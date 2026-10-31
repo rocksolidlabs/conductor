@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DispatchOrder, NotSent, catchUp, editEach, serially, through, throughOrAbsent, type CatchUpOptions } from './dispatchOrder'
+import { DispatchOrder, NotSent, catchUp, editEach, retried, serially, through, throughOrAbsent, type CatchUpOptions } from './dispatchOrder'
 
 /** A request whose reply the test hands back, or fails, when it wants. */
 function deferred<T>() {
@@ -352,6 +352,47 @@ describe("an operation's catch-up, before the next operation is made", () => {
     expect(await catchUp(p.o)).toBe(true)
     expect(p.state.reads).toBe(3)
     expect(p.state.waits).toEqual([250])
+  })
+})
+
+describe('a read outside the reload, asked again', () => {
+  it('until one answers, after the window doubled up to its cap, as a re-read is', async () => {
+    const waits: number[] = []
+    let reads = 0
+    const ok = await retried({
+      read: async () => {
+        if (++reads < 5) throw new Error('down')
+      },
+      stop: () => false,
+      wait: async (ms) => void waits.push(ms),
+      firstMs: 250,
+      maxMs: 1000,
+    })
+    expect(ok).toBe(true)
+    expect(reads).toBe(5)
+    expect(waits).toEqual([250, 500, 1000, 1000])
+  })
+
+  it('no more once it is no longer wanted: a later one took its place, or the page went', async () => {
+    let reads = 0
+    let wanted = true
+    const ok = await retried({
+      read: async () => {
+        reads++
+        throw new Error('down')
+      },
+      stop: () => !wanted,
+      wait: async () => {
+        if (reads === 2) wanted = false
+      },
+      firstMs: 250,
+      maxMs: 8000,
+    })
+    expect(ok).toBe(false)
+    expect(reads).toBe(2)
+    // Not wanted from the start: nothing is read.
+    expect(await retried({ read: async () => void reads++, stop: () => true, wait: async () => {}, firstMs: 1, maxMs: 1 })).toBe(false)
+    expect(reads).toBe(2)
   })
 })
 
