@@ -3175,7 +3175,20 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   source) and `TestExtICEServerValidAsPion` (a server `Valid` takes is one
   Pion takes). Nothing calls `ext` yet.
 
-  PR-2 (#474): ext/local: the free defaults and Fill. Planned.
+  PR-2 (#474): `ext/local`, the standard library and `ext` only: the free
+  defaults, each an empty struct named `local`, safe for concurrent use,
+  its doc comment saying what main does without it: `Identity`
+  (recognises no token), `Router` (the empty route, keeping nothing it is
+  told), `Continuity` (keeps nothing; `Restore` writes nothing and answers
+  `ErrNothingToRestore`), `AllowAll` (every feature allowed, no limit, no
+  end, "allowed: no entitlement source is registered") and `Media` (no ICE
+  server, no room). `Fill` puts them in the identity, router, sync and
+  media slots nothing is registered in, and keeps a registered provider,
+  the lists, the runtime (its native default is C10's) and `All` as they
+  are: the one place any code asks whether a provider is registered.
+  Tests: `TestDefaults` (each answer, from 32 goroutines at once under
+  `-race`) and `TestFill` (an empty set, a full one, a partial one), each
+  checked to fail with its part broken. Nothing calls `Fill` yet.
 
   PR-3 (#475): cli, api: the composition root reads the registry once; every
   provider call guarded. Planned.
