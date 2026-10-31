@@ -893,6 +893,29 @@ func TestReplayChecksTheContent(t *testing.T) {
 	if got := writes(); got != was {
 		t.Fatalf("Replay wrote: %v, then %v", was, got)
 	}
+	// A launch (PR-2's cases): new, then the same request done with the
+	// launch's id; another plan or another label under the id op_conflict,
+	// Replay and Apply alike, nothing written.
+	approve(t, s, "a1", id, "go")
+	largs := LaunchArgs{Key: key, Plan: id}
+	if rc, found := replayed(t, s, testOp("launch1"), IntentTicketLaunch, largs); found {
+		t.Fatalf("a new launch found: %+v", rc)
+	}
+	l := mustLaunch(t, s, "launch1", key, id, "")
+	if rc, found := replayed(t, s, testOp("launch1"), IntentTicketLaunch, largs); !found || rc.Status != StatusDone || !rc.Repeat || rc.ID != l.ID {
+		t.Fatalf("the same launch replayed: %+v %v", rc, found)
+	}
+	launches := count(t, s, "SELECT COUNT(*) FROM launches")
+	for _, o := range []LaunchArgs{{Key: key, Plan: "0123456789abcdef"}, {Key: key, Plan: id, Label: "Another label"}} {
+		if rc, found := replayed(t, s, testOp("launch1"), IntentTicketLaunch, o); !found || rc.Refusal != RefusalOpConflict {
+			t.Fatalf("%+v replayed: %+v %v", o, rc, found)
+		}
+		rc, err := s.Launch(ctx, testOp("launch1"), o.Key, o.Plan, o.Label)
+		want(t, rc, err, StatusFailed, RefusalOpConflict)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM launches"); n != launches {
+		t.Fatalf("%d launches, then %d", launches, n)
+	}
 	// What Apply refuses before looking, Replay refuses too.
 	if _, _, err := s.Replay(ctx, Op{Actor: "test", ID: "a b"}, IntentPlanPropose, args); !errors.Is(err, ErrBadOpID) {
 		t.Fatalf("a bad op id: %v", err)
@@ -930,17 +953,41 @@ func TestReplayAfterPruningChecksTheContent(t *testing.T) {
 	rc, err := addLink(s, "l1", key, NewLink{Kind: LinkDelivery, URL: other})
 	want(t, rc, err, StatusDone, "")
 	link := rc.ID
+	approve(t, s, "a1", id, "go")
+	launched := mustLaunch(t, s, "launch1", key, id, "")
 	if _, err := s.db.Exec("DELETE FROM ops"); err != nil {
 		t.Fatal(err)
 	}
-	writes := func() [3]int {
-		return [3]int{count(t, s, "SELECT COUNT(*) FROM ops"), count(t, s, "SELECT COUNT(*) FROM changes"), count(t, s, "SELECT COUNT(*) FROM plans")}
+	writes := func() [4]int {
+		return [4]int{count(t, s, "SELECT COUNT(*) FROM ops"), count(t, s, "SELECT COUNT(*) FROM changes"), count(t, s, "SELECT COUNT(*) FROM plans"),
+			count(t, s, "SELECT COUNT(*) FROM launches")}
 	}
 	was := writes()
 
+	// The launch (PR-2's cases): the same request done with the launch's
+	// id, Replay and Apply alike; another plan or label op_conflict.
+	largs := LaunchArgs{Key: key, Plan: id}
+	rc, found := replayed(t, s, testOp("launch1"), IntentTicketLaunch, largs)
+	if !found || rc.Status != StatusDone || !rc.Repeat || rc.ID != launched.ID {
+		t.Fatalf("the same launch after the prune: %+v %v", rc, found)
+	}
+	rc, err = s.Launch(ctx, testOp("launch1"), key, id, "")
+	want(t, rc, err, StatusDone, "")
+	if !rc.Repeat || rc.ID != launched.ID {
+		t.Fatalf("the same launch applied after the prune: %+v", rc)
+	}
+	for _, o := range []LaunchArgs{{Key: key, Plan: "0123456789abcdef"}, {Key: key, Plan: id, Label: "Another label"}} {
+		rc, found = replayed(t, s, testOp("launch1"), IntentTicketLaunch, o)
+		if !found || rc.Refusal != RefusalOpConflict || rc.Error != wordsOpConflict {
+			t.Fatalf("%+v after the prune: %+v %v", o, rc, found)
+		}
+		rc, err = s.Launch(ctx, testOp("launch1"), o.Key, o.Plan, o.Label)
+		want(t, rc, err, StatusFailed, RefusalOpConflict)
+	}
+
 	// The proposal.
 	args := PlanProposeArgs{Key: key, PlanRequest: req}
-	rc, found := replayed(t, s, testOp("p1"), IntentPlanPropose, args)
+	rc, found = replayed(t, s, testOp("p1"), IntentPlanPropose, args)
 	if !found || rc.Status != StatusDone || !rc.Repeat || rc.ID != id {
 		t.Fatalf("the same request after the prune: %+v %v", rc, found)
 	}

@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -15,11 +16,20 @@ import (
 // is a member of its ticket's links set: one live row per identity on a
 // local write, a rule and not an index, two replicas' adds of one member
 // one member with two tags whose later add's row (its URL and note) stands
-// for it, and a remove through that row's id removing both. A run belongs
-// to one ticket at most: a run link names a run no other live ticket's
-// live run link names, a tombstone's links holding no run. The store's
-// one sight of the engine is the RunExists function the API gives it; it
-// starts nothing.
+// for it, and a remove through that row's id removing both.
+//
+// A run belongs to one ticket at most, and so does its whole chain: the
+// run, every run it continues and every run that continues it (Program
+// item DS2, docs/plans/dispatch-evidence.md, "Links"). A ticket holds a
+// chain when it launched a run of it (a launch, or the run's package) or
+// has a live run link to a run of it, a tombstone's links holding no run.
+// A launched run is bound by its package and is never linked by hand, nor
+// is a run of its chain; a run link names a run of a chain no other
+// ticket holds; and a chain a version 1 store left on two tickets' links
+// (its rule compared one run id) is kept as it was, contested
+// (ChainHolders naming both), until a person removes one of the links.
+// The store's sight of the engine is the functions the API gives it
+// (SetRunExists, SetRunTicket, SetRunChain); it starts nothing.
 
 // NewLink is what link.add takes: the kind (LinkKinds); the reference,
 // which a run link needs (the run's id) and a delivery or external link
@@ -60,15 +70,226 @@ func (s *Store) SetRunExists(fn func(id string) bool) {
 	s.runExists = fn
 }
 
+// runSight is the store's sight of a run's package and of its chain, the
+// functions the API gives it: ticket the id of the ticket a run was
+// launched from (its package's, which its continuations carry), chain the
+// runs of a run's chain. Either may be nil, for no sight: a run's chain is
+// then the run alone, and its package known only by the store's launches.
+type runSight struct {
+	ticket func(run string) (ticketID string, ok bool)
+	chain  func(run string) []string
+}
+
+// SetRunTicket gives the store the engine's sight of a run's package: fn
+// reports the id of the ticket the run was launched from (the run's
+// Ticket, from the engine or its record), ok false for a run no ticket
+// launched. A run it names is held by that ticket whether or not the store
+// has the launch (one a replica made). fn runs inside an operation's
+// transaction with the store's lock held, so it must not call the store.
+func (s *Store) SetRunTicket(fn func(run string) (ticketID string, ok bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sight.ticket = fn
+}
+
+// SetRunChain gives the store the engine's sight of a run's chain: fn
+// reports the runs of the run's chain, the run, every run it continues
+// and every run that continues it (the ledger's continued_by rows and the
+// run records' resumedFrom and resumedBy), the run itself among them or
+// not. A chain only grows, by a continuation that is a new run, so a check
+// made at a link's write stays true until the link is removed. fn runs
+// inside an operation's transaction with the store's lock held, so it
+// must not call the store.
+func (s *Store) SetRunChain(fn func(run string) []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sight.chain = fn
+}
+
+// chainOf is the runs of the run's chain, the run first, each once.
+func (rs runSight) chainOf(run string) []string {
+	out := []string{run}
+	if rs.chain != nil {
+		for _, r := range rs.chain(run) {
+			if r != "" && !slices.Contains(out, r) {
+				out = append(out, r)
+			}
+		}
+	}
+	return out
+}
+
+// ChainHolder is a ticket that holds a run's chain: the ticket, the run of
+// the chain it holds it by, and how: Launch, the launch that made that run
+// (or "" when only the run's package names the ticket), or Link, its live
+// run link to it.
+type ChainHolder struct {
+	TicketID string `json:"ticketId"`
+	Key      string `json:"key"`
+	Run      string `json:"run"`
+	Launch   string `json:"launch,omitempty"`
+	Link     string `json:"link,omitempty"`
+	// deleted says the ticket is a tombstone: a launch binds its run
+	// whatever becomes of the ticket, and a tombstone's links hold none.
+	deleted bool
+}
+
+// chainHolders reads who holds the chain of runs through q: launched, the
+// tickets that launched a run of it, live or deleted (a launch pending or
+// started, else the run's package by sight), and linked, the live
+// tickets whose live run link names a run of it, each in the order found.
+// A version 1 database, read as it was found, has no launches.
+func chainHolders(ctx context.Context, q queryer, sight runSight, runs []string) (launched, linked []ChainHolder, err error) {
+	for _, run := range runs {
+		var byLaunch []ChainHolder
+		if schemaOf(q) >= 2 {
+			rows, err := q.QueryContext(ctx, `SELECT launches.id, tickets.id, tickets.key, tickets.deleted_at FROM launches JOIN tickets ON tickets.id = launches.ticket_id
+				WHERE launches.run_id = ? AND launches.state != ? ORDER BY launches.created_at, launches.id`, run, LaunchFailed)
+			if err != nil {
+				return nil, nil, err
+			}
+			for rows.Next() {
+				h := ChainHolder{Run: run}
+				var deleted string
+				if err := rows.Scan(&h.Launch, &h.TicketID, &h.Key, &deleted); err != nil {
+					rows.Close()
+					return nil, nil, err
+				}
+				h.deleted = deleted != ""
+				byLaunch = append(byLaunch, h)
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return nil, nil, err
+			}
+		}
+		if sight.ticket != nil {
+			if id, ok := sight.ticket(run); ok && !slices.ContainsFunc(byLaunch, func(h ChainHolder) bool { return h.TicketID == id }) {
+				h := ChainHolder{TicketID: id, Key: id, Run: run}
+				tk, err := ticketByID(ctx, q, id)
+				switch {
+				case err == nil:
+					h.Key, h.deleted = tk.Key, !tk.DeletedAt.IsZero()
+				case !isNoRows(err):
+					return nil, nil, err
+				}
+				byLaunch = append(byLaunch, h)
+			}
+		}
+		launched = append(launched, byLaunch...)
+		rows, err := q.QueryContext(ctx, `SELECT links.id, tickets.id, tickets.key FROM links JOIN tickets ON tickets.id = links.ticket_id
+			WHERE links.kind = ? AND links.ref = ? AND links.deleted_at = '' AND tickets.deleted_at = '' ORDER BY tickets.key, links.created_at, links.id`, LinkRun, run)
+		if err != nil {
+			return nil, nil, err
+		}
+		for rows.Next() {
+			h := ChainHolder{Run: run}
+			if err := rows.Scan(&h.Link, &h.TicketID, &h.Key); err != nil {
+				rows.Close()
+				return nil, nil, err
+			}
+			linked = append(linked, h)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, nil, err
+		}
+	}
+	return launched, linked, nil
+}
+
+// heldBy is the live tickets among holders, one entry each (the first
+// found), by key.
+func heldBy(holders ...[]ChainHolder) []ChainHolder {
+	var out []ChainHolder
+	for _, hs := range holders {
+		for _, h := range hs {
+			if !h.deleted && !slices.ContainsFunc(out, func(o ChainHolder) bool { return o.TicketID == h.TicketID }) {
+				out = append(out, h)
+			}
+		}
+	}
+	slices.SortStableFunc(out, func(a, b ChainHolder) int { return strings.Compare(a.Key, b.Key) })
+	return out
+}
+
+// ChainHolders reads the live tickets that hold the chain of the run (by a
+// launch of a run of it, or by a live run link to one), over the runs the
+// store's sight of the chain gives (SetRunChain), one entry each, by key:
+// none for a chain no live ticket holds, one for a held chain, and more
+// for a contested one, which a version 1 store or a merge left on two
+// tickets' links and which no ticket owns until a person removes one of
+// the links.
+func (s *Store) ChainHolders(ctx context.Context, run string) ([]ChainHolder, error) {
+	s.mu.Lock()
+	sight := s.sight
+	s.mu.Unlock()
+	var out []ChainHolder
+	err := s.read(ctx, func(q queryer) error {
+		launched, linked, err := chainHolders(ctx, q, sight, sight.chainOf(run))
+		if err != nil {
+			return err
+		}
+		out = heldBy(launched, linked)
+		if out == nil {
+			out = []ChainHolder{}
+		}
+		return nil
+	})
+	return out, err
+}
+
+// chainRefusal is why a run link to the run, on the ticket tk, is refused
+// by who holds the run's chain (chainHolders), nil when no one does: a
+// launched run, or a run of a launched run's chain, is its launching
+// ticket's (run_linked naming it, live or deleted, since a package binds
+// its run whatever becomes of its ticket); a run of a chain one live
+// ticket links is that ticket's, the link's own ticket among them
+// (run_linked naming it); and a contested chain is refused naming every
+// holder, the receipt's key the first.
+func chainRefusal(tk Ticket, run string, launched, linked []ChainHolder) error {
+	if len(launched) > 0 {
+		h := launched[0]
+		words := fmt.Sprintf("the run %s was launched from %s: it is among %s's runs already", run, h.Key, h.Key)
+		if h.Run != run {
+			words = fmt.Sprintf("the run %s is of one chain with run %s, launched from %s: it is among %s's runs already", run, h.Run, h.Key, h.Key)
+		}
+		return &Refusal{Code: RefusalRunLinked, Words: words, Key: h.Key}
+	}
+	holders := heldBy(linked)
+	switch len(holders) {
+	case 0:
+		return nil
+	case 1:
+		h := holders[0]
+		switch {
+		case h.Run == run:
+			return &Refusal{Code: RefusalRunLinked, Words: "the run " + run + " is linked to " + h.Key, Key: h.Key}
+		case h.TicketID == tk.ID:
+			return &Refusal{Code: RefusalRunLinked, Key: h.Key,
+				Words: fmt.Sprintf("%s links run %s already, of one chain with run %s: a chain belongs to one ticket, and it is among %s's runs", h.Key, h.Run, run, h.Key)}
+		}
+		return &Refusal{Code: RefusalRunLinked, Key: h.Key,
+			Words: fmt.Sprintf("%s links run %s, of one chain with run %s: a chain belongs to one ticket", h.Key, h.Run, run)}
+	}
+	keys := make([]string, len(holders))
+	for i, h := range holders {
+		keys[i] = h.Key
+	}
+	return &Refusal{Code: RefusalRunLinked, Key: keys[0],
+		Words: fmt.Sprintf("the chain of run %s is contested: %s each link a run of it; remove one of the links first", run, strings.Join(keys, " and "))}
+}
+
 // AddLink links the live ticket with the key outward (link.add): its
 // fields checked by their rules (the URL http or https, the reference
 // and the URL at most 2 KiB, the note at most MaxLinkNote characters); a
 // delivery or external link names its URL and takes it as its reference
 // when it names none, a run link names its reference (invalid
-// otherwise). Its identity live on the ticket already is invalid. A run
-// link's reference names a run that exists (not_found otherwise) and no
-// other live ticket's live run link (run_linked, the receipt's Key naming
-// that ticket), so a run belongs to one ticket at most. At most MaxLinks
+// otherwise); a decision link is reserved for Program item DR1 (invalid).
+// Its identity live on the ticket already is invalid. A run link's
+// reference names a run that exists (not_found otherwise) of a chain no
+// ticket holds (run_linked, the receipt's Key naming the holder:
+// chainRefusal), so a run, and its chain, belongs to one ticket at most. At most MaxLinks
 // live links on the ticket (bound). One add row, its value the link
 // whole ({id, kind, ref, url, note, createdAt, createdBy}) and the
 // operation's fingerprint, which the link's row keeps as well (Replay
@@ -80,6 +301,9 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Rece
 		tk, _, err := t.ticket(key, false)
 		if err != nil {
 			return err
+		}
+		if l.Kind == LinkDecision {
+			return refuse(RefusalInvalid, "a decision link is reserved for durable decision records, which Program item DR1 adds")
 		}
 		if !slices.Contains(LinkKinds, l.Kind) {
 			return refuse(RefusalInvalid, "the kind %q is none of %s", l.Kind, strings.Join(LinkKinds, ", "))
@@ -114,12 +338,12 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Rece
 			if t.runExists == nil || !t.runExists(ref) {
 				return refuse(RefusalNotFound, "no run %s", ref)
 			}
-			holder, err := t.runHolder(ref, tk.ID)
+			launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, t.sight.chainOf(ref))
 			if err != nil {
 				return err
 			}
-			if holder != "" {
-				return &Refusal{Code: RefusalRunLinked, Words: "the run " + ref + " is linked to " + holder, Key: holder}
+			if err := chainRefusal(tk, ref, launched, linked); err != nil {
+				return err
 			}
 		}
 		var n int
@@ -203,37 +427,26 @@ func (t *tx) removeLink(tk Ticket, l Link) error {
 		rowTags(ids, adds))
 }
 
-// runHolder is the key of the live ticket other than the one with the id
-// except whose live run link names the run, "" when there is none: a
-// tombstone's links hold no run.
-func (t *tx) runHolder(run, except string) (string, error) {
-	keys, err := readTexts(t.ctx, t.tx, `SELECT tickets.key FROM links JOIN tickets ON tickets.id = links.ticket_id
-		WHERE links.kind = ? AND links.ref = ? AND links.deleted_at = '' AND tickets.deleted_at = '' AND tickets.id != ?
-		ORDER BY tickets.key LIMIT 1`, LinkRun, run, except)
-	if err != nil || len(keys) == 0 {
-		return "", err
-	}
-	return keys[0], nil
-}
-
 // releaseRuns removes the run links of the ticket, undeleted in this
-// operation, whose run another live ticket linked while it was deleted:
-// one remove row each, so a run belongs to one live ticket at most. Its
-// other links come back as they were.
+// operation, whose run's chain another ticket holds now (one linked a run
+// of it while this one was deleted, or launched one): one remove row
+// each, so a chain belongs to one live ticket at most. Its other links
+// come back as they were.
 func (t *tx) releaseRuns(tk Ticket) error {
 	links, err := linksOf(t.ctx, t.tx, tk.ID)
 	if err != nil {
 		return err
 	}
+	other := func(h ChainHolder) bool { return h.TicketID != tk.ID }
 	for _, l := range links {
 		if l.Kind != LinkRun {
 			continue
 		}
-		holder, err := t.runHolder(l.Ref, tk.ID)
+		launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, t.sight.chainOf(l.Ref))
 		if err != nil {
 			return err
 		}
-		if holder == "" {
+		if !slices.ContainsFunc(launched, other) && !slices.ContainsFunc(linked, other) {
 			continue
 		}
 		if err := t.removeLink(tk, l); err != nil {
