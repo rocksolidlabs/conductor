@@ -137,6 +137,9 @@ test('the session page: the views show and never hide, Share, Copy a view link, 
 })
 
 test("the other pages: the Yard's chips, the Roundhouse's switches and rotation, Crews' New crew, Events' tabs and refresh, Agents' Launch, Settings' Save", async ({ page, api }) => {
+  // Six pages and some thirty palette opens and closes in one test: on a loaded machine (a load of 140, PR #503's full run) every step
+  // went on and the whole took 2.1 m, past the config's 120 s for one test. Its own budget, tripled; each step keeps its own waits.
+  test.slow()
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e rows pages' })
   sessions.push(s.id)
   // The Yard: a chip row sets the filter and reads as on.
