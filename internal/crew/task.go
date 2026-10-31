@@ -55,6 +55,9 @@ const (
 // LedgerTx is a transaction's writer: ledger.Tx, or a test's fake.
 type LedgerTx interface {
 	Event(kind string, payload any) error
+	// CreateRun puts a new run's first row, refusing an id the ledger has
+	// (ledger.ErrRunExists, that row untouched); PutRun every later one.
+	CreateRun(ledger.RunRow) error
 	PutRun(ledger.RunRow) error
 	PutTask(ledger.TaskRow) error
 	PutAttempt(ledger.AttemptRow) error
@@ -589,7 +592,10 @@ func (r *run) dirty() bool {
 // snapshot is what one transition writes: the rows of what changed, as
 // they were when it was taken.
 type snapshot struct {
-	run      *ledger.RunRow
+	run *ledger.RunRow
+	// create says run is the run's first row (CreateRun), the run not yet
+	// in the ledger.
+	create   bool
 	tasks    []ledger.TaskRow
 	attempts []ledger.AttemptRow
 	ts       []*task
@@ -626,7 +632,11 @@ func (r *run) drain() snapshot {
 // before their attempts.
 func (s snapshot) write(tx LedgerTx) error {
 	if s.run != nil {
-		if err := tx.PutRun(*s.run); err != nil {
+		put := tx.PutRun
+		if s.create {
+			put = tx.CreateRun
+		}
+		if err := put(*s.run); err != nil {
 			return err
 		}
 	}
@@ -727,12 +737,42 @@ func ev(kind string, payload map[string]any) tx {
 // commit after it. A change that sets the run's outcome reports the end
 // once committed. Nothing is written for a change that changed nothing.
 func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo func()) error {
+	return e.commit(ctx, r, false, mutate, undo)
+}
+
+// transactFirst is transact for a change that may be a managed run's first
+// transaction: its launch's (run.created), its continuation's
+// (run.continued) and its stop's, a run stopped before its launch was
+// recorded. Every other change of a run whose row is not yet the ledger's
+// (unrecorded) is refused (errLaunching) before it is made: a command
+// taken before run.created would dispatch tasks before the prerequisites
+// were armed, or before a continuation's history was installed.
+func (e *Engine) transactFirst(ctx context.Context, r *run, mutate func() tx, undo func()) error {
+	return e.commit(ctx, r, true, mutate, undo)
+}
+
+// errLaunching refuses a change of a managed run whose launch is not
+// recorded yet (transactFirst): a conflict with the run's state, as a
+// command on a task not in a state for it is.
+var errLaunching = fmt.Errorf("%w: the run's launch is not recorded yet, and it takes no change before it is", ErrTaskState)
+
+// commit is transact, and transactFirst when first is set.
+func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() tx, undo func()) error {
 	if e.ledger == nil {
 		return ErrNoLedger
 	}
 	r.txMu.Lock()
 	defer r.txMu.Unlock()
 	e.mu.Lock()
+	if r.unrecorded() && !first {
+		e.mu.Unlock()
+		return errLaunching
+	}
+	if r.foreign {
+		// Its id is another run's: nothing of it is written again.
+		e.mu.Unlock()
+		return fmt.Errorf("%w: %s", ErrRunExists, r.id)
+	}
 	t := mutate()
 	snap := r.drain()
 	pending, pendingMore := r.pendingEvents, r.pendingMore
@@ -745,6 +785,18 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	if len(events) == 0 && len(more) == 0 && snap.run == nil && len(snap.tasks) == 0 && len(snap.attempts) == 0 {
 		e.mu.Unlock()
 		return nil
+	}
+	if r.unrecorded() {
+		// The run's first transaction, or one after a first that the
+		// ledger refused for another reason: it writes the run's row
+		// first, with an insert that refuses an id the ledger has, so
+		// nothing of it (an event, a row of its own) lands on another
+		// run's row.
+		if snap.run == nil {
+			row := r.runRow(r.crewJSON)
+			snap.run = &row
+		}
+		snap.create = true
 	}
 	r.committing = true
 	e.mu.Unlock()
@@ -767,6 +819,9 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	e.mu.Lock()
 	r.committing = false
 	if err != nil {
+		if snap.create && errors.Is(err, ErrRunExists) {
+			r.foreign = true
+		}
 		snap.undo(r)
 		r.pendingEvents, r.pendingMore = events, more
 		if undo != nil {
@@ -777,6 +832,9 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 		return err
 	}
 	r.revision = rev
+	if snap.create {
+		r.created = true
+	}
 	r.touch()
 	if r.endPending {
 		r.endPending = false
@@ -823,10 +881,12 @@ func (e *Engine) pumpLocked(r *run) {
 // afterTransact takes a transaction's outcome for what rests on it:
 // committed, the ready tasks are dispatched; failed, the run's dispatch
 // pauses until a person looks, the run log says why, and the pause's own
-// commit carries the change's rows. It reports whether the change is
-// durable now, by the one commit or the other: a side effect that must
-// follow the change (a session stopped) waits for that. The caller holds
-// neither lock.
+// commit carries the change's rows. A change refused because the run's
+// launch was not recorded yet (errLaunching) is no failure of the
+// ledger's and pauses nothing (pauseFor). It reports whether the change
+// is durable now, by the one commit or the other: a side effect that
+// must follow the change (a session stopped) waits for that. The caller
+// holds neither lock.
 func (e *Engine) afterTransact(r *run, err error) (durable bool) {
 	if err == nil {
 		e.pumpLocked(r)
@@ -837,8 +897,15 @@ func (e *Engine) afterTransact(r *run, err error) (durable bool) {
 
 // pauseFor pauses the run's dispatch after the ledger refused a
 // transaction, in a transaction that carries what the refused one could
-// not. The caller holds neither lock.
+// not. A change refused before it was made, the run's launch not recorded
+// yet (errLaunching), is not the ledger's refusal: nothing of it waits to
+// be written, and the launch may have committed since, so a pause now
+// would stall a run launched whole. It pauses nothing and is returned:
+// the change is not durable. The caller holds neither lock.
 func (e *Engine) pauseFor(r *run, err error) error {
+	if errors.Is(err, errLaunching) {
+		return err
+	}
 	return e.transact(context.Background(), r, func() tx {
 		return pausedTx(e.pauseDispatch(r, err), err)
 	}, nil)
@@ -855,6 +922,10 @@ func (e *Engine) pauseFor(r *run, err error) error {
 // and the continuation of a run that stopped so starts paused, for a
 // person to look at (Codex's review of #367). The caller holds e.mu.
 func (e *Engine) pauseDispatch(r *run, err error) bool {
+	if errors.Is(err, errLaunching) {
+		// Refused before it was made: no failure of the ledger's (pauseFor).
+		return false
+	}
 	if r.ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		r.note(session.ActivityStatus, "the ledger did not record the run's state as it stopped: %v", err)
 		return false
@@ -1191,13 +1262,19 @@ func (e *Engine) noteEndLater(r *run) {
 // dispatched once they passed, at once without any. An error is the
 // launch's.
 func (e *Engine) startManaged(ctx context.Context, r *run) error {
-	if err := e.transact(ctx, r, func() tx {
+	if err := e.transactFirst(ctx, r, func() tx {
 		r.markRun()
 		for _, t := range r.tasks {
 			r.markTask(t)
 		}
 		r.armPrerequisites()
-		return ev("run.created", map[string]any{"base": r.base, "tasks": len(r.tasks)})
+		payload := map[string]any{"base": r.base, "tasks": len(r.tasks)}
+		if r.pkg != nil {
+			// Launched from a ticket (LaunchPlanned): which, and the
+			// package's digest, which its row keeps the bytes of.
+			payload["ticket"], payload["digest"] = r.pkg.p.Ticket.Key, r.pkg.digest
+		}
+		return ev("run.created", payload)
 	}, giveUp); err != nil {
 		return err
 	}
@@ -1210,7 +1287,7 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 // told once it is committed. The caller does not hold e.mu; the run is
 // stopped. The error is the ledger's refusal: the stop stays pending.
 func (e *Engine) recordStop(r *run) error {
-	return e.transact(context.Background(), r, func() tx {
+	return e.transactFirst(context.Background(), r, func() tx {
 		n := 0
 		for _, t := range r.tasks {
 			if a := t.active(); a != nil {
@@ -1394,6 +1471,9 @@ func (r *run) runRow(crewJSON string) ledger.RunRow {
 		state = ledger.RunFinished
 	}
 	row := ledger.RunRow{ID: r.id, CrewID: r.crewID, Crew: crewJSON, Base: r.base, State: state, Outcome: r.outcome, Paused: r.paused, PausedWhy: r.pausedWhy, CreatedAt: r.startedAt, ContinuedFrom: r.resumedFrom, ContinuedBy: r.resumedBy, Manifest: r.baseManRow}
+	if r.pkg != nil {
+		row.Ticket, row.Package = r.pkg.p.Ticket.ID, r.pkg.raw
+	}
 	if state != ledger.RunRunning {
 		row.ClosedAt = time.Now().UTC()
 	}

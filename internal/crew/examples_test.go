@@ -104,6 +104,18 @@ func TestTodoAppWithTasks(t *testing.T) {
 	if len(c.Setup) != 0 || c.Isolation != IsolationWorktree {
 		t.Errorf("setup %v, isolation %s", c.Setup, c.Isolation)
 	}
+	// Its project manifest (EN1): one prerequisite, python3 --version, and
+	// nothing else, so the first real run shows a receipt and a host
+	// without Python pauses before an attempt is spent.
+	if m := c.Manifest; m == nil || len(m.Prerequisites) != 1 || m.Prerequisites[0].ID != "python" || !slices.Equal(m.Prerequisites[0].Argv, []string{"python3", "--version"}) ||
+		m.File || len(m.Env) != 0 || len(m.Ports) != 0 || len(m.Setup) != 0 || len(m.Services) != 0 || len(m.Ready) != 0 || m.Preview != "" || len(m.Verify) != 0 || len(m.Cleanup) != 0 {
+		t.Errorf("the manifest: %+v", c.Manifest)
+	}
+	for _, other := range list {
+		if other.ID != c.ID && other.Manifest != nil {
+			t.Errorf("%s has a manifest: %+v", other.ID, other.Manifest)
+		}
+	}
 	agents := map[string]string{"lead": "claude", "core": "claude", "cli": "codex", "reviewer": "codex"}
 	if len(c.Members) != len(agents) {
 		t.Fatalf("members: %+v", c.Members)
@@ -250,6 +262,44 @@ func TestSeedAddsTheTaskExampleToAnEarlierLoad(t *testing.T) {
 	}
 	if added, _, err := s.Seed(Examples("/w", now)); err != nil || len(added) != 0 {
 		t.Fatalf("a third load: %v %v", added, err)
+	}
+}
+
+// The task example is seeded with its project manifest at revision 1, so
+// its receipts say crew:1; a copy loaded before it had one keeps no
+// manifest after a later load (Seed skips a crew loaded before), so
+// nobody's saved crew changes under them.
+func TestSeedGivesTheTaskExampleItsManifestAndLeavesAnEarlierCopyAlone(t *testing.T) {
+	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	s, _ := newStore(t)
+	if _, _, err := s.Seed(Examples("/w", now)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("example-todo-app-tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Manifest == nil || len(got.Manifest.Prerequisites) != 1 || got.Manifest.Prerequisites[0].ID != "python" || got.ManifestRevision != 1 {
+		t.Fatalf("seeded: %+v, revision %d", got.Manifest, got.ManifestRevision)
+	}
+	if other, err := s.Get("example-todo-app"); err != nil || other.Manifest != nil || other.ManifestRevision != 0 {
+		t.Fatalf("the rules example: %+v %d %v", other.Manifest, other.ManifestRevision, err)
+	}
+
+	old, _ := newStore(t)
+	before := Examples("/w", now)
+	for i := range before {
+		before[i].Manifest = nil
+	}
+	if _, _, err := old.Seed(before); err != nil {
+		t.Fatal(err)
+	}
+	added, skipped, err := old.Seed(Examples("/w", now))
+	if err != nil || len(added) != 0 || !slices.Contains(skipped, "example-todo-app-tasks") {
+		t.Fatalf("loading again: %v %v %v", added, skipped, err)
+	}
+	if kept, err := old.Get("example-todo-app-tasks"); err != nil || kept.Manifest != nil || kept.ManifestRevision != 0 {
+		t.Fatalf("the earlier copy changed: %+v %d %v", kept.Manifest, kept.ManifestRevision, err)
 	}
 }
 

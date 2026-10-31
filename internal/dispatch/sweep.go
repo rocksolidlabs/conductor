@@ -33,7 +33,11 @@ import (
 // deletes before the file is published (a reused hash it deleted is
 // published afresh), and one that begins after reads the lease and leaves
 // the file, whatever its age. An upload whose lease the sweep dropped
-// before its row was written is refused expired, never trusted.
+// before its row was written is refused expired, never trusted. A
+// launch's package pins the content of the attachments it names
+// (launch_files, Program item DS2): a pinned file is named, so a package's
+// attachment outlives its removal from the ticket, for every attempt of
+// the run and of its continuations, which copy it through OpenLaunchFile.
 
 // shardPattern is the name of a shard of the attachments' directory: the
 // first two characters of its contents' hashes.
@@ -71,8 +75,9 @@ func (s *Store) expireLeases(ctx context.Context, now time.Time) error {
 
 // collectOrphans lists the attachments' directory, then, in a write
 // transaction (BEGIN IMMEDIATE) it holds while it works and writes nothing
-// in, deletes every listed content file whose hash neither a live
-// attachment row nor a lease names, and every upload's temp file at least
+// in, deletes every listed content file whose hash no live attachment
+// row, no lease and no launch's pin names, and every upload's temp file at
+// least
 // sweepGrace old by now, each through unlink. The transaction is the lock
 // that orders the collection against an upload's lease, so it lasts until
 // the last unlink has returned, whatever becomes of ctx: it is begun, and
@@ -135,7 +140,7 @@ func (s *Store) collectOrphans(ctx context.Context, now time.Time) error {
 		}
 		var named bool
 		if err := dbtx.QueryRowContext(held, `SELECT EXISTS (SELECT 1 FROM attachments WHERE sha256 = ? AND deleted_at = '')
-			OR EXISTS (SELECT 1 FROM uploads WHERE sha256 = ?)`, c.sum, c.sum).Scan(&named); err != nil {
+			OR EXISTS (SELECT 1 FROM uploads WHERE sha256 = ?) OR EXISTS (SELECT 1 FROM launch_files WHERE sha256 = ?)`, c.sum, c.sum, c.sum).Scan(&named); err != nil {
 			return err
 		}
 		if !named {
@@ -211,4 +216,45 @@ func (s *Store) openAttachments(ctx context.Context, now time.Time) error {
 		err = serr
 	}
 	return err
+}
+
+// OpenLaunchFile opens the content the package of the launch with the id
+// names by its hash, sum, and nothing else: content no launch_files row of
+// that launch pins is ErrNotFound, whatever the attachments' directory
+// holds, so a caller can open only what a package hands over. A pin is
+// never dropped and the sweep keeps what a pin names, so the content of a
+// launch's attachment opens after the attachment's removal from its
+// ticket; a pinned file missing, or not a regular file, is an error. The
+// engine copies a package's attachments into each attempt through it,
+// checking each one's size and hash as it copies. The caller closes the
+// file.
+func (s *Store) OpenLaunchFile(ctx context.Context, launchID, sum string) (*os.File, error) {
+	if !ValidID(launchID) || !hashPattern.MatchString(sum) {
+		return nil, ErrNotFound
+	}
+	var pinned bool
+	err := s.read(ctx, func(q queryer) error {
+		if schemaOf(q) < 2 {
+			return nil
+		}
+		return q.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM launch_files WHERE launch_id = ? AND sha256 = ?)", launchID, sum).Scan(&pinned)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !pinned {
+		return nil, ErrNotFound
+	}
+	f, err := os.Open(contentPath(filepath.Join(s.dir, attachmentsDir), sum))
+	if err != nil {
+		return nil, fmt.Errorf("dispatch: the content %s of launch %s: %w", sum, launchID, err)
+	}
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		f.Close()
+		if err == nil {
+			err = errors.New("not a regular file")
+		}
+		return nil, fmt.Errorf("dispatch: the content %s of launch %s: %w", sum, launchID, err)
+	}
+	return f, nil
 }

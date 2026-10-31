@@ -7,7 +7,8 @@
  * says so. Ctrl+Enter (⌘+Enter) saves, Escape leaves the text as it was. A save is made against the text the editor opened on: when
  * another person saved theirs meanwhile (the page reads the ticket live, behind the editor), Save sends nothing, keeps the draft and
  * shows their text; a second Save replaces it, knowingly. The text stays editable while a save goes: what is written meanwhile stays
- * in the editor once the save is done, and its next Save is made against the text saved.
+ * in the editor once the save is done, and its next Save is made against the text saved. An image naming one of the ticket's
+ * attachments (`![a screenshot](attachment:<id>)`) is shown from its content, fetched with the token.
  */
 const props = defineProps<{
   /** The text as the store holds it. */
@@ -25,6 +26,8 @@ const props = defineProps<{
   disabled?: boolean
   /** The field's name, for the page's tests. */
   name: string
+  /** The ticket's images of its attachments (`![…](attachment:<id>)`), as object URLs of their content (useDispatchAttachments). */
+  attachmentUrl?: (id: string) => Promise<string | null>
 }>()
 
 const editing = ref(false)
@@ -115,7 +118,7 @@ watch(
 
     <template v-if="!editing">
       <div v-if="text" class="min-w-0 rounded-md ring ring-default" data-markdown-view>
-        <MarkdownPreview :text="text" dir="" :relative-links="false" />
+        <MarkdownPreview :text="text" dir="" :relative-links="false" :attachment-url="attachmentUrl" />
       </div>
       <button v-else type="button" class="rounded-md border border-dashed border-default px-4 py-3 text-left text-sm text-dimmed enabled:hover:border-accented enabled:hover:text-muted" :disabled="disabled" data-markdown-empty @click="edit">
         {{ empty }}
@@ -129,7 +132,7 @@ watch(
           <span>The {{ label.toLowerCase() }} was changed while you wrote. It now reads as below: Save again to replace it with yours, or Cancel to keep it.</span>
         </p>
         <div class="min-w-0 rounded-md ring ring-default" data-markdown-theirs-text>
-          <MarkdownPreview v-if="theirs" :text="theirs" dir="" :relative-links="false" />
+          <MarkdownPreview v-if="theirs" :text="theirs" dir="" :relative-links="false" :attachment-url="attachmentUrl" />
           <p v-else class="px-5 py-4 text-sm text-dimmed">Nothing: it was emptied.</p>
         </div>
       </div>
@@ -150,7 +153,7 @@ watch(
         @keydown.escape.prevent.stop="cancel"
       />
       <div v-else class="min-h-24 min-w-0 rounded-md ring ring-default" data-markdown-draft-preview>
-        <MarkdownPreview v-if="draft" :text="draft" dir="" :relative-links="false" />
+        <MarkdownPreview v-if="draft" :text="draft" dir="" :relative-links="false" :attachment-url="attachmentUrl" />
         <p v-else class="px-5 py-4 text-sm text-dimmed">Nothing to preview.</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">

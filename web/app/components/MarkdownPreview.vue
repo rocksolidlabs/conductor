@@ -31,15 +31,21 @@ const props = withDefaults(
     rawUrl?: (path: string) => string | null
     /** Whether a relative link opens its file; off where the text has no folder (a Dispatch ticket's), its words kept as words. */
     relativeLinks?: boolean
+    /**
+     * A Dispatch ticket's images of its attachments (`![…](attachment:<id>)`): the object URL of an attachment's content, fetched with
+     * the token (an `img` cannot carry a header), or null for one that is no image the page shows (an SVG, a PDF, one removed), whose
+     * alt text stays. None: such an image is held as its alt text.
+     */
+    attachmentUrl?: (id: string) => Promise<string | null>
   }>(),
-  { rawUrl: undefined, relativeLinks: true },
+  { rawUrl: undefined, relativeLinks: true, attachmentUrl: undefined },
 )
 const emit = defineEmits<{ open: [path: string] }>()
 
 const host = ref<HTMLElement | null>(null)
 const colorMode = useColorMode()
 const dark = computed(() => colorMode.value === 'dark')
-const rendered = computed(() => renderMarkdown(props.text, { dir: props.dir, rawUrl: props.rawUrl, relativeLinks: props.relativeLinks }))
+const rendered = computed(() => renderMarkdown(props.text, { dir: props.dir, rawUrl: props.rawUrl, relativeLinks: props.relativeLinks, attachments: !!props.attachmentUrl }))
 
 /** Code shiki highlights at most; past it the block stays plain. */
 const HIGHLIGHT_LIMIT = 100_000
@@ -50,9 +56,32 @@ async function enhance() {
   if (!el) return
   const n = ++pass
   el.innerHTML = rendered.value.html
+  void showAttachments(el, n)
   await highlightCode(el, n)
   if (n !== pass) return
   if (rendered.value.mermaid > 0) await drawMermaid(el, n)
+}
+
+/** Each attachment's image given the object URL its content was fetched into; one that is no image the page shows keeps its alt text. */
+async function showAttachments(el: HTMLElement, n: number) {
+  const resolve = props.attachmentUrl
+  if (!resolve) return
+  await Promise.all(
+    Array.from(el.querySelectorAll<HTMLImageElement>('img[data-md-attachment]')).map(async (img) => {
+      const id = img.dataset.mdAttachment ?? ''
+      const url = await resolve(id).catch(() => null)
+      if (n !== pass || !img.isConnected) return
+      if (url) {
+        img.src = url
+        return
+      }
+      const held = document.createElement('span')
+      held.className = 'md-image-held'
+      held.title = 'An attachment that is no image shown here'
+      held.textContent = img.alt || `attachment:${id}`
+      img.replaceWith(held)
+    }),
+  )
 }
 
 async function highlightCode(el: HTMLElement, n: number) {
@@ -199,7 +228,8 @@ onMounted(() => void enhance())
 onBeforeUnmount(() => {
   pass++
 })
-watch([rendered, dark], () => void nextTick(enhance))
+// A resolver given anew (a ticket's attachments read again) shows its images again: one attached since may be named already.
+watch([rendered, dark, () => props.attachmentUrl], () => void nextTick(enhance))
 defineExpose({ focus: () => host.value?.focus() })
 </script>
 

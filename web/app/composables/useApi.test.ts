@@ -20,34 +20,50 @@ describe('requestText', () => {
   })
   afterEach(() => vi.unstubAllGlobals())
 
-  it('returns the body as text with the reply headers, the bearer header sent', async () => {
-    raw.mockResolvedValue({ _data: 'set-up\n', headers: new Headers({ 'X-Conductor-Log-SHA256': 'ab12' }) })
+  it('returns the body as text and as its bytes with the reply headers, the bearer header sent', async () => {
+    raw.mockResolvedValue({ _data: new TextEncoder().encode('set-up\n').buffer, headers: new Headers({ 'X-Conductor-Log-SHA256': 'ab12' }) })
     const { requestText } = useApi()
     const reply = await requestText('/api/runs/r-1/prerequisites/tools/1/log')
     expect(reply.text).toBe('set-up\n')
+    expect(Array.from(reply.bytes)).toEqual(Array.from(new TextEncoder().encode('set-up\n')))
     expect(reply.headers.get('X-Conductor-Log-SHA256')).toBe('ab12')
     expect(raw).toHaveBeenCalledWith('http://api.test/api/runs/r-1/prerequisites/tools/1/log', {
       method: 'GET',
-      responseType: 'text',
+      responseType: 'arrayBuffer',
       headers: { Authorization: 'Bearer workbench-token' },
     })
   })
 
-  it('reads an empty log as empty text', async () => {
+  it('reads an empty log as empty text and no bytes', async () => {
     raw.mockResolvedValue({ _data: undefined, headers: new Headers({ 'X-Conductor-Log-SHA256': 'e3b0' }) })
     const reply = await useApi().requestText('/log')
     expect(reply.text).toBe('')
+    expect(reply.bytes.length).toBe(0)
     expect(reply.headers.get('X-Conductor-Log-SHA256')).toBe('e3b0')
   })
 
+  // A log the proc bound cut inside a character (Codex's review of #502): the bytes the server hashed are kept whole for Save, the
+  // text shows the cut character as U+FFFD.
+  it("keeps a log's bytes that are no UTF-8 as they came, through ofetch itself", async () => {
+    const sent = new Uint8Array([...new TextEncoder().encode('caf'), 0xc3, 0x0a, 0xe2, 0x9c])
+    vi.stubGlobal('$fetch', ofetch.create({}, { fetch: vi.fn(async () => new Response(sent, { status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'X-Conductor-Log-SHA256': 'cut' } })) }))
+    const reply = await useApi().requestText('/log')
+    expect(Array.from(reply.bytes)).toEqual(Array.from(sent))
+    expect(reply.text).toBe('caf\uFFFD\n\uFFFD')
+    expect(reply.headers.get('X-Conductor-Log-SHA256')).toBe('cut')
+  })
+
   // Through ofetch itself, the app's $fetch, against a server's reply: under `responseType: 'text'` it hands back an error's JSON body
-  // as text, which a stub that rejects with the body already parsed hid (the reviews of #422).
+  // as text, and under `arrayBuffer` (requestText's, since the review of #502) as bytes, which a stub that rejects with the body
+  // already parsed hid (the reviews of #422).
   it('normalises an error as request does, the body ofetch hands a text request as text', async () => {
     const reply = (status: number, body: string, type: string) => vi.fn(async () => new Response(body, { status, headers: { 'Content-Type': type } }))
     const gone = reply(410, JSON.stringify({ error: { code: 'log_dropped', message: 'the log was not kept' } }), 'application/json')
     vi.stubGlobal('$fetch', ofetch.create({}, { fetch: gone }))
     const asText = await ofetch.create({}, { fetch: gone }).raw('/log', { responseType: 'text' }).catch((e: { data?: unknown }) => e.data)
     expect(typeof asText).toBe('string')
+    const asBytes = await ofetch.create({}, { fetch: gone }).raw('/log', { responseType: 'arrayBuffer' }).catch((e: { data?: unknown }) => e.data)
+    expect(asBytes).toBeInstanceOf(ArrayBuffer)
     const { request, requestText } = useApi()
     const fromText = await requestText('/log').catch((e: unknown) => e)
     const fromJSON = await request('/log').catch((e: unknown) => e)

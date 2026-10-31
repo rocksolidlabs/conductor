@@ -245,6 +245,10 @@ type Run struct {
 	// Chat is the run's chat, oldest first, at most session.MaxRunChat
 	// messages: on a run read alone (Get) and in its record, not in a list.
 	Chat []proto.ChatMessage `json:"chat,omitempty"`
+	// Ticket is the Dispatch ticket and plan revision a managed run was
+	// launched from (LaunchPlanned), read from its package, which its
+	// continuations carry; absent for a run no ticket launched.
+	Ticket *RunTicket `json:"ticket,omitempty"`
 }
 
 // Managed is what a managed run's record carries beside the run: the
@@ -348,12 +352,19 @@ type Engine struct {
 	// afterAdd, when set, runs once Launch has kept its run and before any
 	// member's start is reserved: a test stops the run there.
 	afterAdd func(runID string)
+	// newRunID, when set, mints a new run's id in place of a random one
+	// (mintRunID): a test makes a launch mint an id the ledger has.
+	newRunID func(crewID string) string
 	// tried, when set, is called by deliver after each attempt to type a
 	// handoff, with the member and whether it was typed: tests wait on it.
 	tried func(member string, typed bool)
 	// afterLookup, when set, runs once a command or RetryTask has looked
 	// its run up and before its change: a test evicts the run there.
 	afterLookup func(runID string)
+	// afterRefused, when set, runs in a command once its taking was
+	// refused and before the refusal is handled (afterTransact): a test
+	// commits the run's launch there.
+	afterRefused func(runID string, err error)
 	// afterVisit, when set, is called by withdraw for each task it visits,
 	// under e.mu: a test counts the visits.
 	afterVisit func(taskID string)
@@ -422,6 +433,20 @@ type run struct {
 	checks    sync.WaitGroup
 	revision  int64
 	crewJSON  string // the crew as launched, for the ledger's run row
+	// created says the run's row is in the ledger: its first transaction
+	// committed. Until then only a change that may be the run's first (its
+	// launch's, its continuation's, its stop's: transactFirst) is written,
+	// with the row first through CreateRun, which refuses an id the ledger
+	// has, and no record of the run is written as it goes (Journal).
+	created bool
+	// foreign says the ledger refused the run's first row as another
+	// run's (ErrRunExists): the id is that run's, so nothing of this one
+	// is written again, recorded or told as forgotten, and it is dropped
+	// (dropForeign) with the browsers told to read the id again.
+	foreign bool
+	// pkg is the launch package of a run launched from a ticket
+	// (LaunchPlanned) or of a continuation of one; nil for any other run.
+	pkg *runPackage
 	// The run's project manifest (steps.go): the crew's effective one as
 	// launched (manifest, with File for the file form; a legacy setup
 	// lifted), its revision, and the manifest at the base (baseMan),
@@ -633,13 +658,23 @@ func (e *Engine) LaunchNamed(ctx context.Context, c Crew, label string) (*Run, f
 	if err != nil {
 		return nil, noop, err
 	}
-	r := e.add(c, p, label)
-	release := sync.OnceFunc(func() { e.launched(r) })
-	if e.afterAdd != nil {
-		e.afterAdd(r.id)
+	// A managed run's id is minted against the runs the engine holds; the
+	// ledger may have it (a planned run's, after a restart), which the
+	// run's first transaction finds: refused before anything is made, the
+	// launch mints another (maxMints).
+	for try := 1; ; try++ {
+		r := e.add(c, p, label)
+		release := sync.OnceFunc(func() { e.launched(r) })
+		if e.afterAdd != nil {
+			e.afterAdd(r.id)
+		}
+		run, err := e.startImmediate(ctx, r)
+		if minted(err, try) {
+			release()
+			continue
+		}
+		return run, release, err
 	}
-	run, err := e.startImmediate(ctx, r)
-	return run, release, err
 }
 
 // LaunchAdopting is LaunchHeld for a crew an agent forms around its own
@@ -943,8 +978,16 @@ func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error) {
 
 	e.mu.Lock()
 	if r.stopping {
-		// Stopped before any start was reserved: the run stays, stopped.
+		foreign := r.foreign
 		e.mu.Unlock()
+		if foreign {
+			// Stopped before its first transaction, and the stop's row
+			// refused as another run's: the run is not this launch's to
+			// keep, stopped or not (dropForeign, which the stop did too).
+			e.dropForeign(r)
+			return nil, fmt.Errorf("%w: %s", ErrRunExists, r.id)
+		}
+		// Stopped before any start was reserved: the run stays, stopped.
 		return nil, ErrRunStopped
 	}
 	var starts []*member
@@ -996,8 +1039,16 @@ func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error) {
 }
 
 // add makes and keeps a run of c with every member pending, launching until
-// the caller calls launched.
+// the caller calls launched, under an id it mints.
 func (e *Engine) add(c Crew, p prepared, label string) *run {
+	r, _ := e.addRun(c, p, label, "", nil)
+	return r
+}
+
+// addRun is add with the run's id given (a planned launch's: ErrRunExists
+// when the engine holds a run of it), "" to mint one, and the run's launch
+// package, nil for none.
+func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (*run, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed()}
@@ -1031,6 +1082,7 @@ func (e *Engine) add(c Crew, p prepared, label string) *run {
 			immediate++
 		}
 	}
+	r.pkg = pkg
 	// Under endMu as well: a run evict forgets has its record written
 	// (journalForgotten) in its turn among the saves, before the run is
 	// gone for a resume from that record to find.
@@ -1038,8 +1090,18 @@ func (e *Engine) add(c Crew, p prepared, label string) *run {
 	defer e.endMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if id != "" {
+		if e.runs[id] != nil {
+			cancel()
+			if r.teardownCancel != nil {
+				r.teardownCancel()
+			}
+			return nil, ErrRunExists
+		}
+		r.id = id
+	}
 	for r.id == "" || e.runs[r.id] != nil {
-		r.id = c.ID + "-" + session.NewID()[:8]
+		r.id = e.mintRunID(c.ID)
 	}
 	e.evict()
 	e.runs[r.id] = r
@@ -1050,7 +1112,7 @@ func (e *Engine) add(c Crew, p prepared, label string) *run {
 	} else {
 		r.note(session.ActivityStatus, "launched %s: %d members, %d starting now", c.Name, len(c.Members), immediate)
 	}
-	return r
+	return r, nil
 }
 
 // memberRunning reports whether r's member name runs: its prompt typed and
@@ -1714,6 +1776,9 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 		// the stop waits for as long as its context lasts.
 		if err := e.recordStop(r); err != nil {
 			errs = append(errs, fmt.Errorf("the ledger could not record the stop: %w", err))
+			// A stop that was the run's first transaction and found the
+			// id another run's: the run goes, whoever launched it.
+			e.dropForeign(r)
 		}
 		e.waitTrees(ctx, r)
 		return errors.Join(errs...)
@@ -1746,6 +1811,28 @@ func (e *Engine) abort(r *run) {
 	e.forget(r)
 	e.mu.Unlock()
 	e.endMu.Unlock()
+}
+
+// unrecorded reports whether r is a managed run the ledger has no row of
+// as its own: its first transaction not committed yet, or refused. Until
+// it commits, the run takes no change but one that may be its first
+// (transactFirst) and no record of it is written as it goes (Journal):
+// its id may be another run's. The caller holds e.mu.
+func (r *run) unrecorded() bool { return r.managed && !r.created }
+
+// dropForeign forgets r when the ledger refused its first row as another
+// run's (foreign), at once: Get no longer shows it, a continuation of the
+// run whose id it is is not held up by it, and nothing of it is recorded or
+// told as forgotten (forget). Nothing for any other run; a run forgotten
+// already is not forgotten again. The caller holds neither lock.
+func (e *Engine) dropForeign(r *run) {
+	e.endMu.Lock()
+	defer e.endMu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r.foreign {
+		e.forget(r)
+	}
 }
 
 // evict forgets the oldest runs with nothing running until there is room for
@@ -1814,7 +1901,7 @@ func (e *Engine) ForgetForTest(runID string) {
 // record, so the mark is never written over by it. The caller holds endMu
 // and e.mu, as the forget sites do.
 func (e *Engine) journalForgotten(r *run) {
-	if e.journal == nil {
+	if e.journal == nil || r.foreign {
 		return
 	}
 	snap := r.snapshot(false, true)
@@ -1822,9 +1909,16 @@ func (e *Engine) journalForgotten(r *run) {
 	e.journal(snap)
 }
 
-// forget drops r and the index of its sessions, and tells OnForget. The
-// caller holds e.mu.
+// forget drops r and the index of its sessions, and tells OnForget; a run
+// the engine holds no more (dropped already) is left as it is. A run whose
+// first row the ledger refused as another's (foreign) is not told as
+// forgotten: its id, links and record are that other run's. The browsers,
+// told of it as it launched (touch), are told the id changed once it is
+// gone, and read it again. The caller holds e.mu.
 func (e *Engine) forget(r *run) {
+	if e.runs[r.id] != r {
+		return
+	}
 	delete(e.runs, r.id)
 	e.held.Delete(r.id)
 	e.order = slices.DeleteFunc(e.order, func(o *run) bool { return o == r })
@@ -1844,6 +1938,10 @@ func (e *Engine) forget(r *run) {
 	r.cancel()
 	if r.teardownCancel != nil {
 		r.teardownCancel()
+	}
+	if r.foreign {
+		r.touch()
+		return
 	}
 	if e.OnForget != nil {
 		e.OnForget(r.snapshot(false, false))
@@ -2003,6 +2101,7 @@ func (r *run) snapshot(withDiffs, withChat bool) Run {
 		out.Tasks = r.taskStates()
 		out.Manifest = r.manifestState()
 		out.Cleaning = r.trees.n
+		out.Ticket = r.pkg.ticket()
 	}
 	if withChat {
 		for _, m := range r.chat.History() {

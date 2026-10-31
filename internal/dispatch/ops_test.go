@@ -823,3 +823,244 @@ func TestAReceiptStaysUnderItsBound(t *testing.T) {
 		t.Fatalf("the read-only refusal's receipt is %d bytes: %q", len(b), rc.Error)
 	}
 }
+
+// replayed is Replay's answer, failing the test on an error.
+func replayed(t *testing.T, s *Store, op Op, intent string, args any) (Receipt, bool) {
+	t.Helper()
+	rc, found, err := s.Replay(context.Background(), op, intent, args)
+	if err != nil {
+		t.Fatalf("replay %s: %v", op.ID, err)
+	}
+	return rc, found
+}
+
+// Replay answers an operation sent again as Apply would, before anything
+// is done and writing nothing: a new id is not found; one answered is
+// its receipt for the same content (a refusal kept among them) and
+// op_conflict for other content, for a proposal and for a link's add
+// alike.
+func TestReplayChecksTheContent(t *testing.T) {
+	s, _, key := planTicket(t)
+	ctx := context.Background()
+	req := PlanRequest{Crew: "crew", Base: "HEAD"}
+	args := PlanProposeArgs{Key: key, PlanRequest: req}
+	if rc, found := replayed(t, s, testOp("p1"), IntentPlanPropose, args); found {
+		t.Fatalf("a new operation found: %+v", rc)
+	}
+	id := propose(t, s, "p1", key, req, testPlanBody("crew"))
+	rc, found := replayed(t, s, testOp("p1"), IntentPlanPropose, args)
+	if !found || rc.Status != StatusDone || !rc.Repeat || rc.ID != id || rc.Intent != IntentPlanPropose {
+		t.Fatalf("the same request replayed: %+v %v", rc, found)
+	}
+	for _, other := range []PlanRequest{{Crew: "other", Base: "HEAD"}, {Crew: "crew", Base: "main"}, {Crew: "crew"}} {
+		rc, found = replayed(t, s, testOp("p1"), IntentPlanPropose, PlanProposeArgs{Key: key, PlanRequest: other})
+		if !found || rc.Status != StatusFailed || rc.Refusal != RefusalOpConflict {
+			t.Fatalf("another request %+v replayed: %+v %v", other, rc, found)
+		}
+		rc, err := s.ProposePlan(ctx, testOp("p1"), key, other, testPlanBody(other.Crew))
+		want(t, rc, err, StatusFailed, RefusalOpConflict)
+	}
+	// Another intent under the id is another operation's.
+	if rc, found := replayed(t, s, testOp("p1"), IntentLinkAdd, LinkAddArgs{Key: key}); !found || rc.Refusal != RefusalOpConflict {
+		t.Fatalf("another intent under the id: %+v %v", rc, found)
+	}
+	// A refusal kept is answered as it was.
+	rc, err := s.ProposePlan(ctx, testOp("p2"), key, PlanRequest{Crew: "crew"}, PlanBody{})
+	want(t, rc, err, StatusFailed, RefusalInvalid)
+	rc, found = replayed(t, s, testOp("p2"), IntentPlanPropose, PlanProposeArgs{Key: key, PlanRequest: PlanRequest{Crew: "crew"}})
+	if !found || rc.Status != StatusFailed || rc.Refusal != RefusalInvalid || !rc.Repeat {
+		t.Fatalf("a refusal replayed: %+v %v", rc, found)
+	}
+	// A link's add, its reference omitted: the same request done, one
+	// with the reference the URL op_conflict, though both make one link.
+	url := "https://github.com/rocksolidlabs/conductor/pull/7"
+	rc, err = addLink(s, "l1", key, NewLink{Kind: LinkDelivery, URL: url})
+	want(t, rc, err, StatusDone, "")
+	link := rc.ID
+	writes := func() [3]int {
+		return [3]int{count(t, s, "SELECT COUNT(*) FROM ops"), count(t, s, "SELECT COUNT(*) FROM changes"), count(t, s, "SELECT COUNT(*) FROM plans")}
+	}
+	was := writes()
+	if rc, found := replayed(t, s, testOp("p1"), IntentPlanPropose, args); !found || rc.ID != id {
+		t.Fatalf("the proposal replayed again: %+v %v", rc, found)
+	}
+	if rc, found := replayed(t, s, testOp("l1"), IntentLinkAdd, LinkAddArgs{Key: key, NewLink: NewLink{Kind: LinkDelivery, URL: url}}); !found || rc.Status != StatusDone || rc.ID != link {
+		t.Fatalf("the same link replayed: %+v %v", rc, found)
+	}
+	if rc, found := replayed(t, s, testOp("l1"), IntentLinkAdd, LinkAddArgs{Key: key, NewLink: NewLink{Kind: LinkDelivery, Ref: url, URL: url}}); !found || rc.Refusal != RefusalOpConflict {
+		t.Fatalf("the link with its reference replayed: %+v %v", rc, found)
+	}
+	if got := writes(); got != was {
+		t.Fatalf("Replay wrote: %v, then %v", was, got)
+	}
+	// A launch (PR-2's cases): new, then the same request done with the
+	// launch's id; another plan or another label under the id op_conflict,
+	// Replay and Apply alike, nothing written.
+	approve(t, s, "a1", id, "go")
+	largs := LaunchArgs{Key: key, Plan: id}
+	if rc, found := replayed(t, s, testOp("launch1"), IntentTicketLaunch, largs); found {
+		t.Fatalf("a new launch found: %+v", rc)
+	}
+	l := mustLaunch(t, s, "launch1", key, id, "")
+	if rc, found := replayed(t, s, testOp("launch1"), IntentTicketLaunch, largs); !found || rc.Status != StatusDone || !rc.Repeat || rc.ID != l.ID {
+		t.Fatalf("the same launch replayed: %+v %v", rc, found)
+	}
+	launches := count(t, s, "SELECT COUNT(*) FROM launches")
+	for _, o := range []LaunchArgs{{Key: key, Plan: "0123456789abcdef"}, {Key: key, Plan: id, Label: "Another label"}} {
+		if rc, found := replayed(t, s, testOp("launch1"), IntentTicketLaunch, o); !found || rc.Refusal != RefusalOpConflict {
+			t.Fatalf("%+v replayed: %+v %v", o, rc, found)
+		}
+		rc, err := s.Launch(ctx, testOp("launch1"), o.Key, o.Plan, o.Label)
+		want(t, rc, err, StatusFailed, RefusalOpConflict)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM launches"); n != launches {
+		t.Fatalf("%d launches, then %d", launches, n)
+	}
+	// What Apply refuses before looking, Replay refuses too.
+	if _, _, err := s.Replay(ctx, Op{Actor: "test", ID: "a b"}, IntentPlanPropose, args); !errors.Is(err, ErrBadOpID) {
+		t.Fatalf("a bad op id: %v", err)
+	}
+	s.Close()
+	if _, _, err := s.Replay(ctx, testOp("p1"), IntentPlanPropose, args); !errors.Is(err, ErrClosed) {
+		t.Fatalf("a closed store: %v", err)
+	}
+}
+
+// Once its receipt is pruned, an operation that keeps its fingerprint
+// with what it made is compared by it, never answered for content it
+// cannot check: a proposal resent with the same request done with its
+// revision's id, with another crew or with main where HEAD was sent (one
+// commit both) op_conflict with nothing written; a delivery link's add
+// sent with its reference omitted done with the link's id, the same id
+// with the reference the URL op_conflict; a link a version 1 store added,
+// which kept no fingerprint, op_conflict with the words, and a new
+// operation for it refused as a duplicate. Apply answers the same as
+// Replay.
+func TestReplayAfterPruningChecksTheContent(t *testing.T) {
+	ctx := context.Background()
+	url := "https://github.com/rocksolidlabs/conductor/pull/9"
+	var key string
+	dir := versionOneStore(t, func(s *Store) {
+		newProject(t, s, "CND")
+		_, key = newTicket(t, s, "CND", "Delivered long ago")
+		rc, err := addLink(s, "old", key, NewLink{Kind: LinkDelivery, URL: url})
+		want(t, rc, err, StatusDone, "")
+	})
+	s := openStore(t, dir)
+	req := PlanRequest{Crew: "crew", Base: "HEAD"}
+	id := propose(t, s, "p1", key, req, testPlanBody("crew"))
+	other := "https://github.com/rocksolidlabs/conductor/pull/10"
+	rc, err := addLink(s, "l1", key, NewLink{Kind: LinkDelivery, URL: other})
+	want(t, rc, err, StatusDone, "")
+	link := rc.ID
+	approve(t, s, "a1", id, "go")
+	launched := mustLaunch(t, s, "launch1", key, id, "")
+	if _, err := s.db.Exec("DELETE FROM ops"); err != nil {
+		t.Fatal(err)
+	}
+	writes := func() [4]int {
+		return [4]int{count(t, s, "SELECT COUNT(*) FROM ops"), count(t, s, "SELECT COUNT(*) FROM changes"), count(t, s, "SELECT COUNT(*) FROM plans"),
+			count(t, s, "SELECT COUNT(*) FROM launches")}
+	}
+	was := writes()
+
+	// The launch (PR-2's cases): the same request done with the launch's
+	// id, Replay and Apply alike; another plan or label op_conflict.
+	largs := LaunchArgs{Key: key, Plan: id}
+	rc, found := replayed(t, s, testOp("launch1"), IntentTicketLaunch, largs)
+	if !found || rc.Status != StatusDone || !rc.Repeat || rc.ID != launched.ID {
+		t.Fatalf("the same launch after the prune: %+v %v", rc, found)
+	}
+	rc, err = s.Launch(ctx, testOp("launch1"), key, id, "")
+	want(t, rc, err, StatusDone, "")
+	if !rc.Repeat || rc.ID != launched.ID {
+		t.Fatalf("the same launch applied after the prune: %+v", rc)
+	}
+	for _, o := range []LaunchArgs{{Key: key, Plan: "0123456789abcdef"}, {Key: key, Plan: id, Label: "Another label"}} {
+		rc, found = replayed(t, s, testOp("launch1"), IntentTicketLaunch, o)
+		if !found || rc.Refusal != RefusalOpConflict || rc.Error != wordsOpConflict {
+			t.Fatalf("%+v after the prune: %+v %v", o, rc, found)
+		}
+		rc, err = s.Launch(ctx, testOp("launch1"), o.Key, o.Plan, o.Label)
+		want(t, rc, err, StatusFailed, RefusalOpConflict)
+	}
+
+	// The proposal.
+	args := PlanProposeArgs{Key: key, PlanRequest: req}
+	rc, found = replayed(t, s, testOp("p1"), IntentPlanPropose, args)
+	if !found || rc.Status != StatusDone || !rc.Repeat || rc.ID != id {
+		t.Fatalf("the same request after the prune: %+v %v", rc, found)
+	}
+	rc, err = s.ProposePlan(ctx, testOp("p1"), key, req, testPlanBody("crew"))
+	want(t, rc, err, StatusDone, "")
+	if !rc.Repeat || rc.ID != id {
+		t.Fatalf("the same request applied after the prune: %+v", rc)
+	}
+	for _, o := range []PlanRequest{{Crew: "other", Base: "HEAD"}, {Crew: "crew", Base: "main"}} {
+		rc, found = replayed(t, s, testOp("p1"), IntentPlanPropose, PlanProposeArgs{Key: key, PlanRequest: o})
+		if !found || rc.Refusal != RefusalOpConflict || rc.Error != wordsOpConflict {
+			t.Fatalf("%+v after the prune: %+v %v", o, rc, found)
+		}
+		rc, err = s.ProposePlan(ctx, testOp("p1"), key, o, testPlanBody(o.Crew))
+		want(t, rc, err, StatusFailed, RefusalOpConflict)
+	}
+
+	// A delivery link's add, its reference omitted.
+	sent := LinkAddArgs{Key: key, NewLink: NewLink{Kind: LinkDelivery, URL: other}}
+	rc, found = replayed(t, s, testOp("l1"), IntentLinkAdd, sent)
+	if !found || rc.Status != StatusDone || rc.ID != link {
+		t.Fatalf("the same link after the prune: %+v %v", rc, found)
+	}
+	withRef := sent
+	withRef.Ref = other
+	rc, found = replayed(t, s, testOp("l1"), IntentLinkAdd, withRef)
+	if !found || rc.Refusal != RefusalOpConflict {
+		t.Fatalf("the link with its reference after the prune: %+v %v", rc, found)
+	}
+	rc, err = addLink(s, "l1", key, withRef.NewLink)
+	want(t, rc, err, StatusFailed, RefusalOpConflict)
+	// The add row's value carries the fingerprint the link's row keeps.
+	rows := changesOf(t, s, "test", "l1")
+	var added struct {
+		Fingerprint string `json:"fingerprint"`
+	}
+	if len(rows) != 1 || json.Unmarshal([]byte(rows[0].Value), &added) != nil || added.Fingerprint == "" ||
+		!slices.Equal(texts(t, s, "SELECT fingerprint FROM links WHERE id = ?", link), []string{added.Fingerprint}) {
+		t.Fatalf("the add row's fingerprint: %+v", rows)
+	}
+
+	// A version 1 store's link: too old to compare.
+	old := LinkAddArgs{Key: key, NewLink: NewLink{Kind: LinkDelivery, URL: url}}
+	rc, found = replayed(t, s, testOp("old"), IntentLinkAdd, old)
+	if !found || rc.Status != StatusFailed || rc.Refusal != RefusalOpConflict || rc.Error != "this operation is too old to compare: send it as a new one" {
+		t.Fatalf("a version 1 link's add after the prune: %+v %v", rc, found)
+	}
+	rc, err = addLink(s, "old", key, old.NewLink)
+	want(t, rc, err, StatusFailed, RefusalOpConflict)
+	if got := writes(); got != was {
+		t.Fatalf("the resends wrote: %v, then %v", was, got)
+	}
+	rc, err = addLink(s, "new", key, old.NewLink)
+	want(t, rc, err, StatusFailed, RefusalInvalid)
+	if !strings.Contains(rc.Error, "has that delivery link already") {
+		t.Fatalf("a new operation for the old link: %q", rc.Error)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM links WHERE url = ?", url); n != 1 {
+		t.Fatalf("%d links of the old URL", n)
+	}
+
+	// An operation of another kind, pruned, is answered as it was: done.
+	rc, err = s.AddPerson(ctx, testOp("person"), "Alice")
+	want(t, rc, err, StatusDone, "")
+	if _, err := s.db.Exec("DELETE FROM ops"); err != nil {
+		t.Fatal(err)
+	}
+	if rc, found := replayed(t, s, testOp("person"), "person.add", "Bob"); !found || rc.Status != StatusDone || rc.ID != "" {
+		t.Fatalf("a pruned operation of another kind: %+v %v", rc, found)
+	}
+	// The pruned proposal's id resent as another intent: another
+	// operation's.
+	if rc, found := replayed(t, s, testOp("p1"), IntentLinkAdd, sent); !found || rc.Refusal != RefusalOpConflict {
+		t.Fatalf("the proposal's id as a link's add: %+v %v", rc, found)
+	}
+}
