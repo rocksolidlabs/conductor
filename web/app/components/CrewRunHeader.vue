@@ -9,7 +9,8 @@ import { commandBody, sendCommand, taskBadges } from '~/utils/tasks'
 /**
  * The run page's header: the run named by its crew and its start, how many
  * members need input and run (a managed run: its tasks done, failed, running
- * and checking, and whether its dispatch is paused), how long it has been
+ * and checking, whether its dispatch is paused, with the words of a pause the
+ * run made itself, and whether its trees are being cleaned up), how long it has been
  * up, and its actions: add an agent mid-run, share the run (a run link),
  * pause or resume a managed run's dispatch (a command with a receipt), stop
  * every member, and once stopped resume it as a new run. Each action calls
@@ -169,7 +170,8 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
       <div v-if="run" class="ml-2 hidden min-w-0 items-center gap-1.5 sm:flex">
         <UBadge v-if="record" label="record" color="neutral" variant="subtle" size="sm" class="flex-none" title="A run the server no longer holds, as it was when it ended: read-only" data-run-record />
         <template v-if="badges">
-          <UBadge v-for="b in badges" :key="b.label" :label="b.label" :color="b.color" variant="subtle" size="sm" class="flex-none" data-run-task-badge />
+          <UBadge v-for="b in badges" :key="b.label" :label="b.label" :color="b.color" :title="b.title" variant="subtle" size="sm" class="flex-none" data-run-task-badge />
+          <span v-if="run.paused && run.pausedWhy" class="min-w-0 max-w-[24rem] shrink truncate text-xs text-warning" :title="run.pausedWhy" data-run-paused-why>{{ run.pausedWhy }}</span>
           <UBadge v-if="counts.needs" :label="`${counts.needs} need input`" color="warning" variant="subtle" size="sm" class="flex-none" />
         </template>
         <template v-else>
@@ -197,7 +199,8 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
   <!-- On a phone the counts and the uptime take a line of their own: the bar keeps the name and the buttons. -->
   <div v-if="run" class="flex items-center gap-1.5 border-b border-default px-4 py-1.5 sm:hidden" data-run-header-strip>
     <template v-if="badges">
-      <UBadge v-for="b in badges" :key="b.label" :label="b.label" :color="b.color" variant="subtle" size="sm" class="flex-none" data-run-task-badge />
+      <UBadge v-for="b in badges" :key="b.label" :label="b.label" :color="b.color" :title="b.title" variant="subtle" size="sm" class="flex-none" data-run-task-badge />
+      <span v-if="run.paused && run.pausedWhy" class="min-w-0 shrink truncate text-[11px] text-warning" :title="run.pausedWhy" data-run-paused-why>{{ run.pausedWhy }}</span>
     </template>
     <template v-else>
       <UBadge :label="`${counts.needs} need input`" :color="counts.needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="flex-none" data-run-header-needs />

@@ -102,6 +102,14 @@ type RunRow struct {
 	// file's blob, and its prerequisites' ids in order); "" for a run
 	// without one. A run whose record is missing is rebuilt from it.
 	Manifest string
+	// Ticket is the id of the Dispatch ticket the run was launched from,
+	// and Package the launch package as Dispatch built it, JSON, byte for
+	// byte (at most MaxPackage bytes): both "" for a run no ticket
+	// launched. A continuation carries its source's. Written by the run's
+	// first row (CreateRun) and never changed after it: a later PutRun
+	// leaves them as they are.
+	Ticket  string
+	Package string
 }
 
 // TaskRow is a task of a run.
@@ -315,6 +323,12 @@ const (
 	MaxResult = 256 << 10
 	// MaxCrew bounds the crew JSON kept with a run.
 	MaxCrew = 1 << 20
+	// MaxPackage bounds the launch package kept with a run (RunRow.Package):
+	// Dispatch's own bound on a package as it stores one.
+	MaxPackage = 512 << 10
+	// maxTicketID bounds a run's ticket id (RunRow.Ticket): a Dispatch id
+	// is 16 hex digits, and the bound leaves room without leaving it open.
+	maxTicketID = 64
 	// MaxURL bounds a probe's URL kept with its receipt.
 	MaxURL = 2048
 )

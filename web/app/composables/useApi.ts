@@ -34,17 +34,23 @@ export function useApiBase() {
   return { httpBase, wsBase }
 }
 
-/** A body read as text, with the reply's headers: a step's log and its `X-Conductor-Log-SHA256`. */
+/**
+ * A body read as text, with its bytes as the server sent them and the reply's headers: a step's log and its
+ * `X-Conductor-Log-SHA256`, which is the hash of `bytes` (a log can hold bytes that are no UTF-8, such as a character its bound
+ * cut, which `text` shows as U+FFFD).
+ */
 export interface TextReply {
   text: string
+  bytes: Uint8Array
   headers: Headers
 }
 
 /**
- * A failed reply's body as the server sent it: an object for a JSON request, and for a text one (`responseType: 'text'`) the JSON
- * text, which ofetch hands back unparsed, read here as the same object; anything that is no object is no error body.
+ * A failed reply's body as the server sent it: an object for a JSON request, and for a text one (read as bytes) the JSON text,
+ * which ofetch hands back unparsed, read here as the same object; anything that is no object is no error body.
  */
 function errorBody(data: unknown): ApiErrorBody | undefined {
+  if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) data = new TextDecoder().decode(data)
   if (typeof data === 'string') {
     try {
       data = JSON.parse(data)
@@ -86,18 +92,21 @@ export function useApi() {
   }
 
   /**
-   * A GET whose body is text, with the reply's headers: `request` returns the body alone. The bearer header goes with it, so a log is
+   * A GET whose body is text, with the reply's headers: `request` returns the body alone. The body is read as bytes and decoded
+   * for `text`, the bytes kept as they came (a log saved is the log the server hashed). The bearer header goes with it, so a log is
    * fetched, never a link the browser follows (which would carry no token); errors are normalised as `request`'s are.
    */
   async function requestText(path: string, opts: { token?: string; base?: string } = {}): Promise<TextReply> {
     const token = opts.token ?? admin.token.value
     try {
-      const res = await $fetch.raw<string>((opts.base ?? httpBase.value) + path, {
+      const res = await $fetch.raw<ArrayBuffer>((opts.base ?? httpBase.value) + path, {
         method: 'GET',
-        responseType: 'text',
+        responseType: 'arrayBuffer',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
-      return { text: (res._data as string | undefined) ?? '', headers: res.headers }
+      const data = res._data as ArrayBuffer | undefined
+      const bytes = data ? new Uint8Array(data) : new Uint8Array()
+      return { text: new TextDecoder().decode(bytes), bytes, headers: res.headers }
     } catch (e) {
       throw normalise(e, opts.token !== undefined)
     }

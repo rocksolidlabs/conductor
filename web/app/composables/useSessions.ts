@@ -348,8 +348,8 @@ export interface CrewProbe {
 /**
  * A project manifest (docs/plans/project-manifests.md): what makes a fresh tree of the project (an attempt's worktree, or the checkout of its
  * result) usable, how it is checked and how it is cleaned up. Not an agent's recipes (the catalog's yolo, trust and session recipes).
- * `${CONDUCTOR_PORT_<NAME>}` and `${CONDUCTOR_STATE_DIR}` expand inside one argv element, a probe's URL and the preview. This build runs
- * the setup phase alone and refuses the launch of a manifest that names more (400 invalid_crew).
+ * `${CONDUCTOR_PORT_<NAME>}` and `${CONDUCTOR_STATE_DIR}` expand inside one argv element, a probe's URL and the preview. Every phase
+ * runs: the prerequisites once per run, then in each tree setup, services, readiness, (in a result's checkout) verify, and cleanup at its end.
  */
 export interface CrewManifest {
   /** Only in conductor.manifest.json (1); never in a crew's. */
@@ -520,6 +520,12 @@ export interface RunAttempt {
   checkpoint?: AttemptCheckpoint
   /** The attempt's receipts (its trees' steps and its checks, by when each started), in a task's own read alone (`runTask`). */
   steps?: RunStep[]
+  /**
+   * The URL a person opens to look at the attempt's work (EN1): its worktree's preview, from the worktree's `tree.ready` until the first
+   * of the attempt's close and one of the worktree's services exiting on its own; absent otherwise, while the run stops, and for a run
+   * the server has let go. On the server's loopback, not proxied: it opens in a new tab.
+   */
+  preview?: string
 }
 
 /**
@@ -578,9 +584,13 @@ export interface RunManifest {
   prerequisites?: RunPrerequisite[]
 }
 
-/** A receipt's log as `stepLog` and `prerequisiteLog` read it: its text and the SHA-256 the server sent beside it. */
+/**
+ * A receipt's log as `stepLog` and `prerequisiteLog` read it: its text, its bytes as the server sent them (what Save downloads,
+ * so the file matches the hash), and the SHA-256 the server sent beside it.
+ */
 export interface StepLog {
   text: string
+  bytes: Uint8Array
   sha256: string
 }
 
@@ -729,7 +739,7 @@ export function useSessions() {
   const { request, requestText } = useApi()
   /** A receipt's log, with the SHA-256 the server sent in `X-Conductor-Log-SHA256`. */
   const readLog = (path: string): Promise<StepLog> =>
-    requestText(path).then((r) => ({ text: r.text, sha256: r.headers.get('X-Conductor-Log-SHA256') ?? '' }))
+    requestText(path).then((r) => ({ text: r.text, bytes: r.bytes, sha256: r.headers.get('X-Conductor-Log-SHA256') ?? '' }))
 
   return {
     list: () => request<{ sessions: SessionInfo[] }>('/api/sessions').then((r) => r.sessions ?? []),

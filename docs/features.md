@@ -3058,6 +3058,167 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **Project manifests: a fresh attempt worktree made usable, predictably
+  (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
+  `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
+  model (#418), every step a receipt and every failure named and attributed
+  (#422), the host's names, the ports and the state directory (#426), the
+  services, readiness and the preview (#441), verify and cleanup (#498), the
+  crew editor's Project manifest section (#454) and the run page's receipts
+  and preview (#502). A managed crew carries a project
+  manifest (never "workspace" for a tree; not the catalog's agent recipes):
+  the crew's own, counted by the server at each change (`crew:<revision>` on
+  every receipt), or `conductor.manifest.json`, read at each tree's commit
+  (`file:<blob>`); a crew saved with `setup` runs it as the manifest's setup
+  phase, unchanged on disk. Before the first attempt the prerequisites run
+  once in the crew's directory, and a missing tool or host variable pauses
+  the dispatch with the step named, nothing spent; each tree (an attempt's
+  worktree, a result's checkout) gets its ports (`CONDUCTOR_PORT_<NAME>`), its
+  state directory (`.conductor/state`), its setup steps, its services, its
+  readiness probes and its preview before its session or first check rests
+  on it; the checkout runs the verify steps after the task's checks; and
+  however a tree ends, its services are stopped, its cleanup steps run and
+  its ports released. A step that fails in a tree the agent has not touched
+  is not counted and pauses the run with its words; one that fails in a
+  result's checkout is counted as a failing check is. Every step is a ledger
+  row with its command, where it ran, the manifest, its exit, timing, log and
+  SHA-256. On the run page (this PR): each attempt's receipts under it
+  (`RunAttemptSteps.vue`, a held run and a let-go one alike: "exited 0 in
+  4.2 s", "timed out after 60 s", "ready after 3 tries", "running since …",
+  "interrupted", "failed in 3.0 s (exited 0)" for a step that exited 0
+  and changed tracked files, and "failed after 8.3 s" for one a signal
+  ended), each with Log (fetched with the bearer header,
+  shown with its SHA-256, saved from a blob URL as the bytes the server
+  hashed); the run's prerequisites above the tasks, or the run's words when a
+  manifest `env` name stopped them before any ran; the header's `paused`
+  badge titled with the run's own words and the words beside it, and
+  `cleaning up` while trees end; a ready task's words "ready, the dispatch is
+  paused: <why>" when its reason is the pause's; and Open preview on the task's row
+  and in its palette row's → actions while the attempt's `preview` is set,
+  in a new tab (the preview is on the server's loopback, not proxied, and an
+  iframe would be mixed content under TLS). The example crew run by tasks
+  (`example-todo-app-tasks`) gained a manifest with one prerequisite,
+  `python3 --version`, for anyone who loads the examples from now on (a copy
+  loaded before is left as it is). Docs: `docs/architecture.md`'s crew-runs
+  section, `docs/repository-map.md` (`manifest.go`, `steps.go`, `proc.Serve`,
+  the ledger at schema 5).
+
+  Of the item's five acceptance observations (the plan's Acceptance), what
+  the tests observe, on the open-source build with no cloud account: (1) the
+  receipts of every phase with their logs read on the run page, the hash the
+  log route sends checked against its body, the preview answering from the
+  test and opened in a new tab while the attempt runs and gone at its close,
+  the service's process gone and the tree's cleanup receipt in after it
+  (`web/e2e/manifest.spec.ts`), the task file's manifest, ports and preview
+  (`internal/crew` steps and services tests, PR-2 to PR-4); (2) a missing
+  host variable or a name `envPassthrough` does not allow failing the
+  prerequisites with the words that say a restart fixes it
+  (`TestTheEnvNamesArePrerequisites`, `t.Setenv` alone), a setup step that
+  fails in a fresh worktree not counted and pausing the run
+  (`TestASetupStepThatFailsInTheWorktreeIsNotCounted`), a prerequisite that
+  fails pausing the run with the step named and Resume running it again
+  (`manifest.spec.ts`); (3) a task cancelled mid-step and cleaned up after
+  it (`TestACancelMidStepRunsTheCleanupAfterTheStep`, `manifest.spec.ts`), a
+  stop mid-service ending the services and running the cleanup
+  (`TestAStopMidServiceRunsTheCleanup`), a port let go only once its tree's
+  end is committed (`TestAPortIsLetGoOnlyOnceItsTreesEndIsCommitted`); (4) a
+  result that breaks the setup refused at the named step and counted, the
+  next attempt where the refused one started
+  (`TestAResultThatBreaksTheSetupHandsTheNextAttemptWhereItStarted`); (5) a
+  service the last server left running reported at the next start, never
+  signalled (`TestAServiceLeftRunningAcrossARestartIsReportedNotSignalled`,
+  `TestTheNextStartNamesAServiceTheLastServerLeftRunning`). By hand, which no
+  test reaches, the owner's on the WSL box (all five) and the Mac (1 to 3),
+  not run when this entry was written: a real Node project with a committed
+  `conductor.manifest.json` (`npm ci` as setup, two services with ports, its
+  dev server's preview opened in the browser, a cleanup) and a task that
+  edits it, launched from the UI; a variable unset with the server started
+  again with it set and the run continued, and the package registry
+  unreachable with the run unpaused once it is back; a task cancelled
+  mid-setup and a run stopped mid-service from the UI, the ports free and the
+  next launch given fresh ones; a result that breaks the setup; the server
+  killed mid-service and the next start's log read. None of these needs a
+  Windows or WSL networking step. The item is Done once they are seen.
+- **The extension seams: the `ext` and `app` packages, the free defaults
+  and the eight interfaces wired in (Program items C1 to C9; #473 to #489,
+  started 2026-10-31).** The plan is `docs/plans/ext.md` (PR #453), cut
+  into seventeen PRs, one paragraph each below; each PR rewrites its own
+  paragraph only, with what it shipped and its tests, and the last
+  completes the entry with what was observed. Conductor is open core: this
+  repository is the whole free product, and a paid feature is a provider
+  that another module's `main` compiles in, backed by a hosted service.
+  The free build registers nothing, so every seam runs its free default,
+  which is what main did before the stream.
+
+  PR-1 (#473, PR #514): `ext`, standard library only: the package
+  documentation (what a provider is, that its `init` registers and does
+  nothing else, how it starts, the guard's rules from its side, the API's
+  stability); the registry (`Register…` for the six one-value slots and
+  the two lists of at most `MaxPerList` (16), the accessors, `Registered`,
+  `Freeze`, `Providers` with `All`, the eight kinds; a register panics on a
+  nil value, a bad name, a second provider in a one-value slot, a repeated
+  name in a list, a list past its bound, a name another value holds and
+  after `Freeze`, and takes one value in several slots under one name);
+  the eight interfaces and their records with JSON tags, bounds, waits and
+  a `Valid` method on each record a provider hands the server (`RoomJoin`
+  and `Entitlement` have none: no code of this repository takes them);
+  `ICEServer.Valid` takes only STUN and TURN URIs WebRTC takes, and a TURN
+  one only with a username and a credential, since one server Pion or a
+  browser refuses fails the whole configuration; `Starter`,
+  `Host`, their records and errors, declared for PR-4. `app` (`Run`,
+  `Main`), and `cmd/conductor`'s `main` as `app.Main()`. Tests:
+  `TestRegisterRefuses`, `TestRegisteredOrder`, `TestFreezeOnceAndCopies`,
+  `TestAllListsEverySlot`, `TestRegistryConcurrent`,
+  `TestRecordsRoundTrip`, `TestValid`, `TestRunVersion`,
+  `TestPlainBuildRegistersNothing`, `TestExtBoundsAreTheServers` (each
+  bound `ext` copies from `internal/proto` and `internal/crew` held to its
+  source) and `TestExtICEServerValidAsPion` (a server `Valid` takes is one
+  Pion takes). Nothing calls `ext` yet.
+
+  PR-2 (#474): ext/local: the free defaults and Fill. Planned.
+
+  PR-3 (#475): cli, api: the composition root reads the registry once; every
+  provider call guarded. Planned.
+
+  PR-4 (#476): api, cli: ext.Host and the providers' Start. Planned.
+
+  PR-5 (#477): opencore: the open-core rules as a lint, failing on a planted
+  import. Planned.
+
+  PR-6 (#478): api: the identity provider after the token chain; a
+  principal's subject in receipts. Planned.
+
+  PR-7 (#479): api: notification sinks over the event hub, the webhooks the
+  first. Planned.
+
+  PR-8 (#480): crew, api: context blocks in the task files; file touches to
+  the context providers. Planned.
+
+  PR-9 (#481): session, api: Local.AnswerAs and the decision router over
+  needs_input. Planned.
+
+  PR-10 (#482): proto, hostagent, signal, api, web: answer_as, a routed
+  answer for a hosted session. Planned.
+
+  PR-11 (#483): store, ledger, api: the sync hooks after every local commit.
+  Planned.
+
+  PR-12 (#484): export, ledger, dispatch, api: the export archive, GET
+  /api/export and the restore installer. Planned.
+
+  PR-13 (#485): cli: conductor export and conductor restore. Planned.
+
+  PR-14 (#486): opencore, contributing: no entitlement call site outside
+  ext. Planned.
+
+  PR-15 (#487): api: the four ICE sites through the media provider; GET
+  /api/ice keeps credentials. Planned.
+
+  PR-16 (#488): api, web: GET /api/capabilities and the app card's
+  Extensions row. Planned.
+
+  PR-17 (#489): ext/exttest: a fake per interface and the contract suite;
+  the stream's features entry completed. Planned.
 - **Governance: contributing under the DCO, the marks' owner, security
   reporting and the open-core pull request checklist (Program item B; #386
   and #387, 2026-10-28).** The plan is `docs/plans/governance.md` (PR #383).

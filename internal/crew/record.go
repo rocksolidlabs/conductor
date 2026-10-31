@@ -347,10 +347,11 @@ func (e *Engine) noteEnd(runID string) {
 	cur, ok := e.runs[runID]
 	midStop := ok && cur.stopping && cur.stoppedAt == nil
 	// A managed run's end is told once the change that ended it is
-	// committed (transact): a session ending meanwhile does not tell it.
-	// The snapshot is taken under the same hold, so what is told is what
-	// was judged committed.
-	pending := ok && cur.managed && cur.endPending
+	// committed (transact): a session ending meanwhile does not tell it,
+	// and nothing is told of one whose row the ledger has not as its own
+	// (unrecorded). The snapshot is taken under the same hold, so what is
+	// told is what was judged committed.
+	pending := ok && cur.managed && (cur.endPending || cur.unrecorded())
 	var r Run
 	if ok && !midStop && !pending {
 		r = cur.snapshot(false, true)
@@ -451,9 +452,23 @@ func (e *Engine) Journal(runID string) {
 	}
 	e.endMu.Lock()
 	defer e.endMu.Unlock()
-	if r, ok := e.Get(runID); ok {
+	if r, ok := e.getRecorded(runID); ok {
 		e.journal(r)
 	}
+}
+
+// getRecorded is Get for a run whose record may be written: not one the
+// ledger has no row of as its own yet (unrecorded), whose id may be
+// another run's.
+func (e *Engine) getRecorded(runID string) (Run, bool) {
+	e.mu.Lock()
+	r, ok := e.runs[runID]
+	ok = ok && !r.unrecorded()
+	e.mu.Unlock()
+	if !ok {
+		return Run{}, false
+	}
+	return e.Get(runID)
 }
 
 // WaitRecorded waits, as long as ctx allows, until every end handed to the

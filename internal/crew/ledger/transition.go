@@ -21,6 +21,9 @@ var (
 	ErrTooLarge = errors.New("ledger: too large")
 	// ErrNoRun says the run has no row.
 	ErrNoRun = errors.New("ledger: no such run")
+	// ErrRunExists says CreateRun found a row of the run already: the id
+	// is another run's, whose row stays as it was.
+	ErrRunExists = errors.New("ledger: the run exists already")
 )
 
 // Tx is one transition: the rows it puts, the events it records and the
@@ -44,7 +47,7 @@ func (t *Tx) Run() (RunRow, bool, error) {
 	var r RunRow
 	var paused int
 	var created, closed string
-	switch err := row.Scan(&r.ID, &r.CrewID, &r.Crew, &r.Base, &r.State, &r.Outcome, &paused, &r.Revision, &r.ContinuedFrom, &r.ContinuedBy, &created, &closed, &r.PausedWhy, &r.Manifest); {
+	switch err := row.Scan(&r.ID, &r.CrewID, &r.Crew, &r.Base, &r.State, &r.Outcome, &paused, &r.Revision, &r.ContinuedFrom, &r.ContinuedBy, &created, &closed, &r.PausedWhy, &r.Manifest, &r.Ticket, &r.Package); {
 	case errors.Is(err, sql.ErrNoRows):
 		return RunRow{}, false, nil
 	case err != nil:
@@ -182,8 +185,59 @@ func (t *Tx) Settle(actor, id, status string, receipt any) error {
 // PutRun puts the run's row, new or changed. The revision is the ledger's:
 // what r says is ignored. continued_by is never cleared: a write of a row
 // made before the run was continued (a stop's) keeps the link, so the run
-// cannot be continued twice.
+// cannot be continued twice. The ticket and the package are a new row's
+// alone: a row that exists keeps its own, since they are the run's input,
+// written once by its first row. A run's first row is CreateRun's, which
+// refuses an id the ledger has; PutRun, which takes a row that exists, is
+// every later transition's.
 func (t *Tx) PutRun(r RunRow) error {
+	if err := t.checkRun(r); err != nil {
+		return err
+	}
+	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO runs (`+runInsertCols+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET crew_id = excluded.crew_id, crew = excluded.crew, base = excluded.base, state = excluded.state,
+			outcome = excluded.outcome, paused = excluded.paused, continued_from = excluded.continued_from,
+			continued_by = CASE WHEN excluded.continued_by = '' THEN runs.continued_by ELSE excluded.continued_by END,
+			closed_at = excluded.closed_at, paused_why = excluded.paused_why, manifest = excluded.manifest`,
+		runInsertArgs(r)...)
+	return err
+}
+
+// CreateRun puts a new run's first row: an insert that refuses an id the
+// ledger has (ErrRunExists, that row untouched), the check and the write
+// at once under the ledger's write lock, whatever another process, server
+// or restart wrote. Every new run's first transaction writes its row so
+// (a launch's, a planned launch's and a continuation's), never with
+// PutRun, which would take another run's row as its own.
+func (t *Tx) CreateRun(r RunRow) error {
+	if err := t.checkRun(r); err != nil {
+		return err
+	}
+	res, err := t.tx.ExecContext(t.ctx, `INSERT INTO runs (`+runInsertCols+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO NOTHING`, runInsertArgs(r)...)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return fmt.Errorf("%w: %s", ErrRunExists, r.ID)
+	}
+	return nil
+}
+
+// runInsertCols are the columns a run's row is put with, in
+// runInsertArgs' order (the revision the ledger's, 0 on an insert).
+const runInsertCols = `id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at, paused_why, manifest, ticket, package`
+
+func runInsertArgs(r RunRow) []any {
+	return []any{r.ID, r.CrewID, r.Crew, r.Base, r.State, r.Outcome, b2i(r.Paused), r.ContinuedFrom, r.ContinuedBy, stamp(r.CreatedAt), stamp(r.ClosedAt), r.PausedWhy, r.Manifest, r.Ticket, r.Package}
+}
+
+// checkRun refuses a run's row past its bounds, or one of another run.
+func (t *Tx) checkRun(r RunRow) error {
 	if len(r.Crew) > MaxCrew {
 		return fmt.Errorf("%w: the crew is %d bytes", ErrTooLarge, len(r.Crew))
 	}
@@ -193,17 +247,16 @@ func (t *Tx) PutRun(r RunRow) error {
 	if len(r.Manifest) > MaxPayload {
 		return fmt.Errorf("%w: the run's manifest is %d bytes", ErrTooLarge, len(r.Manifest))
 	}
+	if len(r.Package) > MaxPackage {
+		return fmt.Errorf("%w: the run's package is %d bytes", ErrTooLarge, len(r.Package))
+	}
+	if len(r.Ticket) > maxTicketID {
+		return fmt.Errorf("%w: the run's ticket id is %d bytes", ErrTooLarge, len(r.Ticket))
+	}
 	if r.ID != t.runID {
 		return fmt.Errorf("ledger: run %s put in %s's transition", r.ID, t.runID)
 	}
-	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO runs (id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at, paused_why, manifest)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET crew_id = excluded.crew_id, crew = excluded.crew, base = excluded.base, state = excluded.state,
-			outcome = excluded.outcome, paused = excluded.paused, continued_from = excluded.continued_from,
-			continued_by = CASE WHEN excluded.continued_by = '' THEN runs.continued_by ELSE excluded.continued_by END,
-			closed_at = excluded.closed_at, paused_why = excluded.paused_why, manifest = excluded.manifest`,
-		r.ID, r.CrewID, r.Crew, r.Base, r.State, r.Outcome, b2i(r.Paused), r.ContinuedFrom, r.ContinuedBy, stamp(r.CreatedAt), stamp(r.ClosedAt), r.PausedWhy, r.Manifest)
-	return err
+	return nil
 }
 
 // ErrContinued says the run named has been continued already, or has no
@@ -490,7 +543,7 @@ func (l *Ledger) Runs(ctx context.Context) ([]RunRow, error) {
 }
 
 // runCols are the runs columns a RunRow is read from, in its scan order.
-const runCols = `id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at, paused_why, manifest`
+const runCols = `id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at, paused_why, manifest, ticket, package`
 
 func (l *Ledger) runs(ctx context.Context, where string, args ...any) ([]RunRow, error) {
 	db, err := l.conn()
@@ -507,7 +560,7 @@ func (l *Ledger) runs(ctx context.Context, where string, args ...any) ([]RunRow,
 		var r RunRow
 		var paused int
 		var created, closed string
-		if err := rows.Scan(&r.ID, &r.CrewID, &r.Crew, &r.Base, &r.State, &r.Outcome, &paused, &r.Revision, &r.ContinuedFrom, &r.ContinuedBy, &created, &closed, &r.PausedWhy, &r.Manifest); err != nil {
+		if err := rows.Scan(&r.ID, &r.CrewID, &r.Crew, &r.Base, &r.State, &r.Outcome, &paused, &r.Revision, &r.ContinuedFrom, &r.ContinuedBy, &created, &closed, &r.PausedWhy, &r.Manifest, &r.Ticket, &r.Package); err != nil {
 			return nil, err
 		}
 		r.Paused, r.CreatedAt, r.ClosedAt = paused != 0, unstamp(created), unstamp(closed)

@@ -654,7 +654,18 @@ func TestADirectoryOpensWhateverItsPathForm(t *testing.T) {
 // that no index refuses a replicated add.
 func TestTheUniqueIndexesAreTheKeysNeverMintedTwice(t *testing.T) {
 	s := openStore(t, storeDir(t))
-	rows, err := s.db.Query(`SELECT m.name, i.name FROM sqlite_master m JOIN pragma_index_list(m.name) i
+	got := uniqueIndexes(t, s.db)
+	if strings.Join(got, "; ") != strings.Join(theUniqueIndexes, "; ") {
+		t.Fatalf("unique indexes:\n got %v\nwant %v", got, theUniqueIndexes)
+	}
+}
+
+// uniqueIndexes is every unique index of the database's tables but the
+// FTS index's, as table(columns), in the order of their tables' names
+// and their own.
+func uniqueIndexes(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	rows, err := db.Query(`SELECT m.name, i.name FROM sqlite_master m JOIN pragma_index_list(m.name) i
 		WHERE m.type = 'table' AND i."unique" = 1 AND m.name NOT LIKE 'tickets\_fts%' ESCAPE '\' ORDER BY m.name, i.name`)
 	if err != nil {
 		t.Fatal(err)
@@ -670,7 +681,7 @@ func TestTheUniqueIndexesAreTheKeysNeverMintedTwice(t *testing.T) {
 	rows.Close()
 	var got []string
 	for _, ix := range indexes {
-		cols, err := s.db.Query("SELECT name FROM pragma_index_info(?) ORDER BY seqno", ix[1])
+		cols, err := db.Query("SELECT name FROM pragma_index_info(?) ORDER BY seqno", ix[1])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -683,14 +694,17 @@ func TestTheUniqueIndexesAreTheKeysNeverMintedTwice(t *testing.T) {
 		cols.Close()
 		got = append(got, ix[0]+"("+strings.Join(names, ", ")+")")
 	}
-	want := []string{
-		"attachments(id)", "changes(actor, op_id, n)", "comments(id)", "labels(id)", "links(id)", "milestones(id)",
-		"ops(actor, id)", "people(name)", "projects(id)", "projects(key)", "relations(id)", "ticket_assignees(ticket_id, actor)",
-		"ticket_labels(ticket_id, label_id)", "tickets(id)", "tickets(key)", "tickets(project_id, number)", "uploads(id)", "views(id)",
-	}
-	if strings.Join(got, "; ") != strings.Join(want, "; ") {
-		t.Fatalf("unique indexes:\n got %v\nwant %v", got, want)
-	}
+	return got
+}
+
+// theUniqueIndexes is the unique indexes of the schema: every row's own
+// id and the keys never minted twice, and nothing else. Version 2 adds
+// none but its tables' primary keys.
+var theUniqueIndexes = []string{
+	"attachments(id)", "changes(actor, op_id, n)", "comments(id)", "labels(id)", "launch_files(launch_id, sha256)", "launches(id)",
+	"links(id)", "milestones(id)", "ops(actor, id)", "people(name)", "plans(id)", "projects(id)", "projects(key)", "relations(id)",
+	"ticket_assignees(ticket_id, actor)",
+	"ticket_labels(ticket_id, label_id)", "tickets(id)", "tickets(key)", "tickets(project_id, number)", "uploads(id)", "views(id)",
 }
 
 func TestAClosedStoreRefusesEverything(t *testing.T) {

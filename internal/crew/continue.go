@@ -145,6 +145,13 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 		undo()
 		return nil, err
 	}
+	// A run launched from a ticket goes on with its package: the same
+	// bytes, the same ticket, never a new launch.
+	pkg, err := packageOfRow(from.Run)
+	if err != nil {
+		undo()
+		return nil, err
+	}
 	// Prepared at its own base, never at the directory's HEAD: the
 	// commit its manifest and its prerequisites are read at.
 	p, err := e.prepare(ctx, c, from.Run.Base)
@@ -152,16 +159,28 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 		undo()
 		return nil, err
 	}
-	r := e.add(c, p, label)
-	defer e.launched(r)
-	if e.afterAdd != nil {
-		e.afterAdd(r.id)
-	}
-	if err := e.startContinued(ctx, r, from, h, old); err != nil {
+	// Its id is minted against the runs the engine holds; one the ledger
+	// has (a planned run's) is refused by the continuation's first
+	// transaction before anything is made, and another is minted.
+	var r *run
+	for try := 1; ; try++ {
+		r, _ = e.addRun(c, p, label, "", pkg)
+		if e.afterAdd != nil {
+			e.afterAdd(r.id)
+		}
+		err := e.startContinued(ctx, r, from, h, old)
+		if err == nil {
+			break
+		}
 		e.abort(r)
+		e.launched(r)
+		if minted(err, try) {
+			continue
+		}
 		undo()
 		return nil, err
 	}
+	defer e.launched(r)
 	out, ok := e.Get(r.id)
 	if !ok {
 		return nil, ErrRunNotFound
@@ -171,14 +190,28 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 
 // flushPending writes what a run the engine holds has kept for the ledger (the
 // rows and events of changes whose commits failed), so a continuation
-// reads it whole; markContinuing refuses one that still has some.
+// reads it whole; markContinuing refuses one that still has some. A run
+// stopped before its launch was recorded, its stop refused by the ledger,
+// holds that stop: the run's first transaction (transactFirst), written
+// now as one, its row first through CreateRun, so an id the ledger has
+// is refused still and the run, another's, let go (dropForeign). Nothing
+// else of a run whose launch is not recorded is written (errLaunching):
+// it has nothing pending, its launch's refused commit dropped with it.
 func (e *Engine) flushPending(ctx context.Context, runID string) {
 	e.mu.Lock()
 	r := e.runs[runID]
+	first := r != nil && r.unrecorded() && r.stoppedAt != nil
 	e.mu.Unlock()
-	if r != nil {
-		_ = e.transact(ctx, r, func() tx { return tx{} }, nil)
+	if r == nil {
+		return
 	}
+	if first {
+		if err := e.transactFirst(ctx, r, func() tx { return tx{} }, nil); errors.Is(err, ErrRunExists) {
+			e.dropForeign(r)
+		}
+		return
+	}
+	_ = e.transact(ctx, r, func() tx { return tx{} }, nil)
 }
 
 // markContinuing marks the run the engine holds as being continued
@@ -423,7 +456,7 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h history, old *run) error {
 	rows, last, refs, refOf := h.rows, h.last, h.refs, h.refOf
 	var imported, again, uncertain, held int
-	err := e.transact(ctx, r, func() tx {
+	err := e.transactFirst(ctx, r, func() tx {
 		r.base, r.paused, r.pausedWhy, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.PausedWhy, from.Run.ID
 		r.markRun()
 		// The prerequisites run again in the continuation, at its base,
@@ -711,10 +744,16 @@ func Recovered(rec Run, from Loaded) Run {
 			}
 			rec.Manifest = launchedManifest(c, from.Run.Manifest)
 		}
+		rec.Ticket = ticketOfRow(from.Run)
 		if !from.Run.ClosedAt.IsZero() && from.Run.State == ledger.RunStopped {
 			at := from.Run.ClosedAt
 			rec.StoppedAt = &at
 		}
+	}
+	if rec.Ticket == nil {
+		// Its input, which the row keeps: a record written before the
+		// run's binding was read says it too.
+		rec.Ticket = ticketOfRow(from.Run)
 	}
 	rec.ResumedBy = from.Run.ContinuedBy
 	if from.Run.ContinuedFrom != "" {

@@ -552,6 +552,21 @@ func byteCount(n int) string {
 	return s
 }
 
+// ResolveManifest reads the file form of a project manifest at commit for a
+// crew whose working directory is cwd and whose tasks are tasks, as a
+// launch of the crew reads it there (resolveManifest, with where cwd lies
+// in its repository): the manifest held to its rules and the file's blob
+// id. The API's plan revision snapshots a file-form manifest with it
+// (docs/plans/dispatch-evidence.md), so what a revision shows is what its
+// launch will run. Errors as resolveManifest's.
+func ResolveManifest(ctx context.Context, cwd, commit string, tasks []Task) (Manifest, string, error) {
+	prefix, err := repoPrefix(ctx, cwd)
+	if err != nil {
+		return Manifest{}, "", err
+	}
+	return resolveManifest(ctx, cwd, commit, prefix, tasks)
+}
+
 // resolveManifest reads the file form of a project manifest:
 // <prefix>conductor.manifest.json as commit holds it in the repository repo
 // is in, through gitcli.Run (the C locale, no hook, no filter, no text

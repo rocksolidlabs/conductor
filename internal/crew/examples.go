@@ -24,7 +24,11 @@ import (
 // each task's attempt gets a worktree made at the results it needs and a
 // task file with the goal, the member's prompt as its role and the task's
 // instructions, and the checks decide a result. Its checks are Python's
-// unittest, a fixed command with nothing to install.
+// unittest, a fixed command with nothing to install. Its project manifest
+// has one prerequisite, python3 --version, run once before the first
+// attempt, so a host without Python pauses the run with the step named
+// instead of spending every task's attempts, and the run page shows the
+// receipt on the first real run (EN1).
 func Examples(cwd string, now time.Time) []Crew {
 	crew := func(id, name, goal string, members ...Member) Crew {
 		return Crew{ID: id, Name: name, Goal: goal, Cwd: cwd, Where: WhereServer, Isolation: IsolationWorktree, OpenAfterLaunch: true, Members: members, CreatedAt: now, UpdatedAt: now}
@@ -58,6 +62,7 @@ func Examples(cwd string, now time.Time) []Crew {
 			Check{ID: "suite", Argv: unittest}),
 		task("review", "reviewer", TaskReview, "Review the app at HEAD against PLAN.md and the goal: run python3 -m unittest discover -s tests -t . and each command by hand with TODO_FILE set to a file in a temporary directory, and read the code. Approve when the app does what PLAN.md and the goal say and the tests cover it; otherwise ask for changes, with a finding for each problem naming its file and line.", []string{"tests"}),
 	}
+	tasks.Manifest = &Manifest{Prerequisites: []Check{{ID: "python", Argv: []string{"python3", "--version"}}}}
 	list := []Crew{
 		crew("example-todo-app", "Example: todo app",
 			"Build a small command-line todo app in this repository (meant for a fresh repository with one commit: point the crew's working directory at one before launching, not at a real project): add, list and done commands, items kept in a JSON file in the user's home directory, with tests",

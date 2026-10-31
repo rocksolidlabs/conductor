@@ -131,6 +131,13 @@ add its rule here.
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
   look for the thing by its id or name, never by a list's length.
+- What a child keeps under HOME is shared by every process of the same
+  HOME. A test that gives each child its own `XDG_STATE_HOME` hides what
+  the product does where it gives none: the e2e's one server HOME then
+  holds one file for every spec's children (2026-10-31: Neovim's ShaDa,
+  written by several as they left, unreadable, E576 on every later
+  `:edit`). The product gives such a child state of its own or none
+  (`-i NONE`), and a test proves it with the shared HOME, not around it.
 - A frame that must be dropped, a dialog that must be drawn inside a
   budget: read the moment off a seam the code exposes (`viewerSeam`,
   `beforeEnter`) rather than guessing it from a stall or a sleep. A stall
