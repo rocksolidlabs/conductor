@@ -1,16 +1,22 @@
 <script setup lang="ts">
-import type { RunAttempt, RunInfo, RunTask } from '~/composables/useSessions'
+import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSessions'
 import { relativeTime } from '~/utils/sessions'
-import { taskActions, taskDot, taskWords } from '~/utils/tasks'
+import { latestReads, ownedBy, type Owned } from '~/utils/latestReads'
+import { prerequisitesRefused, stepManifest, taskActions, taskDot, taskWords } from '~/utils/tasks'
 
 /**
  * The tasks of a managed run (#334, row 7): one row per task in the crew's
  * order with its state, member, attempt, what it does in words, its result
- * commit, and what can be done with it (Open the attempt's session, Retry,
- * Accept anyway, Cancel, Copy branch). The selected task (`?task=`) opens
- * its result and its attempts under the rows, each attempt with what it
- * submitted. Cancel and Accept anyway ask first; every command carries a
- * receipt (useTaskCommands).
+ * commit, and what can be done with it (Open the attempt's session, Open
+ * preview while the attempt's worktree answers behind its project
+ * manifest's preview, Retry, Accept anyway, Cancel, Copy branch). The
+ * selected task (`?task=`) opens its result and its attempts under the rows,
+ * each attempt with what it submitted and its receipts (RunAttemptSteps).
+ * A run with a project manifest shows its prerequisites' receipts above the
+ * rows. Cancel and Accept anyway ask first; every command carries a receipt
+ * (useTaskCommands). The preview opens in a new tab: it is on the server's
+ * loopback and not proxied, and an iframe of it would be mixed content
+ * under TLS.
  */
 const props = defineProps<{ run: RunInfo; selected: string; now: number }>()
 const emit = defineEmits<{ select: [id: string]; open: [sessionId: string] }>()
@@ -21,7 +27,7 @@ const api = useSessions()
 
 const tasks = computed(() => props.run.tasks ?? [])
 const selectedTask = computed(() => tasks.value.find((t) => t.id === props.selected))
-const live = computed(() => ({ stoppedAt: props.run.stoppedAt, paused: props.run.paused, record: props.run.record, resumedBy: props.run.resumedBy }))
+const live = computed(() => ({ stoppedAt: props.run.stoppedAt, paused: props.run.paused, pausedWhy: props.run.pausedWhy, record: props.run.record, resumedBy: props.run.resumedBy }))
 function agentOf(member: string): string {
   return props.run.members.find((m) => m.name === member)?.agentId ?? ''
 }
@@ -62,27 +68,78 @@ function severityColor(s: string): 'error' | 'warning' | 'neutral' | 'info' {
   return s === 'blocker' ? 'error' : s === 'major' ? 'warning' : s === 'minor' ? 'info' : 'neutral'
 }
 
-// The selected task's attempts, read when the selection or the run's revision changes (a run event brings the revision).
-const attempts = ref<RunAttempt[]>([])
-const loadError = ref('')
+// The selected task's attempts, read when the selection or the run's revision changes (a run event brings the revision). Reads at
+// two revisions can overlap and reply in any order: only the last one started is shown (latestReads), so an older reply that
+// arrives last never puts back a receipt's earlier state on a run that has nothing more to say. What a read brings is held with
+// the run and task it is of and shown only while they are the ones selected (ownedBy): another task selected before its own read
+// replied, or whose read failed, shows none of the last task's attempts, so no receipt's Log asks one task's route for another's.
+const taskOwner = (run: string, task: string) => JSON.stringify([run, task])
+const attemptsHeld = ref<Owned<RunAttempt[]> | null>(null)
+const attemptsError = ref<Owned<string> | null>(null)
+const attempts = computed(() => ownedBy(attemptsHeld.value, taskOwner(props.run.id, props.selected), []))
+const loadError = computed(() => ownedBy(attemptsError.value, taskOwner(props.run.id, props.selected), ''))
+const attemptReads = latestReads()
 watch(
-  () => [props.selected, props.run.managed?.revision] as const,
-  async ([id]) => {
+  () => [props.run.id, props.selected, props.run.managed?.revision] as const,
+  ([run, id]) => {
     if (!id) {
-      attempts.value = []
+      attemptReads.drop()
+      attemptsHeld.value = null
+      attemptsError.value = null
       return
     }
-    try {
-      const r = await api.runTask(props.run.id, id)
-      if (id !== props.selected) return
-      attempts.value = r.attempts
-      loadError.value = ''
-    } catch (e) {
-      if (id === props.selected) loadError.value = (e as Error).message
-    }
+    const owner = taskOwner(run, id)
+    void attemptReads.read(
+      () => api.runTask(run, id),
+      (r) => {
+        attemptsHeld.value = { owner, value: r.attempts }
+        attemptsError.value = null
+      },
+      (e) => (attemptsError.value = { owner, value: (e as Error).message }),
+    )
   },
   { immediate: true },
 )
+
+// The run's prerequisites' receipts (EN1), read while the run has a project manifest, again when its revision moves; the last
+// read started is the one shown, and only under the run it is of, as for the attempts.
+const prereqHeld = ref<Owned<RunStep[]> | null>(null)
+const prereqHeldError = ref<Owned<string> | null>(null)
+const prerequisites = computed(() => ownedBy(prereqHeld.value, props.run.id, []))
+const prereqError = computed(() => ownedBy(prereqHeldError.value, props.run.id, ''))
+const prereqReads = latestReads()
+watch(
+  () => [props.run.id, !!props.run.manifest, props.run.managed?.revision] as const,
+  ([id, has]) => {
+    if (!has) {
+      prereqReads.drop()
+      prereqHeld.value = null
+      prereqHeldError.value = null
+      return
+    }
+    void prereqReads.read(
+      () => api.runPrerequisites(id),
+      (steps) => {
+        prereqHeld.value = { owner: id, value: steps }
+        prereqHeldError.value = null
+      },
+      (e) => (prereqHeldError.value = { owner: id, value: (e as Error).message }),
+    )
+  },
+  { immediate: true },
+)
+// The prerequisites failed before any of their commands ran (a manifest env name the server does not allow or the host does
+// not have): no receipt says so, the run's pause words do.
+const prereqRefused = computed(() => prerequisitesRefused(props.run))
+const manifestName = computed(() => {
+  const m = props.run.manifest
+  if (!m) return ''
+  return m.source === 'file' ? `conductor.manifest.json, ${stepManifest(`file:${m.digest ?? ''}`)}` : `the crew's, crew:${m.revision ?? 0}`
+})
+const logOf = (task: string, n: number) => (s: RunStep) => api.stepLog(props.run.id, task, n, s.id, s.k)
+const prereqLog = (s: RunStep) => api.prerequisiteLog(props.run.id, s.id, s.k)
+const saveName = (task: string, n: number) => (s: RunStep) => `${props.run.id}-${task}-${n}-${s.phase}-${s.id}-${s.k}`
+const prereqName = (s: RunStep) => `${props.run.id}-prerequisite-${s.id}-${s.k}`
 
 // Cancel and Accept anyway ask first.
 const asking = ref<{ task: RunTask; command: 'cancel' | 'accept' } | null>(null)
@@ -103,6 +160,20 @@ async function confirm() {
 
 <template>
   <div class="flex min-h-0 flex-col gap-3" data-run-tasks>
+    <!-- The run's project manifest and its prerequisites, run once before the first attempt (and again at an unpause). -->
+    <section v-if="run.manifest" class="flex flex-col gap-1.5 rounded-md border border-default p-3 text-sm" data-run-manifest>
+      <div class="flex flex-wrap items-baseline gap-x-2">
+        <span class="font-medium">Project manifest</span>
+        <span class="text-xs text-muted" :title="run.manifest.digest || undefined">{{ manifestName }}</span>
+      </div>
+      <UAlert v-if="prereqError" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="prereqError" />
+      <p v-if="prereqRefused" class="whitespace-pre-wrap break-words text-xs text-error" data-run-prereq-refused>{{ prereqRefused }}</p>
+      <RunAttemptSteps v-if="prerequisites.length" :steps="prerequisites" :now="now" :log="prereqLog" :save-as="prereqName" title="Prerequisites" />
+      <template v-else-if="!prereqRefused">
+        <p v-if="run.manifest.prerequisites?.length" class="text-xs text-muted">The prerequisites have not run yet.</p>
+        <p v-else class="text-xs text-muted">No prerequisites.</p>
+      </template>
+    </section>
     <p v-if="!tasks.length" class="text-sm text-muted">No tasks.</p>
     <ol v-else class="flex flex-col gap-1.5" data-task-rows>
       <li v-for="t in tasks" :key="t.id" :data-task-row="t.id" :data-task-state="t.state">
@@ -124,6 +195,7 @@ async function confirm() {
           <span v-if="t.result?.commit" class="flex-none font-mono text-xs text-muted" :title="t.result.commit" data-task-commit>{{ short(t.result.commit) }}</span>
           <div class="ml-auto flex flex-none items-center gap-1" @click.stop>
             <UButton v-if="acts(t).open" label="Open" icon="i-lucide-terminal" size="xs" color="neutral" variant="ghost" :data-task-open="t.id" @click="emit('open', t.attempt!.sessionId!)" />
+            <UButton v-if="acts(t).preview" label="Open preview" icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" :to="acts(t).preview" target="_blank" external :title="acts(t).preview" :data-task-preview="t.id" />
             <UButton v-if="acts(t).retry" label="Retry" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="outline" :loading="commands.busy.value === `${t.id}:retry`" :data-task-retry="t.id" @click="commands.send(t, 'retry')" />
             <UButton v-if="acts(t).accept" label="Accept anyway…" icon="i-lucide-check" size="xs" color="warning" variant="outline" :data-task-accept="t.id" @click="asking = { task: t, command: 'accept' }" />
             <UButton v-if="acts(t).cancel" icon="i-lucide-x" size="xs" color="error" variant="ghost" aria-label="Cancel the task" :data-task-cancel="t.id" @click="asking = { task: t, command: 'cancel' }" />
@@ -193,6 +265,7 @@ async function confirm() {
               </li>
             </ul>
           </template>
+          <RunAttemptSteps v-if="a.steps?.length" :steps="a.steps" :now="now" :attempt="a" :log="logOf(selectedTask.id, a.n)" :save-as="saveName(selectedTask.id, a.n)" />
         </li>
       </ol>
     </section>

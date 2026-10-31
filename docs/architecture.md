@@ -228,9 +228,10 @@ directory) instead of memory. `task.go` dispatches each task as an attempt
 once the tasks it needs have results: a reservation among the server's
 sessions, a worktree at the commit the task starts from (its first need's
 result, or the run's base) on the branch `crew/<run>/<task>.<n>`, the task
-written into it as `.conductor/task.md` and `task.json`, the crew's `setup`
-run there, then the member's session through the same `Launcher` and one
-typed line saying where the task is and how to submit. The attempt's
+written into it as `.conductor/task.md` and `task.json`, the worktree made
+usable by the crew's project manifest (below), then the member's session
+through the same `Launcher` and one typed line saying where the task is and
+how to submit. The attempt's
 session submits its result with its own token (`POST
 /api/sessions/{id}/task/result`, the `task_result` tool or `conductor task
 result`): the commit at its HEAD, refused while the tree is dirty or the
@@ -254,6 +255,49 @@ own transaction, so a repeated command answers the same receipt. `messages.go`
 carries the members' durable messages, typed after the recipient's task line,
 and `checkpoints.go` an attempt's blocker and checkpoints, where the next
 attempt starts after a session is lost.
+
+A managed crew may carry a **project manifest** (EN1, `manifest.go`): what
+makes a fresh tree of the project usable, how it is checked and how it is
+cleaned up. It is not an agent's recipes, which are the catalog's. It is
+either the crew's own, counted by the server at each change (a receipt names
+it `crew:<revision>`), or `conductor.manifest.json`, read at each tree's
+commit (`file:<blob>`), so a task that changes it is checked by the manifest
+it changed; a crew saved with `setup` runs it as the manifest's setup phase.
+A tree is the attempt's worktree or its result's checkout. `steps.go` makes
+each one usable before the member's session or the first check rests on it:
+the manifest resolved and its host names checked (`env`: only names the
+server's `envPassthrough` allows and its environment has), its ports drawn
+(`CONDUCTOR_PORT_<NAME>`, leased by the engine until the tree ends), its
+state directory made (`.conductor/state`, through an `os.Root`), its setup
+steps, its services (`proc.Serve`, under the run's teardown context, never
+the attempt's), its readiness probes (a command, or one `GET` on the
+loopback with no redirect followed), then `tree.ready` with the preview. The
+checkout runs the manifest's verify steps after the task's checks. The
+prerequisites run once per run in the crew's directory before the first
+attempt, and again at each unpause. Every step goes through the tree's
+executor (`treeExec`: `internal/proc` natively) and is a receipt: a `checks`
+row with its phase (a `prerequisites` row for a prerequisite) holding its
+command, directory, manifest, exit, timing, words, log and SHA-256, read
+through `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps` and `GET
+/api/runs/{run}/prerequisites` with their logs, from the ledger, so a run
+the engine has let go reads the same. A step that fails in a tree the agent
+has not touched is the host's or the manifest's: the attempt is not
+counted, the task says which step failed, and the dispatch pauses with the
+words (`pausedWhy`); one that fails in the checkout of a result is the
+result's, counted as a failing check is. However a tree ends (a result
+taken, a check failed, a cancel, a withdrawal, a stop, the server's
+shutdown), `endTree` waits for it to be quiet, stops its services, runs its
+cleanup steps, releases its ports and records `tree.ended`; nothing removes
+the tree itself. A stop ends the run's services beside its sessions before
+`recordStop`, and the server's shutdown arms a cut-off first
+(`Engine.Draining`) so the teardown fits its budget; a service a crash left
+running is reported at the next start, never signalled. The run page shows
+the receipts under each attempt (`RunAttemptSteps.vue`) and the
+prerequisites above the tasks, the header's `paused` badge with its words
+and `cleaning up` while trees end, and Open preview on the task's row and
+in the palette while the attempt's `preview` is set: a new tab, since the
+preview is on the server's loopback, not proxied, and an iframe of it would
+be mixed content under TLS.
 
 ## Dispatch
 
