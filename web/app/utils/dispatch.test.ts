@@ -35,7 +35,7 @@ import {
   ticketWords,
   validProjectKey,
 } from './dispatch'
-import { PICK_KEYS, boardStep, milestoneProgress, moveEdit, newestRows, patchRows, pickAdds, pickEdit, pickHeld, roadmapStep, targetWords, ticketSummaryOf, withMoves } from './dispatch'
+import { PICK_KEYS, allPages, boardStep, milestoneProgress, moveEdit, newestRows, paletteListed, patchRows, pickAdds, pickEdit, pickHeld, roadmapStep, targetWords, ticketSummaryOf, typedPick, withMoves, withPatched } from './dispatch'
 import type { DispatchTicket, TicketSummary } from '~/composables/useDispatch'
 
 describe('the key parser', () => {
@@ -590,5 +590,80 @@ describe("the roadmap's milestones", () => {
       ['m2', 1, 1],
       ['m3', 0, 0],
     ])
+  })
+})
+
+describe("the palette's Tickets cache", () => {
+  it('reads every page by its cursor: 450 projects over three pages of 200, the last ones among them', async () => {
+    const all = Array.from({ length: 450 }, (_, i) => `P${i}`)
+    const asked: string[] = []
+    const read = async (cursor: string) => {
+      asked.push(cursor)
+      const from = cursor ? Number(cursor) : 0
+      const items = all.slice(from, from + 200)
+      return { items, next: from + 200 < all.length ? String(from + 200) : undefined }
+    }
+    const got = await allPages(read)
+    expect(got).toHaveLength(450)
+    expect(got.at(-1)).toBe('P449')
+    expect(asked).toEqual(['', '200', '400'])
+  })
+
+  it('stops at the most asked for, reading no page past it', async () => {
+    let reads = 0
+    const got = await allPages(async (cursor) => {
+      reads++
+      const from = cursor ? Number(cursor) : 0
+      return { items: Array.from({ length: 200 }, (_, i) => from + i), next: String(from + 200) }
+    }, 500)
+    expect(got).toHaveLength(500)
+    expect(reads).toBe(3)
+  })
+
+  it('lists a ticket not done, cancelled or deleted', () => {
+    expect(paletteListed(row('A-1', { status: 'in_progress' }))).toBe(true)
+    expect(paletteListed(row('A-1', { status: 'done' }))).toBe(false)
+    expect(paletteListed(row('A-1', { status: 'cancelled' }))).toBe(false)
+    expect(paletteListed(row('A-1', { deletedAt: '2026-10-30T11:00:00Z' }))).toBe(false)
+  })
+
+  it("keeps an edit's ticket over a read served before its commit and answered after it: the older row never comes back", () => {
+    const patched = new Map([['A-1', row('A-1', { status: 'ready', rev: 2 })]])
+    const { rows, keep } = withPatched([row('A-1', { rev: 1 }), row('A-2')], patched)
+    expect(rows.map((t) => [t.key, t.status, t.rev])).toEqual([
+      ['A-1', 'ready', 2],
+      ['A-2', 'backlog', 1],
+    ])
+    // Still needed: a later read may be older still.
+    expect([...keep.keys()]).toEqual(['A-1'])
+  })
+
+  it("drops a row an edit's answer closed, when the read is older than that answer", () => {
+    const patched = new Map([['A-1', row('A-1', { status: 'done', rev: 3 })]])
+    expect(withPatched([row('A-1', { rev: 2 }), row('A-2')], patched).rows.map((t) => t.key)).toEqual(['A-2'])
+  })
+
+  it('takes a read that carries the ticket at the revision of the edit or later, and forgets the edit then', () => {
+    const patched = new Map([['A-1', row('A-1', { status: 'ready', rev: 2 })]])
+    const { rows, keep } = withPatched([row('A-1', { status: 'in_review', rev: 3 })], patched)
+    expect(rows[0]!.status).toBe('in_review')
+    expect(keep.size).toBe(0)
+  })
+})
+
+describe('a name typed into the owner and assignee pickers', () => {
+  it('offers the person when only an agent has the name typed: agent:claude never stands for the person Claude', () => {
+    expect(typedPick('assignees', 'Claude', ['person:Nate', 'agent:claude'])).toBe('person:Claude')
+  })
+
+  it('offers nothing new when a person has the name, whatever its case', () => {
+    expect(typedPick('assignees', 'nate', ['person:Nate', 'agent:claude'])).toBeNull()
+    expect(typedPick('owner', 'NATE', ['', 'Nate'])).toBeNull()
+  })
+
+  it('offers the owner typed, trimmed and at most 60 characters, and nothing for a blank', () => {
+    expect(typedPick('owner', '  Priya ', ['', 'Nate'])).toBe('Priya')
+    expect(typedPick('owner', 'x'.repeat(70), [])).toBe('x'.repeat(60))
+    expect(typedPick('assignees', '   ', [])).toBeNull()
   })
 })

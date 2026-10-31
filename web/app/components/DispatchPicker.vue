@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import type { DispatchLabel, DispatchMilestone, TicketSummary } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
-import { PICK_WORDS, PRIORITIES, TICKET_STATUSES, assigneeOf, labelDot, pickAdds, pickHeld, statusWord, targetWords, type PickField } from '~/utils/dispatch'
+import { PICK_WORDS, PRIORITIES, TICKET_STATUSES, assigneeOf, labelDot, pickAdds, pickHeld, statusWord, targetWords, typedPick, type PickField } from '~/utils/dispatch'
 import { DispatchOrder, through } from '~/utils/dispatchOrder'
 
 /**
  * A picker of one of a ticket's fields (docs/plans/dispatch.md, Owner decisions, 10): what the list's letters open (S status, P priority,
  * A assignees, L labels, M milestone, O owner) for the focused ticket or the tickets selected with X, and what the palette's rows open.
- * A search narrows the choices as it is typed; ↑ ↓ move, Enter picks, a click picks, Escape closes. The choices every ticket holds are
+ * A search narrows the choices as it is typed; ↑ ↓ move, Enter picks, a click picks, Escape closes; a choice Tab focuses is the one Enter picks. The choices every ticket holds are
  * ticked; picking an assignee or a label every one holds takes it away, else adds it. A name typed that the directory lacks is a choice
  * of its own for the owner and the assignees (people are names until identity exists: the store adds it). The picker only says what
  * was picked (`pick`); its host makes the edits, one operation per ticket.
@@ -94,13 +94,17 @@ const choices = computed<Choice[]>(() => {
   return []
 })
 
-/** The choices the search leaves, and a name typed that no choice is, offered as one (the owner, the assignees). */
+/**
+ * The choices the search leaves, and a name typed that no choice is, offered as one (the owner, the assignees): a person no choice is,
+ * by value (typedPick), so an agent whose name is the name typed leaves the person offered.
+ */
 const shown = computed<Choice[]>(() => {
   const q = query.value.trim().toLowerCase()
   const out = q ? choices.value.filter((c) => c.label.toLowerCase().includes(q)) : choices.value
-  const typed = query.value.trim().slice(0, 60)
-  if (typed && (props.field === 'owner' || props.field === 'assignees') && !choices.value.some((c) => c.label.toLowerCase() === typed.toLowerCase())) {
-    out.push(props.field === 'owner' ? { value: typed, label: `Make ${typed} the owner`, icon: 'i-lucide-user-plus', held: false } : { value: `person:${typed}`, label: `Assign ${typed}`, icon: 'i-lucide-user-plus', held: false })
+  if (props.field === 'owner' || props.field === 'assignees') {
+    const value = typedPick(props.field, query.value, choices.value.map((c) => String(c.value)))
+    const name = query.value.trim().slice(0, 60)
+    if (value !== null) out.push(props.field === 'owner' ? { value, label: `Make ${name} the owner`, icon: 'i-lucide-user-plus', held: false } : { value, label: `Assign ${name}`, icon: 'i-lucide-user-plus', held: false })
   }
   return out
 })
@@ -158,6 +162,7 @@ function onKey(e: KeyboardEvent) {
             :data-pick-held="c.held ? '' : undefined"
             :data-pick-cursor="i === cursor ? '' : undefined"
             @click="choose(c)"
+            @focus="cursor = i"
             @mousemove="cursor = i"
           >
             <span v-if="c.dot" class="mx-0.5 size-2.5 flex-none rounded-full" :class="c.dot" />

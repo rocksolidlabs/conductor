@@ -1,6 +1,9 @@
 import { CommandRefused, mintCommandId, sendCommand } from '~/utils/tasks'
 import { closeRefusalWords, runLinkedWords } from '~/utils/dispatch'
-import type { DispatchOrder } from '~/utils/dispatchOrder'
+import { catchUp, editEach, through, type DispatchOrder } from '~/utils/dispatchOrder'
+import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
+import { ApiError } from './useApi'
+import { DISPATCH_RETRY_MAX_MS } from './useDispatchLive'
 import type { DispatchReceipt, DispatchTicket, OpBody, TicketEdit, TicketReply, TicketSummary } from './useDispatch'
 
 /** How one operation is sent and what becomes of its reply. */
@@ -27,6 +30,8 @@ export interface DispatchOpOptions<R> {
 export interface EditsOutcome {
   done: string[]
   failed: Array<{ key: string; words: string }>
+  /** The page was left before it showed what an edit did: the edits after it were not sent, nor are those queued behind (editEach). */
+  stranded: boolean
 }
 
 /** How `editTickets` shows what it did. */
@@ -35,8 +40,12 @@ export interface EditsOptions {
   apply?: (t: DispatchTicket) => void
   /** The toast's title once every edit is done, from the keys; none when the page shows what changed. */
   done?: (keys: string[]) => string
-  /** Called after a refusal, for the page to read what the store holds now. */
+  /** Called once after the edits when any was refused, for the page to read what the store holds now; the tickets refused are read first. */
   refused?: () => void
+  /** Whether the page that made the edits is gone: a ticket's read that fails is not asked again for it. */
+  left?: () => boolean
+  /** Whether an earlier call's edits were stranded (its outcome's `stranded`): none of these is sent, each failing as not sent. */
+  stranded?: () => boolean
 }
 
 /** A refusal's receipt in words: the close policy's and a run held by another ticket in their own, else `fallback` (the server's words). */
@@ -90,24 +99,32 @@ export function useDispatchOps(gate: DispatchOrder) {
   const api = useDispatchApi()
 
   /**
-   * Edits tickets one after another, one operation each (a pick over the tickets selected is an operation per ticket): each expects the
-   * revision of the ticket shown, or the one an earlier answer of this page carried for it when that is later (a list read before that
-   * answer may still show the older row), so a second pick made on the same ticket is not refused stale_revision by the first. `make`
-   * gives each ticket its edit, null when it holds the value already, which is no operation (the store refuses an edit that changes
-   * nothing). Each answer goes through the page's gate as the ticket's (`ticket:<key>`), where `apply` shows it. One toast says what was
-   * not changed and why, in the refusal's words (the close policy's own), and `done`'s title says what was, when given.
+   * Edits tickets one after another, one operation each (a pick over the tickets selected is an operation per ticket; editEach of
+   * utils/dispatchOrder.ts): each expects the revision of the ticket shown, or the one an earlier answer of this page carried for it when
+   * that is later (a list read before that answer may still show the older row), so a second pick made on the same ticket is not refused
+   * stale_revision by the first. `make` gives each ticket its edit, null when it holds the value already, which is no operation (the store
+   * refuses an edit that changes nothing). Each answer goes through the page's gate as the ticket's (`ticket:<key>`), where `apply` shows
+   * it; an answer that carried no ticket, or that the gate dropped, and a failure (a refusal, or both replies lost to the network, which
+   * may follow a commit), are followed by a read of the ticket through the same gate, asked again while it fails, before the next edit is
+   * made, so the edits queued behind are made on what the store holds; a page left before it shows that makes none of them. A
+   * refusal's read of the page (`refused`) is asked once for the batch. One toast says what was not changed and why, in the refusal's
+   * words (the close policy's own), and `done`'s title says what was, when given.
    */
   async function editTickets(targets: readonly TicketSummary[], make: (t: TicketSummary) => TicketEdit | null, o: EditsOptions = {}): Promise<EditsOutcome> {
-    const out: EditsOutcome = { done: [], failed: [] }
-    for (const t of targets) {
-      const change = make(t)
-      if (!change) {
-        out.done.push(t.key)
-        continue
-      }
-      const thing = `ticket:${t.key}`
+    /** Reads the ticket through the gate: true once taken; a ticket gone (a 404) has nothing more to show, and is taken for read. */
+    async function readTicket(key: string): Promise<boolean> {
       try {
-        await run<TicketReply>((body) => api.editTicket(t.key, { ...body, ...change }), {
+        return await through(gate, `ticket:${key}`, () => api.ticket(key), (t) => o.apply?.(t), (t) => t.rev)
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) return true
+        throw e
+      }
+    }
+    const each = await editEach<TicketSummary, TicketEdit, TicketReply>(targets, {
+      make,
+      send: async (t, change) => {
+        const thing = `ticket:${t.key}`
+        const reply = await run<TicketReply>((body) => api.editTicket(t.key, { ...body, ...change }), {
           thing,
           what: t.key,
           expectedRev: Math.max(t.rev, gate.rev(thing)),
@@ -115,14 +132,25 @@ export function useDispatchOps(gate: DispatchOrder) {
             if (r.ticket) o.apply?.(r.ticket)
           },
           rev: (r) => r.ticket?.rev,
-          refused: o.refused,
           raise: true,
         })
-        out.done.push(t.key)
-      } catch (e) {
-        out.failed.push({ key: t.key, words: dispatchFailureWords(e) })
-      }
-    }
+        return reply!
+      },
+      committed: (r) => r.ticket?.rev ?? r.receipt.rev,
+      caughtUp: (t, rev) =>
+        catchUp({
+          shown: () => rev !== undefined && gate.rev(`ticket:${t.key}`) >= rev,
+          read: () => readTicket(t.key),
+          left: o.left ?? (() => false),
+          wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          firstMs: RUN_EVENT_WINDOW_MS,
+          maxMs: DISPATCH_RETRY_MAX_MS,
+        }),
+      refusal: (e) => e instanceof CommandRefused,
+      refused: o.refused,
+      stranded: o.stranded,
+    })
+    const out: EditsOutcome = { done: each.done.map((t) => t.key), failed: each.failed.map((f) => ({ key: f.t.key, words: dispatchFailureWords(f.error) })), stranded: each.stranded }
     if (out.failed.length === 1 && targets.length === 1) {
       toast.add({ title: `${out.failed[0]!.key}: not changed`, description: out.failed[0]!.words, icon: 'i-lucide-triangle-alert', color: 'warning' })
     } else if (out.failed.length) {

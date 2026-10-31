@@ -129,7 +129,7 @@ export interface CatchUpOptions {
   shown: () => boolean
   /** Reads the thing, sent now, through the gate: resolves to whether the gate took its reply (`through`); rejects when it failed. */
   read: () => Promise<boolean>
-  /** Whether the page has left the thing (it shows another one): nothing more is read. */
+  /** Whether the page has left the thing (it shows another one): nothing more is read, unless it shows the thing as the operation left it. */
   left: () => boolean
   /** Waits that many milliseconds before a read failed is asked again. */
   wait: (ms: number) => Promise<void>
@@ -147,13 +147,14 @@ export interface CatchUpOptions {
  * reply taken first, or the gate reset after it was asked) is asked again at once, the next check deciding. A failure never stands for
  * the read: the next operation, judged on the older state shown, would expect its revision and be refused, or be taken for no change and
  * not be sent at all (a pick taken back to what the older state holds), and the one before it stand. False once the page has left the
- * thing, with nothing more read.
+ * thing before it showed it, with nothing more read: what the page shows may not be what the store holds, and the edits queued behind
+ * are not made on it (editEach's `stranded`). A page left once it shows it answers true: the edits queued behind are made on what it shows.
  */
 export async function catchUp(o: CatchUpOptions): Promise<boolean> {
   let delay = o.firstMs
   for (;;) {
-    if (o.left()) return false
     if (o.shown()) return true
+    if (o.left()) return false
     let taken: boolean
     try {
       taken = await o.read()
@@ -211,4 +212,86 @@ export function serially<A extends unknown[], R>(f: (...args: A) => Promise<R>):
     last = next.catch(() => {})
     return next
   }
+}
+
+/** How `editEach` sends one ticket's edit, waits until the page shows what it left, and tells a refusal from another failure. */
+export interface EachOptions<T, C, R> {
+  /** The edit of a ticket: null when it holds the value already, which is no operation (the store refuses an edit that changes nothing). */
+  make: (t: T) => C | null
+  /** Sends one ticket's edit as one operation: resolves to its reply, rejects with the refusal or the failure. */
+  send: (t: T, change: C) => Promise<R>
+  /** The revision an answer committed: its ticket's, else its receipt's (a reply whose read after the commit failed carries its receipt alone). */
+  committed: (reply: R) => number | undefined
+  /**
+   * Waits until the page shows the ticket at `rev` or later (catchUp), or, with no `rev` (after a failure), once a read of it sent now is
+   * shown: the next edit of it is made on what the store holds. Resolves to false when the page was left before it showed it (catchUp).
+   */
+  caughtUp: (t: T, rev: number | undefined) => Promise<boolean>
+  /** Whether a failure is the store's refusal (a stale revision, the close policy), which says the page shows something the store has not. */
+  refusal: (e: unknown) => boolean
+  /** Called once after the edits when any was refused, for the page to read what the store holds now beside the tickets refused. */
+  refused?: () => void
+  /**
+   * Whether an edit before these, of an earlier call, left the page showing what may not be the store's (`stranded` of its outcome): none
+   * of these is made, each failing as not sent (NotSent), rather than made on that and taken for no change.
+   */
+  stranded?: () => boolean
+}
+
+/** What became of each ticket's edit: done (or holding the value already), or failed with its error. */
+export interface EachOutcome<T> {
+  done: T[]
+  failed: Array<{ t: T; error: unknown }>
+  /**
+   * The page was left before it showed what an edit did (a catch-up given up): the edits after it were not made, each failed as not
+   * sent, and those queued behind are not to be made either (EachOptions' `stranded`).
+   */
+  stranded: boolean
+}
+
+/** An edit not sent: the page was left before it showed what the edit before it did, which the edit would have been made on. */
+export class NotSent extends Error {
+  constructor() {
+    super('Not sent: the page was left before it showed what the edit before this one did.')
+    this.name = 'NotSent'
+  }
+}
+
+/**
+ * Edits tickets one after another, one operation each (a pick over the tickets selected, a card moved): each is sent once the one before
+ * has answered, and the next is not made until the page shows what the one before left (`caughtUp`), as a ticket page's edits are
+ * (DispatchTicketPage.vue): at the revision it committed, read again when its reply carried none (the server's read after the commit
+ * failed) or the gate dropped it. A failure reads the ticket again before the next edit, a refusal and any other alike: a failure that is
+ * no refusal (both replies of an operation lost to the network) may follow a commit, so the store may hold the edit or not, and the edit
+ * queued behind on the same ticket is made on what it holds and expects its revision: a card moved and moved back on a reply that showed
+ * nothing is moved back, not taken for no change. The page's own read after a refusal (`refused`) is asked once, however many were
+ * refused. A page left before it showed what an edit did makes none of the edits after it (`stranded`): each fails as not sent.
+ */
+export async function editEach<T, C, R>(targets: readonly T[], o: EachOptions<T, C, R>): Promise<EachOutcome<T>> {
+  const out: EachOutcome<T> = { done: [], failed: [], stranded: o.stranded?.() ?? false }
+  let refusals = 0
+  for (const t of targets) {
+    if (out.stranded) {
+      out.failed.push({ t, error: new NotSent() })
+      continue
+    }
+    const change = o.make(t)
+    if (!change) {
+      out.done.push(t)
+      continue
+    }
+    let reply: R
+    try {
+      reply = await o.send(t, change)
+    } catch (e) {
+      out.failed.push({ t, error: e })
+      if (o.refusal(e)) refusals++
+      if (!(await o.caughtUp(t, undefined))) out.stranded = true
+      continue
+    }
+    out.done.push(t)
+    if (!(await o.caughtUp(t, o.committed(reply)))) out.stranded = true
+  }
+  if (refusals) o.refused?.()
+  return out
 }

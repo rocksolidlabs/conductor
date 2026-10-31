@@ -19,7 +19,6 @@ import { skipWords } from '~/utils/crews'
 import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
 import { sayWords, type SayOutcome } from '~/utils/sayWords'
 import { SayDrafts } from '~/utils/sayDrafts'
-import { DispatchOrder } from '~/utils/dispatchOrder'
 
 /**
  * The palette's groups for a query (#302): every row read from the live
@@ -88,7 +87,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   const shortcutsModal = useShortcutsModal()
   const renameModal = useRenameModal()
   const identity = useIdentity()
-  const ticketOps = useDispatchOps(new DispatchOrder())
+  // Through the app's Tickets gate (usePalette), which a snapshot resets: the next edit expects the revision the store has.
+  const ticketOps = useDispatchOps(palette.ticketsGate)
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
   const showExited = ref(false)
 
@@ -431,7 +431,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   function assignToMe(t: TicketSummary) {
     const name = identity.name.value.trim()
     if (!name) return
-    void ticketOps.editTickets([t], (x) => pickEdit('assignees', x, `person:${name}`, true), { apply: (x) => palette.patchTicket(ticketSummaryOf(x)), done: () => `${t.key} assigned to ${name}` })
+    // Queued behind the palette's other edits, and made on the ticket as they left it (usePalette's editTicket).
+    void palette.editTicket(t, (x) => ticketOps.editTickets([x], (y) => pickEdit('assignees', y, `person:${name}`, true), { apply: (y) => palette.patchTicket(ticketSummaryOf(y)), done: () => `${t.key} assigned to ${name}` }))
   }
 
   function ticketItem(t: TicketSummary): PaletteItem {

@@ -147,7 +147,23 @@ function actorName(actor: string): string {
   return a.kind === 'agent' ? (props.agents.find((x) => x.id === a.name)?.name ?? a.name) : a.name
 }
 
-defineExpose({ unfold, fold })
+/**
+ * Gives a card the focus (a ticket's page left by Escape: its card focused again), its column unfolded first when it is folded (the
+ * roadmap's Not planned), once the card is drawn. False when no column shows it.
+ */
+async function focusCard(key: string): Promise<boolean> {
+  const c = columnOf(key)
+  if (!c) return false
+  if (folded(c)) {
+    unfold(c.id)
+    await nextTick()
+  }
+  const el = cardOf(key)
+  el?.focus()
+  return !!el
+}
+
+defineExpose({ unfold, fold, focusCard })
 </script>
 
 <template>

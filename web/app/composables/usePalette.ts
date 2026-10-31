@@ -1,7 +1,8 @@
 import type { AgentInfo, CrewSummary, SessionInfo } from '~/composables/useSessions'
 import type { ProjectSummary, TicketSummary } from '~/composables/useDispatch'
 import type { Action } from '~/utils/actions'
-import { DispatchOrder, through } from '~/utils/dispatchOrder'
+import { DispatchOrder, serially, through } from '~/utils/dispatchOrder'
+import { allPages, paletteListed, withPatched } from '~/utils/dispatch'
 import { MODE_PREFIX, type PaletteMode, type PaletteRow } from '~/utils/palette'
 import type { RowPrompt } from '~/utils/sidebarActions'
 import type { TouchedSession } from '~/utils/touchedIndex'
@@ -68,9 +69,24 @@ export interface PageGroup {
 const pageGetter = shallowRef<(() => PageGroup | null) | null>(null)
 /** The Touched cache's generation: bumped as the token is forgotten, so a reply on its way is dropped (#304, whole-batch round). */
 let touchedGen = 0
-/** The Tickets cache's generation, bumped as the token is forgotten, and its ordering gate (utils/dispatchOrder.ts), one for the app. */
+/**
+ * The Tickets cache's generation, bumped as the token is forgotten, and its ordering gate (utils/dispatchOrder.ts), one for the app: the
+ * cache's reads and the palette's edits of tickets (CommandPalette.vue's pickers, usePaletteRows' Assign to me) go through it, so a snapshot
+ * that resets it forgets the revisions both knew (a store restored from a backup), and the next edit expects the revision the store has.
+ */
 let ticketsGen = 0
 const ticketsGate = new DispatchOrder()
+/** The tickets the palette's edits answered with, by key, until a read carries them at that revision or later (withPatched). */
+let ticketsPatched = new Map<string, TicketSummary>()
+/** Bumped as the cache is marked behind the store (an event, a snapshot): a read asked before it answers what it read, but not fresh. */
+let ticketsStale = 0
+/**
+ * The palette's edits of tickets (CommandPalette.vue's pickers, usePaletteRows' Assign to me), one after another (serially), as a project
+ * page's are: each is made once the one before has answered and the cache shows what it left (editTickets' catch-up), on the ticket as
+ * the cache knows it then (editTicket), so a pick made while the one before is on its way (Backlog picked back while Ready is sent) is
+ * made on what that one left and sent, not taken for no change on the older row the picker was opened on.
+ */
+const ticketEdits = serially((edit: () => Promise<unknown>) => edit())
 
 /** The open tickets the palette reads, of every project, the latest updated first: at most this many (five pages of 200). */
 export const PALETTE_TICKETS_MAX = 1000
@@ -176,20 +192,31 @@ export function usePalette() {
   /**
    * The open tickets of every project (at most PALETTE_TICKETS_MAX, the latest updated first) and the projects not archived, read as the
    * lists are: after the first paint, again when they are a minute old at an open, and on a dispatch event while the palette is open
-   * (CommandPalette.vue). Through an ordering gate of their own: a slow reply never replaces a newer one. A read that fails keeps what is
-   * cached.
+   * (CommandPalette.vue). Through the app's Tickets gate (ticketsGate): a slow reply never replaces a newer one, nor the ticket an edit
+   * answered with since (withPatched). A read that fails keeps what is cached, and says it failed.
    */
   let loadingTickets: Promise<void> | null = null
-  /** A forced read asked while one was on its way: that one may have been served before what asked it, so another follows it. */
-  let again = false
+  /** A forced read asked while one was on its way, shared by every forced ask meanwhile: that one may have been served before what asked it. */
+  let followUp: Promise<void> | null = null
+  /**
+   * Reads the cache; resolves once read, rejects when the read failed, which keeps what is cached (the live store asks again, as it does a
+   * page's re-read: CommandPalette.vue). A forced read asked while one is on its way follows it, and answers as that follow-up does.
+   */
   function loadTickets(force = false): Promise<void> {
     if (!admin.hasToken.value) return Promise.resolve()
     if (loadingTickets) {
-      if (force) again = true
-      return loadingTickets
+      if (!force) return loadingTickets
+      followUp ??= loadingTickets
+        .catch(() => {})
+        .then(() => {
+          followUp = null
+          return loadTickets(true)
+        })
+      return followUp
     }
     if (!force && ticketsAt.value && Date.now() - ticketsAt.value < LISTS_STALE_MS) return Promise.resolve()
     const gen = ticketsGen
+    const stale = ticketsStale
     loadingTickets = (async () => {
       try {
         await through(
@@ -200,51 +227,67 @@ export function usePalette() {
             open.set('sort', 'updated')
             open.set('desc', '1')
             open.set('limit', '200')
-            const all: TicketSummary[] = []
-            let cursor = ''
-            do {
+            const all = await allPages(async (cursor) => {
               const page = await dispatch.tickets(`${open.toString()}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)
-              all.push(...(page.tickets ?? []))
-              cursor = page.next ?? ''
-            } while (cursor && all.length < PALETTE_TICKETS_MAX)
-            const p = await dispatch.projects()
-            return { tickets: all.slice(0, PALETTE_TICKETS_MAX), projects: (p.projects ?? []).filter((x) => !x.archivedAt) }
+              return { items: page.tickets ?? [], next: page.next }
+            }, PALETTE_TICKETS_MAX)
+            // Every page of the projects: each not archived gains its New ticket row.
+            const projects = await allPages(async (cursor) => {
+              const page = await dispatch.projects(cursor)
+              return { items: page.projects ?? [], next: page.next }
+            })
+            return { tickets: all, projects: projects.filter((x) => !x.archivedAt) }
           },
           (r) => {
             if (gen !== ticketsGen) return
-            tickets.value = r.tickets
+            // A read served before an edit's commit and answered after its answer shows that answer's ticket, not the older row.
+            const merged = withPatched(r.tickets, ticketsPatched)
+            ticketsPatched = merged.keep
+            tickets.value = merged.rows
             projects.value = r.projects
-            ticketsAt.value = Date.now()
+            // Marked behind the store while it was on its way: what it read stands, and the next open reads again.
+            ticketsAt.value = stale === ticketsStale ? Date.now() : 0
           },
         )
-      } catch {
-        /* the cache stands */
       } finally {
         loadingTickets = null
-        if (again) {
-          again = false
-          void loadTickets(true)
-        }
       }
     })()
     return loadingTickets
   }
   /** The cache is behind the store (an event came while the palette was closed): the next open reads it again. */
   function staleTickets() {
+    ticketsStale++
     ticketsAt.value = 0
   }
   /** A stream started again: what the Tickets gate knew is forgotten (a store restored from a backup), and the cache is read again at the next open. */
   function resetTickets() {
     ticketsGate.reset()
+    ticketsPatched = new Map()
+    ticketsStale++
     ticketsAt.value = 0
   }
   /** A ticket an edit made from the palette answered with: shown at once, and gone from the group once it is no longer open. */
   function patchTicket(t: TicketSummary) {
-    tickets.value = tickets.value.flatMap((x) => (x.key !== t.key || t.rev < x.rev ? [x] : (OPEN_STATUSES as readonly string[]).includes(t.status) && !t.deletedAt ? [t] : []))
+    const known = ticketsPatched.get(t.key)
+    if (!known || t.rev >= known.rev) ticketsPatched.set(t.key, t)
+    tickets.value = tickets.value.flatMap((x) => (x.key !== t.key || t.rev < x.rev ? [x] : paletteListed(t) ? [t] : []))
+  }
+  /** A ticket as the cache knows it now: its row, or the newer answer of an edit; `t` itself when it knows neither (no longer open). */
+  function knownTicket(t: TicketSummary): TicketSummary {
+    const row = tickets.value.find((x) => x.key === t.key)
+    const patched = ticketsPatched.get(t.key)
+    if (row && patched) return patched.rev > row.rev ? patched : row
+    return patched ?? row ?? t
+  }
+  /** An edit of a ticket from the palette: queued behind the palette's others (ticketEdits), and made on the ticket as the cache knows it when it starts. */
+  function editTicket<R>(t: TicketSummary, edit: (t: TicketSummary) => Promise<R>): Promise<R> {
+    return ticketEdits(() => edit(knownTicket(t))) as Promise<R>
   }
   /** The cache goes with the token, as Touched's does: another token must not see the last one's tickets, nor a reply on its way. */
   function forgetTickets() {
     ticketsGen++
+    ticketsPatched = new Map()
     tickets.value = []
     projects.value = []
     ticketsAt.value = 0
@@ -272,5 +315,5 @@ export function usePalette() {
     open.value = true
   }
 
-  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists, touched, loadTouched, forgetTouched, tickets, projects, loadTickets, staleTickets, resetTickets, patchTicket, forgetTickets, newTicketFor, askNewTicket }
+  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists, touched, loadTouched, forgetTouched, tickets, projects, loadTickets, staleTickets, resetTickets, patchTicket, editTicket, forgetTickets, newTicketFor, askNewTicket, ticketsGate }
 }

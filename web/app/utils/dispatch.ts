@@ -1155,3 +1155,57 @@ export type UploadOutcome = 'done' | 'expired' | 'failed'
 /** A ticket's attachments' bounds (the store's): 16 MiB each, 50 on a ticket. */
 export const MAX_ATTACHMENT_SIZE = 16 << 20
 export const MAX_ATTACHMENTS = 50
+
+// ---------------------------------------------------------------------------
+// The palette's Tickets cache (usePalette.ts): the pages read whole, and a read that answers after an edit's answer it was served before.
+
+/** Every page of a list read in turn by its cursor (`read('')` first, then each page's `next`), at most `max` items. */
+export async function allPages<T>(read: (cursor: string) => Promise<{ items: readonly T[]; next?: string }>, max = Infinity): Promise<T[]> {
+  const all: T[] = []
+  let cursor = ''
+  do {
+    const page = await read(cursor)
+    all.push(...page.items)
+    cursor = page.next ?? ''
+  } while (cursor && all.length < max)
+  return all.slice(0, max)
+}
+
+/** Whether the palette's Tickets group lists a ticket: one not done, cancelled or deleted. */
+export function paletteListed(t: Pick<TicketSummary, 'status' | 'deletedAt'>): boolean {
+  return (t.status === 'backlog' || t.status === 'ready' || t.status === 'in_progress' || t.status === 'in_review') && !t.deletedAt
+}
+
+/**
+ * The palette's tickets from a read, beside the tickets its edits answered with (`patched`, by key): a row the read carries below the
+ * revision an edit answered with shows the edit's ticket instead, or goes when that ticket is no longer listed (a read served before the
+ * commit and answered after it never brings the older row back). `keep` is what of `patched` a later read may still need: an entry the
+ * read carries at its revision or later is done with.
+ */
+export function withPatched(read: readonly TicketSummary[], patched: ReadonlyMap<string, TicketSummary>): { rows: TicketSummary[]; keep: Map<string, TicketSummary> } {
+  const keep = new Map(patched)
+  const rows = read.flatMap((r) => {
+    const p = patched.get(r.key)
+    if (!p) return [r]
+    if (p.rev > r.rev) return paletteListed(p) ? [p] : []
+    keep.delete(r.key)
+    return [r]
+  })
+  return { rows, keep }
+}
+
+// ---------------------------------------------------------------------------
+// A name typed into the owner's or the assignees' picker (DispatchPicker.vue).
+
+/**
+ * The value a name typed into the owner's or the assignees' picker offers as a choice of its own, or null when a choice is it already:
+ * the owner's is the name, the assignees' the person (`person:<name>`), compared without case with the values offered (`values`), so an
+ * agent whose display name is the name typed never stands for the person. At most 60 characters of the name.
+ */
+export function typedPick(field: 'owner' | 'assignees', query: string, values: readonly string[]): string | null {
+  const typed = query.trim().slice(0, 60)
+  if (!typed) return null
+  const value = field === 'owner' ? typed : `person:${typed}`
+  const v = value.toLowerCase()
+  return values.some((x) => x.toLowerCase() === v) ? null : value
+}
