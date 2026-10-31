@@ -3202,12 +3202,17 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   flight per provider and kind, a warn once a minute with the count since,
   nothing else kept) and `extQueue` (a ring that drops its oldest, drained
   in order by one goroutine, `DeliveryWait` per delivery, held for a
-  `Starter` until its `Start`), ended and waited for by `Shutdown`. No
-  seam calls a provider yet. Tests: `TestServeReadsTheRegistryOnce`,
+  `Starter` until its `Start` and for the others until `New` can no longer
+  fail), ended and waited for by `Shutdown`. The guard answers copies,
+  reads a provider's error text only inside itself, and names providers
+  from the registry's entries without asking them again. No seam calls a
+  provider yet. Tests: `TestServeReadsTheRegistryOnce`,
   `TestHostClosesTheRegistry`, `TestNewWithoutExtensionsIsTheFreeBuild`,
   `TestWithExtensionsKeepsDefaults`, `TestExtCallWait`, `TestExtCallPanic`,
   `TestExtCallInvalid`, `TestExtCallInFlight`, `TestExtQueueDropsOldest`,
-  `TestExtQueueOrder`, `TestExtQueueShutdown`.
+  `TestExtQueueOrder`, `TestExtQueueShutdown`, `TestNewFailingBeginsNoDrain`,
+  `TestNewAsksNoNameAgain`, `TestExtErrorTextGuarded`,
+  `TestExtCallCopiesAnswers`.
 
   PR-4 (#476): api, cli: ext.Host and the providers' Start. Planned.
 

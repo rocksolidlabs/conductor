@@ -444,7 +444,13 @@ when the call errs, panics, answers what the record's `Valid` refuses, or
 has not answered in time (its late answer is never used; its goroutine
 finishes on its own). At most 16 calls of one provider and kind run at
 once (`extInFlight`); past it the default is answered at once, so a
-provider that hangs holds 16 goroutines of a kind at most. A failure is
+provider that hangs holds 16 goroutines of a kind at most. What it checks
+and answers is its own copy of the provider's answer, so a provider that
+changes a slice it answered changes nothing a seam holds; a provider's
+error or panic text is read on the call's goroutine, a panic in it
+recovered, and the caller runs no method of the provider's. Each provider
+is named as the registry named it (`Providers.All`), so `New` asks no
+registered provider anything. A failure is
 logged at warn once a minute per provider and kind, with how many failed
 since; nothing else about it is kept, so the next call after an outage is
 answered as if none had happened, with no restart. A wait bounds a hang,
@@ -457,8 +463,9 @@ notification sink, `NoteTouch` to a context provider) go through an
 drop and every hundredth logged, as a webhook's queue does), drained in
 order by one goroutine of its own, each delivery with a context that ends
 after `DeliveryWait` (10 s), its panic recovered. A provider that is no
-`ext.Starter` drains at once; a Starter's queues hold what reaches them
-until its `Start` has succeeded. `Saved`, `Deleted` (sync) and `Resolved`
+`ext.Starter` drains once `New` can no longer fail, so a `New` that fails
+leaves no drain running; a Starter's queues hold what reaches them until
+its `Start` has succeeded. `Saved`, `Deleted` (sync) and `Resolved`
 (decisions) never go through a ring, since a call they lose is never made
 again: they are delivered the same way from lists that drop nothing (C6,
 C5). `Shutdown` ends the drains with the webhooks, what waits in them
