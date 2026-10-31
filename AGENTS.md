@@ -207,6 +207,15 @@ add its rule here.
   a test changes the thing between the read and the record through a
   seam (`afterRead` in `internal/certs`), and pokes or calls each check
   itself instead of racing a ticker.
+- A test's waits fit in its timeout, and a slow step is waited on by
+  what ends it. A paste the server hands Neovim frame by frame took the
+  read loop 90 s at a load average of 110 though nothing used a tenth of
+  that in CPU, and the test, its own waits adding up past the suite's
+  120 s, ran out at whichever step was slow that day (`vim.spec.ts`,
+  #281). Wait for the server to have answered the frames (a ping behind
+  them, `serverCaughtUp`), never for a word to stay the same over a few
+  seconds; where nothing in the product caps the step, its bound only
+  bounds a hang, and `test.setTimeout` is above that bound and the rest.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

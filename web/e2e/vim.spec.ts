@@ -343,8 +343,10 @@ test('a connection that ends keeps its Neovim tabs with their text, lost; after 
       }
     } as typeof WebSocket
   })
-  // A directory per repeat: this test leaves swap files on purpose (other.txt's, the ended Neovim's), which a later repeat's open finds.
-  const cwd = join(state.root, `files-vim-reconnect-${test.info().repeatEachIndex}`)
+  // A directory per repeat: this test leaves swap files on purpose (other.txt's, the ended Neovim's), which a later repeat's open finds;
+  // it removes them as it ends.
+  const dir = `files-vim-reconnect-${test.info().repeatEachIndex}`
+  const cwd = join(state.root, dir)
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
   writeFileSync(join(cwd, 'other.txt'), 'beta\n')
@@ -405,11 +407,11 @@ test('a connection that ends keeps its Neovim tabs with their text, lost; after 
     // A Reopen whose open is refused: the tab stays lost, its text kept, and says why.
     await page.evaluate(() => ((window as unknown as { failOpens?: number }).failOpens = 1))
     await lost.locator('[data-nvim-reopen]').click()
-    await page.waitForTimeout(1000)
+    // The refusal had (the page says so), then the tab as it is: what the refusal left, not a moment after the click.
+    await expect(status).toContainText('Reopen failed: refused here', { timeout: 15_000 })
     await expect(lost).toContainText('the connection to the machine was lost')
     await expect(lines).toContainText('alphaxx')
     await expect(tab('notes.txt').locator('[data-editor-dirty]')).toBeVisible()
-    await expect(status).toContainText('Reopen failed: refused here', { timeout: 15_000 })
     // Reopen: a Neovim on the new connection, which finds the ended one's swap file; Recover brings the change back.
     await lost.locator('[data-nvim-reopen]').click()
     await expect(lost).toHaveCount(0)
@@ -424,6 +426,7 @@ test('a connection that ends keeps its Neovim tabs with their text, lost; after 
     await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('alphaxx\n')
   } finally {
     await api.stopSession(s.id)
+    for (const f of swapFilesOf(state.home, dir)) rmSync(f, { force: true })
   }
 })
 
@@ -492,7 +495,7 @@ function controlFrame(msg: Record<string, unknown>): Uint8Array {
  * none of its own (rttFromPong).
  */
 let pings = 0
-async function serverCaughtUp(page: Page, id: string): Promise<void> {
+async function serverCaughtUp(page: Page, id: string, timeout = nvimEndBound + 15_000): Promise<void> {
   const ts = ++pings
   await page.evaluate(
     ({ id, frame }) => {
@@ -503,8 +506,9 @@ async function serverCaughtUp(page: Page, id: string): Promise<void> {
     },
     { id, frame: [...controlFrame({ t: 'ping', ts })] },
   )
-  // Behind keys Neovim never took and the open of another tab's Neovim (15 s at most, the server's bound).
-  await page.waitForFunction((ts) => !!(window as unknown as SocketSeam).pongs?.includes(ts), ts, { timeout: 30_000 })
+  // By default: behind keys Neovim never took and the open of another tab's Neovim (15 s at most, the server's bound), and a close,
+  // which the server answers once that Neovim has left (nvimEndBound).
+  await page.waitForFunction((ts) => !!(window as unknown as SocketSeam).pongs?.includes(ts), ts, { timeout })
 }
 /**
  * Hands the page a frame on session id's connection as its server would send it: dispatched on the socket, so every listener of the
@@ -670,6 +674,19 @@ function nvimOpens(page: Page, name: string): Promise<number> {
   )
 }
 
+// How long a Neovim the server ends may take to be gone, its swap file with it: the bridge lets it leave for nvimEndWait (30 s) and
+// gives it nvimReap (2 s) more to be reaped (internal/session/nvim.go; nvim.exitWait is the same 30 s). A loaded machine makes an exit
+// slow (#281: a swap file still there 15 s after a :q), so a test that judges a swap file after an end the page cannot see waits this
+// long, the sum of the product's caps, and no less.
+const nvimEndBound = 32_000
+
+// The swap files Neovim keeps for the files under the directory named dir (its name in the swap file's name, ended as the path is):
+// a test that leaves one on purpose removes its own as it ends, so nothing of it is left for a later test or repeat to find.
+function swapFilesOf(home: string, dir: string): string[] {
+  const swapDir = join(home, '.local', 'state', 'nvim', 'swap')
+  return existsSync(swapDir) ? readdirSync(swapDir).filter((f) => f.includes(`%${dir}%`)).map((f) => join(swapDir, f)) : []
+}
+
 // A tab left while keys Neovim has not done are on their way keeps its Neovim: they may be making a change it has not said yet. Neovim
 // is slow here and answers in the middle of a key (its config waits 1.5 s with vim.wait in InsertCharPre and in an x mapped to x, so
 // a key's acknowledgement comes before its change; j is busy for 2 s). Its change then shows on the tab not in front, or folded: the
@@ -684,7 +701,9 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
     join(config, 'init.lua'),
     "local uv = vim.uv or vim.loop\nvim.o.timeoutlen = 1000\nvim.api.nvim_create_autocmd('InsertCharPre', { callback = function() vim.wait(1500) end })\nvim.keymap.set('n', 'x', function() vim.wait(1500) return 'x' end, { expr = true })\nvim.keymap.set('n', 'j', function() local t = uv.hrtime() while uv.hrtime() - t < 2e9 do end return 'j' end, { expr = true })\nvim.keymap.set('n', 'kk', 'k')\n",
   )
-  const cwd = join(state.root, 'files-vim-waiting')
+  // A directory per repeat: a Neovim of the last repeat's tabs, still leaving as its session stopped, would greet this one's open of
+  // the same file with its swap file.
+  const cwd = join(state.root, `files-vim-waiting-${test.info().repeatEachIndex}`)
   mkdirSync(cwd, { recursive: true })
   const names = ['f1.txt', 'f2.txt', 'f3.txt', 'f4.txt', 'f5.txt', 'edit.txt', 'fold.txt', 'normal.txt', 'quick.txt', 'saved.txt', 'other.txt']
   for (const n of names) writeFileSync(join(cwd, n), `${n}\nsecond\n`)
@@ -711,10 +730,15 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
       await expect(lines).toContainText(name, { timeout: 30_000 })
       await nvimUp(name, before)
     }
+    // The server ends a Neovim the page closes on the connection's read loop (NvimClose), as long as that Neovim takes to leave, and
+    // reads the keys sent after it only then: A goes once the server has answered every frame before it (a kept Neovim the page let go
+    // as its keys were done among them), so that its mode is Neovim's answer to A alone. That answer has nothing of the config's waits
+    // in it (InsertCharPre fires for the x after it): 30 s, the spec's bound for a Neovim's answer on a loaded machine.
     const typeInto = async () => {
       await lines.click()
+      await serverCaughtUp(page, s.id)
       await page.keyboard.type('A')
-      await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+      await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 30_000 })
       await page.keyboard.type('x')
     }
     const question = page.locator('[role="dialog"]')
@@ -768,14 +792,14 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
     await expect(tab('saved.txt')).toHaveCount(0, { timeout: 15_000 })
     expect(readFileSync(join(cwd, 'saved.txt'), 'utf8')).toBe('saved.txtx\nsecond\n')
     await nvimUp('other.txt', before)
-    // The area folded while x is on its way: once Neovim has it, the folded tab says so, and Close all asks. Opened once the page has
-    // let go of the Neovims of the tabs closed above (a close waits for the keys on their way).
+    // The area folded while x is on its way: once Neovim has it, the folded tab wears the dot, and Close all asks. Opened once the
+    // page has let go of the Neovims of the tabs closed above (a close waits for the keys on their way).
     await roomForNeovim(page)
     await open('fold.txt')
     await typeInto()
     await area.locator('[data-editor-fold]').click()
     await expect(area.locator('[data-editor-folded]')).toBeVisible()
-    await page.waitForTimeout(3000)
+    await expect(area.locator('[data-editor-folded] [data-editor-folded-tab] [data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
     await area.locator('[data-editor-folded] [data-editor-close-all]').click()
     await expect(question).toContainText('Save fold.txt?')
     // The question brings the tab to the front, unfolded.
@@ -912,11 +936,14 @@ test('a tab left while keys are on their way comes back where Neovim is, in its 
 // Don't save drops what the closed tabs' Neovims hold, that once: a file closed with it, opened again, edited and closed before Neovim
 // says so (its x waits 1.5 s here) does not ask, and its Neovim ends keeping the change, which the next open offers from its swap file.
 test("Don't save holds for its own close only: a later close keeps a change still on its way", async ({ page, api, state }) => {
+  await watchSockets(page)
   const config = join(state.home, '.config', 'nvim')
   mkdirSync(config, { recursive: true })
   writeFileSync(join(config, 'init.lua'), "vim.keymap.set('n', 'x', function() vim.wait(1500) return 'x' end, { expr = true })\n")
-  // A directory per repeat: the swap file this test leaves on purpose (clean.txt's) would greet a later repeat's first open.
-  const cwd = join(state.root, `files-vim-consent-${test.info().repeatEachIndex}`)
+  // A directory per repeat: the swap file this test leaves on purpose (clean.txt's) would greet a later repeat's first open; it removes
+  // that file as it ends.
+  const dir = `files-vim-consent-${test.info().repeatEachIndex}`
+  const cwd = join(state.root, dir)
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'dirty.txt'), 'dirty\n')
   writeFileSync(join(cwd, 'clean.txt'), 'clean\n')
@@ -954,7 +981,12 @@ test("Don't save holds for its own close only: a later close keeps a change stil
     await page.keyboard.type('0x')
     await area.locator('[data-editor-tab-active] [data-editor-close]').click()
     await expect(area.locator('[data-editor-tab]')).toHaveCount(0)
-    await page.waitForTimeout(3000)
+    // The page lets that Neovim go once its x is done (the tab kept it until then), and the server ends it on the read loop before it
+    // reads the next frame (NvimClose), so a ping answered after the close comes once it has left, its swap file kept.
+    const second = await page.waitForFunction(() => (window as unknown as SocketSeam).nvimOpened?.filter((o) => o.reqId !== 'undefined' && o.path.endsWith('/clean.txt'))[1]?.id, undefined, { timeout: 30_000 })
+    const kept = (await second.jsonValue()) as string
+    await page.waitForFunction((id) => !!(window as unknown as SocketSeam).nvimCloses?.includes(id), kept, { timeout: 30_000 })
+    await serverCaughtUp(page, s.id)
     // Its Neovim ended keeping the change: the next open offers it from the swap file.
     await pane.locator(`[data-file-node="${cwd}/clean.txt"]`).click()
     const banner = area.locator('[data-editor-swap]')
@@ -965,6 +997,7 @@ test("Don't save holds for its own close only: a later close keeps a change stil
   } finally {
     rmSync(join(config, 'init.lua'), { force: true })
     await api.stopSession(s.id)
+    for (const f of swapFilesOf(state.home, dir)) rmSync(f, { force: true })
   }
 })
 
@@ -1152,14 +1185,25 @@ test('keys refused on their way are named until dismissed, and Save waits for th
 // 5 s (vim.wait), so a paste fills its input and the end of it is refused; then it takes the rest at once and :w writes it. Another tab
 // in front, the area folded: the tab keeps its Neovim and the word of what it never had, and Save still waits for that. Before, the
 // tab left clean and done let its Neovim go, and the word with it.
+//
+// The paste is a hundred nvim_input frames, which the server gives Neovim one after another on the connection's read loop, each
+// waiting for room in Neovim's input (InputSeq) and for its acknowledgement; Neovim, the server and the page use a few seconds of CPU
+// for all of it, yet on a loaded machine (load average 100 to 120 on the 64-core box, 2026-10-31) the read loop is through them only
+// some 90 s after the paste, and the Escape typed after them waits as long (#281: the test ran into its 120 s). So the test waits for
+// the server to have answered every frame of the paste (a ping behind them), the word of every refusal sent before that answer, not
+// for the word to stop changing over a few seconds; and nothing bounds that wait in the product but the machine's pace, so its bound
+// only bounds a hang, and the test's timeout is that bound and the suite's 120 s for the rest.
+const pasteBound = 240_000
 test('keys refused stay named across a tab switched and the area folded, after Neovim wrote the rest', async ({ page, api, state }) => {
+  test.setTimeout(pasteBound + 120_000)
+  await watchSockets(page)
   const config = join(state.home, '.config', 'nvim')
   mkdirSync(config, { recursive: true })
   writeFileSync(
     join(config, 'init.lua'),
     "local first = true\nvim.api.nvim_create_autocmd('InsertCharPre', { callback = function() if first then first = false vim.wait(5000) end end })\n",
   )
-  const cwd = join(state.root, 'files-vim-refused-kept')
+  const cwd = join(state.root, `files-vim-refused-kept-${test.info().repeatEachIndex}`)
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'notes.txt'), 'end\n')
   writeFileSync(join(cwd, 'other.txt'), 'beta\n')
@@ -1184,26 +1228,19 @@ test('keys refused stay named across a tab switched and the area folded, after N
     // sends its whole line).
     await page.keyboard.insertText('aaaaaaaaa\n'.repeat(2_000))
     const refused = status.locator('[data-nvim-refused]')
-    await expect(refused).toBeVisible({ timeout: 30_000 })
-    let said = ''
-    await expect
-      .poll(
-        async () => {
-          const now = (await refused.textContent()) ?? ''
-          const same = now === said
-          said = now
-          return same
-        },
-        { timeout: 60_000, intervals: [3_000] },
-      )
-      .toBe(true)
+    // Every frame of the paste answered, its refusals with it: the word is whole.
+    await serverCaughtUp(page, s.id, pasteBound)
+    await expect(refused).toBeVisible()
+    const said = (await refused.textContent()) ?? ''
+    expect(said).not.toBe('')
     // Neovim out of its wait and done with what it had (the Escape after it); then written, its buffer clean and every key done.
     await page.keyboard.press('Escape')
     await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 60_000 })
     await page.keyboard.type(':w')
     await page.keyboard.press('Enter')
     await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 30_000 }).toMatch(/^(a+\n)+a*end\n$/)
-    await page.waitForTimeout(1000)
+    // The write and every answer to the keys before it had: the word is as it was.
+    await serverCaughtUp(page, s.id)
     await expect(refused).toHaveText(said)
     // Another tab in front, then back: the word stays, and its Neovim with it.
     await pane.locator(`[data-file-node="${cwd}/other.txt"]`).click()
@@ -1576,12 +1613,13 @@ test('a tab left before its Neovim opened lets that Neovim go, and the file open
 // closing it asks: Don't save drops the changes and the swap file with them,
 // Save writes through Neovim's :w. Neovim's own :q leaves no swap file.
 test('a Neovim tab keeps its changes not written while another is in front; closing asks; nothing leaves a swap file', async ({ page, api, state }) => {
-  const cwd = join(state.root, 'files-tabs')
+  // A directory per repeat, and the swap files of that one alone: a Neovim of the last repeat still leaving is not this one's.
+  const dir = `files-tabs-${test.info().repeatEachIndex}`
+  const cwd = join(state.root, dir)
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'a.txt'), 'alpha\n')
   writeFileSync(join(cwd, 'b.txt'), 'beta\n')
-  const swapDir = join(state.home, '.local', 'state', 'nvim', 'swap')
-  const swaps = () => (existsSync(swapDir) ? readdirSync(swapDir).filter((f) => f.includes('files-tabs')) : [])
+  const swaps = () => swapFilesOf(state.home, dir)
   await watchSockets(page)
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'tabs', cwd })
   try {
@@ -1638,7 +1676,8 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
     await expect(tab('a.txt')).toHaveCount(0)
     await nvimUp('b.txt', before)
     expect(readFileSync(join(cwd, 'a.txt'), 'utf8')).toBe('alpha\n')
-    await expect.poll(() => swaps().filter((f) => f.includes('a.txt')), { timeout: 15_000, message: "a.txt's swap file goes with its changes" }).toEqual([])
+    // A Neovim's swap file goes as it leaves, which the server lets take nvimEndBound.
+    await expect.poll(() => swaps().filter((f) => f.includes('a.txt')), { timeout: nvimEndBound, message: "a.txt's swap file goes with its changes" }).toEqual([])
     await expect(area.locator('[data-editor-keymap]')).toBeEnabled()
     // Open again: no banner, the file as it is.
     await open('a.txt', 'alpha')
@@ -1661,7 +1700,8 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
     await page.keyboard.type(':q')
     await page.keyboard.press('Enter')
     await expect(area.locator('[data-editor-tab]')).toHaveCount(0, { timeout: 15_000 })
-    await expect.poll(swaps, { timeout: 15_000, message: 'no swap file left behind' }).toEqual([])
+    // Its tab closes on Neovim's word that it is leaving (conductor_leaving), before it has left and removed its swap file.
+    await expect.poll(swaps, { timeout: nvimEndBound, message: 'no swap file left behind' }).toEqual([])
   } finally {
     await api.stopSession(s.id)
   }
