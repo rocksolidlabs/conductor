@@ -411,6 +411,59 @@ advertising the Windows address (`ice.udpPort`, `ice.publicIp`). The shell
 registers the `conductor:` scheme: an invite opens its own join page with
 `?server=`, which signals to the switchyard named.
 
+## Extensions
+
+Conductor is open core: a paid feature is a provider that another module's
+`main` compiles in (package `ext`), backed by a hosted service. This
+repository holds the interfaces, their free defaults (`ext/local`) and the
+seams that call them; a plain build registers nothing.
+
+**The registry and the composition root.** A provider registers in its
+package's `init`. `runServe` and `runHost` (`internal/cli`) are the
+composition root: each reads the registry once, at start, through the
+package variable `extensions` (`ext.Freeze`, which closes it, so a
+`Register` after it panics and no provider appears mid-run; a test
+replaces the variable and never registers into the process's registry).
+`runServe` fills every empty slot with its free default (`local.Fill`,
+the one place any code asks whether a provider is registered), logs one
+info line naming what is registered (`extensions: identity cloud,
+notifications push`; a plain build logs nothing of it), and hands the set
+to `api.New` through `api.WithExtensions`. `New`'s options are read before
+it writes anything (the masked `catalog.json`, the crews' migration, the
+ledger's recovery), and a server made without the option holds
+`local.Fill(ext.Providers{})`, the free build. `runHost` closes the
+registry and uses nothing of it until the Runtime seam.
+
+**The guard.** `New` wraps every provider in the guard
+(`internal/api/extensions.go`), defaults included, so no seam tells a
+default from a provider. A direct call goes through `extCall`: it runs
+within the interface's wait (`IdentityWait` 1 s, `RouteWait` 5 s,
+`ContextWait` 5 s, `ICEWait` 2 s), on a goroutine of its own whose context
+ends with the wait or the caller's, and answers the free default's answer
+when the call errs, panics, answers what the record's `Valid` refuses, or
+has not answered in time (its late answer is never used; its goroutine
+finishes on its own). At most 16 calls of one provider and kind run at
+once (`extInFlight`); past it the default is answered at once, so a
+provider that hangs holds 16 goroutines of a kind at most. A failure is
+logged at warn once a minute per provider and kind, with how many failed
+since; nothing else about it is kept, so the next call after an outage is
+answered as if none had happened, with no restart. A wait bounds a hang,
+never a normal answer: a provider answers from what it holds.
+
+**Queues.** The calls fed from the server's own activity (`Notify` to a
+notification sink, `NoteTouch` to a context provider) go through an
+`extQueue`: a ring per provider and kind (`SinkQueue` 256, `TouchQueue`
+1,024) filled without waiting, a full ring dropping its oldest (the first
+drop and every hundredth logged, as a webhook's queue does), drained in
+order by one goroutine of its own, each delivery with a context that ends
+after `DeliveryWait` (10 s), its panic recovered. A provider that is no
+`ext.Starter` drains at once; a Starter's queues hold what reaches them
+until its `Start` has succeeded. `Saved`, `Deleted` (sync) and `Resolved`
+(decisions) never go through a ring, since a call they lose is never made
+again: they are delivered the same way from lists that drop nothing (C6,
+C5). `Shutdown` ends the drains with the webhooks, what waits in them
+undelivered, and waits for their goroutines with its others (`track`).
+
 ## Packages
 
 | Package | Responsibility |

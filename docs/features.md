@@ -3190,8 +3190,24 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `-race`) and `TestFill` (an empty set, a full one, a partial one), each
   checked to fail with its part broken. Nothing calls `Fill` yet.
 
-  PR-3 (#475): cli, api: the composition root reads the registry once; every
-  provider call guarded. Planned.
+  PR-3 (#475): `internal/cli` and `internal/api`: the composition root and
+  the guard. `runServe` reads the registry once through the package
+  variable `extensions` (`ext.Freeze`, replaced by tests), fills it with
+  `local.Fill`, logs one line naming what is registered (nothing in a
+  plain build) and hands it to `api.New` through `api.WithExtensions`;
+  `runHost` closes the registry too. `New` gains a trailing `...Option`
+  (every caller unchanged; without it, the free build) and wraps every
+  provider, defaults included, in the guard: `extCall` (the wait, the
+  caller's context, a recovered panic, the record's `Valid`, 16 calls in
+  flight per provider and kind, a warn once a minute with the count since,
+  nothing else kept) and `extQueue` (a ring that drops its oldest, drained
+  in order by one goroutine, `DeliveryWait` per delivery, held for a
+  `Starter` until its `Start`), ended and waited for by `Shutdown`. No
+  seam calls a provider yet. Tests: `TestServeReadsTheRegistryOnce`,
+  `TestHostClosesTheRegistry`, `TestNewWithoutExtensionsIsTheFreeBuild`,
+  `TestWithExtensionsKeepsDefaults`, `TestExtCallWait`, `TestExtCallPanic`,
+  `TestExtCallInvalid`, `TestExtCallInFlight`, `TestExtQueueDropsOldest`,
+  `TestExtQueueOrder`, `TestExtQueueShutdown`.
 
   PR-4 (#476): api, cli: ext.Host and the providers' Start. Planned.
 
