@@ -34,7 +34,7 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 5
+const Version = 6
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
@@ -70,6 +70,15 @@ var migrations = map[int][]string{
 		"ALTER TABLE runs ADD COLUMN manifest TEXT NOT NULL DEFAULT ''",
 		prerequisitesTable,
 		treesTable,
+	},
+	// Version 6 (DS2, a run launched from a plan revision, #460): a run
+	// names the Dispatch ticket it was launched from and keeps the launch
+	// package as Dispatch built it, byte for byte, which its continuations
+	// carry. Every row a version 5 database holds is a run no ticket
+	// launched, which the empty defaults say: nothing is derived.
+	5: {
+		"ALTER TABLE runs ADD COLUMN ticket TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE runs ADD COLUMN package TEXT NOT NULL DEFAULT ''",
 	},
 }
 
@@ -642,7 +651,9 @@ var schema = []string{
 		created_at TEXT NOT NULL,
 		closed_at TEXT NOT NULL DEFAULT '',
 		paused_why TEXT NOT NULL DEFAULT '',
-		manifest TEXT NOT NULL DEFAULT ''
+		manifest TEXT NOT NULL DEFAULT '',
+		ticket TEXT NOT NULL DEFAULT '',
+		package TEXT NOT NULL DEFAULT ''
 	)`,
 	`CREATE TABLE tasks (
 		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,

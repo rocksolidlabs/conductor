@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -530,5 +531,71 @@ func TestAnAttachmentRemovedAndSweptWhileItOpensIsNotFound(t *testing.T) {
 			f.Close()
 		}
 		t.Fatalf("a live attachment whose file went while it opened: %v, want the store's error", err)
+	}
+}
+
+// A launch's package pins its attachments' content (Program item DS2): an
+// attachment removed after a launch named it survives the sweep and opens
+// through OpenLaunchFile, a second store's sweep at its open included;
+// one removed and never launched is collected. OpenLaunchFile opens only
+// a hash its launch's package names: another launch's, a live
+// attachment's the package does not name, and a hash of no shape are not
+// found.
+func TestSweepKeepsALaunchsFiles(t *testing.T) {
+	ctx := context.Background()
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	newProject(t, s, "CND")
+	_, key := makeTicket(t, s, NewTicket{Project: "CND", Title: "Attached", Acceptance: "- it is"})
+	launched := mustPut(t, s, "a1", key, "launched.txt", []byte("handed over"))
+	dropped := mustPut(t, s, "a2", key, "dropped.txt", []byte("never handed over"))
+	live := mustPut(t, s, "a3", key, "live.txt", []byte("live but not handed over"))
+	body := testPlanBody("crew")
+	body.Attachments = []string{launched.ID}
+	plan := approvedPlan(t, s, key, PlanRequest{Crew: "crew", Attachments: body.Attachments}, body, "")
+	l := mustLaunch(t, s, "l1", key, plan, "")
+	_, other := makeTicket(t, s, NewTicket{Project: "CND", Title: "Other"})
+	otherLaunch := mustLaunch(t, s, "l2", other, simplePlan(t, s, other), "")
+	for i, a := range []Attachment{launched, dropped} {
+		rc, err := s.RemoveAttachment(ctx, testOp(opID("rm", i)), key, a.ID)
+		want(t, rc, err, StatusDone, "")
+	}
+	if err := s.sweep(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(t, contentAt(s, launched.SHA256)) || exists(t, contentAt(s, dropped.SHA256)) || !exists(t, contentAt(s, live.SHA256)) {
+		t.Fatalf("after the sweep: the launched %v, the dropped %v, the live %v",
+			exists(t, contentAt(s, launched.SHA256)), exists(t, contentAt(s, dropped.SHA256)), exists(t, contentAt(s, live.SHA256)))
+	}
+	// A second store's sweep, at its open, keeps it too.
+	second := openStore(t, dir)
+	if err := second.SweepError(); err != nil || !exists(t, contentAt(s, launched.SHA256)) {
+		t.Fatalf("a second store's sweep: %v, the file there %v", err, exists(t, contentAt(s, launched.SHA256)))
+	}
+	f, err := s.OpenLaunchFile(ctx, l.ID, launched.SHA256)
+	if err != nil {
+		t.Fatalf("the launch's file: %v", err)
+	}
+	got, err := io.ReadAll(f)
+	f.Close()
+	if err != nil || string(got) != "handed over" {
+		t.Fatalf("the launch's file holds %q %v", got, err)
+	}
+	for _, c := range []struct{ launch, sum string }{
+		{otherLaunch.ID, launched.SHA256}, {l.ID, live.SHA256}, {l.ID, dropped.SHA256}, {l.ID, "not a hash"}, {"not an id", launched.SHA256},
+	} {
+		if f, err := s.OpenLaunchFile(ctx, c.launch, c.sum); !errors.Is(err, ErrNotFound) {
+			if f != nil {
+				f.Close()
+			}
+			t.Errorf("launch %s, content %s: %v, want not found", c.launch, c.sum, err)
+		}
+	}
+	// A pinned content missing is the store's error, never not found.
+	if err := os.Remove(contentAt(s, launched.SHA256)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.OpenLaunchFile(ctx, l.ID, launched.SHA256); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("a pinned file missing: %v", err)
 	}
 }

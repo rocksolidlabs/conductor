@@ -580,9 +580,9 @@ func TestAMigratedVersion3LedgerReusesNothingWithdrawn(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// What versions 4 and 5 added dropped (the ledger package's own
+			// What versions 4 to 6 added dropped (the ledger package's own
 			// tests keep the same list, version5Added).
-			v5 := []string{"ALTER TABLE checks DROP COLUMN phase", "ALTER TABLE checks DROP COLUMN manifest", "ALTER TABLE checks DROP COLUMN ports", "ALTER TABLE checks DROP COLUMN tries",
+			v5 := []string{"ALTER TABLE runs DROP COLUMN ticket", "ALTER TABLE runs DROP COLUMN package", "ALTER TABLE checks DROP COLUMN phase", "ALTER TABLE checks DROP COLUMN manifest", "ALTER TABLE checks DROP COLUMN ports", "ALTER TABLE checks DROP COLUMN tries",
 				"ALTER TABLE checks DROP COLUMN error", "ALTER TABLE checks DROP COLUMN url", "ALTER TABLE runs DROP COLUMN paused_why", "ALTER TABLE runs DROP COLUMN manifest", "DROP TABLE prerequisites", "DROP TABLE trees"}
 			for _, stmt := range append(v5, "ALTER TABLE tasks DROP COLUMN withdrawn", "DELETE FROM events WHERE kind = 'task.reopened'", "UPDATE schema_version SET version = 3") {
 				if _, err := db.Exec(stmt); err != nil {

@@ -299,7 +299,19 @@ func (tx *fakeTx) Event(kind string, payload any) error {
 	tx.events = append(tx.events, fakeEvent{tx.runID, kind, payload})
 	return nil
 }
-func (tx *fakeTx) PutRun(r ledger.RunRow) error   { tx.runs = append(tx.runs, r); return nil }
+func (tx *fakeTx) PutRun(r ledger.RunRow) error { tx.runs = append(tx.runs, r); return nil }
+
+// CreateRun refuses an id the fake ledger has, as the ledger's insert does.
+func (tx *fakeTx) CreateRun(r ledger.RunRow) error {
+	tx.l.mu.Lock()
+	_, ok := tx.l.runs[r.ID]
+	tx.l.mu.Unlock()
+	if ok {
+		return fmt.Errorf("%w: %s", ledger.ErrRunExists, r.ID)
+	}
+	tx.runs = append(tx.runs, r)
+	return nil
+}
 func (tx *fakeTx) PutTask(r ledger.TaskRow) error { tx.tasks = append(tx.tasks, r); return nil }
 func (tx *fakeTx) PutAttempt(r ledger.AttemptRow) error {
 	tx.attempts = append(tx.attempts, r)
@@ -1371,9 +1383,15 @@ func TestAFailedCommitPausesDispatchUntilUnpaused(t *testing.T) {
 	if !r.Paused || taskOf(t, e, run.ID, "test").Attempts != 0 {
 		t.Fatalf("after the failed commit: paused=%v test=%+v", r.Paused, taskOf(t, e, run.ID, "test"))
 	}
+	// The log's note is made inside the pause's change, and its commit comes
+	// after it, outside the lock: wait on the ledger for what it must hold
+	// (the pause's own event committed), never read it at the note.
+	l.mu.Lock()
+	l.failOn = ""
+	l.mu.Unlock()
+	waitFake(t, "the pause committed", func() bool { return slices.Contains(l.kinds(run.ID), "run.paused") })
 	l.mu.Lock()
 	row := l.tasks[run.ID+"/build"]
-	l.failOn = ""
 	l.mu.Unlock()
 	if row.State != ledger.TaskSucceeded {
 		t.Fatalf("build's row after the pause: %+v", row)
