@@ -762,7 +762,11 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
       <UIcon name="i-lucide-files" class="size-4 flex-none text-muted" />
       <span class="font-medium text-highlighted" data-editor-count>{{ tabs.tabs.length === 1 ? '1 file open' : `${tabs.tabs.length} files open` }}</span>
       <span class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-        <button v-for="t in tabs.tabs" :key="t.id" type="button" class="truncate rounded px-1.5 py-0.5 font-mono text-[11px] text-muted hover:bg-elevated hover:text-default" :data-editor-folded-tab="t.id" @click="tabs = activateTab(tabs, t.id)">{{ t.title }}</button>
+        <!-- Each tab wears its unsaved dot folded as it does in the strip: a held Neovim's change said while folded shows here. -->
+        <button v-for="t in tabs.tabs" :key="t.id" type="button" class="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px] text-muted hover:bg-elevated hover:text-default" :data-editor-folded-tab="t.id" @click="tabs = activateTab(tabs, t.id)">
+          <span class="truncate">{{ t.title }}</span>
+          <span v-if="dirty.has(t.id)" class="size-1.5 flex-none rounded-full bg-primary" aria-label="unsaved" data-editor-dirty />
+        </button>
       </span>
       <UTooltip text="Show the editor (T · Alt+T in the terminal)">
         <UButton icon="i-lucide-panel-top" size="xs" color="neutral" variant="ghost" aria-label="Show the editor" data-editor-unfold @click="tabs = toggleFold(tabs)" />
