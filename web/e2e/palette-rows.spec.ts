@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
@@ -10,7 +11,20 @@ import { freeProjectKey, makeProject, makeTicket, storedTicket } from './dispatc
 // started this); a row that cannot act is disabled with its words. What the
 // other palette specs cover already (digits, verbs that ask, the editor's
 // rows, Touched, the pill) is not repeated here.
+// Each test walks one page or several through twenty to forty palette steps. A fixed timeout is spent by such a walk on a loaded
+// box with every step passing (#281: the walk of the other pages took the config's whole 120 s at a load average of 110), so
+// each step raises the test's timeout by the caps of its own waits as it takes them (budget below), the way examples.spec.ts
+// adds its handoff's caps: the test's timeout is their sum, and the config's 120 s above it, for the waits between the steps.
 test.describe.configure({ mode: 'serial' })
+
+/** The cap of every wait a palette step makes: the config's expect bound, and the actions' (a fill, a click, a read). */
+const STEP_MS = 15_000
+test.use({ actionTimeout: STEP_MS })
+/** Raises the running test's timeout by the caps of `waits` waits, as a step is about to make them. */
+function budget(waits: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + waits * STEP_MS)
+}
 
 const sessions: string[] = []
 const runs: string[] = []
@@ -22,30 +36,52 @@ test.afterAll(async ({ api }) => {
   if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
 })
 
-/** Closes the palette: Escape from a row returns to the input first, and a fading palette swallows a key, so Escape until hidden. */
-async function closePalette(page: Page) {
-  const palette = page.locator('[data-palette]')
-  for (let i = 0; i < 4 && (await palette.isVisible()); i++) {
-    await page.keyboard.press('Escape')
-    await palette.waitFor({ state: 'hidden', timeout: 1500 }).catch(() => {})
-  }
-  await expect(palette).toBeHidden()
+/**
+ * Where the palette is: gone, closing (its dialog's data-state turns closed as Escape or a row closes it, before the fade ends
+ * and it leaves the page), or open.
+ */
+function paletteState(page: Page): Promise<'gone' | 'closing' | 'open'> {
+  return page.evaluate(() => {
+    const p = document.querySelector('[data-palette]')
+    if (!p) return 'gone'
+    return p.closest('[role="dialog"]')?.getAttribute('data-state') === 'closed' ? 'closing' : 'open'
+  })
 }
 /**
- * Opens the palette and returns it: Alt+/ (the terminal's way, which the page shares; the layout's own listener, from a terminal or
- * not). Alt+/ only ever opens it, so a second press is safe where Ctrl+K, a toggle, was not: under load the first Alt+/ opened the
- * palette after the 1.5 s look, and the Ctrl+K sent then closed it again.
+ * Closes the palette with one Escape from its input, and waits with the expect's bound for it to go. From a row, a field or a
+ * question Escape goes back a step instead, and a key pressed on the clock (Escape again 1.5 s on, #281) landed wherever the
+ * focus was by then, a fading palette's or the page's: so the input takes the focus first, and a closing palette is only waited for.
+ */
+async function closePalette(page: Page) {
+  budget(1)
+  if ((await paletteState(page)) === 'open') {
+    const inInput = await page.evaluate(() => {
+      const input = document.querySelector<HTMLElement>('[data-palette] input[data-palette-input]')
+      input?.focus()
+      return !!input && document.activeElement === input
+    })
+    if (inInput) await page.keyboard.press('Escape')
+  }
+  await expect(page.locator('[data-palette]')).toBeHidden()
+}
+/**
+ * Opens the palette and returns it: Alt+/ (the terminal's way, which the page shares; the layout's own listener, from a terminal
+ * or not, and it only ever opens the palette), pressed once, when the layout listens for it, and the expect's bound for it to
+ * show. A key pressed before the layout is mounted is lost (#281: after a goto, Alt+/ went in 1.1 s on, the page's first request
+ * 4.9 s on), and a second press on a 1.5 s clock only hid that; the sidebar's root is the layout's own, in the page once it is.
  */
 async function openPalette(page: Page) {
   const palette = page.locator('[data-palette]')
   await closePalette(page)
+  budget(2)
+  await expect(page.locator('#dashboard-sidebar-main')).toBeAttached()
   await page.keyboard.press('Alt+/')
-  if (!(await palette.waitFor({ state: 'visible', timeout: 1500 }).then(() => true, () => false))) await page.keyboard.press('Alt+/')
   await expect(palette).toBeVisible()
   return palette
 }
 /** Runs the row `key` with a click, after a query that keeps it in the list. */
 async function runRow(page: Page, key: string, query = '') {
+  budget(3) // the line, the row, the click
   const palette = await openPalette(page)
   if (query) await palette.locator('input[data-palette-input]').fill(query)
   const row = palette.locator(`[data-palette-row="${key}"]`)
@@ -55,6 +91,7 @@ async function runRow(page: Page, key: string, query = '') {
 }
 /** Focuses the row `key` from the keyboard (↓ until it is the focused row) and presses Enter: what a field-on-Enter row needs. */
 async function enterRow(page: Page, key: string, query = '') {
+  budget(3) // the line, the row, its focus
   const palette = await openPalette(page)
   if (query) await palette.locator('input[data-palette-input]').fill(query)
   const row = palette.locator(`[data-palette-row="${key}"]`)
@@ -66,6 +103,7 @@ async function enterRow(page: Page, key: string, query = '') {
 }
 /** The switch state of the row `key` as the palette shows it now. */
 async function switchOf(page: Page, key: string, query = ''): Promise<string | null> {
+  budget(2) // the line, the read
   const palette = await openPalette(page)
   if (query) await palette.locator('input[data-palette-input]').fill(query)
   const state = await palette.locator(`[data-palette-row="${key}"] [data-palette-switch]`).getAttribute('data-palette-switch')
@@ -244,15 +282,21 @@ test("the run page: the broadcast field, the views, the run's chat, Share, Stop"
 
 test('a session row’s actions: the copies say so, Open Files/Chat/Activity/People reach the page on that view, Type a line opens the field, Resume makes a new session', async ({ page, api, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e rows actions' })
+  // Names of this run's own: a repeat's sessions stay listed, ended, until the server sweeps them, and a name typed into the
+  // palette must find this one alone (the first row, Resume's new session by its name).
+  const tag = randomUUID().slice(0, 8)
+  const actions = `e2e rows actions ${tag}`
+  const goneName = `e2e rows gone ${tag}`
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: actions })
   sessions.push(s.id)
-  const gone = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e rows gone' })
+  const gone = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: goneName })
   sessions.push(gone.id)
   await api.stopSession(gone.id)
   await expect.poll(async () => (await api.session(gone.id)).status, { timeout: 15_000 }).toMatch(/stopped|ended/)
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
   const act = async (name: string, id: string) => {
+    budget(5) // the line, the row, its focus, its actions, the action's click
     const palette = await openPalette(page)
     await palette.locator('input[data-palette-input]').fill(name)
     const row = palette.locator(`[data-palette-row="session:${id}"]`)
@@ -263,39 +307,39 @@ test('a session row’s actions: the copies say so, Open Files/Chat/Activity/Peo
     await expect(row.locator('[data-palette-actions]')).toBeVisible()
     return (action: string) => row.locator(`[data-palette-action="${action}"]`)
   }
-  let a = await act('e2e rows actions', s.id)
+  let a = await act(actions, s.id)
   await a('copy-path').click()
   await expect(toast(page, 'Path copied')).toBeVisible({ timeout: 15_000 })
-  a = await act('e2e rows actions', s.id)
+  a = await act(actions, s.id)
   await a('copy-link').click()
   await expect(toast(page, /View link to .* copied/)).toBeVisible({ timeout: 15_000 })
   for (const [action, tab, item] of [['open-files', 'files', 'explorer'], ['open-chat', 'chat', 'chat'], ['open-activity', 'activity', 'activity'], ['open-people', 'people', 'people']] as const) {
     await page.goto('/agents')
     await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
-    a = await act('e2e rows actions', s.id)
+    a = await act(actions, s.id)
     await a(action).click()
     await expect(page).toHaveURL(new RegExp(`/sessions/${s.id}\\?tab=${tab}`), { timeout: 15_000 })
     await expect(page.locator(`[data-inspector] [data-rail-item="${item}"]`)).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 })
   }
   // On the session's own page the same action shows the view here, twice without hiding it.
-  a = await act('e2e rows actions', s.id)
+  a = await act(actions, s.id)
   await a('open-chat').click()
   await expect(page.locator('[data-inspector] [data-chat]')).toBeVisible()
-  a = await act('e2e rows actions', s.id)
+  a = await act(actions, s.id)
   await a('open-chat').click()
   await expect(page.locator('[data-inspector] [data-chat]')).toBeVisible()
   // Type a line opens the field; Resume on an exited session makes a new one.
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
-  a = await act('e2e rows actions', s.id)
+  a = await act(actions, s.id)
   await a('field').click()
   await expect(page.locator(`[data-palette-row="session:${s.id}"] [data-palette-field] input`)).toBeFocused()
   await closePalette(page)
-  a = await act('e2e rows gone', gone.id)
+  a = await act(goneName, gone.id)
   await a('resume').click()
   // The new session itself, by its name: the list's length is no measure of it, since the server sweeps sessions that ended a
   // while ago at any time (#281: on CI, with ninety sessions from the specs before, the count fell by eight as this waited).
-  const resumed = async () => (await api.ok<{ sessions: Session[] }>('GET', '/api/sessions')).sessions.find((x) => x.name === 'e2e rows gone' && x.id !== gone.id)
+  const resumed = async () => (await api.ok<{ sessions: Session[] }>('GET', '/api/sessions')).sessions.find((x) => x.name === goneName && x.id !== gone.id)
   await expect.poll(async () => (await resumed())?.id ?? '', { timeout: 30_000, message: 'Resume makes a new session under the old name' }).toMatch(/^[0-9a-f]{16}$/)
   const made = await resumed()
   if (made) sessions.push(made.id)
@@ -303,14 +347,18 @@ test('a session row’s actions: the copies say so, Open Files/Chat/Activity/Peo
 
 test('verbs and switches: go, mark, share, answer; the theme, the sidebar, notifications; the dialogs; the prefixes', async ({ page, api, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write', 'notifications'])
-  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e rows verbs' })
+  // Names of this run's own: a verb's name must match one thing, and a repeat's sessions stay listed, ended, until the server
+  // sweeps them (#281: "mark e2e rows verbs working" read as a search in the second repeat of a --repeat-each run).
+  const tag = randomUUID().slice(0, 8)
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: `e2e rows verbs ${tag}` })
   sessions.push(s.id)
-  const asks = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e rows asks' })
+  const asks = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: `e2e rows asks ${tag}` })
   sessions.push(asks.id)
   await expect.poll(async () => (await api.session(asks.id)).attention?.state, { timeout: 30_000 }).toBe('needs_input')
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
   const verb = async (line: string) => {
+    budget(2) // the line, the row
     const palette = await openPalette(page)
     await palette.locator('input[data-palette-input]').fill(line)
     const row = palette.locator('[data-palette-row^="verb:"]').first()
@@ -321,11 +369,11 @@ test('verbs and switches: go, mark, share, answer; the theme, the sidebar, notif
   }
   await verb('go yard')
   await expect(page).toHaveURL(/\/yard/)
-  await verb('mark e2e rows verbs working')
+  await verb(`mark e2e rows verbs ${tag} working`)
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).toBe('working')
-  await verb('share e2e rows verbs')
+  await verb(`share e2e rows verbs ${tag}`)
   await expect(toast(page, /View link to .* copied/)).toBeVisible({ timeout: 15_000 })
-  await verb('answer e2e rows asks 1')
+  await verb(`answer e2e rows asks ${tag} 1`)
   await expect.poll(async () => (await api.session(asks.id)).attention?.state ?? '', { timeout: 15_000 }).not.toBe('needs_input')
   // The switches: the theme flips the html class and back; the sidebar row's words follow its state; notifications flips.
   const dark = async () => page.evaluate(() => document.documentElement.classList.contains('dark'))
@@ -418,6 +466,7 @@ test("the Dispatch pages' rows (#409): go dispatch; the projects page's New proj
 
   // A ticket's row: Set status… opens the picker and sets it; Assign to me adds the name as a person.
   const ticketRow = async () => {
+    budget(5) // the line, the row, its focus, its actions, the action's click
     const p = await openPalette(page)
     await p.locator('input[data-palette-input]').fill(`${key}-1`)
     const row = p.locator(`[data-palette-row="ticket:${key}-1"]`)
