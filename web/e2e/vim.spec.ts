@@ -693,7 +693,12 @@ function swapFilesOf(home: string, dir: string): string[] {
 // unsaved dot, and the close asks; closing right after typing asks too. Kept Neovims whose keys changed nothing go once done, so tabs
 // left that way do not use up the four a window may keep. Each open that needs one of those four waits for the page to have let a
 // kept one go (roomForNeovim), never for a time: on a loaded machine the keys take longer than any fixed wait (#429's review).
+// A typeInto's two waits: the server through the frames before A (serverCaughtUp's default bound) and Neovim's answer to A.
+const insertBound = 30_000
+const typeIntoBound = nvimEndBound + 15_000 + insertBound
 test('a tab left with keys on their way keeps its Neovim until they are done: their change shows on it, else it goes', async ({ page, api, state }) => {
+  // Its four typeIntos' bounds, and the suite's 120 s for the rest, which the test took 1.0 to 1.3 min of on a loaded machine (#281).
+  test.setTimeout(4 * typeIntoBound + 120_000)
   await watchSockets(page)
   const config = join(state.home, '.config', 'nvim')
   mkdirSync(config, { recursive: true })
@@ -738,7 +743,7 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
       await lines.click()
       await serverCaughtUp(page, s.id)
       await page.keyboard.type('A')
-      await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 30_000 })
+      await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: insertBound })
       await page.keyboard.type('x')
     }
     const question = page.locator('[role="dialog"]')
