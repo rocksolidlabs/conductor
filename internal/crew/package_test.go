@@ -672,3 +672,106 @@ func TestAContinuationsAttemptGetsThePackageFiles(t *testing.T) {
 	}
 	stopRun(t, e, next.ID)
 }
+
+// A package that cannot be handed over, or an agent that is not the
+// approved one, at a checkpoint the agent saved is no fault of the
+// checkpoint's tree: attempt 1 saves C and its session ends, attempt 2 at
+// C fails at "package" or "agent", uncounted, its attempt.failed naming no
+// checkpoint, the task's checkpoint kept, and the run paused with the
+// package's or the agent's words (not the checkpoint's). Fixed and
+// unpaused, attempt 3 starts at C with the checkpoint in its task file,
+// in the run and in a continuation made while it was paused, which reads
+// the same from the rows.
+func TestAPackageOrAgentFailureAtACheckpointKeepsIt(t *testing.T) {
+	for _, stage := range []string{"package", "agent"} {
+		for _, continued := range []bool{false, true} {
+			name := stage + map[bool]string{false: ", in the run", true: ", after a continuation"}[continued]
+			t.Run(name, func(t *testing.T) {
+				dir := newRepo(t)
+				base := head(t, dir)
+				e, ld := sqlEngine(t)
+				fl := e.launcher.(*fakeLauncher)
+				store := newFileStore(testSpecPNG)
+				e.UsePackageFiles(store.open)
+				run := launchPlanned(t, e, repoCrew(dir, work("build", "lead")), planned(t, "api-sweep-0000000a", base))
+				a1 := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+				// Attempt 2 is the one that cannot be handed its package or
+				// start its agent.
+				var prefix string
+				switch stage {
+				case "package":
+					store.set(func(s *fileStore) { s.fail = errors.New("the store is closed") })
+					prefix = "attempt 2 could not be handed its ticket's package: "
+				case "agent":
+					fl.mu.Lock()
+					fl.fail["lead · build #2"] = ErrAgentChanged
+					fl.mu.Unlock()
+					prefix = "attempt 2 could not start its agent: "
+				}
+				cp := checkpointAndEnd(t, e, fl, a1)
+				row2 := ledgerAttempt(t, ld, run.ID, "build", 2, ledger.AttemptFailed)
+				if row2.StartCommit != cp || row2.Stage != stage || row2.SessionID != "" {
+					t.Fatalf("attempt 2: %+v", row2)
+				}
+				if fp := failedPayload(t, ld, run.ID, "build", 2); fp["uncounted"] != true || fp["stage"] != stage || fp["checkpoint"] != nil {
+					t.Fatalf("attempt.failed: %v", fp)
+				}
+				why := prefix + row2.Error
+				waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused && r.PausedWhy == why })
+				if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskReady || ts.Reason != why {
+					t.Fatalf("the task: %+v", ts)
+				}
+				keptAt := func(runID string) (string, *unusable) {
+					e.mu.Lock()
+					defer e.mu.Unlock()
+					task := e.runs[runID].task("build")
+					var commit string
+					if task.checkpoint != nil {
+						commit = task.checkpoint.commit
+					}
+					var u *unusable
+					if task.unusable != nil {
+						c := *task.unusable
+						u = &c
+					}
+					return commit, u
+				}
+				if got, u := keptAt(run.ID); got != cp || u == nil || u.n != 2 || u.checkpoint != "" || u.next != cp {
+					t.Fatalf("the task's checkpoint %q (want %q), unusable %+v", got, cp, u)
+				}
+
+				runID := run.ID
+				if continued {
+					stopRun(t, e, run.ID)
+					next, err := e.ContinueRun(t.Context(), run.ID, "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !next.Paused || next.PausedWhy != why {
+						t.Fatalf("the continuation's pause: %v %q", next.Paused, next.PausedWhy)
+					}
+					if got, u := keptAt(next.ID); got != cp || u == nil || u.n != 2 || u.checkpoint != "" || u.next != cp {
+						t.Fatalf("the continuation's checkpoint %q (want %q), unusable %+v", got, cp, u)
+					}
+					runID = next.ID
+				}
+				store.set(func(s *fileStore) { s.fail = nil })
+				fl.mu.Lock()
+				delete(fl.fail, "lead · build #2")
+				fl.mu.Unlock()
+				pauseRun(t, e, runID, false)
+				a3 := attemptN(t, e, runID, "build", 3)
+				if a3.Attempt.Start != cp {
+					t.Fatalf("attempt 3 starts at %s, not at the checkpoint %s", short(a3.Attempt.Start), short(cp))
+				}
+				md, f := taskFileOf(t, a3)
+				if f.Checkpoint == nil || f.Checkpoint.Commit != cp || f.Unusable == nil || f.Unusable.Attempt != 2 || f.Unusable.Stage != stage ||
+					(f.Previous != nil && f.Previous.Checkpoint != "") || !strings.Contains(md, "## Where the last attempt got to") ||
+					!strings.Contains(md, "Attempt 2 could not start: it failed at "+stage) || strings.Contains(md, "could not be made usable") {
+					t.Fatalf("attempt 3's task file: checkpoint %+v previous %+v unusable %+v from %q\n%s", f.Checkpoint, f.Previous, f.Unusable, f.StartFrom, md)
+				}
+				stopRun(t, e, runID)
+			})
+		}
+	}
+}

@@ -410,9 +410,10 @@ func TestARequestedRunIDIsTakenOnce(t *testing.T) {
 // is not the digest, a package that is not the launch of the run, one of
 // another version, one that is not JSON, one with a field the engine's
 // reading does not name, one naming an attachment file not of the derived
-// shape, one past the bound and one whose plan was approved at another
-// base than the one given are each ErrInvalid with no run made; the
-// package taken is kept byte for byte.
+// shape, one past the bound, one whose attachments pass Dispatch's 16 MiB
+// together (so no attempt fails at "package" for it), and one whose plan
+// was approved at another base than the one given are each ErrInvalid with
+// no run made; the package taken is kept byte for byte.
 func TestThePackageIsCheckedAgainstItsDigest(t *testing.T) {
 	dir := newRepo(t)
 	base := head(t, dir)
@@ -457,6 +458,11 @@ func TestThePackageIsCheckedAgainstItsDigest(t *testing.T) {
 		{"a display name as a file", withPackage(id, base, edit(func(p *Package) { p.Attachments[0].File = "Spec.png" })), "derived name"},
 		{"a file ending in a dot", withPackage(id, base, edit(func(p *Package) { p.Attachments[0].File = "01-spec." })), "derived name"},
 		{"past the bound", withPackage(id, base, append(good.Package, []byte(strings.Repeat(" ", ledger.MaxPackage))...)), "more than"},
+		{"attachments past 16 MiB together", withPackage(id, base, edit(func(p *Package) {
+			p.Attachments[0].Size = maxPackageAttachmentBytes / 2
+			p.Attachments = append(p.Attachments, PackageAttachment{ID: "a2", Name: "big.bin", File: "02-big.bin", Size: maxPackageAttachmentBytes/2 + 1, SHA256: strings.Repeat("f", 64)})
+		})), "more than 16 MiB together"},
+		{"one attachment past 16 MiB", withPackage(id, base, edit(func(p *Package) { p.Attachments[0].Size = maxPackageAttachmentBytes + 1 })), "more than 16 MiB together"},
 	} {
 		if tc.name == "another run's launch" {
 			tc.p.RunID = id

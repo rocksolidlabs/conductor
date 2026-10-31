@@ -296,6 +296,7 @@ func (p Package) validate() error {
 		}
 	}
 	files := map[string]bool{}
+	var total int64
 	for _, a := range p.Attachments {
 		if !packageFile.MatchString(a.File) || strings.HasSuffix(a.File, ".") {
 			return invalidf("the package's attachment %s is to be written as %s, which is not a derived name", quote(a.Name), quote(a.File))
@@ -309,6 +310,12 @@ func (p Package) validate() error {
 		if a.Size < 0 || !isSHA256(a.SHA256) {
 			return invalidf("the package's attachment %s has no size or SHA-256", quote(a.Name))
 		}
+		// Dispatch's bound on the attachments together, held at the launch
+		// too: a package past it would fail every attempt at "package".
+		if a.Size > maxPackageAttachmentBytes-total {
+			return invalidf("the package's attachments are more than %d MiB together", maxPackageAttachmentBytes>>20)
+		}
+		total += a.Size
 	}
 	return nil
 }
