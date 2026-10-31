@@ -20,8 +20,8 @@ export interface DispatchOpOptions<R> {
   rev?: (reply: R) => number | undefined
   /** A toast's title once it is done; none when the page shows what changed. */
   done?: string
-  /** Called after a refusal, for the page to read what the store holds now (a stale revision: someone else's edit came first). */
-  refused?: () => void
+  /** Called after a refusal with its receipt, for the page to read what the store holds now (a stale revision: someone else's edit came first). */
+  refused?: (receipt: DispatchReceipt) => void
   /** Throw a failure to the caller (a dialog that shows it in place) instead of a toast. */
   raise?: boolean
 }
@@ -84,7 +84,7 @@ export function useDispatchOps(gate: DispatchOrder) {
       if (o.done) toast.add({ title: o.done, description: reply.receipt.repeat ? 'It was done already.' : undefined, icon: 'i-lucide-check', color: 'success' })
       return reply
     } catch (e) {
-      if (e instanceof CommandRefused) o.refused?.()
+      if (e instanceof CommandRefused) o.refused?.(e.receipt as DispatchReceipt)
       if (o.raise) throw e
       toast.add({ title: `${o.what}: not changed`, description: dispatchFailureWords(e), icon: 'i-lucide-triangle-alert', color: e instanceof CommandRefused ? 'warning' : 'error' })
       return null

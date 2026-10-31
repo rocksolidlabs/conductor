@@ -341,6 +341,9 @@ palette.registerPage(() => {
     const a = taskActions(t, r)
     const actions: Action[] = []
     if (a.open) actions.push({ id: 'open-attempt', kind: 'page', target: t.id, label: "Open the attempt's session", icon: 'i-lucide-terminal', run: () => router.push(`/sessions/${t.attempt!.sessionId}`) })
+    // The attempt's preview (EN1), in a new tab: on the server's loopback, not proxied, never in an iframe.
+    const preview = a.preview
+    if (preview) actions.push({ id: 'open-preview', kind: 'page', target: t.id, label: 'Open preview', icon: 'i-lucide-external-link', run: () => void window.open(preview, '_blank', 'noopener,noreferrer') })
     if (a.retry) actions.push({ id: 'retry', kind: 'page', target: t.id, label: 'Retry', icon: 'i-lucide-rotate-ccw', run: () => void taskCommands.send(t, 'retry') })
     if (a.accept) actions.push({ id: 'accept', kind: 'page', target: t.id, label: 'Accept anyway…', icon: 'i-lucide-check', ask: taskCommands.question(t, 'accept'), run: () => void taskCommands.send(t, 'accept') })
     if (a.cancel) actions.push({ id: 'cancel', kind: 'page', target: t.id, label: 'Cancel…', icon: 'i-lucide-x', color: 'error', ask: taskCommands.question(t, 'cancel'), run: () => void taskCommands.send(t, 'cancel') })

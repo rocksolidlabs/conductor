@@ -1,4 +1,4 @@
-import type { CloseRequirement, CloseState, DispatchChange, DispatchSort, DispatchTicket, Horizon, LabelColor, TicketEdit, TicketStatus, TicketSummary, Tracker } from '~/composables/useDispatch'
+import type { CloseRequirement, CloseState, DispatchChange, DispatchSort, DispatchTicket, Horizon, LabelColor, RelatedTicket, TicketAttachment, TicketComment, TicketEdit, TicketRelation, TicketStatus, TicketSummary, Tracker } from '~/composables/useDispatch'
 import type { Tone } from './tasks'
 
 // Dispatch's words (docs/plans/dispatch.md, "web/app"): the key parser; the vocabularies of a ticket's fields with their words, colours
@@ -141,6 +141,18 @@ export function labelDot(color: string): string {
   return LABEL_COLORS[color as LabelColor] ?? LABEL_COLORS.gray
 }
 
+/** The twelve colours a label may be given, in the order a picker offers them, each with its name in words and its dot. */
+export const LABEL_COLOR_CHOICES: ReadonlyArray<{ value: LabelColor; label: string; dot: string }> = (Object.keys(LABEL_COLORS) as LabelColor[]).map((value) => ({
+  value,
+  label: value[0]!.toUpperCase() + value.slice(1),
+  dot: LABEL_COLORS[value],
+}))
+
+/** Whether `color` is one of the store's twelve names: a label is never given a value of the client's own. */
+export function isLabelColor(color: string): color is LabelColor {
+  return Object.hasOwn(LABEL_COLORS, color)
+}
+
 /** A project's tracker in words: Dispatch itself, or a pointer at another one. */
 export const TRACKERS: Record<Tracker, { label: string; icon: string }> = {
   native: { label: 'Dispatch', icon: 'i-lucide-ticket' },
@@ -165,12 +177,20 @@ export function ticketWords(t: Pick<TicketSummary, 'status' | 'blocked'> & { del
  * are the same, since the store refuses an edit that changes nothing.
  */
 export function assigneesEdit(before: readonly string[], next: readonly string[]): TicketEdit | null {
+  return membersEdit('assignees', before, next)
+}
+
+/**
+ * The edit that takes a ticket's members of a set (its assignees or its labels) from `before` to `next`: the members to add and to remove,
+ * in one operation; null when they are the same.
+ */
+export function membersEdit(field: 'assignees' | 'labels', before: readonly string[], next: readonly string[]): TicketEdit | null {
   const add = next.filter((a) => !before.includes(a))
   const remove = before.filter((a) => !next.includes(a))
   if (!add.length && !remove.length) return null
   const change: TicketEdit = {}
-  if (add.length) change.add = { assignees: add }
-  if (remove.length) change.remove = { assignees: remove }
+  if (add.length) change.add = { [field]: add }
+  if (remove.length) change.remove = { [field]: remove }
   return change
 }
 
@@ -186,6 +206,9 @@ export class AssigneePicks {
   /** By actor: whether the person wants it assigned, and the number of the pick; a later pick of the same actor replaces it. */
   private readonly picks = new Map<string, { on: boolean; n: number }>()
   private n = 0
+
+  /** The set the picks are of: a ticket's assignees (actors), or its labels (ids), picked the same way. */
+  constructor(private readonly field: 'assignees' | 'labels' = 'assignees') {}
 
   /** What the picker shows: the ticket's assignees without those unticked, then those ticked, in the order picked. */
   shown(assignees: readonly string[]): string[] {
@@ -208,7 +231,7 @@ export class AssigneePicks {
    * picks it carries, to settle once it has answered.
    */
   take(assignees: readonly string[]): { edit: TicketEdit | null; carried: Map<string, number> } {
-    return { edit: assigneesEdit(assignees, this.shown(assignees)), carried: new Map([...this.picks].map(([a, p]) => [a, p.n])) }
+    return { edit: membersEdit(this.field, assignees, this.shown(assignees)), carried: new Map([...this.picks].map(([a, p]) => [a, p.n])) }
   }
 
   /** The picks given are no longer pending (their edit answered, done or not), each unless its member was picked again since. */
@@ -738,6 +761,357 @@ export function milestoneProgress<M extends { id: string; target: string; state:
       return { milestone, total: mine.length, done: mine.filter((t) => t.status === 'done').length }
     })
 }
+
+// ---------------------------------------------------------------------------
+// A ticket's discussion (PR-10): its comments as the page shows them, numbered as the store derives them.
+
+/** The most comments a page of them holds: the ticket's read carries its last 50, and the comments route 50 at a time. */
+export const COMMENT_PAGE = 50
+
+/**
+ * A ticket's comments as its page shows them, in their order (their number `n`, which the store derives from their place, tombstones
+ * keeping theirs): the ticket's read's last page, the earlier pages read since, and the comments an operation of this page answered with,
+ * each comment by its id at the latest revision any of them holds, so a read served before a comment's edit committed never shows the
+ * older body once the edit's answer is in, nor leaves out a comment just made. Those of another ticket are left out. A comment the read
+ * lacks (one of an earlier page) keeps the number it was read with. `earlierOutdated` says the earlier pages were read before the stream
+ * started again (a store restored from a backup, whose `rev`s may be below those read): the read's comment is shown over theirs then,
+ * whatever its `rev`, until they are read again. `held` is the comment being edited as it was last shown: kept in its place when no
+ * other source holds it (the read's window moved past it and no earlier page has it yet), so its editor and its draft stay; any other
+ * source's copy is shown over it.
+ */
+export function shownComments(
+  ticketId: string,
+  read: readonly TicketComment[],
+  earlier: readonly TicketComment[],
+  known: ReadonlyMap<string, TicketComment> = new Map(),
+  o: { earlierOutdated?: boolean; held?: TicketComment } = {},
+): TicketComment[] {
+  const byId = new Map<string, TicketComment>()
+  const keep = (c: TicketComment, over = false) => {
+    const had = byId.get(c.id)
+    if (!had || over || c.rev > had.rev) byId.set(c.id, c)
+  }
+  for (const c of earlier) keep(c)
+  for (const c of read) keep(c, o.earlierOutdated)
+  for (const c of known.values()) if (c.ticketId === ticketId) keep(c)
+  if (o.held && o.held.ticketId === ticketId && !byId.has(o.held.id)) byId.set(o.held.id, o.held)
+  return [...byId.values()].sort((a, b) => a.n - b.n || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+}
+
+/**
+ * The page of comments before those shown, whose first is numbered `first`: those numbered after `after`, at most `limit`, so the page
+ * ends at the comment before it; null when the first shown is the ticket's first (or none is shown).
+ */
+export function earlierComments(first: number | undefined): { after: number; limit: number } | null {
+  if (!first || first <= 1) return null
+  const after = Math.max(0, first - 1 - COMMENT_PAGE)
+  return { after, limit: first - 1 - after }
+}
+
+/** Comments not shown between two that are, whose numbers are those after `after`, `limit` of them, before the comment `before`. */
+export interface CommentGap {
+  before: string
+  after: number
+  limit: number
+}
+
+/**
+ * The comments missing among those shown (shownComments), each run of them before the comment that follows it: a comment an operation of
+ * this page answered with can sit below the read's window (the 50 it carries moved on since), and earlier pages read before the window
+ * moved end below its first, until they are read again. Only below the read's first comment (`readFirst`), where the earlier pages
+ * reach; a gap above it is the read's own to fill, on the event of what made it. None when the read carries no comment.
+ */
+export function commentGaps(shown: readonly TicketComment[], readFirst: number | undefined): CommentGap[] {
+  if (!readFirst) return []
+  const out: CommentGap[] = []
+  for (let i = 1; i < shown.length; i++) {
+    const prev = shown[i - 1]!
+    const next = shown[i]!
+    if (next.n > readFirst) break
+    if (next.n > prev.n + 1) out.push({ before: next.id, after: prev.n, limit: next.n - prev.n - 1 })
+  }
+  return out
+}
+
+/**
+ * Where a re-read of a ticket's earlier comments starts (DispatchComments), the read's first comment being `readFirst` and the earlier
+ * pages' `earlierFirst`: the first comment shown below the read's window, an earlier page's or one an operation of this page answered
+ * with that the window has moved past since (a comment posted here, then 50 more), so an edit or a delete of it made elsewhere is read
+ * and shown; else the earlier pages' first; 0 when nothing is shown below the read, and nothing is read again.
+ */
+export function commentsRereadFrom(shown: readonly TicketComment[], readFirst: number | undefined, earlierFirst?: number): number {
+  const first = shown[0]?.n
+  if (first && readFirst && first < readFirst) return Math.min(first, earlierFirst ?? first)
+  return earlierFirst ?? 0
+}
+
+/** Who wrote a comment, in words: the display name it recorded, else its actor (an agent's by its member's name). */
+export function commentAuthor(c: Pick<TicketComment, 'author' | 'by'>): string {
+  if (c.by) return c.by
+  return c.author.startsWith('agent:') ? c.author.slice(6) : c.author || 'admin'
+}
+
+// ---------------------------------------------------------------------------
+// A ticket's relations (PR-10): what it blocks, what blocks it ("depends on" is a blocks read from the other end), what it relates to.
+
+export interface RelationRow {
+  relation: TicketRelation
+  /** The ticket at the other end. */
+  other: RelatedTicket
+  /** Whether it counts: a relation whose other end is deleted is kept, inactive, and comes back with that ticket's undelete. */
+  active: boolean
+}
+
+export interface RelationGroups {
+  /** The tickets this one blocks. */
+  blocks: RelationRow[]
+  /** The tickets that block this one: it depends on them. */
+  blockedBy: RelationRow[]
+  /** The tickets it relates to, either way. */
+  relates: RelationRow[]
+  /** Of those blocking it, the ones that hold it: live, neither done nor cancelled. */
+  blocking: RelationRow[]
+}
+
+/** Whether a ticket's status is a close: done or cancelled. */
+export function closedStatus(status: string): boolean {
+  return status === 'done' || status === 'cancelled'
+}
+
+/** A ticket's live relations by what they are from its side, each with its other end, the active ones first, then by the other's key. */
+export function relationGroups(ticketId: string, relations: readonly TicketRelation[]): RelationGroups {
+  const out: RelationGroups = { blocks: [], blockedBy: [], relates: [], blocking: [] }
+  for (const relation of relations) {
+    if (relation.deletedAt) continue
+    const row: RelationRow = { relation, other: relation.other, active: !relation.other.deletedAt }
+    if (relation.kind === 'relates') out.relates.push(row)
+    else if (relation.fromId === ticketId) out.blocks.push(row)
+    else if (relation.toId === ticketId) out.blockedBy.push(row)
+  }
+  const order = (a: RelationRow, b: RelationRow) => Number(b.active) - Number(a.active) || keyOrder(a.other.key, b.other.key)
+  out.blocks.sort(order)
+  out.blockedBy.sort(order)
+  out.relates.sort(order)
+  out.blocking = out.blockedBy.filter((r) => r.active && !closedStatus(r.other.status))
+  return out
+}
+
+/** Two keys in their project's order: by number, then as text for keys of other projects. */
+function keyOrder(a: string, b: string): number {
+  const pa = parseTicketKey(a)
+  const pb = parseTicketKey(b)
+  if (pa && pb && pa.project === pb.project) return pa.number - pb.number
+  return a.localeCompare(b)
+}
+
+/** What a relation is made as from the page's ticket: it blocks the other, it is blocked by it (made from the other's side), or relates. */
+export type RelationChoice = 'blocks' | 'blocked_by' | 'relates'
+
+export const RELATION_CHOICES: ReadonlyArray<{ value: RelationChoice; label: string; icon: string }> = [
+  { value: 'blocks', label: 'Blocks', icon: 'i-lucide-octagon-x' },
+  { value: 'blocked_by', label: 'Is blocked by', icon: 'i-lucide-octagon-pause' },
+  { value: 'relates', label: 'Relates to', icon: 'i-lucide-link-2' },
+]
+
+/**
+ * The tickets a relation of `choice` from the page's ticket cannot be made with, not to be offered: the ticket itself, and those it
+ * holds that relation with already (the store refuses a second of the same kind between the same two, a `relates` either way). A
+ * relation of another kind with the same ticket can be made, so it is offered: a ticket related to may also be blocked. A `blocks` that
+ * would close a cycle is offered too, and refused in the store's words.
+ */
+export function relationExcluded(ticketId: string, relations: readonly TicketRelation[], choice: RelationChoice): string[] {
+  const out = [ticketId]
+  for (const r of relations) {
+    if (r.deletedAt) continue
+    const held =
+      choice === 'relates' ? r.kind === 'relates' : r.kind === 'blocks' && (choice === 'blocks' ? r.fromId === ticketId : r.toId === ticketId)
+    if (held) out.push(r.other.id)
+  }
+  return out
+}
+
+/**
+ * The route a relation is added through, from the page's ticket (`self`) and the one picked (`other`): a ticket blocks or relates to
+ * another from its own route, so "is blocked by" is the other's `blocks` of this one, made through the other's route.
+ */
+export function relationAdd(choice: RelationChoice, self: string, other: string): { on: string; kind: 'blocks' | 'relates'; to: string } {
+  if (choice === 'blocked_by') return { on: other, kind: 'blocks', to: self }
+  return { on: self, kind: choice, to: other }
+}
+
+// ---------------------------------------------------------------------------
+// The ticket picker (PR-10): a search over a project's tickets by key and title, for a parent and a relation's other end.
+
+/** What a picker offers of a ticket. */
+export type PickTicket = Pick<TicketSummary, 'id' | 'key' | 'number' | 'title' | 'status'> & { deletedAt?: string }
+
+/**
+ * The tickets offered for what is typed, best first: the key typed whole (CND-12, cnd-12, or the number alone, 12), then the keys it
+ * begins (CND-1 offers CND-1, CND-10…), then the titles it begins, then the titles holding every word of it, each by number; the tickets
+ * `exclude` names (the page's own, those related already) and the deleted ones left out. With nothing typed, every ticket, by number,
+ * the newest first.
+ */
+export function rankTickets<T extends PickTicket>(typed: string, tickets: readonly T[], exclude: ReadonlySet<string> = new Set()): T[] {
+  const q = typed.trim()
+  const pool = tickets.filter((t) => !exclude.has(t.id) && !t.deletedAt)
+  const seen = new Set<string>()
+  const unique = pool.filter((t) => (seen.has(t.id) ? false : (seen.add(t.id), true)))
+  if (!q) return [...unique].sort((a, b) => b.number - a.number)
+  const upper = q.toUpperCase()
+  const lower = q.toLowerCase()
+  const words = lower.split(/\s+/).filter(Boolean)
+  const rank = (t: T): number => {
+    const key = t.key.toUpperCase()
+    const title = t.title.toLowerCase()
+    if (key === upper || (/^[1-9][0-9]*$/.test(q) && t.number === Number(q))) return 0
+    if (key.startsWith(upper)) return 1
+    if (title.startsWith(lower)) return 2
+    if (words.every((w) => title.includes(w))) return 3
+    return -1
+  }
+  return unique
+    .map((t) => ({ t, r: rank(t) }))
+    .filter((x) => x.r >= 0)
+    .sort((a, b) => a.r - b.r || a.t.number - b.t.number)
+    .map((x) => x.t)
+}
+
+/** A page of a picker's search: the list route's (GET /api/dispatch/tickets), 50 tickets at a time. */
+export const PICKER_PAGE = 50
+/** The most pages a picker's search reads for what is typed: 500 tickets of the project searched, past which the key typed whole still is. */
+export const PICKER_PAGES = 10
+
+/**
+ * The ticket of `project` whose key is typed whole (CND-12, cnd-12, or its number alone, 12): its key as the store writes it, for the
+ * picker to read it by itself; null for anything else, another project's key among it.
+ */
+export function typedTicketKey(project: string, typed: string): string | null {
+  const m = /^(?:([A-Za-z][A-Za-z0-9]{1,5})-)?([1-9][0-9]{0,17})$/.exec(typed.trim())
+  if (!m || (m[1] !== undefined && m[1].toUpperCase() !== project.toUpperCase())) return null
+  return `${project}-${m[2]}`
+}
+
+/** How pickerSearch reads: a page of the list for its query, and a ticket by its key (null, or a rejection, when there is none). */
+export interface PickerReads<T extends PickTicket> {
+  list: (query: string) => Promise<{ tickets?: T[] | null; next?: string }>
+  ticket: (key: string) => Promise<T | null>
+}
+
+/**
+ * The tickets a picker offers from for what is typed, before rankTickets ranks them: the project's tickets the list's search finds, its
+ * pages read on until a page's worth of them rank (or PICKER_PAGES are read, or none is left), since the search matches descriptions
+ * and comments too, which can fill a page with tickets the ranking leaves out; and the ticket whose key is typed whole, read by itself,
+ * so it is offered whatever the search's pages hold. With nothing typed, the first page of the project's tickets.
+ */
+export async function pickerSearch<T extends PickTicket>(project: string, typed: string, reads: PickerReads<T>, exclude: ReadonlySet<string> = new Set()): Promise<T[]> {
+  const q = typed.trim()
+  const key = typedTicketKey(project, q)
+  const exact = key ? reads.ticket(key).catch(() => null) : Promise.resolve(null)
+  const found: T[] = []
+  let cursor = ''
+  for (let i = 0; i < PICKER_PAGES; i++) {
+    const query = new URLSearchParams({ project, limit: String(PICKER_PAGE), ...(q ? { q } : { sort: 'updated' }), ...(cursor ? { cursor } : {}) }).toString()
+    const page = await reads.list(query)
+    found.push(...(page.tickets ?? []))
+    cursor = page.next ?? ''
+    if (!q || !cursor || rankTickets(q, found, exclude).length >= PICKER_PAGE) break
+  }
+  const t = await exact
+  return t ? [t, ...found] : found
+}
+
+// ---------------------------------------------------------------------------
+// A ticket's attachments (PR-10).
+
+/** The types an attachment is shown inline as, once fetched: the images the server serves as their own type. An SVG is never one. */
+const INLINE_IMAGES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+
+/** Whether an attachment of `contentType` is shown as an image: one of the four the server serves inline, never an SVG, which can script. */
+export function inlineImage(contentType: string): boolean {
+  return INLINE_IMAGES.has(contentType.split(';', 1)[0]!.trim().toLowerCase())
+}
+
+/** How AttachmentImages makes and revokes an object URL: the browser's, or a test's. */
+export interface ObjectUrls {
+  create: (blob: Blob) => string
+  revoke: (url: string) => void
+}
+
+/**
+ * A ticket page's images of its attachments as object URLs (useDispatchAttachments): each content fetched once by its id, a fetch that
+ * failed forgotten, to be asked again; an answer the server serves as no image the page shows (an SVG comes as
+ * application/octet-stream) is none. `dispose`, as the page goes, revokes every URL made, and a fetch that answers after it makes none,
+ * so no blob is kept past the page.
+ */
+export class AttachmentImages {
+  private readonly images = new Map<string, Promise<string | null>>()
+  private readonly made: string[] = []
+  private disposed = false
+
+  constructor(
+    private readonly fetch: (id: string) => Promise<Blob>,
+    private readonly urls: ObjectUrls = { create: (b) => URL.createObjectURL(b), revoke: (u) => URL.revokeObjectURL(u) },
+  ) {}
+
+  image(id: string): Promise<string | null> {
+    if (this.disposed) return Promise.resolve(null)
+    let p = this.images.get(id)
+    if (!p) {
+      p = this.fetch(id).then(
+        (blob) => {
+          if (this.disposed || !inlineImage(blob.type)) return null
+          const url = this.urls.create(blob)
+          this.made.push(url)
+          return url
+        },
+        () => {
+          this.images.delete(id)
+          return null
+        },
+      )
+      this.images.set(id, p)
+    }
+    return p
+  }
+
+  /** How many object URLs are held, not yet revoked. */
+  get held(): number {
+    return this.made.length
+  }
+
+  dispose(): void {
+    this.disposed = true
+    for (const url of this.made) this.urls.revoke(url)
+    this.made.length = 0
+    this.images.clear()
+  }
+}
+
+/** An attachment's id as a Markdown image names it: `attachment:<id>`, 16 lower-case hex characters; null for any other source. */
+export function attachmentRef(src: string): string | null {
+  const m = /^attachment:([0-9a-f]{16})$/.exec(src)
+  return m ? m[1]! : null
+}
+
+/** The Markdown that shows an image attachment in a description or a comment: ![name](attachment:<id>). */
+export function attachmentMarkdown(a: Pick<TicketAttachment, 'id' | 'name'>): string {
+  const alt = a.name.replace(/[[\]\\]/g, '\\$&')
+  return `![${alt}](attachment:${a.id})`
+}
+
+/** A size in words: 512 B, 3.2 KiB, 15.1 MiB. */
+export function sizeWords(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round((bytes / 1024) * 10) / 10} KiB`
+  return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MiB`
+}
+
+/** What became of an upload: done, swept before its row was written (409 expired: sent again under a new op id), or failed. */
+export type UploadOutcome = 'done' | 'expired' | 'failed'
+
+/** A ticket's attachments' bounds (the store's): 16 MiB each, 50 on a ticket. */
+export const MAX_ATTACHMENT_SIZE = 16 << 20
+export const MAX_ATTACHMENTS = 50
 
 // ---------------------------------------------------------------------------
 // The palette's Tickets cache (usePalette.ts): the pages read whole, and a read that answers after an edit's answer it was served before.

@@ -25,13 +25,20 @@ function transcript(home: string, s: Session): string {
   return existsSync(file) ? readFileSync(file, 'utf8') : ''
 }
 
-test('] shows the pill for the next session that needs you; 1 answers it from the page without leaving; [ goes back', async ({ page, api, state }) => {
+test('] shows the pill for the next session that needs you; 1 answers it from the page without leaving; [ goes back', async ({ page, api, state }, info) => {
   const a = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e pill a' })
   const b = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e pill b' })
   sessions.push(a.id, b.id)
   await expect.poll(async () => `${(await api.session(a.id)).attention?.state}/${(await api.session(b.id)).attention?.state}`, { timeout: 30_000 }).toBe('needs_input/needs_input')
+  // A press shows the pill for four seconds (PILL_MS, proved in useNeedsCursor.test.ts): the product's bound, not this test's.
+  // On a loaded machine the reads below and the next key took longer, the pill went, and the next ] started over on the first
+  // (#281); here it lives as long as the test may, and where the test needs it gone it is dismissed.
+  await page.addInitScript((ms) => ((window as Window & { conductorPillMs?: number }).conductorPillMs = ms), info.timeout)
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  // The page's own list has both waiting before the first ]: a ] before the page knows them shows nothing.
+  const row = (s: Session) => page.locator(`[data-session-list] [data-sidebar-row="s:${s.id}"]`).first()
+  for (const s of [a, b]) await expect(row(s)).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
   const pill = page.locator('[data-needs-pill]')
   await page.keyboard.press(']')
   await expect(pill).toBeVisible()
@@ -52,12 +59,17 @@ test('] shows the pill for the next session that needs you; 1 answers it from th
   await page.keyboard.press('Control+k')
   const palette = page.locator('[data-palette]')
   await expect(palette).toBeVisible()
+  // Its input takes the focus a frame after it shows: a 2 typed before that is the pill's, an answer.
+  await expect(palette.locator('input[data-palette-input]')).toBeFocused()
   await page.keyboard.type('2')
   await expect(palette.locator('input[data-palette-input]')).toHaveValue('2')
   expect(transcript(state.home, shown)).not.toContain('SQLite')
   expect(transcript(state.home, other)).not.toContain('SQLite')
   await page.keyboard.press('Escape')
   await expect(palette).toBeHidden()
+  // The palette took that Escape; the next, from the page, dismisses the pill.
+  await expect(pill).toBeVisible()
+  await page.keyboard.press('Escape')
   await expect(pill).toBeHidden()
   // The pill gone, the cursor starts over: [ from nothing is the last, [ again the one before it.
   await page.keyboard.press('[')
@@ -73,6 +85,7 @@ test('] shows the pill for the next session that needs you; 1 answers it from th
   await expect(page).toHaveURL(/\/agents$/)
   // The one left: Escape dismisses the pill, Enter opens the session.
   await expect.poll(async () => (await api.session(shown.id)).attention?.state, { timeout: 15_000 }).not.toBe('needs_input')
+  await expect(row(shown)).not.toHaveAttribute('data-row-state', 'needs')
   await page.keyboard.press(']')
   await expect(pill.locator('[data-pill-count]')).toHaveText('1 of 1')
   await page.keyboard.press('Escape')
