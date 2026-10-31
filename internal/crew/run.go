@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -59,6 +60,13 @@ type LaunchSpec struct {
 	// Resume, when set, is the agent session the launch resumes with its
 	// agent's recipe (ResumeMember); ResumedFrom the session it follows.
 	Resume, ResumedFrom string
+	// AgentSHA256, for an attempt of a run launched from a ticket, is the
+	// approved selection of the member's agent, as its package's plan
+	// revision recorded it (plan.agents): the launcher starts the session
+	// only from a catalog entry whose selection it is, and refuses
+	// ErrAgentChanged otherwise, before any process exists. Empty for any
+	// other run, which launches on the entry as it is.
+	AgentSHA256 string
 	// Inject is Conductor's own names of the attempt's tree, set in the
 	// process after the crew's as a session's own are, unfiltered: its
 	// ports (CONDUCTOR_PORT_<NAME>), its state directory
@@ -352,6 +360,9 @@ type Engine struct {
 	// afterAdd, when set, runs once Launch has kept its run and before any
 	// member's start is reserved: a test stops the run there.
 	afterAdd func(runID string)
+	// openPackageFile reads a launch package's attachment by its SHA-256
+	// (UsePackageFiles): Dispatch's store, which the API gives the engine.
+	openPackageFile func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error)
 	// newRunID, when set, mints a new run's id in place of a random one
 	// (mintRunID): a test makes a launch mint an id the ledger has.
 	newRunID func(crewID string) string

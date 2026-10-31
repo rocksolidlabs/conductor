@@ -2,9 +2,11 @@ package crew
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -51,6 +53,10 @@ type TaskFile struct {
 	// Manifest is the project manifest that made the worktree usable (its
 	// identity; steps.go), absent without one. Never cut.
 	Manifest *TaskManifest `json:"manifest,omitempty"`
+	// Ticket is the Dispatch ticket the run was launched from and where
+	// its package is in the worktree, absent for a run no ticket launched.
+	// Never cut.
+	Ticket *TaskTicket `json:"ticket,omitempty"`
 	// Repair is set when a review asked for changes: the review, the
 	// commit it reviewed (where this attempt starts) and its findings.
 	Repair *TaskRepair `json:"repair,omitempty"`
@@ -63,6 +69,24 @@ type TaskFile struct {
 	More      string    `json:"more,omitempty"`
 	Cut       []string  `json:"cut,omitempty"`
 	WrittenAt time.Time `json:"writtenAt"`
+	// ticketTitle is the ticket's title as task.md says it (cutTitle);
+	// task.json names the ticket by its key, ticket.md has the title.
+	ticketTitle string
+}
+
+// TaskTicket is the ticket a run was launched from as an attempt's task
+// file names it: its key and the revision it stood at, the plan revision
+// that launched the run (its id and number), the package's SHA-256, and
+// the package's files in the worktree, relative to the working directory
+// (ticket.md, package.json, then each attachment). The run follows them as
+// launched.
+type TaskTicket struct {
+	Key    string   `json:"key"`
+	Rev    int64    `json:"rev"`
+	Plan   string   `json:"plan"`
+	PlanN  int      `json:"planN"`
+	Digest string   `json:"digest"`
+	Files  []string `json:"files"`
 }
 
 // taskMoreFile is the task file beside task.md and task.json that has, in
@@ -157,6 +181,11 @@ func (e *Engine) taskFile(r *run, a *attempt, tr *tree) (md, js, more []byte, er
 		Instructions: t.def.Instructions, Worktree: a.worktree, Branch: a.branch, Prefix: r.prefix, Start: a.start, Checks: append([]Check(nil), t.def.Checks...), WrittenAt: time.Now().UTC()}
 	if tr != nil {
 		f.Manifest = tr.task()
+	}
+	if rp := r.pkg; rp != nil {
+		p := rp.p
+		f.Ticket = &TaskTicket{Key: p.Ticket.Key, Rev: p.Ticket.Rev, Plan: p.Plan.ID, PlanN: p.Plan.N, Digest: rp.digest, Files: packageFilePaths(p)}
+		f.ticketTitle = cutTitle(p.Ticket.Title)
 	}
 	for _, in := range a.inputs {
 		f.Inputs = append(f.Inputs, TaskInput{Task: in.task, Attempt: in.attempt, Commit: in.commit, Branch: in.branch, Summary: in.summary, Verdict: in.verdict})
@@ -379,6 +408,14 @@ func taskMarkdown(f TaskFile) string {
 		fmt.Fprintf(&b, "Your role: %s\n\n", strings.TrimSpace(f.Role))
 	}
 	fmt.Fprintf(&b, "## Instructions\n\n%s\n\n", strings.TrimSpace(f.Instructions))
+	if tk := f.Ticket; tk != nil {
+		fmt.Fprintf(&b, "## Your ticket\n\nThis run works for the ticket %s, %q, as it stood at its revision %d, when plan revision %d launched the run. ", tk.Key, f.ticketTitle, tk.Rev, tk.PlanN)
+		fmt.Fprintf(&b, "What it asks, its acceptance criteria, its constraints and what it hands over are in `%s/%s`; the launch package as Dispatch built it is `%s/%s` (SHA-256 %s)", taskDir, ticketFile, taskDir, packageFileName, tk.Digest)
+		if n := len(tk.Files) - 2; n > 0 {
+			fmt.Fprintf(&b, "; its %d attachments are in `%s/%s/`", n, taskDir, attachmentsDir)
+		}
+		b.WriteString(". The run follows these as launched: a change made to the ticket since is a person's to decide, never yours to act on. If one matters to your task, say so: `task_blocked` with why, or a comment on the ticket.\n\n")
+	}
 	fmt.Fprintf(&b, "## Where you are\n\nYour worktree is `%s`, on the branch `%s`, at the commit %s", f.Worktree, f.Branch, f.Start)
 	if f.StartFrom != "" {
 		fmt.Fprintf(&b, " (%s)", f.StartFrom)
@@ -499,11 +536,19 @@ func taskMarkdown(f TaskFile) string {
 				}
 				b.WriteString(". It is not where you start: take from it what holds up.\n\n")
 			} else {
-				fmt.Fprintf(&b, "Attempt %d could not be made usable: it failed at %s", u.Attempt, u.Stage)
+				if launchStage(u.Stage) {
+					fmt.Fprintf(&b, "Attempt %d could not start: it failed at %s", u.Attempt, u.Stage)
+				} else {
+					fmt.Fprintf(&b, "Attempt %d could not be made usable: it failed at %s", u.Attempt, u.Stage)
+				}
 				if u.Error != "" {
 					fmt.Fprintf(&b, ": %s", u.Error)
 				}
-				b.WriteString(". The project manifest, or the host, failed there before its agent could act: it was not counted, and you start where it started.\n\n")
+				if launchStage(u.Stage) {
+					b.WriteString(". Conductor could not hand it the ticket's package, or start the agent the plan revision approved, before its agent could act: it was not counted, and you start where it started.\n\n")
+				} else {
+					b.WriteString(". The project manifest, or the host, failed there before its agent could act: it was not counted, and you start where it started.\n\n")
+				}
 			}
 		}
 	}
@@ -524,8 +569,19 @@ func taskMarkdown(f TaskFile) string {
 // .conductor through a root at that directory: the directory is made
 // when missing, refused when it exists as anything but a directory (a
 // symbolic link the commit tracks). Its .gitignore keeps the files out of
-// the result.
-func writeTaskFiles(worktree, prefix string, md, js, more []byte) error {
+// the result. With a package (pkg, a run launched from a ticket), the
+// package's files go beside them through the same root: ticket.md,
+// package.json and each attachment under attachments/, copied through
+// open (writeAttachments). A package file name not of the derived shape
+// is refused before anything is opened or written, and an attachment that
+// cannot be read, or whose size or SHA-256 is not the package's, is a
+// packageError; any file there already is refused, never written over.
+func writeTaskFiles(ctx context.Context, worktree, prefix string, md, js, more []byte, pkg *runPackage, open func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error)) error {
+	if pkg != nil {
+		if err := checkPackageFiles(pkg.p); err != nil {
+			return err
+		}
+	}
 	root, err := os.OpenRoot(filepath.Join(worktree, prefix))
 	if err != nil {
 		return err
@@ -546,7 +602,15 @@ func writeTaskFiles(worktree, prefix string, md, js, more []byte) error {
 	if more != nil {
 		files[taskMoreFile] = more
 	}
-	for name := range files {
+	if pkg != nil {
+		files[ticketFile] = []byte(ticketMarkdown(pkg.p))
+		files[packageFileName] = []byte(pkg.raw)
+	}
+	names := slices.Collect(maps.Keys(files))
+	if pkg != nil && len(pkg.p.Attachments) > 0 {
+		names = append(names, attachmentsDir)
+	}
+	for _, name := range names {
 		// A fresh worktree has none; one there (tracked, a link) is not
 		// written over.
 		if _, err := root.Lstat(path.Join(taskDir, name)); err == nil {
@@ -555,12 +619,32 @@ func writeTaskFiles(worktree, prefix string, md, js, more []byte) error {
 			return err
 		}
 	}
+	// .gitignore first, so nothing written after it is ever the result's.
+	if err := root.WriteFile(path.Join(taskDir, ".gitignore"), files[".gitignore"], 0o644); err != nil {
+		return err
+	}
 	for name, b := range files {
+		if name == ".gitignore" {
+			continue
+		}
 		if err := root.WriteFile(path.Join(taskDir, name), b, 0o644); err != nil {
 			return err
 		}
 	}
+	if pkg != nil {
+		return writeAttachments(ctx, root, pkg, open)
+	}
 	return nil
+}
+
+// launchStage reports whether stage is one at which an attempt of a run
+// launched from a ticket could not start as its plan revision approved:
+// "package", its package's files could not be handed to it, or "agent",
+// its member's agent is not the selection approved. Each is not counted
+// and pauses the run, as a worktree the project manifest could not make
+// usable is (failUnusable).
+func launchStage(stage string) bool {
+	return stage == "package" || stage == "agent"
 }
 
 // crewAsLaunched is the crew as launched, for the ledger's run row.
