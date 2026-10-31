@@ -12,12 +12,16 @@ import { memberWords, runTitle, startedClock } from '~/utils/crewWords'
 import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
 import { replyFailure } from '~/utils/reply'
+import type { RelatedTicket } from '~/composables/useDispatch'
+import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
 
 // The run page: a tile for every member of one run, its activity and a
 // broadcast bar. Sessions and the run come from the live store (useAttention):
 // the run, with its member states, branches and diff stats, is read as the page
 // opens and again whenever a run event or a member session's change says it
-// changed. Nothing polls.
+// changed. Nothing polls. The header's chip names the Dispatch ticket the run is
+// linked to (PR-11), read with the page and again on every ticket event of
+// Dispatch's and every snapshot, through an ordering gate as every Dispatch read.
 
 const route = useRoute()
 const router = useRouter()
@@ -59,6 +63,22 @@ async function load() {
     if (id === runId.value) error.value = (e as Error).message
   }
 }
+
+// The Dispatch ticket the run is linked to, for the header's chip: the live ticket whose live run link names it, else the latest-linked
+// tombstone, said deleted, else none. Read through the page's ordering gate (a slow answer never replaces a later one) as the page opens,
+// again after the window on every ticket event (a link's add or remove, a ticket's delete or undelete: the event names no run, and a run
+// linked to nothing has no project to narrow by), and on a snapshot, which forgets what the gate knew. A read that fails is asked again
+// as a re-read is. A server with no Dispatch store (no data directory, a store that could not open, a switchyard) answers no chip.
+const dispatch = useDispatch()
+const runTicket = ref<RelatedTicket | null>(null)
+async function readRunTicket(): Promise<void> {
+  if (!admin.hasToken.value) return
+  const id = runId.value
+  await runTicketRead(dispatch.gate, id, () => dispatch.api.runTicket(id), (t) => {
+    if (id === runId.value) runTicket.value = t
+  })
+}
+const chip = useDispatchLive({ ...runLinkWatch(readRunTicket), reset: () => dispatch.gate.reset() }, () => chip.ask(readRunTicket))
 
 /** An action (add, start, stop) answered with the run as it is now. */
 function changed(r: RunInfo) {
@@ -120,10 +140,13 @@ function toggle(name: string, on: boolean | 'indeterminate') {
   choices.value = { ...choices.value, [name]: on === true }
 }
 
-watch(runId, () => {
+watch(runId, (_, before) => {
   choices.value = {}
   gone.value = false
   load()
+  dispatch.gate.drop(`run-ticket:${before}`)
+  runTicket.value = null
+  chip.ask(readRunTicket)
 })
 
 // Activity: the members' events in the live feed and the run's own log.
@@ -306,7 +329,10 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.clearInterval(tick)
 })
-watch(() => admin.token.value, load)
+watch(() => admin.token.value, () => {
+  load()
+  chip.ask(readRunTicket)
+})
 
 // This page's group in the command palette (#302): the header's buttons, the view, the chat, then the members as rows, the one
 // asking first. The broadcast takes its line in the row and says who gets it and who is skipped, as the bar does.
@@ -409,7 +435,7 @@ palette.registerPage(() => {
 <template>
   <UDashboardPanel id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <CrewRunHeader ref="header" :record="!!run?.record" :run="run" :run-id="runId" :counts="counts" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
+      <CrewRunHeader ref="header" :record="!!run?.record" :run="run" :run-id="runId" :ticket="runTicket" :counts="counts" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
     </template>
 
     <template #body>

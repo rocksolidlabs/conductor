@@ -103,5 +103,22 @@ export function useApi() {
     }
   }
 
-  return { request, requestText }
+  /**
+   * A GET whose body is a file, as a Blob of the type the server gave: a Dispatch attachment, fetched with the bearer header and shown
+   * through an object URL, since an `img` or a link the browser follows would carry no token. Errors are normalised as `request`'s are.
+   */
+  async function requestBlob(path: string, opts: { token?: string; base?: string } = {}): Promise<Blob> {
+    const token = opts.token ?? admin.token.value
+    try {
+      return await $fetch<Blob>((opts.base ?? httpBase.value) + path, {
+        method: 'GET',
+        responseType: 'blob',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+    } catch (e) {
+      throw normalise(e, opts.token !== undefined)
+    }
+  }
+
+  return { request, requestText, requestBlob }
 }

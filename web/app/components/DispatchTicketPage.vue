@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import type { DispatchChange, DispatchTicket, Horizon, ProjectRead, TicketEdit, TicketReply, TicketStatus } from '~/composables/useDispatch'
+import type { DispatchChange, DispatchReceipt, DispatchTicket, Horizon, NewLink, OpBody, ProjectRead, TicketAttachment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { DISPATCH_RETRY_MAX_MS, ticketWatch } from '~/composables/useDispatchLive'
-import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, historyEntries, horizonWord, labelDot, parseTicketKey, priorityWord, projectPath, statusWord, ticketPath, ticketWords, validProjectKey } from '~/utils/dispatch'
+import { refusalWords } from '~/composables/useDispatchOps'
+import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, acceptChangedWords, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type AcceptSeen, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
 import { catchUp, serially } from '~/utils/dispatchOrder'
@@ -16,8 +17,14 @@ import { catchUp, serially } from '~/utils/dispatchOrder'
  * project, and on a snapshot, which forgets what the gate knew (a store restored from a backup); a read that fails, its first among
  * them, is asked again. An edit waits for the one before it to be shown, read again until a read answers. An editor's save is made
  * against the text it opened on, so another person's edit made meanwhile is never replaced unseen, and what is typed while it goes
- * stays. Its comments, attachments, parent and relations, labels and milestones, and the close policy come with the next changes, and
- * the page says so. One column on a phone.
+ * stays. Around it (PR-10): its parent, set with a ticket picked by key or title, and its children; its relations, what it blocks and
+ * what blocks it, Blocked said from the live blockers; its labels and its milestone, picked from the project's; its attachments,
+ * uploaded with their progress and shown and downloaded through object URLs of their content fetched with the token; its comments; and
+ * Delete and Undelete, a reference to a deleted ticket kept, inactive, and said so. And (PR-11) its close card (DispatchClosePolicy.vue):
+ * what its project's policy requires and what it meets, the owner's acceptance recorded and taken back by buttons of their own, and a
+ * Close the store refuses, in the policy's words, until the policy is met; its delivery and external links; and the managed runs linked
+ * to it, each with the run page's task rows (DispatchRuns.vue). Every operation on the ticket goes through the one queue of its edits, an
+ * attachment's, a relation's, an acceptance's and a link's among them, since each bumps the ticket's revision. One column on a phone.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -41,6 +48,13 @@ const missing = ref(false)
 const now = ref(Date.now())
 /** The person's picks of the assignees, until the edits carrying them have answered (utils/dispatch.ts, AssigneePicks). */
 const picks = reactive(new AssigneePicks())
+/** The person's picks of the labels, the same way. */
+const labelPicks = reactive(new AssigneePicks('labels'))
+/** Counts the reads of the ticket the page took: the comments' earlier pages are read again with each. */
+const reads = ref(0)
+/** Counts the stream's starts the page saw (a snapshot): the comments forget the answers they kept with each. */
+const resets = ref(0)
+const deleteOpen = ref(false)
 
 useHead({ title: computed(() => (ticket.value ? `${ticket.value.key} ${ticket.value.title}` : props.ticketKey)) })
 
@@ -60,6 +74,7 @@ async function readTicket(): Promise<boolean> {
       if (key !== props.ticketKey) return
       ticket.value = t
       missing.value = false
+      reads.value++
     },
     rev: (t) => t.rev,
     absent: notFound,
@@ -186,12 +201,22 @@ watch(
     // The title being edited and the assignees being picked were the other ticket's.
     leaveTitle()
     picks.clear()
+    labelPicks.clear()
     if (key) load()
   },
 )
 
 // The live events read the page again; its first read is made once it is subscribed to them (useDispatchLive's `first`).
-const live = useDispatchLive({ ...ticketWatch(() => ticket.value?.id ?? '', () => props.project, reload), reset: () => gate.reset() }, load)
+const live = useDispatchLive(
+  {
+    ...ticketWatch(() => ticket.value?.id ?? '', () => props.project, reload),
+    reset: () => {
+      gate.reset()
+      resets.value++
+    },
+  },
+  load,
+)
 
 const projectRow = computed(() => projectRead.value?.project ?? null)
 const archived = computed(() => !!projectRow.value?.archivedAt)
@@ -207,9 +232,23 @@ const entries = computed(() =>
     labels: new Map([...labelsById.value].map(([id, l]) => [id, l.name])),
     milestones: new Map([...milestonesById.value].map(([id, m]) => [id, m.name])),
     agents: new Map(agents.value.map((a) => [a.id, a.name])),
-    tickets: ticket.value?.parent ? new Map([[ticket.value.parent.id, ticket.value.parent.key]]) : undefined,
+    tickets: ticketNames.value,
   }),
 )
+
+/** The tickets the page knows the keys of, by id, for the history's words: the parent, the children, the relations' other ends. */
+const ticketNames = computed(() => {
+  const t = ticket.value
+  const out = new Map<string, string>()
+  if (!t) return out
+  if (t.parent) out.set(t.parent.id, t.parent.key)
+  for (const c of t.children?.tickets ?? []) out.set(c.id, c.key)
+  for (const r of t.relations ?? []) out.set(r.other.id, r.other.key)
+  return out
+})
+
+/** The ticket's attachments as the browser shows them: images and downloads through object URLs of their content, fetched with the token. */
+const files = useDispatchAttachments(() => ticket.value?.attachments ?? [])
 
 /** What an edit's `make` answers when the edit is sent: the change; null when nothing is left to change; false when it must not be sent. */
 type Made = TicketEdit | null | false
@@ -238,47 +277,93 @@ async function caughtUp(key: string, rev: number | undefined): Promise<void> {
   })
 }
 
+/** An operation's reply: its receipt, and the ticket as read after it when the route answers one. */
+interface ActReply {
+  receipt: DispatchReceipt
+  ticket?: DispatchTicket | null
+}
+
+/** One operation on the ticket, made when its turn comes (operate). */
+interface Act {
+  /**
+   * The ticket the route names: the page's, unless a relation is made from the other's side ("is blocked by" is the other's blocks),
+   * when no revision is expected and the page's ticket, whose revision the operation bumps too, is read after it.
+   */
+  on?: string
+  send: (body: OpBody) => Promise<ActReply>
+  /** Made on a deleted ticket: an undelete alone; every other operation is made on a live one. */
+  deleted?: boolean
+  /** The operation in the toasts' words: the key, a file's name. */
+  what?: string
+  /** A toast's title once it is done. */
+  done?: string
+  refused?: (receipt: DispatchReceipt) => void
+}
+
+/** What `operate` answers when the change came to nothing to send. */
+const UNCHANGED = Symbol('unchanged')
+
 /**
- * One edit of the ticket the person acted on (`key`), as one operation on the revision shown when it is sent; true once the store has
- * it. The page's edits go one after another (serially): each is sent once the one before has answered and the page shows the revision
- * it committed (caughtUp), so it expects the revision that one left, where two sent at once would both expect the revision shown at the
- * first and the second be refused stale_revision. The change is made then too (`make`), against the ticket as the one before left it:
- * null when nothing is left to change, which is no operation (the store refuses an edit that changes nothing), so a field set twice in
- * a row sends what it comes to; false when it must not be sent (an editor's text changed by another person since it opened). None is
- * sent once the page shows another ticket.
+ * One operation on the ticket the person acted on (`key`), as one operation on the revision shown when it is sent; its reply once the
+ * store has it, UNCHANGED when nothing was left to change, null when it was not done. The page's operations go one after another
+ * (serially): each is sent once the one before has answered and the page shows the revision it committed (caughtUp), so it expects
+ * the revision that one left, where two sent at once would both expect the revision shown at the first and the second be refused
+ * stale_revision; an attachment's upload and a relation's add are among them, since each bumps the ticket's revision as an edit does.
+ * The operation is made then too (`make`), against the ticket as the one before left it: null when nothing is left to change, which is
+ * no operation (the store refuses one that changes nothing); false when it must not be sent (an editor's text changed by another
+ * person since it opened). None is sent once the page shows another ticket, on a ticket deleted (but an undelete) or in an archived
+ * project.
  */
-const edit = serially(async (key: string, make: () => Made): Promise<boolean> => {
+const operate = serially(async (key: string, make: () => Act | null | false): Promise<ActReply | typeof UNCHANGED | null> => {
   const t = ticket.value
-  if (!t || key !== props.ticketKey || locked.value) return false
-  const change = make()
-  if (change === false) return false
-  if (!change) return true
+  if (!t || key !== props.ticketKey || archived.value) return null
+  const act = make()
+  if (act === false) return null
+  if (!act) return UNCHANGED
+  if (!!act.deleted !== !!t.deletedAt) return null
+  const on = act.on ?? key
+  const own = on === key
   let refused = false
-  const reply = await ops.run<TicketReply>((body) => api.editTicket(key, { ...body, ...change }), {
-    thing: `ticket:${key}`,
-    what: key,
-    expectedRev: t.rev,
+  const reply = await ops.run<ActReply>(act.send, {
+    thing: `ticket:${on}`,
+    what: act.what ?? on,
+    expectedRev: own ? t.rev : undefined,
     apply: (r) => {
-      if (r.ticket && key === props.ticketKey) ticket.value = r.ticket
+      if (own && r.ticket && key === props.ticketKey) ticket.value = r.ticket
     },
-    rev: (r) => r.ticket?.rev,
-    refused: () => (refused = true),
+    rev: (r) => (own ? r.ticket?.rev : undefined),
+    refused: (rc) => {
+      refused = true
+      act.refused?.(rc)
+    },
+    done: act.done,
   })
   // A refusal (a stale revision: another person's edit came first) shows the page as the store holds it now, read before the next edit
   // is made, so that one expects the revision the store has and is made on what it holds; a read of the ticket that fails, or that the
-  // gate drops, is asked again until one is shown, as after a commit (caughtUp).
+  // gate drops, is asked again until one is shown, as after a commit (caughtUp). An operation through the other ticket's route moved
+  // this one's revision to one its reply does not carry: the page reads it after the answer.
   if (refused) {
     if (!(await reload().catch(() => false))) await caughtUp(key, undefined)
   } else if (reply) {
-    await caughtUp(key, reply.ticket?.rev ?? reply.receipt.rev)
+    await caughtUp(key, own ? (reply.ticket?.rev ?? reply.receipt.rev) : undefined)
     void readHistory().catch(() => {})
   } else {
     // A failure that is no refusal (both replies lost to the network) may follow a commit: the ticket is read before the next edit is
     // made, so that one is made on what the store holds, as after a refusal.
     await caughtUp(key, undefined)
   }
-  return !!reply
+  return reply
 })
+
+/** One edit of the ticket (operate): true once the store has it, or when nothing was left to change. */
+function edit(key: string, make: () => Made): Promise<boolean> {
+  return operate(key, () => {
+    if (locked.value) return false
+    const change = make()
+    if (!change) return change
+    return { send: (body: OpBody) => api.editTicket(key, { ...body, ...change }) }
+  }).then((r) => r !== null)
+}
 
 // The title: shown, or edited in place (Enter saves, Escape leaves it). A save is made against the title the editor opened on: when another
 // person's came meanwhile (the page reads the ticket live), it is not sent, the draft is kept and theirs is said; a second save replaces it.
@@ -408,6 +493,135 @@ function setAssignees(next: string[]) {
   })
 }
 
+/** What the label picker shows: the ticket's labels with the person's pending picks applied. */
+const shownLabels = computed(() => labelPicks.shown(ticket.value?.labels ?? []))
+/** The picker's new labels, against those it showed: picked as the assignees are (setAssignees), one operation for what is pending. */
+function setLabels(next: string[]) {
+  const made = labelPicks.pick(shownLabels.value, next)
+  if (!made.size) return
+  let carried: ReadonlyMap<string, number> = new Map()
+  void edit(props.ticketKey, () => {
+    const t = labelPicks.take(ticket.value?.labels ?? [])
+    carried = t.carried
+    return t.edit
+  }).finally(() => {
+    labelPicks.settle(carried)
+    labelPicks.settle(made)
+  })
+}
+
+/** The milestone, by its id ('' for none). */
+function setMilestone(id: string) {
+  void edit(props.ticketKey, () => (id !== ticket.value?.milestoneId ? { set: { milestone: id } } : null))
+}
+
+/** The parent, by its key ('' for none): a cycle, or a chain of more than 8, is refused in the store's words. */
+function setParent(key: string) {
+  void edit(props.ticketKey, () => (key !== (ticket.value?.parent?.key ?? '') ? { set: { parent: key } } : null))
+}
+/** The tickets not to offer as the parent: this one and its children (a child as its parent would be a cycle). */
+const parentExclude = computed(() => [ticket.value?.id ?? '', ...(ticket.value?.children?.tickets ?? []).map((c) => c.id)])
+
+/** A relation added, from this ticket's side, or from the other's for "is blocked by". */
+async function addRelation(choice: RelationChoice, other: TicketSummary): Promise<boolean> {
+  const key = props.ticketKey
+  const r = relationAdd(choice, key, other.key)
+  const reply = await operate(key, () => (locked.value ? false : { on: r.on, what: key, send: (body: OpBody) => api.addRelation(r.on, { ...body, kind: r.kind, to: r.to }) }))
+  return reply !== null
+}
+/** A relation removed, from this ticket's side whichever end it is. */
+async function removeRelation(rel: TicketRelation): Promise<boolean> {
+  const key = props.ticketKey
+  const reply = await operate(key, () => (locked.value ? false : { what: key, send: (body: OpBody) => api.removeRelation(key, rel.id, body) }))
+  return reply !== null
+}
+
+/** A file attached, its progress said as it goes: done, swept before its row was written (offered again), or failed. */
+async function upload(file: File, progress: (sent: number, total: number) => void): Promise<UploadOutcome> {
+  const key = props.ticketKey
+  let refusal = ''
+  const reply = await operate(key, () =>
+    locked.value ? false : { what: file.name, send: (body: OpBody) => api.addAttachment(key, body, file, progress), refused: (rc) => (refusal = rc.refusal ?? '') },
+  )
+  if (reply !== null) return 'done'
+  return refusal === 'expired' ? 'expired' : 'failed'
+}
+async function removeAttachment(a: TicketAttachment): Promise<boolean> {
+  const key = props.ticketKey
+  const reply = await operate(key, () => (locked.value ? false : { what: a.name, send: (body: OpBody) => api.removeAttachment(key, a.id, body) }))
+  return reply !== null
+}
+
+/**
+ * One operation on the ticket that the section which asked says the outcome of in place: '' once the store has it, else why not, in the
+ * refusal's words (the close policy's, a run another ticket holds), else that it was not made. A failure the store did not answer is said
+ * in a toast too (useDispatchOps).
+ */
+async function attempt(make: (key: string) => Act | null | false): Promise<string> {
+  const key = props.ticketKey
+  let words = ''
+  const reply = await operate(key, () => {
+    const act = make(key)
+    if (!act) return act
+    return { ...act, refused: (rc: DispatchReceipt) => (words = refusalWords(rc, rc.error || 'The store refused it.')) }
+  })
+  if (reply !== null) return ''
+  return words || 'It was not made: see the message.'
+}
+
+/**
+ * The owner's acceptance recorded, with the note, for the owner and the criteria the card showed when Accept was clicked (`seen`): the
+ * store records it for the owner and the criteria it holds when it is sent, so one that waited its turn behind another operation while
+ * another person changed either is not sent, and why is said (acceptChangedWords). '' once the store has it, else why not, in words.
+ */
+async function accept(note: string, seen: AcceptSeen): Promise<string> {
+  const n = note.trim()
+  let changed = ''
+  const words = await attempt((key) => {
+    if (locked.value) return false
+    changed = acceptChangedWords(seen, { owner: ticket.value?.owner ?? '', acceptance: ticket.value?.acceptance ?? '' })
+    if (changed) return false
+    return { send: (body: OpBody) => api.accept(key, { ...body, ...(n ? { note: n } : {}) }), done: `${key} accepted` }
+  })
+  return words && (changed || words)
+}
+/** The acceptance on record taken back; no status moves with it. */
+async function unaccept(): Promise<boolean> {
+  return !(await attempt((key) => (locked.value || !ticket.value?.acceptedAt ? false : { send: (body: OpBody) => api.unaccept(key, body), done: `${key}: acceptance taken back` })))
+}
+/** The ticket moved to Done: the store applies the close policy, its refusal said in the policy's words. */
+function closeTicket(): Promise<string> {
+  return attempt((key) => {
+    if (locked.value) return false
+    if (ticket.value?.status === 'done') return null
+    return { send: (body: OpBody) => api.editTicket(key, { ...body, set: { status: 'done' } }), done: `${key} done` }
+  })
+}
+/** A link made outward: a delivery or an external URL, or a run. */
+function addLink(link: NewLink): Promise<string> {
+  return attempt((key) => (locked.value ? false : { send: (body: OpBody) => api.addLink(key, { ...body, ...link }) }))
+}
+function linkRun(run: string): Promise<string> {
+  return addLink({ kind: 'run', ref: run })
+}
+async function removeLink(l: TicketLink): Promise<boolean> {
+  return !(await attempt((key) => (locked.value ? false : { send: (body: OpBody) => api.removeLink(key, l.id, body) })))
+}
+
+/** The ticket deleted: a tombstone, its key kept, every reference to it kept, inactive, until its undelete. */
+function deleteTicket() {
+  deleteOpen.value = false
+  const key = props.ticketKey
+  void operate(key, () => (locked.value ? false : { send: (body: OpBody) => api.deleteTicket(key, body), done: `${key} deleted` }))
+}
+/** The ticket restored whole, every reference to it with it. */
+function undeleteTicket() {
+  const key = props.ticketKey
+  void operate(key, () => ({ deleted: true, send: (body: OpBody) => api.undeleteTicket(key, body), done: `${key} restored` }))
+}
+
+const comments = useTemplateRef<{ insert: (text: string) => void }>('comments')
+
 function moreHistory() {
   historyPages.value++
   void readHistory().catch((e: Error) => (error.value = e.message))
@@ -449,7 +663,16 @@ const MAX_ACCEPTANCE = 16 << 10
       </div>
 
       <div v-else-if="ticket" class="flex flex-col gap-5 px-4 py-5 sm:px-6" :data-ticket="ticket.key" :data-ticket-rev="ticket.rev">
-        <UAlert v-if="deleted" color="neutral" variant="subtle" icon="i-lucide-trash-2" title="This ticket is deleted." description="Its key is kept; nothing of it can be changed." data-ticket-deleted />
+        <UAlert
+          v-if="deleted"
+          color="neutral"
+          variant="subtle"
+          icon="i-lucide-trash-2"
+          title="This ticket is deleted."
+          description="Its key is kept, and so is every reference to it, inactive: its children's parent, its relations, its runs. Undelete brings it back whole."
+          :actions="archived ? [] : [{ label: 'Undelete', icon: 'i-lucide-undo-2', color: 'neutral', variant: 'outline', onClick: undeleteTicket }]"
+          data-ticket-deleted
+        />
         <UAlert v-else-if="archived" color="neutral" variant="subtle" icon="i-lucide-archive" :title="`${project} is archived.`" description="Nothing of its tickets can be changed until it is unarchived." data-ticket-archived />
 
         <!-- The title, edited in place, and the ticket's state in words. -->
@@ -489,13 +712,16 @@ const MAX_ACCEPTANCE = 16 << 10
         <!-- Its text and history, its properties beside them on a wide screen; on a phone one column, the properties first. -->
         <div class="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div class="flex min-w-0 flex-1 flex-col gap-6">
-            <TicketMarkdown :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text, base) => saveText('description', text, base)" :disabled="locked" name="description" />
-            <TicketMarkdown :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" />
+            <TicketMarkdown :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text, base) => saveText('description', text, base)" :disabled="locked" name="description" :attachment-url="files.resolver.value" />
+            <TicketMarkdown :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" :attachment-url="files.resolver.value" />
 
-            <p class="flex items-start gap-2 rounded-md border border-dashed border-default px-4 py-3 text-sm text-muted" data-ticket-later>
-              <UIcon name="i-lucide-construction" class="mt-0.5 size-4 flex-none" />
-              <span>Comments, attachments, the parent and relations, and the close policy with its acceptance come with the next changes to this page.</span>
-            </p>
+            <DispatchClosePolicy :ticket="ticket" :locked="locked" :now="now" :accept="accept" :unaccept="unaccept" :close="closeTicket" />
+            <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" />
+            <DispatchRuns :links="ticket.links ?? []" :locked="locked" :now="now" :add="linkRun" :remove="removeLink" />
+
+            <DispatchRelations :ticket="ticket" :project="project" :locked="locked" :add="addRelation" :remove="removeRelation" />
+            <DispatchAttachments :attachments="ticket.attachments ?? []" :locked="locked" :now="now" :upload="upload" :remove="removeAttachment" :image="files.image" :download="files.download" @insert="(md: string) => comments?.insert(md)" />
+            <DispatchComments ref="comments" :ticket="ticket" :gate="gate" :locked="locked" :reads="reads" :resets="resets" :attachment-url="files.resolver.value" :now="now" />
 
             <DispatchHistory :entries="entries" :now="now" :more="!!historyNext" :loading="historyLoading" @more="moreHistory" />
           </div>
@@ -517,26 +743,30 @@ const MAX_ACCEPTANCE = 16 << 10
               <AssigneePicker :model-value="shownAssignees" :agents="agents" :disabled="locked" data-ticket-assignees @update:model-value="setAssignees" />
             </UFormField>
             <USeparator class="col-span-2" />
-            <div class="flex flex-col gap-1.5 text-sm" data-ticket-labels>
-              <span class="text-xs font-medium text-muted">Labels</span>
-              <span v-if="!ticket.labels.length" class="text-dimmed">None</span>
-              <span v-else class="flex flex-wrap gap-1.5">
-                <span v-for="id in ticket.labels" :key="id" class="flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs ring ring-default">
-                  <span class="size-2 rounded-full" :class="labelDot(labelsById.get(id)?.color ?? 'gray')" />{{ labelsById.get(id)?.name ?? 'a label' }}
-                </span>
-              </span>
-            </div>
-            <div class="flex flex-col gap-1.5 text-sm" data-ticket-milestone>
-              <span class="text-xs font-medium text-muted">Milestone</span>
-              <span :class="ticket.milestoneId && milestonesById.get(ticket.milestoneId) ? 'text-default' : 'text-dimmed'">{{ (ticket.milestoneId && milestonesById.get(ticket.milestoneId)?.name) || 'None' }}</span>
-            </div>
-            <div v-if="ticket.parent" class="col-span-2 flex flex-col gap-1.5 text-sm" data-ticket-parent>
+            <UFormField label="Labels" size="sm" class="col-span-2">
+              <LabelPicker :model-value="shownLabels" :labels="projectRead?.labels ?? []" :disabled="locked" data-ticket-labels @update:model-value="setLabels" />
+            </UFormField>
+            <UFormField label="Milestone" size="sm" class="col-span-2">
+              <MilestonePicker :model-value="ticket.milestoneId" :milestones="projectRead?.milestones ?? []" :disabled="locked" data-ticket-milestone @update:model-value="setMilestone" />
+            </UFormField>
+            <div class="col-span-2 flex flex-col gap-1.5 text-sm" data-ticket-parent :data-parent="ticket.parent?.key ?? ''" :data-parent-deleted="ticket.parent?.deletedAt ? '' : undefined">
               <span class="text-xs font-medium text-muted">Parent</span>
-              <NuxtLink :to="ticketPath(ticket.parent.key)" class="truncate hover:underline">
-                <span class="font-mono text-xs text-muted">{{ ticket.parent.key }}</span> {{ ticket.parent.title }}<template v-if="ticket.parent.deletedAt"> (deleted)</template>
-              </NuxtLink>
+              <div v-if="ticket.parent" class="flex min-w-0 items-center gap-1.5">
+                <NuxtLink :to="ticketPath(ticket.parent.key)" class="min-w-0 truncate hover:underline" :class="ticket.parent.deletedAt ? 'text-muted' : ''" data-parent-link>
+                  <span class="font-mono text-xs text-muted">{{ ticket.parent.key }}</span> <span :class="ticket.parent.deletedAt ? 'line-through' : ''">{{ ticket.parent.title }}</span><template v-if="ticket.parent.deletedAt"> (deleted)</template>
+                </NuxtLink>
+                <span v-if="!ticket.parent.deletedAt" class="flex flex-none items-center gap-1 text-xs text-dimmed" :data-parent-status="ticket.parent.status">
+                  <UIcon :name="statusWord(ticket.parent.status).icon" class="size-3.5" />{{ statusWord(ticket.parent.status).label }}
+                </span>
+                <UButton v-if="!locked" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="ml-auto flex-none" aria-label="No parent" data-parent-clear @click="setParent('')" />
+              </div>
+              <TicketPicker v-if="!locked" :project="project" :exclude="parentExclude" :placeholder="ticket.parent ? 'Another parent…' : 'A parent ticket…'" data-parent-picker @pick="(t: TicketSummary) => setParent(t.key)" />
+              <span v-else-if="!ticket.parent" class="text-dimmed">None</span>
             </div>
-            <p class="col-span-2 text-xs text-dimmed">Labels, the milestone and the parent are set here with the next changes.</p>
+            <template v-if="!locked">
+              <USeparator class="col-span-2" />
+              <UButton label="Delete the ticket" icon="i-lucide-trash-2" color="neutral" variant="ghost" size="sm" class="col-span-2 w-fit" data-ticket-delete @click="deleteOpen = true" />
+            </template>
           </aside>
         </div>
       </div>
@@ -544,4 +774,13 @@ const MAX_ACCEPTANCE = 16 << 10
       <div v-else class="flex flex-1 items-center justify-center p-8 text-sm text-muted">Reading {{ ticketKey }}…</div>
     </template>
   </UDashboardPanel>
+
+  <UModal v-model:open="deleteOpen" :title="`Delete ${ticketKey}?`" description="Its key is kept, and every reference to it stays, inactive: its children keep it as their parent, its relations and its runs stay. Undelete, on its page, brings it back whole." :ui="{ content: 'max-w-md' }">
+    <template #footer>
+      <div class="flex w-full justify-end gap-2">
+        <UButton label="Keep it" color="neutral" variant="ghost" @click="deleteOpen = false" />
+        <UButton label="Delete" icon="i-lucide-trash-2" color="error" data-ticket-delete-confirm @click="deleteTicket" />
+      </div>
+    </template>
+  </UModal>
 </template>

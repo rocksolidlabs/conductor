@@ -1,4 +1,5 @@
 import { DispatchOrder, through, throughOrAbsent, type AbsentOptions } from '~/utils/dispatchOrder'
+import { ApiError, type ApiErrorBody } from './useApi'
 
 // Dispatch's client (docs/plans/dispatch.md, "web/app"; the routes in docs/protocol.md, Dispatch): the types of every reply, as
 // useSessions.ts holds the crews' and the runs', the dispatch event's beside them, and the routes over useApi. Every page's state goes
@@ -388,11 +389,131 @@ export interface TicketReply {
   ticket: DispatchTicket | null
 }
 
+export interface CommentReply {
+  receipt: DispatchReceipt
+  comment: TicketComment | null
+}
+
+export interface AttachmentReply {
+  receipt: DispatchReceipt
+  attachment: TicketAttachment | null
+}
+
+export interface LabelReply {
+  receipt: DispatchReceipt
+  label: DispatchLabel | null
+}
+
+export interface MilestoneReply {
+  receipt: DispatchReceipt
+  milestone: DispatchMilestone | null
+}
+
+/** A project's edit: each field given is set, its key never changing. */
+export interface ProjectEdit {
+  name?: string
+  description?: string
+  cwd?: string
+  tracker?: Tracker
+  trackerUrl?: string
+  closeRequires?: CloseRequirement[]
+}
+
+export interface NewLabel {
+  name: string
+  color: LabelColor
+}
+
+export interface LabelEdit {
+  name?: string
+  color?: LabelColor
+}
+
+export interface NewMilestone {
+  name: string
+  description?: string
+  /** YYYY-MM-DD, or '' for none. */
+  target?: string
+  state?: 'open' | 'closed'
+}
+
+export type MilestoneEdit = Partial<NewMilestone>
+
+/** A relation made from the ticket a route names: it `blocks` the other, or `relates` to it. */
+export interface NewRelation {
+  kind: 'blocks' | 'relates'
+  /** The other ticket's key, of the same project. */
+  to: string
+}
+
+/** What a ticket is linked to outward (PR-11): where it was delivered (a merged pull request's or a release's URL, its merged state never
+ * read), a page of another tracker's, or a managed run that worked on it. */
+export type LinkKind = TicketLink['kind']
+
+/**
+ * A link made from a ticket: a `delivery` or an `external` one by its `url` (its `ref` the URL when none is given), a `run` one by the
+ * run's id as its `ref`, a run the engine holds or has a record of and no other live ticket holds.
+ */
+export interface NewLink {
+  kind: LinkKind
+  ref?: string
+  url?: string
+  note?: string
+}
+
+/** How far a file's upload has gone, in bytes. */
+export type UploadProgress = (sent: number, total: number) => void
+
 const enc = encodeURIComponent
+
+/**
+ * An attachment's upload (POST …/{key}/attachments): a multipart body whose parts are the operation's `opId`, then `expectedRev` and
+ * `byName` when given, and last `file`, in that order (docs/protocol.md), sent by XMLHttpRequest, the one way a browser says how far
+ * a request's body has gone. Its reply and its failures are `request`'s: an ApiError with the server's code, `network` (status 0) when
+ * the server could not be reached, the reply's body beside it (a refusal's receipt).
+ */
+function useUpload() {
+  const { httpBase } = useApiBase()
+  const admin = useWorkbenchToken()
+  return function upload<T>(path: string, body: OpBody, file: File, progress?: UploadProgress): Promise<T> {
+    const form = new FormData()
+    form.append('opId', body.opId)
+    if (body.expectedRev) form.append('expectedRev', String(body.expectedRev))
+    if (body.byName) form.append('byName', body.byName)
+    form.append('file', file, file.name)
+    return new Promise<T>((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', httpBase.value + path)
+      const token = admin.token.value
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      xhr.responseType = 'text'
+      if (progress) xhr.upload.onprogress = (e) => progress(e.loaded, e.lengthComputable ? e.total : file.size)
+      xhr.onerror = () => reject(new ApiError(0, 'network', 'Cannot reach the server'))
+      xhr.onabort = () => reject(new ApiError(0, 'network', 'The upload was stopped'))
+      xhr.onload = () => {
+        let data: unknown
+        try {
+          data = xhr.responseText ? JSON.parse(xhr.responseText) : undefined
+        } catch {
+          data = undefined
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(data as T)
+          return
+        }
+        const err = (data as ApiErrorBody | undefined)?.error
+        if (xhr.status === 401) admin.needsToken.value = true
+        reject(new ApiError(xhr.status, err?.code ?? 'http_error', err?.message ?? `HTTP ${xhr.status}`, err ?? {}, data))
+      }
+      xhr.send(form)
+    })
+  }
+}
 
 /** Dispatch's routes, over useApi: the workbench token in the header, errors as ApiError (a refused operation's `body` carries its receipt). */
 export function useDispatchApi() {
-  const { request } = useApi()
+  const { request, requestBlob } = useApi()
+  const upload = useUpload()
   return {
     /** A page of the projects by key, after `cursor` (a page's `next`). */
     projects: (cursor = '') => request<ProjectsPage>('/api/dispatch/projects' + (cursor ? `?cursor=${enc(cursor)}` : '')),
@@ -411,6 +532,36 @@ export function useDispatchApi() {
     createView: (body: OpBody & NewView) => request<ViewReply>('/api/dispatch/views', { method: 'POST', body }),
     editView: (id: string, body: OpBody & ViewEdit) => request<ViewReply>(`/api/dispatch/views/${enc(id)}/edit`, { method: 'POST', body }),
     deleteView: (id: string, body: OpBody) => request<ViewReply>(`/api/dispatch/views/${enc(id)}/delete`, { method: 'POST', body }),
+    editProject: (key: string, body: OpBody & ProjectEdit) => request<ProjectReply>(`/api/dispatch/projects/${enc(key)}/edit`, { method: 'POST', body }),
+    createLabel: (project: string, body: OpBody & NewLabel) => request<LabelReply>(`/api/dispatch/projects/${enc(project)}/labels`, { method: 'POST', body }),
+    editLabel: (project: string, id: string, body: OpBody & LabelEdit) => request<LabelReply>(`/api/dispatch/projects/${enc(project)}/labels/${enc(id)}/edit`, { method: 'POST', body }),
+    deleteLabel: (project: string, id: string, body: OpBody) => request<LabelReply>(`/api/dispatch/projects/${enc(project)}/labels/${enc(id)}/delete`, { method: 'POST', body }),
+    createMilestone: (project: string, body: OpBody & NewMilestone) => request<MilestoneReply>(`/api/dispatch/projects/${enc(project)}/milestones`, { method: 'POST', body }),
+    editMilestone: (project: string, id: string, body: OpBody & MilestoneEdit) => request<MilestoneReply>(`/api/dispatch/projects/${enc(project)}/milestones/${enc(id)}/edit`, { method: 'POST', body }),
+    deleteMilestone: (project: string, id: string, body: OpBody) => request<MilestoneReply>(`/api/dispatch/projects/${enc(project)}/milestones/${enc(id)}/delete`, { method: 'POST', body }),
+    deleteTicket: (key: string, body: OpBody) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/delete`, { method: 'POST', body }),
+    undeleteTicket: (key: string, body: OpBody) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/undelete`, { method: 'POST', body }),
+    /** A ticket's comments numbered after `after`, at most `limit` (1 to 50), tombstones among them so the numbers have no gap. */
+    comments: (key: string, after: number, limit: number) =>
+      request<{ comments: TicketComment[] }>(`/api/dispatch/tickets/${enc(key)}/comments?after=${after}&limit=${limit}`).then((r) => r.comments ?? []),
+    addComment: (key: string, body: OpBody & { body: string }) => request<CommentReply>(`/api/dispatch/tickets/${enc(key)}/comments`, { method: 'POST', body }),
+    editComment: (key: string, id: string, body: OpBody & { body: string }) => request<CommentReply>(`/api/dispatch/tickets/${enc(key)}/comments/${enc(id)}/edit`, { method: 'POST', body }),
+    deleteComment: (key: string, id: string, body: OpBody) => request<CommentReply>(`/api/dispatch/tickets/${enc(key)}/comments/${enc(id)}/delete`, { method: 'POST', body }),
+    addRelation: (key: string, body: OpBody & NewRelation) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/relations`, { method: 'POST', body }),
+    removeRelation: (key: string, id: string, body: OpBody) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/relations/${enc(id)}/delete`, { method: 'POST', body }),
+    /** A file attached to the ticket, its upload's progress said as it goes. */
+    addAttachment: (key: string, body: OpBody, file: File, progress?: UploadProgress) => upload<AttachmentReply>(`/api/dispatch/tickets/${enc(key)}/attachments`, body, file, progress),
+    removeAttachment: (key: string, id: string, body: OpBody) => request<AttachmentReply>(`/api/dispatch/tickets/${enc(key)}/attachments/${enc(id)}/delete`, { method: 'POST', body }),
+    /** An attachment's content, fetched with the token, as the type the server serves it as (an SVG as application/octet-stream). */
+    attachment: (id: string) => requestBlob(`/api/dispatch/attachments/${enc(id)}`),
+    /** The owner's acceptance recorded, for the owner the ticket has now and against its criteria as they stand, with a note. */
+    accept: (key: string, body: OpBody & { note?: string }) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/accept`, { method: 'POST', body }),
+    /** The acceptance on record cleared. */
+    unaccept: (key: string, body: OpBody) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/unaccept`, { method: 'POST', body }),
+    addLink: (key: string, body: OpBody & NewLink) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/links`, { method: 'POST', body }),
+    removeLink: (key: string, id: string, body: OpBody) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/links/${enc(id)}/delete`, { method: 'POST', body }),
+    /** The ticket a run is linked to, for the run page's chip: the live one, else the latest-linked tombstone with `deletedAt`, else null. */
+    runTicket: (run: string) => request<{ ticket: RelatedTicket | null }>(`/api/dispatch/links?run=${enc(run)}`).then((r) => r.ticket ?? null),
     /** An operation's receipt, read without acting. */
     receipt: (opId: string) => request<{ receipt: DispatchReceipt }>(`/api/dispatch/ops/${enc(opId)}`).then((r) => r.receipt),
   }

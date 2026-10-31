@@ -5,6 +5,8 @@ import { draftMember, memberNameError, memberNameFrom, type DraftMember } from '
 import { runResumable, runSubtitle, shortRunId } from '~/utils/crewWords'
 import { relativeTime } from '~/utils/sessions'
 import { commandBody, sendCommand, taskBadges } from '~/utils/tasks'
+import type { RelatedTicket } from '~/composables/useDispatch'
+import { ticketPath } from '~/utils/dispatch'
 
 /**
  * The run page's header: the run named by its crew and its start, how many
@@ -14,6 +16,8 @@ import { commandBody, sendCommand, taskBadges } from '~/utils/tasks'
  * pause or resume a managed run's dispatch (a command with a receipt), stop
  * every member, and once stopped resume it as a new run. Each action calls
  * the server and hands the run as it is after it to the page (`changed`).
+ * Beside its name, the Dispatch ticket the run is linked to, as a chip that
+ * opens the ticket's page, "(deleted)" on it when the ticket is a tombstone.
  */
 const props = withDefaults(
   defineProps<{
@@ -26,8 +30,10 @@ const props = withDefaults(
     chatOffline?: boolean
     /** A record of a run the server no longer holds (#127): read-only, so no agent added, nothing stopped, no resume until a run can be resumed from its record. */
     record?: boolean
+    /** The Dispatch ticket the run is linked to (GET /api/dispatch/links?run=), null when none. */
+    ticket?: RelatedTicket | null
   }>(),
-  { chatUnread: 0, chatOpen: false, chatOffline: false, record: false },
+  { chatUnread: 0, chatOpen: false, chatOffline: false, record: false, ticket: null },
 )
 const emit = defineEmits<{ changed: [run: RunInfo]; chat: [] }>()
 
@@ -163,6 +169,22 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
         <span v-else class="truncate">Run</span>
         <span v-if="run" class="min-w-0 shrink-[4] truncate text-[13px] font-normal text-muted" :class="!run.label && 'hidden sm:inline'" :title="runSubtitle(run)" data-run-subtitle>{{ runSubtitle(run) }}</span>
         <span class="hidden flex-none font-mono text-[11px] font-normal text-dimmed md:inline" :title="runId">{{ shortRunId(runId) }}</span>
+        <UButton
+          v-if="ticket"
+          :to="ticketPath(ticket.key)"
+          :label="ticket.deletedAt ? `${ticket.key} (deleted)` : ticket.key"
+          icon="i-lucide-ticket"
+          size="xs"
+          color="neutral"
+          :variant="ticket.deletedAt ? 'ghost' : 'soft'"
+          class="flex-none self-center font-mono"
+          :class="ticket.deletedAt && 'text-muted'"
+          :title="`${ticket.key} ${ticket.title}${ticket.deletedAt ? ' (deleted)' : ''}: the ticket this run is linked to`"
+          :aria-label="`The ticket ${ticket.key}${ticket.deletedAt ? ', deleted' : ''}: ${ticket.title}`"
+          data-run-ticket
+          :data-run-ticket-key="ticket.key"
+          :data-run-ticket-deleted="ticket.deletedAt ? '' : undefined"
+        />
       </span>
     </template>
     <template #trailing>

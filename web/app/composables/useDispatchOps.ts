@@ -1,5 +1,5 @@
 import { CommandRefused, mintCommandId, sendCommand } from '~/utils/tasks'
-import { closeRefusalWords } from '~/utils/dispatch'
+import { closeRefusalWords, runLinkedWords } from '~/utils/dispatch'
 import { catchUp, editEach, through, type DispatchOrder } from '~/utils/dispatchOrder'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { ApiError } from './useApi'
@@ -20,8 +20,8 @@ export interface DispatchOpOptions<R> {
   rev?: (reply: R) => number | undefined
   /** A toast's title once it is done; none when the page shows what changed. */
   done?: string
-  /** Called after a refusal, for the page to read what the store holds now (a stale revision: someone else's edit came first). */
-  refused?: () => void
+  /** Called after a refusal with its receipt, for the page to read what the store holds now (a stale revision: someone else's edit came first). */
+  refused?: (receipt: DispatchReceipt) => void
   /** Throw a failure to the caller (a dialog that shows it in place) instead of a toast. */
   raise?: boolean
 }
@@ -48,13 +48,16 @@ export interface EditsOptions {
   stranded?: () => boolean
 }
 
-/** A failed operation in words: a refusal's (the close policy's in its own words), else the error's. */
+/** A refusal's receipt in words: the close policy's and a run held by another ticket in their own, else `fallback` (the server's words). */
+export function refusalWords(r: DispatchReceipt, fallback: string): string {
+  if (r.refusal === 'close_policy') return closeRefusalWords(r.missing ?? [])
+  if (r.refusal === 'run_linked') return runLinkedWords(r.key)
+  return fallback
+}
+
+/** A failed operation in words: a refusal's (refusalWords, the server's words for the rest), else the error's. */
 export function dispatchFailureWords(e: unknown): string {
-  if (e instanceof CommandRefused) {
-    const r = e.receipt as DispatchReceipt
-    if (r.refusal === 'close_policy') return closeRefusalWords(r.missing ?? [])
-    return e.message
-  }
+  if (e instanceof CommandRefused) return refusalWords(e.receipt as DispatchReceipt, e.message)
   return (e as Error).message
 }
 
@@ -84,7 +87,7 @@ export function useDispatchOps(gate: DispatchOrder) {
       if (o.done) toast.add({ title: o.done, description: reply.receipt.repeat ? 'It was done already.' : undefined, icon: 'i-lucide-check', color: 'success' })
       return reply
     } catch (e) {
-      if (e instanceof CommandRefused) o.refused?.()
+      if (e instanceof CommandRefused) o.refused?.(e.receipt as DispatchReceipt)
       if (o.raise) throw e
       toast.add({ title: `${o.what}: not changed`, description: dispatchFailureWords(e), icon: 'i-lucide-triangle-alert', color: e instanceof CommandRefused ? 'warning' : 'error' })
       return null

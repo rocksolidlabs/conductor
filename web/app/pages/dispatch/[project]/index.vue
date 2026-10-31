@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DispatchTicket, DispatchView, Horizon, ProjectRead, TicketEdit, TicketStatus, TicketSummary, ViewKind } from '~/composables/useDispatch'
+import type { DispatchTicket, DispatchView, Horizon, ProjectRead, ProjectReply, TicketEdit, TicketStatus, TicketSummary, ViewKind } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import type { PageGroup } from '~/composables/usePalette'
 import { ApiError } from '~/composables/useApi'
@@ -17,7 +17,8 @@ import { serially } from '~/utils/dispatchOrder'
 // Nothing polls. The keys (Owner decisions, 10): J K move through the list, Enter opens, X selects, C makes a ticket, S P A L M O pick the
 // status, priority, assignees, labels, milestone and owner of the tickets selected or the one focused, each one operation per ticket;
 // a card of the board or the roadmap moves by drag and drop or by ← →. The page's group in the palette offers the views, New ticket and
-// what the selection can be set to.
+// what the selection can be set to. The project's description is shown above its tickets, rendered, and edited in place (one operation on
+// the project's revision); its labels and milestones are managed from the page (DispatchProjectSettings.vue).
 
 const route = useRoute()
 const router = useRouter()
@@ -278,6 +279,56 @@ const milestonesById = computed(() => new Map((projectRead.value?.milestones ?? 
 const narrows = computed(() => filterNarrows(filter.value))
 
 // ---------------------------------------------------------------------------
+// The project itself: its description, shown rendered above its tickets and edited in place, and its settings: its close policy, its
+// labels and its milestones.
+
+const ABOUT_KEY = 'conductor.dispatchAbout'
+/** Whether the description is shown, per browser: shown unless the person folded it. */
+function readAbout(): boolean {
+  try {
+    return localStorage.getItem(ABOUT_KEY) !== 'folded'
+  } catch {
+    return true
+  }
+}
+const aboutOpen = ref(readAbout())
+watch(aboutOpen, (o) => {
+  try {
+    localStorage.setItem(ABOUT_KEY, o ? 'shown' : 'folded')
+  } catch {
+    /* storage refused: the choice lasts the page */
+  }
+})
+const description = computed(() => projectRead.value?.project.description ?? '')
+const settingsOpen = ref(false)
+
+/** A project's description's bound, the store's, in bytes. */
+const MAX_PROJECT_DESCRIPTION = 16 << 10
+
+/**
+ * The description saved, made against `base`, the text its editor opened on: none when the project holds it already, and not sent when
+ * another person's description came while it was written (the editor then shows theirs). One operation on the project's revision shown.
+ */
+async function saveDescription(text: string, base: string): Promise<boolean> {
+  const read = projectRead.value
+  const key = project.value
+  if (!read || archived.value) return false
+  if (read.project.description !== base) return false
+  if (text === read.project.description) return true
+  const reply = await ops.run<ProjectReply>((op) => api.editProject(key, { ...op, description: text }), {
+    thing: `project:${key}`,
+    what: key,
+    expectedRev: read.project.rev,
+    apply: (r) => {
+      if (r.project && key === project.value && projectRead.value) projectRead.value = { ...projectRead.value, project: r.project }
+    },
+    rev: (r) => r.project?.rev,
+    refused: () => void reload().catch(() => {}),
+  })
+  return !!reply
+}
+
+// ---------------------------------------------------------------------------
 // Edits from the list, the board, the roadmap and the pickers: one operation per ticket, one after another.
 
 const ops = useDispatchOps(gate)
@@ -388,8 +439,10 @@ const list = useTemplateRef<{ step: (delta: 1 | -1) => void; leave: () => void; 
 const lastChord = useState<number>('lastChordAt', () => 0)
 /** A dialog, a menu (a chip's) or a list of choices (a filter's) is open: its keys are its own. A tooltip shown is none of them. */
 function overlaid(): boolean {
-  return !!document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')
+  return !!document.querySelector(OVERLAY_SELECTOR)
 }
+/** The same, read as each key goes down: while it holds, the page has no keys, so a menu's Escape reaches the menu whole (useOverlaid). */
+const overlayOpen = useOverlaid()
 function paused(): boolean {
   return Date.now() - lastChord.value <= 150 || pickerOpen.value || newOpen.value || overlaid()
 }
@@ -415,7 +468,7 @@ function pick(field: PickField) {
   }
   openPicker(field, keys)
 }
-defineShortcuts({
+const pageKeys = {
   j: () => !paused() && list.value?.step(1),
   k: () => !paused() && list.value?.step(-1),
   x: () => {
@@ -433,7 +486,8 @@ defineShortcuts({
     if (selected.value.size) clearSelection()
     else list.value?.leave()
   },
-})
+}
+defineShortcuts(computed(() => (overlayOpen.value ? {} : pageKeys)))
 
 // Back from a ticket by Escape (its page sets this): the focus returns to its row or card once the view shows the list read for the
 // filter, as many pages as were shown (startPages), a card's folded column (the roadmap's Not planned) unfolded first; a ticket the
@@ -510,6 +564,7 @@ palette.registerPage((): PageGroup => {
           </span>
         </template>
         <template #right>
+          <UButton icon="i-lucide-settings-2" color="neutral" variant="ghost" aria-label="The project's settings: its close policy, labels and milestones" :disabled="!projectRead" data-project-settings-open @click="settingsOpen = true"><span class="hidden md:inline">Settings</span></UButton>
           <UButton icon="i-lucide-plus" aria-label="New ticket" :disabled="!projectRead || archived" data-new-ticket-open @click="newOpen = true"><span class="hidden sm:inline">New ticket</span></UButton>
           <FullscreenButton class="hidden sm:inline-flex" />
         </template>
@@ -530,7 +585,11 @@ palette.registerPage((): PageGroup => {
       <template v-else>
         <div class="flex min-w-0 flex-none flex-col gap-2.5 px-4 pt-3 pb-2 sm:px-6">
           <UAlert v-if="archived" color="neutral" variant="subtle" icon="i-lucide-archive" :title="`${project} is archived.`" description="Its tickets are read as they are; nothing of them can be changed until it is unarchived." />
+          <div v-if="projectRead && aboutOpen" class="max-h-72 overflow-y-auto" data-project-about>
+            <TicketMarkdown :text="description" label="Description" :empty="`Add a description of ${project}…`" :max-bytes="MAX_PROJECT_DESCRIPTION" :save="saveDescription" :disabled="archived" name="project-description" />
+          </div>
           <div class="flex flex-wrap items-center gap-3">
+            <UButton :icon="aboutOpen ? 'i-lucide-chevron-up' : 'i-lucide-info'" size="xs" color="neutral" variant="ghost" :label="aboutOpen ? 'Fold' : 'About'" :aria-expanded="aboutOpen" :aria-label="aboutOpen ? 'Fold the description' : `About ${project}`" data-project-about-toggle @click="aboutOpen = !aboutOpen" />
             <UTabs v-model="view" :items="viewItems" :content="false" size="xs" color="neutral" data-project-view />
             <a
               v-if="projectRead?.project.tracker === 'external' && projectRead.project.trackerUrl"
@@ -583,6 +642,7 @@ palette.registerPage((): PageGroup => {
     </template>
   </UDashboardPanel>
 
+  <DispatchProjectSettings v-if="projectRead" v-model:open="settingsOpen" :project="project" :read="projectRead" :gate="gate" :archived="archived" @changed="() => void reload().catch(() => {})" />
   <DispatchNewTicket v-model:open="newOpen" :project="project" :gate="gate" @created="created" />
   <DispatchPicker v-model:open="pickerOpen" :field="pickerField" :tickets="pickerTickets" :labels="projectRead?.labels ?? []" :milestones="projectRead?.milestones ?? []" :agents="agents" @pick="picked" />
 </template>
