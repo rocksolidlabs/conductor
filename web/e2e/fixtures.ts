@@ -36,6 +36,10 @@ export interface Run {
   /** A managed run (a crew with tasks): its ledger revision, its tasks, whether its dispatch is paused, and its outcome once every task is terminal. */
   managed?: { revision: number }
   paused?: boolean
+  /** Why the run paused itself (a project manifest's step that failed, EN1); absent for a person's pause. */
+  pausedWhy?: string
+  /** The run's trees being ended (their services stopped, their cleanup run), EN1. */
+  cleaning?: number
   outcome?: string
   tasks?: RunTask[]
 }
@@ -50,6 +54,8 @@ export interface RunAttempt {
   state: string
   stage?: string
   error?: string
+  /** The attempt's worktree's preview URL, from its tree.ready until the attempt's close (EN1). */
+  preview?: string
   /** GET /api/runs/{run}/tasks/{task} only: what the attempt submitted. */
   submitted?: { summary?: string; commit?: string; issues?: string[]; verdict?: string; findings?: Array<{ severity: string; path?: string; line?: number; message: string }> }
 }
