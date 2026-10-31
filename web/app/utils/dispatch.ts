@@ -318,6 +318,49 @@ export function samePolicy(a: readonly string[], b: readonly string[]): boolean 
   return x.length === y.length && x.every((r, i) => r === y[i])
 }
 
+/** The owner and the acceptance criteria an Accept was clicked for: what it records the acceptance of. */
+export interface AcceptSeen {
+  owner: string
+  acceptance: string
+}
+
+/**
+ * Why an Accept waiting its turn (behind an upload, an edit) is not sent: another person changed the owner or the criteria after it was
+ * clicked, and the store would record it for the owner and the criteria it holds then, which the person never saw. '' when neither
+ * changed. Accepting again is the person's own choice, made for what is shown now.
+ */
+export function acceptChangedWords(seen: AcceptSeen, now: AcceptSeen): string {
+  const owner = seen.owner !== now.owner
+  const criteria = seen.acceptance !== now.acceptance
+  if (!owner && !criteria) return ''
+  const what = [owner ? (now.owner ? `the owner changed to ${now.owner}` : 'the owner was taken off') : '', criteria ? 'the acceptance criteria changed' : ''].filter(Boolean)
+  const said = andList(what)
+  return `${said.charAt(0).toUpperCase()}${said.slice(1)} before it was recorded, so nothing was accepted: read the ticket as it is now, and accept again if it holds.`
+}
+
+/** A close policy in words, for a sentence: "the owner's acceptance and a delivery link", or "nothing". */
+export function policyWords(requires: readonly string[]): string {
+  const r = closeRequiresOf(requires)
+  return r.length ? andList(r.map(requirementWords)) : 'nothing'
+}
+
+/**
+ * What Save does with a close policy ticked on the project's settings. The draft was ticked from `base`, the policy the project held
+ * then; `project` is the project as the page holds it now. Nothing to send when the draft is the project's policy already. When the
+ * project's policy is no longer the draft's base, another person changed it meanwhile: theirs is said and nothing sent, so it is never
+ * replaced unseen (the next Save, made from theirs, replaces it knowingly). Otherwise the draft is sent on the project's revision, which
+ * another person's edit of the project's other fields may have moved: only the policy is sent, so their edit is kept.
+ */
+export function policySave(
+  draft: readonly string[],
+  base: readonly string[],
+  project: { closeRequires: readonly string[]; rev: number },
+): { send: CloseRequirement[]; expectedRev: number } | { theirs: CloseRequirement[] } | null {
+  if (samePolicy(draft, project.closeRequires)) return null
+  if (!samePolicy(base, project.closeRequires)) return { theirs: closeRequiresOf(project.closeRequires) }
+  return { send: closeRequiresOf(draft), expectedRev: project.rev }
+}
+
 /** A ticket as its close card reads it: its policy's state, its owner, its acceptance on record, its links. */
 export type ClosingTicket = Pick<DispatchTicket, 'close' | 'owner' | 'status' | 'acceptedAt' | 'acceptedBy' | 'acceptedFor' | 'acceptedNote' | 'links'>
 
@@ -391,10 +434,22 @@ export function linkLabel(url: string): string {
   if (u.hostname === 'github.com' && parts.length >= 4) {
     const [owner, repo, kind, ...rest] = parts
     if ((kind === 'pull' || kind === 'issues') && /^\d+$/.test(rest[0] ?? '')) return `${owner}/${repo}#${rest[0]}`
-    if (kind === 'releases' && rest[0] === 'tag' && rest[1]) return `${owner}/${repo} ${decodeURIComponent(rest[1])}`
+    if (kind === 'releases' && rest[0] === 'tag' && rest[1]) return `${owner}/${repo} ${decodedSegment(rest[1])}`
   }
   const path = u.pathname === '/' ? '' : u.pathname.replace(/\/$/, '')
   return `${u.host}${path}`
+}
+
+/**
+ * A path segment decoded for reading, or as the URL has it when its escapes are not UTF-8 (`%E0%A4`, `%FF`): the store accepts such a
+ * URL, and a label that threw would take the ticket's Links section, and the row's Remove, with it.
+ */
+function decodedSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
 }
 
 // ---------------------------------------------------------------------------

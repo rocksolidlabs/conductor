@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DispatchTicket } from '~/composables/useDispatch'
-import { closeCard } from '~/utils/dispatch'
+import { closeCard, type AcceptSeen } from '~/utils/dispatch'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -16,8 +16,8 @@ const props = defineProps<{
   ticket: DispatchTicket
   locked: boolean
   now: number
-  /** The acceptance recorded with the note: true once the store has it. */
-  accept: (note: string) => Promise<boolean>
+  /** The acceptance recorded with the note, for the owner and the criteria shown when Accept was clicked: '' once the store has it, else why not, in words. */
+  accept: (note: string, seen: AcceptSeen) => Promise<string>
   unaccept: () => Promise<boolean>
   /** The ticket moved to Done: '' once the store has it, else why not, in words. */
   close: () => Promise<string>
@@ -33,6 +33,8 @@ const unaccepting = ref(false)
 const closing = ref(false)
 /** Why the last Close was refused, until the ticket changes. */
 const refused = ref('')
+/** Why the last Accept was not recorded, until the next one or another ticket. */
+const acceptRefused = ref('')
 watch(
   () => props.ticket.rev,
   () => (refused.value = ''),
@@ -43,6 +45,7 @@ watch(
     noteOpen.value = false
     note.value = ''
     refused.value = ''
+    acceptRefused.value = ''
   },
 )
 
@@ -52,11 +55,14 @@ const MAX_NOTE = 1000
 async function doAccept() {
   if (accepting.value || card.value.acceptBlocked) return
   accepting.value = true
+  acceptRefused.value = ''
   try {
-    if (await props.accept(note.value)) {
+    // What the person sees as they click: the acceptance is of this owner and these criteria, or of nothing.
+    const words = await props.accept(note.value, { owner: props.ticket.owner, acceptance: props.ticket.acceptance })
+    if (!words) {
       note.value = ''
       noteOpen.value = false
-    }
+    } else acceptRefused.value = words
   } finally {
     accepting.value = false
   }
@@ -124,6 +130,7 @@ const acceptLabel = computed(() => {
     </p>
 
     <UAlert v-if="refused" color="warning" variant="subtle" icon="i-lucide-triangle-alert" title="Not closed" :description="refused" data-close-refused />
+    <UAlert v-if="acceptRefused" color="warning" variant="subtle" icon="i-lucide-triangle-alert" title="Not accepted" :description="acceptRefused" data-accept-refused />
 
     <template v-if="!locked">
       <div v-if="noteOpen" class="flex flex-col gap-1">

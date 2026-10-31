@@ -13,8 +13,7 @@ import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
 import { replyFailure } from '~/utils/reply'
 import type { RelatedTicket } from '~/composables/useDispatch'
-import { ApiError } from '~/composables/useApi'
-import { runLinkWatch } from '~/composables/useDispatchLive'
+import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
 
 // The run page: a tile for every member of one run, its activity and a
 // broadcast bar. Sessions and the run come from the live store (useAttention):
@@ -72,21 +71,12 @@ async function load() {
 // as a re-read is. A server with no Dispatch store (no data directory, a store that could not open, a switchyard) answers no chip.
 const dispatch = useDispatch()
 const runTicket = ref<RelatedTicket | null>(null)
-function noDispatch(e: unknown): boolean {
-  return e instanceof ApiError && (e.status === 503 || (e.status === 403 && e.code === 'switchyard'))
-}
 async function readRunTicket(): Promise<void> {
   if (!admin.hasToken.value) return
   const id = runId.value
-  const thing = `run-ticket:${id}`
-  try {
-    await dispatch.read(thing, () => dispatch.api.runTicket(id), (t) => {
-      if (id === runId.value) runTicket.value = t
-    })
-  } catch (e) {
-    if (!noDispatch(e)) throw e
-    if (id === runId.value) runTicket.value = null
-  }
+  await runTicketRead(dispatch.gate, id, () => dispatch.api.runTicket(id), (t) => {
+    if (id === runId.value) runTicket.value = t
+  })
 }
 const chip = useDispatchLive({ ...runLinkWatch(readRunTicket), reset: () => dispatch.gate.reset() }, () => chip.ask(readRunTicket))
 

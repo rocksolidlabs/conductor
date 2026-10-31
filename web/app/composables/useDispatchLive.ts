@@ -1,5 +1,7 @@
 import { RUN_EVENT_WINDOW_MS } from '../utils/runs'
-import type { DispatchEvent } from './useDispatch'
+import { type DispatchOrder, through } from '../utils/dispatchOrder'
+import { ApiError } from './useApi'
+import type { DispatchEvent, RelatedTicket } from './useDispatch'
 
 /** The longest a re-read that failed waits before it is asked again: the window, doubled after each failure up to this. */
 export const DISPATCH_RETRY_MAX_MS = 8000
@@ -64,6 +66,29 @@ export function projectsWatch(read: () => Promise<unknown>): DispatchWatch {
  */
 export function runLinkWatch(read: () => Promise<unknown>): DispatchWatch {
   return { later: (e) => e.entity === 'ticket', read }
+}
+
+/** Whether a failure says the server has no Dispatch store (503: no data directory, a store that could not open) or is a switchyard (403). */
+export function noDispatchStore(e: unknown): boolean {
+  return e instanceof ApiError && (e.status === 503 || (e.status === 403 && e.code === 'switchyard'))
+}
+
+/**
+ * The run page's chip's read (GET /api/dispatch/links?run=), through the page's ordering gate. A server with no Dispatch store answers
+ * no ticket inside the gated read, ordered as any reply: a slow refusal never clears a chip a later read filled, nor one read after a
+ * reset (a snapshot, a reconnect). Any other failure rejects and applies nothing, and is asked again as a re-read is.
+ */
+export function runTicketRead(gate: DispatchOrder, run: string, send: () => Promise<RelatedTicket | null>, apply: (t: RelatedTicket | null) => void): Promise<boolean> {
+  return through(
+    gate,
+    `run-ticket:${run}`,
+    () =>
+      send().catch((e: unknown) => {
+        if (noDispatchStore(e)) return null
+        throw e
+      }),
+    apply,
+  )
 }
 
 /** A dispatch event's data as the stream sent it, or null for what is not one. */

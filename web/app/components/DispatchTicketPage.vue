@@ -4,7 +4,7 @@ import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { DISPATCH_RETRY_MAX_MS, ticketWatch } from '~/composables/useDispatchLive'
 import { refusalWords } from '~/composables/useDispatchOps'
-import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
+import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, acceptChangedWords, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type AcceptSeen, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
 import { catchUp, serially } from '~/utils/dispatchOrder'
@@ -569,10 +569,21 @@ async function attempt(make: (key: string) => Act | null | false): Promise<strin
   return words || 'It was not made: see the message.'
 }
 
-/** The owner's acceptance recorded, for the owner the ticket has now and against its criteria as they stand, with the note. */
-async function accept(note: string): Promise<boolean> {
+/**
+ * The owner's acceptance recorded, with the note, for the owner and the criteria the card showed when Accept was clicked (`seen`): the
+ * store records it for the owner and the criteria it holds when it is sent, so one that waited its turn behind another operation while
+ * another person changed either is not sent, and why is said (acceptChangedWords). '' once the store has it, else why not, in words.
+ */
+async function accept(note: string, seen: AcceptSeen): Promise<string> {
   const n = note.trim()
-  return !(await attempt((key) => (locked.value ? false : { send: (body: OpBody) => api.accept(key, { ...body, ...(n ? { note: n } : {}) }), done: `${key} accepted` })))
+  let changed = ''
+  const words = await attempt((key) => {
+    if (locked.value) return false
+    changed = acceptChangedWords(seen, { owner: ticket.value?.owner ?? '', acceptance: ticket.value?.acceptance ?? '' })
+    if (changed) return false
+    return { send: (body: OpBody) => api.accept(key, { ...body, ...(n ? { note: n } : {}) }), done: `${key} accepted` }
+  })
+  return words && (changed || words)
 }
 /** The acceptance on record taken back; no status moves with it. */
 async function unaccept(): Promise<boolean> {

@@ -1,14 +1,23 @@
-import type { Page } from '@playwright/test'
+import type { BrowserContext, Page } from '@playwright/test'
 import { expect, test, type Api } from './fixtures'
-import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
+import { freeProjectKey, makeProject, makeTicket, opOf, secondBrowser, storedTicket } from './dispatch-helpers'
 
 // The close policy on a ticket's page (docs/plans/dispatch.md, PR-11): Done refused on the page with the policy's words, by the status
 // and by the card's Close; a board drop on Done snapping back with the same words; Accept, then Done allowed; the owner changed after the
 // acceptance, and the criteria changed after another, Done refused with the card's reason each time, Accept again and allowed; a
 // delivery link required by a second project, added and removed on the page; the card's states for each; and a policy edited on the
-// project's settings, and in the New project dialog. Every test makes a project of its own (CLS, CLS1… when the server holds the earlier
-// ones) and looks at its own tickets by key.
+// project's settings, and in the New project dialog. Review round 1 added: an Accept that waited behind another operation while another
+// person changed the owner, not sent and said; a policy ticked while a second browser saved another, theirs said before a second Save
+// replaces it. Every test makes a project of its own (CLS, CLS1… when the server holds the earlier ones) and looks at its own tickets by
+// key.
 test.describe.configure({ mode: 'serial' })
+
+let other: BrowserContext | null = null
+
+test.afterEach(async () => {
+  await other?.close()
+  other = null
+})
 
 /** A ticket's field set through the API, as another person's edit is: on the revision the store holds. */
 async function setField(api: Api, key: string, n: string, set: Record<string, unknown>): Promise<void> {
@@ -206,4 +215,85 @@ test("the close policy ticked in the New project dialog, and edited on the proje
   await section.locator('[data-close-policy-save]').click()
   await expect(section).toHaveAttribute('data-policy', '')
   await expect.poll(async () => (await api.ok<{ project: { closeRequires: string[] } }>('GET', `/api/dispatch/projects/${key}`)).project.closeRequires).toEqual([])
+})
+
+test('an Accept that waited behind another operation is not sent once another person changed the owner: said, and accepted again for the new one', async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'CLS')
+  await makeProject(api, key)
+  const t = await makeTicket(api, key, '1', { title: 'Accept me', owner: 'Alice', acceptance: 'It works.', status: 'in_review' })
+  // A link's reply held after the store has it: the Accept clicked behind it waits its turn in the page's one queue.
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  await page.route('**/api/dispatch/tickets/*/links', async (route) => {
+    const response = await route.fetch()
+    await held
+    await route.fulfill({ response })
+  })
+  await page.goto(`/dispatch/${key}/1`)
+  const card = page.locator('[data-close-policy]')
+  await expect(card.locator('[data-accept]')).toHaveText('Accept for Alice')
+  const links = page.locator('[data-ticket-links]')
+  await links.locator('[data-link-add-open]').click()
+  await links.locator('[data-link-kind-pick]').getByRole('radio', { name: 'External' }).click()
+  await links.locator('[data-link-url-input]').fill('https://tracker.example.com/T-1')
+  await links.locator('[data-link-submit]').click()
+  await expect.poll(async () => (await api.ok<{ ticket: { links: unknown[] } }>('GET', `/api/dispatch/tickets/${t}`)).ticket.links.length).toBe(1)
+  await card.locator('[data-accept]').click()
+
+  // Another person makes Bob the owner while the Accept waits; the page shows it before the Accept's turn comes.
+  await setField(api, t, '1', { owner: 'Bob' })
+  await expect(page.locator('[data-ticket-owner]')).toContainText('Bob')
+  release()
+  await expect(card.locator('[data-accept-refused]')).toContainText('The owner changed to Bob before it was recorded, so nothing was accepted')
+  await expect(card).toHaveAttribute('data-accepted', 'none')
+  const stored = await api.ok<{ ticket: { acceptedAt?: string; acceptedFor?: string } }>('GET', `/api/dispatch/tickets/${t}`)
+  expect([stored.ticket.acceptedAt ?? '', stored.ticket.acceptedFor ?? '']).toEqual(['', ''])
+  await page.unroute('**/api/dispatch/tickets/*/links')
+
+  // Accepted again, knowingly, for the owner shown now.
+  await expect(card.locator('[data-accept]')).toHaveText('Accept for Bob')
+  await card.locator('[data-accept]').click()
+  await expect(card).toHaveAttribute('data-accepted', 'met')
+  await expect(card.locator('[data-accept-refused]')).toHaveCount(0)
+  await expect(item(page, 'acceptance').locator('[data-close-state]')).toContainText('for Bob')
+})
+
+test("a policy ticked while a second browser saves another is never saved over theirs unseen: theirs said, and a second Save replaces it", async ({ page, api, state, browser }) => {
+  const key = await freeProjectKey(api, 'CLS')
+  // The default policy: the owner's acceptance.
+  await makeProject(api, key)
+  const projectPolicy = async () => (await api.ok<{ project: { closeRequires: string[] } }>('GET', `/api/dispatch/projects/${key}`)).project.closeRequires
+
+  // The first browser ticks a delivery link too, and does not save yet.
+  await page.goto(`/dispatch/${key}`)
+  await page.locator('[data-project-settings-open]').click()
+  const mine = page.locator('[data-project-close-policy]')
+  await expect(mine).toHaveAttribute('data-policy', 'acceptance')
+  await mine.locator('[data-close-requirement="delivery"]').click()
+
+  // The second browser saves a policy of no requirements.
+  other = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const second = await secondBrowser(other, state.token)
+  await second.goto(`/dispatch/${key}`)
+  await second.locator('[data-project-settings-open]').click()
+  const theirs = second.locator('[data-project-close-policy]')
+  await expect(theirs).toHaveAttribute('data-policy', 'acceptance')
+  await theirs.locator('[data-close-requirement="acceptance"]').click()
+  await theirs.locator('[data-close-policy-save]').click()
+  await expect(theirs).toHaveAttribute('data-policy', '')
+
+  // The first page holds theirs now, its own ticks kept; its Save says theirs and sends nothing.
+  await expect(mine).toHaveAttribute('data-policy', '')
+  await expect(mine.locator('[data-close-requirement="acceptance"]')).toHaveAttribute('aria-checked', 'true')
+  await expect(mine.locator('[data-close-requirement="delivery"]')).toHaveAttribute('aria-checked', 'true')
+  await mine.locator('[data-close-policy-save]').click()
+  await expect(mine.locator('[data-policy-theirs]')).toContainText('It was changed to nothing while you ticked')
+  expect(await projectPolicy()).toEqual([])
+
+  // A second Save replaces it, knowingly; the second browser follows.
+  await mine.locator('[data-close-policy-save]').click()
+  await expect(mine).toHaveAttribute('data-policy', 'acceptance delivery')
+  await expect(mine.locator('[data-policy-theirs]')).toHaveCount(0)
+  await expect.poll(projectPolicy).toEqual(['acceptance', 'delivery'])
+  await expect(theirs).toHaveAttribute('data-policy', 'acceptance delivery')
 })

@@ -2,6 +2,7 @@
 import type { TicketLink } from '~/composables/useDispatch'
 import type { RunInfo } from '~/composables/useSessions'
 import { runTitle, shortRunId } from '~/utils/crewWords'
+import { linkedRunRecords } from '~/utils/linkedRuns'
 import { runBadge, runState } from '~/utils/runs'
 import { taskBadges } from '~/utils/tasks'
 
@@ -26,32 +27,8 @@ const router = useRouter()
 
 const runLinks = computed(() => props.links.filter((l) => l.kind === 'run' && !l.deletedAt).sort((a, b) => a.createdAt.localeCompare(b.createdAt)))
 
-/** The records of linked runs the server no longer holds, read once each; null for an id the server knows nothing of. */
-const records = reactive(new Map<string, RunInfo | null>())
-/** The runs asked for, so each is read once. */
-const asked = new Set<string>()
-watch(
-  () => runLinks.value.map((l) => l.ref),
-  (ids) => {
-    for (const id of ids) {
-      if (asked.has(id) || live.runOf(id)) continue
-      asked.add(id)
-      live
-        .refreshRun(id)
-        .then((r) => {
-          // A run the server holds is the live store's now; a record, or nothing, is this section's.
-          if (!r || r.record) records.set(id, r)
-        })
-        .catch(() => asked.delete(id))
-    }
-  },
-  { immediate: true },
-)
-
-/** The run a link names, as the live store holds it, else its record; undefined while it is read, null when the server knows nothing of it. */
-function runOf(id: string): RunInfo | null | undefined {
-  return live.runOf(id) ?? records.get(id)
-}
+/** The records of linked runs the live store does not hold, read again when it stops holding one (linkedRunRecords). */
+const { runOf } = linkedRunRecords(() => runLinks.value.map((l) => l.ref), live)
 
 function badge(r: RunInfo) {
   const s = runState(r, live.sessions.value)

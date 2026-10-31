@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { CloseRequirement, DispatchLabel, DispatchMilestone, LabelColor, LabelReply, MilestoneEdit, MilestoneReply, ProjectRead, ProjectReply } from '~/composables/useDispatch'
 import type { DispatchOrder } from '~/utils/dispatchOrder'
-import { CLOSE_REQUIREMENTS, LABEL_COLOR_CHOICES, closeRequiresOf, labelDot, samePolicy } from '~/utils/dispatch'
+import { CLOSE_REQUIREMENTS, LABEL_COLOR_CHOICES, closeRequiresOf, labelDot, policySave, policyWords, samePolicy } from '~/utils/dispatch'
 
 /**
  * A project's settings, from its page. Its close policy (PR-11): what a ticket needs before it is done, the owner's acceptance and a
@@ -39,22 +39,29 @@ async function done<R>(p: Promise<R | null>): Promise<boolean> {
 // ---------------------------------------------------------------------------
 // The close policy
 
-/** The policy as ticked, until it is saved; it follows the project's while it holds what the project held when it was last ticked from. */
+/**
+ * The policy as ticked, until it is saved, and the project's policy it was ticked from. An untouched draft follows the project's policy;
+ * a draft ticked otherwise keeps its base when another person's policy comes, so Save says theirs instead of replacing it unseen
+ * (`policySave`), as the label's rename does.
+ */
 const policy = ref<CloseRequirement[]>([...props.read.project.closeRequires])
 const policyBase = ref<CloseRequirement[]>([...props.read.project.closeRequires])
+/** Another person's policy, given while this one was ticked: said until the draft is saved or put back. */
+const policyTheirs = ref<CloseRequirement[] | null>(null)
+function policyFromProject() {
+  policy.value = [...props.read.project.closeRequires]
+  policyBase.value = [...props.read.project.closeRequires]
+  policyTheirs.value = null
+}
 watch(
   () => props.read.project.closeRequires,
   (now) => {
-    // Another person's policy, or this one saved: shown, unless something else is ticked here and not saved.
-    if (samePolicy(policy.value, policyBase.value)) policy.value = [...now]
-    policyBase.value = [...now]
+    // Another person's policy, or this one saved: shown, unless something else is ticked here and not saved, which keeps its base.
+    if (samePolicy(policy.value, policyBase.value) || samePolicy(policy.value, now)) policyFromProject()
   },
 )
 watch(open, (o) => {
-  if (o) {
-    policy.value = [...props.read.project.closeRequires]
-    policyBase.value = [...props.read.project.closeRequires]
-  }
+  if (o) policyFromProject()
 })
 const policyChanged = computed(() => !samePolicy(policy.value, props.read.project.closeRequires))
 const policySaving = ref(false)
@@ -63,18 +70,29 @@ function tick(r: CloseRequirement, on: boolean | 'indeterminate') {
 }
 async function savePolicy() {
   if (!policyChanged.value || props.archived || policySaving.value) return
-  const closeRequires = closeRequiresOf(policy.value)
+  const plan = policySave(policy.value, policyBase.value, props.read.project)
+  if (!plan) return
+  if ('theirs' in plan) {
+    // Changed meanwhile by another person: said, and the draft now made from theirs, so the next Save replaces it knowingly.
+    policyTheirs.value = plan.theirs
+    policyBase.value = plan.theirs
+    return
+  }
+  const { send: closeRequires, expectedRev } = plan
   policySaving.value = true
   try {
-    await done(
-      ops.run<ProjectReply>((op) => api.editProject(props.project, { ...op, closeRequires }), {
-        thing: `project:${props.project}`,
-        what: props.project,
-        expectedRev: props.read.project.rev,
-        rev: (r) => r.project?.rev,
-        done: `${props.project}'s close policy saved`,
-      }),
+    if (
+      await done(
+        ops.run<ProjectReply>((op) => api.editProject(props.project, { ...op, closeRequires }), {
+          thing: `project:${props.project}`,
+          what: props.project,
+          expectedRev,
+          rev: (r) => r.project?.rev,
+          done: `${props.project}'s close policy saved`,
+        }),
+      )
     )
+      policyTheirs.value = null
   } finally {
     policySaving.value = false
   }
@@ -232,8 +250,9 @@ const milestoneOver = computed(() => new TextEncoder().encode(milestoneDescripti
           </div>
           <div v-if="!archived" class="flex items-center gap-2">
             <UButton label="Save the policy" icon="i-lucide-check" size="sm" :disabled="!policyChanged" :loading="policySaving" data-close-policy-save @click="savePolicy" />
-            <UButton v-if="policyChanged" label="Put it back" color="neutral" variant="ghost" size="sm" @click="policy = [...read.project.closeRequires]" />
+            <UButton v-if="policyChanged" label="Put it back" color="neutral" variant="ghost" size="sm" data-close-policy-reset @click="policyFromProject" />
           </div>
+          <p v-if="policyTheirs" class="text-xs text-warning" data-policy-theirs>It was changed to {{ policyWords(policyTheirs) }} while you ticked: Save again to replace that with yours, or Put it back to keep it.</p>
         </section>
 
         <!-- The labels. -->

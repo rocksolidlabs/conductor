@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DispatchOrder, through } from '../utils/dispatchOrder'
 import type { DispatchEvent } from './useDispatch'
 import { DISPATCH_RETRY_MAX_MS, DispatchLive, asDispatchEvent, listWatch, projectsWatch, ticketWatch } from './useDispatchLive'
-import { runLinkWatch, viewsWatch } from './useDispatchLive'
+import { noDispatchStore, runLinkWatch, runTicketRead, viewsWatch } from './useDispatchLive'
+import { ApiError } from './useApi'
+import type { RelatedTicket } from './useDispatch'
 
 // The live events' rules (docs/plans/dispatch.md, "The SSE event"), on fake timers: what each page reads again, when, and how often.
 
@@ -510,5 +512,34 @@ describe("the run page's chip (PR-11)", () => {
     slow('CND-12')
     expect(await first).toBe(false)
     expect(shown).toBeNull()
+  })
+
+  it("orders a server's no-Dispatch answer through the gate: a slow 503 never clears a chip a later lookup filled, after a reset too", async () => {
+    const ticket = { key: 'CND-12' } as RelatedTicket
+    const unavailable = () => new ApiError(503, 'dispatch_unavailable', 'Dispatch is not available on this server')
+    for (const reset of [false, true]) {
+      const gate = new DispatchOrder()
+      let shown: RelatedTicket | null | 'unread' = 'unread'
+      let refuse!: (e: unknown) => void
+      const first = runTicketRead(gate, 'r1', () => new Promise<RelatedTicket | null>((_, reject) => (refuse = reject)), (t) => (shown = t))
+      // A reconnect's snapshot resets the gate before the next lookup.
+      if (reset) gate.reset()
+      expect(await runTicketRead(gate, 'r1', () => Promise.resolve(ticket), (t) => (shown = t))).toBe(true)
+      refuse(unavailable())
+      expect(await first).toBe(false)
+      expect(shown).toBe(ticket)
+    }
+    // Alone, it answers no ticket; a switchyard the same; any other failure rejects and applies nothing.
+    const gate = new DispatchOrder()
+    let shown: RelatedTicket | null | 'unread' = 'unread'
+    expect(await runTicketRead(gate, 'r2', () => Promise.reject(unavailable()), (t) => (shown = t))).toBe(true)
+    expect(shown).toBeNull()
+    shown = 'unread'
+    expect(await runTicketRead(gate, 'r3', () => Promise.reject(new ApiError(403, 'switchyard', 'A switchyard')), (t) => (shown = t))).toBe(true)
+    expect(shown).toBeNull()
+    shown = 'unread'
+    await expect(runTicketRead(gate, 'r4', () => Promise.reject(new ApiError(500, 'internal', 'Boom')), (t) => (shown = t))).rejects.toThrow('Boom')
+    expect(shown).toBe('unread')
+    expect(noDispatchStore(new ApiError(403, 'forbidden', 'No'))).toBe(false)
   })
 })

@@ -15,7 +15,10 @@ import {
   closeRefusalWords,
   closeRequiresOf,
   deliveryLinks,
+  acceptChangedWords,
   linkLabel,
+  policySave,
+  policyWords,
   runLinkedWords,
   samePolicy,
   historyEntries,
@@ -287,6 +290,41 @@ describe("the close policy's editor", () => {
     expect(samePolicy(['acceptance'], ['acceptance', 'delivery'])).toBe(false)
     expect(samePolicy([], [])).toBe(true)
   })
+
+  it('says a policy in words for a sentence', () => {
+    expect(policyWords(['delivery', 'acceptance'])).toBe("the owner's acceptance and a delivery link")
+    expect(policyWords(['acceptance'])).toBe("the owner's acceptance")
+    expect(policyWords([])).toBe('nothing')
+  })
+
+  it("never saves a policy over another person's unseen: theirs said first, then sent from it on the project's revision", () => {
+    // Ticked from acceptance, delivery added; nobody else changed it: sent on the revision the page holds.
+    expect(policySave(['acceptance', 'delivery'], ['acceptance'], { closeRequires: ['acceptance'], rev: 4 })).toEqual({ send: ['acceptance', 'delivery'], expectedRev: 4 })
+    // Another person's edit of the project's other fields moved the revision only: sent on the new one, the policy being unchanged.
+    expect(policySave(['acceptance', 'delivery'], ['acceptance'], { closeRequires: ['acceptance'], rev: 6 })).toEqual({ send: ['acceptance', 'delivery'], expectedRev: 6 })
+    // Another person's policy (no requirements) came meanwhile: theirs, nothing sent.
+    expect(policySave(['acceptance', 'delivery'], ['acceptance'], { closeRequires: [], rev: 5 })).toEqual({ theirs: [] })
+    // Once said, the draft is made from theirs: the next Save replaces it, knowingly.
+    expect(policySave(['acceptance', 'delivery'], [], { closeRequires: [], rev: 5 })).toEqual({ send: ['acceptance', 'delivery'], expectedRev: 5 })
+    // The draft is the project's policy already: nothing to send, whoever made it so.
+    expect(policySave(['delivery'], ['acceptance'], { closeRequires: ['delivery'], rev: 7 })).toBeNull()
+  })
+})
+
+describe('an Accept that waited its turn', () => {
+  it('is sent only for the owner and the criteria shown when it was clicked, and says what changed', () => {
+    const seen = { owner: 'Alice', acceptance: 'It works.' }
+    expect(acceptChangedWords(seen, { owner: 'Alice', acceptance: 'It works.' })).toBe('')
+    expect(acceptChangedWords(seen, { owner: 'Bob', acceptance: 'It works.' })).toBe(
+      'The owner changed to Bob before it was recorded, so nothing was accepted: read the ticket as it is now, and accept again if it holds.',
+    )
+    expect(acceptChangedWords(seen, { owner: 'Alice', acceptance: 'It works, fast.' })).toBe(
+      'The acceptance criteria changed before it was recorded, so nothing was accepted: read the ticket as it is now, and accept again if it holds.',
+    )
+    expect(acceptChangedWords(seen, { owner: '', acceptance: 'It works, fast.' })).toBe(
+      'The owner was taken off and the acceptance criteria changed before it was recorded, so nothing was accepted: read the ticket as it is now, and accept again if it holds.',
+    )
+  })
 })
 
 describe("a link's label", () => {
@@ -298,6 +336,10 @@ describe("a link's label", () => {
     expect(linkLabel('https://example.com/')).toBe('example.com')
     expect(linkLabel('http://example.com:8080/a/b/')).toBe('example.com:8080/a/b')
     expect(linkLabel('not a url')).toBe('not a url')
+    // A tag whose escapes are not UTF-8 is a URL the store keeps: the label shows it as written, never throws.
+    expect(linkLabel('https://github.com/o/r/releases/tag/%E0%A4')).toBe('o/r %E0%A4')
+    expect(linkLabel('https://github.com/acme/api/releases/tag/%FF')).toBe('acme/api %FF')
+    expect(linkLabel('https://github.com/acme/api/releases/tag/v1%2B2')).toBe('acme/api v1+2')
   })
 })
 
