@@ -17,6 +17,18 @@ export function nextNeeding(ids: readonly string[], from: string | null, delta: 
 
 /** How long the pill shows after a press, in milliseconds. */
 export const PILL_MS = 4000
+/** The longest delay setTimeout keeps: one longer fires at once. */
+const TIMER_MAX_MS = 2_147_483_647
+
+/**
+ * How long a press shows the pill: PILL_MS, or what the page was given as `conductorPillMs` (a positive number on the window,
+ * set by an e2e spec's init script). Four seconds is the product's bound, not a spec's: a spec that reads the pill and then
+ * presses again holds it for its own time, so a loaded machine cannot let it go in between and start the cursor over (#281).
+ */
+export function pillMs(scope: { conductorPillMs?: unknown } = globalThis as { conductorPillMs?: unknown }): number {
+  const ms = scope.conductorPillMs
+  return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? Math.min(ms, TIMER_MAX_MS) : PILL_MS
+}
 
 /**
  * Answer all (#303): the same question (message and choices) asked by

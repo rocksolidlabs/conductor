@@ -225,6 +225,36 @@ const (
 	MaxLinkVerified = 8 << 10
 )
 
+// The bounds of a launch (launches.go, package.go;
+// docs/plans/dispatch-evidence.md, "Operations" and "The package").
+const (
+	// MaxLaunches bounds a ticket's launches, whatever their state.
+	MaxLaunches = 200
+	// MaxPackage bounds a launch's package as stored, in bytes: every part
+	// at its bound with every text at its escaped worst is under it
+	// (package_test.go measures it). The ledger's runs.package has the
+	// same bound.
+	MaxPackage = 512 << 10
+	// MaxLaunchLabel bounds a launch's label, the run's own name, in
+	// characters: a managed run's label's bound.
+	MaxLaunchLabel = 60
+	// MaxLaunchWhy bounds why a launch failed, in characters.
+	MaxLaunchWhy = 2000
+	// MaxLaunchAgents bounds a launch's agents as stored (JSON), in bytes:
+	// one per member, each its agent and the version its identity probe
+	// reported, twelve at their bounds and escaped worst under it.
+	MaxLaunchAgents = 4 << 10
+	// MaxLaunchAgentVersion bounds the version a launch's agent reported,
+	// in bytes; a longer one is cut.
+	MaxLaunchAgentVersion = 100
+	// MaxPackageBlockers bounds the blocking tickets a package names, the
+	// open ones first; BlockersTotal counts them all.
+	MaxPackageBlockers = 20
+	// MaxAttachmentFile bounds the portable part of the name an
+	// attachment is written under in an attempt (NN-<portable>), in bytes.
+	MaxAttachmentFile = 64
+)
+
 // The bounds of the reads (query.go, and the composite reads of a
 // ticket and of the projects).
 const (
@@ -339,16 +369,19 @@ var RelationKinds = []string{RelationBlocks, RelationRelates}
 // shade, so the store keeps a name and never a value a client chose.
 var LabelColors = []string{"gray", "brown", "red", "orange", "amber", "yellow", "lime", "green", "teal", "cyan", "blue", "indigo"}
 
-// The kinds of a link. DR1 reserves decision; DS2 adds no kind of its
-// own (a revision is a record of its own, a candidate is named by the
-// delivery that delivers it).
+// The kinds of a link. DS2 adds no kind of its own (a revision is a
+// record of its own, a candidate is named by the delivery that delivers
+// it). LinkDecision is reserved for Program item DR1's durable decision
+// records: refused on a local write, kept when a merge brings one.
 const (
 	LinkDelivery = "delivery"
 	LinkRun      = "run"
 	LinkExternal = "external"
+	LinkDecision = "decision"
 )
 
-// LinkKinds is the kinds of a link.
+// LinkKinds is the kinds of a link a local write takes; LinkDecision is
+// not among them.
 var LinkKinds = []string{LinkDelivery, LinkRun, LinkExternal}
 
 // The kinds of a saved view.
@@ -818,6 +851,9 @@ var fieldRules = map[string]textRule{
 	"plan.reference_path":     {max: MaxReferencePath, required: true, kind: kindText},
 	"plan.reference_note":     {max: MaxReferenceNote, chars: true, kind: kindName},
 	"plan.decision_question":  {max: MaxDecisionQuestion, chars: true, required: true, kind: kindName},
+	"launch.label":            {max: MaxLaunchLabel, chars: true, required: true, kind: kindName},
+	"launch.why":              {max: MaxLaunchWhy, chars: true, required: true, kind: kindMarkdown},
+	"launch.agent_version":    {max: MaxLaunchAgentVersion, kind: kindName},
 	"op.by":                   {max: MaxByName, chars: true, kind: kindName},
 	"op.actor":                {max: MaxActor, required: true, kind: kindName},
 }

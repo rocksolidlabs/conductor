@@ -272,8 +272,13 @@ type tx struct {
 	// which a row records anything.
 	searched []searchEntry
 	// runExists is the store's sight of the engine's runs (SetRunExists),
-	// nil when none was given.
+	// nil when none was given; sight is its sight of a run's package and
+	// chain (SetRunTicket, SetRunChain).
 	runExists func(id string) bool
+	sight     runSight
+	// runSuffix mints a run id's last part for a launch (mintRunID), nil
+	// for crypto/rand's: a test's seam.
+	runSuffix func() string
 	// onRefusal, when a change sets it, runs once a refusal has undone the
 	// change, in its transaction before its receipt: what a refusal keeps
 	// beside the receipt (an upload's lease, dropped with it).
@@ -559,7 +564,7 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 	if found {
 		return rc, nil, nil
 	}
-	t := &tx{ctx: ctx, tx: dbtx, now: time.Now().UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists}
+	t := &tx{ctx: ctx, tx: dbtx, now: time.Now().UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix}
 	// The change runs under a savepoint: a refusal undoes it and keeps the
 	// transaction, and with it the write lock, for its receipt, so no other
 	// writer (a second store on the file) runs the same operation between

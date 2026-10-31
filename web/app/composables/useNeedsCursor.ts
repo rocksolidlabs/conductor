@@ -1,5 +1,5 @@
-import { needingInput } from '~/utils/attention'
-import { nextNeeding, PILL_MS } from '~/utils/needsCursor'
+import { needingInput } from '../utils/attention'
+import { nextNeeding, pillMs } from '../utils/needsCursor'
 
 /**
  * `]` and `[` (#303): a cursor through the sessions that need you, in the
@@ -46,7 +46,7 @@ export function useNeedsCursor() {
     const s = attention.sessions.value.find((x) => x.id === ids[i])
     shown.value = { id: ids[i]!, n: i + 1, of: ids.length, question: s?.attention?.id, focus, seq: seq.value }
     window.clearTimeout(timer)
-    timer = window.setTimeout(hide, PILL_MS)
+    timer = window.setTimeout(hide, pillMs())
   }
 
   return { shown, step, hide }

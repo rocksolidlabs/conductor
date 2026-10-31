@@ -127,6 +127,18 @@ add its rule here.
   picture either way, in the product, not in the stub's ordering.
 - A pid of 0 is no process; a file not yet written is not evidence. Wait for
   the pid file, the swap file, the record before judging it.
+- A page not yet drawn passes every "hidden", and a key it does not yet
+  listen for is lost. After a `goto`, wait for something the listener's
+  own component draws (the layout's sidebar root for the layout's keys)
+  before the first key, press it once, and give its effect the expect's
+  bound; a second press on a clock only hides the first one's loss, and a
+  toggle pressed again closes what was only slow to open.
+- A test's timeout bounds a hang, not its steps. A long walk whose every
+  step has its own bound is spent by a loaded box with every step passing,
+  whatever fixed timeout it has: each step raises the test's timeout by
+  its own waits' caps as it takes them (`testInfo.setTimeout`, the
+  `budget` of `palette-rows.spec.ts`), with the config's timeout above
+  their sum, never a multiple of the config's.
 - Count only what the test made. A spec that counts sessions, tiles or list
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and

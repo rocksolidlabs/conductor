@@ -3058,6 +3058,87 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **Project manifests: a fresh attempt worktree made usable, predictably
+  (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
+  `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
+  model (#418), every step a receipt and every failure named and attributed
+  (#422), the host's names, the ports and the state directory (#426), the
+  services, readiness and the preview (#441), verify and cleanup (#498), the
+  crew editor's Project manifest section (#454) and the run page's receipts
+  and preview (#502). A managed crew carries a project
+  manifest (never "workspace" for a tree; not the catalog's agent recipes):
+  the crew's own, counted by the server at each change (`crew:<revision>` on
+  every receipt), or `conductor.manifest.json`, read at each tree's commit
+  (`file:<blob>`); a crew saved with `setup` runs it as the manifest's setup
+  phase, unchanged on disk. Before the first attempt the prerequisites run
+  once in the crew's directory, and a missing tool or host variable pauses
+  the dispatch with the step named, nothing spent; each tree (an attempt's
+  worktree, a result's checkout) gets its ports (`CONDUCTOR_PORT_<NAME>`), its
+  state directory (`.conductor/state`), its setup steps, its services, its
+  readiness probes and its preview before its session or first check rests
+  on it; the checkout runs the verify steps after the task's checks; and
+  however a tree ends, its services are stopped, its cleanup steps run and
+  its ports released. A step that fails in a tree the agent has not touched
+  is not counted and pauses the run with its words; one that fails in a
+  result's checkout is counted as a failing check is. Every step is a ledger
+  row with its command, where it ran, the manifest, its exit, timing, log and
+  SHA-256. On the run page (this PR): each attempt's receipts under it
+  (`RunAttemptSteps.vue`, a held run and a let-go one alike: "exited 0 in
+  4.2 s", "timed out after 60 s", "ready after 3 tries", "running since …",
+  "interrupted", "failed in 3.0 s (exited 0)" for a step that exited 0
+  and changed tracked files, and "failed after 8.3 s" for one a signal
+  ended), each with Log (fetched with the bearer header,
+  shown with its SHA-256, saved from a blob URL as the bytes the server
+  hashed); the run's prerequisites above the tasks, or the run's words when a
+  manifest `env` name stopped them before any ran; the header's `paused`
+  badge titled with the run's own words and the words beside it, and
+  `cleaning up` while trees end; a ready task's words "ready, the dispatch is
+  paused: <why>" when its reason is the pause's; and Open preview on the task's row
+  and in its palette row's → actions while the attempt's `preview` is set,
+  in a new tab (the preview is on the server's loopback, not proxied, and an
+  iframe would be mixed content under TLS). The example crew run by tasks
+  (`example-todo-app-tasks`) gained a manifest with one prerequisite,
+  `python3 --version`, for anyone who loads the examples from now on (a copy
+  loaded before is left as it is). Docs: `docs/architecture.md`'s crew-runs
+  section, `docs/repository-map.md` (`manifest.go`, `steps.go`, `proc.Serve`,
+  the ledger at schema 5).
+
+  Of the item's five acceptance observations (the plan's Acceptance), what
+  the tests observe, on the open-source build with no cloud account: (1) the
+  receipts of every phase with their logs read on the run page, the hash the
+  log route sends checked against its body, the preview answering from the
+  test and opened in a new tab while the attempt runs and gone at its close,
+  the service's process gone and the tree's cleanup receipt in after it
+  (`web/e2e/manifest.spec.ts`), the task file's manifest, ports and preview
+  (`internal/crew` steps and services tests, PR-2 to PR-4); (2) a missing
+  host variable or a name `envPassthrough` does not allow failing the
+  prerequisites with the words that say a restart fixes it
+  (`TestTheEnvNamesArePrerequisites`, `t.Setenv` alone), a setup step that
+  fails in a fresh worktree not counted and pausing the run
+  (`TestASetupStepThatFailsInTheWorktreeIsNotCounted`), a prerequisite that
+  fails pausing the run with the step named and Resume running it again
+  (`manifest.spec.ts`); (3) a task cancelled mid-step and cleaned up after
+  it (`TestACancelMidStepRunsTheCleanupAfterTheStep`, `manifest.spec.ts`), a
+  stop mid-service ending the services and running the cleanup
+  (`TestAStopMidServiceRunsTheCleanup`), a port let go only once its tree's
+  end is committed (`TestAPortIsLetGoOnlyOnceItsTreesEndIsCommitted`); (4) a
+  result that breaks the setup refused at the named step and counted, the
+  next attempt where the refused one started
+  (`TestAResultThatBreaksTheSetupHandsTheNextAttemptWhereItStarted`); (5) a
+  service the last server left running reported at the next start, never
+  signalled (`TestAServiceLeftRunningAcrossARestartIsReportedNotSignalled`,
+  `TestTheNextStartNamesAServiceTheLastServerLeftRunning`). By hand, which no
+  test reaches, the owner's on the WSL box (all five) and the Mac (1 to 3),
+  not run when this entry was written: a real Node project with a committed
+  `conductor.manifest.json` (`npm ci` as setup, two services with ports, its
+  dev server's preview opened in the browser, a cleanup) and a task that
+  edits it, launched from the UI; a variable unset with the server started
+  again with it set and the run continued, and the package registry
+  unreachable with the run unpaused once it is back; a task cancelled
+  mid-setup and a run stopped mid-service from the UI, the ports free and the
+  next launch given fresh ones; a result that breaks the setup; the server
+  killed mid-service and the next start's log read. None of these needs a
+  Windows or WSL networking step. The item is Done once they are seen.
 - **The extension seams: the `ext` and `app` packages, the free defaults
   and the eight interfaces wired in (Program items C1 to C9; #473 to #489,
   started 2026-10-31).** The plan is `docs/plans/ext.md` (PR #453), cut
