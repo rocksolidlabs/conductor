@@ -48,8 +48,12 @@ const policy = ref<CloseRequirement[]>([...props.read.project.closeRequires])
 const policyBase = ref<CloseRequirement[]>([...props.read.project.closeRequires])
 /** Another person's policy, given while this one was ticked: said until the draft is saved or put back. */
 const policyTheirs = ref<CloseRequirement[] | null>(null)
-/** The policy a Save sent, until the project's policy is it or the Save fails: a tick made meanwhile is the draft's, not undone by it. */
-const policySent = ref<CloseRequirement[] | null>(null)
+/**
+ * The policy a Save sent, until the project's policy is it or the Save fails: a tick made meanwhile is the draft's, not undone by it.
+ * A shallowRef, so it holds the very array the Save sent: the failed Save knows it by identity and clears it, which a ref's proxy of it
+ * would never equal, leaving another person's same policy taken later for this Save's.
+ */
+const policySent = shallowRef<CloseRequirement[] | null>(null)
 function policyFromProject() {
   policy.value = [...props.read.project.closeRequires]
   policyBase.value = [...props.read.project.closeRequires]

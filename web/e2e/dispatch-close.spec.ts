@@ -9,7 +9,9 @@ import { freeProjectKey, makeProject, makeTicket, opOf, secondBrowser, storedTic
 // project's settings, and in the New project dialog. Review round 1 added: an Accept that waited behind another operation while another
 // person changed the owner, not sent and said; a policy ticked while a second browser saved another, theirs said before a second Save
 // replaces it. Review round 2 added: a tick made while the policy's Save is on its way kept once the saved policy comes; a link's add
-// still on its way after its form was cancelled leaving a form opened since as it is. Every test makes a project of its own (CLS, CLS1… when the server holds the earlier ones) and looks at its own tickets by
+// still on its way after its form was cancelled leaving a form opened since as it is. Review round 3 added: the project's reads held
+// too while that tick is made, so the saved policy comes after it; a Save that failed, then another person's save of the same policy,
+// theirs said and not taken for this page's own. Every test makes a project of its own (CLS, CLS1… when the server holds the earlier ones) and looks at its own tickets by
 // key.
 test.describe.configure({ mode: 'serial' })
 
@@ -304,25 +306,39 @@ test("a policy ticked while its Save is on its way keeps that tick once the save
   // The default policy: the owner's acceptance.
   await makeProject(api, key)
   const projectPolicy = async () => (await api.ok<{ project: { closeRequires: string[] } }>('GET', `/api/dispatch/projects/${key}`)).project.closeRequires
-  // The first Save's reply held after the store has it.
+  // The first Save's reply held after the store has it, and the page's reads of the project held from that Save on: the project's
+  // event cannot bring the saved policy before the tick below is made.
   let release!: () => void
   const held = new Promise<void>((resolve) => (release = resolve))
+  let releaseReads!: () => void
+  const readsHeld = new Promise<void>((resolve) => (releaseReads = resolve))
+  let holdReads = false
   let edits = 0
   await page.route('**/api/dispatch/projects/*/edit', async (route) => {
     const response = await route.fetch()
     if (++edits === 1) await held
     await route.fulfill({ response })
   })
+  const projectRead = (url: URL) => url.pathname === `/api/dispatch/projects/${key}`
+  await page.route(projectRead, async (route) => {
+    if (holdReads && route.request().method() === 'GET') await readsHeld
+    await route.continue()
+  })
   await page.goto(`/dispatch/${key}`)
   await page.locator('[data-project-settings-open]').click()
   const section = page.locator('[data-project-close-policy]')
   await expect(section).toHaveAttribute('data-policy', 'acceptance')
   await section.locator('[data-close-requirement="delivery"]').click()
+  holdReads = true
   await section.locator('[data-close-policy-save]').click()
   await expect.poll(projectPolicy).toEqual(['acceptance', 'delivery'])
 
-  // Delivery unticked while the Save waits; the project's event brings the saved policy, and the tick made since stays.
+  // Delivery unticked while the Save waits, the page still holding the policy it was ticked from.
   await section.locator('[data-close-requirement="delivery"]').click()
+  await expect(section.locator('[data-close-requirement="delivery"]')).toHaveAttribute('aria-checked', 'false')
+  await expect(section).toHaveAttribute('data-policy', 'acceptance')
+  // Then the project's read brings the saved policy, the Save's answer still held: the tick made since stays.
+  releaseReads()
   await expect(section).toHaveAttribute('data-policy', 'acceptance delivery')
   await expect(section.locator('[data-close-requirement="delivery"]')).toHaveAttribute('aria-checked', 'false')
   release()
@@ -336,6 +352,65 @@ test("a policy ticked while its Save is on its way keeps that tick once the save
   await expect(section).toHaveAttribute('data-policy', 'acceptance')
   await expect.poll(projectPolicy).toEqual(['acceptance'])
   await expect(section.locator('[data-close-policy-save]')).toBeDisabled()
+  await page.unroute('**/api/dispatch/projects/*/edit')
+  await page.unroute(projectRead)
+})
+
+test("a policy whose Save failed is not taken for another person's save of the same policy: theirs said, and a second Save replaces it", async ({ page, api, state, browser }) => {
+  const key = await freeProjectKey(api, 'CLS')
+  // The default policy: the owner's acceptance.
+  await makeProject(api, key)
+  const projectPolicy = async () => (await api.ok<{ project: { closeRequires: string[] } }>('GET', `/api/dispatch/projects/${key}`)).project.closeRequires
+  // The first Save fails, the store never reached.
+  let edits = 0
+  await page.route('**/api/dispatch/projects/*/edit', async (route) => {
+    if (++edits === 1) await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'the store is unavailable' } }) })
+    else await route.continue()
+  })
+
+  // The first browser ticks a delivery link too and saves: the Save fails, the project's policy unchanged.
+  await page.goto(`/dispatch/${key}`)
+  await page.locator('[data-project-settings-open]').click()
+  const mine = page.locator('[data-project-close-policy]')
+  await expect(mine).toHaveAttribute('data-policy', 'acceptance')
+  await mine.locator('[data-close-requirement="delivery"]').click()
+  await mine.locator('[data-close-policy-save]').click()
+  await expect(page.getByText(`${key}: not changed`).first()).toBeVisible()
+  await expect(mine.locator('[data-close-policy-save]')).toBeEnabled()
+  expect(edits).toBe(1)
+  expect(await projectPolicy()).toEqual(['acceptance'])
+
+  // A delivery link only, now: the acceptance unticked, and not saved yet.
+  await mine.locator('[data-close-requirement="acceptance"]').click()
+  await expect(mine.locator('[data-close-requirement="acceptance"]')).toHaveAttribute('aria-checked', 'false')
+  await expect(mine.locator('[data-close-requirement="delivery"]')).toHaveAttribute('aria-checked', 'true')
+
+  // The second browser saves the owner's acceptance and a delivery link: the very policy the failed Save sent.
+  other = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const second = await secondBrowser(other, state.token)
+  await second.goto(`/dispatch/${key}`)
+  await second.locator('[data-project-settings-open]').click()
+  const theirs = second.locator('[data-project-close-policy]')
+  await expect(theirs).toHaveAttribute('data-policy', 'acceptance')
+  await theirs.locator('[data-close-requirement="delivery"]').click()
+  await theirs.locator('[data-close-policy-save]').click()
+  await expect(theirs).toHaveAttribute('data-policy', 'acceptance delivery')
+
+  // The first page holds theirs now, its own ticks kept; its Save says theirs and sends nothing.
+  await expect(mine).toHaveAttribute('data-policy', 'acceptance delivery')
+  await expect(mine.locator('[data-close-requirement="acceptance"]')).toHaveAttribute('aria-checked', 'false')
+  await expect(mine.locator('[data-close-requirement="delivery"]')).toHaveAttribute('aria-checked', 'true')
+  await mine.locator('[data-close-policy-save]').click()
+  await expect(mine.locator('[data-policy-theirs]')).toContainText(/It was changed to .+ while you ticked/)
+  expect(edits).toBe(1)
+  expect(await projectPolicy()).toEqual(['acceptance', 'delivery'])
+
+  // A second Save replaces it, knowingly; the second browser follows.
+  await mine.locator('[data-close-policy-save]').click()
+  await expect(mine).toHaveAttribute('data-policy', 'delivery')
+  await expect(mine.locator('[data-policy-theirs]')).toHaveCount(0)
+  await expect.poll(projectPolicy).toEqual(['delivery'])
+  await expect(theirs).toHaveAttribute('data-policy', 'delivery')
   await page.unroute('**/api/dispatch/projects/*/edit')
 })
 
