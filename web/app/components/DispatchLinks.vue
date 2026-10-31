@@ -34,10 +34,18 @@ const kind = ref<Exclude<LinkKind, 'run'>>('delivery')
 const url = ref('')
 const note = ref('')
 const error = ref('')
-const sending = ref(false)
+/**
+ * Each opening of the form, and each cancel of it, is a new one: an add answers only the opening it was sent from, so one still on its way
+ * after a cancel never closes, or says its refusal in, a form opened since with another link typed in it.
+ */
+const opening = ref(0)
+/** The opening whose add is on its way, null when none is. */
+const sendingFrom = ref<number | null>(null)
+const sending = computed(() => sendingFrom.value === opening.value && adding.value)
 const urlProblem = computed(() => (url.value.trim() && !/^https?:\/\/[^\s/]+/i.test(url.value.trim()) ? 'An http or https URL' : ''))
 
 function openForm(k: Exclude<LinkKind, 'run'> = 'delivery') {
+  opening.value++
   kind.value = k
   url.value = ''
   note.value = ''
@@ -45,17 +53,24 @@ function openForm(k: Exclude<LinkKind, 'run'> = 'delivery') {
   adding.value = true
 }
 
+function cancel() {
+  opening.value++
+  adding.value = false
+}
+
 async function submit() {
   const u = url.value.trim()
   if (!u || urlProblem.value || sending.value) return
-  sending.value = true
+  const from = opening.value
+  sendingFrom.value = from
   error.value = ''
   try {
     const words = await props.add({ kind: kind.value, url: u, ...(note.value.trim() ? { note: note.value.trim() } : {}) })
+    if (from !== opening.value) return
     if (words) error.value = words
     else adding.value = false
   } finally {
-    sending.value = false
+    if (sendingFrom.value === from) sendingFrom.value = null
   }
 }
 
@@ -104,7 +119,7 @@ const MAX_NOTE = 1000
       </UFormField>
       <UInput v-model="note" :maxlength="MAX_NOTE" placeholder="A note (optional)…" size="sm" class="w-full" aria-label="The link's note" data-link-note-input />
       <div class="flex justify-end gap-2">
-        <UButton label="Cancel" color="neutral" variant="ghost" size="sm" @click="adding = false" />
+        <UButton label="Cancel" color="neutral" variant="ghost" size="sm" data-link-cancel @click="cancel" />
         <UButton type="submit" label="Add" icon="i-lucide-plus" size="sm" :loading="sending" :disabled="!url.trim() || !!urlProblem" data-link-submit />
       </div>
     </form>

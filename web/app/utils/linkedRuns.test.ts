@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { effectScope, nextTick, reactive, ref } from 'vue'
 import type { RunInfo } from '~/composables/useSessions'
-import { linkedRunRecords } from './linkedRuns'
+import { RETRY_CAP_MS, RETRY_FIRST_MS, linkedRunRecords } from './linkedRuns'
+import { RunStore } from './runs'
 
 // The records of a ticket's linked runs (DispatchRuns.vue): read for a run the live store does not hold, and read again when the store
 // drops one while the page is open (review round 1 on PR-11: the section stayed at "Reading…" with its task rows gone).
@@ -104,5 +105,92 @@ describe("a ticket's linked runs", () => {
     await settle()
     expect(r.runOf('crew-cccc0002')).toBeUndefined()
     scope.stop()
+  })
+
+  // Review round 2 on PR-11: a read that settles with its run still unresolved (a failure, or a live answer the store dropped as older than
+  // a removal made while it was on its way) changes nothing the watch sees, so it is made again after a capped backoff.
+  describe('a read that leaves its run unresolved', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('is made again after a failure, the wait doubling up to its cap, and stops once answered', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const s = store()
+      const scope = effectScope()
+      const r = scope.run(() => linkedRunRecords(() => ['crew-dddd0001'], s.live))!
+      await settle()
+      let waited = 0
+      for (let n = 1; n <= 7; n++) {
+        expect(s.reads).toHaveLength(n)
+        s.reads[n - 1]!.fail()
+        await settle()
+        expect(r.runOf('crew-dddd0001')).toBeUndefined()
+        const wait = Math.min(RETRY_CAP_MS, RETRY_FIRST_MS * 2 ** (n - 1))
+        waited += wait
+        await vi.advanceTimersByTimeAsync(wait - 1)
+        expect(s.reads).toHaveLength(n)
+        await vi.advanceTimersByTimeAsync(1)
+      }
+      expect(waited).toBe(1000 + 2000 + 4000 + 8000 + 16000 + 30000 + 30000)
+      expect(s.reads).toHaveLength(8)
+      s.reads[7]!.answer(run('crew-dddd0001', true))
+      await settle()
+      expect(r.runOf('crew-dddd0001')?.record).toBe(true)
+      await vi.advanceTimersByTimeAsync(RETRY_CAP_MS * 2)
+      expect(s.reads).toHaveLength(8)
+      scope.stop()
+    })
+
+    it('is made again when the real store drops its live answer as older than a removal made while it was on its way', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const answers: Array<(r: RunInfo | null) => void> = []
+      const version = ref(0)
+      const rs = new RunStore(
+        { get: () => new Promise<RunInfo | null>((resolve) => answers.push(resolve)), list: async () => [] },
+        () => version.value++,
+      )
+      const live = { runOf: (id: string) => (version.value, rs.runs.get(id)), refreshRun: (id: string) => rs.read(id) }
+      const scope = effectScope()
+      const r = scope.run(() => linkedRunRecords(() => ['crew-eeee0001'], live))!
+      await settle()
+      expect(answers).toHaveLength(1)
+      // A snapshot that does not hold it lands while the read is on its way; the read's live answer is then the older and is dropped.
+      rs.remove('crew-eeee0001')
+      answers[0]!(run('crew-eeee0001'))
+      await settle()
+      expect(rs.runs.has('crew-eeee0001')).toBe(false)
+      expect(r.runOf('crew-eeee0001')).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(RETRY_FIRST_MS)
+      expect(answers).toHaveLength(2)
+      answers[1]!(run('crew-eeee0001', true))
+      await settle()
+      expect(r.runOf('crew-eeee0001')?.record).toBe(true)
+      scope.stop()
+    })
+
+    it('waits no more once the section is gone, the run is held again or unlinked', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const s = store()
+      const ids = ref(['crew-ffff0001', 'crew-ffff0002', 'crew-ffff0003'])
+      const scope = effectScope()
+      scope.run(() => linkedRunRecords(() => ids.value, s.live))
+      await settle()
+      expect(s.reads).toHaveLength(3)
+      for (const x of s.reads) x.fail()
+      await settle()
+      // One is held by the live store again, one unlinked: neither is read once its wait ends.
+      s.held.set('crew-ffff0001', run('crew-ffff0001'))
+      ids.value = ['crew-ffff0001', 'crew-ffff0003']
+      await settle()
+      await vi.advanceTimersByTimeAsync(RETRY_FIRST_MS)
+      expect(s.reads.map((x) => x.id)).toEqual(['crew-ffff0001', 'crew-ffff0002', 'crew-ffff0003', 'crew-ffff0003'])
+      s.reads[3]!.fail()
+      await settle()
+      scope.stop()
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(RETRY_CAP_MS * 2)
+      expect(s.reads).toHaveLength(4)
+    })
   })
 })

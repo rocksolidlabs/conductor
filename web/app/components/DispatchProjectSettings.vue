@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { CloseRequirement, DispatchLabel, DispatchMilestone, LabelColor, LabelReply, MilestoneEdit, MilestoneReply, ProjectRead, ProjectReply } from '~/composables/useDispatch'
 import type { DispatchOrder } from '~/utils/dispatchOrder'
-import { CLOSE_REQUIREMENTS, LABEL_COLOR_CHOICES, closeRequiresOf, labelDot, policySave, policyWords, samePolicy } from '~/utils/dispatch'
+import { CLOSE_REQUIREMENTS, LABEL_COLOR_CHOICES, closeRequiresOf, labelDot, policyOnChange, policySave, policyWords, samePolicy } from '~/utils/dispatch'
 
 /**
  * A project's settings, from its page. Its close policy (PR-11): what a ticket needs before it is done, the owner's acceptance and a
@@ -48,16 +48,32 @@ const policy = ref<CloseRequirement[]>([...props.read.project.closeRequires])
 const policyBase = ref<CloseRequirement[]>([...props.read.project.closeRequires])
 /** Another person's policy, given while this one was ticked: said until the draft is saved or put back. */
 const policyTheirs = ref<CloseRequirement[] | null>(null)
+/** The policy a Save sent, until the project's policy is it or the Save fails: a tick made meanwhile is the draft's, not undone by it. */
+const policySent = ref<CloseRequirement[] | null>(null)
 function policyFromProject() {
   policy.value = [...props.read.project.closeRequires]
   policyBase.value = [...props.read.project.closeRequires]
   policyTheirs.value = null
+  policySent.value = null
 }
 watch(
   () => props.read.project.closeRequires,
   (now) => {
-    // Another person's policy, or this one saved: shown, unless something else is ticked here and not saved, which keeps its base.
-    if (samePolicy(policy.value, policyBase.value) || samePolicy(policy.value, now)) policyFromProject()
+    // This one saved: the base, the draft kept as ticked since. Another person's: shown, unless something else is ticked here and not
+    // saved, which keeps its base (policyOnChange).
+    switch (policyOnChange(policy.value, policyBase.value, policySent.value, now)) {
+      case 'saved':
+        policySent.value = null
+        policyBase.value = [...now]
+        policyTheirs.value = null
+        break
+      case 'follow':
+        // A save still on its way stays awaited: its policy, when it comes, is the base, and a tick made since it was sent is kept.
+        policy.value = [...now]
+        policyBase.value = [...now]
+        policyTheirs.value = null
+        break
+    }
   },
 )
 watch(open, (o) => {
@@ -80,19 +96,19 @@ async function savePolicy() {
   }
   const { send: closeRequires, expectedRev } = plan
   policySaving.value = true
+  policySent.value = closeRequires
   try {
-    if (
-      await done(
-        ops.run<ProjectReply>((op) => api.editProject(props.project, { ...op, closeRequires }), {
-          thing: `project:${props.project}`,
-          what: props.project,
-          expectedRev,
-          rev: (r) => r.project?.rev,
-          done: `${props.project}'s close policy saved`,
-        }),
-      )
+    const saved = await done(
+      ops.run<ProjectReply>((op) => api.editProject(props.project, { ...op, closeRequires }), {
+        thing: `project:${props.project}`,
+        what: props.project,
+        expectedRev,
+        rev: (r) => r.project?.rev,
+        done: `${props.project}'s close policy saved`,
+      }),
     )
-      policyTheirs.value = null
+    if (saved) policyTheirs.value = null
+    else if (policySent.value === closeRequires) policySent.value = null
   } finally {
     policySaving.value = false
   }

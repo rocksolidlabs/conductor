@@ -8,7 +8,8 @@ import { freeProjectKey, makeProject, makeTicket, opOf, secondBrowser, storedTic
 // delivery link required by a second project, added and removed on the page; the card's states for each; and a policy edited on the
 // project's settings, and in the New project dialog. Review round 1 added: an Accept that waited behind another operation while another
 // person changed the owner, not sent and said; a policy ticked while a second browser saved another, theirs said before a second Save
-// replaces it. Every test makes a project of its own (CLS, CLS1… when the server holds the earlier ones) and looks at its own tickets by
+// replaces it. Review round 2 added: a tick made while the policy's Save is on its way kept once the saved policy comes; a link's add
+// still on its way after its form was cancelled leaving a form opened since as it is. Every test makes a project of its own (CLS, CLS1… when the server holds the earlier ones) and looks at its own tickets by
 // key.
 test.describe.configure({ mode: 'serial' })
 
@@ -296,4 +297,93 @@ test("a policy ticked while a second browser saves another is never saved over t
   await expect(mine.locator('[data-policy-theirs]')).toHaveCount(0)
   await expect.poll(projectPolicy).toEqual(['acceptance', 'delivery'])
   await expect(theirs).toHaveAttribute('data-policy', 'acceptance delivery')
+})
+
+test("a policy ticked while its Save is on its way keeps that tick once the saved policy comes, and a second Save sends it", async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'CLS')
+  // The default policy: the owner's acceptance.
+  await makeProject(api, key)
+  const projectPolicy = async () => (await api.ok<{ project: { closeRequires: string[] } }>('GET', `/api/dispatch/projects/${key}`)).project.closeRequires
+  // The first Save's reply held after the store has it.
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  let edits = 0
+  await page.route('**/api/dispatch/projects/*/edit', async (route) => {
+    const response = await route.fetch()
+    if (++edits === 1) await held
+    await route.fulfill({ response })
+  })
+  await page.goto(`/dispatch/${key}`)
+  await page.locator('[data-project-settings-open]').click()
+  const section = page.locator('[data-project-close-policy]')
+  await expect(section).toHaveAttribute('data-policy', 'acceptance')
+  await section.locator('[data-close-requirement="delivery"]').click()
+  await section.locator('[data-close-policy-save]').click()
+  await expect.poll(projectPolicy).toEqual(['acceptance', 'delivery'])
+
+  // Delivery unticked while the Save waits; the project's event brings the saved policy, and the tick made since stays.
+  await section.locator('[data-close-requirement="delivery"]').click()
+  await expect(section).toHaveAttribute('data-policy', 'acceptance delivery')
+  await expect(section.locator('[data-close-requirement="delivery"]')).toHaveAttribute('aria-checked', 'false')
+  release()
+  await expect(section.locator('[data-close-policy-save]')).toBeEnabled()
+  await expect(section.locator('[data-close-requirement="acceptance"]')).toHaveAttribute('aria-checked', 'true')
+  await expect(section.locator('[data-close-requirement="delivery"]')).toHaveAttribute('aria-checked', 'false')
+  await expect(section.locator('[data-policy-theirs]')).toHaveCount(0)
+
+  // A second Save sends it.
+  await section.locator('[data-close-policy-save]').click()
+  await expect(section).toHaveAttribute('data-policy', 'acceptance')
+  await expect.poll(projectPolicy).toEqual(['acceptance'])
+  await expect(section.locator('[data-close-policy-save]')).toBeDisabled()
+  await page.unroute('**/api/dispatch/projects/*/edit')
+})
+
+test('a link whose add is on its way after its form was cancelled leaves a form opened since as it is', async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'CLS')
+  await makeProject(api, key)
+  const t = await makeTicket(api, key, '1', { title: 'Link me' })
+  // The first add's reply held after the store has it.
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  let adds = 0
+  await page.route('**/api/dispatch/tickets/*/links', async (route) => {
+    const first = route.request().method() === 'POST' && ++adds === 1
+    const response = await route.fetch()
+    if (first) await held
+    await route.fulfill({ response })
+  })
+  await page.goto(`/dispatch/${key}/1`)
+  const links = page.locator('[data-ticket-links]')
+  await links.locator('[data-link-add-open]').click()
+  await links.locator('[data-link-kind-pick]').getByRole('radio', { name: 'External' }).click()
+  await links.locator('[data-link-url-input]').fill('https://tracker.example.com/T-1')
+  await links.locator('[data-link-submit]').click()
+  await expect.poll(async () => (await api.ok<{ ticket: { links: unknown[] } }>('GET', `/api/dispatch/tickets/${t}`)).ticket.links.length).toBe(1)
+
+  // Cancelled while it waits, opened again and the same URL typed in it with a note: sent, it waits its turn behind the first in the
+  // page's one queue, so its answer, the store's refusal, is said only after the first's answer came.
+  await links.locator('[data-link-cancel]').click()
+  await links.locator('[data-link-add-open]').click()
+  await links.locator('[data-link-kind-pick]').getByRole('radio', { name: 'External' }).click()
+  await links.locator('[data-link-url-input]').fill('https://tracker.example.com/T-1')
+  await links.locator('[data-link-note-input]').fill('The second')
+  await links.locator('[data-link-submit]').click()
+  // The page's queue holds it: nothing more is sent before the first's answer.
+  expect(adds).toBe(1)
+  release()
+  // The first add's answer left the form opened since as it is: the second's refusal is said in it, with what was typed kept.
+  await expect(links.locator('[data-link-error]')).toBeVisible()
+  expect(adds).toBe(2)
+  await expect(links.locator('[data-link-form]')).toBeVisible()
+  await expect(links.locator('[data-link-url-input]')).toHaveValue('https://tracker.example.com/T-1')
+  await expect(links.locator('[data-link-note-input]')).toHaveValue('The second')
+  await expect(links.locator('[data-link-url]')).toHaveText(['tracker.example.com/T-1'])
+
+  // Another URL: its own add closes the form.
+  await links.locator('[data-link-url-input]').fill('https://tracker.example.com/T-2')
+  await links.locator('[data-link-submit]').click()
+  await expect(links.locator('[data-link-form]')).toHaveCount(0)
+  await expect(links.locator('[data-link-url]')).toHaveText(['tracker.example.com/T-1', 'tracker.example.com/T-2'])
+  await page.unroute('**/api/dispatch/tickets/*/links')
 })

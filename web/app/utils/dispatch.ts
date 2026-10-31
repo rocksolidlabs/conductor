@@ -345,6 +345,23 @@ export function policyWords(requires: readonly string[]): string {
 }
 
 /**
+ * What a close policy's draft on the project's settings does when the project's policy changes under it. 'saved': the policy this page
+ * sent (`sent`, null when no save of it is on its way) is the project's now, so it becomes the draft's base, and the draft is kept as it
+ * is ticked, a tick made while the save was on its way included. 'follow': the draft was left untouched (it is its base) or is the new
+ * policy already, so it follows the project's. 'keep': something else is ticked and not saved, so it keeps its base and Save says theirs.
+ */
+export function policyOnChange(
+  draft: readonly string[],
+  base: readonly string[],
+  sent: readonly string[] | null,
+  now: readonly string[],
+): 'saved' | 'follow' | 'keep' {
+  if (sent && samePolicy(now, sent)) return 'saved'
+  if (samePolicy(draft, base) || samePolicy(draft, now)) return 'follow'
+  return 'keep'
+}
+
+/**
  * What Save does with a close policy ticked on the project's settings. The draft was ticked from `base`, the policy the project held
  * then; `project` is the project as the page holds it now. Nothing to send when the draft is the project's policy already. When the
  * project's policy is no longer the draft's base, another person changed it meanwhile: theirs is said and nothing sent, so it is never

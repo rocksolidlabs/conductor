@@ -17,6 +17,7 @@ import {
   deliveryLinks,
   acceptChangedWords,
   linkLabel,
+  policyOnChange,
   policySave,
   policyWords,
   runLinkedWords,
@@ -308,6 +309,22 @@ describe("the close policy's editor", () => {
     expect(policySave(['acceptance', 'delivery'], [], { closeRequires: [], rev: 5 })).toEqual({ send: ['acceptance', 'delivery'], expectedRev: 5 })
     // The draft is the project's policy already: nothing to send, whoever made it so.
     expect(policySave(['delivery'], ['acceptance'], { closeRequires: ['delivery'], rev: 7 })).toBeNull()
+  })
+
+  it('keeps a tick made while its Save was on its way once the saved policy comes (review round 2 on PR-11)', () => {
+    // Ticked from acceptance, delivery added and sent; delivery unticked while the save is on its way: the saved policy is the base now,
+    // and the draft is kept as ticked, so Save is offered for it again.
+    expect(policyOnChange(['acceptance'], ['acceptance'], ['acceptance', 'delivery'], ['acceptance', 'delivery'])).toBe('saved')
+    // The same draft, a read of the project's other fields coming first: the draft follows the policy it already is, the save still awaited.
+    expect(policyOnChange(['acceptance'], ['acceptance'], ['acceptance', 'delivery'], ['acceptance'])).toBe('follow')
+    // Nothing ticked since it was sent: saved, the draft the policy.
+    expect(policyOnChange(['acceptance', 'delivery'], ['acceptance'], ['acceptance', 'delivery'], ['acceptance', 'delivery'])).toBe('saved')
+    // Another person's policy while the save is on its way, something else ticked here: kept on its base, so Save says theirs.
+    expect(policyOnChange(['acceptance', 'delivery'], ['acceptance'], ['acceptance', 'delivery'], [])).toBe('keep')
+    // No save on its way: an untouched draft follows another person's policy, a ticked one keeps its base.
+    expect(policyOnChange(['acceptance'], ['acceptance'], null, [])).toBe('follow')
+    expect(policyOnChange(['acceptance', 'delivery'], ['acceptance'], null, [])).toBe('keep')
+    expect(policyOnChange(['delivery'], ['acceptance'], null, ['delivery'])).toBe('follow')
   })
 })
 
