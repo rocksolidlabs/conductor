@@ -215,6 +215,21 @@ type Server struct {
 	bg     sync.WaitGroup
 	bgMu   sync.Mutex
 	bgDone bool
+
+	// exts is the providers the composition root gave New (WithExtensions),
+	// the free defaults where nothing is registered, each behind the guard
+	// (extensions.go). extCtx ends with stopExtensions, and the queues'
+	// drains with it; extMu guards extGuards (the guard's state per
+	// provider and kind) and extQueues (a Starter's queues, held until its
+	// Start has succeeded). extClock is the clock of the guard's
+	// once-a-minute log; nil is time.Now, and a test holds its own.
+	exts      extSlots
+	extCtx    context.Context
+	extStop   context.CancelFunc
+	extMu     sync.Mutex
+	extGuards map[string]*extGuard
+	extQueues map[string][]func()
+	extClock  func() time.Time
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
@@ -226,10 +241,15 @@ type Server struct {
 // as the mask first (maskConfiguredEnv), and a failure to save it stops
 // startup too. web serves the embedded SPA and may be nil.
 // st persists UI-managed state in the data directory and may be nil when
-// there is none.
-func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Handler, st *store.Store) (*Server, error) {
+// there is none. The options are read before anything is written; without
+// WithExtensions the server is the free build (extensions.go).
+func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Handler, st *store.Store, opts ...Option) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
+	}
+	o := options{providers: freeBuild()}
+	for _, opt := range opts {
+		opt(&o)
 	}
 	base := cat.Clone()
 	effective, overlay, err := loadCatalog(st, base)
@@ -291,6 +311,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		started:     time.Now(),
 		relayed:     newRelayMeter(nil),
 	}
+	// Every provider behind the guard before the server's first write of
+	// its own (the ledger's recovery, the records): nothing calls them yet.
+	s.installExtensions(o.providers)
 	s.relayBurstFloor = relayBurstFloor
 	s.hostPingEvery = hostPingEvery
 	s.hostGoneWait = writeTimeout
@@ -494,6 +517,7 @@ func (s *Server) track(f func()) {
 // viewers of a forgotten run's links being closed. Shutdown does the same
 // at its end; tests call it before their directories go.
 func (s *Server) WaitBackground(ctx context.Context) {
+	s.stopExtensions()
 	s.bgMu.Lock()
 	s.bgDone = true
 	s.bgMu.Unlock()
@@ -900,6 +924,9 @@ const recordsGrace = 5 * time.Second
 func (s *Server) Shutdown(ctx context.Context) {
 	s.runs.Draining(ctx)
 	s.webhooks.close(ctx)
+	// The providers' queues end as the webhooks' do: what waits in them is
+	// not delivered, and their goroutines are waited for with the others.
+	s.stopExtensions()
 	var stops sync.WaitGroup
 	for _, run := range s.runs.List() {
 		if run.StoppedAt == nil {

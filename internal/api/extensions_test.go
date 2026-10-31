@@ -1,0 +1,567 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/config"
+)
+
+// newExtServer is a server with no data directory made with opts, ended
+// when the test is (its queues' goroutines waited for), logging to log.
+func newExtServer(t *testing.T, log *slog.Logger, opts ...Option) *Server {
+	t.Helper()
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	cfg := config.Defaults()
+	cfg.WorkbenchToken = adminToken
+	cfg.PublicURL = "http://example.test"
+	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{{ID: "cat", Name: "cat", Command: []string{"/bin/cat"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(cfg, cat, log, nil, nil, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.WaitBackground(ctx)
+	})
+	return srv
+}
+
+// fakeSink is a notification sink that hands every notice it is given to
+// got, after gate (when set) lets it.
+type fakeSink struct {
+	name string
+	gate chan struct{}
+	got  chan ext.Notification
+}
+
+func (f *fakeSink) Name() string     { return f.name }
+func (f *fakeSink) Events() []string { return nil }
+func (f *fakeSink) Notify(ctx context.Context, n ext.Notification) error {
+	if f.gate != nil {
+		select {
+		case <-f.gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if n.Message == "panic" {
+		panic("the sink broke")
+	}
+	f.got <- n
+	return nil
+}
+
+// startingSink is a fakeSink that is an ext.Starter: its queue is held
+// until its Start has succeeded.
+type startingSink struct{ fakeSink }
+
+func (*startingSink) Start(context.Context, ext.Host) error { return nil }
+
+// fakeMedia answers servers, or what answer does.
+type fakeMedia struct {
+	answer func(context.Context) ([]ext.ICEServer, error)
+}
+
+func (fakeMedia) Name() string { return "turn" }
+func (f fakeMedia) ICEServers(ctx context.Context, _ ext.ICERequest) ([]ext.ICEServer, error) {
+	return f.answer(ctx)
+}
+func (fakeMedia) Room(context.Context, ext.RoomRequest) (ext.RoomJoin, bool, error) {
+	return ext.RoomJoin{}, false, nil
+}
+
+// fakeIdentity answers what answer does.
+type fakeIdentity struct {
+	answer func(context.Context, string) (ext.Principal, bool, error)
+}
+
+func (fakeIdentity) Name() string { return "cloud" }
+func (f fakeIdentity) Authenticate(ctx context.Context, token string) (ext.Principal, bool, error) {
+	return f.answer(ctx, token)
+}
+
+// A server made without WithExtensions is the free build: the default in
+// every slot, behind the guard, no list, nothing registered, no queue.
+func TestNewWithoutExtensionsIsTheFreeBuild(t *testing.T) {
+	srv := newExtServer(t, nil)
+	x := srv.exts
+	if g, ok := x.identity.(guardIdentity); !ok || g.p != (local.Identity{}) || g.Name() != local.Name {
+		t.Fatalf("identity: %#v", x.identity)
+	}
+	if g, ok := x.router.(guardRouter); !ok || g.p != (local.Router{}) || g.Name() != local.Name {
+		t.Fatalf("router: %#v", x.router)
+	}
+	if g, ok := x.sync.(guardSync); !ok || g.p != (local.Continuity{}) || g.Name() != local.Name {
+		t.Fatalf("sync: %#v", x.sync)
+	}
+	if g, ok := x.media.(guardMedia); !ok || g.p != (local.Media{}) || g.Name() != local.Name {
+		t.Fatalf("media: %#v", x.media)
+	}
+	if len(x.context) != 0 || len(x.sinks) != 0 || len(x.all) != 0 || len(srv.extQueues) != 0 {
+		t.Fatalf("lists %d %d, registered %d, held queues %d: want none", len(x.context), len(x.sinks), len(x.all), len(srv.extQueues))
+	}
+	// Through the guard, each answers as its default does.
+	ctx := t.Context()
+	if p, ok, err := x.identity.Authenticate(ctx, "any"); ok || err != nil || p.Subject != "" {
+		t.Fatalf("identity answered %+v %v %v", p, ok, err)
+	}
+	if r, err := x.router.Route(ctx, ext.Decision{}); err != nil || len(r.To) != 0 || r.Answer != nil {
+		t.Fatalf("router answered %+v %v", r, err)
+	}
+	if ss, err := x.media.ICEServers(ctx, ext.ICERequest{Purpose: "viewer"}); err != nil || ss != nil {
+		t.Fatalf("media answered %v %v", ss, err)
+	}
+	if _, ok, err := x.media.Room(ctx, ext.RoomRequest{}); ok || err != nil {
+		t.Fatalf("room answered %v %v", ok, err)
+	}
+	if err := x.sync.Saved(ctx, ext.Doc{}); err != nil {
+		t.Fatalf("sync answered %v", err)
+	}
+	if err := x.sync.Restore(ctx, ext.RestoreRequest{}, io.Discard); !errors.Is(err, ext.ErrNothingToRestore) {
+		t.Fatalf("restore answered %v", err)
+	}
+}
+
+// WithExtensions keeps the filled set as it is: the defaults where nothing
+// is registered, the providers where something is, each behind the guard,
+// and a sink that is no Starter drained at once.
+func TestWithExtensionsKeepsDefaults(t *testing.T) {
+	sink := &fakeSink{name: "push", got: make(chan ext.Notification, 1)}
+	media := fakeMedia{answer: func(context.Context) ([]ext.ICEServer, error) {
+		return []ext.ICEServer{{URLs: []string{"stun:stun.example.test:3478"}}}, nil
+	}}
+	held := &startingSink{fakeSink{name: "later", got: make(chan ext.Notification, 1)}}
+	p := local.Fill(ext.Providers{
+		Media:         media,
+		Notifications: []ext.NotificationSink{sink, held},
+		All: []ext.Entry{
+			{Kind: ext.KindNotifications, Name: "push", Value: sink},
+			{Kind: ext.KindNotifications, Name: "later", Value: held},
+			{Kind: ext.KindMedia, Name: "turn", Value: media},
+		},
+	})
+	srv := newExtServer(t, nil, WithExtensions(p))
+	x := srv.exts
+	if g, ok := x.identity.(guardIdentity); !ok || g.p != (local.Identity{}) {
+		t.Fatalf("identity: %#v", x.identity)
+	}
+	if g, ok := x.router.(guardRouter); !ok || g.p != (local.Router{}) {
+		t.Fatalf("router: %#v", x.router)
+	}
+	if g, ok := x.sync.(guardSync); !ok || g.p != (local.Continuity{}) {
+		t.Fatalf("sync: %#v", x.sync)
+	}
+	if g, ok := x.media.(guardMedia); !ok || g.Name() != "turn" {
+		t.Fatalf("media: %#v", x.media)
+	}
+	if len(x.all) != 3 || x.all[0].Name != "push" || x.all[2].Kind != ext.KindMedia {
+		t.Fatalf("registered: %+v", x.all)
+	}
+	ss, _ := x.media.ICEServers(t.Context(), ext.ICERequest{Purpose: "viewer"})
+	if len(ss) != 1 || ss[0].URLs[0] != "stun:stun.example.test:3478" {
+		t.Fatalf("the provider's servers: %+v", ss)
+	}
+	if len(x.sinks) != 2 || x.sinks[0].Name() != "push" || x.sinks[1].Name() != "later" {
+		t.Fatalf("sinks: %+v", x.sinks)
+	}
+	_ = x.sinks[0].Notify(t.Context(), ext.Notification{Message: "hello"})
+	if n := <-sink.got; n.Message != "hello" {
+		t.Fatalf("the sink got %+v", n)
+	}
+	// The Starter's queue waits for its Start (PR-4): it fills and is not
+	// delivered until its drain begins.
+	_ = x.sinks[1].Notify(t.Context(), ext.Notification{Message: "held"})
+	q := x.sinks[1].(*guardSink).queue
+	q.mu.Lock()
+	begun := q.begun
+	q.mu.Unlock()
+	if n, _ := q.stats(); begun || n != 1 {
+		t.Fatalf("the starter's queue is begun %v and holds %d: want held, with 1", begun, n)
+	}
+	srv.beginQueues("later")
+	if n := <-held.got; n.Message != "held" {
+		t.Fatalf("the starter's sink got %+v", n)
+	}
+}
+
+// A call that has not answered by its wait is answered with the fallback,
+// its context ended, without waiting for its goroutine, which finishes on
+// its own; its late answer is not used.
+func TestExtCallWait(t *testing.T) {
+	srv := newExtServer(t, nil)
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	got := extCall(t.Context(), srv, ext.KindMedia, "slow", time.Millisecond, "fallback", nil, func(ctx context.Context) (string, error) {
+		defer close(finished)
+		<-ctx.Done()
+		<-release // the goroutine is still here when extCall returns
+		return "late", nil
+	})
+	if got != "fallback" {
+		t.Fatalf("a late call answered %q", got)
+	}
+	close(release)
+	<-finished
+	// An answer given only once the context ended is late too, however
+	// soon after.
+	got = extCall(t.Context(), srv, ext.KindMedia, "slow", time.Millisecond, "fallback", nil, func(ctx context.Context) (string, error) {
+		<-ctx.Done()
+		return "late", nil
+	})
+	if got != "fallback" {
+		t.Fatalf("an answer after the wait was used: %q", got)
+	}
+	// The caller gone ends the call too, and is not the provider's failure.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got := extCall(ctx, srv, ext.KindMedia, "slow", time.Hour, "fallback", nil, func(ctx context.Context) (string, error) {
+		<-ctx.Done()
+		return "late", nil
+	}); got != "fallback" {
+		t.Fatalf("a call whose caller left answered %q", got)
+	}
+	// Through a guarded provider: an identity provider that hangs is no
+	// principal.
+	g := guardIdentity{s: srv, name: "cloud", p: fakeIdentity{answer: func(ctx context.Context, _ string) (ext.Principal, bool, error) {
+		<-ctx.Done()
+		return ext.Principal{Subject: "u1", Name: "U", Grants: []ext.Grant{ext.GrantAdmin}}, true, nil
+	}}}
+	ctx, cancel = context.WithTimeout(t.Context(), time.Millisecond)
+	defer cancel()
+	if p, ok, err := g.Authenticate(ctx, "tok"); ok || err != nil || p.Subject != "" {
+		t.Fatalf("a hung identity provider answered %+v %v %v", p, ok, err)
+	}
+}
+
+// A call that panics is answered with the fallback; the panic never
+// escapes; the failure is logged at warn once a minute per provider and
+// kind, with how many since; and nothing else is remembered, so the next
+// good call is answered as if none had failed.
+func TestExtCallPanic(t *testing.T) {
+	var logs syncLog
+	srv := newExtServer(t, slog.New(slog.NewTextHandler(&logs, nil)))
+	var now atomic.Pointer[time.Time]
+	start := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	now.Store(&start)
+	srv.extClock = func() time.Time { return *now.Load() }
+	boom := func(context.Context) (int, error) { panic("the provider broke") }
+	for range 3 {
+		if got := extCall(t.Context(), srv, ext.KindContext, "graph", time.Hour, -1, nil, boom); got != -1 {
+			t.Fatalf("a panic answered %d", got)
+		}
+	}
+	if n := strings.Count(logs.String(), "extension call failed"); n != 1 {
+		t.Fatalf("three panics in a minute logged %d times, want 1:\n%s", n, logs.String())
+	}
+	if !strings.Contains(logs.String(), "provider=graph") || !strings.Contains(logs.String(), "failures=1") || !strings.Contains(logs.String(), "the provider broke") {
+		t.Fatalf("the log does not name the provider and the panic:\n%s", logs.String())
+	}
+	// Another kind of the same provider is logged on its own.
+	_ = extCall(t.Context(), srv, ext.KindNotifications, "graph", time.Hour, -1, nil, boom)
+	if n := strings.Count(logs.String(), "extension call failed"); n != 2 {
+		t.Fatalf("another kind's panic logged %d lines in all, want 2", n)
+	}
+	// A minute on, the next failure is logged with the two not logged.
+	later := start.Add(extLogEvery)
+	now.Store(&later)
+	_ = extCall(t.Context(), srv, ext.KindContext, "graph", time.Hour, -1, nil, boom)
+	if !strings.Contains(logs.String(), "failures=3") {
+		t.Fatalf("the minute's log does not count the failures since:\n%s", logs.String())
+	}
+	if got := extCall(t.Context(), srv, ext.KindContext, "graph", time.Hour, -1, nil, func(context.Context) (int, error) { return 7, nil }); got != 7 {
+		t.Fatalf("a good call after the panics answered %d", got)
+	}
+	// An error is a failure too.
+	if got := extCall(t.Context(), srv, ext.KindContext, "graph", time.Hour, -1, nil, func(context.Context) (int, error) { return 7, errors.New("down") }); got != -1 {
+		t.Fatalf("an error answered %d", got)
+	}
+}
+
+// An answer valid refuses is never used: the guarded providers check their
+// records against ext's bounds.
+func TestExtCallInvalid(t *testing.T) {
+	srv := newExtServer(t, nil)
+	refuse := func(v int) error {
+		if v > 10 {
+			return errors.New("past 10")
+		}
+		return nil
+	}
+	if got := extCall(t.Context(), srv, ext.KindMedia, "turn", time.Hour, 0, refuse, func(context.Context) (int, error) { return 11, nil }); got != 0 {
+		t.Fatalf("a refused answer was used: %d", got)
+	}
+	if got := extCall(t.Context(), srv, ext.KindMedia, "turn", time.Hour, 0, refuse, func(context.Context) (int, error) { return 9, nil }); got != 9 {
+		t.Fatalf("a valid answer was not used: %d", got)
+	}
+	// A principal with no grant, or one past its bounds, is no principal.
+	for _, p := range []ext.Principal{
+		{Subject: "u1", Name: "U"},
+		{Subject: "has space", Name: "U", Grants: []ext.Grant{ext.GrantAdmin}},
+		{Subject: "u1", Name: "U", Grants: []ext.Grant{"root"}},
+	} {
+		g := guardIdentity{s: srv, name: "cloud", p: fakeIdentity{answer: func(context.Context, string) (ext.Principal, bool, error) { return p, true, nil }}}
+		if got, ok, _ := g.Authenticate(t.Context(), "tok"); ok {
+			t.Fatalf("an invalid principal %+v was used: %+v", p, got)
+		}
+	}
+	good := ext.Principal{Subject: "u1", Name: "U", Grants: []ext.Grant{ext.GrantAdmin}}
+	g := guardIdentity{s: srv, name: "cloud", p: fakeIdentity{answer: func(context.Context, string) (ext.Principal, bool, error) { return good, true, nil }}}
+	if got, ok, _ := g.Authenticate(t.Context(), "tok"); !ok || got.Subject != "u1" {
+		t.Fatalf("a valid principal was refused: %+v %v", got, ok)
+	}
+	// ICE servers past the bound, or one a browser refuses, are none.
+	stun := ext.ICEServer{URLs: []string{"stun:stun.example.test:3478"}}
+	for _, ss := range [][]ext.ICEServer{
+		make([]ext.ICEServer, ext.MaxICEServers+1),
+		{stun, {URLs: []string{"http://example.test"}}},
+	} {
+		for i := range ss {
+			if ss[i].URLs == nil {
+				ss[i] = stun
+			}
+		}
+		m := guardMedia{s: srv, name: "turn", p: fakeMedia{answer: func(context.Context) ([]ext.ICEServer, error) { return ss, nil }}}
+		if got, _ := m.ICEServers(t.Context(), ext.ICERequest{Purpose: "viewer"}); got != nil {
+			t.Fatalf("invalid servers were used: %+v", got)
+		}
+	}
+	// A route whose answer is no choice the question offers is the empty
+	// route.
+	r := guardRouter{s: srv, name: "switchman", p: routeAnswer{ext.Route{Answer: &ext.Answer{Input: "9", By: good}}}}
+	if got, _ := r.Route(t.Context(), ext.Decision{ID: "q1", Options: []ext.DecisionOption{{Input: "1"}}}); got.Answer != nil {
+		t.Fatalf("a route typing a key the question does not offer was used: %+v", got)
+	}
+	// Context past its bounds is none.
+	c := &guardContext{s: srv, name: "graph", p: contextAnswer(make([]ext.ContextBlock, ext.MaxContextBlocks+1))}
+	if got, _ := c.Context(t.Context(), ext.ContextQuery{}); got != nil {
+		t.Fatalf("too many blocks were used: %d", len(got))
+	}
+}
+
+// routeAnswer is a router that answers its route.
+type routeAnswer struct{ r ext.Route }
+
+func (routeAnswer) Name() string                                             { return "switchman" }
+func (a routeAnswer) Route(context.Context, ext.Decision) (ext.Route, error) { return a.r, nil }
+func (routeAnswer) Resolved(context.Context, ext.Resolution)                 {}
+
+// contextAnswer is a context provider that answers its blocks.
+type contextAnswer []ext.ContextBlock
+
+func (contextAnswer) Name() string                               { return "graph" }
+func (contextAnswer) NoteTouch(context.Context, ext.TouchedFile) {}
+func (a contextAnswer) Context(context.Context, ext.ContextQuery) ([]ext.ContextBlock, error) {
+	return a, nil
+}
+
+// At most extInFlight calls of one provider and kind run at once: past it,
+// the fallback at once, without calling the provider; another kind and
+// another provider are not held; once the calls return, calls go through
+// again.
+func TestExtCallInFlight(t *testing.T) {
+	srv := newExtServer(t, nil)
+	gate := make(chan struct{})
+	in := make(chan struct{}, extInFlight)
+	var wg sync.WaitGroup
+	answers := make(chan int, extInFlight)
+	for range extInFlight {
+		wg.Go(func() {
+			answers <- extCall(t.Context(), srv, ext.KindIdentity, "cloud", time.Hour, -1, nil, func(context.Context) (int, error) {
+				in <- struct{}{}
+				<-gate
+				return 1, nil
+			})
+		})
+	}
+	for range extInFlight {
+		<-in
+	}
+	called := false
+	if got := extCall(t.Context(), srv, ext.KindIdentity, "cloud", time.Hour, -1, nil, func(context.Context) (int, error) {
+		called = true
+		return 1, nil
+	}); got != -1 || called {
+		t.Fatalf("a call past %d in flight answered %d, called %v", extInFlight, got, called)
+	}
+	if got := extCall(t.Context(), srv, ext.KindMedia, "cloud", time.Hour, -1, nil, func(context.Context) (int, error) { return 2, nil }); got != 2 {
+		t.Fatalf("another kind of the provider was held: %d", got)
+	}
+	if got := extCall(t.Context(), srv, ext.KindIdentity, "other", time.Hour, -1, nil, func(context.Context) (int, error) { return 3, nil }); got != 3 {
+		t.Fatalf("another provider was held: %d", got)
+	}
+	close(gate)
+	wg.Wait()
+	close(answers)
+	for a := range answers {
+		if a != 1 {
+			t.Fatalf("a call in flight answered %d", a)
+		}
+	}
+	if got := extCall(t.Context(), srv, ext.KindIdentity, "cloud", time.Hour, -1, nil, func(context.Context) (int, error) { return 4, nil }); got != 4 {
+		t.Fatalf("a call once the others returned answered %d", got)
+	}
+}
+
+// A full queue drops its oldest, never making its producer wait; the first
+// drop and every hundredth are logged.
+func TestExtQueueDropsOldest(t *testing.T) {
+	var logs syncLog
+	srv := newExtServer(t, slog.New(slog.NewTextHandler(&logs, nil)))
+	got := make(chan int, 8)
+	q := newExtQueue(srv, ext.KindNotifications, "push", 4, func(_ context.Context, v int) error {
+		got <- v
+		return nil
+	})
+	// Not begun: nothing drains, and pushing past the ring never waits.
+	for i := 1; i <= 6; i++ {
+		q.push(i)
+	}
+	if n, dropped := q.stats(); n != 4 || dropped != 2 {
+		t.Fatalf("queued %d, dropped %d: want 4 and 2", n, dropped)
+	}
+	if n := strings.Count(logs.String(), "dropped the oldest entry"); n != 1 || !strings.Contains(logs.String(), "dropped=1") {
+		t.Fatalf("two drops logged %d times, want the first only:\n%s", n, logs.String())
+	}
+	for i := 7; i <= 104; i++ {
+		q.push(i)
+	}
+	if n := strings.Count(logs.String(), "dropped the oldest entry"); n != 2 || !strings.Contains(logs.String(), "dropped=100") {
+		t.Fatalf("a hundred drops logged %d times, want the first and the hundredth:\n%s", n, logs.String())
+	}
+	q.begin()
+	for want := 101; want <= 104; want++ {
+		if v := <-got; v != want {
+			t.Fatalf("delivered %d, want %d: the newest four, in order", v, want)
+		}
+	}
+}
+
+// A queue delivers in order, from one goroutine; a delivery that panics or
+// errs costs that delivery alone.
+func TestExtQueueOrder(t *testing.T) {
+	srv := newExtServer(t, nil)
+	var inFlight, most atomic.Int32
+	got := make(chan int, 100)
+	q := newExtQueue(srv, ext.KindContext, "graph", ext.TouchQueue, func(_ context.Context, v int) error {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		if n > most.Load() {
+			most.Store(n)
+		}
+		switch v {
+		case 30:
+			panic("the provider broke")
+		case 60:
+			return errors.New("down")
+		}
+		got <- v
+		return nil
+	})
+	q.begin()
+	for i := range 100 {
+		q.push(i)
+	}
+	for want := range 100 {
+		if want == 30 || want == 60 {
+			continue
+		}
+		if v := <-got; v != want {
+			t.Fatalf("delivered %d, want %d", v, want)
+		}
+	}
+	if m := most.Load(); m != 1 {
+		t.Fatalf("%d deliveries ran at once, want one at a time", m)
+	}
+	// Through a guarded sink, as a seam queues: the notices in order.
+	sink := &fakeSink{name: "push", got: make(chan ext.Notification, 10)}
+	srv2 := newExtServer(t, nil, WithExtensions(local.Fill(ext.Providers{Notifications: []ext.NotificationSink{sink}})))
+	for _, m := range []string{"a", "b", "c"} {
+		if err := srv2.exts.sinks[0].Notify(t.Context(), ext.Notification{Message: m}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []string{"a", "b", "c"} {
+		if n := <-sink.got; n.Message != want {
+			t.Fatalf("the sink got %q, want %q", n.Message, want)
+		}
+	}
+}
+
+// Shutdown ends the queues' goroutines and waits for them: a delivery in
+// flight has its context ended, what is still queued is not delivered, and
+// a push after it never waits.
+func TestExtQueueShutdown(t *testing.T) {
+	srv := newExtServer(t, nil)
+	gate := make(chan struct{})
+	sink := &fakeSink{name: "push", gate: gate, got: make(chan ext.Notification, 4)}
+	ended := make(chan error, 1)
+	started := make(chan struct{})
+	q := newExtQueue(srv, ext.KindNotifications, "push", 4, func(ctx context.Context, n ext.Notification) error {
+		if n.Message == "first" {
+			close(started)
+		}
+		err := sink.Notify(ctx, n)
+		if n.Message == "first" {
+			ended <- err
+		}
+		return err
+	})
+	q.push(ext.Notification{Message: "first"})
+	q.push(ext.Notification{Message: "second"})
+	q.begin()
+	<-started // the first is in flight, held by the gate
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx)
+	if ctx.Err() != nil {
+		t.Fatal("Shutdown waited out its context for the queue's goroutine")
+	}
+	if err := <-ended; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the delivery in flight ended with %v, want its context cancelled", err)
+	}
+	close(gate)
+	q.push(ext.Notification{Message: "after"})
+	if n, _ := q.stats(); n != 2 {
+		t.Fatalf("after shutdown %d wait, want the second and the one pushed after", n)
+	}
+	select {
+	case n := <-sink.got:
+		t.Fatalf("delivered %+v after shutdown", n)
+	default:
+	}
+}
+
+// syncLog collects what a server logs while a test reads it.
+type syncLog struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *syncLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *syncLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
