@@ -838,6 +838,115 @@ func TestProposeSnapshotsTheAgentsPassedThrough(t *testing.T) {
 	p.expect(t, "POST", "/api/dispatch/plans/"+after+"/approve", map[string]any{"opId": opID()}, http.StatusConflict, dispatch.RefusalStalePlan)
 }
 
+// An agent's adapter and its signal are part of its selection, since they
+// decide what the launch's adapter adds to its argv and environment
+// (agents.InjectFor): Claude Code's signal edited from none to hook, yolo
+// off, adds a --settings that would override the command's own, so it is
+// agentsChanged and the approval's stale_plan, as is the adapter edited
+// away; the entry as it was resolves the same again, and a signal left
+// out is the bell's, the same as the bell named.
+func TestProposeSnapshotsTheAgentsAdapterAndSignal(t *testing.T) {
+	p := newPlanTest(t, nil)
+	agent := func(adapter string, signal map[string]any) map[string]any {
+		b := map[string]any{"id": "hooked", "name": "hooked", "command": []string{"/bin/cat", "--settings", "own.json"}, "adapter": adapter}
+		if signal != nil {
+			b["signal"] = signal
+		}
+		return b
+	}
+	none := map[string]any{"kind": "none"}
+	p.save(agent("claude", none))
+	off := false
+	c := teamCrew("Hooked", "hooked")
+	c.Yolo = &off
+	id := p.proposed(t, p.saveCrew(t, c).ID, nil)
+	changed := func(want bool, what string) {
+		t.Helper()
+		if v := p.plansOf(t, "CND-1")[id]; v["agentsChanged"] != want {
+			t.Fatalf("%s: %v", what, v)
+		}
+	}
+	changed(false, "before the edit")
+	for _, tc := range []struct {
+		what string
+		body map[string]any
+	}{
+		{"the signal none to hook", agent("claude", map[string]any{"kind": "hook"})},
+		{"the adapter removed", agent("", none)},
+	} {
+		p.save(tc.body)
+		changed(true, tc.what)
+		out := p.expect(t, "POST", "/api/dispatch/plans/"+id+"/approve", map[string]any{"opId": opID()}, http.StatusConflict, dispatch.RefusalStalePlan)
+		if msg := out["error"].(map[string]any)["message"].(string); msg != "the agent hooked's adapter, signal or yolo recipe changed since revision 1 was made: revise it" {
+			t.Fatalf("%s: the approval's words: %q", tc.what, msg)
+		}
+	}
+	p.save(agent("claude", none))
+	changed(false, "the entry as it was")
+	// A signal left out is the bell, as a launch takes it.
+	p.save(agent("claude", map[string]any{"kind": "bell"}))
+	bell := p.proposed(t, p.saveCrew(t, c).ID, nil)
+	p.save(agent("claude", nil))
+	if v := p.plansOf(t, "CND-1")[bell]; v["agentsChanged"] != false {
+		t.Fatalf("the bell named, then left out: %v", v)
+	}
+	p.expect(t, "POST", "/api/dispatch/plans/"+bell+"/approve", map[string]any{"opId": opID()}, http.StatusOK, "")
+}
+
+// Whether an agent's yolo recipe applies is part of its selection, since
+// it decides what the launch's adapter adds (agents.InjectFor: Claude
+// Code's yolo-only --settings with signal none, which would override the
+// command's own; agents.TrustArgsFor): with yolo on, an empty recipe made
+// one whose env repeats the entry's own value changes no argument and no
+// environment, yet it is agentsChanged and the approval's stale_plan; the
+// recipe emptied again resolves the same, and with yolo off the recipe is
+// no change at all.
+func TestProposeSnapshotsWhetherTheYoloRecipeApplies(t *testing.T) {
+	p := newPlanTest(t, nil)
+	agent := func(yolo map[string]any) map[string]any {
+		b := map[string]any{"id": "yoloed", "name": "yoloed", "command": []string{"/bin/cat", "--settings", "own.json"}, "adapter": "claude",
+			"signal": map[string]any{"kind": "none"}, "env": map[string]string{"PLAN_TEST_SAME": "1"}}
+		if yolo != nil {
+			b["yolo"] = yolo
+		}
+		return b
+	}
+	same := map[string]any{"env": map[string]string{"PLAN_TEST_SAME": "1"}}
+	p.save(agent(nil))
+	on, off := true, false
+	crewOn := teamCrew("Yolo on", "yoloed")
+	crewOn.Yolo = &on
+	crewOff := teamCrew("Yolo off", "yoloed")
+	crewOff.Yolo = &off
+	yes := p.proposed(t, p.saveCrew(t, crewOn).ID, nil)
+	no := p.proposed(t, p.saveCrew(t, crewOff).ID, nil)
+	changed := func(id string, want bool, what string) {
+		t.Helper()
+		if v := p.plansOf(t, "CND-1")[id]; v["agentsChanged"] != want {
+			t.Fatalf("%s: %v", what, v)
+		}
+	}
+	changed(yes, false, "yolo on, before the edit")
+	p.save(agent(same))
+	sel := func(yolo bool) dispatch.PlanAgent {
+		a, _ := p.srv.Catalog().Get("yoloed")
+		return agentSelection(a, yolo)
+	}
+	_, body, _ := p.planBodyOf(t, yes)
+	if now, rec := sel(true), body.Agents[0]; !slices.Equal(now.YoloArgs, rec.YoloArgs) || !slices.Equal(now.EnvNames, rec.EnvNames) || now.EnvSHA256 != rec.EnvSHA256 {
+		t.Fatalf("the recipe changed an argument or the environment: %+v %+v", now, rec)
+	}
+	changed(yes, true, "yolo on, the recipe made one")
+	out := p.expect(t, "POST", "/api/dispatch/plans/"+yes+"/approve", map[string]any{"opId": opID()}, http.StatusConflict, dispatch.RefusalStalePlan)
+	if msg := out["error"].(map[string]any)["message"].(string); msg != "the agent yoloed's adapter, signal or yolo recipe changed since revision 1 was made: revise it" {
+		t.Fatalf("the approval's words: %q", msg)
+	}
+	changed(no, false, "yolo off, the recipe made one")
+	p.save(agent(nil))
+	changed(yes, false, "yolo on, the recipe emptied again")
+	p.expect(t, "POST", "/api/dispatch/plans/"+no+"/approve", map[string]any{"opId": opID()}, http.StatusOK, "")
+}
+
 // A ticket's list reads each revision's body once: its facts are kept by
 // the body's digest, so a list again, and a revision's own read, read no
 // body (counted, never timed), and the facts read are the body's.
@@ -908,11 +1017,12 @@ func TestThePlanFactsKeptAreBounded(t *testing.T) {
 	}
 }
 
-// A failure of git itself while the base or a reference is resolved is
-// 500 git_failed, never the request's 409 invalid: an object git cannot
-// read, a context that ended. A name that resolves to nothing, a reflog
-// entry past the log and a submodule's commit the repository has not are
-// still the request's.
+// A failure of git itself while the repository is checked or the base or
+// a reference is resolved is 500 git_failed, never the request's 409
+// invalid: an object git cannot read (HEAD's own commit included), a
+// file's blob the repository has not, a context that ended. A name that
+// resolves to nothing, a reflog entry past the log and a submodule's
+// commit the repository has not are still the request's.
 func TestProposeAnswersGitsOwnFailure(t *testing.T) {
 	p := newPlanTest(t, nil)
 	saved := p.saveCrew(t, teamCrew("Team", "cat"))
@@ -928,6 +1038,21 @@ func TestProposeAnswersGitsOwnFailure(t *testing.T) {
 	out := p.propose(t, "CND-1", map[string]any{"crew": saved.ID, "references": []any{map[string]any{"path": "sm"}}}, http.StatusConflict, dispatch.RefusalInvalid)
 	if msg := out["error"].(map[string]any)["message"].(string); !strings.Contains(msg, "is neither a file nor a directory") {
 		t.Fatalf("the submodule: %q", msg)
+	}
+	// A tracked file whose blob the repository has not: cat-file fails
+	// for it as for the submodule's commit, but its entry is a file's, so
+	// it is git's failure. The file is gone from HEAD after, so later
+	// commits build no tree of the missing blob.
+	gone := commitFile(t, p.repo, "gone.txt", "a blob the repository loses\n")
+	blob := gitIn(t, p.repo, "rev-parse", gone+":gone.txt")
+	gitIn(t, p.repo, "rm", "-q", "gone.txt")
+	gitIn(t, p.repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "gone")
+	if err := os.Remove(filepath.Join(p.repo, ".git", "objects", blob[:2], blob[2:])); err != nil {
+		t.Fatal(err)
+	}
+	out = p.propose(t, "CND-1", map[string]any{"crew": saved.ID, "base": gone, "references": []any{map[string]any{"path": "gone.txt"}}}, http.StatusInternalServerError, "git_failed")
+	if msg := out["error"].(map[string]any)["message"].(string); msg != "could not read a reference at the base with git" || out["receipt"] != nil {
+		t.Fatalf("a file's blob the repository has not: %v", out)
 	}
 	// A context that ended.
 	cancelled, cancel := context.WithCancel(ctx)
@@ -964,4 +1089,9 @@ func TestProposeAnswersGitsOwnFailure(t *testing.T) {
 	commitFile(t, p.repo, "later.txt", "later\n")
 	unreadable(secret)
 	failed(map[string]any{"crew": saved.ID, "base": secret}, "the base")
+	// HEAD's own commit unreadable, HEAD still naming it: git's failure
+	// through the repository's check (crew.CheckRepo), never "a
+	// repository without a commit".
+	unreadable(commitFile(t, p.repo, "last.txt", "last\n"))
+	failed(map[string]any{"crew": saved.ID}, "the working directory's repository")
 }

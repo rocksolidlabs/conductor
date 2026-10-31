@@ -231,11 +231,18 @@ func (c *planFactsCache) loaded() int {
 // entry gives the session, its env with the yolo recipe's overlaid when
 // that applies and the server's variables its envPassthrough names as the
 // launch passes them through (entryPassthrough), with the SHA-256 of those
-// names and values together ("" for none), never a value. SHA256 is the SHA-256 of all of it as encoded: the
-// selection's identity, which a revision records, its approval and its
-// launch compare, and every attempt of a run launched from it is checked
-// against. It is the one function for the proposal, the approval, the
-// launch and every attempt.
+// names and values together ("" for none), never a value. SHA256 is the
+// SHA-256 of all of it as encoded with the entry's adapter, its signal
+// (EffectiveSignal: the bell when it names none) and whether its yolo
+// recipe applies (yolo on and a recipe that is not empty, as the launch's
+// applied), which decide what the launch's adapter adds to its argv and
+// environment (agents.InjectFor: Claude Code's hook --settings, of which
+// only the last applies, or its yolo-only one; agents.TrustArgsFor:
+// Codex's trust; Codex's notify), so a recipe made non-empty by an env
+// that repeats the entry's own values changes it too: the selection's identity, which a
+// revision records, its approval and its launch compare, and every
+// attempt of a run launched from it is checked against. It is the one
+// function for the proposal, the approval, the launch and every attempt.
 func agentSelection(a catalog.Agent, yolo bool) dispatch.PlanAgent {
 	p := dispatch.PlanAgent{ID: a.ID, Command: slices.Clone(a.Command), StartArgs: []string{}, YoloArgs: []string{}, EnvNames: []string{}}
 	if p.Command == nil {
@@ -267,13 +274,16 @@ func agentSelection(a catalog.Agent, yolo bool) dispatch.PlanAgent {
 		p.EnvSHA256 = sha256Of(pairs)
 	}
 	p.SHA256 = sha256Of(struct {
-		ID        string   `json:"id"`
-		Command   []string `json:"command"`
-		StartArgs []string `json:"startArgs"`
-		YoloArgs  []string `json:"yoloArgs"`
-		EnvNames  []string `json:"envNames"`
-		EnvSHA256 string   `json:"envSha256"`
-	}{p.ID, p.Command, p.StartArgs, p.YoloArgs, p.EnvNames, p.EnvSHA256})
+		ID        string         `json:"id"`
+		Command   []string       `json:"command"`
+		StartArgs []string       `json:"startArgs"`
+		YoloArgs  []string       `json:"yoloArgs"`
+		EnvNames  []string       `json:"envNames"`
+		EnvSHA256 string         `json:"envSha256"`
+		Adapter   string         `json:"adapter"`
+		Signal    catalog.Signal `json:"signal"`
+		Yolo      bool           `json:"yolo"`
+	}{p.ID, p.Command, p.StartArgs, p.YoloArgs, p.EnvNames, p.EnvSHA256, a.Adapter, a.EffectiveSignal(), yolo && !a.Yolo.Empty()})
 	return p
 }
 
@@ -318,8 +328,10 @@ func sha256Of(v any) string {
 // in the catalog now, with its yolo choice, in words ("the agent claude's
 // command"), or "" when it resolves the same: no longer in the catalog,
 // its command, its session recipe's start arguments, its yolo recipe's
-// arguments, or its environment (names or values, the yolo recipe's
-// included), the first that differs.
+// arguments, its environment (names or values, the yolo recipe's
+// included), or else its adapter, its signal or whether its yolo recipe
+// applies (which the selection's identity alone records), the first that
+// differs.
 func agentChange(cat catalog.Catalog, rec dispatch.PlanAgent, yolo bool) string {
 	a, ok := cat.Get(rec.ID)
 	if !ok {
@@ -336,8 +348,10 @@ func agentChange(cat catalog.Catalog, rec dispatch.PlanAgent, yolo bool) string 
 		return fmt.Sprintf("the agent %s's session recipe's start arguments changed", rec.ID)
 	case !slices.Equal(now.YoloArgs, rec.YoloArgs):
 		return fmt.Sprintf("the agent %s's yolo recipe's arguments changed", rec.ID)
+	case !slices.Equal(now.EnvNames, rec.EnvNames) || now.EnvSHA256 != rec.EnvSHA256:
+		return fmt.Sprintf("the agent %s's environment changed", rec.ID)
 	}
-	return fmt.Sprintf("the agent %s's environment changed", rec.ID)
+	return fmt.Sprintf("the agent %s's adapter, signal or yolo recipe changed", rec.ID)
 }
 
 // agentsChange is the first agent of a revision's body that resolves
@@ -749,8 +763,10 @@ func isFullCommit(s string) bool {
 // cat-file -t), a file or a directory: a path the base has not, a
 // submodule and anything else are refused. The words say why; "" when it
 // is taken. The error is git's own failure (gitUnresolved): an object the
-// base names that git cannot read is one, a submodule's commit the
-// repository has not (git cat-file -e) is the request's.
+// base names that git cannot read, or that the repository has not, is
+// one; a submodule's commit the repository has not is the request's,
+// told by its tree entry's mode (gitlinkAt), never by the object's
+// absence alone, which a tracked file's missing blob shares.
 func planReference(ctx context.Context, cwd, base, prefix string, rr dispatch.PlanReferenceRequest) (dispatch.PlanReference, string, error) {
 	p := rr.Path
 	switch {
@@ -780,13 +796,17 @@ func planReference(ctx context.Context, cwd, base, prefix string, rr dispatch.Pl
 	notKind := fmt.Sprintf("the reference %s at the base %s is neither a file nor a directory", cut(p, 200), base[:12])
 	kind, err := gitcli.Run(ctx, cwd, "cat-file", "-t", object)
 	if err != nil {
-		// cat-file -t fails alike for an object the repository has not and
-		// for one it cannot read; -e tells them apart.
-		switch _, eerr := gitcli.Run(ctx, cwd, "cat-file", "-e", object); {
-		case eerr != nil && gitUnresolved(eerr):
+		// cat-file -t fails alike for a submodule's commit the repository
+		// has not and for a file's or a directory's object it has not or
+		// cannot read; the entry's mode tells them apart.
+		if p == "." {
+			return dispatch.PlanReference{}, "", err
+		}
+		switch gitlink, lerr := gitlinkAt(ctx, cwd, base, prefix+p); {
+		case lerr != nil:
+			return dispatch.PlanReference{}, "", lerr
+		case gitlink:
 			return dispatch.PlanReference{}, notKind, nil
-		case eerr != nil:
-			return dispatch.PlanReference{}, "", eerr
 		}
 		return dispatch.PlanReference{}, "", err
 	}
@@ -795,6 +815,26 @@ func planReference(ctx context.Context, cwd, base, prefix string, rr dispatch.Pl
 		return dispatch.PlanReference{}, notKind, nil
 	}
 	return dispatch.PlanReference{Path: p, Start: rr.Start, End: rr.End, Note: rr.Note, Object: object, Kind: kind}, "", nil
+}
+
+// gitlinkAt reports whether the base's tree entry at name, a path from the
+// repository's top, is a submodule's (mode 160000): git ls-tree -z
+// --full-tree <base> -- <name>, the name a literal path
+// (GIT_LITERAL_PATHSPECS), which reads the trees down to the entry and
+// never the entry's own object. The error is git's failure, or an entry
+// the base has not (rev-parse had just found it there).
+func gitlinkAt(ctx context.Context, cwd, base, name string) (bool, error) {
+	out, err := gitcli.RunEnv(ctx, cwd, map[string]string{"GIT_LITERAL_PATHSPECS": "1"}, "ls-tree", "-z", "--full-tree", base, "--", name)
+	if err != nil {
+		return false, err
+	}
+	entry, _, _ := strings.Cut(out, "\x00")
+	meta, got, ok := strings.Cut(entry, "\t")
+	if !ok || got != name {
+		return false, fmt.Errorf("git ls-tree: the base has no entry %q", name)
+	}
+	mode, _, _ := strings.Cut(meta, " ")
+	return mode == "160000", nil
 }
 
 // handleDispatchApprovePlan approves a plan revision (plan.approve), the

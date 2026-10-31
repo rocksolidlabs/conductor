@@ -2790,7 +2790,13 @@ or `CONDUCTOR_` name, the entry's own value winning) with `envSha256` the
 SHA-256 of names and values together (`""` for none), never a value, so a
 name added to `envPassthrough` or a server value of one that changes is
 `agentsChanged`, and `sha256` the
-selection's identity, the SHA-256 of the rest; `manifestFile` `{path, blob, manifest}`; each reference
+selection's identity, the SHA-256 of the rest with the entry's `adapter`,
+its `signal` (the bell when it names none) and whether its yolo recipe
+applies (yolo on and a recipe that is not empty), which decide what the
+adapter adds to the launch's argv and environment (Claude Code's hook
+`--settings`, Codex's trust), so an adapter or signal edit, or a recipe
+made non-empty by an `env` that repeats the entry's own values, is
+`agentsChanged` too; `manifestFile` `{path, blob, manifest}`; each reference
 `{path, start?, end?, note?, object, kind}`; each comment `{id, sha256}`,
 the SHA-256 of its body when the revision was made. A body is at most 2
 MiB as encoded: one past it is `409 bound`, the words naming its largest
