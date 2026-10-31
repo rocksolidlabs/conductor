@@ -42,8 +42,23 @@ var planBounds = map[string]struct {
 	"link.note":               {1000, true},
 	"view.name":               {60, true},
 	"view.query":              {8 << 10, false},
-	"op.by":                   {60, true},
-	"op.actor":                {60, false},
+	// Program item DS2's (docs/plans/dispatch-evidence.md, "A plan
+	// revision's body" and the plans table).
+	"plan.approved_note":     {1000, true},
+	"plan.crew_name":         {60, true},
+	"plan.constraints":       {8 << 10, false},
+	"plan.note":              {4 << 10, false},
+	"plan.reference_path":    {1024, false},
+	"plan.reference_note":    {200, true},
+	"plan.decision_question": {500, true},
+	// The launches table's: a label at most 60 characters, why at most
+	// 2,000, and an agent's reported version, which the plan leaves to the
+	// code inside the agents' 4 KiB.
+	"launch.label":         {60, true},
+	"launch.why":           {2000, true},
+	"launch.agent_version": {100, false},
+	"op.by":                {60, true},
+	"op.actor":             {60, false},
 }
 
 // atBound is a value of the rule's kind exactly at its bound, and past
@@ -178,6 +193,15 @@ func TestEveryCountBoundIsThePlansAndRefusedOnePast(t *testing.T) {
 		{"live links per ticket", MaxLinks, 50},
 		{"live views", MaxViews, 200},
 		{"receipts kept", maxReceipts, 20000},
+		{"plan revisions per ticket", MaxPlans, 100},
+		{"agents per revision", MaxPlanAgents, 12},
+		{"references per revision", MaxPlanReferences, 20},
+		{"attachments handed over", MaxPlanAttachments, 8},
+		{"comments handed over", MaxPlanComments, 20},
+		{"decisions per revision", MaxPlanDecisions, 10},
+		{"tasks waiting on a decision", MaxDecisionBefore, 8},
+		{"launches per ticket", MaxLaunches, 200},
+		{"blockers a package names", MaxPackageBlockers, 20},
 	} {
 		if c.got != c.plan {
 			t.Errorf("%s: %d, the plan's %d", c.what, c.got, c.plan)
@@ -208,6 +232,16 @@ func TestEveryCountBoundIsThePlansAndRefusedOnePast(t *testing.T) {
 		{"the relations a ticket's read carries", MaxTicketRelations, 100},
 		{"a page of a ticket's history", MaxHistoryPage, 500},
 		{"a saved view's query", MaxViewQuery, 8 << 10},
+		{"a revision's body", MaxPlanBody, 2 << 20},
+		{"a revision's read", MaxPlanReply, 3 << 20},
+		{"the attachments a revision hands over", MaxPlanAttachmentBytes, 16 << 20},
+		{"the comments a revision hands over", MaxPlanCommentBytes, 64 << 10},
+		{"a file-form manifest", MaxManifestFile, 64 << 10},
+		{"a delivery link's candidate", MaxLinkCandidate, 200},
+		{"a delivery link's verification receipt", MaxLinkVerified, 8 << 10},
+		{"a launch's package", MaxPackage, 512 << 10},
+		{"a launch's agents", MaxLaunchAgents, 4 << 10},
+		{"an attachment's portable file name", MaxAttachmentFile, 64},
 	} {
 		if c.got != c.plan {
 			t.Errorf("%s: %d, the plan's %d", c.what, c.got, c.plan)
@@ -343,7 +377,8 @@ func TestTheLargestStructuredValueIsUnder16KiB(t *testing.T) {
 			t.Fatalf("%s is not at its bound but past it: %v", key, err)
 		}
 	}
-	value, err := encodeValue(link)
+	fp := strings.Repeat("f", 64)
+	value, err := encodeValue(linkAdded{Link: link, Fingerprint: fp})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +399,7 @@ func TestTheLargestStructuredValueIsUnder16KiB(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	if strings.Join(keys, ",") != "createdAt,createdBy,id,kind,note,ref,url" {
+	if strings.Join(keys, ",") != "createdAt,createdBy,fingerprint,id,kind,note,ref,url" {
 		t.Fatalf("a link's add carries %v", keys)
 	}
 	// The values this change writes at their worst are smaller: a
@@ -374,6 +409,13 @@ func TestTheLargestStructuredValueIsUnder16KiB(t *testing.T) {
 		"a ticket's create":  ticketCreated{ID: link.ID, ProjectID: link.ID, Number: 1<<63 - 1, Key: "ABCDEF-999999999999999999", CreatedAt: link.CreatedAt, CreatedBy: by},
 		"a project's create": projectCreated{ID: link.ID, Key: "ABCDEF", CreatedAt: link.CreatedAt},
 		"a close policy":     CloseRequirements,
+		"a plan revision's create": planCreated{ID: link.ID, TicketID: link.ID, BasedOn: link.ID, CrewID: strings.Repeat("a", 64),
+			CrewName: strings.Repeat("\u2028", MaxCrewName), CrewUpdatedAt: link.CreatedAt, Base: strings.Repeat("a", 64),
+			Digest: fp, Bytes: MaxPlanBody, Fingerprint: fp, CreatedAt: link.CreatedAt, CreatedBy: by},
+		"a launch's create": launchCreated{ID: link.ID, TicketID: link.ID, PlanID: link.ID, RunID: strings.Repeat("a", 64) + "-ffffffff",
+			Label: strings.Repeat("\u2028", MaxLaunchLabel), TicketRev: 1<<63 - 1, Intent: fp, Criteria: fp, PackageSHA256: fp, Fingerprint: fp,
+			CreatedAt: link.CreatedAt, CreatedBy: by},
+		"a launch's why": launchWhy(strings.Repeat("\u2028", 2*MaxLaunchWhy)),
 	} {
 		got, err := encodeValue(v)
 		if err != nil || len(got) >= len(value) {
@@ -423,5 +465,78 @@ func TestTheDefaultsAreTheSchemas(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// A delivery link's add with its candidate and its verification receipt
+// at their bounds (Program item DS2, which writes them from its PR-9; the
+// columns are version 2's), every other field at its escaped worst, is
+// still under MaxChangeValue: a receipt is JSON kept as it is, so its
+// bound as stored is its size in the value.
+func TestADeliveryLinksAddWithACandidateIsUnderTheRowBound(t *testing.T) {
+	receipt := `{"receipts":[{"where":"` + strings.Repeat("a", MaxLinkVerified-len(`{"receipts":[{"where":""}]}`)) + `"}]}`
+	if len(receipt) != MaxLinkVerified || !json.Valid([]byte(receipt)) {
+		t.Fatalf("the receipt is %d bytes, valid %v", len(receipt), json.Valid([]byte(receipt)))
+	}
+	candidate := strings.Repeat("r", MaxLinkCandidate-len("/build/1@")-40) + "/build/1@" + strings.Repeat("a", 40)
+	if len(candidate) != MaxLinkCandidate {
+		t.Fatalf("the candidate is %d bytes", len(candidate))
+	}
+	link := Link{
+		ID:        strings.Repeat("f", IDLen),
+		Kind:      LinkDelivery,
+		Ref:       "https://h/" + strings.Repeat(`\`, MaxLinkRef-len("https://h/")),
+		URL:       "https://h/" + strings.Repeat(`\`, MaxLinkURL-len("https://h/")),
+		Note:      strings.Repeat("\u2028", MaxLinkNote),
+		Candidate: candidate,
+		Verified:  json.RawMessage(receipt),
+		CreatedAt: time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC),
+		CreatedBy: strings.Repeat("\u2029", MaxByName),
+	}
+	value, err := encodeValue(linkAdded{Link: link, Fingerprint: strings.Repeat("f", 64)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(value, `"candidate":"`+candidate+`"`) || !strings.Contains(value, `"verified":`+receipt) {
+		t.Fatalf("the value does not carry the candidate and the receipt as they are")
+	}
+	t.Logf("a delivery link's add at its worst: %d bytes of %d", len(value), MaxChangeValue)
+	if len(value) > MaxChangeValue {
+		t.Fatalf("a delivery link's add with its candidate is %d bytes, more than %d", len(value), MaxChangeValue)
+	}
+}
+
+// A revision's read at its largest, a body at MaxPlanBody beside a
+// summary whose texts are at their escaped worst, encoded as the store
+// encodes (HTML escaping off, which the API's replies share), is under
+// MaxPlanReply: the body is answered as the bytes it is kept as.
+func TestTheLargestPlanReadIsUnderItsBound(t *testing.T) {
+	body := `{"note":"` + strings.Repeat("<", MaxPlanBody-len(`{"note":""}`)) + `"}`
+	if len(body) != MaxPlanBody {
+		t.Fatalf("the body is %d bytes", len(body))
+	}
+	at := time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
+	worst := func(n int) string { return strings.Repeat("\u2028", n) }
+	v := PlanView{
+		PlanSummary: PlanSummary{
+			ID: strings.Repeat("f", IDLen), TicketID: strings.Repeat("f", IDLen), N: MaxPlans, BasedOn: strings.Repeat("f", IDLen),
+			CrewID: strings.Repeat("a", 64), CrewName: worst(MaxCrewName), CrewUpdatedAt: at, Base: strings.Repeat("a", 64),
+			Digest: strings.Repeat("a", 64), Bytes: MaxPlanBody, State: PlanSuperseded, ApprovedAt: at, ApprovedBy: worst(MaxByName),
+			ApprovedNote: worst(MaxApprovedNote), ApprovedRev: 1<<63 - 1, ApprovedIntent: strings.Repeat("a", 64), WithdrawnAt: at,
+			WithdrawnBy: worst(MaxByName), CreatedAt: at, CreatedBy: worst(MaxByName), Fingerprint: strings.Repeat("a", 64), Rev: 1<<63 - 1,
+			Stale: &PlanStale{Words: worst(maxReceiptWords), Remedy: RemedyRevise},
+		},
+		Body: json.RawMessage(body),
+	}
+	got, err := encodeValue(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, body) {
+		t.Fatal("the body is not in the read as it is kept")
+	}
+	t.Logf("the largest revision's read: %d bytes of %d", len(got), MaxPlanReply)
+	if len(got) >= MaxPlanReply {
+		t.Fatalf("the largest revision's read is %d bytes, not under %d", len(got), MaxPlanReply)
 	}
 }

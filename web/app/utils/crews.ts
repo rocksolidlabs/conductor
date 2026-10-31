@@ -273,27 +273,25 @@ const bytes = (s: string) => new TextEncoder().encode(s).length
 
 /**
  * How many bytes v takes as JSON as the server writes it (Go's encoding/json, compact, with <, > and & as they are: internal/crew
- * encodeManifest). JSON.stringify's own text is off both ways: the server escapes U+2028 and U+2029, six bytes each where JSON.stringify keeps
- * the three-byte character, and a lone surrogate, which JSON.stringify sends as a six-byte escape, reaches the server as U+FFFD, three bytes.
+ * encodeManifest, and encodeTaskJSON, whose indent leaves a string as it is). JSON.stringify's own text is off both ways: the server escapes
+ * U+2028 and U+2029, six bytes each where JSON.stringify keeps the three-byte character, and a lone surrogate, which JSON.stringify sends as a
+ * six-byte escape, reaches the server as U+FFFD, three bytes. One pass over JSON.stringify's text corrects both without building a string:
+ * the tasks table counts every task's text for each row it draws.
  */
 function serverJsonBytes(v: unknown): number {
-  const text = JSON.stringify(v, (_key, x: unknown) => (typeof x === 'string' ? wellFormed(x) : x))
+  const text = JSON.stringify(v)
   let n = bytes(text)
   for (let i = 0; i < text.length; i++) {
     const c = text.charCodeAt(i)
     if (c === 0x2028 || c === 0x2029) n += 3
+    else if (c === 0x5c) {
+      // An escape, its letter skipped, so the second backslash of an escaped one starts none. A u escape whose code starts with d is a lone
+      // surrogate's: JSON.stringify writes a u escape for no other code unit past U+001F.
+      if (text.charCodeAt(i + 1) === 0x75 && text.charCodeAt(i + 2) === 0x64) n -= 3
+      i++
+    }
   }
   return n
-}
-
-/** s with each lone surrogate as U+FFFD: the string the server decodes from JSON.stringify's escape of one. */
-function wellFormed(s: string): string {
-  let out = ''
-  for (const ch of s) {
-    const c = ch.charCodeAt(0)
-    out += ch.length === 1 && c >= 0xd800 && c <= 0xdfff ? String.fromCharCode(0xfffd) : ch
-  }
-  return out
 }
 
 /** Why the server would refuse a check or setup command (its id, argv and timeout), in order; empty when it is fine. */
@@ -613,9 +611,10 @@ export function taskProblems(c: TaskShape): string[] {
 /**
  * Why the server would refuse to save a crew's tasks beyond taskProblems (internal/crew ValidateSave): rules a crew is held to as it is
  * saved, not as one saved before is launched, so an unchanged crew from before them still launches. A task needs another once, and its
- * goal, role and instructions as its task.json keeps them (JSON, quotes and escapes) leave room for the rest of a task file, which never
- * cuts them. A legacy setup the editor lifted into the project manifest, unchanged, is held here to the manifest's rules (liftedAsStored), first,
- * as the server checks a crew before these: saved, it is a manifest; launched as it is, the crew as stored.
+ * goal, role and instructions as its task.json keeps them (each string as the server writes it as JSON, quotes and escapes: internal/crew
+ * taskTextBytes) leave room for the rest of a task file, which never cuts them. A legacy setup the editor lifted into the project manifest,
+ * unchanged, is held here to the manifest's rules (liftedAsStored), first, as the server checks a crew before these: saved, it is a manifest;
+ * launched as it is, the crew as stored.
  */
 export function taskSaveProblems(c: TaskShape): string[] {
   const out: string[] = liftedAsStored(c) ? manifestProblems(c) : []
@@ -626,7 +625,7 @@ export function taskSaveProblems(c: TaskShape): string[] {
     for (const n of t.needs ?? []) (seen.has(n) ? twice : seen).add(n)
     for (const n of twice) out.push(`${what}: needs ${n} twice`)
     const prompt = c.members.find((m) => m.name === t.member)?.prompt ?? ''
-    const text = [c.goal ?? '', prompt, t.instructions].reduce((n, s) => n + bytes(JSON.stringify(s)), 0)
+    const text = [c.goal ?? '', prompt, t.instructions].reduce((n, s) => n + serverJsonBytes(s), 0)
     if (text > TASK_LIMITS.taskText) out.push(`${what}: its goal, role and instructions are ${text} bytes as its task file keeps them, more than ${TASK_LIMITS.taskText}`)
   }
   return out

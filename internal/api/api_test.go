@@ -1581,6 +1581,11 @@ func TestCatalogRoutesNeedTheWorkbenchToken(t *testing.T) {
 // agents in the same order, including after a built-in was hidden and saved again.
 func TestCatalogEditsMatchARestart(t *testing.T) {
 	e := newTestEnv(t, nil)
+	// Both servers wait for every lookup's answer: past lookupWait an
+	// unanswered lookup counts as installed, and on a loaded machine one
+	// server's lookup of aider (not installed, a PATH walk) answered in time
+	// and the other's did not, so the two listings differed.
+	e.srv.lookups.stubWait(hangWait)
 	snapshot := e.srv.Catalog()
 
 	e.save(agentBody("aider"))
@@ -1603,6 +1608,7 @@ func TestCatalogEditsMatchARestart(t *testing.T) {
 	}
 
 	again := e.restart()
+	again.srv.lookups.stubWait(hangWait)
 	if live, restarted := e.catalogList(), again.catalogList(); !reflect.DeepEqual(live, restarted) {
 		t.Fatalf("restart differs:\n live      %v\n restarted %v", live, restarted)
 	}

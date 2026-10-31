@@ -48,6 +48,25 @@ func (l *ownLog) len() int {
 	return len(l.got)
 }
 
+// logged waits until log holds entry, or fails the test after 5 s. The
+// session hands OnActivity an attention change's entry after the change,
+// once it has let its lock go (recordOwn): a state seen showing says
+// nothing of its entry, which a count of the log taken at once can come
+// before.
+func logged(t *testing.T, log *ownLog, entry string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !slices.Contains(log.since(0), entry) {
+		if time.Now().After(deadline) {
+			t.Fatalf("entries %q, want %q among them", log.since(0), entry)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// heldEntry is the entry the hold of the turn records as it shows.
+const heldEntry = string(AttentionNeedsInput) + " " + HeldWords
+
 // asking is a session under test for the agent's own question, with o's
 // options, and the log of its attention entries.
 func asking(t *testing.T, o Options) (*Local, *fakeProc, *ownLog) {
@@ -581,6 +600,9 @@ func TestAHeldTurnHoldsTheQuestionOver(t *testing.T) {
 				}
 				return
 			}
+			// The hold's own entry first, so that it is not counted as one
+			// under the hold.
+			logged(t, log, heldEntry)
 			n := log.len()
 			reportState(t, s, AttentionWorking, "")
 			reportState(t, s, AttentionDone, "asked")

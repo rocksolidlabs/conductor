@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { nextNeeding, sameQuestions } from './needsCursor'
+import { nextNeeding, PILL_MS, pillMs, sameQuestions } from './needsCursor'
 
 function asking(id: string, message: string, labels: string[], extra: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -48,5 +48,20 @@ describe('answer all', () => {
     expect(groups[0]!.message).toBe('Allow Bash?')
     expect(groups[0]!.sessions.map((s) => s.id)).toEqual(['a', 'b'])
     expect(groups[0]!.choices.map((o) => o.label)).toEqual(['Yes', 'No'])
+  })
+})
+
+describe('the pill’s life (#281)', () => {
+  it('is a positive conductorPillMs, capped at what setTimeout holds, and PILL_MS for anything else', () => {
+    expect(pillMs({})).toBe(PILL_MS)
+    expect(pillMs({ conductorPillMs: 1 })).toBe(1)
+    expect(pillMs({ conductorPillMs: 120_000 })).toBe(120_000)
+    expect(pillMs({ conductorPillMs: 2_147_483_647 })).toBe(2_147_483_647)
+    // One longer than setTimeout keeps would fire at once: it is capped instead.
+    expect(pillMs({ conductorPillMs: 2_147_483_648 })).toBe(2_147_483_647)
+    expect(pillMs({ conductorPillMs: Number.MAX_SAFE_INTEGER })).toBe(2_147_483_647)
+    for (const bad of [0, -0, -5, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, '600000', null, undefined, true, {}]) {
+      expect(pillMs({ conductorPillMs: bad }), String(bad)).toBe(PILL_MS)
+    }
   })
 })

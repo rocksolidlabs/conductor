@@ -125,6 +125,10 @@ const sendTimeout = 5 * time.Second
 // still ends them.
 var retryDelays = []time.Duration{100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second}
 
+// retryWait starts one of retryDelays; tests replace it to end the context
+// while the wait is on.
+var retryWait = time.After
+
 // attentionWord reports whether r reports an attention state, by the
 // attention route or as an attention word of the events route: what a 429
 // retries.
@@ -200,7 +204,7 @@ func send(ctx context.Context, url, token string, req Request, body []byte) erro
 		select {
 		case <-ctx.Done():
 			return failed
-		case <-time.After(retryDelays[attempt]):
+		case <-retryWait(retryDelays[attempt]):
 		}
 	}
 }

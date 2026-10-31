@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -368,5 +369,238 @@ func TestARunsTicketThroughDeletesAndUndeletes(t *testing.T) {
 	}
 	if tk, found, err := s.RunTicket(ctx, "run2"); err != nil || !found || tk.ID != qID || tk.DeletedAt.IsZero() {
 		t.Fatalf("run2's ticket: %s %v %v, want %s deleted", tk.Key, found, err, q)
+	}
+}
+
+// chains is the engine's sight of runs' chains as a test gives it: each
+// list one chain, a run of none its own chain alone.
+func chains(lists ...[]string) func(string) []string {
+	return func(run string) []string {
+		for _, l := range lists {
+			if slices.Contains(l, run) {
+				return l
+			}
+		}
+		return []string{run}
+	}
+}
+
+// A decision link is reserved for Program item DR1's durable decision
+// records: refused on a local write with the words, nothing kept but the
+// receipt; one a merge brought (a row written as a replica's would be) is
+// kept and read with the ticket's links.
+func TestDecisionLinksAreReserved(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "CND")
+	tid, key := newTicket(t, s, "CND", "Decided")
+	rc, err := addLink(s, "d1", key, NewLink{Kind: LinkDecision, Ref: "dec1", URL: "https://example.com/decisions/1"})
+	want(t, rc, err, StatusFailed, RefusalInvalid)
+	if !strings.Contains(rc.Error, "reserved for durable decision records") {
+		t.Fatalf("the words: %q", rc.Error)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM links"); n != 0 {
+		t.Fatalf("%d links kept", n)
+	}
+	if _, err := s.db.Exec(`INSERT INTO links (id, ticket_id, kind, ref, url, note, created_at, created_by) VALUES (?, ?, ?, 'dec1', '', 'merged', ?, 'replica')`,
+		newID(), tid, LinkDecision, stamp(ticketOf(t, s, key).CreatedAt)); err != nil {
+		t.Fatal(err)
+	}
+	links, err := s.Links(ctx, key)
+	if err != nil || len(links) != 1 || links[0].Kind != LinkDecision || links[0].Ref != "dec1" {
+		t.Fatalf("the merged decision link: %+v %v", links, err)
+	}
+	v, err := s.Ticket(ctx, key)
+	if err != nil || len(v.Links) != 1 || v.Links[0].Kind != LinkDecision {
+		t.Fatalf("the ticket's read: %+v %v", v.Links, err)
+	}
+}
+
+// A launched run is bound by its package, never linked by hand: a run
+// link to it is refused run_linked naming the ticket it was launched
+// from, from that ticket or another, and so is one to a continuation of
+// it; the engine's sight of a run's package (SetRunTicket) names its
+// ticket for a run the store has no launch of; a failed launch holds no
+// run.
+func TestALaunchedRunIsNoHandLink(t *testing.T) {
+	s, _, key := planTicket(t)
+	ctx := context.Background()
+	l := mustLaunch(t, s, "l1", key, simplePlan(t, s, key), "")
+	_, other := makeTicket(t, s, NewTicket{Project: "CND", Title: "Another"})
+	continued := "crew-0c0c0c0c"
+	s.SetRunExists(runs(l.RunID, continued, "crew-elsewhere", "crew-failedrun"))
+	s.SetRunChain(chains([]string{l.RunID, continued}))
+	for i, c := range []struct{ ticket, run, words string }{
+		{other, l.RunID, "the run " + l.RunID + " was launched from " + key + ": it is among " + key + "'s runs already"},
+		{key, l.RunID, "was launched from " + key},
+		{other, continued, "the run " + continued + " is of one chain with run " + l.RunID + ", launched from " + key},
+	} {
+		rc, err := addLink(s, opID("x", i), c.ticket, NewLink{Kind: LinkRun, Ref: c.run})
+		want(t, rc, err, StatusFailed, RefusalRunLinked)
+		if rc.Key != key || !strings.Contains(rc.Error, c.words) {
+			t.Fatalf("%s to %s: %+v", c.ticket, c.run, rc)
+		}
+	}
+	// A run whose package names the ticket, launched elsewhere.
+	tid := ticketOf(t, s, key).ID
+	s.SetRunTicket(func(run string) (string, bool) { return tid, run == "crew-elsewhere" })
+	rc, err := addLink(s, "x9", other, NewLink{Kind: LinkRun, Ref: "crew-elsewhere"})
+	want(t, rc, err, StatusFailed, RefusalRunLinked)
+	if rc.Key != key {
+		t.Fatalf("a run its package binds: %+v", rc)
+	}
+	// The launching ticket deleted: its launch still binds the run.
+	if holders, err := s.ChainHolders(ctx, continued); err != nil || len(holders) != 1 || holders[0].Key != key || holders[0].Launch != l.ID || holders[0].Run != l.RunID {
+		t.Fatalf("the launched chain's holders: %+v %v", holders, err)
+	}
+	rc, err = s.DeleteTicket(ctx, testOp("del"), key)
+	want(t, rc, err, StatusDone, "")
+	rc, err = addLink(s, "x10", other, NewLink{Kind: LinkRun, Ref: l.RunID})
+	want(t, rc, err, StatusFailed, RefusalRunLinked)
+	if holders, err := s.ChainHolders(ctx, l.RunID); err != nil || len(holders) != 0 {
+		t.Fatalf("a deleted ticket holds no live chain: %+v %v", holders, err)
+	}
+	// A failed launch's run id is no run of the ticket's.
+	rc, err = s.UndeleteTicket(ctx, testOp("undel"), key)
+	want(t, rc, err, StatusDone, "")
+	failed := mustLaunch(t, s, "l2", key, simplePlan(t, s, key), "")
+	if _, err := s.db.Exec("UPDATE launches SET run_id = 'crew-failedrun' WHERE id = ?", failed.ID); err != nil {
+		t.Fatal(err)
+	}
+	rc, err = s.FailedLaunch(ctx, Op{}, failed.ID, "the run id is another run's")
+	want(t, rc, err, StatusDone, "")
+	rc, err = addLink(s, "x11", other, NewLink{Kind: LinkRun, Ref: "crew-failedrun"})
+	want(t, rc, err, StatusDone, "")
+}
+
+// A chain belongs to one ticket: run A linked to T1 and continued as B, B
+// linked to T2 is refused run_linked naming T1, and to T1 refused as well
+// (it is among T1's runs already); A's link removed, B is T2's. T1 linked
+// to C and deleted, T2 links D, C's continuation; T1's undelete releases
+// its link to C, one remove row, and the chain is T2's.
+func TestAChainHasOneTicket(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "CND")
+	_, t1 := newTicket(t, s, "CND", "T1")
+	_, t2 := newTicket(t, s, "CND", "T2")
+	s.SetRunExists(runs("A", "B", "C", "D"))
+	s.SetRunChain(chains([]string{"A", "B"}, []string{"C", "D"}))
+	rc, err := addLink(s, "a1", t1, NewLink{Kind: LinkRun, Ref: "A"})
+	want(t, rc, err, StatusDone, "")
+	rc, err = addLink(s, "b2", t2, NewLink{Kind: LinkRun, Ref: "B"})
+	want(t, rc, err, StatusFailed, RefusalRunLinked)
+	if rc.Key != t1 || !strings.Contains(rc.Error, t1+" links run A, of one chain with run B") {
+		t.Fatalf("B to T2: %+v", rc)
+	}
+	rc, err = addLink(s, "b1", t1, NewLink{Kind: LinkRun, Ref: "B"})
+	want(t, rc, err, StatusFailed, RefusalRunLinked)
+	if rc.Key != t1 || !strings.Contains(rc.Error, "it is among "+t1+"'s runs") {
+		t.Fatalf("B to T1: %+v", rc)
+	}
+	if holders, err := s.ChainHolders(ctx, "B"); err != nil || len(holders) != 1 || holders[0].Key != t1 || holders[0].Run != "A" || holders[0].Link == "" {
+		t.Fatalf("the chain's holders: %+v %v", holders, err)
+	}
+	links, err := s.Links(ctx, t1)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("T1's links: %+v %v", links, err)
+	}
+	rc, err = s.RemoveLink(ctx, testOp("xa"), t1, links[0].ID)
+	want(t, rc, err, StatusDone, "")
+	rc, err = addLink(s, "b2again", t2, NewLink{Kind: LinkRun, Ref: "B"})
+	want(t, rc, err, StatusDone, "")
+	if holders, err := s.ChainHolders(ctx, "A"); err != nil || len(holders) != 1 || holders[0].Key != t2 {
+		t.Fatalf("the chain's holder after the remove: %+v %v", holders, err)
+	}
+
+	// A tombstone holds no chain while it is deleted; its undelete gives
+	// up the link whose chain another ticket took meanwhile.
+	rc, err = addLink(s, "c1", t1, NewLink{Kind: LinkRun, Ref: "C"})
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.DeleteTicket(ctx, testOp("d1"), t1)
+	want(t, rc, err, StatusDone, "")
+	rc, err = addLink(s, "d2", t2, NewLink{Kind: LinkRun, Ref: "D"})
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.UndeleteTicket(ctx, testOp("u1"), t1)
+	want(t, rc, err, StatusDone, "")
+	rows := rowsOf(t, s, "u1")
+	if len(rows) != 2 || !strings.HasPrefix(rows[1], "remove:links=") || !strings.HasSuffix(rows[1], "<"+EncodeTags([]Tag{{"test", "c1", 0}})) {
+		t.Fatalf("the undelete's rows: %v", rows)
+	}
+	if links, err := s.Links(ctx, t1); err != nil || len(links) != 0 {
+		t.Fatalf("T1's links after its undelete: %+v %v", links, err)
+	}
+	if holders, err := s.ChainHolders(ctx, "C"); err != nil || len(holders) != 1 || holders[0].Key != t2 || holders[0].Run != "D" {
+		t.Fatalf("the chain's holder after the undelete: %+v %v", holders, err)
+	}
+}
+
+// A chain a version 1 store left on two tickets' links, which its rule
+// allowed (T1 links run A, T2 links run B, a continuation of A), is kept
+// as it was by the migration, both links and their add rows byte for
+// byte, and read as contested: ChainHolders names T1 and T2, and a new
+// link to A or B is refused run_linked naming both, from T1, T2 or a third
+// ticket. T2's link removed, the chain is T1's, and the remove is in T2's
+// history.
+func TestMigratedContestedChainIsKept(t *testing.T) {
+	ctx := context.Background()
+	var t1, t2, t3 string
+	dir := versionOneStore(t, func(s *Store) {
+		newProject(t, s, "CND")
+		_, t1 = newTicket(t, s, "CND", "T1")
+		_, t2 = newTicket(t, s, "CND", "T2")
+		_, t3 = newTicket(t, s, "CND", "T3")
+		s.SetRunExists(runs("A", "B"))
+		for _, c := range []struct{ op, key, run string }{{"la", t1, "A"}, {"lb", t2, "B"}} {
+			rc, err := addLink(s, c.op, c.key, NewLink{Kind: LinkRun, Ref: c.run})
+			want(t, rc, err, StatusDone, "")
+		}
+	})
+	v1Cols := []string{"id", "ticket_id", "kind", "ref", "url", "note", "created_at", "created_by", "deleted_at"}
+	changeCols := []string{"seq", "entity", "entity_id", "ticket_id", "project_id", "field", "op", "value", "prior", "at", "actor", "by", "op_id", "n"}
+	raw := openRaw(t, filepath.Join(dir, File))
+	linksBefore, addsBefore := tableRows(t, raw, "links", v1Cols), tableRows(t, raw, "changes", changeCols)
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s := openStore(t, dir)
+	if got := tableRows(t, s.db, "links", v1Cols); !slices.Equal(got, linksBefore) {
+		t.Fatalf("the links after the migration:\n%v\nbefore:\n%v", got, linksBefore)
+	}
+	if got := tableRows(t, s.db, "changes", changeCols); !slices.Equal(got, addsBefore) {
+		t.Fatal("the migration changed the log")
+	}
+	s.SetRunExists(runs("A", "B"))
+	s.SetRunChain(chains([]string{"A", "B"}))
+	for _, run := range []string{"A", "B"} {
+		holders, err := s.ChainHolders(ctx, run)
+		if err != nil || len(holders) != 2 || holders[0].Key != t1 || holders[1].Key != t2 || holders[0].Run != "A" || holders[1].Run != "B" {
+			t.Fatalf("the contested chain's holders from %s: %+v %v", run, holders, err)
+		}
+	}
+	for i, c := range []struct{ key, run string }{{t1, "B"}, {t2, "A"}, {t3, "A"}, {t3, "B"}} {
+		rc, err := addLink(s, opID("n", i), c.key, NewLink{Kind: LinkRun, Ref: c.run})
+		want(t, rc, err, StatusFailed, RefusalRunLinked)
+		if rc.Key != t1 || !strings.Contains(rc.Error, "contested: "+t1+" and "+t2) {
+			t.Fatalf("%s to %s: %+v", c.key, c.run, rc)
+		}
+	}
+	links, err := s.Links(ctx, t2)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("T2's links: %+v %v", links, err)
+	}
+	rc, err := s.RemoveLink(ctx, testOp("xb"), t2, links[0].ID)
+	want(t, rc, err, StatusDone, "")
+	if holders, err := s.ChainHolders(ctx, "B"); err != nil || len(holders) != 1 || holders[0].Key != t1 {
+		t.Fatalf("the chain's holder after the remove: %+v %v", holders, err)
+	}
+	h, err := s.History(ctx, t2, 0, 0)
+	if err != nil || len(h.Changes) == 0 || h.Changes[len(h.Changes)-1].Op != OpRemove || h.Changes[len(h.Changes)-1].Field != "links" {
+		t.Fatalf("T2's history: %+v %v", h.Changes, err)
+	}
+	rc, err = addLink(s, "t3b", t3, NewLink{Kind: LinkRun, Ref: "B"})
+	want(t, rc, err, StatusFailed, RefusalRunLinked)
+	if rc.Key != t1 {
+		t.Fatalf("B to T3 once the chain is T1's: %+v", rc)
 	}
 }

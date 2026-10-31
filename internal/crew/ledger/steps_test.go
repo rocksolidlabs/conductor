@@ -6,14 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-// version5Added is what version 5 added, dropped: a version 5 database
-// made a version 4 one, for a migration's fixture.
-var version5Added = []string{
+// version5Added is what versions 5 and 6 added, dropped: a database of
+// this version made a version 4 one, for a migration's fixture (version
+// 6's own fixture drops version6Added alone).
+var version5Added = append(slices.Clone(version6Added),
 	"ALTER TABLE checks DROP COLUMN phase",
 	"ALTER TABLE checks DROP COLUMN manifest",
 	"ALTER TABLE checks DROP COLUMN ports",
@@ -24,6 +26,13 @@ var version5Added = []string{
 	"ALTER TABLE runs DROP COLUMN manifest",
 	"DROP TABLE prerequisites",
 	"DROP TABLE trees",
+)
+
+// version6Added is what version 6 added, dropped: a version 6 database
+// made a version 5 one.
+var version6Added = []string{
+	"ALTER TABLE runs DROP COLUMN ticket",
+	"ALTER TABLE runs DROP COLUMN package",
 }
 
 // attemptOf puts a run's task and its attempt, for the rows that hang on
@@ -56,11 +65,12 @@ func finish(t *testing.T, l *Ledger, runID string) {
 }
 
 // A version 4 database (every checks row a task's check, no pause's
-// words, no prerequisites or trees) is brought to 5 as it opens: its rows
+// words, no prerequisites or trees) is brought to the version this
+// Conductor writes as it opens: its rows
 // read back as checks of phase check, with no manifest, no ports, one try
 // and no error or URL, the run with no pause's words and no manifest, and
 // the events it had, the recovery's among them, as they were.
-func TestAVersion4DatabaseIsBroughtToVersion5(t *testing.T) {
+func TestAVersion4DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "runs")
 	l := openLedger(t, dir)
 	ctx := context.Background()
@@ -89,7 +99,7 @@ func TestAVersion4DatabaseIsBroughtToVersion5(t *testing.T) {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
 	var version int
-	if err := again.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != 5 || Version != 5 {
+	if err := again.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != Version {
 		t.Fatalf("version %d (%v), Version %d", version, err, Version)
 	}
 	checks, err := again.Checks(ctx, "team-00000001", "build", 1, true)

@@ -506,7 +506,10 @@ character, dictation. The real Neovim runs with your own config and
 plugins, so it is kept for your own windows: a guest through a share link or
 an invite edits with the editor's own keys and **Save**, and its keymap
 button says Neovim is kept for the session's own window. The Neovim child
-never carries Conductor's own variables. In insert mode a plain character shows at once,
+never carries Conductor's own variables, and it keeps no ShaDa file: it
+never writes one, and reads none unless your config names its own with
+`'shadafile'`, which Neovim then reads once as it starts. Marks, registers
+and command history do not carry from one editor tab to the next. In insert mode a plain character shows at once,
 before the machine answers, then settles as Neovim has it; one Neovim has
 not handled after a tenth of a second is underlined. When Neovim's text is
 not the guess (an autopair, an abbreviation, a mapping) its text wins once

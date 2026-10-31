@@ -26,6 +26,11 @@ func (*lifecycle) members(*exec.Cmd) (pids []int, known bool) { return nil, fals
 
 func (*lifecycle) still(*exec.Cmd, []int) []int { return nil }
 
+func newLifecycle(<-chan struct{}, *os.File) *lifecycle { return &lifecycle{} }
+
+// judge is never asked here: no exit is watched, so nothing settles.
+func (*lifecycle) judge() bool { return false }
+
 func attr(cmd *exec.Cmd, g *lifecycle) { cmd.Cancel = func() error { return g.signal(cmd, sigKill) } }
 
 // noServiceRunner refuses Serve here: a service is stopped through its

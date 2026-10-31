@@ -153,6 +153,108 @@ const (
 	MaxActor = 60
 )
 
+// The bounds of a plan revision (plans.go; docs/plans/dispatch-evidence.md,
+// "A plan revision's body"). A revision's body is checked part by part
+// and then whole, encoded: MaxPlanBody is a bound the proposal checks,
+// not one every part at its own bound fits under (an agent's command may
+// hold 32 arguments of 4 KiB, so twelve agents' commands alone can pass
+// it).
+const (
+	// MaxPlans bounds a ticket's revisions, whatever their state.
+	MaxPlans = 100
+	// MaxTicketApproved bounds the approved revisions a ticket's read
+	// carries (TicketView.Approved), the newest: a local write leaves one
+	// at most, a merge may leave more (up to MaxPlans), and the read keeps
+	// its bound with this many at their escaped worst (internal/api's
+	// largest ticket). Plans reads every one.
+	MaxTicketApproved = 10
+	// MaxPlanBody bounds a revision's body, in bytes, as stored.
+	MaxPlanBody = 2 << 20
+	// MaxPlanReply bounds a revision's read, its summary beside its body
+	// as the bytes it is kept as: the largest summary, every text at its
+	// escaped worst, beside a body at MaxPlanBody is under it
+	// (model_test.go). Exported for the API and the CLI.
+	MaxPlanReply = 3 << 20
+	// MaxPlanAgents bounds a body's agents: one per agent a crew's
+	// members name, and a crew has at most 12 members.
+	MaxPlanAgents = 12
+	// MaxPlanReferences bounds a body's source references.
+	MaxPlanReferences = 20
+	// MaxReferencePath bounds a reference's path, in bytes.
+	MaxReferencePath = 1024
+	// MaxReferenceNote bounds a reference's note, in characters.
+	MaxReferenceNote = 200
+	// MaxPlanAttachments bounds the attachments a revision hands over.
+	MaxPlanAttachments = 8
+	// MaxPlanAttachmentBytes bounds their content together, in bytes.
+	MaxPlanAttachmentBytes = 16 << 20
+	// MaxPlanComments bounds the comments a revision hands over.
+	MaxPlanComments = 20
+	// MaxPlanCommentBytes bounds their bodies together, in bytes.
+	MaxPlanCommentBytes = 64 << 10
+	// MaxPlanConstraints bounds a revision's constraints (Markdown), in
+	// bytes.
+	MaxPlanConstraints = 8 << 10
+	// MaxPlanDecisions bounds the decisions a revision names.
+	MaxPlanDecisions = 10
+	// MaxDecisionQuestion bounds a decision's question, in characters.
+	MaxDecisionQuestion = 500
+	// MaxDecisionBefore bounds the tasks that wait on a decision.
+	MaxDecisionBefore = 8
+	// MaxPlanNote bounds a revision's note (Markdown), in bytes.
+	MaxPlanNote = 4 << 10
+	// MaxCrewName bounds the name of a revision's crew, in characters:
+	// a saved crew's (internal/crew's maxName).
+	MaxCrewName = 60
+	// MaxApprovedNote bounds an approval's note (Markdown), in
+	// characters: the rationale.
+	MaxApprovedNote = 1000
+	// MaxManifestFile bounds a body's file-form project manifest as
+	// encoded, in bytes: the engine's maxManifestJSON.
+	MaxManifestFile = 64 << 10
+)
+
+// The bounds of a delivery link's candidate and its verification receipt
+// (Program item DS2's PR-9 writes them; the columns are version 2's).
+const (
+	// MaxLinkCandidate bounds a delivery link's candidate,
+	// <run>/<task>/<n>@<commit>, in bytes.
+	MaxLinkCandidate = 200
+	// MaxLinkVerified bounds a delivery link's verification receipt
+	// (JSON), in bytes, as stored: 16 receipts with their where.
+	MaxLinkVerified = 8 << 10
+)
+
+// The bounds of a launch (launches.go, package.go;
+// docs/plans/dispatch-evidence.md, "Operations" and "The package").
+const (
+	// MaxLaunches bounds a ticket's launches, whatever their state.
+	MaxLaunches = 200
+	// MaxPackage bounds a launch's package as stored, in bytes: every part
+	// at its bound with every text at its escaped worst is under it
+	// (package_test.go measures it). The ledger's runs.package has the
+	// same bound.
+	MaxPackage = 512 << 10
+	// MaxLaunchLabel bounds a launch's label, the run's own name, in
+	// characters: a managed run's label's bound.
+	MaxLaunchLabel = 60
+	// MaxLaunchWhy bounds why a launch failed, in characters.
+	MaxLaunchWhy = 2000
+	// MaxLaunchAgents bounds a launch's agents as stored (JSON), in bytes:
+	// one per member, each its agent and the version its identity probe
+	// reported, twelve at their bounds and escaped worst under it.
+	MaxLaunchAgents = 4 << 10
+	// MaxLaunchAgentVersion bounds the version a launch's agent reported,
+	// in bytes; a longer one is cut.
+	MaxLaunchAgentVersion = 100
+	// MaxPackageBlockers bounds the blocking tickets a package names, the
+	// open ones first; BlockersTotal counts them all.
+	MaxPackageBlockers = 20
+	// MaxAttachmentFile bounds the portable part of the name an
+	// attachment is written under in an attempt (NN-<portable>), in bytes.
+	MaxAttachmentFile = 64
+)
+
 // The bounds of the reads (query.go, and the composite reads of a
 // ticket and of the projects).
 const (
@@ -267,15 +369,19 @@ var RelationKinds = []string{RelationBlocks, RelationRelates}
 // shade, so the store keeps a name and never a value a client chose.
 var LabelColors = []string{"gray", "brown", "red", "orange", "amber", "yellow", "lime", "green", "teal", "cyan", "blue", "indigo"}
 
-// The kinds of a link (DS2 adds plan, candidate, check and finding, DR1
-// decision).
+// The kinds of a link. DS2 adds no kind of its own (a revision is a
+// record of its own, a candidate is named by the delivery that delivers
+// it). LinkDecision is reserved for Program item DR1's durable decision
+// records: refused on a local write, kept when a merge brings one.
 const (
 	LinkDelivery = "delivery"
 	LinkRun      = "run"
 	LinkExternal = "external"
+	LinkDecision = "decision"
 )
 
-// LinkKinds is the kinds of a link.
+// LinkKinds is the kinds of a link a local write takes; LinkDecision is
+// not among them.
 var LinkKinds = []string{LinkDelivery, LinkRun, LinkExternal}
 
 // The kinds of a saved view.
@@ -447,17 +553,28 @@ type Attachment struct {
 // release's URL), a run, or an external reference; Ref its identity (a
 // run's id, a pull request's number, else its URL). As JSON, a live
 // link is what its add's change row records:
-// {id, kind, ref, url, note, createdAt, createdBy}.
+// {id, kind, ref, url, note, createdAt, createdBy}, the add's value
+// carrying the operation's fingerprint beside it (linkAdded).
+//
+// From version 2 a link's row also keeps the fingerprint of the operation
+// that added it (the request's content, which its add's value carries
+// too, so a resend whose receipt is pruned is still checked: Replay), and
+// a delivery link its candidate and that candidate's verification
+// receipt, both empty on every other link and on every version 1 row.
+// The fingerprint is not part of a link as read.
 type Link struct {
-	ID        string    `json:"id"`
-	TicketID  string    `json:"-"`
-	Kind      string    `json:"kind"`
-	Ref       string    `json:"ref"`
-	URL       string    `json:"url"`
-	Note      string    `json:"note"`
-	CreatedAt time.Time `json:"createdAt"`
-	CreatedBy string    `json:"createdBy"`
-	DeletedAt time.Time `json:"deletedAt,omitzero"`
+	ID          string          `json:"id"`
+	TicketID    string          `json:"-"`
+	Kind        string          `json:"kind"`
+	Ref         string          `json:"ref"`
+	URL         string          `json:"url"`
+	Note        string          `json:"note"`
+	Candidate   string          `json:"candidate,omitempty"`
+	Verified    json.RawMessage `json:"verified,omitempty"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	CreatedBy   string          `json:"createdBy"`
+	DeletedAt   time.Time       `json:"deletedAt,omitzero"`
+	Fingerprint string          `json:"-"`
 }
 
 // View is a saved view: a list, board or roadmap, its query the filter,
@@ -472,6 +589,204 @@ type View struct {
 	UpdatedAt time.Time       `json:"updatedAt"`
 	DeletedAt time.Time       `json:"deletedAt,omitzero"`
 	Rev       int64           `json:"rev"`
+}
+
+// The states of a plan revision: proposed when made; approved by the
+// operator, which supersedes the ticket's other approved revision;
+// superseded by another's approval; withdrawn. Any state but withdrawn
+// may be withdrawn, a superseded or a stale approved one approved again,
+// and nothing else (plans.go).
+const (
+	PlanProposed   = "proposed"
+	PlanApproved   = "approved"
+	PlanSuperseded = "superseded"
+	PlanWithdrawn  = "withdrawn"
+)
+
+// PlanStates is a revision's states in their order.
+var PlanStates = []string{PlanProposed, PlanApproved, PlanSuperseded, PlanWithdrawn}
+
+// The kinds of a decision a revision names: an approval a person gives
+// before the tasks that wait on it, or a clarification a person answers.
+const (
+	DecisionApproval      = "approval"
+	DecisionClarification = "clarification"
+)
+
+// The kinds of the git object a reference names at a revision's base.
+const (
+	ObjectBlob = "blob"
+	ObjectTree = "tree"
+)
+
+// The remedies of a stale approval (PlanStale): approve the revision
+// again, for an edit of the ticket's intent, which the approval records;
+// revise it, for what the immutable body records (a handed-over comment
+// edited or gone, an agent resolved otherwise), which only a new revision
+// can cover.
+const (
+	RemedyApprove = "approve"
+	RemedyRevise  = "revise"
+)
+
+// PlanRequest is what plan.propose was sent: the saved crew's id, the
+// base as given (a branch, HEAD, a commit, or empty for HEAD), the
+// revision it is based on (an id of the ticket's, or empty), the source
+// references as given, the attachments and comments to hand over (ids of
+// the ticket's), the constraints, the decisions and a note. Its JSON is
+// the operation's content (its fingerprint), so a resend is checked
+// against what was sent and never against the body built from it, which
+// the saved crew or HEAD moving since would change.
+type PlanRequest struct {
+	Crew        string                 `json:"crew"`
+	Base        string                 `json:"base,omitempty"`
+	BasedOn     string                 `json:"basedOn,omitempty"`
+	References  []PlanReferenceRequest `json:"references,omitempty"`
+	Attachments []string               `json:"attachments,omitempty"`
+	Comments    []string               `json:"comments,omitempty"`
+	Constraints string                 `json:"constraints,omitempty"`
+	Decisions   []PlanDecision         `json:"decisions,omitempty"`
+	Note        string                 `json:"note,omitempty"`
+}
+
+// PlanReferenceRequest is a source reference as a proposal names it: a
+// path relative to the crew's working directory and an optional line
+// range and note, which the API resolves at the base (PlanReference).
+type PlanReferenceRequest struct {
+	Path  string `json:"path"`
+	Start int    `json:"start,omitempty"`
+	End   int    `json:"end,omitempty"`
+	Note  string `json:"note,omitempty"`
+}
+
+// PlanBody is a plan revision's body, immutable once made and named by
+// its digest, the SHA-256 of its JSON as stored: the base (a full commit
+// id of the crew's working directory); the saved crew as the crew store
+// keeps it, its working directory and its yolo choice set as the launch
+// will make them (JSON the store keeps as it is, reading only its id, its
+// name, its updatedAt and its tasks' ids); one entry per agent its
+// members name, as the catalog resolved it; a file-form project
+// manifest's blob and manifest; the references resolved at the base; the
+// attachments and comments handed over, each comment with the SHA-256 of
+// its body, which the store sets from the comment's row; the
+// constraints; the decisions a person will make; a note. The API builds
+// it from the request; the store checks every part's shape and bound,
+// then the whole (MaxPlanBody).
+type PlanBody struct {
+	Base         string            `json:"base"`
+	Crew         json.RawMessage   `json:"crew"`
+	Agents       []PlanAgent       `json:"agents"`
+	ManifestFile *PlanManifestFile `json:"manifestFile,omitempty"`
+	References   []PlanReference   `json:"references"`
+	Attachments  []string          `json:"attachments"`
+	Comments     []PlanComment     `json:"comments"`
+	Constraints  string            `json:"constraints"`
+	Decisions    []PlanDecision    `json:"decisions"`
+	Note         string            `json:"note"`
+}
+
+// PlanAgent is an agent a revision's crew names, as the catalog resolved
+// it when the revision was made: the command as the catalog gives it, its
+// session recipe's start arguments ({id} unexpanded), its yolo recipe's
+// arguments when the revision's yolo choice is on (else none), the names
+// of the environment the session gets from the entry and the SHA-256 of
+// those names and values together (never a value), and SHA256, the
+// selection's identity, which a launch and every attempt compare (the
+// API's agentSelection).
+type PlanAgent struct {
+	ID        string   `json:"id"`
+	Command   []string `json:"command"`
+	StartArgs []string `json:"startArgs"`
+	YoloArgs  []string `json:"yoloArgs"`
+	EnvNames  []string `json:"envNames"`
+	EnvSHA256 string   `json:"envSha256"`
+	SHA256    string   `json:"sha256"`
+}
+
+// PlanManifestFile is a file-form project manifest at a revision's base:
+// its path, its blob, and the manifest as the engine reads it from that
+// blob, at most MaxManifestFile as encoded.
+type PlanManifestFile struct {
+	Path     string          `json:"path"`
+	Blob     string          `json:"blob"`
+	Manifest json.RawMessage `json:"manifest"`
+}
+
+// PlanReference is a source reference resolved at a revision's base: its
+// path (relative, cleaned, never leaving the directory), an optional line
+// range (Start 1 or more, End at least Start; 0 for none), a note, and
+// the git object the path names at the base with its kind (ObjectBlob,
+// ObjectTree).
+type PlanReference struct {
+	Path   string `json:"path"`
+	Start  int    `json:"start,omitempty"`
+	End    int    `json:"end,omitempty"`
+	Note   string `json:"note,omitempty"`
+	Object string `json:"object"`
+	Kind   string `json:"kind"`
+}
+
+// PlanComment is a comment a revision hands over: its id and the SHA-256
+// of its body when the revision was made.
+type PlanComment struct {
+	ID     string `json:"id"`
+	SHA256 string `json:"sha256"`
+}
+
+// PlanDecision is a decision a person will make: an id of a task id's
+// shape, the question, its kind (DecisionApproval, DecisionClarification)
+// and the tasks of the crew that wait on it. Recorded and shown; Program
+// item DR1's durable decisions will hold the work.
+type PlanDecision struct {
+	ID       string   `json:"id"`
+	Question string   `json:"question"`
+	Kind     string   `json:"kind"`
+	Before   []string `json:"before"`
+}
+
+// PlanSummary is a plan revision as a list shows it, never with its body:
+// its row, and N, its 1-based place among its ticket's revisions by
+// (created_at, id), derived at read and never stored, as a comment's
+// number is; Stale, for an approved revision whose approval no longer
+// holds, says why and its remedy.
+type PlanSummary struct {
+	ID             string     `json:"id"`
+	TicketID       string     `json:"ticketId"`
+	N              int        `json:"n"`
+	BasedOn        string     `json:"basedOn,omitempty"`
+	CrewID         string     `json:"crewId"`
+	CrewName       string     `json:"crewName"`
+	CrewUpdatedAt  time.Time  `json:"crewUpdatedAt,omitzero"`
+	Base           string     `json:"base"`
+	Digest         string     `json:"digest"`
+	Bytes          int64      `json:"bytes"`
+	State          string     `json:"state"`
+	ApprovedAt     time.Time  `json:"approvedAt,omitzero"`
+	ApprovedBy     string     `json:"approvedBy,omitempty"`
+	ApprovedNote   string     `json:"approvedNote,omitempty"`
+	ApprovedRev    int64      `json:"approvedRev,omitempty"`
+	ApprovedIntent string     `json:"approvedIntent,omitempty"`
+	WithdrawnAt    time.Time  `json:"withdrawnAt,omitzero"`
+	WithdrawnBy    string     `json:"withdrawnBy,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	CreatedBy      string     `json:"createdBy"`
+	Fingerprint    string     `json:"fingerprint"`
+	Rev            int64      `json:"rev"`
+	Stale          *PlanStale `json:"stale,omitempty"`
+}
+
+// PlanStale is why an approved revision's approval no longer holds, in
+// words, and its remedy (RemedyApprove, RemedyRevise).
+type PlanStale struct {
+	Words  string `json:"words"`
+	Remedy string `json:"remedy"`
+}
+
+// PlanView is a plan revision read whole: its summary and its body, as
+// the bytes it is kept as.
+type PlanView struct {
+	PlanSummary
+	Body json.RawMessage `json:"body"`
 }
 
 // textKind is what a text field may hold beside its bound.
@@ -529,6 +844,16 @@ var fieldRules = map[string]textRule{
 	"link.note":               {max: MaxLinkNote, chars: true, kind: kindMarkdown},
 	"view.name":               {max: MaxViewName, chars: true, required: true, kind: kindName},
 	"view.query":              {max: MaxViewQuery, required: true, kind: kindJSON},
+	"plan.approved_note":      {max: MaxApprovedNote, chars: true, kind: kindMarkdown},
+	"plan.crew_name":          {max: MaxCrewName, chars: true, required: true, kind: kindName},
+	"plan.constraints":        {max: MaxPlanConstraints, kind: kindMarkdown},
+	"plan.note":               {max: MaxPlanNote, kind: kindMarkdown},
+	"plan.reference_path":     {max: MaxReferencePath, required: true, kind: kindText},
+	"plan.reference_note":     {max: MaxReferenceNote, chars: true, kind: kindName},
+	"plan.decision_question":  {max: MaxDecisionQuestion, chars: true, required: true, kind: kindName},
+	"launch.label":            {max: MaxLaunchLabel, chars: true, required: true, kind: kindName},
+	"launch.why":              {max: MaxLaunchWhy, chars: true, required: true, kind: kindMarkdown},
+	"launch.agent_version":    {max: MaxLaunchAgentVersion, kind: kindName},
 	"op.by":                   {max: MaxByName, chars: true, kind: kindName},
 	"op.actor":                {max: MaxActor, required: true, kind: kindName},
 }

@@ -114,6 +114,72 @@ func TestValidateRejectsBadTasks(t *testing.T) {
 	}
 }
 
+// A save holds a task's goal, role and instructions to maxTaskText as its
+// task.json keeps them (taskTextBytes): U+2028 and U+2029 escaped, six
+// bytes each, and a lone surrogate, which the web's JSON.stringify sends as
+// an escape, decoded as U+FFFD, three bytes. web/app/utils/crews.test.ts
+// holds the same cases for taskSaveProblems.
+func TestATasksTextIsCountedAsItsTaskFileKeepsIt(t *testing.T) {
+	// sized is managedCrew with a goal, the builder's role and the build's
+	// instructions of 1500, 3000 and 5500 four-byte characters, last after
+	// the instructions: 40,006 bytes as the task file keeps them before it.
+	wide := "\U0001D11E"
+	sized := func(last string) Crew {
+		c := managedCrew()
+		c.Goal = strings.Repeat(wide, 1500)
+		c.Members[0].Prompt = strings.Repeat(wide, 3000)
+		c.Tasks[0].Instructions = strings.Repeat(wide, 5500) + last
+		return c
+	}
+	// held checks that the build's text in c is size bytes as its task file
+	// keeps it, and that a save of c is refused for it exactly when that is
+	// past the bound.
+	held := func(name string, c Crew, size int) {
+		t.Helper()
+		if n := taskTextBytes(c.Goal, c.Members[0].Prompt, c.Tasks[0].Instructions); n != size {
+			t.Fatalf("%s: %d bytes as the task file keeps them (want %d)", name, n, size)
+		}
+		err := c.ValidateSave()
+		if size <= maxTaskText {
+			if err != nil {
+				t.Errorf("%s: %v", name, err)
+			}
+			return
+		}
+		want := fmt.Sprintf(`task "build": its goal, role and instructions are %d bytes as its task file keeps them, more than %d`, size, maxTaskText)
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v (want %q)", name, err, want)
+		}
+	}
+	ls, ps := string(rune(0x2028)), string(rune(0x2029))
+	held("ASCII at the bound", sized(strings.Repeat("y", 954)), maxTaskText)
+	held("ASCII past it", sized(strings.Repeat("y", 955)), maxTaskText+1)
+	held("U+2028 at the bound", sized(strings.Repeat("y", 948)+ls), maxTaskText)
+	held("U+2028 past it", sized(strings.Repeat("y", 949)+ls), maxTaskText+1)
+	held("U+2029 past it", sized(strings.Repeat("y", 949)+ps), maxTaskText+1)
+	// A lone surrogate comes as the web sends it, an escape in the body,
+	// and is decoded as U+FFFD.
+	for _, tc := range []struct{ ys, size int }{{951, maxTaskText}, {952, maxTaskText + 1}} {
+		body, err := json.Marshal(sized(strings.Repeat("y", tc.ys) + "@"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var c Crew
+		if err := json.Unmarshal([]byte(strings.Replace(string(body), `@"`, `\`+`ud800"`, 1)), &c); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := c.Tasks[0].Instructions, strings.Repeat(wide, 5500)+strings.Repeat("y", tc.ys)+string(rune(0xfffd)); got != want {
+			t.Fatalf("the escape decoded as %q", strings.TrimPrefix(got, strings.Repeat(wide, 5500)+strings.Repeat("y", tc.ys)))
+		}
+		held(fmt.Sprintf("a lone surrogate after %d bytes", tc.ys), c, tc.size)
+	}
+	// A backslash before u, d, 8, 0, 0 is text, not a lone surrogate's
+	// escape: seven bytes as JSON.
+	text := `\` + "ud800"
+	held("a backslash and ud800 at the bound", sized(strings.Repeat("y", 947)+text), maxTaskText)
+	held("a backslash and ud800 past it", sized(strings.Repeat("y", 948)+text), maxTaskText+1)
+}
+
 // A crew with tasks goes through the store whole; a crew without encodes
 // as it did, with no tasks, setup, manifest or manifestRevision key.
 func TestACrewWithTasksRoundTrips(t *testing.T) {

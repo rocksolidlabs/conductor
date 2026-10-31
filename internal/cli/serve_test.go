@@ -101,6 +101,53 @@ func writeServeConfig(t *testing.T, dir, body string) string {
 	return path
 }
 
+// serveStartWait bounds how long a test waits for a server it started to
+// say it is serving: a bound only a hang reaches. Starting opens the
+// ledger's and Dispatch's stores, each open and the ledger's recovery
+// capped at 30 s by the product, and a machine loaded with other suites
+// takes a race build well past any few seconds there (10 s was overrun at
+// a load of 77 to 160, #281); the test binary's own timeout stays above
+// it (startDeadline).
+const serveStartWait = 3 * time.Minute
+
+// startDeadline fires when a test has waited serveStartWait for a server
+// to start, or shortly before the test binary's -timeout would end the
+// run, so that a hang fails with the server's log rather than a panic. It
+// returns the wait it set as well. The margin before -timeout is 10 s, or
+// half of what is left when less than 20 s is, so that the wait is never
+// zero or negative and a short -timeout still gives the server time.
+func startDeadline(t *testing.T) (<-chan time.Time, time.Duration) {
+	t.Helper()
+	wait := serveStartWait
+	if end, ok := t.Deadline(); ok {
+		wait = min(wait, startWaitBefore(time.Until(end)))
+	}
+	return time.After(wait), wait
+}
+
+// startWaitBefore is the start wait that leaves the test binary room to
+// report a hang before -timeout ends it, given how long is left.
+func startWaitBefore(left time.Duration) time.Duration {
+	return max(left-10*time.Second, left/2)
+}
+
+// A short -timeout still leaves a server time to start: the margin before
+// it shrinks to half of what is left rather than making the wait negative,
+// which fired at once (-timeout 10s failed in 0.01 s, #281).
+func TestStartWaitBeforeIsNeverNegative(t *testing.T) {
+	for _, c := range []struct{ left, want time.Duration }{
+		{30 * time.Minute, 30*time.Minute - 10*time.Second},
+		{30 * time.Second, 20 * time.Second},
+		{20 * time.Second, 10 * time.Second},
+		{10 * time.Second, 5 * time.Second},
+		{2 * time.Second, time.Second},
+	} {
+		if got := startWaitBefore(c.left); got != c.want {
+			t.Errorf("startWaitBefore(%s) = %s, want %s", c.left, got, c.want)
+		}
+	}
+}
+
 // serveUntilListening runs `conductor serve` on a free loopback port until it
 // reports that it is serving, stops it, and returns everything it logged.
 func serveUntilListening(t *testing.T, args ...string) string {
@@ -119,13 +166,13 @@ func serveUntilListening(t *testing.T, args ...string) string {
 		}
 		done <- err
 	}()
-	deadline := time.After(10 * time.Second)
+	deadline, wait := startDeadline(t)
 	for !strings.Contains(logs.String(), "conductor serving") {
 		select {
 		case err := <-done:
 			t.Fatalf("serve returned before serving: %v\n%s", err, logs.String())
 		case <-deadline:
-			t.Fatalf("serve did not start:\n%s", logs.String())
+			t.Fatalf("serve did not start in %s:\n%s", wait, logs.String())
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -552,7 +599,7 @@ func serveWhile(t *testing.T, marker string, during func(logs string), args ...s
 	t.Cleanup(agents.ForgetBinary())
 	var logs syncBuffer
 	sv := startServing(t, append([]string{"--listen", "127.0.0.1:0"}, args...), strings.NewReader(""), io.Discard, &logs)
-	deadline := time.After(10 * time.Second)
+	deadline, _ := startDeadline(t)
 	for !strings.Contains(logs.String(), marker) {
 		if err, ok := sv.returned(); ok {
 			t.Fatalf("serve returned before %q: %v\n%s", marker, err, logs.String())
@@ -675,7 +722,7 @@ func TestServePrintsTheListenHandshake(t *testing.T) {
 		_, err := runServe(ctx, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &logs)
 		done <- err
 	}()
-	deadline := time.After(10 * time.Second)
+	deadline, _ := startDeadline(t)
 	for !strings.Contains(out.String(), "\n") {
 		select {
 		case err := <-done:
@@ -725,7 +772,7 @@ func TestServeNamesTheGeneratedTokensFileOnTheTerminal(t *testing.T) {
 	terminalOf = func(io.Writer) io.Writer { return &tty }
 	var logs, out syncBuffer
 	sv := startServing(t, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &logs)
-	deadline := time.After(10 * time.Second)
+	deadline, _ := startDeadline(t)
 	for !strings.Contains(out.String(), "\n") {
 		if err, ok := sv.returned(); ok {
 			t.Fatalf("serve returned: %v\n%s", err, logs.String())
@@ -928,7 +975,7 @@ func TestServeLeavesTheTokenFileOfAnotherRunningServer(t *testing.T) {
 		// the terminal and the log say so, and the file stays the first's.
 		var out, logs syncBuffer
 		sv := startServing(t, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &terminalStderr{&logs})
-		deadline := time.After(10 * time.Second)
+		deadline, _ := startDeadline(t)
 		for !strings.Contains(out.String(), "\n") {
 			if err, ok := sv.returned(); ok {
 				t.Fatalf("serve returned: %v\n%s", err, logs.String())
@@ -1007,7 +1054,7 @@ func TestServeExitsWhenStdinCloses(t *testing.T) {
 		code, _ := runServe(context.Background(), []string{"--listen", "127.0.0.1:0", "--config", cfg, "--exit-on-stdin-close"}, pr, io.Discard, &logs)
 		done <- code
 	}()
-	deadline := time.After(10 * time.Second)
+	deadline, _ := startDeadline(t)
 	for !strings.Contains(logs.String(), "conductor serving") {
 		select {
 		case <-done:

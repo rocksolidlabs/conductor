@@ -526,6 +526,9 @@ func TestATitleNeverShowsOverAHeldTurn(t *testing.T) {
 	}
 	go holdNow(s)
 	heldShows(t, s)
+	// The hold's own entry lands after the hold shows (recordOwn): counted
+	// before it, it would read as a title recorded during the hold.
+	lastEntryIs(t, s, HeldWords)
 	before := len(entries(s))
 	stop := make(chan struct{})
 	done := frames(p, stop)

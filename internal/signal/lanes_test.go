@@ -376,10 +376,15 @@ func TestQuickReplyReachesTheHostUnderACongestedWriter(t *testing.T) {
 // A viewer's leave that says why (its link revoked or expired) goes in the
 // server's own lane, ahead of the viewers' lane, as the link's going does:
 // with the viewers' lane full, the expiry's link_gone and the viewer's
-// leave{expired} are the next two taken, in either order.
+// leave{expired} are the next two taken, in either order. The grant's end
+// is far off and the link is let lapse through the hub's own lapse
+// (linkLapsed, what its timer calls) once the lane is full: the link's and
+// the viewer's timers, drawn on the wall clock, fire in no set order, and a
+// viewer's leave taken before the link's lapse ran had the next message
+// taken a viewer's frame (#281).
 func TestReasonedLeaveInTheServerLane(t *testing.T) {
 	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
-	until := time.Now().Add(200 * time.Millisecond)
+	until := time.Now().Add(time.Hour)
 	guest, err := hs.AddViewerWith(ViewerOptions{ID: "0123456789abcdef", Role: session.RoleControl, LinkID: "l1",
 		Authorize: func() (session.Grant, error) { return session.Grant{Role: session.RoleControl, Until: until}, nil }})
 	if err != nil {
@@ -389,7 +394,11 @@ func TestReasonedLeaveInTheServerLane(t *testing.T) {
 	owner := relayedViewer(t, hs, conn, "fedcba9876543210")
 	sent := fillFromViewer(hs, owner, 2*hostQueueBytes)
 	waitQueued(t, conn, hostViewerBytes-(1+proto.ViewerIDLen+1+proto.MaxInput))
+	hs.linkLapsed("l1")
 	<-guest.Done()
+	if !errors.Is(guest.Reason(), session.ErrExpired) {
+		t.Fatalf("the viewer was let go for %v, want expired", guest.Reason())
+	}
 	gone := removed(hs, guest)
 	select {
 	case <-gone:

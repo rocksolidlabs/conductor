@@ -21,8 +21,7 @@ function goBack() {
   else void router.push(list)
 }
 // A dialog's, a menu's or a list of choices' Escape is its own (a picker's: the status, the owner…): the page's key is not there while
-// one is open, so the key reaches it whole (useOverlaid). An editor open (its Preview tab, its buttons focused): its draft is not thrown
-// away by leaving; its Cancel or Escape in it closes it.
+// one is open, so the key reaches it whole (useOverlaid).
 const overlaid = useOverlaid()
 defineShortcuts(
   computed(() =>
@@ -30,6 +29,7 @@ defineShortcuts(
       ? {}
       : {
           escape: () => {
+            // An editor open (its Preview tab, its buttons focused): its draft is not thrown away by leaving; its Cancel or Escape in it closes it.
             if (document.querySelector('[data-markdown-editor], [data-title-input]')) return
             goBack()
           },

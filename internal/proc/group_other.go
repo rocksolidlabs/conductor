@@ -2,7 +2,10 @@
 
 package proc
 
-import "errors"
+import (
+	"errors"
+	"os"
+)
 
 // groupMembers cannot list a process group's processes here.
 func groupMembers(int, int) ([]int, error) {
@@ -10,3 +13,9 @@ func groupMembers(int, int) ([]int, error) {
 }
 
 func stillMembers(int, []int) []int { return nil }
+
+// exited cannot say here.
+func exited(int) bool { return false }
+
+// writersGone cannot say here: the output's end is read instead.
+func writersGone(*os.File) (gone, known bool) { return false, false }

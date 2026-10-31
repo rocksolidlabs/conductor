@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import type { TicketSummary } from '~/composables/useDispatch'
 import { DispatchOrder, through } from '~/utils/dispatchOrder'
-import { rankTickets, statusWord } from '~/utils/dispatch'
+import { pickerSearch, rankTickets, statusWord, ticketSummaryOf } from '~/utils/dispatch'
 
 /**
  * A ticket of a project, picked by its key or its title (docs/plans/dispatch.md, "web/app"): for a parent, and for a relation's other
  * end. What is typed is searched on the server (the list's `q`, the project's tickets, live ones alone) a moment after the typing
- * stops, and ranked here (rankTickets: the key typed whole first, then the keys it begins, then the titles), the tickets `exclude`
- * names left out (the page's own, those related already). Each answer goes through a gate of its own, so a slow one never replaces the
- * answer to what was typed since.
+ * stops, its pages read on while they hold fewer than a page's worth that rank, and the ticket whose key is typed whole read by itself
+ * (pickerSearch), then ranked here (rankTickets: the key typed whole first, then the keys it begins, then the titles), the tickets
+ * `exclude` names left out (the page's own, those related already). Each answer goes through a gate of its own, so a slow one never
+ * replaces the answer to what was typed since.
  */
 const props = defineProps<{
   project: string
@@ -31,11 +32,13 @@ const SEARCH_REST_MS = 200
 let timer: ReturnType<typeof setTimeout> | undefined
 
 async function search() {
-  const q = term.value.trim()
-  const query = new URLSearchParams({ project: props.project, limit: '50', ...(q ? { q } : { sort: 'updated' }) }).toString()
+  const typed = term.value
+  const project = props.project
+  const exclude = new Set(props.exclude ?? [])
+  const reads = { list: (query: string) => api.tickets(query), ticket: async (key: string) => ticketSummaryOf(await api.ticket(key)) }
   loading.value = true
   try {
-    await through(gate, 'search', () => api.tickets(query), (page) => (found.value = page.tickets ?? []))
+    await through(gate, 'search', () => pickerSearch(project, typed, reads, exclude), (tickets) => (found.value = tickets))
   } catch {
     // What was found before stays offered.
   } finally {

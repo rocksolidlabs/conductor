@@ -10,17 +10,22 @@ import {
   attachmentRef,
   commentAuthor,
   commentGaps,
+  commentsRereadFrom,
   earlierComments,
   inlineImage,
   isLabelColor,
   labelDot,
   membersEdit,
+  PICKER_PAGE,
+  PICKER_PAGES,
+  pickerSearch,
   rankTickets,
   relationAdd,
   relationExcluded,
   relationGroups,
   shownComments,
   sizeWords,
+  typedTicketKey,
 } from './dispatch'
 import { renderMarkdown } from './markdown'
 
@@ -53,6 +58,23 @@ describe('the comments shown', () => {
     expect(shownComments('t1', [], [], new Map([[made.id, made]])).map((c) => c.body)).toEqual(['first'])
     const other = comment(2, { ticketId: 't2' })
     expect(shownComments('t1', [comment(1)], [], new Map([[other.id, other]])).map((c) => c.n)).toEqual([1])
+  })
+
+  it("keep the comment being edited in its place when the read's window moves past it, any other source's copy shown over it", () => {
+    // #1 edited; the read moved on to #2–#51 and no earlier page holds #1 yet: it stays, before #2, with nothing said missing.
+    const read = Array.from({ length: 50 }, (_, i) => comment(i + 2))
+    const held = comment(1, { body: 'as opened', rev: 2 })
+    const shown = shownComments('t1', read, [], new Map(), { held })
+    expect(shown.map((c) => c.n).slice(0, 2)).toEqual([1, 2])
+    expect(shown[0]).toBe(held)
+    expect(commentGaps(shown, 2)).toEqual([])
+    expect(earlierComments(shown[0]!.n)).toBeNull()
+    // It is read again from #1, with the earlier pages, and their copy is shown, whatever its revision (a store restored).
+    expect(commentsRereadFrom(shown, 2)).toBe(1)
+    const reread = comment(1, { body: 'theirs', rev: 1 })
+    expect(shownComments('t1', read, [reread], new Map(), { held })[0]!.body).toBe('theirs')
+    // One of another ticket is never held here.
+    expect(shownComments('t1', read, [], new Map(), { held: comment(1, { ticketId: 't2' }) })[0]!.n).toBe(2)
   })
 
   it('count the same comment once when an earlier page and the read both hold it', () => {
@@ -102,6 +124,21 @@ describe('the comments shown', () => {
     ])
   })
 
+  it("are read again from the first shown below the read's window: an earlier page's, or one an answer kept that the window moved past", () => {
+    // #1 posted here, then #2–#51 by another: the read holds #2–#51, no earlier page was read, and #1 is shown from its answer alone.
+    const read = Array.from({ length: 50 }, (_, i) => comment(i + 2))
+    const known = new Map([[comment(1).id, comment(1)]])
+    expect(commentsRereadFrom(shownComments('t1', read, [], known), 2)).toBe(1)
+    // Its edit elsewhere, read from there, is shown over the answer kept; its delete the same.
+    expect(shownComments('t1', read, [comment(1, { body: 'edited elsewhere', rev: 2 })], known)[0]!.body).toBe('edited elsewhere')
+    expect(shownComments('t1', read, [comment(1, { deletedAt: '2026-10-30T12:00:00Z', rev: 3 })], known)[0]!.deletedAt).toBeTruthy()
+    // Earlier pages read: from their first.
+    expect(commentsRereadFrom(shownComments('t1', read.slice(10), read.slice(0, 10)), 12, 2)).toBe(2)
+    // Nothing below the read: nothing read again, a comment answered above the read's last among it.
+    expect(commentsRereadFrom(shownComments('t1', read, [], new Map([[comment(52).id, comment(52)]])), 2)).toBe(0)
+    expect(commentsRereadFrom([], undefined)).toBe(0)
+  })
+
   it("say who wrote one by the name it recorded, else its actor", () => {
     expect(commentAuthor({ author: 'admin', by: 'Nate' })).toBe('Nate')
     expect(commentAuthor({ author: 'admin', by: '' })).toBe('admin')
@@ -139,6 +176,79 @@ describe('the ticket picker', () => {
   it('leaves out the tickets excluded and the deleted ones', () => {
     expect(keys('', new Set(['c']))).toEqual(['CND-10', 'CND-2', 'CND-1'])
     expect(keys('gone')).toEqual([])
+  })
+
+  it("reads the key typed whole as the project's ticket, in any case or by its number alone, never another project's", () => {
+    expect(typedTicketKey('CND', 'CND-99')).toBe('CND-99')
+    expect(typedTicketKey('CND', ' cnd-99 ')).toBe('CND-99')
+    expect(typedTicketKey('CND', '99')).toBe('CND-99')
+    expect(typedTicketKey('CND', 'AB-99')).toBeNull()
+    expect(typedTicketKey('CND', 'CND-')).toBeNull()
+    expect(typedTicketKey('CND', 'CND-09')).toBeNull()
+    expect(typedTicketKey('CND', 'login')).toBeNull()
+  })
+
+  type Row = { id: string; key: string; number: number; title: string; status: 'ready' }
+  const row = (n: number, title = `Other ${n}`): Row => ({ id: `t${n}`, key: `CND-${n}`, number: n, title, status: 'ready' })
+  /** A search whose pages hold `rows` 50 at a time, the cursor the index of the next, and the queries it was asked. */
+  function server(rows: Row[], byKey: Record<string, Row> = {}) {
+    const asked: URLSearchParams[] = []
+    const keysRead: string[] = []
+    return {
+      asked,
+      keysRead,
+      reads: {
+        list: async (query: string) => {
+          const q = new URLSearchParams(query)
+          asked.push(q)
+          const at = Number(q.get('cursor') ?? 0)
+          const next = at + PICKER_PAGE < rows.length ? String(at + PICKER_PAGE) : undefined
+          return { tickets: rows.slice(at, at + PICKER_PAGE), next }
+        },
+        ticket: async (key: string) => {
+          keysRead.push(key)
+          const t = byKey[key]
+          if (!t) throw new Error('404')
+          return t
+        },
+      },
+    }
+  }
+
+  it('offers the ticket whose key is typed whole though the pages the search finds are full of tickets that only mention it', async () => {
+    // 600 tickets mention CND-999 in their descriptions; CND-999 itself is past every page read.
+    const mentions = Array.from({ length: 600 }, (_, i) => row(i + 1))
+    const s = server(mentions, { 'CND-999': row(999, 'The target') })
+    const found = await pickerSearch('CND', 'cnd-999', s.reads)
+    expect(rankTickets('cnd-999', found)[0]!.key).toBe('CND-999')
+    expect(s.keysRead).toEqual(['CND-999'])
+    // The pages read stop at the bound.
+    expect(s.asked.length).toBe(PICKER_PAGES)
+    expect(s.asked[0]!.get('q')).toBe('cnd-999')
+    expect(s.asked[0]!.get('project')).toBe('CND')
+  })
+
+  it('reads the pages on until a page of matches ranks, a title past the first page among them', async () => {
+    // The first page's 50 match in their descriptions alone; the title is on the second.
+    const rows = [...Array.from({ length: 50 }, (_, i) => row(i + 1)), row(51, 'The needle'), ...Array.from({ length: 49 }, (_, i) => row(i + 52))]
+    const s = server(rows)
+    const found = await pickerSearch('CND', 'needle', s.reads)
+    expect(rankTickets('needle', found).map((t) => t.key)).toEqual(['CND-51'])
+    expect(s.asked.map((q) => q.get('cursor'))).toEqual([null, '50'])
+    // No key typed: none read by itself.
+    expect(s.keysRead).toEqual([])
+  })
+
+  it('stops at the first page once a page of them ranks, and with nothing typed reads the first page alone', async () => {
+    const rows = Array.from({ length: 120 }, (_, i) => row(i + 1, `Login ${i + 1}`))
+    const s = server(rows)
+    await pickerSearch('CND', 'login', s.reads)
+    expect(s.asked.length).toBe(1)
+    const none = server(rows)
+    await pickerSearch('CND', '', none.reads)
+    expect(none.asked.length).toBe(1)
+    expect(none.asked[0]!.get('sort')).toBe('updated')
+    expect(none.asked[0]!.has('q')).toBe(false)
   })
 })
 

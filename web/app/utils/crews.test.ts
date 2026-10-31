@@ -530,6 +530,36 @@ describe('taskProblems', () => {
     expect(taskRowProblems(big.tasks![0]!, big).join('\n')).toContain('its goal, role and instructions')
     expect(taskSaveProblems(managed())).toEqual([])
   })
+  it("counts a task's text as the server writes it as JSON, case for case with internal/crew tasks_test.go", () => {
+    // A goal, the builder's role and the build's instructions of 1500, 3000 and 5500 four-byte characters, `last` after the instructions:
+    // 40,006 bytes as the task file keeps them before it. The server writes U+2028 and U+2029 escaped (six bytes, where JSON.stringify keeps
+    // three) and a lone surrogate as U+FFFD (three, where JSON.stringify sends a six-byte escape), so JSON.stringify's own text would pass
+    // the U+2028 and U+2029 texts past the bound and refuse the lone surrogate's at it (#419).
+    const wide = String.fromCodePoint(0x1d11e)
+    const sized = (last: string): Fixture => {
+      const c = managed()
+      c.goal = wide.repeat(1500)
+      Object.assign(c.members[0]!, { prompt: wide.repeat(3000) })
+      c.tasks[0]!.instructions = wide.repeat(5500) + last
+      return c
+    }
+    const problems = (c: Fixture) => [...taskProblems(c), ...taskSaveProblems(c)]
+    const past = ['Task build: its goal, role and instructions are 40961 bytes as its task file keeps them, more than 40960']
+    const [ls, ps, lone] = [String.fromCharCode(0x2028), String.fromCharCode(0x2029), String.fromCharCode(0xd800)]
+    // The escape the Go test puts in the body for a lone surrogate is what the web sends for one.
+    expect(JSON.stringify(lone)).toBe('"\\' + 'ud800"')
+    expect(problems(sized('y'.repeat(954)))).toEqual([])
+    expect(problems(sized('y'.repeat(955)))).toEqual(past)
+    expect(problems(sized('y'.repeat(948) + ls))).toEqual([])
+    expect(problems(sized('y'.repeat(949) + ls))).toEqual(past)
+    expect(problems(sized('y'.repeat(949) + ps))).toEqual(past)
+    expect(problems(sized('y'.repeat(951) + lone))).toEqual([])
+    expect(problems(sized('y'.repeat(952) + lone))).toEqual(past)
+    // A backslash before u, d, 8, 0, 0 is text, not a lone surrogate's escape: seven bytes as JSON.
+    const text = '\\' + 'ud800'
+    expect(problems(sized('y'.repeat(947) + text))).toEqual([])
+    expect(problems(sized('y'.repeat(948) + text))).toEqual(past)
+  })
   it("keeps a row's problems apart", () => {
     const c = managed()
     c.tasks![0]!.member = 'ghost'

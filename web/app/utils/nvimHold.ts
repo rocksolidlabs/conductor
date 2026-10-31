@@ -31,6 +31,22 @@ export function heldChanges(h: HeldNvim): boolean {
 }
 
 /**
+ * Keys refused on their way to a held Neovim (an `error` with their `seq` as `ack`, `text` the end it did not take): noted against the
+ * echo as it left (their guess comes off the text, they are named) and said on the tab's status line when it is in front, its Neovim
+ * kept until then. Not once its Neovim is lost, as in front: keys refused after its end (its editor let go) are among those it never
+ * had, which the tab keeps over its text and names (unconfirmed); taken off, one was gone from the tab (#429). Returns whether the
+ * hold changed.
+ */
+export function heldRefusal(h: HeldNvim, echo: NvimEcho | null | undefined, ev: { ack: number; text?: string; message?: string; code?: string }): boolean {
+  if (h.state.lost) return false
+  const keys = echo?.noteRefused(ev.ack, ev.text) ?? ev.text ?? ''
+  h.state.refused = (h.state.refused ?? '') + keys
+  h.state.message = `Keys did not reach Neovim (${ev.message ?? ev.code ?? 'refused'}): ${h.state.refused}`
+  h.state.messageKind = 'emsg'
+  return true
+}
+
+/**
  * The Neovims of tabs not in front (the Neovim keymap). A tab whose buffer holds changes not written keeps its Neovim while another
  * tab is in front: the editor hands it here as it leaves and takes it back when its tab is in front again, so the changes stay where
  * they were typed. Closing it instead ended it as a lost connection does, and the next open of the file stumbled on its swap file.

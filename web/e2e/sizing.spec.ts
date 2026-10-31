@@ -18,16 +18,27 @@ test("a control link follows the owner's size, scaled, until Fit to my window; t
   try {
     await page.goto(`/sessions/${s.id}`)
     await expect(page.locator('.xterm-screen')).toBeVisible({ timeout: 30_000 })
-    // The owner's window sizes the session: its size, settled.
-    await expect.poll(async () => (await size()).cols, { timeout: 15_000, message: "the owner's window sizes the session" }).toBeGreaterThan(60)
-    let big = await size()
+    // The owner's window sizes the session: attached (the session counts it as a viewer, which the attach that applies its hello's
+    // size makes under one lock), the session at what the window fits (its terminal's drawn grid, data-cols and data-rows), and still
+    // so a second later, past the refit the bundled font may bring (FIT_DEBOUNCE_MS and a frame). The session starts at 80 × 24, which
+    // a read made before the window attaches sees: a threshold it meets, or two reads a moment apart, are no proof the window sized it.
+    const owner = page.locator('.terminal-host')
+    await page.evaluate(() => document.fonts.ready.then(() => undefined))
+    let big = { cols: 0, rows: 0 }
+    let seen = ''
     await expect
-      .poll(async () => {
-        const now = await size()
-        const same = now.cols === big.cols && now.rows === big.rows
-        big = now
-        return same
-      }, { timeout: 15_000, intervals: [1000] })
+      .poll(
+        async () => {
+          const { session } = await api.ok<{ session: { cols: number; rows: number; viewers: number } }>('GET', `/api/sessions/${s.id}`)
+          const grid = await owner.evaluate((h) => `${h.dataset.cols} × ${h.dataset.rows}`)
+          const now = `${session.viewers} ${session.cols} × ${session.rows} ${grid}`
+          const held = session.viewers > 0 && grid === `${session.cols} × ${session.rows}` && now === seen
+          seen = now
+          big = { cols: session.cols, rows: session.rows }
+          return held
+        },
+        { timeout: 15_000, intervals: [1000], message: "the owner's window sizes the session" },
+      )
       .toBe(true)
     await expect(page.locator('[data-terminal-sizer]')).toHaveCount(0)
 

@@ -114,6 +114,9 @@ type Manager struct {
 	http     map[string]string
 	fileTime time.Time
 	wake     chan struct{}
+	// afterRead, when set, runs in files mode once the pair has been read
+	// and before what was read is recorded: a test's seam, nil otherwise.
+	afterRead func()
 }
 
 var (
@@ -144,7 +147,7 @@ func New(o Options) (*Manager, error) {
 	}
 	m := &Manager{o: o, log: o.Log, now: o.Now, alpn: map[string]*tls.Certificate{}, http: map[string]string{}, wake: make(chan struct{}, 1)}
 	if o.CertFile != "" {
-		if err := m.loadFiles(); err != nil {
+		if err := m.loadFiles(m.filesTime()); err != nil {
 			return nil, err
 		}
 		return m, nil

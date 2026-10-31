@@ -2,7 +2,7 @@
 import type { CommentReply, DispatchTicket, TicketComment } from '~/composables/useDispatch'
 import type { DispatchOrder } from '~/utils/dispatchOrder'
 import { retried, through } from '~/utils/dispatchOrder'
-import { COMMENT_PAGE, commentAuthor, commentGaps, earlierComments, shownComments, type CommentGap } from '~/utils/dispatch'
+import { COMMENT_PAGE, commentAuthor, commentGaps, commentsRereadFrom, earlierComments, shownComments, type CommentGap } from '~/utils/dispatch'
 import { DISPATCH_RETRY_MAX_MS } from '~/composables/useDispatchLive'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { avatarTone } from '~/utils/avatar'
@@ -14,10 +14,16 @@ import { initials, relativeTime } from '~/utils/sessions'
  * images; edit and delete (a tombstone) on a live ticket; the last 50 as the ticket's read carries them and the earlier ones a page at a
  * time; a new comment at the foot. Each is one operation (useDispatchOps); its answer is shown at once, the ticket's re-read on its
  * event (another browser's comment among them) bringing the rest. The earlier pages shown are read again whenever the page reads the
- * ticket again (`reads` moving), so an old comment edited elsewhere is shown as it is now; a read of them that fails is asked again as a
- * re-read is. Comments missing among those shown (one this page made, kept below the read's window; earlier pages the window moved
+ * ticket again (`reads` moving), from the first comment shown below the read's window (an earlier page's, or one an answer kept that
+ * the window moved past), so an old comment edited or deleted elsewhere is shown as it is now; a read of them that fails is asked
+ * again as a re-read is. Comments missing among those shown (one this page made, kept below the read's window; earlier pages the window moved
  * past) are said where they are missing, and read from there. An edit is saved against the comment as its editor opened on it: when
  * another person's edit came meanwhile, Save sends nothing, keeps the draft and shows theirs, and a second Save replaces it, knowingly.
+ * Once saved with the editor kept open (more written meanwhile), it is made against what it sent at the revision its receipt names,
+ * never the comment the answer carries, which is read after the commit and can hold another person's later edit: that one is theirs.
+ * The comment being edited stays shown while its editor is open, though the read's window moves past it (`held`), and is read again
+ * with the earlier pages from then on. A comment an answer keeps below the read's window is read again with them at once, since the
+ * page's reads that came while the answer was on its way had nothing there to read again.
  * A stream started again (`resets` moving: a store restored from a backup, whose `rev`s may be below those shown) forgets the answers
  * kept and those still on their way.
  */
@@ -58,14 +64,28 @@ interface Editing {
   rev: number
   body: string
   theirs: string | null
-  /** The text this editor saved last, when its answer carried no comment to read the revision from: no other person's, once read. */
+  /** The text this editor saved last, when its receipt named no revision: no other person's, once read. */
   saved?: string
   opened: number
 }
 const editing = ref<Editing | null>(null)
 let openings = 0
+/** The comment being edited, as last shown: shown in its place while its editor is open, when the read's window has moved past it. */
+const held = ref<TicketComment | null>(null)
 
-const comments = computed(() => shownComments(props.ticket.id, props.ticket.comments ?? [], earlier.value, known.value, { earlierOutdated: earlierOutdated.value }))
+const comments = computed(() =>
+  shownComments(props.ticket.id, props.ticket.comments ?? [], earlier.value, known.value, {
+    earlierOutdated: earlierOutdated.value,
+    held: held.value && editing.value?.id === held.value.id ? held.value : undefined,
+  }),
+)
+// The comment being edited is followed as it is shown, so the one held is the latest the page had.
+watch(comments, (shown) => {
+  const id = editing.value?.id
+  const c = id ? shown.find((s) => s.id === id) : undefined
+  if (!id) held.value = null
+  else if (c && c !== held.value) held.value = c
+})
 const before = computed(() => earlierComments(comments.value[0]?.n))
 /** The comments missing among those shown, by the id of the one each run comes before. */
 const gaps = computed(() => new Map(commentGaps(comments.value, props.ticket.comments?.[0]?.n).map((g) => [g.before, g])))
@@ -78,6 +98,7 @@ watch(
     earlierOutdated.value = false
     known.value = new Map()
     editing.value = null
+    held.value = null
     confirming.value = ''
   },
 )
@@ -152,31 +173,42 @@ function fill(g: CommentGap) {
   void readFrom(g.after + 1)
 }
 
+/** Where a re-read of the earlier pages starts: the first comment shown below the read's window; 0 when none is. */
+function rereadFrom(): number {
+  return commentsRereadFrom(comments.value, props.ticket.comments?.[0]?.n, earlier.value[0]?.n)
+}
+
 /** Counts the re-reads of the earlier pages: a later one takes the place of one still being asked again. */
 let rereads = 0
 
-// The page read the ticket again: the earlier pages shown are read again too, from the first of them, and asked again until one answers.
-watch(
-  () => props.reads,
-  () => {
-    const mine = ++rereads
-    const id = props.ticket.id
-    void retried({
-      read: () => readEarlier(earlier.value[0]?.n ?? 0),
-      stop: () => gone || mine !== rereads || props.ticket.id !== id || !earlier.value.length,
-      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      firstMs: RUN_EVENT_WINDOW_MS,
-      maxMs: DISPATCH_RETRY_MAX_MS,
-    })
-  },
-)
+/** Reads the earlier pages shown again, from the first of them, asked again until one answers or a later re-read takes its place. */
+function rereadEarlier() {
+  const mine = ++rereads
+  const id = props.ticket.id
+  void retried({
+    read: () => readEarlier(rereadFrom()),
+    stop: () => gone || mine !== rereads || props.ticket.id !== id || !rereadFrom(),
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    firstMs: RUN_EVENT_WINDOW_MS,
+    maxMs: DISPATCH_RETRY_MAX_MS,
+  })
+}
 
-/** A comment an operation answered with: shown at once, at its revision or a later one; none asked before the stream started again. */
+// The page read the ticket again: the earlier pages shown are read again too.
+watch(() => props.reads, rereadEarlier)
+
+/**
+ * A comment an operation answered with: shown at once, at its revision or a later one; none asked before the stream started again. One
+ * below the read's window is read again with the earlier pages at once: the reads that came while its answer was on its way (another
+ * person's edit or delete of it among their events) had nothing below the window to read again, and it would stay as answered.
+ */
 function keep(c: TicketComment | null | undefined, asked: number) {
   if (!c || c.ticketId !== props.ticket.id || asked !== generation) return
   const had = known.value.get(c.id)
   if (had && had.rev > c.rev) return
   known.value = new Map(known.value).set(c.id, c)
+  const readFirst = props.ticket.comments?.[0]?.n
+  if (readFirst && c.n < readFirst) rereadEarlier()
 }
 
 async function add(body: string): Promise<boolean> {
@@ -189,6 +221,7 @@ async function add(body: string): Promise<boolean> {
 
 function edit(c: TicketComment) {
   editing.value = { id: c.id, rev: c.rev, body: c.body, theirs: null, opened: ++openings }
+  held.value = c
 }
 
 /**
@@ -221,10 +254,12 @@ async function save(c: TicketComment, body: string): Promise<boolean> {
   keep(reply?.comment, asked)
   const now = editing.value
   if (reply && now?.opened === opened) {
+    // What it sent, at the revision that commit made: a later revision shown since is another person's, said at the next Save.
     now.theirs = null
-    if (reply.comment) {
-      now.rev = reply.comment.rev
-      now.body = reply.comment.body
+    if (reply.receipt.rev !== undefined) {
+      now.rev = reply.receipt.rev
+      now.body = body
+      now.saved = undefined
     } else now.saved = body
   }
   return !!reply

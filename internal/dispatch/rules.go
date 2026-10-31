@@ -105,6 +105,55 @@ func Class(entity, field string) FieldClass {
 		case "name", "created_at":
 			return ClassImmutable
 		}
+	case "link":
+		// A link's row, a member of its ticket's links set: what its add
+		// carries is never written again, the operation's fingerprint and a
+		// delivery's candidate and verification receipt among it (Program
+		// item DS2); its removal is the set's.
+		switch field {
+		case "id", "ticket_id", "kind", "ref", "url", "note", "created_at", "created_by", "fingerprint", "candidate", "verified":
+			return ClassImmutable
+		}
+	case EntityPlan:
+		// A plan revision (docs/plans/dispatch-evidence.md, "Field rules for
+		// replication"): its content is immutable, its body named by its
+		// digest and shipped beside the create row that names it; its
+		// approval and withdrawal are scalars, the last writer winning per
+		// field; its state is gated, as a ticket's status is: an approval
+		// was gated by the writer's rule (the operator, a fresh revision),
+		// and a merge takes the last writer's state and never applies the
+		// rule again. Two revisions of one ticket approved on two replicas
+		// are two entities, and both stand (kept): a launch names one, and
+		// a person withdraws the other.
+		switch field {
+		case "id", "ticket_id", "based_on", "crew_id", "crew_name", "crew_updated_at", "base", "body", "digest", "bytes",
+			"created_at", "created_by", "fingerprint":
+			return ClassImmutable
+		case "state":
+			return ClassGated
+		case "approved_at", "approved_by", "approved_note", "approved_rev", "approved_intent", "withdrawn_at", "withdrawn_by":
+			return ClassScalar
+		}
+	case EntityLaunch:
+		// A launch: what was launched, from which revision, with which
+		// package, is immutable, the package named by its digest; its
+		// state, why, agents and start are scalars. A launch was made under
+		// the writer's rule (an approved, fresh revision), which a merge
+		// never applies again.
+		switch field {
+		case "id", "ticket_id", "plan_id", "run_id", "label", "ticket_rev", "intent", "criteria", "package", "package_sha256",
+			"created_at", "created_by", "fingerprint":
+			return ClassImmutable
+		case "state", "why", "agents", "started_at":
+			return ClassScalar
+		}
+	case "launch_file", "launch_files":
+		// The attachments a launch's package names: rows of the launch's,
+		// written once with it.
+		switch field {
+		case "launch_id", "sha256":
+			return ClassImmutable
+		}
 	case "change", "changes":
 		switch field {
 		case "actor", "op_id", "n":
