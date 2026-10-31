@@ -85,10 +85,10 @@ export function usePaletteRows(ctx: PaletteContext) {
   const copy = useCopy()
   const quick = useQuickReply()
   const shortcutsModal = useShortcutsModal()
-  const renameModal = useRenameModal()
   const identity = useIdentity()
   // Through the app's Tickets gate (usePalette), which a snapshot resets: the next edit expects the revision the store has.
   const ticketOps = useDispatchOps(palette.ticketsGate)
+  const renameModal = useRenameModal()
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
   const showExited = ref(false)
 

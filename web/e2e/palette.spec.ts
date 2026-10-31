@@ -351,9 +351,12 @@ test("Dispatch's tickets (#409): a key typed puts its ticket first and Enter ope
   await two.locator('[data-palette-action="copy-key"]').click()
   await expect(page.locator('li').filter({ hasText: `${key}-2 copied` }).last()).toBeVisible({ timeout: 15_000 })
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`${key}-2`)
+  // Copy key closes the palette: Control+K goes in once it has gone, never into its closing animation, where CI's press was lost.
+  await expect(palette).toBeHidden()
 
   // > New ticket in the project: the dialog, the ticket made.
   await page.keyboard.press('Control+k')
+  await expect(palette).toBeVisible()
   await input.fill(`> new ticket in ${key}`)
   const row = palette.locator(`[data-palette-row="action:new-ticket:${key}"]`)
   await expect(row).toBeVisible()

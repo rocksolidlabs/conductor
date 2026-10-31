@@ -219,8 +219,10 @@ test("X selects two tickets and the palette's page group sets their status, one 
   // One operation per ticket.
   expect([...edits].sort()).toEqual([order[0], order[1]].sort())
 
-  // Escape clears the selection.
+  // Escape clears the selection. The page leaves Escape to a dialog or a list of choices while one is in the page, the picker's
+  // through its closing animation too: the key goes in once none is (CI pressed it inside that animation, and the key was the picker's).
   await expect(bar).toBeVisible()
+  await expect(page.locator('[role="dialog"], [role="menu"], [role="listbox"]')).toHaveCount(0)
   await page.locator(`[data-ticket-row="${order[1]}"]`).focus()
   await page.keyboard.press('Escape')
   await expect(bar).toBeHidden()
