@@ -52,6 +52,8 @@ const picks = reactive(new AssigneePicks())
 const labelPicks = reactive(new AssigneePicks('labels'))
 /** Counts the reads of the ticket the page took: the comments' earlier pages are read again with each. */
 const reads = ref(0)
+/** Counts the stream's starts the page saw (a snapshot): the comments forget the answers they kept with each. */
+const resets = ref(0)
 const deleteOpen = ref(false)
 
 useHead({ title: computed(() => (ticket.value ? `${ticket.value.key} ${ticket.value.title}` : props.ticketKey)) })
@@ -205,7 +207,16 @@ watch(
 )
 
 // The live events read the page again; its first read is made once it is subscribed to them (useDispatchLive's `first`).
-const live = useDispatchLive({ ...ticketWatch(() => ticket.value?.id ?? '', () => props.project, reload), reset: () => gate.reset() }, load)
+const live = useDispatchLive(
+  {
+    ...ticketWatch(() => ticket.value?.id ?? '', () => props.project, reload),
+    reset: () => {
+      gate.reset()
+      resets.value++
+    },
+  },
+  load,
+)
 
 const projectRow = computed(() => projectRead.value?.project ?? null)
 const archived = computed(() => !!projectRow.value?.archivedAt)
@@ -695,7 +706,7 @@ const MAX_ACCEPTANCE = 16 << 10
 
             <DispatchRelations :ticket="ticket" :project="project" :locked="locked" :add="addRelation" :remove="removeRelation" />
             <DispatchAttachments :attachments="ticket.attachments ?? []" :locked="locked" :now="now" :upload="upload" :remove="removeAttachment" :image="files.image" :download="files.download" @insert="(md: string) => comments?.insert(md)" />
-            <DispatchComments ref="comments" :ticket="ticket" :gate="gate" :locked="locked" :reads="reads" :attachment-url="files.resolver.value" :now="now" />
+            <DispatchComments ref="comments" :ticket="ticket" :gate="gate" :locked="locked" :reads="reads" :resets="resets" :attachment-url="files.resolver.value" :now="now" />
 
             <DispatchHistory :entries="entries" :now="now" :more="!!historyNext" :loading="historyLoading" @more="moreHistory" />
           </div>
@@ -729,6 +740,9 @@ const MAX_ACCEPTANCE = 16 << 10
                 <NuxtLink :to="ticketPath(ticket.parent.key)" class="min-w-0 truncate hover:underline" :class="ticket.parent.deletedAt ? 'text-muted' : ''" data-parent-link>
                   <span class="font-mono text-xs text-muted">{{ ticket.parent.key }}</span> <span :class="ticket.parent.deletedAt ? 'line-through' : ''">{{ ticket.parent.title }}</span><template v-if="ticket.parent.deletedAt"> (deleted)</template>
                 </NuxtLink>
+                <span v-if="!ticket.parent.deletedAt" class="flex flex-none items-center gap-1 text-xs text-dimmed" :data-parent-status="ticket.parent.status">
+                  <UIcon :name="statusWord(ticket.parent.status).icon" class="size-3.5" />{{ statusWord(ticket.parent.status).label }}
+                </span>
                 <UButton v-if="!locked" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="ml-auto flex-none" aria-label="No parent" data-parent-clear @click="setParent('')" />
               </div>
               <TicketPicker v-if="!locked" :project="project" :exclude="parentExclude" :placeholder="ticket.parent ? 'Another parent…' : 'A parent ticket…'" data-parent-picker @pick="(t: TicketSummary) => setParent(t.key)" />

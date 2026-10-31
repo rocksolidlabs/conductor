@@ -875,16 +875,24 @@ export const COMMENT_PAGE = 50
  * keeping theirs): the ticket's read's last page, the earlier pages read since, and the comments an operation of this page answered with,
  * each comment by its id at the latest revision any of them holds, so a read served before a comment's edit committed never shows the
  * older body once the edit's answer is in, nor leaves out a comment just made. Those of another ticket are left out. A comment the read
- * lacks (one of an earlier page) keeps the number it was read with.
+ * lacks (one of an earlier page) keeps the number it was read with. `earlierOutdated` says the earlier pages were read before the stream
+ * started again (a store restored from a backup, whose `rev`s may be below those read): the read's comment is shown over theirs then,
+ * whatever its `rev`, until they are read again.
  */
-export function shownComments(ticketId: string, read: readonly TicketComment[], earlier: readonly TicketComment[], known: ReadonlyMap<string, TicketComment> = new Map()): TicketComment[] {
+export function shownComments(
+  ticketId: string,
+  read: readonly TicketComment[],
+  earlier: readonly TicketComment[],
+  known: ReadonlyMap<string, TicketComment> = new Map(),
+  o: { earlierOutdated?: boolean } = {},
+): TicketComment[] {
   const byId = new Map<string, TicketComment>()
-  const keep = (c: TicketComment) => {
+  const keep = (c: TicketComment, over = false) => {
     const had = byId.get(c.id)
-    if (!had || c.rev > had.rev) byId.set(c.id, c)
+    if (!had || over || c.rev > had.rev) byId.set(c.id, c)
   }
   for (const c of earlier) keep(c)
-  for (const c of read) keep(c)
+  for (const c of read) keep(c, o.earlierOutdated)
   for (const c of known.values()) if (c.ticketId === ticketId) keep(c)
   return [...byId.values()].sort((a, b) => a.n - b.n || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
 }
@@ -897,6 +905,31 @@ export function earlierComments(first: number | undefined): { after: number; lim
   if (!first || first <= 1) return null
   const after = Math.max(0, first - 1 - COMMENT_PAGE)
   return { after, limit: first - 1 - after }
+}
+
+/** Comments not shown between two that are, whose numbers are those after `after`, `limit` of them, before the comment `before`. */
+export interface CommentGap {
+  before: string
+  after: number
+  limit: number
+}
+
+/**
+ * The comments missing among those shown (shownComments), each run of them before the comment that follows it: a comment an operation of
+ * this page answered with can sit below the read's window (the 50 it carries moved on since), and earlier pages read before the window
+ * moved end below its first, until they are read again. Only below the read's first comment (`readFirst`), where the earlier pages
+ * reach; a gap above it is the read's own to fill, on the event of what made it. None when the read carries no comment.
+ */
+export function commentGaps(shown: readonly TicketComment[], readFirst: number | undefined): CommentGap[] {
+  if (!readFirst) return []
+  const out: CommentGap[] = []
+  for (let i = 1; i < shown.length; i++) {
+    const prev = shown[i - 1]!
+    const next = shown[i]!
+    if (next.n > readFirst) break
+    if (next.n > prev.n + 1) out.push({ before: next.id, after: prev.n, limit: next.n - prev.n - 1 })
+  }
+  return out
 }
 
 /** Who wrote a comment, in words: the display name it recorded, else its actor (an agent's by its member's name). */
@@ -968,6 +1001,23 @@ export const RELATION_CHOICES: ReadonlyArray<{ value: RelationChoice; label: str
 ]
 
 /**
+ * The tickets a relation of `choice` from the page's ticket cannot be made with, not to be offered: the ticket itself, and those it
+ * holds that relation with already (the store refuses a second of the same kind between the same two, a `relates` either way). A
+ * relation of another kind with the same ticket can be made, so it is offered: a ticket related to may also be blocked. A `blocks` that
+ * would close a cycle is offered too, and refused in the store's words.
+ */
+export function relationExcluded(ticketId: string, relations: readonly TicketRelation[], choice: RelationChoice): string[] {
+  const out = [ticketId]
+  for (const r of relations) {
+    if (r.deletedAt) continue
+    const held =
+      choice === 'relates' ? r.kind === 'relates' : r.kind === 'blocks' && (choice === 'blocks' ? r.fromId === ticketId : r.toId === ticketId)
+    if (held) out.push(r.other.id)
+  }
+  return out
+}
+
+/**
  * The route a relation is added through, from the page's ticket (`self`) and the one picked (`other`): a ticket blocks or relates to
  * another from its own route, so "is blocked by" is the other's `blocks` of this one, made through the other's route.
  */
@@ -1022,6 +1072,62 @@ const INLINE_IMAGES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/we
 /** Whether an attachment of `contentType` is shown as an image: one of the four the server serves inline, never an SVG, which can script. */
 export function inlineImage(contentType: string): boolean {
   return INLINE_IMAGES.has(contentType.split(';', 1)[0]!.trim().toLowerCase())
+}
+
+/** How AttachmentImages makes and revokes an object URL: the browser's, or a test's. */
+export interface ObjectUrls {
+  create: (blob: Blob) => string
+  revoke: (url: string) => void
+}
+
+/**
+ * A ticket page's images of its attachments as object URLs (useDispatchAttachments): each content fetched once by its id, a fetch that
+ * failed forgotten, to be asked again; an answer the server serves as no image the page shows (an SVG comes as
+ * application/octet-stream) is none. `dispose`, as the page goes, revokes every URL made, and a fetch that answers after it makes none,
+ * so no blob is kept past the page.
+ */
+export class AttachmentImages {
+  private readonly images = new Map<string, Promise<string | null>>()
+  private readonly made: string[] = []
+  private disposed = false
+
+  constructor(
+    private readonly fetch: (id: string) => Promise<Blob>,
+    private readonly urls: ObjectUrls = { create: (b) => URL.createObjectURL(b), revoke: (u) => URL.revokeObjectURL(u) },
+  ) {}
+
+  image(id: string): Promise<string | null> {
+    if (this.disposed) return Promise.resolve(null)
+    let p = this.images.get(id)
+    if (!p) {
+      p = this.fetch(id).then(
+        (blob) => {
+          if (this.disposed || !inlineImage(blob.type)) return null
+          const url = this.urls.create(blob)
+          this.made.push(url)
+          return url
+        },
+        () => {
+          this.images.delete(id)
+          return null
+        },
+      )
+      this.images.set(id, p)
+    }
+    return p
+  }
+
+  /** How many object URLs are held, not yet revoked. */
+  get held(): number {
+    return this.made.length
+  }
+
+  dispose(): void {
+    this.disposed = true
+    for (const url of this.made) this.urls.revoke(url)
+    this.made.length = 0
+    this.images.clear()
+  }
 }
 
 /** An attachment's id as a Markdown image names it: `attachment:<id>`, 16 lower-case hex characters; null for any other source. */

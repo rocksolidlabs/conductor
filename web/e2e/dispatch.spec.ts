@@ -1019,6 +1019,65 @@ test('comments posted, edited and deleted with their numbers and their author, o
   ])
 })
 
+test("a comment's edit never replaces another person's unseen, and what is typed while its save goes stays", async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key, 'The edited discussion')
+  const ticket = `${key}-1`
+  const one = await api.ok<{ comment: { id: string } }>('POST', `/api/dispatch/tickets/${ticket}/comments`, { opId: opOf(key, 'c1'), byName: 'Nate', body: 'The first' })
+  await api.ok('POST', `/api/dispatch/tickets/${ticket}/comments`, { opId: opOf(key, 'c2'), byName: 'Nate', body: 'The second' })
+  const sent: Array<{ expectedRev?: number; body: string }> = []
+  let hold: Promise<void> | null = null
+  await page.route('**/api/dispatch/tickets/*/comments/*/edit', async (route) => {
+    sent.push(route.request().postDataJSON())
+    if (hold) await hold
+    await route.continue()
+  })
+  await page.goto(`/dispatch/${key}/1`)
+  const first = page.locator('[data-ticket-comments] [data-comment="1"]')
+  await expect(first).toHaveAttribute('data-comment-rev', '1')
+
+  // #1 opened and written; Priya edits it meanwhile, which the page reads live behind the editor.
+  await first.locator('[data-comment-edit]').click()
+  await first.locator('[data-comment-input]').fill('Mine')
+  await api.ok('POST', `/api/dispatch/tickets/${ticket}/comments/${one.comment.id}/edit`, { opId: opOf(key, 'c1-theirs'), byName: 'Priya', body: 'Theirs' })
+  await expect(first).toHaveAttribute('data-comment-rev', '2')
+  // Save sends nothing: their text is said and the draft kept.
+  await first.locator('[data-comment-submit]').click()
+  await expect(first.locator('[data-comment-theirs-text]')).toHaveText('Theirs')
+  await expect(first.locator('[data-comment-input]')).toHaveValue('Mine')
+  expect(sent).toEqual([])
+  // A second Save replaces it, knowingly, on the revision said.
+  await first.locator('[data-comment-submit]').click()
+  await expect(first.locator('[data-comment-body]')).toHaveText('Mine')
+  expect(sent.map((b) => [b.expectedRev, b.body])).toEqual([[2, 'Mine']])
+
+  // #2 saved while more is typed: the save is done, the editor stays open with the newer text, and its own Save follows on the
+  // revision the first committed.
+  const second = page.locator('[data-ticket-comments] [data-comment="2"]')
+  let release!: () => void
+  hold = new Promise<void>((resolve) => (release = resolve))
+  await second.locator('[data-comment-edit]').click()
+  await second.locator('[data-comment-input]').fill('The second, edited')
+  await second.locator('[data-comment-submit]').click()
+  await expect.poll(() => sent.length).toBe(2)
+  await second.locator('[data-comment-input]').fill('The second, edited twice')
+  hold = null
+  release()
+  await expect(second).toHaveAttribute('data-comment-rev', '2')
+  await expect(second.locator('[data-comment-input]')).toHaveValue('The second, edited twice')
+  await second.locator('[data-comment-submit]').click()
+  await expect(second.locator('[data-comment-body]')).toHaveText('The second, edited twice')
+  expect(sent.map((b) => [b.expectedRev, b.body]).slice(1)).toEqual([
+    [1, 'The second, edited'],
+    [2, 'The second, edited twice'],
+  ])
+  const read = await api.ok<{ ticket: { comments: Array<{ n: number; body: string }> } }>('GET', `/api/dispatch/tickets/${ticket}`)
+  expect(read.ticket.comments.map((c) => [c.n, c.body])).toEqual([
+    [1, 'Mine'],
+    [2, 'The second, edited twice'],
+  ])
+})
+
 test('an attachment uploaded and downloaded byte for byte, an image shown through an object URL, an SVG offered as a download only', async ({ page, api }) => {
   const key = await freeKey(api)
   await made(api, key, 'The files')
@@ -1090,6 +1149,7 @@ test('a parent set and shown on both pages, a blocks relation both ways, and a s
   await pickTicket(page, page.locator('[data-parent-picker]'), `${key}-1`)
   await expect(page.locator('[data-ticket-parent]')).toHaveAttribute('data-parent', `${key}-1`)
   await expect(page.locator('[data-parent-link]')).toContainText('The epic')
+  await expect(page.locator('[data-parent-status]')).toHaveAttribute('data-parent-status', 'backlog')
 
   // "Is blocked by" the blocker, made from the blocker's side: shown here under Blocked by, and Blocked said.
   await page.locator('[data-relation-kind]').click()
@@ -1105,6 +1165,7 @@ test('a parent set and shown on both pages, a blocks relation both ways, and a s
   await expect(page.locator('[data-ticket-blocked]')).toHaveCount(0)
   await page.goto(`/dispatch/${key}/1`)
   await expect(page.locator(`[data-ticket-children] [data-child="${key}-2"]`)).toContainText('The child')
+  await expect(page.locator('[data-children-count]')).toHaveText('(1)')
 
   // A second browser on the blocked child: the first cancels the blocker, and Blocked goes with no reload.
   other = await browser.newContext({ viewport: { width: 1440, height: 900 } })
@@ -1137,6 +1198,18 @@ test('a parent set and shown on both pages, a blocks relation both ways, and a s
   await page.locator('[data-relation-kind]').click()
   await page.getByRole('option', { name: 'Blocks', exact: true }).click()
   await pickTicket(page, page.locator('[data-relation-to]'), `${key}-4`)
+  await expect(page.locator(`[data-relations="blocks"] [data-relation="${key}-4"]`)).toBeVisible()
+  // A relation of another kind with the same ticket is offered and made; one of the same kind is not offered.
+  await page.locator('[data-relation-to]').click()
+  await page.getByPlaceholder('A key or words of its title…').fill(`${key}-`)
+  await expect(page.locator(`[data-ticket-pick="${key}-1"]`)).toBeVisible()
+  await expect(page.locator(`[data-ticket-pick="${key}-3"]`)).toBeVisible()
+  await expect(page.locator(`[data-ticket-pick="${key}-4"]`)).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await page.locator('[data-relation-kind]').click()
+  await page.getByRole('option', { name: 'Relates to' }).click()
+  await pickTicket(page, page.locator('[data-relation-to]'), `${key}-4`)
+  await expect(page.locator(`[data-relations="relates"] [data-relation="${key}-4"]`)).toBeVisible()
   await expect(page.locator(`[data-relations="blocks"] [data-relation="${key}-4"]`)).toBeVisible()
   await page.goto(`/dispatch/${key}/4`)
   await expect(page.locator(`[data-relations="blocked-by"] [data-relation="${key}-2"]`)).toBeVisible()
@@ -1225,6 +1298,30 @@ test("a project's description, labels and milestones made on its page, picked on
   await expect(milestone).toHaveAttribute('data-milestone-state', 'closed')
   await milestone.locator('[data-milestone-state-toggle]').click()
   await expect(milestone).toHaveAttribute('data-milestone-state', 'open')
+  // Its name edited here while another person writes its description: theirs is kept, as the name is not theirs to change.
+  const v1 = (await api.ok<{ milestones: Array<{ id: string; name: string }> }>('GET', `/api/dispatch/projects/${key}`)).milestones.find((m) => m.name === 'v1')!
+  const rev = Number(await milestone.getAttribute('data-milestone-rev'))
+  await milestone.locator('[data-milestone-edit]').click()
+  await milestone.locator('[data-milestone-name-input]').fill('v1.0')
+  await api.ok('POST', `/api/dispatch/projects/${key}/milestones/${v1.id}/edit`, { opId: opOf(key, 'v1-theirs'), byName: 'Priya', description: 'Theirs' })
+  await expect(milestone).toHaveAttribute('data-milestone-rev', String(rev + 1))
+  await milestone.locator('[data-milestone-save]').click()
+  const renamed = settings.locator('[data-project-milestone="v1.0"]')
+  await expect(renamed).toBeVisible()
+  await expect(renamed).toContainText('Theirs')
+  // The other way: their name, given while this one is renamed, is said, and a second Save replaces it.
+  await renamed.locator('[data-milestone-edit]').click()
+  await renamed.locator('[data-milestone-name-input]').fill('v1.1')
+  await api.ok('POST', `/api/dispatch/projects/${key}/milestones/${v1.id}/edit`, { opId: opOf(key, 'v1-theirs-name'), byName: 'Priya', name: 'v1 final' })
+  const theirs = settings.locator('[data-project-milestone="v1 final"]')
+  await expect(theirs).toBeVisible()
+  await theirs.locator('[data-milestone-save]').click()
+  await expect(theirs.locator('[data-milestone-theirs-name]')).toContainText('v1 final')
+  await expect(theirs.locator('[data-milestone-name-input]')).toHaveValue('v1.1')
+  await theirs.locator('[data-milestone-save]').click()
+  await expect(settings.locator('[data-project-milestone="v1.1"]')).toContainText('Theirs')
+  const stored = (await api.ok<{ milestones: Array<{ id: string; name: string; description: string }> }>('GET', `/api/dispatch/projects/${key}`)).milestones.find((m) => m.id === v1.id)!
+  expect([stored.name, stored.description]).toEqual(['v1.1', 'Theirs'])
   await page.keyboard.press('Escape')
 
   // Picked on the ticket's page.
@@ -1238,8 +1335,8 @@ test("a project's description, labels and milestones made on its page, picked on
   await expect(page.getByRole('listbox')).toHaveCount(0)
   await expect(page).toHaveURL(new RegExp(`/dispatch/${key}/1$`))
   await page.locator('[data-ticket-milestone]').click()
-  await page.getByRole('option', { name: 'v1' }).click()
-  await expect(page.locator('[data-ticket-milestone]')).toContainText('v1')
+  await page.getByRole('option', { name: 'v1.1' }).click()
+  await expect(page.locator('[data-ticket-milestone]')).toContainText('v1.1')
   await expect.poll(async () => (await api.ok<{ ticket: { labels: string[]; milestoneId: string } }>('GET', `/api/dispatch/tickets/${key}-1`)).ticket.labels.length).toBe(2)
   await mark(page)
 
@@ -1250,7 +1347,7 @@ test("a project's description, labels and milestones made on its page, picked on
   await expect(page.locator('[data-ticket-labels] [data-label]')).toHaveCount(1)
   await expect(page.locator('[data-ticket-labels] [data-label="backend"]')).toBeVisible()
   await api.ok('POST', `/api/dispatch/projects/${key}/milestones/${read.milestones[0]!.id}/delete`, { opId: opOf(key, 'del-v1'), byName: 'Priya' })
-  await expect(page.locator('[data-ticket-milestone]')).not.toContainText('v1')
+  await expect(page.locator('[data-ticket-milestone]')).not.toContainText('v1.1')
   expect(await marked(page)).toBe('kept')
   await expect(page.locator('[data-ticket-history]')).toContainText('removed the label')
 })

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DispatchTicket, RelatedTicket, TicketRelation, TicketSummary } from '~/composables/useDispatch'
-import { RELATION_CHOICES, projectPath, relationGroups, statusWord, ticketPath, type RelationChoice, type RelationRow } from '~/utils/dispatch'
+import { RELATION_CHOICES, projectPath, relationExcluded, relationGroups, statusWord, ticketPath, type RelationChoice, type RelationRow } from '~/utils/dispatch'
 
 /**
  * A ticket among its project's (docs/plans/dispatch.md, PR-10; "Hierarchy, relations and references", "Deleting a ticket"): its
@@ -21,10 +21,9 @@ const props = defineProps<{
 const groups = computed(() => relationGroups(props.ticket.id, props.ticket.relations ?? []))
 const children = computed(() => props.ticket.children?.tickets ?? [])
 const childrenTotal = computed(() => props.ticket.children?.total ?? 0)
-/** The tickets not to offer: this one, and those it is related to already. */
-const exclude = computed(() => [props.ticket.id, ...(props.ticket.relations ?? []).filter((r) => !r.deletedAt).map((r) => r.other.id)])
-
 const choice = ref<RelationChoice>('blocks')
+/** The tickets not to offer: this one, and those it holds the relation chosen with already; one of another kind may still be made. */
+const exclude = computed(() => relationExcluded(props.ticket.id, props.ticket.relations ?? [], choice.value))
 const adding = ref(false)
 async function picked(t: TicketSummary) {
   adding.value = true
@@ -60,7 +59,7 @@ function rowClass(r: RelationRow): string {
 
     <!-- Its children: the first 50 by number, the rest in the project's list filtered by parent. -->
     <div class="flex flex-col gap-1.5" data-ticket-children :data-count="childrenTotal">
-      <span class="text-xs font-medium text-muted">Children</span>
+      <span class="text-xs font-medium text-muted">Children<template v-if="childrenTotal"> <span class="font-mono text-dimmed" data-children-count>({{ childrenTotal }})</span></template></span>
       <span v-if="!children.length" class="text-sm text-dimmed">None</span>
       <ul v-else class="flex flex-col">
         <li v-for="c in children" :key="c.id" class="flex min-w-0 items-center gap-2 py-0.5 text-sm" :data-child="c.key">

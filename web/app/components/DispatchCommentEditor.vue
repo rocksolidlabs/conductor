@@ -3,7 +3,7 @@
  * A comment written or edited (DispatchComments): Markdown in a textarea, a Preview beside it rendered as the comment will be, the
  * ticket's images of its attachments among it, and the store's bound in bytes, past which the button is off. Ctrl+Enter (⌘+Enter)
  * sends it, Escape cancels when there is a Cancel. What is written stays while it is sent, and goes once it is done (`submit` answers
- * true).
+ * true), which it says (`sent`) only when nothing more was written meanwhile: what was, stays, and the editor with it.
  */
 const props = defineProps<{
   /** The text it opens with: a comment's body to edit, '' for a new one. */
@@ -17,7 +17,7 @@ const props = defineProps<{
   disabled?: boolean
   placeholder?: string
 }>()
-const emit = defineEmits<{ cancel: [] }>()
+const emit = defineEmits<{ cancel: []; sent: [] }>()
 
 /** A comment's bound, the store's, in bytes. */
 const MAX_COMMENT = 16 << 10
@@ -44,6 +44,7 @@ async function send() {
     if ((await props.submit(body)) && draft.value === body) {
       draft.value = ''
       tab.value = 'write'
+      emit('sent')
     }
   } finally {
     sending.value = false

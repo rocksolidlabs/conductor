@@ -62,15 +62,24 @@ const items = computed(() =>
   })),
 )
 
+/**
+ * Counts the picks: the menu is made again after each, so it holds no value of its own. Holding the last one, it would show it as if
+ * chosen, and a pick of the same ticket again (another relation with it, or one tried again after a refusal) would change nothing and
+ * never be emitted.
+ */
+const picks = ref(0)
+
 function pick(v: unknown) {
   const t = found.value.find((x) => x.key === v)
   open.value = false
+  picks.value++
   if (t) emit('pick', t)
 }
 </script>
 
 <template>
   <USelectMenu
+    :key="picks"
     v-model:open="open"
     v-model:search-term="term"
     :model-value="undefined"

@@ -11,7 +11,9 @@ import { CLOSE_REQUIREMENTS, LABEL_COLOR_CHOICES, closeRequiresOf, labelDot, sam
  * of the twelve names the UI maps to the brand's scales (never a value of the client's own) and deleted; a milestone made, renamed,
  * given a target date and a description, closed and opened again, and deleted. Each change is one operation on the revision shown
  * (useDispatchOps); a delete leaves every ticket that had the label or the milestone, which the open pages of those tickets see by the
- * project's events. The page reads the project again once an operation is done (`changed`) and on every event of the project.
+ * project's events. The page reads the project again once an operation is done (`changed`) and on every event of the project. A rename
+ * and a milestone's edit are made against what their editor opened on: only the fields changed from it are sent, on its revision, so
+ * another person's edit of a field left alone is kept; one of a field edited here is said, the draft kept, and a second Save replaces it.
  */
 const open = defineModel<boolean>('open', { default: false })
 const props = defineProps<{ project: string; read: ProjectRead; gate: DispatchOrder; archived: boolean }>()
@@ -92,12 +94,27 @@ async function makeLabel() {
 
 const renaming = ref('')
 const renameDraft = ref('')
+/** The label as the rename opened on it, or as another person's rename left it once said: what the rename is made against. */
+const renameBase = ref({ name: '', rev: 0 })
+/** Another person's name for the label, given while this one was typed: said until the rename closes. */
+const renameTheirs = ref('')
 function startRename(l: DispatchLabel) {
   renaming.value = l.id
   renameDraft.value = l.name
+  renameBase.value = { name: l.name, rev: l.rev }
+  renameTheirs.value = ''
 }
 async function rename(l: DispatchLabel) {
   const name = renameDraft.value.trim()
+  const base = renameBase.value
+  if (l.rev !== base.rev) {
+    // Changed since the rename opened: another name is said and not replaced unseen; a recolour is no matter to it.
+    renameBase.value = { name: l.name, rev: l.rev }
+    if (l.name !== base.name) {
+      renameTheirs.value = l.name
+      return
+    }
+  }
   if (!name || name === l.name) {
     renaming.value = ''
     return
@@ -138,16 +155,46 @@ function editMilestone(m: DispatchMilestone, change: MilestoneEdit): Promise<boo
 const editingMilestone = ref('')
 const milestoneName = ref('')
 const milestoneDescription = ref('')
+/** The milestone as its editor opened on it, or as another person's edit left it once taken in: what a save is made against. */
+const milestoneBase = ref({ name: '', description: '', rev: 0 })
+/** Another person's edit of a field edited here, made meanwhile: said until the editor closes. */
+const milestoneTheirs = ref<{ name?: string; description?: string } | null>(null)
 function startMilestone(m: DispatchMilestone) {
   editingMilestone.value = m.id
   milestoneName.value = m.name
   milestoneDescription.value = m.description
+  milestoneBase.value = { name: m.name, description: m.description, rev: m.rev }
+  milestoneTheirs.value = null
 }
+/**
+ * Saves the fields changed from what the editor opened on, on its revision. When another person's edit came meanwhile, a field left
+ * alone here takes theirs (its draft too), and one edited here that they changed as well is said and not sent: the next Save replaces
+ * it, knowingly.
+ */
 async function saveMilestone(m: DispatchMilestone) {
-  const change: MilestoneEdit = {}
+  const base = milestoneBase.value
   const name = milestoneName.value.trim()
-  if (name && name !== m.name) change.name = name
-  if (milestoneDescription.value !== m.description) change.description = milestoneDescription.value
+  const nameEdited = !!name && name !== base.name
+  const descriptionEdited = milestoneDescription.value !== base.description
+  if (m.rev !== base.rev) {
+    const theirs: { name?: string; description?: string } = {}
+    if (m.name !== base.name) {
+      if (nameEdited) theirs.name = m.name
+      else milestoneName.value = m.name
+    }
+    if (m.description !== base.description) {
+      if (descriptionEdited) theirs.description = m.description
+      else milestoneDescription.value = m.description
+    }
+    milestoneBase.value = { name: m.name, description: m.description, rev: m.rev }
+    if (Object.keys(theirs).length) {
+      milestoneTheirs.value = theirs
+      return
+    }
+  }
+  const change: MilestoneEdit = {}
+  if (nameEdited && name !== m.name) change.name = name
+  if (descriptionEdited && milestoneDescription.value !== m.description) change.description = milestoneDescription.value
   if (!Object.keys(change).length || (await editMilestone(m, change))) editingMilestone.value = ''
 }
 function setTarget(m: DispatchMilestone, target: string) {
@@ -194,7 +241,7 @@ const milestoneOver = computed(() => new TextEncoder().encode(milestoneDescripti
           <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">Labels</h3>
           <p v-if="!labels.length" class="text-sm text-dimmed">None yet.</p>
           <ul class="flex flex-col gap-1.5">
-            <li v-for="l in labels" :key="l.id" class="flex flex-col gap-1.5" :data-project-label="l.name" :data-label-color="l.color">
+            <li v-for="l in labels" :key="l.id" class="flex flex-col gap-1.5" :data-project-label="l.name" :data-label-color="l.color" :data-label-rev="l.rev">
               <div class="flex min-w-0 items-center gap-2">
                 <USelect :model-value="l.color" :items="colorItems" :disabled="archived" size="xs" class="w-28 flex-none" :aria-label="`The colour of ${l.name}`" data-label-color-pick @update:model-value="(c: unknown) => recolor(l, c)">
                   <template #leading><span class="size-2.5 rounded-full" :class="labelDot(l.color)" /></template>
@@ -210,6 +257,7 @@ const milestoneOver = computed(() => new TextEncoder().encode(milestoneDescripti
                   <UButton icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :aria-label="`Delete ${l.name}`" data-label-delete @click="confirming = l.id" />
                 </template>
               </div>
+              <p v-if="renaming === l.id && renameTheirs" class="text-xs text-warning" data-label-theirs>It was renamed {{ renameTheirs }} while you typed: Save again to replace that with yours, or Escape to keep it.</p>
               <div v-if="confirming === l.id" class="flex flex-wrap items-center gap-2 text-sm" data-label-confirm>
                 <span class="text-muted">Delete {{ l.name }}? Every ticket that has it loses it.</span>
                 <UButton label="Delete" color="error" variant="soft" size="xs" data-label-delete-confirm @click="deleteLabel(l)" />
@@ -232,7 +280,7 @@ const milestoneOver = computed(() => new TextEncoder().encode(milestoneDescripti
           <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">Milestones</h3>
           <p v-if="!milestones.length" class="text-sm text-dimmed">None yet.</p>
           <ul class="flex flex-col gap-3">
-            <li v-for="m in milestones" :key="m.id" class="flex flex-col gap-2 rounded-md p-3 ring ring-default" :data-project-milestone="m.name" :data-milestone-state="m.state">
+            <li v-for="m in milestones" :key="m.id" class="flex flex-col gap-2 rounded-md p-3 ring ring-default" :data-project-milestone="m.name" :data-milestone-state="m.state" :data-milestone-rev="m.rev">
               <div class="flex min-w-0 flex-wrap items-center gap-2">
                 <UIcon :name="m.state === 'closed' ? 'i-lucide-milestone' : 'i-lucide-flag'" class="size-4 flex-none text-muted" />
                 <span class="min-w-0 flex-1 truncate text-sm font-medium" :class="m.state === 'closed' ? 'text-muted line-through' : 'text-highlighted'" data-milestone-name>{{ m.name }}</span>
@@ -240,6 +288,11 @@ const milestoneOver = computed(() => new TextEncoder().encode(milestoneDescripti
               </div>
               <p v-if="m.description && editingMilestone !== m.id" class="whitespace-pre-wrap text-xs text-muted">{{ m.description }}</p>
               <form v-if="editingMilestone === m.id" class="flex flex-col gap-2" @submit.prevent="saveMilestone(m)">
+                <div v-if="milestoneTheirs" class="flex flex-col gap-1 rounded-md p-2 text-xs text-warning ring ring-warning/40" data-milestone-theirs>
+                  <span>It was changed while you edited. Save again to replace it with yours, or Cancel to keep it.</span>
+                  <span v-if="milestoneTheirs.name !== undefined" data-milestone-theirs-name>Its name now: {{ milestoneTheirs.name }}</span>
+                  <span v-if="milestoneTheirs.description !== undefined" class="whitespace-pre-wrap" data-milestone-theirs-description>Its description now: {{ milestoneTheirs.description || '(none)' }}</span>
+                </div>
                 <UInput v-model="milestoneName" size="sm" maxlength="60" aria-label="The milestone's name" data-milestone-name-input />
                 <UTextarea v-model="milestoneDescription" :rows="3" autoresize size="sm" placeholder="What it is for…" aria-label="The milestone's description" data-milestone-description-input />
                 <div class="flex items-center gap-2">

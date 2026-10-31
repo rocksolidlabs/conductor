@@ -1,39 +1,23 @@
 import type { TicketAttachment } from './useDispatch'
-import { inlineImage } from '~/utils/dispatch'
+import { AttachmentImages, inlineImage } from '~/utils/dispatch'
 
 /**
  * A ticket page's attachments as the browser shows them (docs/plans/dispatch.md, Owner decisions, 8): every content fetched with the
  * workbench token and shown through an object URL, since an `img` or a link the browser follows would carry no header; never an `img`
  * whose source is the API. An attachment's content never changes (it is named by its hash, and an attachment is added and removed,
- * never edited), so each is fetched once by its id while the page is open, and every object URL is revoked when it goes.
+ * never edited), so each is fetched once by its id while the page is open, and every object URL is revoked when it goes; an image whose
+ * fetch answers after that makes none (AttachmentImages).
  */
 export function useDispatchAttachments(attachments: () => readonly TicketAttachment[]) {
   const api = useDispatchApi()
-  const images = new Map<string, Promise<string | null>>()
-  const made: string[] = []
+  const images = new AttachmentImages((id) => api.attachment(id))
 
   /**
    * The object URL of an attachment's content as an image, or null when the server serves it as no image the page shows (an SVG comes
    * as application/octet-stream, and is never one). A fetch that failed is forgotten, to be asked again by the next render.
    */
   function image(id: string): Promise<string | null> {
-    let p = images.get(id)
-    if (!p) {
-      p = api.attachment(id).then(
-        (blob) => {
-          if (!inlineImage(blob.type)) return null
-          const url = URL.createObjectURL(blob)
-          made.push(url)
-          return url
-        },
-        () => {
-          images.delete(id)
-          return null
-        },
-      )
-      images.set(id, p)
-    }
-    return p
+    return images.image(id)
   }
 
   /** The live image attachments by id, as one string, so the resolver below is made again only when they change. */
@@ -72,11 +56,7 @@ export function useDispatchAttachments(attachments: () => readonly TicketAttachm
     }
   }
 
-  onBeforeUnmount(() => {
-    for (const url of made) URL.revokeObjectURL(url)
-    made.length = 0
-    images.clear()
-  })
+  onBeforeUnmount(() => images.dispose())
 
   return { image, resolver, download }
 }

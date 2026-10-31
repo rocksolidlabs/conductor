@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest'
 import type { TicketComment, TicketRelation } from '~/composables/useDispatch'
 import {
   AssigneePicks,
+  AttachmentImages,
   COMMENT_PAGE,
   LABEL_COLORS,
   LABEL_COLOR_CHOICES,
   attachmentMarkdown,
   attachmentRef,
   commentAuthor,
+  commentGaps,
   earlierComments,
   inlineImage,
   isLabelColor,
@@ -15,6 +17,7 @@ import {
   membersEdit,
   rankTickets,
   relationAdd,
+  relationExcluded,
   relationGroups,
   shownComments,
   sizeWords,
@@ -63,6 +66,40 @@ describe('the comments shown', () => {
     expect(earlierComments(51)).toEqual({ after: 0, limit: 50 })
     expect(earlierComments(101)).toEqual({ after: 50, limit: 50 })
     expect(earlierComments(120)).toEqual({ after: 69, limit: COMMENT_PAGE })
+  })
+
+  it("say where comments are missing: one this page made, kept below the read's window, and earlier pages the window moved past", () => {
+    // #1 made here and kept; the read's window is #3–#52 since: #2 is missing, and said so before #3.
+    const read = Array.from({ length: 50 }, (_, i) => comment(i + 3))
+    const known = new Map([[comment(1).id, comment(1)]])
+    const shown = shownComments('t1', read, [], known)
+    expect(shown.map((c) => c.n).slice(0, 3)).toEqual([1, 3, 4])
+    expect(commentGaps(shown, 3)).toEqual([{ before: comment(3).id, after: 1, limit: 1 }])
+    // Nothing is before #1: no page above it to read.
+    expect(earlierComments(shown[0]!.n)).toBeNull()
+    // #2 made here, before a window at #4: #1 is before it (the earlier page), #3 between (a gap), each counted once.
+    const two = shownComments('t1', read.slice(1), [], new Map([[comment(2).id, comment(2)]]))
+    expect(earlierComments(two[0]!.n)).toEqual({ after: 0, limit: 1 })
+    expect(commentGaps(two, 4)).toEqual([{ before: comment(4).id, after: 2, limit: 1 }])
+    // Earlier pages read to #50, the window moved on to #53 and their re-read not answered: #51 and #52 are missing, before #53.
+    const earlier = Array.from({ length: 50 }, (_, i) => comment(i + 1))
+    const moved = [comment(53), comment(54)]
+    expect(commentGaps(shownComments('t1', moved, earlier), 53)).toEqual([{ before: comment(53).id, after: 50, limit: 2 }])
+    // A gap above the read's first is the read's own (a comment answered before the read has the one before it), and none without a read.
+    expect(commentGaps(shownComments('t1', [comment(1)], [], new Map([[comment(3).id, comment(3)]])), 1)).toEqual([])
+    expect(commentGaps([comment(1), comment(3)], undefined)).toEqual([])
+  })
+
+  it('show the read over earlier pages read before the stream started again, whatever their revisions', () => {
+    const earlier = [comment(49, { body: 'before the restore', rev: 3 }), comment(50, { body: 'before the restore', rev: 3 })]
+    const read = [comment(50, { body: 'restored', rev: 1 }), comment(51)]
+    expect(shownComments('t1', read, earlier)[1]!.body).toBe('before the restore')
+    const shown = shownComments('t1', read, earlier, new Map(), { earlierOutdated: true })
+    expect(shown.map((c) => [c.n, c.body])).toEqual([
+      [49, 'before the restore'],
+      [50, 'restored'],
+      [51, 'comment 51'],
+    ])
   })
 
   it("say who wrote one by the name it recorded, else its actor", () => {
@@ -172,6 +209,22 @@ describe("a ticket's relations", () => {
     ])
   })
 
+  it('offer every ticket but this one and those it holds the relation chosen with: another kind with the same ticket can be made', () => {
+    const rels = [
+      rel('r1', 'me', 'x', 'relates', other('x', 'CND-5')),
+      rel('r2', 'me', 'y', 'blocks', other('y', 'CND-6')),
+      rel('r3', 'z', 'me', 'blocks', other('z', 'CND-7')),
+      rel('r4', 'w', 'me', 'relates', other('w', 'CND-8')),
+      rel('r5', 'me', 'q', 'blocks', other('q', 'CND-9'), '2026-10-30T00:00:00Z'),
+    ]
+    // Relates either way is held with x and w; x, related to, may still be blocked, or block.
+    expect(relationExcluded('me', rels, 'relates')).toEqual(['me', 'x', 'w'])
+    expect(relationExcluded('me', rels, 'blocks')).toEqual(['me', 'y'])
+    expect(relationExcluded('me', rels, 'blocked_by')).toEqual(['me', 'z'])
+    // A removed relation holds nothing: q can be blocked again.
+    expect(relationExcluded('me', rels, 'blocks')).not.toContain('q')
+  })
+
   it('are made from the other side for "is blocked by"', () => {
     expect(relationAdd('blocks', 'CND-1', 'CND-2')).toEqual({ on: 'CND-1', kind: 'blocks', to: 'CND-2' })
     expect(relationAdd('blocked_by', 'CND-1', 'CND-2')).toEqual({ on: 'CND-2', kind: 'blocks', to: 'CND-1' })
@@ -190,6 +243,43 @@ describe("a ticket's attachments", () => {
     expect(attachmentRef('attachment:0123456789abcdef')).toBe('0123456789abcdef')
     expect(attachmentRef('attachment:../x')).toBeNull()
     expect(attachmentRef('https://h/x.png')).toBeNull()
+  })
+
+  it("are images fetched once each, every object URL revoked as the page goes, and none made by a fetch that answers after", async () => {
+    const made: string[] = []
+    const revoked: string[] = []
+    const urls = { create: (b: Blob) => (made.push(`blob:${made.length}`), `blob:${made.length - 1}`), revoke: (u: string) => void revoked.push(u) }
+    const answers = new Map<string, (b: Blob) => void>()
+    let fetches = 0
+    const images = new AttachmentImages(
+      (id) =>
+        new Promise<Blob>((resolve) => {
+          fetches++
+          answers.set(id, resolve)
+        }),
+      urls,
+    )
+    const png = new Blob([new Uint8Array([1])], { type: 'image/png' })
+    const first = images.image('a')
+    expect(images.image('a')).toBe(first)
+    expect(fetches).toBe(1)
+    answers.get('a')!(png)
+    expect(await first).toBe('blob:0')
+    // An SVG is no image the page shows.
+    const svg = images.image('s')
+    answers.get('s')!(new Blob(['<svg/>'], { type: 'application/octet-stream' }))
+    expect(await svg).toBeNull()
+    // The page goes while b is on its way: a's URL is revoked, and b's answer makes none.
+    const late = images.image('b')
+    images.dispose()
+    expect(revoked).toEqual(['blob:0'])
+    answers.get('b')!(png)
+    expect(await late).toBeNull()
+    expect(made).toEqual(['blob:0'])
+    expect(images.held).toBe(0)
+    // Nothing more is fetched once it is gone.
+    expect(await images.image('c')).toBeNull()
+    expect(fetches).toBe(3)
   })
 
   it('say their size in words', () => {

@@ -166,6 +166,39 @@ export async function catchUp(o: CatchUpOptions): Promise<boolean> {
   }
 }
 
+/** How `retried` reads, and when it stops. */
+export interface RetriedOptions {
+  /** The read, sent now: resolves once it answered; rejects when it failed. */
+  read: () => Promise<unknown>
+  /** Whether it is no longer wanted (a later one took its place, the page shows another thing, or is gone): nothing more is read. */
+  stop: () => boolean
+  /** Waits that many milliseconds before a read failed is asked again. */
+  wait: (ms: number) => Promise<void>
+  /** The first wait, doubled after each failure up to `maxMs`: a re-read's (useDispatchLive), the window and DISPATCH_RETRY_MAX_MS. */
+  firstMs: number
+  maxMs: number
+}
+
+/**
+ * A read made outside the live store's reload (a ticket's earlier comments, read again with each read of the ticket) asked again as a
+ * re-read is: after `firstMs`, doubled up to `maxMs`, until one answers or it is no longer wanted. Answers whether one answered. A
+ * failure never stands for the read, which would leave what is shown as it was, with no event to read it again.
+ */
+export async function retried(o: RetriedOptions): Promise<boolean> {
+  let delay = o.firstMs
+  for (;;) {
+    if (o.stop()) return false
+    try {
+      await o.read()
+      return true
+    } catch {
+      if (o.stop()) return false
+      await o.wait(delay)
+      delay = Math.min(delay * 2, o.maxMs)
+    }
+  }
+}
+
 /**
  * `f` made serial: each call starts once every call before it has settled, answered or failed, and resolves or rejects as its own call
  * does. A page's operations on one entity go so (DispatchTicketPage), each expecting the revision the one before it left, where two sent
