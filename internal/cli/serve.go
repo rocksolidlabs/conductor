@@ -21,6 +21,8 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/certs"
@@ -37,6 +39,22 @@ import (
 
 // writeAssets is agents.WriteAssets: a test replaces it to make a mode fail.
 var writeAssets = agents.WriteAssets
+
+// extensions is ext.Freeze: the composition root (runServe, runHost) reads
+// the registry through it, once, at start, which closes it. A test replaces
+// it instead of registering into the process's registry.
+var extensions = ext.Freeze
+
+// extensionsLine names what the registry holds, kind and name, in its
+// order ("identity cloud, notifications push"); "" when nothing is
+// registered, as in a plain build.
+func extensionsLine(p ext.Providers) string {
+	parts := make([]string, 0, len(p.All))
+	for _, e := range p.All {
+		parts = append(parts, e.Kind+" "+e.Name)
+	}
+	return strings.Join(parts, ", ")
+}
 
 // terminalOf is w when it is a terminal, where the person who started the
 // server reads it, and nil otherwise (a file, or a pipe to a parent process,
@@ -170,7 +188,15 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if ui == nil {
 		log.Warn("web UI is not embedded; run `make web-build` before building, API only")
 	}
-	srv, err := api.New(cfg, cat, log, ui, st)
+	// The registry, read once: every slot nothing is registered in holds
+	// its free default (local.Fill, the one place that asks), and the
+	// server holds every provider behind its guard from before its first
+	// write. A plain build registers nothing and says nothing of it.
+	providers := local.Fill(extensions())
+	if line := extensionsLine(providers); line != "" {
+		log.Info("extensions: " + line)
+	}
+	srv, err := api.New(cfg, cat, log, ui, st, api.WithExtensions(providers))
 	if err != nil {
 		return 1, err
 	}
