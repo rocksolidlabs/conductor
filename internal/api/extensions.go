@@ -262,13 +262,18 @@ func (s *Server) extFailed(kind, name, why, detail string) {
 
 // extCall runs fn, a call of the provider name of kind, within wait and
 // answers its result, or fallback when fn errs, panics, returns what valid
-// refuses (a nil valid takes everything), or has not returned by then. The
-// call's context is ctx's, ending after wait and once extCall returns, so a
-// late fn's goroutine finishes on its own and its answer is not used. At
-// most extInFlight calls of one provider and kind run at once: past it,
-// fallback at once. A failure is logged at warn once a minute per provider
-// and kind (extFailed); one that ends because ctx did, the caller gone, is
-// not the provider's and is not logged.
+// refuses (a nil valid takes everything), or has not returned and been
+// checked by then. The call's context is ctx's, ending after wait and once
+// extCall returns, so a late fn's goroutine finishes on its own and its
+// answer is not used. valid runs on that goroutine too, inside the wait
+// and the slot, since what it reads is the provider's (a name of any
+// length): a check still running when the wait ends is late, and holds its
+// slot until it returns. valid must read only what fn answered and what
+// the guard owns, never the caller's, which may change once extCall has
+// returned. At most extInFlight calls of one provider and kind run at
+// once: past it, fallback at once. A failure is logged at warn once a
+// minute per provider and kind (extFailed); one that ends because ctx did,
+// the caller gone, is not the provider's and is not logged.
 //
 // The plan's extCall takes no ctx; this one takes the caller's, so a
 // request that ends ends its provider call too.
@@ -283,12 +288,14 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 	cctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	// failed is a failure's text, read on the call's goroutine (extText):
-	// the caller never runs a method of the provider's.
+	// the caller never runs a method of the provider's. invalid is valid's
+	// refusal, bounded the same way.
 	type result struct {
-		v      T
-		failed string
-		err    bool
-		late   bool
+		v       T
+		failed  string
+		invalid string
+		err     bool
+		late    bool
 	}
 	done := make(chan result, 1)
 	go func() {
@@ -303,12 +310,21 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 			done <- r
 		}()
 		v, err := fn(cctx)
-		// An answer given once its context ended is late, however soon
-		// after: the caller may already have the fallback.
-		r.v, r.late = v, cctx.Err() != nil
+		r.v = v
 		if err != nil {
 			r.err, r.failed = true, extText(err)
+		} else if valid != nil {
+			// valid is the guard's own (ext's checks), over the guard's copy
+			// of the answer (the guarded providers copy what they are
+			// given), never the provider's; it runs here, bounded by the
+			// wait and holding the slot, because its cost is the answer's.
+			if verr := valid(v); verr != nil {
+				r.invalid = extText(verr)
+			}
 		}
+		// An answer given or checked once its context ended is late,
+		// however soon after: the caller may already have the fallback.
+		r.late = cctx.Err() != nil
 	}()
 	var r result
 	select {
@@ -325,15 +341,9 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 	case r.err:
 		s.extFailed(kind, name, "error", r.failed)
 		return fallback
-	}
-	// valid is the guard's own (ext's checks), over the guard's copy of the
-	// answer (the guarded providers copy what they are given), never the
-	// provider's.
-	if valid != nil {
-		if err := valid(r.v); err != nil {
-			s.extFailed(kind, name, "invalid", err.Error())
-			return fallback
-		}
+	case r.invalid != "":
+		s.extFailed(kind, name, "invalid", r.invalid)
+		return fallback
 	}
 	return r.v
 }
@@ -531,12 +541,16 @@ func (g guardRouter) Name() string { return g.name }
 
 // Route answers the provider's route for d, or the empty route (the free
 // default's) when it fails, is late or answers a route Route.Valid refuses
-// for d. It never answers an error.
+// for d. It never answers an error. The provider is given a copy of d and
+// the route is checked against another, the guard's own: a provider that
+// changes the options it was given changes neither the caller's question
+// nor what its answer is checked against.
 func (g guardRouter) Route(ctx context.Context, d ext.Decision) (ext.Route, error) {
+	own := copyDecision(d)
 	return extCall(ctx, g.s, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
-		return r.Valid(d)
+		return r.Valid(own)
 	}, func(ctx context.Context) (ext.Route, error) {
-		r, err := g.p.Route(ctx, d)
+		r, err := g.p.Route(ctx, copyDecision(own))
 		return copyRoute(r), err
 	}), nil
 }
@@ -579,7 +593,7 @@ func (g *guardContext) Context(ctx context.Context, q ext.ContextQuery) ([]ext.C
 		}
 		return nil
 	}, func(ctx context.Context) ([]ext.ContextBlock, error) {
-		bs, err := g.p.Context(ctx, q)
+		bs, err := g.p.Context(ctx, copyQuery(q))
 		return copyOrNil(bs), err
 	}), nil
 }
@@ -711,7 +725,9 @@ var (
 // The guarded providers answer copies, made on the call's goroutine as the
 // provider returns, so what the guard checks (valid) and answers is the
 // guard's own: a provider that changes the slices it answered afterwards
-// changes nothing the seam holds.
+// changes nothing the seam holds. A direct call's provider is given a copy
+// of what it is asked about too, so a provider that changes the slices it
+// was given changes nothing of the caller's, nor what the guard checks.
 
 // copyOrNil is a copy of s, nil for nil.
 func copyOrNil[S ~[]E, E any](s S) S {
@@ -725,6 +741,18 @@ func copyOrNil[S ~[]E, E any](s S) S {
 func copyPrincipal(p ext.Principal) ext.Principal {
 	p.Grants = copyOrNil(p.Grants)
 	return p
+}
+
+// copyDecision is d with its options copied.
+func copyDecision(d ext.Decision) ext.Decision {
+	d.Options = copyOrNil(d.Options)
+	return d
+}
+
+// copyQuery is q with its inputs copied.
+func copyQuery(q ext.ContextQuery) ext.ContextQuery {
+	q.Inputs = copyOrNil(q.Inputs)
+	return q
 }
 
 // copyRoute is r with its destinations and its answer copied.

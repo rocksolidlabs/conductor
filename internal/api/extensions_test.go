@@ -768,6 +768,119 @@ func TestExtCallCopiesAnswers(t *testing.T) {
 	}
 }
 
+// The check of an answer runs inside the bounded call: a check held (a
+// provider's long name being read) ends the call with the fallback when
+// the caller leaves or the wait ends, and holds its slot until it returns,
+// so held checks count against extInFlight like held calls.
+func TestExtCallValidInsideTheCall(t *testing.T) {
+	srv := newExtServer(t, nil)
+	gate := make(chan struct{})
+	in := make(chan struct{}, extInFlight)
+	held := func(int) error {
+		in <- struct{}{}
+		<-gate
+		return nil
+	}
+	answer := func(context.Context) (int, error) { return 1, nil }
+	// The caller leaving while the check is held answers the fallback.
+	ctx, cancel := context.WithCancel(t.Context())
+	got := make(chan int, extInFlight)
+	for range extInFlight {
+		go func() { got <- extCall(ctx, srv, ext.KindIdentity, "cloud", time.Hour, -1, held, answer) }()
+	}
+	for range extInFlight {
+		<-in
+	}
+	cancel()
+	for range extInFlight {
+		if v := <-got; v != -1 {
+			t.Fatalf("a call whose caller left during its check answered %d", v)
+		}
+	}
+	// The checks still held hold their slots: the next call is busy.
+	called := false
+	if v := extCall(t.Context(), srv, ext.KindIdentity, "cloud", time.Hour, -1, nil, func(context.Context) (int, error) {
+		called = true
+		return 2, nil
+	}); v != -1 || called {
+		t.Fatalf("a call while %d checks are held answered %d, called %v", extInFlight, v, called)
+	}
+	close(gate)
+	g := srv.guard(ext.KindIdentity, "cloud")
+	if !waitFor(time.Minute, func() bool { return len(g.slots) == 0 }) {
+		t.Fatalf("the released checks still hold %d slots", len(g.slots))
+	}
+	if v := extCall(t.Context(), srv, ext.KindIdentity, "cloud", time.Hour, -1, nil, answer); v != 1 {
+		t.Fatalf("a call once the checks returned answered %d", v)
+	}
+	// The wait ending while the check is held answers the fallback too.
+	gate2 := make(chan struct{})
+	defer close(gate2)
+	in2 := make(chan struct{}, 1)
+	if v := extCall(t.Context(), srv, ext.KindIdentity, "late", time.Millisecond, -1, func(int) error {
+		in2 <- struct{}{}
+		<-gate2
+		return nil
+	}, answer); v != -1 {
+		t.Fatalf("a check past the wait answered %d", v)
+	}
+	<-in2
+	// Through the identity guard: a principal whose name is long is
+	// checked inside the call, and refused.
+	long := ext.Principal{Subject: "u1", Name: strings.Repeat("n", 1<<20), Grants: []ext.Grant{ext.GrantAdmin}}
+	id := guardIdentity{s: srv, name: "cloud", p: fakeIdentity{answer: func(context.Context, string) (ext.Principal, bool, error) { return long, true, nil }}}
+	if p, ok, _ := id.Authenticate(t.Context(), "tok"); ok {
+		t.Fatalf("a principal with a name past its bound was used: %d bytes", len(p.Name))
+	}
+}
+
+// A provider is given its own copy of what it is asked about: a router that
+// changes the options of the question it was given, to make its answer one
+// of them, has its answer checked against the question as asked, and the
+// caller's question is unchanged; a context provider that changes its
+// query's inputs changes nothing of the caller's.
+func TestExtCallCopiesInputs(t *testing.T) {
+	srv := newExtServer(t, nil)
+	by := ext.Principal{Subject: "u1", Name: "U"}
+	r := guardRouter{s: srv, name: "switchman", p: mutatingRouter{by: by}}
+	d := ext.Decision{ID: "q1", Options: []ext.DecisionOption{{Label: "Yes", Input: "1"}}}
+	if got, _ := r.Route(t.Context(), d); got.Answer != nil {
+		t.Fatalf("a router that rewrote the question's options had its answer used: %+v", got.Answer)
+	}
+	if d.Options[0].Input != "1" {
+		t.Fatalf("the router changed the caller's question: %+v", d.Options)
+	}
+	c := &guardContext{s: srv, name: "graph", p: mutatingContext{}}
+	q := ext.ContextQuery{Task: "t", Inputs: []ext.ContextInput{{Task: "a", Commit: "c1"}}}
+	if _, err := c.Context(t.Context(), q); err != nil {
+		t.Fatal(err)
+	}
+	if q.Inputs[0].Commit != "c1" {
+		t.Fatalf("the context provider changed the caller's query: %+v", q.Inputs)
+	}
+}
+
+// mutatingRouter rewrites the first option of the question it is given to
+// "9" and answers "9".
+type mutatingRouter struct{ by ext.Principal }
+
+func (mutatingRouter) Name() string { return "switchman" }
+func (m mutatingRouter) Route(_ context.Context, d ext.Decision) (ext.Route, error) {
+	d.Options[0].Input = "9"
+	return ext.Route{Answer: &ext.Answer{Input: "9", By: m.by}}, nil
+}
+func (mutatingRouter) Resolved(context.Context, ext.Resolution) {}
+
+// mutatingContext rewrites the first input of the query it is given.
+type mutatingContext struct{}
+
+func (mutatingContext) Name() string                               { return "graph" }
+func (mutatingContext) NoteTouch(context.Context, ext.TouchedFile) {}
+func (mutatingContext) Context(_ context.Context, q ext.ContextQuery) ([]ext.ContextBlock, error) {
+	q.Inputs[0].Commit = "changed"
+	return nil, nil
+}
+
 // syncLog collects what a server logs while a test reads it.
 type syncLog struct {
 	mu sync.Mutex

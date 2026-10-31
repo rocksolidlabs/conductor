@@ -444,10 +444,13 @@ when the call errs, panics, answers what the record's `Valid` refuses, or
 has not answered in time (its late answer is never used; its goroutine
 finishes on its own). At most 16 calls of one provider and kind run at
 once (`extInFlight`); past it the default is answered at once, so a
-provider that hangs holds 16 goroutines of a kind at most. What it checks
-and answers is its own copy of the provider's answer, so a provider that
-changes a slice it answered changes nothing a seam holds; a provider's
-error or panic text is read on the call's goroutine, a panic in it
+provider that hangs holds 16 goroutines of a kind at most. The check of
+an answer runs on that goroutine too, inside the wait and the slot, since
+its cost is the provider's answer's. What it checks and answers is its own
+copy of the provider's answer, and the provider is given a copy of what it
+is asked about, so a provider that changes a slice it answered or was
+given changes nothing a seam holds nor what its answer is checked against;
+a provider's error or panic text is read on the call's goroutine, a panic in it
 recovered, and the caller runs no method of the provider's. Each provider
 is named as the registry named it (`Providers.All`), so `New` asks no
 registered provider anything. A failure is
