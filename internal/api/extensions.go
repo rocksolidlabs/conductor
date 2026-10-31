@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -76,21 +77,25 @@ type extGuard struct {
 }
 
 // installExtensions wraps every provider of p in the guard and holds it,
-// defaults included, so no call site tells a default from a provider. A
-// queue-fed provider's queues drain at once when it is no ext.Starter;
-// a Starter's wait until its Start has succeeded (beginQueues).
+// defaults included, so no call site tells a default from a provider. It
+// calls no provider: each name is the one the registry checked when the
+// provider registered (extNames). No queue drains yet: a queue-fed
+// provider's queues begin when New can no longer fail (beginFreeQueues)
+// when it is no ext.Starter, and once its Start has succeeded
+// (beginQueues) when it is one.
 func (s *Server) installExtensions(p ext.Providers) {
 	s.extCtx, s.extStop = context.WithCancel(context.Background())
 	s.extQueues = map[string][]func(){}
+	name := extNames(p)
 	s.exts = extSlots{
-		identity: guardIdentity{s: s, name: providerName(p.Identity), p: p.Identity},
-		router:   guardRouter{s: s, name: providerName(p.Router), p: p.Router},
-		sync:     guardSync{s: s, name: providerName(p.Continuity), p: p.Continuity},
-		media:    guardMedia{s: s, name: providerName(p.Media), p: p.Media},
+		identity: guardIdentity{s: s, name: name(ext.KindIdentity, 0, p.Identity), p: p.Identity},
+		router:   guardRouter{s: s, name: name(ext.KindDecisions, 0, p.Router), p: p.Router},
+		sync:     guardSync{s: s, name: name(ext.KindSync, 0, p.Continuity), p: p.Continuity},
+		media:    guardMedia{s: s, name: name(ext.KindMedia, 0, p.Media), p: p.Media},
 		all:      append([]ext.Entry(nil), p.All...),
 	}
-	for _, c := range p.Context {
-		g := &guardContext{s: s, name: providerName(c), p: c}
+	for i, c := range p.Context {
+		g := &guardContext{s: s, name: name(ext.KindContext, i, c), p: c}
 		g.touches = newExtQueue(s, ext.KindContext, g.name, ext.TouchQueue, func(ctx context.Context, f ext.TouchedFile) error {
 			c.NoteTouch(ctx, f)
 			return nil
@@ -98,24 +103,37 @@ func (s *Server) installExtensions(p ext.Providers) {
 		s.holdQueue(c, g.name, g.touches.begin)
 		s.exts.context = append(s.exts.context, g)
 	}
-	for _, n := range p.Notifications {
-		g := &guardSink{s: s, name: providerName(n), p: n}
+	for i, n := range p.Notifications {
+		g := &guardSink{s: s, name: name(ext.KindNotifications, i, n), p: n}
 		g.queue = newExtQueue(s, ext.KindNotifications, g.name, ext.SinkQueue, n.Notify)
 		s.holdQueue(n, g.name, g.queue.begin)
 		s.exts.sinks = append(s.exts.sinks, g)
 	}
 }
 
-// holdQueue begins a queue of the provider v named name at once when v is
-// no ext.Starter, and keeps it for beginQueues otherwise.
+// holdQueue keeps a queue of the provider v named name for
+// beginFreeQueues when v is no ext.Starter, and for beginQueues otherwise.
 func (s *Server) holdQueue(v any, name string, begin func()) {
+	s.extMu.Lock()
+	defer s.extMu.Unlock()
 	if _, ok := v.(ext.Starter); !ok {
-		begin()
+		s.extFree = append(s.extFree, begin)
 		return
 	}
-	s.extMu.Lock()
 	s.extQueues[name] = append(s.extQueues[name], begin)
+}
+
+// beginFreeQueues begins the drains of the queues of every provider that
+// is no ext.Starter. New calls it last, once nothing can fail, so a New
+// that fails leaves no drain running and nothing to stop.
+func (s *Server) beginFreeQueues() {
+	s.extMu.Lock()
+	begins := s.extFree
+	s.extFree = nil
 	s.extMu.Unlock()
+	for _, b := range begins {
+		b()
+	}
 }
 
 // beginQueues begins the drains of the queues the provider name holds,
@@ -139,9 +157,28 @@ func (s *Server) stopExtensions() {
 	}
 }
 
+// extNames answers the name of the i-th provider of kind in p, v: the one
+// p.All gives it, which the registry checked when v registered, so no
+// registered provider is asked again (a Name that blocks would hold New).
+// A provider All does not name is a free default (local.Fill puts only
+// those in a slot, and every list entry is registered), whose name is a
+// constant, read through providerName.
+func extNames(p ext.Providers) func(kind string, i int, v ext.Provider) string {
+	byKind := map[string][]string{}
+	for _, e := range p.All {
+		byKind[e.Kind] = append(byKind[e.Kind], e.Name)
+	}
+	return func(kind string, i int, v ext.Provider) string {
+		if names := byKind[kind]; i < len(names) {
+			return names[i]
+		}
+		return providerName(v)
+	}
+}
+
 // providerName is p's name, read without trusting p: a name that panics or
-// that ext.ValidName refuses is "invalid". A registered provider's name was
-// checked when it registered; this reads it again only for the logs.
+// that ext.ValidName refuses is "invalid". Only a slot All does not name
+// is read this way (extNames).
 func providerName(p ext.Provider) (name string) {
 	defer func() {
 		if recover() != nil {
@@ -152,6 +189,33 @@ func providerName(p ext.Provider) (name string) {
 		return n
 	}
 	return "invalid"
+}
+
+// extText is v, a provider's error or panic value, as the guard's log
+// quotes it, at most extErrText bytes. Its Error or String method is the
+// provider's code, so it is read only inside the guard (on the goroutine
+// of the call or delivery it came from), and a panic in it is recovered:
+// the text then says only that.
+func extText(v any) (text string) {
+	defer func() {
+		if recover() != nil {
+			text = "(its text panicked)"
+		}
+	}()
+	switch v := v.(type) {
+	case string:
+		text = v
+	case error:
+		text = v.Error()
+	case fmt.Stringer:
+		text = v.String()
+	default:
+		text = fmt.Sprintf("%v", v)
+	}
+	if len(text) > extErrText {
+		text = text[:extErrText] + "…"
+	}
+	return text
 }
 
 // guard is the guard's state for the provider name of kind.
@@ -172,8 +236,9 @@ func (s *Server) guard(kind, name string) *extGuard {
 
 // extFailed notes a failed call of the provider name of kind, and logs it
 // at warn when its last log is a minute old or more, with how many failed
-// since. The free default has been answered.
-func (s *Server) extFailed(kind, name, why string, err error) {
+// since, and detail (extText's, or the guard's own words; "" for none).
+// It calls nothing of the provider's. The free default has been answered.
+func (s *Server) extFailed(kind, name, why, detail string) {
 	g := s.guard(kind, name)
 	now := time.Now()
 	if s.extClock != nil {
@@ -189,12 +254,8 @@ func (s *Server) extFailed(kind, name, why string, err error) {
 	g.since, g.last = 0, now
 	g.mu.Unlock()
 	attrs := []any{"kind", kind, "provider", name, "failure", why, "failures", failures}
-	if err != nil {
-		msg := err.Error()
-		if len(msg) > extErrText {
-			msg = msg[:extErrText] + "…"
-		}
-		attrs = append(attrs, "err", msg)
+	if detail != "" {
+		attrs = append(attrs, "err", detail)
 	}
 	s.log.Warn("extension call failed: its free default answered", attrs...)
 }
@@ -216,30 +277,38 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 	select {
 	case g.slots <- struct{}{}:
 	default:
-		s.extFailed(kind, name, "busy", fmt.Errorf("%d calls in flight", extInFlight))
+		s.extFailed(kind, name, "busy", fmt.Sprintf("%d calls in flight", extInFlight))
 		return fallback
 	}
 	cctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
+	// failed is a failure's text, read on the call's goroutine (extText):
+	// the caller never runs a method of the provider's.
 	type result struct {
-		v    T
-		err  error
-		late bool
+		v      T
+		failed string
+		err    bool
+		late   bool
 	}
 	done := make(chan result, 1)
 	go func() {
-		defer func() { <-g.slots }()
 		var r result
 		defer func() {
 			if p := recover(); p != nil {
-				r = result{err: fmt.Errorf("panic: %v", p)}
+				r = result{err: true, failed: "panic: " + extText(p)}
 			}
+			// The slot is free before the answer is sent: a caller that has
+			// its answer may call again at once and find it.
+			<-g.slots
 			done <- r
 		}()
-		r.v, r.err = fn(cctx)
+		v, err := fn(cctx)
 		// An answer given once its context ended is late, however soon
 		// after: the caller may already have the fallback.
-		r.late = cctx.Err() != nil
+		r.v, r.late = v, cctx.Err() != nil
+		if err != nil {
+			r.err, r.failed = true, extText(err)
+		}
 	}()
 	var r result
 	select {
@@ -250,16 +319,19 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 	switch {
 	case r.late:
 		if ctx.Err() == nil {
-			s.extFailed(kind, name, "late", fmt.Errorf("no answer within %s", wait))
+			s.extFailed(kind, name, "late", fmt.Sprintf("no answer within %s", wait))
 		}
 		return fallback
-	case r.err != nil:
-		s.extFailed(kind, name, "error", r.err)
+	case r.err:
+		s.extFailed(kind, name, "error", r.failed)
 		return fallback
 	}
+	// valid is the guard's own (ext's checks), over the guard's copy of the
+	// answer (the guarded providers copy what they are given), never the
+	// provider's.
 	if valid != nil {
 		if err := valid(r.v); err != nil {
-			s.extFailed(kind, name, "invalid", err)
+			s.extFailed(kind, name, "invalid", err.Error())
 			return fallback
 		}
 	}
@@ -269,24 +341,30 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 // extDeliver runs fn, a delivery to the provider name of kind, on the
 // calling goroutine (a queue's drain, or a list that drops nothing) with a
 // context that ends after ext.DeliveryWait or with ctx, and answers its
-// error: fn's own, a panic recovered, or the context's end. A failure is
-// logged as extCall logs one. A provider that ignores its context holds
-// only the goroutine that delivers to it.
+// error: fn's own as its text (extText, read here, a panic in it
+// recovered), a panic recovered, or the context's end. A failure is
+// logged as extCall logs one. A provider that ignores its context, or
+// whose error's text blocks, holds only the goroutine that delivers to it.
 func extDeliver(ctx context.Context, s *Server, kind, name string, fn func(context.Context) error) (err error) {
 	cctx, cancel := context.WithTimeout(ctx, ext.DeliveryWait)
 	defer cancel()
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("panic: %v", p)
+			err = errors.New("panic: " + extText(p))
 		}
 		if err == nil && cctx.Err() != nil {
 			err = cctx.Err()
 		}
 		if err != nil && ctx.Err() == nil {
-			s.extFailed(kind, name, "delivery", err)
+			s.extFailed(kind, name, "delivery", err.Error())
 		}
 	}()
-	return fn(cctx)
+	// An error once the context ended is the context's end (the deferred
+	// check answers it), whatever the provider made of it.
+	if err := fn(cctx); err != nil && cctx.Err() == nil {
+		return errors.New(extText(err))
+	}
+	return nil
 }
 
 // extQueue holds what is to be delivered to one provider of one kind, in
@@ -371,9 +449,16 @@ func (q *extQueue[T]) begin() {
 	}
 	q.begun = true
 	q.mu.Unlock()
+	if f := extBegan.Load(); f != nil {
+		(*f)(q.name)
+	}
 	ctx := q.s.extCtx
 	q.s.track(func() { q.run(ctx) })
 }
+
+// extBegan, when a test sets it, is told the provider name of every queue
+// whose drain begins; nil outside tests.
+var extBegan atomic.Pointer[func(name string)]
 
 // run delivers what is queued, in order, until ctx ends.
 func (q *extQueue[T]) run(ctx context.Context) {
@@ -427,7 +512,7 @@ func (g guardIdentity) Authenticate(ctx context.Context, token string) (ext.Prin
 		return nil
 	}, func(ctx context.Context) (answer, error) {
 		p, ok, err := g.p.Authenticate(ctx, token)
-		return answer{p, ok}, err
+		return answer{copyPrincipal(p), ok}, err
 	})
 	if !a.ok {
 		return ext.Principal{}, false, nil
@@ -451,7 +536,8 @@ func (g guardRouter) Route(ctx context.Context, d ext.Decision) (ext.Route, erro
 	return extCall(ctx, g.s, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
 		return r.Valid(d)
 	}, func(ctx context.Context) (ext.Route, error) {
-		return g.p.Route(ctx, d)
+		r, err := g.p.Route(ctx, d)
+		return copyRoute(r), err
 	}), nil
 }
 
@@ -493,7 +579,8 @@ func (g *guardContext) Context(ctx context.Context, q ext.ContextQuery) ([]ext.C
 		}
 		return nil
 	}, func(ctx context.Context) ([]ext.ContextBlock, error) {
-		return g.p.Context(ctx, q)
+		bs, err := g.p.Context(ctx, q)
+		return copyOrNil(bs), err
 	}), nil
 }
 
@@ -583,7 +670,12 @@ func (g guardMedia) ICEServers(ctx context.Context, r ext.ICERequest) ([]ext.ICE
 		}
 		return nil
 	}, func(ctx context.Context) ([]ext.ICEServer, error) {
-		return g.p.ICEServers(ctx, r)
+		ss, err := g.p.ICEServers(ctx, r)
+		ss = copyOrNil(ss)
+		for i := range ss {
+			ss[i].URLs = copyOrNil(ss[i].URLs)
+		}
+		return ss, err
 	}), nil
 }
 
@@ -615,6 +707,47 @@ var (
 	_ ext.ContinuityStore   = guardSync{}
 	_ ext.MediaRoomProvider = guardMedia{}
 )
+
+// The guarded providers answer copies, made on the call's goroutine as the
+// provider returns, so what the guard checks (valid) and answers is the
+// guard's own: a provider that changes the slices it answered afterwards
+// changes nothing the seam holds.
+
+// copyOrNil is a copy of s, nil for nil.
+func copyOrNil[S ~[]E, E any](s S) S {
+	if s == nil {
+		return nil
+	}
+	return append(S{}, s...)
+}
+
+// copyPrincipal is p with its grants copied.
+func copyPrincipal(p ext.Principal) ext.Principal {
+	p.Grants = copyOrNil(p.Grants)
+	return p
+}
+
+// copyRoute is r with its destinations and its answer copied.
+func copyRoute(r ext.Route) ext.Route {
+	r.To = copyOrNil(r.To)
+	if r.Answer != nil {
+		a := *r.Answer
+		a.By = copyPrincipal(a.By)
+		r.Answer = &a
+	}
+	return r
+}
+
+// Registered is every provider the composition root gave the server
+// (WithExtensions), its kind and name, in the registry's order: none for
+// the free build. It is what GET /api/capabilities (C9) will list.
+func (s *Server) Registered() []ext.Registration {
+	out := make([]ext.Registration, 0, len(s.exts.all))
+	for _, e := range s.exts.all {
+		out = append(out, ext.Registration{Kind: e.Kind, Name: e.Name})
+	}
+	return out
+}
 
 // freeBuild is the providers of a server made without WithExtensions.
 func freeBuild() ext.Providers { return local.Fill(ext.Providers{}) }

@@ -220,8 +220,9 @@ type Server struct {
 	// the free defaults where nothing is registered, each behind the guard
 	// (extensions.go). extCtx ends with stopExtensions, and the queues'
 	// drains with it; extMu guards extGuards (the guard's state per
-	// provider and kind) and extQueues (a Starter's queues, held until its
-	// Start has succeeded). extClock is the clock of the guard's
+	// provider and kind), extQueues (a Starter's queues, held until its
+	// Start has succeeded) and extFree (the other queues, held until New
+	// can no longer fail). extClock is the clock of the guard's
 	// once-a-minute log; nil is time.Now, and a test holds its own.
 	exts      extSlots
 	extCtx    context.Context
@@ -229,6 +230,7 @@ type Server struct {
 	extMu     sync.Mutex
 	extGuards map[string]*extGuard
 	extQueues map[string][]func()
+	extFree   []func()
 	extClock  func() time.Time
 }
 
@@ -363,6 +365,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if st != nil {
 		records, err := crew.NewRecords(st)
 		if err != nil {
+			// No queue's drain has begun (beginFreeQueues, below), so
+			// nothing of the providers' outlives this New.
+			s.stopExtensions()
 			return nil, err
 		}
 		s.records = records
@@ -457,6 +462,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 		s.disconnectLinks([]string{linkID})
 	}
+	// Nothing fails past here: the queues of the providers that are no
+	// Starter drain from now on (a Starter's once its Start has succeeded).
+	s.beginFreeQueues()
 	return s, nil
 }
 

@@ -5,6 +5,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +18,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // newExtServer is a server with no data directory made with opts, ended
@@ -545,6 +549,222 @@ func TestExtQueueShutdown(t *testing.T) {
 	case n := <-sink.got:
 		t.Fatalf("delivered %+v after shutdown", n)
 	default:
+	}
+}
+
+// A New that fails after the providers are installed (here the records'
+// directory is a file) leaves no queue's drain running, since none begins
+// before New can no longer fail; a New that succeeds begins the drain of a
+// sink that is no Starter, once.
+func TestNewFailingBeginsNoDrain(t *testing.T) {
+	var began []string
+	var mu sync.Mutex
+	hook := func(name string) {
+		mu.Lock()
+		defer mu.Unlock()
+		began = append(began, name)
+	}
+	extBegan.Store(&hook)
+	t.Cleanup(func() { extBegan.Store(nil) })
+	beganNow := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), began...)
+	}
+	sink := &fakeSink{name: "failing-new", got: make(chan ext.Notification, 1)}
+	p := local.Fill(ext.Providers{
+		Notifications: []ext.NotificationSink{sink},
+		All:           []ext.Entry{{Kind: ext.KindNotifications, Name: "failing-new", Value: sink}},
+	})
+	cfg := config.Defaults()
+	cfg.WorkbenchToken = adminToken
+	cfg.PublicURL = "http://example.test"
+	cfg.DataDir = t.TempDir()
+	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{{ID: "cat", Name: "cat", Command: []string{"/bin/cat"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.DataDir, "runs"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if srv, err := New(cfg, cat, nil, nil, st, WithExtensions(p)); err == nil {
+		srv.WaitBackground(t.Context())
+		t.Fatal("New succeeded with the records' directory a file")
+	}
+	if b := beganNow(); len(b) != 0 {
+		t.Fatalf("a failed New began the drains of %q", b)
+	}
+	// The same providers, on a New that succeeds: the sink drains.
+	srv := newExtServer(t, nil, WithExtensions(p))
+	if b := beganNow(); !slices.Equal(b, []string{"failing-new"}) {
+		t.Fatalf("a New that succeeded began %q, want the sink's drain once", b)
+	}
+	_ = srv.exts.sinks[0].Notify(t.Context(), ext.Notification{Message: "after"})
+	if n := <-sink.got; n.Message != "after" {
+		t.Fatalf("the sink got %+v", n)
+	}
+}
+
+// New asks no registered provider its name again: a provider whose Name
+// blocks once it has registered holds nothing, and the guard names it as
+// the registry did (Providers.All).
+func TestNewAsksNoNameAgain(t *testing.T) {
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	id := blockingName{fakeIdentity{answer: func(context.Context, string) (ext.Principal, bool, error) {
+		return ext.Principal{}, false, nil
+	}}, block}
+	sink := &blockingSink{fakeSink{name: "push", got: make(chan ext.Notification, 1)}, block}
+	p := local.Fill(ext.Providers{
+		Identity:      id,
+		Notifications: []ext.NotificationSink{sink},
+		All: []ext.Entry{
+			{Kind: ext.KindIdentity, Name: "cloud", Value: id},
+			{Kind: ext.KindNotifications, Name: "push", Value: sink},
+		},
+	})
+	srv := newExtServer(t, nil, WithExtensions(p)) // a Name call would hold New here for good
+	if n := srv.exts.identity.Name(); n != "cloud" {
+		t.Fatalf("the identity provider is named %q, want the registry's cloud", n)
+	}
+	if n := srv.exts.sinks[0].Name(); n != "push" {
+		t.Fatalf("the sink is named %q, want the registry's push", n)
+	}
+	if n := srv.exts.router.Name(); n != local.Name {
+		t.Fatalf("the default router is named %q", n)
+	}
+}
+
+// blockingName is an identity provider whose Name blocks until block
+// closes, as if it had answered once, at its registration.
+type blockingName struct {
+	fakeIdentity
+	block chan struct{}
+}
+
+func (b blockingName) Name() string { <-b.block; return "cloud" }
+
+// blockingSink is a fakeSink whose Name blocks until block closes.
+type blockingSink struct {
+	fakeSink
+	block chan struct{}
+}
+
+func (b *blockingSink) Name() string { <-b.block; return "push" }
+
+// badError is an error whose Error method is the provider's code at its
+// worst: it panics, or blocks until block closes.
+type badError struct {
+	panics bool
+	block  chan struct{}
+}
+
+func (e badError) Error() string {
+	if e.panics {
+		panic(e) // a panic whose value is itself an error that panics
+	}
+	<-e.block
+	return "late text"
+}
+
+// A provider's error is read only inside the guard: an Error that panics
+// never escapes, from a call or from a delivery (a queue's drain among
+// them), and one that blocks holds only its own goroutine, the caller
+// answered the fallback within its wait.
+func TestExtErrorTextGuarded(t *testing.T) {
+	var logs syncLog
+	srv := newExtServer(t, slog.New(slog.NewTextHandler(&logs, nil)))
+	panics := badError{panics: true}
+	if got := extCall(t.Context(), srv, ext.KindMedia, "turn", time.Hour, -1, nil, func(context.Context) (int, error) { return 1, panics }); got != -1 {
+		t.Fatalf("an error whose text panics answered %d", got)
+	}
+	if got := extCall(t.Context(), srv, ext.KindContext, "graph", time.Hour, -1, nil, func(context.Context) (int, error) { panic(panics) }); got != -1 {
+		t.Fatalf("a panic whose text panics answered %d", got)
+	}
+	if !strings.Contains(logs.String(), "its text panicked") {
+		t.Fatalf("the log does not say the text panicked:\n%s", logs.String())
+	}
+	block := make(chan struct{})
+	defer close(block)
+	blocks := badError{block: block}
+	if got := extCall(t.Context(), srv, ext.KindIdentity, "cloud", time.Millisecond, -1, nil, func(context.Context) (int, error) { return 1, blocks }); got != -1 {
+		t.Fatalf("an error whose text blocks answered %d", got)
+	}
+	// A delivery: the error answered is the guard's text, never the
+	// provider's value.
+	err := extDeliver(t.Context(), srv, ext.KindSync, "mirror", func(context.Context) error { return panics })
+	if err == nil || err.Error() != "(its text panicked)" {
+		t.Fatalf("a delivery whose error's text panics answered %v", err)
+	}
+	if _, ok := err.(badError); ok {
+		t.Fatal("a delivery answered the provider's own error")
+	}
+	if err := extDeliver(t.Context(), srv, ext.KindSync, "mirror", func(context.Context) error { panic(panics) }); err == nil || !strings.Contains(err.Error(), "its text panicked") {
+		t.Fatalf("a delivery whose panic's text panics answered %v", err)
+	}
+	// Through a queue's drain, which a panic escaping would end with the
+	// process: the next entry is delivered.
+	got := make(chan int, 1)
+	q := newExtQueue(srv, ext.KindNotifications, "push", 4, func(_ context.Context, v int) error {
+		if v == 1 {
+			return panics
+		}
+		got <- v
+		return nil
+	})
+	q.begin()
+	q.push(1)
+	q.push(2)
+	if v := <-got; v != 2 {
+		t.Fatalf("delivered %d after the error, want 2", v)
+	}
+}
+
+// The guarded providers answer copies: a provider that changes the slices
+// it answered after the call changes nothing the seam was given, which is
+// what the guard checked.
+func TestExtCallCopiesAnswers(t *testing.T) {
+	srv := newExtServer(t, nil)
+	ctx := t.Context()
+
+	principal := ext.Principal{Subject: "u1", Name: "U", Grants: []ext.Grant{ext.GrantHost}}
+	id := guardIdentity{s: srv, name: "cloud", p: fakeIdentity{answer: func(context.Context, string) (ext.Principal, bool, error) { return principal, true, nil }}}
+	gotP, ok, _ := id.Authenticate(ctx, "tok")
+	principal.Grants[0] = "root"
+	if !ok || gotP.Grants[0] != ext.GrantHost {
+		t.Fatalf("the provider's later change reached the principal: %+v", gotP)
+	}
+
+	servers := []ext.ICEServer{{URLs: []string{"stun:stun.example.test:3478"}}}
+	m := guardMedia{s: srv, name: "turn", p: fakeMedia{answer: func(context.Context) ([]ext.ICEServer, error) { return servers, nil }}}
+	gotS, _ := m.ICEServers(ctx, ext.ICERequest{Purpose: "viewer"})
+	servers[0].URLs[0] = "http://example.test"
+	servers[0].Username = "changed"
+	if len(gotS) != 1 || gotS[0].URLs[0] != "stun:stun.example.test:3478" || gotS[0].Username != "" {
+		t.Fatalf("the provider's later change reached the servers: %+v", gotS)
+	}
+
+	blocks := []ext.ContextBlock{{Title: "t", Body: "b"}}
+	c := &guardContext{s: srv, name: "graph", p: contextAnswer(blocks)}
+	gotB, _ := c.Context(ctx, ext.ContextQuery{})
+	blocks[0].Body = ""
+	if len(gotB) != 1 || gotB[0].Body != "b" {
+		t.Fatalf("the provider's later change reached the blocks: %+v", gotB)
+	}
+
+	by := ext.Principal{Subject: "u1", Name: "U", Grants: []ext.Grant{ext.GrantAdmin}}
+	route := ext.Route{To: []ext.Destination{{Kind: "person", Name: "ann"}}, Answer: &ext.Answer{Input: "1", By: by}}
+	r := guardRouter{s: srv, name: "switchman", p: routeAnswer{route}}
+	gotR, _ := r.Route(ctx, ext.Decision{ID: "q1", Options: []ext.DecisionOption{{Input: "1"}}})
+	route.To[0].Name = "bob"
+	route.Answer.Input = "9"
+	by.Grants[0] = "root"
+	if len(gotR.To) != 1 || gotR.To[0].Name != "ann" || gotR.Answer == nil || gotR.Answer.Input != "1" || gotR.Answer.By.Grants[0] != ext.GrantAdmin {
+		t.Fatalf("the provider's later change reached the route: %+v %+v", gotR, gotR.Answer)
 	}
 }
 
