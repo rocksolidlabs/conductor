@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -319,5 +320,143 @@ func TestATicketHoldsAtMostItsBoundOfComments(t *testing.T) {
 	cs, err := s.Comments(ctx, key, MaxComments-MaxCommentPage, MaxCommentPage)
 	if err != nil || len(cs) != MaxCommentPage || cs[len(cs)-1].N != MaxComments || cs[len(cs)-1].Body != "The last one" {
 		t.Fatalf("the last page: %d comments %v", len(cs), err)
+	}
+}
+
+// A run's comment goes to the ticket that holds the run when it commits,
+// found in its own transaction, and its id keeps that ticket: before any
+// link it is ErrNoRunTicket with nothing written, so the same id comments
+// once a ticket holds the run; sent again after the link moved, after its
+// receipt was pruned and the link removed, and after the ticket's delete,
+// it answers its receipt, a repeat naming the ticket it went to, and
+// other content op_conflict. A refused comment's id answers op_conflict
+// for other content, before and after the link moved, and its refusal
+// again for its own.
+func TestARunCommentKeepsTheTicketItWentTo(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "RCM")
+	_, a := newTicket(t, s, "RCM", "A")
+	_, b := newTicket(t, s, "RCM", "B")
+	s.SetRunExists(runs("run1"))
+	// comment is the run's comment and, for a done one, the ticket its
+	// log names (OpTicket), as the API reads it back.
+	comment := func(id, body string) (Receipt, string, error) {
+		t.Helper()
+		rc, err := s.AddRunComment(ctx, testOp(id), "run1", body)
+		if err != nil || rc.Status != StatusDone {
+			return rc, "", err
+		}
+		key, found, err := s.OpTicket(ctx, "test", id)
+		if err != nil || !found {
+			t.Fatalf("%s is done and its log names no ticket: %v", id, err)
+		}
+		return rc, key, nil
+	}
+	count := func(key string) int {
+		t.Helper()
+		cs, err := s.Comments(ctx, key, 0, MaxCommentPage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(cs)
+	}
+	sent := func(when, id, body, wantKey string, repeat bool) {
+		t.Helper()
+		rc, key, err := comment(id, body)
+		want(t, rc, err, StatusDone, "")
+		if key != wantKey || rc.Repeat != repeat {
+			t.Fatalf("%s: %s went to %q (repeat %v), want %q (repeat %v)", when, id, key, rc.Repeat, wantKey, repeat)
+		}
+	}
+	refused := func(when, id, body, refusal string, repeat bool) {
+		t.Helper()
+		rc, key, err := comment(id, body)
+		want(t, rc, err, StatusFailed, refusal)
+		if key != "" || rc.Repeat != repeat {
+			t.Fatalf("%s: %s refused %s names %q (repeat %v)", when, id, refusal, key, rc.Repeat)
+		}
+	}
+
+	if _, _, err := comment("c1", "on A"); !errors.Is(err, ErrNoRunTicket) {
+		t.Fatalf("before any link: %v", err)
+	}
+	if _, found, err := s.Receipt(ctx, "test", "c1"); err != nil || found {
+		t.Fatalf("no ticket wrote a receipt: %v %v", found, err)
+	}
+	link, err := addLink(s, "l1", a, NewLink{Kind: LinkRun, Ref: "run1"})
+	want(t, link, err, StatusDone, "")
+	sent("linked to A", "c1", "on A", a, false)
+	refused("linked to A", "c2", "", RefusalInvalid, false)
+	refused("linked to A", "c2", "now with words", RefusalOpConflict, false)
+
+	rc, err := s.RemoveLink(ctx, testOp("r1"), a, link.ID)
+	want(t, rc, err, StatusDone, "")
+	link, err = addLink(s, "l2", b, NewLink{Kind: LinkRun, Ref: "run1"})
+	want(t, link, err, StatusDone, "")
+	sent("moved to B", "c1", "on A", a, true)
+	refused("moved to B", "c1", "other", RefusalOpConflict, false)
+	refused("moved to B", "c2", "", RefusalInvalid, true)
+	refused("moved to B", "c2", "now with words", RefusalOpConflict, false)
+	sent("moved to B", "c3", "on B", b, false)
+	if na, nb := count(a), count(b); na != 1 || nb != 1 {
+		t.Fatalf("moved to B: %d comments on A and %d on B", na, nb)
+	}
+
+	if _, err := s.db.Exec("DELETE FROM ops WHERE actor = 'test' AND id = 'c1'"); err != nil {
+		t.Fatal(err)
+	}
+	rc, err = s.RemoveLink(ctx, testOp("r2"), b, link.ID)
+	want(t, rc, err, StatusDone, "")
+	sent("pruned and unlinked", "c1", "on A", a, true)
+	rc, err = s.DeleteTicket(ctx, testOp("d1"), a)
+	want(t, rc, err, StatusDone, "")
+	sent("A deleted", "c1", "on A", a, true)
+	if _, _, err := comment("c4", "nowhere"); !errors.Is(err, ErrNoRunTicket) {
+		t.Fatalf("unlinked: %v", err)
+	}
+	if na, nb := count(a), count(b); na != 1 || nb != 1 {
+		t.Fatalf("at the end: %d comments on A and %d on B", na, nb)
+	}
+}
+
+// A run's comment is answered by its receipt once it commits, whatever
+// becomes of its context after: cancelled from OnChange, after the commit
+// and before AddRunComment returns, the receipt is done, the comment on
+// the ticket, and the ticket it went to is OpTicket's to read with a
+// live context; the same id sent again is a repeat.
+func TestARunCommentKeepsItsReceiptWhenItsContextEndsAfterTheCommit(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	newProject(t, s, "RCX")
+	_, key := newTicket(t, s, "RCX", "A")
+	s.SetRunExists(runs("run1"))
+	link, err := addLink(s, "l1", key, NewLink{Kind: LinkRun, Ref: "run1"})
+	want(t, link, err, StatusDone, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var commits atomic.Int32
+	s.OnChange(func([]Change) {
+		commits.Add(1)
+		cancel()
+	})
+	rc, err := s.AddRunComment(ctx, testOp("c1"), "run1", "seen")
+	want(t, rc, err, StatusDone, "")
+	if commits.Load() != 1 || ctx.Err() == nil || rc.ID == "" {
+		t.Fatalf("the comment's commit: %d commits, context %v, receipt %+v", commits.Load(), ctx.Err(), rc)
+	}
+	if _, _, err := s.OpTicket(ctx, "test", "c1"); err == nil {
+		t.Fatal("OpTicket read with the cancelled context")
+	}
+	live := context.Background()
+	if got, found, err := s.OpTicket(live, "test", "c1"); err != nil || !found || got != key {
+		t.Fatalf("OpTicket after the commit: %q %v %v", got, found, err)
+	}
+	if c, err := s.Comment(live, key, rc.ID); err != nil || c.Body != "seen" {
+		t.Fatalf("the comment: %+v %v", c, err)
+	}
+	again, err := s.AddRunComment(live, testOp("c1"), "run1", "seen")
+	want(t, again, err, StatusDone, "")
+	if !again.Repeat || again.ID != rc.ID {
+		t.Fatalf("the resend: %+v", again)
 	}
 }

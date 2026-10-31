@@ -44,8 +44,8 @@ export function toMenuItems(groups: readonly (readonly Action[])[]): DropdownMen
  * What a row of the sidebar offers without opening it (design 3c): the same
  * list behind More, the right-click menu, a long press on a phone, and the
  * keys. A session: Open, Open the run (a member), Share…, Show in the Yard,
- * Stop…; a run's header: Open run, Share run, Stop run…; a link shared with
- * you: Open, Forget.
+ * Rename… (a server session, #318), Stop…; a run's header: Open run, Share
+ * run, Stop run…; a link shared with you: Open, Forget.
  */
 export interface RowActionTarget {
   kind: 'session' | 'run' | 'shared'
@@ -54,6 +54,8 @@ export interface RowActionTarget {
   live: boolean
   /** A session that is a run's member: its run can be opened. */
   inRun?: boolean
+  /** A server session, running or ended: it can be renamed here (a hosted one's host names it). */
+  renamable?: boolean
   /** The session's, run's or entry's id, named on the descriptors. */
   id?: string
 }
@@ -63,6 +65,7 @@ export interface RowActionHandlers {
   openRun?: () => void
   share?: () => void
   yard?: () => void
+  rename?: () => void
   stop?: () => void
   forget?: () => void
 }
@@ -88,6 +91,7 @@ export function rowActions(t: RowActionTarget, on: RowActionHandlers): Action[][
   return [
     first,
     [a('share', 'Share…', on.share, { icon: 'i-lucide-share-2', kbds: ['S'], disabled: !t.live }), a('yard', 'Show in the Yard', on.yard, { icon: 'i-lucide-layout-grid' })],
+    ...(t.renamable ? [[a('rename', 'Rename…', on.rename, { icon: 'i-lucide-pencil' })]] : []),
     [a('stop', 'Stop…', on.stop, { icon: 'i-lucide-square', kbds: ['X'], color: 'error', disabled: !t.live, ask: stopQuestion(t) })],
   ]
 }

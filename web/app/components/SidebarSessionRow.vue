@@ -40,7 +40,9 @@ const confirming = defineModel<boolean>('confirming', { default: false })
 const question = computed(() => stopQuestion({ kind: 'session', name: s.value.name }))
 const prompt = computed(() => rowPrompt(props.row))
 
-const target = computed(() => ({ kind: 'session' as const, name: s.value.name, live: live.value, inRun: !!s.value.crew }))
+const target = computed(() => ({ kind: 'session' as const, name: s.value.name, live: live.value, inRun: !!s.value.crew, renamable: s.value.kind === 'server' }))
+// Rename… opens the one dialog (#318), on the session as the row shows it.
+const renameModal = useRenameModal()
 // An exited server session's row ends with Resume, outside the link; the hover actions stop short of it (#257).
 const resumable = computed(() => props.row.state === 'exited' && s.value.kind === 'server')
 // The Share tooltip, shown on hover or focus, would stay up once the share dialog closed and gave the focus back to the button:
@@ -53,6 +55,7 @@ const menu = computed(() =>
     openRun: () => emit('openRun', props.row),
     share: () => emit('share', props.row),
     yard: () => emit('yard', props.row),
+    rename: () => renameModal.show(s.value),
     stop: () => (confirming.value = true),
   }),
 )

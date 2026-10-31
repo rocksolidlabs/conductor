@@ -2257,21 +2257,22 @@ func TestACrewReadBackGoesBackWithoutWhatTheServerSets(t *testing.T) {
 	}
 }
 
-// The launch of a project manifest this build does not run yet is refused
-// with words that say so, and nothing is made; one with its setup phase
-// alone launches, its setup run as a legacy setup is.
-func TestALaunchOfAProjectManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
+// A project manifest of every phase launches (EN1 PR-5 lifted the last
+// refusal): one with verify and cleanup steps is taken, and one with its
+// setup phase alone launches, its setup run as a legacy setup is.
+func TestALaunchOfAProjectManifestOfEveryPhaseIsTaken(t *testing.T) {
 	e := readyEnv(t, nil)
 	e.gitRepo(t)
-	verify := e.sendCrew("POST", "/api/crews", e.manifestCrewBody("Verify", "ready-cat",
-		map[string]any{"verify": []any{map[string]any{"id": "e2e", "argv": []any{"npm", "test"}}}}), http.StatusCreated)
-	resp, out := e.do("POST", "/api/crews/"+verify["id"].(string)+"/launch", adminToken, nil)
-	wantAPIError(t, "a manifest with a verify step", resp, out, http.StatusBadRequest, "invalid_crew", "this build does not run a project manifest's verify steps yet")
-	if _, err := os.Stat(filepath.Join(e.root, ".conductor", "worktrees")); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("a refused launch made the worktrees: %v", err)
+	every := e.sendCrew("POST", "/api/crews", e.manifestCrewBody("Every", "ready-cat",
+		map[string]any{"verify": []any{map[string]any{"id": "e2e", "argv": []any{"true"}}}, "cleanup": []any{map[string]any{"id": "rm", "argv": []any{"true"}}}}), http.StatusCreated)
+	resp, out := e.do("POST", "/api/crews/"+every["id"].(string)+"/launch", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("a manifest with verify and cleanup steps: %d %v", resp.StatusCode, out)
 	}
-	if runs := e.srv.runs.List(); len(runs) != 0 {
-		t.Fatalf("a refused launch kept a run: %+v", runs)
+	everyRun := out["run"].(map[string]any)["id"].(string)
+	runningAttempt(t, e, everyRun, "build", 1)
+	if resp, out := e.do("POST", "/api/runs/"+everyRun+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
 	}
 	setupOnly := e.sendCrew("POST", "/api/crews", e.manifestCrewBody("Setup", "ready-cat",
 		map[string]any{"setup": []any{map[string]any{"id": "deps", "argv": []any{"sh", "-c", "echo dep > dep.txt"}}}}), http.StatusCreated)

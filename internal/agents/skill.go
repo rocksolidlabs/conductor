@@ -37,8 +37,9 @@ when CONDUCTOR_NOTIFY_URL and CONDUCTOR_NOTIFY_TOKEN are set.
 With Conductor's MCP server registered (Claude Code and Codex get it at
 launch), the same reports and crew actions are tools: report, set_state,
 ask, form_crew, add_member, run_status, link, task_context, task_result,
-message_send, inbox_read, inbox_ack, task_blocked and task_checkpoint.
-Call those when you have them; the commands below do the same.
+message_send, inbox_read, inbox_ack, task_blocked, task_checkpoint,
+ticket_read and ticket_comment. Call those when you have them; the
+commands below do the same.
 
 ## When to report
 
@@ -178,6 +179,27 @@ the end of your turn finishes nothing; only a submitted result does.
   commit, so the work is not lost.
 
       "${CONDUCTOR_BIN:-conductor}" task checkpoint --done "handlers and tests" --remaining "the docs" --notes "the docs page is docs/api.md"
+
+## Your ticket
+
+A person may link your run to a Dispatch ticket, Conductor's own record of
+the work: what was asked, the criteria its owner accepts it against, and
+the discussion around it. Read it before you start, with the ticket_read
+tool or the command below; a run with no ticket says so (no_ticket), and
+there is nothing more to do about it.
+
+      "${CONDUCTOR_BIN:-conductor}" task ticket
+
+- Its acceptance criteria are what the work is accepted against: meet them,
+  and say in your result which you could not.
+- Comment on it for the people who own it: what you found, a question about
+  what was asked, what you did and what is left. The comment is your run
+  member's, with the ticket_comment tool or:
+
+      "${CONDUCTOR_BIN:-conductor}" task ticket comment "the cause is the cache key, which ignores the locale; the fix is in the handler"
+
+- You read the ticket and comment on it, nothing more: you cannot change
+  it, close it or make another.
 
 ## Rules
 

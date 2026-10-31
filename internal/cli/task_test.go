@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -243,5 +244,113 @@ func TestTaskSaysSoOutsideASession(t *testing.T) {
 		if code != 1 || out != "" || err == nil || !strings.Contains(err.Error(), "not in a Conductor session") {
 			t.Errorf("%v: %d %q %v", args, code, out, err)
 		}
+	}
+}
+
+// inSessionOf sets the environment of session sid of the server at url,
+// with its agent token, as Conductor injects it.
+func inSessionOf(t *testing.T, url, sid, token string) {
+	t.Helper()
+	t.Setenv("CONDUCTOR_SESSION_ID", sid)
+	t.Setenv("CONDUCTOR_NOTIFY_URL", url+"/api/sessions/"+sid+"/attention")
+	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", token)
+}
+
+// conductor task ticket against a real server, with the session's own
+// token: no ticket before the run is linked to one; the ticket once it
+// is, as Markdown and as JSON; a comment as the run's member, sent once
+// more with the same operation id when its reply is lost, and taken once;
+// no ticket again once the ticket is deleted.
+func TestTaskTicketAgainstTheServer(t *testing.T) {
+	a := newDispatchAPI(t)
+	run, sid, token := a.launchMember(t)
+	inSessionOf(t, a.hs.URL, sid, token)
+	if code, out, err := task(t, "", "ticket"); code != 1 || out != "" || err == nil || !strings.HasSuffix(err.Error(), "(no_ticket)") {
+		t.Fatalf("before a link: %d %q %v", code, out, err)
+	}
+	a.admin(t, "POST", "/api/dispatch/projects", map[string]any{"opId": "p1", "key": "CND", "name": "Conductor"}, http.StatusCreated)
+	a.mustDispatch(t, "create", "--project", "CND", "--title", "Ship the <thing>")
+	a.mustDispatch(t, "link", "CND-1", "--kind", "run", "--ref", run)
+	code, out, err := task(t, "", "ticket")
+	if code != 0 || err != nil || !strings.HasPrefix(out, "# CND-1: Ship the <thing>\n\n- status: backlog\n") || !strings.Contains(out, "## Links (1)\n\n- run "+run+"\n") {
+		t.Fatalf("task ticket: %d %v\n%s", code, err, out)
+	}
+	var st sessionTicket
+	if code, out, err := task(t, "", "ticket", "--json"); code != 0 || err != nil || json.Unmarshal([]byte(out), &st) != nil || st.Ticket.Key != "CND-1" || st.Labels == nil {
+		t.Fatalf("task ticket --json: %d %v %q", code, err, out)
+	}
+	if code, out, err := task(t, "", "ticket", "comment", "seen", "<it>"); code != 0 || err != nil || out != "comment #1 on your ticket\n" {
+		t.Fatalf("task ticket comment: %d %v %q", code, err, out)
+	}
+	before := a.count()
+	a.loseNext("POST", "/api/sessions/"+sid+"/ticket/comments", 1)
+	if code, out, err := task(t, "", "ticket", "comment", "once"); code != 0 || err != nil || out != "comment #2 on your ticket\n" {
+		t.Fatalf("a comment whose reply was lost: %d %v %q", code, err, out)
+	}
+	if posts := a.requests(before); len(posts) != 2 || posts[0].reply != -1 || posts[0].body["opId"] != posts[1].body["opId"] {
+		t.Fatalf("the comment's posts: %+v", posts)
+	}
+	cs := a.ticket(t, "CND-1").Comments
+	if len(cs) != 2 || cs[0].Author != "agent:a" || cs[0].Body != "seen <it>" || cs[1].Author != "agent:a" || cs[1].Body != "once" {
+		t.Fatalf("the ticket's comments: %+v", cs)
+	}
+	for _, args := range [][]string{{"ticket", "nope"}, {"ticket", "comment"}, {"ticket", "comment", " "}} {
+		if code, _, err := task(t, "", args...); code != 2 || err == nil {
+			t.Errorf("%q: %d %v, want a usage error", args, code, err)
+		}
+	}
+	a.admin(t, "POST", "/api/dispatch/tickets/CND-1/delete", map[string]any{"opId": "d1"}, http.StatusOK)
+	if code, _, err := task(t, "", "ticket"); code != 1 || err == nil || !strings.HasSuffix(err.Error(), "(no_ticket)") {
+		t.Fatalf("after the delete: %d %v", code, err)
+	}
+	if code, _, err := task(t, "", "ticket", "comment", "late"); code != 1 || err == nil || !strings.HasSuffix(err.Error(), "(no_ticket)") {
+		t.Fatalf("a comment after the delete: %d %v", code, err)
+	}
+}
+
+// conductor task ticket takes the largest reply the session's read can
+// make, the largest ticket with its labels and milestone padded to the
+// server's bound, through the session client's limit, and prints it
+// whole; a reply past the limit is refused with words.
+func TestTaskTicketPrintsTheLargestTicketWhole(t *testing.T) {
+	clearConductorEnv(t)
+	l := largestFor(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/sessions/s1/ticket", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(l.session) })
+	mux.HandleFunc("GET /api/sessions/s2/ticket", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte(" "), maxSessionReply+1))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	inSessionOf(t, srv.URL, "s1", "agent-tok")
+	code, out, err := task(t, "", "ticket")
+	if code != 0 || err != nil {
+		t.Fatalf("task ticket: %d %v", code, err)
+	}
+	checkWhole(t, out, l.view, l.labels, l.milestone)
+	inSessionOf(t, srv.URL, "s2", "agent-tok")
+	if code, _, err := task(t, "", "ticket"); code != 1 || err == nil || err.Error() != "task: the server's reply is larger than 4 MiB" {
+		t.Fatalf("a reply past the limit: %d %v", code, err)
+	}
+}
+
+// A comment made whose reply carries no comment, the server unable to
+// read it back after its commit (comment null beside a done receipt), is
+// reported made, without a number it does not have.
+func TestTaskTicketCommentWithoutTheCommentRead(t *testing.T) {
+	clearConductorEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/sessions/s1/ticket/comments" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"receipt":{"opId":"o1","intent":"comment.add","status":"done","rev":1,"id":"c1"},"comment":null}`)
+	}))
+	t.Cleanup(srv.Close)
+	inSessionOf(t, srv.URL, "s1", "agent-tok")
+	if code, out, err := task(t, "", "ticket", "comment", "seen"); code != 0 || err != nil || out != "commented on your ticket\n" {
+		t.Fatalf("a comment with no comment read: %d %v %q", code, err, out)
 	}
 }

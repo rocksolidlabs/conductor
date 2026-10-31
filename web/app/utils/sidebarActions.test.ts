@@ -3,13 +3,19 @@ import type { SessionInfo } from '~/composables/useSessions'
 import { ANSWER_IN_TERMINAL, TERMINAL_FIRST } from './attention'
 import { HOST_AWAY, accountItems, rowMenuItems, rowPrompt, sessionLive, stopQuestion } from './sidebarActions'
 
-const on = { open: () => {}, openRun: () => {}, share: () => {}, yard: () => {}, stop: () => {}, forget: () => {} }
+const on = { open: () => {}, openRun: () => {}, share: () => {}, yard: () => {}, rename: () => {}, stop: () => {}, forget: () => {} }
 const shape = (groups: ReturnType<typeof rowMenuItems>) => groups.map((g) => g.map((i) => `${i.label}${i.kbds ? ` [${i.kbds.join('+')}]` : ''}${i.disabled ? ' (off)' : ''}${i.color ? ` ${i.color}` : ''}`))
 
 describe('rowMenuItems', () => {
   it('offers a session Open, Share, the Yard and Stop; a member its run too', () => {
     expect(shape(rowMenuItems({ kind: 'session', name: 'docs-sweep', live: true }, on))).toEqual([['Open [enter]'], ['Share… [S]', 'Show in the Yard'], ['Stop… [X] error']])
     expect(shape(rowMenuItems({ kind: 'session', name: 'core', live: true, inRun: true }, on))).toEqual([['Open [enter]', 'Open the run [R]'], ['Share… [S]', 'Show in the Yard'], ['Stop… [X] error']])
+  })
+
+  it('offers a server session Rename…, running or ended, before Stop; a hosted one none (#318)', () => {
+    expect(shape(rowMenuItems({ kind: 'session', name: 'docs-sweep', live: true, renamable: true }, on))).toEqual([['Open [enter]'], ['Share… [S]', 'Show in the Yard'], ['Rename…'], ['Stop… [X] error']])
+    expect(shape(rowMenuItems({ kind: 'session', name: 'old', live: false, renamable: true }, on))).toEqual([['Open [enter]'], ['Share… [S] (off)', 'Show in the Yard'], ['Rename…'], ['Stop… [X] (off) error']])
+    expect(shape(rowMenuItems({ kind: 'session', name: 'laptop', live: true, renamable: false }, on)).flat()).not.toContain('Rename…')
   })
 
   it('leaves an exited session nothing to stop or share, and still opens', () => {
@@ -28,8 +34,8 @@ describe('rowMenuItems', () => {
   it('wires every item to its handler', () => {
     const calls: string[] = []
     const h = Object.fromEntries(Object.keys(on).map((k) => [k, () => void calls.push(k)])) as unknown as typeof on
-    for (const g of rowMenuItems({ kind: 'session', name: 'x', live: true, inRun: true }, h)) for (const i of g) i.onSelect?.(new Event('select'))
-    expect(calls).toEqual(['open', 'openRun', 'share', 'yard', 'stop'])
+    for (const g of rowMenuItems({ kind: 'session', name: 'x', live: true, inRun: true, renamable: true }, h)) for (const i of g) i.onSelect?.(new Event('select'))
+    expect(calls).toEqual(['open', 'openRun', 'share', 'yard', 'rename', 'stop'])
   })
 })
 

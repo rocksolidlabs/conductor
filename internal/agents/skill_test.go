@@ -50,13 +50,19 @@ func TestSkillText(t *testing.T) {
 		// A project manifest's tree (EN1 PR-3): its ports, its preview and
 		// its state directory, in the environment.
 		"CONDUCTOR_PORT_<NAME> holds each of its ports", "CONDUCTOR_PREVIEW_URL its preview", "CONDUCTOR_STATE_DIR (.conductor/state)",
-		"task_context, task_result,\nmessage_send, inbox_read, inbox_ack, task_blocked and task_checkpoint",
+		"task_context, task_result,\nmessage_send, inbox_read, inbox_ack, task_blocked, task_checkpoint,\nticket_read and ticket_comment",
 		`"${CONDUCTOR_BIN:-conductor}" task send --to docs "the API is under internal/api/users.go; the handler names are final"`,
 		`"${CONDUCTOR_BIN:-conductor}" task inbox`,
 		`"${CONDUCTOR_BIN:-conductor}" task ack 3`,
 		`"${CONDUCTOR_BIN:-conductor}" task blocked --reason "no token for the registry" --message "Set NPM_TOKEN in the worktree's .env, then answer here"`,
 		`"${CONDUCTOR_BIN:-conductor}" task checkpoint --done "handlers and tests" --remaining "the docs" --notes "the docs page is docs/api.md"`,
 		"most 50 not acknowledged",
+		// The ticket the run is linked to (DS1 PR-12): read it, comment on
+		// it, nothing more.
+		`"${CONDUCTOR_BIN:-conductor}" task ticket`,
+		`"${CONDUCTOR_BIN:-conductor}" task ticket comment "the cause is the cache key, which ignores the locale; the fix is in the handler"`,
+		"with the ticket_read\ntool or the command below; a run with no ticket says so (no_ticket)", "with the ticket_comment tool",
+		"You read the ticket and comment on it, nothing more: you cannot change\n  it, close it or make another.",
 		"ever call notify or crew outside a Conductor session; the commands exit silently there",
 		"CONDUCTOR_AGENT", "at most 2 a session", "at most 12 members",
 	} {
@@ -66,6 +72,13 @@ func TestSkillText(t *testing.T) {
 	}
 	if n := strings.Count(body, " notify --"); n != 7 {
 		t.Errorf("%d notify commands, want the 7 above", n)
+	}
+	// The ticket's section comes after the task's and before the rules,
+	// once, and the marker stays the first line after the frontmatter
+	// (above).
+	task, ticket, rules := strings.Index(body, "\n## Your task\n"), strings.Index(body, "\n## Your ticket\n"), strings.Index(body, "\n## Rules\n")
+	if strings.Count(body, "\n## Your ticket\n") != 1 || task < 0 || !(task < ticket && ticket < rules) {
+		t.Errorf("the ticket's section is not between the task's and the rules: %d %d %d", task, ticket, rules)
 	}
 	if strings.Contains(body, "--state needs_input") {
 		t.Error("the skill asks without the mark (--state needs_input)")

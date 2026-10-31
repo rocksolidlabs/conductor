@@ -26,6 +26,7 @@ const foldState = useSidebarFolds()
 const api = useSessions()
 const toast = useToast()
 const quick = useQuickReply()
+const renameModal = useRenameModal()
 
 const query = ref('')
 const filterInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('filterInput')
@@ -319,8 +320,8 @@ const sheet = computed(() => {
     title: s.name,
     meta: rowMeta(s, !!s.crew, now.value).join(' · '),
     items: rowMenuItems(
-      { kind: 'session', name: s.name, live: sessionLive(s.status), inRun: !!s.crew },
-      { open: () => router.push(`/sessions/${s.id}`), openRun: () => openRunOf(t), share: () => shareSession(t), yard: () => showInYard(t), stop: () => askStop(`s:${s.id}`) },
+      { kind: 'session', name: s.name, live: sessionLive(s.status), inRun: !!s.crew, renamable: s.kind === 'server' },
+      { open: () => router.push(`/sessions/${s.id}`), openRun: () => openRunOf(t), share: () => shareSession(t), yard: () => showInYard(t), rename: () => renameModal.show(s), stop: () => askStop(`s:${s.id}`) },
     ),
   }
 })

@@ -383,7 +383,17 @@ func (s *Local) NvimSwap(sub *Subscription, req proto.NvimSwap) error {
 	return nil
 }
 
-// NvimInput sends keys to one of sub's editors.
+// NvimInput sends keys to one of sub's editors, or says why they are
+// refused (the bounds, the policy, an editor no longer there, the rate),
+// which the connection answers with NvimInputRefused. Keys that meet the end
+// of the editor's Neovim, on their way (it died before reading them) or as
+// they come (its end told, the editor not yet let go), are not refused: that
+// end, `closed`, is their word, and the page keeps every key a lost Neovim
+// never said it had done over the text it last held, and names them. A
+// refusal would be a second word, from another goroutine than the end (the
+// keys' call fails as the client's reading ends, and that reading tells the
+// end), and a page that had it first took the key off its text as if Neovim
+// lived (#429).
 func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 	if len(req.Keys) == 0 || len(req.Keys) > proto.MaxNvimKeys {
 		return errors.New("session: invalid nvim input")
@@ -413,6 +423,10 @@ func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 		return ErrTooManyRequests
 	}
 	if err := ed.InputSeq(req.Keys, req.Seq); err != nil {
+		if errors.Is(err, nvim.ErrClosed) {
+			// Neovim ended: its end answers the keys.
+			return nil
+		}
 		var full *nvim.InputFullError
 		if !errors.As(err, &full) {
 			return err
@@ -614,7 +628,8 @@ func truncateRunes(s string, n int) string {
 }
 
 // NvimInputRefused is the nvim_event of kind error for keys that did not
-// reach editor id's Neovim (the bounds, its input full, the editor gone): with
+// reach editor id's Neovim (the bounds, its input full, an editor no longer
+// there; keys that meet its Neovim's end are not refused, NvimInput): with
 // the editor's id and the keys' seq as its ack, so the page knows which.
 func NvimInputRefused(id string, seq uint32, err error) []byte {
 	ev := refusal(err)

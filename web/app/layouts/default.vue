@@ -312,5 +312,6 @@ defineShortcuts({
     <CommandPalette @token="showToken = true" />
     <NeedsYouPill />
     <LaunchSessionModal v-model:open="launch.open.value" @launched="(s) => navigateTo(`/sessions/${s.id}`)" />
+    <RenameSessionModal />
   </UDashboardGroup>
 </template>

@@ -218,6 +218,17 @@ export function connectError(members: readonly GraphMember[], from: string, to: 
   return ''
 }
 
+/**
+ * Vue Flow's connection check for the graph: whether it keeps, or the editor takes, the edge from `from` to `to`. Vue Flow asks it of a
+ * connection the person draws and of every edge the graph hands it, and drops an edge it refuses. So an edge the graph draws is always
+ * kept: a task's need and a handoff join no two members by a start rule, and the start rules alone dropped them from a run's graph at
+ * its first redraw (#281). A new connection is the editor's alone, under the start rules.
+ */
+export function connectionAllowed(members: readonly GraphMember[], drawn: readonly GraphEdge[], editable: boolean, from: string, to: string): boolean {
+  if (drawn.some((e) => e.from === from && e.to === to)) return true
+  return editable && !!from && !!to && connectError(members, from, to) === ''
+}
+
 /** The members with `to` starting after `from` (connectError empty), or starting on its own again (from empty). */
 export function withStart<M extends GraphMember>(members: readonly M[], to: string, start: CrewStart): M[] {
   return members.map((m) => (m.name === to ? { ...m, start } : m))

@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { Page } from '@playwright/test'
 import { expect, test, type Session } from './fixtures'
 
 // The Neovim keymap (design round 12, F8): off by default; the Keys button
@@ -342,7 +343,8 @@ test('a connection that ends keeps its Neovim tabs with their text, lost; after 
       }
     } as typeof WebSocket
   })
-  const cwd = join(state.root, 'files-vim-reconnect')
+  // A directory per repeat: this test leaves swap files on purpose (other.txt's, the ended Neovim's), which a later repeat's open finds.
+  const cwd = join(state.root, `files-vim-reconnect-${test.info().repeatEachIndex}`)
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
   writeFileSync(join(cwd, 'other.txt'), 'beta\n')
@@ -425,11 +427,131 @@ test('a connection that ends keeps its Neovim tabs with their text, lost; after 
   }
 })
 
+// The page's terminal connections, watched (the lost-Neovim tests below): the keys it sends Neovim (their editor and number), the
+// editors it is told ended, the answers to the pings sent here, and the frames handed to it here (deliver); and the editors it asks
+// for, those it is told opened and those it closes.
+interface SocketSeam {
+  sockets?: WebSocket[]
+  nvimSent?: Array<{ id: string; keys: string; seq?: number }>
+  nvimClosed?: string[]
+  pongs?: number[]
+  delivered?: number
+  nvimOpened?: Array<{ id: string; reqId: string; path: string }>
+  nvimOpens?: Array<{ reqId: string; path: string }>
+  nvimCloses?: string[]
+}
+async function watchSockets(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as SocketSeam
+    const control = (data: unknown): Record<string, unknown> | null => {
+      const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data instanceof Uint8Array ? data : null
+      if (!bytes || bytes[0] !== 0x03) return null
+      try {
+        return JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as Record<string, unknown>
+      } catch {
+        return null
+      }
+    }
+    const Native = window.WebSocket
+    window.WebSocket = class extends Native {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols)
+        ;(w.sockets ??= []).push(this)
+        // Before the page's own handler (set later), in the same dispatch: what is noted here the page has had.
+        this.addEventListener('message', (e) => {
+          // A frame handed to the page here, not one its server sent.
+          if (!e.isTrusted) w.delivered = (w.delivered ?? 0) + 1
+          const msg = control(e.data)
+          if (msg?.t === 'nvim_event' && msg.kind === 'closed' && typeof msg.id === 'string') (w.nvimClosed ??= []).push(msg.id)
+          else if (msg?.t === 'nvim_event' && msg.kind === 'opened' && typeof msg.id === 'string')
+            (w.nvimOpened ??= []).push({ id: msg.id, reqId: String(msg.reqId), path: String(msg.path) })
+          else if (msg?.t === 'pong' && typeof msg.ts === 'number') (w.pongs ??= []).push(msg.ts)
+        })
+      }
+      send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+        const msg = control(data)
+        if (msg?.t === 'nvim_input') (w.nvimSent ??= []).push({ id: String(msg.id), keys: String(msg.keys), seq: typeof msg.seq === 'number' ? msg.seq : undefined })
+        else if (msg?.t === 'nvim_close') (w.nvimCloses ??= []).push(String(msg.id))
+        else if (msg?.t === 'nvim_open') (w.nvimOpens ??= []).push({ reqId: String(msg.reqId), path: String(msg.path) })
+        super.send(data)
+      }
+    } as typeof WebSocket
+  })
+}
+/** The control frame of a message, as the page and the server frame it. */
+function controlFrame(msg: Record<string, unknown>): Uint8Array {
+  const body = new TextEncoder().encode(JSON.stringify(msg))
+  const out = new Uint8Array(body.length + 1)
+  out[0] = 0x03
+  out.set(body, 1)
+  return out
+}
+/**
+ * Returns once the server has answered every frame the page sent to session id so far, and the page has had what it said of them: a
+ * ping's answer comes after them (a connection's frames are taken in order). Its number is small, so the page takes the answer for
+ * none of its own (rttFromPong).
+ */
+let pings = 0
+async function serverCaughtUp(page: Page, id: string): Promise<void> {
+  const ts = ++pings
+  await page.evaluate(
+    ({ id, frame }) => {
+      const w = window as unknown as SocketSeam
+      const ws = w.sockets?.filter((s) => s.url.includes(`/ws/sessions/${id}?`) && s.readyState === WebSocket.OPEN).pop()
+      if (!ws) throw new Error(`no open connection to session ${id}`)
+      ws.send(new Uint8Array(frame))
+    },
+    { id, frame: [...controlFrame({ t: 'ping', ts })] },
+  )
+  // Behind keys Neovim never took and the open of another tab's Neovim (15 s at most, the server's bound).
+  await page.waitForFunction((ts) => !!(window as unknown as SocketSeam).pongs?.includes(ts), ts, { timeout: 30_000 })
+}
+/**
+ * Hands the page a frame on session id's connection as its server would send it: dispatched on the socket, so every listener of the
+ * page's has it, and refused when the page has no handler there or the frame did not go through the socket's listeners.
+ */
+async function deliver(page: Page, id: string, msg: Record<string, unknown>): Promise<void> {
+  await page.evaluate(
+    ({ id, frame }) => {
+      const w = window as unknown as SocketSeam
+      const ws = w.sockets?.filter((s) => s.url.includes(`/ws/sessions/${id}?`) && s.readyState === WebSocket.OPEN).pop()
+      if (!ws) throw new Error(`no open connection to session ${id}`)
+      if (typeof ws.onmessage !== 'function') throw new Error(`the page reads session ${id}'s connection without onmessage: deliver needs another way in`)
+      const before = w.delivered ?? 0
+      ws.dispatchEvent(new MessageEvent('message', { data: new Uint8Array(frame).buffer }))
+      if ((w.delivered ?? 0) !== before + 1) throw new Error(`the frame handed to session ${id}'s connection did not reach its listeners`)
+    },
+    { id, frame: [...controlFrame(msg)] },
+  )
+}
+/**
+ * Returns once the page has let go of enough of its Neovims for another to open under the server's bound of four a connection
+ * (proto.MaxNvimPerSub): those it was told opened, less those it closed. The server ends a closed one before it reads the next frame
+ * (NvimClose), so an open sent after this finds its place free. A tab left with keys on their way keeps its Neovim until Neovim has
+ * done them (a loaded machine makes that slow), and only then does the page close it: this waits for that, not for a time.
+ */
+async function roomForNeovim(page: Page): Promise<void> {
+  await page.waitForFunction(
+    () => {
+      const w = window as unknown as SocketSeam
+      const closed = new Set(w.nvimCloses ?? [])
+      return (w.nvimOpened ?? []).filter((o) => !closed.has(o.id)).length < 4
+    },
+    undefined,
+    { timeout: 60_000 },
+  )
+}
+
 // Characters typed in insert mode show at once (the local echo); Neovim, stopped here (SIGSTOP, so it reads none of them), dies
 // before it has them. The tab keeps them: the text Neovim last held with what was typed laid over it, and its changes that come
 // after its end reconciled with it rather than written over it. (#281: a Neovim merely slowed by its config had taken the first
-// character before the kill on a loaded box, and the banner said `yz`; stopped, it takes none, whatever the box does.)
+// character before the kill on a loaded box, and the banner said `yz`; stopped, it takes none, whatever the box does. #429: the
+// server refused the key on its way as Neovim died, a word from another goroutine than its end, and a page that had the refusal
+// first took the `x` off as if Neovim lived; the keys that meet its end are no longer refused.) Neovim has done every key before
+// it is stopped, so the ones typed after are all it never had; once it has ended, the server has answered every key typed before the
+// tab is looked at.
 test('a Neovim lost while typed characters wait for it keeps them in its tab', async ({ page, api, state }) => {
+  await watchSockets(page)
   const cwd = join(state.root, 'files-vim-lost-typed')
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
@@ -455,13 +577,15 @@ test('a Neovim lost while typed characters wait for it keeps them in its tab', a
     const pid = Number(await message.textContent())
     await page.keyboard.type('A')
     await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    // Every key so far done, as Neovim said (the keymap waits for keys on their way): the mode can show before that word comes.
+    await expect(area.locator('[data-editor-keymap]')).toBeEnabled({ timeout: 15_000 })
     // Stopped, Neovim reads nothing more: the characters typed now wait for it, shown by the local echo alone, until it is killed.
     process.kill(pid, 'SIGSTOP')
     await page.keyboard.type('xyz')
     await expect(lines).toContainText('alphaxyz', { timeout: 5_000 })
     process.kill(pid, 'SIGKILL')
     await expect(area.locator('[data-nvim-lost]')).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
-    await page.waitForTimeout(1000)
+    await serverCaughtUp(page, s.id)
     await expect(lines).toContainText('alphaxyz')
     // And the banner says which characters Neovim never had.
     await expect(area.locator('[data-nvim-unconfirmed]')).toHaveText('xyz')
@@ -471,12 +595,89 @@ test('a Neovim lost while typed characters wait for it keeps them in its tab', a
   }
 })
 
+// The same behind another tab: a tab not in front whose Neovim is lost keeps the characters typed that it never had, and a
+// refusal of them that comes after its end changes nothing, as in front. Keys that reach the server once the editor of a Neovim
+// that died has been let go are refused, and the tab not in front took that word as if its Neovim lived (#429); the refusal is
+// handed to the page here, so the order is the test's, not the machine's.
+test('a Neovim lost behind another tab keeps the characters typed it never had, though a refusal of them follows its end', async ({ page, api, state }) => {
+  await watchSockets(page)
+  const cwd = join(state.root, 'files-vim-lost-held')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
+  writeFileSync(join(cwd, 'other.txt'), 'beta\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-lost-held', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    const status = area.locator('[data-nvim-status]')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    const lines = area.locator('.monaco-editor .view-lines')
+    const tab = (name: string) => area.locator('[data-editor-tab]', { hasText: name })
+    await lines.click()
+    await page.keyboard.type(':echo getpid()')
+    await page.keyboard.press('Enter')
+    const message = status.locator('[data-nvim-message]')
+    await expect(message).toHaveText(/^\d+$/, { timeout: 15_000 })
+    const pid = Number(await message.textContent())
+    await page.keyboard.type('A')
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    await expect(area.locator('[data-editor-keymap]')).toBeEnabled({ timeout: 15_000 })
+    process.kill(pid, 'SIGSTOP')
+    await page.keyboard.type('xyz')
+    await expect(lines).toContainText('alphaxyz', { timeout: 5_000 })
+    // Another tab in front: notes.txt's Neovim held behind it, what was typed laid over its text.
+    await pane.locator(`[data-file-node="${cwd}/other.txt"]`).click()
+    await expect(area.locator('[data-editor-tab-active]')).toContainText('other.txt')
+    process.kill(pid, 'SIGKILL')
+    // The keys typed while it was stopped, the last sent of each.
+    const sent = (await page.evaluate(() => (window as unknown as SocketSeam).nvimSent ?? [])).reverse()
+    const id = sent.find((k) => k.keys === 'x')?.id ?? ''
+    const ySeq = sent.find((k) => k.keys === 'y' && k.id === id)?.seq
+    expect(id).not.toBe('')
+    expect(ySeq).toBeGreaterThan(0)
+    // Its end, then a refusal of one of the keys it never had, as for keys that reached the server once its editor was let go.
+    await page.waitForFunction((id) => !!(window as unknown as SocketSeam).nvimClosed?.includes(id), id, { timeout: 15_000 })
+    await deliver(page, s.id, { t: 'nvim_event', id, kind: 'error', ack: ySeq, code: 'file_denied', message: 'session: file access denied' })
+    // Whatever the server itself said of the keys typed, the page has had it.
+    await serverCaughtUp(page, s.id)
+    // In front again: lost, the text it last held with every character it never had, all named.
+    await tab('notes.txt').click()
+    await expect(area.locator('[data-nvim-lost]')).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
+    await expect(lines).toContainText('alphaxyz')
+    await expect(area.locator('[data-nvim-unconfirmed]')).toHaveText('xyz')
+    await expect(status).not.toContainText('Keys did not reach Neovim')
+    await expect(area.locator('[data-editor-tab-active] [data-editor-dirty]')).toBeVisible()
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+// How many Neovims the server has opened on this page for file name, from the answers to the page's opens (watchSockets). The status
+// line shows normal mode before a tab's Neovim answers, so keys typed then reach none; and a tab left then would leave its Neovim
+// running on the server (#500), holding its file's swap file and one of the four a connection keeps. A tab that comes to the front,
+// opened or shown again as another closes, has its Neovim before a test goes on: nvimUp.
+function nvimOpens(page: Page, name: string): Promise<number> {
+  return page.evaluate(
+    (n) =>
+      ((window as unknown as SocketSeam).nvimOpened ?? []).filter((o) => o.reqId !== 'undefined' && (o.path === n || o.path.endsWith(`/${n}`))).length,
+    name,
+  )
+}
+
 // A tab left while keys Neovim has not done are on their way keeps its Neovim: they may be making a change it has not said yet. Neovim
 // is slow here and answers in the middle of a key (its config waits 1.5 s with vim.wait in InsertCharPre and in an x mapped to x, so
 // a key's acknowledgement comes before its change; j is busy for 2 s). Its change then shows on the tab not in front, or folded: the
 // unsaved dot, and the close asks; closing right after typing asks too. Kept Neovims whose keys changed nothing go once done, so tabs
-// left that way do not use up the four a window may keep.
+// left that way do not use up the four a window may keep. Each open that needs one of those four waits for the page to have let a
+// kept one go (roomForNeovim), never for a time: on a loaded machine the keys take longer than any fixed wait (#429's review).
 test('a tab left with keys on their way keeps its Neovim until they are done: their change shows on it, else it goes', async ({ page, api, state }) => {
+  await watchSockets(page)
   const config = join(state.home, '.config', 'nvim')
   mkdirSync(config, { recursive: true })
   writeFileSync(
@@ -497,10 +698,18 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
     const lines = area.locator('.monaco-editor .view-lines')
     const status = area.locator('[data-nvim-status]')
     const tab = (name: string) => area.locator('[data-editor-tab]', { hasText: name })
+    // A tab that comes to the front, opened or shown again as another closes (other.txt here), has its Neovim before the test goes on:
+    // one left before would stay running on the server (#500), a fifth of the four a connection keeps, and later opens are refused.
+    const opens = (name: string) => nvimOpens(page, name)
+    const nvimUp = async (name: string, before: number) => {
+      await expect.poll(() => opens(name), { timeout: 30_000 }).toBeGreaterThan(before)
+      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    }
     const open = async (name: string) => {
+      const before = await opens(name)
       await pane.locator(`[data-file-node="${cwd}/${name}"]`).click()
       await expect(lines).toContainText(name, { timeout: 30_000 })
-      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+      await nvimUp(name, before)
     }
     const typeInto = async () => {
       await lines.click()
@@ -510,17 +719,19 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
     }
     const question = page.locator('[role="dialog"]')
     const discard = async (name: string) => {
+      const before = await opens('other.txt')
       await tab(name).click()
       await page.keyboard.press('Escape')
       await area.locator('[data-editor-tab-active] [data-editor-close]').click()
       await expect(question).toContainText(`Save ${name}?`)
       await question.locator('[data-editor-discard]').click()
       await expect(tab(name)).toHaveCount(0)
+      await nvimUp('other.txt', before)
     }
     await pane.locator(`[data-file-node="${cwd}/edit.txt"]`).click()
     await expect(lines).toContainText('edit.txt', { timeout: 30_000 })
     await area.locator('[data-editor-keymap]').click()
-    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await nvimUp('edit.txt', 0)
     // Another tab in front while x is on its way: once Neovim has it, the tab not in front wears the dot, and its text holds x.
     await typeInto()
     await open('other.txt')
@@ -541,19 +752,25 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
     // Closed right after typing, before Neovim has the character: the close asks.
     await open('quick.txt')
     await typeInto()
+    let before = await opens('other.txt')
     await area.locator('[data-editor-tab-active] [data-editor-close]').click()
     await expect(question).toContainText('Save quick.txt?')
     await question.locator('[data-editor-discard]').click()
     await expect(tab('quick.txt')).toHaveCount(0)
+    await nvimUp('other.txt', before)
     // Closed right after typing, and Save chosen: the character is waited for, then written, then the tab closes.
     await open('saved.txt')
     await typeInto()
+    before = await opens('other.txt')
     await area.locator('[data-editor-tab-active] [data-editor-close]').click()
     await expect(question).toContainText('Save saved.txt?')
     await question.locator('[data-editor-close-save]').click()
     await expect(tab('saved.txt')).toHaveCount(0, { timeout: 15_000 })
     expect(readFileSync(join(cwd, 'saved.txt'), 'utf8')).toBe('saved.txtx\nsecond\n')
-    // The area folded while x is on its way: once Neovim has it, the folded tab says so, and Close all asks.
+    await nvimUp('other.txt', before)
+    // The area folded while x is on its way: once Neovim has it, the folded tab says so, and Close all asks. Opened once the page has
+    // let go of the Neovims of the tabs closed above (a close waits for the keys on their way).
+    await roomForNeovim(page)
     await open('fold.txt')
     await typeInto()
     await area.locator('[data-editor-fold]').click()
@@ -573,7 +790,7 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
       await lines.click()
       await page.keyboard.type(key)
     }
-    await page.waitForTimeout(3000)
+    await roomForNeovim(page)
     await open('f5.txt')
     await expect(status.locator('[data-nvim-message]')).toHaveCount(0)
   } finally {
@@ -698,7 +915,8 @@ test("Don't save holds for its own close only: a later close keeps a change stil
   const config = join(state.home, '.config', 'nvim')
   mkdirSync(config, { recursive: true })
   writeFileSync(join(config, 'init.lua'), "vim.keymap.set('n', 'x', function() vim.wait(1500) return 'x' end, { expr = true })\n")
-  const cwd = join(state.root, 'files-vim-consent')
+  // A directory per repeat: the swap file this test leaves on purpose (clean.txt's) would greet a later repeat's first open.
+  const cwd = join(state.root, `files-vim-consent-${test.info().repeatEachIndex}`)
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'dirty.txt'), 'dirty\n')
   writeFileSync(join(cwd, 'clean.txt'), 'clean\n')
@@ -1285,6 +1503,72 @@ test('typing in insert mode shows at once and settles as Neovim has it; an autop
   }
 })
 
+// A tab left before its Neovim has opened lets that Neovim go once it opens: no tab takes it. Neovim here waits at its start until the
+// test opens a gate (its config waits for a file), so the tab is left while its open is under way, whatever the machine's load. Before,
+// that Neovim stayed until the connection ended: one of the four a connection may keep, and its swap file, which the file's next open
+// met as another Vim's, read only behind a banner, and which outlived that tab's `:q` (#429's review round 2: the swap-file test below
+// failed so under load, a tab switched while its open was slow).
+test('a tab left before its Neovim opened lets that Neovim go, and the file opens again with no swap file', async ({ page, api, state }) => {
+  await watchSockets(page)
+  const gate = join(state.root, `nvim-gate-${test.info().repeatEachIndex}`)
+  const config = join(state.home, '.config', 'nvim')
+  mkdirSync(config, { recursive: true })
+  // Blocking (uv.sleep, not vim.wait, which would answer the server's requests meanwhile): the open waits for the gate, 60 s at most.
+  writeFileSync(
+    join(config, 'init.lua'),
+    `local uv = vim.uv or vim.loop\nlocal t = uv.hrtime()\nwhile not uv.fs_stat(${JSON.stringify(gate)}) and uv.hrtime() - t < 6e10 do uv.sleep(20) end\n`,
+  )
+  writeFileSync(gate, '')
+  const dir = `files-vim-early-${test.info().repeatEachIndex}`
+  const cwd = join(state.root, dir)
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'a.txt'), 'alpha\n')
+  writeFileSync(join(cwd, 'b.txt'), 'beta\n')
+  const swapDir = join(state.home, '.local', 'state', 'nvim', 'swap')
+  const swaps = () => (existsSync(swapDir) ? readdirSync(swapDir).filter((f) => f.includes(dir)) : [])
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-early', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    const area = page.locator('[data-editor-area]')
+    const lines = area.locator('.monaco-editor .view-lines')
+    const status = area.locator('[data-nvim-status]')
+    const tab = (name: string) => area.locator('[data-editor-tab]', { hasText: name })
+    await pane.locator(`[data-file-node="${cwd}/b.txt"]`).click()
+    await expect(lines).toContainText('beta', { timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    // The gate shut: a.txt's Neovim starts and waits. Its tab is left (b.txt in front again) before it has opened.
+    rmSync(gate)
+    await pane.locator(`[data-file-node="${cwd}/a.txt"]`).click()
+    await expect(lines).toContainText('alpha', { timeout: 30_000 })
+    await page.waitForFunction(() => !!(window as unknown as SocketSeam).nvimOpens?.some((o) => o.path.endsWith('/a.txt')), undefined, { timeout: 30_000 })
+    await tab('b.txt').click()
+    await expect(lines).toContainText('beta', { timeout: 30_000 })
+    expect(await page.evaluate(() => !!(window as unknown as SocketSeam).nvimOpened?.some((o) => o.path.endsWith('/a.txt'))), "a.txt's Neovim opened before its tab was left").toBe(false)
+    // The gate open: both Neovims open, b.txt's for its tab, a.txt's for none, and the page lets a.txt's go.
+    writeFileSync(gate, '')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    const early = await page.waitForFunction(() => (window as unknown as SocketSeam).nvimOpened?.find((o) => o.path.endsWith('/a.txt'))?.id, undefined, { timeout: 30_000 })
+    const earlyId = (await early.jsonValue()) as string
+    await expect
+      .poll(() => page.evaluate((id) => !!(window as unknown as SocketSeam).nvimCloses?.includes(id), earlyId), { timeout: 15_000, message: "the Neovim opened for a tab already left is closed" })
+      .toBe(true)
+    await expect.poll(() => swaps().filter((f) => f.includes('a.txt')), { timeout: 30_000, message: "that Neovim's swap file goes with it" }).toEqual([])
+    // a.txt shown again: a Neovim of its own, the file as it is, no other Vim's swap file in a banner.
+    await tab('a.txt').click()
+    await expect(lines).toContainText('alpha', { timeout: 30_000 })
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await expect(area.locator('[data-editor-swap]')).toHaveCount(0)
+  } finally {
+    rmSync(join(config, 'init.lua'), { force: true })
+    rmSync(gate, { force: true })
+    await api.stopSession(s.id)
+  }
+})
+
 // A tab whose Neovim buffer holds changes not written keeps its Neovim while
 // another tab is in front: back in front, the changes are there and the
 // editing goes on (it ended, before, and the next showing met its swap file
@@ -1298,6 +1582,7 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
   writeFileSync(join(cwd, 'b.txt'), 'beta\n')
   const swapDir = join(state.home, '.local', 'state', 'nvim', 'swap')
   const swaps = () => (existsSync(swapDir) ? readdirSync(swapDir).filter((f) => f.includes('files-tabs')) : [])
+  await watchSockets(page)
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'tabs', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
@@ -1308,15 +1593,22 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
     const lines = area.locator('.monaco-editor .view-lines')
     const status = area.locator('[data-nvim-status]')
     const tab = (name: string) => area.locator('[data-editor-tab]', { hasText: name })
+    // A tab that comes to the front (opened, or shown again as another closes) has its Neovim's answer before the test goes on: one
+    // left before it stays running on the server, its swap file with it (#500).
+    const nvimUp = async (name: string, before: number) => {
+      await expect.poll(() => nvimOpens(page, name), { timeout: 30_000 }).toBeGreaterThan(before)
+      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    }
     const open = async (name: string, text: string) => {
+      const before = await nvimOpens(page, name)
       await pane.locator(`[data-file-node="${cwd}/${name}"]`).click()
       await expect(lines).toContainText(text, { timeout: 30_000 })
-      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+      await nvimUp(name, before)
     }
     await pane.locator(`[data-file-node="${cwd}/a.txt"]`).click()
     await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
     await area.locator('[data-editor-keymap]').click()
-    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await nvimUp('a.txt', 0)
     await lines.click()
     await page.keyboard.type('Ixx ')
     await page.keyboard.press('Escape')
@@ -1338,10 +1630,13 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
     await expect(lines).toContainText('xx alpha!', { timeout: 15_000 })
     // Closing it asks; Don't save drops the changes, the file is as it was, and its swap file goes.
     const question = page.locator('[role="dialog"]', { hasText: 'Save a.txt?' })
+    // b.txt comes to the front as a.txt closes, with a Neovim of its own.
+    let before = await nvimOpens(page, 'b.txt')
     await area.locator('[data-editor-tab-active] [data-editor-close]').click()
     await expect(question).toBeVisible()
     await question.locator('[data-editor-discard]').click()
     await expect(tab('a.txt')).toHaveCount(0)
+    await nvimUp('b.txt', before)
     expect(readFileSync(join(cwd, 'a.txt'), 'utf8')).toBe('alpha\n')
     await expect.poll(() => swaps().filter((f) => f.includes('a.txt')), { timeout: 15_000, message: "a.txt's swap file goes with its changes" }).toEqual([])
     await expect(area.locator('[data-editor-keymap]')).toBeEnabled()
@@ -1353,14 +1648,15 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
     await page.keyboard.type('Ayy')
     await page.keyboard.press('Escape')
     await expect(tab('a.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
+    before = await nvimOpens(page, 'b.txt')
     await area.locator('[data-editor-tab-active] [data-editor-close]').click()
     await question.locator('[data-editor-close-save]').click()
     await expect(tab('a.txt')).toHaveCount(0, { timeout: 15_000 })
     expect(readFileSync(join(cwd, 'a.txt'), 'utf8')).toBe('alphayy\n')
-    // Neovim's own :q on b.txt: the tab closes and no swap file is left.
+    // Neovim's own :q on b.txt (in front again as a.txt closed): the tab closes and no swap file is left.
     await tab('b.txt').click()
     await expect(lines).toContainText('beta', { timeout: 15_000 })
-    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await nvimUp('b.txt', before)
     await lines.click()
     await page.keyboard.type(':q')
     await page.keyboard.press('Enter')

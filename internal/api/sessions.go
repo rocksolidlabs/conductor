@@ -39,6 +39,9 @@ type createSessionRequest struct {
 	// resume, set by Resume, is the agent session id the launch resumes with
 	// the agent's recipe; resumedFrom the session it resumes or relaunches.
 	resume, resumedFrom string
+	// renamed, set by a resume, says Name is one a person renamed the
+	// session it resumes to, or its own resumed from (session.Launched.Renamed).
+	renamed bool
 	// runChat, set by Launch, is the chat of the run the session is a member of.
 	runChat *session.ChatRoom
 	// reservation is the place reserved for the session among the server's
@@ -143,10 +146,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		}
 	}()
 	cwd := folder.Path()
-	name := strings.TrimSpace(req.Name)
-	if len(name) > 120 {
-		name = name[:120]
-	}
+	name := session.CutSessionName(req.Name)
 	if name == "" {
 		name = fmt.Sprintf("%s #%d", agent.Name, s.nextCounter())
 	}
@@ -357,7 +357,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		WorkingTitle:    workingTitle,
 		ConfirmSubmit:   agents.ConfirmsSubmit(agent.Adapter, sig),
 		WatchGit:        true,
-		Launched:        session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo},
+		Launched:        session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed},
 		Folder:          folder,
 		// Where the agent keeps its plans outside the folder (#289), from
 		// its adapter and the environment the process was given: the
@@ -378,7 +378,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}
 	// Published while listed, as every change is (localChange): a session
 	// that ended and was removed at once is not brought back by its launch.
-	s.events.publishIf(local.Info(), s.listed)
+	s.events.publishLatest(id, s.listedInfo)
 	s.publish(local)
 	return local, nil
 }
@@ -410,12 +410,25 @@ func (s *Server) listed(id string) bool {
 	return ok
 }
 
+// listedInfo is the Info of a server session the registry lists, as it is
+// now; false for one it does not (removed, or not yet registered). The event
+// hub asks it under its own lock (publishLatest).
+func (s *Server) listedInfo(id string) (session.Info, bool) {
+	l, ok := s.lookupLocal(id)
+	if !ok {
+		return session.Info{}, false
+	}
+	return l.Info(), true
+}
+
 // localChange is the OnChange hook of a server session. Every change reaches
 // the runs, the session's links and its publication; the browsers hear only
 // of a session the server still lists, so a viewer leaving one that was
 // removed does not bring it back.
 func (s *Server) localChange(info session.Info) {
-	s.events.publishIf(info, s.listed)
+	// The browsers get the session as it is when the hub sends it, not the
+	// snapshot handed here, which a later change may already have overtaken.
+	s.events.publishLatest(info.ID, s.listedInfo)
 	s.runs.OnChange(info)
 	if info.Status.Ended() {
 		s.endLinks(info.ID)
@@ -552,6 +565,45 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d.Info())
+}
+
+// renameRequest is the body of PATCH /api/sessions/{id}.
+type renameRequest struct {
+	Name string `json:"name"`
+}
+
+// maxRenameBody bounds a rename's body: a name cut to proto.MaxSessionName
+// bytes, with room for one sent longer, which is cut.
+const maxRenameBody = 4 << 10
+
+// handleRenameSession renames a server session, running or ended: 200 with
+// its Info. The change reaches the events stream as a session event (the
+// session's OnChange), and a resume of the session starts under the new name
+// (Local.Launched; a member's through Launch). A hosted session is named by
+// its host.
+func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
+	var req renameRequest
+	if err := decodeJSONLimit(w, r, &req, maxRenameBody); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	d, ok := s.registry.Get(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "no such session")
+		return
+	}
+	local, ok := d.(*session.Local)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "hosted_session", "a hosted session is named by its host")
+		return
+	}
+	name := session.CleanSessionName(req.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "invalid_name", "the name is empty without its control characters and surrounding space")
+		return
+	}
+	local.Rename(name)
+	writeJSON(w, http.StatusOK, local.Info())
 }
 
 // installSkillAtLaunch puts the Conductor skill where the adapter's agent

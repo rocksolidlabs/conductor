@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { NvimEcho } from './nvimEcho'
-import { NvimHolds } from './nvimHold'
+import { NvimEcho, type EchoDoc, type EchoLines } from './nvimEcho'
+import { heldRefusal, NvimHolds } from './nvimHold'
 import type { NvimViewState } from './nvimSwap'
 
 const state: NvimViewState = { mode: 'n', cmdline: '', message: '', messageKind: '', swap: null, recovered: false, modified: true }
@@ -163,5 +163,61 @@ describe('NvimHolds', () => {
     h.clear()
     expect(b.calls).toBe(1)
     expect(h.size).toBe(0)
+  })
+})
+
+/** A fake editor: lines, and a lines event applied as the editor applies it. */
+function doc(...lines: string[]): EchoDoc & { text: string[] } {
+  const d = {
+    text: [...lines],
+    line: (n: number) => d.text[n - 1] ?? '',
+    setLine: (n: number, t: string) => {
+      d.text[n - 1] = t
+    },
+    applyLines: (ev: EchoLines) => {
+      const last = ev.last < 0 ? d.text.length : ev.last
+      d.text.splice(ev.first, last - ev.first, ...ev.lines)
+    },
+  }
+  return d
+}
+
+/** xyz typed in insert mode after alpha, none of them acknowledged: the echo as the tab was left, held. */
+function heldWithTyped() {
+  const d = doc('alpha')
+  const e = new NvimEcho(d)
+  e.cursor({ line: 1, col: 6, mode: 'i', ack: 0 }, (_line, byteCol) => byteCol)
+  e.send('x', { line: 1, col: 6 })
+  e.send('y', { line: 1, col: 7 })
+  e.send('z', { line: 1, col: 8 })
+  expect(d.text).toEqual(['alphaxyz'])
+  const holds = new NvimHolds()
+  holds.hold('/w/a.txt', { id: 'e1', state: { ...state, modified: false }, cursor: { line: 1, col: 9 }, echo: e })
+  return { d, e, holds }
+}
+
+describe('heldRefusal', () => {
+  it("takes refused keys off a held Neovim's text and names them on its status line", () => {
+    const { d, e, holds } = heldWithTyped()
+    const h = holds.peek('/w/a.txt')!
+    expect(heldRefusal(h, e, { ack: 2, code: 'too_many_requests', message: 'session: too many requests' })).toBe(true)
+    expect(d.text).toEqual(['alphaxz'])
+    expect(h.state.refused).toBe('y')
+    expect(h.state.message).toBe('Keys did not reach Neovim (session: too many requests): y')
+    expect(h.state.messageKind).toBe('emsg')
+  })
+
+  it('leaves a lost Neovim alone: a refusal after its end keeps every character it never had over its text, named (#429)', () => {
+    const { d, e, holds } = heldWithTyped()
+    holds.ended('e1', 'error: neovim ended')
+    const h = holds.peek('/w/a.txt')!
+    expect(h.state.unconfirmed).toBe('xyz')
+    // Keys that reached the server once the dead Neovim's editor was let go: refused, after its end.
+    expect(heldRefusal(h, e, { ack: 2, code: 'file_denied', message: 'session: file access denied' })).toBe(false)
+    expect(d.text).toEqual(['alphaxyz'])
+    expect(e.showing).toBe(true)
+    expect(e.unconfirmed).toBe('xyz')
+    expect(h.state.refused).toBeUndefined()
+    expect(h.state.message).toBe('')
   })
 })

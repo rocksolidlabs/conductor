@@ -4,7 +4,7 @@ import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import type { CrewStart, RunTask } from '~/composables/useSessions'
 import type { MemberStatus } from '~/utils/crews'
-import { connectError, crewGraph, type GraphDirection, type GraphMember, type HandoffSeen } from '~/utils/crewGraph'
+import { connectError, connectionAllowed, crewGraph, type GraphDirection, type GraphMember, type HandoffSeen } from '~/utils/crewGraph'
 import { taskLayout, taskListRows } from '~/utils/taskGraph'
 import { taskDot, taskWords } from '~/utils/tasks'
 import type { MemberNodeData } from '~/components/CrewGraphNode.vue'
@@ -127,8 +127,10 @@ const flowNodes = computed<Node<MemberNodeData | TaskNodeData>[]>(() =>
         selected: n.id === props.selected,
       })),
 )
+// The edges this graph draws: the tasks' needs in Tasks mode, else the start rules and the run's handoffs.
+const drawnEdges = computed(() => (tasksMode.value ? taskGraph.value.edges : graph.value.edges))
 const flowEdges = computed<Edge<CrewEdgeData>[]>(() =>
-  (tasksMode.value ? taskGraph.value.edges : graph.value.edges).map((e) => ({
+  drawnEdges.value.map((e) => ({
     id: e.id,
     type: 'crew',
     source: e.from,
@@ -170,8 +172,9 @@ watch(
   { flush: 'post' },
 )
 
+// Vue Flow runs this on every edge the graph hands it, not only on a connection the person draws: the graph's own edges stay (#281).
 function isValidConnection(c: Connection): boolean {
-  return !!c.source && !!c.target && connectError(props.members, c.source, c.target) === ''
+  return connectionAllowed(props.members, drawnEdges.value, props.editable, c.source, c.target)
 }
 
 function onConnect(c: Connection) {

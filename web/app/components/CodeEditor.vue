@@ -6,7 +6,7 @@ import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, textToNvim } from
 import { isMarkdownPath } from '~/utils/markdown'
 import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
 import { ECHO_HOLD_MS, NvimEcho, type EchoDoc, type EchoLines } from '~/utils/nvimEcho'
-import { heldChanges, type HeldNvim } from '~/utils/nvimHold'
+import { heldChanges, heldRefusal, type HeldNvim } from '~/utils/nvimHold'
 import { closedByQuit, lostHoldsChanges } from '~/utils/nvimLost'
 import { hasModel, isDirty, markSaved, noteVersion } from '~/utils/editorModels'
 
@@ -211,7 +211,13 @@ async function startNvim() {
     nvimAt = null
     try {
       const opened = await bridge.open(props.path)
-      if (!editor) return
+      if (!editor) {
+        // The tab left or closed while its Neovim opened (a slow start, a loaded machine): that Neovim is no tab's, and ends, as Reopen's
+        // does. Kept, it held one of the four a connection may have and its swap file until the connection went, where the file's next
+        // open met it as another Vim's, read only behind a banner, and it outlived that Neovim's `:q` (#429's review round 2).
+        if (opened.id) bridge.close(opened.id)
+        return
+      }
       nvimId = opened.id ?? null
       nvimPath = opened.path ?? null
     } catch (err) {
@@ -422,12 +428,8 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null, fro
       h.state.message = ev.messageKind === 'clear' ? '' : (ev.text ?? '')
       h.state.messageKind = ev.messageKind ?? ''
     } else if (ev.kind === 'error' && ev.ack) {
-      // Keys refused while the tab was not in front: said on its status line when it is, and its Neovim kept until then.
-      const keys = echoAsLeft?.noteRefused(ev.ack, ev.text) ?? ev.text ?? ''
-      h.state.refused = (h.state.refused ?? '') + keys
-      h.state.message = `Keys did not reach Neovim (${ev.message ?? ev.code ?? 'refused'}): ${h.state.refused}`
-      h.state.messageKind = 'emsg'
-      bridge.holds.changed(path)
+      // Keys refused while the tab was not in front; none once its Neovim is lost, as in front (onNvimEvent; #429).
+      if (heldRefusal(h, echoAsLeft, { ack: ev.ack, text: ev.text, message: ev.message, code: ev.code })) bridge.holds.changed(path)
     } else if (ev.kind === 'settled' && ev.ack) {
       echoAsLeft?.noteSettled(ev.ack)
       if (echoAsLeft) h.state.unconfirmed = echoAsLeft.unconfirmed || undefined

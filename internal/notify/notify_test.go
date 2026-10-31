@@ -277,7 +277,9 @@ func TestSendRetriesARateLimitedAttentionWord(t *testing.T) {
 	}
 }
 
-// The waits fit the budget, and a deadline that comes first ends them.
+// The waits fit the budget, and a context that ends during a wait ends them:
+// the 429 is the answer. The context ends inside the wait (the retryWait
+// seam), never on a wall-clock deadline that a slow first POST could miss.
 func TestSendRetriesWithinItsBudget(t *testing.T) {
 	var total time.Duration
 	for _, d := range retryDelays {
@@ -286,13 +288,24 @@ func TestSendRetriesWithinItsBudget(t *testing.T) {
 	if total >= sendTimeout {
 		t.Fatalf("the waits add up to %v, not within %v", total, sendTimeout)
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTooManyRequests) }))
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
 	defer srv.Close()
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	start := time.Now()
-	if err := Send(ctx, srv.URL+"/a/attention", "tok", Request{State: "working"}); err == nil || !strings.Contains(err.Error(), "429") || time.Since(start) > time.Second {
-		t.Fatalf("%v after %v", err, time.Since(start))
+	var waits []time.Duration
+	old := retryWait
+	retryWait = func(d time.Duration) <-chan time.Time {
+		waits = append(waits, d)
+		cancel()
+		return make(chan time.Time) // never: only the context ends this wait
+	}
+	t.Cleanup(func() { retryWait = old })
+	if err := Send(ctx, srv.URL+"/a/attention", "tok", Request{State: "working"}); err == nil || !strings.Contains(err.Error(), "429") || calls.Load() != 1 || len(waits) != 1 || waits[0] != retryDelays[0] {
+		t.Fatalf("%v after %d calls, waits %v", err, calls.Load(), waits)
 	}
 }
 

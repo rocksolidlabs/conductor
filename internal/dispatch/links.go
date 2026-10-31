@@ -319,51 +319,61 @@ func linksOf(ctx context.Context, q queryer, ticketID string) ([]Link, error) {
 // new ticket. found is false when no live link names the run.
 func (s *Store) RunTicket(ctx context.Context, run string) (tk Ticket, found bool, err error) {
 	err = s.read(ctx, func(q queryer) error {
-		rows, err := q.QueryContext(ctx, `SELECT links.id, links.ticket_id, links.created_at, tickets.deleted_at FROM links JOIN tickets ON tickets.id = links.ticket_id
-			WHERE links.kind = ? AND links.ref = ? AND links.deleted_at = ''`, LinkRun, run)
-		if err != nil {
-			return err
-		}
-		type holder struct {
-			link, ticket, created string
-			live                  bool
-		}
-		var holders []holder
-		for rows.Next() {
-			var h holder
-			var deleted string
-			if err := rows.Scan(&h.link, &h.ticket, &h.created, &deleted); err != nil {
-				rows.Close()
-				return err
-			}
-			h.live = deleted == ""
-			holders = append(holders, h)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		var best *holder
-		var bestKey foldKey
-		for i := range holders {
-			h := &holders[i]
-			adds, err := addsOf(ctx, q, h.ticket, "links", []string{h.link})
-			if err != nil {
-				return err
-			}
-			k := keyOf(h.link, h.created, adds)
-			if best == nil || (h.live && !best.live) || (h.live == best.live && k.after(bestKey)) {
-				best, bestKey = h, k
-			}
-		}
-		if best == nil {
-			return nil
-		}
-		tk, err = ticketByID(ctx, q, best.ticket)
-		found = err == nil
+		tk, found, err = runTicket(ctx, q, run)
 		return err
 	})
 	return tk, found, err
+}
+
+// runTicket is RunTicket read through q: a read transaction's, or an
+// operation's (AddRunComment), which finds the run's ticket inside its
+// own transaction.
+func runTicket(ctx context.Context, q queryer, run string) (tk Ticket, found bool, err error) {
+	rows, err := q.QueryContext(ctx, `SELECT links.id, links.ticket_id, links.created_at, tickets.deleted_at FROM links JOIN tickets ON tickets.id = links.ticket_id
+		WHERE links.kind = ? AND links.ref = ? AND links.deleted_at = ''`, LinkRun, run)
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	type holder struct {
+		link, ticket, created string
+		live                  bool
+	}
+	var holders []holder
+	for rows.Next() {
+		var h holder
+		var deleted string
+		if err := rows.Scan(&h.link, &h.ticket, &h.created, &deleted); err != nil {
+			rows.Close()
+			return Ticket{}, false, err
+		}
+		h.live = deleted == ""
+		holders = append(holders, h)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return Ticket{}, false, err
+	}
+	var best *holder
+	var bestKey foldKey
+	for i := range holders {
+		h := &holders[i]
+		adds, err := addsOf(ctx, q, h.ticket, "links", []string{h.link})
+		if err != nil {
+			return Ticket{}, false, err
+		}
+		k := keyOf(h.link, h.created, adds)
+		if best == nil || (h.live && !best.live) || (h.live == best.live && k.after(bestKey)) {
+			best, bestKey = h, k
+		}
+	}
+	if best == nil {
+		return Ticket{}, false, nil
+	}
+	tk, err = ticketByID(ctx, q, best.ticket)
+	if err != nil {
+		return Ticket{}, false, err
+	}
+	return tk, true, nil
 }
 
 // linkColumns is a link's row as scanLink reads it.

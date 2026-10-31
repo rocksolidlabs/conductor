@@ -171,7 +171,7 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 	}
 	yolo := launched.Yolo
 	next, aerr := s.createLocalSession(createSessionRequest{AgentID: launched.AgentID, Name: launched.Name, Cwd: cwd,
-		Args: launched.Args, Env: launched.Env, Yolo: &yolo, resume: id, resumedFrom: info.ID}, nil)
+		Args: launched.Args, Env: launched.Env, Yolo: &yolo, resume: id, resumedFrom: info.ID, renamed: launched.Renamed}, nil)
 	if aerr != nil {
 		writeAPIError(w, aerr)
 		return

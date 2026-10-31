@@ -60,8 +60,9 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	ref := spec.Ref
 	// The run's chat: the session is made with it, so that its first viewer finds it, and joins it once it exists.
 	room := s.runs.ChatRoom(ref.RunID)
-	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: spec.Name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom,
-		runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow}, &ref)
+	name, renamed := s.memberSessionName(spec)
+	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom,
+		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow}, &ref)
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -74,6 +75,25 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 		}
 	}
 	return local, nil
+}
+
+// memberSessionName is the name a member's session is launched under: the
+// member's, or, for a resume of a session a person renamed (PATCH
+// /api/sessions/{id}), or of one resumed from such a session, that name,
+// which the new session carries on as renamed. A session that nobody renamed
+// resumes under the member's name, whatever it was launched as (a session
+// adopted as a crew's self keeps its own launch name until then). The member
+// keeps its own name in the run: its chat, its messages and its handoffs go
+// by it.
+func (s *Server) memberSessionName(spec crew.LaunchSpec) (name string, renamed bool) {
+	if spec.ResumedFrom != "" {
+		if old, ok := s.lookupLocal(spec.ResumedFrom); ok {
+			if l := old.Launched(); l.Renamed && l.Name != "" {
+				return l.Name, true
+			}
+		}
+	}
+	return spec.Name, false
 }
 
 // Reserve holds a place for a managed run's attempt among the server's

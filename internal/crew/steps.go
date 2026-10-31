@@ -37,9 +37,11 @@ import (
 // step a receipt (runStep: a checks row of its phase, started, running and
 // finished, with its log and the words of its failure). The run's
 // prerequisites run once, before the first attempt, in the crew's
-// directory (prerequisites), and again at each unpause. When an attempt
-// closes, however it closes, its trees end (endTree), each once, after the
-// close is committed and the tree is quiet.
+// directory (prerequisites), and again at each unpause. The checkout's
+// verify steps run after the task's checks, as checks of the crew's
+// (verify.go). When an attempt closes, however it closes, its trees end
+// (endTree), each once, after the close is committed and the tree is
+// quiet: their services stopped, then their cleanup steps run (cleanTree).
 //
 // A step that fails in a worktree is the host's or the manifest's: the
 // attempt is not counted, and the dispatch pauses for a person
@@ -156,8 +158,10 @@ func (rm resolvedManifest) row() string {
 // its working directory; its preview is the manifest's, expanded, "" for
 // none; allow is the manifest's env names the server approved
 // (allowedEnv). All of that is set before the tree is the attempt's and
-// never changed. busy is held while one of its phases or checks runs,
-// and in a worktree through its session's launch (hold). Under e.mu:
+// never changed. busy is held from the change that makes it the
+// attempt's until its caller has made it ready to work in (resolveTree),
+// while one of its phases or checks runs, and in a worktree through its
+// session's launch. Under e.mu:
 // handed is set once it is handed to endTree, ending once its end begins
 // or the run's stop ends its services (nothing holds it after, and no
 // service starts on it: startService), ended once its end is recorded,
@@ -489,10 +493,7 @@ func (e *Engine) resolveAt(ctx context.Context, r *run, commit string) (resolved
 // its env names approved (allowedEnv), so a manifest at any commit passes
 // on no name the server's operator did not allow or the host does not
 // have; its ports drawn (treeExec.port); the manifest expanded with them
-// and the state directory (expandManifest) and held to its bounds; with
-// the file form, a phase this build does not run yet refused (runnable),
-// as the crew's was at the launch (prepare), so a result's commit or a
-// continuation's candidate brings in no phase the engine would skip. Then
+// and the state directory (expandManifest) and held to its bounds. Then
 // one transaction of the run's leases the ports to the tree and records
 // manifest.resolved, manifest.ports (with ports or a preview) and the
 // tree's row, resolved: a number another live tree of this server holds,
@@ -500,12 +501,17 @@ func (e *Engine) resolveAt(ctx context.Context, r *run, commit string) (resolved
 // maxPortDraws times a port) instead, and from the commit on the tree is
 // the attempt's (a.trees), its ports leased until its tree.ended is
 // committed. The transaction is ordered with the attempt's close: an
-// attempt closed before it gets no tree (errAttemptClosed). Last, its
-// state directory is made (makeStateDir). Any other error is the
-// manifest's, its stage "manifest", the failure attributed by the tree's
-// rule: nothing is written or run in the tree before the transaction, and
-// a tree whose state directory could not be made is returned with the
-// error, the attempt's to end with it.
+// attempt closed before it gets no tree (errAttemptClosed). The tree comes
+// back held (busy) from that change on, so a close that comes before the
+// caller has made it ready to work in (its state directory here, the task
+// files and the phases after) ends it, and runs its cleanup, only once the
+// caller lets go of it (t.busy.Done), which it does on every way out
+// (Codex's review of #498). Last, its state directory is made
+// (makeStateDir). Any other error is the manifest's, its stage "manifest",
+// the failure attributed by the tree's rule: nothing is written or run in
+// the tree before the transaction, and a tree whose state directory could
+// not be made is returned with the error, held, the attempt's to end with
+// it.
 func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir, cwd, commit string) (*tree, error) {
 	man, err := e.resolveAt(ctx, r, commit)
 	if err != nil {
@@ -532,9 +538,6 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 			ports[name] = n
 		}
 		expanded, err := expandManifest(man.m, ports, stateDir)
-		if err == nil && man.source == sourceFile {
-			err = expanded.runnable()
-		}
 		if err != nil {
 			if man.source == sourceFile {
 				err = fmt.Errorf("%s at %s: %w", r.prefix+manifestFile, short(commit), err)
@@ -543,7 +546,7 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 		}
 		t := &tree{kind: kind, dir: dir, cwd: cwd, commit: commit, man: resolvedManifest{m: expanded, source: man.source, revision: man.revision, digest: man.digest},
 			ports: maps.Clone(ports), stateDir: stateDir, preview: expanded.Preview, allow: allow, a: a, died: make(chan struct{})}
-		closed := false
+		closed, held := false, false
 		draw = nil
 		err = e.transact(ctx, r, func() tx {
 			if !a.closedAt.IsZero() {
@@ -554,6 +557,10 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 				return tx{}
 			}
 			e.lease(t)
+			// Held before it is the attempt's: no close finds it quiet
+			// until the caller has made it ready to work in.
+			t.busy.Add(1)
+			held = true
 			a.trees = append(a.trees, t)
 			payload := map[string]any{"tree": kind, "task": a.t.def.ID, "attempt": a.n, "source": man.source, "env": slices.Clone(man.m.Env)}
 			if man.source == sourceFile {
@@ -571,6 +578,10 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 		}, func() {
 			a.trees = slices.DeleteFunc(a.trees, func(x *tree) bool { return x == t })
 			e.release(t)
+			if held {
+				held = false
+				t.busy.Done()
+			}
 		})
 		switch {
 		case closed:
@@ -579,6 +590,9 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 			return nil, fmt.Errorf("the ledger could not record the manifest: %w", err)
 		case len(draw) > 0:
 			continue // another tree's number: drawn again
+		}
+		if e.afterTreeResolved != nil {
+			e.afterTreeResolved(kind)
 		}
 		if err := makeStateDir(cwd, kind == ledger.TreeCheckout); err != nil {
 			return t, fmt.Errorf("the state directory %s/%s could not be made: %w", taskDir, stateDirName, err)
@@ -687,17 +701,13 @@ func mkdirIn(root *os.Root, name string) error {
 	return err
 }
 
-// hold marks t busy for a phase, a check or a launch about to run in it,
-// unless its end has begun (false: the attempt closed). The caller ends it
-// with t.busy.Done.
-func (e *Engine) hold(t *tree) bool {
+// ending reports whether t's end has begun: its attempt closed, or the
+// run's stop ended its services. A caller holding t (busy, from
+// resolveTree) lets go of it and runs nothing more in it then.
+func (e *Engine) ending(t *tree) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if t.ending {
-		return false
-	}
-	t.busy.Add(1)
-	return true
+	return t.ending
 }
 
 // prepareTree makes t usable, in order, stopping at the first failure:
@@ -712,7 +722,7 @@ func (e *Engine) hold(t *tree) bool {
 // rests on the tree. A service that exits before then fails the tree at it
 // ("service <id>"). It returns the stage of a failure ("setup <id>",
 // "service <id>", "ready <id>", "ready") with its words, "" and nil once
-// the tree is ready. The caller holds t (hold).
+// the tree is ready. The caller holds t (busy, from resolveTree).
 func (e *Engine) prepareTree(ctx context.Context, r *run, a *attempt, t *tree) (string, error) {
 	for _, ch := range t.man.m.Setup {
 		if _, err := e.runStep(ctx, r, a, t, ledger.PhaseSetup, ch, 0); err != nil {
@@ -968,7 +978,7 @@ func (e *Engine) watchService(r *run, a *attempt, t *tree, ts *treeService) {
 		case r.teardown.Err() != nil:
 			// Killed with its context: the shutdown's cut-off (Draining),
 			// not an exit of its own; the tree answers no more all the same.
-			why = "the server's shutdown cut it"
+			why = shutdownCut
 			if t.kind == ledger.TreeWorktree {
 				a.preview = ""
 			}
@@ -1496,6 +1506,11 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 	if interrupted {
 		fin.State, fin.Stable = ledger.CheckInterrupted, false
 		words = e.interruptedWhy(r, a, ch)
+		if phase == ledger.PhaseCleanup {
+			// Under the run's teardown, which only the shutdown's cut-off
+			// ends (Draining).
+			words = ch.ID + " was interrupted: " + shutdownCut
+		}
 	}
 	fin.Error = session.CleanMessage(words)
 	err := e.transact(context.Background(), r, func() tx {
@@ -1509,12 +1524,34 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 		return out
 	}, nil)
 	switch {
+	case interrupted:
+		return res, stepInterrupted(fin.Error)
 	case words != "":
 		return res, errors.New(fin.Error)
 	case err != nil:
 		return res, fmt.Errorf("the ledger could not record the step %s: %w", ch.ID, err)
 	}
 	return res, nil
+}
+
+// errInterrupted is what errors.Is finds in runStep's error for a step its
+// context ended under, the receipt it recorded saying interrupted
+// (stepInterrupted), and in one its context had ended before it ran (not
+// run, the context's error wrapped): a caller reads the step's own outcome
+// from it, never its context again after the fact.
+var errInterrupted = errors.New("interrupted")
+
+// stepInterrupted is runStep's error for a step its context ended under:
+// the receipt's words, errors.Is errInterrupted.
+type stepInterrupted string
+
+func (s stepInterrupted) Error() string        { return string(s) }
+func (s stepInterrupted) Is(target error) bool { return target == errInterrupted }
+
+// cutStep reports whether err, runStep's, says its step was cut by its
+// context: interrupted under it, or not run because it had ended.
+func cutStep(err error) bool {
+	return errors.Is(err, errInterrupted) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // nextK is the next k of id on a: every row of the attempt takes the next
@@ -1893,14 +1930,16 @@ func (e *Engine) startTrees(r *run) {
 // stopTimeout, read once the hold is let go: a launch the close came
 // during names its session on the tree only then), stops its services
 // (endServices: SIGTERM to each one's group, SIGKILL after the grace or at
-// the shutdown's cut-off, each one's end recorded) and records tree.ended
-// with the tree's row ended, its ports let go once that is committed
-// (releaseEnded), so a number is the next tree's only once the ledger has
-// its tree.ended. The rows are committed under a context of their own, so
-// the cut-off, which ends r.teardown, leaves them their reserve (Draining).
-// It runs no cleanup steps yet. A refused commit is kept for the run's next
+// the shutdown's cut-off, each one's end recorded), runs its cleanup steps
+// (cleanTree), then records tree.ended with the
+// tree's row ended (with the first cleanup step that failed, and whether the
+// shutdown's cut-off came before every one had run), its ports let go once
+// that is committed (releaseEnded), so a number is the next tree's only
+// once the ledger has its tree.ended. The rows are committed under a
+// context of their own, so the cut-off, which ends r.teardown, leaves them
+// their reserve (Draining). A refused commit is kept for the run's next
 // (transact), the ports with it, and a row left not ended is concluded by
-// the recovery at the next start.
+// the recovery at the next start, its cleanup not run.
 func (e *Engine) endTree(r *run, h treeEnd) {
 	t := h.t
 	defer func() {
@@ -1929,6 +1968,7 @@ func (e *Engine) endTree(r *run, h treeEnd) {
 	if e.beforeTreeEnd != nil {
 		e.beforeTreeEnd(t.kind)
 	}
+	failed, cut := e.cleanTree(r, t)
 	a := t.a
 	_ = e.transact(context.Background(), r, func() tx {
 		if t.ended {
@@ -1936,12 +1976,74 @@ func (e *Engine) endTree(r *run, h treeEnd) {
 		}
 		t.ended = true
 		r.pendingReleases = append(r.pendingReleases, t)
-		out := ev("tree.ended", map[string]any{"tree": t.kind, "task": a.t.def.ID, "attempt": a.n, "why": h.why})
+		payload := map[string]any{"tree": t.kind, "task": a.t.def.ID, "attempt": a.n, "why": h.why}
+		if failed != "" {
+			payload["cleanupFailed"] = failed
+		}
+		if cut {
+			payload["interrupted"] = true
+		}
+		out := ev("tree.ended", payload)
 		row := t.row(r.id, ledger.TreeEnded)
-		row.Why, row.EndedAt = session.CleanMessage(h.why), time.Now().UTC()
+		row.Why, row.Interrupted, row.EndedAt = session.CleanMessage(h.why), cut, time.Now().UTC()
 		out.more = func(ltx LedgerTx) error { return ltx.PutTree(row) }
 		return out
 	}, nil)
+}
+
+// shutdownCut is why the server's shutdown cut-off (Draining) ended what a
+// tree's teardown ran: a service still running, a cleanup step under way.
+const shutdownCut = "the server's shutdown cut it"
+
+// cleanTree runs t's cleanup steps, in order, once its services are
+// stopped: each a receipt (runStep, phase cleanup) in the tree's working
+// directory, with the tree's names, under r.teardown and bounded by its own
+// timeout (60 s when it gives none). Every step runs whatever the one
+// before it did, each undoing something of its own. A step that fails is a
+// receipt and a line in the run log ("task build: attempt 2: cleanup db
+// exited 1: …"), never a change to the attempt's state, which its close
+// decided. The shutdown's cut-off ends r.teardown: the step under way is
+// killed with its group and recorded interrupted (proc.Run returns once
+// its group is reaped), and no step starts after it, which the run log
+// says. It returns the first step that failed, "" for none, and whether
+// the cut came before every step had run.
+func (e *Engine) cleanTree(r *run, t *tree) (failed string, cut bool) {
+	a := t.a
+	whose := ""
+	if t.kind == ledger.TreeCheckout {
+		whose = "the checkout's "
+	}
+	steps := t.man.m.Cleanup
+	for i, ch := range steps {
+		if r.teardown.Err() != nil {
+			e.mu.Lock()
+			r.note(session.ActivityError, "task %s: attempt %d: %scleanup %s not run: %s", a.t.def.ID, a.n, whose, strings.Join(checkIDs(steps[i:]), ", "), shutdownCut)
+			e.mu.Unlock()
+			return failed, true
+		}
+		_, err := e.runStep(r.teardown, r, a, t, ledger.PhaseCleanup, ch, 0)
+		if err == nil {
+			continue
+		}
+		words := err.Error()
+		if !strings.HasPrefix(words, ch.ID+" ") {
+			words = ch.ID + ": " + words
+		}
+		e.mu.Lock()
+		r.note(session.ActivityError, "task %s: attempt %d: %scleanup %s", a.t.def.ID, a.n, whose, words)
+		e.mu.Unlock()
+		// Cut or failed by what its receipt says, never by the teardown
+		// read again now: a step that failed on its own just before the
+		// cut-off is a failure (the independent review of #498).
+		if cutStep(err) {
+			cut = true
+			continue // the next turn names what was not run
+		}
+		if failed == "" {
+			failed = ch.ID
+		}
+	}
+	return failed, cut
 }
 
 // stopFor marks ts as being ended for why (stopping), unless something

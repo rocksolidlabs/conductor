@@ -1203,6 +1203,116 @@ func TestALostNeovimsLastChangesComeAfterItsEnd(t *testing.T) {
 	}
 }
 
+// keysTaken is when sub's last keys took their token: NvimInput takes it
+// under the lock it finds their editor with, so once it has moved, those
+// keys have their editor, and only its Neovim answers them, or its end.
+func keysTaken(sub *Subscription) time.Time {
+	sub.nvimKeys.mu.Lock()
+	defer sub.nvimKeys.mu.Unlock()
+	return sub.nvimKeys.last
+}
+
+// Keys on their way to a Neovim that dies are not refused: its end
+// (`closed`, told once) is their word, and the page keeps them over the text
+// Neovim last held and names them. A refusal of them came from another
+// goroutine than the end (the keys' own call fails as the client's reading
+// ends and tells it), and a page that had it first took the key off its text
+// as if Neovim lived (#429). Neovim is stopped (SIGSTOP) before the keys, so
+// it reads none of them, whichever goroutine then tells its end.
+func TestKeysOnTheirWayToANeovimThatDiesAreNotRefused(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newLocal(t, dir)
+	editorsEnd(t, s)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "owner", Owner: true}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := openEditor(t, s, sub)
+	// Insert mode, the key done: Neovim waits for the next.
+	if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: "A", Seq: 1}); err != nil {
+		t.Fatal(err)
+	}
+	from := 0
+	nvimEvents(t, sink, &from, proto.NvimSettled, 10*time.Second)
+	sub.nvimMu.Lock()
+	pid := sub.nvims[id].ed.Pid()
+	sub.nvimMu.Unlock()
+	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if !killed {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	// The keys go to the stopped Neovim; once they have their editor, it is killed under them.
+	before := keysTaken(sub)
+	answered := make(chan error, 1)
+	go func() {
+		answered <- s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: "x", Seq: 2})
+	}()
+	for deadline := time.Now().Add(10 * time.Second); !keysTaken(sub).After(before); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the keys never took their token")
+		}
+	}
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	killed = true
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatalf("keys on their way to a Neovim that died were refused: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("keys on their way to a Neovim that died were never answered")
+	}
+	evs := nvimEvents(t, sink, &from, proto.NvimClosed, 10*time.Second)
+	if closed := evs[len(evs)-1]; closed.ID != id || !strings.HasPrefix(closed.Reason, "error:") {
+		t.Fatalf("closed: %+v", closed)
+	}
+	// Once the editor has gone, nothing more can come of it: its end was told once, and nothing refused the keys.
+	for deadline := time.Now().Add(10 * time.Second); s.nvimCount.Load() != 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the editor of a Neovim that died was never let go")
+		}
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	ends := 0
+	for _, frame := range sink.frames {
+		f, err := proto.Decode(frame)
+		if err != nil || f.Type != proto.TypeControl {
+			continue
+		}
+		var ev proto.NvimEvent
+		if json.Unmarshal(f.Payload, &ev) != nil || ev.T != proto.CtlNvimEvent || ev.ID != id {
+			continue
+		}
+		switch {
+		case ev.Kind == proto.NvimClosed:
+			ends++
+		case ev.Kind == proto.NvimError && ev.Ack == 2:
+			t.Fatalf("the keys were refused: %+v", ev)
+		}
+	}
+	if ends != 1 {
+		t.Fatalf("the end was told %d times", ends)
+	}
+}
+
 // A wrapper that leaves Neovim running as it exits: the editor's end lets
 // Neovim leave in its own time (its quit hook done), its connection kept
 // until it has, rather than killing it as soon as the wrapper is gone.

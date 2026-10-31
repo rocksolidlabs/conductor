@@ -5,7 +5,7 @@ import type { DropdownMenuItem } from '@nuxt/ui'
  * A row's actions on a phone (design 3e), opened by a long press in place of
  * the context menu: the row's name and meta on top, then what hover offers
  * on a desktop as 44 px buttons (a session: Open, Share…, Show in the Yard,
- * Stop…; a run's header: Open run, Share run, Stop run…), then Cancel. Stop
+ * Rename…, Stop…; a run's header: Open run, Share run, Stop run…), then Cancel. Stop
  * asks again, in the row. No swipe actions: a swipe that stops a session is
  * too easy to make by accident.
  */

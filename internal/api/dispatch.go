@@ -36,7 +36,7 @@ import (
 // the same id and answered without a second change. Replies are written
 // with HTML escaping off (writeDispatch), so a text field encodes to at
 // most twice its bytes and the largest reply is bounded by its shape
-// (maxTicketReply).
+// (MaxTicketReply).
 
 const (
 	// maxTicketBody bounds the body of a ticket's create and edit: every
@@ -47,22 +47,26 @@ const (
 	// bound once decoded is the store's bound refusal; a body past this is
 	// 413 bound.
 	maxTicketBody = 192 << 10
-	// maxTicketReply bounds the replies that carry a ticket's comments: a
+	// MaxTicketReply bounds the replies that carry a ticket's comments: a
 	// ticket's read (and an operation's on it, the ticket beside a receipt
-	// of at most 4 KiB) and a page of its comments. The largest ticket the
-	// server can make, every field and set at its bound and every text at
-	// its escaped worst (fifty comments at 32 KiB, the description at 128
-	// KiB, fifty links, fifty attachments, a hundred relations and fifty
-	// children with their titles), is under it, and so is the largest page
-	// of comments, maxCommentPage of them at their escaped worst.
-	// dispatch_test.go builds both and measures their replies; the CLI's
-	// and the tools' limits are checked against it.
-	maxTicketReply = 3 << 20
-	// maxProjectReply bounds a project's read: its fields at their bounds,
+	// of at most 4 KiB, and a session's read of its run's ticket, the
+	// ticket beside its labels and its milestone) and a page of its
+	// comments. The largest ticket the server can make, every field and set
+	// at its bound and every text at its escaped worst (fifty comments at
+	// 32 KiB, the description at 128 KiB, fifty links, fifty attachments, a
+	// hundred relations and fifty children with their titles), is under it,
+	// and so is the largest page of comments, maxCommentPage of them at
+	// their escaped worst. dispatch_test.go builds both and measures their
+	// replies. Exported for the CLI, whose limits are derived from it
+	// (internal/cli: maxDispatchReply, and the session client's).
+	MaxTicketReply = 3 << 20
+	// MaxProjectReply bounds a project's read: its fields at their bounds,
 	// 100 labels, 100 milestones with 4 KiB descriptions and 200 views with
 	// 8 KiB queries, every text at its escaped worst, is under it, which
-	// dispatch_test.go measures as it measures maxTicketReply.
-	maxProjectReply = 3 << 20
+	// dispatch_test.go measures as it measures MaxTicketReply. Exported
+	// for the CLI, which reads a project for its labels' and milestones'
+	// names (internal/cli: maxDispatchReply).
+	MaxProjectReply = 3 << 20
 	// maxProjectsPage bounds a page of the projects: 200 summaries, none
 	// with its description, folder, tracker URL or close policy, a name of
 	// 60 characters encoding to at most 360 bytes.
@@ -74,9 +78,9 @@ const (
 	// maxCommentPage bounds a page of a ticket's comments, and is the page
 	// when a read names none: as many as the ticket's read carries
 	// (dispatch.MaxTicketComments), so the largest page, every comment at
-	// its escaped worst, is under maxTicketReply as the read is. The
+	// its escaped worst, is under MaxTicketReply as the read is. The
 	// store's own bound, dispatch.MaxCommentPage (200), would let a page
-	// of comments of 32 KiB each pass twice maxTicketReply.
+	// of comments of 32 KiB each pass twice MaxTicketReply.
 	maxCommentPage = dispatch.MaxTicketComments
 )
 
@@ -87,11 +91,15 @@ type dispatchRoute struct {
 }
 
 // routeDispatch adds Dispatch's routes, every one the admin's and a
-// switchyard's 403 (launching).
+// switchyard's 403 (launching), and the two of an attempt's ticket, which
+// take the session's own token too (dispatch_session.go) and are a
+// switchyard's 403 as well (launchingAny).
 func (s *Server) routeDispatch(mux *http.ServeMux) {
 	for _, r := range s.dispatchRoutes() {
 		mux.HandleFunc(r.pattern, s.launching(r.h))
 	}
+	mux.HandleFunc("GET /api/sessions/{id}/ticket", s.launchingAny(s.handleSessionTicket))
+	mux.HandleFunc("POST /api/sessions/{id}/ticket/comments", s.launchingAny(s.handleSessionTicketComment))
 }
 
 // dispatchRoutes is Dispatch's routes, as routeDispatch adds them.
@@ -1267,7 +1275,7 @@ func (s *Server) handleDispatchHistory(w http.ResponseWriter, r *http.Request) {
 // read carries: {comments}, those numbered after ?after= (0 when absent),
 // at most ?limit= (1 to maxCommentPage, 50, and 50 when absent: the page
 // the read carries), each with its number n, tombstones among them so the
-// numbers have no gap; the largest page is under maxTicketReply.
+// numbers have no gap; the largest page is under MaxTicketReply.
 func (s *Server) handleDispatchComments(w http.ResponseWriter, r *http.Request) {
 	ds, ok := s.dispatchStore(w)
 	if !ok {
@@ -1496,7 +1504,7 @@ func viewQuery(raw json.RawMessage) string {
 // pages offer, its own and every project's, else every live view. 404
 // not_found for a project missing; 400 invalid_request for a key that is
 // not one and for any other parameter. At most 200 live views with
-// queries of 8 KiB, every project's together: under maxProjectReply, as
+// queries of 8 KiB, every project's together: under MaxProjectReply, as
 // the project's read that carries them is.
 func (s *Server) handleDispatchViews(w http.ResponseWriter, r *http.Request) {
 	ds, ok := s.dispatchStore(w)

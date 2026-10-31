@@ -25,12 +25,11 @@ import (
 // in the crew's directory as each tree's commit holds it (resolveManifest),
 // versioned with the code. A crew has one or the other. A legacy Setup is
 // the manifest's setup phase (effectiveManifest), so the engine sees one
-// shape. This build runs the prerequisites, the setup phase, the services
-// and the ready probes, offers the preview, passes the host's env names on,
-// gives each tree its ports and its state directory and expands the
-// placeholders (steps.go): a manifest that names more (verify or cleanup
-// steps) is refused (runnableManifest, runnable) rather than skipped or
-// half run.
+// shape. The engine runs every phase of it (steps.go): the prerequisites,
+// the setup phase, the services and the ready probes, the preview, the
+// host's env names, each tree's ports and state directory, the verify
+// steps after a result's checks (verify.go) and the cleanup steps at each
+// tree's end.
 
 // Manifest is a project manifest. Every step is a Check: an argv array, never a
 // shell line, run in the tree's working directory.
@@ -551,35 +550,6 @@ func byteCount(n int) string {
 		s = s[:i] + "," + s[i:]
 	}
 	return s
-}
-
-// runnableManifest refuses the launch of a crew whose project manifest names a
-// phase this build does not run yet (runnable), so a manifest saved ahead
-// of its engine is never accepted and then skipped or half run. The file
-// form is held to the same once it is read, at the launch's base
-// (Engine.prepare) and at every tree's commit (resolveTree). A legacy
-// Setup launches as it always has. The error matches ErrInvalid: the API
-// answers 400 invalid_crew.
-func (c Crew) runnableManifest() error {
-	if !c.hasManifest() || c.Manifest.File {
-		return nil
-	}
-	return c.Manifest.runnable()
-}
-
-// runnable refuses a manifest that names a phase this build does not run
-// yet: it runs the prerequisites, the setup phase, the services and the
-// ready probes, offers the preview, passes the env names the server allows
-// on, gives each tree its ports and its state directory and expands every
-// placeholder; the verify steps and the cleanup steps come later.
-func (rec Manifest) runnable() error {
-	switch {
-	case len(rec.Verify) > 0:
-		return invalidf("this build does not run a project manifest's verify steps yet")
-	case len(rec.Cleanup) > 0:
-		return invalidf("this build does not run a project manifest's cleanup steps yet")
-	}
-	return nil
 }
 
 // resolveManifest reads the file form of a project manifest:

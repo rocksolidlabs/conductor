@@ -61,19 +61,38 @@ func crewClientFromEnv(getenv func(string) string) (*crewClient, error) {
 	}}, nil
 }
 
+// maxSessionReply bounds what the session client reads of a reply, in
+// whole MiB: the largest any session route makes is its run's ticket
+// (GET /api/sessions/{id}/ticket), under api.MaxTicketReply, which this
+// holds (TestSessionClientHoldsTheLargestTicket).
+const maxSessionReply = 4 << 20
+
 // call sends body (nil for none) and decodes the reply; an error reply is an error with the server's words.
 func (c *crewClient) call(ctx context.Context, method, path string, body any) (map[string]any, error) {
+	var out map[string]any
+	if err := c.into(ctx, method, path, body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// into is call decoding a reply of at most maxSessionReply bytes into
+// out. The body is encoded with HTML escaping off (encodeJSON), so a
+// comment of 16 KiB of '<' fits its route's 64 KiB. A reply that never
+// came, the request refused, cut or left unanswered, is a lostReply,
+// which a write with an operation id asks for once more (askTwice).
+func (c *crewClient) into(ctx context.Context, method, path string, body, out any) error {
 	var payload io.Reader
 	if body != nil {
-		b, err := json.Marshal(body)
+		b, err := encodeJSON(body)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		payload = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, payload)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
@@ -81,26 +100,34 @@ func (c *crewClient) call(ctx context.Context, method, path string, body any) (m
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, err
+		return lostReply{err}
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxSessionReply+1))
 	if err != nil {
-		return nil, err
+		return lostReply{err}
 	}
-	var out map[string]any
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &out); err != nil {
-			return nil, fmt.Errorf("%s: the server answered %d with no JSON", c.prefix, resp.StatusCode)
-		}
+	if len(raw) > maxSessionReply {
+		return fmt.Errorf("%s: the server's reply is larger than %d MiB", c.prefix, maxSessionReply>>20)
+	}
+	if len(raw) > 0 && !json.Valid(raw) {
+		return fmt.Errorf("%s: the server answered %d with no JSON", c.prefix, resp.StatusCode)
 	}
 	if resp.StatusCode >= 300 {
-		if e, ok := out["error"].(map[string]any); ok {
-			return nil, fmt.Errorf("%s: %v (%v)", c.prefix, e["message"], e["code"])
+		var e struct {
+			Error map[string]any `json:"error"`
 		}
-		return nil, fmt.Errorf("%s: the server answered %d", c.prefix, resp.StatusCode)
+		if json.Unmarshal(raw, &e) == nil && e.Error != nil {
+			return fmt.Errorf("%s: %v (%v)", c.prefix, e.Error["message"], e.Error["code"])
+		}
+		return fmt.Errorf("%s: the server answered %d", c.prefix, resp.StatusCode)
 	}
-	return out, nil
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, out); err != nil {
+			return fmt.Errorf("%s: an unreadable reply: %w", c.prefix, err)
+		}
+	}
+	return nil
 }
 
 // readJSONArg reads the file named, or stdin for "-", as a JSON object.

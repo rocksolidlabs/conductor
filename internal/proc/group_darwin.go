@@ -42,3 +42,11 @@ func stillMembers(pgid int, pids []int) []int {
 	}
 	return out
 }
+
+// exited reports whether pid, a child not reaped yet, has exited: its
+// state a zombie's (sysctl kern.proc.pid). One that cannot be read is not
+// known to have.
+func exited(pid int) bool {
+	p, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	return err == nil && p.Proc.P_stat == sZomb
+}

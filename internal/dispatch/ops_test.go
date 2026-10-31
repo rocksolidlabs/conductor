@@ -571,6 +571,41 @@ func TestAResendAfterPruningIsAnsweredByTheLog(t *testing.T) {
 	}
 }
 
+// OpTicket names the ticket an operation changed, from the log: after
+// its receipt is pruned and after the ticket's delete; an operation that
+// changed no ticket, a refusal, and one never given name none.
+func TestOpTicketNamesTheTicketAnOperationChanged(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "OPS")
+	_, key := newTicket(t, s, "OPS", "Commented")
+	rc, err := s.AddComment(ctx, testOp("c1"), key, "seen")
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.AddComment(ctx, testOp("c2"), key, "")
+	want(t, rc, err, StatusFailed, RefusalInvalid)
+	if _, err := s.db.Exec("DELETE FROM ops WHERE actor = 'test' AND id = 'c1'"); err != nil {
+		t.Fatal(err)
+	}
+	rc, err = s.DeleteTicket(ctx, testOp("d1"), key)
+	want(t, rc, err, StatusDone, "")
+	for _, c := range []struct {
+		actor, id string
+		found     bool
+	}{
+		{"test", "c1", true},
+		{"test", "d1", true},
+		{"test", "project-OPS", false},
+		{"test", "c2", false},
+		{"test", "never", false},
+		{"agent:x", "c1", false},
+	} {
+		got, found, err := s.OpTicket(ctx, c.actor, c.id)
+		if err != nil || found != c.found || (found && got != key) || (!found && got != "") {
+			t.Errorf("OpTicket(%s, %s): %q %v %v", c.actor, c.id, got, found, err)
+		}
+	}
+}
+
 // OnChange's listeners are called once per commit, after it, with what
 // it changed: one change per entity, with the commit's last seq, in the
 // order the rows named them.

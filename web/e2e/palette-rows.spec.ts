@@ -31,12 +31,16 @@ async function closePalette(page: Page) {
   }
   await expect(palette).toBeHidden()
 }
-/** Opens the palette and returns it: Alt+/ (the terminal's way, which the page shares), else Ctrl+K where no terminal has the focus. */
+/**
+ * Opens the palette and returns it: Alt+/ (the terminal's way, which the page shares; the layout's own listener, from a terminal or
+ * not). Alt+/ only ever opens it, so a second press is safe where Ctrl+K, a toggle, was not: under load the first Alt+/ opened the
+ * palette after the 1.5 s look, and the Ctrl+K sent then closed it again.
+ */
 async function openPalette(page: Page) {
   const palette = page.locator('[data-palette]')
   await closePalette(page)
   await page.keyboard.press('Alt+/')
-  if (!(await palette.waitFor({ state: 'visible', timeout: 1500 }).then(() => true, () => false))) await page.keyboard.press('Control+k')
+  if (!(await palette.waitFor({ state: 'visible', timeout: 1500 }).then(() => true, () => false))) await page.keyboard.press('Alt+/')
   await expect(palette).toBeVisible()
   return palette
 }

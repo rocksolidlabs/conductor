@@ -99,8 +99,10 @@ const scopeItems = computed(() => [
   { label: 'Every project', value: 'every', description: "Offered on every project's pages" },
 ])
 
+// While a save or a rename is on its way the dialog stays as it is: it cannot be dismissed, cancelled or opened again, so the answer
+// closes the opening it was made from and a draft of a newer one is never lost to it (DispatchNewTicket.vue does the same).
 function openSave() {
-  if (props.archived || !query.value) return
+  if (props.archived || !query.value || submitting.value) return
   renaming.value = null
   name.value = ''
   scope.value = 'project'
@@ -108,7 +110,7 @@ function openSave() {
   dialogOpen.value = true
 }
 function openRename(v: DispatchView) {
-  if (props.archived && v.projectId) return
+  if ((props.archived && v.projectId) || submitting.value) return
   renaming.value = v
   name.value = v.name
   dialogError.value = ''
@@ -208,7 +210,7 @@ defineExpose({ views, openSave, apply, applied })
     </UButton>
   </div>
 
-  <UModal v-model:open="dialogOpen" :title="renaming ? `Rename ${renaming.name}` : 'Save the view'" :description="renaming ? 'Its filter, sort and kind stay as they are.' : `The filter, sort and ${kind} shown, under a name.`" :ui="{ content: 'max-w-md' }">
+  <UModal v-model:open="dialogOpen" :dismissible="!submitting" :close="{ disabled: submitting }" :title="renaming ? `Rename ${renaming.name}` : 'Save the view'" :description="renaming ? 'Its filter, sort and kind stay as they are.' : `The filter, sort and ${kind} shown, under a name.`" :ui="{ content: 'max-w-md' }">
     <template #body>
       <form class="flex flex-col gap-4" data-view-dialog @submit.prevent="submit">
         <UAlert v-if="dialogError" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="dialogError" data-view-error />
@@ -224,7 +226,7 @@ defineExpose({ views, openSave, apply, applied })
     </template>
     <template #footer>
       <div class="flex w-full justify-end gap-2">
-        <UButton label="Cancel" color="neutral" variant="ghost" @click="dialogOpen = false" />
+        <UButton label="Cancel" color="neutral" variant="ghost" :disabled="submitting" @click="dialogOpen = false" />
         <UButton :label="renaming ? 'Rename' : 'Save'" :icon="renaming ? 'i-lucide-pencil' : 'i-lucide-bookmark-plus'" :loading="submitting" :disabled="nameInvalid" data-view-submit @click="submit" />
       </div>
     </template>

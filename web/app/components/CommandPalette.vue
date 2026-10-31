@@ -6,7 +6,7 @@ import { bindDraft } from '~/utils/reply'
 import { matchRange, noteUse, writeRecent, type PaletteMode } from '~/utils/palette'
 import type { TicketSummary } from '~/composables/useDispatch'
 import { PICK_WORDS, pickEdit, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
-import { DispatchOrder } from '~/utils/dispatchOrder'
+import type { DispatchWatch } from '~/composables/useDispatchLive'
 
 /**
  * The command palette (#302): one keystroke from any page opens it over
@@ -66,7 +66,9 @@ const rows = usePaletteRows({
 
 // Dispatch from the palette (docs/plans/dispatch.md, "web/app"): a ticket row's Set status… and Set priority… open a picker here, once
 // the palette has closed, one operation on the ticket; New ticket in <project> (a `>` row, a Dispatch page's) opens the dialog here.
-const ticketGate = new DispatchOrder()
+// Through the app's Tickets gate (usePalette), which a snapshot resets with the cache's, so the next edit expects the store's revision;
+// one after another with the palette's other edits, each made on the ticket as the ones before left it (usePalette's editTicket).
+const ticketGate = palette.ticketsGate
 const ticketOps = useDispatchOps(ticketGate)
 const ticketPick = ref<{ field: PickField; tickets: TicketSummary[] }>({ field: 'status', tickets: [] })
 const ticketPickOpen = ref(false)
@@ -78,10 +80,14 @@ async function openTicketPick(field: PickField, t: TicketSummary) {
 }
 function ticketPicked(value: string | number, adds: boolean) {
   const { field, tickets } = ticketPick.value
-  void ticketOps.editTickets(tickets, (t) => pickEdit(field, t, value, adds), {
-    apply: (t) => palette.patchTicket(ticketSummaryOf(t)),
-    done: (keys) => `${PICK_WORDS[field].title} of ${keys.join(', ')} set`,
-  })
+  const t = tickets[0]
+  if (!t) return
+  void palette.editTicket(t, (x) =>
+    ticketOps.editTickets([x], (y) => pickEdit(field, y, value, adds), {
+      apply: (y) => palette.patchTicket(ticketSummaryOf(y)),
+      done: (keys) => `${PICK_WORDS[field].title} of ${keys.join(', ')} set`,
+    }),
+  )
 }
 const newTicketOpen = ref(false)
 const newTicketProject = ref('')
@@ -170,7 +176,8 @@ watch(
       input.value?.inputRef?.focus()
       void palette.loadLists()
       void palette.loadTouched()
-      void palette.loadTickets()
+      // Through the live store, so that a read that fails is asked again after the window, doubled, as a re-read is.
+      dispatchLive().ask(ticketsWatch, () => palette.loadTickets())
       void rows.loadIntegrations()
       // Opened on a row to ask (X on a session page): the row takes the focus and asks.
       const key = palette.pendingAsk.value
@@ -197,8 +204,9 @@ watch(
   },
 )
 // The Tickets cache is read again on a dispatch event while the palette is open (gathered, DispatchLive's window), and is due again at
-// the next open when one came while it was closed; a snapshot forgets what its gate knew.
-const stopTickets = dispatchLive().subscribe({
+// the next open when one came while it was closed; a snapshot forgets what its gate knew. A read that fails is asked again after the
+// window, doubled, until one answers (DispatchLive), the cached rows shown meanwhile.
+const ticketsWatch: DispatchWatch = {
   later: () => true,
   read: () => {
     if (!palette.open.value) {
@@ -208,7 +216,8 @@ const stopTickets = dispatchLive().subscribe({
     return palette.loadTickets(true)
   },
   reset: () => palette.resetTickets(),
-})
+}
+const stopTickets = dispatchLive().subscribe(ticketsWatch)
 onBeforeUnmount(stopTickets)
 let touchedTimer: number | undefined
 const stopTouched = events.onEvent((e) => {

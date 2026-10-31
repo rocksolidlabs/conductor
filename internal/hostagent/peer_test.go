@@ -198,13 +198,7 @@ func webrtcViewerAgent(t *testing.T) (*agent, *peer, <-chan []byte) {
 				if typ, _ := proto.ParseHeader(f.Payload); typ == proto.CtlReady {
 					// The session sends ready as it attaches the viewer,
 					// before the peer holds the subscription (attach).
-					for !holdsSub(p) {
-						select {
-						case <-deadline:
-							t.Fatal("the peer never held the viewer's subscription")
-						case <-time.After(5 * time.Millisecond):
-						}
-					}
+					awaitSub(t, p)
 					return a, p, frames
 				}
 			}
@@ -221,17 +215,33 @@ func holdsSub(p *peer) bool {
 	return p.sub != nil
 }
 
+// awaitSub waits for p to hold its viewer's subscription. The session sends
+// the viewer its ready and its welcome inside AttachWith, before attach sets
+// p.sub, so a test that saw either has seen the attach under way, not done:
+// it waits for the subscription itself. The viewer's own next frame needs no
+// wait, as the data channel hands it over only once attach has returned. The
+// bound is past anything but a hang: all that is left of attach is a lock.
+func awaitSub(t *testing.T, p *peer) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !holdsSub(p) {
+		if time.Now().After(deadline) {
+			t.Fatal("the peer never held the viewer's subscription")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // flood queues 480 KiB of output for the viewer: less than the session and the
 // data channel take without holding anything up, more than the connection has
-// carried and had acknowledged by the time the host is done.
+// carried and had acknowledged by the time the host is done. It waits for the
+// viewer's subscription first (awaitSub).
 func flood(t *testing.T, a *agent, p *peer) {
 	t.Helper()
+	awaitSub(t, p)
 	p.mu.Lock()
 	sub := p.sub
 	p.mu.Unlock()
-	if sub == nil {
-		t.Fatal("the viewer is not attached")
-	}
 	frame := proto.Encode(proto.TypeOutput, bytes.Repeat([]byte{'x'}, 30<<10))
 	for i := 0; i < 16; i++ {
 		a.local.Send(sub, frame)

@@ -287,7 +287,10 @@ func TestASetupStepThatFailsInTheWorktreeIsNotCounted(t *testing.T) {
 			open(t, mark)
 			commitResult(t, e, a1, "half.txt", "half\n", "half")
 			attemptFailed(t, e, run.ID, "build", 2)
-			row1, row2 := l.attemptRow(t, run.ID, "build", 1), l.attemptRow(t, run.ID, "build", 2)
+			// The engine's view is one change ahead of the ledger while that
+			// change commits: attempt 2's row, its task's and its
+			// attempt.failed are waited for in the ledger (one commit).
+			row1, row2 := l.attemptWhen(t, run.ID, "build", 1, failedRow), l.attemptWhen(t, run.ID, "build", 2, failedRow)
 			b := row1.ResultCommit
 			if row1.Stage != "check ok" || b == "" || row2.StartCommit != b || row2.Stage != "setup deps" || !strings.Contains(row2.Error, "deps exited 1: the registry is down") || row2.ResultCommit != "" {
 				t.Fatalf("attempt 1 %+v\nattempt 2 %+v", row1, row2)
@@ -651,6 +654,26 @@ func (l *fakeLedger) attemptWhen(t *testing.T, runID, taskID string, n int, ok f
 
 // failedRow is an attempt's row closed failed.
 func failedRow(r ledger.AttemptRow) bool { return r.State == ledger.AttemptFailed }
+
+// succeededRow is an attempt's row closed succeeded.
+func succeededRow(r ledger.AttemptRow) bool { return r.State == ledger.AttemptSucceeded }
+
+// taskWhen waits up to 10 s for the task's row in the fake ledger to
+// satisfy ok, and returns it, as attemptWhen does for an attempt's: a task
+// read in the engine's view is one change ahead of the ledger while that
+// change commits.
+func (l *fakeLedger) taskWhen(t *testing.T, runID, taskID, what string, ok func(ledger.TaskRow) bool) ledger.TaskRow {
+	t.Helper()
+	var row ledger.TaskRow
+	waitFake(t, fmt.Sprintf("the row of %s %s", taskID, what), func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		r, found := l.tasks[runID+"/"+taskID]
+		row = r
+		return found && ok(r)
+	})
+	return row
+}
 
 // waitTreeRowsEnded waits up to 10 s for the rows of the attempt's trees of
 // the kinds given to be ended in the fake ledger. A task read as succeeded

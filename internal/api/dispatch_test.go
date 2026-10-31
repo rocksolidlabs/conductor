@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -1769,10 +1770,11 @@ func buildLargestTicket(t *testing.T, e *testEnv, f filler, key string) largestT
 }
 
 // The largest ticket the server can make, every field and set at its
-// bound, is read back whole and under maxTicketReply: with every text at
+// bound, is read back whole and under MaxTicketReply: with every text at
 // its escaped worst, which is what the bound is, and with every text of
 // '<' and '>', which the reply holds as they are and never as the six
-// bytes of the default encoder.
+// bytes of the default encoder; and so it is through its session's read,
+// linked to a run (sessionReadOfTheLargest).
 func TestDispatchTheLargestTicketIsUnderItsBound(t *testing.T) {
 	t.Parallel()
 	for i, f := range []filler{worstFiller, angleFiller} {
@@ -1784,9 +1786,9 @@ func TestDispatchTheLargestTicketIsUnderItsBound(t *testing.T) {
 			if status != http.StatusOK {
 				t.Fatalf("read: %d %.300s", status, raw)
 			}
-			t.Logf("the largest ticket's reply, %s: %d bytes of %d", f.name, len(raw), maxTicketReply)
-			if len(raw) >= maxTicketReply {
-				t.Fatalf("the largest ticket's reply is %d bytes, not under %d", len(raw), maxTicketReply)
+			t.Logf("the largest ticket's reply, %s: %d bytes of %d", f.name, len(raw), MaxTicketReply)
+			if len(raw) >= MaxTicketReply {
+				t.Fatalf("the largest ticket's reply is %d bytes, not under %d", len(raw), MaxTicketReply)
 			}
 			if f == angleFiller {
 				for _, esc := range []string{"u003c", "u003e"} {
@@ -1853,6 +1855,7 @@ func TestDispatchTheLargestTicketIsUnderItsBound(t *testing.T) {
 					t.Fatalf("attachment %d did not read back whole", i)
 				}
 			}
+			sessionReadOfTheLargest(t, e, f, want)
 		})
 	}
 }
@@ -1860,10 +1863,10 @@ func TestDispatchTheLargestTicketIsUnderItsBound(t *testing.T) {
 // The largest page of a ticket's comments, maxCommentPage of them, each at
 // its escaped worst (a body of 16 KiB of '"' and '\', the author and the
 // display name at their bounds, edited and then deleted, so it carries
-// both times), is read back whole and under maxTicketReply, as the
+// both times), is read back whole and under MaxTicketReply, as the
 // ticket's own read is; the page after it holds the rest, and a page of
 // one more is refused. The store's own bound, 200, would be more than
-// twice maxTicketReply.
+// twice MaxTicketReply.
 func TestDispatchTheLargestPageOfCommentsIsUnderItsBound(t *testing.T) {
 	t.Parallel()
 	done := doneOf(t)
@@ -1898,9 +1901,9 @@ func TestDispatchTheLargestPageOfCommentsIsUnderItsBound(t *testing.T) {
 	}
 	for _, query := range []string{fmt.Sprintf("?limit=%d", maxCommentPage), ""} {
 		raw, comments := page(query)
-		t.Logf("the largest page of comments (%q): %d bytes of %d", query, len(raw), maxTicketReply)
-		if len(raw) >= maxTicketReply {
-			t.Fatalf("the largest page of comments is %d bytes, not under %d", len(raw), maxTicketReply)
+		t.Logf("the largest page of comments (%q): %d bytes of %d", query, len(raw), MaxTicketReply)
+		if len(raw) >= MaxTicketReply {
+			t.Fatalf("the largest page of comments is %d bytes, not under %d", len(raw), MaxTicketReply)
 		}
 		if len(comments) != maxCommentPage {
 			t.Fatalf("%q: %d comments", query, len(comments))
@@ -1955,7 +1958,7 @@ func worstViewQuery(t *testing.T) string {
 
 // The largest project read, its fields at their bounds, 100 labels, 100
 // milestones with 4 KiB descriptions and 200 views with 8 KiB queries,
-// every text at its escaped worst, is under maxProjectReply and read back
+// every text at its escaped worst, is under MaxProjectReply and read back
 // whole; so is the views' read, which carries the same 200 views.
 func TestDispatchTheLargestProjectIsUnderItsBound(t *testing.T) {
 	t.Parallel()
@@ -1987,9 +1990,9 @@ func TestDispatchTheLargestProjectIsUnderItsBound(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("read: %d %.300s", status, raw)
 	}
-	t.Logf("the largest project's reply: %d bytes of %d", len(raw), maxProjectReply)
-	if len(raw) >= maxProjectReply {
-		t.Fatalf("the largest project's reply is %d bytes, not under %d", len(raw), maxProjectReply)
+	t.Logf("the largest project's reply: %d bytes of %d", len(raw), MaxProjectReply)
+	if len(raw) >= MaxProjectReply {
+		t.Fatalf("the largest project's reply is %d bytes, not under %d", len(raw), MaxProjectReply)
 	}
 	var out dispatch.ProjectView
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -2017,9 +2020,9 @@ func TestDispatchTheLargestProjectIsUnderItsBound(t *testing.T) {
 		if status != http.StatusOK {
 			t.Fatalf("%s: %d %.300s", path, status, raw)
 		}
-		t.Logf("the largest views' reply, %s: %d bytes of %d", path, len(raw), maxProjectReply)
-		if len(raw) >= maxProjectReply {
-			t.Fatalf("the views' reply, %s, is %d bytes, not under %d", path, len(raw), maxProjectReply)
+		t.Logf("the largest views' reply, %s: %d bytes of %d", path, len(raw), MaxProjectReply)
+		if len(raw) >= MaxProjectReply {
+			t.Fatalf("the views' reply, %s, is %d bytes, not under %d", path, len(raw), MaxProjectReply)
 		}
 		var read struct {
 			Views []dispatch.View `json:"views"`
@@ -2503,6 +2506,569 @@ func TestDispatchALargeCommitKeepsTheStreamOpen(t *testing.T) {
 	for _, key := range []string{"BIG-1", fmt.Sprintf("BIG-%d", len(tickets))} {
 		if tk := entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+key, nil, http.StatusOK, ""), "ticket"); len(tk["labels"].([]any)) != 0 || tk["milestoneId"] != "" {
 			t.Fatalf("%s after the deletes: %v", key, tk)
+		}
+	}
+}
+
+// An attempt's ticket (PR-12): the session of a run's member reads the
+// ticket its run is linked to and comments on it, with its own token or
+// the admin's, as agent:<member> (dispatch_session.go).
+
+// callAs sends body as call does (JSON with HTML escaping off, or the
+// bytes given as they are) with the token given, none for "", and
+// returns the reply's status, its bytes and the reply decoded.
+func (e *testEnv) callAs(t *testing.T, token, method, path string, body any) (int, []byte, map[string]any) {
+	t.Helper()
+	var rd io.Reader
+	switch b := body.(type) {
+	case nil:
+	case []byte:
+		rd = bytes.NewReader(b)
+	default:
+		rd = bytes.NewReader(encodeNoHTML(t, body))
+	}
+	req, err := http.NewRequest(method, e.http.URL+path, rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("%s %s: the reply is not JSON: %v: %.200s", method, path, err, data)
+		}
+	}
+	return resp.StatusCode, data, out
+}
+
+// expectAs is expect with the token given.
+func (e *testEnv) expectAs(t *testing.T, token, method, path string, body any, status int, code string) map[string]any {
+	t.Helper()
+	got, data, out := e.callAs(t, token, method, path, body)
+	if got != status || (code != "" && errorCode(out) != code) {
+		t.Fatalf("%s %s: %d %.300s, want %d %s", method, path, got, data, status, code)
+	}
+	return out
+}
+
+// memberSession launches a crew of one member, a, running cat, and gives
+// its session a known agent token: the run, the member's session and its
+// token. The member's session is the run's once the engine records it,
+// which the launch's reply waits for; it is looked for until it is, for
+// as long as the test may take. The run is stopped when the test ends.
+func (e *testEnv) memberSession(t *testing.T, name string) (run, sid, token string) {
+	t.Helper()
+	run = e.launchCrew(t, name, catMember("a", "immediately"))
+	t.Cleanup(func() { e.do("POST", "/api/runs/"+run+"/stop", adminToken, nil) })
+	for sid == "" {
+		if r, ok := e.srv.runs.Get(run); ok && len(r.Members) == 1 {
+			sid = r.Members[0].SessionID
+		}
+		if sid == "" {
+			if t.Context().Err() != nil {
+				t.Fatal("the member's session never started")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	return run, sid, e.agentToken(sid)
+}
+
+// The session of a run's member reads the ticket its run is linked to,
+// with its own token or the admin's, and no other: 404 no_ticket before
+// any link, for a session in no run and after the ticket's delete, 401
+// for a token that is not the session's or the admin's. The read is the
+// ticket as the admin's read gives it, with its labels' and its
+// milestone's rows. The comment is the member's, agent:a, whichever token
+// sent it, kept under that actor and not the admin's: sent again it
+// answers its receipt and changes nothing, with other content
+// op_conflict. Once the run is linked to a second ticket both routes name
+// the second, and still do after the first's undelete.
+func TestDispatchSessionTicketRoutes(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	// Every refusal is the token's: the per-client limiter would answer
+	// some with 429.
+	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	run, sid, tok := e.memberSession(t, "Ticketed")
+	read, comment := "/api/sessions/"+sid+"/ticket", "/api/sessions/"+sid+"/ticket/comments"
+	for _, token := range []string{tok, adminToken} {
+		e.expectAs(t, token, "GET", read, nil, http.StatusNotFound, "no_ticket")
+		e.expectAs(t, token, "POST", comment, map[string]any{"opId": opID(), "body": "early"}, http.StatusNotFound, "no_ticket")
+	}
+	// A session in no run has no ticket either; its token is no other
+	// session's, and neither is a share token of this one.
+	other := e.createSession("cat")
+	otherTok := e.agentToken(other)
+	e.expectAs(t, otherTok, "GET", "/api/sessions/"+other+"/ticket", nil, http.StatusNotFound, "no_ticket")
+	e.expectAs(t, otherTok, "POST", "/api/sessions/"+other+"/ticket/comments", map[string]any{"opId": opID(), "body": "x"}, http.StatusNotFound, "no_ticket")
+	_, share, err := e.srv.links.Create(sid, session.RoleControl, "", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{"", "wrong", "test-host-token", otherTok, share} {
+		e.expectAs(t, token, "GET", read, nil, http.StatusUnauthorized, "unauthorized")
+		e.expectAs(t, token, "POST", comment, map[string]any{"opId": opID(), "body": "x"}, http.StatusUnauthorized, "unauthorized")
+	}
+	e.expectAs(t, adminToken, "GET", "/api/sessions/nobody/ticket", nil, http.StatusNotFound, "not_found")
+
+	e.newDispatchProject(t, "TKT", nil)
+	label := entityOf(t, e.expect(t, "POST", "/api/dispatch/projects/TKT/labels", map[string]any{"opId": opID(), "name": "api", "color": "blue"}, http.StatusCreated, ""), "label")["id"].(string)
+	e.expect(t, "POST", "/api/dispatch/projects/TKT/labels", map[string]any{"opId": opID(), "name": "unused", "color": "red"}, http.StatusCreated, "")
+	milestone := entityOf(t, e.expect(t, "POST", "/api/dispatch/projects/TKT/milestones", map[string]any{"opId": opID(), "name": "1.0"}, http.StatusCreated, ""), "milestone")["id"].(string)
+	first := e.newDispatchTicket(t, "TKT", "First", map[string]any{"description": "the <b>work</b>", "labels": []string{label}, "milestone": milestone})["key"].(string)
+	second := e.newDispatchTicket(t, "TKT", "Second", nil)["key"].(string)
+	e.expect(t, "POST", "/api/dispatch/tickets/"+first+"/links", map[string]any{"opId": opID(), "kind": "run", "ref": run}, http.StatusCreated, "")
+	for _, token := range []string{tok, adminToken} {
+		out := e.expectAs(t, token, "GET", read, nil, http.StatusOK, "")
+		tk := entityOf(t, out, "ticket")
+		labels, _ := out["labels"].([]any)
+		ms, _ := out["milestone"].(map[string]any)
+		if tk["key"] != first || tk["description"] != "the <b>work</b>" || len(labels) != 1 || labels[0].(map[string]any)["name"] != "api" || ms["name"] != "1.0" {
+			t.Fatalf("the session's ticket: %v", out)
+		}
+	}
+	e.expectAs(t, tok, "GET", read+"?page=1", nil, http.StatusBadRequest, "invalid_request")
+
+	op := opID()
+	out := e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "seen <b>"}, http.StatusCreated, "")
+	if rc, c := entityOf(t, out, "receipt"), entityOf(t, out, "comment"); rc["status"] != "done" || rc["intent"] != "comment.add" ||
+		c["author"] != "agent:a" || c["by"] != "" || c["body"] != "seen <b>" || c["n"] != 1.0 {
+		t.Fatalf("the member's comment: %v", out)
+	}
+	if rc := entityOf(t, e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "seen <b>"}, http.StatusOK, ""), "receipt"); rc["repeat"] != true {
+		t.Fatalf("the comment sent again: %v", rc)
+	}
+	e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "other"}, http.StatusConflict, "op_conflict")
+	// The admin's token comments through the route as the member: the
+	// route is the session's.
+	if c := entityOf(t, e.expectAs(t, adminToken, "POST", comment, map[string]any{"opId": opID(), "body": "through the session"}, http.StatusCreated, ""), "comment"); c["author"] != "agent:a" || c["n"] != 2.0 {
+		t.Fatalf("a comment through the session with the admin's token: %v", c)
+	}
+	// The member's receipts are its own: the admin's are not among them.
+	e.expect(t, "GET", "/api/dispatch/ops/"+op, nil, http.StatusNotFound, "not_found")
+	if rc, found, err := e.srv.dispatch.Receipt(context.Background(), "agent:a", op); err != nil || !found || rc.Status != dispatch.StatusDone {
+		t.Fatalf("the member's receipt: %+v %v %v", rc, found, err)
+	}
+	if cs := entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+first, nil, http.StatusOK, ""), "ticket")["comments"].([]any); len(cs) != 2 ||
+		cs[0].(map[string]any)["author"] != "agent:a" || cs[1].(map[string]any)["author"] != "agent:a" {
+		t.Fatalf("the ticket's comments: %v", cs)
+	}
+	// What the route will not take, and the store's refusal of an empty
+	// comment, kept as a failed receipt.
+	for _, b := range []any{
+		map[string]any{"body": "no op id"},
+		map[string]any{"opId": "not one!", "body": "x"},
+		map[string]any{"opId": opID(), "body": "x", "byName": "Alice"},
+		map[string]any{"opId": opID(), "body": "x", "expectedRev": 1},
+		[]byte("not json"),
+	} {
+		e.expectAs(t, tok, "POST", comment, b, http.StatusBadRequest, "invalid_request")
+	}
+	e.expectAs(t, tok, "POST", comment, map[string]any{"opId": opID(), "body": ""}, http.StatusConflict, "invalid")
+	e.expectAs(t, tok, "POST", comment, map[string]any{"opId": opID(), "body": strings.Repeat("x", maxBody)}, http.StatusRequestEntityTooLarge, "bound")
+
+	// Deleted, the ticket holds the run no more.
+	e.expect(t, "POST", "/api/dispatch/tickets/"+first+"/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	for _, token := range []string{tok, adminToken} {
+		e.expectAs(t, token, "GET", read, nil, http.StatusNotFound, "no_ticket")
+		e.expectAs(t, token, "POST", comment, map[string]any{"opId": opID(), "body": "after the delete"}, http.StatusNotFound, "no_ticket")
+	}
+	// The second holds it, and still does once the first is back.
+	e.expect(t, "POST", "/api/dispatch/tickets/"+second+"/links", map[string]any{"opId": opID(), "kind": "run", "ref": run}, http.StatusCreated, "")
+	for _, when := range []string{"linked to the second", "after the first's undelete"} {
+		if when != "linked to the second" {
+			e.expect(t, "POST", "/api/dispatch/tickets/"+first+"/undelete", map[string]any{"opId": opID()}, http.StatusOK, "")
+		}
+		if tk := entityOf(t, e.expectAs(t, tok, "GET", read, nil, http.StatusOK, ""), "ticket"); tk["key"] != second {
+			t.Fatalf("%s: the session's ticket is %v", when, tk["key"])
+		}
+	}
+	if c := entityOf(t, e.expectAs(t, tok, "POST", comment, map[string]any{"opId": opID(), "body": "on the second"}, http.StatusCreated, ""), "comment"); c["n"] != 1.0 {
+		t.Fatalf("the comment on the second: %v", c)
+	}
+	if cs := entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+second, nil, http.StatusOK, ""), "ticket")["comments"].([]any); len(cs) != 1 {
+		t.Fatalf("the second's comments: %v", cs)
+	}
+}
+
+// The ticket a session reads is live and holds the run as its own read
+// shows it. A link moved to another ticket between the lookup and the
+// read sends the lookup round again and answers the other ticket; the
+// ticket deleted in that gap answers no_ticket; a link that moves on
+// every look answers no_ticket after ticketReads lookups. Not parallel:
+// the seam is the package's.
+func TestDispatchSessionTicketIsReadWhereItsLinkIs(t *testing.T) {
+	e := dispatchEnv(t)
+	ctx := context.Background()
+	done := doneOf(t)
+	ds := e.srv.dispatch
+	run, sid, tok := e.memberSession(t, "Moving")
+	e.newDispatchProject(t, "MOV", nil)
+	a := e.newDispatchTicket(t, "MOV", "A", nil)["key"].(string)
+	b := e.newDispatchTicket(t, "MOV", "B", nil)["key"].(string)
+	held := done(ds.AddLink(ctx, adminOp(""), a, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})).ID
+	holder := a
+	read := "/api/sessions/" + sid + "/ticket"
+	t.Cleanup(func() { betweenTicketReads.Store(nil) })
+	var calls atomic.Int32
+	// move moves the run's link from its holder to the other ticket; it
+	// runs in the handlers, so it reports with Errorf, and holds mu over
+	// holder and held, which the handlers of several requests share.
+	var mu sync.Mutex
+	move := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		next := a
+		if holder == a {
+			next = b
+		}
+		if rc, err := ds.RemoveLink(ctx, adminOp(""), holder, held); err != nil || rc.Status != dispatch.StatusDone {
+			t.Errorf("the link's remove: %+v %v", rc, err)
+		}
+		rc, err := ds.AddLink(ctx, adminOp(""), next, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})
+		if err != nil || rc.Status != dispatch.StatusDone {
+			t.Errorf("the link's add: %+v %v", rc, err)
+		}
+		holder, held = next, rc.ID
+	}
+	seam := func(f func()) {
+		calls.Store(0)
+		betweenTicketReads.Store(&f)
+	}
+
+	seam(func() {
+		if calls.Add(1) == 1 {
+			move()
+		}
+	})
+	if tk := entityOf(t, e.expectAs(t, tok, "GET", read, nil, http.StatusOK, ""), "ticket"); tk["key"] != b || calls.Load() != 2 {
+		t.Fatalf("the link moved between the reads: %v after %d lookups", tk["key"], calls.Load())
+	}
+
+	seam(func() {
+		if calls.Add(1) == 1 {
+			if rc, err := ds.DeleteTicket(ctx, adminOp(""), b); err != nil || rc.Status != dispatch.StatusDone {
+				t.Errorf("the delete: %+v %v", rc, err)
+			}
+		}
+	})
+	e.expectAs(t, tok, "GET", read, nil, http.StatusNotFound, "no_ticket")
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("the ticket deleted between the reads: %d lookups", n)
+	}
+
+	betweenTicketReads.Store(nil)
+	done(ds.UndeleteTicket(ctx, adminOp(""), b))
+	if tk := entityOf(t, e.expectAs(t, tok, "GET", read, nil, http.StatusOK, ""), "ticket"); tk["key"] != b {
+		t.Fatalf("after the undelete: %v", tk["key"])
+	}
+	seam(func() {
+		calls.Add(1)
+		move()
+	})
+	e.expectAs(t, tok, "GET", read, nil, http.StatusNotFound, "no_ticket")
+	if n := calls.Load(); n != ticketReads {
+		t.Fatalf("a link that moves on every look: %d lookups, want %d", n, ticketReads)
+	}
+}
+
+// A comment's resend goes where the comment went, not where the run's
+// link is now: after the link moved to another ticket, after it was
+// removed, and after the first ticket's delete, the same opId and body
+// answer the receipt, a repeat, with nothing written to either ticket,
+// and other content under it op_conflict. A refused comment's resend
+// answers its refusal again, though the run's ticket changed since, and
+// its opId with another body op_conflict, before the link moved and
+// after.
+func TestDispatchSessionCommentResendKeepsItsTicket(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	ctx := context.Background()
+	done := doneOf(t)
+	ds := e.srv.dispatch
+	run, sid, tok := e.memberSession(t, "Resent")
+	comment := "/api/sessions/" + sid + "/ticket/comments"
+	e.newDispatchProject(t, "RSN", nil)
+	a := e.newDispatchTicket(t, "RSN", "A", nil)["key"].(string)
+	b := e.newDispatchTicket(t, "RSN", "B", nil)["key"].(string)
+	link := done(ds.AddLink(ctx, adminOp(""), a, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})).ID
+	op, refused := opID(), opID()
+	if c := entityOf(t, e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "on A"}, http.StatusCreated, ""), "comment"); c["n"] != 1.0 {
+		t.Fatalf("the first comment: %v", c)
+	}
+	e.expectAs(t, tok, "POST", comment, map[string]any{"opId": refused, "body": ""}, http.StatusConflict, "invalid")
+	e.expectAs(t, tok, "POST", comment, map[string]any{"opId": refused, "body": "now with words"}, http.StatusConflict, "op_conflict")
+	comments := func(key string) int {
+		t.Helper()
+		cs, err := ds.Comments(ctx, key, 0, dispatch.MaxCommentPage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(cs)
+	}
+	resend := func(when string) {
+		t.Helper()
+		out := e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "on A"}, http.StatusOK, "")
+		if rc := entityOf(t, out, "receipt"); rc["status"] != "done" || rc["repeat"] != true {
+			t.Fatalf("%s: the resend: %v", when, out)
+		}
+		if c, _ := out["comment"].(map[string]any); c["body"] != "on A" || c["n"] != 1.0 {
+			t.Fatalf("%s: the resend's comment: %v", when, out)
+		}
+		e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "other"}, http.StatusConflict, "op_conflict")
+		if out := e.expectAs(t, tok, "POST", comment, map[string]any{"opId": refused, "body": ""}, http.StatusConflict, "invalid"); entityOf(t, out, "receipt")["repeat"] != true {
+			t.Fatalf("%s: the refusal's resend: %v", when, out)
+		}
+		e.expectAs(t, tok, "POST", comment, map[string]any{"opId": refused, "body": "now with words"}, http.StatusConflict, "op_conflict")
+		if na, nb := comments(a), comments(b); na != 1 || nb != 0 {
+			t.Fatalf("%s: %d comments on A and %d on B", when, na, nb)
+		}
+	}
+	done(ds.RemoveLink(ctx, adminOp(""), a, link))
+	link = done(ds.AddLink(ctx, adminOp(""), b, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})).ID
+	resend("the link moved to B")
+	done(ds.RemoveLink(ctx, adminOp(""), b, link))
+	resend("the link removed")
+	done(ds.DeleteTicket(ctx, adminOp(""), a))
+	resend("A deleted")
+}
+
+// A session's comment that commits is answered by its receipt though
+// nothing can be read after the commit: the store closed from OnChange,
+// after the comment's commit and before the reply looks up the ticket it
+// went to, the reply is 201 with the done receipt and a null comment,
+// never an error a client would send again under a new opId.
+func TestDispatchSessionCommentKeepsItsReceiptWhenTheReadAfterFails(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	ctx := context.Background()
+	done := doneOf(t)
+	ds := e.srv.dispatch
+	run, sid, tok := e.memberSession(t, "Unread")
+	e.newDispatchProject(t, "URD", nil)
+	key := e.newDispatchTicket(t, "URD", "A", nil)["key"].(string)
+	done(ds.AddLink(ctx, adminOp(""), key, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}))
+	var closed atomic.Bool
+	ds.OnChange(func([]dispatch.Change) {
+		if closed.CompareAndSwap(false, true) {
+			if err := ds.Close(); err != nil {
+				t.Errorf("closing the store: %v", err)
+			}
+		}
+	})
+	out := e.expectAs(t, tok, "POST", "/api/sessions/"+sid+"/ticket/comments", map[string]any{"opId": opID(), "body": "seen"}, http.StatusCreated, "")
+	if rc := entityOf(t, out, "receipt"); rc["status"] != "done" || rc["id"] == "" || rc["id"] == nil {
+		t.Fatalf("the receipt: %v", out)
+	}
+	if c, ok := out["comment"]; !ok || c != nil {
+		t.Fatalf("the comment, unreadable: %v", out)
+	}
+	if !closed.Load() {
+		t.Fatal("no commit closed the store")
+	}
+}
+
+// A comment and its resend that overlap, the resend sent before the
+// comment commits, answer as one operation whatever the run's link does
+// in between: the resend held after its run is found, the comment
+// committed on A, the link moved to B (or removed), the resend answers
+// the comment's receipt, a repeat with the comment on A, and nothing is
+// written to B; another body under the id meanwhile answers op_conflict,
+// never no_ticket or a comment on B. Not parallel:
+// the seam is the package's.
+func TestDispatchSessionCommentOverlappingItsResend(t *testing.T) {
+	e := dispatchEnv(t)
+	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	ctx := context.Background()
+	done := doneOf(t)
+	ds := e.srv.dispatch
+	run, sid, tok := e.memberSession(t, "Overlapping")
+	comment := "/api/sessions/" + sid + "/ticket/comments"
+	e.newDispatchProject(t, "OVL", nil)
+	a := e.newDispatchTicket(t, "OVL", "A", nil)["key"].(string)
+	b := e.newDispatchTicket(t, "OVL", "B", nil)["key"].(string)
+	t.Cleanup(func() { beforeSessionComment.Store(nil) })
+	comments := func(key string) int {
+		t.Helper()
+		cs, err := ds.Comments(ctx, key, 0, dispatch.MaxCommentPage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(cs)
+	}
+	// post sends a comment from a goroutine of its own, the test's
+	// helpers being the test goroutine's: its status and reply, or the
+	// error that kept it from one.
+	type reply struct {
+		status int
+		out    map[string]any
+		err    error
+	}
+	post := func(body map[string]any) <-chan reply {
+		ch := make(chan reply, 1)
+		go func() {
+			var r reply
+			defer func() { ch <- r }()
+			raw, err := json.Marshal(body)
+			if err != nil {
+				r.err = err
+				return
+			}
+			req, err := http.NewRequest("POST", e.http.URL+comment, bytes.NewReader(raw))
+			if err != nil {
+				r.err = err
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+tok)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := e.client.Do(req)
+			if err != nil {
+				r.err = err
+				return
+			}
+			defer resp.Body.Close()
+			r.status = resp.StatusCode
+			r.err = json.NewDecoder(resp.Body).Decode(&r.out)
+		}()
+		return ch
+	}
+	for i, then := range []string{"moved to B", "removed"} {
+		link := done(ds.AddLink(ctx, adminOp(""), a, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})).ID
+		op, body := opID(), fmt.Sprintf("overlapping %d", i)
+		// The seam holds the first request to reach it, the resend, until
+		// released, and lets the rest by.
+		var calls atomic.Int32
+		arrived, release := make(chan struct{}), make(chan struct{})
+		f := func() {
+			if calls.Add(1) == 1 {
+				close(arrived)
+				<-release
+			}
+		}
+		beforeSessionComment.Store(&f)
+		resend := post(map[string]any{"opId": op, "body": body})
+		<-arrived
+		if c := entityOf(t, e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": body}, http.StatusCreated, ""), "comment"); c["body"] != body {
+			t.Fatalf("%s: the comment: %v", then, c)
+		}
+		done(ds.RemoveLink(ctx, adminOp(""), a, link))
+		if then == "moved to B" {
+			done(ds.AddLink(ctx, adminOp(""), b, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}))
+		}
+		e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "other"}, http.StatusConflict, "op_conflict")
+		close(release)
+		r := <-resend
+		if r.err != nil || r.status != http.StatusOK {
+			t.Fatalf("%s: the resend: %d %v %v", then, r.status, r.out, r.err)
+		}
+		if rc, _ := r.out["receipt"].(map[string]any); rc["status"] != "done" || rc["repeat"] != true {
+			t.Fatalf("%s: the resend's receipt: %v", then, r.out)
+		}
+		if c, _ := r.out["comment"].(map[string]any); c["body"] != body {
+			t.Fatalf("%s: the resend's comment: %v", then, r.out)
+		}
+		beforeSessionComment.Store(nil)
+		if na, nb := comments(a), comments(b); na != i+1 || nb != 0 {
+			t.Fatalf("%s: %d comments on A and %d on B", then, na, nb)
+		}
+		if then == "moved to B" {
+			// Back to A for the next round: B's link removed.
+			tk, err := ds.Ticket(ctx, b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, l := range tk.Links {
+				if l.Kind == dispatch.LinkRun {
+					done(ds.RemoveLink(ctx, adminOp(""), b, l.ID))
+				}
+			}
+		}
+	}
+}
+
+// sessionReadOfTheLargest reads the largest ticket through its session's
+// route: the ticket's run link in place of its last external link (a
+// ticket holds fifty), its milestone's description at its bound, the
+// reply read with the member's token whole and under MaxTicketReply,
+// beside the ticket's twenty labels and its milestone.
+func sessionReadOfTheLargest(t *testing.T, e *testEnv, f filler, want largestTicket) {
+	t.Helper()
+	done := doneOf(t)
+	ctx := context.Background()
+	ds := e.srv.dispatch
+	run, sid, tok := e.memberSession(t, "Largest")
+	tk, err := ds.Ticket(ctx, want.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := tk.Links[len(tk.Links)-1]
+	done(ds.RemoveLink(ctx, adminOp(want.by), want.key, last.ID))
+	done(ds.AddLink(ctx, adminOp(want.by), want.key, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run, URL: last.URL, Note: last.Note}))
+	project, _, _ := dispatch.ParseKey(want.key)
+	description := f.text(dispatch.MaxMilestoneDescription, 0)
+	done(ds.EditMilestone(ctx, adminOp(want.by), project, tk.MilestoneID, dispatch.MilestoneEdit{Description: &description}))
+	status, raw, _ := e.callAs(t, tok, "GET", "/api/sessions/"+sid+"/ticket", nil)
+	if status != http.StatusOK {
+		t.Fatalf("the session's read: %d %.300s", status, raw)
+	}
+	t.Logf("the largest ticket through its session, %s: %d bytes of %d", f.name, len(raw), MaxTicketReply)
+	if len(raw) >= MaxTicketReply {
+		t.Fatalf("the largest ticket's reply through its session is %d bytes, not under %d", len(raw), MaxTicketReply)
+	}
+	for _, esc := range []string{"u003c", "u003e"} {
+		if f == angleFiller && bytes.Contains(raw, []byte(`\`+esc)) {
+			t.Fatalf("the session's reply holds the escape of %s", esc)
+		}
+	}
+	var out sessionTicketReply
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	v := out.Ticket
+	if v.Key != want.key || v.Description != want.description || v.Acceptance != want.acceptance || len(v.Links) != dispatch.MaxLinks ||
+		len(v.Comments) != len(want.comments) || len(v.Relations) != dispatch.MaxRelations || len(v.Attachments) != len(want.attachments) {
+		t.Fatalf("the ticket through its session did not read back whole: %d links, %d comments, %d relations, %d attachments",
+			len(v.Links), len(v.Comments), len(v.Relations), len(v.Attachments))
+	}
+	for i, c := range v.Comments {
+		if c.Body != want.comments[i] {
+			t.Fatalf("comment %d through the session did not read back whole", i+1)
+		}
+	}
+	if len(out.Labels) != dispatch.MaxTicketLabels || out.Milestone == nil || out.Milestone.Description != description {
+		t.Fatalf("the ticket's labels and milestone through its session: %d labels, %+v", len(out.Labels), out.Milestone)
+	}
+	for _, l := range out.Labels {
+		if utf8.RuneCountInString(l.Name) != dispatch.MaxLabelName || !slices.Contains(v.Labels, l.ID) {
+			t.Fatalf("a label through the session: %+v", l)
+		}
+	}
+}
+
+// A switchyard keeps no tickets: the session's two routes answer 403
+// switchyard, as every Dispatch route does.
+func TestDispatchSessionTicketOnASwitchyard(t *testing.T) {
+	t.Parallel()
+	e := switchyardEnv(t, true)
+	for _, r := range []struct{ method, path string }{{"GET", "/api/sessions/s1/ticket"}, {"POST", "/api/sessions/s1/ticket/comments"}} {
+		if resp, out := e.do(r.method, r.path, adminToken, map[string]any{"opId": "a1", "body": "x"}); resp.StatusCode != http.StatusForbidden || errorCode(out) != "switchyard" {
+			t.Errorf("%s %s: %d %v", r.method, r.path, resp.StatusCode, out)
 		}
 	}
 }

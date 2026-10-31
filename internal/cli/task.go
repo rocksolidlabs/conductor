@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,8 @@ const taskUsage = `Usage:
                                                say what stops your attempt; the people watching see it and are asked
   conductor task checkpoint --done TEXT --remaining TEXT [--notes TEXT]
                                                save where you got to, tied to your worktree's commit (commit first)
+  conductor task ticket [--json]               print the Dispatch ticket your run is linked to, or its JSON
+  conductor task ticket comment TEXT...        comment on that ticket, as your run's member
 
 In a managed run, the session is one attempt at one task (CONDUCTOR_TASK).
 A work task's result is its commit (HEAD unless --commit names it): commit
@@ -63,7 +66,7 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
-	case "context", "result", "send", "inbox", "ack", "blocked", "checkpoint":
+	case "context", "result", "send", "inbox", "ack", "blocked", "checkpoint", "ticket":
 	default:
 		fmt.Fprint(stderr, taskUsage)
 		return 2, fmt.Errorf("task: unknown command %q", sub)
@@ -71,7 +74,7 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	fs := flag.NewFlagSet("task "+sub, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	page := fs.Int("page", 0, "context: the page to print (all unless given)")
-	asJSON := fs.Bool("json", false, "context: print the task as JSON (task.json)")
+	asJSON := fs.Bool("json", false, "context, inbox, ticket: print the task (task.json), the messages or the ticket as JSON")
 	summary := fs.String("summary", "", "result: what you did")
 	commit := fs.String("commit", "", "result: the result commit (HEAD unless given)")
 	verdict := fs.String("verdict", "", "result: a review's verdict, approved or needs_changes")
@@ -101,6 +104,14 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		if fs.NArg() == 0 {
 			return 2, fmt.Errorf("task %s needs %s", sub, map[string]string{"send": "the text", "ack": "a sequence number"}[sub])
 		}
+	case "ticket":
+		switch {
+		case fs.NArg() == 0:
+		case fs.Arg(0) != "comment":
+			return 2, fmt.Errorf("task ticket takes nothing, or comment and the text: %q", fs.Arg(0))
+		case strings.TrimSpace(strings.Join(fs.Args()[1:], " ")) == "":
+			return 2, errors.New("task ticket comment needs the text")
+		}
 	default:
 		if fs.NArg() > 0 {
 			return 2, fmt.Errorf("task %s takes no argument: %q", sub, fs.Arg(0))
@@ -114,6 +125,29 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	switch sub {
 	case "context":
 		return taskContext(ctx, c, *page, *asJSON, stdout)
+	case "ticket":
+		if fs.NArg() > 0 {
+			cm, err := commentOnSessionTicket(ctx, c, strings.Join(fs.Args()[1:], " "))
+			if err != nil {
+				return 1, err
+			}
+			fmt.Fprintln(stdout, sessionCommentText(cm))
+			return 0, nil
+		}
+		raw, st, err := readSessionTicket(ctx, c)
+		if err != nil {
+			return 1, err
+		}
+		if *asJSON {
+			var b bytes.Buffer
+			if err := json.Indent(&b, raw, "", "  "); err != nil {
+				return 1, err
+			}
+			fmt.Fprintln(stdout, b.String())
+			return 0, nil
+		}
+		fmt.Fprint(stdout, sessionTicketText(st))
+		return 0, nil
 	case "send":
 		if *to == "" {
 			return 2, errors.New("task send: --to names the member")

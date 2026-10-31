@@ -22,6 +22,12 @@ func (c *lookupCache) stub(look func(program string) (string, error)) {
 	c.entries = map[string]lookupEntry{}
 }
 
+// hangWait is a lookup wait only a hang reaches. lookupWait (2 s) is the
+// product's bound, past which an unanswered lookup counts as installed; a
+// test that compares what servers say of a program needs their answers, which
+// a loaded machine can take longer than that to give.
+const hangWait = time.Minute
+
 // stubWait sets how long askers wait for a lookup, under the cache's lock.
 func (c *lookupCache) stubWait(d time.Duration) {
 	c.mu.Lock()

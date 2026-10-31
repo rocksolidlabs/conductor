@@ -73,6 +73,36 @@ func (h *eventHub) publishIf(info session.Info, listed func(id string) bool) {
 	if listed != nil && !listed(info.ID) {
 		return
 	}
+	h.sendSessionLocked(msg)
+}
+
+// publishLatest queues a server session's change as the session is now: its
+// snapshot is taken under the hub's lock (current, which says false for a
+// session the server no longer lists, as publishIf's listed does), so one
+// session's events leave in the order their snapshots were taken. A
+// snapshot taken before a change (a viewer's, read as a rename lands) and
+// handed over after it can then never go out after the change's and undo it
+// in the browsers, which hold the last session event they heard. current
+// takes the session's lock under the hub's: a session calls its hooks
+// without its lock held, and the registry never calls the hub under its
+// own.
+func (h *eventHub) publishLatest(id string, current func(id string) (session.Info, bool)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	info, ok := current(id)
+	if !ok {
+		return
+	}
+	b, err := json.Marshal(info)
+	if err != nil {
+		return
+	}
+	h.sendSessionLocked([]byte("event: session\ndata: " + string(b) + "\n\n"))
+}
+
+// sendSessionLocked queues a session event for every client, under h.mu; a
+// client that cannot keep up is dropped.
+func (h *eventHub) sendSessionLocked(msg []byte) {
 	for ch := range h.clients {
 		select {
 		case ch <- msg:

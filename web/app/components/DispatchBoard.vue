@@ -25,8 +25,15 @@ const columns = computed<CardColumn[]>(() => boardColumns(props.tickets).map((c)
 function step(t: TicketSummary, delta: 1 | -1): string | null {
   return boardStep(t.status, delta)
 }
+
+const cards = useTemplateRef<{ focusCard: (key: string) => Promise<boolean> }>('cards')
+/** Gives a card the focus (DispatchCards.focusCard). */
+function focusCard(key: string): Promise<boolean> {
+  return cards.value?.focusCard(key) ?? Promise.resolve(false)
+}
+defineExpose({ focusCard })
 </script>
 
 <template>
-  <DispatchCards :columns="columns" :labels="labels" :agents="agents" :locked="locked" :step="step" data-board @move="(key: string, id: string) => emit('move', key, id as TicketStatus)" />
+  <DispatchCards ref="cards" :columns="columns" :labels="labels" :agents="agents" :locked="locked" :step="step" data-board @move="(key: string, id: string) => emit('move', key, id as TicketStatus)" />
 </template>

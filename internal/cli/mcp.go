@@ -122,6 +122,10 @@ func mcpTools() []mcpTool {
 			InputSchema: obj(map[string]any{"reason": str("what blocks you, one line of at most 500 characters"), "message": str("what you need from the people watching, at most 4000 characters")}, "reason")},
 		{Name: "task_checkpoint", Description: "In a managed run, save where your attempt got to, tied to the commit your worktree is at (commit first): what is done, what remains, notes. The next attempt at the task reads it in its task file, and one after an attempt that ends without a result starts at that commit, so the work is not lost.",
 			InputSchema: obj(map[string]any{"done": str("what is done, at most 4000 characters"), "remaining": str("what remains"), "notes": str("anything the next attempt should know")}, "done", "remaining")},
+		{Name: "ticket_read", Description: "The Dispatch ticket your run is linked to, when a person linked it to one: its key and title, status, priority, owner, labels, description, acceptance criteria, close policy, links and last comments. Read it for what was asked and how it is accepted. A run belongs to one ticket at most; with none, the tool says so.",
+			InputSchema: obj(map[string]any{})},
+		{Name: "ticket_comment", Description: "Comment on the Dispatch ticket your run is linked to, for the people who own it: what you found, what you did, what is left, as Markdown of at most 16 KiB. The comment is your run member's. You read the ticket and comment on it; you cannot change it.",
+			InputSchema: obj(map[string]any{"body": str("the comment, Markdown of at most 16 KiB")}, "body")},
 	}
 }
 
@@ -175,8 +179,10 @@ func (s *mcpServer) serve(ctx context.Context, in io.Reader) (int, error) {
 	return 0, nil
 }
 
+// reply writes one message, a line, with HTML escaping off (encodeJSON):
+// a ticket of '<' would be six times its size otherwise.
 func (s *mcpServer) reply(r mcpResponse) {
-	b, _ := json.Marshal(r)
+	b, _ := encodeJSON(r)
 	_, _ = s.out.Write(append(b, '\n'))
 }
 
@@ -288,12 +294,13 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			return "", err
 		}
 		return "reported", nil
-	case "form_crew", "add_member", "run_status", "link", "task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint":
+	case "form_crew", "add_member", "run_status", "link", "task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint",
+		"ticket_read", "ticket_comment":
 		c, err := crewClientFromEnv(s.getenv)
 		if err != nil {
 			return "", errNotInSession
 		}
-		if strings.HasPrefix(name, "task_") || strings.HasPrefix(name, "message_") || strings.HasPrefix(name, "inbox_") {
+		if strings.HasPrefix(name, "task_") || strings.HasPrefix(name, "message_") || strings.HasPrefix(name, "inbox_") || strings.HasPrefix(name, "ticket_") {
 			c.prefix = "task"
 		}
 		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -396,6 +403,22 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			a, _ := out["attempt"].(map[string]any)
 			cp, _ := a["checkpoint"].(map[string]any)
 			return fmt.Sprintf("checkpoint saved at %v", cp["commit"]), nil
+		case "ticket_read":
+			_, st, err := readSessionTicket(cctx, c)
+			if err != nil {
+				return "", err
+			}
+			return sessionTicketText(st), nil
+		case "ticket_comment":
+			text, _ := body["body"].(string)
+			if strings.TrimSpace(text) == "" {
+				return "", errors.New("ticket_comment needs a body")
+			}
+			cm, err := commentOnSessionTicket(cctx, c, text)
+			if err != nil {
+				return "", err
+			}
+			return sessionCommentText(cm), nil
 		}
 	}
 	return "", unknownTool(name)

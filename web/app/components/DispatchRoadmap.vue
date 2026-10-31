@@ -34,11 +34,18 @@ function moved(key: string, id: string) {
   const h = HORIZONS.find((x) => x.name === id)
   if (h) emit('move', key, h.value)
 }
+
+const cards = useTemplateRef<{ focusCard: (key: string) => Promise<boolean> }>('cards')
+/** Gives a card the focus, Not planned unfolded first when the card is in it (DispatchCards.focusCard). */
+function focusCard(key: string): Promise<boolean> {
+  return cards.value?.focusCard(key) ?? Promise.resolve(false)
+}
+defineExpose({ focusCard })
 </script>
 
 <template>
   <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden" data-roadmap>
-    <DispatchCards :columns="columns" :labels="labels" :agents="agents" :locked="locked" :step="step" class="lg:min-h-0" @move="moved" />
+    <DispatchCards ref="cards" :columns="columns" :labels="labels" :agents="agents" :locked="locked" :step="step" class="lg:min-h-0" @move="moved" />
     <aside class="flex-none border-t border-default p-4 lg:w-64 lg:overflow-y-auto lg:border-t-0 lg:border-l" data-roadmap-milestones>
       <h3 class="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">Milestones</h3>
       <p v-if="!progress.length" class="text-xs text-dimmed">No milestones in this project yet.</p>

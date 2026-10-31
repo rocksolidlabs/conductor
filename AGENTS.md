@@ -109,6 +109,10 @@ add its rule here.
   drive the step through a seam the code offers (a fake clock, a hook, a
   gate), and when a bound is unavoidable make it the sum of the caps the
   code itself applies, with the test's timeout above it.
+- Two timers set for one deadline fire in no set order. Seeing one fire
+  (a viewer's lapse closing it) says nothing of the other (its link's
+  lapse telling the host): set the deadline far off and call what the
+  timers call, in the order the test needs.
 - The product's bound is not the test's. A 3 s probe limit or a 10 s kill
   wait is right for the product and wrong for a test that only needs the
   thing to happen: give the test its own wait where the product's is not
@@ -146,10 +150,27 @@ add its rule here.
   state that only flashes by in a test is often a product bug: here an
   attempt that failed at once because it was handed a commit known to be
   broken.
-- A run's log is not its ledger. The engine notes a change in the run's
-  log inside the change and commits its rows and events after it, outside
-  the lock: a test that saw the note and reads the ledger at once can read
-  it before the commit. Wait on the ledger for what the ledger must hold.
+- A starting value is not a result. A threshold the starting state
+  already meets (cols above 60 on a session born 80 x 24) passes before
+  anything happened, and a settle that compares a read with one made a
+  moment before settles at once. Wait for the step that makes the value
+  (the window attached: the session counts it as a viewer) and compare
+  with what the actor itself computed (the page's drawn grid), on two
+  reads an interval apart.
+- A run's log is not its ledger, and neither is the rest of the engine's
+  view. The engine makes a change (its log line, a task's state, an
+  attempt's) inside the change and commits its rows and events after it,
+  outside the lock: a test that saw the change in the view (a log line,
+  `waitTask`, `attemptFailed`) and reads the ledger at once can read it
+  before the commit. Wait on the ledger for what the ledger must hold
+  (`attemptWhen`, `taskWhen`), every row and event the test then reads.
+  The session works the same way: it changes the attention
+  inside its lock and records the change's entry after it (`recordOwn`),
+  so a state seen showing says nothing of its entry. Wait for the entry
+  before reading or counting the activity log (`logged`, `lastEntryIs`).
+  A message sent from inside a step is not the step done: the session
+  sends a viewer its welcome inside `AttachWith`, before the host's peer
+  holds the subscription (`awaitSub` in `internal/hostagent` waits for it).
 - End what a test started before its directories go. An engine a test
   abandons (the server that ended, before a continuation) keeps reacting:
   when the fake launcher ended its processes at cleanup, it failed their
@@ -167,6 +188,49 @@ add its rule here.
   Close returns only once nothing it started can still write: the ledger's
   wait could try for the lock once more after Close and make `owner.lock`
   again; its tries are made under the ledger's lock now.
+- What a test finds left behind has an owner: find it before judging.
+  A swap file still there after `:q` named another Vim, still running,
+  in the banner of the next open; it was a Neovim the page had asked for
+  a tab left before the Neovim opened, which nothing closed (2026-10-31,
+  #429's review). The pid in the file, the frames the page sent and the
+  processes still alive say whose it is; a longer wait would only hide it.
+- Check what must last again after a redraw the test causes. A check made
+  only as a view first appears races the page's own redraws (a clock
+  tick, a live update): the run page's graph dropped a task's needs edge
+  at every redraw after its first (Vue Flow ran the editor's connection
+  check on every edge it was handed, #281), and the spec that read the
+  edge on arrival failed only when the page's 5 s tick came first. Switch
+  a mode or toggle a setting, then check again, so a bug that only a
+  redraw shows fails every run.
+- Judge by the state at the moment of judging, not by what a wait last
+  saw. A wait that ended on its timer, or a slow step after it, leaves a
+  variable saying "still open" after the thing closed: a stopped service's
+  `/proc` listing outlasted its member's shutdown on a loaded machine, and
+  the output, closed during the listing, was reported held (`Killed`,
+  #281). Read the channel or the file again where the answer is made, and
+  let the test hold the event back past the judgement through a seam
+  (`outputRead`, `settled` in `internal/proc`), so the old code fails
+  every run. An answer drawn from more than one fact (a kill sent, the
+  group found empty, the output open) reads them all at once, under the
+  lock the events that change them take, and an event beside the wait is
+  noted, under that lock, with what it did when it happened (the kill with
+  whether it took a holder, `lifecycle.judge`). Read one by one, an event
+  between two reads gives a picture neither order would. A goroutine's
+  view of a thing is not the thing: a copier not yet at its end of file
+  says nothing of who writes the pipe, so ask the kernel (the pipe's
+  hang-up, `writersGone`). A fact read before a slow step (a `/proc`
+  listing) is read again after it. A flake a whole
+  loaded box will not show comes back when the test and a few busy loops
+  share a few cores (`taskset -c 0-3`).
+- Mark what you read with what you saw before reading it. A poll that
+  records a file's time (a version, a cursor) after its read can record a
+  change the read never saw, and no later poll sees a change: the
+  certificate files' check read a certificate whose key was not yet
+  written, failed, then stat'd the pair and recorded the key's time
+  (#281). Take the mark first and record it only for a read that loaded;
+  a test changes the thing between the read and the record through a
+  seam (`afterRead` in `internal/certs`), and pokes or calls each check
+  itself instead of racing a ticker.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

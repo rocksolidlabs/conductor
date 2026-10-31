@@ -1552,13 +1552,29 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// The project manifest, resolved for the worktree at its commit,
 	// before the task files are written, so they carry what it made; one
 	// that cannot be is the worktree's failure, uncounted.
+	// The worktree comes back held (resolveTree) and stays held through
+	// the task files, the phases and the launch, until its session is
+	// recorded: a close that comes meanwhile ends the tree, and runs its
+	// cleanup, only once the hold is let go (release), which every way out
+	// does; one that comes during the launch stops no session, there being
+	// none yet, so the tree's end waits on the hold and then for the
+	// session the record stops (endTree).
 	var tr *tree
+	held := false
+	release := func() {
+		if held {
+			held = false
+			tr.busy.Done()
+		}
+	}
 	if r.hasManifest() {
 		tr, err = e.resolveTree(ctx, r, a, ledger.TreeWorktree, a.worktree, cwd, a.start)
+		held = tr != nil
 		if errors.Is(err, errAttemptClosed) {
 			return // cancelled or stopped meanwhile: what closed it wrote it
 		}
 		if err != nil {
+			release()
 			fail("manifest", err, false, true)
 			return
 		}
@@ -1571,12 +1587,14 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		err = writeTaskFiles(a.worktree, r.prefix, md, js, more)
 	}
 	if err != nil {
+		release()
 		fail("task file", err, false, false)
 		return
 	}
 	if err := e.transact(ctx, r, func() tx {
 		return ev("attempt.workspace", map[string]any{"task": t.def.ID, "attempt": a.n, "worktree": a.worktree, "branch": a.branch, "start": a.start})
 	}, giveUp); err != nil {
+		release()
 		fail("worktree", fmt.Errorf("the ledger could not record the worktree: %w", err), false, false)
 		return
 	}
@@ -1584,23 +1602,12 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// its setup steps, its services, its ready probes and tree.ready, so
 	// the session starts in a tree that answers. A step, a service or a
 	// probe that fails here is the host's or the manifest's, not the
-	// agent's, which has typed nothing yet. The worktree stays held
-	// through the launch, until its session is recorded: a close that
-	// comes meanwhile stops no session, there being none yet, so the
-	// tree's end waits on the hold and then for the session the record
-	// stops (endTree).
-	held := false
-	release := func() {
-		if held {
-			held = false
-			tr.busy.Done()
-		}
-	}
+	// agent's, which has typed nothing yet.
 	if tr != nil {
-		if !e.hold(tr) {
+		if e.ending(tr) {
+			release()
 			return // closed meanwhile: its tree is ending
 		}
-		held = true
 		if stage, err := e.prepareTree(ctx, r, a, tr); err != nil {
 			release()
 			if errors.Is(err, errAttemptClosed) {

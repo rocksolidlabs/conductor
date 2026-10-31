@@ -525,6 +525,9 @@ func TestADoneDuringAHoldKeepsTheQuestionHeldOver(t *testing.T) {
 	s.DisconnectLink(guest.LinkID)
 	<-done
 	heldShows(t, s)
+	// The hold's own entry first, so that it is not counted as one under
+	// the hold.
+	logged(t, log, heldEntry)
 	n := log.len()
 	reportState(t, s, AttentionDone, "finished")
 	heldShows(t, s)

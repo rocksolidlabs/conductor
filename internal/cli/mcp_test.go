@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // mcpRun feeds lines to the MCP server and returns its replies, one per request.
@@ -89,7 +93,7 @@ func TestMcpServesTheSkillsCommandsAsTools(t *testing.T) {
 	for _, tl := range tools {
 		names = append(names, tl.(map[string]any)["name"].(string))
 	}
-	if strings.Join(names, ",") != "report,set_state,ask,form_crew,add_member,run_status,link,task_context,task_result,message_send,inbox_read,inbox_ack,task_blocked,task_checkpoint" {
+	if strings.Join(names, ",") != "report,set_state,ask,form_crew,add_member,run_status,link,task_context,task_result,message_send,inbox_read,inbox_ack,task_blocked,task_checkpoint,ticket_read,ticket_comment" {
 		t.Fatalf("tools %v", names)
 	}
 	for _, tl := range tools {
@@ -194,5 +198,153 @@ func TestMcpOutsideASessionSaysSo(t *testing.T) {
 	}
 	if code, err := runMcp(context.Background(), []string{"extra"}, strings.NewReader(""), io.Discard, &stderr); code != 2 || err == nil {
 		t.Fatalf("mcp extra: %d %v", code, err)
+	}
+}
+
+// sessionEnv is the environment of session sid of the server at url, with
+// its agent token, for an MCP server.
+func sessionEnv(url, sid, token string) func(string) string {
+	return func(k string) string {
+		switch k {
+		case "CONDUCTOR_SESSION_ID":
+			return sid
+		case "CONDUCTOR_NOTIFY_URL":
+			return url + "/api/sessions/" + sid + "/attention"
+		case "CONDUCTOR_NOTIFY_TOKEN":
+			return token
+		}
+		return ""
+	}
+}
+
+// ticket_read and ticket_comment against a real server, with the
+// session's own token: no ticket before the run is linked to one, which
+// the agent reads as an error; the ticket once it is; a comment as the
+// run's member, sent once more with the same operation id when its reply
+// is lost and taken once; a comment without a body refused before
+// anything is sent.
+func TestMcpTicketToolsAgainstTheServer(t *testing.T) {
+	a := newDispatchAPI(t)
+	run, sid, token := a.launchMember(t)
+	env := sessionEnv(a.hs.URL, sid, token)
+	read := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ticket_read","arguments":{}}}`
+	if text, isErr := toolText(t, mcpRun(t, env, read)[0]); !isErr || !strings.HasSuffix(text, "(no_ticket)") {
+		t.Fatalf("ticket_read before a link: %q %v", text, isErr)
+	}
+	a.admin(t, "POST", "/api/dispatch/projects", map[string]any{"opId": "p1", "key": "CND", "name": "Conductor"}, http.StatusCreated)
+	a.mustDispatch(t, "create", "--project", "CND", "--title", "Ship it", "--owner", "Alice")
+	a.mustDispatch(t, "link", "CND-1", "--kind", "run", "--ref", run)
+	before := a.count()
+	a.loseNext("POST", "/api/sessions/"+sid+"/ticket/comments", 1)
+	replies := mcpRun(t, env, read,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ticket_comment","arguments":{"body":"from the <tool>"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ticket_comment","arguments":{}}}`,
+	)
+	if text, isErr := toolText(t, replies[0]); isErr || !strings.HasPrefix(text, "# CND-1: Ship it\n\n- status: backlog\n") || !strings.Contains(text, "- owner: Alice\n") {
+		t.Fatalf("ticket_read: %v\n%s", isErr, text)
+	}
+	if text, isErr := toolText(t, replies[1]); isErr || text != "comment #1 on your ticket" {
+		t.Fatalf("ticket_comment: %q %v", text, isErr)
+	}
+	if text, isErr := toolText(t, replies[2]); !isErr || text != "ticket_comment needs a body" {
+		t.Fatalf("ticket_comment without a body: %q %v", text, isErr)
+	}
+	var posts []seenRequest
+	for _, r := range a.requests(before) {
+		if r.method == "POST" {
+			posts = append(posts, r)
+		}
+	}
+	if len(posts) != 2 || posts[0].reply != -1 || posts[0].body["opId"] != posts[1].body["opId"] {
+		t.Fatalf("the comment's posts: %+v", posts)
+	}
+	if cs := a.ticket(t, "CND-1").Comments; len(cs) != 1 || cs[0].Author != "agent:a" || cs[0].Body != "from the <tool>" {
+		t.Fatalf("the ticket's comments: %+v", cs)
+	}
+}
+
+// ticket_read takes the largest reply the session's read can make through
+// the session client's limit, and gives the agent the ticket whole: the
+// tool's text, as tools/call puts it in its reply (the round trip of
+// three megabytes through JSON-RPC is tested on the small ticket above).
+func TestMcpTicketReadGivesTheLargestTicketWhole(t *testing.T) {
+	l := largestFor(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/sessions/s1/ticket", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(l.session) })
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	s := &mcpServer{out: io.Discard, getenv: sessionEnv(srv.URL, "s1", "agent-tok")}
+	text, err := s.call(t.Context(), "ticket_read", nil)
+	if err != nil {
+		t.Fatalf("ticket_read: %v", err)
+	}
+	checkWhole(t, text, l.view, l.labels, l.milestone)
+}
+
+// ticket_comment reports a comment made whose reply carries no comment,
+// the server unable to read it back after its commit (comment null beside
+// a done receipt), as made, without a number it does not have.
+func TestMcpTicketCommentWithoutTheCommentRead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/sessions/s1/ticket/comments" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"receipt":{"opId":"o1","intent":"comment.add","status":"done","rev":1,"id":"c1"},"comment":null}`)
+	}))
+	t.Cleanup(srv.Close)
+	s := &mcpServer{out: io.Discard, getenv: sessionEnv(srv.URL, "s1", "agent-tok")}
+	text, err := s.call(t.Context(), "ticket_comment", json.RawMessage(`{"body":"seen"}`))
+	if err != nil || text != "commented on your ticket" {
+		t.Fatalf("ticket_comment with no comment read: %q %v", text, err)
+	}
+}
+
+// ticket_comment's first reply left unanswered leaves its resend time
+// within the tool's budget: the first post held until the client gives it
+// up, at half of what the budget had left (askTwice), the same operation
+// is sent once more and its reply answers the tool. The budget here is
+// the caller's deadline, under the tool's own 60 s, which equal the
+// session client's timeout on one request.
+func TestMcpTicketCommentResendsAfterAStalledReply(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		opIDs []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/sessions/s1/ticket/comments" {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			OpID string `json:"opId"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		opIDs = append(opIDs, body.OpID)
+		n := len(opIDs)
+		mu.Unlock()
+		if n == 1 {
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"receipt":{"opId":"`+body.OpID+`","intent":"comment.add","status":"done","rev":1,"id":"c1"},"comment":{"id":"c1","n":1,"author":"agent:a","by":"a","body":"seen"}}`)
+	}))
+	t.Cleanup(srv.Close)
+	s := &mcpServer{out: io.Discard, getenv: sessionEnv(srv.URL, "s1", "agent-tok")}
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	text, err := s.call(ctx, "ticket_comment", json.RawMessage(`{"body":"seen"}`))
+	if err != nil || text != "comment #1 on your ticket" {
+		t.Fatalf("ticket_comment after a stalled reply: %q %v", text, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(opIDs) != 2 || opIDs[0] == "" || opIDs[0] != opIDs[1] {
+		t.Fatalf("the comment's posts: %q", opIDs)
 	}
 }

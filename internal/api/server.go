@@ -591,6 +591,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/run", s.launchingAny(s.handleSelfRun))
 	mux.HandleFunc("POST /api/sessions/{id}/links/agent", s.handleSelfLink)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.requireAdmin(s.handleDeleteSession))
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.launching(s.handleRenameSession))
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.launching(s.handleResumeSession))
 	mux.HandleFunc("GET /api/sessions/{id}/links", s.requireAdmin(s.handleListLinks))
 	mux.HandleFunc("POST /api/sessions/{id}/links", s.requireAdmin(s.handleCreateLink))
@@ -636,7 +637,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		if origin := r.Header.Get("Origin"); origin != "" && s.crossOriginAllowed(origin, r.URL.Path) {
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			// A receipt's log hash reaches the app's script across origins.
 			h.Set("Access-Control-Expose-Headers", logHashHeader)
 			h.Set("Vary", "Origin")

@@ -54,9 +54,8 @@ func TestTheFileManifestIsReadAtEachTreesCommit(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
-// A result whose file the manifest's rules refuse (broken, gone, naming a
-// phase this build does not run yet, or naming an env name the server does
-// not allow or the host does not have: the env rule holds in every tree,
+// A result whose file the manifest's rules refuse (broken, gone, or naming
+// an env name the server does not allow or the host does not have: the env rule holds in every tree,
 // so a result's manifest adds no name the operator did not allow) is
 // refused at manifest in its checkout, counted, the next attempt starting
 // where the refused one did; the words name the file and the commit, or
@@ -68,7 +67,6 @@ func TestAResultWhoseManifestCannotBeUsedIsRefusedAtManifest(t *testing.T) {
 	}{
 		{"a broken file", `{"schema": 1, "setup": [`, "conductor.manifest.json at "},
 		{"no file", "", "does not hold conductor.manifest.json"},
-		{"a phase this build does not run", `{"schema": 1, "verify": [{"id": "e2e", "argv": ["sh", "-c", "exit 0"]}]}`, "this build does not run a project manifest's verify steps yet"},
 		{"a name the server does not allow", `{"schema": 1, "env": ["EN1_NOT_ALLOWED"], "setup": [{"id": "deps", "argv": ["true"]}]}`, "EN1_NOT_ALLOWED is not in the server's envPassthrough"},
 		{"a name the host does not have", `{"schema": 1, "env": ["EN1_UNSET"], "setup": [{"id": "deps", "argv": ["true"]}]}`,
 			"the host has no EN1_UNSET: set it where the server starts, start it again and continue the run"},

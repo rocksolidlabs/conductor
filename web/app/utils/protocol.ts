@@ -26,6 +26,9 @@ export const FOLLOW_SIZE = { cols: 0, rows: 0 } as const
 /** The longest line a `submit` control message carries, in bytes (proto.MaxSubmit). */
 export const MAX_SUBMIT = 4096
 
+/** A session's name, in bytes (proto.MaxSessionName): a launch's and a rename's (PATCH /api/sessions/{id}); the server cuts one longer. */
+export const MAX_SESSION_NAME = 120
+
 /** An answer's bounds (proto.MaxQuestionID, MaxAnswerReqID, MaxAnswerInput): the question's id, the request's, a choice's keys, in bytes. */
 export const MAX_QUESTION_ID = 32
 export const MAX_ANSWER_REQ_ID = 32

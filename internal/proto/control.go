@@ -90,6 +90,12 @@ type Header struct {
 // MaxNameLen bounds a viewer display name in runes (see session.CleanName).
 const MaxNameLen = 40
 
+// MaxSessionName bounds a session's name in bytes: the name a launch gives
+// it (POST /api/sessions) and the one a rename does (PATCH
+// /api/sessions/{id}, session.CleanSessionName), which its Info and its
+// `session` events carry.
+const MaxSessionName = 120
+
 // Hello is the first message a client sends.
 type Hello struct {
 	T      string `json:"t"`

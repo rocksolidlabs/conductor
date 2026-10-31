@@ -745,6 +745,8 @@ export function useSessions() {
     resumeRunMember: (runId: string, name: string) =>
       request<ResumeResult>(`/api/runs/${encodeURIComponent(runId)}/members/${encodeURIComponent(name)}/resume`, { method: 'POST' }),
     stop: (id: string) => request<SessionInfo | void>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    /** Renames a server session, running or ended (#318): the reply is the session under the name the server kept; the events stream tells every page. */
+    rename: (id: string, name: string) => request<SessionInfo>(`/api/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: { name } }),
     catalog: () => request<{ agents: AgentInfo[] }>('/api/catalog').then((r) => r.agents ?? []),
     /** Answers a viewer's paste invite (a cpi1 blob) for a server session: the answer blob, which the viewer pastes back. */
     paste: (id: string, body: { offer: string; role: Role; label?: string }) =>

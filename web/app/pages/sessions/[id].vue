@@ -184,12 +184,20 @@ const meta = computed(() => {
   return parts.join(' · ')
 })
 
+// Rename… (#318): a server session, running or ended, through the one dialog; a hosted session's host names it.
+const renameModal = useRenameModal()
+const renamable = computed(() => current.value?.kind === 'server')
+function renameSession() {
+  if (current.value) renameModal.show(current.value)
+}
+
 const menu = computed(() => [
   [
     { label: 'Mark as needs input', icon: 'i-lucide-hand', onSelect: () => signal('needs_input') },
     { label: 'Mark as working', icon: 'i-lucide-loader-circle', onSelect: () => signal('working') },
     { label: 'Clear signal', icon: 'i-lucide-x', onSelect: () => signal('clear') },
   ],
+  ...(renamable.value ? [[{ label: 'Rename…', icon: 'i-lucide-pencil', onSelect: renameSession }]] : []),
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
@@ -224,7 +232,8 @@ const typingLine = computed(() => {
   return `${n[0]}, ${n[1]} and ${n.length - 2} more are typing…`
 })
 
-useHead({ title: computed(() => session.value?.name || 'Session') })
+// The name as the live store has it: a rename, here or anywhere, shows at once.
+useHead({ title: computed(() => current.value?.name || 'Session') })
 
 async function load() {
   if (!admin.hasToken.value) {
@@ -506,6 +515,7 @@ palette.registerPage(() => {
     rows: [
       { key: 'page:share', label: 'Share…', icon: 'i-lucide-share-2', kbds: ['S'], disabled: !live, run: () => (share.value = true) },
       { key: 'page:copy-link', label: 'Copy a view link now', icon: 'i-lucide-link', kbds: ['shift', 'S'], disabled: !live, run: copyViewLink },
+      ...(s.kind === 'server' ? [{ key: 'page:rename', label: 'Rename…', icon: 'i-lucide-pencil', run: renameSession }] : []),
       { key: 'page:stop', label: 'Stop…', icon: 'i-lucide-square', kbds: ['X'], disabled: !live, ask: stopQuestion({ kind: 'session', name: s.name }), run: stop },
       { key: 'page:mark-needs', label: 'Mark as needs input', icon: 'i-lucide-hand', run: () => signal('needs_input') },
       { key: 'page:mark-working', label: 'Mark as working', icon: 'i-lucide-loader-circle', run: () => signal('working') },
@@ -533,7 +543,7 @@ palette.registerPage(() => {
         <template #title>
           <div class="flex min-w-0 flex-col">
             <div class="flex items-center gap-2 min-w-0">
-              <span class="truncate text-[15px] font-semibold">{{ session?.name || 'Session' }}</span>
+              <span class="truncate text-[15px] font-semibold" data-session-title>{{ current?.name || 'Session' }}</span>
               <AttentionBadge :attention="attention" />
               <SessionStatusBadge v-if="session && session.status !== 'running'" :status="session.status" :exit-code="session.exitCode" />
               <YoloBadge v-if="current?.yolo" />
@@ -635,6 +645,6 @@ palette.registerPage(() => {
     </template>
   </UDashboardPanel>
 
-  <ShareLinksModal v-model:open="share" :session-id="id" :session-name="session?.name" />
+  <ShareLinksModal v-model:open="share" :session-id="id" :session-name="current?.name" />
   <ChatSheet v-model:open="chatSheet" :thread="chat.thread.value" role="control" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="chatSend" @send-to-agent="chatSendToAgent" @retry="chatRetry" @answer="chatAnswer" />
 </template>

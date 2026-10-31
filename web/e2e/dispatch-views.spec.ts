@@ -164,6 +164,84 @@ test("the board: a column per status with each ticket in its own, a drag to In r
   await expect.poll(async () => (await storedTicket(api, `${key}-1`)).status).toBe('ready')
 })
 
+test('the board left while a move is on its way and its answer carries the receipt alone: the move queued behind is not sent, and says so', async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EV')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Moved and left' })
+  await page.goto(`/dispatch/${key}?view=board`)
+  const board = page.locator('[data-board]')
+  const card = board.locator(`[data-card="${key}-1"]`)
+  const inColumn = (column: string) => board.locator(`[data-column="${column}"] [data-card="${key}-1"]`)
+  await expect(inColumn('backlog')).toBeVisible()
+  const edits: string[] = []
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const edit = (url: URL) => url.pathname === `/api/dispatch/tickets/${key}-1/edit`
+  await page.route(edit, async (route) => {
+    edits.push((route.request().postDataJSON() as { set?: { status?: string } }).set?.status ?? '')
+    await held
+    // The server's read after the commit failed: the answer carries the receipt alone.
+    const res = await route.fetch()
+    const body = (await res.json()) as Record<string, unknown>
+    await route.fulfill({ response: res, json: { ...body, ticket: null } })
+  })
+  try {
+    await card.focus()
+    await page.keyboard.press('ArrowRight')
+    await expect(inColumn('ready')).toBeVisible()
+    await expect.poll(() => edits.length).toBe(1)
+    // Moved back while Ready is on its way, then the projects page, in the app.
+    await page.keyboard.press('ArrowLeft')
+    await expect(inColumn('backlog')).toBeVisible()
+    await page.locator('[data-project-header] a[href="/dispatch"]:visible').first().click()
+    await expect(page).toHaveURL(/\/dispatch$/)
+    release()
+    await expect(page.getByText('Not sent: the page was left').first()).toBeVisible({ timeout: 15_000 })
+    expect(edits).toEqual(['ready'])
+    expect((await storedTicket(api, `${key}-1`)).status).toBe('ready')
+  } finally {
+    release()
+    await page.unroute(edit)
+  }
+})
+
+test('a move whose two replies are both lost after the store committed it: the ticket is read before the move queued behind, which is sent', async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EV')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Moved, replies lost' })
+  await page.goto(`/dispatch/${key}?view=board`)
+  const board = page.locator('[data-board]')
+  const card = board.locator(`[data-card="${key}-1"]`)
+  const inColumn = (column: string) => board.locator(`[data-column="${column}"] [data-card="${key}-1"]`)
+  await expect(inColumn('backlog')).toBeVisible()
+  const edits: string[] = []
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const edit = (url: URL) => url.pathname === `/api/dispatch/tickets/${key}-1/edit`
+  await page.route(edit, async (route) => {
+    edits.push((route.request().postDataJSON() as { set?: { status?: string } }).set?.status ?? '')
+    if (edits.length > 2) return route.continue()
+    // Ready, and its resend with the same op id: each committed (the resend answered from the receipt), each reply lost.
+    if (edits.length === 1) await held
+    await route.fetch()
+    await route.abort('failed')
+  })
+  try {
+    await card.focus()
+    await page.keyboard.press('ArrowRight')
+    await expect(inColumn('ready')).toBeVisible()
+    await expect.poll(() => edits.length).toBe(1)
+    await page.keyboard.press('ArrowLeft')
+    release()
+    await expect.poll(() => edits).toEqual(['ready', 'ready', 'backlog'])
+    await expect.poll(async () => (await storedTicket(api, `${key}-1`)).status).toBe('backlog')
+    await expect(inColumn('backlog')).toBeVisible()
+  } finally {
+    release()
+    await page.unroute(edit)
+  }
+})
+
 test('the roadmap: Now, Next, Later and a folded Not planned; Next and Now by → and ← on a focused card; the milestones beside with done/total', async ({ page, api }) => {
   const key = await freeProjectKey(api, 'EV')
   // No close policy: a ticket can be made done for the milestone's count.
@@ -203,6 +281,60 @@ test('the roadmap: Now, Next, Later and a folded Not planned; Next and Now by �
   await expect(milestone).toHaveAttribute('data-done', '1')
   await expect(milestone).toHaveAttribute('data-total', '2')
   await expect(milestone.locator('[data-milestone-count]')).toHaveText('1/2')
+})
+
+test('the roadmap: a Not planned ticket opened from its unfolded column and left by Escape has its card focused again, the column unfolded for it', async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EV')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Unplanned and opened' })
+  await page.goto(`/dispatch/${key}?view=roadmap`)
+  const roadmap = page.locator('[data-roadmap]')
+  const none = roadmap.locator('[data-column="none"]')
+  await expect(none).toHaveAttribute('data-folded', '')
+  await none.locator('[data-column-unfold]').click()
+  const card = roadmap.locator(`[data-column="none"] [data-card="${key}-1"]`)
+  await card.click()
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}/1$`))
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Unplanned and opened')
+  await page.keyboard.press('Escape')
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}\\?view=roadmap$`))
+  // The roadmap drawn again folds Not planned; the card's way back unfolds it.
+  await expect(card).toBeFocused()
+  await expect(none).not.toHaveAttribute('data-folded', '')
+})
+
+test('the save dialog holds while its save is on its way: Escape and Cancel leave it as it is, and the answer closes it', async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EV')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Held save', status: 'ready' })
+  await page.goto(`/dispatch/${key}?status=ready`)
+  await expect(page.locator('[data-views-bar]')).toHaveAttribute('data-loaded', '')
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const views = (url: URL) => url.pathname === '/api/dispatch/views'
+  await page.route(views, async (route) => {
+    if (route.request().method() === 'POST') await held
+    await route.continue()
+  })
+  try {
+    await page.locator('[data-view-save]').click()
+    const dialog = page.locator('[data-view-dialog]')
+    await expect(dialog).toBeVisible()
+    await dialog.locator('[data-view-name-input]').fill('Held')
+    const sent = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === '/api/dispatch/views')
+    await page.locator('[data-view-submit]').click()
+    await sent
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeVisible()
+    await expect(page.getByRole('dialog').filter({ has: dialog }).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    await expect(dialog.locator('[data-view-name-input]')).toHaveValue('Held')
+    release()
+    await expect(dialog).toBeHidden()
+    await expect(page.locator('[data-views-bar] [data-view-chip][data-view-name="Held"]')).toHaveAttribute('data-active', '')
+  } finally {
+    release()
+    await page.unroute(views)
+  }
 })
 
 test("at a phone's width (390 px) the list's rows wrap, the board scrolls sideways and the ticket's page is one column, and the page itself never scrolls sideways", async ({ browser, api, state }) => {

@@ -196,6 +196,9 @@ type Local struct {
 
 	mu   sync.Mutex // guards info, events and lastOutput, and orders ring writes against attaches
 	info Info
+	// renamed says a person renamed the session (Rename): a resume of it
+	// starts under info.Name, not the name it was launched with. Under mu.
+	renamed bool
 	// stopRequested makes an exit observed by the pump report "stopped".
 	stopRequested bool
 	// retired says the session left the server's registry (Retire): no

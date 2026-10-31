@@ -399,77 +399,41 @@ func TestTheExpandedManifestIsHeldToItsBounds(t *testing.T) {
 	}
 }
 
-// The launch of a manifest that names a phase this build does not run yet
-// is refused before anything is made; a manifest with its prerequisites
-// and setup phase, its env names, its ports and its placeholders, its
-// services, ready probes and preview, the file form (held to the same once
-// it is read, at the launch's base), and a legacy setup whatever its argv
-// holds, launch.
-func TestALaunchOfAManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
-	setup := []Check{{ID: "deps", Argv: []string{"npm", "ci"}}}
-	cases := []struct {
-		name  string
-		rec   Manifest
-		words string
-	}{
-		{"verify", Manifest{Verify: []Check{{ID: "e2e", Argv: []string{"npm", "test"}}}}, "this build does not run a project manifest's verify steps yet"},
-		{"cleanup", Manifest{Cleanup: []Check{{ID: "rm", Argv: []string{"rm", "-rf", "tmp"}}}}, "this build does not run a project manifest's cleanup steps yet"},
-	}
-	e, _ := newEngine(t)
-	for _, tc := range cases {
-		c := managedCrew()
-		c.Setup, c.Manifest = nil, &tc.rec
-		if err := c.ValidateSave(); err != nil {
-			t.Fatalf("%s: the manifest is not valid: %v", tc.name, err)
-		}
-		_, err := e.Launch(t.Context(), c)
-		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), tc.words) {
-			t.Errorf("%s: %v (want %q)", tc.name, err, tc.words)
-		}
-	}
-	if runs := e.List(); len(runs) != 0 {
-		t.Fatalf("a refused launch kept a run: %+v", runs)
-	}
-	// Its prerequisites and its setup phase run, its env names pass on,
-	// its ports are given and its placeholders put in (EN1 PR-3), and the
-	// file form is read at the base; a legacy setup is not a manifest saved
-	// ahead of its engine: it is the manifest's setup phase.
-	c := managedCrew()
-	c.Setup, c.Manifest = nil, &Manifest{Setup: setup}
-	if err := c.runnableManifest(); err != nil {
-		t.Fatalf("a manifest with its setup alone: %v", err)
-	}
-	c.Manifest = &Manifest{Setup: setup, Prerequisites: []Check{{ID: "node", Argv: []string{"node", "--version"}}}}
-	if err := c.runnableManifest(); err != nil {
-		t.Fatalf("a manifest with prerequisites: %v", err)
-	}
-	c.Manifest = &Manifest{Env: []string{"NPM_TOKEN"}, Ports: []string{"web"},
-		Setup: []Check{{ID: "cache", Argv: []string{"mkdir", "-p", "${CONDUCTOR_STATE_DIR}/cache/${CONDUCTOR_PORT_WEB}"}}}}
-	if err := c.ValidateSave(); err != nil {
-		t.Fatalf("a manifest with env names, ports and placeholders is not valid: %v", err)
-	}
-	if err := c.runnableManifest(); err != nil {
-		t.Fatalf("a manifest with env names, ports and placeholders: %v", err)
-	}
-	c.Manifest = &Manifest{Ports: []string{"web"}, Services: []Check{{ID: "web", Argv: []string{"npm", "start"}}}, Ready: []Probe{{ID: "up", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/"}},
-		Preview: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/"}
-	if err := c.ValidateSave(); err != nil {
-		t.Fatalf("a manifest with services, a probe and a preview is not valid: %v", err)
-	}
-	if err := c.runnableManifest(); err != nil {
-		t.Fatalf("a manifest with services, a probe and a preview (EN1 PR-4): %v", err)
-	}
-	c.Manifest = &Manifest{File: true}
-	if err := c.runnableManifest(); err != nil {
-		t.Fatalf("the file form: %v", err)
-	}
-	c = managedCrew()
-	c.Setup = []Check{{ID: "cache", Argv: []string{"mkdir", "-p", "${CONDUCTOR_STATE_DIR}/cache"}}}
-	if err := c.runnableManifest(); err != nil {
-		t.Fatalf("a legacy setup: %v", err)
-	}
-	if err := managedCrew().runnableManifest(); err != nil {
-		t.Fatalf("a legacy crew: %v", err)
+// A manifest of every phase launches (EN1 PR-5 lifted the last refusal):
+// its prerequisites, env names, ports and placeholders, setup steps,
+// services, ready probes and preview, verify and cleanup steps; and so do
+// the file form and a legacy setup, whatever its argv holds.
+func TestALaunchTakesAManifestOfEveryPhase(t *testing.T) {
+	t.Setenv("EN1_EVERY_PHASE", "set")
+	for name, c := range map[string]func(dir string) Crew{
+		"every phase": func(dir string) Crew {
+			return repoManifestCrew(dir, Manifest{Prerequisites: []Check{{ID: "tools", Argv: []string{"true"}}}, Env: []string{"EN1_EVERY_PHASE"}, Ports: []string{"web"},
+				Setup:    []Check{{ID: "cache", Argv: []string{"mkdir", "-p", "${CONDUCTOR_STATE_DIR}/cache/${CONDUCTOR_PORT_WEB}"}}},
+				Services: []Check{serviceLoop("web", "web.pid", false)}, Ready: []Probe{byFile("up", "web.pid")}, Preview: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/",
+				Verify: []Check{{ID: "e2e", Argv: []string{"true"}}}, Cleanup: []Check{{ID: "rm", Argv: []string{"rm", "-rf", "${CONDUCTOR_STATE_DIR}/cache"}}}}, work("build", "lead"))
+		},
+		"a legacy setup": func(dir string) Crew {
+			c := repoCrew(dir, work("build", "lead"))
+			c.Setup = []Check{{ID: "cache", Argv: []string{"mkdir", "-p", "${CONDUCTOR_STATE_DIR}/cache"}}}
+			return c
+		},
+		"the file form": func(dir string) Crew {
+			commitManifestFile(t, dir, `{"schema": 1, "verify": [{"id": "e2e", "argv": ["true"]}], "cleanup": [{"id": "rm", "argv": ["true"]}]}`)
+			return fileCrew(dir, work("build", "lead"))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, _ := managedEngine(t)
+			e.SetEnvPassthrough([]string{"EN1_EVERY_PHASE"})
+			crew := c(dir)
+			if err := crew.ValidateSave(); err != nil {
+				t.Fatalf("the crew is not valid: %v", err)
+			}
+			run := launchManaged(t, e, crew)
+			waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			stopRun(t, e, run.ID)
+		})
 	}
 }
 

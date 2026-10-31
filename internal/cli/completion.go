@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/rocksolidlabs/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
 
@@ -109,9 +110,17 @@ func completionSpec() []commandSpec {
 		{name: "mcp"},
 		{name: "crew", flags: []flagSpec{{name: "--self", kind: flagValue}, {name: "--open"}, {name: "--ttl", kind: flagValue}, {name: "--label", kind: flagValue}, {name: "--quiet"}}, words: []string{"create", "add", "status", "link"}},
 		{name: "task", flags: []flagSpec{{name: "--page", kind: flagValue}, {name: "--json"}, {name: "--summary", kind: flagValue}, {name: "--commit", kind: flagValue}, {name: "--issue", kind: flagValue}, {name: "--verdict", kind: flagEnum, values: []string{"approved", "needs_changes"}}, {name: "--finding", kind: flagValue}, {name: "--file", kind: flagFile},
-			{name: "--to", kind: flagValue}, {name: "--after", kind: flagValue}, {name: "--reason", kind: flagValue}, {name: "--message", kind: flagValue}, {name: "--done", kind: flagValue}, {name: "--remaining", kind: flagValue}, {name: "--notes", kind: flagValue}}, words: []string{"context", "result", "send", "inbox", "ack", "blocked", "checkpoint"}},
+			{name: "--to", kind: flagValue}, {name: "--after", kind: flagValue}, {name: "--reason", kind: flagValue}, {name: "--message", kind: flagValue}, {name: "--done", kind: flagValue}, {name: "--remaining", kind: flagValue}, {name: "--notes", kind: flagValue}}, words: []string{"context", "result", "send", "inbox", "ack", "blocked", "checkpoint", "ticket"},
+			after: map[string][]string{"ticket": {"comment"}}},
 		{name: "up", flags: api(flagSpec{name: "--name", kind: flagValue}, flagSpec{name: "--resume", kind: flagValue}, flagSpec{name: "--open"}), crewID: true},
 		{name: "crews", flags: api(flagSpec{name: "--ids"})},
+		// Every flag of every dispatch command (each takes its own), and the
+		// store's vocabularies as their values.
+		{name: "dispatch", flags: api(flagSpec{name: "--project", kind: flagValue}, flagSpec{name: "--status", kind: flagEnum, values: dispatch.Statuses}, flagSpec{name: "--q", kind: flagValue}, flagSpec{name: "--json"},
+			flagSpec{name: "--title", kind: flagValue}, flagSpec{name: "--description-file", kind: flagFile}, flagSpec{name: "--priority", kind: flagEnum, values: dispatch.Priorities}, flagSpec{name: "--owner", kind: flagValue}, flagSpec{name: "--label", kind: flagValue},
+			flagSpec{name: "--assignee", kind: flagValue}, flagSpec{name: "--milestone", kind: flagValue}, flagSpec{name: "--horizon", kind: flagEnum, values: dispatch.Horizons[1:]}, flagSpec{name: "--note", kind: flagValue},
+			flagSpec{name: "--kind", kind: flagEnum, values: dispatch.LinkKinds}, flagSpec{name: "--url", kind: flagValue}, flagSpec{name: "--ref", kind: flagValue}),
+			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link"}},
 		{name: "hooks", flags: []flagSpec{{name: "--home", kind: flagFile}, {name: "--data-dir", kind: flagFile}}, words: []string{"install", "status"}, after: map[string][]string{"install": adapters}},
 		{name: "skill"},
 		{name: "completion", flags: []flagSpec{{name: "--shell", kind: flagEnum, values: []string{"zsh", "bash"}}, {name: "--rc", kind: flagFile}}, words: []string{"zsh", "bash", "install"}},

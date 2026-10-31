@@ -185,14 +185,13 @@ func TestAWithdrawalDropsADependentsRepairAndKeepsTheSubjects(t *testing.T) {
 	commitResult(t, e, waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning), "docs.txt", "d\n", "docs")
 	asksChanges(t, e, waitAttempt(t, e, run.ID, "rd", ledger.AttemptRunning))
 	attemptN(t, e, run.ID, "docs", 2)
-	if row := l.tasks[run.ID+"/docs"]; row.Repair == "" {
-		t.Fatalf("docs has no repair after its review: %+v", row)
-	}
+	// The engine's view is one change ahead of the ledger while that change
+	// commits: the task rows are waited for in the ledger.
+	l.taskWhen(t, run.ID, "docs", "with a repair after its review", func(r ledger.TaskRow) bool { return r.Repair != "" })
 	asksChanges(t, e, rb)
 	waitTaskWhere(t, e, run.ID, "docs", "blocked by the withdrawal", func(ts TaskState) bool { return ts.State == ledger.TaskBlocked })
-	l.mu.Lock()
-	docs, build := l.tasks[run.ID+"/docs"], l.tasks[run.ID+"/build"]
-	l.mu.Unlock()
+	docs := l.taskWhen(t, run.ID, "docs", "blocked by the withdrawal", func(r ledger.TaskRow) bool { return r.State == ledger.TaskBlocked })
+	build := l.taskWhen(t, run.ID, "build", "reopened with a repair", func(r ledger.TaskRow) bool { return r.Repair != "" })
 	if docs.Repair != "" || docs.Withdrawn != 2 || build.Repair == "" || build.Withdrawn != 0 {
 		t.Fatalf("after the withdrawal: docs %+v, build %+v", docs, build)
 	}

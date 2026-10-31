@@ -161,12 +161,15 @@ func TestAContinuationVerifiesACandidateAgainAndWaitsOnAnUncertainLaunch(t *test
 	if b.Attempt == nil || b.Attempt.N != 2 || b.Attempt.SessionID != "" || b.Attempt.Start != a.Attempt.Start || b.Result == nil || b.Result.Commit != candidate || b.Result.Attempt != 2 || b.Result.Summary != "built" || !slices.Equal(b.Result.Issues, []string{"none"}) {
 		t.Fatalf("build verified again: %+v %+v %+v", b, b.Attempt, b.Result)
 	}
-	if row := l.attemptRow(t, next.ID, "build", 2); row.State != ledger.AttemptSucceeded || row.SessionID != "" || row.ResultCommit != candidate || !strings.Contains(row.Result, "built") {
+	// The engine's view is one change ahead of the ledger while that change
+	// commits: attempt 2's row and the events are waited for in the ledger.
+	if row := l.attemptWhen(t, next.ID, "build", 2, succeededRow); row.SessionID != "" || row.ResultCommit != candidate || !strings.Contains(row.Result, "built") {
 		t.Fatalf("attempt 2's row: %+v", row)
 	}
-	if kinds := l.kinds(next.ID); !slices.Contains(kinds, "result.reverified") || !slices.Contains(kinds, "check.started") {
-		t.Fatalf("events: %v", kinds)
-	}
+	waitFake(t, "the events result.reverified and check.started", func() bool {
+		kinds := l.kinds(next.ID)
+		return slices.Contains(kinds, "result.reverified") && slices.Contains(kinds, "check.started")
+	})
 	// docs waits for a person: failed with why; a retry allows attempt 2.
 	d := taskOf(t, e2, next.ID, "docs")
 	if d.State != ledger.TaskFailed || !strings.Contains(d.Reason, "attempt 1's launch is uncertain") || d.Attempts != 1 {

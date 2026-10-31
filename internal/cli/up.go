@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -358,11 +359,13 @@ func (c *apiClient) doLimit(ctx context.Context, method, path string, body, out 
 	defer cancel()
 	var reader io.Reader
 	if body != nil {
-		b, err := json.Marshal(body)
+		// HTML escaping off (encodeJSON): a Dispatch body's bounds are
+		// measured with '<' one byte.
+		b, err := encodeJSON(body)
 		if err != nil {
 			return err
 		}
-		reader = strings.NewReader(string(b))
+		reader = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
 	if err != nil {
@@ -418,7 +421,9 @@ func (c *apiClient) statusError(status string, body []byte) error {
 }
 
 // transportError describes a failure to get a reply. The net/http error
-// carries the request URL, so only its cause is kept.
+// carries the request URL, so only its cause is kept. A reply that never
+// came is a lostReply, which a write with an operation id asks for once
+// more (askTwice); an interruption is not.
 func (c *apiClient) transportError(err error) error {
 	var ue *url.Error
 	if errors.As(err, &ue) {
@@ -426,9 +431,9 @@ func (c *apiClient) transportError(err error) error {
 	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("no reply from %s within %s", c.host, requestTimeout)
+		return lostReply{fmt.Errorf("no reply from %s within %s", c.host, requestTimeout)}
 	case errors.Is(err, context.Canceled):
 		return errors.New("interrupted")
 	}
-	return fmt.Errorf("cannot reach %s: %w", c.host, err)
+	return lostReply{fmt.Errorf("cannot reach %s: %w", c.host, err)}
 }

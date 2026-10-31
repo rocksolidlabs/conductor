@@ -1367,10 +1367,12 @@ a view link, that link on a third line, `view <url>`.
 (`--mcp-config`) and Codex (`-c mcp_servers.conductor.…`), every launch
 registers `conductor mcp`, a stdio server with the skill's commands as tools:
 `report`, `set_state`, `ask` (with choices), `form_crew`, `add_member`,
-`run_status`, `link`, and for a member of a managed run `task_context`,
+`run_status`, `link`, for a member of a managed run `task_context`,
 `task_result`, `message_send`, `inbox_read`, `inbox_ack`, `task_blocked` and
 `task_checkpoint` (`conductor task context|result|send|inbox|ack|blocked|
-checkpoint` on the command line); outside a session the tools say so and do
+checkpoint` on the command line), and for a member of a run linked to a
+Dispatch ticket `ticket_read` and `ticket_comment` (`conductor task ticket`,
+see [Dispatch](#dispatch)); outside a session the tools say so and do
 nothing.
 `agents.mcp: false` (`CONDUCTOR_AGENT_MCP=0`) turns the registration off.
 The server's launches register it; `conductor host` does not yet, and the
@@ -1418,6 +1420,46 @@ Limits:
 - Runs live in memory: the server keeps up to 100, and a restart forgets them
   (the worktrees stay); the records of runs that ended survive, 500 at most.
   Saved crews survive.
+
+## Dispatch
+
+Dispatch is Conductor's own work tracking: projects, and tickets with keys
+that never change (`CND-12`), their acceptance criteria, owner, discussion and
+history, in the server's data directory (see `docs/protocol.md`, Dispatch). A
+ticket links to the managed run working on it, and the run's members read it.
+
+**From a shell.**
+
+```bash
+conductor dispatch projects                 # one line per project: key, name, open and done tickets
+conductor dispatch tickets [--project CND] [--status ready]... [--q "cache key"] [--json]  # the whole list, a line a ticket
+conductor dispatch show CND-12              # the ticket whole: its fields, description, criteria, links and last comments
+conductor dispatch create --project CND --title "Try the CLI" [--description-file notes.md] [--priority high] [--owner Alice] [--label api]...
+conductor dispatch edit CND-12 --status in_review --assignee +Bob --label -api --milestone 1.0 --horizon now
+conductor dispatch comment CND-12 "the fix is in"
+conductor dispatch accept CND-12 --note "checked by hand"
+conductor dispatch link CND-12 --kind run --ref <run-id>   # or --kind delivery|external --url <url>
+```
+
+They take `--server`, `--token` and `--insecure` as `conductor crews` does
+([Crews](#crews), From a shell), before the key for `comment`, whose text is
+every word after the key, one that starts with `-` among them. `create` prints
+the new ticket's key; labels and milestones are given by name; a write whose reply is lost to the network
+is sent once more with the same operation id, which the server answers
+without a second change. No command makes or edits a project: the routes do
+(`POST /api/dispatch/projects`, `docs/protocol.md`).
+
+**From an attempt.** In a session of a run linked to a ticket, the agent reads
+the ticket and comments on it, nothing more, with its session's own token; the
+skill teaches it:
+
+```bash
+"${CONDUCTOR_BIN:-conductor}" task ticket                          # the ticket as Markdown (--json for its JSON)
+"${CONDUCTOR_BIN:-conductor}" task ticket comment "found the cause"   # a comment of the run's member, agent:<member>
+```
+
+or the MCP tools `ticket_read` and `ticket_comment`. A run is linked to one
+ticket at most; with none, both say so.
 
 ## Yolo
 

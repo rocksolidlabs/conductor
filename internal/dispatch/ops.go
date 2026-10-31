@@ -705,6 +705,27 @@ func (s *Store) Receipt(ctx context.Context, actor, id string) (rc Receipt, foun
 	return rc, true, nil
 }
 
+// OpTicket is the key of the ticket the actor's operation with the id
+// changed, read from the changes log, the ticket its first row (n 0)
+// names: the log keeps it after the receipt is pruned and after the
+// ticket is deleted, so a resend can name where the operation went
+// (AddRunComment). found is false for an operation that changed no
+// ticket: never given, a refusal (which writes no row), or one of a
+// project's or the store's.
+func (s *Store) OpTicket(ctx context.Context, actor, id string) (key string, found bool, err error) {
+	db, err := s.conn()
+	if err != nil {
+		return "", false, err
+	}
+	switch err := db.QueryRowContext(ctx, "SELECT t.key FROM changes c JOIN tickets t ON t.id = c.ticket_id WHERE c.actor = ? AND c.op_id = ? AND c.n = 0", actor, id).Scan(&key); {
+	case isNoRows(err):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	}
+	return key, true, nil
+}
+
 // prune drops every receipt but the newest maxReceipts, by their time,
 // and reports how many went, counted on the pruned counter; it runs at
 // open and every pruneEvery on the store's goroutine (pruning). now is

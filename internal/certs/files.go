@@ -8,21 +8,35 @@ import (
 	"time"
 )
 
-// loadFiles reads the configured pair.
-func (m *Manager) loadFiles() error {
+// loadFiles reads the configured pair. A pair that loads records at, the
+// files' time taken before the read: a time taken after it can be a change
+// the read never saw (a key written after its certificate, a pair replaced
+// mid-read), and no later check would see the files as changed (#281). A
+// pair that fails records no time, so every check reads it again until it
+// loads, whatever the file system's timestamp granularity made of the
+// writes that follow.
+func (m *Manager) loadFiles(at time.Time) error {
 	cert, err := tls.LoadX509KeyPair(m.o.CertFile, m.o.KeyFile)
-	if err != nil {
-		return fmt.Errorf("tls: %w", err)
+	if err == nil {
+		var leaf *x509.Certificate
+		if leaf, err = x509.ParseCertificate(cert.Certificate[0]); err == nil {
+			cert.Leaf = leaf
+		} else {
+			err = fmt.Errorf("%s: %w", m.o.CertFile, err)
+		}
 	}
-	leaf, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		return fmt.Errorf("tls: %s: %w", m.o.CertFile, err)
+	if m.afterRead != nil {
+		m.afterRead()
 	}
-	cert.Leaf = leaf
 	m.mu.Lock()
-	m.cur, m.leaf, m.lastErr = &cert, leaf, ""
-	m.fileTime = m.filesTime()
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	if err != nil {
+		err = fmt.Errorf("tls: %w", err)
+		m.lastErr = err.Error()
+		return err
+	}
+	m.cur, m.leaf, m.lastErr = &cert, cert.Leaf, ""
+	m.fileTime = at
 	return nil
 }
 
@@ -37,20 +51,18 @@ func (m *Manager) filesTime() time.Time {
 	return t
 }
 
-// reloadFilesIfChanged re-reads the pair when either file changed; a pair
-// that fails to load keeps the one served and records the error.
+// reloadFilesIfChanged re-reads the pair when either file is newer than
+// the pair served; a pair that fails to load keeps the one served and
+// records the error.
 func (m *Manager) reloadFilesIfChanged() error {
 	m.mu.Lock()
 	last := m.fileTime
 	m.mu.Unlock()
-	if !m.filesTime().After(last) {
+	at := m.filesTime()
+	if !at.After(last) {
 		return nil
 	}
-	if err := m.loadFiles(); err != nil {
-		m.mu.Lock()
-		m.lastErr = err.Error()
-		m.fileTime = m.filesTime()
-		m.mu.Unlock()
+	if err := m.loadFiles(at); err != nil {
 		return err
 	}
 	m.log.Info("tls: certificate files re-read", "certFile", m.o.CertFile)

@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -43,39 +44,80 @@ func (s *Store) AddComment(ctx context.Context, op Op, key, body string) (Receip
 		Key  string `json:"key"`
 		Body string `json:"body"`
 	}{key, body}
+	return s.Apply(ctx, op, "comment.add", args, func(t *tx) error { return t.addComment(key, body) })
+}
+
+// ErrNoRunTicket is AddRunComment's answer when no live ticket's live run
+// link names the run: nothing is written, no receipt among it, so the
+// same id sent once a ticket holds the run comments on it (the API's 404
+// no_ticket).
+var ErrNoRunTicket = errors.New("dispatch: no live ticket is linked to the run")
+
+// AddRunComment comments, as AddComment does, on the live ticket the
+// run's live run link names (RunTicket's live answer), found inside the
+// operation's transaction, after its receipt is looked up: an id answered
+// before answers its receipt (a repeat, or op_conflict for other
+// content, its failed receipts' as well as its done ones') wherever the
+// run's link is now, since the content is the run and the body and never
+// the ticket; a new id goes to the ticket that holds the run when it
+// commits, so no link moved or removed between a lookup and the write can
+// send it elsewhere. No live ticket holding the run is ErrNoRunTicket,
+// with nothing written. The ticket a done operation commented on is
+// OpTicket's, the first row of its log naming it, so a repeat names it
+// too, its receipt pruned or its ticket deleted since: a read after the
+// commit, which a caller makes as it reads the comment back, so that a
+// failure of it (the operation's deadline spent) loses no receipt.
+func (s *Store) AddRunComment(ctx context.Context, op Op, run, body string) (Receipt, error) {
+	args := struct {
+		Run  string `json:"run"`
+		Body string `json:"body"`
+	}{run, body}
 	return s.Apply(ctx, op, "comment.add", args, func(t *tx) error {
-		tk, _, err := t.ticket(key, false)
+		tk, found, err := runTicket(t.ctx, t.tx, run)
 		if err != nil {
 			return err
 		}
-		if err := checkField("comment.body", "the comment", body); err != nil {
-			return err
+		if !found || !tk.DeletedAt.IsZero() {
+			return ErrNoRunTicket
 		}
-		var n int
-		if err := t.tx.QueryRowContext(t.ctx, "SELECT COUNT(*) FROM comments WHERE ticket_id = ?", tk.ID).Scan(&n); err != nil {
-			return err
-		}
-		if err := checkCount("comments", n+1, MaxComments); err != nil {
-			return err
-		}
-		id := newID()
-		if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO comments (id, ticket_id, author, by, body, created_at) VALUES (?, ?, ?, ?, '', ?)",
-			id, tk.ID, t.op.Actor, t.op.By, stamp(t.now)); err != nil {
-			return err
-		}
-		t.created(id, "")
-		value, err := encodeValue(commentCreated{ID: id, TicketID: tk.ID, Author: t.op.Actor, By: t.op.By, CreatedAt: t.now})
-		if err != nil {
-			return err
-		}
-		base := ChangeRow{Entity: EntityComment, EntityID: id, TicketID: tk.ID, ProjectID: tk.ProjectID}
-		create := base
-		create.Op, create.Value = OpCreate, value
-		if err := t.record(create); err != nil {
-			return err
-		}
-		return t.setScalars("comments", base, []fieldValue{{"body", ""}}, []fieldValue{{"body", body}})
+		return t.addComment(tk.Key, body)
 	})
+}
+
+// addComment is comment.add's change: the comment on the live ticket
+// with the key, by the operation's actor and display name.
+func (t *tx) addComment(key, body string) error {
+	tk, _, err := t.ticket(key, false)
+	if err != nil {
+		return err
+	}
+	if err := checkField("comment.body", "the comment", body); err != nil {
+		return err
+	}
+	var n int
+	if err := t.tx.QueryRowContext(t.ctx, "SELECT COUNT(*) FROM comments WHERE ticket_id = ?", tk.ID).Scan(&n); err != nil {
+		return err
+	}
+	if err := checkCount("comments", n+1, MaxComments); err != nil {
+		return err
+	}
+	id := newID()
+	if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO comments (id, ticket_id, author, by, body, created_at) VALUES (?, ?, ?, ?, '', ?)",
+		id, tk.ID, t.op.Actor, t.op.By, stamp(t.now)); err != nil {
+		return err
+	}
+	t.created(id, "")
+	value, err := encodeValue(commentCreated{ID: id, TicketID: tk.ID, Author: t.op.Actor, By: t.op.By, CreatedAt: t.now})
+	if err != nil {
+		return err
+	}
+	base := ChangeRow{Entity: EntityComment, EntityID: id, TicketID: tk.ID, ProjectID: tk.ProjectID}
+	create := base
+	create.Op, create.Value = OpCreate, value
+	if err := t.record(create); err != nil {
+		return err
+	}
+	return t.setScalars("comments", base, []fieldValue{{"body", ""}}, []fieldValue{{"body", body}})
 }
 
 // EditComment replaces the body of the comment with the id on the live

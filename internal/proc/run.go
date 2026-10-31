@@ -257,7 +257,11 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 	cmd.Env = environment(s.Allow, s.Env, s.Inject)
 	cmd.Stdout, cmd.Stderr = w, w
 	cmd.WaitDelay = WaitDelay
-	g := &lifecycle{}
+	// The output's end is known to the lifecycle before anything can kill
+	// the group, so that every kill sent before the end's judgement is
+	// noted with what it took (lifecycle.judge).
+	eof := make(chan struct{})
+	g := newLifecycle(eof, r)
 	attr(cmd, g)
 
 	started := time.Now()
@@ -296,7 +300,7 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 		s.Started(res.Process)
 	}
 
-	l = &launched{cmd: cmd, g: g, r: r, exited: exited, wait: wait, mem: &capture{headMax: head, tailMax: tail}, eof: make(chan struct{}), res: res}
+	l = &launched{cmd: cmd, g: g, r: r, exited: exited, wait: wait, mem: &capture{headMax: head, tailMax: tail}, eof: eof, res: res}
 	var sink io.Writer = l.mem
 	if s.Log != nil {
 		l.lg = newLogSink(s.Log, logLimit)
@@ -305,8 +309,33 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 	go func() {
 		defer close(l.eof)
 		io.Copy(sink, r)
+		if outputRead != nil {
+			outputRead()
+		}
 	}()
 	return l, res, true
+}
+
+// outputRead, when set, is called once the output's last byte is read and
+// before its end is told (launched.eof): the tests' way to have the end
+// come late, as it does on a loaded machine. Set it before the process
+// starts.
+var outputRead func()
+
+// settled, when set, is told what settle said of the output (held) once
+// it returns, before end kills the group. Set it before the process starts.
+var settled func(held bool)
+
+// outputOpen says whether the output whose end of file closes eof is open
+// at this moment: read where an answer is made, never from what a wait
+// last saw.
+func outputOpen(eof <-chan struct{}) bool {
+	select {
+	case <-eof:
+		return false
+	default:
+		return true
+	}
 }
 
 // end waits for the launched command's exit, ends what it left in its
@@ -326,6 +355,9 @@ func (l *launched) end(ctx context.Context) Result {
 	held := false
 	if watchErr == nil {
 		held = l.settle(ctx)
+		if settled != nil {
+			settled(held)
+		}
 	}
 	l.g.signal(l.cmd, sigKill)
 	err := l.wait()
@@ -359,9 +391,22 @@ func (l *launched) end(ctx context.Context) Result {
 
 // settle waits, once the process has exited, for what it left in its group
 // before end kills the group: the output pipe given holdGrace to close
-// (held: a child still holds it). For a service whose stop has asked its
-// group to end (Service.Stop), before the exit or while this waits, the
-// group has the stop's grace instead (settleStopped).
+// (held: a child still holds it). An output still open then is held by a
+// member of the group only while the group has one: with none of it left,
+// the output's end is read late (the goroutine that reads it can be, on a
+// loaded machine) or a process that left the group holds it, which end
+// gives WaitDelay and leaves alone; and the output is read again after
+// the listing, which is slow on a loaded machine, as held by a process
+// only while its pipe has a writer (lifecycle.held): a member left that
+// redirected its output holds none of it, though the output's end is read
+// late. Each answer is the
+// lifecycle's judgement (judge), which reads a kill sent beside this wait
+// (the command's Cancel at the context's end, or a stop's) as it was
+// sent: a child holding the output that it took went with the group,
+// though the listing finds none of it and the output closed with it. For
+// a service whose stop has asked its group to end (Service.Stop), before
+// the exit or while this waits, the group has the stop's grace instead
+// (settleStopped).
 func (l *launched) settle(ctx context.Context) (held bool) {
 	var asked <-chan struct{}
 	if l.stop != nil {
@@ -376,9 +421,10 @@ func (l *launched) settle(ctx context.Context) (held bool) {
 	defer hold.Stop()
 	select {
 	case <-l.eof:
-		return false
+		return l.g.judge()
 	case <-hold.C:
-		return true
+		l.g.members(l.cmd) // none of the group left is noted for the judgement
+		return l.g.judge()
 	case <-asked:
 		return l.settleStopped(ctx)
 	}

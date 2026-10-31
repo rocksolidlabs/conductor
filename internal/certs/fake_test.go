@@ -191,9 +191,12 @@ func runManager(t *testing.T, m *Manager) {
 	t.Cleanup(func() { cancel(); <-done })
 }
 
+// waitFor polls cond until it holds. Its bound is one only a hang reaches:
+// what a test waits for is a step it drove (a poke, a gate opened, the
+// fake clock advanced), not a moment on the wall clock (#281).
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(time.Minute)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("never: %s", what)

@@ -156,10 +156,20 @@ func (s *stopping) cutNow() { s.cutOnce.Do(func() { close(s.cut) }) }
 // processes found are followed (lifecycle.still) every groupPoll and when
 // the output closes, the group listed once more when the last of them is
 // gone, for a process one of them started as it ended. With none of the
-// group left, an output still open is held by a process that left the
-// group, which end leaves alone. Where the group cannot be listed, the
-// output closed is taken for the group gone. held says the output was
-// still open when the wait ended.
+// group left, nothing of it holds the output, and end kills nothing: an
+// output still open closes now, or is held by a process that left the
+// group, and end gives it WaitDelay, as it does any such holder, and
+// leaves the holder alone. Where the group cannot be listed, at first or
+// when listed again, the output's end is waited for (or the cut, or ctx's
+// end), as the group's. held is the lifecycle's judgement (judge), made
+// where the wait ends: the output open at that moment, not what the wait
+// last saw (a wait that ended on its timer as the output closed, or a
+// listing during which it closed, since a /proc listing is slow on a
+// loaded machine, would take a closed output for a held one), and a kill
+// beside the wait (the stop's cut, the command's Cancel at ctx's end) read
+// as it was sent, whenever it was: a member it took may be gone from the
+// listing, and the output closed with it, when the wait looks; and one
+// sent once the group was found empty took nothing.
 func (l *launched) settleStopped(ctx context.Context) (held bool) {
 	eof := l.eof
 	// until waits for c, the output's end, the stop's cut or ctx's end, and
@@ -176,37 +186,46 @@ func (l *launched) settleStopped(ctx context.Context) (held bool) {
 		}
 		return false
 	}
+	// unlisted is the wait where the group cannot be listed: the output's
+	// end, or the cut, or ctx's end.
+	unlisted := func() bool {
+		if eof != nil {
+			if awaitingOutput != nil {
+				awaitingOutput()
+			}
+			until(nil)
+		}
+		return l.g.judge()
+	}
 	hold := time.NewTimer(holdGrace)
 	defer hold.Stop()
 	if until(hold.C) {
-		return eof != nil
+		return l.g.judge()
 	}
 	members, known := l.g.members(l.cmd)
 	if !known {
-		if eof != nil {
-			until(nil)
-		}
-		return eof != nil
-	}
-	if len(members) == 0 {
-		return eof != nil
+		return unlisted()
 	}
 	tick := time.NewTicker(groupPoll)
 	defer tick.Stop()
 	for len(members) > 0 {
 		if until(tick.C) {
-			return eof != nil
+			return l.g.judge()
 		}
 		if members = l.g.still(l.cmd, members); len(members) == 0 {
-			members, _ = l.g.members(l.cmd)
+			if members, known = l.g.members(l.cmd); !known {
+				return unlisted()
+			}
 		}
 	}
-	// The last of the group gone: its output closes now, unless a process
-	// that left the group holds it.
-	if eof != nil {
-		last := time.NewTimer(holdGrace)
-		defer last.Stop()
-		until(last.C)
-	}
-	return eof != nil
+	// None of the group is left (the listing noted it): unless a kill took
+	// the last of it, whatever holds the output is no member of it, and
+	// end's wait after the reaping is the output's.
+	return l.g.judge()
 }
+
+// awaitingOutput, when set, is called as settleStopped begins to wait for
+// the output's end where the group cannot be listed: the tests' way to let
+// what holds the output finish only once that wait has begun. Set it
+// before the process starts.
+var awaitingOutput func()

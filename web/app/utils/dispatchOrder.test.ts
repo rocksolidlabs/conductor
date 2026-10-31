@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DispatchOrder, catchUp, retried, serially, through, throughOrAbsent, type CatchUpOptions } from './dispatchOrder'
+import { DispatchOrder, NotSent, catchUp, editEach, retried, serially, through, throughOrAbsent, type CatchUpOptions } from './dispatchOrder'
 
 /** A request whose reply the test hands back, or fails, when it wants. */
 function deferred<T>() {
@@ -338,6 +338,14 @@ describe("an operation's catch-up, before the next operation is made", () => {
     expect(q.state.reads).toBe(0)
   })
 
+  it('answers true, reading nothing, when the page left shows the ticket as the operation left it: the edits behind are made on it', async () => {
+    const p = behind([])
+    p.state.rev = 3
+    p.state.left = true
+    expect(await catchUp(p.o)).toBe(true)
+    expect(p.state.reads).toBe(0)
+  })
+
   it('with no revision to wait for (a refusal), waits for a read taken, whatever it shows', async () => {
     const p = behind([failed(), 'dropped', 2])
     p.o.shown = () => false
@@ -385,5 +393,210 @@ describe('a read outside the reload, asked again', () => {
     // Not wanted from the start: nothing is read.
     expect(await retried({ read: async () => void reads++, stop: () => true, wait: async () => {}, firstMs: 1, maxMs: 1 })).toBe(false)
     expect(reads).toBe(2)
+  })
+})
+
+/** A refusal, as the store answers a stale revision. */
+class Refused extends Error {}
+
+/**
+ * A board's card and the store behind it, for editEach: the page shows a row (`shown`), the store holds the ticket; an edit is refused
+ * when it expects a revision the store has moved past, and its reply carries the ticket, or its receipt alone (`receiptOnly`: the
+ * server's read after the commit failed), or is lost after the commit (`lost`: both replies lost to the network, a failure that is no
+ * refusal). The page's moves go one after another, each made on the row shown when it is sent; the first is answered once `held`
+ * resolves, and `left` says the page is gone. A move stranded (the page left before it showed what one did) strands the moves queued
+ * behind, as the project page's queue does.
+ */
+function board(o: { receiptOnly?: boolean; lost?: boolean; caughtUp?: boolean; held?: Promise<void> } = {}) {
+  const store = { key: 'CND-1', status: 'backlog', rev: 1 }
+  const shown = { ...store }
+  const sent: Array<{ to: string; expectedRev: number }> = []
+  const state = { left: false, stranded: false }
+  let reads = 0
+  let refusedCalls = 0
+  const move = serially(async (to: string) => {
+    const out = await editEach([{ ...shown }], {
+      make: (t) => (t.status === to ? null : to),
+      send: async (t, change) => {
+        const first = sent.length === 0
+        sent.push({ to: change, expectedRev: t.rev })
+        if (first && o.held) await o.held
+        if (t.rev !== store.rev) throw new Refused('stale_revision')
+        store.status = change
+        store.rev++
+        if (first && o.lost) throw new Error('Failed to fetch')
+        const reply = { receipt: { rev: store.rev }, ticket: o.receiptOnly ? null : { ...store } }
+        if (reply.ticket) Object.assign(shown, reply.ticket)
+        return reply
+      },
+      committed: (r) => r.ticket?.rev ?? r.receipt.rev,
+      caughtUp: async (_t, rev) => {
+        if (o.caughtUp === false) return true
+        return catchUp({
+          shown: () => rev !== undefined && shown.rev >= rev,
+          read: async () => {
+            reads++
+            Object.assign(shown, store)
+            return true
+          },
+          left: () => state.left,
+          wait: async () => {},
+          firstMs: 1,
+          maxMs: 1,
+        })
+      },
+      refusal: (e) => e instanceof Refused,
+      refused: () => refusedCalls++,
+      stranded: () => state.stranded,
+    })
+    if (out.stranded) state.stranded = true
+    return out
+  })
+  return { store, shown, sent, state, move, reads: () => reads, refusedCalls: () => refusedCalls }
+}
+
+describe("a page's edits of tickets, one operation each (editEach)", () => {
+  it('reads a ticket whose answer carried its receipt alone before the next edit: Backlog, Ready and back to Backlog sends both moves', async () => {
+    const b = board({ receiptOnly: true })
+    await Promise.all([b.move('ready'), b.move('backlog')])
+    expect(b.sent).toEqual([
+      { to: 'ready', expectedRev: 1 },
+      { to: 'backlog', expectedRev: 2 },
+    ])
+    expect(b.store).toMatchObject({ status: 'backlog', rev: 3 })
+    expect(b.reads()).toBe(2)
+  })
+
+  it('without the read, the move back would be taken for no change and never sent (what the read is for)', async () => {
+    const b = board({ receiptOnly: true, caughtUp: false })
+    await Promise.all([b.move('ready'), b.move('backlog')])
+    expect(b.sent).toEqual([{ to: 'ready', expectedRev: 1 }])
+    expect(b.store.status).toBe('ready')
+  })
+
+  it('reads nothing when the answer showed the ticket at the revision it committed', async () => {
+    const b = board()
+    await Promise.all([b.move('ready'), b.move('backlog')])
+    expect(b.sent.map((s) => s.to)).toEqual(['ready', 'backlog'])
+    expect(b.reads()).toBe(0)
+  })
+
+  it('reads a ticket refused before the next edit, so a move queued behind is made on what the store holds', async () => {
+    const b = board()
+    // Another person moved it to In review: the page still shows Backlog at rev 1.
+    b.store.status = 'in_review'
+    b.store.rev = 2
+    const out = await Promise.all([b.move('ready'), b.move('backlog')])
+    expect(out[0].failed).toHaveLength(1)
+    expect(b.sent).toEqual([
+      { to: 'ready', expectedRev: 1 },
+      { to: 'backlog', expectedRev: 2 },
+    ])
+    expect(b.store.status).toBe('backlog')
+    expect(b.refusedCalls()).toBe(1)
+  })
+
+  it("asks the page's own read once for a batch, however many of its edits were refused, each refused ticket read first", async () => {
+    const reads: string[] = []
+    let refused = 0
+    const targets = ['CND-1', 'CND-2', 'CND-3'].map((key) => ({ key, rev: 1 }))
+    const out = await editEach(targets, {
+      make: () => 'done',
+      send: async () => {
+        throw new Refused('close_policy')
+      },
+      committed: () => undefined,
+      caughtUp: async (t) => {
+        reads.push(t.key)
+        return true
+      },
+      refusal: (e) => e instanceof Refused,
+      refused: () => refused++,
+    })
+    expect(out.failed.map((f) => f.t.key)).toEqual(['CND-1', 'CND-2', 'CND-3'])
+    expect(reads).toEqual(['CND-1', 'CND-2', 'CND-3'])
+    expect(refused).toBe(1)
+  })
+
+  it('reads the ticket after a failure that is no refusal, both replies lost after the commit: the move back queued behind is sent, and the page is not read', async () => {
+    const b = board({ lost: true })
+    const out = await Promise.all([b.move('ready'), b.move('backlog')])
+    expect(out[0].failed).toHaveLength(1)
+    expect(b.reads()).toBe(1)
+    expect(b.sent).toEqual([
+      { to: 'ready', expectedRev: 1 },
+      { to: 'backlog', expectedRev: 2 },
+    ])
+    expect(b.store).toMatchObject({ status: 'backlog', rev: 3 })
+    expect(b.refusedCalls()).toBe(0)
+  })
+
+  it('sends none of the moves queued behind once the page is left before it showed what one did: each fails as not sent, none is said done', async () => {
+    let release!: () => void
+    const b = board({ receiptOnly: true, held: new Promise<void>((resolve) => (release = resolve)) })
+    const moves = [b.move('ready'), b.move('backlog'), b.move('ready')]
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // The page is left while the first is on its way; its answer carries the receipt alone.
+    b.state.left = true
+    release()
+    const out = await Promise.all(moves)
+    expect(b.sent).toEqual([{ to: 'ready', expectedRev: 1 }])
+    expect(b.reads()).toBe(0)
+    expect(out[0]).toMatchObject({ stranded: true, failed: [] })
+    expect(out[0]!.done).toHaveLength(1)
+    for (const later of out.slice(1)) {
+      expect(later.done).toEqual([])
+      expect(later.failed).toHaveLength(1)
+      expect(later.failed[0]!.error).toBeInstanceOf(NotSent)
+    }
+    expect(b.store.status).toBe('ready')
+  })
+
+  it('sends the moves queued behind a page left once it shows what the one before did: the answer carried the ticket', async () => {
+    let release!: () => void
+    const b = board({ held: new Promise<void>((resolve) => (release = resolve)) })
+    const moves = [b.move('ready'), b.move('backlog')]
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    b.state.left = true
+    release()
+    const out = await Promise.all(moves)
+    expect(b.sent.map((s) => s.to)).toEqual(['ready', 'backlog'])
+    expect(out.every((x) => !x.stranded && !x.failed.length)).toBe(true)
+    expect(b.store.status).toBe('backlog')
+  })
+
+  it('fails every ticket after the one stranded in a batch as not sent', async () => {
+    const sends: string[] = []
+    const out = await editEach(['CND-1', 'CND-2', 'CND-3'].map((key) => ({ key, rev: 1 })), {
+      make: () => 'done',
+      send: async (t) => {
+        sends.push(t.key)
+        return {}
+      },
+      committed: () => undefined,
+      caughtUp: async () => false,
+      refusal: () => false,
+    })
+    expect(sends).toEqual(['CND-1'])
+    expect(out.done.map((t) => t.key)).toEqual(['CND-1'])
+    expect(out.failed.map((f) => f.t.key)).toEqual(['CND-2', 'CND-3'])
+    expect(out.failed.every((f) => f.error instanceof NotSent)).toBe(true)
+    expect(out.stranded).toBe(true)
+  })
+
+  it('counts a ticket holding the value already as done, with no operation', async () => {
+    let sends = 0
+    const out = await editEach([{ key: 'CND-1', rev: 1 }], {
+      make: () => null,
+      send: async () => {
+        sends++
+        return {}
+      },
+      committed: () => undefined,
+      caughtUp: async () => true,
+      refusal: () => false,
+    })
+    expect(out.done.map((t) => t.key)).toEqual(['CND-1'])
+    expect(sends).toBe(0)
   })
 })
