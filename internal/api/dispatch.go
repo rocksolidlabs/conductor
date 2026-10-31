@@ -23,7 +23,8 @@ import (
 
 // Dispatch over HTTP (docs/plans/dispatch.md): the projects with their
 // labels and milestones, the people, the tickets with their comments,
-// relations, links and attachments (dispatch_attachments.go), the saved
+// relations, links and attachments (dispatch_attachments.go), their plan
+// revisions (dispatch_plans.go, docs/plans/dispatch-evidence.md), the saved
 // views, the ticket a run is linked to, and the receipts. Every route is
 // the admin's (Owner decisions, 17:
 // share-link viewers see no ticket) and a switchyard's 403 (launching),
@@ -128,6 +129,11 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 		{"POST /api/dispatch/tickets/{key}/delete", s.handleDispatchDeleteTicket},
 		{"POST /api/dispatch/tickets/{key}/undelete", s.handleDispatchUndeleteTicket},
 		{"GET /api/dispatch/tickets/{key}/history", s.handleDispatchHistory},
+		{"GET /api/dispatch/tickets/{key}/plans", s.handleDispatchPlans},
+		{"POST /api/dispatch/tickets/{key}/plans", s.handleDispatchProposePlan},
+		{"GET /api/dispatch/plans/{id}", s.handleDispatchPlan},
+		{"POST /api/dispatch/plans/{id}/approve", s.handleDispatchApprovePlan},
+		{"POST /api/dispatch/plans/{id}/withdraw", s.handleDispatchWithdrawPlan},
 		{"GET /api/dispatch/tickets/{key}/comments", s.handleDispatchComments},
 		{"POST /api/dispatch/tickets/{key}/comments", s.handleDispatchAddComment},
 		{"POST /api/dispatch/tickets/{key}/comments/{id}/edit", s.handleDispatchEditComment},

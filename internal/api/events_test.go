@@ -334,9 +334,10 @@ func TestEventHubPublishIfOrdersAgainstRemoved(t *testing.T) {
 
 // A dispatch event says what of Dispatch's changed and nothing more: its
 // seq, the entity, its id ("" for a person, whose id is its name), and
-// the ticket and the project it belongs to. The longest of every entity,
-// seq at 19 digits, every id at its length, the project's key at 6 and a
-// person's name at 60 characters of six encoded bytes each, fits
+// the ticket and the project it belongs to. The longest of every entity
+// (a ticket's plan revision and launch among them), seq at 19 digits,
+// every id at its length, the project's key at 6 and a person's name at
+// 60 characters of six encoded bytes each, fits
 // maxDispatchEvent: the guard before broadcast drops what is over, and a
 // dropped event would be silence.
 func TestEventHubDispatchEvent(t *testing.T) {
@@ -345,7 +346,7 @@ func TestEventHubDispatchEvent(t *testing.T) {
 	id, ticket := strings.Repeat("f", dispatch.IDLen), strings.Repeat("e", dispatch.IDLen)
 	longest := 0
 	for _, entity := range []string{dispatch.EntityProject, dispatch.EntityTicket, dispatch.EntityComment, dispatch.EntityLabel,
-		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson} {
+		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson, dispatch.EntityPlan, dispatch.EntityLaunch} {
 		c := dispatch.Change{Seq: math.MaxInt64, Entity: entity, ID: id, Ticket: ticket, Project: "ABCDEF"}
 		want := dispatchEvent{Seq: math.MaxInt64, Entity: entity, ID: id, Ticket: ticket, Project: "ABCDEF"}
 		if entity == dispatch.EntityPerson {
