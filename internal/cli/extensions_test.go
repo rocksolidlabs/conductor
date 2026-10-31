@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,7 +13,12 @@ import (
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
+	"github.com/rocksolidlabs/conductor/internal/api"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/hostagent"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // cloudIdentity and pushSink are providers as another module's would be;
@@ -30,8 +37,33 @@ func (pushSink) Name() string                                   { return "push" 
 func (pushSink) Events() []string                               { return nil }
 func (pushSink) Notify(context.Context, ext.Notification) error { return nil }
 
+// handed records what runServe hands newServer, and what the server it
+// made holds of it, through the real newServer.
+type handed struct {
+	providers  ext.Providers
+	registered []ext.Registration
+}
+
+func watchNewServer(t *testing.T) *handed {
+	t.Helper()
+	old := newServer
+	t.Cleanup(func() { newServer = old })
+	h := &handed{}
+	newServer = func(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, ui http.Handler, st *store.Store, p ext.Providers) (*api.Server, error) {
+		h.providers = p
+		srv, err := old(cfg, cat, log, ui, st, p)
+		if srv != nil {
+			h.registered = srv.Registered()
+		}
+		return srv, err
+	}
+	return h
+}
+
 // serve reads the registry once, at start, and names what it holds in one
-// line; a plain build, which registers nothing, says nothing of it.
+// line; a plain build, which registers nothing, says nothing of it. What
+// it read reaches the server filled (local.Fill): the providers where
+// something is registered, the free defaults elsewhere.
 func TestServeReadsTheRegistryOnce(t *testing.T) {
 	clearConductorEnv(t)
 	dir := t.TempDir()
@@ -54,9 +86,20 @@ func TestServeReadsTheRegistryOnce(t *testing.T) {
 			},
 		}
 	}
+	h := watchNewServer(t)
 	logs := serveUntilListening(t, "--config", cfg)
 	if n := reads.Load(); n != 1 {
 		t.Fatalf("serve read the registry %d times, want once", n)
+	}
+	p := h.providers
+	if p.Identity != (cloudIdentity{}) || len(p.Notifications) != 1 || p.Notifications[0] != (pushSink{}) {
+		t.Fatalf("serve did not hand the server what the registry holds: %+v", p)
+	}
+	if p.Router != (local.Router{}) || p.Continuity != (local.Continuity{}) || p.Media != (local.Media{}) {
+		t.Fatalf("serve handed the server slots local.Fill did not fill: %+v", p)
+	}
+	if want := []ext.Registration{{Kind: ext.KindIdentity, Name: "cloud"}, {Kind: ext.KindNotifications, Name: "push"}}; !slices.Equal(h.registered, want) {
+		t.Fatalf("the server holds %+v, want %+v", h.registered, want)
 	}
 	if lines := logLines(logs, "level=INFO", `msg="extensions: identity cloud, notifications push"`); len(lines) != 1 {
 		t.Fatalf("no line naming the providers:\n%s", logs)
@@ -78,6 +121,9 @@ func TestServeReadsTheRegistryOnce(t *testing.T) {
 	}
 	if strings.Contains(logs, "extensions") {
 		t.Fatalf("a plain build logged its extensions:\n%s", logs)
+	}
+	if p := h.providers; p.Identity != (local.Identity{}) || p.Router != (local.Router{}) || len(p.Notifications) != 0 || len(h.registered) != 0 {
+		t.Fatalf("a plain build handed the server %+v, holding %+v: want the free defaults alone", p, h.registered)
 	}
 }
 
