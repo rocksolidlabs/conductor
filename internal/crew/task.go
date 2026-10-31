@@ -1662,13 +1662,22 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// The task files, through a root at the working directory: a
 	// .conductor that is not a directory of ours, or a task file that is
 	// there already, is refused.
+	// With a package (a run launched from a ticket), its files go beside
+	// them: one that cannot be handed over fails the attempt at "package",
+	// uncounted, and pauses the run, since every attempt would fail the
+	// same way until a person looks.
 	md, js, more, err := e.taskFile(r, a, tr)
 	if err == nil {
-		err = writeTaskFiles(a.worktree, r.prefix, md, js, more)
+		err = writeTaskFiles(ctx, a.worktree, r.prefix, md, js, more, r.pkg, e.openPackageFile)
 	}
 	if err != nil {
 		release()
-		fail("task file", err, false, false)
+		var pe *packageError
+		if errors.As(err, &pe) {
+			fail("package", err, false, true)
+		} else {
+			fail("task file", err, false, false)
+		}
 		return
 	}
 	if err := e.transact(ctx, r, func() tx {
@@ -1705,9 +1714,26 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	if tr != nil {
 		spec.Inject, spec.Allow = tr.names(), slices.Clone(tr.allow)
 	}
+	// A run launched from a ticket starts each member's session only from
+	// the agent selection its plan revision approved, which the launcher
+	// checks on the entry it starts (ErrAgentChanged): one that is not
+	// fails the attempt at "agent", uncounted, and pauses the run.
+	if rp := r.pkg; rp != nil {
+		sha, ok := rp.agentSHA256(m.def.AgentID)
+		if !ok {
+			release()
+			fail("agent", fmt.Errorf("the agent %s is not among those plan revision %d approved", m.def.AgentID, rp.p.Plan.N), false, true)
+			return
+		}
+		spec.AgentSHA256 = sha
+	}
 	local, err := e.launcher.Launch(ctx, spec)
 	if err != nil {
 		release()
+		if r.pkg != nil && errors.Is(err, ErrAgentChanged) {
+			fail("agent", agentChangedWords(err, m.def.AgentID, r.pkg.p.Plan.N), false, true)
+			return
+		}
 		fail("launch", err, false, false)
 		return
 	}

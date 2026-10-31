@@ -1,13 +1,21 @@
 package crew
 
 import (
+	"cmp"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/store"
@@ -344,4 +352,406 @@ func packageOfRow(row ledger.RunRow) (*runPackage, error) {
 		return nil, invalidf("run %s's package is ticket %s's, its row names %s", row.ID, quote(rp.p.Ticket.ID), quote(row.Ticket))
 	}
 	return rp, nil
+}
+
+// agentSHA256 is the approved selection of the agent agentID as the
+// package's plan revision recorded it (plan.agents), and whether there is
+// one.
+func (rp *runPackage) agentSHA256(agentID string) (string, bool) {
+	for _, a := range rp.p.Plan.Agents {
+		if a.ID == agentID {
+			return a.SHA256, true
+		}
+	}
+	return "", false
+}
+
+// ErrAgentChanged is a Launcher's refusal of an attempt's session whose
+// agent's catalog entry, as the launcher would start it, is not the
+// selection the run's plan revision approved (LaunchSpec.AgentSHA256),
+// before any process exists. The engine fails the attempt at stage
+// "agent", uncounted, and pauses the run's scheduling with the words: every
+// attempt of that member would fail the same way until a person restores
+// the entry, or revises the plan and launches a follow-up. A launcher that
+// says more wraps it; a bare one is given the engine's words
+// (agentChangedWords).
+var ErrAgentChanged = errors.New("the agent's catalog entry is not the one its plan revision approved")
+
+// agentChangedWords is what an attempt's ErrAgentChanged says: the
+// launcher's own words when it gave any, else the agent and the plan
+// revision.
+func agentChangedWords(err error, agentID string, planN int) error {
+	if err == ErrAgentChanged {
+		return &wordsError{msg: fmt.Sprintf("the agent %s is not the one plan revision %d approved: its catalog entry changed since", agentID, planN), err: err}
+	}
+	return err
+}
+
+// wordsError says msg and is err.
+type wordsError struct {
+	msg string
+	err error
+}
+
+func (w *wordsError) Error() string { return w.msg }
+func (w *wordsError) Unwrap() error { return w.err }
+
+// The package's files in an attempt (docs/plans/dispatch-evidence.md, "The
+// package's files in each attempt"): beside the task files, through the
+// same root at the attempt's working directory, .conductor/ticket.md (the
+// ticket as launched, rendered here), .conductor/package.json (the
+// package's bytes as launched) and each attachment as
+// .conductor/attachments/<file>, the name Dispatch derived, copied from
+// Dispatch's store through the opener the API gives the engine
+// (UsePackageFiles), hashed and counted as it is copied. The .gitignore of
+// "*" keeps them out of the result. Everything they come from is durable
+// (the package in the ledger, the attachments pinned in Dispatch's store),
+// so a retry made days later and a continuation's attempts get the same.
+const (
+	ticketFile      = "ticket.md"
+	packageFileName = "package.json"
+	attachmentsDir  = "attachments"
+	// maxPackageAttachmentBytes bounds a package's attachments together,
+	// Dispatch's own bound (the plan's owner decision 8).
+	maxPackageAttachmentBytes = 16 << 20
+	// maxTicketTitle is a ticket's title as task.md says it, in
+	// characters, Dispatch's bound (ticket.md has the title whole).
+	maxTicketTitle = 200
+)
+
+// UsePackageFiles gives the engine what reads a launch package's
+// attachments: open returns the content of the attachment whose SHA-256
+// (hex) is sha256 among those launch's package names, and nothing else.
+// The API gives it Dispatch's store (OpenLaunchFile). Set it before the
+// first launch; without it, an attempt of a run whose package hands over
+// an attachment fails at stage "package", uncounted, and the run pauses.
+func (e *Engine) UsePackageFiles(open func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error)) {
+	e.openPackageFile = open
+}
+
+// packageError is a package's file that cannot be handed to an attempt: an
+// attachment that cannot be read, or whose size or hash is not the
+// package's, or a file name that is not a derived one. It fails the
+// attempt at stage "package", uncounted, and pauses the run (dispatch); an
+// error writing into the worktree is the task files' ("task file").
+type packageError struct{ err error }
+
+func (p *packageError) Error() string { return p.err.Error() }
+func (p *packageError) Unwrap() error { return p.err }
+
+func packageErrorf(format string, args ...any) error {
+	return &packageError{err: fmt.Errorf(format, args...)}
+}
+
+// packageFilePaths is where the package's files are in the attempt,
+// relative to its working directory: ticket.md, package.json, then each
+// attachment in the package's order (TaskTicket.Files).
+func packageFilePaths(p Package) []string {
+	out := []string{path.Join(taskDir, ticketFile), path.Join(taskDir, packageFileName)}
+	for _, a := range p.Attachments {
+		out = append(out, path.Join(taskDir, attachmentsDir, a.File))
+	}
+	return out
+}
+
+// checkPackageFiles holds the attachments' file names to the derived shape
+// again, distinct as a file system that folds case sees them, and their
+// sizes within the package's bound, before anything is opened or written.
+func checkPackageFiles(p Package) error {
+	seen := map[string]bool{}
+	var total int64
+	for _, a := range p.Attachments {
+		if !packageFile.MatchString(a.File) || strings.HasSuffix(a.File, ".") {
+			return packageErrorf("the attachment %s is to be written as %s, which is not a derived name", quote(a.Name), quote(a.File))
+		}
+		if k := strings.ToLower(a.File); seen[k] {
+			return packageErrorf("the package names the attachment file %s twice", quote(a.File))
+		} else {
+			seen[k] = true
+		}
+		if !isSHA256(a.SHA256) || a.Size < 0 || a.Size > maxPackageAttachmentBytes-total {
+			return packageErrorf("the attachment %s has no SHA-256, or its size passes the package's %d MiB", quote(a.Name), maxPackageAttachmentBytes>>20)
+		}
+		total += a.Size
+	}
+	return nil
+}
+
+// writeAttachments copies the package's attachments into
+// .conductor/attachments under root, each from open, counted and hashed
+// as it is copied: one that cannot be read, or whose size or SHA-256 is
+// not the package's, is removed and is a packageError. The directory and
+// each file are made, never written over (a fresh worktree has none).
+func writeAttachments(ctx context.Context, root *os.Root, rp *runPackage, open func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error)) error {
+	if len(rp.p.Attachments) == 0 {
+		return nil
+	}
+	if open == nil {
+		return packageErrorf("Conductor has no store to read the package's %d attachments from", len(rp.p.Attachments))
+	}
+	dir := path.Join(taskDir, attachmentsDir)
+	if err := root.Mkdir(dir, 0o755); err != nil {
+		return err
+	}
+	for _, a := range rp.p.Attachments {
+		if err := copyAttachment(ctx, root, path.Join(dir, a.File), a, rp.p.Launch.ID, open); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readErr keeps the error of the reader it wraps, so a copy's read
+// failure is told from its write's.
+type readErr struct {
+	r   io.Reader
+	err error
+}
+
+func (r *readErr) Read(b []byte) (int, error) {
+	n, err := r.r.Read(b)
+	if err != nil && err != io.EOF {
+		r.err = err
+	}
+	return n, err
+}
+
+// copyAttachment copies one attachment to name under root.
+func copyAttachment(ctx context.Context, root *os.Root, name string, a PackageAttachment, launch string, open func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error)) (err error) {
+	rc, err := open(ctx, launch, a.SHA256)
+	if err != nil {
+		return packageErrorf("the attachment %s cannot be read from the ticket's store: %v", quote(a.Name), err)
+	}
+	defer rc.Close()
+	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := f.Close(); err == nil && cerr != nil {
+			err = cerr
+		}
+		if err != nil {
+			_ = root.Remove(name)
+		}
+	}()
+	h := sha256.New()
+	// One byte past the size, so a longer content is seen.
+	src := &readErr{r: io.LimitReader(rc, a.Size+1)}
+	n, err := io.Copy(f, io.TeeReader(src, h))
+	switch {
+	case src.err != nil:
+		return packageErrorf("the attachment %s could not be read whole: %v", quote(a.Name), src.err)
+	case err != nil:
+		return err
+	case n != a.Size:
+		return packageErrorf("the attachment %s is %s bytes, not the %d its package names", quote(a.Name), sizeWords(n, a.Size), a.Size)
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != a.SHA256 {
+		return packageErrorf("the attachment %s's SHA-256 is %s, not the package's %s", quote(a.Name), got, a.SHA256)
+	}
+	return nil
+}
+
+// sizeWords is a copied attachment's size in words: past the package's
+// size, the copy stopped one byte after it.
+func sizeWords(n, size int64) string {
+	if n > size {
+		return "more than " + strconv.FormatInt(size, 10)
+	}
+	return strconv.FormatInt(n, 10)
+}
+
+// ticketMarkdown is ticket.md: the ticket as it stood at the launch, the
+// plan revision that launched the run with its approval, the ticket's
+// fields, its description, acceptance criteria, constraints, the decisions
+// a person makes, the references with their objects at the base, the
+// attachments (each display name beside the file it was written as) and
+// the comments handed over. An empty part is left out.
+func ticketMarkdown(p Package) string {
+	var b strings.Builder
+	tk, pl := p.Ticket, p.Plan
+	fmt.Fprintf(&b, "# %s: %s\n\n", tk.Key, flatLine(tk.Title))
+	fmt.Fprintf(&b, "The ticket as it stood at its revision %d, when plan revision %d launched this run", tk.Rev, pl.N)
+	if p.Launch.Run != "" {
+		fmt.Fprintf(&b, " (%s", p.Launch.Run)
+		if !p.Launch.At.IsZero() {
+			fmt.Fprintf(&b, ", %s", p.Launch.At.UTC().Format(time.RFC3339))
+		}
+		if p.Launch.By != "" {
+			fmt.Fprintf(&b, ", by %s", flatLine(p.Launch.By))
+		}
+		b.WriteString(")")
+	}
+	b.WriteString(". The run follows it as written here: a change made to the ticket since is a person's to decide.\n\n")
+	approval := fmt.Sprintf("Plan revision %d", pl.N)
+	if pl.ApprovedBy != "" {
+		approval += " was approved by " + flatLine(pl.ApprovedBy)
+		if !pl.ApprovedAt.IsZero() {
+			approval += " at " + pl.ApprovedAt.UTC().Format(time.RFC3339)
+		}
+	} else if !pl.ApprovedAt.IsZero() {
+		approval += " was approved at " + pl.ApprovedAt.UTC().Format(time.RFC3339)
+	}
+	fmt.Fprintf(&b, "%s; it runs the crew %q at the commit %s", approval, pl.Crew.Name, pl.Base)
+	if pl.Yolo {
+		b.WriteString(", its agents without their permission prompts")
+	}
+	b.WriteString(".")
+	if n := strings.TrimSpace(pl.Note); n != "" {
+		fmt.Fprintf(&b, " The approval's note:\n\n%s", quoteBlock(n))
+	}
+	b.WriteString("\n\n")
+	var fields []string
+	add := func(name, v string) {
+		if v != "" {
+			fields = append(fields, fmt.Sprintf("- %s: %s", name, v))
+		}
+	}
+	add("Status", tk.Status)
+	if tk.Priority > 0 {
+		add("Priority", priorityWord(tk.Priority))
+	}
+	add("Horizon", tk.Horizon)
+	add("Owner", flatLine(tk.Owner))
+	add("Assignees", flatLine(strings.Join(tk.Assignees, ", ")))
+	add("Labels", flatLine(strings.Join(tk.Labels, ", ")))
+	if m := tk.Milestone; m != nil {
+		v := flatLine(m.Name)
+		if m.Target != "" {
+			v += " (target " + m.Target + ")"
+		}
+		add("Milestone", v)
+	}
+	if pr := tk.Parent; pr != nil {
+		add("Parent", ticketRefWords(*pr))
+	}
+	if len(tk.Blockers) > 0 {
+		var bl []string
+		for _, x := range tk.Blockers {
+			bl = append(bl, ticketRefWords(x))
+		}
+		v := strings.Join(bl, "; ")
+		if tk.BlockersTotal > len(tk.Blockers) {
+			v += fmt.Sprintf("; %d more", tk.BlockersTotal-len(tk.Blockers))
+		}
+		add("Blocked by", v)
+	}
+	if len(fields) > 0 {
+		b.WriteString(strings.Join(fields, "\n"))
+		b.WriteString("\n\n")
+	}
+	section := func(title, body string) {
+		if body = strings.TrimSpace(body); body != "" {
+			fmt.Fprintf(&b, "## %s\n\n%s\n\n", title, body)
+		}
+	}
+	section("Description", tk.Description)
+	section("Acceptance criteria", tk.Acceptance)
+	section("Constraints", p.Constraints)
+	if len(p.Decisions) > 0 {
+		b.WriteString("## Decisions a person makes\n\n")
+		for _, d := range p.Decisions {
+			fmt.Fprintf(&b, "- %s (%s): %s", d.ID, d.Kind, flatLine(d.Question))
+			if len(d.Before) > 0 {
+				fmt.Fprintf(&b, " Before: %s.", strings.Join(d.Before, ", "))
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\nAsk a person for these; do not decide them yourself.\n\n")
+	}
+	if len(p.References) > 0 {
+		fmt.Fprintf(&b, "## References\n\nPaths in the crew's working directory, each with the git object it names at the commit %s:\n\n", pl.Base)
+		for _, r := range p.References {
+			fmt.Fprintf(&b, "- `%s`", r.Path)
+			if r.Start > 0 {
+				fmt.Fprintf(&b, " lines %d", r.Start)
+				if r.End > r.Start {
+					fmt.Fprintf(&b, " to %d", r.End)
+				}
+			}
+			fmt.Fprintf(&b, " (%s %s)", r.Kind, r.Object)
+			if n := strings.TrimSpace(r.Note); n != "" {
+				fmt.Fprintf(&b, ": %s", flatLine(n))
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	if len(p.Attachments) > 0 {
+		fmt.Fprintf(&b, "## Attachments\n\nIn `%s/%s/`, each under the name it was written as:\n\n", taskDir, attachmentsDir)
+		for _, a := range p.Attachments {
+			fmt.Fprintf(&b, "- %q: `%s/%s/%s`, %d bytes", flatLine(a.Name), taskDir, attachmentsDir, a.File, a.Size)
+			if a.ContentType != "" {
+				fmt.Fprintf(&b, ", %s", flatLine(a.ContentType))
+			}
+			fmt.Fprintf(&b, ", SHA-256 %s\n", a.SHA256)
+		}
+		b.WriteString("\n")
+	}
+	if len(p.Comments) > 0 {
+		b.WriteString("## Comments handed over\n\n")
+		for _, c := range p.Comments {
+			fmt.Fprintf(&b, "### Comment %d", c.N)
+			if who := cmp.Or(c.By, c.Author); who != "" {
+				fmt.Fprintf(&b, " by %s", flatLine(who))
+			}
+			if !c.At.IsZero() {
+				fmt.Fprintf(&b, ", %s", c.At.UTC().Format(time.RFC3339))
+			}
+			fmt.Fprintf(&b, "\n\n%s\n\n", strings.TrimSpace(c.Body))
+		}
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// priorityWord is a ticket's priority in words, Dispatch's: 1 low to 4
+// urgent.
+func priorityWord(p int) string {
+	if words := []string{"", "low", "medium", "high", "urgent"}; p >= 1 && p < len(words) {
+		return words[p]
+	}
+	return strconv.Itoa(p)
+}
+
+// ticketRefWords is a parent or a blocker as ticket.md names it.
+func ticketRefWords(r PackageTicketRef) string {
+	v := r.Key
+	if r.Title != "" {
+		v += " " + strconv.Quote(flatLine(r.Title))
+	}
+	if r.Status != "" {
+		v += " (" + r.Status + ")"
+	}
+	return v
+}
+
+// flatLine is s on one line: its line breaks and other control characters
+// made spaces.
+func flatLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if isControl(r) || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
+// cutTitle is a ticket's title as task.md says it: on one line and at
+// most maxTicketTitle characters.
+func cutTitle(s string) string {
+	s = flatLine(s)
+	if utf8.RuneCountInString(s) > maxTicketTitle {
+		s = string([]rune(s)[:maxTicketTitle]) + "…"
+	}
+	return s
+}
+
+// quoteBlock is s as a Markdown block quote.
+func quoteBlock(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight("> "+l, " ")
+	}
+	return strings.Join(lines, "\n")
 }

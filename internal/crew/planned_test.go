@@ -31,7 +31,7 @@ func testPackage(t *testing.T, runID, base string) []byte {
 		Ticket:  PackageTicket{ID: testTicketID, Key: "CND-12", Rev: 7, Title: "Fix the login loop", Acceptance: "It logs in.", Status: "open"},
 		Plan: PackagePlan{ID: testPlanID, N: 2, Digest: strings.Repeat("d", 64), Crew: PackageCrew{ID: "api-sweep", Name: "API sweep"}, Base: base,
 			Agents: []PackageAgent{{ID: "claude", SHA256: strings.Repeat("e", 64)}}},
-		Attachments: []PackageAttachment{{ID: "a1", Name: "Spec.png", File: "01-Spec.png", Size: 3, SHA256: strings.Repeat("f", 64), ContentType: "image/png"}},
+		Attachments: []PackageAttachment{{ID: "a1", Name: "Spec.png", File: "01-Spec.png", Size: int64(len(testSpecPNG)), SHA256: sha256Hex(testSpecPNG), ContentType: "image/png"}},
 		Launch:      PackageLaunch{ID: testLaunchID, Run: runID, Label: "CND-12 Fix the login loop"},
 	}
 	b, err := json.MarshalIndent(p, "", "  ")
