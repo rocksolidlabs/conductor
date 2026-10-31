@@ -229,6 +229,11 @@ var dispatchRequests = map[string]struct {
 	"POST /api/dispatch/tickets/{key}/delete":                  {"/api/dispatch/tickets/CND-1/delete", map[string]any{"opId": "a10"}},
 	"POST /api/dispatch/tickets/{key}/undelete":                {"/api/dispatch/tickets/CND-1/undelete", map[string]any{"opId": "a11"}},
 	"GET /api/dispatch/tickets/{key}/history":                  {"/api/dispatch/tickets/CND-1/history", nil},
+	"GET /api/dispatch/tickets/{key}/plans":                    {"/api/dispatch/tickets/CND-1/plans", nil},
+	"POST /api/dispatch/tickets/{key}/plans":                   {"/api/dispatch/tickets/CND-1/plans", map[string]any{"opId": "c1", "crew": "team"}},
+	"GET /api/dispatch/plans/{id}":                             {"/api/dispatch/plans/0123456789abcdef", nil},
+	"POST /api/dispatch/plans/{id}/approve":                    {"/api/dispatch/plans/0123456789abcdef/approve", map[string]any{"opId": "c2", "note": "ok"}},
+	"POST /api/dispatch/plans/{id}/withdraw":                   {"/api/dispatch/plans/0123456789abcdef/withdraw", map[string]any{"opId": "c3"}},
 	"GET /api/dispatch/tickets/{key}/comments":                 {"/api/dispatch/tickets/CND-1/comments", nil},
 	"POST /api/dispatch/tickets/{key}/comments":                {"/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": "b7", "body": "x"}},
 	"POST /api/dispatch/tickets/{key}/comments/{id}/edit":      {"/api/dispatch/tickets/CND-1/comments/0123456789abcdef/edit", map[string]any{"opId": "b8", "body": "y"}},
@@ -1430,7 +1435,13 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 	// The download reads an attachment of the ticket's, whose id its
 	// request names in place of the one dispatchRequests holds.
 	attachment := "/api/dispatch/attachments/" + entityOf(t, e.upload(t, "CND-1", "read.txt", "text/plain", []byte("read me"), http.StatusCreated, ""), "attachment")["id"].(string)
-	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1", attachment}
+	// The revision's read reads a plan revision of the ticket's, made
+	// through the store, in place of the id dispatchRequests holds.
+	rc := doneOf(t)(e.srv.dispatch.ProposePlan(context.Background(), adminOp(""), "CND-1", dispatch.PlanRequest{Crew: "team"},
+		dispatch.PlanBody{Base: strings.Repeat("a", 40), Crew: json.RawMessage(`{"id":"team","name":"Team","tasks":[{"id":"build"}]}`)}))
+	plan := "/api/dispatch/plans/" + rc.ID
+	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1", attachment,
+		"/api/dispatch/tickets/CND-1/plans", plan}
 	reads := 0
 	eachDispatchRoute(t, e.srv, func(method, path string, _ any) {
 		if method != http.MethodGet {
@@ -1444,6 +1455,9 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 				t.Fatalf("%s: %d %q", path, status, data)
 			}
 		} else {
+			if strings.HasPrefix(path, "/api/dispatch/plans/") {
+				path = plan
+			}
 			e.expect(t, method, path, nil, http.StatusOK, "")
 		}
 		sep := "?"
@@ -1458,7 +1472,7 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			e.expect(t, method, path+sep+q, nil, http.StatusBadRequest, "invalid_request")
 		}
 	})
-	if reads != 11 {
+	if reads != 13 {
 		t.Fatalf("%d reads", reads)
 	}
 }
@@ -1560,9 +1574,10 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 	e := dispatchEnv(t)
 	const upload = "POST /api/dispatch/tickets/{key}/attachments"
 	bounds := map[string]int{
-		"POST /api/dispatch/tickets":            maxTicketBody,
-		"POST /api/dispatch/tickets/{key}/edit": maxTicketBody,
-		upload:                                  maxAttachmentBody,
+		"POST /api/dispatch/tickets":             maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/edit":  maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/plans": maxTicketBody,
+		upload:                                   maxAttachmentBody,
 	}
 	// A ticket's create checks its project's key before the store sees
 	// the body.
@@ -1615,7 +1630,7 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 			}
 		}
 	}
-	if writes != 29 {
+	if writes != 32 {
 		t.Fatalf("%d writes", writes)
 	}
 }

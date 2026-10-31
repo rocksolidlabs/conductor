@@ -239,7 +239,8 @@ func (h *eventHub) run(id string, removed bool) {
 // dispatchEvent is the data of a `dispatch` event: something of Dispatch's
 // changed (dispatch.Change), for a page to read again. seq is the commit's
 // last change in the store's log; entity what changed (project, ticket,
-// comment, label, milestone, view or person) and id its id, "" for a
+// comment, label, milestone, view, person, plan or launch: a ticket's
+// plan revision or launch) and id its id, "" for a
 // person, whose id is its name: the directory is small and its pickers
 // read it again whole, so the event says only that it changed; ticket the
 // id of the ticket the change belongs to and project its project's key,
@@ -254,11 +255,12 @@ type dispatchEvent struct {
 }
 
 // maxDispatchEvent bounds a dispatch event's data. The longest is 119
-// bytes: seq at most 19 digits, entity at most 9 (milestone), id and
-// ticket 16 hex characters each, project a key of at most 6, and the
-// envelope's 53; every value is digits, a word of the code's, hex or a
-// key, never escaped. A person's name, which could be 60 characters of
-// six encoded bytes each, never travels (id is "" for a person).
+// bytes: seq at most 19 digits, entity at most 9 (milestone; a plan's
+// and a launch's are shorter), id and ticket 16 hex characters each,
+// project a key of at most 6, and the envelope's 53; every value is
+// digits, a word of the code's, hex or a key, never escaped. A person's
+// name, which could be 60 characters of six encoded bytes each, never
+// travels (id is "" for a person).
 const maxDispatchEvent = 160
 
 // maxDispatchEach is the most changes of one kind in one project that a
@@ -275,9 +277,9 @@ const maxDispatchEvent = 160
 // changed, each at most maxDispatchEvent bytes of data and 24 of
 // framing: at most 11,776 bytes a kind and project, whatever the
 // commit's size. An operation of the store changes entities of one
-// project at most, beside the people its tickets name, so seven kinds at
-// most, and its entry is at most 82,432 bytes; the label deleted on
-// 10,000 tickets is two events.
+// project at most, beside the people its tickets name, so nine kinds at
+// most (a plan revision's and a launch's among them), and its entry is at
+// most 105,984 bytes; the label deleted on 10,000 tickets is two events.
 const maxDispatchEach = 64
 
 // dispatch announces a commit of Dispatch's store, what it changed

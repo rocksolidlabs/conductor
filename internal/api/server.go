@@ -106,6 +106,10 @@ type Server struct {
 	// without a data directory, on a switchyard, which keeps no tickets,
 	// and when it could not be opened.
 	dispatch *dispatch.Store
+	// planFacts keeps what the plan revisions' reads take from each
+	// revision's body, by its digest (dispatch_plans.go), so a list reads
+	// no body it has read before.
+	planFacts planFactsCache
 	// pastes are the paste-invite peers of each server session (paste.go).
 	pastes pasteStore
 	// runs launches crews and keeps their runs, in memory.
