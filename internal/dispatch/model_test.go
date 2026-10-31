@@ -51,8 +51,14 @@ var planBounds = map[string]struct {
 	"plan.reference_path":    {1024, false},
 	"plan.reference_note":    {200, true},
 	"plan.decision_question": {500, true},
-	"op.by":                  {60, true},
-	"op.actor":               {60, false},
+	// The launches table's: a label at most 60 characters, why at most
+	// 2,000, and an agent's reported version, which the plan leaves to the
+	// code inside the agents' 4 KiB.
+	"launch.label":         {60, true},
+	"launch.why":           {2000, true},
+	"launch.agent_version": {100, false},
+	"op.by":                {60, true},
+	"op.actor":             {60, false},
 }
 
 // atBound is a value of the rule's kind exactly at its bound, and past
@@ -194,6 +200,8 @@ func TestEveryCountBoundIsThePlansAndRefusedOnePast(t *testing.T) {
 		{"comments handed over", MaxPlanComments, 20},
 		{"decisions per revision", MaxPlanDecisions, 10},
 		{"tasks waiting on a decision", MaxDecisionBefore, 8},
+		{"launches per ticket", MaxLaunches, 200},
+		{"blockers a package names", MaxPackageBlockers, 20},
 	} {
 		if c.got != c.plan {
 			t.Errorf("%s: %d, the plan's %d", c.what, c.got, c.plan)
@@ -231,6 +239,9 @@ func TestEveryCountBoundIsThePlansAndRefusedOnePast(t *testing.T) {
 		{"a file-form manifest", MaxManifestFile, 64 << 10},
 		{"a delivery link's candidate", MaxLinkCandidate, 200},
 		{"a delivery link's verification receipt", MaxLinkVerified, 8 << 10},
+		{"a launch's package", MaxPackage, 512 << 10},
+		{"a launch's agents", MaxLaunchAgents, 4 << 10},
+		{"an attachment's portable file name", MaxAttachmentFile, 64},
 	} {
 		if c.got != c.plan {
 			t.Errorf("%s: %d, the plan's %d", c.what, c.got, c.plan)
@@ -401,6 +412,10 @@ func TestTheLargestStructuredValueIsUnder16KiB(t *testing.T) {
 		"a plan revision's create": planCreated{ID: link.ID, TicketID: link.ID, BasedOn: link.ID, CrewID: strings.Repeat("a", 64),
 			CrewName: strings.Repeat("\u2028", MaxCrewName), CrewUpdatedAt: link.CreatedAt, Base: strings.Repeat("a", 64),
 			Digest: fp, Bytes: MaxPlanBody, Fingerprint: fp, CreatedAt: link.CreatedAt, CreatedBy: by},
+		"a launch's create": launchCreated{ID: link.ID, TicketID: link.ID, PlanID: link.ID, RunID: strings.Repeat("a", 64) + "-ffffffff",
+			Label: strings.Repeat("\u2028", MaxLaunchLabel), TicketRev: 1<<63 - 1, Intent: fp, Criteria: fp, PackageSHA256: fp, Fingerprint: fp,
+			CreatedAt: link.CreatedAt, CreatedBy: by},
+		"a launch's why": launchWhy(strings.Repeat("\u2028", 2*MaxLaunchWhy)),
 	} {
 		got, err := encodeValue(v)
 		if err != nil || len(got) >= len(value) {
