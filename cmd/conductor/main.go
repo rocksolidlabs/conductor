@@ -1,27 +1,10 @@
 // Command conductor runs the shared agent terminal server (`serve`) or hosts a
-// local terminal session from a developer machine (`host`).
+// local terminal session from a developer machine (`host`). It is the free
+// build: it registers no provider (package ext), so every extension seam runs
+// its free default. A main in another module that registers providers calls
+// app.Main the same way.
 package main
 
-import (
-	"context"
-	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
+import "github.com/rocksolidlabs/conductor/app"
 
-	"github.com/rocksolidlabs/conductor/internal/cli"
-)
-
-func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	code, err := cli.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "conductor:", err)
-		if code == 0 {
-			code = 1
-		}
-	}
-	os.Exit(code)
-}
+func main() { app.Main() }

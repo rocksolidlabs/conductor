@@ -3058,6 +3058,86 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **The extension seams: the `ext` and `app` packages, the free defaults
+  and the eight interfaces wired in (Program items C1 to C9; #473 to #489,
+  started 2026-10-31).** The plan is `docs/plans/ext.md` (PR #453), cut
+  into seventeen PRs, one paragraph each below; each PR rewrites its own
+  paragraph only, with what it shipped and its tests, and the last
+  completes the entry with what was observed. Conductor is open core: this
+  repository is the whole free product, and a paid feature is a provider
+  that another module's `main` compiles in, backed by a hosted service.
+  The free build registers nothing, so every seam runs its free default,
+  which is what main did before the stream.
+
+  PR-1 (#473, PR #514): `ext`, standard library only: the package
+  documentation (what a provider is, that its `init` registers and does
+  nothing else, how it starts, the guard's rules from its side, the API's
+  stability); the registry (`Register…` for the six one-value slots and
+  the two lists of at most `MaxPerList` (16), the accessors, `Registered`,
+  `Freeze`, `Providers` with `All`, the eight kinds; a register panics on a
+  nil value, a bad name, a second provider in a one-value slot, a repeated
+  name in a list, a list past its bound, a name another value holds and
+  after `Freeze`, and takes one value in several slots under one name);
+  the eight interfaces and their records with JSON tags, bounds, waits and
+  a `Valid` method on each record a provider hands the server (`RoomJoin`
+  and `Entitlement` have none: no code of this repository takes them);
+  `ICEServer.Valid` takes only STUN and TURN URIs WebRTC takes, and a TURN
+  one only with a username and a credential, since one server Pion or a
+  browser refuses fails the whole configuration; `Starter`,
+  `Host`, their records and errors, declared for PR-4. `app` (`Run`,
+  `Main`), and `cmd/conductor`'s `main` as `app.Main()`. Tests:
+  `TestRegisterRefuses`, `TestRegisteredOrder`, `TestFreezeOnceAndCopies`,
+  `TestAllListsEverySlot`, `TestRegistryConcurrent`,
+  `TestRecordsRoundTrip`, `TestValid`, `TestRunVersion`,
+  `TestPlainBuildRegistersNothing`, `TestExtBoundsAreTheServers` (each
+  bound `ext` copies from `internal/proto` and `internal/crew` held to its
+  source) and `TestExtICEServerValidAsPion` (a server `Valid` takes is one
+  Pion takes). Nothing calls `ext` yet.
+
+  PR-2 (#474): ext/local: the free defaults and Fill. Planned.
+
+  PR-3 (#475): cli, api: the composition root reads the registry once; every
+  provider call guarded. Planned.
+
+  PR-4 (#476): api, cli: ext.Host and the providers' Start. Planned.
+
+  PR-5 (#477): opencore: the open-core rules as a lint, failing on a planted
+  import. Planned.
+
+  PR-6 (#478): api: the identity provider after the token chain; a
+  principal's subject in receipts. Planned.
+
+  PR-7 (#479): api: notification sinks over the event hub, the webhooks the
+  first. Planned.
+
+  PR-8 (#480): crew, api: context blocks in the task files; file touches to
+  the context providers. Planned.
+
+  PR-9 (#481): session, api: Local.AnswerAs and the decision router over
+  needs_input. Planned.
+
+  PR-10 (#482): proto, hostagent, signal, api, web: answer_as, a routed
+  answer for a hosted session. Planned.
+
+  PR-11 (#483): store, ledger, api: the sync hooks after every local commit.
+  Planned.
+
+  PR-12 (#484): export, ledger, dispatch, api: the export archive, GET
+  /api/export and the restore installer. Planned.
+
+  PR-13 (#485): cli: conductor export and conductor restore. Planned.
+
+  PR-14 (#486): opencore, contributing: no entitlement call site outside
+  ext. Planned.
+
+  PR-15 (#487): api: the four ICE sites through the media provider; GET
+  /api/ice keeps credentials. Planned.
+
+  PR-16 (#488): api, web: GET /api/capabilities and the app card's
+  Extensions row. Planned.
+
+  PR-17 (#489): ext/exttest: a fake per interface and the contract suite;
+  the stream's features entry completed. Planned.
 - **Governance: contributing under the DCO, the marks' owner, security
   reporting and the open-core pull request checklist (Program item B; #386
   and #387, 2026-10-28).** The plan is `docs/plans/governance.md` (PR #383).

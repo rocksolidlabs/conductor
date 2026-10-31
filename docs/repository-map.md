@@ -3,7 +3,9 @@
 
 | Path | Responsibility |
 |---|---|
-| `cmd/conductor` | entry point (`serve`, `switchyard`, `host`, `notify`, `crew`, `mcp`, `hooks`, `skill`, `up`, `crews`, `completion`, `version`) |
+| `cmd/conductor` | the free build's `main`: `app.Main` with no provider registered (`serve`, `switchyard`, `host`, `notify`, `crew`, `mcp`, `hooks`, `skill`, `up`, `crews`, `completion`, `version`); `TestPlainBuildRegistersNothing` holds that a plain build registers nothing |
+| `app` | the public entry point (`Run`, a wrapper over `cli.Run`; `Main`, SIGINT and SIGTERM ending its context, the error printed, the exit code) for this module's `main` and for a `main` in another module that blank-imports its providers first; imports `internal/cli` only |
+| `ext` | the public extension API (`docs/plans/ext.md`), standard library only: the eight interfaces a provider in another module implements, each with its records, bounds and waits: `IdentityProvider` (a token the server's own chain does not know, as a `Principal` with grants), `DecisionRouter` (Switchman: whom a question goes to, `Route`, and that it no longer waits, `Resolved`), `ContextProvider` (context blocks for an attempt's task, and the files the agents touched), `NotificationSink` (the sessions' activity delivered elsewhere), `ContinuityStore` (sync: every document after its local commit, and a restore on another device), `EntitlementSource` (what a workspace may use of a paid feature; no code of this repository asks it), `MediaRoomProvider` (ICE servers beside the configured ones, and rooms) and `Runtime` (where an attempt runs; its `Where` only, its methods the Runtime plan's); a `Valid` method on each record a provider hands the server (`RoomJoin` and `Entitlement` have none: no code of this repository takes them); `Starter` and `Host`, a provider's one door into the app; the registry in the style of `database/sql`'s drivers (`Register…` in a provider's `init`, panicking on a nil value, a bad name, a second provider in a one-value slot, a repeated name in a list, a list past `MaxPerList`, a name held by another value, and after `Freeze`; `Registered`, `Freeze`, `Providers.All`). Nothing in this repository implements or registers a provider |
 | `internal/cli` | flags, help and completion text; no business logic |
 | `internal/config`, `internal/catalog` | JSON config with `CONDUCTOR_*` overrides; argv-based agent catalog with each agent's yolo, trust and session recipes |
 | `internal/store` | atomic JSON documents in the data directory (`dataDir`) |
@@ -39,6 +41,14 @@ session store in `web/app/composables/useAttention.ts` (streaming fetch of
 
 ## Adding things
 
+- **A provider**: implement an `ext` interface in another module (this
+  repository holds none), register it in its package's `init` with the
+  matching `ext.Register…` and do nothing else there, and build a `main`
+  that blank-imports that package and calls `app.Main`. Start from `ext`'s
+  package documentation: how a provider registers, starts and answers (from
+  what it holds, never with a round trip on the call's path), and the
+  guard's waits and bounds. No flag, key, environment variable or build tag
+  turns one on.
 - **An agent**: add a catalog entry in config (or `internal/catalog/defaults.go`
   for built-ins) with `id`, `name`, `command` and `allowArgs`.
 - **An API route**: handler in `internal/api`, auth via `requireAdmin` or

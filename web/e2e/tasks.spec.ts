@@ -105,7 +105,9 @@ test('a task read by the admin is the attempt\'s task file, and a task of an unk
 test('the run page shows the tasks, their attempts and results, the task graph, and the tasks in the palette', async ({ page, api, state }) => {
   const run = await api.run(runs[0]!)
   await page.goto(`/runs/${encodeURIComponent(run.id)}?view=tasks`)
-  await expect(page.locator('[data-run-view]').getByRole('tab', { name: 'Tasks' })).toHaveAttribute('aria-selected', 'true')
+  // The first check after the navigation waits out the page's first paint, the suite's 30 s (#281): on a starved box the
+  // page hydrated 17.8 s after the goto, past the 15 s expect bound, which is nobody's cap.
+  await expect(page.locator('[data-run-view]').getByRole('tab', { name: 'Tasks' })).toHaveAttribute('aria-selected', 'true', { timeout: 30_000 })
   const rows = page.locator('[data-task-row]')
   await expect(rows).toHaveCount(2)
   await expect(page.locator('[data-task-row="build"]')).toHaveAttribute('data-task-state', 'succeeded')
@@ -181,7 +183,8 @@ test('a task that fails its checks three times offers Retry and Accept anyway; t
     .toBe('failed')
   await page.goto(`/runs/${encodeURIComponent(run.id)}?view=tasks`)
   const build = page.locator('[data-task-row="build"]')
-  await expect(build).toHaveAttribute('data-task-state', 'failed')
+  // The first check after the navigation, the same first-paint bound (#281).
+  await expect(build).toHaveAttribute('data-task-state', 'failed', { timeout: 30_000 })
   await expect(build.locator('[data-task-words]')).toContainText('attempt 3 failed at check never')
   await expect(page.locator('[data-crew-run-header] [data-run-task-badge]').nth(1)).toHaveText('1 failed')
   await expect(page.locator('[data-task-row="docs"] [data-task-words]')).toContainText('will not succeed')

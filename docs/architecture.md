@@ -371,7 +371,9 @@ registers the `conductor:` scheme: an invite opens its own join page with
 
 | Package | Responsibility |
 |---|---|
-| `cmd/conductor` | entry point; `serve`, `host`, `notify`, `hooks`, `skill`, `up`, `crews`, `completion`, `version` |
+| `cmd/conductor` | the free build's entry point, `app.Main` with no provider registered; `serve`, `host`, `notify`, `hooks`, `skill`, `up`, `crews`, `completion`, `version` |
+| `app` | the public entry point: `Run` (`cli.Run`) and `Main` (signals, the error, the exit code), for this module's `main` and for one in another module that compiles providers in |
+| `ext` | the public extension API, standard library only: the eight interfaces (identity, decisions, context, notifications, sync through `ContinuityStore`, entitlements, media, runtime), their records with their bounds, waits and `Valid` methods, `Starter` and `Host`, and the registry a provider's `init` registers into and `Freeze` closes; a plain build registers nothing |
 | `internal/cli` | flag parsing, help and completion text (the completion table and scripts, the rc-file line); no business logic |
 | `internal/config` | JSON config, `CONDUCTOR_*` overrides, validation |
 | `internal/catalog` | launchable agents (argv arrays, never shell strings), their yolo, trust and session recipes |
