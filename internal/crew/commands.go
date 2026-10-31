@@ -201,6 +201,9 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	case errors.Is(err, ledger.ErrTooManyCommands):
 		return Receipt{}, ErrTooManyCommands
 	case err != nil:
+		if e.afterRefused != nil {
+			e.afterRefused(runID, err)
+		}
 		e.afterTransact(r, err)
 		return Receipt{}, err
 	}

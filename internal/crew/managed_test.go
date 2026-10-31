@@ -299,7 +299,19 @@ func (tx *fakeTx) Event(kind string, payload any) error {
 	tx.events = append(tx.events, fakeEvent{tx.runID, kind, payload})
 	return nil
 }
-func (tx *fakeTx) PutRun(r ledger.RunRow) error   { tx.runs = append(tx.runs, r); return nil }
+func (tx *fakeTx) PutRun(r ledger.RunRow) error { tx.runs = append(tx.runs, r); return nil }
+
+// CreateRun refuses an id the fake ledger has, as the ledger's insert does.
+func (tx *fakeTx) CreateRun(r ledger.RunRow) error {
+	tx.l.mu.Lock()
+	_, ok := tx.l.runs[r.ID]
+	tx.l.mu.Unlock()
+	if ok {
+		return fmt.Errorf("%w: %s", ledger.ErrRunExists, r.ID)
+	}
+	tx.runs = append(tx.runs, r)
+	return nil
+}
 func (tx *fakeTx) PutTask(r ledger.TaskRow) error { tx.tasks = append(tx.tasks, r); return nil }
 func (tx *fakeTx) PutAttempt(r ledger.AttemptRow) error {
 	tx.attempts = append(tx.attempts, r)
