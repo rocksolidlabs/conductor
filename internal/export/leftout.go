@@ -14,7 +14,7 @@ const (
 	WhyTemporary  = "temporary"          // a database's -wal, -shm or -journal, *.tmp, .probe-*, .restore-*, Dispatch's attachments/tmp/
 	WhyProvider   = "provider"           // ext/, a provider's own state
 	WhyNotRegular = "not a regular file" // a link, a device, a socket, a pipe
-	WhyName       = "unsupported name"   // a name an archive cannot hold (Install would refuse it)
+	WhyName       = "unsupported name"   // a name an archive cannot hold, or another spelling of one it holds (Install would refuse it)
 )
 
 // leftRule is a row of leftOut: an exact slash path (file), a directory

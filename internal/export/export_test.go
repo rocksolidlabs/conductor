@@ -34,3 +34,13 @@ func SetBeforeRename(t testing.TB, f func(name string)) {
 	beforeRename = f
 	t.Cleanup(func() { beforeRename = old })
 }
+
+// SetSyncDir runs f before each sync of a directory an install makes, with
+// the directory's slash path in the data directory ("." for the data
+// directory, .restore-<random>/... for a staged one): an error f returns is
+// the sync's.
+func SetSyncDir(t testing.TB, f func(rel string) error) {
+	old := syncFault
+	syncFault = f
+	t.Cleanup(func() { syncFault = old })
+}

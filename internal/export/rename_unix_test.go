@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build unix
 
 package export
 
@@ -13,7 +13,8 @@ import (
 // renameByHand, the move where the kernel has no no-replace flag, moves a
 // file and a directory into a name that is free, and leaves a name that
 // is taken as it is: a file, an empty directory and a full one, each with
-// fs.ErrExist and the staged entry still staged.
+// fs.ErrExist and the staged entry still staged, and a name taken between
+// the directory it makes in the name's place and its rename (the seam).
 func TestRenameByHand(t *testing.T) {
 	dir := t.TempDir()
 	write := func(rel, content string) {
@@ -67,5 +68,40 @@ func TestRenameByHand(t *testing.T) {
 	}
 	if got, err := os.ReadDir(filepath.Join(dir, "empty")); err != nil || len(got) != 0 {
 		t.Fatalf("the empty directory: %v %v", got, err)
+	}
+
+	// Between the directory made in the name's place and the rename (the
+	// window a check before a rename leaves open), another writer's file
+	// in it, or a file in its place, is never renamed over: fs.ErrExist,
+	// what was put there as it was, the staged directory still staged.
+	for _, c := range []struct {
+		name   string
+		meddle func(p string)
+		check  func(p string) bool
+	}{
+		{"filled", func(p string) {
+			write("filled/mine.json", "mine")
+		}, func(p string) bool { return read("filled/mine.json") == "mine" }},
+		{"swapped", func(p string) {
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+			write("swapped", "mine")
+		}, func(p string) bool { return read("swapped") == "mine" }},
+	} {
+		write("s/"+c.name+"/a.json", "a")
+		afterMkdir = func(name string) {
+			if name == c.name {
+				c.meddle(filepath.Join(dir, name))
+			}
+		}
+		err := renameByHand(root, "s", c.name)
+		afterMkdir = nil
+		if !errors.Is(err, fs.ErrExist) {
+			t.Fatalf("%s meanwhile: %v", c.name, err)
+		}
+		if !c.check(filepath.Join(dir, c.name)) || read("s/"+c.name+"/a.json") != "a" {
+			t.Fatalf("%s meanwhile: what was put there, or the staged directory, changed", c.name)
+		}
 	}
 }

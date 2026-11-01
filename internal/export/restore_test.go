@@ -11,8 +11,10 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -453,5 +455,54 @@ func TestRestoreNeverRenamesOverANameMadeMeanwhile(t *testing.T) {
 	}
 	if got, err := os.ReadDir(filepath.Join(dir, "crews")); err != nil || len(got) != 0 {
 		t.Fatalf("the directory made meanwhile: %v %v", got, err)
+	}
+}
+
+// A directory sync that fails is never taken for durability: a staged
+// directory's (EIO) refuses the restore before any rename, the data
+// directory as it was; the data directory's own, after the renames, is
+// reported with the files in place and the staging directory gone. A
+// filesystem with no sync for a directory (EINVAL, ENOTSUP) restores.
+func TestRestoreDirectorySyncFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a directory is not opened for a sync on Windows")
+	}
+	b := craft(t, [2]string{"catalog.json", `{"agents":[]}`}, [2]string{"crews/team.json", "{}"})
+
+	dir := filepath.Join(t.TempDir(), "data")
+	put(t, dir, "hooks/claude-settings.json", "{}")
+	before := listing(t, dir)
+	export.SetBeforeRename(t, func(name string) { t.Errorf("renamed %s", name) })
+	export.SetSyncDir(t, func(rel string) error {
+		if strings.HasPrefix(rel, ".restore-") && strings.HasSuffix(rel, "/crews") {
+			return syscall.EIO
+		}
+		return nil
+	})
+	if _, err := restore(b, dir); !errors.Is(err, syscall.EIO) || !strings.Contains(err.Error(), "syncing the staged crews") {
+		t.Fatalf("the restore, a staged directory's sync failing: %v", err)
+	}
+	sameListing(t, dir, before)
+	export.SetBeforeRename(t, nil)
+
+	dir = filepath.Join(t.TempDir(), "data")
+	export.SetSyncDir(t, func(rel string) error {
+		if rel == "." {
+			return syscall.EIO
+		}
+		return nil
+	})
+	if _, err := restore(b, dir); !errors.Is(err, syscall.EIO) || !strings.Contains(err.Error(), "syncing the directory failed") {
+		t.Fatalf("the restore, the data directory's sync failing: %v", err)
+	}
+	sameListing(t, dir, map[string]string{"catalog.json": `{"agents":[]}`, "crews/": "", "crews/team.json": "{}"})
+
+	for _, unsupported := range []error{syscall.EINVAL, syscall.ENOTSUP} {
+		dir = filepath.Join(t.TempDir(), "data")
+		export.SetSyncDir(t, func(string) error { return unsupported })
+		if _, err := restore(b, dir); err != nil {
+			t.Fatalf("the restore, no sync for a directory (%v): %v", unsupported, err)
+		}
+		sameListing(t, dir, map[string]string{"catalog.json": `{"agents":[]}`, "crews/": "", "crews/team.json": "{}"})
 	}
 }

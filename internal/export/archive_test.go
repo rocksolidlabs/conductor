@@ -513,3 +513,65 @@ func TestExportAttachmentStillMissing(t *testing.T) {
 		t.Fatalf("%d snapshots, not 3", n)
 	}
 }
+
+// On a filesystem that keeps case, paths a filesystem that folds case or
+// trailing dots takes for one name (two files, a file and a directory, two
+// directories) are never both in the archive, which no restore would
+// take: the lower-case spelling goes in, Conductor's own catalog and crews
+// among them, the others are listed as left out (an unsupported name), and
+// the archive restores with every file it holds.
+func TestExportLeavesAliasesOut(t *testing.T) {
+	f := newFixture(t)
+	if _, err := os.Stat(filepath.Join(f.dir, "RUNS")); err == nil {
+		t.Skip("the filesystem folds case")
+	}
+	for rel, content := range map[string]string{
+		"notes/A.json":    "upper",
+		"notes/a.json":    "lower",
+		"notes/b.json.":   "dotted",
+		"notes/b.json":    "plain",
+		"Catalog.json":    "stray",
+		"catalog.json":    `{"agents":[]}`,
+		"Crews/x.json":    "stray",
+		"crews/team.json": `{"id":"team"}`,
+		"links.":          "stray",
+		"links/abc.json":  "{}",
+		"Notes2/n.json":   "upper",
+		"notes2.":         "a file",
+		"keep/Only.json":  "one spelling",
+	} {
+		put(t, f.dir, rel, content)
+	}
+	b, m := archive(t, f.source())
+	left := map[string]string{}
+	for _, l := range m.Left {
+		left[l.Path] = l.Why
+	}
+	for _, p := range []string{"notes/A.json", "notes/b.json.", "Catalog.json", "Crews/", "links.", "notes2."} {
+		if left[p] != export.WhyName {
+			t.Errorf("%s: left %q, not %q", p, left[p], export.WhyName)
+		}
+	}
+	restored := filepath.Join(t.TempDir(), "restored")
+	if _, err := restore(b, restored); err != nil {
+		t.Fatalf("the archive does not restore: %v", err)
+	}
+	for rel, want := range map[string]string{
+		"notes/a.json":    "lower",
+		"notes/b.json":    "plain",
+		"catalog.json":    `{"agents":[]}`,
+		"crews/team.json": `{"id":"team"}`,
+		"links/abc.json":  "{}",
+		"Notes2/n.json":   "upper",
+		"keep/Only.json":  "one spelling",
+	} {
+		if got, err := os.ReadFile(filepath.Join(restored, filepath.FromSlash(rel))); err != nil || string(got) != want {
+			t.Errorf("%s restored: %q %v", rel, got, err)
+		}
+	}
+	for _, rel := range []string{"notes/A.json", "notes/b.json.", "Catalog.json", "Crews", "links.", "notes2."} {
+		if _, err := os.Lstat(filepath.Join(restored, filepath.FromSlash(rel))); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s restored: %v", rel, err)
+		}
+	}
+}
