@@ -3471,8 +3471,31 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
 
   PR-13 (#485): cli: conductor export and conductor restore. Planned.
 
-  PR-14 (#486): opencore, contributing: no entitlement call site outside
-  ext. Planned.
+  PR-14 (#486): `internal/opencore` and `CONTRIBUTING.md`: no entitlement
+  call site outside `ext`. `CONTRIBUTING.md`, Rules for code, says that code
+  of this repository never asks the entitlement source whether a feature is
+  allowed, only the paid providers do, outside it. The lint's rule
+  `entitlements` makes CI's go job fail on one: outside `ext/`, a file the
+  binary compiles naming `ext.EntitlementSource`, `ext.Entitlement`,
+  `ext.Entitlements`, `ext.RegisterEntitlements` or `ext/local`'s
+  `AllowAll` under any import name, dot-importing `ext` or `ext/local`, or
+  calling, or taking the value of, a method named `Entitled` whatever its
+  receiver (a provider reached through `Providers.All` and asserted to an
+  interface of the file's own is caught so). Unlike the other rules, which
+  still read imports and build constraints only, it parses the files it
+  reads whole. A `_test.go` file is no part of the binary and may name the
+  source, as `cmd/conductor`'s `TestPlainBuildRegistersNothing` and the
+  start-up's entitlement-only provider in `internal/api` do; the plan's
+  rule did not say so, and without it the module fails its own lint. Tests:
+  `TestEachRuleCatchesItsPlant` with the `entitlements` fixture (an
+  `Entitled` call through the registry's entries, beside `ext/` naming and
+  calling the source, a `_test.go` fake and a capabilities listing by
+  kind, the only problem the plant), `TestEntitlementsRule` (each of the
+  five names plainly imported and under other names, a dot import of
+  either, a blank one allowed, a call through parentheses, a method value,
+  a `windows`-only file read all the same, each problem's detail) and
+  `TestModuleKeepsTheRules` with the rule (the module clean), each checked
+  to fail with its part broken.
 
   PR-15 (#487): `internal/api`: the four ICE sites through the media
   provider (C8). `iceServersFor` (`media.go`) answers every configured
