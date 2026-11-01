@@ -2050,6 +2050,79 @@ prerequisites, its setup phase, its services and its `ready` probes, its
 placeholders, its `verify` steps after a result's checks and its `cleanup`
 steps at each tree's end.
 
+### Guide
+
+The operating guide (`docs/plans/brakeman.md`, BK0): what the running
+server says the caller may do here, computed per caller on each request
+and never cached, from the one table of Conductor's operations that the
+MCP server's tools are listed from too (`internal/api/guide.go`), so a
+tool and its guide entry cannot drift. `conductor guide` and the MCP
+tool `guide` read it.
+
+| Route | Credential | Answer |
+|---|---|---|
+| `GET /api/guide?section=` | admin | the guide for the admin, every operation of the table that the server has (a switchyard's lists none that launches) |
+| `GET /api/sessions/{id}/guide?section=` | the session's agent token, or admin | the session's guide, the admin's token reading the same as the session's; another session's token, a share or host token `401`; `404 not_found` for no such session; on a switchyard a published session's own token alone |
+
+Without `section` the reply is the overview, else that section; `404
+no_section` for a name not below, `400 invalid_request` for any other
+parameter. Every reply is `{guide: 1, version, commit, section, <section>:
+…}`, `version` and `commit` the server's build, the content under the
+section's own name; encoded with HTML escaping off and measured so: the
+overview at most 4 KiB, each section at most 64 KiB, the six at most 256
+KiB, which a test holds with every entry at its largest (a past bound is
+`500 guide_bound`, never a cut reply). The sections:
+
+- `overview`: `{caller: {kind, session?, kinds?, run?, member?, scopes},
+  sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
+  session's `kinds` are `plain` (in no run) or `run_member`, `attempt` (of
+  a managed run) and `ticket_member` (of a run a live ticket's run link
+  names); `scopes` are the operations' scopes it reaches (`session`, and
+  `task` for an attempt, `ticket` for a ticket's member; the admin's are
+  `admin`, `session`, `task` and `ticket`). `bytes` is the size of that
+  section's reply. `rules` are three lines for every caller: a fact needs
+  evidence; nothing an agent writes becomes work by itself; a question
+  goes to a person with `ask`.
+- `operations`: the operations the caller's scopes reach on this server,
+  each `{name, summary, scope, method, path, mcp?, cli?, input, receipt?,
+  revision?, bounds?}`: `summary` at most 300 bytes; `path` the mux's
+  pattern after the method; `mcp` the tool's name; `cli` the command's
+  words; `input` the JSON Schema of the body or the tool's arguments;
+  `receipt` `ledger` (a run command's) or `dispatch` (a Dispatch
+  operation's); `revision` the precondition the route itself checks,
+  `run` (a command's `expectedRevision`) or `ticket` (Dispatch's
+  `expectedRev`), absent for a route that takes none (a run's stop and
+  resume); `bounds` in bytes. A tool's description is its MCP
+  `tools/list` entry's, at most 1 KiB, and is not repeated here. A route
+  that needs self-service (`agents.selfService`: `form_crew`,
+  `add_member`, `run_status`, `link`) is listed only with it on, and for a
+  session only for a server session; one that launches or needs the
+  ledger or Dispatch is not listed on a switchyard. The table holds the
+  agent routes and tools, the guide's two routes, and the admin's
+  operations a proposal may name: a run's pause, unpause, stop and resume;
+  a task's cancel, retry and accept; a ticket's create, edit, comment and
+  link; a crew's create and launch.
+- `limits`: `[{name, min?, max?, pattern?, unit?, about}]`, each read from
+  the constant that refuses past it: a task id's pattern, a crew's
+  members and tasks, a task's checks, a check's timeout, a result's
+  summary, issues and findings, a message and an inbox, a report's
+  message, a comment, a ticket's title and description, a task file's
+  page, the self-service crews and links, a body.
+- `host`: `{os, arch, switchyard, managedCrews, selfService, ledger:
+  {state, why?}, dispatch: {state, why?}, checksMaxConcurrent, sessions?,
+  agents: [{id, name, adapter?, installed, version?}], moreAgents?}`;
+  `state` is `owned` (the ledger) or `open` (Dispatch), `read_only` or
+  `absent`, `why` (at most 500 bytes) and `sessions` (how many the server
+  lists) for the admin alone; `agents` the catalog's, at most 64 with
+  `moreAgents` counting the rest, `version` what its probe found when the
+  server knows it already (the guide runs no probe and waits at most 0.5
+  s for the programs' lookups); a session sees the agents only with
+  self-service on, on a server session, and a switchyard lists none.
+- `receipts`: `[{name, about, fields: [{name, type, optional?}]}]`, the
+  formats a caller meets (`ledger`, `dispatch`), read from their types.
+- `providers`: `{known: false, providers: []}` until the server names its
+  registered providers (Program item C9).
+
 ### Crew runs
 
 `POST /api/crews/{id}/launch` starts a run: every member becomes an ordinary
