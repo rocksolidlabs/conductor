@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DispatchOrder, through } from '../utils/dispatchOrder'
 import type { DispatchEvent } from './useDispatch'
 import { DISPATCH_RETRY_MAX_MS, DispatchLive, asDispatchEvent, listWatch, projectsWatch, ticketWatch } from './useDispatchLive'
-import { viewsWatch } from './useDispatchLive'
+import { noDispatchStore, runLinkWatch, runTicketRead, viewsWatch } from './useDispatchLive'
+import { ApiError } from './useApi'
+import type { RelatedTicket } from './useDispatch'
 
 // The live events' rules (docs/plans/dispatch.md, "The SSE event"), on fake timers: what each page reads again, when, and how often.
 
@@ -442,5 +444,102 @@ describe("a list's saved views (PR-9)", () => {
     expect(r.count).toBe(3)
     await vi.advanceTimersByTimeAsync(10 * WINDOW)
     expect(r.count).toBe(3)
+  })
+})
+
+describe("the run page's chip (PR-11)", () => {
+  it('reads its lookup again once after the window on a ticket event of any project, three of them once', async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads()
+    live.subscribe(runLinkWatch(read))
+    live.event(ev({ entity: 'ticket', id: 't1', ticket: 't1', project: 'CND' }))
+    live.event(ev({ entity: 'ticket', id: 't9', ticket: 't9', project: 'API' }))
+    live.event(ev({ entity: 'ticket', id: 't2', ticket: 't2', project: 'CND' }))
+    expect(r.count).toBe(0)
+    await vi.advanceTimersByTimeAsync(WINDOW - 1)
+    expect(r.count).toBe(0)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(r.count).toBe(1)
+    await vi.advanceTimersByTimeAsync(10 * WINDOW)
+    expect(r.count).toBe(1)
+  })
+
+  it("reads it on a commit's collapsed ticket event, which names no ticket", async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads()
+    live.subscribe(runLinkWatch(read))
+    live.event(ev({ entity: 'ticket', id: '', ticket: '', project: 'CND' }))
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    expect(r.count).toBe(1)
+  })
+
+  it("is not read for a label's, a comment's, a project's, a view's or a person's event, where the projects page is", async () => {
+    const live = new DispatchLive()
+    const lookup = reads()
+    const projects = reads()
+    live.subscribe(runLinkWatch(lookup.read))
+    live.subscribe(projectsWatch(projects.read))
+    live.event(ev({ entity: 'label', id: 'l1', ticket: '', project: 'CND' }))
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    expect([lookup.r.count, projects.r.count]).toEqual([0, 1])
+    for (const entity of ['comment', 'project', 'milestone', 'view', 'person'] as const) live.event(ev({ entity, id: '', ticket: entity === 'comment' ? 't1' : '', project: entity === 'person' ? '' : 'CND' }))
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    expect([lookup.r.count, projects.r.count]).toEqual([0, 2])
+  })
+
+  it('reads it again at once on a snapshot, and a read that fails is asked again after the window, doubled', async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads(2)
+    live.subscribe(runLinkWatch(read))
+    live.snapshot()
+    expect(r.count).toBe(1)
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    expect(r.count).toBe(2)
+    await vi.advanceTimersByTimeAsync(2 * WINDOW - 1)
+    expect(r.count).toBe(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(r.count).toBe(3)
+    await vi.advanceTimersByTimeAsync(20 * WINDOW)
+    expect(r.count).toBe(3)
+  })
+
+  it('takes the latest lookup through the ordering gate: a slow answer of an earlier read never replaces a later one', async () => {
+    const gate = new DispatchOrder()
+    let shown: string | null = 'unread'
+    let slow!: (v: string | null) => void
+    const first = through(gate, 'run-ticket:r1', () => new Promise<string | null>((resolve) => (slow = resolve)), (v) => (shown = v))
+    await through(gate, 'run-ticket:r1', () => Promise.resolve(null), (v) => (shown = v))
+    slow('CND-12')
+    expect(await first).toBe(false)
+    expect(shown).toBeNull()
+  })
+
+  it("orders a server's no-Dispatch answer through the gate: a slow 503 never clears a chip a later lookup filled, after a reset too", async () => {
+    const ticket = { key: 'CND-12' } as RelatedTicket
+    const unavailable = () => new ApiError(503, 'dispatch_unavailable', 'Dispatch is not available on this server')
+    for (const reset of [false, true]) {
+      const gate = new DispatchOrder()
+      let shown: RelatedTicket | null | 'unread' = 'unread'
+      let refuse!: (e: unknown) => void
+      const first = runTicketRead(gate, 'r1', () => new Promise<RelatedTicket | null>((_, reject) => (refuse = reject)), (t) => (shown = t))
+      // A reconnect's snapshot resets the gate before the next lookup.
+      if (reset) gate.reset()
+      expect(await runTicketRead(gate, 'r1', () => Promise.resolve(ticket), (t) => (shown = t))).toBe(true)
+      refuse(unavailable())
+      expect(await first).toBe(false)
+      expect(shown).toBe(ticket)
+    }
+    // Alone, it answers no ticket; a switchyard the same; any other failure rejects and applies nothing.
+    const gate = new DispatchOrder()
+    let shown: RelatedTicket | null | 'unread' = 'unread'
+    expect(await runTicketRead(gate, 'r2', () => Promise.reject(unavailable()), (t) => (shown = t))).toBe(true)
+    expect(shown).toBeNull()
+    shown = 'unread'
+    expect(await runTicketRead(gate, 'r3', () => Promise.reject(new ApiError(403, 'switchyard', 'A switchyard')), (t) => (shown = t))).toBe(true)
+    expect(shown).toBeNull()
+    shown = 'unread'
+    await expect(runTicketRead(gate, 'r4', () => Promise.reject(new ApiError(500, 'internal', 'Boom')), (t) => (shown = t))).rejects.toThrow('Boom')
+    expect(shown).toBe('unread')
+    expect(noDispatchStore(new ApiError(403, 'forbidden', 'No'))).toBe(false)
   })
 })

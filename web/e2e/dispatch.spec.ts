@@ -14,7 +14,8 @@ import { expect, test, type Api } from './fixtures'
 // a new project's dialog, which stay open while what they make is on its way and are closed by its answer alone. And review round 5's:
 // an owner picked back behind an edit whose reply carries no ticket, and behind one refused for a stale revision, kept while the reads
 // after it fail and made once one answers; a new ticket and a new project answered with their receipts alone, said and opened by the
-// key the receipt names. The spec names what it made: a project of its own per test (E2E, or E2E1, E2E2… when the server holds the
+// key the receipt names. PR-11 adds to the first test the second browser's close card following a policy edited on the project's
+// settings by the first. The spec names what it made: a project of its own per test (E2E, or E2E1, E2E2… when the server holds the
 // earlier ones), and counts only the rows of that project.
 test.describe.configure({ mode: 'serial' })
 
@@ -235,6 +236,23 @@ test('a project, a ticket made from its page and edited on its own page, its his
   await expect(second.locator('[data-ticket-owner]')).toContainText(owner)
   await expect(second.locator('[data-ticket-markdown="description"] [data-markdown-view] h2')).toHaveText('Steps')
   expect(await marked(second)).toBe('kept')
+
+  // The close policy edited on the project's settings by the first browser (PR-11): the second browser's close card follows it, by the
+  // project's event, with no reload.
+  const secondCard = second.locator('[data-close-policy]')
+  await expect(secondCard.locator('[data-close-summary]')).toHaveText("To close: the owner's acceptance")
+  await expect(secondCard.locator('[data-close-item="delivery"]')).toHaveCount(0)
+  await page.goto(`/dispatch/${key}`)
+  await page.locator('[data-project-settings-open]').click()
+  const policy = page.locator('[data-project-close-policy]')
+  await expect(policy).toHaveAttribute('data-policy', 'acceptance')
+  await policy.locator('[data-close-requirement="delivery"]').click()
+  await policy.locator('[data-close-policy-save]').click()
+  await expect(policy).toHaveAttribute('data-policy', 'acceptance delivery')
+  await expect(secondCard.locator('[data-close-summary]')).toHaveText("To close: the owner's acceptance · a delivery link")
+  await expect(secondCard.locator('[data-close-item="delivery"] [data-close-state]')).toHaveText('No delivery link yet')
+  expect(await marked(second)).toBe('kept')
+  await page.keyboard.press('Escape')
 
   // The counts: the project's list holds its one ticket, and the projects page counts it open, none done.
   await page.goto(`/dispatch/${key}`)

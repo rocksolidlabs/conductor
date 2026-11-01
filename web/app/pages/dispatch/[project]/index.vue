@@ -279,7 +279,8 @@ const milestonesById = computed(() => new Map((projectRead.value?.milestones ?? 
 const narrows = computed(() => filterNarrows(filter.value))
 
 // ---------------------------------------------------------------------------
-// The project itself: its description, shown rendered above its tickets and edited in place, and its labels and milestones.
+// The project itself: its description, shown rendered above its tickets and edited in place, and its settings: its close policy, its
+// labels and its milestones.
 
 const ABOUT_KEY = 'conductor.dispatchAbout'
 /** Whether the description is shown, per browser: shown unless the person folded it. */
@@ -563,7 +564,7 @@ palette.registerPage((): PageGroup => {
           </span>
         </template>
         <template #right>
-          <UButton icon="i-lucide-tags" color="neutral" variant="ghost" aria-label="Labels and milestones" :disabled="!projectRead" data-project-settings-open @click="settingsOpen = true"><span class="hidden md:inline">Labels and milestones</span></UButton>
+          <UButton icon="i-lucide-settings-2" color="neutral" variant="ghost" aria-label="The project's settings: its close policy, labels and milestones" :disabled="!projectRead" data-project-settings-open @click="settingsOpen = true"><span class="hidden md:inline">Settings</span></UButton>
           <UButton icon="i-lucide-plus" aria-label="New ticket" :disabled="!projectRead || archived" data-new-ticket-open @click="newOpen = true"><span class="hidden sm:inline">New ticket</span></UButton>
           <FullscreenButton class="hidden sm:inline-flex" />
         </template>
