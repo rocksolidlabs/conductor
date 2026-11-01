@@ -114,6 +114,7 @@ func completionSpec() []commandSpec {
 		{name: "task", flags: []flagSpec{{name: "--page", kind: flagValue}, {name: "--json"}, {name: "--summary", kind: flagValue}, {name: "--commit", kind: flagValue}, {name: "--issue", kind: flagValue}, {name: "--verdict", kind: flagEnum, values: []string{"approved", "needs_changes"}}, {name: "--finding", kind: flagValue}, {name: "--file", kind: flagFile},
 			{name: "--to", kind: flagValue}, {name: "--after", kind: flagValue}, {name: "--reason", kind: flagValue}, {name: "--message", kind: flagValue}, {name: "--done", kind: flagValue}, {name: "--remaining", kind: flagValue}, {name: "--notes", kind: flagValue}}, words: []string{"context", "result", "send", "inbox", "ack", "blocked", "checkpoint", "ticket"},
 			after: map[string][]string{"ticket": {"comment"}}},
+		{name: "guide", flags: api(flagSpec{name: "--section", kind: flagEnum, values: []string{"operations", "limits", "host", "receipts", "providers"}}, flagSpec{name: "--json"})},
 		{name: "up", flags: api(flagSpec{name: "--name", kind: flagValue}, flagSpec{name: "--resume", kind: flagValue}, flagSpec{name: "--open"}), crewID: true},
 		{name: "crews", flags: api(flagSpec{name: "--ids"})},
 		// Every flag of every dispatch command (each takes its own), and the

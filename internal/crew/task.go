@@ -2357,6 +2357,13 @@ func (e *Engine) RetryTask(ctx context.Context, runID, taskID string) error {
 	return err
 }
 
+// InManagedRun reports whether a session is a member of a managed run,
+// whose members are never added by hand (AddMember's ErrManaged).
+func (e *Engine) InManagedRun(sessionID string) bool {
+	v, ok := e.bySession.Load(sessionID)
+	return ok && v.(sessionMember).r.managed
+}
+
 // AttemptOf reports the task and attempt a session is, in a managed run.
 func (e *Engine) AttemptOf(sessionID string) (runID, taskID string, n int, ok bool) {
 	v, found := e.bySession.Load(sessionID)
