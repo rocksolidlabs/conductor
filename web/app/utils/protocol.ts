@@ -612,6 +612,41 @@ export interface HostIdentity {
 export const HOST_MAX_INSTANCE = 64
 export const HOST_MAX_LOCAL_ID = 64
 
+/**
+ * Routed answers (the decision seam, docs/protocol.md, Host control connection): what a host's
+ * register says when it takes `answer_as` and sends `kept`. `conductor host` says it; a server
+ * publishing to a switchyard never does; an older host leaves it out.
+ */
+export interface HostAnswerAsInfo {
+  answerAs?: boolean
+}
+
+/** host → server, on `attention`, from a host that said answerAs: the questions its session keeps without showing them. */
+export interface HostAttentionKept {
+  /** At most HOST_MAX_KEPT question ids (1–32 bytes of printable ASCII each); a message past that is dropped whole. */
+  kept?: string[]
+}
+export const HOST_MAX_KEPT = 2
+
+/**
+ * server → host, only to a host whose register said answerAs, never from a switchyard: an answer
+ * a decision router or a provider holds for the question the host's session shows, applied there
+ * under the question's claim, the first answer winning. The web never sends it.
+ */
+export interface HostAnswerAsMessage {
+  t: 'answer_as'
+  /** The question's id: 1–32 bytes of printable ASCII. */
+  question: string
+  /** Exactly one of input (a choice's keys, at most 48 bytes, one of the question's own) and text (a line, at most 4096 bytes). */
+  input?: string
+  text?: string
+  /** Who answered: 1–40 characters, one line. */
+  byName: string
+  /** At most HOST_MAX_ANSWER_AS_SUBJECT bytes of printable ASCII, no space. */
+  bySubject?: string
+}
+export const HOST_MAX_ANSWER_AS_SUBJECT = 48
+
 /** The part of registered that says which links the server still holds for the session; absent from an older server. */
 export interface HostRegisteredLinks {
   links?: string[]

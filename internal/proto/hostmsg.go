@@ -3,6 +3,9 @@ package proto
 import (
 	"errors"
 	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Host control messages are JSON text frames on /ws/host. Relayed terminal
@@ -52,6 +55,10 @@ const (
 	// HostViewerBehind tells the host a relayed viewer fell behind what the
 	// server relays to it, or caught up (ViewerBehind).
 	HostViewerBehind = "viewer_behind"
+	// HostAnswerAs carries an answer a decision router or a provider holds
+	// for the question the host's session shows (HostAnswerAsMsg), only to
+	// a host whose register said AnswerAs.
+	HostAnswerAs = "answer_as"
 )
 
 // HostInfo describes the host process.
@@ -66,6 +73,10 @@ type HostInfo struct {
 	// server restarts and a link minted before still opens it. Only its
 	// holder can register under that id. Never logged.
 	Instance string `json:"instance,omitempty"`
+	// AnswerAs says the host takes answer_as (HostAnswerAsMsg) and sends
+	// kept with its attention (HostAttentionMsg.Kept). A host publishing to
+	// a switchyard never says it; an older server ignores it.
+	AnswerAs bool `json:"answerAs,omitempty"`
 }
 
 // MaxHostUser bounds HostInfo.User; MaxHostInstance and MaxLocalID bound
@@ -269,6 +280,86 @@ type HostAttentionMsg struct {
 	// Plan is the host's Attention.Plan: the plan a question asks approval
 	// for, at most MaxPlanPath bytes (#289).
 	Plan string `json:"plan,omitempty"`
+	// Kept goes host to server only, from a host whose register said
+	// AnswerAs: the ids of the questions its session keeps without showing
+	// them (session.Info.Kept: the agent's own question set aside, a
+	// question held over by a held turn), from the same Info as the
+	// message's attention, so that the server's decision router tells a
+	// question set aside from one that ended. At most MaxKept ids, each
+	// ValidQuestionID (KeptValid); an older server ignores it.
+	Kept []string `json:"kept,omitempty"`
+}
+
+// MaxKept bounds HostAttentionMsg.Kept (session.MaxKept).
+const MaxKept = 2
+
+// KeptValid reports whether m's Kept is within its bounds: at most MaxKept
+// ids, each a question's (ValidQuestionID). A message out of them is
+// dropped whole.
+func (m HostAttentionMsg) KeptValid() bool {
+	if len(m.Kept) > MaxKept {
+		return false
+	}
+	for _, id := range m.Kept {
+		if !ValidQuestionID(id) {
+			return false
+		}
+	}
+	return true
+}
+
+// HostAnswerAsMsg (server -> host) is an answer a decision router or a
+// provider holds for the question the host's session shows: the host
+// applies it as its own viewers' answers are applied (Local.AnswerAs for
+// Input, Local.Submit with Question for Text), once, under the question's
+// claim, the first answer winning; nothing else types into the session
+// for it. Question is that question's id; exactly one of Input (a
+// choice's keys, which the host writes only when they are one of the
+// question's own choices) and Text (a line); ByName and BySubject say who
+// answered, recorded as the answer's name: who answered, never a right to
+// answer. Sent only to a host whose register said AnswerAs, and never by a
+// switchyard; a host in switchyard mode drops one that arrives anyway,
+// and an older host ignores a type it does not know. At its largest (every
+// field at its bound, the text's bytes each escaped) the message is about
+// 25 KB, under MaxHostMessage; a plain line's is about 4.4 KB.
+type HostAnswerAsMsg struct {
+	T         string `json:"t"`
+	Question  string `json:"question"`
+	Input     string `json:"input,omitempty"`
+	Text      string `json:"text,omitempty"`
+	ByName    string `json:"byName"`
+	BySubject string `json:"bySubject,omitempty"`
+}
+
+// MaxAnswerAsSubject bounds HostAnswerAsMsg.BySubject, in bytes: a
+// principal's subject (ext.MaxSubject).
+const MaxAnswerAsSubject = 48
+
+// Valid reports whether m is within its bounds: a question's id
+// (ValidQuestionID); exactly one of Input (at most MaxAnswerInput bytes)
+// and Text (at most MaxSubmit); ByName 1 to MaxNameLen characters of one
+// line of UTF-8 text; BySubject none or at most MaxAnswerAsSubject bytes of
+// printable ASCII, no space.
+func (m HostAnswerAsMsg) Valid() bool {
+	if !ValidQuestionID(m.Question) || (m.Input == "") == (m.Text == "") {
+		return false
+	}
+	if len(m.Input) > MaxAnswerInput || len(m.Text) > MaxSubmit {
+		return false
+	}
+	if len(m.BySubject) > MaxAnswerAsSubject || !printable(m.BySubject) {
+		return false
+	}
+	return oneLineName(m.ByName, MaxNameLen)
+}
+
+// oneLineName reports whether s is 1 to max characters of UTF-8 text with
+// no control character: a display name, one line (as ext's Principal.Name).
+func oneLineName(s string, max int) bool {
+	if s == "" || !utf8.ValidString(s) || utf8.RuneCountInString(s) > max {
+		return false
+	}
+	return !strings.ContainsFunc(s, unicode.IsControl)
 }
 
 // HostActivityMsg carries one activity-log entry between host and server.
