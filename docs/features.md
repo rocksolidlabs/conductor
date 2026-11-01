@@ -3417,7 +3417,39 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   a clock the tests drive.
 
   PR-12 (#484): export, ledger, dispatch, api: the export archive, GET
-  /api/export and the restore installer. Planned.
+  /api/export and the restore installer. `internal/export` (new) writes
+  the data directory as one zip archive (`Write`: the runs' records, then
+  the ledger's snapshot, then Dispatch's with the attachment files its live
+  rows and launch pins require, read from the snapshot and taken again, at
+  most three times, when one went meanwhile, then the other files, then
+  `conductor-export.json`, format 1, every file with its size and SHA-256
+  and what was left out and why), the catalog resolved against the
+  configuration (`ResolveCatalog`), so the archive's agents launch with no
+  config; one table (`leftOut`) for what an export leaves out and a
+  restore refuses; `Fresh`, `Reserve`/`Release` (`restore.lock`,
+  exclusive, 0600, the pid and the process's start), `Install` (under its
+  caller's reservation; every check before a byte is written; staged in
+  `.restore-<random>` through an `os.Root`, files 0600, directories 0700;
+  Dispatch's staged database checked for every file its live rows name;
+  renamed into place, never over anything, `hooks/` moved aside) and
+  `Restore`. The ledger and Dispatch gain `Snapshot` (VACUUM INTO on the
+  open connection, under the store's lock) and `SnapshotFile` (a
+  read-only connection, no server running), the ledger `Held`, Dispatch
+  `SnapshotHashes` and `AttachmentPath`. `GET /api/export` (admin, a
+  switchyard's too) streams the archive. No new dependency, no schema
+  change. Tests: `TestRoundTrip`, `TestExportLeavesOut`,
+  `TestRestoreRefuses`, `TestRestoreStages`,
+  `TestExportRecordsBeforeTheLedger`, `TestReserve`,
+  `TestInstallUnderItsCallersReservation`, `TestExportKeepsCatalogEnv`,
+  `TestExportResolvesInheritedEnv`, `TestRestoreRefusesReservedPaths`,
+  `TestRestoreNeverRenamesOver`,
+  `TestExportAttachmentSweptAfterTheSnapshot`,
+  `TestExportAttachmentStillMissing`,
+  `TestRestoreRefusesAMissingAttachment`; the ledger's
+  `TestSnapshotWhileWriting`, `TestSnapshotFileReadOnly`, `TestHeld`;
+  Dispatch's `TestSnapshot`, `TestSnapshotFile`, `TestSnapshotHashes`;
+  the API's `TestExportRoute`. The by-hand export and restore on two
+  machines waits for PR-13's commands.
 
   PR-13 (#485): cli: conductor export and conductor restore. Planned.
 
