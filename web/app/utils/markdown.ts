@@ -32,9 +32,10 @@ export interface RenderOptions {
    */
   attachments?: boolean
   /**
-   * Whether a bare URL with its scheme (`https://…`, and an e-mail address) is a link, as GitHub renders an issue's text: on for a
-   * Dispatch ticket's text, which is often pasted from one. A name with no scheme (`README.md`, `example.com`, `www.…`) and a `#123`
-   * stay words, since a ticket has no repository to resolve them against. Off by default: a repository's own file keeps the
+   * Whether a bare URL with its scheme (`https://…`, `http://…`) is a link, as GitHub renders an issue's text: on for a Dispatch
+   * ticket's text, which is often pasted from one. A name with no scheme (`README.md`, `example.com`, `www.…`) and a `#123` stay
+   * words, since a ticket has no repository to resolve them against; so do an e-mail address, `mailto:`, `ftp:` and a `//host`,
+   * which the desktop app does not open (it opens http and https only). Off by default: a repository's own file keeps the
    * preview it had.
    */
   linkify?: boolean
@@ -101,8 +102,9 @@ function escapeHtml(s: string): string {
 /** Renders Markdown source to HTML under the rules above. Pure: the same source and options give the same HTML. */
 export function renderMarkdown(src: string, opts: RenderOptions): Rendered {
   const md = new MarkdownIt({ html: false, linkify: !!opts.linkify, typographer: false, breaks: false })
-  // Only a URL that names its scheme: a file name or a host alone (`README.md`, `example.com`) is words.
-  if (opts.linkify) md.linkify.set({ fuzzyLink: false })
+  // Only a URL that names http or https: a file name or a host alone (`README.md`, `example.com`) is words, and so is anything the
+  // desktop app would not open (an e-mail address, `mailto:`, `ftp:`, a protocol-relative `//host`), rather than a link that does nothing.
+  if (opts.linkify) md.linkify.set({ fuzzyLink: false, fuzzyEmail: false }).add('mailto:', null).add('ftp:', null).add('//', null)
   let mermaid = 0
 
   // Task lists: a list item beginning `[ ] ` or `[x] ` gets a checkbox (disabled: the preview changes no file).

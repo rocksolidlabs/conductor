@@ -55,19 +55,23 @@ describe('the Markdown preview', () => {
   })
 
   it("links a bare URL with its scheme where asked (a Dispatch ticket's text, pasted from a GitHub issue), and nothing else", () => {
-    const src = 'See https://github.com/o/r/pull/1, and https://q.example/x?y=1. Mail a@b.example; not README.md, example.com, www.example.com or #359.\n\n`https://code.example` [t](https://t.example) <https://x.example> [u](notes.md) javascript:alert(1)\n'
+    const src = 'See https://github.com/o/r/pull/1, and https://q.example/x?y=1. Not README.md, example.com, www.example.com or #359.\n\n`https://code.example` [t](https://t.example) <https://x.example> [u](notes.md) javascript:alert(1)\n'
     const { html } = renderMarkdown(src, { dir: '', relativeLinks: false, linkify: true })
     expect(html).toContain('<a href="https://github.com/o/r/pull/1" target="_blank" rel="noopener noreferrer">https://github.com/o/r/pull/1</a>,')
     expect(html).toContain('<a href="https://q.example/x?y=1" target="_blank" rel="noopener noreferrer">https://q.example/x?y=1</a>.')
-    expect(html).toContain('<a href="mailto:a@b.example" target="_blank" rel="noopener noreferrer">a@b.example</a>')
     // A name with no scheme, an issue number, a URL in code and a held relative link stay as they were; a scheme markdown-it refuses is no link.
-    expect(html).toContain('not README.md, example.com, www.example.com or #359.')
+    expect(html).toContain('Not README.md, example.com, www.example.com or #359.')
     expect(html).toContain('<code>https://code.example</code>')
     expect(html).toContain('<a href="https://t.example" target="_blank" rel="noopener noreferrer">t</a>')
     expect(html).toContain('<a href="https://x.example" target="_blank" rel="noopener noreferrer">https://x.example</a>')
     expect(html).toContain('<span class="md-link-held" title="notes.md">u</span>')
     expect(html).not.toContain('href="javascript:')
-    expect((html.match(/<a /g) ?? []).length).toBe(5)
+    expect((html.match(/<a /g) ?? []).length).toBe(4)
+    // Only http and https, the schemes the desktop app opens (desktop/src/window.ts, external): an e-mail address, mailto:, ftp: and a
+    // protocol-relative URL stay words there, rather than links that do nothing; an upper-case scheme is still http(s).
+    const other = renderMarkdown('Mail a@b.example or mailto:c@d.example; ftp://f.example/x, //p.example/y and HTTP://UP.example\n', { dir: '', linkify: true }).html
+    expect(other).toContain('Mail a@b.example or mailto:c@d.example; ftp://f.example/x, //p.example/y and <a href="HTTP://UP.example" target="_blank" rel="noopener noreferrer">HTTP://UP.example</a>')
+    for (const [, href] of other.matchAll(/href="([^"]*)"/g)) expect(href).toMatch(/^https?:\/\//i)
     // Off by default: a repository's file keeps its bare URLs as words.
     expect(renderMarkdown('See https://github.com/o/r/pull/1\n', { dir }).html).toBe('<p>See https://github.com/o/r/pull/1</p>\n')
   })
