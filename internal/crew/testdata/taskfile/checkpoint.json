@@ -1,0 +1,31 @@
+{
+  "run": "r-0123456789ab",
+  "crew": "c-build",
+  "crewName": "Build crew",
+  "goal": "Ship the parser, tested.",
+  "task": "build",
+  "attempt": 2,
+  "maxAttempts": 3,
+  "member": "lead",
+  "role": "You lead the build.",
+  "kind": "work",
+  "instructions": "Write the parser in parse.go & test it: <input> yields a tree.",
+  "worktree": "/repo/.conductor/worktrees/r-0123456789ab/build.2",
+  "branch": "crew/r-0123456789ab/build.2",
+  "start": "cccccccccccccccccccccccccccccccccccccccc",
+  "startFrom": "attempt 1's checkpoint",
+  "previous": {
+    "attempt": 1,
+    "state": "failed",
+    "stage": "session",
+    "error": "the session ended"
+  },
+  "checkpoint": {
+    "done": "The lexer.",
+    "remaining": "The parser.",
+    "notes": "Keep the tokens small.",
+    "commit": "cccccccccccccccccccccccccccccccccccccccc",
+    "at": "2026-10-31T11:00:00Z"
+  },
+  "writtenAt": "2026-10-31T12:00:00Z"
+}

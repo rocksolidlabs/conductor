@@ -68,6 +68,12 @@ type Info struct {
 	// ResumedFrom is the session this one resumed or relaunched.
 	ResumedFrom string    `json:"resumedFrom,omitempty"`
 	Attention   Attention `json:"attention"`
+	// Kept is the ids of the questions the session keeps without showing
+	// them (the agent's own question while it is set aside, the question a
+	// held turn took the place of), at most MaxKept, read with Attention
+	// in one snapshot (Local.Info): what the decision router tells a
+	// question set aside from one that ended by. Never on the API.
+	Kept []string `json:"-"`
 	// LastAnswer is who most recently cleared a needs-input prompt by typing.
 	LastAnswer *Answer    `json:"lastAnswer,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`

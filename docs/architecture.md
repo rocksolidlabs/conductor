@@ -515,9 +515,12 @@ refusal `ErrRefused` with the route's words. `Submit` types a line into
 a server session only while it shows no question (`Local.Submit` with
 `UnlessWaiting`), or answers a question with a line through the
 question's claim, as a viewer's reply does (`ErrQuestionAnswered` once it
-no longer waits); a choice's keys and a hosted session answer
-`ErrUnsupported` until the decision router's seam, and a line blank once
-cleaned is refused (it would be a bare Enter). `Notify` checks a
+no longer waits), or with a choice's keys (`Local.AnswerAs`: only one
+of the question's own choices, through the same claim; keys whose write
+has begun when the call ends answer `pending`, as a line does, and keys
+still queued when the try is given up are withdrawn); a hosted session
+answers `ErrUnsupported` until its hosts take routed answers, and a line
+blank once cleaned is refused (it would be a bare Enter). `Notify` checks a
 notice (500 bytes of message, 2,048 of URL, one line each) and types it
 `provider` from its sender; a provider one of whose sinks lists
 `TypeProvider` (read once, from `Events`, on the provider's own goroutine
@@ -547,6 +550,53 @@ their receipts are kept under `admin` for the workbench token and
 principal, so a provider's subject never shares the receipts of `admin`,
 `merge` or `agent:<member>`. Nothing stored changes shape.
 
+**Sync.** Every local commit is told to the sync store
+(`ext.ContinuityStore`) after it lands (`internal/api/sync.go`). Three
+hooks hand the commits over in commit order, each under the lock that
+orders them, for an adapter that only marks the document pending there:
+the data directory's store (`store.Observe`, inherited by every `Sub`,
+one mutex and sequence shared by all of them around each rename or
+remove, an event naming a path and a number, never bytes), the ledger
+(`OnCommit` with the run's pointer after each committed transition,
+`Recover`'s included, and with the pointer of a run a continuation
+marked, whose revision the mark bumps; and `OnPrune` with the pruned
+run's last revision, its delete told at the one after) and Dispatch (`OnCommit` with a
+commit's changes). `New` installs them before its first write, so the
+start-up's own commits (the masked catalog, the crews' migration, the
+recovery and the records it rewrites) are told too. What reaches the
+store is an allowlist: `catalog.json` (every env value
+`catalog.RedactedValue`, re-encoded from the saved bytes; one that does
+not decode goes with no data), `crews/<id>.json`, `runs/<id>.json`, a
+run's pointer (never the crew as launched, its rows or its logs) and a
+reference to each Dispatch entity a commit changed; never the workbench
+token, `links/`, `tls/`, `hooks/` or `ext/`. The adapter keeps a pending
+set, not a queue: one entry per document in the order they became
+pending, updated in place, holding no bytes; one goroutine delivers the
+oldest as it is then (read through `store.OpenDoc`, or
+`ledger.Pointer`; gone: `Deleted`), whole, in parts of 1 MiB read from
+one open file past that. An entry leaves the set only when its whole
+document is acknowledged: a delivery that errs, panics or outlives
+`DeliveryWait` stays at the head and is tried again whole after a
+backoff (1 s doubling to 5 minutes, reset by a success), so nothing
+behind it goes first and no further local write is needed. Every epoch
+begins with a replay of the whole state: a `replay` doc with a new
+random epoch, every allowlisted document, every run pointer, Dispatch's
+`log` doc at its last change's position, then `replayed`, told only once
+each of them was acknowledged. One runs when the store's drain begins
+(its `Start` succeeded, or at once for one that needs none), so every
+server lifetime is an epoch of its own, one when the set would pass
+`SyncPending` (65,536 documents, a replay's own listing aside), which it
+is then emptied for, and one once a ledger that waited for another
+server's owner lock takes it, for what that server wrote meanwhile. The
+`replay` marker goes into the set under the lock that empties it, so a
+commit made as a replay begins is behind it. A ledger whose file is there
+but cannot be read fails the replay's listing, which is tried again after
+the backoff: only a ledger with no database file holds no run. A ledger
+or Dispatch whose `Open` failed, the server running without it, is no
+empty store either: its replays deliver what they list but never end
+with `replayed`. Nothing a sync store answers is written back; the
+free default acknowledges every doc and keeps nothing.
+
 **Notifications.** The event hub has one sink for everything that takes
 the sessions' activity elsewhere, the notifier (`internal/api/notify.go`),
 added by `New` where the webhooks' sink always was, so the hub hands an
@@ -573,6 +623,68 @@ starts), never by the hub: until it is read the
 notifier queues everything for the sink and its delivery decides. No
 sink delays the hub, a session, the engine or another sink; a server with
 no webhook and no sink adds no notifier.
+
+**Context.** A context provider gives an attempt of a managed run what to
+read besides its task, and is told the files the agents touch
+(`internal/api/extcontext.go`). The engine asks for an attempt's context
+once its worktree is made and checked and its project manifest resolved,
+before the task files are written (`Engine.SetContext`, the server's
+`contextFor`), with the query read under the engine's lock and the
+function called outside it: every provider at once, each through the
+guard within `ContextWait` (5 s), so the attempt waits at most that long
+and a late, failing or panicking provider adds nothing. A provider's
+answer counts only when every block it gives, of its first eight
+(`MaxContextBlocks`), passes `ContextBlock.Valid`; each block is named by
+its provider, in registration order, and past `MaxTaskContext` (16 KiB)
+together, counted as `task.json` keeps them, the last are left out until
+the rest fit, the run's log saying how many and whose. The blocks go into
+`task.md`'s Context section and `task.json`'s `context`, written through
+the worktree's `os.Root` and cut first when the files pass their bound
+(`fitTaskFile`); they are never in the ledger and never a reason an
+attempt fails or a task's state changes, and with none the files are byte
+for byte what they were before (the goldens in
+`internal/crew/testdata/taskfile`). The touch sink, the hub's last sink
+(after the notifier and the run engine's `OnActivity`; a server with no
+context provider adds none), takes the `file`
+entries of server and hosted sessions after the session recorded them, makes each path absolute by the session's own
+rule (`session.TouchedAbs`; `signal.HostAbs` for a hosted session, whose
+host may run another OS) and queues one `ext.TouchedFile` per provider
+(`TouchQueue`, 1,024, the oldest dropped) without waiting; a server
+session's path its deny list refuses (`Local.Denied`, the rule the
+touched index's readers apply) is never handed to a provider, the list
+read as the touch is delivered, once for every provider, on a provider's
+own goroutine, never the recording one.
+
+**Decisions.** The decision router watches the sessions' attention, not
+their activity (`internal/api/router.go`): a question can stop waiting
+with nothing recorded. `localChange`, the hosted hub's `OnChange` and the
+registry's `OnRemove` mark the session's id in a dirty set (one entry per
+session, nothing dropped, never waiting), and a session tells a change of
+what it keeps through `OnChange` as it tells one of what it shows; at
+most 16 workers, one per
+session at a time, take an id out, read one `Info` (what it shows and
+`Kept`, the questions it keeps without showing them, from one lock
+acquisition) and judge from it alone. A question not seen before is routed
+once through the guard (`RouteWait`): the empty route records nothing, a
+route with destinations one `status` entry, a route's answer is applied
+once through the function `Host.Submit` uses (`Local.AnswerAs` for a
+choice, which writes only the question's own choices through the
+session's writer and claim, `Local.Submit` with `Question` for a line), a
+person's earlier answer winning. A routed question the session neither
+shows nor keeps, or shows answered in the terminal, is resolved (with
+`Ended` once its session ended or left the registry); one first seen
+answered in the terminal is never routed. The router keeps per session
+the ids it saw (at most 64, the oldest no longer waiting forgotten first,
+never one still shown or kept; a resolution not yet told waits in the
+list below, not here), so a question set aside and shown again is routed
+once. Resolutions wait in a first-in first-out list of the router's own,
+told by one goroutine in order (`DeliveryWait`, its panic recovered), each
+leaving only once told; past 1,024 routed and untold questions a new one
+is not routed and is held skipped (warn once a minute). A question shown
+while the router's `Start` has not succeeded is skipped the same way, and
+so is one the guard never gave the provider (every call slot of its busy):
+`Resolved` is told only of what `Route` received.
+Hosted sessions are routed once their hosts send what they keep (PR-10).
 
 ## Packages
 
@@ -707,3 +819,9 @@ the newest 20,000 are dropped, the log still answering a resend of an
 operation that ran. A database a newer Conductor wrote, or one that fails
 its check, opens read-only: its reads are answered, its writes refused with
 why, and it is never written.
+
+The data directory stays the truth when a sync store is registered: each
+commit of the store, the ledger and Dispatch is told after it lands
+(Extensions, Sync), in commit order, and nothing a sync store answers is
+written into the directory while a server runs. No schema changes for it;
+a provider's own state lives under `ext/<name>/`, which sync never sends.

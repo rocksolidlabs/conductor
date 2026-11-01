@@ -657,6 +657,10 @@ func TestAnOrdinaryLaunchNeverOverwritesAPlannedRun(t *testing.T) {
 	untouched("a continuation")
 	if row := ledgerOf(t, ld, ordinary.ID).Row; row.ContinuedBy != next.ID {
 		t.Fatalf("the continued run is continued by %q", row.ContinuedBy)
+	} else if got, ok := e2.Get(ordinary.ID); !ok || got.Managed == nil || got.Managed.Revision != row.Revision {
+		// The mark moved the row's revision; the engine holding the run
+		// gives the ledger's (review round 1 on #553).
+		t.Fatalf("the continued run's revision: %+v, the ledger's %d", got.Managed, row.Revision)
 	}
 	waitAttempt(t, e2, next.ID, "build", ledger.AttemptRunning)
 	stopRun(t, e2, next.ID)

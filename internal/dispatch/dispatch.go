@@ -99,6 +99,11 @@ type Store struct {
 	// lmu guards listeners, what OnChange registered.
 	lmu       sync.Mutex
 	listeners []func([]Change)
+	// onCommit is what OnCommit set, called under mu after each commit
+	// (commit.go); afterCommit, when a test sets it, runs between such a
+	// commit and that call, under mu.
+	onCommit    func([]Change)
+	afterCommit func()
 
 	// pruned counts the receipts prune dropped, at open and by the
 	// pruning goroutine: what a test of the goroutine watches.

@@ -303,6 +303,9 @@ type Engine struct {
 	// by number (steps.go: a number is one tree's at a time). Both under mu.
 	envPassthrough []string
 	ports          map[int]*tree
+	// contextOf answers an attempt's context blocks (SetContext; nil, none
+	// is asked). Under mu.
+	contextOf ContextFunc
 	// teardownRoot is the context every managed run's teardown context is
 	// made beneath (add), ended by teardownCut at the shutdown's cut-off
 	// (steps.go: Draining).
