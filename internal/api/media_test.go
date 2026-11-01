@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/coder/websocket"
+
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/config"
@@ -71,7 +73,19 @@ func answering(servers []ext.ICEServer) *recordingMedia {
 // answerer that hands every ICE list it is given to pastes.
 func mediaEnv(t *testing.T, servers []config.ICEServer, m ext.MediaRoomProvider, log *syncLog, pastes chan<- []proto.ICEServer) *testEnv {
 	t.Helper()
-	mutate := func(c *config.Config) { c.ICEServers = servers }
+	return mediaEnvWith(t, servers, nil, m, log, pastes)
+}
+
+// mediaEnvWith is mediaEnv whose configuration more changes too (nil:
+// nothing more).
+func mediaEnvWith(t *testing.T, servers []config.ICEServer, more func(*config.Config), m ext.MediaRoomProvider, log *syncLog, pastes chan<- []proto.ICEServer) *testEnv {
+	t.Helper()
+	mutate := func(c *config.Config) {
+		c.ICEServers = servers
+		if more != nil {
+			more(c)
+		}
+	}
 	var e *testEnv
 	if log == nil {
 		e = newTestEnv(t, mutate)
@@ -281,7 +295,7 @@ func TestICEOfferNeverAsksTheProvider(t *testing.T) {
 		t.Fatalf("a registration's asks: %+v", asked)
 	}
 	// Called directly, the offer asks nothing either.
-	if got := e.srv.iceServersFor(t.Context(), ext.ICERequest{Purpose: icePurposeOffer}); !reflect.DeepEqual(got, []proto.ICEServer{{URLs: []string{"stun:stun.example.test:3478"}}}) {
+	if got := e.srv.iceServersFor(t.Context(), ext.ICERequest{Purpose: icePurposeOffer}, false); !reflect.DeepEqual(got, []proto.ICEServer{{URLs: []string{"stun:stun.example.test:3478"}}}) {
 		t.Fatalf("the offer's servers: %+v", got)
 	}
 	if asked, _ := m.calls(); len(asked) != 1 {
@@ -400,7 +414,7 @@ func TestMediaBounds(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := server(tc.answer)
-			if got := srv.iceServersFor(t.Context(), viewer); !reflect.DeepEqual(got, mainICE(configured)) {
+			if got := srv.iceServersFor(t.Context(), viewer, false); !reflect.DeepEqual(got, mainICE(configured)) {
 				t.Fatalf("got %+v, want the configured servers alone", got)
 			}
 		})
@@ -412,7 +426,7 @@ func TestMediaBounds(t *testing.T) {
 			return append(mintedServers(ext.MaxICEServers), ext.ICEServer{URLs: []string{"http://minted.example.test"}}), nil
 		})
 		want := append(mainICE(configured), protoICE(mintedServers(ext.MaxICEServers))...)
-		if got := srv.iceServersFor(t.Context(), viewer); !reflect.DeepEqual(got, want) {
+		if got := srv.iceServersFor(t.Context(), viewer, false); !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %+v\nwant %+v", got, want)
 		}
 	})
@@ -464,6 +478,108 @@ func TestMediaBounds(t *testing.T) {
 			t.Fatalf("a welcome that fits lost servers: %d", len(got.ICEServers))
 		}
 	})
+}
+
+// A switchyard's open host, which registered with no token, and the
+// viewers of its session are handed the configured servers alone, and
+// the provider is never asked for them: nobody authenticated that host,
+// as nobody authenticates GET /api/ice. A host with a host token on the
+// same switchyard, and its viewers, are handed the provider's servers
+// after the configured ones.
+func TestICEOpenHostsNeverAskTheProvider(t *testing.T) {
+	servers := []config.ICEServer{{URLs: []string{"stun:stun.example.test:3478"}}}
+	minted := mintedServers(1)
+	m := answering(minted)
+	e := mediaEnvWith(t, servers, func(c *config.Config) {
+		c.Switchyard.Enabled = true
+		c.Switchyard.OpenHosts = true
+	}, m, nil, nil)
+	sess := proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24}
+
+	open, reg := dialFakeHostWith(t, e, proto.HostInfo{Name: "laptop"}, sess, "")
+	if got := iceOf(t, reg); !reflect.DeepEqual(got, mainICE(servers)) {
+		t.Fatalf("the open host's registered: %+v\nwant %+v", got, mainICE(servers))
+	}
+	v := dialViewer(t, e, open.sessionID, open.link("control", ""))
+	v.hello(80, 24)
+	if got := iceOf(t, v.expectControl(proto.CtlWelcome)); !reflect.DeepEqual(got, mainICE(servers)) {
+		t.Fatalf("the open host's viewer's welcome: %+v\nwant %+v", got, mainICE(servers))
+	}
+	if asked, _ := m.calls(); len(asked) != 0 {
+		t.Fatalf("the provider was asked %+v for an open host and its viewer; want nothing", asked)
+	}
+
+	tokened, reg := dialFakeHostWith(t, e, proto.HostInfo{Name: "desk"}, sess, "Bearer test-host-token")
+	want := append(mainICE(servers), protoICE(minted)...)
+	if got := iceOf(t, reg); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the tokened host's registered: %+v\nwant %+v", got, want)
+	}
+	tv := dialViewer(t, e, tokened.sessionID, tokened.link("control", ""))
+	tv.hello(80, 24)
+	w := tv.expectControl(proto.CtlWelcome)
+	if got := iceOf(t, w); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the tokened host's viewer's welcome: %+v\nwant %+v", got, want)
+	}
+	viewerID, _ := w["viewerId"].(string)
+	wantAsked := []ext.ICERequest{
+		{Purpose: icePurposeHost, Session: tokened.sessionID},
+		{Purpose: icePurposeViewer, Session: tokened.sessionID, Role: "control", Viewer: viewerID},
+	}
+	if asked, _ := m.calls(); !reflect.DeepEqual(asked, wantAsked) {
+		t.Fatalf("the provider was asked %+v\nwant %+v", asked, wantAsked)
+	}
+}
+
+// A viewer whose link is revoked while the provider is still answering
+// for its welcome is never sent the welcome, nor the servers in it: the
+// ask is cut short (its context canceled, not run to ext.ICEWait), and
+// the viewer is closed as revoked (article 4: a revoke never degrades).
+func TestICEViewerRevokedWhileTheProviderAnswers(t *testing.T) {
+	asked := make(chan struct{})
+	ended := make(chan error, 1)
+	m := &recordingMedia{name: "turn", answer: func(ctx context.Context, r ext.ICERequest) ([]ext.ICEServer, error) {
+		if r.Purpose != icePurposeViewer {
+			return nil, nil
+		}
+		close(asked)
+		<-ctx.Done()
+		ended <- ctx.Err()
+		return mintedServers(1), nil
+	}}
+	e := mediaEnv(t, []config.ICEServer{{URLs: []string{"stun:stun.example.test:3478"}}}, m, nil, nil)
+	host, _ := dialFakeHostWith(t, e, proto.HostInfo{Name: "laptop"}, proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24}, "Bearer test-host-token")
+	host.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "r1", Role: "control"})
+	created := host.expect(proto.HostLinkCreated)
+	linkID, _ := created["linkId"].(string)
+	_, token, _ := strings.Cut(created["url"].(string), "/join/")
+	v := dialViewer(t, e, host.sessionID, token)
+	v.hello(80, 24)
+	<-asked
+
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "x1", LinkID: linkID})
+	host.expect(proto.HostLinkRevoked)
+	if err := <-ended; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the provider's ask ended with %v; want it canceled by the revoke", err)
+	}
+	for {
+		f, err := v.read()
+		if err != nil {
+			if got := websocket.CloseStatus(err); got != proto.CloseForbidden {
+				t.Fatalf("close status %d, want %d (%v)", got, proto.CloseForbidden, err)
+			}
+			break
+		}
+		if f.Type != proto.TypeControl {
+			continue
+		}
+		var c struct {
+			T string `json:"t"`
+		}
+		_ = json.Unmarshal(f.Payload, &c)
+		if c.T == proto.CtlWelcome {
+			t.Fatalf("the revoked viewer was sent a welcome: %s", f.Payload)
+		}
+	}
 }
 
 // The free build's media slot has no room, and nothing here asks a

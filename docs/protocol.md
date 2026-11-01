@@ -229,7 +229,13 @@ is registered (Program item C8; the free build has none): at most eight,
 each a STUN or TURN server WebRTC takes, asked with the session, the
 viewer's role and its id and given up after 2 s, so a late, failed or
 invalid provider adds none; and only as many of them as keep the welcome
-one CONTROL frame (8 KiB), the last dropped first.
+one CONTROL frame (8 KiB), the last dropped first. A switchyard's open
+host (`switchyard.openHosts`), which registered with no token, and the
+viewers of its session are handed the configured servers alone: no
+provider is asked for a host nobody authenticated, as none is for
+`GET /api/ice`. A viewer closed while the provider answers (its link
+revoked or expired, the session ended) is never sent the welcome: the
+ask is cut short and the viewer is closed with its reason.
 A host started with `--relay-only` sets `relayOnly`, and the viewer requests the
 relay immediately instead of attempting WebRTC. The viewer
 creates the data channel and the SDP offer; the host answers. Candidates trickle
@@ -490,7 +496,8 @@ older host sends none.
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links}`
 (`iceServers`: the configured ones, then the media provider's for the
 host's session, as the viewer's welcome carries them, none dropped for
-the frame: a host message holds 64 KiB; `links`: the ids of the live links the server holds for the session, `[]`
+the frame: a host message holds 64 KiB; an open host, registered with no
+token, is handed the configured ones alone; `links`: the ids of the live links the server holds for the session, `[]`
 when none; an older server sends no field, which says nothing),
 `viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId}`, `stop{sessionId}`,

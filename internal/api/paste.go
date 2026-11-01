@@ -138,7 +138,7 @@ func (s *Server) handlePaste(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	pp, answer, err := answerer(ctx, local, offer, req.Role, label, s.iceServersFor(ctx, ext.ICERequest{Purpose: icePurposePaste, Session: id, Role: string(req.Role)}))
+	pp, answer, err := answerer(ctx, local, offer, req.Role, label, s.iceServersFor(ctx, ext.ICERequest{Purpose: icePurposePaste, Session: id, Role: string(req.Role)}, false))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_offer", strings.TrimPrefix(err.Error(), "paste: "))
 		return
@@ -169,7 +169,7 @@ func (s *Server) handleICE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	urls := []string{}
-	for _, srv := range s.iceServersFor(r.Context(), ext.ICERequest{Purpose: icePurposeOffer}) {
+	for _, srv := range s.iceServersFor(r.Context(), ext.ICERequest{Purpose: icePurposeOffer}, false) {
 		urls = append(urls, srv.URLs...)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"stun": urls})

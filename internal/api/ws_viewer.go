@@ -549,7 +549,28 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 	defer hs.RemoveViewer(v)
 
 	info := hs.Info()
-	ice := s.iceServersFor(sink.ctx, ext.ICERequest{Purpose: icePurposeViewer, Session: info.ID, Role: string(v.Role), Viewer: viewerID})
+	// The media provider is asked once the viewer is attached, so a revoke
+	// or the expiry of its link, the session's end or the host's going
+	// that lands meanwhile closes it: the ask is cut short, and a viewer
+	// closed by then is closed with its reason, never sent the welcome or
+	// the servers in it. A viewer of an open host's session is handed the
+	// configured servers alone (iceServersFor).
+	lookup, endLookup := context.WithCancel(sink.ctx)
+	go func() {
+		select {
+		case <-v.Done():
+			endLookup()
+		case <-lookup.Done():
+		}
+	}()
+	ice := s.iceServersFor(lookup, ext.ICERequest{Purpose: icePurposeViewer, Session: info.ID, Role: string(v.Role), Viewer: viewerID}, v.HostOpen())
+	endLookup()
+	select {
+	case <-v.Done():
+		sink.Close(v.Reason())
+		return
+	default:
+	}
 	welcome := proto.MustControl(fitWelcome(proto.Welcome{
 		T:              proto.CtlWelcome,
 		Proto:          proto.ProtoVersion,

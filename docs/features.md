@@ -3321,7 +3321,13 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   for byte as main does, never a `turn:` URL, a user name or a credential.
   A welcome keeps as many of the provider's servers as leave it one
   CONTROL frame (8 KiB), the last dropped first; `Room` has no caller yet
-  (CL1's). Tests: `TestICEStaticUnchanged` (STUN only, STUN with a TURN
+  (CL1's). A switchyard's open host, registered with no token, and its
+  session's viewers are handed the configured servers alone, the provider
+  never asked for them (review round 1: nobody authenticated that host,
+  as nobody authenticates `GET /api/ice`). A viewer whose link is revoked
+  or expires while the provider answers is never sent the welcome or its
+  servers: the ask is canceled with the viewer and it is closed with its
+  reason (review round 1, Codex). Tests: `TestICEStaticUnchanged` (STUN only, STUN with a TURN
   server and its credential, nine and twenty configured servers, with no
   provider and with one adding eight: the four sites main's, the
   provider's after), `TestICEOfferNeverAsksTheProvider`,
@@ -3329,8 +3335,13 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   site asks with), `TestICENeverLeaksCredentials` (the route and the log),
   `TestMediaBounds` (late, failing, panicking and five kinds of invalid
   server add none; nine cut to eight; a welcome within its frame, the
-  configured servers never cut), `TestRoomDefault`; each fails with its
-  part broken.
+  configured servers never cut), `TestRoomDefault`,
+  `TestICEOpenHostsNeverAskTheProvider` (an open host and its viewer get
+  the configured servers and the provider is asked nothing; a tokened
+  host on the same switchyard and its viewer get the provider's),
+  `TestICEViewerRevokedWhileTheProviderAnswers` (the ask canceled by the
+  revoke, no welcome, closed as revoked); each fails with its part
+  broken.
 
   PR-16 (#488): api, web: GET /api/capabilities and the app card's
   Extensions row. Planned.

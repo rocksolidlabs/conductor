@@ -38,13 +38,21 @@ const (
 // GET /api/ice has always answered, so a request nobody authenticated
 // costs a provider nothing and never carries a turn: URL or a secret,
 // the configured ones' or a provider's.
-func (s *Server) iceServersFor(ctx context.Context, r ext.ICERequest) []proto.ICEServer {
+//
+// open says the connection is a switchyard's open host, which registered
+// with no token, or a viewer of its session: nobody authenticated that
+// host either, so the provider is not asked for it, and the answer is the
+// configured servers alone, as main hands an open host and its viewers.
+func (s *Server) iceServersFor(ctx context.Context, r ext.ICERequest, open bool) []proto.ICEServer {
 	if r.Purpose == icePurposeOffer {
 		return s.stunServers()
 	}
 	out := make([]proto.ICEServer, 0, len(s.cfg.ICEServers))
 	for _, srv := range s.cfg.ICEServers {
 		out = append(out, proto.ICEServer{URLs: srv.URLs, Username: srv.Username, Credential: srv.Credential})
+	}
+	if open {
+		return out
 	}
 	added, _ := s.exts.media.ICEServers(ctx, r)
 	for _, srv := range added {
