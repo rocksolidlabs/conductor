@@ -379,6 +379,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// Published while listed, as every change is (localChange): a session
 	// that ended and was removed at once is not brought back by its launch.
 	s.events.publishLatest(id, s.listedInfo)
+	s.router.mark(id)
 	s.publish(local)
 	return local, nil
 }
@@ -430,6 +431,7 @@ func (s *Server) localChange(info session.Info) {
 	// snapshot handed here, which a later change may already have overtaken.
 	s.events.publishLatest(info.ID, s.listedInfo)
 	s.runs.OnChange(info)
+	s.router.mark(info.ID)
 	if info.Status.Ended() {
 		s.endLinks(info.ID)
 	}
