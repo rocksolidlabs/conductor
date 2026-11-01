@@ -32,11 +32,15 @@ import (
 // offered: the list is read as the touch is delivered, on the provider's
 // own goroutine, so the stat it takes is never the recording goroutine's.
 
-// wireContext gives the engine its context function and the hub its touch
-// sink. New calls it once the engine and the hub exist.
+// wireContext gives the engine its context function and, when the server
+// holds a context provider, the hub its touch sink, after the run engine's
+// (a server with none adds no sink: the hub's are main's, as the notifier
+// leaves them; notify.go). New calls it once the engine and the hub exist.
 func (s *Server) wireContext() {
 	s.runs.SetContext(s.contextFor)
-	s.events.addSink(s.noteTouches)
+	if len(s.exts.context) > 0 {
+		s.events.addSink(s.noteTouches)
+	}
 }
 
 // contextFor answers the context blocks for the attempt q: every provider

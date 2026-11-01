@@ -594,7 +594,8 @@ the worktree's `os.Root` and cut first when the files pass their bound
 attempt fails or a task's state changes, and with none the files are byte
 for byte what they were before (the goldens in
 `internal/crew/testdata/taskfile`). The touch sink, the hub's last sink
-(after the notifier and the run engine's `OnActivity`), takes the `file`
+(after the notifier and the run engine's `OnActivity`; a server with no
+context provider adds none), takes the `file`
 entries of server and hosted sessions after the session recorded them, makes each path absolute by the session's own
 rule (`session.TouchedAbs`; `signal.HostAbs` for a hosted session, whose
 host may run another OS) and queues one `ext.TouchedFile` per provider

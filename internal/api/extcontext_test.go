@@ -313,6 +313,14 @@ func TestTouchesReachProviders(t *testing.T) {
 	e := contextEnv(t, seen, blocked)
 	// Run before the server's cleanup (LIFO): the blocked delivery returns.
 	t.Cleanup(func() { close(blocked.gate) })
+	// The touch sink is the hub's last, after the run engine's (a server
+	// with no context provider has none: TestSinksInMainsOrder).
+	e.srv.events.mu.Lock()
+	sinks := slices.Clone(e.srv.events.sinks)
+	e.srv.events.mu.Unlock()
+	if n := len(sinks); n < 2 || funcName(sinks[n-1]) != funcName(e.srv.noteTouches) || funcName(sinks[n-2]) != funcName(e.srv.runs.OnActivity) {
+		t.Fatalf("the hub's sinks: %d", n)
+	}
 	next := func() ext.TouchedFile {
 		t.Helper()
 		return <-seen.touches
