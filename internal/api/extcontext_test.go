@@ -28,12 +28,14 @@ import (
 
 // fakeContext is a context provider: Context answers what answer does
 // (no block when nil), and every touch it is told goes to touches (when
-// set), after gate (when set) lets it.
+// set), after gate (when set) lets it. A NoteTouch call signals entered
+// (when set, buffered) on arrival, before it waits on gate.
 type fakeContext struct {
 	name    string
 	answer  func(ctx context.Context, q ext.ContextQuery) ([]ext.ContextBlock, error)
 	touches chan ext.TouchedFile
 	gate    chan struct{}
+	entered chan struct{}
 
 	mu    sync.Mutex
 	asked []ext.ContextQuery
@@ -42,6 +44,12 @@ type fakeContext struct {
 func (f *fakeContext) Name() string { return f.name }
 
 func (f *fakeContext) NoteTouch(_ context.Context, t ext.TouchedFile) {
+	if f.entered != nil {
+		select {
+		case f.entered <- struct{}{}:
+		default:
+		}
+	}
 	if f.gate != nil {
 		<-f.gate
 	}
@@ -367,7 +375,7 @@ func TestTaskContextServesTheBlocks(t *testing.T) {
 // the sessions nor the other provider.
 func TestTouchesReachProviders(t *testing.T) {
 	seen := &fakeContext{name: "seen", touches: make(chan ext.TouchedFile, 4096)}
-	blocked := &fakeContext{name: "blocked", gate: make(chan struct{})}
+	blocked := &fakeContext{name: "blocked", gate: make(chan struct{}), entered: make(chan struct{}, 1)}
 	e := contextEnv(t, seen, blocked)
 	// Run before the server's cleanup (LIFO): the blocked delivery returns.
 	t.Cleanup(func() { close(blocked.gate) })
@@ -417,6 +425,10 @@ func TestTouchesReachProviders(t *testing.T) {
 	// touches go in chunks the other provider takes before the next, so
 	// its own queue never fills.
 	g := e.srv.exts.context[1]
+	// The blocked provider has taken its first touch off its queue and
+	// waits on its gate: every touch from here on stays queued or is
+	// dropped, so the count below cannot depend on when its drain ran.
+	<-blocked.entered
 	const extra = 50
 	for sent := 0; sent < ext.TouchQueue+extra; {
 		n := min(ext.TouchQueue/2, ext.TouchQueue+extra-sent)
