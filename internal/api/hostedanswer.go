@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -31,8 +32,9 @@ func (s *Server) routesHosted(hs *signal.HostedSession) bool {
 // no question, a session that is no hosted one, and one whose host did not
 // say answerAs (an older host); ext.ErrRefused with the words why: a line
 // blank once cleaned, an answer past the message's bounds, a host not
-// connected or not reading.
-func (s *Server) answerHosted(d session.Driver, r ext.SubmitRequest) (ext.SubmitResult, error) {
+// connected or not reading. A ctx already ended answers its error and
+// sends nothing: the caller gave the try up before it was sent.
+func (s *Server) answerHosted(ctx context.Context, d session.Driver, r ext.SubmitRequest) (ext.SubmitResult, error) {
 	hs, ok := d.(*signal.HostedSession)
 	switch {
 	case !ok:
@@ -47,6 +49,9 @@ func (s *Server) answerHosted(d session.Driver, r ext.SubmitRequest) (ext.Submit
 	m := proto.HostAnswerAsMsg{T: proto.HostAnswerAs, Question: r.Question, Input: r.Input, Text: r.Text, ByName: r.By.Name, BySubject: r.By.Subject}
 	if !m.Valid() {
 		return ext.SubmitResult{}, refused("the answer is past what a hosted session's answer holds")
+	}
+	if err := ctx.Err(); err != nil {
+		return ext.SubmitResult{}, err
 	}
 	switch err := hs.AnswerAs(m); {
 	case errors.Is(err, ext.ErrUnsupported):

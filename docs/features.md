@@ -3435,18 +3435,25 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   judging `HostView`, the host's own last report: a change the server
   forwards shows in the listing at once, and judged from it a question the
   host still showed read as set aside before the host said it kept it,
-  which `TestHostedSetAsidePastTheBound` found. Tests: in `internal/proto`
+  which `TestHostedSetAsidePastTheBound` found; a host back without
+  `answerAs` has its routed questions still resolved, none of its new
+  ones routed. A provider's answer under a context already ended sends
+  nothing. A connection's end withdraws its routed answers before it lets
+  its viewers go. Tests: in `internal/proto`
   `TestHostAnswerAsBounds`, `TestRegisterAnswerAs`,
   `TestHostAttentionKeptBounds`; in `internal/hostagent`
   `TestAnswerAsApplied`, `TestAnswerAsInvalidDropped`,
   `TestAnswerAsNeverInTheControlLoop`, `TestAnswerAsQueueBounded`,
+  `TestAnswerAsWithdrawnBeforeItsConnectionsViewers`,
   `TestSwitchyardAnswerAsRefused`, `TestKeptSent`,
   `TestKeptSentWithItsAttention`; in `internal/signal` `TestHostedAnswerAs`,
   `TestHostedKept`, `TestHostViewIsTheHostsReport`; in `internal/api`
   `TestRoutedAnswerReachesAHostedSession`, `TestOlderHostUnsupported`,
   `TestHostedSetAsidePastTheBound`,
   `TestHostedAnsweredInTheTerminalResolved`,
-  `TestSwitchyardNeverRoutesAHostedSession`.
+  `TestSwitchyardNeverRoutesAHostedSession`,
+  `TestHostedAnswerHonoursItsContext`,
+  `TestHostedResolvedAfterAnswerAsWithdrawn`.
 
   PR-11 (#483): store, ledger, api: the sync hooks after every local commit.
   Three hooks, each called under the lock that orders its commits, right

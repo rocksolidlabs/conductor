@@ -356,3 +356,96 @@ func TestSwitchyardNeverRoutesAHostedSession(t *testing.T) {
 		t.Fatalf("a switchyard sent %v", got)
 	}
 }
+
+// A provider's answer to a hosted question under a context already ended
+// (given up, or past its deadline) answers the context's error and sends
+// the host nothing, as a server session's submission types nothing; one
+// under a live context is sent.
+func TestHostedAnswerHonoursItsContext(t *testing.T) {
+	f := &fakeRouter{}
+	e := routerEnv(t, f)
+	h, _ := dialFakeHostWith(t, e, proto.HostInfo{Name: "laptop", AnswerAs: true}, proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24}, "Bearer test-host-token")
+	const q = "0123456789abcdef"
+	h.send(proto.HostAttentionMsg{T: proto.HostAttention, State: "needs_input", Message: "Allow?", Source: session.SourceAPI, Kind: session.KindPermission, ID: q, Options: []proto.AttentionOption{{Label: "Yes", Input: "y"}}})
+	until(t, "the question shown", func() bool { return hostedSession(t, e, h.sessionID).Info().Attention.ID == q })
+	host := testHost(e.srv, t.Context(), "switchman")
+	req := ext.SubmitRequest{Session: h.sessionID, Question: q, Input: "y", By: ada}
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := host.Submit(cancelled, req); !errors.Is(err, context.Canceled) {
+		t.Fatalf("under a cancelled context: %v, want context.Canceled", err)
+	}
+	expired, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancel()
+	if _, err := host.Submit(expired, req); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("under an expired context: %v, want context.DeadlineExceeded", err)
+	}
+	if got := ofType(sentUpToMarker(t, e, h), proto.HostAnswerAs); len(got) != 0 {
+		t.Fatalf("an answer given up was sent: %v", got)
+	}
+	if res, err := host.Submit(t.Context(), req); err != nil || res.Status != "sent" {
+		t.Fatalf("under a live context: %+v %v", res, err)
+	}
+	if got := ofType(sentUpToMarker(t, e, h), proto.HostAnswerAs); len(got) != 1 || got[0]["question"] != q {
+		t.Fatalf("the live answer sent as %v", got)
+	}
+}
+
+// A host that said answerAs comes back without it (resumed by an older
+// host) while a routed question is outstanding: the router routes none of
+// its new questions, yet resolves the routed one once the host says it no
+// longer waits, told Resolved once, its place under the server's bound
+// given back.
+func TestHostedResolvedAfterAnswerAsWithdrawn(t *testing.T) {
+	seams := watchRouter(t)
+	f := &fakeRouter{}
+	e := routerEnv(t, f)
+	sess := proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24}
+	h, registered := dialFakeHostWith(t, e, proto.HostInfo{Name: "laptop", AnswerAs: true}, sess, "Bearer test-host-token")
+	id := h.sessionID
+	secret, _ := registered["secret"].(string)
+	if secret == "" {
+		t.Fatal("the server sent no secret to resume with")
+	}
+	const q, q2 = "0123456789abcdef", "fedcba9876543210"
+	question := func(h *fakeHost, id string) {
+		h.send(proto.HostAttentionMsg{T: proto.HostAttention, State: "needs_input", Message: "Allow?", Source: session.SourceAPI, Kind: session.KindPermission, ID: id, Options: []proto.AttentionOption{{Label: "Yes", Input: "y"}}})
+	}
+	question(h, q)
+	seams.wait(t, "routed", q)
+
+	// The host goes, and comes back as an older host.
+	h.c.CloseNow()
+	until(t, "the host gone", func() bool { return hostedSession(t, e, id).Info().Status == session.StatusHostDisconnected })
+	h2, again := dialFakeHostRegister(t, e, proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "laptop"}, Session: sess,
+		Resume: &proto.HostResume{SessionID: id, Secret: secret}}, "Bearer test-host-token", nil)
+	if again["resumed"] != true || h2.sessionID != id {
+		t.Fatalf("resume: %v", again)
+	}
+	until(t, "answerAs taken back", func() bool { return !hostedSession(t, e, id).TakesAnswers() })
+	question(h2, q)
+	until(t, "the host back", func() bool { return hostedSession(t, e, id).Info().Status == session.StatusRunning })
+	seams.settle(t, e, id)
+	if _, n := f.resolution(q); n != 0 {
+		t.Fatal("the question shown still was resolved")
+	}
+
+	// A new question is not routed; the routed one, no longer shown, is
+	// resolved.
+	question(h2, q2)
+	until(t, "the new question shown", func() bool { return hostedSession(t, e, id).Info().Attention.ID == q2 })
+	until(t, "Resolved", func() bool { _, n := f.resolution(q); return n == 1 })
+	seams.settle(t, e, id)
+	if _, n := f.resolution(q); n != 1 {
+		t.Fatalf("told %d times", n)
+	}
+	if n := count(f.routedIDs(), q2); n != 0 {
+		t.Fatalf("the new question routed %d times", n)
+	}
+	e.srv.router.mu.Lock()
+	untold := e.srv.router.untold
+	e.srv.router.mu.Unlock()
+	if untold != 0 {
+		t.Fatalf("%d routed questions still count against the bound", untold)
+	}
+}

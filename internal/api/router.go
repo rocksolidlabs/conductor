@@ -203,8 +203,10 @@ func (r *decisionRouter) nextLocked() (string, bool) {
 // read reads the session id once and judges from that one snapshot: a
 // server session's questions are resolved and routed; a session gone from
 // the registry has its routed questions resolved as ended and is
-// forgotten. A hosted session is read so only when the server may answer
-// it (routesHosted).
+// forgotten. A hosted session's new questions are routed only while the
+// server may answer it (routesHosted); those already routed are resolved
+// either way, so that a host back without answerAs still has them told
+// Resolved and gives back their place under the bound.
 func (r *decisionRouter) read(id string) {
 	seam("read", id, "", ext.Route{}, nil)
 	defer seam("done", id, "", ext.Route{}, nil)
@@ -214,11 +216,13 @@ func (r *decisionRouter) read(id string) {
 		return
 	}
 	var info session.Info
+	mayRoute := true
 	switch drv := d.(type) {
 	case *session.Local:
 		info = drv.Info()
 	case *signal.HostedSession:
-		if !r.s.routesHosted(drv) {
+		mayRoute = r.s.routesHosted(drv)
+		if !mayRoute && !r.knows(id) {
 			return
 		}
 		// What its host said it shows and keeps, never a change the
@@ -228,7 +232,7 @@ func (r *decisionRouter) read(id string) {
 		return
 	}
 	seam("judge", id, "", ext.Route{}, nil)
-	if dec, ok := r.judge(info); ok {
+	if dec, ok := r.judge(info, mayRoute); ok {
 		r.route(d, dec)
 	}
 }
@@ -244,13 +248,25 @@ func question(info session.Info) string {
 	return a.ID
 }
 
+// knows reports whether the router keeps a record of the session id.
+func (r *decisionRouter) knows(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sessions[id] != nil
+}
+
 // judge resolves the session's routed questions that no longer wait, and
 // answers the question to route, when info shows one the router has not
-// seen and may route.
-func (r *decisionRouter) judge(info session.Info) (ext.Decision, bool) {
+// seen and may route. With mayRoute false (a hosted session the server
+// may no longer answer) it only resolves: a question it has not seen is
+// left unseen, routed once the server may answer the session again.
+func (r *decisionRouter) judge(info session.Info, mayRoute bool) (ext.Decision, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.sessions[info.ID]
+	if st == nil && !mayRoute {
+		return ext.Decision{}, false
+	}
 	if st == nil {
 		st = &routedSession{ids: map[string]routeState{}}
 		r.sessions[info.ID] = st
@@ -274,7 +290,7 @@ func (r *decisionRouter) judge(info session.Info) (ext.Decision, bool) {
 	r.tellLocked()
 	var d ext.Decision
 	route := false
-	if _, seen := st.ids[shown]; shown != "" && !seen && !ended {
+	if _, seen := st.ids[shown]; mayRoute && shown != "" && !seen && !ended {
 		switch {
 		case terminal:
 			// Answered by keys typed in the terminal before the router
@@ -457,7 +473,7 @@ func (r *decisionRouter) apply(drv session.Driver, d ext.Decision, a ext.Answer)
 	if local, ok := drv.(*session.Local); ok {
 		res, err, _ = r.s.submitTo(ctx, local, req, nil)
 	} else {
-		res, err = r.s.answerHosted(drv, req)
+		res, err = r.s.answerHosted(ctx, drv, req)
 	}
 	switch {
 	case err == nil && res.Status == "sent":

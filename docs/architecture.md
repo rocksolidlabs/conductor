@@ -689,7 +689,9 @@ host's own last report (`HostView`: its attention and `kept`, one
 message), never a change the server forwarded and the host has not yet
 applied; its answers go to the host as `answer_as`, which applies them off
 its control loop through one queue of four per connection, under its own
-claim. A switchyard routes and answers none.
+claim, and withdrawn first when the connection ends. A host back without
+`answerAs` has none of its new questions routed, and those already routed
+still resolved. A switchyard routes and answers none.
 
 ## Packages
 
