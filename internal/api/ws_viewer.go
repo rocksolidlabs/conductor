@@ -80,7 +80,7 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 // owner is the workbench's own connection (the admin token), the only one
 // offered the editor's Neovim. raw is c's socket (nil when not known).
 // watch, when not nil, runs while the viewer is attached and ends it as
-// revoked (principalWatch).
+// revoked (principalWatch, Subscription.Revoke).
 func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw net.Conn, local *session.Local, role session.Role, linkID string, owner bool, check func() (session.Grant, error), watch func(context.Context, func())) {
 	hello, err := s.readHello(ctx, c)
 	if err != nil {
@@ -107,9 +107,12 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 	}
 	defer local.Detach(sub)
 	if watch != nil {
+		// Revoked as a revoked link's viewer is: its transport closed, and
+		// what it has under way (a submission waiting for its turn or its
+		// Enter, keys, a save) refused, not finished.
 		watching, endWatch := context.WithCancel(sink.ctx)
 		defer endWatch()
-		go watch(watching, func() { sink.Close(errPrincipalRevoked) })
+		go watch(watching, func() { sub.Revoke(errPrincipalRevoked) })
 	}
 	go keepalive(sink.ctx, c, s.pingEvery)
 	var held heldTyping
@@ -559,9 +562,12 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 	}
 	defer hs.RemoveViewer(v)
 	if watch != nil {
+		// Revoked as a revoked link's viewer is: nothing of its still
+		// queued for the host is written, and its leave says why, so the
+		// host withdraws what it has under way (Viewer.Revoke).
 		watching, endWatch := context.WithCancel(sink.ctx)
 		defer endWatch()
-		go watch(watching, func() { sink.Close(errPrincipalRevoked) })
+		go watch(watching, func() { v.Revoke(errPrincipalRevoked) })
 	}
 
 	info := hs.Info()

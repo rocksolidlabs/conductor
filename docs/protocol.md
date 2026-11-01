@@ -82,8 +82,9 @@ reached it, or it went; nothing was written; the message says which, see
 `answer`).
 
 WebSocket close codes: `1000` normal, `1001` server shutdown, `4400` protocol
-error, `4401` unauthorized, `4403` link revoked or expired (or an identity
-provider's principal the provider no longer admits, see the HTTP API's
+error, `4401` unauthorized, `4403` link revoked or expired (reason `link
+revoked`, `link expired`), or an identity provider's principal the
+provider no longer admits (reason `access revoked`, see the HTTP API's
 token order), `4404` unknown session, `4409` too many viewers, `4410` session or host gone. The workbench
 token is control on every session of its own server and has no role on a
 switchyard's (`4401`): a session published there is opened by the links its
@@ -508,7 +509,8 @@ server holds for it, or caught up: above; a host refuses one whose
 `viewerId` is not 16 bytes, and one for a viewer it no longer has changes
 nothing),
 (`reason`: `revoked` when the viewer was let go for its link (revoked, its
-run forgotten, its run's session no longer named) or `expired` (the link
+run forgotten, its run's session no longer named) or because the identity
+provider no longer admits the principal it came as, or `expired` (the link
 reached its expiry), none for any other end (it left, its connection failed,
 it was too slow); `link_gone`: a link a viewer joined the session through
 (`linkId`, at most 64 bytes) no longer opens it (revoked, expired as the
@@ -1786,7 +1788,12 @@ every 30 s while it holds it, each ask bounded at 1 s as the first: once
 the provider answers in time that it no longer admits the token (no
 principal, another subject, or one without the `admin` grant), the viewer
 is closed with `error{revoked}` and `4403` (`access revoked`) and the stream
-is ended. A provider that errs, is late or answers out of bounds has said
+is ended. What the viewer has under way is withdrawn as a revoked link's
+is: a submission not yet entered, keys not yet written and a save's next
+part are refused, and a hosted session's host is told with a
+`viewer_leave` whose reason is `revoked`. The stream's write under way is
+cut. A provider answers so only for a token it knows it no longer admits;
+one that cannot tell returns an error. A provider that errs, is late or answers out of bounds has said
 nothing, and the connection stays. The workbench token, the host tokens
 and the links are never asked about again this way. The admin's commands and Dispatch operations, and the
 reads of their receipts, are kept under the actor `admin` for the workbench

@@ -5,7 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -16,7 +20,9 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/local"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // The watch of a provider's principal's long-lived connections (#560):
@@ -175,16 +181,15 @@ func cutEvent(ev string) (name, data string, ok bool) {
 }
 
 // expectRevoked reads until the connection closes and fails t unless an
-// error{revoked} came first and the close is 4403.
+// error{revoked} came first and the close is 4403 with the words of a
+// principal the provider no longer admits, which name no link.
 func (w *wsClient) expectRevoked() {
 	w.t.Helper()
 	sawError := false
 	for {
 		f, err := w.read()
 		if err != nil {
-			if got := websocket.CloseStatus(err); got != proto.CloseForbidden {
-				w.t.Fatalf("close status %d, want %d (%v)", got, proto.CloseForbidden, err)
-			}
+			expectAccessRevoked(w.t, err)
 			if !sawError {
 				w.t.Fatal("closed with no error{revoked} before it")
 			}
@@ -200,6 +205,15 @@ func (w *wsClient) expectRevoked() {
 			}
 			sawError = true
 		}
+	}
+}
+
+// expectAccessRevoked fails t unless err is a close 4403 "access revoked".
+func expectAccessRevoked(t *testing.T, err error) {
+	t.Helper()
+	var ce websocket.CloseError
+	if !errors.As(err, &ce) || ce.Code != proto.CloseForbidden || ce.Reason != "access revoked" {
+		t.Fatalf("closed with %v, want %d access revoked", err, proto.CloseForbidden)
 	}
 }
 
@@ -295,10 +309,154 @@ func TestRevokedPrincipalLosesViewer(t *testing.T) {
 			if w := v.expectControl(proto.CtlWelcome); w["role"] != "control" {
 				t.Fatalf("welcome %v", w)
 			}
+			// The host knows the viewer (a viewer whose join never reached
+			// it is never named to it, and needs no leave).
+			joined := host.expect(proto.HostViewerJoin)
 			recheckFired(t, clock, f, revoke)
 			v.expectRevoked()
+			// The host is told the viewer was revoked, so that it withdraws
+			// what the viewer has under way rather than finish it.
+			if m := host.expect(proto.HostViewerLeave); m["viewerId"] != joined["viewerId"] || m["reason"] != proto.LeaveRevoked {
+				t.Fatalf("viewer_leave %v, want viewer %v's with reason %s", m, joined["viewerId"], proto.LeaveRevoked)
+			}
 		})
 	}
+}
+
+// A principal the provider revokes while a submission of its waits for
+// the session's turn: the submission is withdrawn, never typed, as a
+// revoked link's is, though its connection's slot waits for it.
+func TestRevokedPrincipalsWaitingSubmissionIsWithdrawn(t *testing.T) {
+	f := newTurningIdentity()
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{drawer}, withIdentity(f))
+	clock := newFakeClock(e.srv)
+	id := e.createSession("drawer")
+	local := e.local(id)
+	owner := dialViewer(t, e, id, adminToken)
+	owner.hello(0, 0)
+	owner.expectControl(proto.CtlReady)
+	out := watchOutput(t, owner)
+
+	// A link's line is typed and its link revoked before its Enter: the
+	// session's turn stays held until a person types into the terminal.
+	resp, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "control"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("link: %d %v", resp.StatusCode, lo)
+	}
+	linkID := lo["link"].(map[string]any)["id"].(string)
+	guest := dialViewer(t, e, id, lo["token"].(string))
+	guest.hello(0, 0)
+	guest.expectControl(proto.CtlReady)
+	guest.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "first"}))
+	out.waitFor(t, "first", 5*time.Second)
+	if resp, _ := e.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke: %d", resp.StatusCode)
+	}
+	waitAttention(t, local, session.AttentionNeedsInput, session.HeldWords)
+
+	// The provider's principal submits a line, which waits for the held
+	// turn: a second of the connection's meanwhile is refused.
+	cloud := dialViewer(t, e, id, watchToken)
+	cloud.hello(0, 0)
+	cloud.expectControl(proto.CtlReady)
+	codes := make(chan string, 16)
+	closed := make(chan error, 1)
+	go func() {
+		for {
+			f, err := cloud.read()
+			if err != nil {
+				closed <- err
+				return
+			}
+			var m map[string]any
+			if f.Type == proto.TypeControl && json.Unmarshal(f.Payload, &m) == nil && m["t"] == proto.CtlError {
+				code, _ := m["code"].(string)
+				codes <- code
+			}
+		}
+	}()
+	cloud.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "second"}))
+	cloud.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "third"}))
+	select {
+	case code := <-codes:
+		if code != proto.ErrCodeTooManyRequests {
+			t.Fatalf("error %s, want the third line's %s", code, proto.ErrCodeTooManyRequests)
+		}
+	case <-time.After(testWait):
+		t.Fatal("the third line was not refused: the second does not wait")
+	}
+
+	// The provider revokes the principal: its viewer is closed as revoked.
+	recheckFired(t, clock, f, revocations["not admitted"])
+	select {
+	case err := <-closed:
+		expectAccessRevoked(t, err)
+	case <-time.After(testWait):
+		t.Fatal("the revoked principal's viewer was not closed")
+	}
+	clock.none(t)
+
+	// The owner types into the terminal: the hold ends, and the turn goes
+	// to the next that waits for it. The owner's own line is entered; the
+	// revoked principal's, which waited before it, was never typed.
+	owner.send(proto.Encode(proto.TypeInput, []byte{0x15}))
+	waitAttention(t, local, session.AttentionNone, "")
+	owner.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "fourth"}))
+	out.waitFor(t, "got:fourth", testWait)
+	if out.has("second") {
+		t.Fatal("the revoked principal's waiting line was typed")
+	}
+}
+
+// blockedWriter is the response of an events stream whose client reads
+// nothing: every write waits until a write deadline is set, and then
+// fails as a passed deadline does.
+type blockedWriter struct {
+	header http.Header
+	cut    chan struct{}
+	once   sync.Once
+}
+
+func (w *blockedWriter) Header() http.Header { return w.header }
+func (w *blockedWriter) WriteHeader(int)     {}
+func (w *blockedWriter) FlushError() error   { return nil }
+
+func (w *blockedWriter) Write([]byte) (int, error) {
+	<-w.cut
+	return 0, os.ErrDeadlineExceeded
+}
+
+func (w *blockedWriter) SetWriteDeadline(at time.Time) error {
+	if !at.IsZero() {
+		w.once.Do(func() { close(w.cut) })
+	}
+	return nil
+}
+
+// A principal the provider revokes loses its events stream though the
+// stream's write waits on a client that reads nothing, from its first,
+// the snapshot: the revoke cuts the write.
+func TestRevokeCutsABlockedEventStream(t *testing.T) {
+	f := newTurningIdentity()
+	e := providerEnv(t, nil, f)
+	clock := newFakeClock(e.srv)
+	w := &blockedWriter{header: http.Header{}, cut: make(chan struct{})}
+	t.Cleanup(func() { w.once.Do(func() { close(w.cut) }) })
+	r := httptest.NewRequestWithContext(t.Context(), "GET", "/api/events", nil)
+	r.Header.Set("Authorization", "Bearer "+watchToken)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.srv.handleEvents(w, r)
+	}()
+	// The watch waits while the snapshot's write does.
+	recheckFired(t, clock, f, revocations["not admitted"])
+	select {
+	case <-done:
+	case <-time.After(testWait):
+		t.Fatal("the revoked principal's blocked events stream was not ended")
+	}
+	clock.none(t)
 }
 
 // A provider that fails, panics, is late or answers out of bounds when

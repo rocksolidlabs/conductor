@@ -278,6 +278,24 @@ func (s *Subscription) revoke() {
 	s.closeWith(ErrRevoked)
 }
 
+// Revoke ends the subscription as revoked for a credential that is not a
+// link (an identity provider's principal the provider no longer admits:
+// api's principalWatch), as its link's revoke would (DisconnectLink):
+// reason, ErrRevoked or a kind of it (ErrRevoked for any other), is what
+// it is closed with, its transport told so; nothing more queued for it is
+// written; and what it has under way is refused with that reason, as a
+// revoked link's is (a submission waiting for its turn or its Enter, keys
+// not yet written, a save's next part: Reason, which they look at). It
+// takes no lock, so any goroutine may call it, more than once: the first
+// reason the subscription ended for is kept.
+func (s *Subscription) Revoke(reason error) {
+	if !errors.Is(reason, ErrRevoked) {
+		reason = ErrRevoked
+	}
+	s.revoked.Store(true)
+	s.closeWith(reason)
+}
+
 // expire is revoke for a link that reached its expiry (ErrExpired).
 func (s *Subscription) expire() {
 	s.revoked.Store(true)

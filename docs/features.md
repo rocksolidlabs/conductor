@@ -3317,9 +3317,18 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   subject with the `admin` grant. An error, a panic, a late answer or one
   out of bounds ends nothing. The workbench token, the host tokens and the
   links have no watch, so a build with no provider asks nothing more.
+  What the viewer has under way is withdrawn as a revoked link's is (the
+  server session's subscription ends revoked; a hosted viewer's queued
+  frames are dropped and its `viewer_leave` says `revoked`), the stream's
+  write under way is cut, and the app says "Your access to this session was
+  revoked". A provider answers ok false only for a token it knows it no
+  longer admits; one that cannot tell returns an error.
   Tests: `TestRevokedPrincipalLosesEventStream`,
   `TestRevokedPrincipalLosesViewer` (each for an answer of no principal,
-  the `host` grant only, no grant, another subject),
+  the `host` grant only, no grant, another subject; the close's
+  `access revoked` and the hosted leave's `revoked` asserted),
+  `TestRevokedPrincipalsWaitingSubmissionIsWithdrawn`,
+  `TestRevokeCutsABlockedEventStream`, the closeReason vitest,
   `TestFailingProviderKeepsConnections` (error, panic, late, out of
   bounds) and `TestChainConnectionsUnwatched`, the waits driven through
   the server's clock seam, each checked to fail with the watch broken (one

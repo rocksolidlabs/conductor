@@ -556,8 +556,19 @@ with `IdentityWait` and call slots of its own (`identity-recheck`, so the
 watches never take a request's), and closes the viewer as revoked (`4403`)
 or ends the stream once the provider answers in time that it no longer
 admits the token as that subject with the `admin` grant; a failure, a late
-answer or one out of bounds ends nothing. The server's own tokens and
-links have no watch, so a build with no provider asks nothing more.
+answer or one out of bounds ends nothing. So `ext.IdentityProvider`'s
+`Authenticate` answers ok false only for a token it knows it no longer
+admits: one that cannot tell (its keys out of reach, its service down or
+lapsed) returns an error, which ends no connection and, for a new request,
+is the free default's answer. The revoke is a revoked link's: the server
+session's subscription ends revoked (`Subscription.Revoke`), so a
+submission waiting for its turn or its Enter, keys or a save under way are
+refused; a hosted viewer is closed revoked (`Viewer.Revoke`), nothing of its
+still queued for the host is written and its `viewer_leave` says `revoked`,
+so the host withdraws what it has under way; the events stream's write
+under way is cut (a passed write deadline) before its context ends. The
+server's own tokens and links have no watch, so a build with no provider
+asks nothing more.
 
 **Sync.** Every local commit is told to the sync store
 (`ext.ContinuityStore`) after it lands (`internal/api/sync.go`). Three

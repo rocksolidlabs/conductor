@@ -365,6 +365,34 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	ch := s.events.subscribe()
 	defer s.events.unsubscribe(ch)
+	// An identity provider's principal keeps the stream while the provider
+	// admits it (principalWatch), and loses it once it no longer does,
+	// from before the first byte is written: the revoke cuts a write under
+	// way, the snapshot's too, which a client that reads nothing would
+	// hold for as long as it likes (the server has no write timeout), and
+	// then ends the stream's context. The cut is a write deadline already
+	// passed, set only while the handler runs (cutting), so the connection
+	// it breaks is this stream's and is never reused for a later request;
+	// a writer that takes no deadline is only ended (http.ErrNotSupported).
+	ctx, end := context.WithCancel(r.Context())
+	defer end()
+	var cutMu sync.Mutex
+	cutting := true
+	defer func() {
+		cutMu.Lock()
+		cutting = false
+		cutMu.Unlock()
+	}()
+	if watch := s.principalWatch(p, presentedToken(r, false)); watch != nil {
+		go watch(ctx, func() {
+			cutMu.Lock()
+			if cutting {
+				_ = rc.SetWriteDeadline(time.Now())
+			}
+			cutMu.Unlock()
+			end()
+		})
+	}
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -382,14 +410,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	ping := time.NewTicker(eventPingEvery)
 	defer ping.Stop()
-	// An identity provider's principal keeps the stream while the provider
-	// admits it (principalWatch), and loses it once it no longer does.
-	ctx, end := context.WithCancel(r.Context())
-	defer end()
-	if watch := s.principalWatch(p, presentedToken(r, false)); watch != nil {
-		go watch(ctx, end)
-	}
 	for {
+		// The end comes before a ping or an event that is ready too: select
+		// would pick at random, and a revoked principal is written nothing
+		// more.
+		if ctx.Err() != nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return

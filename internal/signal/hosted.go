@@ -559,6 +559,21 @@ func (v *Viewer) closeForLink(reason error) {
 	v.close(reason)
 }
 
+// Revoke closes the viewer as revoked for a credential that is not a link
+// (an identity provider's principal the provider no longer admits: api's
+// principalWatch), as its link's revoke closes it (closeForLink): reason,
+// ErrRevoked or a kind of it (ErrRevoked for any other), is what it is
+// closed with; nothing of its still queued for the host is written, nor
+// what it is still owed; and its leave, once it is let go (RemoveViewer),
+// says it was revoked, so that the host withdraws what it has under way
+// rather than finish it.
+func (v *Viewer) Revoke(reason error) {
+	if !errors.Is(reason, session.ErrRevoked) {
+		reason = session.ErrRevoked
+	}
+	v.closeForLink(reason)
+}
+
 // Done is closed when the viewer must be disconnected.
 func (v *Viewer) Done() <-chan struct{} { return v.done }
 
@@ -1467,7 +1482,7 @@ func (h *HostedSession) sendJoin(conn *HostConn, v *Viewer, msg proto.ViewerJoin
 
 // leaveMsg is the viewer_leave of viewer id, closed for reason: with the
 // reason when its link no longer opens the session (revoked, its run's link
-// forgotten, expired), so that the host withdraws what the viewer has under
+// forgotten, expired), or its principal was revoked (Viewer.Revoke), so that the host withdraws what the viewer has under
 // way rather than finish it; with none for any other (the viewer left, its
 // connection failed, it was too slow).
 func leaveMsg(id string, reason error) ([]byte, error) {
