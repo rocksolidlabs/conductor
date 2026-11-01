@@ -143,10 +143,22 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) (in
 	if path == "" {
 		path = exportName(time.Now())
 	}
+	// The archive is created through its directory as the system resolves
+	// it, opened once: the directory the offline export checks is the one
+	// it writes in.
+	outDir, name := splitOut(path)
+	if name == "" || name == "." || name == ".." {
+		return 2, fmt.Errorf("export: --out %s names a directory: name the archive file", path)
+	}
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		return 1, fmt.Errorf("export: --out: %w", err)
+	}
+	defer root.Close()
 	var c *apiClient
 	var src export.Source
 	if offline {
-		if err := outsideOf(*dataDir, path); err != nil {
+		if err := outsideOf(*dataDir, root, outDir, path); err != nil {
 			return 1, err
 		}
 		var res *export.Reservation
@@ -164,7 +176,7 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) (in
 			return 2, err
 		}
 	}
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, fs.ErrExist) {
 		return 1, fmt.Errorf("export: %s exists, and an export never writes over a file: name another with --out", path)
 	}
@@ -175,7 +187,7 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) (in
 	defer func() {
 		if !written {
 			f.Close()
-			os.Remove(path)
+			root.Remove(name)
 		}
 	}()
 	if offline {
@@ -205,33 +217,60 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) (in
 	return 0, nil
 }
 
-// outsideOf refuses an archive out inside the data directory dir, which
-// the export walks: it would read the archive it is writing, growing it
-// as it reads. Inside is by identity, the out's directory (its links
-// resolved) or one above it the same directory as dir, so a link, a
-// spelling a filesystem folds or a bind mount is inside too.
-func outsideOf(dir, out string) error {
+// splitOut is the archive path out as its directory and its name, split
+// at the last separator and not cleaned: cleaning would take a link's ".."
+// back over the link's own name, where the system follows the link first
+// (with /tmp/link a link to /data/sub, /tmp/link/../a.zip is /data/a.zip,
+// and cleaned it is /tmp/a.zip).
+func splitOut(out string) (dir, name string) {
+	vol := len(filepath.VolumeName(out))
+	i := len(out)
+	for i > vol && !os.IsPathSeparator(out[i-1]) {
+		i--
+	}
+	dir, name = out[:i], out[i:]
+	if len(dir) == vol {
+		dir += "."
+	}
+	return dir, name
+}
+
+// outsideOf refuses an archive out, to be created in root (opened at its
+// uncleaned directory outDir), inside the data directory dir, which the
+// export walks: it would read the archive it is writing, growing it as it
+// reads. Inside is by identity: root itself, or a directory above it,
+// reached by appending ".." to outDir (never by cleaning a path), is the
+// same directory as dir, so a link, a link followed by "..", a spelling a
+// filesystem folds or a bind mount of dir is inside too.
+func outsideOf(dir string, root *os.Root, outDir, out string) error {
 	di, err := os.Stat(dir)
 	if err != nil {
 		return nil // offlineSource says what is wrong with it
 	}
-	abs, err := filepath.Abs(out)
+	ri, err := root.Stat(".")
 	if err != nil {
 		return fmt.Errorf("export: --out: %w", err)
 	}
-	d := filepath.Dir(abs)
-	if real, err := filepath.EvalSymlinks(d); err == nil {
-		d = real
+	inside := func() error {
+		return fmt.Errorf("export: the archive %s would be inside the data directory %s, which the export reads: name an --out outside it", out, dir)
 	}
+	if os.SameFile(ri, di) {
+		return inside()
+	}
+	d, fi := outDir, ri
 	for {
-		if fi, err := os.Stat(d); err == nil && os.SameFile(fi, di) {
-			return fmt.Errorf("export: the archive %s would be inside the data directory %s, which the export reads: name an --out outside it", abs, dir)
+		d += string(os.PathSeparator) + ".."
+		up, err := os.Stat(d)
+		if err != nil {
+			return fmt.Errorf("export: --out: %w", err)
 		}
-		up := filepath.Dir(d)
-		if up == d {
-			return nil
+		if os.SameFile(up, fi) {
+			return nil // the top of the filesystem
 		}
-		d = up
+		if os.SameFile(up, di) {
+			return inside()
+		}
+		fi = up
 	}
 }
 

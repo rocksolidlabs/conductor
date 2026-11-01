@@ -329,7 +329,7 @@ func TestExportThroughTheServer(t *testing.T) {
 	if code != 0 || err != nil {
 		t.Fatalf("export: %d %v\n%s%s", code, err, stdout, stderr)
 	}
-	noSecret(t, stdout, stderr, err)
+	noToken(t, exportToken, stdout, stderr, err)
 	if !strings.HasPrefix(stdout, "wrote "+out+": ") {
 		t.Fatalf("stdout: %q", stdout)
 	}
@@ -512,6 +512,65 @@ func TestExportOfflineOutsideTheDataDir(t *testing.T) {
 	beside := filepath.Join(filepath.Dir(dir), "beside.zip")
 	if code, _, _, err := exportCmd(t, "--data-dir", dir, "--out", beside); code != 0 || err != nil {
 		t.Fatalf("beside the data directory: %d %v", code, err)
+	}
+}
+
+// A ".." after a link is taken from where the link goes, as the system
+// takes it, never by cleaning the path: with sub a link to the data
+// directory's crews, sub/../a.zip is inside it (and so is a path that
+// climbs back into crews through it), whether --out is absolute or
+// relative; with up a link to the data directory, up/../a.zip is beside
+// it, and the archive is written there, not beside the link.
+func TestExportOfflineLinkThenDotDot(t *testing.T) {
+	clearConductorEnv(t)
+	dir, _ := sourceDir(t)
+	links := realTempDir(t)
+	sub := filepath.Join(links, "sub")
+	up := filepath.Join(links, "up")
+	if err := os.Symlink(filepath.Join(dir, "crews"), sub); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dir, up); err != nil {
+		t.Fatal(err)
+	}
+	before := tree(t, dir)
+	sep := string(os.PathSeparator)
+	inside := []string{
+		sub + sep + ".." + sep + "a.zip",
+		sub + sep + ".." + sep + "crews" + sep + ".." + sep + "crews" + sep + "a.zip",
+		sub + sep + ".." + sep + "crews" + sep + "a.zip",
+	}
+	for _, out := range inside {
+		code, _, _, err := exportCmd(t, "--data-dir", dir, "--out", out)
+		if code != 1 || err == nil || !strings.Contains(err.Error(), "inside the data directory") {
+			t.Fatalf("--out %s: %d %v", out, code, err)
+		}
+	}
+	t.Chdir(links)
+	if code, _, _, err := exportCmd(t, "--data-dir", dir, "--out", "sub"+sep+".."+sep+"a.zip"); code != 1 || err == nil || !strings.Contains(err.Error(), "inside the data directory") {
+		t.Fatalf("relative --out: %d %v", code, err)
+	}
+	sameTree(t, dir, before)
+	if _, err := os.Lstat(filepath.Join(links, "a.zip")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("an archive beside the links: %v", err)
+	}
+
+	out := up + sep + ".." + sep + "beside.zip"
+	if code, stdout, stderr, err := exportCmd(t, "--data-dir", dir, "--out", out); code != 0 || err != nil {
+		t.Fatalf("--out %s: %d %v\n%s%s", out, code, err, stdout, stderr)
+	}
+	if names, _ := archiveFiles(t, filepath.Join(filepath.Dir(dir), "beside.zip")); len(names) == 0 {
+		t.Fatal("the archive beside the data directory is empty")
+	}
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(links), "beside.zip")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("an archive beside the links' directory: %v", err)
+	}
+
+	// An --out that names a directory is refused before anything is read.
+	for _, out := range []string{links + sep, links + sep + ".", links + sep + ".."} {
+		if code, _, _, err := exportCmd(t, "--data-dir", dir, "--out", out); code != 2 || err == nil || !strings.Contains(err.Error(), "names a directory") {
+			t.Fatalf("--out %s: %d %v", out, code, err)
+		}
 	}
 }
 
