@@ -85,6 +85,10 @@ var (
 	ErrPruned      = errors.New("brakeman: pruned: the op id's request was made and has since been pruned")
 )
 
+// ErrStateDamaged is a state.json that does not parse, is incomplete, or
+// is behind the requests kept: no number is given from it.
+var ErrStateDamaged = errors.New("brakeman: state.json is damaged or behind the requests, kept as it is")
+
 // LockWait is how long a store that found the owner lock held keeps
 // trying for it after Open, as the ledger does (ledger.LockWait): a
 // desktop restart overlaps the old server's shutdown.
@@ -430,9 +434,20 @@ func requestNumber(id string) int64 {
 	return n
 }
 func requestID(n int64) string          { return "br-" + strconv.FormatInt(n, 10) }
-func entrySize(v any) int               { b, _ := json.MarshalIndent(v, "    ", "  "); return len(b) + 4 }
 func ceilMinutes(d time.Duration) int   { return int(math.Ceil(d.Minutes())) }
 func (s *Store) day(t time.Time) string { return t.In(s.loc).Format(time.DateOnly) }
+
+// entrySize is what an entry of a request's list takes in the request as
+// encode writes it: at the list's depth, with <, > and & as they are (not
+// json.MarshalIndent's \u003c), and its indent.
+func entrySize(v any) int {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("    ", "  ")
+	_ = enc.Encode(v)
+	return len(bytes.TrimSuffix(b.Bytes(), []byte("\n"))) + 4
+}
 
 // write puts doc in place of name in st after measuring it against
 // limit: refused past it with nothing written. The caller holds mu.
@@ -594,9 +609,45 @@ func (s *Store) loadState() (state, error) {
 	}
 	var st state
 	if err := store.DecodeStrict(raw, &st); err != nil {
-		return state{}, fmt.Errorf("brakeman: parse %s: %w", StateFile, err)
+		return state{}, fmt.Errorf("%w: parse %s: %w", ErrStateDamaged, StateFile, err)
+	}
+	if err := st.check(); err != nil {
+		return state{}, fmt.Errorf("%w: %s: %v", ErrStateDamaged, StateFile, err)
 	}
 	return st, nil
+}
+
+var sumPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// check refuses a state.json that decodes but is none this build wrote:
+// null, {} or one without its schema or its last number. Every state.json
+// is written by or after a Create, so its last number is at least 1 and
+// every op id and charge in it names a request numbered at most that.
+// Create would otherwise number from 1 again, over requests kept.
+func (st state) check() error {
+	if st.Schema != Schema {
+		return fmt.Errorf("schema %d, want %d", st.Schema, Schema)
+	}
+	if st.Last < 1 || !requestIDPattern.MatchString(requestID(st.Last)) {
+		return fmt.Errorf("no last number (%d)", st.Last)
+	}
+	given := func(id string) bool { return requestIDPattern.MatchString(id) && requestNumber(id) <= st.Last }
+	for i, o := range st.Ops {
+		if !opIDPattern.MatchString(o.OpID) || !given(o.ID) || !sumPattern.MatchString(o.Sum) {
+			return fmt.Errorf("ops[%d] is no op id, request at most br-%d and sum", i, st.Last)
+		}
+	}
+	for d, m := range st.Days {
+		if _, err := time.Parse(time.DateOnly, d); err != nil {
+			return fmt.Errorf("days: %q is no day", d)
+		}
+		for id, c := range m {
+			if !given(id) || c.Reserved < 0 || c.Settled != nil && (*c.Settled < 0 || *c.Settled > c.Reserved) {
+				return fmt.Errorf("days[%s]: %q is no charge of a request at most br-%d", d, id, st.Last)
+			}
+		}
+	}
+	return nil
 }
 
 // saveState writes state.json, its days past ChargeDays dropped. The
@@ -788,6 +839,14 @@ func (s *Store) Create(in Request) (r Request, created bool, err error) {
 		return prev, false, nil
 	}
 	st.Last++
+	// The number is new to state.json; a request kept under it says
+	// state.json is behind the requests, and nothing is written over it.
+	if _, err := os.Lstat(filepath.Join(s.reqs.Dir(), requestDoc(requestID(st.Last)))); !errors.Is(err, os.ErrNotExist) {
+		if err != nil {
+			return Request{}, false, err
+		}
+		return Request{}, false, fmt.Errorf("%w: its last number is %d and %s is kept", ErrStateDamaged, st.Last-1, requestDoc(requestID(st.Last)))
+	}
 	r = ask
 	r.Schema, r.ID, r.CreatedAt, r.State = Schema, requestID(st.Last), s.now().UTC(), StateQueued
 	if !r.Since.IsZero() {

@@ -567,7 +567,7 @@ func TestEveryDocumentFitsItsLoadLimit(t *testing.T) {
 			}
 		}
 		for i := range MaxOps {
-			st.Ops = append(st.Ops, opRef{OpID: fmt.Sprintf("%032d", i), ID: requestID(int64(1<<49 + i))})
+			st.Ops = append(st.Ops, opRef{OpID: fmt.Sprintf("%032d", i), ID: requestID(int64(1<<49 + i)), Sum: fmt.Sprintf("%064x", i)})
 		}
 		err = f.s.saveState(st)
 	}
@@ -1523,4 +1523,156 @@ func TestEveryCloseWaitsForTheOwnedCallback(t *testing.T) {
 		t.Fatalf("the lock was kept after Close: %s %v", why, err)
 	}
 	lock.Release()
+}
+
+// TestAnIncompleteStateGivesNoNumber: a state.json that decodes but is
+// none Create wrote (null, {}, no last number, an op id or a charge past
+// its last number), one gone, or one behind the requests kept, refuses
+// every Create with ErrStateDamaged and leaves the requests, their
+// siblings and state.json as they are: br-1 is never numbered again over
+// the request kept under it.
+func TestAnIncompleteStateGivesNoNumber(t *testing.T) {
+	f := newFixture(t)
+	r1 := f.start("op-1")
+	if _, err := f.s.KeepBrief(r1.ID, Kept{OpID: "b-1", Brief: goodBrief(t)}); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(f.data.Dir(), Dir, StateFile)
+	afterOne, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2 := f.create("op-2")
+	good, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(good, &fields); err != nil {
+		t.Fatal(err)
+	}
+	with := func(set map[string]any) string {
+		m := map[string]any{}
+		for k, v := range fields {
+			m[k] = v
+		}
+		for k, v := range set {
+			if v == nil {
+				delete(m, k)
+			} else {
+				m[k] = v
+			}
+		}
+		b, _ := json.Marshal(m)
+		return string(b)
+	}
+	sum := strings.Repeat("a", 64)
+	cases := map[string]string{
+		"null":                "null",
+		"an empty object":     "{}",
+		"only its schema":     `{"schema": 1}`,
+		"no schema":           with(map[string]any{"schema": nil}),
+		"no last number":      with(map[string]any{"last": nil}),
+		"a last number of 0":  with(map[string]any{"last": 0}),
+		"an op past its last": with(map[string]any{"ops": []any{map[string]any{"opId": "op-9", "id": "br-9", "sum": sum}}}),
+		"an op with no sum":   with(map[string]any{"ops": []any{map[string]any{"opId": "op-1", "id": "br-1"}}}),
+		"a charge past it":    with(map[string]any{"days": map[string]any{"2026-11-01": map[string]any{"br-9": map[string]any{"reserved": 5}}}}),
+		"a charge on no day":  with(map[string]any{"days": map[string]any{"soon": map[string]any{"br-1": map[string]any{"reserved": 5}}}}),
+		"behind the requests": string(afterOne),
+		"gone with requests":  "",
+	}
+	f.reopen() // which interrupts br-1: the documents as each reopen below finds them
+	reqs := map[string][]byte{}
+	for _, name := range []string{requestDoc(r1.ID), briefDoc(r1.ID), refsDoc(r1.ID), requestDoc(r2.ID)} {
+		b, err := os.ReadFile(f.reqPath(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		reqs[name] = b
+	}
+	for name, body := range cases {
+		if body == "" {
+			if err := os.Remove(statePath); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.WriteFile(statePath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f.reopen()
+		if _, _, err := f.s.Create(Request{OpID: "op-3", Kind: KindBriefing}); !errors.Is(err, ErrStateDamaged) {
+			t.Errorf("%s: create: %v", name, err)
+		}
+		for doc, b := range reqs {
+			if got, err := os.ReadFile(f.reqPath(doc)); err != nil || !bytes.Equal(got, b) {
+				t.Errorf("%s: %s was rewritten: %v", name, doc, err)
+			}
+		}
+		got, err := os.ReadFile(statePath)
+		if body == "" && !errors.Is(err, os.ErrNotExist) || body != "" && string(got) != body {
+			t.Errorf("%s: state.json was rewritten: %q %v", name, got, err)
+		}
+		if exists(t, f.reqPath(requestDoc("br-3"))) {
+			t.Errorf("%s: a request was numbered past a damaged state", name)
+		}
+	}
+	// The state as Create left it numbers on from it.
+	if err := os.WriteFile(statePath, good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.reopen()
+	if r := f.create("op-3"); r.ID != "br-3" {
+		t.Fatalf("after the state came back, the next request is %s", r.ID)
+	}
+}
+
+// TestAnEntryIsMeasuredAsItIsWritten: a list entry is measured in the
+// bytes it takes in the request as written, <, > and & as they are, so an
+// entry of them at its bound is kept and one byte past it is refused.
+func TestAnEntryIsMeasuredAsItIsWritten(t *testing.T) {
+	f := newFixture(t)
+	r := f.start("op-1")
+	now := f.clock.now()
+	made := func(item int, why string) Made {
+		return Made{Item: item, OpID: "m-" + fmt.Sprint(item), Op: "bk3", Input: strings.Repeat("f", 64), State: MadeRefused, Why: why, At: now}
+	}
+	if _, err := f.s.Update(r.ID, func(r *Request) error { r.Made = []Made{made(0, "first")}; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(f.reqPath(requestDoc(r.ID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The second entry adds its comma, its newline and itself.
+	second := made(1, strings.Repeat("<", 100)+"&>")
+	if _, err := f.s.Update(r.ID, func(r *Request) error { r.Made = append(r.Made, second); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(f.reqPath(requestDoc(r.ID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grew := len(after) - len(before); grew != entrySize(second)+2 {
+		t.Fatalf("the entry took %d bytes and was measured as %d", grew-2, entrySize(second))
+	}
+	if !bytes.Contains(after, []byte(strings.Repeat("<", 100)+"&>")) {
+		t.Fatal("the entry was not written as it is")
+	}
+	// At its bound in <, kept; one past, refused with nothing written.
+	full := made(2, "")
+	for entrySize(full) < MaxMadeBytes {
+		full.Why += "<"
+	}
+	if entrySize(full) != MaxMadeBytes || len(full.Why) > MaxWhy {
+		t.Fatalf("the entry is %d bytes with a why of %d", entrySize(full), len(full.Why))
+	}
+	if _, err := f.s.Update(r.ID, func(r *Request) error { r.Made = append(r.Made, full); return nil }); err != nil {
+		t.Fatalf("an entry at its bound: %v", err)
+	}
+	kept, _ := os.ReadFile(f.reqPath(requestDoc(r.ID)))
+	if _, err := f.s.Update(r.ID, func(r *Request) error { r.Made[2].Why += "<"; return nil }); !errors.Is(err, ErrBound) {
+		t.Fatalf("an entry one byte past its bound: %v", err)
+	}
+	if got, _ := os.ReadFile(f.reqPath(requestDoc(r.ID))); !bytes.Equal(got, kept) {
+		t.Fatal("a refused entry was written")
+	}
 }
