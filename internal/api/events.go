@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -350,7 +351,8 @@ func (h *eventHub) broadcast(msg []byte) {
 // token must arrive in the Authorization header (the browser reads the
 // stream with fetch, not EventSource) so it never appears in a URL.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	if !s.authenticate(r, false).admin {
+	p := s.authenticate(r, false)
+	if !p.admin {
 		if !s.limiter.allow(clientKey(r)) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 			return
@@ -380,7 +382,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	ping := time.NewTicker(eventPingEvery)
 	defer ping.Stop()
-	ctx := r.Context()
+	// An identity provider's principal keeps the stream while the provider
+	// admits it (principalWatch), and loses it once it no longer does.
+	ctx, end := context.WithCancel(r.Context())
+	defer end()
+	if watch := s.principalWatch(p, presentedToken(r, false)); watch != nil {
+		go watch(ctx, end)
+	}
 	for {
 		select {
 		case <-ctx.Done():

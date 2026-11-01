@@ -82,8 +82,9 @@ reached it, or it went; nothing was written; the message says which, see
 `answer`).
 
 WebSocket close codes: `1000` normal, `1001` server shutdown, `4400` protocol
-error, `4401` unauthorized, `4403` link revoked or expired, `4404` unknown
-session, `4409` too many viewers, `4410` session or host gone. The workbench
+error, `4401` unauthorized, `4403` link revoked or expired (or an identity
+provider's principal the provider no longer admits, see the HTTP API's
+token order), `4404` unknown session, `4409` too many viewers, `4410` session or host gone. The workbench
 token is control on every session of its own server and has no role on a
 switchyard's (`4401`): a session published there is opened by the links its
 publishing machine had minted.
@@ -1779,7 +1780,15 @@ the workbench token is (on a switchyard, with the workbench token's lack of a
 role on the sessions published there), and one with the `host` grant is a
 host token's, at `GET /ws/host` too; a principal without a grant, an answer
 late past 1 s, an error or one out of bounds is an unknown token, `401` under
-the same rate limit. The admin's commands and Dispatch operations, and the
+the same rate limit. A provider's principal that holds a long-lived
+connection, a viewer's WebSocket or `GET /api/events`, is asked about again
+every 30 s while it holds it, each ask bounded at 1 s as the first: once
+the provider answers in time that it no longer admits the token (no
+principal, another subject, or one without the `admin` grant), the viewer
+is closed with `error{revoked}` and `4403` (`access revoked`) and the stream
+is ended. A provider that errs, is late or answers out of bounds has said
+nothing, and the connection stays. The workbench token, the host tokens
+and the links are never asked about again this way. The admin's commands and Dispatch operations, and the
 reads of their receipts, are kept under the actor `admin` for the workbench
 token and `user:<subject>` for a provider's principal (its subject at most 48
 bytes): each finds only its own receipts, and a provider's subject can never

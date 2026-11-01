@@ -548,7 +548,16 @@ reads it: the ledger's commands, Dispatch's operations and the reads of
 their receipts are kept under `admin` for the workbench token and
 `user:<subject>` (`ext.SubjectActor`, at most 53 bytes) for a provider's
 principal, so a provider's subject never shares the receipts of `admin`,
-`merge` or `agent:<member>`. Nothing stored changes shape.
+`merge` or `agent:<member>`. Nothing stored changes shape. A provider's
+principal that holds a viewer's WebSocket or `GET /api/events` keeps it only
+while the provider admits it (`principalWatch`, #560): the connection's
+watch asks again every `identityRecheckEvery` (30 s), through the guard
+with `IdentityWait` and call slots of its own (`identity-recheck`, so the
+watches never take a request's), and closes the viewer as revoked (`4403`)
+or ends the stream once the provider answers in time that it no longer
+admits the token as that subject with the `admin` grant; a failure, a late
+answer or one out of bounds ends nothing. The server's own tokens and
+links have no watch, so a build with no provider asks nothing more.
 
 **Sync.** Every local commit is told to the sync store
 (`ext.ContinuityStore`) after it lands (`internal/api/sync.go`). Three

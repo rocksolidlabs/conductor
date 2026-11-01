@@ -63,11 +63,15 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 	// the viewer attaches, under the lock a revoke takes to close the link's
 	// viewers, since the hello may come seconds later.
 	check := s.attachCheck(p, id)
+	// An identity provider's principal is asked about again while it is
+	// attached, and closed as revoked once the provider no longer admits
+	// it (principalWatch); nil for the server's own tokens and links.
+	watch := s.principalWatch(p, presentedToken(r, true))
 	switch drv := d.(type) {
 	case *session.Local:
-		s.serveLocalViewer(r.Context(), c, hk.conn, drv, role, p.linkID(), p.admin, check)
+		s.serveLocalViewer(r.Context(), c, hk.conn, drv, role, p.linkID(), p.admin, check, watch)
 	case *signal.HostedSession:
-		s.serveHostedViewer(r.Context(), c, hk.conn, drv, role, p.linkID(), check, clientKey(r))
+		s.serveHostedViewer(r.Context(), c, hk.conn, drv, role, p.linkID(), check, watch, clientKey(r))
 	default:
 		c.Close(websocket.StatusInternalError, "unsupported session kind")
 	}
@@ -75,7 +79,9 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 
 // owner is the workbench's own connection (the admin token), the only one
 // offered the editor's Neovim. raw is c's socket (nil when not known).
-func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw net.Conn, local *session.Local, role session.Role, linkID string, owner bool, check func() (session.Grant, error)) {
+// watch, when not nil, runs while the viewer is attached and ends it as
+// revoked (principalWatch).
+func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw net.Conn, local *session.Local, role session.Role, linkID string, owner bool, check func() (session.Grant, error), watch func(context.Context, func())) {
 	hello, err := s.readHello(ctx, c)
 	if err != nil {
 		return
@@ -100,6 +106,11 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 		return
 	}
 	defer local.Detach(sub)
+	if watch != nil {
+		watching, endWatch := context.WithCancel(sink.ctx)
+		defer endWatch()
+		go watch(watching, func() { sink.Close(errPrincipalRevoked) })
+	}
 	go keepalive(sink.ctx, c, s.pingEvery)
 	var held heldTyping
 	// The viewer's slot stays taken until what it asked to type is done.
@@ -485,7 +496,7 @@ func (s *Server) linkLabel(linkID string) string {
 // read loop is done. The connection's failure ends the read loop's waits
 // (the budget, the join, room in the host's queue): the frame that waited is
 // dropped, and with it whatever the viewer sent after it.
-func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw net.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error), addr string) {
+func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw net.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error), watch func(context.Context, func()), addr string) {
 	// What the viewer has not taken waits in its queue, where the server
 	// sees it, not in its socket's buffer (hostedViewerUnsent).
 	if raw != nil {
@@ -547,6 +558,11 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 		return
 	}
 	defer hs.RemoveViewer(v)
+	if watch != nil {
+		watching, endWatch := context.WithCancel(sink.ctx)
+		defer endWatch()
+		go watch(watching, func() { sink.Close(errPrincipalRevoked) })
+	}
 
 	info := hs.Info()
 	// The media provider is asked once the viewer is attached, so a revoke
