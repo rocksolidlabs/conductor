@@ -3283,7 +3283,28 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   to fail with its part broken.
 
   PR-6 (#478): api: the identity provider after the token chain; a
-  principal's subject in receipts. Planned.
+  principal's subject in receipts. `authenticate` reads the workbench
+  token, each host token and the share links, and asks the identity
+  provider only for a token the links answer unknown, so an expired or
+  revoked link is refused as a link and the free path never waits on a
+  provider; a session's agent token is checked before `authenticate` where
+  both are taken, so it never reaches one either. The answer counts only
+  through the guard, valid and with a grant: `admin` makes the caller
+  what the workbench token makes it, `host` a host token's, at
+  `GET /ws/host` too (`hostAllowed`, which replaces `hostTokenOK`). The
+  token is never logged: an identity failure's warn line names its kind
+  (`late`, `error`, `panic`, `invalid`, `busy`) and count, never the
+  provider's words. `requireAdmin` puts the principal in the request's
+  context and `actorOf` reads it, so the ledger's commands, Dispatch's
+  operations and the reads of their receipts are kept under `admin` for
+  the workbench token and `user:<subject>` for a provider's principal;
+  nothing stored changes shape. Tests: `TestTokenChainUnchanged`,
+  `TestProviderAskedLast`, `TestProviderPrincipal`,
+  `TestProviderPrincipalInReceipts`, `TestProviderHostRegistration`,
+  `TestProviderRefused`, `TestProviderSubjectsNeverCollide`,
+  `TestProviderPlanApprovalIsTheOperators` (a provider's admin principal
+  proposes a plan revision; its approval is refused `409 invalid` and the
+  revision stays proposed), each checked to fail with its part broken.
 
   PR-7 (#479): api: notification sinks over the event hub, the webhooks the
   first. Planned.

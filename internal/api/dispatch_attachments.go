@@ -209,7 +209,7 @@ func (s *Server) handleDispatchAddAttachment(w http.ResponseWriter, r *http.Requ
 	// the store's busy timeout for a lock: dispatchWriteTimeout, counted
 	// from the request's start, would end an upload over a slow link.
 	ctx := context.WithoutCancel(r.Context())
-	rc, _, err := ds.AddAttachment(ctx, op.op(), key, name, contentType, file)
+	rc, _, err := ds.AddAttachment(ctx, op.op(r), key, name, contentType, file)
 	switch {
 	case file.err != nil:
 		refuseUpload(w, r, file.err)
@@ -346,7 +346,7 @@ func (s *Server) handleDispatchRemoveAttachment(w http.ResponseWriter, r *http.R
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.RemoveAttachment(ctx, body.op(), key, id)
+	rc, err := ds.RemoveAttachment(ctx, body.op(r), key, id)
 	s.writeOp(w, "ticket", rc, err, false, "attachment", attachmentAfter(ctx, ds, id))
 }
 

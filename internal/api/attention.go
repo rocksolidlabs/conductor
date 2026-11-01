@@ -87,13 +87,16 @@ func (s *Server) reportTarget(w http.ResponseWriter, r *http.Request) (session.D
 // no role on the sessions published there, and reports nothing for them.
 // Anyone else is refused with a 401 that counts against their rate limit;
 // the response is written and ok is false. Both the attention route and the
-// events route use it.
+// events route use it. The agent token is checked first: it is a token of
+// this server's own, so it never reaches an identity provider
+// (tokenPrincipal), and an agent's hooks, which report often, never wait on
+// one.
 func (s *Server) attentionPrincipal(w http.ResponseWriter, r *http.Request, d session.Driver) (source string, ok bool) {
-	if p := s.authenticate(r, false); p.admin && !p.yard {
-		return session.SourceAdmin, true
-	}
 	if agentTokenOK(d, presentedToken(r, false)) {
 		return session.SourceAPI, true
+	}
+	if p := s.authenticate(r, false); p.admin && !p.yard {
+		return session.SourceAdmin, true
 	}
 	if !s.limiter.allow(clientKey(r)) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")

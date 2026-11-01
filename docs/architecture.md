@@ -527,6 +527,26 @@ until the notification seam no sink is handed one. `DataDir` is
 `<dataDir>/ext/<name>`, made 0700 through the store. `Log` is the
 server's logger naming the provider.
 
+**Identity.** The identity provider is asked last (`internal/api/auth.go`,
+`identity.go`): `authenticate` tries the workbench token, each host token
+and the share links, and asks the provider only for a token the links
+answer unknown, so an expired or revoked link is refused as a link and a
+token of the server's own never reaches a provider (a session's agent
+token is checked before `authenticate` where both are taken), and the free
+path never waits on one. Its answer, through the guard with `IdentityWait`,
+counts only when `Principal.Valid` passes and it holds a grant: `admin`
+makes the caller what the workbench token makes it (admin, the yard on a
+switchyard, a host), `host` a host token's; anything else is an unknown
+token. A host registration (`hostAllowed`) takes the same chain. The token
+is never logged: an identity failure's warn line names its kind (`late`,
+`error`, `panic`, `invalid`, `busy`) and count, never the provider's words.
+`requireAdmin` puts the principal in the request's context and `actorOf`
+reads it: the ledger's commands, Dispatch's operations and the reads of
+their receipts are kept under `admin` for the workbench token and
+`user:<subject>` (`ext.SubjectActor`, at most 53 bytes) for a provider's
+principal, so a provider's subject never shares the receipts of `admin`,
+`merge` or `agent:<member>`. Nothing stored changes shape.
+
 ## Packages
 
 | Package | Responsibility |
