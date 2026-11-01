@@ -42,8 +42,10 @@ const (
 	// routerWorkers bounds the sessions read at once.
 	routerWorkers = 16
 	// routedKept bounds the questions the router keeps per session, the
-	// oldest resolved forgotten first; one not yet forgettable (outstanding,
-	// being told, or shown or kept still) is never forgotten.
+	// oldest no longer waiting forgotten first; one not yet forgettable
+	// (outstanding, or shown or kept still: at most three) is never
+	// forgotten. A resolution being told is held by the list of
+	// resolutions, not here.
 	routedKept = 64
 	// maxUnresolved bounds the questions routed and not yet told Resolved,
 	// server-wide.
@@ -63,8 +65,8 @@ const (
 	// routeResolved: told Resolved, or never routed because it was first
 	// seen answered in the terminal.
 	routeResolved
-	// routeSkipped: never routed (the bound, or a router not yet started)
-	// and never told.
+	// routeSkipped: never routed (the bound, a router not yet started, or
+	// a call the guard never made, its slots busy) and never told.
 	routeSkipped
 )
 
@@ -287,16 +289,17 @@ func (r *decisionRouter) addLocked(st *routedSession, id string, state routeStat
 	st.order = append(st.order, id)
 }
 
-// pruneLocked forgets st's oldest forgettable questions (resolved or
-// skipped, neither shown nor kept by the last read) while it keeps more
-// than routedKept. A resolved question never shows again (a session shows
-// again only a question it kept), so forgetting it routes nothing twice.
-// The caller holds r.mu.
+// pruneLocked forgets st's oldest forgettable questions (no longer
+// outstanding: resolved, being told or skipped; and neither shown nor kept
+// by the last read) while it keeps more than routedKept. A question that
+// no longer waits never shows again (a session shows again only a question
+// it kept), so forgetting it routes nothing twice; one being told keeps
+// its place in the resolutions, which tell skips marking once it is
+// forgotten. The caller holds r.mu.
 func (r *decisionRouter) pruneLocked(st *routedSession) {
 	for len(st.order) > routedKept {
 		i := slices.IndexFunc(st.order, func(id string) bool {
-			s := st.ids[id]
-			return (s == routeResolved || s == routeSkipped) && id != st.shown && !slices.Contains(st.kept, id)
+			return st.ids[id] != routeOutstanding && id != st.shown && !slices.Contains(st.kept, id)
 		})
 		if i < 0 {
 			return
@@ -387,8 +390,13 @@ func (r *decisionRouter) route(local *session.Local, d ext.Decision) {
 	if r.wait > 0 {
 		ctx, cancel = context.WithTimeout(ctx, r.wait)
 	}
-	rt, _ := r.s.exts.router.Route(ctx, d)
+	rt, sent := routeSent(ctx, r.s.exts.router, d)
 	cancel()
+	if !sent {
+		// The provider was never given the question (its call slots all
+		// busy, or its Start undone meanwhile): skipped, never told.
+		r.unsent(d)
+	}
 	if len(rt.To) > 0 {
 		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: routedWords(rt)})
 	}
@@ -399,14 +407,39 @@ func (r *decisionRouter) route(local *session.Local, d ext.Decision) {
 	seam("routed", d.Session.ID, d.ID, rt, nil)
 }
 
+// unsent holds the question d, outstanding since its judge, as skipped:
+// Route never reached the provider, so Resolved never will either, and it
+// is not routed later (the people watching answer it).
+func (r *decisionRouter) unsent(d ext.Decision) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.sessions[d.Session.ID]; st != nil && st.ids[d.ID] == routeOutstanding {
+		st.ids[d.ID] = routeSkipped
+		r.untold--
+	}
+}
+
+// routeSent asks dr where d goes, and reports whether its provider was
+// given d: a guarded router that found none of its call slots free, or
+// whose Start has not succeeded, answered the free default itself.
+func routeSent(ctx context.Context, dr ext.DecisionRouter, d ext.Decision) (ext.Route, bool) {
+	if g, ok := dr.(guardRouter); ok {
+		return g.route(ctx, d)
+	}
+	rt, _ := dr.Route(ctx, d)
+	return rt, true
+}
+
 // apply applies a route's answer to its question once, through the
 // question's claim, as Host.Submit does (submitTo): a person's answer that
 // came first wins, and the route's is refused (logged at debug).
 func (r *decisionRouter) apply(local *session.Local, d ext.Decision, a ext.Answer) {
 	ctx, cancel := context.WithTimeout(r.s.extCtx, submitTimeout)
 	defer cancel()
-	_, err, _ := r.s.submitTo(ctx, local, ext.SubmitRequest{Session: d.Session.ID, Question: d.ID, Input: a.Input, Text: a.Text, By: a.By}, nil)
+	res, err, _ := r.s.submitTo(ctx, local, ext.SubmitRequest{Session: d.Session.ID, Question: d.ID, Input: a.Input, Text: a.Text, By: a.By}, nil)
 	switch {
+	case err == nil && res.Status == "pending":
+		r.s.log.Info("routed answer accepted: it lands as the program reads", "session", d.Session.ID, "question", d.ID)
 	case err == nil:
 		r.s.log.Info("routed answer applied", "session", d.Session.ID, "question", d.ID)
 	case errors.Is(err, ext.ErrQuestionAnswered):

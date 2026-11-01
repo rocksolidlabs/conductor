@@ -288,12 +288,19 @@ func (s *Server) extFailed(kind, name, why, detail string) {
 // The plan's extCall takes no ctx; this one takes the caller's, so a
 // request that ends ends its provider call too.
 func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time.Duration, fallback T, valid func(T) error, fn func(context.Context) (T, error)) T {
+	v, _ := extCallSent(ctx, s, kind, name, wait, fallback, valid, fn)
+	return v
+}
+
+// extCallSent is extCall, and reports whether fn was called: false when
+// every slot was busy and the fallback was answered without it.
+func extCallSent[T any](ctx context.Context, s *Server, kind, name string, wait time.Duration, fallback T, valid func(T) error, fn func(context.Context) (T, error)) (T, bool) {
 	g := s.guard(kind, name)
 	select {
 	case g.slots <- struct{}{}:
 	default:
 		s.extFailed(kind, name, "busy", fmt.Sprintf("%d calls in flight", extInFlight))
-		return fallback
+		return fallback, false
 	}
 	if f := extWaiting.Load(); f != nil {
 		wait = *f
@@ -354,19 +361,19 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 		if ctx.Err() == nil {
 			s.extFailed(kind, name, "late", fmt.Sprintf("no answer within %s", wait))
 		}
-		return fallback
+		return fallback, true
 	case r.err:
 		why := "error"
 		if r.panicked {
 			why = "panic"
 		}
 		s.extFailed(kind, name, why, r.failed)
-		return fallback
+		return fallback, true
 	case r.invalid != "":
 		s.extFailed(kind, name, "invalid", r.invalid)
-		return fallback
+		return fallback, true
 	}
-	return r.v
+	return r.v, true
 }
 
 // extCalling, when a test sets it, is told the kind and provider name of
@@ -618,16 +625,24 @@ func (g guardRouter) Name() string { return g.name }
 // changes the options it was given changes neither the caller's question
 // nor what its answer is checked against.
 func (g guardRouter) Route(ctx context.Context, d ext.Decision) (ext.Route, error) {
+	rt, _ := g.route(ctx, d)
+	return rt, nil
+}
+
+// route is Route, and reports whether the provider was given d: not when
+// its Start has not succeeded or every call slot of its is busy, so that
+// the decision router tells Resolved only of what Route received.
+func (g guardRouter) route(ctx context.Context, d ext.Decision) (ext.Route, bool) {
 	if !live(g.ready) {
-		return ext.Route{}, nil
+		return ext.Route{}, false
 	}
 	own := copyDecision(d)
-	return extCall(ctx, g.s, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
+	return extCallSent(ctx, g.s, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
 		return r.Valid(own)
 	}, func(ctx context.Context) (ext.Route, error) {
 		r, err := g.p.Route(ctx, copyDecision(own))
 		return copyRoute(r), err
-	}), nil
+	})
 }
 
 // Resolved tells the provider of r on the calling goroutine (the router's

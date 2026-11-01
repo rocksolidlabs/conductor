@@ -42,14 +42,21 @@ var ErrNotAChoice = errors.New("session: the keys are not one of the question's 
 // answered, gone, held over by a held turn or answered in the terminal,
 // ErrNotAChoice for other keys. Written, they resolve the question as by's
 // name (Answer.ByName, the input entry, the chat's answered line), with no
-// subscriber behind it (Answer.By empty). A line answering a question is
-// Submit with Question and ByName.
+// subscriber behind it (Answer.By empty). Keys whose write has begun when
+// ctx ends, the wait runs out or by is withdrawn are not taken back: they
+// land as the program reads and resolve the question then, and AnswerAs
+// answers ErrSubmitPending, as a line accepted that way does; keys not yet
+// begun are never written. A line answering a question is Submit with
+// Question and ByName.
 func (s *Local) AnswerAs(ctx context.Context, question, input string, by Actor) error {
 	if question == "" {
 		return ErrQuestionAnswered
 	}
 	who := typist{actor: true, name: CleanName(by.Name), gone: by.Withdrawn}
-	return s.input(ctx, who, question, []byte(input), writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, nil)
+	// The landing's word is nobody's to wait for: the question's resolve
+	// (or its refusal) is what follows it.
+	landed := func(error) {}
+	return s.input(ctx, who, question, []byte(input), writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, landed)
 }
 
 // typist is who types keys into the session (input): a viewer's

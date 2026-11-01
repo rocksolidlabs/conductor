@@ -516,7 +516,9 @@ a server session only while it shows no question (`Local.Submit` with
 `UnlessWaiting`), or answers a question with a line through the
 question's claim, as a viewer's reply does (`ErrQuestionAnswered` once it
 no longer waits), or with a choice's keys (`Local.AnswerAs`: only one
-of the question's own choices, through the same claim); a hosted session
+of the question's own choices, through the same claim; keys whose write
+has begun when the call ends answer `pending`, as a line does, and keys
+still queued when the try is given up are withdrawn); a hosted session
 answers `ErrUnsupported` until its hosts take routed answers, and a line
 blank once cleaned is refused (it would be a bare Enter). `Notify` checks a
 notice (500 bytes of message, 2,048 of URL, one line each) and types it
@@ -579,7 +581,9 @@ no webhook and no sink adds no notifier.
 their activity (`internal/api/router.go`): a question can stop waiting
 with nothing recorded. `localChange`, the hosted hub's `OnChange` and the
 registry's `OnRemove` mark the session's id in a dirty set (one entry per
-session, nothing dropped, never waiting); at most 16 workers, one per
+session, nothing dropped, never waiting), and a session tells a change of
+what it keeps through `OnChange` as it tells one of what it shows; at
+most 16 workers, one per
 session at a time, take an id out, read one `Info` (what it shows and
 `Kept`, the questions it keeps without showing them, from one lock
 acquisition) and judge from it alone. A question not seen before is routed
@@ -592,13 +596,16 @@ person's earlier answer winning. A routed question the session neither
 shows nor keeps, or shows answered in the terminal, is resolved (with
 `Ended` once its session ended or left the registry); one first seen
 answered in the terminal is never routed. The router keeps per session
-the ids it saw (at most 64, the oldest resolved forgotten first, never one
-still shown or kept), so a question set aside and shown again is routed
+the ids it saw (at most 64, the oldest no longer waiting forgotten first,
+never one still shown or kept; a resolution not yet told waits in the
+list below, not here), so a question set aside and shown again is routed
 once. Resolutions wait in a first-in first-out list of the router's own,
 told by one goroutine in order (`DeliveryWait`, its panic recovered), each
 leaving only once told; past 1,024 routed and untold questions a new one
 is not routed and is held skipped (warn once a minute). A question shown
-while the router's `Start` has not succeeded is skipped the same way.
+while the router's `Start` has not succeeded is skipped the same way, and
+so is one the guard never gave the provider (every call slot of its busy):
+`Resolved` is told only of what `Route` received.
 Hosted sessions are routed once their hosts send what they keep (PR-10).
 
 ## Packages

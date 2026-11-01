@@ -362,8 +362,8 @@ func (h *extHost) launchError(id string, err error) error {
 // question's own choices are refused, nothing written. Either is recorded
 // as by r.By's name. A hosted session answers ext.ErrUnsupported until
 // its hosts take routed answers (C5, PR-10), and a line blank once
-// cleaned is refused; a line accepted while its program reads slowly
-// answers "pending". The try's end withdraws the submission as a revoked
+// cleaned is refused; a line or a choice's keys accepted while its
+// program reads slowly answers "pending". The try's end withdraws the submission as a revoked
 // link does (session.Submission.Withdrawn, looked at as the writer takes
 // the text): one whose text is not yet typed when its try is given up
 // answers context.Canceled and types nothing; one whose text is typed and
@@ -407,6 +407,10 @@ func (s *Server) submitTo(ctx context.Context, local *session.Local, r ext.Submi
 		switch {
 		case raw == nil:
 			return ext.SubmitResult{Status: "entered"}, nil, nil
+		case errors.Is(raw, session.ErrSubmitPending):
+			// Their write begun, they land as the program reads and answer
+			// the question then.
+			return ext.SubmitResult{Status: "pending"}, nil, raw
 		case errors.Is(raw, session.ErrQuestionAnswered):
 			return ext.SubmitResult{}, fmt.Errorf("%w: %v", ext.ErrQuestionAnswered, raw), raw
 		case errors.Is(raw, session.ErrNotAChoice):

@@ -702,6 +702,12 @@ func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 		// Gone with the hold (the session ended, or a question on the
 		// screen took the hold's place and the agent's went meanwhile).
 		s.forgetLocked(over.ID)
+		if over.ID == s.own.ID {
+			// The agent's own, held over: it shows again nowhere now, so
+			// the session keeps it no longer (Info.Kept). Its chat line
+			// was let go above.
+			s.dropOwnLocked("")
+		}
 	}
 	if restore {
 		// Shown again, it is a wait a title that says the agent works may
@@ -717,7 +723,9 @@ func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
 	}
 	s.mu.Unlock()
-	if restore {
+	// Shown again, or gone: either changes what the session shows or keeps
+	// (Info.Kept), which the decision router hears of through OnChange.
+	if restore || over.ID != "" {
 		s.notifyChange()
 	}
 }

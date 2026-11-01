@@ -1137,3 +1137,178 @@ func TestHostSubmitRefusesABlankLine(t *testing.T) {
 
 // logTo is a logger writing text lines to w.
 func logTo(w *syncLog) *slog.Logger { return slog.New(slog.NewTextHandler(w, nil)) }
+
+// gatedProc is a FakeProc that does not read its first write: the write
+// begins (begun closes) and is held in Write until gate is closed.
+type gatedProc struct {
+	*sessiontest.FakeProc
+	begun, gate chan struct{}
+	once        sync.Once
+}
+
+func newGatedProc(t *testing.T) *gatedProc {
+	g := &gatedProc{FakeProc: sessiontest.NewFakeProc(), begun: make(chan struct{}), gate: make(chan struct{})}
+	t.Cleanup(func() {
+		g.open()
+		g.End(0)
+	})
+	return g
+}
+
+// open lets the held write through, once.
+func (g *gatedProc) open() {
+	select {
+	case <-g.gate:
+	default:
+		close(g.gate)
+	}
+}
+
+func (g *gatedProc) Write(b []byte) (int, error) {
+	g.once.Do(func() {
+		close(g.begun)
+		<-g.gate
+	})
+	return g.FakeProc.Write(b)
+}
+
+// gatedSession is the server session id over proc, showing a question with
+// dbChoices, whose id it answers. Its writes wait an hour for the program:
+// only what the test ends (a call's context, a try) ends a wait.
+func gatedSession(t *testing.T, e *testEnv, id string, proc *gatedProc) (*session.Local, string) {
+	t.Helper()
+	l := session.NewLocal(session.Info{ID: id, Cwd: e.root, Cols: 80, Rows: 24}, proc, session.Options{
+		ScrollbackBytes: 4096, InputWait: time.Hour, Log: slog.New(slog.DiscardHandler),
+	})
+	if err := e.srv.registry.Add(l); err != nil {
+		t.Fatal(err)
+	}
+	l.SetAttentionFull(session.AttentionNeedsInput, "Which database?", session.SourceAPI, session.KindPrompt, dbChoices)
+	q := l.Info().Attention.ID
+	if q == "" {
+		t.Fatalf("no question: %+v", l.Info().Attention)
+	}
+	return l, q
+}
+
+// A choice's keys whose write has begun when the provider's call ends (the
+// program not reading) are accepted, "pending", not refused: they land as
+// the program reads and answer the question then, as by the provider's
+// principal.
+func TestHostSubmitChoicePending(t *testing.T) {
+	e := newTestEnv(t, nil)
+	proc := newGatedProc(t)
+	l, q := gatedSession(t, e, "slow", proc)
+	ctx, cancel := context.WithCancel(t.Context())
+	type result struct {
+		res ext.SubmitResult
+		err error
+	}
+	got := make(chan result, 1)
+	go func() {
+		res, err := testHost(e.srv, t.Context(), "switchman").Submit(ctx, ext.SubmitRequest{Session: "slow", Question: q, Input: "Postgres\r", By: ada})
+		got <- result{res, err}
+	}()
+	select {
+	case <-proc.begun:
+	case <-time.After(testWait):
+		t.Fatal("the keys' write never began")
+	}
+	cancel()
+	var r result
+	select {
+	case r = <-got:
+	case <-time.After(testWait):
+		t.Fatal("Host.Submit still waits on a write begun")
+	}
+	if r.err != nil || r.res.Status != "pending" {
+		t.Fatalf("keys begun as the call ends: %+v %v, want pending", r.res, r.err)
+	}
+	if a := l.Info().LastAnswer; a != nil {
+		t.Fatalf("answered before the keys landed: %+v", a)
+	}
+	proc.open()
+	select {
+	case b := <-proc.Input:
+		if string(b) != "Postgres\r" {
+			t.Fatalf("written %q", b)
+		}
+	case <-time.After(testWait):
+		t.Fatal("the keys never landed")
+	}
+	until(t, "the question answered as by Ada", func() bool {
+		a := l.Info().LastAnswer
+		return a != nil && a.ByName == "Ada"
+	})
+	if a := l.Info().Attention; a.ID == q {
+		t.Fatalf("the question still shows: %+v", a)
+	}
+}
+
+// A choice's keys waiting behind a write the program does not take when
+// their try is given up are withdrawn, as a line is (Actor.Withdrawn):
+// never written, the call answers context.Canceled, and the question still
+// waits, a person's answer the next write the program gets. That the
+// withdrawal itself, not the call's own bound, ends the wait is
+// TestAnswerAsWithdrawn's.
+func TestHostSubmitChoiceGivenUpIsWithdrawn(t *testing.T) {
+	e := newTestEnv(t, nil)
+	proc := newGatedProc(t)
+	l, q := gatedSession(t, e, "slow", proc)
+	nate, err := l.Attach("nate", session.RoleControl, "", 80, 24, &gapSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make(chan error, 1)
+	go func() { first <- l.Input(nate, []byte("x")) }()
+	select {
+	case <-proc.begun:
+	case <-time.After(testWait):
+		t.Fatal("the first write never began")
+	}
+	try, giveUp := context.WithCancel(t.Context())
+	late := make(chan error, 1)
+	go func() {
+		_, err := testHost(e.srv, try, "switchman").Submit(context.Background(), ext.SubmitRequest{Session: "slow", Question: q, Input: "Postgres\r", By: ada})
+		late <- err
+	}()
+	// Queued behind the held write: its wait for the writer beside the
+	// first write's.
+	end := time.Now().Add(testWait)
+	for goroutinesIn("session.(*Local).writeProc(") < 2 {
+		if time.Now().After(end) {
+			t.Fatal("the keys never waited behind the first write")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	giveUp()
+	select {
+	case err := <-late:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a given-up try's keys: %v, want context.Canceled", err)
+		}
+	case <-time.After(testWait):
+		t.Fatal("a given-up try's keys still wait for the writer")
+	}
+	proc.open()
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if b := <-proc.Input; string(b) != "x" {
+		t.Fatalf("written %q, want the first write", b)
+	}
+	if info := l.Info(); info.Attention.ID != q || info.LastAnswer != nil {
+		t.Fatalf("the question after the withdrawal: %+v, last answer %+v", info.Attention, info.LastAnswer)
+	}
+	if err := l.AnswerInput(context.Background(), nate, q, []byte("SQLite\r")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case b := <-proc.Input:
+		if string(b) != "SQLite\r" {
+			t.Fatalf("written %q, want the person's answer next", b)
+		}
+	case <-time.After(testWait):
+		t.Fatal("the person's answer was never written")
+	}
+}

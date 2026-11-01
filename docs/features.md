@@ -3357,10 +3357,22 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   takes a choice's keys for server sessions), a person's earlier answer
   winning; resolutions told in order from a list that drops nothing;
   at most 64 ids kept per session and 1,024 routed and untold server-wide,
-  past which a question is skipped. Tests: in `internal/session`
-  `TestKept`, `TestKeptReadWithTheAttention`, `TestAnswerAsChoice`,
-  `TestAnswerAsOnlyChoices`, `TestAnswerAsHeldTurn`,
-  `TestAnswerAsAgainstAViewer`, `TestAnswerAsRecordsTheName`; in
+  past which a question is skipped. Review round 1: a session tells every
+  change of what it keeps through `OnChange` (keys that let the agent's
+  own question go, a held turn's question let go by the agent or by keys);
+  a choice's keys whose write has begun answer `ErrSubmitPending`
+  (`pending` through `Host.Submit`) rather than a refusal; a question the
+  guard never gave the provider (its call slots busy) is skipped, never
+  told; a resolution being told no longer counts against the session's 64.
+  Review round 2: the question shown, asked again as the agent's own in
+  place of the one set aside, tells that change too; the agent's own
+  question held over and gone with a hold that a question on the screen
+  ended is kept no longer (it can show again nowhere), so it is resolved.
+  Tests: in `internal/session`
+  `TestKept`, `TestKeptReadWithTheAttention`, `TestKeptChangesAreTold`,
+  `TestAnswerAsChoice`, `TestAnswerAsOnlyChoices`, `TestAnswerAsHeldTurn`,
+  `TestAnswerAsAgainstAViewer`, `TestAnswerAsPending`,
+  `TestAnswerAsWithdrawn`, `TestAnswerAsRecordsTheName`; in
   `internal/api` `TestNoRouterHumansAnswer`, `TestRouteAppliedOnce`,
   `TestPersonAnswersBeforeTheRoute`, `TestRouteRecorded`,
   `TestRouteBounds`, `TestResolvedOnce`,
@@ -3371,7 +3383,14 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestResolvedThroughABlockedConsumer`, `TestRouteSkippedAtTheBound`,
   `TestRouterNeverResolvesARestoredQuestion`,
   `TestResolvedWhenAnsweredInTheTerminal`,
-  `TestAnsweredInTheTerminalNeverRouted`, each checked to fail with its
+  `TestAnsweredInTheTerminalNeverRouted`,
+  `TestRouteNeverSentNeverResolved`,
+  `TestResolvedWhenTheTerminalLetsTheOwnQuestionGo`,
+  `TestRouteHeldTurnKeepsBoth`,
+  `TestResolvedWhenTheShownQuestionIsAskedAsTheOwn`,
+  `TestResolvedWhenTheHoldEndsUnderAScreenQuestion`,
+  `TestHostSubmitChoicePending`,
+  `TestHostSubmitChoiceGivenUpIsWithdrawn`, each checked to fail with its
   part broken; `TestHostSubmitLine` now answers a choice's keys.
 
   PR-10 (#482): proto, hostagent, signal, api, web: answer_as, a routed

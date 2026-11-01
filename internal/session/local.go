@@ -1934,6 +1934,9 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// change, past the rules above (the bell's pace among them), is
 		// recorded, as the report it is, and not shown; its turn and pace
 		// are kept as a change shown keeps them.
+		// What the session keeps (Info.Kept) may change below while what it
+		// shows does not: told as a change (OnChange) when it does.
+		keptBefore := s.keptLocked(cur.ID)
 		if state == AttentionDone {
 			s.turnEnded = true
 		} else {
@@ -1966,9 +1969,15 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		default:
 			s.dropOwnLocked(ChatLeftAgent)
 		}
+		keptChanged := !slices.Equal(keptBefore, s.keptLocked(cur.ID))
 		s.mu.Unlock()
-		// The question let go above leaves a withdrawn line (#358) this path tells no other way.
-		s.tellChatLeft()
+		// The question let go above leaves a withdrawn line (#358) this path
+		// tells no other way (notifyChange tells it first).
+		if keptChanged {
+			s.notifyChange()
+		} else {
+			s.tellChatLeft()
+		}
 		if state != AttentionNone {
 			label := message
 			if label == "" {
@@ -2076,12 +2085,17 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			s.consumeLocked(cur.ID)
 			s.holdAskedAgain(cur.ID, words, heldAsked, startupStill)
 		}
+		// The question showing, adopted as the agent's own below, takes the
+		// place of the one the session kept aside (Info.Kept): told as a
+		// change (OnChange) when what it keeps changes.
+		keptBefore := s.keptLocked(cur.ID)
 		if ask && cur.ID != "" && !ownShown {
 			// The question showing, now said to be the agent's own: kept
 			// from here, as asked in this turn.
 			s.info.Attention.ask = true
 			s.own, s.ownAside, s.ownTurn = s.info.Attention, false, s.turn.Load()
 		}
+		keptChanged := !slices.Equal(keptBefore, s.keptLocked(cur.ID))
 		if ask && opt.asked != nil && s.own.ID == cur.ID {
 			// The same question asked again, the agent's own already or
 			// from now: its id is the ask's (TryAskID).
@@ -2091,7 +2105,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// read on a later look): set on it.
 		told := plan != "" && s.planOnShownLocked(plan)
 		s.mu.Unlock()
-		if told {
+		if told || keptChanged {
 			s.notifyChange()
 		}
 		return nil
@@ -3926,14 +3940,23 @@ func (s *Local) answeredLeft() string {
 func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, startup, enter, person bool) {
 	s.mu.Lock()
 	// The agent's own question let go here leaves a withdrawn line (#358) that
-	// no state change follows: told once the lock is let go.
-	defer s.tellChatLeft()
+	// no state change follows, told once the lock is let go; and what the
+	// session keeps changes (Info.Kept), which is a change of its own: the
+	// decision router hears of it only through OnChange.
+	keptGone := false
+	defer func() {
+		s.tellChatLeft()
+		if keptGone {
+			go s.notifyChange()
+		}
+	}()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, maybe) {
 		s.noteDialogAnswered(onScreen.words)
 	}
 	if person && s.own.ID != "" && s.ownAside {
 		s.dropOwnLocked(ChatLeftTerminal)
+		keptGone = true
 	}
 	att := s.info.Attention
 	if att.State != AttentionNeedsInput || att.ID == "" {

@@ -232,7 +232,9 @@ func (l *seamLog) settle(t *testing.T, e *testEnv, id string) {
 
 // fakeSession is a server session over a process in memory, as the
 // server's own are wired (its changes and activity to the server), and the
-// writes the program got.
+// writes the program got. No goroutine collects them: FakeProc.Write hands
+// each write to Input before it returns, so written takes every write made
+// by then, in order, and answer takes its own, so that Input never fills.
 type fakeSession struct {
 	l    *session.Local
 	proc *sessiontest.FakeProc
@@ -250,13 +252,6 @@ func newFakeSession(t *testing.T, e *testEnv, id string, o session.Options) *fak
 	o.OnChange, o.OnActivity = e.srv.localChange, e.srv.localActivity
 	fs := &fakeSession{proc: proc}
 	fs.l = session.NewLocal(session.Info{ID: id, Name: id, Cwd: e.root, Cols: 80, Rows: 24, Status: session.StatusRunning}, proc, o)
-	go func() {
-		for b := range proc.Input {
-			fs.mu.Lock()
-			fs.writes = append(fs.writes, string(b))
-			fs.mu.Unlock()
-		}
-	}()
 	if err := e.srv.registry.Add(fs.l); err != nil {
 		t.Fatal(err)
 	}
@@ -264,11 +259,19 @@ func newFakeSession(t *testing.T, e *testEnv, id string, o session.Options) *fak
 	return fs
 }
 
-// written is every write the program got.
+// written is every write the program got: those taken before, and those
+// Input holds now.
 func (fs *fakeSession) written() []string {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	return slices.Clone(fs.writes)
+	for {
+		select {
+		case b := <-fs.proc.Input:
+			fs.writes = append(fs.writes, string(b))
+		default:
+			return slices.Clone(fs.writes)
+		}
+	}
 }
 
 // ask shows the question words with choices, and answers its id. The
@@ -317,6 +320,7 @@ func (fs *fakeSession) answer(t *testing.T, sub *session.Subscription, id, keys 
 	if err := fs.l.AnswerInput(context.Background(), sub, id, []byte(keys)); err != nil {
 		t.Fatalf("answering %s: %v", id, err)
 	}
+	fs.written()
 }
 
 // statuses is the session's status entries.
@@ -673,8 +677,14 @@ func TestResolvedOnWithdrawalWithNoActivity(t *testing.T) {
 
 // A routed question, the router's 16 workers held in Route by other
 // sessions, changes from 1,000 more sessions, then the question withdrawn
-// and its session quiet: once the gate opens, exactly one Resolved.
+// and its session quiet: once the gate opens, exactly one Resolved. The
+// guard's wait for a call is the test's hour (extWaiting), not
+// ext.RouteWait's seconds: the workers stay held in Route until the gate
+// opens, however slowly a loaded machine gets there.
 func TestResolvedAfterABurstOfOtherSessions(t *testing.T) {
+	wait := time.Hour
+	extWaiting.Store(&wait)
+	t.Cleanup(func() { extWaiting.Store(nil) })
 	seams := watchRouter(t)
 	gate := make(chan struct{})
 	t.Cleanup(func() {
@@ -782,6 +792,15 @@ func TestResolvedThroughABlockedConsumer(t *testing.T) {
 		defer f.mu.Unlock()
 		return f.calls == 1
 	})
+	// The session's ids stay within their bound while every resolution
+	// waits to be told: the list of resolutions holds those, not the
+	// session's record.
+	e.srv.router.mu.Lock()
+	kept, queued := len(e.srv.router.sessions["blocked"].order), len(e.srv.router.told)
+	e.srv.router.mu.Unlock()
+	if kept > routedKept || queued != len(asked) {
+		t.Fatalf("with the consumer blocked: %d ids kept for the session (bound %d), %d resolutions queued, want %d", kept, routedKept, queued, len(asked))
+	}
 	close(f.gate)
 	until(t, "every one told", func() bool { return len(f.resolvedIDs()) >= len(asked) })
 	seams.settle(t, e, "blocked")
@@ -954,5 +973,235 @@ func TestAnsweredInTheTerminalNeverRouted(t *testing.T) {
 	}
 	if got := f.resolvedIDs(); len(got) != 0 {
 		t.Fatalf("told %q", got)
+	}
+}
+
+// A question the guard never gave the provider (every call slot of the
+// router's busy) is held skipped: it is not told Resolved when it stops
+// waiting, for Route never had it, nor routed later; once a slot is free
+// the next question is routed and told as ever.
+func TestRouteNeverSentNeverResolved(t *testing.T) {
+	seams := watchRouter(t)
+	f := &fakeRouter{}
+	e := routerEnv(t, f)
+	g := e.srv.guard(ext.KindDecisions, "switchman")
+	for range extInFlight {
+		g.slots <- struct{}{}
+	}
+	var freed sync.Once
+	free := func() {
+		freed.Do(func() {
+			for range extInFlight {
+				<-g.slots
+			}
+		})
+	}
+	t.Cleanup(free)
+	fs := newFakeSession(t, e, "unsent", session.Options{})
+	q := fs.ask(t, "Which database?", dbChoices)
+	seams.wait(t, "routed", q)
+	if got := f.routedIDs(); len(got) != 0 {
+		t.Fatalf("the provider was given %q with every slot busy", got)
+	}
+	fs.report(t, session.AttentionWorking, "")
+	seams.settle(t, e, "unsent")
+	free()
+	next := fs.ask(t, "Which size?", dbChoices)
+	seams.wait(t, "routed", next)
+	fs.report(t, session.AttentionWorking, "")
+	until(t, "the next one told", func() bool { _, n := f.resolution(next); return n == 1 })
+	seams.settle(t, e, "unsent")
+	if got := f.routedIDs(); !slices.Equal(got, []string{next}) {
+		t.Fatalf("routed %q, want %q", got, []string{next})
+	}
+	if got := f.resolvedIDs(); !slices.Equal(got, []string{next}) {
+		t.Fatalf("told %q, want %q alone", got, []string{next})
+	}
+	e.srv.router.mu.Lock()
+	untold := e.srv.router.untold
+	e.srv.router.mu.Unlock()
+	if untold != 0 {
+		t.Fatalf("%d routed and untold", untold)
+	}
+}
+
+// The agent's own question, routed and set aside by work, let go by keys a
+// person types into the terminal: told Resolved from the session's own
+// change, nothing else marking the router.
+func TestResolvedWhenTheTerminalLetsTheOwnQuestionGo(t *testing.T) {
+	seams := watchRouter(t)
+	f := &fakeRouter{}
+	e := routerEnv(t, f)
+	fs := newFakeSession(t, e, "letgo", session.Options{})
+	nate := fs.owner(t, "Nate")
+	a := fs.askOwn(t, "Which database?", dbChoices)
+	seams.wait(t, "routed", a)
+	fs.report(t, session.AttentionWorking, "")
+	if kept := fs.l.Info().Kept; !slices.Equal(kept, []string{a}) {
+		t.Fatalf("set aside: kept %q", kept)
+	}
+	// The router has judged the session as it keeps A.
+	seams.settle(t, e, "letgo")
+	if _, n := f.resolution(a); n != 0 {
+		t.Fatal("A resolved while set aside")
+	}
+	if err := fs.l.Input(nate, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	until(t, "A let go", func() bool { return len(fs.l.Info().Kept) == 0 })
+	until(t, "A told Resolved", func() bool { _, n := f.resolution(a); return n == 1 })
+	seams.settle(t, e, "letgo")
+	if _, n := f.resolution(a); n != 1 {
+		t.Fatalf("A told %d times", n)
+	}
+}
+
+// The agent's own question A set aside by work, and question B, which the
+// hold of the turn takes the place of (a provider's line answering B typed,
+// its try given up in its pause): the session keeps both, and neither is
+// resolved while the hold shows. The agent's done then lets B go (A held
+// over in its place), and B is told Resolved from that change alone; A,
+// kept still, is not.
+func TestRouteHeldTurnKeepsBoth(t *testing.T) {
+	seams := watchRouter(t)
+	f := &fakeRouter{}
+	e := routerEnv(t, f)
+	fs := newFakeSession(t, e, "held", session.Options{SubmitPause: time.Hour})
+	a := fs.askOwn(t, "Which database?", dbChoices)
+	seams.wait(t, "routed", a)
+	fs.report(t, session.AttentionWorking, "")
+	b := fs.ask(t, "Which name?", nil)
+	seams.wait(t, "routed", b)
+	try, giveUp := context.WithCancel(t.Context())
+	late := make(chan error, 1)
+	go func() {
+		_, err := testHost(e.srv, try, "sched").Submit(context.Background(), ext.SubmitRequest{Session: "held", Text: "late", Question: b, By: ada})
+		late <- err
+	}()
+	until(t, "the line typed", func() bool { return slices.Contains(fs.written(), "late") })
+	giveUp()
+	select {
+	case err := <-late:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("the given-up line: %v, want context.Canceled", err)
+		}
+	case <-time.After(testWait):
+		t.Fatal("the given-up line still waits in its pause")
+	}
+	// The hold shows (its words, not only the turn held): what it took the
+	// place of is held over from then.
+	until(t, "the hold shown", func() bool {
+		att := fs.l.Info().Attention
+		return fs.l.Held() && att.State == session.AttentionNeedsInput && att.Source == session.SourceSubmit
+	})
+	if kept := fs.l.Info().Kept; !slices.Equal(kept, []string{a, b}) {
+		t.Fatalf("kept %q, want %q", kept, []string{a, b})
+	}
+	seams.settle(t, e, "held")
+	if got := f.resolvedIDs(); len(got) != 0 {
+		t.Fatalf("told %q while the hold shows and the session keeps both", got)
+	}
+	fs.report(t, session.AttentionDone, "done for now")
+	until(t, "B let go", func() bool { return slices.Equal(fs.l.Info().Kept, []string{a}) })
+	until(t, "B told Resolved", func() bool { _, n := f.resolution(b); return n == 1 })
+	seams.settle(t, e, "held")
+	if got := f.resolvedIDs(); !slices.Equal(got, []string{b}) {
+		t.Fatalf("told %q, want %q alone", got, []string{b})
+	}
+}
+
+// The agent's own question A set aside by work, and question B shown, both
+// routed; B then asked again by the agent, the same in every field, is
+// adopted as its own in A's place. The session keeps A no longer, and A is
+// told Resolved from that change alone, the session quiet after.
+func TestResolvedWhenTheShownQuestionIsAskedAsTheOwn(t *testing.T) {
+	seams := watchRouter(t)
+	f := &fakeRouter{}
+	e := routerEnv(t, f)
+	fs := newFakeSession(t, e, "adopt", session.Options{})
+	a := fs.askOwn(t, "Which database?", dbChoices)
+	seams.wait(t, "routed", a)
+	fs.report(t, session.AttentionWorking, "")
+	b := fs.ask(t, "Which name?", dbChoices)
+	seams.wait(t, "routed", b)
+	if kept := fs.l.Info().Kept; !slices.Equal(kept, []string{a}) {
+		t.Fatalf("B shown: kept %q", kept)
+	}
+	// The router has read the session as it keeps A and shows B.
+	seams.settle(t, e, "adopt")
+	if got := f.resolvedIDs(); len(got) != 0 {
+		t.Fatalf("told %q while A is kept and B shown", got)
+	}
+	if got := fs.askOwn(t, "Which name?", dbChoices); got != b {
+		t.Fatalf("asked again: %s, want B, %s", got, b)
+	}
+	until(t, "A let go", func() bool { return len(fs.l.Info().Kept) == 0 })
+	until(t, "A told Resolved", func() bool { _, n := f.resolution(a); return n == 1 })
+	seams.settle(t, e, "adopt")
+	if got := f.resolvedIDs(); !slices.Equal(got, []string{a}) {
+		t.Fatalf("told %q, want %q alone", got, []string{a})
+	}
+	if n := count(f.routedIDs(), b); n != 1 {
+		t.Fatalf("B routed %d times", n)
+	}
+}
+
+// The agent's own question A, routed, held over by the hold of the turn (a
+// provider's line answering A typed, its try given up in its pause); a
+// question drawn on the screen shows over the hold, and a person's keys end
+// the hold. A can show again nowhere: the session keeps it no longer, and A
+// is told Resolved while the question on the screen still shows.
+func TestResolvedWhenTheHoldEndsUnderAScreenQuestion(t *testing.T) {
+	seams := watchRouter(t)
+	f := &fakeRouter{}
+	e := routerEnv(t, f)
+	fs := newFakeSession(t, e, "overlay", session.Options{SubmitPause: time.Hour, Questions: codexQuestions(t)})
+	nate := fs.owner(t, "Nate")
+	a := fs.askOwn(t, "Which database?", dbChoices)
+	seams.wait(t, "routed", a)
+	try, giveUp := context.WithCancel(t.Context())
+	late := make(chan error, 1)
+	go func() {
+		_, err := testHost(e.srv, try, "sched").Submit(context.Background(), ext.SubmitRequest{Session: "overlay", Text: "late", Question: a, By: ada})
+		late <- err
+	}()
+	until(t, "the line typed", func() bool { return slices.Contains(fs.written(), "late") })
+	giveUp()
+	select {
+	case err := <-late:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("the given-up line: %v, want context.Canceled", err)
+		}
+	case <-time.After(testWait):
+		t.Fatal("the given-up line still waits in its pause")
+	}
+	until(t, "the hold shown", func() bool {
+		att := fs.l.Info().Attention
+		return fs.l.Held() && att.State == session.AttentionNeedsInput && att.Source == session.SourceSubmit
+	})
+	if err := fs.proc.Print(codexApproval("curl -sI https://example.com")); err != nil {
+		t.Fatal(err)
+	}
+	dialog := shownDialog(t, fs)
+	if kept := fs.l.Info().Kept; !slices.Equal(kept, []string{a}) {
+		t.Fatalf("held over under the dialog: kept %q", kept)
+	}
+	seams.wait(t, "routed", dialog.ID)
+	seams.settle(t, e, "overlay")
+	if got := f.resolvedIDs(); len(got) != 0 {
+		t.Fatalf("told %q while A is held over", got)
+	}
+	if err := fs.l.Input(nate, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	until(t, "the hold ended", func() bool { return !fs.l.Held() })
+	until(t, "A let go", func() bool { return len(fs.l.Info().Kept) == 0 })
+	until(t, "A told Resolved", func() bool { _, n := f.resolution(a); return n == 1 })
+	seams.settle(t, e, "overlay")
+	if got := fs.l.Info().Attention; got.ID != dialog.ID {
+		t.Fatalf("the hold ended: %+v, want the dialog still shown", got)
+	}
+	if got := f.resolvedIDs(); !slices.Equal(got, []string{a}) {
+		t.Fatalf("told %q, want %q alone", got, []string{a})
 	}
 }
