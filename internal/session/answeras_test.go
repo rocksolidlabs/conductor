@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // What the session keeps without showing (Info.Kept): the agent's own
@@ -218,6 +220,10 @@ func TestKeptChangesAreTold(t *testing.T) {
 		if kept := s.Info().Kept; !slices.Equal(kept, []string{a.ID}) {
 			t.Fatalf("held over under the question: kept %q", kept)
 		}
+		watcher := newChanSink(false)
+		if _, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "watcher"}, watcher); err != nil {
+			t.Fatal(err)
+		}
 		n := k.count()
 		if err := s.Input(owner, []byte{0x15}); err != nil {
 			t.Fatal(err)
@@ -234,6 +240,18 @@ func TestKeptChangesAreTold(t *testing.T) {
 			t.Fatalf("the hold ended: %+v, kept %q", info.Attention, info.Kept)
 		}
 		k.toldSince(t, n, nil)
+		// A's card in the chat offers its choices no longer: the chat
+		// keeps its withdrawn line, the agent's moving on (Ctrl+U killed
+		// the held text, answering nothing), and tells it to the viewers.
+		left, found := findChat(s, func(m ChatMessage) bool { return m.Event == "withdrawn" && m.Ref == a.ID })
+		if !found || left.Text != ChatLeftAgent {
+			t.Fatalf("A's withdrawn line: %+v (found %v); the chat %+v", left, found, s.ChatHistory())
+		}
+		if got := waitControl(watcher, func(m map[string]any) bool {
+			return chatOf(proto.ChatKindSystem)(m) && m["event"] == "withdrawn" && m["ref"] == a.ID
+		}); got == nil {
+			t.Fatalf("A's withdrawn line was not told; the chat %+v", s.ChatHistory())
+		}
 		reportState(t, s, AttentionDone, "done for now")
 		if info := s.Info(); info.Attention.ID == a.ID || len(info.Kept) != 0 {
 			t.Fatalf("at the done: %+v, kept %q, A shown again", info.Attention, info.Kept)

@@ -658,9 +658,21 @@ func TestResolvedOnWithdrawalWithNoActivity(t *testing.T) {
 	if err := fs.proc.Print(codexApproval("curl -sI https://example.com")); err != nil {
 		t.Fatal(err)
 	}
-	q := shownDialog(t, fs).ID
+	dialog := shownDialog(t, fs)
+	q := dialog.ID
 	seams.wait(t, "routed", q)
-	entries := len(fs.l.Activity())
+	// The routed seam says nothing of the dialog's own entry: the session
+	// records it after it shows the dialog, and the router may read the
+	// session (its registration's read) in between. The baseline is taken
+	// once that entry is in, so that only the withdrawal can add to it.
+	var entries int
+	until(t, "the dialog's entry", func() bool {
+		got := fs.l.Activity()
+		entries = len(got)
+		return slices.ContainsFunc(got, func(a session.ActivityEntry) bool {
+			return a.Type == session.ActivityAttention && a.Message == dialog.Message && dialog.Since != nil && a.At.Equal(*dialog.Since)
+		})
+	})
 	if err := fs.proc.Print(codexApprovalGone); err != nil {
 		t.Fatal(err)
 	}

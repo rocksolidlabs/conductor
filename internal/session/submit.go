@@ -701,12 +701,15 @@ func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 	if over.ID != "" && !restore {
 		// Gone with the hold (the session ended, or a question on the
 		// screen took the hold's place and the agent's went meanwhile).
+		reason := s.leftReasonLocked(over.ID)
 		s.forgetLocked(over.ID)
 		if over.ID == s.own.ID {
 			// The agent's own, held over: it shows again nowhere now, so
-			// the session keeps it no longer (Info.Kept). Its chat line
-			// was let go above.
-			s.dropOwnLocked("")
+			// the session keeps it no longer (Info.Kept), and its card in
+			// the chat says it left (forgetLocked keeps the line of a
+			// question the session keeps; dropOwnLocked writes it), told
+			// by the notifyChange below.
+			s.dropOwnLocked(reason)
 		}
 	}
 	if restore {
