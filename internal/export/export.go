@@ -118,12 +118,13 @@ var (
 // record may lag its ledger, never lead it; the restored server's
 // syncRecords mends one that lags), then Dispatch's snapshot and the
 // attachment files it requires (a snapshot taken again, at most three,
-// when one went meanwhile), then the other documents and files, then the
-// manifest. A document written meanwhile is one version or the other,
-// never torn: the store renames. Every file is read through an os.Root on
-// the data directory. Nothing is buffered whole; w gets the archive as it
-// is made, so an error leaves it cut short, with no manifest, which no
-// restore takes.
+// when one went meanwhile), then the other documents and files (never a
+// run's record the first copy did not take), then the manifest. A
+// document written meanwhile is one version or the other, never torn: the
+// store renames. Every file is read through an os.Root on the data
+// directory. Nothing is buffered whole; w gets the archive as it is made,
+// so an error leaves it cut short, with no manifest, which no restore
+// takes.
 func Write(ctx context.Context, w io.Writer, src Source) (Manifest, error) {
 	if src.Snapshot == nil {
 		return Manifest{}, errors.New("export: no snapshot of the databases")
@@ -195,17 +196,25 @@ func (e *writer) records() error {
 	}
 	for _, d := range entries {
 		rel := runsPath + "/" + d.Name()
-		if !d.Type().IsRegular() || !strings.HasSuffix(d.Name(), ".json") || !validPath(rel) {
+		if !isRecord(rel, d) {
 			continue // the walk lists it
-		}
-		if _, ok := reserved(rel); ok {
-			continue
 		}
 		if err := e.copyFile(rel); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// isRecord says rel (d) is a run's record as records takes one: a regular
+// file runs/<name>.json of a valid, unreserved path. The walk never takes
+// one records did not.
+func isRecord(rel string, d fs.DirEntry) bool {
+	if path.Dir(rel) != runsPath || !strings.HasSuffix(rel, ".json") || !d.Type().IsRegular() || !validPath(rel) {
+		return false
+	}
+	_, ok := reserved(rel)
+	return !ok
 }
 
 // ledger snapshots the ledger's database, when the data directory has one.
@@ -353,6 +362,14 @@ func (e *writer) rest() error {
 			if d.IsDir() {
 				return fs.SkipDir
 			}
+			return nil
+		}
+		if isRecord(rel, d) {
+			// A run's record that records did not take was written after
+			// the records' copy: taken now, it could lead the archived
+			// ledger (a new run's, or one at a later revision), which no
+			// restored start mends. Left out, the restored server's
+			// syncRecords writes it from the ledger, where it holds the run.
 			return nil
 		}
 		if why, ok := reserved(rel); ok {

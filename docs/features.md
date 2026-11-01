@@ -3471,7 +3471,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   the data directory as one zip archive (`Write`: the runs' records, then
   the ledger's snapshot, then Dispatch's with the attachment files its live
   rows and launch pins require, read from the snapshot and taken again, at
-  most three times, when one went meanwhile, then the other files, then
+  most three times, when one went meanwhile, then the other files, never a
+  run's record written after the records' copy, then
   `conductor-export.json`, format 1, every file with its size and SHA-256
   and what was left out and why), the catalog resolved against the
   configuration (`ResolveCatalog`), so the archive's agents launch with no
@@ -3486,7 +3487,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   open connection, under the store's lock) and `SnapshotFile` (a
   read-only connection, no server running), the ledger `Held`, Dispatch
   `SnapshotHashes` and `AttachmentPath`. `GET /api/export` (admin, a
-  switchyard's too) streams the archive. No new dependency, no schema
+  switchyard's too) streams the archive, and aborts the response when it
+  fails after its first byte. No new dependency, no schema
   change. Tests: `TestRoundTrip`, `TestExportLeavesOut`,
   `TestRestoreRefuses`, `TestRestoreStages`,
   `TestExportRecordsBeforeTheLedger`, `TestReserve`,
@@ -3495,10 +3497,13 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestRestoreNeverRenamesOver`,
   `TestExportAttachmentSweptAfterTheSnapshot`,
   `TestExportAttachmentStillMissing`,
-  `TestRestoreRefusesAMissingAttachment`; the ledger's
+  `TestRestoreRefusesAMissingAttachment`,
+  `TestExportNeverTakesARecordAfterTheLedger`,
+  `TestRestoreRefusesAnAttachmentNotItsName`,
+  `TestRestoreCancelledWithinAnEntry`; the ledger's
   `TestSnapshotWhileWriting`, `TestSnapshotFileReadOnly`, `TestHeld`;
   Dispatch's `TestSnapshot`, `TestSnapshotFile`, `TestSnapshotHashes`;
-  the API's `TestExportRoute`. The by-hand export and restore on two
+  the API's `TestExportRoute`, `TestExportCutShortFails`. The by-hand export and restore on two
   machines waits for PR-13's commands.
 
   PR-13 (#485): cli: conductor export and conductor restore.

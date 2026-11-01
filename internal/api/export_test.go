@@ -6,13 +6,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/coder/websocket"
@@ -171,9 +174,92 @@ func TestExportRoute(t *testing.T) {
 	if !paths["links/"+linkID+".json"] {
 		t.Fatalf("the switchyard's archive lacks its kept link: %v", paths)
 	}
-	if bytes.Contains(b, []byte(yardToken)) {
-		t.Fatal("the archive holds a link's token")
+	if name := archiveHolding(t, b, yardToken); name != "" {
+		t.Fatalf("the archive's %s holds a link's token", name)
+	}
+	// The check sees a token where one is: planted in a file, it is found.
+	if err := os.WriteFile(filepath.Join(dir, "planted.json"), []byte(`{"token":"`+yardToken+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if resp, b = getExport(t, y, adminToken); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the switchyard's export: %d %.200s", resp.StatusCode, b)
+	}
+	if name := archiveHolding(t, b, yardToken); name != export.DataDir+"planted.json" {
+		t.Fatalf("the planted token found in %q", name)
 	}
 	host.c.Close(websocket.StatusNormalClosure, "")
 	<-host.done
+}
+
+// archiveHolding is the first entry of the archive b whose bytes,
+// decompressed, hold s, or "": every entry is deflated, so the archive's
+// own bytes never show it.
+func archiveHolding(t *testing.T, b []byte, s string) string {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(data, []byte(s)) {
+			return f.Name
+		}
+	}
+	return ""
+}
+
+// An export that fails once its first bytes are out (its catalog, through
+// the hook, after an incompressible file the walk takes first) is not a
+// whole 200: the response is aborted, and the client's read of it fails.
+func TestExportCutShortFails(t *testing.T) {
+	e := newTestEnv(t, nil)
+	dir := e.srv.store.Dir()
+	big := make([]byte, 1<<20)
+	rand.NewChaCha8([32]byte{7}).Read(big)
+	if err := os.WriteFile(filepath.Join(dir, "a-big.bin"), big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "catalog.json")); errors.Is(err, fs.ErrNotExist) {
+		if err := os.WriteFile(filepath.Join(dir, "catalog.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var asked atomic.Bool
+	hook := func(src export.Source) export.Source {
+		src.Catalog = func() ([]byte, error) {
+			asked.Store(true)
+			return nil, errors.New("the catalog fails")
+		}
+		return src
+	}
+	exportSourceHook.Store(&hook)
+	t.Cleanup(func() { exportSourceHook.Store(nil) })
+	req, err := http.NewRequest("GET", e.http.URL+"/api/export", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%d: the failure came before the archive's first bytes", resp.StatusCode)
+	}
+	if _, err := io.ReadAll(resp.Body); err == nil {
+		t.Fatal("the cut-short archive's transfer ended whole")
+	}
+	if !asked.Load() {
+		t.Fatal("the catalog was never asked")
+	}
 }

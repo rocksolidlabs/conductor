@@ -182,7 +182,8 @@ var (
 // the manifest within its bound and last, every entry listed with its
 // size and SHA-256 and no other, every path under data/ of [A-Za-z0-9._-]
 // elements (no "..", no backslash, nothing absolute), no link, no
-// duplicate, at most MaxFiles, no path leftOut names. It writes
+// duplicate, at most MaxFiles, no path leftOut names, no attachment's file
+// whose SHA-256 is not its name; ctx ends it, between reads too. It writes
 // everything into <dir>/.restore-<random> through an os.Root (files 0600,
 // directories 0700), syncs it, checks that Dispatch's staged database
 // names no attachment the archive lacks, checks the directory is Fresh
@@ -211,7 +212,7 @@ func Install(ctx context.Context, res *Reservation, r io.ReaderAt, size int64) (
 		if err := ctx.Err(); err != nil {
 			return Manifest{}, err
 		}
-		if err := copyChecked(io.Discard, en); err != nil {
+		if err := copyChecked(ctx, io.Discard, en); err != nil {
 			return Manifest{}, err
 		}
 	}
@@ -316,8 +317,9 @@ var hexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // checkArchive checks the archive's shape and its manifest, before any
 // byte of a file is read: the manifest last and within its bound, of
-// Format, every file valid, listed once, unreserved, its entry a regular
-// file of the size listed, and no entry the manifest does not list.
+// Format, every file valid, listed once, unreserved, an attachment's file
+// listed with the SHA-256 it is named for, its entry a regular file of the
+// size listed, and no entry the manifest does not list.
 func checkArchive(zr *zip.Reader) (Manifest, []entry, error) {
 	refuse := func(format string, args ...any) (Manifest, []entry, error) {
 		return Manifest{}, nil, fmt.Errorf("export: the archive is refused: "+format, args...)
@@ -371,6 +373,9 @@ func checkArchive(zr *zip.Reader) (Manifest, []entry, error) {
 		if why, ok := reserved(f.Path); ok {
 			return refuse("it holds %s, which no restore takes (%s)", f.Path, why)
 		}
+		if sum, ok := attachmentSum(f.Path); ok && sum != f.SHA256 {
+			return refuse("%s is an attachment's file named for the SHA-256 %s, and its manifest says its bytes hash to %s", f.Path, sum, f.SHA256)
+		}
 		if _, dup := listed[f.Path]; dup {
 			return refuse("it lists %s twice", f.Path)
 		}
@@ -412,17 +417,33 @@ func checkArchive(zr *zip.Reader) (Manifest, []entry, error) {
 	return m, entries, nil
 }
 
+// attachmentSum is the SHA-256 that rel, folded, names when it is a
+// Dispatch attachment's file (dispatch/attachments/<2>/<64 hex>), whose
+// bytes must hash to it: Dispatch serves the file under that hash, and
+// takes a file already there as an upload's same content.
+func attachmentSum(rel string) (string, bool) {
+	rel = fold(rel)
+	sum := path.Base(rel)
+	if !hexPattern.MatchString(sum) || rel != "dispatch/"+dispatch.AttachmentPath(sum) {
+		return "", false
+	}
+	return sum, true
+}
+
 // copyChecked copies the entry's bytes to w, refusing them unless they are
 // its size and hash to its SHA-256 (and archive/zip's CRC-32, read to its
-// end, agrees).
-func copyChecked(w io.Writer, en entry) error {
+// end, agrees); ctx ends it between reads.
+func copyChecked(ctx context.Context, w io.Writer, en entry) error {
 	rc, err := en.f.Open()
 	if err != nil {
 		return fmt.Errorf("export: the archive is refused: %s: %w", en.f.Name, err)
 	}
 	defer rc.Close()
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(w, h), io.LimitReader(rc, en.file.Size+1))
+	n, err := io.Copy(io.MultiWriter(w, h), ctxReader{ctx, io.LimitReader(rc, en.file.Size+1)})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if err != nil {
 		return fmt.Errorf("export: the archive is refused: %s: %w", en.f.Name, err)
 	}
@@ -477,7 +498,7 @@ func stage(ctx context.Context, root *os.Root, staging string, entries []entry) 
 		if err != nil {
 			return nil, fmt.Errorf("export: staging %s: %w", rel, err)
 		}
-		err = copyChecked(f, en)
+		err = copyChecked(ctx, f, en)
 		if err == nil {
 			err = f.Sync()
 		}
