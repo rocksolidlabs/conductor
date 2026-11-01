@@ -26,7 +26,7 @@ make desktop-test              # the Electron shell: tsc --noEmit and vitest (de
 make lint-static               # staticcheck, pinned
 make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
 make test-network              # the built-in agents' sites on the network (nightly)
-make test-recipes              # the recipe flags against the CLIs on this machine (nightly)
+make test-recipes              # the recipe and Brakeman flags against the CLIs on this machine (nightly)
 python3 scripts/brand_assets.py --check
 python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
 python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py)

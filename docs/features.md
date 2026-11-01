@@ -3058,6 +3058,216 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **Dispatch: projects, tickets and the views over them (DS1, #400 to
+  #413, 2026-10-29 to 2026-11-01).** Program item DS1, planned in
+  `docs/plans/dispatch.md` (PR #384) and shipped as fourteen PRs.
+  Dispatch is Conductor's own work tracking, local first: projects,
+  tickets with keys that never change (`CND-12`), their acceptance
+  criteria, accountable owner, assignees, priority, status, Now/Next/Later,
+  labels, milestones, parent and children, blockers, comments,
+  attachments, delivery and run links and their history, in
+  `dispatch/dispatch.sqlite` and `dispatch/attachments/` in the data
+  directory, with no account and no network. Every write is a typed
+  operation with a client-minted id and a kept receipt; the `changes` log
+  and the field rules of `rules.go` are what replication (CS1) will merge
+  by. The engine's own act keeps the lower-case verb in code and is
+  "scheduling" where people read it. See the README (Dispatch),
+  `docs/architecture.md` (Dispatch) and `docs/protocol.md` (Dispatch).
+  What each PR shipped and the checks its body reports over its review
+  rounds; every PR's required checks ended green on the head that merged:
+
+  PR-0 (#400, PR #416): the run log's "scheduling paused" and "scheduling
+  resumed", the toast, the button and palette row "Pause scheduling", the
+  task words "ready, scheduling is paused", the README's and the
+  protocol's lines; identifiers and routes kept. It also fixed the crew
+  continuation tests' temp-dir race its CI met (#391). Checks: `make
+  preflight` all 19 steps on Linux, the Mac rows, CI 15 of 15. By hand:
+  not done.
+
+  PR-1 (#401, PR #415): `internal/dispatch` with `Open` (pragmas, quick
+  check, the schema made inside the transaction that reads its version,
+  read-only on a newer or damaged file), ids and keys, `Apply` with
+  receipts, the `changes` log, `prune` and `rules.go`. Found and filed
+  outside the stream: the ledger's read-only open of a rollback-journal
+  file (#417, fixed by PR #446). Checks: lint, lint-static, the module's
+  race tests, the open and lock tests 30 of 30, the Mac rows; CI's `go`
+  job twice red on #391 in `internal/crew`, then green.
+
+  PR-2 (#402, PR #420): the row types and every bound, projects (create,
+  edit, archive) and tickets (create, edit, delete as a tombstone,
+  undelete), numbers allocated in the creating transaction, the parent's
+  cycle and depth checks. Checks: lint, lint-static, the module's race
+  tests, 50 concurrent creates 30 of 30, thirteen mutations each caught,
+  the Mac rows; CI green after #391's fix reached the branch.
+
+  PR-3 (#403, PR #423): comments numbered at read, labels and milestones
+  whose delete leaves every ticket, people added as a ticket names them,
+  `blocks` and `relates` with the cycle check, links (a run's checked
+  against the engine, one ticket a run), acceptance for the owner and
+  against the criteria, the close policy's gate on `done`. Checks: lint,
+  lint-static, the module's race tests, 66 mutations each caught, the Mac
+  rows, CI 15 of 15.
+
+  PR-4 (#404, PR #425): the list query, full-text search, the composite
+  reads, saved views, the pruning goroutine and `BenchmarkList` over
+  10,000 tickets. Two owner decisions came from its reviews: each comment
+  is its own search entry, so a comment's edit re-indexes it alone (it had
+  taken 2.78 s on a ticket of 1,999 large comments; Owner decisions, 20),
+  and a search of several very common words may pass the 50 ms target
+  (Owner decisions, 21). Measured on the Linux box, medians: a filtered
+  page 12.4 ms (target 20), a page of 200 17.4 ms (20), a two-word search
+  34.7 ms (50), one and two letters 35.7 and 35.2 ms, a search of every
+  project 45.5 ms; the 3, 5 and 10 most common words 64.7, 89.0 and 147.7
+  ms, reported without a target. Checks: the module's race tests, the
+  search and pruning tests 30 of 30, 51 mutations over its rounds each caught,
+  the Mac rows, CI 15 of 15.
+
+  PR-5 (#405, PR #427): the store opened by the server (none on a
+  switchyard), projects, people and tickets over HTTP, accept and
+  unaccept, history, `links?run=`, the receipts route, the `dispatch`
+  event, `docs/protocol.md` and this document's Dispatch section. Measured:
+  the largest ticket's reply 2,884,678 bytes of the 3,145,728 bound at its
+  escaped worst, a page of 50 comments 1,674,137. Found and filed outside
+  the stream: older routes dropping a raw `;` (#428, closed). Checks: the
+  module's race tests, eight mutations each caught, the Mac rows, CI 15 of
+  15. By hand against `bin/conductor serve`: a project, a ticket, its
+  receipt, the events, 401 without a token, the file 0600 and no
+  write-ahead log after the stop.
+
+  PR-6 (#406, PR #430): comments, labels, milestones, relations, links and
+  saved views over HTTP, and a large commit that drops no stream: a
+  commit's events are one entry of a client's queue, and more than 64 of a
+  kind in a project are one event (Owner decisions, 22); a label and a
+  milestone deleted from 257 tickets with a live stream open. Checks: the
+  module's race tests, the 13 route tests 20 of 20, ten then four
+  mutations each caught, the Mac rows, CI 15 of 15. By hand: comments,
+  links, a label and a view against `bin/conductor serve` with the events
+  read.
+
+  PR-7 (#407, PR #439): attachments as content-addressed files, a lease
+  before the file is published, the shard and `attachments/` synced (the
+  move written through on Windows), the sweep at open, and the upload,
+  download and delete routes (an SVG only ever a download). Checks: `make
+  preflight` all 19 steps, the attachment and sweep tests 30 of 30, the
+  Windows `publish` run on the Windows host from a cross-compiled test
+  binary, the Mac rows, CI 15 of 15. By hand: 15 MiB uploaded with `curl`
+  at 400 KB/s in 39 s and downloaded byte for byte, its removal swept at
+  the next start.
+
+  PR-8 (#408, PR #438): the client and its ordering gate, operations with
+  receipts, the live re-reads, Dispatch in the sidebar (`G D`, `Alt+D`),
+  the projects page, a project's list and filter bar, and the ticket page
+  with its Markdown editors, pickers and history; a page's edits made one
+  after another. Five review rounds. Checks: typecheck, vitest (853
+  tests), `make test-e2e` (one Neovim load flake, #281),
+  `dispatch.spec.ts` 170 of 170 with `--repeat-each 10`, CI 15 of 15 after
+  one rerun of the Neovim tests' flake.
+
+  PR-9 (#409, PR #496): the board and the roadmap with drag and keyboard
+  moves, saved views as chips, the list's letters and selection, the
+  palette's Tickets group and rows, phone widths. Left for the owner: the
+  roadmap counts a milestone's done/total over the tickets it shows, not
+  from the store. Checks: typecheck, vitest (914 tests), `make test-e2e`
+  278 passed at the last full run, the changed specs alone after, CI 15
+  of 15.
+
+  PR-10 (#410, PR #501): comments, attachments (progress, images through
+  object URLs), parent and relations, labels and milestones, delete and
+  undelete, the project's description. Two bugs of the stream were found
+  and fixed in it: Escape left a picker's menu open, and a ticket picked
+  twice was not picked. Checks: typecheck, vitest (987 tests),
+  `dispatch.spec.ts` 31 of 31, `make test-e2e` 291 passed at review round
+  3, `make preflight` at round 1 (e2e's one failure the graph flake fixed
+  on main by #456), CI 15 of 15.
+
+  PR-11 (#411, PR #503): the close card with Accept, Unaccept and Close as
+  done in the policy's words, delivery and external links, the run Tasks
+  view inside a ticket (`RunTasks.vue` embedded), the run page's chip,
+  and the close policy editor. Checks: typecheck, vitest (1,017 tests),
+  `make test-e2e` 311 passed at review round 3, the three Dispatch specs
+  41 of 41 and the Mac rows on the merge commit, CI 15 of 15; the Windows
+  rows not run (no `desktop/` change).
+
+  PR-12 (#412, PR #450): `conductor dispatch` (projects, tickets, show,
+  create, edit, comment, accept, link), `conductor task ticket` and the
+  MCP tools `ticket_read` and `ticket_comment` over the session's ticket
+  routes, the skill's section. Measured: the largest ticket printed whole
+  by `show`, `task ticket` and `ticket_read` at 3,145,727 bytes. Checks:
+  the module's race tests (each run's one failure a #281 flake outside the
+  PR, passing alone), the PR's tests 10 of 10, the scripts suite, the Mac
+  rows, CI 15 of 15.
+
+  PR-13 (#413): this entry, the README's pages, keys and closing, this
+  document's reads, closing, clients and pages paragraphs, and Dispatch on
+  AGENTS.md's names line. Its review round 1 fixed what the by-hand
+  Markdown check found (below): a ticket's description, criteria and
+  comments link a bare URL, through a `linkify` option of `renderMarkdown`
+  that only Dispatch's text passes (a vitest case, two `dispatch.spec.ts`
+  steps); round 2 kept it to `http:` and `https:`, the schemes the desktop
+  app opens.
+
+  By hand for this entry, 2026-11-01, on main at `ba27edec` (PR-11's
+  merge), `conductor v0.7.0-rc.18-583-gba27edec`, each server on loopback
+  with its own data directory and `CONDUCTOR_REACH=off`:
+
+  - **An upgrade with an empty store**, on the WSL box (Linux) and on the
+    Mac (macOS 27, arm64): the v0.7.0-rc.18 binary from the release's
+    package (the `.deb`, and the arm64 `Conductor.app`) loaded the example
+    crews, answered no Dispatch route and left no `dispatch/` directory;
+    this build on that directory made `dispatch/dispatch.sqlite` (0600,
+    its directories 0700) at its start, listed no project and the same five
+    crews. On Linux, in headless Chromium, the projects page showed its
+    empty state, and `CND` and `CND-1` were made from the page.
+  - **Markdown pasted from GitHub issues**, on Linux: issue #437's body
+    (6,956 characters) as `CND-1`'s description, stored exactly as pasted,
+    rendered with its four headings, its table (4 columns, 4 rows), its 12
+    task-list items as checkboxes, nested lists, bold and inline code; #485's
+    body as a comment, its code block in one `pre`. It found one difference
+    from GitHub: a bare URL stayed words, the renderer's `linkify` off.
+    Fixed in this PR (review round 1): a URL with its scheme is a link in a
+    ticket's text and comments, opening outside the app, as `<https://…>`
+    and `[text](url)` were. What still differs, on purpose: a `#359`, a
+    `www.` host and a file name stay words, since a ticket has no
+    repository to resolve them against and `README.md` would read as a
+    host; a bare e-mail address, `mailto:`, `ftp:` and `//host` stay words
+    too (review round 2), since the desktop app opens only http and https
+    and would leave such a link doing nothing. The Files tab's preview keeps `linkify` off.
+  - **An attachment of 15 MiB over a slow link**, through the page on
+    Linux: Chromium throttled to 400 KB/s up and 2 MB/s down; the upload's
+    progress, read once a second, went from 1 % to 100 % through 39 values
+    and the upload took 40.4 s, the store
+    held 15,728,640 bytes under the file's SHA-256, and the download (10.7
+    s) was the file byte for byte. The same by `curl` was PR-7's.
+  - **A restore of the data directory**, on Linux and the Mac: the
+    directory copied with the server stopped, `CND-1` edited and `CND-2`
+    made, the server stopped and the copy put back. On the next start
+    `CND-1` read as backed up at its revision, `CND-2` answered 404 (its
+    page: missing), the attachment downloaded byte for byte, and an edit
+    against the restored revision was taken. On Linux the ticket's page
+    stayed open across both restarts: it showed the edit live, then, never
+    reloaded, the restored ticket, and its own edit after the restore was
+    taken. The next ticket made after the restore was `CND-2` again: a
+    restore takes the store back whole, its numbers with it.
+  - **Not run**: the desktop app on Windows (WSL) and on the Mac opening
+    Dispatch after an upgrade and after a restore. The app's updater
+    installs only a published release, and none carries Dispatch yet (the
+    last is v0.7.0-rc.18); installing a local build over the owner's app
+    replaces it, and on Windows the server inside WSL that the owner's
+    live sessions run in, so it is the owner's to do or allow. The
+    bare-server half of both ran above; the app's start, its token and the
+    WSL server it runs did not. #561 holds it, on the first release that
+    carries Dispatch. `conductor export` and a restore from it, which wait
+    for item C6 (#484, #485).
+
+  **The acceptance observation: pending.** The item is done when, for
+  seven days, the owner and one other person run a team's work through
+  Dispatch alone on one `conductor serve` (two browsers, the workbench
+  token and a display name each), a run's tasks reached from the ticket
+  that asked for them, and the owner writes here what was missing, what
+  was slow and what was wrong. Which work the week is observed on is the
+  owner's to decide (the plan's Acceptance). A later docs PR of the
+  stream carries the owner's words; #561 holds the week, the desktop
+  check and that PR.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
@@ -3467,9 +3677,109 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   a clock the tests drive.
 
   PR-12 (#484): export, ledger, dispatch, api: the export archive, GET
-  /api/export and the restore installer. Planned.
+  /api/export and the restore installer. `internal/export` (new) writes
+  the data directory as one zip archive (`Write`: the runs' records, then
+  the ledger's snapshot, then Dispatch's with the attachment files its live
+  rows and launch pins require, read from the snapshot and taken again, at
+  most three times, when one went meanwhile, then the other files, never a
+  run's record written after the records' copy, then
+  `conductor-export.json`, format 1, every file with its size and SHA-256
+  and what was left out and why), the catalog resolved against the
+  configuration (`ResolveCatalog`), so the archive's agents launch with no
+  config; one table (`leftOut`) for what an export leaves out and a
+  restore refuses; of two paths one name to a filesystem that folds case
+  or trailing dots, the lower-case one taken and the other left out; `Fresh`, `Reserve`/`Release` (`restore.lock`,
+  exclusive, 0600, the pid and the process's start), `Install` (under its
+  caller's reservation; every check before a byte is written; staged in
+  `.restore-<random>` through an `os.Root`, files 0600, directories 0700,
+  every file and directory synced, a failed sync refusing it;
+  Dispatch's staged database checked for every file its live rows name;
+  no two paths one name to a filesystem that folds case or trailing dots;
+  renamed into place by a rename that refuses a name already there
+  (`RENAME_NOREPLACE` on Linux, `RENAME_EXCL` on macOS, `MoveFileEx`
+  without replace on Windows; elsewhere a file linked and a directory's name
+  taken with `mkdir` before the rename over it), never over anything,
+  `hooks/` moved aside, the data directory synced last, a failure reported) and
+  `Restore`. The ledger and Dispatch gain `Snapshot` (VACUUM INTO on the
+  open connection, under the store's lock) and `SnapshotFile` (a
+  read-only connection, no server running), the ledger `Held`, Dispatch
+  `SnapshotHashes` and `AttachmentPath`. `GET /api/export` (admin, a
+  switchyard's too) streams the archive, and aborts the response when it
+  fails after its first byte. No new dependency, no schema
+  change. Tests: `TestRoundTrip`, `TestExportLeavesOut`,
+  `TestRestoreRefuses`, `TestRestoreStages`,
+  `TestExportRecordsBeforeTheLedger`, `TestReserve`,
+  `TestInstallUnderItsCallersReservation`, `TestExportKeepsCatalogEnv`,
+  `TestExportResolvesInheritedEnv`, `TestRestoreRefusesReservedPaths`,
+  `TestRestoreNeverRenamesOver`,
+  `TestExportAttachmentSweptAfterTheSnapshot`,
+  `TestExportAttachmentStillMissing`,
+  `TestRestoreRefusesAMissingAttachment`,
+  `TestExportNeverTakesARecordAfterTheLedger`,
+  `TestRestoreRefusesAnAttachmentNotItsName`,
+  `TestRestoreCancelledWithinAnEntry`, `TestRestoreRefusesAliases`,
+  `TestRestoreNeverRenamesOverANameMadeMeanwhile`, `TestRenameByHand`,
+  `TestExportLeavesAliasesOut`, `TestRestoreDirectorySyncFails`; the ledger's
+  `TestSnapshotWhileWriting`, `TestSnapshotFileReadOnly`, `TestHeld`;
+  Dispatch's `TestSnapshot`, `TestSnapshotFile`, `TestSnapshotHashes`;
+  the API's `TestExportRoute`, `TestExportCutShortFails`. The by-hand export and restore on two
+  machines waits for PR-13's commands.
 
-  PR-13 (#485): cli: conductor export and conductor restore. Planned.
+  PR-13 (#485): cli: conductor export and conductor restore.
+  `internal/cli/export.go` (new): `conductor export` asks the running
+  server (`GET /api/export`; the server and the token as `conductor up`
+  takes them, a plain server on another machine refused without
+  `--insecure`; no bound on the download but the person's Ctrl-C), or with
+  `--data-dir` reads a data directory no server runs on, holding its
+  reservation while it reads (refused while `restore.lock` is held, while
+  its ledger's owner lock is, checked under the reservation, or when it
+  holds no server data; the databases through read-only snapshots, the
+  catalog resolved against `config.Load(--config)`), and writes `--out`
+  (default `conductor-export-<UTC time>.zip`, 0600, `O_EXCL`, never over a
+  file, and with `--data-dir` never inside the directory it reads, by
+  identity, a link followed by `..` taken where the system takes it and
+  the archive created through the directory checked; `--data-dir` itself
+  resolved once, as the system resolves it, a `..` after a missing child
+  refused, and that one directory checked, reserved and read),
+  kept only once it ends in its manifest, and says on stderr that the
+  archive holds the agents' env values. `conductor restore FILE` goes into
+  `--data-dir` or the directory `serve` would use (`config.Load`, then
+  `ResolveDataDir` with its legacy rule and notice), printed first, and
+  installs under one reservation; `--provider` takes the reservation and
+  checks `Fresh`, asks the sync slot alone (`local.Fill(extensions())`) for
+  its copy into a temporary file beside the data directory, giving it
+  `ext/<name>` (0700), on a goroutine of its own with no guard's wait,
+  counts the bytes as they arrive, and installs under the same
+  reservation; the free default answers that there is nothing to restore,
+  and nothing changes; a provider's `Restore` that ends its goroutine by
+  `runtime.Goexit` ends the command too. A refused restore removes the
+  data directory and every directory above it that it made.
+  `runServe` takes the reservation before `store.Open` and lets it go once
+  `api.New` has returned. `export.Reserve` names its holder (restore,
+  serve, export) and keeps `restore.lock` locked (flock) while held: a
+  file no process holds that a killed serve or export left is taken over,
+  a cut-short restore's still refuses. The usage text,
+  the completion table (restore's argument completes as a file) and the
+  README's "Export and restore" gain both. Tests:
+  `TestExportThroughTheServer`, `TestExportThroughTheServerCutShort`,
+  `TestExportOffline`, `TestExportOfflineRefusesNoServerData`,
+  `TestExportOfflineOutsideTheDataDir`, `TestExportOfflineLinkThenDotDot`,
+  `TestExportOfflineDataDirAsTheSystemResolvesIt`,
+  `TestExportOfflineHoldsTheReservation`, `TestExportNeverOverwrites`,
+  `TestExportSaysEnvIsKept`, `TestExportOfflineResolvesCatalog`,
+  `TestRestoreInstalls`, `TestRestoreRefusesServerData`,
+  `TestRestoreDataDirAsServe`, `TestRestoreReplacesHooks`,
+  `TestServeRefusesWhileRestoring`, `TestRestoreRefusesWhileServeStarts`,
+  `TestServeAfterAKilledServesReservation`,
+  `TestRestoreFromProviderStreams`, `TestRestoreFromProviderEndedShort`,
+  `TestRestoreFromProviderHoldsTheReservation` (as the download starts,
+  between it and the install, between two of the install's renames
+  through `export.BeforeRename`, and after the last),
+  `TestRestoreFromProviderGoexit`, `TestRestoreFromProvider`;
+  `TestReserveTakesOverAKilledServesOrExports` in `internal/export`;
+  `TestCompletionCompletes` and `TestCompletionSpecMatchesEveryFlag` cover
+  the two commands. The by-hand export on one machine and restore on
+  another is C6's acceptance, after this merges (PR-17 records it).
 
   PR-14 (#486): `internal/opencore` and `CONTRIBUTING.md`: no entitlement
   call site outside `ext`. `CONTRIBUTING.md`, Rules for code, says that code

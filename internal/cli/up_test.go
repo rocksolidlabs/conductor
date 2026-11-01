@@ -61,9 +61,23 @@ func crews(t *testing.T, args ...string) (int, string, string, error) {
 	return runWith(t, runCrews, args...)
 }
 
-// noSecret fails the test when the token is in anything a command printed.
+// noSecret fails the test when secretToken is in anything a command
+// printed.
 func noSecret(t *testing.T, parts ...any) {
 	t.Helper()
+	noToken(t, secretToken, parts...)
+}
+
+// noToken fails the test when token is in anything a command printed.
+func noToken(t *testing.T, token string, parts ...any) {
+	t.Helper()
+	if s, ok := tokenIn(token, parts...); ok {
+		t.Fatalf("the token is in %q", s)
+	}
+}
+
+// tokenIn is the first of parts (strings and errors) that holds token.
+func tokenIn(token string, parts ...any) (string, bool) {
 	for _, p := range parts {
 		s := ""
 		switch v := p.(type) {
@@ -74,9 +88,35 @@ func noSecret(t *testing.T, parts ...any) {
 				s = v.Error()
 			}
 		}
-		if strings.Contains(s, secretToken) {
-			t.Fatalf("the token is in %q", s)
+		if strings.Contains(s, token) {
+			return s, true
 		}
+	}
+	return "", false
+}
+
+// The check finds the token it is given wherever it is planted, and only
+// that one: a token another test uses is not secretToken.
+func TestTokenInFindsThePlantedToken(t *testing.T) {
+	for _, token := range []string{secretToken, exportToken} {
+		for _, parts := range [][]any{
+			{"wrote x\n", "conductor export: Bearer " + token + "\n", nil},
+			{"", "", errors.New("export: GET /api/export?token=" + token)},
+			{token},
+		} {
+			if _, ok := tokenIn(token, parts...); !ok {
+				t.Fatalf("%s not found in %q", token, parts)
+			}
+		}
+		if _, ok := tokenIn(token, "clean", "", error(nil)); ok {
+			t.Fatalf("%s found in clean output", token)
+		}
+	}
+	if _, ok := tokenIn(secretToken, "Bearer "+exportToken); ok {
+		t.Fatal("secretToken matched exportToken")
+	}
+	if _, ok := tokenIn(exportToken, "Bearer "+exportToken); !ok {
+		t.Fatal("exportToken missed")
 	}
 }
 

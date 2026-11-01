@@ -1430,6 +1430,78 @@ Dispatch is Conductor's own work tracking: projects, and tickets with keys
 that never change (`CND-12`), their acceptance criteria, owner, discussion and
 history, in the server's data directory (see `docs/protocol.md`, Dispatch). A
 ticket links to the managed run working on it, and the run's members read it.
+It is the tracker, not the engine: what Yardmaster does to a run's tasks is
+scheduling (Pause scheduling on a run page). Everything here is the workbench
+token's; a share link sees no ticket, and a switchyard keeps none. The store is
+`dispatch/dispatch.sqlite` and the attachments' files beside it in
+`dispatch/attachments/`, so a copy of the data directory taken with the server
+stopped is a backup of it, and copying it back restores it.
+
+**The pages.** **Dispatch** sits in the sidebar's foot after Crews (under More
+on a phone), **G D** from any page (**Alt+D** in a terminal). It lists the
+projects with their open and done tickets; **New project** takes a key (two
+to six capitals and digits, a capital first: `CND`), a name, a repository
+folder, the tracker (Dispatch's own, or an external one named by its URL,
+whose tickets are made by hand with a reference) and the close policy. A
+project's page shows its description (edited in place) and its tickets three
+ways, **List** (pages of 200, sorted
+on the server), **Board** (a column per status: Backlog, Ready, In progress,
+In review, Done, Cancelled) and **Roadmap** (Now, Next, Later and a folded Not
+planned, with the project's milestones and how many of the tickets shown are
+done beside them); a card moves by drag and drop or by **←** **→**. The filter
+bar (words to search, status, priority, labels, owner, assignees, milestone,
+horizon, blocked, and the sort) is the link's, so a link names what it shows
+(`/dispatch/CND?status=in_progress&label=api&q=cache`). **Save** keeps the
+filter, sort and view as a chip for this project or for every project; a
+chip's menu renames or deletes it. **Settings** on the project's page holds
+the close policy and the labels (twelve colours) and milestones (a target
+date, open or closed). A search is words, never syntax: every word must be in
+the ticket's key, title, description, criteria or one of its comments, the
+last one as a prefix.
+
+A ticket's page is `/dispatch/CND/12`: its title, the description and the
+acceptance criteria as Markdown with a preview (a `![…](attachment:<id>)`
+shows an attached image), the status, priority and horizon, the **owner**
+(the one accountable person) apart from the **assignees** (people or the
+catalog's agents), labels, milestone, parent and children, what it blocks and
+what blocks it (Blocked while a blocker is open), relates-to, attachments (16
+MiB each, 50 a ticket; PNG, JPEG, GIF and WebP shown, everything else a
+download), comments, delivery and external links, the managed runs linked to it, and its history
+field by field. A name typed for an owner or an assignee joins the people
+directory; people are names until Conductor has accounts. Delete keeps the
+key and every reference to the ticket, shown as deleted, and **Undelete** on
+its page brings it back with every reference, but for a run another ticket
+was linked to meanwhile: that run link is removed, since a run belongs to
+one live ticket.
+
+**Closing.** The card "To close: the owner's acceptance · a delivery link"
+says what the project's policy asks and which is met, and, unmet, why
+("accepted for Alice; the owner is now Bob", "accepted before the criteria
+changed"). **Accept for Alice** records the acceptance for the owner and
+against the criteria as they stand; no status implies it. A delivery link is
+the merged pull request's or the release's URL, added by hand. **Close as
+done**, a drop on Done or `s` to Done is refused in those words until the
+policy is met; any other status is free. A new Dispatch project asks for the
+owner's acceptance, an external one for nothing.
+
+**Runs.** A ticket's page lists the managed runs linked to it, each with the
+run page's own Tasks rows, live while the server holds the run and from its
+record after; a run is linked from the form (picked or named by its id), one
+ticket a run. The run page shows the ticket's key beside the run's name and
+opens it. Launching a run from a ticket comes later.
+
+**The keys.** On a project's page: **J** **K** (or the arrows) move, **Enter**
+opens, **X** selects, **C** makes a ticket, and **S** **P** **A** **L** **M**
+**O** set the status, priority, assignees, labels, milestone or owner of the
+tickets selected, else of the focused one; **Escape** clears the selection,
+then leaves the list, and on a ticket's page goes back to the list with its
+row focused. They are plain keys, so they pause in a text field, a terminal
+and a menu. In the command palette a key or a word of a title finds a ticket
+(a key typed whole is first, Enter opens it), **→** on it offers Copy key, Set
+status…, Set priority… and Assign to me, and **>** offers "New ticket in CND".
+Every page is live: another browser's change shows without a reload, and an
+edit made against what the page shows is refused, never lost, when someone
+changed it first.
 
 **From a shell.**
 
@@ -1719,6 +1791,74 @@ server cannot create stops it with `data directory … is not usable`. The Docke
 image sets `CONDUCTOR_DATA_DIR=/var/lib/conductor`, declared as a volume. At startup the
 server logs the directory it uses, and warns when it overlaps an allowed root:
 agents working there can read and commit its secrets.
+
+### Export and restore
+
+`conductor export` writes the data directory as one zip file, and
+`conductor restore` puts one into an empty data directory on any machine,
+where the next `conductor serve` opens it as its own: the agents saved on
+the **Agents** page, the crews, the runs' records and the ledger (what ran
+at the export shows as interrupted, as after a restart), Dispatch with its
+attachments, a switchyard's links (their hashes; the tokens were never
+kept) and the hook assets.
+
+```sh
+conductor export                                 # the running server, by CONDUCTOR_SERVER and CONDUCTOR_WORKBENCH_TOKEN
+conductor export --server URL --token T --out conductor.zip
+conductor export --data-dir DIR [--config FILE]  # a data directory no server runs on
+conductor restore conductor.zip [--config FILE] [--data-dir DIR]
+```
+
+`conductor export` asks the running server (`GET /api/export`), which
+snapshots its databases while it writes; the server and the token are
+taken as `conductor up` takes them, and a plain `http://` server on another
+machine is refused without `--insecure`. With `--data-dir` it reads a
+stopped server's directory itself, holding `restore.lock` there while it
+reads (below), and is refused while a server runs on it or when the
+directory holds no server data; `--config` names the config that server
+runs with. The archive goes to `--out`, by default
+`conductor-export-<UTC time>.zip` in the current directory, made 0600,
+never over an existing file and, with `--data-dir`, never inside the
+directory it reads. It leaves out the
+workbench token, the locks, the temporary files, `tls/` (a new machine
+gets its own certificates) and `ext/`, and lists what it left out in its
+manifest. **The archive holds your agents' env values in full**, the
+configured ones they inherit among them, so that the restored agents
+launch as they did with no config at all: keep it as you keep the config.
+
+`conductor restore` goes into `--data-dir`, or else the directory
+`conductor serve` would use with the same `--config` and environment
+(`dataDir`, `CONDUCTOR_DATA_DIR`, the older `conductor.d` rule of
+[Upgrading](#upgrading), then `~/.conductor`), which it prints before it
+writes anything. It refuses a directory that holds server data
+(`catalog.json`, `crews/`, `crews.json`, `runs/`, `dispatch/` or
+`links/`; `hooks/` is replaced) or that a server runs on, checks the whole
+archive before it writes a byte, and renames what it staged into place,
+never over anything. From before its first byte to after its last rename
+it holds `restore.lock` in the directory, which `conductor serve` takes
+too while it starts (and `conductor export --data-dir` while it reads), so
+none of them runs on it while another does. A serve or an export that was
+killed leaves the file, and the next one takes it over; a restore that was
+cut short leaves it too, and every later restore, export or serve is
+refused with a message naming it, to remove before you start over. On a machine whose config holds the same agents and
+values, the restored server's start masks those values again, so the
+agents follow that config from then on.
+
+`conductor restore --provider` asks the sync store built into the app for
+this device's latest copy instead of a file, and installs it the same way,
+printing the store's name and the bytes as they arrive (Ctrl-C stops it,
+nothing installed); the open-source build has none, so there is nothing to
+restore and nothing changes.
+
+The desktop app starts its server with a data directory of its own, which
+the CLI's default does not know; its **Settings** page names it. By default
+it is `conductor` in the app's directory (`~/Library/Application
+Support/Conductor/conductor` on macOS, `~/.config/Conductor/conductor` on
+Linux) and, on Windows, `~/.local/share/conductor/data` inside the WSL
+distribution the server runs in, where the command runs too (the app puts
+the binary at `~/.local/share/conductor/bin/conductor` there). Quit the app
+first, then give that directory as `--data-dir` to `conductor export` or
+`conductor restore`.
 
 ### Agent catalog
 

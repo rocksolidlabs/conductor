@@ -141,6 +141,29 @@ func codexAdapter() Adapter {
 			}
 			return []string{"-c", "mcp_servers.conductor.command=" + tomlString(bin), "-c", `mcp_servers.conductor.args=["mcp"]`, "-c", "mcp_servers.conductor.env_vars=" + codexMCPEnv}
 		},
+		// Checked against `codex --help` (0.163.0) and by the recipes tier.
+		// Conductor's MCP server still reaches the server under the
+		// read-only sandbox (tried by hand with 0.163.0). Unlike Claude
+		// Code's, this mode does not hold what the person's own Codex
+		// configuration adds (codexReadOnlyApprovals says what and why).
+		ReadOnlyArgs: func() []string { return []string{"--sandbox", "read-only", "-c", codexReadOnlyApprovals} },
+		ModelArgs: func(model string) []string {
+			if model == "" {
+				return nil
+			}
+			return []string{"--model=" + model}
+		},
+		// Codex asks before every tool of an MCP server ("Allow the
+		// conductor MCP server to run tool …?" in 0.163.0), whatever the
+		// sandbox, unless the server's default_tools_approval_mode is
+		// "approve" (one of auto, prompt, writes and approve; the recipes
+		// tier reads the list from Codex's refusal of another value).
+		AllowTools: func(server string) []string {
+			if !mcpServerName.MatchString(server) {
+				return nil
+			}
+			return []string{"-c", "mcp_servers." + server + `.default_tools_approval_mode="approve"`}
+		},
 		Status: func(home string) (bool, string) {
 			return statusOf(home, codexConfig, codexSteps("")...)
 		},
@@ -156,6 +179,36 @@ func codexAdapter() Adapter {
 		Events: []string{"needs_input", "working", "done", "tool_use"},
 	}
 }
+
+// codexReadOnlyApprovals is the approval policy of a read-only launch.
+// Under the read-only sandbox alone Codex asks the person to run a write the
+// sandbox blocked ("Would you like to run the following command?", 0.163.0,
+// on-request), and a yes would write. The granular policy turns every such
+// request down without asking (sandbox_approval, a prompt the person's
+// command rules raise, a request for more permissions) and still asks an MCP
+// server's questions, an MCP tool's approval among them (tried by hand with
+// 0.163.0). A Codex too old to know it refuses to start, so a launch never
+// runs without it.
+//
+// What the mode does not hold, in 0.163.0, and no flag of it turns off:
+//   - the person's own MCP servers (mcp_servers in their configuration):
+//     they stay beside Conductor's, run outside the sandbox and are asked
+//     about like Conductor's, so one yes, or a server whose
+//     default_tools_approval_mode is "approve", lets a tool of theirs
+//     write. Codex turns a server off only by its name
+//     (mcp_servers.<name>.enabled=false); an override of the whole
+//     mcp_servers table leaves the configured ones (tried with a scratch
+//     CODEX_HOME).
+//   - the person's exec-policy allow rules: a command one matches runs
+//     outside the sandbox without asking ("exec-policy allow behavior
+//     (including any sandbox bypass) takes precedence", Codex's own
+//     instructions in 0.163.0); rules=false refuses only the prompts a
+//     prompt rule raises.
+//
+// So under Codex a Brakeman turn is read-only only for an account with no
+// MCP server and no allow rule of its own; whether Codex stays Brakeman's
+// agent on those terms is the owner's decision (PR-3c's Validate, Settings).
+const codexReadOnlyApprovals = `approval_policy={granular={sandbox_approval=false,rules=false,request_permissions=false,mcp_elicitations=true}}`
 
 // codexMCPEnv is the TOML list of the variables Codex passes on to
 // Conductor's MCP server (#354): every CONDUCTOR_* one a session sets.
