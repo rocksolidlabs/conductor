@@ -40,6 +40,7 @@ type Server struct {
 	hosts    *signal.Hub
 	events   *eventHub
 	webhooks *webhookSender
+	notifier *notifier // the webhooks and the providers' sinks (notify.go)
 	limiter  *rateLimiter
 	// hostLimiter, openHosts and openRelay bound open hosts on a switchyard,
 	// per address: how often one registers, how many live sessions it holds,
@@ -429,7 +430,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			s.dispatch.OnChange(s.events.dispatch)
 		}
 	}
-	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
+	s.webhooks = s.startNotifier(cfg.Webhooks)
 	// The runs take every entry too: a member's done starts the members after
 	// it, and its handoff is typed into the member it names. OnActivity never
 	// waits, as a sink must not. The changes of server sessions reach the runs

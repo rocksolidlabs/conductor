@@ -18,21 +18,24 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // Webhooks: the server POSTs the activity entries of every session to the
 // webhooks of its config (config.Webhook) that list their event type, one
-// entry a request. One sink types each entry and builds its body once, and
-// each webhook has a queue and a goroutine of its own that delivers from it in
+// entry a request. The webhooks are the first kind of notification sink
+// (notify.go): the notifier types each entry once, builds its notification
+// once and, from it, the body once (webhookBody), and each webhook has a
+// queue (an extQueue) and a goroutine of its own that delivers from it in
 // order, so a slow or dead endpoint holds up neither the sessions, whose
-// goroutines only queue, nor the other webhooks.
+// goroutines only queue, nor the other webhooks, nor the providers' sinks.
 
 const (
 	// webhookQueue bounds the deliveries waiting for one webhook: a full
-	// queue drops its oldest.
-	webhookQueue = 256
+	// queue drops its oldest. It is a provider sink's queue's bound too.
+	webhookQueue = ext.SinkQueue
 	// webhookTimeout bounds a delivery, from the dial to the end of the
 	// answer. A delivery is tried once: one that fails is gone.
 	webhookTimeout = 5 * time.Second
@@ -68,21 +71,41 @@ type webhookDelivery struct {
 	body  []byte
 }
 
+// webhookBody is the body of a delivery of n, a session entry's
+// notification: webhookPayload, the struct the webhooks have always sent,
+// rebuilt from n, which carries every field of the entry and its session's
+// id, name and agent. So a webhook's body is byte for byte what it was
+// before the providers' sinks.
+func webhookBody(n ext.Notification) ([]byte, error) {
+	return json.Marshal(webhookPayload{
+		SessionID: n.Session.ID,
+		Session:   webhookSession{ID: n.Session.ID, Name: n.Session.Name, AgentID: n.Session.AgentID},
+		Entry:     notificationEntry(n),
+	})
+}
+
+// notificationEntry is the session entry n was built from (entryNotification).
+func notificationEntry(n ext.Notification) session.ActivityEntry {
+	return session.ActivityEntry{
+		At: n.At, Type: n.Type, By: n.By, ByName: n.ByName, Message: n.Message,
+		URL: n.URL, To: n.To, Tool: n.Tool, Op: n.Op, Path: n.Path,
+	}
+}
+
 // webhookSender runs the webhooks of the config.
 type webhookSender struct {
-	hooks    []*webhook
-	registry *session.Registry
-	ctx      context.Context // done once the sender is closed
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup // the delivering goroutines
+	hooks  []*webhook
+	ctx    context.Context // done once the sender is closed
+	cancel context.CancelFunc
+	wg     sync.WaitGroup // the delivering goroutines
 }
 
 // startWebhooks starts a goroutine for every webhook of hooks, as Validate
-// has checked them, and makes the sender a sink of events. The session an
-// entry belongs to is read from registry. close stops them.
-func startWebhooks(hooks []config.Webhook, events *eventHub, registry *session.Registry, log *slog.Logger) *webhookSender {
+// has checked them; the notifier (notify.go) hands them their deliveries.
+// close stops them.
+func startWebhooks(hooks []config.Webhook, log *slog.Logger) *webhookSender {
 	ctx, cancel := context.WithCancel(context.Background())
-	ws := &webhookSender{registry: registry, ctx: ctx, cancel: cancel}
+	ws := &webhookSender{ctx: ctx, cancel: cancel}
 	for i, h := range hooks {
 		u, err := url.Parse(h.URL)
 		if err != nil {
@@ -99,22 +122,34 @@ func startWebhooks(hooks []config.Webhook, events *eventHub, registry *session.R
 			client: webhookClient(h.AllowPrivate),
 			log:    log,
 			ctx:    ctx,
-			wake:   make(chan struct{}, 1),
 		}
 		for _, t := range h.Events {
 			w.events[t] = true
 		}
+		w.queue = newWebhookQueue(w)
 		ws.hooks = append(ws.hooks, w)
 		ws.wg.Add(1)
 		go func() {
 			defer ws.wg.Done()
-			w.run()
+			w.queue.run(ctx)
 		}()
 	}
-	if len(ws.hooks) > 0 {
-		events.addSink(ws.offer)
-	}
 	return ws
+}
+
+// newWebhookQueue is w's queue: an extQueue of webhookQueue deliveries
+// that w delivers itself (deliver, bounded by webhookTimeout and logged as
+// a webhook's), and whose drops are logged as a webhook's.
+func newWebhookQueue(w *webhook) *extQueue[webhookDelivery] {
+	q := newExtQueue(nil, "webhook", w.host, webhookQueue, func(_ context.Context, d webhookDelivery) error {
+		w.deliver(d)
+		return nil
+	})
+	q.direct = true
+	q.onDrop = func(dropped uint64) {
+		w.log.Warn("webhook queue full: dropped the oldest entry", "webhook", w.index, "host", w.host, "dropped", dropped)
+	}
+	return q
 }
 
 // close stops the webhooks: the delivery in flight is abandoned, the queued
@@ -133,41 +168,6 @@ func (ws *webhookSender) close(ctx context.Context) {
 	}
 	for _, w := range ws.hooks {
 		w.client.CloseIdleConnections()
-	}
-}
-
-// offer is the webhooks' activity sink. It types e once (eventTypeOf) and
-// queues it for every webhook that lists that type or e's own, with one body
-// for all of them, built for the first. It runs on the goroutine that
-// recorded e, so it never waits: it looks the session up, for the body, only
-// once a webhook wants the entry, and queues.
-func (ws *webhookSender) offer(sessionID string, e session.ActivityEntry, state session.AttentionState) {
-	if ws.ctx.Err() != nil {
-		return
-	}
-	typ := eventTypeOf(e, state)
-	var body []byte
-	for _, w := range ws.hooks {
-		event := w.eventFor(typ, e.Type)
-		if event == "" {
-			continue
-		}
-		if body == nil {
-			var info session.Info
-			if d, ok := ws.registry.Get(sessionID); ok {
-				info = d.Info()
-			}
-			b, err := json.Marshal(webhookPayload{
-				SessionID: sessionID,
-				Session:   webhookSession{ID: sessionID, Name: info.Name, AgentID: info.AgentID},
-				Entry:     e,
-			})
-			if err != nil {
-				return
-			}
-			body = b
-		}
-		w.push(webhookDelivery{event: event, body: body})
 	}
 }
 
@@ -217,12 +217,7 @@ type webhook struct {
 	client *http.Client
 	log    *slog.Logger
 	ctx    context.Context // done once the sender is closed
-
-	mu      sync.Mutex
-	queue   [webhookQueue]webhookDelivery // a ring: n deliveries from head
-	head, n int
-	dropped uint64
-	wake    chan struct{} // something was queued
+	queue  *extQueue[webhookDelivery]
 }
 
 // eventFor is the event type under which an entry of type own, which the
@@ -238,69 +233,8 @@ func (w *webhook) eventFor(typ, own string) string {
 	return ""
 }
 
-// push queues d, dropping the oldest delivery when the queue is full. The
-// first drop and every 100th are logged.
-func (w *webhook) push(d webhookDelivery) {
-	w.mu.Lock()
-	dropped := uint64(0)
-	if w.n == webhookQueue {
-		w.queue[w.head] = webhookDelivery{}
-		w.head = (w.head + 1) % webhookQueue
-		w.n--
-		w.dropped++
-		dropped = w.dropped
-	}
-	w.queue[(w.head+w.n)%webhookQueue] = d
-	w.n++
-	w.mu.Unlock()
-	select {
-	case w.wake <- struct{}{}:
-	default:
-	}
-	if dropped > 0 && (dropped == 1 || dropped%100 == 0) {
-		w.log.Warn("webhook queue full: dropped the oldest entry", "webhook", w.index, "host", w.host, "dropped", dropped)
-	}
-}
-
-// pop takes the oldest queued delivery.
-func (w *webhook) pop() (webhookDelivery, bool) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.n == 0 {
-		return webhookDelivery{}, false
-	}
-	d := w.queue[w.head]
-	w.queue[w.head] = webhookDelivery{}
-	w.head = (w.head + 1) % webhookQueue
-	w.n--
-	return d, true
-}
-
 // stats reports how many deliveries wait and how many were dropped so far.
-func (w *webhook) stats() (queued int, dropped uint64) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.n, w.dropped
-}
-
-// run delivers what is queued, in order, until the sender is closed.
-func (w *webhook) run() {
-	for {
-		d, ok := w.pop()
-		if !ok {
-			select {
-			case <-w.ctx.Done():
-				return
-			case <-w.wake:
-			}
-			continue
-		}
-		if w.ctx.Err() != nil {
-			return
-		}
-		w.deliver(d)
-	}
-}
+func (w *webhook) stats() (queued int, dropped uint64) { return w.queue.stats() }
 
 // deliver POSTs one entry, once, and logs a failure or an answer that is not
 // 2xx at warn level. Neither the URL, whose query may hold a token, nor the
