@@ -1442,8 +1442,9 @@ on a phone), **G D** from any page (**Alt+D** in a terminal). It lists the
 projects with their open and done tickets; **New project** takes a key (two
 to six capitals and digits, a capital first: `CND`), a name, a repository
 folder, the tracker (Dispatch's own, or an external one named by its URL,
-whose tickets are made by hand with a reference) and the close policy. A project's page shows its description
-(edited in place) and its tickets three ways, **List** (pages of 200, sorted
+whose tickets are made by hand with a reference) and the close policy. A
+project's page shows its description (edited in place) and its tickets three
+ways, **List** (pages of 200, sorted
 on the server), **Board** (a column per status: Backlog, Ready, In progress,
 In review, Done, Cancelled) and **Roadmap** (Now, Next, Later and a folded Not
 planned, with the project's milestones and how many of the tickets shown are
@@ -1465,8 +1466,7 @@ shows an attached image), the status, priority and horizon, the **owner**
 catalog's agents), labels, milestone, parent and children, what it blocks and
 what blocks it (Blocked while a blocker is open), relates-to, attachments (16
 MiB each, 50 a ticket; PNG, JPEG, GIF and WebP shown, everything else a
-download), comments,
-delivery and external links, the managed runs linked to it, and its history
+download), comments, delivery and external links, the managed runs linked to it, and its history
 field by field. A name typed for an owner or an assignee joins the people
 directory; people are names until Conductor has accounts. Delete keeps the
 key and every reference to the ticket, shown as deleted, and **Undelete** on
