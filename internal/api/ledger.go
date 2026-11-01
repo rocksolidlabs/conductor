@@ -120,11 +120,13 @@ type logger interface {
 // (docs/plans/agent-harness-order.md, decision 10).
 var commandIDPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,32}$`)
 
-// adminActor is the actor a workbench token's commands are kept under.
+// adminActor is the actor a workbench token's commands are kept under; an
+// identity provider's principal's are kept under its subject (actorOf).
 const adminActor = "admin"
 
 // handleGetCommand answers a command's receipt: 200 {command}, 404 when
-// the run or the admin's command with that id is unknown. It never acts:
+// the run or the caller's command with that id is unknown (a receipt is
+// found by the actor that made it, actorOf). It never acts:
 // a client that lost a reply reads here before it sends again.
 func (s *Server) handleGetCommand(w http.ResponseWriter, r *http.Request) {
 	runID, id := r.PathValue("run"), r.PathValue("command")
@@ -138,7 +140,7 @@ func (s *Server) handleGetCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", "the ledger could not be opened; see the server's log")
 		return
 	}
-	c, ok, err := s.ledger.Receipt(r.Context(), runID, adminActor, id)
+	c, ok, err := s.ledger.Receipt(r.Context(), runID, actorOf(r), id)
 	if errors.Is(err, ledger.ErrUnavailable) || errors.Is(err, ledger.ErrClosed) {
 		writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", err.Error())
 		return
