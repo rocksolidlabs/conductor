@@ -800,10 +800,13 @@ secrets, locks, temporary files, a provider's `ext/`. The installer
 (`export.Install`, under the `restore.lock` reservation its caller holds)
 takes an archive only into a data directory with no server data, checks the
 whole archive before it writes a byte (an attachment's file must hash to
-its name), stages it in `.restore-<random>`
+its name; no two paths are one name to a filesystem that folds case or
+trailing dots), stages it in `.restore-<random>`
 through an `os.Root`, checks the staged Dispatch database's attachments and
-the directory again, then renames each top-level entry into place, never
-over anything (`hooks/` moved aside first). The next `serve` opens what was
+the directory again, then renames each top-level entry into place with a
+rename that refuses a name already there, so nothing is renamed over, not
+even a name another writer made after the check (`hooks/` moved aside
+first). The next `serve` opens what was
 restored as its own: the ledger's recovery marks what ran at the export
 interrupted and `syncRecords` mends a record that lagged.
 
