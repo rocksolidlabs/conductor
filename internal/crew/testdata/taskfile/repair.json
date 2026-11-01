@@ -1,0 +1,40 @@
+{
+  "run": "r-0123456789ab",
+  "crew": "c-build",
+  "crewName": "Build crew",
+  "goal": "Ship the parser, tested.",
+  "task": "build",
+  "attempt": 3,
+  "maxAttempts": 3,
+  "member": "lead",
+  "role": "You lead the build.",
+  "kind": "work",
+  "instructions": "Write the parser in parse.go & test it: <input> yields a tree.",
+  "worktree": "/repo/.conductor/worktrees/r-0123456789ab/build.3",
+  "branch": "crew/r-0123456789ab/build.3",
+  "start": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "startFrom": "the commit review \"check\" asked changes of",
+  "previous": {
+    "attempt": 2,
+    "state": "succeeded"
+  },
+  "repair": {
+    "review": "check",
+    "attempt": 1,
+    "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "summary": "Two gaps in the tests.",
+    "findings": [
+      {
+        "severity": "major",
+        "path": "parse.go",
+        "line": 40,
+        "message": "An empty input panics."
+      },
+      {
+        "severity": "nit",
+        "message": "Name the error."
+      }
+    ]
+  },
+  "writtenAt": "2026-10-31T12:00:00Z"
+}

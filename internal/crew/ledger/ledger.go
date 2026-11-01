@@ -194,6 +194,13 @@ type Ledger struct {
 	// beforeCommit, when set, runs before a transition commits: a test
 	// makes the commit fail.
 	beforeCommit func() error
+	// onCommit and onPrune are what OnCommit and OnPrune set, called under
+	// mu after each committed transition and prune (pointer.go);
+	// afterCommit, when a test sets it, runs between such a commit and
+	// those calls, under mu.
+	onCommit    func(RunPointer)
+	onPrune     func(runID string, revision int64)
+	afterCommit func()
 }
 
 // Errors of a ledger that cannot serve.

@@ -596,7 +596,14 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 		return err
 	}
 	if old != nil {
+		// The mark moved its row's revision (ledger.Tx.Continued): read
+		// back, so the revision the API and its record give it is the
+		// ledger's.
+		marked, ok, lerr := e.ledger.Load(ctx, from.Run.ID)
 		e.mu.Lock()
+		if lerr == nil && ok {
+			old.revision = max(old.revision, marked.Run.Revision)
+		}
 		old.resumedBy = r.id
 		old.resuming = false
 		old.note(session.ActivityStatus, "continued as %s", r.id)

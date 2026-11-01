@@ -1383,6 +1383,24 @@ the agent's own question set aside, and a question the agent reported waits
 for the agent to move on or for a reply naming it. Nobody is recorded as
 having answered in the terminal.
 
+A routed answer (the decision router seam, `docs/plans/ext.md`, C5) is a
+reply too, with no connection behind it. On a build with a decision router
+registered, each question a server session shows is told to it once
+(`Route`), and an answer it holds then is applied once, through the same
+claim as a viewer's reply: a choice's keys only when they are the `input`
+of one of the question's own `options` (anything else is refused, nothing
+written), a line as a `submit` naming the question. A person's reply that
+came first wins and the route's is refused, as a second reply always is; a
+held turn, a question no longer shown and one answered in the terminal
+refuse it as they refuse a viewer. The answer is recorded under the
+router's principal's display name (`lastAnswer.byName`, the `input`
+entry, the chat's `answered` line) with no `by`. A route that names whom
+the question went to records one `status` entry, `routed: <kind> <name>,
+… (<rule>)`; the empty route, the free build's, records nothing, so a
+plain build's activity is as before. A provider answers the same way
+through its host (`Host.Submit` with `question` and `input` or `text`).
+Hosted sessions are not routed yet.
+
 A reply to a question read off the screen is taken only while the screen
 still shows that question, too (a next question drawn after it and not asked
 yet, or none, refuses it), for its keys reach whatever the screen shows: a 1
@@ -2282,11 +2300,30 @@ written as
 `.conductor/task.md` and `.conductor/task.json` in the attempt's working
 directory (with a `.gitignore` of `*`; refused when the commit tracks
 `.conductor/` there, or `.conductor` is not a directory), each kept within
-64 KiB: what is needed least is cut (the inputs' summaries, then the
+64 KiB: what is needed least is cut (the context blocks, the last first,
+then the inputs' summaries, then the
 checkpoint, then findings from the last, then the review's summary, the
 checks' commands, the inputs after the first, the attempt before's error
 past 2,000 characters) into `.conductor/task-more.json` in full, which
-`task.json`'s `more` and `cut` and a "Cut to fit" section of `task.md` name.
+`task.json`'s `more` and `cut` (`the last N context blocks` among them) and
+a "Cut to fit" section of `task.md` name. With a context provider
+registered (Program item C4), the attempt's context is asked for before
+its task files are written, at most 5 s (`ext.ContextWait`), and an
+attempt never fails or waits longer for it: `task.json` gains `context`,
+`[{source, title, ref?, body}]` (after `inputs`; `source` the provider's
+name, at most 8 blocks of each provider, a title of one line of at most
+120 bytes, a ref of at most 1,024, a body of at most 8 KiB, and every
+provider's blocks at most 16 KiB together as `task.json` keeps them, the
+last left out past it and the run's log saying how many and whose), and
+`task.md` a "Context" section after "Inputs" saying the blocks are
+reference material a provider derived and that the repository and the
+task are what holds, each block under `### <title> (from <source>)` with
+its ref and its body inside a fence longer than any run of backticks in
+it. With no block (no provider, or one late, failing or out of bounds)
+the field is absent and the section not written, so the files are what
+they were before; the blocks are never in the ledger. `GET
+/api/sessions/{id}/task` and the `task_context` tool read the files, so
+they serve the blocks as part of the task.
 The crew's own text is never cut: a crew is refused as it is saved when a
 task's goal, role and instructions take more than 40 KiB as `task.json`
 keeps them, or a task needs the same task twice, so a task file always

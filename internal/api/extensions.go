@@ -55,7 +55,7 @@ const extErrText = 200
 type extSlots struct {
 	identity ext.IdentityProvider
 	router   ext.DecisionRouter
-	context  []ext.ContextProvider
+	context  []*guardContext
 	sinks    []ext.NotificationSink
 	sync     ext.ContinuityStore
 	media    ext.MediaRoomProvider
@@ -100,10 +100,7 @@ func (s *Server) installExtensions(p ext.Providers) {
 	for i, c := range p.Context {
 		n := name(ext.KindContext, i, c)
 		g := &guardContext{s: s, name: n, p: c, ready: s.readyOf(n, c)}
-		g.touches = newExtQueue(s, ext.KindContext, g.name, ext.TouchQueue, func(ctx context.Context, f ext.TouchedFile) error {
-			c.NoteTouch(ctx, f)
-			return nil
-		})
+		g.touches = newExtQueue(s, ext.KindContext, g.name, ext.TouchQueue, func(ctx context.Context, t touch) error { return deliverTouch(ctx, c, t) })
 		s.holdQueue(c, g.name, g.touches.begin)
 		s.exts.context = append(s.exts.context, g)
 	}
@@ -288,12 +285,19 @@ func (s *Server) extFailed(kind, name, why, detail string) {
 // The plan's extCall takes no ctx; this one takes the caller's, so a
 // request that ends ends its provider call too.
 func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time.Duration, fallback T, valid func(T) error, fn func(context.Context) (T, error)) T {
+	v, _ := extCallSent(ctx, s, kind, name, wait, fallback, valid, fn)
+	return v
+}
+
+// extCallSent is extCall, and reports whether fn was called: false when
+// every slot was busy and the fallback was answered without it.
+func extCallSent[T any](ctx context.Context, s *Server, kind, name string, wait time.Duration, fallback T, valid func(T) error, fn func(context.Context) (T, error)) (T, bool) {
 	g := s.guard(kind, name)
 	select {
 	case g.slots <- struct{}{}:
 	default:
 		s.extFailed(kind, name, "busy", fmt.Sprintf("%d calls in flight", extInFlight))
-		return fallback
+		return fallback, false
 	}
 	if f := extWaiting.Load(); f != nil {
 		wait = *f
@@ -354,19 +358,19 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 		if ctx.Err() == nil {
 			s.extFailed(kind, name, "late", fmt.Sprintf("no answer within %s", wait))
 		}
-		return fallback
+		return fallback, true
 	case r.err:
 		why := "error"
 		if r.panicked {
 			why = "panic"
 		}
 		s.extFailed(kind, name, why, r.failed)
-		return fallback
+		return fallback, true
 	case r.invalid != "":
 		s.extFailed(kind, name, "invalid", r.invalid)
-		return fallback
+		return fallback, true
 	}
-	return r.v
+	return r.v, true
 }
 
 // extCalling, when a test sets it, is told the kind and provider name of
@@ -618,16 +622,24 @@ func (g guardRouter) Name() string { return g.name }
 // changes the options it was given changes neither the caller's question
 // nor what its answer is checked against.
 func (g guardRouter) Route(ctx context.Context, d ext.Decision) (ext.Route, error) {
+	rt, _ := g.route(ctx, d)
+	return rt, nil
+}
+
+// route is Route, and reports whether the provider was given d: not when
+// its Start has not succeeded or every call slot of its is busy, so that
+// the decision router tells Resolved only of what Route received.
+func (g guardRouter) route(ctx context.Context, d ext.Decision) (ext.Route, bool) {
 	if !live(g.ready) {
-		return ext.Route{}, nil
+		return ext.Route{}, false
 	}
 	own := copyDecision(d)
-	return extCall(ctx, g.s, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
+	return extCallSent(ctx, g.s, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
 		return r.Valid(own)
 	}, func(ctx context.Context) (ext.Route, error) {
 		r, err := g.p.Route(ctx, copyDecision(own))
 		return copyRoute(r), err
-	}), nil
+	})
 }
 
 // Resolved tells the provider of r on the calling goroutine (the router's
@@ -650,17 +662,18 @@ type guardContext struct {
 	name    string
 	p       ext.ContextProvider
 	ready   *atomic.Bool
-	touches *extQueue[ext.TouchedFile]
+	touches *extQueue[touch] // extcontext.go
 }
 
 func (g *guardContext) Name() string { return g.name }
 
 // NoteTouch queues f for the provider, never waiting.
-func (g *guardContext) NoteTouch(_ context.Context, f ext.TouchedFile) { g.touches.push(f) }
+func (g *guardContext) NoteTouch(_ context.Context, f ext.TouchedFile) { g.touches.push(touch{f: f}) }
 
-// Context answers the provider's blocks for q, or none (the free default's)
-// when it fails, is late or answers more than ext.MaxContextBlocks or a
-// block ContextBlock.Valid refuses. It never answers an error.
+// Context answers the provider's blocks for q, the first
+// ext.MaxContextBlocks of them when it answers more (the rest are never
+// read), or none (the free default's) when it fails, is late or answers a
+// block ContextBlock.Valid refuses among those. It never answers an error.
 func (g *guardContext) Context(ctx context.Context, q ext.ContextQuery) ([]ext.ContextBlock, error) {
 	if !live(g.ready) {
 		return nil, nil
@@ -669,9 +682,6 @@ func (g *guardContext) Context(ctx context.Context, q ext.ContextQuery) ([]ext.C
 	// the default (its context ended) may reuse q's inputs at once.
 	own := copyQuery(q)
 	return extCall(ctx, g.s, ext.KindContext, g.name, ext.ContextWait, nil, func(bs []ext.ContextBlock) error {
-		if len(bs) > ext.MaxContextBlocks {
-			return fmt.Errorf("context: %d blocks, past %d", len(bs), ext.MaxContextBlocks)
-		}
 		for _, b := range bs {
 			if err := b.Valid(); err != nil {
 				return err
@@ -680,7 +690,7 @@ func (g *guardContext) Context(ctx context.Context, q ext.ContextQuery) ([]ext.C
 		return nil
 	}, func(ctx context.Context) ([]ext.ContextBlock, error) {
 		bs, err := g.p.Context(ctx, own)
-		return copyOrNil(bs), err
+		return copyOrNil(bs[:min(len(bs), ext.MaxContextBlocks)]), err
 	}), nil
 }
 

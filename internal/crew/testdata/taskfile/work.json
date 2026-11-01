@@ -1,0 +1,53 @@
+{
+  "run": "r-0123456789ab",
+  "crew": "c-build",
+  "crewName": "Build crew",
+  "goal": "Ship the parser, tested.",
+  "task": "build",
+  "attempt": 2,
+  "maxAttempts": 3,
+  "member": "lead",
+  "role": "You lead the build.",
+  "kind": "work",
+  "instructions": "Write the parser in parse.go & test it: <input> yields a tree.",
+  "worktree": "/repo/.conductor/worktrees/r-0123456789ab/build.2",
+  "branch": "crew/r-0123456789ab/build.2",
+  "prefix": "svc",
+  "start": "dddddddddddddddddddddddddddddddddddddddd",
+  "startFrom": "task \"design\"'s result",
+  "inputs": [
+    {
+      "task": "design",
+      "attempt": 1,
+      "commit": "dddddddddddddddddddddddddddddddddddddddd",
+      "branch": "crew/r-0123456789ab/design.1",
+      "summary": "The grammar, in grammar.md."
+    }
+  ],
+  "checks": [
+    {
+      "id": "test",
+      "argv": [
+        "go",
+        "test",
+        "./..."
+      ],
+      "timeoutSeconds": 600
+    },
+    {
+      "id": "vet",
+      "argv": [
+        "go",
+        "vet",
+        "./..."
+      ]
+    }
+  ],
+  "previous": {
+    "attempt": 1,
+    "state": "failed",
+    "stage": "check test",
+    "error": "exit 1: parse_test.go:12: want a tree"
+  },
+  "writtenAt": "2026-10-31T12:00:00Z"
+}
