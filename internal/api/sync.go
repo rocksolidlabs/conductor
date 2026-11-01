@@ -118,6 +118,9 @@ type syncAdapter struct {
 	limit  int
 	after  func(time.Duration) <-chan time.Time
 	warned time.Time
+	// afterReset, when a test sets it, runs as a replay has emptied the
+	// set and put its marker in, before it lists anything.
+	afterReset func()
 }
 
 // newSyncAdapter is an adapter with nothing pending, observing data (nil
@@ -147,6 +150,18 @@ func (a *syncAdapter) detach() {
 func (a *syncAdapter) observeLedger(ld *ledger.Ledger) {
 	ld.OnCommit(func(p ledger.RunPointer) { a.mark(syncKey{syncLedger, p.ID}, p.Revision, nil) })
 	ld.OnPrune(func(id string) { a.mark(syncKey{syncLedger, id}, 0, nil) })
+}
+
+// ledgerOwned asks for a replay in a new epoch: the ledger has taken the
+// owner lock after its Open (openLedger, once its recovery is done), so
+// what the server it waited for wrote meanwhile, to the ledger or to the
+// data directory, which no hook here saw, is told too. Before the drain
+// begins it changes nothing (the drain's first act is a replay).
+func (a *syncAdapter) ledgerOwned() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.due = true
+	a.signal()
 }
 
 // observeDispatch installs Dispatch's hook, as the store opens.
@@ -348,8 +363,15 @@ func (a *syncAdapter) replay(ctx context.Context) error {
 	a.gen++
 	gen := a.gen
 	a.epoch = epoch
+	// The marker under the reset's lock: a document committed from here on
+	// is pending behind it, in the new epoch, never delivered before the
+	// marker that would then drop it from the store's named set.
+	a.push(syncKey{store: syncReplay}, 0)
+	hook := a.afterReset
 	a.mu.Unlock()
-	a.list(gen, syncKey{store: syncReplay}, 0)
+	if hook != nil {
+		hook()
+	}
 	if a.data != nil {
 		seq := a.data.Seq()
 		for _, dir := range []string{"", "crews", "runs"} {
@@ -372,10 +394,14 @@ func (a *syncAdapter) replay(ctx context.Context) error {
 		after := ""
 		for {
 			page, err := ld.Pointers(ctx, after, syncPage)
-			if errors.Is(err, ledger.ErrUnavailable) {
-				break // no database to read: it holds no run
+			if errors.Is(err, ledger.ErrUnavailable) && ld.NoDatabase() {
+				break // no database file: it holds no run
 			}
 			if err != nil {
+				// A database that is there but cannot be read (damaged, its
+				// lock file failed) is not an empty one: the replay is not
+				// complete, so its `replayed` would drop every run's pointer
+				// the store holds. It is tried again after the backoff.
 				return a.redo(gen, err)
 			}
 			for _, p := range page {
@@ -417,12 +443,18 @@ func (a *syncAdapter) list(gen uint64, key syncKey, rev int64) bool {
 	if a.gen != gen || a.due {
 		return false
 	}
+	a.push(key, rev)
+	return true
+}
+
+// push puts the document key in the set for a replay, at the back unless
+// it is pending already. The caller holds mu.
+func (a *syncAdapter) push(key syncKey, rev int64) {
 	if _, ok := a.index[key]; !ok {
 		a.index[key] = a.order.PushBack(&syncEntry{key: key, rev: rev, listed: true})
 		a.listed++
 		a.signal()
 	}
-	return true
 }
 
 // newEpoch is a random epoch: 32 hex characters.

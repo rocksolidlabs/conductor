@@ -396,7 +396,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 		s.records = records
 		s.runs.RecordEnds(records, func(runID string, err error) { log.Warn("run record not saved", "run", runID, "err", err) }, s.track)
-		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger)
+		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned)
 		if s.ledger != nil {
 			// The engine writes managed runs to it; while it is read-only
 			// (another server holds the owner lock, for a while after a

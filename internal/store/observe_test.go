@@ -169,13 +169,14 @@ func TestPlainFileNoBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := io.ReadAll(f)
-	f.Close()
 	if string(b) != "{\n  \"n\": 1\n}\n" {
 		t.Fatalf("the open document reads %q, want the version opened", b)
 	}
-	if _, err := f.Write([]byte("x")); err == nil {
-		t.Fatal("OpenDoc's file takes writes")
+	// Tried while the file is open: a closed one refuses every write.
+	if _, err := f.Write([]byte("x")); err == nil || errors.Is(err, os.ErrClosed) {
+		t.Fatalf("OpenDoc's file takes writes: %v", err)
 	}
+	f.Close()
 	sub, _ := s.Sub("runs")
 	if err := sub.Save("r-1.json", doc{N: 3}); err != nil {
 		t.Fatal(err)

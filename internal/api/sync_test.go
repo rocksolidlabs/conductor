@@ -389,9 +389,12 @@ func TestSyncAllowlist(t *testing.T) {
 	}
 }
 
-// Each doc is handed over after its local commit: as it arrives, the file
-// holds its bytes, the ledger's row its revision, and Dispatch the receipt
-// of the operation that changed the entity.
+// Each doc is handed over after its local commit: as it arrives, its bytes
+// are a version of the file already committed, the ledger's row has its
+// revision, Dispatch the receipt of the operation that changed the entity,
+// and a deleted document's delete has landed. The test goes on saving as
+// docs arrive, so a doc is compared with the versions committed by then,
+// never with the file as a later save left it.
 func TestSyncAfterLocalCommit(t *testing.T) {
 	f := syncStarter{newFakeSync()}
 	dir := syncDataDir(t)
@@ -403,18 +406,44 @@ func TestSyncAfterLocalCommit(t *testing.T) {
 		defer mu.Unlock()
 		problems = append(problems, fmt.Sprintf(format, args...))
 	}
+	// committed holds each version of a document the test's saves had
+	// committed, read back once its save returned; deleted the documents
+	// whose delete had. A save's commit comes before its return, so a doc
+	// told of a version whose save has not returned is the file as it is
+	// when told, which the check reads too.
+	committed := map[string][][]byte{}
+	deleted := map[string]bool{}
+	landed := func(path string) {
+		b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(path)))
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			deleted[path] = true
+		case err != nil:
+			problems = append(problems, fmt.Sprintf("%s read back: %v", path, err))
+		default:
+			committed[path] = append(committed[path], b)
+		}
+	}
 	srv := e.srv
 	f.set(func(f *fakeSync) {
 		f.check = func(op string, d ext.Doc) {
 			ctx := context.Background()
 			switch d.Store {
 			case syncData:
+				if d.Path == catalogFile {
+					return
+				}
 				b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(d.Path)))
+				mu.Lock()
+				was, gone := committed[d.Path], deleted[d.Path]
+				mu.Unlock()
 				switch {
-				case op == "deleted" && !errors.Is(err, os.ErrNotExist):
-					note("%s told deleted while it is there", d.Path)
-				case op == "saved" && d.Path != catalogFile && !bytes.Equal(b, d.Data):
-					note("%s told %q while the file holds %q (%v)", d.Path, d.Data, b, err)
+				case op == "deleted" && !gone && !errors.Is(err, os.ErrNotExist):
+					note("%s told deleted before its delete landed", d.Path)
+				case op == "saved" && !bytes.Equal(b, d.Data) && !slices.ContainsFunc(was, func(v []byte) bool { return bytes.Equal(v, d.Data) }):
+					note("%s told %q, no version committed (the file holds %q, %v)", d.Path, d.Data, b, err)
 				}
 			case syncLedger:
 				row, ok, err := srv.ledger.Run(ctx, d.Path)
@@ -446,6 +475,7 @@ func TestSyncAfterLocalCommit(t *testing.T) {
 		if err := crews.Save("todo-app.json", syncCrew{ID: "todo-app", Name: "Todo", N: i}); err != nil {
 			t.Fatal(err)
 		}
+		landed("crews/todo-app.json")
 	}
 	newLedgerRun(t, srv.ledger, "team-00000001", ledger.RunRunning)
 	if _, err := srv.ledger.Transition(t.Context(), "team-00000001", func(tx *ledger.Tx) error { return tx.Event("x", nil) }); err != nil {
@@ -457,6 +487,7 @@ func TestSyncAfterLocalCommit(t *testing.T) {
 	if err := crews.Delete("todo-app.json"); err != nil {
 		t.Fatal(err)
 	}
+	landed("crews/todo-app.json")
 	f.until(t, "the crew deleted", func(c []syncCall) bool {
 		for _, c := range c {
 			if c.op == "deleted" && c.d.Path == "crews/todo-app.json" && c.err == nil {
@@ -1097,5 +1128,118 @@ func TestSyncBusyDocumentHoldsNothingBehind(t *testing.T) {
 	var c syncCrew
 	if err := json.Unmarshal(syncModel(calls)[hot], &c); err != nil || c.N != 2 {
 		t.Fatalf("the hot crew's last state: %+v %v", c, err)
+	}
+}
+
+// A document committed as a replay begins, between the reset of the set
+// and its listing, is delivered behind the replay's marker, in the new
+// epoch, so the store keeps it once `replayed` is told (Codex round 1 on
+// #553).
+func TestSyncCommitAsAReplayBegins(t *testing.T) {
+	f := newFakeSync()
+	e := syncEnv(t, syncDataDir(t), f)
+	f.until(t, "the start's replay", func(c []syncCall) bool { return replayedIn(c, 1) })
+	a := e.srv.syncs
+	crews, _ := e.srv.store.Sub("crews")
+	var once sync.Once
+	a.mu.Lock()
+	a.afterReset = func() {
+		once.Do(func() {
+			if err := crews.Save("edge.json", syncCrew{ID: "edge", Name: "edge"}); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	a.due = true
+	a.signal()
+	a.mu.Unlock()
+	calls := f.until(t, "the second replay", func(c []syncCall) bool { return replayedIn(c, 2) })
+	second := nthEpoch(calls, 2)
+	for _, c := range calls {
+		if c.d.Epoch == second {
+			if c.d.Store != syncReplay {
+				t.Fatalf("the new epoch begins with %s %s, not its marker: %s", c.d.Store, c.d.Path, describeCalls(calls))
+			}
+			break
+		}
+	}
+	if _, ok := syncModel(calls)[syncKey{syncData, "crews/edge.json"}]; !ok {
+		t.Fatalf("the store dropped the crew committed as the replay began: %s", describeCalls(calls))
+	}
+}
+
+// A restart against a ledger whose file is there but will not open: its
+// runs are not taken as gone. The replay is not complete, so `replayed` is
+// not told and the store keeps the run pointers it holds; the replay is
+// tried again after the backoff (Codex round 1 on #553).
+func TestSyncUnreadableLedgerIsNotEmpty(t *testing.T) {
+	dir := syncDataDir(t)
+	f := newFakeSync()
+	e1 := syncEnv(t, dir, f)
+	newLedgerRun(t, e1.srv.ledger, "team-00000001", ledger.RunFinished)
+	run := syncKey{syncLedger, "team-00000001"}
+	f.until(t, "the run's pointer", func(c []syncCall) bool {
+		_, ok := syncModel(c)[run]
+		return replayedIn(c, 1) && ok
+	})
+	stopEnv(t, e1)
+	file, err := os.OpenFile(filepath.Join(dir, "runs", ledger.File), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteAt([]byte(strings.Repeat("\xff", 100)), 0); err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+	e2 := syncEnv(t, dir, syncStarter{f})
+	if _, err := e2.srv.ledger.Pointers(t.Context(), "", 1); !errors.Is(err, ledger.ErrUnavailable) || e2.srv.ledger.NoDatabase() {
+		t.Fatalf("the damaged ledger reads %v, NoDatabase %v", err, e2.srv.ledger.NoDatabase())
+	}
+	clock := newSyncClock(e2.srv.syncs)
+	e2.srv.StartExtensions(t.Context())
+	// The replay's listing failed: the backoff is asked for, twice.
+	clock.next(t, syncRetryFirst).fire <- time.Now()
+	clock.next(t, 2*syncRetryFirst)
+	calls := f.all()
+	if nthEpoch(calls, 2) != "" {
+		t.Fatalf("a replay with the ledger unread was told: %s", describeCalls(calls))
+	}
+	if _, ok := syncModel(calls)[run]; !ok {
+		t.Fatalf("the store lost the run's pointer: %s", describeCalls(calls))
+	}
+}
+
+// A ledger whose owner lock another server held at the start, taken once
+// that one lets go: what that server wrote meanwhile, which no hook here
+// saw, is told by a replay in a new epoch.
+func TestSyncReplaysWhenTheLedgerIsOwnedLate(t *testing.T) {
+	was := ledger.LockWait
+	ledger.LockWait = testWait
+	t.Cleanup(func() { ledger.LockWait = was })
+	dir := syncDataDir(t)
+	other, err := ledger.Open(filepath.Join(dir, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	newLedgerRun(t, other, "team-00000001", ledger.RunFinished)
+	f := newFakeSync()
+	e := syncEnv(t, dir, f)
+	if ro, _ := e.srv.ledger.ReadOnly(); !ro {
+		t.Fatal("the server took the owner lock another ledger holds")
+	}
+	calls := f.until(t, "the start's replay", func(c []syncCall) bool { return replayedIn(c, 1) })
+	if _, ok := syncModel(calls)[syncKey{syncLedger, "team-00000001"}]; !ok {
+		t.Fatalf("the start's replay missed the run it could read: %s", describeCalls(calls))
+	}
+	// The server it waits for writes on, then lets go.
+	newLedgerRun(t, other, "team-00000002", ledger.RunFinished)
+	other.Close()
+	f.until(t, "a replay once the lock is taken", func(c []syncCall) bool {
+		_, ok := syncModel(c)[syncKey{syncLedger, "team-00000002"}]
+		return replayedIn(c, 2) && ok
+	})
+	if ro, why := e.srv.ledger.ReadOnly(); ro {
+		t.Fatalf("the ledger is read-only after the replay: %s", why)
 	}
 }

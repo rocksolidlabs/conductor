@@ -555,7 +555,8 @@ the data directory's store (`store.Observe`, inherited by every `Sub`,
 one mutex and sequence shared by all of them around each rename or
 remove, an event naming a path and a number, never bytes), the ledger
 (`OnCommit` with the run's pointer after each committed transition,
-`Recover`'s included, and `OnPrune`) and Dispatch (`OnCommit` with a
+`Recover`'s included, and with the pointer of a run a continuation
+marked, whose revision the mark bumps; and `OnPrune`) and Dispatch (`OnCommit` with a
 commit's changes). `New` installs them before its first write, so the
 start-up's own commits (the masked catalog, the crews' migration, the
 recovery and the records it rewrites) are told too. What reaches the
@@ -579,9 +580,14 @@ random epoch, every allowlisted document, every run pointer, Dispatch's
 `log` doc at its last change's position, then `replayed`, told only once
 each of them was acknowledged. One runs when the store's drain begins
 (its `Start` succeeded, or at once for one that needs none), so every
-server lifetime is an epoch of its own, and one when the set would pass
+server lifetime is an epoch of its own, one when the set would pass
 `SyncPending` (65,536 documents, a replay's own listing aside), which it
-is then emptied for. Nothing a sync store answers is written back; the
+is then emptied for, and one once a ledger that waited for another
+server's owner lock takes it, for what that server wrote meanwhile. The
+`replay` marker goes into the set under the lock that empties it, so a
+commit made as a replay begins is behind it. A ledger whose file is there
+but cannot be read fails the replay's listing, which is tried again after
+the backoff: only a ledger with no database file holds no run. Nothing a sync store answers is written back; the
 free default acknowledges every doc and keeps nothing.
 
 ## Packages

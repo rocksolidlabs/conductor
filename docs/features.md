@@ -3326,7 +3326,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   temp file written and synced outside it; `Event{Op, Path, Seq}`, never
   bytes, never for a failed write), the ledger's `OnCommit` (the run's
   pointer read in the transaction with its new revision, `Recover`'s
-  transitions included, and the pointer of a run a continuation marked)
+  transitions included, and the pointer of a run a continuation marked,
+  whose revision the mark bumps, so each state of a run told has a
+  revision of its own)
   and `OnPrune`, and Dispatch's `OnCommit` (`OnChange` unchanged); with
   `store.OpenDoc` (a regular JSON document, read-only through the store's
   directory as a root), `ListDocs`, `ledger.Pointer` and `Pointers` (paged)
@@ -3338,18 +3340,25 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   as it is then, whole, in parts of 1 MiB from one open file past that,
   leaving the set only when acknowledged whole and tried again whole after
   a backoff of 1 s doubling to 5 minutes, and begins every epoch with a
-  replay of the whole state (at the drain's start, and when the set would
-  pass 65,536), its `replayed` told once every document of it was
-  acknowledged. No schema change. Tests: `TestObserveAfterRename`,
+  replay of the whole state (at the drain's start, when the set would pass
+  65,536, and once a ledger that waited for its owner lock takes it), its
+  marker put in the set under the lock that empties it, its `replayed`
+  told once every document of it was acknowledged; a ledger whose file is
+  there but cannot be read fails the replay's listing, tried again after
+  the backoff, and is never read as holding no run (`ledger.NoDatabase`).
+  No schema change. Tests: `TestObserveAfterRename`,
   `TestObserveInheritedBySub`, `TestPlainFileNoBytes`,
   `TestObserveInCommitOrder`, `TestListDocs`; `TestOnCommitAfterCommit`,
-  `TestOnCommitInOrder`, `TestOnPrune`, `TestPointersPaged`; Dispatch's
+  `TestOnCommitInOrder`, `TestOnPrune`, `TestPointersPaged`,
+  `TestNoDatabase`; Dispatch's
   `TestOnCommitInOrder`; `TestSyncAllowlist`, `TestSyncAfterLocalCommit`,
   `TestSyncReplayAtStart`, `TestSyncOverflowReplays`, `TestSyncPendingOnce`,
   `TestSyncRetriesAFailedDelivery`, `TestSyncReplayedWaitsForEveryDoc`,
   `TestSyncLargeDocInParts`, `TestSyncEpochAcrossRestarts`,
   `TestSyncDefaultKeepsNothing`, `TestSyncCatalogMasksEnv`,
-  `TestSyncStartupCommits`. The order tests hold the first commit after it
+  `TestSyncStartupCommits`, `TestSyncCommitAsAReplayBegins`,
+  `TestSyncUnreadableLedgerIsNotEmpty`,
+  `TestSyncReplaysWhenTheLedgerIsOwnedLate`. The order tests hold the first commit after it
   lands with a seam and check its lock is still held; the backoff runs on
   a clock the tests drive.
 
