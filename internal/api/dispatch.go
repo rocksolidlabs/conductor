@@ -23,7 +23,8 @@ import (
 
 // Dispatch over HTTP (docs/plans/dispatch.md): the projects with their
 // labels and milestones, the people, the tickets with their comments,
-// relations, links and attachments (dispatch_attachments.go), the saved
+// relations, links and attachments (dispatch_attachments.go), their plan
+// revisions (dispatch_plans.go, docs/plans/dispatch-evidence.md), the saved
 // views, the ticket a run is linked to, and the receipts. Every route is
 // the admin's (Owner decisions, 17:
 // share-link viewers see no ticket) and a switchyard's 403 (launching),
@@ -128,6 +129,11 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 		{"POST /api/dispatch/tickets/{key}/delete", s.handleDispatchDeleteTicket},
 		{"POST /api/dispatch/tickets/{key}/undelete", s.handleDispatchUndeleteTicket},
 		{"GET /api/dispatch/tickets/{key}/history", s.handleDispatchHistory},
+		{"GET /api/dispatch/tickets/{key}/plans", s.handleDispatchPlans},
+		{"POST /api/dispatch/tickets/{key}/plans", s.handleDispatchProposePlan},
+		{"GET /api/dispatch/plans/{id}", s.handleDispatchPlan},
+		{"POST /api/dispatch/plans/{id}/approve", s.handleDispatchApprovePlan},
+		{"POST /api/dispatch/plans/{id}/withdraw", s.handleDispatchWithdrawPlan},
 		{"GET /api/dispatch/tickets/{key}/comments", s.handleDispatchComments},
 		{"POST /api/dispatch/tickets/{key}/comments", s.handleDispatchAddComment},
 		{"POST /api/dispatch/tickets/{key}/comments/{id}/edit", s.handleDispatchEditComment},
@@ -231,16 +237,17 @@ func (s *Server) dispatchWriter(w http.ResponseWriter) (*dispatch.Store, bool) {
 // acts on that the client expects, 0 for none (stale_revision once the
 // entity's has moved on); and the display name the store records as by,
 // which travels in the body as a broadcast's byName does, never in the
-// query string. The admin's operations are kept under the actor admin.
+// query string. The admin's operations are kept under the actor admin, an
+// identity provider's principal's under its subject (actorOf).
 type dispatchOp struct {
 	OpID        string `json:"opId"`
 	ExpectedRev int64  `json:"expectedRev,omitempty"`
 	ByName      string `json:"byName,omitempty"`
 }
 
-// op is the store's operation of the admin's.
-func (b dispatchOp) op() dispatch.Op {
-	return dispatch.Op{Actor: adminActor, ID: b.OpID, ExpectedRev: b.ExpectedRev, By: b.ByName}
+// op is the store's operation of r's principal (actorOf).
+func (b dispatchOp) op(r *http.Request) dispatch.Op {
+	return dispatch.Op{Actor: actorOf(r), ID: b.OpID, ExpectedRev: b.ExpectedRev, By: b.ByName}
 }
 
 // The bodies of the writes: the operation and the fields its intent takes.
@@ -781,7 +788,7 @@ func (s *Server) handleDispatchCreateProject(w http.ResponseWriter, r *http.Requ
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.CreateProject(ctx, body.op(), body.NewProject)
+	rc, err := ds.CreateProject(ctx, body.op(r), body.NewProject)
 	s.writeOp(w, "project", rc, err, true, "project", projectAfter(ctx, ds, ""))
 }
 
@@ -804,7 +811,7 @@ func (s *Server) handleDispatchEditProject(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.EditProject(ctx, body.op(), key, body.ProjectEdit)
+	rc, err := ds.EditProject(ctx, body.op(r), key, body.ProjectEdit)
 	s.writeOp(w, "project", rc, err, false, "project", projectAfter(ctx, ds, key))
 }
 
@@ -838,7 +845,7 @@ func (s *Server) archiveProject(w http.ResponseWriter, r *http.Request, archive 
 	if archive {
 		archiveOrNot = ds.ArchiveProject
 	}
-	rc, err := archiveOrNot(ctx, body.op(), key)
+	rc, err := archiveOrNot(ctx, body.op(r), key)
 	s.writeOp(w, "project", rc, err, false, "project", projectAfter(ctx, ds, key))
 }
 
@@ -859,7 +866,7 @@ func (s *Server) handleDispatchCreateLabel(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.CreateLabel(ctx, body.op(), key, body.NewLabel)
+	rc, err := ds.CreateLabel(ctx, body.op(r), key, body.NewLabel)
 	s.writeOp(w, "label", rc, err, true, "label", labelAfter(ctx, ds, key, ""))
 }
 
@@ -876,7 +883,7 @@ func (s *Server) handleDispatchEditLabel(w http.ResponseWriter, r *http.Request)
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.EditLabel(ctx, body.op(), key, id, body.LabelEdit)
+	rc, err := ds.EditLabel(ctx, body.op(r), key, id, body.LabelEdit)
 	s.writeOp(w, "label", rc, err, false, "label", labelAfter(ctx, ds, key, id))
 }
 
@@ -895,7 +902,7 @@ func (s *Server) handleDispatchDeleteLabel(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.DeleteLabel(ctx, body.op(), key, id)
+	rc, err := ds.DeleteLabel(ctx, body.op(r), key, id)
 	s.writeOp(w, "label", rc, err, false, "label", labelAfter(ctx, ds, key, id))
 }
 
@@ -914,7 +921,7 @@ func (s *Server) handleDispatchCreateMilestone(w http.ResponseWriter, r *http.Re
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.CreateMilestone(ctx, body.op(), key, body.NewMilestone)
+	rc, err := ds.CreateMilestone(ctx, body.op(r), key, body.NewMilestone)
 	s.writeOp(w, "milestone", rc, err, true, "milestone", milestoneAfter(ctx, ds, key, ""))
 }
 
@@ -932,7 +939,7 @@ func (s *Server) handleDispatchEditMilestone(w http.ResponseWriter, r *http.Requ
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.EditMilestone(ctx, body.op(), key, id, body.MilestoneEdit)
+	rc, err := ds.EditMilestone(ctx, body.op(r), key, id, body.MilestoneEdit)
 	s.writeOp(w, "milestone", rc, err, false, "milestone", milestoneAfter(ctx, ds, key, id))
 }
 
@@ -951,7 +958,7 @@ func (s *Server) handleDispatchDeleteMilestone(w http.ResponseWriter, r *http.Re
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.DeleteMilestone(ctx, body.op(), key, id)
+	rc, err := ds.DeleteMilestone(ctx, body.op(r), key, id)
 	s.writeOp(w, "milestone", rc, err, false, "milestone", milestoneAfter(ctx, ds, key, id))
 }
 
@@ -990,7 +997,7 @@ func (s *Server) handleDispatchAddPerson(w http.ResponseWriter, r *http.Request)
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.AddPerson(ctx, body.op(), body.Name)
+	rc, err := ds.AddPerson(ctx, body.op(r), body.Name)
 	s.writeOp(w, "person", rc, err, true, "person", func(rc dispatch.Receipt) (any, error) {
 		if rc.ID == "" {
 			return nil, nil
@@ -1138,7 +1145,7 @@ func (s *Server) handleDispatchCreateTicket(w http.ResponseWriter, r *http.Reque
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.CreateTicket(ctx, body.op(), body.NewTicket)
+	rc, err := ds.CreateTicket(ctx, body.op(r), body.NewTicket)
 	s.writeOp(w, "ticket", rc, err, true, "ticket", ticketAfter(ctx, ds, ""))
 }
 
@@ -1165,7 +1172,7 @@ func (s *Server) handleDispatchEditTicket(w http.ResponseWriter, r *http.Request
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.EditTicket(ctx, body.op(), key, body.TicketEdit)
+	rc, err := ds.EditTicket(ctx, body.op(r), key, body.TicketEdit)
 	s.writeOp(w, "ticket", rc, err, false, "ticket", ticketAfter(ctx, ds, key))
 }
 
@@ -1189,7 +1196,7 @@ func (s *Server) handleDispatchAcceptTicket(w http.ResponseWriter, r *http.Reque
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.AcceptTicket(ctx, body.op(), key, body.Note)
+	rc, err := ds.AcceptTicket(ctx, body.op(r), key, body.Note)
 	s.writeOp(w, "ticket", rc, err, false, "ticket", ticketAfter(ctx, ds, key))
 }
 
@@ -1232,7 +1239,7 @@ func (s *Server) ticketOp(w http.ResponseWriter, r *http.Request, apply func(*di
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := apply(ds, ctx, body.op(), key)
+	rc, err := apply(ds, ctx, body.op(r), key)
 	s.writeOp(w, "ticket", rc, err, false, "ticket", ticketAfter(ctx, ds, key))
 }
 
@@ -1328,7 +1335,7 @@ func (s *Server) handleDispatchAddComment(w http.ResponseWriter, r *http.Request
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.AddComment(ctx, body.op(), key, body.Body)
+	rc, err := ds.AddComment(ctx, body.op(r), key, body.Body)
 	s.writeOp(w, "comment", rc, err, true, "comment", commentAfter(ctx, ds, key, ""))
 }
 
@@ -1345,7 +1352,7 @@ func (s *Server) handleDispatchEditComment(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.EditComment(ctx, body.op(), key, id, body.Body)
+	rc, err := ds.EditComment(ctx, body.op(r), key, id, body.Body)
 	s.writeOp(w, "comment", rc, err, false, "comment", commentAfter(ctx, ds, key, id))
 }
 
@@ -1361,7 +1368,7 @@ func (s *Server) handleDispatchDeleteComment(w http.ResponseWriter, r *http.Requ
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.DeleteComment(ctx, body.op(), key, id)
+	rc, err := ds.DeleteComment(ctx, body.op(r), key, id)
 	s.writeOp(w, "comment", rc, err, false, "comment", commentAfter(ctx, ds, key, id))
 }
 
@@ -1386,7 +1393,7 @@ func (s *Server) handleDispatchAddRelation(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.AddRelation(ctx, body.op(), key, body.Kind, body.To)
+	rc, err := ds.AddRelation(ctx, body.op(r), key, body.Kind, body.To)
 	s.writeOp(w, "ticket", rc, err, true, "ticket", ticketAfter(ctx, ds, key))
 }
 
@@ -1403,7 +1410,7 @@ func (s *Server) handleDispatchRemoveRelation(w http.ResponseWriter, r *http.Req
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.RemoveRelation(ctx, body.op(), key, id)
+	rc, err := ds.RemoveRelation(ctx, body.op(r), key, id)
 	s.writeOp(w, "ticket", rc, err, false, "ticket", ticketAfter(ctx, ds, key))
 }
 
@@ -1424,7 +1431,7 @@ func (s *Server) handleDispatchAddLink(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.AddLink(ctx, body.op(), key, body.NewLink)
+	rc, err := ds.AddLink(ctx, body.op(r), key, body.NewLink)
 	s.writeOp(w, "ticket", rc, err, true, "ticket", ticketAfter(ctx, ds, key))
 }
 
@@ -1440,7 +1447,7 @@ func (s *Server) handleDispatchRemoveLink(w http.ResponseWriter, r *http.Request
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.RemoveLink(ctx, body.op(), key, id)
+	rc, err := ds.RemoveLink(ctx, body.op(r), key, id)
 	s.writeOp(w, "ticket", rc, err, false, "ticket", ticketAfter(ctx, ds, key))
 }
 
@@ -1552,7 +1559,7 @@ func (s *Server) handleDispatchCreateView(w http.ResponseWriter, r *http.Request
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.CreateView(ctx, body.op(), dispatch.NewView{Project: body.Project, Name: body.Name, Kind: body.Kind, Query: viewQuery(body.Query)})
+	rc, err := ds.CreateView(ctx, body.op(r), dispatch.NewView{Project: body.Project, Name: body.Name, Kind: body.Kind, Query: viewQuery(body.Query)})
 	s.writeOp(w, "view", rc, err, true, "view", viewAfter(ctx, ds, ""))
 }
 
@@ -1574,7 +1581,7 @@ func (s *Server) handleDispatchEditView(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.EditView(ctx, body.op(), id, edit)
+	rc, err := ds.EditView(ctx, body.op(r), id, edit)
 	s.writeOp(w, "view", rc, err, false, "view", viewAfter(ctx, ds, id))
 }
 
@@ -1590,11 +1597,11 @@ func (s *Server) handleDispatchDeleteView(w http.ResponseWriter, r *http.Request
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.DeleteView(ctx, body.op(), id)
+	rc, err := ds.DeleteView(ctx, body.op(r), id)
 	s.writeOp(w, "view", rc, err, false, "view", viewAfter(ctx, ds, id))
 }
 
-// handleDispatchOp answers an operation's receipt of the admin's without
+// handleDispatchOp answers an operation's receipt of the caller's without
 // acting, as GET /api/runs/{run}/commands/{command} answers a command's:
 // {receipt}; 404 not_found when the store holds none (never given, or
 // pruned past the newest 20,000: a resend of a pruned one that ran is
@@ -1614,7 +1621,7 @@ func (s *Server) handleDispatchOp(w http.ResponseWriter, r *http.Request) {
 	if !noQuery(w, r) {
 		return
 	}
-	rc, found, err := ds.Receipt(r.Context(), adminActor, id)
+	rc, found, err := ds.Receipt(r.Context(), actorOf(r), id)
 	if err != nil {
 		s.dispatchError(w, "operation", err)
 		return

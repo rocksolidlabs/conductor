@@ -53,6 +53,10 @@ type Op struct {
 	By          string
 }
 
+// ActorAdmin is the operator's actor: the admin's operations are kept
+// under it, and an approval of a plan revision is its alone.
+const ActorAdmin = "admin"
+
 // author is the name a row the operation makes records as its creator
 // (created_by): the display name, else the actor.
 func (op Op) author() string {
@@ -102,6 +106,28 @@ const (
 	RefusalRunLinked     = "run_linked"
 	RefusalExpired       = "expired"
 	RefusalKeyTaken      = "key_taken"
+	// RefusalStalePlan is a plan revision whose approval no longer holds
+	// for what is asked of it (Program item DS2): an approval of a
+	// revision whose handed-over comment is edited or gone, a launch of
+	// one whose ticket's intent changed since it was approved.
+	RefusalStalePlan = "stale_plan"
+)
+
+// The words of an op_conflict refusal: the id was used with other
+// content, or its operation's receipt is pruned and what it made keeps no
+// fingerprint to compare a resend with (a link a version 1 store added).
+const (
+	wordsOpConflict = "the operation id was used before with other content"
+	wordsTooOld     = "this operation is too old to compare: send it as a new one"
+)
+
+// The intents whose resend, its receipt pruned, is compared by the
+// fingerprint kept with what the operation made (Replay): a plan
+// revision's proposal, a launch, a link's add.
+const (
+	IntentPlanPropose  = "plan.propose"
+	IntentTicketLaunch = "ticket.launch"
+	IntentLinkAdd      = "link.add"
 )
 
 // Receipt is what an operation gets and what the store keeps under
@@ -157,6 +183,12 @@ const (
 	EntityMilestone = "milestone"
 	EntityView      = "view"
 	EntityPerson    = "person"
+	// EntityPlan is a ticket's plan revision and EntityLaunch a ticket's
+	// launch (Program item DS2): their rows name their ticket and its
+	// project, as a comment's do, and bump their own rev, never the
+	// ticket's.
+	EntityPlan   = "plan"
+	EntityLaunch = "launch"
 )
 
 // The ops of a change row: a scalar field set (value and prior), a set
@@ -210,6 +242,8 @@ var revTables = map[string]struct {
 	EntityLabel:     {"labels", false},
 	EntityMilestone: {"milestones", true},
 	EntityView:      {"views", true},
+	EntityPlan:      {"plans", false},
+	EntityLaunch:    {"launches", false},
 }
 
 // tx is one operation's transaction: what a change writes through. It
@@ -222,8 +256,11 @@ type tx struct {
 	now    time.Time
 	op     Op
 	intent string
-	n      int
-	seq    int64
+	// fp is the operation's fingerprint, which an operation that keeps it
+	// with what it makes writes there (a plan revision, a launch, a link).
+	fp  string
+	n   int
+	seq int64
 	// touched is every (entity, id) the change rows named, in order; the
 	// first is the operation's subject, whose rev the receipt carries.
 	touched []touched
@@ -235,8 +272,13 @@ type tx struct {
 	// which a row records anything.
 	searched []searchEntry
 	// runExists is the store's sight of the engine's runs (SetRunExists),
-	// nil when none was given.
+	// nil when none was given; sight is its sight of a run's package and
+	// chain (SetRunTicket, SetRunChain).
 	runExists func(id string) bool
+	sight     runSight
+	// runSuffix mints a run id's last part for a launch (mintRunID), nil
+	// for crypto/rand's: a test's seam.
+	runSuffix func() string
 	// onRefusal, when a change sets it, runs once a refusal has undone the
 	// change, in its transaction before its receipt: what a refusal keeps
 	// beside the receipt (an upload's lease, dropped with it).
@@ -469,10 +511,12 @@ func fingerprint(intent string, args any) (string, error) {
 // kept), else done with the subject's rev after the operation and what a
 // create made. A change that records no changes row is refused invalid,
 // so every done receipt has its row (actor, op id, 0): a resend whose
-// receipt is pruned is answered by the changes log, a row (actor, op id,
-// 0) meaning the operation ran, and the resend is answered done and Repeat
-// with no rev, id or key whatever its content; none means the receipt was
-// a refusal's, and the resend runs as a new operation. An error is the
+// receipt is pruned is answered by the changes log (prunedAnswer), a row
+// (actor, op id, 0) meaning the operation ran, and the resend is answered
+// done and Repeat with no rev, id or key, or, for an operation that keeps
+// its fingerprint with what it made, done with that record's id when the
+// fingerprints agree and op_conflict when they do not; none means the
+// receipt was a refusal's, and the resend runs as a new operation. An error is the
 // database's own, a bad op id, actor or display name, or the store
 // closed: nothing was written, and nothing is answered; a read-only store
 // answers a read_only refusal, written nowhere. OnChange's listeners are
@@ -511,32 +555,16 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 		return Receipt{}, nil, cancelledAs(ctx, err)
 	}
 	defer dbtx.Rollback()
-	// The receipt, when the id was answered before.
-	var priorIntent, priorFp, priorBody string
-	switch err := dbtx.QueryRowContext(ctx, "SELECT intent, fingerprint, receipt FROM ops WHERE actor = ? AND id = ?", op.Actor, op.ID).Scan(&priorIntent, &priorFp, &priorBody); {
-	case err == nil:
-		if priorIntent != intent || priorFp != fp {
-			return Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: RefusalOpConflict, Error: "the operation id was used before with other content"}, nil, nil
-		}
-		var rc Receipt
-		if err := json.Unmarshal([]byte(priorBody), &rc); err != nil {
-			return Receipt{}, nil, fmt.Errorf("dispatch: the receipt of %s: %w", op.ID, err)
-		}
-		rc.Repeat = true
+	// The receipt, when the id was answered before; else the log, when
+	// the receipt was pruned: the operation ran.
+	rc, found, err := answered(ctx, dbtx, op, intent, fp)
+	if err != nil {
+		return Receipt{}, nil, cancelledAs(ctx, err)
+	}
+	if found {
 		return rc, nil, nil
-	case isNoRows(err):
-	default:
-		return Receipt{}, nil, cancelledAs(ctx, err)
 	}
-	// The log, when the receipt was pruned: the operation ran.
-	var ran int
-	if err := dbtx.QueryRowContext(ctx, "SELECT COUNT(*) FROM changes WHERE actor = ? AND op_id = ? AND n = 0", op.Actor, op.ID).Scan(&ran); err != nil {
-		return Receipt{}, nil, cancelledAs(ctx, err)
-	}
-	if ran > 0 {
-		return Receipt{OpID: op.ID, Intent: intent, Status: StatusDone, Repeat: true}, nil, nil
-	}
-	t := &tx{ctx: ctx, tx: dbtx, now: time.Now().UTC(), op: op, intent: intent, runExists: s.runExists}
+	t := &tx{ctx: ctx, tx: dbtx, now: time.Now().UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix}
 	// The change runs under a savepoint: a refusal undoes it and keeps the
 	// transaction, and with it the write lock, for its receipt, so no other
 	// writer (a second store on the file) runs the same operation between
@@ -566,7 +594,7 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 				return Receipt{}, nil, cancelledAs(ctx, err)
 			}
 		}
-		rc := fitWords(Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: ref.Code, Error: words(ref.Words), Missing: ref.Missing, Key: ref.Key})
+		rc = fitWords(Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: ref.Code, Error: words(ref.Words), Missing: ref.Missing, Key: ref.Key})
 		if err := s.commitReceipt(ctx, dbtx, op, intent, fp, t.now, rc); err != nil {
 			return Receipt{}, nil, err
 		}
@@ -584,11 +612,145 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 	if err != nil {
 		return Receipt{}, nil, cancelledAs(ctx, err)
 	}
-	rc := Receipt{OpID: op.ID, Intent: intent, Status: StatusDone, Rev: rev, ID: t.id, Key: t.key}
+	rc = Receipt{OpID: op.ID, Intent: intent, Status: StatusDone, Rev: rev, ID: t.id, Key: t.key}
 	if err := s.commitReceipt(ctx, dbtx, op, intent, fp, t.now, rc); err != nil {
 		return Receipt{}, nil, err
 	}
 	return rc, t.changes(), nil
+}
+
+// answered is the answer an operation id sent again gets before anything
+// is done, read through q (the operation's transaction, or Replay's
+// read): its receipt when the store keeps one (a repeat of it for the same
+// intent and fingerprint, op_conflict for other content), else what the
+// changes log says of it (prunedAnswer); found is false for an id never
+// answered, or whose receipt was a refusal's and is pruned.
+func answered(ctx context.Context, q queryer, op Op, intent, fp string) (rc Receipt, found bool, err error) {
+	var priorIntent, priorFp, priorBody string
+	switch err := q.QueryRowContext(ctx, "SELECT intent, fingerprint, receipt FROM ops WHERE actor = ? AND id = ?", op.Actor, op.ID).Scan(&priorIntent, &priorFp, &priorBody); {
+	case err == nil:
+		if priorIntent != intent || priorFp != fp {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		if err := json.Unmarshal([]byte(priorBody), &rc); err != nil {
+			return Receipt{}, false, fmt.Errorf("dispatch: the receipt of %s: %w", op.ID, err)
+		}
+		rc.Repeat = true
+		return rc, true, nil
+	case isNoRows(err):
+	default:
+		return Receipt{}, false, err
+	}
+	return prunedAnswer(ctx, q, op, intent, fp)
+}
+
+// conflictReceipt is an op_conflict refusal with the words, written
+// nowhere.
+func conflictReceipt(op Op, intent, words string) Receipt {
+	return Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: RefusalOpConflict, Error: words}
+}
+
+// prunedAnswer is the answer to an operation whose receipt the store
+// keeps no more (prune), from the changes log, which keeps the
+// operation's first row (actor, op id, 0) for good: none, and found is
+// false (never run, or refused, which writes no row). Found, it is done
+// and Repeat, with no rev, id or key, for an operation that keeps no
+// fingerprint of its own; for one that does, its first row names what it
+// made, and that record's fingerprint, written in the operation's
+// transaction and never changed, is compared with the resend's: the same,
+// done and Repeat with the record's id, which the caller reads it by;
+// another, op_conflict, as the receipt would have answered. A plan
+// revision's proposal finds its create row (entity plan), a launch its
+// create row (entity launch), a link's add its add row (a ticket's links),
+// whose link names the fingerprint; a first row of another kind is
+// another operation's, op_conflict. A record with no fingerprint (a link
+// a version 1 store added) cannot be compared: op_conflict with the words
+// that say so, which refuses the resend rather than take content it
+// cannot check, and a new operation for the same link is refused as a
+// duplicate, so nothing is added twice.
+func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc Receipt, found bool, err error) {
+	var entity, entityID, field, kind, value string
+	switch err := q.QueryRowContext(ctx, "SELECT entity, entity_id, field, op, value FROM changes WHERE actor = ? AND op_id = ? AND n = 0",
+		op.Actor, op.ID).Scan(&entity, &entityID, &field, &kind, &value); {
+	case isNoRows(err):
+		return Receipt{}, false, nil
+	case err != nil:
+		return Receipt{}, false, err
+	}
+	done := Receipt{OpID: op.ID, Intent: intent, Status: StatusDone, Repeat: true}
+	var table, id string
+	switch intent {
+	case IntentPlanPropose:
+		table, id = "plans", entityID
+		if entity != EntityPlan || kind != OpCreate {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+	case IntentTicketLaunch:
+		table, id = "launches", entityID
+		if entity != EntityLaunch || kind != OpCreate {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+	case IntentLinkAdd:
+		var v struct {
+			ID string `json:"id"`
+		}
+		if entity != EntityTicket || field != "links" || kind != OpAdd || json.Unmarshal([]byte(value), &v) != nil || v.ID == "" {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		table, id = "links", v.ID
+	default:
+		return done, true, nil
+	}
+	// A version 1 database, read as it was found (read), kept no
+	// fingerprint: recorded stays empty, too old to compare.
+	var recorded string
+	if schemaOf(q) >= 2 {
+		if err := q.QueryRowContext(ctx, "SELECT fingerprint FROM "+table+" WHERE id = ?", id).Scan(&recorded); err != nil {
+			if isNoRows(err) {
+				return Receipt{}, false, fmt.Errorf("dispatch: the operation %s made %s %s, which has no row", op.ID, table, id)
+			}
+			return Receipt{}, false, err
+		}
+	}
+	switch recorded {
+	case "":
+		return conflictReceipt(op, intent, wordsTooOld), true, nil
+	case fp:
+		done.ID = id
+		return done, true, nil
+	}
+	return conflictReceipt(op, intent, wordsOpConflict), true, nil
+}
+
+// Replay answers an operation sent again before its caller does any work
+// of its own, as Apply would answer it and no weaker (answered): found,
+// the answer is the operation's (a repeat of its receipt, done with the
+// record's id once the receipt is pruned, op_conflict for other content,
+// or a refusal kept); not found, the operation is new and the caller goes
+// on to make it. intent and args are the operation's content, as Apply is
+// given them (PlanProposeArgs for plan.propose, LinkAddArgs for link.add):
+// the API replays a proposal before it reads the crew or resolves the
+// base, a launch before it starts anything, and a delivery's add before
+// it reads the ledger, so a resend after a lost reply gets the first
+// answer whatever those have become. It writes nothing; it reads a
+// read-only store as any read does. An error is the database's, a bad op
+// id, actor or display name, or the store closed or unavailable.
+func (s *Store) Replay(ctx context.Context, op Op, intent string, args any) (rc Receipt, found bool, err error) {
+	if err := op.check(); err != nil {
+		return Receipt{}, false, err
+	}
+	fp, err := fingerprint(intent, args)
+	if err != nil {
+		return Receipt{}, false, err
+	}
+	err = s.read(ctx, func(q queryer) error {
+		rc, found, err = answered(ctx, q, op, intent, fp)
+		return err
+	})
+	if err != nil {
+		return Receipt{}, false, err
+	}
+	return rc, found, nil
 }
 
 // commitReceipt writes an operation's receipt in its transaction and

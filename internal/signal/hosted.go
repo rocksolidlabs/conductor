@@ -141,6 +141,11 @@ type HostConn struct {
 	// place in line for room (enter): a test's signal that a frame waits,
 	// which no clock can give it (#281). It must not block.
 	OnWait func()
+	// Open says the host registered with no token, as a switchyard's open
+	// hosts may: set before Register and never after. The viewers of its
+	// sessions are handed the configured ICE servers alone, no media
+	// provider's (Viewer.HostOpen).
+	Open bool
 }
 
 // roomWaiter is a viewer's message in the line for room in a host's queue:
@@ -556,6 +561,10 @@ func (v *Viewer) closeForLink(reason error) {
 
 // Done is closed when the viewer must be disconnected.
 func (v *Viewer) Done() <-chan struct{} { return v.done }
+
+// HostOpen reports whether the host connection the viewer joined over
+// registered with no token (HostConn.Open).
+func (v *Viewer) HostOpen() bool { return v.conn != nil && v.conn.Open }
 
 // Reason reports why the viewer was closed.
 func (v *Viewer) Reason() error {

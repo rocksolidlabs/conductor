@@ -21,8 +21,11 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/api"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/certs"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/hostagent"
@@ -37,6 +40,29 @@ import (
 
 // writeAssets is agents.WriteAssets: a test replaces it to make a mode fail.
 var writeAssets = agents.WriteAssets
+
+// extensions is ext.Freeze: the composition root (runServe, runHost) reads
+// the registry through it, once, at start, which closes it. A test replaces
+// it instead of registering into the process's registry.
+var extensions = ext.Freeze
+
+// newServer is api.New given the providers the composition root read: a
+// test replaces it to see what runServe hands the server, as it replaces
+// extensions.
+var newServer = func(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, ui http.Handler, st *store.Store, p ext.Providers) (*api.Server, error) {
+	return api.New(cfg, cat, log, ui, st, api.WithExtensions(p))
+}
+
+// extensionsLine names what the registry holds, kind and name, in its
+// order ("identity cloud, notifications push"); "" when nothing is
+// registered, as in a plain build.
+func extensionsLine(p ext.Providers) string {
+	parts := make([]string, 0, len(p.All))
+	for _, e := range p.All {
+		parts = append(parts, e.Kind+" "+e.Name)
+	}
+	return strings.Join(parts, ", ")
+}
 
 // terminalOf is w when it is a terminal, where the person who started the
 // server reads it, and nil otherwise (a file, or a pipe to a parent process,
@@ -170,10 +196,31 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if ui == nil {
 		log.Warn("web UI is not embedded; run `make web-build` before building, API only")
 	}
-	srv, err := api.New(cfg, cat, log, ui, st)
+	// The registry, read once: every slot nothing is registered in holds
+	// its free default (local.Fill, the one place that asks), and the
+	// server holds every provider behind its guard from before its first
+	// write. A plain build registers nothing and says nothing of it.
+	providers := local.Fill(extensions())
+	if line := extensionsLine(providers); line != "" {
+		log.Info("extensions: " + line)
+	}
+	srv, err := newServer(cfg, cat, log, ui, st, providers)
 	if err != nil {
 		return 1, err
 	}
+	// The server now runs goroutines of its own (a provider's queue drains
+	// on the server's context, not ctx): a start that fails below, or a
+	// Serve that ends, shuts it down as shutdown does, so a failed run in a
+	// process that goes on leaves nothing of it running.
+	shutDown := false
+	defer func() {
+		if shutDown {
+			return
+		}
+		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(sctx)
+	}()
 	if cfg.Switchyard.Enabled {
 		log.Info("switchyard: coordinating hosted sessions and launching nothing", "relay", cfg.SwitchyardRelay(), "origins", strings.Join(cfg.SwitchyardOrigins(), ","))
 	}
@@ -238,6 +285,25 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	defer stdinCancel()
 	mctx, mcancel := context.WithCancel(ctx)
 	go srv.RunMaintenance(mctx)
+	// The publisher is in place before a provider starts: a session a
+	// provider's Start launches at once is published as any other is.
+	if server := cfg.RendezvousServer(); server != "" {
+		rv := cfg.Rendezvous
+		srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, Insecure: rv.Insecure, ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log}})
+		log.Info("sessions are published to the switchyard", "server", config.ShownURL(server), "hostToken", rv.Token != "")
+		if rv.Insecure && config.PlainOffMachine(server) {
+			// Once per start: the config allowed it (rendezvous.insecure).
+			log.Warn("rendezvous.insecure: the switchyard is plain http and not localhost or a loopback address; what this server publishes there travels in the clear and unverified", "server", urlHost(server))
+		}
+	} else if !cfg.Switchyard.Enabled {
+		log.Info("sessions are not published to a switchyard; share links work where this server is reachable")
+	}
+	// The providers that need the server start now, before the listeners
+	// serve, on the maintenance context, which shutdown ends: Start
+	// returns at once, and one that fails is tried again with backoff
+	// while its slots answer their free defaults (a plain build starts
+	// nothing).
+	srv.StartExtensions(mctx)
 	// The agents' lookups and probes, so the first Launch dialog lists them at once.
 	go srv.WarmCatalog(mctx)
 
@@ -256,6 +322,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	mapper := startReach(mctx, cfg, srv, certMgr, portOf(ln), portOf(tlsLn), log)
 	shutdown := func() {
+		shutDown = true
 		mcancel()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -286,17 +353,6 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			log.Info("stdin closed; shutting down")
 			stdinCancel()
 		}()
-	}
-	if server := cfg.RendezvousServer(); server != "" {
-		rv := cfg.Rendezvous
-		srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, Insecure: rv.Insecure, ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log}})
-		log.Info("sessions are published to the switchyard", "server", config.ShownURL(server), "hostToken", rv.Token != "")
-		if rv.Insecure && config.PlainOffMachine(server) {
-			// Once per start: the config allowed it (rendezvous.insecure).
-			log.Warn("rendezvous.insecure: the switchyard is plain http and not localhost or a loopback address; what this server publishes there travels in the clear and unverified", "server", urlHost(server))
-		}
-	} else if !cfg.Switchyard.Enabled {
-		log.Info("sessions are not published to a switchyard; share links work where this server is reachable")
 	}
 
 	select {

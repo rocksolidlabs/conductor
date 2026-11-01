@@ -25,6 +25,12 @@ export interface RenderOptions {
    * ticket's description): the link's words stay, as words, and nothing opens. On by default.
    */
   relativeLinks?: boolean
+  /**
+   * Whether an image naming a Dispatch attachment (`![a screenshot](attachment:<id>)`) is kept for the component to show: an `img` with
+   * `data-md-attachment` and no source, which the preview fills with an object URL of the content it fetched with the token, since an
+   * `img` cannot carry a header; a link naming one keeps its words. Off by default, where such an image is held as its alt text.
+   */
+  attachments?: boolean
 }
 
 export interface Rendered {
@@ -132,6 +138,9 @@ export function renderMarkdown(src: string, opts: RenderOptions): Rendered {
     if (!href) {
       // `[words]()`: no destination, so no link (an empty href would reload the page).
       t.attrs = (t.attrs ?? []).filter((a) => a[0] !== 'href')
+    } else if (opts.attachments && /^attachment:/i.test(href)) {
+      held.push(true)
+      return `<span class="md-link-held" title="An attachment of the ticket's: it is downloaded from its Attachments">`
     } else if (isRemote(href)) {
       t.attrSet('target', '_blank')
       t.attrSet('rel', 'noopener noreferrer')
@@ -153,6 +162,11 @@ export function renderMarkdown(src: string, opts: RenderOptions): Rendered {
     const t = tokens[idx]!
     const src = String(t.attrGet('src') ?? '')
     const alt = self.renderInlineAsText(t.children ?? [], options, env)
+    const attachment = opts.attachments ? /^attachment:([0-9a-f]{16})$/.exec(src) : null
+    if (attachment) {
+      // Filled by the component with the content it fetched with the token: no URL of the API is ever an img's source.
+      return `<img data-md-attachment="${attachment[1]}" alt="${escapeHtml(alt)}">`
+    }
     if (/^data:image\//i.test(src)) {
       // An image embedded in the file (markdown-it passes only gif, png, jpeg and webp data URLs): nothing is fetched.
     } else if (isRemote(src)) {

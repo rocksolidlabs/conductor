@@ -16,7 +16,11 @@ type principal struct {
 	// published there and has no role on any of them (role).
 	yard bool
 	host bool
-	link *share.Link
+	// subject and name are an identity provider's principal's (identity.go):
+	// empty for every token of the server's own chain.
+	subject string
+	name    string
+	link    *share.Link
 	// runOf answers the run a session is a member of, for a run link
 	// (Server.runOf).
 	runOf func(sessionID string) (runID string, ok bool)
@@ -121,10 +125,16 @@ func presentedToken(r *http.Request, allowQuery bool) string {
 	return ""
 }
 
-// authenticate resolves a presented token to a principal. Unknown tokens
+// authenticate resolves a presented token to a principal: the workbench
+// token, each host token, the share links, and only then, for a token none
+// of them knows, the identity provider (providerPrincipal). Unknown tokens
 // yield an empty principal; callers decide the response.
 func (s *Server) authenticate(r *http.Request, allowQuery bool) principal {
-	tok := presentedToken(r, allowQuery)
+	return s.tokenPrincipal(r, presentedToken(r, allowQuery))
+}
+
+// tokenPrincipal is authenticate's principal for tok, presented with r.
+func (s *Server) tokenPrincipal(r *http.Request, tok string) principal {
 	if tok == "" {
 		return principal{}
 	}
@@ -136,18 +146,26 @@ func (s *Server) authenticate(r *http.Request, allowQuery bool) principal {
 			return principal{host: true}
 		}
 	}
-	if link, err := s.links.Resolve(tok); err == nil {
+	link, err := s.links.Resolve(tok)
+	if err == nil {
 		return principal{link: link, runOf: s.runOf}
-	} else if !errors.Is(err, share.ErrUnknownToken) {
-		s.log.Debug("share token rejected", "reason", err)
 	}
-	return principal{}
+	if !errors.Is(err, share.ErrUnknownToken) {
+		// An expired or revoked link is a link: refused as one, never asked
+		// of the identity provider.
+		s.log.Debug("share token rejected", "reason", err)
+		return principal{}
+	}
+	return s.providerPrincipal(r, tok)
 }
 
-// requireAdmin wraps handlers that need the workbench token (the admin principal).
+// requireAdmin wraps handlers that need the workbench token (the admin
+// principal), or an identity provider's principal with the admin grant; the
+// handler finds the principal in the request's context (actorOf).
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.authenticate(r, false).admin {
+		p := s.authenticate(r, false)
+		if !p.admin {
 			if !s.limiter.allow(clientKey(r)) {
 				writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 				return
@@ -156,6 +174,6 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "workbench token required")
 			return
 		}
-		next(w, r)
+		next(w, withPrincipal(r, p))
 	}
 }

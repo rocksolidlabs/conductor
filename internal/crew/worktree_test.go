@@ -480,3 +480,28 @@ func TestAddDetachedWorktreeHasNoBranch(t *testing.T) {
 		t.Fatalf("a revision that is not a commit id: %v", err)
 	}
 }
+
+// A HEAD whose commit git cannot read is git's failure, not a repository
+// without a commit: CheckRepo hands git's error back, matching neither
+// ErrNotRepo nor ErrNoGit, and GitState reports the directory in its
+// repository, without a commit, in git's words.
+func TestCheckRepoKeepsGitsFailureReadingHead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file whatever its mode")
+	}
+	repo := newRepo(t)
+	head := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+	f := filepath.Join(repo, ".git", "objects", head[:2], head[2:])
+	if err := os.Chmod(f, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(f, 0o444) })
+	err := CheckRepo(t.Context(), repo)
+	if err == nil || errors.Is(err, ErrNotRepo) || errors.Is(err, ErrNoGit) || !strings.Contains(err.Error(), "unable to open loose object") {
+		t.Fatalf("CheckRepo: %v", err)
+	}
+	st, err := GitState(t.Context(), repo)
+	if err != nil || !st.InRepo || st.HasCommit || !strings.HasPrefix(st.Message, "git cannot read the working directory's HEAD: ") {
+		t.Fatalf("GitState: %+v %v", st, err)
+	}
+}

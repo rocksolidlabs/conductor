@@ -127,10 +127,29 @@ add its rule here.
   picture either way, in the product, not in the stub's ordering.
 - A pid of 0 is no process; a file not yet written is not evidence. Wait for
   the pid file, the swap file, the record before judging it.
+- A page not yet drawn passes every "hidden", and a key it does not yet
+  listen for is lost. After a `goto`, wait for something the listener's
+  own component draws (the layout's sidebar root for the layout's keys)
+  before the first key, press it once, and give its effect the expect's
+  bound; a second press on a clock only hides the first one's loss, and a
+  toggle pressed again closes what was only slow to open.
+- A test's timeout bounds a hang, not its steps. A long walk whose every
+  step has its own bound is spent by a loaded box with every step passing,
+  whatever fixed timeout it has: each step raises the test's timeout by
+  its own waits' caps as it takes them (`testInfo.setTimeout`, the
+  `budget` of `palette-rows.spec.ts`), with the config's timeout above
+  their sum, never a multiple of the config's.
 - Count only what the test made. A spec that counts sessions, tiles or list
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
   look for the thing by its id or name, never by a list's length.
+- What a child keeps under HOME is shared by every process of the same
+  HOME. A test that gives each child its own `XDG_STATE_HOME` hides what
+  the product does where it gives none: the e2e's one server HOME then
+  holds one file for every spec's children (2026-10-31: Neovim's ShaDa,
+  written by several as they left, unreadable, E576 on every later
+  `:edit`). The product gives such a child state of its own or none
+  (`-i NONE`), and a test proves it with the shared HOME, not around it.
 - A frame that must be dropped, a dialog that must be drawn inside a
   budget: read the moment off a seam the code exposes (`viewerSeam`,
   `beforeEnter`) rather than guessing it from a stall or a sleep. A stall
@@ -231,6 +250,15 @@ add its rule here.
   a test changes the thing between the read and the record through a
   seam (`afterRead` in `internal/certs`), and pokes or calls each check
   itself instead of racing a ticker.
+- A test's waits fit in its timeout, and a slow step is waited on by
+  what ends it. A paste the server hands Neovim frame by frame took the
+  read loop 90 s at a load average of 110 though nothing used a tenth of
+  that in CPU, and the test, its own waits adding up past the suite's
+  120 s, ran out at whichever step was slow that day (`vim.spec.ts`,
+  #281). Wait for the server to have answered the frames (a ping behind
+  them, `serverCaughtUp`), never for a word to stay the same over a few
+  seconds; where nothing in the product caps the step, its bound only
+  bounds a hang, and `test.setTimeout` is above that bound and the rest.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

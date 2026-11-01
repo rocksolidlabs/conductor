@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -550,5 +551,148 @@ func TestNeovimChildHasNoConductorSecret(t *testing.T) {
 	var path string
 	if err := e.v.Eval("$PATH", &path); err != nil || path == "" {
 		t.Fatalf("the editor lost PATH: %q %v", path, err)
+	}
+}
+
+// unreadableShaDa is a ShaDa file Neovim refuses, as the one the e2e's
+// Neovims left under the server's HOME did (#281): an item of type 0, which
+// "must not be there", and every `:edit` that reads it throws E576.
+var unreadableShaDa = []byte{0x00, 0x00, 0x01, 0xc0}
+
+// Two embedded Neovims never share a ShaDa path, with each other or with
+// the person (#281): each says 'shadafile' is NONE, both open their files
+// though the person's ShaDa file is unreadable, and both leave (one as a
+// lost connection does, one as `:qa!` does) without writing it or leaving a
+// temporary file beside it. The same holds when the person's config names a
+// ShaDa file of its own, which the argument alone would not cover.
+func TestEditorsShareNoShaDa(t *testing.T) {
+	if !Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	for _, tc := range []struct {
+		name string
+		// config is the init.vim written into the config's nvim folder, %s
+		// the ShaDa folder ("" for none).
+		config string
+		// file is the ShaDa file the person's Neovim would use, in it.
+		file string
+	}{
+		{name: "the default ShaDa file", file: "main.shada"},
+		{name: "a ShaDa file the config names", config: "set shadafile=%s/mine.shada\n", file: "mine.shada"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, config := t.TempDir(), t.TempDir()
+			t.Setenv("XDG_STATE_HOME", state)
+			t.Setenv("XDG_CONFIG_HOME", config)
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			shada := filepath.Join(state, "nvim", "shada")
+			if err := os.MkdirAll(shada, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(shada, tc.file), unreadableShaDa, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tc.config != "" {
+				if err := os.MkdirAll(filepath.Join(config, "nvim"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(config, "nvim", "init.vim"), []byte(fmt.Sprintf(tc.config, shada)), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dir := t.TempDir()
+			var eds []*Editor
+			for _, name := range []string{"one.txt", "two.txt"} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(name+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				e, err := Open(context.Background(), dir, name, &recorder{done: make(chan struct{})})
+				if err != nil {
+					t.Fatalf("open %s beside an unreadable ShaDa file: %v", name, err)
+				}
+				defer e.Close()
+				eds = append(eds, e)
+			}
+			for i, e := range eds {
+				var file string
+				if err := e.v.Eval("&shadafile", &file); err != nil {
+					t.Fatal(err)
+				}
+				if file != "NONE" {
+					t.Errorf("editor %d's 'shadafile' is %q, not NONE", i, file)
+				}
+				// Something a ShaDa file would keep: a register and a
+				// command in the history, as requests Neovim has done
+				// once they return.
+				for _, c := range []string{"normal! yy", "call histadd(':', 'echo 1')"} {
+					if err := e.v.Command(c); err != nil {
+						t.Fatalf("%s: %v", c, err)
+					}
+				}
+			}
+			eds[0].Close()
+			eds[1].Discard()
+			entries, err := os.ReadDir(shada)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || entries[0].Name() != tc.file {
+				var names []string
+				for _, en := range entries {
+					names = append(names, en.Name())
+				}
+				t.Errorf("the ShaDa folder holds %q, not the person's %s alone", names, tc.file)
+			}
+			if got, err := os.ReadFile(filepath.Join(shada, tc.file)); err != nil || string(got) != string(unreadableShaDa) {
+				t.Errorf("the person's ShaDa file was written: %x %v", got, err)
+			}
+		})
+	}
+}
+
+// An embedded Neovim does not read the person's ShaDa file as it starts
+// either (#281): a register the person's Neovim kept there is not the
+// editor's, and the file is as it was once the editor has left.
+func TestEditorReadsNoShaDaAtStart(t *testing.T) {
+	if !Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	shada := filepath.Join(state, "nvim", "shada")
+	if err := os.MkdirAll(shada, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	main := filepath.Join(shada, "main.shada")
+	// The person's Neovim, keeping a register in its ShaDa file.
+	if out, err := exec.Command(Program, "--headless", "--clean", "-i", main, "-c", "let @a = 'kept'", "-c", "wshada!", "-c", "qa!").CombinedOutput(); err != nil {
+		t.Fatalf("write the person's ShaDa file: %v %s", err, out)
+	}
+	before, err := os.ReadFile(main)
+	if err != nil || len(before) == 0 {
+		t.Fatalf("the person's ShaDa file: %d bytes, %v", len(before), err)
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "sample.txt"), []byte("one\n"), 0o644)
+	e, err := Open(context.Background(), dir, "sample.txt", &recorder{done: make(chan struct{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	var a string
+	if err := e.v.Eval("@a", &a); err != nil {
+		t.Fatal(err)
+	}
+	if a != "" {
+		t.Errorf("the editor read the person's register a: %q", a)
+	}
+	if err := e.v.Command("let @a = 'the editor''s'"); err != nil {
+		t.Fatal(err)
+	}
+	e.Discard()
+	if after, err := os.ReadFile(main); err != nil || string(after) != string(before) {
+		t.Errorf("the person's ShaDa file changed: %d bytes before, %d after, %v", len(before), len(after), err)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor"
@@ -39,6 +40,7 @@ type Server struct {
 	hosts    *signal.Hub
 	events   *eventHub
 	webhooks *webhookSender
+	notifier *notifier // the webhooks and the providers' sinks (notify.go)
 	limiter  *rateLimiter
 	// hostLimiter, openHosts and openRelay bound open hosts on a switchyard,
 	// per address: how often one registers, how many live sessions it holds,
@@ -106,6 +108,10 @@ type Server struct {
 	// without a data directory, on a switchyard, which keeps no tickets,
 	// and when it could not be opened.
 	dispatch *dispatch.Store
+	// planFacts keeps what the plan revisions' reads take from each
+	// revision's body, by its digest (dispatch_plans.go), so a list reads
+	// no body it has read before.
+	planFacts planFactsCache
 	// pastes are the paste-invite peers of each server session (paste.go).
 	pastes pasteStore
 	// runs launches crews and keeps their runs, in memory.
@@ -211,6 +217,30 @@ type Server struct {
 	bg     sync.WaitGroup
 	bgMu   sync.Mutex
 	bgDone bool
+
+	// exts is the providers the composition root gave New (WithExtensions),
+	// the free defaults where nothing is registered, each behind the guard
+	// (extensions.go). extCtx ends with stopExtensions, and the queues'
+	// drains with it; extMu guards extGuards (the guard's state per
+	// provider and kind), extQueues (a Starter's queues, held until its
+	// Start has succeeded) and extFree (the other queues, held until New
+	// can no longer fail). extClock is the clock of the guard's
+	// once-a-minute log; nil is time.Now, and a test holds its own.
+	// extStarts is the providers the server starts (exthost.go), each with
+	// its ready flag, and extStarting is set by the one StartExtensions
+	// that starts them; extAfter is the clock of their starts' waits and
+	// backoffs, nil for time.After, a test's own otherwise.
+	exts        extSlots
+	extCtx      context.Context
+	extStop     context.CancelFunc
+	extMu       sync.Mutex
+	extGuards   map[string]*extGuard
+	extQueues   map[string][]func()
+	extFree     []func()
+	extClock    func() time.Time
+	extStarts   []*extStarter
+	extStarting atomic.Bool
+	extAfter    func(time.Duration) <-chan time.Time
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
@@ -222,10 +252,15 @@ type Server struct {
 // as the mask first (maskConfiguredEnv), and a failure to save it stops
 // startup too. web serves the embedded SPA and may be nil.
 // st persists UI-managed state in the data directory and may be nil when
-// there is none.
-func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Handler, st *store.Store) (*Server, error) {
+// there is none. The options are read before anything is written; without
+// WithExtensions the server is the free build (extensions.go).
+func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Handler, st *store.Store, opts ...Option) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
+	}
+	o := options{providers: freeBuild()}
+	for _, opt := range opts {
+		opt(&o)
 	}
 	base := cat.Clone()
 	effective, overlay, err := loadCatalog(st, base)
@@ -287,6 +322,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		started:     time.Now(),
 		relayed:     newRelayMeter(nil),
 	}
+	// Every provider behind the guard before the server's first write of
+	// its own (the ledger's recovery, the records): nothing calls them yet.
+	s.installExtensions(o.providers)
 	s.relayBurstFloor = relayBurstFloor
 	s.hostPingEvery = hostPingEvery
 	s.hostGoneWait = writeTimeout
@@ -336,6 +374,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if st != nil {
 		records, err := crew.NewRecords(st)
 		if err != nil {
+			// No queue's drain has begun (beginFreeQueues, below), so
+			// nothing of the providers' outlives this New.
+			s.stopExtensions()
 			return nil, err
 		}
 		s.records = records
@@ -365,7 +406,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			s.dispatch.OnChange(s.events.dispatch)
 		}
 	}
-	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
+	s.webhooks = s.startNotifier(cfg.Webhooks)
 	// The runs take every entry too: a member's done starts the members after
 	// it, and its handoff is typed into the member it names. OnActivity never
 	// waits, as a sink must not. The changes of server sessions reach the runs
@@ -430,6 +471,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 		s.disconnectLinks([]string{linkID})
 	}
+	// Nothing fails past here: the queues of the providers that are no
+	// Starter drain from now on (a Starter's once its Start has succeeded).
+	s.beginFreeQueues()
 	return s, nil
 }
 
@@ -490,6 +534,7 @@ func (s *Server) track(f func()) {
 // viewers of a forgotten run's links being closed. Shutdown does the same
 // at its end; tests call it before their directories go.
 func (s *Server) WaitBackground(ctx context.Context) {
+	s.stopExtensions()
 	s.bgMu.Lock()
 	s.bgDone = true
 	s.bgMu.Unlock()
@@ -896,6 +941,9 @@ const recordsGrace = 5 * time.Second
 func (s *Server) Shutdown(ctx context.Context) {
 	s.runs.Draining(ctx)
 	s.webhooks.close(ctx)
+	// The providers' queues end as the webhooks' do: what waits in them is
+	// not delivered, and their goroutines are waited for with the others.
+	s.stopExtensions()
 	var stops sync.WaitGroup
 	for _, run := range s.runs.List() {
 		if run.StoppedAt == nil {

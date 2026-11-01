@@ -954,7 +954,12 @@ func readTexts(ctx context.Context, q queryer, query string, args ...any) ([]str
 // first relations both ways, the active ones first, each with its other
 // end, and how many it has (RelationsTotal); whether a live, open ticket
 // blocks it; its live links and attachments; its last comments, each
-// with its number; and its close policy's state, computed now.
+// with its number; its close policy's state, computed now; its approved
+// plan revisions' summaries, newest first (none, one on a local write,
+// more when a merge left more: the field rules), at most
+// MaxTicketApproved, each with its staleness; and how many launches it
+// has. The revisions and the launches are reads of their own (Plans), so
+// the read keeps its bound.
 type TicketView struct {
 	Ticket
 	Parent         *RelatedTicket   `json:"parent,omitempty"`
@@ -966,6 +971,8 @@ type TicketView struct {
 	Attachments    []Attachment     `json:"attachments"`
 	Comments       []Comment        `json:"comments"`
 	Close          CloseState       `json:"close"`
+	Approved       []PlanSummary    `json:"approved"`
+	LaunchCount    int              `json:"launchCount"`
 }
 
 // TicketChildren is the first MaxTicketChildren live children of a
@@ -1033,8 +1040,17 @@ func (s *Store) Ticket(ctx context.Context, key string) (TicketView, error) {
 		if err != nil {
 			return err
 		}
-		v.Close, err = closeOf(ctx, q, p, tk)
-		return err
+		if v.Close, err = closeOf(ctx, q, p, tk); err != nil {
+			return err
+		}
+		if v.Approved, err = plansOf(ctx, q, tk, true); err != nil {
+			return err
+		}
+		if schemaOf(q) < 2 {
+			// A version 1 database, read as it was found: no launches.
+			return nil
+		}
+		return q.QueryRowContext(ctx, "SELECT COUNT(*) FROM launches WHERE ticket_id = ?", tk.ID).Scan(&v.LaunchCount)
 	})
 	if err != nil {
 		return TicketView{}, err

@@ -229,6 +229,11 @@ var dispatchRequests = map[string]struct {
 	"POST /api/dispatch/tickets/{key}/delete":                  {"/api/dispatch/tickets/CND-1/delete", map[string]any{"opId": "a10"}},
 	"POST /api/dispatch/tickets/{key}/undelete":                {"/api/dispatch/tickets/CND-1/undelete", map[string]any{"opId": "a11"}},
 	"GET /api/dispatch/tickets/{key}/history":                  {"/api/dispatch/tickets/CND-1/history", nil},
+	"GET /api/dispatch/tickets/{key}/plans":                    {"/api/dispatch/tickets/CND-1/plans", nil},
+	"POST /api/dispatch/tickets/{key}/plans":                   {"/api/dispatch/tickets/CND-1/plans", map[string]any{"opId": "c1", "crew": "team"}},
+	"GET /api/dispatch/plans/{id}":                             {"/api/dispatch/plans/0123456789abcdef", nil},
+	"POST /api/dispatch/plans/{id}/approve":                    {"/api/dispatch/plans/0123456789abcdef/approve", map[string]any{"opId": "c2", "note": "ok"}},
+	"POST /api/dispatch/plans/{id}/withdraw":                   {"/api/dispatch/plans/0123456789abcdef/withdraw", map[string]any{"opId": "c3"}},
 	"GET /api/dispatch/tickets/{key}/comments":                 {"/api/dispatch/tickets/CND-1/comments", nil},
 	"POST /api/dispatch/tickets/{key}/comments":                {"/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": "b7", "body": "x"}},
 	"POST /api/dispatch/tickets/{key}/comments/{id}/edit":      {"/api/dispatch/tickets/CND-1/comments/0123456789abcdef/edit", map[string]any{"opId": "b8", "body": "y"}},
@@ -1430,7 +1435,13 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 	// The download reads an attachment of the ticket's, whose id its
 	// request names in place of the one dispatchRequests holds.
 	attachment := "/api/dispatch/attachments/" + entityOf(t, e.upload(t, "CND-1", "read.txt", "text/plain", []byte("read me"), http.StatusCreated, ""), "attachment")["id"].(string)
-	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1", attachment}
+	// The revision's read reads a plan revision of the ticket's, made
+	// through the store, in place of the id dispatchRequests holds.
+	rc := doneOf(t)(e.srv.dispatch.ProposePlan(context.Background(), adminOp(""), "CND-1", dispatch.PlanRequest{Crew: "team"},
+		dispatch.PlanBody{Base: strings.Repeat("a", 40), Crew: json.RawMessage(`{"id":"team","name":"Team","tasks":[{"id":"build"}]}`)}))
+	plan := "/api/dispatch/plans/" + rc.ID
+	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1", attachment,
+		"/api/dispatch/tickets/CND-1/plans", plan}
 	reads := 0
 	eachDispatchRoute(t, e.srv, func(method, path string, _ any) {
 		if method != http.MethodGet {
@@ -1444,6 +1455,9 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 				t.Fatalf("%s: %d %q", path, status, data)
 			}
 		} else {
+			if strings.HasPrefix(path, "/api/dispatch/plans/") {
+				path = plan
+			}
 			e.expect(t, method, path, nil, http.StatusOK, "")
 		}
 		sep := "?"
@@ -1458,7 +1472,7 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			e.expect(t, method, path+sep+q, nil, http.StatusBadRequest, "invalid_request")
 		}
 	})
-	if reads != 11 {
+	if reads != 13 {
 		t.Fatalf("%d reads", reads)
 	}
 }
@@ -1560,9 +1574,10 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 	e := dispatchEnv(t)
 	const upload = "POST /api/dispatch/tickets/{key}/attachments"
 	bounds := map[string]int{
-		"POST /api/dispatch/tickets":            maxTicketBody,
-		"POST /api/dispatch/tickets/{key}/edit": maxTicketBody,
-		upload:                                  maxAttachmentBody,
+		"POST /api/dispatch/tickets":             maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/edit":  maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/plans": maxTicketBody,
+		upload:                                   maxAttachmentBody,
 	}
 	// A ticket's create checks its project's key before the store sees
 	// the body.
@@ -1615,7 +1630,7 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 			}
 		}
 	}
-	if writes != 29 {
+	if writes != 32 {
 		t.Fatalf("%d writes", writes)
 	}
 }
@@ -1683,6 +1698,9 @@ type largestTicket struct {
 	comments, relationTitles, childTitles                             []string
 	links                                                             []dispatch.NewLink
 	attachments                                                       []string
+	// approvedNotes are the approved revisions' notes the read carries,
+	// newest first.
+	approvedNotes []string
 }
 
 // buildLargestTicket makes, through the store, the largest ticket the
@@ -1694,7 +1712,13 @@ type largestTicket struct {
 // planted in the database as their upload writes them, each of 16 MiB with
 // a name and a type at their bounds (fifty uploads at that size would
 // write 800 MiB, and a reply carries a row, never its file), every
-// operation by a display name at its bound.
+// operation by a display name at its bound. And one more approved plan
+// revision than the read carries (dispatch.MaxTicketApproved), as merges
+// may leave them, each with its crew's name and its approval's note at
+// their bounds and stale for both reasons, its handed-over comment edited
+// and the title, the description and the criteria changed since, so its
+// words are their longest; the edits come before the acceptance, which
+// they would otherwise unmeet.
 func buildLargestTicket(t *testing.T, e *testEnv, f filler, key string) largestTicket {
 	t.Helper()
 	done := doneOf(t)
@@ -1722,7 +1746,6 @@ func buildLargestTicket(t *testing.T, e *testEnv, f filler, key string) largestT
 		Status: dispatch.TicketInProgress, Priority: dispatch.MaxPriority, Horizon: dispatch.HorizonLater, Owner: want.owner,
 		Assignees: want.assignees, Labels: labels, Milestone: milestone, Parent: parent,
 	})).Key
-	done(ds.AcceptTicket(ctx, op(), want.key, want.note))
 	for i := range dispatch.MaxRelations {
 		title := f.runes(dispatch.MaxTicketTitle, 3+i)
 		n := dispatch.NewTicket{Project: key, Title: title, Status: dispatch.TicketInProgress}
@@ -1739,11 +1762,33 @@ func buildLargestTicket(t *testing.T, e *testEnv, f filler, key string) largestT
 		done(ds.AddLink(ctx, op(), want.key, l))
 		want.links = append(want.links, l)
 	}
+	var handed string
 	for i := range dispatch.MaxTicketComments {
 		body := f.text(dispatch.MaxCommentBody, i)
-		done(ds.AddComment(ctx, op(), want.key, body))
+		id := done(ds.AddComment(ctx, op(), want.key, body)).ID
+		if i == 0 {
+			handed = id
+		}
 		want.comments = append(want.comments, body)
 	}
+	for i := range dispatch.MaxTicketApproved + 1 {
+		crew, err := json.Marshal(map[string]any{"id": "crew", "name": f.runes(dispatch.MaxCrewName, i), "tasks": []map[string]any{{"id": "build"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := dispatch.PlanBody{Base: strings.Repeat("ab", 20), Crew: crew, Comments: []dispatch.PlanComment{{ID: handed}}}
+		id := done(ds.ProposePlan(ctx, op(), want.key, dispatch.PlanRequest{Crew: "crew", Comments: []string{handed}}, body)).ID
+		note := f.runes(dispatch.MaxApprovedNote, i)
+		done(ds.ApprovePlan(ctx, op(), id, 0, note))
+		if i > 0 {
+			want.approvedNotes = append([]string{note}, want.approvedNotes...)
+		}
+	}
+	want.comments[0] = f.text(dispatch.MaxCommentBody, dispatch.MaxTicketComments)
+	done(ds.EditComment(ctx, op(), want.key, handed, want.comments[0]))
+	want.title, want.description, want.acceptance = f.runes(dispatch.MaxTicketTitle, 5000), f.text(dispatch.MaxTicketDescription, 1), f.text(dispatch.MaxAcceptance, 2)
+	done(ds.EditTicket(ctx, op(), want.key, dispatch.TicketEdit{Set: dispatch.TicketSet{Title: &want.title, Description: &want.description, Acceptance: &want.acceptance}}))
+	done(ds.AcceptTicket(ctx, op(), want.key, want.note))
 	tk, err := ds.Ticket(ctx, want.key)
 	if err != nil {
 		t.Fatal(err)
@@ -1762,6 +1807,11 @@ func buildLargestTicket(t *testing.T, e *testEnv, f filler, key string) largestT
 			t.Fatal(err)
 		}
 		want.attachments = append(want.attachments, name)
+	}
+	// Every revision approved, as merges of as many replicas leave them:
+	// a local approval supersedes the others.
+	if _, err := tx.Exec("UPDATE plans SET state = ? WHERE ticket_id = ?", dispatch.PlanApproved, tk.ID); err != nil {
+		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
@@ -1813,6 +1863,15 @@ func TestDispatchTheLargestTicketIsUnderItsBound(t *testing.T) {
 			}
 			if !slices.Equal(tk.Assignees, slices.Sorted(slices.Values(want.assignees))) {
 				t.Fatal("the assignees did not read back whole")
+			}
+			if len(tk.Approved) != dispatch.MaxTicketApproved {
+				t.Fatalf("%d approved revisions", len(tk.Approved))
+			}
+			for i, p := range tk.Approved {
+				if p.ApprovedNote != want.approvedNotes[i] || p.ApprovedBy != want.by || p.Stale == nil || p.Stale.Remedy != dispatch.RemedyRevise ||
+					!strings.Contains(p.Stale.Words, "the title, the description and the acceptance criteria changed") {
+					t.Fatalf("approved revision %d did not read back whole: %+v", i, p.Stale)
+				}
 			}
 			if len(tk.Comments) != len(want.comments) {
 				t.Fatalf("%d comments", len(tk.Comments))

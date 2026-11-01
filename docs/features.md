@@ -3058,6 +3058,87 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **Project manifests: a fresh attempt worktree made usable, predictably
+  (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
+  `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
+  model (#418), every step a receipt and every failure named and attributed
+  (#422), the host's names, the ports and the state directory (#426), the
+  services, readiness and the preview (#441), verify and cleanup (#498), the
+  crew editor's Project manifest section (#454) and the run page's receipts
+  and preview (#502). A managed crew carries a project
+  manifest (never "workspace" for a tree; not the catalog's agent recipes):
+  the crew's own, counted by the server at each change (`crew:<revision>` on
+  every receipt), or `conductor.manifest.json`, read at each tree's commit
+  (`file:<blob>`); a crew saved with `setup` runs it as the manifest's setup
+  phase, unchanged on disk. Before the first attempt the prerequisites run
+  once in the crew's directory, and a missing tool or host variable pauses
+  the dispatch with the step named, nothing spent; each tree (an attempt's
+  worktree, a result's checkout) gets its ports (`CONDUCTOR_PORT_<NAME>`), its
+  state directory (`.conductor/state`), its setup steps, its services, its
+  readiness probes and its preview before its session or first check rests
+  on it; the checkout runs the verify steps after the task's checks; and
+  however a tree ends, its services are stopped, its cleanup steps run and
+  its ports released. A step that fails in a tree the agent has not touched
+  is not counted and pauses the run with its words; one that fails in a
+  result's checkout is counted as a failing check is. Every step is a ledger
+  row with its command, where it ran, the manifest, its exit, timing, log and
+  SHA-256. On the run page (this PR): each attempt's receipts under it
+  (`RunAttemptSteps.vue`, a held run and a let-go one alike: "exited 0 in
+  4.2 s", "timed out after 60 s", "ready after 3 tries", "running since …",
+  "interrupted", "failed in 3.0 s (exited 0)" for a step that exited 0
+  and changed tracked files, and "failed after 8.3 s" for one a signal
+  ended), each with Log (fetched with the bearer header,
+  shown with its SHA-256, saved from a blob URL as the bytes the server
+  hashed); the run's prerequisites above the tasks, or the run's words when a
+  manifest `env` name stopped them before any ran; the header's `paused`
+  badge titled with the run's own words and the words beside it, and
+  `cleaning up` while trees end; a ready task's words "ready, the dispatch is
+  paused: <why>" when its reason is the pause's; and Open preview on the task's row
+  and in its palette row's → actions while the attempt's `preview` is set,
+  in a new tab (the preview is on the server's loopback, not proxied, and an
+  iframe would be mixed content under TLS). The example crew run by tasks
+  (`example-todo-app-tasks`) gained a manifest with one prerequisite,
+  `python3 --version`, for anyone who loads the examples from now on (a copy
+  loaded before is left as it is). Docs: `docs/architecture.md`'s crew-runs
+  section, `docs/repository-map.md` (`manifest.go`, `steps.go`, `proc.Serve`,
+  the ledger at schema 5).
+
+  Of the item's five acceptance observations (the plan's Acceptance), what
+  the tests observe, on the open-source build with no cloud account: (1) the
+  receipts of every phase with their logs read on the run page, the hash the
+  log route sends checked against its body, the preview answering from the
+  test and opened in a new tab while the attempt runs and gone at its close,
+  the service's process gone and the tree's cleanup receipt in after it
+  (`web/e2e/manifest.spec.ts`), the task file's manifest, ports and preview
+  (`internal/crew` steps and services tests, PR-2 to PR-4); (2) a missing
+  host variable or a name `envPassthrough` does not allow failing the
+  prerequisites with the words that say a restart fixes it
+  (`TestTheEnvNamesArePrerequisites`, `t.Setenv` alone), a setup step that
+  fails in a fresh worktree not counted and pausing the run
+  (`TestASetupStepThatFailsInTheWorktreeIsNotCounted`), a prerequisite that
+  fails pausing the run with the step named and Resume running it again
+  (`manifest.spec.ts`); (3) a task cancelled mid-step and cleaned up after
+  it (`TestACancelMidStepRunsTheCleanupAfterTheStep`, `manifest.spec.ts`), a
+  stop mid-service ending the services and running the cleanup
+  (`TestAStopMidServiceRunsTheCleanup`), a port let go only once its tree's
+  end is committed (`TestAPortIsLetGoOnlyOnceItsTreesEndIsCommitted`); (4) a
+  result that breaks the setup refused at the named step and counted, the
+  next attempt where the refused one started
+  (`TestAResultThatBreaksTheSetupHandsTheNextAttemptWhereItStarted`); (5) a
+  service the last server left running reported at the next start, never
+  signalled (`TestAServiceLeftRunningAcrossARestartIsReportedNotSignalled`,
+  `TestTheNextStartNamesAServiceTheLastServerLeftRunning`). By hand, which no
+  test reaches, the owner's on the WSL box (all five) and the Mac (1 to 3),
+  not run when this entry was written: a real Node project with a committed
+  `conductor.manifest.json` (`npm ci` as setup, two services with ports, its
+  dev server's preview opened in the browser, a cleanup) and a task that
+  edits it, launched from the UI; a variable unset with the server started
+  again with it set and the run continued, and the package registry
+  unreachable with the run unpaused once it is back; a task cancelled
+  mid-setup and a run stopped mid-service from the UI, the ports free and the
+  next launch given fresh ones; a result that breaks the setup; the server
+  killed mid-service and the next start's log read. None of these needs a
+  Windows or WSL networking step. The item is Done once they are seen.
 - **The extension seams: the `ext` and `app` packages, the free defaults
   and the eight interfaces wired in (Program items C1 to C9; #473 to #489,
   started 2026-10-31).** The plan is `docs/plans/ext.md` (PR #453), cut
@@ -3094,21 +3175,167 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   source) and `TestExtICEServerValidAsPion` (a server `Valid` takes is one
   Pion takes). Nothing calls `ext` yet.
 
-  PR-2 (#474): ext/local: the free defaults and Fill. Planned.
+  PR-2 (#474): `ext/local`, the standard library and `ext` only: the free
+  defaults, each an empty struct named `local`, safe for concurrent use,
+  its doc comment saying what main does without it: `Identity`
+  (recognises no token), `Router` (the empty route, keeping nothing it is
+  told), `Continuity` (keeps nothing; `Restore` writes nothing and answers
+  `ErrNothingToRestore`), `AllowAll` (every feature allowed, no limit, no
+  end, "allowed: no entitlement source is registered") and `Media` (no ICE
+  server, no room). `Fill` puts them in the identity, router, sync and
+  media slots nothing is registered in, and keeps a registered provider,
+  the lists, the runtime (its native default is C10's) and `All` as they
+  are: the one place any code asks whether a provider is registered.
+  Tests: `TestDefaults` (each answer, from 32 goroutines at once under
+  `-race`) and `TestFill` (an empty set, a full one, a partial one), each
+  checked to fail with its part broken. Nothing calls `Fill` yet.
 
-  PR-3 (#475): cli, api: the composition root reads the registry once; every
-  provider call guarded. Planned.
+  PR-3 (#475): `internal/cli` and `internal/api`: the composition root and
+  the guard. `runServe` reads the registry once through the package
+  variable `extensions` (`ext.Freeze`, replaced by tests), fills it with
+  `local.Fill`, logs one line naming what is registered (nothing in a
+  plain build) and hands it to `api.New` through `api.WithExtensions`;
+  `runHost` closes the registry too. `New` gains a trailing `...Option`
+  (every caller unchanged; without it, the free build) and wraps every
+  provider, defaults included, in the guard: `extCall` (the wait, the
+  caller's context, a recovered panic, the record's `Valid`, 16 calls in
+  flight per provider and kind, a warn once a minute with the count since,
+  nothing else kept) and `extQueue` (a ring that drops its oldest, drained
+  in order by one goroutine, `DeliveryWait` per delivery, held for a
+  `Starter` until its `Start` and for the others until `New` can no longer
+  fail), ended and waited for by `Shutdown`. The guard answers copies,
+  gives a provider copies of what it is asked, checks an answer inside
+  the bounded call, reads a provider's error text only inside itself, and
+  names providers from the registry's entries without asking them again. No seam calls a
+  provider yet. Tests: `TestServeReadsTheRegistryOnce`,
+  `TestHostClosesTheRegistry`, `TestNewWithoutExtensionsIsTheFreeBuild`,
+  `TestWithExtensionsKeepsDefaults`, `TestExtCallWait`, `TestExtCallPanic`,
+  `TestExtCallInvalid`, `TestExtCallInFlight`, `TestExtQueueDropsOldest`,
+  `TestExtQueueOrder`, `TestExtQueueShutdown`, `TestNewFailingBeginsNoDrain`,
+  `TestNewAsksNoNameAgain`, `TestExtErrorTextGuarded`,
+  `TestExtCallCopiesAnswers`, `TestExtCallValidInsideTheCall`,
+  `TestExtCallCopiesInputs`.
 
-  PR-4 (#476): api, cli: ext.Host and the providers' Start. Planned.
+  PR-4 (#476): `internal/api` and `internal/cli`: `ext.Host` and the
+  providers' `Start`. `runServe` calls `Server.StartExtensions` after
+  `api.New` and before the listeners serve, on the maintenance context:
+  `Start` once per distinct value that is a Starter, each try with a
+  context and a `Host` of its own; until one succeeds the provider's
+  slots answer their free defaults without asking it and its queues
+  hold; a try that errs, panics or passes `StartWait` is given up (its
+  context cancelled, its `Host` refusing) and tried again after a backoff
+  of 1 s doubling to 5 minutes, never while the last try is unfinished
+  (one that never returns is logged as late once a minute). A `Host`
+  call under way when its try is given up ends then, before it acts (a
+  submission is withdrawn as a revoked link's is: its text typed, the
+  Enter left out and the turn held for a person); a
+  sink's `Events` is read on its provider's own goroutine, never by
+  `StartExtensions`; the switchyard's publisher is set before any
+  provider starts.
+  The `Host` (`internal/api/exthost.go`): `Launch` through `launchSaved`,
+  moved out of `handleLaunchCrew` (the route and its tests unchanged),
+  with the launch noted in the run's log; `Submit` of a line into a
+  server session that shows no question, or of a line answering one
+  through its claim (a choice's keys and hosted sessions refused until
+  PR-9 and PR-10, a blank line always); `Notify` checked and refused for a provider whose sink
+  takes provider notices (no sink is handed one until PR-7); `DataDir`
+  under `<dataDir>/ext/`; `Log`. Tests: `TestHostLaunch`,
+  `TestHostLaunchManaged`, `TestHostSubmitLine`, `TestHostSubmitAnswer`,
+  `TestHostSubmitRefusesABlankLine`, `TestHostDataDir`, `TestHostNotify`, `TestStartOncePerValue`,
+  `TestStartRetriedUntilItSucceeds`, `TestStartQueuesHeldUntilStarted`,
+  `TestStartNeverOverlaps` (the clock driven through a seam, never
+  slept), `TestStartNeverWaitsOnEvents`, `TestHostCallsEndWithTheirTry`,
+  `TestHostSubmitGivenUpInItsPauseHoldsTheTurn`, `TestServeStartsProviders`;
+  in `internal/session`, `TestAWithdrawnSubmissionIsWithdrawnAsARevokedLinksIs`,
+  `TestAWithdrawnTypedLineIsHeldWhateverEndedIt`.
 
-  PR-5 (#477): opencore: the open-core rules as a lint, failing on a planted
-  import. Planned.
+  PR-5 (#477): `internal/opencore`, standard library only: the open-core
+  rules as a lint. `Check(root)` reads `go.mod`, a root `go.work` and the
+  imports and build constraints of every `.go` file of the module with
+  `go/parser`, whatever their tags, a symlinked file where its link stands,
+  skipping `testdata`, `node_modules`, `vendor`, `internal/web/dist`,
+  directories beginning with `.` or `_`, other modules and symlinked
+  directories, and names each problem's rule, file and line:
+  `private-module` (an import of a module of the `rocksolidlabs`
+  organization other than this one, by path elements), `go-mod` (`go.mod`
+  or `go.work` requiring, replacing on either side or naming as a tool such
+  a module, replacing a module with a directory, or using a directory other
+  than the root),
+  `feature-tag` (a `//go:build` or `// +build` line naming anything but a
+  GOOS or GOARCH of `go tool dist list`, `unix`, `cgo`, `gc`, `gccgo`, a Go
+  version or a test tier, `recipes`, `pebble` or `network`; one that does
+  not parse is refused too) and `ext-std` (a file under `ext/` importing
+  anything but the standard library, told apart from a dotless module
+  `go.mod` or `go.work` names, and `ext`'s own packages) and
+  `unread-package` (an import of this module's package from a skipped
+  directory, which the build compiles all the same). `make lint`
+  runs `TestModuleKeepsTheRules` after `go vet`, so `make lint`, `make
+  preflight` and CI's go job fail on a planted import, with no workflow
+  change. Tests: `TestModuleKeepsTheRules`, `TestEachRuleCatchesItsPlant`
+  (four fixtures under `testdata/`, an import of
+  `…/conductor-premium/register`, a `go.mod` requiring
+  `…/conductor-cloud`, a `//go:build premium` file and a file of `ext/`
+  importing `internal/session`, each beside what its rule lets through,
+  each yielding exactly its plant), `TestPlatformTagsMatchTheToolchain`,
+  `TestFeatureTagRule`, `TestGoModRule`, `TestGoWorkRule`,
+  `TestExtStdKnowsADotlessModule`, `TestCheckReadsWhatTheBuildCompiles`,
+  `TestCheckSkipsWhatIsNotTheModule` and `TestCheckRefuses`, each checked
+  to fail with its part broken.
 
   PR-6 (#478): api: the identity provider after the token chain; a
-  principal's subject in receipts. Planned.
+  principal's subject in receipts. `authenticate` reads the workbench
+  token, each host token and the share links, and asks the identity
+  provider only for a token the links answer unknown, so an expired or
+  revoked link is refused as a link and the free path never waits on a
+  provider; a session's agent token is checked before `authenticate` where
+  both are taken, so it never reaches one either. The answer counts only
+  through the guard, valid and with a grant: `admin` makes the caller
+  what the workbench token makes it, `host` a host token's, at
+  `GET /ws/host` too (`hostAllowed`, which replaces `hostTokenOK`). The
+  token is never logged: an identity failure's warn line names its kind
+  (`late`, `error`, `panic`, `invalid`, `busy`) and count, never the
+  provider's words. `requireAdmin` puts the principal in the request's
+  context and `actorOf` reads it, so the ledger's commands, Dispatch's
+  operations and the reads of their receipts are kept under `admin` for
+  the workbench token and `user:<subject>` for a provider's principal;
+  nothing stored changes shape. Tests: `TestTokenChainUnchanged`,
+  `TestProviderAskedLast`, `TestProviderPrincipal`,
+  `TestProviderPrincipalInReceipts`, `TestProviderHostRegistration`,
+  `TestProviderRefused`, `TestProviderSubjectsNeverCollide`,
+  `TestProviderPlanApprovalIsTheOperators` (a provider's admin principal
+  proposes a plan revision; its approval is refused `409 invalid` and the
+  revision stays proposed), each checked to fail with its part broken.
 
-  PR-7 (#479): api: notification sinks over the event hub, the webhooks the
-  first. Planned.
+  PR-7 (#479): `internal/api`: notification sinks over the event hub, the
+  webhooks the first. The notifier (`notify.go`) takes the webhooks'
+  place on the hub, so the hub's sinks stay in main's order (the
+  notifier, then the run engine's `OnActivity`); within it the webhooks
+  come first, in config order, then the providers' sinks, in registration
+  order, each with a queue of `SinkQueue` (256) that never makes the hub
+  wait and drops its oldest. An entry is typed once, its session looked
+  up once when a sink wants it, and one `ext.Notification` queued for
+  every sink whose `Events` is nil or lists the entry's event name or its
+  own type; a provider's notice (`Host.Notify`) goes only to the sinks
+  that list `TypeProvider`, never to a webhook. A webhook's body is
+  rebuilt from the notification (`webhookBody`, main's `webhookPayload`,
+  built once per entry), its ring now an `extQueue`, its bound, timeout,
+  address rule, redirect rule and logs unchanged; a sink's `Events` is
+  read once on its own goroutine, and what was queued before it was read
+  is decided at delivery. A plain build adds no sink to the hub. Tests:
+  every existing `webhooks_test.go` test, unchanged;
+  `TestWebhooksUnchanged` (seventeen kinds of entry, of a session the
+  registry holds and of one it does not, with and without a provider's
+  sink beside: body, `X-Conductor-Event` and signature equal main's
+  construction, kept in the test; every field of an entry survives its
+  notification), `TestSinkGetsEveryAttentionEvent` (10 sessions, 1,000
+  changes, three sinks, each's in order, none dropped),
+  `TestBlockedSinkNeverHoldsTheHub` (a sink that never returns: the hub,
+  the session, the webhook and the other sink go on, its 244 drops
+  counted), `TestSinkEventsFilter`, `TestProviderNoticesCannotLoop`,
+  `TestSinkPanicRecovered`, `TestSinksInMainsOrder`, each checked to fail
+  with its part broken; `TestSinkFirstNotifyGetsFullDeliveryWait` (review
+  round 1: a sink that is no `Starter` and whose `Events` is slow still
+  gives its first `Notify` the whole `DeliveryWait`).
 
   PR-8 (#480): crew, api: context blocks in the task files; file touches to
   the context providers. Planned.
@@ -3130,8 +3357,40 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   PR-14 (#486): opencore, contributing: no entitlement call site outside
   ext. Planned.
 
-  PR-15 (#487): api: the four ICE sites through the media provider; GET
-  /api/ice keeps credentials. Planned.
+  PR-15 (#487): `internal/api`: the four ICE sites through the media
+  provider (C8). `iceServersFor` (`media.go`) answers every configured
+  server first, as main sends it, never counted or cut, then the media
+  provider's through the guard (`ICEWait`, each `Valid`, the first eight
+  of more), so a late, failing, panicking or invalid provider adds none and
+  the free default adds nothing. A hosted viewer's welcome (asked with the
+  session, the viewer's role and its id), a host's `registered` (its
+  session) and the paste answerer's servers (the session and the role) go
+  through it; `GET /api/ice` too, as the offer, for which the provider is
+  never asked: it answers the configured `stun:` and `stuns:` URLs byte
+  for byte as main does, never a `turn:` URL, a user name or a credential.
+  A welcome keeps as many of the provider's servers as leave it one
+  CONTROL frame (8 KiB), the last dropped first; `Room` has no caller yet
+  (CL1's). A switchyard's open host, registered with no token, and its
+  session's viewers are handed the configured servers alone, the provider
+  never asked for them (review round 1: nobody authenticated that host,
+  as nobody authenticates `GET /api/ice`). A viewer whose link is revoked
+  or expires while the provider answers is never sent the welcome or its
+  servers: the ask is canceled with the viewer and it is closed with its
+  reason (review round 1, Codex). Tests: `TestICEStaticUnchanged` (STUN only, STUN with a TURN
+  server and its credential, nine and twenty configured servers, with no
+  provider and with one adding eight: the four sites main's, the
+  provider's after), `TestICEOfferNeverAsksTheProvider`,
+  `TestMediaServersReachViewersAndHosts` (the servers and the request each
+  site asks with), `TestICENeverLeaksCredentials` (the route and the log),
+  `TestMediaBounds` (late, failing, panicking and five kinds of invalid
+  server add none; nine cut to eight; a welcome within its frame, the
+  configured servers never cut), `TestRoomDefault`,
+  `TestICEOpenHostsNeverAskTheProvider` (an open host and its viewer get
+  the configured servers and the provider is asked nothing; a tokened
+  host on the same switchyard and its viewer get the provider's),
+  `TestICEViewerRevokedWhileTheProviderAnswers` (the ask canceled by the
+  revoke, no welcome, closed as revoked); each fails with its part
+  broken.
 
   PR-16 (#488): api, web: GET /api/capabilities and the app card's
   Extensions row. Planned.

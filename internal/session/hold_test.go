@@ -807,3 +807,171 @@ func TestAQuestionTheHoldTookThePlaceOfShowsAgainUnlessAnswered(t *testing.T) {
 		})
 	}
 }
+
+// A submission whose sender is withdrawn (Submission.Withdrawn closed, as
+// an extension's Host is once its try is given up) is withdrawn as one
+// whose link is revoked. Waiting for the session's turn, it is never typed,
+// even when the turn is given back as it is withdrawn. Its text typed, in
+// its pause, its Enter is left out and the session's turn is held until a
+// person types, so that no later line joins the text; a reply's claim is
+// let go as the hold shows, so that a person's reply to the question,
+// shown again by the keys, is typed rather than refused. The pause is an
+// hour long: only the withdrawal ends it. A sender whose context ends with
+// its withdrawal, as an extension's does when it submits with its Start
+// context (the submission's context a child of the try's, the withdrawal
+// the try's Done), is withdrawn the same, whichever end its pause sees;
+// TestAWithdrawnTypedLineIsHeldWhateverEndedIt covers the context's.
+func TestAWithdrawnSubmissionIsWithdrawnAsARevokedLinksIs(t *testing.T) {
+	t.Run("waiting for the turn", func(t *testing.T) {
+		s, p := newLocalWith(t, quiet(Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second}))
+		atEnter, gate := make(chan struct{}), make(chan struct{})
+		first := submitAsync(s, Submission{Text: "first", ByName: "run", BeforeEnter: func() {
+			close(atEnter)
+			<-gate
+		}})
+		if got := written(t, p); got != "first" {
+			t.Fatalf("written %q", got)
+		}
+		returnsWithin(t, 5*time.Second, "the first line's Enter", func() bool { <-atEnter; return true })
+		gone := make(chan struct{})
+		late := submitAsync(s, Submission{Text: "late", ByName: "sched", Withdrawn: gone})
+		deadline := time.Now().Add(5 * time.Second)
+		for s.turnWaiters.Load() != 1 {
+			if time.Now().After(deadline) {
+				t.Fatal("the withdrawn line never waited for the turn")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		// Withdrawn, and the turn given back at once after.
+		close(gone)
+		close(gate)
+		if got := written(t, p); got != "\r" {
+			t.Fatalf("written %q, want the first line's Enter", got)
+		}
+		if got := returnsWithin(t, 5*time.Second, "the first line", func() submitted { return <-first }); got.err != nil || !got.res.Entered {
+			t.Fatalf("the first line: %+v, %v", got.res, got.err)
+		}
+		if got := returnsWithin(t, 5*time.Second, "the withdrawn line", func() submitted { return <-late }); !errors.Is(got.err, ErrRevoked) || got.res.Typed {
+			t.Fatalf("the withdrawn line: %+v, %v; want nothing typed, a kind of ErrRevoked", got.res, got.err)
+		}
+		nothingWritten(t, p, 100*time.Millisecond)
+	})
+
+	for _, c := range []struct {
+		name         string
+		reply, onCtx bool
+	}{
+		{"a line in its pause", false, false},
+		{"a reply in its pause", true, false},
+		{"a line in its pause, its context ended with it", false, true},
+		{"a reply in its pause, its context ended with it", true, true},
+	} {
+		reply := c.reply
+		t.Run(c.name, func(t *testing.T) {
+			s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: time.Hour})
+			owner := ownerOf(t, s)
+			var q string
+			if reply {
+				if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which name?", SourceAPI, "", nil); err != nil {
+					t.Fatal(err)
+				}
+				if q = s.Info().Attention.ID; q == "" {
+					t.Fatalf("attention %+v", s.Info().Attention)
+				}
+			}
+			ctx := context.Background()
+			gone := make(chan struct{})
+			withdraw := func() { close(gone) }
+			var withdrawn <-chan struct{} = gone
+			if c.onCtx {
+				try, giveUp := context.WithCancel(context.Background())
+				defer giveUp()
+				child, end := context.WithCancel(try)
+				defer end()
+				ctx, withdrawn, withdraw = child, try.Done(), giveUp
+			}
+			done := make(chan submitted, 1)
+			go func() {
+				res, err := s.Submit(ctx, Submission{Text: "late", ByName: "sched", Question: q, Withdrawn: withdrawn})
+				done <- submitted{res, err}
+			}()
+			if got := written(t, p); got != "late" {
+				t.Fatalf("written %q", got)
+			}
+			withdraw()
+			got := returnsWithin(t, 5*time.Second, "the withdrawn line", func() submitted { return <-done })
+			if !errors.Is(got.err, ErrRevoked) || !got.res.Typed || got.res.Entered {
+				t.Fatalf("result %+v, %v; want typed, not entered, a kind of ErrRevoked", got.res, got.err)
+			}
+			heldShows(t, s)
+			next := submitAsync(s, Submission{Text: "second", By: owner, Question: q})
+			// The next line waits for the turn the hold keeps, and has
+			// written nothing.
+			deadline := time.Now().Add(5 * time.Second)
+			for s.TurnWaiters() != 1 {
+				if time.Now().After(deadline) {
+					t.Fatal("the next line never waited for the turn")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			select {
+			case b := <-p.input:
+				t.Fatalf("written %q while the next line waited", b)
+			default:
+			}
+			if !s.Held() {
+				t.Fatal("the hold went while the next line waited")
+			}
+			// A person types into the terminal (Ctrl+U, the line killed): the
+			// next line is typed after the keys, a reply to the question
+			// shown again among them, its claim let go with the hold.
+			if err := s.Input(owner, []byte{0x15}); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"\x15", "second"} {
+				if got := written(t, p); got != want {
+					t.Fatalf("written %q, want %q", got, want)
+				}
+			}
+			select {
+			case got := <-next:
+				t.Fatalf("the next line returned in its pause: %+v, %v", got.res, got.err)
+			default:
+			}
+		})
+	}
+}
+
+// A submission's line typed and its Enter not written is held for a person
+// once its sender is withdrawn, whatever ended it (withdrawnTyped): the
+// context's end its pause or look saw first, a deadline, a write's error,
+// or nothing (a prompt come meanwhile). The session's end and a link's own
+// revocation keep their words; a line entered, or not typed, or whose
+// sender stands, keeps its error.
+func TestAWithdrawnTypedLineIsHeldWhateverEndedIt(t *testing.T) {
+	gone, stands := make(chan struct{}), make(chan struct{})
+	close(gone)
+	typed := SubmitResult{Typed: true}
+	for _, c := range []struct {
+		name   string
+		sender <-chan struct{}
+		res    SubmitResult
+		err    error
+		want   error
+	}{
+		{"its context's end", gone, typed, context.Canceled, errWithdrawn},
+		{"its deadline", gone, typed, context.DeadlineExceeded, errWithdrawn},
+		{"a write's error", gone, typed, errors.New("EIO"), errWithdrawn},
+		{"no error", gone, typed, nil, errWithdrawn},
+		{"the session's end", gone, typed, ErrSessionEnded, ErrSessionEnded},
+		{"its link revoked", gone, typed, ErrRevoked, ErrRevoked},
+		{"entered", gone, SubmitResult{Typed: true, Entered: true}, nil, nil},
+		{"not typed", gone, SubmitResult{}, context.Canceled, context.Canceled},
+		{"its sender standing", stands, typed, context.Canceled, context.Canceled},
+	} {
+		st := submitState{wait: writeWait{gone: c.sender}}
+		if got := st.withdrawnTyped(c.res, c.err); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}

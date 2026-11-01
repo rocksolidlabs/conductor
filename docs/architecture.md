@@ -228,9 +228,10 @@ directory) instead of memory. `task.go` dispatches each task as an attempt
 once the tasks it needs have results: a reservation among the server's
 sessions, a worktree at the commit the task starts from (its first need's
 result, or the run's base) on the branch `crew/<run>/<task>.<n>`, the task
-written into it as `.conductor/task.md` and `task.json`, the crew's `setup`
-run there, then the member's session through the same `Launcher` and one
-typed line saying where the task is and how to submit. The attempt's
+written into it as `.conductor/task.md` and `task.json`, the worktree made
+usable by the crew's project manifest (below), then the member's session
+through the same `Launcher` and one typed line saying where the task is and
+how to submit. The attempt's
 session submits its result with its own token (`POST
 /api/sessions/{id}/task/result`, the `task_result` tool or `conductor task
 result`): the commit at its HEAD, refused while the tree is dirty or the
@@ -254,6 +255,49 @@ own transaction, so a repeated command answers the same receipt. `messages.go`
 carries the members' durable messages, typed after the recipient's task line,
 and `checkpoints.go` an attempt's blocker and checkpoints, where the next
 attempt starts after a session is lost.
+
+A managed crew may carry a **project manifest** (EN1, `manifest.go`): what
+makes a fresh tree of the project usable, how it is checked and how it is
+cleaned up. It is not an agent's recipes, which are the catalog's. It is
+either the crew's own, counted by the server at each change (a receipt names
+it `crew:<revision>`), or `conductor.manifest.json`, read at each tree's
+commit (`file:<blob>`), so a task that changes it is checked by the manifest
+it changed; a crew saved with `setup` runs it as the manifest's setup phase.
+A tree is the attempt's worktree or its result's checkout. `steps.go` makes
+each one usable before the member's session or the first check rests on it:
+the manifest resolved and its host names checked (`env`: only names the
+server's `envPassthrough` allows and its environment has), its ports drawn
+(`CONDUCTOR_PORT_<NAME>`, leased by the engine until the tree ends), its
+state directory made (`.conductor/state`, through an `os.Root`), its setup
+steps, its services (`proc.Serve`, under the run's teardown context, never
+the attempt's), its readiness probes (a command, or one `GET` on the
+loopback with no redirect followed), then `tree.ready` with the preview. The
+checkout runs the manifest's verify steps after the task's checks. The
+prerequisites run once per run in the crew's directory before the first
+attempt, and again at each unpause. Every step goes through the tree's
+executor (`treeExec`: `internal/proc` natively) and is a receipt: a `checks`
+row with its phase (a `prerequisites` row for a prerequisite) holding its
+command, directory, manifest, exit, timing, words, log and SHA-256, read
+through `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps` and `GET
+/api/runs/{run}/prerequisites` with their logs, from the ledger, so a run
+the engine has let go reads the same. A step that fails in a tree the agent
+has not touched is the host's or the manifest's: the attempt is not
+counted, the task says which step failed, and the dispatch pauses with the
+words (`pausedWhy`); one that fails in the checkout of a result is the
+result's, counted as a failing check is. However a tree ends (a result
+taken, a check failed, a cancel, a withdrawal, a stop, the server's
+shutdown), `endTree` waits for it to be quiet, stops its services, runs its
+cleanup steps, releases its ports and records `tree.ended`; nothing removes
+the tree itself. A stop ends the run's services beside its sessions before
+`recordStop`, and the server's shutdown arms a cut-off first
+(`Engine.Draining`) so the teardown fits its budget; a service a crash left
+running is reported at the next start, never signalled. The run page shows
+the receipts under each attempt (`RunAttemptSteps.vue`) and the
+prerequisites above the tasks, the header's `paused` badge with its words
+and `cleaning up` while trees end, and Open preview on the task's row and
+in the palette while the attempt's `preview` is set: a new tab, since the
+preview is on the server's loopback, not proxied, and an iframe of it would
+be mixed content under TLS.
 
 ## Dispatch
 
@@ -367,6 +411,169 @@ advertising the Windows address (`ice.udpPort`, `ice.publicIp`). The shell
 registers the `conductor:` scheme: an invite opens its own join page with
 `?server=`, which signals to the switchyard named.
 
+## Extensions
+
+Conductor is open core: a paid feature is a provider that another module's
+`main` compiles in (package `ext`), backed by a hosted service. This
+repository holds the interfaces, their free defaults (`ext/local`) and the
+seams that call them; a plain build registers nothing.
+
+**The registry and the composition root.** A provider registers in its
+package's `init`. `runServe` and `runHost` (`internal/cli`) are the
+composition root: each reads the registry once, at start, through the
+package variable `extensions` (`ext.Freeze`, which closes it, so a
+`Register` after it panics and no provider appears mid-run; a test
+replaces the variable and never registers into the process's registry).
+`runServe` fills every empty slot with its free default (`local.Fill`,
+the one place any code asks whether a provider is registered), logs one
+info line naming what is registered (`extensions: identity cloud,
+notifications push`; a plain build logs nothing of it), and hands the set
+to `api.New` through `api.WithExtensions`. `New`'s options are read before
+it writes anything (the masked `catalog.json`, the crews' migration, the
+ledger's recovery), and a server made without the option holds
+`local.Fill(ext.Providers{})`, the free build. `runHost` closes the
+registry and uses nothing of it until the Runtime seam.
+
+**The guard.** `New` wraps every provider in the guard
+(`internal/api/extensions.go`), defaults included, so no seam tells a
+default from a provider. A direct call goes through `extCall`: it runs
+within the interface's wait (`IdentityWait` 1 s, `RouteWait` 5 s,
+`ContextWait` 5 s, `ICEWait` 2 s), on a goroutine of its own whose context
+ends with the wait or the caller's, and answers the free default's answer
+when the call errs, panics, answers what the record's `Valid` refuses, or
+has not answered in time (its late answer is never used; its goroutine
+finishes on its own). At most 16 calls of one provider and kind run at
+once (`extInFlight`); past it the default is answered at once, so a
+provider that hangs holds 16 goroutines of a kind at most. The check of
+an answer runs on that goroutine too, inside the wait and the slot, since
+its cost is the provider's answer's. What it checks and answers is its own
+copy of the provider's answer, and the provider is given a copy of what it
+is asked about, made before the call's goroutine begins (a caller answered
+the default may reuse its slices at once), so a provider that changes a slice it answered or was
+given changes nothing a seam holds nor what its answer is checked against;
+a provider's error or panic text is read on the call's goroutine, a panic in it
+recovered, and the caller runs no method of the provider's. Each provider
+is named as the registry named it (`Providers.All`), so `New` asks no
+registered provider anything. A failure is
+logged at warn once a minute per provider and kind, with how many failed
+since; nothing else about it is kept, so the next call after an outage is
+answered as if none had happened, with no restart. A wait bounds a hang,
+never a normal answer: a provider answers from what it holds.
+
+**Queues.** The calls fed from the server's own activity (`Notify` to a
+notification sink, `NoteTouch` to a context provider) go through an
+`extQueue`: a ring per provider and kind (`SinkQueue` 256, `TouchQueue`
+1,024) filled without waiting, a full ring dropping its oldest (the first
+drop and every hundredth logged, as a webhook's queue does), drained in
+order by one goroutine of its own, each delivery with a context that ends
+after `DeliveryWait` (10 s), its panic recovered. A provider that is no
+`ext.Starter` drains once `New` can no longer fail, so a `New` that fails
+leaves no drain running; a Starter's queues hold what reaches them until
+its `Start` has succeeded. `Saved`, `Deleted` (sync) and `Resolved`
+(decisions) never go through a ring, since a call they lose is never made
+again: they are delivered the same way from lists that drop nothing (C6,
+C5). `Shutdown` ends the drains with the webhooks, what waits in them
+undelivered, and waits for their goroutines with its others (`track`).
+
+**Host and Start.** A provider that needs the server is an `ext.Starter`.
+`runServe` calls `Server.StartExtensions` once the server is made, its
+switchyard publisher set, and before the listeners serve, with the
+maintenance context; it asks no provider anything itself and returns at
+once. `conductor host` starts none. It calls `Start` once per distinct registered value
+that is a Starter (one value in two slots is started once; one registered
+only as the entitlement source is started too), all at once, each try
+with a context and an `ext.Host` of its own (`internal/api/exthost.go`).
+Until a provider's `Start` has succeeded, every slot it holds answers its
+free default without asking it, its queues hold what reaches them, and
+it is `starting`. A try that errs, panics or has not returned within
+`StartWait` (5 s) is logged as the guard logs a failure (kind `start`)
+and given up: its context is cancelled, which revokes its `Host` (every
+call then answers `context.Canceled`, and one under way, waiting for a
+session's turn or a launch not yet handed to the engine, ends with it, so
+goroutines a given-up try began cannot act). A submission's withdrawal is
+the try's end itself (`session.Submission.Withdrawn`, looked at as the
+writer takes the text), never a context passed on later, and it does what
+a revoked link does: a line whose text is typed has its Enter left out and
+the session's turn held for a person, a reply's claim let go as the hold
+shows. The next try begins after a
+backoff of 1 s doubling to 5 minutes, for as long as the server runs, and
+only once the last try has returned: a `Start` that ignores its context
+holds one goroutine, logged as late once a minute, and nothing calls it
+again meanwhile; its late answer is ignored. Once a try
+succeeds its slots are the provider's from their next call and its
+queues drain, with no restart; the try's context ends with the server.
+
+The `Host` is the provider's only door into the app. `Launch` validates
+the request (a crew id, a label, a principal) and runs what `POST
+/api/crews/{id}/launch` runs (`launchSaved`: the label, the crews store,
+the managed checks, `Launchable`, `checkLaunch`, `resolveCwd`, the yolo
+choice, then the engine's `LaunchNamed`), notes "launched by <name>
+through <provider>" in the run's log and answers the run's id, crew and
+page URL on the public base; a switchyard and a server with no data
+directory answer `ErrUnsupported`, a crew not held `ErrNotFound`, a
+refusal `ErrRefused` with the route's words. `Submit` types a line into
+a server session only while it shows no question (`Local.Submit` with
+`UnlessWaiting`), or answers a question with a line through the
+question's claim, as a viewer's reply does (`ErrQuestionAnswered` once it
+no longer waits); a choice's keys and a hosted session answer
+`ErrUnsupported` until the decision router's seam, and a line blank once
+cleaned is refused (it would be a bare Enter). `Notify` checks a
+notice (500 bytes of message, 2,048 of URL, one line each) and types it
+`provider` from its sender; a provider one of whose sinks lists
+`TypeProvider` (read once, from `Events`, on the provider's own goroutine
+before its first `Start`, so a slow sink holds up nothing else) may not
+send one (`ErrUnsupported`), so notices never loop between providers;
+the sinks that list `TypeProvider` are handed it (Notifications, below). `DataDir` is
+`<dataDir>/ext/<name>`, made 0700 through the store. `Log` is the
+server's logger naming the provider.
+
+**Identity.** The identity provider is asked last (`internal/api/auth.go`,
+`identity.go`): `authenticate` tries the workbench token, each host token
+and the share links, and asks the provider only for a token the links
+answer unknown, so an expired or revoked link is refused as a link and a
+token of the server's own never reaches a provider (a session's agent
+token is checked before `authenticate` where both are taken), and the free
+path never waits on one. Its answer, through the guard with `IdentityWait`,
+counts only when `Principal.Valid` passes and it holds a grant: `admin`
+makes the caller what the workbench token makes it (admin, the yard on a
+switchyard, a host), `host` a host token's; anything else is an unknown
+token. A host registration (`hostAllowed`) takes the same chain. The token
+is never logged: an identity failure's warn line names its kind (`late`,
+`error`, `panic`, `invalid`, `busy`) and count, never the provider's words.
+`requireAdmin` puts the principal in the request's context and `actorOf`
+reads it: the ledger's commands, Dispatch's operations and the reads of
+their receipts are kept under `admin` for the workbench token and
+`user:<subject>` (`ext.SubjectActor`, at most 53 bytes) for a provider's
+principal, so a provider's subject never shares the receipts of `admin`,
+`merge` or `agent:<member>`. Nothing stored changes shape.
+
+**Notifications.** The event hub has one sink for everything that takes
+the sessions' activity elsewhere, the notifier (`internal/api/notify.go`),
+added by `New` where the webhooks' sink always was, so the hub hands an
+entry to the SSE clients, then the notifier, then the run engine's
+`OnActivity`, as before. Its sinks are the webhooks of the config, in
+config order, then the providers' notification sinks, in registration
+order. It types each entry once (`eventTypeOf`), looks its session up once
+(name, agent, crew reference) and only when a sink wants the entry, and
+queues one `ext.Notification` for every sink that takes it: a sink whose
+`Events` is nil takes every session entry, any other the entries whose
+event name or own type it lists, the rule a webhook applies. A webhook is
+the first kind of sink: its body is rebuilt from the notification, which
+carries every field of the entry (`webhookBody`, the same
+`webhookPayload` as before, built once for every webhook that wants the
+entry), so its body, `X-Conductor-Event` and signature are byte for byte
+what they were; its queue is an `extQueue` too (256, the oldest dropped,
+the drops logged as a webhook's), delivered by the webhook itself, with
+its timeout, address rule and redirect rule unchanged. A provider's
+notice (`Host.Notify`) reaches only the sinks that list `TypeProvider`,
+never a webhook (no webhook may list it). Each sink's `Events` is read
+once, on its own goroutine (its supervisor's before its first `Start`, or
+its queue's first delivery, before that delivery's `DeliveryWait`
+starts), never by the hub: until it is read the
+notifier queues everything for the sink and its delivery decides. No
+sink delays the hub, a session, the engine or another sink; a server with
+no webhook and no sink adds no notifier.
+
 ## Packages
 
 | Package | Responsibility |
@@ -374,6 +581,7 @@ registers the `conductor:` scheme: an invite opens its own join page with
 | `cmd/conductor` | the free build's entry point, `app.Main` with no provider registered; `serve`, `host`, `notify`, `hooks`, `skill`, `up`, `crews`, `completion`, `version` |
 | `app` | the public entry point: `Run` (`cli.Run`) and `Main` (signals, the error, the exit code), for this module's `main` and for one in another module that compiles providers in |
 | `ext` | the public extension API, standard library only: the eight interfaces (identity, decisions, context, notifications, sync through `ContinuityStore`, entitlements, media, runtime), their records with their bounds, waits and `Valid` methods, `Starter` and `Host`, and the registry a provider's `init` registers into and `Freeze` closes; a plain build registers nothing |
+| `ext/local` | the free defaults, standard library and `ext` only: `Identity`, `Router`, `Continuity`, `AllowAll` and `Media`, each what main does without a provider (no principal, the empty route, nothing kept, everything allowed, no ICE server or room), and `Fill`, the one place that asks, which puts the default in the identity, router, sync and media slots nothing is registered in; `AllowAll` is the entitlement source's default, which no slot holds, and the runtime slot stays as it is (nil when nothing is registered; its native default is the Runtime plan's) |
 | `internal/cli` | flag parsing, help and completion text (the completion table and scripts, the rc-file line); no business logic |
 | `internal/config` | JSON config, `CONDUCTOR_*` overrides, validation |
 | `internal/catalog` | launchable agents (argv arrays, never shell strings), their yolo, trust and session recipes |

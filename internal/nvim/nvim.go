@@ -201,6 +201,21 @@ const (
 // minute, then: a loaded machine makes an exit slow, never a hang.
 var exitWait = 30 * time.Second
 
+// noShada keeps Neovim's ShaDa file (its marks, registers and histories
+// across runs) out of the editor (#281): Open starts Neovim with `-i NONE`,
+// and runs this once the person's config has run, so that no ShaDa file is
+// read (as Neovim starts, or by an `:edit`, which reads the file's marks) or
+// written (as it leaves). Every Neovim Conductor starts shares the HOME of
+// the machine that runs the session, and so the one ShaDa file under it,
+// with the others and with the person's own: several write it as they
+// leave, and once it is unreadable every later `:edit` throws E576 and no
+// editor opens. A file of each editor's own would be written and never read
+// again, since the next editor has a file of its own too, so none is kept.
+// A config may name a ShaDa file of its own ('shadafile'), which wins over
+// the argument: Neovim reads that one as it starts, and this sets it back
+// before the file is opened.
+const noShada = "set shadafile=NONE"
+
 // Open starts Neovim in dir, loads path, and reports to h until Close or
 // Neovim's own exit. ctx ends the process when it ends, and with it what
 // it started (its process group, ownGroup).
@@ -213,7 +228,7 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 	// NewChildProcess, so that its process group, the end of its pipes and
 	// its reaping are the editor's own: the client's close waits on its
 	// output, which a child of a `nvim` wrapper may hold open.
-	cmd := exec.CommandContext(ctx, prog, "--embed")
+	cmd := exec.CommandContext(ctx, prog, "--embed", "-i", "NONE") // no ShaDa file (noShada)
 	cmd.Dir = dir
 	cmd.Env = childEnv(os.Environ())
 	ownGroup(cmd)
@@ -308,6 +323,8 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		// page shows the buffer alone; a preview turned on again later (a
 		// plugin) is not relayed either (the lines event).
 		"set inccommand=",
+		// No ShaDa file, whatever the config named.
+		noShada,
 	} {
 		if err := v.Command(cmd); err != nil {
 			return fail(err)

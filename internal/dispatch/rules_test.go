@@ -1097,3 +1097,132 @@ func TestARelationToATicketDeletedElsewhereIsInactiveUntilItsUndelete(t *testing
 		}
 	}
 }
+
+// Every field version 2 adds has its class (docs/plans/dispatch-evidence.md,
+// "Field rules for replication"): every column of the plans, launches and
+// launch_files tables but a row's rev, which a replica computes, and a
+// link's three new columns, each read off the schema so a column added
+// later without a class fails here.
+func TestEveryNewFieldHasItsClass(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	want := map[string]map[string]FieldClass{
+		EntityPlan: {
+			"id": ClassImmutable, "ticket_id": ClassImmutable, "based_on": ClassImmutable, "crew_id": ClassImmutable, "crew_name": ClassImmutable,
+			"crew_updated_at": ClassImmutable, "base": ClassImmutable, "body": ClassImmutable, "digest": ClassImmutable, "bytes": ClassImmutable,
+			"created_at": ClassImmutable, "created_by": ClassImmutable, "fingerprint": ClassImmutable,
+			"state": ClassGated, "approved_at": ClassScalar, "approved_by": ClassScalar, "approved_note": ClassScalar, "approved_rev": ClassScalar,
+			"approved_intent": ClassScalar, "withdrawn_at": ClassScalar, "withdrawn_by": ClassScalar,
+		},
+		EntityLaunch: {
+			"id": ClassImmutable, "ticket_id": ClassImmutable, "plan_id": ClassImmutable, "run_id": ClassImmutable, "label": ClassImmutable,
+			"ticket_rev": ClassImmutable, "intent": ClassImmutable, "criteria": ClassImmutable, "package": ClassImmutable,
+			"package_sha256": ClassImmutable, "created_at": ClassImmutable, "created_by": ClassImmutable, "fingerprint": ClassImmutable,
+			"state": ClassScalar, "why": ClassScalar, "agents": ClassScalar, "started_at": ClassScalar,
+		},
+		"launch_files": {"launch_id": ClassImmutable, "sha256": ClassImmutable},
+	}
+	tableOf := map[string]string{EntityPlan: "plans", EntityLaunch: "launches", "launch_files": "launch_files"}
+	for entity, classes := range want {
+		cols := columnsOf(t, s.db, tableOf[entity])
+		classed := 0
+		for _, col := range cols {
+			if col == "rev" {
+				if got := Class(entity, col); got != "" {
+					t.Errorf("%s.rev has the class %q: a rev is a replica's own count", entity, got)
+				}
+				continue
+			}
+			c, ok := classes[col]
+			if !ok {
+				t.Errorf("%s.%s is a column the test does not know", entity, col)
+				continue
+			}
+			if got := Class(entity, col); got != c {
+				t.Errorf("Class(%s, %s) = %q, want %q", entity, col, got, c)
+			}
+			classed++
+		}
+		if classed != len(classes) {
+			t.Errorf("%s: %d columns with a class, %d classes the test names", entity, classed, len(classes))
+		}
+	}
+	for _, col := range []string{"fingerprint", "candidate", "verified"} {
+		if !slices.Contains(columnsOf(t, s.db, "links"), col) {
+			t.Errorf("links has no %s", col)
+		}
+		if got := Class("link", col); got != ClassImmutable {
+			t.Errorf("Class(link, %s) = %q, want immutable", col, got)
+		}
+	}
+	// A link's set is still its ticket's, merged as one.
+	if Class(EntityTicket, "links") != ClassSet {
+		t.Error("a ticket's links are no set")
+	}
+	// A revision's state merges as a scalar, the approval's rule never
+	// applied again: the later wins.
+	t1 := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	if got := Merge(row(EntityPlan, "state", OpSet, t1, "a", "x", 0), row(EntityPlan, "state", OpSet, t1.Add(time.Second), "b", "y", 0)); got != TakeRemote {
+		t.Errorf("a revision's later state: %v", got)
+	}
+	if got := Merge(row(EntityPlan, "body", OpSet, t1, "a", "x", 0), row(EntityPlan, "body", OpSet, t1.Add(time.Second), "b", "y", 0)); got != KeepLocal {
+		t.Errorf("a revision's body written twice: %v", got)
+	}
+}
+
+// Two revisions of one ticket approved on two replicas are kept, both
+// standing: each is an entity of its own, so a merge of the two
+// approvals' rows touches neither the other's, and the ticket's read
+// shows both, newest first, until a person withdraws one.
+func TestTwoApprovedRevisionsOfOneTicketAreKept(t *testing.T) {
+	s, _, key := planTicket(t)
+	r1 := propose(t, s, "p1", key, PlanRequest{Crew: "crew"}, testPlanBody("crew"))
+	r2 := propose(t, s, "p2", key, PlanRequest{Crew: "crew"}, testPlanBody("crew"))
+	approve(t, s, "a1", r1, "")
+	// The second approved elsewhere, its rows as a merge writes them:
+	// the first's supersession was never seen there.
+	tk := ticketOf(t, s, key)
+	if _, err := s.db.Exec("UPDATE plans SET state = ?, approved_at = ?, approved_by = 'elsewhere', approved_rev = ?, approved_intent = ? WHERE id = ?",
+		PlanApproved, stamp(time.Now()), tk.Rev, IntentDigest(tk), r2); err != nil {
+		t.Fatal(err)
+	}
+	ids, stale := approvedOf(t, s, key)
+	if !slices.Equal(ids, []string{r2, r1}) || stale[0] != nil || stale[1] != nil {
+		t.Fatalf("the ticket's approved revisions after the merge: %v %v", ids, stale)
+	}
+	// No reconcile rule undoes either: a person withdraws the other.
+	rc, err := s.WithdrawPlan(context.Background(), testOp("w2"), r2)
+	want(t, rc, err, StatusDone, "")
+	if ids, _ := approvedOf(t, s, key); !slices.Equal(ids, []string{r1}) {
+		t.Fatalf("after the other's withdrawal: %v", ids)
+	}
+}
+
+// However many approved revisions merges leave (up to MaxPlans), a
+// ticket's read carries the newest MaxTicketApproved, newest first, so it
+// keeps its bound; the revisions' own read has every one.
+func TestATicketReadCarriesTheNewestApprovedRevisions(t *testing.T) {
+	s, _, key := planTicket(t)
+	for i := range MaxTicketApproved + 2 {
+		propose(t, s, opID("p", i), key, PlanRequest{Crew: "crew"}, testPlanBody("crew"))
+	}
+	tk := ticketOf(t, s, key)
+	// Every revision approved, as merges of as many replicas leave them.
+	if _, err := s.db.Exec("UPDATE plans SET state = ?, approved_at = ?, approved_by = 'elsewhere', approved_rev = ?, approved_intent = ?",
+		PlanApproved, stamp(time.Now()), tk.Rev, IntentDigest(tk)); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.Plans(context.Background(), key)
+	if err != nil || len(all) != MaxTicketApproved+2 {
+		t.Fatalf("the revisions' read: %d %v", len(all), err)
+	}
+	var newest []string
+	for _, p := range all[:MaxTicketApproved] {
+		if p.State != PlanApproved {
+			t.Fatalf("revision %d is %s", p.N, p.State)
+		}
+		newest = append(newest, p.ID)
+	}
+	if ids, _ := approvedOf(t, s, key); !slices.Equal(ids, newest) {
+		t.Fatalf("the ticket's approved revisions: %v, want the newest %d %v", ids, MaxTicketApproved, newest)
+	}
+}
