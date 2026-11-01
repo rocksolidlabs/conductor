@@ -360,8 +360,8 @@ func (h *extHost) launchError(id string, err error) error {
 // reply does: the first answer wins, and one to a question that no longer
 // waits answers ext.ErrQuestionAnswered; keys that are not one of the
 // question's own choices are refused, nothing written. Either is recorded
-// as by r.By's name. A hosted session answers ext.ErrUnsupported until
-// its hosts take routed answers (C5, PR-10), and a line blank once
+// as by r.By's name. A hosted session takes only an answer to its question,
+// sent to its host (answerHosted: "sent"), and a line blank once
 // cleaned is refused; a line or a choice's keys accepted while its
 // program reads slowly answers "pending". The try's end withdraws the submission as a revoked
 // link does (session.Submission.Withdrawn, looked at as the writer takes
@@ -384,7 +384,7 @@ func (h *extHost) Submit(ctx context.Context, r ext.SubmitRequest) (ext.SubmitRe
 	}
 	local, ok := d.(*session.Local)
 	if !ok {
-		return ext.SubmitResult{}, fmt.Errorf("%w: a hosted session takes no submission from a provider yet", ext.ErrUnsupported)
+		return h.s.answerHosted(d, r)
 	}
 	res, err, raw := h.s.submitTo(ctx, local, r, h.ctx.Done())
 	if raw != nil && !errors.Is(raw, session.ErrSubmitPending) && h.gone() != nil {

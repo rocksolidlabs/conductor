@@ -1434,7 +1434,17 @@ the question went to records one `status` entry, `routed: <kind> <name>,
 … (<rule>)`; the empty route, the free build's, records nothing, so a
 plain build's activity is as before. A provider answers the same way
 through its host (`Host.Submit` with `question` and `input` or `text`).
-Hosted sessions are not routed yet.
+A hosted session's question is routed the same way when its host's
+register said `answerAs`, and only by the owner's own server: the route's
+answer, or a provider's, travels to the host as `answer_as` (`Host.Submit`
+answers `sent`) and is applied there under the host's own claim, two
+answers that cross (a viewer's and the route's) ordered on the host; the
+router judges what the host said its session shows and keeps (`kept`),
+never a change the server forwarded and the host has not yet applied. An
+older host's questions are routed by no one, as before, and a provider's
+answer to one is unsupported; a switchyard routes none and sends no
+`answer_as`. A line that answers no question is never typed into a hosted
+session.
 
 A reply to a question read off the screen is taken only while the screen
 still shows that question, too (a next question drawn after it and not asked
