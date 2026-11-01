@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rocksolidlabs/conductor/internal/api"
+	"github.com/rocksolidlabs/conductor/internal/version"
 )
 
 // mcpRun feeds lines to the MCP server and returns its replies, one per request.
@@ -93,7 +97,7 @@ func TestMcpServesTheSkillsCommandsAsTools(t *testing.T) {
 	for _, tl := range tools {
 		names = append(names, tl.(map[string]any)["name"].(string))
 	}
-	if strings.Join(names, ",") != "report,set_state,ask,form_crew,add_member,run_status,link,task_context,task_result,message_send,inbox_read,inbox_ack,task_blocked,task_checkpoint,ticket_read,ticket_comment" {
+	if strings.Join(names, ",") != "report,set_state,ask,form_crew,add_member,run_status,link,task_context,task_result,message_send,inbox_read,inbox_ack,task_blocked,task_checkpoint,ticket_read,ticket_comment,guide" {
 		t.Fatalf("tools %v", names)
 	}
 	for _, tl := range tools {
@@ -346,5 +350,164 @@ func TestMcpTicketCommentResendsAfterAStalledReply(t *testing.T) {
 	defer mu.Unlock()
 	if len(opIDs) != 2 || opIDs[0] == "" || opIDs[0] != opIDs[1] {
 		t.Fatalf("the comment's posts: %q", opIDs)
+	}
+}
+
+// The golden file is main's tools/list reply before the tools were listed
+// from the table (docs/plans/brakeman.md, PR-2): its sixteen tools are
+// listed byte for byte as they were, in their order, and the guide after
+// them.
+func TestToolsListIsUnchanged(t *testing.T) {
+	golden, err := os.ReadFile("testdata/tools-list-main.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := func(line []byte) []json.RawMessage {
+		var reply struct {
+			Result struct {
+				Tools []json.RawMessage `json:"tools"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(line, &reply); err != nil {
+			t.Fatal(err)
+		}
+		return reply.Result.Tools
+	}
+	var out bytes.Buffer
+	s := &mcpServer{out: &out, getenv: func(string) string { return "" }}
+	if _, err := s.serve(t.Context(), strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	was, now := tools(golden), tools(out.Bytes())
+	if len(was) != 16 || len(now) != len(was)+1 {
+		t.Fatalf("%d tools before, %d now", len(was), len(now))
+	}
+	for i := range was {
+		if !bytes.Equal(was[i], now[i]) {
+			t.Errorf("tool %d changed:\n was %s\n now %s", i, was[i], now[i])
+		}
+	}
+	var guide mcpTool
+	if err := json.Unmarshal(now[len(was)], &guide); err != nil || guide.Name != "guide" || guide.InputSchema["type"] != "object" {
+		t.Fatalf("the last tool %s %v", now[len(was)], err)
+	}
+	// The whole reply is the golden's with the guide's entry added.
+	trimmed := strings.TrimRight(string(golden), "\n")
+	if !strings.HasPrefix(out.String(), strings.TrimSuffix(trimmed, "]}}")+",") {
+		t.Fatalf("the reply does not begin as main's did")
+	}
+}
+
+// Every operation's summary and description keep their bounds, and an
+// operation with a tool has a description to give it.
+func TestSummaryAndDescriptionAreBounded(t *testing.T) {
+	for _, op := range api.Operations() {
+		if op.Summary == "" || len(op.Summary) > 300 {
+			t.Errorf("%s: a summary of %d bytes", op.Name, len(op.Summary))
+		}
+		if len(op.Description) > 1<<10 {
+			t.Errorf("%s: a description of %d bytes", op.Name, len(op.Description))
+		}
+		if op.MCP != "" && op.Description == "" {
+			t.Errorf("%s: a tool with no description", op.Name)
+		}
+	}
+}
+
+// Every tool the MCP server handles is an operation of the table, listed
+// under its name, and each answers outside a session that it is outside
+// one, never that it is unknown: the handled set is call's.
+func TestEveryToolIsAnOperation(t *testing.T) {
+	byMCP := map[string]api.Operation{}
+	names := map[string]bool{}
+	for _, op := range api.Operations() {
+		if names[op.Name] {
+			t.Errorf("two operations named %s", op.Name)
+		}
+		names[op.Name] = true
+		if op.MCP != "" {
+			byMCP[op.MCP] = op
+		}
+	}
+	listed := map[string]bool{}
+	for _, tl := range mcpTools() {
+		listed[tl.Name] = true
+		if op, ok := byMCP[tl.Name]; !ok || tl.Description != op.Description {
+			t.Errorf("tool %s: not the table's", tl.Name)
+		}
+	}
+	s := &mcpServer{getenv: func(string) string { return "" }}
+	for name := range mcpHandled {
+		if _, ok := byMCP[name]; !ok || !listed[name] {
+			t.Errorf("tool %s is handled but not the table's or not listed", name)
+		}
+		if _, err := s.call(t.Context(), name, nil); !errors.Is(err, errNotInSession) {
+			t.Errorf("tool %s outside a session: %v", name, err)
+		}
+	}
+	if _, err := s.call(t.Context(), "nope", nil); !errors.As(err, new(unknownTool)) {
+		t.Errorf("an unknown tool: %v", err)
+	}
+}
+
+// An entry of the table with an MCP name and no handler is not listed.
+func TestAnUnhandledToolIsNotListed(t *testing.T) {
+	ops := append(api.Operations(), api.Operation{Name: "brief_submit", MCP: "brief_submit", Summary: "s", Description: "d", Input: map[string]any{"type": "object"}})
+	for _, tl := range mcpToolsFrom(ops) {
+		if tl.Name == "brief_submit" {
+			t.Fatal("a tool with no handler is listed")
+		}
+	}
+	if len(mcpToolsFrom(ops)) != len(mcpTools()) {
+		t.Fatal("the listing changed")
+	}
+}
+
+// The guide tool reads the session's guide from a real server with the
+// session's token: the overview, then a section, as text; a section the
+// server does not have is the server's refusal.
+func TestTheGuideToolReadsTheServer(t *testing.T) {
+	a := newDispatchAPI(t)
+	_, sid, token := a.launchMember(t)
+	env := map[string]string{
+		"CONDUCTOR_SESSION_ID":   sid,
+		"CONDUCTOR_NOTIFY_URL":   a.hs.URL + "/api/sessions/" + sid + "/attention",
+		"CONDUCTOR_NOTIFY_TOKEN": token,
+	}
+	replies := mcpRun(t, func(k string) string { return env[k] },
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"guide","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"guide","arguments":{"section":"operations"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"guide","arguments":{"section":"nope"}}}`,
+	)
+	if text, isErr := toolText(t, replies[0]); isErr || !hasAll(text, "session "+sid, "run_member", "scopes: session.", "A question goes to a person with ask.", "operations (", `call guide with {"section": NAME}`) || strings.Contains(text, "the guide is the server's") {
+		t.Fatalf("overview %q %v", text, isErr)
+	}
+	text, isErr := toolText(t, replies[1])
+	if isErr || !hasAll(text, "report [session] POST /api/sessions/{id}/events", "tool guide", "command conductor crew status") || strings.Contains(text, "task_result") {
+		t.Fatalf("operations %q %v", text, isErr)
+	}
+	if text, isErr := toolText(t, replies[2]); !isErr || !strings.Contains(text, "no_section") {
+		t.Fatalf("no section %q %v", text, isErr)
+	}
+}
+
+// A server of another version: the tool says first that the guide is the
+// server's.
+func TestTheGuideToolSaysWhenVersionsDiffer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/sessions/s1/guide" || r.Header.Get("Authorization") != "Bearer agent-tok" {
+			http.Error(w, "no", http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"guide":1,"version":"0.0.0-other","commit":"abc","section":"limits","limits":[{"name":"inbox","max":50,"about":"x"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	env := map[string]string{"CONDUCTOR_NOTIFY_URL": srv.URL + "/api/sessions/s1/attention", "CONDUCTOR_NOTIFY_TOKEN": "agent-tok"}
+	replies := mcpRun(t, func(k string) string { return env[k] },
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"guide","arguments":{"section":"limits"}}}`)
+	text, isErr := toolText(t, replies[0])
+	want := "this conductor is " + version.Version + ", the server is 0.0.0-other: the guide is the server's\n\n"
+	if isErr || !strings.HasPrefix(text, want) || !strings.Contains(text, `"inbox"`) {
+		t.Fatalf("%q %v", text, isErr)
 	}
 }
