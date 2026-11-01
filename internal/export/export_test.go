@@ -30,9 +30,9 @@ func SetBeforeRenames(t testing.TB, f func()) {
 }
 
 func SetBeforeRename(t testing.TB, f func(name string)) {
-	old := beforeRename
-	beforeRename = f
-	t.Cleanup(func() { beforeRename = old })
+	old := BeforeRename
+	BeforeRename = f
+	t.Cleanup(func() { BeforeRename = old })
 }
 
 // SetSyncDir runs f before each sync of a directory an install makes, with

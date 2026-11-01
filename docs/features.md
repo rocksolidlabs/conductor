@@ -3515,7 +3515,61 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   the API's `TestExportRoute`, `TestExportCutShortFails`. The by-hand export and restore on two
   machines waits for PR-13's commands.
 
-  PR-13 (#485): cli: conductor export and conductor restore. Planned.
+  PR-13 (#485): cli: conductor export and conductor restore.
+  `internal/cli/export.go` (new): `conductor export` asks the running
+  server (`GET /api/export`; the server and the token as `conductor up`
+  takes them, a plain server on another machine refused without
+  `--insecure`; no bound on the download but the person's Ctrl-C), or with
+  `--data-dir` reads a data directory no server runs on, holding its
+  reservation while it reads (refused while `restore.lock` is held, while
+  its ledger's owner lock is, checked under the reservation, or when it
+  holds no server data; the databases through read-only snapshots, the
+  catalog resolved against `config.Load(--config)`), and writes `--out`
+  (default `conductor-export-<UTC time>.zip`, 0600, `O_EXCL`, never over a
+  file, and with `--data-dir` never inside the directory it reads, by
+  identity, a link followed by `..` taken where the system takes it and
+  the archive created through the directory checked; `--data-dir` itself
+  resolved once, as the system resolves it, a `..` after a missing child
+  refused, and that one directory checked, reserved and read),
+  kept only once it ends in its manifest, and says on stderr that the
+  archive holds the agents' env values. `conductor restore FILE` goes into
+  `--data-dir` or the directory `serve` would use (`config.Load`, then
+  `ResolveDataDir` with its legacy rule and notice), printed first, and
+  installs under one reservation; `--provider` takes the reservation and
+  checks `Fresh`, asks the sync slot alone (`local.Fill(extensions())`) for
+  its copy into a temporary file beside the data directory, giving it
+  `ext/<name>` (0700), on a goroutine of its own with no guard's wait,
+  counts the bytes as they arrive, and installs under the same
+  reservation; the free default answers that there is nothing to restore,
+  and nothing changes; a provider's `Restore` that ends its goroutine by
+  `runtime.Goexit` ends the command too. A refused restore removes the
+  data directory and every directory above it that it made.
+  `runServe` takes the reservation before `store.Open` and lets it go once
+  `api.New` has returned. `export.Reserve` names its holder (restore,
+  serve, export) and keeps `restore.lock` locked (flock) while held: a
+  file no process holds that a killed serve or export left is taken over,
+  a cut-short restore's still refuses. The usage text,
+  the completion table (restore's argument completes as a file) and the
+  README's "Export and restore" gain both. Tests:
+  `TestExportThroughTheServer`, `TestExportThroughTheServerCutShort`,
+  `TestExportOffline`, `TestExportOfflineRefusesNoServerData`,
+  `TestExportOfflineOutsideTheDataDir`, `TestExportOfflineLinkThenDotDot`,
+  `TestExportOfflineDataDirAsTheSystemResolvesIt`,
+  `TestExportOfflineHoldsTheReservation`, `TestExportNeverOverwrites`,
+  `TestExportSaysEnvIsKept`, `TestExportOfflineResolvesCatalog`,
+  `TestRestoreInstalls`, `TestRestoreRefusesServerData`,
+  `TestRestoreDataDirAsServe`, `TestRestoreReplacesHooks`,
+  `TestServeRefusesWhileRestoring`, `TestRestoreRefusesWhileServeStarts`,
+  `TestServeAfterAKilledServesReservation`,
+  `TestRestoreFromProviderStreams`, `TestRestoreFromProviderEndedShort`,
+  `TestRestoreFromProviderHoldsTheReservation` (as the download starts,
+  between it and the install, between two of the install's renames
+  through `export.BeforeRename`, and after the last),
+  `TestRestoreFromProviderGoexit`, `TestRestoreFromProvider`;
+  `TestReserveTakesOverAKilledServesOrExports` in `internal/export`;
+  `TestCompletionCompletes` and `TestCompletionSpecMatchesEveryFlag` cover
+  the two commands. The by-hand export on one machine and restore on
+  another is C6's acceptance, after this merges (PR-17 records it).
 
   PR-14 (#486): `internal/opencore` and `CONTRIBUTING.md`: no entitlement
   call site outside `ext`. `CONTRIBUTING.md`, Rules for code, says that code

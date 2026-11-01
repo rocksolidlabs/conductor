@@ -78,38 +78,145 @@ func serverDataIn(dir string) (string, error) {
 type Reservation struct {
 	dir   string
 	stamp []byte
+	f     *os.File // restore.lock, open and locked (flock) for as long as it is held; nil where there are no locks
 	mu    sync.Mutex
 	done  bool
 }
 
-// Reserve takes the data directory dir for a restore (or a starting
-// server): it makes dir (0700) when it is missing and creates
-// restore.lock in it exclusively (O_CREATE|O_EXCL, 0600), holding this
-// process's pid and start time. A file already there refuses it with
-// words naming it (ErrReserved): a restore runs, or a server starts, or
-// one was cut short, and the file to remove to start over.
-func Reserve(dir string) (*Reservation, error) {
+// Holder is what holds a reservation, which restore.lock names after the
+// pid and start time.
+type Holder string
+
+// The holders. A restore's file that no process holds any more is never
+// taken over: the restore may have renamed part of an archive. A serve's or
+// an export's is (Reserve): nothing either did needs undoing, a serve's
+// start-up being made again and an export writing nothing into the
+// directory.
+const (
+	HolderRestore Holder = "restore"
+	HolderServe   Holder = "serve"
+	HolderExport  Holder = "export"
+)
+
+// Reserve takes the data directory dir for by (a restore, a starting
+// server, an export from the directory): it makes dir (0700) when it is
+// missing and creates restore.lock in it exclusively (O_CREATE|O_EXCL,
+// 0600), holding this process's pid, its start time and by, and keeps it
+// open and locked (flock, where the filesystem has locks) until Release.
+// A file already there refuses it with words naming it (ErrReserved): a
+// restore, an export or a server's start holds it, or a restore was cut
+// short, and the file to remove to start over. One no process holds, which
+// a serve or an export left when it was killed, is taken over: the
+// reservation is that file, with this process's stamp.
+func Reserve(dir string, by Holder) (*Reservation, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	p := filepath.Join(dir, LockFile)
-	stamp := []byte("pid " + strconv.Itoa(os.Getpid()) + " since " + started.Format(time.RFC3339) + "\n")
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, fs.ErrExist) {
-		holder := readHolder(p)
-		return nil, fmt.Errorf("%w: %s is there (%s): a restore is running or a server is starting on it, or one was cut short; if none is, remove %s to start over", ErrReserved, p, holder, p)
+	stamp := []byte("pid " + strconv.Itoa(os.Getpid()) + " since " + started.Format(time.RFC3339) + ": " + string(by) + "\n")
+	// A file that goes, or is another, between the tries is tried again: a
+	// holder let it go meanwhile.
+	for range 3 {
+		f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			return made(dir, p, f, stamp)
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, err
+		}
+		res, again, err := takeOver(dir, p, stamp)
+		if !again {
+			return res, err
+		}
+	}
+	return nil, refusedBy(p, readHolder(p))
+}
+
+// made is the reservation of the restore.lock this process has just made:
+// locked, its stamp written and synced.
+func made(dir, p string, f *os.File, stamp []byte) (*Reservation, error) {
+	locked, err := lockWait(f)
+	if err == nil {
+		_, err = f.Write(stamp)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if err != nil || !locked {
+		cerr := f.Close()
+		if err = errors.Join(err, cerr); err != nil {
+			os.Remove(p)
+			return nil, err
+		}
+		f = nil
+	}
+	return &Reservation{dir: dir, stamp: stamp, f: f}, nil
+}
+
+// takeOver is the reservation of a restore.lock already there, when no
+// process holds its lock and a serve or an export left it; refused
+// (ErrReserved) otherwise, and again when the file went or was replaced
+// while it looked.
+func takeOver(dir, p string, stamp []byte) (res *Reservation, again bool, err error) {
+	f, err := os.OpenFile(p, os.O_RDWR, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, true, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	_, werr := f.Write(stamp)
-	serr := f.Sync()
-	cerr := f.Close()
-	if err := errors.Join(werr, serr, cerr); err != nil {
-		os.Remove(p)
-		return nil, err
+	locked, err := tryLock(f)
+	if err != nil || !locked {
+		// Held, or no locks to tell a dead holder by.
+		f.Close()
+		if err != nil {
+			return nil, false, err
+		}
+		return nil, false, refusedBy(p, readHolder(p))
 	}
-	return &Reservation{dir: dir, stamp: stamp}, nil
+	let := func() { unlock(f); f.Close() }
+	fi, ferr := f.Stat()
+	pi, perr := os.Lstat(p)
+	if ferr != nil || perr != nil || !os.SameFile(fi, pi) {
+		// Released and made anew meanwhile.
+		let()
+		return nil, true, nil
+	}
+	b, _ := io.ReadAll(io.LimitReader(f, 200))
+	if h := holderOf(b); h != HolderServe && h != HolderExport {
+		let()
+		return nil, false, refusedBy(p, holderText(b))
+	}
+	err = f.Truncate(0)
+	if err == nil {
+		_, err = f.WriteAt(stamp, 0)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if err != nil {
+		let()
+		return nil, false, err
+	}
+	return &Reservation{dir: dir, stamp: stamp, f: f}, false, nil
+}
+
+// holderOf is the holder a restore.lock's bytes name, or "".
+func holderOf(b []byte) Holder {
+	s := strings.TrimSuffix(string(b), "\n")
+	if !strings.HasPrefix(s, "pid ") {
+		return ""
+	}
+	i := strings.LastIndex(s, ": ")
+	if i < 0 {
+		return ""
+	}
+	return Holder(s[i+2:])
+}
+
+// refusedBy is the refusal of a reservation: restore.lock there, held.
+func refusedBy(p, holder string) error {
+	return fmt.Errorf("%w: %s is there (%s): a restore, an export or a server's start holds it, or a restore was cut short; if none runs, remove %s to start over", ErrReserved, p, holder, p)
 }
 
 // readHolder is what restore.lock says of its holder, bounded.
@@ -120,6 +227,11 @@ func readHolder(p string) string {
 	}
 	defer f.Close()
 	b, _ := io.ReadAll(io.LimitReader(f, 200))
+	return holderText(b)
+}
+
+// holderText is a restore.lock's bytes as words.
+func holderText(b []byte) string {
 	if s := strings.TrimSpace(string(b)); s != "" {
 		return s
 	}
@@ -130,7 +242,9 @@ func readHolder(p string) string {
 func (r *Reservation) Dir() string { return r.dir }
 
 // Release lets the directory go: restore.lock removed, when it is still
-// the one Reserve made. A second Release does nothing.
+// the one Reserve made, and then its lock let go (in that order, so
+// whoever takes the lock next finds the file gone, and tries again). A
+// second Release does nothing.
 func (r *Reservation) Release() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -141,6 +255,10 @@ func (r *Reservation) Release() {
 	p := filepath.Join(r.dir, LockFile)
 	if b, err := os.ReadFile(p); err == nil && bytes.Equal(b, r.stamp) {
 		os.Remove(p)
+	}
+	if r.f != nil {
+		unlock(r.f)
+		r.f.Close()
 	}
 }
 
@@ -160,7 +278,7 @@ func (r *Reservation) held() bool {
 // the reservation is let go after the last rename, or the failure that
 // ends the install.
 func Restore(ctx context.Context, r io.ReaderAt, size int64, dir string) (Manifest, error) {
-	res, err := Reserve(dir)
+	res, err := Reserve(dir, HolderRestore)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -168,11 +286,12 @@ func Restore(ctx context.Context, r io.ReaderAt, size int64, dir string) (Manife
 	return Install(ctx, res, r, size)
 }
 
-// Seams a test sets (export_test.go): before the renames, once every check
-// has passed; and before each rename, its name.
+// Seams a test sets: before the renames, once every check has passed
+// (export_test.go); and before each rename, its name, which internal/cli's
+// tests set too (BeforeRename). Both are nil in the product.
 var (
 	beforeRenames func()
-	beforeRename  func(name string)
+	BeforeRename  func(name string)
 )
 
 // Install checks the archive r (size bytes) and installs it into the data
@@ -283,8 +402,8 @@ func Install(ctx context.Context, res *Reservation, r io.ReaderAt, size int64) (
 	}
 	renaming = true
 	for _, name := range tops {
-		if beforeRename != nil {
-			beforeRename(name)
+		if BeforeRename != nil {
+			BeforeRename(name)
 		}
 		if err := renameNoReplace(root, staging, name); err != nil {
 			if errors.Is(err, fs.ErrExist) {
