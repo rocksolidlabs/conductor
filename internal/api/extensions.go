@@ -290,6 +290,9 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 		s.extFailed(kind, name, "busy", fmt.Sprintf("%d calls in flight", extInFlight))
 		return fallback
 	}
+	if f := extWaiting.Load(); f != nil {
+		wait = *f
+	}
 	cctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	// failed is a failure's text, read on the call's goroutine (extText):
@@ -360,6 +363,11 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 // every direct call as its goroutine begins, before fn runs, and may hold
 // it there; nil outside tests.
 var extCalling atomic.Pointer[func(kind, name string)]
+
+// extWaiting, when a test sets it, is every direct call's wait in place of
+// its kind's (ext.ICEWait and the rest), so a test of what ends a call
+// before its wait does not race the product's bound; nil outside tests.
+var extWaiting atomic.Pointer[time.Duration]
 
 // extDeliver runs fn, a delivery to the provider name of kind, on the
 // calling goroutine (a queue's drain, or a list that drops nothing) with a

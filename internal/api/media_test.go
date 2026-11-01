@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -534,7 +535,14 @@ func TestICEOpenHostsNeverAskTheProvider(t *testing.T) {
 // for its welcome is never sent the welcome, nor the servers in it: the
 // ask is cut short (its context canceled, not run to ext.ICEWait), and
 // the viewer is closed as revoked (article 4: a revoke never degrades).
+// The call's wait is the test's own minute (extWaiting), not ext.ICEWait's
+// two seconds: the revoke, not the deadline, must end the ask, however
+// slowly a loaded machine dials, says hello and revokes; a revoke that
+// never cancels it fails at the minute with the deadline as its error.
 func TestICEViewerRevokedWhileTheProviderAnswers(t *testing.T) {
+	wait := time.Minute
+	extWaiting.Store(&wait)
+	t.Cleanup(func() { extWaiting.Store(nil) })
 	asked := make(chan struct{})
 	ended := make(chan error, 1)
 	m := &recordingMedia{name: "turn", answer: func(ctx context.Context, r ext.ICERequest) ([]ext.ICEServer, error) {
