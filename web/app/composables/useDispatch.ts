@@ -446,6 +446,21 @@ export interface NewRelation {
   to: string
 }
 
+/** What a ticket is linked to outward (PR-11): where it was delivered (a merged pull request's or a release's URL, its merged state never
+ * read), a page of another tracker's, or a managed run that worked on it. */
+export type LinkKind = TicketLink['kind']
+
+/**
+ * A link made from a ticket: a `delivery` or an `external` one by its `url` (its `ref` the URL when none is given), a `run` one by the
+ * run's id as its `ref`, a run the engine holds or has a record of and no other live ticket holds.
+ */
+export interface NewLink {
+  kind: LinkKind
+  ref?: string
+  url?: string
+  note?: string
+}
+
 /** How far a file's upload has gone, in bytes. */
 export type UploadProgress = (sent: number, total: number) => void
 
@@ -539,6 +554,14 @@ export function useDispatchApi() {
     removeAttachment: (key: string, id: string, body: OpBody) => request<AttachmentReply>(`/api/dispatch/tickets/${enc(key)}/attachments/${enc(id)}/delete`, { method: 'POST', body }),
     /** An attachment's content, fetched with the token, as the type the server serves it as (an SVG as application/octet-stream). */
     attachment: (id: string) => requestBlob(`/api/dispatch/attachments/${enc(id)}`),
+    /** The owner's acceptance recorded, for the owner the ticket has now and against its criteria as they stand, with a note. */
+    accept: (key: string, body: OpBody & { note?: string }) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/accept`, { method: 'POST', body }),
+    /** The acceptance on record cleared. */
+    unaccept: (key: string, body: OpBody) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/unaccept`, { method: 'POST', body }),
+    addLink: (key: string, body: OpBody & NewLink) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/links`, { method: 'POST', body }),
+    removeLink: (key: string, id: string, body: OpBody) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/links/${enc(id)}/delete`, { method: 'POST', body }),
+    /** The ticket a run is linked to, for the run page's chip: the live one, else the latest-linked tombstone with `deletedAt`, else null. */
+    runTicket: (run: string) => request<{ ticket: RelatedTicket | null }>(`/api/dispatch/links?run=${enc(run)}`).then((r) => r.ticket ?? null),
     /** An operation's receipt, read without acting. */
     receipt: (opId: string) => request<{ receipt: DispatchReceipt }>(`/api/dispatch/ops/${enc(opId)}`).then((r) => r.receipt),
   }

@@ -10,8 +10,18 @@ import {
   TICKET_STATUSES,
   boardColumns,
   changeWords,
+  closeCard,
   closePolicyWords,
   closeRefusalWords,
+  closeRequiresOf,
+  deliveryLinks,
+  acceptChangedWords,
+  linkLabel,
+  policyOnChange,
+  policySave,
+  policyWords,
+  runLinkedWords,
+  samePolicy,
   historyEntries,
   horizonWord,
   isSort,
@@ -202,6 +212,151 @@ describe("the close policy's words", () => {
     expect(closeRefusalWords(['acceptance'])).toBe("It needs the owner's acceptance to be done.")
     expect(closeRefusalWords(['acceptance', 'delivery'])).toBe("It needs the owner's acceptance and a delivery link to be done.")
     expect(closeRefusalWords([])).toBe('The close policy refused it.')
+  })
+  it("say a run held by another ticket, the receipt's key naming it", () => {
+    expect(runLinkedWords('CND-3')).toBe('The run is linked to CND-3 already: a run belongs to one ticket.')
+    expect(runLinkedWords()).toBe('The run is linked to another ticket already: a run belongs to one ticket.')
+  })
+})
+
+describe("the close card's words (PR-11)", () => {
+  const link = (kind: 'delivery' | 'run' | 'external', ref: string, deletedAt?: string) => ({ id: ref, kind, ref, url: `https://h/${ref}`, note: '', createdAt: '', createdBy: '', ...(deletedAt ? { deletedAt } : {}) })
+  const base = {
+    owner: 'Alice',
+    status: 'in_review' as const,
+    links: [] as ReturnType<typeof link>[],
+    close: { requires: ['acceptance', 'delivery'] as Array<'acceptance' | 'delivery'>, met: { acceptance: false, delivery: false }, missing: ['acceptance', 'delivery'] as Array<'acceptance' | 'delivery'> },
+  }
+  it('say what closing takes and that nothing of it is met yet, the owner named', () => {
+    const c = closeCard(base)
+    expect(c.summary).toBe("To close: the owner's acceptance · a delivery link")
+    expect(c.items.map((i) => [i.requirement, i.met, i.state])).toEqual([
+      ['acceptance', false, 'Not accepted yet: Alice is the owner'],
+      ['delivery', false, 'No delivery link yet'],
+    ])
+    expect([c.ready, c.closed, c.acceptBlocked]).toEqual([false, false, ''])
+    expect(c.acceptance).toEqual({ text: 'Not accepted yet: Alice is the owner', tone: 'muted', recorded: false, met: false })
+  })
+  it('say who accepted for whom, and count the live delivery links alone', () => {
+    const c = closeCard({
+      ...base,
+      acceptedAt: '2026-10-31T00:00:00Z',
+      acceptedBy: 'Nate',
+      acceptedFor: 'Alice',
+      links: [link('delivery', 'a'), link('delivery', 'b'), link('delivery', 'c', '2026-10-31T00:00:00Z'), link('run', 'team-0000aaaa'), link('external', 'x')],
+      close: { requires: ['acceptance', 'delivery'], met: { acceptance: true, delivery: true }, missing: [] },
+    })
+    expect(c.items.map((i) => [i.met, i.state])).toEqual([
+      [true, 'Accepted by Nate for Alice'],
+      [true, 'Delivered: 2 links'],
+    ])
+    expect(c.acceptance.tone).toBe('success')
+    expect(c.ready).toBe(true)
+    expect(closeCard({ ...base, links: [link('delivery', 'a')], close: { ...base.close, met: { acceptance: false, delivery: true } } }).items[1]!.state).toBe('Delivered: one link')
+  })
+  it("say why an acceptance on record is unmet in the server's words: the owner changed, the criteria changed", () => {
+    const owner = closeCard({ ...base, owner: 'Bob', acceptedAt: 'x', acceptedBy: 'Nate', acceptedFor: 'Alice', close: { ...base.close, why: 'accepted for Alice; the owner is now Bob' } })
+    expect(owner.items[0]).toEqual({ requirement: 'acceptance', words: "the owner's acceptance", met: false, state: 'accepted for Alice; the owner is now Bob' })
+    expect(owner.acceptance).toEqual({ text: 'accepted for Alice; the owner is now Bob', tone: 'warning', recorded: true, met: false })
+    const criteria = closeCard({ ...base, acceptedAt: 'x', acceptedBy: 'Nate', acceptedFor: 'Alice', close: { ...base.close, why: 'accepted before the criteria changed' } })
+    expect(criteria.items[0]!.state).toBe('accepted before the criteria changed')
+  })
+  it('say that a ticket with no owner has no one to accept it for, and that a closed ticket offers no Close', () => {
+    const c = closeCard({ ...base, owner: '', status: 'done' })
+    expect(c.acceptBlocked).toBe('It needs an owner to accept it for.')
+    expect(c.acceptance.text).toBe('Not accepted yet: the ticket has no owner to accept it')
+    expect(c.closed).toBe(true)
+    expect(closeCard({ ...base, status: 'cancelled' }).closed).toBe(true)
+  })
+  it('say the acceptance on record when the policy does not require it, and that nothing is required', () => {
+    const c = closeCard({ ...base, acceptedAt: 'x', acceptedBy: 'Nate', acceptedFor: 'Alice', close: { requires: [], met: { acceptance: true, delivery: false }, missing: [] } })
+    expect(c.summary).toBe('Closes with nothing required')
+    expect(c.items).toEqual([])
+    expect(c.acceptance.text).toBe('Accepted by Nate for Alice')
+    expect(c.ready).toBe(true)
+  })
+  it('keep the live delivery links alone', () => {
+    expect(deliveryLinks([link('delivery', 'a'), link('external', 'b'), link('delivery', 'c', 'gone')]).map((l) => l.ref)).toEqual(['a'])
+  })
+})
+
+describe("the close policy's editor", () => {
+  it('keeps the policy in its order, each requirement once, nothing it does not know', () => {
+    expect(closeRequiresOf(['delivery', 'acceptance', 'delivery'])).toEqual(['acceptance', 'delivery'])
+    expect(closeRequiresOf(['verified', 'delivery'])).toEqual(['delivery'])
+    expect(closeRequiresOf([])).toEqual([])
+  })
+  it('tells two policies apart whatever their order', () => {
+    expect(samePolicy(['delivery', 'acceptance'], ['acceptance', 'delivery'])).toBe(true)
+    expect(samePolicy(['acceptance'], ['acceptance', 'delivery'])).toBe(false)
+    expect(samePolicy([], [])).toBe(true)
+  })
+
+  it('says a policy in words for a sentence', () => {
+    expect(policyWords(['delivery', 'acceptance'])).toBe("the owner's acceptance and a delivery link")
+    expect(policyWords(['acceptance'])).toBe("the owner's acceptance")
+    expect(policyWords([])).toBe('nothing')
+  })
+
+  it("never saves a policy over another person's unseen: theirs said first, then sent from it on the project's revision", () => {
+    // Ticked from acceptance, delivery added; nobody else changed it: sent on the revision the page holds.
+    expect(policySave(['acceptance', 'delivery'], ['acceptance'], { closeRequires: ['acceptance'], rev: 4 })).toEqual({ send: ['acceptance', 'delivery'], expectedRev: 4 })
+    // Another person's edit of the project's other fields moved the revision only: sent on the new one, the policy being unchanged.
+    expect(policySave(['acceptance', 'delivery'], ['acceptance'], { closeRequires: ['acceptance'], rev: 6 })).toEqual({ send: ['acceptance', 'delivery'], expectedRev: 6 })
+    // Another person's policy (no requirements) came meanwhile: theirs, nothing sent.
+    expect(policySave(['acceptance', 'delivery'], ['acceptance'], { closeRequires: [], rev: 5 })).toEqual({ theirs: [] })
+    // Once said, the draft is made from theirs: the next Save replaces it, knowingly.
+    expect(policySave(['acceptance', 'delivery'], [], { closeRequires: [], rev: 5 })).toEqual({ send: ['acceptance', 'delivery'], expectedRev: 5 })
+    // The draft is the project's policy already: nothing to send, whoever made it so.
+    expect(policySave(['delivery'], ['acceptance'], { closeRequires: ['delivery'], rev: 7 })).toBeNull()
+  })
+
+  it('keeps a tick made while its Save was on its way once the saved policy comes (review round 2 on PR-11)', () => {
+    // Ticked from acceptance, delivery added and sent; delivery unticked while the save is on its way: the saved policy is the base now,
+    // and the draft is kept as ticked, so Save is offered for it again.
+    expect(policyOnChange(['acceptance'], ['acceptance'], ['acceptance', 'delivery'], ['acceptance', 'delivery'])).toBe('saved')
+    // The same draft, a read of the project's other fields coming first: the draft follows the policy it already is, the save still awaited.
+    expect(policyOnChange(['acceptance'], ['acceptance'], ['acceptance', 'delivery'], ['acceptance'])).toBe('follow')
+    // Nothing ticked since it was sent: saved, the draft the policy.
+    expect(policyOnChange(['acceptance', 'delivery'], ['acceptance'], ['acceptance', 'delivery'], ['acceptance', 'delivery'])).toBe('saved')
+    // Another person's policy while the save is on its way, something else ticked here: kept on its base, so Save says theirs.
+    expect(policyOnChange(['acceptance', 'delivery'], ['acceptance'], ['acceptance', 'delivery'], [])).toBe('keep')
+    // No save on its way: an untouched draft follows another person's policy, a ticked one keeps its base.
+    expect(policyOnChange(['acceptance'], ['acceptance'], null, [])).toBe('follow')
+    expect(policyOnChange(['acceptance', 'delivery'], ['acceptance'], null, [])).toBe('keep')
+    expect(policyOnChange(['delivery'], ['acceptance'], null, ['delivery'])).toBe('follow')
+  })
+})
+
+describe('an Accept that waited its turn', () => {
+  it('is sent only for the owner and the criteria shown when it was clicked, and says what changed', () => {
+    const seen = { owner: 'Alice', acceptance: 'It works.' }
+    expect(acceptChangedWords(seen, { owner: 'Alice', acceptance: 'It works.' })).toBe('')
+    expect(acceptChangedWords(seen, { owner: 'Bob', acceptance: 'It works.' })).toBe(
+      'The owner changed to Bob before it was recorded, so nothing was accepted: read the ticket as it is now, and accept again if it holds.',
+    )
+    expect(acceptChangedWords(seen, { owner: 'Alice', acceptance: 'It works, fast.' })).toBe(
+      'The acceptance criteria changed before it was recorded, so nothing was accepted: read the ticket as it is now, and accept again if it holds.',
+    )
+    expect(acceptChangedWords(seen, { owner: '', acceptance: 'It works, fast.' })).toBe(
+      'The owner was taken off and the acceptance criteria changed before it was recorded, so nothing was accepted: read the ticket as it is now, and accept again if it holds.',
+    )
+  })
+})
+
+describe("a link's label", () => {
+  it('says a GitHub pull request, issue and release in short, and any other URL by its host and path', () => {
+    expect(linkLabel('https://github.com/rocksolidlabs/conductor/pull/411')).toBe('rocksolidlabs/conductor#411')
+    expect(linkLabel('https://github.com/rocksolidlabs/conductor/issues/12#issuecomment-1')).toBe('rocksolidlabs/conductor#12')
+    expect(linkLabel('https://github.com/rocksolidlabs/conductor/releases/tag/v0.7.0-rc.18')).toBe('rocksolidlabs/conductor v0.7.0-rc.18')
+    expect(linkLabel('https://github.com/rocksolidlabs/conductor')).toBe('github.com/rocksolidlabs/conductor')
+    expect(linkLabel('https://example.com/')).toBe('example.com')
+    expect(linkLabel('http://example.com:8080/a/b/')).toBe('example.com:8080/a/b')
+    expect(linkLabel('not a url')).toBe('not a url')
+    // A tag whose escapes are not UTF-8 is a URL the store keeps: the label shows it as written, never throws.
+    expect(linkLabel('https://github.com/o/r/releases/tag/%E0%A4')).toBe('o/r %E0%A4')
+    expect(linkLabel('https://github.com/acme/api/releases/tag/%FF')).toBe('acme/api %FF')
+    expect(linkLabel('https://github.com/acme/api/releases/tag/v1%2B2')).toBe('acme/api v1+2')
   })
 })
 

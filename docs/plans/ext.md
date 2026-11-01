@@ -91,7 +91,8 @@ item does for each:
    no ICE server, allow every entitlement. Each seam keeps main's behaviour
    first: the token chain before the identity provider, the configured ICE
    servers before a provider's, the webhooks before a provider's sinks. No
-   file outside `ext/` names the entitlement source (C7, the same lint).
+   file outside `ext/` the binary compiles names the entitlement source
+   (C7, the same lint).
 8. **Served** by three rules. First, the contract of every interface: a
    call answers from what the provider holds on this machine, never with a
    round trip to its service on the call's path; the provider talks to its
@@ -1559,7 +1560,8 @@ restore" under Configuration.
 asks the entitlement source (`ext.EntitlementSource`) whether a feature is
 allowed: only the paid providers do, outside it; a free feature has no
 entitlement to ask about." `internal/opencore` gains the rule
-`entitlements`: outside `ext/`, a reference to `ext.EntitlementSource`,
+`entitlements`: outside `ext/`, in any `.go` file but a `_test.go` one, a
+reference to `ext.EntitlementSource`,
 `ext.Entitlement`, `ext.Entitlements`, `ext.RegisterEntitlements` or
 `ext/local`'s `AllowAll`, or a call of a method named `Entitled`, is a
 problem, which CI's go job fails on. A reference is not an import, so
@@ -1568,7 +1570,13 @@ this rule parses each file whole (`go/parser` with no mode limit, then
 constraints only: it finds the selector expressions whose package is the
 file's name for `…/conductor/ext` or `…/conductor/ext/local`, under any
 import name (a dot import of either outside `ext/` is a problem too),
-and the method calls named `Entitled`.
+and the method calls named `Entitled`. A `_test.go` file is exempt
+(amended in PR-14): the go command compiles it into a test binary only,
+never into `conductor`, so it gates nothing; and the tests of the
+composition root and the host (`cmd/conductor/main_test.go`,
+`internal/api/exthost_test.go`) and PR-16's
+`TestCapabilitiesNamesProviders` must name the entitlement source to test
+it.
 
 ### C8, the four ICE sites through the media provider (PR-15)
 
@@ -1695,7 +1703,7 @@ problem it reports with file and line:
 - `ext-std`: a file under `ext/` importing anything but the standard
   library and packages under `ext/`;
 - `entitlements` (PR-14), which, unlike the four above, parses each file
-  whole (C7).
+  whole and skips `_test.go` files (C7).
 
 `TestModuleKeepsTheRules` runs `Check` on the module and wants nothing;
 `TestEachRuleCatchesItsPlant` runs it on fixtures under `testdata/`, each
@@ -2573,7 +2581,8 @@ none is ticked, each is seen:
   per surface), recorded in the features entry; `TestRoundTrip` and
   `TestSyncAfterLocalCommit` green.
 - **C7.** `TestModuleKeepsTheRules` with the `entitlements` rule green on
-  main (no call site outside `ext`), and its fixture caught.
+  main (no call site outside `ext` in a file the binary compiles), and
+  its fixture caught.
 - **C8.** `TestICEStaticUnchanged` and `TestMediaServersReachViewersAndHosts`
   green.
 - **C9.** The Settings row in Playwright on the plain build, and in a

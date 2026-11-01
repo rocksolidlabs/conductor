@@ -48,9 +48,15 @@ of a module of the `rocksolidlabs` organization other than this one
 workspace `use` (`go-mod`), no build constraint naming anything but a
 platform, a Go version or a test tier (`feature-tag`), nothing but the
 standard library and `ext`'s own packages imported under `ext/` (`ext-std`),
-and no import of this module's package from a directory the lint does not
+no import of this module's package from a directory the lint does not
 read, such as `testdata`, a `_` directory or a symlinked one
-(`unread-package`; a symlinked `.go` file is read where its link stands). A
+(`unread-package`; a symlinked `.go` file is read where its link stands),
+and no entitlement call site outside `ext/` (`entitlements`: a file the
+binary compiles, any but a `_test.go` one, naming `ext.EntitlementSource`,
+`ext.Entitlement`, `ext.Entitlements`, `ext.RegisterEntitlements` or
+`ext/local`'s `AllowAll` under any import name, dot-importing either
+package, or calling a method named `Entitled`; this rule parses each file it
+reads whole, the others read imports and build constraints only). A
 problem names its rule, file and line; the race suite runs the same test, so CI's go job fails on it
 twice over.
 
