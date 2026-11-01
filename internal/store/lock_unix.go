@@ -54,3 +54,29 @@ func (o *OwnerLock) Release() {
 	syscall.Flock(int(o.f.Fd()), syscall.LOCK_UN)
 	o.f.Close()
 }
+
+// LockHeld tries once for the lock at path without making the file, and
+// lets it go at once: true when another process (or another open file of
+// this one) holds it. A file that is not there is held by nobody, and a
+// filesystem with no locks tells nothing, which is false too.
+func LockHeld(path string) (bool, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return true, nil
+		}
+		if errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.ENOLCK) || errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.EINVAL) {
+			return false, nil
+		}
+		return false, fmt.Errorf("lock %s: %w", path, err)
+	}
+	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false, nil
+}

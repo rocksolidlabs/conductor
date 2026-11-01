@@ -22,3 +22,13 @@ func takeOwnerLock(path string) (*ownerLock, string, bool, error) {
 	}
 	return lock, why, held, err
 }
+
+// lockHeld asks whether a server holds the lock at path (store.LockHeld),
+// without making the file.
+func lockHeld(path string) (bool, error) {
+	held, err := store.LockHeld(path)
+	if err != nil {
+		err = fmt.Errorf("ledger: %w", err)
+	}
+	return held, err
+}
