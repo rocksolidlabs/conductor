@@ -86,7 +86,7 @@ type RunRow struct {
 	State    string
 	Outcome  string
 	Paused   bool
-	Revision int64 // bumped by every transition; the run's revision on the API
+	Revision int64 // bumped by every transition, and by a continuation's mark (Tx.Continued); the run's revision on the API
 	// ContinuedFrom names the run this one continues (a resume after a
 	// restart), ContinuedBy the run that continues this one.
 	ContinuedFrom string

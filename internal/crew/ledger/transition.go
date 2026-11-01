@@ -270,10 +270,12 @@ func (t *Tx) checkRun(r RunRow) error {
 var ErrContinued = errors.New("ledger: the run was continued already")
 
 // Continued marks the run from as continued by this transition's run: its
-// continued_by, set once; ErrContinued when it is set already or the run
-// has no row. The one write a transition makes to another run's row.
+// continued_by, set once, and its revision bumped with it, so every state
+// of a run's row has a revision of its own (the sync seam orders a run's
+// pointers by it, OnCommit); ErrContinued when it is set already or the
+// run has no row. The one write a transition makes to another run's row.
 func (t *Tx) Continued(from string) error {
-	res, err := t.tx.ExecContext(t.ctx, "UPDATE runs SET continued_by = ? WHERE id = ? AND continued_by = ''", t.runID, from)
+	res, err := t.tx.ExecContext(t.ctx, "UPDATE runs SET continued_by = ?, revision = revision + (id != ?) WHERE id = ? AND continued_by = ''", t.runID, t.runID, from)
 	if err != nil {
 		return err
 	}

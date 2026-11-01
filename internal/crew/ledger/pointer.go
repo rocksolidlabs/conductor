@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -52,7 +55,7 @@ func scanPointer(sc scanner) (RunPointer, error) {
 // transitions, so the calls come in commit order and never for a
 // transition that failed: the transition's own run, with its new
 // revision, then the run its Continued marked, when there is one (its
-// continued_by set, its revision as it was). Recover's transitions are
+// continued_by set, its revision bumped too). Recover's transitions are
 // transitions too. Each pointer is read in the transaction. fn must only
 // queue what it is told: it holds every writer of the ledger while it
 // runs, and it must not call the ledger. Set it before the first
@@ -113,6 +116,21 @@ func (l *Ledger) pruned(runID string) {
 	if l.onPrune != nil {
 		l.onPrune(runID)
 	}
+}
+
+// NoDatabase reports that the ledger has nothing to read because no
+// database file is where it keeps one: it holds no run. A read's
+// ErrUnavailable says less, only that there is nothing to read: a file
+// that is there but will not open, or a lock file that failed, is not
+// an empty ledger.
+func (l *Ledger) NoDatabase() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.db != nil {
+		return false
+	}
+	_, err := os.Lstat(filepath.Join(l.dir, File))
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 // MaxPointers bounds a page of Pointers.

@@ -3,8 +3,10 @@ package ledger
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -96,7 +98,8 @@ func TestOnCommitAfterCommit(t *testing.T) {
 		t.Fatalf("Pointer: %+v %v %v, want %+v", got, ok, err, p)
 	}
 	// A continuation's transition tells its run, then the run it marked,
-	// whose revision stays as it was.
+	// whose revision moves with the mark: a state of its own, after the
+	// one told before it (review round 1 on #553).
 	if _, err := l.Transition(ctx, "team-00000002", func(tx *Tx) error {
 		if err := tx.CreateRun(RunRow{ID: "team-00000002", CrewID: "team", Crew: "{}", State: RunRunning, ContinuedFrom: "team-00000001", CreatedAt: tx.Now()}); err != nil {
 			return err
@@ -106,7 +109,7 @@ func TestOnCommitAfterCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n := len(w.commits); n != 4 || w.commits[2].ID != "team-00000002" || w.commits[3].ID != "team-00000001" ||
-		w.commits[3].ContinuedBy != "team-00000002" || w.commits[3].Revision != 2 || w.commits[2].ContinuedFrom != "team-00000001" {
+		w.commits[3].ContinuedBy != "team-00000002" || w.commits[3].Revision != 3 || w.commits[2].ContinuedFrom != "team-00000001" {
 		t.Fatalf("a continuation told %+v", w.commits[2:])
 	}
 	// Recover's transitions are told too.
@@ -124,6 +127,60 @@ func TestOnCommitAfterCommit(t *testing.T) {
 	}
 	if len(bad) > 0 {
 		t.Fatalf("told of %v before it was committed", bad)
+	}
+	// Every state of a run told has a revision of its own, each after the
+	// one told before it, so a store that keeps the greater drops none.
+	prev := map[string]int64{}
+	for _, p := range w.commits {
+		if p.Revision <= prev[p.ID] {
+			t.Fatalf("run %s told at revision %d after %d: %+v", p.ID, p.Revision, prev[p.ID], w.commits)
+		}
+		prev[p.ID] = p.Revision
+	}
+}
+
+// A ledger with no database file holds no run (NoDatabase); one whose file
+// is there but will not open, or that is open, is not an empty one.
+func TestNoDatabase(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := takeLock
+	takeLock = func(string) (*ownerLock, string, bool, error) { return nil, "", false, errors.New("no locks here") }
+	none, err := Open(dir)
+	takeLock = old
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := none.Pointers(context.Background(), "", 10); !errors.Is(err, ErrUnavailable) || !none.NoDatabase() {
+		t.Fatalf("no file: %v, NoDatabase %v", err, none.NoDatabase())
+	}
+	none.Close()
+	l := openLedger(t, dir)
+	newRun(t, l, "team-00000001")
+	if l.NoDatabase() {
+		t.Fatal("an open ledger has no database")
+	}
+	l.Close()
+	f, err := os.OpenFile(filepath.Join(dir, File), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte(strings.Repeat("\xff", 100)), 0); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	damaged, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer damaged.Close()
+	if _, err := damaged.Pointers(context.Background(), "", 10); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("a damaged file's pointers: %v", err)
+	}
+	if damaged.NoDatabase() {
+		t.Fatal("a damaged file read as no database")
 	}
 }
 
