@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -20,7 +21,9 @@ import (
 	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 )
 
 // tokenIdentity is an identity provider that knows the tokens of known,
@@ -88,6 +91,20 @@ func tokenRequest(tok string, byQuery bool) *http.Request {
 	return r
 }
 
+// expiredLink is the token of a view link on the session that expired an
+// hour ago, put in the server's store through Restore, as a link kept on
+// disk comes back: expired by its own time, with no clock to wait on.
+func expiredLink(t *testing.T, e *testEnv, sid string) string {
+	t.Helper()
+	tok, hash := share.NewToken()
+	past := time.Now().UTC().Add(-time.Hour)
+	e.srv.links.Restore(share.Link{ID: session.NewID(), SessionID: sid, Role: session.RoleView, CreatedAt: past.Add(-time.Hour), ExpiresAt: &past}, hash)
+	if _, err := e.srv.links.Resolve(tok); !errors.Is(err, share.ErrExpired) {
+		t.Fatalf("the link is not expired: %v", err)
+	}
+	return tok
+}
+
 // samePrincipal fails t unless got is the principal want is, field by
 // field: what a route reads of it.
 func samePrincipal(t *testing.T, what string, got, want principal) {
@@ -125,11 +142,13 @@ func TestTokenChainUnchanged(t *testing.T) {
 				if _, ok := e.srv.links.Revoke("s1", revoked.ID); !ok {
 					t.Fatal("the link was not revoked")
 				}
+				expiredTok := expiredLink(t, e, "s1")
 				want := map[string]principal{
 					adminToken:        {admin: true, yard: yard, host: true},
 					"test-host-token": {host: true},
 					linkTok:           {link: link},
 					revokedTok:        {},
+					expiredTok:        {},
 					"not-a-token":     {},
 					"":                {},
 				}
@@ -139,6 +158,8 @@ func TestTokenChainUnchanged(t *testing.T) {
 						what = "a link"
 					} else if tok == revokedTok {
 						what = "a revoked link"
+					} else if tok == expiredTok {
+						what = "an expired link"
 					}
 					samePrincipal(t, what+" by header", e.srv.authenticate(tokenRequest(tok, false), false), w)
 					samePrincipal(t, what+" by query", e.srv.authenticate(tokenRequest(tok, true), true), w)
@@ -164,8 +185,8 @@ func TestTokenChainUnchanged(t *testing.T) {
 }
 
 // The provider is asked last: a chain token (the workbench's, a host's, a
-// link's), a revoked link and a session's agent token never reach it; a
-// token none of them knows does.
+// link's), a revoked link, an expired link and a session's agent token
+// never reach it; a token none of them knows does.
 func TestProviderAskedLast(t *testing.T) {
 	id := &tokenIdentity{}
 	e := providerEnv(t, nil, id)
@@ -180,6 +201,7 @@ func TestProviderAskedLast(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.srv.links.Revoke(sid, revoked.ID)
+	expiredTok := expiredLink(t, e, sid)
 
 	if resp, _ := e.do("GET", "/api/sessions", adminToken, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("the workbench token: %d", resp.StatusCode)
@@ -193,6 +215,12 @@ func TestProviderAskedLast(t *testing.T) {
 	if resp, _ := e.do("GET", "/api/sessions", revokedTok, nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("a revoked link at an admin route: %d", resp.StatusCode)
 	}
+	if resp, _ := e.do("GET", "/api/sessions/"+sid, expiredTok, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("an expired link: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do("GET", "/api/sessions", expiredTok, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("an expired link at an admin route: %d", resp.StatusCode)
+	}
 	if resp, _ := e.do("POST", "/api/sessions/"+sid+"/attention", agentTok, map[string]any{"state": "working"}); resp.StatusCode >= 300 {
 		t.Fatalf("the agent token: %d", resp.StatusCode)
 	}
@@ -202,6 +230,9 @@ func TestProviderAskedLast(t *testing.T) {
 	dialFakeHost(t, e, "hosted-agent-token")
 	if code := dialHostRaw(t, e, "Bearer "+linkTok); code != http.StatusUnauthorized {
 		t.Fatalf("a link at the host route: %d", code)
+	}
+	if code := dialHostRaw(t, e, "Bearer "+expiredTok); code != http.StatusUnauthorized {
+		t.Fatalf("an expired link at the host route: %d", code)
 	}
 	if got := id.askedTokens(); len(got) != 0 {
 		t.Fatalf("the provider was asked about %d chain tokens", len(got))
@@ -523,5 +554,50 @@ func TestProviderSubjectsNeverCollide(t *testing.T) {
 	}
 	if resp, out := e.do("GET", base+"/commands/c1", "cloud-long", nil); resp.StatusCode != http.StatusOK || out["command"].(map[string]any)["status"] != "done" {
 		t.Fatalf("the command read back: %d %v", resp.StatusCode, out)
+	}
+}
+
+// A provider's principal with the admin grant proposes a plan revision but
+// does not approve one: an approval is the operator's (dispatch.ApprovePlan),
+// so the provider's is refused 409 invalid with a failed receipt kept under
+// user:<subject>, the revision stays proposed, and the workbench token
+// approves it.
+func TestProviderPlanApprovalIsTheOperators(t *testing.T) {
+	id := &tokenIdentity{known: map[string]ext.Principal{providerToken: cloudAdmin("u1")}}
+	e := providerEnv(t, func(cfg *config.Config) { cfg.DataDir = filepath.Join(t.TempDir(), "data") }, id)
+	repo := filepath.Join(e.root, "repo")
+	planRepo(t, repo)
+	e.newDispatchProject(t, "CND", map[string]any{"cwd": repo})
+	e.newDispatchTicket(t, "CND", "Fix the login loop", map[string]any{"description": "It loops.", "acceptance": "It does not."})
+	p := &planTest{testEnv: e, repo: repo}
+	saved := p.saveCrew(t, teamCrew("Team", "ready-cat"))
+
+	resp, out := e.do("POST", "/api/dispatch/tickets/CND-1/plans", providerToken, map[string]any{"opId": "propose-1", "crew": saved.ID})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("the provider's proposal: %d %v", resp.StatusCode, out)
+	}
+	rev := entityOf(t, out, "plan")["id"].(string)
+
+	resp, out = e.do("POST", "/api/dispatch/plans/"+rev+"/approve", providerToken, map[string]any{"opId": "approve-1"})
+	if resp.StatusCode != http.StatusConflict || errorCode(out) != "invalid" {
+		t.Fatalf("the provider's approval: %d %v", resp.StatusCode, out)
+	}
+	if rc := receiptOf(t, out); rc["status"] != "failed" || rc["refusal"] != "invalid" {
+		t.Fatalf("the provider's approval's receipt: %v", rc)
+	}
+	ctx := t.Context()
+	if rc, ok, err := e.srv.dispatch.Receipt(ctx, "user:u1", "approve-1"); err != nil || !ok || rc.Status != "failed" {
+		t.Fatalf("the refused approval's receipt under user:u1: %+v %v %v", rc, ok, err)
+	}
+	if _, ok, _ := e.srv.dispatch.Receipt(ctx, "admin", "approve-1"); ok {
+		t.Fatal("the refused approval is kept under admin")
+	}
+	if v := p.plansOf(t, "CND-1")[rev]; v["state"] != dispatch.PlanProposed {
+		t.Fatalf("after the provider's approval: %v", v)
+	}
+
+	resp, out = e.do("POST", "/api/dispatch/plans/"+rev+"/approve", adminToken, map[string]any{"opId": "approve-2"})
+	if resp.StatusCode != http.StatusOK || entityOf(t, out, "plan")["state"] != dispatch.PlanApproved {
+		t.Fatalf("the workbench's approval: %d %v", resp.StatusCode, out)
 	}
 }

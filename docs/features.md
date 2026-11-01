@@ -3301,8 +3301,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   nothing stored changes shape. Tests: `TestTokenChainUnchanged`,
   `TestProviderAskedLast`, `TestProviderPrincipal`,
   `TestProviderPrincipalInReceipts`, `TestProviderHostRegistration`,
-  `TestProviderRefused`, `TestProviderSubjectsNeverCollide`, each checked
-  to fail with its part broken.
+  `TestProviderRefused`, `TestProviderSubjectsNeverCollide`,
+  `TestProviderPlanApprovalIsTheOperators` (a provider's admin principal
+  proposes a plan revision; its approval is refused `409 invalid` and the
+  revision stays proposed), each checked to fail with its part broken.
 
   PR-7 (#479): api: notification sinks over the event hub, the webhooks the
   first. Planned.
