@@ -242,7 +242,9 @@ func (s *Server) guard(kind, name string) *extGuard {
 
 // extFailed notes a failed call of the provider name of kind, and logs it
 // at warn when its last log is a minute old or more, with how many failed
-// since, and detail (extText's, or the guard's own words; "" for none).
+// since, and detail (extText's, or the guard's own words; "" for none),
+// except for an identity provider's, whose failure is logged by its kind
+// and count alone.
 // It calls nothing of the provider's. The free default has been answered.
 func (s *Server) extFailed(kind, name, why, detail string) {
 	g := s.guard(kind, name)
@@ -260,7 +262,9 @@ func (s *Server) extFailed(kind, name, why, detail string) {
 	g.since, g.last = 0, now
 	g.mu.Unlock()
 	attrs := []any{"kind", kind, "provider", name, "failure", why, "failures", failures}
-	if detail != "" {
+	// An identity provider's words are never quoted: its error, its panic
+	// and its refused principal may carry the token it was given.
+	if detail != "" && kind != ext.KindIdentity {
 		attrs = append(attrs, "err", detail)
 	}
 	s.log.Warn("extension call failed: its free default answered", attrs...)
@@ -291,24 +295,28 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 		s.extFailed(kind, name, "busy", fmt.Sprintf("%d calls in flight", extInFlight))
 		return fallback
 	}
+	if f := extWaiting.Load(); f != nil {
+		wait = *f
+	}
 	cctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	// failed is a failure's text, read on the call's goroutine (extText):
 	// the caller never runs a method of the provider's. invalid is valid's
 	// refusal, bounded the same way.
 	type result struct {
-		v       T
-		failed  string
-		invalid string
-		err     bool
-		late    bool
+		v        T
+		failed   string
+		invalid  string
+		err      bool
+		panicked bool
+		late     bool
 	}
 	done := make(chan result, 1)
 	go func() {
 		var r result
 		defer func() {
 			if p := recover(); p != nil {
-				r = result{err: true, failed: "panic: " + extText(p)}
+				r = result{err: true, panicked: true, failed: "panic: " + extText(p)}
 			}
 			// The slot is free before the answer is sent: a caller that has
 			// its answer may call again at once and find it.
@@ -348,7 +356,11 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 		}
 		return fallback
 	case r.err:
-		s.extFailed(kind, name, "error", r.failed)
+		why := "error"
+		if r.panicked {
+			why = "panic"
+		}
+		s.extFailed(kind, name, why, r.failed)
 		return fallback
 	case r.invalid != "":
 		s.extFailed(kind, name, "invalid", r.invalid)
@@ -361,6 +373,11 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 // every direct call as its goroutine begins, before fn runs, and may hold
 // it there; nil outside tests.
 var extCalling atomic.Pointer[func(kind, name string)]
+
+// extWaiting, when a test sets it, is every direct call's wait in place of
+// its kind's (ext.ICEWait and the rest), so a test of what ends a call
+// before its wait does not race the product's bound; nil outside tests.
+var extWaiting atomic.Pointer[time.Duration]
 
 // extDeliver runs fn, a delivery to the provider name of kind, on the
 // calling goroutine (a queue's drain, or a list that drops nothing) with a
@@ -772,17 +789,15 @@ type guardMedia struct {
 
 func (g guardMedia) Name() string { return g.name }
 
-// ICEServers answers the provider's servers for r, or none (the free
-// default's) when it fails, is late or answers more than ext.MaxICEServers
-// or a server ICEServer.Valid refuses. It never answers an error.
+// ICEServers answers the provider's servers for r, the first
+// ext.MaxICEServers of them when it answers more (the rest are never
+// read), or none (the free default's) when it fails, is late or answers a
+// server ICEServer.Valid refuses among those. It never answers an error.
 func (g guardMedia) ICEServers(ctx context.Context, r ext.ICERequest) ([]ext.ICEServer, error) {
 	if !live(g.ready) {
 		return nil, nil
 	}
 	return extCall(ctx, g.s, ext.KindMedia, g.name, ext.ICEWait, nil, func(ss []ext.ICEServer) error {
-		if len(ss) > ext.MaxICEServers {
-			return fmt.Errorf("ice: %d servers, past %d", len(ss), ext.MaxICEServers)
-		}
 		for _, sv := range ss {
 			if err := sv.Valid(); err != nil {
 				return err
@@ -791,7 +806,7 @@ func (g guardMedia) ICEServers(ctx context.Context, r ext.ICERequest) ([]ext.ICE
 		return nil
 	}, func(ctx context.Context) ([]ext.ICEServer, error) {
 		ss, err := g.p.ICEServers(ctx, r)
-		ss = copyOrNil(ss)
+		ss = copyOrNil(ss[:min(len(ss), ext.MaxICEServers)])
 		for i := range ss {
 			ss[i].URLs = copyOrNil(ss[i].URLs)
 		}

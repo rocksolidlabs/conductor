@@ -14,7 +14,6 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
-	"github.com/rocksolidlabs/conductor/internal/share"
 	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
@@ -318,20 +317,4 @@ func hostGone(sink *wsSink, pumped <-chan struct{}, wait time.Duration) {
 	case <-time.After(wait):
 		sink.Close(signal.ErrHostGone)
 	}
-}
-
-// hostTokenOK reports whether tok authorizes a host registration.
-func (s *Server) hostTokenOK(tok string) bool {
-	if tok == "" {
-		return false
-	}
-	if share.Equal(tok, s.cfg.WorkbenchToken) {
-		return true
-	}
-	for _, ht := range s.cfg.HostTokens {
-		if share.Equal(tok, ht) {
-			return true
-		}
-	}
-	return false
 }

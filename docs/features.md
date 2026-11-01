@@ -3283,7 +3283,28 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   to fail with its part broken.
 
   PR-6 (#478): api: the identity provider after the token chain; a
-  principal's subject in receipts. Planned.
+  principal's subject in receipts. `authenticate` reads the workbench
+  token, each host token and the share links, and asks the identity
+  provider only for a token the links answer unknown, so an expired or
+  revoked link is refused as a link and the free path never waits on a
+  provider; a session's agent token is checked before `authenticate` where
+  both are taken, so it never reaches one either. The answer counts only
+  through the guard, valid and with a grant: `admin` makes the caller
+  what the workbench token makes it, `host` a host token's, at
+  `GET /ws/host` too (`hostAllowed`, which replaces `hostTokenOK`). The
+  token is never logged: an identity failure's warn line names its kind
+  (`late`, `error`, `panic`, `invalid`, `busy`) and count, never the
+  provider's words. `requireAdmin` puts the principal in the request's
+  context and `actorOf` reads it, so the ledger's commands, Dispatch's
+  operations and the reads of their receipts are kept under `admin` for
+  the workbench token and `user:<subject>` for a provider's principal;
+  nothing stored changes shape. Tests: `TestTokenChainUnchanged`,
+  `TestProviderAskedLast`, `TestProviderPrincipal`,
+  `TestProviderPrincipalInReceipts`, `TestProviderHostRegistration`,
+  `TestProviderRefused`, `TestProviderSubjectsNeverCollide`,
+  `TestProviderPlanApprovalIsTheOperators` (a provider's admin principal
+  proposes a plan revision; its approval is refused `409 invalid` and the
+  revision stays proposed), each checked to fail with its part broken.
 
   PR-7 (#479): `internal/api`: notification sinks over the event hub, the
   webhooks the first. The notifier (`notify.go`) takes the webhooks'
@@ -3336,8 +3357,40 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   PR-14 (#486): opencore, contributing: no entitlement call site outside
   ext. Planned.
 
-  PR-15 (#487): api: the four ICE sites through the media provider; GET
-  /api/ice keeps credentials. Planned.
+  PR-15 (#487): `internal/api`: the four ICE sites through the media
+  provider (C8). `iceServersFor` (`media.go`) answers every configured
+  server first, as main sends it, never counted or cut, then the media
+  provider's through the guard (`ICEWait`, each `Valid`, the first eight
+  of more), so a late, failing, panicking or invalid provider adds none and
+  the free default adds nothing. A hosted viewer's welcome (asked with the
+  session, the viewer's role and its id), a host's `registered` (its
+  session) and the paste answerer's servers (the session and the role) go
+  through it; `GET /api/ice` too, as the offer, for which the provider is
+  never asked: it answers the configured `stun:` and `stuns:` URLs byte
+  for byte as main does, never a `turn:` URL, a user name or a credential.
+  A welcome keeps as many of the provider's servers as leave it one
+  CONTROL frame (8 KiB), the last dropped first; `Room` has no caller yet
+  (CL1's). A switchyard's open host, registered with no token, and its
+  session's viewers are handed the configured servers alone, the provider
+  never asked for them (review round 1: nobody authenticated that host,
+  as nobody authenticates `GET /api/ice`). A viewer whose link is revoked
+  or expires while the provider answers is never sent the welcome or its
+  servers: the ask is canceled with the viewer and it is closed with its
+  reason (review round 1, Codex). Tests: `TestICEStaticUnchanged` (STUN only, STUN with a TURN
+  server and its credential, nine and twenty configured servers, with no
+  provider and with one adding eight: the four sites main's, the
+  provider's after), `TestICEOfferNeverAsksTheProvider`,
+  `TestMediaServersReachViewersAndHosts` (the servers and the request each
+  site asks with), `TestICENeverLeaksCredentials` (the route and the log),
+  `TestMediaBounds` (late, failing, panicking and five kinds of invalid
+  server add none; nine cut to eight; a welcome within its frame, the
+  configured servers never cut), `TestRoomDefault`,
+  `TestICEOpenHostsNeverAskTheProvider` (an open host and its viewer get
+  the configured servers and the provider is asked nothing; a tokened
+  host on the same switchyard and its viewer get the provider's),
+  `TestICEViewerRevokedWhileTheProviderAnswers` (the ask canceled by the
+  revoke, no welcome, closed as revoked); each fails with its part
+  broken.
 
   PR-16 (#488): api, web: GET /api/capabilities and the app card's
   Extensions row. Planned.

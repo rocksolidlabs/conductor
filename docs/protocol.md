@@ -222,6 +222,20 @@ resumed run starts a new one.
 
 For a hosted session the viewer's WebSocket first receives
 `welcome{transport:"webrtc", viewerId, iceServers, relayTimeoutMs, relayOnly?}`.
+`iceServers` is every configured ICE server (`iceServers` in the config,
+`CONDUCTOR_ICE_SERVERS`), first and as configured, with their credentials,
+none ever cut; then the media provider's for this viewer, when a provider
+is registered (Program item C8; the free build has none): at most eight,
+each a STUN or TURN server WebRTC takes, asked with the session, the
+viewer's role and its id and given up after 2 s, so a late, failed or
+invalid provider adds none; and only as many of them as keep the welcome
+one CONTROL frame (8 KiB), the last dropped first. A switchyard's open
+host (`switchyard.openHosts`), which registered with no token, and the
+viewers of its session are handed the configured servers alone: no
+provider is asked for a host nobody authenticated, as none is for
+`GET /api/ice`. A viewer closed while the provider answers (its link
+revoked or expired, the session ended) is never sent the welcome: the
+ask is cut short and the viewer is closed with its reason.
 A host started with `--relay-only` sets `relayOnly`, and the viewer requests the
 relay immediately instead of attempting WebRTC. The viewer
 creates the data channel and the SDP offer; the host answers. Candidates trickle
@@ -419,7 +433,8 @@ first written is taken (`answer_ok`) and the other refused
 
 ## Host control connection
 
-`GET /ws/host?token=…` (host token or workbench token; on a switchyard with
+`GET /ws/host?token=…` (host token or workbench token, or an identity
+provider's principal with either grant, HTTP API; on a switchyard with
 `switchyard.openHosts`, none at all: an open host, limited per address in how
 often it registers, how many live sessions it holds and what it relays). A
 refusal is an HTTP error before the upgrade, `{"error": {code, message}}`:
@@ -480,7 +495,10 @@ field (it decodes host messages without refusing unknown fields), and an
 older host sends none.
 
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links}`
-(`links`: the ids of the live links the server holds for the session, `[]`
+(`iceServers`: the configured ones, then the media provider's for the
+host's session, as the viewer's welcome carries them, none dropped for
+the frame: a host message holds 64 KiB; an open host, registered with no
+token, is handed the configured ones alone; `links`: the ids of the live links the server holds for the session, `[]`
 when none; an older server sends no field, which says nothing),
 `viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId}`, `stop{sessionId}`,
@@ -1733,7 +1751,23 @@ served only under `/join/` and `/paste` and for its assets.
 
 Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <workbench token>`; a share token is also accepted where the
-table says so. JSON request bodies are limited to 64 KiB (2 MiB on the crew
+table says so. A token is read in this order: the workbench token, each host
+token, the share links, and only then, for a token none of them knows, the
+identity provider when the build has one registered (package `ext`; a plain
+build has none, so there the order ends at the links). An expired or revoked
+link is refused as a link and never asked of a provider, nor is a session's
+agent token. A provider's principal with the `admin` grant is admin wherever
+the workbench token is (on a switchyard, with the workbench token's lack of a
+role on the sessions published there), and one with the `host` grant is a
+host token's, at `GET /ws/host` too; a principal without a grant, an answer
+late past 1 s, an error or one out of bounds is an unknown token, `401` under
+the same rate limit. The admin's commands and Dispatch operations, and the
+reads of their receipts, are kept under the actor `admin` for the workbench
+token and `user:<subject>` for a provider's principal (its subject at most 48
+bytes): each finds only its own receipts, and a provider's subject can never
+be `admin`, Dispatch's `merge` or `agent:<member>`. A plan revision's
+approval stays the operator's: Dispatch refuses it `409 invalid` for any
+actor but `admin`. JSON request bodies are limited to 64 KiB (2 MiB on the crew
 routes, 128 KiB when adding a member to a run, 192 KiB on a Dispatch
 ticket's create and edit, where a body past its bound is `413 bound`) and
 unknown fields are rejected; a Dispatch attachment's upload is
@@ -1776,7 +1810,7 @@ its run, and on no other.
 | `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); an optional body `{label}` names the run (at most 60 characters, no control characters, trimmed; kept on the run as `label` and by a resume; `400 invalid_request` for a bad label or an unknown field, the body at most 4 KiB); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; the run's `yolo` is the crew's, else the server's, fixed for every member of the run, one started or added later included; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, or, with the file form, one whose `conductor.manifest.json` at the run's base (`HEAD` of `cwd`, read once) is missing or broken (the file and the commit named), an agent the catalog does not have, an agent whose program is not installed on the server (`command[0]` does not resolve, by the check of `GET /api/catalog`'s `available`, so a lookup that does not answer within 2 s does not refuse; the message names the member and the agent), arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `409 crew_unreadable` when its file cannot be used; `503 store_unavailable` without a data directory; `400 invalid_crew` also for a member whose agent's program the identity probe found to be another one (a known impostor, or a verified probe that matched nothing), the message naming the member, the agent, what the program is not and what it printed; a pending or failed probe refuses nothing |
 | `GET /api/crews/{id}/runs` | admin | `{runs, live}`: the crew's runs, newest first, each as `GET /api/runs/{run}` answers it (without diffs): the `live` first ones the server holds, then the records of runs the server no longer holds, saved under `runs/<id>.json` in the data directory, at most 500 kept (the oldest by start dropped), never a terminal's contents; a run's record is written from its launch on (again a couple of seconds after each change, and as it ends, a reopened run again when it ends again) and read back after a restart, where the record of a run that was running when the server last stopped is marked `interrupted` (its running members `ended` with that `error`), never relaunched on its own; `404 not_found` for a crew neither saved nor recorded |
 | `POST /api/sessions/{id}/paste` | admin | answer a viewer's paste invite for a server session: `{offer, role, label?}`, `offer` a `cpi1.` blob (the viewer's SDP with every candidate gathered, deflated and base64url-encoded, ≤ 64 KiB), reply `201 {answer, role}` with the session's blob of the same form, which the viewer pastes back; the data channel then runs with no server between the two, as a host's does (hello over it, welcome, scrollback, input by role); at most 16 such peers a session, idle ones dropped after two minutes; `400 invalid_offer` for a blob that is not an offer, `400 hosted_session` for a hosted session (shared from its own machine), `409 session_ended` |
-| `GET /api/ice` | none (rate-limited) | `{stun}`: the configured ICE servers' `stun:` URLs, for a viewer gathering a paste invite's offer before it has any session; a TURN server's credentials never leave the server |
+| `GET /api/ice` | none (rate-limited) | `{stun}`: the configured ICE servers' `stun:` and `stuns:` URLs, in order, for a viewer gathering a paste invite's offer before it has any session; never a `turn:` URL, a user name or a credential, and never a media provider's server: the route never asks a provider, so a request nobody authenticated costs one nothing (the paste invite's answer, `POST /api/sessions/{id}/paste`, is handed the configured servers and the provider's, as a hosted viewer's welcome is) |
 | `GET /api/runs` | admin | `{runs}`: the runs in the server's memory, newest first, each with its `state` and `needsInput` (see Crew runs) |
 | `GET /api/runs/{run}` | admin | `{run}` with each worktree member's `diff{added, removed}`, the run's `log`, whose entries Crew runs lists, and its `chat` (the run's chat messages, oldest first, at most 500; see Chat); for a run the server no longer holds (it ended before the server last started, or was evicted) but has a record of, `{run, record: true}` as it was last written (its `state` as recorded, `interrupted` for a run the server's end cut short), no diffs, and its page opens read-only: the run's actions (stop, members, broadcast, links) answer `404` for it as for any run not held, and `POST /api/runs/{run}/resume` resumes it from the record; `404` when unknown |
 | `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once the session of a member that starts immediately exists; `400 invalid_crew` for an invalid member, a name the run has (`the name is used twice`), a prompt over 32756 bytes with the run's goal in it, an `after` naming no member of the run, a 13th member or an agent as at launch; a member whose session cannot be created answers as at launch (`409 not_a_repo`, `500 launch_failed`), and stays in the run, `ended` with its `error`, its name taken: adding it again under that name is `400 invalid_crew`; `409 run_stopped`; `404` when unknown |
@@ -2536,7 +2570,9 @@ the review's result.
 **Commands with receipts.** A person's change to a managed run (pause,
 unpause, cancel, retry, accept) is a command: the client mints a `commandId`
 (1 to 32 of letters, digits, `.`, `_`, `~` and `-`), the run keeps the
-outcome under the admin and that id in the same transaction as the change,
+outcome under the caller's actor (`admin` for the workbench token,
+`user:<subject>` for an identity provider's principal: HTTP API) and that id
+in the same transaction as the change,
 and the receipt comes back as `{receipt: {commandId, intent, revision,
 repeat?, status, error?, refusal?, task?, paused?}}`: `status` is `done` or
 `failed` (with `error` and `refusal`, for a command the run's state refused,
@@ -2707,7 +2743,8 @@ of letters, digits, `.`, `_`, `~` and `-`), `expectedRev`, the revision of
 the entity it acts on that the client expects (absent or 0 for none), and
 `byName`, the display name the store records as `by` (at most 60
 characters, no control character; never in the query string). The admin's
-operations are kept under the actor `admin`, a run member's under
+operations are kept under the actor `admin` (an identity provider's
+principal's under `user:<subject>`, HTTP API), a run member's under
 `agent:<member>` (An attempt's ticket, below). Each is one transaction: the
 receipt is looked up (the same `opId` with the same content answers with
 the receipt given before, `repeat: true`, and changes nothing; with other

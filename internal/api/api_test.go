@@ -54,7 +54,7 @@ func newTestEnvLogging(t *testing.T, mutate func(*config.Config), log *slog.Logg
 }
 
 // newTestEnvAgents is newTestEnvLogging with extra agents in the catalog,
-// and New given opts.
+// its server made with opts.
 func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logger, extra []catalog.Agent, opts ...Option) *testEnv {
 	t.Helper()
 	// Resolved, as the server reports a session's cwd (resolveCwd): on
