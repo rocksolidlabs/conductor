@@ -699,7 +699,7 @@ func taskMarkdown(f TaskFile) string {
 				}
 				switch {
 				case u.Stage == receiptStage:
-					b.WriteString(". Conductor could not read from the ledger the receipt and the log of the check that failed the attempt before it, before its agent could act: it was not counted, and you start where it started.\n\n")
+					b.WriteString(". Conductor could not read from the ledger the receipt and the log of the check that failed the attempt before it, or write the log beside its task files, before its agent could act: it was not counted, and you start where it started.\n\n")
 				case launchStage(u.Stage):
 					b.WriteString(". Conductor could not hand it the ticket's package, or start the agent the plan revision approved, before its agent could act: it was not counted, and you start where it started.\n\n")
 				default:
@@ -767,7 +767,8 @@ func longestBacktickRun(s string) int {
 // cannot be read, or whose size or SHA-256 is not the package's, is a
 // packageError; any file there already is refused, never written over.
 // With log (the attempt before failed at a check), its whole log goes in
-// previous/ through the same root.
+// previous/ through the same root, a write of it that fails a
+// receiptError (writePreviousLog).
 func writeTaskFiles(ctx context.Context, worktree, prefix string, md, js, more []byte, pkg *runPackage, open func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error), log *checkLog) error {
 	if pkg != nil {
 		if err := checkPackageFiles(pkg.p); err != nil {
@@ -827,15 +828,37 @@ func writeTaskFiles(ctx context.Context, worktree, prefix string, md, js, more [
 		}
 	}
 	if log != nil {
-		if err := root.Mkdir(path.Join(taskDir, previousDir), 0o755); err != nil {
-			return err
-		}
-		if err := root.WriteFile(path.Join(taskDir, previousDir, log.name), log.data, 0o644); err != nil {
+		if err := writePreviousLog(root, log); err != nil {
 			return err
 		}
 	}
 	if pkg != nil {
 		return writeAttachments(ctx, root, pkg, open)
+	}
+	return nil
+}
+
+// writePreviousLog writes the log of the check that failed the attempt
+// before in previous/ through root. Its error is a receiptError (a disk
+// full, say), as one reading it from the ledger is: the attempt is not
+// counted and the run pauses, so the attempt after the pause is handed the
+// receipt and its log, never one that took the receipt's place as the
+// attempt before (Codex's review of #559, round 2). log.fault, a test's,
+// is the write's error when it gives one.
+func writePreviousLog(root *os.Root, log *checkLog) error {
+	write := func() error {
+		if err := root.Mkdir(path.Join(taskDir, previousDir), 0o755); err != nil {
+			return err
+		}
+		if log.fault != nil {
+			if err := log.fault(); err != nil {
+				return err
+			}
+		}
+		return root.WriteFile(path.Join(taskDir, previousDir, log.name), log.data, 0o644)
+	}
+	if err := write(); err != nil {
+		return receiptErrorf("the log of the receipt %s could not be written beside the task files: %w", log.receipt, err)
 	}
 	return nil
 }

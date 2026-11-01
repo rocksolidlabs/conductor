@@ -119,11 +119,11 @@ func failedAtCheck(a ledger.AttemptRow) (phase, id string, ok bool) {
 
 // failingReceipt is, of an attempt's receipts (rows, by id and k), the one
 // that failed it: the last finished run of the check or verify step its
-// stage names, when that run failed (its row has its failure's words). None
-// when the attempt did not fail at one, the ledger kept no finished row of
-// it (its outcome refused), or the run passed and the attempt failed at it
-// only because its outcome was not recorded then (verify keeps no receipt
-// in memory for that either).
+// stage names, when that run failed (failedOutcome). None when the attempt
+// did not fail at one, the ledger kept no finished row of it (its outcome
+// refused), or the run passed and the attempt failed at it only because
+// its outcome was not recorded then (verify keeps no receipt in memory for
+// that either).
 func failingReceipt(a ledger.AttemptRow, rows []ledger.CheckRow) (ledger.CheckRow, bool) {
 	phase, id, ok := failedAtCheck(a)
 	if !ok {
@@ -136,11 +136,21 @@ func failingReceipt(a ledger.AttemptRow, rows []ledger.CheckRow) (ledger.CheckRo
 			out, found = r, true
 		}
 	}
-	if !found || out.Error == "" {
+	if !found || !failedOutcome(out) {
 		return ledger.CheckRow{}, false
 	}
 	out.Log = nil
 	return out, true
+}
+
+// failedOutcome reports whether a finished receipt's row records a
+// failure: its failure's words, or, for a row without them, how it ended:
+// a non-zero exit, a signal, a timeout, or a checkout left changed. A row
+// a version 4 database kept has no words (the migration to version 5
+// gives every row an empty error), and its failure is still its outcome
+// (Codex's review of #559, round 2); a run that passed has neither.
+func failedOutcome(r ledger.CheckRow) bool {
+	return r.Error != "" || r.Exit != 0 || r.Signal != "" || r.TimedOut || !r.Stable
 }
 
 // handedChanged is what the next attempt is told of the paths a check
@@ -213,10 +223,12 @@ func cutBytes(s string, n int) string {
 }
 
 // checkLog is the failed check's log as the next attempt's files hold it:
-// its name in .conductor/previous, and its bytes.
+// its name in .conductor/previous, and its bytes, of the receipt named;
+// fault is the engine's beforePreviousLog, a test's (writePreviousLog).
 type checkLog struct {
-	name string
-	data []byte
+	receipt, name string
+	data          []byte
+	fault         func() error
 }
 
 // receiptStage is the stage of an attempt that could not be handed the
@@ -226,7 +238,9 @@ type checkLog struct {
 // independent review of #559).
 const receiptStage = "receipt"
 
-// receiptError is previousLog's error: the attempt fails at receiptStage.
+// receiptError is previousLog's error, and writeTaskFiles' when the log
+// cannot be written beside the task files: the attempt fails at
+// receiptStage.
 type receiptError struct{ err error }
 
 func (r *receiptError) Error() string { return r.err.Error() }
@@ -264,7 +278,7 @@ func (e *Engine) previousLog(ctx context.Context, c *TaskCheck) (*checkLog, erro
 	}
 	name := "check-" + c.ID + ".log"
 	c.LogBytes, c.Log = int64(len(row.Log)), path.Join(taskDir, previousDir, name)
-	return &checkLog{name: name, data: row.Log}, nil
+	return &checkLog{receipt: c.Receipt, name: name, data: row.Log, fault: e.beforePreviousLog}, nil
 }
 
 // writeFailedCheck writes task.md's account of the check that failed the

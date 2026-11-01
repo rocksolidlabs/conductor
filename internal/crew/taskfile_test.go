@@ -3,6 +3,7 @@ package crew
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"unicode/utf8"
 
@@ -170,11 +173,13 @@ func wantReceipt(t *testing.T, c *TaskCheck, runID string, row ledger.CheckRow) 
 // opened again and the continuation's attempt 2.
 func failAndContinue(t *testing.T, ch Check) (string, ledger.CheckRow, *ledger.Ledger, TaskState) {
 	t.Helper()
-	return failAndContinueIn(t, newRepo(t), ch)
+	return failAndContinueIn(t, newRepo(t), ch, nil)
 }
 
-// failAndContinueIn is failAndContinue in the repository dir.
-func failAndContinueIn(t *testing.T, dir string, ch Check) (string, ledger.CheckRow, *ledger.Ledger, TaskState) {
+// failAndContinueIn is failAndContinue in the repository dir; between,
+// when set, is given the ledger's directory once the ledger is closed and
+// before it is opened again.
+func failAndContinueIn(t *testing.T, dir string, ch Check, between func(ldir string)) (string, ledger.CheckRow, *ledger.Ledger, TaskState) {
 	t.Helper()
 	ldir := t.TempDir()
 	ld, err := ledger.Open(ldir)
@@ -196,6 +201,9 @@ func failAndContinueIn(t *testing.T, dir string, ch Check) (string, ledger.Check
 	stopRun(t, e, run.ID)
 	if err := ld.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if between != nil {
+		between(ldir)
 	}
 	again, err := ledger.Open(ldir)
 	if err != nil {
@@ -453,6 +461,62 @@ func TestAContinuationsFirstAttemptGetsTheFailedCheck(t *testing.T) {
 	}
 }
 
+// A receipt a version 4 database kept, which has no words of its failure
+// (the migration to version 5 gives every row an empty error) and whose
+// check.finished names no k, is still the one that failed its attempt: a
+// continuation of the run, its ledger migrated, hands its first attempt
+// the receipt and its whole log, as the failure is the row's outcome, a
+// non-zero exit or a checkout left changed (Codex's review of #559, round
+// 2).
+func TestAContinuationHandsAFailedReceiptAVersion4DatabaseKept(t *testing.T) {
+	asVersion4 := func(ldir string) {
+		db, err := sql.Open("sqlite", filepath.Join(ldir, ledger.File))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		// What versions 5 and 6 added dropped (the ledger package's own
+		// tests keep the same list, version5Added), and k out of the
+		// check.finished events, which version 4 never wrote there.
+		for _, stmt := range []string{"ALTER TABLE runs DROP COLUMN ticket", "ALTER TABLE runs DROP COLUMN package", "ALTER TABLE checks DROP COLUMN phase", "ALTER TABLE checks DROP COLUMN manifest", "ALTER TABLE checks DROP COLUMN ports", "ALTER TABLE checks DROP COLUMN tries",
+			"ALTER TABLE checks DROP COLUMN error", "ALTER TABLE checks DROP COLUMN url", "ALTER TABLE runs DROP COLUMN paused_why", "ALTER TABLE runs DROP COLUMN manifest", "DROP TABLE prerequisites", "DROP TABLE trees",
+			"UPDATE events SET payload = json_remove(payload, '$.k') WHERE kind = 'check.finished'", "UPDATE schema_version SET version = 4"} {
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("%s: %v", stmt, err)
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		ch      Check
+		changed []string
+	}{
+		{"it exited non-zero", shStep("unit", fiveKiB), nil},
+		{"it changed the checkout", shStep("unit", `echo changed >> README`), []string{"README"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src, row, ld, a2 := failAndContinueIn(t, newRepo(t), tc.ch, asVersion4)
+			if row.Error == "" {
+				t.Fatalf("the receipt had no words before the migration: %+v", row)
+			}
+			if migrated := receiptOf(t, ld, src, "build", 1, "unit"); migrated.Error != "" || migrated.Phase != ledger.PhaseCheck || migrated.Exit != row.Exit || migrated.Stable != row.Stable {
+				t.Fatalf("the migrated receipt: %+v", migrated)
+			}
+			c, md := previousCheckOf(t, a2)
+			wantReceipt(t, c, src, row)
+			if !slices.Equal(c.Changed, tc.changed) {
+				t.Fatalf("the paths handed: %q, want %q", c.Changed, tc.changed)
+			}
+			if !bytes.Equal(logFileOf(t, a2, c), row.Log) {
+				t.Fatal("the log file is not the row's")
+			}
+			if !strings.Contains(md, "Its receipt in the ledger is "+c.Receipt) {
+				t.Fatalf("task.md:\n%s", md[strings.Index(md, "## The attempt before"):])
+			}
+		})
+	}
+}
+
 // A receipt or a log the ledger cannot give the attempt after a failed
 // check (its error, or a log that is not the one its SHA-256 names) fails
 // that attempt at "receipt", not counted, and pauses the run, as a package
@@ -462,17 +526,29 @@ func TestAContinuationsFirstAttemptGetsTheFailedCheck(t *testing.T) {
 func TestAReceiptTheLedgerCannotGivePausesUncounted(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		set   func(l *fakeLedger)
+		set   func(e *Engine, l *fakeLedger)
 		words string
 	}{
-		{"its error", func(l *fakeLedger) { l.failCheckLog = errors.New("disk gone") }, "the ledger could not give the log of the receipt %s: disk gone"},
-		{"a log not its hash's", func(l *fakeLedger) { l.corruptLog = true }, "the log of the receipt %s is not the one its SHA-256 names"},
+		{"its error", func(_ *Engine, l *fakeLedger) { l.failCheckLog = errors.New("disk gone") }, "the ledger could not give the log of the receipt %s: disk gone"},
+		{"a log not its hash's", func(_ *Engine, l *fakeLedger) { l.corruptLog = true }, "the log of the receipt %s is not the one its SHA-256 names"},
+		// The log read, its file cannot be written (the worktree's disk
+		// full): attempt 3 is handed attempt 1's receipt, never attempt 2
+		// as the attempt before (Codex's review of #559, round 2).
+		{"its file not written", func(e *Engine, _ *fakeLedger) {
+			var once atomic.Bool
+			e.beforePreviousLog = func() error {
+				if once.CompareAndSwap(false, true) {
+					return syscall.ENOSPC
+				}
+				return nil
+			}
+		}, "the log of the receipt %s could not be written beside the task files: no space left on device"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := newRepo(t)
 			e, fl, l := managedEngine(t)
 			l.mu.Lock()
-			tc.set(l)
+			tc.set(e, l)
 			l.mu.Unlock()
 			build := work("build", "lead")
 			build.Checks = []Check{shStep("unit", fiveKiB)}
@@ -586,7 +662,7 @@ func TestTheChangedPathsHandedAreTheEventsWhateverTheirBytes(t *testing.T) {
 		stopRun(t, e, run.ID)
 
 		// After a restart: a continuation's first attempt, the same.
-		src, row2, ld2, b2 := failAndContinueIn(t, dir, shStep("amp", script))
+		src, row2, ld2, b2 := failAndContinueIn(t, dir, shStep("amp", script), nil)
 		c2, _ := previousCheckOf(t, b2)
 		wantReceipt(t, c2, src, row2)
 		if !slices.Equal(c2.Changed, want) {

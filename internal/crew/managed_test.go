@@ -40,13 +40,15 @@ type fakeLedger struct {
 	commandCap int
 	// failOn names the events whose transaction fails (comma-separated;
 	// "kind[key=value]" matches a payload field too); failOnce clears it
-	// after one failure. blockOn names events whose transaction waits,
-	// once blocked is told, for release to close.
-	failOn   string
-	failOnce bool
-	blockOn  string
-	blocked  chan struct{}
-	release  chan struct{}
+	// after one failure, failTimes, when set, after that many. blockOn
+	// names events whose transaction waits, once blocked is told, for
+	// release to close.
+	failOn    string
+	failOnce  bool
+	failTimes int
+	blockOn   string
+	blocked   chan struct{}
+	release   chan struct{}
 	// unavailable, when set, is what Available returns.
 	unavailable error
 	// failLoad, when set, names a run whose next Load fails, once.
@@ -324,6 +326,11 @@ func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(Ledge
 		if l.failOn != "" && matches(l.failOn, ev) {
 			if l.failOnce {
 				l.failOn, l.failOnce = "", false
+			}
+			if l.failTimes > 0 {
+				if l.failTimes--; l.failTimes == 0 {
+					l.failOn = ""
+				}
 			}
 			return 0, errors.New("ledger: disk full (injected)")
 		}

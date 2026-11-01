@@ -298,16 +298,19 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 		// Its running row refused: its process ended under it, and the
 		// check fails with the ledger's words, its receipt finished
 		// with them.
+		// The finished transaction has no undo: refused too, its row and
+		// event stay for the next commit, which writes them before the
+		// attempt's failure, so the receipt is kept either way, as a verify
+		// step's refused outcome keeps its (Codex's review of #559, round 2).
 		fin.State = ledger.CheckFinished
 		words = unrecorded + ": " + session.CleanMessage(refused.Error())
 		fin.Error = words
-		if err := e.transact(context.Background(), r, func() tx {
+		_ = e.transact(context.Background(), r, func() tx {
 			out := event("finished", map[string]any{"exit": res.Exit, "timedOut": res.TimedOut, "stable": false, "duration": res.Duration.String(), "error": words})
 			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
 			return out
-		}, nil); err == nil {
-			e.keepFailed(r, a, fin, nil)
-		}
+		}, nil)
+		e.keepFailed(r, a, fin, nil)
 		return stage, words, true, false
 	}
 	if e.beforeCompare != nil {

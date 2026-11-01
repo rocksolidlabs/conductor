@@ -2333,12 +2333,15 @@ output in a fenced block, and where its log is. The receipt's identity,
 its outcome and its log's fields are never cut; `tail`, `changed` and
 `argv` go into `task-more.json`'s `previous.check`, in that order, before
 the error does. A receipt or a log the ledger cannot give (or a log that
-is not the one its SHA-256 names) fails the attempt at `receipt`, not
-counted, and pauses the run, as a package that cannot be handed over
-does: no attempt starts without the log it is told of, and the attempt
-after the pause is handed the receipt and the log. A receipt that passed
-is never handed, a verify step's included whose outcome the ledger took
-only with the next commit. With a context provider
+is not the one its SHA-256 names), or a log whose file cannot be
+written, fails the attempt at `receipt`, not counted, and pauses the
+run, as a package that cannot be handed over does: no attempt starts
+without the log it is told of, and the attempt after the pause is handed
+the receipt and the log. A receipt that passed is never handed, a verify
+step's included whose outcome the ledger took only with the next commit;
+one that failed is, a row from a version 4 ledger too, which keeps no
+words of its failure (its exit, signal, timeout or changed checkout
+say it). With a context provider
 registered (Program item C4), the attempt's context is asked for before
 its task files are written, at most 5 s (`ext.ContextWait`), and an
 attempt never fails or waits longer for it: `task.json` gains `context`,

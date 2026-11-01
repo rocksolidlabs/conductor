@@ -881,6 +881,57 @@ func TestARefusedFinishedRowOfAFailingVerifyStepReachesTheNextAttempt(t *testing
 	stopRun(t, e, run.ID)
 }
 
+// A check whose running row the ledger refuses, and then its finished row,
+// keeps both for the next commit, the attempt's failure's, which writes
+// them: the receipt is the ledger's, and attempt 2 is handed it and its
+// whole log, as a continuation would be, the run never told otherwise
+// (Codex's review of #559, round 2).
+func TestARefusedRunningRowThenARefusedFinishedRowStillReachTheNextAttempt(t *testing.T) {
+	finished := map[string]string{"check.running": "check.finished", "step.running[phase=verify]": "step.finished[phase=verify]"}
+	for _, kind := range checkKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			gate := filepath.Join(t.TempDir(), "gate")
+			t.Cleanup(func() { open(t, gate) })
+			l.mu.Lock()
+			l.failOn, l.failTimes = kind.running+","+finished[kind.running], 2
+			l.mu.Unlock()
+			run := launchManaged(t, e, kind.crew(dir, shStep("e2e", gated(gate))))
+			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			commitResult(t, e, a, "built.txt", "yes\n", "built")
+			row := l.attemptWhen(t, run.ID, "build", 1, failedRow)
+			if row.Stage != kind.stage || row.Error != kind.refused {
+				t.Fatalf("attempt 1: stage %q, %q", row.Stage, row.Error)
+			}
+			a2 := attemptN(t, e, run.ID, "build", 2)
+			l.mu.Lock()
+			left := l.failTimes
+			l.mu.Unlock()
+			if left != 0 {
+				t.Fatalf("the ledger refused %d transactions, not 2", 2-left)
+			}
+			e2e, _ := rowOf(l.stepRows(run.ID, "build", 1), "e2e", 1)
+			if e2e.State != ledger.CheckFinished || e2e.Error != kind.refused || e2e.PID == 0 || e2e.Stable || e2e.LogSHA256 != sha(e2e.Log) {
+				t.Fatalf("the check's row: %+v", e2e)
+			}
+			_, f := taskFileOf(t, a2)
+			c := f.Previous.Check
+			if c == nil || c.Phase != e2e.Phase || c.ID != "e2e" || c.K != e2e.K || c.Subject != e2e.Subject || c.LogSHA256 != e2e.LogSHA256 || c.LogBytes != int64(len(e2e.Log)) {
+				t.Fatalf("attempt 2's receipt: %+v", c)
+			}
+			got, err := os.ReadFile(filepath.Join(a2.Attempt.Worktree, filepath.FromSlash(c.Log)))
+			if err != nil || string(got) != string(e2e.Log) {
+				t.Fatalf("the log file: %q %v", got, err)
+			}
+			if fr, ok := failingReceipt(row, []ledger.CheckRow{e2e}); !ok || fr.K != c.K {
+				t.Fatalf("the rows' receipt: %+v %v", fr, ok)
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
 // A check whose attempt is cancelled while it waits for the server's check
 // slot is concluded interrupted, not left started: its receipt reads as a
 // check that never ran (no process), and the result's checkout ends after
