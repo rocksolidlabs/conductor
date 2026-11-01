@@ -98,7 +98,7 @@ defineExpose({ insert })
       @keydown.escape.stop="cancel"
     />
     <div v-else class="min-h-16 min-w-0 rounded-md ring ring-default" data-comment-draft-preview>
-      <MarkdownPreview v-if="draft.trim()" :text="draft" dir="" :relative-links="false" :attachment-url="attachmentUrl" />
+      <MarkdownPreview v-if="draft.trim()" :text="draft" dir="" :relative-links="false" linkify :attachment-url="attachmentUrl" />
       <p v-else class="px-5 py-4 text-sm text-dimmed">Nothing to preview.</p>
     </div>
     <div class="flex flex-wrap items-center gap-2">
