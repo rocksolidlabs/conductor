@@ -143,8 +143,7 @@ func codexAdapter() Adapter {
 		},
 		// Checked against `codex --help` (0.163.0) and by the recipes tier.
 		// Conductor's MCP server still reaches the server under the
-		// read-only sandbox: Codex starts it outside the sandbox (tried by
-		// hand with 0.163.0).
+		// read-only sandbox (tried by hand with 0.163.0).
 		ReadOnlyArgs: func() []string { return []string{"--sandbox", "read-only", "-c", codexReadOnlyApprovals} },
 		ModelArgs: func(model string) []string {
 			if model == "" {
