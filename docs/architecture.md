@@ -563,9 +563,17 @@ lapsed) returns an error, which ends no connection and, for a new request,
 is the free default's answer. The revoke is a revoked link's: the server
 session's subscription ends revoked (`Subscription.Revoke`), so a
 submission waiting for its turn or its Enter, keys or a save under way are
-refused; a hosted viewer is closed revoked (`Viewer.Revoke`), nothing of its
-still queued for the host is written and its `viewer_leave` says `revoked`,
-so the host withdraws what it has under way; the events stream's write
+refused, also when the connection had ended for another reason first (the
+revocation is kept of its own, not as the close's first reason); a hosted
+viewer is closed revoked (`HostedSession.RevokeViewer`), nothing of its
+still queued for the host is written and the host is sent its
+`viewer_leave` saying `revoked` at once, after its join and only once, not
+when its connection has closed, so the host withdraws what it has under
+way; and since that leave may be what a lost connection did not carry,
+the viewer's `viewer_join` says `principal`, and the host gives it a
+credential of its own (`linkCreds.principal`), which the connection's
+loss marks gone as it does the links', and acts on what it sends only
+while it vouches for its server, as for a link's viewer; the events stream's write
 under way is cut (a passed write deadline) before its context ends. The
 server's own tokens and links have no watch, so a build with no provider
 asks nothing more.

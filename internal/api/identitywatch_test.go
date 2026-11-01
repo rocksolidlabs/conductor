@@ -304,6 +304,14 @@ func TestRevokedPrincipalLosesViewer(t *testing.T) {
 			f := newTurningIdentity()
 			e := providerEnv(t, nil, f)
 			clock := newFakeClock(e.srv)
+			// The viewer's close is held: its connection is not cut
+			// closeWait on, and the viewer is not let go (RemoveViewer,
+			// which sends a leave) until the host has been told.
+			e.srv.viewerCloseWait = 2 * time.Minute
+			told := make(chan struct{})
+			release := sync.OnceFunc(func() { close(told) })
+			defer release()
+			e.srv.viewerSeam = &viewerSeam{left: func() { <-told }}
 			host := dialFakeHost(t, e, "")
 			v := dialViewer(t, e, host.sessionID, watchToken)
 			if w := v.expectControl(proto.CtlWelcome); w["role"] != "control" {
@@ -312,14 +320,41 @@ func TestRevokedPrincipalLosesViewer(t *testing.T) {
 			// The host knows the viewer (a viewer whose join never reached
 			// it is never named to it, and needs no leave).
 			joined := host.expect(proto.HostViewerJoin)
+			if joined["principal"] != true {
+				t.Fatalf("viewer_join %v does not say the viewer is a principal", joined)
+			}
 			recheckFired(t, clock, f, revoke)
-			v.expectRevoked()
-			// The host is told the viewer was revoked, so that it withdraws
-			// what the viewer has under way rather than finish it.
+			// The viewer reads nothing yet, so its close handshake waits on
+			// it: the host is told the viewer was revoked all the same, so
+			// that it withdraws what the viewer has under way rather than
+			// finish it (once: TestARevokedPrincipalsLeaveGoesAtOnce).
 			if m := host.expect(proto.HostViewerLeave); m["viewerId"] != joined["viewerId"] || m["reason"] != proto.LeaveRevoked {
 				t.Fatalf("viewer_leave %v, want viewer %v's with reason %s", m, joined["viewerId"], proto.LeaveRevoked)
 			}
+			release()
+			v.expectRevoked()
 		})
+	}
+}
+
+// A hosted viewer's join says it came as an identity provider's principal
+// (principal), so that the host withdraws what it has under way when the
+// connection to the server is lost, a revoked leave perhaps not carried;
+// the workbench token's viewer and a link's say nothing of it.
+func TestOnlyAPrincipalsHostedJoinSaysPrincipal(t *testing.T) {
+	f := newTurningIdentity()
+	e := providerEnv(t, nil, f)
+	host := dialFakeHost(t, e, "")
+	for _, c := range []struct {
+		tok       string
+		principal bool
+	}{{adminToken, false}, {watchToken, true}} {
+		v := dialViewer(t, e, host.sessionID, c.tok)
+		v.expectControl(proto.CtlWelcome)
+		joined := host.expect(proto.HostViewerJoin)
+		if got, ok := joined["principal"]; (got == true) != c.principal || (!c.principal && ok) {
+			t.Fatalf("token %q: viewer_join %v", c.tok, joined)
+		}
 	}
 }
 

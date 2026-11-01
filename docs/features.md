@@ -3318,16 +3318,27 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   out of bounds ends nothing. The workbench token, the host tokens and the
   links have no watch, so a build with no provider asks nothing more.
   What the viewer has under way is withdrawn as a revoked link's is (the
-  server session's subscription ends revoked; a hosted viewer's queued
-  frames are dropped and its `viewer_leave` says `revoked`), the stream's
+  server session's subscription ends revoked, whatever it ended for
+  first; a hosted viewer's queued frames are dropped and the host is sent
+  its `viewer_leave` saying `revoked` at once, not when the viewer's
+  connection has closed, and, its join saying `principal`, the host
+  withdraws what it has under way as it loses its connection to the
+  server, which may not have carried that leave), the stream's
   write under way is cut, and the app says "Your access to this session was
   revoked". A provider answers ok false only for a token it knows it no
   longer admits; one that cannot tell returns an error.
   Tests: `TestRevokedPrincipalLosesEventStream`,
   `TestRevokedPrincipalLosesViewer` (each for an answer of no principal,
-  the `host` grant only, no grant, another subject; the close's
-  `access revoked` and the hosted leave's `revoked` asserted),
+  the `host` grant only, no grant, another subject; the
+  host's leave, `revoked`, read with the viewer's close held, before
+  the close's `access revoked`),
   `TestRevokedPrincipalsWaitingSubmissionIsWithdrawn`,
+  `TestARevocationAfterAnotherEndStillRefuses`,
+  `TestARevokedPrincipalsLeaveGoesAtOnce`,
+  `TestOnlyAPrincipalsHostedJoinSaysPrincipal`,
+  `TestAPrincipalsLineIsWithdrawnWhenTheConnectionIsLost`,
+  `TestAPrincipalsViewerWaitsForTheServersWord`,
+  `TestAPrincipalsCredIsKeptWhileHeld`,
   `TestRevokeCutsABlockedEventStream`, the closeReason vitest,
   `TestFailingProviderKeepsConnections` (error, panic, late, out of
   bounds) and `TestChainConnectionsUnwatched`, the waits driven through

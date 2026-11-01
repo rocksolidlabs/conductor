@@ -548,7 +548,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 		}
 	}
 	viewerID := session.NewID()
-	v, err := hs.AddViewerWith(signal.ViewerOptions{ID: viewerID, Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Authorize: check, Charge: charge, ChargeJoin: chargeJoin})
+	v, err := hs.AddViewerWith(signal.ViewerOptions{ID: viewerID, Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Authorize: check, Charge: charge, ChargeJoin: chargeJoin, Principal: watch != nil})
 	if err != nil {
 		switch {
 		case errors.Is(err, session.ErrRevoked), errors.Is(err, session.ErrSessionEnded):
@@ -563,11 +563,13 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 	defer hs.RemoveViewer(v)
 	if watch != nil {
 		// Revoked as a revoked link's viewer is: nothing of its still
-		// queued for the host is written, and its leave says why, so the
-		// host withdraws what it has under way (Viewer.Revoke).
+		// queued for the host is written, and the host is told at once
+		// that it was revoked, not once its connection has closed, so
+		// that it withdraws what the viewer has under way
+		// (HostedSession.RevokeViewer).
 		watching, endWatch := context.WithCancel(sink.ctx)
 		defer endWatch()
-		go watch(watching, func() { v.Revoke(errPrincipalRevoked) })
+		go watch(watching, func() { hs.RevokeViewer(v, errPrincipalRevoked) })
 	}
 
 	info := hs.Info()

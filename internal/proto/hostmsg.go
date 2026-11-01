@@ -150,6 +150,13 @@ type ViewerJoin struct {
 	LinkID   string `json:"linkId,omitempty"`
 	// LinkLabel is shown in the viewers roster; the host never sees the token.
 	LinkLabel string `json:"linkLabel,omitempty"`
+	// Principal says the viewer came as an identity provider's principal,
+	// a credential that is not a link and that the server may revoke at
+	// any time (its viewer_leave then says revoked): the host holds what
+	// the viewer has under way to its connection to the server, as it does
+	// a link's viewer's, withdrawn when the connection is lost and acted on
+	// only while the host vouches for its server. An older host ignores it.
+	Principal bool `json:"principal,omitempty"`
 }
 
 // LinkGone tells the host that a link through which a viewer of its

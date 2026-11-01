@@ -502,7 +502,7 @@ host's session, as the viewer's welcome carries them, none dropped for
 the frame: a host message holds 64 KiB; an open host, registered with no
 token, is handed the configured ones alone; `links`: the ids of the live links the server holds for the session, `[]`
 when none; an older server sends no field, which says nothing),
-`viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
+`viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
 server holds for it, or caught up: above; a host refuses one whose
@@ -569,7 +569,15 @@ host gives the connection up and connects again (its pings keep a
 connection that drops what it carries from being idle, which TCP's
 keepalive would otherwise have ended). The lines of the owner's own
 windows, the host's own terminal and a paste invite's viewer need no such
-word. A host reads a reason it does not know, or
+word. A viewer that came as an identity provider's principal has no link,
+but the server may revoke it at any time (its `viewer_leave` then says
+`revoked`), so it joins with `principal: true` and the host holds what it
+asked for as a link's viewer's: as the host loses its connection to the
+server, which may have kept that leave from coming, what is still under
+way of the viewer's is withdrawn (a line's carriage return among it),
+and what it sends is acted on only while the host vouches for its server,
+its join pinging at once as a link's does. An older host ignores the
+field. A host reads a reason it does not know, or
 one over 16 bytes, as none; an older server sends neither, and an older
 host ignores both, as before: each side decodes the other's messages
 without refusing unknown fields),
@@ -1790,8 +1798,9 @@ principal, another subject, or one without the `admin` grant), the viewer
 is closed with `error{revoked}` and `4403` (`access revoked`) and the stream
 is ended. What the viewer has under way is withdrawn as a revoked link's
 is: a submission not yet entered, keys not yet written and a save's next
-part are refused, and a hosted session's host is told with a
-`viewer_leave` whose reason is `revoked`. The stream's write under way is
+part are refused, and a hosted session's host is told at once with a
+`viewer_leave` whose reason is `revoked` (not when the viewer's connection
+has closed; one leave, after its join). The stream's write under way is
 cut. A provider answers so only for a token it knows it no longer admits;
 one that cannot tell returns an error. A provider that errs, is late or answers out of bounds has said
 nothing, and the connection stays. The workbench token, the host tokens
