@@ -54,6 +54,12 @@ type createSessionRequest struct {
 	// approved (LaunchSpec.Allow), passed on beside the passthrough.
 	inject map[string]string
 	allow  []string
+	// agentSHA256, set by Launch for an attempt of a run launched from a
+	// ticket, is the agent selection its plan revision approved
+	// (crew.LaunchSpec.AgentSHA256): the session starts only from a
+	// catalog entry whose selection it is (agentSelection), and is
+	// refused agent_changed otherwise, before any process exists.
+	agentSHA256 string
 	// Env is set in the process over the agent's own variables: the GOAL of
 	// a crew member. JSON cannot set it; a client sending "env" is refused
 	// like one sending any other unknown field.
@@ -184,6 +190,12 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		yolo = *req.Yolo
 	}
 	applied := yolo && !agent.Yolo.Empty()
+	// An attempt of a run launched from a ticket starts only the agent its
+	// plan revision approved: the selection of this entry, the one the
+	// session is started from, with this launch's yolo choice.
+	if req.agentSHA256 != "" && agentSelection(agent, yolo).SHA256 != req.agentSHA256 {
+		return nil, newAPIError(http.StatusConflict, agentChangedCode, "the agent "+agent.ID+"'s catalog entry is not the one its plan revision approved")
+	}
 	extra, adapterEnv := agents.InjectFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir), sig, applied)
 	// The agent's own session: resumed by its recipe, or named at launch when
 	// the recipe lets Conductor choose; its arguments go right after the

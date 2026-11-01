@@ -247,6 +247,9 @@ type Server struct {
 	// router is the decision router's seam over the sessions' questions
 	// (router.go).
 	router *decisionRouter
+	// launches admits and settles the launches from a ticket
+	// (dispatch_launch.go).
+	launches launchGate
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
@@ -401,7 +404,25 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 		s.records = records
 		s.runs.RecordEnds(records, func(runID string, err error) { log.Warn("run record not saved", "run", runID, "err", err) }, s.track)
-		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned)
+		// Dispatch's store, beside the ledger and opened before it: the
+		// reconcile of its launches runs at the ledger's recovery
+		// (dispatch_launch.go). A switchyard keeps no tickets. Its changes
+		// reach the pages as dispatch events, a commit's together
+		// (OnChange hands the hub a commit at a time), and a run link names
+		// a run the engine holds or has a record of.
+		if !cfg.Switchyard.Enabled {
+			s.dispatch = openDispatch(st, log)
+			if s.dispatch == nil {
+				syncs.unopened("Dispatch")
+			}
+		}
+		if s.dispatch != nil {
+			syncs.observeDispatch(s.dispatch)
+			s.dispatch.SetRunExists(s.runKnown)
+			s.dispatch.OnChange(s.events.dispatch)
+		}
+		s.wireLaunches()
+		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned, s.ledgerRecovered)
 		if s.ledger == nil {
 			// Its runs are not gone: the sync store is never told they are.
 			syncs.unopened("the ledger")
@@ -418,21 +439,6 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// steps and sessions: the server's envPassthrough, as the server
 		// started with it.
 		s.runs.SetEnvPassthrough(cfg.EnvPassthrough)
-		// Dispatch's store, beside the ledger; a switchyard keeps no
-		// tickets. Its changes reach the pages as dispatch events, a
-		// commit's together (OnChange hands the hub a commit at a time),
-		// and a run link names a run the engine holds or has a record of.
-		if !cfg.Switchyard.Enabled {
-			s.dispatch = openDispatch(st, log)
-			if s.dispatch == nil {
-				syncs.unopened("Dispatch")
-			}
-		}
-		if s.dispatch != nil {
-			syncs.observeDispatch(s.dispatch)
-			s.dispatch.SetRunExists(s.runKnown)
-			s.dispatch.OnChange(s.events.dispatch)
-		}
 	}
 	s.webhooks = s.startNotifier(cfg.Webhooks)
 	// The runs take every entry too: a member's done starts the members after
