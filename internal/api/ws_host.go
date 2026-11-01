@@ -12,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/share"
@@ -80,6 +81,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn := signal.NewHostConn()
+	conn.Open = open
 	if s.viewerSeam != nil && s.viewerSeam.waited != nil {
 		conn.OnWait = s.viewerSeam.waited
 	}
@@ -122,10 +124,9 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	// connection ends (before the session shows it gone).
 	defer s.hostUp(hs.Owner())()
 
-	ice := make([]proto.ICEServer, 0, len(s.cfg.ICEServers))
-	for _, srv := range s.cfg.ICEServers {
-		ice = append(ice, proto.ICEServer{URLs: srv.URLs, Username: srv.Username, Credential: srv.Credential})
-	}
+	// An open host, which presented no token, is handed the configured
+	// servers alone: no media provider is asked for it (iceServersFor).
+	ice := s.iceServersFor(ctx, ext.ICERequest{Purpose: icePurposeHost, Session: info.ID}, open)
 	registered, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice, Links: s.liveLinkIDs(info.ID)})
 	if err := writeText(ctx, c, registered); err != nil {
 		return
