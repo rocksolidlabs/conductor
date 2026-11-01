@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -291,6 +293,42 @@ func TestLaunchResentMakesNoSecondRun(t *testing.T) {
 	}
 	if n := len(l.srv.runs.List()); n != 1 {
 		t.Fatalf("the engine holds %d runs", n)
+	}
+}
+
+// A settling whose read of the launch inside the hold fails (its context
+// ended) releases the hold by the launch's id: nothing is left in flight,
+// so the same opId sent again settles the launch, started, without
+// waiting on a settling that is over.
+func TestASettlingThatCannotReadReleasesItsLaunch(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	op := adminOp("")
+	v := l.pendingLaunch(t, op)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, release, pending, err := l.srv.settleLaunch(ctx, l.srv.dispatch, v, "")
+	release()
+	if !errors.Is(err, context.Canceled) || pending != nil {
+		t.Fatalf("the settling: %v %v", pending, err)
+	}
+	l.srv.launches.mu.Lock()
+	left := maps.Clone(l.srv.launches.inFlight)
+	l.srv.launches.mu.Unlock()
+	if len(left) != 0 {
+		t.Fatalf("in flight after the settling: %v", left)
+	}
+	if got := l.launchOf(t, v.ID); got.State != dispatch.LaunchPending {
+		t.Fatalf("the launch: %+v", got.LaunchSummary)
+	}
+	out := l.launch(t, l.testEnv, map[string]any{"opId": op.ID}, http.StatusOK, "")
+	if launch := entityOf(t, out, "launch"); launch["id"] != v.ID || launch["state"] != dispatch.LaunchStarted || launch["runId"] != v.RunID {
+		t.Fatalf("the resend: %v", out)
+	}
+	l.srv.launches.mu.Lock()
+	waits := l.srv.launches.waits
+	l.srv.launches.mu.Unlock()
+	if waits != 0 {
+		t.Fatalf("the resend waited %d times", waits)
 	}
 }
 

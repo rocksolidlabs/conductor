@@ -435,9 +435,13 @@ func (s *Server) launchedRun(id string) *crew.Run {
 // written, and the error of a store that failed.
 func (s *Server) settleLaunch(ctx context.Context, ds *dispatch.Store, l dispatch.LaunchView, by string) (dispatch.LaunchView, func(), *apiError, error) {
 	noop := func() {}
+	// The launch's id, kept apart from l: the read inside the hold
+	// replaces l, with an empty view when it fails, and the hold is
+	// released by this id whatever that read gave.
+	id := l.ID
 	g := &s.launches
 	g.mu.Lock()
-	if ch, ok := g.inFlight[l.ID]; ok {
+	if ch, ok := g.inFlight[id]; ok {
 		g.waits++
 		g.mu.Unlock()
 		t := time.NewTimer(runTimeout)
@@ -447,23 +451,23 @@ func (s *Server) settleLaunch(ctx context.Context, ds *dispatch.Store, l dispatc
 		case <-t.C:
 		case <-ctx.Done():
 		}
-		after, err := ds.LaunchByID(ctx, l.ID)
+		after, err := ds.LaunchByID(ctx, id)
 		return after, noop, nil, err
 	}
 	ch := make(chan struct{})
 	if g.inFlight == nil {
 		g.inFlight = map[string]chan struct{}{}
 	}
-	g.inFlight[l.ID] = ch
+	g.inFlight[id] = ch
 	g.mu.Unlock()
 	defer func() {
 		g.mu.Lock()
-		delete(g.inFlight, l.ID)
+		delete(g.inFlight, id)
 		g.mu.Unlock()
 		close(ch)
 	}()
 	// Read again inside the hold: another request may have settled it.
-	l, err := ds.LaunchByID(ctx, l.ID)
+	l, err := ds.LaunchByID(ctx, id)
 	if err != nil || l.State != dispatch.LaunchPending {
 		return l, noop, nil, err
 	}
