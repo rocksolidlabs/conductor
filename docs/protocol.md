@@ -471,8 +471,10 @@ the server's copy takes the two from one message, an `attention` equal to
 the one shown with a new `kept` taking the `kept` and changing nothing
 else; a message whose `kept` holds more than 2 ids, or one that is not
 1–32 bytes of printable ASCII, is dropped whole (the connection stays);
-the server takes no `kept` from a host that did not say `answerAs`, and an
-older server ignores the field),
+the server takes no `kept` from a host that did not say `answerAs` (one
+that resumes without it has the pair it last sent stand until its first
+`attention`, which then drops the `kept`), and an older server ignores the
+field),
 `activity{sessionId,entry,state?}`,
 `chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,

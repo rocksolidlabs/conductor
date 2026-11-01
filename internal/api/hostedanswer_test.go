@@ -449,3 +449,66 @@ func TestHostedResolvedAfterAnswerAsWithdrawn(t *testing.T) {
 		t.Fatalf("%d routed questions still count against the bound", untold)
 	}
 }
+
+// A routed question the host set aside (kept under working) when it went,
+// and showed again while away, is not resolved as the host comes back
+// without answerAs: until the older host's first attention, which the
+// test holds back, the router judges the pair the host last sent, which
+// keeps the question; that report shows it, and only a later one that
+// neither shows nor keeps it resolves it, once.
+func TestHostedKeptSurvivesAnAnswerAsWithdrawn(t *testing.T) {
+	seams := watchRouter(t)
+	f := &fakeRouter{}
+	e := routerEnv(t, f)
+	sess := proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24}
+	h, registered := dialFakeHostWith(t, e, proto.HostInfo{Name: "laptop", AnswerAs: true}, sess, "Bearer test-host-token")
+	id := h.sessionID
+	secret, _ := registered["secret"].(string)
+	if secret == "" {
+		t.Fatal("the server sent no secret to resume with")
+	}
+	const q = "0123456789abcdef"
+	shown := proto.HostAttentionMsg{T: proto.HostAttention, State: "needs_input", Message: "Which database?", Source: session.SourceAPI, Kind: session.KindPrompt, ID: q, Ask: true, Options: []proto.AttentionOption{{Label: "Postgres", Input: "Postgres\r"}}}
+	h.send(shown)
+	seams.wait(t, "routed", q)
+	h.send(proto.HostAttentionMsg{T: proto.HostAttention, State: "working", Source: session.SourceAPI, Kept: []string{q}})
+	until(t, "the question kept", func() bool { return slices.Equal(hostedSession(t, e, id).HostView().Kept, []string{q}) })
+	seams.settle(t, e, id)
+	if _, n := f.resolution(q); n != 0 {
+		t.Fatal("the question kept was resolved")
+	}
+
+	// The host goes, and comes back as an older host, its first report
+	// held back.
+	h.c.CloseNow()
+	until(t, "the host gone", func() bool { return hostedSession(t, e, id).Info().Status == session.StatusHostDisconnected })
+	h2, again := dialFakeHostRegister(t, e, proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "laptop"}, Session: sess,
+		Resume: &proto.HostResume{SessionID: id, Secret: secret}}, "Bearer test-host-token", nil)
+	if again["resumed"] != true || h2.sessionID != id {
+		t.Fatalf("resume: %v", again)
+	}
+	until(t, "answerAs taken back", func() bool { return !hostedSession(t, e, id).TakesAnswers() })
+	seams.settle(t, e, id)
+	if _, n := f.resolution(q); n != 0 {
+		t.Fatal("the question kept was resolved before the host said anything")
+	}
+
+	// Its first report: the question shown again.
+	h2.send(shown)
+	until(t, "the question shown again", func() bool {
+		v := hostedSession(t, e, id).HostView()
+		return v.Attention.ID == q && v.Kept == nil
+	})
+	seams.settle(t, e, id)
+	if _, n := f.resolution(q); n != 0 {
+		t.Fatal("the question shown again was resolved")
+	}
+
+	// Answered there, it is resolved, once.
+	h2.send(proto.HostAttentionMsg{T: proto.HostAttention, State: "working", Source: session.SourceAPI})
+	until(t, "Resolved", func() bool { _, n := f.resolution(q); return n == 1 })
+	seams.settle(t, e, id)
+	if _, n := f.resolution(q); n != 1 {
+		t.Fatalf("told %d times", n)
+	}
+}

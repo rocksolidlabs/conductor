@@ -75,16 +75,22 @@ func TestHostedAnswerAs(t *testing.T) {
 	if err := hs.AnswerAs(m); !errors.Is(err, ErrHostGone) {
 		t.Fatalf("with the host gone: %v", err)
 	}
-	// Registering again as an older host takes the flag back, and what
-	// it kept.
-	hs.HostAttentionKept(session.AttentionWorking, "", session.SourceAPI, "", nil, "", false, "", "", []string{"aaaaaaaaaaaaaaaa"})
+	// Registering again as an older host takes the flag back; what it
+	// kept goes with its next attention, the pair it last sent standing
+	// whole until then.
+	const a = "aaaaaaaaaaaaaaaa"
+	hs.HostAttentionKept(session.AttentionWorking, "", session.SourceAPI, "", nil, "", false, "", "", []string{a})
 	reconn := NewHostConn()
 	if _, resumed, err := hub.Register(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "laptop"},
 		Session: proto.HostSession{Command: []string{"bash"}, Cols: 80, Rows: 24}, Resume: &proto.HostResume{SessionID: hs.Info().ID, Secret: hs.Secret()}}, reconn); err != nil || !resumed {
 		t.Fatalf("resume: %v %v", err, resumed)
 	}
-	if hs.TakesAnswers() || hs.Info().Kept != nil {
-		t.Fatalf("an older host's resume: takes %v, keeps %v", hs.TakesAnswers(), hs.Info().Kept)
+	if v := hs.HostView(); hs.TakesAnswers() || v.Attention.State != session.AttentionWorking || !slices.Equal(v.Kept, []string{a}) {
+		t.Fatalf("an older host's resume: takes %v, the pair %+v %v", hs.TakesAnswers(), v.Attention, v.Kept)
+	}
+	hs.HostAttention(session.AttentionNeedsInput, "Which database?", session.SourceAPI, session.KindPrompt, nil, a, true, "", "")
+	if v := hs.HostView(); v.Attention.ID != a || v.Kept != nil {
+		t.Fatalf("the older host's first report: %+v %v", v.Attention, v.Kept)
 	}
 }
 

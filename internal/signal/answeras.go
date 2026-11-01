@@ -89,11 +89,12 @@ func (h *HostedSession) ForwardStatus(e session.ActivityEntry) error {
 	return h.toHost(hostActivityMsg(session.CleanEntry(e)))
 }
 
-// setAnswerAs keeps what a register says of answer_as: a host that no
-// longer says it (an older one, registering again) keeps nothing.
+// setAnswerAs keeps what a register says of answer_as. A host that no
+// longer says it (an older one, registering again) has what it last said
+// it kept dropped with its next attention (setAttention), not here: until
+// that report the pair it last sent (HostView) stands whole, so that a
+// question it kept set aside, and may have shown again while it was away,
+// is not judged ended from the attention of that report alone.
 func (h *HostedSession) setAnswerAs(on bool) {
 	h.answerAs = on
-	if !on {
-		h.info.Kept = nil
-	}
 }
