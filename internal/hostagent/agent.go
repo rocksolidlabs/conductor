@@ -736,7 +736,10 @@ func lastElement(dir string) string {
 // keystroke that answers a prompt, on a viewer's keys queue; a viewer's
 // hello, on the frame loop) never waits for the control connection's turn
 // (onLocalChange may wait up to controlTurnWait). Only the latest change
-// waits, and one goroutine forwards them, in order.
+// waits, and one goroutine forwards them, in order. The Info it is handed
+// says only that the session changed: the session reads it before calling
+// the hook, and its calls are not ordered among themselves, so one holding
+// an older snapshot may come after one holding a newer (forwardChanges).
 func (a *agent) noteChange(info session.Info) {
 	a.mu.Lock()
 	a.changeNext = &info
@@ -749,11 +752,21 @@ func (a *agent) noteChange(info session.Info) {
 }
 
 // forwardChanges hands the changes noteChange noted to onLocalChange, one at
-// a time, the latest of those noted meanwhile next, until none is left.
+// a time, until none is left: for each, the session as it is when the
+// forwarder gets to it (Local.Info, read here, on the one goroutine), which
+// is at least as new as the change noted, and a change made after this
+// read is noted after it. The snapshot a change was noted with is not
+// forwarded: a hook's call holding one older than a change already told
+// (the session read it, then another call read and told a question, then
+// this one was noted) would tell the server the question gone while it
+// waits, and its router would call it resolved (#482). Nor is a snapshot
+// taken as the connection started (retellAttention), which could be older
+// than a change noted since. Only an agent with no session (tests) forwards
+// what it was handed.
 func (a *agent) forwardChanges() {
 	for {
 		a.mu.Lock()
-		info, retell := a.changeNext, a.retell
+		info, retell, local := a.changeNext, a.retell, a.local
 		a.changeNext, a.retell = nil, false
 		if info == nil && !retell {
 			a.forwarding = false
@@ -761,13 +774,12 @@ func (a *agent) forwardChanges() {
 			return
 		}
 		a.mu.Unlock()
-		if retell {
-			// The session as it is now, which is at least as new as the
-			// change noted; a change made after this read is noted after
-			// it. A snapshot taken as the connection started could be
-			// older than a change noted since, and overtake it.
-			cur := a.local.Info()
+		if local != nil {
+			cur := local.Info()
 			info = &cur
+		}
+		if info == nil {
+			continue
 		}
 		a.onLocalChange(*info)
 	}

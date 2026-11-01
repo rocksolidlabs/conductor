@@ -590,6 +590,47 @@ func TestAnsweredMarkSent(t *testing.T) {
 	}
 }
 
+// The session's change hook reads the session before it is called, and
+// its calls are not ordered: one holding an older snapshot (working, the
+// question not yet asked, nothing kept) may be noted after another has
+// told the server question A. The forwarder tells the session as it is,
+// never that older snapshot: the server is not told A gone (neither shown
+// nor kept) while A waits, so its router does not call A resolved.
+func TestAnOlderChangeNeverOvertakesAQuestionTold(t *testing.T) {
+	proc := sessiontest.NewFakeProc()
+	t.Cleanup(func() { proc.End(0) })
+	h := newAnswering(t, proc, Options{})
+	l := h.a.local
+	l.SetAttentionFull(session.AttentionWorking, "", "hook", "", nil)
+	older := l.Info()
+	q := ask(t, l, "Allow?", yesNo)
+	forwarded := func() bool {
+		h.a.mu.Lock()
+		defer h.a.mu.Unlock()
+		return !h.a.forwarding
+	}
+	waitFor(t, "the question told", func() bool {
+		for len(h.sent) > 0 {
+			if m := <-h.sent; m.ID == q && m.State == "needs_input" {
+				return true
+			}
+		}
+		return false
+	})
+	waitFor(t, "the forwarder idle", forwarded)
+	// The older call, delayed until A was told.
+	h.a.noteChange(older)
+	waitFor(t, "the older change forwarded", forwarded)
+	for len(h.sent) > 0 {
+		if m := <-h.sent; m.ID != q || m.State != "needs_input" {
+			t.Fatalf("the server was told %+v after question %s", m, q)
+		}
+	}
+	if got := l.Info().Attention; got.ID != q {
+		t.Fatalf("the session shows %+v", got)
+	}
+}
+
 // Published to a switchyard, the host says no answerAs, an answer_as that
 // arrives anyway types nothing and is logged, and its attention goes
 // without kept; to the owner's own server it says answerAs.
