@@ -61,6 +61,11 @@ func TestGuideWithTheWorkbenchToken(t *testing.T) {
 	if code != 0 || err != nil || !hasAll(out, "run_pause [admin] POST /api/runs/{run}/pause", "checks the run's revision", "task_result [task]") {
 		t.Fatalf("operations: %d %v %q", code, err, out)
 	}
+	// An admin operation's input is its route's body: a Dispatch one's
+	// operation id among its properties, and required.
+	if _, comment, _ := strings.Cut(out, "ticket_comment_admin [admin]"); !hasAll(comment, `"opId":{"type":"string"}`, `"expectedRev":{"type":"integer"}`, `"required":["body","opId"]`) {
+		t.Fatalf("ticket_comment_admin's input: %q", comment)
+	}
 	if code, _, _, err := guideCmd(t, "--server", a.hs.URL, "--token", "wrong"); code != 1 || err == nil {
 		t.Fatalf("a wrong token: %d %v", code, err)
 	}
@@ -69,6 +74,27 @@ func TestGuideWithTheWorkbenchToken(t *testing.T) {
 	t.Setenv("CONDUCTOR_ADMIN_TOKEN", "")
 	if code, _, _, err := guideCmd(t, "--server", a.hs.URL); code != 2 || err == nil {
 		t.Fatalf("no token: %d %v", code, err)
+	}
+}
+
+// The operations text carries what the running server says of each
+// operation's input and bounds, whatever this binary's tools would say:
+// a property only that server has is printed, compact, and its bounds in
+// order.
+func TestGuideTextCarriesTheServersInputs(t *testing.T) {
+	raw := `{"guide":1,"version":"` + version.Version + `","commit":"c","section":"operations","operations":[` +
+		`{"name":"report","summary":"Report.","scope":"session","method":"POST","path":"/api/sessions/{id}/events","mcp":"report",` +
+		`"input":{"type": "object", "properties": {"onlyOnThatServer": {"type": "string"}}},"bounds":{"message":500,"body":65536}},` +
+		`{"name":"run_stop","summary":"Stop.","scope":"admin","method":"POST","path":"/api/runs/{run}/stop","input":null}]}`
+	text, err := guideText([]byte(raw), "how")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "report [session] POST /api/sessions/{id}/events\n    Report.\n    tool report\n" +
+		`    input {"type":"object","properties":{"onlyOnThatServer":{"type":"string"}}}` + "\n    bounds body 65536, message 500\n" +
+		"run_stop [admin] POST /api/runs/{run}/stop\n    Stop."
+	if text != want {
+		t.Fatalf("got\n%s\nwant\n%s", text, want)
 	}
 }
 

@@ -200,7 +200,7 @@ func runContext(r *http.Request) (context.Context, context.CancelFunc) {
 // its session is ready.
 // launchBody is the optional body of POST /api/crews/{id}/launch: the run's own name.
 type launchBody struct {
-	Label string `json:"label"`
+	Label string `json:"label,omitempty"`
 }
 
 // maxLaunchBody bounds that body.

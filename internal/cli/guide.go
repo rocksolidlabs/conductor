@@ -8,9 +8,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/rocksolidlabs/conductor/internal/version"
@@ -175,6 +177,10 @@ func guideText(raw []byte, how string) (string, error) {
 		var ops []struct {
 			Name, Summary, Scope, Method, Path, MCP, Receipt, Revision string
 			CLI                                                        []string
+			// Input and Bounds are the running server's, which the MCP
+			// tools' schemas (this binary's) need not be.
+			Input  json.RawMessage
+			Bounds map[string]int
 		}
 		if err := json.Unmarshal(env["operations"], &ops); err != nil {
 			return "", fmt.Errorf("guide: unreadable operations: %w", err)
@@ -199,6 +205,17 @@ func guideText(raw []byte, how string) (string, error) {
 			}
 			if len(via) > 0 {
 				fmt.Fprintf(&b, "\n    %s", strings.Join(via, "; "))
+			}
+			var input bytes.Buffer
+			if len(op.Input) > 0 && json.Compact(&input, op.Input) == nil && input.String() != "null" {
+				fmt.Fprintf(&b, "\n    input %s", input.String())
+			}
+			if len(op.Bounds) > 0 {
+				bounds := make([]string, 0, len(op.Bounds))
+				for _, k := range slices.Sorted(maps.Keys(op.Bounds)) {
+					bounds = append(bounds, fmt.Sprintf("%s %d", k, op.Bounds[k]))
+				}
+				fmt.Fprintf(&b, "\n    bounds %s", strings.Join(bounds, ", "))
 			}
 		}
 		if len(ops) == 0 {

@@ -486,6 +486,10 @@ func TestTheGuideToolReadsTheServer(t *testing.T) {
 	if isErr || !hasAll(text, "report [session] POST /api/sessions/{id}/events", "tool guide", "command conductor crew status") || strings.Contains(text, "task_result") {
 		t.Fatalf("operations %q %v", text, isErr)
 	}
+	// Each operation's input and bounds, as the server gives them.
+	if !hasAll(text, `input {"additionalProperties":false,"properties":{"event":{"enum":["progress",`, `"required":["event"]`, "bounds body 65536, message ") {
+		t.Fatalf("operations without their inputs %q", text)
+	}
 	if text, isErr := toolText(t, replies[2]); !isErr || !strings.Contains(text, "no_section") {
 		t.Fatalf("no section %q %v", text, isErr)
 	}

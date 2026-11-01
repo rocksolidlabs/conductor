@@ -3,9 +3,11 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
@@ -88,7 +91,7 @@ func TestTheGuideNamesThisBuild(t *testing.T) {
 		limits[l["name"].(string)] = l
 	}
 	if limits["crew_tasks"]["max"] != float64(128) || limits["task_checks"]["max"] != float64(8) || limits["check_timeout"]["max"] != float64(3600) ||
-		limits["check_timeout"]["min"] != float64(1) || limits["comment"]["max"] != float64(16<<10) || limits["inbox"]["max"] != float64(50) || limits["task_id"]["pattern"] != `^[a-z0-9][a-z0-9_-]{0,39}$` {
+		limits["check_timeout"]["min"] != float64(1) || limits["check_timeout"]["default"] != float64(600) || limits["comment"]["max"] != float64(16<<10) || limits["inbox"]["max"] != float64(50) || limits["task_id"]["pattern"] != `^[a-z0-9][a-z0-9_-]{0,39}$` {
 		t.Fatalf("limits %v", limits)
 	}
 }
@@ -179,14 +182,23 @@ func TestEverySessionRouteIsInTheTable(t *testing.T) {
 
 // The largest guide the table can make: every operation's summary and
 // description at their bounds, more agents than the host section lists
-// with their names at theirs, a session caller of every kind, keeps
-// each section, the overview and the whole within their bounds.
+// with their ids and adapters at their bounds and their names at theirs
+// in the rune encoding/json writes longest (a control one, six bytes;
+// U+2028 is as long but a space, and a name is not blank), the
+// ledger's and Dispatch's reasons at their 500 bytes and each agent's
+// version at its 64, both in the bytes it writes longest (a control
+// byte, six), a session caller of every kind, keeps each section, the
+// overview and the whole within their bounds.
 func TestEachSectionIsBounded(t *testing.T) {
 	e := newTestEnv(t, nil)
 	var list []catalog.Agent
 	for i := range maxGuideAgents + 10 {
-		list = append(list, catalog.Agent{ID: fmt.Sprintf("%032d", i), Name: strings.Repeat("n", 60), Adapter: strings.Repeat("a", 32), Command: []string{"/bin/cat"}})
+		list = append(list, catalog.Agent{ID: fmt.Sprintf("%032d", i), Name: strings.Repeat(string(rune(1)), 60), Adapter: strings.Repeat("a", 32), Command: []string{"/bin/cat"}})
 	}
+	if b, _ := json.Marshal(list[0].Name); len(b) != 2+60*6 {
+		t.Fatalf("a name encodes to %d bytes", len(b))
+	}
+	worst := func(n int) string { return strings.Repeat(string(rune(1)), n) }
 	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: list})
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +212,22 @@ func TestEachSectionIsBounded(t *testing.T) {
 	long := strings.Repeat("x", 64)
 	callers := []guideCaller{adminCaller(), {Kind: "session", Session: long, Kinds: []string{"run_member", "attempt", "ticket_member"}, Run: long, Member: strings.Repeat("m", 40), Scopes: []string{"session", "task", "ticket"}, local: true}}
 	for _, c := range callers {
-		replies, err := e.srv.guideReplies(t.Context(), c, ops)
+		content := e.srv.guideContent(t.Context(), c, ops)
+		h := content["host"].(guideHost)
+		if len(h.Agents) != maxGuideAgents {
+			t.Fatalf("%s's host: %d agents", c.Kind, len(h.Agents))
+		}
+		// What the server cuts to its bounds, at them: a reason the admin
+		// alone reads, a version every caller that sees the agents does.
+		if c.Kind == "admin" {
+			h.Ledger = guideStore{State: "read_only", Why: worst(500)}
+			h.Dispatch = guideStore{State: "read_only", Why: worst(500)}
+		}
+		for i := range h.Agents {
+			h.Agents[i].Version = worst(64)
+		}
+		content["host"] = h
+		replies, err := encodeGuide(c, content)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -236,7 +263,10 @@ func TestEachSectionIsBounded(t *testing.T) {
 // managed run the task tools too; a member of a run a ticket holds the
 // ticket's two. The admin reads a session's guide as the session's.
 func TestASessionsGuideListsItsScopesOnly(t *testing.T) {
-	sessionOps := []string{"report", "set_state", "ask", "form_crew", "add_member", "run_status", "link", "guide"}
+	// A session in no run may form a crew; one in a run may add to it and
+	// read it, and forms none (409 in_a_run).
+	plainOps := []string{"report", "set_state", "ask", "form_crew", "link", "guide"}
+	memberOps := []string{"report", "set_state", "ask", "add_member", "run_status", "link"}
 	taskOps := []string{"task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint"}
 	ticketOps := []string{"ticket_read", "ticket_comment"}
 	check := func(t *testing.T, e *testEnv, sid, tok string, kinds []string, want []string) {
@@ -256,7 +286,7 @@ func TestASessionsGuideListsItsScopesOnly(t *testing.T) {
 	t.Run("plain", func(t *testing.T) {
 		e := newTestEnv(t, nil)
 		sid := e.createSession("cat")
-		check(t, e, sid, e.agentToken(sid), []string{"plain"}, sessionOps)
+		check(t, e, sid, e.agentToken(sid), []string{"plain"}, plainOps)
 	})
 	t.Run("attempt", func(t *testing.T) {
 		e := readyEnv(t, nil)
@@ -267,16 +297,16 @@ func TestASessionsGuideListsItsScopesOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 		sid := runningAttempt(t, e, run.ID, "build", 1)["sessionId"].(string)
-		check(t, e, sid, e.agentToken(sid), []string{"run_member", "attempt"}, slices.Concat(sessionOps[:7], taskOps, []string{"guide"}))
+		check(t, e, sid, e.agentToken(sid), []string{"run_member", "attempt"}, slices.Concat(memberOps, taskOps, []string{"guide"}))
 	})
 	t.Run("ticket", func(t *testing.T) {
 		e := dispatchEnv(t)
 		run, sid, tok := e.memberSession(t, "Ticketed")
-		check(t, e, sid, tok, []string{"run_member"}, sessionOps)
+		check(t, e, sid, tok, []string{"run_member"}, slices.Concat(memberOps, []string{"guide"}))
 		e.newDispatchProject(t, "GDE", nil)
 		key := e.newDispatchTicket(t, "GDE", "Guided", nil)["key"].(string)
 		e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", map[string]any{"opId": opID(), "kind": "run", "ref": run}, http.StatusCreated, "")
-		check(t, e, sid, tok, []string{"run_member", "ticket_member"}, slices.Concat(sessionOps[:7], ticketOps, []string{"guide"}))
+		check(t, e, sid, tok, []string{"run_member", "ticket_member"}, slices.Concat(memberOps, ticketOps, []string{"guide"}))
 	})
 	t.Run("self-service off", func(t *testing.T) {
 		e := newTestEnv(t, func(c *config.Config) { off := false; c.Agents.SelfService = &off })
@@ -348,6 +378,308 @@ func TestProvidersAreUnknownBeforeC9(t *testing.T) {
 		status, raw, _ := guideOf(t, e, tok, path+"?section=providers")
 		if status != http.StatusOK || !strings.Contains(string(raw), `"providers":{"known":false,"providers":[]}`) {
 			t.Fatalf("%s: %d %s", path, status, raw)
+		}
+	}
+}
+
+// fill sets every field of v it can set (an unexported embedded struct's
+// fields it cannot, through reflect), at every depth, to a value that is
+// not its zero, so encoding/json writes each one.
+func fill(v reflect.Value) {
+	switch {
+	case v.Type() == reflect.TypeFor[json.RawMessage]():
+		v.SetBytes([]byte("{}"))
+		return
+	case v.Type() == reflect.TypeFor[time.Time]():
+		v.Set(reflect.ValueOf(time.Unix(1, 0)))
+		return
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		v.Set(reflect.New(v.Type().Elem()))
+		fill(v.Elem())
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if v.Field(i).CanSet() {
+				fill(v.Field(i))
+			}
+		}
+	case reflect.Slice:
+		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
+		fill(v.Index(0))
+	case reflect.String:
+		v.SetString("x")
+	case reflect.Bool:
+		v.SetBool(true)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v.SetInt(1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		v.SetUint(1)
+	case reflect.Float32, reflect.Float64:
+		v.SetFloat(1)
+	}
+}
+
+// encodedOf is v as encoding/json writes it, read back as JSON values.
+func encodedOf(t *testing.T, v any) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// fullOf is what encoding/json writes for a value of typ with every field
+// filled: the fields of an unexported embedded struct, which reflect
+// cannot set through its parent, are its type's own encoding, filled.
+func fullOf(t *testing.T, typ reflect.Type) map[string]any {
+	t.Helper()
+	v := reflect.New(typ).Elem()
+	fill(v)
+	out := encodedOf(t, v.Interface())
+	for i := range typ.NumField() {
+		f := typ.Field(i)
+		ft := f.Type
+		if ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		if f.Anonymous && ft.Kind() == reflect.Struct && !v.Field(i).CanSet() {
+			maps.Copy(out, fullOf(t, ft))
+		}
+	}
+	return out
+}
+
+// matchesEncoding fails t unless schema describes v, a value encoding/json
+// wrote with every field filled: an object's properties its keys and no
+// other property taken, at every depth, and each value of its type.
+func matchesEncoding(t *testing.T, at string, schema map[string]any, v any) {
+	t.Helper()
+	switch x := v.(type) {
+	case map[string]any:
+		props, ok := schema["properties"].(map[string]any)
+		if schema["type"] != "object" || (!ok && len(x) > 0) {
+			t.Errorf("%s: an object of %v, the schema says %v", at, slices.Sorted(maps.Keys(x)), schema)
+			return
+		}
+		if schema["additionalProperties"] != false {
+			t.Errorf("%s: the route takes no other property, the schema %v", at, schema)
+		}
+		if got, want := slices.Sorted(maps.Keys(props)), slices.Sorted(maps.Keys(x)); !slices.Equal(got, want) {
+			t.Errorf("%s: the schema's properties %v, encoding/json's fields %v", at, got, want)
+		}
+		for k, p := range props {
+			if val, ok := x[k]; ok {
+				matchesEncoding(t, at+"."+k, p.(map[string]any), val)
+			}
+		}
+	case []any:
+		items, _ := schema["items"].(map[string]any)
+		if schema["type"] != "array" || items == nil || len(x) != 1 {
+			t.Errorf("%s: an array, the schema says %v", at, schema)
+			return
+		}
+		matchesEncoding(t, at+"[]", items, x[0])
+	case string:
+		if schema["type"] != "string" {
+			t.Errorf("%s: a string, the schema says %v", at, schema)
+		}
+	case float64:
+		if schema["type"] != "integer" && schema["type"] != "number" {
+			t.Errorf("%s: a number, the schema says %v", at, schema)
+		}
+	case bool:
+		if schema["type"] != "boolean" {
+			t.Errorf("%s: a boolean, the schema says %v", at, schema)
+		}
+	}
+}
+
+// Each admin operation's input is the schema of the type its route
+// decodes, as encoding/json reads that type: every field it writes for a
+// value with all of them filled is a property (an unexported embedded
+// struct's opId, expectedRev and byName among them, a nested struct's
+// fields its object's), no other, and the fields it writes for the zero
+// value (no omitempty, no omitzero) are the required ones.
+func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
+	bodies := map[string]any{
+		"run_pause": crew.Command{}, "run_unpause": crew.Command{}, "task_cancel": crew.Command{}, "task_retry": crew.Command{}, "task_accept": crew.Command{},
+		"ticket_create": ticketCreateBody{}, "ticket_edit": ticketEditBody{}, "ticket_comment_admin": commentBody{}, "ticket_link": linkBody{},
+		"crew_launch": launchBody{},
+	}
+	seen := 0
+	for _, op := range Operations() {
+		v, ok := bodies[op.Name]
+		if !ok {
+			if op.Scope == "admin" && op.Input["properties"] != nil {
+				t.Errorf("%s: its input names properties, and no body type holds them here", op.Name)
+			}
+			continue
+		}
+		seen++
+		if !reflect.DeepEqual(op.Input, bodySchema(v)) {
+			t.Errorf("%s: its input is not its body's schema", op.Name)
+		}
+		// Through JSON, as a client reads it.
+		raw, err := json.Marshal(op.Input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatal(err)
+		}
+		matchesEncoding(t, op.Name, schema, fullOf(t, reflect.TypeOf(v)))
+		var required []string
+		if r, ok := schema["required"].([]any); ok {
+			for _, x := range r {
+				required = append(required, x.(string))
+			}
+		}
+		if want := slices.Sorted(maps.Keys(encodedOf(t, v))); !slices.Equal(required, want) {
+			t.Errorf("%s: required %v, encoding/json writes %v for the zero value", op.Name, required, want)
+		}
+	}
+	if seen != len(bodies) {
+		t.Fatalf("%d of the %d bodies are the table's", seen, len(bodies))
+	}
+}
+
+// fitsSchema fails t unless body is one schema describes: its keys among
+// the properties, every required one there, at every depth.
+func fitsSchema(t *testing.T, at string, schema, body map[string]any) {
+	t.Helper()
+	props, _ := schema["properties"].(map[string]any)
+	for k, v := range body {
+		p, ok := props[k].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: %s is no property of %v", at, k, slices.Sorted(maps.Keys(props)))
+		}
+		if nested, ok := v.(map[string]any); ok {
+			fitsSchema(t, at+"."+k, p, nested)
+		}
+	}
+	req, _ := schema["required"].([]string)
+	for _, k := range req {
+		if _, ok := body[k]; !ok {
+			t.Fatalf("%s: the required %s is not in %v", at, k, body)
+		}
+	}
+}
+
+// A body made from each Dispatch operation's schema, its required
+// properties and the revision it names, is taken by its route.
+func TestABodyFromEachDispatchSchemaIsTaken(t *testing.T) {
+	e := dispatchEnv(t)
+	e.newDispatchProject(t, "SCH", nil)
+	key := e.newDispatchTicket(t, "SCH", "Schemas", nil)["key"].(string)
+	ops := map[string]Operation{}
+	for _, op := range Operations() {
+		ops[op.Name] = op
+	}
+	rev := func() any {
+		return entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+key, nil, http.StatusOK, ""), "ticket")["rev"]
+	}
+	for _, c := range []struct {
+		name   string
+		body   func() map[string]any
+		status int
+	}{
+		{"ticket_create", func() map[string]any {
+			return map[string]any{"opId": opID(), "project": "SCH", "title": "From the schema"}
+		}, http.StatusCreated},
+		{"ticket_edit", func() map[string]any {
+			return map[string]any{"opId": opID(), "expectedRev": rev(), "set": map[string]any{"title": "Edited"}, "add": map[string]any{"assignees": []string{"person:Ada"}}}
+		}, http.StatusOK},
+		{"ticket_comment_admin", func() map[string]any {
+			return map[string]any{"opId": opID(), "expectedRev": rev(), "body": "From the schema"}
+		}, http.StatusCreated},
+		{"ticket_link", func() map[string]any {
+			return map[string]any{"opId": opID(), "expectedRev": rev(), "kind": "external", "url": "https://tracker.example.com/SCH-1"}
+		}, http.StatusCreated},
+	} {
+		op := ops[c.name]
+		if op.Revision != "ticket" && c.name != "ticket_create" {
+			t.Fatalf("%s: revision %q", c.name, op.Revision)
+		}
+		body := c.body()
+		fitsSchema(t, c.name, op.Input, body)
+		e.expect(t, op.Method, strings.Replace(op.Path, "{key}", key, 1), body, c.status, "")
+	}
+}
+
+// Each operation's advertised body bound is its route's: a body one byte
+// past it is refused as too large, one at it is read whole (and refused
+// only for the field it names, so it changes nothing). Every operation
+// with a body bound is tried, by a caller its guide lists it for: a plain
+// session, an attempt of a managed run linked to a ticket, the admin.
+func TestEachBodyBoundIsItsRoutes(t *testing.T) {
+	plain := newTestEnv(t, nil)
+	plain.srv.limiter = newRateLimiter(1e6, 1e6)
+	psid := plain.createSession("cat")
+
+	e := readyEnv(t, func(c *config.Config) { c.DataDir = filepath.Join(t.TempDir(), "data") })
+	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	e.gitRepo(t)
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), managedCrew(e.root), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	asid := runningAttempt(t, e, run.ID, "build", 1)["sessionId"].(string)
+	e.newDispatchProject(t, "BND", nil)
+	key := e.newDispatchTicket(t, "BND", "Bounded", nil)["key"].(string)
+	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", map[string]any{"opId": opID(), "kind": "run", "ref": run.ID}, http.StatusCreated, "")
+
+	tried := map[string]bool{}
+	for _, c := range []struct {
+		e          *testEnv
+		token, sid string
+	}{{plain, plain.agentToken(psid), psid}, {e, e.agentToken(asid), asid}, {e, adminToken, ""}} {
+		guide := "/api/guide?section=operations"
+		id := "x"
+		if c.sid != "" {
+			guide, id = "/api/sessions/"+c.sid+"/guide?section=operations", c.sid
+		}
+		status, raw, _ := guideOf(t, c.e, c.token, guide)
+		var g struct {
+			Operations []Operation `json:"operations"`
+		}
+		if err := json.Unmarshal(raw, &g); status != http.StatusOK || err != nil {
+			t.Fatalf("%s: %d %v", guide, status, err)
+		}
+		paths := strings.NewReplacer("{id}", id, "{run}", run.ID, "{task}", "build", "{key}", key)
+		for _, op := range g.Operations {
+			n := op.Bounds["body"]
+			if op.Method != http.MethodPost || n == 0 || (c.sid == "" && op.Scope != "admin") {
+				continue
+			}
+			tried[op.Name] = true
+			path := paths.Replace(op.Path)
+			probe := `{"boundProbe":1`
+			over := probe + strings.Repeat(" ", n+1-len(probe)-1) + "}"
+			at := probe + strings.Repeat(" ", n-len(probe)-1) + "}"
+			if len(over) != n+1 || len(at) != n {
+				t.Fatalf("%s: bodies of %d and %d bytes", op.Name, len(over), len(at))
+			}
+			status, data, out := c.e.callAs(t, c.token, op.Method, path, []byte(over))
+			if status != http.StatusRequestEntityTooLarge && !strings.Contains(apiMessage(out), errBodyTooLarge.Error()) {
+				t.Errorf("%s: %d bytes, one past its bound, answers %d %.200s", op.Name, len(over), status, data)
+			}
+			status, data, out = c.e.callAs(t, c.token, op.Method, path, []byte(at))
+			if status != http.StatusBadRequest || !strings.Contains(apiMessage(out), `unknown field "boundProbe"`) {
+				t.Errorf("%s: %d bytes, at its bound, answers %d %.200s", op.Name, len(at), status, data)
+			}
+		}
+	}
+	for _, op := range Operations() {
+		if op.Method == http.MethodPost && op.Bounds["body"] > 0 && !tried[op.Name] {
+			t.Errorf("%s: no caller's guide lists it, so its body bound is untried", op.Name)
 		}
 	}
 }

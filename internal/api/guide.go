@@ -79,6 +79,12 @@ const (
 	// session caller, a server session (a hosted session's folder is on
 	// its own machine).
 	needSelfService
+	// needRun: for a session caller, one that is a member of a run
+	// (add_member answers 409 no_run otherwise, run_status 404 no_run).
+	needRun
+	// needNoRun: for a session caller, one in no run (form_crew answers
+	// 409 in_a_run otherwise).
+	needNoRun
 )
 
 // The guide's bounds (docs/protocol.md, Guide), measured by
@@ -158,7 +164,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:         []string{"conductor", "notify", "--ask", "--message", "TEXT", "--choices", "a|b"},
 			Input:       obj(map[string]any{"message": str("the question, one line"), "choices": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 6}}, "message"),
 			Bounds:      map[string]int{"body": maxBody, "message": session.MaxAttentionMessage}},
-		{Name: "form_crew", MCP: "form_crew", Scope: "session", Method: http.MethodPost, Path: sessions + "/crew", needs: needLauncher | needSelfService,
+		{Name: "form_crew", MCP: "form_crew", Scope: "session", Method: http.MethodPost, Path: sessions + "/crew", needs: needLauncher | needSelfService | needNoRun,
 			Summary:     "Form a crew around this session when the work splits into parts that run side by side: this session stays as one member. Twice an hour at most.",
 			Description: "Form a crew around this session when the work splits into parts that can run side by side: you stay as the member named by self (its agentId and prompt may be empty), the others get sessions of their own. At most 2 a session; never for work you can finish alone.",
 			CLI:         []string{"conductor", "crew", "create", "CREW.json", "--self", "NAME"},
@@ -171,13 +177,13 @@ var operationsTable = sync.OnceValue(func() []Operation {
 				"open":      map[string]any{"type": "boolean", "description": "offer the run in the workbench"},
 			}, "name", "goal", "members", "self"),
 			Bounds: map[string]int{"body": maxCrewBody}},
-		{Name: "add_member", MCP: "add_member", Scope: "session", Method: http.MethodPost, Path: sessions + "/run/members", needs: needLauncher | needSelfService,
+		{Name: "add_member", MCP: "add_member", Scope: "session", Method: http.MethodPost, Path: sessions + "/run/members", needs: needLauncher | needSelfService | needRun,
 			Summary:     "Add a member to this session's run.",
 			Description: "Add a member to this session's run: {name, agentId, prompt, start}.",
 			CLI:         []string{"conductor", "crew", "add", "MEMBER.json"},
 			Input:       obj(map[string]any{"member": map[string]any{"type": "object"}}, "member"),
-			Bounds:      map[string]int{"body": maxCrewBody}},
-		{Name: "run_status", MCP: "run_status", Scope: "session", Method: http.MethodGet, Path: sessions + "/run", needs: needLauncher | needSelfService,
+			Bounds:      map[string]int{"body": maxMemberBody}},
+		{Name: "run_status", MCP: "run_status", Scope: "session", Method: http.MethodGet, Path: sessions + "/run", needs: needLauncher | needSelfService | needRun,
 			Summary:     "This session's run and its members, with their states.",
 			Description: "This session's run and its members, with their states.",
 			CLI:         []string{"conductor", "crew", "status"},
@@ -316,42 +322,83 @@ func taskCommandOp(name, summary, suffix string) Operation {
 }
 
 // bodySchema is the JSON Schema of a route's body, read from the type it
-// decodes (with DisallowUnknownFields: no other property): its fields by
-// their JSON names, an embedded struct's among them, a nested struct an
-// object and a list an array of its element.
-func bodySchema(v any) map[string]any {
-	props := map[string]any{}
-	schemaFields(reflect.TypeOf(v), props)
-	return map[string]any{"type": "object", "properties": props, "additionalProperties": false}
+// decodes the way encoding/json reads it: its fields by their JSON names;
+// an embedded struct's exported fields promoted among them, an unexported
+// struct type's too (dispatchOp's opId, expectedRev and byName); a nested
+// struct an object of its own fields and a list an array of its
+// element's schema; a field without omitempty or omitzero required; and,
+// as DisallowUnknownFields refuses one at every depth, no other property.
+// TestEachBodySchemaIsWhatItsRouteDecodes holds it to encoding/json.
+func bodySchema(v any) map[string]any { return structSchema(reflect.TypeOf(v)) }
+
+// structSchema is a struct type's object schema.
+func structSchema(t reflect.Type) map[string]any {
+	props, required, depth := map[string]any{}, map[string]bool{}, map[string]int{}
+	schemaFields(t, 0, props, required, depth)
+	out := map[string]any{"type": "object", "properties": props, "additionalProperties": false}
+	var req []string
+	for name, ok := range required {
+		if ok {
+			req = append(req, name)
+		}
+	}
+	if len(req) > 0 {
+		slices.Sort(req)
+		out["required"] = req
+	}
+	return out
 }
 
-func schemaFields(t reflect.Type, props map[string]any) {
+// schemaFields adds t's fields at depth d (an embedded struct's one
+// deeper) to props: a name already there at a depth no greater keeps its
+// field, as encoding/json's shallower field wins.
+func schemaFields(t reflect.Type, d int, props map[string]any, required map[string]bool, depth map[string]int) {
 	for i := range t.NumField() {
 		f := t.Field(i)
+		tag := f.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+		name, opts, _ := strings.Cut(tag, ",")
+		ft := f.Type
+		if ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		// encoding/json promotes an embedded struct's exported fields
+		// whether or not its type is exported; only a tag names it.
+		if f.Anonymous && name == "" && ft.Kind() == reflect.Struct {
+			schemaFields(ft, d+1, props, required, depth)
+			continue
+		}
 		if !f.IsExported() {
 			continue
-		}
-		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
-		if name == "-" {
-			continue
-		}
-		if f.Anonymous && name == "" {
-			ft := f.Type
-			if ft.Kind() == reflect.Pointer {
-				ft = ft.Elem()
-			}
-			if ft.Kind() == reflect.Struct {
-				schemaFields(ft, props)
-				continue
-			}
 		}
 		if name == "" {
 			name = f.Name
 		}
-		props[name] = map[string]any{"type": jsonType(f.Type)}
-		if jsonType(f.Type) == "array" {
-			props[name].(map[string]any)["items"] = map[string]any{"type": jsonType(f.Type.Elem())}
+		if have, ok := depth[name]; ok && have <= d {
+			continue
 		}
+		depth[name] = d
+		props[name] = valueSchema(f.Type)
+		o := strings.Split(opts, ",")
+		required[name] = !slices.Contains(o, "omitempty") && !slices.Contains(o, "omitzero")
+	}
+}
+
+// valueSchema is the schema of a field's value: a struct's object, a
+// list's array of its element, else its JSON type.
+func valueSchema(t reflect.Type) map[string]any {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch typ := jsonType(t); {
+	case typ == "array":
+		return map[string]any{"type": typ, "items": valueSchema(t.Elem())}
+	case typ == "object" && t.Kind() == reflect.Struct:
+		return structSchema(t)
+	default:
+		return map[string]any{"type": typ}
 	}
 }
 
@@ -365,6 +412,9 @@ func jsonType(t reflect.Type) string {
 		return "string"
 	case t == reflect.TypeFor[json.RawMessage]():
 		return "object"
+	case t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8:
+		// encoding/json writes []byte as its base64 text.
+		return "string"
 	}
 	switch t.Kind() {
 	case reflect.String:
@@ -463,14 +513,24 @@ func (s *Server) reaches(c guideCaller, op Operation) bool {
 	if op.needs&needSelfService != 0 && (!s.cfg.SelfService() || s.cfg.Switchyard.Enabled || (c.Kind == "session" && !c.local)) {
 		return false
 	}
+	// A session in a run is not given what only one in none may do, nor
+	// one in none what needs a run; the admin is given both.
+	if c.Kind == "session" {
+		inRun := slices.Contains(c.Kinds, "run_member")
+		if (op.needs&needRun != 0 && !inRun) || (op.needs&needNoRun != 0 && inRun) {
+			return false
+		}
+	}
 	return true
 }
 
 // guideLimit is one named bound that refuses a body.
 type guideLimit struct {
-	Name    string `json:"name"`
-	Min     int    `json:"min,omitempty"`
-	Max     int    `json:"max,omitempty"`
+	Name string `json:"name"`
+	Min  int    `json:"min,omitempty"`
+	Max  int    `json:"max,omitempty"`
+	// Default is what 0 takes, for a limit that has one.
+	Default int    `json:"default,omitempty"`
 	Pattern string `json:"pattern,omitempty"`
 	Unit    string `json:"unit,omitempty"`
 	About   string `json:"about"`
@@ -485,7 +545,7 @@ func guideLimits() []guideLimit {
 		{Name: "crew_members", Max: b.Members, About: "members a crew"},
 		{Name: "crew_tasks", Max: b.Tasks, About: "tasks a managed crew"},
 		{Name: "task_checks", Max: b.ChecksPerTask, About: "checks a task"},
-		{Name: "check_timeout", Min: b.CheckTimeoutMin, Max: b.CheckTimeoutMax, Unit: "seconds", About: "a check's timeoutSeconds; 0 is the default, 600"},
+		{Name: "check_timeout", Min: b.CheckTimeoutMin, Max: b.CheckTimeoutMax, Default: b.CheckTimeoutDefault, Unit: "seconds", About: "a check's timeoutSeconds; 0 takes the default"},
 		{Name: "result_summary", Max: b.Summary, Unit: "characters", About: "a task result's summary"},
 		{Name: "result_issues", Max: b.Issues, About: "a task result's issues"},
 		{Name: "result_findings", Max: b.Findings, About: "a review's findings"},
@@ -651,6 +711,11 @@ type guideSectionSize struct {
 // guideReplies is every reply of the guide for the caller, by section
 // ("overview" among them), encoded: each section is computed from ops.
 func (s *Server) guideReplies(ctx context.Context, c guideCaller, ops []Operation) (map[string][]byte, error) {
+	return encodeGuide(c, s.guideContent(ctx, c, ops))
+}
+
+// guideContent is each section's content for the caller, by its name.
+func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operation) map[string]any {
 	reached := []Operation{}
 	for _, op := range ops {
 		if s.reaches(c, op) {
@@ -658,13 +723,18 @@ func (s *Server) guideReplies(ctx context.Context, c guideCaller, ops []Operatio
 			reached = append(reached, op)
 		}
 	}
-	content := map[string]any{
+	return map[string]any{
 		"operations": reached,
 		"limits":     guideLimits(),
 		"host":       s.guideHostSection(ctx, c),
 		"receipts":   guideReceipts(),
 		"providers":  guideProviders{Providers: []string{}},
 	}
+}
+
+// encodeGuide is each section's reply and the overview naming their
+// sizes, for the caller.
+func encodeGuide(c guideCaller, content map[string]any) (map[string][]byte, error) {
 	out := make(map[string][]byte, len(content)+1)
 	ov := guideOverview{Caller: c, Rules: guideRules}
 	for _, name := range guideSections {

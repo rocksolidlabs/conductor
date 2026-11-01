@@ -2087,7 +2087,11 @@ KiB, which a test holds with every entry at its largest (a past bound is
   each `{name, summary, scope, method, path, mcp?, cli?, input, receipt?,
   revision?, bounds?}`: `summary` at most 300 bytes; `path` the mux's
   pattern after the method; `mcp` the tool's name; `cli` the command's
-  words; `input` the JSON Schema of the body or the tool's arguments;
+  words; `input` the JSON Schema of the tool's arguments, or of the body
+  read from the type the route decodes (every field it takes, an
+  embedded operation's `opId`, `expectedRev` and `byName` among them, a
+  nested object's own, those without a default `required`, and no other
+  property at any depth);
   `receipt` `ledger` (a run command's) or `dispatch` (a Dispatch
   operation's); `revision` the precondition the route itself checks,
   `run` (a command's `expectedRevision`) or `ticket` (Dispatch's
@@ -2097,14 +2101,17 @@ KiB, which a test holds with every entry at its largest (a past bound is
   that needs self-service (`agents.selfService`: `form_crew`,
   `add_member`, `run_status`, `link`) is listed only with it on, never on
   a switchyard (whose sessions are all hosted), and for a session only
-  for a server session; one that launches or needs the
+  for a server session: `form_crew` only for one in no run (one in a run
+  is answered `409 in_a_run`), `add_member` and `run_status` only for a
+  member of a run; one that launches or needs the
   ledger or Dispatch is not listed on a switchyard. The table holds the
   agent routes and tools, the guide's two routes, and the admin's
   operations a proposal may name: a run's pause, unpause, stop and resume;
   a task's cancel, retry and accept; a ticket's create, edit, comment and
   link; a crew's create and launch.
-- `limits`: `[{name, min?, max?, pattern?, unit?, about}]`, each read from
-  the constant that refuses past it: a task id's pattern, a crew's
+- `limits`: `[{name, min?, max?, default?, pattern?, unit?, about}]`,
+  each read from the constant that refuses past it (`default` what 0
+  takes, a check timeout's): a task id's pattern, a crew's
   members and tasks, a task's checks, a check's timeout, a result's
   summary, issues and findings, a message and an inbox, a report's
   message, a comment, a ticket's title and description, a task file's
