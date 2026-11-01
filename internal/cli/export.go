@@ -44,11 +44,13 @@ const exportUsage = `Usage:
       provider's own state
   conductor export --data-dir DIR [--config FILE] [--out FILE]
       the same from a data directory no server runs on (refused while one
-      does: export through it instead); the catalog is resolved against
-      the configuration --config gives, as serve would load it
+      does: export through it instead), reserved (restore.lock) while it is
+      read; the catalog is resolved against the configuration --config
+      gives, as serve would load it
 
 The archive goes to --out, by default conductor-export-<UTC time>.zip in
-the current directory, made 0600 and never written over an existing file.
+the current directory, made 0600 and never written over an existing file;
+with --data-dir, never inside the data directory it reads.
 It holds saved agents' env values in full, configured ones they inherit
 among them, so that the agents launch as here on the machine it is
 restored on: keep it as you keep the config. The server defaults to
@@ -77,11 +79,14 @@ with the data directory as it was.
 `
 
 // The seams a test sets: serveReserved runs once serve holds the data
-// directory's reservation, restoreAt at each stage of a restore under its
-// reservation ("reserved", "downloaded" for --provider, "installed").
+// directory's reservation, exportReserved once an export from a data
+// directory holds it and has checked it, restoreAt at each stage of a
+// restore under its reservation ("reserved", "downloaded" for --provider,
+// "installed").
 var (
-	serveReserved func(dir string)
-	restoreAt     func(stage string)
+	serveReserved  func(dir string)
+	exportReserved func(dir string)
+	restoreAt      func(stage string)
 )
 
 // restoreStage runs the restoreAt seam.
@@ -141,9 +146,17 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) (in
 	var c *apiClient
 	var src export.Source
 	if offline {
-		var err error
-		if src, err = offlineSource(*dataDir, *configPath); err != nil {
+		if err := outsideOf(*dataDir, path); err != nil {
 			return 1, err
+		}
+		var res *export.Reservation
+		var err error
+		if src, res, err = offlineSource(*dataDir, *configPath); err != nil {
+			return 1, err
+		}
+		defer res.Release()
+		if exportReserved != nil {
+			exportReserved(src.Dir)
 		}
 	} else {
 		var err error
@@ -192,23 +205,78 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) (in
 	return 0, nil
 }
 
+// outsideOf refuses an archive out inside the data directory dir, which
+// the export walks: it would read the archive it is writing, growing it
+// as it reads. Inside is by identity, the out's directory (its links
+// resolved) or one above it the same directory as dir, so a link, a
+// spelling a filesystem folds or a bind mount is inside too.
+func outsideOf(dir, out string) error {
+	di, err := os.Stat(dir)
+	if err != nil {
+		return nil // offlineSource says what is wrong with it
+	}
+	abs, err := filepath.Abs(out)
+	if err != nil {
+		return fmt.Errorf("export: --out: %w", err)
+	}
+	d := filepath.Dir(abs)
+	if real, err := filepath.EvalSymlinks(d); err == nil {
+		d = real
+	}
+	for {
+		if fi, err := os.Stat(d); err == nil && os.SameFile(fi, di) {
+			return fmt.Errorf("export: the archive %s would be inside the data directory %s, which the export reads: name an --out outside it", abs, dir)
+		}
+		up := filepath.Dir(d)
+		if up == d {
+			return nil
+		}
+		d = up
+	}
+}
+
 // offlineSource is the export's view of a data directory no server runs
-// on: its databases snapshotted through read-only connections of the
-// export's, and its catalog resolved against the configuration
-// config.Load(configPath) gives, as serve would load it. A directory
-// whose ledger a server holds, or that restore.lock reserves, is refused.
-func offlineSource(dir, configPath string) (export.Source, error) {
+// on, reserved (restore.lock) for as long as the export reads it, so no
+// restore and no server's start takes it meanwhile: its databases
+// snapshotted through read-only connections of the export's, and its
+// catalog resolved against the configuration config.Load(configPath)
+// gives, as serve would load it. A directory that restore.lock reserves,
+// whose ledger a server holds (checked under the reservation, so a server
+// that started before it is seen), or that holds no server data, is
+// refused. The caller releases the reservation once the archive is
+// written.
+func offlineSource(dir, configPath string) (export.Source, *export.Reservation, error) {
+	refuse := func(err error) (export.Source, *export.Reservation, error) {
+		return export.Source{}, nil, err
+	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return export.Source{}, fmt.Errorf("export: --data-dir: %w", err)
+		return refuse(fmt.Errorf("export: --data-dir: %w", err))
 	}
 	fi, err := os.Stat(abs)
 	if err != nil {
-		return export.Source{}, fmt.Errorf("export: the data directory %s: %w", abs, err)
+		return refuse(fmt.Errorf("export: the data directory %s: %w", abs, err))
 	}
 	if !fi.IsDir() {
-		return export.Source{}, fmt.Errorf("export: the data directory %s is not a directory", abs)
+		return refuse(fmt.Errorf("export: the data directory %s is not a directory", abs))
 	}
+	res, err := export.Reserve(abs, export.HolderExport)
+	if errors.Is(err, export.ErrReserved) {
+		return refuse(fmt.Errorf("%w; export once it is gone", err))
+	}
+	if err != nil {
+		return refuse(fmt.Errorf("export: %w", err))
+	}
+	src, err := offlineChecked(abs, configPath)
+	if err != nil {
+		res.Release()
+		return refuse(err)
+	}
+	return src, res, nil
+}
+
+// offlineChecked is offlineSource's work under the reservation.
+func offlineChecked(abs, configPath string) (export.Source, error) {
 	held, err := ledger.Held(filepath.Join(abs, "runs"))
 	if err != nil {
 		return export.Source{}, fmt.Errorf("export: %w", err)
@@ -216,10 +284,12 @@ func offlineSource(dir, configPath string) (export.Source, error) {
 	if held {
 		return export.Source{}, fmt.Errorf("export: a server is running on %s: export through it (conductor export --server URL), or stop it and run this again", abs)
 	}
-	if _, err := os.Lstat(filepath.Join(abs, export.LockFile)); err == nil {
-		return export.Source{}, fmt.Errorf("export: %s is there: a restore is running or a server is starting on %s, or one was cut short; export once it is gone", filepath.Join(abs, export.LockFile), abs)
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	fresh, err := export.Fresh(abs)
+	if err != nil {
 		return export.Source{}, fmt.Errorf("export: %w", err)
+	}
+	if fresh {
+		return export.Source{}, fmt.Errorf("export: %s holds no server data (no catalog.json, crews, runs, dispatch or links): name a data directory conductor serve ran on", abs)
 	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -388,7 +458,7 @@ func runRestore(ctx context.Context, args []string, stdout, stderr io.Writer) (i
 	}
 	installed := false
 	defer leaveAsItWas(dir, &installed)()
-	res, err := export.Reserve(dir)
+	res, err := export.Reserve(dir, export.HolderRestore)
 	if err != nil {
 		return 1, fmt.Errorf("restore: %w", err)
 	}
@@ -462,7 +532,7 @@ var errRestoreEnded = errors.New("restore: the download is no longer taken")
 func restoreFromProvider(ctx context.Context, dir string, stdout, stderr io.Writer) (int, error) {
 	installed := false
 	defer leaveAsItWas(dir, &installed)()
-	res, err := export.Reserve(dir)
+	res, err := export.Reserve(dir, export.HolderRestore)
 	if err != nil {
 		return 1, fmt.Errorf("restore: %w", err)
 	}
@@ -507,14 +577,25 @@ func restoreFromProvider(ctx context.Context, dir string, stdout, stderr io.Writ
 	fmt.Fprintf(stdout, "asking the sync store %s for this device's latest copy\n", name)
 	pw := &progressWriter{f: tmp, out: stdout, name: name, next: progressStep}
 	log := slog.New(slog.NewTextHandler(stderr, nil)).With("provider", name)
+	// done gets one value however Restore ends: its error, a panic
+	// (recovered), or runtime.Goexit, which unwinds the goroutine with no
+	// panic to recover.
 	done := make(chan error, 1)
 	go func() {
+		returned := false
 		defer func() {
+			if returned {
+				return
+			}
 			if p := recover(); p != nil {
 				done <- fmt.Errorf("it panicked: %v", p)
+			} else {
+				done <- errors.New("it ended its goroutine without returning (runtime.Goexit)")
 			}
 		}()
-		done <- cs.Restore(ctx, ext.RestoreRequest{Dir: extDir, Log: log}, pw)
+		err := cs.Restore(ctx, ext.RestoreRequest{Dir: extDir, Log: log}, pw)
+		returned = true
+		done <- err
 	}()
 	var rerr error
 	select {
@@ -551,14 +632,26 @@ func restoreFromProvider(ctx context.Context, dir string, stdout, stderr io.Writ
 }
 
 // leaveAsItWas is, deferred before the reservation is taken, what puts
-// back a data directory a restore made (Reserve makes a missing one) and
-// installed nothing into: removed again once the reservation is let go,
-// when it is empty still. The returned func runs it.
+// back a data directory a restore made (Reserve makes a missing one, and
+// every missing directory above it) and installed nothing into: each
+// removed again once the reservation is let go, the deepest first, while
+// it is empty still. The returned func runs it.
 func leaveAsItWas(dir string, installed *bool) func() {
-	made := !exists(dir)
+	var made []string
+	for d := dir; !exists(d); d = filepath.Dir(d) {
+		made = append(made, d)
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
 	return func() {
-		if made && !*installed {
-			os.Remove(dir)
+		if *installed {
+			return
+		}
+		for _, d := range made {
+			if os.Remove(d) != nil {
+				return
+			}
 		}
 	}
 }

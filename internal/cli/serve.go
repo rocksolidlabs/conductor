@@ -150,7 +150,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	// and the start-up's writes are made: a restore and a starting server
 	// exclude each other (internal/export, restore.lock), and a restore
 	// refuses a running server by its ledger and its data.
-	res, err := export.Reserve(cfg.DataDir)
+	res, err := export.Reserve(cfg.DataDir, export.HolderServe)
 	if errors.Is(err, export.ErrReserved) {
 		return 1, fmt.Errorf("the data directory %s is not served: %w", cfg.DataDir, err)
 	}

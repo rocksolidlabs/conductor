@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -463,6 +464,158 @@ func TestExportOffline(t *testing.T) {
 	}
 }
 
+// conductor export --data-dir takes a data directory only: one with no
+// server data (a home directory, a project) is refused, with no archive
+// written and the directory as it was.
+func TestExportOfflineRefusesNoServerData(t *testing.T) {
+	clearConductorEnv(t)
+	dir := realTempDir(t)
+	writeFile(t, dir, ".ssh/id_ed25519", "a key")
+	writeFile(t, dir, "project/main.go", "package main")
+	writeFile(t, dir, "hooks/x", "conductor host's")
+	before := tree(t, dir)
+	out := filepath.Join(realTempDir(t), "home.zip")
+	code, _, _, err := exportCmd(t, "--data-dir", dir, "--out", out)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "holds no server data") {
+		t.Fatalf("a directory with no server data: %d %v", code, err)
+	}
+	if _, err := os.Stat(out); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a refused export wrote %s: %v", out, err)
+	}
+	sameTree(t, dir, before)
+}
+
+// The archive never goes inside the data directory the export reads (it
+// would read itself as it grows): --out there, the default name from the
+// data directory as the current directory (--data-dir .), and an --out
+// through a link to it are refused, nothing written.
+func TestExportOfflineOutsideTheDataDir(t *testing.T) {
+	clearConductorEnv(t)
+	dir, _ := sourceDir(t)
+	before := tree(t, dir)
+	link := filepath.Join(realTempDir(t), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, out := range []string{filepath.Join(dir, "a.zip"), filepath.Join(dir, "crews", "a.zip"), filepath.Join(link, "a.zip")} {
+		code, _, _, err := exportCmd(t, "--data-dir", dir, "--out", out)
+		if code != 1 || err == nil || !strings.Contains(err.Error(), "inside the data directory") {
+			t.Fatalf("--out %s: %d %v", out, code, err)
+		}
+	}
+	t.Chdir(dir)
+	if code, _, _, err := exportCmd(t, "--data-dir", "."); code != 1 || err == nil || !strings.Contains(err.Error(), "inside the data directory") {
+		t.Fatalf("--data-dir . from it: %d %v", code, err)
+	}
+	sameTree(t, dir, before)
+	// Beside it is outside.
+	beside := filepath.Join(filepath.Dir(dir), "beside.zip")
+	if code, _, _, err := exportCmd(t, "--data-dir", dir, "--out", beside); code != 0 || err != nil {
+		t.Fatalf("beside the data directory: %d %v", code, err)
+	}
+}
+
+// An export from a data directory holds its reservation while it reads:
+// paused there, restore.lock names the export, a serve and a restore on
+// the directory are refused; let go, the archive is whole, without
+// restore.lock, which is gone. A serve that holds the reservation refuses
+// the export in turn.
+func TestExportOfflineHoldsTheReservation(t *testing.T) {
+	clearConductorEnv(t)
+	dir, id := sourceDir(t)
+	cfg := dataDirConfig(t, dir)
+	archive := exportOf(t, dir)
+	g := newGate()
+	old := exportReserved
+	exportReserved = func(string) { g.hold() }
+	t.Cleanup(func() { exportReserved = old })
+	out := filepath.Join(realTempDir(t), "held.zip")
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		code, err := runExport(context.Background(), []string{"--data-dir", dir, "--out", out}, io.Discard, io.Discard)
+		if err == nil && code != 0 {
+			err = fmt.Errorf("exit %d", code)
+		}
+		done <- err
+	}()
+	t.Cleanup(func() { g.release(); <-finished })
+	g.waitReached(t, done)
+	lock := filepath.Join(dir, export.LockFile)
+	if b, err := os.ReadFile(lock); err != nil || !strings.HasSuffix(string(b), ": export\n") {
+		t.Fatalf("restore.lock while the export reads: %q %v", b, err)
+	}
+	serveRefused(t, cfg)
+	code, _, _, err := restoreCmd(t, archive, "--data-dir", dir)
+	if code != 1 || !errors.Is(err, export.ErrReserved) {
+		t.Fatalf("a restore while the export reads: %d %v", code, err)
+	}
+	g.release()
+	if err := <-done; err != nil {
+		t.Fatalf("the export: %v", err)
+	}
+	if _, err := os.Stat(lock); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("restore.lock left: %v", err)
+	}
+	names, _ := archiveFiles(t, out)
+	if slices.Contains(names, export.DataDir+export.LockFile) || !slices.Contains(names, export.DataDir+"crews/"+id+".json") {
+		t.Fatalf("the archive: %v", names)
+	}
+
+	// A serve inside its reservation: the export is refused, naming it.
+	g2 := newGate()
+	oldServe := serveReserved
+	serveReserved = func(string) { g2.hold() }
+	t.Cleanup(agents.ForgetBinary())
+	var logs syncBuffer
+	sv := startServing(t, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, &logs)
+	t.Cleanup(func() { g2.release(); sv.stop(); serveReserved = oldServe })
+	deadline, wait := startDeadline(t)
+	select {
+	case <-g2.reached:
+	case <-deadline:
+		t.Fatalf("serve did not reach its reservation in %s:\n%s", wait, logs.String())
+	}
+	refused := filepath.Join(realTempDir(t), "refused.zip")
+	code, _, _, err = exportCmd(t, "--data-dir", dir, "--out", refused)
+	if code != 1 || !errors.Is(err, export.ErrReserved) || !strings.Contains(err.Error(), ": serve") {
+		t.Fatalf("an export while serve starts: %d %v", code, err)
+	}
+	if _, err := os.Stat(refused); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a refused export wrote %s: %v", refused, err)
+	}
+}
+
+// A serve or an export killed inside its reservation leaves restore.lock
+// with no process holding it: the next serve takes it over and starts,
+// letting it go as it does its own. A restore's, left by a restore cut
+// short, still refuses the serve, naming the file to remove.
+func TestServeAfterAKilledServesReservation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no flock: restore.lock is its file alone")
+	}
+	clearConductorEnv(t)
+	for _, by := range []string{"serve", "export"} {
+		t.Run(by, func(t *testing.T) {
+			clearConductorEnv(t)
+			into := filepath.Join(realTempDir(t), "data")
+			writeFile(t, into, export.LockFile, "pid 999999 since 2026-10-01T00:00:00Z: "+by+"\n")
+			cfg := dataDirConfig(t, into)
+			logs := serveUntilListening(t, "--config", cfg)
+			if len(logLines(logs, "conductor serving")) != 1 {
+				t.Fatalf("serve did not start:\n%s", logs)
+			}
+			if _, err := os.Stat(filepath.Join(into, export.LockFile)); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("serve kept restore.lock: %v", err)
+			}
+		})
+	}
+	into := filepath.Join(realTempDir(t), "data")
+	writeFile(t, into, export.LockFile, "pid 999999 since 2026-10-01T00:00:00Z: restore\n")
+	serveRefused(t, dataDirConfig(t, into))
+}
+
 // An export never writes over a file, through the server or offline: an
 // existing --out refuses it and keeps its bytes; with no --out the archive
 // is conductor-export-<UTC time>.zip in the current directory.
@@ -613,6 +766,15 @@ func TestRestoreInstalls(t *testing.T) {
 	}
 	if _, err := os.Stat(none); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("a refused restore left %s: %v", none, err)
+	}
+	// Two levels above it missing too: none of them is left.
+	parent := realTempDir(t)
+	deep := filepath.Join(parent, "new", "a", "b")
+	if code, _, _, err := restoreCmd(t, junk, "--data-dir", deep); code != 1 || err == nil {
+		t.Fatalf("junk, deep: %d %v", code, err)
+	}
+	if entries := mustReadDir(t, parent); len(entries) != 0 {
+		t.Fatalf("a refused restore left %v in %s", entries, parent)
 	}
 	for _, args := range [][]string{{}, {out, out}, {"--provider", out}} {
 		if code, _, _, err := restoreCmd(t, args...); code != 2 || err == nil {
@@ -799,16 +961,25 @@ func setRestoreAt(t *testing.T, f func(stage string)) {
 // checks it is refused, naming restore.lock, before it listens.
 func serveRefused(t *testing.T, cfg string) {
 	t.Helper()
+	if err := serveRefusedErr(cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// serveRefusedErr is serveRefused's check as an error, for a seam that
+// runs off the test's goroutine, where t.Fatal must not be called.
+func serveRefusedErr(cfg string) error {
 	var logs syncBuffer
 	ctx, cancel := context.WithTimeout(context.Background(), serveStartWait)
 	defer cancel()
 	code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, &logs)
 	if code != 1 || err == nil || !errors.Is(err, export.ErrReserved) || !strings.Contains(err.Error(), export.LockFile) {
-		t.Fatalf("serve while reserved: %d %v\n%s", code, err, logs.String())
+		return fmt.Errorf("serve while reserved: %d %v\n%s", code, err, logs.String())
 	}
 	if strings.Contains(logs.String(), "conductor serving") {
-		t.Fatalf("serve listened while reserved:\n%s", logs.String())
+		return fmt.Errorf("serve listened while reserved:\n%s", logs.String())
 	}
+	return nil
 }
 
 // dataDirConfig is a config whose dataDir is dir.
@@ -1123,7 +1294,7 @@ func TestRestoreFromProviderEndedShort(t *testing.T) {
 		}
 		noTemporary(t, into)
 		sameTree(t, into, before)
-		res, rerr := export.Reserve(into)
+		res, rerr := export.Reserve(into, export.HolderRestore)
 		if rerr != nil {
 			t.Fatalf("the reservation was not released: %v", rerr)
 		}
@@ -1175,10 +1346,13 @@ func TestRestoreFromProviderEndedShort(t *testing.T) {
 }
 
 // One reservation from before the download to after the install: as the
-// download starts, between it and the install, and after the install's
-// last rename, restore.lock is the same file with the same pid and start
-// time, a serve and a second restore are refused; it is gone once the
-// command returns.
+// download starts, between it and the install, between two of the
+// install's renames and after its last, restore.lock is the same file
+// with the same pid and start time, a serve and a second restore are
+// refused; it is gone once the command returns. The seams run on the
+// command's goroutines (the provider's own, for the first), so each
+// records what it found for the test to judge, and a failed check ends
+// the command rather than the goroutine.
 func TestRestoreFromProviderHoldsTheReservation(t *testing.T) {
 	clearConductorEnv(t)
 	src, _ := sourceDir(t)
@@ -1186,52 +1360,123 @@ func TestRestoreFromProviderHoldsTheReservation(t *testing.T) {
 	into := filepath.Join(realTempDir(t), "into")
 	cfg := dataDirConfig(t, into)
 	lock := filepath.Join(into, export.LockFile)
+	var mu sync.Mutex
 	var first os.FileInfo
 	var stamp []byte
-	var seen []string
-	check := func(at string) {
-		t.Helper()
-		fi, err := os.Stat(lock)
-		if err != nil {
-			t.Fatalf("%s: no restore.lock: %v", at, err)
-		}
-		b, err := os.ReadFile(lock)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if first == nil {
-			first, stamp = fi, b
-		} else if !os.SameFile(first, fi) || !bytes.Equal(b, stamp) {
-			t.Fatalf("%s: restore.lock is another (%q, was %q)", at, b, stamp)
-		}
-		if !strings.HasPrefix(string(b), fmt.Sprintf("pid %d since ", os.Getpid())) {
-			t.Fatalf("%s: restore.lock says %q", at, b)
-		}
-		serveRefused(t, cfg)
-		if code, _, _, err := restoreCmd(t, out, "--data-dir", into); code != 1 || !errors.Is(err, export.ErrReserved) {
-			t.Fatalf("%s: a second restore: %d %v", at, code, err)
-		}
+	var seen, failed []string
+	check := func(at string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		err := func() error {
+			fi, err := os.Stat(lock)
+			if err != nil {
+				return fmt.Errorf("no restore.lock: %v", err)
+			}
+			b, err := os.ReadFile(lock)
+			if err != nil {
+				return err
+			}
+			if first == nil {
+				first, stamp = fi, b
+			} else if !os.SameFile(first, fi) || !bytes.Equal(b, stamp) {
+				return fmt.Errorf("restore.lock is another (%q, was %q)", b, stamp)
+			}
+			if !strings.HasPrefix(string(b), fmt.Sprintf("pid %d since ", os.Getpid())) {
+				return fmt.Errorf("restore.lock says %q", b)
+			}
+			if err := serveRefusedErr(cfg); err != nil {
+				return err
+			}
+			if code, _, _, err := restoreCmd(t, out, "--data-dir", into); code != 1 || !errors.Is(err, export.ErrReserved) {
+				return fmt.Errorf("a second restore: %d %v", code, err)
+			}
+			return nil
+		}()
 		seen = append(seen, at)
+		if err != nil {
+			failed = append(failed, at+": "+err.Error())
+		}
+		return err
 	}
 	setRestoreAt(t, func(stage string) {
 		if stage == "downloaded" || stage == "installed" {
 			check(stage)
 		}
 	})
+	// The install's renames, through internal/export's seam: the check
+	// before the second, with the first renamed and the rest not.
+	renames := 0
+	oldRename := export.BeforeRename
+	export.BeforeRename = func(string) {
+		if renames++; renames == 2 {
+			check("renaming")
+		}
+	}
+	t.Cleanup(func() { export.BeforeRename = oldRename })
 	fetch := fromFile(out)
 	withSync(t, fakeSync{restore: func(ctx context.Context, r ext.RestoreRequest, w io.Writer) error {
-		check("download")
+		if err := check("download"); err != nil {
+			return err
+		}
 		return fetch(ctx, r, w)
 	}})
-	if code, stdout, stderr, err := restoreCmd(t, "--provider", "--data-dir", into); code != 0 || err != nil {
+	code, stdout, stderr, err := restoreCmd(t, "--provider", "--data-dir", into)
+	if len(failed) != 0 {
+		t.Fatalf("under the reservation:\n%s", strings.Join(failed, "\n"))
+	}
+	if code != 0 || err != nil {
 		t.Fatalf("restore: %d %v\n%s%s", code, err, stdout, stderr)
 	}
-	if !slices.Equal(seen, []string{"download", "downloaded", "installed"}) {
+	if renames < 2 {
+		t.Fatalf("the install renamed %d entries; the test needs two", renames)
+	}
+	if !slices.Equal(seen, []string{"download", "downloaded", "renaming", "installed"}) {
 		t.Fatalf("the seams reached: %v", seen)
 	}
 	if _, err := os.Stat(lock); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("restore.lock left: %v", err)
 	}
+}
+
+// A provider's Restore that ends its goroutine with runtime.Goexit (as a
+// t.Fatal there does) returns no error and raises no panic: the command
+// still ends, exit 1 naming it, the temporary file gone, the reservation
+// released and the data directory as it was.
+func TestRestoreFromProviderGoexit(t *testing.T) {
+	clearConductorEnv(t)
+	withSync(t, fakeSync{restore: func(context.Context, ext.RestoreRequest, io.Writer) error {
+		runtime.Goexit()
+		return nil
+	}})
+	into := filepath.Join(realTempDir(t), "into")
+	writeFile(t, into, "config.json", "{}")
+	before := tree(t, into)
+	type result struct {
+		code int
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, err := runRestore(t.Context(), []string{"--provider", "--data-dir", into}, io.Discard, io.Discard)
+		done <- result{code, err}
+	}()
+	deadline, wait := startDeadline(t)
+	var r result
+	select {
+	case r = <-done:
+	case <-deadline:
+		t.Fatalf("the command did not return in %s after the provider's Goexit", wait)
+	}
+	if r.code != 1 || r.err == nil || !strings.Contains(r.err.Error(), "Goexit") || !strings.Contains(r.err.Error(), "the sync store fake") {
+		t.Fatalf("restore: %d %v", r.code, r.err)
+	}
+	noTemporary(t, into)
+	sameTree(t, into, before)
+	res, err := export.Reserve(into, export.HolderRestore)
+	if err != nil {
+		t.Fatalf("the reservation was not released: %v", err)
+	}
+	res.Release()
 }
 
 // The free default: nothing to restore, nothing changed. A fake's whole
@@ -1247,7 +1492,8 @@ func TestRestoreFromProvider(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		withSync(t, nil)
 		for _, made := range []bool{false, true} {
-			into := filepath.Join(realTempDir(t), "into")
+			parent := realTempDir(t)
+			into := filepath.Join(parent, "new", "a", "into")
 			if made {
 				writeFile(t, into, "hooks/x", "host")
 			}
@@ -1258,10 +1504,10 @@ func TestRestoreFromProvider(t *testing.T) {
 			}
 			if made {
 				sameTree(t, into, before)
-			} else if _, err := os.Stat(into); !errors.Is(err, fs.ErrNotExist) {
-				t.Fatalf("the default made %s: %v", into, err)
+				noTemporary(t, into)
+			} else if entries := mustReadDir(t, parent); len(entries) != 0 {
+				t.Fatalf("the default made %v in %s", entries, parent)
 			}
-			noTemporary(t, into)
 		}
 	})
 

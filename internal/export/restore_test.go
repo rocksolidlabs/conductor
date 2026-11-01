@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -167,7 +168,7 @@ func TestRestoreStages(t *testing.T) {
 // the same file, through every rename and lets it go after the last.
 func TestReserve(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
-	res, err := export.Reserve(dir)
+	res, err := export.Reserve(dir, export.HolderRestore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +177,7 @@ func TestReserve(t *testing.T) {
 	if err != nil || !strings.Contains(string(stamp), fmt.Sprintf("pid %d since ", os.Getpid())) {
 		t.Fatalf("restore.lock: %q %v", stamp, err)
 	}
-	if _, err := export.Reserve(dir); !errors.Is(err, export.ErrReserved) || !strings.Contains(err.Error(), lock) {
+	if _, err := export.Reserve(dir, export.HolderRestore); !errors.Is(err, export.ErrReserved) || !strings.Contains(err.Error(), lock) {
 		t.Fatalf("a second reservation: %v", err)
 	}
 	b := craft(t, [2]string{"crews/team.json", "{}"})
@@ -190,7 +191,7 @@ func TestReserve(t *testing.T) {
 	res.Release()
 	// A file of someone else's in its place is not the reservation's to
 	// remove.
-	res, err = export.Reserve(dir)
+	res, err = export.Reserve(dir, export.HolderRestore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func TestReserve(t *testing.T) {
 		if err != nil || !bytes.Equal(got, stamp) {
 			t.Fatalf("restore.lock at the rename of %s: %q %v", name, got, err)
 		}
-		if _, err := export.Reserve(dir); !errors.Is(err, export.ErrReserved) {
+		if _, err := export.Reserve(dir, export.HolderRestore); !errors.Is(err, export.ErrReserved) {
 			t.Fatalf("a reservation during the renames: %v", err)
 		}
 		renamed = append(renamed, name)
@@ -228,13 +229,79 @@ func TestReserve(t *testing.T) {
 	}
 }
 
+// A restore.lock no process holds (its lock free), which a serve or an
+// export left when it was killed, is taken over: the reservation is that
+// file with this process's stamp and holder, refusing others while it is
+// held, and Release removes it. A killed restore's, or one that names no
+// holder, is refused, naming the file to remove; so is a live serve's.
+func TestReserveTakesOverAKilledServesOrExports(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no flock: restore.lock is its file alone")
+	}
+	for _, by := range []export.Holder{export.HolderServe, export.HolderExport} {
+		t.Run(string(by), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "data")
+			lock := filepath.Join(dir, export.LockFile)
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(lock, []byte("pid 999999 since 2026-10-01T00:00:00Z: "+string(by)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Stat(lock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := export.Reserve(dir, export.HolderServe)
+			if err != nil {
+				t.Fatalf("a killed %s's restore.lock: %v", by, err)
+			}
+			b, err := os.ReadFile(lock)
+			if err != nil || !strings.HasPrefix(string(b), fmt.Sprintf("pid %d since ", os.Getpid())) || !strings.HasSuffix(string(b), ": serve\n") {
+				t.Fatalf("taken over, restore.lock says %q %v", b, err)
+			}
+			if after, err := os.Stat(lock); err != nil || !os.SameFile(before, after) {
+				t.Fatalf("taken over, restore.lock is another file: %v", err)
+			}
+			// Held now: a live serve's is refused, by a serve and a restore.
+			for _, other := range []export.Holder{export.HolderServe, export.HolderRestore} {
+				if _, err := export.Reserve(dir, other); !errors.Is(err, export.ErrReserved) {
+					t.Fatalf("a %s while it is held: %v", other, err)
+				}
+			}
+			res.Release()
+			if _, err := os.Lstat(lock); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("released, restore.lock: %v", err)
+			}
+		})
+	}
+	for _, left := range []string{"pid 999999 since 2026-10-01T00:00:00Z: restore\n", "pid 1 since then\n", ""} {
+		dir := filepath.Join(t.TempDir(), "data")
+		lock := filepath.Join(dir, export.LockFile)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(lock, []byte(left), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, by := range []export.Holder{export.HolderServe, export.HolderExport, export.HolderRestore} {
+			if _, err := export.Reserve(dir, by); !errors.Is(err, export.ErrReserved) || !strings.Contains(err.Error(), "remove "+lock) {
+				t.Fatalf("%q, a %s: %v", left, by, err)
+			}
+		}
+		if b, err := os.ReadFile(lock); err != nil || string(b) != left {
+			t.Fatalf("a refused reservation changed %q: %q %v", left, b, err)
+		}
+	}
+}
+
 // Install runs under the reservation its caller holds: it installs and
 // leaves restore.lock in place for the caller to release; with a
 // reservation already released it is refused before a byte is written.
 func TestInstallUnderItsCallersReservation(t *testing.T) {
 	b := craft(t, [2]string{"crews/team.json", `{"id":"team"}`})
 	dir := filepath.Join(t.TempDir(), "data")
-	res, err := export.Reserve(dir)
+	res, err := export.Reserve(dir, export.HolderRestore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +318,7 @@ func TestInstallUnderItsCallersReservation(t *testing.T) {
 	res.Release()
 
 	other := filepath.Join(t.TempDir(), "other")
-	res, err = export.Reserve(other)
+	res, err = export.Reserve(other, export.HolderRestore)
 	if err != nil {
 		t.Fatal(err)
 	}
