@@ -31,6 +31,13 @@ export interface RenderOptions {
    * `img` cannot carry a header; a link naming one keeps its words. Off by default, where such an image is held as its alt text.
    */
   attachments?: boolean
+  /**
+   * Whether a bare URL with its scheme (`https://…`, and an e-mail address) is a link, as GitHub renders an issue's text: on for a
+   * Dispatch ticket's text, which is often pasted from one. A name with no scheme (`README.md`, `example.com`, `www.…`) and a `#123`
+   * stay words, since a ticket has no repository to resolve them against. Off by default: a repository's own file keeps the
+   * preview it had.
+   */
+  linkify?: boolean
 }
 
 export interface Rendered {
@@ -93,7 +100,9 @@ function escapeHtml(s: string): string {
 
 /** Renders Markdown source to HTML under the rules above. Pure: the same source and options give the same HTML. */
 export function renderMarkdown(src: string, opts: RenderOptions): Rendered {
-  const md = new MarkdownIt({ html: false, linkify: false, typographer: false, breaks: false })
+  const md = new MarkdownIt({ html: false, linkify: !!opts.linkify, typographer: false, breaks: false })
+  // Only a URL that names its scheme: a file name or a host alone (`README.md`, `example.com`) is words.
+  if (opts.linkify) md.linkify.set({ fuzzyLink: false })
   let mermaid = 0
 
   // Task lists: a list item beginning `[ ] ` or `[x] ` gets a checkbox (disabled: the preview changes no file).
