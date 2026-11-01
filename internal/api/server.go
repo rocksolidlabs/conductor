@@ -240,6 +240,9 @@ type Server struct {
 	extStarts   []*extStarter
 	extStarting atomic.Bool
 	extAfter    func(time.Duration) <-chan time.Time
+	// syncs is the sync adapter (sync.go): what the data directory, the
+	// ledger and Dispatch commit, told to the sync store.
+	syncs *syncAdapter
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
@@ -261,6 +264,16 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	for _, opt := range opts {
 		opt(&o)
 	}
+	// The sync hooks before the first write (the masked catalog, the crews'
+	// migration, the ledger's recovery), so the start-up's commits are told
+	// too; taken off the data directory again when New fails.
+	syncs := newSyncAdapter(st)
+	made := false
+	defer func() {
+		if !made {
+			syncs.detach()
+		}
+	}()
 	base := cat.Clone()
 	effective, overlay, err := loadCatalog(st, base)
 	if err != nil {
@@ -324,6 +337,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.installExtensions(o.providers)
+	s.syncs = syncs
+	syncs.attach(s)
+	s.holdQueue(o.providers.Continuity, s.exts.sync.Name(), syncs.begin)
 	s.relayBurstFloor = relayBurstFloor
 	s.hostPingEvery = hostPingEvery
 	s.hostGoneWait = writeTimeout
@@ -380,7 +396,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 		s.records = records
 		s.runs.RecordEnds(records, func(runID string, err error) { log.Warn("run record not saved", "run", runID, "err", err) }, s.track)
-		s.ledger = openLedger(context.Background(), st, s.records, log)
+		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger)
 		if s.ledger != nil {
 			// The engine writes managed runs to it; while it is read-only
 			// (another server holds the owner lock, for a while after a
@@ -401,6 +417,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			s.dispatch = openDispatch(st, log)
 		}
 		if s.dispatch != nil {
+			syncs.observeDispatch(s.dispatch)
 			s.dispatch.SetRunExists(s.runKnown)
 			s.dispatch.OnChange(s.events.dispatch)
 		}
@@ -473,6 +490,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Nothing fails past here: the queues of the providers that are no
 	// Starter drain from now on (a Starter's once its Start has succeeded).
 	s.beginFreeQueues()
+	made = true
 	return s, nil
 }
 

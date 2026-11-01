@@ -19,14 +19,19 @@ import (
 // (ledger.Recover). A ledger that opens read-only (another server holds
 // the owner lock, the filesystem has no locks, the database is damaged or
 // newer) is logged, and managed launches answer 503 from then on; the
-// legacy runs are untouched by it.
-func openLedger(ctx context.Context, st *store.Store, records *crew.Records, log logger) *ledger.Ledger {
+// legacy runs are untouched by it. observe is given the ledger before its
+// recovery, so the hooks it installs (the sync seam's) are told of every
+// commit.
+func openLedger(ctx context.Context, st *store.Store, records *crew.Records, log logger, observe func(*ledger.Ledger)) *ledger.Ledger {
 	ld, err := ledger.Open(filepath.Join(st.Dir(), "runs"))
 	if err != nil {
 		// The directory or the file itself: the server runs its legacy
 		// crews all the same, with no ledger.
 		log.Warn("managed runs are off: the ledger could not be opened", "err", err)
 		return nil
+	}
+	if observe != nil {
+		observe(ld)
 	}
 	if ro, why := ld.ReadOnly(); ro {
 		// Held by another server, this one serves meanwhile and takes the
