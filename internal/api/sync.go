@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -121,6 +123,9 @@ type syncAdapter struct {
 	// afterReset, when a test sets it, runs as a replay has emptied the
 	// set and put its marker in, before it lists anything.
 	afterReset func()
+	// missing names the stores whose Open failed (unopened): a replay
+	// cannot list them, so none ends with `replayed`.
+	missing []string
 }
 
 // newSyncAdapter is an adapter with nothing pending, observing data (nil
@@ -146,10 +151,23 @@ func (a *syncAdapter) detach() {
 }
 
 // observeLedger installs the ledger's hooks: openLedger calls it before
-// the ledger's recovery, so its transitions are told.
+// the ledger's recovery, so its transitions are told. A pruned run's
+// delete takes the revision after its row's last: a store that orders a
+// run's docs by revision takes it as newer than every pointer it was told
+// of the run, never as a stale one.
 func (a *syncAdapter) observeLedger(ld *ledger.Ledger) {
 	ld.OnCommit(func(p ledger.RunPointer) { a.mark(syncKey{syncLedger, p.ID}, p.Revision, nil) })
-	ld.OnPrune(func(id string) { a.mark(syncKey{syncLedger, id}, 0, nil) })
+	ld.OnPrune(func(id string, revision int64) { a.mark(syncKey{syncLedger, id}, revision+1, nil) })
+}
+
+// unopened says that what (the ledger, Dispatch) was to be opened but its
+// Open failed: the server runs without it, which is not a store that holds
+// nothing, so no replay of this server's ends as complete (its `replayed`
+// would drop every doc the sync store holds of it).
+func (a *syncAdapter) unopened(what string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.missing = append(a.missing, what)
 }
 
 // ledgerOwned asks for a replay in a new epoch: the ledger has taken the
@@ -348,7 +366,8 @@ func (a *syncAdapter) ack(el *list.Element, e syncEntry) {
 
 // replay empties the set and lists the whole state into it, in a new
 // epoch: the `replay` marker, every allowlisted data document, every run
-// pointer, Dispatch's log, then `replayed`. A document committed while it
+// pointer, Dispatch's log, then `replayed` (none while a store's Open
+// failed: unopened). A document committed while it
 // lists is marked as any other (one entry per document), so nothing is
 // missed: the data directory's sequence is read before its directories
 // are. An overflow meanwhile ends the listing, for a replay again.
@@ -418,6 +437,17 @@ func (a *syncAdapter) replay(ctx context.Context) error {
 	if a.s.dispatch != nil && !a.list(gen, syncKey{syncDispatch, syncLogPath}, 0) {
 		return nil
 	}
+	a.mu.Lock()
+	missing := slices.Clone(a.missing)
+	a.mu.Unlock()
+	if len(missing) > 0 {
+		// A store that failed to open was not listed, and it is not an empty
+		// one: the replay is not complete, so no `replayed` drops what the
+		// sync store holds of it. What was listed and what is committed from
+		// now on is delivered all the same; the epoch never completes.
+		a.warn("sync: the replay is not complete, so the sync store keeps what it holds", fmt.Errorf("%s could not be opened", strings.Join(missing, " and ")))
+		return nil
+	}
 	a.list(gen, syncKey{store: syncReplayed}, 0)
 	return nil
 }
@@ -483,6 +513,9 @@ func (a *syncAdapter) deliver(ctx context.Context, epoch string, e syncEntry) er
 			return err
 		}
 		if !ok {
+			// Pruned: the prune's mark gives the delete the revision after
+			// the row's last. One read before that mark is made goes at the
+			// commit's; the mark then has it delivered again, newer.
 			return sy.Deleted(ctx, d)
 		}
 		d.Rev = p.Revision

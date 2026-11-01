@@ -66,10 +66,13 @@ func (l *Ledger) OnCommit(fn func(RunPointer)) {
 	l.onCommit = fn
 }
 
-// OnPrune gives the ledger fn, called with a run's id after a prune that
-// removed its rows has committed, under the lock as OnCommit's fn is,
-// never for a prune that failed or found no row. fn must only queue.
-func (l *Ledger) OnPrune(fn func(runID string)) {
+// OnPrune gives the ledger fn, called with a run's id and the revision its
+// row had when it was removed, after a prune that removed its rows has
+// committed, under the lock as OnCommit's fn is, never for a prune that
+// failed or found no row. The revision is the last one OnCommit's fn was
+// told of the run, so an observer can give the removal a newer one. fn
+// must only queue.
+func (l *Ledger) OnPrune(fn func(runID string, revision int64)) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.onPrune = fn
@@ -107,14 +110,14 @@ func (l *Ledger) committed(ps []RunPointer) {
 	}
 }
 
-// pruned tells the observer of a run a committed prune removed. The caller
-// holds mu.
-func (l *Ledger) pruned(runID string) {
+// pruned tells the observer of a run a committed prune removed, at the
+// revision its row had. The caller holds mu.
+func (l *Ledger) pruned(runID string, revision int64) {
 	if l.afterCommit != nil {
 		l.afterCommit()
 	}
 	if l.onPrune != nil {
-		l.onPrune(runID)
+		l.onPrune(runID, revision)
 	}
 }
 

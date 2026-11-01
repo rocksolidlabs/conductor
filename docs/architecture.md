@@ -556,7 +556,8 @@ one mutex and sequence shared by all of them around each rename or
 remove, an event naming a path and a number, never bytes), the ledger
 (`OnCommit` with the run's pointer after each committed transition,
 `Recover`'s included, and with the pointer of a run a continuation
-marked, whose revision the mark bumps; and `OnPrune`) and Dispatch (`OnCommit` with a
+marked, whose revision the mark bumps; and `OnPrune` with the pruned
+run's last revision, its delete told at the one after) and Dispatch (`OnCommit` with a
 commit's changes). `New` installs them before its first write, so the
 start-up's own commits (the masked catalog, the crews' migration, the
 recovery and the records it rewrites) are told too. What reaches the
@@ -587,7 +588,10 @@ server's owner lock takes it, for what that server wrote meanwhile. The
 `replay` marker goes into the set under the lock that empties it, so a
 commit made as a replay begins is behind it. A ledger whose file is there
 but cannot be read fails the replay's listing, which is tried again after
-the backoff: only a ledger with no database file holds no run. Nothing a sync store answers is written back; the
+the backoff: only a ledger with no database file holds no run. A ledger
+or Dispatch whose `Open` failed, the server running without it, is no
+empty store either: its replays deliver what they list but never end
+with `replayed`. Nothing a sync store answers is written back; the
 free default acknowledges every doc and keeps nothing.
 
 ## Packages

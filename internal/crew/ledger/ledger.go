@@ -199,7 +199,7 @@ type Ledger struct {
 	// afterCommit, when a test sets it, runs between such a commit and
 	// those calls, under mu.
 	onCommit    func(RunPointer)
-	onPrune     func(runID string)
+	onPrune     func(runID string, revision int64)
 	afterCommit func()
 }
 

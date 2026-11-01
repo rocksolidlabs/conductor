@@ -1156,7 +1156,8 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	}
 	defer tx.Rollback()
 	var state, closed string
-	switch err := tx.QueryRowContext(ctx, "SELECT state, closed_at FROM runs WHERE id = ?", runID).Scan(&state, &closed); {
+	var revision int64
+	switch err := tx.QueryRowContext(ctx, "SELECT state, closed_at, revision FROM runs WHERE id = ?", runID).Scan(&state, &closed, &revision); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil
 	case err != nil:
@@ -1190,6 +1191,6 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	l.pruned(runID)
+	l.pruned(runID, revision)
 	return nil
 }

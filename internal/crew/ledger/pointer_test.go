@@ -19,6 +19,8 @@ type told struct {
 	mu      sync.Mutex
 	commits []RunPointer
 	prunes  []string
+	// pruneRevs are the revisions the prunes were told with.
+	pruneRevs []int64
 }
 
 func (w *told) commit(p RunPointer) {
@@ -27,10 +29,11 @@ func (w *told) commit(p RunPointer) {
 	w.commits = append(w.commits, p)
 }
 
-func (w *told) prune(id string) {
+func (w *told) prune(id string, revision int64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.prunes = append(w.prunes, id)
+	w.pruneRevs = append(w.pruneRevs, revision)
 }
 
 func (w *told) revisions() []int64 {
@@ -235,12 +238,15 @@ func TestOnCommitInOrder(t *testing.T) {
 	}
 }
 
-// A committed prune is told with the run's id; a prune refused, or of a
+// A committed prune is told with the run's id and the revision its row
+// had, the last one a commit was told with (so an observer can give the
+// removal a newer one: Codex round 2 on #553); a prune refused, or of a
 // run with no row, is not.
 func TestOnPrune(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	ctx := context.Background()
 	var w told
+	l.OnCommit(w.commit)
 	l.OnPrune(w.prune)
 	newRun(t, l, "team-00000001")
 	if err := l.Prune(ctx, "team-00000001"); !errors.Is(err, ErrNotPrunable) {
@@ -267,6 +273,9 @@ func TestOnPrune(t *testing.T) {
 	}
 	if !slices.Equal(w.prunes, []string{"team-00000001"}) {
 		t.Fatalf("told prunes %v, want the one", w.prunes)
+	}
+	if revs := w.revisions(); len(revs) == 0 || !slices.Equal(w.pruneRevs, []int64{revs[len(revs)-1]}) {
+		t.Fatalf("the prune told at revision %v, the commits at %v", w.pruneRevs, revs)
 	}
 	if _, ok, err := l.Pointer(ctx, "team-00000001"); ok || err != nil {
 		t.Fatalf("a pruned run's pointer: %v %v", ok, err)

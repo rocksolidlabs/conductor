@@ -397,6 +397,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.records = records
 		s.runs.RecordEnds(records, func(runID string, err error) { log.Warn("run record not saved", "run", runID, "err", err) }, s.track)
 		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned)
+		if s.ledger == nil {
+			// Its runs are not gone: the sync store is never told they are.
+			syncs.unopened("the ledger")
+		}
 		if s.ledger != nil {
 			// The engine writes managed runs to it; while it is read-only
 			// (another server holds the owner lock, for a while after a
@@ -415,6 +419,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// and a run link names a run the engine holds or has a record of.
 		if !cfg.Switchyard.Enabled {
 			s.dispatch = openDispatch(st, log)
+			if s.dispatch == nil {
+				syncs.unopened("Dispatch")
+			}
 		}
 		if s.dispatch != nil {
 			syncs.observeDispatch(s.dispatch)

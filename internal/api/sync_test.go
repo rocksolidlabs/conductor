@@ -174,20 +174,29 @@ func nthEpoch(calls []syncCall, n int) string {
 // syncModel is what a store that applies the calls as ext asks holds:
 // each document's last whole state (its parts joined by path, rev and
 // epoch, a part's failure starting it again), a replay's `replayed`
-// dropping what the replay did not name.
+// dropping what the replay did not name. It orders a document's docs by
+// revision as a provider may: within an epoch, a doc (a save's first part,
+// or a delete) whose Rev is not newer than the last one applied of that
+// document is stale and ignored, its parts with it.
 func syncModel(calls []syncCall) map[syncKey][]byte {
 	state := map[syncKey][]byte{}
 	partial := map[syncKey][]byte{}
 	named := map[syncKey]bool{}
+	applied := map[syncKey]int64{}
+	stale := map[syncKey]bool{}
 	epoch := ""
 	for _, c := range calls {
 		if c.err != nil {
 			continue
 		}
 		k := syncKey{c.d.Store, c.d.Path}
+		if c.d.Store != syncReplay && c.d.Store != syncReplayed && (c.op == "deleted" || c.d.Offset == 0) {
+			last, ok := applied[k]
+			stale[k] = ok && c.d.Rev <= last
+		}
 		switch {
 		case c.d.Store == syncReplay:
-			epoch, named = c.d.Epoch, map[syncKey]bool{}
+			epoch, named, applied = c.d.Epoch, map[syncKey]bool{}, map[syncKey]int64{}
 		case c.d.Store == syncReplayed:
 			if c.d.Epoch == epoch {
 				for k := range state {
@@ -196,9 +205,11 @@ func syncModel(calls []syncCall) map[syncKey][]byte {
 					}
 				}
 			}
+		case stale[k]:
 		case c.op == "deleted":
 			delete(state, k)
 			delete(partial, k)
+			applied[k] = c.d.Rev
 		default:
 			buf := partial[k]
 			if c.d.Offset == 0 {
@@ -209,6 +220,7 @@ func syncModel(calls []syncCall) map[syncKey][]byte {
 				state[k] = buf
 				delete(partial, k)
 				named[k] = true
+				applied[k] = c.d.Rev
 			} else {
 				partial[k] = buf
 			}
@@ -1241,5 +1253,129 @@ func TestSyncReplaysWhenTheLedgerIsOwnedLate(t *testing.T) {
 	})
 	if ro, why := e.srv.ledger.ReadOnly(); ro {
 		t.Fatalf("the ledger is read-only after the replay: %s", why)
+	}
+}
+
+// A pruned run's delete is newer than every pointer the store was told of
+// it: a store that orders a run's docs by revision (syncModel does) drops
+// the run, never keeping it as the newer state (Codex round 2 on #553).
+func TestSyncPrunedRunDeletedAtANewerRevision(t *testing.T) {
+	f := newFakeSync()
+	e := syncEnv(t, syncDataDir(t), f)
+	ld := e.srv.ledger
+	ctx := t.Context()
+	const runID = "team-00000001"
+	run := syncKey{syncLedger, runID}
+	newLedgerRun(t, ld, runID, ledger.RunRunning)
+	if _, err := ld.Transition(ctx, runID, func(tx *ledger.Tx) error {
+		r, _, err := tx.Run()
+		if err != nil {
+			return err
+		}
+		r.State, r.Outcome, r.ClosedAt = ledger.RunFinished, ledger.OutcomeSucceeded, tx.Now()
+		return tx.PutRun(r)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.until(t, "the closed run's pointer", func(c []syncCall) bool {
+		var p syncPointer
+		return replayedIn(c, 1) && json.Unmarshal(syncModel(c)[run], &p) == nil && p.State == ledger.RunFinished
+	})
+	if err := ld.Prune(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.until(t, "the pruned run's delete", func(c []syncCall) bool {
+		for _, c := range callsOf(c, run) {
+			if c.op == "deleted" && c.err == nil {
+				return true
+			}
+		}
+		return false
+	})
+	var saved, deleted int64
+	for _, c := range callsOf(calls, run) {
+		switch {
+		case c.err != nil:
+		case c.op == "saved":
+			saved = max(saved, c.d.Rev)
+		case deleted == 0:
+			deleted = c.d.Rev
+		}
+	}
+	if saved < 2 || deleted <= saved {
+		t.Fatalf("the run saved at revision %d, deleted at %d: %s", saved, deleted, describeCalls(calls))
+	}
+	if _, ok := syncModel(calls)[run]; ok {
+		t.Fatalf("an ordering store kept the pruned run: %s", describeCalls(calls))
+	}
+}
+
+// A restart where the ledger's or Dispatch's database cannot be opened at
+// all (its file a symbolic link): the server runs without it, which is not
+// a store with nothing in it. The replay delivers what it could list, but
+// no `replayed` ends it, so the sync store keeps the run pointers or the
+// Dispatch log it holds (Codex round 2 on #553).
+func TestSyncUnopenedStoreKeepsWhatTheSyncStoreHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name, dir, file string
+		kept            syncKey
+	}{
+		{"ledger", "runs", ledger.File, syncKey{syncLedger, "team-00000001"}},
+		{"dispatch", "dispatch", dispatch.File, syncKey{syncDispatch, syncLogPath}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := syncDataDir(t)
+			f := newFakeSync()
+			e1 := syncEnv(t, dir, f)
+			newLedgerRun(t, e1.srv.ledger, "team-00000001", ledger.RunFinished)
+			f.until(t, "the first epoch", func(c []syncCall) bool {
+				_, ok := syncModel(c)[tc.kept]
+				return replayedIn(c, 1) && ok
+			})
+			stopEnv(t, e1)
+			files, err := filepath.Glob(filepath.Join(dir, tc.dir, tc.file+"*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, p := range files {
+				if err := os.Remove(p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(filepath.Join(dir, tc.dir, "elsewhere.sqlite"), filepath.Join(dir, tc.dir, tc.file)); err != nil {
+				t.Fatal(err)
+			}
+			e2 := syncEnv(t, dir, syncStarter{f})
+			if (tc.name == "ledger" && e2.srv.ledger != nil) || (tc.name == "dispatch" && e2.srv.dispatch != nil) {
+				t.Fatalf("the %s opened on a symbolic link", tc.name)
+			}
+			crews, err := e2.srv.store.Sub("crews")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := crews.Save("after.json", syncCrew{ID: "after", Name: "After"}); err != nil {
+				t.Fatal(err)
+			}
+			e2.srv.StartExtensions(t.Context())
+			// The second epoch's replay, and the crew saved before it, both
+			// acknowledged; the set then empty, so nothing of the replay waits.
+			f.until(t, "the second epoch's crew", func(c []syncCall) bool {
+				second := nthEpoch(c, 2)
+				for _, c := range callsOf(c, syncKey{syncData, "crews/after.json"}) {
+					if second != "" && c.d.Epoch == second && c.err == nil {
+						return true
+					}
+				}
+				return false
+			})
+			waitPending(t, e2.srv.syncs, 0)
+			calls := f.all()
+			if replayedIn(calls, 2) {
+				t.Fatalf("a replay without the %s ended as complete: %s", tc.name, describeCalls(calls))
+			}
+			if _, ok := syncModel(calls)[tc.kept]; !ok {
+				t.Fatalf("the sync store lost %v: %s", tc.kept, describeCalls(calls))
+			}
+		})
 	}
 }

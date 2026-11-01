@@ -3329,7 +3329,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   transitions included, and the pointer of a run a continuation marked,
   whose revision the mark bumps, so each state of a run told has a
   revision of its own)
-  and `OnPrune`, and Dispatch's `OnCommit` (`OnChange` unchanged); with
+  and `OnPrune` (with the pruned row's last revision, the delete told at
+  the one after, so a store ordering by revision never takes it as
+  stale), and Dispatch's `OnCommit` (`OnChange` unchanged); with
   `store.OpenDoc` (a regular JSON document, read-only through the store's
   directory as a root), `ListDocs`, `ledger.Pointer` and `Pointers` (paged)
   and `dispatch.Head`. `api.New` installs them before its first write. The
@@ -3345,7 +3347,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   marker put in the set under the lock that empties it, its `replayed`
   told once every document of it was acknowledged; a ledger whose file is
   there but cannot be read fails the replay's listing, tried again after
-  the backoff, and is never read as holding no run (`ledger.NoDatabase`).
+  the backoff, and is never read as holding no run (`ledger.NoDatabase`);
+  with a ledger or Dispatch whose `Open` failed, no replay ends with
+  `replayed`.
   No schema change. Tests: `TestObserveAfterRename`,
   `TestObserveInheritedBySub`, `TestPlainFileNoBytes`,
   `TestObserveInCommitOrder`, `TestListDocs`; `TestOnCommitAfterCommit`,
@@ -3358,7 +3362,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestSyncDefaultKeepsNothing`, `TestSyncCatalogMasksEnv`,
   `TestSyncStartupCommits`, `TestSyncCommitAsAReplayBegins`,
   `TestSyncUnreadableLedgerIsNotEmpty`,
-  `TestSyncReplaysWhenTheLedgerIsOwnedLate`. The order tests hold the first commit after it
+  `TestSyncReplaysWhenTheLedgerIsOwnedLate`,
+  `TestSyncPrunedRunDeletedAtANewerRevision`,
+  `TestSyncUnopenedStoreKeepsWhatTheSyncStoreHolds`. The order tests hold the first commit after it
   lands with a seam and check its lock is still held; the backoff runs on
   a clock the tests drive.
 
