@@ -60,8 +60,8 @@ type extSlots struct {
 	sync     ext.ContinuityStore
 	media    ext.MediaRoomProvider
 	// all is every registered provider (ext.Providers.All), unwrapped: what
-	// the providers' Start (PR-4) and GET /api/capabilities (C9) read. No
-	// call is made through it.
+	// the providers' Start (StartExtensions, through extStarters) and GET
+	// /api/capabilities (C9) read. No call is made through it.
 	all []ext.Entry
 }
 
@@ -86,16 +86,20 @@ type extGuard struct {
 func (s *Server) installExtensions(p ext.Providers) {
 	s.extCtx, s.extStop = context.WithCancel(context.Background())
 	s.extQueues = map[string][]func(){}
+	s.extStarts = extStarters(p)
 	name := extNames(p)
+	idName, routerName := name(ext.KindIdentity, 0, p.Identity), name(ext.KindDecisions, 0, p.Router)
+	syncName, mediaName := name(ext.KindSync, 0, p.Continuity), name(ext.KindMedia, 0, p.Media)
 	s.exts = extSlots{
-		identity: guardIdentity{s: s, name: name(ext.KindIdentity, 0, p.Identity), p: p.Identity},
-		router:   guardRouter{s: s, name: name(ext.KindDecisions, 0, p.Router), p: p.Router},
-		sync:     guardSync{s: s, name: name(ext.KindSync, 0, p.Continuity), p: p.Continuity},
-		media:    guardMedia{s: s, name: name(ext.KindMedia, 0, p.Media), p: p.Media},
+		identity: guardIdentity{s: s, name: idName, p: p.Identity, ready: s.readyOf(idName, p.Identity)},
+		router:   guardRouter{s: s, name: routerName, p: p.Router, ready: s.readyOf(routerName, p.Router)},
+		sync:     guardSync{s: s, name: syncName, p: p.Continuity, ready: s.readyOf(syncName, p.Continuity)},
+		media:    guardMedia{s: s, name: mediaName, p: p.Media, ready: s.readyOf(mediaName, p.Media)},
 		all:      append([]ext.Entry(nil), p.All...),
 	}
 	for i, c := range p.Context {
-		g := &guardContext{s: s, name: name(ext.KindContext, i, c), p: c}
+		n := name(ext.KindContext, i, c)
+		g := &guardContext{s: s, name: n, p: c, ready: s.readyOf(n, c)}
 		g.touches = newExtQueue(s, ext.KindContext, g.name, ext.TouchQueue, func(ctx context.Context, f ext.TouchedFile) error {
 			c.NoteTouch(ctx, f)
 			return nil
@@ -137,7 +141,8 @@ func (s *Server) beginFreeQueues() {
 }
 
 // beginQueues begins the drains of the queues the provider name holds,
-// once its Start has succeeded (PR-4). It is safe to call more than once.
+// once its Start has succeeded (superviseStart). It is safe to call more
+// than once.
 func (s *Server) beginQueues(name string) {
 	s.extMu.Lock()
 	begins := s.extQueues[name]
@@ -500,19 +505,28 @@ func (q *extQueue[T]) run(ctx context.Context) {
 // errNoGrant is an identity provider's principal that may do nothing here.
 var errNoGrant = errors.New("principal: no grant")
 
+// errNotStarted is a delivery to a provider whose Start has not yet
+// succeeded: not made, to be made again.
+var errNotStarted = errors.New("extension: not started yet")
+
 // guardIdentity is an identity provider behind the guard.
 type guardIdentity struct {
-	s    *Server
-	name string
-	p    ext.IdentityProvider
+	s     *Server
+	name  string
+	p     ext.IdentityProvider
+	ready *atomic.Bool // nil, or the provider's Start (exthost.go)
 }
 
 func (g guardIdentity) Name() string { return g.name }
 
 // Authenticate answers the provider's principal for token, or ok false (as
 // the free default answers) when it fails, is late or answers a principal
-// that is not valid or holds no grant. It never answers an error.
+// that is not valid or holds no grant, and, without asking it, until its
+// Start has succeeded. It never answers an error.
 func (g guardIdentity) Authenticate(ctx context.Context, token string) (ext.Principal, bool, error) {
+	if !live(g.ready) {
+		return ext.Principal{}, false, nil
+	}
 	type answer struct {
 		p  ext.Principal
 		ok bool
@@ -540,9 +554,10 @@ func (g guardIdentity) Authenticate(ctx context.Context, token string) (ext.Prin
 
 // guardRouter is a decision router behind the guard.
 type guardRouter struct {
-	s    *Server
-	name string
-	p    ext.DecisionRouter
+	s     *Server
+	name  string
+	p     ext.DecisionRouter
+	ready *atomic.Bool
 }
 
 func (g guardRouter) Name() string { return g.name }
@@ -554,6 +569,9 @@ func (g guardRouter) Name() string { return g.name }
 // changes the options it was given changes neither the caller's question
 // nor what its answer is checked against.
 func (g guardRouter) Route(ctx context.Context, d ext.Decision) (ext.Route, error) {
+	if !live(g.ready) {
+		return ext.Route{}, nil
+	}
 	own := copyDecision(d)
 	return extCall(ctx, g.s, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
 		return r.Valid(own)
@@ -565,8 +583,12 @@ func (g guardRouter) Route(ctx context.Context, d ext.Decision) (ext.Route, erro
 
 // Resolved tells the provider of r on the calling goroutine (the router's
 // resolutions, which drop nothing, drain through it in order: C5), within
-// ext.DeliveryWait, its panic recovered.
+// ext.DeliveryWait, its panic recovered. A router not yet started routed
+// nothing, so it is told nothing.
 func (g guardRouter) Resolved(ctx context.Context, r ext.Resolution) {
+	if !live(g.ready) {
+		return
+	}
 	_ = extDeliver(ctx, g.s, ext.KindDecisions, g.name, func(ctx context.Context) error {
 		g.p.Resolved(ctx, r)
 		return nil
@@ -578,6 +600,7 @@ type guardContext struct {
 	s       *Server
 	name    string
 	p       ext.ContextProvider
+	ready   *atomic.Bool
 	touches *extQueue[ext.TouchedFile]
 }
 
@@ -590,6 +613,9 @@ func (g *guardContext) NoteTouch(_ context.Context, f ext.TouchedFile) { g.touch
 // when it fails, is late or answers more than ext.MaxContextBlocks or a
 // block ContextBlock.Valid refuses. It never answers an error.
 func (g *guardContext) Context(ctx context.Context, q ext.ContextQuery) ([]ext.ContextBlock, error) {
+	if !live(g.ready) {
+		return nil, nil
+	}
 	// Copied here, before the call's goroutine begins: a caller answered
 	// the default (its context ended) may reuse q's inputs at once.
 	own := copyQuery(q)
@@ -615,21 +641,30 @@ type guardSink struct {
 	name  string
 	p     ext.NotificationSink
 	queue *extQueue[ext.Notification]
+
+	eventsOnce sync.Once
+	events     []string
 }
 
 func (g *guardSink) Name() string { return g.name }
 
 // Events answers what the sink takes, as a copy, or nothing (an empty list,
 // not nil, which would take everything) when the call fails or is late.
-// It is read once, at start (C3).
+// The provider is asked once, at its first call (StartExtensions, which
+// decides from it whether the provider may send notices, or C3's wiring),
+// and every call after answers that same list, so what a sink takes and
+// whether its provider may send notices never disagree.
 func (g *guardSink) Events() []string {
-	return extCall(context.Background(), g.s, ext.KindNotifications, g.name, ext.StartWait, []string{}, nil, func(context.Context) ([]string, error) {
-		evs := g.p.Events()
-		if evs == nil {
-			return nil, nil
-		}
-		return append([]string{}, evs...), nil
+	g.eventsOnce.Do(func() {
+		g.events = extCall(context.Background(), g.s, ext.KindNotifications, g.name, ext.StartWait, []string{}, nil, func(context.Context) ([]string, error) {
+			evs := g.p.Events()
+			if evs == nil {
+				return nil, nil
+			}
+			return append([]string{}, evs...), nil
+		})
 	})
+	return copyOrNil(g.events)
 }
 
 // Notify queues n for the sink, never waiting; it answers nil.
@@ -640,9 +675,10 @@ func (g *guardSink) Notify(_ context.Context, n ext.Notification) error {
 
 // guardSync is a sync store behind the guard.
 type guardSync struct {
-	s    *Server
-	name string
-	p    ext.ContinuityStore
+	s     *Server
+	name  string
+	p     ext.ContinuityStore
+	ready *atomic.Bool
 }
 
 func (g guardSync) Name() string { return g.name }
@@ -650,12 +686,20 @@ func (g guardSync) Name() string { return g.name }
 // Saved delivers d on the calling goroutine (the sync adapter's pending
 // set, which drops nothing, drains through it: C6), within
 // ext.DeliveryWait, its panic recovered; an error has d delivered again.
+// Until the store's Start has succeeded it is not asked: errNotStarted,
+// so the pending set keeps d for a later delivery.
 func (g guardSync) Saved(ctx context.Context, d ext.Doc) error {
+	if !live(g.ready) {
+		return errNotStarted
+	}
 	return extDeliver(ctx, g.s, ext.KindSync, g.name, func(ctx context.Context) error { return g.p.Saved(ctx, d) })
 }
 
 // Deleted is Saved for a document the data directory no longer holds.
 func (g guardSync) Deleted(ctx context.Context, d ext.Doc) error {
+	if !live(g.ready) {
+		return errNotStarted
+	}
 	return extDeliver(ctx, g.s, ext.KindSync, g.name, func(ctx context.Context) error { return g.p.Deleted(ctx, d) })
 }
 
@@ -673,9 +717,10 @@ func (g guardSync) Restore(ctx context.Context, r ext.RestoreRequest, w io.Write
 
 // guardMedia is a media room provider behind the guard.
 type guardMedia struct {
-	s    *Server
-	name string
-	p    ext.MediaRoomProvider
+	s     *Server
+	name  string
+	p     ext.MediaRoomProvider
+	ready *atomic.Bool
 }
 
 func (g guardMedia) Name() string { return g.name }
@@ -684,6 +729,9 @@ func (g guardMedia) Name() string { return g.name }
 // default's) when it fails, is late or answers more than ext.MaxICEServers
 // or a server ICEServer.Valid refuses. It never answers an error.
 func (g guardMedia) ICEServers(ctx context.Context, r ext.ICERequest) ([]ext.ICEServer, error) {
+	if !live(g.ready) {
+		return nil, nil
+	}
 	return extCall(ctx, g.s, ext.KindMedia, g.name, ext.ICEWait, nil, func(ss []ext.ICEServer) error {
 		if len(ss) > ext.MaxICEServers {
 			return fmt.Errorf("ice: %d servers, past %d", len(ss), ext.MaxICEServers)
@@ -709,6 +757,9 @@ func (g guardMedia) ICEServers(ctx context.Context, r ext.ICERequest) ([]ext.ICE
 // until Program item CL1, which adds its check. The provider is given a
 // copy of r's grants, made before the call's goroutine begins.
 func (g guardMedia) Room(ctx context.Context, r ext.RoomRequest) (ext.RoomJoin, bool, error) {
+	if !live(g.ready) {
+		return ext.RoomJoin{}, false, nil
+	}
 	own := r
 	own.By = copyPrincipal(r.By)
 	type answer struct {
