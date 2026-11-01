@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,7 +164,8 @@ func stopRunVia(t *testing.T, e *testEnv, runID string) {
 // What the providers answer is bounded: an answer with a block past its
 // bound is none of that provider's, a ninth block is never read, and past
 // ext.MaxTaskContext together the last blocks are left out until the rest
-// fit, the run's log saying how many and whose.
+// fit, the run's log saying how many and whose, in notes none of which is
+// cut, however many providers there are and however long their names.
 func TestContextBounds(t *testing.T) {
 	block := func(title string, n int) ext.ContextBlock {
 		return ext.ContextBlock{Title: title, Body: strings.Repeat("b", n)}
@@ -216,11 +218,58 @@ func TestContextBounds(t *testing.T) {
 		t.Fatalf("the run's log lacks %q: %v", note, msgs)
 	}
 	stopRunVia(t, e, run.ID)
+
+	// The most providers, their names the longest, each a block of the
+	// most: all but the first's are left out, and the log names every one
+	// with its count, in notes none of which is cut.
+	var ps []ext.ContextProvider
+	var want []string
+	for i := range ext.MaxPerList {
+		name := fmt.Sprintf("p%02d", i) + strings.Repeat("x", ext.MaxProviderName-3)
+		ps = append(ps, &fakeContext{name: name, answer: blocksOf(block("t", ext.MaxContextBody))})
+		if i > 0 {
+			want = append(want, name+" 1")
+		}
+	}
+	e = contextEnv(t, ps...)
+	e.gitRepo(t)
+	run, release, err = e.srv.runs.LaunchNamed(t.Context(), managedCrew(e.root), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, f, _ = attemptTaskFiles(t, e, run.ID, "build"); len(f.Context) != 1 || f.Context[0].Source != ps[0].Name() {
+		t.Fatalf("kept %+v", f.Context)
+	}
+	r, _ = e.srv.runs.Get(run.ID)
+	var notes []string
+	for _, en := range r.Log {
+		if strings.HasPrefix(en.Message, "context for build #1:") {
+			notes = append(notes, en.Message)
+		}
+	}
+	head := fmt.Sprintf("context for build #1: %d blocks left out past 16 KiB together (", ext.MaxPerList-1)
+	var named []string
+	for i, m := range notes {
+		prefix := "context for build #1: left out also ("
+		if i == 0 {
+			prefix = head
+		}
+		if len(m) > session.MaxAttentionMessage || !strings.HasPrefix(m, prefix) || !strings.HasSuffix(m, ")") {
+			t.Fatalf("note %d of %d (%d bytes): %q", i, len(notes), len(m), m)
+		}
+		named = append(named, strings.Split(strings.TrimSuffix(strings.TrimPrefix(m, prefix), ")"), ", ")...)
+	}
+	if len(notes) < 2 || !reflect.DeepEqual(named, want) {
+		t.Fatalf("the notes name %v, want %v: %q", named, want, notes)
+	}
+	stopRunVia(t, e, run.ID)
 }
 
 // A provider late, failing or panicking adds nothing: the attempt starts
-// with no block once the late one's ext.ContextWait has ended its call,
-// and a working provider's blocks are kept beside them.
+// with no block once ext.ContextWait has ended the late one's call, even
+// when that provider ignores its context and never returns, and a working
+// provider's blocks are kept beside them.
 func TestContextLateOrFailing(t *testing.T) {
 	type seen struct {
 		deadline time.Time
@@ -228,11 +277,13 @@ func TestContextLateOrFailing(t *testing.T) {
 		asked    time.Time
 	}
 	lateSaw := make(chan seen, 1)
+	lateGate := make(chan struct{}) // closed as the test ends
+	var lateReturned atomic.Bool
 	late := &fakeContext{name: "late", answer: func(ctx context.Context, _ ext.ContextQuery) ([]ext.ContextBlock, error) {
-		asked := time.Now()
 		d, ok := ctx.Deadline()
-		<-ctx.Done() // never answers on its own
-		lateSaw <- seen{d, ok, asked}
+		lateSaw <- seen{d, ok, time.Now()}
+		<-lateGate // ignores its context: returns only once the test ends
+		lateReturned.Store(true)
 		return []ext.ContextBlock{{Title: "late", Body: "too late"}}, nil
 	}}
 	failing := &fakeContext{name: "failing", answer: func(context.Context, ext.ContextQuery) ([]ext.ContextBlock, error) {
@@ -241,6 +292,8 @@ func TestContextLateOrFailing(t *testing.T) {
 	panicking := &fakeContext{name: "panicking", answer: func(context.Context, ext.ContextQuery) ([]ext.ContextBlock, error) { panic("boom") }}
 	fine := &fakeContext{name: "fine", answer: blocksOf(ext.ContextBlock{Title: "Kept", Body: "From a provider that answers."})}
 	e := contextEnv(t, late, failing, panicking, fine)
+	// Run before the server's cleanup (LIFO): the late call returns.
+	t.Cleanup(func() { close(lateGate) })
 	e.gitRepo(t)
 	run, release, err := e.srv.runs.LaunchNamed(t.Context(), managedCrew(e.root), "")
 	release()
@@ -255,6 +308,11 @@ func TestContextLateOrFailing(t *testing.T) {
 	md, f, _ := attemptTaskFiles(t, e, run.ID, "build")
 	if !reflect.DeepEqual(f.Context, []crew.TaskContext{{Source: "fine", Title: "Kept", Body: "From a provider that answers."}}) || strings.Contains(md, "too late") || strings.Contains(md, "(from late)") {
 		t.Fatalf("the context: %+v", f.Context)
+	}
+	// The attempt runs while the late provider's call has still not
+	// returned: the guard's deadline ended the wait, not the provider.
+	if lateReturned.Load() {
+		t.Fatal("the late provider returned before the test let it")
 	}
 	stopRunVia(t, e, run.ID)
 

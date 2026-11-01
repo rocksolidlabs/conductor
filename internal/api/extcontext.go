@@ -48,7 +48,8 @@ func (s *Server) wireContext() {
 // ext.MaxContextBlocks, each block ContextBlock.Valid, or none), in
 // registration order, each block named by its provider, and, when they
 // pass ext.MaxTaskContext together as a task file keeps them, the last
-// left out until they fit, the run's log saying how many and whose.
+// left out until they fit, the run's log saying how many and whose (in
+// more than one note when one would be cut: packNotes).
 func (s *Server) contextFor(ctx context.Context, q ext.ContextQuery) []crew.TaskContext {
 	providers := s.exts.context
 	answers := make([][]ext.ContextBlock, len(providers))
@@ -84,9 +85,40 @@ func (s *Server) contextFor(ctx context.Context, q ext.ContextQuery) []crew.Task
 			n += dropped[order[i]]
 			whose = append(whose, fmt.Sprintf("%s %d", order[i], dropped[order[i]]))
 		}
-		s.runs.Note(q.Run, session.ActivityStatus, fmt.Sprintf("context for %s #%d: %d blocks left out past %d KiB together (%s)", q.Task, q.Attempt, n, ext.MaxTaskContext>>10, strings.Join(whose, ", ")))
+		head := fmt.Sprintf("context for %s #%d: %d blocks left out past %d KiB together", q.Task, q.Attempt, n, ext.MaxTaskContext>>10)
+		more := fmt.Sprintf("context for %s #%d: left out also", q.Task, q.Attempt)
+		for _, m := range packNotes(head, more, whose) {
+			s.runs.Note(q.Run, session.ActivityStatus, m)
+		}
 	}
 	return blocks
+}
+
+// packNotes is the run-log notes that say head and then every item of
+// whose, "head (a, b)", in as few notes as fit session.MaxAttentionMessage
+// (what a note keeps of its message) each, a note after the first saying
+// more in place of head. head and more are short (a task id, an attempt and
+// a count) and an item is a provider's name and a count, so every note
+// holds at least one item and none is cut.
+func packNotes(head, more string, whose []string) []string {
+	var notes []string
+	var b strings.Builder
+	b.WriteString(head + " (")
+	n := 0 // items in b
+	for _, w := range whose {
+		if n > 0 && b.Len()+len(", ")+len(w)+len(")") > session.MaxAttentionMessage {
+			notes = append(notes, b.String()+")")
+			b.Reset()
+			b.WriteString(more + " (")
+			n = 0
+		}
+		if n > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(w)
+		n++
+	}
+	return append(notes, b.String()+")")
 }
 
 // touch is a file a session's agent touched, as a context provider's queue
