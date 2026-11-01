@@ -405,6 +405,38 @@ events, nothing polled. A ticket's page embeds `RunTasks.vue`, the run
 page's own Tasks rows, for each linked run, and the run page asks
 `GET /api/dispatch/links?run=` for its ticket's chip.
 
+A ticket's plan revisions and launches (Program item DS2,
+`docs/plans/dispatch-evidence.md`) join Dispatch to Yardmaster without
+either importing the other: the API is what joins them. A plan revision
+is an immutable record in Dispatch's store, taken whole from a saved crew
+with tasks (its members' agents as the catalog resolved them, the base
+pinned to a commit, the references at it), approved by the operator
+against the ticket's intent. A launch (`api/dispatch_launch.go`) is
+recorded before it runs: Dispatch commits it pending with its package
+(the ticket as it stood, the revision, the attachments, comments,
+references, constraints and decisions handed over, frozen and hashed)
+and the run id it minted; the engine's planned launch
+(`crew.Engine.LaunchPlanned`, through `crew.Launcher` like any managed
+run) writes the run's first ledger row with an insert that refuses an id
+the ledger has, carrying the package byte for byte and the ticket's id;
+and the API records the launch started or failed by what the ledger
+holds, a row being the launch's only when its ticket and its package's
+SHA-256 are the launch's. So a resend answers the first launch, no
+launch makes two runs or adopts another's, and the reconcile run at the
+ledger's recovery (`openLedger`'s `afterRecover`, inside the one
+`OnOwned` callback when the lock comes late) settles what a server that
+stopped left pending; launches are admitted only once it has finished.
+The package travels with the run, not with Dispatch: the ledger keeps it,
+continuations carry it, and every attempt is handed `ticket.md`,
+`package.json` and the attachments (read from Dispatch's store by their
+pinned hashes, `UsePackageFiles`) beside its task files, so an edit of
+the ticket after the launch changes nothing of the run; each attempt's
+session starts only from the agent selection the revision approved,
+checked by the launcher on the catalog entry it starts. A run's evidence
+is read through its launch: its run id names the run in the engine, its
+record and the ledger, whose rows (attempts, check receipts with their
+logs' SHA-256, results, commands) are the truth Dispatch never copies.
+
 ## Switchyard
 
 A switchyard is the server in a mode (`config.Switchyard`): the signaling
