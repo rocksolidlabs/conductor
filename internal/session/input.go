@@ -67,6 +67,12 @@ type writeWait struct {
 	// was too slow.
 	from   *Subscription
 	anyEnd bool
+	// gone, when set, is closed once whoever asked for the write no longer
+	// stands, as a revoked link's connection no longer does
+	// (Submission.Withdrawn): it withdraws a write not yet begun
+	// (errWithdrawn), asked as the write is queued and again as the writer
+	// takes it, as from's credential does.
+	gone <-chan struct{}
 	// before, when set, runs as the writer takes the write, just before it
 	// is made, and never for a write not made: a submission's BeforeEnter.
 	before func()
@@ -82,6 +88,13 @@ type writeWait struct {
 // before it closes the link's connections), and that first; a
 // keystroke's also once the connection has ended (errGone).
 func (o writeWait) withdrawn() error {
+	if o.gone != nil {
+		select {
+		case <-o.gone:
+			return errWithdrawn
+		default:
+		}
+	}
 	if o.from == nil {
 		return nil
 	}
@@ -97,6 +110,19 @@ func (o writeWait) withdrawn() error {
 	}
 	return nil
 }
+
+// errWithdrawn withdraws a submission whose sender no longer stands
+// (Submission.Withdrawn closed): a kind of ErrRevoked, so that whatever a
+// revoked link does to a submission, its text typed or not, this does too.
+var errWithdrawn error = senderWithdrawn{}
+
+// senderWithdrawn is errWithdrawn's type: an error that is also ErrRevoked.
+type senderWithdrawn struct{}
+
+func (senderWithdrawn) Error() string { return "session: the submission's sender was withdrawn" }
+
+// Is makes errors.Is(errWithdrawn, ErrRevoked) hold.
+func (senderWithdrawn) Is(target error) bool { return target == ErrRevoked }
 
 // revoked says why sub's credential no longer stands (a revoked or expired
 // link: ErrRevoked, ErrExpired), nil while it does, whether sub is still
@@ -353,6 +379,8 @@ wait:
 				fromEnded = nil
 				continue
 			}
+		case <-o.gone:
+			err = errWithdrawn
 		case <-s.ended:
 			err = ErrSessionEnded
 		}

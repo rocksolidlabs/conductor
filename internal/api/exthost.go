@@ -273,9 +273,12 @@ func (h *extHost) gone() error {
 	return nil
 }
 
-// bound is ctx ending also when the host's try does, so a call already
-// under way when its try is given up (waiting for a session's turn, for an
-// agent's lookup) ends then, before it acts.
+// bound is ctx ending also when the host's try does, so a launch already
+// under way when its try is given up (waiting on an agent's lookup) stops
+// waiting then. It is passed on by a goroutine of its own, so it only
+// shortens the wait: whether the call acts is asked of the try itself (h.gone
+// as the engine is asked; Submission.Withdrawn as the writer takes a line),
+// never of this context.
 func (h *extHost) bound(ctx context.Context) (context.Context, context.CancelFunc) {
 	cctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(h.ctx, cancel)
@@ -358,8 +361,13 @@ func (h *extHost) launchError(id string, err error) error {
 // Either is recorded as by r.By's name. A choice's keys (r.Input) and a
 // hosted session answer ext.ErrUnsupported until the decision router's
 // seam (C5) adds them; a line accepted while its program reads slowly
-// answers "pending". A submission still waiting (for the session's turn)
-// when its try is given up answers context.Canceled and types nothing.
+// answers "pending". The try's end withdraws the submission as a revoked
+// link does (session.Submission.Withdrawn, looked at as the writer takes
+// the text): one whose text is not yet typed when its try is given up
+// answers context.Canceled and types nothing; one whose text is typed and
+// whose Enter is not answers context.Canceled too, its Enter left out and
+// the session's turn held for a person (a reply's claim let go as the
+// hold shows), so that no later line joins the text.
 func (h *extHost) Submit(ctx context.Context, r ext.SubmitRequest) (ext.SubmitResult, error) {
 	if err := h.gone(); err != nil {
 		return ext.SubmitResult{}, err
@@ -378,11 +386,12 @@ func (h *extHost) Submit(ctx context.Context, r ext.SubmitRequest) (ext.SubmitRe
 	if r.Input != "" {
 		return ext.SubmitResult{}, fmt.Errorf("%w: a choice's keys are not answered through the host yet", ext.ErrUnsupported)
 	}
-	bctx, end := h.bound(ctx)
-	defer end()
-	sctx, cancel := context.WithTimeout(bctx, submitTimeout)
+	sctx, cancel := context.WithTimeout(ctx, submitTimeout)
 	defer cancel()
-	sub := session.Submission{Text: r.Text, ByName: r.By.Name, Question: r.Question}
+	// The try's end is the submission's withdrawal, not its context's: a
+	// closed channel the writer sees at once, and that leaves a typed text
+	// held rather than its turn given to the next line.
+	sub := session.Submission{Text: r.Text, ByName: r.By.Name, Question: r.Question, Withdrawn: h.ctx.Done()}
 	// A line that answers no question is never typed into one.
 	sub.UnlessWaiting = r.Question == ""
 	res, err := local.Submit(sctx, sub)

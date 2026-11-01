@@ -3226,7 +3226,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   context cancelled, its `Host` refusing) and tried again after a backoff
   of 1 s doubling to 5 minutes, never while the last try is unfinished
   (one that never returns is logged as late once a minute). A `Host`
-  call under way when its try is given up ends then, before it acts; a
+  call under way when its try is given up ends then, before it acts (a
+  submission is withdrawn as a revoked link's is: its text typed, the
+  Enter left out and the turn held for a person); a
   sink's `Events` is read on its provider's own goroutine, never by
   `StartExtensions`; the switchyard's publisher is set before any
   provider starts.
@@ -3243,7 +3245,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestStartRetriedUntilItSucceeds`, `TestStartQueuesHeldUntilStarted`,
   `TestStartNeverOverlaps` (the clock driven through a seam, never
   slept), `TestStartNeverWaitsOnEvents`, `TestHostCallsEndWithTheirTry`,
-  `TestServeStartsProviders`.
+  `TestHostSubmitGivenUpInItsPauseHoldsTheTurn`, `TestServeStartsProviders`;
+  in `internal/session`, `TestAWithdrawnSubmissionIsWithdrawnAsARevokedLinksIs`.
 
   PR-5 (#477): opencore: the open-core rules as a lint, failing on a planted
   import. Planned.

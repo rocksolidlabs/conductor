@@ -19,6 +19,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
 // testHost is the ext.Host a try of the provider name's Start would get,
@@ -862,9 +863,10 @@ func waitIn(t *testing.T, frame string) {
 
 // A Host call already under way when its try is given up ends then,
 // before it acts, whatever the caller's context: a line waiting for the
-// session's turn answers context.Canceled and is never typed, and a
-// launch waiting on an agent's lookup answers context.Canceled and starts
-// no run.
+// session's turn answers context.Canceled and is never typed, though the
+// turn is given back the moment after the try is given up, with nothing
+// left to pass the try's end on; and a launch waiting on an agent's lookup
+// answers context.Canceled and starts no run.
 func TestHostCallsEndWithTheirTry(t *testing.T) {
 	e := newTestEnv(t, nil)
 	e.stopEverything(t)
@@ -893,7 +895,9 @@ func TestHostCallsEndWithTheirTry(t *testing.T) {
 		late <- err
 	}()
 	waitIn(t, "session.(*Local).awaitTurn(")
+	// Given up, and the turn given back at once: the line must not take it.
 	giveUp()
+	close(gate)
 	select {
 	case err := <-late:
 		if !errors.Is(err, context.Canceled) {
@@ -902,7 +906,6 @@ func TestHostCallsEndWithTheirTry(t *testing.T) {
 	case <-time.After(testWait):
 		t.Fatal("a given-up try's line still waits for the session's turn")
 	}
-	close(gate)
 	select {
 	case err := <-first:
 		if err != nil {
@@ -952,6 +955,107 @@ func TestHostCallsEndWithTheirTry(t *testing.T) {
 		if r.CrewID == crewID {
 			t.Fatalf("a given-up try's launch started run %s", r.ID)
 		}
+	}
+}
+
+// A Host submission whose text is typed when its try is given up (in its
+// pause, an hour long here, so that only the try's end can end it) leaves
+// its Enter out and holds the session's turn for a person, as a revoked
+// link's line does: it answers context.Canceled, and no later line is
+// typed after the text until a person types into the terminal. A reply's
+// claim on its question is let go as the hold shows: once the person's
+// keys show the question again, a viewer's reply to it is typed, not
+// refused as answered.
+func TestHostSubmitGivenUpInItsPauseHoldsTheTurn(t *testing.T) {
+	for _, reply := range []bool{false, true} {
+		name := "a line"
+		if reply {
+			name = "a reply"
+		}
+		t.Run(name, func(t *testing.T) {
+			e := newTestEnv(t, nil)
+			proc := sessiontest.NewFakeProc()
+			t.Cleanup(func() { proc.End(0) })
+			l := session.NewLocal(session.Info{ID: "paused", Cwd: e.root, Cols: 80, Rows: 24}, proc, session.Options{
+				ScrollbackBytes: 4096, InputWait: testWait, SubmitPause: time.Hour, Log: slog.New(slog.DiscardHandler),
+			})
+			if err := e.srv.registry.Add(l); err != nil {
+				t.Fatal(err)
+			}
+			written := func() string {
+				t.Helper()
+				select {
+				case b := <-proc.Input:
+					return string(b)
+				case <-time.After(testWait):
+					t.Fatalf("nothing written within %s", testWait)
+					return ""
+				}
+			}
+			nothingWritten := func(d time.Duration) {
+				t.Helper()
+				select {
+				case b := <-proc.Input:
+					t.Fatalf("written %q", b)
+				case <-time.After(d):
+				}
+			}
+			nate, err := l.Attach("nate", session.RoleControl, "", 80, 24, &gapSink{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var q string
+			if reply {
+				if err := l.TrySetAttentionFull(session.AttentionNeedsInput, "Which name?", session.SourceAPI, "", nil); err != nil {
+					t.Fatal(err)
+				}
+				q = l.Info().Attention.ID
+			}
+			try, giveUp := context.WithCancel(t.Context())
+			late := make(chan error, 1)
+			go func() {
+				_, err := testHost(e.srv, try, "sched").Submit(context.Background(), ext.SubmitRequest{Session: "paused", Text: "late", Question: q, By: ada})
+				late <- err
+			}()
+			if got := written(); got != "late" {
+				t.Fatalf("written %q", got)
+			}
+			giveUp()
+			select {
+			case err := <-late:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("a given-up try's typed line: %v, want context.Canceled", err)
+				}
+			case <-time.After(testWait):
+				t.Fatal("a given-up try's line still waits in its pause")
+			}
+			end := time.Now().Add(testWait)
+			for !l.Held() {
+				if time.Now().After(end) {
+					t.Fatalf("the turn is not held: %+v", l.Info().Attention)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			next := make(chan error, 1)
+			go func() {
+				_, err := l.Submit(context.Background(), session.Submission{Text: "second", By: nate, Question: q})
+				next <- err
+			}()
+			nothingWritten(300 * time.Millisecond)
+			if err := l.Input(nate, []byte{0x15}); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"\x15", "second"} {
+				if got := written(); got != want {
+					t.Fatalf("written %q, want %q", got, want)
+				}
+			}
+			select {
+			case err := <-next:
+				t.Fatalf("the next line returned in its pause: %v", err)
+			default:
+			}
+		})
 	}
 }
 

@@ -490,7 +490,12 @@ it is `starting`. A try that errs, panics or has not returned within
 and given up: its context is cancelled, which revokes its `Host` (every
 call then answers `context.Canceled`, and one under way, waiting for a
 session's turn or a launch not yet handed to the engine, ends with it, so
-goroutines a given-up try began cannot act). The next try begins after a
+goroutines a given-up try began cannot act). A submission's withdrawal is
+the try's end itself (`session.Submission.Withdrawn`, looked at as the
+writer takes the text), never a context passed on later, and it does what
+a revoked link does: a line whose text is typed has its Enter left out and
+the session's turn held for a person, a reply's claim let go as the hold
+shows. The next try begins after a
 backoff of 1 s doubling to 5 minutes, for as long as the server runs, and
 only once the last try has returned: a `Start` that ignores its context
 holds one goroutine, logged as late once a minute, and nothing calls it

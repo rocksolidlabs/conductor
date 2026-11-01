@@ -118,6 +118,16 @@ type Submission struct {
 	// typed whose Enter is not written lets the claim go (ErrLineStranded,
 	// the turn held). A line naming no question answers nothing.
 	Question string
+	// Withdrawn, when set, is closed once whoever sent the submission no
+	// longer stands (an extension's Host whose try was given up): as a
+	// revoked link does for By or From, it withdraws the submission
+	// (a kind of ErrRevoked) while it waits for the session's turn and
+	// until its text's write begins, looked at as the writer takes the
+	// text; once the text is typed, its Enter is left out and the
+	// session's turn is held for a person (holdTyped), a reply's claim let
+	// go as the hold shows. A closed channel is seen at once: nothing
+	// waits for it to be passed on.
+	Withdrawn <-chan struct{}
 }
 
 // ErrSubmitPending says a submission's text was being taken when its time
@@ -273,7 +283,8 @@ type SubmitResult struct {
 // MaxSubmitText bytes once cleaned, ErrSessionEnded, ctx's error,
 // ErrInputStalled, ErrSubmitPending (accepted), ErrTooManyRequests, the
 // process's write error, or why the session ended By (or From) for its
-// link (ErrRevoked, ErrExpired), or its credential no longer stands,
+// link (ErrRevoked, ErrExpired), or its credential no longer stands, or
+// its sender was withdrawn (Submission.Withdrawn, a kind of ErrRevoked),
 // before its Enter was written. Before the text is typed, nothing of it
 // is written. Once it is typed (or its write begun), its Enter is not
 // written either, and the text cannot be taken back out of the program:
@@ -306,7 +317,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if from != nil {
 		fromEnded = from.done
 	}
-	if err := s.awaitTurn(ctx, from, fromEnded); err != nil {
+	if err := s.awaitTurn(ctx, from, fromEnded, sub.Withdrawn); err != nil {
 		return res, err
 	}
 	// The turn is given back as Submit returns, unless the submission goes
@@ -317,10 +328,10 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 			<-s.submitting
 		}
 	}()
-	if from != nil {
-		if err := revoked(from); err != nil {
-			return res, err
-		}
+	// Its link, or its sender, withdrawn while it waited for the turn (the
+	// turn given back just as it was): nothing of it is written.
+	if err := (writeWait{from: from, gone: sub.Withdrawn}).withdrawn(); err != nil {
+		return res, err
 	}
 
 	// A dialog already drawn and not yet seen quiet takes a paste and drops
@@ -388,7 +399,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// while the program is known not to read, and is withdrawn when
 		// the session ends its controller (not when the controller only
 		// goes): its text, and its Enter once the text is typed.
-		wait:  writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, from: from},
+		wait:  writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, from: from, gone: sub.Withdrawn},
 		aside: aside,
 		claim: new(atomic.Uint64),
 	}
@@ -483,10 +494,11 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 const maxTurnWaiters = 64
 
 // awaitTurn takes the session's turn (submitting) for a submission of from
-// (nil for Conductor's own), waiting until ctx ends, the session ends or the
-// session ends from for its link (revoked): their errors then.
-// ErrTooManyRequests when maxTurnWaiters wait already.
-func (s *Local) awaitTurn(ctx context.Context, from *Subscription, fromEnded <-chan struct{}) error {
+// (nil for Conductor's own), waiting until ctx ends, the session ends, the
+// session ends from for its link (revoked) or gone closes (errWithdrawn,
+// Submission.Withdrawn): their errors then. ErrTooManyRequests when
+// maxTurnWaiters wait already.
+func (s *Local) awaitTurn(ctx context.Context, from *Subscription, fromEnded, gone <-chan struct{}) error {
 	select {
 	case s.submitting <- struct{}{}:
 		return nil
@@ -505,6 +517,8 @@ func (s *Local) awaitTurn(ctx context.Context, from *Subscription, fromEnded <-c
 			return ctx.Err()
 		case <-s.ended:
 			return ErrSessionEnded
+		case <-gone:
+			return errWithdrawn
 		case <-fromEnded:
 			if err := revoked(from); err != nil {
 				return err
@@ -790,12 +804,16 @@ func (s *Local) finishSubmission(landed <-chan error, sub Submission, text strin
 // enter is the rest of a submission once its text is written (res.Typed),
 // or when it has none: the pause and the look for a trust question after a
 // text, then its Enter, unless a prompt came meanwhile (or, with no text,
-// its controller's link no longer stands).
+// its controller's link no longer stands). Its sender withdrawn
+// (Submission.Withdrawn) ends the pause: no Enter (errWithdrawn).
 func (s *Local) enter(ctx context.Context, sub Submission, res SubmitResult, st submitState) (SubmitResult, error) {
 	if res.Typed {
 		t := time.NewTimer(s.opts.SubmitPause)
 		select {
 		case <-t.C:
+		case <-st.wait.gone:
+			t.Stop()
+			return res, errWithdrawn
 		case <-ctx.Done():
 			t.Stop()
 			return res, ctx.Err()
