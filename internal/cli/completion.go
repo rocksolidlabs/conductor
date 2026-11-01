@@ -60,13 +60,15 @@ type flagSpec struct {
 // commandSpec is a subcommand as the scripts know it: its flags (those of
 // the FlagSet its run function makes; TestCompletionSpecMatchesEveryFlag
 // holds the two together), the words its first argument may be, the words its
-// second may be after each first, and whether its argument is a crew id.
+// second may be after each first, and whether its argument is a crew id or a
+// file.
 type commandSpec struct {
 	name   string
 	flags  []flagSpec
 	words  []string
 	after  map[string][]string
 	crewID bool
+	file   bool
 }
 
 // completionSpec lists the subcommands of root.go with the flags their run
@@ -121,6 +123,8 @@ func completionSpec() []commandSpec {
 			flagSpec{name: "--assignee", kind: flagValue}, flagSpec{name: "--milestone", kind: flagValue}, flagSpec{name: "--horizon", kind: flagEnum, values: dispatch.Horizons[1:]}, flagSpec{name: "--note", kind: flagValue},
 			flagSpec{name: "--kind", kind: flagEnum, values: dispatch.LinkKinds}, flagSpec{name: "--url", kind: flagValue}, flagSpec{name: "--ref", kind: flagValue}),
 			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link"}},
+		{name: "export", flags: api(flagSpec{name: "--data-dir", kind: flagFile}, flagSpec{name: "--config", kind: flagFile}, flagSpec{name: "--out", kind: flagFile})},
+		{name: "restore", flags: []flagSpec{{name: "--config", kind: flagFile}, {name: "--data-dir", kind: flagFile}, {name: "--provider"}}, file: true},
 		{name: "hooks", flags: []flagSpec{{name: "--home", kind: flagFile}, {name: "--data-dir", kind: flagFile}}, words: []string{"install", "status"}, after: map[string][]string{"install": adapters}},
 		{name: "skill"},
 		{name: "completion", flags: []flagSpec{{name: "--shell", kind: flagEnum, values: []string{"zsh", "bash"}}, {name: "--rc", kind: flagFile}}, words: []string{"zsh", "bash", "install"}},
@@ -179,6 +183,8 @@ func zshScript(spec []commandSpec) string {
 		switch {
 		case c.crewID:
 			fmt.Fprintf(&b, "    %s)\n      local id re='%s' MATCH MBEGIN MEND; local -a ids\n      for id in \"${(@f)$(\"${words[1]}\" crews --ids 2>/dev/null)}\"; do [[ $id =~ $re ]] && ids+=(\"$id\"); done\n      (( ${#ids} )) && compadd -- \"${ids[@]}\" ;;\n", c.name, idShape)
+		case c.file:
+			fmt.Fprintf(&b, "    %s) _files ;;\n", c.name)
 		case len(c.words) > 0:
 			fmt.Fprintf(&b, "    %s)\n      if (( CURRENT == 3 )); then compadd -- %s\n", c.name, strings.Join(c.words, " "))
 			for _, w := range c.words {
@@ -230,6 +236,8 @@ func bashScript(spec []commandSpec) string {
 		switch {
 		case c.crewID:
 			fmt.Fprintf(&b, "    %s)\n      local id re='%s'\n      while IFS= read -r id; do [[ $id =~ $re && $id == \"$cur\"* ]] && COMPREPLY+=(\"$id\"); done < <(\"${COMP_WORDS[0]}\" crews --ids 2>/dev/null) ;;\n", c.name, idShape)
+		case c.file:
+			fmt.Fprintf(&b, "    %s) compopt -o filenames 2>/dev/null; local f; while IFS= read -r f; do COMPREPLY+=(\"$f\"); done < <(compgen -f -- \"$cur\") ;;\n", c.name)
 		case len(c.words) > 0:
 			fmt.Fprintf(&b, "    %s)\n      if (( COMP_CWORD == 2 )); then COMPREPLY=($(compgen -W %q -- \"$cur\"))\n", c.name, strings.Join(c.words, " "))
 			for _, w := range c.words {

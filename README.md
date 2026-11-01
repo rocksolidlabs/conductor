@@ -1792,6 +1792,74 @@ image sets `CONDUCTOR_DATA_DIR=/var/lib/conductor`, declared as a volume. At sta
 server logs the directory it uses, and warns when it overlaps an allowed root:
 agents working there can read and commit its secrets.
 
+### Export and restore
+
+`conductor export` writes the data directory as one zip file, and
+`conductor restore` puts one into an empty data directory on any machine,
+where the next `conductor serve` opens it as its own: the agents saved on
+the **Agents** page, the crews, the runs' records and the ledger (what ran
+at the export shows as interrupted, as after a restart), Dispatch with its
+attachments, a switchyard's links (their hashes; the tokens were never
+kept) and the hook assets.
+
+```sh
+conductor export                                 # the running server, by CONDUCTOR_SERVER and CONDUCTOR_WORKBENCH_TOKEN
+conductor export --server URL --token T --out conductor.zip
+conductor export --data-dir DIR [--config FILE]  # a data directory no server runs on
+conductor restore conductor.zip [--config FILE] [--data-dir DIR]
+```
+
+`conductor export` asks the running server (`GET /api/export`), which
+snapshots its databases while it writes; the server and the token are
+taken as `conductor up` takes them, and a plain `http://` server on another
+machine is refused without `--insecure`. With `--data-dir` it reads a
+stopped server's directory itself, holding `restore.lock` there while it
+reads (below), and is refused while a server runs on it or when the
+directory holds no server data; `--config` names the config that server
+runs with. The archive goes to `--out`, by default
+`conductor-export-<UTC time>.zip` in the current directory, made 0600,
+never over an existing file and, with `--data-dir`, never inside the
+directory it reads. It leaves out the
+workbench token, the locks, the temporary files, `tls/` (a new machine
+gets its own certificates) and `ext/`, and lists what it left out in its
+manifest. **The archive holds your agents' env values in full**, the
+configured ones they inherit among them, so that the restored agents
+launch as they did with no config at all: keep it as you keep the config.
+
+`conductor restore` goes into `--data-dir`, or else the directory
+`conductor serve` would use with the same `--config` and environment
+(`dataDir`, `CONDUCTOR_DATA_DIR`, the older `conductor.d` rule of
+[Upgrading](#upgrading), then `~/.conductor`), which it prints before it
+writes anything. It refuses a directory that holds server data
+(`catalog.json`, `crews/`, `crews.json`, `runs/`, `dispatch/` or
+`links/`; `hooks/` is replaced) or that a server runs on, checks the whole
+archive before it writes a byte, and renames what it staged into place,
+never over anything. From before its first byte to after its last rename
+it holds `restore.lock` in the directory, which `conductor serve` takes
+too while it starts (and `conductor export --data-dir` while it reads), so
+none of them runs on it while another does. A serve or an export that was
+killed leaves the file, and the next one takes it over; a restore that was
+cut short leaves it too, and every later restore, export or serve is
+refused with a message naming it, to remove before you start over. On a machine whose config holds the same agents and
+values, the restored server's start masks those values again, so the
+agents follow that config from then on.
+
+`conductor restore --provider` asks the sync store built into the app for
+this device's latest copy instead of a file, and installs it the same way,
+printing the store's name and the bytes as they arrive (Ctrl-C stops it,
+nothing installed); the open-source build has none, so there is nothing to
+restore and nothing changes.
+
+The desktop app starts its server with a data directory of its own, which
+the CLI's default does not know; its **Settings** page names it. By default
+it is `conductor` in the app's directory (`~/Library/Application
+Support/Conductor/conductor` on macOS, `~/.config/Conductor/conductor` on
+Linux) and, on Windows, `~/.local/share/conductor/data` inside the WSL
+distribution the server runs in, where the command runs too (the app puts
+the binary at `~/.local/share/conductor/bin/conductor` there). Quit the app
+first, then give that directory as `--data-dir` to `conductor export` or
+`conductor restore`.
+
 ### Agent catalog
 
 Built-in entries, one for each agent with a hook adapter (see
