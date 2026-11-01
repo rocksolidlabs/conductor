@@ -493,6 +493,10 @@ func TestSyncAfterLocalCommit(t *testing.T) {
 	if _, err := srv.ledger.Transition(t.Context(), "team-00000001", func(tx *ledger.Tx) error { return tx.Event("x", nil) }); err != nil {
 		t.Fatal(err)
 	}
+	run, ok, err := srv.ledger.Run(t.Context(), "team-00000001")
+	if err != nil || !ok {
+		t.Fatalf("the run: %v %v", ok, err)
+	}
 	if rc, err := srv.dispatch.CreateProject(t.Context(), dispatch.Op{Actor: adminActor, ID: "sync-p1", By: "Ada"}, dispatch.NewProject{Key: "SYN", Name: "Sync"}); err != nil || rc.Status != dispatch.StatusDone {
 		t.Fatalf("project: %+v %v", rc, err)
 	}
@@ -500,18 +504,28 @@ func TestSyncAfterLocalCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	landed("crews/todo-app.json")
-	f.until(t, "the crew deleted", func(c []syncCall) bool {
-		for _, c := range c {
-			if c.op == "deleted" && c.d.Path == "crews/todo-app.json" && c.err == nil {
-				return true
+	// The three are told in no fixed order (a pending entry is updated in
+	// place, so the crew's delete can go ahead of the run and the project),
+	// and a call is kept only after its check ran: wait for each
+	// acknowledged before reading what the checks found.
+	f.until(t, "the crew deleted, the run at its revision and the project", func(calls []syncCall) bool {
+		var gone, pointer, project bool
+		for _, c := range calls {
+			if c.err != nil {
+				continue
+			}
+			switch {
+			case c.d.Store == syncData && c.d.Path == "crews/todo-app.json" && c.op == "deleted":
+				gone = true
+			case c.d.Store == syncLedger && c.d.Path == "team-00000001" && c.d.Rev >= run.Revision:
+				pointer = true
+			case c.d.Store == syncDispatch && c.d.Path != syncLogPath:
+				var ref syncRef
+				project = project || (json.Unmarshal(c.d.Data, &ref) == nil && ref.Kind == "project")
 			}
 		}
-		return false
+		return gone && pointer && project
 	})
-	calls := f.all()
-	if !slices.Contains(keysOf(calls, ""), syncKey{syncLedger, "team-00000001"}) {
-		t.Fatalf("the run never reached the sync store: %s", describeCalls(calls))
-	}
 	mu.Lock()
 	defer mu.Unlock()
 	if len(problems) > 0 {
