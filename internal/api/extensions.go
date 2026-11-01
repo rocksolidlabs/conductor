@@ -106,7 +106,8 @@ func (s *Server) installExtensions(p ext.Providers) {
 	}
 	for i, n := range p.Notifications {
 		g := &guardSink{s: s, name: name(ext.KindNotifications, i, n), p: n}
-		g.queue = newExtQueue(s, ext.KindNotifications, g.name, ext.SinkQueue, n.Notify)
+		g.queue = newExtQueue(s, ext.KindNotifications, g.name, ext.SinkQueue, g.deliver)
+		g.queue.direct = true // deliver reads Events, then calls extDeliver itself
 		s.holdQueue(n, g.name, g.queue.begin)
 		s.exts.sinks = append(s.exts.sinks, g)
 	}
@@ -383,6 +384,9 @@ var extWaiting atomic.Pointer[time.Duration]
 // logged as extCall logs one. A provider that ignores its context, or
 // whose error's text blocks, holds only the goroutine that delivers to it.
 func extDeliver(ctx context.Context, s *Server, kind, name string, fn func(context.Context) error) (err error) {
+	if f := extDeliverStarts.Load(); f != nil {
+		(*f)(kind, name)
+	}
 	cctx, cancel := context.WithTimeout(ctx, ext.DeliveryWait)
 	defer cancel()
 	defer func() {
@@ -404,16 +408,27 @@ func extDeliver(ctx context.Context, s *Server, kind, name string, fn func(conte
 	return nil
 }
 
+// extDeliverStarts, when a test sets it, is told the kind and provider
+// name of every extDeliver as it begins, before its context (and so its
+// ext.DeliveryWait) starts; nil outside tests.
+var extDeliverStarts atomic.Pointer[func(kind, name string)]
+
 // extQueue holds what is to be delivered to one provider of one kind, in
 // order: a ring filled without waiting, whose oldest entry is dropped when
 // it is full (the first drop and every hundredth logged, as a webhook's
 // queue does), drained by one goroutine of its own once begun, each
-// delivery through extDeliver.
+// delivery through extDeliver. A webhook's queue is one too (webhooks.go):
+// direct, it delivers without extDeliver, a webhook bounding and logging
+// its own deliveries, and onDrop logs its drops as a webhook's. A
+// notification sink's is direct as well: its delivery reads the sink's
+// Events first and only then calls extDeliver (guardSink.deliver).
 type extQueue[T any] struct {
 	s       *Server
 	kind    string
 	name    string
 	deliver func(context.Context, T) error
+	direct  bool                 // deliver is called as it is, with the drain's context
+	onDrop  func(dropped uint64) // logs a drop; nil for the extension line
 
 	mu      sync.Mutex
 	ring    []T // n entries from head
@@ -450,6 +465,10 @@ func (q *extQueue[T]) push(v T) {
 	default:
 	}
 	if dropped > 0 && (dropped == 1 || dropped%100 == 0) {
+		if q.onDrop != nil {
+			q.onDrop(dropped)
+			return
+		}
 		q.s.log.Warn("extension queue full: dropped the oldest entry", "kind", q.kind, "provider", q.name, "dropped", dropped)
 	}
 }
@@ -497,6 +516,12 @@ func (q *extQueue[T]) begin() {
 // whose drain begins; nil outside tests.
 var extBegan atomic.Pointer[func(name string)]
 
+// extDelivering, when a test sets it, is told the drain's context and the
+// kind and provider name of every queued delivery (a webhook's kind is
+// "webhook", its name its host) as it begins, and may hold it there; nil
+// outside tests.
+var extDelivering atomic.Pointer[func(ctx context.Context, kind, name string)]
+
 // run delivers what is queued, in order, until ctx ends.
 func (q *extQueue[T]) run(ctx context.Context) {
 	for {
@@ -510,6 +535,13 @@ func (q *extQueue[T]) run(ctx context.Context) {
 				return
 			case <-q.wake:
 			}
+			continue
+		}
+		if f := extDelivering.Load(); f != nil {
+			(*f)(ctx, q.kind, q.name)
+		}
+		if q.direct {
+			_ = q.deliver(ctx, v)
 			continue
 		}
 		_ = extDeliver(ctx, q.s, q.kind, q.name, func(ctx context.Context) error { return q.deliver(ctx, v) })
@@ -656,6 +688,12 @@ type guardSink struct {
 
 	eventsOnce sync.Once
 	events     []string
+	// eventsWait bounds the one ask of the provider's Events; 0 is
+	// ext.StartWait. A test sets its own before the sink is first asked.
+	eventsWait time.Duration
+	// known is what events takes, once read (sinkFilter, notify.go): nil
+	// until then.
+	known atomic.Pointer[sinkFilter]
 }
 
 func (g *guardSink) Name() string { return g.name }
@@ -663,21 +701,27 @@ func (g *guardSink) Name() string { return g.name }
 // Events answers what the sink takes, as a copy, or nothing (an empty list,
 // not nil, which would take everything) when the call fails or is late.
 // The provider is asked once, at its first call (its Start's supervisor,
-// which decides from it whether the provider may send notices, or C3's
-// wiring), and every call after answers that same list, so what a sink
-// takes and whether its provider may send notices never disagree.
+// which decides from it whether the provider may send notices, or its
+// queue's first delivery, notify.go), and every call after answers that
+// same list, so what a sink takes and whether its provider may send
+// notices never disagree.
 func (g *guardSink) Events() []string { return g.eventsWithin(context.Background()) }
 
 // eventsWithin is Events, its one ask of the provider ending with ctx too.
 func (g *guardSink) eventsWithin(ctx context.Context) []string {
 	g.eventsOnce.Do(func() {
-		g.events = extCall(ctx, g.s, ext.KindNotifications, g.name, ext.StartWait, []string{}, nil, func(context.Context) ([]string, error) {
+		wait := ext.StartWait
+		if g.eventsWait > 0 {
+			wait = g.eventsWait
+		}
+		g.events = extCall(ctx, g.s, ext.KindNotifications, g.name, wait, []string{}, nil, func(context.Context) ([]string, error) {
 			evs := g.p.Events()
 			if evs == nil {
 				return nil, nil
 			}
 			return append([]string{}, evs...), nil
 		})
+		g.known.Store(newSinkFilter(g.events))
 	})
 	return copyOrNil(g.events)
 }

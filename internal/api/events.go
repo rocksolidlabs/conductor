@@ -28,8 +28,9 @@ const (
 type eventHub struct {
 	mu      sync.Mutex
 	clients map[chan []byte]struct{}
-	// sinks receive every activity entry after the clients: the webhooks and
-	// the crew runs.
+	// sinks receive every activity entry after the clients: the notifier
+	// (the webhooks, then the providers' sinks; notify.go), the crew runs,
+	// then the context providers' touch sink (extcontext.go).
 	sinks []activitySink
 }
 
