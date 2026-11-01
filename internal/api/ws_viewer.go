@@ -11,6 +11,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/signal"
@@ -547,12 +548,30 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 	}
 	defer hs.RemoveViewer(v)
 
-	ice := make([]proto.ICEServer, 0, len(s.cfg.ICEServers))
-	for _, srv := range s.cfg.ICEServers {
-		ice = append(ice, proto.ICEServer{URLs: srv.URLs, Username: srv.Username, Credential: srv.Credential})
-	}
 	info := hs.Info()
-	welcome := proto.MustControl(proto.Welcome{
+	// The media provider is asked once the viewer is attached, so a revoke
+	// or the expiry of its link, the session's end or the host's going
+	// that lands meanwhile closes it: the ask is cut short, and a viewer
+	// closed by then is closed with its reason, never sent the welcome or
+	// the servers in it. A viewer of an open host's session is handed the
+	// configured servers alone (iceServersFor).
+	lookup, endLookup := context.WithCancel(sink.ctx)
+	go func() {
+		select {
+		case <-v.Done():
+			endLookup()
+		case <-lookup.Done():
+		}
+	}()
+	ice := s.iceServersFor(lookup, ext.ICERequest{Purpose: icePurposeViewer, Session: info.ID, Role: string(v.Role), Viewer: viewerID}, v.HostOpen())
+	endLookup()
+	select {
+	case <-v.Done():
+		sink.Close(v.Reason())
+		return
+	default:
+	}
+	welcome := proto.MustControl(fitWelcome(proto.Welcome{
 		T:              proto.CtlWelcome,
 		Proto:          proto.ProtoVersion,
 		SessionID:      info.ID,
@@ -565,7 +584,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 		ICEServers:     ice,
 		RelayTimeoutMs: s.cfg.RelayTimeoutMs,
 		RelayOnly:      hs.RelayOnly(),
-	})
+	}, len(s.cfg.ICEServers)))
 	if err := sink.WriteFrame(welcome); err != nil {
 		return
 	}
