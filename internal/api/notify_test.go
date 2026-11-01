@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"reflect"
 	"runtime"
 	"slices"
@@ -421,12 +422,23 @@ func TestBlockedSinkNeverHoldsTheHub(t *testing.T) {
 		return session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityProgress, Message: m}
 	}
 	// Recorded off the test's goroutine, so a hub that waited would fail
-	// the test, not hang it.
-	go e.srv.events.activity(id, progress("0"), "")
+	// the test, not hang it. The stuck sink can be handed 0 before the
+	// call has queued it for the fast one, so the burst waits for the call
+	// to return too: 0 is then the fast sink's first.
+	first := make(chan struct{})
+	go func() {
+		defer close(first)
+		e.srv.events.activity(id, progress("0"), "")
+	}()
 	select {
 	case <-stuck.entered:
 	case <-time.After(testWait):
 		t.Fatal("the stuck sink was never handed its first entry")
+	}
+	select {
+	case <-first:
+	case <-time.After(testWait):
+		t.Fatal("the hub waited for the stuck sink")
 	}
 	fastQ := sinkOf(t, e.srv, "fast").queue
 	const more = 500
@@ -786,22 +798,35 @@ func TestSinksInMainsOrder(t *testing.T) {
 		t.Fatalf("the free build's sinks: %d", len(plain.srv.events.sinks))
 	}
 
+	rcv := newReceiver(t, nil)
+	// The webhook's first delivery is held before it starts, until the
+	// test lets it go or the webhooks close, so the webhook's own timeout
+	// can never end it while the test looks.
+	rcvURL, err := url.Parse(rcv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	release := make(chan struct{})
 	stalled := make(chan struct{})
 	var once sync.Once
-	rcv := newReceiver(t, func(w http.ResponseWriter, r *http.Request) {
+	hold := func(ctx context.Context, kind, name string) {
+		if kind != "webhook" || name != rcvURL.Host {
+			return
+		}
 		once.Do(func() {
 			close(stalled)
 			select {
 			case <-release:
-			case <-r.Context().Done():
+			case <-ctx.Done():
 			}
 		})
-		w.WriteHeader(http.StatusNoContent)
-	})
-	t.Cleanup(func() { close(release) })
+	}
+	extDelivering.Store(&hold)
+	t.Cleanup(func() { extDelivering.Store(nil) })
 	held := &heldSink{recSink{name: "held"}}
 	e := newNotifyEnv(t, nil, []config.Webhook{{URL: rcv.URL, Events: []string{"progress"}, AllowPrivate: true}}, held)
+	// Let go before the server's cleanup waits for the webhook's drain.
+	t.Cleanup(func() { close(release) })
 	e.srv.events.mu.Lock()
 	sinks := e.srv.events.sinks
 	if len(sinks) != 2 || funcName(sinks[0]) != funcName((&notifier{}).offer) || funcName(sinks[1]) != engine {
@@ -833,7 +858,7 @@ func TestSinksInMainsOrder(t *testing.T) {
 	case <-time.After(testWait):
 		t.Fatal("the webhook was never called")
 	}
-	// The webhook is busy with 0; 1 waits in its queue when the engine has it.
+	// The webhook is held with 0; 1 waits in its queue when the engine has it.
 	e.srv.events.activity("probe", progress("1"), "")
 	if s := <-saw; s.webhook != 1 || s.sink != 2 {
 		t.Fatalf("as the engine was handed the entry, the webhook held %d and the sink %d: want 1 and 2", s.webhook, s.sink)
