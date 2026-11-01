@@ -173,3 +173,12 @@ func (s *Local) TouchedFiles() []proto.TouchedFile {
 	}
 	return out
 }
+
+// Denied reports whether the session's deny list refuses path, an absolute
+// path as the touched index keys it (TouchedAbs): the rule TouchedFiles
+// applies, so what it leaves out of the index is never offered elsewhere
+// either (the context providers, internal/api's extcontext.go). It reads
+// the files the list names, outside the session's lock.
+func (s *Local) Denied(path string) bool {
+	return insideAny(path, s.fileDeny())
+}

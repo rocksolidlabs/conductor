@@ -870,11 +870,13 @@ func (h *HostedSession) Info() session.Info {
 	return info
 }
 
-// hostAbs is session.TouchedAbs for a path a host named: the host's OS may
+// HostAbs is session.TouchedAbs for a path a host named: the host's OS may
 // not be this server's, so a Windows path (a drive letter or a UNC prefix)
 // is absolute here too, and a relative one under a Windows working
-// directory joins it with the directory's own separator.
-func hostAbs(cwd, p string) string {
+// directory joins it with the directory's own separator. It is the key a
+// hosted session's touched index takes, and what the context providers
+// are told of a hosted session's file (internal/api, extcontext.go).
+func HostAbs(cwd, p string) string {
 	if windowsPath(p) {
 		return p
 	}
@@ -1727,7 +1729,7 @@ func (h *HostedSession) HostActivity(a proto.Activity, state string) {
 	// A file entry (its op and path kept by the cleaning) feeds the
 	// session's touched index on the server (#304).
 	if e.Type == session.ActivityFile && e.Op != "" && e.Path != "" {
-		h.touched.Note(hostAbs(h.info.Cwd, e.Path), e.Op, e.Tool, e.ByName, e.At)
+		h.touched.Note(HostAbs(h.info.Cwd, e.Path), e.Op, e.Tool, e.ByName, e.At)
 	}
 	h.mu.Unlock()
 	if h.hub != nil && h.hub.OnActivity != nil {

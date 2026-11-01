@@ -55,7 +55,7 @@ const extErrText = 200
 type extSlots struct {
 	identity ext.IdentityProvider
 	router   ext.DecisionRouter
-	context  []ext.ContextProvider
+	context  []*guardContext
 	sinks    []ext.NotificationSink
 	sync     ext.ContinuityStore
 	media    ext.MediaRoomProvider
@@ -100,10 +100,7 @@ func (s *Server) installExtensions(p ext.Providers) {
 	for i, c := range p.Context {
 		n := name(ext.KindContext, i, c)
 		g := &guardContext{s: s, name: n, p: c, ready: s.readyOf(n, c)}
-		g.touches = newExtQueue(s, ext.KindContext, g.name, ext.TouchQueue, func(ctx context.Context, f ext.TouchedFile) error {
-			c.NoteTouch(ctx, f)
-			return nil
-		})
+		g.touches = newExtQueue(s, ext.KindContext, g.name, ext.TouchQueue, func(ctx context.Context, t touch) error { return deliverTouch(ctx, c, t) })
 		s.holdQueue(c, g.name, g.touches.begin)
 		s.exts.context = append(s.exts.context, g)
 	}
@@ -610,17 +607,18 @@ type guardContext struct {
 	name    string
 	p       ext.ContextProvider
 	ready   *atomic.Bool
-	touches *extQueue[ext.TouchedFile]
+	touches *extQueue[touch] // extcontext.go
 }
 
 func (g *guardContext) Name() string { return g.name }
 
 // NoteTouch queues f for the provider, never waiting.
-func (g *guardContext) NoteTouch(_ context.Context, f ext.TouchedFile) { g.touches.push(f) }
+func (g *guardContext) NoteTouch(_ context.Context, f ext.TouchedFile) { g.touches.push(touch{f: f}) }
 
-// Context answers the provider's blocks for q, or none (the free default's)
-// when it fails, is late or answers more than ext.MaxContextBlocks or a
-// block ContextBlock.Valid refuses. It never answers an error.
+// Context answers the provider's blocks for q, the first
+// ext.MaxContextBlocks of them when it answers more (the rest are never
+// read), or none (the free default's) when it fails, is late or answers a
+// block ContextBlock.Valid refuses among those. It never answers an error.
 func (g *guardContext) Context(ctx context.Context, q ext.ContextQuery) ([]ext.ContextBlock, error) {
 	if !live(g.ready) {
 		return nil, nil
@@ -629,9 +627,6 @@ func (g *guardContext) Context(ctx context.Context, q ext.ContextQuery) ([]ext.C
 	// the default (its context ended) may reuse q's inputs at once.
 	own := copyQuery(q)
 	return extCall(ctx, g.s, ext.KindContext, g.name, ext.ContextWait, nil, func(bs []ext.ContextBlock) error {
-		if len(bs) > ext.MaxContextBlocks {
-			return fmt.Errorf("context: %d blocks, past %d", len(bs), ext.MaxContextBlocks)
-		}
 		for _, b := range bs {
 			if err := b.Valid(); err != nil {
 				return err
@@ -640,7 +635,7 @@ func (g *guardContext) Context(ctx context.Context, q ext.ContextQuery) ([]ext.C
 		return nil
 	}, func(ctx context.Context) ([]ext.ContextBlock, error) {
 		bs, err := g.p.Context(ctx, own)
-		return copyOrNil(bs), err
+		return copyOrNil(bs[:min(len(bs), ext.MaxContextBlocks)]), err
 	}), nil
 }
 
