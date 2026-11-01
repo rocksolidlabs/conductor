@@ -28,6 +28,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/certs"
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/export"
 	"github.com/rocksolidlabs/conductor/internal/hostagent"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/reach"
@@ -144,6 +145,22 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if err != nil {
 		return 1, err
 	}
+	// The data directory reserved before anything is written into it, and
+	// let go once New has returned, by when the ledger holds its owner lock
+	// and the start-up's writes are made: a restore and a starting server
+	// exclude each other (internal/export, restore.lock), and a restore
+	// refuses a running server by its ledger and its data.
+	res, err := export.Reserve(cfg.DataDir, export.HolderServe)
+	if errors.Is(err, export.ErrReserved) {
+		return 1, fmt.Errorf("the data directory %s is not served: %w", cfg.DataDir, err)
+	}
+	if err != nil {
+		return 1, fmt.Errorf("data directory %s is not usable (%w); set dataDir in the config or CONDUCTOR_DATA_DIR to a writable directory", cfg.DataDir, err)
+	}
+	defer res.Release()
+	if serveReserved != nil {
+		serveReserved(cfg.DataDir)
+	}
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		return 1, fmt.Errorf("data directory %s is not usable (%w); set dataDir in the config or CONDUCTOR_DATA_DIR to a writable directory", cfg.DataDir, err)
@@ -205,6 +222,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		log.Info("extensions: " + line)
 	}
 	srv, err := newServer(cfg, cat, log, ui, st, providers)
+	res.Release()
 	if err != nil {
 		return 1, err
 	}
