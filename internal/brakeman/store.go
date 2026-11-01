@@ -614,6 +614,16 @@ func (s *Store) readDoc(name string, limit int64) ([]byte, error) {
 // their bounds, the rest within MaxRequestRest and the whole within
 // MaxRequestDoc, or nothing is written. The caller holds mu.
 func (s *Store) saveRequestLocked(r Request) error {
+	if err := measureRequest(r); err != nil {
+		return err
+	}
+	return s.write(s.reqs, requestDoc(r.ID), r, MaxRequestDoc)
+}
+
+// measureRequest holds r to its bounds as it would be written: its lists
+// and fields, the rest within MaxRequestRest, the whole within
+// MaxRequestDoc.
+func measureRequest(r Request) error {
 	if err := r.checkEntries(); err != nil {
 		return err
 	}
@@ -626,7 +636,13 @@ func (s *Store) saveRequestLocked(r Request) error {
 	if len(b) > MaxRequestRest {
 		return fmt.Errorf("%w: %s without its lists would be %d bytes, at most %d", ErrBound, r.ID, len(b), MaxRequestRest)
 	}
-	return s.write(s.reqs, requestDoc(r.ID), r, MaxRequestDoc)
+	if b, err = encode(r); err != nil {
+		return err
+	}
+	if len(b) > MaxRequestDoc {
+		return fmt.Errorf("%w: %s would be %d bytes, at most %d", ErrBound, r.ID, len(b), MaxRequestDoc)
+	}
+	return nil
 }
 
 // Create keeps a new request: in's op id, kind, subjects, note, since and
@@ -1183,7 +1199,7 @@ func (s *Store) KeepBrief(id string, k Kept) (Request, error) {
 	}
 	// The request is measured before its siblings are written, so a
 	// request that could not be written leaves no sibling either.
-	if err := next.checkEntries(); err != nil {
+	if err := measureRequest(next); err != nil {
 		return Request{}, err
 	}
 	if err := s.write(s.reqs, briefDoc(id), k.Brief, MaxBrief); err != nil {
