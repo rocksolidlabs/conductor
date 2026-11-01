@@ -1339,3 +1339,188 @@ func TestABriefWhoseDocumentsAreGoneIsNotFound(t *testing.T) {
 		}
 	}
 }
+
+// TestAnOpIDOutlivesItsPrunedRequest: state.json keeps more op ids than
+// Prune keeps requests, so a repeat of a pruned request's op id is
+// answered ErrPruned for the same content and ErrOpConflict for other
+// content, never made again; only an op id whose request never landed
+// makes a new one. A crash after the op ids are marked and before the
+// files go leaves the request answered as it is.
+func TestAnOpIDOutlivesItsPrunedRequest(t *testing.T) {
+	keepNewest = 0
+	t.Cleanup(func() { keepNewest = Keep })
+	f := newFixture(t)
+	in := Request{OpID: "op-1", Kind: KindAsk, Note: "why?", Subjects: []Ref{ref(t, "run:"+runA)}}
+	first, _, err := f.s.Create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.close(first.ID, StateCancelled)
+
+	// The crash: the op id is marked pruned, the request's file stays.
+	failWrite(t, RequestsDir+"/"+requestDoc(first.ID))
+	if _, err := f.s.Prune(); err == nil {
+		t.Fatal("the removal failed and Prune said nothing")
+	}
+	beforeWrite = nil
+	f.reopen()
+	if again, created, err := f.s.Create(in); err != nil || created || again.ID != first.ID {
+		t.Fatalf("a repeat of a marked request still there: %s %v %v", again.ID, created, err)
+	}
+
+	if n, err := f.s.Prune(); err != nil || n != 1 {
+		t.Fatalf("prune: %d %v", n, err)
+	}
+	f.reopen()
+	if _, created, err := f.s.Create(in); !errors.Is(err, ErrPruned) || created {
+		t.Fatalf("the same content after pruning: %v %v", created, err)
+	}
+	changed := in
+	changed.Note = "why not?"
+	if _, created, err := f.s.Create(changed); !errors.Is(err, ErrOpConflict) || created {
+		t.Fatalf("other content after pruning: %v %v", created, err)
+	}
+	if page, _, err := f.s.List("", MaxPage); err != nil || len(page) != 0 {
+		t.Fatalf("a request was made again: %v %v", ids(page), err)
+	}
+
+	// A creation whose file never landed is still a new request.
+	failWrite(t, RequestsDir+"/br-2.json")
+	if _, _, err := f.s.Create(Request{OpID: "op-2", Kind: KindBriefing}); err == nil {
+		t.Fatal("the request's write failed and Create said nothing")
+	}
+	beforeWrite = nil
+	if r, created, err := f.s.Create(Request{OpID: "op-2", Kind: KindBriefing}); err != nil || !created || r.ID != "br-3" {
+		t.Fatalf("an op id whose request never landed: %s %v %v", r.ID, created, err)
+	}
+}
+
+// TestAnIncompleteRequestIsDamaged: a request document that decodes but
+// is no request (null, {}, one without its id, state, time or ask) is
+// damaged: skipped by every walk and kept with its siblings, never read
+// as a request that names none.
+func TestAnIncompleteRequestIsDamaged(t *testing.T) {
+	f := newFixture(t)
+	good := f.create("op-1")
+	whole, err := os.ReadFile(f.reqPath(requestDoc(good.ID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(whole, &fields); err != nil {
+		t.Fatal(err)
+	}
+	without := func(id string, drop string, set map[string]any) string {
+		m := map[string]any{}
+		for k, v := range fields {
+			m[k] = v
+		}
+		m["id"] = id
+		delete(m, drop)
+		for k, v := range set {
+			m[k] = v
+		}
+		b, _ := json.Marshal(m)
+		return string(b)
+	}
+	damaged := map[string]string{
+		"br-5":  "null",
+		"br-6":  "{}",
+		"br-7":  without("br-7", "schema", nil),
+		"br-8":  without("br-8", "id", nil),
+		"br-9":  without("br-9", "state", nil),
+		"br-10": without("br-10", "createdAt", nil),
+		"br-11": without("br-11", "opId", nil),
+		"br-12": without("br-12", "kind", nil),
+		"br-13": without("br-13", "", map[string]any{"id": "br-1"}),
+		"br-14": without("br-14", "", map[string]any{"state": "nowhere"}),
+		"br-15": without("br-15", "", map[string]any{"kind": KindExplain}), // an explain names one subject
+	}
+	for id, body := range damaged {
+		if err := os.WriteFile(f.reqPath(requestDoc(id)), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, sib := range []string{briefDoc(id), refsDoc(id), readsDoc(id)} {
+			if err := os.WriteFile(f.reqPath(sib), []byte(`{}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	f.reopen() // Open concludes past them, removing no sibling
+	for id, body := range damaged {
+		if _, err := f.s.Get(id); !errors.Is(err, ErrDamaged) {
+			t.Errorf("get %s: %v", id, err)
+		}
+		if b, err := os.ReadFile(f.reqPath(requestDoc(id))); err != nil || string(b) != body {
+			t.Errorf("%s was rewritten: %q %v", id, b, err)
+		}
+		for _, sib := range []string{briefDoc(id), refsDoc(id), readsDoc(id)} {
+			if !exists(t, f.reqPath(sib)) {
+				t.Errorf("%s's sibling %s was removed", id, sib)
+			}
+		}
+	}
+	page, _, err := f.s.List("", MaxPage)
+	if err != nil || len(page) != 1 || page[0].ID != good.ID {
+		t.Fatalf("list: %v %v", ids(page), err)
+	}
+}
+
+// TestEveryCloseWaitsForTheOwnedCallback: a second Close, called while
+// the first waits for the recovery OnOwned runs, returns only once the
+// recovery has returned and the lock is let go, as the first does.
+func TestEveryCloseWaitsForTheOwnedCallback(t *testing.T) {
+	old := LockWait
+	LockWait = time.Minute
+	t.Cleanup(func() { LockWait = old })
+	f := newFixture(t)
+	second := f.open()
+	started, gate := make(chan struct{}), make(chan struct{})
+	second.OnOwned(func() {
+		close(started)
+		<-gate
+	})
+	f.s.Close()
+	<-started
+	closes := make(chan struct{}, 2)
+	closeOnce := func() {
+		second.Close()
+		closes <- struct{}{}
+	}
+	go closeOnce()
+	// The first Close has begun once a write is refused as closed; the
+	// second starts after it, so it finds the store closing.
+	for {
+		if _, err := second.Prune(); err != nil && strings.Contains(err.Error(), "closed") {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	waiting := make(chan struct{})
+	closeWaits = func() { close(waiting) }
+	t.Cleanup(func() { closeWaits = nil })
+	go closeOnce()
+	<-waiting
+	lockPath := filepath.Join(f.data.Dir(), Dir, Lock)
+	// The recovery is held at the gate and the second Close has begun its
+	// wait: neither may have returned.
+	select {
+	case <-closes:
+		t.Fatal("a Close returned while the recovery ran")
+	default:
+	}
+	if lock, why, held, err := store.TakeOwnerLock(lockPath); lock != nil || !held || err != nil {
+		if lock != nil {
+			lock.Release()
+		}
+		t.Fatalf("the lock was let go while the recovery ran: %s %v", why, err)
+	}
+	close(gate)
+	<-closes
+	<-closes
+	lock, why, _, err := store.TakeOwnerLock(lockPath)
+	if lock == nil || err != nil {
+		t.Fatalf("the lock was kept after Close: %s %v", why, err)
+	}
+	lock.Release()
+}

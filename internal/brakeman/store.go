@@ -28,6 +28,8 @@ package brakeman
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,6 +82,7 @@ var (
 	ErrNotQueued   = errors.New("brakeman: the request is not queued")
 	ErrNotTurn     = errors.New("brakeman: the request is not starting or running")
 	ErrDamaged     = errors.New("brakeman: a request that does not parse, kept as it is")
+	ErrPruned      = errors.New("brakeman: pruned: the op id's request was made and has since been pruned")
 )
 
 // LockWait is how long a store that found the owner lock held keeps
@@ -118,6 +121,9 @@ type Store struct {
 	why      string
 	lock     *store.OwnerLock
 	done     chan struct{}
+	// shut is closed once a Close has waited for OnOwned's function and
+	// let the lock go: every Close returns only then.
+	shut     chan struct{}
 	onOwned  func()
 	owned    bool // the lock was taken after Open
 	notified bool
@@ -158,7 +164,7 @@ func Open(st *store.Store, o Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{st: b, reqs: reqs, now: o.Now, loc: o.Location, cwd: o.DefaultCwd, log: o.Log, done: make(chan struct{}), skipped: map[string]bool{}}
+	s := &Store{st: b, reqs: reqs, now: o.Now, loc: o.Location, cwd: o.DefaultCwd, log: o.Log, done: make(chan struct{}), shut: make(chan struct{}), skipped: map[string]bool{}}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -272,11 +278,16 @@ func (s *Store) ReadOnly() (bool, string) {
 // Close ends the wait for the owner lock and refuses every write from
 // then on; it waits for OnOwned's function to return, if it runs, and
 // only then releases the lock, so what that function does under the
-// store's ownership is done before another server can take it.
+// store's ownership is done before another server can take it. Every
+// Close returns only then, a second one called meanwhile too.
 func (s *Store) Close() error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
+		if f := closeWaits; f != nil {
+			f()
+		}
+		<-s.shut
 		return nil
 	}
 	s.closed = true
@@ -287,12 +298,17 @@ func (s *Store) Close() error {
 	s.inOwned.Wait()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer close(s.shut)
 	if s.lock != nil {
 		s.lock.Release()
 		s.lock = nil
 	}
 	return nil
 }
+
+// closeWaits, when a test sets it, runs as a Close that found the store
+// already closing begins to wait for the first.
+var closeWaits func()
 
 // writable answers why a write is refused. The caller holds mu.
 func (s *Store) writable() error {
@@ -513,9 +529,35 @@ type state struct {
 	Days map[string]map[string]Charge `json:"days,omitempty"`
 }
 
+// opRef is an op id and its request: the hex SHA-256 of what was asked
+// (askSum), and whether Prune has removed the request, so a repeat of a
+// pruned request is told from a creation whose file never landed.
 type opRef struct {
-	OpID string `json:"opId"`
-	ID   string `json:"id"`
+	OpID   string `json:"opId"`
+	ID     string `json:"id"`
+	Sum    string `json:"sum"`
+	Pruned bool   `json:"pruned,omitempty"`
+}
+
+// askSum is the hex SHA-256 of what a request asks, as sameAsk compares
+// it: its kind, subjects, note and since.
+func askSum(r Request) string {
+	b, _ := json.Marshal(struct {
+		Kind     string    `json:"kind"`
+		Subjects []string  `json:"subjects"`
+		Note     string    `json:"note"`
+		Since    time.Time `json:"since"`
+	}{r.Kind, refStrings(r.Subjects), r.Note, r.Since.UTC()})
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func refStrings(refs []Ref) []string {
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, r.String())
+	}
+	return out
 }
 
 // Charge is a turn's minutes, reserved at its start and settled after it
@@ -609,7 +651,30 @@ func (s *Store) loadLocked(id string) (Request, error) {
 	if err := store.DecodeStrict(b, &r); err != nil {
 		return Request{}, s.damaged(id, name, err)
 	}
+	if err := r.checkRecord(id); err != nil {
+		return Request{}, s.damaged(id, name, err)
+	}
 	return r, nil
+}
+
+// checkRecord refuses a request document that decodes but is no request
+// this build wrote under id: null, {} or one missing what Create gives
+// every request (its schema, its id, its time, a state, an ask its kind
+// takes). Open would otherwise read it as a request that names no
+// sibling, and remove its siblings.
+func (r Request) checkRecord(id string) error {
+	switch {
+	case r.Schema != Schema:
+		return fmt.Errorf("schema %d, want %d", r.Schema, Schema)
+	case r.ID != id:
+		return fmt.Errorf("its id is %q, its name %s", r.ID, id)
+	case !slices.Contains(States, r.State):
+		return fmt.Errorf("no state %q", r.State)
+	case r.CreatedAt.IsZero():
+		return errors.New("no createdAt")
+	}
+	ask := Request{OpID: r.OpID, Kind: r.Kind, Subjects: r.Subjects, Note: r.Note, Since: r.Since, By: r.By}
+	return ask.checkAsked()
 }
 
 // damaged says once that the request id does not parse and answers
@@ -682,7 +747,10 @@ func measureRequest(r Request) error {
 // request's own file, so a number is never reused, even after a crash
 // between the two. An op id state.json still holds answers its request
 // when in asks the same (created false) and ErrOpConflict when it does
-// not. The request is queued.
+// not; once its request is pruned, ErrPruned when in asks the same and
+// ErrOpConflict when it does not, so an op id never makes two requests.
+// Only an op id whose request never landed makes a new one. The request
+// is queued.
 func (s *Store) Create(in Request) (r Request, created bool, err error) {
 	ask := Request{OpID: in.OpID, Kind: in.Kind, Subjects: in.Subjects, Note: in.Note, Since: in.Since, By: in.By}
 	if err := ask.checkAsked(); err != nil {
@@ -702,8 +770,14 @@ func (s *Store) Create(in Request) (r Request, created bool, err error) {
 			continue
 		}
 		prev, err := s.loadLocked(st.Ops[i].ID)
+		if errors.Is(err, ErrNotFound) && st.Ops[i].Pruned {
+			if st.Ops[i].Sum != askSum(ask) {
+				return Request{}, false, fmt.Errorf("%w: %s, since pruned", ErrOpConflict, st.Ops[i].ID)
+			}
+			return Request{}, false, fmt.Errorf("%w: %s", ErrPruned, st.Ops[i].ID)
+		}
 		if errors.Is(err, ErrNotFound) {
-			break // its file never landed, or it was pruned: a new request
+			break // its file never landed: a new request
 		}
 		if err != nil {
 			return Request{}, false, err
@@ -720,7 +794,7 @@ func (s *Store) Create(in Request) (r Request, created bool, err error) {
 		r.Since = r.Since.UTC()
 	}
 	st.Ops = slices.DeleteFunc(st.Ops, func(o opRef) bool { return o.OpID == ask.OpID })
-	st.Ops = append(st.Ops, opRef{OpID: ask.OpID, ID: r.ID})
+	st.Ops = append(st.Ops, opRef{OpID: ask.OpID, ID: r.ID, Sum: askSum(ask)})
 	if err := s.saveState(st); err != nil {
 		return Request{}, false, err
 	}
@@ -1056,7 +1130,7 @@ func (s *Store) Prune() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	removed := 0
+	var gone []string
 	for i, id := range ids {
 		if i < keepNewest {
 			continue
@@ -1066,11 +1140,36 @@ func (s *Store) Prune() (int, error) {
 			continue
 		}
 		if err != nil {
-			return removed, err
+			return 0, err
 		}
 		if r.Open() || r.pinned() {
 			continue
 		}
+		gone = append(gone, id)
+	}
+	// The op ids of the requests to go are marked pruned before any file
+	// goes, so a repeat of one is never taken for a request whose file
+	// never landed; a crash between leaves a marked request that is still
+	// there, answered as it is, and removed by the next Prune.
+	if len(gone) > 0 {
+		st, err := s.loadState()
+		if err != nil {
+			return 0, err
+		}
+		marked := false
+		for i := range st.Ops {
+			if !st.Ops[i].Pruned && slices.Contains(gone, st.Ops[i].ID) {
+				st.Ops[i].Pruned, marked = true, true
+			}
+		}
+		if marked {
+			if err := s.saveState(st); err != nil {
+				return 0, err
+			}
+		}
+	}
+	removed := 0
+	for _, id := range gone {
 		if err := s.removeLocked(requestDoc(id)); err != nil {
 			return removed, err
 		}
