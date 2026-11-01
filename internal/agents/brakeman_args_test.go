@@ -52,8 +52,9 @@ func TestOnlyClaudeAndCodexHaveAReadOnlyMode(t *testing.T) {
 	}
 	want := map[string][]string{
 		// The built-in tools are the file reads alone; the writers are
-		// denied by name as well.
-		"claude": {"--tools=Read,Grep,Glob", "--disallowedTools=Bash,Edit,Write,NotebookEdit"},
+		// denied by name as well; and no MCP server but the one of
+		// --mcp-config, Conductor's.
+		"claude": {"--tools=Read,Grep,Glob", "--disallowedTools=Bash,Edit,Write,NotebookEdit", "--strict-mcp-config"},
 		// The read-only sandbox, and no command escalated past it: a
 		// person is never asked to let a blocked write run, while an MCP
 		// tool's approval is still asked.
@@ -73,6 +74,12 @@ func TestOnlyClaudeAndCodexHaveAReadOnlyMode(t *testing.T) {
 		if a.ReadOnlyArgs()[0] == "changed" {
 			t.Errorf("%s: ReadOnlyArgs hands out a slice it keeps", id)
 		}
+	}
+	// --strict-mcp-config keeps only --mcp-config's servers: Conductor's
+	// must come that way, or a read-only turn would have none of its tools.
+	claude, _ := Get("claude")
+	if mcp := claude.MCP("/hooks"); len(mcp) == 0 || mcp[0] != "--mcp-config" {
+		t.Errorf("claude registers Conductor's MCP server other than by --mcp-config: %q", mcp)
 	}
 	// Claude Code's reads and writes do not overlap, and no write is left
 	// out of the deny rule.
