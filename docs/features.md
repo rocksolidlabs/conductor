@@ -3224,7 +3224,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   slots answer their free defaults without asking it and its queues
   hold; a try that errs, panics or passes `StartWait` is given up (its
   context cancelled, its `Host` refusing) and tried again after a backoff
-  of 1 s doubling to 5 minutes, never while the last try is unfinished.
+  of 1 s doubling to 5 minutes, never while the last try is unfinished
+  (one that never returns is logged as late once a minute). A `Host`
+  call under way when its try is given up ends then, before it acts; a
+  sink's `Events` is read on its provider's own goroutine, never by
+  `StartExtensions`; the switchyard's publisher is set before any
+  provider starts.
   The `Host` (`internal/api/exthost.go`): `Launch` through `launchSaved`,
   moved out of `handleLaunchCrew` (the route and its tests unchanged),
   with the launch noted in the run's log; `Submit` of a line into a
@@ -3237,7 +3242,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestHostDataDir`, `TestHostNotify`, `TestStartOncePerValue`,
   `TestStartRetriedUntilItSucceeds`, `TestStartQueuesHeldUntilStarted`,
   `TestStartNeverOverlaps` (the clock driven through a seam, never
-  slept), `TestServeStartsProviders`.
+  slept), `TestStartNeverWaitsOnEvents`, `TestHostCallsEndWithTheirTry`,
+  `TestServeStartsProviders`.
 
   PR-5 (#477): opencore: the open-core rules as a lint, failing on a planted
   import. Planned.

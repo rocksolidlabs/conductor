@@ -213,7 +213,7 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	run, c, release, err := s.launchSaved(r.Context(), id, strings.TrimSpace(body.Label))
+	run, c, release, err := s.launchSaved(r.Context(), id, strings.TrimSpace(body.Label), nil)
 	// Released once the reply is written: the view link is minted first, so a
 	// launch at the cap meanwhile cannot forget the run.
 	defer release()
@@ -271,10 +271,12 @@ func launchRefusal(status int, code, message string) error {
 // itself runs on runContext's terms (the asker's values, not its end,
 // bounded by runTimeout). It answers the run, the crew as launched, and
 // the release of both the engine's hold and that context, to call once
-// the run is answered for, whatever the error. Its error is a
-// launchRefused for a refusal of the request, a crewStoreErr for the
-// store's, or the engine's (runError).
-func (s *Server) launchSaved(ctx context.Context, crewID, label string) (*crew.Run, crew.Crew, func(), error) {
+// the run is answered for, whatever the error. admit, when set, is asked
+// last, just before the engine: its error refuses the launch, which then
+// starts nothing (ext.Host's Launch, whose try may have been given up
+// meanwhile). Its error is a launchRefused for a refusal of the request, a
+// crewStoreErr for the store's, admit's, or the engine's (runError).
+func (s *Server) launchSaved(ctx context.Context, crewID, label string, admit func() error) (*crew.Run, crew.Crew, func(), error) {
 	noop := func() {}
 	if err := crew.ValidateLabel(label); err != nil {
 		return nil, crew.Crew{}, noop, launchRefusal(http.StatusBadRequest, "invalid_request", err.Error())
@@ -317,6 +319,11 @@ func (s *Server) launchSaved(ctx context.Context, crewID, label string) (*crew.R
 		yolo = *c.Yolo
 	}
 	c.Yolo = &yolo
+	if admit != nil {
+		if err := admit(); err != nil {
+			return nil, c, noop, err
+		}
+	}
 	// The launch's context ends with its release, as the route's did at
 	// its end: after the engine's release.
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runTimeout)

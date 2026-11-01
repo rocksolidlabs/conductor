@@ -549,6 +549,9 @@ func TestStartRetriedUntilItSucceeds(t *testing.T) {
 		stillDefault(try)
 		if try == 3 {
 			wait.fire <- time.Now() // past StartWait: given up
+			// Its log's first minute is asked for as the try is waited
+			// for; the try returns before it passes.
+			clock.next(t, extLogEvery)
 		}
 		next := clock.next(t, backoff)
 		revoked(try, c)
@@ -682,8 +685,11 @@ func (s *stuck) Start(ctx context.Context, h ext.Host) error {
 	for m := s.maxActive.Load(); n > m && !s.maxActive.CompareAndSwap(m, n); m = s.maxActive.Load() {
 	}
 	defer s.active.Add(-1)
+	// Counted before it is announced: a test that has heard of this Start
+	// reads it in calls.
+	n = s.calls.Add(1)
 	s.began <- startCall{ctx, h}
-	if s.calls.Add(1) == 1 {
+	if n == 1 {
 		<-s.gate
 	}
 	return nil
@@ -702,10 +708,11 @@ func stuckGoroutines() int {
 }
 
 // A Start gated shut that ignores its context is given up past StartWait
-// (its context cancelled, its Host refusing, the provider starting), and
-// no second Start begins while it has not returned, however long: the
-// server asks for no backoff until it has; once it returns, the next try
-// begins after the backoff, and never two at once.
+// (its context cancelled, its Host refusing, the provider starting, logged
+// late once a minute), and no second Start begins while it has not
+// returned, however long: the server asks for no backoff until it has;
+// once it returns, the next try begins after the backoff, and never two at
+// once.
 func TestStartNeverOverlaps(t *testing.T) {
 	s := &stuck{gate: make(chan struct{}), began: make(chan startCall, 2)}
 	p := ext.Providers{All: []ext.Entry{{Kind: ext.KindEntitlements, Name: "stuck", Value: s}}}
@@ -717,8 +724,12 @@ func TestStartNeverOverlaps(t *testing.T) {
 	}
 	extAbandoned.Store(&f)
 	t.Cleanup(func() { extAbandoned.Store(nil) })
-	srv := newExtServer(t, nil, WithExtensions(local.Fill(p)))
+	var logs syncLog
+	srv := newExtServer(t, logTo(&logs), WithExtensions(local.Fill(p)))
 	clock := newFakeClock(srv)
+	// Each log a minute after the last, so each is written.
+	var minutes atomic.Int64
+	srv.extClock = func() time.Time { return time.Unix(0, 0).Add(time.Duration(minutes.Add(1)) * time.Minute) }
 	srv.StartExtensions(t.Context())
 
 	wait := clock.next(t, ext.StartWait)
@@ -736,9 +747,17 @@ func TestStartNeverOverlaps(t *testing.T) {
 		t.Fatalf("the given-up try's host: %v", err)
 	}
 	// The supervisor waits for the try to return, told it is given up
-	// (abandoned): it has asked for no backoff, so no clock driven however
-	// far can begin a second Start.
+	// (abandoned), asking only for the minutes of its log: it has asked
+	// for no backoff, so no clock driven however far can begin a second
+	// Start. Each minute is logged; the next is asked for once it is.
+	for range 2 {
+		clock.next(t, extLogEvery).fire <- time.Now()
+	}
+	clock.next(t, extLogEvery)
 	clock.none(t)
+	if n := strings.Count(logs.String(), "failure=late"); n != 3 {
+		t.Fatalf("logged late %d times, want 3 (given up, then two minutes):\n%s", n, logs.String())
+	}
 	if st := srv.extState("stuck"); st != extStarting {
 		t.Fatalf("%s, want starting", st)
 	}
@@ -760,6 +779,179 @@ func TestStartNeverOverlaps(t *testing.T) {
 	}
 	if n := s.calls.Load(); n != 2 {
 		t.Fatalf("%d Starts, want 2", n)
+	}
+}
+
+// slowEvents is a sink that takes provider notices, and a Starter, whose
+// Events answers only once open is closed.
+type slowEvents struct {
+	fakeSink
+	open chan struct{}
+	host atomic.Value
+}
+
+func (s *slowEvents) Events() []string {
+	<-s.open
+	return []string{ext.TypeProvider}
+}
+func (s *slowEvents) Start(_ context.Context, h ext.Host) error {
+	s.host.Store(h)
+	return nil
+}
+
+// StartExtensions asks no provider anything: two sinks whose Events have
+// not answered hold up neither it, nor so the listeners, nor each other;
+// each is read on its own provider's supervisor before that provider's
+// first Start, and what it answers still decides that the provider may
+// not send notices.
+func TestStartNeverWaitsOnEvents(t *testing.T) {
+	open := make(chan struct{})
+	a := &slowEvents{fakeSink: fakeSink{name: "relay-a", got: make(chan ext.Notification, 1)}, open: open}
+	b := &slowEvents{fakeSink: fakeSink{name: "relay-b", got: make(chan ext.Notification, 1)}, open: open}
+	p := ext.Providers{
+		Notifications: []ext.NotificationSink{a, b},
+		All: []ext.Entry{
+			{Kind: ext.KindNotifications, Name: "relay-a", Value: a},
+			{Kind: ext.KindNotifications, Name: "relay-b", Value: b},
+		},
+	}
+	srv := newExtServer(t, nil, WithExtensions(local.Fill(p)))
+	// Returned with neither Events answered: open is still shut.
+	srv.StartExtensions(t.Context())
+	for _, name := range []string{"relay-a", "relay-b"} {
+		if st := srv.extState(name); st != extStarting {
+			t.Fatalf("%s is %s before its Events answered, want starting", name, st)
+		}
+	}
+	if a.host.Load() != nil || b.host.Load() != nil {
+		t.Fatal("a provider was started before its Events answered")
+	}
+	close(open)
+	for _, s := range []*slowEvents{a, b} {
+		waitState(t, srv, s.name, extStarted)
+		if err := s.host.Load().(ext.Host).Notify(t.Context(), ext.Notification{Message: "hi"}); !errors.Is(err, ext.ErrUnsupported) {
+			t.Fatalf("%s takes provider notices and sent one: %v", s.name, err)
+		}
+	}
+}
+
+// goroutinesIn counts the goroutines whose stack holds frame.
+func goroutinesIn(frame string) int {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return bytes.Count(buf[:n], []byte(frame))
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+}
+
+// waitIn waits until a goroutine's stack holds frame: the call under test
+// has reached it.
+func waitIn(t *testing.T, frame string) {
+	t.Helper()
+	end := time.Now().Add(testWait)
+	for goroutinesIn(frame) == 0 {
+		if time.Now().After(end) {
+			t.Fatalf("no goroutine reached %s within %s", frame, testWait)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A Host call already under way when its try is given up ends then,
+// before it acts, whatever the caller's context: a line waiting for the
+// session's turn answers context.Canceled and is never typed, and a
+// launch waiting on an agent's lookup answers context.Canceled and starts
+// no run.
+func TestHostCallsEndWithTheirTry(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+
+	// Nate's line holds the session's turn at its Enter.
+	id := e.createSession("cat")
+	l := e.local(id)
+	atEnter, gate := make(chan struct{}), make(chan struct{})
+	first := make(chan error, 1)
+	go func() {
+		_, err := l.Submit(context.Background(), session.Submission{Text: "first", ByName: "Nate", BeforeEnter: func() {
+			close(atEnter)
+			<-gate
+		}})
+		first <- err
+	}()
+	select {
+	case <-atEnter:
+	case <-time.After(testWait):
+		t.Fatal("the first line never reached its Enter")
+	}
+	try, giveUp := context.WithCancel(t.Context())
+	late := make(chan error, 1)
+	go func() {
+		_, err := testHost(e.srv, try, "sched").Submit(context.Background(), ext.SubmitRequest{Session: id, Text: "late", By: ada})
+		late <- err
+	}()
+	waitIn(t, "session.(*Local).awaitTurn(")
+	giveUp()
+	select {
+	case err := <-late:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a given-up try's waiting line: %v, want context.Canceled", err)
+		}
+	case <-time.After(testWait):
+		t.Fatal("a given-up try's line still waits for the session's turn")
+	}
+	close(gate)
+	select {
+	case err := <-first:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(testWait):
+		t.Fatal("the first line was not entered")
+	}
+	if got := inputs(l); len(got) != 1 || got[0] != "first by Nate" {
+		t.Fatalf("inputs %q, want Nate's alone", got)
+	}
+
+	// A launch waits on its member's lookup.
+	crewID := e.sendCrew("POST", "/api/crews", map[string]any{
+		"name": "Nightly", "goal": "ship", "cwd": e.root, "where": "server", "isolation": "none",
+		"members": []any{catMember("core", "immediately")},
+	}, http.StatusCreated)["id"].(string)
+	looking, answer := make(chan string, 8), make(chan struct{})
+	t.Cleanup(func() { close(answer) })
+	e.srv.lookups.stubWait(hangWait)
+	e.srv.lookups.stub(func(program string) (string, error) {
+		looking <- program
+		<-answer
+		return program, nil
+	})
+	try, giveUp = context.WithCancel(t.Context())
+	launched := make(chan error, 1)
+	go func() {
+		_, err := testHost(e.srv, try, "sched").Launch(context.Background(), ext.LaunchRequest{Crew: crewID, By: ada})
+		launched <- err
+	}()
+	select {
+	case <-looking:
+	case <-time.After(testWait):
+		t.Fatal("the launch looked up no member's program")
+	}
+	giveUp()
+	select {
+	case err := <-launched:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a given-up try's waiting launch: %v, want context.Canceled", err)
+		}
+	case <-time.After(testWait):
+		t.Fatal("a given-up try's launch still waits on its lookup")
+	}
+	for _, r := range e.srv.runs.List() {
+		if r.CrewID == crewID {
+			t.Fatalf("a given-up try's launch started run %s", r.ID)
+		}
 	}
 }
 

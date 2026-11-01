@@ -650,13 +650,16 @@ func (g *guardSink) Name() string { return g.name }
 
 // Events answers what the sink takes, as a copy, or nothing (an empty list,
 // not nil, which would take everything) when the call fails or is late.
-// The provider is asked once, at its first call (StartExtensions, which
-// decides from it whether the provider may send notices, or C3's wiring),
-// and every call after answers that same list, so what a sink takes and
-// whether its provider may send notices never disagree.
-func (g *guardSink) Events() []string {
+// The provider is asked once, at its first call (its Start's supervisor,
+// which decides from it whether the provider may send notices, or C3's
+// wiring), and every call after answers that same list, so what a sink
+// takes and whether its provider may send notices never disagree.
+func (g *guardSink) Events() []string { return g.eventsWithin(context.Background()) }
+
+// eventsWithin is Events, its one ask of the provider ending with ctx too.
+func (g *guardSink) eventsWithin(ctx context.Context) []string {
 	g.eventsOnce.Do(func() {
-		g.events = extCall(context.Background(), g.s, ext.KindNotifications, g.name, ext.StartWait, []string{}, nil, func(context.Context) ([]string, error) {
+		g.events = extCall(ctx, g.s, ext.KindNotifications, g.name, ext.StartWait, []string{}, nil, func(context.Context) ([]string, error) {
 			evs := g.p.Events()
 			if evs == nil {
 				return nil, nil

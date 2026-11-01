@@ -108,10 +108,12 @@ func (s *Server) extState(name string) string {
 
 // StartExtensions starts every provider that is an ext.Starter, once per
 // distinct value (the entitlement source's slot among them), all at once,
-// each on a goroutine of the server's own (track). runServe calls it once
-// the server is made and before the listeners serve, with the maintenance
-// context: ctx's end, or the server's extensions stopping (Shutdown), ends
-// every try and every retry. A second call does nothing.
+// each on a goroutine of the server's own (track), and returns at once: it
+// asks no provider anything itself, so nothing a provider does holds up
+// the listeners. runServe calls it once the server is made and before the
+// listeners serve, with the maintenance context: ctx's end, or the
+// server's extensions stopping (Shutdown), ends every try and every retry.
+// A second call does nothing.
 func (s *Server) StartExtensions(ctx context.Context) {
 	if !s.extStarting.CompareAndSwap(false, true) {
 		return
@@ -124,15 +126,6 @@ func (s *Server) StartExtensions(ctx context.Context) {
 	// end reaches them too.
 	base, cancel := context.WithCancel(s.extCtx)
 	context.AfterFunc(ctx, cancel)
-	// A provider that takes provider notices cannot send them: read from
-	// each sink's Events, once (guardSink caches it), before any Start.
-	for _, st := range s.extStarts {
-		for _, sink := range s.exts.sinks {
-			if g, ok := sink.(*guardSink); ok && g.name == st.name && slices.Contains(g.Events(), ext.TypeProvider) {
-				st.mayNotify = false
-			}
-		}
-	}
 	for _, st := range s.extStarts {
 		s.track(func() { s.superviseStart(base, st) })
 	}
@@ -142,8 +135,11 @@ func (s *Server) StartExtensions(ctx context.Context) {
 // waiting a backoff between two tries (extStartFirst doubling to
 // extStartMost) that begins once the last try has returned. On success
 // the provider's slots answer through it from their next call and its
-// queues begin to drain.
+// queues begin to drain. Before the first try it decides whether the
+// provider may send notices (takesNotices), on its own goroutine, so a
+// sink whose Events is slow holds up only its own provider's Start.
 func (s *Server) superviseStart(ctx context.Context, st *extStarter) {
+	st.mayNotify = !s.takesNotices(ctx, st.name)
 	delay := extStartFirst
 	for ctx.Err() == nil {
 		if s.tryStart(ctx, st) {
@@ -161,14 +157,28 @@ func (s *Server) superviseStart(ctx context.Context, st *extStarter) {
 	}
 }
 
+// takesNotices reports whether one of the provider name's sinks takes
+// provider notices (ext.TypeProvider): such a provider's Host refuses to
+// send one, so no notice is handed back round through providers. Each
+// sink's Events is read once (guardSink keeps it), within ext.StartWait,
+// and ends with ctx.
+func (s *Server) takesNotices(ctx context.Context, name string) bool {
+	for _, sink := range s.exts.sinks {
+		if g, ok := sink.(*guardSink); ok && g.name == name && slices.Contains(g.eventsWithin(ctx), ext.TypeProvider) {
+			return true
+		}
+	}
+	return false
+}
+
 // tryStart runs one try of st's Start with a context and a Host of its
 // own, and reports whether it succeeded: returned nil within
 // ext.StartWait. A try that errs or panics is logged (once a minute, as
 // the guard logs) and its context cancelled, which revokes its Host. One
 // that has not returned by ext.StartWait is given up the same way, and
 // tryStart then waits for it to return (or for ctx to end), so a
-// provider never has two Starts running; its answer, once it comes, is
-// ignored.
+// provider never has two Starts running, logging once a minute that it
+// has not; its answer, once it comes, is ignored.
 func (s *Server) tryStart(ctx context.Context, st *extStarter) bool {
 	tctx, cancel := context.WithCancel(ctx)
 	h := &extHost{s: s, name: st.name, ctx: tctx, mayNotify: st.mayNotify}
@@ -209,11 +219,16 @@ func (s *Server) tryStart(ctx context.Context, st *extStarter) bool {
 		if f := extAbandoned.Load(); f != nil {
 			(*f)(st.name)
 		}
-		select {
-		case <-done:
-		case <-ctx.Done():
+		for {
+			select {
+			case <-done:
+				return false
+			case <-ctx.Done():
+				return false
+			case <-s.extAfterOr(extLogEvery):
+				s.extFailed(extKindStart, st.name, "late", "Start has not returned since it was given up")
+			}
 		}
-		return false
 	case <-ctx.Done():
 		cancel()
 		return false
@@ -258,6 +273,15 @@ func (h *extHost) gone() error {
 	return nil
 }
 
+// bound is ctx ending also when the host's try does, so a call already
+// under way when its try is given up (waiting for a session's turn, for an
+// agent's lookup) ends then, before it acts.
+func (h *extHost) bound(ctx context.Context) (context.Context, context.CancelFunc) {
+	cctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(h.ctx, cancel)
+	return cctx, func() { stop(); cancel() }
+}
+
 // refused is ext.ErrRefused with the words why.
 func refused(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ext.ErrRefused}, args...)...)
@@ -269,7 +293,8 @@ func refused(format string, args ...any) error {
 // and its page's URL on the public base. A switchyard answers
 // ext.ErrUnsupported; a crew the server does not hold, ext.ErrNotFound;
 // a request past its bounds or a launch the server refuses, ext.ErrRefused
-// with the words why.
+// with the words why. A launch whose try is given up before the engine is
+// asked answers context.Canceled and launches nothing.
 func (h *extHost) Launch(ctx context.Context, r ext.LaunchRequest) (ext.RunRef, error) {
 	if err := h.gone(); err != nil {
 		return ext.RunRef{}, err
@@ -284,9 +309,17 @@ func (h *extHost) Launch(ctx context.Context, r ext.LaunchRequest) (ext.RunRef, 
 	if !crew.ValidID(r.Crew) {
 		return ext.RunRef{}, refused("crew %q is not a crew id", r.Crew)
 	}
-	run, c, release, err := h.s.launchSaved(ctx, r.Crew, r.Label)
+	bctx, end := h.bound(ctx)
+	defer end()
+	// The try's end is checked once more as the engine is asked (admit):
+	// a lookup the try's end cut short counts as an answer, and the launch
+	// itself runs on to its end once admitted.
+	run, c, release, err := h.s.launchSaved(bctx, r.Crew, r.Label, h.gone)
 	defer release()
 	if err != nil {
+		if h.gone() != nil {
+			return ext.RunRef{}, context.Canceled
+		}
 		return ext.RunRef{}, h.launchError(r.Crew, err)
 	}
 	// Noted while the engine holds the run (release, deferred), as the
@@ -325,7 +358,8 @@ func (h *extHost) launchError(id string, err error) error {
 // Either is recorded as by r.By's name. A choice's keys (r.Input) and a
 // hosted session answer ext.ErrUnsupported until the decision router's
 // seam (C5) adds them; a line accepted while its program reads slowly
-// answers "pending".
+// answers "pending". A submission still waiting (for the session's turn)
+// when its try is given up answers context.Canceled and types nothing.
 func (h *extHost) Submit(ctx context.Context, r ext.SubmitRequest) (ext.SubmitResult, error) {
 	if err := h.gone(); err != nil {
 		return ext.SubmitResult{}, err
@@ -344,12 +378,17 @@ func (h *extHost) Submit(ctx context.Context, r ext.SubmitRequest) (ext.SubmitRe
 	if r.Input != "" {
 		return ext.SubmitResult{}, fmt.Errorf("%w: a choice's keys are not answered through the host yet", ext.ErrUnsupported)
 	}
-	sctx, cancel := context.WithTimeout(ctx, submitTimeout)
+	bctx, end := h.bound(ctx)
+	defer end()
+	sctx, cancel := context.WithTimeout(bctx, submitTimeout)
 	defer cancel()
 	sub := session.Submission{Text: r.Text, ByName: r.By.Name, Question: r.Question}
 	// A line that answers no question is never typed into one.
 	sub.UnlessWaiting = r.Question == ""
 	res, err := local.Submit(sctx, sub)
+	if err != nil && !errors.Is(err, session.ErrSubmitPending) && h.gone() != nil {
+		return ext.SubmitResult{}, context.Canceled
+	}
 	switch {
 	case errors.Is(err, session.ErrSubmitPending):
 		return ext.SubmitResult{Status: "pending"}, nil
