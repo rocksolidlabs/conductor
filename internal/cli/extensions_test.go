@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -228,5 +230,113 @@ func TestHostClosesTheRegistry(t *testing.T) {
 	}
 	if want := []string{"registry", "host"}; !slices.Equal(order, want) {
 		t.Fatalf("host did %q, want %q", order, want)
+	}
+}
+
+// startingIdentity is an identity provider that is a Starter: each Start
+// hands its context and Host over, and what serve had logged by then.
+type startingIdentity struct {
+	began chan startedWith
+	logs  *syncBuffer
+}
+
+type startedWith struct {
+	ctx    context.Context
+	h      ext.Host
+	logged string
+}
+
+func (startingIdentity) Name() string { return "cloud" }
+func (startingIdentity) Authenticate(context.Context, string) (ext.Principal, bool, error) {
+	return ext.Principal{}, false, nil
+}
+func (s startingIdentity) Start(ctx context.Context, h ext.Host) error {
+	s.began <- startedWith{ctx, h, s.logs.String()}
+	return nil
+}
+
+// heldWriter is a stdout whose writes wait until it is opened.
+type heldWriter struct {
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	b       bytes.Buffer
+}
+
+func (w *heldWriter) open() { w.once.Do(func() { close(w.release) }) }
+
+func (w *heldWriter) Write(p []byte) (int, error) {
+	<-w.release
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+// serve starts the providers that need the server once it is made, with a
+// Host whose directory is the provider's own in the data directory, on a
+// context that serve's end ends; the try's Host refuses after it. The
+// switchyard's publisher is in place by then, so a session the provider
+// launches at once is published: the start-up work after the providers'
+// start (here the handshake line) is held until the provider has started.
+func TestServeStartsProviders(t *testing.T) {
+	clearConductorEnv(t)
+	// Publishing on, to a switchyard nothing is ever published to (no
+	// session is made).
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "1")
+	t.Cleanup(agents.ForgetBinary())
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "rendezvous": {"server": "http://127.0.0.1:1"}}`, work, work, state))
+	var logs syncBuffer
+	p := startingIdentity{began: make(chan startedWith, 1), logs: &logs}
+	old := extensions
+	t.Cleanup(func() { extensions = old })
+	extensions = func() ext.Providers {
+		return ext.Providers{Identity: p, All: []ext.Entry{{Kind: ext.KindIdentity, Name: "cloud", Value: p}}}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	held := &heldWriter{release: make(chan struct{})}
+	defer held.open()
+	done := make(chan error, 1)
+	go func() {
+		code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0", "--print-listen"}, strings.NewReader(""), held, &logs)
+		if err == nil && code != 0 {
+			err = fmt.Errorf("exit code %d", code)
+		}
+		done <- err
+	}()
+	deadline, wait := startDeadline(t)
+	var got startedWith
+	select {
+	case got = <-p.began:
+	case err := <-done:
+		t.Fatalf("serve returned before starting the provider: %v\n%s", err, logs.String())
+	case <-deadline:
+		t.Fatalf("the provider was not started in %s:\n%s", wait, logs.String())
+	}
+	if !strings.Contains(got.logged, "sessions are published to the switchyard") {
+		t.Fatalf("the provider started before the switchyard's publisher was set:\n%s", got.logged)
+	}
+	held.open()
+	if d, err := got.h.DataDir(); err != nil || d != filepath.Join(state, "ext", "cloud") {
+		t.Fatalf("the provider's directory: %s %v", d, err)
+	}
+	if got.ctx.Err() != nil {
+		t.Fatal("the started provider's context ended while serve runs")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("serve: %v\n%s", err, logs.String())
+	}
+	if got.ctx.Err() == nil {
+		t.Fatal("serve ended and the provider's context did not")
+	}
+	if _, err := got.h.DataDir(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the host acts after serve ended: %v", err)
 	}
 }

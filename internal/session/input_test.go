@@ -259,6 +259,7 @@ func TestTheWriterNeverBeginsAWriteWhoseWaitHasEnded(t *testing.T) {
 	<-failed.Done()
 	ctx, cancel := context.WithCancel(context.Background())
 	bg := context.Background()
+	gone := make(chan struct{})
 	writes := map[string]*procWrite{
 		// A keystroke's connection that goes withdraws it.
 		"typist's": s.newWrite(bg, []byte("typist's"), time.Time{}, writeWait{from: typist, anyEnd: true}),
@@ -266,11 +267,13 @@ func TestTheWriterNeverBeginsAWriteWhoseWaitHasEnded(t *testing.T) {
 		"revoked's": s.newWrite(bg, []byte("revoked's"), time.Time{}, writeWait{from: revoked}),
 		"left's":    s.newWrite(bg, []byte("left's"), time.Time{}, writeWait{from: left}),
 		"failed's":  s.newWrite(bg, []byte("failed's"), time.Time{}, writeWait{from: failed}),
-		"expired":   s.newWrite(ctx, []byte("expired"), time.Time{}, writeWait{}),
-		"late":      s.newWrite(bg, []byte("late"), time.Now().Add(50*time.Millisecond), writeWait{}),
-		"live":      s.newWrite(bg, []byte("live"), time.Time{}, writeWait{}),
+		// A submission whose sender is withdrawn (Submission.Withdrawn).
+		"withdrawn's": s.newWrite(bg, []byte("withdrawn's"), time.Time{}, writeWait{gone: gone}),
+		"expired":     s.newWrite(ctx, []byte("expired"), time.Time{}, writeWait{}),
+		"late":        s.newWrite(bg, []byte("late"), time.Now().Add(50*time.Millisecond), writeWait{}),
+		"live":        s.newWrite(bg, []byte("live"), time.Time{}, writeWait{}),
 	}
-	order := []string{"typist's", "revoked's", "left's", "failed's", "expired", "late", "live"}
+	order := []string{"typist's", "revoked's", "left's", "failed's", "withdrawn's", "expired", "late", "live"}
 	for _, k := range order {
 		if err := s.writer.add(writes[k], s.proc, 0); err != nil {
 			t.Fatal(err)
@@ -282,6 +285,7 @@ func TestTheWriterNeverBeginsAWriteWhoseWaitHasEnded(t *testing.T) {
 	revoked.closeWith(ErrRevoked)
 	s.Detach(left)
 	linkRevoked.Store(true)
+	close(gone)
 	cancel()
 	time.Sleep(100 * time.Millisecond)
 	takeAgain()
@@ -291,7 +295,7 @@ func TestTheWriterNeverBeginsAWriteWhoseWaitHasEnded(t *testing.T) {
 		}
 	}
 	nothingWritten(t, p, 200*time.Millisecond)
-	for k, want := range map[string]error{"typist's": errGone, "revoked's": ErrRevoked, "left's": nil, "failed's": ErrRevoked, "expired": context.Canceled, "late": ErrInputStalled, "live": nil} {
+	for k, want := range map[string]error{"typist's": errGone, "revoked's": ErrRevoked, "left's": nil, "failed's": ErrRevoked, "withdrawn's": ErrRevoked, "expired": context.Canceled, "late": ErrInputStalled, "live": nil} {
 		if err := <-writes[k].done; !errors.Is(err, want) {
 			t.Fatalf("%s: %v, want %v", k, err, want)
 		}
