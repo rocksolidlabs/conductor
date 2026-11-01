@@ -1440,7 +1440,11 @@ answer, or a provider's, travels to the host as `answer_as` (`Host.Submit`
 answers `sent`) and is applied there under the host's own claim, two
 answers that cross (a viewer's and the route's) ordered on the host; the
 router judges what the host said its session shows and keeps (`kept`),
-never a change the server forwarded and the host has not yet applied. An
+never a change the server forwarded and the host has not yet applied. A
+hosted route's `routed: …` entry goes to the host as an `activity` message
+of the server's own, which the host records and reports back; like a server
+session's own `status` entries it spends no token of the session's bucket,
+so the reports an agent makes cannot crowd it out. An
 older host's questions are routed by no one, as before, and a provider's
 answer to one is unsupported; a switchyard routes none and sends no
 `answer_as`. A line that answers no question is never typed into a hosted

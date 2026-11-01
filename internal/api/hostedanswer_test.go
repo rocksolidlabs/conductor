@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,6 +83,33 @@ func hostedSession(t *testing.T, e *testEnv, id string) *signal.HostedSession {
 	return hs
 }
 
+// sentUpToMarker has the server send the fake host h a marker in its own
+// lane (Tell), the lane every answer_as takes, and answers what h got
+// before it: an absence among them is ordered after the mechanism, never
+// read off a wait on the clock.
+func sentUpToMarker(t *testing.T, e *testEnv, h *fakeHost) []map[string]any {
+	t.Helper()
+	const marker = "test_marker"
+	if err := hostedSession(t, e, h.sessionID).Tell(map[string]string{"t": marker}); err != nil {
+		t.Fatal(err)
+	}
+	var got []map[string]any
+	deadline := time.After(testWait)
+	for {
+		select {
+		case m := <-h.msgs:
+			if m["t"] == marker {
+				return got
+			}
+			got = append(got, m)
+		case <-h.done:
+			t.Fatalf("the host's connection ended before the marker: %v", h.err)
+		case <-deadline:
+			t.Fatal("the marker never reached the host")
+		}
+	}
+}
+
 // yes is a question's one choice, which a line's program takes.
 var yes = []session.Option{{Label: "Yes", Input: "y\r"}}
 
@@ -126,6 +154,72 @@ func TestRoutedAnswerReachesAHostedSession(t *testing.T) {
 	}
 }
 
+// A route that names whom a real host's question went to records its
+// status entry through the host, which records it and reports it back,
+// with the session's bucket spent meanwhile by the agent's reports: the
+// entry spends no token of it, as a server session's own spend none.
+func TestHostedRouteRecordsItsStatus(t *testing.T) {
+	seams := watchRouter(t)
+	entered, gate := make(chan struct{}, 1), make(chan struct{})
+	f := &fakeRouter{route: func(ctx context.Context, _ ext.Decision) (ext.Route, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		select {
+		case <-gate:
+		case <-ctx.Done():
+		}
+		return ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ada"}}, Rule: "on call"}, nil
+	}}
+	e := routerEnv(t, f)
+	const words = "routed: person Ada (on call)"
+	var mu sync.Mutex
+	recorded := map[string]int{}
+	e.srv.events.addSink(func(sess string, en session.ActivityEntry, _ session.AttentionState) {
+		if en.Type == session.ActivityStatus && en.Message == words {
+			mu.Lock()
+			recorded[sess]++
+			mu.Unlock()
+		}
+	})
+	id := startHost(t, e, []string{"/bin/cat"})
+	until(t, "the host says answerAs", func() bool { return hostedSession(t, e, id).TakesAnswers() })
+	q := hostedQuestion(t, e, f, id, map[string]any{"state": "needs_input", "message": "Allow?", "kind": "permission", "options": yes})
+	select {
+	case <-entered:
+	case <-time.After(testWait):
+		t.Fatal("the route was never asked")
+	}
+	// The agent's reports spend the session's bucket while the route is
+	// asked: a forwarded report would find no token for the entry.
+	until(t, "the bucket spent", func() bool {
+		resp, out := e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "progress", "message": "busy"})
+		switch resp.StatusCode {
+		case http.StatusTooManyRequests:
+			return true
+		case http.StatusAccepted, http.StatusOK:
+			return false
+		}
+		t.Fatalf("report: %d %v", resp.StatusCode, out)
+		return false
+	})
+	close(gate)
+	seams.wait(t, "routed", q)
+	until(t, "the entry reported back by the host", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return recorded[id] > 0
+	})
+	seams.settle(t, e, id)
+	mu.Lock()
+	n := recorded[id]
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("the entry recorded %d times", n)
+	}
+}
+
 // A host that did not say answerAs (an older one): a provider's answer to
 // its question is unsupported and nothing is sent it, and the router
 // routes none of its questions.
@@ -145,7 +239,7 @@ func TestOlderHostUnsupported(t *testing.T) {
 	if !errors.Is(err, ext.ErrUnsupported) {
 		t.Fatalf("an answer to an older host's question: %v", err)
 	}
-	if got := ofType(h.drain(200*time.Millisecond), proto.HostAnswerAs); len(got) != 0 {
+	if got := ofType(sentUpToMarker(t, e, h), proto.HostAnswerAs); len(got) != 0 {
 		t.Fatalf("an older host was sent %v", got)
 	}
 }
@@ -258,7 +352,7 @@ func TestSwitchyardNeverRoutesAHostedSession(t *testing.T) {
 	if !errors.Is(err, ext.ErrUnsupported) {
 		t.Fatalf("a switchyard's Host.Submit to a hosted session: %v", err)
 	}
-	if got := ofType(h.drain(200*time.Millisecond), proto.HostAnswerAs); len(got) != 0 {
+	if got := ofType(sentUpToMarker(t, e, h), proto.HostAnswerAs); len(got) != 0 {
 		t.Fatalf("a switchyard sent %v", got)
 	}
 }

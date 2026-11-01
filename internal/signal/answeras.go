@@ -74,6 +74,21 @@ func (h *HostedSession) AnswerAs(m proto.HostAnswerAsMsg) error {
 	return h.Tell(m)
 }
 
+// ForwardStatus sends the host a status entry of the server's own (a
+// route's "routed: ..." line), which the host records in its session's
+// activity and reports back (HostActivity), as a server session records
+// its own status entries (session.Local.Record): it spends no token of the
+// session's bucket, which the reports an agent makes through the API
+// share (ForwardActivity, SetAttentionFull), so that a busy session's
+// reports never lose it. What sends it bounds it: the router sends one per
+// question it routes, never twice, and the host's lane keeps its own
+// bound (HostConn.send). It returns ErrHostGone when no host is connected
+// and ErrSlowHost when the host's queue is full.
+func (h *HostedSession) ForwardStatus(e session.ActivityEntry) error {
+	e.Type = session.ActivityStatus
+	return h.toHost(hostActivityMsg(session.CleanEntry(e)))
+}
+
 // setAnswerAs keeps what a register says of answer_as: a host that no
 // longer says it (an older one, registering again) keeps nothing.
 func (h *HostedSession) setAnswerAs(on bool) {

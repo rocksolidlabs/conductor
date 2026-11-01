@@ -63,13 +63,19 @@ func (s *Server) answerHosted(d session.Driver, r ext.SubmitRequest) (ext.Submit
 
 // recordRouted records the status entry words of a route with
 // destinations in the session's activity: a server session's own, a hosted
-// session's through its host, which records it and reports it back.
-func recordRouted(d session.Driver, words string) {
+// session's through its host, which records it and reports it back. Like a
+// server session's own status entries, a hosted session's spends no token
+// of the bucket its agent's reports share (ForwardStatus): a busy session
+// never loses it to them. One its host cannot be sent (gone, or not
+// reading) is logged.
+func (s *Server) recordRouted(d session.Driver, words string) {
 	e := session.ActivityEntry{Type: session.ActivityStatus, Message: words}
 	switch drv := d.(type) {
 	case *session.Local:
 		drv.Record(e)
 	case *signal.HostedSession:
-		_ = drv.ForwardActivity(e)
+		if err := drv.ForwardStatus(e); err != nil {
+			s.log.Warn("decision router: the route's status entry was not recorded: its host was not sent it", "session", drv.Info().ID, "entry", words, "err", err)
+		}
 	}
 }

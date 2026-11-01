@@ -412,7 +412,7 @@ func (r *decisionRouter) route(drv session.Driver, d ext.Decision) {
 		r.unsent(d)
 	}
 	if len(rt.To) > 0 {
-		recordRouted(drv, routedWords(rt))
+		r.s.recordRouted(drv, routedWords(rt))
 	}
 	if a := rt.Answer; a != nil {
 		answer := *a

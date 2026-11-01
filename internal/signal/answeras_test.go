@@ -25,6 +25,13 @@ func registerAnswering(t *testing.T, hub *Hub, answerAs bool) (*HostedSession, *
 	return hs, conn
 }
 
+// nothingQueued reports whether conn holds nothing for its host: AnswerAs
+// queues in the caller's goroutine, so what it sent is there once it
+// returns, and no wait is needed to see that nothing was.
+func nothingQueued(conn *HostConn) bool {
+	return len(conn.Own) == 0 && len(conn.Send) == 0 && conn.held == nil
+}
+
 // An answer_as goes to a host that said answerAs, in the server's own lane,
 // whole; a host that did not (an older one) is sent nothing, and the
 // answer is unsupported there; a host gone answers ErrHostGone.
@@ -39,8 +46,8 @@ func TestHostedAnswerAs(t *testing.T) {
 	if err := older.AnswerAs(m); !errors.Is(err, ext.ErrUnsupported) {
 		t.Fatalf("to an older host: %v", err)
 	}
-	if o, ok := takeWithin(oconn, 50*time.Millisecond); ok {
-		t.Fatalf("an older host was sent %q", o.Text)
+	if !nothingQueued(oconn) {
+		t.Fatal("an older host was sent the answer")
 	}
 
 	hs, conn := registerAnswering(t, hub, true)
@@ -61,8 +68,8 @@ func TestHostedAnswerAs(t *testing.T) {
 	if err := hs.AnswerAs(proto.HostAnswerAsMsg{Question: "q", Input: "y", Text: "y", ByName: "Ada"}); err == nil {
 		t.Fatal("an answer out of its bounds was sent")
 	}
-	if o, ok := takeWithin(conn, 50*time.Millisecond); ok {
-		t.Fatalf("sent besides: %q", o.Text)
+	if !nothingQueued(conn) {
+		t.Fatal("an answer out of its bounds was queued")
 	}
 	hs.HostDisconnected(conn)
 	if err := hs.AnswerAs(m); !errors.Is(err, ErrHostGone) {
@@ -167,5 +174,40 @@ func TestHostViewIsTheHostsReport(t *testing.T) {
 	hs.HostStatus(session.StatusExited, &code)
 	if v := hs.HostView(); !v.Status.Ended() || v.Attention.State != hs.Info().Attention.State {
 		t.Fatalf("ended: %+v", v)
+	}
+}
+
+// A status entry of the server's own (a route's "routed: ..." line) goes to
+// the host with the session's bucket empty, whatever type it is handed as:
+// it spends no token, as a server session's own status entries spend none.
+// A host gone answers ErrHostGone.
+func TestForwardStatusSpendsNoToken(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, conn := registerAnswering(t, hub, true)
+	for n := 0; ; n++ {
+		err := hs.ForwardActivity(session.ActivityEntry{Type: session.ActivityProgress, Message: "busy"})
+		if errors.Is(err, ErrRateLimited) {
+			break
+		}
+		if err != nil || n > session.EventBurst {
+			t.Fatalf("report %d: %v", n, err)
+		}
+	}
+	for len(conn.Own) > 0 {
+		<-conn.Own
+	}
+	if err := hs.ForwardStatus(session.ActivityEntry{Type: session.ActivityProgress, Message: "routed: person Ada (on call)"}); err != nil {
+		t.Fatalf("with the bucket empty: %v", err)
+	}
+	if len(conn.Own) != 1 {
+		t.Fatalf("%d queued, want the entry", len(conn.Own))
+	}
+	var m proto.HostActivityMsg
+	if err := json.Unmarshal((<-conn.Own).Text, &m); err != nil || m.T != proto.HostActivity || m.Entry.Type != session.ActivityStatus || m.Entry.Message != "routed: person Ada (on call)" {
+		t.Fatalf("sent %+v (%v)", m, err)
+	}
+	hs.HostDisconnected(conn)
+	if err := hs.ForwardStatus(session.ActivityEntry{Message: "routed: person Ada"}); !errors.Is(err, ErrHostGone) {
+		t.Fatalf("with the host gone: %v", err)
 	}
 }
