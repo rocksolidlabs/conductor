@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -228,5 +229,82 @@ func TestHostClosesTheRegistry(t *testing.T) {
 	}
 	if want := []string{"registry", "host"}; !slices.Equal(order, want) {
 		t.Fatalf("host did %q, want %q", order, want)
+	}
+}
+
+// startingIdentity is an identity provider that is a Starter: each Start
+// hands its context and Host over.
+type startingIdentity struct {
+	began chan startedWith
+}
+
+type startedWith struct {
+	ctx context.Context
+	h   ext.Host
+}
+
+func (startingIdentity) Name() string { return "cloud" }
+func (startingIdentity) Authenticate(context.Context, string) (ext.Principal, bool, error) {
+	return ext.Principal{}, false, nil
+}
+func (s startingIdentity) Start(ctx context.Context, h ext.Host) error {
+	s.began <- startedWith{ctx, h}
+	return nil
+}
+
+// serve starts the providers that need the server once it is made, with a
+// Host whose directory is the provider's own in the data directory, on a
+// context that serve's end ends; the try's Host refuses after it.
+func TestServeStartsProviders(t *testing.T) {
+	clearConductorEnv(t)
+	t.Cleanup(agents.ForgetBinary())
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, state))
+	p := startingIdentity{began: make(chan startedWith, 1)}
+	old := extensions
+	t.Cleanup(func() { extensions = old })
+	extensions = func() ext.Providers {
+		return ext.Providers{Identity: p, All: []ext.Entry{{Kind: ext.KindIdentity, Name: "cloud", Value: p}}}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logs syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, &logs)
+		if err == nil && code != 0 {
+			err = fmt.Errorf("exit code %d", code)
+		}
+		done <- err
+	}()
+	deadline, wait := startDeadline(t)
+	var got startedWith
+	select {
+	case got = <-p.began:
+	case err := <-done:
+		t.Fatalf("serve returned before starting the provider: %v\n%s", err, logs.String())
+	case <-deadline:
+		t.Fatalf("the provider was not started in %s:\n%s", wait, logs.String())
+	}
+	if d, err := got.h.DataDir(); err != nil || d != filepath.Join(state, "ext", "cloud") {
+		t.Fatalf("the provider's directory: %s %v", d, err)
+	}
+	if got.ctx.Err() != nil {
+		t.Fatal("the started provider's context ended while serve runs")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("serve: %v\n%s", err, logs.String())
+	}
+	if got.ctx.Err() == nil {
+		t.Fatal("serve ended and the provider's context did not")
+	}
+	if _, err := got.h.DataDir(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the host acts after serve ended: %v", err)
 	}
 }

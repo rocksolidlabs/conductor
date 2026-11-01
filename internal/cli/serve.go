@@ -285,6 +285,12 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	defer stdinCancel()
 	mctx, mcancel := context.WithCancel(ctx)
 	go srv.RunMaintenance(mctx)
+	// The providers that need the server start now, before the listeners
+	// serve, on the maintenance context, which shutdown ends: Start
+	// returns at once, and one that fails is tried again with backoff
+	// while its slots answer their free defaults (a plain build starts
+	// nothing).
+	srv.StartExtensions(mctx)
 	// The agents' lookups and probes, so the first Launch dialog lists them at once.
 	go srv.WarmCatalog(mctx)
 
