@@ -2303,10 +2303,34 @@ directory (with a `.gitignore` of `*`; refused when the commit tracks
 64 KiB: what is needed least is cut (the context blocks, the last first,
 then the inputs' summaries, then the
 checkpoint, then findings from the last, then the review's summary, the
-checks' commands, the inputs after the first, the attempt before's error
+checks' commands, the inputs after the first, the failed check's last
+output, the paths it changed and its command, the attempt before's error
 past 2,000 characters) into `.conductor/task-more.json` in full, which
 `task.json`'s `more` and `cut` (`the last N context blocks` among them) and
-a "Cut to fit" section of `task.md` name. With a context provider
+a "Cut to fit" section of `task.md` name. An attempt after one that
+failed at a check or a project manifest's verify step (DS2) is handed
+that receipt: `task.json`'s `previous.check`, `{receipt, run, task,
+attempt, phase, id, k, argv, subject, exit, signal?, timedOut, stable,
+changed?, tail?, logSha256, logBytes, log?, logDropped?}`, `receipt` the
+ledger's identity of the row (`<run>/<task>/<n>/<phase>/<id>/<k>`, its
+log the one the step log route above answers for the same run, task,
+attempt, id and k) and `run` the run whose ledger holds it (the source
+run's for a continuation's first attempt, never the continuation's),
+`subject` the commit it failed, `changed` at most 10 of the tracked paths
+it changed (each cut to 1,024 bytes, as its `check.finished` or
+`step.finished` event lists them; both name `k`), `tail` the last 2 KiB of
+its output as the ledger keeps it; and its whole log, at most 1 MiB, read
+from the ledger and written before the session starts as
+`.conductor/previous/check-<id>.log` (`log`, its size `logBytes` and its
+SHA-256 `logSha256`, the ledger's). A log the run's bound dropped is
+`logDropped`, with no file, its hash and tail kept. `task.md`'s "The
+attempt before" says which check failed on which commit, how, its last
+output in a fenced block, and where its log is. The receipt's identity,
+its outcome and its log's fields are never cut; `tail`, `changed` and
+`argv` go into `task-more.json`'s `previous.check`, in that order, before
+the error does. A receipt or a log the ledger cannot give fails the
+attempt at `task file`, so no attempt starts without the log it is told
+of. With a context provider
 registered (Program item C4), the attempt's context is asked for before
 its task files are written, at most 5 s (`ext.ContextWait`), and an
 attempt never fails or waits longer for it: `task.json` gains `context`,
