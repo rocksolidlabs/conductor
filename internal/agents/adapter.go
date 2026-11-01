@@ -8,6 +8,7 @@ package agents
 import (
 	"errors"
 	"fmt"
+	"regexp"
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
@@ -81,7 +82,33 @@ type Adapter struct {
 	// an agent under a configuration of its own, #291). Empty for an agent
 	// without one.
 	ConfigDirEnv string
+	// ReadOnlyArgs, when set, returns the arguments that hold the agent to
+	// reading for one launch, through its own read-only mode: its file
+	// reads and Conductor's MCP tools left, nothing that writes or runs a
+	// command (Claude Code's tool rules, Codex's read-only sandbox). The
+	// adapter's definition says what its mode does not hold (Codex's: the
+	// person's own MCP servers and exec-policy allow rules). A Brakeman
+	// turn launches with them; an agent without them cannot be Brakeman's.
+	// nil for an agent Conductor knows no read-only mode of.
+	ReadOnlyArgs func() []string
+	// ModelArgs, when set, returns the arguments that choose model for one
+	// launch, through the agent's own flag, the model its value and never an
+	// argument of its own; "" is the agent's default, and gives none. nil for
+	// an agent whose model flag Conductor has not checked: no model can be
+	// set for it.
+	ModelArgs func(model string) []string
+	// AllowTools, when set, returns the arguments that let the agent call
+	// every tool of the MCP server named server without asking for each,
+	// for one launch (Claude Code's allow rule, Codex's approval mode for
+	// one server); nil for a name that is not a plain word. nil for an
+	// agent that asks before each tool.
+	AllowTools func(server string) []string
 }
+
+// mcpServerName is what an MCP server's name must be for AllowTools to
+// write it into a rule: a plain word, so it cannot carry a rule, a TOML key
+// or a flag of its own.
+var mcpServerName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 // InstallsSkill reports whether the agent reads skills: its Install, and a
 // launch, bring the Conductor skill (SkillPath).

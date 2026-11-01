@@ -135,6 +135,17 @@ func TestCompletionCompletes(t *testing.T) {
 			if (sh == "zsh" && !slices.Equal(got, []string{"<files>"})) || (sh == "bash" && !slices.Equal(slices.Sorted(slices.Values(got)), []string{"my config.json", "x.json"})) {
 				t.Fatalf("files: %q", got)
 			}
+			// restore's argument is the archive, a file.
+			got = complete(t, sh, script, dir, bin, "restore", "")
+			if (sh == "zsh" && !slices.Equal(got, []string{"<files>"})) || (sh == "bash" && !slices.Equal(slices.Sorted(slices.Values(got)), []string{"my config.json", "x.json"})) {
+				t.Fatalf("restore's file: %q", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "export", "--"); !has(got, "--server", "--token", "--insecure", "--data-dir", "--config", "--out") {
+				t.Fatalf("export flags: %v", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "restore", "--"); !has(got, "--config", "--data-dir", "--provider") {
+				t.Fatalf("restore flags: %v", got)
+			}
 			if got := complete(t, sh, script, dir, bin, "hooks", ""); !slices.Equal(got, []string{"install", "status"}) {
 				t.Fatalf("hooks words: %v", got)
 			}
@@ -215,7 +226,7 @@ func TestCompletionSpecMatchesEveryFlag(t *testing.T) {
 	helps := map[string][][]string{
 		"serve": {{"serve", "-h"}}, "switchyard": {{"switchyard", "-h"}}, "host": {{"host", "-h"}}, "notify": {{"notify", "-h"}}, "up": {{"up", "-h"}}, "crews": {{"crews", "-h"}}, "guide": {{"guide", "-h"}},
 		"hooks": {{"hooks", "install", "-h"}, {"hooks", "status", "-h"}}, "completion": {{"completion", "install", "-h"}},
-		"skill": {{"skill", "-h"}}, "crew": {{"crew", "create", "-h"}}, "mcp": {{"mcp", "-h"}}, "task": {{"task", "context", "-h"}, {"task", "result", "-h"}, {"task", "send", "-h"}, {"task", "inbox", "-h"}, {"task", "ack", "-h"}, {"task", "blocked", "-h"}, {"task", "checkpoint", "-h"}, {"task", "ticket", "-h"}},
+		"skill": {{"skill", "-h"}}, "export": {{"export", "-h"}}, "restore": {{"restore", "-h"}}, "crew": {{"crew", "create", "-h"}}, "mcp": {{"mcp", "-h"}}, "task": {{"task", "context", "-h"}, {"task", "result", "-h"}, {"task", "send", "-h"}, {"task", "inbox", "-h"}, {"task", "ack", "-h"}, {"task", "blocked", "-h"}, {"task", "checkpoint", "-h"}, {"task", "ticket", "-h"}},
 		"dispatch": {{"dispatch", "projects", "-h"}, {"dispatch", "tickets", "-h"}, {"dispatch", "show", "-h"}, {"dispatch", "create", "-h"}, {"dispatch", "edit", "-h"}, {"dispatch", "comment", "-h"}, {"dispatch", "accept", "-h"}, {"dispatch", "link", "-h"}},
 	}
 	flagLine := regexp.MustCompile(`(?m)^  -([a-z][a-z0-9-]*)`)

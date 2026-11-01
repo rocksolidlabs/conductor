@@ -32,6 +32,15 @@ Usage:
                                list the saved crews (--ids: ids only, for completion)
   conductor dispatch projects|tickets|show|create|edit|comment|accept|link [--server URL] [--token T]
                                Dispatch's projects and tickets from the shell
+  conductor export [--server URL] [--token T] [--out FILE]
+                               write the running server's data directory as one zip archive
+  conductor export --data-dir DIR [--config FILE] [--out FILE]
+                               the same from a data directory no server runs on
+  conductor restore FILE [--config FILE] [--data-dir DIR]
+                               put an archive into an empty data directory, which the next
+                               conductor serve opens as its own
+  conductor restore --provider [--config FILE] [--data-dir DIR]
+                               the same with this device's latest copy from the sync store
   conductor hooks install <adapter>|all [--home DIR] [--data-dir DIR]
                                put Conductor's hooks into an agent's own config
   conductor hooks status       show which agents have Conductor's hooks
@@ -80,6 +89,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runCrews(ctx, args[1:], stdout, stderr)
 	case "dispatch":
 		return runDispatch(ctx, args[1:], stdin, stdout, stderr)
+	case "export":
+		return runExport(ctx, args[1:], stdout, stderr)
+	case "restore":
+		return runRestore(ctx, args[1:], stdout, stderr)
 	case "hooks":
 		return runHooks(ctx, args[1:], stdout, stderr)
 	case "skill":

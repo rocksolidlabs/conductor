@@ -54,6 +54,28 @@ describe('the Markdown preview', () => {
     expect(renderMarkdown('[q](a"b<c>.md)\n', { dir: '', relativeLinks: false }).html).toContain('title="a%22b%3Cc%3E.md"')
   })
 
+  it("links a bare URL with its scheme where asked (a Dispatch ticket's text, pasted from a GitHub issue), and nothing else", () => {
+    const src = 'See https://github.com/o/r/pull/1, and https://q.example/x?y=1. Not README.md, example.com, www.example.com or #359.\n\n`https://code.example` [t](https://t.example) <https://x.example> [u](notes.md) javascript:alert(1)\n'
+    const { html } = renderMarkdown(src, { dir: '', relativeLinks: false, linkify: true })
+    expect(html).toContain('<a href="https://github.com/o/r/pull/1" target="_blank" rel="noopener noreferrer">https://github.com/o/r/pull/1</a>,')
+    expect(html).toContain('<a href="https://q.example/x?y=1" target="_blank" rel="noopener noreferrer">https://q.example/x?y=1</a>.')
+    // A name with no scheme, an issue number, a URL in code and a held relative link stay as they were; a scheme markdown-it refuses is no link.
+    expect(html).toContain('Not README.md, example.com, www.example.com or #359.')
+    expect(html).toContain('<code>https://code.example</code>')
+    expect(html).toContain('<a href="https://t.example" target="_blank" rel="noopener noreferrer">t</a>')
+    expect(html).toContain('<a href="https://x.example" target="_blank" rel="noopener noreferrer">https://x.example</a>')
+    expect(html).toContain('<span class="md-link-held" title="notes.md">u</span>')
+    expect(html).not.toContain('href="javascript:')
+    expect((html.match(/<a /g) ?? []).length).toBe(4)
+    // Only http and https, the schemes the desktop app opens (desktop/src/window.ts, external): an e-mail address, mailto:, ftp: and a
+    // protocol-relative URL stay words there, rather than links that do nothing; an upper-case scheme is still http(s).
+    const other = renderMarkdown('Mail a@b.example or mailto:c@d.example; ftp://f.example/x, //p.example/y and HTTP://UP.example\n', { dir: '', linkify: true }).html
+    expect(other).toContain('Mail a@b.example or mailto:c@d.example; ftp://f.example/x, //p.example/y and <a href="HTTP://UP.example" target="_blank" rel="noopener noreferrer">HTTP://UP.example</a>')
+    for (const [, href] of other.matchAll(/href="([^"]*)"/g)) expect(href).toMatch(/^https?:\/\//i)
+    // Off by default: a repository's file keeps its bare URLs as words.
+    expect(renderMarkdown('See https://github.com/o/r/pull/1\n', { dir }).html).toBe('<p>See https://github.com/o/r/pull/1</p>\n')
+  })
+
   it('names the file a local link or image means: the encoding markdown-it gives undone once, the query and fragment cut', () => {
     expect(localPath('my%20notes.md')).toBe('my notes.md')
     expect(localPath('a%2520b.md')).toBe('a%20b.md')

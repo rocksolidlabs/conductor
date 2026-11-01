@@ -118,7 +118,7 @@ watch(
 
     <template v-if="!editing">
       <div v-if="text" class="min-w-0 rounded-md ring ring-default" data-markdown-view>
-        <MarkdownPreview :text="text" dir="" :relative-links="false" :attachment-url="attachmentUrl" />
+        <MarkdownPreview :text="text" dir="" :relative-links="false" linkify :attachment-url="attachmentUrl" />
       </div>
       <button v-else type="button" class="rounded-md border border-dashed border-default px-4 py-3 text-left text-sm text-dimmed enabled:hover:border-accented enabled:hover:text-muted" :disabled="disabled" data-markdown-empty @click="edit">
         {{ empty }}
@@ -132,7 +132,7 @@ watch(
           <span>The {{ label.toLowerCase() }} was changed while you wrote. It now reads as below: Save again to replace it with yours, or Cancel to keep it.</span>
         </p>
         <div class="min-w-0 rounded-md ring ring-default" data-markdown-theirs-text>
-          <MarkdownPreview v-if="theirs" :text="theirs" dir="" :relative-links="false" :attachment-url="attachmentUrl" />
+          <MarkdownPreview v-if="theirs" :text="theirs" dir="" :relative-links="false" linkify :attachment-url="attachmentUrl" />
           <p v-else class="px-5 py-4 text-sm text-dimmed">Nothing: it was emptied.</p>
         </div>
       </div>
@@ -153,7 +153,7 @@ watch(
         @keydown.escape.prevent.stop="cancel"
       />
       <div v-else class="min-h-24 min-w-0 rounded-md ring ring-default" data-markdown-draft-preview>
-        <MarkdownPreview v-if="draft" :text="draft" dir="" :relative-links="false" :attachment-url="attachmentUrl" />
+        <MarkdownPreview v-if="draft" :text="draft" dir="" :relative-links="false" linkify :attachment-url="attachmentUrl" />
         <p v-else class="px-5 py-4 text-sm text-dimmed">Nothing to preview.</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">

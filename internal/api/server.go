@@ -601,6 +601,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /.well-known/acme-challenge/{token}", s.handleACMEChallenge)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
 	mux.HandleFunc("GET /api/switchyard/status", s.requireAdmin(s.handleSwitchyardStatus))
+	mux.HandleFunc("GET /api/export", s.requireAdmin(s.handleExport))
 	mux.HandleFunc("GET /api/catalog", s.launching(s.handleCatalog))
 	mux.HandleFunc("POST /api/catalog", s.launching(s.handleSaveAgent))
 	mux.HandleFunc("POST /api/catalog/check", s.launching(s.handleCheckCommand))
@@ -730,6 +731,13 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		rw := &statusWriter{ResponseWriter: w, status: 200}
 		defer func() {
 			if rec := recover(); rec != nil {
+				if rec == http.ErrAbortHandler {
+					// A handler aborting its response on purpose: net/http
+					// drops the connection (or resets the stream) rather
+					// than end the response.
+					s.log.Debug("request aborted", "method", r.Method, "path", logPath(r), "ms", time.Since(start).Milliseconds())
+					panic(rec)
+				}
 				s.log.Error("panic in handler", "path", logPath(r), "panic", rec)
 				if !rw.wrote {
 					// Through rw, so the request line below records the 500.
