@@ -2270,6 +2270,9 @@ func (s *Local) Info() Info {
 	defer s.mu.Unlock()
 	info := s.info
 	info.Attention = s.attentionLocked()
+	// What the session keeps without showing it, from the same snapshot as
+	// what it shows: a question set aside never reads as neither.
+	info.Kept = s.keptLocked(info.Attention.ID)
 	info.Viewers = s.hub.LoudCount()
 	if info.AgentSession != nil {
 		as := *info.AgentSession
@@ -2634,7 +2637,7 @@ func (s *Local) Detach(sub *Subscription) {
 // turn for a submission's text typed without its Enter (holdTyped). data
 // may be reused once Input returns.
 func (s *Local) Input(sub *Subscription, data []byte) error {
-	return s.input(context.Background(), sub, "", data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, nil)
+	return s.input(context.Background(), viewer(sub), "", data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, nil)
 }
 
 // AnswerInput is Input for a reply to the question named question (its
@@ -2649,7 +2652,7 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 // refused, so that a late click never lands on the question that came
 // next.
 func (s *Local) AnswerInput(ctx context.Context, sub *Subscription, question string, data []byte) error {
-	return s.input(ctx, sub, question, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, nil)
+	return s.input(ctx, viewer(sub), question, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, nil)
 }
 
 // AnswerInputFinished is AnswerInput whose word waits for its keys to
@@ -2659,7 +2662,7 @@ func (s *Local) AnswerInput(ctx context.Context, sub *Subscription, question str
 // or withdrawn meanwhile) or the session ended (ErrSessionEnded); any
 // other return is the word, and finished is not called.
 func (s *Local) AnswerInputFinished(ctx context.Context, sub *Subscription, question string, data []byte, finished func(error)) error {
-	return s.input(ctx, sub, question, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, finished)
+	return s.input(ctx, viewer(sub), question, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, finished)
 }
 
 // InputContext is Input waiting until ctx ends in place of
@@ -2668,21 +2671,25 @@ func (s *Local) AnswerInputFinished(ctx context.Context, sub *Subscription, ques
 // keystrokes on from its frame loop and gives each its time from its
 // arrival.
 func (s *Local) InputContext(ctx context.Context, sub *Subscription, data []byte) error {
-	return s.input(ctx, sub, "", data, writeWait{stall: s.opts.InputWait}, nil)
+	return s.input(ctx, viewer(sub), "", data, writeWait{stall: s.opts.InputWait}, nil)
 }
 
 // InputWaiting is InputContext for a terminal of the person's own (a
 // host's): it waits for the program to read, however long it has not, as
 // a terminal does, until ctx ends.
 func (s *Local) InputWaiting(ctx context.Context, sub *Subscription, data []byte) error {
-	return s.input(ctx, sub, "", data, writeWait{}, nil)
+	return s.input(ctx, viewer(sub), "", data, writeWait{}, nil)
 }
 
-// input is Input waiting as o says, until ctx ends; with question, the
-// keys are a reply to that question (AnswerInput), and finished, when
-// set, is told their word once they land late (AnswerInputFinished).
-func (s *Local) input(ctx context.Context, sub *Subscription, question string, data []byte, o writeWait, finished func(error)) error {
-	if sub.Role != RoleControl {
+// input is Input waiting as o says, until ctx ends, typed by who (a
+// viewer, or an actor with no connection: AnswerAs); with question, the
+// keys are a reply to that question (AnswerInput, AnswerAs), and
+// finished, when set, is told their word once they land late
+// (AnswerInputFinished). An actor's keys must be one of the question's
+// choices, looked at with the question and again as the writer takes
+// them (ErrNotAChoice).
+func (s *Local) input(ctx context.Context, who typist, question string, data []byte, o writeWait, finished func(error)) error {
+	if !who.controls() {
 		return ErrReadOnly
 	}
 	// The keys are this call's own: what runs as they are written, or once
@@ -2696,6 +2703,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			return err
 		}
 		if err := s.stillOnScreen(question); err != nil {
+			return err
+		}
+		if err := who.mayType(s, question, data); err != nil {
 			return err
 		}
 	}
@@ -2779,11 +2789,14 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// or on a host its server not heard from lately), asked as they are
 	// queued and again as the writer takes them (writeWait.from): a write
 	// begun before lands as the program reads, and none after it begins.
-	o.from, o.anyEnd = sub, true
+	o.from, o.anyEnd = who.sub, true
+	if who.gone != nil {
+		o.gone = who.gone
+	}
 	// Whether a person typed anything here, or only the terminal reported
 	// (its replies, the pointer moved or clicked), as many reports as the
 	// write holds, one the connection's last write began included.
-	typed := sub.typesSomething(data)
+	typed := who.typesSomething(data)
 	if s.asked != nil && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data) {
 		// Several keys with an Enter, looked at again as the writer takes
 		// them (they may have waited behind another write): a key that
@@ -2821,6 +2834,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				}
 			}
 			if err := s.stillOnScreen(question); err != nil {
+				return err
+			}
+			if err := who.mayType(s, question, data); err != nil {
 				return err
 			}
 			t, err := s.claimQuestion(question)
@@ -2970,7 +2986,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// Only the Escape held may answer it: the startup question
 			// showing (or, not asked yet, the one the screen shows, by its
 			// words) is held answered, nothing else done.
-			s.holdStartupAnswered(startupWords, sub)
+			s.holdStartupAnswered(startupWords, who.id(), who.displayName())
 		}
 		if (ownAnswer || startupAnswer || startupOnScreen) && s.trust != nil {
 			// The answered screen behind, a look that took its text before
@@ -2993,7 +3009,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			}
 			s.mu.Unlock()
 			if question == "" {
-				s.holdStartupAnswered(startupWords, sub)
+				s.holdStartupAnswered(startupWords, who.id(), who.displayName())
 			}
 			s.trust.Reset()
 		}
@@ -3019,10 +3035,10 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// claim its keys made (resolve).
 	written := func() {
 		if !quiet {
-			s.typedKeys(sub, data, typedEnter)
+			s.typedKeys(who, data, typedEnter)
 		}
 		if token != 0 {
-			s.resolve(question, token, sub.ID, sub.Name, data)
+			s.resolve(question, token, who.id(), who.displayName(), data)
 		}
 	}
 	landed, err := s.writeProc(ctx, data, o)
@@ -3074,14 +3090,17 @@ func isChoice(att Attention, data []byte) bool {
 	return false
 }
 
-// typedKeys is what follows keys written to the program (input): sub is
-// typing, and the screen is looked at again for a dialog the keys may have
+// typedKeys is what follows keys written to the program (input): who is
+// typing (a viewer is stamped so; an actor has no place in the roster),
+// and the screen is looked at again for a dialog the keys may have
 // answered (enter: an Enter, or a dialog's key). They answer no question.
-func (s *Local) typedKeys(sub *Subscription, data []byte, enter bool) {
+func (s *Local) typedKeys(who typist, data []byte, enter bool) {
 	if isTerminalReport(data) {
 		return
 	}
-	s.stampTyping(sub)
+	if who.sub != nil {
+		s.stampTyping(who.sub)
+	}
 	if s.asked != nil && (enter || s.askedKeys[string(data)]) {
 		// Look at the screen again even if the program draws nothing: a
 		// dialog the key did not take away is asked again, and one it took
@@ -4321,10 +4340,10 @@ type heldStartup struct {
 // with). Consumed (a reply to it refused), not cleared, until the screen
 // shows it gone (escGone: withdrawn) or the next startup question takes
 // its place.
-func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
+func (s *Local) holdStartupAnswered(words, by, name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	held := heldStartup{by: sub.ID, name: sub.Name}
+	held := heldStartup{by: by, name: name}
 	if s.asked != nil {
 		held.fed = s.asked.Fed()
 		held.cols, held.rows = s.asked.Size()
