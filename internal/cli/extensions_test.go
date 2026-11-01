@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -233,14 +234,16 @@ func TestHostClosesTheRegistry(t *testing.T) {
 }
 
 // startingIdentity is an identity provider that is a Starter: each Start
-// hands its context and Host over.
+// hands its context and Host over, and what serve had logged by then.
 type startingIdentity struct {
 	began chan startedWith
+	logs  *syncBuffer
 }
 
 type startedWith struct {
-	ctx context.Context
-	h   ext.Host
+	ctx    context.Context
+	h      ext.Host
+	logged string
 }
 
 func (startingIdentity) Name() string { return "cloud" }
@@ -248,15 +251,38 @@ func (startingIdentity) Authenticate(context.Context, string) (ext.Principal, bo
 	return ext.Principal{}, false, nil
 }
 func (s startingIdentity) Start(ctx context.Context, h ext.Host) error {
-	s.began <- startedWith{ctx, h}
+	s.began <- startedWith{ctx, h, s.logs.String()}
 	return nil
+}
+
+// heldWriter is a stdout whose writes wait until it is opened.
+type heldWriter struct {
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	b       bytes.Buffer
+}
+
+func (w *heldWriter) open() { w.once.Do(func() { close(w.release) }) }
+
+func (w *heldWriter) Write(p []byte) (int, error) {
+	<-w.release
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
 }
 
 // serve starts the providers that need the server once it is made, with a
 // Host whose directory is the provider's own in the data directory, on a
-// context that serve's end ends; the try's Host refuses after it.
+// context that serve's end ends; the try's Host refuses after it. The
+// switchyard's publisher is in place by then, so a session the provider
+// launches at once is published: the start-up work after the providers'
+// start (here the handshake line) is held until the provider has started.
 func TestServeStartsProviders(t *testing.T) {
 	clearConductorEnv(t)
+	// Publishing on, to a switchyard nothing is ever published to (no
+	// session is made).
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "1")
 	t.Cleanup(agents.ForgetBinary())
 	dir := t.TempDir()
 	work := filepath.Join(dir, "work")
@@ -264,8 +290,9 @@ func TestServeStartsProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := filepath.Join(dir, "state")
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, state))
-	p := startingIdentity{began: make(chan startedWith, 1)}
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "rendezvous": {"server": "http://127.0.0.1:1"}}`, work, work, state))
+	var logs syncBuffer
+	p := startingIdentity{began: make(chan startedWith, 1), logs: &logs}
 	old := extensions
 	t.Cleanup(func() { extensions = old })
 	extensions = func() ext.Providers {
@@ -273,10 +300,11 @@ func TestServeStartsProviders(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var logs syncBuffer
+	held := &heldWriter{release: make(chan struct{})}
+	defer held.open()
 	done := make(chan error, 1)
 	go func() {
-		code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, &logs)
+		code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0", "--print-listen"}, strings.NewReader(""), held, &logs)
 		if err == nil && code != 0 {
 			err = fmt.Errorf("exit code %d", code)
 		}
@@ -291,6 +319,10 @@ func TestServeStartsProviders(t *testing.T) {
 	case <-deadline:
 		t.Fatalf("the provider was not started in %s:\n%s", wait, logs.String())
 	}
+	if !strings.Contains(got.logged, "sessions are published to the switchyard") {
+		t.Fatalf("the provider started before the switchyard's publisher was set:\n%s", got.logged)
+	}
+	held.open()
 	if d, err := got.h.DataDir(); err != nil || d != filepath.Join(state, "ext", "cloud") {
 		t.Fatalf("the provider's directory: %s %v", d, err)
 	}
