@@ -212,64 +212,21 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	label := strings.TrimSpace(body.Label)
-	if err := crew.ValidateLabel(label); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	if s.crews == nil {
-		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
-		return
-	}
-	c, err := s.crews.Get(r.PathValue("id"))
-	if err != nil {
-		s.crewStoreError(w, r.PathValue("id"), err)
-		return
-	}
-	if c.Managed() {
-		// A managed run needs the server's ledger, as its owner, and the
-		// crews.managed switch on (the engine checks the ledger again).
-		if !s.cfg.ManagedCrews() {
-			writeError(w, http.StatusConflict, "managed_off", "crews with tasks are off on this server (crews.managed)")
-			return
-		}
-		if s.ledger == nil {
-			writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", "the ledger could not be opened; see the server's log")
-			return
-		}
-		if ro, why := s.ledger.ReadOnly(); ro {
-			writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", why)
-			return
-		}
-	}
-	if err := c.Launchable(); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
-		return
-	}
-	cat := s.Catalog()
-	if err := checkLaunch(c.Members, cat, s.installedFor(r.Context(), cat, c.Members), s.identityFor(r.Context(), cat, c.Members)); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
-		return
-	}
-	cwd, err := s.resolveCwd(cmp.Or(c.Cwd, s.cfg.DefaultCwd))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_cwd", err.Error())
-		return
-	}
-	c.Cwd = cwd
-	// The run's yolo choice: the crew's, else the server's, fixed now.
-	yolo := s.cfg.Yolo
-	if c.Yolo != nil {
-		yolo = *c.Yolo
-	}
-	c.Yolo = &yolo
-	ctx, cancel := runContext(r)
-	defer cancel()
-	run, release, err := s.runs.LaunchNamed(ctx, c, label)
+	id := r.PathValue("id")
+	run, c, release, err := s.launchSaved(r.Context(), id, strings.TrimSpace(body.Label))
 	// Released once the reply is written: the view link is minted first, so a
 	// launch at the cap meanwhile cannot forget the run.
 	defer release()
-	if err != nil {
+	var refused launchRefused
+	var stored crewStoreErr
+	switch {
+	case errors.As(err, &refused):
+		writeAPIError(w, refused.e)
+		return
+	case errors.As(err, &stored):
+		s.crewStoreError(w, id, stored.err)
+		return
+	case err != nil:
 		s.runError(w, "launch", c.ID, err)
 		return
 	}
@@ -285,6 +242,86 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusCreated, reply)
+}
+
+// crewStoreErr is the crews store's error reading the crew a launch names,
+// for crewStoreError.
+type crewStoreErr struct{ err error }
+
+func (e crewStoreErr) Error() string { return e.err.Error() }
+func (e crewStoreErr) Unwrap() error { return e.err }
+
+// launchRefused is launchSaved's refusal of a launch before the engine is
+// asked, as the route answers it; the engine's own errors, an *apiError
+// among them, are runError's.
+type launchRefused struct{ e *apiError }
+
+func (e launchRefused) Error() string { return e.e.Message }
+
+// launchRefusal is a launchRefused answered with status.
+func launchRefusal(status int, code, message string) error {
+	return launchRefused{newAPIError(status, code, message)}
+}
+
+// launchSaved launches the saved crew crewID as a run named label, as POST
+// /api/crews/{id}/launch does and ext.Host's Launch does: the label's
+// check, the crews store, the managed checks, Launchable, checkLaunch,
+// resolveCwd and the run's yolo, then the engine (runs.LaunchNamed), the
+// one scheduler. ctx is the asker's, for the agents' lookups; the launch
+// itself runs on runContext's terms (the asker's values, not its end,
+// bounded by runTimeout). It answers the run, the crew as launched, and
+// the release of both the engine's hold and that context, to call once
+// the run is answered for, whatever the error. Its error is a
+// launchRefused for a refusal of the request, a crewStoreErr for the
+// store's, or the engine's (runError).
+func (s *Server) launchSaved(ctx context.Context, crewID, label string) (*crew.Run, crew.Crew, func(), error) {
+	noop := func() {}
+	if err := crew.ValidateLabel(label); err != nil {
+		return nil, crew.Crew{}, noop, launchRefusal(http.StatusBadRequest, "invalid_request", err.Error())
+	}
+	if s.crews == nil {
+		return nil, crew.Crew{}, noop, launchRefusal(http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
+	}
+	c, err := s.crews.Get(crewID)
+	if err != nil {
+		return nil, crew.Crew{}, noop, crewStoreErr{err}
+	}
+	if c.Managed() {
+		// A managed run needs the server's ledger, as its owner, and the
+		// crews.managed switch on (the engine checks the ledger again).
+		if !s.cfg.ManagedCrews() {
+			return nil, c, noop, launchRefusal(http.StatusConflict, "managed_off", "crews with tasks are off on this server (crews.managed)")
+		}
+		if s.ledger == nil {
+			return nil, c, noop, launchRefusal(http.StatusServiceUnavailable, "ledger_unavailable", "the ledger could not be opened; see the server's log")
+		}
+		if ro, why := s.ledger.ReadOnly(); ro {
+			return nil, c, noop, launchRefusal(http.StatusServiceUnavailable, "ledger_unavailable", why)
+		}
+	}
+	if err := c.Launchable(); err != nil {
+		return nil, c, noop, launchRefusal(http.StatusBadRequest, "invalid_crew", err.Error())
+	}
+	cat := s.Catalog()
+	if err := checkLaunch(c.Members, cat, s.installedFor(ctx, cat, c.Members), s.identityFor(ctx, cat, c.Members)); err != nil {
+		return nil, c, noop, launchRefusal(http.StatusBadRequest, "invalid_crew", err.Error())
+	}
+	cwd, err := s.resolveCwd(cmp.Or(c.Cwd, s.cfg.DefaultCwd))
+	if err != nil {
+		return nil, c, noop, launchRefusal(http.StatusBadRequest, "invalid_cwd", err.Error())
+	}
+	c.Cwd = cwd
+	// The run's yolo choice: the crew's, else the server's, fixed now.
+	yolo := s.cfg.Yolo
+	if c.Yolo != nil {
+		yolo = *c.Yolo
+	}
+	c.Yolo = &yolo
+	// The launch's context ends with its release, as the route's did at
+	// its end: after the engine's release.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runTimeout)
+	run, release, err := s.runs.LaunchNamed(rctx, c, label)
+	return run, c, func() { release(); cancel() }, err
 }
 
 // launchViewLink creates the view link a crew asks for at launch, as POST
