@@ -213,9 +213,10 @@ func inputs(l *session.Local) []string {
 }
 
 // A provider's line is typed into a server session, recorded as by its
-// principal, and never into a question the session shows; a session that
-// is not there, a hosted session and a choice's keys are refused as ext
-// names them.
+// principal, and never into a question the session shows; a choice's keys
+// answer the question once, and keys that are none of its choices are
+// refused; a session that is not there and a hosted session are refused as
+// ext names them.
 func TestHostSubmitLine(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id := e.createSession("cat")
@@ -241,8 +242,20 @@ func TestHostSubmitLine(t *testing.T) {
 		t.Fatalf("the question went: %+v", a)
 	}
 	q := l.Info().Attention.ID
-	if _, err := h.Submit(t.Context(), ext.SubmitRequest{Session: id, Question: q, Input: "1", By: ada}); !errors.Is(err, ext.ErrUnsupported) {
-		t.Fatalf("a choice's keys: %v", err)
+	if _, err := h.Submit(t.Context(), ext.SubmitRequest{Session: id, Question: q, Input: "2", By: ada}); !errors.Is(err, ext.ErrRefused) || !strings.Contains(err.Error(), "not one of the question's choices") {
+		t.Fatalf("keys that are no choice: %v", err)
+	}
+	if got := inputs(l); len(got) != 1 {
+		t.Fatalf("keys that are no choice were typed: %q", got)
+	}
+	if res, err := h.Submit(t.Context(), ext.SubmitRequest{Session: id, Question: q, Input: "1", By: ada}); err != nil || res.Status != "entered" {
+		t.Fatalf("a choice's keys: %+v %v", res, err)
+	}
+	if got := inputs(l); len(got) != 2 || got[1] != "Allow Bash? by Ada" {
+		t.Fatalf("the choice's answer: %q", got)
+	}
+	if _, err := h.Submit(t.Context(), ext.SubmitRequest{Session: id, Question: q, Input: "1", By: ada}); !errors.Is(err, ext.ErrQuestionAnswered) {
+		t.Fatalf("the choice again: %v", err)
 	}
 	if _, err := h.Submit(t.Context(), ext.SubmitRequest{Session: id, Input: "1", By: ada}); !errors.Is(err, ext.ErrRefused) {
 		t.Fatalf("keys answering no question: %v", err)

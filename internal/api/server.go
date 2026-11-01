@@ -240,6 +240,9 @@ type Server struct {
 	extStarts   []*extStarter
 	extStarting atomic.Bool
 	extAfter    func(time.Duration) <-chan time.Time
+	// router is the decision router's seam over the sessions' questions
+	// (router.go).
+	router *decisionRouter
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
@@ -324,6 +327,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.installExtensions(o.providers)
+	s.router = newDecisionRouter(s)
 	s.relayBurstFloor = relayBurstFloor
 	s.hostPingEvery = hostPingEvery
 	s.hostGoneWait = writeTimeout
@@ -417,6 +421,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	s.hosts.OnChange = func(info session.Info) {
 		s.events.publishIf(info, s.listed)
+		s.router.mark(info.ID)
 		// A hosted session that ended takes its links with it, as a server
 		// session does, and closes their viewers as its end.
 		if info.Status.Ended() {
@@ -448,6 +453,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.events.removed(id)
 		s.unpublish(id)
 		s.pastes.closeAll(id)
+		s.router.mark(id)
 	}
 	if cfg.Switchyard.Enabled && s.store != nil {
 		s.openLinkKeeper(s.store)

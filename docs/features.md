@@ -3313,7 +3313,38 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   the context providers. Planned.
 
   PR-9 (#481): session, api: Local.AnswerAs and the decision router over
-  needs_input. Planned.
+  needs_input. `Local.AnswerAs(ctx, question, input, Actor)` writes a
+  choice's keys as `AnswerInput` does, through the same writer, guards
+  and claim, with no subscription behind it (`input()` takes who types,
+  a viewer or an actor), and only keys that are the shown question's own
+  choice (`ErrNotAChoice` otherwise, checked as the keys are queued and
+  as the writer takes them); the answer is recorded under the actor's
+  name. `session.Info.Kept` (never on the API) lists the questions the
+  session keeps without showing them, at most two, read in the same lock
+  acquisition as the attention. The router (`internal/api/router.go`):
+  a dirty set of session ids fed by the change hooks, 16 workers, one
+  `Info` per read; each question routed once, an empty route recording
+  nothing, destinations one `routed: …` status entry, an answer applied
+  once through `submitTo` (the function `Host.Submit` now uses, which
+  takes a choice's keys for server sessions), a person's earlier answer
+  winning; resolutions told in order from a list that drops nothing;
+  at most 64 ids kept per session and 1,024 routed and untold server-wide,
+  past which a question is skipped. Tests: in `internal/session`
+  `TestKept`, `TestKeptReadWithTheAttention`, `TestAnswerAsChoice`,
+  `TestAnswerAsOnlyChoices`, `TestAnswerAsHeldTurn`,
+  `TestAnswerAsAgainstAViewer`, `TestAnswerAsRecordsTheName`; in
+  `internal/api` `TestNoRouterHumansAnswer`, `TestRouteAppliedOnce`,
+  `TestPersonAnswersBeforeTheRoute`, `TestRouteRecorded`,
+  `TestRouteBounds`, `TestResolvedOnce`,
+  `TestRouteOncePerQuestionSetAside`,
+  `TestResolvedOnWithdrawalWithNoActivity`,
+  `TestResolvedAfterABurstOfOtherSessions`,
+  `TestRouteOncePerQuestionSetAsidePastTheBound`,
+  `TestResolvedThroughABlockedConsumer`, `TestRouteSkippedAtTheBound`,
+  `TestRouterNeverResolvesARestoredQuestion`,
+  `TestResolvedWhenAnsweredInTheTerminal`,
+  `TestAnsweredInTheTerminalNeverRouted`, each checked to fail with its
+  part broken; `TestHostSubmitLine` now answers a choice's keys.
 
   PR-10 (#482): proto, hostagent, signal, api, web: answer_as, a routed
   answer for a hosted session. Planned.

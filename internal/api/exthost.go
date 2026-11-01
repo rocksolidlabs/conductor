@@ -355,19 +355,22 @@ func (h *extHost) launchError(id string, err error) error {
 
 // Submit types r.Text into the server session r.Session, never into a
 // question it shows (Local.Submit with UnlessWaiting), or, with
-// r.Question, answers that question with the line, through the
-// question's claim as a viewer's reply does: the first answer wins, and
-// one to a question that no longer waits answers ext.ErrQuestionAnswered.
-// Either is recorded as by r.By's name. A choice's keys (r.Input) and a
-// hosted session answer ext.ErrUnsupported until the decision router's
-// seam (C5) adds them, and a line blank once cleaned is refused; a line
-// accepted while its program reads slowly answers "pending". The try's end withdraws the submission as a revoked
+// r.Question, answers that question with the line or with a choice's keys
+// (r.Input, Local.AnswerAs), through the question's claim as a viewer's
+// reply does: the first answer wins, and one to a question that no longer
+// waits answers ext.ErrQuestionAnswered; keys that are not one of the
+// question's own choices are refused, nothing written. Either is recorded
+// as by r.By's name. A hosted session answers ext.ErrUnsupported until
+// its hosts take routed answers (C5, PR-10), and a line blank once
+// cleaned is refused; a line accepted while its program reads slowly
+// answers "pending". The try's end withdraws the submission as a revoked
 // link does (session.Submission.Withdrawn, looked at as the writer takes
 // the text): one whose text is not yet typed when its try is given up
 // answers context.Canceled and types nothing; one whose text is typed and
 // whose Enter is not answers context.Canceled too, its Enter left out and
 // the session's turn held for a person (a reply's claim let go as the
-// hold shows), so that no later line joins the text.
+// hold shows), so that no later line joins the text. A choice's keys not
+// yet written when it is given up are withdrawn the same way.
 func (h *extHost) Submit(ctx context.Context, r ext.SubmitRequest) (ext.SubmitResult, error) {
 	if err := h.gone(); err != nil {
 		return ext.SubmitResult{}, err
@@ -383,42 +386,64 @@ func (h *extHost) Submit(ctx context.Context, r ext.SubmitRequest) (ext.SubmitRe
 	if !ok {
 		return ext.SubmitResult{}, fmt.Errorf("%w: a hosted session takes no submission from a provider yet", ext.ErrUnsupported)
 	}
+	res, err, raw := h.s.submitTo(ctx, local, r, h.ctx.Done())
+	if raw != nil && !errors.Is(raw, session.ErrSubmitPending) && h.gone() != nil {
+		return ext.SubmitResult{}, context.Canceled
+	}
+	return res, err
+}
+
+// submitTo is what Host.Submit and the decision router's answers do to a
+// server session, r checked: a choice's keys answer r.Question through
+// Local.AnswerAs, a line is Local.Submit's (a reply to r.Question, or with
+// UnlessWaiting a line answering none), each as by r.By, withdrawn once
+// withdrawn closes (nil: never). It answers the result as ext names it,
+// and the session's own error (raw), nil when the session took it.
+func (s *Server) submitTo(ctx context.Context, local *session.Local, r ext.SubmitRequest, withdrawn <-chan struct{}) (res ext.SubmitResult, err, raw error) {
+	sctx, cancel := context.WithTimeout(ctx, submitTimeout)
+	defer cancel()
 	if r.Input != "" {
-		return ext.SubmitResult{}, fmt.Errorf("%w: a choice's keys are not answered through the host yet", ext.ErrUnsupported)
+		raw := local.AnswerAs(sctx, r.Question, r.Input, session.Actor{Subject: r.By.Subject, Name: r.By.Name, Withdrawn: withdrawn})
+		switch {
+		case raw == nil:
+			return ext.SubmitResult{Status: "entered"}, nil, nil
+		case errors.Is(raw, session.ErrQuestionAnswered):
+			return ext.SubmitResult{}, fmt.Errorf("%w: %v", ext.ErrQuestionAnswered, raw), raw
+		case errors.Is(raw, session.ErrNotAChoice):
+			return ext.SubmitResult{}, refused("the keys are not one of the question's choices"), raw
+		case errors.Is(raw, session.ErrSessionEnded):
+			return ext.SubmitResult{}, refused("the session has ended"), raw
+		}
+		return ext.SubmitResult{}, refused("%v", raw), raw
 	}
 	// A text blank once cleaned (spaces, line breaks) would be typed as a
 	// bare Enter, which into a question picks what the question
 	// highlights, as only a choice's keys may: refused, nothing written.
 	if session.SubmitLine(r.Text) == "" {
-		return ext.SubmitResult{}, refused("the line is blank")
+		return ext.SubmitResult{}, refused("the line is blank"), nil
 	}
-	sctx, cancel := context.WithTimeout(ctx, submitTimeout)
-	defer cancel()
 	// The try's end is the submission's withdrawal, not its context's: a
 	// closed channel the writer sees at once, and that leaves a typed text
 	// held rather than its turn given to the next line.
-	sub := session.Submission{Text: r.Text, ByName: r.By.Name, Question: r.Question, Withdrawn: h.ctx.Done()}
+	sub := session.Submission{Text: r.Text, ByName: r.By.Name, Question: r.Question, Withdrawn: withdrawn}
 	// A line that answers no question is never typed into one.
 	sub.UnlessWaiting = r.Question == ""
-	res, err := local.Submit(sctx, sub)
-	if err != nil && !errors.Is(err, session.ErrSubmitPending) && h.gone() != nil {
-		return ext.SubmitResult{}, context.Canceled
-	}
+	got, raw := local.Submit(sctx, sub)
 	switch {
-	case errors.Is(err, session.ErrSubmitPending):
-		return ext.SubmitResult{Status: "pending"}, nil
-	case errors.Is(err, session.ErrQuestionAnswered):
-		return ext.SubmitResult{}, fmt.Errorf("%w: %v", ext.ErrQuestionAnswered, err)
-	case errors.Is(err, session.ErrSessionEnded):
-		return ext.SubmitResult{}, refused("the session has ended")
-	case err != nil:
-		return ext.SubmitResult{}, refused("%v", err)
-	case !res.Typed:
-		return ext.SubmitResult{}, refused("the session asks a question")
-	case !res.Entered:
-		return ext.SubmitResult{}, refused("%s", session.LineStrandedWords)
+	case errors.Is(raw, session.ErrSubmitPending):
+		return ext.SubmitResult{Status: "pending"}, nil, raw
+	case errors.Is(raw, session.ErrQuestionAnswered):
+		return ext.SubmitResult{}, fmt.Errorf("%w: %v", ext.ErrQuestionAnswered, raw), raw
+	case errors.Is(raw, session.ErrSessionEnded):
+		return ext.SubmitResult{}, refused("the session has ended"), raw
+	case raw != nil:
+		return ext.SubmitResult{}, refused("%v", raw), raw
+	case !got.Typed:
+		return ext.SubmitResult{}, refused("the session asks a question"), nil
+	case !got.Entered:
+		return ext.SubmitResult{}, refused("%s", session.LineStrandedWords), nil
 	}
-	return ext.SubmitResult{Status: "entered"}, nil
+	return ext.SubmitResult{Status: "entered"}, nil, nil
 }
 
 // Notify checks n as a provider's notice (at most ext.MaxNoticeMessage

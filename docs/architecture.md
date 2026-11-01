@@ -515,9 +515,10 @@ refusal `ErrRefused` with the route's words. `Submit` types a line into
 a server session only while it shows no question (`Local.Submit` with
 `UnlessWaiting`), or answers a question with a line through the
 question's claim, as a viewer's reply does (`ErrQuestionAnswered` once it
-no longer waits); a choice's keys and a hosted session answer
-`ErrUnsupported` until the decision router's seam, and a line blank once
-cleaned is refused (it would be a bare Enter). `Notify` checks a
+no longer waits), or with a choice's keys (`Local.AnswerAs`: only one
+of the question's own choices, through the same claim); a hosted session
+answers `ErrUnsupported` until its hosts take routed answers, and a line
+blank once cleaned is refused (it would be a bare Enter). `Notify` checks a
 notice (500 bytes of message, 2,048 of URL, one line each) and types it
 `provider` from its sender; a provider one of whose sinks lists
 `TypeProvider` (read once, from `Events`, on the provider's own goroutine
@@ -546,6 +547,32 @@ their receipts are kept under `admin` for the workbench token and
 `user:<subject>` (`ext.SubjectActor`, at most 53 bytes) for a provider's
 principal, so a provider's subject never shares the receipts of `admin`,
 `merge` or `agent:<member>`. Nothing stored changes shape.
+
+**Decisions.** The decision router watches the sessions' attention, not
+their activity (`internal/api/router.go`): a question can stop waiting
+with nothing recorded. `localChange`, the hosted hub's `OnChange` and the
+registry's `OnRemove` mark the session's id in a dirty set (one entry per
+session, nothing dropped, never waiting); at most 16 workers, one per
+session at a time, take an id out, read one `Info` (what it shows and
+`Kept`, the questions it keeps without showing them, from one lock
+acquisition) and judge from it alone. A question not seen before is routed
+once through the guard (`RouteWait`): the empty route records nothing, a
+route with destinations one `status` entry, a route's answer is applied
+once through the function `Host.Submit` uses (`Local.AnswerAs` for a
+choice, which writes only the question's own choices through the
+session's writer and claim, `Local.Submit` with `Question` for a line), a
+person's earlier answer winning. A routed question the session neither
+shows nor keeps, or shows answered in the terminal, is resolved (with
+`Ended` once its session ended or left the registry); one first seen
+answered in the terminal is never routed. The router keeps per session
+the ids it saw (at most 64, the oldest resolved forgotten first, never one
+still shown or kept), so a question set aside and shown again is routed
+once. Resolutions wait in a first-in first-out list of the router's own,
+told by one goroutine in order (`DeliveryWait`, its panic recovered), each
+leaving only once told; past 1,024 routed and untold questions a new one
+is not routed and is held skipped (warn once a minute). A question shown
+while the router's `Start` has not succeeded is skipped the same way.
+Hosted sessions are routed once their hosts send what they keep (PR-10).
 
 ## Packages
 
