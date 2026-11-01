@@ -20,6 +20,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -134,7 +135,9 @@ type Options struct {
 	// attention change or an event it sends is not taken: the session's
 	// agent reports to its own server, never to the switchyard, so only the
 	// switchyard could send one, and an attention's choices are keys the
-	// owner types with one click. The Uplink sets it; `conductor host`
+	// owner types with one click. Nor is it told the host takes routed
+	// answers (answer_as) or what the session keeps, and an answer_as it
+	// sends is dropped unread. The Uplink sets it; `conductor host`
 	// publishes to the owner's own server, which shows the session in its
 	// workbench, stops it and forwards its agent's reports, and leaves it off.
 	Switchyard bool
@@ -339,6 +342,10 @@ type agent struct {
 
 	agentToken    string
 	lastAttention session.Attention
+	// lastKept is what the session kept as lastAttention was told
+	// (Info.Kept, to the owner's own server alone: toServerKept), the pair
+	// sent and resent together. Guarded by mu.
+	lastKept []string
 	// attentionUntold says the last attention change was not sent for want
 	// of a connection, or a connection has started since the last was told
 	// (retellAttention): the next change sends it, whatever it is.
@@ -404,6 +411,10 @@ type agent struct {
 	// liveWithin replaces linkHeardWithin, and livePing livePingEvery, in
 	// tests.
 	liveWithin, livePing time.Duration
+	// answers applies the routed answers (answer_as) of the current control
+	// connection, off its read loop (openAnswers); nil while there is
+	// none. Guarded by mu.
+	answers *routedAnswers
 	// beforeSave, when set (tests), runs as a viewer's save part has its
 	// turn on the viewer's saving queue, before the session takes it.
 	beforeSave atomic.Pointer[func(proto.FileWrite)]
@@ -691,6 +702,9 @@ func (a *agent) registration(cols, rows uint16) proto.Register {
 	}
 	if !a.opts.Switchyard {
 		reg.Session.Branch = session.GitBranch(a.dir)
+		// The owner's own server may route the session's questions: it is
+		// told what the session keeps, and its answers are taken.
+		reg.Host.AnswerAs = true
 		return reg
 	}
 	reg.Host.User = ""
@@ -760,21 +774,24 @@ func (a *agent) forwardChanges() {
 // server so listings stay current for hosted sessions.
 func (a *agent) onLocalChange(info session.Info) {
 	att := a.toServer(info.Attention)
+	// What the session keeps goes with what it shows, from the one Info:
+	// a change of either is told, the two together.
+	kept := a.toServerKept(info.Kept)
 	a.mu.Lock()
-	changed := a.attentionUntold || !sameAttention(att, a.lastAttention)
+	changed := a.attentionUntold || !sameAttention(att, a.lastAttention) || !slices.Equal(kept, a.lastKept)
 	// The mark is taken here, under the lock that set it, not after the
 	// send: one set while a send was under way would be cleared by that
 	// send's end and its re-tell lost; taken here, it makes the next
 	// change tell, at worst the same attention once more.
 	a.attentionUntold = false
-	a.lastAttention, a.attentionOf = att, info.ID
+	a.lastAttention, a.lastKept, a.attentionOf = att, kept, info.ID
 	retrying := a.attentionRetry
 	a.mu.Unlock()
 	if !changed || retrying {
 		// A retry under way sends the latest when its turn comes.
 		return
 	}
-	err := a.send(hostAttentionMsg(info.ID, att))
+	err := a.send(hostAttentionMsg(info.ID, att, kept))
 	switch {
 	case err == nil:
 	case errors.Is(err, errConnDown):
@@ -830,9 +847,9 @@ func (a *agent) retryAttention() {
 	go func() {
 		for {
 			a.mu.Lock()
-			att, id, on := a.lastAttention, a.attentionOf, a.out
+			att, kept, id, on := a.lastAttention, a.lastKept, a.attentionOf, a.out
 			a.mu.Unlock()
-			err := a.tell(hostAttentionMsg(id, att), nil)
+			err := a.tell(hostAttentionMsg(id, att, kept), nil)
 			a.mu.Lock()
 			if a.out != on {
 				// The connection the attention went on is not the host's
@@ -847,7 +864,7 @@ func (a *agent) retryAttention() {
 				a.mu.Unlock()
 				return
 			}
-			if err != nil || sameAttention(att, a.lastAttention) {
+			if err != nil || sameAttention(att, a.lastAttention) && slices.Equal(kept, a.lastKept) {
 				a.attentionRetry = false
 				a.attentionUntold = err != nil
 				a.mu.Unlock()
@@ -883,9 +900,10 @@ func (a *agent) toServer(att session.Attention) session.Attention {
 
 // hostAttentionMsg encodes an attention change for the control connection,
 // with its mark as the agent's own question, which the server's copy keeps
-// through a done it forwards (signal.HostedSession.Ask).
-func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttentionMsg {
-	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked(), Answered: att.Answered, Plan: att.Plan}
+// through a done it forwards (signal.HostedSession.Ask), and what the
+// session keeps without showing it, read with it (toServerKept).
+func hostAttentionMsg(sessionID string, att session.Attention, kept []string) proto.HostAttentionMsg {
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked(), Answered: att.Answered, Plan: att.Plan, Kept: kept}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
@@ -1094,6 +1112,8 @@ func (a *agent) dropConn(c *websocket.Conn) {
 func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	defer c.CloseNow()
 	w := a.writerFor(c)
+	// The routed answers this connection brings end with it.
+	defer a.openAnswers(ctx)()
 	// The server is told the session's attention as the connection starts,
 	// the empty state included (retellAttention).
 	a.retellAttention()
@@ -1339,6 +1359,14 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
 		}
 		a.noteChange(a.local.Info())
+	case proto.HostAnswerAs:
+		if a.opts.Switchyard {
+			// A switchyard has no authority over the terminal: never
+			// sent one, what arrives anyway is dropped unread.
+			a.log.Warn("an answer_as from the switchyard was dropped unread")
+			return nil
+		}
+		a.answerAs(data)
 	case proto.HostActivity:
 		if a.opts.Switchyard {
 			return nil // see Options.Switchyard
