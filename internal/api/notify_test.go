@@ -143,6 +143,24 @@ func drain[T any](q *extQueue[T]) []T {
 	}
 }
 
+// nextAt is the next delivery rcv was sent of an entry made at at: the
+// session's own entries (its start, its status) are not the test's.
+func nextAt(t *testing.T, rcv *receiver, at time.Time) delivery {
+	t.Helper()
+	for {
+		d := rcv.next(t)
+		var p struct {
+			Entry session.ActivityEntry `json:"entry"`
+		}
+		if err := json.Unmarshal(d.body, &p); err != nil {
+			t.Fatalf("a body that is not JSON: %s", d.body)
+		}
+		if p.Entry.At.Equal(at) {
+			return d
+		}
+	}
+}
+
 // mainPayload and mainSession are a delivery's body as main built it,
 // kept here so that the body a webhook is sent is checked against main's
 // construction, not against the code under test.
@@ -215,7 +233,7 @@ func TestWebhooksUnchanged(t *testing.T) {
 			for _, sid := range []string{id, "not-a-session"} {
 				for _, tc := range cases {
 					e.srv.events.activity(sid, tc.entry, tc.state)
-					d := rcv.next(t)
+					d := nextAt(t, rcv, at)
 					ms := mainSession{ID: sid}
 					if sid == id {
 						ms.Name, ms.AgentID = name, "cat"
@@ -240,7 +258,6 @@ func TestWebhooksUnchanged(t *testing.T) {
 					}
 				}
 			}
-			rcv.none(t, 100*time.Millisecond)
 			if beside {
 				// The sink beside was given every one of them too.
 				other.waitFor(t, "every entry", func(ns []ext.Notification) bool {
@@ -343,7 +360,7 @@ func TestSinkGetsEveryAttentionEvent(t *testing.T) {
 		for _, n := range ns {
 			if n.Session.ID == ids[i] && n.Type == session.ActivityAttention && (strings.HasPrefix(n.Message, "q ") || strings.HasPrefix(n.Message, "w ")) {
 				if wantEv := map[byte]string{'q': "needs_input", 'w': "working"}[n.Message[0]]; n.Event != wantEv || n.State != wantEv {
-					panic(fmt.Sprintf("%q typed %s, state %s", n.Message, n.Event, n.State))
+					t.Fatalf("%q typed %s, state %s", n.Message, n.Event, n.State)
 				}
 				out = append(out, n.Message)
 			}
@@ -391,8 +408,10 @@ func TestSinkGetsEveryAttentionEvent(t *testing.T) {
 // sessions, the webhooks and the other sinks go on, and the blocked
 // sink's queue keeps its newest 256, the drops counted.
 func TestBlockedSinkNeverHoldsTheHub(t *testing.T) {
-	stuck := &recSink{name: "stuck", block: make(chan struct{}), entered: make(chan struct{})}
-	fast := &recSink{name: "fast"}
+	// The sinks take progress entries, which the session never makes
+	// itself, so the queues hold the test's entries alone.
+	stuck := &recSink{name: "stuck", events: []string{"progress"}, block: make(chan struct{}), entered: make(chan struct{})}
+	fast := &recSink{name: "fast", events: []string{"progress", "needs_input"}}
 	rcv := newReceiver(t, nil)
 	e := newNotifyEnv(t, nil, []config.Webhook{{URL: rcv.URL, Events: []string{"error", "needs_input"}, AllowPrivate: true}}, stuck, fast)
 	// Let go before the server's cleanup waits for the sink's drain.
@@ -498,11 +517,9 @@ func TestSinkEventsFilter(t *testing.T) {
 		sinkOf(t, e.srv, name).Events()
 	}
 	id := e.createSession("cat")
-	// The entries the session made itself as it started are not the test's.
-	for name := range sinks {
-		drain(sinkOf(t, e.srv, name).queue)
-	}
-	now := time.Now().UTC()
+	// The test's entries are those made at now: the session's own (its
+	// start, its status) are not the test's.
+	now := time.Now().UTC().Add(time.Hour)
 	entries := []struct {
 		e     session.ActivityEntry
 		state session.AttentionState
@@ -532,7 +549,12 @@ func TestSinkEventsFilter(t *testing.T) {
 		"notices":   {"notice"},
 	}
 	for name, s := range sinks {
-		got := drain(sinkOf(t, e.srv, name).queue)
+		var got []ext.Notification
+		for _, n := range drain(sinkOf(t, e.srv, name).queue) {
+			if n.At.Equal(now) {
+				got = append(got, n)
+			}
+		}
 		var ms []string
 		for _, n := range got {
 			ms = append(ms, n.Message)
