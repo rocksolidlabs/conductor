@@ -2,18 +2,20 @@
 // (CONTRIBUTING.md, The open-core rules; docs/plans/ext.md, The lint) on
 // the module's source, as a test CI fails on: no module of the
 // rocksolidlabs organization but this one is imported or required, no
-// build constraint names a feature tag, and ext/ stays on the standard
+// build constraint names a feature tag, ext/ stays on the standard
 // library so that another module can take its types without this
-// module's internals.
+// module's internals, and no code outside ext/ asks the entitlement
+// source.
 //
-// The rules read each file's imports and build constraints only, with
-// go/parser, whatever the file's tags: a file a plain build leaves out is
-// read as well as one it compiles, which no build of the module and no
-// text search would do. What the build would compile from a place the walk
-// does not read is reported instead: an import of this module's package
-// from a skipped directory, and another module's tree brought in by a
-// local replace or a workspace. The package imports the standard library
-// only.
+// The rules read each file with go/parser, whatever the file's tags: a
+// file a plain build leaves out is read as well as one it compiles, which
+// no build of the module and no text search would do. All but one read a
+// file's imports and build constraints only; the entitlements rule, which
+// looks for references rather than imports, parses the files it applies
+// to whole. What the build would compile from a place the walk does not
+// read is reported instead: an import of this module's package from a
+// skipped directory, and another module's tree brought in by a local
+// replace or a workspace. The package imports the standard library only.
 package opencore
 
 import (
@@ -21,11 +23,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"go/ast"
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -60,6 +64,15 @@ const (
 	// module's directory, a symlinked directory), which the build compiles
 	// all the same.
 	RuleUnreadPackage = "unread-package"
+	// RuleEntitlements: a file outside ext/ that the binary compiles (any
+	// .go file but a _test.go one) names the entitlement source or its
+	// records (EntitlementSource, Entitlement, Entitlements,
+	// RegisterEntitlements of ext; AllowAll of ext/local) under whatever
+	// name it imports them by, dot-imports ext or ext/local, or calls a
+	// method named Entitled (CONTRIBUTING.md, Rules for code): a free
+	// feature has no entitlement to ask about, and only the paid
+	// providers, outside this repository, ask it.
+	RuleEntitlements = "entitlements"
 )
 
 // Problem is one breach of a rule: the rule, the file (a slash path
@@ -109,6 +122,20 @@ func allowedTag(tag string) bool {
 // go command's testdata (the fixtures of this package's own test among
 // them) and the package managers' trees.
 var skipDirs = []string{"testdata", "node_modules", "vendor"}
+
+// entitlementNames are the names a file outside ext/ may not use, by the
+// package that declares them: the entitlement source, its record, its
+// slot's register and accessor, and its free default.
+var entitlementNames = map[string][]string{
+	Module + "/ext":       {"EntitlementSource", "Entitlement", "Entitlements", "RegisterEntitlements"},
+	Module + "/ext/local": {"AllowAll"},
+}
+
+// entitledMethod is the entitlement source's method: a call of a method by
+// this name outside ext/ is a problem whatever its receiver's type, which
+// a parse cannot know, so a value reached through Providers.All, typed as
+// a Provider and asserted to an interface of the file's own, is caught too.
+const entitledMethod = "Entitled"
 
 // ownImport is a file's import of a package of this module, kept until
 // the walk has seen every directory it skips.
@@ -241,9 +268,20 @@ func Check(root string) ([]Problem, error) {
 
 // checkFile applies the file rules to one .go file, rel its slash path
 // under the root and modules the module paths go.mod and go.work name; it
-// returns the file's imports of this module's packages too.
+// returns the file's imports of this module's packages too. A file the
+// entitlements rule applies to is parsed whole, any other up to its
+// imports.
 func checkFile(fset *token.FileSet, p, rel string, modules []string) ([]Problem, []ownImport, error) {
-	f, err := parser.ParseFile(fset, p, nil, parser.ImportsOnly|parser.ParseComments)
+	inExt := rel == "ext" || strings.HasPrefix(rel, "ext/")
+	// The go command compiles a _test.go file into a test binary only, never
+	// into the one it builds: a test may name the entitlement source to test
+	// the registry, the start-up or a listing of what is registered.
+	entitlements := !inExt && !strings.HasSuffix(path.Base(rel), "_test.go")
+	mode := parser.ImportsOnly | parser.ParseComments
+	if entitlements {
+		mode = parser.ParseComments | parser.SkipObjectResolution
+	}
+	f, err := parser.ParseFile(fset, p, nil, mode)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opencore: %w", err)
 	}
@@ -275,7 +313,6 @@ func checkFile(fset *token.FileSet, p, rel string, modules []string) ([]Problem,
 			}
 		}
 	}
-	inExt := rel == "ext" || strings.HasPrefix(rel, "ext/")
 	var own []ownImport
 	for _, spec := range f.Imports {
 		imp, err := strconv.Unquote(spec.Path.Value)
@@ -295,7 +332,72 @@ func checkFile(fset *token.FileSet, p, rel string, modules []string) ([]Problem,
 				fmt.Sprintf("imports %s: ext/ takes only the standard library and ext's own packages", imp)})
 		}
 	}
+	if entitlements {
+		problems = append(problems, checkEntitlements(fset, f, rel)...)
+	}
 	return problems, own, nil
+}
+
+// checkEntitlements applies the entitlements rule to a file parsed whole.
+// It finds each selector whose left side is the file's name for ext or
+// ext/local (the package's own name, or the one its import gives) and
+// whose right side is one of entitlementNames, each dot import of either
+// package, and each selector of a method named Entitled, called or taken
+// as a value. A local name that shadows the import's is read as the
+// import: the rule cannot tell them apart without type-checking, and a
+// rename settles it. Reflection and a method reached by its name as a
+// string are not seen; the rule keeps honest code honest, it is no
+// sandbox.
+func checkEntitlements(fset *token.FileSet, f *ast.File, rel string) []Problem {
+	var problems []Problem
+	report := func(pos token.Pos, detail string) {
+		problems = append(problems, Problem{RuleEntitlements, rel, fset.Position(pos).Line,
+			detail + ": no code of this repository asks the entitlement source; only the paid providers do, outside it (CONTRIBUTING.md, Rules for code)"})
+	}
+	names := map[string]string{} // the file's name for ext or ext/local: its path
+	for _, spec := range f.Imports {
+		imp, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			continue // checkFile has refused it already
+		}
+		if _, ok := entitlementNames[imp]; !ok {
+			continue
+		}
+		name := path.Base(imp)
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		switch name {
+		case "_":
+		case ".":
+			report(spec.Pos(), fmt.Sprintf("dot-imports %s outside ext/, which would name %s unqualified",
+				imp, strings.Join(entitlementNames[imp], ", ")))
+		default:
+			names[name] = imp
+		}
+	}
+	calls := map[ast.Expr]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.CallExpr:
+			calls[ast.Unparen(n.Fun)] = true
+		case *ast.SelectorExpr:
+			if n.Sel.Name == entitledMethod {
+				what := "calls"
+				if !calls[n] {
+					what = "takes the method value of"
+				}
+				report(n.Sel.Pos(), fmt.Sprintf("%s a method named %s, the entitlement source's", what, entitledMethod))
+			}
+			if x, ok := n.X.(*ast.Ident); ok {
+				if imp, ok := names[x.Name]; ok && slices.Contains(entitlementNames[imp], n.Sel.Name) {
+					report(n.Sel.Pos(), fmt.Sprintf("names %s.%s (%s)", x.Name, n.Sel.Name, imp))
+				}
+			}
+		}
+		return true
+	})
+	return problems
 }
 
 // tags lists the tags a build constraint names, each once, in order.

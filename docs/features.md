@@ -3361,7 +3361,57 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestTaskContextServesTheBlocks`, `TestTouchesReachProviders`.
 
   PR-9 (#481): session, api: Local.AnswerAs and the decision router over
-  needs_input. Planned.
+  needs_input. `Local.AnswerAs(ctx, question, input, Actor)` writes a
+  choice's keys as `AnswerInput` does, through the same writer, guards
+  and claim, with no subscription behind it (`input()` takes who types,
+  a viewer or an actor), and only keys that are the shown question's own
+  choice (`ErrNotAChoice` otherwise, checked as the keys are queued and
+  as the writer takes them); the answer is recorded under the actor's
+  name. `session.Info.Kept` (never on the API) lists the questions the
+  session keeps without showing them, at most two, read in the same lock
+  acquisition as the attention. The router (`internal/api/router.go`):
+  a dirty set of session ids fed by the change hooks, 16 workers, one
+  `Info` per read; each question routed once, an empty route recording
+  nothing, destinations one `routed: …` status entry, an answer applied
+  once through `submitTo` (the function `Host.Submit` now uses, which
+  takes a choice's keys for server sessions), a person's earlier answer
+  winning; resolutions told in order from a list that drops nothing;
+  at most 64 ids kept per session and 1,024 routed and untold server-wide,
+  past which a question is skipped. Review round 1: a session tells every
+  change of what it keeps through `OnChange` (keys that let the agent's
+  own question go, a held turn's question let go by the agent or by keys);
+  a choice's keys whose write has begun answer `ErrSubmitPending`
+  (`pending` through `Host.Submit`) rather than a refusal; a question the
+  guard never gave the provider (its call slots busy) is skipped, never
+  told; a resolution being told no longer counts against the session's 64.
+  Review round 2: the question shown, asked again as the agent's own in
+  place of the one set aside, tells that change too; the agent's own
+  question held over and gone with a hold that a question on the screen
+  ended is kept no longer (it can show again nowhere), so it is resolved.
+  Tests: in `internal/session`
+  `TestKept`, `TestKeptReadWithTheAttention`, `TestKeptChangesAreTold`,
+  `TestAnswerAsChoice`, `TestAnswerAsOnlyChoices`, `TestAnswerAsHeldTurn`,
+  `TestAnswerAsAgainstAViewer`, `TestAnswerAsPending`,
+  `TestAnswerAsWithdrawn`, `TestAnswerAsRecordsTheName`; in
+  `internal/api` `TestNoRouterHumansAnswer`, `TestRouteAppliedOnce`,
+  `TestPersonAnswersBeforeTheRoute`, `TestRouteRecorded`,
+  `TestRouteBounds`, `TestResolvedOnce`,
+  `TestRouteOncePerQuestionSetAside`,
+  `TestResolvedOnWithdrawalWithNoActivity`,
+  `TestResolvedAfterABurstOfOtherSessions`,
+  `TestRouteOncePerQuestionSetAsidePastTheBound`,
+  `TestResolvedThroughABlockedConsumer`, `TestRouteSkippedAtTheBound`,
+  `TestRouterNeverResolvesARestoredQuestion`,
+  `TestResolvedWhenAnsweredInTheTerminal`,
+  `TestAnsweredInTheTerminalNeverRouted`,
+  `TestRouteNeverSentNeverResolved`,
+  `TestResolvedWhenTheTerminalLetsTheOwnQuestionGo`,
+  `TestRouteHeldTurnKeepsBoth`,
+  `TestResolvedWhenTheShownQuestionIsAskedAsTheOwn`,
+  `TestResolvedWhenTheHoldEndsUnderAScreenQuestion`,
+  `TestHostSubmitChoicePending`,
+  `TestHostSubmitChoiceGivenUpIsWithdrawn`, each checked to fail with its
+  part broken; `TestHostSubmitLine` now answers a choice's keys.
 
   PR-10 (#482): proto, hostagent, signal, api, web: answer_as, a routed
   answer for a hosted session. Planned.
@@ -3467,8 +3517,31 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
 
   PR-13 (#485): cli: conductor export and conductor restore. Planned.
 
-  PR-14 (#486): opencore, contributing: no entitlement call site outside
-  ext. Planned.
+  PR-14 (#486): `internal/opencore` and `CONTRIBUTING.md`: no entitlement
+  call site outside `ext`. `CONTRIBUTING.md`, Rules for code, says that code
+  of this repository never asks the entitlement source whether a feature is
+  allowed, only the paid providers do, outside it. The lint's rule
+  `entitlements` makes CI's go job fail on one: outside `ext/`, a file the
+  binary compiles naming `ext.EntitlementSource`, `ext.Entitlement`,
+  `ext.Entitlements`, `ext.RegisterEntitlements` or `ext/local`'s
+  `AllowAll` under any import name, dot-importing `ext` or `ext/local`, or
+  calling, or taking the value of, a method named `Entitled` whatever its
+  receiver (a provider reached through `Providers.All` and asserted to an
+  interface of the file's own is caught so). Unlike the other rules, which
+  still read imports and build constraints only, it parses the files it
+  reads whole. A `_test.go` file is no part of the binary and may name the
+  source, as `cmd/conductor`'s `TestPlainBuildRegistersNothing` and the
+  start-up's entitlement-only provider in `internal/api` do; the plan's
+  rule did not say so, and without it the module fails its own lint. Tests:
+  `TestEachRuleCatchesItsPlant` with the `entitlements` fixture (an
+  `Entitled` call through the registry's entries, beside `ext/` naming and
+  calling the source, a `_test.go` fake and a capabilities listing by
+  kind, the only problem the plant), `TestEntitlementsRule` (each of the
+  five names plainly imported and under other names, a dot import of
+  either, a blank one allowed, a call through parentheses, a method value,
+  a `windows`-only file read all the same, each problem's detail) and
+  `TestModuleKeepsTheRules` with the rule (the module clean), each checked
+  to fail with its part broken.
 
   PR-15 (#487): `internal/api`: the four ICE sites through the media
   provider (C8). `iceServersFor` (`media.go`) answers every configured

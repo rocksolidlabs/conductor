@@ -1383,6 +1383,24 @@ the agent's own question set aside, and a question the agent reported waits
 for the agent to move on or for a reply naming it. Nobody is recorded as
 having answered in the terminal.
 
+A routed answer (the decision router seam, `docs/plans/ext.md`, C5) is a
+reply too, with no connection behind it. On a build with a decision router
+registered, each question a server session shows is told to it once
+(`Route`), and an answer it holds then is applied once, through the same
+claim as a viewer's reply: a choice's keys only when they are the `input`
+of one of the question's own `options` (anything else is refused, nothing
+written), a line as a `submit` naming the question. A person's reply that
+came first wins and the route's is refused, as a second reply always is; a
+held turn, a question no longer shown and one answered in the terminal
+refuse it as they refuse a viewer. The answer is recorded under the
+router's principal's display name (`lastAnswer.byName`, the `input`
+entry, the chat's `answered` line) with no `by`. A route that names whom
+the question went to records one `status` entry, `routed: <kind> <name>,
+… (<rule>)`; the empty route, the free build's, records nothing, so a
+plain build's activity is as before. A provider answers the same way
+through its host (`Host.Submit` with `question` and `input` or `text`).
+Hosted sessions are not routed yet.
+
 A reply to a question read off the screen is taken only while the screen
 still shows that question, too (a next question drawn after it and not asked
 yet, or none, refuses it), for its keys reach whatever the screen shows: a 1

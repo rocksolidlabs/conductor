@@ -82,6 +82,13 @@ func (e *Engine) LaunchPlanned(ctx context.Context, c Crew, label string, p Plan
 	if pkg.p.Launch.Run != p.RunID {
 		return nil, noop, invalidf("the package is the launch of run %s, not of %s", quote(pkg.p.Launch.Run), quote(p.RunID))
 	}
+	// Every member's agent has its approved selection, which each attempt's
+	// session is started from (LaunchSpec.AgentSHA256).
+	for _, m := range c.Members {
+		if _, ok := pkg.agentSHA256(m.AgentID); !ok {
+			return nil, noop, invalidf("the package's plan revision approves no selection of member %s's agent %s", quote(m.Name), quote(m.AgentID))
+		}
+	}
 	// The base is the revision's: the one its package was built at, its
 	// references' objects resolved there.
 	if pkg.p.Plan.Base != p.Base {

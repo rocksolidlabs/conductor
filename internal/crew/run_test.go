@@ -35,6 +35,9 @@ type launchCall struct {
 	// tree's names and the env names the server approved for it.
 	inject map[string]string
 	allow  []string
+	// agentSHA256 is the spec's AgentSHA256: the approved selection of a
+	// run launched from a ticket.
+	agentSHA256 string
 }
 
 // fakeLauncher starts member sessions over fake processes, where the API
@@ -128,7 +131,7 @@ func (f *fakeLauncher) Reserve(ctx context.Context) (*session.Reservation, error
 func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Local, error) {
 	name, ref := spec.Name, spec.Ref
 	f.mu.Lock()
-	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume, maps.Clone(spec.Inject), slices.Clone(spec.Allow)})
+	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume, maps.Clone(spec.Inject), slices.Clone(spec.Allow), spec.AgentSHA256})
 	err, block := f.fail[name], f.block[name]
 	f.mu.Unlock()
 	if err != nil {
@@ -221,6 +224,9 @@ func readyEngine(t *testing.T) (*Engine, *fakeLauncher) {
 	e, fl := newEngine(t)
 	fl.onLaunch = printOnce
 	e.await = readyWait{poll: 5 * time.Millisecond, quiet: 20 * time.Millisecond}.await
+	// The store a planned run's attachments are copied from, as the API
+	// gives the engine Dispatch's (package_test.go).
+	e.UsePackageFiles(testFiles.open)
 	return e, fl
 }
 

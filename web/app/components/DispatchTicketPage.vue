@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import type { DispatchChange, DispatchReceipt, DispatchTicket, Horizon, OpBody, ProjectRead, TicketAttachment, TicketEdit, TicketRelation, TicketStatus, TicketSummary } from '~/composables/useDispatch'
+import type { DispatchChange, DispatchReceipt, DispatchTicket, Horizon, NewLink, OpBody, ProjectRead, TicketAttachment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { DISPATCH_RETRY_MAX_MS, ticketWatch } from '~/composables/useDispatchLive'
-import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
+import { refusalWords } from '~/composables/useDispatchOps'
+import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, acceptChangedWords, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type AcceptSeen, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
 import { catchUp, serially } from '~/utils/dispatchOrder'
@@ -19,9 +20,11 @@ import { catchUp, serially } from '~/utils/dispatchOrder'
  * stays. Around it (PR-10): its parent, set with a ticket picked by key or title, and its children; its relations, what it blocks and
  * what blocks it, Blocked said from the live blockers; its labels and its milestone, picked from the project's; its attachments,
  * uploaded with their progress and shown and downloaded through object URLs of their content fetched with the token; its comments; and
- * Delete and Undelete, a reference to a deleted ticket kept, inactive, and said so. Every operation on the ticket goes through the one
- * queue of its edits, an attachment's and a relation's among them, since each bumps the ticket's revision. The close policy with its
- * acceptance, the delivery links and the runs come with the next change, and the page says so. One column on a phone.
+ * Delete and Undelete, a reference to a deleted ticket kept, inactive, and said so. And (PR-11) its close card (DispatchClosePolicy.vue):
+ * what its project's policy requires and what it meets, the owner's acceptance recorded and taken back by buttons of their own, and a
+ * Close the store refuses, in the policy's words, until the policy is met; its delivery and external links; and the managed runs linked
+ * to it, each with the run page's task rows (DispatchRuns.vue). Every operation on the ticket goes through the one queue of its edits, an
+ * attachment's, a relation's, an acceptance's and a link's among them, since each bumps the ticket's revision. One column on a phone.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -549,6 +552,62 @@ async function removeAttachment(a: TicketAttachment): Promise<boolean> {
   return reply !== null
 }
 
+/**
+ * One operation on the ticket that the section which asked says the outcome of in place: '' once the store has it, else why not, in the
+ * refusal's words (the close policy's, a run another ticket holds), else that it was not made. A failure the store did not answer is said
+ * in a toast too (useDispatchOps).
+ */
+async function attempt(make: (key: string) => Act | null | false): Promise<string> {
+  const key = props.ticketKey
+  let words = ''
+  const reply = await operate(key, () => {
+    const act = make(key)
+    if (!act) return act
+    return { ...act, refused: (rc: DispatchReceipt) => (words = refusalWords(rc, rc.error || 'The store refused it.')) }
+  })
+  if (reply !== null) return ''
+  return words || 'It was not made: see the message.'
+}
+
+/**
+ * The owner's acceptance recorded, with the note, for the owner and the criteria the card showed when Accept was clicked (`seen`): the
+ * store records it for the owner and the criteria it holds when it is sent, so one that waited its turn behind another operation while
+ * another person changed either is not sent, and why is said (acceptChangedWords). '' once the store has it, else why not, in words.
+ */
+async function accept(note: string, seen: AcceptSeen): Promise<string> {
+  const n = note.trim()
+  let changed = ''
+  const words = await attempt((key) => {
+    if (locked.value) return false
+    changed = acceptChangedWords(seen, { owner: ticket.value?.owner ?? '', acceptance: ticket.value?.acceptance ?? '' })
+    if (changed) return false
+    return { send: (body: OpBody) => api.accept(key, { ...body, ...(n ? { note: n } : {}) }), done: `${key} accepted` }
+  })
+  return words && (changed || words)
+}
+/** The acceptance on record taken back; no status moves with it. */
+async function unaccept(): Promise<boolean> {
+  return !(await attempt((key) => (locked.value || !ticket.value?.acceptedAt ? false : { send: (body: OpBody) => api.unaccept(key, body), done: `${key}: acceptance taken back` })))
+}
+/** The ticket moved to Done: the store applies the close policy, its refusal said in the policy's words. */
+function closeTicket(): Promise<string> {
+  return attempt((key) => {
+    if (locked.value) return false
+    if (ticket.value?.status === 'done') return null
+    return { send: (body: OpBody) => api.editTicket(key, { ...body, set: { status: 'done' } }), done: `${key} done` }
+  })
+}
+/** A link made outward: a delivery or an external URL, or a run. */
+function addLink(link: NewLink): Promise<string> {
+  return attempt((key) => (locked.value ? false : { send: (body: OpBody) => api.addLink(key, { ...body, ...link }) }))
+}
+function linkRun(run: string): Promise<string> {
+  return addLink({ kind: 'run', ref: run })
+}
+async function removeLink(l: TicketLink): Promise<boolean> {
+  return !(await attempt((key) => (locked.value ? false : { send: (body: OpBody) => api.removeLink(key, l.id, body) })))
+}
+
 /** The ticket deleted: a tombstone, its key kept, every reference to it kept, inactive, until its undelete. */
 function deleteTicket() {
   deleteOpen.value = false
@@ -656,10 +715,9 @@ const MAX_ACCEPTANCE = 16 << 10
             <TicketMarkdown :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text, base) => saveText('description', text, base)" :disabled="locked" name="description" :attachment-url="files.resolver.value" />
             <TicketMarkdown :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" :attachment-url="files.resolver.value" />
 
-            <p class="flex items-start gap-2 rounded-md border border-dashed border-default px-4 py-3 text-sm text-muted" data-ticket-later>
-              <UIcon name="i-lucide-construction" class="mt-0.5 size-4 flex-none" />
-              <span>The close policy with its acceptance, the delivery links and the runs come with the next change to this page.</span>
-            </p>
+            <DispatchClosePolicy :ticket="ticket" :locked="locked" :now="now" :accept="accept" :unaccept="unaccept" :close="closeTicket" />
+            <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" />
+            <DispatchRuns :links="ticket.links ?? []" :locked="locked" :now="now" :add="linkRun" :remove="removeLink" />
 
             <DispatchRelations :ticket="ticket" :project="project" :locked="locked" :add="addRelation" :remove="removeRelation" />
             <DispatchAttachments :attachments="ticket.attachments ?? []" :locked="locked" :now="now" :upload="upload" :remove="removeAttachment" :image="files.image" :download="files.download" @insert="(md: string) => comments?.insert(md)" />
