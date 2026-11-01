@@ -34,6 +34,9 @@ type Tx struct {
 	tx    *sql.Tx
 	runID string
 	now   time.Time
+	// marked is the run Continued marked, "" for none: its pointer
+	// changes in this transition too (OnCommit).
+	marked string
 }
 
 // Now is the transaction's time, one for all it writes.
@@ -91,8 +94,10 @@ func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) erro
 	if n, _ := res.RowsAffected(); n != 1 {
 		return 0, ErrNoRun
 	}
-	var rev int64
-	if err := tx.QueryRowContext(ctx, "SELECT revision FROM runs WHERE id = ?", runID).Scan(&rev); err != nil {
+	// The new revision, read with the run's pointer (and the pointer of a
+	// run Continued marked), for the commit's observer (OnCommit).
+	told, err := t.pointers()
+	if err != nil {
 		return 0, cancelledAs(ctx, err)
 	}
 	if l.beforeCommit != nil {
@@ -103,7 +108,8 @@ func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) erro
 	if err := tx.Commit(); err != nil {
 		return 0, cancelledAs(ctx, err)
 	}
-	return rev, nil
+	l.committed(told)
+	return told[0].Revision, nil
 }
 
 // cancelledAs is err as the transaction's caller should see it: the
@@ -274,6 +280,7 @@ func (t *Tx) Continued(from string) error {
 	if n, _ := res.RowsAffected(); n != 1 {
 		return fmt.Errorf("%w: %s", ErrContinued, from)
 	}
+	t.marked = from
 	return nil
 }
 
@@ -1178,5 +1185,9 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM runs WHERE id = ?", runID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	l.pruned(runID)
+	return nil
 }
