@@ -1,19 +1,25 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/local"
+	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
@@ -124,6 +130,82 @@ func TestServeReadsTheRegistryOnce(t *testing.T) {
 	}
 	if p := h.providers; p.Identity != (local.Identity{}) || p.Router != (local.Router{}) || len(p.Notifications) != 0 || len(h.registered) != 0 {
 		t.Fatalf("a plain build handed the server %+v, holding %+v: want the free defaults alone", p, h.registered)
+	}
+}
+
+// A start that fails once the server is made (here its listener, on a
+// port that is taken) shuts the server down: the drain of a provider that
+// is no Starter, which began in New on the server's own context, ends
+// with runServe, so a process that goes on keeps nothing of the run.
+func TestServeFailedStartEndsTheDrains(t *testing.T) {
+	clearConductorEnv(t)
+	t.Cleanup(agents.ForgetBinary())
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, filepath.Join(dir, "state")))
+	old := extensions
+	t.Cleanup(func() { extensions = old })
+	extensions = func() ext.Providers {
+		return ext.Providers{
+			Notifications: []ext.NotificationSink{pushSink{}},
+			All:           []ext.Entry{{Kind: ext.KindNotifications, Name: "push", Value: pushSink{}}},
+		}
+	}
+	before := drainGoroutines()
+	oldNew := newServer
+	t.Cleanup(func() { newServer = oldNew })
+	deadline, wait := startDeadline(t)
+	newServer = func(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, ui http.Handler, st *store.Store, p ext.Providers) (*api.Server, error) {
+		srv, err := oldNew(cfg, cat, log, ui, st, p)
+		if err != nil {
+			return srv, err
+		}
+		// The sink's drain runs before runServe goes on: the test sees it.
+		for drainGoroutines() <= before {
+			select {
+			case <-deadline:
+				t.Errorf("the sink's drain did not begin in %s", wait)
+				return srv, nil
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		return srv, nil
+	}
+	var logs syncBuffer
+	code, err := runServe(t.Context(), []string{"--config", cfg, "--listen", taken.Addr().String()}, strings.NewReader(""), io.Discard, &logs)
+	if code == 0 || err == nil || !strings.Contains(err.Error(), "listen") {
+		t.Fatalf("serve on a taken port exited %d, %v; want the listener's error\n%s", code, err, logs.String())
+	}
+	// Shutdown waits for the drains (10 s at most); a goroutine whose wait
+	// is done may show a moment longer. The bound is reached only by a
+	// drain that never ends.
+	end := time.Now().Add(15 * time.Second)
+	for n := drainGoroutines(); n > before; n = drainGoroutines() {
+		if time.Now().After(end) {
+			t.Fatalf("%d drain(s) still run after serve failed to start", n-before)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// drainGoroutines counts the goroutines draining a provider's queue, from
+// every goroutine's stack.
+func drainGoroutines() int {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return bytes.Count(buf[:n], []byte("internal/api.(*extQueue[...]).run("))
+		}
+		buf = make([]byte, 2*len(buf))
 	}
 }
 

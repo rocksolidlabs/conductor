@@ -208,6 +208,19 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if err != nil {
 		return 1, err
 	}
+	// The server now runs goroutines of its own (a provider's queue drains
+	// on the server's context, not ctx): a start that fails below, or a
+	// Serve that ends, shuts it down as shutdown does, so a failed run in a
+	// process that goes on leaves nothing of it running.
+	shutDown := false
+	defer func() {
+		if shutDown {
+			return
+		}
+		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(sctx)
+	}()
 	if cfg.Switchyard.Enabled {
 		log.Info("switchyard: coordinating hosted sessions and launching nothing", "relay", cfg.SwitchyardRelay(), "origins", strings.Join(cfg.SwitchyardOrigins(), ","))
 	}
@@ -290,6 +303,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	mapper := startReach(mctx, cfg, srv, certMgr, portOf(ln), portOf(tlsLn), log)
 	shutdown := func() {
+		shutDown = true
 		mcancel()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
