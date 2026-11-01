@@ -722,6 +722,13 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		rw := &statusWriter{ResponseWriter: w, status: 200}
 		defer func() {
 			if rec := recover(); rec != nil {
+				if rec == http.ErrAbortHandler {
+					// A handler aborting its response on purpose: net/http
+					// drops the connection (or resets the stream) rather
+					// than end the response.
+					s.log.Debug("request aborted", "method", r.Method, "path", logPath(r), "ms", time.Since(start).Milliseconds())
+					panic(rec)
+				}
 				s.log.Error("panic in handler", "path", logPath(r), "panic", rec)
 				if !rw.wrote {
 					// Through rw, so the request line below records the 500.

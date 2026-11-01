@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -32,19 +33,29 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 	}}
-	m, err := export.Write(r.Context(), cw, s.exportSource())
+	src := s.exportSource()
+	if f := exportSourceHook.Load(); f != nil {
+		src = (*f)(src)
+	}
+	m, err := export.Write(r.Context(), cw, src)
 	if err != nil {
 		if cw.n == 0 {
 			s.log.Warn("export refused", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal", "the export could not be made: "+err.Error())
 			return
 		}
-		// The archive is cut short, with no manifest: no restore takes it.
+		// The archive is cut short, with no manifest: no restore takes it,
+		// and the transfer fails too, the response aborted rather than
+		// ended, so a client sees an error and never a whole 200.
 		s.log.Warn("export cut short", "err", err, "bytes", cw.n)
-		return
+		panic(http.ErrAbortHandler)
 	}
 	s.log.Info("data directory exported", "files", len(m.Files), "left", len(m.Left), "bytes", cw.n)
 }
+
+// exportSourceHook, when a test sets it, is given the export's source and
+// returns the one the export reads; nil outside tests.
+var exportSourceHook atomic.Pointer[func(export.Source) export.Source]
 
 // exportSource is the export's view of this server's data directory: its
 // own ledger and Dispatch connections for the snapshots (a database it
