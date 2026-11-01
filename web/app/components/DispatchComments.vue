@@ -316,13 +316,13 @@ defineExpose({ insert: (text: string) => composer.value?.insert(text) })
                   <span>Comment #{{ c.n }} was changed while you wrote. It now reads as below: Save again to replace it with yours, or Cancel to keep it.</span>
                 </p>
                 <div class="min-w-0 rounded-md ring ring-default" data-comment-theirs-text>
-                  <MarkdownPreview :text="editing.theirs" dir="" :relative-links="false" :attachment-url="attachmentUrl" />
+                  <MarkdownPreview :text="editing.theirs" dir="" :relative-links="false" linkify :attachment-url="attachmentUrl" />
                 </div>
               </div>
               <DispatchCommentEditor :initial="c.body" action="Save" cancellable :submit="(body) => save(c, body)" :attachment-url="attachmentUrl" @sent="sent(c)" @cancel="editing = null" />
             </template>
             <div v-else class="min-w-0 rounded-md ring ring-default" data-comment-body>
-              <MarkdownPreview :text="c.body" dir="" :relative-links="false" :attachment-url="attachmentUrl" />
+              <MarkdownPreview :text="c.body" dir="" :relative-links="false" linkify :attachment-url="attachmentUrl" />
             </div>
             <div v-if="confirming === c.id" class="flex flex-wrap items-center gap-2 text-sm" data-comment-confirm>
               <span class="text-muted">Delete comment #{{ c.n }}? Its number stays, and the history keeps what it said.</span>
