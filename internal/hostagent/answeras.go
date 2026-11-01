@@ -28,7 +28,8 @@ import (
 // in order, each within submitDeadline() from its arrival (the deadline a
 // viewer's reply has), so that answers waiting behind a program that reads
 // nothing hold at most answerQueue, never a goroutine each. The queue and
-// its goroutine end with the connection, a message waiting then dropped.
+// its goroutine end with the connection, a message waiting then dropped
+// and the one applying withdrawn (applyAnswer).
 
 // answerQueue bounds the routed answers a control connection holds.
 const answerQueue = 4
@@ -41,8 +42,9 @@ type routedAnswers struct {
 
 // openAnswers gives the control connection whose context is ctx its answer
 // queue, and returns what ends it: the queue closed (a message waiting
-// dropped), the one applying ended through its context, and its goroutine
-// waited for.
+// dropped), the one applying withdrawn and ended through its context (one
+// cancel: the withdrawal, actx's end, comes before its context's), and its
+// goroutine waited for.
 func (a *agent) openAnswers(ctx context.Context) func() {
 	actx, cancel := context.WithCancel(ctx)
 	ra := &routedAnswers{q: requestQueue{limit: answerQueue - 1}, ctx: actx}
@@ -82,7 +84,7 @@ func (a *agent) answerAs(data []byte) {
 		run: func() {
 			ctx, cancel := context.WithDeadline(ra.ctx, deadline)
 			defer cancel()
-			err := a.applyAnswer(ctx, m)
+			err := a.applyAnswer(ctx, m, ra.ctx.Done())
 			a.log.Debug("routed answer", "question", m.Question, "by", m.ByName, "err", err)
 		},
 		deadline: deadline,
@@ -100,15 +102,20 @@ func (a *agent) answerAs(data []byte) {
 var errBlankAnswer = errors.New("the line is blank")
 
 // applyAnswer applies m to the session, under the question's claim, as by
-// m's name and subject.
-func (a *agent) applyAnswer(ctx context.Context, m proto.HostAnswerAsMsg) error {
+// m's name and subject. The connection's end (withdrawn, closed before ctx,
+// which it ends too) withdraws the answer as a revoked link withdraws a
+// viewer's: one not yet written types nothing, and a line whose text is
+// typed and whose Enter is not has its Enter left out, the session's turn
+// held for a person and its claim let go as the hold shows, so that the
+// question can be answered again and no later line joins the text.
+func (a *agent) applyAnswer(ctx context.Context, m proto.HostAnswerAsMsg, withdrawn <-chan struct{}) error {
 	if m.Input != "" {
-		return a.local.AnswerAs(ctx, m.Question, m.Input, session.Actor{Subject: m.BySubject, Name: m.ByName})
+		return a.local.AnswerAs(ctx, m.Question, m.Input, session.Actor{Subject: m.BySubject, Name: m.ByName, Withdrawn: withdrawn})
 	}
 	if session.SubmitLine(m.Text) == "" {
 		return errBlankAnswer
 	}
-	_, err := a.local.Submit(ctx, session.Submission{Text: m.Text, ByName: m.ByName, Question: m.Question})
+	_, err := a.local.Submit(ctx, session.Submission{Text: m.Text, ByName: m.ByName, Question: m.Question, Withdrawn: withdrawn})
 	return err
 }
 

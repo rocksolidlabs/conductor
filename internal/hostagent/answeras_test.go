@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -26,18 +27,40 @@ import (
 // tested by it.
 const answerWait = 10 * time.Second
 
-// logRecorder keeps the messages logged at warn and above.
+// logRecorder keeps the messages logged at warn and above, and the
+// outcome of each routed answer applied (logged at debug).
 type logRecorder struct {
-	mu   sync.Mutex
-	msgs []string
+	mu      sync.Mutex
+	msgs    []string
+	applied []error
 }
 
-func (r *logRecorder) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelWarn }
+func (r *logRecorder) Enabled(context.Context, slog.Level) bool { return true }
 func (r *logRecorder) Handle(_ context.Context, rec slog.Record) error {
 	r.mu.Lock()
-	r.msgs = append(r.msgs, rec.Message)
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	if rec.Level >= slog.LevelWarn {
+		r.msgs = append(r.msgs, rec.Message)
+	}
+	if rec.Message == "routed answer" {
+		var err error
+		rec.Attrs(func(a slog.Attr) bool {
+			if a.Key == "err" {
+				err, _ = a.Value.Any().(error)
+			}
+			return true
+		})
+		r.applied = append(r.applied, err)
+	}
 	return nil
+}
+
+// outcomes is the errors the routed answers applied so far ended with
+// (nil for one applied), in order.
+func (r *logRecorder) outcomes() []error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.applied)
 }
 func (r *logRecorder) WithAttrs([]slog.Attr) slog.Handler { return r }
 func (r *logRecorder) WithGroup(string) slog.Handler      { return r }
@@ -344,7 +367,12 @@ func TestAnswerAsQueueBounded(t *testing.T) {
 		t.Fatalf("%d goroutines applied the answers", n)
 	}
 	// The connection ends: those waiting are dropped, the one applying
-	// ends, and the queue's goroutine with it.
+	// ends through its context, and the queue's goroutine with it. The
+	// queue is looked at itself, kept from before its connection let it
+	// go: the agent holds none after.
+	h.a.mu.Lock()
+	ra := h.a.answers
+	h.a.mu.Unlock()
 	ended := make(chan struct{})
 	go func() {
 		h.close()
@@ -355,8 +383,23 @@ func TestAnswerAsQueueBounded(t *testing.T) {
 	case <-time.After(answerWait):
 		t.Fatal("the answers outlived their connection")
 	}
-	if n := h.started(); n != 0 {
-		t.Fatalf("the queue outlived its connection (%d)", n)
+	ra.q.mu.Lock()
+	running, closed, done := ra.q.running, ra.q.closed, ra.q.done
+	ra.q.mu.Unlock()
+	if running || !closed {
+		t.Fatalf("after its connection the queue runs %v, closed %v", running, closed)
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("the queue's goroutine outlived its connection")
+	}
+	// The one applying ended through its context, with the program still
+	// reading nothing: its text's write begun, it is accepted (pending) or
+	// withdrawn, never applied, and nothing else was.
+	got := h.logs.outcomes()
+	if len(got) != 1 || got[0] == nil || !errors.Is(got[0], session.ErrSubmitPending) && !errors.Is(got[0], session.ErrRevoked) && !errors.Is(got[0], context.Canceled) {
+		t.Fatalf("the answers applied ended with %v", got)
 	}
 	proc.open()
 	var all string
@@ -368,6 +411,98 @@ func TestAnswerAsQueueBounded(t *testing.T) {
 		if strings.Contains(all, fmt.Sprintf("answer-%d", i)) {
 			t.Fatalf("answer %d was typed: %q", i, all)
 		}
+	}
+}
+
+// The connection ends while a line answer is in its pause, its text typed
+// and its Enter not: the answer is withdrawn (a kind of ErrRevoked), its
+// Enter never written, and the session's turn is held for a person, its
+// question's claim let go as the hold shows, so that no later line joins
+// the text and a person's keys show the question again to be answered.
+func TestAnswerAsWithdrawnWithItsConnection(t *testing.T) {
+	proc := sessiontest.NewFakeProc()
+	t.Cleanup(func() { proc.End(0) })
+	logs := &logRecorder{}
+	a := &agent{opts: Options{}, peers: map[string]*peer{}, log: slog.New(logs), sessID: "s"}
+	a.sendHook = func(any) {}
+	// The pause after the text outlasts the test: only the connection's
+	// end ends it.
+	a.local = session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24, Status: session.StatusRunning}, proc, session.Options{FileEdit: "off", Log: discardLog, OnChange: a.noteChange, InputWait: answerWait, SubmitPause: time.Hour})
+	end := a.openAnswers(context.Background())
+	var once sync.Once
+	t.Cleanup(func() { once.Do(end) })
+	h := &answering{a: a, logs: logs, close: func() { once.Do(end) }}
+	l := a.local
+	q := ask(t, l, "Which database?", []session.Option{{Label: "SQLite", Input: "s"}})
+	h.answer(t, proto.HostAnswerAsMsg{Question: q, Text: "Postgres", ByName: "Ada"})
+	var typed string
+	waitFor(t, "the text typed", func() bool { typed += strings.Join(writes(proc), ""); return strings.Contains(typed, "Postgres") })
+	h.close()
+	got := logs.outcomes()
+	if len(got) != 1 || !errors.Is(got[0], session.ErrRevoked) {
+		t.Fatalf("the answer in its pause ended with %v, want a kind of ErrRevoked", got)
+	}
+	if strings.Contains(typed+strings.Join(writes(proc), ""), "\r") {
+		t.Fatal("the Enter was written after the connection ended")
+	}
+	waitFor(t, "the turn held for a person", l.Held)
+	owner, err := l.AttachWith(session.AttachOptions{Role: session.RoleControl, Name: "Nate", Owner: true}, discardSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Input(owner, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the question shown again, open", func() bool {
+		return !l.Held() && l.Info().Attention.ID == q
+	})
+	// Its claim let go, the question takes an answer again: a choice's
+	// keys, which have no pause.
+	ctx, cancel := context.WithTimeout(t.Context(), answerWait)
+	defer cancel()
+	if err := l.AnswerAs(ctx, q, "s", session.Actor{Name: "Nate"}); err != nil {
+		t.Fatalf("an answer after the hold: %v", err)
+	}
+	if info := l.Info(); info.LastAnswer == nil || info.LastAnswer.ByName != "Nate" {
+		t.Fatalf("after the answer: %+v", info.LastAnswer)
+	}
+}
+
+// Keys typed in the host's terminal answer the question shown, which stays
+// drawn with its id (Answered: a dialog read off the screen, which a
+// session marks so at once): the host's forwarder tells the server the
+// change that only marks it, so that its router resolves a routed
+// question while the program stays quiet, and tells nothing again for the
+// same.
+func TestAnsweredMarkSent(t *testing.T) {
+	proc := sessiontest.NewFakeProc()
+	t.Cleanup(func() { proc.End(0) })
+	h := newAnswering(t, proc, Options{})
+	const q = "0123456789abcdef"
+	shown := session.Attention{State: session.AttentionNeedsInput, Message: "Allow curl?", Source: session.SourceQuestion, Kind: session.KindPermission, ID: q, Options: yesNo}
+	// The forwarder sends on the caller's goroutine (sendHook): what it
+	// told is in sent once onLocalChange returns.
+	told := func() []proto.HostAttentionMsg {
+		var out []proto.HostAttentionMsg
+		for len(h.sent) > 0 {
+			out = append(out, <-h.sent)
+		}
+		return out
+	}
+	told()
+	h.a.onLocalChange(session.Info{ID: "s", Attention: shown})
+	if got := told(); len(got) != 1 || got[0].ID != q || got[0].Answered != "" {
+		t.Fatalf("the question told as %+v", got)
+	}
+	answered := shown
+	answered.Answered = session.AnsweredTerminal
+	h.a.onLocalChange(session.Info{ID: "s", Attention: answered})
+	if got := told(); len(got) != 1 || got[0].ID != q || got[0].State != "needs_input" || got[0].Answered != session.AnsweredTerminal {
+		t.Fatalf("the mark told as %+v", got)
+	}
+	h.a.onLocalChange(session.Info{ID: "s", Attention: answered})
+	if got := told(); len(got) != 0 {
+		t.Fatalf("the same told again: %+v", got)
 	}
 }
 
@@ -493,17 +628,38 @@ func TestKeptSentWithItsAttention(t *testing.T) {
 	}
 	close(s.read)
 	s.expectGot(t, big)
-	// Every message up to the one that tells the session as it is now.
+	// The retry and the forwarder done with every change, a marker sent
+	// after them in the connection's order: every message before it is
+	// one the forwarder sent, and the last tells the session as it is now.
+	waitFor(t, "the retry and the forwarder done", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return !a.attentionRetry && !a.forwarding
+	})
+	const marker = "test_marker"
+	if err := a.send(map[string]string{"t": marker}); err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.After(answerWait)
+	var last proto.HostAttentionMsg
 	for n := 0; ; n++ {
 		var m proto.HostAttentionMsg
 		select {
 		case got := <-s.got:
-			if err := json.Unmarshal(got, &m); err != nil || m.T != proto.HostAttention {
+			if err := json.Unmarshal(got, &m); err != nil {
 				t.Fatalf("the server got %.80q", got)
 			}
 		case <-deadline:
-			t.Fatal("the server was never told A shown again")
+			t.Fatal("the server was never sent the marker")
+		}
+		if m.T == marker {
+			if n == 0 || last.ID != id || len(last.Kept) != 0 || last.State != "needs_input" {
+				t.Fatalf("after %d messages the last told %+v, want A shown, kept by none", n, last)
+			}
+			return
+		}
+		if m.T != proto.HostAttention {
+			t.Fatalf("the server got %+v", m)
 		}
 		if m.ID != id && !slices.Contains(m.Kept, id) {
 			t.Fatalf("message %d shows %q and keeps %v: A in neither", n, m.ID, m.Kept)
@@ -511,8 +667,6 @@ func TestKeptSentWithItsAttention(t *testing.T) {
 		if m.ID == id && slices.Contains(m.Kept, id) {
 			t.Fatalf("message %d shows and keeps A", n)
 		}
-		if m.ID == id && len(m.Kept) == 0 && m.State == "needs_input" {
-			return
-		}
+		last = m
 	}
 }

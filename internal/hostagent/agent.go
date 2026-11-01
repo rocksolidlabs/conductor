@@ -882,8 +882,12 @@ func sameAttention(x, y session.Attention) bool {
 	// The source too: a switchyard is told no words, and a held turn
 	// (source submit) differs from a bell's wait by its source alone there.
 	// The plan too (#289): a plan set on the question showing (the dialog's
-	// footer read after the hook's report) changes nothing else of it.
-	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options) && x.ID == y.ID && x.Asked() == y.Asked() && x.Plan == y.Plan
+	// footer read after the hook's report) changes nothing else of it. The
+	// mark of a question answered in the terminal too (Answered): keys
+	// typed there change nothing else of the question shown, and the
+	// server's router resolves a routed question from that mark alone
+	// while the program stays quiet.
+	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options) && x.ID == y.ID && x.Asked() == y.Asked() && x.Plan == y.Plan && x.Answered == y.Answered
 }
 
 // toServer is an attention change as the server is told it: in full to the
