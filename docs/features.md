@@ -3199,7 +3199,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
 
   PR-13 (#413): this entry, the README's pages, keys and closing, this
   document's reads, closing, clients and pages paragraphs, and Dispatch on
-  AGENTS.md's names line.
+  AGENTS.md's names line. Its review round 1 fixed what the by-hand
+  Markdown check found (below): a ticket's description, criteria and
+  comments link a bare URL, through a `linkify` option of `renderMarkdown`
+  that only Dispatch's text passes (a vitest case, two `dispatch.spec.ts`
+  steps).
 
   By hand for this entry, 2026-11-01, on main at `ba27edec` (PR-11's
   merge), `conductor v0.7.0-rc.18-583-gba27edec`, each server on loopback
@@ -3217,9 +3221,14 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     (6,956 characters) as `CND-1`'s description, stored exactly as pasted,
     rendered with its four headings, its table (4 columns, 4 rows), its 12
     task-list items as checkboxes, nested lists, bold and inline code; #485's
-    body as a comment, its code block in one `pre`. One difference from
-    GitHub: a bare URL and a `#359` stay words, since the renderer links
-    neither (`linkify` off; `<https://…>` and `[text](url)` are links).
+    body as a comment, its code block in one `pre`. It found one difference
+    from GitHub: a bare URL stayed words, the renderer's `linkify` off.
+    Fixed in this PR (review round 1): a URL with its scheme and an e-mail
+    address are links in a ticket's text and comments, opening outside the
+    app, as `<https://…>` and `[text](url)` were. What still differs, on
+    purpose: a `#359`, a `www.` host and a file name stay words, since a
+    ticket has no repository to resolve them against and `README.md` would
+    read as a host. The Files tab's preview keeps `linkify` off.
   - **An attachment of 15 MiB over a slow link**, through the page on
     Linux: Chromium throttled to 400 KB/s up and 2 MB/s down; the upload's
     progress, read once a second, went from 1 % to 100 % through 39 values
@@ -3237,10 +3246,15 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     taken. The next ticket made after the restore was `CND-2` again: a
     restore takes the store back whole, its numbers with it.
   - **Not run**: the desktop app on Windows (WSL) and on the Mac opening
-    Dispatch after an upgrade and after a restore, since no release
-    carries Dispatch yet (the last is v0.7.0-rc.18); the first release
-    after it is the build to try. `conductor export` and a restore from
-    it, which wait for item C6 (#484, #485).
+    Dispatch after an upgrade and after a restore. The app's updater
+    installs only a published release, and none carries Dispatch yet (the
+    last is v0.7.0-rc.18); installing a local build over the owner's app
+    replaces it, and on Windows the server inside WSL that the owner's
+    live sessions run in, so it is the owner's to do or allow. The
+    bare-server half of both ran above; the app's start, its token and the
+    WSL server it runs did not. #561 holds it, on the first release that
+    carries Dispatch. `conductor export` and a restore from it, which wait
+    for item C6 (#484, #485).
 
   **The acceptance observation: pending.** The item is done when, for
   seven days, the owner and one other person run a team's work through
@@ -3249,7 +3263,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   that asked for them, and the owner writes here what was missing, what
   was slow and what was wrong. Which work the week is observed on is the
   owner's to decide (the plan's Acceptance). A later docs PR of the
-  stream carries the owner's words.
+  stream carries the owner's words; #561 holds the week, the desktop
+  check and that PR.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the

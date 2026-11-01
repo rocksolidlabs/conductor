@@ -1470,7 +1470,9 @@ download), comments, delivery and external links, the managed runs linked to it,
 field by field. A name typed for an owner or an assignee joins the people
 directory; people are names until Conductor has accounts. Delete keeps the
 key and every reference to the ticket, shown as deleted, and **Undelete** on
-its page brings it back whole.
+its page brings it back with every reference, but for a run another ticket
+was linked to meanwhile: that run link is removed, since a run belongs to
+one live ticket.
 
 **Closing.** The card "To close: the owner's acceptance · a delivery link"
 says what the project's policy asks and which is met, and, unmet, why
