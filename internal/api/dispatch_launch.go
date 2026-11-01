@@ -254,7 +254,9 @@ func launchAgents(members []crew.Member, cat catalog.Catalog, identity func(cata
 // launchAdmission refuses a launch, or the replay of a pending one, that
 // this server may not advance: managed runs off (409 managed_off), no
 // ledger, one another server owns, or one whose recovery and reconcile
-// have not finished (503 ledger_unavailable). nil admits it.
+// have not finished (503 ledger_unavailable). nil admits it. A pending
+// launch's replay is answered 503 ledger_unavailable with the reason
+// whichever it is (answerLaunch): it is still pending, not refused.
 func (s *Server) launchAdmission() *apiError {
 	if !s.cfg.ManagedCrews() {
 		return newAPIError(http.StatusConflict, "managed_off", "crews with tasks are off on this server (crews.managed)")
@@ -373,7 +375,9 @@ func (s *Server) answerLaunch(ctx context.Context, w http.ResponseWriter, ds *di
 	var pending *apiError
 	if l.State == dispatch.LaunchPending {
 		if aerr := s.launchAdmission(); aerr != nil {
-			pending = aerr
+			// Still pending, whatever this server's reason: the server
+			// that committed it may be starting its run.
+			pending = newAPIError(http.StatusServiceUnavailable, "ledger_unavailable", aerr.Message)
 		} else {
 			var release func()
 			l, release, pending, err = s.settleLaunch(ctx, ds, l, op.By)

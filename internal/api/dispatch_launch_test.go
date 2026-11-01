@@ -515,43 +515,74 @@ func TestNoLaunchWhileTheLedgerIsTakenOver(t *testing.T) {
 }
 
 // Two servers on one data directory: A commits a pending launch and is
-// held before its run; the same opId sent to B, whose ledger is read-only,
-// answers it pending with 503 and records nothing; A released, its run
-// starts and the launch is started.
+// held before its run; the same opId sent to B, whose ledger is read-only
+// or whose managed runs are off, answers it pending with 503
+// ledger_unavailable and B's reason, and records nothing; A released, its
+// run starts and the launch is started.
 func TestAReplayOnTheServerWithoutTheLedger(t *testing.T) {
-	l := newLaunchTest(t, nil, nil)
-	b := l.restart()
-	if ro, _ := b.srv.ledger.ReadOnly(); !ro {
-		t.Fatal("the second server owns the ledger")
-	}
-	held, release := make(chan string, 1), make(chan struct{})
-	l.srv.launches.setSeams(func(g *launchGate) {
-		g.beforePlanned = func(id string) {
-			held <- id
-			<-release
-		}
-	})
-	type answer struct {
-		status int
-		out    map[string]any
-	}
-	answers := make(chan answer, 1)
-	go func() {
-		status, _, out := l.call(t, "POST", "/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": "shared", "plan": l.plan})
-		answers <- answer{status, out}
-	}()
-	id := <-held
-	out := l.launch(t, b, map[string]any{"opId": "shared"}, http.StatusServiceUnavailable, "ledger_unavailable")
-	if launch := entityOf(t, out, "launch"); launch["id"] != id || launch["state"] != dispatch.LaunchPending || receiptOf(t, out)["repeat"] != true {
-		t.Fatalf("B's answer: %v", out)
-	}
-	if got := l.launchOf(t, id); got.State != dispatch.LaunchPending {
-		t.Fatalf("B recorded the launch: %+v", got.LaunchSummary)
-	}
-	close(release)
-	a := <-answers
-	if a.status != http.StatusCreated || entityOf(t, a.out, "launch")["state"] != dispatch.LaunchStarted {
-		t.Fatalf("A's answer: %d %v", a.status, a.out)
+	for _, tc := range []struct {
+		name, why string
+		second    func(t *testing.T, l *launchTest) *testEnv
+	}{
+		{"read-only ledger", "", func(t *testing.T, l *launchTest) *testEnv {
+			b := l.restart()
+			if ro, _ := b.srv.ledger.ReadOnly(); !ro {
+				t.Fatal("the second server owns the ledger")
+			}
+			return b
+		}},
+		{"managed runs off", "crews with tasks are off on this server (crews.managed)", func(t *testing.T, l *launchTest) *testEnv {
+			cfg := *l.srv.cfg
+			off := false
+			cfg.Crews.Managed = &off
+			srv, err := New(&cfg, l.srv.base, l.srv.log, nil, l.srv.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return l.serve(srv)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newLaunchTest(t, nil, nil)
+			b := tc.second(t, l)
+			held, release := make(chan string, 1), make(chan struct{})
+			var released sync.Once
+			let := func() { released.Do(func() { close(release) }) }
+			// A failure before A is released still lets it go, so the
+			// test ends instead of hanging on A's run.
+			t.Cleanup(let)
+			l.srv.launches.setSeams(func(g *launchGate) {
+				g.beforePlanned = func(id string) {
+					held <- id
+					<-release
+				}
+			})
+			type answer struct {
+				status int
+				out    map[string]any
+			}
+			answers := make(chan answer, 1)
+			go func() {
+				status, _, out := l.call(t, "POST", "/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": "shared", "plan": l.plan})
+				answers <- answer{status, out}
+			}()
+			id := <-held
+			out := l.launch(t, b, map[string]any{"opId": "shared"}, http.StatusServiceUnavailable, "ledger_unavailable")
+			if launch := entityOf(t, out, "launch"); launch["id"] != id || launch["state"] != dispatch.LaunchPending || receiptOf(t, out)["repeat"] != true {
+				t.Fatalf("B's answer: %v", out)
+			}
+			if msg := out["error"].(map[string]any)["message"]; tc.why != "" && msg != tc.why {
+				t.Fatalf("B's reason: %v", out)
+			}
+			if got := l.launchOf(t, id); got.State != dispatch.LaunchPending {
+				t.Fatalf("B recorded the launch: %+v", got.LaunchSummary)
+			}
+			let()
+			a := <-answers
+			if a.status != http.StatusCreated || entityOf(t, a.out, "launch")["state"] != dispatch.LaunchStarted {
+				t.Fatalf("A's answer: %d %v", a.status, a.out)
+			}
+		})
 	}
 }
 
@@ -701,7 +732,8 @@ func waitPaused(t *testing.T, e *testEnv, run, want string) {
 // after the launch, with the first attempt held before its session takes
 // the entry, fails that attempt at agent, uncounted, with no session, and
 // pauses the run with the words; the entry restored and the run unpaused,
-// the attempt starts. The same for a retry, and for a continuation after
+// the attempt starts. The same for a retry, for the entry deleted and
+// hidden (no longer in the catalog at all), and for a continuation after
 // a restart with the entry edited before its first attempt; a crew
 // launched from the Crews page, with no package, launches on the edited
 // entry as before.
@@ -736,6 +768,29 @@ func TestAnAttemptStartsOnlyTheApprovedAgent(t *testing.T) {
 		t.Fatalf("the retry's attempt: %+v", row)
 	}
 	waitPaused(t, l.testEnv, runID, words)
+
+	// A removal: the entry deleted (the saved one, then the configured one
+	// it replaced, hidden) while the run is paused; unpaused, the attempt
+	// fails at agent the same way, uncounted, with no session; the entry
+	// brought back and the run unpaused, the attempt starts.
+	for range 2 {
+		if status := l.del("bold"); status != http.StatusNoContent {
+			t.Fatalf("delete bold: %d", status)
+		}
+	}
+	if _, ok := l.srv.Catalog().Get("bold"); ok {
+		t.Fatal("bold is still in the catalog")
+	}
+	command(t, l.testEnv, runID, "unpause")
+	if row := ledgerAttemptIn(t, l.srv, runID, "build", 4, ledger.AttemptFailed); row.Stage != "agent" || row.Error != words || row.SessionID != "" {
+		t.Fatalf("the removed agent's attempt: %+v", row)
+	}
+	waitPaused(t, l.testEnv, runID, words)
+	l.expect(t, "POST", "/api/catalog/bold/unhide", nil, http.StatusOK, "")
+	l.save(boldEntry(nil))
+	command(t, l.testEnv, runID, "unpause")
+	runningAttempt(t, l.testEnv, runID, "build", 5)
+	l.save(boldEntry(edited))
 
 	// A continuation after a restart, the entry still edited.
 	l.expect(t, "POST", "/api/runs/"+runID+"/stop", nil, http.StatusOK, "")

@@ -2360,7 +2360,7 @@ not counted, and pauses the run. Each attempt's session is started only
 from the agent selection the revision approved: the server takes the
 catalog entry once, computes its selection with the run's yolo choice
 and starts the session from that entry only when it is the package's;
-otherwise the attempt fails at `agent`, not counted, before any process
+otherwise, the entry edited, deleted or hidden, the attempt fails at `agent`, not counted, before any process
 exists, and the run pauses with the words, until the entry is restored
 (and the run unpaused) or a new revision is launched. A retry and a
 continuation get the same files and the same check. With a context provider

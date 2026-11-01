@@ -120,6 +120,11 @@ func crewInject(ref *session.CrewRef) map[string]string {
 func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.CrewRef) (*session.Local, *apiError) {
 	agent, ok := s.Catalog().Get(req.AgentID)
 	if !ok {
+		if req.agentSHA256 != "" {
+			// An attempt whose approved agent was deleted or hidden since:
+			// not the selection its plan revision approved either.
+			return nil, newAPIError(http.StatusConflict, agentChangedCode, "the agent "+req.AgentID+" is no longer in the catalog its plan revision approved it from")
+		}
 		return nil, newAPIError(http.StatusBadRequest, "invalid_agent", "unknown agent id")
 	}
 	if len(req.Args) > 0 && !agent.AllowArgs {
