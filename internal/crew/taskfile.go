@@ -98,7 +98,10 @@ type TaskTicket struct {
 // full, what was cut from them to keep them within maxTaskFile.
 const taskMoreFile = "task-more.json"
 
-// TaskMore is .conductor/task-more.json: what the task files cut.
+// TaskMore is .conductor/task-more.json: what the task files cut. Previous
+// is what was cut of the attempt before: the whole of it once its error
+// was cut, and in its check the failed check's identity with whichever of
+// its tail, changed paths and argv were cut.
 type TaskMore struct {
 	Context       []TaskContext `json:"context,omitempty"`
 	Inputs        []TaskInput   `json:"inputs,omitempty"`
@@ -174,6 +177,9 @@ type TaskPrevious struct {
 	// attempt after it, made there, could not be made usable: it is not
 	// where this one starts.
 	Checkpoint string `json:"checkpoint,omitempty"`
+	// Check is the receipt of the check or verify step that failed the
+	// attempt (failedcheck.go), its whole log in .conductor/previous.
+	Check *TaskCheck `json:"check,omitempty"`
 }
 
 // TaskUnusable is an attempt whose worktree could not be made usable: the
@@ -205,8 +211,10 @@ type TaskManifest struct {
 // tools, and, when they would pass maxTaskFile, task-more.json with what
 // was cut from them (fitTaskFile); tr is a's worktree when the run has a
 // project manifest, whose identity the files name; blocks is the context
-// the providers gave a (askContext), none without. It takes e.mu.
-func (e *Engine) taskFile(r *run, a *attempt, tr *tree, blocks []TaskContext) (md, js, more []byte, err error) {
+// the providers gave a (askContext), none without. When the attempt before
+// failed at a check, its log is read from the ledger after e.mu is let go
+// (previousLog), for the files beside the task files. It takes e.mu.
+func (e *Engine) taskFile(ctx context.Context, r *run, a *attempt, tr *tree, blocks []TaskContext) (md, js, more []byte, log *checkLog, err error) {
 	e.mu.Lock()
 	t := a.t
 	f := TaskFile{Run: r.id, Crew: r.crewID, CrewName: r.name, Goal: r.goal, Task: t.def.ID, Attempt: a.n, MaxAttempts: maxAttemptsPerTask + t.extra, Member: a.m.def.Name, Role: a.m.def.Prompt, Kind: t.def.Kind,
@@ -238,14 +246,28 @@ func (e *Engine) taskFile(r *run, a *attempt, tr *tree, blocks []TaskContext) (m
 		f.Checkpoint = c.api()
 	}
 	e.mu.Unlock()
-	return fitTaskFile(f)
+	if p := f.Previous; p != nil && p.Check != nil {
+		// A copy: the one previousOf made may be an uncounted attempt's,
+		// kept for the attempt after it.
+		c := *p.Check
+		if log, err = e.previousLog(ctx, &c); err != nil {
+			return nil, nil, nil, nil, err
+		}
+		prev := *p
+		prev.Check = &c
+		f.Previous = &prev
+	}
+	md, js, more, err = fitTaskFile(f)
+	return md, js, more, log, err
 }
 
 // previousOf is the attempt before a as a's task file names it: the last
 // counted attempt kept before a in this run (one whose worktree could not
 // be made usable is passed over); for a continuation's first attempt, the
-// one the uncounted attempt's own task file named, or the attempt whose
-// result was refused before its checks. The caller holds e.mu.
+// one the uncounted attempt's own task file named, the attempt whose
+// result was refused before its checks, or the one that failed at a check
+// (priorFailed). An attempt that failed at a check or a verify step comes
+// with its receipt (Check), its log not read yet. The caller holds e.mu.
 func previousOf(t *task, a *attempt) *TaskPrevious {
 	var p *attempt
 	for _, x := range t.attempts {
@@ -258,6 +280,9 @@ func previousOf(t *task, a *attempt) *TaskPrevious {
 		if p.result != "" && p.result != a.start {
 			prev.Result, prev.Branch = p.result, p.branch
 		}
+		if fc := p.failed; fc != nil && p.state == ledger.AttemptFailed && p.stage == fc.stage() {
+			prev.Check = fc.handed()
+		}
 		return prev
 	}
 	if u := t.unusableBefore(a); u != nil {
@@ -269,6 +294,15 @@ func previousOf(t *task, a *attempt) *TaskPrevious {
 	}
 	if rf := t.refused; rf != nil && rf.n == a.n-1 && t.kept(rf.n) {
 		return &TaskPrevious{Attempt: rf.n, State: ledger.AttemptFailed, Stage: rf.stage, Error: rf.err, Result: rf.result, Branch: rf.branch}
+	}
+	if pf := t.priorFailed; pf != nil && pf.n == a.n-1 && t.kept(pf.n) {
+		// A continuation's first attempt after one that failed at a check:
+		// its receipt as the ledger has it.
+		prev := &TaskPrevious{Attempt: pf.n, State: pf.state, Stage: pf.stage, Error: pf.err, Check: pf.check.handed()}
+		if pf.result != "" && pf.result != a.start {
+			prev.Result, prev.Branch = pf.result, pf.branch
+		}
+		return prev
 	}
 	return nil
 }
@@ -287,7 +321,9 @@ func (t *task) unusableBefore(a *attempt) *unusable {
 // then the inputs' summaries, then the
 // checkpoint, then the findings from the last, then the review's summary,
 // then the checks' commands, then the inputs after the first (the start's),
-// then the attempt before's error past maxPreviousError; what is cut goes,
+// then the failed check's last output, the paths it changed and its
+// command (the attempt before's receipt, failedcheck.go), then the attempt
+// before's error past maxPreviousError; what is cut goes,
 // in full, into task-more.json, which task.md names. The crew's goal, role
 // and instructions are never cut: the crew's validation bounds them
 // (maxTaskText), so a task file always fits and no attempt fails at it for
@@ -303,9 +339,35 @@ func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
 	}
 	if f.Previous != nil {
 		p := *f.Previous
+		if p.Check != nil {
+			c := *p.Check
+			c.Argv, c.Changed = slices.Clone(c.Argv), slices.Clone(c.Changed)
+			p.Check = &c
+		}
 		f.Previous = &p
 	}
 	var m TaskMore
+	errorCut := false
+	// checkMore is the failed check in task-more.json, made with its
+	// identity at the first of its parts cut.
+	checkMore := func() *TaskCheck {
+		if m.Previous == nil {
+			m.Previous = &TaskPrevious{Attempt: f.Previous.Attempt, State: f.Previous.State, Stage: f.Previous.Stage}
+		}
+		if m.Previous.Check == nil {
+			c := f.Previous.Check
+			m.Previous.Check = &TaskCheck{Receipt: c.Receipt, Run: c.Run, Task: c.Task, Attempt: c.Attempt, Phase: c.Phase, ID: c.ID, K: c.K, Subject: c.Subject, Exit: c.Exit, Signal: c.Signal,
+				TimedOut: c.TimedOut, Stable: c.Stable, LogSHA256: c.LogSHA256, LogBytes: c.LogBytes, Log: c.Log, LogDropped: c.LogDropped}
+		}
+		return m.Previous.Check
+	}
+	// failedCheck is the failed check as task.json has it, nil without.
+	failedCheck := func() *TaskCheck {
+		if f.Previous == nil {
+			return nil
+		}
+		return f.Previous.Check
+	}
 	cuts := []func() bool{
 		func() bool {
 			// A provider's view goes before anything of the task's own.
@@ -390,13 +452,50 @@ func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
 			f.Inputs = f.Inputs[:1]
 			return true
 		},
+		// The failed check's parts that can be large, one after another:
+		// its last output, the paths it changed, its command (8 KiB of
+		// control characters is some 49 KiB as JSON). Its identity, its
+		// outcome and its log's file and hash are never cut.
+		func() bool {
+			c := failedCheck()
+			if c == nil || c.Tail == "" {
+				return false
+			}
+			checkMore().Tail, c.Tail = c.Tail, ""
+			f.Cut = append(f.Cut, cutCheckTail)
+			return true
+		},
+		func() bool {
+			c := failedCheck()
+			if c == nil || len(c.Changed) == 0 {
+				return false
+			}
+			checkMore().Changed, c.Changed = c.Changed, nil
+			f.Cut = append(f.Cut, cutCheckChanged)
+			return true
+		},
+		func() bool {
+			c := failedCheck()
+			if c == nil || len(c.Argv) == 0 {
+				return false
+			}
+			checkMore().Argv, c.Argv = c.Argv, nil
+			f.Cut = append(f.Cut, cutCheckArgv)
+			return true
+		},
 		func() bool {
 			// Once: the cut error is maxPreviousError and a mark, longer
 			// than maxPreviousError itself.
-			if f.Previous == nil || m.Previous != nil || utf8.RuneCountInString(f.Previous.Error) <= maxPreviousError {
+			if f.Previous == nil || errorCut || utf8.RuneCountInString(f.Previous.Error) <= maxPreviousError {
 				return false
 			}
+			errorCut = true
 			whole := *f.Previous
+			if m.Previous != nil {
+				whole.Check = m.Previous.Check // its parts cut before, with its identity
+			} else {
+				whole.Check = nil // whole in task.json
+			}
 			m.Previous = &whole
 			f.Previous.Error = string([]rune(f.Previous.Error)[:maxPreviousError]) + "…"
 			f.Cut = append(f.Cut, "the rest of the attempt before's error")
@@ -578,6 +677,9 @@ func taskMarkdown(f TaskFile) string {
 				fmt.Fprintf(&b, ". Its result, the commit %s on the branch %s, is not where you start: take from it what holds up, and fix what was refused", p.Result, p.Branch)
 			}
 			b.WriteString("\n\n")
+			if p.Check != nil {
+				writeFailedCheck(&b, f, p.Check)
+			}
 		}
 		if u != nil {
 			if p != nil && p.Checkpoint != "" {
@@ -661,7 +763,9 @@ func longestBacktickRun(s string) int {
 // is refused before anything is opened or written, and an attachment that
 // cannot be read, or whose size or SHA-256 is not the package's, is a
 // packageError; any file there already is refused, never written over.
-func writeTaskFiles(ctx context.Context, worktree, prefix string, md, js, more []byte, pkg *runPackage, open func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error)) error {
+// With log (the attempt before failed at a check), its whole log goes in
+// previous/ through the same root.
+func writeTaskFiles(ctx context.Context, worktree, prefix string, md, js, more []byte, pkg *runPackage, open func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error), log *checkLog) error {
 	if pkg != nil {
 		if err := checkPackageFiles(pkg.p); err != nil {
 			return err
@@ -695,6 +799,9 @@ func writeTaskFiles(ctx context.Context, worktree, prefix string, md, js, more [
 	if pkg != nil && len(pkg.p.Attachments) > 0 {
 		names = append(names, attachmentsDir)
 	}
+	if log != nil {
+		names = append(names, previousDir)
+	}
 	for _, name := range names {
 		// A fresh worktree has none; one there (tracked, a link) is not
 		// written over.
@@ -713,6 +820,14 @@ func writeTaskFiles(ctx context.Context, worktree, prefix string, md, js, more [
 			continue
 		}
 		if err := root.WriteFile(path.Join(taskDir, name), b, 0o644); err != nil {
+			return err
+		}
+	}
+	if log != nil {
+		if err := root.Mkdir(path.Join(taskDir, previousDir), 0o755); err != nil {
+			return err
+		}
+		if err := root.WriteFile(path.Join(taskDir, previousDir, log.name), log.data, 0o644); err != nil {
 			return err
 		}
 	}

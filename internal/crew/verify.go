@@ -203,12 +203,14 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 		}
 	}
 	// event is the receipt's event of the kind (started, running,
-	// finished), with more in its payload.
+	// finished), with more in its payload: each names the receipt (its
+	// task, attempt, id and k), so the paths a finished one lists are read
+	// back for the next attempt after a restart (ledger.CheckChanged).
 	event := func(kind string, more map[string]any) tx {
 		if step {
 			return ev("step."+kind, stepPayload(a, tr, phase, ch.ID, k, more))
 		}
-		p := map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID}
+		p := map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "k": k}
 		maps.Copy(p, more)
 		return ev("check."+kind, p)
 	}
@@ -298,11 +300,13 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 		fin.State = ledger.CheckFinished
 		words = unrecorded + ": " + session.CleanMessage(refused.Error())
 		fin.Error = words
-		_ = e.transact(context.Background(), r, func() tx {
+		if err := e.transact(context.Background(), r, func() tx {
 			out := event("finished", map[string]any{"exit": res.Exit, "timedOut": res.TimedOut, "stable": false, "duration": res.Duration.String(), "error": words})
 			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
 			return out
-		}, nil)
+		}, nil); err == nil {
+			e.keepFailed(r, a, fin, nil)
+		}
 		return stage, words, true, false
 	}
 	if e.beforeCompare != nil {
@@ -348,9 +352,22 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 		return stage, what + ": " + session.CleanMessage(err.Error()), true, false
 	}
 	if words != "" {
+		e.keepFailed(r, a, fin, changed)
 		return stage, words, true, false
 	}
 	return "", "", true, true
+}
+
+// keepFailed keeps on a the receipt that failed it, as the ledger has its
+// row (fin, its log left out: the next attempt reads that from the ledger)
+// with the tracked paths the check changed as its finished event lists
+// them, for the attempt after it (failedcheck.go).
+func (e *Engine) keepFailed(r *run, a *attempt, fin ledger.CheckRow, changed []string) {
+	fin.Log = nil
+	fc := &failedCheck{run: r.id, row: fin, changed: handedChanged(bounded(changed))}
+	e.mu.Lock()
+	a.failed = fc
+	e.mu.Unlock()
 }
 
 // serviceIDs is the ids of t's services, in the order they started; none

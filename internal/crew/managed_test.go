@@ -51,6 +51,9 @@ type fakeLedger struct {
 	unavailable error
 	// failLoad, when set, names a run whose next Load fails, once.
 	failLoad string
+	// dropLogs, when set, drops every check's log as the ledger does past
+	// the run's bound (ledger.MaxRunLogs).
+	dropLogs bool
 }
 
 // matches reports whether an event is named by spec.
@@ -146,7 +149,65 @@ func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, erro
 		at[key] = len(out.Prerequisites)
 		out.Prerequisites = append(out.Prerequisites, p)
 	}
+	// The receipts that failed its attempts, as the ledger's Load reads
+	// them: each (task, n, id, k) as last put.
+	for _, a := range out.Attempts {
+		if fr, ok := failingReceipt(a, l.lastChecks(runID, a.TaskID, a.N)); ok {
+			out.FailedChecks = append(out.FailedChecks, fr)
+		}
+	}
 	return out, true, nil
+}
+
+// lastChecks is an attempt's receipts, each as last put. The caller holds
+// l.mu.
+func (l *fakeLedger) lastChecks(runID, taskID string, n int) []ledger.CheckRow {
+	var out []ledger.CheckRow
+	at := map[string]int{}
+	for _, c := range l.checks {
+		if c.RunID != runID || c.TaskID != taskID || c.N != n {
+			continue
+		}
+		key := fmt.Sprintf("%s/%d", c.ID, c.K)
+		if i, ok := at[key]; ok {
+			out[i] = c
+			continue
+		}
+		at[key] = len(out)
+		out = append(out, c)
+	}
+	return out
+}
+
+func (l *fakeLedger) CheckLog(ctx context.Context, runID, taskID string, n int, id string, k int) (ledger.CheckRow, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, c := range l.lastChecks(runID, taskID, n) {
+		if c.ID == id && c.K == k {
+			c.LogBytes = int64(len(c.Log))
+			return c, true, nil
+		}
+	}
+	return ledger.CheckRow{}, false, nil
+}
+
+// CheckChanged reads the paths from the receipt's finished event, as the
+// ledger's does: the one naming k.
+func (l *fakeLedger) CheckChanged(ctx context.Context, runID, taskID string, n int, id string, k int) ([]string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := len(l.events) - 1; i >= 0; i-- {
+		ev := l.events[i]
+		p, ok := ev.payload.(map[string]any)
+		if !ok || ev.runID != runID || p["task"] != taskID || p["attempt"] != n || p["k"] != k {
+			continue
+		}
+		if ev.kind == "check.finished" && p["check"] == id || ev.kind == "step.finished" && p["id"] == id {
+			changed, _ := p["changed"].([]string)
+			return changed, nil
+		}
+	}
+	return nil, nil
 }
 
 func (tx *fakeTx) PutMessage(r ledger.MessageRow) error {
@@ -317,7 +378,18 @@ func (tx *fakeTx) PutAttempt(r ledger.AttemptRow) error {
 	tx.attempts = append(tx.attempts, r)
 	return nil
 }
-func (tx *fakeTx) PutCheck(r ledger.CheckRow) error { tx.checks = append(tx.checks, r); return nil }
+func (tx *fakeTx) PutCheck(r ledger.CheckRow) error {
+	tx.l.mu.Lock()
+	drop := tx.l.dropLogs
+	tx.l.mu.Unlock()
+	if drop && len(r.Log) > 0 {
+		// As the ledger keeps a log past the run's bound: dropped, its
+		// hash and tail kept.
+		r.Log, r.LogDropped = nil, true
+	}
+	tx.checks = append(tx.checks, r)
+	return nil
+}
 func (tx *fakeTx) PutPrerequisite(r ledger.PrerequisiteRow) error {
 	tx.prereqs = append(tx.prereqs, r)
 	return nil

@@ -355,6 +355,101 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 	}
 }
 
+// The whole repair handoff at its valid bounds (DS2's PR-5): a failed
+// check's argv at 8 KiB of control characters (some 49 KiB as JSON), ten
+// changed paths of 1,024 bytes of the same, the tail at 2 KiB of them,
+// beside the task's text at maxTaskText as task.json keeps it, every input
+// with its summary, a repair with every finding, eight checks at their
+// bound and the attempt before's error at 40 KiB: fitTaskFile succeeds,
+// task.md and task.json within maxTaskFile, the receipt's identity, its
+// outcome and its log's hash, size and name in task.json, and its tail,
+// changed paths and argv in task-more.json, each cut said.
+func TestAFailedCheckHandoffAtItsWorst(t *testing.T) {
+	ctl := func(n int) string { return strings.Repeat("\x01", n) }
+	var argv []string
+	for range maxArgs {
+		argv = append(argv, ctl(maxArgsBytes/maxArgs))
+	}
+	if err := validateArgv("check unit", argv); err != nil {
+		t.Fatalf("the worst argv is not valid: %v", err)
+	}
+	var changed []string
+	for i := range maxHandedChanged {
+		changed = append(changed, handedChanged([]string{fmt.Sprintf("%02d", i) + ctl(4<<10)})[0])
+	}
+	if len(changed[0]) != maxHandedPath {
+		t.Fatalf("a handed path is %d bytes", len(changed[0]))
+	}
+	c := &TaskCheck{Receipt: "", Run: "api-sweep-" + strings.Repeat("0", 8), Task: strings.Repeat("t", 40), Attempt: maxAttemptsPerTask, Phase: ledger.PhaseVerify, ID: strings.Repeat("v", 40), K: 1 << 30,
+		Argv: argv, Subject: strings.Repeat("c", 64), Exit: -1, Signal: "killed", TimedOut: true, Changed: changed, Tail: ctl(checkTail),
+		LogSHA256: strings.Repeat("f", 64), LogBytes: ledger.MaxLog, Log: ".conductor/previous/check-" + strings.Repeat("v", 40) + ".log"}
+	c.Receipt = fmt.Sprintf("%s/%s/%d/%s/%s/%d", c.Run, c.Task, c.Attempt, c.Phase, c.ID, c.K)
+	if b, _ := json.Marshal(c); len(b) < 49<<10+60<<10 {
+		t.Fatalf("the receipt is only %d bytes as JSON", len(b))
+	}
+	// The task's own text at its bound as task.json keeps it (maxTaskText),
+	// each part within its own: the goal of control characters, the
+	// instructions of "<", the role as many control characters as fit.
+	goal, instructions := ctl(maxGoal), strings.Repeat("<", maxInstructions)
+	// Each control character is five bytes more than a "<" as JSON.
+	n := min(maxPrompt, (maxTaskText-taskTextBytes(goal, strings.Repeat("<", maxPrompt), instructions))/5)
+	role := ctl(n) + strings.Repeat("<", maxPrompt-n)
+	if b := taskTextBytes(goal, role, instructions); b > maxTaskText || b < maxTaskText-8 {
+		t.Fatalf("the task's text is %d bytes as task.json keeps it", b)
+	}
+	var inputs []TaskInput
+	for i := range maxTasks - 1 {
+		inputs = append(inputs, TaskInput{Task: fmt.Sprintf("in%d", i), Attempt: 3, Commit: strings.Repeat("a", 40), Branch: fmt.Sprintf("crew/run/in%d.3", i), Summary: strings.Repeat("s", maxSummary)})
+	}
+	var findings []Finding
+	for i := range maxFindings {
+		findings = append(findings, Finding{Severity: "major", Path: fmt.Sprintf("p%d", i), Message: strings.Repeat("<", maxFindingText)})
+	}
+	var checks []Check
+	for i := range maxChecks {
+		checks = append(checks, Check{ID: fmt.Sprintf("c%d", i), Argv: argv, TimeoutSeconds: maxCheckTimeout})
+	}
+	f := TaskFile{Task: c.Task, Attempt: maxAttemptsPerTask + 1, MaxAttempts: maxAttemptsPerTask + 1, Member: "lead", Kind: TaskWork, Goal: goal, Role: role, Instructions: instructions,
+		Start: c.Subject, Inputs: inputs, Checks: checks, Ticket: worstTicket(), ticketTitle: strings.Repeat("<", maxTicketTitle),
+		Repair:   &TaskRepair{Review: "check", Attempt: 1, Commit: strings.Repeat("r", 40), Summary: strings.Repeat("r", maxSummary), Findings: findings},
+		Previous: &TaskPrevious{Attempt: c.Attempt, State: ledger.AttemptFailed, Stage: "verify " + c.ID, Error: strings.Repeat("e", 40<<10), Check: c}}
+	md, js, more, err := fitTaskFile(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(md) > maxTaskFile || len(js) > maxTaskFile || more == nil {
+		t.Fatalf("task.md %d, task.json %d bytes, task-more.json %v", len(md), len(js), more != nil)
+	}
+	var kept TaskFile
+	var cut TaskMore
+	if err := json.Unmarshal(js, &kept); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(more, &cut); err != nil {
+		t.Fatal(err)
+	}
+	k := kept.Previous.Check
+	if k == nil || k.Receipt != c.Receipt || k.Run != c.Run || k.Task != c.Task || k.Attempt != c.Attempt || k.Phase != c.Phase || k.ID != c.ID || k.K != c.K ||
+		k.Subject != c.Subject || k.Exit != c.Exit || k.Signal != c.Signal || k.TimedOut != c.TimedOut || k.Stable != c.Stable ||
+		k.LogSHA256 != c.LogSHA256 || k.LogBytes != c.LogBytes || k.Log != c.Log {
+		t.Fatalf("task.json's receipt: %+v", k)
+	}
+	if k.Tail != "" || k.Changed != nil || k.Argv != nil {
+		t.Fatalf("task.json keeps the receipt's large parts: tail %d, changed %d, argv %d", len(k.Tail), len(k.Changed), len(k.Argv))
+	}
+	m := cut.Previous
+	if m == nil || m.Check == nil || m.Check.Tail != c.Tail || !slices.Equal(m.Check.Changed, c.Changed) || !slices.Equal(m.Check.Argv, c.Argv) || m.Check.Receipt != c.Receipt {
+		t.Fatalf("task-more.json's receipt: %+v", m)
+	}
+	at := func(what string) int { return slices.Index(kept.Cut, what) }
+	if at(cutCheckTail) < 0 || at(cutCheckTail) > at(cutCheckChanged) || at(cutCheckChanged) > at(cutCheckArgv) || at(cutCheckTail) < at("the 8 checks' commands") {
+		t.Fatalf("the cuts: %q", kept.Cut)
+	}
+	if !strings.Contains(string(md), "Its receipt in the ledger is "+c.Receipt) || !strings.Contains(string(md), "is `"+c.Log+"`") || !reflect.DeepEqual(kept.Ticket, f.Ticket) || kept.Instructions != instructions {
+		t.Fatal("task.md does not name the receipt and its log, or the ticket or the text was cut")
+	}
+}
+
 // A dispatch whose repair would pass the task file's bound writes the cut
 // files and launches: no attempt fails at "task file" for its size.
 func TestARepairPastTheTaskFilesBoundStillLaunches(t *testing.T) {
