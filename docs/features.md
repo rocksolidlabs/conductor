@@ -3285,8 +3285,34 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   PR-6 (#478): api: the identity provider after the token chain; a
   principal's subject in receipts. Planned.
 
-  PR-7 (#479): api: notification sinks over the event hub, the webhooks the
-  first. Planned.
+  PR-7 (#479): `internal/api`: notification sinks over the event hub, the
+  webhooks the first. The notifier (`notify.go`) takes the webhooks'
+  place on the hub, so the hub's sinks stay in main's order (the
+  notifier, then the run engine's `OnActivity`); within it the webhooks
+  come first, in config order, then the providers' sinks, in registration
+  order, each with a queue of `SinkQueue` (256) that never makes the hub
+  wait and drops its oldest. An entry is typed once, its session looked
+  up once when a sink wants it, and one `ext.Notification` queued for
+  every sink whose `Events` is nil or lists the entry's event name or its
+  own type; a provider's notice (`Host.Notify`) goes only to the sinks
+  that list `TypeProvider`, never to a webhook. A webhook's body is
+  rebuilt from the notification (`webhookBody`, main's `webhookPayload`,
+  built once per entry), its ring now an `extQueue`, its bound, timeout,
+  address rule, redirect rule and logs unchanged; a sink's `Events` is
+  read once on its own goroutine, and what was queued before it was read
+  is decided at delivery. A plain build adds no sink to the hub. Tests:
+  every existing `webhooks_test.go` test, unchanged;
+  `TestWebhooksUnchanged` (seventeen kinds of entry, of a session the
+  registry holds and of one it does not, with and without a provider's
+  sink beside: body, `X-Conductor-Event` and signature equal main's
+  construction, kept in the test; every field of an entry survives its
+  notification), `TestSinkGetsEveryAttentionEvent` (10 sessions, 1,000
+  changes, three sinks, each's in order, none dropped),
+  `TestBlockedSinkNeverHoldsTheHub` (a sink that never returns: the hub,
+  the session, the webhook and the other sink go on, its 244 drops
+  counted), `TestSinkEventsFilter`, `TestProviderNoticesCannotLoop`,
+  `TestSinkPanicRecovered`, `TestSinksInMainsOrder`, each checked to fail
+  with its part broken.
 
   PR-8 (#480): crew, api: context blocks in the task files; file touches to
   the context providers. Planned.
