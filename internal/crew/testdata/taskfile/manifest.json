@@ -1,0 +1,36 @@
+{
+  "run": "r-0123456789ab",
+  "crew": "c-build",
+  "crewName": "Build crew",
+  "goal": "Ship the parser, tested.",
+  "task": "build",
+  "attempt": 2,
+  "maxAttempts": 3,
+  "member": "lead",
+  "role": "You lead the build.",
+  "kind": "work",
+  "instructions": "Write the parser in parse.go & test it: <input> yields a tree.",
+  "worktree": "/repo/.conductor/worktrees/r-0123456789ab/build.2",
+  "branch": "crew/r-0123456789ab/build.2",
+  "start": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "startFrom": "the run's base",
+  "unusable": {
+    "attempt": 1,
+    "stage": "setup install",
+    "error": "npm ci: exit 1"
+  },
+  "manifest": {
+    "source": "file",
+    "digest": "ffffffffffffffffffffffffffffffffffffffff",
+    "ports": {
+      "api": 41001,
+      "web": 41000
+    },
+    "preview": "http://127.0.0.1:41000/",
+    "services": [
+      "db",
+      "cache"
+    ]
+  },
+  "writtenAt": "2026-10-31T12:00:00Z"
+}

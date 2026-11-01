@@ -2,6 +2,12 @@
 // a directory of JSON documents, which may hold directories of its own (Sub),
 // and a few plain files (WriteFile). Every write goes to a temp file first and is renamed into place so readers
 // never see a torn file; a mutex serialises writers in this process.
+//
+// An observer (Observe) is told every commit of the data directory, through
+// the store or any Sub of it, after its rename or remove and in that order:
+// the document's path and a sequence number, never its bytes, so a plain
+// file's contents (the workbench token's) never leave this package. The
+// sync seam reads an allowlisted document when it delivers it (OpenDoc).
 package store
 
 import (
@@ -27,7 +33,91 @@ var namePattern = regexp.MustCompile(`^[a-z0-9-]+\.json$`)
 type Store struct {
 	dir string
 	mu  sync.Mutex
+	// prefix is the store's slash path from the store Open made, "" for
+	// that one and "crews/" for its Sub("crews"): what an Event's path
+	// begins with. obs is the observer record the store shares with the
+	// store Open made and every Sub of it.
+	prefix string
+	obs    *observer
 }
+
+// Event is one commit of the data directory: a document or plain file
+// saved (renamed into place) or deleted, by its slash path from the
+// directory Open was given ("catalog.json", "crews/todo-app.json"), and its
+// number in commit order (Seq, from 1 for each Open). It carries no bytes.
+type Event struct {
+	Op   string // OpSaved or OpDeleted
+	Path string
+	Seq  int64
+}
+
+// The ops of an Event.
+const (
+	OpSaved   = "saved"
+	OpDeleted = "deleted"
+)
+
+// observer is what a store and its Subs share: one mutex taken around
+// every rename and remove, so the commits of one directory tree, whichever
+// store makes them, are numbered and told in the order they land, the
+// sequence, and the function Observe gave.
+type observer struct {
+	mu  sync.Mutex
+	seq int64
+	fn  func(Event)
+}
+
+// Observe gives the store, and every Sub of it made before or after, fn:
+// called once after each commit (a save's rename, a delete's remove) that
+// succeeded, never after a failed one, with the commit's Event, under the
+// mutex that orders the commits. fn must only queue what it is told: it
+// holds every writer of the directory tree while it runs, and it must not
+// call the store. A later Observe replaces fn; nil removes it.
+func (s *Store) Observe(fn func(Event)) {
+	s.obs.mu.Lock()
+	defer s.obs.mu.Unlock()
+	s.obs.fn = fn
+}
+
+// Seq answers the number of the last commit told so far (0 for none):
+// every commit after it has a greater one.
+func (s *Store) Seq() int64 {
+	s.obs.mu.Lock()
+	defer s.obs.mu.Unlock()
+	return s.obs.seq
+}
+
+// commit runs do, a write's last step (its rename or remove), under the
+// observer's mutex and, when do answers that it changed the directory,
+// numbers the commit and tells the observer before letting the mutex go,
+// so commits are told in the order they land. The caller holds s.mu.
+func (s *Store) commit(name, op string, do func() (bool, error)) error {
+	path := s.prefix + name
+	if f := beforeCommit; f != nil {
+		f(path)
+	}
+	o := s.obs
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	changed, err := do()
+	if err != nil || !changed {
+		return err
+	}
+	if f := afterCommit; f != nil {
+		f(path)
+	}
+	o.seq++
+	if o.fn != nil {
+		o.fn(Event{Op: op, Path: path, Seq: o.seq})
+	}
+	return nil
+}
+
+// beforeCommit and afterCommit, when a test sets them, run in every
+// commit with its path: before the observer's mutex is taken, and once
+// the rename or remove has landed and before it is numbered and told.
+// nil outside tests.
+var beforeCommit, afterCommit func(path string)
 
 // Open creates dir with mode 0700 when it is missing and fails when it is not
 // writable, so a misconfigured data directory is caught at startup.
@@ -44,7 +134,7 @@ func Open(dir string) (*Store, error) {
 	}
 	probe.Close()
 	os.Remove(probe.Name())
-	return &Store{dir: dir}, nil
+	return &Store{dir: dir, obs: &observer{}}, nil
 }
 
 // Dir returns the directory the store reads from and writes to.
@@ -54,12 +144,18 @@ func (s *Store) Dir() string { return s.dir }
 var subPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // Sub opens the directory name inside s as a store of its own, made 0700 when
-// missing and refused when it cannot be written, as Open does.
+// missing and refused when it cannot be written, as Open does. It shares
+// s's observer (Observe), its events' paths beginning with name and a slash.
 func (s *Store) Sub(name string) (*Store, error) {
 	if !subPattern.MatchString(name) {
 		return nil, fmt.Errorf("store: bad name %q", name)
 	}
-	return Open(filepath.Join(s.dir, name))
+	sub, err := Open(filepath.Join(s.dir, name))
+	if err != nil {
+		return nil, err
+	}
+	sub.prefix, sub.obs = s.prefix+name+"/", s.obs
+	return sub, nil
 }
 
 // Entry is a document in a store, as List reports it.
@@ -72,8 +168,29 @@ type Entry struct {
 // List returns the documents in the store, sorted by name: the regular files
 // whose names a document may have. Temp files, the write probe, links,
 // directories and anything else are left out.
-func (s *Store) List() ([]Entry, error) {
-	des, err := os.ReadDir(s.dir)
+func (s *Store) List() ([]Entry, error) { return listDir(s.dir) }
+
+// ListDocs is List for the store's directory sub ("" for the store's own),
+// as Sub would open it, without making it: a directory that is not there
+// holds none.
+func (s *Store) ListDocs(sub string) ([]Entry, error) {
+	dir := s.dir
+	if sub != "" {
+		if !subPattern.MatchString(sub) {
+			return nil, fmt.Errorf("store: bad name %q", sub)
+		}
+		dir = filepath.Join(s.dir, sub)
+	}
+	out, err := listDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return out, err
+}
+
+// listDir is List of dir.
+func listDir(dir string) ([]Entry, error) {
+	des, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -98,10 +215,13 @@ func (s *Store) Delete(name string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.Remove(filepath.Join(s.dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
+	return s.commit(name, OpDeleted, func() (bool, error) {
+		err := os.Remove(filepath.Join(s.dir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return err == nil, err
+	})
 }
 
 // Load decodes the document called name into v. It reports false, with no
@@ -271,25 +391,30 @@ func (s *Store) RemoveFile(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path := filepath.Join(s.dir, name)
-	fi, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if fi.IsDir() {
-		return fmt.Errorf("store: %s is a directory", path)
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
+	return s.commit(name, OpDeleted, func() (bool, error) {
+		fi, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if fi.IsDir() {
+			return false, fmt.Errorf("store: %s is a directory", path)
+		}
+		err = os.Remove(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return err == nil, err
+	})
 }
 
 // write puts b in place of name through a temp file of mode 0600 in the
 // store's directory, synced before the rename, so a crash leaves the old
-// contents or the new, never a part. The caller holds s.mu.
+// contents or the new, never a part. The temp file is written outside the
+// observer's mutex and the rename made under it (commit). The caller holds
+// s.mu.
 func (s *Store) write(name string, b []byte) error {
 	final := filepath.Join(s.dir, name)
 	tmp, err := os.CreateTemp(s.dir, name+".*.tmp")
@@ -312,5 +437,54 @@ func (s *Store) write(name string, b []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return rename(tmp.Name(), final)
+	return s.commit(name, OpSaved, func() (bool, error) {
+		if err := rename(tmp.Name(), final); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
+}
+
+// docPattern is a document's slash path in the store: directories a Sub
+// may have, then a document's name.
+var docPattern = regexp.MustCompile(`^([a-z0-9-]+/)*[a-z0-9-]+\.json$`)
+
+// OpenDoc opens the document at path, a slash path in the store ("catalog.json",
+// "runs/r-1.json"), read-only through the store's directory as a root, so
+// nothing outside it is reached: a regular JSON document only. A plain
+// file, a symbolic link or anything else in its place is refused; a
+// document that is not there is an error that wraps os.ErrNotExist. The
+// file opened is one version of the document, whatever is renamed over it
+// meanwhile (a save), and the caller closes it.
+func (s *Store) OpenDoc(path string) (*os.File, error) {
+	if !docPattern.MatchString(path) {
+		return nil, fmt.Errorf("store: bad document path %q", path)
+	}
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	rel := filepath.FromSlash(path)
+	fi, err := root.Lstat(rel)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("store: %s is not a regular file", path)
+	}
+	f, err := root.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	ofi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !os.SameFile(fi, ofi) {
+		f.Close()
+		return nil, fmt.Errorf("store: %s %w", path, ErrChanged)
+	}
+	return f, nil
 }

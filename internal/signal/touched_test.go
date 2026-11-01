@@ -23,8 +23,8 @@ func TestHostedSessionTouchedIndex(t *testing.T) {
 		{`C:\Users\me\proj`, `\\share\x\c.go`, `\\share\x\c.go`},
 		{"/home/me/proj", `C:\elsewhere\d.go`, `C:\elsewhere\d.go`},
 	} {
-		if got := hostAbs(c.cwd, c.path); got != c.want {
-			t.Errorf("hostAbs(%q, %q) = %q, want %q", c.cwd, c.path, got, c.want)
+		if got := HostAbs(c.cwd, c.path); got != c.want {
+			t.Errorf("HostAbs(%q, %q) = %q, want %q", c.cwd, c.path, got, c.want)
 		}
 	}
 
