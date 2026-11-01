@@ -1741,10 +1741,13 @@ conductor restore conductor.zip [--config FILE] [--data-dir DIR]
 snapshots its databases while it writes; the server and the token are
 taken as `conductor up` takes them, and a plain `http://` server on another
 machine is refused without `--insecure`. With `--data-dir` it reads a
-stopped server's directory itself, and is refused while a server runs on
-it; `--config` names the config that server runs with. The archive goes to
-`--out`, by default `conductor-export-<UTC time>.zip` in the current
-directory, made 0600, and never over an existing file. It leaves out the
+stopped server's directory itself, holding `restore.lock` there while it
+reads (below), and is refused while a server runs on it or when the
+directory holds no server data; `--config` names the config that server
+runs with. The archive goes to `--out`, by default
+`conductor-export-<UTC time>.zip` in the current directory, made 0600,
+never over an existing file and, with `--data-dir`, never inside the
+directory it reads. It leaves out the
 workbench token, the locks, the temporary files, `tls/` (a new machine
 gets its own certificates) and `ext/`, and lists what it left out in its
 manifest. **The archive holds your agents' env values in full**, the
@@ -1761,9 +1764,11 @@ writes anything. It refuses a directory that holds server data
 archive before it writes a byte, and renames what it staged into place,
 never over anything. From before its first byte to after its last rename
 it holds `restore.lock` in the directory, which `conductor serve` takes
-too while it starts, so the two never run on it at once; a restore that
-was cut short leaves the file, and the message names it, to remove before
-you start over. On a machine whose config holds the same agents and
+too while it starts (and `conductor export --data-dir` while it reads), so
+none of them runs on it while another does. A serve or an export that was
+killed leaves the file, and the next one takes it over; a restore that was
+cut short leaves it too, and every later restore, export or serve is
+refused with a message naming it, to remove before you start over. On a machine whose config holds the same agents and
 values, the restored server's start masks those values again, so the
 agents follow that config from then on.
 

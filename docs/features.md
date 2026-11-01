@@ -3515,11 +3515,13 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   server (`GET /api/export`; the server and the token as `conductor up`
   takes them, a plain server on another machine refused without
   `--insecure`; no bound on the download but the person's Ctrl-C), or with
-  `--data-dir` reads a data directory no server runs on (refused while its
-  ledger's owner lock is held or `restore.lock` is there; the databases
-  through read-only snapshots, the catalog resolved against
-  `config.Load(--config)`), and writes `--out` (default
-  `conductor-export-<UTC time>.zip`, 0600, `O_EXCL`, never over a file),
+  `--data-dir` reads a data directory no server runs on, holding its
+  reservation while it reads (refused while `restore.lock` is held, while
+  its ledger's owner lock is, checked under the reservation, or when it
+  holds no server data; the databases through read-only snapshots, the
+  catalog resolved against `config.Load(--config)`), and writes `--out`
+  (default `conductor-export-<UTC time>.zip`, 0600, `O_EXCL`, never over a
+  file, and with `--data-dir` never inside the directory it reads),
   kept only once it ends in its manifest, and says on stderr that the
   archive holds the agents' env values. `conductor restore FILE` goes into
   `--data-dir` or the directory `serve` would use (`config.Load`, then
@@ -3530,18 +3532,31 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `ext/<name>` (0700), on a goroutine of its own with no guard's wait,
   counts the bytes as they arrive, and installs under the same
   reservation; the free default answers that there is nothing to restore,
-  and nothing changes. `runServe` takes the reservation before
-  `store.Open` and lets it go once `api.New` has returned. The usage text,
+  and nothing changes; a provider's `Restore` that ends its goroutine by
+  `runtime.Goexit` ends the command too. A refused restore removes the
+  data directory and every directory above it that it made.
+  `runServe` takes the reservation before `store.Open` and lets it go once
+  `api.New` has returned. `export.Reserve` names its holder (restore,
+  serve, export) and keeps `restore.lock` locked (flock) while held: a
+  file no process holds that a killed serve or export left is taken over,
+  a cut-short restore's still refuses. The usage text,
   the completion table (restore's argument completes as a file) and the
   README's "Export and restore" gain both. Tests:
   `TestExportThroughTheServer`, `TestExportThroughTheServerCutShort`,
-  `TestExportOffline`, `TestExportNeverOverwrites`,
+  `TestExportOffline`, `TestExportOfflineRefusesNoServerData`,
+  `TestExportOfflineOutsideTheDataDir`,
+  `TestExportOfflineHoldsTheReservation`, `TestExportNeverOverwrites`,
   `TestExportSaysEnvIsKept`, `TestExportOfflineResolvesCatalog`,
   `TestRestoreInstalls`, `TestRestoreRefusesServerData`,
   `TestRestoreDataDirAsServe`, `TestRestoreReplacesHooks`,
   `TestServeRefusesWhileRestoring`, `TestRestoreRefusesWhileServeStarts`,
+  `TestServeAfterAKilledServesReservation`,
   `TestRestoreFromProviderStreams`, `TestRestoreFromProviderEndedShort`,
-  `TestRestoreFromProviderHoldsTheReservation`, `TestRestoreFromProvider`;
+  `TestRestoreFromProviderHoldsTheReservation` (as the download starts,
+  between it and the install, between two of the install's renames
+  through `export.BeforeRename`, and after the last),
+  `TestRestoreFromProviderGoexit`, `TestRestoreFromProvider`;
+  `TestReserveTakesOverAKilledServesOrExports` in `internal/export`;
   `TestCompletionCompletes` and `TestCompletionSpecMatchesEveryFlag` cover
   the two commands. The by-hand export on one machine and restore on
   another is C6's acceptance, after this merges (PR-17 records it).
