@@ -831,7 +831,9 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 		e.mu.Unlock()
 		return err
 	}
-	r.revision = rev
+	// The greater: a continuation's mark moves a run's revision outside
+	// the run's own transactions (startContinued reads it back).
+	r.revision = max(r.revision, rev)
 	if snap.create {
 		r.created = true
 	}

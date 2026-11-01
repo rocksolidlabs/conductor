@@ -547,6 +547,53 @@ their receipts are kept under `admin` for the workbench token and
 principal, so a provider's subject never shares the receipts of `admin`,
 `merge` or `agent:<member>`. Nothing stored changes shape.
 
+**Sync.** Every local commit is told to the sync store
+(`ext.ContinuityStore`) after it lands (`internal/api/sync.go`). Three
+hooks hand the commits over in commit order, each under the lock that
+orders them, for an adapter that only marks the document pending there:
+the data directory's store (`store.Observe`, inherited by every `Sub`,
+one mutex and sequence shared by all of them around each rename or
+remove, an event naming a path and a number, never bytes), the ledger
+(`OnCommit` with the run's pointer after each committed transition,
+`Recover`'s included, and with the pointer of a run a continuation
+marked, whose revision the mark bumps; and `OnPrune` with the pruned
+run's last revision, its delete told at the one after) and Dispatch (`OnCommit` with a
+commit's changes). `New` installs them before its first write, so the
+start-up's own commits (the masked catalog, the crews' migration, the
+recovery and the records it rewrites) are told too. What reaches the
+store is an allowlist: `catalog.json` (every env value
+`catalog.RedactedValue`, re-encoded from the saved bytes; one that does
+not decode goes with no data), `crews/<id>.json`, `runs/<id>.json`, a
+run's pointer (never the crew as launched, its rows or its logs) and a
+reference to each Dispatch entity a commit changed; never the workbench
+token, `links/`, `tls/`, `hooks/` or `ext/`. The adapter keeps a pending
+set, not a queue: one entry per document in the order they became
+pending, updated in place, holding no bytes; one goroutine delivers the
+oldest as it is then (read through `store.OpenDoc`, or
+`ledger.Pointer`; gone: `Deleted`), whole, in parts of 1 MiB read from
+one open file past that. An entry leaves the set only when its whole
+document is acknowledged: a delivery that errs, panics or outlives
+`DeliveryWait` stays at the head and is tried again whole after a
+backoff (1 s doubling to 5 minutes, reset by a success), so nothing
+behind it goes first and no further local write is needed. Every epoch
+begins with a replay of the whole state: a `replay` doc with a new
+random epoch, every allowlisted document, every run pointer, Dispatch's
+`log` doc at its last change's position, then `replayed`, told only once
+each of them was acknowledged. One runs when the store's drain begins
+(its `Start` succeeded, or at once for one that needs none), so every
+server lifetime is an epoch of its own, one when the set would pass
+`SyncPending` (65,536 documents, a replay's own listing aside), which it
+is then emptied for, and one once a ledger that waited for another
+server's owner lock takes it, for what that server wrote meanwhile. The
+`replay` marker goes into the set under the lock that empties it, so a
+commit made as a replay begins is behind it. A ledger whose file is there
+but cannot be read fails the replay's listing, which is tried again after
+the backoff: only a ledger with no database file holds no run. A ledger
+or Dispatch whose `Open` failed, the server running without it, is no
+empty store either: its replays deliver what they list but never end
+with `replayed`. Nothing a sync store answers is written back; the
+free default acknowledges every doc and keeps nothing.
+
 **Notifications.** The event hub has one sink for everything that takes
 the sessions' activity elsewhere, the notifier (`internal/api/notify.go`),
 added by `New` where the webhooks' sink always was, so the hub hands an
@@ -738,3 +785,9 @@ the newest 20,000 are dropped, the log still answering a resend of an
 operation that ran. A database a newer Conductor wrote, or one that fails
 its check, opens read-only: its reads are answered, its writes refused with
 why, and it is never written.
+
+The data directory stays the truth when a sync store is registered: each
+commit of the store, the ledger and Dispatch is told after it lands
+(Extensions, Sync), in commit order, and nothing a sync store answers is
+written into the directory while a server runs. No schema changes for it;
+a provider's own state lives under `ext/<name>/`, which sync never sends.
