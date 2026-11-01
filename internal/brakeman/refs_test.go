@@ -154,3 +154,49 @@ func TestARefPrintsAsParsed(t *testing.T) {
 		t.Error("a bad ref was read")
 	}
 }
+
+// TestAConstructedRefIsHeldToTheGrammar: Ref's fields are exported, so a
+// ref built by hand is checked as a parsed one is: a part of the wrong
+// shape, a part its kind does not take, or no such kind is refused by
+// Valid, by JSON, by a brief and by a request, and nothing is written.
+func TestAConstructedRefIsHeldToTheGrammar(t *testing.T) {
+	for _, s := range validRefs {
+		if err := ref(t, s).Valid(); err != nil {
+			t.Errorf("%s: %v", s, err)
+		}
+	}
+	bad := []Ref{
+		{Kind: RefRun, Run: "invalid"},
+		{Kind: RefRun, Run: runA, Task: "build"}, // a part a run ref does not take
+		{Kind: RefTask, Run: runA, Task: "Build"},
+		{Kind: RefAttempt, Run: runA, Task: "build"}, // attempt 0
+		{Kind: RefCheck, Run: runA, Task: "build", N: 1, Check: "vet", K: -1},
+		{Kind: RefEvent, Run: runA, Seq: 0},
+		{Kind: RefSession, Session: "nope"},
+		{Kind: RefTicket, Ticket: "cnd-1"},
+		{Kind: RefTicket, Ticket: "CND-1", Session: sessA},
+		{Kind: RefOp, Actor: "", Op: "op-1"},
+		{Kind: RefCommit, Run: runA, Commit: "abc"},
+		{Kind: RefFile, Session: sessA, Path: "relative"},
+		{Kind: RefBrief, Request: "br-1", Item: MaxItems},
+		{Kind: "nothing", Run: runA},
+	}
+	for _, r := range bad {
+		if err := r.Valid(); err == nil {
+			t.Errorf("%+v is valid", r)
+		}
+		if b, err := json.Marshal(r); err == nil {
+			t.Errorf("%+v was written as %s", r, b)
+		}
+		b := goodBrief(t)
+		b.Items[0].Fact.Evidence = []Ref{r}
+		wantInvalid(t, check(b), "items[0].evidence[0]")
+
+		f := newFixture(t)
+		_, _, err := f.s.Create(Request{OpID: "op-1", Kind: KindAsk, Note: "why?", Subjects: []Ref{r}})
+		wantInvalid(t, err, "subjects[0]")
+		if exists(t, f.reqPath("br-1.json")) {
+			t.Errorf("%+v: a request was written", r)
+		}
+	}
+}

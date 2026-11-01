@@ -292,13 +292,32 @@ func (r Ref) String() string {
 // IsZero reports a ref with no kind: none.
 func (r Ref) IsZero() bool { return r.Kind == "" }
 
-// MarshalText writes the ref as it prints; a zero ref is refused.
-func (r Ref) MarshalText() ([]byte, error) {
+// Valid refuses a ref ParseRef would not give: Ref's fields are
+// exported, so a ref built by hand may hold parts its kind does not take,
+// a part of the wrong shape, or a part of another kind. A ref is valid
+// when it prints as a string ParseRef reads back to the same ref.
+func (r Ref) Valid() error {
 	s := r.String()
 	if s == "" {
-		return nil, fmt.Errorf("brakeman: a ref of no kind %q", r.Kind)
+		return &RefError{Ref: r.Kind, Why: "no such kind"}
 	}
-	return []byte(s), nil
+	p, err := ParseRef(s)
+	if err != nil {
+		return err
+	}
+	if p != r {
+		return &RefError{Ref: s, Why: "it holds parts its kind does not take"}
+	}
+	return nil
+}
+
+// MarshalText writes the ref as it prints; a zero ref, or one Valid
+// refuses, is refused, so what is written always reads back.
+func (r Ref) MarshalText() ([]byte, error) {
+	if err := r.Valid(); err != nil {
+		return nil, fmt.Errorf("brakeman: %w", err)
+	}
+	return []byte(r.String()), nil
 }
 
 // UnmarshalText parses a ref (ParseRef).

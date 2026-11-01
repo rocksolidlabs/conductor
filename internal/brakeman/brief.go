@@ -531,6 +531,9 @@ func oneRef(field string, r Ref, kinds ...string) error {
 	if len(kinds) > 0 && !slices.Contains(kinds, r.Kind) {
 		return invalidBrief(field, "a %s ref, not %s", strings.Join(kinds, ", "), r.Kind)
 	}
+	if err := r.Valid(); err != nil {
+		return invalidBrief(field, "%v", err)
+	}
 	return nil
 }
 

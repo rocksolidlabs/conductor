@@ -316,6 +316,9 @@ func (r *Request) checkAsked() error {
 		if s.IsZero() {
 			return invalidRequest(fmt.Sprintf("subjects[%d]", i), "no ref")
 		}
+		if err := s.Valid(); err != nil {
+			return invalidRequest(fmt.Sprintf("subjects[%d]", i), "%v", err)
+		}
 		if slices.Contains(r.Subjects[:i], s) {
 			return invalidRequest(fmt.Sprintf("subjects[%d]", i), "%s is named twice", s)
 		}
