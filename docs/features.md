@@ -3319,7 +3319,39 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   answer for a hosted session. Planned.
 
   PR-11 (#483): store, ledger, api: the sync hooks after every local commit.
-  Planned.
+  Three hooks, each called under the lock that orders its commits, right
+  after the commit, for an observer that only queues: `store.Observe`
+  (inherited by every `Sub`, made before or after; one mutex and sequence
+  shared by the store and its `Sub`s around each rename or remove, the
+  temp file written and synced outside it; `Event{Op, Path, Seq}`, never
+  bytes, never for a failed write), the ledger's `OnCommit` (the run's
+  pointer read in the transaction with its new revision, `Recover`'s
+  transitions included, and the pointer of a run a continuation marked)
+  and `OnPrune`, and Dispatch's `OnCommit` (`OnChange` unchanged); with
+  `store.OpenDoc` (a regular JSON document, read-only through the store's
+  directory as a root), `ListDocs`, `ledger.Pointer` and `Pointers` (paged)
+  and `dispatch.Head`. `api.New` installs them before its first write. The
+  sync adapter (`internal/api/sync.go`) sends the allowlist (the catalog
+  masked, every env value `catalog.RedactedValue`; the crews; the runs'
+  records; the runs' pointers; a reference to each Dispatch entity a
+  commit changed) from a pending set of one entry per document, delivered
+  as it is then, whole, in parts of 1 MiB from one open file past that,
+  leaving the set only when acknowledged whole and tried again whole after
+  a backoff of 1 s doubling to 5 minutes, and begins every epoch with a
+  replay of the whole state (at the drain's start, and when the set would
+  pass 65,536), its `replayed` told once every document of it was
+  acknowledged. No schema change. Tests: `TestObserveAfterRename`,
+  `TestObserveInheritedBySub`, `TestPlainFileNoBytes`,
+  `TestObserveInCommitOrder`, `TestListDocs`; `TestOnCommitAfterCommit`,
+  `TestOnCommitInOrder`, `TestOnPrune`, `TestPointersPaged`; Dispatch's
+  `TestOnCommitInOrder`; `TestSyncAllowlist`, `TestSyncAfterLocalCommit`,
+  `TestSyncReplayAtStart`, `TestSyncOverflowReplays`, `TestSyncPendingOnce`,
+  `TestSyncRetriesAFailedDelivery`, `TestSyncReplayedWaitsForEveryDoc`,
+  `TestSyncLargeDocInParts`, `TestSyncEpochAcrossRestarts`,
+  `TestSyncDefaultKeepsNothing`, `TestSyncCatalogMasksEnv`,
+  `TestSyncStartupCommits`. The order tests hold the first commit after it
+  lands with a seam and check its lock is still held; the backoff runs on
+  a clock the tests drive.
 
   PR-12 (#484): export, ledger, dispatch, api: the export archive, GET
   /api/export and the restore installer. Planned.
