@@ -29,26 +29,22 @@ import (
 // (routerSeam), the server's copy of the session and the program's own
 // output, never on the clock.
 
-// hostedQuestion reports the attention words to the hosted session id as
-// an admin does (forwarded to its host), trying again while the session's
-// bucket for forwarded reports is empty, and waits until the host has told
-// the server the question with its id, which it answers.
-func hostedQuestion(t *testing.T, e *testEnv, id string, body map[string]any) string {
+// hostedQuestion reports the question body to the hosted session id as an
+// admin does (forwarded to its host), and answers the id the router f was
+// given for it once the host told it back: the router's record holds,
+// where the question shown may pass by at once (a route that answers it).
+func hostedQuestion(t *testing.T, e *testEnv, f *fakeRouter, id string, body map[string]any) string {
 	t.Helper()
 	report(t, e, id, body)
-	if body["state"] != "needs_input" {
-		return ""
-	}
 	var q string
-	until(t, "the host tells "+fmt.Sprint(body["message"]), func() bool {
-		d, ok := e.srv.registry.Get(id)
-		if !ok {
-			return false
-		}
-		a := d.Info().Attention
-		if a.State == session.AttentionNeedsInput && a.Message == body["message"] && a.ID != "" {
-			q = a.ID
-			return true
+	until(t, "the router given "+fmt.Sprint(body["message"]), func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, d := range f.routed {
+			if d.Session.ID == id && d.Message == body["message"] {
+				q = d.ID
+				return true
+			}
 		}
 		return false
 	})
@@ -102,7 +98,7 @@ func TestRoutedAnswerReachesAHostedSession(t *testing.T) {
 	out := filepath.Join(e.root, "read")
 	id := startHost(t, e, []string{"/bin/sh", "-c", `exec cat > "$0"`, out})
 	until(t, "the host says answerAs", func() bool { return hostedSession(t, e, id).TakesAnswers() })
-	q := hostedQuestion(t, e, id, map[string]any{"state": "needs_input", "message": "Allow?", "kind": "permission", "options": yes})
+	q := hostedQuestion(t, e, f, id, map[string]any{"state": "needs_input", "message": "Allow?", "kind": "permission", "options": yes})
 	routed := seams.wait(t, "routed", q)
 	if routed.rt.Answer == nil || routed.sess != id {
 		t.Fatalf("routed %+v", routed)
@@ -170,7 +166,7 @@ func TestHostedSetAsidePastTheBound(t *testing.T) {
 	e := routerEnv(t, f)
 	id := startHost(t, e, []string{"/bin/cat"})
 	until(t, "the host says answerAs", func() bool { return hostedSession(t, e, id).TakesAnswers() })
-	a := hostedQuestion(t, e, id, map[string]any{"state": "needs_input", "message": ownWords, "kind": "prompt", "options": dbChoices, "ask": true})
+	a := hostedQuestion(t, e, f, id, map[string]any{"state": "needs_input", "message": ownWords, "kind": "prompt", "options": dbChoices, "ask": true})
 	seams.wait(t, "routed", a)
 	report(t, e, id, map[string]any{"state": "working"})
 	until(t, "A set aside, kept", func() bool {
@@ -178,7 +174,7 @@ func TestHostedSetAsidePastTheBound(t *testing.T) {
 		return info.Attention.State == session.AttentionWorking && slices.Equal(info.Kept, []string{a})
 	})
 	for i := range 70 {
-		q := hostedQuestion(t, e, id, map[string]any{"state": "needs_input", "message": fmt.Sprintf("Question %d?", i), "kind": "prompt", "options": dbChoices})
+		q := hostedQuestion(t, e, f, id, map[string]any{"state": "needs_input", "message": fmt.Sprintf("Question %d?", i), "kind": "prompt", "options": dbChoices})
 		seams.wait(t, "routed", q)
 		until(t, fmt.Sprintf("question %d resolved", i), func() bool { _, n := f.resolution(q); return n == 1 })
 		if _, n := f.resolution(a); n != 0 {
