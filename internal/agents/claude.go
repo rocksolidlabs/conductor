@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
@@ -47,6 +48,23 @@ func claudeBaseHookList() string {
 // with --dangerously-skip-permissions (the yolo recipe). Claude Code honours
 // only the last --settings, so it goes in the file that carries the hooks.
 const claudeYoloKey = `"skipDangerousModePermissionPrompt":true`
+
+// Claude Code's read-only mode is three rules. --tools names the built-in
+// tools a session has, and these are its file reads alone: Conductor's MCP
+// tools are not built in and stay. Denying only the tools that write or run
+// a command would leave others that act (Task's subagents, EnterWorktree,
+// CronCreate, RemoteTrigger, seen in 2.1.314's tool list), so the reads are
+// named instead. --disallowedTools denies the writers by name as well: a
+// deny rule holds over any allow rule in the person's own settings.
+// --strict-mcp-config keeps only the MCP servers of --mcp-config, the one
+// Conductor registers (MCP): --tools leaves every other MCP server the
+// account has (its own, its plugins', its claude.ai connectors), and their
+// tools can write. With it 2.1.314's tools were Read, Grep, Glob and
+// Conductor's alone, a connector's create, update and delete tools gone.
+var (
+	claudeReadTools  = []string{"Read", "Grep", "Glob"}
+	claudeWriteTools = []string{"Bash", "Edit", "Write", "NotebookEdit"}
+)
 
 var (
 	claudeEvents      = []string{"Notification", "Stop", "UserPromptSubmit", "PermissionRequest", "PermissionDenied"}
@@ -105,6 +123,26 @@ func claudeAdapter() Adapter {
 			return []string{"--mcp-config", filepath.Join(hooksDir, "claude-mcp.json")}
 		},
 		PlansDir: claudePlansDir,
+		// Checked against `claude --help` (2.1.314) and by the recipes tier;
+		// the = form, as --tools, --disallowedTools and --allowedTools take
+		// a list and would read a following word as one of its items.
+		// Conductor's tools come with MCP's --mcp-config, the only MCP
+		// configuration --strict-mcp-config keeps.
+		ReadOnlyArgs: func() []string {
+			return []string{"--tools=" + strings.Join(claudeReadTools, ","), "--disallowedTools=" + strings.Join(claudeWriteTools, ","), "--strict-mcp-config"}
+		},
+		ModelArgs: func(model string) []string {
+			if model == "" {
+				return nil
+			}
+			return []string{"--model=" + model}
+		},
+		AllowTools: func(server string) []string {
+			if !mcpServerName.MatchString(server) {
+				return nil
+			}
+			return []string{"--allowedTools=mcp__" + server}
+		},
 		Status: func(home string) (bool, string) {
 			return statusOf(home, claudeSettings, claudeSteps("")...)
 		},

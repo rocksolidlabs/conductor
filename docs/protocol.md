@@ -1835,6 +1835,7 @@ its run, and on no other.
 | `GET /.well-known/acme-challenge/{token}` | none | the key authorization of an open ACME `http-01` order (RFC 8555 §8.3), on the plain listener; `404` for any other token, a token over 128 bytes, or without a TLS listener |
 | `GET /api/switchyard/status` | admin | on a switchyard only (`404` elsewhere): the landing page's operator figures, `{hosts, sessions, viewers, relayBytesHour, hostList: [{name, since, sessions, viewers}]}`, the live hosted sessions grouped by the publishing host, earliest first, and the bytes the relay carried in the last sixty minutes |
 | `GET /api/whoami` | admin | OS user running the server (the default display name); `host` is the machine's name (`""` when it cannot tell) and `switchyard` whether this server launches nothing; `home` the server user's home directory, when it has one (the settings picker's Home); `version` the server's version, as `conductor version` prints it (Settings → The app) |
+| `GET /api/export` | admin (a switchyard's too) | the data directory as one zip archive (`docs/plans/ext.md`, C6), streamed as it is made, nothing buffered whole: `200` with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="conductor-export-<UTC time>.zip"` (`20060102T150405Z`). The archive holds `data/` as the data directory holds it (the catalog, the crews, the runs' records, a switchyard's `links/` (hashes, never tokens), `hooks/` and any other file) with the ledger's and Dispatch's databases as snapshots (`VACUUM INTO`, consistent while the server writes), the attachment files the Dispatch snapshot's live rows and launch pins require, and `conductor-export.json` last: `{format: 1, version, createdAt, files: [{path, size, sha256}], left: [{path, why}]}`. Left out, and listed with why: the workbench token and its lock, `restore.lock`, `runs/owner.lock`, the databases' `-wal`, `-shm` and `-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`, `tls/`, `ext/`, anything not a regular file or a directory, and a name not of `[A-Za-z0-9._-]` elements. The catalog is resolved against the configuration the server runs with, so saved agents' env values, configured ones they inherit among them, are in it in full: the archive is the person's own file. The records are copied before the ledger's snapshot, and none written after their copy is taken, so a record may lag its ledger, never lead it. A failure before the first byte is `500 internal`; one after it cuts the archive short, with no manifest, which no restore takes, and aborts the response (the connection dropped, or the stream reset, never a whole `200`), so the client's transfer fails; `503 no_data_dir` for a server with none |
 | `GET /api/catalog` | admin | `{agents, hidden, yoloDefault}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog; each agent, here and in the replies of the catalog routes below, also carries `source` (`built-in`, `config` or `saved`) and, for a saved agent that replaces a built-in or configured one, `replaces` (where that one came from); `available`, whether `command[0]` resolves on the server (the check of `POST /api/catalog/check`; any program of that name on the server's `PATH` counts, and a relative `command[0]` with a path separator counts without a lookup, since it resolves in the session's directory, which the server's own cannot stand for; the answer is kept 30 s per program, and the programs with no fresh answer are looked up together, at most 8 lookups at a time across all requests; a lookup that does not answer within 2 s (a `PATH` entry on a mount that stalls), or before the client goes away, counts as available, so the launch of such an agent is allowed and its spawn fails if the program is missing, and the lookup's answer is kept when it lands); and `site` when the agent has a website (an `https` URL: a built-in's, or the saved agent's); each agent also carries, when it has them, its `yolo` recipe `{args?, env?}` (its `env` values shown as they are: switches, not secrets), its `trustPrompt` and its `session` recipe `{startArgs?, newId?, idFrom?, idPolicy?, resumeArgs?, idPattern?, resumeNeedsCwd?}` (limits below); `yoloDefault` is the server's `yolo` setting, which a launch or a crew without `yolo` follows; each agent whose adapter has an identity probe (the real agent's `--version` line, checked against what it prints: Claude Code and Codex verified live, the others from their docs until the nightly recipes job confirms them) and whose program the lookup found at an absolute path also carries `identity` `{ran, pending?, identified, impostor?, verified, name?, version?, output?, error?}`: the program on the server run with its version flag (argv only, a spartan environment, 3 s, 4 KiB), its answer kept 10 min; `identified` with `version` when it is the agent, `impostor` when it is a known other program of that name (the Go migrations tool called goose; the agent's `available` is then `false`: it is not offered, and `POST /api/sessions` refuses it), `output` the first line it printed otherwise, `pending` when the probe is still under way (ask again), `verified` whether the adapter's expectation was checked against the real CLI (a verified probe that matches nothing means the program is not the agent; an unverified one leaves it unidentified and refuses nothing); an agent with `probe: false` is not probed |
 | `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source`, `replaces` and `available` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter`, `signal`, `site`, `yolo`, `trustPrompt` or `session` takes those of the agent it replaces, and a `signal` without `workingTitle` the replaced agent's `workingTitle`, and `"yolo": {}` or `"session": {}` says it has none; `***` is rejected for a key neither has; `site`, when present, must be an `https://` URL with a host name, a valid port if it has one, no user info and no white space, at most 200 bytes, a rule that also holds for the config's agents and for `catalog.json`; `400 invalid_agent` carries the validation message, an unknown `adapter` or a bad `site` included (the adapter check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
@@ -2328,10 +2329,45 @@ directory (with a `.gitignore` of `*`; refused when the commit tracks
 64 KiB: what is needed least is cut (the context blocks, the last first,
 then the inputs' summaries, then the
 checkpoint, then findings from the last, then the review's summary, the
-checks' commands, the inputs after the first, the attempt before's error
+checks' commands, the inputs after the first, the failed check's last
+output, the paths it changed and its command, the attempt before's error
 past 2,000 characters) into `.conductor/task-more.json` in full, which
 `task.json`'s `more` and `cut` (`the last N context blocks` among them) and
-a "Cut to fit" section of `task.md` name. With a context provider
+a "Cut to fit" section of `task.md` name. An attempt after one that
+failed at a check or a project manifest's verify step (DS2) is handed
+that receipt: `task.json`'s `previous.check`, `{receipt, run, task,
+attempt, phase, id, k, argv, subject, exit, signal?, timedOut, stable,
+changed?, tail?, logSha256, logBytes, log?, logDropped?}`, `receipt` the
+ledger's identity of the row (`<run>/<task>/<n>/<phase>/<id>/<k>`, its
+log the one the step log route above answers for the same run, task,
+attempt, id and k) and `run` the run whose ledger holds it (the source
+run's for a continuation's first attempt, never the continuation's),
+`subject` the commit it failed, `changed` at most 10 of the tracked paths
+it changed (each cut to 1,024 bytes, as its `check.finished` or
+`step.finished` event lists them, in the run as after a restart: both
+name `k`, a byte that is not UTF-8 is one U+FFFD as the event's JSON has
+it, and an event past the ledger's bound as JSON loses its untracked
+paths, then its words' control characters, then changed paths past these
+ten, before it would become a note), `tail` the last 2 KiB of
+its output as the ledger keeps it; and its whole log, at most 1 MiB, read
+from the ledger and written before the session starts as
+`.conductor/previous/check-<id>.log` (`log`, its size `logBytes` and its
+SHA-256 `logSha256`, the ledger's). A log the run's bound dropped is
+`logDropped`, with no file, its hash and tail kept. `task.md`'s "The
+attempt before" says which check failed on which commit, how, its last
+output in a fenced block, and where its log is. The receipt's identity,
+its outcome and its log's fields are never cut; `tail`, `changed` and
+`argv` go into `task-more.json`'s `previous.check`, in that order, before
+the error does. A receipt or a log the ledger cannot give (or a log that
+is not the one its SHA-256 names), or a log whose file cannot be
+written, fails the attempt at `receipt`, not counted, and pauses the
+run, as a package that cannot be handed over does: no attempt starts
+without the log it is told of, and the attempt after the pause is handed
+the receipt and the log. A receipt that passed is never handed, a verify
+step's included whose outcome the ledger took only with the next commit;
+one that failed is, a row from a version 4 ledger too, which keeps no
+words of its failure (its exit, signal, timeout or changed checkout
+say it). With a context provider
 registered (Program item C4), the attempt's context is asked for before
 its task files are written, at most 5 s (`ext.ContextWait`), and an
 attempt never fails or waits longer for it: `task.json` gains `context`,

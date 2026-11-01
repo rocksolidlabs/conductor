@@ -120,8 +120,8 @@ vuln: ## govulncheck against the Go vulnerability database (needs the network)
 test-network: ## the built-in agents' sites, on the network (nightly)
 	go test -race -count=1 -tags network -run Sites ./internal/catalog/
 
-test-recipes: ## the recipe flags against the CLIs on this machine (nightly; CONDUCTOR_RECIPES_REQUIRE names one that must be there)
-	go test -count=1 -tags recipes -run Recipe -v ./internal/catalog/
+test-recipes: ## the recipe and Brakeman flags against the CLIs on this machine (nightly; CONDUCTOR_RECIPES_REQUIRE names one that must be there)
+	go test -count=1 -tags recipes -run 'Recipe|TheCLI' -v ./internal/catalog/ ./internal/agents/
 
 lint: ## gofmt, go vet and the open-core rules (internal/opencore)
 	@out="$$(gofmt -l $(GO_FILES))"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi

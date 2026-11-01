@@ -355,6 +355,56 @@ commit's together as one entry of a client's queue, by the `run` event's
 path: a client that cannot keep up is dropped and starts over from a
 snapshot, never for one commit's size, and no webhook or sink sees it.
 
+The reads are the store's too. A list (`query.go`) is one statement: a
+materialized set of the matching ids and sort keys, counted for the
+total and sorted for the page, then the page's summaries, every value a
+client gave a bound parameter and the cursor the last row's sort keys and
+id. Search is FTS5 (`tickets_fts`, contentless): an entry of each
+ticket's own (key, title, description, criteria) and one of each live
+comment, rewritten in the transaction of the operation that changed them,
+so a comment's write re-indexes that comment alone; a query is words,
+every term quoted and the last a prefix, and a ticket matches when each
+term is in one of its entries. A saved view (`views.go`) is a list's
+filter and sort kept as the store checks them, of one project or of
+every project. A goroutine prunes the receipts past the newest 20,000
+daily; the `changes` log still answers a resend older than that.
+
+Closing is the store's rule, not the page's. Acceptance (`acceptance.go`)
+is a fact of its own, recorded for the ticket's owner and against its
+criteria as they stand; the close policy's state (`CloseState`: what the
+project requires, what is met, what is missing and why) is computed on
+every read and never stored, so an owner or criteria changed later read
+true at once. A move to `done` is the only change it gates, refused
+`close_policy` with what is missing; any other status follows any other.
+A `delivery` link is a URL a person adds; a `run` link names a run the
+engine holds or has a record of, one live ticket a run.
+
+Three clients reach the routes. The workbench's pages (below) and
+`conductor dispatch` use the workbench token, as the admin. An attempt
+reaches only its run's ticket, through two routes under the session
+(`GET /api/sessions/{id}/ticket`, `POST …/ticket/comments`, by
+`taskSession`) with its own `CONDUCTOR_NOTIFY_TOKEN` over HTTP, as every
+task tool does: it reads the ticket and comments as `agent:<member>`,
+nothing more (`conductor task ticket`, the MCP tools `ticket_read` and
+`ticket_comment`). The comment's operation finds the run's ticket inside
+its own transaction (`AddRunComment`), so a resend answers its receipt
+whatever the run's link says by then.
+
+In the web app, `useDispatch.ts` is the client and `utils/dispatchOrder.ts`
+the gate every page's state goes through, the run page's rule per thing
+shown: each request is numbered as it is sent and its reply applied only
+above the last applied, never below the `rev` shown, and a `snapshot`
+resets it, since a store restored from a backup has lower revisions.
+`useDispatchOps.ts` sends an operation with a minted op id, the `rev`
+shown as `expectedRev` and the display name, once more with the same id
+when the reply is lost; a page's edits go one after another, each made on
+the ticket as the one before left it. `useDispatchLive.ts` re-reads on the
+`dispatch` event: a ticket's page at once for its own ticket and after
+the 250 ms window for the rest of its project, a list on its project's
+events, nothing polled. A ticket's page embeds `RunTasks.vue`, the run
+page's own Tasks rows, for each linked run, and the run page asks
+`GET /api/dispatch/links?run=` for its ticket's chip.
+
 ## Switchyard
 
 A switchyard is the server in a mode (`config.Switchyard`): the signaling
@@ -847,6 +897,47 @@ the newest 20,000 are dropped, the log still answering a resend of an
 operation that ran. A database a newer Conductor wrote, or one that fails
 its check, opens read-only: its reads are answered, its writes refused with
 why, and it is never written.
+
+Export and restore (`internal/export`, Program item C6) move the data
+directory to another machine as one zip archive. `GET /api/export` writes it
+while the server runs: the runs' records first, then the ledger's snapshot
+(`VACUUM INTO` on its own connection, under its lock), then Dispatch's
+snapshot and the attachment files that snapshot's live rows require (read
+from the snapshot itself, never a walk of `attachments/`; a snapshot taken
+again, at most three, when a file it names went meanwhile), then the other
+documents and files (never a run's record written after the records' copy,
+which could lead the archived ledger), then the manifest, every file with
+its size and SHA-256. One table says what an export leaves out and a restore refuses:
+secrets, locks, temporary files, a provider's `ext/`; of two paths one name
+to a filesystem that folds case or trailing dots, the export takes the
+lower-case one and leaves the other out, so that what it writes restores. The installer
+(`export.Install`, under the `restore.lock` reservation its caller holds)
+takes an archive only into a data directory with no server data, checks the
+whole archive before it writes a byte (an attachment's file must hash to
+its name; no two paths are one name to a filesystem that folds case or
+trailing dots), stages it in `.restore-<random>`
+through an `os.Root` and syncs every file and directory (a sync that fails
+refuses it), checks the staged Dispatch database's attachments and
+the directory again, then renames each top-level entry into place with a
+rename that refuses a name already there, so nothing is renamed over, not
+even a name another writer made after the check (`hooks/` moved aside
+first; where the kernel has no such flag, a directory's name is taken with
+`mkdir` first and the staged directory renamed over that empty one), and
+syncs the data directory, a failure there reported. The next `serve` opens what was
+restored as its own: the ledger's recovery marks what ran at the export
+interrupted and `syncRecords` mends a record that lagged. `conductor
+export` asks the route, or with `--data-dir` reads a directory no server
+holds and that holds server data, under the reservation (read-only
+snapshots, the catalog resolved against `--config`, the archive never
+inside it);
+`conductor restore` installs a file, or with `--provider` the sync store's
+copy, into the directory `serve` would use, under one reservation from
+before the first byte to after the last rename; `runServe` takes the same
+reservation before `store.Open` and lets it go once `api.New` has returned,
+so a restore and a starting server never share a directory. The
+reservation holds `restore.lock` open and locked (flock, where the
+filesystem has locks) and names its holder: a file no process holds that a
+killed serve or export left is taken over, a cut-short restore's never.
 
 The data directory stays the truth when a sync store is registered: each
 commit of the store, the ledger and Dispatch is told after it lands
