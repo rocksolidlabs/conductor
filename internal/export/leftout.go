@@ -48,14 +48,15 @@ var leftOut = []leftRule{
 }
 
 // reserved says why the slash path rel, relative to the data directory,
-// is one leftOut names (itself, or a directory it is under), and whether
-// it is. rel is compared folded (fold), as a filesystem may resolve it.
+// is one leftOut names (itself, or a directory it is under, a file row's
+// path among them), and whether it is. rel is compared folded (fold), as
+// a filesystem may resolve it.
 func reserved(rel string) (string, bool) {
 	rel = fold(rel)
 	elems := strings.Split(rel, "/")
 	for _, r := range leftOut {
 		switch {
-		case r.file != "" && rel == r.file:
+		case r.file != "" && (rel == r.file || strings.HasPrefix(rel, r.file+"/")):
 			return r.why, true
 		case r.dir != "" && (rel == r.dir || strings.HasPrefix(rel, r.dir+"/")):
 			return r.why, true

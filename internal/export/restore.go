@@ -182,15 +182,19 @@ var (
 // the manifest within its bound and last, every entry listed with its
 // size and SHA-256 and no other, every path under data/ of [A-Za-z0-9._-]
 // elements (no "..", no backslash, nothing absolute), no link, no
-// duplicate, at most MaxFiles, no path leftOut names, no attachment's file
-// whose SHA-256 is not its name; ctx ends it, between reads too. It writes
+// duplicate, no two paths a filesystem may resolve to one name in different
+// spellings (fold), at most MaxFiles, no path leftOut names, no
+// attachment's file whose SHA-256 is not its name; ctx ends it, between
+// reads too. It writes
 // everything into <dir>/.restore-<random> through an os.Root (files 0600,
 // directories 0700), syncs it, checks that Dispatch's staged database
 // names no attachment the archive lacks, checks the directory is Fresh
 // still and that no top-level name it will rename is there (hooks/ aside,
 // moved into the staging directory first and removed with it), then
-// renames each top-level entry into place, never over anything. A failure
-// before the renames leaves the data directory as it was.
+// renames each top-level entry into place with a rename that refuses a
+// name already there (renameNoReplace), so a name another writer made
+// after the check is never renamed over. A failure before the renames
+// leaves the data directory as it was.
 func Install(ctx context.Context, res *Reservation, r io.ReaderAt, size int64) (Manifest, error) {
 	if res == nil || !res.held() {
 		return Manifest{}, errors.New("export: the data directory's reservation is not held: nothing installed")
@@ -278,7 +282,10 @@ func Install(ctx context.Context, res *Reservation, r io.ReaderAt, size int64) (
 		if beforeRename != nil {
 			beforeRename(name)
 		}
-		if err := root.Rename(staging+"/"+name, name); err != nil {
+		if err := renameNoReplace(root, staging, name); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				err = fmt.Errorf("%s was made in %s while the restore ran, and nothing was renamed over it: %w", name, dir, err)
+			}
 			return Manifest{}, fmt.Errorf("export: the restore stopped part way, at %s: %w; remove what it renamed into %s (and %s) to start over", name, err, dir, filepath.Join(dir, staging))
 		}
 	}
@@ -317,7 +324,8 @@ var hexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // checkArchive checks the archive's shape and its manifest, before any
 // byte of a file is read: the manifest last and within its bound, of
-// Format, every file valid, listed once, unreserved, an attachment's file
+// Format, every file valid, listed once, unreserved, no path or directory
+// of one an alias of another's in another spelling, an attachment's file
 // listed with the SHA-256 it is named for, its entry a regular file of the
 // size listed, and no entry the manifest does not list.
 func checkArchive(zr *zip.Reader) (Manifest, []entry, error) {
@@ -386,6 +394,21 @@ func checkArchive(zr *zip.Reader) (Manifest, []entry, error) {
 		for d := path.Dir(p); d != "."; d = path.Dir(d) {
 			if _, ok := listed[d]; ok {
 				return refuse("%s is a file, and %s is under it", d, p)
+			}
+		}
+	}
+	// No two paths, nor two of the directories they are under, are one
+	// name to a filesystem that folds case or trailing dots and two to
+	// the archive: staged, both would land in one place, and the renames
+	// would take one and then miss the other part way.
+	spelled := make(map[string]string, len(listed))
+	for p := range listed {
+		for q := p; q != "."; q = path.Dir(q) {
+			k := fold(q)
+			if was, ok := spelled[k]; !ok {
+				spelled[k] = q
+			} else if was != q {
+				return refuse("%s and %s are one name on a filesystem that folds case or trailing dots", min(was, q), max(was, q))
 			}
 		}
 	}

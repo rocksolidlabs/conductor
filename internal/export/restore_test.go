@@ -109,12 +109,13 @@ func TestRestoreRefuses(t *testing.T) {
 // credential, a lock or a provider's state nor name the restore's own
 // files, and each is refused before a byte is written. So is each in
 // another case or with a trailing dot, the names a filesystem may resolve
-// to the same file.
+// to the same file, and anything under a path the table names as a file.
 func TestRestoreRefusesReservedPaths(t *testing.T) {
 	for _, rel := range []string{export.LockFile, "tls/x", "ext/p/x", "workbench-token", "workbench-token.lock", "runs/owner.lock", "runs/managed.sqlite-wal",
 		"dispatch/dispatch.sqlite-shm", "crews/team.json.tmp", ".probe-1", ".restore-0123/catalog.json", "dispatch/attachments/tmp/up",
 		"Restore.Lock", "TLS/account.key", "tls./account.key", "Ext/provider/state.json", "Workbench-Token", "workbench-token.", "WORKBENCH-TOKEN.LOCK",
-		"runs/Owner.Lock", "runs/managed.SQLITE-WAL", "crews/team.json.TMP", ".Probe-1", ".RESTORE-0123/catalog.json", "dispatch/Attachments/TMP/up"} {
+		"runs/Owner.Lock", "runs/managed.SQLITE-WAL", "crews/team.json.TMP", ".Probe-1", ".RESTORE-0123/catalog.json", "dispatch/Attachments/TMP/up",
+		"runs/owner.lock/child", "workbench-token/child", "workbench-token.lock/child", "restore.lock/child", "Runs/Owner.Lock./child", "WORKBENCH-TOKEN/a/b"} {
 		refused(t, craft(t, [2]string{"crews/team.json", "{}"}, [2]string{rel, "x"}), "which no restore takes")
 	}
 }
@@ -397,4 +398,60 @@ func (c *cancelWithin) ReadAt(p []byte, off int64) (int, error) {
 		c.cancel()
 	}
 	return n, err
+}
+
+// Two paths a filesystem that folds case or trailing dots resolves to one
+// name, spelled two ways in the archive, are refused before a byte is
+// written: two files, two directories over files, a file and a directory.
+// Staged on such a filesystem, both would land in one place and the
+// renames would stop part way.
+func TestRestoreRefusesAliases(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"Crews/a.json", "crews/b.json"},
+		{"crews/Team.json", "crews/team.json"},
+		{"crews./a.json", "crews/b.json"},
+		{"runs/x/a.json", "runs/X./b.json"},
+		{"Links", "links/a.json"},
+	} {
+		refused(t, craft(t, [2]string{pair[0], "{}"}, [2]string{pair[1], "{}"}), "are one name on a filesystem that folds")
+	}
+}
+
+// A name made in the data directory after the last check, while the
+// restore runs, is never renamed over: a file made before the rename of
+// its name keeps its bytes, and an empty directory made before the rename
+// of its name stays empty; the restore stops there with fs.ErrExist.
+func TestRestoreNeverRenamesOverANameMadeMeanwhile(t *testing.T) {
+	b := craft(t, [2]string{"catalog.json", `{"agents":[]}`}, [2]string{"crews/team.json", "{}"})
+
+	dir := filepath.Join(t.TempDir(), "data")
+	export.SetBeforeRename(t, func(name string) {
+		if name == "catalog.json" {
+			put(t, dir, "catalog.json", "mine")
+		}
+	})
+	if _, err := restore(b, dir); !errors.Is(err, fs.ErrExist) || !strings.Contains(err.Error(), "nothing was renamed over it") {
+		t.Fatalf("the restore: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "catalog.json")); err != nil || string(got) != "mine" {
+		t.Fatalf("the file made meanwhile: %q %v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "crews")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("renamed past the refusal, crews: %v", err)
+	}
+
+	dir = filepath.Join(t.TempDir(), "data")
+	export.SetBeforeRename(t, func(name string) {
+		if name == "crews" {
+			if err := os.Mkdir(filepath.Join(dir, "crews"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	if _, err := restore(b, dir); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("the restore: %v", err)
+	}
+	if got, err := os.ReadDir(filepath.Join(dir, "crews")); err != nil || len(got) != 0 {
+		t.Fatalf("the directory made meanwhile: %v %v", got, err)
+	}
 }

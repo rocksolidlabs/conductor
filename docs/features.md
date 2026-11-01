@@ -3482,7 +3482,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   caller's reservation; every check before a byte is written; staged in
   `.restore-<random>` through an `os.Root`, files 0600, directories 0700;
   Dispatch's staged database checked for every file its live rows name;
-  renamed into place, never over anything, `hooks/` moved aside) and
+  no two paths one name to a filesystem that folds case or trailing dots;
+  renamed into place by a rename that refuses a name already there
+  (`RENAME_NOREPLACE` on Linux, `RENAME_EXCL` on macOS, `MoveFileEx`
+  without replace on Windows), never over anything, `hooks/` moved aside) and
   `Restore`. The ledger and Dispatch gain `Snapshot` (VACUUM INTO on the
   open connection, under the store's lock) and `SnapshotFile` (a
   read-only connection, no server running), the ledger `Held`, Dispatch
@@ -3500,7 +3503,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestRestoreRefusesAMissingAttachment`,
   `TestExportNeverTakesARecordAfterTheLedger`,
   `TestRestoreRefusesAnAttachmentNotItsName`,
-  `TestRestoreCancelledWithinAnEntry`; the ledger's
+  `TestRestoreCancelledWithinAnEntry`, `TestRestoreRefusesAliases`,
+  `TestRestoreNeverRenamesOverANameMadeMeanwhile`, `TestRenameByHand`; the ledger's
   `TestSnapshotWhileWriting`, `TestSnapshotFileReadOnly`, `TestHeld`;
   Dispatch's `TestSnapshot`, `TestSnapshotFile`, `TestSnapshotHashes`;
   the API's `TestExportRoute`, `TestExportCutShortFails`. The by-hand export and restore on two
