@@ -34,7 +34,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	}
 	tok := presentedToken(r, true)
 	open := tok == "" && s.cfg.Switchyard.Enabled && s.cfg.Switchyard.OpenHosts
-	if !open && !s.hostTokenOK(tok) {
+	if !open && !s.hostAllowed(r, tok) {
 		if !s.limiter.allow(clientKey(r)) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 			return

@@ -241,7 +241,9 @@ func (s *Server) guard(kind, name string) *extGuard {
 
 // extFailed notes a failed call of the provider name of kind, and logs it
 // at warn when its last log is a minute old or more, with how many failed
-// since, and detail (extText's, or the guard's own words; "" for none).
+// since, and detail (extText's, or the guard's own words; "" for none),
+// except for an identity provider's, whose failure is logged by its kind
+// and count alone.
 // It calls nothing of the provider's. The free default has been answered.
 func (s *Server) extFailed(kind, name, why, detail string) {
 	g := s.guard(kind, name)
@@ -259,7 +261,9 @@ func (s *Server) extFailed(kind, name, why, detail string) {
 	g.since, g.last = 0, now
 	g.mu.Unlock()
 	attrs := []any{"kind", kind, "provider", name, "failure", why, "failures", failures}
-	if detail != "" {
+	// An identity provider's words are never quoted: its error, its panic
+	// and its refused principal may carry the token it was given.
+	if detail != "" && kind != ext.KindIdentity {
 		attrs = append(attrs, "err", detail)
 	}
 	s.log.Warn("extension call failed: its free default answered", attrs...)
@@ -299,18 +303,19 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 	// the caller never runs a method of the provider's. invalid is valid's
 	// refusal, bounded the same way.
 	type result struct {
-		v       T
-		failed  string
-		invalid string
-		err     bool
-		late    bool
+		v        T
+		failed   string
+		invalid  string
+		err      bool
+		panicked bool
+		late     bool
 	}
 	done := make(chan result, 1)
 	go func() {
 		var r result
 		defer func() {
 			if p := recover(); p != nil {
-				r = result{err: true, failed: "panic: " + extText(p)}
+				r = result{err: true, panicked: true, failed: "panic: " + extText(p)}
 			}
 			// The slot is free before the answer is sent: a caller that has
 			// its answer may call again at once and find it.
@@ -350,7 +355,11 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 		}
 		return fallback
 	case r.err:
-		s.extFailed(kind, name, "error", r.failed)
+		why := "error"
+		if r.panicked {
+			why = "panic"
+		}
+		s.extFailed(kind, name, why, r.failed)
 		return fallback
 	case r.invalid != "":
 		s.extFailed(kind, name, "invalid", r.invalid)

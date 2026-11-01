@@ -433,7 +433,8 @@ first written is taken (`answer_ok`) and the other refused
 
 ## Host control connection
 
-`GET /ws/host?token=…` (host token or workbench token; on a switchyard with
+`GET /ws/host?token=…` (host token or workbench token, or an identity
+provider's principal with either grant, HTTP API; on a switchyard with
 `switchyard.openHosts`, none at all: an open host, limited per address in how
 often it registers, how many live sessions it holds and what it relays). A
 refusal is an HTTP error before the upgrade, `{"error": {code, message}}`:
@@ -1750,7 +1751,23 @@ served only under `/join/` and `/paste` and for its assets.
 
 Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <workbench token>`; a share token is also accepted where the
-table says so. JSON request bodies are limited to 64 KiB (2 MiB on the crew
+table says so. A token is read in this order: the workbench token, each host
+token, the share links, and only then, for a token none of them knows, the
+identity provider when the build has one registered (package `ext`; a plain
+build has none, so there the order ends at the links). An expired or revoked
+link is refused as a link and never asked of a provider, nor is a session's
+agent token. A provider's principal with the `admin` grant is admin wherever
+the workbench token is (on a switchyard, with the workbench token's lack of a
+role on the sessions published there), and one with the `host` grant is a
+host token's, at `GET /ws/host` too; a principal without a grant, an answer
+late past 1 s, an error or one out of bounds is an unknown token, `401` under
+the same rate limit. The admin's commands and Dispatch operations, and the
+reads of their receipts, are kept under the actor `admin` for the workbench
+token and `user:<subject>` for a provider's principal (its subject at most 48
+bytes): each finds only its own receipts, and a provider's subject can never
+be `admin`, Dispatch's `merge` or `agent:<member>`. A plan revision's
+approval stays the operator's: Dispatch refuses it `409 invalid` for any
+actor but `admin`. JSON request bodies are limited to 64 KiB (2 MiB on the crew
 routes, 128 KiB when adding a member to a run, 192 KiB on a Dispatch
 ticket's create and edit, where a body past its bound is `413 bound`) and
 unknown fields are rejected; a Dispatch attachment's upload is
@@ -2553,7 +2570,9 @@ the review's result.
 **Commands with receipts.** A person's change to a managed run (pause,
 unpause, cancel, retry, accept) is a command: the client mints a `commandId`
 (1 to 32 of letters, digits, `.`, `_`, `~` and `-`), the run keeps the
-outcome under the admin and that id in the same transaction as the change,
+outcome under the caller's actor (`admin` for the workbench token,
+`user:<subject>` for an identity provider's principal: HTTP API) and that id
+in the same transaction as the change,
 and the receipt comes back as `{receipt: {commandId, intent, revision,
 repeat?, status, error?, refusal?, task?, paused?}}`: `status` is `done` or
 `failed` (with `error` and `refusal`, for a command the run's state refused,
@@ -2724,7 +2743,8 @@ of letters, digits, `.`, `_`, `~` and `-`), `expectedRev`, the revision of
 the entity it acts on that the client expects (absent or 0 for none), and
 `byName`, the display name the store records as `by` (at most 60
 characters, no control character; never in the query string). The admin's
-operations are kept under the actor `admin`, a run member's under
+operations are kept under the actor `admin` (an identity provider's
+principal's under `user:<subject>`, HTTP API), a run member's under
 `agent:<member>` (An attempt's ticket, below). Each is one transaction: the
 receipt is looked up (the same `opId` with the same content answers with
 the receipt given before, `repeat: true`, and changes nothing; with other
