@@ -109,7 +109,7 @@ func (s *Server) installExtensions(p ext.Providers) {
 	}
 	for i, n := range p.Notifications {
 		g := &guardSink{s: s, name: name(ext.KindNotifications, i, n), p: n}
-		g.queue = newExtQueue(s, ext.KindNotifications, g.name, ext.SinkQueue, n.Notify)
+		g.queue = newExtQueue(s, ext.KindNotifications, g.name, ext.SinkQueue, g.deliver)
 		s.holdQueue(n, g.name, g.queue.begin)
 		s.exts.sinks = append(s.exts.sinks, g)
 	}
@@ -394,12 +394,16 @@ func extDeliver(ctx context.Context, s *Server, kind, name string, fn func(conte
 // order: a ring filled without waiting, whose oldest entry is dropped when
 // it is full (the first drop and every hundredth logged, as a webhook's
 // queue does), drained by one goroutine of its own once begun, each
-// delivery through extDeliver.
+// delivery through extDeliver. A webhook's queue is one too (webhooks.go):
+// direct, it delivers without extDeliver, a webhook bounding and logging
+// its own deliveries, and onDrop logs its drops as a webhook's.
 type extQueue[T any] struct {
 	s       *Server
 	kind    string
 	name    string
 	deliver func(context.Context, T) error
+	direct  bool                 // deliver is called as it is, with the drain's context
+	onDrop  func(dropped uint64) // logs a drop; nil for the extension line
 
 	mu      sync.Mutex
 	ring    []T // n entries from head
@@ -436,6 +440,10 @@ func (q *extQueue[T]) push(v T) {
 	default:
 	}
 	if dropped > 0 && (dropped == 1 || dropped%100 == 0) {
+		if q.onDrop != nil {
+			q.onDrop(dropped)
+			return
+		}
 		q.s.log.Warn("extension queue full: dropped the oldest entry", "kind", q.kind, "provider", q.name, "dropped", dropped)
 	}
 }
@@ -496,6 +504,10 @@ func (q *extQueue[T]) run(ctx context.Context) {
 				return
 			case <-q.wake:
 			}
+			continue
+		}
+		if q.direct {
+			_ = q.deliver(ctx, v)
 			continue
 		}
 		_ = extDeliver(ctx, q.s, q.kind, q.name, func(ctx context.Context) error { return q.deliver(ctx, v) })
@@ -644,6 +656,9 @@ type guardSink struct {
 
 	eventsOnce sync.Once
 	events     []string
+	// known is what events takes, once read (sinkFilter, notify.go): nil
+	// until then.
+	known atomic.Pointer[sinkFilter]
 }
 
 func (g *guardSink) Name() string { return g.name }
@@ -651,9 +666,10 @@ func (g *guardSink) Name() string { return g.name }
 // Events answers what the sink takes, as a copy, or nothing (an empty list,
 // not nil, which would take everything) when the call fails or is late.
 // The provider is asked once, at its first call (its Start's supervisor,
-// which decides from it whether the provider may send notices, or C3's
-// wiring), and every call after answers that same list, so what a sink
-// takes and whether its provider may send notices never disagree.
+// which decides from it whether the provider may send notices, or its
+// queue's first delivery, notify.go), and every call after answers that
+// same list, so what a sink takes and whether its provider may send
+// notices never disagree.
 func (g *guardSink) Events() []string { return g.eventsWithin(context.Background()) }
 
 // eventsWithin is Events, its one ask of the provider ending with ctx too.
@@ -666,6 +682,7 @@ func (g *guardSink) eventsWithin(ctx context.Context) []string {
 			}
 			return append([]string{}, evs...), nil
 		})
+		g.known.Store(newSinkFilter(g.events))
 	})
 	return copyOrNil(g.events)
 }
