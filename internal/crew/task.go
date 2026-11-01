@@ -724,7 +724,8 @@ func giveUp() {}
 
 // writable is events as the ledger takes them: an event whose payload
 // encodes to more than ledger.MaxPayload becomes a note of its size (with
-// its task and attempt, when it names them), which always fits.
+// what of a receipt's identity it names: its task, attempt, check or id,
+// phase and k), which always fits.
 func writable(events []event) []event {
 	out, cloned := events, false
 	for i, ev := range events {
@@ -739,7 +740,7 @@ func writable(events []event) []event {
 		if err != nil {
 			note = map[string]any{"unencodable": session.CleanMessage(err.Error())}
 		}
-		for _, k := range []string{"task", "attempt", "check"} {
+		for _, k := range []string{"task", "attempt", "check", "phase", "id", "k"} {
 			if v, ok := ev.payload[k]; ok {
 				note[k] = v
 			}
@@ -1707,7 +1708,8 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// With a package (a run launched from a ticket), its files go beside
 	// them: one that cannot be handed over fails the attempt at "package",
 	// uncounted, and pauses the run, since every attempt would fail the
-	// same way until a person looks.
+	// same way until a person looks. The receipt of a check that failed
+	// the attempt before is read the same way (at "receipt").
 	md, js, more, log, err := e.taskFile(ctx, r, a, tr, blocks)
 	if err == nil {
 		err = writeTaskFiles(ctx, a.worktree, r.prefix, md, js, more, r.pkg, e.openPackageFile, log)
@@ -1715,9 +1717,16 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	if err != nil {
 		release()
 		var pe *packageError
-		if errors.As(err, &pe) {
+		var re *receiptError
+		switch {
+		case errors.As(err, &pe):
 			fail("package", err, false, true)
-		} else {
+		case errors.As(err, &re):
+			// The receipt of the check that failed the attempt before,
+			// or its log, could not be read: not counted, and the run
+			// paused, so the attempt after the pause is handed them.
+			fail(receiptStage, err, false, true)
+		default:
 			fail("task file", err, false, false)
 		}
 		return

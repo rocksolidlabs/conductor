@@ -54,6 +54,11 @@ type fakeLedger struct {
 	// dropLogs, when set, drops every check's log as the ledger does past
 	// the run's bound (ledger.MaxRunLogs).
 	dropLogs bool
+	// failCheckLog, when set, is the error of the next CheckLog, once;
+	// corruptLog, when set, has the next CheckLog give a log that is not
+	// the one its hash names, once.
+	failCheckLog error
+	corruptLog   bool
 }
 
 // matches reports whether an event is named by spec.
@@ -182,8 +187,16 @@ func (l *fakeLedger) lastChecks(runID, taskID string, n int) []ledger.CheckRow {
 func (l *fakeLedger) CheckLog(ctx context.Context, runID, taskID string, n int, id string, k int) (ledger.CheckRow, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if err := l.failCheckLog; err != nil {
+		l.failCheckLog = nil
+		return ledger.CheckRow{}, false, err
+	}
 	for _, c := range l.lastChecks(runID, taskID, n) {
 		if c.ID == id && c.K == k {
+			if l.corruptLog {
+				l.corruptLog = false
+				c.Log = append(slices.Clone(c.Log), 'x')
+			}
 			c.LogBytes = int64(len(c.Log))
 			return c, true, nil
 		}

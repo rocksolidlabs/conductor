@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
@@ -169,7 +170,12 @@ func wantReceipt(t *testing.T, c *TaskCheck, runID string, row ledger.CheckRow) 
 // opened again and the continuation's attempt 2.
 func failAndContinue(t *testing.T, ch Check) (string, ledger.CheckRow, *ledger.Ledger, TaskState) {
 	t.Helper()
-	dir := newRepo(t)
+	return failAndContinueIn(t, newRepo(t), ch)
+}
+
+// failAndContinueIn is failAndContinue in the repository dir.
+func failAndContinueIn(t *testing.T, dir string, ch Check) (string, ledger.CheckRow, *ledger.Ledger, TaskState) {
+	t.Helper()
 	ldir := t.TempDir()
 	ld, err := ledger.Open(ldir)
 	if err != nil {
@@ -445,4 +451,149 @@ func TestAContinuationsFirstAttemptGetsTheFailedCheck(t *testing.T) {
 	if f.Previous.Attempt != 1 || f.Previous.Stage != "check unit" || !strings.Contains(md, "Attempt 1 failed at check unit") || !strings.Contains(md, "Its receipt in the ledger is "+c.Receipt) {
 		t.Fatalf("the continuation's attempt before: %+v\n%s", f.Previous, md)
 	}
+}
+
+// A receipt or a log the ledger cannot give the attempt after a failed
+// check (its error, or a log that is not the one its SHA-256 names) fails
+// that attempt at "receipt", not counted, and pauses the run, as a package
+// that cannot be handed over does: unpaused, the attempt after it is
+// handed the receipt and its whole log, with one attempt more (the
+// independent review of #559).
+func TestAReceiptTheLedgerCannotGivePausesUncounted(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		set   func(l *fakeLedger)
+		words string
+	}{
+		{"its error", func(l *fakeLedger) { l.failCheckLog = errors.New("disk gone") }, "the ledger could not give the log of the receipt %s: disk gone"},
+		{"a log not its hash's", func(l *fakeLedger) { l.corruptLog = true }, "the log of the receipt %s is not the one its SHA-256 names"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, fl, l := managedEngine(t)
+			l.mu.Lock()
+			tc.set(l)
+			l.mu.Unlock()
+			build := work("build", "lead")
+			build.Checks = []Check{shStep("unit", fiveKiB)}
+			run := launchManaged(t, e, repoCrew(dir, build))
+			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			commitResult(t, e, a, "built.txt", "b\n", "built")
+			unit := l.rowWhen(t, run.ID, "build", 1, "unit", 1, func(c ledger.CheckRow) bool { return c.State == ledger.CheckFinished })
+			words := fmt.Sprintf(tc.words, run.ID+"/build/1/check/unit/1")
+			row := l.attemptWhen(t, run.ID, "build", 2, failedRow)
+			if row.Stage != receiptStage || row.Error != words || row.SessionID != "" {
+				t.Fatalf("attempt 2: %+v", row)
+			}
+			if l.eventAt(run.ID, "attempt.failed", func(p map[string]any) bool {
+				return p["attempt"] == 2 && p["stage"] == receiptStage && p["uncounted"] == true
+			}) < 0 {
+				t.Fatalf("attempt 2's failure is not uncounted: %v", l.payloads(run.ID, "attempt.failed"))
+			}
+			why := "attempt 2 could not be handed the receipt of the check that failed the attempt before: " + words
+			waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused && r.PausedWhy == why })
+			if got := fl.launched(); len(got) != 1 {
+				t.Fatalf("sessions started: %v", got)
+			}
+			if err := e.PauseRun(t.Context(), run.ID, false); err != nil {
+				t.Fatal(err)
+			}
+			a3 := attemptN(t, e, run.ID, "build", 3)
+			c, md := previousCheckOf(t, a3)
+			wantReceipt(t, c, run.ID, unit)
+			if got := logFileOf(t, a3, c); !bytes.Equal(got, unit.Log) {
+				t.Fatalf("the log file: %d bytes, the row's %d", len(got), len(unit.Log))
+			}
+			_, f := taskFileOf(t, a3)
+			if f.MaxAttempts != maxAttemptsPerTask+1 || f.Previous.Attempt != 1 || f.Unusable == nil || f.Unusable.Attempt != 2 || f.Unusable.Stage != receiptStage || f.Unusable.Error != words {
+				t.Fatalf("attempt 3's attempts before: max %d, %+v, %+v", f.MaxAttempts, f.Previous, f.Unusable)
+			}
+			if !strings.Contains(md, "Attempt 2 could not start: it failed at receipt: "+words+". Conductor could not read from the ledger the receipt") {
+				t.Fatalf("attempt 3's task.md:\n%s", md[strings.Index(md, "## The attempt before"):])
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// The paths a failed check changed reach the next attempt the same in the
+// run as read back from its finished event after a restart, whatever they
+// are made of (the reviews of #559): a path that is not valid UTF-8 has
+// each such byte replaced as encoding/json writes it, before it is cut,
+// and a list that is small in bytes but large as JSON (each "&" six bytes)
+// keeps the event within the ledger's bound with its k and its paths,
+// never a note that names neither.
+func TestTheChangedPathsHandedAreTheEventsWhateverTheirBytes(t *testing.T) {
+	t.Run("not valid UTF-8", func(t *testing.T) {
+		// Kept as the run keeps them (runCheck), and through a real
+		// ledger's event, read back as a continuation reads them.
+		raw := []string{"lat\xff\xfen.txt", "ok.txt", "\xff" + strings.Repeat("\xfe", 2000)}
+		dir := newRepo(t)
+		e, ld := sqlEngine(t)
+		build := work("build", "lead")
+		run := launchManaged(t, e, repoCrew(dir, build))
+		stopRun(t, e, run.ID)
+		p := map[string]any{"task": "build", "attempt": 1, "check": "unit", "k": 1, "changed": bounded(raw), "changedCount": len(raw), "error": "changed tracked files"}
+		fitFinished(p, raw)
+		evs := []event{{"check.finished", p}}
+		inRun := handedChanged(eventChanged(evs))
+		if _, err := ld.Transition(t.Context(), run.ID, func(tx *ledger.Tx) error { return tx.Event(evs[0].kind, evs[0].payload) }); err != nil {
+			t.Fatal(err)
+		}
+		back, err := SQLLedger(ld).CheckChanged(t.Context(), run.ID, "build", 1, "unit", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if read := handedChanged(back); !slices.Equal(inRun, read) {
+			t.Fatalf("in the run %q, read back %q", inRun, read)
+		}
+		if inRun[0] != "lat��n.txt" || len(inRun[2]) > maxHandedPath || !utf8.ValidString(inRun[2]) || !strings.HasPrefix(inRun[2], "��") {
+			t.Fatalf("the paths handed: %q", inRun)
+		}
+	})
+
+	t.Run("large as JSON", func(t *testing.T) {
+		// 50 tracked paths and 50 untracked of 160 bytes, within the
+		// lists' bounds in bytes, some 96 KiB as JSON together.
+		dir := newRepo(t)
+		var names []string
+		for i := range maxListed {
+			name := fmt.Sprintf("%02d", i) + strings.Repeat("&", 158)
+			names = append(names, name)
+			writeFile(t, filepath.Join(dir, name), "x\n")
+		}
+		runGit(t, dir, "add", "-A")
+		runGit(t, dir, "commit", "-qm", "ampersands")
+		want := names[:maxHandedChanged]
+		script := `for f in [0-9][0-9]'&'*; do echo y >> "$f"; echo u > "u$f"; done`
+
+		// In the run: attempt 2 is handed them as the event keeps them.
+		e, ld := sqlEngine(t)
+		build := work("build", "lead")
+		build.Checks = []Check{shStep("amp", script)}
+		run := launchManaged(t, e, repoCrew(dir, build))
+		a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+		commitResult(t, e, a, "built.txt", "b\n", "built")
+		a2 := attemptN(t, e, run.ID, "build", 2)
+		c, _ := previousCheckOf(t, a2)
+		if !slices.Equal(c.Changed, want) {
+			t.Fatalf("in the run: %d paths, %q", len(c.Changed), c.Changed)
+		}
+		row := receiptOf(t, ld, run.ID, "build", 1, "amp")
+		if got, err := SQLLedger(ld).CheckChanged(t.Context(), run.ID, "build", 1, "amp", row.K); err != nil || !slices.Equal(got, names) {
+			t.Fatalf("the event keeps %d paths (%v)", len(got), err)
+		}
+		stopRun(t, e, run.ID)
+
+		// After a restart: a continuation's first attempt, the same.
+		src, row2, ld2, b2 := failAndContinueIn(t, dir, shStep("amp", script))
+		c2, _ := previousCheckOf(t, b2)
+		wantReceipt(t, c2, src, row2)
+		if !slices.Equal(c2.Changed, want) {
+			t.Fatalf("after a restart: %d paths, %q", len(c2.Changed), c2.Changed)
+		}
+		if got, err := SQLLedger(ld2).CheckChanged(t.Context(), src, "build", 1, "amp", row2.K); err != nil || !slices.Equal(got, names) {
+			t.Fatalf("the restarted ledger's event keeps %d paths (%v)", len(got), err)
+		}
+	})
 }

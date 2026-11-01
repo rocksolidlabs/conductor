@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path"
 	"slices"
@@ -118,8 +119,11 @@ func failedAtCheck(a ledger.AttemptRow) (phase, id string, ok bool) {
 
 // failingReceipt is, of an attempt's receipts (rows, by id and k), the one
 // that failed it: the last finished run of the check or verify step its
-// stage names. None when the attempt did not fail at one, or the ledger
-// kept no finished row of it (its outcome refused).
+// stage names, when that run failed (its row has its failure's words). None
+// when the attempt did not fail at one, the ledger kept no finished row of
+// it (its outcome refused), or the run passed and the attempt failed at it
+// only because its outcome was not recorded then (verify keeps no receipt
+// in memory for that either).
 func failingReceipt(a ledger.AttemptRow, rows []ledger.CheckRow) (ledger.CheckRow, bool) {
 	phase, id, ok := failedAtCheck(a)
 	if !ok {
@@ -132,22 +136,67 @@ func failingReceipt(a ledger.AttemptRow, rows []ledger.CheckRow) (ledger.CheckRo
 			out, found = r, true
 		}
 	}
+	if !found || out.Error == "" {
+		return ledger.CheckRow{}, false
+	}
 	out.Log = nil
-	return out, found
+	return out, true
 }
 
 // handedChanged is what the next attempt is told of the paths a check
 // changed: the first maxHandedChanged as the check's finished event lists
-// them (bounded), each made valid UTF-8 as JSON keeps it and cut to
-// maxHandedPath bytes, so the list read back from the event after a
-// restart is the one kept in memory.
+// them, each made valid UTF-8 as JSON keeps it (jsonValid) and cut to
+// maxHandedPath bytes. In the run it is given the list as the event was
+// written (eventChanged), after a restart the list read back from it, so
+// the two are the same.
 func handedChanged(paths []string) []string {
 	var out []string
 	for _, p := range paths {
 		if len(out) == maxHandedChanged {
 			break
 		}
-		out = append(out, cutBytes(strings.ToValidUTF8(p, "�"), maxHandedPath))
+		out = append(out, cutBytes(jsonValid(p), maxHandedPath))
+	}
+	return out
+}
+
+// jsonValid is s as encoding/json writes it: each byte that is not part of
+// valid UTF-8 replaced by U+FFFD, one for each byte (strings.ToValidUTF8
+// gives one for a run of them, which a path read back from its event
+// would not match: the reviews of #559).
+func jsonValid(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && n == 1 {
+			b.WriteRune(utf8.RuneError)
+		} else {
+			b.WriteString(s[i : i+n])
+		}
+		i += n
+	}
+	return b.String()
+}
+
+// eventChanged is the changed paths of a check's or a verify step's
+// finished event as the ledger keeps them: of the payload writable leaves
+// (a note of one too large names none), through JSON as the ledger stores
+// it, so what the run hands the next attempt is what ledger.CheckChanged
+// reads back after a restart.
+func eventChanged(evs []event) []string {
+	if len(evs) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(writable(evs[:1])[0].payload["changed"])
+	if err != nil {
+		return nil
+	}
+	var out []string
+	if json.Unmarshal(b, &out) != nil {
+		return nil
 	}
 	return out
 }
@@ -170,21 +219,39 @@ type checkLog struct {
 	data []byte
 }
 
+// receiptStage is the stage of an attempt that could not be handed the
+// receipt of the check that failed the attempt before (previousLog): not
+// counted, and the run paused, as a package that cannot be handed over is,
+// so the attempt after the pause is handed the receipt and its log (the
+// independent review of #559).
+const receiptStage = "receipt"
+
+// receiptError is previousLog's error: the attempt fails at receiptStage.
+type receiptError struct{ err error }
+
+func (r *receiptError) Error() string { return r.err.Error() }
+func (r *receiptError) Unwrap() error { return r.err }
+
+func receiptErrorf(format string, args ...any) error {
+	return &receiptError{err: fmt.Errorf(format, args...)}
+}
+
 // previousLog reads the log of c's receipt from the ledger and fills in
 // what c says of it: its file, its size and its hash, or that the run's
 // bound dropped it (no file then, its hash and tail kept). A receipt the
 // ledger cannot give, or a log that is not the one its hash names, is the
-// error: the attempt is never started without the whole log it is told of.
+// error (a receiptError): the attempt is never started without the whole
+// log it is told of.
 func (e *Engine) previousLog(ctx context.Context, c *TaskCheck) (*checkLog, error) {
 	if !ValidTaskID(c.ID) {
-		return nil, fmt.Errorf("the failed check's id %q is not one a file can be named after", c.ID)
+		return nil, receiptErrorf("the failed check's id %q is not one a file can be named after", c.ID)
 	}
 	row, ok, err := e.ledger.CheckLog(ctx, c.Run, c.Task, c.Attempt, c.ID, c.K)
 	if err != nil {
-		return nil, fmt.Errorf("the ledger could not give the log of the receipt %s: %w", c.Receipt, err)
+		return nil, receiptErrorf("the ledger could not give the log of the receipt %s: %w", c.Receipt, err)
 	}
 	if !ok {
-		return nil, fmt.Errorf("the ledger has no receipt %s", c.Receipt)
+		return nil, receiptErrorf("the ledger has no receipt %s", c.Receipt)
 	}
 	c.LogSHA256 = row.LogSHA256
 	if row.LogDropped {
@@ -193,7 +260,7 @@ func (e *Engine) previousLog(ctx context.Context, c *TaskCheck) (*checkLog, erro
 	}
 	sum := sha256.Sum256(row.Log)
 	if hex.EncodeToString(sum[:]) != row.LogSHA256 {
-		return nil, fmt.Errorf("the log of the receipt %s is not the one its SHA-256 names", c.Receipt)
+		return nil, receiptErrorf("the log of the receipt %s is not the one its SHA-256 names", c.Receipt)
 	}
 	name := "check-" + c.ID + ".log"
 	c.LogBytes, c.Log = int64(len(row.Log)), path.Join(taskDir, previousDir, name)

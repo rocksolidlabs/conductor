@@ -283,10 +283,11 @@ type history struct {
 // worktree could not be made usable (steps.go), failed with no result at a
 // stage of the project manifest, or, for a run launched from a ticket, it
 // could not start as its plan revision approved, at "package" or "agent"
-// (launchStage). A continuation passes over it as the run that made it
-// did.
+// (launchStage), or it could not be handed the receipt of the check that
+// failed the attempt before (receiptStage). A continuation passes over it
+// as the run that made it did.
 func uncountedRow(a ledger.AttemptRow) bool {
-	return a.State == ledger.AttemptFailed && a.ResultCommit == "" && (manifestStage(a.Stage) || launchStage(a.Stage))
+	return a.State == ledger.AttemptFailed && a.ResultCommit == "" && (manifestStage(a.Stage) || launchStage(a.Stage) || a.Stage == receiptStage)
 }
 
 // manifestStage reports whether stage is a project manifest's: one of its

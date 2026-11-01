@@ -2318,7 +2318,11 @@ attempt, id and k) and `run` the run whose ledger holds it (the source
 run's for a continuation's first attempt, never the continuation's),
 `subject` the commit it failed, `changed` at most 10 of the tracked paths
 it changed (each cut to 1,024 bytes, as its `check.finished` or
-`step.finished` event lists them; both name `k`), `tail` the last 2 KiB of
+`step.finished` event lists them, in the run as after a restart: both
+name `k`, a byte that is not UTF-8 is one U+FFFD as the event's JSON has
+it, and an event past the ledger's bound as JSON loses its untracked
+paths, then its words' control characters, then changed paths past these
+ten, before it would become a note), `tail` the last 2 KiB of
 its output as the ledger keeps it; and its whole log, at most 1 MiB, read
 from the ledger and written before the session starts as
 `.conductor/previous/check-<id>.log` (`log`, its size `logBytes` and its
@@ -2328,9 +2332,13 @@ attempt before" says which check failed on which commit, how, its last
 output in a fenced block, and where its log is. The receipt's identity,
 its outcome and its log's fields are never cut; `tail`, `changed` and
 `argv` go into `task-more.json`'s `previous.check`, in that order, before
-the error does. A receipt or a log the ledger cannot give fails the
-attempt at `task file`, so no attempt starts without the log it is told
-of. With a context provider
+the error does. A receipt or a log the ledger cannot give (or a log that
+is not the one its SHA-256 names) fails the attempt at `receipt`, not
+counted, and pauses the run, as a package that cannot be handed over
+does: no attempt starts without the log it is told of, and the attempt
+after the pause is handed the receipt and the log. A receipt that passed
+is never handed, a verify step's included whose outcome the ledger took
+only with the next commit. With a context provider
 registered (Program item C4), the attempt's context is asked for before
 its task files are written, at most 5 s (`ext.ContextWait`), and an
 attempt never fails or waits longer for it: `task.json` gains `context`,

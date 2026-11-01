@@ -114,9 +114,9 @@ func TestAnUndoneChangesEventsAreNotWritten(t *testing.T) {
 // it cannot fail every commit after it; a path list is bounded by bytes.
 func TestAnOversizedEventBecomesANote(t *testing.T) {
 	big := strings.Repeat("<", ledger.MaxPayload)
-	out := writable([]event{{"check.finished", map[string]any{"task": "build", "attempt": 2, "check": "ok", "untracked": []string{big}}}, {"small", map[string]any{"task": "x"}}})
+	out := writable([]event{{"check.finished", map[string]any{"task": "build", "attempt": 2, "check": "ok", "k": 3, "untracked": []string{big}}}, {"small", map[string]any{"task": "x"}}})
 	note := out[0].payload
-	if out[0].kind != "check.finished" || note["oversized"] == nil || note["task"] != "build" || note["attempt"] != 2 || note["check"] != "ok" || note["untracked"] != nil {
+	if out[0].kind != "check.finished" || note["oversized"] == nil || note["task"] != "build" || note["attempt"] != 2 || note["check"] != "ok" || note["k"] != 3 || note["untracked"] != nil {
 		t.Fatalf("the oversized event: %+v", out[0])
 	}
 	if out[1].payload["task"] != "x" {

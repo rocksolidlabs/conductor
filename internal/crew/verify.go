@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -339,32 +340,89 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 	if step {
 		undo = nil
 	}
+	// The finished event, within the ledger's bound with the receipt's
+	// identity and the paths the next attempt is handed (fitFinished), and
+	// those paths as the event keeps them (eventChanged).
+	finished := event("finished", map[string]any{"exit": res.Exit, "timedOut": res.TimedOut, "stable": fin.Stable,
+		"changed": bounded(changed), "changedCount": len(changed), "untracked": bounded(untracked), "untrackedCount": len(untracked), "duration": res.Duration.String(), "error": words})
+	fitFinished(finished.events[0].payload, changed)
+	handed := eventChanged(finished.events)
 	if err := e.transact(context.Background(), r, func() tx {
-		out := event("finished", map[string]any{"exit": res.Exit, "timedOut": res.TimedOut, "stable": fin.Stable,
-			"changed": bounded(changed), "changedCount": len(changed), "untracked": bounded(untracked), "untrackedCount": len(untracked), "duration": res.Duration.String(), "error": words})
+		out := finished
 		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
 		return out
 	}, undo); err != nil {
 		what := "the ledger could not record the check's outcome"
 		if step {
 			what = "the ledger could not record the outcome of the step " + ch.ID
+			if words != "" {
+				// Its row and event kept for the next commit (no undo),
+				// which writes them before the attempt's failure: the
+				// receipt is the ledger's as the attempt's failure is, and
+				// the next attempt is handed it (Codex's review of #559).
+				e.keepFailed(r, a, fin, handed)
+			}
 		}
 		return stage, what + ": " + session.CleanMessage(err.Error()), true, false
 	}
 	if words != "" {
-		e.keepFailed(r, a, fin, changed)
+		e.keepFailed(r, a, fin, handed)
 		return stage, words, true, false
 	}
 	return "", "", true, true
 }
 
+// fitFinished keeps a check's or a verify step's finished payload p within
+// ledger.MaxPayload as JSON, so writable never makes it a note that drops
+// the receipt's k and the paths it changed (Codex's review of #559): the
+// lists are bounded in bytes, not as JSON, where a control character or a
+// byte that is not UTF-8 takes six. Past the bound the untracked paths go
+// first (their count kept), then the error's words are cleaned and cut
+// (session.CleanMessage), then the changed paths are cut to those the next
+// attempt is handed (handedChanged) with a mark of how many more, then
+// those, the last first. The identity (task, attempt, id or check, k) is
+// never touched.
+func fitFinished(p map[string]any, changed []string) {
+	fits := func() bool {
+		b, err := json.Marshal(p)
+		return err == nil && len(b) <= ledger.MaxPayload
+	}
+	if fits() {
+		return
+	}
+	if n, _ := p["untrackedCount"].(int); n > 0 {
+		p["untracked"] = []string{fmt.Sprintf("… and %d more", n)}
+		if fits() {
+			return
+		}
+	}
+	if w, ok := p["error"].(string); ok {
+		p["error"] = session.CleanMessage(w)
+		if fits() {
+			return
+		}
+	}
+	list := handedChanged(changed)
+	for {
+		out := list
+		if len(list) < len(changed) {
+			out = append(slices.Clone(list), fmt.Sprintf("… and %d more", len(changed)-len(list)))
+		}
+		p["changed"] = out
+		if fits() || len(list) == 0 {
+			return
+		}
+		list = list[:len(list)-1]
+	}
+}
+
 // keepFailed keeps on a the receipt that failed it, as the ledger has its
 // row (fin, its log left out: the next attempt reads that from the ledger)
-// with the tracked paths the check changed as its finished event lists
-// them, for the attempt after it (failedcheck.go).
+// with the tracked paths the check changed as its finished event keeps
+// them (eventChanged), for the attempt after it (failedcheck.go).
 func (e *Engine) keepFailed(r *run, a *attempt, fin ledger.CheckRow, changed []string) {
 	fin.Log = nil
-	fc := &failedCheck{run: r.id, row: fin, changed: handedChanged(bounded(changed))}
+	fc := &failedCheck{run: r.id, row: fin, changed: handedChanged(changed)}
 	e.mu.Lock()
 	a.failed = fc
 	e.mu.Unlock()
