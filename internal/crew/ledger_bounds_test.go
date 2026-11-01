@@ -280,7 +280,7 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 	unusable := &TaskUnusable{Attempt: 3, Stage: "setup " + strings.Repeat("s", 40), Error: strings.Repeat("u", 500)}
 	f := TaskFile{Task: "build", Attempt: 4, MaxAttempts: 4, Member: "lead", Kind: TaskWork,
 		Goal: strings.Repeat("<", maxGoal), Role: strings.Repeat("<", maxPrompt), Instructions: strings.Repeat("<", maxInstructions),
-		Start: strings.Repeat("b", 40), Inputs: inputs, Checks: checks, Manifest: manifest, Unusable: unusable,
+		Start: strings.Repeat("b", 40), Inputs: inputs, Checks: checks, Manifest: manifest, Unusable: unusable, Ticket: worstTicket(), ticketTitle: strings.Repeat("<", maxTicketTitle),
 		Previous:   &TaskPrevious{Attempt: 1, State: ledger.AttemptFailed, Stage: "check c0", Error: strings.Repeat("e", 40<<10), Checkpoint: strings.Repeat("c", 64), Branch: "crew/run/build.1"},
 		Repair:     &TaskRepair{Review: "check", Attempt: 1, Commit: strings.Repeat("c", 40), Summary: strings.Repeat("r", maxSummary), Findings: findings},
 		Checkpoint: &Checkpoint{Done: strings.Repeat("d", maxCheckpointField), Remaining: strings.Repeat("m", maxCheckpointField), Commit: strings.Repeat("e", 40)}}
@@ -304,6 +304,9 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 	}
 	if kept.Goal != f.Goal || kept.Role != f.Role || kept.Instructions != f.Instructions || !strings.Contains(string(md), f.Instructions) {
 		t.Fatal("the crew's own text was cut")
+	}
+	if !reflect.DeepEqual(kept.Ticket, f.Ticket) || !strings.Contains(string(md), "## Your ticket\n\nThis run works for the ticket "+f.Ticket.Key) {
+		t.Fatalf("the ticket was cut: %+v", kept.Ticket)
 	}
 	if kept.Manifest == nil || !reflect.DeepEqual(*kept.Manifest, *manifest) || kept.Unusable == nil || *kept.Unusable != *unusable || kept.Previous == nil || kept.Previous.Checkpoint != f.Previous.Checkpoint ||
 		!strings.Contains(string(md), "The project manifest `conductor.manifest.json` as this commit holds it") || !strings.Contains(string(md), unusable.Error) ||

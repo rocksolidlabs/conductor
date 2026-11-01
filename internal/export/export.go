@@ -29,6 +29,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -119,7 +120,10 @@ var (
 // syncRecords mends one that lags), then Dispatch's snapshot and the
 // attachment files it requires (a snapshot taken again, at most three,
 // when one went meanwhile), then the other documents and files (never a
-// run's record the first copy did not take), then the manifest. A
+// run's record the first copy did not take), then the manifest. Of two
+// paths one name to a filesystem that folds case or trailing dots, which
+// no restore takes together, the archive holds the lower-case one (or the
+// first) and lists the other as left out (WhyName). A
 // document written meanwhile is one version or the other, never torn: the
 // store renames. Every file is read through an os.Root on the data
 // directory. Nothing is buffered whole; w gets the archive as it is made,
@@ -146,6 +150,7 @@ func Write(ctx context.Context, w io.Writer, src Source) (Manifest, error) {
 		tmp:  tmp,
 		zw:   zip.NewWriter(w),
 		done: map[string]bool{},
+		seen: map[string]string{},
 		m:    Manifest{Format: Format, Version: version.String(), CreatedAt: time.Now().UTC().Truncate(time.Second), Files: []File{}},
 	}
 	if err := e.write(); err != nil {
@@ -164,6 +169,9 @@ type writer struct {
 	m    Manifest
 	// done is the paths taken already (or left), which the walk skips.
 	done map[string]bool
+	// seen is every path taken, and every directory one is under, by its
+	// folded spelling (fold): a second spelling of one is an alias.
+	seen map[string]string
 }
 
 func (e *writer) write() error {
@@ -194,6 +202,7 @@ func (e *writer) records() error {
 	if err != nil {
 		return err
 	}
+	sortFolded(entries)
 	for _, d := range entries {
 		rel := runsPath + "/" + d.Name()
 		if !isRecord(rel, d) {
@@ -338,7 +347,7 @@ func (e *writer) rest() error {
 	// A data directory that holds the temporary directory (os.TempDir
 	// itself) does not export it.
 	tmpRel, _ := filepath.Rel(e.src.Dir, e.tmp)
-	return fs.WalkDir(e.root.FS(), ".", func(rel string, d fs.DirEntry, err error) error {
+	return walkFolded(e.root.FS(), func(rel string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -386,6 +395,13 @@ func (e *writer) rest() error {
 			}
 			return nil
 		}
+		if _, ok := e.alias(rel); ok {
+			e.leave(rel+slashIf(d.IsDir()), WhyName)
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		switch {
 		case d.IsDir():
 			return nil
@@ -398,7 +414,7 @@ func (e *writer) rest() error {
 				return fmt.Errorf("export: the catalog: %w", err)
 			}
 			_, err = e.add(rel, bytes.NewReader(b))
-			return err
+			return e.leaveAlias(rel, err)
 		}
 		return e.copyFile(rel)
 	})
@@ -434,6 +450,16 @@ func (e *writer) copyFile(rel string) error {
 	}
 	defer f.Close()
 	_, err = e.add(rel, f)
+	return e.leaveAlias(rel, err)
+}
+
+// leaveAlias lists rel as left out (WhyName) when err is add's refusal of
+// an alias, and is err otherwise.
+func (e *writer) leaveAlias(rel string, err error) error {
+	if errors.Is(err, errAlias) {
+		e.leave(rel, WhyName)
+		return nil
+	}
 	return err
 }
 
@@ -480,10 +506,20 @@ func (e *writer) addPath(rel, path string) error {
 	return err
 }
 
-// add writes r's bytes as the entry DataDir + rel and lists it.
+// errAlias is add's refusal of a path that is one a filesystem that folds
+// resolves to a path taken already, in another spelling.
+var errAlias = errors.New("another spelling of a path the archive holds")
+
+// add writes r's bytes as the entry DataDir + rel and lists it. A path
+// that is, or is under, another spelling of one taken already (alias) is
+// refused (errAlias) before an entry is made: Install refuses an archive
+// that holds both (checkArchive), so the archive holds the first.
 func (e *writer) add(rel string, r io.Reader) (File, error) {
 	if len(e.m.Files) >= MaxFiles {
 		return File{}, fmt.Errorf("export: the data directory holds more than %d files", MaxFiles)
+	}
+	if was, ok := e.alias(rel); ok {
+		return File{}, fmt.Errorf("export: %s: %w (%s)", rel, errAlias, was)
 	}
 	h := &zip.FileHeader{Name: DataDir + rel, Method: zip.Deflate, Modified: e.m.CreatedAt}
 	h.SetMode(0o600)
@@ -498,7 +534,86 @@ func (e *writer) add(rel string, r io.Reader) (File, error) {
 	}
 	file := File{Path: rel, Size: n, SHA256: hex.EncodeToString(sum.Sum(nil))}
 	e.m.Files = append(e.m.Files, file)
+	for q := rel; q != "."; q = path.Dir(q) {
+		e.seen[fold(q)] = q
+	}
 	return file, nil
+}
+
+// alias is the path taken already that rel, or a directory rel is under,
+// is another spelling of (one name to a filesystem that folds case or
+// trailing dots, two to the archive), and whether there is one.
+func (e *writer) alias(rel string) (string, bool) {
+	for q := rel; q != "."; q = path.Dir(q) {
+		if was, ok := e.seen[fold(q)]; ok && was != q {
+			return was, true
+		}
+	}
+	return "", false
+}
+
+// sortFolded orders a directory's entries by their folded names (fold),
+// the one that is its own folded spelling first among those that fold to
+// one name, then by name: of the spellings of one name, the export takes
+// the first and leaves the others, so a lower-case name, the one Conductor
+// writes, is the one taken.
+func sortFolded(entries []fs.DirEntry) {
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int {
+		an, bn := a.Name(), b.Name()
+		af, bf := fold(an), fold(bn)
+		if c := strings.Compare(af, bf); c != 0 {
+			return c
+		}
+		if ac, bc := an == af, bn == bf; ac != bc {
+			if ac {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(an, bn)
+	})
+}
+
+// walkFolded is fs.WalkDir from fsys's root, each directory's entries in
+// sortFolded's order instead of lexical order.
+func walkFolded(fsys fs.FS, fn fs.WalkDirFunc) error {
+	info, err := fs.Stat(fsys, ".")
+	if err != nil {
+		return fn(".", nil, err)
+	}
+	err = walkFoldedDir(fsys, ".", fs.FileInfoToDirEntry(info), fn)
+	if errors.Is(err, fs.SkipDir) || errors.Is(err, fs.SkipAll) {
+		return nil
+	}
+	return err
+}
+
+func walkFoldedDir(fsys fs.FS, name string, d fs.DirEntry, fn fs.WalkDirFunc) error {
+	if err := fn(name, d, nil); err != nil || !d.IsDir() {
+		if err == fs.SkipDir && d.IsDir() {
+			err = nil
+		}
+		return err
+	}
+	entries, err := fs.ReadDir(fsys, name)
+	if err != nil {
+		if err = fn(name, d, err); err != nil {
+			if err == fs.SkipDir {
+				err = nil
+			}
+			return err
+		}
+	}
+	sortFolded(entries)
+	for _, d1 := range entries {
+		if err := walkFoldedDir(fsys, path.Join(name, d1.Name()), d1, fn); err != nil {
+			if err == fs.SkipDir {
+				break
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // manifest writes the manifest, the archive's last entry, and ends the

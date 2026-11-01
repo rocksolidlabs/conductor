@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import type { ProjectReply, Tracker } from '~/composables/useDispatch'
+import type { CloseRequirement, ProjectReply, Tracker } from '~/composables/useDispatch'
 import type { DispatchOrder } from '~/utils/dispatchOrder'
-import { PROJECT_KEY_PATTERN } from '~/utils/dispatch'
+import { CLOSE_REQUIREMENTS, PROJECT_KEY_PATTERN, closeRequiresOf } from '~/utils/dispatch'
 import { dispatchFailureWords } from '~/composables/useDispatchOps'
 
 /**
  * New project (docs/plans/dispatch.md, "web/app"): its key (CND: one upper-case letter, then one to five upper-case letters or digits,
  * chosen now and never changed, its tickets' keys CND-1, CND-2…), its name, the folder of its repository (DirInput, completed from the
  * server's allowed roots; kept as text, used when something launches from it), and its tracker: Dispatch itself, or a pointer at
- * another one by its URL. The close policy is the store's default (the owner's acceptance for a project of Dispatch's, nothing for one
- * tracked elsewhere) until the project dialog can edit it. A refusal (a key taken) shows in the dialog. While the project is made the
+ * another one by its URL; and its close policy (PR-11), what a ticket needs before it is done: the owner's acceptance, a delivery link,
+ * both or neither, ticked as the store's default is (the owner's acceptance for a project of Dispatch's, nothing for one tracked
+ * elsewhere, which its tracker decides) until the person ticks otherwise; `verified` is not offered. A refusal (a key taken) shows in
+ * the dialog. While the project is made the
  * dialog stays: Escape, a click outside, its close button and Cancel do nothing until the store has answered, so that answer closes the
  * opening it was made from and opens the project's page, never closing a later opening, or leaving its draft for that page. The project
  * made is handed on by its key (`created`), its reply's project's, else its receipt's: a creation whose read after the commit failed is
@@ -27,6 +29,9 @@ const name = ref('')
 const cwd = ref('')
 const tracker = ref<Tracker>('native')
 const trackerUrl = ref('')
+/** The close policy ticked, and whether the person ticked it: until then it follows the tracker's default. */
+const closeRequires = ref<CloseRequirement[]>(['acceptance'])
+const policyTouched = ref(false)
 const error = ref('')
 const submitting = ref(false)
 
@@ -37,8 +42,19 @@ watch(open, (o) => {
   cwd.value = ''
   tracker.value = 'native'
   trackerUrl.value = ''
+  closeRequires.value = ['acceptance']
+  policyTouched.value = false
   error.value = ''
 })
+
+/** The store's default for the tracker, until the person ticks a requirement. */
+watch(tracker, (t) => {
+  if (!policyTouched.value) closeRequires.value = t === 'native' ? ['acceptance'] : []
+})
+function tick(r: CloseRequirement, on: boolean | 'indeterminate') {
+  policyTouched.value = true
+  closeRequires.value = closeRequiresOf(on === true ? [...closeRequires.value, r] : closeRequires.value.filter((x) => x !== r))
+}
 
 /** The key as typed, in upper case: a key is never lower case. */
 function onKey(v: string | number) {
@@ -64,6 +80,7 @@ async function submit() {
       ...(cwd.value.trim() ? { cwd: cwd.value.trim() } : {}),
       tracker: tracker.value,
       ...(tracker.value === 'external' ? { trackerUrl: trackerUrl.value.trim() } : {}),
+      closeRequires: closeRequiresOf(closeRequires.value),
     }
     const reply = await ops.run<ProjectReply>((op) => api.createProject({ ...op, ...body }), { thing: `project:${key.value}`, what: 'New project', raise: true })
     // Made: by the key its reply's project has, else the one its receipt names.
@@ -99,6 +116,19 @@ async function submit() {
         </UFormField>
         <UFormField v-if="tracker === 'external'" label="Its URL" name="trackerUrl" :error="urlProblem || undefined">
           <UInput v-model="trackerUrl" placeholder="https://github.com/acme/api/issues" class="w-full" aria-label="The tracker's URL" />
+        </UFormField>
+        <UFormField label="To close a ticket" name="closeRequires" hint="nothing ticked: nothing required" data-new-project-policy>
+          <div class="flex flex-col gap-2">
+            <UCheckbox
+              v-for="r in CLOSE_REQUIREMENTS"
+              :key="r.value"
+              :model-value="closeRequires.includes(r.value)"
+              :label="r.label"
+              :description="r.description"
+              :data-close-requirement="r.value"
+              @update:model-value="(on: boolean | 'indeterminate') => tick(r.value, on)"
+            />
+          </div>
         </UFormField>
         <button type="submit" class="hidden" />
       </form>

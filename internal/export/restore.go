@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -306,14 +307,17 @@ var (
 // attachment's file whose SHA-256 is not its name; ctx ends it, between
 // reads too. It writes
 // everything into <dir>/.restore-<random> through an os.Root (files 0600,
-// directories 0700), syncs it, checks that Dispatch's staged database
+// directories 0700), syncs it (a file or a directory that does not sync
+// refuses it, nothing renamed), checks that Dispatch's staged database
 // names no attachment the archive lacks, checks the directory is Fresh
 // still and that no top-level name it will rename is there (hooks/ aside,
 // moved into the staging directory first and removed with it), then
 // renames each top-level entry into place with a rename that refuses a
 // name already there (renameNoReplace), so a name another writer made
-// after the check is never renamed over. A failure before the renames
-// leaves the data directory as it was.
+// after the check is never renamed over, and syncs the data directory
+// last: a failure there is reported, the files renamed and maybe not
+// durable. A failure before the renames leaves the data directory as it
+// was.
 func Install(ctx context.Context, res *Reservation, r io.ReaderAt, size int64) (Manifest, error) {
 	if res == nil || !res.held() {
 		return Manifest{}, errors.New("export: the data directory's reservation is not held: nothing installed")
@@ -408,8 +412,11 @@ func Install(ctx context.Context, res *Reservation, r io.ReaderAt, size int64) (
 			return Manifest{}, fmt.Errorf("export: the restore stopped part way, at %s: %w; remove what it renamed into %s (and %s) to start over", name, err, dir, filepath.Join(dir, staging))
 		}
 	}
-	syncDir(dir)
+	serr := syncDirIn(root, ".", ".")
 	root.RemoveAll(staging)
+	if serr != nil {
+		return Manifest{}, fmt.Errorf("export: the restore renamed every file into %s, and syncing the directory failed (%w): what it renamed may not survive a crash or a power loss; check the disk, then move what the restore made away and restore again", dir, serr)
+	}
 	return m, nil
 }
 
@@ -609,8 +616,8 @@ func stagingName() (string, error) {
 
 // stage writes every entry under the staging directory through root
 // (files 0600, directories 0700, a file never over another), syncs each
-// file and directory, and returns the staging directory's top-level names,
-// sorted.
+// file and directory (a failure ends it), and returns the staging
+// directory's top-level names, sorted.
 func stage(ctx context.Context, root *os.Root, staging string, entries []entry) ([]string, error) {
 	sroot, err := root.OpenRoot(staging)
 	if err != nil {
@@ -651,12 +658,9 @@ func stage(ctx context.Context, root *os.Root, staging string, entries []entry) 
 			return nil, err
 		}
 	}
-	if runtime.GOOS != "windows" {
-		for d := range dirs {
-			if df, err := sroot.Open(filepath.FromSlash(d)); err == nil {
-				df.Sync()
-				df.Close()
-			}
+	for d := range dirs {
+		if err := syncDirIn(sroot, d, path.Join(staging, d)); err != nil {
+			return nil, fmt.Errorf("export: syncing the staged %s: %w", d, err)
 		}
 	}
 	slices.Sort(tops)
@@ -692,14 +696,35 @@ func checkAttachments(ctx context.Context, root *os.Root, dir, staging string) e
 	return nil
 }
 
-// syncDir makes a directory's entries durable where the platform can:
-// on Windows a directory is not opened for a sync.
-func syncDir(dir string) {
+// syncFault is the seam a test sets (export_test.go): run before each
+// directory's sync with its slash path in the data directory, an error it
+// returns is the sync's.
+var syncFault func(rel string) error
+
+// syncDirIn makes the entries of r's directory name (rel in the data
+// directory) durable, and says why not: an open or a sync that fails. On
+// Windows a directory is not opened for a sync (the renames write
+// through), and on a filesystem that has no sync for a directory (EINVAL,
+// errors.ErrUnsupported) there is none to ask for.
+func syncDirIn(r *os.Root, name, rel string) error {
 	if runtime.GOOS == "windows" {
-		return
+		return nil
 	}
-	if d, err := os.Open(dir); err == nil {
-		d.Sync()
-		d.Close()
+	d, err := r.Open(filepath.FromSlash(name))
+	if err != nil {
+		return err
 	}
+	if syncFault != nil {
+		err = syncFault(rel)
+	}
+	if err == nil {
+		err = d.Sync()
+	}
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	if errors.Is(err, syscall.EINVAL) || errors.Is(err, errors.ErrUnsupported) {
+		return nil
+	}
+	return err
 }

@@ -3477,15 +3477,19 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   and what was left out and why), the catalog resolved against the
   configuration (`ResolveCatalog`), so the archive's agents launch with no
   config; one table (`leftOut`) for what an export leaves out and a
-  restore refuses; `Fresh`, `Reserve`/`Release` (`restore.lock`,
+  restore refuses; of two paths one name to a filesystem that folds case
+  or trailing dots, the lower-case one taken and the other left out; `Fresh`, `Reserve`/`Release` (`restore.lock`,
   exclusive, 0600, the pid and the process's start), `Install` (under its
   caller's reservation; every check before a byte is written; staged in
-  `.restore-<random>` through an `os.Root`, files 0600, directories 0700;
+  `.restore-<random>` through an `os.Root`, files 0600, directories 0700,
+  every file and directory synced, a failed sync refusing it;
   Dispatch's staged database checked for every file its live rows name;
   no two paths one name to a filesystem that folds case or trailing dots;
   renamed into place by a rename that refuses a name already there
   (`RENAME_NOREPLACE` on Linux, `RENAME_EXCL` on macOS, `MoveFileEx`
-  without replace on Windows), never over anything, `hooks/` moved aside) and
+  without replace on Windows; elsewhere a file linked and a directory's name
+  taken with `mkdir` before the rename over it), never over anything,
+  `hooks/` moved aside, the data directory synced last, a failure reported) and
   `Restore`. The ledger and Dispatch gain `Snapshot` (VACUUM INTO on the
   open connection, under the store's lock) and `SnapshotFile` (a
   read-only connection, no server running), the ledger `Held`, Dispatch
@@ -3504,7 +3508,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestExportNeverTakesARecordAfterTheLedger`,
   `TestRestoreRefusesAnAttachmentNotItsName`,
   `TestRestoreCancelledWithinAnEntry`, `TestRestoreRefusesAliases`,
-  `TestRestoreNeverRenamesOverANameMadeMeanwhile`, `TestRenameByHand`; the ledger's
+  `TestRestoreNeverRenamesOverANameMadeMeanwhile`, `TestRenameByHand`,
+  `TestExportLeavesAliasesOut`, `TestRestoreDirectorySyncFails`; the ledger's
   `TestSnapshotWhileWriting`, `TestSnapshotFileReadOnly`, `TestHeld`;
   Dispatch's `TestSnapshot`, `TestSnapshotFile`, `TestSnapshotHashes`;
   the API's `TestExportRoute`, `TestExportCutShortFails`. The by-hand export and restore on two
@@ -3566,8 +3571,31 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   the two commands. The by-hand export on one machine and restore on
   another is C6's acceptance, after this merges (PR-17 records it).
 
-  PR-14 (#486): opencore, contributing: no entitlement call site outside
-  ext. Planned.
+  PR-14 (#486): `internal/opencore` and `CONTRIBUTING.md`: no entitlement
+  call site outside `ext`. `CONTRIBUTING.md`, Rules for code, says that code
+  of this repository never asks the entitlement source whether a feature is
+  allowed, only the paid providers do, outside it. The lint's rule
+  `entitlements` makes CI's go job fail on one: outside `ext/`, a file the
+  binary compiles naming `ext.EntitlementSource`, `ext.Entitlement`,
+  `ext.Entitlements`, `ext.RegisterEntitlements` or `ext/local`'s
+  `AllowAll` under any import name, dot-importing `ext` or `ext/local`, or
+  calling, or taking the value of, a method named `Entitled` whatever its
+  receiver (a provider reached through `Providers.All` and asserted to an
+  interface of the file's own is caught so). Unlike the other rules, which
+  still read imports and build constraints only, it parses the files it
+  reads whole. A `_test.go` file is no part of the binary and may name the
+  source, as `cmd/conductor`'s `TestPlainBuildRegistersNothing` and the
+  start-up's entitlement-only provider in `internal/api` do; the plan's
+  rule did not say so, and without it the module fails its own lint. Tests:
+  `TestEachRuleCatchesItsPlant` with the `entitlements` fixture (an
+  `Entitled` call through the registry's entries, beside `ext/` naming and
+  calling the source, a `_test.go` fake and a capabilities listing by
+  kind, the only problem the plant), `TestEntitlementsRule` (each of the
+  five names plainly imported and under other names, a dot import of
+  either, a blank one allowed, a call through parentheses, a method value,
+  a `windows`-only file read all the same, each problem's detail) and
+  `TestModuleKeepsTheRules` with the rule (the module clean), each checked
+  to fail with its part broken.
 
   PR-15 (#487): `internal/api`: the four ICE sites through the media
   provider (C8). `iceServersFor` (`media.go`) answers every configured

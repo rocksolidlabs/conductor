@@ -40,6 +40,7 @@ func TestEachRuleCatchesItsPlant(t *testing.T) {
 		{"go-mod", Problem{Rule: RuleGoMod, File: "go.mod", Line: 9}, "require github.com/rocksolidlabs/conductor-cloud"},
 		{"feature-tag", Problem{Rule: RuleFeatureTag, File: "premium.go", Line: 1}, `"premium"`},
 		{"ext-std", Problem{Rule: RuleExtStd, File: "ext/plant.go", Line: 9}, "github.com/rocksolidlabs/conductor/internal/session"},
+		{"entitlements", Problem{Rule: RuleEntitlements, File: "internal/feature/gate.go", Line: 18}, "calls a method named Entitled"},
 	} {
 		t.Run(tc.fixture, func(t *testing.T) {
 			problems, err := Check(filepath.Join("testdata", tc.fixture))
@@ -439,6 +440,99 @@ func TestCheckRefuses(t *testing.T) {
 				t.Errorf("Check = %q, nil; want an error", problems)
 			}
 		})
+	}
+}
+
+// TestEntitlementsRule: outside ext/, a file the binary compiles may not
+// name the entitlement source, its record, its register or accessor, or
+// its free default, under whatever name it imports ext or ext/local by;
+// may not dot-import either; and may not call, or take the value of, a
+// method named Entitled, whatever its receiver. Under ext/ and in a
+// _test.go file all of it is allowed, and so is the rest of ext: the
+// entitlement source's kind, the registry's entries, a blank import, a
+// field named like a forbidden name on a value that is not the package.
+// A file a plain build leaves out by its tags is read all the same.
+func TestEntitlementsRule(t *testing.T) {
+	ext, local := strconv.Quote(Module+"/ext"), strconv.Quote(Module+"/ext/local")
+	// The five names on lines 8 to 12 of a file that begins with imports,
+	// then three the rule lets through.
+	refs := "var (\n" +
+		"\t_ ext.EntitlementSource\n" +
+		"\t_ = ext.Entitlement{}\n" +
+		"\t_ = ext.RegisterEntitlements\n" +
+		"\t_, _ = ext.Entitlements()\n" +
+		"\t_ = local.AllowAll{}\n" +
+		"\t_ = ext.KindEntitlements\n" +
+		"\t_ []ext.Entry\n" +
+		"\t_ = local.Fill\n" +
+		")\n"
+	imports := "\nimport (\n\t" + ext + "\n\t" + local + "\n)\n"
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"go.mod":                 "module " + Module + "\n",
+		"ext/x.go":               "package ext\n" + imports + refs, // ext names itself as any package would
+		"ext/exttest/x.go":       "package exttest\n" + imports + refs + "var _ = x.Entitled\n",
+		"internal/api/x_test.go": "package api\n" + imports + refs + "var _ = x.Entitled\n",
+		// The five names, plainly imported.
+		"internal/a/plain.go": "package a\n" + imports + refs,
+		// Under other names; ext and local are then free names.
+		"internal/a/renamed.go": "package a\n\nimport (\n\tplans " + ext + "\n\tcheap " + local + "\n)\n\n" +
+			"var _ plans.EntitlementSource\n" + // 8
+			"var _ = cheap.AllowAll{}\n" + // 9
+			"var _ = func() int { ext := struct{ Entitlements int }{}; return ext.Entitlements }\n" +
+			"var _ = plans.Entry{}\n",
+		// A dot import of either, beside a blank one.
+		"internal/a/dot.go": "package a\n\nimport (\n\t. " + local + "\n\t_ " + ext + "\n\t. " + ext + "\n)\n",
+		// Entitled called (twice, through parentheses once) and taken as
+		// a value, on receivers of no known type; declared, it is not.
+		"internal/a/call.go": "package a\n\n" +
+			"type s interface{ Entitled(string) bool }\n" +
+			"func f(v s) bool {\n" +
+			"\tg := v.Entitled\n" + // 5
+			"\treturn (v.Entitled)(\"x\") && g(\"y\") &&\n" + // 6
+			"\t\tv.\n" +
+			"\t\t\tEntitled(\"z\")\n" + // 8
+			"}\n",
+		// Left out of a plain build by its tags, read all the same.
+		"internal/a/windows.go": "//go:build windows\n\npackage a\n\nimport " + ext + "\n\nvar _ ext.Entitlement\n",
+	})
+	got := rules(t, dir)
+	want := []string{
+		"internal/a/call.go:5: entitlements",
+		"internal/a/call.go:6: entitlements",
+		"internal/a/call.go:8: entitlements",
+		"internal/a/dot.go:4: entitlements",
+		"internal/a/dot.go:6: entitlements",
+		"internal/a/plain.go:8: entitlements",
+		"internal/a/plain.go:9: entitlements",
+		"internal/a/plain.go:10: entitlements",
+		"internal/a/plain.go:11: entitlements",
+		"internal/a/plain.go:12: entitlements",
+		"internal/a/renamed.go:8: entitlements",
+		"internal/a/renamed.go:9: entitlements",
+		"internal/a/windows.go:7: entitlements",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("problems =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// A problem says what was found: a call, through parentheses too, or a
+	// method value; the name as the file wrote it.
+	problems, err := Check(dir)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	details := map[string]string{
+		"internal/a/call.go:5":    "takes the method value of a method named Entitled",
+		"internal/a/call.go:6":    "calls a method named Entitled",
+		"internal/a/call.go:8":    "calls a method named Entitled",
+		"internal/a/dot.go:4":     "dot-imports " + Module + "/ext/local outside ext/",
+		"internal/a/renamed.go:8": "names plans.EntitlementSource (" + Module + "/ext)",
+		"internal/a/renamed.go:9": "names cheap.AllowAll (" + Module + "/ext/local)",
+	}
+	for _, p := range problems {
+		if d, ok := details[p.File+":"+strconv.Itoa(p.Line)]; ok && !strings.HasPrefix(p.Detail, d) {
+			t.Errorf("%s: detail %q, want it to begin %q", p.File, p.Detail, d)
+		}
 	}
 }
 
