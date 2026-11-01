@@ -245,10 +245,22 @@ func (s *Store) Load(name string, v any) (bool, error) {
 		return false, err
 	}
 	if err := DecodeStrict(b, v); err != nil {
-		return false, fmt.Errorf("store: parse %s: %w", name, err)
+		return false, &ParseError{Name: name, Err: err}
 	}
 	return true, nil
 }
+
+// ParseError is a load's error for a document that was read whole but
+// does not decode: empty, cut short, not JSON, or not v's shape. Any other
+// load error is the file system's (or a bound's), so a caller can tell a
+// damaged document from a disk that failed.
+type ParseError struct {
+	Name string
+	Err  error
+}
+
+func (e *ParseError) Error() string { return "store: parse " + e.Name + ": " + e.Err.Error() }
+func (e *ParseError) Unwrap() error { return e.Err }
 
 // ErrChanged is what LoadLimit's error wraps when the file it opened is not
 // the one it checked: another was renamed into its place in between, as a save
@@ -303,7 +315,7 @@ func (s *Store) LoadLimit(name string, v any, limit int64) (bool, error) {
 		return false, fmt.Errorf("store: %s is more than %d bytes: %w", name, limit, ErrTooLarge)
 	}
 	if err := DecodeStrict(b, v); err != nil {
-		return false, fmt.Errorf("store: parse %s: %w", name, err)
+		return false, &ParseError{Name: name, Err: err}
 	}
 	return true, nil
 }

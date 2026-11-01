@@ -269,6 +269,13 @@ func TestLoadRejectsEmptyAndTruncatedFiles(t *testing.T) {
 			if msg := err.Error(); !strings.Contains(msg, "c.json") || !strings.Contains(msg, tc.want) {
 				t.Fatalf("error should name the file and say %q: %v", tc.want, err)
 			}
+			var pe *ParseError
+			if !errors.As(err, &pe) || pe.Name != "c.json" {
+				t.Fatalf("a document that does not decode is no ParseError: %v", err)
+			}
+			if _, err := s.LoadLimit("c.json", &d, 64); !errors.As(err, &pe) {
+				t.Fatalf("LoadLimit: a document that does not decode is no ParseError: %v", err)
+			}
 		})
 	}
 }
@@ -340,7 +347,8 @@ func TestLoadLimit(t *testing.T) {
 	if ok, err := s.LoadLimit("c.json", &d, 64); !ok || err != nil || d.N != 12345 {
 		t.Fatalf("within: %v %v %+v", ok, err, d)
 	}
-	if ok, err := s.LoadLimit("c.json", &d, 8); ok || err == nil || !strings.Contains(err.Error(), "more than 8 bytes") {
+	var pe *ParseError
+	if ok, err := s.LoadLimit("c.json", &d, 8); ok || err == nil || !strings.Contains(err.Error(), "more than 8 bytes") || errors.As(err, &pe) {
 		t.Fatalf("over: %v %v", ok, err)
 	}
 	if ok, err := s.LoadLimit("gone.json", &d, 8); ok || err != nil {
@@ -354,7 +362,7 @@ func TestLoadLimit(t *testing.T) {
 	if err := os.Symlink(filepath.Join(s.Dir(), "c.json"), filepath.Join(s.Dir(), "link.json")); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := s.LoadLimit("link.json", &d, 64); ok || err == nil || !strings.Contains(err.Error(), "symbolic link") {
+	if ok, err := s.LoadLimit("link.json", &d, 64); ok || err == nil || !strings.Contains(err.Error(), "symbolic link") || errors.As(err, &pe) {
 		t.Fatalf("a link: %v %v", ok, err)
 	}
 }
