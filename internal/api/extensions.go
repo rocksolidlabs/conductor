@@ -370,6 +370,9 @@ var extCalling atomic.Pointer[func(kind, name string)]
 // logged as extCall logs one. A provider that ignores its context, or
 // whose error's text blocks, holds only the goroutine that delivers to it.
 func extDeliver(ctx context.Context, s *Server, kind, name string, fn func(context.Context) error) (err error) {
+	if f := extDeliverStarts.Load(); f != nil {
+		(*f)(kind, name)
+	}
 	cctx, cancel := context.WithTimeout(ctx, ext.DeliveryWait)
 	defer cancel()
 	defer func() {
@@ -390,6 +393,11 @@ func extDeliver(ctx context.Context, s *Server, kind, name string, fn func(conte
 	}
 	return nil
 }
+
+// extDeliverStarts, when a test sets it, is told the kind and provider
+// name of every extDeliver as it begins, before its context (and so its
+// ext.DeliveryWait) starts; nil outside tests.
+var extDeliverStarts atomic.Pointer[func(kind, name string)]
 
 // extQueue holds what is to be delivered to one provider of one kind, in
 // order: a ring filled without waiting, whose oldest entry is dropped when
@@ -668,6 +676,9 @@ type guardSink struct {
 
 	eventsOnce sync.Once
 	events     []string
+	// eventsWait bounds the one ask of the provider's Events; 0 is
+	// ext.StartWait. A test sets its own before the sink is first asked.
+	eventsWait time.Duration
 	// known is what events takes, once read (sinkFilter, notify.go): nil
 	// until then.
 	known atomic.Pointer[sinkFilter]
@@ -687,7 +698,11 @@ func (g *guardSink) Events() []string { return g.eventsWithin(context.Background
 // eventsWithin is Events, its one ask of the provider ending with ctx too.
 func (g *guardSink) eventsWithin(ctx context.Context) []string {
 	g.eventsOnce.Do(func() {
-		g.events = extCall(ctx, g.s, ext.KindNotifications, g.name, ext.StartWait, []string{}, nil, func(context.Context) ([]string, error) {
+		wait := ext.StartWait
+		if g.eventsWait > 0 {
+			wait = g.eventsWait
+		}
+		g.events = extCall(ctx, g.s, ext.KindNotifications, g.name, wait, []string{}, nil, func(context.Context) ([]string, error) {
 			evs := g.p.Events()
 			if evs == nil {
 				return nil, nil

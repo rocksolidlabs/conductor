@@ -867,7 +867,9 @@ func TestSinksInMainsOrder(t *testing.T) {
 
 // gatedEvents is a notification sink that is no ext.Starter and whose
 // Events waits for gate, entered closed as it is asked; it notes when
-// Events returned and the deadline of each Notify's context.
+// Events returned and the deadline of each Notify's context, and logs, in
+// order, Events returning ("events") and, through the test's hook, each
+// delivery's context starting ("deliver").
 type gatedEvents struct {
 	name     string
 	gate     chan struct{}
@@ -875,6 +877,7 @@ type gatedEvents struct {
 	returned atomic.Pointer[time.Time]
 
 	mu        sync.Mutex
+	order     []string
 	deadlines []time.Time
 }
 
@@ -884,6 +887,7 @@ func (s *gatedEvents) Events() []string {
 	<-s.gate
 	now := time.Now()
 	s.returned.Store(&now)
+	s.note("events")
 	return []string{"progress"}
 }
 func (s *gatedEvents) Notify(ctx context.Context, _ ext.Notification) error {
@@ -896,14 +900,41 @@ func (s *gatedEvents) Notify(ctx context.Context, _ ext.Notification) error {
 	s.mu.Unlock()
 	return nil
 }
+func (s *gatedEvents) note(step string) {
+	s.mu.Lock()
+	s.order = append(s.order, step)
+	s.mu.Unlock()
+}
 
 // A sink that is no ext.Starter has its Events read by its queue's first
 // delivery, and that read comes before the delivery's context starts: the
 // first Notify's context ends ext.DeliveryWait after Events returned, not
-// earlier, however long Events took.
+// earlier, however long Events took. The order is read off the code's own
+// seam (extDeliverStarts, told as a delivery's context starts), never off
+// how long Events was held, and the sink's Events is given the test's own
+// wait, so a slow machine cannot turn the held Events into a late one.
 func TestSinkFirstNotifyGetsFullDeliveryWait(t *testing.T) {
-	slow := &gatedEvents{name: "slow", gate: make(chan struct{}), entered: make(chan struct{})}
+	slow := &gatedEvents{name: "slow-events", gate: make(chan struct{}), entered: make(chan struct{})}
 	e := newNotifyEnv(t, nil, nil, slow)
+	var guarded *guardSink
+	for _, s := range e.srv.exts.sinks {
+		if g, ok := s.(*guardSink); ok && g.p == slow {
+			guarded = g
+		}
+	}
+	if guarded == nil {
+		t.Fatal("the sink is not behind the guard")
+	}
+	// Held until the test lets go, which its own wait bounds: the
+	// product's ext.StartWait is not what is tested here.
+	guarded.eventsWait = 2 * testWait
+	hook := func(kind, name string) {
+		if kind == ext.KindNotifications && name == guarded.name {
+			slow.note("deliver")
+		}
+	}
+	extDeliverStarts.Store(&hook)
+	t.Cleanup(func() { extDeliverStarts.Store(nil) })
 	// Let go before the server's cleanup waits for the sink's drain.
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(slow.gate) }) }
@@ -916,11 +947,12 @@ func TestSinkFirstNotifyGetsFullDeliveryWait(t *testing.T) {
 	case <-time.After(testWait):
 		t.Fatal("the sink's Events was never asked")
 	}
-	// Events takes a while: past a millisecond on the monotonic clock,
-	// however coarse it is, before it is let go.
-	asked := time.Now()
-	for time.Since(asked) < time.Millisecond {
-		runtime.Gosched()
+	// Events is held: no delivery's context has started.
+	slow.mu.Lock()
+	held := slices.Clone(slow.order)
+	slow.mu.Unlock()
+	if len(held) != 0 {
+		t.Fatalf("while Events was held the log was %q, want nothing", held)
 	}
 	release()
 	end := time.Now().Add(testWait)
@@ -939,6 +971,9 @@ func TestSinkFirstNotifyGetsFullDeliveryWait(t *testing.T) {
 	returned := *slow.returned.Load()
 	slow.mu.Lock()
 	defer slow.mu.Unlock()
+	if want := []string{"events", "deliver", "deliver"}; !slices.Equal(slow.order, want) {
+		t.Fatalf("the order was %q, want %q: Events returns before a delivery's context starts", slow.order, want)
+	}
 	for i, d := range slow.deadlines {
 		if d.IsZero() {
 			t.Fatalf("Notify %d had a context with no deadline", i)
