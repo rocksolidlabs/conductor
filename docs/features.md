@@ -3216,7 +3216,28 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestExtCallCopiesAnswers`, `TestExtCallValidInsideTheCall`,
   `TestExtCallCopiesInputs`.
 
-  PR-4 (#476): api, cli: ext.Host and the providers' Start. Planned.
+  PR-4 (#476): `internal/api` and `internal/cli`: `ext.Host` and the
+  providers' `Start`. `runServe` calls `Server.StartExtensions` after
+  `api.New` and before the listeners serve, on the maintenance context:
+  `Start` once per distinct value that is a Starter, each try with a
+  context and a `Host` of its own; until one succeeds the provider's
+  slots answer their free defaults without asking it and its queues
+  hold; a try that errs, panics or passes `StartWait` is given up (its
+  context cancelled, its `Host` refusing) and tried again after a backoff
+  of 1 s doubling to 5 minutes, never while the last try is unfinished.
+  The `Host` (`internal/api/exthost.go`): `Launch` through `launchSaved`,
+  moved out of `handleLaunchCrew` (the route and its tests unchanged),
+  with the launch noted in the run's log; `Submit` of a line into a
+  server session that shows no question, or of a line answering one
+  through its claim (a choice's keys and hosted sessions refused until
+  PR-9 and PR-10); `Notify` checked and refused for a provider whose sink
+  takes provider notices (no sink is handed one until PR-7); `DataDir`
+  under `<dataDir>/ext/`; `Log`. Tests: `TestHostLaunch`,
+  `TestHostLaunchManaged`, `TestHostSubmitLine`, `TestHostSubmitAnswer`,
+  `TestHostDataDir`, `TestHostNotify`, `TestStartOncePerValue`,
+  `TestStartRetriedUntilItSucceeds`, `TestStartQueuesHeldUntilStarted`,
+  `TestStartNeverOverlaps` (the clock driven through a seam, never
+  slept), `TestServeStartsProviders`.
 
   PR-5 (#477): opencore: the open-core rules as a lint, failing on a planted
   import. Planned.

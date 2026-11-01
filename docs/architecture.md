@@ -475,6 +475,48 @@ again: they are delivered the same way from lists that drop nothing (C6,
 C5). `Shutdown` ends the drains with the webhooks, what waits in them
 undelivered, and waits for their goroutines with its others (`track`).
 
+**Host and Start.** A provider that needs the server is an `ext.Starter`.
+`runServe` calls `Server.StartExtensions` once the server is made and
+before the listeners serve, with the maintenance context; `conductor
+host` starts none. It calls `Start` once per distinct registered value
+that is a Starter (one value in two slots is started once; one registered
+only as the entitlement source is started too), all at once, each try
+with a context and an `ext.Host` of its own (`internal/api/exthost.go`).
+Until a provider's `Start` has succeeded, every slot it holds answers its
+free default without asking it, its queues hold what reaches them, and
+it is `starting`. A try that errs, panics or has not returned within
+`StartWait` (5 s) is logged as the guard logs a failure (kind `start`)
+and given up: its context is cancelled, which revokes its `Host` (every
+call then answers `context.Canceled`, so goroutines a given-up try began
+cannot act). The next try begins after a backoff of 1 s doubling to 5
+minutes, for as long as the server runs, and only once the last try has
+returned: a `Start` that ignores its context holds one goroutine and
+nothing calls it again meanwhile; its late answer is ignored. Once a try
+succeeds its slots are the provider's from their next call and its
+queues drain, with no restart; the try's context ends with the server.
+
+The `Host` is the provider's only door into the app. `Launch` validates
+the request (a crew id, a label, a principal) and runs what `POST
+/api/crews/{id}/launch` runs (`launchSaved`: the label, the crews store,
+the managed checks, `Launchable`, `checkLaunch`, `resolveCwd`, the yolo
+choice, then the engine's `LaunchNamed`), notes "launched by <name>
+through <provider>" in the run's log and answers the run's id, crew and
+page URL on the public base; a switchyard and a server with no data
+directory answer `ErrUnsupported`, a crew not held `ErrNotFound`, a
+refusal `ErrRefused` with the route's words. `Submit` types a line into
+a server session only while it shows no question (`Local.Submit` with
+`UnlessWaiting`), or answers a question with a line through the
+question's claim, as a viewer's reply does (`ErrQuestionAnswered` once it
+no longer waits); a choice's keys and a hosted session answer
+`ErrUnsupported` until the decision router's seam. `Notify` checks a
+notice (500 bytes of message, 2,048 of URL, one line each) and types it
+`provider` from its sender; a provider one of whose sinks lists
+`TypeProvider` (read once, from `Events`, before any `Start`) may not
+send one (`ErrUnsupported`), so notices never loop between providers;
+until the notification seam no sink is handed one. `DataDir` is
+`<dataDir>/ext/<name>`, made 0700 through the store. `Log` is the
+server's logger naming the provider.
+
 ## Packages
 
 | Package | Responsibility |
