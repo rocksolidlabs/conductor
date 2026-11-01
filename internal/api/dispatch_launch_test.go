@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -732,14 +733,26 @@ func waitPaused(t *testing.T, e *testEnv, run, want string) {
 // after the launch, with the first attempt held before its session takes
 // the entry, fails that attempt at agent, uncounted, with no session, and
 // pauses the run with the words; the entry restored and the run unpaused,
-// the attempt starts. The same for a retry, for the entry deleted and
-// hidden (no longer in the catalog at all), and for a continuation after
+// the attempt starts. The same for a retry, for the saved entry deleted
+// (the configured one it replaced back, another command that takes no
+// extra arguments, while the member has some), for the entry hidden (no
+// longer in the catalog at all), and for a continuation after
 // a restart with the entry edited before its first attempt; a crew
 // launched from the Crews page, with no package, launches on the edited
 // entry as before.
 func TestAnAttemptStartsOnlyTheApprovedAgent(t *testing.T) {
-	l := newLaunchTest(t, nil, func(c *crew.Crew) { c.Members[0].AgentID = "bold" }, catalog.Agent{ID: "bold", Name: "bold", Command: []string{"/bin/true"}})
-	l.save(boldEntry(nil))
+	l := newLaunchTest(t, nil, func(c *crew.Crew) {
+		c.Members[0].AgentID = "bold"
+		c.Members[0].Args = []string{"--verbose"}
+	}, catalog.Agent{ID: "bold", Name: "bold", Command: []string{"/bin/true"}})
+	// The saved entry takes the member's extra arguments; the configured
+	// one it replaces does not.
+	entry := func(edit func(map[string]any)) map[string]any {
+		b := boldEntry(edit)
+		b["allowArgs"] = true
+		return b
+	}
+	l.save(entry(nil))
 	plan := l.approved(t, nil)
 	edited := func(b map[string]any) { b["command"] = []string{"/bin/sh", "-c", "echo edited; exec cat", "sh"} }
 	words := "the agent bold is not the one plan revision 2 approved: its catalog entry changed since"
@@ -749,48 +762,59 @@ func TestAnAttemptStartsOnlyTheApprovedAgent(t *testing.T) {
 	if spec := <-reached; spec.AgentSHA256 == "" || spec.Ref.RunID != runID {
 		t.Fatalf("the attempt's spec: %+v", spec)
 	}
-	l.save(boldEntry(edited))
+	l.save(entry(edited))
 	close(release)
 	if row := ledgerAttemptIn(t, l.srv, runID, "build", 1, ledger.AttemptFailed); row.Stage != "agent" || row.Error != words || row.SessionID != "" {
 		t.Fatalf("attempt 1: %+v", row)
 	}
 	waitPaused(t, l.testEnv, runID, words)
 	l.srv.launches.setSeams(func(g *launchGate) { g.attempt = nil })
-	l.save(boldEntry(nil))
+	l.save(entry(nil))
 	command(t, l.testEnv, runID, "unpause")
 	runningAttempt(t, l.testEnv, runID, "build", 2)
 
 	// A retry: the task cancelled, the entry edited, the task retried.
 	command(t, l.testEnv, runID, "tasks/build/cancel")
-	l.save(boldEntry(edited))
+	l.save(entry(edited))
 	command(t, l.testEnv, runID, "tasks/build/retry")
 	if row := ledgerAttemptIn(t, l.srv, runID, "build", 3, ledger.AttemptFailed); row.Stage != "agent" || row.Error != words || row.SessionID != "" {
 		t.Fatalf("the retry's attempt: %+v", row)
 	}
 	waitPaused(t, l.testEnv, runID, words)
 
-	// A removal: the entry deleted (the saved one, then the configured one
-	// it replaced, hidden) while the run is paused; unpaused, the attempt
-	// fails at agent the same way, uncounted, with no session; the entry
-	// brought back and the run unpaused, the attempt starts.
-	for range 2 {
-		if status := l.del("bold"); status != http.StatusNoContent {
-			t.Fatalf("delete bold: %d", status)
-		}
+	// A removal while the run is paused: the saved entry deleted, so the
+	// configured one it replaced is back (another command, no extra
+	// arguments taken, the member's refused only after the selection is),
+	// then that one hidden too. Unpaused each time, the attempt fails at
+	// agent the same way, uncounted, with no session; the entry brought
+	// back and the run unpaused, the attempt starts.
+	if status := l.del("bold"); status != http.StatusNoContent {
+		t.Fatalf("delete bold: %d", status)
+	}
+	if a, ok := l.srv.Catalog().Get("bold"); !ok || a.AllowArgs || !slices.Equal(a.Command, []string{"/bin/true"}) {
+		t.Fatalf("the configured bold: %+v %v", a, ok)
+	}
+	command(t, l.testEnv, runID, "unpause")
+	if row := ledgerAttemptIn(t, l.srv, runID, "build", 4, ledger.AttemptFailed); row.Stage != "agent" || row.Error != words || row.SessionID != "" {
+		t.Fatalf("the configured agent's attempt: %+v", row)
+	}
+	waitPaused(t, l.testEnv, runID, words)
+	if status := l.del("bold"); status != http.StatusNoContent {
+		t.Fatalf("hide bold: %d", status)
 	}
 	if _, ok := l.srv.Catalog().Get("bold"); ok {
 		t.Fatal("bold is still in the catalog")
 	}
 	command(t, l.testEnv, runID, "unpause")
-	if row := ledgerAttemptIn(t, l.srv, runID, "build", 4, ledger.AttemptFailed); row.Stage != "agent" || row.Error != words || row.SessionID != "" {
+	if row := ledgerAttemptIn(t, l.srv, runID, "build", 5, ledger.AttemptFailed); row.Stage != "agent" || row.Error != words || row.SessionID != "" {
 		t.Fatalf("the removed agent's attempt: %+v", row)
 	}
 	waitPaused(t, l.testEnv, runID, words)
 	l.expect(t, "POST", "/api/catalog/bold/unhide", nil, http.StatusOK, "")
-	l.save(boldEntry(nil))
+	l.save(entry(nil))
 	command(t, l.testEnv, runID, "unpause")
-	runningAttempt(t, l.testEnv, runID, "build", 5)
-	l.save(boldEntry(edited))
+	runningAttempt(t, l.testEnv, runID, "build", 6)
+	l.save(entry(edited))
 
 	// A continuation after a restart, the entry still edited.
 	l.expect(t, "POST", "/api/runs/"+runID+"/stop", nil, http.StatusOK, "")

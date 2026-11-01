@@ -127,6 +127,20 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		}
 		return nil, newAPIError(http.StatusBadRequest, "invalid_agent", "unknown agent id")
 	}
+	// Yolo: the launch's choice, else the server's.
+	yolo := s.cfg.Yolo
+	if req.Yolo != nil {
+		yolo = *req.Yolo
+	}
+	// An attempt of a run launched from a ticket starts only the agent its
+	// plan revision approved: the selection of this entry, the one the
+	// session is started from, with this launch's yolo choice. It is checked
+	// before anything else about the entry, so an entry that is not the
+	// approved one (another command that takes no extra arguments, say) is
+	// always that, never an ordinary refusal of the launch.
+	if req.agentSHA256 != "" && agentSelection(agent, yolo).SHA256 != req.agentSHA256 {
+		return nil, newAPIError(http.StatusConflict, agentChangedCode, "the agent "+agent.ID+"'s catalog entry is not the one its plan revision approved")
+	}
 	if len(req.Args) > 0 && !agent.AllowArgs {
 		return nil, newAPIError(http.StatusBadRequest, "args_not_allowed", "this agent does not accept extra arguments")
 	}
@@ -185,22 +199,12 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// environment under the agent's own, so a variable the agent sets keeps
 	// its value. The hooks are the assets `conductor serve` wrote at startup.
 	// What the request sets (a crew's GOAL) goes over both.
-	// Yolo: the launch's choice, else the server's; applied when the agent
-	// has a recipe, whose arguments follow the user's and whose environment
-	// goes over the agent's own, through the same filtered environment, never
-	// with Conductor's own variables. An agent with a trust override (Codex)
+	// Yolo, chosen above, is applied when the agent has a recipe, whose
+	// arguments follow the user's and whose environment goes over the
+	// agent's own, through the same filtered environment, never with
+	// Conductor's own variables. An agent with a trust override (Codex)
 	// trusts the launch's repository for this launch alone.
-	yolo := s.cfg.Yolo
-	if req.Yolo != nil {
-		yolo = *req.Yolo
-	}
 	applied := yolo && !agent.Yolo.Empty()
-	// An attempt of a run launched from a ticket starts only the agent its
-	// plan revision approved: the selection of this entry, the one the
-	// session is started from, with this launch's yolo choice.
-	if req.agentSHA256 != "" && agentSelection(agent, yolo).SHA256 != req.agentSHA256 {
-		return nil, newAPIError(http.StatusConflict, agentChangedCode, "the agent "+agent.ID+"'s catalog entry is not the one its plan revision approved")
-	}
 	extra, adapterEnv := agents.InjectFor(agent.Adapter, agents.HooksDir(s.cfg.DataDir), sig, applied)
 	// The agent's own session: resumed by its recipe, or named at launch when
 	// the recipe lets Conductor choose; its arguments go right after the
