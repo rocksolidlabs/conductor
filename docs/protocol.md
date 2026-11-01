@@ -2095,8 +2095,9 @@ KiB, which a test holds with every entry at its largest (a past bound is
   resume); `bounds` in bytes. A tool's description is its MCP
   `tools/list` entry's, at most 1 KiB, and is not repeated here. A route
   that needs self-service (`agents.selfService`: `form_crew`,
-  `add_member`, `run_status`, `link`) is listed only with it on, and for a
-  session only for a server session; one that launches or needs the
+  `add_member`, `run_status`, `link`) is listed only with it on, never on
+  a switchyard (whose sessions are all hosted), and for a session only
+  for a server session; one that launches or needs the
   ledger or Dispatch is not listed on a switchyard. The table holds the
   agent routes and tools, the guide's two routes, and the admin's
   operations a proposal may name: a run's pause, unpause, stop and resume;

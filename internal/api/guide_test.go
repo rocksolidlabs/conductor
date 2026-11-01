@@ -153,6 +153,7 @@ func TestEverySessionRouteIsInTheTable(t *testing.T) {
 		table[op.Method+" "+op.Path] = op
 	}
 	registered := map[string]bool{}
+	wild := regexp.MustCompile(`\{[a-zA-Z]+\}`)
 	for _, pattern := range muxPatterns(t, "/api/sessions/{id}") {
 		registered[pattern] = true
 		method, path, _ := strings.Cut(pattern, " ")
@@ -160,7 +161,7 @@ func TestEverySessionRouteIsInTheTable(t *testing.T) {
 		if method != http.MethodGet {
 			body = []byte("{}")
 		}
-		status, data, _ := e.callAs(t, tok, method, strings.ReplaceAll(regexp.MustCompile(`\{[a-zA-Z]+\}`).ReplaceAllString(strings.Replace(path, "{id}", sid, 1), "x"), "{$}", ""), body)
+		status, data, _ := e.callAs(t, tok, method, wild.ReplaceAllString(strings.Replace(path, "{id}", sid, 1), "x"), body)
 		if status == http.StatusUnauthorized {
 			continue
 		}
@@ -324,7 +325,7 @@ func TestASwitchyardAnswersItsOwnGuide(t *testing.T) {
 		t.Fatalf("host: %d %v", status, out)
 	}
 	_, _, out = guideOf(t, e, adminToken, "/api/guide?section=operations")
-	if got := opNames(t, out); !slices.Equal(got, []string{"report", "set_state", "ask", "link", "guide", "server_guide"}) {
+	if got := opNames(t, out); !slices.Equal(got, []string{"report", "set_state", "ask", "guide", "server_guide"}) {
 		t.Fatalf("the admin's operations %v", got)
 	}
 	h := dialFakeHost(t, e, "hosted-agent-token")

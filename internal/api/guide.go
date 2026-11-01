@@ -75,8 +75,9 @@ type opNeeds uint8
 const (
 	// needLauncher: a server that launches (not a switchyard).
 	needLauncher opNeeds = 1 << iota
-	// needSelfService: agents.selfService on and, for a session caller,
-	// a server session (a hosted session's folder is on its own machine).
+	// needSelfService: agents.selfService on, not a switchyard, and, for a
+	// session caller, a server session (a hosted session's folder is on
+	// its own machine).
 	needSelfService
 )
 
@@ -457,7 +458,9 @@ func (s *Server) reaches(c guideCaller, op Operation) bool {
 	if op.needs&needLauncher != 0 && s.cfg.Switchyard.Enabled {
 		return false
 	}
-	if op.needs&needSelfService != 0 && (!s.cfg.SelfService() || (c.Kind == "session" && !c.local)) {
+	// A switchyard's sessions are all hosted, whose folders are on their
+	// own machines: self-service reaches none of them.
+	if op.needs&needSelfService != 0 && (!s.cfg.SelfService() || s.cfg.Switchyard.Enabled || (c.Kind == "session" && !c.local)) {
 		return false
 	}
 	return true
