@@ -68,10 +68,21 @@ func TestTheHostAppliesTheAgentsOwnQuestion(t *testing.T) {
 			t.Fatalf("told %+v after the done", m)
 		}
 		// A forwarded needs_input without the mark is no question of the
-		// agent's: the done replaces it.
+		// agent's: the done replaces it. The question may be told once more
+		// before it (a change the session noted before the wait reaches the
+		// forwarder after the wait's report marked the attention untold:
+		// "at worst the same attention once more", onLocalChange), so the
+		// test waits for the wait's own message rather than the next one.
 		forward(proto.HostAttentionMsg{T: proto.HostAttention, State: "needs_input", Message: "Allow Bash?", Source: session.SourceAPI})
-		if m := next("a wait"); m.Ask {
-			t.Fatalf("a wait without the mark told marked: %+v", m)
+		for {
+			m := next("a wait")
+			if m.ID == q.ID && m.Ask && m.State == "needs_input" && m.Message == "Which database?" {
+				continue // the question told again, as it was
+			}
+			if m.Message != "Allow Bash?" || m.Ask {
+				t.Fatalf("a wait without the mark told %+v", m)
+			}
+			break
 		}
 		forward(proto.HostAttentionMsg{T: proto.HostAttention, State: "done", Source: session.SourceAPI})
 		if att := a.local.Info().Attention; att.State != session.AttentionDone {
