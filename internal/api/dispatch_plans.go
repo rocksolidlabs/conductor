@@ -542,7 +542,7 @@ func (s *Server) handleDispatchProposePlan(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	op := body.op()
+	op := body.op(r)
 	rc, found, err := ds.Replay(ctx, op, dispatch.IntentPlanPropose, dispatch.PlanProposeArgs{Key: key, PlanRequest: body.PlanRequest})
 	if err != nil || found {
 		s.writeOp(w, "plan revision", rc, err, true, "plan", s.planAfter(ctx, ds, ""))
@@ -856,7 +856,7 @@ func (s *Server) handleDispatchApprovePlan(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	op := body.op()
+	op := body.op(r)
 	rc, found, err := ds.Replay(ctx, op, dispatch.IntentPlanApprove, planApproveArgs{ID: id, TicketRev: body.TicketRev, Note: body.Note})
 	if err != nil || found {
 		s.writeOp(w, "plan revision", rc, err, false, "plan", s.planAfter(ctx, ds, id))
@@ -895,6 +895,6 @@ func (s *Server) handleDispatchWithdrawPlan(w http.ResponseWriter, r *http.Reque
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.WithdrawPlan(ctx, body.op(), id)
+	rc, err := ds.WithdrawPlan(ctx, body.op(r), id)
 	s.writeOp(w, "plan revision", rc, err, false, "plan", s.planAfter(ctx, ds, id))
 }

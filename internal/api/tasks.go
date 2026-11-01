@@ -303,7 +303,7 @@ func (s *Server) handlePause(w http.ResponseWriter, r *http.Request, paused bool
 	}
 	ctx, cancel := runContext(r)
 	defer cancel()
-	receipt, err := s.runs.Pause(ctx, runID, adminActor, cmd, paused)
+	receipt, err := s.runs.Pause(ctx, runID, actorOf(r), cmd, paused)
 	s.writeReceipt(w, runID, receipt, err)
 }
 
@@ -316,7 +316,7 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := runContext(r)
 	defer cancel()
-	receipt, err := s.runs.Cancel(ctx, runID, adminActor, cmd, taskID)
+	receipt, err := s.runs.Cancel(ctx, runID, actorOf(r), cmd, taskID)
 	s.writeReceipt(w, runID, receipt, err)
 }
 
@@ -328,7 +328,7 @@ func (s *Server) handleRetryTask(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := runContext(r)
 	defer cancel()
-	receipt, err := s.runs.Retry(ctx, runID, adminActor, cmd, taskID)
+	receipt, err := s.runs.Retry(ctx, runID, actorOf(r), cmd, taskID)
 	s.writeReceipt(w, runID, receipt, err)
 }
 
@@ -341,7 +341,7 @@ func (s *Server) handleAcceptTask(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := runContext(r)
 	defer cancel()
-	receipt, err := s.runs.Accept(ctx, runID, adminActor, cmd, taskID)
+	receipt, err := s.runs.Accept(ctx, runID, actorOf(r), cmd, taskID)
 	s.writeReceipt(w, runID, receipt, err)
 }
 

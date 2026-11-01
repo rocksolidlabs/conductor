@@ -53,8 +53,9 @@ func newTestEnvLogging(t *testing.T, mutate func(*config.Config), log *slog.Logg
 	return newTestEnvAgents(t, mutate, log, nil)
 }
 
-// newTestEnvAgents is newTestEnvLogging with extra agents in the catalog.
-func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logger, extra []catalog.Agent) *testEnv {
+// newTestEnvAgents is newTestEnvLogging with extra agents in the catalog,
+// its server made with opts.
+func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logger, extra []catalog.Agent, opts ...Option) *testEnv {
 	t.Helper()
 	// Resolved, as the server reports a session's cwd (resolveCwd): on
 	// macOS a temporary directory is under /var, a link to /private/var.
@@ -95,7 +96,7 @@ func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logge
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := New(cfg, cat, log, nil, st)
+	srv, err := New(cfg, cat, log, nil, st, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
