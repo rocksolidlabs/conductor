@@ -1,6 +1,7 @@
 package brakeman
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +40,43 @@ func decision(t *testing.T) Item {
 	}}
 }
 
+func comparison(t *testing.T) Item {
+	return Item{Kind: ItemComparison, Comparison: &Comparison{Title: "Options", Columns: []string{"Keep", "Drop"}, Rows: []Row{{Label: "Cost", Cells: []string{"low", "high"}}}, Evidence: []Ref{ref(t, "run:"+runA)}}}
+}
+
+func overlap(t *testing.T) Item {
+	return Item{Kind: ItemOverlap, Overlap: &Overlap{Paths: []string{"main.go"}, Between: []Ref{ref(t, "session:"+sessA), ref(t, "attempt:"+runA+"/build/1")}}}
+}
+
+// columns gives the comparison n columns and each row a cell a column.
+func columns(c *Comparison, n int) {
+	c.Columns = make([]string, n)
+	for i := range c.Columns {
+		c.Columns[i] = fmt.Sprintf("c%d", i)
+	}
+	for j := range c.Rows {
+		c.Rows[j].Cells = make([]string, n)
+	}
+}
+
+// strs is n texts.
+func strs(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("t%d", i)
+	}
+	return out
+}
+
+// sessions is n distinct session refs.
+func sessions(t *testing.T, n int) []Ref {
+	out := make([]Ref, n)
+	for i := range out {
+		out[i] = ref(t, fmt.Sprintf("session:%016x", i+1))
+	}
+	return out
+}
+
 // check runs CheckBrief with every permission and goodFacts.
 func check(b Brief) error { return CheckBrief(&b, allowAll, goodFacts()) }
 
@@ -56,7 +94,82 @@ func TestBriefBounds(t *testing.T) {
 		}
 		return out
 	}
+	// add appends the item mk makes, changed by mut, as items[1].
+	add := func(mk func() Item, mut func(*Item)) func(*Brief) {
+		return func(b *Brief) {
+			it := mk()
+			mut(&it)
+			b.Items = append(b.Items, it)
+		}
+	}
+	// at and past are one bound of the item mk makes: set(it, n) at n and
+	// at n+1.
+	item := func(field string, mk func() Item, n int, set func(it *Item, n int)) bound {
+		return bound{field, add(mk, func(it *Item) { set(it, n) }), add(mk, func(it *Item) { set(it, n+1) })}
+	}
+	interp := func() Item {
+		return Item{Kind: ItemInterpretation, Interpretation: &Interpretation{Text: "It looks stuck.", Facts: []int{0}}}
+	}
+	outcome := func() Item {
+		return Item{Kind: ItemOutcome, Outcome: &Outcome{Text: "The retry passed.", Receipt: ref(t, "op:admin/op-9")}}
+	}
+	panel := func() Item {
+		return Item{Kind: ItemEvidence, Evidence: &EvidencePanel{Title: "Runs", Refs: evidence(1)}}
+	}
+	prop := func() Item { return proposal(t) }
+	dec := func() Item { return decision(t) }
+	cmp := func() Item { return comparison(t) }
+	ticket := func() Item { return draftTicket(t, "CND", "T") }
+	hand := func() Item { return handoff(t) }
+	over := func() Item { return overlap(t) }
+	crewBody := func(n int) json.RawMessage {
+		head, tail := `{"name":"Parser","cwd":"/src/app","members":[],"note":"`, `"}`
+		return json.RawMessage(head + pad("n", n-len(head)-len(tail)) + tail)
+	}
 	cases := []bound{
+		item("items[1].text", interp, 2<<10, func(it *Item, n int) { it.Interpretation.Text = pad("i", n) }),
+		item("items[1].text", prop, 2<<10, func(it *Item, n int) { it.Proposal.Text = pad("p", n) }),
+		item("items[1].expectedRevision", prop, MaxRevision, func(it *Item, n int) { it.Proposal.ExpectedRevision = pad("7", n) }),
+		item("items[1].text", outcome, 1<<10, func(it *Item, n int) { it.Outcome.Text = pad("o", n) }),
+		item("items[1].happened", dec, 2<<10, func(it *Item, n int) { it.Decision.Happened = pad("h", n) }),
+		item("items[1].whyHuman", dec, 1<<10, func(it *Item, n int) { it.Decision.WhyHuman = pad("w", n) }),
+		item("items[1].uncertainty", dec, 1<<10, func(it *Item, n int) { it.Decision.Uncertainty = pad("u", n) }),
+		item("items[1].authorizes", dec, 1<<10, func(it *Item, n int) { it.Decision.Authorizes = pad("a", n) }),
+		item("items[1].alternatives[0].tradeoffs", dec, 1<<10, func(it *Item, n int) { it.Decision.Alternatives[0].Tradeoffs = pad("t", n) }),
+		item("items[1].blocked", dec, 20, func(it *Item, n int) { it.Decision.Blocked = evidence(n) }),
+		item("items[1].title", cmp, MaxTitle, func(it *Item, n int) { it.Comparison.Title = strings.Repeat("é", n) }),
+		item("items[1].columns", cmp, 6, func(it *Item, n int) { columns(it.Comparison, n) }),
+		item("items[1].columns[0]", cmp, MaxLabel, func(it *Item, n int) { it.Comparison.Columns[0] = strings.Repeat("ü", n) }),
+		item("items[1].rows", cmp, 20, func(it *Item, n int) {
+			for len(it.Comparison.Rows) < n {
+				it.Comparison.Rows = append(it.Comparison.Rows, Row{Label: "more", Cells: []string{"a", "b"}})
+			}
+		}),
+		item("items[1].rows[0].label", cmp, MaxTitle, func(it *Item, n int) { it.Comparison.Rows[0].Label = strings.Repeat("é", n) }),
+		item("items[1].rows[0].cells[1]", cmp, 500, func(it *Item, n int) { it.Comparison.Rows[0].Cells[1] = pad("c", n) }),
+		item("items[1].evidence", cmp, 20, func(it *Item, n int) { it.Comparison.Evidence = evidence(n) }),
+		item("items[1].title", panel, MaxTitle, func(it *Item, n int) { it.Evidence.Title = strings.Repeat("é", n) }),
+		item("items[1].title", ticket, MaxTitle, func(it *Item, n int) { it.DraftTicket.Title = strings.Repeat("é", n) }),
+		item("items[1].acceptance", ticket, 8<<10, func(it *Item, n int) { it.DraftTicket.Acceptance = pad("a", n) }),
+		item("items[1].from", ticket, 10, func(it *Item, n int) { it.DraftTicket.From = evidence(n) }),
+		item("items[1].crew", draftCrew, MaxCrewBody, func(it *Item, n int) { it.DraftCrew.Crew = crewBody(n) }),
+		item("items[1].gates", draftCrew, 10, func(it *Item, n int) {
+			for len(it.DraftCrew.Gates) < n {
+				it.DraftCrew.Gates = append(it.DraftCrew.Gates, Gate{Task: "build", Decision: "approve"})
+			}
+		}),
+		item("items[1].gates[0].decision", draftCrew, 500, func(it *Item, n int) { it.DraftCrew.Gates[0].Decision = pad("d", n) }),
+		item("items[1].from", draftCrew, 10, func(it *Item, n int) { it.DraftCrew.From = evidence(n) }),
+		item("items[1].objective", hand, 2<<10, func(it *Item, n int) { it.Handoff.Objective = pad("o", n) }),
+		item("items[1].constraints", hand, 4<<10, func(it *Item, n int) { it.Handoff.Constraints = pad("c", n) }),
+		item("items[1].decisions", hand, 20, func(it *Item, n int) { it.Handoff.Decisions = strs(n) }),
+		item("items[1].decisions[0]", hand, 500, func(it *Item, n int) { it.Handoff.Decisions[0] = pad("d", n) }),
+		item("items[1].questions", hand, 20, func(it *Item, n int) { it.Handoff.Questions = strs(n) }),
+		item("items[1].questions[0]", hand, 500, func(it *Item, n int) { it.Handoff.Questions = []string{pad("q", n)} }),
+		item("items[1].evidence", hand, 20, func(it *Item, n int) { it.Handoff.Evidence = evidence(n) }),
+		item("items[1].between", over, 8, func(it *Item, n int) { it.Overlap.Between = sessions(t, n) }),
+		item("items[1].paths[0]", over, MaxPathRef, func(it *Item, n int) { it.Overlap.Paths[0] = pad("p", n) }),
+		item("items[1].evidence", over, 20, func(it *Item, n int) { it.Overlap.Evidence = evidence(n) }),
 		{"title", func(b *Brief) { b.Title = strings.Repeat("é", MaxTitle) }, func(b *Brief) { b.Title = strings.Repeat("é", MaxTitle+1) }},
 		{"summary", func(b *Brief) { b.Summary = pad("s", MaxSummary) }, func(b *Brief) { b.Summary = pad("s", MaxSummary+1) }},
 		{"uncertainty", func(b *Brief) { b.Uncertainty = pad("u", MaxUncertainty) }, func(b *Brief) { b.Uncertainty = pad("u", MaxUncertainty+1) }},
@@ -469,5 +582,130 @@ func TestABriefCarryingAsOfIsRefused(t *testing.T) {
 	out, err := json.Marshal(b.Items[0])
 	if err != nil || string(out) != `{"kind":"fact/1","text":"x","evidence":["run:`+runA+`"]}` {
 		t.Errorf("the item is written %s %v", out, err)
+	}
+}
+
+// everyKind is a brief with one item of each kind, the proposal's args and
+// the crew's body holding <, > and &.
+func everyKind(t *testing.T) Brief {
+	b := goodBrief(t)
+	prop := proposal(t)
+	prop.Proposal.Args = json.RawMessage(`{"reason":"<a> & <b>"}`)
+	crew := draftCrew()
+	crew.DraftCrew.Crew = json.RawMessage(`{"name":"P<1>&","cwd":"/src/app","members":[]}`)
+	b.Items = append(b.Items,
+		Item{Kind: ItemInterpretation, Interpretation: &Interpretation{Text: "It looks stuck.", Facts: []int{0}}},
+		prop,
+		Item{Kind: ItemOutcome, Outcome: &Outcome{Text: "The retry passed.", Receipt: ref(t, "check:"+runA+"/build/1/vet/1")}},
+		decision(t),
+		comparison(t),
+		Item{Kind: ItemEvidence, Evidence: &EvidencePanel{Title: "Runs", Refs: []Ref{ref(t, "run:"+runA)}}},
+		draftTicket(t, "CND", "Fix it"),
+		crew,
+		handoff(t),
+		overlap(t),
+	)
+	return b
+}
+
+// TestEveryItemKindRoundTrips: a brief of every kind, written as it is
+// kept, decodes through DecodeBrief and writes back byte for byte.
+func TestEveryItemKindRoundTrips(t *testing.T) {
+	b := everyKind(t)
+	if err := check(b); err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]bool{}
+	for _, it := range b.Items {
+		kinds[it.Kind] = true
+	}
+	if len(kinds) != 11 {
+		t.Fatalf("the brief has %d kinds", len(kinds))
+	}
+	enc, err := encode(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := DecodeBrief(enc, allowAll, goodFacts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := encode(back)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(enc, again) {
+		t.Fatalf("the brief came back otherwise:\n%s\nwas\n%s", again, enc)
+	}
+}
+
+// TestRawFieldsAreMeasuredAsTheyCame: a proposal's args and a draft
+// crew's body are measured as the session sent them, never as an HTML
+// escaping would write them: 700 '<' fit in args of 4 KiB.
+func TestRawFieldsAreMeasuredAsTheyCame(t *testing.T) {
+	brief := func(item string) []byte {
+		return []byte(`{"schema":"brakeman.brief/1","title":"t","summary":"s","items":[{"kind":"fact/1","text":"x","evidence":["run:` + runA + `"]},` + item + `]}`)
+	}
+	args := func(n int) string {
+		head := `{"a":"`
+		return head + strings.Repeat("<", n-len(head)-2) + `"}`
+	}
+	prop := func(a string) string {
+		return `{"kind":"proposal/1","text":"Retry.","op":"task_retry","target":"task:` + runA + `/build","args":` + a + `}`
+	}
+	b, err := DecodeBrief(brief(prop(args(700))), allowAll, goodFacts())
+	if err != nil {
+		t.Fatalf("args of 700 bytes, most of them '<': %v", err)
+	}
+	if got := string(b.Items[1].Proposal.Args); got != args(700) {
+		t.Fatalf("the args were kept as %s", got)
+	}
+	if _, err := DecodeBrief(brief(prop(args(MaxArgs))), allowAll, goodFacts()); err != nil {
+		t.Fatalf("args of %d bytes: %v", MaxArgs, err)
+	}
+	_, err = DecodeBrief(brief(prop(args(MaxArgs+1))), allowAll, goodFacts())
+	wantInvalid(t, err, "items[1].args")
+	crew := func(n int) string {
+		head := `{"name":"Parser","cwd":"/src/app","members":[],"note":"`
+		return `{"kind":"draft_crew/1","crew":` + head + strings.Repeat("&", n-len(head)-2) + `"}}`
+	}
+	if _, err := DecodeBrief(brief(crew(MaxCrewBody)), allowAll, goodFacts()); err != nil {
+		t.Fatalf("a crew body of %d bytes, most of them '&': %v", MaxCrewBody, err)
+	}
+	_, err = DecodeBrief(brief(crew(MaxCrewBody+1)), allowAll, goodFacts())
+	wantInvalid(t, err, "items[1].crew")
+}
+
+// TestAnItemHoldsItsOwnKindsFields: an item without its kind's fields,
+// or with another kind's, is refused, never a panic, whatever the caller
+// built.
+func TestAnItemHoldsItsOwnKindsFields(t *testing.T) {
+	full := everyKind(t).Items
+	for _, own := range full {
+		for _, other := range full {
+			it := Item{Kind: own.Kind}
+			// other's fields alone: the kind's own are missing.
+			it.Fact, it.Interpretation, it.Proposal, it.Outcome, it.Decision, it.Comparison = other.Fact, other.Interpretation, other.Proposal, other.Outcome, other.Decision, other.Comparison
+			it.Evidence, it.DraftTicket, it.DraftCrew, it.Handoff, it.Overlap = other.Evidence, other.DraftTicket, other.DraftCrew, other.Handoff, other.Overlap
+			if other.Kind == own.Kind {
+				continue
+			}
+			b := goodBrief(t)
+			b.Items = append(b.Items, it)
+			if inv := wantInvalid(t, check(b), "items[1]"); !strings.Contains(inv.Why, "has no fields") {
+				t.Errorf("%s with %s's fields: %s", own.Kind, other.Kind, inv.Why)
+			}
+		}
+		b := goodBrief(t)
+		b.Items = append(b.Items, Item{Kind: own.Kind})
+		wantInvalid(t, check(b), "items[1]")
+	}
+	// Its own fields and another kind's too.
+	b := goodBrief(t)
+	it := factItem(t, "x")
+	it.Overlap = &Overlap{}
+	b.Items = append(b.Items, it)
+	if inv := wantInvalid(t, check(b), "items[1]"); !strings.Contains(inv.Why, "another kind's fields") {
+		t.Errorf("why: %s", inv.Why)
 	}
 }

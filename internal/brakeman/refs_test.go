@@ -24,6 +24,8 @@ var validRefs = []string{
 	"ticket:CND-12",
 	"ticket:AB-1",
 	"comment:CND-12/" + commentA,
+	"ticket:CND-999999999999999999", // Dispatch's largest number: 18 digits
+	"comment:CND-999999999999999999/" + commentA,
 	"op:admin/op-1",
 	"op:session/abc/op-1",
 	"commit:" + runA + "/" + strings.Repeat("a", 40),
@@ -75,6 +77,8 @@ func TestRefGrammar(t *testing.T) {
 		"ticket:CND-0",
 		"ticket:CND12",
 		"ticket:C-1",
+		"ticket:CND-1000000000000000000", // 19 digits
+		"comment:CND-1000000000000000000/" + commentA,
 		"comment:CND-12",
 		"comment:CND-12/xyz",
 		"op:admin",

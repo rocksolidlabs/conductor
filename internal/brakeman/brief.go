@@ -192,6 +192,34 @@ type Overlap struct {
 	Evidence []Ref    `json:"evidence,omitempty"`
 }
 
+// fields reports whether the item holds its own kind's fields (own) and
+// how many kinds' fields it holds (n): a well-formed item holds its own
+// and no other.
+func (it Item) fields() (own bool, n int) {
+	for _, f := range []struct {
+		kind string
+		set  bool
+	}{
+		{ItemFact, it.Fact != nil},
+		{ItemInterpretation, it.Interpretation != nil},
+		{ItemProposal, it.Proposal != nil},
+		{ItemOutcome, it.Outcome != nil},
+		{ItemDecision, it.Decision != nil},
+		{ItemComparison, it.Comparison != nil},
+		{ItemEvidence, it.Evidence != nil},
+		{ItemDraftTicket, it.DraftTicket != nil},
+		{ItemDraftCrew, it.DraftCrew != nil},
+		{ItemHandoff, it.Handoff != nil},
+		{ItemOverlap, it.Overlap != nil},
+	} {
+		if f.set {
+			n++
+			own = own || f.kind == it.Kind
+		}
+	}
+	return own, n
+}
+
 // body is the item's own fields, by its kind.
 func (it Item) body() (any, error) {
 	var v any
@@ -298,17 +326,23 @@ func (it *Item) UnmarshalJSON(b []byte) error {
 	default:
 		return fmt.Errorf("no item kind %q", head.Kind)
 	}
-	// The kind is read above; the strict decode takes the rest.
+	// The kind is read above; the strict decode takes the rest, written
+	// back with <, > and & as they are: json.Marshal would escape them in
+	// the raw fields kept as they came (a proposal's args, a draft crew's
+	// body), six bytes for one, and a body within its bound would be
+	// measured past it.
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(b, &fields); err != nil {
 		return err
 	}
 	delete(fields, "kind")
-	rest, err := json.Marshal(fields)
-	if err != nil {
+	var rest bytes.Buffer
+	enc := json.NewEncoder(&rest)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(fields); err != nil {
 		return err
 	}
-	return store.DecodeStrict(rest, dst)
+	return store.DecodeStrict(rest.Bytes(), dst)
 }
 
 // isControl reports a character a kept text never holds: a C0 control
@@ -517,12 +551,16 @@ func texts(field string, list []string, max, each int) error {
 
 // checkItem checks item i of b by its kind's rules.
 func checkItem(b *Brief, i int, it *Item, field string, p Permissions, f Facts) error {
-	v, err := it.body()
-	if err != nil {
+	if _, err := it.body(); err != nil {
 		return invalidBrief(field+".kind", "%v", err)
 	}
-	if v == nil || (it.Fact == nil && it.Interpretation == nil && it.Proposal == nil && it.Outcome == nil && it.Decision == nil && it.Comparison == nil && it.Evidence == nil && it.DraftTicket == nil && it.DraftCrew == nil && it.Handoff == nil && it.Overlap == nil) {
+	// body answers a typed nil for a kind whose fields are missing, never a
+	// nil interface: the kind's own pointer is what is checked.
+	switch own, n := it.fields(); {
+	case !own:
 		return invalidBrief(field, "a %s item has no fields", it.Kind)
+	case n > 1:
+		return invalidBrief(field, "a %s item holds another kind's fields", it.Kind)
 	}
 	switch it.Kind {
 	case ItemDraftTicket, ItemDraftCrew, ItemHandoff:

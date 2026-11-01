@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // reqPath is a document's path under the fixture's requests/.
@@ -1018,5 +1020,322 @@ func TestAChargeBelongsToItsStartDay(t *testing.T) {
 	}
 	if m, _ := f.s.MinutesToday(start); m != 25 {
 		t.Fatalf("the start day counts %d minutes", m)
+	}
+}
+
+// TestADamagedRequestIsSkippedByEveryWalk: a request document that is
+// empty, cut short or of the wrong shape is skipped by Open, List, Pending
+// and Prune, kept as it is with its siblings and said once; a document the
+// disk will not give is said, never skipped.
+func TestADamagedRequestIsSkippedByEveryWalk(t *testing.T) {
+	f := newFixture(t)
+	f.create("op-1")
+	damaged := map[string]string{
+		"br-5.json": "",
+		"br-6.json": `{"schema": 1, "id": "br-6", "st`,
+		"br-7.json": `{"schema": 1, "id": "br-7", "nope": true}`,
+	}
+	for name, body := range damaged {
+		if err := os.WriteFile(f.reqPath(name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(f.reqPath("br-6-brief.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.reopen() // Open concludes past them
+	page, _, err := f.s.List("", MaxPage)
+	if err != nil || len(page) != 1 || page[0].ID != "br-1" {
+		t.Fatalf("list: %v %v", ids(page), err)
+	}
+	if p, err := f.s.Pending(); err != nil || len(p) != 0 {
+		t.Fatalf("pending: %v %v", p, err)
+	}
+	keepNewest = 0
+	t.Cleanup(func() { keepNewest = Keep })
+	if _, err := f.s.Prune(); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	for name, body := range damaged {
+		id := strings.TrimSuffix(name, ".json")
+		if _, err := f.s.Get(id); !errors.Is(err, ErrDamaged) {
+			t.Errorf("get %s: %v", id, err)
+		}
+		if b, err := os.ReadFile(f.reqPath(name)); err != nil || string(b) != body {
+			t.Errorf("%s was rewritten: %q %v", name, b, err)
+		}
+	}
+	if !exists(t, f.reqPath("br-6-brief.json")) {
+		t.Error("a damaged request's sibling was removed")
+	}
+	if n := strings.Count(f.logged(), "does not parse"); n != len(damaged) {
+		t.Errorf("said %d times:\n%s", n, f.logged())
+	}
+	if os.Geteuid() == 0 {
+		return // root reads a file of mode 0
+	}
+	r := f.create("op-2")
+	if err := os.Chmod(f.reqPath(requestDoc(r.ID)), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(f.reqPath(requestDoc(r.ID)), 0o600) })
+	if _, err := f.s.Get(r.ID); err == nil || skippable(err) {
+		t.Fatalf("an unreadable request: %v", err)
+	}
+	if _, _, err := f.s.List("", MaxPage); err == nil {
+		t.Fatal("a walk passed over a request the disk would not give")
+	}
+}
+
+// TestCloseWaitsForTheOwnedCallback: the recovery OnOwned runs keeps the
+// owner lock until it returns, though Close was called meanwhile; and a
+// function set after Close never runs.
+func TestCloseWaitsForTheOwnedCallback(t *testing.T) {
+	old := LockWait
+	LockWait = time.Minute
+	t.Cleanup(func() { LockWait = old })
+	f := newFixture(t)
+	second := f.open()
+	started, gate := make(chan struct{}), make(chan struct{})
+	second.OnOwned(func() {
+		close(started)
+		<-gate
+	})
+	f.s.Close()
+	<-started
+	closed := make(chan struct{})
+	go func() {
+		second.Close()
+		close(closed)
+	}()
+	// Close has begun once a write is refused as closed.
+	for {
+		if _, err := second.Prune(); err != nil && strings.Contains(err.Error(), "closed") {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	lockPath := filepath.Join(f.data.Dir(), Dir, Lock)
+	if lock, why, held, err := store.TakeOwnerLock(lockPath); lock != nil || !held || err != nil {
+		if lock != nil {
+			lock.Release()
+		}
+		t.Fatalf("the lock was let go while the recovery ran: %s %v", why, err)
+	}
+	select {
+	case <-closed:
+		t.Fatal("Close returned while the recovery ran")
+	default:
+	}
+	close(gate)
+	<-closed
+	lock, why, _, err := store.TakeOwnerLock(lockPath)
+	if lock == nil || err != nil {
+		t.Fatalf("the lock was kept after Close: %s %v", why, err)
+	}
+	lock.Release()
+
+	// A store that took the lock with no function set, then closed: a
+	// function set now never runs.
+	f = newFixture(t)
+	third := f.open()
+	f.s.Close()
+	for {
+		if ro, _ := third.ReadOnly(); !ro {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	third.Close()
+	ran := false
+	third.OnOwned(func() { ran = true })
+	if ran {
+		t.Fatal("OnOwned ran its function after Close")
+	}
+}
+
+// TestALockThePlatformCannotTakeLeavesTheStoreReadOnly: where the owner
+// lock is unsupported the store serves reads, refuses every write with
+// why, and waits for no lock.
+func TestALockThePlatformCannotTakeLeavesTheStoreReadOnly(t *testing.T) {
+	f := newFixture(t)
+	r := f.create("op-1")
+	f.s.Close()
+	takeLock = func(string) (*store.OwnerLock, string, bool, error) {
+		return nil, "the owner lock is not supported on this platform", false, nil
+	}
+	t.Cleanup(func() { takeLock = store.TakeOwnerLock })
+	s := f.open()
+	if ro, why := s.ReadOnly(); !ro || why != "the owner lock is not supported on this platform" {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	if got, err := s.Get(r.ID); err != nil || got.State != StateQueued {
+		t.Fatalf("a read: %s %v", got.State, err)
+	}
+	if _, _, err := s.Create(Request{OpID: "op-2", Kind: KindBriefing}); !errors.Is(err, ErrNotOwner) || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("a write: %v", err)
+	}
+	ran := false
+	s.OnOwned(func() { ran = true })
+	if ran {
+		t.Fatal("a store without the lock ran OnOwned's function")
+	}
+}
+
+// TestAStartPastABoundChargesNothing: a start whose request would pass a
+// bound is refused before the charge, the request still queued.
+func TestAStartPastABoundChargesNothing(t *testing.T) {
+	f := newFixture(t)
+	r := f.create("op-1")
+	if _, err := f.s.Start(r.ID, onConfig(), Stamp{AgentID: "claude", Version: strings.Repeat("v", 129)}); !errors.Is(err, ErrBound) {
+		t.Fatalf("a start with a stamp past its bound: %v", err)
+	}
+	if got, _ := f.s.Get(r.ID); got.State != StateQueued {
+		t.Fatalf("the request is %s", got.State)
+	}
+	if n, _ := f.s.TurnsToday(f.clock.now()); n != 0 {
+		t.Fatalf("a refused start charged %d turns", n)
+	}
+	if got, err := f.s.Start(r.ID, onConfig(), Stamp{AgentID: "claude"}); err != nil || got.State != StateStarting {
+		t.Fatalf("the start within the bound: %s %v", got.State, err)
+	}
+}
+
+// TestAChargeFromBeforeMidnightCountsOnTheDayItStarts: a request charged
+// before midnight and started after it (a crash between the two writes)
+// must fit the new day's turns, and its charge moves to that day.
+func TestAChargeFromBeforeMidnightCountsOnTheDayItStarts(t *testing.T) {
+	day1 := time.Date(2026, 11, 1, 23, 59, 0, 0, zone)
+	day2 := time.Date(2026, 11, 2, 0, 5, 0, 0, zone)
+	crashBeforeMidnight := func(f *fixture) Request {
+		f.clock.set(day1)
+		r := f.create("op-1")
+		afterCharge = func() error { return errors.New("the test's crash") }
+		defer func() { afterCharge = nil }()
+		if _, err := f.s.Start(r.ID, onConfig(), Stamp{}); err == nil {
+			t.Fatal("a crash after the charge was not said")
+		}
+		f.clock.set(day2)
+		return r
+	}
+	t.Cleanup(func() { afterCharge = nil })
+	c := onConfig()
+	c.Budget.TurnsPerDay = 1
+
+	// The new day's one turn is spent: the request is over budget.
+	f := newFixture(t)
+	r := crashBeforeMidnight(f)
+	other, err := f.s.Start(f.create("op-2").ID, c, Stamp{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.close(other.ID, StateEnded)
+	if got, err := f.s.Start(r.ID, c, Stamp{}); !errors.Is(err, ErrOverBudget) || got.State != StateOverBudget {
+		t.Fatalf("a start past the new day's turns: %s %v", got.State, err)
+	}
+	if n, _ := f.s.TurnsToday(day2); n != 1 {
+		t.Fatalf("the new day counts %d turns", n)
+	}
+
+	// The new day has room: the turn starts and is counted there alone.
+	f = newFixture(t)
+	r = crashBeforeMidnight(f)
+	got, err := f.s.Start(r.ID, c, Stamp{})
+	if err != nil || got.State != StateStarting {
+		t.Fatalf("the start after midnight: %s %v", got.State, err)
+	}
+	if n, _ := f.s.TurnsToday(day2); n != 1 {
+		t.Fatalf("the day it started counts %d turns", n)
+	}
+	if n, _ := f.s.TurnsToday(day1); n != 0 {
+		t.Fatalf("the day of the crash still counts %d turns", n)
+	}
+	if _, err := f.s.Start(f.create("op-2").ID, c, Stamp{}); !errors.Is(err, ErrOverBudget) {
+		t.Fatalf("a second turn on a day of one: %v", err)
+	}
+}
+
+// TestAKeptBriefRecordsTheFootprintOfItsReads: the footprint is read off
+// the read log in the briefed write, so a read noted just before the
+// brief is in it; a log that dropped reads counts every class the
+// snapshot had on; the coverage given is kept beside it.
+func TestAKeptBriefRecordsTheFootprintOfItsReads(t *testing.T) {
+	f := newFixture(t)
+	c := onConfig()
+	c.Visibility.Terminals, c.Visibility.Touched = true, false
+	now := f.clock.now()
+	start := func(op string) Request {
+		r, err := f.s.Start(f.create(op).ID, c, Stamp{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	r := start("op-1")
+	if _, err := f.s.NoteReads(r.ID, Read{Ref: ref(t, "run:"+runA), Class: ClassRuns, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.NoteReads(r.ID, Read{Ref: ref(t, "session:"+sessA), Class: ClassTerminals, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	cov := &Coverage{Runs: []Watermark{{ID: runA, Seq: 7}}, Dispatch: &Watermark{Seq: 3}}
+	kept, err := f.s.KeepBrief(r.ID, Kept{OpID: "b-1", Brief: goodBrief(t), Coverage: cov})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.reopen()
+	got, err := f.s.Get(r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range []Request{kept, got} {
+		if x.Footprint == nil || !slices.Equal(x.Footprint.Classes, []string{ClassRuns, ClassTerminals}) {
+			t.Fatalf("the footprint: %+v", x.Footprint)
+		}
+		if x.Coverage == nil || len(x.Coverage.Runs) != 1 || x.Coverage.Runs[0].Seq != 7 || x.Coverage.Dispatch == nil || x.Coverage.Dispatch.Seq != 3 {
+			t.Fatalf("the coverage: %+v", x.Coverage)
+		}
+	}
+
+	// A log that dropped its oldest reads: every class the snapshot had on.
+	r = start("op-2")
+	reads := make([]Read, MaxReadLog+1)
+	for i := range reads {
+		reads[i] = Read{Ref: ref(t, fmt.Sprintf("event:%s/%d", runA, i+1)), Class: ClassRuns, At: now}
+	}
+	if log, err := f.s.NoteReads(r.ID, reads...); err != nil || log.Dropped == 0 {
+		t.Fatalf("the read log: dropped %d, %v", log.Dropped, err)
+	}
+	kept, err = f.s.KeepBrief(r.ID, Kept{OpID: "b-2", Brief: goodBrief(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{ClassRuns, ClassLogs, ClassDispatch, ClassSessions, ClassTerminals}; kept.Footprint == nil || !slices.Equal(kept.Footprint.Classes, want) {
+		t.Fatalf("the footprint of a log that dropped reads: %+v, want %v", kept.Footprint, want)
+	}
+
+	// No reads: an empty footprint, which no class is outside of.
+	r = start("op-3")
+	if kept, err = f.s.KeepBrief(r.ID, Kept{OpID: "b-3", Brief: goodBrief(t)}); err != nil || kept.Footprint == nil || len(kept.Footprint.Classes) != 0 {
+		t.Fatalf("a brief with no reads: %+v %v", kept.Footprint, err)
+	}
+}
+
+// TestABriefWhoseDocumentsAreGoneIsNotFound: a request read as having a
+// brief whose brief or resolutions are gone (another server pruned it
+// after the read) answers ErrNotFound, never an empty brief.
+func TestABriefWhoseDocumentsAreGoneIsNotFound(t *testing.T) {
+	for _, gone := range []string{"br-1-brief.json", "br-1-refs.json"} {
+		f := newFixture(t)
+		r := f.start("op-1")
+		if _, err := f.s.KeepBrief(r.ID, Kept{OpID: "b-1", Brief: goodBrief(t)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(f.reqPath(gone)); err != nil {
+			t.Fatal(err)
+		}
+		if b, refs, err := f.s.Brief(r.ID); !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), gone) {
+			t.Fatalf("%s gone: %+v %v %v", gone, b, refs, err)
+		}
 	}
 }

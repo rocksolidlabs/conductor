@@ -47,8 +47,8 @@ var (
 	// digits (session.NewID, dispatch.ValidID).
 	hexIDPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
 	// A ticket's key: its project's key (dispatch.KeyPattern), a dash and
-	// its number.
-	ticketKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,5}-[1-9][0-9]{0,9}$`)
+	// its number of at most 18 digits (dispatch.ParseKey).
+	ticketKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,5}-[1-9][0-9]{0,17}$`)
 	// A full git object id: SHA-1 or SHA-256.
 	commitPattern = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 	// A request's id.

@@ -121,6 +121,10 @@ type Store struct {
 	onOwned  func()
 	owned    bool // the lock was taken after Open
 	notified bool
+	// inOwned counts OnOwned's function while it runs: Close waits for it
+	// before it lets the lock go, so the recovery it runs never outlives
+	// the store's ownership.
+	inOwned sync.WaitGroup
 	// skipped is the records of a later schema already logged.
 	skipped map[string]bool
 }
@@ -219,9 +223,11 @@ func (s *Store) awaitLock(lockPath string) {
 			run := cb != nil && !s.readOnly && !s.notified
 			if run {
 				s.notified = true
+				s.inOwned.Add(1)
 			}
 			s.mu.Unlock()
 			if run {
+				defer s.inOwned.Done()
 				cb()
 			}
 			return
@@ -238,16 +244,20 @@ func (s *Store) awaitLock(lockPath string) {
 
 // OnOwned sets what runs once the store has taken the owner lock after
 // Open: the desk recovers what it holds of other stores then. A lock taken
-// before the call runs fn at once; it runs at most once.
+// before the call runs fn at once; it runs at most once, never after
+// Close, and Close waits for it to return before it lets the lock go, so
+// fn must not call Close.
 func (s *Store) OnOwned(fn func()) {
 	s.mu.Lock()
 	s.onOwned = fn
-	run := fn != nil && s.owned && !s.readOnly && !s.notified
+	run := fn != nil && s.owned && !s.readOnly && !s.notified && !s.closed
 	if run {
 		s.notified = true
+		s.inOwned.Add(1)
 	}
 	s.mu.Unlock()
 	if run {
+		defer s.inOwned.Done()
 		fn()
 	}
 }
@@ -259,15 +269,24 @@ func (s *Store) ReadOnly() (bool, string) {
 	return s.readOnly, s.why
 }
 
-// Close releases the owner lock and ends the wait for it.
+// Close ends the wait for the owner lock and refuses every write from
+// then on; it waits for OnOwned's function to return, if it runs, and
+// only then releases the lock, so what that function does under the
+// store's ownership is done before another server can take it.
 func (s *Store) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
 	close(s.done)
+	s.mu.Unlock()
+	// No function starts once closed is set (both starts check it under
+	// mu), so the wait sees every one that did.
+	s.inOwned.Wait()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.lock != nil {
 		s.lock.Release()
 		s.lock = nil
@@ -566,6 +585,13 @@ func (s *Store) loadLocked(id string) (Request, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return Request{}, ErrNotFound
 	}
+	// A document read whole that is not JSON (empty, cut short) is damaged,
+	// as one that is JSON of the wrong shape is below; any other error is the
+	// disk's, and is said.
+	var pe *store.ParseError
+	if errors.As(err, &pe) {
+		return Request{}, s.damaged(id, name, err)
+	}
 	if err != nil {
 		return Request{}, err
 	}
@@ -581,13 +607,19 @@ func (s *Store) loadLocked(id string) (Request, error) {
 	}
 	var r Request
 	if err := store.DecodeStrict(b, &r); err != nil {
-		if !s.skipped[id] {
-			s.skipped[id] = true
-			s.log.Error("brakeman: a request that does not parse is skipped and kept as it is", "request", id, "err", err)
-		}
-		return Request{}, fmt.Errorf("%w: %s: %v", ErrDamaged, name, err)
+		return Request{}, s.damaged(id, name, err)
 	}
 	return r, nil
+}
+
+// damaged says once that the request id does not parse and answers
+// ErrDamaged. The caller holds mu.
+func (s *Store) damaged(id, name string, err error) error {
+	if !s.skipped[id] {
+		s.skipped[id] = true
+		s.log.Error("brakeman: a request that does not parse is skipped and kept as it is", "request", id, "err", err)
+	}
+	return fmt.Errorf("%w: %s: %v", ErrDamaged, name, err)
 }
 
 // skippable reports a request a walk over them passes by: gone meanwhile,
@@ -842,10 +874,14 @@ func clone(r Request) (Request, error) {
 // configuration c, in two writes in this order: state.json with the
 // request's charge in its start day's map (reserved: c's TurnMinutes),
 // then the request starting, its deadline its start plus the reservation,
-// with c's snapshot and the agent's stamp. A charge already written for
+// with c's snapshot and the agent's stamp. The starting request is
+// measured before either write, so a start past a bound (ErrBound)
+// leaves no charge and the request queued. A charge already written for
 // the request (a crash between the two) is the same entry, never a
-// second. A request whose start would pass the day's turns is closed
-// over_budget and ErrOverBudget answered.
+// second; one written on an earlier day (a crash before midnight) is
+// moved to the day the turn starts, whose turns it must fit. A request
+// whose start would pass the day's turns is closed over_budget and
+// ErrOverBudget answered.
 func (s *Store) Start(id string, c Config, stamp Stamp) (Request, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -864,9 +900,34 @@ func (s *Store) Start(id string, c Config, stamp Stamp) (Request, error) {
 	if err != nil {
 		return Request{}, err
 	}
-	_, charge, charged := chargeOf(st, id)
+	day := s.day(now)
+	chargedOn, charge, charged := chargeOf(st, id)
 	if !charged {
-		if len(st.Days[s.day(now)]) >= c.Budget.TurnsPerDay {
+		charge = Charge{Reserved: c.Budget.TurnMinutes}
+	}
+	starting := func(r *Request) error {
+		if err := r.To(StateStarting, "", now); err != nil {
+			return err
+		}
+		r.Deadline = now.UTC().Add(time.Duration(charge.Reserved) * time.Minute)
+		r.Config, r.Agent = SnapshotOf(c), stamp
+		return nil
+	}
+	// The request as it will be written, measured before the charge: a
+	// start that could not be written charges nothing.
+	next, err := clone(r)
+	if err != nil {
+		return Request{}, err
+	}
+	if err := starting(&next); err != nil {
+		return Request{}, err
+	}
+	if err := measureRequest(next); err != nil {
+		return Request{}, err
+	}
+	if chargedOn != day {
+		// A new charge, or one an earlier day holds: today's turns decide.
+		if len(st.Days[day]) >= c.Budget.TurnsPerDay {
 			r, err := s.updateLocked(id, func(r *Request) error {
 				return r.To(StateOverBudget, fmt.Sprintf("the day's %d turns were spent", c.Budget.TurnsPerDay), now)
 			})
@@ -875,8 +936,12 @@ func (s *Store) Start(id string, c Config, stamp Stamp) (Request, error) {
 			}
 			return r, ErrOverBudget
 		}
-		day := s.day(now)
-		charge = Charge{Reserved: c.Budget.TurnMinutes}
+		if charged {
+			delete(st.Days[chargedOn], id)
+			if len(st.Days[chargedOn]) == 0 {
+				delete(st.Days, chargedOn)
+			}
+		}
 		if st.Days == nil {
 			st.Days = map[string]map[string]Charge{}
 		}
@@ -893,14 +958,7 @@ func (s *Store) Start(id string, c Config, stamp Stamp) (Request, error) {
 			return Request{}, err
 		}
 	}
-	return s.updateLocked(id, func(r *Request) error {
-		if err := r.To(StateStarting, "", now); err != nil {
-			return err
-		}
-		r.Deadline = now.UTC().Add(time.Duration(charge.Reserved) * time.Minute)
-		r.Config, r.Agent = SnapshotOf(c), stamp
-		return nil
-	})
+	return s.updateLocked(id, starting)
 }
 
 // afterCharge, when a test sets it, runs between Start's two writes; an
@@ -1108,22 +1166,27 @@ func (r RefState) check(field string) error {
 }
 
 // Kept is a brief to keep: the op id it came with, the brief (checked by
-// CheckBrief), its resolutions (one per distinct ref), and the run and
-// session the closing write knows.
+// CheckBrief), its resolutions (one per distinct ref), the run and
+// session the closing write knows, and the server's coverage of what the
+// turn read (PR-4 gives it). The footprint is not the caller's: KeepBrief
+// reads it off the turn's read log.
 type Kept struct {
 	OpID      string
 	Brief     Brief
 	Refs      []Resolution
 	RunID     string
 	SessionID string
+	Coverage  *Coverage
 }
 
 // KeepBrief keeps a request's brief: the brief and its resolutions
 // measured (ErrBound past MaxBrief or MaxRefsDoc, nothing written) and
-// written, then the request briefed, naming them. A request with a brief
-// answers the same op id and brief with itself, and any other with
-// ErrBriefExists, whatever its state; only a starting or running one
-// takes a new brief (ErrNotTurn).
+// written, then the request briefed, naming them, with its coverage and
+// its footprint, the classes its read log used read under the same mutex
+// as the briefed write, so no read noted before the brief is left out of
+// it. A request with a brief answers the same op id and brief with
+// itself, and any other with ErrBriefExists, whatever its state; only a
+// starting or running one takes a new brief (ErrNotTurn).
 func (s *Store) KeepBrief(id string, k Kept) (Request, error) {
 	if !opIDPattern.MatchString(k.OpID) {
 		return Request{}, invalidBrief("opId", "must match %s", opIDPattern)
@@ -1182,6 +1245,10 @@ func (s *Store) KeepBrief(id string, k Kept) (Request, error) {
 	if len(rb) > MaxRefsDoc {
 		return Request{}, fmt.Errorf("%w: the brief's resolutions would be %d bytes, at most %d", ErrBound, len(rb), MaxRefsDoc)
 	}
+	var log ReadLog
+	if _, err := s.reqs.LoadLimit(readsDoc(id), &log, MaxReadsDoc); err != nil {
+		return Request{}, err
+	}
 	now := s.now()
 	next, err := clone(r)
 	if err != nil {
@@ -1191,6 +1258,7 @@ func (s *Store) KeepBrief(id string, k Kept) (Request, error) {
 		return Request{}, err
 	}
 	next.HasBrief, next.BriefOpID, next.BriefAt = true, k.OpID, now.UTC()
+	next.Footprint, next.Coverage = footprintOf(log, r.Config.Visibility), k.Coverage
 	if next.RunID == "" {
 		next.RunID = k.RunID
 	}
@@ -1217,7 +1285,26 @@ func (s *Store) KeepBrief(id string, k Kept) (Request, error) {
 	return next, nil
 }
 
-// Brief answers a request's kept brief and its resolutions.
+// footprintOf is the visibility classes a read log used, in Classes'
+// order; a log that dropped entries used, for all anyone can tell, every
+// class the snapshot v had on.
+func footprintOf(log ReadLog, v Visibility) *Footprint {
+	used := map[string]bool{}
+	for _, rd := range log.Reads {
+		used[rd.Class] = true
+	}
+	fp := &Footprint{Classes: []string{}}
+	for _, c := range Classes {
+		if used[c] || (log.Dropped > 0 && v.Has(c)) {
+			fp.Classes = append(fp.Classes, c)
+		}
+	}
+	return fp
+}
+
+// Brief answers a request's kept brief and its resolutions. A brief or
+// resolutions the request names but that are gone (another server pruned
+// the request after it was read) answer ErrNotFound, never an empty brief.
 func (s *Store) Brief(id string) (Brief, []Resolution, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1229,12 +1316,19 @@ func (s *Store) Brief(id string) (Brief, []Resolution, error) {
 		return Brief{}, nil, fmt.Errorf("%w: %s has no brief", ErrNotFound, id)
 	}
 	var b Brief
-	if _, err := s.reqs.LoadLimit(briefDoc(id), &b, MaxBrief); err != nil {
+	ok, err := s.reqs.LoadLimit(briefDoc(id), &b, MaxBrief)
+	if err != nil {
 		return Brief{}, nil, err
 	}
+	if !ok {
+		return Brief{}, nil, fmt.Errorf("%w: %s names %s, which is gone", ErrNotFound, id, briefDoc(id))
+	}
 	var refs []Resolution
-	if _, err := s.reqs.LoadLimit(refsDoc(id), &refs, MaxRefsDoc); err != nil {
+	if ok, err = s.reqs.LoadLimit(refsDoc(id), &refs, MaxRefsDoc); err != nil {
 		return Brief{}, nil, err
+	}
+	if !ok {
+		return Brief{}, nil, fmt.Errorf("%w: %s names %s, which is gone", ErrNotFound, id, refsDoc(id))
 	}
 	return b, refs, nil
 }
