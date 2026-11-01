@@ -3427,15 +3427,19 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   and what was left out and why), the catalog resolved against the
   configuration (`ResolveCatalog`), so the archive's agents launch with no
   config; one table (`leftOut`) for what an export leaves out and a
-  restore refuses; `Fresh`, `Reserve`/`Release` (`restore.lock`,
+  restore refuses; of two paths one name to a filesystem that folds case
+  or trailing dots, the lower-case one taken and the other left out; `Fresh`, `Reserve`/`Release` (`restore.lock`,
   exclusive, 0600, the pid and the process's start), `Install` (under its
   caller's reservation; every check before a byte is written; staged in
-  `.restore-<random>` through an `os.Root`, files 0600, directories 0700;
+  `.restore-<random>` through an `os.Root`, files 0600, directories 0700,
+  every file and directory synced, a failed sync refusing it;
   Dispatch's staged database checked for every file its live rows name;
   no two paths one name to a filesystem that folds case or trailing dots;
   renamed into place by a rename that refuses a name already there
   (`RENAME_NOREPLACE` on Linux, `RENAME_EXCL` on macOS, `MoveFileEx`
-  without replace on Windows), never over anything, `hooks/` moved aside) and
+  without replace on Windows; elsewhere a file linked and a directory's name
+  taken with `mkdir` before the rename over it), never over anything,
+  `hooks/` moved aside, the data directory synced last, a failure reported) and
   `Restore`. The ledger and Dispatch gain `Snapshot` (VACUUM INTO on the
   open connection, under the store's lock) and `SnapshotFile` (a
   read-only connection, no server running), the ledger `Held`, Dispatch
@@ -3454,7 +3458,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestExportNeverTakesARecordAfterTheLedger`,
   `TestRestoreRefusesAnAttachmentNotItsName`,
   `TestRestoreCancelledWithinAnEntry`, `TestRestoreRefusesAliases`,
-  `TestRestoreNeverRenamesOverANameMadeMeanwhile`, `TestRenameByHand`; the ledger's
+  `TestRestoreNeverRenamesOverANameMadeMeanwhile`, `TestRenameByHand`,
+  `TestExportLeavesAliasesOut`, `TestRestoreDirectorySyncFails`; the ledger's
   `TestSnapshotWhileWriting`, `TestSnapshotFileReadOnly`, `TestHeld`;
   Dispatch's `TestSnapshot`, `TestSnapshotFile`, `TestSnapshotHashes`;
   the API's `TestExportRoute`, `TestExportCutShortFails`. The by-hand export and restore on two
