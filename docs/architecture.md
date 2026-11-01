@@ -793,12 +793,14 @@ while the server runs: the runs' records first, then the ledger's snapshot
 snapshot and the attachment files that snapshot's live rows require (read
 from the snapshot itself, never a walk of `attachments/`; a snapshot taken
 again, at most three, when a file it names went meanwhile), then the other
-documents and files, then the manifest, every file with its size and
-SHA-256. One table says what an export leaves out and a restore refuses:
+documents and files (never a run's record written after the records' copy,
+which could lead the archived ledger), then the manifest, every file with
+its size and SHA-256. One table says what an export leaves out and a restore refuses:
 secrets, locks, temporary files, a provider's `ext/`. The installer
 (`export.Install`, under the `restore.lock` reservation its caller holds)
 takes an archive only into a data directory with no server data, checks the
-whole archive before it writes a byte, stages it in `.restore-<random>`
+whole archive before it writes a byte (an attachment's file must hash to
+its name), stages it in `.restore-<random>`
 through an `os.Root`, checks the staged Dispatch database's attachments and
 the directory again, then renames each top-level entry into place, never
 over anything (`hooks/` moved aside first). The next `serve` opens what was
