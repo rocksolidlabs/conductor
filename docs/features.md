@@ -3203,7 +3203,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   Markdown check found (below): a ticket's description, criteria and
   comments link a bare URL, through a `linkify` option of `renderMarkdown`
   that only Dispatch's text passes (a vitest case, two `dispatch.spec.ts`
-  steps).
+  steps); round 2 kept it to `http:` and `https:`, the schemes the desktop
+  app opens.
 
   By hand for this entry, 2026-11-01, on main at `ba27edec` (PR-11's
   merge), `conductor v0.7.0-rc.18-583-gba27edec`, each server on loopback
@@ -3223,12 +3224,14 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     task-list items as checkboxes, nested lists, bold and inline code; #485's
     body as a comment, its code block in one `pre`. It found one difference
     from GitHub: a bare URL stayed words, the renderer's `linkify` off.
-    Fixed in this PR (review round 1): a URL with its scheme and an e-mail
-    address are links in a ticket's text and comments, opening outside the
-    app, as `<https://…>` and `[text](url)` were. What still differs, on
-    purpose: a `#359`, a `www.` host and a file name stay words, since a
-    ticket has no repository to resolve them against and `README.md` would
-    read as a host. The Files tab's preview keeps `linkify` off.
+    Fixed in this PR (review round 1): a URL with its scheme is a link in a
+    ticket's text and comments, opening outside the app, as `<https://…>`
+    and `[text](url)` were. What still differs, on purpose: a `#359`, a
+    `www.` host and a file name stay words, since a ticket has no
+    repository to resolve them against and `README.md` would read as a
+    host; a bare e-mail address, `mailto:`, `ftp:` and `//host` stay words
+    too (review round 2), since the desktop app opens only http and https
+    and would leave such a link doing nothing. The Files tab's preview keeps `linkify` off.
   - **An attachment of 15 MiB over a slow link**, through the page on
     Linux: Chromium throttled to 400 KB/s up and 2 MB/s down; the upload's
     progress, read once a second, went from 1 % to 100 % through 39 values
