@@ -467,14 +467,6 @@ func (h *extHost) Notify(_ context.Context, n ext.Notification) error {
 	return nil
 }
 
-// deliverNotice hands a provider's notice to the sinks that list
-// ext.TypeProvider. The sinks reach the event hub with the notification
-// seam (C3); until then no sink is handed one, and the notice is logged
-// at debug.
-func (s *Server) deliverNotice(n ext.Notification) {
-	s.log.Debug("provider notice: no sink takes it yet", "provider", n.Origin, "bytes", len(n.Message))
-}
-
 // DataDir is <dataDir>/ext/<name>, made 0700 through the store; a server
 // with no data directory answers ext.ErrUnsupported.
 func (h *extHost) DataDir() (string, error) {
