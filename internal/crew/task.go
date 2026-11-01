@@ -1661,10 +1661,13 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 			return
 		}
 	}
+	// The context the providers give the attempt, asked outside the lock
+	// (askContext): none, without a provider or for one late or failing.
+	blocks := e.askContext(ctx, r, a)
 	// The task files, through a root at the working directory: a
 	// .conductor that is not a directory of ours, or a task file that is
 	// there already, is refused.
-	md, js, more, err := e.taskFile(r, a, tr)
+	md, js, more, err := e.taskFile(r, a, tr, blocks)
 	if err == nil {
 		err = writeTaskFiles(a.worktree, r.prefix, md, js, more)
 	}

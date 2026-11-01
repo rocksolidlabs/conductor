@@ -621,6 +621,37 @@ notifier queues everything for the sink and its delivery decides. No
 sink delays the hub, a session, the engine or another sink; a server with
 no webhook and no sink adds no notifier.
 
+**Context.** A context provider gives an attempt of a managed run what to
+read besides its task, and is told the files the agents touch
+(`internal/api/extcontext.go`). The engine asks for an attempt's context
+once its worktree is made and checked and its project manifest resolved,
+before the task files are written (`Engine.SetContext`, the server's
+`contextFor`), with the query read under the engine's lock and the
+function called outside it: every provider at once, each through the
+guard within `ContextWait` (5 s), so the attempt waits at most that long
+and a late, failing or panicking provider adds nothing. A provider's
+answer counts only when every block it gives, of its first eight
+(`MaxContextBlocks`), passes `ContextBlock.Valid`; each block is named by
+its provider, in registration order, and past `MaxTaskContext` (16 KiB)
+together, counted as `task.json` keeps them, the last are left out until
+the rest fit, the run's log saying how many and whose. The blocks go into
+`task.md`'s Context section and `task.json`'s `context`, written through
+the worktree's `os.Root` and cut first when the files pass their bound
+(`fitTaskFile`); they are never in the ledger and never a reason an
+attempt fails or a task's state changes, and with none the files are byte
+for byte what they were before (the goldens in
+`internal/crew/testdata/taskfile`). The touch sink, the hub's last sink
+(after the notifier and the run engine's `OnActivity`; a server with no
+context provider adds none), takes the `file`
+entries of server and hosted sessions after the session recorded them, makes each path absolute by the session's own
+rule (`session.TouchedAbs`; `signal.HostAbs` for a hosted session, whose
+host may run another OS) and queues one `ext.TouchedFile` per provider
+(`TouchQueue`, 1,024, the oldest dropped) without waiting; a server
+session's path its deny list refuses (`Local.Denied`, the rule the
+touched index's readers apply) is never handed to a provider, the list
+read as the touch is delivered, once for every provider, on a provider's
+own goroutine, never the recording one.
+
 ## Packages
 
 | Package | Responsibility |

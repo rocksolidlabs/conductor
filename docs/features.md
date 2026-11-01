@@ -3337,8 +3337,28 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   round 1: a sink that is no `Starter` and whose `Events` is slow still
   gives its first `Notify` the whole `DeliveryWait`).
 
-  PR-8 (#480): crew, api: context blocks in the task files; file touches to
-  the context providers. Planned.
+  PR-8 (#480): `internal/crew`, `internal/api`: context blocks in the task
+  files; file touches to the context providers. The engine asks its
+  context function for an attempt (`Engine.SetContext`) outside its lock,
+  after the worktree and the project manifest and before the task files;
+  the server's (`extcontext.go`) asks every context provider at once
+  through the guard within `ContextWait`, keeps a provider's answer only
+  when each of its first eight blocks is valid, names each block by its
+  provider and leaves the last out past `MaxTaskContext` together, noting
+  in the run's log how many and whose. The blocks are `task.json`'s
+  `context` and `task.md`'s Context section (each body inside a fence
+  longer than any run of backticks in it), cut first, the last first, into
+  `task-more.json`; with none the files are byte for byte main's, against
+  goldens written by main's `fitTaskFile` in the PR's first commit. The
+  touch sink hands every provider the `file` entries of server and hosted
+  sessions, paths absolute by the session's rule (`signal.HostAbs`
+  exported), a server session's denied paths (`Local.Denied`) left out,
+  each provider's queue of `TouchQueue` dropping its oldest. Tests:
+  `TestTaskFileByteIdenticalWithoutContext` (seven goldens),
+  `TestTaskFileContextSection`, `TestContextCutFirst`,
+  `TestEngineAsksContextOutsideTheLock`; `TestContextInTaskFile`,
+  `TestContextBounds`, `TestContextLateOrFailing`,
+  `TestTaskContextServesTheBlocks`, `TestTouchesReachProviders`.
 
   PR-9 (#481): session, api: Local.AnswerAs and the decision router over
   needs_input. Planned.

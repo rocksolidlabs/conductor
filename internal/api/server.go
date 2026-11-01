@@ -436,6 +436,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// waits, as a sink must not. The changes of server sessions reach the runs
 	// through localChange.
 	s.events.addSink(s.runs.OnActivity)
+	// The context providers: an attempt's context, and the files touched.
+	s.wireContext()
 	s.hosts = signal.NewHub(s.registry, log)
 	if cfg.MaxViewersPerSession > 0 {
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
