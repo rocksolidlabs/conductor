@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/paste"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -137,7 +138,7 @@ func (s *Server) handlePaste(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	pp, answer, err := answerer(ctx, local, offer, req.Role, label, s.iceServers())
+	pp, answer, err := answerer(ctx, local, offer, req.Role, label, s.iceServersFor(ctx, ext.ICERequest{Purpose: icePurposePaste, Session: id, Role: string(req.Role)}))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_offer", strings.TrimPrefix(err.Error(), "paste: "))
 		return
@@ -158,30 +159,18 @@ func (s *Server) handlePaste(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"answer": blob, "role": req.Role})
 }
 
-// iceServers is the configured ICE servers as the host protocol carries them.
-func (s *Server) iceServers() []proto.ICEServer {
-	out := make([]proto.ICEServer, 0, len(s.cfg.ICEServers))
-	for _, srv := range s.cfg.ICEServers {
-		out = append(out, proto.ICEServer{URLs: srv.URLs, Username: srv.Username, Credential: srv.Credential})
-	}
-	return out
-}
-
 // handleICE answers the STUN servers a viewer may gather its candidates
 // with before it has any session (a paste invite's offer): the configured
-// ICE servers without credentials, so a TURN secret never leaves the server.
+// ICE servers' stun: and stuns: URLs (iceServersFor's offer), so a TURN
+// secret never leaves the server and no provider is asked.
 func (s *Server) handleICE(w http.ResponseWriter, r *http.Request) {
 	if !s.limiter.allow(clientKey(r)) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 		return
 	}
 	urls := []string{}
-	for _, srv := range s.cfg.ICEServers {
-		for _, u := range srv.URLs {
-			if strings.HasPrefix(u, "stun:") || strings.HasPrefix(u, "stuns:") {
-				urls = append(urls, u)
-			}
-		}
+	for _, srv := range s.iceServersFor(r.Context(), ext.ICERequest{Purpose: icePurposeOffer}) {
+		urls = append(urls, srv.URLs...)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"stun": urls})
 }

@@ -728,17 +728,15 @@ type guardMedia struct {
 
 func (g guardMedia) Name() string { return g.name }
 
-// ICEServers answers the provider's servers for r, or none (the free
-// default's) when it fails, is late or answers more than ext.MaxICEServers
-// or a server ICEServer.Valid refuses. It never answers an error.
+// ICEServers answers the provider's servers for r, the first
+// ext.MaxICEServers of them when it answers more (the rest are never
+// read), or none (the free default's) when it fails, is late or answers a
+// server ICEServer.Valid refuses among those. It never answers an error.
 func (g guardMedia) ICEServers(ctx context.Context, r ext.ICERequest) ([]ext.ICEServer, error) {
 	if !live(g.ready) {
 		return nil, nil
 	}
 	return extCall(ctx, g.s, ext.KindMedia, g.name, ext.ICEWait, nil, func(ss []ext.ICEServer) error {
-		if len(ss) > ext.MaxICEServers {
-			return fmt.Errorf("ice: %d servers, past %d", len(ss), ext.MaxICEServers)
-		}
 		for _, sv := range ss {
 			if err := sv.Valid(); err != nil {
 				return err
@@ -747,7 +745,7 @@ func (g guardMedia) ICEServers(ctx context.Context, r ext.ICERequest) ([]ext.ICE
 		return nil
 	}, func(ctx context.Context) ([]ext.ICEServer, error) {
 		ss, err := g.p.ICEServers(ctx, r)
-		ss = copyOrNil(ss)
+		ss = copyOrNil(ss[:min(len(ss), ext.MaxICEServers)])
 		for i := range ss {
 			ss[i].URLs = copyOrNil(ss[i].URLs)
 		}

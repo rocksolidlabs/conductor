@@ -11,6 +11,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/signal"
@@ -547,12 +548,9 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 	}
 	defer hs.RemoveViewer(v)
 
-	ice := make([]proto.ICEServer, 0, len(s.cfg.ICEServers))
-	for _, srv := range s.cfg.ICEServers {
-		ice = append(ice, proto.ICEServer{URLs: srv.URLs, Username: srv.Username, Credential: srv.Credential})
-	}
 	info := hs.Info()
-	welcome := proto.MustControl(proto.Welcome{
+	ice := s.iceServersFor(sink.ctx, ext.ICERequest{Purpose: icePurposeViewer, Session: info.ID, Role: string(v.Role), Viewer: viewerID})
+	welcome := proto.MustControl(fitWelcome(proto.Welcome{
 		T:              proto.CtlWelcome,
 		Proto:          proto.ProtoVersion,
 		SessionID:      info.ID,
@@ -565,7 +563,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 		ICEServers:     ice,
 		RelayTimeoutMs: s.cfg.RelayTimeoutMs,
 		RelayOnly:      hs.RelayOnly(),
-	})
+	}, len(s.cfg.ICEServers)))
 	if err := sink.WriteFrame(welcome); err != nil {
 		return
 	}
