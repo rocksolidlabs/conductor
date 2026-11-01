@@ -127,8 +127,8 @@ func newAnswering(t *testing.T, proc session.Process, opts Options) *answering {
 	}
 	h.a.local = session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24, Status: session.StatusRunning}, proc, session.Options{FileEdit: "off", Log: discardLog, OnChange: h.a.noteChange, InputWait: answerWait})
 	var once sync.Once
-	end := h.a.openAnswers(context.Background())
-	h.close = func() { once.Do(end) }
+	withdraw, wait := h.a.openAnswers(context.Background())
+	h.close = func() { once.Do(func() { withdraw(); wait() }) }
 	t.Cleanup(h.close)
 	return h
 }
@@ -428,7 +428,8 @@ func TestAnswerAsWithdrawnWithItsConnection(t *testing.T) {
 	// The pause after the text outlasts the test: only the connection's
 	// end ends it.
 	a.local = session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24, Status: session.StatusRunning}, proc, session.Options{FileEdit: "off", Log: discardLog, OnChange: a.noteChange, InputWait: answerWait, SubmitPause: time.Hour})
-	end := a.openAnswers(context.Background())
+	withdraw, wait := a.openAnswers(context.Background())
+	end := func() { withdraw(); wait() }
 	var once sync.Once
 	t.Cleanup(func() { once.Do(end) })
 	h := &answering{a: a, logs: logs, close: func() { once.Do(end) }}
@@ -465,6 +466,89 @@ func TestAnswerAsWithdrawnWithItsConnection(t *testing.T) {
 	}
 	if info := l.Info(); info.LastAnswer == nil || info.LastAnswer.ByName != "Nate" {
 		t.Fatalf("after the answer: %+v", info.LastAnswer)
+	}
+}
+
+// The control connection fails while a routed line answer is in its
+// pause, its text typed and its Enter not, and the rest of the
+// connection's end (connLost: its writer and viewers let go) is held: the
+// answer is withdrawn before it, its Enter never written, so that no
+// answer of a connection gone is typed while its viewers are let go.
+func TestAnswerAsWithdrawnBeforeItsConnectionsViewers(t *testing.T) {
+	_, hs := startServer(t)
+	logs := &logRecorder{}
+	a := &agent{opts: Options{ServerURL: hs.URL, Token: hostToken, Name: "away", Argv: []string{"stub"}, AgentID: "stub", HostName: "h", Log: discardLog}, peers: map[string]*peer{}, log: slog.New(logs)}
+	a.dir = t.TempDir()
+	wsURL, err := controlURL(hs.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.wsURL = wsURL
+	ctx := t.Context()
+	conn, registered, err := a.dialAndRegister(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc := sessiontest.NewFakeProc()
+	t.Cleanup(func() { proc.End(0) })
+	// The pause after the text outlasts the test: only the withdrawal
+	// ends it.
+	local := session.NewLocal(session.Info{ID: registered.SessionID, Cwd: a.dir, Cols: 80, Rows: 24, Status: session.StatusRunning}, proc, session.Options{FileEdit: "off", OnChange: a.noteChange, Log: discardLog, InputWait: answerWait, SubmitPause: time.Hour})
+	a.mu.Lock()
+	a.local = local
+	a.mu.Unlock()
+	entered, gate := make(chan struct{}), make(chan struct{})
+	hold := func() {
+		close(entered)
+		select {
+		case <-gate:
+		case <-ctx.Done():
+		}
+	}
+	a.beforeConnLost.Store(&hold)
+	served := make(chan error, 1)
+	go func() { served <- a.serveConn(ctx, conn) }()
+	waitFor(t, "the connection's answer queue", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.answers != nil
+	})
+	q := ask(t, local, "Which database?", nil)
+	b, _ := json.Marshal(proto.HostAnswerAsMsg{T: proto.HostAnswerAs, Question: q, Text: "Postgres", ByName: "Ada"})
+	if err := a.handleControl(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	var typed string
+	waitFor(t, "the text typed", func() bool { typed += strings.Join(writes(proc), ""); return strings.Contains(typed, "Postgres") })
+
+	conn.CloseNow()
+	select {
+	case <-entered:
+	case <-time.After(answerWait):
+		t.Fatal("the connection's end never began")
+	}
+	// Its viewers not yet let go, the answer is withdrawn already.
+	waitFor(t, "the answer withdrawn", func() bool { return len(logs.outcomes()) == 1 })
+	if got := logs.outcomes(); !errors.Is(got[0], session.ErrRevoked) {
+		t.Fatalf("the answer in its pause ended with %v, want a kind of ErrRevoked", got)
+	}
+	if strings.Contains(typed+strings.Join(writes(proc), ""), "\r") {
+		t.Fatal("the Enter was written after the connection failed")
+	}
+	close(gate)
+	select {
+	case <-served:
+	case <-time.After(answerWait):
+		t.Fatal("serveConn never returned")
+	}
+	a.mu.Lock()
+	left := a.answers
+	a.mu.Unlock()
+	if left != nil {
+		t.Fatal("the connection's answer queue outlived it")
+	}
+	if strings.Contains(strings.Join(writes(proc), ""), "\r") {
+		t.Fatal("the Enter was written after the connection ended")
 	}
 }
 

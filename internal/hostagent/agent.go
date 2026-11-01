@@ -423,6 +423,9 @@ type agent struct {
 	// out (pingOn).
 	beforeAnswer atomic.Pointer[func()]
 	beforePing   atomic.Pointer[func()]
+	// beforeConnLost, when set (tests), runs as a control connection's
+	// end begins letting its writer and viewers go (connLost).
+	beforeConnLost atomic.Pointer[func()]
 	// ticks counts keepHearing's ticks done, each counted after its ping
 	// is reserved, or not: two more ticks after a link went means one
 	// began after it went and reserved none (tests wait on that before
@@ -1116,12 +1119,19 @@ func (a *agent) dropConn(c *websocket.Conn) {
 func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	defer c.CloseNow()
 	w := a.writerFor(c)
-	// The routed answers this connection brings end with it.
-	defer a.openAnswers(ctx)()
+	// The routed answers this connection brings end with it, withdrawn
+	// first: the rest of its end (its viewers let go, connLost) may wait,
+	// and no answer of a connection gone is typed meanwhile. Their
+	// goroutine is waited for after.
+	withdrawAnswers, answersDone := a.openAnswers(ctx)
+	defer func() {
+		withdrawAnswers()
+		a.connLost(c)
+		answersDone()
+	}()
 	// The server is told the session's attention as the connection starts,
 	// the empty state included (retellAttention).
 	a.retellAttention()
-	defer a.connLost(c)
 
 	// Report the current status in case the process ended while disconnected.
 	go a.watchStatus(ctx, w)
@@ -1731,6 +1741,9 @@ func (a *agent) removePeer(id string) { a.removePeerFor(id, nil) }
 // until the connection is back: what a link's viewer asked for and is
 // still under way is withdrawn rather than finished.
 func (a *agent) connLost(c *websocket.Conn) {
+	if f := a.beforeConnLost.Load(); f != nil {
+		(*f)()
+	}
 	a.dropConn(c)
 	a.creds.lost()
 	a.closeAllPeers()

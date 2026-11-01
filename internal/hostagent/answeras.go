@@ -41,17 +41,19 @@ type routedAnswers struct {
 }
 
 // openAnswers gives the control connection whose context is ctx its answer
-// queue, and returns what ends it: the queue closed (a message waiting
-// dropped), the one applying withdrawn and ended through its context (one
-// cancel: the withdrawal, actx's end, comes before its context's), and its
-// goroutine waited for.
-func (a *agent) openAnswers(ctx context.Context) func() {
+// queue, and returns what ends it, in two steps: withdraw, the queue closed
+// (a message waiting dropped) and the one applying withdrawn and ended
+// through its context (one cancel: the withdrawal, actx's end, comes
+// before its context's), which never waits; and wait, its goroutine waited
+// for. The connection withdraws its answers before anything else of it is
+// let go (serveConn), so that none is still typed while its viewers are.
+func (a *agent) openAnswers(ctx context.Context) (withdraw, wait func()) {
 	actx, cancel := context.WithCancel(ctx)
 	ra := &routedAnswers{q: requestQueue{limit: answerQueue - 1}, ctx: actx}
 	a.mu.Lock()
 	a.answers = ra
 	a.mu.Unlock()
-	return func() {
+	withdraw = func() {
 		a.mu.Lock()
 		if a.answers == ra {
 			a.answers = nil
@@ -59,8 +61,8 @@ func (a *agent) openAnswers(ctx context.Context) func() {
 		a.mu.Unlock()
 		ra.q.close()
 		cancel()
-		ra.q.wait()
 	}
+	return withdraw, ra.q.wait
 }
 
 // answerAs takes an answer_as off the read loop: one out of its bounds is
