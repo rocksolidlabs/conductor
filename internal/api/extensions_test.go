@@ -344,10 +344,23 @@ func TestExtCallInvalid(t *testing.T) {
 	if got, _ := r.Route(t.Context(), ext.Decision{ID: "q1", Options: []ext.DecisionOption{{Input: "1"}}}); got.Answer != nil {
 		t.Fatalf("a route typing a key the question does not offer was used: %+v", got)
 	}
-	// Context past its bounds is none.
-	c := &guardContext{s: srv, name: "graph", p: contextAnswer(make([]ext.ContextBlock, ext.MaxContextBlocks+1))}
-	if got, _ := c.Context(t.Context(), ext.ContextQuery{}); got != nil {
-		t.Fatalf("too many blocks were used: %d", len(got))
+	// Context past ext.MaxContextBlocks is cut to its first blocks, the
+	// rest never read, so an invalid block past them changes nothing; an
+	// invalid block among them makes the answer none.
+	valid := slices.Repeat([]ext.ContextBlock{{Title: "t", Body: "b"}}, ext.MaxContextBlocks)
+	for _, tc := range []struct {
+		name   string
+		answer []ext.ContextBlock
+		want   int
+	}{
+		{"one block past the bound", append(slices.Clone(valid), ext.ContextBlock{Title: "t", Body: "b"}), ext.MaxContextBlocks},
+		{"an invalid block past the bound", append(slices.Clone(valid), ext.ContextBlock{}), ext.MaxContextBlocks},
+		{"an invalid block among the first", append(append(slices.Clone(valid[:ext.MaxContextBlocks-1]), ext.ContextBlock{}), valid[0]), 0},
+	} {
+		c := &guardContext{s: srv, name: "graph", p: contextAnswer(tc.answer)}
+		if got, _ := c.Context(t.Context(), ext.ContextQuery{}); len(got) != tc.want || (tc.want == 0 && got != nil) {
+			t.Fatalf("%s: %d blocks were used, want %d", tc.name, len(got), tc.want)
+		}
 	}
 }
 

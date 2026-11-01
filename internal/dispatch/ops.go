@@ -532,6 +532,9 @@ func (s *Store) Apply(ctx context.Context, op Op, intent string, args any, chang
 	}
 	s.mu.Lock()
 	rc, changed, err := s.apply(ctx, op, intent, fp, change)
+	if err == nil && len(changed) > 0 {
+		s.committed(changed)
+	}
 	s.mu.Unlock()
 	if err != nil {
 		return Receipt{}, err

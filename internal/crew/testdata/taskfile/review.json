@@ -1,0 +1,26 @@
+{
+  "run": "r-0123456789ab",
+  "crew": "c-build",
+  "crewName": "Build crew",
+  "goal": "Ship the parser, tested.",
+  "task": "check",
+  "attempt": 1,
+  "maxAttempts": 3,
+  "member": "lead",
+  "kind": "review",
+  "instructions": "Write the parser in parse.go & test it: <input> yields a tree.",
+  "worktree": "/repo/.conductor/worktrees/r-0123456789ab/check.1",
+  "branch": "crew/r-0123456789ab/check.1",
+  "start": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "startFrom": "task \"build\"'s result",
+  "inputs": [
+    {
+      "task": "build",
+      "attempt": 2,
+      "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "branch": "crew/r-0123456789ab/build.2",
+      "summary": "The parser and its tests."
+    }
+  ],
+  "writtenAt": "2026-10-31T12:00:00Z"
+}
