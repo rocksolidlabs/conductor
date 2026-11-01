@@ -37,15 +37,17 @@ const props = withDefaults(
      * alt text stays. None: such an image is held as its alt text.
      */
     attachmentUrl?: (id: string) => Promise<string | null>
+    /** Whether a bare URL with its scheme is a link (a Dispatch ticket's text, often pasted from a GitHub issue); off for a repository's file. */
+    linkify?: boolean
   }>(),
-  { rawUrl: undefined, relativeLinks: true, attachmentUrl: undefined },
+  { rawUrl: undefined, relativeLinks: true, attachmentUrl: undefined, linkify: false },
 )
 const emit = defineEmits<{ open: [path: string] }>()
 
 const host = ref<HTMLElement | null>(null)
 const colorMode = useColorMode()
 const dark = computed(() => colorMode.value === 'dark')
-const rendered = computed(() => renderMarkdown(props.text, { dir: props.dir, rawUrl: props.rawUrl, relativeLinks: props.relativeLinks, attachments: !!props.attachmentUrl }))
+const rendered = computed(() => renderMarkdown(props.text, { dir: props.dir, rawUrl: props.rawUrl, relativeLinks: props.relativeLinks, attachments: !!props.attachmentUrl, linkify: props.linkify }))
 
 /** Code shiki highlights at most; past it the block stays plain. */
 const HIGHLIGHT_LIMIT = 100_000

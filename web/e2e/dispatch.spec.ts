@@ -158,7 +158,7 @@ test('a project, a ticket made from its page and edited on its own page, its his
   // The description, written as Markdown: its preview while it is written, and rendered once saved.
   const description = page.locator('[data-ticket-markdown="description"]')
   await description.locator('[data-markdown-empty]').click()
-  await description.locator('[data-markdown-input]').fill('## Steps\n\n1. Open the **login** page\n2. See [the notes](notes.md)')
+  await description.locator('[data-markdown-input]').fill('## Steps\n\n1. Open the **login** page\n2. See [the notes](notes.md)\n3. Reported in https://github.com/o/r/issues/7')
   await description.getByRole('tab', { name: 'Preview' }).click()
   await expect(description.locator('[data-markdown-draft-preview] h2')).toHaveText('Steps')
   await description.locator('[data-markdown-save]').click()
@@ -167,7 +167,12 @@ test('a project, a ticket made from its page and edited on its own page, its his
   await expect(view.locator('strong')).toHaveText('login')
   // A relative link names no file of a ticket's: its words stay, and nothing opens.
   await expect(view.locator('.md-link-held')).toHaveText('the notes')
-  await expect(view.locator('a')).toHaveCount(0)
+  // A bare URL, as a GitHub issue pasted in carries them, is a link that opens outside the app, as GitHub draws it.
+  const bare = view.locator('a')
+  await expect(bare).toHaveCount(1)
+  await expect(bare).toHaveText('https://github.com/o/r/issues/7')
+  await expect(bare).toHaveAttribute('href', 'https://github.com/o/r/issues/7')
+  await expect(bare).toHaveAttribute('target', '_blank')
 
   // The priority.
   await page.locator('[data-ticket-priority]').click()
@@ -975,12 +980,15 @@ test('comments posted, edited and deleted with their numbers and their author, o
   await mark(second)
 
   // The first comment, as Markdown, previewed and posted: #1 by Nate.
-  await comments.locator('[data-comment-input]').fill('First, **bold**')
+  await comments.locator('[data-comment-input]').fill('First, **bold**, see https://example.net/log')
   await comments.getByRole('tab', { name: 'Preview' }).click()
   await expect(comments.locator('[data-comment-draft-preview] strong')).toHaveText('bold')
+  await expect(comments.locator('[data-comment-draft-preview] a')).toHaveAttribute('href', 'https://example.net/log')
   await comments.locator('[data-comment-submit]').click()
   const first = comments.locator('[data-comment="1"]')
   await expect(first.locator('[data-comment-body] strong')).toHaveText('bold')
+  // Its bare URL is a link, as in the description.
+  await expect(first.locator('[data-comment-body] a')).toHaveAttribute('href', 'https://example.net/log')
   await expect(first.locator('[data-comment-author]')).toHaveText('Nate')
   await expect(first.locator('[data-comment-n]')).toHaveText('#1')
   // The composer is empty again, on Write.

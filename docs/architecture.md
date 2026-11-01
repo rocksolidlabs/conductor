@@ -355,6 +355,56 @@ commit's together as one entry of a client's queue, by the `run` event's
 path: a client that cannot keep up is dropped and starts over from a
 snapshot, never for one commit's size, and no webhook or sink sees it.
 
+The reads are the store's too. A list (`query.go`) is one statement: a
+materialized set of the matching ids and sort keys, counted for the
+total and sorted for the page, then the page's summaries, every value a
+client gave a bound parameter and the cursor the last row's sort keys and
+id. Search is FTS5 (`tickets_fts`, contentless): an entry of each
+ticket's own (key, title, description, criteria) and one of each live
+comment, rewritten in the transaction of the operation that changed them,
+so a comment's write re-indexes that comment alone; a query is words,
+every term quoted and the last a prefix, and a ticket matches when each
+term is in one of its entries. A saved view (`views.go`) is a list's
+filter and sort kept as the store checks them, of one project or of
+every project. A goroutine prunes the receipts past the newest 20,000
+daily; the `changes` log still answers a resend older than that.
+
+Closing is the store's rule, not the page's. Acceptance (`acceptance.go`)
+is a fact of its own, recorded for the ticket's owner and against its
+criteria as they stand; the close policy's state (`CloseState`: what the
+project requires, what is met, what is missing and why) is computed on
+every read and never stored, so an owner or criteria changed later read
+true at once. A move to `done` is the only change it gates, refused
+`close_policy` with what is missing; any other status follows any other.
+A `delivery` link is a URL a person adds; a `run` link names a run the
+engine holds or has a record of, one live ticket a run.
+
+Three clients reach the routes. The workbench's pages (below) and
+`conductor dispatch` use the workbench token, as the admin. An attempt
+reaches only its run's ticket, through two routes under the session
+(`GET /api/sessions/{id}/ticket`, `POST …/ticket/comments`, by
+`taskSession`) with its own `CONDUCTOR_NOTIFY_TOKEN` over HTTP, as every
+task tool does: it reads the ticket and comments as `agent:<member>`,
+nothing more (`conductor task ticket`, the MCP tools `ticket_read` and
+`ticket_comment`). The comment's operation finds the run's ticket inside
+its own transaction (`AddRunComment`), so a resend answers its receipt
+whatever the run's link says by then.
+
+In the web app, `useDispatch.ts` is the client and `utils/dispatchOrder.ts`
+the gate every page's state goes through, the run page's rule per thing
+shown: each request is numbered as it is sent and its reply applied only
+above the last applied, never below the `rev` shown, and a `snapshot`
+resets it, since a store restored from a backup has lower revisions.
+`useDispatchOps.ts` sends an operation with a minted op id, the `rev`
+shown as `expectedRev` and the display name, once more with the same id
+when the reply is lost; a page's edits go one after another, each made on
+the ticket as the one before left it. `useDispatchLive.ts` re-reads on the
+`dispatch` event: a ticket's page at once for its own ticket and after
+the 250 ms window for the rest of its project, a list on its project's
+events, nothing polled. A ticket's page embeds `RunTasks.vue`, the run
+page's own Tasks rows, for each linked run, and the run page asks
+`GET /api/dispatch/links?run=` for its ticket's chip.
+
 ## Switchyard
 
 A switchyard is the server in a mode (`config.Switchyard`): the signaling
