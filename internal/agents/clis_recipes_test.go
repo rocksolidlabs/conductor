@@ -197,6 +197,17 @@ func TestReadOnlyArgsMatchTheCLIs(t *testing.T) {
 				t.Errorf("codex: %s is not a field of its granular policy (%q): %v\n%s", field, without, err, out)
 			}
 		}
+		// Codex takes an unknown field of the granular policy, or one left
+		// out, without a word (0.163.0), but refuses a value of the wrong
+		// type: so request_permissions, which has a default, is proved a
+		// field by a value that is not a boolean.
+		rp := strings.Replace(policy, "request_permissions=false", `request_permissions="x"`, 1)
+		if rp == policy {
+			t.Fatalf("codex: request_permissions is not false in %q", policy)
+		}
+		if out, err := codexTakes(t, "request-permissions-wrong", "-c", rp); err == nil || !strings.Contains(out, "request_permissions") || !strings.Contains(out, "expected a boolean") {
+			t.Errorf("codex: request_permissions is not a boolean field of its granular policy (%q): %v\n%s", rp, err, out)
+		}
 		if out, err := codexTakes(t, "policy-wrong", "-c", `approval_policy="not-a-policy"`); err == nil || !strings.Contains(out, "`granular`") {
 			t.Errorf("codex names no granular approval policy: %v\n%s", err, out)
 		}

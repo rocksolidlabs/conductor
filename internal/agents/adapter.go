@@ -85,9 +85,11 @@ type Adapter struct {
 	// ReadOnlyArgs, when set, returns the arguments that hold the agent to
 	// reading for one launch, through its own read-only mode: its file
 	// reads and Conductor's MCP tools left, nothing that writes or runs a
-	// command (Claude Code's tool rules, Codex's read-only sandbox). A
-	// Brakeman turn launches with them; an agent without them cannot be
-	// Brakeman's. nil for an agent Conductor knows no read-only mode of.
+	// command (Claude Code's tool rules, Codex's read-only sandbox). The
+	// adapter's definition says what its mode does not hold (Codex's: the
+	// person's own MCP servers and exec-policy allow rules). A Brakeman
+	// turn launches with them; an agent without them cannot be Brakeman's.
+	// nil for an agent Conductor knows no read-only mode of.
 	ReadOnlyArgs func() []string
 	// ModelArgs, when set, returns the arguments that choose model for one
 	// launch, through the agent's own flag, the model its value and never an
