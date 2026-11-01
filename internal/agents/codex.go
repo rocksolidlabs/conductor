@@ -141,6 +141,28 @@ func codexAdapter() Adapter {
 			}
 			return []string{"-c", "mcp_servers.conductor.command=" + tomlString(bin), "-c", `mcp_servers.conductor.args=["mcp"]`, "-c", "mcp_servers.conductor.env_vars=" + codexMCPEnv}
 		},
+		// Checked against `codex --help` (0.163.0) and by the recipes tier.
+		// Conductor's MCP server still reaches the server under the
+		// read-only sandbox: Codex starts it outside the sandbox (tried by
+		// hand with 0.163.0).
+		ReadOnlyArgs: func() []string { return []string{"--sandbox", "read-only", "-c", codexReadOnlyApprovals} },
+		ModelArgs: func(model string) []string {
+			if model == "" {
+				return nil
+			}
+			return []string{"--model=" + model}
+		},
+		// Codex asks before every tool of an MCP server ("Allow the
+		// conductor MCP server to run tool …?" in 0.163.0), whatever the
+		// sandbox, unless the server's default_tools_approval_mode is
+		// "approve" (one of auto, prompt, writes and approve; the recipes
+		// tier reads the list from Codex's refusal of another value).
+		AllowTools: func(server string) []string {
+			if !mcpServerName.MatchString(server) {
+				return nil
+			}
+			return []string{"-c", "mcp_servers." + server + `.default_tools_approval_mode="approve"`}
+		},
 		Status: func(home string) (bool, string) {
 			return statusOf(home, codexConfig, codexSteps("")...)
 		},
@@ -156,6 +178,16 @@ func codexAdapter() Adapter {
 		Events: []string{"needs_input", "working", "done", "tool_use"},
 	}
 }
+
+// codexReadOnlyApprovals is the approval policy of a read-only launch.
+// Under the read-only sandbox alone Codex asks the person to run a write the
+// sandbox blocked ("Would you like to run the following command?", 0.163.0,
+// on-request), and a yes would write. The granular policy turns every such
+// request down without asking (sandbox_approval, the person's command rules,
+// a request for more permissions) and still asks an MCP server's questions,
+// an MCP tool's approval among them (tried by hand with 0.163.0). A Codex
+// too old to know it refuses to start, so a launch never runs without it.
+const codexReadOnlyApprovals = `approval_policy={granular={sandbox_approval=false,rules=false,request_permissions=false,mcp_elicitations=true}}`
 
 // codexMCPEnv is the TOML list of the variables Codex passes on to
 // Conductor's MCP server (#354): every CONDUCTOR_* one a session sets.
