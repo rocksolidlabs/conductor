@@ -3249,8 +3249,38 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   in `internal/session`, `TestAWithdrawnSubmissionIsWithdrawnAsARevokedLinksIs`,
   `TestAWithdrawnTypedLineIsHeldWhateverEndedIt`.
 
-  PR-5 (#477): opencore: the open-core rules as a lint, failing on a planted
-  import. Planned.
+  PR-5 (#477): `internal/opencore`, standard library only: the open-core
+  rules as a lint. `Check(root)` reads `go.mod`, a root `go.work` and the
+  imports and build constraints of every `.go` file of the module with
+  `go/parser`, whatever their tags, a symlinked file where its link stands,
+  skipping `testdata`, `node_modules`, `vendor`, `internal/web/dist`,
+  directories beginning with `.` or `_`, other modules and symlinked
+  directories, and names each problem's rule, file and line:
+  `private-module` (an import of a module of the `rocksolidlabs`
+  organization other than this one, by path elements), `go-mod` (`go.mod`
+  or `go.work` requiring, replacing on either side or naming as a tool such
+  a module, replacing a module with a directory, or using a directory other
+  than the root),
+  `feature-tag` (a `//go:build` or `// +build` line naming anything but a
+  GOOS or GOARCH of `go tool dist list`, `unix`, `cgo`, `gc`, `gccgo`, a Go
+  version or a test tier, `recipes`, `pebble` or `network`; one that does
+  not parse is refused too) and `ext-std` (a file under `ext/` importing
+  anything but the standard library, told apart from a dotless module
+  `go.mod` or `go.work` names, and `ext`'s own packages) and
+  `unread-package` (an import of this module's package from a skipped
+  directory, which the build compiles all the same). `make lint`
+  runs `TestModuleKeepsTheRules` after `go vet`, so `make lint`, `make
+  preflight` and CI's go job fail on a planted import, with no workflow
+  change. Tests: `TestModuleKeepsTheRules`, `TestEachRuleCatchesItsPlant`
+  (four fixtures under `testdata/`, an import of
+  `…/conductor-premium/register`, a `go.mod` requiring
+  `…/conductor-cloud`, a `//go:build premium` file and a file of `ext/`
+  importing `internal/session`, each beside what its rule lets through,
+  each yielding exactly its plant), `TestPlatformTagsMatchTheToolchain`,
+  `TestFeatureTagRule`, `TestGoModRule`, `TestGoWorkRule`,
+  `TestExtStdKnowsADotlessModule`, `TestCheckReadsWhatTheBuildCompiles`,
+  `TestCheckSkipsWhatIsNotTheModule` and `TestCheckRefuses`, each checked
+  to fail with its part broken.
 
   PR-6 (#478): api: the identity provider after the token chain; a
   principal's subject in receipts. Planned.

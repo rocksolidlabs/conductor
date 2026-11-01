@@ -123,9 +123,10 @@ test-network: ## the built-in agents' sites, on the network (nightly)
 test-recipes: ## the recipe flags against the CLIs on this machine (nightly; CONDUCTOR_RECIPES_REQUIRE names one that must be there)
 	go test -count=1 -tags recipes -run Recipe -v ./internal/catalog/
 
-lint: ## gofmt and go vet
+lint: ## gofmt, go vet and the open-core rules (internal/opencore)
 	@out="$$(gofmt -l $(GO_FILES))"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	go vet ./...
+	go test -count=1 -run '^TestModuleKeepsTheRules$$' ./internal/opencore
 
 fmt: ## gofmt all Go files
 	gofmt -w $(GO_FILES)
