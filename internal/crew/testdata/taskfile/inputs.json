@@ -1,0 +1,40 @@
+{
+  "run": "r-0123456789ab",
+  "crew": "c-build",
+  "crewName": "Build crew",
+  "goal": "Ship the parser, tested.",
+  "task": "merge",
+  "attempt": 1,
+  "maxAttempts": 3,
+  "member": "lead",
+  "role": "You lead the build.",
+  "kind": "work",
+  "instructions": "Write the parser in parse.go & test it: <input> yields a tree.",
+  "worktree": "/repo/.conductor/worktrees/r-0123456789ab/merge.1",
+  "branch": "crew/r-0123456789ab/merge.1",
+  "start": "1111111111111111111111111111111111111111",
+  "startFrom": "task \"lexer\"'s result",
+  "inputs": [
+    {
+      "task": "lexer",
+      "attempt": 1,
+      "commit": "1111111111111111111111111111111111111111",
+      "branch": "crew/r-0123456789ab/lexer.1",
+      "summary": "The lexer."
+    },
+    {
+      "task": "parser",
+      "attempt": 2,
+      "commit": "2222222222222222222222222222222222222222",
+      "branch": "crew/r-0123456789ab/parser.2"
+    },
+    {
+      "task": "check",
+      "attempt": 1,
+      "commit": "2222222222222222222222222222222222222222",
+      "summary": "Approved.",
+      "verdict": "approved"
+    }
+  ],
+  "writtenAt": "2026-10-31T12:00:00Z"
+}
