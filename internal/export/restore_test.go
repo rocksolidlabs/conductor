@@ -1,14 +1,18 @@
 package export_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,10 +107,14 @@ func TestRestoreRefuses(t *testing.T) {
 // holding restore.lock, tls/x, ext/p/x, workbench-token, a database's
 // -wal, a .tmp file or a .restore- directory can neither plant a
 // credential, a lock or a provider's state nor name the restore's own
-// files, and each is refused before a byte is written.
+// files, and each is refused before a byte is written. So is each in
+// another case or with a trailing dot, the names a filesystem may resolve
+// to the same file.
 func TestRestoreRefusesReservedPaths(t *testing.T) {
 	for _, rel := range []string{export.LockFile, "tls/x", "ext/p/x", "workbench-token", "workbench-token.lock", "runs/owner.lock", "runs/managed.sqlite-wal",
-		"dispatch/dispatch.sqlite-shm", "crews/team.json.tmp", ".probe-1", ".restore-0123/catalog.json", "dispatch/attachments/tmp/up"} {
+		"dispatch/dispatch.sqlite-shm", "crews/team.json.tmp", ".probe-1", ".restore-0123/catalog.json", "dispatch/attachments/tmp/up",
+		"Restore.Lock", "TLS/account.key", "tls./account.key", "Ext/provider/state.json", "Workbench-Token", "workbench-token.", "WORKBENCH-TOKEN.LOCK",
+		"runs/Owner.Lock", "runs/managed.SQLITE-WAL", "crews/team.json.TMP", ".Probe-1", ".RESTORE-0123/catalog.json", "dispatch/Attachments/TMP/up"} {
 		refused(t, craft(t, [2]string{"crews/team.json", "{}"}, [2]string{rel, "x"}), "which no restore takes")
 	}
 }
@@ -307,4 +315,86 @@ func TestRestoreRefusesAMissingAttachment(t *testing.T) {
 	cut.CreatedAt = time.Now().UTC()
 	export.SetBeforeRename(t, func(name string) { t.Errorf("renamed %s", name) })
 	refused(t, zipOf(t, append(items, manifestItem(t, cut))), atts[1].SHA256)
+}
+
+// An attachment's file whose bytes are not its name is refused before a
+// byte is written, though its manifest lists the bytes' own SHA-256 and
+// size: omega's under alpha's hash, and under alpha's hash in capitals.
+func TestRestoreRefusesAnAttachmentNotItsName(t *testing.T) {
+	f := newFixture(t)
+	_, atts := f.ticket(t, [2]string{"a.txt", "alpha"})
+	b, m := archive(t, f.source())
+	_, files := entries(t, b)
+	named := "dispatch/" + dispatch.AttachmentPath(atts[0].SHA256)
+	for _, as := range []string{named, strings.ToUpper(named[:len("dispatch/attachments/")]) + strings.ToUpper(named[len("dispatch/attachments/"):])} {
+		swapped := m
+		swapped.Files = nil
+		var items []item
+		found := false
+		for _, file := range m.Files {
+			data := files[export.DataDir+file.Path]
+			if file.Path == named {
+				found = true
+				file, data = fileOf(as, []byte("omega")), []byte("omega")
+			}
+			swapped.Files = append(swapped.Files, file)
+			items = append(items, item{name: export.DataDir + file.Path, data: data})
+		}
+		if !found {
+			t.Fatalf("the archive lacks %s", named)
+		}
+		export.SetBeforeRename(t, func(name string) { t.Errorf("renamed %s", name) })
+		refused(t, zipOf(t, append(items, manifestItem(t, swapped))), "is an attachment's file named for")
+	}
+}
+
+// A restore cancelled while it reads an entry ends there, before the
+// entry's end: a large entry is not read through after its context ends.
+func TestRestoreCancelledWithinAnEntry(t *testing.T) {
+	// The big entry first, and after it an entry larger than the tail
+	// archive/zip reads to find its directory (65 KiB at most), so that
+	// only the big entry's own reads touch its bytes.
+	rng := rand.NewChaCha8([32]byte{1})
+	big, pad := make([]byte, 1<<20), make([]byte, 128<<10)
+	rng.Read(big)
+	rng.Read(pad)
+	b := craft(t, [2]string{"crews/big.bin", string(big)}, [2]string{"crews/pad.bin", string(pad)})
+	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	from, err := zr.File[0].DataOffset()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &cancelWithin{r: bytes.NewReader(b), from: from, to: from + int64(zr.File[0].CompressedSize64), cancel: cancel}
+	dir := filepath.Join(t.TempDir(), "data")
+	_, err = export.Restore(ctx, r, int64(len(b)), dir)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("the restore: %v", err)
+	}
+	if got := r.read.Load(); got >= r.to-r.from {
+		t.Fatalf("%d of the entry's %d bytes read after its context ended", got, r.to-r.from)
+	}
+	sameListing(t, dir, map[string]string{})
+}
+
+// cancelWithin is r, cancelling at its first read of [from, to) and
+// counting the bytes of that range it is asked for.
+type cancelWithin struct {
+	r        io.ReaderAt
+	from, to int64
+	cancel   func()
+	read     atomic.Int64
+}
+
+func (c *cancelWithin) ReadAt(p []byte, off int64) (int, error) {
+	n, err := c.r.ReadAt(p, off)
+	if lo, hi := max(off, c.from), min(off+int64(n), c.to); lo < hi {
+		c.read.Add(hi - lo)
+		c.cancel()
+	}
+	return n, err
 }

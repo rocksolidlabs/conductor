@@ -49,8 +49,9 @@ var leftOut = []leftRule{
 
 // reserved says why the slash path rel, relative to the data directory,
 // is one leftOut names (itself, or a directory it is under), and whether
-// it is.
+// it is. rel is compared folded (fold), as a filesystem may resolve it.
 func reserved(rel string) (string, bool) {
+	rel = fold(rel)
 	elems := strings.Split(rel, "/")
 	for _, r := range leftOut {
 		switch {
@@ -67,6 +68,19 @@ func reserved(rel string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// fold is the slash path rel as the filesystems a data directory may be on
+// resolve its names: every element in lower case and without its trailing
+// dots. leftOut's rows are written folded.
+func fold(rel string) string {
+	elems := strings.Split(strings.ToLower(rel), "/")
+	for i, e := range elems {
+		if t := strings.TrimRight(e, "."); t != "" {
+			elems[i] = t
+		}
+	}
+	return strings.Join(elems, "/")
 }
 
 // maxPath bounds a path an archive holds, in bytes.

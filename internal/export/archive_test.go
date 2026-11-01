@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -150,7 +151,7 @@ func TestRoundTrip(t *testing.T) {
 
 // What the export leaves out it lists with why: the workbench token and
 // its lock, restore.lock, the ledger's owner lock, the databases' -wal
-// and -shm, *.tmp, .probe-*, a .restore- directory, Dispatch's uploads'
+// and -shm, *.tmp (in any case), .probe-*, a .restore- directory, Dispatch's uploads'
 // temporary directory, tls/, ext/, a link, and a name no archive holds;
 // none is in the archive, which restores.
 func TestExportLeavesOut(t *testing.T) {
@@ -163,6 +164,7 @@ func TestExportLeavesOut(t *testing.T) {
 		"tls/account.key":                "key",
 		"ext/provider/state.json":        "{}",
 		"x.tmp":                          "tmp",
+		"crews/notes.TMP":                "tmp",
 		"crews/team.json.123.tmp":        "tmp",
 		".probe-123":                     "",
 		".restore-abc/catalog.json":      "{}",
@@ -182,6 +184,7 @@ func TestExportLeavesOut(t *testing.T) {
 		"ext/":                      export.WhyProvider,
 		"x.tmp":                     export.WhyTemporary,
 		"crews/team.json.123.tmp":   export.WhyTemporary,
+		"crews/notes.TMP":           export.WhyTemporary,
 		".probe-123":                export.WhyTemporary,
 		".restore-abc/":             export.WhyTemporary,
 		"dispatch/attachments/tmp/": export.WhyTemporary,
@@ -258,6 +261,49 @@ func TestExportRecordsBeforeTheLedger(t *testing.T) {
 		t.Fatalf("the archive holds a record of %s, made after the records' copy", started)
 	}
 
+	restoredRecordsMatch(t, b, done, started)
+}
+
+// A run's record written after the ledger's snapshot (through the seam
+// after Dispatch's): a new run's, made with its record, and a record that
+// was missing at the records' copy, written at a later revision. Neither
+// goes in, though the walk meets both; restored and served, every managed
+// run's record is its ledger's, and the new run, which the archived
+// ledger does not hold, has none.
+func TestExportNeverTakesARecordAfterTheLedger(t *testing.T) {
+	f := newFixture(t)
+	const kept, late, made = "team-00000001", "team-00000002", "team-00000003"
+	f.run(t, kept, ledger.RunRunning)
+	f.ledgerRun(t, late, ledger.RunRunning)
+	export.SetAfterDispatchSnapshot(t, func(n int) {
+		if n != 1 {
+			return
+		}
+		f.run(t, made, ledger.RunRunning)
+		f.finish(t, late)
+		f.record(t, late)
+	})
+	b, _ := archive(t, f.source())
+	_, files := entries(t, b)
+	if _, ok := files[export.DataDir+"runs/"+kept+".json"]; !ok {
+		t.Fatalf("the archive lacks the record of %s, there at the records' copy", kept)
+	}
+	for _, id := range []string{late, made} {
+		if _, ok := files[export.DataDir+"runs/"+id+".json"]; ok {
+			t.Fatalf("the archive holds the record of %s, written after the ledger's snapshot", id)
+		}
+	}
+	dst := restoredRecordsMatch(t, b, kept, late)
+	if _, err := os.Lstat(filepath.Join(dst, "runs", made+".json")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the restored directory holds a record of %s, which its ledger does not: %v", made, err)
+	}
+}
+
+// restoredRecordsMatch restores b, serves it once and stops it, and fails
+// t unless the restored ledger holds the runs ids, each with its record at
+// the ledger's revision and state. It returns the restored directory.
+func restoredRecordsMatch(t *testing.T, b []byte, ids ...string) string {
+	t.Helper()
 	dst := filepath.Join(t.TempDir(), "restored")
 	if _, err := restore(b, dst); err != nil {
 		t.Fatal(err)
@@ -279,10 +325,12 @@ func TestExportRecordsBeforeTheLedger(t *testing.T) {
 	}
 	defer l.Close()
 	rows, err := l.Runs(context.Background())
-	if err != nil || len(rows) != 2 {
-		t.Fatalf("the restored ledger's runs: %d %v", len(rows), err)
+	if err != nil {
+		t.Fatal(err)
 	}
+	var got []string
 	for _, row := range rows {
+		got = append(got, row.ID)
 		rec, ok, err := records.Get(row.ID)
 		switch {
 		case err != nil || !ok || rec.Managed == nil:
@@ -291,6 +339,12 @@ func TestExportRecordsBeforeTheLedger(t *testing.T) {
 			t.Fatalf("%s: the record at revision %d (%s), the ledger at %d (%s)", row.ID, rec.Managed.Revision, rec.State, row.Revision, row.State)
 		}
 	}
+	slices.Sort(got)
+	want := slices.Sorted(slices.Values(ids))
+	if !slices.Equal(got, want) {
+		t.Fatalf("the restored ledger's runs: %v, not %v", got, want)
+	}
+	return dst
 }
 
 // keyed is a configured agent with an env value and an adapter.
