@@ -294,6 +294,9 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 		s.extFailed(kind, name, "busy", fmt.Sprintf("%d calls in flight", extInFlight))
 		return fallback
 	}
+	if f := extWaiting.Load(); f != nil {
+		wait = *f
+	}
 	cctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	// failed is a failure's text, read on the call's goroutine (extText):
@@ -369,6 +372,11 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 // every direct call as its goroutine begins, before fn runs, and may hold
 // it there; nil outside tests.
 var extCalling atomic.Pointer[func(kind, name string)]
+
+// extWaiting, when a test sets it, is every direct call's wait in place of
+// its kind's (ext.ICEWait and the rest), so a test of what ends a call
+// before its wait does not race the product's bound; nil outside tests.
+var extWaiting atomic.Pointer[time.Duration]
 
 // extDeliver runs fn, a delivery to the provider name of kind, on the
 // calling goroutine (a queue's drain, or a list that drops nothing) with a
@@ -737,17 +745,15 @@ type guardMedia struct {
 
 func (g guardMedia) Name() string { return g.name }
 
-// ICEServers answers the provider's servers for r, or none (the free
-// default's) when it fails, is late or answers more than ext.MaxICEServers
-// or a server ICEServer.Valid refuses. It never answers an error.
+// ICEServers answers the provider's servers for r, the first
+// ext.MaxICEServers of them when it answers more (the rest are never
+// read), or none (the free default's) when it fails, is late or answers a
+// server ICEServer.Valid refuses among those. It never answers an error.
 func (g guardMedia) ICEServers(ctx context.Context, r ext.ICERequest) ([]ext.ICEServer, error) {
 	if !live(g.ready) {
 		return nil, nil
 	}
 	return extCall(ctx, g.s, ext.KindMedia, g.name, ext.ICEWait, nil, func(ss []ext.ICEServer) error {
-		if len(ss) > ext.MaxICEServers {
-			return fmt.Errorf("ice: %d servers, past %d", len(ss), ext.MaxICEServers)
-		}
 		for _, sv := range ss {
 			if err := sv.Valid(); err != nil {
 				return err
@@ -756,7 +762,7 @@ func (g guardMedia) ICEServers(ctx context.Context, r ext.ICERequest) ([]ext.ICE
 		return nil
 	}, func(ctx context.Context) ([]ext.ICEServer, error) {
 		ss, err := g.p.ICEServers(ctx, r)
-		ss = copyOrNil(ss)
+		ss = copyOrNil(ss[:min(len(ss), ext.MaxICEServers)])
 		for i := range ss {
 			ss[i].URLs = copyOrNil(ss[i].URLs)
 		}
