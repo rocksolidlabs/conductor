@@ -191,6 +191,11 @@ author; the `dco` check proves it.
   size limit and a test.
 - A new dependency needs its reason in the pull request and `make notices`,
   committed with it.
+- Code in this repository never asks the entitlement source
+  (`ext.EntitlementSource`) whether a feature is allowed: only the paid
+  providers do, outside it; a free feature has no entitlement to ask about.
+  `make lint` fails on a call site outside `ext/` (the `entitlements` rule
+  of `internal/opencore`).
 - Every shipped feature gets its `docs/features.md` entry.
 
 ## Licence, marks, security
