@@ -181,8 +181,40 @@ func TestEverySessionRouteIsInTheTable(t *testing.T) {
 	}
 }
 
+// encodedLen is the bytes s takes inside a JSON string as the guide
+// writes it, HTML escaping off: a control character its six-byte escape.
+func encodedLen(t *testing.T, s string) int {
+	t.Helper()
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		t.Fatal(err)
+	}
+	return b.Len() - len(`""`) - len("\n")
+}
+
+// Every operation's summary and description fit their bounds as the
+// guide encodes them, so a summary at its bound in
+// TestEachSectionIsBounded, ASCII that encodes as written, is the
+// longest the table can hold.
+func TestEveryOperationFitsItsBounds(t *testing.T) {
+	if n := encodedLen(t, "a\x01\u2028\"<"); n != 1+6+6+2+1 {
+		t.Fatalf("encodedLen: %d", n)
+	}
+	for _, op := range Operations() {
+		if n := encodedLen(t, op.Summary); n > maxOpSummary || op.Summary == "" {
+			t.Errorf("%s: a summary of %d bytes encoded, over %d", op.Name, n, maxOpSummary)
+		}
+		if n := encodedLen(t, op.Description); n > maxOpDescription {
+			t.Errorf("%s: a description of %d bytes encoded, over %d", op.Name, n, maxOpDescription)
+		}
+	}
+}
+
 // The largest guide the table can make: every operation's summary and
-// description at their bounds, more agents than the host section lists
+// description at their bounds as encoded (TestEveryOperationFitsItsBounds),
+// more agents than the host section lists
 // with their ids and adapters at their bounds and their names at theirs
 // in the rune encoding/json writes longest (a control one, six bytes;
 // U+2028 is as long but a space, and a name is not blank), the

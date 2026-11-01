@@ -2085,7 +2085,7 @@ KiB, which a test holds with every entry at its largest (a past bound is
   goes to a person with `ask`.
 - `operations`: the operations the caller's scopes reach on this server,
   each `{name, summary, scope, method, path, mcp?, cli?, input, receipt?,
-  revision?, bounds?}`: `summary` at most 300 bytes; `path` the mux's
+  revision?, bounds?}`: `summary` at most 300 bytes as encoded; `path` the mux's
   pattern after the method; `mcp` the tool's name; `cli` the command's
   words; `input` the JSON Schema of the tool's arguments, or of the body
   read from the type the route decodes (every field it takes, an

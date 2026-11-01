@@ -35,11 +35,12 @@ import (
 type Operation struct {
 	// Name is the operation's name, the MCP tool's when it has one.
 	Name string `json:"name"`
-	// Summary is the guide's line, at most maxOpSummary bytes.
+	// Summary is the guide's line, at most maxOpSummary bytes as the
+	// guide encodes it (a character JSON escapes counts as its escape).
 	Summary string `json:"summary"`
 	// Description is the MCP tool's description, verbatim, at most
-	// maxOpDescription bytes, apart from Summary so neither bound breaks
-	// the other. The guide's operations section leaves it out: tools/list
+	// maxOpDescription bytes as encoded, apart from Summary so neither
+	// bound breaks the other. The guide's operations section leaves it out: tools/list
 	// carries it.
 	Description string `json:"description,omitempty"`
 	// Scope is who reaches it: admin, session (any session), task (an
