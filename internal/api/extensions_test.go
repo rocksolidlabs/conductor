@@ -330,21 +330,13 @@ func TestExtCallInvalid(t *testing.T) {
 	if got, ok, _ := g.Authenticate(t.Context(), "tok"); !ok || got.Subject != "u1" {
 		t.Fatalf("a valid principal was refused: %+v %v", got, ok)
 	}
-	// ICE servers past the bound, or one a browser refuses, are none.
+	// ICE servers among which one a browser refuses are none; past the
+	// bound they are cut to it (TestMediaBounds).
 	stun := ext.ICEServer{URLs: []string{"stun:stun.example.test:3478"}}
-	for _, ss := range [][]ext.ICEServer{
-		make([]ext.ICEServer, ext.MaxICEServers+1),
-		{stun, {URLs: []string{"http://example.test"}}},
-	} {
-		for i := range ss {
-			if ss[i].URLs == nil {
-				ss[i] = stun
-			}
-		}
-		m := guardMedia{s: srv, name: "turn", p: fakeMedia{answer: func(context.Context) ([]ext.ICEServer, error) { return ss, nil }}}
-		if got, _ := m.ICEServers(t.Context(), ext.ICERequest{Purpose: "viewer"}); got != nil {
-			t.Fatalf("invalid servers were used: %+v", got)
-		}
+	ss := []ext.ICEServer{stun, {URLs: []string{"http://example.test"}}}
+	m := guardMedia{s: srv, name: "turn", p: fakeMedia{answer: func(context.Context) ([]ext.ICEServer, error) { return ss, nil }}}
+	if got, _ := m.ICEServers(t.Context(), ext.ICERequest{Purpose: "viewer"}); got != nil {
+		t.Fatalf("invalid servers were used: %+v", got)
 	}
 	// A route whose answer is no choice the question offers is the empty
 	// route.

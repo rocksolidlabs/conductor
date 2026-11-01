@@ -3306,8 +3306,36 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   proposes a plan revision; its approval is refused `409 invalid` and the
   revision stays proposed), each checked to fail with its part broken.
 
-  PR-7 (#479): api: notification sinks over the event hub, the webhooks the
-  first. Planned.
+  PR-7 (#479): `internal/api`: notification sinks over the event hub, the
+  webhooks the first. The notifier (`notify.go`) takes the webhooks'
+  place on the hub, so the hub's sinks stay in main's order (the
+  notifier, then the run engine's `OnActivity`); within it the webhooks
+  come first, in config order, then the providers' sinks, in registration
+  order, each with a queue of `SinkQueue` (256) that never makes the hub
+  wait and drops its oldest. An entry is typed once, its session looked
+  up once when a sink wants it, and one `ext.Notification` queued for
+  every sink whose `Events` is nil or lists the entry's event name or its
+  own type; a provider's notice (`Host.Notify`) goes only to the sinks
+  that list `TypeProvider`, never to a webhook. A webhook's body is
+  rebuilt from the notification (`webhookBody`, main's `webhookPayload`,
+  built once per entry), its ring now an `extQueue`, its bound, timeout,
+  address rule, redirect rule and logs unchanged; a sink's `Events` is
+  read once on its own goroutine, and what was queued before it was read
+  is decided at delivery. A plain build adds no sink to the hub. Tests:
+  every existing `webhooks_test.go` test, unchanged;
+  `TestWebhooksUnchanged` (seventeen kinds of entry, of a session the
+  registry holds and of one it does not, with and without a provider's
+  sink beside: body, `X-Conductor-Event` and signature equal main's
+  construction, kept in the test; every field of an entry survives its
+  notification), `TestSinkGetsEveryAttentionEvent` (10 sessions, 1,000
+  changes, three sinks, each's in order, none dropped),
+  `TestBlockedSinkNeverHoldsTheHub` (a sink that never returns: the hub,
+  the session, the webhook and the other sink go on, its 244 drops
+  counted), `TestSinkEventsFilter`, `TestProviderNoticesCannotLoop`,
+  `TestSinkPanicRecovered`, `TestSinksInMainsOrder`, each checked to fail
+  with its part broken; `TestSinkFirstNotifyGetsFullDeliveryWait` (review
+  round 1: a sink that is no `Starter` and whose `Events` is slow still
+  gives its first `Notify` the whole `DeliveryWait`).
 
   PR-8 (#480): crew, api: context blocks in the task files; file touches to
   the context providers. Planned.
@@ -3352,8 +3380,40 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestModuleKeepsTheRules` with the rule (the module clean), each checked
   to fail with its part broken.
 
-  PR-15 (#487): api: the four ICE sites through the media provider; GET
-  /api/ice keeps credentials. Planned.
+  PR-15 (#487): `internal/api`: the four ICE sites through the media
+  provider (C8). `iceServersFor` (`media.go`) answers every configured
+  server first, as main sends it, never counted or cut, then the media
+  provider's through the guard (`ICEWait`, each `Valid`, the first eight
+  of more), so a late, failing, panicking or invalid provider adds none and
+  the free default adds nothing. A hosted viewer's welcome (asked with the
+  session, the viewer's role and its id), a host's `registered` (its
+  session) and the paste answerer's servers (the session and the role) go
+  through it; `GET /api/ice` too, as the offer, for which the provider is
+  never asked: it answers the configured `stun:` and `stuns:` URLs byte
+  for byte as main does, never a `turn:` URL, a user name or a credential.
+  A welcome keeps as many of the provider's servers as leave it one
+  CONTROL frame (8 KiB), the last dropped first; `Room` has no caller yet
+  (CL1's). A switchyard's open host, registered with no token, and its
+  session's viewers are handed the configured servers alone, the provider
+  never asked for them (review round 1: nobody authenticated that host,
+  as nobody authenticates `GET /api/ice`). A viewer whose link is revoked
+  or expires while the provider answers is never sent the welcome or its
+  servers: the ask is canceled with the viewer and it is closed with its
+  reason (review round 1, Codex). Tests: `TestICEStaticUnchanged` (STUN only, STUN with a TURN
+  server and its credential, nine and twenty configured servers, with no
+  provider and with one adding eight: the four sites main's, the
+  provider's after), `TestICEOfferNeverAsksTheProvider`,
+  `TestMediaServersReachViewersAndHosts` (the servers and the request each
+  site asks with), `TestICENeverLeaksCredentials` (the route and the log),
+  `TestMediaBounds` (late, failing, panicking and five kinds of invalid
+  server add none; nine cut to eight; a welcome within its frame, the
+  configured servers never cut), `TestRoomDefault`,
+  `TestICEOpenHostsNeverAskTheProvider` (an open host and its viewer get
+  the configured servers and the provider is asked nothing; a tokened
+  host on the same switchyard and its viewer get the provider's),
+  `TestICEViewerRevokedWhileTheProviderAnswers` (the ask canceled by the
+  revoke, no welcome, closed as revoked); each fails with its part
+  broken.
 
   PR-16 (#488): api, web: GET /api/capabilities and the app card's
   Extensions row. Planned.

@@ -523,7 +523,7 @@ notice (500 bytes of message, 2,048 of URL, one line each) and types it
 `TypeProvider` (read once, from `Events`, on the provider's own goroutine
 before its first `Start`, so a slow sink holds up nothing else) may not
 send one (`ErrUnsupported`), so notices never loop between providers;
-until the notification seam no sink is handed one. `DataDir` is
+the sinks that list `TypeProvider` are handed it (Notifications, below). `DataDir` is
 `<dataDir>/ext/<name>`, made 0700 through the store. `Log` is the
 server's logger naming the provider.
 
@@ -546,6 +546,33 @@ their receipts are kept under `admin` for the workbench token and
 `user:<subject>` (`ext.SubjectActor`, at most 53 bytes) for a provider's
 principal, so a provider's subject never shares the receipts of `admin`,
 `merge` or `agent:<member>`. Nothing stored changes shape.
+
+**Notifications.** The event hub has one sink for everything that takes
+the sessions' activity elsewhere, the notifier (`internal/api/notify.go`),
+added by `New` where the webhooks' sink always was, so the hub hands an
+entry to the SSE clients, then the notifier, then the run engine's
+`OnActivity`, as before. Its sinks are the webhooks of the config, in
+config order, then the providers' notification sinks, in registration
+order. It types each entry once (`eventTypeOf`), looks its session up once
+(name, agent, crew reference) and only when a sink wants the entry, and
+queues one `ext.Notification` for every sink that takes it: a sink whose
+`Events` is nil takes every session entry, any other the entries whose
+event name or own type it lists, the rule a webhook applies. A webhook is
+the first kind of sink: its body is rebuilt from the notification, which
+carries every field of the entry (`webhookBody`, the same
+`webhookPayload` as before, built once for every webhook that wants the
+entry), so its body, `X-Conductor-Event` and signature are byte for byte
+what they were; its queue is an `extQueue` too (256, the oldest dropped,
+the drops logged as a webhook's), delivered by the webhook itself, with
+its timeout, address rule and redirect rule unchanged. A provider's
+notice (`Host.Notify`) reaches only the sinks that list `TypeProvider`,
+never a webhook (no webhook may list it). Each sink's `Events` is read
+once, on its own goroutine (its supervisor's before its first `Start`, or
+its queue's first delivery, before that delivery's `DeliveryWait`
+starts), never by the hub: until it is read the
+notifier queues everything for the sink and its delivery decides. No
+sink delays the hub, a session, the engine or another sink; a server with
+no webhook and no sink adds no notifier.
 
 ## Packages
 
