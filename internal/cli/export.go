@@ -158,12 +158,18 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) (in
 	var c *apiClient
 	var src export.Source
 	if offline {
-		if err := outsideOf(*dataDir, root, outDir, path); err != nil {
+		// The data directory is resolved once, as the system resolves it,
+		// and that one directory is the one checked against --out,
+		// reserved and read.
+		dir, err := dataDirOf(*dataDir)
+		if err != nil {
+			return 1, err
+		}
+		if err := outsideOf(dir, root, outDir, path); err != nil {
 			return 1, err
 		}
 		var res *export.Reservation
-		var err error
-		if src, res, err = offlineSource(*dataDir, *configPath); err != nil {
+		if src, res, err = offlineSource(dir, *configPath); err != nil {
 			return 1, err
 		}
 		defer res.Release()
@@ -235,17 +241,52 @@ func splitOut(out string) (dir, name string) {
 	return dir, name
 }
 
+// dataDirOf is the --data-dir dir as the system resolves it: absolute,
+// with every link followed where it appears and a ".." taken from where
+// the link before it goes, never by cleaning the path (with sub a link to
+// /data/crews, sub/.. is /data; cleaned it would be the directory sub is
+// in). A path the system cannot resolve (data/missing/.., with no
+// missing) is refused, not cleaned into one it can. The result has no
+// link and no "..", so cleaning it, as filepath.Join and Abs do, keeps
+// the directory it names.
+func dataDirOf(dir string) (string, error) {
+	path := dir
+	if !filepath.IsAbs(path) {
+		if filepath.VolumeName(path) != "" {
+			// A drive-relative path (C:data, on Windows): Abs resolves its
+			// drive's own working directory.
+			abs, err := filepath.Abs(path)
+			if err != nil {
+				return "", fmt.Errorf("export: --data-dir %s: %w", dir, err)
+			}
+			path = abs
+		} else {
+			wd, err := os.Getwd()
+			if err != nil {
+				return "", fmt.Errorf("export: --data-dir %s: %w", dir, err)
+			}
+			path = wd + string(os.PathSeparator) + path
+		}
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("export: the data directory %s: %w", dir, err)
+	}
+	return resolved, nil
+}
+
 // outsideOf refuses an archive out, to be created in root (opened at its
-// uncleaned directory outDir), inside the data directory dir, which the
-// export walks: it would read the archive it is writing, growing it as it
-// reads. Inside is by identity: root itself, or a directory above it,
-// reached by appending ".." to outDir (never by cleaning a path), is the
-// same directory as dir, so a link, a link followed by "..", a spelling a
-// filesystem folds or a bind mount of dir is inside too.
+// uncleaned directory outDir), inside the data directory dir (resolved by
+// dataDirOf, the directory the export reserves and walks): it would read
+// the archive it is writing, growing it as it reads. Inside is by
+// identity: root itself, or a directory above it, reached by appending
+// ".." to outDir (never by cleaning a path), is the same directory as dir,
+// so a link, a link followed by "..", a spelling a filesystem folds or a
+// bind mount of dir is inside too.
 func outsideOf(dir string, root *os.Root, outDir, out string) error {
 	di, err := os.Stat(dir)
 	if err != nil {
-		return nil // offlineSource says what is wrong with it
+		return fmt.Errorf("export: the data directory %s: %w", dir, err)
 	}
 	ri, err := root.Stat(".")
 	if err != nil {
@@ -282,8 +323,8 @@ func outsideOf(dir string, root *os.Root, outDir, out string) error {
 // gives, as serve would load it. A directory that restore.lock reserves,
 // whose ledger a server holds (checked under the reservation, so a server
 // that started before it is seen), or that holds no server data, is
-// refused. The caller releases the reservation once the archive is
-// written.
+// refused. dir is dataDirOf's, the directory outsideOf checked. The
+// caller releases the reservation once the archive is written.
 func offlineSource(dir, configPath string) (export.Source, *export.Reservation, error) {
 	refuse := func(err error) (export.Source, *export.Reservation, error) {
 		return export.Source{}, nil, err

@@ -3523,7 +3523,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (default `conductor-export-<UTC time>.zip`, 0600, `O_EXCL`, never over a
   file, and with `--data-dir` never inside the directory it reads, by
   identity, a link followed by `..` taken where the system takes it and
-  the archive created through the directory checked),
+  the archive created through the directory checked; `--data-dir` itself
+  resolved once, as the system resolves it, a `..` after a missing child
+  refused, and that one directory checked, reserved and read),
   kept only once it ends in its manifest, and says on stderr that the
   archive holds the agents' env values. `conductor restore FILE` goes into
   `--data-dir` or the directory `serve` would use (`config.Load`, then
@@ -3547,6 +3549,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestExportThroughTheServer`, `TestExportThroughTheServerCutShort`,
   `TestExportOffline`, `TestExportOfflineRefusesNoServerData`,
   `TestExportOfflineOutsideTheDataDir`, `TestExportOfflineLinkThenDotDot`,
+  `TestExportOfflineDataDirAsTheSystemResolvesIt`,
   `TestExportOfflineHoldsTheReservation`, `TestExportNeverOverwrites`,
   `TestExportSaysEnvIsKept`, `TestExportOfflineResolvesCatalog`,
   `TestRestoreInstalls`, `TestRestoreRefusesServerData`,

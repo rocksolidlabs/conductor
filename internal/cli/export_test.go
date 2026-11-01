@@ -246,7 +246,8 @@ func archiveFiles(t *testing.T, path string) ([]string, map[string][]byte) {
 }
 
 // tree is every path under dir, a directory's ending in a slash and a
-// file's with its content: what a refused command must leave as it was.
+// file's with its content, a link's with where it goes: what a refused
+// command must leave as it was.
 func tree(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
@@ -258,6 +259,11 @@ func tree(t *testing.T, dir string) map[string]string {
 		if d.IsDir() {
 			out[filepath.ToSlash(rel)+"/"] = ""
 			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			to, err := os.Readlink(p)
+			out[filepath.ToSlash(rel)] = "-> " + to
+			return err
 		}
 		b, err := os.ReadFile(p)
 		if err != nil {
@@ -571,6 +577,60 @@ func TestExportOfflineLinkThenDotDot(t *testing.T) {
 		if code, _, _, err := exportCmd(t, "--data-dir", dir, "--out", out); code != 2 || err == nil || !strings.Contains(err.Error(), "names a directory") {
 			t.Fatalf("--out %s: %d %v", out, code, err)
 		}
+	}
+}
+
+// --data-dir is resolved once, as the system resolves it, and that one
+// directory is checked against --out, reserved and read: a ".." after a
+// child that is not there is refused, not cleaned into the data directory
+// with an --out inside it; with sub a link from the data directory to a
+// directory elsewhere, dir/sub/.. is that elsewhere (which holds no server
+// data), never dir with the archive inside it; with crews a link from
+// beside the data directory to its crews, crews/.. is the data directory,
+// exported whole, and an --out in it is inside.
+func TestExportOfflineDataDirAsTheSystemResolvesIt(t *testing.T) {
+	clearConductorEnv(t)
+	dir, id := sourceDir(t)
+	elsewhere := filepath.Join(realTempDir(t), "elsewhere")
+	if err := os.MkdirAll(filepath.Join(elsewhere, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(elsewhere, "inner"), filepath.Join(dir, "sub")); err != nil {
+		t.Fatal(err)
+	}
+	links := realTempDir(t)
+	if err := os.Symlink(filepath.Join(dir, "crews"), filepath.Join(links, "crews")); err != nil {
+		t.Fatal(err)
+	}
+	before := tree(t, dir)
+	sep := string(os.PathSeparator)
+	for _, c := range []struct{ dataDir, why string }{
+		{dir + sep + "missing" + sep + "..", "the data directory"},
+		{dir + sep + "sub" + sep + "..", "holds no server data"},
+	} {
+		out := filepath.Join(dir, "zzz.zip")
+		code, _, _, err := exportCmd(t, "--data-dir", c.dataDir, "--out", out)
+		if code != 1 || err == nil || !strings.Contains(err.Error(), c.why) {
+			t.Fatalf("--data-dir %s --out %s: %d %v", c.dataDir, out, code, err)
+		}
+		if _, err := os.Lstat(out); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("--data-dir %s wrote %s: %v", c.dataDir, out, err)
+		}
+	}
+	sameTree(t, dir, before)
+
+	viaLink := links + sep + "crews" + sep + ".."
+	inside := filepath.Join(dir, "a.zip")
+	if code, _, _, err := exportCmd(t, "--data-dir", viaLink, "--out", inside); code != 1 || err == nil || !strings.Contains(err.Error(), "inside the data directory") {
+		t.Fatalf("--data-dir %s --out %s: %d %v", viaLink, inside, code, err)
+	}
+	sameTree(t, dir, before)
+	out := filepath.Join(links, "a.zip")
+	if code, stdout, stderr, err := exportCmd(t, "--data-dir", viaLink, "--out", out); code != 0 || err != nil {
+		t.Fatalf("--data-dir %s --out %s: %d %v\n%s%s", viaLink, out, code, err, stdout, stderr)
+	}
+	if names, _ := archiveFiles(t, out); !slices.Contains(names, export.DataDir+"crews/"+id+".json") {
+		t.Fatalf("the archive of %s: %v", viaLink, names)
 	}
 }
 
