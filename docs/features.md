@@ -3312,7 +3312,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   the session, the webhook and the other sink go on, its 244 drops
   counted), `TestSinkEventsFilter`, `TestProviderNoticesCannotLoop`,
   `TestSinkPanicRecovered`, `TestSinksInMainsOrder`, each checked to fail
-  with its part broken.
+  with its part broken; `TestSinkFirstNotifyGetsFullDeliveryWait` (review
+  round 1: a sink that is no `Starter` and whose `Events` is slow still
+  gives its first `Notify` the whole `DeliveryWait`).
 
   PR-8 (#480): crew, api: context blocks in the task files; file touches to
   the context providers. Planned.

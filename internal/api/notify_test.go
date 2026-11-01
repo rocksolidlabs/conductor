@@ -839,3 +839,87 @@ func TestSinksInMainsOrder(t *testing.T) {
 		t.Fatalf("as the engine was handed the entry, the webhook held %d and the sink %d: want 1 and 2", s.webhook, s.sink)
 	}
 }
+
+// gatedEvents is a notification sink that is no ext.Starter and whose
+// Events waits for gate, entered closed as it is asked; it notes when
+// Events returned and the deadline of each Notify's context.
+type gatedEvents struct {
+	name     string
+	gate     chan struct{}
+	entered  chan struct{}
+	returned atomic.Pointer[time.Time]
+
+	mu        sync.Mutex
+	deadlines []time.Time
+}
+
+func (s *gatedEvents) Name() string { return s.name }
+func (s *gatedEvents) Events() []string {
+	close(s.entered)
+	<-s.gate
+	now := time.Now()
+	s.returned.Store(&now)
+	return []string{"progress"}
+}
+func (s *gatedEvents) Notify(ctx context.Context, _ ext.Notification) error {
+	d, ok := ctx.Deadline()
+	if !ok {
+		d = time.Time{}
+	}
+	s.mu.Lock()
+	s.deadlines = append(s.deadlines, d)
+	s.mu.Unlock()
+	return nil
+}
+
+// A sink that is no ext.Starter has its Events read by its queue's first
+// delivery, and that read comes before the delivery's context starts: the
+// first Notify's context ends ext.DeliveryWait after Events returned, not
+// earlier, however long Events took.
+func TestSinkFirstNotifyGetsFullDeliveryWait(t *testing.T) {
+	slow := &gatedEvents{name: "slow", gate: make(chan struct{}), entered: make(chan struct{})}
+	e := newNotifyEnv(t, nil, nil, slow)
+	// Let go before the server's cleanup waits for the sink's drain.
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(slow.gate) }) }
+	t.Cleanup(release)
+	for _, m := range []string{"0", "1"} {
+		e.srv.events.activity("s1", session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityProgress, Message: m}, "")
+	}
+	select {
+	case <-slow.entered:
+	case <-time.After(testWait):
+		t.Fatal("the sink's Events was never asked")
+	}
+	// Events takes a while: past a millisecond on the monotonic clock,
+	// however coarse it is, before it is let go.
+	asked := time.Now()
+	for time.Since(asked) < time.Millisecond {
+		runtime.Gosched()
+	}
+	release()
+	end := time.Now().Add(testWait)
+	for {
+		slow.mu.Lock()
+		n := len(slow.deadlines)
+		slow.mu.Unlock()
+		if n == 2 {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("the sink was given %d notifications, want 2", n)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	returned := *slow.returned.Load()
+	slow.mu.Lock()
+	defer slow.mu.Unlock()
+	for i, d := range slow.deadlines {
+		if d.IsZero() {
+			t.Fatalf("Notify %d had a context with no deadline", i)
+		}
+		if d.Before(returned.Add(ext.DeliveryWait)) {
+			t.Fatalf("Notify %d's context ends %s after Events returned, want at least %s", i, d.Sub(returned), ext.DeliveryWait)
+		}
+	}
+}

@@ -110,6 +110,7 @@ func (s *Server) installExtensions(p ext.Providers) {
 	for i, n := range p.Notifications {
 		g := &guardSink{s: s, name: name(ext.KindNotifications, i, n), p: n}
 		g.queue = newExtQueue(s, ext.KindNotifications, g.name, ext.SinkQueue, g.deliver)
+		g.queue.direct = true // deliver reads Events, then calls extDeliver itself
 		s.holdQueue(n, g.name, g.queue.begin)
 		s.exts.sinks = append(s.exts.sinks, g)
 	}
@@ -396,7 +397,9 @@ func extDeliver(ctx context.Context, s *Server, kind, name string, fn func(conte
 // queue does), drained by one goroutine of its own once begun, each
 // delivery through extDeliver. A webhook's queue is one too (webhooks.go):
 // direct, it delivers without extDeliver, a webhook bounding and logging
-// its own deliveries, and onDrop logs its drops as a webhook's.
+// its own deliveries, and onDrop logs its drops as a webhook's. A
+// notification sink's is direct as well: its delivery reads the sink's
+// Events first and only then calls extDeliver (guardSink.deliver).
 type extQueue[T any] struct {
 	s       *Server
 	kind    string
@@ -491,6 +494,12 @@ func (q *extQueue[T]) begin() {
 // whose drain begins; nil outside tests.
 var extBegan atomic.Pointer[func(name string)]
 
+// extDelivering, when a test sets it, is told the drain's context and the
+// kind and provider name of every queued delivery (a webhook's kind is
+// "webhook", its name its host) as it begins, and may hold it there; nil
+// outside tests.
+var extDelivering atomic.Pointer[func(ctx context.Context, kind, name string)]
+
 // run delivers what is queued, in order, until ctx ends.
 func (q *extQueue[T]) run(ctx context.Context) {
 	for {
@@ -505,6 +514,9 @@ func (q *extQueue[T]) run(ctx context.Context) {
 			case <-q.wake:
 			}
 			continue
+		}
+		if f := extDelivering.Load(); f != nil {
+			(*f)(ctx, q.kind, q.name)
 		}
 		if q.direct {
 			_ = q.deliver(ctx, v)

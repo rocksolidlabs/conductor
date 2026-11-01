@@ -188,11 +188,14 @@ func (g *guardSink) mayTake(event, own string) bool {
 	return f == nil || f.takes(event, own)
 }
 
-// deliver is the sink's queue's delivery: n, when the sink takes it. A
+// deliver is the sink's queue's delivery (a direct one, called with the
+// drain's context): n, when the sink takes it, through extDeliver. A
 // notification queued before the sink's Events was read is decided here,
-// on the queue's own goroutine, which reads Events (once, eventsWithin) if
-// nothing has yet; one the sink does not take is let go, delivered to no
-// one.
+// on the queue's own goroutine, which reads Events (once, eventsWithin,
+// within ext.StartWait) if nothing has yet; one the sink does not take is
+// let go, delivered to no one. Events is read before the delivery's
+// context starts, so the time it takes never comes out of Notify's
+// ext.DeliveryWait.
 func (g *guardSink) deliver(ctx context.Context, n ext.Notification) error {
 	f := g.known.Load()
 	if f == nil {
@@ -202,5 +205,5 @@ func (g *guardSink) deliver(ctx context.Context, n ext.Notification) error {
 	if !f.takes(n.Event, n.Type) {
 		return nil
 	}
-	return g.p.Notify(ctx, n)
+	return extDeliver(ctx, g.s, ext.KindNotifications, g.name, func(ctx context.Context) error { return g.p.Notify(ctx, n) })
 }

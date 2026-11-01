@@ -548,7 +548,8 @@ its timeout, address rule and redirect rule unchanged. A provider's
 notice (`Host.Notify`) reaches only the sinks that list `TypeProvider`,
 never a webhook (no webhook may list it). Each sink's `Events` is read
 once, on its own goroutine (its supervisor's before its first `Start`, or
-its queue's first delivery), never by the hub: until it is read the
+its queue's first delivery, before that delivery's `DeliveryWait`
+starts), never by the hub: until it is read the
 notifier queues everything for the sink and its delivery decides. No
 sink delays the hub, a session, the engine or another sink; a server with
 no webhook and no sink adds no notifier.
