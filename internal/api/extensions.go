@@ -309,6 +309,9 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 			<-g.slots
 			done <- r
 		}()
+		if f := extCalling.Load(); f != nil {
+			(*f)(kind, name)
+		}
 		v, err := fn(cctx)
 		r.v = v
 		if err != nil {
@@ -347,6 +350,11 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 	}
 	return r.v
 }
+
+// extCalling, when a test sets it, is told the kind and provider name of
+// every direct call as its goroutine begins, before fn runs, and may hold
+// it there; nil outside tests.
+var extCalling atomic.Pointer[func(kind, name string)]
 
 // extDeliver runs fn, a delivery to the provider name of kind, on the
 // calling goroutine (a queue's drain, or a list that drops nothing) with a
@@ -582,6 +590,9 @@ func (g *guardContext) NoteTouch(_ context.Context, f ext.TouchedFile) { g.touch
 // when it fails, is late or answers more than ext.MaxContextBlocks or a
 // block ContextBlock.Valid refuses. It never answers an error.
 func (g *guardContext) Context(ctx context.Context, q ext.ContextQuery) ([]ext.ContextBlock, error) {
+	// Copied here, before the call's goroutine begins: a caller answered
+	// the default (its context ended) may reuse q's inputs at once.
+	own := copyQuery(q)
 	return extCall(ctx, g.s, ext.KindContext, g.name, ext.ContextWait, nil, func(bs []ext.ContextBlock) error {
 		if len(bs) > ext.MaxContextBlocks {
 			return fmt.Errorf("context: %d blocks, past %d", len(bs), ext.MaxContextBlocks)
@@ -593,7 +604,7 @@ func (g *guardContext) Context(ctx context.Context, q ext.ContextQuery) ([]ext.C
 		}
 		return nil
 	}, func(ctx context.Context) ([]ext.ContextBlock, error) {
-		bs, err := g.p.Context(ctx, copyQuery(q))
+		bs, err := g.p.Context(ctx, own)
 		return copyOrNil(bs), err
 	}), nil
 }
@@ -695,14 +706,17 @@ func (g guardMedia) ICEServers(ctx context.Context, r ext.ICERequest) ([]ext.ICE
 
 // Room answers the provider's room for r, or ok false (the free default's)
 // when it fails or is late. RoomJoin has no Valid yet: Room has no caller
-// until Program item CL1, which adds its check.
+// until Program item CL1, which adds its check. The provider is given a
+// copy of r's grants, made before the call's goroutine begins.
 func (g guardMedia) Room(ctx context.Context, r ext.RoomRequest) (ext.RoomJoin, bool, error) {
+	own := r
+	own.By = copyPrincipal(r.By)
 	type answer struct {
 		j  ext.RoomJoin
 		ok bool
 	}
 	a := extCall(ctx, g.s, ext.KindMedia, g.name, ext.ICEWait, answer{}, nil, func(ctx context.Context) (answer, error) {
-		j, ok, err := g.p.Room(ctx, r)
+		j, ok, err := g.p.Room(ctx, own)
 		return answer{j, ok}, err
 	})
 	if !a.ok {
@@ -726,8 +740,11 @@ var (
 // provider returns, so what the guard checks (valid) and answers is the
 // guard's own: a provider that changes the slices it answered afterwards
 // changes nothing the seam holds. A direct call's provider is given a copy
-// of what it is asked about too, so a provider that changes the slices it
-// was given changes nothing of the caller's, nor what the guard checks.
+// of what it is asked about too, made on the caller's goroutine before
+// extCall begins the call's (the caller may reuse its slices as soon as
+// extCall returns, which may be before that goroutine runs), so a provider
+// that changes the slices it was given changes nothing of the caller's,
+// nor what the guard checks.
 
 // copyOrNil is a copy of s, nil for nil.
 func copyOrNil[S ~[]E, E any](s S) S {

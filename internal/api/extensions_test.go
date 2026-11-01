@@ -860,6 +860,81 @@ func TestExtCallCopiesInputs(t *testing.T) {
 	}
 }
 
+// A caller whose context ended before the call's goroutine read what it
+// was asked (held at its start, through extCalling) has the default at
+// once and may reuse its slices: the provider is given what the caller
+// asked, never what it changed after, and what the provider changes of
+// what it was given, once the caller is gone, reaches nothing of the
+// caller's. Context's inputs and Room's grants both.
+func TestExtCallCopiesInputsBeforeTheCall(t *testing.T) {
+	srv := newExtServer(t, nil)
+	hold := make(chan struct{})
+	hook := func(_, name string) {
+		if name == "held-graph" || name == "held-room" {
+			<-hold
+		}
+	}
+	extCalling.Store(&hook)
+	t.Cleanup(func() { extCalling.Store(nil) })
+	gone, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	seenInput := make(chan string, 1)
+	c := &guardContext{s: srv, name: "held-graph", p: seeingContext{seen: seenInput}}
+	q := ext.ContextQuery{Task: "t", Inputs: []ext.ContextInput{{Task: "a", Commit: "c1"}}}
+	if bs, err := c.Context(gone, q); bs != nil || err != nil {
+		t.Fatalf("a call whose caller was gone answered %+v, %v; want the default", bs, err)
+	}
+	q.Inputs[0].Commit = "reused"
+
+	seenGrant := make(chan ext.Grant, 1)
+	m := guardMedia{s: srv, name: "held-room", p: seeingMedia{seen: seenGrant}}
+	r := ext.RoomRequest{Kind: "run", ID: "r1", By: ext.Principal{Subject: "u1", Name: "U", Grants: []ext.Grant{ext.GrantHost}}}
+	if _, ok, err := m.Room(gone, r); ok || err != nil {
+		t.Fatalf("a room whose caller was gone answered ok %v, %v; want the default", ok, err)
+	}
+	r.By.Grants[0] = "reused"
+
+	close(hold)
+	if got := <-seenInput; got != "c1" {
+		t.Fatalf("the context provider was given %q, what the caller changed after its call, want c1", got)
+	}
+	if got := <-seenGrant; got != ext.GrantHost {
+		t.Fatalf("the media provider was given grant %q, what the caller changed after its call, want host", got)
+	}
+	if q.Inputs[0].Commit != "reused" || r.By.Grants[0] != "reused" {
+		t.Fatalf("a provider changed the caller's request after its call: %+v, %+v", q.Inputs, r.By.Grants)
+	}
+}
+
+// seeingContext hands the first input's commit of the query it is given to
+// seen, after rewriting it.
+type seeingContext struct{ seen chan<- string }
+
+func (seeingContext) Name() string                               { return "held-graph" }
+func (seeingContext) NoteTouch(context.Context, ext.TouchedFile) {}
+func (s seeingContext) Context(_ context.Context, q ext.ContextQuery) ([]ext.ContextBlock, error) {
+	c := q.Inputs[0].Commit
+	q.Inputs[0].Commit = "changed"
+	s.seen <- c
+	return nil, nil
+}
+
+// seeingMedia hands the first grant of the room request it is given to
+// seen, after rewriting it to admin.
+type seeingMedia struct{ seen chan<- ext.Grant }
+
+func (seeingMedia) Name() string { return "held-room" }
+func (seeingMedia) ICEServers(context.Context, ext.ICERequest) ([]ext.ICEServer, error) {
+	return nil, nil
+}
+func (s seeingMedia) Room(_ context.Context, r ext.RoomRequest) (ext.RoomJoin, bool, error) {
+	g := r.By.Grants[0]
+	r.By.Grants[0] = ext.GrantAdmin
+	s.seen <- g
+	return ext.RoomJoin{}, false, nil
+}
+
 // mutatingRouter rewrites the first option of the question it is given to
 // "9" and answers "9".
 type mutatingRouter struct{ by ext.Principal }

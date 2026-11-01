@@ -448,7 +448,8 @@ provider that hangs holds 16 goroutines of a kind at most. The check of
 an answer runs on that goroutine too, inside the wait and the slot, since
 its cost is the provider's answer's. What it checks and answers is its own
 copy of the provider's answer, and the provider is given a copy of what it
-is asked about, so a provider that changes a slice it answered or was
+is asked about, made before the call's goroutine begins (a caller answered
+the default may reuse its slices at once), so a provider that changes a slice it answered or was
 given changes nothing a seam holds nor what its answer is checked against;
 a provider's error or panic text is read on the call's goroutine, a panic in it
 recovered, and the caller runs no method of the provider's. Each provider
