@@ -85,6 +85,10 @@ const (
 	// needNoRun: for a session caller, one in no run (form_crew answers
 	// 409 in_a_run otherwise).
 	needNoRun
+	// needUnmanaged: for a session caller, one in no managed run, whose
+	// members the run makes itself (add_member answers 409 managed_run
+	// otherwise).
+	needUnmanaged
 )
 
 // The guide's bounds (docs/protocol.md, Guide), measured by
@@ -177,7 +181,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 				"open":      map[string]any{"type": "boolean", "description": "offer the run in the workbench"},
 			}, "name", "goal", "members", "self"),
 			Bounds: map[string]int{"body": maxCrewBody}},
-		{Name: "add_member", MCP: "add_member", Scope: "session", Method: http.MethodPost, Path: sessions + "/run/members", needs: needLauncher | needSelfService | needRun,
+		{Name: "add_member", MCP: "add_member", Scope: "session", Method: http.MethodPost, Path: sessions + "/run/members", needs: needLauncher | needSelfService | needRun | needUnmanaged,
 			Summary:     "Add a member to this session's run.",
 			Description: "Add a member to this session's run: {name, agentId, prompt, start}.",
 			CLI:         []string{"conductor", "crew", "add", "MEMBER.json"},
@@ -276,7 +280,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:     []string{"conductor", "up", "--resume", "RUN"},
 			Input:   map[string]any{"type": "object", "description": "no body"}},
 		taskCommandOp("task_cancel", "Cancel a task of a managed run: its attempt stops and the task ends cancelled.", "/cancel"),
-		taskCommandOp("task_retry", "Retry a failed or blocked task of a managed run: a new attempt starts.", "/retry"),
+		taskCommandOp("task_retry", "Retry a "+strings.Join(crew.RetryableStates(), " or ")+" task of a managed run: a new attempt starts.", "/retry"),
 		taskCommandOp("task_accept", "Accept a task's submitted result although its checks did not pass.", "/accept"),
 		{Name: "ticket_create", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets", needs: needLauncher, Receipt: "dispatch",
 			Summary: "Make a Dispatch ticket in a project.",
@@ -300,7 +304,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Bounds:  map[string]int{"body": maxBody}},
 		{Name: "crew_create", Scope: "admin", Method: http.MethodPost, Path: "/api/crews", needs: needLauncher,
 			Summary: "Save a crew: its members, and for a managed run its tasks and checks. Saving launches nothing.",
-			Input:   map[string]any{"type": "object", "description": "a crew, as GET /api/crews/{id} reads it, without its id and times"},
+			Input:   bodySchema(crewInput{}),
 			Bounds:  map[string]int{"body": maxCrewBody, "crew": crew.MaxEncoded}},
 		{Name: "crew_launch", Scope: "admin", Method: http.MethodPost, Path: "/api/crews/{id}/launch", needs: needLauncher,
 			Summary: "Launch a saved crew as a run.",
@@ -465,8 +469,9 @@ type guideCaller struct {
 	Member string   `json:"member,omitempty"`
 	// Scopes are the operations' scopes it reaches.
 	Scopes []string `json:"scopes"`
-	// local says the session is a server session (not hosted).
-	local bool
+	// local says the session is a server session (not hosted); managed
+	// that its run is a managed one.
+	local, managed bool
 }
 
 // adminCaller is the workbench token's: every scope.
@@ -486,6 +491,7 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 	} else {
 		c.Kinds = append(c.Kinds, "run_member")
 		c.Run, c.Member = run, member
+		c.managed = s.runs.InManagedRun(id)
 	}
 	if _, _, _, ok := s.runs.AttemptOf(id); ok {
 		c.Kinds = append(c.Kinds, "attempt")
@@ -514,10 +520,11 @@ func (s *Server) reaches(c guideCaller, op Operation) bool {
 		return false
 	}
 	// A session in a run is not given what only one in none may do, nor
-	// one in none what needs a run; the admin is given both.
+	// one in none what needs a run, nor one in a managed run what only
+	// one in another may do; the admin is given all three.
 	if c.Kind == "session" {
 		inRun := slices.Contains(c.Kinds, "run_member")
-		if (op.needs&needRun != 0 && !inRun) || (op.needs&needNoRun != 0 && inRun) {
+		if (op.needs&needRun != 0 && !inRun) || (op.needs&needNoRun != 0 && inRun) || (op.needs&needUnmanaged != 0 && c.managed) {
 			return false
 		}
 	}

@@ -2103,7 +2103,8 @@ KiB, which a test holds with every entry at its largest (a past bound is
   a switchyard (whose sessions are all hosted), and for a session only
   for a server session: `form_crew` only for one in no run (one in a run
   is answered `409 in_a_run`), `add_member` and `run_status` only for a
-  member of a run; one that launches or needs the
+  member of a run, `add_member` never for a member of a managed run (one
+  is answered `409 managed_run`); one that launches or needs the
   ledger or Dispatch is not listed on a switchyard. The table holds the
   agent routes and tools, the guide's two routes, and the admin's
   operations a proposal may name: a run's pause, unpause, stop and resume;

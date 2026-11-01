@@ -17,6 +17,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
@@ -260,13 +261,16 @@ func TestEachSectionIsBounded(t *testing.T) {
 
 // A session's guide lists what its scopes reach: a plain session the
 // session's operations and no task, ticket or admin one; an attempt of a
-// managed run the task tools too; a member of a run a ticket holds the
-// ticket's two. The admin reads a session's guide as the session's.
+// managed run the task tools too, and no add_member; a member of a run a
+// ticket holds the ticket's two. The admin reads a session's guide as the
+// session's.
 func TestASessionsGuideListsItsScopesOnly(t *testing.T) {
 	// A session in no run may form a crew; one in a run may add to it and
-	// read it, and forms none (409 in_a_run).
+	// read it, and forms none (409 in_a_run); one in a managed run only
+	// reads it, the run making its members itself (409 managed_run).
 	plainOps := []string{"report", "set_state", "ask", "form_crew", "link", "guide"}
 	memberOps := []string{"report", "set_state", "ask", "add_member", "run_status", "link"}
+	attemptOps := []string{"report", "set_state", "ask", "run_status", "link"}
 	taskOps := []string{"task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint"}
 	ticketOps := []string{"ticket_read", "ticket_comment"}
 	check := func(t *testing.T, e *testEnv, sid, tok string, kinds []string, want []string) {
@@ -297,7 +301,12 @@ func TestASessionsGuideListsItsScopesOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 		sid := runningAttempt(t, e, run.ID, "build", 1)["sessionId"].(string)
-		check(t, e, sid, e.agentToken(sid), []string{"run_member", "attempt"}, slices.Concat(memberOps, taskOps, []string{"guide"}))
+		check(t, e, sid, e.agentToken(sid), []string{"run_member", "attempt"}, slices.Concat(attemptOps, taskOps, []string{"guide"}))
+		// What the guide leaves out, the route refuses.
+		status, data, out := e.callAs(t, e.agentToken(sid), http.MethodPost, "/api/sessions/"+sid+"/run/members", []byte(`{"name":"extra","agentId":"ready-cat","prompt":"","start":{"when":"immediately"}}`))
+		if status != http.StatusConflict || errCodeOf(out) != "managed_run" {
+			t.Fatalf("add_member in a managed run: %d %s", status, data)
+		}
 	})
 	t.Run("ticket", func(t *testing.T) {
 		e := dispatchEnv(t)
@@ -510,7 +519,7 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 	bodies := map[string]any{
 		"run_pause": crew.Command{}, "run_unpause": crew.Command{}, "task_cancel": crew.Command{}, "task_retry": crew.Command{}, "task_accept": crew.Command{},
 		"ticket_create": ticketCreateBody{}, "ticket_edit": ticketEditBody{}, "ticket_comment_admin": commentBody{}, "ticket_link": linkBody{},
-		"crew_launch": launchBody{},
+		"crew_create": crewInput{}, "crew_launch": launchBody{},
 	}
 	seen := 0
 	for _, op := range Operations() {
@@ -613,15 +622,78 @@ func TestABodyFromEachDispatchSchemaIsTaken(t *testing.T) {
 	}
 }
 
+// crew_create's input is a crew as GET /api/crews/{id} reads it without
+// the fields the server sets (id, createdAt, updatedAt, manifestRevision):
+// a crew read back, with a project manifest or with a legacy setup (both
+// carry manifestRevision), cut to the schema's properties fits it and is
+// saved by its route.
+func TestCrewCreatesSchemaIsACrewReadBackWithoutTheServersFields(t *testing.T) {
+	var op Operation
+	for _, o := range Operations() {
+		if o.Name == "crew_create" {
+			op = o
+		}
+	}
+	props, _ := op.Input["properties"].(map[string]any)
+	server := []string{"id", "createdAt", "updatedAt", "manifestRevision"}
+	var want []string
+	for k := range fullOf(t, reflect.TypeFor[crew.Crew]()) {
+		if !slices.Contains(server, k) {
+			want = append(want, k)
+		}
+	}
+	slices.Sort(want)
+	if got := slices.Sorted(maps.Keys(props)); !slices.Equal(got, want) {
+		t.Fatalf("crew_create's properties %v, a crew's without the server's %v", got, want)
+	}
+	e := newTestEnv(t, nil)
+	legacy := e.manifestCrewBody("Legacy", "cat", nil)
+	delete(legacy, "manifest")
+	legacy["setup"] = []any{map[string]any{"id": "deps", "argv": []any{"npm", "ci"}}}
+	manifested := e.manifestCrewBody("Manifested", "cat", map[string]any{"setup": []any{map[string]any{"id": "deps", "argv": []any{"npm", "ci"}}}})
+	for i, body := range []map[string]any{manifested, legacy} {
+		read := e.crew(e.sendCrew("POST", "/api/crews", body, http.StatusCreated)["id"].(string))
+		if read["manifestRevision"] == nil {
+			t.Fatalf("%s read back without its manifestRevision: %v", body["name"], read)
+		}
+		for k := range read {
+			if _, ok := props[k]; !ok {
+				delete(read, k)
+			}
+		}
+		read["name"] = fmt.Sprintf("Copy %d", i)
+		fitsSchema(t, "crew_create", op.Input, read)
+		e.sendCrew(op.Method, op.Path, read, http.StatusCreated)
+	}
+}
+
+// task_retry's summary names the task states a retry takes, as the
+// engine enforces them (crew.RetryableStates), and no other.
+func TestTaskRetrySaysTheStatesARetryTakes(t *testing.T) {
+	var summary string
+	for _, o := range Operations() {
+		if o.Name == "task_retry" {
+			summary = o.Summary
+		}
+	}
+	for _, st := range []string{ledger.TaskBlocked, ledger.TaskReady, ledger.TaskRunning, ledger.TaskVerifying, ledger.TaskSucceeded, ledger.TaskFailed, ledger.TaskCancelled} {
+		if strings.Contains(summary, st) != slices.Contains(crew.RetryableStates(), st) {
+			t.Errorf("task_retry's summary %q on a %s task; a retry takes %v", summary, st, crew.RetryableStates())
+		}
+	}
+}
+
 // Each operation's advertised body bound is its route's: a body one byte
 // past it is refused as too large, one at it is read whole (and refused
 // only for the field it names, so it changes nothing). Every operation
 // with a body bound is tried, by a caller its guide lists it for: a plain
-// session, an attempt of a managed run linked to a ticket, the admin.
+// session, a member of a run that is not managed, an attempt of a managed
+// run linked to a ticket, the admin.
 func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 	plain := newTestEnv(t, nil)
 	plain.srv.limiter = newRateLimiter(1e6, 1e6)
 	psid := plain.createSession("cat")
+	_, msid, mtok := plain.memberSession(t, "Bounded")
 
 	e := readyEnv(t, func(c *config.Config) { c.DataDir = filepath.Join(t.TempDir(), "data") })
 	e.srv.limiter = newRateLimiter(1e6, 1e6)
@@ -640,7 +712,7 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 	for _, c := range []struct {
 		e          *testEnv
 		token, sid string
-	}{{plain, plain.agentToken(psid), psid}, {e, e.agentToken(asid), asid}, {e, adminToken, ""}} {
+	}{{plain, plain.agentToken(psid), psid}, {plain, mtok, msid}, {e, e.agentToken(asid), asid}, {e, adminToken, ""}} {
 		guide := "/api/guide?section=operations"
 		id := "x"
 		if c.sid != "" {

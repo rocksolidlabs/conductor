@@ -27,6 +27,8 @@ const (
 // crewInput is the body of POST /api/crews and PUT /api/crews/{id}: a crew
 // without what the server sets. A client that sends id, createdAt, updatedAt
 // or manifestRevision is refused like one that sends any other unknown field.
+// Its tags are crew.Crew's, so the operating guide's schema of it
+// (crew_create) requires what a crew read back always carries.
 type crewInput struct {
 	Name               string        `json:"name"`
 	Goal               string        `json:"goal"`
@@ -34,8 +36,8 @@ type crewInput struct {
 	Where              string        `json:"where"`
 	Isolation          string        `json:"isolation"`
 	OpenAfterLaunch    bool          `json:"openAfterLaunch"`
-	ViewLinkTTLSeconds int64         `json:"viewLinkTtlSeconds"`
-	Yolo               *bool         `json:"yolo"`
+	ViewLinkTTLSeconds int64         `json:"viewLinkTtlSeconds,omitempty"`
+	Yolo               *bool         `json:"yolo,omitempty"`
 	Members            []crew.Member `json:"members"`
 	// Tasks and Setup make a managed crew (#334): validated with the rest.
 	// Manifest is its project manifest, of which Setup is the legacy form: a
