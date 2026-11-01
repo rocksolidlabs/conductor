@@ -516,7 +516,8 @@ a server session only while it shows no question (`Local.Submit` with
 `UnlessWaiting`), or answers a question with a line through the
 question's claim, as a viewer's reply does (`ErrQuestionAnswered` once it
 no longer waits); a choice's keys and a hosted session answer
-`ErrUnsupported` until the decision router's seam. `Notify` checks a
+`ErrUnsupported` until the decision router's seam, and a line blank once
+cleaned is refused (it would be a bare Enter). `Notify` checks a
 notice (500 bytes of message, 2,048 of URL, one line each) and types it
 `provider` from its sender; a provider one of whose sinks lists
 `TypeProvider` (read once, from `Events`, on the provider's own goroutine

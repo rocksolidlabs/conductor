@@ -965,14 +965,21 @@ func TestHostCallsEndWithTheirTry(t *testing.T) {
 // typed after the text until a person types into the terminal. A reply's
 // claim on its question is let go as the hold shows: once the person's
 // keys show the question again, a viewer's reply to it is typed, not
-// refused as answered.
+// refused as answered. The same holds for a provider that submits with its
+// Start's context, which ends with the try: the pause may see that end
+// first, and it is no reason to give the turn back.
 func TestHostSubmitGivenUpInItsPauseHoldsTheTurn(t *testing.T) {
-	for _, reply := range []bool{false, true} {
-		name := "a line"
-		if reply {
-			name = "a reply"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		reply, start bool
+	}{
+		{"a line", false, false},
+		{"a reply", true, false},
+		{"a line on the Start context", false, true},
+		{"a reply on the Start context", true, true},
+	} {
+		reply := c.reply
+		t.Run(c.name, func(t *testing.T) {
 			e := newTestEnv(t, nil)
 			proc := sessiontest.NewFakeProc()
 			t.Cleanup(func() { proc.End(0) })
@@ -992,12 +999,12 @@ func TestHostSubmitGivenUpInItsPauseHoldsTheTurn(t *testing.T) {
 					return ""
 				}
 			}
-			nothingWritten := func(d time.Duration) {
+			noneWritten := func() {
 				t.Helper()
 				select {
 				case b := <-proc.Input:
 					t.Fatalf("written %q", b)
-				case <-time.After(d):
+				default:
 				}
 			}
 			nate, err := l.Attach("nate", session.RoleControl, "", 80, 24, &gapSink{})
@@ -1012,9 +1019,13 @@ func TestHostSubmitGivenUpInItsPauseHoldsTheTurn(t *testing.T) {
 				q = l.Info().Attention.ID
 			}
 			try, giveUp := context.WithCancel(t.Context())
+			sctx := context.Background()
+			if c.start {
+				sctx = try
+			}
 			late := make(chan error, 1)
 			go func() {
-				_, err := testHost(e.srv, try, "sched").Submit(context.Background(), ext.SubmitRequest{Session: "paused", Text: "late", Question: q, By: ada})
+				_, err := testHost(e.srv, try, "sched").Submit(sctx, ext.SubmitRequest{Session: "paused", Text: "late", Question: q, By: ada})
 				late <- err
 			}()
 			if got := written(); got != "late" {
@@ -1041,7 +1052,19 @@ func TestHostSubmitGivenUpInItsPauseHoldsTheTurn(t *testing.T) {
 				_, err := l.Submit(context.Background(), session.Submission{Text: "second", By: nate, Question: q})
 				next <- err
 			}()
-			nothingWritten(300 * time.Millisecond)
+			// The next line waits for the turn the hold keeps, and has
+			// written nothing.
+			end = time.Now().Add(testWait)
+			for l.TurnWaiters() != 1 {
+				if time.Now().After(end) {
+					t.Fatal("the next line never waited for the turn")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			noneWritten()
+			if !l.Held() {
+				t.Fatal("the hold went while the next line waited")
+			}
 			if err := l.Input(nate, []byte{0x15}); err != nil {
 				t.Fatal(err)
 			}
@@ -1056,6 +1079,46 @@ func TestHostSubmitGivenUpInItsPauseHoldsTheTurn(t *testing.T) {
 			default:
 			}
 		})
+	}
+}
+
+// A provider's text blank once cleaned (spaces, line breaks) is refused
+// and writes nothing, not even the bare Enter it would be: a line into a
+// session, and a reply to its question, which still waits.
+func TestHostSubmitRefusesABlankLine(t *testing.T) {
+	e := newTestEnv(t, nil)
+	proc := sessiontest.NewFakeProc()
+	t.Cleanup(func() { proc.End(0) })
+	l := session.NewLocal(session.Info{ID: "blank", Cwd: e.root, Cols: 80, Rows: 24}, proc, session.Options{
+		ScrollbackBytes: 4096, InputWait: testWait, Log: slog.New(slog.DiscardHandler),
+	})
+	if err := e.srv.registry.Add(l); err != nil {
+		t.Fatal(err)
+	}
+	h := testHost(e.srv, t.Context(), "sched")
+	for _, text := range []string{" ", "\n", " \r\n\t "} {
+		if _, err := h.Submit(t.Context(), ext.SubmitRequest{Session: "blank", Text: text, By: ada}); !errors.Is(err, ext.ErrRefused) || !strings.Contains(err.Error(), "blank") {
+			t.Fatalf("a blank line %q: %v", text, err)
+		}
+	}
+	if err := l.TrySetAttentionFull(session.AttentionNeedsInput, "Which name?", session.SourceAPI, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	q := l.Info().Attention.ID
+	if _, err := h.Submit(t.Context(), ext.SubmitRequest{Session: "blank", Question: q, Text: " \n ", By: ada}); !errors.Is(err, ext.ErrRefused) || !strings.Contains(err.Error(), "blank") {
+		t.Fatalf("a blank reply: %v", err)
+	}
+	select {
+	case b := <-proc.Input:
+		t.Fatalf("written %q", b)
+	default:
+	}
+	if a := l.Info().Attention; a.State != session.AttentionNeedsInput || a.ID != q {
+		t.Fatalf("the question no longer waits: %+v", a)
+	}
+	// The question is still the reply's to answer.
+	if res, err := h.Submit(t.Context(), ext.SubmitRequest{Session: "blank", Question: q, Text: "ada", By: ada}); err != nil || res.Status != "entered" {
+		t.Fatalf("a reply after the blank one: %+v, %v", res, err)
 	}
 }
 

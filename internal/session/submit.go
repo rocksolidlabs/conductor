@@ -569,13 +569,28 @@ func (s *Local) finishLine(sub Submission, res SubmitResult, st submitState) {
 }
 
 // withdrawnTyped is err for a submission that ended with res, err, its
-// sender's link looked at once more when its text is typed and its Enter
-// was left out with no error (a prompt come meanwhile, a dialog drawn on
-// the screen): why the link no longer opens the session then, so that the
-// turn is held for a person as for any typed text whose link went, rather
-// than given to the next line, which would join the text.
+// sender looked at once more when its text is typed and its Enter is not
+// written, so that the turn is held for a person as for any typed text
+// whose link went, rather than given to the next line, which would join
+// the text. Its sender withdrawn (Submission.Withdrawn closed) makes it
+// errWithdrawn whatever else ended it but the session's end or its link's
+// (a sender whose context is its withdrawal ends both at once, and the
+// pause or the look may see the context's end first: context.Canceled is
+// no reason to give the turn back then). Its link is looked at when the
+// Enter was left out with no error (a prompt come meanwhile, a dialog
+// drawn on the screen): why it no longer opens the session then.
 func (st submitState) withdrawnTyped(res SubmitResult, err error) error {
-	if err == nil && res.Typed && !res.Entered {
+	if !res.Typed || res.Entered {
+		return err
+	}
+	if st.wait.gone != nil && !errors.Is(err, ErrRevoked) && !errors.Is(err, ErrSessionEnded) {
+		select {
+		case <-st.wait.gone:
+			return errWithdrawn
+		default:
+		}
+	}
+	if err == nil {
 		if why := st.wait.withdrawn(); why != nil {
 			return why
 		}
@@ -706,6 +721,12 @@ func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 		s.notifyChange()
 	}
 }
+
+// TurnWaiters is how many submissions wait for the session's turn now
+// (awaitTurn), at most maxTurnWaiters: a seam for whoever must know that
+// one does before looking at what it has not written, as a test of a held
+// turn does.
+func (s *Local) TurnWaiters() int { return int(s.turnWaiters.Load()) }
 
 // Held reports whether the session's turn is held for a submission's text
 // typed without its Enter (holdTyped), until a person types into the

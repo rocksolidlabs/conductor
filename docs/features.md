@@ -3237,16 +3237,17 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   with the launch noted in the run's log; `Submit` of a line into a
   server session that shows no question, or of a line answering one
   through its claim (a choice's keys and hosted sessions refused until
-  PR-9 and PR-10); `Notify` checked and refused for a provider whose sink
+  PR-9 and PR-10, a blank line always); `Notify` checked and refused for a provider whose sink
   takes provider notices (no sink is handed one until PR-7); `DataDir`
   under `<dataDir>/ext/`; `Log`. Tests: `TestHostLaunch`,
   `TestHostLaunchManaged`, `TestHostSubmitLine`, `TestHostSubmitAnswer`,
-  `TestHostDataDir`, `TestHostNotify`, `TestStartOncePerValue`,
+  `TestHostSubmitRefusesABlankLine`, `TestHostDataDir`, `TestHostNotify`, `TestStartOncePerValue`,
   `TestStartRetriedUntilItSucceeds`, `TestStartQueuesHeldUntilStarted`,
   `TestStartNeverOverlaps` (the clock driven through a seam, never
   slept), `TestStartNeverWaitsOnEvents`, `TestHostCallsEndWithTheirTry`,
   `TestHostSubmitGivenUpInItsPauseHoldsTheTurn`, `TestServeStartsProviders`;
-  in `internal/session`, `TestAWithdrawnSubmissionIsWithdrawnAsARevokedLinksIs`.
+  in `internal/session`, `TestAWithdrawnSubmissionIsWithdrawnAsARevokedLinksIs`,
+  `TestAWithdrawnTypedLineIsHeldWhateverEndedIt`.
 
   PR-5 (#477): opencore: the open-core rules as a lint, failing on a planted
   import. Planned.

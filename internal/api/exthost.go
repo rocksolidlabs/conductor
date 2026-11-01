@@ -360,8 +360,8 @@ func (h *extHost) launchError(id string, err error) error {
 // one to a question that no longer waits answers ext.ErrQuestionAnswered.
 // Either is recorded as by r.By's name. A choice's keys (r.Input) and a
 // hosted session answer ext.ErrUnsupported until the decision router's
-// seam (C5) adds them; a line accepted while its program reads slowly
-// answers "pending". The try's end withdraws the submission as a revoked
+// seam (C5) adds them, and a line blank once cleaned is refused; a line
+// accepted while its program reads slowly answers "pending". The try's end withdraws the submission as a revoked
 // link does (session.Submission.Withdrawn, looked at as the writer takes
 // the text): one whose text is not yet typed when its try is given up
 // answers context.Canceled and types nothing; one whose text is typed and
@@ -385,6 +385,12 @@ func (h *extHost) Submit(ctx context.Context, r ext.SubmitRequest) (ext.SubmitRe
 	}
 	if r.Input != "" {
 		return ext.SubmitResult{}, fmt.Errorf("%w: a choice's keys are not answered through the host yet", ext.ErrUnsupported)
+	}
+	// A text blank once cleaned (spaces, line breaks) would be typed as a
+	// bare Enter, which into a question picks what the question
+	// highlights, as only a choice's keys may: refused, nothing written.
+	if session.SubmitLine(r.Text) == "" {
+		return ext.SubmitResult{}, refused("the line is blank")
 	}
 	sctx, cancel := context.WithTimeout(ctx, submitTimeout)
 	defer cancel()
