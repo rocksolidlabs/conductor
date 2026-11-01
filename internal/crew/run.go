@@ -409,6 +409,11 @@ type Engine struct {
 	// has ended and before its checkout is compared, with the check's
 	// context and id: a test closes the attempt there.
 	beforeCompare func(ctx context.Context, checkID string)
+	// beforePreviousLog, when set, runs as the log of the check that
+	// failed the attempt before is written beside an attempt's task files
+	// (writePreviousLog): an error it gives is the write's, a test's disk
+	// full.
+	beforePreviousLog func() error
 	// beforePrereqEnd, when set, runs as a generation of the prerequisites
 	// ends, after its last commit and before it is counted out: a test
 	// lands an unpause there.

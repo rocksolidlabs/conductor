@@ -32,7 +32,10 @@ import (
 // not hold. Prerequisites are its prerequisites' receipts, without their
 // logs. Imported are the attempt rows its tasks' results were imported
 // from by reference, by the reference (run/task/n), read from the runs
-// that hold them (LoadImports): empty unless read.
+// that hold them (LoadImports): empty unless read. FailedChecks are the
+// receipts that failed its attempts failed at a check or a verify step,
+// one each (failingReceipt), without their logs: a continuation hands the
+// one of a task's last attempt to its first (taskfile.go).
 type Loaded struct {
 	Run           ledger.RunRow
 	Tasks         []ledger.TaskRow
@@ -40,6 +43,7 @@ type Loaded struct {
 	Messages      []ledger.MessageRow
 	Prerequisites []ledger.PrerequisiteRow
 	Imported      map[string]ledger.AttemptRow
+	FailedChecks  []ledger.CheckRow
 }
 
 // LoadImports reads into from.Imported the attempt rows of the results its
@@ -261,7 +265,8 @@ func (e *Engine) markContinuing(runID, label string) (*run, string, error) {
 // ContinuedFrom when the source made none), the attempt after it whose
 // worktree could not be made usable when the task's last is one
 // (unusable), whether such an attempt refused the last one's checkpoint
-// (refusedCP), and the imported results with where each was found.
+// (refusedCP), the imported results with where each was found, and the
+// receipt that failed the last attempt at a check (failed).
 type history struct {
 	rows      map[string]ledger.TaskRow
 	last      map[string]ledger.AttemptRow
@@ -269,16 +274,20 @@ type history struct {
 	refusedCP map[string]bool
 	refs      map[string]ledger.AttemptRow
 	refOf     map[string]string
+	// failed is the receipt that failed each task's last attempt, when it
+	// failed at a check or a verify step, from the run that holds it.
+	failed map[string]*failedCheck
 }
 
 // uncountedRow reports whether an attempt's row is one not counted: its
 // worktree could not be made usable (steps.go), failed with no result at a
 // stage of the project manifest, or, for a run launched from a ticket, it
 // could not start as its plan revision approved, at "package" or "agent"
-// (launchStage). A continuation passes over it as the run that made it
-// did.
+// (launchStage), or it could not be handed the receipt of the check that
+// failed the attempt before (receiptStage). A continuation passes over it
+// as the run that made it did.
 func uncountedRow(a ledger.AttemptRow) bool {
-	return a.State == ledger.AttemptFailed && a.ResultCommit == "" && (manifestStage(a.Stage) || launchStage(a.Stage))
+	return a.State == ledger.AttemptFailed && a.ResultCommit == "" && (manifestStage(a.Stage) || launchStage(a.Stage) || a.Stage == receiptStage)
 }
 
 // manifestStage reports whether stage is a project manifest's: one of its
@@ -449,7 +458,35 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 			}
 		}
 	}
-	return history{rows: rows, last: last, unusable: unusable, refusedCP: refusedCP, refs: refs, refOf: refOf}, nil
+	// The receipt that failed a task's last attempt at a check or a verify
+	// step, from the rows of the run that made the attempt (its
+	// FailedChecks), the paths it changed from its finished event: never
+	// from memory, so a restart hands the next attempt the same.
+	failed := map[string]*failedCheck{}
+	for id, la := range last {
+		phase, cid, ok := failedAtCheck(la)
+		if !ok {
+			continue
+		}
+		src, ok := sources[la.RunID]
+		if !ok {
+			continue
+		}
+		i := slices.IndexFunc(src.FailedChecks, func(c ledger.CheckRow) bool {
+			return c.TaskID == la.TaskID && c.N == la.N && c.Phase == phase && c.ID == cid
+		})
+		if i < 0 {
+			continue // its outcome not recorded: no receipt to hand
+		}
+		row := src.FailedChecks[i]
+		changed, err := e.ledger.CheckChanged(ctx, la.RunID, la.TaskID, la.N, cid, row.K)
+		if err != nil {
+			return history{}, fmt.Errorf("the ledger could not read run %s: %w", la.RunID, err)
+		}
+		row.Log = nil
+		failed[id] = &failedCheck{run: la.RunID, row: row, changed: handedChanged(changed)}
+	}
+	return history{rows: rows, last: last, unusable: unusable, refusedCP: refusedCP, refs: refs, refOf: refOf, failed: failed}, nil
 }
 
 // startContinued sets r up from the run it continues and records it: the
@@ -500,6 +537,9 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 				u := &unusable{n: ua.N, stage: ua.Stage, err: ua.Error, next: ua.StartCommit}
 				if hasLast {
 					u.prev = &TaskPrevious{Attempt: la.N, State: la.State, Stage: la.Stage, Error: la.Error}
+					if fc := h.failed[t.def.ID]; fc != nil {
+						u.prev.Check = fc.handed()
+					}
 					u.prevResult = la.ResultCommit
 					if la.ResultCommit != "" && la.ResultCommit != ua.StartCommit {
 						u.prev.Result, u.prev.Branch = la.ResultCommit, la.Branch
@@ -511,6 +551,10 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 					}
 				}
 				t.unusable = u
+			}
+			if fc := h.failed[t.def.ID]; fc != nil && hasLast {
+				// Failed at a check: the next attempt is handed its receipt.
+				t.priorFailed = &priorFailed{n: la.N, state: la.State, stage: la.Stage, err: la.Error, result: la.ResultCommit, branch: la.Branch, check: fc}
 			}
 			if hasLast && t.def.Kind == TaskWork && la.State == ledger.AttemptFailed && la.ResultCommit != "" && la.StartCommit != "" && refusedBeforeChecks(la.Stage) {
 				t.refused = &refusal{n: la.N, start: la.StartCommit, stage: la.Stage, err: la.Error, result: la.ResultCommit, branch: la.Branch}
