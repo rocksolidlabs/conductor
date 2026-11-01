@@ -72,12 +72,17 @@ func TestTheHostAppliesTheAgentsOwnQuestion(t *testing.T) {
 		// before it (a change the session noted before the wait reaches the
 		// forwarder after the wait's report marked the attention untold:
 		// "at worst the same attention once more", onLocalChange), so the
-		// test waits for the wait's own message rather than the next one.
+		// test waits for the wait's own message rather than the next one,
+		// and allows that one re-tell, never a second.
 		forward(proto.HostAttentionMsg{T: proto.HostAttention, State: "needs_input", Message: "Allow Bash?", Source: session.SourceAPI})
-		for {
+		for retold := false; ; {
 			m := next("a wait")
 			if m.ID == q.ID && m.Ask && m.State == "needs_input" && m.Message == "Which database?" {
-				continue // the question told again, as it was
+				if retold {
+					t.Fatalf("the question was told again a second time before the wait: %+v", m)
+				}
+				retold = true // the question told once more, as it was
+				continue
 			}
 			if m.Message != "Allow Bash?" || m.Ask {
 				t.Fatalf("a wait without the mark told %+v", m)
