@@ -837,7 +837,14 @@ through an `os.Root`, checks the staged Dispatch database's attachments and
 the directory again, then renames each top-level entry into place, never
 over anything (`hooks/` moved aside first). The next `serve` opens what was
 restored as its own: the ledger's recovery marks what ran at the export
-interrupted and `syncRecords` mends a record that lagged.
+interrupted and `syncRecords` mends a record that lagged. `conductor
+export` asks the route, or with `--data-dir` reads a directory no server
+holds (read-only snapshots, the catalog resolved against `--config`);
+`conductor restore` installs a file, or with `--provider` the sync store's
+copy, into the directory `serve` would use, under one reservation from
+before the first byte to after the last rename; `runServe` takes the same
+reservation before `store.Open` and lets it go once `api.New` has returned,
+so a restore and a starting server never share a directory.
 
 The data directory stays the truth when a sync store is registered: each
 commit of the store, the ledger and Dispatch is told after it lands
