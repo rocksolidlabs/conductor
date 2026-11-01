@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor"
@@ -224,14 +225,21 @@ type Server struct {
 	// Start has succeeded) and extFree (the other queues, held until New
 	// can no longer fail). extClock is the clock of the guard's
 	// once-a-minute log; nil is time.Now, and a test holds its own.
-	exts      extSlots
-	extCtx    context.Context
-	extStop   context.CancelFunc
-	extMu     sync.Mutex
-	extGuards map[string]*extGuard
-	extQueues map[string][]func()
-	extFree   []func()
-	extClock  func() time.Time
+	// extStarts is the providers the server starts (exthost.go), each with
+	// its ready flag, and extStarting is set by the one StartExtensions
+	// that starts them; extAfter is the clock of their starts' waits and
+	// backoffs, nil for time.After, a test's own otherwise.
+	exts        extSlots
+	extCtx      context.Context
+	extStop     context.CancelFunc
+	extMu       sync.Mutex
+	extGuards   map[string]*extGuard
+	extQueues   map[string][]func()
+	extFree     []func()
+	extClock    func() time.Time
+	extStarts   []*extStarter
+	extStarting atomic.Bool
+	extAfter    func(time.Duration) <-chan time.Time
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
