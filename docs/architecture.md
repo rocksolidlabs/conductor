@@ -820,6 +820,35 @@ operation that ran. A database a newer Conductor wrote, or one that fails
 its check, opens read-only: its reads are answered, its writes refused with
 why, and it is never written.
 
+Export and restore (`internal/export`, Program item C6) move the data
+directory to another machine as one zip archive. `GET /api/export` writes it
+while the server runs: the runs' records first, then the ledger's snapshot
+(`VACUUM INTO` on its own connection, under its lock), then Dispatch's
+snapshot and the attachment files that snapshot's live rows require (read
+from the snapshot itself, never a walk of `attachments/`; a snapshot taken
+again, at most three, when a file it names went meanwhile), then the other
+documents and files (never a run's record written after the records' copy,
+which could lead the archived ledger), then the manifest, every file with
+its size and SHA-256. One table says what an export leaves out and a restore refuses:
+secrets, locks, temporary files, a provider's `ext/`; of two paths one name
+to a filesystem that folds case or trailing dots, the export takes the
+lower-case one and leaves the other out, so that what it writes restores. The installer
+(`export.Install`, under the `restore.lock` reservation its caller holds)
+takes an archive only into a data directory with no server data, checks the
+whole archive before it writes a byte (an attachment's file must hash to
+its name; no two paths are one name to a filesystem that folds case or
+trailing dots), stages it in `.restore-<random>`
+through an `os.Root` and syncs every file and directory (a sync that fails
+refuses it), checks the staged Dispatch database's attachments and
+the directory again, then renames each top-level entry into place with a
+rename that refuses a name already there, so nothing is renamed over, not
+even a name another writer made after the check (`hooks/` moved aside
+first; where the kernel has no such flag, a directory's name is taken with
+`mkdir` first and the staged directory renamed over that empty one), and
+syncs the data directory, a failure there reported. The next `serve` opens what was
+restored as its own: the ledger's recovery marks what ran at the export
+interrupted and `syncRecords` mends a record that lagged.
+
 The data directory stays the truth when a sync store is registered: each
 commit of the store, the ledger and Dispatch is told after it lands
 (Extensions, Sync), in commit order, and nothing a sync store answers is

@@ -9,3 +9,6 @@ func takeOwnerLock(path string) (*ownerLock, string, bool, error) {
 }
 
 func (*ownerLock) release() {}
+
+// lockHeld tells nothing where there is no owner lock.
+func lockHeld(string) (bool, error) { return false, nil }
