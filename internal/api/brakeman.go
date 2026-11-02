@@ -73,6 +73,8 @@ type brakemanDesk struct {
 	done     chan struct{}
 	loopDone chan struct{}
 	stopOnce sync.Once
+	// steps counts the loop's passes, for a test to wait on one.
+	steps atomic.Uint64
 
 	mu sync.Mutex
 	// queue is the queued requests' ids, oldest first.
@@ -188,6 +190,7 @@ func (d *brakemanDesk) loop() {
 	defer timer.Stop()
 	for {
 		next := d.step()
+		d.steps.Add(1)
 		timer.Stop()
 		var tick <-chan time.Time
 		if next > 0 {

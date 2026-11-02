@@ -1151,7 +1151,8 @@ only a kill leaves one; a kill after the wait is logged with the file), and a
 server or host that stops waits for them.
 
 Session `Info` carries `crew{runId, crewId, member}` for a member of a crew
-run (see Crew runs), and no `crew` otherwise.
+run (see Crew runs), and no `crew` otherwise; a Brakeman turn's member's
+also carries `brakeman: {request, quiet}` (see Brakeman).
 
 Changes are pushed to attached clients as the `attention` control message and
 to admins as `session` events on `GET /api/events` (Server-Sent Events over a
@@ -1912,7 +1913,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
-| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), see Attention and Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, see Brakeman), see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
 
 The catalog routes persist their changes as `catalog.json` in the data
@@ -2078,9 +2079,11 @@ KiB, which a test holds with every entry at its largest (a past bound is
   sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
   session's `kinds` are `plain` (in no run) or `run_member`, `attempt` (of
   a managed run) and `ticket_member` (of a run a live ticket's run link
-  names); `scopes` are the operations' scopes it reaches (`session`, and
-  `task` for an attempt, `ticket` for a ticket's member; the admin's are
-  `admin`, `session`, `task` and `ticket`). `bytes` is the size of that
+  names), or `brakeman` (a Brakeman turn's, which is never a ticket's
+  member); `scopes` are the operations' scopes it reaches (`session`, and
+  `task` for an attempt, `ticket` for a ticket's member, `observe` for a
+  Brakeman turn: its request and its brief; the admin's are `admin`,
+  `session`, `task`, `ticket` and `observe`). `bytes` is the size of that
   section's reply. `rules` are three lines for every caller: a fact needs
   evidence; nothing an agent writes becomes work by itself; a question
   goes to a person with `ask`.
@@ -2117,7 +2120,8 @@ KiB, which a test holds with every entry at its largest (a past bound is
   members and tasks, a task's checks, a check's timeout, a result's
   summary, issues and findings, a message and an inbox, a report's
   message, a comment, a ticket's title and description, a task file's
-  page, the self-service crews and links, a body.
+  page, the self-service crews and links, a brief's size, items, refs,
+  title, summary and draft tickets, Brakeman's queue, a body.
 - `host`: `{os, arch, switchyard, managedCrews, selfService, ledger:
   {state, why?}, dispatch: {state, why?}, checksMaxConcurrent, sessions?,
   agents: [{id, name, adapter?, installed, version?}], moreAgents?}`;
@@ -2129,7 +2133,8 @@ KiB, which a test holds with every entry at its largest (a past bound is
   s for the programs' lookups); a session sees the agents only with
   self-service on, on a server session, and a switchyard lists none.
 - `receipts`: `[{name, about, fields: [{name, type, optional?}]}]`, the
-  formats a caller meets (`ledger`, `dispatch`), read from their types.
+  formats a caller meets (`brakeman`, a request's; `ledger`, `dispatch`),
+  read from their types.
 - `providers`: `{known: false, providers: []}` until the server names its
   registered providers (Program item C9).
 
@@ -3026,3 +3031,137 @@ place in the server's queue for a client, however many there are, so a
 commit that changed many entities (a label's delete on hundreds of
 tickets) never drops a client that keeps up. It reaches the pages alone,
 never a webhook or the run engine.
+
+### Brakeman
+
+Brakeman is Conductor's sidekick agent (`docs/plans/brakeman.md`): an
+agent of the person's own choosing that Yardmaster runs for bounded
+turns, each a **request** a person made, each turn handing back one
+**brief**. Its records are JSON documents under the data directory's
+`brakeman/` (`internal/brakeman`); the server's desk (`internal/api`,
+`brakeman.go`) owns them while it holds `brakeman/owner.lock`, the
+ledger's lock. A second server on the same data directory opens them
+read-only: its reads are served, every write answers `503
+brakeman_not_owner` with the holder's words, and it takes no turn until
+it holds the lock. A switchyard runs no Brakeman: every route below
+answers `403 switchyard`.
+
+**A turn is a run.** The desk takes the oldest queued request when no
+turn holds the slot, writes the day's charge and then the request
+`starting` (its deadline `budget.turnMinutes` on, its configuration
+snapshot), and launches through the engine an unsaved one-member crew:
+crew id `brakeman`, isolation `none`, in the configured folder, the
+member the configured agent with its adapter's read-only arguments,
+then its model flag, then, when `allowConductorTools` is set, the rule
+that lets Conductor's MCP tools run without asking; never yolo, whatever
+the server's default says; never a managed run. The run's `class` is
+`brakeman` and its `request` the request's id (both in `GET
+/api/runs/{run}` and the run's record; absent for a person's run); its
+label "Brakeman · <kind> br-n". The member's session is named "Brakeman ·
+br-n" (the label Needs you shows), carries `CONDUCTOR_BRAKEMAN=<request>`
+and, with an account set, the adapter's configuration folder variable
+(`CLAUDE_CONFIG_DIR`) as the account, and its `crew` carries
+`brakeman: {request, quiet}` from its creation. The line typed once the
+session is ready (at most 300 bytes): `Brakeman request br-n (<kind>):
+read it with the brakeman_request tool or "conductor brakeman request",
+and submit one brief with brief_submit or "conductor brakeman brief".
+Call guide for what you may read.` One turn at a time; the slot is held
+until the launch has returned and every member's process is reaped (a
+stop that leaves a process is retried every 10 s; after six failed
+retries the desk takes no new request, `503 brakeman_stuck`, until a
+stop reaps it). The engine keeps at most 10 Brakeman runs and the
+records 50, apart from a person's runs (100 and 500).
+
+**What a turn cannot do.** A run of class `brakeman` is not resumed and
+takes no member: `POST /api/runs/{run}/resume`, `…/members` and
+`…/members/{name}/resume` answer `409 brakeman_run` ("ask Brakeman
+again"), and Dispatch's run link to it (`POST
+/api/dispatch/tickets/{key}/links`, kind `run`) answers `409
+brakeman_run`. Its session forms no crew, adds no member and reaches no
+ticket: `POST /api/sessions/{id}/crew`, `…/run/members`, `GET
+…/ticket` and `POST …/ticket/comments` answer `403 brakeman_cannot`,
+whether or not its run is linked to one, and the guide lists none of
+them for it. The crew store gives no derived crew the id `brakeman`: a
+crew a person names Brakeman is saved as `brakeman-2`.
+
+**A request's states.** `queued` → `starting` → `running` →
+`briefed`; the others close it: `timed_out` (its deadline, which covers
+`starting`), `ended` (its session ended with no brief, after it read its
+request), `failed` (the launch failed, with the engine's words, or the
+agent exited before it read its request: "is it logged in?", with its
+exit and last line), `over_budget` (at the dequeue the day's turns were
+spent), `cancelled` (a person, or Brakeman turned off, which cancels the
+turn in progress and the queue) and `interrupted` (the server stopped
+while it was starting or running; a restart finds it so). A deadline, a
+cancel and turning Brakeman off write the closing state first and stop
+the run after; a brief's run is stopped 20 s after the brief is kept. A
+run the launch returns after its request closed by a deadline or a
+cancel is recorded as the request's `strayRun` and stopped at once.
+
+**The admin's routes**, the workbench token's:
+
+| Route | Body and answer |
+|---|---|
+| `GET /api/brakeman` | `{config, current, queue, turnsToday, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns a day, mode `invoked`), the request holding the slot or `null`, the queued requests oldest first, the turns charged to today |
+| `PUT /api/brakeman/config` | `{rev, config}` → `{config}`, its `rev` bumped and `updatedAt` stamped; `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode, or whose read-only mode does not hold: Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules, so Codex is refused with that reason); at most 64 KiB |
+| `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}`; `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
+| `GET /api/brakeman/requests?after=&limit=` | `{requests, next}`, newest first, at most 100 a page; `next` the id to ask after, `""` for none |
+| `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |
+| `GET /api/brakeman/requests/{id}/refs` | `{refs: [{ref, seen, now}]}`, each `{url?, state?, rev?, sha256?, at?}`: what the turn read of each ref of the brief (`state` `unobserved` for one it never read) and what it was as the brief was kept; `404 no_brief` before one; at most 4 MiB |
+| `POST /api/brakeman/requests/{id}/cancel` | `{opId}` → `{request}`; a closed request answers as it stands |
+
+The kinds and their subjects: `briefing` (none; `since`, else since the
+last complete briefing), `explain` (one `run:`, `task:`, `attempt:`,
+`session:`, `question:` or `ticket:` ref), `decision` (one `question:`,
+`task:` or `ticket:`), `draft_tickets` (a `ticket:` or `comment:`, or the
+note as the discussion), `propose_crew` (one `ticket:`), `handoff` (one
+`task:`, `attempt:` or `session:`), `locate` (the note), `overlaps`
+(none) and `ask` (the note, up to 10 subjects). A note is Markdown of at
+most 16 KiB.
+
+**The turn's routes**, its session's own token (`agentTokenOK`), for
+the request its launch marked it with, while that request is `starting`
+or `running` (`409 turn_over` after); `404 not_brakeman` for a session
+that is not a turn's:
+
+| Route | Body and answer |
+|---|---|
+| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}}}`: the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together. The admin's token reads it too; read with the session's own, it marks the request read |
+| `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed. The `opId` is looked up first: the same `opId` and brief answer `200` with the request whatever its state now, another brief `409 brief_exists`. Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` and why (a field past its bound is refused, never cut; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
+
+**A brief**, schema `brakeman.brief/1`, at most 256 KiB as kept: `{schema,
+title, summary, uncertainty?, items}`, `title` at most 200 characters,
+`summary` (Brakeman's reading) at most 4 KiB, `uncertainty` 2 KiB, at
+most 100 items and 500 distinct refs across them; no `asOf` (what it
+covers is the server's record). Each item is `{kind, …its fields}`:
+`fact/1` (`text`, `evidence` 1 to 10 refs), `interpretation/1` (`text`,
+`facts`: indexes of the brief's facts), `proposal/1` (`text`, `op`,
+`target`, `args?`, `expectedRevision?`, `facts?`), `outcome/1` (`text`,
+`receipt`: a `check:`, `command:` or `op:` ref), `decision/1` (`about`,
+`happened`, `whyHuman`, `question`, `alternatives` 2 to 6, `recommendation`,
+`uncertainty?`, `blocked?`, `authorizes`, `evidence`, `subjectRevision?`),
+`comparison/1`, `evidence/1`, `draft_ticket/1` (at most 20, their `blocks`
+without a cycle), `draft_crew/1`, `handoff/1` and `overlap/1`, each with
+the bounds `internal/brakeman` holds them to. Drafts need the `draft`
+permission and proposals and decisions `propose`.
+
+**Refs** name records: `run:<run>`, `task:<run>/<task>`,
+`attempt:<run>/<task>/<n>`, `check:<run>/<task>/<n>/<id>/<k>`,
+`command:<run>/<command>`, `event:<run>/<seq>`, `message:<run>/<seq>`,
+`session:<id>`, `question:<session>/<question>`, `ticket:<KEY-n>`,
+`comment:<KEY-n>/<id>`, `op:<actor>/<opId>`, `commit:<run>/<sha>`,
+`file:<session>/<path>` and `brief:<br-n>/<item>`, each at most 512
+bytes, resolved as the brief is kept against the record it names.
+
+**The `brakeman` event.** After each change of a request's state the
+server sends `brakeman` on `GET /api/events`: `{id, state}`, at most 200
+bytes. Like a `run` event it is state a page cannot do without: a client
+that cannot keep up is dropped and reads again on its next `snapshot`.
+It reaches the pages alone, never a webhook.
+
+**Notifications.** A question a turn's session asks is listed in Needs
+you under its session's name, "Brakeman · br-n", and reaches browser
+notifications, Chime and webhooks only when its `crew.brakeman.quiet` is
+false (every turn a person asked for; a background turn's, Program item
+BK3, will be quiet): the server's webhooks and providers' sinks skip a
+quiet session's entries.

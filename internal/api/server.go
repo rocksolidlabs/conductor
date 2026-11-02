@@ -994,6 +994,11 @@ const recordsGrace = 5 * time.Second
 // records of the runs stopped are then waited for within recordsGrace,
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
+	// Brakeman's records first: the turn the stops below end is left
+	// running in them, and the next start finds it interrupted.
+	if s.brakeman != nil {
+		s.brakeman.close()
+	}
 	s.runs.Draining(ctx)
 	s.webhooks.close(ctx)
 	// The providers' queues end as the webhooks' do: what waits in them is
@@ -1058,9 +1063,6 @@ func (s *Server) Shutdown(ctx context.Context) {
 	select {
 	case <-done:
 	case <-ctx.Done():
-	}
-	if s.brakeman != nil {
-		s.brakeman.close()
 	}
 	if s.records != nil {
 		wctx, cancel := context.WithTimeout(context.Background(), recordsGrace)
