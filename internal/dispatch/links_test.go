@@ -9,11 +9,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // addLink adds a link through link.add and answers its receipt.
 func addLink(s *Store, opID, key string, l NewLink) (Receipt, error) {
-	return s.AddLink(context.Background(), testOp(opID), key, l)
+	return s.AddLink(context.Background(), testOp(opID), key, l, nil)
 }
 
 // runs is the engine's runs as a test gives the store sight of them.
@@ -31,7 +32,7 @@ func TestADeliveryLinkTakesItsURLAsItsReference(t *testing.T) {
 	tid, key := newTicket(t, s, "CND", "Delivered")
 	op := testOp("l1")
 	op.ExpectedRev = 1
-	rc, err := s.AddLink(ctx, op, key, NewLink{Kind: LinkDelivery, URL: "https://github.com/rocksolidlabs/conductor/pull/1", Note: "the merge"})
+	rc, err := s.AddLink(ctx, op, key, NewLink{Kind: LinkDelivery, URL: "https://github.com/rocksolidlabs/conductor/pull/1", Note: "the merge"}, nil)
 	want(t, rc, err, StatusDone, "")
 	first := rc.ID
 	if len(first) != IDLen || rc.Rev != 2 || rc.Intent != "link.add" {
@@ -169,7 +170,7 @@ func TestALinkAtItsBoundIsRecordedWhole(t *testing.T) {
 		Note: strings.Repeat(" ", MaxLinkNote),
 	}
 	op := Op{Actor: "admin", ID: "add", By: strings.Repeat(" ", MaxByName)}
-	rc, err := s.AddLink(ctx, op, key, l)
+	rc, err := s.AddLink(ctx, op, key, l, nil)
 	want(t, rc, err, StatusDone, "")
 	id := rc.ID
 	rc, err = s.RemoveLink(ctx, Op{Actor: "admin", ID: "remove", By: op.By}, key, id)
@@ -651,4 +652,275 @@ func TestMigratedContestedChainIsKept(t *testing.T) {
 	if rc.Key != t1 {
 		t.Fatalf("B to T3 once the chain is T1's: %+v", rc)
 	}
+}
+
+// commitA and commitB are two candidates' commits, in full.
+const (
+	commitA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	commitB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
+// exit is an exit code as a receipt holds it.
+func exit(n int) *int { return &n }
+
+// passedReceipt is a verification receipt of attempt n that passed one
+// check, test, natively.
+func passedReceipt(n int) *Verified {
+	return &Verified{At: unstamp("2026-11-01T12:00:00.000000000Z"), Passed: true, Attempt: n, Receipts: []VerifiedReceipt{
+		{Phase: PhaseCheck, ID: "test", K: 1, Where: "native", Exit: exit(0), Stable: true, LogSHA256: strings.Repeat("c", 64)},
+	}}
+}
+
+// addDelivery adds a delivery link naming the candidate, with the
+// verification receipt, through link.add, and answers its receipt.
+func addDelivery(s *Store, opID, key, url, candidate string, v *Verified) (Receipt, error) {
+	return s.AddLink(context.Background(), testOp(opID), key, NewLink{Kind: LinkDelivery, URL: url, Candidate: candidate}, v)
+}
+
+// A delivery link names its candidate, <run>/<task>/<n>@<commit>, a run
+// of its own ticket's, with the candidate's verification receipt: both
+// kept on the link's row and in its add's value, only a delivery naming
+// one, each with the other, each of its shape. The operation's
+// fingerprint is the request, never the receipt: the same request sent
+// again with another receipt is a repeat, the first receipt kept; another
+// candidate under the id is op_conflict. A candidate of another ticket's
+// run is run_linked naming it, of a run no ticket holds invalid.
+func TestADeliveryNamesItsCandidate(t *testing.T) {
+	s, _, key := planTicket(t)
+	ctx := context.Background()
+	l := mustLaunch(t, s, "l1", key, simplePlan(t, s, key), "")
+	run := l.RunID
+	s.SetRunExists(runs(run, "other-0000beef", "loose-0000cafe"))
+	_, other := makeTicket(t, s, NewTicket{Project: "CND", Title: "Another"})
+	rc, err := addLink(s, "hand", other, NewLink{Kind: LinkRun, Ref: "other-0000beef"})
+	want(t, rc, err, StatusDone, "")
+
+	candidate := run + "/build/2@" + commitA
+	v := passedReceipt(2)
+	rc, err = addDelivery(s, "d1", key, "https://github.com/rocksolidlabs/conductor/pull/9", candidate, v)
+	want(t, rc, err, StatusDone, "")
+	id := rc.ID
+	links, err := s.Links(ctx, key)
+	if err != nil || len(links) != 1 || links[0].ID != id || links[0].Candidate != candidate {
+		t.Fatalf("the delivery: %+v %v", links, err)
+	}
+	var kept Verified
+	if err := json.Unmarshal(links[0].Verified, &kept); err != nil || !kept.Passed || kept.Attempt != 2 || len(kept.Receipts) != 1 ||
+		kept.Receipts[0].Where != "native" || *kept.Receipts[0].Exit != 0 || !kept.At.Equal(v.At) {
+		t.Fatalf("the receipt kept: %s %v", links[0].Verified, err)
+	}
+	rows := changesOf(t, s, "test", "d1")
+	var added linkAdded
+	if len(rows) != 1 || json.Unmarshal([]byte(rows[0].Value), &added) != nil || added.Candidate != candidate || string(added.Verified) != string(links[0].Verified) {
+		t.Fatalf("the add's row: %+v", rows)
+	}
+	// The same request with another receipt: a repeat, the first kept.
+	again := passedReceipt(2)
+	again.At = again.At.Add(time.Hour)
+	again.Receipts[0].K = 2
+	rc, err = addDelivery(s, "d1", key, "https://github.com/rocksolidlabs/conductor/pull/9", candidate, again)
+	want(t, rc, err, StatusDone, "")
+	if !rc.Repeat || rc.ID != id {
+		t.Fatalf("the resend: %+v", rc)
+	}
+	if links, _ := s.Links(ctx, key); len(links) != 1 || string(links[0].Verified) != string(added.Verified) {
+		t.Fatalf("the resend changed the receipt: %+v", links)
+	}
+	// Another candidate under the id: op_conflict, nothing written.
+	rc, err = addDelivery(s, "d1", key, "https://github.com/rocksolidlabs/conductor/pull/9", run+"/build/3@"+commitA, passedReceipt(3))
+	want(t, rc, err, StatusFailed, RefusalOpConflict)
+
+	// The shapes: only a delivery names a candidate; each with the other.
+	for i, c := range []struct {
+		l       NewLink
+		v       *Verified
+		refusal string
+	}{
+		{NewLink{Kind: LinkExternal, URL: "https://example.com/x", Candidate: candidate}, v, RefusalInvalid},
+		{NewLink{Kind: LinkRun, Ref: "loose-0000cafe", Candidate: candidate}, v, RefusalInvalid},
+		{NewLink{Kind: LinkDelivery, URL: "https://example.com/x", Candidate: candidate}, nil, RefusalInvalid},
+		{NewLink{Kind: LinkDelivery, URL: "https://example.com/x"}, v, RefusalInvalid},
+		{NewLink{Kind: LinkDelivery, URL: "https://example.com/x", Candidate: strings.Repeat("a", MaxLinkCandidate+1)}, v, RefusalBound},
+	} {
+		rc, err := s.AddLink(ctx, testOp(opID("shape", i)), key, c.l, c.v)
+		want(t, rc, err, StatusFailed, c.refusal)
+	}
+	for i, bad := range []string{
+		run + "/build/2",
+		run + "/build/2@" + commitA[:39],
+		run + "/build/2@" + strings.ToUpper(commitA),
+		run + "/build/0@" + commitA,
+		run + "/build/02@" + commitA,
+		run + "/Build/2@" + commitA,
+		run + "/build@" + commitA,
+		run + "/build/2/3@" + commitA,
+		"crew/build/2@" + commitA,
+		"crew-0000beeg/build/2@" + commitA,
+		"/build/2@" + commitA,
+	} {
+		rc, err := addDelivery(s, opID("cand", i), key, "https://example.com/c", bad, passedReceipt(2))
+		want(t, rc, err, StatusFailed, RefusalInvalid)
+		if !strings.Contains(rc.Error, "<run>/<task>/<n>@<commit>") {
+			t.Fatalf("%q: %+v", bad, rc)
+		}
+	}
+	// A SHA-256 commit is a commit.
+	rc, err = addDelivery(s, "sha256", key, "https://example.com/release/2", run+"/build/2@"+commitB, passedReceipt(2))
+	want(t, rc, err, StatusDone, "")
+	// The receipt's shapes.
+	for i, mutate := range []func(v *Verified){
+		func(v *Verified) { v.At = time.Time{} },
+		func(v *Verified) { v.Attempt = 3 },
+		func(v *Verified) { v.Receipts[0].Phase = "setup" },
+		func(v *Verified) { v.Receipts[0].ID = "Test" },
+		func(v *Verified) { v.Receipts[0].K = -1 },
+		func(v *Verified) { v.Receipts[0].Where = "" },
+		func(v *Verified) { v.Receipts[0].Where = "Native" },
+		func(v *Verified) { v.Receipts[0].Where = strings.Repeat("a", MaxVerifiedWhere+1) },
+		func(v *Verified) { v.Receipts[0].LogSHA256 = "abc" },
+		// Passed only when every receipt passed, and there is one.
+		func(v *Verified) { v.Receipts[0].Exit = exit(1) },
+		func(v *Verified) { v.Receipts[0].Exit = nil },
+		func(v *Verified) { v.Receipts[0].Stable = false },
+		func(v *Verified) { v.Receipts = nil },
+	} {
+		v := passedReceipt(2)
+		mutate(v)
+		rc, err := addDelivery(s, opID("receipt", i), key, "https://example.com/r", candidate, v)
+		want(t, rc, err, StatusFailed, RefusalInvalid)
+	}
+	many := passedReceipt(2)
+	for len(many.Receipts) <= MaxVerifiedReceipts {
+		many.Receipts = append(many.Receipts, many.Receipts[0])
+	}
+	rc, err = addDelivery(s, "many", key, "https://example.com/r", candidate, many)
+	want(t, rc, err, StatusFailed, RefusalBound)
+	// A candidate that did not pass is kept as it is, passed false.
+	failed := passedReceipt(1)
+	failed.Passed, failed.Receipts[0].Exit = false, exit(1)
+	rc, err = addDelivery(s, "failed", key, "https://example.com/release/1", run+"/build/1@"+commitA, failed)
+	want(t, rc, err, StatusDone, "")
+
+	// Whose run: another ticket's is run_linked naming it, one no ticket
+	// holds invalid; the API's question answers as the operation does.
+	rc, err = addDelivery(s, "theirs", key, "https://example.com/t", "other-0000beef/build/1@"+commitA, passedReceipt(1))
+	want(t, rc, err, StatusFailed, RefusalRunLinked)
+	if rc.Key != other || !strings.Contains(rc.Error, "among "+other+"'s runs") {
+		t.Fatalf("another ticket's run: %+v", rc)
+	}
+	rc, err = addDelivery(s, "loose", key, "https://example.com/t", "loose-0000cafe/build/1@"+commitA, passedReceipt(1))
+	want(t, rc, err, StatusFailed, RefusalInvalid)
+	if !strings.Contains(rc.Error, "none of "+key+"'s runs") {
+		t.Fatalf("a run no ticket holds: %+v", rc)
+	}
+	var refusal *Refusal
+	if err := s.CandidateRefusal(ctx, key, run); err != nil {
+		t.Fatalf("its own run: %v", err)
+	}
+	if err := s.CandidateRefusal(ctx, key, "other-0000beef"); !errors.As(err, &refusal) || refusal.Code != RefusalRunLinked || refusal.Key != other {
+		t.Fatalf("another ticket's run: %v", err)
+	}
+	if err := s.CandidateRefusal(ctx, key, "loose-0000cafe"); !errors.As(err, &refusal) || refusal.Code != RefusalInvalid {
+		t.Fatalf("a run no ticket holds: %v", err)
+	}
+	if err := s.CandidateRefusal(ctx, "CND-99", run); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no ticket: %v", err)
+	}
+	// A continuation of the launched run is of its chain: the ticket's.
+	s.SetRunChain(chains([]string{run, "crew-0c0c0c0c"}))
+	rc, err = addDelivery(s, "continued", key, "https://example.com/release/3", "crew-0c0c0c0c/build/1@"+commitA, passedReceipt(1))
+	want(t, rc, err, StatusDone, "")
+}
+
+// A delivery's receipt keeps each receipt's where: sixteen receipts at
+// their worst (every field at its bound, where at its 32 bytes) are kept
+// byte for byte, under MaxLinkVerified, and the add's value is under
+// MaxChangeValue.
+func TestDeliveryReceiptKeepsWhere(t *testing.T) {
+	s, _, key := planTicket(t)
+	ctx := context.Background()
+	l := mustLaunch(t, s, "l1", key, simplePlan(t, s, key), "")
+	v := &Verified{At: unstamp("2026-11-01T12:00:00.123456789Z"), Attempt: 999999}
+	for i := range MaxVerifiedReceipts {
+		where := "native"
+		if i%2 == 1 {
+			where = "a" + strings.Repeat("-", MaxVerifiedWhere-1)
+		}
+		v.Receipts = append(v.Receipts, VerifiedReceipt{Phase: PhaseVerify, ID: strings.Repeat("z", 40), K: 1<<63 - 1, Where: where,
+			Exit: exit(-1 << 63), LogSHA256: strings.Repeat("f", 64)})
+	}
+	value, err := encodeValue(v)
+	if err != nil || len(value) > MaxLinkVerified {
+		t.Fatalf("the receipt at its worst is %d bytes: %v", len(value), err)
+	}
+	cand := l.RunID + "/" + strings.Repeat("t", 40) + "/999999@" + commitB
+	if len(cand) > MaxLinkCandidate {
+		t.Fatalf("the candidate is %d bytes", len(cand))
+	}
+	// The task id at its bound is of the crew the store does not read: the
+	// candidate's shape is all the store checks.
+	rc, err := s.AddLink(ctx, testOp("worst"), key, NewLink{Kind: LinkDelivery, URL: "https://example.com/worst", Candidate: cand}, v)
+	want(t, rc, err, StatusDone, "")
+	links, err := s.Links(ctx, key)
+	if err != nil || len(links) != 1 || string(links[0].Verified) != value {
+		t.Fatalf("the receipt kept: %+v %v", links, err)
+	}
+	var kept Verified
+	if err := json.Unmarshal(links[0].Verified, &kept); err != nil || len(kept.Receipts) != MaxVerifiedReceipts {
+		t.Fatal(err)
+	}
+	for i, r := range kept.Receipts {
+		if r.Where != v.Receipts[i].Where {
+			t.Fatalf("receipt %d ran %q, kept %q", i, v.Receipts[i].Where, r.Where)
+		}
+	}
+	if rows := changesOf(t, s, "test", "worst"); len(rows) != 1 || len(rows[0].Value) > MaxChangeValue {
+		t.Fatalf("the add's row: %d rows", len(rows))
+	}
+	// A run id at its bound (a crew id of 64 characters) still fits.
+	long := strings.Repeat("c", 64) + "-ffffffff/" + strings.Repeat("t", 40) + "/999999@" + commitB
+	if c, err := ParseCandidate(long); err != nil || len(long) > MaxLinkCandidate || c.String() != long || c.Name() != strings.Repeat("t", 40)+"#999999" {
+		t.Fatalf("the longest candidate, %d bytes: %+v %v", len(long), c, err)
+	}
+}
+
+// A delivery naming a candidate of a contested chain (one a version 1
+// store left on two tickets' hand links) is refused run_linked naming
+// both, from either ticket, nothing kept but the receipt; the contest
+// ended by a link's removal, the remaining ticket's delivery is taken.
+func TestADeliveryOfAContestedChainIsRefused(t *testing.T) {
+	ctx := context.Background()
+	const a, b = "crew-0000000a", "crew-0000000b"
+	var t1, t2 string
+	dir := versionOneStore(t, func(s *Store) {
+		newProject(t, s, "CND")
+		_, t1 = newTicket(t, s, "CND", "T1")
+		_, t2 = newTicket(t, s, "CND", "T2")
+		s.SetRunExists(runs(a, b))
+		for _, c := range []struct{ op, key, run string }{{"la", t1, a}, {"lb", t2, b}} {
+			rc, err := addLink(s, c.op, c.key, NewLink{Kind: LinkRun, Ref: c.run})
+			want(t, rc, err, StatusDone, "")
+		}
+	})
+	s := openStore(t, dir)
+	s.SetRunExists(runs(a, b))
+	s.SetRunChain(chains([]string{a, b}))
+	for i, c := range []struct{ key, run string }{{t1, a}, {t1, b}, {t2, a}, {t2, b}} {
+		rc, err := addDelivery(s, opID("d", i), c.key, "https://example.com/pull/1", c.run+"/build/1@"+commitA, passedReceipt(1))
+		want(t, rc, err, StatusFailed, RefusalRunLinked)
+		if rc.Key != t1 || !strings.Contains(rc.Error, "contested: "+t1+" and "+t2) {
+			t.Fatalf("%s naming %s: %+v", c.key, c.run, rc)
+		}
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM links WHERE kind = ?", LinkDelivery); n != 0 {
+		t.Fatalf("%d deliveries kept", n)
+	}
+	links, err := s.Links(ctx, t2)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("T2's links: %+v %v", links, err)
+	}
+	rc, err := s.RemoveLink(ctx, testOp("xb"), t2, links[0].ID)
+	want(t, rc, err, StatusDone, "")
+	rc, err = addDelivery(s, "after", t1, "https://example.com/pull/1", b+"/build/1@"+commitA, passedReceipt(1))
+	want(t, rc, err, StatusDone, "")
 }

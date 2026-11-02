@@ -160,7 +160,7 @@ func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, 
 		// acceptance and no link yet, so only a policy that requires
 		// nothing lets it.
 		if status == TicketDone {
-			if st := closeState(p.CloseRequires, Ticket{Owner: n.Owner, Acceptance: n.Acceptance}, false); len(st.Missing) > 0 {
+			if st := closeState(p.CloseRequires, Ticket{Owner: n.Owner, Acceptance: n.Acceptance}, nil); len(st.Missing) > 0 {
 				return policyRefusal("a new ticket", st)
 			}
 		}

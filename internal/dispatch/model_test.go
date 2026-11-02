@@ -322,10 +322,12 @@ func TestTheVocabulariesAreThePlans(t *testing.T) {
 		{[]string{}, "[]"},
 		{[]string{"acceptance"}, `["acceptance"]`},
 		{[]string{"delivery", "acceptance"}, `["acceptance","delivery"]`},
-		{[]string{"verified"}, "verified"},
+		{[]string{"verified"}, `["verified"]`},
+		{[]string{"verified", "delivery", "acceptance"}, `["acceptance","delivery","verified"]`},
 		{[]string{"acceptance", "acceptance"}, "twice"},
-		{[]string{"merged"}, "neither"},
-		{[]string{""}, "neither"},
+		{[]string{"verified", "verified"}, "twice"},
+		{[]string{"merged"}, "none of"},
+		{[]string{""}, "none of"},
 	} {
 		got, err := closePolicyValue(c.requires)
 		if strings.HasPrefix(c.want, "[") {

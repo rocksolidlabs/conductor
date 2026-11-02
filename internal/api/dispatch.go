@@ -54,13 +54,15 @@ const (
 	// ticket beside its labels and its milestone) and a page of its
 	// comments. The largest ticket the server can make, every field and set
 	// at its bound and every text at its escaped worst (fifty comments at
-	// 32 KiB, the description at 128 KiB, fifty links, fifty attachments, a
-	// hundred relations and fifty children with their titles), is under it,
-	// and so is the largest page of comments, maxCommentPage of them at
-	// their escaped worst. dispatch_test.go builds both and measures their
-	// replies. Exported for the CLI, whose limits are derived from it
-	// (internal/cli: maxDispatchReply, and the session client's).
-	MaxTicketReply = 3 << 20
+	// 32 KiB, the description at 128 KiB, fifty links, each a delivery
+	// naming its candidate with its verification receipt at 8 KiB, fifty
+	// attachments, a hundred relations and fifty children with their
+	// titles: about 3.2 MiB), is under it, and so is the largest page of
+	// comments, maxCommentPage of them at their escaped worst.
+	// dispatch_test.go builds both and measures their replies. Exported
+	// for the CLI, whose limits are derived from it (internal/cli:
+	// maxDispatchReply, and the session client's, each 4 MiB).
+	MaxTicketReply = 3<<20 + 512<<10
 	// MaxProjectReply bounds a project's read: its fields at their bounds,
 	// 100 labels, 100 milestones with 4 KiB descriptions and 200 views with
 	// 8 KiB queries, every text at its escaped worst, is under it, which
@@ -1435,7 +1437,8 @@ func (s *Server) handleDispatchRemoveRelation(w http.ResponseWriter, r *http.Req
 // live ticket's live run link names (409 run_linked, the receipt's key
 // naming that ticket). 201 {receipt, ticket}, the receipt naming the
 // link's id; 409 invalid for a second live link of the same kind and ref
-// or a field the store refuses, bound past 50.
+// or a field the store refuses, bound past 50. A delivery naming its
+// candidate is addDelivery's (dispatch_delivery.go).
 func (s *Server) handleDispatchAddLink(w http.ResponseWriter, r *http.Request) {
 	var body linkBody
 	ds, key, _, ok := s.opAt(w, r, ticketKey, &body, &body.dispatchOp)
@@ -1444,7 +1447,11 @@ func (s *Server) handleDispatchAddLink(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	rc, err := ds.AddLink(ctx, body.op(r), key, body.NewLink)
+	if body.Kind == dispatch.LinkDelivery && body.Candidate != "" {
+		s.addDelivery(ctx, w, ds, body.op(r), key, body.NewLink)
+		return
+	}
+	rc, err := ds.AddLink(ctx, body.op(r), key, body.NewLink, nil)
 	s.writeOp(w, "ticket", rc, err, true, "ticket", ticketAfter(ctx, ds, key))
 }
 
