@@ -1065,7 +1065,8 @@ func TestAConnectionStartTellsTheSessionAsItIsWhenForwarded(t *testing.T) {
 		<-release
 	}
 	// The forwarder is busy with a change as the connection starts.
-	a.noteChange(session.Info{ID: "sess-1", Attention: session.Attention{State: session.AttentionWorking, Source: "hook"}})
+	a.local.SetAttentionFull(session.AttentionWorking, "", "hook", "", nil)
+	a.noteChange(a.local.Info())
 	if m := (<-out).(proto.HostAttentionMsg); m.State != string(session.AttentionWorking) {
 		t.Fatalf("the server got %+v first", m)
 	}

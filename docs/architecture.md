@@ -794,7 +794,14 @@ is not routed and is held skipped (warn once a minute). A question shown
 while the router's `Start` has not succeeded is skipped the same way, and
 so is one the guard never gave the provider (every call slot of its busy):
 `Resolved` is told only of what `Route` received.
-Hosted sessions are routed once their hosts send what they keep (PR-10).
+A hosted session is routed when its host said `answerAs`, from the
+host's own last report (`HostView`: its attention and `kept`, one
+message), never a change the server forwarded and the host has not yet
+applied; its answers go to the host as `answer_as`, which applies them off
+its control loop through one queue of four per connection, under its own
+claim, and withdrawn first when the connection ends. A host back without
+`answerAs` has none of its new questions routed, and those already routed
+still resolved. A switchyard routes and answers none.
 
 ## Packages
 
