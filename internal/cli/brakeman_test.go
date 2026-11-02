@@ -3,8 +3,11 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -124,21 +128,7 @@ func TestBrakemanBriefFromAFile(t *testing.T) {
 	a.enableBrakeman(t)
 	a.srv.StartBrakeman()
 	id := a.admin(t, "POST", "/api/brakeman/requests", map[string]any{"opId": "ask-1", "kind": "briefing"}, http.StatusCreated)["request"].(map[string]any)["id"].(string)
-	var sid string
-	var local *session.Local
-	for sid == "" {
-		a.srv.Registry().Each(func(d session.Driver) {
-			if ref := d.Info().Crew; ref != nil && ref.Brakeman != nil && ref.Brakeman.Request == id {
-				sid, local = d.Info().ID, d.(*session.Local)
-			}
-		})
-		if sid == "" {
-			if t.Context().Err() != nil {
-				t.Fatal("the turn's session never started")
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
+	sid, local := a.turnSessionOf(t, id)
 	token := "agent-token-" + sid
 	local.SetAgentToken(token)
 	t.Setenv("CONDUCTOR_NOTIFY_URL", a.hs.URL+"/api/sessions/"+sid+"/attention")
@@ -165,6 +155,176 @@ func TestBrakemanBriefFromAFile(t *testing.T) {
 	if code, out, _, err = brakemanCmd(t, "", "show", id, "--server", a.hs.URL, "--token", dispatchToken); code != 0 || err != nil ||
 		!hasAll(out, id+" briefed briefing", "# Quiet night", "Nothing failed.", "0. fact/1: This turn ran.", "evidence: session:"+sid) {
 		t.Fatalf("show: %d %v\n%s", code, err, out)
+	}
+}
+
+// turnSessionOf waits for request id's session, in the registry once
+// the desk has launched the turn. A request that closes before it (a
+// launch refused or failed ends it) fails t with its state and why, and
+// so does the test's own deadline drawing near, with the request as it
+// stands, rather than go test's panic.
+func (a *dispatchAPI) turnSessionOf(t *testing.T, id string) (string, *session.Local) {
+	t.Helper()
+	deadline, bounded := t.Deadline()
+	for {
+		var sid string
+		var local *session.Local
+		a.srv.Registry().Each(func(d session.Driver) {
+			if ref := d.Info().Crew; ref != nil && ref.Brakeman != nil && ref.Brakeman.Request == id {
+				sid, local = d.Info().ID, d.(*session.Local)
+			}
+		})
+		if sid != "" {
+			return sid, local
+		}
+		r := a.admin(t, "GET", "/api/brakeman/requests/"+id, nil, http.StatusOK)["request"].(map[string]any)
+		state, _ := r["state"].(string)
+		if brakeman.Closed(state) {
+			t.Fatalf("request %s is %s before its session started: %v", id, state, r["why"])
+		}
+		if bounded && time.Until(deadline) < 30*time.Second {
+			t.Fatalf("request %s's session never started: it is %s", id, state)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// list follows the pages to the end: with a page of 3, seven requests
+// are asked for in three pages, each after the one before's next, and
+// every request is listed once, newest first.
+func TestBrakemanListFollowsEveryPage(t *testing.T) {
+	a := newBrakemanAPI(t)
+	a.enableBrakeman(t)
+	was := brakemanListPage
+	brakemanListPage = 3
+	t.Cleanup(func() { brakemanListPage = was })
+	for i := range 7 {
+		a.admin(t, "POST", "/api/brakeman/requests", map[string]any{"opId": fmt.Sprintf("ask-%d", i), "kind": "briefing"}, http.StatusCreated)
+	}
+	before := a.count()
+	code, out, _, err := brakemanCmd(t, "", "list", "--server", a.hs.URL, "--token", dispatchToken)
+	if code != 0 || err != nil {
+		t.Fatalf("list: %d %v", code, err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 7 {
+		t.Fatalf("%d lines:\n%s", len(lines), out)
+	}
+	for i, l := range lines {
+		if want := fmt.Sprintf("br-%d queued briefing ", 7-i); !strings.HasPrefix(l, want) {
+			t.Fatalf("line %d is %q, want %q…", i, l, want)
+		}
+	}
+	gets := a.requests(before)
+	if len(gets) != 3 {
+		t.Fatalf("%d requests, want 3 pages: %+v", len(gets), gets)
+	}
+	next := ""
+	for i, g := range gets {
+		want := "limit=3"
+		if next != "" {
+			want += "&after=" + url.QueryEscape(next)
+		}
+		if g.method != "GET" || g.path != "/api/brakeman/requests" || g.query != want {
+			t.Fatalf("page %d: %s %s?%s, want ?%s", i, g.method, g.path, g.query, want)
+		}
+		// The page as the server answers it, for the next one's after.
+		next, _ = a.admin(t, "GET", "/api/brakeman/requests?"+g.query, nil, http.StatusOK)["next"].(string)
+		if i < 2 && next == "" {
+			t.Fatalf("page %d has no next", i)
+		}
+	}
+	if next != "" {
+		t.Fatalf("the last page's next is %q", next)
+	}
+}
+
+// show prints every item whole: its kind and the words it leads with,
+// then each other field in the brief's order, so a draft crew's crew and
+// gates, an overlap's paths and a decision's alternatives,
+// recommendation and what it authorizes are all there.
+func TestBrakemanShowPrintsEveryItemWhole(t *testing.T) {
+	clearConductorEnv(t)
+	reply := `{"request":{"id":"br-1","kind":"decision","state":"briefed","createdAt":"2026-11-02T09:00:00Z","agent":{"agentId":"claude","version":"2.1.304"}},
+"brief":{"title":"Morning","summary":"Two things.","items":[
+{"kind":"draft_crew/1","crew":{"name":"Fix <it>","members":[{"name":"a"}]},"gates":[{"task":"t1","decision":"merge?"}],"from":["ticket:CND-1"]},
+{"kind":"overlap/1","paths":["a/b.go","c.go"],"between":["attempt:r1/t1/1","session:s1"]},
+{"kind":"decision/1","about":"question:q1","happened":"It asked.","whyHuman":"Only you know.","question":"Ship?","alternatives":[{"label":"Yes","tradeoffs":"fast"},{"label":"No","tradeoffs":"safe"}],"recommendation":1,"authorizes":"merging it","evidence":["session:s1"]},
+{"kind":"fact/1","text":"It ran.","evidence":["session:s1"]}]}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/brakeman/requests/br-1" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, reply)
+	}))
+	t.Cleanup(srv.Close)
+	code, out, _, err := brakemanCmd(t, "", "show", "br-1", "--server", srv.URL, "--token", dispatchToken)
+	if code != 0 || err != nil {
+		t.Fatalf("show: %d %v", code, err)
+	}
+	for _, want := range []string{
+		"\n0. draft_crew/1\n   crew: {\"name\":\"Fix <it>\",\"members\":[{\"name\":\"a\"}]}\n   gates:\n     - {\"task\":\"t1\",\"decision\":\"merge?\"}\n   from: ticket:CND-1\n",
+		"\n1. overlap/1\n   paths: a/b.go, c.go\n   between: attempt:r1/t1/1, session:s1\n",
+		"\n2. decision/1: Ship?\n   about: question:q1\n   happened: It asked.\n   whyHuman: Only you know.\n   alternatives:\n     - {\"label\":\"Yes\",\"tradeoffs\":\"fast\"}\n     - {\"label\":\"No\",\"tradeoffs\":\"safe\"}\n   recommendation: 1\n   authorizes: merging it\n   evidence: session:s1\n",
+		"\n3. fact/1: It ran.\n   evidence: session:s1\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("show lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// A failure to reach the server names its host and cause, never the
+// read's URL: its query is the turn's (here a search), as the command's
+// error and the MCP tool's text.
+func TestObserveNamesNoQueryWhenTheServerCannotBeReached(t *testing.T) {
+	clearConductorEnv(t)
+	srv := httptest.NewServer(http.NotFoundHandler())
+	gone := srv.URL
+	srv.Close()
+	const marker = "review-query-marker"
+	replies := mcpRun(t, brakemanEnv(gone, "s1", "agent-tok"),
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"observe","arguments":{"what":"tickets","query":{"q":"`+marker+`"}}}}`)
+	if text, isErr := toolText(t, replies[0]); !isErr || strings.Contains(text, marker) || strings.Contains(text, "/api/") || !strings.Contains(text, "observe: cannot reach") {
+		t.Errorf("the tool's text: %q %v", text, isErr)
+	}
+	t.Setenv("CONDUCTOR_NOTIFY_URL", gone+"/api/sessions/s1/attention")
+	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "agent-tok")
+	t.Setenv(envBrakeman, "br-1")
+	code, out, errOut, err := brakemanCmd(t, "", "observe", "tickets", "--q", marker)
+	if code != 1 || err == nil || strings.Contains(err.Error()+out+errOut, marker) || strings.Contains(err.Error(), "/api/") || !strings.Contains(err.Error(), "cannot reach") {
+		t.Errorf("the command: %d %v %q %q", code, err, out, errOut)
+	}
+}
+
+// observe reads a reply up to the bound the table gives its what, in
+// whole MiB above it (a shared read's 4 MiB, which the server holds a
+// turn's answer to), and refuses one past it.
+func TestObserveReadsUpToItsTableBound(t *testing.T) {
+	limit := wholeMiB(opBound("observe_messages", "reply"))
+	if limit <= maxSessionReply {
+		t.Fatalf("observe_messages reads at most %d bytes, no more than the session client's %d", limit, maxSessionReply)
+	}
+	var size atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := int(size.Load())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"messages":[],"pad":"`+strings.Repeat("x", n-len(`{"messages":[],"pad":""}`))+`"}`)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := brakemanClientFromEnv(brakemanEnv(srv.URL, "s1", "agent-tok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	size.Store(int64(maxSessionReply + 1))
+	if text, err := c.observe(t.Context(), "messages", map[string]string{"run": "r1"}); err != nil || len(text) != maxSessionReply+1 {
+		t.Fatalf("a reply past 4 MiB within the bound: %d bytes, %v", len(text), err)
+	}
+	size.Store(int64(limit + 1))
+	if _, err := c.observe(t.Context(), "messages", map[string]string{"run": "r1"}); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("a reply past the bound: %v", err)
 	}
 }
 
