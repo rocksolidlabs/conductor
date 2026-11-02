@@ -91,7 +91,34 @@ test('in a browser, Settings says what the server is and who sponsors it', async
   await page.goto('/settings')
   const about = page.locator('[data-about-card]')
   await expect(about.locator('[data-about-row="server"]')).not.toBeEmpty()
+  // The e2e server is a plain build: nothing is registered beside the open-source feature set (GET /api/capabilities).
+  await expect(about.locator('[data-about-row="extensions"]')).toHaveText('None: the open-source feature set')
   await expect(about.locator('[data-about-credit]')).toContainText('Sponsored and maintained by RockSolid Labs')
+})
+
+// A provider still starting as Settings opens (docs/plans/ext.md, C9): the row says so, the route is read again on its own, and the
+// row reads ready once the reply does, with no reload and the same token. It waits on the second request, never on the clock.
+test('the Extensions row shows a provider that was starting as ready once it is, with no reload', async ({ page, state }) => {
+  const replies = [
+    { providers: [{ kind: 'identity', name: 'cloud', state: 'starting' }, { kind: 'notifications', name: 'push', state: 'ready' }] },
+    { providers: [{ kind: 'identity', name: 'cloud', state: 'ready' }, { kind: 'notifications', name: 'push', state: 'ready' }] },
+  ]
+  let served = 0
+  await page.route('**/api/capabilities', (route) => route.fulfill({ json: replies[Math.min(served++, replies.length - 1)] }))
+  const first = page.waitForRequest('**/api/capabilities')
+  await page.goto('/settings')
+  const asked = await first
+  // Asked for before the first reply can have been read, so the second request cannot pass it by.
+  const second = page.waitForRequest('**/api/capabilities')
+  const row = page.locator('[data-about-card] [data-about-row="extensions"]')
+  await expect(row).toHaveText('identity: cloud (starting) · notifications: push')
+  // A mark on the page that a reload would lose.
+  await page.evaluate(() => ((window as unknown as { capabilitiesMark: number }).capabilitiesMark = 1))
+  const again = await second
+  await expect(row).toHaveText('identity: cloud · notifications: push')
+  expect(await page.evaluate(() => (window as unknown as { capabilitiesMark?: number }).capabilitiesMark)).toBe(1)
+  expect(asked.headers().authorization).toBe(`Bearer ${state.token}`)
+  expect(again.headers().authorization).toBe(`Bearer ${state.token}`)
 })
 
 test('a "Runs in" field has a folder button that browses the allowed roots and fills it', async ({ page, state }) => {
