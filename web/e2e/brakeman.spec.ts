@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Api, expect, test, type Run } from './fixtures'
@@ -30,7 +30,8 @@ let briefed: Request
 
 test.beforeAll(async ({ state }) => {
   const here = dirname(fileURLToPath(import.meta.url))
-  const root = join(state.root, 'brakeman')
+  // A root of its own each time the spec runs (a repeat starts again from no records, so its requests are br-1 and br-2).
+  const root = mkdtempSync(join(state.root, 'brakeman-'))
   const home = join(root, 'home')
   const data = join(root, 'data')
   const repo = join(root, 'repo')
@@ -67,6 +68,9 @@ async function open(page: import('@playwright/test').Page, path: string) {
 const request = (id: string) => api.ok<{ request: Request }>('GET', `/api/brakeman/requests/${id}`).then((r) => r.request)
 
 test('Settings saves Brakeman with the stub as its agent and terminal screens off', async ({ page }) => {
+  // The defaults, written on the first read, at the revision the save names.
+  const before = (await api.ok<{ config: { enabled: boolean; rev: number } }>('GET', '/api/brakeman')).config
+  expect(before.enabled).toBe(false)
   await open(page, '/settings')
   const card = page.locator('[data-brakeman-settings]')
   await expect(card).toBeVisible()
@@ -83,7 +87,7 @@ test('Settings saves Brakeman with the stub as its agent and terminal screens of
   await expect.poll(async () => {
     const c = (await api.ok<{ config: { enabled: boolean; agentId: string; visibility: { terminals: boolean; runs: boolean }; rev: number } }>('GET', '/api/brakeman')).config
     return [c.enabled, c.agentId, c.visibility.terminals, c.visibility.runs, c.rev]
-  }, { timeout: 15_000 }).toEqual([true, 'brakeman-stub', false, true, 1])
+  }, { timeout: 15_000 }).toEqual([true, 'brakeman-stub', false, true, before.rev + 1])
   await expect(card.locator('[data-brakeman-save]')).toBeDisabled()
 })
 

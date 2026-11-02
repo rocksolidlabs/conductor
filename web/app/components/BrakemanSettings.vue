@@ -38,14 +38,6 @@ onMounted(async () => {
     .then((c) => (agents.value = c))
     .catch(() => (agents.value = []))
 })
-// The form follows the configuration saved until it is changed here.
-watch(
-  () => saved.value?.rev,
-  () => {
-    if (saved.value && (!form.value || !dirty.value)) reset(saved.value)
-  },
-  { immediate: true },
-)
 
 /** The form as the server takes it, its scope from the text fields. */
 const body = computed<BrakemanConfig | null>(() => {
@@ -63,6 +55,15 @@ function normal(c: BrakemanConfig) {
   const { rev: _rev, updatedAt: _at, ...rest } = c
   return { ...rest, account: rest.account || undefined, model: rest.model || undefined }
 }
+
+// The form follows the configuration saved until it is changed here.
+watch(
+  () => saved.value?.rev,
+  () => {
+    if (saved.value && (!form.value || !dirty.value)) reset(saved.value)
+  },
+  { immediate: true },
+)
 
 /** The agents Brakeman can be: an adapter that registers Conductor's tools and has a read-only mode. */
 const offered = computed(() => agents.value.filter((a) => a.adapter && BRAKEMAN_ADAPTERS[a.adapter]))

@@ -113,7 +113,7 @@
       {
         "id": "brakeman-stub",
         "name": "Brakeman (e2e stub)",
-        "description": "The stub as Brakeman's agent, under Claude Code's adapter so the configuration takes it: on its request line it reads its request with conductor brakeman request, observes the changes and submits a brief citing its own session and run. The MCP, read-only and model arguments it is launched with are taken and ignored.",
+        "description": "The stub as Brakeman's agent, under Claude Code's adapter: it reads its request and the changes with conductor brakeman and submits a brief citing its own session and run.",
         "command": ["@BASH@", "@STUB@"],
         "allowArgs": true,
         "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "plain", "STUB_BRAKEMAN": "1", "STUB_WORKER": "cli" },
