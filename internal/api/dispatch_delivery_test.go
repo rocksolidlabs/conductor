@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,10 +22,13 @@ func deliveryCommit(n int) string { return fmt.Sprintf("%040x", n) }
 // one left it, its record saved so a hand link can name it: a work task
 // build and a review rv. build's attempt 1 failed its check test on its
 // result; attempt 2 succeeded, its check test and its verify step lint
-// passing on its result (a setup step's row, and a failing row of
-// another commit, beside them, neither the candidate's); attempt 3 failed
-// its check and was accepted anyway; attempt 4 succeeded with no check at
-// all; attempt 5 passed its check and was stopped before it succeeded.
+// passing on its result, lint's leftover child killed after it exited 0
+// (Killed, no failure of the step), a setup step's row, and a failing
+// row of another commit, beside them, neither the candidate's; attempt 3
+// failed its check and was accepted anyway; attempt 4 succeeded with no
+// check at all; attempt 5 passed its check and was stopped before it
+// succeeded; attempt 6 passed its check and is still verifying, attempt
+// 7 still submitting, both with their result.
 // rv's attempt 1 reviewed attempt 2's result. A from not "" is the
 // run it continues, marked continued by it in the ledger.
 func deliveryRun(t *testing.T, e *testEnv, run, from string) {
@@ -43,13 +47,14 @@ func deliveryRun(t *testing.T, e *testEnv, run, from string) {
 				return err
 			}
 		}
-		if err := tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: crew.TaskWork, State: ledger.TaskSucceeded, Attempts: 5, ResultAttempt: 2, ResultCommit: deliveryCommit(2)}); err != nil {
+		if err := tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: crew.TaskWork, State: ledger.TaskSucceeded, Attempts: 7, ResultAttempt: 2, ResultCommit: deliveryCommit(2)}); err != nil {
 			return err
 		}
 		if err := tx.PutTask(ledger.TaskRow{ID: "rv", Member: "lead", Kind: crew.TaskReview, State: ledger.TaskSucceeded, Attempts: 1, ResultAttempt: 1}); err != nil {
 			return err
 		}
-		for n, state := range map[int]string{1: ledger.AttemptFailed, 2: ledger.AttemptSucceeded, 3: ledger.AttemptFailed, 4: ledger.AttemptSucceeded, 5: ledger.AttemptStopped} {
+		for n, state := range map[int]string{1: ledger.AttemptFailed, 2: ledger.AttemptSucceeded, 3: ledger.AttemptFailed, 4: ledger.AttemptSucceeded, 5: ledger.AttemptStopped,
+			6: ledger.AttemptVerifying, 7: ledger.AttemptSubmitting} {
 			a := ledger.AttemptRow{TaskID: "build", N: n, Member: "lead", StartCommit: deliveryCommit(n - 1), ResultCommit: deliveryCommit(n), State: state, Result: result(crew.Result{Commit: deliveryCommit(n)})}
 			if state == ledger.AttemptFailed {
 				a.Stage = "check"
@@ -66,10 +71,11 @@ func deliveryRun(t *testing.T, e *testEnv, run, from string) {
 			{TaskID: "build", N: 1, ID: "test", K: 1, Subject: deliveryCommit(1), State: ledger.CheckFinished, Exit: 1, Stable: true, LogSHA256: strings.Repeat("1", 64)},
 			{TaskID: "build", N: 2, ID: "deps", K: 1, Phase: ledger.PhaseSetup, Subject: deliveryCommit(2), State: ledger.CheckFinished, Exit: 1},
 			{TaskID: "build", N: 2, ID: "test", K: 2, Subject: deliveryCommit(2), State: ledger.CheckFinished, Exit: 0, Stable: true, LogSHA256: strings.Repeat("2", 64)},
-			{TaskID: "build", N: 2, ID: "lint", K: 3, Phase: ledger.PhaseVerify, Subject: deliveryCommit(2), State: ledger.CheckFinished, Exit: 0, Stable: true},
+			{TaskID: "build", N: 2, ID: "lint", K: 3, Phase: ledger.PhaseVerify, Subject: deliveryCommit(2), State: ledger.CheckFinished, Exit: 0, Stable: true, Killed: true},
 			{TaskID: "build", N: 2, ID: "old", K: 4, Subject: deliveryCommit(1), State: ledger.CheckFinished, Exit: 1},
 			{TaskID: "build", N: 3, ID: "test", K: 1, Subject: deliveryCommit(3), State: ledger.CheckFinished, Exit: 2, Stable: true},
 			{TaskID: "build", N: 5, ID: "test", K: 1, Subject: deliveryCommit(5), State: ledger.CheckFinished, Exit: 0, Stable: true},
+			{TaskID: "build", N: 6, ID: "test", K: 1, Subject: deliveryCommit(6), State: ledger.CheckFinished, Exit: 0, Stable: true},
 		} {
 			row.StartedAt, row.FinishedAt = at, at.Add(time.Second)
 			if err := tx.PutCheck(row); err != nil {
@@ -147,8 +153,10 @@ func linkCount(t *testing.T, e *testEnv, key string) int {
 // as the ledger had it: a candidate that passed (its check and its verify
 // step on its commit, where they ran, the setup step and another commit's
 // row left out), one that failed, one accepted anyway (not verified), one
-// with no check (not verified). Refused, nothing kept: a commit that is
-// not the attempt's result, a review, an attempt the run has not, a run of
+// with no check (not verified), one whose verify step's leftover child was
+// killed after it passed (verified). Refused, nothing kept: a commit that
+// is not the attempt's result, a review, an attempt the run has not, an
+// attempt still verifying or submitting (its receipt not finished), a run of
 // another ticket's (run_linked naming it), a run no ticket holds, a run the
 // ledger has not. A candidate not of its shape is the store's refusal, its
 // receipt kept. The close policy's verified through the project's edit
@@ -161,12 +169,15 @@ func TestDeliveryLinkNamesACandidate(t *testing.T) {
 		return fmt.Sprintf("%s/%s/%d@%s", run, task, n, deliveryCommit(commit))
 	}
 
-	// Failed first, so the close policy can be shown unmet by it.
+	// Failed first, so the close policy can be shown unmet by it. The
+	// receipt's time is when the route read it.
+	asked := time.Now()
 	out := e.deliver(t, "CND-1", opID(), "https://example.com/pull/1", cand("build", 1, 1), http.StatusCreated, "")
+	answered := time.Now()
 	l, v := deliveryOf(t, entityOf(t, out, "ticket"), receiptOf(t, out)["id"].(string))
 	if l["candidate"] != cand("build", 1, 1) || v.Passed || v.Attempt != 1 || len(v.Receipts) != 1 || *v.Receipts[0].Exit != 1 || v.Receipts[0].Where != "native" ||
-		v.Receipts[0].LogSHA256 != strings.Repeat("1", 64) || time.Since(v.At) > time.Minute {
-		t.Fatalf("a failed candidate: %v %+v", l, v)
+		v.Receipts[0].LogSHA256 != strings.Repeat("1", 64) || v.At.Before(asked) || v.At.After(answered) {
+		t.Fatalf("a failed candidate: %v %+v (asked %s, answered %s)", l, v, asked, answered)
 	}
 	e.expect(t, "POST", "/api/dispatch/projects/CND/edit", map[string]any{"opId": opID(), "closeRequires": []string{"verified"}}, http.StatusOK, "")
 	p := entityOf(t, e.expect(t, "GET", "/api/dispatch/projects/CND", nil, http.StatusOK, ""), "project")
@@ -212,6 +223,8 @@ func TestDeliveryLinkNamesACandidate(t *testing.T) {
 		{cand("build", 2, 1), http.StatusConflict, "invalid", "build#2's commit is not " + deliveryCommit(1)},
 		{cand("rv", 1, 2), http.StatusConflict, "invalid", "is a review"},
 		{cand("build", 9, 2), http.StatusConflict, "invalid", "no attempt 9"},
+		{cand("build", 6, 6), http.StatusConflict, "invalid", "build#6 has not ended (its attempt is verifying)"},
+		{cand("build", 7, 7), http.StatusConflict, "invalid", "build#7 has not ended (its attempt is submitting)"},
 		{"other-0000abcd/build/2@" + deliveryCommit(2), http.StatusConflict, "run_linked", "among CND-2's runs"},
 		{"loose-0000abcd/build/2@" + deliveryCommit(2), http.StatusConflict, "invalid", "none of CND-1's runs"},
 	} {
@@ -248,7 +261,7 @@ func TestDeliveryLinkNamesACandidate(t *testing.T) {
 	if !v.Passed || v.Attempt != 2 || len(v.Receipts) != 2 {
 		t.Fatalf("a passed candidate: %+v", v)
 	}
-	// In the ledger's order: by id, then k.
+	// In the ledger's order: by id, then k; lint passed, its child killed.
 	for i, want := range []dispatch.VerifiedReceipt{
 		{Phase: dispatch.PhaseVerify, ID: "lint", K: 3, Where: "native", Stable: true},
 		{Phase: dispatch.PhaseCheck, ID: "test", K: 2, Where: "native", Stable: true, LogSHA256: strings.Repeat("2", 64)},
@@ -328,6 +341,67 @@ func TestDeliveryLinkResentAfterTheEvidenceChanged(t *testing.T) {
 	e.deliver(t, "CND-1", op, url, run+"/build/4@"+deliveryCommit(4), http.StatusConflict, "op_conflict")
 	if n := linkCount(t, e, "CND-1"); n != before {
 		t.Fatalf("%d links, %d before", n, before)
+	}
+}
+
+// Two tries of one delivery in flight at once both find no receipt in
+// the first replay; the twin that commits first wins. A try that then
+// meets a refusal (its run's link removed meanwhile, so the run is none
+// of the ticket's) or a ledger it cannot read (closed meanwhile) answers
+// the twin's receipt, a repeat with the twin's recorded receipt, never
+// its own failure. The seam commits the twin between the first replay
+// and the reads that would fail.
+func TestDeliveryOverlappingTriesAnswerTheFirst(t *testing.T) {
+	t.Parallel()
+	run := "synth-0000abcd"
+	candidate := run + "/build/2@" + deliveryCommit(2)
+	for _, c := range []struct {
+		name  string
+		after func(t *testing.T, e *testEnv)
+	}{
+		{"the run's link removed", func(t *testing.T, e *testEnv) {
+			links, err := e.srv.dispatch.Links(t.Context(), "CND-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, l := range links {
+				if l.Kind == dispatch.LinkRun {
+					if rc, err := e.srv.dispatch.RemoveLink(t.Context(), adminOp(""), "CND-1", l.ID); err != nil || rc.Status != dispatch.StatusDone {
+						t.Fatalf("the run link's remove: %+v %v", rc, err)
+					}
+				}
+			}
+		}},
+		{"the ledger closed", func(t *testing.T, e *testEnv) {
+			if err := e.srv.ledger.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			e := deliveryEnv(t)
+			twin := &dispatch.Verified{At: time.Now().UTC(), Passed: true, Attempt: 2, Receipts: []dispatch.VerifiedReceipt{
+				{Phase: dispatch.PhaseCheck, ID: "test", K: 2, Where: "native", Exit: new(int), Stable: true}}}
+			var twinID string
+			e.srv.deliveryReplayed = func(ctx context.Context, op dispatch.Op, key string, l dispatch.NewLink) {
+				rc, err := e.srv.dispatch.AddLink(ctx, op, key, l, twin)
+				if err != nil || rc.Status != dispatch.StatusDone {
+					t.Errorf("the twin: %+v %v", rc, err)
+					return
+				}
+				twinID = rc.ID
+				c.after(t, e)
+			}
+			op := opID()
+			out := e.deliver(t, "CND-1", op, "https://example.com/pull/2", candidate, http.StatusOK, "")
+			if rc := receiptOf(t, out); rc["repeat"] != true || rc["id"] != twinID || twinID == "" {
+				t.Fatalf("the second try: %v, the twin's %s", rc, twinID)
+			}
+			if _, v := deliveryOf(t, entityOf(t, out, "ticket"), twinID); !v.Passed || !v.At.Equal(twin.At) {
+				t.Fatalf("the receipt answered %+v, the twin's %+v", v, twin)
+			}
+		})
 	}
 }
 

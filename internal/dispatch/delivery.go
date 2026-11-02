@@ -282,27 +282,22 @@ type delivery struct {
 	verified  string
 }
 
-// deliveriesOf reads the ticket's live delivery links, in the order they
-// were made. A version 1 database has no candidates.
+// deliveriesOf reads the ticket's live delivery links as the ticket shows
+// them (linksOf: a member two replicas added read as its later add), in
+// the order they were made, so a receipt the ticket does not show never
+// meets the close policy. A version 1 database has no candidates.
 func deliveriesOf(ctx context.Context, q queryer, ticketID string) ([]delivery, error) {
-	cols := "candidate, verified"
-	if schemaOf(q) < 2 {
-		cols = "'', ''"
-	}
-	rows, err := q.QueryContext(ctx, "SELECT "+cols+" FROM links WHERE ticket_id = ? AND kind = ? AND deleted_at = '' ORDER BY created_at, id", ticketID, LinkDelivery)
+	links, err := linksOf(ctx, q, ticketID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var out []delivery
-	for rows.Next() {
-		var d delivery
-		if err := rows.Scan(&d.candidate, &d.verified); err != nil {
-			return nil, err
+	for _, l := range links {
+		if l.Kind == LinkDelivery {
+			out = append(out, delivery{candidate: l.Candidate, verified: string(l.Verified)})
 		}
-		out = append(out, d)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // verifiedState is the close policy's verified, pure: met when a live
