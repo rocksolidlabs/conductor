@@ -9,8 +9,8 @@ import { taskBadges } from '~/utils/tasks'
 /**
  * The run Tasks view inside a ticket (docs/plans/dispatch.md, PR-11): the managed runs linked to the ticket, each with the run page's own
  * task rows (RunTasks.vue, embedded, not a copy) for the run the live store holds or, for one the server no longer holds, its record,
- * read once, read-only. Nothing is launched from a ticket (DS2's): a run is linked by hand, picked from the runs the server holds or
- * named by its id, one the engine holds or has a record of; a run another live ticket holds is refused (409 run_linked) with that ticket
+ * read once, read-only. A run launched from the ticket's plan revision needs no link (its launch, in the Plan section, is the ticket's
+ * reference to it); any other run is linked by hand, picked from the runs the server holds or named by its id, one the engine holds or has a record of; a run another live ticket holds is refused (409 run_linked) with that ticket
  * named, since a run belongs to one ticket. A link removed leaves the run as it is. The runs follow the live store's run events.
  */
 const props = defineProps<{
