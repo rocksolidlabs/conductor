@@ -7,8 +7,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Network is the transport a provider under test reaches its service
@@ -24,8 +26,9 @@ import (
 //   - While the suite holds the network blocked (Block), every dial and
 //     request waits until it is let go (Unblock) or its context ends, and
 //     no byte crosses a connection DialContext made, however long before
-//     it was made: a Read or Write on it waits until Unblock or the
-//     connection's Close (a deadline does not let it go). So a call that
+//     it was made: a Read or Write on it waits until Unblock, the
+//     connection's Close or its deadline (os.ErrDeadlineExceeded, as
+//     net.Conn's). So a call that
 //     waits on its service under a context of its own, or over a
 //     connection it holds (gRPC, a websocket), does not return, and is
 //     caught when the guard's wait for that method ends.
@@ -106,9 +109,10 @@ func NewNetwork() *Network {
 // refuses a dial under a call's context (ErrOnCallPath) and, while the
 // network is blocked, waits until it is let go or ctx ends (ctx's error).
 // The connection it answers lets no byte cross while the network is
-// blocked: a Read or Write waits until Unblock or Close (net.ErrClosed),
-// and bytes a Read took from the wire are handed over only once the gate
-// opens.
+// blocked: a Read or Write waits until Unblock, Close (net.ErrClosed) or
+// its deadline (os.ErrDeadlineExceeded, a deadline set while it waits
+// counting too, as net.Conn's does), and bytes a Read took from the wire
+// are handed over only once the gate opens.
 func (n *Network) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	if err := n.pass(ctx, Dial{Network: network, Addr: addr}); err != nil {
 		return nil, err
@@ -118,7 +122,7 @@ func (n *Network) DialContext(ctx context.Context, network, addr string) (net.Co
 		return nil, err
 	}
 	label, _ := ctx.Value(waitKey{}).(string)
-	return &heldConn{Conn: conn, n: n, label: label, closed: make(chan struct{})}, nil
+	return &heldConn{Conn: conn, n: n, label: label, closed: make(chan struct{}), moved: make(chan struct{})}, nil
 }
 
 // heldConn is a connection DialContext made, gated as the network is.
@@ -128,30 +132,97 @@ type heldConn struct {
 	label  string // the wait label of the context it was dialled under
 	once   sync.Once
 	closed chan struct{} // closed by Close
+
+	mu      sync.Mutex
+	rdl     time.Time     // the read deadline; zero for none
+	wdl     time.Time     // the write deadline; zero for none
+	moved   chan struct{} // closed, and made anew, when a deadline is set
+	pending []byte        // what a Read took from the wire while the gate shut, for the next Read
+	perr    error         // and the error that Read answered with it
 }
 
-// gate waits while the network is blocked, until it opens (nil) or the
-// connection is closed (net.ErrClosed).
-func (c *heldConn) gate() error {
-	if !c.n.await(c.label, c.closed) {
-		return net.ErrClosed
+// gate waits while the network is blocked, until it opens (nil), the
+// connection is closed (net.ErrClosed) or the read's or write's deadline
+// passes (os.ErrDeadlineExceeded), a deadline set while it waits too.
+func (c *heldConn) gate(write bool) error {
+	for {
+		c.mu.Lock()
+		dl, moved := c.rdl, c.moved
+		if write {
+			dl = c.wdl
+		}
+		c.mu.Unlock()
+		select {
+		case <-c.closed:
+			return net.ErrClosed
+		default:
+		}
+		if !dl.IsZero() && !time.Now().Before(dl) {
+			return os.ErrDeadlineExceeded
+		}
+		if !c.n.blocked() {
+			return nil
+		}
+		// stop closes once the connection is closed, a deadline is set
+		// or the deadline passes, whichever is first; then gate looks
+		// again.
+		stop, quit := make(chan struct{}), make(chan struct{})
+		go func() {
+			var expired <-chan time.Time
+			if !dl.IsZero() {
+				t := time.NewTimer(time.Until(dl))
+				defer t.Stop()
+				expired = t.C
+			}
+			select {
+			case <-c.closed:
+			case <-moved:
+			case <-expired:
+			case <-quit:
+				return
+			}
+			close(stop)
+		}()
+		opened := c.n.await(c.label, stop)
+		close(quit)
+		if opened {
+			return nil
+		}
 	}
-	return nil
 }
 
 func (c *heldConn) Read(p []byte) (int, error) {
-	if err := c.gate(); err != nil {
+	if err := c.gate(false); err != nil {
 		return 0, err
 	}
+	c.mu.Lock()
+	if len(c.pending) > 0 || c.perr != nil {
+		k := copy(p, c.pending)
+		c.pending = c.pending[k:]
+		var err error
+		if len(c.pending) == 0 {
+			err, c.perr = c.perr, nil
+		}
+		c.mu.Unlock()
+		return k, err
+	}
+	c.mu.Unlock()
 	k, err := c.Conn.Read(p)
-	if gerr := c.gate(); gerr != nil { // the network blocked while the Read waited on the wire
+	if gerr := c.gate(false); gerr != nil { // the network blocked while the Read waited on the wire
+		if k > 0 || err != nil {
+			// Kept for the next Read, so that a deadline or a Close that
+			// ends this one loses none of the connection's bytes.
+			c.mu.Lock()
+			c.pending, c.perr = append(c.pending, p[:k]...), err
+			c.mu.Unlock()
+		}
 		return 0, gerr
 	}
 	return k, err
 }
 
 func (c *heldConn) Write(p []byte) (int, error) {
-	if err := c.gate(); err != nil {
+	if err := c.gate(true); err != nil {
 		return 0, err
 	}
 	return c.Conn.Write(p)
@@ -160,6 +231,41 @@ func (c *heldConn) Write(p []byte) (int, error) {
 func (c *heldConn) Close() error {
 	c.once.Do(func() { close(c.closed) })
 	return c.Conn.Close()
+}
+
+// SetDeadline sets both deadlines, on the connection and on its waits at
+// the gate.
+func (c *heldConn) SetDeadline(t time.Time) error {
+	c.setDeadline(t, true, true)
+	return c.Conn.SetDeadline(t)
+}
+
+// SetReadDeadline sets the read deadline, on the connection and on a
+// Read's wait at the gate.
+func (c *heldConn) SetReadDeadline(t time.Time) error {
+	c.setDeadline(t, true, false)
+	return c.Conn.SetReadDeadline(t)
+}
+
+// SetWriteDeadline sets the write deadline, on the connection and on a
+// Write's wait at the gate.
+func (c *heldConn) SetWriteDeadline(t time.Time) error {
+	c.setDeadline(t, false, true)
+	return c.Conn.SetWriteDeadline(t)
+}
+
+// setDeadline records t and wakes every wait at the gate to look again.
+func (c *heldConn) setDeadline(t time.Time, read, write bool) {
+	c.mu.Lock()
+	if read {
+		c.rdl = t
+	}
+	if write {
+		c.wdl = t
+	}
+	close(c.moved)
+	c.moved = make(chan struct{})
+	c.mu.Unlock()
 }
 
 // Transport is an http.RoundTripper that lets each request through as
@@ -195,6 +301,13 @@ func (n *Network) Block() {
 	if n.shut == nil {
 		n.shut = make(chan struct{})
 	}
+}
+
+// blocked reports whether the gate is shut now.
+func (n *Network) blocked() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.shut != nil
 }
 
 // Unblock opens the gate and lets every waiting dial and request go.

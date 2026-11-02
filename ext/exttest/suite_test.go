@@ -2,6 +2,7 @@ package exttest
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,11 +11,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/local"
@@ -166,7 +169,8 @@ func TestSuitePassesEveryFake(t *testing.T) {
 
 	router := NewFakeRouter("fake-router")
 	d := SampleDecision()
-	router.SetRoute(d.ID, ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ada"}}, Rule: "owns main.go", Answer: &ext.Answer{Input: "1", By: ext.Principal{Subject: "ada", Name: "Ada"}}})
+	// The route of the suite's first question (Router asks d's ID with -1).
+	router.SetRoute(d.ID+"-1", ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ada"}}, Rule: "owns main.go", Answer: &ext.Answer{Input: "1", By: ext.Principal{Subject: "ada", Name: "Ada"}}})
 	cx := NewFakeContext("fake-context")
 	cx.SetBlocks([]ext.ContextBlock{{Title: "Callers of Build", Ref: "main.go", Body: "main calls Build."}, {Title: "Recent change", Body: "Build gained a flag."}})
 	sink := NewFakeSink("fake-sink", []string{"needs_input", ext.TypeProvider})
@@ -403,6 +407,63 @@ type fickleSink struct {
 
 func (s *fickleSink) Events() []string { return []string{fmt.Sprint("e", s.n.Add(1))} }
 
+// doneSink takes only done, and asks its service on the call's path for
+// each: a notification it does not take it lets go at once.
+type doneSink struct {
+	*FakeSink
+	client *http.Client
+	url    string
+}
+
+func (doneSink) Events() []string { return []string{"done"} }
+func (s doneSink) Notify(ctx context.Context, n ext.Notification) error {
+	if n.Event != "done" {
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// cachingRouter fetches a question's route from its service the first
+// time it is told of it, under a context of its own, and answers it from
+// its cache after.
+type cachingRouter struct {
+	*FakeRouter
+	client *http.Client
+	url    string
+	mu     sync.Mutex
+	cache  map[string]ext.Route
+}
+
+func (r *cachingRouter) Route(_ context.Context, d ext.Decision) (ext.Route, error) {
+	r.mu.Lock()
+	rt, ok := r.cache[d.ID]
+	r.mu.Unlock()
+	if ok {
+		return rt, nil
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, r.url, nil)
+	if err != nil {
+		return ext.Route{}, err
+	}
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return ext.Route{}, err
+	}
+	resp.Body.Close()
+	r.mu.Lock()
+	r.cache[d.ID] = ext.Route{}
+	r.mu.Unlock()
+	return ext.Route{}, nil
+}
+
 // TestSuiteCatchesABreach plants one breach of a rule in each provider and
 // checks that the suite fails it, naming the check and the rule, through a
 // recording T. The waits are the guard's own (IdentityWait, StartWait):
@@ -456,6 +517,12 @@ func TestSuiteCatchesABreach(t *testing.T) {
 		{"a Restore that writes once its context ends", func(t T, n *Network) {
 			Continuity(t, n, &lateRestore{FakeContinuity: NewFakeContinuity("late"), wrote: make(chan struct{})})
 		}, []string{`exttest: Continuity "late": Restore wrote 4 bytes after it had returned`}},
+		{"a round trip only for the event the sink takes", func(t T, n *Network) {
+			Sink(t, n, doneSink{NewFakeSink("done-only", nil), &http.Client{Transport: n.Transport()}, srv.URL})
+		}, []string{`exttest: Sink "done-only": Notify sent GET http://` + srv.Listener.Addr().String(), "under its call's context", "article 8"}},
+		{"a route fetched the first time a question is routed", func(t T, n *Network) {
+			Router(t, n, &cachingRouter{FakeRouter: NewFakeRouter("cacher"), client: &http.Client{Transport: n.Transport()}, url: srv.URL, cache: map[string]ext.Route{}}, SampleDecision())
+		}, []string{`exttest: Router "cacher": Route did not return within 5s with the network blocked`, "article 8"}},
 		{"a bad name", func(t T, n *Network) {
 			Identity(t, n, NewFakeIdentity("Not A Name"), nil, nil)
 		}, []string{`exttest: Identity "Not A Name": Name "Not A Name" is not a provider's name`}},
@@ -626,6 +693,50 @@ func TestRestoreMayStream(t *testing.T) {
 	}
 }
 
+// deadlineRestore downloads over a connection it holds from before its
+// call, as a gRPC client does, and ends a Restore whose context ends by
+// setting the connection's deadline, as net.Conn lets it.
+type deadlineRestore struct {
+	*FakeContinuity
+	conn net.Conn
+}
+
+func (p deadlineRestore) Restore(ctx context.Context, _ ext.RestoreRequest, w io.Writer) error {
+	if err := p.conn.SetDeadline(time.Time{}); err != nil {
+		return err
+	}
+	stop := context.AfterFunc(ctx, func() { p.conn.SetDeadline(time.Unix(1, 0)) })
+	defer stop()
+	b := []byte("?")
+	if _, err := p.conn.Write(b); err != nil {
+		return cmp.Or(ctx.Err(), err)
+	}
+	if _, err := io.ReadFull(p.conn, b); err != nil {
+		return cmp.Or(ctx.Err(), err)
+	}
+	_, err := w.Write(b)
+	return err
+}
+
+// TestRestoreEndedByADeadline checks that a Restore ended by its
+// connection's deadline, set once its context ends, passes the suite:
+// the deadline lets its Write go from the shut gate.
+func TestRestoreEndedByADeadline(t *testing.T) {
+	t.Parallel()
+	n := NewNetwork()
+	// Dialled under the label of the suite's blocked Restore, so the suite
+	// sees its Write wait on the gate and ends its context then.
+	conn, err := n.DialContext(mayWait(context.Background(), "Continuity deadliner Restore blocked"), "tcp", echoServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	errs := record(t, func(rt T) { Continuity(rt, n, deadlineRestore{NewFakeContinuity("deadliner"), conn}) })
+	if len(errs) != 0 {
+		t.Errorf("the suite failed a Restore that its connection's deadline ends: %q", errs)
+	}
+}
+
 // TestNetwork checks the Network itself: a dial and a request under a
 // call's context refused and recorded, one under another context through
 // while open, held while blocked and let go by Unblock or its context.
@@ -696,8 +807,10 @@ func TestNetwork(t *testing.T) {
 }
 
 // queryIdentity sends the token it is asked about in its request's query
-// string, with a password in the URL's user information, under the call's
-// context, and answers the client's error, which names that URL.
+// string, escaped, beside a key of its own, with a password in the URL's
+// user information, under the call's context, and answers the client's
+// error, which names that URL, inside words naming the token as it is and
+// escaped both ways.
 type queryIdentity struct {
 	client *http.Client
 	base   *url.URL
@@ -708,14 +821,14 @@ func (p queryIdentity) Authenticate(ctx context.Context, token string) (ext.Prin
 	u := *p.base
 	u.User = url.UserPassword("svc", "pass-secret")
 	u.Path = "/check"
-	u.RawQuery = url.Values{"token": {token}}.Encode()
+	u.RawQuery = url.Values{"token": {token}, "key": {"svc-key-secret"}}.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return ext.Principal{}, false, err
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return ext.Principal{}, false, err
+		return ext.Principal{}, false, fmt.Errorf("checking %s (%s, %s): %w", token, url.QueryEscape(token), url.PathEscape(token), err)
 	}
 	resp.Body.Close()
 	return ext.Principal{}, false, nil
@@ -732,18 +845,24 @@ func TestBreachWordsKeepTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	n := NewNetwork()
-	const secret = "tok-secret-admin"
+	// A token that query- and path-escaping both change.
+	const secret = "tok-secret+admin/="
 	errs := record(t, func(rt T) {
 		Identity(rt, n, queryIdentity{&http.Client{Transport: n.Transport()}, base}, []string{secret}, []string{UnknownToken})
 	})
 	if !said(errs, `exttest: Identity "querier": Authenticate sent GET http://`+base.Host+`/check under its call's context`) {
 		t.Errorf("the breach was not said, by method, scheme, host and path: %q", errs)
 	}
-	if !said(errs, "[token]") {
-		t.Errorf("no token was stood in for, though the client's error names the URL: %q", errs)
+	// The provider's own words: the token stood in for in each form, the
+	// client's error naming its request by scheme, host and path.
+	if !said(errs, `Authenticate answered an error for known token 0 with the network open: checking [token] ([token], [token]): Get "http://`+base.Host+`/check": `) {
+		t.Errorf("the provider's error was not said with its token and its URL's query kept out: %q", errs)
 	}
 	for _, e := range errs {
-		for _, kept := range []string{secret, UnknownToken, "pass-secret"} {
+		for _, kept := range []string{
+			secret, url.QueryEscape(secret), url.PathEscape(secret),
+			UnknownToken, "pass-secret", "svc-key-secret", "token=", "key=", "svc:",
+		} {
 			if strings.Contains(e, kept) {
 				t.Errorf("the suite printed %q: %s", kept, e)
 			}
@@ -903,6 +1022,55 @@ func TestNetworkHoldsAConnection(t *testing.T) {
 	n.Unblock()
 	if got := <-read; got != "c" {
 		t.Errorf("a Read let go answered %q, want c", got)
+	}
+
+	// Blocked: a deadline set while a Read waits lets it go, as net.Conn's
+	// does, and so does one that passes while a Write waits.
+	n.Block()
+	timedOut := make(chan error, 1)
+	go func() {
+		_, err := conn.Read(make([]byte, 1))
+		timedOut <- err
+	}()
+	held(t)
+	if err := conn.SetReadDeadline(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	timeout := func(err error, what string) {
+		t.Helper()
+		var ne net.Error
+		if !errors.Is(err, os.ErrDeadlineExceeded) || !errors.As(err, &ne) || !ne.Timeout() {
+			t.Errorf("a held %s whose deadline passed answered %v, want os.ErrDeadlineExceeded", what, err)
+		}
+	}
+	let := func(ch <-chan error, what string) {
+		t.Helper()
+		select {
+		case err := <-ch:
+			timeout(err, what)
+		case <-ctx.Done():
+			t.Fatalf("a held %s whose deadline passed was never let go", what)
+		}
+	}
+	let(timedOut, "Read")
+	if err := conn.SetWriteDeadline(time.Now().Add(20 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_, err := conn.Write([]byte("d"))
+		timedOut <- err
+	}()
+	let(timedOut, "Write")
+	// Its deadlines cleared, the connection carries bytes again once open.
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	n.Unblock()
+	if _, err := conn.Write([]byte("e")); err != nil {
+		t.Fatalf("a Write after the deadlines were cleared answered %v", err)
+	}
+	if b := make([]byte, 1); func() error { _, err := io.ReadFull(svc, b); return err }() != nil || string(b) != "e" {
+		t.Errorf("the service did not get the byte written after the deadlines were cleared: %q", b)
 	}
 
 	// Blocked: Close lets a held Read go.

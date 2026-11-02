@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -62,8 +64,8 @@ type checker struct {
 	p     ext.Provider // the provider, its Name asked again with the network blocked by done
 
 	// secrets are what a check is given and never prints (Identity's
-	// tokens): errorf writes [token] in their place, whatever the
-	// provider's words put them in (an error naming the URL it sent one in).
+	// tokens): errorf writes [token] in their place, as they are and
+	// query- or path-escaped, wherever the provider's words put them.
 	secrets []string
 
 	mu   sync.Mutex
@@ -94,15 +96,12 @@ func begin(t T, n *Network, check string, p ext.Provider) (*checker, bool) {
 }
 
 // errorf says a failure once, naming the check and the provider. It is
-// called on the check's goroutine; the calls' goroutines use found.
+// called on the check's goroutine; the calls' goroutines use found. What
+// it says is kept from tokens (keep): every URL in it is shown by its
+// scheme, host and path, and c's secrets are stood in for.
 func (c *checker) errorf(format string, args ...any) {
 	c.t.Helper()
-	msg := fmt.Sprintf("exttest: %s %q: ", c.check, c.name) + fmt.Sprintf(format, args...)
-	for _, s := range c.secrets {
-		if s != "" {
-			msg = strings.ReplaceAll(msg, s, "[token]")
-		}
-	}
+	msg := c.keep(fmt.Sprintf("exttest: %s %q: ", c.check, c.name) + fmt.Sprintf(format, args...))
 	c.mu.Lock()
 	seen := c.said[msg]
 	c.said[msg] = true
@@ -110,6 +109,45 @@ func (c *checker) errorf(format string, args ...any) {
 	if !seen {
 		c.t.Errorf("%s", msg)
 	}
+}
+
+// urlIn is a URL in a message, as an *url.Error and most clients print
+// one: a scheme, "://", and what follows up to a space, a quote or an
+// angle bracket.
+var urlIn = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>` + "`" + `]+`)
+
+// keep is msg as a check may print it: each URL in it shown by its scheme,
+// host and path, never its user information, query or fragment (a token,
+// the one asked about or the provider's own, may ride there; one that does
+// not parse is cut at its first '?' or '#' and loses what comes before
+// an '@'), and each of c's secrets, as it is and query- or path-escaped,
+// stood in for by [token]. A token the provider's words print bare, not in
+// a URL, and not one the check was given, is beyond what it can know.
+func (c *checker) keep(msg string) string {
+	msg = urlIn.ReplaceAllStringFunc(msg, func(raw string) string {
+		if u, err := url.Parse(raw); err == nil {
+			return shownURL(u)
+		}
+		if i := strings.IndexAny(raw, "?#"); i >= 0 {
+			raw = raw[:i]
+		}
+		if scheme, rest, ok := strings.Cut(raw, "://"); ok {
+			if i := strings.LastIndex(rest, "@"); i >= 0 {
+				rest = rest[i+1:]
+			}
+			raw = scheme + "://" + rest
+		}
+		return raw
+	})
+	for _, s := range c.secrets {
+		if s == "" {
+			continue
+		}
+		for _, form := range []string{s, url.QueryEscape(s), url.PathEscape(s)} {
+			msg = strings.ReplaceAll(msg, form, "[token]")
+		}
+	}
+	return msg
 }
 
 // found keeps a failure a call's goroutine saw, for flush to say.
@@ -251,8 +289,11 @@ func (c *checker) phases(call func(ph phase)) {
 // network open; none of unknown, and never the empty token, recognised;
 // whenever it answers ok, a valid principal with a grant; and article 8
 // (Network). known and unknown are never printed, not even inside the
-// provider's own words (an error naming the URL a token was sent in):
-// [token] stands in their place. With the network blocked a provider may
+// provider's own words: [token] stands in their place, as they are and
+// query- or path-escaped, and a URL the words name (an error naming the
+// request a token was sent in) is shown without its query, user
+// information or fragment, whatever credential rides there. With the
+// network blocked a provider may
 // answer an error for a known token (it cannot tell), never ok false.
 func Identity(t T, n *Network, p ext.IdentityProvider, known, unknown []string) {
 	t.Helper()
@@ -316,10 +357,15 @@ func Identity(t T, n *Network, p ext.IdentityProvider, known, unknown []string) 
 	c.n.Unblock()
 }
 
-// Router checks a decision router against the decision d: a valid name;
-// Route answering a route valid for d (Route.Valid) whenever it answers
-// no error, from Goroutines goroutines at once too; Resolved returning; and
-// article 8 (Network).
+// Router checks a decision router against questions like the decision d,
+// each a question of its own (d's ID with "-1", "-2", … after it), since
+// Route is told each question once: a valid name; Route answering a route
+// valid for its question (Route.Valid) whenever it answers no error, from
+// Goroutines goroutines at once too; Resolved returning, told once of each
+// question Route was given, in order from one goroutine; and article 8
+// (Network). A router that fetches a question's route on the call's path
+// is caught on the questions asked with the network blocked, which it has
+// never been given before.
 func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 	t.Helper()
 	c, ok := begin(t, n, "Router", r)
@@ -331,22 +377,44 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 		r   ext.Route
 		err error
 	}
+	var (
+		mu     sync.Mutex
+		asked  int
+		routed []ext.Decision // given to Route, not yet to Resolved
+	)
+	question := func() ext.Decision {
+		mu.Lock()
+		defer mu.Unlock()
+		asked++
+		q := d
+		q.ID = fmt.Sprintf("%s-%d", d.ID, asked)
+		q.Options = append([]ext.DecisionOption(nil), d.Options...)
+		routed = append(routed, q)
+		return q
+	}
 	route := func(ph phase) {
+		q := question()
 		a, returned := run(c, "Route", ext.RouteWait, ph, func(ctx context.Context) answer {
-			rt, err := r.Route(ctx, d)
+			rt, err := r.Route(ctx, q)
 			return answer{rt, err}
 		})
 		if returned && a.err == nil {
-			if err := a.r.Valid(d); err != nil {
+			if err := a.r.Valid(q); err != nil {
 				c.found("Route answered a route not valid for its decision%s: %v", ph.words(), err)
 			}
 		}
 	}
 	resolved := func(ph phase) {
-		run(c, "Resolved", ext.DeliveryWait, ph, func(ctx context.Context) struct{} {
-			r.Resolved(ctx, ext.Resolution{ID: d.ID, Session: d.Session, At: time.Now().UTC()})
-			return struct{}{}
-		})
+		mu.Lock()
+		qs := routed
+		routed = nil
+		mu.Unlock()
+		for _, q := range qs {
+			run(c, "Resolved", ext.DeliveryWait, ph, func(ctx context.Context) struct{} {
+				r.Resolved(ctx, ext.Resolution{ID: q.ID, Session: q.Session, At: time.Now().UTC()})
+				return struct{}{}
+			})
+		}
 	}
 	route(open)
 	together(func() { route(open) })
@@ -415,7 +483,11 @@ func Context(t T, n *Network, p ext.ContextProvider, q ext.ContextQuery) {
 
 // Sink checks a notification sink: a valid name; Events stable (the same
 // answer every time, nil, taking everything, never confused with an empty
-// list, taking nothing); Notify returning; and article 8 (Network).
+// list, taking nothing); Notify returning; and article 8 (Network). Notify
+// is handed what the server would hand the sink (notices): a notification
+// of each event or type its Events lists, as the server types one, since
+// the server hands a sink nothing else; the attention entry needs_input
+// when it takes every entry, or nothing.
 func Sink(t T, n *Network, s ext.NotificationSink) {
 	t.Helper()
 	c, ok := begin(t, n, "Sink", s)
@@ -435,16 +507,15 @@ func Sink(t T, n *Network, s ext.NotificationSink) {
 			c.found("Events answered %q%s, after %q: what a sink takes is read once and must not change", evs, ph.words(), first)
 		}
 	}
-	notice := ext.Notification{
-		Event:   "needs_input",
-		Type:    "attention",
-		At:      time.Now().UTC(),
-		Session: ext.SessionRef{ID: "exttest-session", Name: "exttest"},
-		State:   "open",
-		Message: "Allow the edit?",
+	var takes []string
+	if firstOK {
+		takes = first
 	}
+	given := notices(takes)
 	notify := func(ph phase) {
-		run(c, "Notify", ext.DeliveryWait, ph, func(ctx context.Context) error { return s.Notify(ctx, notice) })
+		for _, notice := range given {
+			run(c, "Notify", ext.DeliveryWait, ph, func(ctx context.Context) error { return s.Notify(ctx, notice) })
+		}
 	}
 	c.phases(func(ph phase) {
 		if ph != cancelled {
@@ -452,6 +523,52 @@ func Sink(t T, n *Network, s ext.NotificationSink) {
 		}
 		notify(ph)
 	})
+}
+
+// notices is a notification of each name in events, once each, as the
+// server types it (internal/api's eventTypeOf): an attention state
+// (needs_input, working, done) an attention entry recording it;
+// exit_nonzero a status entry of a process that exited with 1; a provider
+// notice for ext.TypeProvider; one of the entry types the Events page
+// names by their type (progress, artifact, handoff, tool_use,
+// tool_denied, error) an entry of that type named so; any other name an
+// entry of that type with no Events name. With no name (events nil, or a
+// sink taking nothing, which the server hands nothing), the attention
+// entry needs_input.
+func notices(events []string) []ext.Notification {
+	base := ext.Notification{
+		At:      time.Now().UTC(),
+		Session: ext.SessionRef{ID: "exttest-session", Name: "exttest"},
+		Message: "Allow the edit?",
+	}
+	var out []ext.Notification
+	seen := map[string]bool{}
+	for _, ev := range events {
+		if seen[ev] {
+			continue
+		}
+		seen[ev] = true
+		n := base
+		switch ev {
+		case "needs_input", "working", "done":
+			n.Event, n.Type, n.State = ev, "attention", ev
+		case "exit_nonzero":
+			n.Event, n.Type, n.Message = ev, "status", "exited (exit 1)"
+		case ext.TypeProvider:
+			n.Type, n.Origin, n.Message = ext.TypeProvider, "exttest-provider", "A provider's notice"
+		case "progress", "artifact", "handoff", "tool_use", "tool_denied", "error":
+			n.Event, n.Type = ev, ev
+		default:
+			n.Type = ev
+		}
+		out = append(out, n)
+	}
+	if len(out) == 0 {
+		n := base
+		n.Event, n.Type, n.State = "needs_input", "attention", "needs_input"
+		out = append(out, n)
+	}
+	return out
 }
 
 // Continuity checks a sync store: a valid name; Saved and Deleted

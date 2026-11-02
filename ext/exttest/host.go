@@ -174,14 +174,18 @@ func (h *FakeHost) enter(ctx context.Context) error {
 }
 
 // Launch records r and answers a run of its crew (run-1, run-2, …), or
-// what OnLaunch set.
+// what OnLaunch set. The record, the callback and the caller each hold a
+// copy of their own: a callback that changes its request changes neither
+// the record nor the caller's.
 func (h *FakeHost) Launch(ctx context.Context, r ext.LaunchRequest) (ext.RunRef, error) {
 	if err := h.enter(ctx); err != nil {
 		return ext.RunRef{}, err
 	}
+	rec := r
+	rec.By = copyPrincipal(r.By)
 	r.By = copyPrincipal(r.By)
 	h.mu.Lock()
-	h.launches = append(h.launches, r)
+	h.launches = append(h.launches, rec)
 	h.runs++
 	n, fn := h.runs, h.launch
 	h.mu.Unlock()
@@ -196,14 +200,17 @@ func (h *FakeHost) Launch(ctx context.Context, r ext.LaunchRequest) (ext.RunRef,
 	return ext.RunRef{ID: id, Crew: r.Crew, URL: "/crews/" + r.Crew + "/runs/" + id}, nil
 }
 
-// Submit records r and answers "entered", or what OnSubmit set.
+// Submit records r and answers "entered", or what OnSubmit set; the
+// record and the callback each hold a copy of their own, as Launch's.
 func (h *FakeHost) Submit(ctx context.Context, r ext.SubmitRequest) (ext.SubmitResult, error) {
 	if err := h.enter(ctx); err != nil {
 		return ext.SubmitResult{}, err
 	}
+	rec := r
+	rec.By = copyPrincipal(r.By)
 	r.By = copyPrincipal(r.By)
 	h.mu.Lock()
-	h.submits = append(h.submits, r)
+	h.submits = append(h.submits, rec)
 	fn := h.submit
 	h.mu.Unlock()
 	h.tell()

@@ -457,6 +457,41 @@ func TestFakes(t *testing.T) {
 		}
 	})
 
+	t.Run("callbacks hold copies of their own", func(t *testing.T) {
+		// A callback that changes the request it is handed changes neither
+		// the record nor the caller's, while the accessors read the record
+		// from other goroutines (under -race).
+		ctx := context.Background()
+		h := NewFakeHost(t)
+		h.OnLaunch(func(r ext.LaunchRequest) (ext.RunRef, error) {
+			r.By.Grants[0] = ext.GrantHost
+			return ext.RunRef{ID: "run-x", Crew: r.Crew}, nil
+		})
+		h.OnSubmit(func(r ext.SubmitRequest) (ext.SubmitResult, error) {
+			r.By.Grants[0] = ext.GrantHost
+			return ext.SubmitResult{Status: "entered"}, nil
+		})
+		together(func() {
+			h.Launch(ctx, ext.LaunchRequest{Crew: "web", By: ada})
+			h.Submit(ctx, ext.SubmitRequest{Session: "s1", Text: "x", By: ada})
+			h.Launches()
+			h.Submits()
+		})
+		for i, r := range h.Launches() {
+			if got := r.By.Grants[0]; got != ext.GrantAdmin {
+				t.Fatalf("Launch %d's record holds the grant %q its callback set", i, got)
+			}
+		}
+		for i, r := range h.Submits() {
+			if got := r.By.Grants[0]; got != ext.GrantAdmin {
+				t.Fatalf("Submit %d's record holds the grant %q its callback set", i, got)
+			}
+		}
+		if ada.Grants[0] != ext.GrantAdmin {
+			t.Fatalf("the caller's principal changed")
+		}
+	})
+
 	t.Run("concurrent", func(t *testing.T) {
 		// Every fake from Goroutines goroutines at once, under -race.
 		id, rt, cx, sk := NewFakeIdentity("i"), NewFakeRouter("r"), NewFakeContext("c"), NewFakeSink("s", nil)
