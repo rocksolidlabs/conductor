@@ -23,6 +23,9 @@ Usage:
   conductor task context|result|ticket
                                read this session's task in a managed run, submit its result, and
                                read and comment on the Dispatch ticket its run is linked to
+  conductor guide [--section S] [--json]
+                               what the running server says you may do here: in a session, the
+                               session's guide; elsewhere the admin's (--server, --token)
   conductor up <crew-id> [--server URL] [--token T] [--open]
                                launch a saved crew as a run and print its URL
   conductor crews [--server URL] [--token T] [--ids]
@@ -78,6 +81,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runCrew(ctx, args[1:], stdin, stdout, stderr)
 	case "task":
 		return runTask(ctx, args[1:], stdin, stdout, stderr)
+	case "guide":
+		return runGuide(ctx, args[1:], stdout, stderr)
 	case "up":
 		return runUp(ctx, args[1:], stdout, stderr)
 	case "crews":

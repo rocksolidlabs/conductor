@@ -451,9 +451,15 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if json.Unmarshal(data, &m) != nil || !session.AttentionState(m.State).Valid() {
 			return false
 		}
+		// What the host's session keeps comes with its attention, at most
+		// two question ids: a message past that is dropped whole.
+		if !m.KeptValid() {
+			s.log.Warn("a host's attention was dropped: its kept is out of bounds", "session", hs.Info().ID)
+			break
+		}
 		// The host's own report is not forwarded, so it is never limited;
 		// its question keeps the host's id, and its mark as the agent's own.
-		hs.HostAttention(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), m.ID, m.Ask, m.Answered, m.Plan)
+		hs.HostAttentionKept(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), m.ID, m.Ask, m.Answered, m.Plan, m.Kept)
 	case proto.HostActivity:
 		var m proto.HostActivityMsg
 		if json.Unmarshal(data, &m) != nil {

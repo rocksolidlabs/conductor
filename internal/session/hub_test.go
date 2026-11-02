@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -222,4 +223,53 @@ func TestHubDrainedIgnoresEndedSubscriptions(t *testing.T) {
 		t.Fatal("an ended subscription still holds the hub back")
 	}
 	close(sink.block)
+}
+
+// heldCloseSink is a sink whose Close is held until the test releases it:
+// a transport whose close is under way.
+type heldCloseSink struct {
+	closing chan error
+	release chan struct{}
+}
+
+func (s *heldCloseSink) WriteFrame([]byte) error { return nil }
+
+func (s *heldCloseSink) Close(reason error) {
+	s.closing <- reason
+	<-s.release
+}
+
+// A connection that is not a link's, revoked (Revoke) after it ended for
+// another reason, its transport's close still under way for that one, is
+// refused for the revocation all the same: what it has under way (keys,
+// an Enter, a save's next part) looks at revoked, which says so, though
+// Reason keeps the first end, which its transport was told.
+func TestARevocationAfterAnotherEndStillRefuses(t *testing.T) {
+	sink := &heldCloseSink{closing: make(chan error, 1), release: make(chan struct{})}
+	sub := newSubscription("p", RoleControl, "", sink)
+	defer close(sink.release)
+	sub.closeWith(ErrSlowConsumer)
+	if got := <-sink.closing; got != ErrSlowConsumer {
+		t.Fatalf("the transport was closed for %v", got)
+	}
+	// Too slow is no revocation: a submission of a connection that only
+	// went goes on.
+	if err := revoked(sub); err != nil {
+		t.Fatalf("a slow consumer is refused: %v", err)
+	}
+	revocation := fmt.Errorf("access revoked by the identity provider: %w", ErrRevoked)
+	sub.Revoke(revocation)
+	sub.Revoke(ErrRevoked)
+	if err := revoked(sub); err != revocation {
+		t.Fatalf("revoked after the revocation: %v, want %v", err, revocation)
+	}
+	if err := (writeWait{from: sub}).withdrawn(); err != revocation {
+		t.Fatalf("a write of the connection's: %v, want it withdrawn for %v", err, revocation)
+	}
+	if r := sub.Reason(); r != ErrSlowConsumer {
+		t.Fatalf("Reason %v, want the first end's", r)
+	}
+	if !sub.revoked.Load() {
+		t.Fatal("what it is still owed is not dropped")
+	}
 }

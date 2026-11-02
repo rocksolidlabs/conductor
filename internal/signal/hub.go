@@ -134,6 +134,7 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 		},
 	}
 	hs.setAgentToken(reg.Session.AgentToken)
+	hs.setAnswerAs(reg.Host.AnswerAs)
 	if err := hub.registry.Add(hs); err != nil {
 		return nil, false, err
 	}
@@ -161,6 +162,7 @@ func (hs *HostedSession) attach(reg proto.Register, conn *HostConn) bool {
 	hs.info.Branch = reg.Session.Branch
 	hs.info.HostUser = reg.Host.User
 	hs.relayOnly = reg.Session.RelayOnly
+	hs.setAnswerAs(reg.Host.AnswerAs)
 	if reg.Session.AgentToken != "" {
 		hs.setAgentToken(reg.Session.AgentToken)
 	}

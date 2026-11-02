@@ -20,6 +20,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -134,7 +135,9 @@ type Options struct {
 	// attention change or an event it sends is not taken: the session's
 	// agent reports to its own server, never to the switchyard, so only the
 	// switchyard could send one, and an attention's choices are keys the
-	// owner types with one click. The Uplink sets it; `conductor host`
+	// owner types with one click. Nor is it told the host takes routed
+	// answers (answer_as) or what the session keeps, and an answer_as it
+	// sends is dropped unread. The Uplink sets it; `conductor host`
 	// publishes to the owner's own server, which shows the session in its
 	// workbench, stops it and forwards its agent's reports, and leaves it off.
 	Switchyard bool
@@ -339,6 +342,10 @@ type agent struct {
 
 	agentToken    string
 	lastAttention session.Attention
+	// lastKept is what the session kept as lastAttention was told
+	// (Info.Kept, to the owner's own server alone: toServerKept), the pair
+	// sent and resent together. Guarded by mu.
+	lastKept []string
 	// attentionUntold says the last attention change was not sent for want
 	// of a connection, or a connection has started since the last was told
 	// (retellAttention): the next change sends it, whatever it is.
@@ -367,10 +374,12 @@ type agent struct {
 	// request id. Guarded by mu.
 	links map[string]chan linkAnswer
 
-	// creds are the links the viewers joined through (linkCreds): one the
-	// server says no longer opens the session (link_gone), or every one as
-	// the connection to it is lost, withdraws what its viewers asked for
-	// and is still under way (peer.authorize). Its lock is held for nothing
+	// creds are the links the viewers joined through (linkCreds), and the
+	// credentials of the viewers that came as an identity provider's
+	// principal (linkCreds.principal): one the server says no longer opens
+	// the session (link_gone), or every one as the connection to it is
+	// lost, withdraws what its viewers asked for and is still under way
+	// (peer.authorize). Its lock is held for nothing
 	// else: the session asks under its own locks.
 	creds linkCreds
 	// live is what the host knows of its server on the current control
@@ -404,6 +413,10 @@ type agent struct {
 	// liveWithin replaces linkHeardWithin, and livePing livePingEvery, in
 	// tests.
 	liveWithin, livePing time.Duration
+	// answers applies the routed answers (answer_as) of the current control
+	// connection, off its read loop (openAnswers); nil while there is
+	// none. Guarded by mu.
+	answers *routedAnswers
 	// beforeSave, when set (tests), runs as a viewer's save part has its
 	// turn on the viewer's saving queue, before the session takes it.
 	beforeSave atomic.Pointer[func(proto.FileWrite)]
@@ -412,6 +425,9 @@ type agent struct {
 	// out (pingOn).
 	beforeAnswer atomic.Pointer[func()]
 	beforePing   atomic.Pointer[func()]
+	// beforeConnLost, when set (tests), runs as a control connection's
+	// end begins letting its writer and viewers go (connLost).
+	beforeConnLost atomic.Pointer[func()]
 	// ticks counts keepHearing's ticks done, each counted after its ping
 	// is reserved, or not: two more ticks after a link went means one
 	// began after it went and reserved none (tests wait on that before
@@ -691,6 +707,9 @@ func (a *agent) registration(cols, rows uint16) proto.Register {
 	}
 	if !a.opts.Switchyard {
 		reg.Session.Branch = session.GitBranch(a.dir)
+		// The owner's own server may route the session's questions: it is
+		// told what the session keeps, and its answers are taken.
+		reg.Host.AnswerAs = true
 		return reg
 	}
 	reg.Host.User = ""
@@ -719,7 +738,10 @@ func lastElement(dir string) string {
 // keystroke that answers a prompt, on a viewer's keys queue; a viewer's
 // hello, on the frame loop) never waits for the control connection's turn
 // (onLocalChange may wait up to controlTurnWait). Only the latest change
-// waits, and one goroutine forwards them, in order.
+// waits, and one goroutine forwards them, in order. The Info it is handed
+// says only that the session changed: the session reads it before calling
+// the hook, and its calls are not ordered among themselves, so one holding
+// an older snapshot may come after one holding a newer (forwardChanges).
 func (a *agent) noteChange(info session.Info) {
 	a.mu.Lock()
 	a.changeNext = &info
@@ -732,11 +754,21 @@ func (a *agent) noteChange(info session.Info) {
 }
 
 // forwardChanges hands the changes noteChange noted to onLocalChange, one at
-// a time, the latest of those noted meanwhile next, until none is left.
+// a time, until none is left: for each, the session as it is when the
+// forwarder gets to it (Local.Info, read here, on the one goroutine), which
+// is at least as new as the change noted, and a change made after this
+// read is noted after it. The snapshot a change was noted with is not
+// forwarded: a hook's call holding one older than a change already told
+// (the session read it, then another call read and told a question, then
+// this one was noted) would tell the server the question gone while it
+// waits, and its router would call it resolved (#482). Nor is a snapshot
+// taken as the connection started (retellAttention), which could be older
+// than a change noted since. Only an agent with no session (tests) forwards
+// what it was handed.
 func (a *agent) forwardChanges() {
 	for {
 		a.mu.Lock()
-		info, retell := a.changeNext, a.retell
+		info, retell, local := a.changeNext, a.retell, a.local
 		a.changeNext, a.retell = nil, false
 		if info == nil && !retell {
 			a.forwarding = false
@@ -744,13 +776,12 @@ func (a *agent) forwardChanges() {
 			return
 		}
 		a.mu.Unlock()
-		if retell {
-			// The session as it is now, which is at least as new as the
-			// change noted; a change made after this read is noted after
-			// it. A snapshot taken as the connection started could be
-			// older than a change noted since, and overtake it.
-			cur := a.local.Info()
+		if local != nil {
+			cur := local.Info()
 			info = &cur
+		}
+		if info == nil {
+			continue
 		}
 		a.onLocalChange(*info)
 	}
@@ -760,21 +791,24 @@ func (a *agent) forwardChanges() {
 // server so listings stay current for hosted sessions.
 func (a *agent) onLocalChange(info session.Info) {
 	att := a.toServer(info.Attention)
+	// What the session keeps goes with what it shows, from the one Info:
+	// a change of either is told, the two together.
+	kept := a.toServerKept(info.Kept)
 	a.mu.Lock()
-	changed := a.attentionUntold || !sameAttention(att, a.lastAttention)
+	changed := a.attentionUntold || !sameAttention(att, a.lastAttention) || !slices.Equal(kept, a.lastKept)
 	// The mark is taken here, under the lock that set it, not after the
 	// send: one set while a send was under way would be cleared by that
 	// send's end and its re-tell lost; taken here, it makes the next
 	// change tell, at worst the same attention once more.
 	a.attentionUntold = false
-	a.lastAttention, a.attentionOf = att, info.ID
+	a.lastAttention, a.lastKept, a.attentionOf = att, kept, info.ID
 	retrying := a.attentionRetry
 	a.mu.Unlock()
 	if !changed || retrying {
 		// A retry under way sends the latest when its turn comes.
 		return
 	}
-	err := a.send(hostAttentionMsg(info.ID, att))
+	err := a.send(hostAttentionMsg(info.ID, att, kept))
 	switch {
 	case err == nil:
 	case errors.Is(err, errConnDown):
@@ -830,9 +864,9 @@ func (a *agent) retryAttention() {
 	go func() {
 		for {
 			a.mu.Lock()
-			att, id, on := a.lastAttention, a.attentionOf, a.out
+			att, kept, id, on := a.lastAttention, a.lastKept, a.attentionOf, a.out
 			a.mu.Unlock()
-			err := a.tell(hostAttentionMsg(id, att), nil)
+			err := a.tell(hostAttentionMsg(id, att, kept), nil)
 			a.mu.Lock()
 			if a.out != on {
 				// The connection the attention went on is not the host's
@@ -847,7 +881,7 @@ func (a *agent) retryAttention() {
 				a.mu.Unlock()
 				return
 			}
-			if err != nil || sameAttention(att, a.lastAttention) {
+			if err != nil || sameAttention(att, a.lastAttention) && slices.Equal(kept, a.lastKept) {
 				a.attentionRetry = false
 				a.attentionUntold = err != nil
 				a.mu.Unlock()
@@ -865,8 +899,12 @@ func sameAttention(x, y session.Attention) bool {
 	// The source too: a switchyard is told no words, and a held turn
 	// (source submit) differs from a bell's wait by its source alone there.
 	// The plan too (#289): a plan set on the question showing (the dialog's
-	// footer read after the hook's report) changes nothing else of it.
-	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options) && x.ID == y.ID && x.Asked() == y.Asked() && x.Plan == y.Plan
+	// footer read after the hook's report) changes nothing else of it. The
+	// mark of a question answered in the terminal too (Answered): keys
+	// typed there change nothing else of the question shown, and the
+	// server's router resolves a routed question from that mark alone
+	// while the program stays quiet.
+	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options) && x.ID == y.ID && x.Asked() == y.Asked() && x.Plan == y.Plan && x.Answered == y.Answered
 }
 
 // toServer is an attention change as the server is told it: in full to the
@@ -883,9 +921,10 @@ func (a *agent) toServer(att session.Attention) session.Attention {
 
 // hostAttentionMsg encodes an attention change for the control connection,
 // with its mark as the agent's own question, which the server's copy keeps
-// through a done it forwards (signal.HostedSession.Ask).
-func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttentionMsg {
-	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked(), Answered: att.Answered, Plan: att.Plan}
+// through a done it forwards (signal.HostedSession.Ask), and what the
+// session keeps without showing it, read with it (toServerKept).
+func hostAttentionMsg(sessionID string, att session.Attention, kept []string) proto.HostAttentionMsg {
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked(), Answered: att.Answered, Plan: att.Plan, Kept: kept}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
@@ -1094,10 +1133,19 @@ func (a *agent) dropConn(c *websocket.Conn) {
 func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	defer c.CloseNow()
 	w := a.writerFor(c)
+	// The routed answers this connection brings end with it, withdrawn
+	// first: the rest of its end (its viewers let go, connLost) may wait,
+	// and no answer of a connection gone is typed meanwhile. Their
+	// goroutine is waited for after.
+	withdrawAnswers, answersDone := a.openAnswers(ctx)
+	defer func() {
+		withdrawAnswers()
+		a.connLost(c)
+		answersDone()
+	}()
 	// The server is told the session's attention as the connection starts,
 	// the empty state included (retellAttention).
 	a.retellAttention()
-	defer a.connLost(c)
 
 	// Report the current status in case the process ended while disconnected.
 	go a.watchStatus(ctx, w)
@@ -1228,7 +1276,7 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		if !role.Valid() || len(m.ViewerID) != proto.ViewerIDLen {
 			return errors.New("invalid viewer_join")
 		}
-		a.addPeer(m.ViewerID, role, m.LinkID, m.LinkLabel)
+		a.addPeerAs(m.ViewerID, role, m.LinkID, m.LinkLabel, m.Principal)
 	case proto.HostLinkGone:
 		var m proto.LinkGone
 		if err := json.Unmarshal(data, &m); err != nil {
@@ -1339,6 +1387,14 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
 		}
 		a.noteChange(a.local.Info())
+	case proto.HostAnswerAs:
+		if a.opts.Switchyard {
+			// A switchyard has no authority over the terminal: never
+			// sent one, what arrives anyway is dropped unread.
+			a.log.Warn("an answer_as from the switchyard was dropped unread")
+			return nil
+		}
+		a.answerAs(data)
 	case proto.HostActivity:
 		if a.opts.Switchyard {
 			return nil // see Options.Switchyard
@@ -1664,11 +1720,25 @@ func (a *agent) tell(v any, gone <-chan struct{}) error {
 }
 
 func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) {
+	a.addPeerAs(id, role, linkID, linkLabel, false)
+}
+
+// addPeerAs is addPeer for a viewer that came, when principal, as an
+// identity provider's principal (proto.ViewerJoin.Principal): with no link,
+// it holds a cred of its own (linkCreds.principal), which the server's
+// revoked leave or the loss of the connection to it (connLost), which may
+// have kept that leave from coming, marks gone, so that what it has under
+// way is withdrawn rather than finished; and what it sends is acted on only
+// while the host vouches for its server, as a link's viewer's is.
+func (a *agent) addPeerAs(id string, role session.Role, linkID, linkLabel string, principal bool) {
 	a.removePeer(id)
 	// A switchyard's viewer is never the owner's window, whatever else says
 	// so: its workbench is its operator's (Options.Switchyard).
 	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners && !a.opts.Switchyard)
 	p.cred = a.creds.of(linkID)
+	if p.cred == nil && principal {
+		p.cred = a.creds.principal()
+	}
 	if p.cred != nil {
 		// Before its hello can arrive: its first line waits for the answer
 		// when the host does not vouch for its server yet (awaitVouch).
@@ -1697,8 +1767,13 @@ func (a *agent) removePeer(id string) { a.removePeerFor(id, nil) }
 // viewer is let go, and every link the viewers joined through counts as
 // gone (linkCreds.lost) before them, for a link's going is not heard of
 // until the connection is back: what a link's viewer asked for and is
-// still under way is withdrawn rather than finished.
+// still under way is withdrawn rather than finished. So is what a
+// provider's principal asked for (linkCreds.principal): its revocation's
+// leave may be what the connection did not carry.
 func (a *agent) connLost(c *websocket.Conn) {
+	if f := a.beforeConnLost.Load(); f != nil {
+		(*f)()
+	}
 	a.dropConn(c)
 	a.creds.lost()
 	a.closeAllPeers()

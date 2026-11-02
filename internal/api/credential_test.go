@@ -59,7 +59,7 @@ func TestServerViewerRefusedOnceItsCredentialGoes(t *testing.T) {
 					return
 				}
 				conn.SetReadLimit(readLimit)
-				e.srv.serveLocalViewer(r.Context(), conn, nil, local, session.RoleControl, "l-test", false, check)
+				e.srv.serveLocalViewer(r.Context(), conn, nil, local, session.RoleControl, "l-test", false, check, nil)
 			}))
 			t.Cleanup(hs.Close)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
