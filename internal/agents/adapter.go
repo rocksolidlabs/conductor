@@ -91,6 +91,14 @@ type Adapter struct {
 	// turn launches with them; an agent without them cannot be Brakeman's.
 	// nil for an agent Conductor knows no read-only mode of.
 	ReadOnlyArgs func() []string
+	// ReadOnlyGap says, in words for Settings, what the agent's read-only
+	// mode does not hold: "" when it holds (Claude Code's, with
+	// --strict-mcp-config). An agent with a gap is still taken as
+	// Brakeman's, the gap a warning Settings shows beside the choice
+	// (brakeman.Warnings, through the API's Facts); this one fact is
+	// where that warning starts, so refusing such an agent instead is one
+	// case in brakeman.Validate.
+	ReadOnlyGap string
 	// ModelArgs, when set, returns the arguments that choose model for one
 	// launch, through the agent's own flag, the model its value and never an
 	// argument of its own; "" is the agent's default, and gives none. nil for
