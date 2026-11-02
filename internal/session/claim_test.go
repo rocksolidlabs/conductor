@@ -1986,6 +1986,102 @@ func TestAnEnterAtAStartupQuestionDrawnBeforeTheHoldKeepsTheHold(t *testing.T) {
 	open(t, s, q, "once the hold ended")
 }
 
+// #224, a viewer's Enter: the viewer answers the trust dialog the moment
+// its chunk reaches it, with no wait on anything of the session's, the pump
+// stalled once that chunk has gone out (afterBroadcast). The screen the
+// keys are routed by took the chunk before any viewer had it: the Enter
+// reaches the dialog, the reported question is not consumed, and the hold
+// follows as with a person's Enter.
+func TestAViewersEnterAtAStartupQuestionItWasJustSentKeepsTheHold(t *testing.T) {
+	trust := StartupQuestion{Pattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), Answers: []Option{{Label: "Trust and continue", Input: "\r"}, {Label: "Quit", Input: "\x1b"}}}
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond, Questions: append(approvalQuestions(), trust)})
+	var gone atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &gone)
+	sink := newChanSink(false)
+	nate, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := reported(t, s, "Which database?")
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	hook := func() { once.Do(func() { close(reached); <-gate }) }
+	s.beforeHold.Store(&hook)
+	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	line := submitAsync(s, Submission{Text: "note", By: guest})
+	written(t, p)
+	untilIdle(t, s)
+	gone.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	if got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line }); !errors.Is(got.err, ErrRevoked) {
+		t.Fatalf("the line: %+v %v", got.res, got.err)
+	}
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hold never began")
+	}
+	// The pump stalls once the dialog's chunk has gone out to the viewers,
+	// until the viewer's Enter has been judged.
+	const dialog = "Trust this folder?\r\n› 1. Trust and continue\r\n  2. Quit\r\nenter continue · esc quit\r\n"
+	stalled, release := make(chan struct{}), make(chan struct{})
+	var stall, unstall sync.Once
+	after := func(chunk []byte) {
+		if strings.Contains(string(chunk), "Trust this folder?") {
+			stall.Do(func() { close(stalled); <-release })
+		}
+	}
+	s.afterBroadcast.Store(&after)
+	t.Cleanup(func() { unstall.Do(func() { close(release) }) })
+	from := sink.count()
+	p.outW.Write([]byte(dialog))
+	select {
+	case <-stalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the dialog never went out")
+	}
+	// The viewer has the dialog: its Enter, at once.
+	sent := false
+	for !sent {
+		select {
+		case <-sink.writeCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the dialog never reached the viewer")
+		}
+		for i := from; i < sink.count(); i++ {
+			if f := sink.frame(i); len(f) > 0 && f[0] == proto.TypeOutput && strings.Contains(string(f[1:]), "Trust this folder?") {
+				sent = true
+			}
+		}
+	}
+	if err := s.Input(nate, []byte{'\r'}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "\r" {
+		t.Fatalf("written %q", got)
+	}
+	if st := stateOf(s); st.consumed == q.ID {
+		t.Fatalf("the viewer's Enter at the startup question consumed the reported question: %+v", st)
+	}
+	if a := s.Info().Attention; a.ID != q.ID {
+		t.Fatalf("the dialog was asked before the Enter: %+v", a)
+	}
+	unstall.Do(func() { close(release) })
+	let.Do(func() { close(gate) })
+	if !waitFor(5*time.Second, s.Held) {
+		t.Fatal("no hold followed the stranded text")
+	}
+	// The program takes the dialog away: the hold shows, and Ctrl+U shows
+	// the question again OPEN.
+	p.outW.Write([]byte("\r\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2KTrusted.\r\n> "))
+	heldShows(t, s)
+	if err := s.Input(nate, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	open(t, s, q, "once the hold ended")
+}
+
 // #224, the witness: the screen, not the output's tail. A footer the program
 // redraws in place evicts the dialog's heading from the tail (ScreenTail
 // keeps the last 1024 bytes) while the dialog stays on the screen: the Enter
