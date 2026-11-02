@@ -1514,6 +1514,15 @@ conductor dispatch edit CND-12 --status in_review --assignee +Bob --label -api -
 conductor dispatch comment CND-12 "the fix is in"
 conductor dispatch accept CND-12 --note "checked by hand"
 conductor dispatch link CND-12 --kind run --ref <run-id>   # or --kind delivery|external --url <url>
+conductor dispatch link CND-12 --kind delivery --url <pr-url> --candidate <run>/build/2@<commit>  # the candidate it delivers, its checks' receipt kept
+conductor dispatch plans CND-12             # the plan revisions, newest first: rN, state, crew, base, checks, approval, staleness
+conductor dispatch plan show CND-12 [3]     # a revision whole: the approved one, else the newest, unless named
+conductor dispatch plan propose CND-12 --crew team [--base main] [--reference internal/api/auth.go:40-60=the loop]... \
+    [--attachment Spec.png]... [--comment 4]... [--constraints-file c.md] [--decision ship:approval:"Ship it?"@build]... [--note "why"]
+conductor dispatch plan approve CND-12 3 --note "the operator's rationale"
+conductor dispatch plan withdraw CND-12 2
+conductor dispatch launch CND-12 [--plan 3] [--label "CND-12 Fix the login loop"]  # a managed run from the approved revision
+conductor dispatch runs CND-12              # every launch, run and continuation, with what changed since each launch
 ```
 
 They take `--server`, `--token` and `--insecure` as `conductor crews` does
@@ -1521,7 +1530,10 @@ They take `--server`, `--token` and `--insecure` as `conductor crews` does
 every word after the key, one that starts with `-` among them. `create` prints
 the new ticket's key; labels and milestones are given by name; a write whose reply is lost to the network
 is sent once more with the same operation id, which the server answers
-without a second change. No command makes or edits a project: the routes do
+without a second change: a launch resent is answered with the run it made,
+never a second one. A plan revision is named by its number (`3` or `r3`, as
+`plans` prints it) or its id; a revision's attachments by name and its
+comments by number. No command makes or edits a project: the routes do
 (`POST /api/dispatch/projects`, `docs/protocol.md`).
 
 **From an attempt.** In a session of a run linked to a ticket, the agent reads
@@ -1534,7 +1546,11 @@ skill teaches it:
 ```
 
 or the MCP tools `ticket_read` and `ticket_comment`. A run is linked to one
-ticket at most; with none, both say so.
+ticket at most; with none, both say so. In a run launched from a ticket both
+say first what it was launched at ("As launched: CND-12 at revision 7, plan
+revision 3, in .conductor/ticket.md. Now at revision 9: the description
+changed; 2 comments since."): the run follows the ticket as launched, and a
+change is a person's to decide.
 
 ## Yolo
 
