@@ -156,8 +156,11 @@ func TestCompletionCompletes(t *testing.T) {
 			if got := complete(t, sh, script, dir, bin, "completion", ""); !slices.Equal(got, []string{"zsh", "bash", "install"}) {
 				t.Fatalf("completion words: %v", got)
 			}
-			if got := complete(t, sh, script, dir, bin, "dispatch", ""); !slices.Equal(got, []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link"}) {
+			if got := complete(t, sh, script, dir, bin, "dispatch", ""); !slices.Equal(got, []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs"}) {
 				t.Fatalf("dispatch words: %v", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "dispatch", "plan", ""); !slices.Equal(got, []string{"show", "propose", "approve", "withdraw"}) {
+				t.Fatalf("dispatch plan words: %v", got)
 			}
 			if got := complete(t, sh, script, dir, bin, "dispatch", "--status", ""); !slices.Equal(got, dispatch.Statuses) {
 				t.Fatalf("dispatch statuses: %v", got)
@@ -241,7 +244,8 @@ func TestCompletionSpecMatchesEveryFlag(t *testing.T) {
 		"hooks": {{"hooks", "install", "-h"}, {"hooks", "status", "-h"}}, "completion": {{"completion", "install", "-h"}},
 		"skill": {{"skill", "-h"}}, "export": {{"export", "-h"}}, "restore": {{"restore", "-h"}}, "crew": {{"crew", "create", "-h"}}, "mcp": {{"mcp", "-h"}}, "task": {{"task", "context", "-h"}, {"task", "result", "-h"}, {"task", "send", "-h"}, {"task", "inbox", "-h"}, {"task", "ack", "-h"}, {"task", "blocked", "-h"}, {"task", "checkpoint", "-h"}, {"task", "ticket", "-h"}},
 		"brakeman": {{"brakeman", "request", "-h"}, {"brakeman", "brief", "-h"}, {"brakeman", "ask", "-h"}, {"brakeman", "status", "-h"}, {"brakeman", "list", "-h"}, {"brakeman", "show", "-h"}},
-		"dispatch": {{"dispatch", "projects", "-h"}, {"dispatch", "tickets", "-h"}, {"dispatch", "show", "-h"}, {"dispatch", "create", "-h"}, {"dispatch", "edit", "-h"}, {"dispatch", "comment", "-h"}, {"dispatch", "accept", "-h"}, {"dispatch", "link", "-h"}},
+		"dispatch": {{"dispatch", "projects", "-h"}, {"dispatch", "tickets", "-h"}, {"dispatch", "show", "-h"}, {"dispatch", "create", "-h"}, {"dispatch", "edit", "-h"}, {"dispatch", "comment", "-h"}, {"dispatch", "accept", "-h"}, {"dispatch", "link", "-h"},
+			{"dispatch", "plans", "-h"}, {"dispatch", "plan", "show", "-h"}, {"dispatch", "plan", "propose", "-h"}, {"dispatch", "plan", "approve", "-h"}, {"dispatch", "plan", "withdraw", "-h"}, {"dispatch", "launch", "-h"}, {"dispatch", "runs", "-h"}},
 	}
 	flagLine := regexp.MustCompile(`(?m)^  -([a-z][a-z0-9-]*)`)
 	for _, c := range completionSpec() {

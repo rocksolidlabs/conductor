@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -352,5 +354,36 @@ func TestTaskTicketCommentWithoutTheCommentRead(t *testing.T) {
 	inSessionOf(t, srv.URL, "s1", "agent-tok")
 	if code, out, err := task(t, "", "ticket", "comment", "seen"); code != 0 || err != nil || out != "commented on your ticket\n" {
 		t.Fatalf("a comment with no comment read: %d %v %q", code, err, out)
+	}
+}
+
+// conductor task ticket in an attempt of a run launched from its ticket
+// (Program item DS2, PR-13): what it was launched at comes first, the
+// revision, the plan revision and where the package is, unchanged since;
+// once the ticket's description is edited and a comment added, what
+// changed since, and that the run follows the ticket as launched; then
+// the ticket as it is now.
+func TestTaskTicketSaysWhatItWasLaunchedAt(t *testing.T) {
+	a := newPlannedAPI(t)
+	launchedRev := a.ticket(t, "CND-1").Rev
+	_, sid, token := a.launched(t)
+	inSessionOf(t, a.hs.URL, sid, token)
+	code, out, err := task(t, "", "ticket")
+	head := fmt.Sprintf("As launched: CND-1 at revision %d, plan revision 1, in .conductor/ticket.md (the package: .conductor/package.json, the attachments in .conductor/attachments/).", launchedRev)
+	follows := " Your run follows the ticket as launched: a change that matters to your work is a person's to decide, so tell them (ticket_comment, or task_blocked when it stops you), never act on it alone.\n\n# CND-1: Fix the login loop\n"
+	if code != 0 || err != nil || !strings.HasPrefix(out, head+" It is unchanged since."+follows) || !strings.Contains(out, "## Description\n\nIt loops.\n") {
+		t.Fatalf("task ticket: %d %v\n%s", code, err, out)
+	}
+	a.admin(t, "POST", "/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": "e1", "set": map[string]any{"description": "It loops twice."}}, http.StatusOK)
+	a.mustDispatch(t, "comment", "CND-1", "seen")
+	now := a.ticket(t, "CND-1").Rev
+	code, out, err = task(t, "", "ticket")
+	if want := head + fmt.Sprintf(" Now at revision %d: the description changed; 1 comment since.", now) + follows; code != 0 || err != nil || !strings.HasPrefix(out, want) || !strings.Contains(out, "## Description\n\nIt loops twice.\n") {
+		t.Fatalf("task ticket after an edit: %d %v\n%s\nwant the start\n%s", code, err, out, want)
+	}
+	var st sessionTicket
+	if code, out, err := task(t, "", "ticket", "--json"); code != 0 || err != nil || json.Unmarshal([]byte(out), &st) != nil || st.Launch == nil || st.Launch.Rev != launchedRev || st.Launch.Plan.N != 1 ||
+		st.Launch.Changed == nil || !slices.Equal(st.Launch.Changed.Fields, []string{"description"}) {
+		t.Fatalf("task ticket --json: %d %v %q", code, err, out)
 	}
 }
