@@ -425,7 +425,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   // ---------------------------------------------------------------------------
   // Dispatch's tickets (docs/plans/dispatch.md, "web/app"; Owner decisions, 11: no new prefix, no new verb): the open tickets of every
   // project in the search, a key or a word of the title finding one, a key typed whole ranking its ticket first; → offers Open, Copy key,
-  // Set status…, Set priority… and Assign to me.
+  // Set status…, Set priority…, Assign to me and Launch from the approved plan (DS2).
 
   /** Assign to me: the display name, as a person, added to the ticket's assignees; one operation, said in a toast. */
   function assignToMe(t: TicketSummary) {
@@ -456,6 +456,8 @@ export function usePaletteRows(ctx: PaletteContext) {
         { id: 'set-status', kind: 'page', target: t.key, label: 'Set status…', icon: 'i-lucide-circle-dot', kbds: ['S'], run: () => ctx.pickTicket('status', t) },
         { id: 'set-priority', kind: 'page', target: t.key, label: 'Set priority…', icon: 'i-lucide-signal-high', kbds: ['P'], run: () => ctx.pickTicket('priority', t) },
         { id: 'assign-me', kind: 'page', target: t.key, label: name ? (mine ? `Assigned to you (${name})` : `Assign to me (${name})`) : 'Assign to me: say your name first', icon: 'i-lucide-user-plus', kbds: ['A'], disabled: !name || mine, run: () => assignToMe(t) },
+        // DS2: the ticket's page, its launch dialog opened for the approved plan revision (asked first there), or why not said.
+        { id: 'launch-approved', kind: 'page', target: t.key, label: 'Launch from the approved plan', icon: 'i-lucide-play', run: () => go(`${path}?launch=approved`) },
       ],
     }
   }

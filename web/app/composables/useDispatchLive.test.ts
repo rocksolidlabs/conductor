@@ -543,3 +543,51 @@ describe("the run page's chip (PR-11)", () => {
     expect(noDispatchStore(new ApiError(403, 'forbidden', 'No'))).toBe(false)
   })
 })
+
+// DS2 (docs/plans/dispatch-evidence.md, "web/app"): a ticket's plan revisions and launches are read with it, on the `plan` and `launch`
+// events that name it, as on any event of its own.
+describe("a ticket page's plan revisions and launches", () => {
+  it("is read again at once for a plan revision's event and a launch's, which name their ticket", () => {
+    const live = new DispatchLive()
+    const { r, read } = reads()
+    live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    live.event(ev({ entity: 'plan', id: 'p'.repeat(16), ticket: 't1', project: 'CND' }))
+    expect(r.count).toBe(1)
+    live.event(ev({ entity: 'launch', id: 'l'.repeat(16), ticket: 't1', project: 'CND' }))
+    expect(r.count).toBe(2)
+  })
+
+  it("reads another ticket's plan and launch events after the window, once, as any event of its project", async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads()
+    live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    live.event(ev({ entity: 'plan', id: 'p'.repeat(16), ticket: 't2', project: 'CND' }))
+    live.event(ev({ entity: 'launch', id: 'l'.repeat(16), ticket: 't2', project: 'CND' }))
+    expect(r.count).toBe(0)
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    expect(r.count).toBe(1)
+  })
+
+  it("reads an approval's events, the revision approved and the one it superseded, which are one commit, once", () => {
+    const live = new DispatchLive()
+    const { r, read } = reads()
+    live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    live.event(ev({ at: 900, entity: 'plan', id: 'p'.repeat(16), ticket: 't1', project: 'CND' }))
+    live.event(ev({ at: 900, entity: 'plan', id: 'q'.repeat(16), ticket: 't1', project: 'CND' }))
+    expect(r.count).toBe(1)
+  })
+
+  it('takes the entities from the stream as they are', () => {
+    expect(asDispatchEvent({ seq: 3, entity: 'launch', id: 'l'.repeat(16), ticket: 't1', project: 'CND' })).toEqual({ seq: 3, entity: 'launch', id: 'l'.repeat(16), ticket: 't1', project: 'CND' })
+    expect(asDispatchEvent({ seq: 4, entity: 'plan', id: 'p'.repeat(16), ticket: 't1', project: 'CND' })?.entity).toBe('plan')
+  })
+
+  it('is not read again for a plan event of another project', async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads()
+    live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    live.event(ev({ entity: 'plan', id: 'p'.repeat(16), ticket: 't9', project: 'API' }))
+    await vi.advanceTimersByTimeAsync(10 * WINDOW)
+    expect(r.count).toBe(0)
+  })
+})

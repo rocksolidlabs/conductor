@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DispatchChange, DispatchReceipt, DispatchTicket, Horizon, NewLink, OpBody, ProjectRead, TicketAttachment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary } from '~/composables/useDispatch'
+import type { DispatchChange, DispatchReceipt, DispatchTicket, Horizon, NewLink, OpBody, PlanSummary, ProjectRead, TicketAttachment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { DISPATCH_RETRY_MAX_MS, ticketWatch } from '~/composables/useDispatchLive'
@@ -8,6 +8,9 @@ import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, acceptChangedWord
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
 import { catchUp, serially } from '~/utils/dispatchOrder'
+import type { PaletteItem } from '~/composables/usePalette'
+import { TICKET_PLAN_ROWS } from '~/composables/useTicketPlans'
+import { approvable, launchBlockers, revisionTag } from '~/utils/dispatchPlans'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -25,6 +28,8 @@ import { catchUp, serially } from '~/utils/dispatchOrder'
  * Close the store refuses, in the policy's words, until the policy is met; its delivery and external links; and the managed runs linked
  * to it, each with the run page's task rows (DispatchRuns.vue). Every operation on the ticket goes through the one queue of its edits, an
  * attachment's, a relation's, an acceptance's and a link's among them, since each bumps the ticket's revision. One column on a phone.
+ * Its Plan (DS2, DispatchPlan) follows the acceptance criteria: its plan revisions and launches are read with the ticket, on every event
+ * naming it (a `plan` or a `launch` event among them) and on a snapshot, and the palette's page group gains the Plan's rows.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -55,6 +60,8 @@ const reads = ref(0)
 /** Counts the stream's starts the page saw (a snapshot): the comments forget the answers they kept with each. */
 const resets = ref(0)
 const deleteOpen = ref(false)
+/** The ticket's plan revisions and launches (DS2), read with it. */
+const plan = useTicketPlans({ gate, ticket: () => ticket.value, changes: () => changes.value })
 
 useHead({ title: computed(() => (ticket.value ? `${ticket.value.key} ${ticket.value.title}` : props.ticketKey)) })
 
@@ -147,7 +154,7 @@ async function readProject(): Promise<void> {
  * else resolves to whether the gate took the ticket's answer.
  */
 async function reload(): Promise<boolean> {
-  const results = await Promise.allSettled([readTicket(), readHistory(), readProject()])
+  const results = await Promise.allSettled([readTicket(), readHistory(), readProject(), plan.read()])
   const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
   if (failed) {
     error.value = (failed.reason as Error).message
@@ -212,6 +219,7 @@ const live = useDispatchLive(
     ...ticketWatch(() => ticket.value?.id ?? '', () => props.project, reload),
     reset: () => {
       gate.reset()
+      plan.reset()
       resets.value++
     },
   },
@@ -233,6 +241,7 @@ const entries = computed(() =>
     milestones: new Map([...milestonesById.value].map(([id, m]) => [id, m.name])),
     agents: new Map(agents.value.map((a) => [a.id, a.name])),
     tickets: ticketNames.value,
+    plans: new Map(plan.plans.value.map((p) => [p.id, p.n])),
   }),
 )
 
@@ -622,6 +631,58 @@ function undeleteTicket() {
 
 const comments = useTemplateRef<{ insert: (text: string) => void }>('comments')
 
+// The Plan section's rows in the palette's page group (DS2): Propose a plan revision, Approve revision n, Launch from revision n (asked
+// first, in its dialog) and Open run, each opening its dialog once the palette has closed. Launch from the approved plan, the Tickets
+// group's row, opens this page with ?launch=approved, which opens the dialog once the revisions are read, or says why not.
+const planSection = useTemplateRef<{ propose: () => void; approve: (p: PlanSummary) => void; launch: () => boolean }>('planSection')
+const palette = usePalette()
+const route = useRoute()
+const router = useRouter()
+const planRows = inject(TICKET_PLAN_ROWS, null)
+async function afterPalette(f: () => void) {
+  palette.close()
+  await nextTick()
+  f()
+}
+watchEffect(() => {
+  if (!planRows) return
+  const t = ticket.value
+  if (!t || locked.value) {
+    planRows.value = []
+    return
+  }
+  const rows: PaletteItem[] = [{ key: 'page:plan-propose', label: 'Propose a plan revision', detail: `Of ${t.key}, from a saved crew with tasks`, icon: 'i-lucide-file-pen-line', run: () => void afterPalette(() => planSection.value?.propose()) }]
+  for (const p of plan.plans.value) {
+    if (approvable(p)) rows.push({ key: `page:plan-approve:${p.n}`, label: `Approve revision ${p.n}`, detail: `${p.crewName} · ${p.state}${p.stale ? `: ${p.stale.words}` : ''}`, icon: 'i-lucide-badge-check', run: () => void afterPalette(() => planSection.value?.approve(p)) })
+  }
+  const a = plan.approved.value
+  if (a) {
+    const why = launchBlockers(a, { ticket: t, project: props.project, archived: archived.value, server: plan.server })
+    rows.push({ key: `page:plan-launch:${a.n}`, label: `Launch from revision ${a.n}`, detail: why[0] ?? `${a.crewName}: asks first`, icon: 'i-lucide-play', disabled: !!why.length, run: () => void afterPalette(() => planSection.value?.launch()) })
+  }
+  for (const l of plan.shown.value) {
+    if (plan.launches.get(l.id)?.state !== 'started') continue
+    const n = plan.plans.value.find((p) => p.id === l.planId)?.n
+    rows.push({ key: `page:open-run:${l.runId}`, label: `Open run ${l.label || l.runId}`, detail: n ? `Launched from ${revisionTag(n)}` : l.runId, icon: 'i-lucide-workflow', run: () => void afterPalette(() => void router.push(`/runs/${encodeURIComponent(l.runId)}`)), href: `/runs/${encodeURIComponent(l.runId)}` })
+  }
+  planRows.value = rows
+})
+onBeforeUnmount(() => {
+  if (planRows) planRows.value = []
+})
+// ?launch=approved: the dialog opened once the ticket and its revisions are read, then the query dropped, so a reload asks nothing again.
+watch(
+  () => [route.query.launch, ticket.value?.key, plan.listed.value] as const,
+  ([ask, key, listed]) => {
+    if (ask !== 'approved' || !key || !listed) return
+    const query = { ...route.query }
+    delete query.launch
+    void router.replace({ query })
+    void nextTick(() => planSection.value?.launch())
+  },
+  { immediate: true },
+)
+
 function moreHistory() {
   historyPages.value++
   void readHistory().catch((e: Error) => (error.value = e.message))
@@ -714,6 +775,7 @@ const MAX_ACCEPTANCE = 16 << 10
           <div class="flex min-w-0 flex-1 flex-col gap-6">
             <TicketMarkdown :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text, base) => saveText('description', text, base)" :disabled="locked" name="description" :attachment-url="files.resolver.value" />
             <TicketMarkdown :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" :attachment-url="files.resolver.value" />
+            <DispatchPlan ref="planSection" :ticket="ticket" :plans="plan" :project="project" :archived="archived" :locked="locked" :agents="agents" :now="now" />
 
             <DispatchClosePolicy :ticket="ticket" :locked="locked" :now="now" :accept="accept" :unaccept="unaccept" :close="closeTicket" />
             <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" />
