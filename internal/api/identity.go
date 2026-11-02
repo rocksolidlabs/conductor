@@ -2,9 +2,12 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // The identity provider at authentication (Program item C2, the plan's
@@ -20,6 +23,12 @@ import (
 // the provider's words, which may quote the token. A provider's principal
 // is what its grants make it here (grantPrincipal), and the receipts of
 // what it does are kept under its subject (actorOf), never "admin".
+//
+// A provider's principal that holds a long-lived connection, a viewer's
+// WebSocket or the events stream, is asked about again while it holds it
+// (principalWatch): one the provider no longer admits loses the
+// connection, as a revoked link's viewer does (the owner's decision of
+// 2026-11-01, #560).
 
 // providerPrincipal is the identity provider's principal for tok, a token
 // the chain does not know (tokenPrincipal), presented with r: the empty
@@ -88,4 +97,60 @@ func (p principal) actor() string {
 		return adminActor
 	}
 	return ext.SubjectActor + p.subject
+}
+
+// identityRecheckEvery is how often a long-lived connection an identity
+// provider's principal holds (a viewer's WebSocket, GET /api/events) asks
+// the provider again about the token it was opened with
+// (principalWatch). Each ask is bounded by ext.IdentityWait, as the
+// first was, so a principal the provider revokes loses its connections
+// within this and that.
+const identityRecheckEvery = 30 * time.Second
+
+// errPrincipalRevoked closes a viewer's connection whose principal the
+// identity provider no longer admits: an error{revoked} and 4403, as a
+// revoked link's viewer is closed, with words that name no link.
+var errPrincipalRevoked = fmt.Errorf("access revoked by the identity provider: %w", session.ErrRevoked)
+
+// principalWatch is the watch of a long-lived connection p holds, opened
+// with tok: run on a goroutine of its own with the connection's context,
+// it asks the identity provider again every identityRecheckEvery
+// (guardIdentity.recheck, through the guard) and calls end, once, when
+// the provider answers in time that it no longer admits tok as p: no
+// principal, another subject, or one without the admin grant, which every
+// connection it watches needs (a viewer's control role, the events
+// stream). A provider that fails, panics, is late, is busy or answers a
+// principal out of bounds has said nothing, and the connection stays: the
+// guard's rule that a failure answers what was there before. It returns
+// when ctx ends or after end. Nil, and nothing asked, for every principal
+// of the server's own chain (the workbench token, a host token, a link:
+// no subject), so a build with no provider watches nothing.
+func (s *Server) principalWatch(p principal, tok string) func(ctx context.Context, end func()) {
+	if p.subject == "" || tok == "" {
+		return nil
+	}
+	g, ok := s.exts.identity.(guardIdentity)
+	if !ok {
+		return nil
+	}
+	return func(ctx context.Context, end func()) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.extAfterOr(identityRecheckEvery):
+			}
+			pr, admitted, known := g.recheck(ctx, tok)
+			if !known || ctx.Err() != nil {
+				continue
+			}
+			if admitted && pr.Subject == p.subject && s.grantPrincipal(pr).admin {
+				continue
+			}
+			// By the provider's name alone: the token is never logged.
+			s.log.Debug("identity provider no longer admits a connection's principal: closed", "provider", g.name)
+			end()
+			return
+		}
+	}
 }

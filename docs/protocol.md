@@ -82,8 +82,10 @@ reached it, or it went; nothing was written; the message says which, see
 `answer`).
 
 WebSocket close codes: `1000` normal, `1001` server shutdown, `4400` protocol
-error, `4401` unauthorized, `4403` link revoked or expired, `4404` unknown
-session, `4409` too many viewers, `4410` session or host gone. The workbench
+error, `4401` unauthorized, `4403` link revoked or expired (reason `link
+revoked`, `link expired`), or an identity provider's principal the
+provider no longer admits (reason `access revoked`, see the HTTP API's
+token order), `4404` unknown session, `4409` too many viewers, `4410` session or host gone. The workbench
 token is control on every session of its own server and has no role on a
 switchyard's (`4401`): a session published there is opened by the links its
 publishing machine had minted.
@@ -444,21 +446,37 @@ refusal is an HTTP error before the upgrade, `{"error": {code, message}}`:
 when longer, and stops when the session ends. Text frames are JSON; binary
 frames are RELAY envelopes.
 
-Host → server: `register{proto, host{name,version,user?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?}, resume?{sessionId,secret}}`
-(`user` ≤ 64 bytes is the OS user for "hosted by"; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
+Host → server: `register{proto, host{name,version,user?,answerAs?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?}, resume?{sessionId,secret}}`
+(`user` ≤ 64 bytes is the OS user for "hosted by"; `answerAs: true` says the host takes `answer_as` and
+sends `kept` with its `attention` (below): `conductor host` says it, a server publishing to a switchyard
+never does, an older host leaves it out and an older server ignores it; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
 a server publishing its sessions to a switchyard registers each with less: `command` is one word, the
 agent's id or else the program's name, never an argument; `cwd` the folder's last element; no `user`
 and no `branch`),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
-`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?,ask?}`
+`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?,ask?,kept?}`
 (`id` the id the host's session gave the change, which the server keeps,
 only as 1–32 bytes of printable ASCII, so that an answer from its listings
 names the question the host holds; an older server ignores it; a question
 asked again with the same words is sent again, its `id` new; `ask: true`,
 with `needs_input` only, says the question the host's session shows is the
 agent's own (see Attention), which the server's copy then keeps through a
-`done` it forwards; never sent to a switchyard),
+`done` it forwards; never sent to a switchyard; `kept`, from a host whose
+register said `answerAs` alone, the ids of the questions its session keeps
+without showing them, at most 2 (the agent's own question set aside, a
+question a held turn holds over), from the same snapshot as the rest of
+the message, so the server's decision router tells a question set aside
+from one that ended: a host sends its `attention` whenever what its
+session shows or keeps changes, a retry resending the pair it holds, and
+the server's copy takes the two from one message, an `attention` equal to
+the one shown with a new `kept` taking the `kept` and changing nothing
+else; a message whose `kept` holds more than 2 ids, or one that is not
+1–32 bytes of printable ASCII, is dropped whole (the connection stays);
+the server takes no `kept` from a host that did not say `answerAs` (one
+that resumes without it has the pair it last sent stand until its first
+`attention`, which then drops the `kept`), and an older server ignores the
+field),
 `activity{sessionId,entry,state?}`,
 `chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
@@ -500,14 +518,15 @@ host's session, as the viewer's welcome carries them, none dropped for
 the frame: a host message holds 64 KiB; an open host, registered with no
 token, is handed the configured ones alone; `links`: the ids of the live links the server holds for the session, `[]`
 when none; an older server sends no field, which says nothing),
-`viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
+`viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
 server holds for it, or caught up: above; a host refuses one whose
 `viewerId` is not 16 bytes, and one for a viewer it no longer has changes
 nothing),
 (`reason`: `revoked` when the viewer was let go for its link (revoked, its
-run forgotten, its run's session no longer named) or `expired` (the link
+run forgotten, its run's session no longer named) or because the identity
+provider no longer admits the principal it came as, or `expired` (the link
 reached its expiry), none for any other end (it left, its connection failed,
 it was too slow); `link_gone`: a link a viewer joined the session through
 (`linkId`, at most 64 bytes) no longer opens it (revoked, expired as the
@@ -566,11 +585,40 @@ host gives the connection up and connects again (its pings keep a
 connection that drops what it carries from being idle, which TCP's
 keepalive would otherwise have ended). The lines of the owner's own
 windows, the host's own terminal and a paste invite's viewer need no such
-word. A host reads a reason it does not know, or
+word. A viewer that came as an identity provider's principal has no link,
+but the server may revoke it at any time (its `viewer_leave` then says
+`revoked`), so it joins with `principal: true` and the host holds what it
+asked for as a link's viewer's: as the host loses its connection to the
+server, which may have kept that leave from coming, what is still under
+way of the viewer's is withdrawn (a line's carriage return among it),
+and what it sends is acted on only while the host vouches for its server,
+its join pinging at once as a link's does. An older host ignores the
+field. A host reads a reason it does not know, or
 one over 16 bytes, as none; an older server sends neither, and an older
 host ignores both, as before: each side decodes the other's messages
 without refusing unknown fields),
 `attention{state,message?,source,kind?,options?}` (API-originated change to broadcast),
+`answer_as{question, input?, text?, byName, bySubject?}` (an answer a
+decision router or a provider holds for the question the host's session
+shows: `question` its id, 1–32 bytes of printable ASCII; exactly one of
+`input`, a choice's keys of at most 48 bytes, and `text`, a line of at most
+4096; `byName` who answered, 1–40 characters on one line; `bySubject` at
+most 48 bytes of printable ASCII, no space; about 4.4 KB with a plain line
+of 4096 bytes, under 25 KB at its largest, far under the 64 KiB host
+message. Sent in the server's own lane, after `registered`, only to a host
+whose register said `answerAs`, and only by the owner's own server, never
+by a switchyard. It carries who answered, not a right to answer: the host
+applies it as its viewers' `answer`s are applied, under the question's
+claim, the first answer winning, a choice only when its keys are the
+`input` of one of the question's own `options`, a line as a `submit`
+naming the question, a line blank once cleaned refused; the result reaches
+the server as the host's `attention` and `activity` always do. The host
+holds at most 4 of them per connection, the one applying among them, and
+drops a fifth with a log line; one goroutine applies them in order, each
+within a reply's 10 s from its arrival, and the queue ends with the
+connection, a message waiting then dropped. One out of its bounds is
+dropped and logged; a host publishing to a switchyard drops one unread;
+an older host ignores a type it does not know),
 `activity{entry}` (an event reported through the API, for the host to record),
 `link_created{requestId, url, invite, linkId, role, label?, expiresAt?, runId?}`
 (`runId` for a link minted by `link_run`), `link_run_updated{requestId, runId, links}`
@@ -1399,7 +1447,21 @@ the question went to records one `status` entry, `routed: <kind> <name>,
 … (<rule>)`; the empty route, the free build's, records nothing, so a
 plain build's activity is as before. A provider answers the same way
 through its host (`Host.Submit` with `question` and `input` or `text`).
-Hosted sessions are not routed yet.
+A hosted session's question is routed the same way when its host's
+register said `answerAs`, and only by the owner's own server: the route's
+answer, or a provider's, travels to the host as `answer_as` (`Host.Submit`
+answers `sent`) and is applied there under the host's own claim, two
+answers that cross (a viewer's and the route's) ordered on the host; the
+router judges what the host said its session shows and keeps (`kept`),
+never a change the server forwarded and the host has not yet applied. A
+hosted route's `routed: …` entry goes to the host as an `activity` message
+of the server's own, which the host records and reports back; like a server
+session's own `status` entries it spends no token of the session's bucket,
+so the reports an agent makes cannot crowd it out. An
+older host's questions are routed by no one, as before, and a provider's
+answer to one is unsupported; a switchyard routes none and sends no
+`answer_as`. A line that answers no question is never typed into a hosted
+session.
 
 A reply to a question read off the screen is taken only while the screen
 still shows that question, too (a next question drawn after it and not asked
@@ -1779,7 +1841,21 @@ the workbench token is (on a switchyard, with the workbench token's lack of a
 role on the sessions published there), and one with the `host` grant is a
 host token's, at `GET /ws/host` too; a principal without a grant, an answer
 late past 1 s, an error or one out of bounds is an unknown token, `401` under
-the same rate limit. The admin's commands and Dispatch operations, and the
+the same rate limit. A provider's principal that holds a long-lived
+connection, a viewer's WebSocket or `GET /api/events`, is asked about again
+every 30 s while it holds it, each ask bounded at 1 s as the first: once
+the provider answers in time that it no longer admits the token (no
+principal, another subject, or one without the `admin` grant), the viewer
+is closed with `error{revoked}` and `4403` (`access revoked`) and the stream
+is ended. What the viewer has under way is withdrawn as a revoked link's
+is: a submission not yet entered, keys not yet written and a save's next
+part are refused, and a hosted session's host is told at once with a
+`viewer_leave` whose reason is `revoked` (not when the viewer's connection
+has closed; one leave, after its join). The stream's write under way is
+cut. A provider answers so only for a token it knows it no longer admits;
+one that cannot tell returns an error. A provider that errs, is late or answers out of bounds has said
+nothing, and the connection stays. The workbench token, the host tokens
+and the links are never asked about again this way. The admin's commands and Dispatch operations, and the
 reads of their receipts, are kept under the actor `admin` for the workbench
 token and `user:<subject>` for a provider's principal (its subject at most 48
 bytes): each finds only its own receipts, and a provider's subject can never
@@ -2052,6 +2128,88 @@ prerequisites, its setup phase, its services and its `ready` probes, its
 `preview`, its `env` names, each tree's ports, state directory and
 placeholders, its `verify` steps after a result's checks and its `cleanup`
 steps at each tree's end.
+
+### Guide
+
+The operating guide (`docs/plans/brakeman.md`, BK0): what the running
+server says the caller may do here, computed per caller on each request
+and never cached, from the one table of Conductor's operations that the
+MCP server's tools are listed from too (`internal/api/guide.go`), so a
+tool and its guide entry cannot drift. `conductor guide` and the MCP
+tool `guide` read it.
+
+| Route | Credential | Answer |
+|---|---|---|
+| `GET /api/guide?section=` | admin | the guide for the admin, every operation of the table that the server has (a switchyard's lists none that launches) |
+| `GET /api/sessions/{id}/guide?section=` | the session's agent token, or admin | the session's guide, the admin's token reading the same as the session's; another session's token, a share or host token `401`; `404 not_found` for no such session; on a switchyard a published session's own token alone |
+
+Without `section` the reply is the overview, else that section; `404
+no_section` for a name not below, `400 invalid_request` for any other
+parameter. Every reply is `{guide: 1, version, commit, section, <section>:
+…}`, `version` and `commit` the server's build, the content under the
+section's own name; encoded with HTML escaping off and measured so: the
+overview at most 4 KiB, each section at most 64 KiB, the six at most 256
+KiB, which a test holds with every entry at its largest (a past bound is
+`500 guide_bound`, never a cut reply). The sections:
+
+- `overview`: `{caller: {kind, session?, kinds?, run?, member?, scopes},
+  sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
+  session's `kinds` are `plain` (in no run) or `run_member`, `attempt` (of
+  a managed run) and `ticket_member` (of a run a live ticket's run link
+  names); `scopes` are the operations' scopes it reaches (`session`, and
+  `task` for an attempt, `ticket` for a ticket's member; the admin's are
+  `admin`, `session`, `task` and `ticket`). `bytes` is the size of that
+  section's reply. `rules` are three lines for every caller: a fact needs
+  evidence; nothing an agent writes becomes work by itself; a question
+  goes to a person with `ask`.
+- `operations`: the operations the caller's scopes reach on this server,
+  each `{name, summary, scope, method, path, mcp?, cli?, input, receipt?,
+  revision?, bounds?}`: `summary` at most 300 bytes as encoded; `path` the mux's
+  pattern after the method; `mcp` the tool's name; `cli` the command's
+  words; `input` the JSON Schema of the tool's arguments, or of the body
+  read from the type the route decodes (every field it takes, an
+  embedded operation's `opId`, `expectedRev` and `byName` among them, a
+  nested object's own, those without a default `required`, and no other
+  property at any depth);
+  `receipt` `ledger` (a run command's) or `dispatch` (a Dispatch
+  operation's); `revision` the precondition the route itself checks,
+  `run` (a command's `expectedRevision`) or `ticket` (Dispatch's
+  `expectedRev`), absent for a route that takes none (a run's stop and
+  resume); `bounds` in bytes. A tool's description is its MCP
+  `tools/list` entry's, at most 1 KiB, and is not repeated here. A route
+  that needs self-service (`agents.selfService`: `form_crew`,
+  `add_member`, `run_status`, `link`) is listed only with it on, never on
+  a switchyard (whose sessions are all hosted), and for a session only
+  for a server session: `form_crew` only for one in no run (one in a run
+  is answered `409 in_a_run`), `add_member` and `run_status` only for a
+  member of a run, `add_member` never for a member of a managed run (one
+  is answered `409 managed_run`); one that launches or needs the
+  ledger or Dispatch is not listed on a switchyard. The table holds the
+  agent routes and tools, the guide's two routes, and the admin's
+  operations a proposal may name: a run's pause, unpause, stop and resume;
+  a task's cancel, retry and accept; a ticket's create, edit, comment and
+  link; a crew's create and launch.
+- `limits`: `[{name, min?, max?, default?, pattern?, unit?, about}]`,
+  each read from the constant that refuses past it (`default` what 0
+  takes, a check timeout's): a task id's pattern, a crew's
+  members and tasks, a task's checks, a check's timeout, a result's
+  summary, issues and findings, a message and an inbox, a report's
+  message, a comment, a ticket's title and description, a task file's
+  page, the self-service crews and links, a body.
+- `host`: `{os, arch, switchyard, managedCrews, selfService, ledger:
+  {state, why?}, dispatch: {state, why?}, checksMaxConcurrent, sessions?,
+  agents: [{id, name, adapter?, installed, version?}], moreAgents?}`;
+  `state` is `owned` (the ledger) or `open` (Dispatch), `read_only` or
+  `absent`, `why` (at most 500 bytes) and `sessions` (how many the server
+  lists) for the admin alone; `agents` the catalog's, at most 64 with
+  `moreAgents` counting the rest, `version` what its probe found when the
+  server knows it already (the guide runs no probe and waits at most 0.5
+  s for the programs' lookups); a session sees the agents only with
+  self-service on, on a server session, and a switchyard lists none.
+- `receipts`: `[{name, about, fields: [{name, type, optional?}]}]`, the
+  formats a caller meets (`ledger`, `dispatch`), read from their types.
+- `providers`: `{known: false, providers: []}` until the server names its
+  registered providers (Program item C9).
 
 ### Crew runs
 

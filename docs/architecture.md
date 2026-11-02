@@ -630,7 +630,35 @@ reads it: the ledger's commands, Dispatch's operations and the reads of
 their receipts are kept under `admin` for the workbench token and
 `user:<subject>` (`ext.SubjectActor`, at most 53 bytes) for a provider's
 principal, so a provider's subject never shares the receipts of `admin`,
-`merge` or `agent:<member>`. Nothing stored changes shape.
+`merge` or `agent:<member>`. Nothing stored changes shape. A provider's
+principal that holds a viewer's WebSocket or `GET /api/events` keeps it only
+while the provider admits it (`principalWatch`, #560): the connection's
+watch asks again every `identityRecheckEvery` (30 s), through the guard
+with `IdentityWait` and call slots of its own (`identity-recheck`, so the
+watches never take a request's), and closes the viewer as revoked (`4403`)
+or ends the stream once the provider answers in time that it no longer
+admits the token as that subject with the `admin` grant; a failure, a late
+answer or one out of bounds ends nothing. So `ext.IdentityProvider`'s
+`Authenticate` answers ok false only for a token it knows it no longer
+admits: one that cannot tell (its keys out of reach, its service down or
+lapsed) returns an error, which ends no connection and, for a new request,
+is the free default's answer. The revoke is a revoked link's: the server
+session's subscription ends revoked (`Subscription.Revoke`), so a
+submission waiting for its turn or its Enter, keys or a save under way are
+refused, also when the connection had ended for another reason first (the
+revocation is kept of its own, not as the close's first reason); a hosted
+viewer is closed revoked (`HostedSession.RevokeViewer`), nothing of its
+still queued for the host is written and the host is sent its
+`viewer_leave` saying `revoked` at once, after its join and only once, not
+when its connection has closed, so the host withdraws what it has under
+way; and since that leave may be what a lost connection did not carry,
+the viewer's `viewer_join` says `principal`, and the host gives it a
+credential of its own (`linkCreds.principal`), which the connection's
+loss marks gone as it does the links', and acts on what it sends only
+while it vouches for its server, as for a link's viewer; the events stream's write
+under way is cut (a passed write deadline) before its context ends. The
+server's own tokens and links have no watch, so a build with no provider
+asks nothing more.
 
 **Sync.** Every local commit is told to the sync store
 (`ext.ContinuityStore`) after it lands (`internal/api/sync.go`). Three
@@ -766,7 +794,14 @@ is not routed and is held skipped (warn once a minute). A question shown
 while the router's `Start` has not succeeded is skipped the same way, and
 so is one the guard never gave the provider (every call slot of its busy):
 `Resolved` is told only of what `Route` received.
-Hosted sessions are routed once their hosts send what they keep (PR-10).
+A hosted session is routed when its host said `answerAs`, from the
+host's own last report (`HostView`: its attention and `kept`, one
+message), never a change the server forwarded and the host has not yet
+applied; its answers go to the host as `answer_as`, which applies them off
+its control loop through one queue of four per connection, under its own
+claim, and withdrawn first when the connection ends. A host back without
+`answerAs` has none of its new questions routed, and those already routed
+still resolved. A switchyard routes and answers none.
 
 ## Packages
 
