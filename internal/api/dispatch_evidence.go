@@ -186,7 +186,10 @@ type chainNode struct {
 
 // runNode reads the run's place in its chain: the ledger's row of it
 // (continued_from, continued_by), else the engine's run, else its record
-// (resumedFrom, resumedBy); ok false for a run found nowhere.
+// (resumedFrom, resumedBy); ok false for a run found nowhere. A record
+// there but not read (an I/O error, one too large or not JSON) is the
+// error: its marks may name more of the chain, so the walk fails rather
+// than end there.
 func (s *Server) runNode(ctx context.Context, id string) (chainNode, bool, error) {
 	if !crew.ValidRunID(id) {
 		return chainNode{}, false, nil
@@ -206,7 +209,7 @@ func (s *Server) runNode(ctx context.Context, id string) (chainNode, bool, error
 	if s.records != nil {
 		r, ok, err := s.records.Get(id)
 		if err != nil {
-			s.log.Warn("a run's record could not be read for its chain", "run", id, "err", err)
+			return chainNode{}, false, fmt.Errorf("the record of run %s: %w", id, err)
 		}
 		if ok {
 			return chainNode{id: id, from: r.ResumedFrom, by: r.ResumedBy, at: r.StartedAt}, true, nil
@@ -223,18 +226,22 @@ var chainWalkSeam atomic.Pointer[func(run string) error]
 // runChain is the chain of the run with the id: the run, every run it
 // continues and every run that continues it, found by walking the marks
 // both ways (runNode), oldest first by start, the anchor among them;
-// before says which of them come before the anchor (the runs it
-// continues, directly or not). Empty for a run found nowhere. There is no
-// cap on a chain's runs: each is visited once, and the walk ends with the
-// context, failing, never with a part of the chain taken for all of it.
-func (s *Server) runChain(ctx context.Context, anchor string) (nodes []chainNode, before map[string]bool, err error) {
+// before says which runs come before the anchor (the runs it continues,
+// directly or not, a missing one among them); missing is the runs a
+// found run's marks name that no source has any more (a legacy run's
+// record pruned while a run continuing it stayed), which are of the chain
+// still: a ticket's link to one holds it. Empty for a run found nowhere.
+// There is no cap on a chain's runs: each is visited once, and the walk
+// ends with the context, failing, never with a part of the chain taken
+// for all of it.
+func (s *Server) runChain(ctx context.Context, anchor string) (nodes []chainNode, before map[string]bool, missing []string, err error) {
 	before = map[string]bool{}
 	seen := map[string]bool{}
 	byID := map[string]chainNode{}
 	queue := []string{anchor}
 	for len(queue) > 0 {
 		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		id := queue[0]
 		queue = queue[1:]
@@ -244,28 +251,32 @@ func (s *Server) runChain(ctx context.Context, anchor string) (nodes []chainNode
 		seen[id] = true
 		if f := chainWalkSeam.Load(); f != nil {
 			if err := (*f)(id); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		}
 		n, ok, err := s.runNode(ctx, id)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if !ok {
+			if id != anchor {
+				missing = append(missing, id)
+			}
 			continue
 		}
 		byID[id] = n
 		queue = append(queue, n.from, n.by)
 	}
 	if _, ok := byID[anchor]; !ok {
-		return nil, before, nil
+		return nil, before, nil, nil
 	}
-	// The runs before the anchor: its from, theirs, and so on.
+	// The runs before the anchor: its from, theirs, and so on, to the
+	// first one missing.
 	for id := byID[anchor].from; id != "" && !before[id]; id = byID[id].from {
+		before[id] = true
 		if _, ok := byID[id]; !ok {
 			break
 		}
-		before[id] = true
 	}
 	for _, n := range byID {
 		nodes = append(nodes, n)
@@ -273,26 +284,29 @@ func (s *Server) runChain(ctx context.Context, anchor string) (nodes []chainNode
 	slices.SortFunc(nodes, func(a, b chainNode) int {
 		return cmp.Or(a.at.Compare(b.at), strings.Compare(a.id, b.id))
 	})
-	return nodes, before, nil
+	return nodes, before, missing, nil
 }
 
 // chainRuns is the store's sight of a run's chain (SetRunChain): the runs
 // of the run's chain, read from the ledger, the engine and the records,
-// never from the store, inside whose operation it runs. A walk that fails
-// (a ledger read's error, chainWalkTimeout) answers its error and no runs,
-// so the store judges no link on a part of a chain (dispatch.ErrChainUnread).
+// never from the store, inside whose operation it runs, the runs its
+// marks name that are found nowhere any more among them, so a link to a
+// pruned run still holds the chain. A walk that fails (a ledger read's
+// error, a record that cannot be read, chainWalkTimeout) answers its error
+// and no runs, so the store judges no link on a part of a chain
+// (dispatch.ErrChainUnread).
 func (s *Server) chainRuns(run string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), chainWalkTimeout)
 	defer cancel()
-	nodes, _, err := s.runChain(ctx, run)
+	nodes, _, missing, err := s.runChain(ctx, run)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(nodes))
+	out := make([]string, 0, len(nodes)+len(missing))
 	for _, n := range nodes {
 		out = append(out, n.id)
 	}
-	return out, nil
+	return append(out, missing...), nil
 }
 
 // contested is a launched or hand-linked run's chain held by other
@@ -426,7 +440,7 @@ func (s *Server) ticketRunEntries(ctx context.Context, ds *dispatch.Store, key s
 		out = append(out, e)
 	}
 	for _, a := range anchors {
-		nodes, before, err := s.runChain(ctx, a.run)
+		nodes, before, _, err := s.runChain(ctx, a.run)
 		if err != nil {
 			return nil, fmt.Errorf("%w: run %s: %w", dispatch.ErrChainUnread, a.run, err)
 		}
@@ -476,7 +490,7 @@ func (s *Server) contestedWords(ctx context.Context, key, run string, launched b
 	if otherLaunched {
 		holds = "launched from " + h.Key
 	}
-	_, before, err := s.runChain(ctx, run)
+	_, before, _, err := s.runChain(ctx, run)
 	switch {
 	case (err != nil || h.Run == run) && otherLaunched:
 		c.Words = fmt.Sprintf("run %s was launched from %s: %s", run, h.Key, remedy)

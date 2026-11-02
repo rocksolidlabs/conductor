@@ -161,8 +161,9 @@ var candidatesSeam atomic.Pointer[func(run string)]
 // MaxCandidatesReply. The run's tasks, attempts, receipts and commands are
 // four reads, made again while the run's revision moved between the first
 // and the last (at most candidateReadTries times), so a page pairs a task
-// row with the attempts of its own revision unless the run moved through
-// every try. A run the ledger has not, or any run while the ledger cannot
+// row with the attempts of its own revision; 503 run_changing (Retry-After
+// 1) when the run moved through every try, never rows of two revisions. A
+// run the ledger has not, or any run while the ledger cannot
 // be read, is looked for as GET /api/runs/{run} looks: found, a legacy run answers
 // {managed: false, candidates: []} (true for a managed run's record whose
 // rows are gone); 404 not_found only for a run found nowhere with a ledger
@@ -267,8 +268,15 @@ func (s *Server) handleRunCandidates(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Pruned meanwhile, the rows read are the last it had.
-		if !ok || p.Revision == rev || try == candidateReadTries {
+		if !ok || p.Revision == rev {
 			break
+		}
+		// Moved through every try: rows of two revisions are never
+		// answered, the page is asked for again.
+		if try == candidateReadTries {
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusServiceUnavailable, "run_changing", "the run changed through every read of its candidates; ask again")
+			return
 		}
 		rev = p.Revision
 	}

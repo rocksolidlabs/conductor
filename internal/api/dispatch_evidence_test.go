@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -415,6 +417,52 @@ func TestALinkIntoAChainThatCannotBeWalkedIsNotKept(t *testing.T) {
 	}
 }
 
+// A chain whose older run is gone is held still by a link to it: A linked
+// to CND-1 and continued by B, A's record unreadable, a link of B to
+// CND-2 is 503 ledger_unavailable with nothing kept (A's marks may name
+// more of the chain); A's record pruned, B still naming it, the link is
+// refused run_linked naming CND-1, whose link holds the chain by A, and
+// B's holders name CND-1.
+func TestALinkToAPrunedRunHoldsItsChain(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	l.newDispatchTicket(t, "CND", "Two", nil)
+	now := time.Now().UTC()
+	a, b := "legacy-000000f1", "legacy-000000f2"
+	saveRecord(t, l.srv, crew.Run{ID: a, StartedAt: now.Add(-time.Hour), ResumedBy: b})
+	saveRecord(t, l.srv, crew.Run{ID: b, StartedAt: now, ResumedFrom: a})
+	linkRun(t, l.testEnv, "CND-1", a, http.StatusCreated, "")
+
+	record := filepath.Join(l.srv.cfg.DataDir, "runs", a+".json")
+	if err := os.WriteFile(record, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	op := opID()
+	body := map[string]any{"opId": op, "kind": dispatch.LinkRun, "ref": b}
+	l.expect(t, "POST", "/api/dispatch/tickets/CND-2/links", body, http.StatusServiceUnavailable, "ledger_unavailable")
+	l.expect(t, "GET", "/api/dispatch/ops/"+op, nil, http.StatusNotFound, "not_found")
+	if links, err := l.srv.dispatch.Links(t.Context(), "CND-2"); err != nil || len(links) != 0 {
+		t.Fatalf("CND-2's links with A unreadable: %v %v", links, err)
+	}
+
+	if err := l.srv.records.Delete(a); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := l.srv.records.Get(a); ok || err != nil {
+		t.Fatalf("A's record pruned: %v %v", ok, err)
+	}
+	out := l.expect(t, "POST", "/api/dispatch/tickets/CND-2/links", body, http.StatusConflict, dispatch.RefusalRunLinked)
+	if receiptOf(t, out)["key"] != "CND-1" {
+		t.Fatalf("the link of B with A pruned: %v", out)
+	}
+	holders, err := l.srv.dispatch.ChainHolders(t.Context(), b)
+	if err != nil || len(holders) != 1 || holders[0].Key != "CND-1" || holders[0].Run != a {
+		t.Fatalf("B's holders with A pruned: %v %v", holders, err)
+	}
+	if links, err := l.srv.dispatch.Links(t.Context(), "CND-2"); err != nil || len(links) != 0 {
+		t.Fatalf("CND-2's links: %v %v", links, err)
+	}
+}
+
 // The largest page of a ticket's runs: ten entries, each with a launch
 // whose texts are at their escaped worst (its why, its label, its agents),
 // a link at its bounds, the run's summary with twelve members and twenty
@@ -785,6 +833,75 @@ func TestCandidatesAreReadAtOneRevision(t *testing.T) {
 	candidatesSeam.Store(nil)
 	if len(cs) != 1 || cs[0]["state"] != ledger.AttemptSucceeded || cs[0]["standing"] != true || calls != 2 {
 		t.Fatalf("the candidate across a transition (%d reads): %v", calls, cs)
+	}
+}
+
+// A run that moves through every read of a page is never answered with
+// rows of two revisions: a transition committed between the tasks' and
+// the attempts' reads on each of the candidateReadTries passes (the last
+// among them) is 503 run_changing with Retry-After, and one that stops
+// before the last pass answers that pass's rows, of one revision.
+func TestCandidatesMovingThroughEveryReadAreRefused(t *testing.T) {
+	e := readyEnv(t, nil)
+	run := "churn-0000abcd"
+	c, _ := json.Marshal(crew.Crew{ID: "churn", Name: "Churn", Tasks: []crew.Task{{ID: "build", Member: "lead", Kind: crew.TaskWork}}})
+	sub := strings.Repeat("a", 40)
+	attempt := ledger.AttemptRow{TaskID: "build", N: 1, ResultCommit: sub, State: ledger.AttemptRunning, Stage: "check", Result: `{"commit":"` + sub + `"}`}
+	verifying := ledger.TaskRow{ID: "build", Member: "lead", Kind: crew.TaskWork, State: ledger.TaskVerifying, Attempts: 1}
+	if _, err := e.srv.ledger.Transition(t.Context(), run, func(tx *ledger.Tx) error {
+		if err := tx.CreateRun(ledger.RunRow{ID: run, CrewID: "churn", Crew: string(c), State: ledger.RunRunning, CreatedAt: tx.Now()}); err != nil {
+			return err
+		}
+		if err := tx.PutTask(verifying); err != nil {
+			return err
+		}
+		return tx.PutAttempt(attempt)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Each pass the seam moves, the attempt succeeds and becomes the
+	// task's result, or both go back: a pass that read the tasks before
+	// and the attempts after would pair succeeded with not standing.
+	var calls, moves int
+	seam := func(id string) {
+		if id != run {
+			return
+		}
+		calls++
+		if calls > moves {
+			return
+		}
+		succeeded := calls%2 == 1
+		if _, err := e.srv.ledger.Transition(context.Background(), run, func(tx *ledger.Tx) error {
+			tr, a := verifying, attempt
+			if succeeded {
+				tr.State, tr.ResultAttempt, tr.ResultCommit = ledger.TaskSucceeded, 1, sub
+				a.State, a.Stage = ledger.AttemptSucceeded, ""
+			}
+			if err := tx.PutTask(tr); err != nil {
+				return err
+			}
+			return tx.PutAttempt(a)
+		}); err != nil {
+			t.Error(err)
+		}
+	}
+	candidatesSeam.Store(&seam)
+	t.Cleanup(func() { candidatesSeam.Store(nil) })
+
+	moves = candidateReadTries
+	resp, out := e.do("GET", "/api/runs/"+run+"/candidates", adminToken, nil)
+	if resp.StatusCode != http.StatusServiceUnavailable || errorCode(out) != "run_changing" || resp.Header.Get("Retry-After") == "" || calls != candidateReadTries {
+		t.Fatalf("a run moving through all %d reads: %d %v, Retry-After %q, %d reads", candidateReadTries, resp.StatusCode, out, resp.Header.Get("Retry-After"), calls)
+	}
+
+	// Moving through every pass but the last: the last pass's rows, of
+	// the revision the seventh move made (the attempt succeeded and its
+	// task's result).
+	calls, moves = 0, candidateReadTries-1
+	cs := candidateList(taskOn(t, candidatesOf(t, e, run, ""), "build"))
+	if calls != candidateReadTries || len(cs) != 1 || cs[0]["state"] != ledger.AttemptSucceeded || cs[0]["standing"] != true {
+		t.Fatalf("a run settling on the last read (%d reads): %v", calls, cs)
 	}
 }
 
