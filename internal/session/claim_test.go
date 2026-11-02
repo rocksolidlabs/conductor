@@ -1935,11 +1935,16 @@ func TestAnEnterAtAStartupQuestionDrawnBeforeTheHoldKeepsTheHold(t *testing.T) {
 	hook := func() { once.Do(func() { close(reached); <-gate }) }
 	s.beforeHold.Store(&hook)
 	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	// The guest's line, typed and paused at its Enter: the guest's link
+	// goes before the Enter, never raced against the pause.
+	at, release := pauseEnter(t, s)
 	line := submitAsync(s, Submission{Text: "note", By: guest})
 	written(t, p)
 	untilIdle(t, s)
+	atEnter(t, at)
 	gone.Store(true)
 	s.DisconnectLink(guest.LinkID)
+	release()
 	if got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line }); !errors.Is(got.err, ErrRevoked) {
 		t.Fatalf("the line: %+v %v", got.res, got.err)
 	}
@@ -2008,11 +2013,16 @@ func TestAViewersEnterAtAStartupQuestionItWasJustSentKeepsTheHold(t *testing.T) 
 	hook := func() { once.Do(func() { close(reached); <-gate }) }
 	s.beforeHold.Store(&hook)
 	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	// The guest's line, typed and paused at its Enter: the guest's link
+	// goes before the Enter, never raced against the pause.
+	at, release := pauseEnter(t, s)
 	line := submitAsync(s, Submission{Text: "note", By: guest})
 	written(t, p)
 	untilIdle(t, s)
+	atEnter(t, at)
 	gone.Store(true)
 	s.DisconnectLink(guest.LinkID)
+	release()
 	if got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line }); !errors.Is(got.err, ErrRevoked) {
 		t.Fatalf("the line: %+v %v", got.res, got.err)
 	}
@@ -2024,15 +2034,15 @@ func TestAViewersEnterAtAStartupQuestionItWasJustSentKeepsTheHold(t *testing.T) 
 	// The pump stalls once the dialog's chunk has gone out to the viewers,
 	// until the viewer's Enter has been judged.
 	const dialog = "Trust this folder?\r\n› 1. Trust and continue\r\n  2. Quit\r\nenter continue · esc quit\r\n"
-	stalled, release := make(chan struct{}), make(chan struct{})
+	stalled, resume := make(chan struct{}), make(chan struct{})
 	var stall, unstall sync.Once
 	after := func(chunk []byte) {
 		if strings.Contains(string(chunk), "Trust this folder?") {
-			stall.Do(func() { close(stalled); <-release })
+			stall.Do(func() { close(stalled); <-resume })
 		}
 	}
 	s.afterBroadcast.Store(&after)
-	t.Cleanup(func() { unstall.Do(func() { close(release) }) })
+	t.Cleanup(func() { unstall.Do(func() { close(resume) }) })
 	from := sink.count()
 	p.outW.Write([]byte(dialog))
 	select {
@@ -2066,7 +2076,7 @@ func TestAViewersEnterAtAStartupQuestionItWasJustSentKeepsTheHold(t *testing.T) 
 	if a := s.Info().Attention; a.ID != q.ID {
 		t.Fatalf("the dialog was asked before the Enter: %+v", a)
 	}
-	unstall.Do(func() { close(release) })
+	unstall.Do(func() { close(resume) })
 	let.Do(func() { close(gate) })
 	if !waitFor(5*time.Second, s.Held) {
 		t.Fatal("no hold followed the stranded text")
