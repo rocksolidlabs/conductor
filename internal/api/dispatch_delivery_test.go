@@ -344,6 +344,92 @@ func TestDeliveryLinkResentAfterTheEvidenceChanged(t *testing.T) {
 	}
 }
 
+// A cancel commits the attempt's end before it ends the check under it,
+// and the check writes its interrupted receipt, its log's hash with it,
+// in a later transaction: between the two the ledger holds an ended
+// attempt whose receipt is still started or running. The ledger is held
+// in that state here, the check's finalization not yet written: the
+// delivery is refused with nothing kept, the same opId too, and once the
+// receipts are finished as the check finishes them the same opId is taken
+// with the final receipt, its log's hash in it. A stopped attempt whose
+// unfinished receipt is past the 16 a delivery keeps is refused alike.
+func TestDeliveryWaitsForAnEndedAttemptsReceipts(t *testing.T) {
+	t.Parallel()
+	e := deliveryEnv(t)
+	run := "synth-0000abcd"
+	at := time.Now().UTC().Add(-time.Minute)
+	put := func(rows ...ledger.CheckRow) {
+		t.Helper()
+		if _, err := e.srv.ledger.Transition(t.Context(), run, func(tx *ledger.Tx) error {
+			for _, row := range rows {
+				if err := tx.PutCheck(row); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Attempt 8 cancelled under its check test (running) and its verify
+	// step lint (started); attempt 9 stopped with sixteen finished receipts
+	// and a seventeenth still running.
+	if _, err := e.srv.ledger.Transition(t.Context(), run, func(tx *ledger.Tx) error {
+		for n, state := range map[int]string{8: ledger.AttemptCancelled, 9: ledger.AttemptStopped} {
+			if err := tx.PutAttempt(ledger.AttemptRow{TaskID: "build", N: n, Member: "lead", StartCommit: deliveryCommit(n - 1), ResultCommit: deliveryCommit(n), State: state}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	test := ledger.CheckRow{TaskID: "build", N: 8, ID: "test", K: 1, Subject: deliveryCommit(8), State: ledger.CheckRunning, Exit: -1, StartedAt: at, PID: 4242}
+	lint := ledger.CheckRow{TaskID: "build", N: 8, ID: "lint", K: 2, Phase: ledger.PhaseVerify, Subject: deliveryCommit(8), State: ledger.CheckStarted, Exit: -1, StartedAt: at}
+	put(test, lint)
+	var many []ledger.CheckRow
+	for k := 1; k <= 16; k++ {
+		many = append(many, ledger.CheckRow{TaskID: "build", N: 9, ID: fmt.Sprintf("a%02d", k), K: k, Subject: deliveryCommit(9), State: ledger.CheckFinished, Exit: 0, Stable: true, StartedAt: at, FinishedAt: at})
+	}
+	many = append(many, ledger.CheckRow{TaskID: "build", N: 9, ID: "z", K: 17, Subject: deliveryCommit(9), State: ledger.CheckRunning, Exit: -1, StartedAt: at})
+	put(many...)
+
+	before := linkCount(t, e, "CND-1")
+	refused := func(op, candidate, words string) {
+		t.Helper()
+		out := e.deliver(t, "CND-1", op, "https://example.com/pull/8", candidate, http.StatusConflict, "invalid")
+		if msg, _ := out["error"].(map[string]any)["message"].(string); !strings.Contains(msg, words) || out["receipt"] != nil {
+			t.Fatalf("%s: %v", candidate, out)
+		}
+		if _, ok, err := e.srv.dispatch.Receipt(t.Context(), adminActor, op); err != nil || ok {
+			t.Fatalf("%s kept a receipt: %v %v", candidate, ok, err)
+		}
+		if n := linkCount(t, e, "CND-1"); n != before {
+			t.Fatalf("%d links after the refusal, %d before", n, before)
+		}
+	}
+	cancelled := run + "/build/8@" + deliveryCommit(8)
+	op := opID()
+	refused(op, cancelled, "build#8's receipt lint is still started (its attempt is cancelled)")
+	refused(opID(), run+"/build/9@"+deliveryCommit(9), "build#9's receipt z is still running (its attempt is stopped)")
+	// lint's end written, test's not yet: the same opId still refused.
+	lint.State, lint.Exit, lint.FinishedAt, lint.Error = ledger.CheckInterrupted, -1, at.Add(time.Second), "the attempt closed under the check"
+	lint.LogSHA256 = strings.Repeat("c", 64)
+	put(lint)
+	refused(op, cancelled, "build#8's receipt test is still running (its attempt is cancelled)")
+	// test's interrupted receipt written, as the check writes it once the
+	// cancel ended it: the same opId taken, the final receipts kept.
+	test.State, test.Exit, test.Signal, test.FinishedAt, test.Error = ledger.CheckInterrupted, -1, "killed", at.Add(2*time.Second), "the attempt closed under the check"
+	test.LogSHA256 = strings.Repeat("d", 64)
+	put(test)
+	out := e.deliver(t, "CND-1", op, "https://example.com/pull/8", cancelled, http.StatusCreated, "")
+	_, v := deliveryOf(t, entityOf(t, out, "ticket"), receiptOf(t, out)["id"].(string))
+	if v.Passed || v.Attempt != 8 || len(v.Receipts) != 2 || v.Receipts[0].ID != "lint" || v.Receipts[0].LogSHA256 != strings.Repeat("c", 64) ||
+		v.Receipts[1].ID != "test" || v.Receipts[1].LogSHA256 != strings.Repeat("d", 64) {
+		t.Fatalf("the cancelled candidate's final receipt: %+v", v)
+	}
+}
+
 // Two tries of one delivery in flight at once both find no receipt in
 // the first replay; the twin that commits first wins. A try that then
 // meets a refusal (its run's link removed meanwhile, so the run is none

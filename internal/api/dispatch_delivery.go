@@ -41,8 +41,9 @@ import (
 // holder of a contested chain; 409 invalid for a run no ticket holds; 404
 // not_found for no live ticket; nothing kept), the attempt read from the
 // ledger (503 ledger_unavailable when there is none to read, nothing
-// kept; 409 invalid for a run the ledger has not, or an attempt that is no
-// ended work attempt's whose result is the commit named), its receipts as
+// kept; 409 invalid for a run the ledger has not, an attempt that is no
+// ended work attempt's whose result is the commit named, or one whose
+// receipts are not all finished yet), its receipts as
 // the candidates route reads them, and the store's AddLink with the
 // receipt. A refusal or a failure on the way asks the replay again first
 // (a twin try in flight may have committed the operation meanwhile).
@@ -111,8 +112,11 @@ func (s *Server) addDelivery(ctx context.Context, w http.ResponseWriter, ds *dis
 	s.writeOp(w, "ticket", rc, err, true, "ticket", ticketAfter(ctx, ds, key))
 }
 
-// attemptEnded is the states of an attempt that has ended, whose
-// receipts are all written: any other is still on its way.
+// attemptEnded is the states of an attempt that has ended: any other is
+// still on its way. An ended attempt's receipts may still be on theirs: a
+// cancel or a stop commits the attempt's state first and ends its check
+// after, which writes its receipt in a later transaction
+// (candidateVerified waits for that too).
 var attemptEnded = []string{ledger.AttemptSucceeded, ledger.AttemptFailed, ledger.AttemptCancelled, ledger.AttemptStopped, ledger.AttemptInterrupted, ledger.AttemptUncertain}
 
 // candidateVerified reads the candidate's verification receipt from the
@@ -125,8 +129,9 @@ var attemptEnded = []string{ledger.AttemptSucceeded, ledger.AttemptFailed, ledge
 // (Killed) is no failure of the check, as the engine's own reading of it
 // says (crew's checkWords). A refusal is its code and words
 // (ledger_unavailable with no ledger to read; invalid for a run the ledger
-// has not, an attempt that has not ended, or an attempt that is not the
-// candidate); an error is the ledger's.
+// has not, an attempt that has not ended, an attempt that is not the
+// candidate, or one of whose receipts is still started or running); an
+// error is the ledger's.
 func (s *Server) candidateVerified(ctx context.Context, c dispatch.Candidate) (v *dispatch.Verified, code, words string, err error) {
 	if s.ledger == nil {
 		return nil, "ledger_unavailable", "the ledger could not be opened, so the candidate's receipts cannot be read; see the server's log", nil
@@ -154,11 +159,11 @@ func (s *Server) candidateVerified(ctx context.Context, c dispatch.Candidate) (v
 		tr = taskRows[i]
 		kind = cmp.Or(tr.Kind, kind)
 	}
-	// The attempt is read before its receipts: an attempt read as ended
-	// committed every receipt of its verification before, so the later
-	// read holds them all. One not ended (running, submitting or still
-	// verifying) is refused: its receipt is not finished, and a receipt
-	// recorded never changes.
+	// The attempt is read before its receipts, so the later read holds
+	// every receipt its end left. One not ended (running, submitting or
+	// still verifying) is refused: its receipt is not finished, and a
+	// receipt recorded never changes. An ended one may still have a receipt
+	// on its way (below).
 	attempts, err := s.ledger.Attempts(ctx, c.Run)
 	if err != nil {
 		return nil, "", "", err
@@ -184,6 +189,22 @@ func (s *Server) candidateVerified(ctx context.Context, c dispatch.Candidate) (v
 			result = "the result " + cand.Commit
 		}
 		return nil, dispatch.RefusalInvalid, fmt.Sprintf("%s's commit is not %s: the attempt has %s", c.Name(), c.Commit, result), nil
+	}
+	// A cancel or a stop commits the attempt's end before it ends the check
+	// under it (crew's commit cancels the check's context after the
+	// transaction), and the check then writes its interrupted receipt, its
+	// log's hash with it, in a later one: a receipt still started or
+	// running is unfinished, and a delivery added now would keep it so for
+	// good. Refused, nothing kept, whichever of the attempt's receipts it
+	// is (the 16 the receipt keeps or one past them); sent again once the
+	// receipt is finished, it is taken.
+	for _, r := range checks {
+		if r.Subject != c.Commit || (r.Phase != "" && r.Phase != ledger.PhaseCheck && r.Phase != ledger.PhaseVerify) {
+			continue
+		}
+		if r.State == ledger.CheckStarted || r.State == ledger.CheckRunning {
+			return nil, dispatch.RefusalInvalid, fmt.Sprintf("%s's receipt %s is still %s (its attempt is %s): a delivery keeps a finished receipt, so send it again once the receipt is finished", c.Name(), r.ID, r.State, a.State), nil
+		}
 	}
 	v = &dispatch.Verified{At: time.Now().UTC(), Attempt: c.Attempt, Receipts: []dispatch.VerifiedReceipt{}}
 	passed := a.State == ledger.AttemptSucceeded
