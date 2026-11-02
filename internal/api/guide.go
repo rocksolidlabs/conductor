@@ -286,7 +286,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// in X-Conductor-Session on each.
 		{Name: "observe", MCP: "observe", Scope: "observe", Method: http.MethodGet, Path: "/api/brakeman/changes", needs: needLauncher,
 			Summary:     "Read what you may see as a Brakeman turn: what changed, a status, runs, tasks, receipts, logs, tickets, sessions, files, overlaps, earlier briefs.",
-			Description: "When this session is a Brakeman turn: read one thing Conductor holds, within your scope and visibility, each answer counted against your reads. what names it (changes, status, screen, overlaps, briefs, runs, run, task, steps, log, command, messages, projects, tickets, ticket, history, comments, sessions, touched) and query its parameters (run, task, n, id, k, command, key, session, since, cursor, limit, lines, q, after). Every item carries the ref a brief cites it by.",
+			Description: "When this session is a Brakeman turn: read one thing Conductor holds, within your scope and visibility, each answer counted against your reads. what names it (changes, status, screen, overlaps, briefs, runs, run, task, steps, log, command, messages, projects, tickets, ticket, history, comments, sessions, touched) and query its parameters (run, task, n, id, k, command, key, session, since, cursor, limit, lines, q, after). Every item carries the ref a brief cites it by; each answer keeps its observe_<what> entry's bound.",
 			CLI:         []string{"conductor", "brakeman", "observe", "WHAT", "--KEY", "VALUE"},
 			Input: obj(map[string]any{
 				"what":  map[string]any{"type": "string", "enum": observeWhats, "description": "what to read: the guide's observe_<what> operation names its route"},
@@ -308,7 +308,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		observeOp("projects", "/api/dispatch/projects", "Dispatch's projects in your scope.", "archived", "limit", "cursor"),
 		observeOp("tickets", "/api/dispatch/tickets", "A page of tickets in your scope, each with its ref and rev.", "project", "status", "q", "limit", "cursor"),
 		observeOp("ticket", "/api/dispatch/tickets/{key}", "A ticket whole with its last comments, each with its ref and rev."),
-		observeOp("history", "/api/dispatch/tickets/{key}/history", "A ticket's history, field by field.", "after", "limit"),
+		observeOp("history", "/api/dispatch/tickets/{key}/history", "A ticket's history, field by field, each change with the ref of its operation.", "after", "limit"),
 		observeOp("comments", "/api/dispatch/tickets/{key}/comments", "A ticket's comments past the ones its read carries.", "after", "limit"),
 		observeOp("sessions", "/api/sessions", "The sessions in your scope: names, states, questions."),
 		observeOp("touched", "/api/touched", "The files the sessions in your scope touched.", "limit"),
@@ -408,10 +408,14 @@ var observeWhats = []string{"changes", "status", "screen", "overlaps", "briefs",
 
 // observeOp is one read of a Brakeman turn's: observe_<what>, its route,
 // its query's parameters by name and its path's, and its answer's bound:
-// Brakeman's own routes' maxObserveReply, a shared route's maxTurnReply,
-// which a turn's read of it is held to.
+// maxObserveReply for Brakeman's own reads, a shared read's its route's
+// own (sharedReadReply), else maxTurnReply, which a turn's read of any
+// shared route is held to.
 func observeOp(what, path, summary string, query ...string) Operation {
-	bound := maxTurnReply
+	bound := sharedReadReply(http.MethodGet + " " + path)
+	if bound == 0 {
+		bound = maxTurnReply
+	}
 	if strings.HasPrefix(path, "/api/brakeman/") {
 		bound = maxObserveReply
 	}

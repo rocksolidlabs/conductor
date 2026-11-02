@@ -118,10 +118,11 @@ type brakemanDesk struct {
 	// stuck is set past brakemanStuck and refuses new requests.
 	stopFails int
 	stuck     bool
-	// makes holds each request's make mutex (makeLock); reached how far
-	// each turn's pages of changes reach, contiguously (cover).
-	makes   map[string]*sync.Mutex
-	reached map[string]int
+	// makes holds each request's make mutex (makeLock); turnReads what
+	// the turn in progress was given of what changed (cover) and the
+	// classes its answers used (usedClass).
+	makes     map[string]*sync.Mutex
+	turnReads *turnChanges
 
 	// readMu orders a turn's reads: the count, the read log and the
 	// coverage of one read are written before the next is answered.
@@ -129,6 +130,18 @@ type brakemanDesk struct {
 	// recovering holds Brakeman's routes (503 brakeman_recovering) while
 	// recoverMakes completes what the last owner left of the makes.
 	recovering atomic.Bool
+	// recoveries is the recovery the desk's start began (startRecovery),
+	// which release waits for before the owner lock goes;
+	// recoverCtx/stopRecovery end every recovery as the desk quiesces.
+	recoveries   sync.WaitGroup
+	recoverCtx   context.Context
+	stopRecovery context.CancelFunc
+	// making counts the makes the make route admitted (admitMake), which
+	// release waits for before the owner lock goes: a make admitted before
+	// the desk closed finishes its backend's operation here, never beside
+	// the next owner's recovery of the same claim. Added to under mu, with
+	// closing read there, so none is admitted once quiesce began.
+	making sync.WaitGroup
 }
 
 // deskTurn is the slot: a request from starting until its launch has
@@ -164,6 +177,7 @@ type deskTurn struct {
 // and when the store cannot be opened.
 func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 	d := &brakemanDesk{s: s, wake: make(chan struct{}, 1), done: make(chan struct{}), loopDone: make(chan struct{}), read: map[string]bool{}}
+	d.recoverCtx, d.stopRecovery = context.WithCancel(context.Background())
 	now := time.Now
 	d.clock.Store(&now)
 	d.keep.Store(brakeman.Keep)
@@ -177,7 +191,6 @@ func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 		s.log.Warn("Brakeman takes no turn: its records are read-only", "why", why)
 	}
 	d.st = bs
-	d.reached = map[string]int{}
 	bs.OnOwned(func() {
 		d.recover()
 		d.loadQueue()
@@ -189,11 +202,22 @@ func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 		// Dispatch and the crew store, opened before the desk), when the
 		// last owner left one to recover.
 		if pending, err := bs.Pending(); err != nil || len(pending) > 0 {
-			d.recovering.Store(true)
-			go d.recover()
+			d.startRecovery()
 		}
 	}
 	return d
+}
+
+// startRecovery runs the recovery of the makes in the background, with
+// Brakeman's routes held until it is done; release waits for it, so the
+// owner lock never goes while it saves a crew or makes a ticket.
+func (d *brakemanDesk) startRecovery() {
+	d.recovering.Store(true)
+	d.recoveries.Add(1)
+	go func() {
+		defer d.recoveries.Done()
+		d.recover()
+	}()
 }
 
 // StartBrakeman starts Brakeman's desk: its loop, which takes the queued
@@ -229,7 +253,14 @@ var errDeskClosing = errors.New("brakeman: the server is shutting down")
 // run and the session it makes are ones the stops after it find. It may
 // be called again.
 func (d *brakemanDesk) quiesce(ctx context.Context) {
+	// Under mu, as admitMake reads it: a make is admitted before this, and
+	// release waits for it, or refused after.
+	d.mu.Lock()
 	d.closing.Store(true)
+	d.mu.Unlock()
+	// A recovery under way stops at its next make; the one it is in
+	// finishes (release waits for it).
+	d.stopRecovery()
 	d.stopOnce.Do(func() { close(d.done) })
 	d.startOnce.Do(func() { close(d.loopDone) })
 	<-d.loopDone
@@ -273,8 +304,30 @@ func (d *brakemanDesk) release(ctx context.Context) {
 		case <-ctx.Done():
 		}
 	}
+	// The recovery the start began holds the lock's promise as a make's
+	// does: it ends before the lock goes (the one OnOwned began, Close
+	// waits for); so does every make the route admitted, whose backend's
+	// operation the next owner's recovery would otherwise run beside it.
+	d.recoveries.Wait()
+	d.making.Wait()
 	_ = d.st.Close()
 }
+
+// admitMake admits a make of the make route, false once the desk is
+// closing (quiesce): release waits for each admitted make (madeDone)
+// before the owner lock goes.
+func (d *brakemanDesk) admitMake() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closing.Load() {
+		return false
+	}
+	d.making.Add(1)
+	return true
+}
+
+// madeDone ends an admitted make.
+func (d *brakemanDesk) madeDone() { d.making.Done() }
 
 // poke makes the loop look again.
 func (d *brakemanDesk) poke() {
