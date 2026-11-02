@@ -3433,8 +3433,28 @@ are `{id, key, withheld}`, no title or status; a ticket's history's
 changes each carry the `op:` ref of the operation that made them. Each answer counts one read against `readsPerTurn`
 (`429 reads_spent` past it) and its items are noted in the turn's read
 log (at most 5,000 entries and 2 MiB, the oldest dropped first). Every
-route keeps its own bound; the admin's answers are unchanged; every other
-route refuses the principal as it refuses no token. `401` for a token
+route keeps its own bound, and a turn's answer is at most 4 MiB as
+filtered (the guide's bound for each `observe_<what>`): past it `413
+bound`, neither counted nor noted. A run's messages, up to 4,096 of 4 KiB,
+are paged for a turn: `…/messages?after=&limit=` (`after` the `next` of
+the page before, a message's `seq`; `limit` 1 to 200, 100 when absent) →
+`{messages, next?}` in `seq` order, at most 256 KiB a page, `next` while
+more remain. The runs, up to 100 each with twelve members' prompts, are
+paged for a turn likewise: `GET /api/runs?after=&limit=` (`after` the
+`next` of the page before, a run's id; `limit` 1 to 100, 100 when absent)
+→ `{runs, next?}` newest first, at most 4 MiB a page and one run at least,
+`next` while more remain; an `after` naming a run the server no longer
+holds is `400 invalid_request`, and the runs are read again from the
+first page. A run that alone passes a turn's 4 MiB (a managed run of 128
+tasks with their results can), on its page or as `GET /api/runs/{run}`,
+is given short rather than refused, with `cut` naming what it leaves out,
+in this order and each only while the run is still past the bound:
+`tasks` (each task's result's summary, issues and findings, its latest
+attempt's checkpoint and error, its blocker's message: the task's own read
+gives them whole), `members` (each member's prompt and args), `log` and
+`chat` (their oldest entries, the newest that fit kept). The admin's
+answers are unchanged; every other route refuses the principal as it
+refuses no token. `401` for a token
 that is not the named session's, `403 not_brakeman` for a session that
 is no turn's, `409 turn_over` once its request is closed.
 
@@ -3442,7 +3462,7 @@ Brakeman's own reads, the admin's and the principal's, each at most 256
 KiB (the guide's `observe_<what>` entries carry each read's `reply`
 bound: these 256 KiB; a shared read its route's own, a check's log 1
 MiB, a ticket's read and a page of its comments 3 MiB, a page of
-projects 128 KiB, none where the route states none):
+projects 128 KiB, and a turn's 4 MiB where the route states none):
 
 | Route | Query and answer |
 |---|---|

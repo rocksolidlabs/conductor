@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -1066,6 +1067,444 @@ func TestARepeatedMakeDerivesTheSameOp(t *testing.T) {
 	}
 }
 
+// A run's messages past what one answer holds (1,100 of 4,000 bytes,
+// more than 4 MiB as the route answers them) are read by a turn a page at
+// a time: each page at most maxObserveReply and limit, in seq order,
+// next the after of the page that follows, every message once; after and
+// limit out of their range are refused 400 invalid_request.
+func TestATurnReadsARunsMessagesAPageAtATime(t *testing.T) {
+	const run = "team-0000aaaa"
+	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	var msgs []crew.Message
+	for i := range 1100 {
+		msgs = append(msgs, crew.Message{Seq: int64(i + 1), From: "lead", To: "dev", Text: strings.Repeat("m", 4000), CreatedAt: at, DeliveredAt: &at})
+	}
+	body, err := json.Marshal(map[string]any{"messages": msgs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) <= 4<<20 {
+		t.Fatalf("the route's answer is %d bytes, not past 4 MiB", len(body))
+	}
+	read := func(query string) ([]byte, error) {
+		r, _ := http.NewRequest("GET", "/api/runs/"+run+"/messages"+query, nil)
+		r.SetPathValue("run", run)
+		return filterMessages(r, &observer{}, body)
+	}
+	var seqs []int64
+	pages := 0
+	for after := ""; ; pages++ {
+		q := "?limit=" + strconv.Itoa(maxMessagesPage)
+		if after != "" {
+			q += "&after=" + after
+		}
+		page, err := read(q)
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if len(page) > maxObserveReply {
+			t.Fatalf("page %d is %d bytes, past %d", pages, len(page), maxObserveReply)
+		}
+		var out struct {
+			Messages []struct {
+				Seq int64  `json:"seq"`
+				Ref string `json:"ref"`
+			} `json:"messages"`
+			Next int64 `json:"next"`
+		}
+		if err := json.Unmarshal(page, &out); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Messages) == 0 || len(out.Messages) > maxMessagesPage {
+			t.Fatalf("page %d holds %d messages", pages, len(out.Messages))
+		}
+		for _, m := range out.Messages {
+			if m.Ref != fmt.Sprintf("message:%s/%d", run, m.Seq) {
+				t.Fatalf("message %d's ref %q", m.Seq, m.Ref)
+			}
+			seqs = append(seqs, m.Seq)
+		}
+		if out.Next == 0 {
+			break
+		}
+		if out.Next != out.Messages[len(out.Messages)-1].Seq {
+			t.Fatalf("page %d's next %d is not its last seq", pages, out.Next)
+		}
+		after = strconv.FormatInt(out.Next, 10)
+	}
+	if len(seqs) != len(msgs) || pages < 17 {
+		t.Fatalf("%d messages in %d pages", len(seqs), pages+1)
+	}
+	for i, s := range seqs {
+		if s != int64(i+1) {
+			t.Fatalf("message %d is seq %d", i, s)
+		}
+	}
+	// With no limit, a page of defaultMessagesPage at most.
+	if page, err := read(""); err != nil || strings.Count(string(page), `"seq":`) > defaultMessagesPage {
+		t.Fatalf("a page with no limit: %v, %d messages", err, strings.Count(string(page), `"seq":`))
+	}
+	for _, q := range []string{"?limit=201", "?limit=-1", "?after=x", "?after=-1", "?after=01", "?nope=1", "?after=1&after=2"} {
+		_, err := read(q)
+		var ae *apiError
+		if !errors.As(err, &ae) || ae.status != http.StatusBadRequest || ae.Code != "invalid_request" {
+			t.Errorf("%s: %v", q, err)
+		}
+	}
+}
+
+// The runs the engine keeps, each with twelve members' 4,000-character
+// prompts (more than 4 MiB as the route lists them), are read by a turn a
+// page at a time: newest first, each page at most maxTurnReply and limit,
+// only the grant's runs and every one of them once, next the after of the
+// page that follows, only a page's runs noted; after and limit out of
+// their range, and an after naming a run no longer listed, are refused
+// 400 invalid_request. Through the route, the query reaches the filter.
+func TestATurnReadsTheRunsAPageAtATime(t *testing.T) {
+	f := newObsFixture(t)
+	prompt := strings.Repeat("€", 4000)
+	var runs []crew.Run
+	var want []string
+	for i := range 100 {
+		crewID := "big"
+		if i%5 == 4 {
+			crewID = "else"
+		}
+		run := crew.Run{ID: fmt.Sprintf("%s-%08x", crewID, 100-i), CrewID: crewID, Name: crewID, State: crew.RunStopped}
+		for m := range 12 {
+			run.Members = append(run.Members, crew.MemberState{Name: fmt.Sprintf("m%d", m), AgentID: "bk", Status: "ended", Prompt: prompt})
+		}
+		runs = append(runs, run)
+		if crewID == "big" {
+			want = append(want, run.ID)
+		}
+	}
+	body, err := json.Marshal(map[string]any{"runs": runs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) <= 4<<20 {
+		t.Fatalf("the route's answer is %d bytes, not past 4 MiB", len(body))
+	}
+	read := func(query string) ([]byte, *observer, error) {
+		o := f.srv.newObserver(nil)
+		o.tp = &turnPrincipal{}
+		o.grant = refGrant{scopes: []brakeman.Scope{{Crews: []string{"big"}}}}
+		r, _ := http.NewRequest("GET", "/api/runs"+query, nil)
+		b, err := filterRuns(r, o, body)
+		return b, o, err
+	}
+	var got []string
+	pages := 0
+	for after := ""; ; pages++ {
+		q := "?limit=" + strconv.Itoa(maxRunsPage)
+		if after != "" {
+			q += "&after=" + after
+		}
+		page, o, err := read(q)
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if len(page) > maxTurnReply {
+			t.Fatalf("page %d is %d bytes, past %d", pages, len(page), maxTurnReply)
+		}
+		var out struct {
+			Runs []struct {
+				ID  string `json:"id"`
+				Ref string `json:"ref"`
+			} `json:"runs"`
+			Next string `json:"next"`
+		}
+		if err := json.Unmarshal(page, &out); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Runs) == 0 || len(o.reads) != len(out.Runs) {
+			t.Fatalf("page %d holds %d runs, %d noted", pages, len(out.Runs), len(o.reads))
+		}
+		for i, r := range out.Runs {
+			if r.Ref != "run:"+r.ID || o.reads[i].Ref.String() != r.Ref {
+				t.Fatalf("run %s's ref %q, noted %v", r.ID, r.Ref, o.reads[i].Ref)
+			}
+			got = append(got, r.ID)
+		}
+		if out.Next == "" {
+			break
+		}
+		if out.Next != out.Runs[len(out.Runs)-1].ID {
+			t.Fatalf("page %d's next %s is not its last run", pages, out.Next)
+		}
+		after = out.Next
+	}
+	if !slices.Equal(got, want) || pages < 2 {
+		t.Fatalf("%d of %d runs in %d pages", len(got), len(want), pages+1)
+	}
+	if page, _, err := read("?limit=3"); err != nil || strings.Count(string(page), `"ref":"run:`) != 3 || !strings.Contains(string(page), `"next":"`+want[2]+`"`) {
+		t.Fatalf("a page of 3: %v", err)
+	}
+	for _, q := range []string{"?limit=101", "?limit=-1", "?limit=x", "?after=x", "?after=gone-0000ffff", "?nope=1", "?limit=1&limit=2"} {
+		_, _, err := read(q)
+		var ae *apiError
+		if !errors.As(err, &ae) || ae.status != http.StatusBadRequest || ae.Code != "invalid_request" {
+			t.Errorf("%s: %v", q, err)
+		}
+	}
+	f.turn(t, nil)
+	if out := f.expectRead(t, "/api/runs?limit=1", http.StatusOK, ""); len(out["runs"].([]any)) > 1 {
+		t.Fatalf("a page of one through the route: %v", out)
+	}
+	f.expectRead(t, "/api/runs?nope=1", http.StatusBadRequest, "invalid_request")
+}
+
+// bigManagedRun is a managed run of 128 tasks, each with a result of a
+// 4,000-character summary and twenty 500-character issues, all of
+// three-byte characters, a checkpoint and a blocker: each task's own read
+// is some 42 KiB, the run's more than 4 MiB.
+func bigManagedRun(id string) crew.Run {
+	run := crew.Run{ID: id, CrewID: crewOfRun(id), Name: "big", State: crew.RunRunning, Managed: &crew.Managed{Revision: 7},
+		Members: []crew.MemberState{{Name: "lead", AgentID: "bk", Status: "running", Prompt: "do it", Args: []string{"--x"}}}}
+	issues := make([]string, 20)
+	for i := range issues {
+		issues[i] = strings.Repeat("问", 500)
+	}
+	for i := range 128 {
+		run.Tasks = append(run.Tasks, crew.TaskState{ID: fmt.Sprintf("t%03d", i), Member: "lead", Kind: "work", State: ledger.TaskSucceeded, Attempts: 1,
+			Attempt: &crew.AttemptState{N: 1, State: ledger.AttemptSucceeded, Error: "e", Checkpoint: &crew.Checkpoint{Done: "done", Remaining: "none", Commit: "abc"}},
+			Result:  &crew.ResultState{Attempt: 1, Commit: fmt.Sprintf("%040x", i), Summary: strings.Repeat("问", 4000), Issues: issues, Verdict: "approved"},
+			Blocker: &crew.Blocker{Reason: "waits", Message: "on a person", By: "lead"}})
+	}
+	return run
+}
+
+// Codex round 3: one managed run larger than a turn's answer is given
+// short, never refused, so neither the runs' pages nor the run's own read
+// stop at it: on its page (limit 1 or not), within maxTurnReply,
+// its cut naming tasks, each task with its state and result's commit (and
+// its ref, in the run's own read)
+// but not its summary, issues, checkpoint or blocker's message, which the
+// task's own read gives whole; the next run follows it whole, on its page
+// or the page after. A run that fits is given whole.
+func TestATurnReadsARunLargerThanItsAnswerShort(t *testing.T) {
+	f := newObsFixture(t)
+	big, small := bigManagedRun("big-00000002"), crew.Run{ID: "big-00000001", CrewID: "big", Name: "big", State: crew.RunStopped}
+	whole, err := json.Marshal(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(whole) <= maxTurnReply {
+		t.Fatalf("the run is %d bytes, not past %d", len(whole), maxTurnReply)
+	}
+	task, _ := json.Marshal(big.Tasks[0])
+	if len(task) > 64<<10 {
+		t.Fatalf("a task is %d bytes", len(task))
+	}
+	newObs := func() *observer {
+		o := f.srv.newObserver(nil)
+		o.tp = &turnPrincipal{}
+		o.grant = refGrant{scopes: []brakeman.Scope{{Crews: []string{"big"}}}}
+		return o
+	}
+	type shortRun struct {
+		ID    string   `json:"id"`
+		Ref   string   `json:"ref"`
+		Cut   []string `json:"cut"`
+		Tasks []struct {
+			ID      string         `json:"id"`
+			Ref     string         `json:"ref"`
+			State   string         `json:"state"`
+			Result  map[string]any `json:"result"`
+			Attempt map[string]any `json:"attempt"`
+			Blocker map[string]any `json:"blocker"`
+		} `json:"tasks"`
+		Members []map[string]any `json:"members"`
+	}
+	// The run's own read gives each task its ref; the runs' list does not.
+	isShort := func(t *testing.T, r shortRun, taskRefs bool) {
+		t.Helper()
+		if r.Ref != "run:"+big.ID || !slices.Equal(r.Cut, []string{"tasks"}) || len(r.Tasks) != 128 || len(r.Members) != 1 || r.Members[0]["prompt"] != "do it" {
+			t.Fatalf("the short run: %s %q cut %v, %d tasks, members %v", r.ID, r.Ref, r.Cut, len(r.Tasks), r.Members)
+		}
+		for i, tk := range r.Tasks {
+			if tk.ID != big.Tasks[i].ID || (tk.Ref == "task:"+big.ID+"/"+tk.ID) != taskRefs || tk.State != ledger.TaskSucceeded || tk.Result["commit"] != big.Tasks[i].Result.Commit || tk.Result["verdict"] != "approved" || tk.Attempt["n"] != float64(1) || tk.Blocker["reason"] != "waits" {
+				t.Fatalf("task %d: %+v", i, tk)
+			}
+			for _, gone := range []any{tk.Result["summary"], tk.Result["issues"], tk.Attempt["checkpoint"], tk.Attempt["error"], tk.Blocker["message"]} {
+				if gone != nil {
+					t.Fatalf("task %d keeps %v", i, gone)
+				}
+			}
+		}
+	}
+	body, _ := json.Marshal(map[string]any{"runs": []crew.Run{big, small}})
+	readRuns := func(q string) ([]shortRun, string) {
+		t.Helper()
+		r, _ := http.NewRequest("GET", "/api/runs"+q, nil)
+		o := newObs()
+		page, err := filterRuns(r, o, body)
+		if err != nil || len(page) > maxTurnReply {
+			t.Fatalf("%q: %d bytes, %v", q, len(page), err)
+		}
+		var out struct {
+			Runs []shortRun `json:"runs"`
+			Next string     `json:"next"`
+		}
+		if err := json.Unmarshal(page, &out); err != nil {
+			t.Fatal(err)
+		}
+		if len(o.reads) != len(out.Runs) {
+			t.Fatalf("%q: %d runs, %d noted", q, len(out.Runs), len(o.reads))
+		}
+		return out.Runs, out.Next
+	}
+	// A page of one: the run short, and the next page the run after it.
+	runs, next := readRuns("?limit=1")
+	if len(runs) != 1 || next != big.ID {
+		t.Fatalf("a page of one: %d runs, next %q", len(runs), next)
+	}
+	isShort(t, runs[0], false)
+	if runs, next = readRuns("?limit=1&after=" + next); len(runs) != 1 || runs[0].ID != small.ID || runs[0].Cut != nil || next != "" {
+		t.Fatalf("the page after: %+v, next %q", runs, next)
+	}
+	// A page with no limit: the run short, and the run after it whole
+	// in what it leaves of the page.
+	runs, next = readRuns("")
+	if len(runs) != 2 || next != "" || runs[1].ID != small.ID || runs[1].Cut != nil {
+		t.Fatalf("a page: %d runs, next %q", len(runs), next)
+	}
+	isShort(t, runs[0], false)
+	for _, record := range []bool{false, true} {
+		m := map[string]any{"run": big}
+		if record {
+			m["record"] = true
+		}
+		body, _ := json.Marshal(m)
+		r, _ := http.NewRequest("GET", "/api/runs/"+big.ID, nil)
+		r.SetPathValue("run", big.ID)
+		got, err := filterRun(r, newObs(), body)
+		if err != nil || len(got) > maxTurnReply {
+			t.Fatalf("record %v: %d bytes, %v", record, len(got), err)
+		}
+		var out struct {
+			Run    shortRun `json:"run"`
+			Record bool     `json:"record"`
+		}
+		if err := json.Unmarshal(got, &out); err != nil || out.Record != record {
+			t.Fatalf("record %v: %v %v", record, err, out.Record)
+		}
+		isShort(t, out.Run, true)
+	}
+	body, _ = json.Marshal(map[string]any{"run": small})
+	r, _ := http.NewRequest("GET", "/api/runs/"+small.ID, nil)
+	r.SetPathValue("run", small.ID)
+	if got, err := filterRun(r, newObs(), body); err != nil || strings.Contains(string(got), `"cut"`) {
+		t.Fatalf("a run that fits: %v %s", err, got)
+	}
+}
+
+// fitRun makes its cuts in order, each only while the run is still past
+// its room: tasks, then members' prompts and args, then the log's and the
+// chat's oldest entries (the newest that fit kept, in order); a run past
+// its room with all of them made is refused 413 bound.
+func TestFitRunCutsInOrderAndKeepsTheNewest(t *testing.T) {
+	var log, chat []map[string]any
+	for i := range 50 {
+		log = append(log, map[string]any{"n": i, "text": strings.Repeat("l", 100)})
+		chat = append(chat, map[string]any{"n": i, "text": strings.Repeat("c", 100)})
+	}
+	raw, _ := json.Marshal(map[string]any{"id": "r", "ref": "run:r",
+		"tasks":   []map[string]any{{"id": "a", "result": map[string]any{"commit": "c1", "summary": strings.Repeat("s", 2000)}}},
+		"members": []map[string]any{{"name": "lead", "prompt": strings.Repeat("p", 2000), "args": []string{"x"}}},
+		"log":     log, "chat": chat})
+	type fitted struct {
+		Cut     []string         `json:"cut"`
+		Tasks   []map[string]any `json:"tasks"`
+		Members []map[string]any `json:"members"`
+		Log     []map[string]any `json:"log"`
+		Chat    []map[string]any `json:"chat"`
+	}
+	fit := func(room int) (fitted, int, error) {
+		b, err := fitRun(raw, room)
+		var out fitted
+		if err == nil {
+			err = json.Unmarshal(b, &out)
+		}
+		return out, len(b), err
+	}
+	newest := func(list []map[string]any) bool {
+		for i, e := range list {
+			if e["n"] != float64(50-len(list)+i) {
+				return false
+			}
+		}
+		return true
+	}
+	if b, err := fitRun(raw, len(raw)); err != nil || string(b) != string(raw) {
+		t.Fatalf("a run within its room is itself: %v", err)
+	}
+	for _, c := range []struct {
+		room int
+		cut  []string
+	}{
+		{len(raw) - 1, []string{"tasks"}},
+		{len(raw) - 2100, []string{"tasks", "members"}},
+		{len(raw) - 6000, []string{"tasks", "members", "log"}},
+		{len(raw) - 10000, []string{"tasks", "members", "log", "chat"}},
+	} {
+		out, n, err := fit(c.room)
+		if err != nil || n > c.room || !slices.Equal(out.Cut, c.cut) {
+			t.Fatalf("room %d: %d bytes, cut %v, %v", c.room, n, out.Cut, err)
+		}
+		if out.Tasks[0]["summary"] != nil || out.Tasks[0]["result"].(map[string]any)["summary"] != nil || out.Tasks[0]["result"].(map[string]any)["commit"] != "c1" {
+			t.Fatalf("room %d: tasks %v", c.room, out.Tasks)
+		}
+		if cutMembers := len(c.cut) > 1; (out.Members[0]["prompt"] == nil) != cutMembers || out.Members[0]["name"] != "lead" {
+			t.Fatalf("room %d: members %v", c.room, out.Members)
+		}
+		if !newest(out.Log) || !newest(out.Chat) || (len(c.cut) > 2) != (len(out.Log) < 50) || (len(c.cut) > 3) != (len(out.Chat) < 50) {
+			t.Fatalf("room %d: %d log entries, %d chat messages", c.room, len(out.Log), len(out.Chat))
+		}
+	}
+	if _, err := fitRun(raw, 100); err == nil {
+		t.Fatal("a run past its room even short is refused")
+	} else if ae := (*apiError)(nil); !errors.As(err, &ae) || ae.status != http.StatusRequestEntityTooLarge || ae.Code != "bound" {
+		t.Fatalf("refused: %v", err)
+	}
+}
+
+// Every answer a turn reads is held to maxTurnReply, the bound the
+// guide gives each shared read: past it the read is refused 413 bound,
+// neither counted nor noted; the admin's answer is unchanged.
+func TestATurnsAnswerPastItsBoundIsRefused(t *testing.T) {
+	f := newObsFixture(t)
+	f.turn(t, nil)
+	old := maxTurnReply
+	maxTurnReply = 64
+	t.Cleanup(func() { maxTurnReply = old })
+	f.expectRead(t, "/api/dispatch/tickets", http.StatusRequestEntityTooLarge, "bound")
+	if r, _ := f.desk.st.Get(f.req); r.Reads != 0 {
+		t.Fatalf("%d reads counted", r.Reads)
+	}
+	if _, ok := f.readOf(t, "ticket:"+f.ticket); ok {
+		t.Fatal("a refused read was noted")
+	}
+	f.expect(t, "GET", "/api/dispatch/tickets", nil, http.StatusOK, "")
+	maxTurnReply = old
+	f.expectRead(t, "/api/dispatch/tickets", http.StatusOK, "")
+	for _, op := range Operations() {
+		if w, ok := strings.CutPrefix(op.Name, "observe_"); ok {
+			want := sharedReadReply(http.MethodGet + " " + op.Path)
+			if want == 0 {
+				want = old
+			}
+			if strings.HasPrefix(op.Path, "/api/brakeman/") {
+				want = maxObserveReply
+			}
+			if op.Bounds["reply"] != want {
+				t.Errorf("observe_%s's bound is %d, want %d", w, op.Bounds["reply"], want)
+			}
+		}
+	}
+}
+
 // ---- review round 1 (#525)
 
 // A page's cursor is the place of its last item, never an index: a
@@ -1786,8 +2225,14 @@ func TestTheGuideListsEachReadsOwnBound(t *testing.T) {
 		if !ok {
 			t.Fatalf("no observe_ entry for %s", sr.pattern)
 		}
-		if got := op.Bounds["reply"]; got != sr.reply {
-			t.Fatalf("%s: the guide lists %d, the route keeps %d", path, got, sr.reply)
+		want := sr.reply
+		if want == 0 {
+			// A route that states no bound of its own is held to the
+			// turn's (maxTurnReply).
+			want = maxTurnReply
+		}
+		if got := op.Bounds["reply"]; got != want {
+			t.Fatalf("%s: the guide lists %d, the route keeps %d", path, got, want)
 		}
 	}
 	for path, op := range ops {

@@ -61,6 +61,17 @@ const (
 	// maxBriefsPageRefs the refs each carries.
 	maxBriefsPage     = 20
 	maxBriefsPageRefs = 100
+	// maxMessagesPage bounds a page of a run's messages a turn reads, and
+	// defaultMessagesPage is a page asked for with no limit: a run keeps
+	// up to 4,096 messages of 4 KiB, more than one answer holds, so a
+	// turn reads them a page at a time, each at most maxObserveReply.
+	maxMessagesPage     = 200
+	defaultMessagesPage = 100
+	// maxRunsPage bounds a page of the runs a turn reads, and
+	// defaultRunsPage is a page asked for with no limit: as many as the
+	// engine keeps (maxRuns), each page at most maxTurnReply.
+	maxRunsPage     = 100
+	defaultRunsPage = 100
 	// quietAfter is how long a server session's terminal has written
 	// nothing before its status is quiet.
 	quietAfter = 10 * time.Minute
@@ -68,6 +79,15 @@ const (
 	// earlier briefing reads back.
 	defaultBriefingWindow = 24 * time.Hour
 )
+
+// maxTurnReply bounds every answer a turn reads, a shared read's as its
+// filter leaves it: past it the read is refused (413 bound), not counted,
+// so the guide's bound for each observe_<what> holds and a client reads
+// at most it. The largest a shared route makes for a turn is a ticket's
+// (MaxTicketReply) with its refs; a run's messages and the runs are
+// paged. A test
+// makes it smaller.
+var maxTurnReply = 4 << 20
 
 // changesWindow is how many of a run's newest events, and of Dispatch's
 // newest changes, a read of what changed since a time looks at: one with
@@ -424,6 +444,11 @@ func (s *Server) turnRead(w http.ResponseWriter, r *http.Request, tp *turnPrinci
 			return
 		}
 	}
+	if rec.status == http.StatusOK && len(body) > maxTurnReply {
+		// Refused before it is counted or noted: the turn read nothing.
+		writeError(w, http.StatusRequestEntityTooLarge, "bound", fmt.Sprintf("the answer is larger than a turn's %d MiB: ask for less (a page, a narrower query)", maxTurnReply>>20))
+		return
+	}
 	if _, err := d.st.NoteAnswer(req.ID, o.reads...); err != nil {
 		s.brakemanError(w, err)
 		return
@@ -458,6 +483,11 @@ func (s *Server) turnRead(w http.ResponseWriter, r *http.Request, tp *turnPrinci
 // open as the other routes answer it, anything else as a failure to read.
 func (s *Server) observeError(w http.ResponseWriter, err error) {
 	var unopened *errRefStore
+	var refused *apiError
+	if errors.As(err, &refused) {
+		writeAPIError(w, refused)
+		return
+	}
 	if errors.As(err, &unopened) {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", unopened.Error())
 		return
@@ -599,16 +629,48 @@ func (g refGrant) projectAdmitted(key string) bool {
 	return true
 }
 
-// filterRuns is GET /api/runs for a turn: the runs in its grant, each
-// with its ref and noted at its state and revision.
+// filterRuns is GET /api/runs for a turn, a page at a time: the runs in
+// its grant, newest first, after the run after names (none: from the
+// newest), at most limit (1 to maxRunsPage, defaultRunsPage when absent)
+// and maxTurnReply bytes, with next, the last run given, while more
+// remain; each with its ref, and only the page's noted at their state and
+// revision. A run's members' prompts alone can be 192 KB, and the engine
+// keeps maxRuns of them, more than one answer holds. A page holds one run
+// at least: a run that alone passes the bound is given short (fitRun).
 func filterRuns(r *http.Request, o *observer, body []byte) ([]byte, error) {
+	q, err := readQuery(r, "after", "limit")
+	var after string
+	var limit int
+	if err == nil {
+		after, err = q.one("after")
+	}
+	if err == nil {
+		limit, err = q.count("limit")
+	}
+	if err == nil && (limit < 0 || limit > maxRunsPage) {
+		err = fmt.Errorf("limit is 1 to %d", maxRunsPage)
+	}
+	if err == nil && after != "" && !crew.ValidRunID(after) {
+		err = errors.New("after is the next of the page before, a run's id")
+	}
+	if err != nil {
+		return nil, newAPIError(http.StatusBadRequest, "invalid_request", err.Error())
+	}
+	if limit == 0 {
+		limit = defaultRunsPage
+	}
 	var in struct {
 		Runs []json.RawMessage `json:"runs"`
 	}
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, err
 	}
-	out := []json.RawMessage{}
+	type listed struct {
+		id  string
+		raw json.RawMessage
+	}
+	runs := make([]listed, 0, len(in.Runs))
+	start := 0
 	for _, raw := range in.Runs {
 		var head struct {
 			ID string `json:"id"`
@@ -616,29 +678,71 @@ func filterRuns(r *http.Request, o *observer, body []byte) ([]byte, error) {
 		if err := json.Unmarshal(raw, &head); err != nil {
 			return nil, err
 		}
-		run, ok, err := o.runAdmitted(r.Context(), head.ID)
+		runs = append(runs, listed{head.ID, raw})
+		if after != "" && head.ID == after {
+			start = len(runs)
+		}
+	}
+	if after != "" && start == 0 {
+		// The page before's last run has left the engine since: where
+		// the list went on from is lost, so it is read again from the
+		// first page, never with runs skipped unsaid.
+		return nil, newAPIError(http.StatusBadRequest, "invalid_request", "after names a run the server no longer holds: read the runs again from the first page")
+	}
+	// The page's frame: {"runs":[…],"next":"<a run's id>"}, a run id
+	// at most a crew id's 64 bytes and its suffix.
+	used := len(`{"runs":[],"next":""}`+"\n") + 64 + 9
+	page := []json.RawMessage{}
+	var next, last string
+	for _, l := range runs[start:] {
+		if len(page) == limit {
+			next = last
+			break
+		}
+		run, ok, err := o.runAdmitted(r.Context(), l.id)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			continue
 		}
-		ref := "run:" + head.ID
-		rev, err := o.deliveredRev(r.Context(), head.ID, run)
+		ref := "run:" + l.id
+		rev, err := o.deliveredRev(r.Context(), l.id, run)
 		if err != nil {
 			return nil, err
 		}
-		if raw, err = withFields(raw, ref, rev); err != nil {
+		b, err := withFields(l.raw, ref, rev)
+		if err != nil {
 			return nil, err
 		}
+		if used+len(b)+1 > maxTurnReply {
+			if len(page) > 0 {
+				next = last
+				break
+			}
+			if b, err = fitRun(b, maxTurnReply-used-1); err != nil {
+				return nil, err
+			}
+		}
 		o.noteRef(ref, brakeman.ClassRuns, run.state, rev)
-		out = append(out, raw)
+		page = append(page, b)
+		used += len(b) + 1
+		last = l.id
 	}
-	return refreshed(body, "runs", out)
+	out := map[string]any{"runs": page}
+	if next != "" {
+		out["next"] = next
+	}
+	b, err := marshalNoEscape(out)
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
 }
 
 // filterRun is GET /api/runs/{run} for a turn: the run and its tasks,
-// each with its ref and noted.
+// each with its ref and noted; a run past maxTurnReply is given short
+// (fitRun).
 func filterRun(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	id := r.PathValue("run")
 	var in struct {
@@ -688,7 +792,140 @@ func filterRun(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	if rev != "" {
 		m["revision"], _ = json.Marshal(rev)
 	}
-	return refreshed(body, "run", m)
+	// The answer's frame, {"run":…} and whatever else the route says
+	// beside it (record), is what the run leaves of the bound.
+	frame, err := refreshed(body, "run", json.RawMessage("0"))
+	if err != nil {
+		return nil, err
+	}
+	whole, err := marshalNoEscape(m)
+	if err != nil {
+		return nil, err
+	}
+	fit, err := fitRun(whole, maxTurnReply-(len(frame)-1))
+	if err != nil {
+		return nil, err
+	}
+	return refreshed(body, "run", fit)
+}
+
+// runCuts are what fitRun leaves out of a run past its room, in order:
+// first what the turn reads whole elsewhere, then what it needs least.
+//   - tasks: each task's result's text (summary, issues, findings), its
+//     latest attempt's checkpoint and error, and its blocker's message,
+//     which the task's own read (observe task) gives whole;
+//   - members: each member's prompt and args;
+//   - log: the run's log's oldest entries, the newest that fit kept;
+//   - chat: the run's chat's oldest messages, the newest that fit kept.
+var runCuts = []string{"tasks", "members", "log", "chat"}
+
+// fitRun is a run as a turn reads it, the JSON object raw, within room
+// bytes: raw itself when it fits, else the run with runCuts made one at a
+// time until it does, its cut naming each made. A managed run of 128
+// tasks, each with a 4,000-character summary, twenty issues and fifty
+// findings, is far past a turn's answer; its short form is not. A run
+// still past room with every cut made is refused 413 bound.
+func fitRun(raw json.RawMessage, room int) (json.RawMessage, error) {
+	if len(raw) <= room {
+		return raw, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	var cut []string
+	for _, c := range runCuts {
+		list, ok := m[c]
+		if !ok {
+			continue
+		}
+		cut = append(cut, c)
+		m["cut"], _ = json.Marshal(cut)
+		var err error
+		switch c {
+		case "tasks":
+			m[c], err = cutFields(list, map[string][]string{"result": {"summary", "issues", "findings"}, "attempt": {"checkpoint", "error"}, "blocker": {"message"}})
+		case "members":
+			m[c], err = cutFields(list, map[string][]string{"": {"prompt", "args"}})
+		default:
+			m[c], err = newestThatFit(m, c, room)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out, err := marshalNoEscape(m)
+		if err != nil {
+			return nil, err
+		}
+		if len(out) <= room {
+			return out, nil
+		}
+	}
+	return nil, newAPIError(http.StatusRequestEntityTooLarge, "bound", fmt.Sprintf("the run is larger than a turn's %d MiB even short", maxTurnReply>>20))
+}
+
+// cutFields is list, a JSON array of objects, with the fields drop names
+// left out: drop[""] of each object itself, drop[f] of the object in its
+// field f.
+func cutFields(list json.RawMessage, drop map[string][]string) (json.RawMessage, error) {
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(list, &items); err != nil {
+		return nil, err
+	}
+	for _, it := range items {
+		for f, fields := range drop {
+			if f == "" {
+				for _, k := range fields {
+					delete(it, k)
+				}
+				continue
+			}
+			raw, ok := it[f]
+			if !ok || string(raw) == "null" {
+				continue
+			}
+			var inner map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &inner); err != nil {
+				return nil, err
+			}
+			for _, k := range fields {
+				delete(inner, k)
+			}
+			b, err := marshalNoEscape(inner)
+			if err != nil {
+				return nil, err
+			}
+			it[f] = b
+		}
+	}
+	return marshalNoEscape(items)
+}
+
+// newestThatFit is m's list field, oldest first, cut to its newest
+// entries that leave m within room: none when the rest of m alone fills
+// it.
+func newestThatFit(m map[string]json.RawMessage, field string, room int) (json.RawMessage, error) {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(m[field], &entries); err != nil {
+		return nil, err
+	}
+	m[field] = json.RawMessage("[]")
+	rest, err := marshalNoEscape(m)
+	if err != nil {
+		return nil, err
+	}
+	free, from := room-len(rest), len(entries)
+	for from > 0 {
+		e, err := marshalNoEscape(entries[from-1])
+		if err != nil {
+			return nil, err
+		}
+		if free -= len(e) + 1; free < 0 {
+			break
+		}
+		from--
+	}
+	return marshalNoEscape(entries[from:])
 }
 
 // filterTask is GET /api/runs/{run}/tasks/{task} for a turn: the task,
@@ -829,8 +1066,36 @@ func filterCommand(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	return refreshed(body, "command", c)
 }
 
-// filterMessages is GET /api/runs/{run}/messages for a turn.
+// filterMessages is GET /api/runs/{run}/messages for a turn, a page at
+// a time: the messages after the seq after names (none: from the
+// first), in seq order, at most limit (1 to maxMessagesPage,
+// defaultMessagesPage when absent) and maxObserveReply bytes, with next,
+// the last seq given, while more remain. Only the page's are noted.
 func filterMessages(r *http.Request, o *observer, body []byte) ([]byte, error) {
+	q, err := readQuery(r, "after", "limit")
+	var afterText string
+	var limit int
+	if err == nil {
+		afterText, err = q.one("after")
+	}
+	if err == nil {
+		limit, err = q.count("limit")
+	}
+	if err == nil && (limit < 0 || limit > maxMessagesPage) {
+		err = fmt.Errorf("limit is 1 to %d", maxMessagesPage)
+	}
+	var after int64
+	if err == nil && afterText != "" {
+		if after, err = strconv.ParseInt(afterText, 10, 64); err != nil || after < 0 || strconv.FormatInt(after, 10) != afterText {
+			err = errors.New("after is the next of the page before, a message's seq")
+		}
+	}
+	if err != nil {
+		return nil, newAPIError(http.StatusBadRequest, "invalid_request", err.Error())
+	}
+	if limit == 0 {
+		limit = defaultMessagesPage
+	}
 	var in struct {
 		Messages []json.RawMessage `json:"messages"`
 	}
@@ -838,7 +1103,12 @@ func filterMessages(r *http.Request, o *observer, body []byte) ([]byte, error) {
 		return nil, err
 	}
 	runID := r.PathValue("run")
-	for i, m := range in.Messages {
+	page := []json.RawMessage{}
+	// The page's frame: {"messages":[…],"next":<seq>} with a seq's
+	// largest digits.
+	used := len(`{"messages":[],"next":9223372036854775807}` + "\n")
+	var next, last int64
+	for _, m := range in.Messages {
 		var head struct {
 			Seq         int64      `json:"seq"`
 			DeliveredAt *time.Time `json:"deliveredAt"`
@@ -846,6 +1116,13 @@ func filterMessages(r *http.Request, o *observer, body []byte) ([]byte, error) {
 		}
 		if err := json.Unmarshal(m, &head); err != nil {
 			return nil, err
+		}
+		if head.Seq <= after {
+			continue
+		}
+		if len(page) == limit {
+			next = last
+			break
 		}
 		state := "queued"
 		switch {
@@ -855,16 +1132,29 @@ func filterMessages(r *http.Request, o *observer, body []byte) ([]byte, error) {
 			state = "delivered"
 		}
 		ref := "message:" + runID + "/" + strconv.FormatInt(head.Seq, 10)
-		o.noteRef(ref, brakeman.ClassRuns, state, "")
-		var err error
-		if in.Messages[i], err = withRef(m, ref); err != nil {
+		b, err := withRef(m, ref)
+		if err != nil {
 			return nil, err
 		}
+		// A message is at most a few tens of KiB, so a page holds one.
+		if len(page) > 0 && used+len(b)+1 > maxObserveReply {
+			next = last
+			break
+		}
+		o.noteRef(ref, brakeman.ClassRuns, state, "")
+		page = append(page, b)
+		used += len(b) + 1
+		last = head.Seq
 	}
-	if in.Messages == nil {
-		in.Messages = []json.RawMessage{}
+	out := map[string]any{"messages": page}
+	if next > 0 {
+		out["next"] = next
 	}
-	return refreshed(body, "messages", in.Messages)
+	b, err := marshalNoEscape(out)
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
 }
 
 // filterStepLog is the step log route for a turn: the log as it is, its
