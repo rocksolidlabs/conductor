@@ -930,7 +930,13 @@ func TestOverlapsSeeCommittedChanges(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.HasPrefix(r, repo) {
+		// git names the repository by its real path (macOS's /var is
+		// /private/var).
+		real, err := filepath.EvalSymlinks(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(r, real) {
 			t.Fatalf("the repository %q of %s", r, tr.dir)
 		}
 		for _, p := range paths {
