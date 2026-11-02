@@ -292,7 +292,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 				"what":  map[string]any{"type": "string", "enum": observeWhats, "description": "what to read: the guide's observe_<what> operation names its route"},
 				"query": map[string]any{"type": "object", "description": "the read's parameters, by name: the route's path parameters and its query", "additionalProperties": map[string]any{"type": "string"}},
 			}, "what"),
-			Bounds: map[string]int{"reply": maxObserveReply}},
+			Bounds: map[string]int{"reply": maxTurnReply}},
 		observeOp("changes", "/api/brakeman/changes", "What changed since a time, or since your last briefing's watermarks: runs, tasks with their status, questions, messages, Dispatch's changes; paged.", "since", "cursor", "limit"),
 		observeOp("status", "/api/brakeman/status", "Each task's status, or a session's, as Conductor computes it: failed with its receipt, blocked, waiting on a person, quiet (no proof), running, succeeded, stopped.", "run", "session"),
 		observeOp("screen", "/api/brakeman/screen", "A server session's screen's last lines, only with terminals visible; a hosted session's is unavailable.", "session", "lines"),
@@ -304,7 +304,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		observeOp("steps", "/api/runs/{run}/tasks/{task}/attempts/{n}/steps", "An attempt's receipts: each check's exit, subject and log SHA-256."),
 		observeOp("log", "/api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log", "A check's log as text, its SHA-256 in X-Conductor-Log-SHA256; only with logs visible."),
 		observeOp("command", "/api/runs/{run}/commands/{command}", "A run command's receipt."),
-		observeOp("messages", "/api/runs/{run}/messages", "A managed run's members' messages."),
+		observeOp("messages", "/api/runs/{run}/messages", "A managed run's members' messages, a page at a time: after (the page before's next) and limit (at most 200).", "after", "limit"),
 		observeOp("projects", "/api/dispatch/projects", "Dispatch's projects in your scope.", "archived", "limit", "cursor"),
 		observeOp("tickets", "/api/dispatch/tickets", "A page of tickets in your scope, each with its ref and rev.", "project", "status", "q", "limit", "cursor"),
 		observeOp("ticket", "/api/dispatch/tickets/{key}", "A ticket whole with its last comments, each with its ref and rev."),
@@ -407,8 +407,14 @@ var operationsTable = sync.OnceValue(func() []Operation {
 var observeWhats = []string{"changes", "status", "screen", "overlaps", "briefs", "runs", "run", "task", "steps", "log", "command", "messages", "projects", "tickets", "ticket", "history", "comments", "sessions", "touched"}
 
 // observeOp is one read of a Brakeman turn's: observe_<what>, its route,
-// its query's parameters by name and its path's.
+// its query's parameters by name and its path's, and its answer's bound:
+// Brakeman's own routes' maxObserveReply, a shared route's maxTurnReply,
+// which a turn's read of it is held to.
 func observeOp(what, path, summary string, query ...string) Operation {
+	bound := maxTurnReply
+	if strings.HasPrefix(path, "/api/brakeman/") {
+		bound = maxObserveReply
+	}
 	props := map[string]any{}
 	for _, m := range regexp.MustCompile(`\{([a-z]+)\}`).FindAllStringSubmatch(path, -1) {
 		props[m[1]] = mcpString("the path's " + m[1])
@@ -417,7 +423,7 @@ func observeOp(what, path, summary string, query ...string) Operation {
 		props[q] = mcpString("?" + q + "=")
 	}
 	return Operation{Name: "observe_" + what, Scope: "observe", Method: http.MethodGet, Path: path, needs: needLauncher,
-		Summary: summary, Input: mcpObject(props), Bounds: map[string]int{"reply": maxObserveReply}}
+		Summary: summary, Input: mcpObject(props), Bounds: map[string]int{"reply": bound}}
 }
 
 // runCommandOp is a run's command, with its receipt and revision.
