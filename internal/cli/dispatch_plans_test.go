@@ -181,8 +181,8 @@ func TestDispatchPlanCommandsAgainstTheServer(t *testing.T) {
 	}
 	shown := a.mustDispatch(t, "plan", "show", "CND-1")
 	for _, want := range []string{"# CND-1 plan revision 1 (r1)\n", "- state: proposed\n", "- base: " + a.head + "\n", "- yolo: off: its members ask before they act\n",
-		"- expected checks: 1\n", "## Members\n\n- lead: ready-cat\n", "## Agents\n\n- ready-cat: /bin/sh -c \"echo ready; exec cat\"\n",
-		"## Tasks\n\n- build: work, by lead\n  check test: true\n", "## References\n\n- README:1-2 (blob ", "): the readme\n",
+		"- expected checks: 1\n", "## Goal\n\nfix it\n", "## Members\n\n- lead: ready-cat\n", "## Agents\n\n- ready-cat: /bin/sh -c \"echo ready; exec cat\"\n",
+		"## Tasks\n\n- build: work, by lead\n  instructions:\n    Build it.\n  check test: true\n", "## References\n\n- README:1-2 (blob ", "): the readme\n",
 		"## Handed over\n\n- comment #1\n", "## Constraints\n\nKeep the <API>.\n", "## Decisions a person makes\n\n- ship (approval): Ship it @ once?; before build\n",
 		"## Note\n\nfirst try\n"} {
 		if !strings.Contains(shown, want) {
@@ -421,7 +421,15 @@ func TestDispatchRunsFollowsEveryPage(t *testing.T) {
 				"run":     map[string]any{"id": run, "label": "CND-1 Fix it", "state": "running", "paused": true, "startedAt": at, "tasks": map[string]int{"running": 1, "done": 2}, "questions": 1, "blockers": []any{map[string]any{"task": "build", "reason": "no token", "by": "lead", "at": at}}},
 				"changed": dispatch.LaunchChanges{Fields: []string{"description", "acceptance"}, Comments: 2, Rev: 9}})
 		case 1:
-			entries = append(entries, map[string]any{"kind": "run", "run": map[string]any{"id": run, "state": "stopped", "outcome": "succeeded", "startedAt": at, "record": true}, "continues": fmt.Sprintf("team-%08x", i-1)})
+			// A continuation carries the launch or the link that holds its
+			// chain, as ticketRunEntries answers it: its kind says what it is.
+			e := map[string]any{"kind": "run", "run": map[string]any{"id": run, "state": "stopped", "outcome": "succeeded", "startedAt": at, "record": true}, "continues": fmt.Sprintf("team-%08x", i-1)}
+			if i%2 == 0 {
+				e["launch"] = entries[i-1]["launch"]
+			} else {
+				e["link"] = dispatch.Link{ID: fmt.Sprintf("l%d", i), Kind: dispatch.LinkRun, Ref: fmt.Sprintf("team-%08x", i-1), CreatedAt: at, CreatedBy: "Nate"}
+			}
+			entries = append(entries, e)
 		default:
 			entries = append(entries, map[string]any{"kind": "launch", "launch": dispatch.LaunchSummary{ID: fmt.Sprintf("%016x", i), PlanN: 1, RunID: run, Label: "x", State: dispatch.LaunchFailed, Why: "the agent claude is not installed", CreatedAt: at}})
 		}
@@ -458,18 +466,153 @@ func TestDispatchRunsFollowsEveryPage(t *testing.T) {
 	if n := strings.Count(text, "\nlaunch ") + strings.Count(text[:7], "launch "); n != 15 {
 		t.Fatalf("%d launches printed, want 15:\n%s", n, text)
 	}
-	if n := strings.Count(text, "\nrun team-"); n != 8 {
-		t.Fatalf("%d continuations printed, want 8:\n%s", n, text)
+	if n := strings.Count(text, "\nrun team-"); n != 8 || strings.Contains(text, "linked run") {
+		t.Fatalf("%d continuations printed, want 8, none as a link:\n%s", n, text)
 	}
 	for _, want := range []string{
 		"launch 0000000000000000\tr2\tstarted\t2026-10-30 12:00 UTC by Nate\t\"CND-1 Fix it\"\n  member lead: claude 2.1.304\n  now at revision 9: the description and the acceptance criteria changed; 2 comments since\n  run team-00000000\trunning, paused\t\"CND-1 Fix it\"\tstarted 2026-10-30 12:00 UTC\n    tasks: 2 done, 1 running\n    questions: 1 of its members wait on a person\n    blocked build: no token (lead, 2026-10-30 12:00 UTC)\n",
 		"run team-00000001\tcontinues team-00000000\n  run team-00000001\tstopped (succeeded)\t\"\"\tstarted 2026-10-30 12:00 UTC\tfrom its record\n",
+		"\nrun team-00000004\tcontinues team-00000003\n  run team-00000004\t",
 		"launch 0000000000000002\tr1\tfailed\t2026-10-30 12:00 UTC by admin\t\"x\"\n  failed: the agent claude is not installed\n",
 		"launch 0000000000000015\t",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("runs does not say %q:\n%s", want, text)
 		}
+	}
+}
+
+// conductor dispatch plan show prints every text the attempts' agents are
+// handed, the crew's goal, each member's prompt and each task's
+// instructions, whole and indented under their item; and names each
+// comment handed over by its number, one older than the ticket's read
+// carries found through the comments route, page by page, and one found
+// nowhere by its id.
+func TestDispatchPlanShowSaysTheWorkAndOlderComments(t *testing.T) {
+	clearConductorEnv(t)
+	at := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	id := strings.Repeat("ab", 8)
+	var comments []dispatch.Comment
+	for n := 1; n <= 60; n++ {
+		comments = append(comments, dispatch.Comment{ID: fmt.Sprintf("c%015d", n), N: n, Body: "x", CreatedAt: at})
+	}
+	gone := strings.Repeat("ef", 8)
+	body, _ := encodeJSON(map[string]any{"base": strings.Repeat("0", 40),
+		"crew": map[string]any{"id": "team", "name": "Team", "goal": "Fix the login loop.\nKeep the API.",
+			"members": []any{map[string]any{"name": "lead", "agentId": "claude", "prompt": "You lead.\n\nAsk before <rm>."}},
+			"tasks":   []any{map[string]any{"id": "build", "member": "lead", "kind": "work", "instructions": "Build it.\nThen test it.\x1b[2J"}}},
+		"agents": []any{}, "references": []any{}, "attachments": []any{}, "constraints": "", "decisions": []any{}, "note": "",
+		"comments": []any{map[string]any{"id": comments[2].ID, "sha256": "x"}, map[string]any{"id": comments[57].ID, "sha256": "x"}, map[string]any{"id": gone, "sha256": "x"}}})
+	summary := dispatch.PlanSummary{ID: id, N: 1, CrewID: "team", CrewName: "Team", Base: strings.Repeat("0", 40), State: dispatch.PlanProposed, CreatedAt: at, CreatedBy: "admin"}
+	list, _ := encodeJSON(map[string]any{"plans": []any{summary}})
+	read, _ := encodeJSON(map[string]any{"plan": map[string]any{"id": id, "n": 1, "crewId": "team", "crewName": "Team", "base": summary.Base, "state": summary.State,
+		"createdAt": at, "createdBy": "admin", "expectedChecks": 0, "body": json.RawMessage(body)}})
+	ticket, _ := encodeJSON(map[string]any{"ticket": map[string]any{"id": "cdcdcdcdcdcdcdcd", "key": "CND-1", "attachments": []any{}, "comments": comments[10:]}})
+	var mu sync.Mutex
+	var asked []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/dispatch/tickets/CND-1/plans", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(list) })
+	mux.HandleFunc("GET /api/dispatch/plans/"+id, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(read) })
+	mux.HandleFunc("GET /api/dispatch/tickets/CND-1", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(ticket) })
+	mux.HandleFunc("GET /api/dispatch/tickets/CND-1/comments", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		asked = append(asked, r.URL.RawQuery)
+		mu.Unlock()
+		var after, limit int
+		fmt.Sscan(r.URL.Query().Get("after"), &after)
+		fmt.Sscan(r.URL.Query().Get("limit"), &limit)
+		page := comments[min(after, len(comments)):min(after+limit, len(comments))]
+		b, _ := encodeJSON(map[string]any{"comments": page})
+		_, _ = w.Write(b)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	var out bytes.Buffer
+	if code, err := runDispatch(t.Context(), []string{"plan", "show", "CND-1", "--server", srv.URL, "--token", "t"}, strings.NewReader(""), &out, io.Discard); code != 0 || err != nil {
+		t.Fatalf("plan show: %d %v", code, err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"## Goal\n\nFix the login loop.\nKeep the API.\n",
+		"## Members\n\n- lead: claude\n  prompt:\n    You lead.\n\n    Ask before <rm>.\n",
+		"## Tasks\n\n- build: work, by lead\n  instructions:\n    Build it.\n    Then test it.\uFFFD[2J\n",
+		"## Handed over\n\n- comment #3\n- comment #58\n- comment " + gone + "\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("plan show does not say %q:\n%s", want, text)
+		}
+	}
+	// The older comment is looked for page by page from the first; the id
+	// found nowhere ends the search at the empty page past the last.
+	if !slices.Equal(asked, []string{"after=0&limit=50", "after=50&limit=50", "after=60&limit=50"}) {
+		t.Fatalf("the comment pages asked for: %q", asked)
+	}
+}
+
+// conductor dispatch launch sends a launch the server answers still
+// pending (503 ledger_unavailable carrying the launch) again, the same
+// operation, and prints the run the next answer names; still pending
+// after launchTries, the error names the launch and conductor dispatch
+// runs, and never says to launch again, every try the one operation.
+func TestDispatchLaunchResendsAPendingLaunch(t *testing.T) {
+	clearConductorEnv(t)
+	wait := launchResendWait
+	launchResendWait = 0
+	t.Cleanup(func() { launchResendWait = wait })
+	at := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	plan := strings.Repeat("ab", 8)
+	list, _ := encodeJSON(map[string]any{"plans": []any{dispatch.PlanSummary{ID: plan, N: 2, CrewID: "team", CrewName: "Team", State: dispatch.PlanApproved, ApprovedAt: at, CreatedAt: at}}})
+	launch := dispatch.LaunchSummary{ID: strings.Repeat("12", 8), PlanID: plan, PlanN: 2, RunID: "team-0123abcd", Label: "CND-1 Fix it", State: dispatch.LaunchPending, CreatedAt: at}
+	for _, tc := range []struct {
+		name    string
+		pending int // how many POSTs are answered pending before the launch starts
+	}{{"pending once", 1}, {"pending throughout", launchTries}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var ops []string
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /api/dispatch/tickets/CND-1/plans", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(list) })
+			mux.HandleFunc("POST /api/dispatch/tickets/CND-1/launch", func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				mu.Lock()
+				ops = append(ops, body["opId"].(string))
+				n := len(ops)
+				mu.Unlock()
+				rc := map[string]any{"opId": body["opId"], "status": "done", "id": launch.ID}
+				if n <= tc.pending {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					b, _ := encodeJSON(map[string]any{"error": map[string]any{"code": "ledger_unavailable", "message": "the launch is still being started: send it again"}, "receipt": rc, "launch": launch})
+					_, _ = w.Write(b)
+					return
+				}
+				started := launch
+				started.State = dispatch.LaunchStarted
+				w.WriteHeader(http.StatusOK)
+				b, _ := encodeJSON(map[string]any{"receipt": rc, "launch": started, "run": map[string]any{"id": started.RunID, "label": started.Label}})
+				_, _ = w.Write(b)
+			})
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+			var out bytes.Buffer
+			code, err := runDispatch(t.Context(), []string{"launch", "CND-1", "--server", srv.URL, "--token", "t"}, strings.NewReader(""), &out, io.Discard)
+			mu.Lock()
+			defer mu.Unlock()
+			if len(ops) == 0 || slices.ContainsFunc(ops, func(op string) bool { return op != ops[0] }) {
+				t.Fatalf("the operations sent: %q, want one", ops)
+			}
+			if tc.pending < launchTries {
+				if want := "CND-1 launched from r2: launch " + launch.ID + ", run team-0123abcd \"CND-1 Fix it\"\n" + srv.URL + "/runs/team-0123abcd\n"; code != 0 || err != nil || out.String() != want || len(ops) != tc.pending+1 {
+					t.Fatalf("launch: %d %v %q, %d posts", code, err, out.String(), len(ops))
+				}
+				return
+			}
+			if code != 1 || err == nil || len(ops) != launchTries || out.Len() != 0 ||
+				!strings.Contains(err.Error(), "launch "+launch.ID+" from r2 is still pending after 3 tries") || !strings.Contains(err.Error(), "conductor dispatch runs CND-1 shows it") ||
+				strings.Contains(err.Error(), "send it again") {
+				t.Fatalf("a launch pending throughout: %d %v, %d posts", code, err, len(ops))
+			}
+		})
 	}
 }
 

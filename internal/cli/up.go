@@ -398,13 +398,25 @@ func (c *apiClient) doWithin(ctx context.Context, timeout time.Duration, method,
 		return fmt.Errorf("the reply from %s is larger than %d MiB", c.host, limit>>20)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return c.statusError(resp.Status, reply)
+		return replyRefusal{status: resp.StatusCode, body: reply, err: c.statusError(resp.Status, reply)}
 	}
 	if err := json.Unmarshal(reply, out); err != nil {
 		return fmt.Errorf("unreadable reply from %s: %w", c.host, err)
 	}
 	return nil
 }
+
+// replyRefusal is a non-2xx reply: its words are statusError's, and it
+// keeps the status and the body (within the reply's limit) for a caller
+// that reads more of it than its error (a launch still pending).
+type replyRefusal struct {
+	status int
+	body   []byte
+	err    error
+}
+
+func (r replyRefusal) Error() string { return r.err.Error() }
+func (r replyRefusal) Unwrap() error { return r.err }
 
 // statusError is the error for a non-2xx reply: "code: message" from the API's
 // error envelope, else the status line.

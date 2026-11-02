@@ -49,6 +49,16 @@ var planVerbs = []string{"show", "propose", "approve", "withdraw"}
 // writes), and a request's time beside it for the reply to come back.
 var launchRequestTimeout = api.LaunchTimeout + requestTimeout
 
+// launchTries is how many times a launch the server answers still pending
+// (503 ledger_unavailable carrying the launch) is sent, the same operation
+// each time, and launchResendWait the wait before each resend: a resend
+// the server takes waits behind the request starting the run, one it
+// cannot take yet (taking over the ledger) is answered at once.
+var (
+	launchTries      = 3
+	launchResendWait = 2 * time.Second
+)
+
 // plannedFlags is what this file's commands take beside the server's;
 // each command defines its own.
 type plannedFlags struct {
@@ -363,8 +373,8 @@ type planManifestFileView struct {
 }
 
 // dispatchPlanShow prints a revision whole: the one named, else the
-// approved one, else the newest; its attachments by name and its comments
-// by number from the ticket's read.
+// approved one, else the newest; its attachments by name from the ticket's
+// read and its comments by number (commentNumbers).
 func dispatchPlanShow(ctx context.Context, c *apiClient, key string, ref *revisionRef, stdout io.Writer) (int, error) {
 	plans, err := ticketPlans(ctx, c, key)
 	if err != nil {
@@ -400,8 +410,52 @@ func dispatchPlanShow(ctx context.Context, c *apiClient, key string, ref *revisi
 	if err := c.doLimit(ctx, http.MethodGet, "/api/dispatch/tickets/"+url.PathEscape(key), nil, &tv, maxDispatchReply); err != nil {
 		return 1, err
 	}
-	writePlan(stdout, key, plans, out.Plan, body, tv.Ticket)
+	numbers, err := commentNumbers(ctx, c, key, body.Comments, tv.Ticket.Comments)
+	if err != nil {
+		return 1, err
+	}
+	writePlan(stdout, key, plans, out.Plan, body, tv.Ticket, numbers)
 	return 0, nil
+}
+
+// commentNumbers is the number of each comment the revision hands over,
+// by its id: from the ticket's read, which carries its last
+// dispatch.MaxTicketComments, and for an older one from the comments
+// route, page by page from the first until each is found (a ticket holds
+// at most dispatch.MaxComments). An id found nowhere has no number.
+func commentNumbers(ctx context.Context, c *apiClient, key string, handed []dispatch.PlanComment, recent []dispatch.Comment) (map[string]int, error) {
+	numbers := map[string]int{}
+	for _, cm := range recent {
+		numbers[cm.ID] = cm.N
+	}
+	missing := 0
+	for _, cm := range handed {
+		if _, ok := numbers[cm.ID]; !ok {
+			missing++
+		}
+	}
+	for after := 0; missing > 0; {
+		var page struct {
+			Comments []dispatch.Comment `json:"comments"`
+		}
+		q := url.Values{"after": {strconv.Itoa(after)}, "limit": {strconv.Itoa(dispatch.MaxTicketComments)}}
+		if err := c.doLimit(ctx, http.MethodGet, "/api/dispatch/tickets/"+url.PathEscape(key)+"/comments?"+q.Encode(), nil, &page, maxDispatchReply); err != nil {
+			return nil, err
+		}
+		next := after
+		for _, cm := range page.Comments {
+			if _, ok := numbers[cm.ID]; !ok && slices.ContainsFunc(handed, func(h dispatch.PlanComment) bool { return h.ID == cm.ID }) {
+				missing--
+			}
+			numbers[cm.ID] = cm.N
+			next = max(next, cm.N)
+		}
+		if next == after {
+			break
+		}
+		after = next
+	}
+	return numbers, nil
 }
 
 // argvText is an argv as a line shows it: each word as it is when it holds
@@ -421,11 +475,13 @@ func argvText(argv []string) string {
 // writePlan prints a revision whole, as Markdown: its header (the ticket
 // and its number, its state, approval and staleness, the crew, the base,
 // the yolo choice said plainly, the checks it expects), the approval's
-// note, the members with their agents and arguments, the agents as the
-// catalog resolved them, the tasks with their member, kind, needs and
-// checks, the manifest's verify steps, the references, what it hands over,
-// the constraints, the decisions a person makes and its note.
-func writePlan(w io.Writer, key string, plans []planEntry, p planEntry, b planBodyView, tv dispatch.TicketView) {
+// note, the crew's goal, the members with their agents, arguments and
+// prompts, the agents as the catalog resolved them, the tasks with their
+// member, kind, needs, instructions and checks, the manifest's verify
+// steps, the references, what it hands over (attachments by name,
+// comments by number), the constraints, the decisions a person makes and
+// its note: every text the attempts' agents are handed.
+func writePlan(w io.Writer, key string, plans []planEntry, p planEntry, b planBodyView, tv dispatch.TicketView, numbers map[string]int) {
 	fmt.Fprintf(w, "# %s plan revision %d (r%d)\n\n", oneLine(key), p.N, p.N)
 	field := func(name, value string) { fmt.Fprintf(w, "- %s: %s\n", name, value) }
 	field("id", oneLine(p.ID))
@@ -468,6 +524,7 @@ func writePlan(w io.Writer, key string, plans []planEntry, p planEntry, b planBo
 	if p.ApprovedNote != "" {
 		section("Approval note", p.ApprovedNote)
 	}
+	section("Goal", b.Crew.Goal)
 	var lines strings.Builder
 	for _, m := range b.Crew.Members {
 		fmt.Fprintf(&lines, "- %s: %s", oneLine(m.Name), oneLine(m.AgentID))
@@ -475,6 +532,7 @@ func writePlan(w io.Writer, key string, plans []planEntry, p planEntry, b planBo
 			fmt.Fprintf(&lines, " %s", argvText(m.Args))
 		}
 		lines.WriteString("\n")
+		indentedText(&lines, "prompt", m.Prompt)
 	}
 	section("Members", lines.String())
 	lines.Reset()
@@ -498,6 +556,7 @@ func writePlan(w io.Writer, key string, plans []planEntry, p planEntry, b planBo
 			fmt.Fprintf(&lines, ", after %s", oneLine(strings.Join(t.Needs, ", ")))
 		}
 		lines.WriteString("\n")
+		indentedText(&lines, "instructions", t.Instructions)
 		for _, ch := range t.Checks {
 			fmt.Fprintf(&lines, "  check %s: %s\n", oneLine(ch.ID), argvText(ch.Argv))
 		}
@@ -533,10 +592,6 @@ func writePlan(w io.Writer, key string, plans []planEntry, p planEntry, b planBo
 	for _, id := range b.Attachments {
 		fmt.Fprintf(&lines, "- attachment %s\n", oneLine(cmp.Or(names[id], id)))
 	}
-	numbers := map[string]int{}
-	for _, cm := range tv.Comments {
-		numbers[cm.ID] = cm.N
-	}
 	for _, cm := range b.Comments {
 		if n, ok := numbers[cm.ID]; ok {
 			fmt.Fprintf(&lines, "- comment #%d\n", n)
@@ -559,6 +614,24 @@ func writePlan(w io.Writer, key string, plans []planEntry, p planEntry, b planBo
 	}
 	section("Decisions a person makes", lines.String())
 	section("Note", b.Note)
+}
+
+// indentedText writes a saved text under a list item: its label, then its
+// lines indented under it, a terminal's control characters but newlines
+// and tabs made U+FFFD (textBlock); nothing for an empty text.
+func indentedText(w *strings.Builder, label, text string) {
+	text = strings.TrimRight(textBlock(text), "\n")
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	fmt.Fprintf(w, "  %s:\n", label)
+	for _, l := range strings.Split(text, "\n") {
+		if l == "" {
+			w.WriteString("\n")
+			continue
+		}
+		fmt.Fprintf(w, "    %s\n", l)
+	}
 }
 
 // referenceText is a reference as its flag says it: path, path:12 or
@@ -907,9 +980,13 @@ func dispatchPlanAct(ctx context.Context, c *apiClient, key string, ref revision
 // named, else the approved one. The operation's id is minted and sent
 // once more on a lost reply, which the server answers from its receipt,
 // the same launch and never a second run; the request waits as long as
-// the server's own bound on a launch. It prints the launch, the run and
-// the run's page; a launch that failed is the server's words, its launch
-// kept failed (conductor dispatch runs lists it).
+// the server's own bound on a launch. A launch the server answers still
+// pending is sent again, the same operation, at most launchTries times in
+// all; still pending then, the error names it and where it shows, never
+// advice to launch again, which would be a second launch. It prints the
+// launch, the run and the run's page; a launch that failed is the
+// server's words, its launch kept failed (conductor dispatch runs lists
+// it).
 func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revisionRef, label string, stdout io.Writer) (int, error) {
 	plans, err := ticketPlans(ctx, c, key)
 	if err != nil {
@@ -936,10 +1013,28 @@ func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revision
 			Yolo  bool   `json:"yolo"`
 		} `json:"run"`
 	}
-	if err := askTwice(ctx, func(ctx context.Context) error {
-		return c.doWithin(ctx, launchRequestTimeout, http.MethodPost, "/api/dispatch/tickets/"+url.PathEscape(key)+"/launch", body, &out, maxDispatchReply)
-	}); err != nil {
-		return 1, err
+	for try := 1; ; try++ {
+		err := askTwice(ctx, func(ctx context.Context) error {
+			return c.doWithin(ctx, launchRequestTimeout, http.MethodPost, "/api/dispatch/tickets/"+url.PathEscape(key)+"/launch", body, &out, maxDispatchReply)
+		})
+		if err == nil {
+			break
+		}
+		pending, ok := pendingLaunch(err)
+		if !ok {
+			return 1, err
+		}
+		if try >= launchTries {
+			return 1, fmt.Errorf("%s: launch %s from r%d is still pending after %d tries: the server settles it at its next start if no request does before; conductor dispatch runs %s shows it and its run; launching again would be a second launch",
+				key, oneLine(pending.ID), p.N, try, key)
+		}
+		t := time.NewTimer(launchResendWait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return 1, fmt.Errorf("%s: launch %s from r%d is still pending, interrupted: conductor dispatch runs %s shows it and its run; launching again would be a second launch", key, oneLine(pending.ID), p.N, key)
+		case <-t.C:
+		}
 	}
 	run := cmp.Or(out.Launch.RunID, func() string {
 		if out.Run != nil {
@@ -955,6 +1050,27 @@ func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revision
 		fmt.Fprintln(stdout, "yolo: its members skip their permission prompts")
 	}
 	return 0, nil
+}
+
+// pendingLaunch is the launch a refusal carries when it is one still
+// pending: a 503 ledger_unavailable whose body names a pending launch,
+// which the same operation sent again settles (the ticket page's
+// launchOutcome reads it so too).
+func pendingLaunch(err error) (dispatch.LaunchSummary, bool) {
+	var r replyRefusal
+	if !errors.As(err, &r) || r.status != http.StatusServiceUnavailable {
+		return dispatch.LaunchSummary{}, false
+	}
+	var b struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+		Launch *dispatch.LaunchSummary `json:"launch"`
+	}
+	if json.Unmarshal(r.body, &b) != nil || b.Error.Code != "ledger_unavailable" || b.Launch == nil || b.Launch.State != dispatch.LaunchPending {
+		return dispatch.LaunchSummary{}, false
+	}
+	return *b.Launch, true
 }
 
 // runEntryView is an entry of a ticket's runs as the route answers it
@@ -1038,10 +1154,13 @@ func dispatchRuns(ctx context.Context, c *apiClient, key string, stdout io.Write
 }
 
 // writeRunEntry prints an entry of a ticket's runs: its head line, then
-// its run's, each further line indented.
+// its run's, each further line indented. The entry's kind says what it
+// is: a continuation (kind run) carries the launch or the link that holds
+// its chain too, and is printed as the run it is, with the run it
+// continues.
 func writeRunEntry(w io.Writer, e runEntryView) {
 	switch {
-	case e.Launch != nil:
+	case e.Kind == "launch" && e.Launch != nil:
 		l := e.Launch
 		fmt.Fprintln(w, tabbed("launch "+l.ID, "r"+strconv.Itoa(l.PlanN), l.State, when(l.CreatedAt)+" by "+cmp.Or(l.CreatedBy, "admin"), strconv.Quote(l.Label)))
 		switch l.State {
@@ -1056,7 +1175,7 @@ func writeRunEntry(w io.Writer, e runEntryView) {
 		if e.Changed != nil {
 			fmt.Fprintf(w, "  %s\n", oneLine(changedWords(l.TicketRev, *e.Changed)))
 		}
-	case e.Link != nil:
+	case e.Kind == "link" && e.Link != nil:
 		fmt.Fprintln(w, tabbed("linked run "+e.Link.Ref, "by "+cmp.Or(e.Link.CreatedBy, "admin")+" "+when(e.Link.CreatedAt)))
 	default:
 		head := []string{"run"}
