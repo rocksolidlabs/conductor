@@ -1,5 +1,6 @@
 import { DispatchOrder, through, throughOrAbsent, type AbsentOptions } from '~/utils/dispatchOrder'
 import { ApiError, type ApiErrorBody } from './useApi'
+import type { CrewCheck, CrewManifest, RunInfo } from './useSessions'
 
 // Dispatch's client (docs/plans/dispatch.md, "web/app"; the routes in docs/protocol.md, Dispatch): the types of every reply, as
 // useSessions.ts holds the crews' and the runs', the dispatch event's beside them, and the routes over useApi. Every page's state goes
@@ -19,7 +20,7 @@ export type LabelColor = 'gray' | 'brown' | 'red' | 'orange' | 'amber' | 'yellow
 /** What a list is sorted by: its updated or created time, its priority, its status, its title, its key, its milestone. */
 export type DispatchSort = 'updated' | 'created' | 'priority' | 'status' | 'title' | 'key' | 'milestone'
 /** What a dispatch event says changed. */
-export type DispatchEntity = 'project' | 'ticket' | 'comment' | 'label' | 'milestone' | 'view' | 'person'
+export type DispatchEntity = 'project' | 'ticket' | 'comment' | 'label' | 'milestone' | 'view' | 'person' | 'plan' | 'launch'
 
 /** A project as its read carries it (GET /api/dispatch/projects/{key}). Times are RFC 3339; a zero one is absent. */
 export interface DispatchProject {
@@ -265,6 +266,10 @@ export interface DispatchTicket {
   attachments: TicketAttachment[]
   comments: TicketComment[]
   close: CloseState
+  /** Its approved plan revisions' summaries, newest first, at most 10: none, one on a local write, more only where a merge left them. */
+  approved?: PlanSummary[]
+  /** How many launches it has. */
+  launchCount?: number
 }
 
 /** One row of a ticket's history, as the store recorded it: one field set, added or removed by one operation. */
@@ -318,6 +323,178 @@ export interface DispatchEvent {
   id: string
   ticket: string
   project: string
+}
+
+// ---------------------------------------------------------------------------
+// Plan revisions and launches (Program item DS2, docs/plans/dispatch-evidence.md; docs/protocol.md, Plan revisions and Launches).
+
+/** A plan revision's state: proposed, approved, superseded by a later approval, or withdrawn. */
+export type PlanState = 'proposed' | 'approved' | 'superseded' | 'withdrawn'
+
+/** Why an approved revision's approval no longer holds, and its remedy: `approve` (an intent edit) or `revise` (a comment handed over changed). */
+export interface PlanStale {
+  words: string
+  remedy: 'approve' | 'revise'
+}
+
+/**
+ * A plan revision as the list gives it (GET /api/dispatch/tickets/{key}/plans), never with its body: `n` its place among the ticket's
+ * revisions; the approval's fields while it has one; `crewChanged` the saved crew edited since or gone, `agentsChanged` an agent resolving
+ * otherwise now (both cured by a new revision alone); `expectedChecks` its tasks' checks and its manifest's verify steps. A ticket's read
+ * carries its approved ones without the last three.
+ */
+export interface PlanSummary {
+  id: string
+  ticketId: string
+  n: number
+  basedOn?: string
+  crewId: string
+  crewName: string
+  crewUpdatedAt?: string
+  /** A full commit id of the crew's working directory: the input revision. */
+  base: string
+  digest: string
+  bytes: number
+  state: PlanState
+  approvedAt?: string
+  approvedBy?: string
+  approvedNote?: string
+  approvedRev?: number
+  approvedIntent?: string
+  withdrawnAt?: string
+  withdrawnBy?: string
+  createdAt: string
+  createdBy: string
+  fingerprint: string
+  rev: number
+  stale?: PlanStale
+  crewChanged?: boolean
+  agentsChanged?: boolean
+  expectedChecks?: number
+}
+
+/** An agent a revision's crew names, as the catalog resolved it when the revision was made: what a launch and every attempt compare. */
+export interface PlanAgent {
+  id: string
+  command: string[]
+  startArgs: string[]
+  yoloArgs: string[]
+  envNames: string[]
+  envSha256: string
+  sha256: string
+}
+
+/** A source reference resolved at the base: a path relative to the crew's directory, a line range, a note, the git object and its kind. */
+export interface PlanReference {
+  path: string
+  start?: number
+  end?: number
+  note?: string
+  object: string
+  kind: 'blob' | 'tree'
+}
+
+/** A decision a person will make: recorded and shown, not held, until durable decisions (Program item DR1) hold the tasks before it. */
+export interface PlanDecision {
+  id: string
+  question: string
+  kind: 'approval' | 'clarification'
+  before: string[]
+}
+
+/** The saved crew as a revision keeps it: the fields the page shows of it, its working directory and its yolo choice fixed. */
+export interface PlanCrew {
+  id: string
+  name: string
+  cwd?: string
+  yolo?: boolean
+  updatedAt?: string
+  members?: Array<{ name: string; agentId: string; args?: string[] }>
+  tasks?: Array<{ id: string; member: string; kind: 'work' | 'review'; needs?: string[]; checks?: CrewCheck[] }>
+  manifest?: CrewManifest
+}
+
+/** A plan revision's body, immutable once made: what its approval covers and what a launch runs. */
+export interface PlanBody {
+  base: string
+  crew: PlanCrew
+  agents: PlanAgent[]
+  manifestFile?: { path: string; blob: string; manifest: CrewManifest }
+  references: PlanReference[]
+  attachments: string[]
+  comments: Array<{ id: string; sha256: string }>
+  constraints: string
+  decisions: PlanDecision[]
+  note: string
+}
+
+/** A plan revision read whole (GET /api/dispatch/plans/{id}): its summary and its body. */
+export type PlanRead = PlanSummary & { body: PlanBody }
+
+/** A reference as a proposal names it: the server resolves it at the base. */
+export interface NewPlanReference {
+  path: string
+  start?: number
+  end?: number
+  note?: string
+}
+
+/** A proposal (POST …/{key}/plans): a saved crew's id, the base (HEAD when absent), the revision it revises, and what it hands over. */
+export interface NewPlan {
+  crew: string
+  base?: string
+  basedOn?: string
+  references?: NewPlanReference[]
+  attachments?: string[]
+  comments?: string[]
+  constraints?: string
+  decisions?: PlanDecision[]
+  note?: string
+}
+
+export interface PlanReply {
+  receipt: DispatchReceipt
+  plan: PlanSummary | null
+}
+
+/** A member's agent at a launch's start, with the version its identity probe reported. */
+export interface LaunchAgent {
+  member: string
+  agent: string
+  version: string
+}
+
+/** A launch as its route answers it (never its package): pending until its run's first transaction is committed, then started or failed. */
+export interface LaunchSummary {
+  id: string
+  ticketId: string
+  ticketKey: string
+  planId: string
+  planN: number
+  runId: string
+  label: string
+  ticketRev: number
+  intent: string
+  criteria: string
+  packageSha256: string
+  state: 'pending' | 'started' | 'failed'
+  why?: string
+  agents: LaunchAgent[]
+  createdAt: string
+  createdBy: string
+  fingerprint: string
+  startedAt?: string
+  rev: number
+}
+
+/** A launch read whole (GET /api/dispatch/launches/{id}): its summary and its package. */
+export type LaunchRead = LaunchSummary & { package: unknown }
+
+/** A launch's reply: started, the launch and its run (as GET /api/runs/{run} answers it); refused or failed, an ApiError carrying the rest. */
+export interface LaunchReply {
+  receipt: DispatchReceipt
+  launch: LaunchSummary | null
+  run: RunInfo | null
 }
 
 /** What every Dispatch write carries beside its fields: the op id the browser mints, the revision it expects (none: absent), the display name. */
@@ -562,6 +739,18 @@ export function useDispatchApi() {
     removeLink: (key: string, id: string, body: OpBody) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/links/${enc(id)}/delete`, { method: 'POST', body }),
     /** The ticket a run is linked to, for the run page's chip: the live one, else the latest-linked tombstone with `deletedAt`, else null. */
     runTicket: (run: string) => request<{ ticket: RelatedTicket | null }>(`/api/dispatch/links?run=${enc(run)}`).then((r) => r.ticket ?? null),
+    /** A ticket's plan revisions' summaries, newest first, never a body. */
+    plans: (key: string) => request<{ plans: PlanSummary[] }>(`/api/dispatch/tickets/${enc(key)}/plans`).then((r) => r.plans ?? []),
+    /** A plan revision whole, by its id. */
+    plan: (id: string) => request<{ plan: PlanRead }>(`/api/dispatch/plans/${enc(id)}`).then((r) => r.plan),
+    proposePlan: (key: string, body: OpBody & NewPlan) => request<PlanReply>(`/api/dispatch/tickets/${enc(key)}/plans`, { method: 'POST', body }),
+    /** The operator's approval of a revision: `expectedRev` the revision's, `ticketRev` the ticket's as shown, with a note. */
+    approvePlan: (id: string, body: OpBody & { ticketRev?: number; note?: string }) => request<PlanReply>(`/api/dispatch/plans/${enc(id)}/approve`, { method: 'POST', body }),
+    withdrawPlan: (id: string, body: OpBody) => request<PlanReply>(`/api/dispatch/plans/${enc(id)}/withdraw`, { method: 'POST', body }),
+    /** A managed run launched from the ticket's approved revision `plan`: `expectedRev` the ticket's, `label` the run's own name. */
+    launch: (key: string, body: OpBody & { plan: string; label?: string }) => request<LaunchReply>(`/api/dispatch/tickets/${enc(key)}/launch`, { method: 'POST', body }),
+    /** A launch whole, by its id. */
+    launchRead: (id: string) => request<{ launch: LaunchRead }>(`/api/dispatch/launches/${enc(id)}`).then((r) => r.launch),
     /** An operation's receipt, read without acting. */
     receipt: (opId: string) => request<{ receipt: DispatchReceipt }>(`/api/dispatch/ops/${enc(opId)}`).then((r) => r.receipt),
   }

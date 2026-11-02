@@ -610,8 +610,10 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # line Conductor types names the task and the attempt; the stub reads the
 # task (conductor task context, or the task_context tool of conductor mcp
 # on stdio), does it, and submits the result (conductor task result, or
-# task_result). A work task commits stub-<member>.txt, and stub-fixed.txt
-# too once a finding or an attempt before asks for a change; a review says
+# task_result). A work task commits stub-<member>.txt (with the first line
+# of .conductor/ticket.md in it when the run was launched from a ticket),
+# and stub-fixed.txt too once a finding or an attempt before asks for a
+# change; a review says
 # needs_changes with one finding on its first attempt and approved after.
 # What it reads and what the server answered go into the transcript.
 
@@ -654,6 +656,11 @@ task_attempt() {
 	printf 'task: %s %s attempt %s: read %s bytes\n' "$kind" "$task" "$n" "${#ctx}" >>"$transcript"
 	if [[ $kind == task ]]; then
 		printf 'attempt %s of %s by %s\n' "$n" "$task" "$member" >>"stub-$member.txt"
+		if [[ -f .conductor/ticket.md ]]; then
+			# A run launched from a ticket: the package's first line (the ticket's key and title as launched) goes into the commit, so a
+			# spec sees that the package reached the attempt.
+			printf 'ticket: %s\n' "$(head -n 1 .conductor/ticket.md)" >>"stub-$member.txt"
+		fi
 		git add -- "stub-$member.txt" >/dev/null 2>&1 || true
 		if [[ $ctx == *"Findings to address"* || $ctx == *"The attempt before"* || $n -ge 2 ]]; then
 			printf 'fixed in attempt %s\n' "$n" >stub-fixed.txt

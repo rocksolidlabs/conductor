@@ -514,6 +514,42 @@ describe("a ticket's history", () => {
       ['accepted it for Bob'],
     ])
   })
+
+  // DS2: a ticket's plan revisions and launches are rows of its history; each says what it did, never "made the ticket".
+  it("says a plan revision's proposal, approval, supersession and withdrawal, and a launch with how its run's start came out", () => {
+    const plans = { plans: new Map([['p1', 1], ['p2', 2]]) }
+    const plan = (p: Partial<DispatchChange>) => row({ entity: 'plan', entityId: 'p2', ...p })
+    expect(changeWords(plan({ op: 'create', value: '{}' }), plans)).toBe('proposed plan revision 2')
+    expect(changeWords(plan({ op: 'create', value: '{}', entityId: 'p9' }), plans)).toBe('proposed a plan revision')
+    expect(changeWords(plan({ field: 'state', value: 'approved', prior: 'proposed' }), plans)).toBe('approved plan revision 2')
+    expect(changeWords(plan({ field: 'state', value: 'approved', prior: 'approved' }), plans)).toBe('approved plan revision 2 again')
+    expect(changeWords(plan({ field: 'state', value: 'superseded', prior: 'approved', entityId: 'p1' }), plans)).toBe('superseded plan revision 1')
+    expect(changeWords(plan({ field: 'state', value: 'withdrawn', prior: 'approved' }), plans)).toBe('withdrew plan revision 2')
+    expect(changeWords(plan({ field: 'approved_note', value: 'the smaller one' }), plans)).toBe('noted "the smaller one"')
+    for (const field of ['approved_at', 'approved_by', 'approved_rev', 'approved_intent', 'withdrawn_at', 'withdrawn_by']) expect(changeWords(plan({ field, value: 'x' }), plans)).toBe('')
+    const launch = (p: Partial<DispatchChange>) => row({ entity: 'launch', entityId: 'l1', ...p })
+    expect(changeWords(launch({ op: 'create', value: JSON.stringify({ runId: 'build-0123abcd', planId: 'p2' }) }), plans)).toBe('launched the run build-0123abcd from plan revision 2')
+    expect(changeWords(launch({ op: 'create', value: 'not json' }), plans)).toBe('launched the run from a plan revision')
+    expect(changeWords(launch({ field: 'state', value: 'started', actor: 'server' }), plans)).toBe('its run started')
+    expect(changeWords(launch({ field: 'state', value: 'failed', actor: 'server' }), plans)).toBe('')
+    expect(changeWords(launch({ field: 'why', value: 'the agent is not installed', actor: 'server' }), plans)).toBe('the launch failed: the agent is not installed')
+    for (const field of ['agents', 'started_at']) expect(changeWords(launch({ field, value: 'x' }), plans)).toBe('')
+  })
+
+  it("makes an approval one entry: the revision approved, the one it superseded, its note", () => {
+    const plans = { plans: new Map([['p1', 1], ['p2', 2]]) }
+    const at = { opId: 'appr', actor: 'admin', by: 'Nate' }
+    const entries = historyEntries(
+      [
+        row({ ...at, entity: 'plan', entityId: 'p2', field: 'approved_at', value: '2026-11-01T10:00:00Z' }),
+        row({ ...at, entity: 'plan', entityId: 'p2', field: 'approved_note', value: 'go' }),
+        row({ ...at, entity: 'plan', entityId: 'p2', field: 'state', value: 'approved', prior: 'proposed' }),
+        row({ ...at, entity: 'plan', entityId: 'p1', field: 'state', value: 'superseded', prior: 'approved' }),
+      ],
+      plans,
+    )
+    expect(entries.map((e) => e.lines)).toEqual([['noted "go"', 'approved plan revision 2', 'superseded plan revision 1']])
+  })
 })
 
 // PR-9: the board's and the roadmap's moves, the list's letters and their pickers, the rows an edit's answer patches, the roadmap's
