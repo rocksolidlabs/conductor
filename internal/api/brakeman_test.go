@@ -219,6 +219,13 @@ func (b *bkEnv) settle(t *testing.T) {
 	}
 }
 
+// turnHeld reports whether a turn holds the slot.
+func (b *bkEnv) turnHeld() bool {
+	b.desk.mu.Lock()
+	defer b.desk.mu.Unlock()
+	return b.desk.turn != nil
+}
+
 // slotFree waits for the slot to be given up.
 func (b *bkEnv) slotFree(t *testing.T) {
 	t.Helper()
@@ -788,7 +795,10 @@ func TestTheWorkbenchTokenSubmitsNoBrief(t *testing.T) {
 	if status, out := b.readRequest(t, sid, adminToken); status != http.StatusOK {
 		t.Fatalf("the admin's read %d %v", status, out)
 	}
-	if b.desk.read[id] {
+	b.desk.mu.Lock()
+	read := b.desk.read[id]
+	b.desk.mu.Unlock()
+	if read {
 		t.Fatal("the admin's read counted as the agent's")
 	}
 	if status, _ := b.readRequest(t, sid, "nope"); status != http.StatusUnauthorized {
@@ -1023,7 +1033,7 @@ func TestAPersonsCrewNamedBrakemanIsNotATurn(t *testing.T) {
 	if status, out := b.readRequest(t, sid, b.agentToken(sid)); status != http.StatusNotFound || errorCode(out) != "not_brakeman" {
 		t.Fatalf("%d %v", status, out)
 	}
-	if b.desk.turn != nil {
+	if b.turnHeld() {
 		t.Fatal("the person's run took the slot")
 	}
 }
@@ -1162,7 +1172,7 @@ func TestASecondServerRunsNoTurn(t *testing.T) {
 	second.expect(t, "PUT", "/api/brakeman/config", map[string]any{"rev": c["rev"], "config": c}, http.StatusServiceUnavailable, "brakeman_not_owner")
 	id := b.briefing(t)
 	b.turnSession(t, id)
-	if second.srv.brakeman.turn != nil {
+	if (&bkEnv{testEnv: second, desk: second.srv.brakeman}).turnHeld() {
 		t.Fatal("the second server took a turn")
 	}
 }

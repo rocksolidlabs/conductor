@@ -113,7 +113,7 @@ func TestRestoreRefuses(t *testing.T) {
 // another case or with a trailing dot, the names a filesystem may resolve
 // to the same file, and anything under a path the table names as a file.
 func TestRestoreRefusesReservedPaths(t *testing.T) {
-	for _, rel := range []string{export.LockFile, "tls/x", "ext/p/x", "workbench-token", "workbench-token.lock", "runs/owner.lock", "runs/managed.sqlite-wal",
+	for _, rel := range []string{export.LockFile, "tls/x", "ext/p/x", "workbench-token", "workbench-token.lock", "runs/owner.lock", "brakeman/owner.lock", "Brakeman/Owner.Lock", "runs/managed.sqlite-wal",
 		"dispatch/dispatch.sqlite-shm", "crews/team.json.tmp", ".probe-1", ".restore-0123/catalog.json", "dispatch/attachments/tmp/up",
 		"Restore.Lock", "TLS/account.key", "tls./account.key", "Ext/provider/state.json", "Workbench-Token", "workbench-token.", "WORKBENCH-TOKEN.LOCK",
 		"runs/Owner.Lock", "runs/managed.SQLITE-WAL", "crews/team.json.TMP", ".Probe-1", ".RESTORE-0123/catalog.json", "dispatch/Attachments/TMP/up",
