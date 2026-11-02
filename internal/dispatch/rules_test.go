@@ -759,6 +759,83 @@ func TestTwoAddsOfOneMemberReadAsTheLaterAdd(t *testing.T) {
 	}
 }
 
+// delivery writes the delivery link the replica's link.add made, naming
+// the candidate with its verification receipt: its row and its add's row.
+// It returns the link's id.
+func (r replica) delivery(t *testing.T, s *Store, opID, projectID, ticketID, url, candidate string, v *Verified) string {
+	t.Helper()
+	c, err := ParseCandidate(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := encodeVerified(c, *v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln := Link{ID: newID(), TicketID: ticketID, Kind: LinkDelivery, Ref: url, URL: url, Candidate: candidate, Verified: json.RawMessage(verified), CreatedAt: r.at, CreatedBy: r.actor}
+	exec(t, s, "INSERT INTO links (id, ticket_id, kind, ref, url, note, candidate, verified, created_at, created_by) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?)",
+		ln.ID, ticketID, ln.Kind, ln.Ref, ln.URL, candidate, verified, stamp(r.at), r.actor)
+	value, err := encodeValue(linkAdded{Link: ln})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.change(t, s, opID, 0, ChangeRow{Entity: EntityTicket, EntityID: ticketID, TicketID: ticketID, ProjectID: projectID, Field: "links", Op: OpAdd, Value: value})
+	return ln.ID
+}
+
+// Two adds of one delivery link from two replicas, each naming another
+// candidate with its own receipt, one passed and one failed: the close
+// policy's verified reads the later add's receipt, the one the ticket
+// shows, in both delivery orders, never the earlier add's the ticket
+// hides. A later passed receipt meets it; a later failed one leaves it
+// unmet with that candidate's words, the earlier passed one counting for
+// nothing.
+func TestTwoAddsOfOneDeliveryReadTheLaterReceipt(t *testing.T) {
+	early := replica{"replica-a", time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)}
+	late := replica{"replica-b", early.at.Add(time.Second)}
+	run := "synth-0000abcd"
+	failed := passedReceipt(1)
+	failed.Passed, failed.Receipts[0].Exit = false, exit(1)
+	for _, c := range []struct {
+		name                string
+		first, second       replica
+		laterPassed, wantOK bool
+	}{
+		{"passed early, failed late; early first", early, late, false, false},
+		{"passed early, failed late; late first", late, early, false, false},
+		{"failed early, passed late; early first", early, late, true, true},
+		{"failed early, passed late; late first", late, early, true, true},
+	} {
+		s := openStore(t, storeDir(t))
+		ctx := context.Background()
+		pid := newProject(t, s, "CND")
+		aID, a := newTicket(t, s, "CND", "A")
+		ids := map[string]string{}
+		for i, r := range []replica{c.first, c.second} {
+			// The later add's candidate is attempt 1 when it failed, 2 when
+			// it passed; the earlier add's the other.
+			isLate := r == late
+			passed := isLate == c.laterPassed
+			cand, v := run+"/build/2@"+commitA, passedReceipt(2)
+			if !passed {
+				cand, v = run+"/build/1@"+commitA, failed
+			}
+			ids[r.actor] = r.delivery(t, s, opID("add", i), pid, aID, "https://example.com/pull/7", cand, v)
+		}
+		ls, err := s.Links(ctx, a)
+		if err != nil || len(ls) != 1 || ls[0].ID != ids[late.actor] {
+			t.Fatalf("%s: the links %+v %v, want the later add %s", c.name, ls, err, ids[late.actor])
+		}
+		st := closeOfKey(t, s, a)
+		if st.Met.Verified != c.wantOK || !st.Met.Delivery {
+			t.Fatalf("%s: the close state %+v", c.name, st)
+		}
+		if !c.wantOK && st.VerifiedWhy != "the delivered candidate build#1 failed the check test (exit 1)" {
+			t.Fatalf("%s: the words %q", c.name, st.VerifiedWhy)
+		}
+	}
+}
+
 // A member two replicas added takes one place in its ticket's bound,
 // however many rows it has: with the rest of each bound but one place
 // written by hand, the ticket takes one more link and one more relation,
