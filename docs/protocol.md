@@ -1199,7 +1199,8 @@ only a kill leaves one; a kill after the wait is logged with the file), and a
 server or host that stops waits for them.
 
 Session `Info` carries `crew{runId, crewId, member}` for a member of a crew
-run (see Crew runs), and no `crew` otherwise.
+run (see Crew runs), and no `crew` otherwise; a Brakeman turn's member's
+also carries `brakeman: {request, quiet}` (see Brakeman).
 
 Changes are pushed to attached clients as the `attention` control message and
 to admins as `session` events on `GET /api/events` (Server-Sent Events over a
@@ -1886,7 +1887,7 @@ its run, and on no other.
 | `GET /.well-known/acme-challenge/{token}` | none | the key authorization of an open ACME `http-01` order (RFC 8555 §8.3), on the plain listener; `404` for any other token, a token over 128 bytes, or without a TLS listener |
 | `GET /api/switchyard/status` | admin | on a switchyard only (`404` elsewhere): the landing page's operator figures, `{hosts, sessions, viewers, relayBytesHour, hostList: [{name, since, sessions, viewers}]}`, the live hosted sessions grouped by the publishing host, earliest first, and the bytes the relay carried in the last sixty minutes |
 | `GET /api/whoami` | admin | OS user running the server (the default display name); `host` is the machine's name (`""` when it cannot tell) and `switchyard` whether this server launches nothing; `home` the server user's home directory, when it has one (the settings picker's Home); `version` the server's version, as `conductor version` prints it (Settings → The app) |
-| `GET /api/export` | admin (a switchyard's too) | the data directory as one zip archive (`docs/plans/ext.md`, C6), streamed as it is made, nothing buffered whole: `200` with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="conductor-export-<UTC time>.zip"` (`20060102T150405Z`). The archive holds `data/` as the data directory holds it (the catalog, the crews, the runs' records, a switchyard's `links/` (hashes, never tokens), `hooks/` and any other file) with the ledger's and Dispatch's databases as snapshots (`VACUUM INTO`, consistent while the server writes), the attachment files the Dispatch snapshot's live rows and launch pins require, and `conductor-export.json` last: `{format: 1, version, createdAt, files: [{path, size, sha256}], left: [{path, why}]}`. Left out, and listed with why: the workbench token and its lock, `restore.lock`, `runs/owner.lock`, the databases' `-wal`, `-shm` and `-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`, `tls/`, `ext/`, anything not a regular file or a directory, and a name not of `[A-Za-z0-9._-]` elements. The catalog is resolved against the configuration the server runs with, so saved agents' env values, configured ones they inherit among them, are in it in full: the archive is the person's own file. The records are copied before the ledger's snapshot, and none written after their copy is taken, so a record may lag its ledger, never lead it. A failure before the first byte is `500 internal`; one after it cuts the archive short, with no manifest, which no restore takes, and aborts the response (the connection dropped, or the stream reset, never a whole `200`), so the client's transfer fails; `503 no_data_dir` for a server with none |
+| `GET /api/export` | admin (a switchyard's too) | the data directory as one zip archive (`docs/plans/ext.md`, C6), streamed as it is made, nothing buffered whole: `200` with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="conductor-export-<UTC time>.zip"` (`20060102T150405Z`). The archive holds `data/` as the data directory holds it (the catalog, the crews, the runs' records, a switchyard's `links/` (hashes, never tokens), `hooks/` and any other file) with the ledger's and Dispatch's databases as snapshots (`VACUUM INTO`, consistent while the server writes), the attachment files the Dispatch snapshot's live rows and launch pins require, and `conductor-export.json` last: `{format: 1, version, createdAt, files: [{path, size, sha256}], left: [{path, why}]}`. Left out, and listed with why: the workbench token and its lock, `restore.lock`, `runs/owner.lock`, `brakeman/owner.lock`, the databases' `-wal`, `-shm` and `-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`, `tls/`, `ext/`, anything not a regular file or a directory, and a name not of `[A-Za-z0-9._-]` elements. The catalog is resolved against the configuration the server runs with, so saved agents' env values, configured ones they inherit among them, are in it in full: the archive is the person's own file. The records are copied before the ledger's snapshot, and none written after their copy is taken, so a record may lag its ledger, never lead it. A failure before the first byte is `500 internal`; one after it cuts the archive short, with no manifest, which no restore takes, and aborts the response (the connection dropped, or the stream reset, never a whole `200`), so the client's transfer fails; `503 no_data_dir` for a server with none |
 | `GET /api/catalog` | admin | `{agents, hidden, yoloDefault}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog; each agent, here and in the replies of the catalog routes below, also carries `source` (`built-in`, `config` or `saved`) and, for a saved agent that replaces a built-in or configured one, `replaces` (where that one came from); `available`, whether `command[0]` resolves on the server (the check of `POST /api/catalog/check`; any program of that name on the server's `PATH` counts, and a relative `command[0]` with a path separator counts without a lookup, since it resolves in the session's directory, which the server's own cannot stand for; the answer is kept 30 s per program, and the programs with no fresh answer are looked up together, at most 8 lookups at a time across all requests; a lookup that does not answer within 2 s (a `PATH` entry on a mount that stalls), or before the client goes away, counts as available, so the launch of such an agent is allowed and its spawn fails if the program is missing, and the lookup's answer is kept when it lands); and `site` when the agent has a website (an `https` URL: a built-in's, or the saved agent's); each agent also carries, when it has them, its `yolo` recipe `{args?, env?}` (its `env` values shown as they are: switches, not secrets), its `trustPrompt` and its `session` recipe `{startArgs?, newId?, idFrom?, idPolicy?, resumeArgs?, idPattern?, resumeNeedsCwd?}` (limits below); `yoloDefault` is the server's `yolo` setting, which a launch or a crew without `yolo` follows; each agent whose adapter has an identity probe (the real agent's `--version` line, checked against what it prints: Claude Code and Codex verified live, the others from their docs until the nightly recipes job confirms them) and whose program the lookup found at an absolute path also carries `identity` `{ran, pending?, identified, impostor?, verified, name?, version?, output?, error?}`: the program on the server run with its version flag (argv only, a spartan environment, 3 s, 4 KiB), its answer kept 10 min; `identified` with `version` when it is the agent, `impostor` when it is a known other program of that name (the Go migrations tool called goose; the agent's `available` is then `false`: it is not offered, and `POST /api/sessions` refuses it), `output` the first line it printed otherwise, `pending` when the probe is still under way (ask again), `verified` whether the adapter's expectation was checked against the real CLI (a verified probe that matches nothing means the program is not the agent; an unverified one leaves it unidentified and refuses nothing); an agent with `probe: false` is not probed |
 | `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source`, `replaces` and `available` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter`, `signal`, `site`, `yolo`, `trustPrompt` or `session` takes those of the agent it replaces, and a `signal` without `workingTitle` the replaced agent's `workingTitle`, and `"yolo": {}` or `"session": {}` says it has none; `***` is rejected for a key neither has; `site`, when present, must be an `https://` URL with a host name, a valid port if it has one, no user info and no white space, at most 200 bytes, a rule that also holds for the config's agents and for `catalog.json`; `400 invalid_agent` carries the validation message, an unknown `adapter` or a bad `site` included (the adapter check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
@@ -1992,7 +1993,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
-| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), see Attention and Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, see Brakeman), see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
 
 The catalog routes persist their changes as `catalog.json` in the data
@@ -2158,9 +2159,11 @@ KiB, which a test holds with every entry at its largest (a past bound is
   sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
   session's `kinds` are `plain` (in no run) or `run_member`, `attempt` (of
   a managed run) and `ticket_member` (of a run a live ticket's run link
-  names); `scopes` are the operations' scopes it reaches (`session`, and
-  `task` for an attempt, `ticket` for a ticket's member; the admin's are
-  `admin`, `session`, `task` and `ticket`). `bytes` is the size of that
+  names), or `brakeman` (a Brakeman turn's, which is never a ticket's
+  member); `scopes` are the operations' scopes it reaches (`session`, and
+  `task` for an attempt, `ticket` for a ticket's member, `observe` for a
+  Brakeman turn: its request and its brief; the admin's are `admin`,
+  `session`, `task`, `ticket` and `observe`). `bytes` is the size of that
   section's reply. `rules` are three lines for every caller: a fact needs
   evidence; nothing an agent writes becomes work by itself; a question
   goes to a person with `ask`.
@@ -2197,7 +2200,8 @@ KiB, which a test holds with every entry at its largest (a past bound is
   members and tasks, a task's checks, a check's timeout, a result's
   summary, issues and findings, a message and an inbox, a report's
   message, a comment, a ticket's title and description, a task file's
-  page, the self-service crews and links, a body.
+  page, the self-service crews and links, a brief's size, items, refs,
+  title, summary and draft tickets, Brakeman's queue, a body.
 - `host`: `{os, arch, switchyard, managedCrews, selfService, ledger:
   {state, why?}, dispatch: {state, why?}, checksMaxConcurrent, sessions?,
   agents: [{id, name, adapter?, installed, version?}], moreAgents?}`;
@@ -2209,7 +2213,8 @@ KiB, which a test holds with every entry at its largest (a past bound is
   s for the programs' lookups); a session sees the agents only with
   self-service on, on a server session, and a switchyard lists none.
 - `receipts`: `[{name, about, fields: [{name, type, optional?}]}]`, the
-  formats a caller meets (`ledger`, `dispatch`), read from their types.
+  formats a caller meets (`brakeman`, a request's; `ledger`, `dispatch`),
+  read from their types.
 - `providers`: `{known: false, providers: []}` until the server names its
   registered providers (Program item C9).
 
@@ -3287,3 +3292,154 @@ place in the server's queue for a client, however many there are, so a
 commit that changed many entities (a label's delete on hundreds of
 tickets) never drops a client that keeps up. It reaches the pages alone,
 never a webhook or the run engine.
+
+### Brakeman
+
+Brakeman is Conductor's sidekick agent (`docs/plans/brakeman.md`): an
+agent of the person's own choosing that Yardmaster runs for bounded
+turns, each a **request** a person made, each turn handing back one
+**brief**. Its records are JSON documents under the data directory's
+`brakeman/` (`internal/brakeman`); the server's desk (`internal/api`,
+`brakeman.go`) owns them while it holds `brakeman/owner.lock`, the
+ledger's lock. A second server on the same data directory opens them
+read-only: its reads are served, every write answers `503
+brakeman_not_owner` with the holder's words, and it takes no turn until
+it holds the lock and has read the last owner's queue again (a save or
+an ask in between answers `503 brakeman_not_owner` too). A server that
+stops keeps the lock until its last turn's launch has returned and every
+process the turn made is reaped, past its shutdown's deadline if need
+be. A switchyard runs no Brakeman: every route below
+answers `403 switchyard`.
+
+**A turn is a run.** The desk takes the oldest queued request when no
+turn holds the slot, writes the day's charge and then the request
+`starting` (its deadline `budget.turnMinutes` on, its configuration
+snapshot), and launches through the engine an unsaved one-member crew:
+crew id `brakeman`, isolation `none`, in the configured folder, the
+member the configured agent with its adapter's read-only arguments,
+then its model flag, then, when `allowConductorTools` is set, the rule
+that lets Conductor's MCP tools run without asking; never yolo, whatever
+the server's default says; never a managed run. The run's `class` is
+`brakeman` and its `request` the request's id (both in `GET
+/api/runs/{run}` and the run's record; absent for a person's run); its
+label "Brakeman · <kind> br-n". The member's session is named "Brakeman ·
+br-n" (the label Needs you shows), carries `CONDUCTOR_BRAKEMAN=<request>`
+and, with an account set, the adapter's configuration folder variable
+(`CLAUDE_CONFIG_DIR`) as the account, and its `crew` carries
+`brakeman: {request, quiet}` from its creation. The line typed once the
+session is ready (at most 300 bytes): `Brakeman request br-n (<kind>):
+read it with the brakeman_request tool or "conductor brakeman request",
+and submit one brief with brief_submit or "conductor brakeman brief".
+Call guide for what you may read.` One turn at a time; the slot is held
+until the launch has returned and every member's process is reaped (a
+stop that leaves a process is retried every 10 s; after six failed
+retries the desk takes no new request, `503 brakeman_stuck`, until a
+stop reaps it). The engine keeps at most 10 Brakeman runs and the
+records 50, apart from a person's runs (100 and 500). The desk keeps the
+newest 500 requests and every open or pinned one, pruning the rest as it
+starts and after each turn. A turn starts only from a configuration that
+still holds against the catalog and the folders as they are then (an
+agent changed or hidden since the save fails the turn, "the
+configuration no longer holds"), and its session only from the agent's
+catalog entry its arguments were made for (`agent_changed` otherwise,
+the turn failed with the engine's words). The desk takes queued
+requests once the server listens; as the server stops, the turn in
+progress is left as it is (the next start finds it `interrupted`), its
+launch outstanding is waited for, and the records' owner lock goes only
+once the turn's processes are stopped.
+
+**What a turn cannot do.** A run of class `brakeman` is not resumed and
+takes no member: `POST /api/runs/{run}/resume`, `…/members`,
+`…/members/{name}/resume` and its session's `POST
+/api/sessions/{id}/resume` answer `409 brakeman_run` ("ask Brakeman
+again"), and Dispatch's run link to it (`POST
+/api/dispatch/tickets/{key}/links`, kind `run`) answers `409
+brakeman_run`. Its session forms no crew, adds no member and reaches no
+ticket: `POST /api/sessions/{id}/crew`, `…/run/members`, `GET
+…/ticket` and `POST …/ticket/comments` answer `403 brakeman_cannot`,
+whether or not its run is linked to one, and the guide lists none of
+them for it. The crew store gives no derived crew the id `brakeman`: a
+crew a person names Brakeman is saved as `brakeman-2`.
+
+**A request's states.** `queued` → `starting` → `running` →
+`briefed`; the others close it: `timed_out` (its deadline, which covers
+`starting`), `ended` (its session ended with no brief, after it read its
+request), `failed` (the launch failed, with the engine's words, or the
+agent exited before it read its request: "is it logged in?", with its
+exit and last line), `over_budget` (at the dequeue the day's turns were
+spent), `cancelled` (a person, or Brakeman turned off, which cancels the
+turn in progress and the queue) and `interrupted` (the server stopped
+while it was starting or running; a restart finds it so). A deadline, a
+cancel and turning Brakeman off write the closing state first and stop
+the run after; a brief's run is stopped 20 s after the brief is kept. A
+run the launch returns after its request closed by a deadline or a
+cancel is recorded as the request's `strayRun` and stopped at once.
+
+**The admin's routes**, the workbench token's:
+
+| Route | Body and answer |
+|---|---|
+| `GET /api/brakeman` | `{config, current, queue, turnsToday, warnings?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns a day, mode `invoked`), the request holding the slot or `null`, the queued requests oldest first, the turns charged to today, `warnings` as the configuration's save answers them; on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
+| `PUT /api/brakeman/config` | `{rev, config}` → `{config, warnings?}`, its `rev` bumped and `updatedAt` stamped; `warnings` the words Settings shows beside the agent chosen, for an agent whose read-only mode does not hold (Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules: Codex is taken, with that limit said); `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode); `503 shutting_down` once the server is shutting down (nothing saved, nothing cancelled); at most 64 KiB |
+| `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}`; `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
+| `GET /api/brakeman/requests?after=&limit=` | `{requests, next}`, newest first, at most 100 a page; `next` the id to ask after, `""` for none |
+| `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |
+| `GET /api/brakeman/requests/{id}/refs` | `{refs: [{ref, seen, now}]}`, each `{url?, state?, rev?, sha256?, at?}`: what the turn read of each ref of the brief (`state` `unobserved` for one it never read) and what it was as the brief was kept; `404 no_brief` before one; at most 4 MiB |
+| `POST /api/brakeman/requests/{id}/cancel` | `{opId}` → `{request}`; a closed request answers as it stands |
+
+The kinds and their subjects: `briefing` (none; `since`, else since the
+last complete briefing), `explain` (one `run:`, `task:`, `attempt:`,
+`session:`, `question:` or `ticket:` ref), `decision` (one `question:`,
+`task:` or `ticket:`), `draft_tickets` (a `ticket:` or `comment:`, or the
+note as the discussion), `propose_crew` (one `ticket:`), `handoff` (one
+`task:`, `attempt:` or `session:`), `locate` (the note), `overlaps`
+(none) and `ask` (the note, up to 10 subjects). A note is Markdown of at
+most 16 KiB.
+
+**The turn's routes**, its session's own token (`agentTokenOK`), for
+the request its launch marked it with, while that request is `starting`
+or `running` (`409 turn_over` after); `404 not_brakeman` for a session
+that is not a turn's:
+
+| Route | Body and answer |
+|---|---|
+| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}}}`: the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together. The admin's token reads it too; read with the session's own, it marks the request read |
+| `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed. The `opId` is looked up first: the same `opId` and brief answer `200` with the request whatever its state now, another brief `409 brief_exists`; so does a submission that overlapped the one kept (both checked before either was kept). Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` and why (a field past its bound is refused, never cut; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; all of it against the configuration as the brief is kept, a save meanwhile having it checked again (`409 stale_revision` when the configuration keeps changing); nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
+
+**A brief**, schema `brakeman.brief/1`, at most 256 KiB as kept: `{schema,
+title, summary, uncertainty?, items}`, `title` at most 200 characters,
+`summary` (Brakeman's reading) at most 4 KiB, `uncertainty` 2 KiB, at
+most 100 items and 500 distinct refs across them; no `asOf` (what it
+covers is the server's record). Each item is `{kind, …its fields}`:
+`fact/1` (`text`, `evidence` 1 to 10 refs), `interpretation/1` (`text`,
+`facts`: indexes of the brief's facts), `proposal/1` (`text`, `op`,
+`target`, `args?`, `expectedRevision?`, `facts?`), `outcome/1` (`text`,
+`receipt`: a `check:`, `command:` or `op:` ref), `decision/1` (`about`,
+`happened`, `whyHuman`, `question`, `alternatives` 2 to 6, `recommendation`,
+`uncertainty?`, `blocked?`, `authorizes`, `evidence`, `subjectRevision?`),
+`comparison/1`, `evidence/1`, `draft_ticket/1` (at most 20, their `blocks`
+without a cycle), `draft_crew/1`, `handoff/1` and `overlap/1`, each with
+the bounds `internal/brakeman` holds them to. Drafts need the `draft`
+permission and proposals and decisions `propose`.
+
+**Refs** name records: `run:<run>`, `task:<run>/<task>`,
+`attempt:<run>/<task>/<n>`, `check:<run>/<task>/<n>/<id>/<k>`,
+`command:<run>/<command>`, `event:<run>/<seq>`, `message:<run>/<seq>`,
+`session:<id>`, `question:<session>/<question>`, `ticket:<KEY-n>`,
+`comment:<KEY-n>/<id>`, `op:<actor>/<opId>`, `commit:<run>/<sha>`,
+`file:<session>/<path>` and `brief:<br-n>/<item>`, each at most 512
+bytes, resolved as the brief is kept against the record it names.
+
+**The `brakeman` event.** After each change of a request's state the
+server sends `brakeman` on `GET /api/events`: `{id, state}`, at most 200
+bytes, `state` the one the records hold as the event is sent, so the last
+event a request's changes send carries its state now. Like a `run` event it is state a page cannot do without: a client
+that cannot keep up is dropped and reads again on its next `snapshot`.
+It reaches the pages alone, never a webhook.
+
+**Notifications.** A question a turn's session asks is listed in Needs
+you under its session's name, "Brakeman · br-n", and reaches browser
+notifications, Chime and webhooks only when its `crew.brakeman.quiet` is
+false (every turn a person asked for; a background turn's, Program item
+BK3, will be quiet): the server's webhooks and providers' sinks skip a
+quiet session's entries.

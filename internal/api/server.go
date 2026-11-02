@@ -117,6 +117,9 @@ type Server struct {
 	// without a data directory, on a switchyard, which keeps no tickets,
 	// and when it could not be opened.
 	dispatch *dispatch.Store
+	// brakeman is Brakeman's desk (brakeman.go), opened beside Dispatch;
+	// nil without a data directory and on a switchyard.
+	brakeman *brakemanDesk
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -431,6 +434,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			s.dispatch.SetRunExists(s.runKnown)
 			s.dispatch.OnChange(s.events.dispatch)
 		}
+		if !cfg.Switchyard.Enabled {
+			s.brakeman = s.openBrakemanDesk(st)
+		}
 		s.wireLaunches()
 		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned, s.ledgerRecovered)
 		if s.ledger == nil {
@@ -597,6 +603,9 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	case <-ctx.Done():
 	}
 	// No record lands after this: the directories may be going.
+	if s.brakeman != nil {
+		s.brakeman.release(ctx)
+	}
 	if s.records != nil {
 		s.records.Close()
 	}
@@ -656,6 +665,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/cancel", s.requireAdmin(s.handleCancelTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/retry", s.requireAdmin(s.handleRetryTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/accept", s.requireAdmin(s.handleAcceptTask))
+	// Brakeman's desk and its turn's session routes (brakeman.go).
+	s.routeBrakeman(mux)
 	// The operating guide, the admin's and a session's (guide.go).
 	mux.HandleFunc("GET /api/guide", s.requireAdmin(s.handleGuide))
 	mux.HandleFunc("GET /api/sessions/{id}/guide", s.handleSessionGuide)
@@ -999,6 +1010,15 @@ const recordsGrace = 5 * time.Second
 // records of the runs stopped are then waited for within recordsGrace,
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
+	// Brakeman's desk first: it writes no request's state from now on, so
+	// the turn the stops below end is left running in its records and the
+	// next start finds it interrupted; its launch outstanding is waited
+	// for, so the run and session it makes are among those stopped below.
+	// Its records, and their owner lock, are let go once the sessions are
+	// stopped (release, below).
+	if s.brakeman != nil {
+		s.brakeman.quiesce(ctx)
+	}
 	s.runs.Draining(ctx)
 	s.webhooks.close(ctx)
 	// The providers' queues end as the webhooks' do: what waits in them is
@@ -1028,6 +1048,12 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}
 	})
 	closes.Wait()
+	// The turn's processes stopped (or ctx spent), Brakeman's owner lock
+	// goes: another server takes no queued request while one of this
+	// server's turns still runs.
+	if s.brakeman != nil {
+		s.brakeman.release(ctx)
+	}
 	// The publications end with their sessions; wait for them to tell the
 	// rendezvous, all at once, as long as ctx allows.
 	s.pubMu.Lock()

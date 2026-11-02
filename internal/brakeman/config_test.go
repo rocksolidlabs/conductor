@@ -191,6 +191,30 @@ func TestAnAgentWithoutAReadOnlyModeIsRefused(t *testing.T) {
 	}
 }
 
+// TestAReadOnlyModeThatDoesNotHoldIsAWarning: an agent whose read-only
+// mode does not hold (Codex 0.163.0's) is taken, and Warnings says what
+// it leaves in the adapter's own words; one whose mode holds has none.
+func TestAReadOnlyModeThatDoesNotHoldIsAWarning(t *testing.T) {
+	f := goodFacts()
+	f.agents["leaky"] = AgentFacts{MCP: true, ReadOnly: true, ReadOnlyGap: "your own MCP servers run outside the sandbox"}
+	c := onConfig()
+	c.AgentID = "leaky"
+	if err := Validate(c, f); err != nil {
+		t.Fatalf("a mode that does not hold was refused: %v", err)
+	}
+	w := Warnings(c, f)
+	if len(w) != 1 || !strings.Contains(w[0], "does not hold: your own MCP servers run outside the sandbox") {
+		t.Fatalf("%q", w)
+	}
+	if w := Warnings(onConfig(), f); w != nil {
+		t.Fatalf("a mode that holds warns %q", w)
+	}
+	c.AgentID = ""
+	if w := Warnings(c, f); w != nil {
+		t.Fatalf("no agent warns %q", w)
+	}
+}
+
 // TestAConfigSaveNamesItsRevision: a save names the rev it read, else
 // stale_revision; each save bumps it and stamps its time.
 func TestAConfigSaveNamesItsRevision(t *testing.T) {

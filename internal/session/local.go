@@ -400,6 +400,9 @@ type Local struct {
 	// read (and the turn taken with it) and everything the pump does with
 	// it.
 	beforeScan atomic.Pointer[func(chunk []byte)]
+	// afterBroadcast, a test's hook, runs with each chunk once it has gone
+	// out to the viewers, before the rest of what the pump does with it.
+	afterBroadcast atomic.Pointer[func(chunk []byte)]
 	// beforeSettle, a test's hook, runs as the settle timer fires, before
 	// it looks at anything (settled); afterTitle between readTitle's look
 	// at a title that matches and its change.
@@ -581,18 +584,12 @@ func (s *Local) pump() {
 			// not count as output for the quiet the run engine and the
 			// trust watcher wait for.
 			title := titleOnly.Match(chunk)
-			s.mu.Lock()
-			s.ring.Write(chunk)
-			s.hub.BroadcastLoud(proto.Encode(proto.TypeOutput, chunk))
-			if !title {
-				s.lastOutput = time.Now()
-			}
-			s.mu.Unlock()
-			s.paste.feed(chunk)
-			s.scanOutput(chunk, turn)
-			if s.pattern != nil {
-				s.pattern.Feed(chunk)
-			}
+			// The startup questions' watcher and the screen the questions
+			// are read from take the chunk before any viewer has it: keys
+			// are routed by them (startupMayShow, askedIn), and a viewer
+			// that answers what it was sent, at once (a routed answer, a
+			// crew's client), finds them showing it. The dialog the chunk
+			// erased is withdrawn after the viewers have the chunk.
 			var left string
 			s.feedMu.Lock()
 			if s.trust != nil && !title {
@@ -602,6 +599,21 @@ func (s *Local) pump() {
 				left = s.feedAsked(chunk)
 			}
 			s.feedMu.Unlock()
+			s.mu.Lock()
+			s.ring.Write(chunk)
+			s.hub.BroadcastLoud(proto.Encode(proto.TypeOutput, chunk))
+			if !title {
+				s.lastOutput = time.Now()
+			}
+			s.mu.Unlock()
+			if hook := s.afterBroadcast.Load(); hook != nil {
+				(*hook)(chunk)
+			}
+			s.paste.feed(chunk)
+			s.scanOutput(chunk, turn)
+			if s.pattern != nil {
+				s.pattern.Feed(chunk)
+			}
 			if left != "" {
 				s.withdraw(left)
 			}
@@ -4940,17 +4952,56 @@ func (s *Local) handOverSize() {
 }
 
 // Stop terminates the process.
+//
+// The guard is the process, not the status: a stop returns at once only
+// once the process is reaped (ProcessDone). A session marked ended whose
+// process is not (a stop that failed, a read side that closed before its
+// child exited) is signalled again by every call, which answers that
+// stop's error; its status stays as it is, so a stop never makes a
+// session running again.
 func (s *Local) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	s.stopRequested = true
 	s.mu.Unlock()
-	if ended {
-		return nil
+	select {
+	case <-s.proc.Done():
+		if ended {
+			return nil
+		}
+	default:
 	}
 	err := s.proc.Stop(ctx, s.opts.StopGrace)
 	s.markEnded(StatusStopped)
 	return err
+}
+
+// ProcessDone is closed once the session's process has exited and been
+// waited for: the process's own Done. A session's status can read ended
+// before it (Stop marks it stopped whatever the process did), so what must
+// know the process is gone (the Brakeman desk's slot) waits on this.
+func (s *Local) ProcessDone() <-chan struct{} { return s.proc.Done() }
+
+// maxLastLine bounds LastLine.
+const maxLastLine = 200
+
+// LastLine is the last line of output the session kept that is not blank,
+// its escape sequences stripped and cut to at most maxLastLine bytes: what
+// an agent printed as it exited ("Please run /login").
+func (s *Local) LastLine() string {
+	text := strings.ReplaceAll(string(StripANSI(s.ring.Snapshot())), "\r", "\n")
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			l = strings.ToValidUTF8(l, "")
+			for len(l) > maxLastLine {
+				_, n := utf8.DecodeLastRuneInString(l)
+				l = l[:len(l)-n]
+			}
+			return l
+		}
+	}
+	return ""
 }
 
 // DisconnectLink evicts every subscription created through linkID as
