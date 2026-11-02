@@ -268,6 +268,12 @@ add its rule here.
   another's waits for the server's read after them (`viewerSeam.read`
   with `wsClient.sent`, `viewerReads.await`), and holds the writer that
   would drain them (`writerGate`) rather than trusting a full socket.
+- A control that only hurries what the page does by itself races it.
+  Read it again beside a read the page asks again on its own (a failed
+  re-read, retried with backoff) can vanish before the click lands, and
+  the click then waits for a button that never comes back
+  (`dispatch-plan.spec.ts`, #467). Press it until the state it leads to
+  is shown (`readAgain`), never once and blind.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

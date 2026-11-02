@@ -10,7 +10,9 @@ import { PLAN_BOUNDS, defaultLabel, revisionTag, shortCommit, yoloWords, type La
  * again under the same operation (never a second run); or refused before any run, in the server's words. The operation's id is minted
  * once per launch asked for, with the label it is first sent with, and both are kept until it is settled: a reply lost to the network, or
  * a pending launch sent again, is the same launch, sent unchanged (the label is not edited meanwhile; another would be a conflict, not the
- * launch). Nothing is launched before the revision's body is read: the yolo choice is said from it, never assumed.
+ * launch). Closing the dialog does not settle it: opened again on the same revision while it is unsettled, it shows that launch as it
+ * stands (still being sent, pending, or no answer) and sends it again under its id. Nothing is launched before the revision's body is
+ * read: the yolo choice is said from it, never assumed.
  */
 const props = defineProps<{
   revision: PlanSummary | null
@@ -25,13 +27,16 @@ const sending = ref(false)
 const outcome = ref<LaunchOutcome | null>(null)
 const error = ref('')
 /**
- * The operation this launch is and the label it was first sent with: kept while it may still be the same launch (pending, a reply lost),
- * so it is sent again unchanged; none once it is settled (started, failed or refused), and the next press is another launch.
+ * The operation this launch is, the revision it launches from and the label it was first sent with: kept while it may still be the same
+ * launch (being sent, pending, a reply lost), across closes, so it is sent again unchanged; none once it is settled (started, failed or
+ * refused), and the next press is another launch.
  */
-const op = ref<{ id: string; label: string } | null>(null)
+const op = ref<{ id: string; plan: string; label: string } | null>(null)
 
 watch(open, (o) => {
   if (!o) return
+  // A launch not settled from this revision: shown as it stands, and the next press sends it again.
+  if (op.value && op.value.plan === props.revision?.id) return
   label.value = ''
   outcome.value = null
   error.value = ''
@@ -51,7 +56,7 @@ async function send() {
   if (!p || !props.body || sending.value) return
   // No launch on its way: this press is another launch, and what came of the one before is behind us.
   if (!op.value) {
-    op.value = { id: props.plans.mintOpId(), label: label.value }
+    op.value = { id: props.plans.mintOpId(), plan: p.id, label: label.value }
     outcome.value = null
   }
   const sent = op.value
@@ -59,11 +64,13 @@ async function send() {
   error.value = ''
   try {
     const out = await props.plans.launch(p, sent.label, sent.id)
+    // Another launch asked for since (the dialog opened on another revision): this one's outcome is not what the dialog shows.
+    if (op.value !== sent) return
     outcome.value = out
     if (out.state !== 'pending') op.value = null
   } catch (e) {
     // Both tries lost to the network: the launch may have been made, and the same operation sent again answers it.
-    error.value = `${(e as Error).message}: send it again; it is the same launch`
+    if (op.value === sent) error.value = `${(e as Error).message}: send it again; it is the same launch`
   } finally {
     sending.value = false
   }

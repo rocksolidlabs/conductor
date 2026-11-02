@@ -11,8 +11,9 @@ import { PLAN_BOUNDS, decisionsProblem, keptComments, nextDecisionId, parseRefer
  * source references as rows (`path:12-30=note`); the ticket's attachments and recent comments to hand over, as checkboxes; constraints;
  * the decisions a person will make, as rows; a note. Revising prefills it all from the revision it revises, and the new one names it: a
  * comment it handed over that is older than the recent ones the ticket's read carries is kept, offered beside them, never dropped for
- * being out of sight. The server reads the crew, the commit and the references and refuses, in words, what does not hold; the refusal is
- * said in place.
+ * being out of sight. Nothing is proposed from a revision before its body is read: what it holds is carried over, never dropped for
+ * being unread, so until it is the dialog says why (with Read it again) and asks nothing, and the form is filled from it once it is. The
+ * server reads the crew, the commit and the references and refuses, in words, what does not hold; the refusal is said in place.
  */
 const props = defineProps<{
   ticket: DispatchTicket
@@ -73,8 +74,15 @@ async function loadCrews() {
   }
 }
 
-watch(open, (o) => {
-  if (!o) return
+/** Revising a revision whose body is not read yet: nothing is asked or sent until it is. */
+const waiting = computed(() => !!props.from && !props.from.body)
+const fromBodyError = computed(() => (props.from && !props.from.body ? (props.plans.bodyErrors.get(props.from.revision.id) ?? '') : ''))
+function readFromAgain() {
+  if (props.from) void props.plans.readBody(props.from.revision.id).catch(() => {})
+}
+
+/** The form as the dialog opens: empty, or the revision revised as its body holds it. */
+function fill() {
   const f = props.from
   const b = f?.body
   crew.value = f?.revision.crewId
@@ -89,8 +97,20 @@ watch(open, (o) => {
   decisions.value = (b?.decisions ?? []).map((d) => ({ ...d, before: [...d.before] }))
   note.value = ''
   error.value = ''
+}
+
+watch(open, (o) => {
+  if (!o) return
+  fill()
   void loadCrews()
 })
+// The revised revision's body read while the dialog is open (it was not when it opened): the form is filled from it.
+watch(
+  () => props.from?.body,
+  (b, old) => {
+    if (open.value && b && !old) fill()
+  },
+)
 
 // The picked crew's tasks, for the decisions' "before": read in full, since a list's summary carries none.
 watch(crew, async (id) => {
@@ -130,6 +150,7 @@ const kindItems = [
 ]
 
 const blocked = computed(() => {
+  if (waiting.value) return `Revision ${props.from!.revision.n} is not read yet`
   if (!crew.value) return 'Pick a crew with tasks'
   if (refErrors.value.some((e) => e)) return 'A reference is not one'
   if (attachments.value.length > PLAN_BOUNDS.attachments) return `At most ${PLAN_BOUNDS.attachments} attachments`
@@ -167,6 +188,12 @@ async function submit() {
   <UModal v-model:open="open" :title="from ? `Revise ${revisionTag(from.revision.n)}` : 'Propose a plan revision'" :description="`Of ${ticket.key}: a saved crew with tasks, as it is now, and what every attempt is handed.`" :ui="{ content: 'max-w-2xl' }">
     <template #body>
       <form class="flex flex-col gap-4 text-sm" data-plan-propose-dialog @submit.prevent="submit">
+        <p v-if="waiting && fromBodyError" class="flex flex-wrap items-center gap-2 text-warning" data-plan-propose-body-error>
+          <span>Revision {{ from!.revision.n }} could not be read, so what it holds cannot be carried over: {{ fromBodyError }}</span>
+          <UButton label="Read it again" size="xs" color="neutral" variant="outline" data-plan-propose-body-retry @click="readFromAgain" />
+        </p>
+        <p v-else-if="waiting" class="text-dimmed" data-plan-propose-body-reading>Reading revision {{ from!.revision.n }}: what it holds is carried over before anything is proposed…</p>
+        <template v-else>
         <UFormField label="Crew" size="sm" :error="crewsError || undefined">
           <USelectMenu v-model="crew" :items="crewItems" value-key="value" placeholder="A saved crew with tasks…" class="w-full" data-plan-propose-crew />
         </UFormField>
@@ -240,6 +267,7 @@ async function submit() {
         <UFormField label="Note" hint="why this revision" size="sm">
           <UTextarea v-model="note" :rows="2" autoresize :maxlength="PLAN_BOUNDS.note" class="w-full" data-plan-propose-note />
         </UFormField>
+        </template>
 
         <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" title="Not proposed" :description="error" data-plan-propose-error />
         <div class="flex items-center justify-end gap-2">
