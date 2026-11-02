@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import type { DispatchChange, LaunchSummary, PlanBody, PlanSummary } from '~/composables/useDispatch'
+import type { DispatchChange, HistoryPage, LaunchSummary, PlanBody, PlanSummary } from '~/composables/useDispatch'
 import {
   approvable,
   approvedRevision,
   argvLine,
+  decisionsProblem,
   defaultLabel,
   expectedChecks,
   historyLaunches,
+  keptComments,
   launchBlockers,
   launchOutcome,
+  launchUnresolved,
+  launchesToRead,
+  nextDecisionId,
   parseReference,
   planReasons,
   planRemedy,
@@ -16,6 +21,8 @@ import {
   referenceText,
   resolvedArgv,
   revisionTag,
+  scanLaunches,
+  withAnswers,
   yoloWords,
 } from './dispatchPlans'
 
@@ -123,8 +130,10 @@ describe('the expected checks', () => {
 })
 
 describe('the command as resolved', () => {
-  it('is the catalog command, the start arguments, the yolo arguments, then the member’s', () => {
-    expect(resolvedArgv({ command: ['aider', '--model', 'sonnet'], startArgs: ['--session-id', '{id}'], yoloArgs: ['--yes'] }, ['--verbose'])).toEqual(['aider', '--model', 'sonnet', '--session-id', '{id}', '--yes', '--verbose'])
+  it('is the catalog command, the start arguments, the member’s, then the yolo arguments, as the server builds it', () => {
+    // internal/api/sessions.go, createLocalSession: the member's arguments before the yolo recipe's, so where both name an option the
+    // shown order is the one that runs.
+    expect(resolvedArgv({ command: ['aider', '--model', 'sonnet'], startArgs: ['--session-id', '{id}'], yoloArgs: ['--yes'] }, ['--verbose'])).toEqual(['aider', '--model', 'sonnet', '--session-id', '{id}', '--verbose', '--yes'])
     expect(resolvedArgv(undefined, ['-x'])).toEqual(['-x'])
     expect(argvLine(['go', 'test', 'a b', '', 'it"s'])).toBe('go test "a b" "" "it\\"s"')
   })
@@ -279,6 +288,65 @@ describe("a launch's outcome", () => {
     expect(launchOutcome({ failure: { status: 409, code: 'stale_plan', message: 'x', body: { error: {}, receipt: failed } } })).toEqual({ state: 'refused', words: failed.error, code: 'stale_plan', receipt: failed })
     expect(launchOutcome({ failure: { status: 409, code: 'managed_off', message: 'crews with tasks are off on this server (crews.managed)' } })).toMatchObject({ state: 'refused', code: 'managed_off' })
   })
+
+  it('is unknown, never refused, for no answer or a server failure that is no refusal: the same operation is sent again', () => {
+    // The store failed after the launch was kept (its run started): another op id would start a second run.
+    expect(launchUnresolved({ status: 500, code: 'store_failed' })).toBe(true)
+    expect(launchUnresolved({ status: 503, code: 'dispatch_unavailable' })).toBe(true)
+    expect(launchUnresolved({ status: 0, code: 'network' })).toBe(true)
+    // ledger_unavailable is pending when it carries the launch, a refusal said before anything is kept when not: launchOutcome sorts it.
+    expect(launchUnresolved({ status: 503, code: 'ledger_unavailable' })).toBe(false)
+    for (const [status, code] of [[409, 'managed_off'], [409, 'stale_plan'], [409, 'launch_failed'], [409, 'op_conflict'], [400, 'invalid_request'], [404, 'not_found']] as const) {
+      expect(launchUnresolved({ status, code }), code).toBe(false)
+    }
+  })
+})
+
+describe('the launches to read again', () => {
+  it('are those not read yet and those read pending: a launch started or failed never changes', () => {
+    const read = new Map<string, Pick<LaunchSummary, 'state'>>([
+      ['l1', { state: 'started' }],
+      ['l2', { state: 'failed' }],
+      ['l3', { state: 'pending' }],
+    ])
+    expect(launchesToRead([{ id: 'l1' }, { id: 'l2' }, { id: 'l3' }, { id: 'l4' }], read)).toEqual(['l3', 'l4'])
+    // A second event: the started one is not read again.
+    expect(launchesToRead([{ id: 'l1' }], read)).toEqual([])
+  })
+})
+
+describe('the revisions shown', () => {
+  it("are the list's, each replaced whole by a later answer: a field the answer leaves out is one the revision no longer has", () => {
+    const stale = rev({ id: 'p1', n: 1, rev: 3, stale: { words: 'the title changed since revision 1 was approved', remedy: 'approve' }, approvedNote: 'old note' })
+    // Approved again: the answer has no stale and no note.
+    const again = rev({ id: 'p1', n: 1, rev: 4 })
+    const shown = withAnswers([stale], new Map([['p1', again]]))
+    expect(shown).toEqual([again])
+    expect(shown[0]!.stale).toBeUndefined()
+    expect(shown[0]!.approvedNote).toBeUndefined()
+    // An older answer never replaces a later list row; an answer the list does not hold yet is shown, newest first.
+    expect(withAnswers([again], new Map([['p1', stale]]))).toEqual([again])
+    const r2 = rev({ id: 'p2', n: 2, rev: 1, state: 'proposed' })
+    expect(withAnswers([again], new Map([['p2', r2]])).map((p) => p.n)).toEqual([2, 1])
+  })
+})
+
+describe("a revision's revision", () => {
+  it('keeps every comment handed over but those the ticket shows deleted: one older than the recent page is kept', () => {
+    const comments = [{ id: 'c50' }, { id: 'c51', deletedAt: '2026-11-01T10:00:00Z' }]
+    expect(keptComments(['c1', 'c50', 'c51'], comments)).toEqual(['c1', 'c50'])
+  })
+
+  it('gives a new decision an id no row has, and refuses two of one id before the store does', () => {
+    expect(nextDecisionId([])).toBe('d1')
+    // d1 and d2 added, d1 removed: the next is d1, never a second d2.
+    expect(nextDecisionId([{ id: 'd2' }])).toBe('d1')
+    expect(nextDecisionId([{ id: 'd1' }, { id: 'd2' }])).toBe('d3')
+    expect(decisionsProblem([{ id: 'd1', question: 'Ship it?' }, { id: 'd2', question: 'Which?' }])).toBe('')
+    expect(decisionsProblem([{ id: 'd2', question: 'Ship it?' }, { id: 'd2 ', question: 'Which?' }])).toBe('The decision d2 is named twice')
+    expect(decisionsProblem([{ id: 'D1', question: 'Ship it?' }])).toContain('Each decision has an id')
+    expect(decisionsProblem([{ id: 'd1', question: ' ' }])).toContain('Each decision has an id')
+  })
 })
 
 describe('the launches the history names', () => {
@@ -297,5 +365,30 @@ describe('the launches the history names', () => {
       { id: 'l1', runId: 'c-00000001', planId: 'p1', label: 'one', createdAt: '2026-11-01T10:00:00Z', createdBy: 'Nate' },
       { id: 'l3', runId: '', planId: '', label: '', createdAt: '2026-11-01T09:00:00Z', createdBy: 'Sam' },
     ])
+  })
+
+  it('are found over every page of a long history, and a later scan reads only what came since', async () => {
+    const create = (seq: number, id: string) => row({ seq, entity: 'launch', entityId: id, op: 'create', value: JSON.stringify({ id, runId: `c-${id}`, planId: 'p1', label: id, createdAt: `2026-11-01T10:00:${String(seq % 60).padStart(2, '0')}Z`, createdBy: 'Nate' }) })
+    // 250 rows, a launch at 5 and at 240 (past the first page of 100): three pages.
+    let rows: DispatchChange[] = Array.from({ length: 250 }, (_, i) => (i + 1 === 5 ? create(5, 'l1') : i + 1 === 240 ? create(240, 'l2') : row({ seq: i + 1 })))
+    const asked: number[] = []
+    const read = async (after: number): Promise<HistoryPage> => {
+      asked.push(after)
+      const page = rows.filter((c) => c.seq > after).slice(0, 100)
+      const more = rows.some((c) => c.seq > (page.at(-1)?.seq ?? after))
+      return { changes: page, ...(more ? { next: page.at(-1)!.seq } : {}) }
+    }
+    const first = await scanLaunches(read, 0)
+    expect(first.launches.map((l) => l.id).sort()).toEqual(['l1', 'l2'])
+    expect(first.after).toBe(250)
+    expect(asked).toEqual([0, 100, 200])
+    // A launch made since: the next scan starts after the last row read and finds it alone.
+    rows = [...rows, row({ seq: 251 }), create(252, 'l3')]
+    asked.length = 0
+    const later = await scanLaunches(read, first.after)
+    expect(asked).toEqual([250])
+    expect(later).toEqual({ launches: [expect.objectContaining({ id: 'l3' })], after: 252 })
+    // Nothing since: the cursor stays.
+    expect(await scanLaunches(read, later.after)).toEqual({ launches: [], after: 252 })
   })
 })

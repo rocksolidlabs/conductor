@@ -76,6 +76,13 @@ function launch(p: PlanSummary | null = props.plans.approved.value): boolean {
   launchOpen.value = true
   return true
 }
+/** Whether a blocker is one the server's reply said (managed runs off, no ledger), which may have passed since: asked again by Try again. */
+const refusedByServer = computed(() => !!(props.plans.server.managedOff || props.plans.server.noLedger))
+/** What the server refused the last launch for, forgotten, and Launch asked again: the server says whether it still holds. */
+function launchAgain(p: PlanSummary) {
+  props.plans.forgetRefusals()
+  launch(p)
+}
 const withdrawing = ref('')
 async function withdraw(p: PlanSummary) {
   if (props.locked || withdrawing.value) return
@@ -167,6 +174,7 @@ defineExpose({ propose, approve, launch })
       </div>
       <ul v-if="featured.state === 'approved' && blockers.length" class="flex flex-col gap-0.5 text-xs text-muted" data-plan-blockers>
         <li v-for="b in blockers" :key="b" class="flex items-start gap-1.5"><UIcon name="i-lucide-circle-slash" class="mt-0.5 size-3 flex-none" /><span>{{ b }}</span></li>
+        <li v-if="!locked && refusedByServer"><UButton label="Try again" icon="i-lucide-rotate-cw" size="xs" color="neutral" variant="outline" data-plan-launch-retry @click="launchAgain(featured)" /></li>
       </ul>
     </div>
 
@@ -190,7 +198,7 @@ defineExpose({ propose, approve, launch })
           <span v-if="plans.launches.get(l.id)?.state === 'failed'" class="w-full text-xs text-error" data-plan-launch-why>{{ plans.launches.get(l.id)!.why }}</span>
         </li>
       </ul>
-      <p v-if="launchCount > plans.shown.value.length" class="text-xs text-dimmed">{{ launchCount }} launches in all; the newest {{ plans.shown.value.length }} the history read so far names are shown.</p>
+      <p v-if="launchCount > plans.shown.value.length" class="text-xs text-dimmed">{{ launchCount }} launches in all; the newest {{ plans.shown.value.length }} are shown.</p>
       <p class="text-xs text-dimmed">A ticket's runs with their tasks, candidates and checks are not shown here yet: each run's page has them.</p>
     </div>
 

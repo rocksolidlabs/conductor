@@ -8,7 +8,9 @@ import { PLAN_BOUNDS, defaultLabel, revisionTag, shortCommit, yoloWords, type La
  * first: the revision, the commit the run starts from, the yolo choice said plainly, and the run's label (the ticket's key and title when
  * none is given). Then it says what came of it: the run started, with its link; the launch failed, with why; still being started, sent
  * again under the same operation (never a second run); or refused before any run, in the server's words. The operation's id is minted
- * once per launch asked for, so a reply lost to the network, or a pending launch sent again, is the same launch.
+ * once per launch asked for, with the label it is first sent with, and both are kept until it is settled: a reply lost to the network, or
+ * a pending launch sent again, is the same launch, sent unchanged (the label is not edited meanwhile; another would be a conflict, not the
+ * launch). Nothing is launched before the revision's body is read: the yolo choice is said from it, never assumed.
  */
 const props = defineProps<{
   revision: PlanSummary | null
@@ -22,30 +24,43 @@ const label = ref('')
 const sending = ref(false)
 const outcome = ref<LaunchOutcome | null>(null)
 const error = ref('')
-/** The operation this launch is: kept while it may still be the same launch (pending, a reply lost), minted again after it is settled. */
-let opId = ''
+/**
+ * The operation this launch is and the label it was first sent with: kept while it may still be the same launch (pending, a reply lost),
+ * so it is sent again unchanged; none once it is settled (started, failed or refused), and the next press is another launch.
+ */
+const op = ref<{ id: string; label: string } | null>(null)
 
 watch(open, (o) => {
   if (!o) return
   label.value = ''
   outcome.value = null
   error.value = ''
-  opId = props.plans.mintOpId()
+  op.value = null
 })
 
-const yolo = computed(() => yoloWords(props.body?.crew.yolo))
+const yolo = computed(() => (props.body ? yoloWords(props.body.crew.yolo) : null))
+const bodyError = computed(() => (props.revision && !props.body ? (props.plans.bodyErrors.get(props.revision.id) ?? '') : ''))
+function readBodyAgain() {
+  if (props.revision) void props.plans.readBody(props.revision.id).catch(() => {})
+}
 const placeholder = computed(() => defaultLabel(props.ticket.key, props.ticket.title))
 const runPath = computed(() => (outcome.value?.state === 'started' ? `/runs/${encodeURIComponent(outcome.value.launch.runId)}` : ''))
 
 async function send() {
   const p = props.revision
-  if (!p || sending.value) return
-  // A launch settled (started or failed) or refused is behind us: the next press is another launch.
-  if (outcome.value && outcome.value.state !== 'pending') opId = props.plans.mintOpId()
+  if (!p || !props.body || sending.value) return
+  // No launch on its way: this press is another launch, and what came of the one before is behind us.
+  if (!op.value) {
+    op.value = { id: props.plans.mintOpId(), label: label.value }
+    outcome.value = null
+  }
+  const sent = op.value
   sending.value = true
   error.value = ''
   try {
-    outcome.value = await props.plans.launch(p, label.value, opId)
+    const out = await props.plans.launch(p, sent.label, sent.id)
+    outcome.value = out
+    if (out.state !== 'pending') op.value = null
   } catch (e) {
     // Both tries lost to the network: the launch may have been made, and the same operation sent again answers it.
     error.value = `${(e as Error).message}: send it again; it is the same launch`
@@ -65,9 +80,14 @@ async function send() {
             <code class="font-mono text-xs" :title="revision.base" data-launch-base>{{ shortCommit(revision.base) }}</code>. Every attempt is handed the ticket as it
             stands now; an edit of the ticket after the launch never changes the run.
           </p>
-          <p class="font-medium" :class="yolo.tone === 'warning' ? 'text-warning' : 'text-muted'" :data-launch-yolo="body?.crew.yolo ? 'on' : 'off'">{{ yolo.label }}. {{ yolo.words }}</p>
-          <UFormField label="The run's label" :hint="`at most ${PLAN_BOUNDS.label} characters`" size="sm">
-            <UInput v-model="label" :maxlength="PLAN_BOUNDS.label" :placeholder="placeholder" class="w-full" data-launch-label />
+          <p v-if="body && yolo" class="font-medium" :class="yolo.tone === 'warning' ? 'text-warning' : 'text-muted'" :data-launch-yolo="body.crew.yolo ? 'on' : 'off'">{{ yolo.label }}. {{ yolo.words }}</p>
+          <p v-else-if="bodyError" class="flex flex-wrap items-center gap-2 text-warning" data-launch-body-error>
+            <span>Revision {{ revision.n }} could not be read, so its yolo choice is not known: {{ bodyError }}</span>
+            <UButton label="Read it again" size="xs" color="neutral" variant="outline" data-launch-body-retry @click="readBodyAgain" />
+          </p>
+          <p v-else class="text-dimmed" data-launch-body-reading>Reading revision {{ revision.n }}: its yolo choice is said before anything launches…</p>
+          <UFormField label="The run's label" :hint="op ? 'kept as it was sent, until this launch is settled' : `at most ${PLAN_BOUNDS.label} characters`" size="sm">
+            <UInput :model-value="op ? op.label : label" :maxlength="PLAN_BOUNDS.label" :placeholder="placeholder" :disabled="!!op" class="w-full" data-launch-label @update:model-value="(v) => (label = String(v ?? ''))" />
           </UFormField>
         </template>
 
@@ -95,6 +115,7 @@ async function send() {
               :label="outcome?.state === 'pending' || error ? 'Send again' : outcome?.state === 'failed' ? 'Launch again' : 'Launch'"
               icon="i-lucide-play"
               :loading="sending"
+              :disabled="!body"
               data-launch-confirm
               @click="send"
             />

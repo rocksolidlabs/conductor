@@ -7,7 +7,8 @@ import { PLAN_BOUNDS, revisionTag, shortCommit, yoloWords } from '~/utils/dispat
  * Approving a plan revision (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): the operator's act, with a note, the
  * rationale, kept beside the approval. The dialog says what the approval covers before it is made: the revision's crew, its commit and its
  * yolo choice, and the ticket's title, description and criteria as they stand now, an edit of which makes it stale until it is approved
- * again. It supersedes the ticket's approval before it. A refusal is said in place, in the store's words.
+ * again. It supersedes the ticket's approval before it. A refusal is said in place, in the store's words. Nothing is approved before the
+ * revision's body is read: the yolo choice is what an approval most needs to show.
  */
 const props = defineProps<{
   revision: PlanSummary | null
@@ -27,13 +28,17 @@ watch(open, (o) => {
   }
 })
 
-const yolo = computed(() => yoloWords(props.body?.crew.yolo))
+const yolo = computed(() => (props.body ? yoloWords(props.body.crew.yolo) : null))
+const bodyError = computed(() => (props.revision && !props.body ? (props.plans.bodyErrors.get(props.revision.id) ?? '') : ''))
+function readBodyAgain() {
+  if (props.revision) void props.plans.readBody(props.revision.id).catch(() => {})
+}
 const other = computed(() => props.plans.approved.value && props.plans.approved.value.id !== props.revision?.id ? props.plans.approved.value : null)
 const again = computed(() => props.revision?.state === 'approved')
 
 async function submit() {
   const p = props.revision
-  if (!p || sending.value) return
+  if (!p || !props.body || sending.value) return
   sending.value = true
   error.value = ''
   try {
@@ -56,7 +61,12 @@ async function submit() {
           <code class="font-mono text-xs" :title="revision.base">{{ shortCommit(revision.base) }}</code>.
           <template v-if="other">It supersedes the approval of revision {{ other.n }}.</template>
         </p>
-        <p v-if="body" class="font-medium" :class="yolo.tone === 'warning' ? 'text-warning' : 'text-muted'" data-plan-approve-yolo>{{ yolo.label }}. {{ yolo.words }}</p>
+        <p v-if="body && yolo" class="font-medium" :class="yolo.tone === 'warning' ? 'text-warning' : 'text-muted'" data-plan-approve-yolo>{{ yolo.label }}. {{ yolo.words }}</p>
+        <p v-else-if="bodyError" class="flex flex-wrap items-center gap-2 text-warning" data-plan-approve-body-error>
+          <span>Revision {{ revision.n }} could not be read, so its yolo choice is not known: {{ bodyError }}</span>
+          <UButton label="Read it again" size="xs" color="neutral" variant="outline" data-plan-approve-body-retry @click="readBodyAgain" />
+        </p>
+        <p v-else class="text-dimmed" data-plan-approve-body-reading>Reading revision {{ revision.n }}: its yolo choice is said before it is approved…</p>
         <p class="text-xs text-muted">
           The approval covers the ticket's title, description and acceptance criteria as they are now (its revision {{ ticket.rev }}): an edit of
           any of them makes it stale, and nothing launches until it is approved again.
@@ -67,7 +77,7 @@ async function submit() {
         <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" title="Not approved" :description="error" data-plan-approve-error />
         <div class="flex justify-end gap-2">
           <UButton label="Cancel" color="neutral" variant="ghost" :disabled="sending" @click="open = false" />
-          <UButton type="submit" :label="again ? 'Approve again' : 'Approve'" icon="i-lucide-badge-check" :loading="sending" data-plan-approve-submit />
+          <UButton type="submit" :label="again ? 'Approve again' : 'Approve'" icon="i-lucide-badge-check" :loading="sending" :disabled="!body" data-plan-approve-submit />
         </div>
       </form>
     </template>

@@ -1,11 +1,11 @@
 import type { InjectionKey, ShallowRef } from 'vue'
 import { ApiError } from './useApi'
 import type { PaletteItem } from './usePalette'
-import type { DispatchChange, DispatchTicket, LaunchSummary, NewPlan, OpBody, PlanBody, PlanReply, PlanSummary } from './useDispatch'
+import type { DispatchTicket, LaunchSummary, NewPlan, OpBody, PlanBody, PlanReply, PlanSummary } from './useDispatch'
 import { dispatchFailureWords } from './useDispatchOps'
 import { through, type DispatchOrder } from '~/utils/dispatchOrder'
 import { retried } from '~/utils/dispatchOrder'
-import { approvedRevision, historyLaunches, launchOutcome, type KnownLaunch, type LaunchOutcome, type LaunchServer } from '~/utils/dispatchPlans'
+import { approvedRevision, launchOutcome, launchUnresolved, launchesToRead, scanLaunches, withAnswers, type KnownLaunch, type LaunchOutcome, type LaunchServer } from '~/utils/dispatchPlans'
 import { mintCommandId } from '~/utils/tasks'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { DISPATCH_RETRY_MAX_MS } from './useDispatchLive'
@@ -19,16 +19,21 @@ export const TICKET_PLAN_ROWS: InjectionKey<ShallowRef<PaletteItem[]>> = Symbol(
 /** How many of a ticket's launches the Plan section reads and shows, the newest: every one is the Runs section's. */
 export const LAUNCHES_SHOWN = 5
 
+/** The rows of a page of the history the launches are found in: the route's largest. */
+const LAUNCH_SCAN_PAGE = 500
+
 /**
  * A ticket page's plan revisions and launches (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): the revisions' summaries
- * (GET …/{key}/plans), the body of each revision opened (immutable, read once by its id), and the launches the ticket's history names, the
- * newest LAUNCHES_SHOWN read by their ids (GET /api/dispatch/launches/{id}), every read through the page's ordering gate. The page reads
- * them with the ticket (its `read` is among the page's reload, so a failure is asked again as a re-read is), which the live events do at
- * once for a `plan` or a `launch` event of the ticket, as for any event naming it; a launch the history names after that read is read as
- * it appears. Nothing polls. The operations (propose, approve, withdraw, launch) are the page's, each one operation with an op id the
- * browser mints; a revision an operation answered with is shown over an older list read, by its `rev`.
+ * (GET …/{key}/plans), the body of each revision opened (immutable, read once by its id), and the launches the ticket's whole history
+ * names (scanned to its end, then from where the last scan stopped, whatever pages the history section shows), the newest LAUNCHES_SHOWN
+ * read by their ids (GET /api/dispatch/launches/{id}) until each is started or failed, which never changes again, every read through the
+ * page's ordering gate. The page reads them with the ticket (its `read` is among the page's reload, so a failure is asked again as a
+ * re-read is), which the live events do at once for a `plan` or a `launch` event of the ticket, as for any event naming it; a launch the
+ * scan finds is read as it appears. Nothing polls. The operations (propose, approve, withdraw, launch) are the page's, each one operation
+ * with an op id the browser mints; a revision an operation answered with is shown over an older list read, by its `rev`, and a launch an
+ * operation answered with goes through the gate as a read of it does.
  */
-export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; ticket: () => DispatchTicket | null; changes: () => readonly DispatchChange[] }) {
+export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; ticket: () => DispatchTicket | null }) {
   const api = useDispatchApi()
   const ops = useDispatchOps(o.gate)
   const identity = useIdentity()
@@ -43,8 +48,15 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
   const bodyErrors = shallowReactive(new Map<string, string>())
   /** The launches read, by id. */
   const launches = shallowReactive(new Map<string, LaunchSummary>())
-  /** The launches this page made, before the history read names them. */
+  /** The launches this page made, before the history's scan names them. */
   const made = ref<KnownLaunch[]>([])
+  /** The launches the history's scans found, by id, and the seq the next scan starts after. */
+  const scanned = shallowReactive(new Map<string, KnownLaunch>())
+  let scannedAfter = 0
+  /** Counts what makes a scan's answer another ticket's or an older store's (a key changed, a reset): a scan of an earlier one is dropped. */
+  let scanGen = 0
+  /** The scans, one after another: each starts where the one before stopped. */
+  let scanning: Promise<void> = Promise.resolve()
   /** What the server is known to refuse a launch for, from its replies. */
   const server = reactive<LaunchServer>({})
 
@@ -54,21 +66,15 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
   /** The revisions shown: the list's, each replaced by an operation's answer that is later (a higher `rev`). */
   const plans = computed<PlanSummary[]>(() => {
     const shownTicket = o.ticket()
-    const list = listed.value ?? (shownTicket?.key === key() ? shownTicket.approved : undefined) ?? []
-    const out = list.map((p) => {
-      const a = answered.get(p.id)
-      return a && a.rev > p.rev ? { ...p, ...a } : p
-    })
-    for (const a of answered.values()) if (!out.some((p) => p.id === a.id)) out.push(a)
-    return out.sort((a, b) => b.n - a.n || b.createdAt.localeCompare(a.createdAt))
+    return withAnswers(listed.value ?? (shownTicket?.key === key() ? shownTicket.approved : undefined) ?? [], answered)
   })
   const approved = computed(() => approvedRevision(plans.value))
   /** The revision shown in full: the approved one, else the newest proposed. */
   const featured = computed(() => approved.value ?? plans.value.find((p) => p.state === 'proposed') ?? null)
   /** The launches known, newest first: the history's, and this page's own not in it yet. */
   const known = computed<KnownLaunch[]>(() => {
-    const out = historyLaunches(o.changes())
-    for (const m of made.value) if (!out.some((l) => l.id === m.id)) out.push(m)
+    const out = [...scanned.values()]
+    for (const m of made.value) if (!scanned.has(m.id)) out.push(m)
     return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
   })
   const shown = computed(() => known.value.slice(0, LAUNCHES_SHOWN))
@@ -108,6 +114,25 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
     }
   }
 
+  /** Scans the history for launches from where the last scan stopped, after the scans before it. Rejects when a page could not be read. */
+  function scanHistory(): Promise<void> {
+    const k = key()
+    const gen = scanGen
+    const next = scanning.catch(() => {}).then(async () => {
+      if (!k || gen !== scanGen || k !== key()) return
+      try {
+        const r = await scanLaunches((after) => api.history(k, after, LAUNCH_SCAN_PAGE), scannedAfter)
+        if (gen !== scanGen || k !== key()) return
+        for (const l of r.launches) scanned.set(l.id, l)
+        scannedAfter = r.after
+      } catch (e) {
+        if (!notFound(e)) throw e
+      }
+    })
+    scanning = next
+    return next
+  }
+
   async function readLaunch(id: string): Promise<void> {
     try {
       await through(
@@ -125,15 +150,17 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
     }
   }
 
-  /** Everything the section shows, read again: the list, the body of the revision shown in full, the launches shown. Rejects when a read failed. */
+  /**
+   * Everything the section shows, read again: the list and the history's launches since the last scan, then the body of the revision shown
+   * in full and the launches shown that may still change (not read yet, or pending). Rejects when a read failed.
+   */
   async function read(): Promise<void> {
-    await readList()
+    await Promise.all([readList(), scanHistory()])
     const f = featured.value
-    await Promise.all([f ? readBody(f.id) : Promise.resolve(), ...shown.value.map((l) => readLaunch(l.id))])
+    await Promise.all([f ? readBody(f.id) : Promise.resolve(), ...launchesToRead(shown.value, launches).map((id) => readLaunch(id))])
   }
 
-  // A launch the history names after the section's read (the history and the list are read side by side): read as it appears, asked
-  // again until it answers, as a re-read is.
+  // A launch a scan finds, or this page made, that is not read yet: read as it appears, asked again until it answers, as a re-read is.
   let gone = false
   onBeforeUnmount(() => (gone = true))
   watch(
@@ -162,18 +189,34 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
       answered.clear()
       launches.clear()
       made.value = []
-      delete server.managedOff
-      delete server.noLedger
+      forgetScan()
+      forgetRefusals()
     },
   )
 
+  /** The history's scans forgotten: the next starts from the history's first change. */
+  function forgetScan(): void {
+    scanGen++
+    scanned.clear()
+    scannedAfter = 0
+  }
+
+  /** What the server was known to refuse a launch for, forgotten: the next launch asks it again (a ledger taken over since, a restart). */
+  function forgetRefusals(): void {
+    delete server.managedOff
+    delete server.noLedger
+  }
+
   /**
-   * The stream started again (a snapshot), maybe on a store restored from a backup whose `rev`s are below those shown: the answers kept
-   * and the launches read are forgotten, and shown as the next read finds them. The bodies stay: each is named by its id and never changes.
+   * The stream started again (a snapshot), maybe on a store restored from a backup whose `rev`s are below those shown, or a server started
+   * again: the answers kept, the launches read and scanned, and what the server refused launches for are forgotten, and shown as the next
+   * read finds them. The bodies stay: each is named by its id and never changes.
    */
   function reset(): void {
     answered.clear()
     launches.clear()
+    forgetScan()
+    forgetRefusals()
   }
 
   /** Shows a revision an operation answered with, and reads the list again after it (the approval superseded another). */
@@ -215,8 +258,10 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
   /**
    * Launches a managed run from the revision `p`, at the ticket's revision shown, under the op id given (minted by the dialog, so the same
    * launch sent again after a lost reply, or while it is pending, is the same operation, never a second run): one network loss is asked
-   * again at once with it, a second is thrown. A refusal that says the server has managed runs off, or no ledger, is kept and said by
-   * Launch until a launch is made.
+   * again at once with it, a second is thrown, as is a server failure that is no refusal (`launchUnresolved`: the launch may have been
+   * kept), so the dialog sends the same operation again. A refusal that says the server has managed runs off, or no ledger, is kept and
+   * said by Launch until a launch is made, a snapshot, or the person asks again (`forgetRefusals`). The launch an answer carries goes
+   * through the gate as a read of it: a slow answer never replaces a later state a read showed.
    */
   async function launch(p: PlanSummary, label: string, opId: string): Promise<LaunchOutcome> {
     const t = o.ticket()
@@ -227,14 +272,16 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
     if (name) body.byName = name
     if (label.trim()) body.label = label.trim()
     let out: LaunchOutcome
+    let n = 0
     for (let attempt = 1; ; attempt++) {
+      n = o.gate.ask()
       try {
         out = launchOutcome({ reply: await api.launch(k, body) })
         break
       } catch (e) {
         if (!(e instanceof ApiError)) throw e
         if (e.status === 0 && attempt === 1) continue
-        if (e.status === 0) throw e
+        if (launchUnresolved(e)) throw e
         out = launchOutcome({ failure: { status: e.status, code: e.code, message: e.message, body: e.body } })
         break
       }
@@ -248,13 +295,13 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
     }
     const l = out.state === 'refused' ? null : out.launch
     if (l) {
-      launches.set(l.id, l)
-      if (!made.value.some((m) => m.id === l.id)) made.value = [...made.value, { id: l.id, runId: l.runId, planId: l.planId, label: l.label, createdAt: l.createdAt, createdBy: l.createdBy }]
+      if (k === key() && o.gate.take(`launch:${l.id}`, n, l.rev)) launches.set(l.id, l)
+      if (k === key() && !made.value.some((m) => m.id === l.id)) made.value = [...made.value, { id: l.id, runId: l.runId, planId: l.planId, label: l.label, createdAt: l.createdAt, createdBy: l.createdBy }]
     }
     return out
   }
 
-  return { plans, listed, approved, featured, bodies, bodyErrors, readBody, launches, known, shown, server, read, reset, propose, approve, withdraw, launch, busy: ops.busy, mintOpId: mintCommandId, failureWords: dispatchFailureWords }
+  return { plans, listed, approved, featured, bodies, bodyErrors, readBody, launches, known, shown, server, forgetRefusals, read, reset, propose, approve, withdraw, launch, busy: ops.busy, mintOpId: mintCommandId, failureWords: dispatchFailureWords }
 }
 
 export type TicketPlans = ReturnType<typeof useTicketPlans>

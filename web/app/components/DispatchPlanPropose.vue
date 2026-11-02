@@ -2,15 +2,17 @@
 import type { DispatchTicket, NewPlan, NewPlanReference, PlanBody, PlanDecision, PlanSummary } from '~/composables/useDispatch'
 import type { CrewSummary } from '~/composables/useSessions'
 import type { TicketPlans } from '~/composables/useTicketPlans'
-import { PLAN_BOUNDS, parseReference, referenceText, revisionTag, shortCommit } from '~/utils/dispatchPlans'
+import { PLAN_BOUNDS, decisionsProblem, keptComments, nextDecisionId, parseReference, referenceText, revisionTag, shortCommit } from '~/utils/dispatchPlans'
 
 /**
  * Proposing a plan revision of a ticket (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): a saved crew with tasks, taken
  * whole as it is now (a crew without tasks, or one that runs on another machine, offered greyed with why: a revision is of a managed crew,
  * and the crew editor is where a crew changes); the commit it starts from, HEAD by default, which the server pins to a full commit id;
  * source references as rows (`path:12-30=note`); the ticket's attachments and recent comments to hand over, as checkboxes; constraints;
- * the decisions a person will make, as rows; a note. Revising prefills it all from the revision it revises, and the new one names it. The
- * server reads the crew, the commit and the references and refuses, in words, what does not hold; the refusal is said in place.
+ * the decisions a person will make, as rows; a note. Revising prefills it all from the revision it revises, and the new one names it: a
+ * comment it handed over that is older than the recent ones the ticket's read carries is kept, offered beside them, never dropped for
+ * being out of sight. The server reads the crew, the commit and the references and refuses, in words, what does not hold; the refusal is
+ * said in place.
  */
 const props = defineProps<{
   ticket: DispatchTicket
@@ -53,6 +55,14 @@ const crewItems = computed(() =>
 const liveAttachments = computed(() => (props.ticket.attachments ?? []).filter((a) => !a.deletedAt))
 /** The recent comments offered: the newest live ones the ticket's read carries, at most the bound. */
 const recentComments = computed(() => (props.ticket.comments ?? []).filter((c) => !c.deletedAt).slice(-PLAN_BOUNDS.comments).reverse())
+/** The comments the revision revised handed over that are not among those offered: older ones, kept unless unticked. */
+const earlierComments = ref<string[]>([])
+/** A comment's words in its checkbox: its number, who wrote it and its start; an older one the ticket's read does not carry, said so. */
+function commentLabel(id: string, i: number): string {
+  const c = (props.ticket.comments ?? []).find((x) => x.id === id)
+  if (!c) return `An earlier comment (${i + 1} of ${earlierComments.value.length}), older than those this page has read`
+  return `#${c.n} ${c.author || c.by}: ${c.body.slice(0, 80)}${c.body.length > 80 ? '…' : ''}`
+}
 
 async function loadCrews() {
   crewsError.value = ''
@@ -72,8 +82,9 @@ watch(open, (o) => {
   refs.value = (b?.references ?? []).map((r) => referenceText(r))
   const live = new Set(liveAttachments.value.map((a) => a.id))
   attachments.value = (b?.attachments ?? []).filter((id) => live.has(id))
-  const liveComments = new Set((props.ticket.comments ?? []).filter((c) => !c.deletedAt).map((c) => c.id))
-  comments.value = (b?.comments ?? []).map((c) => c.id).filter((id) => liveComments.has(id))
+  comments.value = keptComments((b?.comments ?? []).map((c) => c.id), props.ticket.comments ?? [])
+  const offered = new Set(recentComments.value.map((c) => c.id))
+  earlierComments.value = comments.value.filter((id) => !offered.has(id))
   constraints.value = b?.constraints ?? ''
   decisions.value = (b?.decisions ?? []).map((d) => ({ ...d, before: [...d.before] }))
   note.value = ''
@@ -103,7 +114,7 @@ function removeRef(i: number) {
   refs.value = refs.value.filter((_, j) => j !== i)
 }
 function addDecision() {
-  if (decisions.value.length < PLAN_BOUNDS.decisions) decisions.value = [...decisions.value, { id: `d${decisions.value.length + 1}`, question: '', kind: 'approval', before: [] }]
+  if (decisions.value.length < PLAN_BOUNDS.decisions) decisions.value = [...decisions.value, { id: nextDecisionId(decisions.value), question: '', kind: 'approval', before: [] }]
 }
 function removeDecision(i: number) {
   decisions.value = decisions.value.filter((_, j) => j !== i)
@@ -123,8 +134,7 @@ const blocked = computed(() => {
   if (refErrors.value.some((e) => e)) return 'A reference is not one'
   if (attachments.value.length > PLAN_BOUNDS.attachments) return `At most ${PLAN_BOUNDS.attachments} attachments`
   if (comments.value.length > PLAN_BOUNDS.comments) return `At most ${PLAN_BOUNDS.comments} comments`
-  if (decisions.value.some((d) => !d.question.trim() || !/^[a-z0-9][a-z0-9_-]{0,39}$/.test(d.id))) return 'Each decision has an id (a-z, 0-9, _ and -) and a question'
-  return ''
+  return decisionsProblem(decisions.value)
 })
 
 async function submit() {
@@ -193,6 +203,17 @@ async function submit() {
             :label="`#${c.n} ${c.author || c.by}: ${c.body.slice(0, 80)}${c.body.length > 80 ? '…' : ''}`"
             :data-plan-propose-comment="c.n"
             @update:model-value="(v) => toggle('comments', c.id, v)"
+          />
+        </div>
+        <div v-if="earlierComments.length" class="flex flex-col gap-1.5">
+          <span class="text-xs font-medium text-muted">Earlier comments {{ from ? revisionTag(from.revision.n) : 'the revision' }} handed over <span class="text-dimmed">(older than the recent ones; kept unless unticked)</span></span>
+          <UCheckbox
+            v-for="(id, i) in earlierComments"
+            :key="id"
+            :model-value="comments.includes(id)"
+            :label="commentLabel(id, i)"
+            :data-plan-propose-earlier-comment="id"
+            @update:model-value="(v) => toggle('comments', id, v)"
           />
         </div>
 
