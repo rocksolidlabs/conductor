@@ -192,18 +192,28 @@ func requestText(raw json.RawMessage, read, submit string) (string, error) {
 
 // observe reads what, its query's keys the parameters of the route the
 // table's observe_<what> names: a path's are put in its path, the rest
-// in its query. The reply is the route's as it is; a check's log is its
-// text after its SHA-256.
+// in its query. The reply is the route's as it is, read up to the bound
+// the table gives it (the server holds a turn's answer to it); a check's
+// log is its text after its SHA-256. A failure to get a reply names the
+// host and its cause, never the URL: its query is the turn's.
 func (c *brakemanClient) observe(ctx context.Context, what string, query map[string]string) (string, error) {
+	text, _, err := c.observeReply(ctx, what, query)
+	return text, err
+}
+
+// observeReply is observe's text and whether it is JSON: a check's log
+// is its bytes as the server gave them, trailing newlines and all, so it
+// still matches its SHA-256.
+func (c *brakemanClient) observeReply(ctx context.Context, what string, query map[string]string) (string, bool, error) {
 	op, ok := operation("observe_" + what)
 	if what == "" || !ok {
-		return "", fmt.Errorf("observe: what is one of %s", strings.Join(observeWhats(), ", "))
+		return "", false, fmt.Errorf("observe: what is one of %s", strings.Join(observeWhats(), ", "))
 	}
 	props, _ := op.Input["properties"].(map[string]any)
 	path, q := op.Path, url.Values{}
 	for _, k := range slices.Sorted(maps.Keys(query)) {
 		if _, ok := props[k]; !ok {
-			return "", fmt.Errorf("observe %s takes %s", what, takes(props))
+			return "", false, fmt.Errorf("observe %s takes %s", what, takes(props))
 		}
 		if p := "{" + k + "}"; strings.Contains(path, p) {
 			path = strings.ReplaceAll(path, p, url.PathEscape(query[k]))
@@ -212,45 +222,62 @@ func (c *brakemanClient) observe(ctx context.Context, what string, query map[str
 		}
 	}
 	if m := regexp.MustCompile(`\{([a-z]+)\}`).FindStringSubmatch(path); m != nil {
-		return "", fmt.Errorf("observe %s needs %s", what, m[1])
+		return "", false, fmt.Errorf("observe %s needs %s", what, m[1])
 	}
 	if len(q) > 0 {
 		path += "?" + q.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.root+path, nil)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("X-Conductor-Session", c.session)
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("observe: %w", err)
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return "", false, fmt.Errorf("observe: cannot reach %s: %w", req.URL.Host, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSessionReply+1))
-	if err != nil {
-		return "", fmt.Errorf("observe: %w", err)
+	limit := maxSessionReply
+	if b := op.Bounds["reply"]; b > 0 {
+		limit = wholeMiB(b)
 	}
-	if len(body) > maxSessionReply {
-		return "", fmt.Errorf("observe: the server's reply is larger than %d MiB", maxSessionReply>>20)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+	if err != nil {
+		return "", false, fmt.Errorf("observe: the reply was cut short: %v", stripURL(err))
+	}
+	if len(body) > limit {
+		return "", false, fmt.Errorf("observe: the server's reply is larger than %d MiB", limit>>20)
 	}
 	if resp.StatusCode >= 300 {
 		var e struct {
 			Error struct{ Code, Message string } `json:"error"`
 		}
 		if json.Unmarshal(body, &e) == nil && e.Error.Code != "" {
-			return "", fmt.Errorf("observe: %s (%s)", e.Error.Message, e.Error.Code)
+			return "", false, fmt.Errorf("observe: %s (%s)", e.Error.Message, e.Error.Code)
 		}
-		return "", fmt.Errorf("observe: the server answered %d", resp.StatusCode)
+		return "", false, fmt.Errorf("observe: the server answered %d", resp.StatusCode)
 	}
 	if ct, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); ct == "application/json" {
-		return string(bytes.TrimRight(body, "\n")), nil
+		return string(bytes.TrimRight(body, "\n")), true, nil
 	}
 	if sha := resp.Header.Get("X-Conductor-Log-SHA256"); sha != "" {
-		return "sha256 " + sha + "\n\n" + string(body), nil
+		return "sha256 " + sha + "\n\n" + string(body), false, nil
 	}
-	return string(body), nil
+	return string(body), false, nil
+}
+
+// stripURL is err without the URL a net/http error carries.
+func stripURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
 }
 
 // observeWhats is every what observe reads, in the table's order.
@@ -468,11 +495,16 @@ func brakemanObserve(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return 1, err
 	}
-	text, err := c.observe(ctx, what, query)
+	text, isJSON, err := c.observeReply(ctx, what, query)
 	if err != nil {
 		return 1, err
 	}
-	_, err = fmt.Fprintln(stdout, strings.TrimRight(text, "\n"))
+	if isJSON {
+		// A JSON answer ends at its value: one line ends it here.
+		text += "\n"
+	}
+	// A log is written as it came, so it still matches its SHA-256.
+	_, err = io.WriteString(stdout, text)
 	return 0, err
 }
 
@@ -617,8 +649,8 @@ func requestLine(r brakeman.Request) string {
 }
 
 // brakemanListPage is how many requests list asks for a page at a time,
-// and its reply's bound each at the request's.
-const brakemanListPage = 20
+// and its reply's bound each at the request's. A test makes it smaller.
+var brakemanListPage = 20
 
 // brakemanList is conductor brakeman list: every page, newest first.
 func brakemanList(ctx context.Context, c *apiClient, asJSON bool, stdout io.Writer) (int, error) {
@@ -663,7 +695,8 @@ func brakemanList(ctx context.Context, c *apiClient, asJSON bool, stdout io.Writ
 }
 
 // brakemanShow is conductor brakeman show br-n: the request, then its
-// brief's title, reading and items, each with the refs it rests on.
+// brief's title, reading and items, each whole: the words it leads with,
+// then every other field of it in the brief's order.
 func brakemanShow(ctx context.Context, c *apiClient, id string, asJSON bool, stdout io.Writer) (int, error) {
 	var raw json.RawMessage
 	if err := c.doLimit(ctx, http.MethodGet, "/api/brakeman/requests/"+id, nil, &raw, wholeMiB(opBound("brakeman_show", "reply"))); err != nil {
@@ -677,7 +710,7 @@ func brakemanShow(ctx context.Context, c *apiClient, id string, asJSON bool, std
 		Request brakeman.Request `json:"request"`
 		Brief   *struct {
 			Title, Summary, Uncertainty string
-			Items                       []map[string]any
+			Items                       []json.RawMessage
 		} `json:"brief"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -697,39 +730,124 @@ func brakemanShow(ctx context.Context, c *apiClient, id string, asJSON bool, std
 	if b.Uncertainty != "" {
 		fmt.Fprintf(stdout, "\nUncertain: %s\n", b.Uncertainty)
 	}
-	for i, it := range b.Items {
-		fmt.Fprintf(stdout, "\n%d. %v: %s", i, it["kind"], itemText(it))
-		for _, k := range []string{"evidence", "refs", "receipt", "about", "target", "from", "between"} {
-			if v, ok := it[k]; ok {
-				fmt.Fprintf(stdout, "\n   %s: %s", k, refList(v))
+	for i, raw := range b.Items {
+		fields, err := itemFields(raw)
+		if err != nil {
+			return 1, fmt.Errorf("brakeman show: item %d: %w", i, err)
+		}
+		fmt.Fprintf(stdout, "\n%d. %s", i, itemHead(fields))
+		for _, f := range fields {
+			if f.key == "kind" || f.lead {
+				continue
 			}
+			text := fieldText(f.value)
+			sep := " "
+			if strings.HasPrefix(text, "\n") {
+				sep = ""
+			}
+			fmt.Fprintf(stdout, "\n   %s:%s%s", f.key, sep, text)
 		}
 		fmt.Fprintln(stdout)
 	}
 	return 0, nil
 }
 
-// itemText is the words an item leads with.
-func itemText(it map[string]any) string {
-	for _, k := range []string{"text", "question", "title", "objective"} {
-		if s, ok := it[k].(string); ok && s != "" {
-			return s
-		}
-	}
-	if p, ok := it["paths"].([]any); ok {
-		return fmt.Sprintf("%d paths", len(p))
-	}
-	return ""
+// itemField is one field of a brief's item, in the item's order; lead
+// marks the words the item leads with.
+type itemField struct {
+	key   string
+	value json.RawMessage
+	lead  bool
 }
 
-// refList is a ref or a list of refs, comma-separated.
-func refList(v any) string {
-	if l, ok := v.([]any); ok {
-		parts := make([]string, len(l))
-		for i, x := range l {
-			parts[i] = fmt.Sprint(x)
-		}
-		return strings.Join(parts, ", ")
+// itemFields is an item's fields in the order the brief holds them, the
+// first of text, question, title and objective that is a string not
+// empty marked as its lead.
+func itemFields(raw json.RawMessage) ([]itemField, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return nil, errors.New("an item is not an object")
 	}
-	return fmt.Sprint(v)
+	var fields []itemField
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil, err
+		}
+		fields = append(fields, itemField{key: t.(string), value: v})
+	}
+	for _, k := range []string{"text", "question", "title", "objective"} {
+		for i, f := range fields {
+			var s string
+			if f.key == k && json.Unmarshal(f.value, &s) == nil && s != "" {
+				fields[i].lead = true
+				return fields, nil
+			}
+		}
+	}
+	return fields, nil
+}
+
+// itemHead is an item's first line: its kind, and the words it leads
+// with when it has them.
+func itemHead(fields []itemField) string {
+	var kind, lead string
+	for _, f := range fields {
+		switch {
+		case f.key == "kind":
+			_ = json.Unmarshal(f.value, &kind)
+		case f.lead:
+			_ = json.Unmarshal(f.value, &lead)
+		}
+	}
+	if lead == "" {
+		return kind
+	}
+	return kind + ": " + lead
+}
+
+// fieldText is a field's value as show prints it: a string as it is, a
+// list of strings and numbers comma-separated, a list of objects one a
+// line, anything else as JSON.
+func fieldText(v json.RawMessage) string {
+	var s string
+	if json.Unmarshal(v, &s) == nil {
+		return strings.ReplaceAll(s, "\n", "\n     ")
+	}
+	var list []json.RawMessage
+	if json.Unmarshal(v, &list) == nil {
+		parts := make([]string, len(list))
+		plain := true
+		for i, x := range list {
+			var p any
+			_ = json.Unmarshal(x, &p)
+			switch p := p.(type) {
+			case string:
+				parts[i] = p
+			case float64, bool:
+				parts[i] = string(x)
+			default:
+				plain = false
+				parts[i] = compactJSON(x)
+			}
+		}
+		if plain {
+			return strings.Join(parts, ", ")
+		}
+		return "\n     - " + strings.Join(parts, "\n     - ")
+	}
+	return compactJSON(v)
+}
+
+// compactJSON is v on one line, '<', '>' and '&' as they are.
+func compactJSON(v json.RawMessage) string {
+	var b bytes.Buffer
+	if err := json.Compact(&b, v); err != nil {
+		return string(v)
+	}
+	return b.String()
 }
