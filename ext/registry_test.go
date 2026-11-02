@@ -2,6 +2,7 @@ package ext_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -42,7 +43,23 @@ func (f *fake) ICEServers(context.Context, ext.ICERequest) ([]ext.ICEServer, err
 func (f *fake) Room(context.Context, ext.RoomRequest) (ext.RoomJoin, bool, error) {
 	return ext.RoomJoin{}, false, nil
 }
-func (f *fake) Where() ext.Where { return ext.WhereNative }
+func (f *fake) Where() ext.Where          { return "fake" }
+func (f *fake) Takes(ext.ProcessRef) bool { return true }
+func (f *fake) StartTerminal(context.Context, ext.TerminalSpec) (ext.Terminal, error) {
+	return nil, errors.New("fake: no terminal")
+}
+func (f *fake) Run(context.Context, ext.CommandSpec) ext.CommandResult {
+	return ext.CommandResult{Exit: -1, Err: "fake: no command"}
+}
+func (f *fake) Serve(context.Context, ext.CommandSpec) (ext.ServiceProcess, error) {
+	return nil, errors.New("fake: no service")
+}
+func (f *fake) Probe(context.Context, ext.ProbeSpec) (int, error) {
+	return 0, errors.New("fake: no probe")
+}
+func (f *fake) Port(context.Context, ext.ProcessRef) (int, error) {
+	return 0, errors.New("fake: no port")
+}
 
 // incomparable is a provider value whose dynamic type == cannot compare (it
 // holds a slice): never the same value as anything, itself included.
@@ -64,8 +81,24 @@ func (i incomparable) Resolved(context.Context, ext.Resolution) {}
 // *nilSafe answers a name, and is still no provider.
 type nilSafe struct{}
 
-func (*nilSafe) Name() string     { return "constant" }
-func (*nilSafe) Where() ext.Where { return ext.WhereNative }
+func (*nilSafe) Name() string              { return "constant" }
+func (*nilSafe) Where() ext.Where          { return "constant" }
+func (*nilSafe) Takes(ext.ProcessRef) bool { return true }
+func (*nilSafe) StartTerminal(context.Context, ext.TerminalSpec) (ext.Terminal, error) {
+	return nil, errors.New("fake: no terminal")
+}
+func (*nilSafe) Run(context.Context, ext.CommandSpec) ext.CommandResult {
+	return ext.CommandResult{Exit: -1, Err: "fake: no command"}
+}
+func (*nilSafe) Serve(context.Context, ext.CommandSpec) (ext.ServiceProcess, error) {
+	return nil, errors.New("fake: no service")
+}
+func (*nilSafe) Probe(context.Context, ext.ProbeSpec) (int, error) {
+	return 0, errors.New("fake: no probe")
+}
+func (*nilSafe) Port(context.Context, ext.ProcessRef) (int, error) {
+	return 0, errors.New("fake: no port")
+}
 
 // registers is each Register function by its kind, for a fake.
 var registers = []struct {

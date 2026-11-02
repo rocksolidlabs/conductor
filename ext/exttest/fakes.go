@@ -680,13 +680,15 @@ func (f *FakeMedia) RoomRequests() []ext.RoomRequest {
 	return append([]ext.RoomRequest(nil), f.rooms...)
 }
 
-// FakeRuntime is a runtime that answers the Where a test sets. The Runtime
-// seam (docs/plans/runtime.md) gives it the interface's other methods.
+// FakeRuntime is a runtime that answers the Where a test sets, and
+// records and answers the interface's other methods as runtime.go says.
 type FakeRuntime struct {
+	changes
 	name string
 
-	mu    sync.Mutex
-	where ext.Where
+	mu     sync.Mutex
+	where  ext.Where
+	script runtimeScript // runtime.go
 }
 
 // NewFakeRuntime is a FakeRuntime named name that answers w.

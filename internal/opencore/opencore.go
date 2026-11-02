@@ -4,8 +4,9 @@
 // rocksolidlabs organization but this one is imported or required, no
 // build constraint names a feature tag, ext/ stays on the standard
 // library so that another module can take its types without this
-// module's internals, and no code outside ext/ asks the entitlement
-// source.
+// module's internals (ext/local's native Runtime takes the two runners it
+// is made of, internal/pty and internal/proc, and nothing else), and no
+// code outside ext/ asks the entitlement source.
 //
 // The rules read each file with go/parser, whatever the file's tags: a
 // file a plain build leaves out is read as well as one it compiles, which
@@ -56,7 +57,9 @@ const (
 	// cgo, a Go version or one of the test tiers.
 	RuleFeatureTag = "feature-tag"
 	// RuleExtStd: a file under ext/ imports anything but the standard
-	// library and ext's own packages.
+	// library and ext's own packages; a file of ext/local, the free
+	// defaults, may import extStdRunners too (the native Runtime is made of
+	// them), and no other package under ext/ may.
 	RuleExtStd = "ext-std"
 	// RuleUnreadPackage: a file imports a package of this module from a
 	// directory the walk does not read (testdata, node_modules, vendor,
@@ -122,6 +125,11 @@ func allowedTag(tag string) bool {
 // go command's testdata (the fixtures of this package's own test among
 // them) and the package managers' trees.
 var skipDirs = []string{"testdata", "node_modules", "vendor"}
+
+// extStdRunners are the packages of this module a file of ext/local may
+// import beside the standard library and ext's own (RuleExtStd): the
+// runners the native Runtime is made of, which import nothing of ext.
+var extStdRunners = []string{Module + "/internal/pty", Module + "/internal/proc"}
 
 // entitlementNames are the names a file outside ext/ may not use, by the
 // package that declares them: the entitlement source, its record, its
@@ -327,9 +335,10 @@ func checkFile(fset *token.FileSet, p, rel string, modules []string) ([]Problem,
 			problems = append(problems, Problem{RulePrivateModule, rel, line,
 				fmt.Sprintf("imports %s, of a module of the rocksolidlabs organization other than %s", imp, Module)})
 		}
-		if inExt && !standard(imp, modules) && imp != Module+"/ext" && !strings.HasPrefix(imp, Module+"/ext/") {
+		if inExt && !standard(imp, modules) && imp != Module+"/ext" && !strings.HasPrefix(imp, Module+"/ext/") &&
+			!(path.Dir(rel) == "ext/local" && slices.Contains(extStdRunners, imp)) {
 			problems = append(problems, Problem{RuleExtStd, rel, line,
-				fmt.Sprintf("imports %s: ext/ takes only the standard library and ext's own packages", imp)})
+				fmt.Sprintf("imports %s: ext/ takes only the standard library and ext's own packages (and ext/local the runners %s)", imp, strings.Join(extStdRunners, ", "))})
 		}
 	}
 	if entitlements {
