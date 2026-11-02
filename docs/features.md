@@ -3516,6 +3516,45 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   proposes a plan revision; its approval is refused `409 invalid` and the
   revision stays proposed), each checked to fail with its part broken.
 
+  #560 (after PR-6, the owner's decision of 2026-11-01: revocation drops
+  them): a provider's principal that holds a viewer's WebSocket (a server
+  session's or a hosted one's) or `GET /api/events` keeps it only while the
+  provider admits it. The connection's watch (`principalWatch`) asks the
+  provider again every 30 s, through the guard with `IdentityWait` and call
+  slots of its own (`identity-recheck`), and closes the viewer with
+  `error{revoked}` and `4403` (`access revoked`), or ends the stream, once
+  the provider answers in time that it no longer admits the token as that
+  subject with the `admin` grant. An error, a panic, a late answer or one
+  out of bounds ends nothing. The workbench token, the host tokens and the
+  links have no watch, so a build with no provider asks nothing more.
+  What the viewer has under way is withdrawn as a revoked link's is (the
+  server session's subscription ends revoked, whatever it ended for
+  first; a hosted viewer's queued frames are dropped and the host is sent
+  its `viewer_leave` saying `revoked` at once, not when the viewer's
+  connection has closed, and, its join saying `principal`, the host
+  withdraws what it has under way as it loses its connection to the
+  server, which may not have carried that leave), the stream's
+  write under way is cut, and the app says "Your access to this session was
+  revoked". A provider answers ok false only for a token it knows it no
+  longer admits; one that cannot tell returns an error.
+  Tests: `TestRevokedPrincipalLosesEventStream`,
+  `TestRevokedPrincipalLosesViewer` (each for an answer of no principal,
+  the `host` grant only, no grant, another subject; the
+  host's leave, `revoked`, read with the viewer's close held, before
+  the close's `access revoked`),
+  `TestRevokedPrincipalsWaitingSubmissionIsWithdrawn`,
+  `TestARevocationAfterAnotherEndStillRefuses`,
+  `TestARevokedPrincipalsLeaveGoesAtOnce`,
+  `TestOnlyAPrincipalsHostedJoinSaysPrincipal`,
+  `TestAPrincipalsLineIsWithdrawnWhenTheConnectionIsLost`,
+  `TestAPrincipalsViewerWaitsForTheServersWord`,
+  `TestAPrincipalsCredIsKeptWhileHeld`,
+  `TestRevokeCutsABlockedEventStream`, the closeReason vitest,
+  `TestFailingProviderKeepsConnections` (error, panic, late, out of
+  bounds) and `TestChainConnectionsUnwatched`, the waits driven through
+  the server's clock seam, each checked to fail with the watch broken (one
+  that never ends a connection, one that ends it on a failure).
+
   PR-7 (#479): `internal/api`: notification sinks over the event hub, the
   webhooks the first. The notifier (`notify.go`) takes the webhooks'
   place on the hub, so the hub's sinks stay in main's order (the
@@ -3624,7 +3663,46 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   part broken; `TestHostSubmitLine` now answers a choice's keys.
 
   PR-10 (#482): proto, hostagent, signal, api, web: answer_as, a routed
-  answer for a hosted session. Planned.
+  answer for a hosted session. One host control message, server to host,
+  `answer_as{question, input?, text?, byName, bySubject?}` (`HostAnswerAsMsg`,
+  `Valid` holding every field to its bound, exactly one of input and text,
+  under 25 KB at its largest), the register's `answerAs` and the host's
+  `attention` gaining `kept` (at most two ids, a message past that dropped
+  whole), in `internal/proto`, `web/app/utils/protocol.ts` and
+  `docs/protocol.md` together. `conductor host` says `answerAs`, sends
+  what its session keeps with every attention (a change of either told,
+  the pair resent together by a retry) and applies an `answer_as` off its
+  control loop through one queue per connection (four held, a fifth
+  dropped and logged, one goroutine, each within the reply's deadline,
+  ended with the connection) as `Local.AnswerAs` or `Local.Submit` with the
+  question; a server's uplink to a switchyard says none, sends no `kept`
+  and drops an `answer_as` unread. The hub's copy takes attention and
+  `kept` from one message (`HostAttentionKept`); `HostedSession.AnswerAs`
+  sends only to a host that said so. `Host.Submit` and the router send a
+  hosted session's answers there (`sent`); the router routes a hosted
+  session only when its host said `answerAs` and only off a switchyard,
+  judging `HostView`, the host's own last report: a change the server
+  forwards shows in the listing at once, and judged from it a question the
+  host still showed read as set aside before the host said it kept it,
+  which `TestHostedSetAsidePastTheBound` found; a host back without
+  `answerAs` has its routed questions still resolved, none of its new
+  ones routed. A provider's answer under a context already ended sends
+  nothing. A connection's end withdraws its routed answers before it lets
+  its viewers go. Tests: in `internal/proto`
+  `TestHostAnswerAsBounds`, `TestRegisterAnswerAs`,
+  `TestHostAttentionKeptBounds`; in `internal/hostagent`
+  `TestAnswerAsApplied`, `TestAnswerAsInvalidDropped`,
+  `TestAnswerAsNeverInTheControlLoop`, `TestAnswerAsQueueBounded`,
+  `TestAnswerAsWithdrawnBeforeItsConnectionsViewers`,
+  `TestSwitchyardAnswerAsRefused`, `TestKeptSent`,
+  `TestKeptSentWithItsAttention`; in `internal/signal` `TestHostedAnswerAs`,
+  `TestHostedKept`, `TestHostViewIsTheHostsReport`; in `internal/api`
+  `TestRoutedAnswerReachesAHostedSession`, `TestOlderHostUnsupported`,
+  `TestHostedSetAsidePastTheBound`,
+  `TestHostedAnsweredInTheTerminalResolved`,
+  `TestSwitchyardNeverRoutesAHostedSession`,
+  `TestHostedAnswerHonoursItsContext`,
+  `TestHostedResolvedAfterAnswerAsWithdrawn`.
 
   PR-11 (#483): store, ledger, api: the sync hooks after every local commit.
   Three hooks, each called under the lock that orders its commits, right

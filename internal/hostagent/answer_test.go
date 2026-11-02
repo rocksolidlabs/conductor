@@ -253,7 +253,7 @@ func TestTheHostTellsTheServerEachQuestionsID(t *testing.T) {
 	if sameAttention(x, y) {
 		t.Fatal("the same words asked again were taken for the question told already")
 	}
-	if m := hostAttentionMsg("s", x); m.ID != x.ID {
+	if m := hostAttentionMsg("s", x, nil); m.ID != x.ID {
 		t.Fatalf("the message %+v", m)
 	}
 }

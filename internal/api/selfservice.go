@@ -109,7 +109,7 @@ func (s *Server) selfSession(w http.ResponseWriter, r *http.Request) (*session.L
 // launch. 201 {run, crew, member, url}.
 func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 	local, ok := s.selfSession(w, r)
-	if !ok {
+	if !ok || brakemanCannot(w, local) {
 		return
 	}
 	if s.crews == nil {
@@ -203,7 +203,7 @@ func itoa(n int) string { return strconv.Itoa(n) }
 // handleSelfAddMember adds a member to the calling session's run: 201 {run}.
 func (s *Server) handleSelfAddMember(w http.ResponseWriter, r *http.Request) {
 	local, ok := s.selfSession(w, r)
-	if !ok {
+	if !ok || brakemanCannot(w, local) {
 		return
 	}
 	runID, _, inRun := s.runs.MemberOf(local.Info().ID)

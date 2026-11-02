@@ -181,18 +181,27 @@ func maxRelayedBeforeLinkGone() int {
 // host here reads everything in order, as an older host does.
 func TestRevokeOvertakingAQueuedJoinReachesNoHost(t *testing.T) {
 	e := newTestEnv(t, noViewerBudget)
+	reads, gate := newViewerReads(), newWriterGate()
+	e.srv.viewerSeam = &viewerSeam{read: reads.read, taking: gate.wait}
 	hc, sessionID := dialRawHostVia(t, e, slowDoor(t, e))
-	owner, ownerID := joinRawRelayed(t, e, hc, sessionID)
-	// A megabyte the host does not read: the server's writer waits on the
-	// socket, the rest in the viewers' lane, which has room.
+	owner, ownerID := joinRawRelayed(t, e, hc, sessionID) // the viewers' first connection
+	// Until the revoke the server's writer takes nothing more from the
+	// host's queue but for the one message it may already be waiting for:
+	// one of the owner's megabyte, queued, the read after its every frame
+	// begun, before the guest joins. Its writing to the socket alone says
+	// nothing of the server's reading it: a join queued ahead of it would
+	// be taken, and written, before the revoke.
+	gate.shut()
 	sendInput(t, owner, 1<<20)
+	reads.await(t, 0, int(owner.sent.Load())+1)
 	linkID, token := controlLink(t, e, sessionID)
-	guest := dialViewer(t, e, sessionID, token)
+	guest := dialViewer(t, e, sessionID, token) // and their second
 	guestID, _ := guest.expectControl(proto.CtlWelcome)["viewerId"].(string)
 	askRelay(t, guest) // relay_ok: the join and relay_start are queued
 	guest.send(proto.Encode(proto.TypeInput, []byte("typed through the link\n")))
-	time.Sleep(300 * time.Millisecond)
+	reads.await(t, 1, int(guest.sent.Load())+1) // the frame is queued too
 	revokeLink(t, e, sessionID, linkID)
+	gate.lift()
 	marker := proto.Encode(proto.TypeInput, []byte("marker\n"))
 	owner.send(marker)
 	gone := false

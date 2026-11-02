@@ -134,6 +134,8 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 		{"GET /api/dispatch/plans/{id}", s.handleDispatchPlan},
 		{"POST /api/dispatch/plans/{id}/approve", s.handleDispatchApprovePlan},
 		{"POST /api/dispatch/plans/{id}/withdraw", s.handleDispatchWithdrawPlan},
+		{"POST /api/dispatch/tickets/{key}/launch", s.handleDispatchLaunch},
+		{"GET /api/dispatch/launches/{id}", s.handleDispatchLaunchRead},
 		{"GET /api/dispatch/tickets/{key}/comments", s.handleDispatchComments},
 		{"POST /api/dispatch/tickets/{key}/comments", s.handleDispatchAddComment},
 		{"POST /api/dispatch/tickets/{key}/comments/{id}/edit", s.handleDispatchEditComment},
@@ -1426,7 +1428,7 @@ func (s *Server) handleDispatchRemoveRelation(w http.ResponseWriter, r *http.Req
 func (s *Server) handleDispatchAddLink(w http.ResponseWriter, r *http.Request) {
 	var body linkBody
 	ds, key, _, ok := s.opAt(w, r, ticketKey, &body, &body.dispatchOp)
-	if !ok {
+	if !ok || body.Kind == dispatch.LinkRun && s.brakemanRun(w, body.Ref) {
 		return
 	}
 	ctx, cancel := opContext(r)

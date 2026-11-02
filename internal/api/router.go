@@ -11,6 +11,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
 // The decision router (Program item C5): the seam of ext.DecisionRouter
@@ -35,8 +36,11 @@ import (
 //
 // A question first seen answered in the terminal is never routed. Past
 // maxUnresolved routed and untold questions a new one is not routed (the
-// people watching answer it) and is held skipped. Hosted sessions are
-// routed by no one until their hosts send what they keep (PR-10).
+// people watching answer it) and is held skipped. A hosted session is
+// routed as a server session is when its host said answerAs (it sends what
+// its session keeps, and takes answer_as), and only by the owner's own
+// server, never a switchyard: an older host's questions are routed by no
+// one (answerHosted).
 
 const (
 	// routerWorkers bounds the sessions read at once.
@@ -199,7 +203,10 @@ func (r *decisionRouter) nextLocked() (string, bool) {
 // read reads the session id once and judges from that one snapshot: a
 // server session's questions are resolved and routed; a session gone from
 // the registry has its routed questions resolved as ended and is
-// forgotten. A hosted session is not routed yet (PR-10).
+// forgotten. A hosted session's new questions are routed only while the
+// server may answer it (routesHosted); those already routed are resolved
+// either way, so that a host back without answerAs still has them told
+// Resolved and gives back their place under the bound.
 func (r *decisionRouter) read(id string) {
 	seam("read", id, "", ext.Route{}, nil)
 	defer seam("done", id, "", ext.Route{}, nil)
@@ -208,14 +215,25 @@ func (r *decisionRouter) read(id string) {
 		r.gone(id)
 		return
 	}
-	local, ok := d.(*session.Local)
-	if !ok {
+	var info session.Info
+	mayRoute := true
+	switch drv := d.(type) {
+	case *session.Local:
+		info = drv.Info()
+	case *signal.HostedSession:
+		mayRoute = r.s.routesHosted(drv)
+		if !mayRoute && !r.knows(id) {
+			return
+		}
+		// What its host said it shows and keeps, never a change the
+		// server forwarded and the host has not yet applied.
+		info = drv.HostView()
+	default:
 		return
 	}
-	info := local.Info()
 	seam("judge", id, "", ext.Route{}, nil)
-	if d, ok := r.judge(info); ok {
-		r.route(local, d)
+	if dec, ok := r.judge(info, mayRoute); ok {
+		r.route(d, dec)
 	}
 }
 
@@ -230,13 +248,25 @@ func question(info session.Info) string {
 	return a.ID
 }
 
+// knows reports whether the router keeps a record of the session id.
+func (r *decisionRouter) knows(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sessions[id] != nil
+}
+
 // judge resolves the session's routed questions that no longer wait, and
 // answers the question to route, when info shows one the router has not
-// seen and may route.
-func (r *decisionRouter) judge(info session.Info) (ext.Decision, bool) {
+// seen and may route. With mayRoute false (a hosted session the server
+// may no longer answer) it only resolves: a question it has not seen is
+// left unseen, routed once the server may answer the session again.
+func (r *decisionRouter) judge(info session.Info, mayRoute bool) (ext.Decision, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.sessions[info.ID]
+	if st == nil && !mayRoute {
+		return ext.Decision{}, false
+	}
 	if st == nil {
 		st = &routedSession{ids: map[string]routeState{}}
 		r.sessions[info.ID] = st
@@ -260,7 +290,7 @@ func (r *decisionRouter) judge(info session.Info) (ext.Decision, bool) {
 	r.tellLocked()
 	var d ext.Decision
 	route := false
-	if _, seen := st.ids[shown]; shown != "" && !seen && !ended {
+	if _, seen := st.ids[shown]; mayRoute && shown != "" && !seen && !ended {
 		switch {
 		case terminal:
 			// Answered by keys typed in the terminal before the router
@@ -385,7 +415,7 @@ func (r *decisionRouter) tell() {
 // route asks the router where d goes, within its wait, and acts on what
 // the guard answers: a status entry for its destinations, its answer
 // applied once on a goroutine of its own.
-func (r *decisionRouter) route(local *session.Local, d ext.Decision) {
+func (r *decisionRouter) route(drv session.Driver, d ext.Decision) {
 	ctx, cancel := r.s.extCtx, context.CancelFunc(func() {})
 	if r.wait > 0 {
 		ctx, cancel = context.WithTimeout(ctx, r.wait)
@@ -398,11 +428,11 @@ func (r *decisionRouter) route(local *session.Local, d ext.Decision) {
 		r.unsent(d)
 	}
 	if len(rt.To) > 0 {
-		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: routedWords(rt)})
+		r.s.recordRouted(drv, routedWords(rt))
 	}
 	if a := rt.Answer; a != nil {
 		answer := *a
-		r.s.track(func() { r.apply(local, d, answer) })
+		r.s.track(func() { r.apply(drv, d, answer) })
 	}
 	seam("routed", d.Session.ID, d.ID, rt, nil)
 }
@@ -432,12 +462,22 @@ func routeSent(ctx context.Context, dr ext.DecisionRouter, d ext.Decision) (ext.
 
 // apply applies a route's answer to its question once, through the
 // question's claim, as Host.Submit does (submitTo): a person's answer that
-// came first wins, and the route's is refused (logged at debug).
-func (r *decisionRouter) apply(local *session.Local, d ext.Decision, a ext.Answer) {
+// came first wins, and the route's is refused (logged at debug). A hosted
+// session's is sent to its host, which applies it under its own claim.
+func (r *decisionRouter) apply(drv session.Driver, d ext.Decision, a ext.Answer) {
 	ctx, cancel := context.WithTimeout(r.s.extCtx, submitTimeout)
 	defer cancel()
-	res, err, _ := r.s.submitTo(ctx, local, ext.SubmitRequest{Session: d.Session.ID, Question: d.ID, Input: a.Input, Text: a.Text, By: a.By}, nil)
+	req := ext.SubmitRequest{Session: d.Session.ID, Question: d.ID, Input: a.Input, Text: a.Text, By: a.By}
+	var res ext.SubmitResult
+	var err error
+	if local, ok := drv.(*session.Local); ok {
+		res, err, _ = r.s.submitTo(ctx, local, req, nil)
+	} else {
+		res, err = r.s.answerHosted(ctx, drv, req)
+	}
 	switch {
+	case err == nil && res.Status == "sent":
+		r.s.log.Info("routed answer sent to the session's host", "session", d.Session.ID, "question", d.ID)
 	case err == nil && res.Status == "pending":
 		r.s.log.Info("routed answer accepted: it lands as the program reads", "session", d.Session.ID, "question", d.ID)
 	case err == nil:

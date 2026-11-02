@@ -95,6 +95,23 @@ func TestCreateNeverDerivesTheReservedID(t *testing.T) {
 	}
 }
 
+// A crew a person names Brakeman is saved as brakeman-2: brakeman is a
+// Brakeman turn's crew id, which no derived id takes. One saved under it
+// before keeps it.
+func TestBrakemanIsATakenID(t *testing.T) {
+	s, _ := newStore(t)
+	c, err := s.Create(validCrew("", "Brakeman"))
+	if err != nil || c.ID != "brakeman-2" {
+		t.Fatalf("a crew named Brakeman got the id %q, %v", c.ID, err)
+	}
+	if err := s.Put(validCrew("brakeman", "Brakeman")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Get("brakeman"); err != nil || got.ID != "brakeman" {
+		t.Fatalf("a crew saved as brakeman before: %+v %v", got, err)
+	}
+}
+
 func TestListPagesThroughTheDirectory(t *testing.T) {
 	s, st := newStore(t)
 	for i := range 7 {

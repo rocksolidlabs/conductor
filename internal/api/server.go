@@ -108,6 +108,9 @@ type Server struct {
 	// without a data directory, on a switchyard, which keeps no tickets,
 	// and when it could not be opened.
 	dispatch *dispatch.Store
+	// brakeman is Brakeman's desk (brakeman.go), opened beside Dispatch;
+	// nil without a data directory and on a switchyard.
+	brakeman *brakemanDesk
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -229,7 +232,8 @@ type Server struct {
 	// extStarts is the providers the server starts (exthost.go), each with
 	// its ready flag, and extStarting is set by the one StartExtensions
 	// that starts them; extAfter is the clock of their starts' waits and
-	// backoffs, nil for time.After, a test's own otherwise.
+	// backoffs and of an identity provider's re-asks (principalWatch), nil
+	// for time.After, a test's own otherwise.
 	exts        extSlots
 	extCtx      context.Context
 	extStop     context.CancelFunc
@@ -247,6 +251,9 @@ type Server struct {
 	// router is the decision router's seam over the sessions' questions
 	// (router.go).
 	router *decisionRouter
+	// launches admits and settles the launches from a ticket
+	// (dispatch_launch.go).
+	launches launchGate
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
@@ -401,7 +408,28 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 		s.records = records
 		s.runs.RecordEnds(records, func(runID string, err error) { log.Warn("run record not saved", "run", runID, "err", err) }, s.track)
-		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned)
+		// Dispatch's store, beside the ledger and opened before it: the
+		// reconcile of its launches runs at the ledger's recovery
+		// (dispatch_launch.go). A switchyard keeps no tickets. Its changes
+		// reach the pages as dispatch events, a commit's together
+		// (OnChange hands the hub a commit at a time), and a run link names
+		// a run the engine holds or has a record of.
+		if !cfg.Switchyard.Enabled {
+			s.dispatch = openDispatch(st, log)
+			if s.dispatch == nil {
+				syncs.unopened("Dispatch")
+			}
+		}
+		if s.dispatch != nil {
+			syncs.observeDispatch(s.dispatch)
+			s.dispatch.SetRunExists(s.runKnown)
+			s.dispatch.OnChange(s.events.dispatch)
+		}
+		if !cfg.Switchyard.Enabled {
+			s.brakeman = s.openBrakemanDesk(st)
+		}
+		s.wireLaunches()
+		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned, s.ledgerRecovered)
 		if s.ledger == nil {
 			// Its runs are not gone: the sync store is never told they are.
 			syncs.unopened("the ledger")
@@ -418,21 +446,6 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// steps and sessions: the server's envPassthrough, as the server
 		// started with it.
 		s.runs.SetEnvPassthrough(cfg.EnvPassthrough)
-		// Dispatch's store, beside the ledger; a switchyard keeps no
-		// tickets. Its changes reach the pages as dispatch events, a
-		// commit's together (OnChange hands the hub a commit at a time),
-		// and a run link names a run the engine holds or has a record of.
-		if !cfg.Switchyard.Enabled {
-			s.dispatch = openDispatch(st, log)
-			if s.dispatch == nil {
-				syncs.unopened("Dispatch")
-			}
-		}
-		if s.dispatch != nil {
-			syncs.observeDispatch(s.dispatch)
-			s.dispatch.SetRunExists(s.runKnown)
-			s.dispatch.OnChange(s.events.dispatch)
-		}
 	}
 	s.webhooks = s.startNotifier(cfg.Webhooks)
 	// The runs take every entry too: a member's done starts the members after
@@ -581,6 +594,9 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	case <-ctx.Done():
 	}
 	// No record lands after this: the directories may be going.
+	if s.brakeman != nil {
+		s.brakeman.close()
+	}
 	if s.records != nil {
 		s.records.Close()
 	}
@@ -640,6 +656,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/cancel", s.requireAdmin(s.handleCancelTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/retry", s.requireAdmin(s.handleRetryTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/accept", s.requireAdmin(s.handleAcceptTask))
+	// Brakeman's desk and its turn's session routes (brakeman.go).
+	s.routeBrakeman(mux)
 	// The operating guide, the admin's and a session's (guide.go).
 	mux.HandleFunc("GET /api/guide", s.requireAdmin(s.handleGuide))
 	mux.HandleFunc("GET /api/sessions/{id}/guide", s.handleSessionGuide)
@@ -983,6 +1001,11 @@ const recordsGrace = 5 * time.Second
 // records of the runs stopped are then waited for within recordsGrace,
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
+	// Brakeman's records first: the turn the stops below end is left
+	// running in them, and the next start finds it interrupted.
+	if s.brakeman != nil {
+		s.brakeman.close()
+	}
 	s.runs.Draining(ctx)
 	s.webhooks.close(ctx)
 	// The providers' queues end as the webhooks' do: what waits in them is

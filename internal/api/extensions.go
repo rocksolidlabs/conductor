@@ -261,7 +261,7 @@ func (s *Server) extFailed(kind, name, why, detail string) {
 	attrs := []any{"kind", kind, "provider", name, "failure", why, "failures", failures}
 	// An identity provider's words are never quoted: its error, its panic
 	// and its refused principal may carry the token it was given.
-	if detail != "" && kind != ext.KindIdentity {
+	if detail != "" && kind != ext.KindIdentity && kind != kindIdentityRecheck {
 		attrs = append(attrs, "err", detail)
 	}
 	s.log.Warn("extension call failed: its free default answered", attrs...)
@@ -603,6 +603,42 @@ func (g guardIdentity) Authenticate(ctx context.Context, token string) (ext.Prin
 		return ext.Principal{}, false, nil
 	}
 	return a.p, true, nil
+}
+
+// kindIdentityRecheck is the guard's kind of an identity provider's
+// re-asks (recheck): its calls have slots of their own, so the watches of
+// many connections never take the slots a request's authentication needs,
+// and its failures are logged as an identity provider's are, never with
+// its words.
+const kindIdentityRecheck = ext.KindIdentity + "-recheck"
+
+// recheck asks the provider again about token, which it admitted when a
+// long-lived connection was opened with it (principalWatch). known is
+// whether the provider answered: in time, with no error or panic, and,
+// when ok, a principal Principal.Valid takes. A principal without a grant
+// is an answer (it may do nothing here), not a failure. Until its Start
+// has succeeded, nothing is known and nothing asked.
+func (g guardIdentity) recheck(ctx context.Context, token string) (p ext.Principal, ok, known bool) {
+	if !live(g.ready) {
+		return ext.Principal{}, false, false
+	}
+	type answer struct {
+		p         ext.Principal
+		ok, known bool
+	}
+	a := extCall(ctx, g.s, kindIdentityRecheck, g.name, ext.IdentityWait, answer{}, func(a answer) error {
+		if !a.ok {
+			return nil
+		}
+		return a.p.Valid()
+	}, func(ctx context.Context) (answer, error) {
+		p, ok, err := g.p.Authenticate(ctx, token)
+		return answer{copyPrincipal(p), ok, true}, err
+	})
+	if !a.known || !a.ok {
+		return ext.Principal{}, false, a.known
+	}
+	return a.p, true, true
 }
 
 // guardRouter is a decision router behind the guard.

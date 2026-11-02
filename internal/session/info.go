@@ -90,6 +90,20 @@ type CrewRef struct {
 	// a managed run (#334): the task's id and the attempt's number.
 	Task    string `json:"task,omitempty"`
 	Attempt int    `json:"attempt,omitempty"`
+	// Brakeman is set when the session is a Brakeman turn's member
+	// (docs/plans/brakeman.md): the request it does and whether its
+	// questions page no one (quiet, a background turn's). It is set at
+	// the session's creation, from the launch, so every snapshot that can
+	// need input carries it.
+	Brakeman *BrakemanMark `json:"brakeman,omitempty"`
+}
+
+// BrakemanMark is a Brakeman turn's mark on its session (CrewRef.Brakeman).
+type BrakemanMark struct {
+	Request string `json:"request"`
+	// Quiet says the session's questions reach no notification, Chime or
+	// webhook while Needs you still lists them: a background turn's.
+	Quiet bool `json:"quiet"`
 }
 
 // Driver is the minimal interface the registry and API need from any session

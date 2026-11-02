@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding"
 	"encoding/json"
 	"net/http"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -45,7 +47,8 @@ type Operation struct {
 	Description string `json:"description,omitempty"`
 	// Scope is who reaches it: admin, session (any session), task (an
 	// attempt of a managed run) or ticket (a member of a run linked to a
-	// ticket); Brakeman's scopes come with its own entries.
+	// ticket) or observe (a Brakeman turn's session: its request and its
+	// brief; PR-4's reads join it).
 	Scope  string `json:"scope"`
 	Method string `json:"method"`
 	// Path is the route's pattern, as the mux takes it after the method.
@@ -90,6 +93,10 @@ const (
 	// members the run makes itself (add_member answers 409 managed_run
 	// otherwise).
 	needUnmanaged
+	// needNotBrakeman: for a session caller, one that is not a Brakeman
+	// turn's, which forms no crew and adds no member (403
+	// brakeman_cannot).
+	needNotBrakeman
 )
 
 // The guide's bounds (docs/protocol.md, Guide), measured by
@@ -169,7 +176,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:         []string{"conductor", "notify", "--ask", "--message", "TEXT", "--choices", "a|b"},
 			Input:       obj(map[string]any{"message": str("the question, one line"), "choices": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 6}}, "message"),
 			Bounds:      map[string]int{"body": maxBody, "message": session.MaxAttentionMessage}},
-		{Name: "form_crew", MCP: "form_crew", Scope: "session", Method: http.MethodPost, Path: sessions + "/crew", needs: needLauncher | needSelfService | needNoRun,
+		{Name: "form_crew", MCP: "form_crew", Scope: "session", Method: http.MethodPost, Path: sessions + "/crew", needs: needLauncher | needSelfService | needNoRun | needNotBrakeman,
 			Summary:     "Form a crew around this session when the work splits into parts that run side by side: this session stays as one member. Twice an hour at most.",
 			Description: "Form a crew around this session when the work splits into parts that can run side by side: you stay as the member named by self (its agentId and prompt may be empty), the others get sessions of their own. At most 2 a session; never for work you can finish alone.",
 			CLI:         []string{"conductor", "crew", "create", "CREW.json", "--self", "NAME"},
@@ -182,7 +189,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 				"open":      map[string]any{"type": "boolean", "description": "offer the run in the workbench"},
 			}, "name", "goal", "members", "self"),
 			Bounds: map[string]int{"body": maxCrewBody}},
-		{Name: "add_member", MCP: "add_member", Scope: "session", Method: http.MethodPost, Path: sessions + "/run/members", needs: needLauncher | needSelfService | needRun | needUnmanaged,
+		{Name: "add_member", MCP: "add_member", Scope: "session", Method: http.MethodPost, Path: sessions + "/run/members", needs: needLauncher | needSelfService | needRun | needUnmanaged | needNotBrakeman,
 			Summary:     "Add a member to this session's run.",
 			Description: "Add a member to this session's run: {name, agentId, prompt, start}.",
 			CLI:         []string{"conductor", "crew", "add", "MEMBER.json"},
@@ -258,6 +265,19 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:         []string{"conductor", "task", "ticket", "comment", "TEXT"},
 			Input:       obj(map[string]any{"body": str("the comment, Markdown of at most 16 KiB")}, "body"),
 			Bounds:      map[string]int{"body": maxBody, "comment": dispatch.MaxCommentBody}},
+		// A Brakeman turn's request and brief (brakeman_session.go); their
+		// tools are handled from PR-5.
+		{Name: "brakeman_request", MCP: "brakeman_request", Scope: "observe", Method: http.MethodGet, Path: sessions + "/brakeman/request", needs: needLauncher,
+			Summary:     "Your Brakeman request: its kind, subjects as resolved, note, since, the last briefing you may build on, what you may see and your budget left.",
+			Description: "When this session is a Brakeman turn (CONDUCTOR_BRAKEMAN is set): the request you are to answer, its kind and subjects as resolved now, the note and since, the last briefing you may build on, the scope and visibility you may read under and what your budget has left. Read it first.",
+			CLI:         []string{"conductor", "brakeman", "request"},
+			Input:       obj(map[string]any{})},
+		{Name: "brief_submit", MCP: "brief_submit", Scope: "observe", Method: http.MethodPost, Path: sessions + "/brakeman/brief", needs: needLauncher, Receipt: "brakeman",
+			Summary:     "Submit your turn's one brief (brakeman.brief/1): every fact names its evidence, every ref resolves in your scope; the same opId again answers it.",
+			Description: "Submit your Brakeman turn's one brief, schema brakeman.brief/1: a title, your reading (summary), and items (facts with evidence refs, interpretations naming facts, proposals naming an operation of the guide, outcomes naming a receipt, decision cards, drafts). Every ref must resolve inside your scope and visibility, and a revision you name must be the one you read; a refusal names what to fix. The same opId and brief again answer the kept one. Your turn ends once it is kept.",
+			CLI:         []string{"conductor", "brakeman", "brief", "--file", "BRIEF.json"},
+			Input:       obj(map[string]any{"opId": str("your id for this submission, 1 to 32 of A-Z a-z 0-9 . _ ~ -"), "brief": map[string]any{"type": "object", "description": "the brief, schema brakeman.brief/1"}}, "brief"),
+			Bounds:      map[string]int{"body": maxBriefBody, "brief": brakeman.MaxBrief, "refs": brakeman.MaxRefsDoc}},
 		// The guide itself.
 		{Name: "guide", MCP: "guide", Scope: "session", Method: http.MethodGet, Path: sessions + "/guide",
 			Summary:     "This guide, from the running server: the overview without a section, else the section named.",
@@ -312,6 +332,35 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:     []string{"conductor", "up", "CREW"},
 			Input:   bodySchema(launchBody{}),
 			Bounds:  map[string]int{"body": maxLaunchBody}},
+		// Brakeman's desk, the admin's (brakeman.go).
+		{Name: "brakeman_status", Scope: "admin", Method: http.MethodGet, Path: "/api/brakeman", needs: needLauncher,
+			Summary: "Brakeman's configuration, the turn in progress, the queue and today's turns.",
+			Input:   map[string]any{"type": "object", "description": "no body"}},
+		{Name: "brakeman_config", Scope: "admin", Method: http.MethodPut, Path: "/api/brakeman/config", needs: needLauncher,
+			Summary: "Save Brakeman's configuration against the revision read (rev); off cancels the turn in progress and the queue.",
+			Input:   bodySchema(brakemanConfigBody{}),
+			Bounds:  map[string]int{"body": brakeman.MaxConfigDoc}},
+		{Name: "brakeman_ask", Scope: "admin", Method: http.MethodPost, Path: "/api/brakeman/requests", needs: needLauncher, Receipt: "brakeman",
+			Summary: "Ask Brakeman: a request of a kind, with subjects, a note and a since; the same opId again answers it.",
+			CLI:     []string{"conductor", "brakeman", "ask", "KIND"},
+			Input:   bodySchema(brakemanAskBody{}),
+			Bounds:  map[string]int{"body": brakeman.MaxNote + 8<<10, "queue": brakemanQueue}},
+		{Name: "brakeman_requests", Scope: "admin", Method: http.MethodGet, Path: "/api/brakeman/requests", needs: needLauncher,
+			Summary: "Brakeman's requests, newest first, a page at a time.",
+			CLI:     []string{"conductor", "brakeman", "list"},
+			Input:   map[string]any{"type": "object", "description": "no body; ?after= and ?limit= (at most 100)"}},
+		{Name: "brakeman_show", Scope: "admin", Method: http.MethodGet, Path: "/api/brakeman/requests/{id}", needs: needLauncher,
+			Summary: "A Brakeman request whole, with its brief.",
+			CLI:     []string{"conductor", "brakeman", "show", "br-n"},
+			Input:   map[string]any{"type": "object", "description": "no body"},
+			Bounds:  map[string]int{"reply": maxBrakemanRequestReply}},
+		{Name: "brakeman_refs", Scope: "admin", Method: http.MethodGet, Path: "/api/brakeman/requests/{id}/refs", needs: needLauncher,
+			Summary: "A brief's refs as resolved: what the turn read of each and what it was as the brief was kept.",
+			Input:   map[string]any{"type": "object", "description": "no body"},
+			Bounds:  map[string]int{"reply": brakeman.MaxRefsDoc}},
+		{Name: "brakeman_cancel", Scope: "admin", Method: http.MethodPost, Path: "/api/brakeman/requests/{id}/cancel", needs: needLauncher,
+			Summary: "Cancel a Brakeman request: a queued one leaves the queue, a turn's run is stopped after the write.",
+			Input:   bodySchema(brakemanCancelBody{})},
 	}
 })
 
@@ -407,6 +456,9 @@ func valueSchema(t reflect.Type) map[string]any {
 	}
 }
 
+// textMarshaler is encoding.TextMarshaler's type.
+var textMarshaler = reflect.TypeFor[encoding.TextMarshaler]()
+
 // jsonType is the JSON Schema type a Go type encodes as.
 func jsonType(t reflect.Type) string {
 	for t.Kind() == reflect.Pointer {
@@ -414,6 +466,9 @@ func jsonType(t reflect.Type) string {
 	}
 	switch {
 	case t == reflect.TypeFor[time.Time]():
+		return "string"
+	case t.Kind() == reflect.Struct && (t.Implements(textMarshaler) || reflect.PointerTo(t).Implements(textMarshaler)):
+		// encoding/json writes it as its text (a Brakeman ref).
 		return "string"
 	case t == reflect.TypeFor[json.RawMessage]():
 		return "object"
@@ -471,13 +526,13 @@ type guideCaller struct {
 	// Scopes are the operations' scopes it reaches.
 	Scopes []string `json:"scopes"`
 	// local says the session is a server session (not hosted); managed
-	// that its run is a managed one.
-	local, managed bool
+	// that its run is a managed one; brakeman that it is a Brakeman turn's.
+	local, managed, brakeman bool
 }
 
 // adminCaller is the workbench token's: every scope.
 func adminCaller() guideCaller {
-	return guideCaller{Kind: "admin", Scopes: []string{"admin", "session", "task", "ticket"}}
+	return guideCaller{Kind: "admin", Scopes: []string{"admin", "session", "task", "ticket", "observe"}}
 }
 
 // sessionCaller is d's: a session, a run's member, an attempt, a member
@@ -497,6 +552,14 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 	if _, _, _, ok := s.runs.AttemptOf(id); ok {
 		c.Kinds = append(c.Kinds, "attempt")
 		c.Scopes = append(c.Scopes, "task")
+	}
+	if ref := d.Info().Crew; ref != nil && ref.Brakeman != nil {
+		// A Brakeman turn reads its request and submits its brief; it
+		// reaches no ticket through its run, linked or not.
+		c.Kinds = append(c.Kinds, "brakeman")
+		c.Scopes = append(c.Scopes, "observe")
+		c.brakeman = true
+		return c
 	}
 	if inRun && s.dispatch != nil && !s.cfg.Switchyard.Enabled {
 		if _, found, err := linkedTicket(ctx, s.dispatch, run); err == nil && found {
@@ -525,7 +588,7 @@ func (s *Server) reaches(c guideCaller, op Operation) bool {
 	// one in another may do; the admin is given all three.
 	if c.Kind == "session" {
 		inRun := slices.Contains(c.Kinds, "run_member")
-		if (op.needs&needRun != 0 && !inRun) || (op.needs&needNoRun != 0 && inRun) || (op.needs&needUnmanaged != 0 && c.managed) {
+		if (op.needs&needRun != 0 && !inRun) || (op.needs&needNoRun != 0 && inRun) || (op.needs&needUnmanaged != 0 && c.managed) || (op.needs&needNotBrakeman != 0 && c.brakeman) {
 			return false
 		}
 	}
@@ -566,6 +629,13 @@ func guideLimits() []guideLimit {
 		{Name: "task_page", Max: taskPage, Unit: "bytes", About: "a page of a task file"},
 		{Name: "self_crews", Max: selfCrewsPerHour, About: "crews a session forms an hour"},
 		{Name: "self_links", Max: selfLinksPerDay, About: "view links a session mints a day"},
+		{Name: "brief", Max: brakeman.MaxBrief, Unit: "bytes", About: "a Brakeman brief as kept (store.Encode's form)"},
+		{Name: "brief_items", Max: brakeman.MaxItems, About: "items a brief"},
+		{Name: "brief_refs", Max: brakeman.MaxBriefRefs, About: "distinct refs a brief, across its items"},
+		{Name: "brief_title", Max: brakeman.MaxTitle, Unit: "characters", About: "a brief's title"},
+		{Name: "brief_summary", Max: brakeman.MaxSummary, Unit: "bytes", About: "a brief's summary, Brakeman's reading"},
+		{Name: "brief_draft_tickets", Max: brakeman.MaxDraftTicket, About: "draft tickets a brief"},
+		{Name: "brakeman_queue", Max: brakemanQueue, About: "Brakeman requests waiting"},
 		{Name: "body", Max: maxBody, Unit: "bytes", About: "a JSON body, unless its route says more"},
 	}
 }
@@ -688,9 +758,10 @@ type guideReceipt struct {
 }
 
 // guideReceipts is the receipts section: the formats a caller meets,
-// read from their types. A Brakeman request's arrives with its routes.
+// read from their types.
 func guideReceipts() []guideReceipt {
 	return []guideReceipt{
+		{Name: "brakeman", About: "a Brakeman request's, kept under its opId: the same opId again answers the same request, and the same brief's opId again the kept brief", Fields: receiptFields(reflect.TypeFor[brakeman.Request]())},
 		{Name: "ledger", About: "a run command's (pause, unpause, cancel, retry, accept), kept in the ledger under its actor and commandId: the same command again answers the same receipt, repeat true", Fields: receiptFields(reflect.TypeFor[crew.Receipt]())},
 		{Name: "dispatch", About: "a Dispatch operation's, kept under its actor and opId: the same opId again answers it, repeat true", Fields: receiptFields(reflect.TypeFor[dispatch.Receipt]())},
 	}

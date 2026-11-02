@@ -116,7 +116,7 @@ func linkedTicket(ctx context.Context, ds *dispatch.Store, run string) (dispatch
 // through this route.
 func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.taskSession(w, r, false)
-	if !ok {
+	if !ok || brakemanCannot(w, d) {
 		return
 	}
 	ds, ok := s.dispatchStore(w)
@@ -181,7 +181,7 @@ var beforeSessionComment atomic.Pointer[func()]
 // the run when it commits.
 func (s *Server) handleSessionTicketComment(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.taskSession(w, r, false)
-	if !ok {
+	if !ok || brakemanCannot(w, d) {
 		return
 	}
 	ds, ok := s.dispatchWriter(w)

@@ -214,16 +214,19 @@ func (rs *Records) Delete(runID string) error {
 	return err
 }
 
-// prune drops the oldest records past maxRecords among those of runs the
-// engine no longer holds (held) and that are not managed; a held run's
-// record and a managed run's are left alone and not counted. The caller
-// holds rs.mu.
+// prune drops the oldest records past each class's cap (recordsCap:
+// maxRecords for a person's runs, maxBrakemanRecords for Brakeman's
+// turns, so a day of turns never drops a person's record) among those of
+// runs the engine no longer holds (held) and that are not managed; a held
+// run's record and a managed run's are left alone and not counted. A
+// record that cannot be read counts as a person's. The caller holds
+// rs.mu.
 func (rs *Records) prune() error {
 	entries, err := rs.st.List()
 	if err != nil {
 		return err
 	}
-	if len(entries) <= maxRecords {
+	if len(entries) <= min(maxRecords, maxBrakemanRecords) {
 		return nil
 	}
 	all, err := rs.load(entries)
@@ -235,16 +238,23 @@ func (rs *Records) prune() error {
 	all = slices.DeleteFunc(all, func(f recordFile) bool {
 		return (f.ok && f.run.Managed != nil) || f.large || (rs.held != nil && rs.held(strings.TrimSuffix(f.name, ".json")))
 	})
-	if len(all) <= maxRecords {
-		return nil
+	byClass := map[string][]recordFile{}
+	for _, f := range all {
+		byClass[f.run.Class] = append(byClass[f.run.Class], f)
 	}
-	// Oldest first by start time; a record that cannot be read goes first.
-	slices.SortFunc(all, func(a, b recordFile) int {
-		return cmp.Or(cmp.Compare(boolInt(a.ok), boolInt(b.ok)), a.run.StartedAt.Compare(b.run.StartedAt), cmp.Compare(a.name, b.name))
-	})
 	var errs []error
-	for _, f := range all[:len(all)-maxRecords] {
-		errs = append(errs, rs.st.Delete(f.name))
+	for class, files := range byClass {
+		keep := recordsCap(class)
+		if len(files) <= keep {
+			continue
+		}
+		// Oldest first by start time; a record that cannot be read goes first.
+		slices.SortFunc(files, func(a, b recordFile) int {
+			return cmp.Or(cmp.Compare(boolInt(a.ok), boolInt(b.ok)), a.run.StartedAt.Compare(b.run.StartedAt), cmp.Compare(a.name, b.name))
+		})
+		for _, f := range files[:len(files)-keep] {
+			errs = append(errs, rs.st.Delete(f.name))
+		}
 	}
 	return errors.Join(errs...)
 }

@@ -279,8 +279,12 @@ func (s *Store) Create(c Crew) (Crew, error) {
 	if err != nil {
 		return Crew{}, err
 	}
-	// The workbench edits a crew not saved yet at /crews/new: no crew takes that id.
+	// The workbench edits a crew not saved yet at /crews/new: no crew takes
+	// that id; nor Brakeman's, a turn's crew (ClassBrakeman), so a crew a
+	// person names Brakeman is saved as brakeman-2. One saved under it
+	// before keeps it.
 	taken[reservedID] = true
+	taken[ClassBrakeman] = true
 	c.ID = freeID(taken, cmp.Or(slug(c.Name), "crew"), "")
 	c.CreatedAt = s.now()
 	c.UpdatedAt = c.CreatedAt

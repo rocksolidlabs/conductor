@@ -147,6 +147,7 @@ func codexAdapter() Adapter {
 		// Code's, this mode does not hold what the person's own Codex
 		// configuration adds (codexReadOnlyApprovals says what and why).
 		ReadOnlyArgs: func() []string { return []string{"--sandbox", "read-only", "-c", codexReadOnlyApprovals} },
+		ReadOnlyGap:  codexReadOnlyGap,
 		ModelArgs: func(model string) []string {
 			if model == "" {
 				return nil
@@ -209,6 +210,10 @@ func codexAdapter() Adapter {
 // MCP server and no allow rule of its own; whether Codex stays Brakeman's
 // agent on those terms is the owner's decision (PR-3c's Validate, Settings).
 const codexReadOnlyApprovals = `approval_policy={granular={sandbox_approval=false,rules=false,request_permissions=false,mcp_elicitations=true}}`
+
+// codexReadOnlyGap is codexReadOnlyApprovals' list above, in Settings'
+// words (Adapter.ReadOnlyGap).
+const codexReadOnlyGap = "Codex's read-only sandbox (0.163.0) does not hold your own MCP servers, which run outside it and are one yes away from writing, nor your exec-policy allow rules, which run a command outside it without asking; no flag isolates them"
 
 // codexMCPEnv is the TOML list of the variables Codex passes on to
 // Conductor's MCP server (#354): every CONDUCTOR_* one a session sets.
