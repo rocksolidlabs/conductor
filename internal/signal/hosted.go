@@ -451,6 +451,16 @@ type Viewer struct {
 	// link_gone is queued. Nothing of the viewer's still queued for the host
 	// is written from then on (HostConn.Took).
 	forLink atomic.Bool
+	// revocation is why the credential the viewer came with, one that is
+	// not a link (an identity provider's principal), no longer stands
+	// (HostedSession.RevokeViewer), nil while it does: kept whatever the
+	// viewer was closed for first, so that its leave says it was revoked
+	// (leaveCause), there being no link_gone to tell the host.
+	revocation atomic.Pointer[error]
+	// leaveOnce sends the viewer's leave, once, whoever sends it first:
+	// the revocation of its principal (RevokeViewer), which does not wait
+	// for the viewer's connection to close, or its going (RemoveViewer).
+	leaveOnce sync.Once
 	// link is the state of the link the viewer joined through, shared with
 	// the link's other viewers, nil for none: once the link went, nothing
 	// of the viewer's still queued is written either, also once the viewer
@@ -1120,6 +1130,34 @@ func (h *HostedSession) closeLink(linkID string, revoked bool) {
 	}
 }
 
+// RevokeViewer closes v as revoked for a credential that is not a link (an
+// identity provider's principal the provider no longer admits: api's
+// principalWatch), as its link's revoke closes it (closeForLink): reason,
+// ErrRevoked or a kind of it (ErrRevoked for any other), is what it is
+// closed with, unless it was closed for another reason first; nothing of
+// its still queued for the host is written, nor what it is still owed.
+// And the host is told at once that it was revoked (its viewer_leave with
+// LeaveRevoked, whatever it was closed for first), so that the host
+// withdraws what it has under way rather than finish it: there is no
+// link_gone to tell it, and the viewer's connection may take its
+// closeWait to close, which its going (RemoveViewer) waits for. The leave
+// follows the viewer's join, as every leave does, and goes once: its going
+// sends none after it. One already let go is told nothing more.
+func (h *HostedSession) RevokeViewer(v *Viewer, reason error) {
+	if !errors.Is(reason, session.ErrRevoked) {
+		reason = session.ErrRevoked
+	}
+	v.revocation.CompareAndSwap(nil, &reason)
+	v.closeForLink(reason)
+	h.mu.Lock()
+	_, present := h.viewers[v.ID]
+	conn := h.conn
+	h.mu.Unlock()
+	if present {
+		h.leave(conn, v)
+	}
+}
+
 // AgentTokenOK compares a presented agent token in constant time.
 func (h *HostedSession) AgentTokenOK(tok string) bool {
 	h.mu.Lock()
@@ -1401,6 +1439,11 @@ type ViewerOptions struct {
 	// stop (the viewer's closing, or its connection failing) is closed; an
 	// error drops the join, and with it the leave.
 	ChargeJoin func(stop <-chan struct{}, n int) error
+	// Principal says the viewer came as an identity provider's principal
+	// (proto.ViewerJoin.Principal): its join tells the host so, which then
+	// withdraws what it has under way when its connection to the server is
+	// lost, a revoked leave (RevokeViewer) that may not have reached it.
+	Principal bool
 }
 
 // AddViewerWith registers a browser and notifies the host.
@@ -1445,7 +1488,7 @@ func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 	conn := h.conn
 	h.mu.Unlock()
 	h.linkGone(conn, pushedOut)
-	h.sendJoin(conn, v, proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: o.ID, Role: string(role), LinkID: o.LinkID, LinkLabel: o.LinkLabel}, o.ChargeJoin)
+	h.sendJoin(conn, v, proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: o.ID, Role: string(role), LinkID: o.LinkID, LinkLabel: o.LinkLabel, Principal: o.Principal}, o.ChargeJoin)
 	h.notifyChange()
 	return v, nil
 }
@@ -1495,9 +1538,10 @@ func (h *HostedSession) sendJoin(conn *HostConn, v *Viewer, msg proto.ViewerJoin
 
 // leaveMsg is the viewer_leave of viewer id, closed for reason: with the
 // reason when its link no longer opens the session (revoked, its run's link
-// forgotten, expired), so that the host withdraws what the viewer has under
-// way rather than finish it; with none for any other (the viewer left, its
-// connection failed, it was too slow).
+// forgotten, expired), or its principal was revoked (RevokeViewer), so
+// that the host withdraws what the viewer has under way rather than finish
+// it; with none for any other (the viewer left, its connection failed, it
+// was too slow).
 func leaveMsg(id string, reason error) ([]byte, error) {
 	return jsonMarshal(proto.ViewerLeave{T: proto.HostViewerLeave, ViewerID: id, Reason: leaveReason(reason)})
 }
@@ -1537,8 +1581,9 @@ func leaveSize(id string) int {
 // for room until the host's connection closes, and is never dropped, for
 // the host would keep a viewer it was not told left. A leave that says why,
 // the viewer closed for its link (leaveMsg: the first reason it was closed
-// for), goes in the server's own lane, behind the link's going. A viewer
-// let go is written nothing more, whatever it was still owed (the
+// for), goes in the server's own lane, behind the link's going; a viewer
+// whose principal was revoked (RevokeViewer) told the host so already, and
+// gets no second leave. A viewer let go is written nothing more, whatever it was still owed (the
 // session's end, its host's going): no revoke or expiry of its link would
 // find it after.
 func (h *HostedSession) RemoveViewer(v *Viewer) {
@@ -1556,9 +1601,17 @@ func (h *HostedSession) RemoveViewer(v *Viewer) {
 	if !present {
 		return
 	}
-	// The join stops waiting as the viewer closes; one that never went
-	// needs no leave. One queued goes, or is dropped, as the writer takes
-	// it, unless the connection ends first.
+	h.leave(conn, v)
+	h.notifyChange()
+}
+
+// leave tells the host over conn, the session's host connection as the
+// caller found it, that v left (its viewer_leave), once v's join went over
+// it, and only once: RemoveViewer and RevokeViewer both call it, and the
+// first that finds the join went sends it. The join stops waiting as the
+// viewer closes; one that never went needs no leave. One queued goes, or
+// is dropped, as the writer takes it, unless the connection ends first.
+func (h *HostedSession) leave(conn *HostConn, v *Viewer) {
 	<-v.joinDone
 	if conn != nil && conn == v.conn && v.joinQueued {
 		select {
@@ -1566,8 +1619,11 @@ func (h *HostedSession) RemoveViewer(v *Viewer) {
 		case <-conn.Done():
 		}
 	}
-	if conn != nil && conn == v.conn && v.joinTakenNow() {
-		reason := v.Reason()
+	if conn == nil || conn != v.conn || !v.joinTakenNow() {
+		return
+	}
+	v.leaveOnce.Do(func() {
+		reason := v.leaveCause()
 		if leave, err := leaveMsg(v.ID, reason); err == nil {
 			if leaveReason(reason) != "" {
 				conn.send(Outbound{Text: leave})
@@ -1575,8 +1631,22 @@ func (h *HostedSession) RemoveViewer(v *Viewer) {
 				_ = conn.sendFrom(Outbound{Text: leave}, nil, nil)
 			}
 		}
+	})
+}
+
+// leaveCause is what v's leave says it was closed for (leaveReason): the
+// first reason it was closed for when that is its link's going, else the
+// revocation of its principal (RevokeViewer) when there is one, which may
+// have come after another close (too slow, its connection's end).
+func (v *Viewer) leaveCause() error {
+	reason := v.Reason()
+	if leaveReason(reason) != "" {
+		return reason
 	}
-	h.notifyChange()
+	if r := v.revocation.Load(); r != nil {
+		return *r
+	}
+	return reason
 }
 
 // joinTakenNow reports whether the viewer's join went, settled by now.

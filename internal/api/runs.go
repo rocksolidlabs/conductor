@@ -56,14 +56,19 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	s.launches.beforeAttempt(spec)
 	yolo := spec.Yolo
 	ref := spec.Ref
 	// The run's chat: the session is made with it, so that its first viewer finds it, and joins it once it exists.
 	room := s.runs.ChatRoom(ref.RunID)
 	name, renamed := s.memberSessionName(spec)
 	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom,
-		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow}, &ref)
+		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow, agentSHA256: spec.AgentSHA256}, &ref)
 	if aerr != nil {
+		if aerr.Code == agentChangedCode {
+			// The engine's refusal, which it says with the plan revision.
+			return nil, crew.ErrAgentChanged
+		}
 		return nil, aerr
 	}
 	if room != nil {
@@ -200,7 +205,7 @@ func runContext(r *http.Request) (context.Context, context.CancelFunc) {
 // its session is ready.
 // launchBody is the optional body of POST /api/crews/{id}/launch: the run's own name.
 type launchBody struct {
-	Label string `json:"label"`
+	Label string `json:"label,omitempty"`
 }
 
 // maxLaunchBody bounds that body.

@@ -310,8 +310,16 @@ func cancellable(t *task) error {
 	return nil
 }
 
+// retryStates are the task states a retry takes.
+var retryStates = []string{ledger.TaskFailed, ledger.TaskCancelled}
+
+// RetryableStates are the task states Retry takes, for the operating
+// guide (internal/api, guide.go), which says them as retryable enforces
+// them.
+func RetryableStates() []string { return slices.Clone(retryStates) }
+
 func retryable(t *task) error {
-	if t.state != ledger.TaskFailed && t.state != ledger.TaskCancelled {
+	if !slices.Contains(retryStates, t.state) {
 		return fmt.Errorf("%w: it is %s", ErrTaskState, t.state)
 	}
 	return nil

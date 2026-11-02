@@ -91,6 +91,13 @@ type Ledger interface {
 	// recovered record and a task read (continue.go); ok is false for a run
 	// the ledger has no row of.
 	Load(ctx context.Context, runID string) (from Loaded, ok bool, err error)
+	// CheckLog reads one receipt of an attempt (a check's, or a manifest
+	// step's) with its log, as the ledger keeps it, for the attempt after
+	// the one it failed (taskfile.go); ok is false for no such row.
+	CheckLog(ctx context.Context, runID, taskID string, n int, id string, k int) (row ledger.CheckRow, ok bool, err error)
+	// CheckChanged reads the tracked paths that receipt's command changed,
+	// from the finished event committed with its row (ledger.CheckChanged).
+	CheckChanged(ctx context.Context, runID, taskID string, n int, id string, k int) ([]string, error)
 }
 
 // SQLLedger is the ledger package's as a Ledger.
@@ -134,7 +141,30 @@ func (s sqlLedger) Load(ctx context.Context, runID string) (Loaded, bool, error)
 	if err != nil {
 		return Loaded{}, true, err
 	}
-	return Loaded{Run: row, Tasks: tasks, Attempts: attempts, Messages: messages, Prerequisites: prereqs}, true, nil
+	// The receipt that failed each attempt failed at a check or a verify
+	// step, without its log, read with the attempt's checks.
+	var failed []ledger.CheckRow
+	for _, a := range attempts {
+		if _, _, ok := failedAtCheck(a); !ok {
+			continue
+		}
+		rows, err := s.l.Checks(ctx, runID, a.TaskID, a.N, false)
+		if err != nil {
+			return Loaded{}, true, err
+		}
+		if fr, ok := failingReceipt(a, rows); ok {
+			failed = append(failed, fr)
+		}
+	}
+	return Loaded{Run: row, Tasks: tasks, Attempts: attempts, Messages: messages, Prerequisites: prereqs, FailedChecks: failed}, true, nil
+}
+
+func (s sqlLedger) CheckLog(ctx context.Context, runID, taskID string, n int, id string, k int) (ledger.CheckRow, bool, error) {
+	return s.l.Check(ctx, runID, taskID, n, id, k)
+}
+
+func (s sqlLedger) CheckChanged(ctx context.Context, runID, taskID string, n int, id string, k int) ([]string, error) {
+	return s.l.CheckChanged(ctx, runID, taskID, n, id, k)
 }
 
 // UseLedger gives the engine the ledger managed runs are written to. Set
@@ -308,6 +338,10 @@ type task struct {
 	// made usable (steps.go): not counted, the next attempt starting where
 	// it started; a continuation's from the rows.
 	unusable *unusable
+	// priorFailed is, in a continuation, the last attempt of the runs it
+	// continues when it failed at a check: its first attempt is handed the
+	// receipt, read from the rows (failedcheck.go).
+	priorFailed *priorFailed
 }
 
 // lastKept is t's last attempt when a withdrawal has not taken it back,
@@ -417,6 +451,9 @@ type attempt struct {
 	ks        map[string]int
 	uncounted bool
 	preview   string
+	// failed is the receipt of the check or verify step that failed the
+	// attempt (verify), handed to the attempt after it (failedcheck.go).
+	failed *failedCheck
 }
 
 // input is a result a task starts from or has at hand.
@@ -687,7 +724,8 @@ func giveUp() {}
 
 // writable is events as the ledger takes them: an event whose payload
 // encodes to more than ledger.MaxPayload becomes a note of its size (with
-// its task and attempt, when it names them), which always fits.
+// what of a receipt's identity it names: its task, attempt, check or id,
+// phase and k), which always fits.
 func writable(events []event) []event {
 	out, cloned := events, false
 	for i, ev := range events {
@@ -702,7 +740,7 @@ func writable(events []event) []event {
 		if err != nil {
 			note = map[string]any{"unencodable": session.CleanMessage(err.Error())}
 		}
-		for _, k := range []string{"task", "attempt", "check"} {
+		for _, k := range []string{"task", "attempt", "check", "phase", "id", "k"} {
 			if v, ok := ev.payload[k]; ok {
 				note[k] = v
 			}
@@ -1670,17 +1708,25 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// With a package (a run launched from a ticket), its files go beside
 	// them: one that cannot be handed over fails the attempt at "package",
 	// uncounted, and pauses the run, since every attempt would fail the
-	// same way until a person looks.
-	md, js, more, err := e.taskFile(r, a, tr, blocks)
+	// same way until a person looks. The receipt of a check that failed
+	// the attempt before is read the same way (at "receipt").
+	md, js, more, log, err := e.taskFile(ctx, r, a, tr, blocks)
 	if err == nil {
-		err = writeTaskFiles(ctx, a.worktree, r.prefix, md, js, more, r.pkg, e.openPackageFile)
+		err = writeTaskFiles(ctx, a.worktree, r.prefix, md, js, more, r.pkg, e.openPackageFile, log)
 	}
 	if err != nil {
 		release()
 		var pe *packageError
-		if errors.As(err, &pe) {
+		var re *receiptError
+		switch {
+		case errors.As(err, &pe):
 			fail("package", err, false, true)
-		} else {
+		case errors.As(err, &re):
+			// The receipt of the check that failed the attempt before,
+			// or its log, could not be read: not counted, and the run
+			// paused, so the attempt after the pause is handed them.
+			fail(receiptStage, err, false, true)
+		default:
 			fail("task file", err, false, false)
 		}
 		return
@@ -2355,6 +2401,13 @@ func (e *Engine) RetryTask(ctx context.Context, runID, taskID string) error {
 		return refused
 	}
 	return err
+}
+
+// InManagedRun reports whether a session is a member of a managed run,
+// whose members are never added by hand (AddMember's ErrManaged).
+func (e *Engine) InManagedRun(sessionID string) bool {
+	v, ok := e.bySession.Load(sessionID)
+	return ok && v.(sessionMember).r.managed
 }
 
 // AttemptOf reports the task and attempt a session is, in a managed run.

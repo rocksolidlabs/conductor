@@ -51,16 +51,29 @@ func run(t *testing.T, name string, args ...string) string {
 }
 
 // runStatus is run with the command's error too: a non-zero exit, a
-// timeout.
+// timeout. The output goes to a file, not a pipe: Claude Code 2.1.314 exits
+// before a pipe has taken all of its help (229 of its 313 lines read,
+// --session-id not among them), and writes a file whole.
 func runStatus(t *testing.T, name string, args ...string) (string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	dir := t.TempDir()
+	f, err := os.Create(filepath.Join(dir, "out.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = append(os.Environ(), "TERM=dumb", "NO_COLOR=1", "CI=1")
-	cmd.Dir = t.TempDir()
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	cmd.Dir = dir
+	cmd.Stdout, cmd.Stderr = f, f
+	runErr := cmd.Run()
+	out, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out), runErr
 }
 
 func keep(t *testing.T, id, kind, text string) {

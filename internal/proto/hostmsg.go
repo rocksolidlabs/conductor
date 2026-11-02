@@ -161,6 +161,13 @@ type ViewerJoin struct {
 	LinkID   string `json:"linkId,omitempty"`
 	// LinkLabel is shown in the viewers roster; the host never sees the token.
 	LinkLabel string `json:"linkLabel,omitempty"`
+	// Principal says the viewer came as an identity provider's principal,
+	// a credential that is not a link and that the server may revoke at
+	// any time (its viewer_leave then says revoked): the host holds what
+	// the viewer has under way to its connection to the server, as it does
+	// a link's viewer's, withdrawn when the connection is lost and acted on
+	// only while the host vouches for its server. An older host ignores it.
+	Principal bool `json:"principal,omitempty"`
 }
 
 // LinkGone tells the host that a link through which a viewer of its
@@ -199,7 +206,9 @@ type ViewerBehind struct {
 
 // ViewerLeave tells the host a viewer left, or was let go. Reason says the
 // viewer's link no longer opens the session (LeaveRevoked: revoked, its
-// run's link forgotten, gone; LeaveExpired), and is empty for any other
+// run's link forgotten, gone; LeaveExpired), or the identity provider no
+// longer admits the principal the viewer came as (LeaveRevoked), and is
+// empty for any other
 // end (the viewer left, its connection failed, it was too slow). A host
 // takes a reason it does not know, or one over MaxLeaveReason bytes, as
 // none; an older server sends none, and an older host ignores the field.

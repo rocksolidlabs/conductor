@@ -82,8 +82,10 @@ reached it, or it went; nothing was written; the message says which, see
 `answer`).
 
 WebSocket close codes: `1000` normal, `1001` server shutdown, `4400` protocol
-error, `4401` unauthorized, `4403` link revoked or expired, `4404` unknown
-session, `4409` too many viewers, `4410` session or host gone. The workbench
+error, `4401` unauthorized, `4403` link revoked or expired (reason `link
+revoked`, `link expired`), or an identity provider's principal the
+provider no longer admits (reason `access revoked`, see the HTTP API's
+token order), `4404` unknown session, `4409` too many viewers, `4410` session or host gone. The workbench
 token is control on every session of its own server and has no role on a
 switchyard's (`4401`): a session published there is opened by the links its
 publishing machine had minted.
@@ -516,14 +518,15 @@ host's session, as the viewer's welcome carries them, none dropped for
 the frame: a host message holds 64 KiB; an open host, registered with no
 token, is handed the configured ones alone; `links`: the ids of the live links the server holds for the session, `[]`
 when none; an older server sends no field, which says nothing),
-`viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
+`viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
 server holds for it, or caught up: above; a host refuses one whose
 `viewerId` is not 16 bytes, and one for a viewer it no longer has changes
 nothing),
 (`reason`: `revoked` when the viewer was let go for its link (revoked, its
-run forgotten, its run's session no longer named) or `expired` (the link
+run forgotten, its run's session no longer named) or because the identity
+provider no longer admits the principal it came as, or `expired` (the link
 reached its expiry), none for any other end (it left, its connection failed,
 it was too slow); `link_gone`: a link a viewer joined the session through
 (`linkId`, at most 64 bytes) no longer opens it (revoked, expired as the
@@ -582,7 +585,15 @@ host gives the connection up and connects again (its pings keep a
 connection that drops what it carries from being idle, which TCP's
 keepalive would otherwise have ended). The lines of the owner's own
 windows, the host's own terminal and a paste invite's viewer need no such
-word. A host reads a reason it does not know, or
+word. A viewer that came as an identity provider's principal has no link,
+but the server may revoke it at any time (its `viewer_leave` then says
+`revoked`), so it joins with `principal: true` and the host holds what it
+asked for as a link's viewer's: as the host loses its connection to the
+server, which may have kept that leave from coming, what is still under
+way of the viewer's is withdrawn (a line's carriage return among it),
+and what it sends is acted on only while the host vouches for its server,
+its join pinging at once as a link's does. An older host ignores the
+field. A host reads a reason it does not know, or
 one over 16 bytes, as none; an older server sends neither, and an older
 host ignores both, as before: each side decodes the other's messages
 without refusing unknown fields),
@@ -1830,7 +1841,21 @@ the workbench token is (on a switchyard, with the workbench token's lack of a
 role on the sessions published there), and one with the `host` grant is a
 host token's, at `GET /ws/host` too; a principal without a grant, an answer
 late past 1 s, an error or one out of bounds is an unknown token, `401` under
-the same rate limit. The admin's commands and Dispatch operations, and the
+the same rate limit. A provider's principal that holds a long-lived
+connection, a viewer's WebSocket or `GET /api/events`, is asked about again
+every 30 s while it holds it, each ask bounded at 1 s as the first: once
+the provider answers in time that it no longer admits the token (no
+principal, another subject, or one without the `admin` grant), the viewer
+is closed with `error{revoked}` and `4403` (`access revoked`) and the stream
+is ended. What the viewer has under way is withdrawn as a revoked link's
+is: a submission not yet entered, keys not yet written and a save's next
+part are refused, and a hosted session's host is told at once with a
+`viewer_leave` whose reason is `revoked` (not when the viewer's connection
+has closed; one leave, after its join). The stream's write under way is
+cut. A provider answers so only for a token it knows it no longer admits;
+one that cannot tell returns an error. A provider that errs, is late or answers out of bounds has said
+nothing, and the connection stays. The workbench token, the host tokens
+and the links are never asked about again this way. The admin's commands and Dispatch operations, and the
 reads of their receipts, are kept under the actor `admin` for the workbench
 token and `user:<subject>` for a provider's principal (its subject at most 48
 bytes): each finds only its own receipts, and a provider's subject can never
@@ -1930,6 +1955,8 @@ its run, and on no other.
 | `GET /api/dispatch/plans/{id}` | admin | a plan revision whole: `{plan}`, its summary as the list gives it and `body`, the bytes it is kept as (Plan revisions, below), under 3 MiB (`MaxPlanReply`); `404 not_found` |
 | `POST /api/dispatch/plans/{id}/approve` | admin | approve a plan revision (`plan.approve`), the operator's: `{opId, expectedRev?, ticketRev?, note?, byName?}`, `expectedRev` the revision's and `ticketRev` the ticket's (`409 stale_revision` for either), `note` at most 1,000 characters of Markdown, the rationale; the ticket's other approved revision made `superseded`; reply `{receipt, plan}`; `409 stale_plan` ("…: revise it") when an agent of its body resolves otherwise in the catalog now, naming the agent and the part (its command, its session recipe's start arguments, its yolo recipe's arguments or its environment), no receipt kept, or when a comment it hands over was edited or deleted since it was made, its receipt kept; `409 invalid` for a withdrawn revision and for one approved whose approval holds; `404 not_found` |
 | `POST /api/dispatch/plans/{id}/withdraw` | admin | withdraw a plan revision (`plan.withdraw`): `{opId, expectedRev?, byName?}`, `expectedRev` the revision's; reply `{receipt, plan}`; `409 invalid` for one withdrawn already; `404 not_found` |
+| `POST /api/dispatch/tickets/{key}/launch` | admin | launch a managed run from a ticket's approved plan revision (`ticket.launch`; see Launches below): `{opId, plan, expectedRev?, label?, byName?}`, at most 4 KiB, `plan` the revision's id, `expectedRev` the ticket's, `label` the run's own name (at most 60 characters; the ticket's key and title, cut at a word, when absent); reply `201 {receipt, launch, run}` once the run's first ledger transaction is committed and the launch recorded started, `launch` its summary `{id, ticketId, ticketKey, planId, planN, runId, label, ticketRev, intent, criteria, packageSha256, state, why?, agents, createdAt, createdBy, fingerprint, startedAt?, rev}` (never the package), `run` as `GET /api/runs/{run}` answers it; the same `opId` again answers the same launch, `200` with the receipt's `repeat`, never a second run; `409 launch_failed {error, receipt, launch}` when the run could not be started (an agent not installed or not the one it claims, a working directory outside the allowed roots, the engine's refusal), the launch kept, `failed`, with why; `409 stale_plan` when an agent of the revision resolves otherwise in the catalog now, naming the agent and the part ("…: revise it"), no receipt kept, or when the store finds the approval stale (the ticket's intent changed: "approve it again or revise it"; a handed-over comment or attachment edited or gone: "revise it"), its receipt kept; `409 invalid` for a ticket closed or a revision not approved; `409 managed_off`; `503 ledger_unavailable` without a ledger, with one another server owns, and while the server takes the ledger over ("the server is taking over the ledger"), no launch kept; a pending launch replayed on a server that may not advance it is answered `503 ledger_unavailable {error, receipt, launch}`, still pending, never recorded failed |
+| `GET /api/dispatch/launches/{id}` | admin | a launch whole: `{launch}`, its summary as the launch answers it and `package`, the bytes it is kept as (Launches, below), under 1 MiB (`MaxLaunchReply`); `404 not_found` |
 | `GET /api/dispatch/links?run={id}` | admin | the ticket a run is linked to, for the run page's chip: `{ticket: {id, key, title, status, deletedAt?}}`, the live ticket whose live `run` link names the run (one at most); else, when only deleted tickets' links name it, the one whose link is latest, with `deletedAt`; `{ticket: null}` when no live link names the run; `400 invalid_request` for a run id that is not one |
 | `GET /api/dispatch/views` | admin | the live saved views, by name: `{views}`, each `{id, projectId, name, kind, query, createdAt, updatedAt, rev}`, `projectId` `""` for a view of every project and `query` the JSON it is; with `project` (a project's key), the views its pages offer, its own and every project's, else every live view; at most 200, under 3 MiB as a project's read is; `404 not_found` for a project missing |
 | `POST /api/dispatch/views`, `…/views/{id}/edit`, `…/views/{id}/delete` | admin | save a view (`view.create`: `{opId, byName?, project?, name, kind, query}`, of the project with the key or, without one, of every project; `name` 1 to 60 characters, `kind` `list`, `board` or `roadmap`, `query` a JSON object, never a string of one, of a list's filter and sort as the tickets' list takes them (`status`, `priority`, `labels`, `owner`, `assignees`, `milestone`, `horizon`, `parent`, `blocked`, `q`, `deleted`, `sort`, `desc`) and its grouping (`group`: `status`, `priority`, `horizon`, `milestone` or `owner`), each value in its vocabulary, at most 8 KiB as kept, compacted; at most 200 live), set the fields given of a live one (`view.edit`: `{opId, expectedRev?, byName?, name?, kind?, query?}`, its project never changing), or delete one (`view.delete`: `{opId, expectedRev?, byName?}`, a tombstone); reply `{receipt, view}`, `201` for a create; `404 not_found` for a project missing, or a view missing or deleted; `409 invalid` for a query that is not a list's; `409 archived` for a view of an archived project |
@@ -2101,6 +2128,88 @@ prerequisites, its setup phase, its services and its `ready` probes, its
 `preview`, its `env` names, each tree's ports, state directory and
 placeholders, its `verify` steps after a result's checks and its `cleanup`
 steps at each tree's end.
+
+### Guide
+
+The operating guide (`docs/plans/brakeman.md`, BK0): what the running
+server says the caller may do here, computed per caller on each request
+and never cached, from the one table of Conductor's operations that the
+MCP server's tools are listed from too (`internal/api/guide.go`), so a
+tool and its guide entry cannot drift. `conductor guide` and the MCP
+tool `guide` read it.
+
+| Route | Credential | Answer |
+|---|---|---|
+| `GET /api/guide?section=` | admin | the guide for the admin, every operation of the table that the server has (a switchyard's lists none that launches) |
+| `GET /api/sessions/{id}/guide?section=` | the session's agent token, or admin | the session's guide, the admin's token reading the same as the session's; another session's token, a share or host token `401`; `404 not_found` for no such session; on a switchyard a published session's own token alone |
+
+Without `section` the reply is the overview, else that section; `404
+no_section` for a name not below, `400 invalid_request` for any other
+parameter. Every reply is `{guide: 1, version, commit, section, <section>:
+…}`, `version` and `commit` the server's build, the content under the
+section's own name; encoded with HTML escaping off and measured so: the
+overview at most 4 KiB, each section at most 64 KiB, the six at most 256
+KiB, which a test holds with every entry at its largest (a past bound is
+`500 guide_bound`, never a cut reply). The sections:
+
+- `overview`: `{caller: {kind, session?, kinds?, run?, member?, scopes},
+  sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
+  session's `kinds` are `plain` (in no run) or `run_member`, `attempt` (of
+  a managed run) and `ticket_member` (of a run a live ticket's run link
+  names); `scopes` are the operations' scopes it reaches (`session`, and
+  `task` for an attempt, `ticket` for a ticket's member; the admin's are
+  `admin`, `session`, `task` and `ticket`). `bytes` is the size of that
+  section's reply. `rules` are three lines for every caller: a fact needs
+  evidence; nothing an agent writes becomes work by itself; a question
+  goes to a person with `ask`.
+- `operations`: the operations the caller's scopes reach on this server,
+  each `{name, summary, scope, method, path, mcp?, cli?, input, receipt?,
+  revision?, bounds?}`: `summary` at most 300 bytes as encoded; `path` the mux's
+  pattern after the method; `mcp` the tool's name; `cli` the command's
+  words; `input` the JSON Schema of the tool's arguments, or of the body
+  read from the type the route decodes (every field it takes, an
+  embedded operation's `opId`, `expectedRev` and `byName` among them, a
+  nested object's own, those without a default `required`, and no other
+  property at any depth);
+  `receipt` `ledger` (a run command's) or `dispatch` (a Dispatch
+  operation's); `revision` the precondition the route itself checks,
+  `run` (a command's `expectedRevision`) or `ticket` (Dispatch's
+  `expectedRev`), absent for a route that takes none (a run's stop and
+  resume); `bounds` in bytes. A tool's description is its MCP
+  `tools/list` entry's, at most 1 KiB, and is not repeated here. A route
+  that needs self-service (`agents.selfService`: `form_crew`,
+  `add_member`, `run_status`, `link`) is listed only with it on, never on
+  a switchyard (whose sessions are all hosted), and for a session only
+  for a server session: `form_crew` only for one in no run (one in a run
+  is answered `409 in_a_run`), `add_member` and `run_status` only for a
+  member of a run, `add_member` never for a member of a managed run (one
+  is answered `409 managed_run`); one that launches or needs the
+  ledger or Dispatch is not listed on a switchyard. The table holds the
+  agent routes and tools, the guide's two routes, and the admin's
+  operations a proposal may name: a run's pause, unpause, stop and resume;
+  a task's cancel, retry and accept; a ticket's create, edit, comment and
+  link; a crew's create and launch.
+- `limits`: `[{name, min?, max?, default?, pattern?, unit?, about}]`,
+  each read from the constant that refuses past it (`default` what 0
+  takes, a check timeout's): a task id's pattern, a crew's
+  members and tasks, a task's checks, a check's timeout, a result's
+  summary, issues and findings, a message and an inbox, a report's
+  message, a comment, a ticket's title and description, a task file's
+  page, the self-service crews and links, a body.
+- `host`: `{os, arch, switchyard, managedCrews, selfService, ledger:
+  {state, why?}, dispatch: {state, why?}, checksMaxConcurrent, sessions?,
+  agents: [{id, name, adapter?, installed, version?}], moreAgents?}`;
+  `state` is `owned` (the ledger) or `open` (Dispatch), `read_only` or
+  `absent`, `why` (at most 500 bytes) and `sessions` (how many the server
+  lists) for the admin alone; `agents` the catalog's, at most 64 with
+  `moreAgents` counting the rest, `version` what its probe found when the
+  server knows it already (the guide runs no probe and waits at most 0.5
+  s for the programs' lookups); a session sees the agents only with
+  self-service on, on a server session, and a switchyard lists none.
+- `receipts`: `[{name, about, fields: [{name, type, optional?}]}]`, the
+  formats a caller meets (`ledger`, `dispatch`), read from their types.
+- `providers`: `{known: false, providers: []}` until the server names its
+  registered providers (Program item C9).
 
 ### Crew runs
 
@@ -2355,10 +2464,65 @@ directory (with a `.gitignore` of `*`; refused when the commit tracks
 64 KiB: what is needed least is cut (the context blocks, the last first,
 then the inputs' summaries, then the
 checkpoint, then findings from the last, then the review's summary, the
-checks' commands, the inputs after the first, the attempt before's error
+checks' commands, the inputs after the first, the failed check's last
+output, the paths it changed and its command, the attempt before's error
 past 2,000 characters) into `.conductor/task-more.json` in full, which
 `task.json`'s `more` and `cut` (`the last N context blocks` among them) and
-a "Cut to fit" section of `task.md` name. With a context provider
+a "Cut to fit" section of `task.md` name. An attempt after one that
+failed at a check or a project manifest's verify step (DS2) is handed
+that receipt: `task.json`'s `previous.check`, `{receipt, run, task,
+attempt, phase, id, k, argv, subject, exit, signal?, timedOut, stable,
+changed?, tail?, logSha256, logBytes, log?, logDropped?}`, `receipt` the
+ledger's identity of the row (`<run>/<task>/<n>/<phase>/<id>/<k>`, its
+log the one the step log route above answers for the same run, task,
+attempt, id and k) and `run` the run whose ledger holds it (the source
+run's for a continuation's first attempt, never the continuation's),
+`subject` the commit it failed, `changed` at most 10 of the tracked paths
+it changed (each cut to 1,024 bytes, as its `check.finished` or
+`step.finished` event lists them, in the run as after a restart: both
+name `k`, a byte that is not UTF-8 is one U+FFFD as the event's JSON has
+it, and an event past the ledger's bound as JSON loses its untracked
+paths, then its words' control characters, then changed paths past these
+ten, before it would become a note), `tail` the last 2 KiB of
+its output as the ledger keeps it; and its whole log, at most 1 MiB, read
+from the ledger and written before the session starts as
+`.conductor/previous/check-<id>.log` (`log`, its size `logBytes` and its
+SHA-256 `logSha256`, the ledger's). A log the run's bound dropped is
+`logDropped`, with no file, its hash and tail kept. `task.md`'s "The
+attempt before" says which check failed on which commit, how, its last
+output in a fenced block, and where its log is. The receipt's identity,
+its outcome and its log's fields are never cut; `tail`, `changed` and
+`argv` go into `task-more.json`'s `previous.check`, in that order, before
+the error does. A receipt or a log the ledger cannot give (or a log that
+is not the one its SHA-256 names), or a log whose file cannot be
+written, fails the attempt at `receipt`, not counted, and pauses the
+run, as a package that cannot be handed over does: no attempt starts
+without the log it is told of, and the attempt after the pause is handed
+the receipt and the log. A receipt that passed is never handed, a verify
+step's included whose outcome the ledger took only with the next commit;
+one that failed is, a row from a version 4 ledger too, which keeps no
+words of its failure (its exit, signal, timeout or changed checkout
+say it). An attempt of a run launched from a ticket (DS2, Launches
+below) is handed the package beside its task files, through the same
+root: `.conductor/ticket.md` (the ticket as launched, rendered from the
+package: its key and title, the revision it stood at and the plan
+revision with its approval's note, its fields, description, criteria,
+constraints, decisions, references, attachments and comments),
+`.conductor/package.json` (the package's bytes as launched) and each
+attachment as `.conductor/attachments/<file>`, read from Dispatch's store
+by its hash (pinned there, so a removal from the ticket does not take it
+away), its size and SHA-256 checked as it is copied; `task.json`'s
+`ticket` (`{key, rev, plan, planN, digest, files}`) and `task.md`'s "Your
+ticket" say where they are and that the run follows them. A file that
+cannot be read, or is not the package's, fails the attempt at `package`,
+not counted, and pauses the run. Each attempt's session is started only
+from the agent selection the revision approved: the server takes the
+catalog entry once, computes its selection with the run's yolo choice
+and starts the session from that entry only when it is the package's;
+otherwise, the entry edited, deleted or hidden, the attempt fails at `agent`, not counted, before any process
+exists, and the run pauses with the words, until the entry is restored
+(and the run unpaused) or a new revision is launched. A retry and a
+continuation get the same files and the same check. With a context provider
 registered (Program item C4), the attempt's context is asked for before
 its task files are written, at most 5 s (`ext.ContextWait`), and an
 attempt never fails or waits longer for it: `task.json` gains `context`,
@@ -2939,6 +3103,53 @@ saved crew changes no revision, and the list says `crewChanged`.
 Proposing, approving and withdrawing never bump the ticket's `rev`; a
 ticket has at most 100 revisions. Their changes are `dispatch` events of
 the entity `plan`, naming the revision, its ticket and its project.
+
+**Launches.** A launch starts a managed run from a ticket's approved
+plan revision (`docs/plans/dispatch-evidence.md`), and it is the one call
+from a Dispatch route into a run: it makes a new one, and no Dispatch
+operation changes a run's package, crew, tasks, attempts or sessions.
+The operation is replayed first, so a resend is answered by the launch it
+made whatever the revision or the catalog became since; a new one, or a
+pending one replayed, needs `crews.managed` on and the ledger this
+server's, writable and taken over (its recovery and the reconcile of the
+pending launches finished); a new one has the revision's agents resolved
+against the catalog again (`409 stale_plan`). Then, in order, each step
+durable before the next: Dispatch commits the launch `pending` with its
+package and the run id it minted (the crew's id, `-`, 8 hex characters);
+the engine's first transaction of the run inserts its ledger row with the
+package and the ticket's id, refusing an id the ledger has; Dispatch
+records the launch `started`, with each member's agent and the version
+its identity probe reported, or `failed` with why. One launch is settled
+at a time per launch in a server: a second request for it waits for the
+first, at most the launch's bound (2 minutes). A pending launch is
+adopted only by a ledger row that is its own (the row's ticket the
+launch's and the SHA-256 of its package the launch's `packageSha256`); a
+row of the run id that is not is another run's, and the launch is
+recorded failed ("the run id is another run's"), that row untouched.
+When the server starts, once the ledger's recovery has run, every
+pending launch is reconciled the same way, one with no row recorded
+failed ("the server stopped before the run started"), and no launch is
+admitted until that has finished. Only the ledger's owner settles a
+launch. The run is the revision's: its crew, its yolo choice, its base
+(never `HEAD` read again), its label; the run's `ticket` is `{id, key,
+rev, plan, planN, launch, digest}`, and its continuations carry the same.
+The package, version 1, is JSON of at most 512 KiB, built once in the
+launch's transaction and kept byte for byte in Dispatch and in the
+ledger: `{version, ticket, plan, references, attachments, comments,
+constraints, decisions, launch}`, `ticket` the ticket as it stood (`{id,
+key, rev, title, description, acceptance, status, priority, horizon,
+owner, assignees, labels, milestone?, parent?, blockers, blockersTotal,
+intent, criteria}`, the labels by name, the milestone `{name, target}`,
+the parent and at most 20 live blockers `{key, title, status}`), `plan`
+`{id, n, digest, basedOn, approvedAt, approvedBy, note, crew: {id, name,
+updatedAt}, base, yolo, agents}` with `agents` the approved selection
+`[{id, sha256}]`, each attachment `{id, name, file, size, sha256,
+contentType}` (`file` the name it is written under in an attempt,
+`NN-<portable>`: its place `01` to `08` and its name with every byte
+outside `[A-Za-z0-9._-]` made `_`, at most 64 bytes, never a display
+name), each comment `{id, n, author, by, at, body, sha256}`, and `launch`
+`{id, run, label, at, by}`. Their changes are `dispatch` events of the
+entity `launch`, naming the launch, its ticket and its project.
 
 **An attempt's ticket.** A run belongs to one live ticket at most, the
 one whose live `run` link names it, so a session of the run's member has

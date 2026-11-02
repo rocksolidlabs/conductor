@@ -764,3 +764,61 @@ func TestAViewersLeaveSaysWhenItsLinkWent(t *testing.T) {
 		}
 	}
 }
+
+// A viewer whose principal is revoked (RevokeViewer: a credential that is
+// not a link, so no link_gone tells the host) has the host told at once,
+// before it is let go and whatever it was closed for first, that it was
+// revoked; letting it go after sends no second leave. One let go before
+// is told nothing more.
+func TestARevokedPrincipalsLeaveGoesAtOnce(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	add := func(id string) *Viewer {
+		t.Helper()
+		v, err := hs.AddViewer(id, session.RoleControl, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		drainText(t, conn, proto.HostViewerJoin)
+		return v
+	}
+	revocation := fmt.Errorf("access revoked by the identity provider: %w", session.ErrRevoked)
+	for _, c := range []struct {
+		name  string
+		id    string
+		first error
+	}{{"open", "1111111111111111", nil}, {"too slow first", "2222222222222222", ErrSlowViewer}} {
+		t.Run(c.name, func(t *testing.T) {
+			v := add(c.id)
+			if c.first != nil {
+				v.close(c.first)
+			}
+			// The viewer is not let go: its connection's close is under way.
+			hs.RevokeViewer(v, revocation)
+			if m := nextToHost(t, conn); m["t"] != proto.HostViewerLeave || m["viewerId"] != v.ID || m["reason"] != proto.LeaveRevoked {
+				t.Fatalf("%v, want viewer %s's leave with the reason %s", m, v.ID, proto.LeaveRevoked)
+			}
+			want := c.first
+			if want == nil {
+				want = revocation
+			}
+			if r := v.Reason(); r != want {
+				t.Fatalf("closed for %v, want %v", r, want)
+			}
+			hs.RemoveViewer(v)
+			if n := conn.queued(); n != 0 {
+				t.Fatalf("%d bytes queued for the host once the viewer is let go: a second leave", n)
+			}
+		})
+	}
+	t.Run("let go before", func(t *testing.T) {
+		v := add("3333333333333333")
+		hs.RemoveViewer(v)
+		if m := nextToHost(t, conn); m["t"] != proto.HostViewerLeave || m["viewerId"] != v.ID {
+			t.Fatalf("%v, want viewer %s's leave", m, v.ID)
+		}
+		hs.RevokeViewer(v, revocation)
+		if n := conn.queued(); n != 0 {
+			t.Fatalf("%d bytes queued for the host for a viewer let go", n)
+		}
+	})
+}

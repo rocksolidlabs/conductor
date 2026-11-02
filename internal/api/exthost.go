@@ -244,7 +244,8 @@ const extKindStart = "start"
 var extAbandoned atomic.Pointer[func(name string)]
 
 // extAfterOr is time.After, or the server's clock seam when a test set
-// one (extAfter): the waits of the providers' starts and their backoffs.
+// one (extAfter): the waits of the providers' starts and their backoffs,
+// and those between an identity provider's re-asks (principalWatch).
 func (s *Server) extAfterOr(d time.Duration) <-chan time.Time {
 	if s.extAfter != nil {
 		return s.extAfter(d)

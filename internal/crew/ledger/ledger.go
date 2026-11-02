@@ -633,7 +633,7 @@ func (l *Ledger) Close() error {
 
 func (l *Ledger) release() {
 	if l.lock != nil {
-		l.lock.release()
+		l.lock.Release()
 		l.lock = nil
 	}
 }
