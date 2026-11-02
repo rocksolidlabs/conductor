@@ -174,11 +174,15 @@ func TestAnAgentWithoutAReadOnlyModeIsRefused(t *testing.T) {
 	f.agents["goose"] = AgentFacts{MCP: true}
 	f.agents["amp"] = AgentFacts{ReadOnly: true}
 	f.agents["shy"] = AgentFacts{Hidden: true, MCP: true, ReadOnly: true}
+	// A read-only mode that does not hold (Codex 0.163.0's) refuses the
+	// agent with the adapter's own words, for Settings.
+	f.agents["leaky"] = AgentFacts{MCP: true, ReadOnly: true, ReadOnlyGap: "your own MCP servers run outside the sandbox"}
 	for id, words := range map[string]string{
 		"goose":   "no read-only mode",
 		"amp":     "MCP server",
 		"shy":     "hidden",
 		"nowhere": "no agent",
+		"leaky":   "does not hold: your own MCP servers run outside the sandbox",
 	} {
 		c := onConfig()
 		c.AgentID = id

@@ -184,7 +184,11 @@ type AgentFacts struct {
 	Hidden   bool // the catalog hides it
 	MCP      bool // its adapter registers Conductor's MCP server
 	ReadOnly bool // its adapter has a read-only mode (Adapter.ReadOnlyArgs)
-	Model    bool // its adapter takes a model (Adapter.ModelArgs)
+	// ReadOnlyGap is what that mode does not hold, in words (the
+	// adapter's ReadOnlyGap); "" when it holds. An agent whose mode does
+	// not hold is refused as Brakeman's.
+	ReadOnlyGap string
+	Model       bool // its adapter takes a model (Adapter.ModelArgs)
 	// AllowTools: its adapter can let one MCP server's tools run without
 	// asking (Adapter.AllowTools).
 	AllowTools bool
@@ -232,6 +236,10 @@ func Validate(c Config, f Facts) error {
 			return invalidConfig("agentId", "the agent %s does not register Conductor's MCP server, so it could not read its request", c.AgentID)
 		case !a.ReadOnly:
 			return invalidConfig("agentId", "the agent %s has no read-only mode Conductor knows, and a turn never runs with yolo", c.AgentID)
+		case a.ReadOnlyGap != "":
+			// The one place a mode that does not hold refuses the agent:
+			// a warning instead would drop this case and show the gap.
+			return invalidConfig("agentId", "the agent %s cannot be Brakeman's: its read-only mode does not hold: %s", c.AgentID, a.ReadOnlyGap)
 		case c.Model != "" && !a.Model:
 			return invalidConfig("model", "the agent %s takes no model from Conductor: leave it empty for its default", c.AgentID)
 		case c.AllowConductorTools && !a.AllowTools:
