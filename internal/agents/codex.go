@@ -218,5 +218,7 @@ const codexReadOnlyApprovals = `approval_policy={granular={sandbox_approval=fals
 const codexReadOnlyGap = "Codex's read-only sandbox (0.163.0) does not hold your own MCP servers, which run outside it and are one yes away from writing, nor your exec-policy allow rules, which run a command outside it without asking; no flag isolates them"
 
 // codexMCPEnv is the TOML list of the variables Codex passes on to
-// Conductor's MCP server (#354): every CONDUCTOR_* one a session sets.
-const codexMCPEnv = `["CONDUCTOR_SESSION_ID","CONDUCTOR_NOTIFY_URL","CONDUCTOR_NOTIFY_TOKEN","CONDUCTOR_BIN","CONDUCTOR_CREW","CONDUCTOR_RUN","CONDUCTOR_MEMBER","CONDUCTOR_TASK","CONDUCTOR_ATTEMPT","CONDUCTOR_TASK_FILE","CONDUCTOR_AGENT","CONDUCTOR_SKILL"]`
+// Conductor's MCP server (#354): every CONDUCTOR_* one a session sets,
+// CONDUCTOR_BRAKEMAN among them, by which the server lists a Brakeman
+// turn's tools.
+const codexMCPEnv = `["CONDUCTOR_SESSION_ID","CONDUCTOR_NOTIFY_URL","CONDUCTOR_NOTIFY_TOKEN","CONDUCTOR_BIN","CONDUCTOR_CREW","CONDUCTOR_RUN","CONDUCTOR_MEMBER","CONDUCTOR_TASK","CONDUCTOR_ATTEMPT","CONDUCTOR_TASK_FILE","CONDUCTOR_AGENT","CONDUCTOR_SKILL","CONDUCTOR_BRAKEMAN"]`
