@@ -158,7 +158,8 @@ func (s *Server) engineHoldOf(id string) engineHold {
 // observeSeam, when a test sets it, runs at each stage of a turn's
 // shared read: "admitted" once what its path names is admitted, before
 // the revisions it is read at are taken; "answered" once the route's
-// handler answered, before its filter.
+// handler answered, before its filter; "listed" once a read of changes
+// has read its parts, before its coverage is written.
 var observeSeam atomic.Pointer[func(stage string)]
 
 func atObserveSeam(stage string) {
@@ -232,13 +233,21 @@ func (o *observer) deliveredRev(ctx context.Context, id string, run *refRun) (st
 	if !found || strconv.FormatInt(row.Revision, 10) != before {
 		return "", nil
 	}
-	engBefore, engAfter := o.engBefore[id], o.rr.s.engineHoldOf(id)
-	if engBefore.held || engAfter.held {
-		if !engBefore.held || !engAfter.held || !engBefore.settled || !engAfter.settled || engBefore.rev != engAfter.rev {
-			return "", nil
-		}
+	if !settledThrough(o.engBefore[id], o.rr.s.engineHoldOf(id)) {
+		return "", nil
 	}
 	return before, nil
+}
+
+// settledThrough reports whether the engine's two holds of a run, read
+// before a read of it and after, say nothing of it changed between that
+// its ledger has not committed: it held the run settled at one revision
+// both times, or held it neither time.
+func settledThrough(before, after engineHold) bool {
+	if !before.held && !after.held {
+		return true
+	}
+	return before.held && after.held && before.settled && after.settled && before.rev == after.rev
 }
 
 // note notes a read of ref (a turn's only).
@@ -1308,16 +1317,22 @@ func (s *Server) handleBrakemanStatus(w http.ResponseWriter, r *http.Request, o 
 		return
 	}
 	// A managed run's tasks are read between two reads of its revision
-	// that agree (every transition moves it), read again when a
-	// transition came between, so the revision answered is the one they
-	// were read at, or none.
+	// that agree (every transition moves it) while the engine held it
+	// settled at one revision throughout (it changes its run before the
+	// transaction commits: a status computed from its run then may hold
+	// what the ledger's revision does not yet), read again, the engine's
+	// run with them, when either moved between, so the revision answered
+	// is the one they were read at, or none. The engine's hold is read
+	// before the ledger's revision and after it, as a shared read's are
+	// (takeRevs, deliveredRev).
 	state, rev := run.state, run.rev
 	var tasks []taskStatus
 	var members []memberStatus
 	for try := range refRevTries {
 		var before, after string
-		if before, _, err = s.freshRun(ctx, runID, run); err == nil {
-			tasks, members, err = s.runStatus(ctx, o, run, runID)
+		engBefore := s.engineHoldOf(runID)
+		if before, state, err = s.freshRun(ctx, runID, run); err == nil {
+			tasks, members, err = s.runStatus(ctx, o, s.restatus(run, runID, state), runID)
 		}
 		if err == nil {
 			after, state, err = s.freshRun(ctx, runID, run)
@@ -1326,7 +1341,8 @@ func (s *Server) handleBrakemanStatus(w http.ResponseWriter, r *http.Request, o 
 			s.observeError(w, err)
 			return
 		}
-		if before == after {
+		settled := !run.managed || s.ledger == nil || settledThrough(engBefore, s.engineHoldOf(runID))
+		if before == after && settled {
 			rev = after
 			break
 		}
@@ -1516,6 +1532,24 @@ func (s *Server) freshRun(ctx context.Context, id string, run *refRun) (rev, sta
 		return "", "", wrapNil(err, "the ledger's run %s", id)
 	}
 	return strconv.FormatInt(row.Revision, 10), row.State, nil
+}
+
+// restatus is run with the engine's run read now, never the one its
+// resolution cached (a status read again after a transition computes
+// from the engine's run as it is), and, for a managed run, the ledger's
+// state read with its revision.
+func (s *Server) restatus(run *refRun, id, state string) *refRun {
+	cur := *run
+	if r, ok := s.runs.Get(id); ok {
+		cur.run, cur.held = r, true
+		if !cur.managed {
+			cur.state = r.State
+		}
+	}
+	if cur.managed {
+		cur.state = state
+	}
+	return &cur
 }
 
 // runStatus is a run's tasks' statuses (a managed run's) and its members'

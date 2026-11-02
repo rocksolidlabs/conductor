@@ -521,6 +521,10 @@ func (s *Server) completeMake(ctx context.Context, d *brakemanDesk, id string, m
 		return m, fmt.Errorf("the make's input is of %q", in.Kind)
 	}
 	out.At = d.now().UTC()
+	// The outcome is held to the entry's bound whole (its words cut to
+	// the room its other fields leave), so the write never refuses it
+	// and leaves the claim pending.
+	out = out.Fit()
 	if _, err := d.update(id, func(q *brakeman.Request) error {
 		i := slices.IndexFunc(q.Made, func(x brakeman.Made) bool {
 			return x.Item == m.Item && x.OpID == m.OpID && x.State == brakeman.MadePending

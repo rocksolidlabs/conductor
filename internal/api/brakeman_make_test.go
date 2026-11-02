@@ -439,6 +439,45 @@ func TestADraftCrewDeletedBeforeMadeIsNotRecreated(t *testing.T) {
 	}
 }
 
+// A make's outcome fits its entry's bound whole, however its claim's
+// fields are escaped: a crew saved under the longest opId, a name of 60
+// quotation marks and a 40-character id, deleted after a crash and
+// before the make was recorded, is recovered as deleted, its words cut
+// to the room the rest leaves, never left pending by a write the bound
+// refuses.
+func TestAMakesOutcomeFitsItsEntrysBound(t *testing.T) {
+	f := newObsFixture(t)
+	req := f.drafts(t, f.draftCrew(strings.Repeat("f", 40)))
+	crashAt(t, "committed")
+	opID := strings.Repeat("o", 32)
+	body := map[string]any{"opId": opID, "by": strings.Repeat(`"`, brakeman.MaxBy)}
+	if status, _, out := f.call(t, "POST", "/api/brakeman/requests/"+req+"/items/0/make", body); status != http.StatusInternalServerError {
+		t.Fatalf("the crash: %d %v", status, out)
+	}
+	if m := f.made(t, req, 0); m.State != brakeman.MadePending || m.OpID != opID {
+		t.Fatalf("the claim: %+v", m)
+	}
+	page, _, _ := f.srv.crews.List(0, 10)
+	if len(page) != 1 || len(page[0].ID) != 40 {
+		t.Fatalf("crews: %v", page)
+	}
+	if ok, err := f.srv.crews.Delete(page[0].ID); err != nil || !ok {
+		t.Fatalf("the delete: %v %v", ok, err)
+	}
+	f.recoverNow(t)
+	m := f.made(t, req, 0)
+	if m.State != brakeman.MadeDeleted || m.Why == "" {
+		t.Fatalf("recovered: %+v", m)
+	}
+	if b, _ := json.MarshalIndent(m, "    ", "  "); len(b)+4 > brakeman.MaxMadeBytes {
+		t.Fatalf("the outcome is %d bytes, past %d", len(b)+4, brakeman.MaxMadeBytes)
+	}
+	// Its words are the deletion's, cut at their end.
+	if !strings.HasPrefix(m.Why, crew.ErrOriginDeleted.Error()) {
+		t.Fatalf("the words: %q", m.Why)
+	}
+}
+
 // A ticket whose make stopped before Dispatch committed is made by the
 // recovery from its recorded input, with the person's edits and name,
 // once.
