@@ -1,4 +1,4 @@
-import { effectScope, watch, type Ref } from 'vue'
+import { effectScope, onBeforeUnmount, onMounted, watch, type Ref } from 'vue'
 import { anyStarting, asCapabilities, extensionsWords, has, type Capabilities } from '../utils/capabilities'
 
 /** The first re-read of a reply that has a provider still starting, after the reply; each later one waits twice the last, up to the most. */
@@ -33,9 +33,10 @@ export class CapabilitiesPoll {
     this.forToken = t
   }
 
-  /** Reads the route, unless what is known has no provider starting or a re-read is due already; a read on its way is shared. */
+  /** Reads the route while a reader shows, unless what is known has no provider starting or a re-read is due already; a read on its way is shared. */
   load(): Promise<void> {
     if (this.reading) return this.reading
+    if (this.readers === 0) return Promise.resolve()
     if (this.timer !== undefined) return Promise.resolve()
     if (this.caps.value && !anyStarting(this.caps.value)) return Promise.resolve()
     return this.readNow()
@@ -124,6 +125,26 @@ export function followToken(p: CapabilitiesPoll, token: Ref<string>): () => void
   return () => scope.stop()
 }
 
+/**
+ * Registers the caller's component as a reader of `p` for as long as it is mounted, its first load after its first paint (the next
+ * animation frame) when `hasToken()`. A component unmounted before that frame cancels it, so no read is made for a reader that is gone.
+ */
+export function readWhileMounted(p: CapabilitiesPoll, hasToken: () => boolean) {
+  let frame: number | undefined
+  onMounted(() => {
+    p.attach()
+    frame = requestAnimationFrame(() => {
+      frame = undefined
+      if (hasToken()) void p.load()
+    })
+  })
+  onBeforeUnmount(() => {
+    if (frame !== undefined) cancelAnimationFrame(frame)
+    frame = undefined
+    p.detach()
+  })
+}
+
 let poll: CapabilitiesPoll | null = null
 
 /**
@@ -139,14 +160,7 @@ export function useCapabilities() {
     poll = new CapabilitiesPoll(() => request<unknown>('/api/capabilities'), caps)
     followToken(poll, admin.token)
   }
-  const p = poll
-  onMounted(() => {
-    p.attach()
-    requestAnimationFrame(() => {
-      if (admin.hasToken.value) void p.load()
-    })
-  })
-  onBeforeUnmount(() => p.detach())
+  readWhileMounted(poll, () => admin.hasToken.value)
   return {
     caps,
     words: computed(() => (caps.value ? extensionsWords(caps.value) : '')),

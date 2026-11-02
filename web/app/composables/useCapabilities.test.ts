@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { nextTick, ref } from 'vue'
+import { createRenderer, defineComponent, h, nextTick, ref } from 'vue'
 import { extensionsWords, type Capabilities } from '../utils/capabilities'
-import { CAPABILITIES_RETRY_FIRST_MS, CAPABILITIES_RETRY_MOST_MS, CapabilitiesPoll, followToken } from './useCapabilities'
+import { CAPABILITIES_RETRY_FIRST_MS, CAPABILITIES_RETRY_MOST_MS, CapabilitiesPoll, followToken, readWhileMounted } from './useCapabilities'
 
 // The reads of GET /api/capabilities on fake timers, the route a stubbed fetch: when the reply is read again, and when it never is.
 
@@ -172,5 +172,84 @@ describe('the workbench token', () => {
     expect(caps.value).toBeNull()
     expect(fetch).toHaveBeenCalledTimes(4)
     stop()
+  })
+})
+
+// A component that reads the capabilities (readWhileMounted), mounted and unmounted by Vue itself through a renderer with no DOM; the
+// animation frames are a queue the test runs, so the order of unmount and first frame is the test's, not the clock's.
+describe('a reader mounted and unmounted', () => {
+  const nodeOps = {
+    insert: () => {},
+    remove: () => {},
+    createElement: () => ({}),
+    createText: () => ({}),
+    createComment: () => ({}),
+    setText: () => {},
+    setElementText: () => {},
+    parentNode: () => null,
+    nextSibling: () => null,
+    patchProp: () => {},
+  }
+  const { createApp } = createRenderer<object, object>(nodeOps)
+  let frames: Map<number, () => void>
+  let lastFrame = 0
+  const runFrames = () => {
+    const due = [...frames.values()]
+    frames.clear()
+    for (const f of due) f()
+  }
+
+  beforeEach(() => {
+    frames = new Map()
+    vi.stubGlobal('requestAnimationFrame', (f: () => void) => {
+      frames.set(++lastFrame, f)
+      return lastFrame
+    })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id))
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  function mountReader(poll: CapabilitiesPoll) {
+    const app = createApp(defineComponent({ setup: () => (readWhileMounted(poll, () => true), () => h('div')) }))
+    app.mount({})
+    return app
+  }
+
+  it('reads after its first frame, and a reader unmounted before that frame reads nothing, its frame cancelled', async () => {
+    const { fetch } = route(starting)
+    const caps = ref<Capabilities | null>(null)
+    const poll = new CapabilitiesPoll(fetch, caps)
+    poll.token('workbench-token')
+    // Settings opened: its read waits for the first frame.
+    const first = mountReader(poll)
+    expect(fetch).toHaveBeenCalledTimes(0)
+    runFrames()
+    expect(fetch).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(caps.value).toEqual(starting)
+    first.unmount()
+    // Settings opened again with a starting reply cached, and left before its first frame.
+    const second = mountReader(poll)
+    expect(frames.size).toBe(1)
+    second.unmount()
+    expect(frames.size).toBe(0)
+    runFrames()
+    await vi.advanceTimersByTimeAsync(10 * CAPABILITIES_RETRY_MOST_MS)
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(poll.shown).toBe(false)
+  })
+
+  it('a load with no reader left reads nothing', async () => {
+    const { fetch } = route(starting)
+    const caps = ref<Capabilities | null>(null)
+    const poll = new CapabilitiesPoll(fetch, caps)
+    poll.token('workbench-token')
+    poll.attach()
+    await poll.load()
+    poll.detach()
+    // The poll itself: a load with no reader is no read, whoever calls it.
+    await poll.load()
+    await vi.advanceTimersByTimeAsync(10 * CAPABILITIES_RETRY_MOST_MS)
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 })
