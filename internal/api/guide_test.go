@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -52,7 +53,7 @@ func TestTheGuideNamesThisBuild(t *testing.T) {
 		t.Fatalf("overview: %d %v", status, out)
 	}
 	ov := out["overview"].(map[string]any)
-	if c := ov["caller"].(map[string]any); c["kind"] != "admin" || fmt.Sprint(c["scopes"]) != "[admin session task ticket]" {
+	if c := ov["caller"].(map[string]any); c["kind"] != "admin" || fmt.Sprint(c["scopes"]) != "[admin session task ticket observe]" {
 		t.Fatalf("caller %v", c)
 	}
 	if rules, _ := ov["rules"].([]any); len(rules) != 3 || !strings.Contains(fmt.Sprint(rules), "with ask") {
@@ -434,6 +435,10 @@ func fill(v reflect.Value) {
 	case v.Type() == reflect.TypeFor[time.Time]():
 		v.Set(reflect.ValueOf(time.Unix(1, 0)))
 		return
+	case v.Type() == reflect.TypeFor[brakeman.Ref]():
+		ref, _ := brakeman.ParseRef("ticket:AB-1")
+		v.Set(reflect.ValueOf(ref))
+		return
 	}
 	switch v.Kind() {
 	case reflect.Pointer:
@@ -552,6 +557,7 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 		"run_pause": crew.Command{}, "run_unpause": crew.Command{}, "task_cancel": crew.Command{}, "task_retry": crew.Command{}, "task_accept": crew.Command{},
 		"ticket_create": ticketCreateBody{}, "ticket_edit": ticketEditBody{}, "ticket_comment_admin": commentBody{}, "ticket_link": linkBody{},
 		"crew_create": crewInput{}, "crew_launch": launchBody{},
+		"brakeman_config": brakemanConfigBody{}, "brakeman_ask": brakemanAskBody{}, "brakeman_cancel": brakemanCancelBody{},
 	}
 	seen := 0
 	for _, op := range Operations() {

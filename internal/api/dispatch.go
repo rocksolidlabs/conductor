@@ -1426,7 +1426,7 @@ func (s *Server) handleDispatchRemoveRelation(w http.ResponseWriter, r *http.Req
 func (s *Server) handleDispatchAddLink(w http.ResponseWriter, r *http.Request) {
 	var body linkBody
 	ds, key, _, ok := s.opAt(w, r, ticketKey, &body, &body.dispatchOp)
-	if !ok {
+	if !ok || body.Kind == dispatch.LinkRun && s.brakemanRun(w, body.Ref) {
 		return
 	}
 	ctx, cancel := opContext(r)

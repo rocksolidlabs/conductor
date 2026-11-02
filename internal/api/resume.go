@@ -182,6 +182,9 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 // handleResumeRunMember resumes an ended member of a run, in its worktree:
 // 201 {session, resumed, notice?}.
 func (s *Server) handleResumeRunMember(w http.ResponseWriter, r *http.Request) {
+	if s.brakemanRun(w, r.PathValue("run")) {
+		return
+	}
 	s.resumeMember(w, r, r.PathValue("run"), r.PathValue("name"))
 }
 

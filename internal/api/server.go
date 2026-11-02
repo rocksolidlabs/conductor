@@ -108,6 +108,9 @@ type Server struct {
 	// without a data directory, on a switchyard, which keeps no tickets,
 	// and when it could not be opened.
 	dispatch *dispatch.Store
+	// brakeman is Brakeman's desk (brakeman.go), opened beside Dispatch;
+	// nil without a data directory and on a switchyard.
+	brakeman *brakemanDesk
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -433,6 +436,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			s.dispatch.SetRunExists(s.runKnown)
 			s.dispatch.OnChange(s.events.dispatch)
 		}
+		if !cfg.Switchyard.Enabled {
+			s.brakeman = s.openBrakemanDesk(st)
+		}
 	}
 	s.webhooks = s.startNotifier(cfg.Webhooks)
 	// The runs take every entry too: a member's done starts the members after
@@ -581,6 +587,9 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	case <-ctx.Done():
 	}
 	// No record lands after this: the directories may be going.
+	if s.brakeman != nil {
+		s.brakeman.close()
+	}
 	if s.records != nil {
 		s.records.Close()
 	}
@@ -640,6 +649,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/cancel", s.requireAdmin(s.handleCancelTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/retry", s.requireAdmin(s.handleRetryTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/accept", s.requireAdmin(s.handleAcceptTask))
+	// Brakeman's desk and its turn's session routes (brakeman.go).
+	s.routeBrakeman(mux)
 	// The operating guide, the admin's and a session's (guide.go).
 	mux.HandleFunc("GET /api/guide", s.requireAdmin(s.handleGuide))
 	mux.HandleFunc("GET /api/sessions/{id}/guide", s.handleSessionGuide)
@@ -1047,6 +1058,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	select {
 	case <-done:
 	case <-ctx.Done():
+	}
+	if s.brakeman != nil {
+		s.brakeman.close()
 	}
 	if s.records != nil {
 		wctx, cancel := context.WithTimeout(context.Background(), recordsGrace)

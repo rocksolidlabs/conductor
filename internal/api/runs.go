@@ -61,10 +61,19 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	// The run's chat: the session is made with it, so that its first viewer finds it, and joins it once it exists.
 	room := s.runs.ChatRoom(ref.RunID)
 	name, renamed := s.memberSessionName(spec)
-	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom,
-		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow}, &ref)
+	req := createSessionRequest{AgentID: spec.AgentID, Name: name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom,
+		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow}
+	if spec.Class == crew.ClassBrakeman {
+		if aerr := s.brakemanLaunch(spec, &req, &ref); aerr != nil {
+			return nil, aerr
+		}
+	}
+	local, aerr := s.newLocal(req, &ref)
 	if aerr != nil {
 		return nil, aerr
+	}
+	if spec.Class == crew.ClassBrakeman {
+		s.brakeman.memberStarted(spec.Request, local)
 	}
 	if room != nil {
 		room.Join(local, spec.Name)
@@ -386,6 +395,9 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 // handleAddRunMember adds a member to a run: 201 {run}. A member that starts
 // immediately has its session by then.
 func (s *Server) handleAddRunMember(w http.ResponseWriter, r *http.Request) {
+	if s.brakemanRun(w, r.PathValue("run")) {
+		return
+	}
 	var m crew.Member
 	if err := decodeJSONLimit(w, r, &m, maxMemberBody); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -728,6 +740,9 @@ func (s *Server) recordMark(id string) string {
 // (Engine.ResumeRun): 201 {run}.
 func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("run")
+	if s.brakemanRun(w, id) {
+		return
+	}
 	ctx, cancel := runContext(r)
 	defer cancel()
 	run, err := s.runs.ResumeRun(ctx, id)

@@ -54,6 +54,11 @@ type createSessionRequest struct {
 	// approved (LaunchSpec.Allow), passed on beside the passthrough.
 	inject map[string]string
 	allow  []string
+	// conductorArgs, set by Launch for a Brakeman turn's member, says Args
+	// are Conductor's own (the adapter's read-only, model and tools
+	// arguments, launchTurn checked them), taken whatever the agent's
+	// allowArgs says.
+	conductorArgs bool
 	// Env is set in the process over the agent's own variables: the GOAL of
 	// a crew member. JSON cannot set it; a client sending "env" is refused
 	// like one sending any other unknown field.
@@ -116,7 +121,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if !ok {
 		return nil, newAPIError(http.StatusBadRequest, "invalid_agent", "unknown agent id")
 	}
-	if len(req.Args) > 0 && !agent.AllowArgs {
+	if len(req.Args) > 0 && !agent.AllowArgs && !req.conductorArgs {
 		return nil, newAPIError(http.StatusBadRequest, "args_not_allowed", "this agent does not accept extra arguments")
 	}
 	if len(req.Args) > 64 {
@@ -431,6 +436,9 @@ func (s *Server) localChange(info session.Info) {
 	// snapshot handed here, which a later change may already have overtaken.
 	s.events.publishLatest(info.ID, s.listedInfo)
 	s.runs.OnChange(info)
+	if s.brakeman != nil {
+		s.brakeman.sessionChanged(info)
+	}
 	s.router.mark(info.ID)
 	if info.Status.Ended() {
 		s.endLinks(info.ID)

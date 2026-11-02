@@ -54,7 +54,7 @@ func TestGuideInASession(t *testing.T) {
 func TestGuideWithTheWorkbenchToken(t *testing.T) {
 	a := newDispatchAPI(t)
 	code, out, errOut, err := guideCmd(t, "--server", a.hs.URL, "--token", dispatchToken)
-	if code != 0 || err != nil || !hasAll(out, "You are the admin (the workbench token); your scopes: admin, session, task, ticket.") {
+	if code != 0 || err != nil || !hasAll(out, "You are the admin (the workbench token); your scopes: admin, session, task, ticket, observe.") {
 		t.Fatalf("overview: %d %v %q %q", code, err, out, errOut)
 	}
 	code, out, _, err = guideCmd(t, "--server", a.hs.URL, "--token", dispatchToken, "--section", "operations")
