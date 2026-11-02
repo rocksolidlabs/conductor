@@ -462,3 +462,48 @@ func TestFilterNames(t *testing.T) {
 		t.Fatalf("a filter named with =: %v", err)
 	}
 }
+
+// ChangedSince lists what HEAD's commits since a base changed: committed
+// and only committed, against the merge base, with a nested path relative
+// to the top; a base that moved on adds nothing of its own.
+func TestChangedSince(t *testing.T) {
+	dir := repo(t)
+	ctx := context.Background()
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := Run(ctx, dir, args...)
+		if err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+		return strings.TrimSpace(out)
+	}
+	base := run("rev-parse", "HEAD")
+	if paths, truncated, err := ChangedSince(ctx, dir, base); err != nil || len(paths) != 0 || truncated {
+		t.Fatalf("nothing since the base: %v %v %v", paths, truncated, err)
+	}
+	run("checkout", "-q", "-b", "work")
+	os.WriteFile(filepath.Join(dir, "internal", "api", "users.go"), []byte("package api\n\nfunc B() {}\n"), 0o644)
+	run("commit", "-q", "-am", "work")
+	// Not committed: not listed.
+	os.WriteFile(filepath.Join(dir, "README.md"), []byte("dirty\n"), 0o644)
+	// The base moves on with a file of its own.
+	run("stash", "-q")
+	run("checkout", "-q", "-")
+	os.WriteFile(filepath.Join(dir, "old.txt"), []byte("moved on\n"), 0o644)
+	run("commit", "-q", "-am", "main moves")
+	moved := run("rev-parse", "HEAD")
+	run("checkout", "-q", "work")
+	run("stash", "pop", "-q")
+	for _, b := range []string{base, moved} {
+		paths, truncated, err := ChangedSince(ctx, filepath.Join(dir, "internal"), b)
+		if err != nil || truncated || !slices.Equal(paths, []string{"internal/api/users.go"}) {
+			t.Fatalf("since %s: %v %v %v", b, paths, truncated, err)
+		}
+	}
+	if _, _, err := ChangedSince(ctx, dir, "-x"); err == nil {
+		t.Fatal("a base that is a flag")
+	}
+	if _, _, err := ChangedSince(ctx, t.TempDir(), base); err == nil {
+		t.Fatal("outside a repository")
+	}
+}

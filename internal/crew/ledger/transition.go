@@ -907,6 +907,21 @@ func (l *Ledger) Commands(ctx context.Context, runID string) ([]CommandRow, erro
 	return out, rows.Err()
 }
 
+// LastEvent answers the seq of a run's newest event, 0 for a run with
+// none (or none the ledger holds): a reader that wants the newest events
+// of a run reads Events after LastEvent less what it wants.
+func (l *Ledger) LastEvent(ctx context.Context, runID string) (int64, error) {
+	db, err := l.conn()
+	if err != nil {
+		return 0, err
+	}
+	var seq int64
+	if err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(seq), 0) FROM events WHERE run_id = ?", runID).Scan(&seq); err != nil {
+		return 0, err
+	}
+	return seq, nil
+}
+
 // Events reads a run's events after seq, at most limit of them, in order.
 func (l *Ledger) Events(ctx context.Context, runID string, after int64, limit int) ([]EventRow, error) {
 	if limit <= 0 {

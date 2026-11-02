@@ -471,6 +471,37 @@ func TestEventsAreSequencedWithoutGaps(t *testing.T) {
 	}
 }
 
+func TestLastEvent(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	if seq, err := l.LastEvent(ctx, "team-00000001"); err != nil || seq != 0 {
+		t.Fatalf("a run the ledger has not: %d %v", seq, err)
+	}
+	newRun(t, l, "team-00000001")
+	newRun(t, l, "team-00000002")
+	first, err := l.LastEvent(ctx, "team-00000001")
+	if err != nil || first < 1 {
+		t.Fatalf("a new run's last event: %d %v", first, err)
+	}
+	for i := range 3 {
+		if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error { return tx.Event("tick", map[string]int{"i": i}) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seq, err := l.LastEvent(ctx, "team-00000001")
+	if err != nil || seq != first+3 {
+		t.Fatalf("after three events: %d, want %d (%v)", seq, first+3, err)
+	}
+	ev, err := l.Events(ctx, "team-00000001", seq-1, 10)
+	if err != nil || len(ev) != 1 || ev[0].Seq != seq {
+		t.Fatalf("the newest event is the last: %v %v", ev, err)
+	}
+	// Another run's events are its own.
+	if other, err := l.LastEvent(ctx, "team-00000002"); err != nil || other != first {
+		t.Fatalf("the other run's last event: %d %v", other, err)
+	}
+}
+
 func TestReceipts(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	ctx := context.Background()
