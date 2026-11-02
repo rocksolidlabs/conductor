@@ -506,13 +506,17 @@ func (d *brakemanDesk) turnCrew(req brakeman.Request, cfg brakeman.Config) (crew
 	if err != nil {
 		return crew.Crew{}, err
 	}
+	line := brakemanLine(req)
+	if len(line) > maxBrakemanLine {
+		return crew.Crew{}, fmt.Errorf("the request's line is %d bytes, more than %d", len(line), maxBrakemanLine)
+	}
 	no := false
 	return crew.Crew{
 		ID: brakemanMember, Name: "Brakeman", Cwd: cfg.Cwd, Where: crew.WhereServer, Isolation: crew.IsolationNone,
 		Goal: "Brakeman request " + req.ID, Yolo: &no,
 		Members: []crew.Member{{
 			Name: brakemanMember, AgentID: cfg.AgentID, Args: args,
-			Start: crew.Start{When: crew.StartImmediately}, Prompt: brakemanLine(req),
+			Start: crew.Start{When: crew.StartImmediately}, Prompt: line,
 		}},
 	}, nil
 }
