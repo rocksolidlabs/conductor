@@ -185,6 +185,8 @@ usePalette().registerPage(() => {
       <!-- One column that reads top to bottom (#366): two left a blank beside every short card. -->
       <div v-if="!desktop.isDesktop.value" class="mx-auto flex w-full max-w-3xl flex-col gap-5">
         <UAlert color="neutral" variant="subtle" icon="i-lucide-info" title="This server is configured by its file" description="These settings belong to the desktop app, which starts a server of its own. A server you run yourself takes its configuration file and CONDUCTOR_* variables (see the README)." />
+        <!-- Brakeman's configuration is the server's own, saved through its route: here in a browser too. -->
+        <BrakemanSettings />
         <AboutCard />
       </div>
       <div v-else class="mx-auto flex w-full max-w-3xl flex-col gap-5" data-desktop-settings>
@@ -286,6 +288,8 @@ usePalette().registerPage(() => {
             </li>
           </ul>
         </UCard>
+
+        <BrakemanSettings />
 
         <AboutCard :versions="versions">
           <USwitch v-model="form.closeToTray" label="Closing the window keeps Conductor in the tray; the server goes on" data-tray-switch />
