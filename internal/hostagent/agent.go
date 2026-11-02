@@ -367,10 +367,12 @@ type agent struct {
 	// request id. Guarded by mu.
 	links map[string]chan linkAnswer
 
-	// creds are the links the viewers joined through (linkCreds): one the
-	// server says no longer opens the session (link_gone), or every one as
-	// the connection to it is lost, withdraws what its viewers asked for
-	// and is still under way (peer.authorize). Its lock is held for nothing
+	// creds are the links the viewers joined through (linkCreds), and the
+	// credentials of the viewers that came as an identity provider's
+	// principal (linkCreds.principal): one the server says no longer opens
+	// the session (link_gone), or every one as the connection to it is
+	// lost, withdraws what its viewers asked for and is still under way
+	// (peer.authorize). Its lock is held for nothing
 	// else: the session asks under its own locks.
 	creds linkCreds
 	// live is what the host knows of its server on the current control
@@ -1228,7 +1230,7 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		if !role.Valid() || len(m.ViewerID) != proto.ViewerIDLen {
 			return errors.New("invalid viewer_join")
 		}
-		a.addPeer(m.ViewerID, role, m.LinkID, m.LinkLabel)
+		a.addPeerAs(m.ViewerID, role, m.LinkID, m.LinkLabel, m.Principal)
 	case proto.HostLinkGone:
 		var m proto.LinkGone
 		if err := json.Unmarshal(data, &m); err != nil {
@@ -1664,11 +1666,25 @@ func (a *agent) tell(v any, gone <-chan struct{}) error {
 }
 
 func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) {
+	a.addPeerAs(id, role, linkID, linkLabel, false)
+}
+
+// addPeerAs is addPeer for a viewer that came, when principal, as an
+// identity provider's principal (proto.ViewerJoin.Principal): with no link,
+// it holds a cred of its own (linkCreds.principal), which the server's
+// revoked leave or the loss of the connection to it (connLost), which may
+// have kept that leave from coming, marks gone, so that what it has under
+// way is withdrawn rather than finished; and what it sends is acted on only
+// while the host vouches for its server, as a link's viewer's is.
+func (a *agent) addPeerAs(id string, role session.Role, linkID, linkLabel string, principal bool) {
 	a.removePeer(id)
 	// A switchyard's viewer is never the owner's window, whatever else says
 	// so: its workbench is its operator's (Options.Switchyard).
 	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners && !a.opts.Switchyard)
 	p.cred = a.creds.of(linkID)
+	if p.cred == nil && principal {
+		p.cred = a.creds.principal()
+	}
 	if p.cred != nil {
 		// Before its hello can arrive: its first line waits for the answer
 		// when the host does not vouch for its server yet (awaitVouch).
@@ -1697,7 +1713,9 @@ func (a *agent) removePeer(id string) { a.removePeerFor(id, nil) }
 // viewer is let go, and every link the viewers joined through counts as
 // gone (linkCreds.lost) before them, for a link's going is not heard of
 // until the connection is back: what a link's viewer asked for and is
-// still under way is withdrawn rather than finished.
+// still under way is withdrawn rather than finished. So is what a
+// provider's principal asked for (linkCreds.principal): its revocation's
+// leave may be what the connection did not carry.
 func (a *agent) connLost(c *websocket.Conn) {
 	a.dropConn(c)
 	a.creds.lost()

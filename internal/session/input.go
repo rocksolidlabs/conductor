@@ -130,10 +130,16 @@ func (senderWithdrawn) Is(target error) bool { return target == ErrRevoked }
 // of sub for its link first, else the credential asked again
 // (AttachOptions.Authorize), since a connection that ended for another
 // reason keeps that reason, and then whether it may be acted on now
-// (AttachOptions.Fresh). It does not call the session.
+// (AttachOptions.Fresh). A credential that is not a link's, revoked
+// (Subscription.Revoke), is kept of its own, since the connection may
+// have ended for another reason first, and so is looked at after the
+// session's end of sub. It does not call the session.
 func revoked(sub *Subscription) error {
 	if r := sub.Reason(); errors.Is(r, ErrRevoked) {
 		return r
+	}
+	if r := sub.revocation.Load(); r != nil {
+		return *r
 	}
 	if sub.authorize != nil {
 		if _, err := sub.authorize(); err != nil {

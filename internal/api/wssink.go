@@ -167,6 +167,8 @@ func closeCodeFor(reason error) (websocket.StatusCode, string) {
 		return websocket.StatusNormalClosure, "bye"
 	case errors.Is(reason, session.ErrExpired):
 		return proto.CloseForbidden, "link expired"
+	case errors.Is(reason, errPrincipalRevoked):
+		return proto.CloseForbidden, "access revoked"
 	case errors.Is(reason, session.ErrRevoked):
 		return proto.CloseForbidden, "link revoked"
 	case errors.Is(reason, session.ErrSlowConsumer), errors.Is(reason, signal.ErrSlowViewer):

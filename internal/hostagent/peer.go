@@ -31,8 +31,9 @@ type peer struct {
 	// replaces is the subscription the viewer had before it moved to the
 	// relay, for the relay's attach to take over its slot.
 	replaces *session.Subscription
-	// cred is what the host knows of the viewer's link (linkCreds), nil for
-	// none; set before the peer is seen.
+	// cred is what the host knows of the viewer's link (linkCreds), or of
+	// the identity provider's principal it came as (linkCreds.principal),
+	// nil for neither; set before the peer is seen.
 	cred *linkCred
 
 	// attaching runs the viewer's attaches one at a time (attach): a hello

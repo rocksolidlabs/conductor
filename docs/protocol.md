@@ -82,8 +82,10 @@ reached it, or it went; nothing was written; the message says which, see
 `answer`).
 
 WebSocket close codes: `1000` normal, `1001` server shutdown, `4400` protocol
-error, `4401` unauthorized, `4403` link revoked or expired, `4404` unknown
-session, `4409` too many viewers, `4410` session or host gone. The workbench
+error, `4401` unauthorized, `4403` link revoked or expired (reason `link
+revoked`, `link expired`), or an identity provider's principal the
+provider no longer admits (reason `access revoked`, see the HTTP API's
+token order), `4404` unknown session, `4409` too many viewers, `4410` session or host gone. The workbench
 token is control on every session of its own server and has no role on a
 switchyard's (`4401`): a session published there is opened by the links its
 publishing machine had minted.
@@ -500,14 +502,15 @@ host's session, as the viewer's welcome carries them, none dropped for
 the frame: a host message holds 64 KiB; an open host, registered with no
 token, is handed the configured ones alone; `links`: the ids of the live links the server holds for the session, `[]`
 when none; an older server sends no field, which says nothing),
-`viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
+`viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
 server holds for it, or caught up: above; a host refuses one whose
 `viewerId` is not 16 bytes, and one for a viewer it no longer has changes
 nothing),
 (`reason`: `revoked` when the viewer was let go for its link (revoked, its
-run forgotten, its run's session no longer named) or `expired` (the link
+run forgotten, its run's session no longer named) or because the identity
+provider no longer admits the principal it came as, or `expired` (the link
 reached its expiry), none for any other end (it left, its connection failed,
 it was too slow); `link_gone`: a link a viewer joined the session through
 (`linkId`, at most 64 bytes) no longer opens it (revoked, expired as the
@@ -566,7 +569,15 @@ host gives the connection up and connects again (its pings keep a
 connection that drops what it carries from being idle, which TCP's
 keepalive would otherwise have ended). The lines of the owner's own
 windows, the host's own terminal and a paste invite's viewer need no such
-word. A host reads a reason it does not know, or
+word. A viewer that came as an identity provider's principal has no link,
+but the server may revoke it at any time (its `viewer_leave` then says
+`revoked`), so it joins with `principal: true` and the host holds what it
+asked for as a link's viewer's: as the host loses its connection to the
+server, which may have kept that leave from coming, what is still under
+way of the viewer's is withdrawn (a line's carriage return among it),
+and what it sends is acted on only while the host vouches for its server,
+its join pinging at once as a link's does. An older host ignores the
+field. A host reads a reason it does not know, or
 one over 16 bytes, as none; an older server sends neither, and an older
 host ignores both, as before: each side decodes the other's messages
 without refusing unknown fields),
@@ -1779,7 +1790,21 @@ the workbench token is (on a switchyard, with the workbench token's lack of a
 role on the sessions published there), and one with the `host` grant is a
 host token's, at `GET /ws/host` too; a principal without a grant, an answer
 late past 1 s, an error or one out of bounds is an unknown token, `401` under
-the same rate limit. The admin's commands and Dispatch operations, and the
+the same rate limit. A provider's principal that holds a long-lived
+connection, a viewer's WebSocket or `GET /api/events`, is asked about again
+every 30 s while it holds it, each ask bounded at 1 s as the first: once
+the provider answers in time that it no longer admits the token (no
+principal, another subject, or one without the `admin` grant), the viewer
+is closed with `error{revoked}` and `4403` (`access revoked`) and the stream
+is ended. What the viewer has under way is withdrawn as a revoked link's
+is: a submission not yet entered, keys not yet written and a save's next
+part are refused, and a hosted session's host is told at once with a
+`viewer_leave` whose reason is `revoked` (not when the viewer's connection
+has closed; one leave, after its join). The stream's write under way is
+cut. A provider answers so only for a token it knows it no longer admits;
+one that cannot tell returns an error. A provider that errs, is late or answers out of bounds has said
+nothing, and the connection stays. The workbench token, the host tokens
+and the links are never asked about again this way. The admin's commands and Dispatch operations, and the
 reads of their receipts, are kept under the actor `admin` for the workbench
 token and `user:<subject>` for a provider's principal (its subject at most 48
 bytes): each finds only its own receipts, and a provider's subject can never

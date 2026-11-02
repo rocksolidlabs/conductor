@@ -229,7 +229,8 @@ type Server struct {
 	// extStarts is the providers the server starts (exthost.go), each with
 	// its ready flag, and extStarting is set by the one StartExtensions
 	// that starts them; extAfter is the clock of their starts' waits and
-	// backoffs, nil for time.After, a test's own otherwise.
+	// backoffs and of an identity provider's re-asks (principalWatch), nil
+	// for time.After, a test's own otherwise.
 	exts        extSlots
 	extCtx      context.Context
 	extStop     context.CancelFunc

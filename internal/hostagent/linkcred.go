@@ -38,8 +38,13 @@ func (c *linkCred) err() error {
 type linkCreds struct {
 	mu sync.Mutex
 	m  map[string]weak.Pointer[linkCred]
-	// pruneAt is the size past which the entries gone are swept.
-	pruneAt int
+	// principals are the creds of the viewers that came as an identity
+	// provider's principal (principal), one each, held weakly as the
+	// links' are; no link_gone names them.
+	principals []weak.Pointer[linkCred]
+	// pruneAt is the size past which the entries gone are swept;
+	// principalsAt the same for principals.
+	pruneAt, principalsAt int
 }
 
 // of returns the linkCred of linkID that someone still holds, or a new one;
@@ -64,13 +69,45 @@ func (l *linkCreds) of(linkID string) *linkCred {
 	return c
 }
 
+// principal returns a new cred for a viewer that came as an identity
+// provider's principal, a credential that is not a link: it stands until
+// the server's leave says the viewer was revoked (peer.closeFor marks the
+// viewer itself) or the connection to the server is lost (lost), which
+// may have kept that leave from coming. Like a link's, it is held for as
+// long as the viewer or anything it asked for lives, and counts as a link
+// held (held), so that the host pings its server while it is.
+func (l *linkCreds) principal() *linkCred {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	c := &linkCred{}
+	l.principals = append(l.principals, weak.Make(c))
+	if len(l.principals) > max(l.principalsAt, 64) {
+		kept := l.principals[:0]
+		for _, p := range l.principals {
+			if p.Value() != nil {
+				kept = append(kept, p)
+			}
+		}
+		clear(l.principals[len(kept):])
+		l.principals = kept
+		l.principalsAt = 2 * len(kept)
+	}
+	return c
+}
+
 // held says whether someone holds a link still standing: a viewer who
-// joined through it, or something of theirs under way. One the collector
-// has not swept yet counts until it has.
+// joined through it, or something of theirs under way; or a principal's
+// cred still standing. One the collector has not swept yet counts until
+// it has.
 func (l *linkCreds) held() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, p := range l.m {
+		if c := p.Value(); c != nil && c.err() == nil {
+			return true
+		}
+	}
+	for _, p := range l.principals {
 		if c := p.Value(); c != nil && c.err() == nil {
 			return true
 		}
@@ -108,14 +145,21 @@ func (l *linkCreds) gone(linkID string) {
 // server is lost: the host is not told of a link going until it is back,
 // so what is still under way of a link's viewers (gone with the connection)
 // is withdrawn rather than finished. A viewer joining through a link once
-// the connection is back gets a linkCred of its own.
+// the connection is back gets a linkCred of its own. Every principal's cred
+// (principal) is marked gone too: the leave that would have said its
+// principal was revoked may be what the connection did not carry.
 func (l *linkCreds) lost() {
 	l.mu.Lock()
-	held := l.m
-	l.m = nil
-	l.pruneAt = 0
+	held, principals := l.m, l.principals
+	l.m, l.principals = nil, nil
+	l.pruneAt, l.principalsAt = 0, 0
 	l.mu.Unlock()
 	for _, p := range held {
+		if c := p.Value(); c != nil {
+			c.goneFor(session.ErrRevoked)
+		}
+	}
+	for _, p := range principals {
 		if c := p.Value(); c != nil {
 			c.goneFor(session.ErrRevoked)
 		}

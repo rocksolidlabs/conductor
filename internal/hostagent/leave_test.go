@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
 // leaveOf is the server's viewer_leave of the viewer id with reason ("" for
@@ -394,4 +396,125 @@ func revokedLinksSubmissionNeverTyped(t *testing.T, left bool) {
 	if bytes.Contains(acc, []byte("queued line")) {
 		t.Fatal("the revoked link's submission was typed")
 	}
+}
+
+// joinedAs has viewer id join a's session as the server's viewer_join has
+// it join (agent.handleControl), as an identity provider's principal or
+// not, with no link, and attaches it over a loopback data channel.
+func joinedAs(t *testing.T, a *agent, proc *sessiontest.FakeProc, begun *atomic.Int32, id string, principal bool, out <-chan any) *submitViewer {
+	t.Helper()
+	if err := a.handleControl(t.Context(), mustJSON(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: id, Role: string(session.RoleControl), Principal: principal})); err != nil {
+		t.Fatal(err)
+	}
+	p := a.peer(id)
+	if p == nil {
+		t.Fatal("the viewer did not join")
+	}
+	t.Cleanup(func() { a.removePeer(id) })
+	return attachLoopback(t, a, proc, begun, p, out)
+}
+
+// A viewer that came as an identity provider's principal (viewer_join's
+// principal), its line's text being typed and its Enter to come, has no
+// Enter when the host's connection to the server is lost (connLost) with
+// no leave heard: the leave that says the principal was revoked may be
+// what the connection did not carry, so what the viewer has under way is
+// withdrawn as a link's viewer's is, and the session's turn is held for a
+// person. A viewer with no link that is no principal (the owner's window)
+// has its line finished, as before.
+func TestAPrincipalsLineIsWithdrawnWhenTheConnectionIsLost(t *testing.T) {
+	for _, principal := range []bool{true, false} {
+		t.Run(map[bool]string{true: "principal", false: "no principal"}[principal], func(t *testing.T) {
+			a, proc, begun := newSubmitHost(t, 10*time.Millisecond, 0, 0)
+			out := make(chan any, 64)
+			a.sendHook = func(v any) { out <- v }
+			heardFromServer(t, a)
+			v := joinedAs(t, a, proc, begun, "0123456789abcdef", principal, out)
+			if got := v.p.cred != nil; got != principal {
+				t.Fatalf("the viewer holds a cred: %v", got)
+			}
+			v.hold()
+			v.send(proto.Submit{T: proto.CtlSubmit, Text: "reply"})
+			v.sync()
+			v.untilBegun(1) // its text's write waits in the process
+			a.connLost(nil)
+			if !principal {
+				if typed := v.typed(v.release(), 2); strings.Join(typed, "|") != "reply|\r" {
+					t.Fatalf("typed %q", typed)
+				}
+				return
+			}
+			if got := v.release(); got != "reply" {
+				t.Fatalf("typed %q", got)
+			}
+			v.quiet(500 * time.Millisecond)
+			holdShows(t, a.local)
+		})
+	}
+}
+
+// What a principal's viewer sends is acted on only while the host vouches
+// for its server, as a link's viewer's is: the server would have told it
+// of the revocation. A viewer with no link that is no principal needs no
+// such word. A principal's cred counts as a link held, so that the host
+// pings its server while it stands; the connection's loss marks it gone.
+func TestAPrincipalsViewerWaitsForTheServersWord(t *testing.T) {
+	a := &agent{peers: map[string]*peer{}, log: discardLog}
+	for _, c := range []struct {
+		id        string
+		principal bool
+	}{{"0123456789abcdef", true}, {"fedcba9876543210", false}} {
+		if err := a.handleControl(t.Context(), mustJSON(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: c.id, Role: string(session.RoleControl), Principal: c.principal})); err != nil {
+			t.Fatal(err)
+		}
+		p := a.peer(c.id)
+		var quiet serverQuiet
+		if err := p.fresh(); errors.As(err, &quiet) != c.principal || (err != nil && !errors.Is(err, session.ErrRevoked)) {
+			t.Fatalf("principal %v: fresh %v with the server unheard", c.principal, err)
+		}
+	}
+	if !a.creds.held() {
+		t.Fatal("a principal's viewer holds nothing the host pings for")
+	}
+	p := a.peer("0123456789abcdef")
+	a.connLost(nil)
+	if !errors.Is(p.cred.err(), session.ErrRevoked) {
+		t.Fatalf("the connection's loss left the principal standing: %v", p.cred.err())
+	}
+	if a.creds.held() {
+		t.Fatal("a principal's cred is held past the connection's loss")
+	}
+	if _, err := p.authorize(); !errors.Is(err, session.ErrRevoked) {
+		t.Fatalf("authorize %v, want revoked", err)
+	}
+}
+
+// What the host keeps of the principals' creds is held by their viewers
+// and what they asked for, as the links' is: one nobody holds is swept as
+// more come, and the connection's loss marks the one still held gone.
+func TestAPrincipalsCredIsKeptWhileHeld(t *testing.T) {
+	var l linkCreds
+	held := l.principal()
+	if l.principal() == held {
+		t.Fatal("two principals' viewers hold one cred")
+	}
+	for range 4096 {
+		_ = l.principal()
+		if len(l.principals)%512 == 0 {
+			runtime.GC()
+		}
+	}
+	runtime.GC()
+	_ = l.principal()
+	l.mu.Lock()
+	n := len(l.principals)
+	l.mu.Unlock()
+	if n > 1024 {
+		t.Fatalf("%d principals' creds kept, nobody holding most", n)
+	}
+	l.lost()
+	if !errors.Is(held.err(), session.ErrRevoked) {
+		t.Fatal("the connection's loss left a principal standing")
+	}
+	runtime.KeepAlive(held)
 }
