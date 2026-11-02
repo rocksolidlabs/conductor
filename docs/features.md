@@ -3349,6 +3349,72 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   next launch given fresh ones; a result that breaks the setup; the server
   killed mid-service and the next start's log read. None of these needs a
   Windows or WSL networking step. The item is Done once they are seen.
+- **The Runtime seam: where the processes of a session and of a managed
+  run start, and where an attempt and its checks ran (Program item C10;
+  #490 to #494, started 2026-11-01).** The plan is `docs/plans/runtime.md`
+  (PR #451), cut into five PRs, one paragraph each below; each PR rewrites
+  its own paragraph only, and the last completes the entry with what was
+  observed. The Runtime (`ext.Runtime`) is the one place a session's
+  terminal and a managed run's commands, services, probes and ports start;
+  its free default, `ext/local`'s native Runtime, is what main did before
+  the stream, so nothing a person sees changes; the ledger's evidence rows
+  say where they ran, `native` until a Runtime of item F exists.
+
+  PR-1 (#490): the contract and its native default; nothing calls it yet.
+  `ext.Runtime` gains `Takes`, `StartTerminal`, `Run`, `Serve`, `Probe`
+  and `Port` beside `Name` and `Where`, with `ProcessRef`, `TerminalSpec`,
+  `Terminal`, `ExitStatus`, `ProcessInfo`, `CommandSpec`,
+  `CommandResult`, `ServiceProcess` and `ProbeSpec` (in-process types, no
+  JSON tags), `TakesWait` (100 ms), `StopKillWait` (5 s, `pty.KillWait`)
+  and `MaxCommandTimeout` (`proc.MaxTimeout`), each method's doc stating
+  the contract (a start's context bounds the start, never the process; the
+  folder lent for the call; a stop asks the group, forces it after the
+  grace, promises the leader alone; a panic leaves nothing running);
+  `RegisterRuntime` refuses an invalid `Where` and `native`, which only the
+  free default reports. `local.Native()` (`pty.Start` behind two checks of
+  the context and a test seam, a panic after the fork stopping the process
+  with no grace; `proc.Run` and `proc.Serve` with the environment whole;
+  `proc.Probe`; `proc.FreePort`), put by `local.Fill` in an empty Runtime
+  slot. `internal/proc`: `Prepare` (the refusals `Run` gives, in its order
+  and words, then the environment), `Spec.Environ`, `Probe` and
+  `FreePort` moved from `internal/crew` (whose executor calls them), and a
+  `Started` that panics ending the command's group, reaping it and letting
+  the panic go on. `exttest.FakeRuntime` records and scripts the new
+  methods (unscripted, each refuses naming itself). `internal/opencore`'s
+  `ext-std` rule lets `ext/local`, and nothing else under `ext/`, import
+  `internal/pty` and `internal/proc`. Tests: `TestRegisterRuntimeRefusesItsWhere`,
+  `TestARuntimeMayBeAStarter`; `TestNativeStartsATerminalInItsFolder`,
+  `TestNativeStartRefusesAnEndedContext`, `TestNativeStartCancelledWhileGated`,
+  `TestNativeStartCancelledDuringTheForkIsTheCallers`,
+  `TestNativeStartCompletedIsTheCallers`,
+  `TestNativeStartThatPanicsAfterTheForkLeavesNothing`,
+  `TestNativeStopAsksTheGroup`, `TestNativeStopForcesALeaderThatIgnoresTheAsk`,
+  `TestNativeStopAfterExitSignalsNothing`, `TestNativeStopPromisesTheLeaderOnly`,
+  `TestStopKillWaitIsPtys`, `TestNativeRunIsProcRun`,
+  `TestNativeServeStartsAndStops`, `TestNativeProbeAndPortAreProcs`,
+  `TestNativeTakesEveryRun`, `TestFillGivesTheNativeRuntime` and the
+  boundary test `TestOnlyTheRunnersStartOrSignalAProcess` (every non-test
+  Go file parsed whatever its tags: a raw start or signal outside
+  `internal/pty`, `internal/proc`, `internal/gitcli`, `internal/nvim`,
+  `internal/agents`, `internal/reach` and `internal/cli/up.go`, or
+  `pty.Start`, `proc.Run` or `proc.Serve` used past the Runtime outside
+  `ext/local`, the runners and the three files that start one today, fails
+  naming the file, the line and article 12; its plants each reported);
+  `TestPlainBuildRegistersNothing` (the filled Runtime the native one);
+  `TestEachRuleCatchesItsPlant` (the amendment's plants);
+  `TestPrepareRefusesAsRunDoes`, `TestRunWithEnvironGivesExactlyIt`,
+  `TestEnvironBesideAllowIsRefused`, `TestAStartedThatPanicsEndsTheCommand`
+  and the probe's and the port's tests, moved; `TestFakeRuntimeRecordsAndRefuses`.
+
+  PR-2 (#491): a managed run's trees run through the Runtime. Planned.
+
+  PR-3 (#492): sessions start through the Runtime, on the server and on a
+  host. Planned.
+
+  PR-4 (#493): every attempt and its evidence say where they ran (ledger
+  schema 6). Planned.
+
+  PR-5 (#494): the Runtime's public fake and contract check. Planned.
 - **The extension seams: the `ext` and `app` packages, the free defaults
   and the eight interfaces wired in (Program items C1 to C9; #473 to #489,
   started 2026-10-31).** The plan is `docs/plans/ext.md` (PR #453), cut
