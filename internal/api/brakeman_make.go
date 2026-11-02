@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
@@ -150,8 +151,10 @@ func (s *Server) handleBrakemanMake(w http.ResponseWriter, r *http.Request) {
 	case !dispatch.OpIDPattern.MatchString(body.OpID):
 		writeError(w, http.StatusBadRequest, "invalid_request", "opId is 1 to 32 of A-Z, a-z, 0-9, . _ ~ -")
 		return
-	case len(by) > brakeman.MaxBy || strings.ContainsAny(by, "\n\t") || !utf8.ValidString(by):
-		writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("by is one line of at most %d bytes", brakeman.MaxBy))
+	case len(by) > brakeman.MaxBy || !utf8.ValidString(by) || strings.ContainsFunc(by, unicode.IsControl):
+		// Dispatch's display name holds no control character: a name it
+		// refuses would leave the claim pending for good.
+		writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("by is at most %d bytes with no control character", brakeman.MaxBy))
 		return
 	}
 	req, err := d.st.Get(id)
@@ -432,7 +435,13 @@ func (s *Server) completeMake(ctx context.Context, d *brakemanDesk, id string, m
 			}
 		}
 		if !found {
-			if rc, err = ds.CreateTicket(ctx, dispatch.Op{Actor: dispatch.ActorAdmin, ID: m.Op, By: in.By}, *in.Ticket); err != nil {
+			rc, err = ds.CreateTicket(ctx, dispatch.Op{Actor: dispatch.ActorAdmin, ID: m.Op, By: in.By}, *in.Ticket)
+			switch {
+			case errors.Is(err, dispatch.ErrBadBy), errors.Is(err, dispatch.ErrBadOpID), errors.Is(err, dispatch.ErrBadActor):
+				// The same input is refused every time: settled refused,
+				// so the item can be made again, never left pending.
+				rc, err = dispatch.Receipt{OpID: m.Op, Status: dispatch.StatusFailed, Error: err.Error()}, nil
+			case err != nil:
 				return m, err
 			}
 		}
@@ -578,6 +587,10 @@ func (d *brakemanDesk) recoverMakes(ctx context.Context) {
 	}
 	edges := map[string]bool{}
 	for _, p := range pending {
+		if ctx.Err() != nil {
+			// The desk is closing: the rest is the next start's.
+			return
+		}
 		switch {
 		case p.Made != nil:
 			if _, err := d.s.completeMake(ctx, d, p.Request, *p.Made); err != nil {
@@ -597,7 +610,7 @@ func (d *brakemanDesk) recoverMakes(ctx context.Context) {
 func (d *brakemanDesk) recover() {
 	d.recovering.Store(true)
 	defer d.recovering.Store(false)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(d.recoverCtx, 2*time.Minute)
 	defer cancel()
 	d.recoverMakes(ctx)
 }

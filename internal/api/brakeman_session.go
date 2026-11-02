@@ -326,13 +326,14 @@ func (s *Server) handleSessionBrakemanBrief(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	// The coverage is the server's record of what the turn's reads
-	// reached, read under the reads' mutex so none is left out of it.
+	// reached, and the classes its answers used beside its read log's,
+	// read under the reads' mutex so none is left out of them.
 	d.readMu.Lock()
 	var coverage *brakeman.Coverage
 	if cur, err := d.st.Get(id); err == nil {
 		coverage = cur.Coverage
 	}
-	kept, err := d.st.KeepBrief(id, brakeman.Kept{OpID: body.OpID, Brief: b, Refs: refs, RunID: runID, SessionID: info.ID, Coverage: coverage})
+	kept, err := d.st.KeepBrief(id, brakeman.Kept{OpID: body.OpID, Brief: b, Refs: refs, RunID: runID, SessionID: info.ID, Coverage: coverage, Classes: d.classesUsed(id)})
 	d.readMu.Unlock()
 	if err != nil {
 		s.brakemanError(w, err)

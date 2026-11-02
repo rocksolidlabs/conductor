@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -655,6 +657,11 @@ func TestCoverageIsTheServers(t *testing.T) {
 	for i := range 4 {
 		f.event(t, f.other, "tick", fmt.Sprintf("t%d", i))
 	}
+	// The plain session's window full, its first entry after the start:
+	// a gap.
+	for range session.MaxActivity {
+		f.plainLocal.Record(session.ActivityEntry{At: time.Now(), Type: session.ActivityProgress, Message: "x"})
+	}
 	f.turn(t, nil)
 	page := f.expectRead(t, "/api/brakeman/changes?limit=1", http.StatusOK, "")
 	if page["next"] == "" {
@@ -671,6 +678,9 @@ func TestCoverageIsTheServers(t *testing.T) {
 	}
 	if partial == 0 {
 		t.Fatalf("an unread page and a truncated run leave nothing partial: %+v", r.Coverage)
+	}
+	if i := slices.IndexFunc(r.Coverage.Sessions, func(w brakeman.Watermark) bool { return w.ID == f.plain }); i < 0 || !r.Coverage.Sessions[i].Partial {
+		t.Fatalf("a window with a gap is not partial: %+v", r.Coverage.Sessions)
 	}
 	f.again(t, nil)
 	second := f.changesOf(t, 200)
@@ -1050,5 +1060,338 @@ func TestARepeatedMakeDerivesTheSameOp(t *testing.T) {
 	}}
 	if e := briefEdges("br-1", b); len(e) != 1 || e[0].Op != edgeOp("br-1", 0, 1) || e[0].From != 0 || e[0].To != 1 {
 		t.Fatalf("the edges: %+v", e)
+	}
+}
+
+// ---- review round 1 (#525)
+
+// A page's cursor is the place of its last item, never an index: a
+// question answered between pages after its question.open was given
+// shifts nothing, and every change the list holds at the end was given.
+func TestAPageAfterAnAnsweredQuestionSkipsNothing(t *testing.T) {
+	f := newObsFixture(t)
+	f.turn(t, nil)
+	question := "question:" + f.plain + "/" + f.question
+	given := map[string]bool{}
+	key := func(m map[string]any) string {
+		return fmt.Sprint(m["part"], " ", m["kind"], " ", m["ref"], " ", m["at"])
+	}
+	cursor, answered := "", false
+	for {
+		out := f.expectRead(t, "/api/brakeman/changes?limit=1&cursor="+cursor, http.StatusOK, "")
+		for _, c := range out["changes"].([]any) {
+			m := c.(map[string]any)
+			given[key(m)] = true
+			if m["ref"] == question && !answered {
+				// Answered once its question.open was given: the list
+				// loses an item before the cursor.
+				f.plainLocal.SetAttention(session.AttentionNone, "", session.SourceAPI)
+				answered = true
+			}
+		}
+		if cursor, _ = out["next"].(string); cursor == "" {
+			break
+		}
+	}
+	if !answered {
+		t.Fatal("the question was never among the changes")
+	}
+	// What happened once the pages were read is the next read's.
+	done := time.Now()
+	for _, c := range f.expectRead(t, "/api/brakeman/changes?limit=200", http.StatusOK, "")["changes"].([]any) {
+		m := c.(map[string]any)
+		if at, _ := time.Parse(time.RFC3339Nano, m["at"].(string)); at.After(done) {
+			continue
+		}
+		if !given[key(m)] {
+			t.Fatalf("%s was never given: %v", key(m), given)
+		}
+	}
+}
+
+// The coverage counts the items a turn was given, never a page's reach:
+// an item a page passed over stops its part's watermark before it, and a
+// session's two items at one time, split across pages, stop it before
+// that time; once all are given, a session is complete up to when its
+// window was read, not up to the moment the coverage is written.
+func TestCoverageCountsTheItemsGiven(t *testing.T) {
+	read := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	later := read.Add(time.Hour)
+	clock := func() time.Time { return later }
+	d := &brakemanDesk{}
+	d.clock.Store(&clock)
+	run, sess := "run:team-0000aaaa", "session:00000000000000aa"
+	at := func(n int) time.Time { return read.Add(-time.Duration(10-n) * time.Minute) }
+	items := []changeItem{
+		{Ref: "event:team-0000aaaa/1", Kind: "a", At: at(1), Part: run, seq: 1},
+		{Ref: "event:team-0000aaaa/2", Kind: "b", At: at(2), Part: run, seq: 2},
+		{Ref: "event:team-0000aaaa/3", Kind: "c", At: at(3), Part: run, seq: 3},
+		{Ref: sess, Kind: "attention", At: at(5), Part: sess, seq: at(5).UnixNano()},
+		{Ref: "question:00000000000000aa/q1", Kind: "question.open", At: at(5), Part: sess, seq: at(5).UnixNano()},
+	}
+	parts := []changePart{
+		{Part: run, kind: "run", id: "team-0000aaaa", From: "time", end: 3},
+		{Part: sess, kind: "session", id: "00000000000000aa", From: "time", lastAt: at(0), readAt: read},
+	}
+	req := brakeman.Request{ID: "br-1"}
+	watermarks := func(c *brakeman.Coverage) (brakeman.Watermark, brakeman.Watermark) {
+		return c.Runs[0], c.Sessions[0]
+	}
+	r, s := watermarks(d.cover(req, []changeItem{items[0], items[3]}, items, parts))
+	if r.Seq != 1 || !r.Partial || !s.At.Equal(at(5).Add(-time.Nanosecond)) || !s.Partial {
+		t.Fatalf("one of a pair given: run %+v, session %+v", r, s)
+	}
+	// The run's second event passed over: its watermark stays before it.
+	r, s = watermarks(d.cover(req, []changeItem{items[2], items[4]}, items, parts))
+	if r.Seq != 1 || !r.Partial || s.Partial || !s.At.Equal(read) {
+		t.Fatalf("an event passed over: run %+v, session %+v", r, s)
+	}
+	r, _ = watermarks(d.cover(req, []changeItem{items[1]}, items, parts))
+	if r.Seq != 3 || r.Partial {
+		t.Fatalf("every event given: %+v", r)
+	}
+	// Another request's turn begins its own record.
+	if r, _ = watermarks(d.cover(brakeman.Request{ID: "br-2"}, nil, items, parts)); r.Seq != 0 || !r.Partial {
+		t.Fatalf("another turn's coverage: %+v", r)
+	}
+}
+
+// Dispatch's part is truncated where its page fills short of the head,
+// the window and the feed's page equal as they are in the product: the
+// next briefing's coverage of Dispatch is partial.
+func TestDispatchIsTruncatedAtTheFeedsPage(t *testing.T) {
+	f := newObsFixture(t)
+	oldWindow, oldPage := changesWindow, dispatchFeedPage
+	changesWindow, dispatchFeedPage = 3, 3
+	t.Cleanup(func() { changesWindow, dispatchFeedPage = oldWindow, oldPage })
+	f.turn(t, nil)
+	f.changesOf(t, 200)
+	f.submitFact(t, "run:"+f.run)
+	for i := range 5 {
+		doneOf(t)(f.srv.dispatch.AddComment(t.Context(), adminOp("Bob"), f.ticket, fmt.Sprintf("comment %d", i)))
+	}
+	f.again(t, nil)
+	out := f.expectRead(t, "/api/brakeman/changes?limit=200", http.StatusOK, "")
+	if out["from"] != "watermarks" {
+		t.Fatalf("the second briefing's start: %v", out["from"])
+	}
+	var part map[string]any
+	for _, p := range out["parts"].([]any) {
+		if m := p.(map[string]any); m["part"] == partDispatch {
+			part = m
+		}
+	}
+	if part == nil || part["truncated"] != true {
+		t.Fatalf("Dispatch's part past its page: %v", out["parts"])
+	}
+	f.submitFact(t, "run:"+f.run)
+	if r, _ := f.desk.st.Get(f.req); r.Coverage == nil || r.Coverage.Dispatch == nil || !r.Coverage.Dispatch.Partial {
+		t.Fatalf("Dispatch's coverage: %+v", r.Coverage)
+	}
+}
+
+// A change with no ticket cites the receipt of the operation that made
+// it, under its actor and op id, and the ref resolves.
+func TestAProjectsChangeCitesItsOperation(t *testing.T) {
+	f := newObsFixture(t)
+	since := time.Now().UTC()
+	op := adminOp("Ann")
+	doneOf(t)(f.srv.dispatch.CreateProject(t.Context(), op, dispatch.NewProject{Key: "NEW", Name: "New"}))
+	f.turn(t, nil)
+	want := "op:" + op.Actor + "/" + op.ID
+	found := false
+	for _, c := range f.expectRead(t, "/api/brakeman/changes?since="+since.Format(time.RFC3339Nano), http.StatusOK, "")["changes"].([]any) {
+		if m := c.(map[string]any); strings.HasPrefix(m["kind"].(string), "project.") {
+			found = true
+			if m["ref"] != want {
+				t.Fatalf("the project's change cites %v, not %s", m["ref"], want)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the project's change is not among the changes")
+	}
+	f.submitFact(t, want)
+}
+
+// A line of what changed names a ticket without its revision: the
+// revision the turn read of the ticket stands, and a decision naming it
+// is kept.
+func TestAChangesReadKeepsTheRevisionRead(t *testing.T) {
+	f := newObsFixture(t)
+	f.turn(t, nil)
+	f.expectRead(t, "/api/dispatch/tickets/"+f.ticket, http.StatusOK, "")
+	seen, _ := f.readOf(t, "ticket:"+f.ticket)
+	refs := f.changesOf(t, 200)
+	if !slices.Contains(refs, "ticket:"+f.ticket) {
+		t.Fatalf("the ticket is not among the changes: %v", refs)
+	}
+	if rd, _ := f.readOf(t, "ticket:"+f.ticket); rd.Rev != "" {
+		t.Fatalf("the changes' line of the ticket: %+v", rd)
+	}
+	decision := map[string]any{"schema": brakeman.BriefSchema, "title": "A decision", "summary": "One to make.", "items": []any{map[string]any{
+		"kind": brakeman.ItemDecision, "about": "ticket:" + f.ticket, "happened": "the build failed", "whyHuman": "only you can say",
+		"question": "Fix it now?", "alternatives": []any{map[string]any{"label": "Now", "tradeoffs": "costs today"}, map[string]any{"label": "Later", "tradeoffs": "risks tomorrow"}},
+		"recommendation": 0, "authorizes": "a retry", "evidence": []string{"ticket:" + f.ticket}, "subjectRevision": seen.Rev,
+	}}}
+	if status, out := f.submit(t, f.sid, f.tok, "rev-read", decision); status != http.StatusCreated {
+		t.Fatalf("the revision read: %d %v", status, out)
+	}
+}
+
+// atObserve runs fn once at the stage of the next shared read.
+func atObserve(t *testing.T, stage string, fn func()) {
+	t.Helper()
+	var once sync.Once
+	f := func(s string) {
+		if s == stage {
+			once.Do(fn)
+		}
+	}
+	observeSeam.Store(&f)
+	t.Cleanup(func() { observeSeam.Store(nil) })
+}
+
+// A run's read is noted at the revision its answer was read at, which
+// the answer carries: a transition before the handler is the answer's;
+// one between the handler and its filter leaves the revision unknown,
+// noted as none.
+func TestARunsRevisionIsTheOneItsAnswerWasReadAt(t *testing.T) {
+	f := newObsFixture(t)
+	f.turn(t, nil)
+	ledgerRev := func() string {
+		row, _, err := f.srv.ledger.Run(t.Context(), f.run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strconv.FormatInt(row.Revision, 10)
+	}
+	for _, path := range []string{"/api/runs/" + f.run, "/api/runs/" + f.run + "/tasks/build"} {
+		ref, field := "run:"+f.run, "run"
+		if strings.Contains(path, "/tasks/") {
+			ref, field = "task:"+f.run+"/build", "task"
+		}
+		atObserve(t, "admitted", func() { f.event(t, f.run, "moved", "") })
+		out := f.expectRead(t, path, http.StatusOK, "")
+		now := ledgerRev()
+		rd, _ := f.readOf(t, ref)
+		if got := out[field].(map[string]any)["revision"]; rd.Rev != now || got != now {
+			t.Fatalf("%s after a transition before its handler: noted %q, answered %v, the ledger at %s", path, rd.Rev, got, now)
+		}
+		atObserve(t, "answered", func() { f.event(t, f.run, "moved", "") })
+		out = f.expectRead(t, path, http.StatusOK, "")
+		rd, _ = f.readOf(t, ref)
+		if got, ok := out[field].(map[string]any)["revision"]; rd.Rev != "" || ok {
+			t.Fatalf("%s with a transition between its handler and its filter: noted %q, answered %v", path, rd.Rev, got)
+		}
+	}
+}
+
+// A ticket's read holds the tickets it names beside it to the grant: a
+// related ticket linked only to a run outside the scope is shown by its
+// key alone, as a read of it is refused.
+func TestARelatedTicketOutsideTheScopeIsWithheld(t *testing.T) {
+	f := newObsFixture(t)
+	ctx := t.Context()
+	elsewhere := doneOf(t)(f.srv.dispatch.CreateTicket(ctx, adminOp("Ann"), dispatch.NewTicket{Project: "CND", Title: "A secret elsewhere"})).Key
+	third := "third-0000dddd"
+	if _, err := f.srv.ledger.Transition(ctx, third, func(tx *ledger.Tx) error {
+		return tx.PutRun(ledger.RunRow{ID: third, CrewID: "third", Crew: "{}", State: ledger.RunRunning, CreatedAt: tx.Now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.srv.records.Save(crew.Run{ID: third, CrewID: "third", Name: "third", Cwd: f.root, State: crew.RunRunning, Managed: &crew.Managed{Revision: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	doneOf(t)(f.srv.dispatch.AddLink(ctx, adminOp("Ann"), elsewhere, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: third}))
+	doneOf(t)(f.srv.dispatch.AddRelation(ctx, adminOp("Ann"), f.ticket, dispatch.RelationBlocks, elsewhere))
+	f.turn(t, func(c map[string]any) { c["scope"] = map[string]any{"runs": []string{f.run}} })
+	f.expectRead(t, "/api/dispatch/tickets/"+elsewhere, http.StatusForbidden, "outside_scope")
+	_, body := f.readRaw(t, "/api/dispatch/tickets/"+f.ticket)
+	if strings.Contains(string(body), "A secret elsewhere") {
+		t.Fatalf("the related ticket's title: %s", body)
+	}
+	out := f.expectRead(t, "/api/dispatch/tickets/"+f.ticket, http.StatusOK, "")
+	rels := out["ticket"].(map[string]any)["relations"].([]any)
+	if len(rels) != 1 {
+		t.Fatalf("relations: %v", rels)
+	}
+	other := rels[0].(map[string]any)["other"].(map[string]any)
+	if other["key"] != elsewhere || other["withheld"] == nil || other["status"] != nil {
+		t.Fatalf("the related ticket outside the scope: %v", other)
+	}
+}
+
+// A turn whose answers held Dispatch's text with no item a ref names
+// keeps dispatch in its footprint: a ticket's history (whose changes
+// cite their operations) and a page of projects; its brief is withheld
+// from a turn with Dispatch off.
+func TestADispatchReadWithoutItemsKeepsItsFootprint(t *testing.T) {
+	for _, path := range []string{"/api/dispatch/tickets/CND-1/history", "/api/dispatch/projects"} {
+		t.Run(path, func(t *testing.T) {
+			f := newObsFixture(t)
+			f.turn(t, nil)
+			out := f.expectRead(t, path, http.StatusOK, "")
+			if changes, ok := out["changes"].([]any); ok {
+				if len(changes) == 0 || !strings.HasPrefix(fmt.Sprint(changes[0].(map[string]any)["ref"]), "op:") {
+					t.Fatalf("the history's changes: %v", changes)
+				}
+			}
+			f.submitFact(t, "run:"+f.run)
+			early := f.req
+			if r, _ := f.desk.st.Get(early); r.Footprint == nil || !slices.Contains(r.Footprint.Classes, brakeman.ClassDispatch) {
+				t.Fatalf("the footprint: %+v", r.Footprint)
+			}
+			f.again(t, func(c map[string]any) { c["visibility"].(map[string]any)["dispatch"] = false })
+			if got := f.briefsOf(t)[early]; got == nil || whole(got) {
+				t.Fatalf("the brief with Dispatch off: %v", got)
+			}
+		})
+	}
+}
+
+// A page of changes carries the parts its items are of, not every part
+// of the answer: thirty runs with a change each, read a change a page.
+func TestAPageCarriesItsItemsParts(t *testing.T) {
+	f := newObsFixture(t)
+	for i := range 30 {
+		run := fmt.Sprintf("many%02d-0000cccc", i)
+		if _, err := f.srv.ledger.Transition(t.Context(), run, func(tx *ledger.Tx) error {
+			if err := tx.PutRun(ledger.RunRow{ID: run, CrewID: "many", Crew: "{}", State: ledger.RunRunning, CreatedAt: tx.Now()}); err != nil {
+				return err
+			}
+			return tx.Event("tick", map[string]string{})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.turn(t, nil)
+	out := f.expectRead(t, "/api/brakeman/changes?limit=1", http.StatusOK, "")
+	if n := len(out["parts"].([]any)); n != 1 {
+		t.Fatalf("a page of one change carries %d parts: %v", n, out["parts"])
+	}
+	parts := map[string]bool{}
+	cursor := ""
+	for {
+		page := f.expectRead(t, "/api/brakeman/changes?limit=7&cursor="+cursor, http.StatusOK, "")
+		named := map[string]bool{}
+		for _, c := range page["changes"].([]any) {
+			named[c.(map[string]any)["part"].(string)] = true
+		}
+		for _, p := range page["parts"].([]any) {
+			part := p.(map[string]any)["part"].(string)
+			if cursor != "" && !named[part] {
+				t.Fatalf("a later page carries %s, which none of its items is of", part)
+			}
+			parts[part] = true
+		}
+		if cursor, _ = page["next"].(string); cursor == "" {
+			break
+		}
+	}
+	for i := range 30 {
+		if part := fmt.Sprintf("run:many%02d-0000cccc", i); !parts[part] {
+			t.Fatalf("%s is on no page: %v", part, parts)
+		}
 	}
 }

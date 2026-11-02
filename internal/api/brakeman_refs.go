@@ -188,7 +188,14 @@ func (s *Server) newRefResolver(desk *brakeman.Store, req brakeman.Request, log 
 	rr := &refResolver{s: s, desk: desk, snap: req.Config, grant: grantOf(req.Config, now), at: time.Now().UTC(),
 		seen: map[brakeman.Ref]brakeman.Read{}, runs: map[string]*refRun{}, tops: map[string]string{}}
 	for _, rd := range log.Reads {
-		// The newest read of a ref stands: the log is oldest first.
+		// The newest read of a ref stands, the log oldest first; but a
+		// read with no revision (a line of what changed, an overlap, a
+		// ticket's history) never stands over one with a revision: it
+		// saw no snapshot of the record, and the revision read is still
+		// the one the turn read.
+		if prev, ok := rr.seen[rd.Ref]; ok && prev.Rev != "" && rd.Rev == "" {
+			continue
+		}
 		rr.seen[rd.Ref] = rd
 	}
 	return rr

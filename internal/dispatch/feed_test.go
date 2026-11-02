@@ -33,7 +33,7 @@ func TestChangesAfter(t *testing.T) {
 		if c.Seq <= head {
 			t.Fatalf("a change at or before %d: %+v", head, c)
 		}
-		if c.Ticket != oldKey || c.Project != "OLD" || c.At.IsZero() || c.Actor != "test" {
+		if c.Ticket != oldKey || c.Project != "OLD" || c.At.IsZero() || c.Actor != "test" || c.OpID != "c1" {
 			t.Fatalf("the comment's change: %+v", c)
 		}
 	}

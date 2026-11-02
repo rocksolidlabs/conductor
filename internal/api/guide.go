@@ -308,7 +308,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		observeOp("projects", "/api/dispatch/projects", "Dispatch's projects in your scope.", "archived", "limit", "cursor"),
 		observeOp("tickets", "/api/dispatch/tickets", "A page of tickets in your scope, each with its ref and rev.", "project", "status", "q", "limit", "cursor"),
 		observeOp("ticket", "/api/dispatch/tickets/{key}", "A ticket whole with its last comments, each with its ref and rev."),
-		observeOp("history", "/api/dispatch/tickets/{key}/history", "A ticket's history, field by field.", "after", "limit"),
+		observeOp("history", "/api/dispatch/tickets/{key}/history", "A ticket's history, field by field, each change with the ref of its operation.", "after", "limit"),
 		observeOp("comments", "/api/dispatch/tickets/{key}/comments", "A ticket's comments past the ones its read carries.", "after", "limit"),
 		observeOp("sessions", "/api/sessions", "The sessions in your scope: names, states, questions."),
 		observeOp("touched", "/api/touched", "The files the sessions in your scope touched.", "limit"),
