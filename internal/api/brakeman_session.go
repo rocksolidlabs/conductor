@@ -154,7 +154,12 @@ func (s *Server) handleSessionBrakemanRequest(w http.ResponseWriter, r *http.Req
 		sc := cfg.Scope
 		out.ScopeNow = &sc
 	}
-	rr := s.newRefResolver(d.st, req, cfg)
+	log, err := d.st.Reads(id)
+	if err != nil {
+		s.brakemanError(w, err)
+		return
+	}
+	rr := s.newRefResolver(d.st, req, log, cfg)
 	for _, ref := range req.Subjects {
 		res, why, err := rr.resolve(r.Context(), ref)
 		if err != nil {
@@ -211,14 +216,6 @@ func (d *brakemanDesk) lastBriefing(req brakeman.Request, g refGrant) (*turnBrie
 		after = next
 	}
 	return nil, nil
-}
-
-// newRefResolver is the resolver of a request's refs under the
-// configuration now, as resolveBriefRefs makes one, with nothing read
-// noted.
-func (s *Server) newRefResolver(desk *brakeman.Store, req brakeman.Request, now brakeman.Config) *refResolver {
-	return &refResolver{s: s, desk: desk, grant: grantOf(req.Config, now), at: time.Now().UTC(),
-		seen: map[brakeman.Ref]brakeman.Read{}, runs: map[string]*refRun{}, tops: map[string]string{}}
 }
 
 // briefBody is POST …/brakeman/brief's body.
@@ -311,9 +308,15 @@ func (s *Server) handleSessionBrakemanBrief(w http.ResponseWriter, r *http.Reque
 	}
 	refs, err := s.resolveBriefRefs(r.Context(), d.st, req, b, log, cfg)
 	var bad *badRefsError
+	var unopened *errRefStore
 	switch {
 	case errors.As(err, &bad):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": map[string]any{"code": "bad_refs", "message": bad.Error(), "refs": bad.Refs}})
+		return
+	case errors.As(err, &unopened):
+		// A store the server has and could not open, as the other
+		// routes answer one.
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", unopened.Error())
 		return
 	case err != nil:
 		s.log.Warn("a brief's refs could not be resolved", "request", id, "err", err)
