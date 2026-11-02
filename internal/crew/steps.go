@@ -1849,9 +1849,10 @@ type unusable struct {
 func (e *Engine) failUnusable(r *run, a *attempt, stage, errText string) []event {
 	t := a.t
 	cp := t.checkpoint
-	// A package or an agent that is not the approved one is no fault of the
-	// checkpoint's tree: the run pauses whatever the attempt started at.
-	atCheckpoint := !launchStage(stage) && cp != nil && t.kept(cp.n) && cp.commit != "" && cp.commit != cp.start && a.start == cp.commit
+	// A package or an agent that is not the approved one, or a receipt the
+	// ledger could not give, is no fault of the checkpoint's tree: the run
+	// pauses whatever the attempt started at.
+	atCheckpoint := !launchStage(stage) && stage != receiptStage && cp != nil && t.kept(cp.n) && cp.commit != "" && cp.commit != cp.start && a.start == cp.commit
 	u := &unusable{n: a.n, stage: stage, err: errText, next: a.start, prev: previousOf(t, a)}
 	if old := t.unusableBefore(a); old != nil {
 		u.prevResult = old.prevResult
@@ -1873,6 +1874,8 @@ func (e *Engine) failUnusable(r *run, a *attempt, stage, errText string) []event
 		why = fmt.Sprintf("attempt %d could not be handed its ticket's package: %s", a.n, errText)
 	case "agent":
 		why = fmt.Sprintf("attempt %d could not start its agent: %s", a.n, errText)
+	case receiptStage:
+		why = fmt.Sprintf("attempt %d could not be handed the receipt of the check that failed the attempt before: %s", a.n, errText)
 	}
 	if atCheckpoint {
 		u.checkpoint, u.branch, u.checkpointN, u.next = cp.commit, cp.branch, cp.n, cp.start

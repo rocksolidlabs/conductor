@@ -70,6 +70,13 @@ type Subscription struct {
 	// another reason: what it is still owed at the session's end is dropped
 	// from then on (owed).
 	revoked atomic.Bool
+	// revocation is why the credential of a connection that is not a
+	// link's no longer stands (Revoke), nil while it does: kept whatever
+	// the subscription ended for first (a slow consumer, a viewer that
+	// left), which Reason keeps saying, so that what the connection has
+	// under way is refused for it (revoked) though its transport was
+	// already closing for another reason.
+	revocation atomic.Pointer[error]
 
 	inflight atomic.Int32 // file requests in progress
 
@@ -276,6 +283,29 @@ func (s *Subscription) closeWith(reason error) {
 func (s *Subscription) revoke() {
 	s.revoked.Store(true)
 	s.closeWith(ErrRevoked)
+}
+
+// Revoke ends the subscription as revoked for a credential that is not a
+// link (an identity provider's principal the provider no longer admits:
+// api's principalWatch), as its link's revoke would (DisconnectLink):
+// reason, ErrRevoked or a kind of it (ErrRevoked for any other), is what
+// it is closed with, its transport told so; nothing more queued for it is
+// written; and what it has under way is refused with that reason, as a
+// revoked link's is (a submission waiting for its turn or its Enter, keys
+// not yet written, a save's next part: revoked, which they look at). It
+// takes no lock, so any goroutine may call it, more than once. The first
+// reason the subscription ended for is what Reason says and its transport
+// was told; a revocation that comes after another end (a slow consumer,
+// a viewer that left, its transport's close still under way) is kept of
+// its own (revocation), and what the connection has under way is refused
+// for it all the same. The first revocation is kept.
+func (s *Subscription) Revoke(reason error) {
+	if !errors.Is(reason, ErrRevoked) {
+		reason = ErrRevoked
+	}
+	s.revocation.CompareAndSwap(nil, &reason)
+	s.revoked.Store(true)
+	s.closeWith(reason)
 }
 
 // expire is revoke for a link that reached its expiry (ErrExpired).

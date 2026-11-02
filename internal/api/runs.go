@@ -56,13 +56,14 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	s.launches.beforeAttempt(spec)
 	yolo := spec.Yolo
 	ref := spec.Ref
 	// The run's chat: the session is made with it, so that its first viewer finds it, and joins it once it exists.
 	room := s.runs.ChatRoom(ref.RunID)
 	name, renamed := s.memberSessionName(spec)
 	req := createSessionRequest{AgentID: spec.AgentID, Name: name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom,
-		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow}
+		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow, agentSHA256: spec.AgentSHA256}
 	if spec.Class == crew.ClassBrakeman {
 		if aerr := s.brakemanLaunch(spec, &req, &ref); aerr != nil {
 			return nil, aerr
@@ -70,6 +71,10 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	}
 	local, aerr := s.newLocal(req, &ref)
 	if aerr != nil {
+		if aerr.Code == agentChangedCode {
+			// The engine's refusal, which it says with the plan revision.
+			return nil, crew.ErrAgentChanged
+		}
 		return nil, aerr
 	}
 	if spec.Class == crew.ClassBrakeman {

@@ -134,6 +134,8 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 		{"GET /api/dispatch/plans/{id}", s.handleDispatchPlan},
 		{"POST /api/dispatch/plans/{id}/approve", s.handleDispatchApprovePlan},
 		{"POST /api/dispatch/plans/{id}/withdraw", s.handleDispatchWithdrawPlan},
+		{"POST /api/dispatch/tickets/{key}/launch", s.handleDispatchLaunch},
+		{"GET /api/dispatch/launches/{id}", s.handleDispatchLaunchRead},
 		{"GET /api/dispatch/tickets/{key}/comments", s.handleDispatchComments},
 		{"POST /api/dispatch/tickets/{key}/comments", s.handleDispatchAddComment},
 		{"POST /api/dispatch/tickets/{key}/comments/{id}/edit", s.handleDispatchEditComment},

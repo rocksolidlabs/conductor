@@ -7,6 +7,10 @@ describe('what a closed connection says', () => {
     expect(closeReason(CloseCode.Forbidden, 'link revoked')).toBe('This share link was revoked')
     expect(closeReason(CloseCode.Forbidden, '')).toBe('This share link was revoked')
   })
+  it('names no link for a principal the identity provider no longer admits, closed with 4403 too', () => {
+    expect(closeReason(CloseCode.Forbidden, 'access revoked')).toBe('Your access to this session was revoked')
+    expect(closedByTheEnd(CloseCode.Forbidden, 'access revoked')).toBe(false)
+  })
   it('names the other closes as before', () => {
     expect(closeReason(CloseCode.Unauthorized, '')).toBe('Not authorized for this session')
     expect(closeReason(CloseCode.SessionEnded, 'host disconnected')).toBe('host disconnected')
