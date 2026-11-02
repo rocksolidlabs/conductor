@@ -35,10 +35,10 @@ const (
 )
 
 // The states of a provider the server starts, as extState answers them
-// (and GET /api/capabilities will list them, C9).
+// and GET /api/capabilities lists them (capabilities.go).
 const (
 	extStarting = "starting" // its Start has not yet succeeded: its slots answer the free default
-	extStarted  = "started"  // its Start succeeded, or it needs none
+	extStarted  = "ready"    // its Start succeeded, or it needs none
 )
 
 // extStarter is a provider the server starts: one per registered name
