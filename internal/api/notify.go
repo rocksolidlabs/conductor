@@ -65,6 +65,11 @@ func (nt *notifier) offer(sessionID string, e session.ActivityEntry, state sessi
 		return
 	}
 	typ := eventTypeOf(e, state)
+	// A quiet Brakeman turn's session (a background turn's) pages no one:
+	// Needs you still lists its question.
+	if d, ok := nt.registry.Get(sessionID); ok && quietSession(d.Info()) {
+		return
+	}
 	var (
 		n     ext.Notification
 		built bool

@@ -1175,7 +1175,13 @@ func (r *Request) pinned() bool {
 // siblings. One of a later schema is kept. It answers how many it
 // removed. It runs under Update's mutex, so a claim either lands on a
 // request it keeps or finds the request gone (ErrNotFound).
-func (s *Store) Prune() (int, error) {
+func (s *Store) Prune() (int, error) { return s.PruneKeeping(keepNewest) }
+
+// PruneKeeping is Prune keeping the newest keep requests (none below 0)
+// besides the open and pinned ones: the desk's, which keeps Keep and
+// whose tests lower it.
+func (s *Store) PruneKeeping(keep int) (int, error) {
+	keep = max(keep, 0)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.writable(); err != nil {
@@ -1191,7 +1197,7 @@ func (s *Store) Prune() (int, error) {
 	}
 	var gone []string
 	for i, id := range ids {
-		if i < keepNewest {
+		if i < keep {
 			continue
 		}
 		r, err := s.loadLocked(id)
