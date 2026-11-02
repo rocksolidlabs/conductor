@@ -143,6 +143,33 @@ func GetStatus(ctx context.Context, dir, base string) (Status, error) {
 	return st, nil
 }
 
+// ChangedSince is the paths of the files the commits of dir's HEAD since
+// base changed (git diff --name-only -z base...HEAD: against the merge
+// base of the two, so a base that moved on adds nothing), relative to the
+// working tree's top, at most MaxChanges of them, truncated past that.
+// What the working tree changed and has not committed is GetStatus's.
+// ErrNotRepo outside a repository; a base that does not resolve is git's
+// error.
+func ChangedSince(ctx context.Context, dir, base string) (paths []string, truncated bool, err error) {
+	if base == "" || strings.HasPrefix(base, "-") {
+		return nil, false, fmt.Errorf("git: invalid base %q", base)
+	}
+	out, err := Run(ctx, dir, "diff", "--name-only", "-z", "--no-renames", base+"...HEAD", "--")
+	if err != nil {
+		return nil, false, err
+	}
+	for p := range strings.SplitSeq(out, "\x00") {
+		if p == "" {
+			continue
+		}
+		if len(paths) == MaxChanges {
+			return paths, true, nil
+		}
+		paths = append(paths, p)
+	}
+	return paths, false, nil
+}
+
 // parsePorcelain reads `git status --porcelain=v1 -z` output: each changed
 // or untracked file with its status letter (M, A, D, R, ?), at most
 // MaxChanges of them, truncated past that.

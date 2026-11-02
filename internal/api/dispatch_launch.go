@@ -41,6 +41,11 @@ const (
 	// (why, the agents, the label) at their escaped worst, is under it
 	// (dispatch_launch_test.go). Exported for the CLI.
 	MaxLaunchReply = 1 << 20
+	// LaunchTimeout bounds a launch's request on the server: its run's
+	// start (runTimeout) and its two store writes, the pending launch and
+	// its outcome, each within its own bound. A client that waits for the
+	// answer waits at least this long. Exported for the CLI.
+	LaunchTimeout = runTimeout + 2*dispatchWriteTimeout
 	// maxTicketLaunchBody bounds a launch's body: an op, a revision's id
 	// and a label of at most 60 characters.
 	maxTicketLaunchBody = 4 << 10
@@ -106,11 +111,14 @@ type ticketLaunchBody struct {
 // for the launches from a ticket: the engine reads a package's
 // attachments from Dispatch's store (OpenLaunchFile), and the store reads
 // which ticket launched a run from the engine, else from the run's
-// record (runTicket).
+// record (runTicket), and a run's chain from the ledger, the engine and
+// the records (chainRuns).
 func (s *Server) wireLaunches() {
 	s.runs.UsePackageFiles(s.openLaunchFile)
 	if s.dispatch != nil {
 		s.dispatch.SetRunTicket(s.runTicket)
+		// A run's chain, for the store's chain rule (dispatch_evidence.go).
+		s.dispatch.SetRunChain(s.chainRuns)
 	}
 }
 
@@ -308,7 +316,7 @@ func (s *Server) handleDispatchLaunch(w http.ResponseWriter, r *http.Request) {
 	}
 	// A launch runs to its end when the client goes away: its store
 	// operations and its run's start, each within its own bound.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), runTimeout+2*dispatchWriteTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), LaunchTimeout)
 	defer cancel()
 	op := body.op(r)
 	rc, found, err := ds.Replay(ctx, op, dispatch.IntentTicketLaunch, dispatch.LaunchArgs{Key: key, Plan: body.Plan, Label: body.Label})

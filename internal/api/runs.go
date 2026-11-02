@@ -62,14 +62,38 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	// The run's chat: the session is made with it, so that its first viewer finds it, and joins it once it exists.
 	room := s.runs.ChatRoom(ref.RunID)
 	name, renamed := s.memberSessionName(spec)
-	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom,
-		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow, agentSHA256: spec.AgentSHA256}, &ref)
+	req := createSessionRequest{AgentID: spec.AgentID, Name: name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom,
+		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow, agentSHA256: spec.AgentSHA256}
+	if spec.Class == crew.ClassBrakeman {
+		if aerr := s.brakemanLaunch(spec, &req, &ref); aerr != nil {
+			return nil, aerr
+		}
+		// The turn's place among the server's sessions is held before its
+		// process is spawned: at the cap the turn is refused with nothing
+		// made, never a process started and then refused registration.
+		if req.reservation == nil {
+			res, err := s.registry.Reserve()
+			if err != nil {
+				return nil, newAPIError(http.StatusConflict, "too_many_sessions", "session limit reached")
+			}
+			defer res.Release()
+			req.reservation = res
+		}
+		// The desk holds the process from its spawn, through any failure
+		// of the launch after it.
+		request := spec.Request
+		req.spawned = func(l *session.Local) { s.brakeman.memberSpawned(request, l) }
+	}
+	local, aerr := s.newLocal(req, &ref)
 	if aerr != nil {
 		if aerr.Code == agentChangedCode {
 			// The engine's refusal, which it says with the plan revision.
 			return nil, crew.ErrAgentChanged
 		}
 		return nil, aerr
+	}
+	if spec.Class == crew.ClassBrakeman {
+		s.brakeman.memberStarted(spec.Request, local)
 	}
 	if room != nil {
 		room.Join(local, spec.Name)
@@ -391,6 +415,9 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 // handleAddRunMember adds a member to a run: 201 {run}. A member that starts
 // immediately has its session by then.
 func (s *Server) handleAddRunMember(w http.ResponseWriter, r *http.Request) {
+	if s.brakemanRun(w, r.PathValue("run")) {
+		return
+	}
 	var m crew.Member
 	if err := decodeJSONLimit(w, r, &m, maxMemberBody); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -624,6 +651,8 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "still_running", err.Error())
 	case errors.Is(err, crew.ErrManaged):
 		writeError(w, http.StatusConflict, "managed_run", err.Error())
+	case errors.Is(err, crew.ErrBrakemanRun):
+		writeError(w, http.StatusConflict, "brakeman_run", err.Error())
 	case errors.As(err, &aerr):
 		writeError(w, aerr.status, aerr.Code, err.Error())
 	default:
@@ -730,11 +759,18 @@ func (s *Server) recordMark(id string) string {
 
 // handleResumeRun starts a new run of a stopped run's crew in which every
 // member with a resumable conversation continues it in its kept worktree
-// (Engine.ResumeRun): 201 {run}.
+// (Engine.ResumeRun): 201 {run}. From its start until the continuation
+// and the run it resumes name each other, a chain's walk at either is
+// refused (beginContinuation), so no link is judged on a chain that is
+// about to have one more run.
 func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("run")
+	if s.brakemanRun(w, id) {
+		return
+	}
 	ctx, cancel := runContext(r)
 	defer cancel()
+	defer s.beginContinuation(id)()
 	run, err := s.runs.ResumeRun(ctx, id)
 	if errors.Is(err, crew.ErrManaged) {
 		// A managed run is continued (#334, row 8): its results kept, the

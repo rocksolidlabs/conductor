@@ -56,8 +56,8 @@ var (
 // (invalid otherwise; key_taken when another project, archived or not,
 // holds it); its name, description and folder within their bounds; its
 // tracker, native with no URL or external with an http or https one; its
-// close policy, acceptance and delivery at most once each, verified
-// refused, the default when none is given. One create row records what
+// close policy, acceptance, delivery and verified at most once each, the
+// default when none is given. One create row records what
 // never changes, then one set row per field the schema's default does
 // not already hold. The receipt carries its id and key.
 func (s *Store) CreateProject(ctx context.Context, op Op, p NewProject) (Receipt, error) {

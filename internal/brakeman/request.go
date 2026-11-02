@@ -89,6 +89,14 @@ type Coverage struct {
 	Runs     []Watermark `json:"runs,omitempty"`     // at most MaxWatermarks
 	Sessions []Watermark `json:"sessions,omitempty"` // at most MaxWatermarks
 	Dispatch *Watermark  `json:"dispatch,omitempty"`
+	// OmittedFrom is, for the parts a list had no room for, the earliest
+	// time a change of theirs not given may be at: a part with no
+	// watermark is read from it next time, never from a later one.
+	OmittedFrom time.Time `json:"omittedFrom,omitzero"`
+	// ReadFrom is when the first of the turn's reads of changes began,
+	// before it listed the parts: a part begun after a read listed them
+	// has no watermark and is read from no later than it next time.
+	ReadFrom time.Time `json:"readFrom,omitzero"`
 }
 
 // Watermark is one part's reach: a run's last event seq delivered with
@@ -99,6 +107,25 @@ type Watermark struct {
 	At      time.Time `json:"at,omitzero"`
 	Partial bool      `json:"partial,omitempty"`
 	New     bool      `json:"new,omitempty"` // newly in scope
+}
+
+// Fit is m with its Why cut, at a character, until the entry as the
+// request's encoding writes it is within MaxMadeBytes: an outcome's words
+// give way to its other fields, each bounded on its own, so an outcome
+// written over a claim that fit always fits.
+func (m Made) Fit() Made {
+	for m.Why != "" {
+		over := entrySize(m) - MaxMadeBytes
+		if over <= 0 {
+			break
+		}
+		n := max(0, len(m.Why)-over)
+		for n > 0 && !utf8.RuneStart(m.Why[n]) {
+			n--
+		}
+		m.Why = m.Why[:n]
+	}
+	return m
 }
 
 // MaxWatermarks bounds each of a Coverage's lists.

@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -34,12 +35,15 @@ import (
 // NewLink is what link.add takes: the kind (LinkKinds); the reference,
 // which a run link needs (the run's id) and a delivery or external link
 // takes from its URL when none is given; the URL, which a delivery or
-// external link needs; and a note.
+// external link needs; a note; and, for a delivery alone, the candidate
+// it delivers, <run>/<task>/<n>@<commit> (delivery.go), part of the
+// request and so of its fingerprint.
 type NewLink struct {
-	Kind string `json:"kind"`
-	Ref  string `json:"ref,omitempty"`
-	URL  string `json:"url,omitempty"`
-	Note string `json:"note,omitempty"`
+	Kind      string `json:"kind"`
+	Ref       string `json:"ref,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Note      string `json:"note,omitempty"`
+	Candidate string `json:"candidate,omitempty"`
 }
 
 // LinkAddArgs is link.add's content, its fingerprint: the ticket's key
@@ -77,8 +81,14 @@ func (s *Store) SetRunExists(fn func(id string) bool) {
 // then the run alone, and its package known only by the store's launches.
 type runSight struct {
 	ticket func(run string) (ticketID string, ok bool)
-	chain  func(run string) []string
+	chain  func(run string) ([]string, error)
 }
+
+// ErrChainUnread is a store operation's or read's answer when the store's
+// sight of a run's chain (SetRunChain) could not read it: the chain rule
+// is never judged on a chain that was not read, so the operation writes
+// nothing (no link, no receipt) and may be sent again.
+var ErrChainUnread = errors.New("dispatch: the run's chain could not be read")
 
 // SetRunTicket gives the store the engine's sight of a run's package: fn
 // reports the id of the ticket the run was launched from (the run's
@@ -96,27 +106,34 @@ func (s *Store) SetRunTicket(fn func(run string) (ticketID string, ok bool)) {
 // reports the runs of the run's chain, the run, every run it continues
 // and every run that continues it (the ledger's continued_by rows and the
 // run records' resumedFrom and resumedBy), the run itself among them or
-// not. A chain only grows, by a continuation that is a new run, so a check
-// made at a link's write stays true until the link is removed. fn runs
-// inside an operation's transaction with the store's lock held, so it
-// must not call the store.
-func (s *Store) SetRunChain(fn func(run string) []string) {
+// not, or the error that kept it from reading them, which fails the
+// operation or the read that asked (ErrChainUnread), nothing written. A
+// chain only grows, by a continuation that is a new run, so a check made
+// at a link's write stays true until the link is removed. fn runs inside
+// an operation's transaction with the store's lock held, so it must not
+// call the store.
+func (s *Store) SetRunChain(fn func(run string) ([]string, error)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sight.chain = fn
 }
 
-// chainOf is the runs of the run's chain, the run first, each once.
-func (rs runSight) chainOf(run string) []string {
+// chainOf is the runs of the run's chain, the run first, each once; an
+// ErrChainUnread when the sight could not read them.
+func (rs runSight) chainOf(run string) ([]string, error) {
 	out := []string{run}
 	if rs.chain != nil {
-		for _, r := range rs.chain(run) {
+		runs, err := rs.chain(run)
+		if err != nil {
+			return nil, fmt.Errorf("%w: run %s: %w", ErrChainUnread, run, err)
+		}
+		for _, r := range runs {
 			if r != "" && !slices.Contains(out, r) {
 				out = append(out, r)
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // ChainHolder is a ticket that holds a run's chain: the ticket, the run of
@@ -219,14 +236,18 @@ func heldBy(holders ...[]ChainHolder) []ChainHolder {
 // none for a chain no live ticket holds, one for a held chain, and more
 // for a contested one, which a version 1 store or a merge left on two
 // tickets' links and which no ticket owns until a person removes one of
-// the links.
+// the links; ErrChainUnread when the sight could not read the chain.
 func (s *Store) ChainHolders(ctx context.Context, run string) ([]ChainHolder, error) {
 	s.mu.Lock()
 	sight := s.sight
 	s.mu.Unlock()
 	var out []ChainHolder
 	err := s.read(ctx, func(q queryer) error {
-		launched, linked, err := chainHolders(ctx, q, sight, sight.chainOf(run))
+		chain, err := sight.chainOf(run)
+		if err != nil {
+			return err
+		}
+		launched, linked, err := chainHolders(ctx, q, sight, chain)
 		if err != nil {
 			return err
 		}
@@ -289,14 +310,23 @@ func chainRefusal(tk Ticket, run string, launched, linked []ChainHolder) error {
 // Its identity live on the ticket already is invalid. A run link's
 // reference names a run that exists (not_found otherwise) of a chain no
 // ticket holds (run_linked, the receipt's Key naming the holder:
-// chainRefusal), so a run, and its chain, belongs to one ticket at most. At most MaxLinks
+// chainRefusal), so a run, and its chain, belongs to one ticket at most.
+// A delivery link may name its candidate, with verified, the candidate's
+// verification receipt as the API read it from the ledger (delivery.go):
+// both of their shapes, only on a delivery link, each with the other
+// (invalid otherwise), the candidate's run of a chain the ticket holds
+// alone (candidateRefusal: run_linked for another ticket's or a contested
+// chain). verified is an argument apart from the request: the operation's
+// fingerprint is the key and l, never the receipt, which is computed
+// evidence and may differ between two tries of one request. At most MaxLinks
 // live links on the ticket (bound). One add row, its value the link
-// whole ({id, kind, ref, url, note, createdAt, createdBy}) and the
-// operation's fingerprint, which the link's row keeps as well (Replay
-// compares a resend by it once the receipt is pruned). A deleted
-// ticket is not_found; an expected revision is the ticket's; an archived
-// project refuses it (archived). The receipt carries the link's id.
-func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Receipt, error) {
+// whole ({id, kind, ref, url, note, candidate?, verified?, createdAt,
+// createdBy}) and the operation's fingerprint, which the link's row keeps
+// as well (Replay compares a resend by it once the receipt is pruned). A
+// deleted ticket is not_found; an expected revision is the ticket's; an
+// archived project refuses it (archived). The receipt carries the link's
+// id.
+func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink, verified *Verified) (Receipt, error) {
 	return s.Apply(ctx, op, IntentLinkAdd, LinkAddArgs{Key: key, NewLink: l}, func(t *tx) error {
 		tk, _, err := t.ticket(key, false)
 		if err != nil {
@@ -326,6 +356,10 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Rece
 		case ref == "":
 			ref = l.URL
 		}
+		candidate, verifiedValue, err := checkCandidate(l, verified)
+		if err != nil {
+			return err
+		}
 		var held int
 		if err := t.tx.QueryRowContext(t.ctx, "SELECT COUNT(*) FROM links WHERE ticket_id = ? AND kind = ? AND ref = ? AND deleted_at = ''",
 			tk.ID, l.Kind, ref).Scan(&held); err != nil {
@@ -338,11 +372,28 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Rece
 			if t.runExists == nil || !t.runExists(ref) {
 				return refuse(RefusalNotFound, "no run %s", ref)
 			}
-			launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, t.sight.chainOf(ref))
+			chain, err := t.sight.chainOf(ref)
+			if err != nil {
+				return err
+			}
+			launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, chain)
 			if err != nil {
 				return err
 			}
 			if err := chainRefusal(tk, ref, launched, linked); err != nil {
+				return err
+			}
+		}
+		if l.Candidate != "" {
+			chain, err := t.sight.chainOf(candidate.Run)
+			if err != nil {
+				return err
+			}
+			launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, chain)
+			if err != nil {
+				return err
+			}
+			if err := candidateRefusal(tk, candidate.Run, launched, linked); err != nil {
 				return err
 			}
 		}
@@ -353,9 +404,13 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Rece
 		if err := checkCount("links", n+1, MaxLinks); err != nil {
 			return err
 		}
-		link := Link{ID: newID(), TicketID: tk.ID, Kind: l.Kind, Ref: ref, URL: l.URL, Note: l.Note, CreatedAt: t.now, CreatedBy: t.op.author(), Fingerprint: t.fp}
-		if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO links (id, ticket_id, kind, ref, url, note, created_at, created_by, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			link.ID, link.TicketID, link.Kind, link.Ref, link.URL, link.Note, stamp(link.CreatedAt), link.CreatedBy, link.Fingerprint); err != nil {
+		link := Link{ID: newID(), TicketID: tk.ID, Kind: l.Kind, Ref: ref, URL: l.URL, Note: l.Note, Candidate: l.Candidate,
+			CreatedAt: t.now, CreatedBy: t.op.author(), Fingerprint: t.fp}
+		if verifiedValue != "" {
+			link.Verified = json.RawMessage(verifiedValue)
+		}
+		if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO links (id, ticket_id, kind, ref, url, note, candidate, verified, created_at, created_by, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			link.ID, link.TicketID, link.Kind, link.Ref, link.URL, link.Note, link.Candidate, verifiedValue, stamp(link.CreatedAt), link.CreatedBy, link.Fingerprint); err != nil {
 			return err
 		}
 		t.created(link.ID, "")
@@ -442,7 +497,11 @@ func (t *tx) releaseRuns(tk Ticket) error {
 		if l.Kind != LinkRun {
 			continue
 		}
-		launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, t.sight.chainOf(l.Ref))
+		chain, err := t.sight.chainOf(l.Ref)
+		if err != nil {
+			return err
+		}
+		launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, chain)
 		if err != nil {
 			return err
 		}
