@@ -4043,8 +4043,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   **Extensions** row read "None: the open-source feature set" in that
   browser on both machines' plain builds, `GET /api/capabilities`
   answering `{"providers":[]}`; PR-16's Playwright spec reads the row on
-  the e2e server in CI; and `TestSuitePassesEveryDefault` passed locally
-  under `-race`, every default passing the contract suite.
+  the e2e server in CI; and `TestSuitePassesEveryDefault` passed in this
+  PR's own CI (run 41399105691, the go job at the merge of 0db9005b into
+  its base, Go 1.26.10: `ext/exttest` ok) as under `-race` here, every
+  default passing the contract suite. With C1, the two clauses of the R0
+  gate this stream owns are observed: a plain build registers nothing,
+  and every default passes the contract suite.
 - **Governance: contributing under the DCO, the marks' owner, security
   reporting and the open-core pull request checklist (Program item B; #386
   and #387, 2026-10-28).** The plan is `docs/plans/governance.md` (PR #383).
