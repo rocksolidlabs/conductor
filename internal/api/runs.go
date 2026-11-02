@@ -730,11 +730,15 @@ func (s *Server) recordMark(id string) string {
 
 // handleResumeRun starts a new run of a stopped run's crew in which every
 // member with a resumable conversation continues it in its kept worktree
-// (Engine.ResumeRun): 201 {run}.
+// (Engine.ResumeRun): 201 {run}. From its start until the continuation
+// and the run it resumes name each other, a chain's walk at either is
+// refused (beginContinuation), so no link is judged on a chain that is
+// about to have one more run.
 func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("run")
 	ctx, cancel := runContext(r)
 	defer cancel()
+	defer s.beginContinuation(id)()
 	run, err := s.runs.ResumeRun(ctx, id)
 	if errors.Is(err, crew.ErrManaged) {
 		// A managed run is continued (#334, row 8): its results kept, the

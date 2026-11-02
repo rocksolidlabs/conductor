@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
@@ -314,6 +315,46 @@ func (rs *Records) Get(runID string) (Run, bool, error) {
 		return Run{}, false, err
 	}
 	return r, true, nil
+}
+
+// RecordMarks is a record's place in its run's chain: the run, the run it
+// resumed (ResumedFrom) and the run that resumed it (ResumedBy), and when
+// it started.
+type RecordMarks struct {
+	ID, ResumedFrom, ResumedBy string
+	StartedAt                  time.Time
+}
+
+// Marks reads every record's place in its chain (RecordMarks), so a run
+// whose own record is gone is still found through the records that name
+// it. A record that cannot be read (an I/O error, not JSON, past
+// maxGuardSize) is the error, naming it, since what it names is unknown;
+// a file that is no run's record (its name not a run id's, or the id in
+// it not its name, which Get answers as no record) is none.
+func (rs *Records) Marks() ([]RecordMarks, error) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	entries, err := rs.st.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RecordMarks, 0, len(entries))
+	for _, en := range entries {
+		id, ok := strings.CutSuffix(en.Name, ".json")
+		if !ok || !ValidRunID(id) {
+			continue
+		}
+		var r Run
+		found, err := rs.st.LoadLimit(en.Name, &r, maxGuardSize)
+		if err != nil {
+			return nil, fmt.Errorf("records: the record %s: %w", en.Name, err)
+		}
+		if !found || r.ID != id {
+			continue
+		}
+		out = append(out, RecordMarks{ID: r.ID, ResumedFrom: r.ResumedFrom, ResumedBy: r.ResumedBy, StartedAt: r.StartedAt})
+	}
+	return out, nil
 }
 
 // ValidRunID reports whether id has a run id's shape: a crew id, a dash and
