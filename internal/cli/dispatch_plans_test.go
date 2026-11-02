@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -549,6 +550,82 @@ func TestDispatchPlanShowSaysTheWorkAndOlderComments(t *testing.T) {
 	}
 }
 
+// conductor dispatch plan show prints every phase of the project manifest
+// the engine runs, with its timeouts and its probes' bounds: an inline
+// manifest with setup and services and no verify step, a file-form one
+// with every phase, and a crew's legacy setup, which is that phase.
+func TestDispatchPlanShowSaysEveryManifestPhase(t *testing.T) {
+	clearConductorEnv(t)
+	at := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	id := strings.Repeat("ab", 8)
+	full := map[string]any{
+		"prerequisites": []any{map[string]any{"id": "go", "argv": []string{"go", "version"}}},
+		"env":           []string{"GOFLAGS", "NPM_TOKEN"},
+		"ports":         []string{"web"},
+		"setup":         []any{map[string]any{"id": "deps", "argv": []string{"npm", "ci"}, "timeoutSeconds": 900}},
+		"services":      []any{map[string]any{"id": "dev", "argv": []string{"npm", "run", "dev"}}},
+		"ready": []any{map[string]any{"id": "up", "url": "http://127.0.0.1:3000/", "intervalSeconds": 5, "timeoutSeconds": 120},
+			map[string]any{"id": "db", "argv": []string{"pg_isready"}}},
+		"preview": "http://127.0.0.1:3000/",
+		"verify":  []any{map[string]any{"id": "e2e", "argv": []string{"make", "test-e2e"}}},
+		"cleanup": []any{map[string]any{"id": "down", "argv": []string{"docker", "compose", "down"}, "timeoutSeconds": 30}},
+	}
+	for _, tc := range []struct {
+		name string
+		body map[string]any // the crew's manifest, setup and the body's manifestFile
+		want string
+	}{
+		{"inline without verify", map[string]any{"manifest": map[string]any{
+			"setup":    []any{map[string]any{"id": "deps", "argv": []string{"npm", "ci"}}},
+			"services": []any{map[string]any{"id": "dev", "argv": []string{"npm", "run", "dev"}}}}},
+			"## Project manifest\n\n- setup deps: npm ci\n- service dev: npm run dev\n"},
+		{"file form", map[string]any{"manifest": map[string]any{"file": true},
+			"manifestFile": map[string]any{"path": "conductor.manifest.json", "blob": strings.Repeat("b", 40), "manifest": full}},
+			"## Project manifest\n\n- from conductor.manifest.json, blob bbbbbbbbbbbb at the base\n" +
+				"- prerequisite go: go version\n- setup deps: npm ci (timeout 900 s)\n- service dev: npm run dev\n" +
+				"- ready up: http://127.0.0.1:3000/ (every 5 s, timeout 120 s)\n- ready db: pg_isready\n" +
+				"- preview: http://127.0.0.1:3000/\n- environment: GOFLAGS, NPM_TOKEN\n- ports: web\n" +
+				"- verify e2e: make test-e2e\n- cleanup down: docker compose down (timeout 30 s)\n"},
+		{"legacy setup", map[string]any{"setup": []any{map[string]any{"id": "deps", "argv": []string{"npm", "ci"}, "timeoutSeconds": 300}}},
+			"## Project manifest\n\n- setup deps: npm ci (timeout 300 s)\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			crewBody := map[string]any{"id": "team", "name": "Team", "members": []any{},
+				"tasks": []any{map[string]any{"id": "build", "member": "lead", "kind": "work", "instructions": "Build it."}}}
+			for _, k := range []string{"manifest", "setup"} {
+				if v, ok := tc.body[k]; ok {
+					crewBody[k] = v
+				}
+			}
+			planBody := map[string]any{"base": strings.Repeat("0", 40), "crew": crewBody, "agents": []any{}, "references": []any{}, "attachments": []any{},
+				"comments": []any{}, "constraints": "", "decisions": []any{}, "note": ""}
+			if v, ok := tc.body["manifestFile"]; ok {
+				planBody["manifestFile"] = v
+			}
+			body, _ := encodeJSON(planBody)
+			summary := dispatch.PlanSummary{ID: id, N: 1, CrewID: "team", CrewName: "Team", Base: strings.Repeat("0", 40), State: dispatch.PlanProposed, CreatedAt: at, CreatedBy: "admin"}
+			list, _ := encodeJSON(map[string]any{"plans": []any{summary}})
+			read, _ := encodeJSON(map[string]any{"plan": map[string]any{"id": id, "n": 1, "crewId": "team", "crewName": "Team", "base": summary.Base, "state": summary.State,
+				"createdAt": at, "createdBy": "admin", "expectedChecks": 0, "body": json.RawMessage(body)}})
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /api/dispatch/tickets/CND-1/plans", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(list) })
+			mux.HandleFunc("GET /api/dispatch/plans/"+id, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(read) })
+			mux.HandleFunc("GET /api/dispatch/tickets/CND-1", func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"ticket":{"id":"cdcdcdcdcdcdcdcd","key":"CND-1","attachments":[],"comments":[]}}`))
+			})
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+			var out bytes.Buffer
+			if code, err := runDispatch(t.Context(), []string{"plan", "show", "CND-1", "--server", srv.URL, "--token", "t"}, strings.NewReader(""), &out, io.Discard); code != 0 || err != nil {
+				t.Fatalf("plan show: %d %v", code, err)
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("plan show does not say the manifest %q:\n%s", tc.want, out.String())
+			}
+		})
+	}
+}
+
 // conductor dispatch launch sends a launch the server answers still
 // pending (503 ledger_unavailable carrying the launch) again, the same
 // operation, and prints the run the next answer names; still pending
@@ -611,6 +688,76 @@ func TestDispatchLaunchResendsAPendingLaunch(t *testing.T) {
 				!strings.Contains(err.Error(), "launch "+launch.ID+" from r2 is still pending after 3 tries") || !strings.Contains(err.Error(), "conductor dispatch runs CND-1 shows it") ||
 				strings.Contains(err.Error(), "send it again") {
 				t.Fatalf("a launch pending throughout: %d %v, %d posts", code, err, len(ops))
+			}
+		})
+	}
+}
+
+// A launch the server has answered pending stays named when sending it
+// again leaves it unsettled: the resend and its retry both losing their
+// replies, or the command interrupted during the resend. The error names
+// the launch and conductor dispatch runs and says launching again would be
+// a second launch; every post is the one operation.
+func TestDispatchLaunchNamesAPendingLaunchItCouldNotSettle(t *testing.T) {
+	clearConductorEnv(t)
+	wait := launchResendWait
+	launchResendWait = 0
+	t.Cleanup(func() { launchResendWait = wait })
+	at := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	plan := strings.Repeat("ab", 8)
+	list, _ := encodeJSON(map[string]any{"plans": []any{dispatch.PlanSummary{ID: plan, N: 2, CrewID: "team", CrewName: "Team", State: dispatch.PlanApproved, ApprovedAt: at, CreatedAt: at}}})
+	launch := dispatch.LaunchSummary{ID: strings.Repeat("12", 8), PlanID: plan, PlanN: 2, RunID: "team-0123abcd", Label: "CND-1 Fix it", State: dispatch.LaunchPending, CreatedAt: at}
+	for _, tc := range []struct {
+		name  string
+		posts int    // how many POSTs the command sends in all
+		want  string // what the error says of the launch
+	}{
+		{"lost replies", 3, "launch " + launch.ID + " from r2 was pending, and sending it again had no answer"},
+		{"interrupted", 2, "launch " + launch.ID + " from r2 was pending, interrupted while it was sent again"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var mu sync.Mutex
+			var ops []string
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /api/dispatch/tickets/CND-1/plans", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(list) })
+			mux.HandleFunc("POST /api/dispatch/tickets/CND-1/launch", func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				mu.Lock()
+				ops = append(ops, body["opId"].(string))
+				n := len(ops)
+				mu.Unlock()
+				switch {
+				case n == 1:
+					w.WriteHeader(http.StatusServiceUnavailable)
+					b, _ := encodeJSON(map[string]any{"error": map[string]any{"code": "ledger_unavailable", "message": "the launch is still being started: send it again"},
+						"receipt": map[string]any{"opId": body["opId"], "status": "done", "id": launch.ID}, "launch": launch})
+					_, _ = w.Write(b)
+				case tc.name == "interrupted":
+					// The command is stopped while its resend waits for the
+					// answer; the request ends with it.
+					cancel()
+					<-r.Context().Done()
+				default:
+					if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+						conn.Close()
+					}
+				}
+			})
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+			var out bytes.Buffer
+			code, err := runDispatch(ctx, []string{"launch", "CND-1", "--server", srv.URL, "--token", "t"}, strings.NewReader(""), &out, io.Discard)
+			mu.Lock()
+			defer mu.Unlock()
+			if len(ops) != tc.posts || slices.ContainsFunc(ops, func(op string) bool { return op != ops[0] }) {
+				t.Fatalf("the operations sent: %q, want one, %d times", ops, tc.posts)
+			}
+			if code != 1 || err == nil || out.Len() != 0 || !strings.Contains(err.Error(), tc.want) ||
+				!strings.Contains(err.Error(), "conductor dispatch runs CND-1 shows it") || !strings.Contains(err.Error(), "launching again would be a second launch") {
+				t.Fatalf("a pending launch left unsettled: %d %v %q", code, err, out.String())
 			}
 		})
 	}

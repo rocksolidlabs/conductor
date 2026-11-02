@@ -477,8 +477,8 @@ func argvText(argv []string) string {
 // the yolo choice said plainly, the checks it expects), the approval's
 // note, the crew's goal, the members with their agents, arguments and
 // prompts, the agents as the catalog resolved them, the tasks with their
-// member, kind, needs, instructions and checks, the manifest's verify
-// steps, the references, what it hands over (attachments by name,
+// member, kind, needs, instructions and checks, every phase of the project
+// manifest (writeManifest), the references, what it hands over (attachments by name,
 // comments by number), the constraints, the decisions a person makes and
 // its note: every text the attempts' agents are handed.
 func writePlan(w io.Writer, key string, plans []planEntry, p planEntry, b planBodyView, tv dispatch.TicketView, numbers map[string]int) {
@@ -563,17 +563,15 @@ func writePlan(w io.Writer, key string, plans []planEntry, p planEntry, b planBo
 	}
 	section("Tasks", lines.String())
 	lines.Reset()
-	verify := []crew.Check(nil)
+	var m crew.Manifest
 	if b.Crew.Manifest != nil {
-		verify = b.Crew.Manifest.Verify
+		m = *b.Crew.Manifest
 	}
 	if b.ManifestFile != nil {
 		fmt.Fprintf(&lines, "- from %s, blob %s at the base\n", oneLine(b.ManifestFile.Path), short(b.ManifestFile.Blob))
-		verify = b.ManifestFile.Manifest.Verify
+		m = b.ManifestFile.Manifest
 	}
-	for _, v := range verify {
-		fmt.Fprintf(&lines, "- verify %s: %s\n", oneLine(v.ID), argvText(v.Argv))
-	}
+	writeManifest(&lines, m, b.Crew.Setup)
 	section("Project manifest", lines.String())
 	lines.Reset()
 	for _, r := range b.References {
@@ -614,6 +612,57 @@ func writePlan(w io.Writer, key string, plans []planEntry, p planEntry, b planBo
 	}
 	section("Decisions a person makes", lines.String())
 	section("Note", b.Note)
+}
+
+// writeManifest writes every phase of a project manifest the engine runs,
+// in its order, each step with its timeout when it sets one: the
+// prerequisites, the setup (a crew's legacy Setup is that phase, as
+// effectiveManifest reads it), the services, the ready probes with their
+// interval and timeout, the preview, the host's environment names, the
+// ports, the verify steps and the cleanup.
+func writeManifest(w *strings.Builder, m crew.Manifest, legacySetup []crew.Check) {
+	steps := func(phase string, checks []crew.Check) {
+		for _, ch := range checks {
+			fmt.Fprintf(w, "- %s %s: %s", phase, oneLine(ch.ID), argvText(ch.Argv))
+			if ch.TimeoutSeconds > 0 {
+				fmt.Fprintf(w, " (timeout %d s)", ch.TimeoutSeconds)
+			}
+			w.WriteString("\n")
+		}
+	}
+	steps("prerequisite", m.Prerequisites)
+	steps("setup", m.Setup)
+	steps("setup", legacySetup)
+	steps("service", m.Services)
+	for _, p := range m.Ready {
+		target := argvText(p.Argv)
+		if p.URL != "" {
+			target = oneLine(p.URL)
+		}
+		fmt.Fprintf(w, "- ready %s: %s", oneLine(p.ID), target)
+		var bounds []string
+		if p.IntervalSeconds > 0 {
+			bounds = append(bounds, fmt.Sprintf("every %d s", p.IntervalSeconds))
+		}
+		if p.TimeoutSeconds > 0 {
+			bounds = append(bounds, fmt.Sprintf("timeout %d s", p.TimeoutSeconds))
+		}
+		if len(bounds) > 0 {
+			fmt.Fprintf(w, " (%s)", strings.Join(bounds, ", "))
+		}
+		w.WriteString("\n")
+	}
+	if m.Preview != "" {
+		fmt.Fprintf(w, "- preview: %s\n", oneLine(m.Preview))
+	}
+	if len(m.Env) > 0 {
+		fmt.Fprintf(w, "- environment: %s\n", oneLine(strings.Join(m.Env, ", ")))
+	}
+	if len(m.Ports) > 0 {
+		fmt.Fprintf(w, "- ports: %s\n", oneLine(strings.Join(m.Ports, ", ")))
+	}
+	steps("verify", m.Verify)
+	steps("cleanup", m.Cleanup)
 }
 
 // indentedText writes a saved text under a list item: its label, then its
@@ -982,8 +1031,9 @@ func dispatchPlanAct(ctx context.Context, c *apiClient, key string, ref revision
 // the same launch and never a second run; the request waits as long as
 // the server's own bound on a launch. A launch the server answers still
 // pending is sent again, the same operation, at most launchTries times in
-// all; still pending then, the error names it and where it shows, never
-// advice to launch again, which would be a second launch. It prints the
+// all; still pending then, or a resend unanswered or interrupted, the
+// error names it and where it shows, never advice to launch again, which
+// would be a second launch. It prints the
 // launch, the run and the run's page; a launch that failed is the
 // server's words, its launch kept failed (conductor dispatch runs lists
 // it).
@@ -1013,6 +1063,9 @@ func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revision
 			Yolo  bool   `json:"yolo"`
 		} `json:"run"`
 	}
+	// known is the launch a pending answer named: once the server has
+	// one, every exit that leaves it unsettled names it.
+	var known *dispatch.LaunchSummary
 	for try := 1; ; try++ {
 		err := askTwice(ctx, func(ctx context.Context) error {
 			return c.doWithin(ctx, launchRequestTimeout, http.MethodPost, "/api/dispatch/tickets/"+url.PathEscape(key)+"/launch", body, &out, maxDispatchReply)
@@ -1022,8 +1075,15 @@ func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revision
 		}
 		pending, ok := pendingLaunch(err)
 		if !ok {
+			if known != nil && unsettled(err) {
+				if ctx.Err() != nil {
+					return 1, fmt.Errorf("%s: launch %s from r%d was pending, interrupted while it was sent again: conductor dispatch runs %s shows it and its run; launching again would be a second launch", key, oneLine(known.ID), p.N, key)
+				}
+				return 1, fmt.Errorf("%s: launch %s from r%d was pending, and sending it again had no answer (%w): conductor dispatch runs %s shows it and its run; launching again would be a second launch", key, oneLine(known.ID), p.N, err, key)
+			}
 			return 1, err
 		}
+		known = &pending
 		if try >= launchTries {
 			return 1, fmt.Errorf("%s: launch %s from r%d is still pending after %d tries: the server settles it at its next start if no request does before; conductor dispatch runs %s shows it and its run; launching again would be a second launch",
 				key, oneLine(pending.ID), p.N, try, key)
@@ -1050,6 +1110,14 @@ func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revision
 		fmt.Fprintln(stdout, "yolo: its members skip their permission prompts")
 	}
 	return 0, nil
+}
+
+// unsettled is an error that leaves a launch's outcome unknown: no reply,
+// an interruption, a reply that cannot be read, or a server's 5xx; a 4xx
+// is the server's answer to the operation, its words enough.
+func unsettled(err error) bool {
+	var r replyRefusal
+	return !errors.As(err, &r) || r.status >= http.StatusInternalServerError
 }
 
 // pendingLaunch is the launch a refusal carries when it is one still
