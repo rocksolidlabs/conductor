@@ -694,10 +694,13 @@ func TestDispatchLaunchResendsAPendingLaunch(t *testing.T) {
 }
 
 // A launch the server has answered pending stays named when sending it
-// again leaves it unsettled: the resend and its retry both losing their
-// replies, or the command interrupted during the resend. The error names
-// the launch and conductor dispatch runs and says launching again would be
-// a second launch; every post is the one operation.
+// again leaves it unsettled: the resends losing their replies, the command
+// interrupted during a resend, or a resend refused in front of the launch
+// handler (401, 429), which says nothing of the launch. The error names
+// the launch and conductor dispatch runs and says launching again would
+// be a second launch. A resend answered 409 launch_failed settles it: the
+// error is the server's words. Every send, a lost reply's as a pending
+// answer's, counts against launchTries; every post is the one operation.
 func TestDispatchLaunchNamesAPendingLaunchItCouldNotSettle(t *testing.T) {
 	clearConductorEnv(t)
 	wait := launchResendWait
@@ -707,13 +710,20 @@ func TestDispatchLaunchNamesAPendingLaunchItCouldNotSettle(t *testing.T) {
 	plan := strings.Repeat("ab", 8)
 	list, _ := encodeJSON(map[string]any{"plans": []any{dispatch.PlanSummary{ID: plan, N: 2, CrewID: "team", CrewName: "Team", State: dispatch.PlanApproved, ApprovedAt: at, CreatedAt: at}}})
 	launch := dispatch.LaunchSummary{ID: strings.Repeat("12", 8), PlanID: plan, PlanN: 2, RunID: "team-0123abcd", Label: "CND-1 Fix it", State: dispatch.LaunchPending, CreatedAt: at}
+	const named = "conductor dispatch runs CND-1 shows it and its run; launching again would be a second launch"
 	for _, tc := range []struct {
-		name  string
-		posts int    // how many POSTs the command sends in all
-		want  string // what the error says of the launch
+		name    string
+		answers []string // what each POST is answered, in order: pending, lost, interrupt, 401, 429, failed
+		want    []string // what the error says
+		not     string   // what the error never says
 	}{
-		{"lost replies", 3, "launch " + launch.ID + " from r2 was pending, and sending it again had no answer"},
-		{"interrupted", 2, "launch " + launch.ID + " from r2 was pending, interrupted while it was sent again"},
+		{"lost replies", []string{"pending", "lost", "lost"}, []string{"launch " + launch.ID + " from r2 was pending, and sending it again had no answer", named}, ""},
+		{"interrupted", []string{"pending", "interrupt"}, []string{"launch " + launch.ID + " from r2 was pending, interrupted while it was sent again", named}, ""},
+		{"refused 401", []string{"pending", "401"}, []string{"launch " + launch.ID + " from r2 was pending, and sending it again was answered without its outcome", "unauthorized: a token is required", named}, ""},
+		{"refused 429", []string{"pending", "429"}, []string{"launch " + launch.ID + " from r2 was pending, and sending it again was answered without its outcome", "rate_limited", named}, ""},
+		{"lost, pending, lost", []string{"lost", "pending", "lost"}, []string{"launch " + launch.ID + " from r2 was pending, and sending it again had no answer", named}, ""},
+		{"pending, lost, pending", []string{"pending", "lost", "pending"}, []string{"launch " + launch.ID + " from r2 is still pending after 3 tries", named}, ""},
+		{"failed", []string{"pending", "failed"}, []string{"its agent is gone"}, "was pending"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
@@ -729,17 +739,35 @@ func TestDispatchLaunchNamesAPendingLaunchItCouldNotSettle(t *testing.T) {
 				ops = append(ops, body["opId"].(string))
 				n := len(ops)
 				mu.Unlock()
-				switch {
-				case n == 1:
+				if n > len(tc.answers) {
+					t.Errorf("post %d past the %d the case answers", n, len(tc.answers))
+					w.WriteHeader(http.StatusTeapot)
+					return
+				}
+				rc := map[string]any{"opId": body["opId"], "status": "done", "id": launch.ID}
+				switch tc.answers[n-1] {
+				case "pending":
 					w.WriteHeader(http.StatusServiceUnavailable)
-					b, _ := encodeJSON(map[string]any{"error": map[string]any{"code": "ledger_unavailable", "message": "the launch is still being started: send it again"},
-						"receipt": map[string]any{"opId": body["opId"], "status": "done", "id": launch.ID}, "launch": launch})
+					b, _ := encodeJSON(map[string]any{"error": map[string]any{"code": "ledger_unavailable", "message": "the launch is still being started: send it again"}, "receipt": rc, "launch": launch})
 					_, _ = w.Write(b)
-				case tc.name == "interrupted":
+				case "interrupt":
 					// The command is stopped while its resend waits for the
 					// answer; the request ends with it.
 					cancel()
 					<-r.Context().Done()
+				case "401":
+					// requireAdmin's refusal, in front of the launch handler.
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"a token is required"}}`))
+				case "429":
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte(`{"error":{"code":"rate_limited","message":"too many failed tokens from this address"}}`))
+				case "failed":
+					failed := launch
+					failed.State = dispatch.LaunchFailed
+					w.WriteHeader(http.StatusConflict)
+					b, _ := encodeJSON(map[string]any{"error": map[string]any{"code": "launch_failed", "message": "its agent is gone"}, "receipt": rc, "launch": failed})
+					_, _ = w.Write(b)
 				default:
 					if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
 						conn.Close()
@@ -752,12 +780,19 @@ func TestDispatchLaunchNamesAPendingLaunchItCouldNotSettle(t *testing.T) {
 			code, err := runDispatch(ctx, []string{"launch", "CND-1", "--server", srv.URL, "--token", "t"}, strings.NewReader(""), &out, io.Discard)
 			mu.Lock()
 			defer mu.Unlock()
-			if len(ops) != tc.posts || slices.ContainsFunc(ops, func(op string) bool { return op != ops[0] }) {
-				t.Fatalf("the operations sent: %q, want one, %d times", ops, tc.posts)
+			if len(ops) != len(tc.answers) || slices.ContainsFunc(ops, func(op string) bool { return op != ops[0] }) {
+				t.Fatalf("the operations sent: %q, want one, %d times", ops, len(tc.answers))
 			}
-			if code != 1 || err == nil || out.Len() != 0 || !strings.Contains(err.Error(), tc.want) ||
-				!strings.Contains(err.Error(), "conductor dispatch runs CND-1 shows it") || !strings.Contains(err.Error(), "launching again would be a second launch") {
+			if code != 1 || err == nil || out.Len() != 0 {
 				t.Fatalf("a pending launch left unsettled: %d %v %q", code, err, out.String())
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("the error does not say %q: %v", w, err)
+				}
+			}
+			if tc.not != "" && strings.Contains(err.Error(), tc.not) {
+				t.Errorf("the error says %q: %v", tc.not, err)
 			}
 		})
 	}
@@ -788,7 +823,12 @@ func TestDispatchLinkSaysTheCandidatesVerification(t *testing.T) {
 	if want := "CND-1 linked: delivery https://example.com/pull/1, candidate " + cand + ", verified: 1 check passed\n"; out.String() != want || sent["candidate"] != cand {
 		t.Fatalf("link: %q, sent %v", out.String(), sent)
 	}
-	for raw, want := range map[string]string{`{"passed":false,"receipts":[]}`: ", not verified: it ran no check", `{"passed":false,"receipts":[{"id":"t"}]}`: ", not verified: its checks did not all pass", "": ""} {
+	for raw, want := range map[string]string{`{"passed":false,"receipts":[]}`: ", not verified: it ran no check", `{"passed":false,"receipts":[{"id":"t"}]}`: ", not verified: its checks did not all pass", "": "",
+		// Every check passed, stably, in an attempt that did not succeed
+		// (one stopped): not a failed check (dispatch.shortfall).
+		`{"passed":false,"receipts":[{"phase":"check","id":"t","exit":0,"stable":true},{"phase":"verify","id":"v","exit":0,"stable":true}]}`: ", not verified: 2 checks passed, but its attempt did not succeed",
+		`{"passed":false,"receipts":[{"phase":"check","id":"t","exit":0,"stable":true},{"phase":"check","id":"u","exit":1,"stable":true}]}`:  ", not verified: its checks did not all pass",
+		`{"passed":false,"receipts":[{"phase":"check","id":"t","exit":0,"stable":false}]}`:                                                   ", not verified: its checks did not all pass"} {
 		if got := verifiedWords(json.RawMessage(raw)); got != want {
 			t.Errorf("%s: %q, want %q", raw, got, want)
 		}

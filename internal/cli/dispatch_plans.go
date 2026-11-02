@@ -33,8 +33,9 @@ import (
 // takes. A revision is named by its number (3, or r3, as the lists print
 // it) or by its id; the CLI reads the ticket's revisions to find it, so a
 // number is the ticket's own. Every write mints its operation's id and is
-// asked for once more on a lost reply (askTwice), which the server answers
-// from its receipt: a launch resent never makes a second run. The reads go
+// asked for once more on a lost reply (askTwice; a launch, within
+// launchTries sends in all), which the server answers from its receipt: a
+// launch resent never makes a second run. The reads go
 // through maxDispatchReply, which holds a revision with its body.
 
 // dispatchPlannedArgs is the commands of this file, which runDispatch
@@ -49,11 +50,12 @@ var planVerbs = []string{"show", "propose", "approve", "withdraw"}
 // writes), and a request's time beside it for the reply to come back.
 var launchRequestTimeout = api.LaunchTimeout + requestTimeout
 
-// launchTries is how many times a launch the server answers still pending
-// (503 ledger_unavailable carrying the launch) is sent, the same operation
-// each time, and launchResendWait the wait before each resend: a resend
-// the server takes waits behind the request starting the run, one it
-// cannot take yet (taking over the ledger) is answered at once.
+// launchTries is how many times a launch is sent in all, the same
+// operation each time: again at once when its reply was lost, again after
+// launchResendWait when the server answers it still pending (503
+// ledger_unavailable carrying the launch). A resend the server takes
+// waits behind the request starting the run; one it cannot take yet
+// (taking over the ledger) is answered at once.
 var (
 	launchTries      = 3
 	launchResendWait = 2 * time.Second
@@ -1026,17 +1028,18 @@ func dispatchPlanAct(ctx context.Context, c *apiClient, key string, ref revision
 }
 
 // dispatchLaunch starts a managed run from the ticket's revision: the one
-// named, else the approved one. The operation's id is minted and sent
-// once more on a lost reply, which the server answers from its receipt,
-// the same launch and never a second run; the request waits as long as
-// the server's own bound on a launch. A launch the server answers still
-// pending is sent again, the same operation, at most launchTries times in
-// all; still pending then, or a resend unanswered or interrupted, the
-// error names it and where it shows, never advice to launch again, which
-// would be a second launch. It prints the
-// launch, the run and the run's page; a launch that failed is the
-// server's words, its launch kept failed (conductor dispatch runs lists
-// it).
+// named, else the approved one. The operation's id is minted and the
+// request sent again on a lost reply, at once, and on a launch the server
+// answers still pending, after a wait: the server answers a resend from
+// its receipt, the same launch and never a second run. Every send counts
+// against launchTries; each request waits as long as the server's own
+// bound on a launch. Once the server has named a pending launch, an exit
+// that does not settle it (still pending after the last try, a resend
+// unanswered, interrupted, or refused without its outcome, as a 401 or a
+// 429 is) names the launch and where it shows, never advice to launch
+// again, which would be a second launch. It prints the launch, the run
+// and the run's page; a launch that failed is the server's words, its
+// launch kept failed (conductor dispatch runs lists it).
 func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revisionRef, label string, stdout io.Writer) (int, error) {
 	plans, err := ticketPlans(ctx, c, key)
 	if err != nil {
@@ -1066,27 +1069,33 @@ func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revision
 	// known is the launch a pending answer named: once the server has
 	// one, every exit that leaves it unsettled names it.
 	var known *dispatch.LaunchSummary
-	for try := 1; ; try++ {
-		err := askTwice(ctx, func(ctx context.Context) error {
-			return c.doWithin(ctx, launchRequestTimeout, http.MethodPost, "/api/dispatch/tickets/"+url.PathEscape(key)+"/launch", body, &out, maxDispatchReply)
-		})
+	for sends := 1; ; sends++ {
+		err := c.doWithin(ctx, launchRequestTimeout, http.MethodPost, "/api/dispatch/tickets/"+url.PathEscape(key)+"/launch", body, &out, maxDispatchReply)
 		if err == nil {
 			break
 		}
+		var lost lostReply
+		if errors.As(err, &lost) && ctx.Err() == nil && sends < launchTries {
+			continue
+		}
 		pending, ok := pendingLaunch(err)
 		if !ok {
-			if known != nil && unsettled(err) {
-				if ctx.Err() != nil {
+			if known != nil && !failedLaunch(err) {
+				var r replyRefusal
+				switch {
+				case ctx.Err() != nil:
 					return 1, fmt.Errorf("%s: launch %s from r%d was pending, interrupted while it was sent again: conductor dispatch runs %s shows it and its run; launching again would be a second launch", key, oneLine(known.ID), p.N, key)
+				case errors.As(err, &r):
+					return 1, fmt.Errorf("%s: launch %s from r%d was pending, and sending it again was answered without its outcome (%w): conductor dispatch runs %s shows it and its run; launching again would be a second launch", key, oneLine(known.ID), p.N, err, key)
 				}
 				return 1, fmt.Errorf("%s: launch %s from r%d was pending, and sending it again had no answer (%w): conductor dispatch runs %s shows it and its run; launching again would be a second launch", key, oneLine(known.ID), p.N, err, key)
 			}
 			return 1, err
 		}
 		known = &pending
-		if try >= launchTries {
+		if sends >= launchTries {
 			return 1, fmt.Errorf("%s: launch %s from r%d is still pending after %d tries: the server settles it at its next start if no request does before; conductor dispatch runs %s shows it and its run; launching again would be a second launch",
-				key, oneLine(pending.ID), p.N, try, key)
+				key, oneLine(pending.ID), p.N, sends, key)
 		}
 		t := time.NewTimer(launchResendWait)
 		select {
@@ -1112,21 +1121,12 @@ func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revision
 	return 0, nil
 }
 
-// unsettled is an error that leaves a launch's outcome unknown: no reply,
-// an interruption, a reply that cannot be read, or a server's 5xx; a 4xx
-// is the server's answer to the operation, its words enough.
-func unsettled(err error) bool {
+// launchRefusal is the launch a refusal with the status and the error
+// code carries in its body; false for another error, status or code, a
+// body that cannot be read or one that names no launch.
+func launchRefusal(err error, status int, code string) (dispatch.LaunchSummary, bool) {
 	var r replyRefusal
-	return !errors.As(err, &r) || r.status >= http.StatusInternalServerError
-}
-
-// pendingLaunch is the launch a refusal carries when it is one still
-// pending: a 503 ledger_unavailable whose body names a pending launch,
-// which the same operation sent again settles (the ticket page's
-// launchOutcome reads it so too).
-func pendingLaunch(err error) (dispatch.LaunchSummary, bool) {
-	var r replyRefusal
-	if !errors.As(err, &r) || r.status != http.StatusServiceUnavailable {
+	if !errors.As(err, &r) || r.status != status {
 		return dispatch.LaunchSummary{}, false
 	}
 	var b struct {
@@ -1135,10 +1135,28 @@ func pendingLaunch(err error) (dispatch.LaunchSummary, bool) {
 		} `json:"error"`
 		Launch *dispatch.LaunchSummary `json:"launch"`
 	}
-	if json.Unmarshal(r.body, &b) != nil || b.Error.Code != "ledger_unavailable" || b.Launch == nil || b.Launch.State != dispatch.LaunchPending {
+	if json.Unmarshal(r.body, &b) != nil || b.Error.Code != code || b.Launch == nil {
 		return dispatch.LaunchSummary{}, false
 	}
 	return *b.Launch, true
+}
+
+// pendingLaunch is the launch a refusal carries when it is one still
+// pending: a 503 ledger_unavailable whose body names a pending launch,
+// which the same operation sent again settles (the ticket page's
+// launchOutcome reads it so too).
+func pendingLaunch(err error) (dispatch.LaunchSummary, bool) {
+	l, ok := launchRefusal(err, http.StatusServiceUnavailable, "ledger_unavailable")
+	return l, ok && l.State == dispatch.LaunchPending
+}
+
+// failedLaunch is whether a refusal settles a launch as failed: a 409
+// launch_failed whose body names the launch failed, the launch handler's
+// answer to the operation. Any other refusal of a resend (a 401 or a 429
+// from in front of the handler, a 5xx) says nothing of the launch.
+func failedLaunch(err error) bool {
+	l, ok := launchRefusal(err, http.StatusConflict, "launch_failed")
+	return ok && l.State == dispatch.LaunchFailed
 }
 
 // runEntryView is an entry of a ticket's runs as the route answers it
@@ -1406,7 +1424,10 @@ func candidateWords(tv *dispatch.TicketView, candidate string) string {
 }
 
 // verifiedWords is a delivery's recorded verification receipt in words:
-// whether its candidate passed its checks.
+// whether its candidate passed its checks, and when it did not, how it fell
+// short as the server's dispatch.shortfall tells it: no check, a receipt
+// that did not pass (unfinished, a non-zero exit, unstable), else every
+// check passed but its attempt did not succeed (one stopped, say).
 func verifiedWords(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -1420,6 +1441,8 @@ func verifiedWords(raw json.RawMessage) string {
 		return fmt.Sprintf(", verified: %s passed", checksWords(len(v.Receipts)))
 	case len(v.Receipts) == 0:
 		return ", not verified: it ran no check"
+	case slices.ContainsFunc(v.Receipts, func(r dispatch.VerifiedReceipt) bool { return r.Exit == nil || *r.Exit != 0 || !r.Stable }):
+		return ", not verified: its checks did not all pass"
 	}
-	return ", not verified: its checks did not all pass"
+	return fmt.Sprintf(", not verified: %s passed, but its attempt did not succeed", checksWords(len(v.Receipts)))
 }
