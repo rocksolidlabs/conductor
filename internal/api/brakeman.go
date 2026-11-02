@@ -144,6 +144,30 @@ type brakemanDesk struct {
 	// stuck is set past brakemanStuck and refuses new requests.
 	stopFails int
 	stuck     bool
+	// makes holds each request's make mutex (makeLock); turnReads what
+	// the turn in progress was given of what changed (cover) and the
+	// classes its answers used (usedClass).
+	makes     map[string]*sync.Mutex
+	turnReads *turnChanges
+
+	// readMu orders a turn's reads: the count, the read log and the
+	// coverage of one read are written before the next is answered.
+	readMu sync.Mutex
+	// recovering holds Brakeman's routes (503 brakeman_recovering) while
+	// recoverMakes completes what the last owner left of the makes.
+	recovering atomic.Bool
+	// recoveries is the recovery the desk's start began (startRecovery),
+	// which release waits for before the owner lock goes;
+	// recoverCtx/stopRecovery end every recovery as the desk quiesces.
+	recoveries   sync.WaitGroup
+	recoverCtx   context.Context
+	stopRecovery context.CancelFunc
+	// making counts the makes the make route admitted (admitMake), which
+	// release waits for before the owner lock goes: a make admitted before
+	// the desk closed finishes its backend's operation here, never beside
+	// the next owner's recovery of the same claim. Added to under mu, with
+	// closing read there, so none is admitted once quiesce began.
+	making sync.WaitGroup
 }
 
 // deskTurn is the slot: a request from starting until its launch has
@@ -183,6 +207,7 @@ type deskTurn struct {
 // and when the store cannot be opened.
 func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 	d := &brakemanDesk{s: s, wake: make(chan struct{}, 1), done: make(chan struct{}), loopDone: make(chan struct{}), read: map[string]bool{}}
+	d.recoverCtx, d.stopRecovery = context.WithCancel(context.Background())
 	now := time.Now
 	d.clock.Store(&now)
 	d.keep.Store(brakeman.Keep)
@@ -209,6 +234,9 @@ func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 		if f := d.beforeRecover.Load(); f != nil {
 			(*f)()
 		}
+		// The makes the last owner left are completed first, Brakeman's
+		// routes held meanwhile (recover).
+		d.recover()
 		d.admit.Lock()
 		d.loadQueue()
 		d.recovered.Store(true)
@@ -218,8 +246,26 @@ func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 	d.loadQueue()
 	if ownedAtOpen {
 		d.recovered.Store(true)
+		// Brakeman's routes wait for the recovery of the makes (it reads
+		// Dispatch and the crew store, opened before the desk), when the
+		// last owner left one to recover.
+		if pending, err := bs.Pending(); err != nil || len(pending) > 0 {
+			d.startRecovery()
+		}
 	}
 	return d
+}
+
+// startRecovery runs the recovery of the makes in the background, with
+// Brakeman's routes held until it is done; release waits for it, so the
+// owner lock never goes while it saves a crew or makes a ticket.
+func (d *brakemanDesk) startRecovery() {
+	d.recovering.Store(true)
+	d.recoveries.Add(1)
+	go func() {
+		defer d.recoveries.Done()
+		d.recover()
+	}()
 }
 
 // notOwner is why the desk refuses a write before it holds the records'
@@ -266,10 +312,17 @@ var errDeskClosing = errors.New("brakeman: the server is shutting down")
 // be called again.
 func (d *brakemanDesk) quiesce(ctx context.Context) {
 	// In admission's order: a save before it has written its
-	// cancellations, one after it is refused.
+	// cancellations, one after it is refused. Under mu too, as admitMake
+	// reads it: a make is admitted before this, and release waits for
+	// it, or refused after.
 	d.admit.Lock()
+	d.mu.Lock()
 	d.closing.Store(true)
+	d.mu.Unlock()
 	d.admit.Unlock()
+	// A recovery under way stops at its next make; the one it is in
+	// finishes (release waits for it).
+	d.stopRecovery()
 	d.stopOnce.Do(func() { close(d.done) })
 	d.startOnce.Do(func() { close(d.loopDone) })
 	<-d.loopDone
@@ -302,6 +355,13 @@ func (d *brakemanDesk) release(ctx context.Context) {
 	go func() {
 		defer close(released)
 		d.drain()
+		// The recovery the start began holds the lock's promise as a
+		// make's does: it ends before the lock goes (the one OnOwned
+		// began, Close waits for); so does every make the route
+		// admitted, whose backend's operation the next owner's recovery
+		// would otherwise run beside it.
+		d.recoveries.Wait()
+		d.making.Wait()
 		_ = d.st.Close()
 	}()
 	select {
@@ -347,6 +407,22 @@ func (d *brakemanDesk) drain() {
 		retry.Stop()
 	}
 }
+
+// admitMake admits a make of the make route, false once the desk is
+// closing (quiesce): release waits for each admitted make (madeDone)
+// before the owner lock goes.
+func (d *brakemanDesk) admitMake() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closing.Load() {
+		return false
+	}
+	d.making.Add(1)
+	return true
+}
+
+// madeDone ends an admitted make.
+func (d *brakemanDesk) madeDone() { d.making.Done() }
 
 // poke makes the loop look again.
 func (d *brakemanDesk) poke() {
@@ -1090,6 +1166,10 @@ func (s *Server) brakemanDeskOf(w http.ResponseWriter) (*brakemanDesk, bool) {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "Brakeman needs a data directory")
 		return nil, false
 	}
+	if s.brakeman.recovering.Load() {
+		writeError(w, http.StatusServiceUnavailable, "brakeman_recovering", "Brakeman's records are being recovered: ask again in a moment")
+		return nil, false
+	}
 	return s.brakeman, true
 }
 
@@ -1132,6 +1212,12 @@ func (s *Server) routeBrakeman(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/brakeman/requests/{id}", s.requireAdmin(s.handleBrakemanRequest))
 	mux.HandleFunc("GET /api/brakeman/requests/{id}/refs", s.requireAdmin(s.handleBrakemanRefs))
 	mux.HandleFunc("POST /api/brakeman/requests/{id}/cancel", s.requireAdmin(s.handleBrakemanCancel))
+	mux.HandleFunc("POST /api/brakeman/requests/{id}/items/{i}/make", s.requireAdmin(s.handleBrakemanMake))
+	mux.HandleFunc("GET /api/brakeman/changes", s.observeRoute(s.handleBrakemanChanges))
+	mux.HandleFunc("GET /api/brakeman/status", s.observeRoute(s.handleBrakemanStatus))
+	mux.HandleFunc("GET /api/brakeman/screen", s.observeRoute(s.handleBrakemanScreen))
+	mux.HandleFunc("GET /api/brakeman/overlaps", s.observeRoute(s.handleBrakemanOverlaps))
+	mux.HandleFunc("GET /api/brakeman/briefs", s.observeRoute(s.handleBrakemanBriefs))
 	mux.HandleFunc("GET /api/sessions/{id}/brakeman/request", s.handleSessionBrakemanRequest)
 	mux.HandleFunc("POST /api/sessions/{id}/brakeman/brief", s.handleSessionBrakemanBrief)
 }

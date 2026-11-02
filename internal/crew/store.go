@@ -2,6 +2,8 @@ package crew
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -20,6 +22,22 @@ import (
 // crewsDir is the directory of the data directory that holds one file per
 // crew, <id>.json.
 const crewsDir = "crews"
+
+// originsDir is the directory beside crewsDir that holds the origin
+// tombstones: one file for each crew with an origin that was deleted,
+// written before its crew's file is removed (Delete).
+const originsDir = "crew-origins"
+
+// originPattern is a crew's origin: a Brakeman request, an item of its
+// brief and the derived op id its make ran under.
+var originPattern = regexp.MustCompile(`^brakeman:br-[1-9][0-9]{0,17}/[0-9]{1,2}/[A-Za-z0-9._~-]{1,32}$`)
+
+// ValidOrigin reports whether o has the shape of a crew's origin.
+func ValidOrigin(o string) bool { return originPattern.MatchString(o) }
+
+// ErrOriginDeleted answers a CreateFrom whose origin a crew held and that
+// crew was deleted since: its tombstone says so, and nothing is saved.
+var ErrOriginDeleted = errors.New("crew: the crew made from this origin was deleted")
 
 // maxID bounds an ID. Derived IDs are at most 40 characters from the name
 // plus a suffix; duplicates of duplicates are cut to stay within it.
@@ -84,8 +102,9 @@ func (c Crew) summary() Summary {
 // change is checked in the form it is saved in (name trimmed, ID and times
 // set), and a failed save changes nothing. Crews go in and come out as copies.
 type Store struct {
-	st  *store.Store // crews/
-	now func() time.Time
+	st      *store.Store // crews/
+	origins *store.Store // crew-origins/
+	now     func() time.Time
 
 	// mu serialises the writers, so that a derived ID is chosen and taken in
 	// one step, and the readers with them, so that a read never meets a save
@@ -130,7 +149,11 @@ func NewStore(st *store.Store) (s *Store, problems []error, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	s = &Store{st: dir, now: func() time.Time { return time.Now().UTC() }, sums: map[string]cached{}}
+	origins, err := st.Sub(originsDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	s = &Store{st: dir, origins: origins, now: func() time.Time { return time.Now().UTC() }, sums: map[string]cached{}}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entries, err := s.st.List()
@@ -289,10 +312,85 @@ func (s *Store) Create(c Crew) (Crew, error) {
 	c.CreatedAt = s.now()
 	c.UpdatedAt = c.CreatedAt
 	c.ManifestRevision = manifestRevision(nil, c)
+	// Only CreateFrom gives a crew an origin.
+	c.Origin = ""
 	if err := s.commit(c); err != nil {
 		return Crew{}, err
 	}
 	return c.canonical(), nil
+}
+
+// OriginTombstone is what a deleted crew with an origin leaves in
+// crew-origins/: its origin, the crew's id and when it went.
+type OriginTombstone struct {
+	Origin    string    `json:"origin"`
+	Crew      string    `json:"crew"`
+	DeletedAt time.Time `json:"deletedAt"`
+}
+
+// tombstoneName is the document name of an origin's tombstone: the first
+// 32 hex digits of the origin's SHA-256.
+func tombstoneName(origin string) string {
+	sum := sha256.Sum256([]byte(origin))
+	return hex.EncodeToString(sum[:16]) + ".json"
+}
+
+// CreateFrom saves c as a new crew made from origin (Create's id, times
+// and revision), once: a crew that holds the origin already is answered
+// as it is (made false), and an origin whose crew was deleted since (its
+// tombstone) answers ErrOriginDeleted with nothing saved, so a make
+// recovered after a crash finds what it made, or that a person deleted
+// it, and never saves a second. Two servers on one data directory read
+// the same files.
+func (s *Store) CreateFrom(c Crew, origin string) (out Crew, made bool, err error) {
+	if !originPattern.MatchString(origin) {
+		return Crew{}, false, invalidf("origin %s must match %s", quote(origin), originPattern)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if found, ok, err := s.byOrigin(origin); err != nil || ok {
+		return found, false, err
+	}
+	var tomb OriginTombstone
+	if ok, err := s.origins.LoadLimit(tombstoneName(origin), &tomb, 4<<10); err != nil {
+		return Crew{}, false, err
+	} else if ok && tomb.Origin == origin {
+		return Crew{}, false, fmt.Errorf("%w: %s was %s, deleted %s", ErrOriginDeleted, origin, tomb.Crew, tomb.DeletedAt.Format(time.RFC3339))
+	}
+	taken, err := s.taken()
+	if err != nil {
+		return Crew{}, false, err
+	}
+	taken[reservedID] = true
+	taken[ClassBrakeman] = true
+	c.ID = freeID(taken, cmp.Or(slug(c.Name), "crew"), "")
+	c.CreatedAt = s.now()
+	c.UpdatedAt = c.CreatedAt
+	c.ManifestRevision = manifestRevision(nil, c)
+	c.Origin = origin
+	if err := s.commit(c); err != nil {
+		return Crew{}, false, err
+	}
+	return c.canonical(), true, nil
+}
+
+// byOrigin is the crew that holds origin, read from every crew file. The
+// caller holds s.mu.
+func (s *Store) byOrigin(origin string) (Crew, bool, error) {
+	entries, err := s.st.List()
+	if err != nil {
+		return Crew{}, false, err
+	}
+	for _, e := range entries {
+		c, err := s.read(strings.TrimSuffix(e.Name, ".json"))
+		if err != nil {
+			continue // a file that cannot be used holds no origin
+		}
+		if c.Origin == origin {
+			return c, true, nil
+		}
+	}
+	return Crew{}, false, nil
 }
 
 // Update replaces the crew with the given ID by c. The ID and CreatedAt stay
@@ -309,6 +407,7 @@ func (s *Store) Update(id string, c Crew) (Crew, error) {
 	}
 	c.ID, c.CreatedAt, c.UpdatedAt = id, old.CreatedAt, s.now()
 	c.ManifestRevision = manifestRevision(&old, c)
+	c.Origin = old.Origin
 	if err := s.commit(c); err != nil {
 		return Crew{}, err
 	}
@@ -332,6 +431,7 @@ func (s *Store) Duplicate(id string) (Crew, error) {
 	c := src.clone()
 	c.ID = freeID(taken, id, "-copy")
 	c.Name = copyName(src.Name)
+	c.Origin = ""
 	c.CreatedAt = s.now()
 	c.UpdatedAt = c.CreatedAt
 	c.ManifestRevision = manifestRevision(nil, c)
@@ -357,12 +457,29 @@ func (s *Store) Delete(id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// A crew made from a Brakeman draft leaves its origin's tombstone
+	// before its file goes, so a make recovered later never saves it again.
+	if c, err := s.read(id); err == nil && c.Origin != "" {
+		tomb := OriginTombstone{Origin: c.Origin, Crew: id, DeletedAt: s.now()}
+		if err := s.origins.Save(tombstoneName(c.Origin), tomb); err != nil {
+			return false, fmt.Errorf("%w: the origin tombstone of %s: %w", ErrWrite, id, err)
+		}
+		if f := afterTombstone; f != nil {
+			if err := f(); err != nil {
+				return false, err
+			}
+		}
+	}
 	if err := s.st.Delete(id + ".json"); err != nil {
 		return false, fmt.Errorf("%w: delete %s.json: %w", ErrWrite, id, err)
 	}
 	delete(s.sums, id+".json")
 	return true, nil
 }
+
+// afterTombstone, when a test sets it, runs between an origin's tombstone
+// and its crew's removal: the crash seam; an error it answers is Delete's.
+var afterTombstone func() error
 
 // Seed saves the crews of list whose ids have no file in the crews
 // directory, each with a new crew's ManifestRevision, and returns the ids it
@@ -402,6 +519,9 @@ func (s *Store) commit(c Crew) error {
 	c = c.canonical()
 	if err := c.validateWithID(); err != nil {
 		return err
+	}
+	if c.Origin != "" && !originPattern.MatchString(c.Origin) {
+		return invalidf("origin %s must match %s", quote(c.Origin), originPattern)
 	}
 	if err := c.ValidateSave(); err != nil {
 		return err

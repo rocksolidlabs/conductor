@@ -2071,6 +2071,21 @@ func (e *Engine) Get(runID string) (Run, bool) {
 	return out, true
 }
 
+// Settled reports a run the engine holds, at the revision of its last
+// commit, and whether its state is the one the ledger holds at that
+// revision: no change of it waits for a commit or is in one (a commit
+// changes the run before its transaction and moves the revision after).
+// ok is false for a run the engine does not hold.
+func (e *Engine) Settled(runID string) (revision int64, settled, ok bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, ok := e.runs[runID]
+	if !ok {
+		return 0, false, false
+	}
+	return r.revision, !r.dirty(), true
+}
+
 // List returns every run, the newest first.
 func (e *Engine) List() []Run {
 	e.mu.Lock()

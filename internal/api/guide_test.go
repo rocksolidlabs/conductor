@@ -176,7 +176,9 @@ func TestEverySessionRouteIsInTheTable(t *testing.T) {
 		}
 	}
 	for key, op := range table {
-		if op.Scope != "admin" && !registered[key] {
+		// A Brakeman turn's reads are routes of their own, outside
+		// /api/sessions/{id} (TestEveryOperationIsARegisteredRoute).
+		if op.Scope != "admin" && strings.HasPrefix(op.Path, "/api/sessions/{id}") && !registered[key] {
 			t.Errorf("%s: %s is no route the server registers", op.Name, key)
 		}
 	}
@@ -673,7 +675,8 @@ func TestCrewCreatesSchemaIsACrewReadBackWithoutTheServersFields(t *testing.T) {
 		}
 	}
 	props, _ := op.Input["properties"].(map[string]any)
-	server := []string{"id", "createdAt", "updatedAt", "manifestRevision"}
+	// origin is the server's too: only a Brakeman draft's make sets it.
+	server := []string{"id", "createdAt", "updatedAt", "manifestRevision", "origin"}
 	var want []string
 	for k := range fullOf(t, reflect.TypeFor[crew.Crew]()) {
 		if !slices.Contains(server, k) {

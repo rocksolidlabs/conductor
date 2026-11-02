@@ -330,7 +330,16 @@ func (s *Server) handleSessionBrakemanBrief(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusConflict, "stale_revision", "Brakeman's configuration changed while the brief was checked: submit it again")
 			return
 		}
-		kept, err := d.st.KeepBrief(id, brakeman.Kept{OpID: body.OpID, Brief: b, Refs: refs, RunID: runID, SessionID: info.ID})
+		// The coverage is the server's record of what the turn's reads
+		// reached, and the classes its answers used beside its read
+		// log's, read under the reads' mutex so none is left out of them.
+		d.readMu.Lock()
+		var coverage *brakeman.Coverage
+		if cur, err := d.st.Get(id); err == nil {
+			coverage = cur.Coverage
+		}
+		kept, err := d.st.KeepBrief(id, brakeman.Kept{OpID: body.OpID, Brief: b, Refs: refs, RunID: runID, SessionID: info.ID, Coverage: coverage, Classes: d.classesUsed(id)})
+		d.readMu.Unlock()
 		d.admit.Unlock()
 		if err != nil {
 			s.brakemanError(w, err)

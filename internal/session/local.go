@@ -791,6 +791,13 @@ func (s *Local) Dropped() uint64 { return s.dropped.Load() }
 // Activity returns the activity log, oldest first.
 func (s *Local) Activity() []ActivityEntry { return s.activity.Snapshot() }
 
+// ActivityThrough returns the activity log, oldest first, and the time it
+// is whole up to: an entry the session adds later, an attention's entry
+// stamped before the read among them, is of a time after it.
+func (s *Local) ActivityThrough() ([]ActivityEntry, time.Time) {
+	return s.activity.SnapshotThrough()
+}
+
 // notifyChange hands a fresh Info snapshot to the OnChange hook.
 func (s *Local) notifyChange() {
 	// A question's withdrawn line (#358) goes first: its card loses its choices as the state that replaced the question is told.
@@ -1995,7 +2002,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			if label == "" {
 				label = string(state)
 			}
-			s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: label}, state)
+			s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: label}, state)
 		}
 		return nil
 	}
@@ -2012,7 +2019,13 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// reply under way compares that stamp (pressEnter, answer), and
 		// its line in the chat is the one an answer refers to. The done
 		// has ended the turn, and is recorded as the report it is.
-		now := time.Now().UTC()
+		// The done's entry, and the question's shown again, stamped now
+		// and added once the lock is let go (Stamp).
+		n := 1
+		if !ownShown {
+			n = 2
+		}
+		now := s.activity.Stamp(n)
 		if !ownShown {
 			// What showed leaves, and a claim on it with it.
 			if cur.ID != "" && cur.ID != own.ID {
@@ -2161,7 +2174,9 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		s.releaseStrandedLocked()
 	}
 	if state != AttentionNone {
-		now := time.Now().UTC()
+		// Its entry is added at this time once the lock is let go
+		// (recordOwn below): stamped so until then (Stamp).
+		now := s.activity.Stamp(1)
 		att.Since = &now
 		att.ID = NewID()
 		if stillAnswered {
@@ -3517,10 +3532,10 @@ func (s *Local) recordStatusReconciled() {
 	}
 	switch att.State {
 	case AttentionNeedsInput:
-		s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: att.Message}, AttentionNeedsInput)
+		s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: att.Message}, AttentionNeedsInput)
 	case AttentionWorking:
 		// Labelled as a working change is (setAttentionLooked): by its state.
-		s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: string(AttentionWorking)}, AttentionWorking)
+		s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: string(AttentionWorking)}, AttentionWorking)
 	}
 }
 
@@ -5002,6 +5017,36 @@ func (s *Local) LastLine() string {
 		}
 	}
 	return ""
+}
+
+// TailLines is the last n lines of output the session kept (at most n,
+// oldest first), their escape sequences stripped, each cut to at most
+// maxLastLine*4 bytes and made valid UTF-8, trailing blank lines left out:
+// what a person reading its screen sees of its end (the Brakeman desk's
+// screen read).
+func (s *Local) TailLines(n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	text := strings.ReplaceAll(string(StripANSI(s.ring.Snapshot())), "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := strings.Split(strings.TrimRight(text, " \t\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		l = strings.ToValidUTF8(strings.TrimRight(l, " \t"), "")
+		for len(l) > maxLastLine*4 {
+			_, k := utf8.DecodeLastRuneInString(l)
+			l = l[:len(l)-k]
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 // DisconnectLink evicts every subscription created through linkID as
