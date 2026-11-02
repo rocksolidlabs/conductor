@@ -134,7 +134,7 @@ func (f *FakeIdentity) Authenticate(_ context.Context, token string) (ext.Princi
 	switch {
 	case err != nil:
 		return ext.Principal{}, false, err
-	case !ok || token == "":
+	case !ok: // the empty token is never added
 		return ext.Principal{}, false, nil
 	}
 	return copyPrincipal(p), true, nil
