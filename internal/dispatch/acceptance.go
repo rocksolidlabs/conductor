@@ -13,7 +13,9 @@ import (
 // accepted_criteria, accepted_note), and no status change touches it, so
 // a ticket may be accepted while open or closed. The close policy is a
 // project's: what a ticket needs before it is done, the owner's
-// acceptance, a delivery link, both or neither. Its state on a ticket is
+// acceptance, a delivery link, a verified delivery (one naming a
+// candidate whose recorded receipt passed: delivery.go), any of them or
+// none. Its state on a ticket is
 // computed on every read (CloseState), never stored, so a policy, an
 // owner or criteria edited later read true at once; done is entered only
 // when it is met (EditTicket's gate), and any other status may follow
@@ -21,22 +23,28 @@ import (
 
 // CloseState is a ticket's close policy as read: what its project
 // requires, which requirements the ticket meets, the required ones it
-// does not (Missing, the order of Requires), and Why, the words for an
+// does not (Missing, the order of Requires), Why, the words for an
 // acceptance recorded but unmet ("accepted for Alice; the owner is now
 // Bob", "accepted before the criteria changed"), "" when there is none
-// or it is met.
+// or it is met, and VerifiedWhy, the words for verified unmet ("the
+// delivered candidate build#2 failed the check test (exit 1)", "no
+// delivery names a candidate"), "" when it is met.
 type CloseState struct {
-	Requires []string `json:"requires"`
-	Met      CloseMet `json:"met"`
-	Missing  []string `json:"missing"`
-	Why      string   `json:"why,omitempty"`
+	Requires    []string `json:"requires"`
+	Met         CloseMet `json:"met"`
+	Missing     []string `json:"missing"`
+	Why         string   `json:"why,omitempty"`
+	VerifiedWhy string   `json:"verifiedWhy,omitempty"`
 }
 
 // CloseMet says which of the close policy's requirements a ticket meets,
-// required or not: the owner's acceptance, and a delivery link.
+// required or not: the owner's acceptance, a delivery link, and a
+// delivery whose candidate's recorded receipt passed (verified, which
+// implies a delivery).
 type CloseMet struct {
 	Acceptance bool `json:"acceptance"`
 	Delivery   bool `json:"delivery"`
+	Verified   bool `json:"verified"`
 }
 
 // AcceptTicket records the owner's acceptance of the live ticket with the
@@ -138,19 +146,21 @@ func (s *Store) CloseState(ctx context.Context, key string) (CloseState, error) 
 
 // closeOf is the close policy's state of the ticket tk of the project p:
 // tk's acceptance, owner and criteria as given (the gate passes them as
-// an edit leaves them), and a delivery link from its live links.
+// an edit leaves them), and its live delivery links.
 func closeOf(ctx context.Context, q queryer, p Project, tk Ticket) (CloseState, error) {
-	var delivered int
-	if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM links WHERE ticket_id = ? AND kind = ? AND deleted_at = ''", tk.ID, LinkDelivery).Scan(&delivered); err != nil {
+	deliveries, err := deliveriesOf(ctx, q, tk.ID)
+	if err != nil {
 		return CloseState{}, err
 	}
-	return closeState(p.CloseRequires, tk, delivered > 0), nil
+	return closeState(p.CloseRequires, tk, deliveries), nil
 }
 
 // closeState is the close policy's state, pure: the acceptance is met when
 // one is recorded, for the owner the ticket has now, against the criteria
-// it has now; a delivery when a live delivery link is there.
-func closeState(requires []string, tk Ticket, delivered bool) CloseState {
+// it has now; a delivery when a live delivery link is there; verified when
+// one of them names a candidate whose recorded receipt passed
+// (verifiedState).
+func closeState(requires []string, tk Ticket, deliveries []delivery) CloseState {
 	st := CloseState{Requires: append([]string{}, requires...), Missing: []string{}}
 	var why []string
 	if !tk.AcceptedAt.IsZero() {
@@ -166,9 +176,10 @@ func closeState(requires []string, tk Ticket, delivered bool) CloseState {
 			why = append(why, "accepted before the criteria changed")
 		}
 	}
-	st.Met.Delivery = delivered
+	st.Met.Delivery = len(deliveries) > 0
+	st.Met.Verified, st.VerifiedWhy = verifiedState(deliveries)
 	for _, r := range requires {
-		if (r == RequireAcceptance && !st.Met.Acceptance) || (r == RequireDelivery && !st.Met.Delivery) {
+		if (r == RequireAcceptance && !st.Met.Acceptance) || (r == RequireDelivery && !st.Met.Delivery) || (r == RequireVerified && !st.Met.Verified) {
 			st.Missing = append(st.Missing, r)
 		}
 	}
@@ -177,8 +188,9 @@ func closeState(requires []string, tk Ticket, delivered bool) CloseState {
 }
 
 // policyRefusal is the close_policy refusal of a move of what to done
-// while the policy is unmet: its words name what is missing, and why an
-// acceptance recorded is unmet; Missing names the requirements.
+// while the policy is unmet: its words name what is missing, why an
+// acceptance recorded is unmet and why verified is; Missing names the
+// requirements.
 func policyRefusal(what string, st CloseState) error {
 	var lacks []string
 	for _, r := range st.Missing {
@@ -191,6 +203,8 @@ func policyRefusal(what string, st CloseState) error {
 			}
 		case RequireDelivery:
 			lacks = append(lacks, "a delivery link")
+		case RequireVerified:
+			lacks = append(lacks, "a verified delivery ("+st.VerifiedWhy+")")
 		}
 	}
 	return &Refusal{Code: RefusalClosePolicy, Words: what + " is done only once its project's close policy is met: it lacks " + strings.Join(lacks, " and "),

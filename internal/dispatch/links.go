@@ -34,12 +34,15 @@ import (
 // NewLink is what link.add takes: the kind (LinkKinds); the reference,
 // which a run link needs (the run's id) and a delivery or external link
 // takes from its URL when none is given; the URL, which a delivery or
-// external link needs; and a note.
+// external link needs; a note; and, for a delivery alone, the candidate
+// it delivers, <run>/<task>/<n>@<commit> (delivery.go), part of the
+// request and so of its fingerprint.
 type NewLink struct {
-	Kind string `json:"kind"`
-	Ref  string `json:"ref,omitempty"`
-	URL  string `json:"url,omitempty"`
-	Note string `json:"note,omitempty"`
+	Kind      string `json:"kind"`
+	Ref       string `json:"ref,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Note      string `json:"note,omitempty"`
+	Candidate string `json:"candidate,omitempty"`
 }
 
 // LinkAddArgs is link.add's content, its fingerprint: the ticket's key
@@ -289,14 +292,23 @@ func chainRefusal(tk Ticket, run string, launched, linked []ChainHolder) error {
 // Its identity live on the ticket already is invalid. A run link's
 // reference names a run that exists (not_found otherwise) of a chain no
 // ticket holds (run_linked, the receipt's Key naming the holder:
-// chainRefusal), so a run, and its chain, belongs to one ticket at most. At most MaxLinks
+// chainRefusal), so a run, and its chain, belongs to one ticket at most.
+// A delivery link may name its candidate, with verified, the candidate's
+// verification receipt as the API read it from the ledger (delivery.go):
+// both of their shapes, only on a delivery link, each with the other
+// (invalid otherwise), the candidate's run of a chain the ticket holds
+// alone (candidateRefusal: run_linked for another ticket's or a contested
+// chain). verified is an argument apart from the request: the operation's
+// fingerprint is the key and l, never the receipt, which is computed
+// evidence and may differ between two tries of one request. At most MaxLinks
 // live links on the ticket (bound). One add row, its value the link
-// whole ({id, kind, ref, url, note, createdAt, createdBy}) and the
-// operation's fingerprint, which the link's row keeps as well (Replay
-// compares a resend by it once the receipt is pruned). A deleted
-// ticket is not_found; an expected revision is the ticket's; an archived
-// project refuses it (archived). The receipt carries the link's id.
-func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Receipt, error) {
+// whole ({id, kind, ref, url, note, candidate?, verified?, createdAt,
+// createdBy}) and the operation's fingerprint, which the link's row keeps
+// as well (Replay compares a resend by it once the receipt is pruned). A
+// deleted ticket is not_found; an expected revision is the ticket's; an
+// archived project refuses it (archived). The receipt carries the link's
+// id.
+func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink, verified *Verified) (Receipt, error) {
 	return s.Apply(ctx, op, IntentLinkAdd, LinkAddArgs{Key: key, NewLink: l}, func(t *tx) error {
 		tk, _, err := t.ticket(key, false)
 		if err != nil {
@@ -326,6 +338,10 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Rece
 		case ref == "":
 			ref = l.URL
 		}
+		candidate, verifiedValue, err := checkCandidate(l, verified)
+		if err != nil {
+			return err
+		}
 		var held int
 		if err := t.tx.QueryRowContext(t.ctx, "SELECT COUNT(*) FROM links WHERE ticket_id = ? AND kind = ? AND ref = ? AND deleted_at = ''",
 			tk.ID, l.Kind, ref).Scan(&held); err != nil {
@@ -346,6 +362,15 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Rece
 				return err
 			}
 		}
+		if l.Candidate != "" {
+			launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, t.sight.chainOf(candidate.Run))
+			if err != nil {
+				return err
+			}
+			if err := candidateRefusal(tk, candidate.Run, launched, linked); err != nil {
+				return err
+			}
+		}
 		var n int
 		if err := t.tx.QueryRowContext(t.ctx, "SELECT COUNT(*) FROM (SELECT DISTINCT kind, ref FROM links WHERE ticket_id = ? AND deleted_at = '')", tk.ID).Scan(&n); err != nil {
 			return err
@@ -353,9 +378,13 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Rece
 		if err := checkCount("links", n+1, MaxLinks); err != nil {
 			return err
 		}
-		link := Link{ID: newID(), TicketID: tk.ID, Kind: l.Kind, Ref: ref, URL: l.URL, Note: l.Note, CreatedAt: t.now, CreatedBy: t.op.author(), Fingerprint: t.fp}
-		if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO links (id, ticket_id, kind, ref, url, note, created_at, created_by, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			link.ID, link.TicketID, link.Kind, link.Ref, link.URL, link.Note, stamp(link.CreatedAt), link.CreatedBy, link.Fingerprint); err != nil {
+		link := Link{ID: newID(), TicketID: tk.ID, Kind: l.Kind, Ref: ref, URL: l.URL, Note: l.Note, Candidate: l.Candidate,
+			CreatedAt: t.now, CreatedBy: t.op.author(), Fingerprint: t.fp}
+		if verifiedValue != "" {
+			link.Verified = json.RawMessage(verifiedValue)
+		}
+		if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO links (id, ticket_id, kind, ref, url, note, candidate, verified, created_at, created_by, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			link.ID, link.TicketID, link.Kind, link.Ref, link.URL, link.Note, link.Candidate, verifiedValue, stamp(link.CreatedAt), link.CreatedBy, link.Fingerprint); err != nil {
 			return err
 		}
 		t.created(link.ID, "")
