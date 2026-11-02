@@ -3351,8 +3351,16 @@ paged for a turn likewise: `GET /api/runs?after=&limit=` (`after` the
 → `{runs, next?}` newest first, at most 4 MiB a page and one run at least,
 `next` while more remain; an `after` naming a run the server no longer
 holds is `400 invalid_request`, and the runs are read again from the
-first page. The admin's answers are unchanged; every other route refuses
-the principal as it refuses no token. `401` for a token
+first page. A run that alone passes a turn's 4 MiB (a managed run of 128
+tasks with their results can), on its page or as `GET /api/runs/{run}`,
+is given short rather than refused, with `cut` naming what it leaves out,
+in this order and each only while the run is still past the bound:
+`tasks` (each task's result's summary, issues and findings, its latest
+attempt's checkpoint and error, its blocker's message: the task's own read
+gives them whole), `members` (each member's prompt and args), `log` and
+`chat` (their oldest entries, the newest that fit kept). The admin's
+answers are unchanged; every other route refuses the principal as it
+refuses no token. `401` for a token
 that is not the named session's, `403 not_brakeman` for a session that
 is no turn's, `409 turn_over` once its request is closed.
 

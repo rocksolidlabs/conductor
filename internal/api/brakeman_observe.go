@@ -499,7 +499,7 @@ func (g refGrant) projectAdmitted(key string) bool {
 // remain; each with its ref, and only the page's noted at their state and
 // revision. A run's members' prompts alone can be 192 KB, and the engine
 // keeps maxRuns of them, more than one answer holds. A page holds one run
-// at least, so only a run past the bound alone is refused (413 bound).
+// at least: a run that alone passes the bound is given short (fitRun).
 func filterRuns(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	q, err := readQuery(r, "after", "limit")
 	var after string
@@ -574,9 +574,14 @@ func filterRuns(r *http.Request, o *observer, body []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(page) > 0 && used+len(b)+1 > maxTurnReply {
-			next = last
-			break
+		if used+len(b)+1 > maxTurnReply {
+			if len(page) > 0 {
+				next = last
+				break
+			}
+			if b, err = fitRun(b, maxTurnReply-used-1); err != nil {
+				return nil, err
+			}
 		}
 		o.noteRef(ref, brakeman.ClassRuns, run.state, run.rev)
 		page = append(page, b)
@@ -595,7 +600,8 @@ func filterRuns(r *http.Request, o *observer, body []byte) ([]byte, error) {
 }
 
 // filterRun is GET /api/runs/{run} for a turn: the run and its tasks,
-// each with its ref and noted.
+// each with its ref and noted; a run past maxTurnReply is given short
+// (fitRun).
 func filterRun(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	id := r.PathValue("run")
 	var in struct {
@@ -638,7 +644,140 @@ func filterRun(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	}
 	b, _ := json.Marshal("run:" + id)
 	m["ref"] = b
-	return refreshed(body, "run", m)
+	// The answer's frame, {"run":…} and whatever else the route says
+	// beside it (record), is what the run leaves of the bound.
+	frame, err := refreshed(body, "run", json.RawMessage("0"))
+	if err != nil {
+		return nil, err
+	}
+	whole, err := marshalNoEscape(m)
+	if err != nil {
+		return nil, err
+	}
+	fit, err := fitRun(whole, maxTurnReply-(len(frame)-1))
+	if err != nil {
+		return nil, err
+	}
+	return refreshed(body, "run", fit)
+}
+
+// runCuts are what fitRun leaves out of a run past its room, in order:
+// first what the turn reads whole elsewhere, then what it needs least.
+//   - tasks: each task's result's text (summary, issues, findings), its
+//     latest attempt's checkpoint and error, and its blocker's message,
+//     which the task's own read (observe task) gives whole;
+//   - members: each member's prompt and args;
+//   - log: the run's log's oldest entries, the newest that fit kept;
+//   - chat: the run's chat's oldest messages, the newest that fit kept.
+var runCuts = []string{"tasks", "members", "log", "chat"}
+
+// fitRun is a run as a turn reads it, the JSON object raw, within room
+// bytes: raw itself when it fits, else the run with runCuts made one at a
+// time until it does, its cut naming each made. A managed run of 128
+// tasks, each with a 4,000-character summary, twenty issues and fifty
+// findings, is far past a turn's answer; its short form is not. A run
+// still past room with every cut made is refused 413 bound.
+func fitRun(raw json.RawMessage, room int) (json.RawMessage, error) {
+	if len(raw) <= room {
+		return raw, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	var cut []string
+	for _, c := range runCuts {
+		list, ok := m[c]
+		if !ok {
+			continue
+		}
+		cut = append(cut, c)
+		m["cut"], _ = json.Marshal(cut)
+		var err error
+		switch c {
+		case "tasks":
+			m[c], err = cutFields(list, map[string][]string{"result": {"summary", "issues", "findings"}, "attempt": {"checkpoint", "error"}, "blocker": {"message"}})
+		case "members":
+			m[c], err = cutFields(list, map[string][]string{"": {"prompt", "args"}})
+		default:
+			m[c], err = newestThatFit(m, c, room)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out, err := marshalNoEscape(m)
+		if err != nil {
+			return nil, err
+		}
+		if len(out) <= room {
+			return out, nil
+		}
+	}
+	return nil, newAPIError(http.StatusRequestEntityTooLarge, "bound", fmt.Sprintf("the run is larger than a turn's %d MiB even short", maxTurnReply>>20))
+}
+
+// cutFields is list, a JSON array of objects, with the fields drop names
+// left out: drop[""] of each object itself, drop[f] of the object in its
+// field f.
+func cutFields(list json.RawMessage, drop map[string][]string) (json.RawMessage, error) {
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(list, &items); err != nil {
+		return nil, err
+	}
+	for _, it := range items {
+		for f, fields := range drop {
+			if f == "" {
+				for _, k := range fields {
+					delete(it, k)
+				}
+				continue
+			}
+			raw, ok := it[f]
+			if !ok || string(raw) == "null" {
+				continue
+			}
+			var inner map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &inner); err != nil {
+				return nil, err
+			}
+			for _, k := range fields {
+				delete(inner, k)
+			}
+			b, err := marshalNoEscape(inner)
+			if err != nil {
+				return nil, err
+			}
+			it[f] = b
+		}
+	}
+	return marshalNoEscape(items)
+}
+
+// newestThatFit is m's list field, oldest first, cut to its newest
+// entries that leave m within room: none when the rest of m alone fills
+// it.
+func newestThatFit(m map[string]json.RawMessage, field string, room int) (json.RawMessage, error) {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(m[field], &entries); err != nil {
+		return nil, err
+	}
+	m[field] = json.RawMessage("[]")
+	rest, err := marshalNoEscape(m)
+	if err != nil {
+		return nil, err
+	}
+	free, from := room-len(rest), len(entries)
+	for from > 0 {
+		e, err := marshalNoEscape(entries[from-1])
+		if err != nil {
+			return nil, err
+		}
+		if free -= len(e) + 1; free < 0 {
+			break
+		}
+		from--
+	}
+	return marshalNoEscape(entries[from:])
 }
 
 // filterTask is GET /api/runs/{run}/tasks/{task} for a turn: the task,
