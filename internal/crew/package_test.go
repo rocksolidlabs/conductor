@@ -353,7 +353,7 @@ func TestTheAttemptGetsThePackageFiles(t *testing.T) {
 		}
 		writeFile(t, filepath.Join(wt, taskDir, there), "mine\n")
 		s := newFileStore(testSpecPNG, testNotes)
-		err := writeTaskFiles(t.Context(), wt, "", []byte("md"), []byte("{}"), nil, rp, s.open)
+		err := writeTaskFiles(t.Context(), wt, "", []byte("md"), []byte("{}"), nil, rp, s.open, nil)
 		var pe *packageError
 		if err == nil || !strings.Contains(err.Error(), "exists in the worktree already") || errors.As(err, &pe) {
 			t.Fatalf("%s there already: %v", there, err)
@@ -385,7 +385,7 @@ func TestTheAttemptWritesTheDerivedNames(t *testing.T) {
 	}
 	wt := t.TempDir()
 	s := newFileStore(evil, con)
-	if err := writeTaskFiles(t.Context(), wt, "", []byte("md"), []byte("{}"), nil, rp, s.open); err != nil {
+	if err := writeTaskFiles(t.Context(), wt, "", []byte("md"), []byte("{}"), nil, rp, s.open, nil); err != nil {
 		t.Fatal(err)
 	}
 	var written []string
@@ -414,7 +414,7 @@ func TestTheAttemptWritesTheDerivedNames(t *testing.T) {
 		}
 		wt := t.TempDir()
 		s := newFileStore([]byte("x"))
-		err := writeTaskFiles(t.Context(), wt, "", []byte("md"), []byte("{}"), nil, &bad, s.open)
+		err := writeTaskFiles(t.Context(), wt, "", []byte("md"), []byte("{}"), nil, &bad, s.open, nil)
 		var pe *packageError
 		if !errors.As(err, &pe) {
 			t.Fatalf("the files %q: %v", files, err)

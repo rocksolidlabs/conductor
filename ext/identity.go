@@ -15,6 +15,15 @@ type IdentityProvider interface {
 	// false: not the provider's. It answers from what it holds (a signature
 	// checked against keys it keeps), never with a call per request; the
 	// token is never logged or kept. Safe for concurrent use.
+	//
+	// It is asked again about a token it admitted for as long as a
+	// long-lived connection opened with it lasts (a viewer's WebSocket, the
+	// events stream), and that answer is a revocation when it is ok false,
+	// another subject or a principal without the admin grant: the
+	// connection is closed. A provider that cannot tell (the keys it checks
+	// against out of reach, its service down or lapsed) returns an error,
+	// never ok false: an error ends no connection, and for a new request it
+	// is the free default's answer, an unknown token.
 	Authenticate(ctx context.Context, token string) (p Principal, ok bool, err error)
 }
 

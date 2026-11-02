@@ -405,6 +405,38 @@ events, nothing polled. A ticket's page embeds `RunTasks.vue`, the run
 page's own Tasks rows, for each linked run, and the run page asks
 `GET /api/dispatch/links?run=` for its ticket's chip.
 
+A ticket's plan revisions and launches (Program item DS2,
+`docs/plans/dispatch-evidence.md`) join Dispatch to Yardmaster without
+either importing the other: the API is what joins them. A plan revision
+is an immutable record in Dispatch's store, taken whole from a saved crew
+with tasks (its members' agents as the catalog resolved them, the base
+pinned to a commit, the references at it), approved by the operator
+against the ticket's intent. A launch (`api/dispatch_launch.go`) is
+recorded before it runs: Dispatch commits it pending with its package
+(the ticket as it stood, the revision, the attachments, comments,
+references, constraints and decisions handed over, frozen and hashed)
+and the run id it minted; the engine's planned launch
+(`crew.Engine.LaunchPlanned`, through `crew.Launcher` like any managed
+run) writes the run's first ledger row with an insert that refuses an id
+the ledger has, carrying the package byte for byte and the ticket's id;
+and the API records the launch started or failed by what the ledger
+holds, a row being the launch's only when its ticket and its package's
+SHA-256 are the launch's. So a resend answers the first launch, no
+launch makes two runs or adopts another's, and the reconcile run at the
+ledger's recovery (`openLedger`'s `afterRecover`, inside the one
+`OnOwned` callback when the lock comes late) settles what a server that
+stopped left pending; launches are admitted only once it has finished.
+The package travels with the run, not with Dispatch: the ledger keeps it,
+continuations carry it, and every attempt is handed `ticket.md`,
+`package.json` and the attachments (read from Dispatch's store by their
+pinned hashes, `UsePackageFiles`) beside its task files, so an edit of
+the ticket after the launch changes nothing of the run; each attempt's
+session starts only from the agent selection the revision approved,
+checked by the launcher on the catalog entry it starts. A run's evidence
+is read through its launch: its run id names the run in the engine, its
+record and the ledger, whose rows (attempts, check receipts with their
+logs' SHA-256, results, commands) are the truth Dispatch never copies.
+
 ## Switchyard
 
 A switchyard is the server in a mode (`config.Switchyard`): the signaling
@@ -598,7 +630,35 @@ reads it: the ledger's commands, Dispatch's operations and the reads of
 their receipts are kept under `admin` for the workbench token and
 `user:<subject>` (`ext.SubjectActor`, at most 53 bytes) for a provider's
 principal, so a provider's subject never shares the receipts of `admin`,
-`merge` or `agent:<member>`. Nothing stored changes shape.
+`merge` or `agent:<member>`. Nothing stored changes shape. A provider's
+principal that holds a viewer's WebSocket or `GET /api/events` keeps it only
+while the provider admits it (`principalWatch`, #560): the connection's
+watch asks again every `identityRecheckEvery` (30 s), through the guard
+with `IdentityWait` and call slots of its own (`identity-recheck`, so the
+watches never take a request's), and closes the viewer as revoked (`4403`)
+or ends the stream once the provider answers in time that it no longer
+admits the token as that subject with the `admin` grant; a failure, a late
+answer or one out of bounds ends nothing. So `ext.IdentityProvider`'s
+`Authenticate` answers ok false only for a token it knows it no longer
+admits: one that cannot tell (its keys out of reach, its service down or
+lapsed) returns an error, which ends no connection and, for a new request,
+is the free default's answer. The revoke is a revoked link's: the server
+session's subscription ends revoked (`Subscription.Revoke`), so a
+submission waiting for its turn or its Enter, keys or a save under way are
+refused, also when the connection had ended for another reason first (the
+revocation is kept of its own, not as the close's first reason); a hosted
+viewer is closed revoked (`HostedSession.RevokeViewer`), nothing of its
+still queued for the host is written and the host is sent its
+`viewer_leave` saying `revoked` at once, after its join and only once, not
+when its connection has closed, so the host withdraws what it has under
+way; and since that leave may be what a lost connection did not carry,
+the viewer's `viewer_join` says `principal`, and the host gives it a
+credential of its own (`linkCreds.principal`), which the connection's
+loss marks gone as it does the links', and acts on what it sends only
+while it vouches for its server, as for a link's viewer; the events stream's write
+under way is cut (a passed write deadline) before its context ends. The
+server's own tokens and links have no watch, so a build with no provider
+asks nothing more.
 
 **Sync.** Every local commit is told to the sync store
 (`ext.ContinuityStore`) after it lands (`internal/api/sync.go`). Three
