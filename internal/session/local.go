@@ -400,6 +400,9 @@ type Local struct {
 	// read (and the turn taken with it) and everything the pump does with
 	// it.
 	beforeScan atomic.Pointer[func(chunk []byte)]
+	// afterBroadcast, a test's hook, runs with each chunk once it has gone
+	// out to the viewers, before the rest of what the pump does with it.
+	afterBroadcast atomic.Pointer[func(chunk []byte)]
 	// beforeSettle, a test's hook, runs as the settle timer fires, before
 	// it looks at anything (settled); afterTitle between readTitle's look
 	// at a title that matches and its change.
@@ -581,18 +584,12 @@ func (s *Local) pump() {
 			// not count as output for the quiet the run engine and the
 			// trust watcher wait for.
 			title := titleOnly.Match(chunk)
-			s.mu.Lock()
-			s.ring.Write(chunk)
-			s.hub.BroadcastLoud(proto.Encode(proto.TypeOutput, chunk))
-			if !title {
-				s.lastOutput = time.Now()
-			}
-			s.mu.Unlock()
-			s.paste.feed(chunk)
-			s.scanOutput(chunk, turn)
-			if s.pattern != nil {
-				s.pattern.Feed(chunk)
-			}
+			// The startup questions' watcher and the screen the questions
+			// are read from take the chunk before any viewer has it: keys
+			// are routed by them (startupMayShow, askedIn), and a viewer
+			// that answers what it was sent, at once (a routed answer, a
+			// crew's client), finds them showing it. The dialog the chunk
+			// erased is withdrawn after the viewers have the chunk.
 			var left string
 			s.feedMu.Lock()
 			if s.trust != nil && !title {
@@ -602,6 +599,21 @@ func (s *Local) pump() {
 				left = s.feedAsked(chunk)
 			}
 			s.feedMu.Unlock()
+			s.mu.Lock()
+			s.ring.Write(chunk)
+			s.hub.BroadcastLoud(proto.Encode(proto.TypeOutput, chunk))
+			if !title {
+				s.lastOutput = time.Now()
+			}
+			s.mu.Unlock()
+			if hook := s.afterBroadcast.Load(); hook != nil {
+				(*hook)(chunk)
+			}
+			s.paste.feed(chunk)
+			s.scanOutput(chunk, turn)
+			if s.pattern != nil {
+				s.pattern.Feed(chunk)
+			}
 			if left != "" {
 				s.withdraw(left)
 			}
