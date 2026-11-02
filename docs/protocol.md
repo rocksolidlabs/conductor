@@ -3289,6 +3289,7 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 | `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |
 | `GET /api/brakeman/requests/{id}/refs` | `{refs: [{ref, seen, now}]}`, each `{url?, state?, rev?, sha256?, at?}`: what the turn read of each ref of the brief (`state` `unobserved` for one it never read) and what it was as the brief was kept; `404 no_brief` before one; at most 4 MiB |
 | `POST /api/brakeman/requests/{id}/cancel` | `{opId}` → `{request}`; a closed request answers as it stands |
+| `POST /api/brakeman/requests/{id}/items/{i}/make` | `{opId, by?, edit?}` → `201 {request, made, ticket?: {key, url}, receipt?, crew?: {id, url}}`: a `draft_ticket/1` made a ticket through Dispatch's own create under the actor `admin` with `by` as the display name (its `blocks` become `blocks` relations once both ends are tickets, whichever is made first), a `draft_crew/1` a saved crew (never launched) carrying `origin: "brakeman:<request>/<item>/<op>"`; `edit` the draft as the person changed it, in the draft's own shape, else the draft as written. Its op id is derived (`bk` + 30 hex digits of a SHA-256 of the request, the item and the `opId`), so the backend answers a repeat once. The same `opId` again answers what it made (`200`); `409 already_made` with `key` or `crew` for another `opId` once made; `409 make_pending` with the `opId` of a make under way; `409 op_conflict` for the same `opId` with other content; a refused make answers `409` with its receipt's words and may be made again with a new `opId`; `400 not_a_draft` for any other item, `400 invalid_draft` with `field`; `404` for a request pruned before the make claimed it (no backend called); `503 brakeman_not_owner` on a server without Brakeman's owner lock; at most 4 MiB |
 
 The kinds and their subjects: `briefing` (none; `since`, else since the
 last complete briefing), `explain` (one `run:`, `task:`, `attempt:`,
@@ -3308,6 +3309,48 @@ that is not a turn's:
 |---|---|
 | `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}}}`: the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together. The admin's token reads it too; read with the session's own, it marks the request read |
 | `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed. The `opId` is looked up first: the same `opId` and brief answer `200` with the request whatever its state now, another brief `409 brief_exists`. Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` and why (a field past its bound is refused, never cut; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
+
+**What a turn reads.** A request whose bearer is a turn's session token
+and whose `X-Conductor-Session` header names that session, its request
+`starting` or `running`, is the principal `brakeman` on exactly these
+existing reads, each answered by its own handler: `GET /api/runs`, `GET
+/api/runs/{run}`, `…/tasks/{task}`, `…/tasks/{task}/attempts/{n}/steps`,
+`…/commands/{command}` and `…/messages` (visibility `runs`), the step log
+route `…/steps/{id}/{k}/log` with its `X-Conductor-Log-SHA256` (`logs`),
+`GET /api/dispatch/projects`, `…/tickets`, `…/tickets/{key}`,
+`…/history` and `…/comments` (`dispatch`), `GET /api/sessions`
+(`sessions`) and `GET /api/touched` (`touched`). The principal's answer
+is the route's own, filtered by the turn's grant (the scope and
+visibility it began under, intersected with the configuration now), each
+item carrying `ref`, the ref a brief cites it by; a class not visible is
+`403 not_visible`, a run or ticket a path names outside the scope `403
+outside_scope`. Each answer counts one read against `readsPerTurn`
+(`429 reads_spent` past it) and its items are noted in the turn's read
+log (at most 5,000 entries and 2 MiB, the oldest dropped first). Every
+route keeps its own bound; the admin's answers are unchanged; every other
+route refuses the principal as it refuses no token. `401` for a token
+that is not the named session's, `403 not_brakeman` for a session that
+is no turn's, `409 turn_over` once its request is closed.
+
+Brakeman's own reads, the admin's and the principal's, each at most 256
+KiB:
+
+| Route | Query and answer |
+|---|---|
+| `GET /api/brakeman/changes` | `since` (RFC 3339), `cursor`, `limit` (1 to 200, 100 when absent) → `{from, since?, briefing?, changes: [{ref, kind, at, part, task?, ticket?, words?, status?}], parts: [{part, from, seq?, at?, new?, truncated?, gap?, why?}], next}`: what changed, in time order: a managed run's ledger events (a task's with its `status`), another run's launch and end, the questions each listed session's window shows asked and answered (`gap` where the window starts after the start, the session is gone, or the session is hosted), Dispatch's changes, every project's (a comment on an old ticket among them). Without `since`: a briefing's own `since`, else the last complete briefing's watermarks (`from: "watermarks"`, a part newly in scope `new`, from that briefing's reads), else the last 24 hours (`from: "day"`). Given a time, a run's newest 5,000 events and Dispatch's newest 5,000 changes are looked at, `truncated` past them |
+| `GET /api/brakeman/status` | `run` or `session` → `{run, state, revision, tasks: [{ref, state, status, proof, words?, question?, commit?}], members: [...]}` or `{session, status}`: the status as Conductor computes it: `failed` with the receipt that proves it (`proof`: the last attempt's failing check, else the attempt), `blocked` with the blocker, `waiting_on_person` with the open question, `quiet` (a server session's terminal silent 10 minutes or more, `quietSeconds`, `proof: none`; a hosted session's quiet time is `quiet: "unknown"`, never quiet), `running`, `pending` (ready, no attempt yet), `succeeded` with its `commit`, `stopped` or `interrupted` with the record's words |
+| `GET /api/brakeman/screen` | `session`, `lines` (1 to 200, 50) → `{session, lines}`: a server session's screen's last lines, its escape sequences stripped; `403 not_visible` unless terminals are visible; `409 unavailable` for a hosted session, whose screen the server does not hold |
+| `GET /api/brakeman/overlaps` | none → `{overlaps: [{path, repo, between}], trees, truncated}`: the paths changed in two or more live attempts' or server sessions' git work trees of one repository (`repo` its common git directory), each tree's committed changes since its base (an attempt's start) with its working tree's, at most 32 trees and 2,000 paths |
+| `GET /api/brakeman/briefs` | `q`, `after` → `{briefs: [{id, kind, at, title?, summary?, refs, withheld?}], next}`: earlier briefs, newest first, at most 20 a page and 100 refs each. For a turn, a brief whose footprint (the classes its reads used, and the scope it ran under) the turn's grant does not cover is its projection: its id, kind, time and the refs the grant admits now, `withheld: "made under a wider scope or visibility"`, none of its prose; one given whole counts its footprint's classes into the turn's |
+
+**What a briefing covers is the server's record.** A turn's reads of
+`…/changes` from its own start (no `since`) note how far the pages it was
+given reach, contiguously from the first: per run the last event seq
+delivered with nothing skipped before it, Dispatch's change seq likewise,
+each session's window by time; a part with a page not read, `truncated`
+or a `gap` is `partial`. The request's `coverage` is that record, kept
+with its brief, and the next briefing starts from each part's watermark,
+so what was not read is read again.
 
 **A brief**, schema `brakeman.brief/1`, at most 256 KiB as kept: `{schema,
 title, summary, uncertainty?, items}`, `title` at most 200 characters,
