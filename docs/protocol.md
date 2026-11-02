@@ -3223,7 +3223,11 @@ turns, each a **request** a person made, each turn handing back one
 ledger's lock. A second server on the same data directory opens them
 read-only: its reads are served, every write answers `503
 brakeman_not_owner` with the holder's words, and it takes no turn until
-it holds the lock. A switchyard runs no Brakeman: every route below
+it holds the lock and has read the last owner's queue again (a save or
+an ask in between answers `503 brakeman_not_owner` too). A server that
+stops keeps the lock until its last turn's launch has returned and every
+process the turn made is reaped, past its shutdown's deadline if need
+be. A switchyard runs no Brakeman: every route below
 answers `403 switchyard`.
 
 **A turn is a run.** The desk takes the oldest queued request when no
@@ -3319,7 +3323,7 @@ that is not a turn's:
 | Route | Body and answer |
 |---|---|
 | `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}}}`: the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together. The admin's token reads it too; read with the session's own, it marks the request read |
-| `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed. The `opId` is looked up first: the same `opId` and brief answer `200` with the request whatever its state now, another brief `409 brief_exists`. Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` and why (a field past its bound is refused, never cut; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
+| `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed. The `opId` is looked up first: the same `opId` and brief answer `200` with the request whatever its state now, another brief `409 brief_exists`. Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` and why (a field past its bound is refused, never cut; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; all of it against the configuration as the brief is kept, a save meanwhile having it checked again (`409 stale_revision` when the configuration keeps changing); nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
 
 **A brief**, schema `brakeman.brief/1`, at most 256 KiB as kept: `{schema,
 title, summary, uncertainty?, items}`, `title` at most 200 characters,
@@ -3347,7 +3351,8 @@ bytes, resolved as the brief is kept against the record it names.
 
 **The `brakeman` event.** After each change of a request's state the
 server sends `brakeman` on `GET /api/events`: `{id, state}`, at most 200
-bytes. Like a `run` event it is state a page cannot do without: a client
+bytes, `state` the one the records hold as the event is sent, so the last
+event a request's changes send carries its state now. Like a `run` event it is state a page cannot do without: a client
 that cannot keep up is dropped and reads again on its next `snapshot`.
 It reaches the pages alone, never a webhook.
 

@@ -1818,3 +1818,283 @@ func TestATurnRunsAnAgentThatTakesNoArguments(t *testing.T) {
 		t.Fatalf("argv %q lacks the read-only mode", argv)
 	}
 }
+
+// send sends a request with tok from any goroutine and answers its status
+// and its decoded body, 0 when it could not be sent.
+func (b *bkEnv) send(tok, method, path string, body any) (int, map[string]any) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return 0, nil
+	}
+	req, err := http.NewRequest(method, b.http.URL+path, bytes.NewReader(data))
+	if err != nil {
+		return 0, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return 0, nil
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out
+}
+
+// A shutdown whose deadline has passed keeps Brakeman's records: a turn
+// whose process did not stop holds the owner lock after Shutdown has
+// returned, so another server takes no request while it runs, and the
+// lock goes once the process is reaped.
+func TestAShutdownPastItsDeadlineKeepsTheRecordsUntilTheTurnIsReaped(t *testing.T) {
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	var mu sync.Mutex
+	var procs []*failingProc
+	f := func(s *Server, req createSessionRequest, ref *session.CrewRef) (*session.Local, *apiError) {
+		// Every stop fails: the process lives on until the test ends it.
+		p := &failingProc{FakeProc: sessiontest.NewFakeProc()}
+		mu.Lock()
+		procs = append(procs, p)
+		mu.Unlock()
+		r := *ref
+		info := session.Info{ID: session.NewID(), Name: req.Name, Kind: session.KindServer, AgentID: req.AgentID, Cwd: req.Cwd, Status: session.StatusRunning, Cols: 80, Rows: 24, Crew: &r, CreatedAt: time.Now().UTC()}
+		l := session.NewLocal(info, p, session.Options{OnChange: s.localChange, OnActivity: s.localActivity, Log: s.log})
+		if err := s.registry.Add(l); err != nil {
+			return nil, newAPIError(http.StatusConflict, "too_many_sessions", err.Error())
+		}
+		t.Cleanup(func() { p.End(0) })
+		return l, nil
+	}
+	newLocalSeam.Store(&f)
+	t.Cleanup(func() { newLocalSeam.Store(nil) })
+	id := b.briefing(t)
+	_, _, l := b.turnSession(t, id)
+	b.waitState(t, id, brakeman.StateRunning)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	b.srv.Shutdown(ctx)
+	select {
+	case <-l.ProcessDone():
+		t.Fatal("the failing stop reaped the process")
+	default:
+	}
+	second := &bkEnv{testEnv: b.restart()}
+	second.desk = second.srv.brakeman
+	if st := second.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, ""); st["readOnly"] != true {
+		t.Fatalf("another server took the records while the turn's process runs: %v", st)
+	}
+	mu.Lock()
+	p := procs[0]
+	mu.Unlock()
+	p.End(0)
+	if !waitFor(30*time.Second, func() bool { ro, _ := second.desk.st.ReadOnly(); return !ro }) {
+		t.Fatal("the records were never let go once the process was reaped")
+	}
+	second.waitState(t, id, brakeman.StateInterrupted)
+}
+
+// A save while the store has become this server's but the last owner's
+// queue is not yet read again is refused (503 brakeman_not_owner), as an
+// ask is: turning Brakeman off then would cancel the queue this server
+// saw as it opened, not a request the last owner queued since, which
+// would then launch once Brakeman is on again. Once the queue is read,
+// turning Brakeman off cancels that request too.
+func TestASaveBeforeTheQueueIsRecoveredIsRefused(t *testing.T) {
+	// Not parallel: the wait for the lock is the store package's, raised
+	// here so a loaded machine's slow shutdown is not what the test sees.
+	wait := brakeman.LockWait
+	brakeman.LockWait = 2 * time.Minute
+	t.Cleanup(func() { brakeman.LockWait = wait })
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	second := &bkEnv{testEnv: b.restart()}
+	second.desk = second.srv.brakeman
+	recovering, recover := make(chan struct{}), make(chan struct{})
+	gate := func() {
+		close(recovering)
+		<-recover
+	}
+	second.desk.beforeRecover.Store(&gate)
+	// A failure before the gate opens must not leave the second server's
+	// close waiting on its recovery.
+	var opened sync.Once
+	letRecover := func() { opened.Do(func() { close(recover) }) }
+	t.Cleanup(letRecover)
+	held, release := b.gateLaunch(t)
+	first := b.briefing(t)
+	<-held
+	// Queued after the second server read the queue as it opened.
+	queued := b.briefing(t)
+	release()
+	b.waitState(t, first, brakeman.StateRunning)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	b.srv.Shutdown(ctx)
+	select {
+	case <-recovering:
+	case <-time.After(time.Minute):
+		t.Fatal("the second server never took the records")
+	}
+	if ro, why := second.desk.st.ReadOnly(); ro {
+		t.Fatalf("the store is not writable as the queue is read again: %s", why)
+	}
+	c := second.config(t)
+	rev := c["rev"]
+	c["enabled"] = false
+	second.expect(t, "PUT", "/api/brakeman/config", map[string]any{"rev": rev, "config": c}, http.StatusServiceUnavailable, "brakeman_not_owner")
+	second.expect(t, "POST", "/api/brakeman/requests", map[string]any{"opId": "during", "kind": "briefing"}, http.StatusServiceUnavailable, "brakeman_not_owner")
+	letRecover()
+	if !waitFor(30*time.Second, second.desk.recovered.Load) {
+		t.Fatal("the queue was never read again")
+	}
+	second.configure(t, func(c map[string]any) { c["enabled"] = false })
+	if r := second.waitState(t, queued, brakeman.StateCancelled); r.Why != "Brakeman was turned off" {
+		t.Fatalf("%+v", r)
+	}
+	second.waitState(t, first, brakeman.StateInterrupted)
+}
+
+// A brief is checked against the configuration as it is kept: a save
+// that narrows the scope while the brief's refs are resolved has the
+// brief checked again, and a ref the narrowed scope leaves out is
+// refused 422 with nothing kept.
+func TestABriefIsCheckedAgainstASaveMadeWhileItWasResolved(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	other := b.createSession("cat")
+	b.enable(t, "bk", nil)
+	id := b.briefing(t)
+	sid, tok, _ := b.turnSession(t, id)
+	held, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f := func(string) {
+		once.Do(func() {
+			close(held)
+			<-gate
+		})
+	}
+	b.desk.beforeKeep.Store(&f)
+	type answer struct {
+		status int
+		out    map[string]any
+	}
+	got := make(chan answer, 1)
+	go func() {
+		status, out := b.send(tok, "POST", "/api/sessions/"+sid+"/brakeman/brief", map[string]any{"opId": "b1", "brief": factBrief("session:" + other)})
+		got <- answer{status, out}
+	}()
+	<-held
+	b.configure(t, func(c map[string]any) { c["scope"] = map[string]any{"crews": []any{"brakeman"}} })
+	close(gate)
+	a := <-got
+	if a.status != http.StatusUnprocessableEntity || !strings.Contains(fmt.Sprint(a.out), "outside") {
+		t.Fatalf("a brief the save left outside the scope: %d %v", a.status, a.out)
+	}
+	if r, _ := b.desk.st.Get(id); r.HasBrief || !r.Open() {
+		t.Fatalf("something was kept: %+v", r)
+	}
+	if status, out := b.submit(t, sid, tok, "b2", factBrief("session:"+sid)); status != http.StatusCreated {
+		t.Fatalf("the turn's own session, in the narrowed scope: %d %v", status, out)
+	}
+}
+
+// Two asks with one opId at once, at the day's last turn, answer one
+// request: the second finds the first's in admission's order (200), never
+// the slot the first took (429 budget_spent).
+func TestTwoAsksWithOneOpIDAtTheLastSlotAnswerOneRequest(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", func(c map[string]any) { c["budget"].(map[string]any)["turnsPerDay"] = 1 })
+	arrived, gate := make(chan struct{}, 2), make(chan struct{})
+	f := func() {
+		arrived <- struct{}{}
+		<-gate
+	}
+	b.desk.beforeAdmit.Store(&f)
+	body := map[string]any{"opId": "last-slot", "kind": "briefing"}
+	statuses, ids := make([]int, 2), make([]any, 2)
+	var asks sync.WaitGroup
+	for i := range 2 {
+		asks.Go(func() {
+			var out map[string]any
+			statuses[i], out = b.send(adminToken, "POST", "/api/brakeman/requests", body)
+			if req, ok := out["request"].(map[string]any); ok {
+				ids[i] = req["id"]
+			} else {
+				ids[i] = out
+			}
+		})
+	}
+	// Both are past the body and before admission.
+	<-arrived
+	<-arrived
+	b.desk.beforeAdmit.Store(nil)
+	close(gate)
+	asks.Wait()
+	got := slices.Clone(statuses)
+	slices.Sort(got)
+	if !slices.Equal(got, []int{http.StatusOK, http.StatusCreated}) || ids[0] != ids[1] {
+		t.Fatalf("the two asks: %v %v", statuses, ids)
+	}
+}
+
+// The brakeman events end on the state the records end on: a launch that
+// wrote running and sends its event after a cancel was written and sent
+// sends the request's state then, cancelled, never the running it wrote.
+func TestTheLastEventIsTheStateTheRecordsEndOn(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	events := b.sse(t)
+	b.enable(t, "bk", nil)
+	held, gate := make(chan string, 1), make(chan struct{})
+	var once sync.Once
+	f := func(id, state string) {
+		if state == brakeman.StateRunning {
+			once.Do(func() {
+				held <- id
+				<-gate
+			})
+		}
+	}
+	b.desk.afterWrite.Store(&f)
+	open := true
+	t.Cleanup(func() {
+		if open {
+			close(gate)
+		}
+		b.desk.afterWrite.Store(nil)
+	})
+	id := b.briefing(t)
+	if got := <-held; got != id {
+		t.Fatalf("the running written was %s's", got)
+	}
+	b.expect(t, "POST", "/api/brakeman/requests/"+id+"/cancel", map[string]any{"opId": "c1"}, http.StatusOK, "")
+	open = false
+	close(gate)
+	// The launch has sent its event once it has returned.
+	if !waitFor(30*time.Second, func() bool {
+		b.desk.mu.Lock()
+		defer b.desk.mu.Unlock()
+		return b.desk.turn == nil || b.desk.turn.id != id || !b.desk.turn.launching
+	}) {
+		t.Fatal("the launch never returned")
+	}
+	// A later request's event, after every event of id's on the stream.
+	marker := b.briefing(t)
+	last := ""
+	b.waitEvent(t, events, func(ev string) bool {
+		data, ok := strings.CutPrefix(ev, "brakeman ")
+		var e brakemanEvent
+		if !ok || json.Unmarshal([]byte(data), &e) != nil {
+			return false
+		}
+		if e.ID == id {
+			last = e.State
+		}
+		return e.ID == marker
+	})
+	if last != brakeman.StateCancelled {
+		t.Fatalf("the last event of %s says %q", id, last)
+	}
+}

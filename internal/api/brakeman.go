@@ -85,6 +85,28 @@ type brakemanDesk struct {
 	// before the engine is asked for its run. Each desk's own, so tests
 	// that gate run beside each other.
 	afterLaunch, beforeLaunch atomic.Pointer[func(requestID string)]
+	// beforeRecover runs as the store becomes this server's (OnOwned),
+	// before the queue is read again; beforeAdmit in an ask before it
+	// takes admit; beforeKeep in a brief's route once its refs are
+	// resolved and before it takes admit to keep it; afterWrite in update
+	// once a change of state is written and before its event is sent.
+	// Each a test's gate, nil otherwise.
+	beforeRecover, beforeAdmit atomic.Pointer[func()]
+	beforeKeep                 atomic.Pointer[func(requestID string)]
+	afterWrite                 atomic.Pointer[func(requestID, state string)]
+	// recovered says the desk holds the records' queue as their owner: set
+	// once the store is this server's and the queue is read from it (at
+	// open for a store that took the owner lock then, in OnOwned's
+	// function otherwise). Until then the desk is not the owner, even
+	// while the store already writes: a save, an ask and a dequeue are
+	// refused (ErrNotOwner), so none acts on the queue as this server saw
+	// it before the last owner let go.
+	recovered atomic.Bool
+	// emit orders the brakeman events: each is sent under it with the
+	// state the records hold as it is sent (publish), so the last event a
+	// request's state change sends is its state now, whichever writer
+	// sends it last.
+	emit sync.Mutex
 	// closing is set as the server shuts down (quiesce): no request's
 	// state is written by the desk from then on, so the turn in progress
 	// stays starting or running and the next start finds it interrupted.
@@ -166,12 +188,40 @@ func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 		s.log.Warn("Brakeman takes no turn: its records are read-only", "why", why)
 	}
 	d.st = bs
+	// A store that took the owner lock as it opened is owned from here:
+	// its queue, read below, is the records'. One that waits for the lock
+	// is owned once OnOwned's function has read the queue again, under
+	// admit, so no save, ask or dequeue falls between the store becoming
+	// writable and the queue being the records'.
+	ownedAtOpen := false
+	if ro, _ := bs.ReadOnly(); !ro {
+		ownedAtOpen = true
+	}
 	bs.OnOwned(func() {
+		if f := d.beforeRecover.Load(); f != nil {
+			(*f)()
+		}
+		d.admit.Lock()
 		d.loadQueue()
+		d.recovered.Store(true)
+		d.admit.Unlock()
 		d.poke()
 	})
 	d.loadQueue()
+	if ownedAtOpen {
+		d.recovered.Store(true)
+	}
 	return d
+}
+
+// notOwner is why the desk refuses a write before it holds the records'
+// queue as their owner (recovered): the store's own words while it is
+// read-only, else that the last owner's queue is still being read.
+func (d *brakemanDesk) notOwner() error {
+	if ro, why := d.st.ReadOnly(); ro {
+		return fmt.Errorf("%w: %s", brakeman.ErrNotOwner, why)
+	}
+	return fmt.Errorf("%w: the last owner's queue is still being read", brakeman.ErrNotOwner)
 }
 
 // StartBrakeman starts Brakeman's desk: its loop, which takes the queued
@@ -227,31 +277,63 @@ func (d *brakemanDesk) quiesce(ctx context.Context) {
 	}
 }
 
-// release closes the store, which lets the owner lock go, once every
-// member process of the turn in progress is reaped (Shutdown has stopped
-// the sessions; one the registry no longer lists is stopped here) or ctx
-// has ended: another server takes no queued request while this one's
-// turn still runs. It quiesces the desk first when nothing did.
+// release closes the store, which lets the owner lock go, only once the
+// turn in progress has no launch outstanding and every member process it
+// made is reaped (drain): another server takes no queued request while
+// one of this server's turns could still start or still runs. It waits
+// for that as long as ctx allows; past it, Shutdown goes on and the desk
+// keeps the records until the drain is done, the lock going with the
+// process at the latest. It quiesces the desk first when nothing did.
 func (d *brakemanDesk) release(ctx context.Context) {
 	d.quiesce(ctx)
-	d.mu.Lock()
-	var locals []*session.Local
-	if d.turn != nil {
-		locals = slices.Clone(d.turn.locals)
+	released := make(chan struct{})
+	go func() {
+		defer close(released)
+		d.drain()
+		_ = d.st.Close()
+	}()
+	select {
+	case <-released:
+	case <-ctx.Done():
+		d.s.log.Warn("Brakeman keeps its records until its last turn's launch returns and its processes are reaped")
 	}
-	d.mu.Unlock()
-	for _, l := range liveLocals(locals) {
-		if err := l.Stop(ctx); err != nil {
-			d.s.log.Warn("Brakeman's turn's session did not stop as the server stopped", "session", l.Info().ID, "err", err)
+}
+
+// drain waits for the turn's launch outstanding (a session it makes late
+// is the turn's, kept in its locals), then stops each member session
+// whose process is not reaped (Shutdown has stopped those the registry
+// lists; one it no longer lists, or one whose stop failed, is stopped
+// here), again every brakemanRetry, until every one is reaped.
+func (d *brakemanDesk) drain() {
+	d.launches.Wait()
+	for {
+		d.mu.Lock()
+		var locals []*session.Local
+		if d.turn != nil {
+			locals = slices.Clone(d.turn.locals)
 		}
-	}
-	for _, l := range locals {
+		d.mu.Unlock()
+		live := liveLocals(locals)
+		if len(live) == 0 {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), brakemanStopWait)
+		for _, l := range live {
+			if err := l.Stop(ctx); err != nil {
+				d.s.log.Warn("Brakeman's turn's session did not stop as the server stopped", "session", l.Info().ID, "err", err)
+			}
+		}
+		cancel()
+		if live = liveLocals(live); len(live) == 0 {
+			return
+		}
+		retry := time.NewTimer(brakemanRetry)
 		select {
-		case <-l.ProcessDone():
-		case <-ctx.Done():
+		case <-live[0].ProcessDone():
+		case <-retry.C:
 		}
+		retry.Stop()
 	}
-	_ = d.st.Close()
 }
 
 // poke makes the loop look again.
@@ -320,7 +402,7 @@ func (d *brakemanDesk) loop() {
 // oldest queued request started. It answers how long until something
 // falls due on its own, 0 for nothing.
 func (d *brakemanDesk) step() time.Duration {
-	if ro, _ := d.st.ReadOnly(); ro {
+	if ro, _ := d.st.ReadOnly(); ro || !d.recovered.Load() {
 		return 0
 	}
 	d.mu.Lock()
@@ -480,6 +562,9 @@ func (d *brakemanDesk) watch(l *session.Local) {
 func (d *brakemanDesk) dequeue() time.Duration {
 	d.admit.Lock()
 	defer d.admit.Unlock()
+	if !d.recovered.Load() {
+		return 0
+	}
 	cfg, err := d.st.Config()
 	if err != nil {
 		d.s.log.Warn("Brakeman's configuration could not be read", "err", err)
@@ -497,7 +582,7 @@ func (d *brakemanDesk) dequeue() time.Duration {
 		switch {
 		case errors.Is(err, brakeman.ErrOverBudget), errors.Is(err, brakeman.ErrNotQueued), errors.Is(err, brakeman.ErrNotFound):
 			d.unqueue(id)
-			d.s.events.brakeman(id, req.State)
+			d.publish(id)
 			continue
 		case err != nil:
 			d.s.log.Warn("Brakeman's turn could not start", "request", id, "err", err)
@@ -509,7 +594,7 @@ func (d *brakemanDesk) dequeue() time.Duration {
 		d.queue = slices.DeleteFunc(d.queue, func(q string) bool { return q == id })
 		d.turn = t
 		d.mu.Unlock()
-		d.s.events.brakeman(id, req.State)
+		d.publish(id)
 		d.launches.Add(1)
 		d.s.track(func() {
 			defer d.launches.Done()
@@ -827,7 +912,8 @@ func (d *brakemanDesk) sessionChanged(info session.Info) {
 }
 
 // update is Store.Update with the brakeman event sent after a change of
-// state; refused (errDeskClosing) once the server is shutting down.
+// state (publish); refused (errDeskClosing) once the server is shutting
+// down.
 func (d *brakemanDesk) update(id string, fn func(*brakeman.Request) error) (brakeman.Request, error) {
 	if d.closing.Load() {
 		return brakeman.Request{}, errDeskClosing
@@ -838,9 +924,28 @@ func (d *brakemanDesk) update(id string, fn func(*brakeman.Request) error) (brak
 		return fn(r)
 	})
 	if err == nil && r.State != before {
-		d.s.events.brakeman(id, r.State)
+		if f := d.afterWrite.Load(); f != nil {
+			(*f)(id, r.State)
+		}
+		d.publish(id)
 	}
 	return r, err
+}
+
+// publish sends the brakeman event for a change of id's state with the
+// state its records hold as it is sent, under emit: a writer that wrote
+// running and sends its event after a cancel was written and sent sends
+// cancelled again, never the running it wrote, so the events a page
+// folds end on the state the records end on. A request that cannot be
+// read sends nothing.
+func (d *brakemanDesk) publish(id string) {
+	d.emit.Lock()
+	defer d.emit.Unlock()
+	r, err := d.st.Get(id)
+	if err != nil {
+		return
+	}
+	d.s.events.brakeman(id, r.State)
 }
 
 // brakemanEvent is the data of a brakeman event: a request's id and its
@@ -1086,10 +1191,19 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 	// The save and what turning Brakeman off cancels are one step of
 	// admission's order: an ask after it reads Brakeman off, one before
 	// it is in the queue cancelled, and no dequeue starts a turn between.
+	// A desk not yet holding the records' queue as their owner saves
+	// nothing: turning Brakeman off would cancel the queue as this server
+	// saw it, not the records' (recovered).
 	d.admit.Lock()
-	saved, err := d.st.SaveConfig(c, brakemanFacts{s: s})
-	if err == nil && !saved.Enabled {
-		d.turnOff()
+	var saved brakeman.Config
+	var err error
+	if d.recovered.Load() {
+		saved, err = d.st.SaveConfig(c, brakemanFacts{s: s})
+		if err == nil && !saved.Enabled {
+			d.turnOff()
+		}
+	} else {
+		err = d.notOwner()
 	}
 	d.admit.Unlock()
 	if err != nil {
@@ -1134,7 +1248,17 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := brakeman.Request{OpID: body.OpID, Kind: body.Kind, Subjects: body.Subjects, Note: body.Note, Since: body.Since, By: body.By}
-	// A repeat answers its request whatever stands since.
+	if f := d.beforeAdmit.Load(); f != nil {
+		(*f)()
+	}
+	// Brakeman on is read and the request kept in admission's order
+	// (admit), so a save that turns Brakeman off is before this ask, which
+	// is refused, or after it, and cancels it with the queue.
+	d.admit.Lock()
+	defer d.admit.Unlock()
+	// A repeat answers its request whatever stands since. It is looked up
+	// in admission's order, so of two asks with one opId at once the
+	// second finds the first's request, never a slot the first just took.
 	if _, found, err := d.st.ByOp(body.OpID); err == nil && found {
 		req, _, err := d.st.Create(in)
 		if err != nil {
@@ -1144,11 +1268,10 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"request": req})
 		return
 	}
-	// Brakeman on is read and the request kept in admission's order
-	// (admit), so a save that turns Brakeman off is before this ask, which
-	// is refused, or after it, and cancels it with the queue.
-	d.admit.Lock()
-	defer d.admit.Unlock()
+	if !d.recovered.Load() {
+		s.brakemanError(w, d.notOwner())
+		return
+	}
 	cfg, err := d.st.Config()
 	if err != nil {
 		s.brakemanError(w, err)
@@ -1188,7 +1311,7 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 	if created {
 		status = http.StatusCreated
 		d.queue = append(d.queue, req.ID)
-		s.events.brakeman(req.ID, req.State)
+		d.publish(req.ID)
 		d.poke()
 	}
 	writeJSON(w, status, map[string]any{"request": req})
