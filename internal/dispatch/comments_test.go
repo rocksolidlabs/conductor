@@ -460,3 +460,60 @@ func TestARunCommentKeepsItsReceiptWhenItsContextEndsAfterTheCommit(t *testing.T
 		t.Fatalf("the resend: %+v", again)
 	}
 }
+
+// A run launched from a ticket comments on that ticket, by the store's
+// sight of its package (SetRunTicket), whatever links say: a run link of
+// another ticket's naming it is passed over; the ticket deleted, or one
+// this store does not have, is ErrLaunchTicketGone, an ErrNoRunTicket,
+// with nothing written; a run with no package comments by its link as
+// before.
+func TestARunCommentGoesToTheTicketItWasLaunchedFrom(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "RCL")
+	launched, a := newTicket(t, s, "RCL", "Launched")
+	_, b := newTicket(t, s, "RCL", "Linked")
+	s.SetRunExists(runs("run1", "run2", "run3"))
+	link, err := addLink(s, "l1", b, NewLink{Kind: LinkRun, Ref: "run2"})
+	want(t, link, err, StatusDone, "")
+	s.SetRunTicket(func(run string) (string, bool) {
+		switch run {
+		case "run1":
+			return launched, true
+		case "run3":
+			return "0123456789abcdef", true
+		}
+		return "", false
+	})
+	count := func(key string) int {
+		t.Helper()
+		cs, err := s.Comments(ctx, key, 0, MaxCommentPage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(cs)
+	}
+	rc, err := s.AddRunComment(ctx, testOp("c1"), "run1", "from the package")
+	want(t, rc, err, StatusDone, "")
+	if key, found, err := s.OpTicket(ctx, "test", "c1"); err != nil || !found || key != a {
+		t.Fatalf("the launched run's comment went to %q %v %v", key, found, err)
+	}
+	rc, err = s.AddRunComment(ctx, testOp("c2"), "run2", "by the link")
+	want(t, rc, err, StatusDone, "")
+	if na, nb := count(a), count(b); na != 1 || nb != 1 {
+		t.Fatalf("%d comments on the launched ticket, %d on the linked one", na, nb)
+	}
+	if _, err := s.AddRunComment(ctx, testOp("c3"), "run3", "nowhere"); !errors.Is(err, ErrLaunchTicketGone) || !errors.Is(err, ErrNoRunTicket) {
+		t.Fatalf("a ticket this store has not: %v", err)
+	}
+	rc, err = s.DeleteTicket(ctx, testOp("d1"), a)
+	want(t, rc, err, StatusDone, "")
+	if _, err := s.AddRunComment(ctx, testOp("c4"), "run1", "after the delete"); !errors.Is(err, ErrLaunchTicketGone) {
+		t.Fatalf("the launched ticket deleted: %v", err)
+	}
+	for _, id := range []string{"c3", "c4"} {
+		if _, found, err := s.Receipt(ctx, "test", id); err != nil || found {
+			t.Fatalf("%s wrote a receipt: %v %v", id, found, err)
+		}
+	}
+}
