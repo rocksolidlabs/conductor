@@ -136,6 +136,12 @@ type brakemanDesk struct {
 	recoveries   sync.WaitGroup
 	recoverCtx   context.Context
 	stopRecovery context.CancelFunc
+	// making counts the makes the make route admitted (admitMake), which
+	// release waits for before the owner lock goes: a make admitted before
+	// the desk closed finishes its backend's operation here, never beside
+	// the next owner's recovery of the same claim. Added to under mu, with
+	// closing read there, so none is admitted once quiesce began.
+	making sync.WaitGroup
 }
 
 // deskTurn is the slot: a request from starting until its launch has
@@ -247,7 +253,11 @@ var errDeskClosing = errors.New("brakeman: the server is shutting down")
 // run and the session it makes are ones the stops after it find. It may
 // be called again.
 func (d *brakemanDesk) quiesce(ctx context.Context) {
+	// Under mu, as admitMake reads it: a make is admitted before this, and
+	// release waits for it, or refused after.
+	d.mu.Lock()
 	d.closing.Store(true)
+	d.mu.Unlock()
 	// A recovery under way stops at its next make; the one it is in
 	// finishes (release waits for it).
 	d.stopRecovery()
@@ -296,10 +306,28 @@ func (d *brakemanDesk) release(ctx context.Context) {
 	}
 	// The recovery the start began holds the lock's promise as a make's
 	// does: it ends before the lock goes (the one OnOwned began, Close
-	// waits for).
+	// waits for); so does every make the route admitted, whose backend's
+	// operation the next owner's recovery would otherwise run beside it.
 	d.recoveries.Wait()
+	d.making.Wait()
 	_ = d.st.Close()
 }
+
+// admitMake admits a make of the make route, false once the desk is
+// closing (quiesce): release waits for each admitted make (madeDone)
+// before the owner lock goes.
+func (d *brakemanDesk) admitMake() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closing.Load() {
+		return false
+	}
+	d.making.Add(1)
+	return true
+}
+
+// madeDone ends an admitted make.
+func (d *brakemanDesk) madeDone() { d.making.Done() }
 
 // poke makes the loop look again.
 func (d *brakemanDesk) poke() {

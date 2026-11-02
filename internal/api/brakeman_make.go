@@ -130,6 +130,14 @@ func (s *Server) handleBrakemanMake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "brakeman_not_owner", why)
 		return
 	}
+	// Admitted while the desk is open, and waited for by release before
+	// the owner lock goes: a make never runs its backend's operation
+	// beside the next owner's recovery of its claim.
+	if !d.admitMake() {
+		s.brakemanError(w, errDeskClosing)
+		return
+	}
+	defer d.madeDone()
 	var body makeBody
 	if err := decodeJSONLimit(w, r, &body, maxMakeBody); err != nil {
 		if errors.Is(err, errBodyTooLarge) {
@@ -176,16 +184,8 @@ func (s *Server) handleBrakemanMake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in, err := s.makeInputOf(b, item, body.Edit, by)
-	var inv *brakeman.Invalid
-	switch {
-	case errors.As(err, &inv) && inv.Code == "not_a_draft":
-		writeError(w, http.StatusBadRequest, "not_a_draft", inv.Why)
-		return
-	case errors.As(err, &inv):
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"code": "invalid_draft", "message": inv.Error(), "field": inv.Field}})
-		return
-	case err != nil:
-		writeError(w, http.StatusBadRequest, "invalid_draft", err.Error())
+	if err != nil {
+		writeDraftError(w, err)
 		return
 	}
 	raw, err := marshalNoEscape(in)
@@ -240,6 +240,14 @@ func (s *Server) handleBrakemanMake(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Only a new claim is held to what the server holds now (a crew's
+	// agents in the catalog): a make done, deleted or under way answers
+	// as it was made, whatever changed since.
+	if err := s.checkMakeNow(in); err != nil {
+		lock.Unlock()
+		writeDraftError(w, err)
+		return
+	}
 	if err := d.st.PutMakeInput(id, item, raw); err != nil {
 		lock.Unlock()
 		s.brakemanError(w, err)
@@ -279,8 +287,14 @@ func (s *Server) finishMake(w http.ResponseWriter, r *http.Request, d *brakemanD
 	done, err := s.completeMake(ctx, d, id, m)
 	if err != nil {
 		var unopened *errRefStore
-		if errors.As(err, &unopened) {
+		switch {
+		case errors.As(err, &unopened):
 			writeError(w, http.StatusServiceUnavailable, "store_unavailable", unopened.Error())
+			return
+		case errors.Is(err, errDeskClosing):
+			// The server began to shut down during the make: its outcome
+			// is the next start's recovery's, from the backend's receipt.
+			s.brakemanError(w, err)
 			return
 		}
 		s.log.Warn("a Brakeman draft's make did not finish", "request", id, "item", m.Item, "err", err)
@@ -335,11 +349,40 @@ func briefEdges(request string, b brakeman.Brief) []brakeman.Edge {
 	return out
 }
 
+// writeDraftError answers a make's input that is not a draft (400
+// not_a_draft) or not a valid one (400 invalid_draft, with its field).
+func writeDraftError(w http.ResponseWriter, err error) {
+	var inv *brakeman.Invalid
+	switch {
+	case errors.As(err, &inv) && inv.Code == "not_a_draft":
+		writeError(w, http.StatusBadRequest, "not_a_draft", inv.Why)
+	case errors.As(err, &inv):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"code": "invalid_draft", "message": inv.Error(), "field": inv.Field}})
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_draft", err.Error())
+	}
+}
+
+// checkMakeNow holds a new claim's input to what the server holds now: a
+// crew's body checked as POST /api/crews checks it, its agents in the
+// catalog among it. A ticket's fields are the draft's own bounds, checked
+// with its input (makeInputOf).
+func (s *Server) checkMakeNow(in makeInput) error {
+	if in.Kind != brakeman.ItemDraftCrew {
+		return nil
+	}
+	if err := (brakemanFacts{s: s}).CheckCrew(in.Crew); err != nil {
+		return &brakeman.Invalid{Code: "invalid_draft", Field: "crew", Why: err.Error()}
+	}
+	return nil
+}
+
 // makeInputOf is the canonical input of a make of the brief's item, the
 // draft as edited (edit, its own shape) or as written: a ticket's fields
-// held to the draft's bounds, a crew's body checked as POST /api/crews
-// checks it. An *brakeman.Invalid with Code not_a_draft for any other
-// item.
+// held to the draft's bounds, a crew's body as the JSON it is (checked
+// against the catalog, as POST /api/crews checks it, only for a new
+// claim: checkMakeNow). An *brakeman.Invalid with Code not_a_draft for
+// any other item.
 func (s *Server) makeInputOf(b brakeman.Brief, item int, edit json.RawMessage, by string) (makeInput, error) {
 	it := b.Items[item]
 	switch it.Kind {
@@ -365,9 +408,6 @@ func (s *Server) makeInputOf(b brakeman.Brief, item int, edit json.RawMessage, b
 		}
 		if len(x.Crew) == 0 {
 			return makeInput{}, &brakeman.Invalid{Code: "invalid_draft", Field: "crew", Why: "a draft crew is the body POST /api/crews takes"}
-		}
-		if err := (brakemanFacts{s: s}).CheckCrew(x.Crew); err != nil {
-			return makeInput{}, &brakeman.Invalid{Code: "invalid_draft", Field: "crew", Why: err.Error()}
 		}
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, x.Crew); err != nil {

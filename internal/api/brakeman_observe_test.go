@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,10 +14,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -1393,5 +1396,335 @@ func TestAPageCarriesItsItemsParts(t *testing.T) {
 		if part := fmt.Sprintf("run:many%02d-0000cccc", i); !parts[part] {
 			t.Fatalf("%s is on no page: %v", part, parts)
 		}
+	}
+}
+
+// holdLedger is the engine's ledger with a gate before one run's next
+// transaction once armed (with the run's id): the engine has changed the
+// run and let its lock go, and waits there, its transaction not begun,
+// until the test lets it go.
+type holdLedger struct {
+	crew.Ledger
+	armed    atomic.Pointer[string]
+	held     chan struct{}
+	released chan struct{}
+}
+
+func (g *holdLedger) Transition(ctx context.Context, runID string, fn func(crew.LedgerTx) error) (int64, error) {
+	if p := g.armed.Load(); p != nil && *p == runID && g.armed.CompareAndSwap(p, nil) {
+		close(g.held)
+		<-g.released
+	}
+	return g.Ledger.Transition(ctx, runID, fn)
+}
+
+// A run read while the engine holds a change of it that its ledger has
+// not committed (the engine changes its run, lets its lock go, then
+// commits) carries no revision, though the ledger's is the same before
+// the handler and after: what the engine answered is not the ledger's at
+// that revision. Once the change is committed, a read carries it.
+func TestARunReadBeforeItsChangeCommitsHasNoRevision(t *testing.T) {
+	f := newObsFixture(t)
+	f.gitRepo(t)
+	cat := f.srv.Catalog().Clone()
+	if err := cat.Upsert(catalog.Agent{ID: "ready-cat", Name: "ready cat", Command: []string{"/bin/sh", "-c", "echo ready; exec cat"}}); err != nil {
+		t.Fatal(err)
+	}
+	f.setCatalog(cat)
+	g := &holdLedger{Ledger: crew.SQLLedger(f.srv.ledger), held: make(chan struct{}), released: make(chan struct{})}
+	f.srv.runs.UseLedger(g)
+	c := crew.Crew{ID: "held", Name: "Held", Goal: "build it", Cwd: f.root, Where: crew.WhereServer, Isolation: crew.IsolationWorktree,
+		Members: []crew.Member{{Name: "lead", AgentID: "ready-cat", Start: crew.Start{When: crew.StartTask}}},
+		Tasks: []crew.Task{{ID: "build", Member: "lead", Kind: crew.TaskWork, Instructions: "Build it."},
+			{ID: "docs", Member: "lead", Kind: crew.TaskWork, Instructions: "Write it.", Needs: []string{"build"}}}}
+	run, release, err := f.srv.runs.LaunchNamed(t.Context(), c, "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := run.ID
+	runningAttempt(t, f.testEnv, id, "build", 1)
+	f.turn(t, func(c map[string]any) { c["budget"].(map[string]any)["readsPerTurn"] = brakeman.MaxReadsPerTurn })
+	settled := func() bool {
+		_, settled, held := f.srv.runs.Settled(id)
+		return settled && held
+	}
+	if !waitFor(30*time.Second, settled) {
+		t.Fatal("the run never settled")
+	}
+	var freed sync.Once
+	free := func() { freed.Do(func() { close(g.released) }) }
+	t.Cleanup(free)
+	g.armed.Store(&id)
+	cancelled := make(chan int, 1)
+	go func() {
+		resp, _ := f.do("POST", "/api/runs/"+id+"/tasks/docs/cancel", adminToken, map[string]any{"commandId": "c1"})
+		cancelled <- resp.StatusCode
+	}()
+	select {
+	case <-g.held:
+	case <-t.Context().Done():
+		t.Fatal("the cancel never reached the ledger")
+	}
+	if settled() {
+		t.Fatal("the engine holds no change waiting for its commit: the window is not open")
+	}
+	for _, path := range []string{"/api/runs/" + id, "/api/runs/" + id + "/tasks/docs"} {
+		ref, field := "run:"+id, "run"
+		if strings.Contains(path, "/tasks/") {
+			ref, field = "task:"+id+"/docs", "task"
+		}
+		out := f.expectRead(t, path, http.StatusOK, "")
+		rd, _ := f.readOf(t, ref)
+		if got, ok := out[field].(map[string]any)["revision"]; ok || rd.Rev != "" {
+			t.Fatalf("%s with a change not committed: answered %v, noted %q", path, got, rd.Rev)
+		}
+	}
+	free()
+	if code := <-cancelled; code != http.StatusOK {
+		t.Fatalf("the cancel: %d", code)
+	}
+	// Settled again, a read carries the ledger's revision (a change of
+	// the run's own between the wait and the read leaves it out: read
+	// again).
+	for try := 0; ; try++ {
+		if !waitFor(30*time.Second, settled) {
+			t.Fatal("the run never settled after the cancel")
+		}
+		out := f.expectRead(t, "/api/runs/"+id, http.StatusOK, "")
+		row, _, err := f.srv.ledger.Run(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := out["run"].(map[string]any)["revision"]; got == strconv.FormatInt(row.Revision, 10) {
+			break
+		}
+		if try == 20 {
+			t.Fatalf("no read carries the ledger's revision %d", row.Revision)
+		}
+	}
+}
+
+// heldParts is one read of an unmanaged run's launch and end from start,
+// as changes reads it: its part and its items.
+func heldParts(run crew.Run, start changesStart) (changePart, []changeItem) {
+	p, w := partStart(start, "run", run.ID)
+	its := heldRunChanges(run, &p, w)
+	p.Part = "run:" + run.ID
+	for i := range its {
+		its[i].Part = p.Part
+	}
+	return p, its
+}
+
+// An unmanaged run's launch and end are placed by their seqs, 1 and 2:
+// left unread by one briefing (its watermark's time written after them),
+// each is read by the next, and once given never again.
+func TestAnUnmanagedRunsUnreadLaunchAndEndAreReadNext(t *testing.T) {
+	base := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	now := base.Add(time.Hour)
+	clock := func() time.Time { return now }
+	d := &brakemanDesk{}
+	d.clock.Store(&clock)
+	run := crew.Run{ID: "plain-0000cccc", StartedAt: base.Add(time.Minute), Label: "plain"}
+	n := 0
+	briefing := func(cov *brakeman.Coverage, give bool) ([]string, *brakeman.Coverage) {
+		n++
+		start := changesStart{mode: "since", since: base}
+		if cov != nil {
+			start = changesStart{mode: "watermarks", since: base, coverage: cov}
+		}
+		p, its := heldParts(run, start)
+		var page []changeItem
+		if give {
+			page = its
+		}
+		var kinds []string
+		for _, it := range its {
+			kinds = append(kinds, it.Kind)
+		}
+		return kinds, d.cover(brakeman.Request{ID: fmt.Sprintf("br-%d", n)}, page, its, []changePart{p})
+	}
+	kinds, cov := briefing(nil, false)
+	if !slices.Equal(kinds, []string{"run.launched"}) || cov.Runs[0].Seq != 0 || !cov.Runs[0].Partial || !cov.Runs[0].At.After(run.StartedAt) {
+		t.Fatalf("the launch left unread: %v %+v", kinds, cov.Runs)
+	}
+	if kinds, cov = briefing(cov, true); !slices.Equal(kinds, []string{"run.launched"}) || cov.Runs[0].Seq != 1 || cov.Runs[0].Partial {
+		t.Fatalf("the launch read by the next briefing: %v %+v", kinds, cov.Runs)
+	}
+	stopped := base.Add(2 * time.Minute)
+	run.StoppedAt, run.State = &stopped, crew.RunStopped
+	if kinds, cov = briefing(cov, false); !slices.Equal(kinds, []string{"run.stopped"}) || cov.Runs[0].Seq != 1 || !cov.Runs[0].Partial {
+		t.Fatalf("the end left unread: %v %+v", kinds, cov.Runs)
+	}
+	if kinds, cov = briefing(cov, true); !slices.Equal(kinds, []string{"run.stopped"}) || cov.Runs[0].Seq != 2 || cov.Runs[0].Partial {
+		t.Fatalf("the end read by the next briefing: %v %+v", kinds, cov.Runs)
+	}
+	if kinds, _ = briefing(cov, true); len(kinds) != 0 {
+		t.Fatalf("given, read again: %v", kinds)
+	}
+}
+
+// Runs past the coverage's room (64 watermarks) are read again from
+// before their first change not given: a turn that read one page leaves
+// them unread, and the next briefing gives each of their changes.
+func TestRunsPastTheCoveragesRoomAreReadAgain(t *testing.T) {
+	f := newObsFixture(t)
+	ctx := t.Context()
+	crewJSON, _ := json.Marshal(map[string]string{"id": "many", "cwd": f.root})
+	var runs []string
+	for i := range brakeman.MaxWatermarks + 6 {
+		id := fmt.Sprintf("many-%08x", i)
+		runs = append(runs, id)
+		if _, err := f.srv.ledger.Transition(ctx, id, func(tx *ledger.Tx) error {
+			if err := tx.PutRun(ledger.RunRow{ID: id, CrewID: "many", Crew: string(crewJSON), State: ledger.RunRunning, CreatedAt: tx.Now()}); err != nil {
+				return err
+			}
+			return tx.Event("run.note", map[string]string{})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// No sessions seen: a session's watermark, a time before its first
+	// question not given, would start every part early.
+	noSessions := func(c map[string]any) { c["visibility"].(map[string]any)["sessions"] = false }
+	f.turn(t, noSessions)
+	given := refsOf(t, f.expectRead(t, "/api/brakeman/changes?limit=1", http.StatusOK, "")["changes"])
+	f.submitFact(t, "run:"+f.run)
+	r, _ := f.desk.st.Get(f.req)
+	if r.Coverage == nil || len(r.Coverage.Runs) != brakeman.MaxWatermarks || r.Coverage.OmittedFrom.IsZero() {
+		t.Fatalf("the coverage of %d runs: %d watermarks, omitted from %v", len(runs)+2, len(r.Coverage.Runs), r.Coverage.OmittedFrom)
+	}
+	f.again(t, nil)
+	second := f.changesOf(t, 200)
+	for _, id := range runs {
+		ref := "event:" + id + "/1"
+		if !slices.Contains(given, ref) && !slices.Contains(second, ref) {
+			t.Fatalf("%s was never given and is not read again", ref)
+		}
+	}
+}
+
+// A status read of a run at its largest (128 tasks, each failed with an
+// attempt's error of 3 KiB, every character one JSON escapes) is within
+// 256 KiB: each line's words cut, its ref and its proof whole.
+func TestAStatusOfTheLargestRunIsBounded(t *testing.T) {
+	f := newObsFixture(t)
+	ctx := t.Context()
+	id := "large-0000eeee"
+	crewJSON, _ := json.Marshal(map[string]string{"id": "large", "cwd": f.root})
+	words := strings.Repeat("<", 3<<10)
+	if _, err := f.srv.ledger.Transition(ctx, id, func(tx *ledger.Tx) error {
+		now := tx.Now()
+		if err := tx.PutRun(ledger.RunRow{ID: id, CrewID: "large", Crew: string(crewJSON), State: ledger.RunRunning, CreatedAt: now}); err != nil {
+			return err
+		}
+		for i := range 128 {
+			task := fmt.Sprintf("task-%03d", i)
+			if err := tx.PutTask(ledger.TaskRow{ID: task, Member: "lead", Kind: "work", State: ledger.TaskFailed, Attempts: 1}); err != nil {
+				return err
+			}
+			if err := tx.PutAttempt(ledger.AttemptRow{TaskID: task, N: 1, Member: "lead", State: ledger.AttemptFailed, Error: words, ReservedAt: now, ClosedAt: now}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.turn(t, nil)
+	resp, body := f.readRaw(t, "/api/brakeman/status?run="+id)
+	if resp.StatusCode != http.StatusOK || len(body) > maxObserveReply {
+		t.Fatalf("the status: %d, %d bytes", resp.StatusCode, len(body))
+	}
+	var out struct {
+		WordsCut bool         `json:"wordsCut"`
+		Tasks    []taskStatus `json:"tasks"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.WordsCut || len(out.Tasks) != 128 {
+		t.Fatalf("cut %v, %d tasks", out.WordsCut, len(out.Tasks))
+	}
+	for _, ts := range out.Tasks {
+		want := fmt.Sprintf("attempt:%s/%s/1", id, strings.TrimPrefix(ts.Ref, "task:"+id+"/"))
+		if ts.Status != statusFailed || ts.Proof != want || ts.Words == "" || !strings.HasPrefix(words, ts.Words) {
+			t.Fatalf("a line: %+v, want its proof %s", ts, want)
+		}
+	}
+}
+
+// A server session that has written nothing since it began is quiet once
+// it began ten minutes ago, never running for good; a hosted session's
+// quiet time stays unknown.
+func TestASilentSessionIsQuietFromItsStart(t *testing.T) {
+	f := newObsFixture(t)
+	seam := func(id string) (time.Time, bool) { return time.Time{}, true }
+	outputAtSeam.Store(&seam)
+	t.Cleanup(func() { outputAtSeam.Store(nil) })
+	now := time.Now()
+	info := session.Info{ID: "silent", Status: session.StatusRunning, CreatedAt: now.Add(-11 * time.Minute)}
+	if c := f.srv.sessionStatus(info, now); c.Status != statusQuiet || c.Proof != proofNone || c.QuietSeconds < 600 {
+		t.Fatalf("a session silent since it began: %+v", c)
+	}
+	info.CreatedAt = now.Add(-time.Minute)
+	if c := f.srv.sessionStatus(info, now); c.Status != statusRunning {
+		t.Fatalf("a session begun a minute ago: %+v", c)
+	}
+	info.Kind, info.CreatedAt = session.KindHosted, now.Add(-time.Hour)
+	if c := f.srv.sessionStatus(info, now); c.Status != statusRunning || c.Quiet != "unknown" {
+		t.Fatalf("a hosted session: %+v", c)
+	}
+}
+
+// The guide lists each read's own bound: Brakeman's own reads 256 KiB, a
+// shared read its route's (a check's log 1 MiB, a ticket's read and a
+// page of its comments 3 MiB), none where the route states none; and a
+// check's log at its bound is answered whole to a turn, past 256 KiB.
+func TestTheGuideListsEachReadsOwnBound(t *testing.T) {
+	ops := map[string]Operation{}
+	for _, op := range Operations() {
+		if strings.HasPrefix(op.Name, "observe_") {
+			ops[op.Path] = op
+		}
+	}
+	for _, sr := range brakemanReads {
+		path := strings.TrimPrefix(sr.pattern, "GET ")
+		op, ok := ops[path]
+		if !ok {
+			t.Fatalf("no observe_ entry for %s", sr.pattern)
+		}
+		if got := op.Bounds["reply"]; got != sr.reply {
+			t.Fatalf("%s: the guide lists %d, the route keeps %d", path, got, sr.reply)
+		}
+	}
+	for path, op := range ops {
+		if strings.HasPrefix(path, "/api/brakeman/") && op.Bounds["reply"] != maxObserveReply {
+			t.Fatalf("%s: %v", path, op.Bounds)
+		}
+	}
+	for path, want := range map[string]int{
+		"/api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log": ledger.MaxLog,
+		"/api/dispatch/tickets/{key}":                                  MaxTicketReply,
+		"/api/dispatch/tickets/{key}/comments":                         MaxTicketReply,
+	} {
+		if got := ops[path].Bounds["reply"]; got != want {
+			t.Fatalf("%s: %d, want %d", path, got, want)
+		}
+	}
+	f := newObsFixture(t)
+	big := []byte(strings.Repeat("x", ledger.MaxLog))
+	sum := sha256.Sum256(big)
+	if _, err := f.srv.ledger.Transition(t.Context(), f.run, func(tx *ledger.Tx) error {
+		now := tx.Now()
+		return tx.PutCheck(ledger.CheckRow{TaskID: "build", N: 1, ID: "big", K: 1, Argv: []string{"go", "test"}, State: ledger.CheckFinished, Exit: 1, Log: big, LogSHA256: hex.EncodeToString(sum[:]), StartedAt: now, FinishedAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.turn(t, nil)
+	resp, body := f.readRaw(t, "/api/runs/"+f.run+"/tasks/build/attempts/1/steps/big/1/log")
+	if resp.StatusCode != http.StatusOK || len(body) != ledger.MaxLog || len(body) <= maxObserveReply {
+		t.Fatalf("a check's log at its bound: %d, %d bytes", resp.StatusCode, len(body))
 	}
 }

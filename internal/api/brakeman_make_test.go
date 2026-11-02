@@ -661,3 +661,101 @@ func TestReleaseWaitsForTheStartsRecovery(t *testing.T) {
 		t.Fatalf("%d tickets made", n-before)
 	}
 }
+
+// A make the route admitted ends before Brakeman's owner lock goes: held
+// after Dispatch's commit, a release that has begun keeps the lock (a
+// second server opening the records is read-only) and refuses a new make
+// (503 shutting_down), and lets the lock go once the make returns. Its
+// outcome is not written by a closing desk: the claim stays for the next
+// start, whose backend answers it once.
+func TestReleaseWaitsForAnHTTPMake(t *testing.T) {
+	f := newObsFixture(t)
+	req := f.drafts(t, draftTicket("Made as the server stops"), draftTicket("Asked as it stops"))
+	before := f.tickets(t)
+	held, letGo := make(chan struct{}), make(chan struct{})
+	var once, freed sync.Once
+	free := func() { freed.Do(func() { close(letGo) }) }
+	t.Cleanup(free)
+	atSeam(t, func(stage, _ string, item int) error {
+		if stage == "committed" && item == 0 {
+			once.Do(func() {
+				close(held)
+				<-letGo
+			})
+		}
+		return nil
+	})
+	made := make(chan int, 1)
+	go func() {
+		status, _ := f.make(t, req, 0, "stop-1", nil)
+		made <- status
+	}()
+	<-held
+	released := make(chan struct{})
+	go func() {
+		f.desk.release(context.Background())
+		close(released)
+	}()
+	if !waitFor(30*time.Second, f.desk.closing.Load) {
+		t.Fatal("the desk never began to close")
+	}
+	if status, out := f.make(t, req, 1, "stop-2", nil); status != http.StatusServiceUnavailable || errorCode(out) != "shutting_down" {
+		t.Fatalf("a make asked as the server stops: %d %v", status, out)
+	}
+	st, err := store.Open(f.dataDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := brakeman.Open(st, brakeman.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if ro, _ := other.ReadOnly(); !ro {
+		t.Fatal("the owner lock went while a make made a ticket")
+	}
+	select {
+	case <-released:
+		t.Fatal("the release returned while a make was under way")
+	default:
+	}
+	free()
+	<-released
+	if status := <-made; status != http.StatusServiceUnavailable {
+		t.Fatalf("the make whose outcome the closing desk did not write: %d", status)
+	}
+	if n := f.tickets(t); n != before+1 {
+		t.Fatalf("%d tickets made", n-before)
+	}
+	if m := f.made(t, req, 0); m.State != brakeman.MadePending {
+		t.Fatalf("the claim the next start completes: %+v", m)
+	}
+}
+
+// A make done answers its same opId as it was made, before anything is
+// checked against what the server holds now: a crew whose agent left the
+// catalog since is answered from its claim, while a new make of a draft
+// naming that agent is refused.
+func TestARepeatedMakeAnswersAfterItsAgentLeavesTheCatalog(t *testing.T) {
+	f := newObsFixture(t)
+	req := f.drafts(t, f.draftCrew("Kept"), f.draftCrew("Not yet"))
+	status, out := f.make(t, req, 0, "crew-1", nil)
+	if status != http.StatusCreated {
+		t.Fatalf("the make: %d %v", status, out)
+	}
+	cat := f.srv.Catalog().Clone()
+	if !cat.Hide("cat") {
+		t.Fatal("the catalog has no cat")
+	}
+	f.setCatalog(cat)
+	status, again := f.make(t, req, 0, "crew-1", nil)
+	if status != http.StatusOK || entityOf(t, again, "made")["state"] != brakeman.MadeDone || entityOf(t, again, "crew")["id"] != entityOf(t, out, "crew")["id"] {
+		t.Fatalf("the same opId after the agent left: %d %v", status, again)
+	}
+	if status, out := f.make(t, req, 1, "crew-2", nil); status != http.StatusBadRequest || errorCode(out) != "invalid_draft" {
+		t.Fatalf("a new make naming the agent gone: %d %v", status, out)
+	}
+	if m := f.made(t, req, 1); m.OpID != "" {
+		t.Fatalf("a claim after the refusal: %+v", m)
+	}
+}

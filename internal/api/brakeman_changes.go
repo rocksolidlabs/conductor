@@ -400,6 +400,11 @@ func coverageTime(b *turnBriefing) time.Time {
 	if c.Dispatch != nil && !c.Dispatch.At.IsZero() && c.Dispatch.At.Before(at) {
 		at = c.Dispatch.At
 	}
+	// A part the coverage had no room for starts no later than its
+	// earliest change not given.
+	if !c.OmittedFrom.IsZero() && c.OmittedFrom.Before(at) {
+		at = c.OmittedFrom
+	}
 	return at
 }
 
@@ -411,6 +416,11 @@ func (s *Server) changes(ctx context.Context, o *observer, start changesStart) (
 	parts := []changePart{}
 	add := func(p changePart, its []changeItem) {
 		p.Part = cmpOr(p.Part, p.kind+":"+p.id)
+		if p.readAt.IsZero() {
+			// Read after the observer's time: what the part gives is
+			// whole up to then.
+			p.readAt = o.now
+		}
 		for i := range its {
 			its[i].Part, its[i].h = p.Part, wordsHash(its[i].Words)
 		}
@@ -596,21 +606,30 @@ func (s *Server) ledgerChanges(ctx context.Context, id string, p *changePart, w 
 }
 
 // heldRunChanges is a run without a ledger's launch and end, from the
-// engine's record of it.
+// engine's record of it, placed by the synthetic seqs 1 (its launch) and
+// 2 (its end): after a watermark by those seqs alone (the watermark's
+// time is when its coverage was written, after a launch or an end it may
+// have left unread), by time otherwise. What the part read reaches its
+// end, its launch's seq, or its end's once it ended, so a watermark moves
+// past what was given and stops before what was not.
 func heldRunChanges(run crew.Run, p *changePart, w *brakeman.Watermark) []changeItem {
 	var out []changeItem
 	from := p.At
 	var after int64
 	if w != nil {
-		after = w.Seq
+		after, from = w.Seq, time.Time{}
 	}
 	if run.StartedAt.After(from) && after < 1 {
 		out = append(out, changeItem{Ref: "run:" + run.ID, Kind: "run.launched", At: run.StartedAt, seq: 1, Words: run.Label})
 	}
-	if run.StoppedAt != nil && run.StoppedAt.After(from) && after < 2 {
-		out = append(out, changeItem{Ref: "run:" + run.ID, Kind: "run." + run.State, At: *run.StoppedAt, seq: 2})
+	end := int64(1)
+	if run.StoppedAt != nil {
+		end = 2
+		if run.StoppedAt.After(from) && after < 2 {
+			out = append(out, changeItem{Ref: "run:" + run.ID, Kind: "run." + run.State, At: *run.StoppedAt, seq: 2})
+		}
 	}
-	p.last, p.end = after, after
+	p.last, p.end = after, max(after, end)
 	return out
 }
 
@@ -637,6 +656,11 @@ func (s *Server) sessionChanges(ctx context.Context, o *observer, start changesS
 		}
 		ref := "session:" + info.ID
 		var its []changeItem
+		// The window is read after the observer's time: a session that
+		// gives nothing more is complete up to that time, never up to one
+		// after an entry its read did not see, nor past one the session
+		// stamped and has not added yet (ActivityThrough).
+		readAt := o.now
 		l, local := s.lookupLocal(info.ID)
 		if !local || info.Kind == session.KindHosted {
 			if a := info.Attention; a.State == session.AttentionNeedsInput && a.Since != nil && a.Since.After(from) {
@@ -648,7 +672,10 @@ func (s *Server) sessionChanges(ctx context.Context, o *observer, start changesS
 			}
 			p.Gap, p.Why = true, "a hosted session's window is its host's: only its question now"
 		} else {
-			window := l.Activity()
+			window, through := l.ActivityThrough()
+			if through.Before(readAt) {
+				readAt = through
+			}
 			if len(window) >= session.MaxActivity && window[0].At.After(from) {
 				p.Gap, p.Why = true, "the session's window starts after "+from.Format(time.RFC3339)
 			}
@@ -672,10 +699,7 @@ func (s *Server) sessionChanges(ctx context.Context, o *observer, start changesS
 		for i := range its {
 			its[i].seq = its[i].At.UnixNano()
 		}
-		// The window is read after the observer's time: a session that
-		// gives nothing more is complete up to that time, never up to one
-		// after an entry its read did not see.
-		p.lastAt, p.readAt = from, o.now
+		p.lastAt, p.readAt = from, readAt
 		if len(its) == 0 && p.From != "watermark" && !p.Gap {
 			continue
 		}
@@ -877,32 +901,70 @@ func (d *brakemanDesk) cover(req brakeman.Request, page, items []changeItem, par
 				wm.Seq = its[u].seq - 1
 			}
 		}
+		kept := true
 		switch p.kind {
 		case "run":
-			cov.Runs = putWatermark(cov.Runs, wm)
+			cov.Runs, kept = putWatermark(cov.Runs, wm)
 		case "session":
-			cov.Sessions = putWatermark(cov.Sessions, wm)
+			cov.Sessions, kept = putWatermark(cov.Sessions, wm)
 		default:
 			w := wm
 			w.ID = ""
 			cov.Dispatch = &w
 		}
+		if !kept {
+			// No room for its watermark: the next briefing reads it as a
+			// part with none, from no later than its first change not
+			// given.
+			if at := reachFrom(p, its, u, now); cov.OmittedFrom.IsZero() || at.Before(cov.OmittedFrom) {
+				cov.OmittedFrom = at
+			}
+		}
 	}
 	return cov
 }
 
+// reachFrom is the earliest time a change of the part not given may be
+// at, for a part the coverage has no room for: just before its first
+// item not given; for a part truncated or with a gap, no later than where
+// it was read from and its first item; for one given whole, when it was
+// read (now, when no time says it).
+func reachFrom(p changePart, its []changeItem, u int, now time.Time) time.Time {
+	at := now
+	if !p.readAt.IsZero() && p.readAt.Before(at) {
+		at = p.readAt
+	}
+	earlier := func(t time.Time) {
+		if !t.IsZero() && t.Before(at) {
+			at = t
+		}
+	}
+	if u >= 0 {
+		earlier(its[u].At.Add(-time.Nanosecond))
+	}
+	if p.Truncated || p.Gap {
+		earlier(p.At)
+		earlier(p.lastAt)
+		if len(its) > 0 {
+			earlier(slices.MinFunc(its, func(a, b changeItem) int { return a.At.Compare(b.At) }).At.Add(-time.Nanosecond))
+		}
+	}
+	return at
+}
+
 // putWatermark puts w in place of the one of its id, or adds it while
-// the list has room (brakeman.MaxWatermarks): a part left out starts at
-// the briefing's time, newly in scope, next time.
-func putWatermark(list []brakeman.Watermark, w brakeman.Watermark) []brakeman.Watermark {
+// the list has room (brakeman.MaxWatermarks); false when it had none: the
+// part is then read from the coverage's OmittedFrom, as one with no
+// watermark, next time.
+func putWatermark(list []brakeman.Watermark, w brakeman.Watermark) ([]brakeman.Watermark, bool) {
 	if i := slices.IndexFunc(list, func(o brakeman.Watermark) bool { return o.ID == w.ID }); i >= 0 {
 		list[i] = w
-		return list
+		return list, true
 	}
 	if len(list) >= brakeman.MaxWatermarks {
-		return list
+		return list, false
 	}
-	return append(list, w)
+	return append(list, w), true
 }
 
 // overlapTree is one live git work tree overlaps reads: an attempt's

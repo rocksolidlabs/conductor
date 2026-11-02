@@ -89,6 +89,10 @@ type Coverage struct {
 	Runs     []Watermark `json:"runs,omitempty"`     // at most MaxWatermarks
 	Sessions []Watermark `json:"sessions,omitempty"` // at most MaxWatermarks
 	Dispatch *Watermark  `json:"dispatch,omitempty"`
+	// OmittedFrom is, for the parts a list had no room for, the earliest
+	// time a change of theirs not given may be at: a part with no
+	// watermark is read from it next time, never from a later one.
+	OmittedFrom time.Time `json:"omittedFrom,omitzero"`
 }
 
 // Watermark is one part's reach: a run's last event seq delivered with

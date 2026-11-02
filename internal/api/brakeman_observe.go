@@ -134,9 +134,25 @@ type observer struct {
 	// what its pages reached, written into the request with the read.
 	coverage *brakeman.Coverage
 	// revsBefore is the ledger's revision of each run a runs read names,
-	// read just before its handler ran (deliveredRev); nil for another
-	// read.
+	// read just before its handler ran (deliveredRev), and engBefore the
+	// engine's hold of each, read before that; nil for another read.
 	revsBefore map[string]string
+	engBefore  map[string]engineHold
+}
+
+// engineHold is a run as the engine holds it (Engine.Settled): the
+// revision of its last commit, whether nothing of it waits for or is in a
+// commit, and whether the engine holds it at all.
+type engineHold struct {
+	rev     int64
+	settled bool
+	held    bool
+}
+
+// engineHoldOf is the engine's hold of the run id now.
+func (s *Server) engineHoldOf(id string) engineHold {
+	rev, settled, held := s.runs.Settled(id)
+	return engineHold{rev: rev, settled: settled, held: held}
 }
 
 // observeSeam, when a test sets it, runs at each stage of a turn's
@@ -151,17 +167,23 @@ func atObserveSeam(stage string) {
 	}
 }
 
-// takeRevs reads, for a read of the runs' class, the ledger's revision of
-// the run its path names (every run's for GET /api/runs) just before the
-// route's handler runs.
+// takeRevs reads, for a read of the runs' class, the engine's hold of
+// the run its path names (every run's for GET /api/runs) and then the
+// ledger's revision of it, just before the route's handler runs.
 func (o *observer) takeRevs(r *http.Request, class string) error {
-	ld := o.rr.s.ledger
+	s := o.rr.s
+	ld := s.ledger
 	if class != brakeman.ClassRuns || ld == nil {
 		return nil
 	}
-	o.revsBefore = map[string]string{}
+	o.revsBefore, o.engBefore = map[string]string{}, map[string]engineHold{}
 	id := r.PathValue("run")
 	if id == "" {
+		// The engine first, then the ledger: a commit the engine began
+		// before the ledger was read is seen unsettled, or as committed.
+		for _, run := range s.runs.List() {
+			o.engBefore[run.ID] = s.engineHoldOf(run.ID)
+		}
 		rows, err := ld.Runs(r.Context())
 		if err != nil {
 			return fmt.Errorf("the ledger's runs: %w", err)
@@ -174,6 +196,7 @@ func (o *observer) takeRevs(r *http.Request, class string) error {
 	if !crew.ValidRunID(id) {
 		return nil
 	}
+	o.engBefore[id] = s.engineHoldOf(id)
 	row, ok, err := ld.Run(r.Context(), id)
 	if err != nil {
 		return fmt.Errorf("the ledger's run %s: %w", id, err)
@@ -186,9 +209,12 @@ func (o *observer) takeRevs(r *http.Request, class string) error {
 
 // deliveredRev is the revision a read of the run id was answered at: a
 // managed run's the ledger's, when it was the same just before the
-// route's handler ran and after it (every transition moves it), "" when a
-// transition came between, for what was delivered may be either's; any
-// other run's its record's.
+// route's handler ran and after it (every transition moves it) and the
+// engine, holding the run, held it settled at one revision throughout
+// (it changes its run before the transaction commits, so a handler that
+// read the engine's run then may have answered a state the ledger's
+// revision does not hold yet); "" otherwise, for what was delivered may
+// be either's; any other run's its record's.
 func (o *observer) deliveredRev(ctx context.Context, id string, run *refRun) (string, error) {
 	ld := o.rr.s.ledger
 	if !run.managed || ld == nil || o.revsBefore == nil {
@@ -198,12 +224,19 @@ func (o *observer) deliveredRev(ctx context.Context, id string, run *refRun) (st
 	if !ok {
 		return "", nil
 	}
+	// The ledger first, then the engine: the reverse of takeRevs.
 	row, found, err := ld.Run(ctx, id)
 	if err != nil {
 		return "", fmt.Errorf("the ledger's run %s: %w", id, err)
 	}
 	if !found || strconv.FormatInt(row.Revision, 10) != before {
 		return "", nil
+	}
+	engBefore, engAfter := o.engBefore[id], o.rr.s.engineHoldOf(id)
+	if engBefore.held || engAfter.held {
+		if !engBefore.held || !engAfter.held || !engBefore.settled || !engAfter.settled || engBefore.rev != engAfter.rev {
+			return "", nil
+		}
 	}
 	return before, nil
 }
@@ -1305,7 +1338,71 @@ func (s *Server) handleBrakemanStatus(w http.ResponseWriter, r *http.Request, o 
 	for _, t := range tasks {
 		o.noteRef(t.Ref, brakeman.ClassRuns, t.State, rev)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"run": "run:" + runID, "state": state, "revision": rev, "tasks": tasks, "members": members})
+	out := map[string]any{"run": "run:" + runID, "state": state, "revision": rev, "tasks": tasks, "members": members}
+	if fitStatusWords(tasks, members) {
+		out["wordsCut"] = true
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// maxStatusWords bounds a status line's words, as encoded.
+const maxStatusWords = 1 << 10
+
+// fitStatusWords holds a run's status read to maxObserveReply: each line's
+// words (a record's, an attempt's error among them) cut to at most
+// maxStatusWords bytes as encoded, and to an even share of what the
+// lines leave when they need less, every ref, state and proof whole. It
+// reports whether it cut any. A run has at most 128 tasks and 12
+// members, whose lines without their words come to well under the bound.
+func fitStatusWords(tasks []taskStatus, members []memberStatus) bool {
+	n := len(tasks) + len(members)
+	if n == 0 {
+		return false
+	}
+	bare := 8 << 10 // the answer's own fields, with room
+	for _, t := range tasks {
+		t.Words = ""
+		bare += len(mustJSON(t)) + 1
+	}
+	for _, m := range members {
+		m.Words = ""
+		bare += len(mustJSON(m)) + 1
+	}
+	per := min(maxStatusWords, max(0, maxObserveReply-bare)/n)
+	cut := false
+	fit := func(c *computed) {
+		if w := fitJSON(c.Words, per); w != c.Words {
+			c.Words, cut = w, true
+		}
+	}
+	for i := range tasks {
+		fit(&tasks[i].computed)
+	}
+	for i := range members {
+		fit(&members[i].computed)
+	}
+	return cut
+}
+
+// fitJSON is the longest prefix of s, cut at a character, whose JSON
+// string, quotes and escapes counted, is at most n bytes beside its
+// quotes.
+func fitJSON(s string, n int) string {
+	size := func(t string) int { return len(mustJSON(t)) - 2 }
+	if size(s) <= n {
+		return s
+	}
+	target := min(len(s), n)
+	for target > 0 {
+		c := cutBytes(s, target)
+		got := size(c)
+		if got <= n || c == "" {
+			return c
+		}
+		// Each byte encodes to at most six: shrink by what is over.
+		target = len(c) - max(1, (got-n+5)/6)
+	}
+	return ""
 }
 
 // computed is a task's or a session's status as Conductor computes it:
@@ -1375,8 +1472,9 @@ func (s *Server) lastOutput(id string) (time.Time, bool) {
 
 // sessionStatus is a session's status: stopped once it ended, waiting on
 // a person while it asks, quiet when a server session's terminal has
-// written nothing for quietAfter (with no proof of anything), running
-// otherwise; a hosted session's quiet time is unknown, never quiet.
+// written nothing for quietAfter (since it began, when it has written
+// nothing yet; with no proof of anything), running otherwise; a hosted
+// session's quiet time is unknown, never quiet.
 func (s *Server) sessionStatus(info session.Info, now time.Time) computed {
 	switch {
 	case info.Status.Ended():
@@ -1395,8 +1493,12 @@ func (s *Server) sessionStatus(info session.Info, now time.Time) computed {
 	case info.Kind == session.KindHosted:
 		return computed{Status: statusRunning, Proof: proofNone, Quiet: "unknown"}
 	}
-	if at, ok := s.lastOutput(info.ID); ok && !at.IsZero() {
-		if quiet := now.Sub(at); quiet >= quietAfter {
+	if at, ok := s.lastOutput(info.ID); ok {
+		if at.IsZero() {
+			// Nothing written yet: silent since the session began.
+			at = info.CreatedAt
+		}
+		if quiet := now.Sub(at); !at.IsZero() && quiet >= quietAfter {
 			return computed{Status: statusQuiet, Proof: proofNone, QuietSeconds: int(quiet.Seconds()), Words: "the terminal has written nothing since " + at.UTC().Format(time.RFC3339)}
 		}
 	}
@@ -1780,11 +1882,14 @@ func (o *observer) noteFootprint(req brakeman.Request) {
 
 // ---- the shared reads' table
 
-// sharedRead is a shared read a turn may make: its pattern, its handler
-// and its spec. routeBrakeman's caller registers each through reader.
+// sharedRead is a shared read a turn may make: its pattern, its spec and
+// the bound its route keeps of its reply (0 for a route that states
+// none), which the guide's observe_<what> entry lists. routeBrakeman's
+// caller registers each through reader.
 type sharedRead struct {
 	pattern string
 	spec    readSpec
+	reply   int
 }
 
 // brakemanReads are the shared reads the principal brakeman takes, each
@@ -1794,20 +1899,30 @@ type sharedRead struct {
 // its comments), the sessions and the touched files. Every other route
 // refuses the principal.
 var brakemanReads = []sharedRead{
-	{"GET /api/runs", readSpec{class: brakeman.ClassRuns, filter: filterRuns}},
-	{"GET /api/runs/{run}", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterRun}},
-	{"GET /api/runs/{run}/tasks/{task}", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterTask}},
-	{"GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterSteps}},
-	{"GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log", readSpec{class: brakeman.ClassLogs, admit: admitRunPath, filter: filterStepLog}},
-	{"GET /api/runs/{run}/commands/{command}", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterCommand}},
-	{"GET /api/runs/{run}/messages", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterMessages}},
-	{"GET /api/dispatch/projects", readSpec{class: brakeman.ClassDispatch, filter: filterProjects}},
-	{"GET /api/dispatch/tickets", readSpec{class: brakeman.ClassDispatch, filter: filterTickets}},
-	{"GET /api/dispatch/tickets/{key}", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterTicket}},
-	{"GET /api/dispatch/tickets/{key}/history", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterHistory}},
-	{"GET /api/dispatch/tickets/{key}/comments", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterComments}},
-	{"GET /api/sessions", readSpec{class: brakeman.ClassSessions, filter: filterSessions}},
-	{"GET /api/touched", readSpec{class: brakeman.ClassTouched, filter: filterTouched}},
+	{"GET /api/runs", readSpec{class: brakeman.ClassRuns, filter: filterRuns}, 0},
+	{"GET /api/runs/{run}", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterRun}, 0},
+	{"GET /api/runs/{run}/tasks/{task}", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterTask}, 0},
+	{"GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterSteps}, 0},
+	{"GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log", readSpec{class: brakeman.ClassLogs, admit: admitRunPath, filter: filterStepLog}, ledger.MaxLog},
+	{"GET /api/runs/{run}/commands/{command}", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterCommand}, 0},
+	{"GET /api/runs/{run}/messages", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterMessages}, 0},
+	{"GET /api/dispatch/projects", readSpec{class: brakeman.ClassDispatch, filter: filterProjects}, maxProjectsPage},
+	{"GET /api/dispatch/tickets", readSpec{class: brakeman.ClassDispatch, filter: filterTickets}, 0},
+	{"GET /api/dispatch/tickets/{key}", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterTicket}, MaxTicketReply},
+	{"GET /api/dispatch/tickets/{key}/history", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterHistory}, 0},
+	{"GET /api/dispatch/tickets/{key}/comments", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterComments}, MaxTicketReply},
+	{"GET /api/sessions", readSpec{class: brakeman.ClassSessions, filter: filterSessions}, 0},
+	{"GET /api/touched", readSpec{class: brakeman.ClassTouched, filter: filterTouched}, 0},
+}
+
+// sharedReadReply is the bound the shared read of pattern keeps of its
+// reply, 0 for none stated or no such read.
+func sharedReadReply(pattern string) int {
+	i := slices.IndexFunc(brakemanReads, func(sr sharedRead) bool { return sr.pattern == pattern })
+	if i < 0 {
+		return 0
+	}
+	return brakemanReads[i].reply
 }
 
 // sharedReadSpec is the spec of a shared read's pattern, ok false for a

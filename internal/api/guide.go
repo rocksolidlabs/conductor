@@ -286,13 +286,12 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// in X-Conductor-Session on each.
 		{Name: "observe", MCP: "observe", Scope: "observe", Method: http.MethodGet, Path: "/api/brakeman/changes", needs: needLauncher,
 			Summary:     "Read what you may see as a Brakeman turn: what changed, a status, runs, tasks, receipts, logs, tickets, sessions, files, overlaps, earlier briefs.",
-			Description: "When this session is a Brakeman turn: read one thing Conductor holds, within your scope and visibility, each answer counted against your reads. what names it (changes, status, screen, overlaps, briefs, runs, run, task, steps, log, command, messages, projects, tickets, ticket, history, comments, sessions, touched) and query its parameters (run, task, n, id, k, command, key, session, since, cursor, limit, lines, q, after). Every item carries the ref a brief cites it by.",
+			Description: "When this session is a Brakeman turn: read one thing Conductor holds, within your scope and visibility, each answer counted against your reads. what names it (changes, status, screen, overlaps, briefs, runs, run, task, steps, log, command, messages, projects, tickets, ticket, history, comments, sessions, touched) and query its parameters (run, task, n, id, k, command, key, session, since, cursor, limit, lines, q, after). Every item carries the ref a brief cites it by; each answer keeps its observe_<what> entry's bound.",
 			CLI:         []string{"conductor", "brakeman", "observe", "WHAT", "--KEY", "VALUE"},
 			Input: obj(map[string]any{
 				"what":  map[string]any{"type": "string", "enum": observeWhats, "description": "what to read: the guide's observe_<what> operation names its route"},
 				"query": map[string]any{"type": "object", "description": "the read's parameters, by name: the route's path parameters and its query", "additionalProperties": map[string]any{"type": "string"}},
-			}, "what"),
-			Bounds: map[string]int{"reply": maxObserveReply}},
+			}, "what")},
 		observeOp("changes", "/api/brakeman/changes", "What changed since a time, or since your last briefing's watermarks: runs, tasks with their status, questions, messages, Dispatch's changes; paged.", "since", "cursor", "limit"),
 		observeOp("status", "/api/brakeman/status", "Each task's status, or a session's, as Conductor computes it: failed with its receipt, blocked, waiting on a person, quiet (no proof), running, succeeded, stopped.", "run", "session"),
 		observeOp("screen", "/api/brakeman/screen", "A server session's screen's last lines, only with terminals visible; a hosted session's is unavailable.", "session", "lines"),
@@ -407,7 +406,9 @@ var operationsTable = sync.OnceValue(func() []Operation {
 var observeWhats = []string{"changes", "status", "screen", "overlaps", "briefs", "runs", "run", "task", "steps", "log", "command", "messages", "projects", "tickets", "ticket", "history", "comments", "sessions", "touched"}
 
 // observeOp is one read of a Brakeman turn's: observe_<what>, its route,
-// its query's parameters by name and its path's.
+// its query's parameters by name and its path's, and its reply's bound:
+// maxObserveReply for Brakeman's own reads, a shared read's its route's
+// own (sharedReadReply), none for a route that states none.
 func observeOp(what, path, summary string, query ...string) Operation {
 	props := map[string]any{}
 	for _, m := range regexp.MustCompile(`\{([a-z]+)\}`).FindAllStringSubmatch(path, -1) {
@@ -416,8 +417,16 @@ func observeOp(what, path, summary string, query ...string) Operation {
 	for _, q := range query {
 		props[q] = mcpString("?" + q + "=")
 	}
-	return Operation{Name: "observe_" + what, Scope: "observe", Method: http.MethodGet, Path: path, needs: needLauncher,
-		Summary: summary, Input: mcpObject(props), Bounds: map[string]int{"reply": maxObserveReply}}
+	op := Operation{Name: "observe_" + what, Scope: "observe", Method: http.MethodGet, Path: path, needs: needLauncher,
+		Summary: summary, Input: mcpObject(props)}
+	reply := sharedReadReply(http.MethodGet + " " + path)
+	if strings.HasPrefix(path, "/api/brakeman/") {
+		reply = maxObserveReply
+	}
+	if reply > 0 {
+		op.Bounds = map[string]int{"reply": reply}
+	}
+	return op
 }
 
 // runCommandOp is a run's command, with its receipt and revision.
