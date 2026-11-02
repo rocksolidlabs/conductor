@@ -76,6 +76,12 @@ func (c *countingWriter) Write(b []byte) (int, error) {
 // newDispatchAPI starts a real server for t, ended with it.
 func newDispatchAPI(t *testing.T) *dispatchAPI {
 	t.Helper()
+	return newDispatchAPIWith(t)
+}
+
+// newDispatchAPIWith is newDispatchAPI with more agents in its catalog.
+func newDispatchAPIWith(t *testing.T, more ...catalog.Agent) *dispatchAPI {
+	t.Helper()
 	clearConductorEnv(t)
 	root := realTempDir(t)
 	cfg := config.Defaults()
@@ -86,7 +92,7 @@ func newDispatchAPI(t *testing.T) *dispatchAPI {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{{ID: "cat", Name: "cat", Command: []string{"/bin/cat"}}}})
+	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: append([]catalog.Agent{{ID: "cat", Name: "cat", Command: []string{"/bin/cat"}}}, more...)})
 	if err != nil {
 		t.Fatal(err)
 	}

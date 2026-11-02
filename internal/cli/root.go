@@ -26,6 +26,10 @@ Usage:
   conductor guide [--section S] [--json]
                                what the running server says you may do here: in a session, the
                                session's guide; elsewhere the admin's (--server, --token)
+  conductor brakeman request|observe|brief
+                               a Brakeman turn's request, reads and brief, from inside its session
+  conductor brakeman ask|status|list|show [--server URL] [--token T]
+                               ask Brakeman and read its requests and briefs
   conductor up <crew-id> [--server URL] [--token T] [--open]
                                launch a saved crew as a run and print its URL
   conductor crews [--server URL] [--token T] [--ids]
@@ -83,6 +87,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runTask(ctx, args[1:], stdin, stdout, stderr)
 	case "guide":
 		return runGuide(ctx, args[1:], stdout, stderr)
+	case "brakeman":
+		return runBrakeman(ctx, args[1:], stdin, stdout, stderr)
 	case "up":
 		return runUp(ctx, args[1:], stdout, stderr)
 	case "crews":
