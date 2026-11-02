@@ -3,7 +3,7 @@ import { ApiError } from './useApi'
 import type { PaletteItem } from './usePalette'
 import type { DispatchTicket, LaunchSummary, NewPlan, OpBody, PlanBody, PlanReply, PlanSummary } from './useDispatch'
 import { dispatchFailureWords } from './useDispatchOps'
-import { through, type DispatchOrder } from '~/utils/dispatchOrder'
+import { through, throughOrAbsent, type DispatchOrder } from '~/utils/dispatchOrder'
 import { retried } from '~/utils/dispatchOrder'
 import { approvedRevision, launchOutcome, launchUnresolved, launchesToRead, scanLaunches, withAnswers, type KnownLaunch, type LaunchOutcome, type LaunchServer } from '~/utils/dispatchPlans'
 import { mintCommandId } from '~/utils/tasks'
@@ -53,8 +53,11 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
   /** The launches the history's scans found, by id, and the seq the next scan starts after. */
   const scanned = shallowReactive(new Map<string, KnownLaunch>())
   let scannedAfter = 0
-  /** Counts what makes a scan's answer another ticket's or an older store's (a key changed, a reset): a scan of an earlier one is dropped. */
-  let scanGen = 0
+  /**
+   * Counts what makes an answer another ticket's or an older store's (a key changed, a reset): a scan of an earlier one is dropped, and a
+   * launch answered to a request sent before it is not remembered as this page's.
+   */
+  let gen = 0
   /** The scans, one after another: each starts where the one before stopped. */
   let scanning: Promise<void> = Promise.resolve()
   /** What the server is known to refuse a launch for, from its replies. */
@@ -86,19 +89,16 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
   async function readList(): Promise<void> {
     const k = key()
     if (!k) return
-    try {
-      await through(
-        o.gate,
-        `plans:${k}`,
-        () => api.plans(k),
-        (ps) => {
-          if (k === key()) listed.value = ps
-        },
-      )
-    } catch (e) {
-      if (!notFound(e)) throw e
-      if (k === key()) listed.value = []
-    }
+    // A 404 (no ticket by the key yet) is ordered as a list is: a slow one never empties what a later read found.
+    await throughOrAbsent(o.gate, `plans:${k}`, () => api.plans(k), {
+      apply: (ps) => {
+        if (k === key()) listed.value = ps
+      },
+      absent: notFound,
+      gone: () => {
+        if (k === key()) listed.value = []
+      },
+    })
   }
 
   /** Reads a revision's body, once: it never changes. A failure is said where the body would be, and is not asked again until the next read. */
@@ -117,12 +117,12 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
   /** Scans the history for launches from where the last scan stopped, after the scans before it. Rejects when a page could not be read. */
   function scanHistory(): Promise<void> {
     const k = key()
-    const gen = scanGen
+    const g = gen
     const next = scanning.catch(() => {}).then(async () => {
-      if (!k || gen !== scanGen || k !== key()) return
+      if (!k || g !== gen || k !== key()) return
       try {
         const r = await scanLaunches((after) => api.history(k, after, LAUNCH_SCAN_PAGE), scannedAfter)
-        if (gen !== scanGen || k !== key()) return
+        if (g !== gen || k !== key()) return
         for (const l of r.launches) scanned.set(l.id, l)
         scannedAfter = r.after
       } catch (e) {
@@ -196,7 +196,7 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
 
   /** The history's scans forgotten: the next starts from the history's first change. */
   function forgetScan(): void {
-    scanGen++
+    gen++
     scanned.clear()
     scannedAfter = 0
   }
@@ -209,49 +209,60 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
 
   /**
    * The stream started again (a snapshot), maybe on a store restored from a backup whose `rev`s are below those shown, or a server started
-   * again: the answers kept, the launches read and scanned, and what the server refused launches for are forgotten, and shown as the next
-   * read finds them. The bodies stay: each is named by its id and never changes.
+   * again: the answers kept, the launches read, scanned and made here, and what the server refused launches for are forgotten, and shown
+   * as the next read finds them (a launch made here that the restored store lacks is no longer listed). An operation's answer to a
+   * request sent before it is dropped by the gate. The bodies stay: each is named by its id and never changes.
    */
   function reset(): void {
     answered.clear()
     launches.clear()
+    made.value = []
     forgetScan()
     forgetRefusals()
   }
 
-  /** Shows a revision an operation answered with, and reads the list again after it (the approval superseded another). */
-  function answer(p: PlanSummary | null): void {
-    if (!p) return
-    const before = answered.get(p.id)
-    if (!before || before.rev <= p.rev) answered.set(p.id, p)
-    void readList().catch(() => {})
+  /**
+   * How an operation's answer is shown, applied by the gate (ops.run's `apply`, `rev`): only when the gate takes it, so an answer to a
+   * request sent before a snapshot's reset, or under a later one on the same revision, is dropped, and only while the page shows the
+   * ticket it was made on. Taken, the revision is shown over an older list read and the list is read again (the approval superseded another).
+   */
+  function answering(k: string) {
+    return {
+      apply: (r: PlanReply) => {
+        const p = r.plan
+        if (!p || k !== key()) return
+        const before = answered.get(p.id)
+        if (!before || before.rev <= p.rev) answered.set(p.id, p)
+        void readList().catch(() => {})
+      },
+      rev: (r: PlanReply) => r.plan?.rev,
+    }
   }
 
-  /** Proposes a revision; the reply's revision, or throws the failure in words. */
+  /** Proposes a revision; the reply's revision, or throws the failure in words. Its thing is its own: a revision nothing has shown yet. */
   async function propose(req: NewPlan): Promise<PlanSummary | null> {
     const k = key()
-    const reply = await ops.run<PlanReply>((body) => api.proposePlan(k, { ...body, ...req }), { thing: `propose:${k}`, what: `${k}: the plan revision`, raise: true })
-    answer(reply?.plan ?? null)
+    const reply = await ops.run<PlanReply>((body) => api.proposePlan(k, { ...body, ...req }), { thing: `propose:${k}:${mintCommandId()}`, what: `${k}: the plan revision`, raise: true, ...answering(k) })
     return reply?.plan ?? null
   }
 
   /** The operator's approval of a revision, at the revision and the ticket shown, with a note. */
   async function approve(p: PlanSummary, note: string): Promise<PlanSummary | null> {
     const t = o.ticket()
+    const k = key()
     const reply = await ops.run<PlanReply>((body) => api.approvePlan(p.id, { ...body, ...(t ? { ticketRev: t.rev } : {}), ...(note.trim() ? { note: note.trim() } : {}) }), {
       thing: `plan:${p.id}`,
       what: `Revision ${p.n}`,
       expectedRev: p.rev,
       raise: true,
+      ...answering(k),
     })
-    answer(reply?.plan ?? null)
     return reply?.plan ?? null
   }
 
   /** A revision withdrawn; said in a toast either way. */
   async function withdraw(p: PlanSummary): Promise<boolean> {
-    const reply = await ops.run<PlanReply>((body) => api.withdrawPlan(p.id, body), { thing: `plan:${p.id}`, what: `Revision ${p.n}`, expectedRev: p.rev, done: `Revision ${p.n} withdrawn` })
-    answer(reply?.plan ?? null)
+    const reply = await ops.run<PlanReply>((body) => api.withdrawPlan(p.id, body), { thing: `plan:${p.id}`, what: `Revision ${p.n}`, expectedRev: p.rev, done: `Revision ${p.n} withdrawn`, ...answering(key()) })
     return !!reply
   }
 
@@ -261,7 +272,8 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
    * again at once with it, a second is thrown, as is a server failure that is no refusal (`launchUnresolved`: the launch may have been
    * kept), so the dialog sends the same operation again. A refusal that says the server has managed runs off, or no ledger, is kept and
    * said by Launch until a launch is made, a snapshot, or the person asks again (`forgetRefusals`). The launch an answer carries goes
-   * through the gate as a read of it: a slow answer never replaces a later state a read showed.
+   * through the gate as a read of it: a slow answer never replaces a later state a read showed. It is remembered as this page's only when
+   * its request was sent after the last reset, on the ticket shown: one sent before a snapshot is the restored store's to name, or not.
    */
   async function launch(p: PlanSummary, label: string, opId: string): Promise<LaunchOutcome> {
     const t = o.ticket()
@@ -273,8 +285,10 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
     if (label.trim()) body.label = label.trim()
     let out: LaunchOutcome
     let n = 0
+    let g = gen
     for (let attempt = 1; ; attempt++) {
       n = o.gate.ask()
+      g = gen
       try {
         out = launchOutcome({ reply: await api.launch(k, body) })
         break
@@ -296,7 +310,7 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
     const l = out.state === 'refused' ? null : out.launch
     if (l) {
       if (k === key() && o.gate.take(`launch:${l.id}`, n, l.rev)) launches.set(l.id, l)
-      if (k === key() && !made.value.some((m) => m.id === l.id)) made.value = [...made.value, { id: l.id, runId: l.runId, planId: l.planId, label: l.label, createdAt: l.createdAt, createdBy: l.createdBy }]
+      if (g === gen && k === key() && !made.value.some((m) => m.id === l.id)) made.value = [...made.value, { id: l.id, runId: l.runId, planId: l.planId, label: l.label, createdAt: l.createdAt, createdBy: l.createdBy }]
     }
     return out
   }
