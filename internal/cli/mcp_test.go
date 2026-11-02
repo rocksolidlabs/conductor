@@ -10,8 +10,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -452,7 +455,7 @@ func TestEveryToolIsAnOperation(t *testing.T) {
 		}
 	}
 	listed := map[string]bool{}
-	for _, tl := range mcpTools() {
+	for _, tl := range append(mcpTools(false), mcpTools(true)...) {
 		listed[tl.Name] = true
 		if op, ok := byMCP[tl.Name]; !ok || tl.Description != op.Description {
 			t.Errorf("tool %s: not the table's", tl.Name)
@@ -472,16 +475,25 @@ func TestEveryToolIsAnOperation(t *testing.T) {
 	}
 }
 
-// An entry of the table with an MCP name and no handler is not listed.
+// An entry of the table with an MCP name and no handler is not listed,
+// in a Brakeman turn's session or any other; every tool the table names
+// has its handler (Brakeman's since PR-5).
 func TestAnUnhandledToolIsNotListed(t *testing.T) {
-	ops := append(api.Operations(), api.Operation{Name: "brief_submit", MCP: "brief_submit", Summary: "s", Description: "d", Input: map[string]any{"type": "object"}})
-	for _, tl := range mcpToolsFrom(ops) {
-		if tl.Name == "brief_submit" {
-			t.Fatal("a tool with no handler is listed")
+	for _, op := range api.Operations() {
+		if op.MCP != "" && !mcpHandled[op.MCP] {
+			t.Errorf("the table's tool %s has no handler", op.MCP)
 		}
 	}
-	if len(mcpToolsFrom(ops)) != len(mcpTools()) {
-		t.Fatal("the listing changed")
+	ops := append(api.Operations(), api.Operation{Name: "not_yet", MCP: "not_yet", Summary: "s", Description: "d", Input: map[string]any{"type": "object"}})
+	for _, brakeman := range []bool{false, true} {
+		for _, tl := range mcpToolsFrom(ops, brakeman) {
+			if tl.Name == "not_yet" {
+				t.Fatal("a tool with no handler is listed")
+			}
+		}
+		if len(mcpToolsFrom(ops, brakeman)) != len(mcpTools(brakeman)) {
+			t.Fatal("the listing changed")
+		}
 	}
 }
 
@@ -535,5 +547,196 @@ func TestTheGuideToolSaysWhenVersionsDiffer(t *testing.T) {
 	want := "this conductor is " + version.Version + ", the server is 0.0.0-other: the guide is the server's\n\n"
 	if isErr || !strings.HasPrefix(text, want) || !strings.Contains(text, `"inbox"`) {
 		t.Fatalf("%q %v", text, isErr)
+	}
+}
+
+// brakemanEnv is sessionEnv of a Brakeman turn's session, answering
+// request br-1.
+func brakemanEnv(url, sid, token string) func(string) string {
+	env := sessionEnv(url, sid, token)
+	return func(k string) string {
+		if k == envBrakeman {
+			return "br-1"
+		}
+		return env(k)
+	}
+}
+
+// listedTools is tools/list's names in a session of env.
+func listedTools(t *testing.T, env func(string) string) []string {
+	t.Helper()
+	res, _ := mcpRun(t, env, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)[0]["result"].(map[string]any)
+	var names []string
+	for _, x := range res["tools"].([]any) {
+		names = append(names, x.(map[string]any)["name"].(string))
+	}
+	return names
+}
+
+// Brakeman's three tools are listed in a Brakeman turn's session alone,
+// with the table's descriptions and schemas; a worker's session lists
+// none of them, and calling one there is refused before anything is sent.
+func TestBrakemansToolsOnlyInABrakemanSession(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	t.Cleanup(srv.Close)
+	brakemans := []string{"brakeman_request", "observe", "brief_submit"}
+	worker := listedTools(t, sessionEnv(srv.URL, "s1", "tok"))
+	turn := listedTools(t, brakemanEnv(srv.URL, "s1", "tok"))
+	for _, name := range brakemans {
+		if slices.Contains(worker, name) {
+			t.Errorf("a worker's session lists %s", name)
+		}
+		if !slices.Contains(turn, name) {
+			t.Errorf("a Brakeman turn's session does not list %s", name)
+		}
+	}
+	for _, tl := range mcpTools(true) {
+		op, ok := operation(tl.Name)
+		if !ok || tl.Description != op.Description || !reflect.DeepEqual(tl.InputSchema, op.Input) {
+			t.Errorf("tool %s is not the table's", tl.Name)
+		}
+	}
+	s := &mcpServer{out: io.Discard, getenv: sessionEnv(srv.URL, "s1", "tok")}
+	for _, name := range brakemans {
+		if _, err := s.call(t.Context(), name, json.RawMessage(`{"what":"changes","brief":{}}`)); !errors.Is(err, errNotBrakeman) {
+			t.Errorf("%s in a worker's session: %v", name, err)
+		}
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("%d requests sent from a worker's session", hits.Load())
+	}
+}
+
+// A Brakeman turn's session lists no tool that forms a crew, adds a
+// member or reaches a ticket; it keeps the rest, the guide among them.
+func TestNoCrewToolsForBrakeman(t *testing.T) {
+	turn := listedTools(t, brakemanEnv("http://127.0.0.1:1", "s1", "tok"))
+	for _, name := range []string{"form_crew", "add_member", "ticket_read", "ticket_comment"} {
+		if slices.Contains(turn, name) {
+			t.Errorf("a Brakeman turn's session lists %s", name)
+		}
+	}
+	for _, name := range []string{"report", "ask", "set_state", "run_status", "guide"} {
+		if !slices.Contains(turn, name) {
+			t.Errorf("a Brakeman turn's session does not list %s", name)
+		}
+	}
+	if want := len(mcpTools(false)) - 4 + 3; len(turn) != want {
+		t.Fatalf("%d tools, want %d: %v", len(turn), want, turn)
+	}
+}
+
+// observe sends each what to its own route by the table, with the
+// session's token and its name in X-Conductor-Session: a path's
+// parameters escaped into its path, the rest into its query, a number
+// taken as its text; a check's log comes back as text after its SHA-256.
+// A key the route does not take, a path parameter missing and a what
+// that is none are refused before anything is sent.
+func TestObservePassesItsQuery(t *testing.T) {
+	type seen struct{ path, query, auth, session string }
+	var (
+		mu  sync.Mutex
+		got []seen
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got = append(got, seen{r.URL.EscapedPath(), r.URL.RawQuery, r.Header.Get("Authorization"), r.Header.Get("X-Conductor-Session")})
+		mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/log") {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("X-Conductor-Log-SHA256", "abc123")
+			_, _ = io.WriteString(w, "FAIL TestX\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = io.WriteString(w, `{"ok":true}`+"\n")
+	}))
+	t.Cleanup(srv.Close)
+	env := brakemanEnv(srv.URL, "s1", "agent-tok")
+	replies := mcpRun(t, env,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"observe","arguments":{"what":"changes","query":{"since":"2026-11-01T18:00:00Z","limit":50}}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"observe","arguments":{"what":"task","query":{"run":"r 1","task":"t1"}}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"observe","arguments":{"what":"log","query":{"run":"r1","task":"t1","n":"2","id":"test","k":"0"}}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"observe","arguments":{"what":"changes","query":{"nope":"1"}}}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"observe","arguments":{"what":"task","query":{"run":"r1"}}}}`,
+		`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"observe","arguments":{"what":"everything"}}}`,
+	)
+	for i, want := range []string{`{"ok":true}`, `{"ok":true}`, "sha256 abc123\n\nFAIL TestX\n"} {
+		if text, isErr := toolText(t, replies[i]); isErr || text != want {
+			t.Errorf("reply %d: %q %v", i, text, isErr)
+		}
+	}
+	for i, want := range []string{"observe changes takes cursor, limit, since", "observe task needs task", "observe: what is one of changes, status, screen"} {
+		if text, isErr := toolText(t, replies[3+i]); !isErr || !strings.HasPrefix(text, want) {
+			t.Errorf("reply %d: %q %v", 3+i, text, isErr)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []seen{
+		{"/api/brakeman/changes", "limit=50&since=2026-11-01T18%3A00%3A00Z", "Bearer agent-tok", "s1"},
+		{"/api/runs/r%201/tasks/t1", "", "Bearer agent-tok", "s1"},
+		{"/api/runs/r1/tasks/t1/attempts/2/steps/test/0/log", "", "Bearer agent-tok", "s1"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the reads:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// brief_submit's reply lost to the network is asked for once more with
+// the same opId, minted by the tool when the agent gives none; one the
+// agent gives is the one sent.
+func TestBriefSubmitResendsTheSameOpID(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		opIDs []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/sessions/s1/brakeman/brief" {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			OpID  string          `json:"opId"`
+			Brief json.RawMessage `json:"brief"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || string(body.Brief) != `{"title":"t"}` {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		opIDs = append(opIDs, body.OpID)
+		n := len(opIDs)
+		mu.Unlock()
+		if n == 1 {
+			// Lost: the connection cut before the reply.
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				conn.Close()
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"request":{"id":"br-1","state":"briefed"}}`)
+	}))
+	t.Cleanup(srv.Close)
+	replies := mcpRun(t, brakemanEnv(srv.URL, "s1", "agent-tok"),
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brief_submit","arguments":{"brief":{"title":"t"}}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"brief_submit","arguments":{"opId":"mine-1","brief":{"title":"t"}}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"brief_submit","arguments":{"opId":"x"}}}`,
+	)
+	for i := range 2 {
+		if text, isErr := toolText(t, replies[i]); isErr || text != "brief kept: request br-1 is briefed; your turn ends now" {
+			t.Fatalf("reply %d: %q %v", i, text, isErr)
+		}
+	}
+	if text, isErr := toolText(t, replies[2]); !isErr || !strings.Contains(text, "needs a brief") {
+		t.Fatalf("no brief: %q %v", text, isErr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(opIDs) != 3 || len(opIDs[0]) != 16 || opIDs[0] != opIDs[1] || opIDs[2] != "mine-1" {
+		t.Fatalf("the posts' opIds: %q", opIDs)
 	}
 }

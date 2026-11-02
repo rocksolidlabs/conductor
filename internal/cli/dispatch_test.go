@@ -45,8 +45,9 @@ type seenRequest struct {
 
 // dispatchAPI is a real server for the CLI's tests: its Dispatch store
 // open in a data directory of the test's, the workbench token
-// dispatchToken, a catalog of two agents, cat, that runs /bin/cat, and
-// ready-cat (readyCat), for a managed run's attempts. Its
+// dispatchToken, a catalog of cat, that runs /bin/cat, and
+// ready-cat (readyCat), for a managed run's attempts, with any more the
+// test names. Its
 // handler records every request and the size of every reply, and loses
 // the next losing replies of the request lose names ("METHOD path"): the
 // server acts on each whole, and the connection is then cut before the
@@ -77,6 +78,12 @@ func (c *countingWriter) Write(b []byte) (int, error) {
 // newDispatchAPI starts a real server for t, ended with it.
 func newDispatchAPI(t *testing.T) *dispatchAPI {
 	t.Helper()
+	return newDispatchAPIWith(t)
+}
+
+// newDispatchAPIWith is newDispatchAPI with more agents in its catalog.
+func newDispatchAPIWith(t *testing.T, more ...catalog.Agent) *dispatchAPI {
+	t.Helper()
 	clearConductorEnv(t)
 	root := realTempDir(t)
 	cfg := config.Defaults()
@@ -87,7 +94,7 @@ func newDispatchAPI(t *testing.T) *dispatchAPI {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{{ID: "cat", Name: "cat", Command: []string{"/bin/cat"}}, readyCat}})
+	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: append([]catalog.Agent{{ID: "cat", Name: "cat", Command: []string{"/bin/cat"}}, readyCat}, more...)})
 	if err != nil {
 		t.Fatal(err)
 	}

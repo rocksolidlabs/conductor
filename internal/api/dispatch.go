@@ -99,7 +99,7 @@ type dispatchRoute struct {
 // switchyard's 403 as well (launchingAny).
 func (s *Server) routeDispatch(mux *http.ServeMux) {
 	for _, r := range s.dispatchRoutes() {
-		mux.HandleFunc(r.pattern, s.launching(r.h))
+		mux.HandleFunc(r.pattern, s.readable(r.pattern, s.launchingAny(r.h)))
 	}
 	mux.HandleFunc("GET /api/sessions/{id}/ticket", s.launchingAny(s.handleSessionTicket))
 	mux.HandleFunc("POST /api/sessions/{id}/ticket/comments", s.launchingAny(s.handleSessionTicketComment))
@@ -419,12 +419,19 @@ func (s *Server) writeOp(w http.ResponseWriter, what string, rc dispatch.Receipt
 // display name that is not one, a query outside its vocabulary or past
 // its bound), 404 not_found for what it does not hold, 503
 // dispatch_unavailable for a store that cannot serve (nothing to read,
-// closed), 503 ledger_unavailable, logged, for a run's chain the chain
-// rule could not read (dispatch.ErrChainUnread), and 500 store_failed,
+// closed), 503 run_changing (Retry-After: 1) for a run's chain walked
+// while a run of it was being resumed (errRunContinuing), 503
+// ledger_unavailable, logged, for a run's chain the chain rule could not
+// read otherwise (dispatch.ErrChainUnread), and 500 store_failed,
 // logged, for a failure of the database.
 func (s *Server) dispatchError(w http.ResponseWriter, what string, err error) {
 	words := strings.TrimPrefix(err.Error(), "dispatch: ")
 	switch {
+	case errors.Is(err, errRunContinuing):
+		// A run of the chain is being resumed: nothing was judged, and the
+		// same request may be sent again once the continuation is made.
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "run_changing", "a run of the chain is being resumed, so nothing was kept; ask again")
 	case errors.Is(err, dispatch.ErrChainUnread):
 		// The chain rule judges no link on a chain it could not read: the
 		// operation wrote nothing, and may be sent again.
@@ -1442,7 +1449,7 @@ func (s *Server) handleDispatchRemoveRelation(w http.ResponseWriter, r *http.Req
 func (s *Server) handleDispatchAddLink(w http.ResponseWriter, r *http.Request) {
 	var body linkBody
 	ds, key, _, ok := s.opAt(w, r, ticketKey, &body, &body.dispatchOp)
-	if !ok {
+	if !ok || body.Kind == dispatch.LinkRun && s.brakemanRun(w, body.Ref) {
 		return
 	}
 	ctx, cancel := opContext(r)

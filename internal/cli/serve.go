@@ -322,6 +322,9 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	// while its slots answer their free defaults (a plain build starts
 	// nothing).
 	srv.StartExtensions(mctx)
+	// Brakeman's desk takes its queued requests from now on: cfg.PublicURL
+	// has the listener's port, which a turn's session calls back on.
+	srv.StartBrakeman()
 	// The agents' lookups and probes, so the first Launch dialog lists them at once.
 	go srv.WarmCatalog(mctx)
 

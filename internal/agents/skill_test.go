@@ -425,3 +425,38 @@ func TestCodexPassesTheSessionsVariablesToItsMCPServer(t *testing.T) {
 		t.Error("a value went into the override: names only")
 	}
 }
+
+// The skill's Brakeman section is one short section, between the
+// ticket's and the rules, of at most six lines: CONDUCTOR_BRAKEMAN names
+// a turn, guide comes first, the request, observe and one brief, and
+// nothing written becomes work; the skill carries nothing else of
+// Brakeman's, so no agent carries a large static prompt.
+func TestTheSkillsBrakemanSectionIsShort(t *testing.T) {
+	const head = "\n## If you are Brakeman\n"
+	if strings.Count(Skill, head) != 1 {
+		t.Fatal("no Brakeman section, or more than one")
+	}
+	start := strings.Index(Skill, head) + len(head)
+	end := strings.Index(Skill[start:], "\n## ")
+	if end < 0 || strings.Index(Skill, "\n## Your ticket\n") > start || !strings.HasPrefix(Skill[start+end:], "\n## Rules\n") {
+		t.Fatal("the Brakeman section is not between the ticket's and the rules")
+	}
+	section := Skill[start : start+end]
+	var lines []string
+	for _, l := range strings.Split(section, "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > 6 {
+		t.Fatalf("%d lines, at most 6:\n%s", len(lines), section)
+	}
+	for _, want := range []string{"CONDUCTOR_BRAKEMAN is set", "Call guide first", "brakeman_request", "observe", "brief_submit", "evidence", "Nothing you write becomes work", "one brief", "your turn ends"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the section does not say %q", want)
+		}
+	}
+	if n := strings.Count(Skill, "Brakeman"); n != strings.Count(section, "Brakeman")+1 {
+		t.Errorf("Brakeman is named outside its section (%d times in the skill)", n)
+	}
+}

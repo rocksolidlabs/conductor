@@ -98,6 +98,10 @@ type Server struct {
 	// continuation and trying the mark again (resumeRecord). Under
 	// resumingMu.
 	recordMarks map[string]string
+	// continuations are the resumes and continuations under way
+	// (beginContinuation), whose runs no chain's walk judges until they
+	// end (continuingAt). Under resumingMu.
+	continuations map[*continuation]struct{}
 	// journaling holds the runs whose record is about to be written again
 	// (scheduleJournal), under journalMu.
 	journalMu  sync.Mutex
@@ -113,6 +117,9 @@ type Server struct {
 	// without a data directory, on a switchyard, which keeps no tickets,
 	// and when it could not be opened.
 	dispatch *dispatch.Store
+	// brakeman is Brakeman's desk (brakeman.go), opened beside Dispatch;
+	// nil without a data directory and on a switchyard.
+	brakeman *brakemanDesk
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -427,6 +434,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			s.dispatch.SetRunExists(s.runKnown)
 			s.dispatch.OnChange(s.events.dispatch)
 		}
+		if !cfg.Switchyard.Enabled {
+			s.brakeman = s.openBrakemanDesk(st)
+		}
 		s.wireLaunches()
 		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned, s.ledgerRecovered)
 		if s.ledger == nil {
@@ -593,6 +603,9 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	case <-ctx.Done():
 	}
 	// No record lands after this: the directories may be going.
+	if s.brakeman != nil {
+		s.brakeman.release(ctx)
+	}
 	if s.records != nil {
 		s.records.Close()
 	}
@@ -631,20 +644,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/crews/{id}/runs", s.launching(s.handleCrewRuns))
 	mux.HandleFunc("GET /api/paths", s.launching(s.handleListPaths))
 	mux.HandleFunc("GET /api/git/check", s.launching(s.handleGitCheck))
-	mux.HandleFunc("GET /api/runs", s.launching(s.handleListRuns))
-	mux.HandleFunc("GET /api/runs/{run}", s.launching(s.handleGetRun))
+	mux.HandleFunc("GET /api/runs", s.readable("GET /api/runs", s.launchingAny(s.handleListRuns)))
+	mux.HandleFunc("GET /api/runs/{run}", s.readable("GET /api/runs/{run}", s.launchingAny(s.handleGetRun)))
 	mux.HandleFunc("POST /api/runs/{run}/members", s.launching(s.handleAddRunMember))
 	mux.HandleFunc("POST /api/runs/{run}/members/{name}/start", s.launching(s.handleStartRunMember))
 	mux.HandleFunc("POST /api/runs/{run}/stop", s.launching(s.handleStopRun))
 	mux.HandleFunc("POST /api/runs/{run}/resume", s.launching(s.handleResumeRun))
 	mux.HandleFunc("POST /api/runs/{run}/members/{name}/resume", s.launching(s.handleResumeRunMember))
 	mux.HandleFunc("POST /api/runs/{run}/broadcast", s.launching(s.handleBroadcast))
-	mux.HandleFunc("GET /api/runs/{run}/commands/{command}", s.requireAdmin(s.handleGetCommand))
+	mux.HandleFunc("GET /api/runs/{run}/commands/{command}", s.readable("GET /api/runs/{run}/commands/{command}", s.handleGetCommand))
 	// Managed runs: the tasks, and the commands with receipts (tasks.go).
-	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}", s.requireAdmin(s.handleGetTask))
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}", s.readable("GET /api/runs/{run}/tasks/{task}", s.handleGetTask))
 	// A project manifest's receipts, from the ledger (manifest.go).
-	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps", s.requireAdmin(s.handleAttemptSteps))
-	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log", s.requireAdmin(s.handleStepLog))
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps", s.readable("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps", s.handleAttemptSteps))
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log", s.readable("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log", s.handleStepLog))
 	mux.HandleFunc("GET /api/runs/{run}/prerequisites", s.requireAdmin(s.handlePrerequisites))
 	mux.HandleFunc("GET /api/runs/{run}/prerequisites/{id}/{k}/log", s.requireAdmin(s.handlePrerequisiteLog))
 	mux.HandleFunc("POST /api/runs/{run}/pause", s.requireAdmin(s.handlePauseRun))
@@ -652,6 +665,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/cancel", s.requireAdmin(s.handleCancelTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/retry", s.requireAdmin(s.handleRetryTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/accept", s.requireAdmin(s.handleAcceptTask))
+	// Brakeman's desk and its turn's session routes (brakeman.go).
+	s.routeBrakeman(mux)
 	// The operating guide, the admin's and a session's (guide.go).
 	mux.HandleFunc("GET /api/guide", s.requireAdmin(s.handleGuide))
 	mux.HandleFunc("GET /api/sessions/{id}/guide", s.handleSessionGuide)
@@ -664,7 +679,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/inbox/ack", s.handleSessionInboxAck)
 	mux.HandleFunc("POST /api/sessions/{id}/task/blocked", s.handleSessionTaskBlocked)
 	mux.HandleFunc("POST /api/sessions/{id}/task/checkpoint", s.handleSessionTaskCheckpoint)
-	mux.HandleFunc("GET /api/runs/{run}/messages", s.requireAdmin(s.handleRunMessages))
+	mux.HandleFunc("GET /api/runs/{run}/messages", s.readable("GET /api/runs/{run}/messages", s.handleRunMessages))
 	mux.HandleFunc("GET /api/runs/{run}/links", s.launching(s.handleListRunLinks))
 	mux.HandleFunc("POST /api/runs/{run}/links", s.launching(s.handleCreateRunLink))
 	mux.HandleFunc("DELETE /api/runs/{run}/links/{linkId}", s.launching(s.handleRevokeRunLink))
@@ -675,8 +690,8 @@ func (s *Server) Handler() http.Handler {
 	s.routeDispatch(mux)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
-	mux.HandleFunc("GET /api/sessions", s.requireAdmin(s.handleListSessions))
-	mux.HandleFunc("GET /api/touched", s.requireAdmin(s.handleTouched))
+	mux.HandleFunc("GET /api/sessions", s.readable("GET /api/sessions", s.handleListSessions))
+	mux.HandleFunc("GET /api/touched", s.readable("GET /api/touched", s.handleTouched))
 	mux.HandleFunc("POST /api/sessions", s.launching(s.handleCreateSession))
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
 	// What an agent may do with its own session's token (selfservice.go).
@@ -995,6 +1010,15 @@ const recordsGrace = 5 * time.Second
 // records of the runs stopped are then waited for within recordsGrace,
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
+	// Brakeman's desk first: it writes no request's state from now on, so
+	// the turn the stops below end is left running in its records and the
+	// next start finds it interrupted; its launch outstanding is waited
+	// for, so the run and session it makes are among those stopped below.
+	// Its records, and their owner lock, are let go once the sessions are
+	// stopped (release, below).
+	if s.brakeman != nil {
+		s.brakeman.quiesce(ctx)
+	}
 	s.runs.Draining(ctx)
 	s.webhooks.close(ctx)
 	// The providers' queues end as the webhooks' do: what waits in them is
@@ -1024,6 +1048,12 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}
 	})
 	closes.Wait()
+	// The turn's processes stopped (or ctx spent), Brakeman's owner lock
+	// goes: another server takes no queued request while one of this
+	// server's turns still runs.
+	if s.brakeman != nil {
+		s.brakeman.release(ctx)
+	}
 	// The publications end with their sessions; wait for them to tell the
 	// rendezvous, all at once, as long as ctx allows.
 	s.pubMu.Lock()

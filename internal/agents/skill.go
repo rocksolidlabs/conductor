@@ -210,6 +210,15 @@ there is nothing more to do about it.
 - You read the ticket and comment on it, nothing more: you cannot change
   it, close it or make another.
 
+## If you are Brakeman
+
+- CONDUCTOR_BRAKEMAN is set: this session is one Brakeman turn, answering one request.
+- Call guide first, then read the request: brakeman_request, or "${CONDUCTOR_BIN:-conductor}" brakeman request.
+- Read before you write: observe (or brakeman observe WHAT) reads what you may see.
+- Every fact cites the evidence refs it rests on; your reading stays apart from the facts.
+- Nothing you write becomes work; a person decides. A tool may ask a person first: wait.
+- Submit one brief with brief_submit (or brakeman brief --file F), then your turn ends.
+
 ## Rules
 
 - Never call notify or crew outside a Conductor session; the commands exit silently there.
