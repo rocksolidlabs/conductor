@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync/atomic"
 
+	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
 
@@ -61,6 +62,37 @@ type sessionTicketReply struct {
 	Ticket    dispatch.TicketView `json:"ticket"`
 	Labels    []dispatch.Label    `json:"labels"`
 	Milestone *dispatch.Milestone `json:"milestone"`
+	Launch    *sessionLaunch      `json:"launch,omitempty"`
+}
+
+// sessionLaunch is the launch a run launched from a ticket carries in its
+// package, as a session reads it beside its ticket (Program item DS2,
+// docs/plans/dispatch-evidence.md, "The attempt's ticket"): the launch's
+// id, the ticket's revision it was launched at, the plan revision (its id
+// and number), the package's digest, and what changed of the ticket since
+// (null when the store has no such launch: one a replica made).
+type sessionLaunch struct {
+	ID      string                  `json:"id"`
+	Rev     int64                   `json:"rev"`
+	Plan    sessionLaunchPlan       `json:"plan"`
+	Digest  string                  `json:"digest"`
+	Changed *dispatch.LaunchChanges `json:"changed"`
+}
+
+// sessionLaunchPlan is the plan revision a launch was made from.
+type sessionLaunchPlan struct {
+	ID string `json:"id"`
+	N  int    `json:"n"`
+}
+
+// runPackage is the ticket the run with the id was launched from, as its
+// package names it (the engine's run, which holds every run a session is
+// a member of); nil for a run no ticket launched.
+func (s *Server) runPackage(run string) *crew.RunTicket {
+	if r, ok := s.runs.Get(run); ok {
+		return r.Ticket
+	}
+	return nil
 }
 
 // sessionRun is the run and the member of the session with the id: ok is
@@ -78,6 +110,29 @@ func (s *Server) sessionRun(w http.ResponseWriter, sessionID string) (run, membe
 // names.
 func noTicket(w http.ResponseWriter, run string) {
 	writeError(w, http.StatusNotFound, "no_ticket", "no ticket is linked to this session's run "+run)
+}
+
+// launchTicketGone answers 404 no_ticket for a run launched from a ticket
+// that is deleted (or not in this store): the run follows its package.
+func launchTicketGone(w http.ResponseWriter, run, key string) {
+	writeError(w, http.StatusNotFound, "no_ticket", fmt.Sprintf("the ticket %s this session's run %s was launched from is deleted: the run follows its package, .conductor/ticket.md and .conductor/package.json", key, run))
+}
+
+// packageTicket reads, whole, the ticket the run was launched from (the
+// run's Ticket, which its package names and its continuations carry), by
+// its key and checked by its id; found false for one deleted or not in
+// this store.
+func packageTicket(ctx context.Context, ds *dispatch.Store, rt *crew.RunTicket) (dispatch.TicketView, bool, error) {
+	v, err := ds.Ticket(ctx, rt.Key)
+	switch {
+	case errors.Is(err, dispatch.ErrNotFound):
+		return dispatch.TicketView{}, false, nil
+	case err != nil:
+		return dispatch.TicketView{}, false, err
+	case v.ID != rt.ID || !v.DeletedAt.IsZero():
+		return dispatch.TicketView{}, false, nil
+	}
+	return v, true, nil
 }
 
 // linkedTicket reads, whole (dispatch.TicketView), the live ticket whose
@@ -127,7 +182,32 @@ func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	v, found, err := linkedTicket(r.Context(), ds, run)
+	ctx := r.Context()
+	var (
+		v      dispatch.TicketView
+		found  bool
+		err    error
+		launch *sessionLaunch
+	)
+	if rt := s.runPackage(run); rt != nil {
+		// Launched from a ticket: that ticket, whatever links say.
+		if v, found, err = packageTicket(ctx, ds, rt); err == nil && !found {
+			launchTicketGone(w, run, rt.Key)
+			return
+		}
+		if err == nil {
+			launch = &sessionLaunch{ID: rt.Launch, Rev: rt.Rev, Plan: sessionLaunchPlan{ID: rt.Plan, N: rt.PlanN}, Digest: rt.Digest}
+			switch changed, cerr := ds.ChangedSince(ctx, rt.Launch); {
+			case errors.Is(cerr, dispatch.ErrNotFound):
+			case cerr != nil:
+				err = cerr
+			default:
+				launch.Changed = &changed
+			}
+		}
+	} else {
+		v, found, err = linkedTicket(ctx, ds, run)
+	}
 	if err != nil {
 		s.dispatchError(w, "ticket", err)
 		return
@@ -137,12 +217,12 @@ func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	project, _, _ := dispatch.ParseKey(v.Key)
-	pv, err := ds.Project(r.Context(), project)
+	pv, err := ds.Project(ctx, project)
 	if err != nil {
 		s.dispatchError(w, "project", err)
 		return
 	}
-	out := sessionTicketReply{Ticket: v, Labels: []dispatch.Label{}}
+	out := sessionTicketReply{Ticket: v, Labels: []dispatch.Label{}, Launch: launch}
 	for _, l := range pv.Labels {
 		if slices.Contains(v.Labels, l.ID) {
 			out.Labels = append(out.Labels, l)
@@ -212,6 +292,14 @@ func (s *Server) handleSessionTicketComment(w http.ResponseWriter, r *http.Reque
 	}
 	op := dispatch.Op{Actor: agentActor(member), ID: body.OpID}
 	rc, err := ds.AddRunComment(ctx, op, run, body.Body)
+	if errors.Is(err, dispatch.ErrLaunchTicketGone) {
+		key := ""
+		if rt := s.runPackage(run); rt != nil {
+			key = rt.Key
+		}
+		launchTicketGone(w, run, key)
+		return
+	}
 	if errors.Is(err, dispatch.ErrNoRunTicket) {
 		noTicket(w, run)
 		return

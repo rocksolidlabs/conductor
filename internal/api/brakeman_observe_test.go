@@ -107,8 +107,8 @@ func (f *obsFixture) seed(t *testing.T) {
 	f.ticket = done(ds.CreateTicket(ctx, adminOp("Ann"), dispatch.NewTicket{Project: "CND", Title: "The build fails"})).Key
 	f.otherTicket = done(ds.CreateTicket(ctx, adminOp("Ann"), dispatch.NewTicket{Project: "OTH", Title: "Elsewhere"})).Key
 	f.comment = done(ds.AddComment(ctx, adminOp("Ann"), f.ticket, "It fails on main too.")).ID
-	done(ds.AddLink(ctx, adminOp("Ann"), f.ticket, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: f.run}))
-	done(ds.AddLink(ctx, adminOp("Ann"), f.otherTicket, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: f.other}))
+	done(ds.AddLink(ctx, adminOp("Ann"), f.ticket, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: f.run}, nil))
+	done(ds.AddLink(ctx, adminOp("Ann"), f.otherTicket, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: f.other}, nil))
 
 	f.plain = e.createSession("cat")
 	d, _ := e.srv.registry.Get(f.plain)
@@ -1385,7 +1385,7 @@ func TestARelatedTicketOutsideTheScopeIsWithheld(t *testing.T) {
 	if err := f.srv.records.Save(crew.Run{ID: third, CrewID: "third", Name: "third", Cwd: f.root, State: crew.RunRunning, Managed: &crew.Managed{Revision: 1}}); err != nil {
 		t.Fatal(err)
 	}
-	doneOf(t)(f.srv.dispatch.AddLink(ctx, adminOp("Ann"), elsewhere, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: third}))
+	doneOf(t)(f.srv.dispatch.AddLink(ctx, adminOp("Ann"), elsewhere, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: third}, nil))
 	doneOf(t)(f.srv.dispatch.AddRelation(ctx, adminOp("Ann"), f.ticket, dispatch.RelationBlocks, elsewhere))
 	f.turn(t, func(c map[string]any) { c["scope"] = map[string]any{"runs": []string{f.run}} })
 	f.expectRead(t, "/api/dispatch/tickets/"+elsewhere, http.StatusForbidden, "outside_scope")

@@ -65,6 +65,11 @@ type createSessionRequest struct {
 	// catalog entry whose selection it is (agentSelection), and is
 	// refused agent_changed otherwise, before any process exists.
 	agentSHA256 string
+	// spawned, set by Launch for a Brakeman turn's member, is handed the
+	// session as soon as its process exists, before it is registered: the
+	// desk keeps it for its process (memberStarted) even when the
+	// registration is refused and the stop after it fails.
+	spawned func(*session.Local)
 	// Env is set in the process over the agent's own variables: the GOAL of
 	// a crew member. JSON cannot set it; a client sending "env" is refused
 	// like one sending any other unknown field.
@@ -391,6 +396,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		Plans: agents.PlansDir(agent.Adapter, pty.Lookup(procEnv), cwd),
 	})
 	local.SetAgentToken(agentToken)
+	if req.spawned != nil {
+		req.spawned(local)
+	}
 	if err := s.registry.AddReserved(local, req.reservation); err != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

@@ -321,7 +321,7 @@ func (s *Server) answerMade(w http.ResponseWriter, r *http.Request, status int, 
 		if rc, ok, err := s.dispatch.Receipt(r.Context(), dispatch.ActorAdmin, m.Op); err == nil && ok {
 			out["receipt"] = rc
 		}
-		out["ticket"] = map[string]any{"key": m.Key, "url": ticketURL(m.Key, "")}
+		out["ticket"] = map[string]any{"key": m.Key, "url": ticketURL(m.Key)}
 	case m.Crew != "":
 		out["crew"] = map[string]any{"id": m.Crew, "url": "/crews/" + m.Crew}
 	}
