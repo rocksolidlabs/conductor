@@ -1949,9 +1949,14 @@ func TestAnEnterAtAStartupQuestionDrawnBeforeTheHoldKeepsTheHold(t *testing.T) {
 		t.Fatal("the hold never began")
 	}
 	// The trust dialog drawn, on the screen and not asked yet; the Enter
-	// typed at it.
+	// typed at it. The pump feeds the output's tail (the watcher's) before
+	// the screen, and the Enter is routed by the screen (startupMayShow):
+	// the wait is for both, the tail alone having the dialog a moment before
+	// the screen does.
 	p.outW.Write([]byte("Trust this folder?\r\n› 1. Trust and continue\r\n  2. Quit\r\nenter continue · esc quit\r\n"))
-	if !waitFor(2*time.Second, func() bool { return s.trust != nil && s.trust.Watching() && s.lastStartup(s.trust.Text()) != "" }) {
+	if !waitFor(2*time.Second, func() bool {
+		return s.trust != nil && s.trust.Watching() && s.lastStartup(s.trust.Text()) != "" && s.startupMayShow()
+	}) {
 		t.Fatal("the dialog never reached the screen")
 	}
 	if a := s.Info().Attention; a.ID != q.ID {
