@@ -49,6 +49,10 @@ type Process struct {
 	exit ExitStatus
 }
 
+// KillWait is the most Stop waits for the process after SIGKILL: Stop
+// returns within its grace plus KillWait.
+const KillWait = 5 * time.Second
+
 // ErrNoCommand is returned for an empty argv.
 var ErrNoCommand = errors.New("pty: empty command")
 
@@ -173,7 +177,7 @@ func (p *Process) Stop(ctx context.Context, grace time.Duration) error {
 	select {
 	case <-p.done:
 		return nil
-	case <-time.After(5 * time.Second):
+	case <-time.After(KillWait):
 		return errors.New("pty: process did not exit after SIGKILL")
 	}
 }

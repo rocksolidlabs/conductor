@@ -4,8 +4,11 @@
 // managed-run checks (docs/plans/agent-harness-order.md) and a project
 // manifest's steps (docs/plans/project-manifests.md) are Run's callers; a
 // manifest's services are Serve's, a command that runs until it is
-// stopped (SIGTERM to its group, SIGKILL after a grace). A probe and git
-// have runners of their own.
+// stopped (SIGTERM to its group, SIGKILL after a grace). Probe makes one
+// try of a tree's readiness probe and FreePort draws a port for it; git
+// has a runner of its own. Prepare builds a command's environment apart
+// from its run, for a runner that takes it whole (Spec.Environ): the
+// Runtime (package ext) receives what Conductor built.
 package proc
 
 import (
@@ -75,6 +78,12 @@ type Spec struct {
 	// refused (injectable), so no token comes in by this door: the run
 	// does not start.
 	Inject map[string]string
+	// Environ, when set (not nil), is the command's whole environment, as
+	// Prepare built it: the command gets exactly it. Allow, Env and Inject
+	// must then be empty, and each entry NAME=value, the name not empty
+	// and free of NUL; its names were held to their rules when Prepare
+	// built it.
+	Environ []string
 	// Timeout is required by Run: the process group is killed past it, and
 	// at most MaxTimeout. A service has no timeout of its life: Serve's,
 	// when given, bounds its start alone.
@@ -197,6 +206,16 @@ func (s Spec) bounds(service bool) (head, tail int, logLimit int64, why string) 
 	if !filepath.IsAbs(s.Dir) {
 		return 0, 0, 0, "proc: the directory must be absolute"
 	}
+	if s.Environ != nil {
+		if len(s.Allow) > 0 || len(s.Env) > 0 || len(s.Inject) > 0 {
+			return 0, 0, 0, "proc: Environ beside Allow, Env or Inject"
+		}
+		for _, kv := range s.Environ {
+			if k, _, ok := strings.Cut(kv, "="); !ok || k == "" || strings.ContainsRune(k, 0) {
+				return 0, 0, 0, fmt.Sprintf("proc: %q in Environ is not NAME=value", kv)
+			}
+		}
+	}
 	for k := range s.Env {
 		if err := checkName(k); err != nil {
 			return 0, 0, 0, err.Error()
@@ -218,6 +237,30 @@ func (s Spec) bounds(service bool) (head, tail int, logLimit int64, why string) 
 		logLimit = DefaultLogLimit
 	}
 	return head, tail, logLimit, ""
+}
+
+// Prepare checks s as Run (or Serve, service) checks it, in the same order,
+// and builds the environment its command would be given: a session's, as
+// BuildEnv builds it from Conductor's own (the allowlist and Allow,
+// CONDUCTOR_* and the blocked loaders out), then Env, then Inject, then
+// TERM=dumb and NO_COLOR=1; s.Environ, copied, when it is set. Its error is
+// the words Result.Err carries for the same spec. A runner that takes the
+// environment whole (Spec.Environ, the Runtime's CommandSpec.Env) is given
+// what it answers.
+func Prepare(s Spec, service bool) ([]string, error) {
+	if _, _, _, why := s.bounds(service); why != "" {
+		return nil, errors.New(why)
+	}
+	return s.environ(), nil
+}
+
+// environ is the command's environment: Environ, copied, when it is set,
+// and otherwise the one environment builds.
+func (s Spec) environ() []string {
+	if s.Environ != nil {
+		return append([]string{}, s.Environ...)
+	}
+	return environment(s.Allow, s.Env, s.Inject)
 }
 
 // launched is a command started, its exit watched and its output read, as
@@ -254,7 +297,7 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 	cmd := exec.CommandContext(ctx, s.Argv[0], s.Argv[1:]...)
 	cmd.Dir = s.Dir
 	cmd.Stdin = nil
-	cmd.Env = environment(s.Allow, s.Env, s.Inject)
+	cmd.Env = s.environ()
 	cmd.Stdout, cmd.Stderr = w, w
 	cmd.WaitDelay = WaitDelay
 	// The output's end is known to the lifecycle before anything can kill
@@ -297,7 +340,7 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 		return nil, res, false
 	}
 	if s.Started != nil {
-		s.Started(res.Process)
+		tellStarted(s.Started, res.Process, cmd, g, wait, r)
 	}
 
 	l = &launched{cmd: cmd, g: g, r: r, exited: exited, wait: wait, mem: &capture{headMax: head, tailMax: tail}, eof: eof, res: res}
@@ -314,6 +357,24 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 		}
 	}()
 	return l, res, true
+}
+
+// tellStarted calls started with the process. A started that panics (or
+// ends its goroutine) leaves nothing running: before the panic leaves, the
+// group is ended as the command's own end ends it, the process reaped and
+// the output's pipe closed, and the panic goes on unchanged.
+func tellStarted(started func(Process), p Process, cmd *exec.Cmd, g *lifecycle, wait func() error, r *os.File) {
+	told := false
+	defer func() {
+		if told {
+			return
+		}
+		g.signal(cmd, sigKill)
+		wait()
+		r.Close()
+	}()
+	started(p)
+	told = true
 }
 
 // outputRead, when set, is called once the output's last byte is read and
