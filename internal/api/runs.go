@@ -68,6 +68,21 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 		if aerr := s.brakemanLaunch(spec, &req, &ref); aerr != nil {
 			return nil, aerr
 		}
+		// The turn's place among the server's sessions is held before its
+		// process is spawned: at the cap the turn is refused with nothing
+		// made, never a process started and then refused registration.
+		if req.reservation == nil {
+			res, err := s.registry.Reserve()
+			if err != nil {
+				return nil, newAPIError(http.StatusConflict, "too_many_sessions", "session limit reached")
+			}
+			defer res.Release()
+			req.reservation = res
+		}
+		// The desk holds the process from its spawn, through any failure
+		// of the launch after it.
+		request := spec.Request
+		req.spawned = func(l *session.Local) { s.brakeman.memberSpawned(request, l) }
 	}
 	local, aerr := s.newLocal(req, &ref)
 	if aerr != nil {

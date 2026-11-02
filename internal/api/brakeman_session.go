@@ -266,21 +266,7 @@ func (s *Server) handleSessionBrakemanBrief(w http.ResponseWriter, r *http.Reque
 		runID = info.Crew.RunID
 	}
 	if req.HasBrief {
-		// The repeat of a kept brief: compared as kept, never resolved
-		// or checked again against the catalog and the folders, whatever
-		// the records, the catalog and the request say now (a drafted
-		// crew's agent removed since is still the brief kept).
-		b, err := brakeman.DecodeBrief(body.Brief, req.Config.Permissions, keptFacts{brakemanFacts{s: s}})
-		if err != nil {
-			s.brakemanError(w, fmt.Errorf("%w: %s", brakeman.ErrBriefExists, id))
-			return
-		}
-		kept, err := d.st.KeepBrief(id, brakeman.Kept{OpID: body.OpID, Brief: b})
-		if err != nil {
-			s.brakemanError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"request": kept})
+		s.repeatBrief(w, req, body)
 		return
 	}
 	if req.State != brakeman.StateStarting && req.State != brakeman.StateRunning {
@@ -296,16 +282,40 @@ func (s *Server) handleSessionBrakemanBrief(w http.ResponseWriter, r *http.Reque
 	// configuration is still at the revision it was checked against: a
 	// save meanwhile (drafting refused, the visibility or the scope
 	// narrowed) has the brief checked again against it, and one that
-	// keeps moving refuses it (409 stale_revision), nothing kept.
+	// keeps moving refuses it (409 stale_revision), nothing kept. Every
+	// new brief is kept under admit, so a brief found kept there, or by a
+	// check refusing this one, is an overlapping submission's: this one
+	// is its repeat (200) or another brief (409 brief_exists), never
+	// created again nor refused against a configuration that moved after
+	// the kept one was checked.
 	for attempt := 1; ; attempt++ {
-		b, refs, rev, ok := s.checkBrief(w, r, req, body.Brief)
-		if !ok {
+		if f := d.beforeCheck.Load(); f != nil {
+			(*f)(id)
+		}
+		b, refs, rev, refuse := s.checkBrief(r, req, body.Brief)
+		if refuse != nil {
+			if now, err := d.st.Get(id); err == nil && now.HasBrief {
+				s.repeatBrief(w, now, body)
+				return
+			}
+			refuse(w)
 			return
 		}
 		if f := d.beforeKeep.Load(); f != nil {
 			(*f)(id)
 		}
 		d.admit.Lock()
+		now, err := d.st.Get(id)
+		if err != nil {
+			d.admit.Unlock()
+			s.brakemanError(w, err)
+			return
+		}
+		if now.HasBrief {
+			d.admit.Unlock()
+			s.repeatBrief(w, now, body)
+			return
+		}
 		cfg, err := d.st.Config()
 		if err != nil {
 			d.admit.Unlock()
@@ -333,6 +343,26 @@ func (s *Server) handleSessionBrakemanBrief(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+// repeatBrief answers a submission to a request whose brief is kept
+// (req, as read): the same opId and brief 200 with the request, compared
+// as kept, never resolved or checked again against the catalog and the
+// folders, whatever the records, the catalog and the request say now (a
+// drafted crew's agent removed since is still the brief kept); any other
+// brief 409 brief_exists.
+func (s *Server) repeatBrief(w http.ResponseWriter, req brakeman.Request, body briefBody) {
+	b, err := brakeman.DecodeBrief(body.Brief, req.Config.Permissions, keptFacts{brakemanFacts{s: s}})
+	if err != nil {
+		s.brakemanError(w, fmt.Errorf("%w: %s", brakeman.ErrBriefExists, req.ID))
+		return
+	}
+	kept, err := s.brakeman.st.KeepBrief(req.ID, brakeman.Kept{OpID: body.OpID, Brief: b})
+	if err != nil {
+		s.brakemanError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"request": kept})
+}
+
 // briefChecks is how many times a brief is checked against a
 // configuration that moves under it before it is refused.
 const briefChecks = 3
@@ -341,47 +371,50 @@ const briefChecks = 3
 // the request's snapshot: decoded under the permissions both allow, its
 // proposals held to the guide, its refs resolved under the grant both
 // allow. It answers the brief, its resolutions and the configuration's
-// revision they were checked against, or writes the refusal (ok false).
-func (s *Server) checkBrief(w http.ResponseWriter, r *http.Request, req brakeman.Request, raw json.RawMessage) (brakeman.Brief, []brakeman.Resolution, int64, bool) {
+// revision they were checked against, or the refusal to write (refuse
+// non-nil), which the caller writes unless a brief was kept meanwhile.
+func (s *Server) checkBrief(r *http.Request, req brakeman.Request, raw json.RawMessage) (brakeman.Brief, []brakeman.Resolution, int64, func(http.ResponseWriter)) {
 	d := s.brakeman
 	id := req.ID
+	refused := func(err error) func(http.ResponseWriter) {
+		return func(w http.ResponseWriter) { s.brakemanError(w, err) }
+	}
 	cfg, err := d.st.Config()
 	if err != nil {
-		s.brakemanError(w, err)
-		return brakeman.Brief{}, nil, 0, false
+		return brakeman.Brief{}, nil, 0, refused(err)
 	}
 	b, err := brakeman.DecodeBrief(raw, bothPermit(req.Config.Permissions, cfg.Permissions), brakemanFacts{s: s})
 	if err != nil {
-		s.brakemanError(w, err)
-		return brakeman.Brief{}, nil, 0, false
+		return brakeman.Brief{}, nil, 0, refused(err)
 	}
 	if err := checkProposals(b); err != nil {
-		s.brakemanError(w, err)
-		return brakeman.Brief{}, nil, 0, false
+		return brakeman.Brief{}, nil, 0, refused(err)
 	}
 	log, err := d.st.Reads(id)
 	if err != nil {
-		s.brakemanError(w, err)
-		return brakeman.Brief{}, nil, 0, false
+		return brakeman.Brief{}, nil, 0, refused(err)
 	}
 	refs, err := s.resolveBriefRefs(r.Context(), d.st, req, b, log, cfg)
 	var bad *badRefsError
 	var unopened *errRefStore
 	switch {
 	case errors.As(err, &bad):
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": map[string]any{"code": "bad_refs", "message": bad.Error(), "refs": bad.Refs}})
-		return brakeman.Brief{}, nil, 0, false
+		return brakeman.Brief{}, nil, 0, func(w http.ResponseWriter) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": map[string]any{"code": "bad_refs", "message": bad.Error(), "refs": bad.Refs}})
+		}
 	case errors.As(err, &unopened):
 		// A store the server has and could not open, as the other
 		// routes answer one.
-		writeError(w, http.StatusServiceUnavailable, "store_unavailable", unopened.Error())
-		return brakeman.Brief{}, nil, 0, false
+		return brakeman.Brief{}, nil, 0, func(w http.ResponseWriter) {
+			writeError(w, http.StatusServiceUnavailable, "store_unavailable", unopened.Error())
+		}
 	case err != nil:
 		s.log.Warn("a brief's refs could not be resolved", "request", id, "err", err)
-		writeError(w, http.StatusInternalServerError, "store_failed", "the records a brief cites could not be read")
-		return brakeman.Brief{}, nil, 0, false
+		return brakeman.Brief{}, nil, 0, func(w http.ResponseWriter) {
+			writeError(w, http.StatusInternalServerError, "store_failed", "the records a brief cites could not be read")
+		}
 	}
-	return b, refs, cfg.Rev, true
+	return b, refs, cfg.Rev, nil
 }
 
 // keptFacts are the facts a repeat of a kept brief is decoded with: a

@@ -2098,3 +2098,277 @@ func TestTheLastEventIsTheStateTheRecordsEndOn(t *testing.T) {
 		t.Fatalf("the last event of %s says %q", id, last)
 	}
 }
+
+// At the session limit a turn is refused before its process is spawned:
+// its place is reserved first, so the request fails with the limit's
+// words, no session is made, and the slot is given up.
+func TestATurnAtTheSessionLimitSpawnsNothing(t *testing.T) {
+	b := brakemanEnv(t, func(c *config.Config) { c.MaxSessions = 1 })
+	b.createSession("cat")
+	b.enable(t, "bk", nil)
+	var made atomic.Int32
+	f := func(s *Server, req createSessionRequest, ref *session.CrewRef) (*session.Local, *apiError) {
+		made.Add(1)
+		return s.createLocalSession(req, ref)
+	}
+	newLocalSeam.Store(&f)
+	t.Cleanup(func() { newLocalSeam.Store(nil) })
+	id := b.briefing(t)
+	if r := b.waitState(t, id, brakeman.StateFailed); !strings.Contains(r.Why, "session limit reached") {
+		t.Fatalf("%+v", r)
+	}
+	b.slotFree(t)
+	if n := made.Load(); n != 0 {
+		t.Fatalf("%d sessions made at the limit", n)
+	}
+}
+
+// createLocalSession hands a session to spawned as soon as its process
+// exists, before it is registered: a registration refused at the cap
+// still names the process it stopped.
+func TestASpawnedSessionIsHandedOverBeforeItsRegistration(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, func(c *config.Config) { c.MaxSessions = 1 })
+	b.createSession("cat")
+	var got *session.Local
+	_, aerr := b.srv.createLocalSession(createSessionRequest{AgentID: "cat", Cwd: b.root, spawned: func(l *session.Local) { got = l }}, nil)
+	if aerr == nil || aerr.Code != "too_many_sessions" {
+		t.Fatalf("at the cap: %v", aerr)
+	}
+	if got == nil {
+		t.Fatal("the process spawned was never handed over")
+	}
+	select {
+	case <-got.ProcessDone():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the refused session's process was not stopped")
+	}
+}
+
+// A turn whose session's registration is refused after its process was
+// spawned, and whose stop fails, holds the slot until that process is
+// reaped: the desk was handed the process at its spawn, so the next
+// request waits and the records are never let go under it.
+func TestARefusedRegistrationHoldsTheSlotUntilItsProcessIsReaped(t *testing.T) {
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	var mu sync.Mutex
+	var procs []*failingProc
+	f := func(s *Server, req createSessionRequest, ref *session.CrewRef) (*session.Local, *apiError) {
+		// createLocalSession's refusal at the cap: the process exists and
+		// is handed over (spawned), its registration is refused, and its
+		// stop fails.
+		p := &failingProc{FakeProc: sessiontest.NewFakeProc()}
+		mu.Lock()
+		procs = append(procs, p)
+		mu.Unlock()
+		r := *ref
+		info := session.Info{ID: session.NewID(), Name: req.Name, Kind: session.KindServer, AgentID: req.AgentID, Cwd: req.Cwd, Status: session.StatusRunning, Cols: 80, Rows: 24, Crew: &r, CreatedAt: time.Now().UTC()}
+		l := session.NewLocal(info, p, session.Options{OnChange: s.localChange, OnActivity: s.localActivity, Log: s.log})
+		t.Cleanup(func() { p.End(0) })
+		if req.spawned != nil {
+			req.spawned(l)
+		}
+		if err := l.Stop(t.Context()); err == nil {
+			t.Error("the process double's stop did not fail")
+		}
+		return nil, newAPIError(http.StatusConflict, "too_many_sessions", "session limit reached")
+	}
+	newLocalSeam.Store(&f)
+	t.Cleanup(func() { newLocalSeam.Store(nil) })
+	first := b.briefing(t)
+	next := b.briefing(t)
+	if r := b.waitState(t, first, brakeman.StateFailed); !strings.Contains(r.Why, "session limit reached") {
+		t.Fatalf("%+v", r)
+	}
+	b.settle(t)
+	if !b.turnHeld() {
+		t.Fatal("the slot was given up while the refused session's process lives")
+	}
+	if r, _ := b.desk.st.Get(next); r.State != brakeman.StateQueued {
+		t.Fatalf("the next turn started while the process lives: %s", r.State)
+	}
+	mu.Lock()
+	p := procs[0]
+	mu.Unlock()
+	p.End(0)
+	b.waitState(t, next, brakeman.StateStarting, brakeman.StateRunning, brakeman.StateFailed)
+}
+
+// An agent that exits before its session is registered fails its request
+// with its exit and last line: the desk, handed the session only once the
+// registration is done, writes the end then, never one without the
+// output (registration gated here until the session's end was told).
+func TestAnAgentThatExitsBeforeItsSessionIsRegisteredFailsWithItsLastLine(t *testing.T) {
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	f := func(s *Server, req createSessionRequest, ref *session.CrewRef) (*session.Local, *apiError) {
+		p := sessiontest.NewFakeProc()
+		told := make(chan struct{})
+		var once sync.Once
+		r := *ref
+		info := session.Info{ID: session.NewID(), Name: req.Name, Kind: session.KindServer, AgentID: req.AgentID, Cwd: req.Cwd, Status: session.StatusRunning, Cols: 80, Rows: 24, Crew: &r, CreatedAt: time.Now().UTC()}
+		l := session.NewLocal(info, p, session.Options{Log: s.log, OnActivity: s.localActivity, OnChange: func(info session.Info) {
+			s.localChange(info)
+			if info.Status.Ended() {
+				once.Do(func() { close(told) })
+			}
+		}})
+		if err := p.Print("Please run /login\r\n"); err != nil {
+			t.Error(err)
+		}
+		p.End(3)
+		select {
+		case <-told:
+		case <-time.After(30 * time.Second):
+			t.Error("the session's end was never told")
+		}
+		if err := s.registry.Add(l); err != nil {
+			return nil, newAPIError(http.StatusConflict, "too_many_sessions", err.Error())
+		}
+		return l, nil
+	}
+	newLocalSeam.Store(&f)
+	t.Cleanup(func() { newLocalSeam.Store(nil) })
+	id := b.briefing(t)
+	r := b.waitState(t, id, brakeman.StateFailed)
+	if !strings.Contains(r.Why, "exited before it read its request") || !strings.Contains(r.Why, "exit 3") || !strings.Contains(r.Why, "Please run /login") {
+		t.Fatalf("%+v", r)
+	}
+	b.slotFree(t)
+}
+
+// A save while the server shuts down is refused (503 shutting_down),
+// nothing saved: turning Brakeman off then could cancel nothing, and the
+// queue would launch once Brakeman is on again after the restart.
+func TestASaveDuringShutdownIsRefused(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	held, release := b.gateBeforeLaunch(t, nil)
+	b.briefing(t)
+	queued := b.briefing(t)
+	<-held
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		b.srv.Shutdown(ctx)
+	}()
+	if !waitFor(30*time.Second, b.desk.closing.Load) {
+		t.Fatal("the shutdown never quiesced the desk")
+	}
+	c := b.config(t)
+	rev := c["rev"]
+	c["enabled"] = false
+	b.expect(t, "PUT", "/api/brakeman/config", map[string]any{"rev": rev, "config": c}, http.StatusServiceUnavailable, "shutting_down")
+	if cfg, err := b.desk.st.Config(); err != nil || !cfg.Enabled {
+		t.Fatalf("the refused save was kept: %+v %v", cfg, err)
+	}
+	release()
+	<-done
+	if r, _ := b.desk.st.Get(queued); r.State != brakeman.StateQueued {
+		t.Fatalf("the queued request is %s after the refused save", r.State)
+	}
+}
+
+// Two submissions of one brief that overlap keep it once: the one that
+// finds it kept as it takes admit (both checked before either kept) is
+// its repeat, 200 and never created again, even with the configuration
+// narrowed after the first was kept.
+func TestOverlappingBriefSubmissionsKeepItOnce(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	other := b.createSession("cat")
+	b.enable(t, "bk", nil)
+	id := b.briefing(t)
+	sid, tok, _ := b.turnSession(t, id)
+	var arrivals atomic.Int32
+	held := make(chan struct{}, 2)
+	gates := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
+	f := func(string) {
+		n := arrivals.Add(1)
+		if n > 2 {
+			return
+		}
+		held <- struct{}{}
+		<-gates[n-1]
+	}
+	b.desk.beforeKeep.Store(&f)
+	t.Cleanup(func() {
+		for _, g := range gates {
+			select {
+			case <-g:
+			default:
+				close(g)
+			}
+		}
+		b.desk.beforeKeep.Store(nil)
+	})
+	brief := factBrief("session:" + other)
+	got := make(chan int, 2)
+	for range 2 {
+		go func() {
+			status, _ := b.send(tok, "POST", "/api/sessions/"+sid+"/brakeman/brief", map[string]any{"opId": "b1", "brief": brief})
+			got <- status
+		}()
+	}
+	<-held
+	<-held
+	close(gates[0])
+	if status := <-got; status != http.StatusCreated {
+		t.Fatalf("the first kept: %d", status)
+	}
+	b.configure(t, func(c map[string]any) { c["scope"] = map[string]any{"crews": []any{"brakeman"}} })
+	close(gates[1])
+	if status := <-got; status != http.StatusOK {
+		t.Fatalf("the overlapping repeat: %d", status)
+	}
+	if r, _ := b.desk.st.Get(id); r.State != brakeman.StateBriefed || r.BriefOpID != "b1" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// A submission whose check runs after an overlapping one was kept, and
+// that the configuration narrowed since would refuse, is that brief's
+// repeat (200), never refused for a brief already kept.
+func TestABriefRefusedAfterAnOverlappingKeepIsItsRepeat(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	other := b.createSession("cat")
+	b.enable(t, "bk", nil)
+	id := b.briefing(t)
+	sid, tok, _ := b.turnSession(t, id)
+	held, gate := make(chan struct{}), make(chan struct{})
+	var arrivals atomic.Int32
+	f := func(string) {
+		// The first submission only; the second passes.
+		if arrivals.Add(1) == 1 {
+			close(held)
+			<-gate
+		}
+	}
+	b.desk.beforeCheck.Store(&f)
+	var opened sync.Once
+	open := func() { opened.Do(func() { close(gate) }) }
+	t.Cleanup(func() {
+		open()
+		b.desk.beforeCheck.Store(nil)
+	})
+	brief := factBrief("session:" + other)
+	got := make(chan int, 1)
+	go func() {
+		status, _ := b.send(tok, "POST", "/api/sessions/"+sid+"/brakeman/brief", map[string]any{"opId": "b1", "brief": brief})
+		got <- status
+	}()
+	<-held
+	if status, out := b.submit(t, sid, tok, "b1", brief); status != http.StatusCreated {
+		t.Fatalf("the overlapping submission: %d %v", status, out)
+	}
+	b.configure(t, func(c map[string]any) { c["scope"] = map[string]any{"crews": []any{"brakeman"}} })
+	open()
+	if status := <-got; status != http.StatusOK {
+		t.Fatalf("the held submission: %d", status)
+	}
+}
