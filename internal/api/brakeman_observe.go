@@ -93,7 +93,9 @@ func (s *Server) turnPrincipalOf(r *http.Request) (*turnPrincipal, *apiError) {
 	d := s.brakeman
 	drv, ok := s.registry.Get(id)
 	if !ok || !agentTokenOK(drv, presentedToken(r, false)) {
-		return nil, newAPIError(http.StatusUnauthorized, "unauthorized", "the session's own token, for the session X-Conductor-Session names, or the workbench token is required")
+		// Not the named session's own token: the request is any other's,
+		// the workbench token's or none.
+		return nil, nil
 	}
 	ref := drv.Info().Crew
 	if ref == nil || ref.Brakeman == nil {
@@ -190,21 +192,35 @@ type readSpec struct {
 // in its read log. Anyone else is refused as requireAdmin refuses.
 func (s *Server) reader(spec readSpec, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if p := s.authenticate(r, false); p.admin {
-			next(w, withPrincipal(r, p))
-			return
-		}
+		// A turn's token is looked at first, so it is never asked of the
+		// token chain (and an identity provider) as a token of theirs.
 		tp, aerr := s.turnPrincipalOf(r)
 		if aerr != nil {
 			writeAPIError(w, aerr)
 			return
 		}
-		if tp == nil {
-			s.requireAdmin(next)(w, r)
+		if tp != nil {
+			s.turnRead(w, r, tp, spec, next)
 			return
 		}
-		s.turnRead(w, r, tp, spec, next)
+		if p := s.authenticate(r, false); p.admin {
+			next(w, withPrincipal(r, p))
+			return
+		}
+		s.refuseAdmin(w, r)
 	}
+}
+
+// refuseAdmin answers a request that is neither the admin's nor a
+// turn's as requireAdmin answers it, without asking the token chain (and
+// an identity provider) a second time.
+func (s *Server) refuseAdmin(w http.ResponseWriter, r *http.Request) {
+	if !s.limiter.allow(clientKey(r)) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
+		return
+	}
+	w.Header().Set("WWW-Authenticate", `Bearer realm="conductor"`)
+	writeError(w, http.StatusUnauthorized, "unauthorized", "workbench token required")
 }
 
 // observeRoute is a route of Brakeman's own reads (GET /api/brakeman/…):
@@ -215,20 +231,20 @@ func (s *Server) observeRoute(h func(w http.ResponseWriter, r *http.Request, o *
 		if _, ok := s.brakemanDeskOf(w); !ok {
 			return
 		}
-		if p := s.authenticate(r, false); p.admin {
-			h(w, withPrincipal(r, p), s.newObserver(nil))
-			return
-		}
 		tp, aerr := s.turnPrincipalOf(r)
 		if aerr != nil {
 			writeAPIError(w, aerr)
 			return
 		}
-		if tp == nil {
-			s.requireAdmin(func(http.ResponseWriter, *http.Request) {})(w, r)
+		if tp != nil {
+			s.turnRead(w, r, tp, readSpec{}, nil, h)
 			return
 		}
-		s.turnRead(w, r, tp, readSpec{}, nil, h)
+		if p := s.authenticate(r, false); p.admin {
+			h(w, withPrincipal(r, p), s.newObserver(nil))
+			return
+		}
+		s.refuseAdmin(w, r)
 	}
 }
 

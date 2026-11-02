@@ -675,7 +675,8 @@ func TestCrewCreatesSchemaIsACrewReadBackWithoutTheServersFields(t *testing.T) {
 		}
 	}
 	props, _ := op.Input["properties"].(map[string]any)
-	server := []string{"id", "createdAt", "updatedAt", "manifestRevision"}
+	// origin is the server's too: only a Brakeman draft's make sets it.
+	server := []string{"id", "createdAt", "updatedAt", "manifestRevision", "origin"}
 	var want []string
 	for k := range fullOf(t, reflect.TypeFor[crew.Crew]()) {
 		if !slices.Contains(server, k) {
