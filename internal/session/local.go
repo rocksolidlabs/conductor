@@ -4940,17 +4940,56 @@ func (s *Local) handOverSize() {
 }
 
 // Stop terminates the process.
+//
+// The guard is the process, not the status: a stop returns at once only
+// once the process is reaped (ProcessDone). A session marked ended whose
+// process is not (a stop that failed, a read side that closed before its
+// child exited) is signalled again by every call, which answers that
+// stop's error; its status stays as it is, so a stop never makes a
+// session running again.
 func (s *Local) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	s.stopRequested = true
 	s.mu.Unlock()
-	if ended {
-		return nil
+	select {
+	case <-s.proc.Done():
+		if ended {
+			return nil
+		}
+	default:
 	}
 	err := s.proc.Stop(ctx, s.opts.StopGrace)
 	s.markEnded(StatusStopped)
 	return err
+}
+
+// ProcessDone is closed once the session's process has exited and been
+// waited for: the process's own Done. A session's status can read ended
+// before it (Stop marks it stopped whatever the process did), so what must
+// know the process is gone (the Brakeman desk's slot) waits on this.
+func (s *Local) ProcessDone() <-chan struct{} { return s.proc.Done() }
+
+// maxLastLine bounds LastLine.
+const maxLastLine = 200
+
+// LastLine is the last line of output the session kept that is not blank,
+// its escape sequences stripped and cut to at most maxLastLine bytes: what
+// an agent printed as it exited ("Please run /login").
+func (s *Local) LastLine() string {
+	text := strings.ReplaceAll(string(StripANSI(s.ring.Snapshot())), "\r", "\n")
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			l = strings.ToValidUTF8(l, "")
+			for len(l) > maxLastLine {
+				_, n := utf8.DecodeLastRuneInString(l)
+				l = l[:len(l)-n]
+			}
+			return l
+		}
+	}
+	return ""
 }
 
 // DisconnectLink evicts every subscription created through linkID as

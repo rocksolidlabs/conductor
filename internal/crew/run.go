@@ -67,6 +67,10 @@ type LaunchSpec struct {
 	// ErrAgentChanged otherwise, before any process exists. Empty for any
 	// other run, which launches on the entry as it is.
 	AgentSHA256 string
+	// Class and Request are the run's (LaunchNamedWith): a Brakeman turn's
+	// member is known by them, never by its crew's id or goal. Both empty
+	// for a person's run.
+	Class, Request string
 	// Inject is Conductor's own names of the attempt's tree, set in the
 	// process after the crew's as a session's own are, unfiltered: its
 	// ports (CONDUCTOR_PORT_<NAME>), its state directory
@@ -257,6 +261,11 @@ type Run struct {
 	// launched from (LaunchPlanned), read from its package, which its
 	// continuations carry; absent for a run no ticket launched.
 	Ticket *RunTicket `json:"ticket,omitempty"`
+	// Class is the run's class (ClassBrakeman for a Brakeman turn) and
+	// Request the Brakeman request it does; both absent for a person's
+	// run, whose JSON is unchanged (LaunchNamedWith).
+	Class   string `json:"class,omitempty"`
+	Request string `json:"request,omitempty"`
 }
 
 // Managed is what a managed run's record carries beside the run: the
@@ -531,6 +540,8 @@ type run struct {
 	// must still be there (dirty).
 	committing                                    bool
 	id, crewID, name, label, goal, cwd, isolation string
+	// class and request are the run's LaunchOpts, fixed when it is made.
+	class, request string
 	// yolo is the run's yolo choice, fixed when it is made.
 	yolo bool
 	// changed is the engine's OnRunChange, or nil.
@@ -660,6 +671,11 @@ func (e *Engine) LaunchHeld(ctx context.Context, c Crew) (*Run, func(), error) {
 // LaunchNamed is LaunchHeld with the run's own name (Run.Label), checked
 // as a crew name is (ValidateLabel, ErrInvalid); empty gives it none.
 func (e *Engine) LaunchNamed(ctx context.Context, c Crew, label string) (*Run, func(), error) {
+	return e.launchNamed(ctx, c, label, LaunchOpts{})
+}
+
+// launchNamed is LaunchNamedWith once its options are checked.
+func (e *Engine) launchNamed(ctx context.Context, c Crew, label string, opts LaunchOpts) (*Run, func(), error) {
 	noop := func() {}
 	if err := ValidateLabel(label); err != nil {
 		return nil, noop, err
@@ -672,6 +688,7 @@ func (e *Engine) LaunchNamed(ctx context.Context, c Crew, label string) (*Run, f
 	if err != nil {
 		return nil, noop, err
 	}
+	p.opts = opts
 	// A managed run's id is minted against the runs the engine holds; the
 	// ledger may have it (a planned run's, after a restart), which the
 	// run's first transaction finds: refused before anything is made, the
@@ -746,6 +763,8 @@ type prepared struct {
 	prefix string
 	base   string
 	man    resolvedManifest
+	// opts are the run's class and request (LaunchNamedWith).
+	opts LaunchOpts
 }
 
 // prepare checks c as LaunchHeld describes and, with worktrees, finds where
@@ -838,6 +857,10 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 		e.mu.Unlock()
 		return nil, ErrManaged
 	}
+	if old.class == ClassBrakeman {
+		e.mu.Unlock()
+		return nil, ErrBrakemanRun
+	}
 	switch {
 	case old.stopping && !old.stopDone:
 		e.mu.Unlock()
@@ -888,6 +911,9 @@ type kept struct{ agentSession, sessionID, worktree, branch, base string }
 func (e *Engine) ResumeRecord(ctx context.Context, rec Run) (*Run, error) {
 	if rec.managed() {
 		return nil, ErrManaged
+	}
+	if rec.Class == ClassBrakeman {
+		return nil, ErrBrakemanRun
 	}
 	if _, ok := e.Get(rec.ID); ok {
 		return nil, ErrRunRunning
@@ -1065,7 +1091,8 @@ func (e *Engine) add(c Crew, p prepared, label string) *run {
 func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (*run, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
-		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed()}
+		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed(),
+		class: p.opts.Class, request: p.opts.Request}
 	if r.managed {
 		// The crew's project manifest as launched, a legacy setup lifted
 		// into it, and the manifest at the pinned base, whose prerequisites
@@ -1117,7 +1144,7 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 	for r.id == "" || e.runs[r.id] != nil {
 		r.id = e.mintRunID(c.ID)
 	}
-	e.evict()
+	e.evict(r.class)
 	e.runs[r.id] = r
 	e.held.Store(r.id, struct{}{})
 	e.order = append(e.order, r)
@@ -1262,7 +1289,8 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 		}
 	}
 	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
-		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo})
+		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo,
+		Class: r.class, Request: r.request})
 	if err != nil {
 		return nil, err
 	}
@@ -1668,6 +1696,10 @@ func (e *Engine) AddMember(ctx context.Context, runID string, m Member) error {
 		e.mu.Unlock()
 		return ErrManaged
 	}
+	if r.class == ClassBrakeman {
+		e.mu.Unlock()
+		return ErrBrakemanRun
+	}
 	if err := r.admit(m); err != nil {
 		e.mu.Unlock()
 		return err
@@ -1849,15 +1881,27 @@ func (e *Engine) dropForeign(r *run) {
 	}
 }
 
-// evict forgets the oldest runs with nothing running until there is room for
-// one more. A run with a member starting or a live session stays, and so does
-// one being launched, so the engine may hold more than maxRuns while they run.
-// The caller holds e.mu.
-func (e *Engine) evict() {
-	for len(e.order) >= maxRuns {
+// evict forgets the oldest runs of class with nothing running until there
+// is room for one more of it: each class is bounded on its own (runsCap),
+// so a day of Brakeman turns never forgets a person's run. A run with a
+// member starting or a live session stays, and so does one being launched,
+// so the engine may hold more than its cap while they run. The caller
+// holds e.mu.
+func (e *Engine) evict(class string) {
+	of := func(r *run) bool { return r.class == class }
+	for {
+		n := 0
+		for _, r := range e.order {
+			if of(r) {
+				n++
+			}
+		}
+		if n < runsCap(class) {
+			return
+		}
 		// A run being resumed stays until its continuation names it
 		// (resumedBy), or it would be forgotten with its record unmarked.
-		i := slices.IndexFunc(e.order, func(r *run) bool { return !r.launching && !r.resuming && e.idle(r) })
+		i := slices.IndexFunc(e.order, func(r *run) bool { return of(r) && !r.launching && !r.resuming && e.idle(r) })
 		if i < 0 {
 			return
 		}
@@ -2095,6 +2139,7 @@ func (e *Engine) GetWithDiffs(ctx context.Context, runID string) (Run, bool) {
 // chat when withChat. The caller holds e.mu.
 func (r *run) snapshot(withDiffs, withChat bool) Run {
 	out := Run{ID: r.id, CrewID: r.crewID, Name: r.name, Label: r.label, Goal: r.goal, Cwd: r.cwd, Isolation: r.isolation, Yolo: r.yolo,
+		Class: r.class, Request: r.request,
 		StartedAt: r.startedAt, StoppedAt: r.stoppedAt, Members: make([]MemberState, 0, len(r.members)),
 		ResumedFrom: r.resumedFrom, ResumedBy: r.resumedBy,
 		Log: append([]session.ActivityEntry{}, r.log...)}
@@ -2304,6 +2349,10 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	if r.managed {
 		e.mu.Unlock()
 		return "", ErrManaged
+	}
+	if r.class == ClassBrakeman {
+		e.mu.Unlock()
+		return "", ErrBrakemanRun
 	}
 	m := r.member(name)
 	var err error
