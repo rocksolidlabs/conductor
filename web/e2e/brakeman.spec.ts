@@ -1,4 +1,5 @@
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Api, expect, test, type Run } from './fixtures'
@@ -24,14 +25,16 @@ interface Request {
 let server: Started | null = null
 let api: Api
 let serverLog = ''
+let root = ''
 let gate = ''
 let start: () => Promise<Started>
 let briefed: Request
 
-test.beforeAll(async ({ state }) => {
+test.beforeAll(async () => {
   const here = dirname(fileURLToPath(import.meta.url))
-  // A root of its own each time the spec runs (a repeat starts again from no records, so its requests are br-1 and br-2).
-  const root = mkdtempSync(join(state.root, 'brakeman-'))
+  // A root of its own each time the spec runs (a repeat starts again from no records, so its requests are br-1 and br-2), outside
+  // the suite's scratch root: a folder there is one more entry in the listings other specs' pickers read (settings.spec.ts).
+  root = mkdtempSync(join(tmpdir(), 'conductor-e2e-brakeman-'))
   const home = join(root, 'home')
   const data = join(root, 'data')
   const repo = join(root, 'repo')
@@ -57,6 +60,7 @@ test.afterAll(async () => {
     mkdirSync('test-results', { recursive: true })
     copyFileSync(serverLog, 'test-results/brakeman-server.log')
   }
+  if (root) rmSync(root, { recursive: true, force: true })
 })
 
 /** The page on this spec's server, with its token where the workbench keeps it. */
