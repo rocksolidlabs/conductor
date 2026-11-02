@@ -595,7 +595,7 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	}
 	// No record lands after this: the directories may be going.
 	if s.brakeman != nil {
-		s.brakeman.close()
+		s.brakeman.release(ctx)
 	}
 	if s.records != nil {
 		s.records.Close()
@@ -1001,10 +1001,14 @@ const recordsGrace = 5 * time.Second
 // records of the runs stopped are then waited for within recordsGrace,
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
-	// Brakeman's records first: the turn the stops below end is left
-	// running in them, and the next start finds it interrupted.
+	// Brakeman's desk first: it writes no request's state from now on, so
+	// the turn the stops below end is left running in its records and the
+	// next start finds it interrupted; its launch outstanding is waited
+	// for, so the run and session it makes are among those stopped below.
+	// Its records, and their owner lock, are let go once the sessions are
+	// stopped (release, below).
 	if s.brakeman != nil {
-		s.brakeman.close()
+		s.brakeman.quiesce(ctx)
 	}
 	s.runs.Draining(ctx)
 	s.webhooks.close(ctx)
@@ -1035,6 +1039,12 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}
 	})
 	closes.Wait()
+	// The turn's processes stopped (or ctx spent), Brakeman's owner lock
+	// goes: another server takes no queued request while one of this
+	// server's turns still runs.
+	if s.brakeman != nil {
+		s.brakeman.release(ctx)
+	}
 	// The publications end with their sessions; wait for them to tell the
 	// rendezvous, all at once, as long as ctx allows.
 	s.pubMu.Lock()

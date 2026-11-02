@@ -186,7 +186,7 @@ type AgentFacts struct {
 	ReadOnly bool // its adapter has a read-only mode (Adapter.ReadOnlyArgs)
 	// ReadOnlyGap is what that mode does not hold, in words (the
 	// adapter's ReadOnlyGap); "" when it holds. An agent whose mode does
-	// not hold is refused as Brakeman's.
+	// not hold is taken as Brakeman's, its gap a warning (Warnings).
 	ReadOnlyGap string
 	Model       bool // its adapter takes a model (Adapter.ModelArgs)
 	// AllowTools: its adapter can let one MCP server's tools run without
@@ -216,6 +216,21 @@ func invalidConfig(field, why string, a ...any) error {
 	return &Invalid{Code: CodeInvalidConfig, Field: field, Why: fmt.Sprintf(why, a...)}
 }
 
+// Warnings is what Settings shows beside a configuration Validate takes:
+// the agent's read-only mode's gap, in its adapter's words (Codex's
+// sandbox leaves the person's own MCP servers and exec-policy allow
+// rules), so the person chooses that agent knowing it. nil for none.
+func Warnings(c Config, f Facts) []string {
+	if c.AgentID == "" {
+		return nil
+	}
+	a, ok := f.Agent(c.AgentID)
+	if !ok || a.ReadOnlyGap == "" {
+		return nil
+	}
+	return []string{"the agent " + c.AgentID + "'s read-only mode does not hold: " + a.ReadOnlyGap}
+}
+
 // Validate holds every field of c to its bound and asks f what the
 // package cannot know: the agent exists, is not hidden, has an MCP
 // registration and a read-only mode, and takes a model only when its
@@ -236,10 +251,9 @@ func Validate(c Config, f Facts) error {
 			return invalidConfig("agentId", "the agent %s does not register Conductor's MCP server, so it could not read its request", c.AgentID)
 		case !a.ReadOnly:
 			return invalidConfig("agentId", "the agent %s has no read-only mode Conductor knows, and a turn never runs with yolo", c.AgentID)
-		case a.ReadOnlyGap != "":
-			// The one place a mode that does not hold refuses the agent:
-			// a warning instead would drop this case and show the gap.
-			return invalidConfig("agentId", "the agent %s cannot be Brakeman's: its read-only mode does not hold: %s", c.AgentID, a.ReadOnlyGap)
+		// A read-only mode that does not hold (a.ReadOnlyGap) is taken:
+		// Warnings says what it leaves, for Settings. Refusing it instead
+		// would be one case here.
 		case c.Model != "" && !a.Model:
 			return invalidConfig("model", "the agent %s takes no model from Conductor: leave it empty for its default", c.AgentID)
 		case c.AllowConductorTools && !a.AllowTools:

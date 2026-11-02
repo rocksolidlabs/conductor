@@ -207,8 +207,10 @@ func codexAdapter() Adapter {
 //     prompt rule raises.
 //
 // So under Codex a Brakeman turn is read-only only for an account with no
-// MCP server and no allow rule of its own; whether Codex stays Brakeman's
-// agent on those terms is the owner's decision (PR-3c's Validate, Settings).
+// MCP server and no allow rule of its own. Codex stays a choice for
+// Brakeman's agent on those terms: the configuration takes it and answers
+// codexReadOnlyGap as a warning, which Settings shows beside the choice
+// (brakeman.Warnings).
 const codexReadOnlyApprovals = `approval_policy={granular={sandbox_approval=false,rules=false,request_permissions=false,mcp_elicitations=true}}`
 
 // codexReadOnlyGap is codexReadOnlyApprovals' list above, in Settings'

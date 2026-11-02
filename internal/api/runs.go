@@ -636,6 +636,8 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "still_running", err.Error())
 	case errors.Is(err, crew.ErrManaged):
 		writeError(w, http.StatusConflict, "managed_run", err.Error())
+	case errors.Is(err, crew.ErrBrakemanRun):
+		writeError(w, http.StatusConflict, "brakeman_run", err.Error())
 	case errors.As(err, &aerr):
 		writeError(w, aerr.status, aerr.Code, err.Error())
 	default:

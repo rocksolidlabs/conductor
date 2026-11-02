@@ -174,15 +174,11 @@ func TestAnAgentWithoutAReadOnlyModeIsRefused(t *testing.T) {
 	f.agents["goose"] = AgentFacts{MCP: true}
 	f.agents["amp"] = AgentFacts{ReadOnly: true}
 	f.agents["shy"] = AgentFacts{Hidden: true, MCP: true, ReadOnly: true}
-	// A read-only mode that does not hold (Codex 0.163.0's) refuses the
-	// agent with the adapter's own words, for Settings.
-	f.agents["leaky"] = AgentFacts{MCP: true, ReadOnly: true, ReadOnlyGap: "your own MCP servers run outside the sandbox"}
 	for id, words := range map[string]string{
 		"goose":   "no read-only mode",
 		"amp":     "MCP server",
 		"shy":     "hidden",
 		"nowhere": "no agent",
-		"leaky":   "does not hold: your own MCP servers run outside the sandbox",
 	} {
 		c := onConfig()
 		c.AgentID = id
@@ -192,6 +188,30 @@ func TestAnAgentWithoutAReadOnlyModeIsRefused(t *testing.T) {
 		// Off, the agent is held to the same: it is what turns would run.
 		c.Enabled = false
 		wantInvalid(t, Validate(c, f), "agentId")
+	}
+}
+
+// TestAReadOnlyModeThatDoesNotHoldIsAWarning: an agent whose read-only
+// mode does not hold (Codex 0.163.0's) is taken, and Warnings says what
+// it leaves in the adapter's own words; one whose mode holds has none.
+func TestAReadOnlyModeThatDoesNotHoldIsAWarning(t *testing.T) {
+	f := goodFacts()
+	f.agents["leaky"] = AgentFacts{MCP: true, ReadOnly: true, ReadOnlyGap: "your own MCP servers run outside the sandbox"}
+	c := onConfig()
+	c.AgentID = "leaky"
+	if err := Validate(c, f); err != nil {
+		t.Fatalf("a mode that does not hold was refused: %v", err)
+	}
+	w := Warnings(c, f)
+	if len(w) != 1 || !strings.Contains(w[0], "does not hold: your own MCP servers run outside the sandbox") {
+		t.Fatalf("%q", w)
+	}
+	if w := Warnings(onConfig(), f); w != nil {
+		t.Fatalf("a mode that holds warns %q", w)
+	}
+	c.AgentID = ""
+	if w := Warnings(c, f); w != nil {
+		t.Fatalf("no agent warns %q", w)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -73,8 +74,37 @@ type brakemanDesk struct {
 	done     chan struct{}
 	loopDone chan struct{}
 	stopOnce sync.Once
+	// startOnce starts the loop (start), or, for a desk closed before it
+	// started, says there is none to wait for.
+	startOnce sync.Once
 	// steps counts the loop's passes, for a test to wait on one.
 	steps atomic.Uint64
+	// afterLaunch, when a test sets it, runs once launchTurn has returned
+	// and before its return is written: the gate inside the launch seam;
+	// beforeLaunch runs in launchTurn once the turn's crew is made and
+	// before the engine is asked for its run. Each desk's own, so tests
+	// that gate run beside each other.
+	afterLaunch, beforeLaunch atomic.Pointer[func(requestID string)]
+	// closing is set as the server shuts down (quiesce): no request's
+	// state is written by the desk from then on, so the turn in progress
+	// stays starting or running and the next start finds it interrupted.
+	closing atomic.Bool
+	// launches counts the turns' launches outstanding, which quiesce
+	// waits for.
+	launches sync.WaitGroup
+	// pruneDue says the requests are pruned at the loop's next pass
+	// (Store.Prune): at the start and after each turn.
+	pruneDue atomic.Bool
+	// keep is how many requests a prune keeps past the open and pinned
+	// ones, brakeman.Keep; a test lowers it.
+	keep atomic.Int64
+
+	// admit orders admission (an ask), a configuration's save and the
+	// dequeue: an ask either lands before Brakeman is turned off, and is
+	// cancelled with the queue, or reads it off and is refused; a dequeue
+	// never starts a turn after the save that turned Brakeman off.
+	// Taken before mu.
+	admit sync.Mutex
 
 	mu sync.Mutex
 	// queue is the queued requests' ids, oldest first.
@@ -110,16 +140,23 @@ type deskTurn struct {
 	// start (a retry's wait).
 	stopping bool
 	nextStop time.Time
+	// agentSHA256 is the agent's catalog entry the turn's arguments were
+	// made for (agentSelection): its session starts only from that entry
+	// (createLocalSession's agent_changed otherwise).
+	agentSHA256 string
 }
 
 // openBrakemanDesk opens the desk over the data directory st: its store
 // and its owner lock (read-only while another server holds it, the desk
-// taking no turn until this one does), then its loop. nil on a
-// switchyard and when the store cannot be opened.
+// taking no turn until this one does) and its queue. Its loop starts
+// with start, once the server is made and listening. nil on a switchyard
+// and when the store cannot be opened.
 func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 	d := &brakemanDesk{s: s, wake: make(chan struct{}, 1), done: make(chan struct{}), loopDone: make(chan struct{}), read: map[string]bool{}}
 	now := time.Now
 	d.clock.Store(&now)
+	d.keep.Store(brakeman.Keep)
+	d.pruneDue.Store(true)
 	bs, err := brakeman.Open(st, brakeman.Options{Now: d.now, DefaultCwd: s.cfg.DefaultCwd, Log: s.log})
 	if err != nil {
 		s.log.Warn("Brakeman is off: its records could not be opened", "err", err)
@@ -134,17 +171,86 @@ func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 		d.poke()
 	})
 	d.loadQueue()
-	go d.loop()
 	return d
+}
+
+// StartBrakeman starts Brakeman's desk: its loop, which takes the queued
+// requests a restart finds. conductor serve calls it once the server is
+// made and its listener bound (cfg.PublicURL then has the listener's
+// port, which a turn's session is given to call back on), so the first
+// turn is launched by a desk the server holds. A server never started
+// takes no turn; one with no desk (a switchyard, no data directory) does
+// nothing.
+func (s *Server) StartBrakeman() {
+	if s.brakeman != nil {
+		s.brakeman.start()
+	}
+}
+
+// start starts the loop, once; never after the desk closed.
+func (d *brakemanDesk) start() {
+	d.startOnce.Do(func() { go d.loop() })
 }
 
 // now is the desk's clock.
 func (d *brakemanDesk) now() time.Time { return (*d.clock.Load())() }
 
-// close ends the loop and closes the store: no turn starts after it.
-func (d *brakemanDesk) close() {
+// errDeskClosing refuses a write of the desk's once the server is
+// shutting down (quiesce).
+var errDeskClosing = errors.New("brakeman: the server is shutting down")
+
+// quiesce takes the desk out of the server as it shuts down, before its
+// runs are stopped: no request's state is written by the desk from then
+// on (the turn in progress stays starting or running in the records, and
+// the next start finds it interrupted), the loop ends, and the launch
+// outstanding is cancelled and waited for, as long as ctx allows, so the
+// run and the session it makes are ones the stops after it find. It may
+// be called again.
+func (d *brakemanDesk) quiesce(ctx context.Context) {
+	d.closing.Store(true)
 	d.stopOnce.Do(func() { close(d.done) })
+	d.startOnce.Do(func() { close(d.loopDone) })
 	<-d.loopDone
+	d.mu.Lock()
+	if t := d.turn; t != nil && t.cancel != nil {
+		t.cancel()
+	}
+	d.mu.Unlock()
+	launched := make(chan struct{})
+	go func() {
+		d.launches.Wait()
+		close(launched)
+	}()
+	select {
+	case <-launched:
+	case <-ctx.Done():
+	}
+}
+
+// release closes the store, which lets the owner lock go, once every
+// member process of the turn in progress is reaped (Shutdown has stopped
+// the sessions; one the registry no longer lists is stopped here) or ctx
+// has ended: another server takes no queued request while this one's
+// turn still runs. It quiesces the desk first when nothing did.
+func (d *brakemanDesk) release(ctx context.Context) {
+	d.quiesce(ctx)
+	d.mu.Lock()
+	var locals []*session.Local
+	if d.turn != nil {
+		locals = slices.Clone(d.turn.locals)
+	}
+	d.mu.Unlock()
+	for _, l := range liveLocals(locals) {
+		if err := l.Stop(ctx); err != nil {
+			d.s.log.Warn("Brakeman's turn's session did not stop as the server stopped", "session", l.Info().ID, "err", err)
+		}
+	}
+	for _, l := range locals {
+		select {
+		case <-l.ProcessDone():
+		case <-ctx.Done():
+		}
+	}
 	_ = d.st.Close()
 }
 
@@ -156,8 +262,14 @@ func (d *brakemanDesk) poke() {
 	}
 }
 
-// loadQueue reads the queued requests from the store, oldest first.
+// loadQueue reads the queued requests from the store, oldest first, all
+// under the desk's mutex, which an ask holds while it creates its request
+// and joins the queue: one kept as the store becomes this server's
+// (OnOwned) is either read here or joins the queue after it, never lost
+// in between.
 func (d *brakemanDesk) loadQueue() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	var queued []string
 	after := ""
 	for {
@@ -177,9 +289,7 @@ func (d *brakemanDesk) loadQueue() {
 		after = next
 	}
 	slices.Reverse(queued)
-	d.mu.Lock()
 	d.queue = queued
-	d.mu.Unlock()
 }
 
 // loop is the watchdog: it looks again on a poke, at the next moment a
@@ -219,7 +329,25 @@ func (d *brakemanDesk) step() time.Duration {
 	if t != nil {
 		return d.tend(t)
 	}
+	if d.pruneDue.CompareAndSwap(true, false) {
+		d.prune()
+	}
 	return d.dequeue()
+}
+
+// prune keeps the newest requests (keep, brakeman.Keep) and every open or
+// pinned one, and removes the rest with their documents: at the loop's
+// first pass as the owner, then after each turn, so a turn's history
+// never grows past it.
+func (d *brakemanDesk) prune() {
+	n, err := d.st.PruneKeeping(int(d.keep.Load()))
+	if err != nil {
+		d.s.log.Warn("Brakeman's old requests could not be pruned", "err", err)
+		return
+	}
+	if n > 0 {
+		d.s.log.Info("Brakeman's old requests pruned", "removed", n)
+	}
 }
 
 // tend closes the turn at its deadline, stops its run once its request is
@@ -256,6 +384,7 @@ func (d *brakemanDesk) tend(t *deskTurn) time.Duration {
 	live := liveLocals(t.locals)
 	if !t.launching && len(live) == 0 && !t.stopping {
 		d.turn, d.stopFails, d.stuck = nil, 0, false
+		d.pruneDue.Store(true)
 		d.poke()
 		return 0
 	}
@@ -349,6 +478,8 @@ func (d *brakemanDesk) watch(l *session.Local) {
 // (Store.Start, which closes a request past the day's turns over_budget),
 // then its launch, on a goroutine of its own.
 func (d *brakemanDesk) dequeue() time.Duration {
+	d.admit.Lock()
+	defer d.admit.Unlock()
 	cfg, err := d.st.Config()
 	if err != nil {
 		d.s.log.Warn("Brakeman's configuration could not be read", "err", err)
@@ -356,7 +487,7 @@ func (d *brakemanDesk) dequeue() time.Duration {
 	}
 	for {
 		d.mu.Lock()
-		if !cfg.Enabled || d.stuck || len(d.queue) == 0 || d.turn != nil {
+		if !cfg.Enabled || d.stuck || len(d.queue) == 0 || d.turn != nil || d.closing.Load() {
 			d.mu.Unlock()
 			return 0
 		}
@@ -379,7 +510,11 @@ func (d *brakemanDesk) dequeue() time.Duration {
 		d.turn = t
 		d.mu.Unlock()
 		d.s.events.brakeman(id, req.State)
-		d.s.track(func() { d.launch(ctx, t, req, cfg) })
+		d.launches.Add(1)
+		d.s.track(func() {
+			defer d.launches.Done()
+			d.launch(ctx, t, req, cfg)
+		})
 		return untilPositive(req.Deadline, d.now())
 	}
 }
@@ -405,10 +540,6 @@ func (d *brakemanDesk) stamp(cfg brakeman.Config) brakeman.Stamp {
 	return st
 }
 
-// afterTurnLaunch, when a test sets it, runs once launchTurn has returned
-// and before its return is written: the gate inside the launch seam.
-var afterTurnLaunch atomic.Pointer[func(requestID string)]
-
 // launch launches the turn's run and writes what its return says: running
 // with the run and its session, for a request still starting; nothing of
 // its state for one closed meanwhile (a brief, the member's end, a
@@ -417,12 +548,15 @@ var afterTurnLaunch atomic.Pointer[func(requestID string)]
 // recorded as the request's stray run and stopped. A launch that fails
 // closes the request failed with the engine's words.
 func (d *brakemanDesk) launch(ctx context.Context, t *deskTurn, req brakeman.Request, cfg brakeman.Config) {
-	c, err := d.turnCrew(req, cfg)
+	c, sha, err := d.turnCrew(req, cfg)
 	var run *crew.Run
 	if err == nil {
+		d.mu.Lock()
+		t.agentSHA256 = sha
+		d.mu.Unlock()
 		run, err = d.s.launchTurn(ctx, c, brakemanLabel(req), crew.LaunchOpts{Class: crew.ClassBrakeman, Request: req.ID})
 	}
-	if f := afterTurnLaunch.Load(); f != nil {
+	if f := d.afterLaunch.Load(); f != nil {
 		(*f)(req.ID)
 	}
 	runID, sessionID := "", ""
@@ -460,7 +594,7 @@ func (d *brakemanDesk) launch(ctx context.Context, t *deskTurn, req brakeman.Req
 		}
 		return nil
 	})
-	if uerr != nil {
+	if uerr != nil && !errors.Is(uerr, errDeskClosing) {
 		d.s.log.Warn("Brakeman's turn's launch could not be written", "request", req.ID, "err", uerr)
 	}
 	if stray {
@@ -503,15 +637,26 @@ func brakemanLine(req brakeman.Request) string {
 // turnCrew is the crew a turn launches: one member, the configured agent
 // in its adapter's read-only mode, then its model and, when allowed,
 // Conductor's tools, nothing a person typed; never yolo, never managed,
-// in the configured folder without a worktree.
-func (d *brakemanDesk) turnCrew(req brakeman.Request, cfg brakeman.Config) (crew.Crew, error) {
-	args, err := d.s.turnArgs(cfg)
+// in the configured folder without a worktree. The configuration is held
+// to Validate again against the catalog and the folders as they are now
+// (an agent hidden, its adapter changed since the save), and the agent's
+// entry the arguments are made for is answered (agentSelection's
+// SHA256), which the member's session must start from.
+func (d *brakemanDesk) turnCrew(req brakeman.Request, cfg brakeman.Config) (crew.Crew, string, error) {
+	if err := brakeman.Validate(cfg, brakemanFacts{s: d.s}); err != nil {
+		return crew.Crew{}, "", fmt.Errorf("the configuration no longer holds: %w", err)
+	}
+	a, ok := d.s.Catalog().Get(cfg.AgentID)
+	if !ok {
+		return crew.Crew{}, "", fmt.Errorf("no agent %s in the catalog", cfg.AgentID)
+	}
+	args, err := turnArgs(a, cfg)
 	if err != nil {
-		return crew.Crew{}, err
+		return crew.Crew{}, "", err
 	}
 	line := brakemanLine(req)
 	if len(line) > maxBrakemanLine {
-		return crew.Crew{}, fmt.Errorf("the request's line is %d bytes, more than %d", len(line), maxBrakemanLine)
+		return crew.Crew{}, "", fmt.Errorf("the request's line is %d bytes, more than %d", len(line), maxBrakemanLine)
 	}
 	no := false
 	return crew.Crew{
@@ -521,17 +666,13 @@ func (d *brakemanDesk) turnCrew(req brakeman.Request, cfg brakeman.Config) (crew
 			Name: brakemanMember, AgentID: cfg.AgentID, Args: args,
 			Start: crew.Start{When: crew.StartImmediately}, Prompt: line,
 		}},
-	}, nil
+	}, agentSelection(a, false).SHA256, nil
 }
 
-// turnArgs is a turn's member's arguments under cfg: its adapter's
-// ReadOnlyArgs, then ModelArgs(model), then AllowTools("conductor") when
-// allowed.
-func (s *Server) turnArgs(cfg brakeman.Config) ([]string, error) {
-	a, ok := s.Catalog().Get(cfg.AgentID)
-	if !ok {
-		return nil, fmt.Errorf("no agent %s in the catalog", cfg.AgentID)
-	}
+// turnArgs is a turn's member's arguments under cfg for the agent's entry
+// a: its adapter's ReadOnlyArgs, then ModelArgs(model), then
+// AllowTools("conductor") when allowed.
+func turnArgs(a catalog.Agent, cfg brakeman.Config) ([]string, error) {
 	ad, ok := agents.Get(a.Adapter)
 	if !ok || ad.ReadOnlyArgs == nil {
 		return nil, fmt.Errorf("the agent %s has no read-only mode", cfg.AgentID)
@@ -581,21 +722,32 @@ func (s *Server) launchTurn(ctx context.Context, c crew.Crew, label string, opts
 	}
 	c.Cwd = folder.Path()
 	folder.Close()
+	if d := s.brakeman; d != nil {
+		if f := d.beforeLaunch.Load(); f != nil {
+			(*f)(opts.Request)
+		}
+	}
+	// A launch the desk cancelled meanwhile (a deadline, a cancel, the
+	// server shutting down) makes no run.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	run, release, err := s.runs.LaunchNamedWith(ctx, c, label, opts)
 	release()
 	return run, err
 }
 
 // turnLaunch is what Server.Launch asks of the desk for a Brakeman
-// turn's member (spec.Class): the account the turn runs under, and ok
-// false for a request that is not the turn holding the slot.
-func (d *brakemanDesk) turnLaunch(request string) (account string, ok bool) {
+// turn's member (spec.Class): the account the turn runs under and the
+// agent's entry its arguments were made for, and ok false for a request
+// that is not the turn holding the slot.
+func (d *brakemanDesk) turnLaunch(request string) (account, agentSHA256 string, ok bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.turn == nil || d.turn.id != request {
-		return "", false
+		return "", "", false
 	}
-	return d.turn.account, true
+	return d.turn.account, d.turn.agentSHA256, true
 }
 
 // memberStarted keeps a turn's member session for its process: the slot
@@ -624,12 +776,19 @@ func (d *brakemanDesk) sessionChanged(info session.Info) {
 		return
 	}
 	id := ref.Brakeman.Request
+	// A closed request that holds its run and session already has nothing
+	// to take from its ended session's later changes: nothing is written.
+	if r, err := d.st.Get(id); err != nil || (!r.Open() && r.RunID != "" && r.SessionID != "") {
+		return
+	}
 	d.mu.Lock()
 	read := d.read[id]
 	d.mu.Unlock()
 	var last string
-	if l, ok := d.s.lookupLocal(info.ID); ok {
-		last = l.LastLine()
+	if !read {
+		if l, ok := d.s.lookupLocal(info.ID); ok {
+			last = l.LastLine()
+		}
 	}
 	now := d.now()
 	_, err := d.update(id, func(r *brakeman.Request) error {
@@ -661,15 +820,18 @@ func (d *brakemanDesk) sessionChanged(info session.Info) {
 		}
 		return r.To(brakeman.StateFailed, why, now)
 	})
-	if err != nil && !errors.Is(err, brakeman.ErrNotFound) {
+	if err != nil && !errors.Is(err, brakeman.ErrNotFound) && !errors.Is(err, errDeskClosing) {
 		d.s.log.Warn("Brakeman's turn's end could not be written", "request", id, "err", err)
 	}
 	d.poke()
 }
 
 // update is Store.Update with the brakeman event sent after a change of
-// state.
+// state; refused (errDeskClosing) once the server is shutting down.
 func (d *brakemanDesk) update(id string, fn func(*brakeman.Request) error) (brakeman.Request, error) {
+	if d.closing.Load() {
+		return brakeman.Request{}, errDeskClosing
+	}
 	before := ""
 	r, err := d.st.Update(id, func(r *brakeman.Request) error {
 		before = r.State
@@ -774,6 +936,8 @@ func (s *Server) brakemanError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "turn_over", err.Error())
 	case errors.Is(err, brakeman.ErrBound):
 		writeError(w, http.StatusRequestEntityTooLarge, "bound", err.Error())
+	case errors.Is(err, errDeskClosing):
+		writeError(w, http.StatusServiceUnavailable, "shutting_down", err.Error())
 	default:
 		s.log.Warn("Brakeman's records could not be read or written", "err", err)
 		writeError(w, http.StatusInternalServerError, "store_failed", "Brakeman's records could not be read or written")
@@ -799,6 +963,9 @@ type brakemanState struct {
 	Current    *brakeman.Request  `json:"current"`
 	Queue      []brakeman.Request `json:"queue"`
 	TurnsToday int                `json:"turnsToday"`
+	// Warnings are what Settings shows beside the agent chosen
+	// (brakeman.Warnings: a read-only mode that does not hold).
+	Warnings []string `json:"warnings,omitempty"`
 	// ReadOnly says another server owns Brakeman's records, with why;
 	// Stuck that the last turn's run did not stop.
 	ReadOnly bool   `json:"readOnly,omitempty"`
@@ -819,24 +986,34 @@ func (s *Server) handleBrakeman(w http.ResponseWriter, r *http.Request) {
 		s.brakemanError(w, err)
 		return
 	}
-	out := brakemanState{Config: cfg, Queue: []brakeman.Request{}}
+	out := brakemanState{Config: cfg, Queue: []brakeman.Request{}, Warnings: brakeman.Warnings(cfg, brakemanFacts{s: s})}
 	out.ReadOnly, out.Why = d.st.ReadOnly()
-	d.mu.Lock()
-	queue := slices.Clone(d.queue)
-	var cur string
-	if d.turn != nil {
-		cur = d.turn.id
-	}
-	out.Stuck = d.stuck
-	d.mu.Unlock()
-	if cur != "" {
-		if req, err := d.st.Get(cur); err == nil {
-			out.Current = &req
+	if out.ReadOnly {
+		// Another server owns the records and runs their turns: what it is
+		// doing is read from them, never from this desk's scheduler, which
+		// holds no turn and saw the queue only as it opened.
+		if out.Current, out.Queue, err = d.recordedStatus(); err != nil {
+			s.brakemanError(w, err)
+			return
 		}
-	}
-	for _, id := range queue {
-		if req, err := d.st.Get(id); err == nil {
-			out.Queue = append(out.Queue, req)
+	} else {
+		d.mu.Lock()
+		queue := slices.Clone(d.queue)
+		var cur string
+		if d.turn != nil {
+			cur = d.turn.id
+		}
+		out.Stuck = d.stuck
+		d.mu.Unlock()
+		if cur != "" {
+			if req, err := d.st.Get(cur); err == nil {
+				out.Current = &req
+			}
+		}
+		for _, id := range queue {
+			if req, err := d.st.Get(id); err == nil {
+				out.Queue = append(out.Queue, req)
+			}
 		}
 	}
 	if out.TurnsToday, err = d.st.TurnsToday(d.now()); err != nil {
@@ -844,6 +1021,37 @@ func (s *Server) handleBrakeman(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// recordedStatus is the desk's state as the records hold it, for a server
+// that does not own them: the newest request starting or running (the
+// owner's turn), nil for none, and the queued ones, oldest first.
+func (d *brakemanDesk) recordedStatus() (*brakeman.Request, []brakeman.Request, error) {
+	var cur *brakeman.Request
+	queue := []brakeman.Request{}
+	after := ""
+	for {
+		page, next, err := d.st.List(after, brakeman.MaxPage)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, r := range page {
+			switch r.State {
+			case brakeman.StateStarting, brakeman.StateRunning:
+				if cur == nil {
+					cur = &r
+				}
+			case brakeman.StateQueued:
+				queue = append(queue, r)
+			}
+		}
+		if next == "" {
+			break
+		}
+		after = next
+	}
+	slices.Reverse(queue)
+	return cur, queue, nil
 }
 
 // brakemanConfigBody is PUT /api/brakeman/config's body: the rev the
@@ -854,8 +1062,9 @@ type brakemanConfigBody struct {
 	Config brakeman.Config `json:"config"`
 }
 
-// handleBrakemanConfig saves the configuration: {rev, config} → {config};
-// 409 stale_revision for a rev not the stored one; 400 invalid_config
+// handleBrakemanConfig saves the configuration: {rev, config} → {config,
+// warnings?} (an agent whose read-only mode does not hold is taken, its
+// gap said); 409 stale_revision for a rev not the stored one; 400 invalid_config
 // with the field and its words. Turning Brakeman off cancels the turn in
 // progress and the queue.
 func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
@@ -874,16 +1083,25 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	c := body.Config
 	c.Rev, c.UpdatedAt = body.Rev, time.Time{}
+	// The save and what turning Brakeman off cancels are one step of
+	// admission's order: an ask after it reads Brakeman off, one before
+	// it is in the queue cancelled, and no dequeue starts a turn between.
+	d.admit.Lock()
 	saved, err := d.st.SaveConfig(c, brakemanFacts{s: s})
+	if err == nil && !saved.Enabled {
+		d.turnOff()
+	}
+	d.admit.Unlock()
 	if err != nil {
 		s.brakemanError(w, err)
 		return
 	}
-	if !saved.Enabled {
-		d.turnOff()
-	}
 	d.poke()
-	writeJSON(w, http.StatusOK, map[string]any{"config": saved})
+	out := map[string]any{"config": saved}
+	if warn := brakeman.Warnings(saved, brakemanFacts{s: s}); len(warn) > 0 {
+		out["warnings"] = warn
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // brakemanAskBody is POST /api/brakeman/requests's body.
@@ -926,6 +1144,11 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"request": req})
 		return
 	}
+	// Brakeman on is read and the request kept in admission's order
+	// (admit), so a save that turns Brakeman off is before this ask, which
+	// is refused, or after it, and cancels it with the queue.
+	d.admit.Lock()
+	defer d.admit.Unlock()
 	cfg, err := d.st.Config()
 	if err != nil {
 		s.brakemanError(w, err)
@@ -1209,17 +1432,25 @@ func (f brakemanFacts) CheckCrew(body json.RawMessage) error {
 // you shows its questions by; CONDUCTOR_BRAKEMAN names the request, set
 // as Conductor's own names are, unfiltered; the account is the adapter's
 // ConfigDirEnv; and the session's CrewRef carries the brakeman mark from
-// its creation (quiet false until BK3's background turns).
+// its creation (quiet false until BK3's background turns); and the agent's
+// entry is the one the turn's arguments were made for (agentSHA256).
 func (s *Server) brakemanLaunch(spec crew.LaunchSpec, req *createSessionRequest, ref *session.CrewRef) *apiError {
 	if s.brakeman == nil {
 		return newAPIError(http.StatusServiceUnavailable, "store_unavailable", "Brakeman needs a data directory")
 	}
-	account, ok := s.brakeman.turnLaunch(spec.Request)
+	account, sha, ok := s.brakeman.turnLaunch(spec.Request)
 	if !ok {
 		return newAPIError(http.StatusConflict, "not_the_turn", "no Brakeman turn holds the slot for "+spec.Request)
 	}
+	if sha == "" {
+		return newAPIError(http.StatusConflict, "not_the_turn", "the turn for "+spec.Request+" named no agent entry")
+	}
 	no := false
 	req.Yolo, req.conductorArgs = &no, true
+	// The session starts only from the entry its read-only arguments were
+	// made for: one changed since (another adapter, another command) is
+	// refused agent_changed, and the turn fails with the engine's words.
+	req.agentSHA256 = sha
 	req.Name = "Brakeman · " + spec.Request
 	req.inject = maps.Clone(req.inject)
 	if req.inject == nil {

@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,7 +36,7 @@ import (
 
 // bkScript writes the turn's names to env-<request>.txt in its folder,
 // says it is ready and waits on its input, echoing what is typed.
-const bkScript = `printf 'B=%s A=%s Y=%s\n' "$CONDUCTOR_BRAKEMAN" "$CLAUDE_CONFIG_DIR" "$CONDUCTOR_RUN" > "env-$CONDUCTOR_BRAKEMAN.txt"; echo ready; exec cat`
+const bkScript = `printf 'B=%s A=%s Y=%s N=%s\n' "$CONDUCTOR_BRAKEMAN" "$CLAUDE_CONFIG_DIR" "$CONDUCTOR_RUN" "$CONDUCTOR_NOTIFY_URL" > "env-$CONDUCTOR_BRAKEMAN.txt"; echo ready; exec cat`
 
 // bkEnv is a test server with Brakeman's scripted agents.
 type bkEnv struct {
@@ -43,14 +46,16 @@ type bkEnv struct {
 
 // brakemanEnv is a server whose catalog holds the scripted agents: bk
 // (bkScript), bkexit (an agent that prints why and exits at once, as a
-// logged-out CLI does) and bkcodex (Codex's adapter: its read-only mode
-// does not hold).
+// logged-out CLI does), bkcodex (Codex's adapter: its read-only mode
+// does not hold) and bkfixed (bkScript, an entry that takes no extra
+// arguments).
 func brakemanEnv(t *testing.T, mutate func(*config.Config)) *bkEnv {
 	t.Helper()
 	e := newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{
 		{ID: "bk", Name: "bk", Command: []string{"/bin/sh", "-c", bkScript}, Adapter: "claude", AllowArgs: true},
 		{ID: "bkexit", Name: "bkexit", Command: []string{"/bin/sh", "-c", "echo 'Please run /login'; exit 3"}, Adapter: "claude", AllowArgs: true},
 		{ID: "bkcodex", Name: "bkcodex", Command: []string{"/bin/sh", "-c", "exec cat"}, Adapter: "codex", AllowArgs: true},
+		{ID: "bkfixed", Name: "bkfixed", Command: []string{"/bin/sh", "-c", bkScript}, Adapter: "claude"},
 	})
 	e.srv.limiter = newRateLimiter(1e6, 1e6)
 	e.stopEverything(t)
@@ -251,14 +256,14 @@ func (b *bkEnv) runStopped(t *testing.T, run string) {
 
 // gateLaunch holds every turn's launch once it has returned, before its
 // return is written, until the returned function is called.
-func gateLaunch(t *testing.T) (held <-chan string, release func()) {
+func (b *bkEnv) gateLaunch(t *testing.T) (held <-chan string, release func()) {
 	t.Helper()
 	ch, gate := make(chan string, 4), make(chan struct{})
 	f := func(id string) {
 		ch <- id
 		<-gate
 	}
-	afterTurnLaunch.Store(&f)
+	b.desk.afterLaunch.Store(&f)
 	once := func() {
 		select {
 		case <-gate:
@@ -268,7 +273,7 @@ func gateLaunch(t *testing.T) (held <-chan string, release func()) {
 	}
 	t.Cleanup(func() {
 		once()
-		afterTurnLaunch.Store(nil)
+		b.desk.afterLaunch.Store(nil)
 	})
 	return ch, once
 }
@@ -498,7 +503,7 @@ func TestTheDeadlineCoversStarting(t *testing.T) {
 	b := brakemanEnv(t, nil)
 	c := b.fakeClock()
 	b.enable(t, "bk", func(c map[string]any) { c["budget"].(map[string]any)["turnMinutes"] = 1 })
-	held, release := gateLaunch(t)
+	held, release := b.gateLaunch(t)
 	id := b.briefing(t)
 	<-held
 	c.add(2 * time.Minute)
@@ -521,7 +526,7 @@ func TestTheDeadlineCoversStarting(t *testing.T) {
 func TestCancelDuringLaunchStopsTheRunItReturns(t *testing.T) {
 	b := brakemanEnv(t, nil)
 	b.enable(t, "bk", nil)
-	held, release := gateLaunch(t)
+	held, release := b.gateLaunch(t)
 	id := b.briefing(t)
 	<-held
 	out := b.expect(t, "POST", "/api/brakeman/requests/"+id+"/cancel", map[string]any{"opId": "c1"}, http.StatusOK, "")
@@ -608,7 +613,7 @@ func TestAnAgentThatExitsBeforeReadingFails(t *testing.T) {
 	t.Run("starting", func(t *testing.T) {
 		b := brakemanEnv(t, nil)
 		b.enable(t, "bkexit", nil)
-		held, release := gateLaunch(t)
+		held, release := b.gateLaunch(t)
 		id := b.briefing(t)
 		<-held
 		r := b.waitState(t, id, brakeman.StateFailed)
@@ -642,7 +647,7 @@ func TestAnAgentThatExitsBeforeReadingFails(t *testing.T) {
 func TestASessionThatEndsDuringLaunchEnds(t *testing.T) {
 	b := brakemanEnv(t, nil)
 	b.enable(t, "bk", nil)
-	held, release := gateLaunch(t)
+	held, release := b.gateLaunch(t)
 	id := b.briefing(t)
 	<-held
 	sid, tok, l := b.turnSession(t, id)
@@ -667,7 +672,7 @@ func TestALateLaunchReturnLeavesAClosedRequest(t *testing.T) {
 			b := brakemanEnv(t, nil)
 			c := b.fakeClock()
 			b.enable(t, "bk", nil)
-			held, release := gateLaunch(t)
+			held, release := b.gateLaunch(t)
 			id := b.briefing(t)
 			<-held
 			sid, tok, l := b.turnSession(t, id)
@@ -699,7 +704,7 @@ func TestALateLaunchReturnLeavesAClosedRequest(t *testing.T) {
 func TestABriefWhileStartingIsTaken(t *testing.T) {
 	b := brakemanEnv(t, nil)
 	b.enable(t, "bk", nil)
-	held, release := gateLaunch(t)
+	held, release := b.gateLaunch(t)
 	id := b.briefing(t)
 	<-held
 	sid, tok, _ := b.turnSession(t, id)
@@ -933,7 +938,8 @@ func TestARestartInterruptsTheTurn(t *testing.T) {
 }
 
 // A Brakeman run is never resumed and takes no member: its resume, its
-// members' route and a member's resume answer 409 brakeman_run.
+// members' route, a member's resume and its session's resume answer 409
+// brakeman_run.
 func TestABrakemanRunIsNotResumed(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
@@ -946,6 +952,15 @@ func TestABrakemanRunIsNotResumed(t *testing.T) {
 	b.runStopped(t, run)
 	b.expect(t, "POST", "/api/runs/"+run+"/resume", nil, http.StatusConflict, "brakeman_run")
 	b.expect(t, "POST", "/api/runs/"+run+"/members/brakeman/resume", nil, http.StatusConflict, "brakeman_run")
+	// Its member's session is not resumed through the session's own route
+	// either, once it has ended.
+	if !waitFor(30*time.Second, func() bool {
+		d, ok := b.srv.registry.Get(sid)
+		return ok && d.Info().Status.Ended()
+	}) {
+		t.Fatal("the turn's session never ended")
+	}
+	b.expect(t, "POST", "/api/sessions/"+sid+"/resume", nil, http.StatusConflict, "brakeman_run")
 }
 
 // A Brakeman session forms no crew and adds no member: 403
@@ -1039,7 +1054,9 @@ func TestAPersonsCrewNamedBrakemanIsNotATurn(t *testing.T) {
 }
 
 // Brakeman's token reaches no admin route: every route the server
-// registers outside a session's own is walked with it.
+// registers but a session's own is walked with it, those under
+// /api/sessions/{id}/ that are the admin's or launch (resume, paste,
+// links) among them.
 func TestBrakemansTokenReachesNoAdminRoute(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
@@ -1047,11 +1064,27 @@ func TestBrakemansTokenReachesNoAdminRoute(t *testing.T) {
 	id := b.briefing(t)
 	sid, tok, _ := b.turnSession(t, id)
 	public := map[string]bool{"GET /api/health": true, "GET /api/ice": true, "GET /api/join/{token}": true}
+	// A session's own routes, which its token is for (the ones that would
+	// schedule or reach a ticket answer brakeman_cannot for it:
+	// TestABrakemanSessionFormsNoCrew, TestBrakemanCannotReachATicket);
+	// every other route under the session, the admin's and the launching
+	// ones (resume, paste, links), is walked with the rest.
+	own := map[string]bool{}
+	for _, p := range []string{"GET brakeman/request", "POST brakeman/brief", "GET ticket", "POST ticket/comments", "GET guide", "GET task",
+		"POST task/result", "POST messages", "GET inbox", "POST inbox/ack", "POST task/blocked", "POST task/checkpoint", "POST crew",
+		"POST run/members", "GET run", "POST links/agent", "GET files", "POST attention", "POST events"} {
+		method, path, _ := strings.Cut(p, " ")
+		own[method+" /api/sessions/{id}/"+path] = true
+	}
 	wild := strings.NewReplacer("{id}", sid, "{run}", "x", "{name}", "x", "{task}", "x", "{key}", "BK-1", "{token}", "x", "{linkId}", "x", "{command}", "x", "{n}", "1", "{k}", "1", "{path...}", "x")
+	walked := 0
 	for _, pattern := range muxPatterns(t, "/api/") {
 		method, path, _ := strings.Cut(pattern, " ")
-		if strings.HasPrefix(path, "/api/sessions/{id}/") || public[pattern] {
+		if own[pattern] || public[pattern] {
 			continue
+		}
+		if strings.HasPrefix(path, "/api/sessions/{id}/") {
+			walked++
 		}
 		var body any
 		if method != http.MethodGet {
@@ -1065,6 +1098,10 @@ func TestBrakemansTokenReachesNoAdminRoute(t *testing.T) {
 		if status != http.StatusUnauthorized {
 			t.Errorf("%s: Brakeman's token answered %d %.200s", pattern, status, data)
 		}
+	}
+	// resume, paste, the links' list, creation and revocation.
+	if walked < 5 {
+		t.Fatalf("%d of the session's admin routes walked", walked)
 	}
 }
 
@@ -1170,10 +1207,28 @@ func TestASecondServerRunsNoTurn(t *testing.T) {
 	second.expect(t, "POST", "/api/brakeman/requests", map[string]any{"opId": "s1", "kind": "briefing"}, http.StatusServiceUnavailable, "brakeman_not_owner")
 	c := entityOf(t, state, "config")
 	second.expect(t, "PUT", "/api/brakeman/config", map[string]any{"rev": c["rev"], "config": c}, http.StatusServiceUnavailable, "brakeman_not_owner")
+	held, release := b.gateLaunch(t)
 	id := b.briefing(t)
+	<-held
 	b.turnSession(t, id)
 	if (&bkEnv{testEnv: second, desk: second.srv.brakeman}).turnHeld() {
 		t.Fatal("the second server took a turn")
+	}
+	// What the owner is doing is read from the records: its turn current,
+	// a request it queued after the second server opened in the queue.
+	queued := b.briefing(t)
+	state = second.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, "")
+	cur, _ := state["current"].(map[string]any)
+	queue, _ := state["queue"].([]any)
+	if cur == nil || cur["id"] != id || len(queue) != 1 || queue[0].(map[string]any)["id"] != queued {
+		t.Fatalf("the second server shows current %v, queue %v", state["current"], state["queue"])
+	}
+	release()
+	b.expect(t, "POST", "/api/brakeman/requests/"+id+"/cancel", map[string]any{"opId": "c-own"}, http.StatusOK, "")
+	b.expect(t, "POST", "/api/brakeman/requests/"+queued+"/cancel", map[string]any{"opId": "c-q"}, http.StatusOK, "")
+	state = second.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, "")
+	if state["current"] != nil || len(state["queue"].([]any)) != 0 {
+		t.Fatalf("closed requests shown: current %v, queue %v", state["current"], state["queue"])
 	}
 }
 
@@ -1350,7 +1405,7 @@ func TestTheNextTurnWaitsForTheLastRunToEnd(t *testing.T) {
 func TestTheSlotWaitsForAnOutstandingLaunch(t *testing.T) {
 	b := brakemanEnv(t, nil)
 	b.enable(t, "bk", nil)
-	held, release := gateLaunch(t)
+	held, release := b.gateLaunch(t)
 	first := b.briefing(t)
 	next := b.briefing(t)
 	<-held
@@ -1364,16 +1419,402 @@ func TestTheSlotWaitsForAnOutstandingLaunch(t *testing.T) {
 }
 
 // Codex 0.163.0's read-only mode does not hold (PR-3a): the configuration
-// refuses it with the adapter's reason; Claude Code's is taken.
-func TestAnAgentWhoseReadOnlyModeDoesNotHoldIsRefused(t *testing.T) {
+// takes it (the owner's decision on #524) and answers the adapter's
+// reason as a warning, on the save and on the desk's state, for
+// Settings; Claude Code's mode holds and warns nothing.
+func TestAnAgentWhoseReadOnlyModeDoesNotHoldIsAWarning(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
 	c := b.config(t)
 	rev := c["rev"]
 	c["enabled"], c["agentId"], c["cwd"] = true, "bkcodex", b.root
-	out := b.expect(t, "PUT", "/api/brakeman/config", map[string]any{"rev": rev, "config": c}, http.StatusBadRequest, brakeman.CodeInvalidConfig)
-	if e := entityOf(t, out, "error"); e["field"] != "agentId" || !strings.Contains(fmt.Sprint(e["message"]), "your own MCP servers") {
-		t.Fatalf("%v", out)
+	out := b.expect(t, "PUT", "/api/brakeman/config", map[string]any{"rev": rev, "config": c}, http.StatusOK, "")
+	if w := fmt.Sprint(out["warnings"]); !strings.Contains(w, "bkcodex's read-only mode does not hold") || !strings.Contains(w, "your own MCP servers") {
+		t.Fatalf("the save's warnings: %v", out)
+	}
+	state := b.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, "")
+	if w := fmt.Sprint(state["warnings"]); !strings.Contains(w, "your own MCP servers") {
+		t.Fatalf("the desk's warnings: %v", state)
 	}
 	b.enable(t, "bk", nil)
+	if state := b.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, ""); state["warnings"] != nil {
+		t.Fatalf("Claude Code's mode warns: %v", state)
+	}
+}
+
+// gateBeforeLaunch holds every turn's launch inside launchTurn, its crew
+// made and before the engine is asked for its run, until the returned
+// function is called; do, when set, runs as each is held.
+func (b *bkEnv) gateBeforeLaunch(t *testing.T, do func(id string)) (held <-chan string, release func()) {
+	t.Helper()
+	ch, gate := make(chan string, 4), make(chan struct{})
+	f := func(id string) {
+		if do != nil {
+			do(id)
+		}
+		ch <- id
+		<-gate
+	}
+	b.desk.beforeLaunch.Store(&f)
+	once := func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	}
+	t.Cleanup(func() {
+		once()
+		b.desk.beforeLaunch.Store(nil)
+	})
+	return ch, once
+}
+
+// post sends an admin's POST or PUT from any goroutine and answers its
+// status, 0 when it could not be sent.
+func (b *bkEnv) post(method, path string, body any) int {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return 0
+	}
+	req, err := http.NewRequest(method, b.http.URL+path, bytes.NewReader(data))
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return 0
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// A request a restart finds queued waits for the server to listen
+// (StartBrakeman): the desk takes no turn while the server is being made,
+// then launches it as the server's own desk, with the callback URL the
+// listener's port gave cfg.PublicURL.
+func TestAQueuedRequestWaitsForTheServerToListen(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	first := b.briefing(t)
+	b.turnSession(t, first)
+	b.waitState(t, first, brakeman.StateRunning)
+	queued := b.briefing(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	b.srv.Shutdown(ctx)
+	cfg := *b.srv.cfg
+	srv, err := New(&cfg, b.srv.base, b.srv.log, nil, b.srv.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.brakeman == nil {
+		t.Fatal("no desk")
+	}
+	if srv.brakeman.steps.Load() != 0 || srv.brakeman.turn != nil {
+		t.Fatal("the desk ran before the server listened")
+	}
+	if r, _ := srv.brakeman.st.Get(queued); r.State != brakeman.StateQueued {
+		t.Fatalf("%s is %s before the server listened", queued, r.State)
+	}
+	// As conductor serve does once its listener is bound.
+	cfg.PublicURL = "http://127.0.0.1:47321"
+	again := &bkEnv{testEnv: b.serve(srv)}
+	again.desk = srv.brakeman
+	again.waitState(t, first, brakeman.StateInterrupted)
+	r := again.waitState(t, queued, brakeman.StateRunning, brakeman.StateFailed)
+	if r.State != brakeman.StateRunning {
+		t.Fatalf("the queued request %s: %s", r.State, r.Why)
+	}
+	var got []byte
+	if !waitFor(30*time.Second, func() bool {
+		got, _ = os.ReadFile(filepath.Join(b.root, "env-"+queued+".txt"))
+		return strings.HasSuffix(string(got), "\n")
+	}) || !strings.Contains(string(got), " N=http://127.0.0.1:47321/") {
+		t.Fatalf("the session was given %q", got)
+	}
+}
+
+// A shutdown waits for a turn's launch outstanding before it stops the
+// runs: a launch held before the engine made its run makes none once
+// let go, no process is left running, and the request stays as the
+// shutdown found it, interrupted at the next start.
+func TestAShutdownWaitsForAnOutstandingLaunch(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	held, release := b.gateBeforeLaunch(t, nil)
+	id := b.briefing(t)
+	<-held
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		b.srv.Shutdown(ctx)
+	}()
+	if !waitFor(30*time.Second, b.desk.closing.Load) {
+		t.Fatal("the shutdown never quiesced the desk")
+	}
+	release()
+	<-done
+	b.srv.registry.Each(func(d session.Driver) {
+		if ref := d.Info().Crew; ref != nil && ref.Brakeman != nil && ref.Brakeman.Request == id && !d.Info().Status.Ended() {
+			t.Errorf("the turn's session %s runs after the shutdown", d.Info().ID)
+		}
+	})
+	b.desk.mu.Lock()
+	locals := slices.Clone(b.desk.turn.locals)
+	b.desk.mu.Unlock()
+	if live := liveLocals(locals); len(live) > 0 {
+		t.Fatalf("%d of the turn's processes not reaped", len(live))
+	}
+	again := &bkEnv{testEnv: b.restart()}
+	again.desk = again.srv.brakeman
+	if r := again.waitState(t, id, brakeman.StateInterrupted); r.RunID != "" {
+		t.Fatalf("the cancelled launch made a run: %+v", r)
+	}
+}
+
+// A shutdown lets Brakeman's owner lock go only once the turn's processes
+// are reaped: a turn running as the server stops has none left when
+// another server can take its records.
+func TestAShutdownReapsTheTurnBeforeItLetsTheRecordsGo(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	id := b.briefing(t)
+	_, _, l := b.turnSession(t, id)
+	b.waitState(t, id, brakeman.StateRunning)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	b.srv.Shutdown(ctx)
+	select {
+	case <-l.ProcessDone():
+	default:
+		t.Fatal("the turn's process is not reaped as the records are let go")
+	}
+	if r, _ := b.desk.st.Get(id); r.State != brakeman.StateRunning {
+		t.Fatalf("the shutdown wrote %s", r.State)
+	}
+}
+
+// An ask while the queue is read again (the store becoming this server's,
+// OnOwned) is never lost from it: the queue the desk holds is the queued
+// requests the records hold.
+func TestAnAskDuringQueueRecoveryJoinsTheQueue(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	held, release := b.gateLaunch(t)
+	defer release()
+	b.briefing(t)
+	<-held
+	stop := make(chan struct{})
+	reloaded := make(chan struct{})
+	go func() {
+		defer close(reloaded)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				b.desk.loadQueue()
+			}
+		}
+	}()
+	var asks sync.WaitGroup
+	statuses := make([]int, brakemanQueue-1)
+	for i := range statuses {
+		asks.Go(func() {
+			statuses[i] = b.post("POST", "/api/brakeman/requests", map[string]any{"opId": fmt.Sprintf("rq-%d", i), "kind": "briefing"})
+		})
+	}
+	asks.Wait()
+	close(stop)
+	<-reloaded
+	for i, st := range statuses {
+		if st != http.StatusCreated {
+			t.Fatalf("ask %d: %d", i, st)
+		}
+	}
+	_, want, err := b.desk.recordedStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.desk.mu.Lock()
+	got := slices.Clone(b.desk.queue)
+	b.desk.mu.Unlock()
+	ids := make([]string, len(want))
+	for i, r := range want {
+		ids[i] = r.ID
+	}
+	if !slices.Equal(got, ids) || len(got) != brakemanQueue-1 {
+		t.Fatalf("the desk's queue %v, the records' %v", got, ids)
+	}
+}
+
+// Turning Brakeman off and asking at once leave no request open: an ask
+// either lands before the save, and is cancelled with the queue, or reads
+// Brakeman off (409 brakeman_off).
+func TestTurningBrakemanOffWhileAskingLeavesNothingOpen(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	held, release := b.gateLaunch(t)
+	defer release()
+	first := b.briefing(t)
+	<-held
+	c := b.config(t)
+	rev := c["rev"]
+	c["enabled"] = false
+	var all sync.WaitGroup
+	statuses := make([]int, brakemanQueue-1)
+	for i := range statuses {
+		all.Go(func() {
+			statuses[i] = b.post("POST", "/api/brakeman/requests", map[string]any{"opId": fmt.Sprintf("off-%d", i), "kind": "briefing"})
+		})
+	}
+	var off int
+	all.Go(func() { off = b.post("PUT", "/api/brakeman/config", map[string]any{"rev": rev, "config": c}) })
+	all.Wait()
+	if off != http.StatusOK {
+		t.Fatalf("the save: %d", off)
+	}
+	for i, st := range statuses {
+		if st != http.StatusCreated && st != http.StatusConflict {
+			t.Fatalf("ask %d: %d", i, st)
+		}
+	}
+	page, _, err := b.desk.st.List("", brakeman.MaxPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range page {
+		if r.Open() {
+			t.Errorf("%s is %s after Brakeman was turned off", r.ID, r.State)
+		}
+	}
+	if r := b.waitState(t, first, brakeman.StateCancelled); r.Why != "Brakeman was turned off" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// The configuration is held again as a turn starts: an agent whose entry
+// changed since the save (here, to an adapter with no read-only mode)
+// fails the turn with why, and nothing is launched.
+func TestATurnRechecksItsConfiguration(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	cat := b.srv.Catalog().Clone()
+	a, _ := cat.Get("bk")
+	a.Adapter = "goose"
+	if err := cat.Upsert(a); err != nil {
+		t.Fatal(err)
+	}
+	b.setCatalog(cat)
+	id := b.briefing(t)
+	r := b.waitState(t, id, brakeman.StateFailed)
+	if !strings.Contains(r.Why, "the configuration no longer holds") || r.RunID != "" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// A turn's session starts only from the agent's entry its read-only
+// arguments were made for: an entry changed between the two (here its
+// command) fails the turn with the engine's words, and no session runs.
+func TestATurnsSessionStartsFromTheEntryItsArgumentsWereMadeFor(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	_, release := b.gateBeforeLaunch(t, func(string) {
+		cat := b.srv.Catalog().Clone()
+		a, _ := cat.Get("bk")
+		a.Command = []string{"/bin/sh", "-c", "exec cat"}
+		_ = cat.Upsert(a)
+		b.setCatalog(cat)
+	})
+	release()
+	id := b.briefing(t)
+	r := b.waitState(t, id, brakeman.StateFailed)
+	if !strings.Contains(r.Why, "the launch failed") {
+		t.Fatalf("%+v", r)
+	}
+	b.srv.registry.Each(func(d session.Driver) {
+		if ref := d.Info().Crew; ref != nil && ref.Brakeman != nil && ref.Brakeman.Request == id {
+			t.Errorf("a session %s was started from the changed entry", d.Info().ID)
+		}
+	})
+}
+
+// The desk prunes its requests (Store.Prune) as it starts and after each
+// turn: past the newest it keeps, a closed request goes with its
+// documents.
+func TestTheDeskPrunesOldRequests(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.desk.keep.Store(1)
+	b.enable(t, "bk", nil)
+	var ids []string
+	for i := range 3 {
+		id := b.briefing(t)
+		b.turnSession(t, id)
+		b.expect(t, "POST", "/api/brakeman/requests/"+id+"/cancel", map[string]any{"opId": fmt.Sprintf("pr-%d", i)}, http.StatusOK, "")
+		b.slotFree(t)
+		ids = append(ids, id)
+	}
+	b.settle(t)
+	if !waitFor(30*time.Second, func() bool {
+		_, err := b.desk.st.Get(ids[0])
+		return errors.Is(err, brakeman.ErrNotFound)
+	}) {
+		t.Fatalf("%s, past the newest kept, was not pruned", ids[0])
+	}
+	if _, err := b.desk.st.Get(ids[2]); err != nil {
+		t.Fatalf("the newest request: %v", err)
+	}
+}
+
+// The repeat of a kept brief is compared as kept, never checked again
+// against the catalog: a drafted crew whose agent was hidden since still
+// answers 200 with the request.
+func TestABriefRepeatAfterItsCrewsAgentWentIsAnswered(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	id := b.briefing(t)
+	sid, tok, _ := b.turnSession(t, id)
+	b.readRequest(t, sid, tok)
+	brief := factBrief("session:" + sid)
+	brief["items"] = append(brief["items"].([]any), map[string]any{"kind": brakeman.ItemDraftCrew,
+		"crew": map[string]any{"name": "Parser", "goal": "parse", "cwd": b.root, "where": "server", "isolation": "none", "members": []any{map[string]any{"name": "a", "agentId": "cat", "start": map[string]any{"when": "manual"}}}}})
+	if status, out := b.submit(t, sid, tok, "dc-1", brief); status != http.StatusCreated {
+		t.Fatalf("brief %d %v", status, out)
+	}
+	cat := b.srv.Catalog().Clone()
+	cat.Hide("cat")
+	b.setCatalog(cat)
+	if status, out := b.submit(t, sid, tok, "dc-1", brief); status != http.StatusOK {
+		t.Fatalf("the repeat: %d %v", status, out)
+	}
+}
+
+// An agent whose entry takes no extra arguments (allowArgs false) still
+// runs a turn: the read-only arguments are Conductor's own, never a
+// person's.
+func TestATurnRunsAnAgentThatTakesNoArguments(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bkfixed", nil)
+	id := b.briefing(t)
+	_, _, l := b.turnSession(t, id)
+	b.waitState(t, id, brakeman.StateRunning)
+	if argv := l.Info().Command; !slices.Contains(argv, "--strict-mcp-config") {
+		t.Fatalf("argv %q lacks the read-only mode", argv)
+	}
 }
