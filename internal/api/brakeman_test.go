@@ -999,7 +999,7 @@ func TestBrakemanCannotReachATicket(t *testing.T) {
 	id := b.briefing(t)
 	sid, tok, _ := b.turnSession(t, id)
 	run := b.runOf(t, sid)
-	if _, err := b.srv.dispatch.AddLink(t.Context(), dispatch.Op{Actor: dispatch.ActorAdmin, ID: "seam-link"}, key, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}); err != nil {
+	if _, err := b.srv.dispatch.AddLink(t.Context(), dispatch.Op{Actor: dispatch.ActorAdmin, ID: "seam-link"}, key, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}, nil); err != nil {
 		t.Fatal(err)
 	}
 	b.expectAs(t, tok, "GET", "/api/sessions/"+sid+"/ticket", nil, http.StatusForbidden, "brakeman_cannot")
