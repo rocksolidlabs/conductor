@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -247,8 +248,8 @@ func TestEachRefKindResolves(t *testing.T) {
 	ticketPage := "/dispatch/CND/1"
 	want := map[string]brakeman.RefState{
 		"run:" + f.run:                             {URL: "/runs/" + f.run, State: ledger.RunStopped, Rev: "1"},
-		"task:" + f.run + "/build":                 {URL: "/runs/" + f.run + "?task=build", State: "failed", Rev: "1"},
-		"attempt:" + f.run + "/build/1":            {URL: "/runs/" + f.run + "?task=build&attempt=1", State: ledger.AttemptFailed, Rev: f.commit},
+		"task:" + f.run + "/build":                 {URL: "/runs/" + f.run + "?view=tasks&task=build", State: "failed", Rev: "1"},
+		"attempt:" + f.run + "/build/1":            {URL: "/runs/" + f.run + "?view=tasks&task=build", State: ledger.AttemptFailed, Rev: f.commit},
 		"check:" + f.run + "/build/1/test/1":       {URL: "/api/runs/" + f.run + "/tasks/build/attempts/1/steps/test/1/log", State: "exit:1", Rev: f.commit, SHA256: f.logSHA},
 		"command:" + f.run + "/c1":                 {URL: "/api/runs/" + f.run + "/commands/c1", State: ledger.CommandDone},
 		"event:" + f.run + "/1":                    {URL: "/runs/" + f.run, State: "task.failed"},
@@ -258,7 +259,7 @@ func TestEachRefKindResolves(t *testing.T) {
 		"question:" + f.session + "/" + f.question: {URL: "/sessions/" + f.session, State: questionOpen},
 		"file:" + f.session + "/" + f.file:         {URL: "/sessions/" + f.session + "?tab=files&open=" + strings.ReplaceAll(f.file, "/", "%2F"), State: session.FileOpEdit, Rev: "1"},
 		"ticket:" + f.ticket:                       {URL: ticketPage, State: "backlog", Rev: ""},
-		"comment:" + f.ticket + "/" + f.comment:    {URL: ticketPage + "#comment-" + f.comment, State: "posted", Rev: "1"},
+		"comment:" + f.ticket + "/" + f.comment:    {URL: "/api/dispatch/tickets/" + f.ticket + "/comments?after=0&limit=1", State: "posted", Rev: "1"},
 		"op:" + adminActor + "/" + f.op:            {URL: ticketPage, State: dispatch.StatusDone},
 		"brief:" + f.earlier + "/0":                {URL: "/brakeman?request=" + f.earlier + "#item-0", State: brakeman.StateBriefed},
 	}
@@ -1129,15 +1130,64 @@ func TestAnUnopenedStoreIsAnError(t *testing.T) {
 	if e.srv.dispatch != nil || e.srv.ledger != nil {
 		t.Fatal("a store opened on a symbolic link")
 	}
+	// A managed run's record, as the engine left one before the ledger
+	// could not be opened: it lags the ledger's committed transitions,
+	// so it is no answer for the run or its tasks. A legacy run's record
+	// is its own, and still answers.
+	managed := crew.Run{ID: "team-0000bbbb", CrewID: "team", Name: "team", Cwd: e.root, State: crew.RunRunning,
+		Managed: &crew.Managed{Revision: 3}, Tasks: []crew.TaskState{{ID: "build", Member: "lead", Kind: "work", State: "running", Attempts: 1}}}
+	legacy := crew.Run{ID: "team-0000cccc", CrewID: "team", Name: "team", Cwd: e.root, State: crew.RunStopped}
+	for _, run := range []crew.Run{managed, legacy} {
+		if err := e.srv.records.Save(run); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cfg := brakeman.DefaultConfig(e.root)
+	resolve := func(s string) ([]brakeman.Resolution, error) {
+		return e.srv.resolveBriefRefs(t.Context(), nil, brakeman.Request{ID: "br-1", Config: brakeman.SnapshotOf(cfg)},
+			brakeman.Brief{Schema: brakeman.BriefSchema, Title: "t", Summary: "s", Items: []brakeman.Item{panel(ref(t, s))}}, brakeman.ReadLog{}, cfg)
+	}
 	var bad *badRefsError
-	for _, s := range []string{"run:team-0000aaaa", "ticket:CND-1", "op:admin/op-1"} {
-		r := ref(t, s)
-		_, err := e.srv.resolveBriefRefs(t.Context(), nil, brakeman.Request{ID: "br-1", Config: brakeman.SnapshotOf(cfg)},
-			brakeman.Brief{Schema: brakeman.BriefSchema, Title: "t", Summary: "s", Items: []brakeman.Item{panel(r)}}, brakeman.ReadLog{}, cfg)
+	for _, s := range []string{"run:team-0000aaaa", "run:" + managed.ID, "task:" + managed.ID + "/build", "ticket:CND-1", "op:admin/op-1"} {
+		_, err := resolve(s)
 		var unopened *errRefStore
 		if !errors.As(err, &unopened) || errors.As(err, &bad) {
 			t.Errorf("%s: %v", s, err)
 		}
+	}
+	got, err := resolve("run:" + legacy.ID)
+	if err != nil || len(got) != 1 || got[0].Now.State != crew.RunStopped {
+		t.Errorf("the legacy run's record: %+v, %v", got, err)
+	}
+}
+
+// A comment ref's url is the route that serves that comment alone,
+// wherever it falls among the ticket's comments: one older than the
+// latest page the ticket's own read carries is still found by it.
+func TestACommentRefLeadsToItsComment(t *testing.T) {
+	f := newRefsFixture(t)
+	ctx := t.Context()
+	done := doneOf(t)
+	for i := 0; i < dispatch.MaxTicketComments; i++ {
+		done(f.e.srv.dispatch.AddComment(ctx, adminOp("Ann"), f.ticket, fmt.Sprintf("Later note %d.", i)))
+	}
+	page := listOf(t, entityOf(t, f.e.expect(t, "GET", "/api/dispatch/tickets/"+f.ticket, nil, http.StatusOK, ""), "ticket"), "comments")
+	for _, c := range page {
+		if c["id"] == f.comment {
+			t.Fatal("the comment is in the ticket's latest page; the test needs one outside it")
+		}
+	}
+	cfg := brakeman.DefaultConfig(f.e.root)
+	r := ref(t, "comment:"+f.ticket+"/"+f.comment)
+	got, err := f.resolve(t, cfg, cfg, []brakeman.Item{panel(r)}, brakeman.Read{Ref: r, Class: brakeman.ClassDispatch, State: "posted", Rev: "1", At: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Seen.URL != got[0].Now.URL {
+		t.Errorf("seen at %q, now at %q", got[0].Seen.URL, got[0].Now.URL)
+	}
+	cs := f.e.expect(t, "GET", got[0].Now.URL, nil, http.StatusOK, "")["comments"].([]any)
+	if len(cs) != 1 || cs[0].(map[string]any)["id"] != f.comment {
+		t.Errorf("%s serves %v, want the comment %s alone", got[0].Now.URL, cs, f.comment)
 	}
 }
