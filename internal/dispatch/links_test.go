@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -374,14 +375,14 @@ func TestARunsTicketThroughDeletesAndUndeletes(t *testing.T) {
 
 // chains is the engine's sight of runs' chains as a test gives it: each
 // list one chain, a run of none its own chain alone.
-func chains(lists ...[]string) func(string) []string {
-	return func(run string) []string {
+func chains(lists ...[]string) func(string) ([]string, error) {
+	return func(run string) ([]string, error) {
 		for _, l := range lists {
 			if slices.Contains(l, run) {
-				return l
+				return l, nil
 			}
 		}
-		return []string{run}
+		return []string{run}, nil
 	}
 }
 
@@ -532,6 +533,53 @@ func TestAChainHasOneTicket(t *testing.T) {
 	}
 	if holders, err := s.ChainHolders(ctx, "C"); err != nil || len(holders) != 1 || holders[0].Key != t2 || holders[0].Run != "D" {
 		t.Fatalf("the chain's holder after the undelete: %+v %v", holders, err)
+	}
+}
+
+// A chain the sight cannot read is never judged: T1 links A, and while
+// the sight fails, B (a continuation of A) to T2 is ErrChainUnread with
+// nothing written (no link, no receipt), ChainHolders is ErrChainUnread,
+// and T1's undelete is too, its link kept; once the sight reads again,
+// the same operation id is answered by the chain rule, refused naming T1.
+func TestAChainThatCannotBeReadIsNeverJudged(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "CND")
+	_, t1 := newTicket(t, s, "CND", "T1")
+	_, t2 := newTicket(t, s, "CND", "T2")
+	s.SetRunExists(runs("A", "B"))
+	s.SetRunChain(chains([]string{"A", "B"}))
+	rc, err := addLink(s, "a1", t1, NewLink{Kind: LinkRun, Ref: "A"})
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.DeleteTicket(ctx, testOp("d1"), t1)
+	want(t, rc, err, StatusDone, "")
+	busy := errors.New("database is locked")
+	s.SetRunChain(func(string) ([]string, error) { return nil, busy })
+	if _, err := addLink(s, "b2", t2, NewLink{Kind: LinkRun, Ref: "B"}); !errors.Is(err, ErrChainUnread) || !errors.Is(err, busy) {
+		t.Fatalf("B to T2 with the chain unread: %v", err)
+	}
+	if _, found, err := s.Receipt(ctx, "test", "b2"); err != nil || found {
+		t.Fatalf("the unread chain's operation kept a receipt: %v %v", found, err)
+	}
+	if links, err := s.Links(ctx, t2); err != nil || len(links) != 0 {
+		t.Fatalf("T2's links: %+v %v", links, err)
+	}
+	if _, err := s.ChainHolders(ctx, "A"); !errors.Is(err, ErrChainUnread) {
+		t.Fatalf("the holders with the chain unread: %v", err)
+	}
+	if _, err := s.UndeleteTicket(ctx, testOp("u1"), t1); !errors.Is(err, ErrChainUnread) {
+		t.Fatalf("T1's undelete with the chain unread: %v", err)
+	}
+	if tk := ticketOf(t, s, t1); tk.DeletedAt.IsZero() {
+		t.Fatal("T1 undeleted with its chain unread")
+	}
+	s.SetRunChain(chains([]string{"A", "B"}))
+	rc, err = s.UndeleteTicket(ctx, testOp("u1"), t1)
+	want(t, rc, err, StatusDone, "")
+	rc, err = addLink(s, "b2", t2, NewLink{Kind: LinkRun, Ref: "B"})
+	want(t, rc, err, StatusFailed, RefusalRunLinked)
+	if rc.Key != t1 {
+		t.Fatalf("B to T2 once the chain reads: %+v", rc)
 	}
 }
 

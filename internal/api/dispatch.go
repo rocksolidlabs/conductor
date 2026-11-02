@@ -101,6 +101,9 @@ func (s *Server) routeDispatch(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("GET /api/sessions/{id}/ticket", s.launchingAny(s.handleSessionTicket))
 	mux.HandleFunc("POST /api/sessions/{id}/ticket/comments", s.launchingAny(s.handleSessionTicketComment))
+	// A run's candidates are the admin's, as its task routes are
+	// (candidates.go); the ledger is read, never Dispatch's store.
+	mux.HandleFunc("GET /api/runs/{run}/candidates", s.requireAdmin(s.handleRunCandidates))
 }
 
 // dispatchRoutes is Dispatch's routes, as routeDispatch adds them.
@@ -136,6 +139,7 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 		{"POST /api/dispatch/plans/{id}/withdraw", s.handleDispatchWithdrawPlan},
 		{"POST /api/dispatch/tickets/{key}/launch", s.handleDispatchLaunch},
 		{"GET /api/dispatch/launches/{id}", s.handleDispatchLaunchRead},
+		{"GET /api/dispatch/tickets/{key}/runs", s.handleDispatchTicketRuns},
 		{"GET /api/dispatch/tickets/{key}/comments", s.handleDispatchComments},
 		{"POST /api/dispatch/tickets/{key}/comments", s.handleDispatchAddComment},
 		{"POST /api/dispatch/tickets/{key}/comments/{id}/edit", s.handleDispatchEditComment},
@@ -413,10 +417,24 @@ func (s *Server) writeOp(w http.ResponseWriter, what string, rc dispatch.Receipt
 // display name that is not one, a query outside its vocabulary or past
 // its bound), 404 not_found for what it does not hold, 503
 // dispatch_unavailable for a store that cannot serve (nothing to read,
-// closed), and 500 store_failed, logged, for a failure of the database.
+// closed), 503 run_changing (Retry-After: 1) for a run's chain walked
+// while a run of it was being resumed (errRunContinuing), 503
+// ledger_unavailable, logged, for a run's chain the chain rule could not
+// read otherwise (dispatch.ErrChainUnread), and 500 store_failed,
+// logged, for a failure of the database.
 func (s *Server) dispatchError(w http.ResponseWriter, what string, err error) {
 	words := strings.TrimPrefix(err.Error(), "dispatch: ")
 	switch {
+	case errors.Is(err, errRunContinuing):
+		// A run of the chain is being resumed: nothing was judged, and the
+		// same request may be sent again once the continuation is made.
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "run_changing", "a run of the chain is being resumed, so nothing was kept; ask again")
+	case errors.Is(err, dispatch.ErrChainUnread):
+		// The chain rule judges no link on a chain it could not read: the
+		// operation wrote nothing, and may be sent again.
+		s.log.Warn("a run's chain could not be read", "what", what, "err", err)
+		writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", "a run's chain could not be read from the ledger, so nothing was kept; see the server's log")
 	case errors.Is(err, dispatch.ErrBadOpID), errors.Is(err, dispatch.ErrBadActor), errors.Is(err, dispatch.ErrBadBy), errors.Is(err, dispatch.ErrBadQuery):
 		writeError(w, http.StatusBadRequest, "invalid_request", words)
 	case errors.Is(err, dispatch.ErrNotFound):

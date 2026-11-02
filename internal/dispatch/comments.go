@@ -53,8 +53,18 @@ func (s *Store) AddComment(ctx context.Context, op Op, key, body string) (Receip
 // no_ticket).
 var ErrNoRunTicket = errors.New("dispatch: no live ticket is linked to the run")
 
-// AddRunComment comments, as AddComment does, on the live ticket the
-// run's live run link names (RunTicket's live answer), found inside the
+// ErrLaunchTicketGone is AddRunComment's answer for a run launched from a
+// ticket (its package's, the store's sight of it: SetRunTicket) that is
+// deleted, or not in this store: the run follows its package, and no link
+// sends the comment elsewhere. It is an ErrNoRunTicket, with nothing
+// written.
+var ErrLaunchTicketGone = fmt.Errorf("%w: the ticket the run was launched from is deleted, and the run follows its package", ErrNoRunTicket)
+
+// AddRunComment comments, as AddComment does, on the ticket the run was
+// launched from (the store's sight of its package, SetRunTicket, whatever
+// links say, so a continuation's sessions find it too: deleted, or not in
+// this store, ErrLaunchTicketGone), else on the live ticket the run's
+// live run link names (RunTicket's live answer), found inside the
 // operation's transaction, after its receipt is looked up: an id answered
 // before answers its receipt (a repeat, or op_conflict for other
 // content, its failed receipts' as well as its done ones') wherever the
@@ -73,6 +83,20 @@ func (s *Store) AddRunComment(ctx context.Context, op Op, run, body string) (Rec
 		Body string `json:"body"`
 	}{run, body}
 	return s.Apply(ctx, op, "comment.add", args, func(t *tx) error {
+		if t.sight.ticket != nil {
+			if id, ok := t.sight.ticket(run); ok {
+				tk, err := ticketByID(t.ctx, t.tx, id)
+				switch {
+				case isNoRows(err):
+					return ErrLaunchTicketGone
+				case err != nil:
+					return err
+				case !tk.DeletedAt.IsZero():
+					return ErrLaunchTicketGone
+				}
+				return t.addComment(tk.Key, body)
+			}
+		}
 		tk, found, err := runTicket(t.ctx, t.tx, run)
 		if err != nil {
 			return err

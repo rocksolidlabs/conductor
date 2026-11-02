@@ -564,3 +564,30 @@ func TestAManagedRecordIsTheLedgersToKeep(t *testing.T) {
 		t.Fatal("a bad id was deleted")
 	}
 }
+
+// The records' marks are every record's place in its chain, so a run
+// whose record is gone is found through the record naming it; a file
+// that is no run's record is none, and a record that cannot be read is
+// the error, naming it, since what it names is unknown.
+func TestRecordMarksNameEveryRecordsChain(t *testing.T) {
+	rs, runsDir := newRecords(t)
+	at := time.Now().UTC()
+	next := Run{ID: "crew-0000eeee", CrewID: "crew", Name: "Crew", State: RunStopped, StartedAt: at, StoppedAt: &at, ResumedFrom: "crew-0000ffff",
+		Members: []MemberState{{Name: "a", AgentID: "cat", Status: MemberEnded}}}
+	if err := rs.Save(next); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runsDir, "notes.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marks, err := rs.Marks()
+	if err != nil || len(marks) != 1 || marks[0].ID != next.ID || marks[0].ResumedFrom != "crew-0000ffff" || marks[0].ResumedBy != "" || !marks[0].StartedAt.Equal(at) {
+		t.Fatalf("the marks: %+v %v", marks, err)
+	}
+	if err := os.WriteFile(filepath.Join(runsDir, "crew-00001111.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if marks, err := rs.Marks(); err == nil || !strings.Contains(err.Error(), "crew-00001111.json") {
+		t.Fatalf("the marks with a record unreadable: %+v %v", marks, err)
+	}
+}
