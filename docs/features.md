@@ -3964,7 +3964,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   a client it is given), `FakeEntitlements` (nothing allowed until set),
   `FakeMedia`, `FakeRuntime` (a `Where`; C10 adds its methods) and
   `FakeHost` (records every `Launch`, `Submit` and `Notify` with scripted
-  answers, refuses what the records' `Valid` refuses with
+  answers, the record and a callback each holding a copy of the request,
+  refuses what the records' `Valid` refuses with
   `ext.ErrRefused`, a `t.TempDir()` as `DataDir`, a logger into the
   test's log, `Block`, and `Close`, after which every call answers
   `context.Canceled`). The `Network` a provider under test is built with
@@ -3973,7 +3974,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (`ErrOnCallPath`) and, blocked, holds every one on a gate until it is
   let go or its context ends, and lets no byte cross a connection
   `DialContext` made, however long before (a gRPC or websocket client's
-  round trip on a held connection waits too); a request is recorded by
+  round trip on a held connection waits too) until it is let go, closed
+  or its deadline passes, as `net.Conn`'s; a request is recorded by
   its scheme, host and path, never its query or user information. One
   check function per interface,
   `Identity`, `Router`, `Context`, `Sink`, `Continuity`, `Entitlements`,
@@ -3989,12 +3991,16 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   for the methods that must be safe for concurrent use, then with it
   blocked and with a cancelled context, and fails on a dial or request
   under its context or on not returning within the wait the server's
-  guard gives that method, `Name` among them; `Restore` alone may use the
+  guard gives that method, `Name` among them; each `Route` is given a
+  question of its own, each resolved once, and `Notify` a notification of
+  each event the sink's `Events` lists, as the server types it; `Restore`
+  alone may use the
   network on its path, must return its context's error once that ends
   while its download waits on the gate, and fails a write made after it
   returned whenever the suite sees it; `Starter` goes on only once the
   closed host's refusals have reached the provider; Identity's tokens are
-  never printed, `[token]` standing in for them. The package
+  never printed, `[token]` standing in for them as they are and escaped,
+  and a URL in a check's words is shown by its scheme, host and path. The package
   documentation says how a provider's repository runs the suite in CI, with its service reachable
   and unreachable, and how a new interface joins it. Tests:
   `TestFakes` (each fake, `FakeHost` and `FakeRuntime` among them, and all
@@ -4008,12 +4014,15 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   token, nine blocks, a `Start` waiting on its host, a route its decision
   does not offer, a panic, `Events` that change, new or in place, a round
   trip over a connection held from before the call, a `Name` that asks
-  its service, a `Restore` that writes once its context ends, a bad name,
+  its service, a `Restore` that writes once its context ends, a round trip
+  only for the event a sink takes, a route fetched the first time a
+  question is routed, a bad name,
   a nil provider: each failing check named through a recording
   `exttest.T`), `TestRunAll`, `TestRestoreMayStream` (a `Restore`
   streaming from an `httptest` server through the `Network` passes, ends
   with its context's error while the gate is shut, and one answering nil
-  then fails), `TestBreachWordsKeepTokens`, `TestStarterDeliversTheRefusals`,
+  then fails), `TestRestoreEndedByADeadline`, `TestBreachWordsKeepTokens`,
+  `TestStarterDeliversTheRefusals`,
   `TestNetwork` and `TestNetworkHoldsAConnection`, each checked to fail
   with its part broken; benchmarks of
   the defaults and the fakes measure a call's time, which no check does.
