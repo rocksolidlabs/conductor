@@ -741,6 +741,59 @@ func (l *Ledger) Check(ctx context.Context, runID, taskID string, n int, id stri
 	return r, true, nil
 }
 
+// CheckChanged reads the tracked paths a receipt's command changed, which
+// its row does not hold: they are in the finished event the transaction
+// that finished the row committed with it, a task's check's
+// check.finished (naming the task, the attempt, the check and, since
+// DS2's PR-5, k) or a manifest step's step.finished (naming the task, the
+// attempt, the id and k). The event naming k is read; with none, the
+// latest check.finished of the task, attempt and check that names no k
+// (written before k was added). The list is the event's, cut short as it
+// was written; none for a receipt with no finished event, or one that
+// changed nothing.
+func (l *Ledger) CheckChanged(ctx context.Context, runID, taskID string, n int, id string, k int) ([]string, error) {
+	db, err := l.conn()
+	if err != nil {
+		return nil, err
+	}
+	// The kinds are told by the events' index (run_id, seq) and their
+	// kind; what each names is read here, never by SQL over a payload.
+	rows, err := db.QueryContext(ctx, `SELECT kind, payload FROM events WHERE run_id = ? AND kind IN ('check.finished', 'step.finished') ORDER BY seq DESC`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var older []string
+	found := false
+	for rows.Next() {
+		var kind, payload string
+		if err := rows.Scan(&kind, &payload); err != nil {
+			return nil, err
+		}
+		var p struct {
+			Task    string   `json:"task"`
+			Attempt int      `json:"attempt"`
+			Check   string   `json:"check"`
+			ID      string   `json:"id"`
+			K       *int     `json:"k"`
+			Changed []string `json:"changed"`
+		}
+		if json.Unmarshal([]byte(payload), &p) != nil || p.Task != taskID || p.Attempt != n {
+			continue // another receipt's, or not an event this reads
+		}
+		if kind == "check.finished" && p.Check != id || kind == "step.finished" && p.ID != id {
+			continue
+		}
+		switch {
+		case p.K != nil && *p.K == k:
+			return p.Changed, rows.Err()
+		case p.K == nil && kind == "check.finished" && !found:
+			older, found = p.Changed, true
+		}
+	}
+	return older, rows.Err()
+}
+
 // Prerequisites reads a run's prerequisites' receipts, by id and k;
 // withLog says whether the log blobs come along.
 func (l *Ledger) Prerequisites(ctx context.Context, runID string, withLog bool) ([]PrerequisiteRow, error) {

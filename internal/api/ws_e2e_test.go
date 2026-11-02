@@ -540,6 +540,13 @@ func dialFakeHostWith(t *testing.T, e *testEnv, host proto.HostInfo, sess proto.
 // set, as each of the server's pings arrives (and answers it as ever).
 func dialFakeHostPinged(t *testing.T, e *testEnv, host proto.HostInfo, sess proto.HostSession, auth string, onPing func()) (*fakeHost, map[string]any) {
 	t.Helper()
+	return dialFakeHostRegister(t, e, proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: host, Session: sess}, auth, onPing)
+}
+
+// dialFakeHostRegister registers a fake host with reg (a resume among
+// them), as dialFakeHostPinged does.
+func dialFakeHostRegister(t *testing.T, e *testEnv, reg proto.Register, auth string, onPing func()) (*fakeHost, map[string]any) {
+	t.Helper()
 	url := strings.Replace(e.http.URL, "http://", "ws://", 1) + "/ws/host"
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -562,7 +569,7 @@ func dialFakeHostPinged(t *testing.T, e *testEnv, host proto.HostInfo, sess prot
 	t.Cleanup(func() { c.CloseNow() })
 	h := &fakeHost{t: t, c: c, msgs: make(chan map[string]any, 4096), bin: make(chan []byte, 4096), done: make(chan struct{})}
 	go h.pump()
-	h.send(proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: host, Session: sess})
+	h.send(reg)
 	registered := h.expect(proto.HostRegistered)
 	h.sessionID, _ = registered["sessionId"].(string)
 	if h.sessionID == "" {
