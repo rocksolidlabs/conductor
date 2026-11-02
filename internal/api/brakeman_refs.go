@@ -372,6 +372,10 @@ func (rr *refResolver) resolve(ctx context.Context, ref brakeman.Ref) (brakeman.
 		return brakeman.Resolution{}, "outside the request's scope", nil
 	}
 	u := refURL(ref)
+	if ref.Kind == brakeman.RefComment && f.now.URL != "" {
+		// What the turn read is followed where the comment is now.
+		u = f.now.URL
+	}
 	now := f.now
 	switch {
 	case f.unavailable:
@@ -522,8 +526,11 @@ func (rr *refResolver) run(ctx context.Context, id string) (*refRun, error) {
 	}
 	ld, err := rr.ledger()
 	switch {
-	case err != nil && !r.held:
-		// The run may be the unopened ledger's.
+	case err != nil && (!r.held || r.run.Managed != nil):
+		// The run may be the unopened ledger's; and a managed run's record
+		// is not its ledger (it lags the transitions committed there, and
+		// an unopened ledger recovered none at startup), so it cannot stand
+		// for the run now. A legacy run's record is the run's own.
 		return nil, fmt.Errorf("the run %s: %w", id, err)
 	case ld != nil:
 		row, ok, err := ld.Run(ctx, id)
@@ -1160,7 +1167,7 @@ func (rr *refResolver) lookupDispatch(ctx context.Context, ref brakeman.Ref) (re
 		project := projectOfKey(key)
 		switch {
 		case project != "":
-			f.now.URL = ticketURL(key, "")
+			f.now.URL = ticketURL(key)
 		case dispatch.ValidKey(key):
 			project, f.now.URL = key, "/dispatch/"+url.PathEscape(key)
 		case ref.Actor == adminActor:
@@ -1203,7 +1210,7 @@ func (rr *refResolver) lookupDispatch(ctx context.Context, ref brakeman.Ref) (re
 		if !c.EditedAt.IsZero() {
 			state = "edited"
 		}
-		f.now = brakeman.RefState{State: state, Rev: strconv.FormatInt(c.Rev, 10), At: firstTime(c.EditedAt, c.CreatedAt)}
+		f.now = brakeman.RefState{URL: commentURL(key, c.N), State: state, Rev: strconv.FormatInt(c.Rev, 10), At: firstTime(c.EditedAt, c.CreatedAt)}
 		f.found, f.deleted = c.DeletedAt.IsZero(), !c.DeletedAt.IsZero()
 	}
 	links, err := rr.ticketLinks(ctx, key)
@@ -1263,10 +1270,11 @@ func refURL(ref brakeman.Ref) string {
 	switch ref.Kind {
 	case brakeman.RefRun, brakeman.RefEvent, brakeman.RefMessage, brakeman.RefCommit:
 		return run
-	case brakeman.RefTask:
-		return run + "?task=" + url.QueryEscape(ref.Task)
-	case brakeman.RefAttempt:
-		return run + "?task=" + url.QueryEscape(ref.Task) + "&attempt=" + strconv.Itoa(ref.N)
+	case brakeman.RefTask, brakeman.RefAttempt:
+		// The Tasks view, whatever view this browser chose last, at the
+		// task: its attempts are listed under it (the page selects no one
+		// attempt).
+		return run + "?view=tasks&task=" + url.QueryEscape(ref.Task)
 	case brakeman.RefCheck:
 		return "/api/runs/" + esc(ref.Run) + "/tasks/" + esc(ref.Task) + "/attempts/" + strconv.Itoa(ref.N) + "/steps/" + esc(ref.Check) + "/" + strconv.Itoa(ref.K) + "/log"
 	case brakeman.RefCommand:
@@ -1279,27 +1287,34 @@ func refURL(ref brakeman.Ref) string {
 			return "/sessions/" + esc(ref.Session) + "?tab=files"
 		}
 		return u
-	case brakeman.RefTicket:
-		return ticketURL(ref.Ticket, "")
-	case brakeman.RefComment:
-		return ticketURL(ref.Ticket, ref.Comment)
+	case brakeman.RefTicket, brakeman.RefComment:
+		// A comment the resolver finds is served by its own route
+		// (commentURL); one it does not is shown on its ticket's page.
+		return ticketURL(ref.Ticket)
 	case brakeman.RefBrief:
 		return "/brakeman?request=" + url.QueryEscape(ref.Request) + "#item-" + strconv.Itoa(ref.Item)
 	}
 	return ""
 }
 
-// ticketURL is a ticket's page, at the comment id when one is given.
-func ticketURL(key, comment string) string {
+// ticketURL is a ticket's page.
+func ticketURL(key string) string {
 	p, n, ok := dispatch.ParseKey(key)
 	if !ok {
 		return ""
 	}
-	u := "/dispatch/" + url.PathEscape(p) + "/" + strconv.FormatInt(n, 10)
-	if comment != "" {
-		u += "#comment-" + url.PathEscape(comment)
+	return "/dispatch/" + url.PathEscape(p) + "/" + strconv.FormatInt(n, 10)
+}
+
+// commentURL is the route that serves the ticket's comment numbered n,
+// alone and wherever it falls among the ticket's comments (the ticket's
+// page loads only the latest page of them and locates none by its id); a
+// deleted one is served as its tombstone.
+func commentURL(key string, n int) string {
+	if _, _, ok := dispatch.ParseKey(key); !ok || n < 1 {
+		return ticketURL(key)
 	}
-	return u
+	return "/api/dispatch/tickets/" + url.PathEscape(key) + "/comments?after=" + strconv.Itoa(n-1) + "&limit=1"
 }
 
 // firstTime is the first of ts that is not zero.
