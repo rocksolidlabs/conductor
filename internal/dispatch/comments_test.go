@@ -463,7 +463,8 @@ func TestARunCommentKeepsItsReceiptWhenItsContextEndsAfterTheCommit(t *testing.T
 
 // A run launched from a ticket comments on that ticket, by the store's
 // sight of its package (SetRunTicket), whatever links say: a run link of
-// another ticket's naming it is passed over; the ticket deleted, or one
+// another ticket's naming it (written before the sight could see the
+// package) is passed over; the ticket deleted, or one
 // this store does not have, is ErrLaunchTicketGone, an ErrNoRunTicket,
 // with nothing written; a run with no package comments by its link as
 // before.
@@ -476,6 +477,12 @@ func TestARunCommentGoesToTheTicketItWasLaunchedFrom(t *testing.T) {
 	s.SetRunExists(runs("run1", "run2", "run3"))
 	link, err := addLink(s, "l1", b, NewLink{Kind: LinkRun, Ref: "run2"})
 	want(t, link, err, StatusDone, "")
+	// A link to run1 on b, made while the store saw no package of it.
+	link, err = addLink(s, "l2", b, NewLink{Kind: LinkRun, Ref: "run1"})
+	want(t, link, err, StatusDone, "")
+	if tk, found, err := s.RunTicket(ctx, "run1"); err != nil || !found || tk.Key != b {
+		t.Fatalf("run1's link: %s %v %v, want %s", tk.Key, found, err, b)
+	}
 	s.SetRunTicket(func(run string) (string, bool) {
 		switch run {
 		case "run1":
