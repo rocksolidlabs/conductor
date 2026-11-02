@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -52,7 +53,7 @@ func TestTheGuideNamesThisBuild(t *testing.T) {
 		t.Fatalf("overview: %d %v", status, out)
 	}
 	ov := out["overview"].(map[string]any)
-	if c := ov["caller"].(map[string]any); c["kind"] != "admin" || fmt.Sprint(c["scopes"]) != "[admin session task ticket]" {
+	if c := ov["caller"].(map[string]any); c["kind"] != "admin" || fmt.Sprint(c["scopes"]) != "[admin session task ticket observe]" {
 		t.Fatalf("caller %v", c)
 	}
 	if rules, _ := ov["rules"].([]any); len(rules) != 3 || !strings.Contains(fmt.Sprint(rules), "with ask") {
@@ -175,7 +176,9 @@ func TestEverySessionRouteIsInTheTable(t *testing.T) {
 		}
 	}
 	for key, op := range table {
-		if op.Scope != "admin" && !registered[key] {
+		// A Brakeman turn's reads are routes of their own, outside
+		// /api/sessions/{id} (TestEveryOperationIsARegisteredRoute).
+		if op.Scope != "admin" && strings.HasPrefix(op.Path, "/api/sessions/{id}") && !registered[key] {
 			t.Errorf("%s: %s is no route the server registers", op.Name, key)
 		}
 	}
@@ -434,6 +437,10 @@ func fill(v reflect.Value) {
 	case v.Type() == reflect.TypeFor[time.Time]():
 		v.Set(reflect.ValueOf(time.Unix(1, 0)))
 		return
+	case v.Type() == reflect.TypeFor[brakeman.Ref]():
+		ref, _ := brakeman.ParseRef("ticket:AB-1")
+		v.Set(reflect.ValueOf(ref))
+		return
 	}
 	switch v.Kind() {
 	case reflect.Pointer:
@@ -552,6 +559,7 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 		"run_pause": crew.Command{}, "run_unpause": crew.Command{}, "task_cancel": crew.Command{}, "task_retry": crew.Command{}, "task_accept": crew.Command{},
 		"ticket_create": ticketCreateBody{}, "ticket_edit": ticketEditBody{}, "ticket_comment_admin": commentBody{}, "ticket_link": linkBody{},
 		"crew_create": crewInput{}, "crew_launch": launchBody{},
+		"brakeman_config": brakemanConfigBody{}, "brakeman_ask": brakemanAskBody{}, "brakeman_cancel": brakemanCancelBody{},
 	}
 	seen := 0
 	for _, op := range Operations() {
@@ -667,7 +675,8 @@ func TestCrewCreatesSchemaIsACrewReadBackWithoutTheServersFields(t *testing.T) {
 		}
 	}
 	props, _ := op.Input["properties"].(map[string]any)
-	server := []string{"id", "createdAt", "updatedAt", "manifestRevision"}
+	// origin is the server's too: only a Brakeman draft's make sets it.
+	server := []string{"id", "createdAt", "updatedAt", "manifestRevision", "origin"}
 	var want []string
 	for k := range fullOf(t, reflect.TypeFor[crew.Crew]()) {
 		if !slices.Contains(server, k) {
@@ -740,11 +749,16 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 	key := e.newDispatchTicket(t, "BND", "Bounded", nil)["key"].(string)
 	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", map[string]any{"opId": opID(), "kind": "run", "ref": run.ID}, http.StatusCreated, "")
 
+	// A Brakeman turn's session, whose guide lists its brief.
+	bk := brakemanEnv(t, nil)
+	bk.enable(t, "bk", nil)
+	bsid, btok, _ := bk.turnSession(t, bk.briefing(t))
+
 	tried := map[string]bool{}
 	for _, c := range []struct {
 		e          *testEnv
 		token, sid string
-	}{{plain, plain.agentToken(psid), psid}, {plain, mtok, msid}, {e, e.agentToken(asid), asid}, {e, adminToken, ""}} {
+	}{{plain, plain.agentToken(psid), psid}, {plain, mtok, msid}, {e, e.agentToken(asid), asid}, {e, adminToken, ""}, {bk.testEnv, btok, bsid}} {
 		guide := "/api/guide?section=operations"
 		id := "x"
 		if c.sid != "" {

@@ -26,12 +26,17 @@ Usage:
   conductor guide [--section S] [--json]
                                what the running server says you may do here: in a session, the
                                session's guide; elsewhere the admin's (--server, --token)
+  conductor brakeman request|observe|brief
+                               a Brakeman turn's request, reads and brief, from inside its session
+  conductor brakeman ask|status|list|show [--server URL] [--token T]
+                               ask Brakeman and read its requests and briefs
   conductor up <crew-id> [--server URL] [--token T] [--open]
                                launch a saved crew as a run and print its URL
   conductor crews [--server URL] [--token T] [--ids]
                                list the saved crews (--ids: ids only, for completion)
-  conductor dispatch projects|tickets|show|create|edit|comment|accept|link [--server URL] [--token T]
-                               Dispatch's projects and tickets from the shell
+  conductor dispatch projects|tickets|show|create|edit|comment|accept|link|plans|plan|launch|runs [--server URL] [--token T]
+                               Dispatch's projects and tickets from the shell, their plan revisions
+                               and the runs launched from them
   conductor export [--server URL] [--token T] [--out FILE]
                                write the running server's data directory as one zip archive
   conductor export --data-dir DIR [--config FILE] [--out FILE]
@@ -83,6 +88,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runTask(ctx, args[1:], stdin, stdout, stderr)
 	case "guide":
 		return runGuide(ctx, args[1:], stdout, stderr)
+	case "brakeman":
+		return runBrakeman(ctx, args[1:], stdin, stdout, stderr)
 	case "up":
 		return runUp(ctx, args[1:], stdout, stderr)
 	case "crews":

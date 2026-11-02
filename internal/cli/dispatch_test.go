@@ -45,7 +45,9 @@ type seenRequest struct {
 
 // dispatchAPI is a real server for the CLI's tests: its Dispatch store
 // open in a data directory of the test's, the workbench token
-// dispatchToken, a catalog of one agent, cat, that runs /bin/cat. Its
+// dispatchToken, a catalog of cat, that runs /bin/cat, and
+// ready-cat (readyCat), for a managed run's attempts, with any more the
+// test names. Its
 // handler records every request and the size of every reply, and loses
 // the next losing replies of the request lose names ("METHOD path"): the
 // server acts on each whole, and the connection is then cut before the
@@ -76,6 +78,12 @@ func (c *countingWriter) Write(b []byte) (int, error) {
 // newDispatchAPI starts a real server for t, ended with it.
 func newDispatchAPI(t *testing.T) *dispatchAPI {
 	t.Helper()
+	return newDispatchAPIWith(t)
+}
+
+// newDispatchAPIWith is newDispatchAPI with more agents in its catalog.
+func newDispatchAPIWith(t *testing.T, more ...catalog.Agent) *dispatchAPI {
+	t.Helper()
 	clearConductorEnv(t)
 	root := realTempDir(t)
 	cfg := config.Defaults()
@@ -86,7 +94,7 @@ func newDispatchAPI(t *testing.T) *dispatchAPI {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{{ID: "cat", Name: "cat", Command: []string{"/bin/cat"}}}})
+	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: append([]catalog.Agent{{ID: "cat", Name: "cat", Command: []string{"/bin/cat"}}, readyCat}, more...)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,16 +524,18 @@ func TestDispatchUsageErrors(t *testing.T) {
 			t.Fatalf("%q: %d %v\n%s", args, code, err, errOut.String())
 		}
 	}
-	if !strings.Contains(usage, "conductor dispatch projects|tickets|show|create|edit|comment|accept|link") {
+	if !strings.Contains(usage, "conductor dispatch projects|tickets|show|create|edit|comment|accept|link|plans|plan|launch|runs") {
 		t.Fatal("the root usage does not name conductor dispatch")
 	}
 }
 
 // maxDispatchReply is the smallest whole number of MiB above the largest
-// reply conductor dispatch's reads can carry, a ticket's and a project's,
-// and the session client's limit holds a ticket's.
+// reply conductor dispatch's reads can carry, a ticket's, a project's, a
+// plan revision's with its body, a ticket's revisions, a launch's with its
+// package and a page of a ticket's runs, and the session client's limit
+// holds a ticket's.
 func TestDispatchReplyLimitsAreDerivedFromTheServersBounds(t *testing.T) {
-	largest := max(api.MaxTicketReply, api.MaxProjectReply)
+	largest := max(api.MaxTicketReply, api.MaxProjectReply, api.MaxPlanReply, api.MaxPlansReply, api.MaxLaunchReply, api.MaxTicketRunsReply)
 	if maxDispatchReply%(1<<20) != 0 || maxDispatchReply <= largest || maxDispatchReply-(1<<20) > largest {
 		t.Fatalf("maxDispatchReply is %d, the largest reply %d", maxDispatchReply, largest)
 	}
