@@ -409,3 +409,104 @@ func TestTheCloseStateIsComputedOnRead(t *testing.T) {
 		t.Fatalf("no ticket: %v", err)
 	}
 }
+
+// verified is met by a live delivery whose recorded receipt passed, and
+// unmet by one whose receipt failed, by a delivery that names no
+// candidate and by none, each with its words, which the close_policy
+// refusal carries; a passed delivery removed leaves it unmet on read, the
+// ticket left done. Required with delivery, a passed candidate meets both.
+func TestClosePolicyVerified(t *testing.T) {
+	s, _, _ := planTicket(t)
+	ctx := context.Background()
+	if rc, err := s.CreateProject(ctx, testOp("p1"), NewProject{Key: "VER", Name: "Verified", CloseRequires: &[]string{RequireVerified, RequireDelivery}}); err != nil || rc.Status != StatusDone {
+		t.Fatalf("the project: %+v %v", rc, err)
+	}
+	if p, err := s.Project(ctx, "VER"); err != nil || !slices.Equal(p.Project.CloseRequires, []string{RequireDelivery, RequireVerified}) {
+		t.Fatalf("the policy: %+v %v", p, err)
+	}
+	_, key := makeTicket(t, s, NewTicket{Project: "VER", Title: "Verified", Description: "d", Acceptance: "- it works"})
+	l := mustLaunch(t, s, "l1", key, simplePlan(t, s, key), "")
+	s.SetRunExists(runs(l.RunID))
+	st := closeOfKey(t, s, key)
+	if st.Met.Verified || st.Met.Delivery || !slices.Equal(st.Missing, []string{RequireDelivery, RequireVerified}) || st.VerifiedWhy != "no delivery names a candidate" || st.Why != "" {
+		t.Fatalf("nothing delivered: %+v", st)
+	}
+	// A delivery naming no candidate: delivered, not verified.
+	rc, err := addLink(s, "plain", key, NewLink{Kind: LinkDelivery, URL: "https://example.com/pull/1"})
+	want(t, rc, err, StatusDone, "")
+	st = closeOfKey(t, s, key)
+	if st.Met.Verified || !st.Met.Delivery || !slices.Equal(st.Missing, []string{RequireVerified}) || st.VerifiedWhy != "no delivery names a candidate" {
+		t.Fatalf("a delivery with no candidate: %+v", st)
+	}
+	rc, err = setStatus(s, "d1", key, TicketDone)
+	want(t, rc, err, StatusFailed, RefusalClosePolicy)
+	if !slices.Equal(rc.Missing, []string{RequireVerified}) || !strings.Contains(rc.Error, "it lacks a verified delivery (no delivery names a candidate)") {
+		t.Fatalf("the refusal: %+v", rc)
+	}
+	// A candidate that failed its check: the words name it.
+	failed := passedReceipt(1)
+	failed.Passed, failed.Receipts[0].Exit = false, exit(1)
+	rc, err = addDelivery(s, "failed", key, "https://example.com/pull/2", l.RunID+"/build/1@"+commitA, failed)
+	want(t, rc, err, StatusDone, "")
+	st = closeOfKey(t, s, key)
+	if st.Met.Verified || st.VerifiedWhy != "the delivered candidate build#1 failed the check test (exit 1)" {
+		t.Fatalf("a failed candidate: %+v", st)
+	}
+	rc, err = setStatus(s, "d2", key, TicketDone)
+	want(t, rc, err, StatusFailed, RefusalClosePolicy)
+	if !strings.Contains(rc.Error, "the delivered candidate build#1 failed the check test") {
+		t.Fatalf("the refusal: %+v", rc)
+	}
+	// The other ways a candidate falls short, in words.
+	for _, c := range []struct {
+		v    Verified
+		want string
+	}{
+		{Verified{Attempt: 1}, "ran no check"},
+		{Verified{Attempt: 1, Receipts: []VerifiedReceipt{{Phase: PhaseVerify, ID: "lint", Where: "native"}}}, "did not finish the verify step lint"},
+		{Verified{Attempt: 1, Receipts: []VerifiedReceipt{{Phase: PhaseCheck, ID: "test", Where: "native", Exit: exit(0)}}}, "passed the check test but not stably"},
+		{Verified{Attempt: 1, Receipts: []VerifiedReceipt{{Phase: PhaseCheck, ID: "test", Where: "native", Exit: exit(0), Stable: true}}}, "passed its checks, but its attempt did not succeed"},
+	} {
+		if got := shortfall(c.v); got != c.want {
+			t.Errorf("%+v: %q, want %q", c.v, got, c.want)
+		}
+	}
+	if met, why := verifiedState([]delivery{{candidate: l.RunID + "/build/1@" + commitA, verified: "{"}}); met || !strings.Contains(why, "cannot be read") {
+		t.Fatalf("a receipt that cannot be read: %v %q", met, why)
+	}
+	// A candidate that passed: met, and done is taken.
+	rc, err = addDelivery(s, "passed", key, "https://example.com/pull/3", l.RunID+"/build/2@"+commitA, passedReceipt(2))
+	want(t, rc, err, StatusDone, "")
+	passed := rc.ID
+	st = closeOfKey(t, s, key)
+	if !st.Met.Verified || !st.Met.Delivery || len(st.Missing) != 0 || st.VerifiedWhy != "" {
+		t.Fatalf("a passed candidate: %+v", st)
+	}
+	rc, err = setStatus(s, "d3", key, TicketDone)
+	want(t, rc, err, StatusDone, "")
+	// Removed: unmet on read, the words the failed candidate's again, the
+	// ticket left done.
+	rc, err = s.RemoveLink(ctx, testOp("x1"), key, passed)
+	want(t, rc, err, StatusDone, "")
+	st = closeOfKey(t, s, key)
+	if st.Met.Verified || !slices.Equal(st.Missing, []string{RequireVerified}) || !strings.Contains(st.VerifiedWhy, "build#1 failed") {
+		t.Fatalf("the passed delivery removed: %+v", st)
+	}
+	if ticketOf(t, s, key).Status != TicketDone {
+		t.Fatal("removing a link moved the status")
+	}
+	// The ticket view carries it.
+	v, err := s.Ticket(ctx, key)
+	if err != nil || v.Close.Met.Verified || v.Close.VerifiedWhy == "" {
+		t.Fatalf("the ticket's close: %+v %v", v.Close, err)
+	}
+	// Verified alone required: a create made done is refused for it.
+	if rc, err := s.CreateProject(ctx, testOp("p2"), NewProject{Key: "VO", Name: "Verified only", CloseRequires: &[]string{RequireVerified}}); err != nil || rc.Status != StatusDone {
+		t.Fatalf("the project: %+v %v", rc, err)
+	}
+	rc, err = s.CreateTicket(ctx, testOp("c1"), NewTicket{Project: "VO", Title: "Made done", Status: TicketDone})
+	want(t, rc, err, StatusFailed, RefusalClosePolicy)
+	if !slices.Equal(rc.Missing, []string{RequireVerified}) {
+		t.Fatalf("a create made done: %+v", rc)
+	}
+}

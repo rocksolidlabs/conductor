@@ -343,16 +343,17 @@ const (
 )
 
 // What a project's close policy may require before a ticket is done:
-// the owner's acceptance, a delivery link. verified is refused until
-// Program item DS2 defines it (Owner decisions, 6).
+// the owner's acceptance, a delivery link, and verified, a live delivery
+// link naming a candidate whose recorded receipt passed (Program item
+// DS2, docs/plans/dispatch-evidence.md, Owner decisions, 12; delivery.go).
 const (
 	RequireAcceptance = "acceptance"
 	RequireDelivery   = "delivery"
-	requireVerified   = "verified"
+	RequireVerified   = "verified"
 )
 
 // CloseRequirements is the requirements in their order in a policy.
-var CloseRequirements = []string{RequireAcceptance, RequireDelivery}
+var CloseRequirements = []string{RequireAcceptance, RequireDelivery, RequireVerified}
 
 // The kinds of a relation: "depends on" is blocks read from the other
 // end.
@@ -1025,8 +1026,7 @@ func checkTracker(tracker, trackerURL string) error {
 }
 
 // closePolicy checks a close policy and gives it in CloseRequirements'
-// order: acceptance and delivery, each at most once; verified is refused
-// until Program item DS2 defines it.
+// order: acceptance, delivery and verified, each at most once.
 func closePolicy(requires []string) ([]string, error) {
 	out := []string{}
 	for _, want := range CloseRequirements {
@@ -1044,11 +1044,8 @@ func closePolicy(requires []string) ([]string, error) {
 		}
 	}
 	for _, r := range requires {
-		if r == requireVerified {
-			return nil, refuse(RefusalInvalid, "the close policy cannot require verified until verification is defined")
-		}
 		if !slices.Contains(CloseRequirements, r) {
-			return nil, refuse(RefusalInvalid, "the close policy's %q is neither acceptance nor delivery", r)
+			return nil, refuse(RefusalInvalid, "the close policy's %q is none of acceptance, delivery and verified", r)
 		}
 	}
 	return out, nil

@@ -268,6 +268,15 @@ add its rule here.
   another's waits for the server's read after them (`viewerSeam.read`
   with `wsClient.sent`, `viewerReads.await`), and holds the writer that
   would drain them (`writerGate`) rather than trusting a full socket.
+- Keep what decides ahead of what is shown, and wait on what decides.
+  The output pump sent each chunk to the viewers before it fed the screen
+  a key is routed by (`startupMayShow`): a viewer that answered the
+  dialog at once (a routed answer, a crew's client) met a screen without
+  it, and its Enter went to the text. A test that saw the dialog in the
+  watcher's tail, fed just before that screen, and typed found the same
+  gap. Feed the state that routes a viewer's answer before the viewer has
+  the output, prove it with a stall after the send (`afterBroadcast`),
+  and when one state is kept twice, wait on the copy the code decides by.
 - A control that only hurries what the page does by itself races it.
   Read it again beside a read the page asks again on its own (a failed
   re-read, retried with backoff) can vanish before the click lands, and

@@ -88,7 +88,7 @@ func TestAKeyHeldIsTaken(t *testing.T) {
 func TestAProjectsValuesAreChecked(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	ctx := context.Background()
-	verified, twice := []string{"verified"}, []string{RequireDelivery, RequireDelivery}
+	twice, unknown := []string{RequireDelivery, RequireDelivery}, []string{"merged"}
 	for i, c := range []struct {
 		p       NewProject
 		refusal string
@@ -108,7 +108,7 @@ func TestAProjectsValuesAreChecked(t *testing.T) {
 		{NewProject{Key: "CD", Name: "x", Tracker: TrackerExternal, TrackerURL: "ftp://h/x"}, RefusalInvalid},
 		{NewProject{Key: "CD", Name: "x", Tracker: TrackerExternal, TrackerURL: "https://:443/issues"}, RefusalInvalid},
 		{NewProject{Key: "CD", Name: "x", Tracker: TrackerExternal, TrackerURL: "https://h/" + strings.Repeat("a", MaxTrackerURL)}, RefusalBound},
-		{NewProject{Key: "CD", Name: "x", CloseRequires: &verified}, RefusalInvalid},
+		{NewProject{Key: "CD", Name: "x", CloseRequires: &unknown}, RefusalInvalid},
 		{NewProject{Key: "CD", Name: "x", CloseRequires: &twice}, RefusalInvalid},
 	} {
 		rc, err := s.CreateProject(ctx, testOp(opID("bad", i)), c.p)
@@ -178,7 +178,7 @@ func TestEditAProject(t *testing.T) {
 		{Description: ptr("a\x00b")},
 		{Cwd: ptr(strings.Repeat("c", MaxCwd+1))},
 		{TrackerURL: ptr("https://h/x")},
-		{CloseRequires: &[]string{"verified"}},
+		{CloseRequires: &[]string{"merged"}},
 	} {
 		rc, err := s.EditProject(ctx, testOp(opID("bad", i)), "CND", e)
 		if err != nil || rc.Status != StatusFailed || (rc.Refusal != RefusalInvalid && rc.Refusal != RefusalBound) {
