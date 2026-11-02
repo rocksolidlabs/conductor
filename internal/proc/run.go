@@ -340,7 +340,7 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 		return nil, res, false
 	}
 	if s.Started != nil {
-		tellStarted(s.Started, res.Process, cmd, g, wait, r)
+		tellStarted(s.Started, res.Process, cmd, g, exited, wait, r)
 	}
 
 	l = &launched{cmd: cmd, g: g, r: r, exited: exited, wait: wait, mem: &capture{headMax: head, tailMax: tail}, eof: eof, res: res}
@@ -361,15 +361,17 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 
 // tellStarted calls started with the process. A started that panics (or
 // ends its goroutine) leaves nothing running: before the panic leaves, the
-// group is ended as the command's own end ends it, the process reaped and
-// the output's pipe closed, and the panic goes on unchanged.
-func tellStarted(started func(Process), p Process, cmd *exec.Cmd, g *lifecycle, wait func() error, r *os.File) {
+// group is ended as the command's own end ends it (its exit watched for
+// before the reaping, as end waits for it), the process reaped and the
+// output's pipe closed, and the panic goes on unchanged.
+func tellStarted(started func(Process), p Process, cmd *exec.Cmd, g *lifecycle, exited <-chan error, wait func() error, r *os.File) {
 	told := false
 	defer func() {
 		if told {
 			return
 		}
 		g.signal(cmd, sigKill)
+		<-exited
 		wait()
 		r.Close()
 	}()
