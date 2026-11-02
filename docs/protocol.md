@@ -3345,7 +3345,13 @@ bound`, neither counted nor noted. A run's messages, up to 4,096 of 4 KiB,
 are paged for a turn: `…/messages?after=&limit=` (`after` the `next` of
 the page before, a message's `seq`; `limit` 1 to 200, 100 when absent) →
 `{messages, next?}` in `seq` order, at most 256 KiB a page, `next` while
-more remain. The admin's answers are unchanged; every other route refuses
+more remain. The runs, up to 100 each with twelve members' prompts, are
+paged for a turn likewise: `GET /api/runs?after=&limit=` (`after` the
+`next` of the page before, a run's id; `limit` 1 to 100, 100 when absent)
+→ `{runs, next?}` newest first, at most 4 MiB a page and one run at least,
+`next` while more remain; an `after` naming a run the server no longer
+holds is `400 invalid_request`, and the runs are read again from the
+first page. The admin's answers are unchanged; every other route refuses
 the principal as it refuses no token. `401` for a token
 that is not the named session's, `403 not_brakeman` for a session that
 is no turn's, `409 turn_over` once its request is closed.

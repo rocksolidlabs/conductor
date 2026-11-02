@@ -67,6 +67,11 @@ const (
 	// turn reads them a page at a time, each at most maxObserveReply.
 	maxMessagesPage     = 200
 	defaultMessagesPage = 100
+	// maxRunsPage bounds a page of the runs a turn reads, and
+	// defaultRunsPage is a page asked for with no limit: as many as the
+	// engine keeps (maxRuns), each page at most maxTurnReply.
+	maxRunsPage     = 100
+	defaultRunsPage = 100
 	// quietAfter is how long a server session's terminal has written
 	// nothing before its status is quiet.
 	quietAfter = 10 * time.Minute
@@ -79,7 +84,8 @@ const (
 // filter leaves it: past it the read is refused (413 bound), not counted,
 // so the guide's bound for each observe_<what> holds and a client reads
 // at most it. The largest a shared route makes for a turn is a ticket's
-// (MaxTicketReply) with its refs; a run's messages are paged. A test
+// (MaxTicketReply) with its refs; a run's messages and the runs are
+// paged. A test
 // makes it smaller.
 var maxTurnReply = 4 << 20
 
@@ -486,16 +492,48 @@ func (g refGrant) projectAdmitted(key string) bool {
 	return true
 }
 
-// filterRuns is GET /api/runs for a turn: the runs in its grant, each
-// with its ref and noted at its state and revision.
+// filterRuns is GET /api/runs for a turn, a page at a time: the runs in
+// its grant, newest first, after the run after names (none: from the
+// newest), at most limit (1 to maxRunsPage, defaultRunsPage when absent)
+// and maxTurnReply bytes, with next, the last run given, while more
+// remain; each with its ref, and only the page's noted at their state and
+// revision. A run's members' prompts alone can be 192 KB, and the engine
+// keeps maxRuns of them, more than one answer holds. A page holds one run
+// at least, so only a run past the bound alone is refused (413 bound).
 func filterRuns(r *http.Request, o *observer, body []byte) ([]byte, error) {
+	q, err := readQuery(r, "after", "limit")
+	var after string
+	var limit int
+	if err == nil {
+		after, err = q.one("after")
+	}
+	if err == nil {
+		limit, err = q.count("limit")
+	}
+	if err == nil && (limit < 0 || limit > maxRunsPage) {
+		err = fmt.Errorf("limit is 1 to %d", maxRunsPage)
+	}
+	if err == nil && after != "" && !crew.ValidRunID(after) {
+		err = errors.New("after is the next of the page before, a run's id")
+	}
+	if err != nil {
+		return nil, newAPIError(http.StatusBadRequest, "invalid_request", err.Error())
+	}
+	if limit == 0 {
+		limit = defaultRunsPage
+	}
 	var in struct {
 		Runs []json.RawMessage `json:"runs"`
 	}
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, err
 	}
-	out := []json.RawMessage{}
+	type listed struct {
+		id  string
+		raw json.RawMessage
+	}
+	runs := make([]listed, 0, len(in.Runs))
+	start := 0
 	for _, raw := range in.Runs {
 		var head struct {
 			ID string `json:"id"`
@@ -503,22 +541,57 @@ func filterRuns(r *http.Request, o *observer, body []byte) ([]byte, error) {
 		if err := json.Unmarshal(raw, &head); err != nil {
 			return nil, err
 		}
-		run, ok, err := o.runAdmitted(r.Context(), head.ID)
+		runs = append(runs, listed{head.ID, raw})
+		if after != "" && head.ID == after {
+			start = len(runs)
+		}
+	}
+	if after != "" && start == 0 {
+		// The page before's last run has left the engine since: where
+		// the list went on from is lost, so it is read again from the
+		// first page, never with runs skipped unsaid.
+		return nil, newAPIError(http.StatusBadRequest, "invalid_request", "after names a run the server no longer holds: read the runs again from the first page")
+	}
+	// The page's frame: {"runs":[…],"next":"<a run's id>"}, a run id
+	// at most a crew id's 64 bytes and its suffix.
+	used := len(`{"runs":[],"next":""}`+"\n") + 64 + 9
+	page := []json.RawMessage{}
+	var next, last string
+	for _, l := range runs[start:] {
+		if len(page) == limit {
+			next = last
+			break
+		}
+		run, ok, err := o.runAdmitted(r.Context(), l.id)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			continue
 		}
-		ref := "run:" + head.ID
-		raw, err = withRef(raw, ref)
+		ref := "run:" + l.id
+		b, err := withRef(l.raw, ref)
 		if err != nil {
 			return nil, err
 		}
+		if len(page) > 0 && used+len(b)+1 > maxTurnReply {
+			next = last
+			break
+		}
 		o.noteRef(ref, brakeman.ClassRuns, run.state, run.rev)
-		out = append(out, raw)
+		page = append(page, b)
+		used += len(b) + 1
+		last = l.id
 	}
-	return refreshed(body, "runs", out)
+	out := map[string]any{"runs": page}
+	if next != "" {
+		out["next"] = next
+	}
+	b, err := marshalNoEscape(out)
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
 }
 
 // filterRun is GET /api/runs/{run} for a turn: the run and its tasks,

@@ -1141,6 +1141,108 @@ func TestATurnReadsARunsMessagesAPageAtATime(t *testing.T) {
 	}
 }
 
+// The runs the engine keeps, each with twelve members' 4,000-character
+// prompts (more than 4 MiB as the route lists them), are read by a turn a
+// page at a time: newest first, each page at most maxTurnReply and limit,
+// only the grant's runs and every one of them once, next the after of the
+// page that follows, only a page's runs noted; after and limit out of
+// their range, and an after naming a run no longer listed, are refused
+// 400 invalid_request. Through the route, the query reaches the filter.
+func TestATurnReadsTheRunsAPageAtATime(t *testing.T) {
+	f := newObsFixture(t)
+	prompt := strings.Repeat("€", 4000)
+	var runs []crew.Run
+	var want []string
+	for i := range 100 {
+		crewID := "big"
+		if i%5 == 4 {
+			crewID = "else"
+		}
+		run := crew.Run{ID: fmt.Sprintf("%s-%08x", crewID, 100-i), CrewID: crewID, Name: crewID, State: crew.RunStopped}
+		for m := range 12 {
+			run.Members = append(run.Members, crew.MemberState{Name: fmt.Sprintf("m%d", m), AgentID: "bk", Status: "ended", Prompt: prompt})
+		}
+		runs = append(runs, run)
+		if crewID == "big" {
+			want = append(want, run.ID)
+		}
+	}
+	body, err := json.Marshal(map[string]any{"runs": runs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) <= 4<<20 {
+		t.Fatalf("the route's answer is %d bytes, not past 4 MiB", len(body))
+	}
+	read := func(query string) ([]byte, *observer, error) {
+		o := f.srv.newObserver(nil)
+		o.tp = &turnPrincipal{}
+		o.grant = refGrant{scopes: []brakeman.Scope{{Crews: []string{"big"}}}}
+		r, _ := http.NewRequest("GET", "/api/runs"+query, nil)
+		b, err := filterRuns(r, o, body)
+		return b, o, err
+	}
+	var got []string
+	pages := 0
+	for after := ""; ; pages++ {
+		q := "?limit=" + strconv.Itoa(maxRunsPage)
+		if after != "" {
+			q += "&after=" + after
+		}
+		page, o, err := read(q)
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if len(page) > maxTurnReply {
+			t.Fatalf("page %d is %d bytes, past %d", pages, len(page), maxTurnReply)
+		}
+		var out struct {
+			Runs []struct {
+				ID  string `json:"id"`
+				Ref string `json:"ref"`
+			} `json:"runs"`
+			Next string `json:"next"`
+		}
+		if err := json.Unmarshal(page, &out); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Runs) == 0 || len(o.reads) != len(out.Runs) {
+			t.Fatalf("page %d holds %d runs, %d noted", pages, len(out.Runs), len(o.reads))
+		}
+		for i, r := range out.Runs {
+			if r.Ref != "run:"+r.ID || o.reads[i].Ref.String() != r.Ref {
+				t.Fatalf("run %s's ref %q, noted %v", r.ID, r.Ref, o.reads[i].Ref)
+			}
+			got = append(got, r.ID)
+		}
+		if out.Next == "" {
+			break
+		}
+		if out.Next != out.Runs[len(out.Runs)-1].ID {
+			t.Fatalf("page %d's next %s is not its last run", pages, out.Next)
+		}
+		after = out.Next
+	}
+	if !slices.Equal(got, want) || pages < 2 {
+		t.Fatalf("%d of %d runs in %d pages", len(got), len(want), pages+1)
+	}
+	if page, _, err := read("?limit=3"); err != nil || strings.Count(string(page), `"ref":"run:`) != 3 || !strings.Contains(string(page), `"next":"`+want[2]+`"`) {
+		t.Fatalf("a page of 3: %v", err)
+	}
+	for _, q := range []string{"?limit=101", "?limit=-1", "?limit=x", "?after=x", "?after=gone-0000ffff", "?nope=1", "?limit=1&limit=2"} {
+		_, _, err := read(q)
+		var ae *apiError
+		if !errors.As(err, &ae) || ae.status != http.StatusBadRequest || ae.Code != "invalid_request" {
+			t.Errorf("%s: %v", q, err)
+		}
+	}
+	f.turn(t, nil)
+	if out := f.expectRead(t, "/api/runs?limit=1", http.StatusOK, ""); len(out["runs"].([]any)) > 1 {
+		t.Fatalf("a page of one through the route: %v", out)
+	}
+	f.expectRead(t, "/api/runs?nope=1", http.StatusBadRequest, "invalid_request")
+}
+
 // Every answer a turn reads is held to maxTurnReply, the bound the
 // guide gives each shared read: past it the read is refused 413 bound,
 // neither counted nor noted; the admin's answer is unchanged.
