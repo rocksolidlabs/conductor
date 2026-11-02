@@ -7,7 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -55,6 +59,12 @@ const (
 // refGitWait bounds each git command a commit: ref's resolution runs.
 const refGitWait = 10 * time.Second
 
+// refRevTries bounds the reads of a managed task's state between two
+// reads of its run's revision: a transition between them (every one moves
+// the revision) reads the pair again, and a run that moves on every try
+// is an error, never a pair that never existed.
+const refRevTries = 5
+
 // refGrant is what a request may see: the snapshot its turn began under
 // intersected with the configuration now (a narrowing takes effect at
 // once, a widening at the next request), so an item is admitted, a class
@@ -95,6 +105,30 @@ func (g refGrant) covers(earlier brakeman.Scope) bool {
 		}
 	}
 	return true
+}
+
+// byProject reports whether the grant admits by Dispatch project, so an
+// item's project must be known to be admitted.
+func (g refGrant) byProject() bool {
+	return slices.ContainsFunc(g.scopes, func(s brakeman.Scope) bool { return len(s.Projects) > 0 })
+}
+
+// byRepo reports whether the grant admits by repository, so an item's
+// repository must be known to be admitted.
+func (g refGrant) byRepo() bool {
+	return slices.ContainsFunc(g.scopes, func(s brakeman.Scope) bool { return len(s.Repos) > 0 })
+}
+
+// unnarrowed reports whether the grant is still all that the snapshot
+// snap gave: every class it showed visible, its scope covered. A read the
+// turn made under snap is then within the grant whatever it named.
+func (g refGrant) unnarrowed(snap brakeman.Snapshot) bool {
+	for _, c := range brakeman.Classes {
+		if snap.Visibility.Has(c) && !g.sees(c) {
+			return false
+		}
+	}
+	return g.covers(snap.Scope)
 }
 
 // badRef is a ref a brief cannot be kept with, and why, in words the
@@ -145,12 +179,23 @@ func refClass(kind string) string {
 // every bad ref named); a store that cannot be read is an error of its
 // own. desk holds the requests a brief: ref names (nil: none resolves).
 func (s *Server) resolveBriefRefs(ctx context.Context, desk *brakeman.Store, req brakeman.Request, b brakeman.Brief, log brakeman.ReadLog, now brakeman.Config) ([]brakeman.Resolution, error) {
-	rr := &refResolver{s: s, desk: desk, grant: grantOf(req.Config, now), at: time.Now().UTC(),
+	return s.newRefResolver(desk, req, log, now).resolveAll(ctx, b)
+}
+
+// newRefResolver is the resolver of a brief of req's, as resolveBriefRefs
+// reads it.
+func (s *Server) newRefResolver(desk *brakeman.Store, req brakeman.Request, log brakeman.ReadLog, now brakeman.Config) *refResolver {
+	rr := &refResolver{s: s, desk: desk, snap: req.Config, grant: grantOf(req.Config, now), at: time.Now().UTC(),
 		seen: map[brakeman.Ref]brakeman.Read{}, runs: map[string]*refRun{}, tops: map[string]string{}}
 	for _, rd := range log.Reads {
 		// The newest read of a ref stands: the log is oldest first.
 		rr.seen[rd.Ref] = rd
 	}
+	return rr
+}
+
+// resolveAll resolves every distinct ref of b (resolveBriefRefs).
+func (rr *refResolver) resolveAll(ctx context.Context, b brakeman.Brief) ([]brakeman.Resolution, error) {
 	var (
 		out  []brakeman.Resolution
 		bad  []badRef
@@ -175,10 +220,15 @@ func (s *Server) resolveBriefRefs(ctx context.Context, desk *brakeman.Store, req
 		}
 	}
 	// What a decision and a proposal advise was read at one revision of
-	// their target: the revision they name must be that one.
+	// their target: the revision they name must be that one. A decision
+	// names it whenever its target has one (a task's, a ticket's; a
+	// question has none); a proposal's is required only for an operation
+	// whose route checks one, which the brief's own check holds it to
+	// (Operation.Revision), so an empty one is not looked at here.
 	for i, it := range b.Items {
 		var target brakeman.Ref
 		var rev string
+		decision := it.Kind == brakeman.ItemDecision
 		switch it.Kind {
 		case brakeman.ItemDecision:
 			target, rev = it.Decision.About, it.Decision.SubjectRevision
@@ -188,7 +238,7 @@ func (s *Server) resolveBriefRefs(ctx context.Context, desk *brakeman.Store, req
 			continue
 		}
 		j, ok := done[target]
-		if rev == "" || !ok || slices.ContainsFunc(bad, func(b badRef) bool { return b.Ref == target.String() }) {
+		if (rev == "" && !decision) || !ok || slices.ContainsFunc(bad, func(b badRef) bool { return b.Ref == target.String() }) {
 			continue
 		}
 		if why := revisionWhy(out[j], rev); why != "" {
@@ -206,10 +256,14 @@ func (s *Server) resolveBriefRefs(ctx context.Context, desk *brakeman.Store, req
 
 // revisionWhy is why rev is not the revision a decision or proposal was
 // read at: the turn's read of the target (seen), or, for a target the
-// turn never read, the target as it is.
+// turn never read, the target as it is; rev "" (a decision's that names
+// none) is that revision only when there is none.
 func revisionWhy(res brakeman.Resolution, rev string) string {
 	if res.Seen.State != refUnobserved {
 		switch {
+		case res.Seen.Rev == rev:
+		case rev == "":
+			return fmt.Sprintf("names no revision, and you read revision %s of %s: name it", res.Seen.Rev, res.Ref)
 		case res.Seen.Rev == "":
 			return fmt.Sprintf("names revision %s, and what you read of %s had none", rev, res.Ref)
 		case res.Seen.Rev != rev:
@@ -218,6 +272,9 @@ func revisionWhy(res brakeman.Resolution, rev string) string {
 		return ""
 	}
 	switch {
+	case res.Now.Rev == rev:
+	case rev == "":
+		return fmt.Sprintf("names no revision, and %s is at revision %s: read it and name it", res.Ref, res.Now.Rev)
 	case res.Now.Rev == "":
 		return fmt.Sprintf("names revision %s, and %s has none", rev, res.Ref)
 	case res.Now.Rev != rev:
@@ -232,11 +289,48 @@ func revisionWhy(res brakeman.Resolution, rev string) string {
 type refResolver struct {
 	s     *Server
 	desk  *brakeman.Store
+	snap  brakeman.Snapshot // what the turn began under
 	grant refGrant
 	at    time.Time
 	seen  map[brakeman.Ref]brakeman.Read
 	runs  map[string]*refRun
 	tops  map[string]string
+	// taskRead is nil but in tests: called after a managed task's states
+	// are read and before its run's revision is read again (taskRev), so
+	// a test commits a transition between the two.
+	taskRead func()
+}
+
+// errRefStore is a store a ref's record is in that this server could not
+// open: the record may be there and cannot be read, which is not its
+// absence (handleGetCommand's ledger_unavailable, dispatchStore's
+// dispatch_unavailable).
+type errRefStore struct{ what string }
+
+func (e *errRefStore) Error() string { return e.what + " could not be opened; see the server's log" }
+
+// ledger is the ledger, nil when the server has none to have (no data
+// directory), an error when it has one it could not open.
+func (rr *refResolver) ledger() (*ledger.Ledger, error) {
+	switch {
+	case rr.s.ledger != nil:
+		return rr.s.ledger, nil
+	case rr.s.store == nil:
+		return nil, nil
+	}
+	return nil, &errRefStore{what: "the ledger"}
+}
+
+// dispatch is Dispatch's store, nil when the server keeps none (no data
+// directory, a switchyard), an error when it keeps one it could not open.
+func (rr *refResolver) dispatch() (*dispatch.Store, error) {
+	switch {
+	case rr.s.dispatch != nil:
+		return rr.s.dispatch, nil
+	case rr.s.store == nil || rr.s.cfg.Switchyard.Enabled:
+		return nil, nil
+	}
+	return nil, &errRefStore{what: "Dispatch's store"}
 }
 
 // refFound is what a ref names as it is now: found, or a tombstone
@@ -311,14 +405,16 @@ func liveWindow(kind string) bool {
 // the scope.
 func (rr *refResolver) resolveBrief(ref brakeman.Ref) (brakeman.Resolution, string, error) {
 	if rr.desk == nil {
-		return brakeman.Resolution{}, "resolves to nothing", nil
+		return brakeman.Resolution{}, "", &errRefStore{what: "Brakeman's store"}
 	}
 	req, err := rr.desk.Get(ref.Request)
 	switch {
-	case errors.Is(err, brakeman.ErrNotFound), errors.Is(err, brakeman.ErrDamaged), errors.Is(err, brakeman.ErrLaterSchema):
-		return brakeman.Resolution{}, "resolves to nothing", nil
+	case errors.Is(err, brakeman.ErrNotFound):
+		return rr.goneBrief(ref, "resolves to nothing")
 	case err != nil:
-		return brakeman.Resolution{}, "", err
+		// Damaged, or of a later schema: kept as it is and not read, which
+		// is not its absence.
+		return brakeman.Resolution{}, "", fmt.Errorf("the request %s: %w", ref.Request, err)
 	case !req.HasBrief:
 		return brakeman.Resolution{}, "resolves to nothing: " + ref.Request + " has no brief", nil
 	}
@@ -339,9 +435,9 @@ func (rr *refResolver) resolveBrief(ref brakeman.Ref) (brakeman.Resolution, stri
 	b, _, err := rr.desk.Brief(ref.Request)
 	switch {
 	case errors.Is(err, brakeman.ErrNotFound):
-		return brakeman.Resolution{}, "resolves to nothing: " + ref.Request + "'s brief is gone", nil
+		return rr.goneBrief(ref, "resolves to nothing: "+ref.Request+"'s brief is gone")
 	case err != nil:
-		return brakeman.Resolution{}, "", err
+		return brakeman.Resolution{}, "", fmt.Errorf("the brief of %s: %w", ref.Request, err)
 	case ref.Item >= len(b.Items):
 		return brakeman.Resolution{}, fmt.Sprintf("resolves to nothing: %s's brief has %d items", ref.Request, len(b.Items)), nil
 	}
@@ -355,6 +451,26 @@ func (rr *refResolver) resolveBrief(ref brakeman.Ref) (brakeman.Resolution, stri
 	if read, ok := rr.seen[ref]; ok {
 		seen = brakeman.RefState{URL: now.URL, State: read.State, Rev: read.Rev, At: read.At}
 	}
+	return brakeman.Resolution{Ref: ref, Seen: fitState(seen), Now: fitState(now)}, "", nil
+}
+
+// goneBrief is a brief: ref whose earlier request or brief is gone (pruned):
+// one the turn read is deleted beside what it read, as every other kind's
+// record is, while the grant is all the turn's snapshot gave (the read was
+// within it, and what the gone request ran under can no longer be
+// checked); under a grant narrowed since, it is refused as outside the
+// scope; one the turn never read names nothing (why).
+func (rr *refResolver) goneBrief(ref brakeman.Ref, why string) (brakeman.Resolution, string, error) {
+	read, ok := rr.seen[ref]
+	switch {
+	case !ok:
+		return brakeman.Resolution{}, why, nil
+	case !rr.grant.unnarrowed(rr.snap):
+		return brakeman.Resolution{}, "outside the request's scope: " + ref.Request + " is gone, and the scope or visibility has narrowed since the turn read it", nil
+	}
+	u := refURL(ref)
+	seen := brakeman.RefState{URL: u, State: read.State, Rev: read.Rev, At: read.At}
+	now := brakeman.RefState{URL: u, State: refDeleted, At: rr.at}
 	return brakeman.Resolution{Ref: ref, Seen: fitState(seen), Now: fitState(now)}, "", nil
 }
 
@@ -404,18 +520,30 @@ func (rr *refResolver) run(ctx context.Context, id string) (*refRun, error) {
 		}
 		r.run, r.held = run, ok
 	}
-	if rr.s.ledger != nil {
-		row, ok, err := rr.s.ledger.Run(ctx, id)
+	ld, err := rr.ledger()
+	switch {
+	case err != nil && !r.held:
+		// The run may be the unopened ledger's.
+		return nil, fmt.Errorf("the run %s: %w", id, err)
+	case ld != nil:
+		row, ok, err := ld.Run(ctx, id)
 		if err != nil {
 			return nil, fmt.Errorf("the ledger's run %s: %w", id, err)
 		}
 		r.row, r.managed = row, ok
 	}
 	r.found = r.held || r.managed
+	// A run's state and revision are one committed record's, so the pair
+	// is one that was: a managed run's the ledger's row, written in one
+	// transaction (the engine changes its run before the transaction
+	// commits and moves its revision after, so its snapshot can pair a new
+	// state with the old revision); any other run's its record's. A
+	// managed run the ledger holds no row of yet (its launch is being
+	// recorded) has no revision.
 	switch {
 	case r.held:
 		r.state, r.crewID, r.cwd = r.run.State, r.run.CrewID, r.run.Cwd
-		if r.run.Managed != nil {
+		if r.run.Managed != nil && ld == nil {
 			r.rev = strconv.FormatInt(r.run.Managed.Revision, 10)
 		}
 		for _, m := range r.run.Members {
@@ -438,9 +566,9 @@ func (rr *refResolver) run(ctx context.Context, id string) (*refRun, error) {
 		}
 	}
 	if r.managed {
-		r.rev = strconv.FormatInt(r.row.Revision, 10)
+		r.state, r.rev = r.row.State, strconv.FormatInt(r.row.Revision, 10)
 		r.commits = append(r.commits, r.row.Base)
-		attempts, err := rr.s.ledger.Attempts(ctx, id)
+		attempts, err := ld.Attempts(ctx, id)
 		if err != nil {
 			return nil, fmt.Errorf("the ledger's attempts of %s: %w", id, err)
 		}
@@ -455,7 +583,9 @@ func (rr *refResolver) run(ctx context.Context, id string) (*refRun, error) {
 	r.item = brakeman.ScopeItem{Kind: brakeman.ItemRun, Run: id, Crew: crewOfRun(id)}
 	if r.found {
 		r.item.Crew = r.crewID
-		r.item.Repo = rr.top(ctx, r.cwd)
+		if r.item.Repo, err = rr.top(ctx, r.cwd); err != nil {
+			return nil, fmt.Errorf("the repository of run %s: %w", id, err)
+		}
 		project, err := rr.runProject(ctx, id, r)
 		if err != nil {
 			return nil, err
@@ -467,9 +597,16 @@ func (rr *refResolver) run(ctx context.Context, id string) (*refRun, error) {
 }
 
 // runProject is the project of the ticket the run is linked to (Dispatch's
-// live run link), else of the one it was launched from; "" for none.
+// live run link), else of the one it was launched from (the engine's or
+// the record's run, else the launch package the ledger's row keeps, which
+// outlasts the record); "" for none.
 func (rr *refResolver) runProject(ctx context.Context, id string, r *refRun) (string, error) {
-	if ds := rr.s.dispatch; ds != nil {
+	ds, err := rr.dispatch()
+	if err != nil && rr.grant.byProject() {
+		// The live link cannot be read, and the scope admits by it.
+		return "", fmt.Errorf("the ticket of run %s: %w", id, err)
+	}
+	if ds != nil {
 		tk, ok, err := ds.RunTicket(ctx, id)
 		if err != nil {
 			return "", fmt.Errorf("the ticket of run %s: %w", id, err)
@@ -478,29 +615,118 @@ func (rr *refResolver) runProject(ctx context.Context, id string, r *refRun) (st
 			return projectOfKey(tk.Key), nil
 		}
 	}
-	if r.held && r.run.Ticket != nil {
+	switch {
+	case r.held && r.run.Ticket != nil:
 		return projectOfKey(r.run.Ticket.Key), nil
+	case r.managed && r.row.Package != "":
+		key, err := packageTicketKey(r.row)
+		if err != nil && rr.grant.byProject() {
+			return "", fmt.Errorf("the launch package of run %s: %w", id, err)
+		}
+		return projectOfKey(key), nil
 	}
 	return "", nil
 }
 
-// top is the repository root of dir as git reports it, "" outside one (or
-// for no folder), read once per folder.
-func (rr *refResolver) top(ctx context.Context, dir string) string {
+// packageTicketKey is the key of the ticket a managed run's ledger row
+// says it was launched from: its launch package's, once the package names
+// the ticket the row does.
+func packageTicketKey(row ledger.RunRow) (string, error) {
+	var p crew.Package
+	if err := json.Unmarshal([]byte(row.Package), &p); err != nil {
+		return "", fmt.Errorf("the package cannot be read: %w", err)
+	}
+	if p.Ticket.ID != row.Ticket {
+		return "", fmt.Errorf("the package is ticket %q's, the row names %q", p.Ticket.ID, row.Ticket)
+	}
+	return p.Ticket.Key, nil
+}
+
+// top is the repository root of dir as git reports it, read once per
+// folder: "" for no folder, one that is gone, one outside any repository
+// (git's ErrNotRepo with no .git at or above it, repoAbsent) or one whose
+// working tree is elsewhere (ErrElsewhere), git's own answers; any other
+// failure (git that could not run, the wait run out, ctx ended, a .git
+// there that git could not read while the grant admits by repository) is
+// an error and is not kept, so a scope of repositories never refuses what
+// git could not look at.
+func (rr *refResolver) top(ctx context.Context, dir string) (string, error) {
 	if dir == "" {
-		return ""
+		return "", nil
 	}
 	if t, ok := rr.tops[dir]; ok {
-		return t
+		return t, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if gone, err := folderGone(dir); err != nil || gone {
+		return "", err
 	}
 	gctx, cancel := context.WithTimeout(ctx, refGitWait)
 	defer cancel()
 	t, err := gitcli.TopOf(gctx, dir)
-	if err != nil {
+	switch {
+	case errors.Is(err, gitcli.ErrNotRepo):
+		if aerr := repoAbsent(dir); aerr != nil && rr.grant.byRepo() {
+			return "", aerr
+		}
+		// No repository; or one git could not read, which no scope here
+		// asks about.
 		t = ""
+	case errors.Is(err, gitcli.ErrElsewhere):
+		t = ""
+	case err != nil:
+		return "", err
 	}
 	rr.tops[dir] = t
-	return t
+	return t, nil
+}
+
+// repoAbsent is nil when git's "not a git repository" for dir is the
+// absence of one: no repository's metadata at dir or above it, where git
+// looks. git says the same of a repository whose metadata it cannot read
+// (an object store it may not open), so a .git that is a repository's (a
+// directory with a HEAD, or a file or link git follows), or one on the way
+// that cannot be looked at, is an error. A .git directory without a HEAD
+// is no repository's, and git looks on above it, as this does.
+func repoAbsent(dir string) error {
+	abs, err := filepath.Abs(dir)
+	if err == nil {
+		abs, err = filepath.EvalSymlinks(abs)
+	}
+	if err != nil {
+		return fmt.Errorf("git reports no repository at %s, and its folder cannot be looked at: %w", dir, err)
+	}
+	for p := abs; ; p = filepath.Dir(p) {
+		meta := filepath.Join(p, ".git")
+		fi, err := os.Lstat(meta)
+		if err == nil && fi.IsDir() {
+			_, err = os.Lstat(filepath.Join(meta, "HEAD"))
+		}
+		switch {
+		case err == nil:
+			return fmt.Errorf("git reports no repository at %s, though %s is there: git could not read it", dir, meta)
+		case !errors.Is(err, fs.ErrNotExist):
+			return fmt.Errorf("git reports no repository at %s, and %s cannot be looked at: %w", dir, meta, err)
+		}
+		if filepath.Dir(p) == p {
+			return nil
+		}
+	}
+}
+
+// folderGone reports whether dir is no longer there; an error for a folder
+// that cannot be looked at.
+func folderGone(dir string) (bool, error) {
+	_, err := os.Stat(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return true, nil
+	case err != nil:
+		return false, err
+	}
+	return false, nil
 }
 
 // lookupRunPart reads a run, or what is under it, from the run's records.
@@ -514,17 +740,24 @@ func (rr *refResolver) lookupRunPart(ctx context.Context, ref brakeman.Ref) (ref
 		return f, nil
 	}
 	ld := rr.s.ledger
+	if !r.managed && r.held && r.run.Managed != nil && ref.Kind != brakeman.RefRun && ref.Kind != brakeman.RefTask && ref.Kind != brakeman.RefCommit {
+		// A managed run's attempts, receipts, events and messages are the
+		// ledger's alone: unopened, they cannot be read.
+		if _, err := rr.ledger(); err != nil {
+			return f, fmt.Errorf("%s: %w", ref, err)
+		}
+	}
 	switch ref.Kind {
 	case brakeman.RefRun:
 		f.found, f.now = true, brakeman.RefState{State: r.state, Rev: r.rev}
 	case brakeman.RefTask:
 		if r.managed {
-			tasks, err := ld.Tasks(ctx, ref.Run)
+			task, rev, ok, err := rr.taskRev(ctx, ld, ref.Run, ref.Task)
 			if err != nil {
-				return f, fmt.Errorf("the ledger's tasks of %s: %w", ref.Run, err)
+				return f, err
 			}
-			if i := slices.IndexFunc(tasks, func(t ledger.TaskRow) bool { return t.ID == ref.Task }); i >= 0 {
-				f.found, f.now = true, brakeman.RefState{State: tasks[i].State, Rev: r.rev}
+			if ok {
+				f.found, f.now = true, brakeman.RefState{State: task.State, Rev: rev}
 			}
 		} else if i := slices.IndexFunc(r.run.Tasks, func(t crew.TaskState) bool { return t.ID == ref.Task }); i >= 0 {
 			f.found, f.now = true, brakeman.RefState{State: r.run.Tasks[i].State, Rev: r.rev}
@@ -556,19 +789,16 @@ func (rr *refResolver) lookupRunPart(ctx context.Context, ref brakeman.Ref) (ref
 		if !r.managed {
 			break
 		}
-		cmds, err := ld.Commands(ctx, ref.Run)
+		// A command id is the client's, kept by its actor, and the ref names
+		// none: it names the admin's receipt, the one its url
+		// (handleGetCommand, actorOf) answers the workbench token, whose
+		// person Brakeman's pages are. Another actor's receipt of the id
+		// is never cited by it.
+		cmd, ok, err := ld.Receipt(ctx, ref.Run, adminActor, ref.Command)
 		if err != nil {
-			return f, fmt.Errorf("the ledger's commands of %s: %w", ref.Run, err)
+			return f, fmt.Errorf("the ledger's command %s: %w", ref, err)
 		}
-		// A command id is the client's, kept by its actor: the admin's
-		// stands where two actors used one id, as its route reads it.
-		var cmd *ledger.CommandRow
-		for i := range cmds {
-			if c := &cmds[i]; c.ID == ref.Command && (cmd == nil || c.Actor == adminActor) {
-				cmd = c
-			}
-		}
-		if cmd != nil {
+		if ok {
 			f.found, f.now = true, brakeman.RefState{State: cmd.Status, At: cmd.CreatedAt}
 		}
 	case brakeman.RefEvent:
@@ -605,27 +835,103 @@ func (rr *refResolver) lookupRunPart(ctx context.Context, ref brakeman.Ref) (ref
 	return f, nil
 }
 
+// taskRev is the managed task's row with the run's revision it was read
+// at: its states read between two reads of the run's revision that agree
+// (every transition moves it), read again when a transition came between.
+func (rr *refResolver) taskRev(ctx context.Context, ld *ledger.Ledger, runID, taskID string) (ledger.TaskRow, string, bool, error) {
+	for range refRevTries {
+		before, ok, err := ld.Run(ctx, runID)
+		if err != nil || !ok {
+			return ledger.TaskRow{}, "", false, wrapNil(err, "the ledger's run %s", runID)
+		}
+		tasks, err := ld.Tasks(ctx, runID)
+		if err != nil {
+			return ledger.TaskRow{}, "", false, fmt.Errorf("the ledger's tasks of %s: %w", runID, err)
+		}
+		if rr.taskRead != nil {
+			rr.taskRead()
+		}
+		after, ok, err := ld.Run(ctx, runID)
+		if err != nil || !ok {
+			return ledger.TaskRow{}, "", false, wrapNil(err, "the ledger's run %s", runID)
+		}
+		if before.Revision != after.Revision {
+			continue
+		}
+		i := slices.IndexFunc(tasks, func(t ledger.TaskRow) bool { return t.ID == taskID })
+		if i < 0 {
+			return ledger.TaskRow{}, "", false, nil
+		}
+		return tasks[i], strconv.FormatInt(after.Revision, 10), true, nil
+	}
+	return ledger.TaskRow{}, "", false, fmt.Errorf("the run %s moved on through %d reads of its task %s", runID, refRevTries, taskID)
+}
+
+// wrapNil is err with what was read, nil for none.
+func wrapNil(err error, format string, args ...any) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf(format+": %w", append(args, err)...)
+}
+
 // commitOn reports whether sha is a commit of the run's: its base, an
 // attempt's start or result, or a commit one of its branches holds (any
 // branch of its folder's repository, for a run that made none), with its
-// short id. git is run through internal/gitcli, argv only.
+// short id. git is run through internal/gitcli, argv only. Only git's own
+// answers say it is not: no such object (rev-parse --verify --quiet's exit
+// 1, which says nothing on standard error), an object that is no commit (a
+// blob, a tree or a tag, as cat-file -t names it), no branch of the run's
+// holding it, a folder that is gone, or no repository there (repoAbsent).
+// Anything else (git that could not run, the wait run out, ctx ended, a
+// repository git cannot read) is an error: a commit the turn read is never
+// kept as deleted because git could not look.
 func (rr *refResolver) commitOn(ctx context.Context, r *refRun, sha string) (string, bool, error) {
 	if r.cwd == "" {
 		return "", false, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	if gone, err := folderGone(r.cwd); err != nil || gone {
+		return "", false, err
+	}
 	gctx, cancel := context.WithTimeout(ctx, refGitWait)
 	defer cancel()
-	full, err := gitcli.Run(gctx, r.cwd, "rev-parse", "--verify", "--quiet", sha+"^{commit}")
-	if err != nil || strings.TrimSpace(full) != sha {
-		// Not a commit of the run's repository (or no repository): it
-		// names nothing there.
+	// ^{object}, not ^{commit}: git refuses a blob or a tree under
+	// ^{commit} with words on standard error, which gitcli keeps in place
+	// of the exit status, while a missing object is exit 1 alone.
+	full, err := gitcli.Run(gctx, r.cwd, "rev-parse", "--verify", "--quiet", sha+"^{object}")
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		// git looked and found no such object.
+		return "", false, nil
+	case errors.Is(err, gitcli.ErrNotRepo):
+		if aerr := repoAbsent(r.cwd); aerr != nil {
+			return "", false, fmt.Errorf("the repository of run %s: %w", r.item.Run, aerr)
+		}
+		return "", false, nil
+	default:
+		return "", false, fmt.Errorf("git rev-parse for run %s: %w", r.item.Run, err)
+	}
+	if strings.TrimSpace(full) != sha {
+		return "", false, nil
+	}
+	kind, err := gitcli.Run(gctx, r.cwd, "cat-file", "-t", sha)
+	switch {
+	case err != nil:
+		return "", false, fmt.Errorf("git cat-file for run %s: %w", r.item.Run, err)
+	case strings.TrimSpace(kind) != "commit":
+		// A blob, a tree or a tag: no commit.
 		return "", false, nil
 	}
 	on := slices.Contains(r.commits, sha)
 	if !on {
 		out, err := gitcli.Run(gctx, r.cwd, "branch", "--contains", sha, "--format=%(refname:short)")
 		if err != nil {
-			return "", false, nil
+			return "", false, fmt.Errorf("git branch --contains for run %s: %w", r.item.Run, err)
 		}
 		ours := slices.DeleteFunc(slices.Clone(r.branches), func(b string) bool { return b == "" })
 		for line := range strings.Lines(out) {
@@ -641,7 +947,7 @@ func (rr *refResolver) commitOn(ctx context.Context, r *refRun, sha string) (str
 	}
 	short, err := gitcli.Run(gctx, r.cwd, "rev-parse", "--short", sha)
 	if err != nil {
-		return "", false, nil
+		return "", false, fmt.Errorf("git rev-parse --short for run %s: %w", r.item.Run, err)
 	}
 	return strings.TrimSpace(short), true, nil
 }
@@ -709,7 +1015,11 @@ func (rr *refResolver) lookupSessionPart(ctx context.Context, ref brakeman.Ref) 
 	if info.Kind != session.KindHosted {
 		// A hosted session's folder is on its host: no repository of the
 		// server's names it.
-		f.item.Repo = rr.top(ctx, info.Cwd)
+		top, err := rr.top(ctx, info.Cwd)
+		if err != nil {
+			return f, fmt.Errorf("the repository of session %s: %w", ref.Session, err)
+		}
+		f.item.Repo = top
 	}
 	if info.Crew != nil {
 		if err := rr.memberItem(ctx, &f.item, info.Crew.RunID); err != nil {
@@ -724,7 +1034,11 @@ func (rr *refResolver) lookupSessionPart(ctx context.Context, ref brakeman.Ref) 
 		}
 		f.found, f.now = true, brakeman.RefState{State: state}
 	case brakeman.RefQuestion:
-		state, at := questionState(d, info, ref.Question)
+		var history func() []session.ChatMessage
+		if c, ok := d.(chatter); ok {
+			history = c.ChatHistory
+		}
+		state, at := questionState(info, history, ref.Question)
 		switch {
 		case state != "":
 			f.found, f.now = true, brakeman.RefState{State: state, At: at}
@@ -764,31 +1078,39 @@ func (rr *refResolver) memberItem(ctx context.Context, it *brakeman.ScopeItem, r
 	return nil
 }
 
-// questionState is the state of the session's question id: open while it
-// shows or is kept (set aside, held over), else answered or withdrawn by
-// its chat window's lines; "" when neither holds it (a hosted session's
-// chat is its host's).
-func questionState(d session.Driver, info session.Info, id string) (string, time.Time) {
+// questionState is the state of the session's question id: answered
+// (resolved) once keys typed in its terminal reached it while it shows
+// (Attention.Answered), else open while it shows or is kept (set aside,
+// held over); else, by its chat window's lines (history, nil for a hosted
+// session, whose chat is its host's), answered through Conductor or by
+// keys typed in the terminal (resolved), or withdrawn as the agent moved
+// on; "" when neither holds it.
+func questionState(info session.Info, history func() []session.ChatMessage, id string) (string, time.Time) {
 	if a := info.Attention; a.ID == id && a.State == session.AttentionNeedsInput {
 		var at time.Time
 		if a.Since != nil {
 			at = *a.Since
+		}
+		if a.Answered == session.AnsweredTerminal {
+			return questionResolved, at
 		}
 		return questionOpen, at
 	}
 	if slices.Contains(info.Kept, id) {
 		return questionOpen, time.Time{}
 	}
-	c, ok := d.(chatter)
-	if !ok {
+	if history == nil {
 		return "", time.Time{}
 	}
 	state, at := "", time.Time{}
-	for _, m := range c.ChatHistory() {
+	for _, m := range history() {
 		switch {
 		case m.ID == id && m.Kind == proto.ChatKindQuestion:
 			state, at = questionWithdrawn, m.At
 		case state != "" && m.Ref == id && m.Event == "answered":
+			return questionResolved, m.At
+		case state != "" && m.Ref == id && m.Event == "withdrawn" && m.Text == session.ChatLeftTerminal:
+			// Keys typed in the terminal answered it.
 			return questionResolved, m.At
 		case state != "" && m.Ref == id && m.Event == "withdrawn":
 			state, at = questionWithdrawn, m.At
@@ -800,8 +1122,11 @@ func questionState(d session.Driver, info session.Info, id string) (string, time
 // lookupDispatch reads a ticket, a comment or a receipt from Dispatch's
 // store; a tombstone is deleted, never dropped.
 func (rr *refResolver) lookupDispatch(ctx context.Context, ref brakeman.Ref) (refFound, error) {
-	ds := rr.s.dispatch
 	f := refFound{item: brakeman.ScopeItem{Kind: brakeman.ItemTicket}}
+	ds, err := rr.dispatch()
+	if err != nil {
+		return f, fmt.Errorf("%s: %w", ref, err)
+	}
 	key := ref.Ticket
 	if ref.Kind == brakeman.RefOp {
 		if ds == nil {
@@ -829,13 +1154,20 @@ func (rr *refResolver) lookupDispatch(ctx context.Context, ref brakeman.Ref) (re
 			// ticket.
 			f.found, f.now = true, brakeman.RefState{State: "pruned"}
 		}
-		if key != "" {
+		// A receipt names a ticket's key, or a project's for an operation
+		// of the project's own (its creation, its edit): its project is
+		// that key, its page the project's, and no ticket's links admit it.
+		project := projectOfKey(key)
+		switch {
+		case project != "":
 			f.now.URL = ticketURL(key, "")
-		} else if ref.Actor == adminActor {
+		case dispatch.ValidKey(key):
+			project, f.now.URL = key, "/dispatch/"+url.PathEscape(key)
+		case ref.Actor == adminActor:
 			f.now.URL = "/api/dispatch/ops/" + url.PathEscape(ref.Op)
 		}
-		f.item.Project = projectOfKey(key)
-		if key != "" {
+		f.item.Project = project
+		if projectOfKey(key) != "" {
 			links, err := rr.ticketLinks(ctx, key)
 			if err != nil {
 				return f, err
@@ -885,7 +1217,11 @@ func (rr *refResolver) lookupDispatch(ctx context.Context, ref brakeman.Ref) (re
 // ticketLinks is the runs a ticket's live run links name, each with its
 // crew (the run's id says it); none for a ticket Dispatch does not hold.
 func (rr *refResolver) ticketLinks(ctx context.Context, key string) ([]brakeman.RunLink, error) {
-	links, err := rr.s.dispatch.Links(ctx, key)
+	ds, err := rr.dispatch()
+	if err != nil || ds == nil {
+		return nil, err
+	}
+	links, err := ds.Links(ctx, key)
 	switch {
 	case errors.Is(err, dispatch.ErrNotFound):
 		return nil, nil
