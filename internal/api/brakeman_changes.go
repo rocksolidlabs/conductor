@@ -225,6 +225,7 @@ func (s *Server) handleBrakemanChanges(w http.ResponseWriter, r *http.Request, o
 		s.observeError(w, err)
 		return
 	}
+	atObserveSeam("listed")
 	first := 0
 	if cursorText != "" {
 		first = len(items)
@@ -297,7 +298,7 @@ func (s *Server) handleBrakemanChanges(w http.ResponseWriter, r *http.Request, o
 		next = encodeCursor(page[n-1].pos())
 	}
 	if o.tp != nil && start.natural {
-		o.coverage = s.brakeman.cover(o.tp.req, page, items, parts)
+		o.coverage = s.brakeman.cover(o.tp.req, page, items, parts, o.now)
 	}
 	out := map[string]any{"from": start.mode, "changes": page, "parts": pageParts, "next": next}
 	if omitted > 0 {
@@ -401,9 +402,12 @@ func coverageTime(b *turnBriefing) time.Time {
 		at = c.Dispatch.At
 	}
 	// A part the coverage had no room for starts no later than its
-	// earliest change not given.
-	if !c.OmittedFrom.IsZero() && c.OmittedFrom.Before(at) {
-		at = c.OmittedFrom
+	// earliest change not given; one begun after the turn's reads listed
+	// their parts, no later than the first of them began.
+	for _, t := range []time.Time{c.OmittedFrom, c.ReadFrom} {
+		if !t.IsZero() && t.Before(at) {
+			at = t
+		}
 	}
 	return at
 }
@@ -851,8 +855,14 @@ func (d *brakemanDesk) classesUsed(id string) []string {
 // all were; just before the first that was not, partial, otherwise; and
 // partial where the part was truncated or has a gap. A session's place
 // is a time, so an item not given at a time another was stops the
-// watermark before that time, and neither is passed over.
-func (d *brakemanDesk) cover(req brakeman.Request, page, items []changeItem, parts []changePart) *brakeman.Coverage {
+// watermark before that time, and neither is passed over; nor is it ever
+// past when its window was read (an entry stamped then may not have been
+// added yet). readStart is when the read began, before it listed its
+// parts: a part it did not list (one begun since) has no watermark and is
+// read next time from no later than the earliest of the turn's reads'
+// starts (ReadFrom), and every other watermark's time is when its part
+// was read, never when the coverage is written.
+func (d *brakemanDesk) cover(req brakeman.Request, page, items []changeItem, parts []changePart, readStart time.Time) *brakeman.Coverage {
 	d.mu.Lock()
 	tc := d.turnChangesOf(req.ID)
 	for _, it := range page {
@@ -875,17 +885,26 @@ func (d *brakemanDesk) cover(req brakeman.Request, page, items []changeItem, par
 		*cov = *req.Coverage
 	}
 	now := d.now().UTC()
+	if !readStart.IsZero() && (cov.ReadFrom.IsZero() || readStart.Before(cov.ReadFrom)) {
+		cov.ReadFrom = readStart.UTC()
+	}
 	for _, p := range parts {
 		its, u := byPart[p.Part], -1
 		if len(its) > 0 {
 			u = missed[p.Part]
 		}
 		wm := brakeman.Watermark{ID: p.id, Partial: u >= 0 || p.Truncated || p.Gap, New: p.New, At: now}
+		if !p.readAt.IsZero() && p.readAt.Before(now) {
+			wm.At = p.readAt
+		}
 		switch p.kind {
 		case "session":
-			wm.At = p.readAt
+			// The earlier of when the window was read and just before
+			// its first item not given.
 			if u >= 0 {
-				wm.At = its[u].At.Add(-time.Nanosecond)
+				if at := its[u].At.Add(-time.Nanosecond); at.Before(wm.At) {
+					wm.At = at
+				}
 			}
 			if wm.At.Before(p.lastAt) {
 				wm.At = p.lastAt

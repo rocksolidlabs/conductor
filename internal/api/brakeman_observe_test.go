@@ -108,8 +108,8 @@ func (f *obsFixture) seed(t *testing.T) {
 	f.ticket = done(ds.CreateTicket(ctx, adminOp("Ann"), dispatch.NewTicket{Project: "CND", Title: "The build fails"})).Key
 	f.otherTicket = done(ds.CreateTicket(ctx, adminOp("Ann"), dispatch.NewTicket{Project: "OTH", Title: "Elsewhere"})).Key
 	f.comment = done(ds.AddComment(ctx, adminOp("Ann"), f.ticket, "It fails on main too.")).ID
-	done(ds.AddLink(ctx, adminOp("Ann"), f.ticket, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: f.run}))
-	done(ds.AddLink(ctx, adminOp("Ann"), f.otherTicket, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: f.other}))
+	done(ds.AddLink(ctx, adminOp("Ann"), f.ticket, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: f.run}, nil))
+	done(ds.AddLink(ctx, adminOp("Ann"), f.otherTicket, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: f.other}, nil))
 
 	f.plain = e.createSession("cat")
 	d, _ := e.srv.registry.Get(f.plain)
@@ -1579,22 +1579,101 @@ func TestCoverageCountsTheItemsGiven(t *testing.T) {
 	watermarks := func(c *brakeman.Coverage) (brakeman.Watermark, brakeman.Watermark) {
 		return c.Runs[0], c.Sessions[0]
 	}
-	r, s := watermarks(d.cover(req, []changeItem{items[0], items[3]}, items, parts))
+	r, s := watermarks(d.cover(req, []changeItem{items[0], items[3]}, items, parts, read))
 	if r.Seq != 1 || !r.Partial || !s.At.Equal(at(5).Add(-time.Nanosecond)) || !s.Partial {
 		t.Fatalf("one of a pair given: run %+v, session %+v", r, s)
 	}
 	// The run's second event passed over: its watermark stays before it.
-	r, s = watermarks(d.cover(req, []changeItem{items[2], items[4]}, items, parts))
+	r, s = watermarks(d.cover(req, []changeItem{items[2], items[4]}, items, parts, read))
 	if r.Seq != 1 || !r.Partial || s.Partial || !s.At.Equal(read) {
 		t.Fatalf("an event passed over: run %+v, session %+v", r, s)
 	}
-	r, _ = watermarks(d.cover(req, []changeItem{items[1]}, items, parts))
+	r, _ = watermarks(d.cover(req, []changeItem{items[1]}, items, parts, read))
 	if r.Seq != 3 || r.Partial {
 		t.Fatalf("every event given: %+v", r)
 	}
 	// Another request's turn begins its own record.
-	if r, _ = watermarks(d.cover(brakeman.Request{ID: "br-2"}, nil, items, parts)); r.Seq != 0 || !r.Partial {
+	if r, _ = watermarks(d.cover(brakeman.Request{ID: "br-2"}, nil, items, parts, read)); r.Seq != 0 || !r.Partial {
 		t.Fatalf("another turn's coverage: %+v", r)
+	}
+}
+
+// A session's watermark is never past when its window was read (the
+// time ActivityThrough says it is whole up to, held back by an attention
+// stamped and not added yet), though a page left an item of a later time
+// unread: the attention, added once the read is over, is read next time.
+func TestASessionsWatermarkStaysBeforeAnEntryNotYetAdded(t *testing.T) {
+	through := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	later := through.Add(time.Hour)
+	clock := func() time.Time { return later }
+	d := &brakemanDesk{}
+	d.clock.Store(&clock)
+	sess := "session:00000000000000aa"
+	before, after := through.Add(-time.Minute), through.Add(time.Minute)
+	items := []changeItem{
+		{Ref: sess, Kind: "status", At: before, Part: sess, seq: before.UnixNano()},
+		{Ref: sess, Kind: "answered", At: after, Part: sess, seq: after.UnixNano()},
+	}
+	parts := []changePart{{Part: sess, kind: "session", id: "00000000000000aa", From: "time", lastAt: through.Add(-time.Hour), readAt: through}}
+	cov := d.cover(brakeman.Request{ID: "br-1"}, items[:1], items, parts, through.Add(-time.Second))
+	if w := cov.Sessions[0]; !w.At.Equal(through) || !w.Partial {
+		t.Fatalf("a partial page with an entry still to come: %+v, want at %v", w, through)
+	}
+	// Every item given, the window's time still holds it.
+	cov = d.cover(brakeman.Request{ID: "br-1"}, items[1:], items, parts, through.Add(-time.Second))
+	if w := cov.Sessions[0]; !w.At.Equal(through) || w.Partial {
+		t.Fatalf("every item given: %+v, want at %v", w, through)
+	}
+}
+
+// A run begun after a turn's read of changes listed its parts, and before
+// the read's coverage is written, is no part of that answer, and the next
+// briefing reads it: a part with no watermark is read from no later than
+// when the turn's first read began (ReadFrom), and each watermark's time
+// is when its part was read, never when the coverage was written. Runs
+// alone are visible, so no session's time holds the start earlier; with
+// no part at all, the read's start is kept still.
+func TestARunBegunDuringAReadIsReadNext(t *testing.T) {
+	f := newObsFixture(t)
+	ctx := t.Context()
+	onlyRuns := func(c map[string]any) {
+		v := c["visibility"].(map[string]any)
+		v["sessions"], v["dispatch"] = false, false
+	}
+	f.turn(t, onlyRuns)
+	id := "late-0000ffff"
+	crewJSON, _ := json.Marshal(map[string]string{"id": "late", "cwd": f.root})
+	atObserve(t, "listed", func() {
+		if _, err := f.srv.ledger.Transition(ctx, id, func(tx *ledger.Tx) error {
+			if err := tx.PutRun(ledger.RunRow{ID: id, CrewID: "late", Crew: string(crewJSON), State: ledger.RunRunning, CreatedAt: tx.Now()}); err != nil {
+				return err
+			}
+			return tx.Event("run.note", map[string]string{})
+		}); err != nil {
+			t.Error(err)
+		}
+	})
+	ref := "event:" + id + "/1"
+	if first := f.changesOf(t, 200); slices.Contains(first, ref) {
+		t.Fatalf("the run begun during the read is in its answer: %v", first)
+	}
+	f.submitFact(t, "run:"+f.run)
+	r, _ := f.desk.st.Get(f.req)
+	if r.Coverage == nil || r.Coverage.ReadFrom.IsZero() {
+		t.Fatalf("the coverage keeps no read's start: %+v", r.Coverage)
+	}
+	f.again(t, nil)
+	if second := f.changesOf(t, 200); !slices.Contains(second, ref) {
+		t.Fatalf("the run begun during the earlier read is not read next: %v", second)
+	}
+	// No part at all: the coverage still keeps when the read began.
+	start := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return start.Add(time.Hour) }
+	d := &brakemanDesk{}
+	d.clock.Store(&clock)
+	cov := d.cover(brakeman.Request{ID: "br-1"}, nil, nil, nil, start)
+	if at := coverageTime(&turnBriefing{At: start.Add(time.Hour), Coverage: cov}); !at.Equal(start) {
+		t.Fatalf("no part read: the next briefing starts at %v, want %v", at, start)
 	}
 }
 
@@ -1745,7 +1824,7 @@ func TestARelatedTicketOutsideTheScopeIsWithheld(t *testing.T) {
 	if err := f.srv.records.Save(crew.Run{ID: third, CrewID: "third", Name: "third", Cwd: f.root, State: crew.RunRunning, Managed: &crew.Managed{Revision: 1}}); err != nil {
 		t.Fatal(err)
 	}
-	doneOf(t)(f.srv.dispatch.AddLink(ctx, adminOp("Ann"), elsewhere, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: third}))
+	doneOf(t)(f.srv.dispatch.AddLink(ctx, adminOp("Ann"), elsewhere, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: third}, nil))
 	doneOf(t)(f.srv.dispatch.AddRelation(ctx, adminOp("Ann"), f.ticket, dispatch.RelationBlocks, elsewhere))
 	f.turn(t, func(c map[string]any) { c["scope"] = map[string]any{"runs": []string{f.run}} })
 	f.expectRead(t, "/api/dispatch/tickets/"+elsewhere, http.StatusForbidden, "outside_scope")
@@ -1861,7 +1940,8 @@ func (g *holdLedger) Transition(ctx context.Context, runID string, fn func(crew.
 // not committed (the engine changes its run, lets its lock go, then
 // commits) carries no revision, though the ledger's is the same before
 // the handler and after: what the engine answered is not the ledger's at
-// that revision. Once the change is committed, a read carries it.
+// that revision. The status Conductor computes is held to the same. Once
+// the change is committed, a read carries it.
 func TestARunReadBeforeItsChangeCommitsHasNoRevision(t *testing.T) {
 	f := newObsFixture(t)
 	f.gitRepo(t)
@@ -1908,6 +1988,15 @@ func TestARunReadBeforeItsChangeCommitsHasNoRevision(t *testing.T) {
 	if settled() {
 		t.Fatal("the engine holds no change waiting for its commit: the window is not open")
 	}
+	// The status Conductor computes first, so the reads it notes are the
+	// first of their refs: it reads the engine's run as the shared reads
+	// do, and is held to the same.
+	status := f.expectRead(t, "/api/brakeman/status?run="+id, http.StatusOK, "")
+	for _, ref := range []string{"run:" + id, "task:" + id + "/docs"} {
+		if rd, _ := f.readOf(t, ref); status["revision"] != "" || rd.Rev != "" {
+			t.Fatalf("the status with a change not committed: answered %v, noted %q of %s", status["revision"], rd.Rev, ref)
+		}
+	}
 	for _, path := range []string{"/api/runs/" + id, "/api/runs/" + id + "/tasks/docs"} {
 		ref, field := "run:"+id, "run"
 		if strings.Contains(path, "/tasks/") {
@@ -1931,11 +2020,13 @@ func TestARunReadBeforeItsChangeCommitsHasNoRevision(t *testing.T) {
 			t.Fatal("the run never settled after the cancel")
 		}
 		out := f.expectRead(t, "/api/runs/"+id, http.StatusOK, "")
+		st := f.expectRead(t, "/api/brakeman/status?run="+id, http.StatusOK, "")
 		row, _, err := f.srv.ledger.Run(t.Context(), id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := out["run"].(map[string]any)["revision"]; got == strconv.FormatInt(row.Revision, 10) {
+		want := strconv.FormatInt(row.Revision, 10)
+		if got := out["run"].(map[string]any)["revision"]; got == want && st["revision"] == want {
 			break
 		}
 		if try == 20 {
@@ -1982,7 +2073,7 @@ func TestAnUnmanagedRunsUnreadLaunchAndEndAreReadNext(t *testing.T) {
 		for _, it := range its {
 			kinds = append(kinds, it.Kind)
 		}
-		return kinds, d.cover(brakeman.Request{ID: fmt.Sprintf("br-%d", n)}, page, its, []changePart{p})
+		return kinds, d.cover(brakeman.Request{ID: fmt.Sprintf("br-%d", n)}, page, its, []changePart{p}, time.Time{})
 	}
 	kinds, cov := briefing(nil, false)
 	if !slices.Equal(kinds, []string{"run.launched"}) || cov.Runs[0].Seq != 0 || !cov.Runs[0].Partial || !cov.Runs[0].At.After(run.StartedAt) {
