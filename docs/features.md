@@ -4004,6 +4004,47 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   error while the gate is shut, and one answering nil then fails) and
   `TestNetwork`, each checked to fail with its part broken; benchmarks of
   the defaults and the fakes measure a call's time, which no check does.
+
+  What the stream observed, item by item (PR-17, 2026-11-02). C1: main's
+  CI run 41383344892 (at c045df68, Go 1.26.10) passed, in its go job,
+  `cmd/conductor` (`TestPlainBuildRegistersNothing`: a plain build's
+  registry is empty), `ext`, `ext/local` and `internal/opencore`
+  (`TestModuleKeepsTheRules` in `make lint` and in the race suite,
+  `TestEachRuleCatchesItsPlant` in the latter), as run 41224370513 did on
+  PR-1's merge (63375be5); by hand on the WSL box, `conductor serve` built
+  at 8cf30cc5 (`make build-go`) on a scratch data directory logged no
+  extension line and served the workbench as before. C2, C3, C4, C5, C7
+  and C8: the tests their acceptance names passed in that same go job,
+  the whole race suite green. C6, by hand on 2026-11-02 (05:53 to 05:58
+  UTC), the commit 8cf30cc5 (`conductor v0.7.0-rc.18-700-g8cf30cc5`) on
+  both machines: on the WSL box (Linux 6.18 under WSL2, amd64), a server
+  with the e2e stub agents (`web/e2e/conductor.e2e.json`) and a scratch
+  repository, a crew of two members and two tasks whose managed run
+  succeeded (`build` at its second attempt, its check failing the first;
+  `docs` at its first), and a Dispatch project with two tickets and a
+  53-byte text attachment on the first; `conductor export --server
+  http://127.0.0.1:<port> --out conductor-export.zip` (the workbench token
+  in `CONDUCTOR_WORKBENCH_TOKEN`): 24 files, 32,755 bytes, six left out
+  (the databases' `-wal` and `-shm`, `runs/owner.lock`,
+  `dispatch/attachments/tmp/`); the server stopped; the archive copied by
+  `scp` to the Mac (macOS 27.0.1, arm64; the binary cross-built with
+  `GOOS=darwin GOARCH=arm64 make build-go`), its SHA-256 the same there;
+  `conductor restore --data-dir <an empty directory> conductor-export.zip`:
+  24 files restored; `conductor serve` on it; and in Chromium 1117
+  (headless, through an `ssh -L` tunnel), as on the WSL box before the
+  export: the crew's page, the run's Tasks view read from the ledger
+  (`build` succeeded by attempt 2 at commit 0274a7b896d8, `docs` by
+  attempt 1 at c3592e8a34b9), both tickets in the project's list, the
+  first's page naming its attachment, and the attachment's bytes (53, the
+  same SHA-256). The crew's working directory and its stub agents belong
+  to the WSL box (the configuration, not the data directory), so the Mac's
+  crew page says the directory does not exist there and the agents are
+  not in its catalog, as it should. C9: Settings → The app's
+  **Extensions** row read "None: the open-source feature set" in that
+  browser on both machines' plain builds, `GET /api/capabilities`
+  answering `{"providers":[]}`; PR-16's Playwright spec reads the row on
+  the e2e server in CI; and `TestSuitePassesEveryDefault` passed locally
+  under `-race`, every default passing the contract suite.
 - **Governance: contributing under the DCO, the marks' owner, security
   reporting and the open-core pull request checklist (Program item B; #386
   and #387, 2026-10-28).** The plan is `docs/plans/governance.md` (PR #383).
