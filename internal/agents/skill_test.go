@@ -63,6 +63,10 @@ func TestSkillText(t *testing.T) {
 		`"${CONDUCTOR_BIN:-conductor}" task ticket comment "the cause is the cache key, which ignores the locale; the fix is in the handler"`,
 		"with the ticket_read\ntool or the command below; a run with no ticket says so (no_ticket)", "with the ticket_comment tool",
 		"You read the ticket and comment on it, nothing more: you cannot change\n  it, close it or make another.",
+		// A run launched from a ticket (DS2 PR-13): where the package is,
+		// that the run follows it, and that a change is a person's to decide.
+		".conductor/ticket.md", ".conductor/package.json", ".conductor/attachments/",
+		"Your\n  run follows that package.", "a change that matters to your work is a\n  person's to decide: tell them, with a comment or task blocked, and never\n  act on it alone.",
 		"ever call notify or crew outside a Conductor session; the commands exit silently there",
 		"CONDUCTOR_AGENT", "at most 2 a session", "at most 12 members",
 	} {

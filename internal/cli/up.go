@@ -355,7 +355,13 @@ func (c *apiClient) doBody(ctx context.Context, method, path string, body, out a
 
 // doLimit is doBody with a reply of at most limit bytes, a whole number of MiB.
 func (c *apiClient) doLimit(ctx context.Context, method, path string, body, out any, limit int) error {
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	return c.doWithin(ctx, requestTimeout, method, path, body, out, limit)
+}
+
+// doWithin is doLimit bounded by timeout instead of requestTimeout: for a
+// request whose server takes longer by design (a launch from a ticket).
+func (c *apiClient) doWithin(ctx context.Context, timeout time.Duration, method, path string, body, out any, limit int) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var reader io.Reader
 	if body != nil {

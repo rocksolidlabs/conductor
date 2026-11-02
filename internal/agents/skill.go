@@ -190,6 +190,15 @@ there is nothing more to do about it.
 
       "${CONDUCTOR_BIN:-conductor}" task ticket
 
+- A run launched from a ticket's approved plan revision carries the ticket
+  as it stood at the launch, in your worktree: .conductor/ticket.md (the
+  ticket, the plan revision, the references, the constraints, the decisions
+  a person makes, the comments handed over), .conductor/package.json (the
+  same as launched) and the attachments in .conductor/attachments/. Your
+  run follows that package. The tool and the command say first what changed
+  of the ticket since the launch; a change that matters to your work is a
+  person's to decide: tell them, with a comment or task blocked, and never
+  act on it alone.
 - Its acceptance criteria are what the work is accepted against: meet them,
   and say in your result which you could not.
 - Comment on it for the people who own it: what you found, a question about
