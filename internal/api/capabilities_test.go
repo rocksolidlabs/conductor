@@ -5,10 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -173,25 +178,33 @@ func TestCapabilitiesNamesProviders(t *testing.T) {
 }
 
 // The fullest registry the registry allows (a provider in each of the six
-// one-value slots and MaxPerList in each list, every name 40 bytes, every
-// one starting) answers within capabilitiesReplyMax.
+// one-value slots and MaxPerList in each list, every name
+// ext.MaxProviderName bytes, every one starting) answers within
+// capabilitiesReplyMax.
 func TestCapabilitiesReplyBounded(t *testing.T) {
 	name := func(prefix string, i int) string {
 		n := fmt.Sprintf("%s-%d-", prefix, i)
-		return n + strings.Repeat("x", 40-len(n))
+		return n + strings.Repeat("x", ext.MaxProviderName-len(n))
+	}
+	ones := []string{ext.KindIdentity, ext.KindDecisions, ext.KindSync, ext.KindEntitlements, ext.KindMedia, ext.KindRuntime}
+	lists := []string{ext.KindContext, ext.KindNotifications}
+	// Every kind ext declares is here, so a kind added there cannot leave
+	// this reply short of the fullest.
+	if got, want := extKinds(t), append(append([]string{}, ones...), lists...); !sameSet(got, want) {
+		t.Fatalf("ext declares the kinds %q, the test builds %q", got, want)
 	}
 	var all []ext.Entry
-	for _, k := range []string{ext.KindIdentity, ext.KindDecisions, ext.KindSync, ext.KindEntitlements, ext.KindMedia, ext.KindRuntime} {
+	for _, k := range ones {
 		all = append(all, ext.Entry{Kind: k, Name: name(k, 0)})
 	}
-	for _, k := range []string{ext.KindContext, ext.KindNotifications} {
+	for _, k := range lists {
 		for i := range ext.MaxPerList {
 			all = append(all, ext.Entry{Kind: k, Name: name(k, i)})
 		}
 	}
 	for _, en := range all {
-		if !ext.ValidName(en.Name) {
-			t.Fatalf("the test's name %q is not one the registry takes", en.Name)
+		if !ext.ValidName(en.Name) || len(en.Name) != ext.MaxProviderName {
+			t.Fatalf("the test's name %q is not a longest one the registry takes", en.Name)
 		}
 	}
 	srv := newExtServer(t, nil)
@@ -211,4 +224,39 @@ func TestCapabilitiesReplyBounded(t *testing.T) {
 	if len(b) > capabilitiesReplyMax {
 		t.Fatalf("the fullest reply is %d bytes, more than %d", len(b), capabilitiesReplyMax)
 	}
+}
+
+// extKinds is the value of every Kind constant ext/registry.go declares,
+// read from its source.
+func extKinds(t *testing.T) []string {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.Join("..", "..", "ext", "registry.go"), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, d := range f.Decls {
+		g, ok := d.(*ast.GenDecl)
+		if !ok || g.Tok != token.CONST {
+			continue
+		}
+		for _, sp := range g.Specs {
+			vs := sp.(*ast.ValueSpec)
+			for i, n := range vs.Names {
+				if !strings.HasPrefix(n.Name, "Kind") || i >= len(vs.Values) {
+					continue
+				}
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					t.Fatalf("ext.%s is not a string literal", n.Name)
+				}
+				v, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				kinds = append(kinds, v)
+			}
+		}
+	}
+	return kinds
 }
