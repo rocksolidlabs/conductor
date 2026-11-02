@@ -234,6 +234,8 @@ var dispatchRequests = map[string]struct {
 	"GET /api/dispatch/plans/{id}":                             {"/api/dispatch/plans/0123456789abcdef", nil},
 	"POST /api/dispatch/plans/{id}/approve":                    {"/api/dispatch/plans/0123456789abcdef/approve", map[string]any{"opId": "c2", "note": "ok"}},
 	"POST /api/dispatch/plans/{id}/withdraw":                   {"/api/dispatch/plans/0123456789abcdef/withdraw", map[string]any{"opId": "c3"}},
+	"POST /api/dispatch/tickets/{key}/launch":                  {"/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": "c4", "plan": "0123456789abcdef"}},
+	"GET /api/dispatch/launches/{id}":                          {"/api/dispatch/launches/0123456789abcdef", nil},
 	"GET /api/dispatch/tickets/{key}/comments":                 {"/api/dispatch/tickets/CND-1/comments", nil},
 	"POST /api/dispatch/tickets/{key}/comments":                {"/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": "b7", "body": "x"}},
 	"POST /api/dispatch/tickets/{key}/comments/{id}/edit":      {"/api/dispatch/tickets/CND-1/comments/0123456789abcdef/edit", map[string]any{"opId": "b8", "body": "y"}},
@@ -1440,8 +1442,12 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 	rc := doneOf(t)(e.srv.dispatch.ProposePlan(context.Background(), adminOp(""), "CND-1", dispatch.PlanRequest{Crew: "team"},
 		dispatch.PlanBody{Base: strings.Repeat("a", 40), Crew: json.RawMessage(`{"id":"team","name":"Team","tasks":[{"id":"build"}]}`)}))
 	plan := "/api/dispatch/plans/" + rc.ID
+	// The launch's read reads a launch of that revision's, approved and
+	// launched through the store (pending: nothing starts it here).
+	doneOf(t)(e.srv.dispatch.ApprovePlan(context.Background(), adminOp(""), rc.ID, 0, ""))
+	launch := "/api/dispatch/launches/" + doneOf(t)(e.srv.dispatch.Launch(context.Background(), adminOp(""), "CND-1", rc.ID, "")).ID
 	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1", attachment,
-		"/api/dispatch/tickets/CND-1/plans", plan}
+		"/api/dispatch/tickets/CND-1/plans", plan, launch}
 	reads := 0
 	eachDispatchRoute(t, e.srv, func(method, path string, _ any) {
 		if method != http.MethodGet {
@@ -1458,6 +1464,9 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			if strings.HasPrefix(path, "/api/dispatch/plans/") {
 				path = plan
 			}
+			if strings.HasPrefix(path, "/api/dispatch/launches/") {
+				path = launch
+			}
 			e.expect(t, method, path, nil, http.StatusOK, "")
 		}
 		sep := "?"
@@ -1472,7 +1481,7 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			e.expect(t, method, path+sep+q, nil, http.StatusBadRequest, "invalid_request")
 		}
 	})
-	if reads != 13 {
+	if reads != 14 {
 		t.Fatalf("%d reads", reads)
 	}
 }
@@ -1574,10 +1583,11 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 	e := dispatchEnv(t)
 	const upload = "POST /api/dispatch/tickets/{key}/attachments"
 	bounds := map[string]int{
-		"POST /api/dispatch/tickets":             maxTicketBody,
-		"POST /api/dispatch/tickets/{key}/edit":  maxTicketBody,
-		"POST /api/dispatch/tickets/{key}/plans": maxTicketBody,
-		upload:                                   maxAttachmentBody,
+		"POST /api/dispatch/tickets":              maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/edit":   maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/plans":  maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/launch": maxTicketLaunchBody,
+		upload: maxAttachmentBody,
 	}
 	// A ticket's create checks its project's key before the store sees
 	// the body.
@@ -1630,7 +1640,7 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 			}
 		}
 	}
-	if writes != 32 {
+	if writes != 33 {
 		t.Fatalf("%d writes", writes)
 	}
 }

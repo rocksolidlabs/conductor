@@ -1879,6 +1879,8 @@ its run, and on no other.
 | `GET /api/dispatch/plans/{id}` | admin | a plan revision whole: `{plan}`, its summary as the list gives it and `body`, the bytes it is kept as (Plan revisions, below), under 3 MiB (`MaxPlanReply`); `404 not_found` |
 | `POST /api/dispatch/plans/{id}/approve` | admin | approve a plan revision (`plan.approve`), the operator's: `{opId, expectedRev?, ticketRev?, note?, byName?}`, `expectedRev` the revision's and `ticketRev` the ticket's (`409 stale_revision` for either), `note` at most 1,000 characters of Markdown, the rationale; the ticket's other approved revision made `superseded`; reply `{receipt, plan}`; `409 stale_plan` ("…: revise it") when an agent of its body resolves otherwise in the catalog now, naming the agent and the part (its command, its session recipe's start arguments, its yolo recipe's arguments or its environment), no receipt kept, or when a comment it hands over was edited or deleted since it was made, its receipt kept; `409 invalid` for a withdrawn revision and for one approved whose approval holds; `404 not_found` |
 | `POST /api/dispatch/plans/{id}/withdraw` | admin | withdraw a plan revision (`plan.withdraw`): `{opId, expectedRev?, byName?}`, `expectedRev` the revision's; reply `{receipt, plan}`; `409 invalid` for one withdrawn already; `404 not_found` |
+| `POST /api/dispatch/tickets/{key}/launch` | admin | launch a managed run from a ticket's approved plan revision (`ticket.launch`; see Launches below): `{opId, plan, expectedRev?, label?, byName?}`, at most 4 KiB, `plan` the revision's id, `expectedRev` the ticket's, `label` the run's own name (at most 60 characters; the ticket's key and title, cut at a word, when absent); reply `201 {receipt, launch, run}` once the run's first ledger transaction is committed and the launch recorded started, `launch` its summary `{id, ticketId, ticketKey, planId, planN, runId, label, ticketRev, intent, criteria, packageSha256, state, why?, agents, createdAt, createdBy, fingerprint, startedAt?, rev}` (never the package), `run` as `GET /api/runs/{run}` answers it; the same `opId` again answers the same launch, `200` with the receipt's `repeat`, never a second run; `409 launch_failed {error, receipt, launch}` when the run could not be started (an agent not installed or not the one it claims, a working directory outside the allowed roots, the engine's refusal), the launch kept, `failed`, with why; `409 stale_plan` when an agent of the revision resolves otherwise in the catalog now, naming the agent and the part ("…: revise it"), no receipt kept, or when the store finds the approval stale (the ticket's intent changed: "approve it again or revise it"; a handed-over comment or attachment edited or gone: "revise it"), its receipt kept; `409 invalid` for a ticket closed or a revision not approved; `409 managed_off`; `503 ledger_unavailable` without a ledger, with one another server owns, and while the server takes the ledger over ("the server is taking over the ledger"), no launch kept; a pending launch replayed on a server that may not advance it is answered `503 ledger_unavailable {error, receipt, launch}`, still pending, never recorded failed |
+| `GET /api/dispatch/launches/{id}` | admin | a launch whole: `{launch}`, its summary as the launch answers it and `package`, the bytes it is kept as (Launches, below), under 1 MiB (`MaxLaunchReply`); `404 not_found` |
 | `GET /api/dispatch/links?run={id}` | admin | the ticket a run is linked to, for the run page's chip: `{ticket: {id, key, title, status, deletedAt?}}`, the live ticket whose live `run` link names the run (one at most); else, when only deleted tickets' links name it, the one whose link is latest, with `deletedAt`; `{ticket: null}` when no live link names the run; `400 invalid_request` for a run id that is not one |
 | `GET /api/dispatch/views` | admin | the live saved views, by name: `{views}`, each `{id, projectId, name, kind, query, createdAt, updatedAt, rev}`, `projectId` `""` for a view of every project and `query` the JSON it is; with `project` (a project's key), the views its pages offer, its own and every project's, else every live view; at most 200, under 3 MiB as a project's read is; `404 not_found` for a project missing |
 | `POST /api/dispatch/views`, `…/views/{id}/edit`, `…/views/{id}/delete` | admin | save a view (`view.create`: `{opId, byName?, project?, name, kind, query}`, of the project with the key or, without one, of every project; `name` 1 to 60 characters, `kind` `list`, `board` or `roadmap`, `query` a JSON object, never a string of one, of a list's filter and sort as the tickets' list takes them (`status`, `priority`, `labels`, `owner`, `assignees`, `milestone`, `horizon`, `parent`, `blocked`, `q`, `deleted`, `sort`, `desc`) and its grouping (`group`: `status`, `priority`, `horizon`, `milestone` or `owner`), each value in its vocabulary, at most 8 KiB as kept, compacted; at most 200 live), set the fields given of a live one (`view.edit`: `{opId, expectedRev?, byName?, name?, kind?, query?}`, its project never changing), or delete one (`view.delete`: `{opId, expectedRev?, byName?}`, a tombstone); reply `{receipt, view}`, `201` for a create; `404 not_found` for a project missing, or a view missing or deleted; `409 invalid` for a query that is not a list's; `409 archived` for a view of an archived project |
@@ -2342,7 +2344,27 @@ the receipt and the log. A receipt that passed is never handed, a verify
 step's included whose outcome the ledger took only with the next commit;
 one that failed is, a row from a version 4 ledger too, which keeps no
 words of its failure (its exit, signal, timeout or changed checkout
-say it). With a context provider
+say it). An attempt of a run launched from a ticket (DS2, Launches
+below) is handed the package beside its task files, through the same
+root: `.conductor/ticket.md` (the ticket as launched, rendered from the
+package: its key and title, the revision it stood at and the plan
+revision with its approval's note, its fields, description, criteria,
+constraints, decisions, references, attachments and comments),
+`.conductor/package.json` (the package's bytes as launched) and each
+attachment as `.conductor/attachments/<file>`, read from Dispatch's store
+by its hash (pinned there, so a removal from the ticket does not take it
+away), its size and SHA-256 checked as it is copied; `task.json`'s
+`ticket` (`{key, rev, plan, planN, digest, files}`) and `task.md`'s "Your
+ticket" say where they are and that the run follows them. A file that
+cannot be read, or is not the package's, fails the attempt at `package`,
+not counted, and pauses the run. Each attempt's session is started only
+from the agent selection the revision approved: the server takes the
+catalog entry once, computes its selection with the run's yolo choice
+and starts the session from that entry only when it is the package's;
+otherwise, the entry edited, deleted or hidden, the attempt fails at `agent`, not counted, before any process
+exists, and the run pauses with the words, until the entry is restored
+(and the run unpaused) or a new revision is launched. A retry and a
+continuation get the same files and the same check. With a context provider
 registered (Program item C4), the attempt's context is asked for before
 its task files are written, at most 5 s (`ext.ContextWait`), and an
 attempt never fails or waits longer for it: `task.json` gains `context`,
@@ -2923,6 +2945,53 @@ saved crew changes no revision, and the list says `crewChanged`.
 Proposing, approving and withdrawing never bump the ticket's `rev`; a
 ticket has at most 100 revisions. Their changes are `dispatch` events of
 the entity `plan`, naming the revision, its ticket and its project.
+
+**Launches.** A launch starts a managed run from a ticket's approved
+plan revision (`docs/plans/dispatch-evidence.md`), and it is the one call
+from a Dispatch route into a run: it makes a new one, and no Dispatch
+operation changes a run's package, crew, tasks, attempts or sessions.
+The operation is replayed first, so a resend is answered by the launch it
+made whatever the revision or the catalog became since; a new one, or a
+pending one replayed, needs `crews.managed` on and the ledger this
+server's, writable and taken over (its recovery and the reconcile of the
+pending launches finished); a new one has the revision's agents resolved
+against the catalog again (`409 stale_plan`). Then, in order, each step
+durable before the next: Dispatch commits the launch `pending` with its
+package and the run id it minted (the crew's id, `-`, 8 hex characters);
+the engine's first transaction of the run inserts its ledger row with the
+package and the ticket's id, refusing an id the ledger has; Dispatch
+records the launch `started`, with each member's agent and the version
+its identity probe reported, or `failed` with why. One launch is settled
+at a time per launch in a server: a second request for it waits for the
+first, at most the launch's bound (2 minutes). A pending launch is
+adopted only by a ledger row that is its own (the row's ticket the
+launch's and the SHA-256 of its package the launch's `packageSha256`); a
+row of the run id that is not is another run's, and the launch is
+recorded failed ("the run id is another run's"), that row untouched.
+When the server starts, once the ledger's recovery has run, every
+pending launch is reconciled the same way, one with no row recorded
+failed ("the server stopped before the run started"), and no launch is
+admitted until that has finished. Only the ledger's owner settles a
+launch. The run is the revision's: its crew, its yolo choice, its base
+(never `HEAD` read again), its label; the run's `ticket` is `{id, key,
+rev, plan, planN, launch, digest}`, and its continuations carry the same.
+The package, version 1, is JSON of at most 512 KiB, built once in the
+launch's transaction and kept byte for byte in Dispatch and in the
+ledger: `{version, ticket, plan, references, attachments, comments,
+constraints, decisions, launch}`, `ticket` the ticket as it stood (`{id,
+key, rev, title, description, acceptance, status, priority, horizon,
+owner, assignees, labels, milestone?, parent?, blockers, blockersTotal,
+intent, criteria}`, the labels by name, the milestone `{name, target}`,
+the parent and at most 20 live blockers `{key, title, status}`), `plan`
+`{id, n, digest, basedOn, approvedAt, approvedBy, note, crew: {id, name,
+updatedAt}, base, yolo, agents}` with `agents` the approved selection
+`[{id, sha256}]`, each attachment `{id, name, file, size, sha256,
+contentType}` (`file` the name it is written under in an attempt,
+`NN-<portable>`: its place `01` to `08` and its name with every byte
+outside `[A-Za-z0-9._-]` made `_`, at most 64 bytes, never a display
+name), each comment `{id, n, author, by, at, body, sha256}`, and `launch`
+`{id, run, label, at, by}`. Their changes are `dispatch` events of the
+entity `launch`, naming the launch, its ticket and its project.
 
 **An attempt's ticket.** A run belongs to one live ticket at most, the
 one whose live `run` link names it, so a session of the run's member has
