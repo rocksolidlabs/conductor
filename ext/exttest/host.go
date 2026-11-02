@@ -29,6 +29,7 @@ type FakeHost struct {
 	closed   bool
 	done     chan struct{} // closed by Close
 	gate     chan struct{} // non-nil while blocked
+	waiting  int
 	runs     int
 	launches []ext.LaunchRequest
 	submits  []ext.SubmitRequest
@@ -122,6 +123,13 @@ func (h *FakeHost) Close() {
 	h.tell()
 }
 
+// Waiting answers how many calls Block holds now.
+func (h *FakeHost) Waiting() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.waiting
+}
+
 // Closed reports whether the host is closed.
 func (h *FakeHost) Closed() bool {
 	h.mu.Lock()
@@ -139,12 +147,24 @@ func (h *FakeHost) enter(ctx context.Context) error {
 		return context.Canceled
 	}
 	if gate != nil {
+		h.mu.Lock()
+		h.waiting++
+		h.mu.Unlock()
+		h.tell()
+		var err error
 		select {
 		case <-gate:
 		case <-h.done:
-			return context.Canceled
+			err = context.Canceled
 		case <-ctx.Done():
-			return ctx.Err()
+			err = ctx.Err()
+		}
+		h.mu.Lock()
+		h.waiting--
+		h.mu.Unlock()
+		h.tell()
+		if err != nil {
+			return err
 		}
 	}
 	if h.Closed() {
