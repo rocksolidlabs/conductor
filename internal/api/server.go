@@ -93,6 +93,10 @@ type Server struct {
 	// continuation and trying the mark again (resumeRecord). Under
 	// resumingMu.
 	recordMarks map[string]string
+	// continuations are the resumes and continuations under way
+	// (beginContinuation), whose runs no chain's walk judges until they
+	// end (continuingAt). Under resumingMu.
+	continuations map[*continuation]struct{}
 	// journaling holds the runs whose record is about to be written again
 	// (scheduleJournal), under journalMu.
 	journalMu  sync.Mutex

@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -461,6 +462,147 @@ func TestALinkToAPrunedRunHoldsItsChain(t *testing.T) {
 	if links, err := l.srv.dispatch.Links(t.Context(), "CND-2"); err != nil || len(links) != 0 {
 		t.Fatalf("CND-2's links: %v %v", links, err)
 	}
+}
+
+// A link to a pruned run holds the runs after it: A linked to CND-1 and
+// continued by B, A's record pruned, CND-1's runs list B as continuing A,
+// found through B's record naming A. CND-1 deleted, B is linked to CND-2;
+// CND-1's undelete walks A's chain through B and releases its link to A,
+// so the chain is CND-2's alone, never held by both. And with the middle
+// of a chain pruned (C continues D, which continues E; D's record gone),
+// a link to C is refused naming the ticket that links E.
+func TestAnUndeleteWalksAChainFromAPrunedRun(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	l.newDispatchTicket(t, "CND", "Two", nil)
+	now := time.Now().UTC()
+	a, b := "legacy-000000a1", "legacy-000000a2"
+	saveRecord(t, l.srv, crew.Run{ID: a, StartedAt: now.Add(-time.Hour), ResumedBy: b})
+	saveRecord(t, l.srv, crew.Run{ID: b, StartedAt: now, ResumedFrom: a})
+	link := linkRun(t, l.testEnv, "CND-1", a, http.StatusCreated, "")
+	if err := l.srv.records.Delete(a); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := ticketRunPages(t, l.testEnv, "CND-1")
+	if e := entryWith(t, entries, entryRun, "run", b); e["continues"] != a || e["link"].(map[string]any)["id"] != link {
+		t.Fatalf("B on CND-1's runs with A pruned: %v", e)
+	}
+
+	l.expect(t, "POST", "/api/dispatch/tickets/CND-1/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	linkRun(t, l.testEnv, "CND-2", b, http.StatusCreated, "")
+	l.expect(t, "POST", "/api/dispatch/tickets/CND-1/undelete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	if links, err := l.srv.dispatch.Links(t.Context(), "CND-1"); err != nil || slices.ContainsFunc(links, func(k dispatch.Link) bool { return k.Kind == dispatch.LinkRun }) {
+		t.Fatalf("CND-1's links after its undelete: %v %v", links, err)
+	}
+	for _, run := range []string{a, b} {
+		holders, err := l.srv.dispatch.ChainHolders(t.Context(), run)
+		if err != nil || len(holders) != 1 || holders[0].Key != "CND-2" || holders[0].Run != b {
+			t.Fatalf("%s's holders after CND-1's undelete: %v %v", run, holders, err)
+		}
+	}
+
+	c, d, e := "legacy-000000a3", "legacy-000000a4", "legacy-000000a5"
+	saveRecord(t, l.srv, crew.Run{ID: e, StartedAt: now.Add(-2 * time.Hour), ResumedBy: d})
+	saveRecord(t, l.srv, crew.Run{ID: d, StartedAt: now.Add(-time.Hour), ResumedFrom: e, ResumedBy: c})
+	saveRecord(t, l.srv, crew.Run{ID: c, StartedAt: now, ResumedFrom: d})
+	linkRun(t, l.testEnv, "CND-1", e, http.StatusCreated, "")
+	if err := l.srv.records.Delete(d); err != nil {
+		t.Fatal(err)
+	}
+	out := l.expect(t, "POST", "/api/dispatch/tickets/CND-2/links", map[string]any{"opId": opID(), "kind": dispatch.LinkRun, "ref": c}, http.StatusConflict, dispatch.RefusalRunLinked)
+	if receiptOf(t, out)["key"] != "CND-1" {
+		t.Fatalf("the link of C with D pruned: %v", out)
+	}
+}
+
+// A run being resumed is never judged half made: while the resume of the
+// legacy run A from its record is held at its member's launch (B made
+// and naming A, A's record not yet naming B), a link of B to CND-2 and
+// one of A to CND-1 are each 503 run_changing with nothing kept; once the
+// resume is made, A's link is taken and B's refused naming CND-1, so the
+// chain has one holder.
+func TestALinkWaitsForAResumeToBeMade(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	l.newDispatchTicket(t, "CND", "Two", nil)
+	a, _ := legacyRun(t, l.testEnv, l.repo)
+	l.expect(t, "POST", "/api/runs/"+a+"/stop", nil, http.StatusOK, "")
+	waitUntil(t, "A's record stopped", func() bool {
+		r, ok, err := l.srv.records.Get(a)
+		return err == nil && ok && r.StoppedAt != nil
+	})
+	l.srv.runs.ForgetForTest(a)
+
+	reached, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(free)
+	onLaunch(t, "checked", func() {
+		close(reached)
+		<-release
+	})
+	type answer struct {
+		status int
+		out    map[string]any
+	}
+	resumed := make(chan answer, 1)
+	go func() {
+		resp, out := l.do("POST", "/api/runs/"+a+"/resume", adminToken, nil)
+		resumed <- answer{resp.StatusCode, out}
+	}()
+	<-reached
+	var b string
+	for _, r := range l.srv.runs.List() {
+		if r.ResumedFrom == a {
+			b = r.ID
+		}
+	}
+	if b == "" {
+		t.Fatalf("no continuation of %s held while its member launches", a)
+	}
+	if rec, _, _ := l.srv.records.Get(a); rec.ResumedBy != "" {
+		t.Fatalf("A's record names its continuation before the resume is made: %v", rec.ResumedBy)
+	}
+	for _, try := range []struct{ key, run string }{{"CND-2", b}, {"CND-1", a}} {
+		op := opID()
+		resp, out := l.do("POST", "/api/dispatch/tickets/"+try.key+"/links", adminToken, map[string]any{"opId": op, "kind": dispatch.LinkRun, "ref": try.run})
+		if apiErr, _ := out["error"].(map[string]any); resp.StatusCode != http.StatusServiceUnavailable || apiErr["code"] != "run_changing" || resp.Header.Get("Retry-After") != "1" {
+			t.Fatalf("the link of %s to %s while it is resumed: %d %v, Retry-After %q", try.run, try.key, resp.StatusCode, out, resp.Header.Get("Retry-After"))
+		}
+		l.expect(t, "GET", "/api/dispatch/ops/"+op, nil, http.StatusNotFound, "not_found")
+		if links, err := l.srv.dispatch.Links(t.Context(), try.key); err != nil || len(links) != 0 {
+			t.Fatalf("%s's links while the resume is held: %v %v", try.key, links, err)
+		}
+	}
+	free()
+	if got := <-resumed; got.status != http.StatusCreated || got.out["run"].(map[string]any)["id"] != b {
+		t.Fatalf("the resume: %d %v", got.status, got.out)
+	}
+	linkRun(t, l.testEnv, "CND-1", a, http.StatusCreated, "")
+	out := l.expect(t, "POST", "/api/dispatch/tickets/CND-2/links", map[string]any{"opId": opID(), "kind": dispatch.LinkRun, "ref": b}, http.StatusConflict, dispatch.RefusalRunLinked)
+	if receiptOf(t, out)["key"] != "CND-1" {
+		t.Fatalf("the link of B once the resume is made: %v", out)
+	}
+	holders, err := l.srv.dispatch.ChainHolders(t.Context(), b)
+	if err != nil || len(holders) != 1 || holders[0].Key != "CND-1" {
+		t.Fatalf("B's holders: %v %v", holders, err)
+	}
+}
+
+// A continuation is made before it names its source, so while one is
+// under way a run the engine took on since it began and that names no
+// source may be it: a link to such a run is 503 run_changing until the
+// continuation ends, and a run the engine held before it is linked as
+// ever.
+func TestARunMadeDuringAContinuationWaitsForIt(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	l.newDispatchTicket(t, "CND", "Two", nil)
+	before, _ := legacyRun(t, l.testEnv, l.repo)
+	end := l.srv.beginContinuation("legacy-0000ab01")
+	t.Cleanup(end)
+	since, _ := legacyRun(t, l.testEnv, l.repo)
+	linkRun(t, l.testEnv, "CND-1", before, http.StatusCreated, "")
+	linkRun(t, l.testEnv, "CND-2", since, http.StatusServiceUnavailable, "run_changing")
+	end()
+	linkRun(t, l.testEnv, "CND-2", since, http.StatusCreated, "")
 }
 
 // The largest page of a ticket's runs: ten entries, each with a launch
