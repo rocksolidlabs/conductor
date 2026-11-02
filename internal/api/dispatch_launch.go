@@ -106,11 +106,14 @@ type ticketLaunchBody struct {
 // for the launches from a ticket: the engine reads a package's
 // attachments from Dispatch's store (OpenLaunchFile), and the store reads
 // which ticket launched a run from the engine, else from the run's
-// record (runTicket).
+// record (runTicket), and a run's chain from the ledger, the engine and
+// the records (chainRuns).
 func (s *Server) wireLaunches() {
 	s.runs.UsePackageFiles(s.openLaunchFile)
 	if s.dispatch != nil {
 		s.dispatch.SetRunTicket(s.runTicket)
+		// A run's chain, for the store's chain rule (dispatch_evidence.go).
+		s.dispatch.SetRunChain(s.chainRuns)
 	}
 }
 

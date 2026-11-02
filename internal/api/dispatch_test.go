@@ -236,6 +236,7 @@ var dispatchRequests = map[string]struct {
 	"POST /api/dispatch/plans/{id}/withdraw":                   {"/api/dispatch/plans/0123456789abcdef/withdraw", map[string]any{"opId": "c3"}},
 	"POST /api/dispatch/tickets/{key}/launch":                  {"/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": "c4", "plan": "0123456789abcdef"}},
 	"GET /api/dispatch/launches/{id}":                          {"/api/dispatch/launches/0123456789abcdef", nil},
+	"GET /api/dispatch/tickets/{key}/runs":                     {"/api/dispatch/tickets/CND-1/runs", nil},
 	"GET /api/dispatch/tickets/{key}/comments":                 {"/api/dispatch/tickets/CND-1/comments", nil},
 	"POST /api/dispatch/tickets/{key}/comments":                {"/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": "b7", "body": "x"}},
 	"POST /api/dispatch/tickets/{key}/comments/{id}/edit":      {"/api/dispatch/tickets/CND-1/comments/0123456789abcdef/edit", map[string]any{"opId": "b8", "body": "y"}},
@@ -1481,7 +1482,7 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			e.expect(t, method, path+sep+q, nil, http.StatusBadRequest, "invalid_request")
 		}
 	})
-	if reads != 14 {
+	if reads != 15 {
 		t.Fatalf("%d reads", reads)
 	}
 }
