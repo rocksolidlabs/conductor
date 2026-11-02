@@ -3301,7 +3301,10 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 | `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |
 | `GET /api/brakeman/requests/{id}/refs` | `{refs: [{ref, seen, now}]}`, each `{url?, state?, rev?, sha256?, at?}`: what the turn read of each ref of the brief (`state` `unobserved` for one it never read) and what it was as the brief was kept; `404 no_brief` before one; at most 4 MiB |
 | `POST /api/brakeman/requests/{id}/cancel` | `{opId}` → `{request}`; a closed request answers as it stands |
-| `POST /api/brakeman/requests/{id}/items/{i}/make` | `{opId, by?, edit?}` → `201 {request, made, ticket?: {key, url}, receipt?, crew?: {id, url}}`: a `draft_ticket/1` made a ticket through Dispatch's own create under the actor `admin` with `by` as the display name (its `blocks` become `blocks` relations once both ends are tickets, whichever is made first), a `draft_crew/1` a saved crew (never launched) carrying `origin: "brakeman:<request>/<item>/<op>"`; `edit` the draft as the person changed it, in the draft's own shape, else the draft as written. Its op id is derived (`bk` + 30 hex digits of a SHA-256 of the request, the item and the `opId`), so the backend answers a repeat once. The same `opId` again answers what it made (`200`), as it was made, whatever changed since (a crew's agent gone from the catalog); a new make is checked against the catalog now; `409 already_made` with `key` or `crew` for another `opId` once made; `409 make_pending` with the `opId` of a make under way; `409 op_conflict` for the same `opId` with other content; a refused make answers `409` with its receipt's words and may be made again with a new `opId`; `400 not_a_draft` for any other item, `400 invalid_draft` with `field`, `400 invalid_request` for a `by` past 60 bytes or holding a control character (Dispatch's display name); `404` for a request pruned before the make claimed it (no backend called); `503 brakeman_not_owner` on a server without Brakeman's owner lock; `503 shutting_down` once the server shuts down (a make under way then finishes before the owner lock goes, its outcome written by the next start); at most 4 MiB |
+| `POST /api/brakeman/requests/{id}/items/{i}/make` | `{opId, by?, edit?}` → `201 {request, made, ticket?: {key, url}, receipt?, crew?: {id, url}}`: a `draft_ticket/1` made a ticket through Dispatch's own create under the actor `admin` with `by` as the display name (its `blocks` become `blocks` relations once both ends are tickets, whichever is made first), a `draft_crew/1` a saved crew (never launched) carrying `origin: "brakeman:<request>/<item>/<op>"`; `edit` the draft as the person changed it, in the draft's own shape, else the draft as written. Its op id is derived (`bk` + 30 hex digits of a SHA-256 of the request, the item and the `opId`), so the backend answers a repeat once. The same `opId` again answers what it made (`200`), as it was made, whatever changed since (a crew's agent gone from the catalog); an
+outcome's words are cut to the room its other fields leave in the entry's
+600 bytes, so recording an outcome is never refused and never leaves the
+claim pending; a new make is checked against the catalog now; `409 already_made` with `key` or `crew` for another `opId` once made; `409 make_pending` with the `opId` of a make under way; `409 op_conflict` for the same `opId` with other content; a refused make answers `409` with its receipt's words and may be made again with a new `opId`; `400 not_a_draft` for any other item, `400 invalid_draft` with `field`, `400 invalid_request` for a `by` past 60 bytes or holding a control character (Dispatch's display name); `404` for a request pruned before the make claimed it (no backend called); `503 brakeman_not_owner` on a server without Brakeman's owner lock; `503 shutting_down` once the server shuts down (a make under way then finishes before the owner lock goes, its outcome written by the next start); at most 4 MiB |
 
 The kinds and their subjects: `briefing` (none; `since`, else since the
 last complete briefing), `explain` (one `run:`, `task:`, `attempt:`,
@@ -3373,13 +3376,19 @@ seq so given (a run the ledger does not hold placed by its launch, seq
 change seq likewise, each session's window by time (just before the
 time of the first change not given, so two at one time are never split;
 up to when the window was read once all were, never past an entry the
-session stamped and has not added yet). A part with a change not given,
+session stamped and has not added yet, even on a page that left a later
+item unread). Each watermark's time is when its part was read, never when
+the coverage is written. A part with a change not given,
 `truncated` or a `gap` is `partial`. The request's `coverage` is that
 record, kept with its brief, and the next briefing starts from each
 part's watermark, so what was not read is read again. Each list keeps at
 most 64 runs and 64 sessions; for the parts past them `omittedFrom` is
 the earliest time a change of theirs not given may be at, and a part
-with no watermark is read from no later than it. A brief's footprint counts every class its turn's answers used,
+with no watermark is read from no later than it. `readFrom` is when the
+turn's first read of changes began, before it listed the parts (kept
+even when a read listed none): a part begun after that listing, absent
+from its answer and with no watermark, is read from no later than it.
+A brief's footprint counts every class its turn's answers used,
 an answer with no item a ref names (a page of projects) among them.
 
 **A brief**, schema `brakeman.brief/1`, at most 256 KiB as kept: `{schema,
