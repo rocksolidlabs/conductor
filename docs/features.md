@@ -3921,7 +3921,35 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   broken.
 
   PR-16 (#488): api, web: GET /api/capabilities and the app card's
-  Extensions row. Planned.
+  Extensions row (C9). `internal/api/capabilities.go`: `GET
+  /api/capabilities`, admin, answers `{providers: [{kind, name, state}]}`,
+  one row per entry of `Providers.All` (the entitlement source's slot by
+  kind and name only), `state` `ready` once the provider's `Start` has
+  succeeded or for one that needs none, `starting` until then (the start
+  state's word, `started` since PR-4, renamed `ready` as the plan names
+  it); a plain build answers `{"providers": []}`, and no provider is asked
+  anything to answer. The web app's first reader of it:
+  `web/app/utils/capabilities.ts` (`has`, true only for a kind with a
+  provider ready, `extensionsWords`, an unknown state taken for
+  `starting`), `web/app/composables/useCapabilities.ts` (read after the
+  first paint of a reader, kept while none is `starting`, read again while
+  one is, 2 s after the last reply doubling to 60 s, only while a reader
+  is mounted, forgotten with the workbench token, a reply on its way for
+  the old token dropped), and Settings → The app's **Extensions** row
+  (`data-about-row="extensions"`). Tests: `TestCapabilitiesPlainBuild`
+  (`{"providers":[]}`, no token and a host token refused),
+  `TestCapabilitiesNamesProviders` (a provider in two slots starting before
+  its first try and after one failed, ready once a try succeeds, with no
+  restart; an entitlement-only provider, a context provider and a sink
+  ready from the first), `TestCapabilitiesReplyBounded` (the fullest
+  registry within 8 KiB); vitest `utils/capabilities.test.ts` and
+  `composables/useCapabilities.test.ts` (fake timers: re-read while
+  starting and not after, the waits 2, 4, 8, 16, 32, 60, 60 s, a failed
+  read keeping what is known, no re-read without a reader, the token's
+  change dropping the cache and a late reply); Playwright
+  `settings.spec.ts` (the row on the plain e2e server, and a route answered
+  through `page.route` starting then ready, the second request waited for,
+  the row ready with no reload and the same token).
 
   PR-17 (#489): ext/exttest: a fake per interface and the contract suite;
   the stream's features entry completed. Planned.
