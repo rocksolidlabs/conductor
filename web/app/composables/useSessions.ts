@@ -622,6 +622,20 @@ export interface RunTaskResult {
   at: string
 }
 
+/**
+ * The Dispatch ticket a run was launched from (Program item DS2): the ticket's id and key, the revision it stood at, the plan revision
+ * that launched it (its id and number), the launch, and the package's SHA-256. Its continuations carry it; absent for a run with no package.
+ */
+export interface RunTicket {
+  id: string
+  key: string
+  rev: number
+  plan: string
+  planN: number
+  launch: string
+  digest: string
+}
+
 /** A launch of a crew. Runs live in the server's memory: a restart forgets them. */
 export interface RunInfo {
   /** `<crew id>-<8 hex>`. */
@@ -653,6 +667,8 @@ export interface RunInfo {
   /** The stopped run this one resumed, and the run that resumed this one (Resume as new run). */
   resumedFrom?: string
   resumedBy?: string
+  /** The ticket it was launched from, whose package it and its continuations follow; absent for a run with no package. */
+  ticket?: RunTicket
   /** A managed run (a crew with tasks, #334): its revision in the ledger, which every transition bumps. Absent for a legacy run. */
   managed?: { revision: number }
   /** A managed run whose dispatch is paused: attempts in flight go on, none starts. */
