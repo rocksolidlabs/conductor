@@ -291,6 +291,34 @@ func observeWhats() []string {
 	return out
 }
 
+// observeParams is every parameter an observe_<what> entry of the table
+// takes, its path's and its query's, sorted: observe's --KEY flags.
+func observeParams() []string {
+	seen := map[string]bool{}
+	for _, op := range api.Operations() {
+		if !strings.HasPrefix(op.Name, "observe_") {
+			continue
+		}
+		props, _ := op.Input["properties"].(map[string]any)
+		for k := range props {
+			seen[k] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
+// observeFlags is flags with each of observe's parameters (observeParams)
+// that flags do not name already, as a flag taking a value: what
+// completion offers after conductor brakeman observe WHAT.
+func observeFlags(flags []flagSpec) []flagSpec {
+	for _, k := range observeParams() {
+		if !slices.ContainsFunc(flags, func(f flagSpec) bool { return f.name == "--"+k }) {
+			flags = append(flags, flagSpec{name: "--" + k, kind: flagValue})
+		}
+	}
+	return flags
+}
+
 // takes names a route's parameters, or says it takes none.
 func takes(props map[string]any) string {
 	if len(props) == 0 {
