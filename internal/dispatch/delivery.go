@@ -241,7 +241,7 @@ func candidateRefusal(tk Ticket, run string, launched, linked []ChainHolder) err
 // *Refusal otherwise. The API asks it before it reads the ledger, so a
 // candidate of another ticket's run, or of a contested chain, is refused
 // with nothing read and nothing kept. ErrNotFound when there is no such
-// live ticket.
+// live ticket; ErrChainUnread when the run's chain could not be read.
 func (s *Store) CandidateRefusal(ctx context.Context, key, run string) error {
 	s.mu.Lock()
 	sight := s.sight
@@ -257,7 +257,11 @@ func (s *Store) CandidateRefusal(ctx context.Context, key, run string) error {
 		case !tk.DeletedAt.IsZero():
 			return ErrNotFound
 		}
-		launched, linked, err := chainHolders(ctx, q, sight, sight.chainOf(run))
+		chain, err := sight.chainOf(run)
+		if err != nil {
+			return err
+		}
+		launched, linked, err := chainHolders(ctx, q, sight, chain)
 		if err != nil {
 			return err
 		}

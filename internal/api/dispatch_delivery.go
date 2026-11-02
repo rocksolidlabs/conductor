@@ -119,6 +119,10 @@ func (s *Server) candidateVerified(ctx context.Context, c dispatch.Candidate) (v
 		tr = taskRows[i]
 		kind = cmp.Or(tr.Kind, kind)
 	}
+	// The attempt is read before its receipts: an attempt read as
+	// succeeded committed every receipt of its verification before, so the
+	// later read holds them all; one read mid-verification is not passed,
+	// which is true of it now.
 	attempts, err := s.ledger.Attempts(ctx, c.Run)
 	if err != nil {
 		return nil, "", "", err

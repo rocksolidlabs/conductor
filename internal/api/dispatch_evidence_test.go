@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -320,6 +321,100 @@ func TestTicketRunsPageThroughEverything(t *testing.T) {
 	linkRun(t, l.testEnv, "CND-1", "legacy-000000c3", http.StatusConflict, dispatch.RefusalRunLinked)
 }
 
+// A chain one ticket launched and another links by hand (X linked to
+// CND-2 while unrelated, then written as a continuation of A, which CND-1
+// launched) is contested on both: CND-1's launch lists its run alone,
+// marked with CND-2's key and words naming CND-2's link, X an entry of
+// neither ticket's chain; CND-2's link lists X alone, marked with CND-1's
+// key and words naming the launch; a ticket with no runs answers an empty
+// list. CND-2's link removed, the chain is CND-1's whole. While the
+// ledger cannot be read the page still answers, a run only the ledger had
+// an entry without its run.
+func TestTicketRunsContestedByALaunch(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	ctx := t.Context()
+	ds := l.srv.dispatch
+	l.newDispatchTicket(t, "CND", "Two", nil)
+	l.newDispatchTicket(t, "CND", "Three", nil)
+	if status, raw, _ := l.call(t, "GET", "/api/dispatch/tickets/CND-3/runs", nil); status != http.StatusOK || !strings.Contains(string(raw), `"entries":[]`) {
+		t.Fatalf("a ticket with no runs: %d %s", status, raw)
+	}
+	la := l.launchOf(t, doneOf(t)(ds.Launch(ctx, adminOp(""), "CND-1", l.plan, "")).ID)
+	crewJSON, _ := json.Marshal(l.crew)
+	row := ledger.RunRow{ID: la.RunID, CrewID: l.crew.ID, Crew: string(crewJSON), Base: l.head, State: ledger.RunFinished, Ticket: l.ticketID, Package: string(la.Package)}
+	putLedgerRun(t, l.srv.ledger, row)
+	doneOf(t)(ds.StartedLaunch(ctx, dispatch.Op{}, la.ID, nil))
+	x := "legacy-000000d1"
+	saveRecord(t, l.srv, crew.Run{ID: x, StartedAt: time.Now().UTC()})
+	onX := linkRun(t, l.testEnv, "CND-2", x, http.StatusCreated, "")
+	row.ID, row.ContinuedFrom, row.Ticket, row.Package = x, la.RunID, "", ""
+	putLedgerRun(t, l.srv.ledger, row)
+	for _, tc := range []struct{ key, kind, part, id, run, other, words string }{
+		{"CND-1", entryLaunch, "launch", la.ID, la.RunID, "CND-2", "run " + x + ", which CND-2 links, continues run " + la.RunID + ": remove CND-2's link"},
+		{"CND-2", entryLink, "link", onX, x, "CND-1", "run " + x + " continues run " + la.RunID + ", launched from CND-1: remove CND-2's link"},
+	} {
+		entries, _ := ticketRunPages(t, l.testEnv, tc.key)
+		if len(entries) != 1 {
+			t.Fatalf("%s: %v", tc.key, entries)
+		}
+		e := entryWith(t, entries, tc.kind, tc.part, tc.id)
+		c, _ := e["contested"].(map[string]any)
+		if e["run"].(map[string]any)["id"] != tc.run || c == nil || !reflect.DeepEqual(c["keys"], []any{tc.other}) || c["words"] != tc.words {
+			t.Fatalf("%s: %v", tc.key, e)
+		}
+	}
+	l.expect(t, "POST", "/api/dispatch/tickets/CND-2/links/"+onX+"/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	entries, _ := ticketRunPages(t, l.testEnv, "CND-1")
+	if len(entries) != 2 || entryWith(t, entries, entryLaunch, "launch", la.ID)["contested"] != nil ||
+		entryWith(t, entries, entryRun, "run", x)["continues"] != la.RunID {
+		t.Fatalf("the chain CND-1's whole: %v", entries)
+	}
+
+	// The ledger closed: the page answers, the launch's run unread.
+	if err := l.srv.ledger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ = ticketRunPages(t, l.testEnv, "CND-1")
+	if e := entryWith(t, entries, entryLaunch, "launch", la.ID); e["run"] != nil {
+		t.Fatalf("the launch's run with the ledger closed: %v", e)
+	}
+}
+
+// A chain whose walk fails is never judged: while the walk of B's chain
+// fails (a ledger read's error, through chainWalkSeam), a link to B is
+// 503 ledger_unavailable with nothing kept, no link and no receipt, and
+// the ticket's runs page is 503 too; once the walk reads again, the same
+// operation id is refused run_linked, B being of the chain A's link holds.
+func TestALinkIntoAChainThatCannotBeWalkedIsNotKept(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	l.newDispatchTicket(t, "CND", "Two", nil)
+	now := time.Now().UTC()
+	saveRecord(t, l.srv, crew.Run{ID: "legacy-000000e1", StartedAt: now.Add(-time.Hour), ResumedBy: "legacy-000000e2"})
+	saveRecord(t, l.srv, crew.Run{ID: "legacy-000000e2", StartedAt: now, ResumedFrom: "legacy-000000e1"})
+	linkRun(t, l.testEnv, "CND-1", "legacy-000000e1", http.StatusCreated, "")
+	fail := func(run string) error {
+		if run == "legacy-000000e2" {
+			return errors.New("database is locked")
+		}
+		return nil
+	}
+	chainWalkSeam.Store(&fail)
+	t.Cleanup(func() { chainWalkSeam.Store(nil) })
+	op := opID()
+	body := map[string]any{"opId": op, "kind": dispatch.LinkRun, "ref": "legacy-000000e2"}
+	l.expect(t, "POST", "/api/dispatch/tickets/CND-2/links", body, http.StatusServiceUnavailable, "ledger_unavailable")
+	l.expect(t, "GET", "/api/dispatch/ops/"+op, nil, http.StatusNotFound, "not_found")
+	if links, err := l.srv.dispatch.Links(t.Context(), "CND-2"); err != nil || len(links) != 0 {
+		t.Fatalf("CND-2's links: %v %v", links, err)
+	}
+	l.expect(t, "GET", "/api/dispatch/tickets/CND-1/runs", nil, http.StatusServiceUnavailable, "ledger_unavailable")
+	chainWalkSeam.Store(nil)
+	out := l.expect(t, "POST", "/api/dispatch/tickets/CND-2/links", body, http.StatusConflict, dispatch.RefusalRunLinked)
+	if receiptOf(t, out)["key"] != "CND-1" {
+		t.Fatalf("the link once the chain reads: %v", out)
+	}
+}
+
 // The largest page of a ticket's runs: ten entries, each with a launch
 // whose texts are at their escaped worst (its why, its label, its agents),
 // a link at its bounds, the run's summary with twelve members and twenty
@@ -631,6 +726,65 @@ func TestCandidatesOfALegacyRun(t *testing.T) {
 	again.expect(t, "GET", "/api/runs/nobody/candidates", nil, http.StatusBadRequest, "invalid_request")
 	if resp, _ := again.do("GET", "/api/runs/"+legacy+"/candidates", "", nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("without a token: %d", resp.StatusCode)
+	}
+	// The ledger closed: the legacy run, which needs none, answers the
+	// same; a run found nowhere may be the ledger's, so it is 503.
+	if err := again.srv.ledger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := candidatesOf(t, again, legacy, ""); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the legacy run with the ledger closed: %v", got)
+	}
+	again.expect(t, "GET", "/api/runs/nobody-00000000/candidates", nil, http.StatusServiceUnavailable, "ledger_unavailable")
+}
+
+// A page's rows are of one revision: a transition committed between its
+// reads of the tasks and of the attempts (through candidatesSeam: attempt
+// 1 succeeded and made the task's result) is read again, so the attempt
+// is answered succeeded and standing, never succeeded and not standing.
+func TestCandidatesAreReadAtOneRevision(t *testing.T) {
+	e := readyEnv(t, nil)
+	run := "torn-0000abcd"
+	c, _ := json.Marshal(crew.Crew{ID: "torn", Name: "Torn", Tasks: []crew.Task{{ID: "build", Member: "lead", Kind: crew.TaskWork}}})
+	sub := strings.Repeat("a", 40)
+	attempt := ledger.AttemptRow{TaskID: "build", N: 1, ResultCommit: sub, State: ledger.AttemptRunning, Stage: "check", Result: `{"commit":"` + sub + `"}`}
+	if _, err := e.srv.ledger.Transition(t.Context(), run, func(tx *ledger.Tx) error {
+		if err := tx.CreateRun(ledger.RunRow{ID: run, CrewID: "torn", Crew: string(c), State: ledger.RunRunning, CreatedAt: tx.Now()}); err != nil {
+			return err
+		}
+		if err := tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: crew.TaskWork, State: ledger.TaskVerifying, Attempts: 1}); err != nil {
+			return err
+		}
+		return tx.PutAttempt(attempt)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	seam := func(id string) {
+		if id != run {
+			return
+		}
+		calls++
+		if calls > 1 {
+			return
+		}
+		if _, err := e.srv.ledger.Transition(context.Background(), run, func(tx *ledger.Tx) error {
+			if err := tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: crew.TaskWork, State: ledger.TaskSucceeded, Attempts: 1, ResultAttempt: 1, ResultCommit: sub}); err != nil {
+				return err
+			}
+			a := attempt
+			a.State, a.Stage = ledger.AttemptSucceeded, ""
+			return tx.PutAttempt(a)
+		}); err != nil {
+			t.Error(err)
+		}
+	}
+	candidatesSeam.Store(&seam)
+	t.Cleanup(func() { candidatesSeam.Store(nil) })
+	cs := candidateList(taskOn(t, candidatesOf(t, e, run, ""), "build"))
+	candidatesSeam.Store(nil)
+	if len(cs) != 1 || cs[0]["state"] != ledger.AttemptSucceeded || cs[0]["standing"] != true || calls != 2 {
+		t.Fatalf("the candidate across a transition (%d reads): %v", calls, cs)
 	}
 }
 

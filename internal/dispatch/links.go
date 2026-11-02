@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -80,8 +81,14 @@ func (s *Store) SetRunExists(fn func(id string) bool) {
 // then the run alone, and its package known only by the store's launches.
 type runSight struct {
 	ticket func(run string) (ticketID string, ok bool)
-	chain  func(run string) []string
+	chain  func(run string) ([]string, error)
 }
+
+// ErrChainUnread is a store operation's or read's answer when the store's
+// sight of a run's chain (SetRunChain) could not read it: the chain rule
+// is never judged on a chain that was not read, so the operation writes
+// nothing (no link, no receipt) and may be sent again.
+var ErrChainUnread = errors.New("dispatch: the run's chain could not be read")
 
 // SetRunTicket gives the store the engine's sight of a run's package: fn
 // reports the id of the ticket the run was launched from (the run's
@@ -99,27 +106,34 @@ func (s *Store) SetRunTicket(fn func(run string) (ticketID string, ok bool)) {
 // reports the runs of the run's chain, the run, every run it continues
 // and every run that continues it (the ledger's continued_by rows and the
 // run records' resumedFrom and resumedBy), the run itself among them or
-// not. A chain only grows, by a continuation that is a new run, so a check
-// made at a link's write stays true until the link is removed. fn runs
-// inside an operation's transaction with the store's lock held, so it
-// must not call the store.
-func (s *Store) SetRunChain(fn func(run string) []string) {
+// not, or the error that kept it from reading them, which fails the
+// operation or the read that asked (ErrChainUnread), nothing written. A
+// chain only grows, by a continuation that is a new run, so a check made
+// at a link's write stays true until the link is removed. fn runs inside
+// an operation's transaction with the store's lock held, so it must not
+// call the store.
+func (s *Store) SetRunChain(fn func(run string) ([]string, error)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sight.chain = fn
 }
 
-// chainOf is the runs of the run's chain, the run first, each once.
-func (rs runSight) chainOf(run string) []string {
+// chainOf is the runs of the run's chain, the run first, each once; an
+// ErrChainUnread when the sight could not read them.
+func (rs runSight) chainOf(run string) ([]string, error) {
 	out := []string{run}
 	if rs.chain != nil {
-		for _, r := range rs.chain(run) {
+		runs, err := rs.chain(run)
+		if err != nil {
+			return nil, fmt.Errorf("%w: run %s: %w", ErrChainUnread, run, err)
+		}
+		for _, r := range runs {
 			if r != "" && !slices.Contains(out, r) {
 				out = append(out, r)
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // ChainHolder is a ticket that holds a run's chain: the ticket, the run of
@@ -222,14 +236,18 @@ func heldBy(holders ...[]ChainHolder) []ChainHolder {
 // none for a chain no live ticket holds, one for a held chain, and more
 // for a contested one, which a version 1 store or a merge left on two
 // tickets' links and which no ticket owns until a person removes one of
-// the links.
+// the links; ErrChainUnread when the sight could not read the chain.
 func (s *Store) ChainHolders(ctx context.Context, run string) ([]ChainHolder, error) {
 	s.mu.Lock()
 	sight := s.sight
 	s.mu.Unlock()
 	var out []ChainHolder
 	err := s.read(ctx, func(q queryer) error {
-		launched, linked, err := chainHolders(ctx, q, sight, sight.chainOf(run))
+		chain, err := sight.chainOf(run)
+		if err != nil {
+			return err
+		}
+		launched, linked, err := chainHolders(ctx, q, sight, chain)
 		if err != nil {
 			return err
 		}
@@ -354,7 +372,11 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink, verif
 			if t.runExists == nil || !t.runExists(ref) {
 				return refuse(RefusalNotFound, "no run %s", ref)
 			}
-			launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, t.sight.chainOf(ref))
+			chain, err := t.sight.chainOf(ref)
+			if err != nil {
+				return err
+			}
+			launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, chain)
 			if err != nil {
 				return err
 			}
@@ -363,7 +385,11 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink, verif
 			}
 		}
 		if l.Candidate != "" {
-			launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, t.sight.chainOf(candidate.Run))
+			chain, err := t.sight.chainOf(candidate.Run)
+			if err != nil {
+				return err
+			}
+			launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, chain)
 			if err != nil {
 				return err
 			}
@@ -471,7 +497,11 @@ func (t *tx) releaseRuns(tk Ticket) error {
 		if l.Kind != LinkRun {
 			continue
 		}
-		launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, t.sight.chainOf(l.Ref))
+		chain, err := t.sight.chainOf(l.Ref)
+		if err != nil {
+			return err
+		}
+		launched, linked, err := chainHolders(t.ctx, t.tx, t.sight, chain)
 		if err != nil {
 			return err
 		}

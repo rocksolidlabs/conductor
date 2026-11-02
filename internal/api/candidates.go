@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -38,6 +39,9 @@ const (
 	// maxReceiptError bounds a receipt's error here, in characters (the
 	// task's route has it whole).
 	maxReceiptError = 120
+	// candidateReadTries bounds the times a page's reads are made again
+	// because the run's revision moved while they were made.
+	candidateReadTries = 8
 	// whereNative is where every check runs until a runtime other than
 	// the native one exists (the Program, section 2.5, constraint 7): the
 	// ledger's checks rows carry no where yet, and this is their value.
@@ -145,17 +149,27 @@ func acceptances(rows []ledger.CommandRow) map[string]map[int]candidateAccepted 
 	return out
 }
 
+// candidatesSeam, when a test sets it, is called between a candidates
+// page's reads of the ledger (its tasks', then its attempts'), so a test
+// can commit a transition there.
+var candidatesSeam atomic.Pointer[func(run string)]
+
 // handleRunCandidates answers a page of a run's candidates: 200 {run,
 // managed, base, candidates, next?}, candidates at most candidateTasksPage
 // tasks in the crew's order from after the task ?after names, each with
 // its candidates, next the page's last task when more follow; under
-// MaxCandidatesReply. A run the ledger has not is looked for as GET
-// /api/runs/{run} looks: found, it answers {managed: false (true for a
-// managed run's record whose rows are gone), candidates: []}; 404
-// not_found only for a run found nowhere; 503 ledger_unavailable for a
-// managed run with no ledger to read; 400 invalid_request for an id that
-// is not one, an after that is no task of the run, or any other
-// parameter.
+// MaxCandidatesReply. The run's tasks, attempts, receipts and commands are
+// four reads, made again while the run's revision moved between the first
+// and the last (at most candidateReadTries times), so a page pairs a task
+// row with the attempts of its own revision unless the run moved through
+// every try. A run the ledger has not, or any run while the ledger cannot
+// be read, is looked for as GET /api/runs/{run} looks: found, a legacy run answers
+// {managed: false, candidates: []} (true for a managed run's record whose
+// rows are gone); 404 not_found only for a run found nowhere with a ledger
+// that could be read, or none; 503 ledger_unavailable for a managed run,
+// or a run found nowhere, with no ledger to read; 400 invalid_request for
+// an id that is not one, an after that is no task of the run, or any
+// other parameter.
 func (s *Server) handleRunCandidates(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("run")
 	if !crew.ValidRunID(runID) {
@@ -177,8 +191,15 @@ func (s *Server) handleRunCandidates(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var row ledger.RunRow
 	found := false
+	// unread is the ledger's error when it cannot be read (unavailable or
+	// closed): a legacy run still answers, from the engine or its record.
+	var unread error
 	if s.ledger != nil {
-		if row, found, err = s.ledger.Run(ctx, runID); err != nil {
+		row, found, err = s.ledger.Run(ctx, runID)
+		switch {
+		case errors.Is(err, ledger.ErrUnavailable), errors.Is(err, ledger.ErrClosed):
+			unread, found = err, false
+		case err != nil:
 			s.receiptError(w, "candidates", runID, err)
 			return
 		}
@@ -186,6 +207,8 @@ func (s *Server) handleRunCandidates(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		run := s.launchedRun(runID)
 		switch {
+		case unread != nil && (run == nil || run.Managed != nil):
+			s.receiptError(w, "candidates", runID, unread)
 		case run == nil:
 			writeError(w, http.StatusNotFound, "not_found", "no such run")
 		case s.ledger == nil && run.Managed != nil:
@@ -210,25 +233,44 @@ func (s *Server) handleRunCandidates(w http.ResponseWriter, r *http.Request) {
 		from = i + 1
 	}
 	tasks := c.Tasks[from:min(from+candidateTasksPage, len(c.Tasks))]
-	taskRows, err := s.ledger.Tasks(ctx, runID)
-	if err != nil {
-		s.receiptError(w, "candidates: tasks", runID, err)
-		return
-	}
-	attempts, err := s.ledger.Attempts(ctx, runID)
-	if err != nil {
-		s.receiptError(w, "candidates: attempts", runID, err)
-		return
-	}
-	checks, err := s.ledger.Checks(ctx, runID, "", 0, false)
-	if err != nil {
-		s.receiptError(w, "candidates: receipts", runID, err)
-		return
-	}
-	commands, err := s.ledger.Commands(ctx, runID)
-	if err != nil {
-		s.receiptError(w, "candidates: commands", runID, err)
-		return
+	var (
+		taskRows []ledger.TaskRow
+		attempts []ledger.AttemptRow
+		checks   []ledger.CheckRow
+		commands []ledger.CommandRow
+	)
+	// The rows of one revision: read, then the revision looked at again,
+	// and read again while it moved.
+	for rev, try := row.Revision, 1; ; try++ {
+		if taskRows, err = s.ledger.Tasks(ctx, runID); err != nil {
+			s.receiptError(w, "candidates: tasks", runID, err)
+			return
+		}
+		if f := candidatesSeam.Load(); f != nil {
+			(*f)(runID)
+		}
+		if attempts, err = s.ledger.Attempts(ctx, runID); err != nil {
+			s.receiptError(w, "candidates: attempts", runID, err)
+			return
+		}
+		if checks, err = s.ledger.Checks(ctx, runID, "", 0, false); err != nil {
+			s.receiptError(w, "candidates: receipts", runID, err)
+			return
+		}
+		if commands, err = s.ledger.Commands(ctx, runID); err != nil {
+			s.receiptError(w, "candidates: commands", runID, err)
+			return
+		}
+		p, ok, perr := s.ledger.Pointer(ctx, runID)
+		if perr != nil {
+			s.receiptError(w, "candidates: the run's revision", runID, perr)
+			return
+		}
+		// Pruned meanwhile, the rows read are the last it had.
+		if !ok || p.Revision == rev || try == candidateReadTries {
+			break
+		}
+		rev = p.Revision
 	}
 	accepted := acceptances(commands)
 	out := make([]taskCandidates, 0, len(tasks))
