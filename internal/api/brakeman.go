@@ -88,6 +88,17 @@ type brakemanDesk struct {
 	// stuck is set past brakemanStuck and refuses new requests.
 	stopFails int
 	stuck     bool
+	// makes holds each request's make mutex (makeLock); reached how far
+	// each turn's pages of changes reach, contiguously (cover).
+	makes   map[string]*sync.Mutex
+	reached map[string]int
+
+	// readMu orders a turn's reads: the count, the read log and the
+	// coverage of one read are written before the next is answered.
+	readMu sync.Mutex
+	// recovering holds Brakeman's routes (503 brakeman_recovering) while
+	// recoverMakes completes what the last owner left of the makes.
+	recovering atomic.Bool
 }
 
 // deskTurn is the slot: a request from starting until its launch has
@@ -129,11 +140,22 @@ func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 		s.log.Warn("Brakeman takes no turn: its records are read-only", "why", why)
 	}
 	d.st = bs
+	d.reached = map[string]int{}
 	bs.OnOwned(func() {
+		d.recover()
 		d.loadQueue()
 		d.poke()
 	})
 	d.loadQueue()
+	if ro, _ := bs.ReadOnly(); !ro {
+		// Brakeman's routes wait for the recovery of the makes (it reads
+		// Dispatch and the crew store, opened before the desk), when the
+		// last owner left one to recover.
+		if pending, err := bs.Pending(); err != nil || len(pending) > 0 {
+			d.recovering.Store(true)
+			go d.recover()
+		}
+	}
 	go d.loop()
 	return d
 }
@@ -749,6 +771,10 @@ func (s *Server) brakemanDeskOf(w http.ResponseWriter) (*brakemanDesk, bool) {
 		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "Brakeman needs a data directory")
 		return nil, false
 	}
+	if s.brakeman.recovering.Load() {
+		writeError(w, http.StatusServiceUnavailable, "brakeman_recovering", "Brakeman's records are being recovered: ask again in a moment")
+		return nil, false
+	}
 	return s.brakeman, true
 }
 
@@ -789,6 +815,12 @@ func (s *Server) routeBrakeman(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/brakeman/requests/{id}", s.requireAdmin(s.handleBrakemanRequest))
 	mux.HandleFunc("GET /api/brakeman/requests/{id}/refs", s.requireAdmin(s.handleBrakemanRefs))
 	mux.HandleFunc("POST /api/brakeman/requests/{id}/cancel", s.requireAdmin(s.handleBrakemanCancel))
+	mux.HandleFunc("POST /api/brakeman/requests/{id}/items/{i}/make", s.requireAdmin(s.handleBrakemanMake))
+	mux.HandleFunc("GET /api/brakeman/changes", s.observeRoute(s.handleBrakemanChanges))
+	mux.HandleFunc("GET /api/brakeman/status", s.observeRoute(s.handleBrakemanStatus))
+	mux.HandleFunc("GET /api/brakeman/screen", s.observeRoute(s.handleBrakemanScreen))
+	mux.HandleFunc("GET /api/brakeman/overlaps", s.observeRoute(s.handleBrakemanOverlaps))
+	mux.HandleFunc("GET /api/brakeman/briefs", s.observeRoute(s.handleBrakemanBriefs))
 	mux.HandleFunc("GET /api/sessions/{id}/brakeman/request", s.handleSessionBrakemanRequest)
 	mux.HandleFunc("POST /api/sessions/{id}/brakeman/brief", s.handleSessionBrakemanBrief)
 }

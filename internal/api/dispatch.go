@@ -97,7 +97,7 @@ type dispatchRoute struct {
 // switchyard's 403 as well (launchingAny).
 func (s *Server) routeDispatch(mux *http.ServeMux) {
 	for _, r := range s.dispatchRoutes() {
-		mux.HandleFunc(r.pattern, s.launching(r.h))
+		mux.HandleFunc(r.pattern, s.readable(r.pattern, s.launchingAny(r.h)))
 	}
 	mux.HandleFunc("GET /api/sessions/{id}/ticket", s.launchingAny(s.handleSessionTicket))
 	mux.HandleFunc("POST /api/sessions/{id}/ticket/comments", s.launchingAny(s.handleSessionTicketComment))

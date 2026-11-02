@@ -1512,6 +1512,17 @@ type ReadLog struct {
 // request id, the oldest dropped first (and counted) past MaxReadLog
 // entries or MaxReadsDoc bytes, and adds them to the request's count.
 func (s *Store) NoteReads(id string, reads ...Read) (ReadLog, error) {
+	return s.noteReads(id, len(reads), reads)
+}
+
+// NoteAnswer is NoteReads for one answer a turn read: its items noted in
+// the read log, and one read counted against the turn's ReadsPerTurn
+// whatever the answer held (none, or a page of 200).
+func (s *Store) NoteAnswer(id string, reads ...Read) (ReadLog, error) {
+	return s.noteReads(id, 1, reads)
+}
+
+func (s *Store) noteReads(id string, count int, reads []Read) (ReadLog, error) {
 	for i, rd := range reads {
 		if rd.Ref.IsZero() || !slices.Contains(Classes, rd.Class) || len(rd.Rev) > MaxRevision || len(rd.State) > MaxRefState {
 			return ReadLog{}, fmt.Errorf("%w: reads[%d]: a ref, a class and a revision or state within their bounds", ErrBound, i)
@@ -1553,11 +1564,13 @@ func (s *Store) NoteReads(id string, reads ...Read) (ReadLog, error) {
 		n := max(1, min(len(log.Reads), over/entrySize(log.Reads[0])+1))
 		log.Reads, log.Dropped = log.Reads[n:], log.Dropped+n
 	}
-	if err := s.write(s.reqs, readsDoc(id), log, MaxReadsDoc); err != nil {
-		return ReadLog{}, err
+	if len(reads) > 0 {
+		if err := s.write(s.reqs, readsDoc(id), log, MaxReadsDoc); err != nil {
+			return ReadLog{}, err
+		}
 	}
 	if _, err := s.updateLocked(id, func(r *Request) error {
-		r.Reads += len(reads)
+		r.Reads += count
 		return nil
 	}); err != nil {
 		return ReadLog{}, err

@@ -4992,6 +4992,36 @@ func (s *Local) LastLine() string {
 	return ""
 }
 
+// TailLines is the last n lines of output the session kept (at most n,
+// oldest first), their escape sequences stripped, each cut to at most
+// maxLastLine*4 bytes and made valid UTF-8, trailing blank lines left out:
+// what a person reading its screen sees of its end (the Brakeman desk's
+// screen read).
+func (s *Local) TailLines(n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	text := strings.ReplaceAll(string(StripANSI(s.ring.Snapshot())), "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := strings.Split(strings.TrimRight(text, " \t\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		l = strings.ToValidUTF8(strings.TrimRight(l, " \t"), "")
+		for len(l) > maxLastLine*4 {
+			_, k := utf8.DecodeLastRuneInString(l)
+			l = l[:len(l)-k]
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
 // DisconnectLink evicts every subscription created through linkID as
 // revoked, whether or not the session has ended (a run's link keeps its
 // viewers on a member that ended, until it is revoked): each is written
