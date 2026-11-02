@@ -2,7 +2,7 @@
 import type { CandidateReceipt, RunCandidate, RunCandidatesPage, TaskCandidates } from '~/composables/useDispatch'
 import type { Finding, RunTask } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { candidateWords, findingsCount, findingsWords, gather, receiptChips, receiptKey, receiptName, receiptState, repairs } from '~/utils/dispatchEvidence'
+import { RUN_CHANGING_RETRY_MS, candidateWords, findingsCount, findingsWords, gather, receiptChips, receiptKey, receiptName, receiptState, repairs } from '~/utils/dispatchEvidence'
 import { shortCommit } from '~/utils/dispatchPlans'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { latestReads } from '~/utils/latestReads'
@@ -69,13 +69,23 @@ async function readPages(): Promise<void> {
     )
   } catch (e) {
     if (run !== props.runId) return
+    // The run moved through every read (503 run_changing, Retry-After: 1): the pages shown stay, asked again after a second.
+    if (e instanceof ApiError && e.status === 503 && e.code === 'run_changing') {
+      retry.ask()
+      if (pages.value) return
+    }
     error.value = e instanceof ApiError && e.status === 404 ? 'The server knows no such run.' : (e as Error).message
   } finally {
     loading.value = false
   }
 }
 const reads = gather(readPages, RUN_EVENT_WINDOW_MS)
-onBeforeUnmount(() => reads.stop())
+/** A read refused while the run moved through every one of its reads, asked again after the second its Retry-After names. */
+const retry = gather(readPages, RUN_CHANGING_RETRY_MS)
+onBeforeUnmount(() => {
+  reads.stop()
+  retry.stop()
+})
 watch(
   () => props.runId,
   () => {

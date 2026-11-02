@@ -1,7 +1,7 @@
 import { ApiError } from './useApi'
 import type { TicketRunsPage } from './useDispatch'
 import { through, type DispatchOrder } from '~/utils/dispatchOrder'
-import { entryRunId, gather, mergeEntries, runsChanged, runsSignature } from '~/utils/dispatchEvidence'
+import { RUN_CHANGING_RETRY_MS, entryRunId, gather, mergeEntries, runsChanged, runsSignature } from '~/utils/dispatchEvidence'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 
 /**
@@ -30,6 +30,14 @@ export function useTicketRuns(o: { gate: DispatchOrder; key: () => string }) {
   function notFound(e: unknown): boolean {
     return e instanceof ApiError && e.status === 404
   }
+  function changing(e: unknown): boolean {
+    return e instanceof ApiError && e.status === 503 && e.code === 'run_changing'
+  }
+
+  /** The reads asked for by a run's change, gathered for the window. */
+  const reads = gather(() => read(), RUN_EVENT_WINDOW_MS)
+  /** A read refused while a run of the chain is resumed, asked again after the second its Retry-After names. */
+  const retry = gather(() => read(), RUN_CHANGING_RETRY_MS)
 
   /** Reads the pages shown again, from the start, as one reply. Rejects when the read failed. */
   async function read(): Promise<void> {
@@ -63,6 +71,12 @@ export function useTicketRuns(o: { gate: DispatchOrder; key: () => string }) {
         if (k === o.key()) pages.value = []
         return
       }
+      // A run of a chain shown being resumed (503 run_changing, Retry-After: 1): the pages shown stay, and are asked again after the
+      // second; the resume ends by itself, and its run events read them again too.
+      if (changing(e) && pages.value) {
+        retry.ask()
+        return
+      }
       if (k === o.key()) error.value = (e as Error).message
       throw e
     } finally {
@@ -79,14 +93,16 @@ export function useTicketRuns(o: { gate: DispatchOrder; key: () => string }) {
 
   // The runs shown, as the live store holds them, with their member sessions: a change reads the pages again.
   const shown = computed(() => entries.value.map(entryRunId).filter(Boolean))
-  const reads = gather(() => read(), RUN_EVENT_WINDOW_MS)
   watch(
     () => runsSignature(shown.value, (id) => live.runOf(id), live.sessions.value),
     (now, before) => {
       if (before && runsChanged(before, now)) reads.ask()
     },
   )
-  onBeforeUnmount(() => reads.stop())
+  onBeforeUnmount(() => {
+    reads.stop()
+    retry.stop()
+  })
 
   // Another ticket on the page: nothing of this one's stays.
   watch(

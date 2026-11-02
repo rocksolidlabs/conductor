@@ -9,6 +9,9 @@ import { isEnded, liveAttention } from './attention'
 // blockers of a run, its questions counted from the live sessions. Pure: the Runs section and its parts read these, vitest proves them
 // (dispatchEvidence.test.ts). A receipt is shown by what ran, where, against which commit and how it ended, never by a process.
 
+/** How long a read refused 503 run_changing waits before it is asked again: the second its Retry-After names. */
+export const RUN_CHANGING_RETRY_MS = 1000
+
 /** A badge's words and colour. */
 export interface Chip {
   label: string
