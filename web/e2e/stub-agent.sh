@@ -25,6 +25,13 @@
 #   STUB_CHOICES    a|b|c: the stub asks STUB_ASK (else "Which one?") with
 #                   these as choices (notify --choices) before its prompt;
 #                   the next line typed answers it
+#   STUB_BRAKEMAN=1 the stub is Brakeman's agent: on the line a turn types
+#                   ("Brakeman request br-n (<kind>): …") it reads its request
+#                   and the changes, waits for the file STUB_BRAKEMAN_WAIT
+#                   names when one is named (a spec's gate), and submits one
+#                   brief whose fact cites its own session and run, and the
+#                   check receipt STUB_BRAKEMAN_CHECK names; through the CLI,
+#                   or the MCP tools with STUB_WORKER=mcp
 # $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
 # start as Codex 0.161 draws it when its hooks are new or changed (round 13,
 # G2c): 1. Review hooks highlighted; a digit moves the highlight, Enter
@@ -676,6 +683,47 @@ task_attempt() {
 	fi
 }
 
+# brakeman_turn does the Brakeman request $1 (STUB_BRAKEMAN=1): it reads the
+# request and what changed (conductor brakeman request and observe changes,
+# or the brakeman_request and observe tools), waits for STUB_BRAKEMAN_WAIT's
+# file to exist when one is named (at most 120 s), then submits a brief whose
+# one fact cites the session and the run it runs as (and the check receipt
+# STUB_BRAKEMAN_CHECK names) and whose interpretation reads that fact. What it
+# read and what the server answered go into the transcript.
+brakeman_turn() {
+	local req=$1 got changes brief reply evidence n=0
+	case ${STUB_WORKER:-} in
+	mcp)
+		got=$(mcp_call brakeman_request '{}')
+		changes=$(mcp_call observe '{"what":"changes"}')
+		;;
+	*)
+		got=$("$conductor" brakeman request --json 2>&1)
+		changes=$("$conductor" brakeman observe changes 2>&1)
+		;;
+	esac
+	printf 'brakeman: %s: read %s bytes of its request and %s of the changes\n' "$req" "${#got}" "${#changes}" >>"$transcript"
+	if [[ -n ${STUB_BRAKEMAN_WAIT:-} ]]; then
+		while [[ ! -e $STUB_BRAKEMAN_WAIT ]] && ((n < 1200)); do
+			sleep 0.1
+			n=$((n + 1))
+		done
+	fi
+	evidence=$(json_str "session:${CONDUCTOR_SESSION_ID:-}")
+	[[ -n $run ]] && evidence+=",$(json_str "run:$run")"
+	[[ -n ${STUB_BRAKEMAN_CHECK:-} ]] && evidence+=",$(json_str "$STUB_BRAKEMAN_CHECK")"
+	brief="{\"schema\":\"brakeman.brief/1\",\"title\":\"Stub brief for $req\",\"summary\":\"The stub read its request and what changed, and found its own turn.\",\"items\":[{\"kind\":\"fact/1\",\"text\":\"This turn runs as its own session and run.\",\"evidence\":[$evidence]},{\"kind\":\"interpretation/1\",\"text\":\"Nothing else happened that the stub was asked about.\",\"facts\":[0]}]}"
+	case ${STUB_WORKER:-} in
+	mcp) reply=$(mcp_call brief_submit "{\"brief\":$brief}") ;;
+	*)
+		printf '%s\n' "$brief" >"$transcripts/$id.brief.json"
+		reply=$("$conductor" brakeman brief --file "$transcripts/$id.brief.json" 2>&1)
+		;;
+	esac
+	printf 'brief: %s\n' "${reply:0:300}" >>"$transcript"
+	printf 'stub: brief -> %s\n' "${reply:0:200}"
+}
+
 # trust_dialog draws the folder-trust question as Codex 0.161 does (1. Trust
 # and continue, highlighted; 2. Quit) and waits for Enter; arrows move the
 # selection and redraw, Esc quits, anything else is ignored. Enter on the
@@ -981,6 +1029,13 @@ answer() {
 	printf '%s\n' "${line:0:200}" >>"$transcript"
 	title_working
 	report_working
+	if [[ -n ${STUB_BRAKEMAN:-} && -n ${CONDUCTOR_BRAKEMAN:-} && $line =~ ^Brakeman\ request\ (br-[1-9][0-9]{0,17})\ \( ]]; then
+		local req=${BASH_REMATCH[1]}
+		brakeman_turn "$req"
+		title_ready done
+		report_done "brakeman $req: brief submitted" "$line"
+		return
+	fi
 	if [[ -n ${STUB_WORKER:-} && -n ${CONDUCTOR_TASK:-} && $line =~ ^Conductor\ (task|review)\ \"([a-z0-9_-]+)\",\ attempt\ ([0-9]+): ]]; then
 		task_attempt "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
 		title_ready done
