@@ -746,11 +746,16 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 	key := e.newDispatchTicket(t, "BND", "Bounded", nil)["key"].(string)
 	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", map[string]any{"opId": opID(), "kind": "run", "ref": run.ID}, http.StatusCreated, "")
 
+	// A Brakeman turn's session, whose guide lists its brief.
+	bk := brakemanEnv(t, nil)
+	bk.enable(t, "bk", nil)
+	bsid, btok, _ := bk.turnSession(t, bk.briefing(t))
+
 	tried := map[string]bool{}
 	for _, c := range []struct {
 		e          *testEnv
 		token, sid string
-	}{{plain, plain.agentToken(psid), psid}, {plain, mtok, msid}, {e, e.agentToken(asid), asid}, {e, adminToken, ""}} {
+	}{{plain, plain.agentToken(psid), psid}, {plain, mtok, msid}, {e, e.agentToken(asid), asid}, {e, adminToken, ""}, {bk.testEnv, btok, bsid}} {
 		guide := "/api/guide?section=operations"
 		id := "x"
 		if c.sid != "" {
