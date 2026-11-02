@@ -413,6 +413,50 @@ func TestFakes(t *testing.T) {
 		}
 	})
 
+	t.Run("accessors answer copies", func(t *testing.T) {
+		// A change to what an accessor answered, nested slices too, reaches
+		// nothing the fake holds.
+		ctx := context.Background()
+		rt := NewFakeRouter("r")
+		rt.Route(ctx, SampleDecision())
+		rt.Decisions()[0].Options[0].Label = "changed"
+		cx := NewFakeContext("c")
+		cx.Context(ctx, SampleQuery(t.TempDir()))
+		cx.Queries()[0].Inputs[0].Task = "changed"
+		cs := NewFakeContinuity("y")
+		cs.Saved(ctx, ext.Doc{Store: "data", Path: "a.json", Data: []byte("{}")})
+		cs.Docs()[0].Doc.Data[0] = 'X'
+		md := NewFakeMedia("m")
+		md.Room(ctx, ext.RoomRequest{Kind: "run", ID: "r1", By: ada})
+		md.RoomRequests()[0].By.Grants[0] = ext.GrantHost
+		h := NewFakeHost(t)
+		h.Launch(ctx, ext.LaunchRequest{Crew: "web", By: ada})
+		h.Launches()[0].By.Grants[0] = ext.GrantHost
+		h.Submit(ctx, ext.SubmitRequest{Session: "s1", Text: "x", By: ada})
+		h.Submits()[0].By.Grants[0] = ext.GrantHost
+		if got := rt.Decisions()[0].Options[0].Label; got != "Yes" {
+			t.Errorf("Decisions' option changed to %q", got)
+		}
+		if got := cx.Queries()[0].Inputs[0].Task; got != "plan" {
+			t.Errorf("Queries' input changed to %q", got)
+		}
+		if got := string(cs.Docs()[0].Doc.Data); got != "{}" {
+			t.Errorf("Docs' data changed to %q", got)
+		}
+		if got := md.RoomRequests()[0].By.Grants[0]; got != ext.GrantAdmin {
+			t.Errorf("RoomRequests' grant changed to %q", got)
+		}
+		if got := h.Launches()[0].By.Grants[0]; got != ext.GrantAdmin {
+			t.Errorf("Launches' grant changed to %q", got)
+		}
+		if got := h.Submits()[0].By.Grants[0]; got != ext.GrantAdmin {
+			t.Errorf("Submits' grant changed to %q", got)
+		}
+		if ada.Grants[0] != ext.GrantAdmin {
+			t.Fatalf("the test's own principal changed")
+		}
+	})
+
 	t.Run("concurrent", func(t *testing.T) {
 		// Every fake from Goroutines goroutines at once, under -race.
 		id, rt, cx, sk := NewFakeIdentity("i"), NewFakeRouter("r"), NewFakeContext("c"), NewFakeSink("s", nil)

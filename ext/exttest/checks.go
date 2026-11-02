@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,8 +57,14 @@ func (p phase) words() string {
 type checker struct {
 	t     T
 	n     *Network
-	check string // the check function's name: Identity, Router, …
-	name  string // the provider's
+	check string       // the check function's name: Identity, Router, …
+	name  string       // the provider's
+	p     ext.Provider // the provider, its Name asked again with the network blocked by done
+
+	// secrets are what a check is given and never prints (Identity's
+	// tokens): errorf writes [token] in their place, whatever the
+	// provider's words put them in (an error naming the URL it sent one in).
+	secrets []string
 
 	mu   sync.Mutex
 	said map[string]bool // what errorf said, said once
@@ -79,7 +86,7 @@ func begin(t T, n *Network, check string, p ext.Provider) (*checker, bool) {
 		c.flush()
 		return c, false
 	}
-	c.name = name
+	c.name, c.p = name, p
 	if !ext.ValidName(name) {
 		c.errorf("Name %q is not a provider's name: 1 to %d of a-z, 0-9 and '-' beginning with a letter or a digit", name, ext.MaxProviderName)
 	}
@@ -91,6 +98,11 @@ func begin(t T, n *Network, check string, p ext.Provider) (*checker, bool) {
 func (c *checker) errorf(format string, args ...any) {
 	c.t.Helper()
 	msg := fmt.Sprintf("exttest: %s %q: ", c.check, c.name) + fmt.Sprintf(format, args...)
+	for _, s := range c.secrets {
+		if s != "" {
+			msg = strings.ReplaceAll(msg, s, "[token]")
+		}
+	}
 	c.mu.Lock()
 	seen := c.said[msg]
 	c.said[msg] = true
@@ -132,11 +144,16 @@ func (c *checker) breaches(label, method string) {
 	}
 }
 
-// done ends the check: what the provider's goroutines dialled under a
-// call's context since, and every failure found, said; the network open
-// again.
+// done ends the check: Name asked once more with the network blocked (it
+// too answers from what the provider holds); what the provider's
+// goroutines dialled under a call's context since, and every failure
+// found, said; the network open again.
 func (c *checker) done() {
 	c.t.Helper()
+	if c.p != nil {
+		c.n.Block()
+		run(c, "Name", ext.StartWait, blocked, func(context.Context) string { return c.p.Name() })
+	}
 	for _, d := range c.n.takeBreaches(c.prefix()) {
 		c.found("%s under the context of its call %q, after that call returned: a call answers from what the provider holds, never with a round trip to its service on the call's path (article 8)", d.what(), d.Call)
 	}
@@ -233,15 +250,17 @@ func (c *checker) phases(call func(ph phase)) {
 // recognised, as a valid principal with at least one grant, with the
 // network open; none of unknown, and never the empty token, recognised;
 // whenever it answers ok, a valid principal with a grant; and article 8
-// (Network). known and unknown are never printed. With the network
-// blocked a provider may answer an error for a known token (it cannot
-// tell), never ok false.
+// (Network). known and unknown are never printed, not even inside the
+// provider's own words (an error naming the URL a token was sent in):
+// [token] stands in their place. With the network blocked a provider may
+// answer an error for a known token (it cannot tell), never ok false.
 func Identity(t T, n *Network, p ext.IdentityProvider, known, unknown []string) {
 	t.Helper()
 	c, ok := begin(t, n, "Identity", p)
 	if !ok {
 		return
 	}
+	c.secrets = append(append([]string(nil), known...), unknown...)
 	defer c.done()
 	type answer struct {
 		p   ext.Principal
@@ -405,6 +424,11 @@ func Sink(t T, n *Network, s ext.NotificationSink) {
 	}
 	defer c.done()
 	first, firstOK := run(c, "Events", ext.StartWait, open, func(context.Context) []string { return s.Events() })
+	if first != nil {
+		// A copy, nil and empty kept apart: a sink that changes the array it
+		// answered, and answers it again, must not change first with it.
+		first = append([]string{}, first...)
+	}
 	events := func(ph phase) {
 		evs, ok := run(c, "Events", ext.StartWait, ph, func(context.Context) []string { return s.Events() })
 		if ok && firstOK && !reflect.DeepEqual(evs, first) {
@@ -467,6 +491,29 @@ func restore(c *checker, cs ext.ContinuityStore) {
 		panicked any
 		wrote    int64
 	}
+	// Every writer is judged again for late writes once every Restore's
+	// context has ended (this defer runs after the others): a goroutine of
+	// Restore's that writes once its context ends is seen when it writes
+	// before Continuity returns, not only when it wrote before its Restore
+	// was judged.
+	type writer struct {
+		w     *afterWriter
+		words string
+	}
+	var writers []writer
+	defer func() {
+		c.t.Helper()
+		for _, w := range writers {
+			if late := w.w.late(); late > 0 {
+				c.errorf("Restore wrote %d bytes after it had returned%s: what it writes, it writes before it returns", late, w.words)
+			}
+		}
+	}()
+	newWriter := func(words string) *afterWriter {
+		w := &afterWriter{}
+		writers = append(writers, writer{w, words})
+		return w
+	}
 	call := func(ctx context.Context, w *afterWriter) <-chan answer {
 		ch := make(chan answer, 1)
 		r := req()
@@ -483,23 +530,20 @@ func restore(c *checker, cs ext.ContinuityStore) {
 		}()
 		return ch
 	}
-	judge := func(a answer, w *afterWriter, words string) {
+	judge := func(a answer, words string) {
 		if a.panicked != nil {
 			c.errorf("Restore panicked%s: %v", words, a.panicked)
 		}
 		if errors.Is(a.err, ext.ErrNothingToRestore) && a.wrote > 0 {
 			c.errorf("Restore wrote %d bytes and answered ErrNothingToRestore%s: a store that keeps no copy writes none", a.wrote, words)
 		}
-		if late := w.late(); late > 0 {
-			c.errorf("Restore wrote %d bytes after it had returned%s: what it writes, it writes before it returns", late, words)
-		}
 	}
 
 	// The network open: it returns, whatever its answer, and with no bound:
 	// only the person's Ctrl-C ends a download.
 	ctx, cancel := context.WithCancel(mayWait(context.Background(), c.label("Restore")))
-	w := &afterWriter{}
-	judge(<-call(ctx, w), w, "")
+	w := newWriter("")
+	judge(<-call(ctx, w), "")
 	cancel()
 
 	// The network blocked: it answers from what it holds, or its download
@@ -509,7 +553,7 @@ func restore(c *checker, cs ext.ContinuityStore) {
 	label := c.label("Restore blocked")
 	ctx, cancel = context.WithCancel(mayWait(context.Background(), label))
 	defer cancel()
-	w = &afterWriter{}
+	w = newWriter(" with the network blocked")
 	answered := call(ctx, w)
 	var waiting <-chan struct{}
 	if c.n != nil {
@@ -523,7 +567,8 @@ func restore(c *checker, cs ext.ContinuityStore) {
 	defer timer.Stop()
 	select {
 	case a := <-answered:
-		judge(a, w, " with the network blocked")
+		cancel()
+		judge(a, " with the network blocked")
 		return
 	case <-waiting:
 	case <-timer.C:
@@ -532,7 +577,7 @@ func restore(c *checker, cs ext.ContinuityStore) {
 	timer.Reset(ext.DeliveryWait)
 	select {
 	case a := <-answered:
-		judge(a, w, " once its context ended with the network blocked")
+		judge(a, " once its context ended with the network blocked")
 		if a.panicked == nil && !errors.Is(a.err, context.Canceled) {
 			c.errorf("Restore answered %v once its context ended with the network blocked, not its context's error", a.err)
 		}
@@ -676,11 +721,18 @@ func Runtime(t T, n *Network, r ext.Runtime) {
 
 // Starter checks a provider's Start: with a FakeHost and the network both
 // blocked, Start returns within ext.StartWait (the gate shut until it has
-// returned), and, once its context is cancelled and the host closed, the
-// provider takes the closed host's refusals (context.Canceled) without a
-// panic; a second try, with a new context and a new host, as the server
-// makes after a failure, returns the same way. Start may answer an error
-// (for what no retry mends); it may not wait.
+// returned); then its context is cancelled, the host closed and the
+// network opened, and Starter goes on only once every call the host held
+// has been answered with the closed host's refusal (context.Canceled) and
+// every dial and byte the network held has been let go, so each refusal
+// reaches the provider while the check runs; a second try, with a new
+// context and a new host, as the server makes after a failure, returns the
+// same way. Start may answer an error (for what no retry mends); it may
+// not wait. What a provider's goroutine does with a refusal once it has it
+// runs on that goroutine, which no check can wait on or recover: a panic
+// there ends the test binary, failing the run, whenever it comes before
+// the binary exits, and is missed when it comes later. Give Starter a
+// value not yet started: it starts it twice itself.
 func Starter(t T, n *Network, s ext.Starter) {
 	t.Helper()
 	if s == nil || nilValue(s) {
@@ -691,7 +743,7 @@ func Starter(t T, n *Network, s ext.Starter) {
 	c.name = "?"
 	if p, ok := s.(ext.Provider); ok {
 		if name, ok := run(c, "Name", ext.StartWait, open, func(context.Context) string { return p.Name() }); ok {
-			c.name = name
+			c.name, c.p = name, p
 		}
 	}
 	defer c.done()
@@ -729,6 +781,19 @@ func Starter(t T, n *Network, s ext.Starter) {
 		cancel()
 		h.Close()
 		c.n.Unblock()
+		// The calls held at the close answer at once (the fake lets them go
+		// on Close), as the held dials do on Unblock or their context's end:
+		// StartWait only bounds a hang of the suite's own.
+		drain, stop := context.WithTimeout(context.Background(), ext.StartWait)
+		if err := Await(drain, h, func() bool { return h.Waiting() == 0 }); err != nil {
+			c.errorf("the closed host still held %d of try %d's calls after %s: exttest's FakeHost lets every held call go on Close", h.Waiting(), try, ext.StartWait)
+		}
+		select {
+		case <-c.n.settled():
+		case <-drain.Done():
+			c.errorf("the network still held a dial or a connection's bytes %s after try %d's end: exttest's Network lets them go on Unblock", ext.StartWait, try)
+		}
+		stop()
 		switch {
 		case late:
 			c.errorf("Start (try %d) did not return within StartWait (%s) with its host and the network blocked: Start returns at once, and reaches its service and its host on goroutines of its own", try, ext.StartWait)

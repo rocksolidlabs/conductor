@@ -250,14 +250,14 @@ func (h *FakeHost) Log() *slog.Logger { return h.log }
 func (h *FakeHost) Launches() []ext.LaunchRequest {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]ext.LaunchRequest(nil), h.launches...)
+	return copyAll(h.launches, func(r ext.LaunchRequest) ext.LaunchRequest { r.By = copyPrincipal(r.By); return r })
 }
 
 // Submits answers every Submit's request, in order.
 func (h *FakeHost) Submits() []ext.SubmitRequest {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]ext.SubmitRequest(nil), h.submits...)
+	return copyAll(h.submits, func(r ext.SubmitRequest) ext.SubmitRequest { r.By = copyPrincipal(r.By); return r })
 }
 
 // Notices answers every Notify's notice, in order.
