@@ -197,15 +197,23 @@ func requestText(raw json.RawMessage, read, submit string) (string, error) {
 // log is its text after its SHA-256. A failure to get a reply names the
 // host and its cause, never the URL: its query is the turn's.
 func (c *brakemanClient) observe(ctx context.Context, what string, query map[string]string) (string, error) {
+	text, _, err := c.observeReply(ctx, what, query)
+	return text, err
+}
+
+// observeReply is observe's text and whether it is JSON: a check's log
+// is its bytes as the server gave them, trailing newlines and all, so it
+// still matches its SHA-256.
+func (c *brakemanClient) observeReply(ctx context.Context, what string, query map[string]string) (string, bool, error) {
 	op, ok := operation("observe_" + what)
 	if what == "" || !ok {
-		return "", fmt.Errorf("observe: what is one of %s", strings.Join(observeWhats(), ", "))
+		return "", false, fmt.Errorf("observe: what is one of %s", strings.Join(observeWhats(), ", "))
 	}
 	props, _ := op.Input["properties"].(map[string]any)
 	path, q := op.Path, url.Values{}
 	for _, k := range slices.Sorted(maps.Keys(query)) {
 		if _, ok := props[k]; !ok {
-			return "", fmt.Errorf("observe %s takes %s", what, takes(props))
+			return "", false, fmt.Errorf("observe %s takes %s", what, takes(props))
 		}
 		if p := "{" + k + "}"; strings.Contains(path, p) {
 			path = strings.ReplaceAll(path, p, url.PathEscape(query[k]))
@@ -214,14 +222,14 @@ func (c *brakemanClient) observe(ctx context.Context, what string, query map[str
 		}
 	}
 	if m := regexp.MustCompile(`\{([a-z]+)\}`).FindStringSubmatch(path); m != nil {
-		return "", fmt.Errorf("observe %s needs %s", what, m[1])
+		return "", false, fmt.Errorf("observe %s needs %s", what, m[1])
 	}
 	if len(q) > 0 {
 		path += "?" + q.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.root+path, nil)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("X-Conductor-Session", c.session)
@@ -231,7 +239,7 @@ func (c *brakemanClient) observe(ctx context.Context, what string, query map[str
 		if errors.As(err, &ue) {
 			err = ue.Err
 		}
-		return "", fmt.Errorf("observe: cannot reach %s: %w", req.URL.Host, err)
+		return "", false, fmt.Errorf("observe: cannot reach %s: %w", req.URL.Host, err)
 	}
 	defer resp.Body.Close()
 	limit := maxSessionReply
@@ -240,27 +248,27 @@ func (c *brakemanClient) observe(ctx context.Context, what string, query map[str
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
-		return "", fmt.Errorf("observe: the reply was cut short: %v", stripURL(err))
+		return "", false, fmt.Errorf("observe: the reply was cut short: %v", stripURL(err))
 	}
 	if len(body) > limit {
-		return "", fmt.Errorf("observe: the server's reply is larger than %d MiB", limit>>20)
+		return "", false, fmt.Errorf("observe: the server's reply is larger than %d MiB", limit>>20)
 	}
 	if resp.StatusCode >= 300 {
 		var e struct {
 			Error struct{ Code, Message string } `json:"error"`
 		}
 		if json.Unmarshal(body, &e) == nil && e.Error.Code != "" {
-			return "", fmt.Errorf("observe: %s (%s)", e.Error.Message, e.Error.Code)
+			return "", false, fmt.Errorf("observe: %s (%s)", e.Error.Message, e.Error.Code)
 		}
-		return "", fmt.Errorf("observe: the server answered %d", resp.StatusCode)
+		return "", false, fmt.Errorf("observe: the server answered %d", resp.StatusCode)
 	}
 	if ct, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); ct == "application/json" {
-		return string(bytes.TrimRight(body, "\n")), nil
+		return string(bytes.TrimRight(body, "\n")), true, nil
 	}
 	if sha := resp.Header.Get("X-Conductor-Log-SHA256"); sha != "" {
-		return "sha256 " + sha + "\n\n" + string(body), nil
+		return "sha256 " + sha + "\n\n" + string(body), false, nil
 	}
-	return string(body), nil
+	return string(body), false, nil
 }
 
 // stripURL is err without the URL a net/http error carries.
@@ -487,11 +495,16 @@ func brakemanObserve(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return 1, err
 	}
-	text, err := c.observe(ctx, what, query)
+	text, isJSON, err := c.observeReply(ctx, what, query)
 	if err != nil {
 		return 1, err
 	}
-	_, err = fmt.Fprintln(stdout, strings.TrimRight(text, "\n"))
+	if isJSON {
+		// A JSON answer ends at its value: one line ends it here.
+		text += "\n"
+	}
+	// A log is written as it came, so it still matches its SHA-256.
+	_, err = io.WriteString(stdout, text)
 	return 0, err
 }
 

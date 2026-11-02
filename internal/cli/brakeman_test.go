@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -325,6 +327,53 @@ func TestObserveReadsUpToItsTableBound(t *testing.T) {
 	size.Store(int64(limit + 1))
 	if _, err := c.observe(t.Context(), "messages", map[string]string{"run": "r1"}); err == nil || !strings.Contains(err.Error(), "larger than") {
 		t.Fatalf("a reply past the bound: %v", err)
+	}
+}
+
+// A check's log is printed as the server gave it, so it matches the
+// SHA-256 printed above it: one with no final newline gains none, one
+// with several keeps them all, and the MCP tool's text is the same; a
+// JSON answer ends with one newline.
+func TestObservePrintsALogsBytesAsTheyCame(t *testing.T) {
+	clearConductorEnv(t)
+	var log atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/log") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"runs":[]}`+"\n\n")
+			return
+		}
+		b := log.Load().(string)
+		sum := sha256.Sum256([]byte(b))
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Conductor-Log-SHA256", hex.EncodeToString(sum[:]))
+		_, _ = io.WriteString(w, b)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("CONDUCTOR_NOTIFY_URL", srv.URL+"/api/sessions/s1/attention")
+	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "agent-tok")
+	t.Setenv(envBrakeman, "br-1")
+	keys := []string{"--run", "r1", "--task", "build", "--n", "1", "--id", "test", "--k", "1"}
+	for _, b := range []string{"ok", "FAIL\n\n\n", "\n", ""} {
+		log.Store(b)
+		sum := sha256.Sum256([]byte(b))
+		want := "sha256 " + hex.EncodeToString(sum[:]) + "\n\n" + b
+		code, out, _, err := brakemanCmd(t, "", append([]string{"observe", "log"}, keys...)...)
+		if code != 0 || err != nil || out != want {
+			t.Errorf("the log %q printed: %d %v %q, want %q", b, code, err, out, want)
+		}
+		got, _ := strings.CutPrefix(out, "sha256 "+hex.EncodeToString(sum[:])+"\n\n")
+		if s := sha256.Sum256([]byte(got)); s != sum {
+			t.Errorf("the log %q printed does not match its SHA-256", b)
+		}
+		replies := mcpRun(t, brakemanEnv(srv.URL, "s1", "agent-tok"),
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"observe","arguments":{"what":"log","query":{"run":"r1","task":"build","n":"1","id":"test","k":"1"}}}}`)
+		if text, isErr := toolText(t, replies[0]); isErr || text != want {
+			t.Errorf("the tool's text for %q: %q %v", b, text, isErr)
+		}
+	}
+	if code, out, _, err := brakemanCmd(t, "", "observe", "runs"); code != 0 || err != nil || out != `{"runs":[]}`+"\n" {
+		t.Errorf("a JSON answer printed: %d %v %q", code, err, out)
 	}
 }
 
