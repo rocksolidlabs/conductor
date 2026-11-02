@@ -344,3 +344,18 @@ func TestCommandsNeedAManagedRunAndTheLedger(t *testing.T) {
 		t.Fatalf("no ledger: %v", err)
 	}
 }
+
+// A retry takes a task in the states RetryableStates names, failed or
+// cancelled, and refuses it in every other (ErrTaskState): the operating
+// guide's task_retry says them from RetryableStates.
+func TestARetryTakesTheRetryableStatesOnly(t *testing.T) {
+	if got := RetryableStates(); !slices.Equal(got, []string{ledger.TaskFailed, ledger.TaskCancelled}) {
+		t.Fatalf("retryable states %v", got)
+	}
+	for _, st := range []string{ledger.TaskBlocked, ledger.TaskReady, ledger.TaskRunning, ledger.TaskVerifying, ledger.TaskSucceeded, ledger.TaskFailed, ledger.TaskCancelled} {
+		err := retryable(&task{state: st})
+		if want := slices.Contains(RetryableStates(), st); (err == nil) != want || (err != nil && !errors.Is(err, ErrTaskState)) {
+			t.Errorf("a %s task: %v", st, err)
+		}
+	}
+}

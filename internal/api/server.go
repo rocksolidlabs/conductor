@@ -647,6 +647,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/cancel", s.requireAdmin(s.handleCancelTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/retry", s.requireAdmin(s.handleRetryTask))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/accept", s.requireAdmin(s.handleAcceptTask))
+	// The operating guide, the admin's and a session's (guide.go).
+	mux.HandleFunc("GET /api/guide", s.requireAdmin(s.handleGuide))
+	mux.HandleFunc("GET /api/sessions/{id}/guide", s.handleSessionGuide)
 	// An attempt's session reads its task and submits its result.
 	mux.HandleFunc("GET /api/sessions/{id}/task", s.handleSessionTask)
 	mux.HandleFunc("POST /api/sessions/{id}/task/result", s.handleSessionTaskResult)
