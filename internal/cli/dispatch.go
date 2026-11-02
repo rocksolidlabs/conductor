@@ -67,8 +67,8 @@ const dispatchUsage = `Usage:
       the candidate it delivers, an attempt's result commit in full, whose
       checks' receipt the link keeps (the close policy's verified)
   conductor dispatch plans KEY-n
-      the ticket's plan revisions, newest first, one a line: rN, id, state,
-      crew, base, expected checks, the approval, and why an approval no
+      the ticket's plan revisions, newest first, one a line: rN, id, crew,
+      base, expected checks, state, the approval, and why an approval no
       longer holds, with its remedy
   conductor dispatch plan show KEY-n [N | ID]
       a plan revision whole, by its number or its id: the approved one, else

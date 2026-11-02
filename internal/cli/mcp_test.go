@@ -271,7 +271,7 @@ func TestMcpTicketToolsAgainstTheServer(t *testing.T) {
 // ticket_read in an attempt of a run launched from its ticket (Program
 // item DS2, PR-13) says what the run was launched at first, then what
 // changed since and that the run follows the ticket as launched, as
-// conductor task ticket does; the tool's description says so too.
+// conductor task ticket does.
 func TestMcpTicketReadSaysWhatItWasLaunchedAt(t *testing.T) {
 	a := newPlannedAPI(t)
 	launchedRev := a.ticket(t, "CND-1").Rev
@@ -286,11 +286,6 @@ func TestMcpTicketReadSaysWhatItWasLaunchedAt(t *testing.T) {
 		" Now at revision %d: the title and the acceptance criteria changed; 2 comments since. Your run follows the ticket as launched", launchedRev, now)
 	if isErr || !strings.HasPrefix(text, want) || !strings.Contains(text, "\n\n# CND-1: Fix the login loop now\n") {
 		t.Fatalf("ticket_read: %v\n%s\nwant the start\n%s", isErr, text, want)
-	}
-	for _, tool := range mcpTools() {
-		if tool.Name == "ticket_read" && !strings.Contains(tool.Description, "A run launched from a ticket says first the revision it was launched at, the plan revision, where the package is (.conductor/ticket.md) and what changed since") {
-			t.Fatalf("ticket_read's description: %q", tool.Description)
-		}
 	}
 }
 

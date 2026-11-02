@@ -1515,7 +1515,7 @@ conductor dispatch comment CND-12 "the fix is in"
 conductor dispatch accept CND-12 --note "checked by hand"
 conductor dispatch link CND-12 --kind run --ref <run-id>   # or --kind delivery|external --url <url>
 conductor dispatch link CND-12 --kind delivery --url <pr-url> --candidate <run>/build/2@<commit>  # the candidate it delivers, its checks' receipt kept
-conductor dispatch plans CND-12             # the plan revisions, newest first: rN, state, crew, base, checks, approval, staleness
+conductor dispatch plans CND-12             # the plan revisions, newest first: rN, id, crew, base, checks, state, approval, staleness
 conductor dispatch plan show CND-12 [3]     # a revision whole: the approved one, else the newest, unless named
 conductor dispatch plan propose CND-12 --crew team [--base main] [--reference internal/api/auth.go:40-60=the loop]... \
     [--attachment Spec.png]... [--comment 4]... [--constraints-file c.md] [--decision ship:approval:"Ship it?"@build]... [--note "why"]
