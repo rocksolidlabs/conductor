@@ -3951,8 +3951,59 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   through `page.route` starting then ready, the second request waited for,
   the row ready with no reload and the same token).
 
-  PR-17 (#489): ext/exttest: a fake per interface and the contract suite;
-  the stream's features entry completed. Planned.
+  PR-17 (#489): `ext/exttest`, the standard library, `ext` and `ext/local`
+  only: a fake per interface and for `ext.Host`, each safe for concurrent
+  use, each that records with `Changed` (closed at its next record) and
+  `Await`, so a test waits on what a fake was given: `FakeIdentity` (tokens
+  to principals, never the empty one; `Remove` a revocation),
+  `FakeRouter` (records decisions and resolutions, answers the route
+  scripted for a question), `FakeContext` (records touches and queries,
+  answers scripted blocks), `FakeSink` (records; `Block` holds each
+  `Notify` until let go or its context ends), `FakeContinuity` (records
+  docs; `Restore` writes a scripted archive or streams a download through
+  a client it is given), `FakeEntitlements` (nothing allowed until set),
+  `FakeMedia`, `FakeRuntime` (a `Where`; C10 adds its methods) and
+  `FakeHost` (records every `Launch`, `Submit` and `Notify` with scripted
+  answers, refuses what the records' `Valid` refuses with
+  `ext.ErrRefused`, a `t.TempDir()` as `DataDir`, a logger into the
+  test's log, `Block`, and `Close`, after which every call answers
+  `context.Canceled`). The `Network` a provider under test is built with
+  (`DialContext`, `Transport()`) records every dial and request with its
+  context, refuses one under the context of one of the suite's calls
+  (`ErrOnCallPath`) and, blocked, holds every one on a gate until it is
+  let go or its context ends. One check function per interface,
+  `Identity`, `Router`, `Context`, `Sink`, `Continuity`, `Entitlements`,
+  `Media`, `Runtime` and `Starter`, each taking an `exttest.T` and the
+  `Network`, and `RunAll(t, n, ext.Providers, ...RunOption)`, over the
+  typed slots and every entry of `All`, each value once per kind, then
+  `Starter` once per value that is one; its checks by kind are one table
+  (`byKind`) a ninth interface joins with a row, and an entry of a kind
+  no row knows fails. Article 8 is checked by the network, never a clock:
+  every call is made with the network open, from 32 goroutines at once
+  for the methods that must be safe for concurrent use, then with it
+  blocked and with a cancelled context, and fails on a dial or request
+  under its context or on not returning within the wait the server's
+  guard gives that method; `Restore` alone may use the network on its
+  path, and must return its context's error once that ends while its
+  download waits on the gate. The package documentation says how a
+  provider's repository runs the suite in CI, with its service reachable
+  and unreachable, and how a new interface joins it. Tests:
+  `TestFakes` (each fake, `FakeHost` and `FakeRuntime` among them, and all
+  of them from 32 goroutines under `-race`), `TestSuitePassesEveryDefault`
+  (`RunAll` over `local.Fill(ext.Providers{})` and over every default as an
+  entry of `All`, the entitlement source's among them, and each check
+  alone), `TestSuitePassesEveryFake` (every fake, and a provider that
+  fetches its keys through the `Network` on a goroutine its `Start` began),
+  `TestSuiteCatchesABreach` (a dial under the call's context, a wait on
+  the network under a context of the provider's own, ok for the empty
+  token, nine blocks, a `Start` waiting on its host, a route its decision
+  does not offer, a panic, `Events` that change, a bad name, a nil
+  provider: each failing check named through a recording `exttest.T`),
+  `TestRunAll`, `TestRestoreMayStream` (a `Restore` streaming from an
+  `httptest` server through the `Network` passes, ends with its context's
+  error while the gate is shut, and one answering nil then fails) and
+  `TestNetwork`, each checked to fail with its part broken; benchmarks of
+  the defaults and the fakes measure a call's time, which no check does.
 - **Governance: contributing under the DCO, the marks' owner, security
   reporting and the open-core pull request checklist (Program item B; #386
   and #387, 2026-10-28).** The plan is `docs/plans/governance.md` (PR #383).
