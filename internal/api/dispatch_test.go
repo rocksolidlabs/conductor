@@ -521,7 +521,7 @@ func TestDispatchProjectRoutes(t *testing.T) {
 	}
 	e.expect(t, "POST", "/api/dispatch/projects/CND/edit", map[string]any{"opId": opID(), "expectedRev": rev, "name": "Lost"}, http.StatusConflict, "stale_revision")
 	e.expect(t, "POST", "/api/dispatch/projects/NOPE/edit", map[string]any{"opId": opID(), "name": "x"}, http.StatusNotFound, "not_found")
-	e.expect(t, "POST", "/api/dispatch/projects/CND/edit", map[string]any{"opId": opID(), "closeRequires": []string{"verified"}}, http.StatusConflict, "invalid")
+	e.expect(t, "POST", "/api/dispatch/projects/CND/edit", map[string]any{"opId": opID(), "closeRequires": []string{"merged"}}, http.StatusConflict, "invalid")
 	e.expect(t, "POST", "/api/dispatch/projects/C/edit", map[string]any{"opId": opID(), "name": "x"}, http.StatusBadRequest, "invalid_request")
 
 	// Archived: every write under it refused, archived again refused.
