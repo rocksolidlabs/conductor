@@ -24,8 +24,8 @@ func brakemanCrew() Crew {
 // LaunchNamedWith stamps the run with its class and request before its
 // member starts: the Launcher is handed both in the member's spec, and
 // the run, its record among its reads, carries them. LaunchNamed stamps
-// none, and an option of the wrong shape refuses the launch before
-// anything is made.
+// none, and an option of the wrong shape, or a turn whose crew is not
+// Brakeman's id, refuses the launch before anything is made.
 func TestLaunchNamedWithStampsClassAndRequest(t *testing.T) {
 	e, fl := newEngine(t)
 	var specs []LaunchSpec
@@ -58,6 +58,15 @@ func TestLaunchNamedWithStampsClassAndRequest(t *testing.T) {
 		} else {
 			release()
 		}
+	}
+	// A turn's crew is Brakeman's own id, so its runs and records are
+	// named brakeman-<n> (the records' prune counts them by that name).
+	other := brakemanCrew()
+	other.ID = "team"
+	if _, release, err := e.LaunchNamedWith(t.Context(), other, "", LaunchOpts{Class: ClassBrakeman, Request: "br-1"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a turn of crew team launched: %v", err)
+	} else {
+		release()
 	}
 	if n := len(specs); n != 2 {
 		t.Fatalf("%d launches, a refused one among them", n)

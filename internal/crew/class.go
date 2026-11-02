@@ -87,5 +87,11 @@ func (e *Engine) LaunchNamedWith(ctx context.Context, c Crew, label string, opts
 	if opts.Class == ClassBrakeman && c.Managed() {
 		return nil, noop, invalidf("a Brakeman turn is never a managed run")
 	}
+	// A turn's crew is Brakeman's own id (the store reserves it), so its
+	// runs and their records are named brakeman-<n>: the records' prune
+	// counts them by that name before it reads any.
+	if opts.Class == ClassBrakeman && c.ID != ClassBrakeman {
+		return nil, noop, invalidf("a Brakeman turn's crew is %s", ClassBrakeman)
+	}
 	return e.launchNamed(ctx, c, label, opts)
 }
