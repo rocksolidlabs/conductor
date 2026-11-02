@@ -182,13 +182,16 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 // handleResumeRunMember resumes an ended member of a run, in its worktree:
 // 201 {session, resumed, notice?}.
 func (s *Server) handleResumeRunMember(w http.ResponseWriter, r *http.Request) {
-	if s.brakemanRun(w, r.PathValue("run")) {
-		return
-	}
 	s.resumeMember(w, r, r.PathValue("run"), r.PathValue("name"))
 }
 
+// resumeMember resumes the member name of the run runID, for the run's
+// route and for its session's own (POST /api/sessions/{id}/resume); a
+// Brakeman turn's run is never resumed (409 brakeman_run) on either.
 func (s *Server) resumeMember(w http.ResponseWriter, r *http.Request, runID, name string) {
+	if s.brakemanRun(w, runID) {
+		return
+	}
 	run, ok := s.runs.Get(runID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "not_found", "no such run")

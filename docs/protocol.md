@@ -3250,11 +3250,23 @@ until the launch has returned and every member's process is reaped (a
 stop that leaves a process is retried every 10 s; after six failed
 retries the desk takes no new request, `503 brakeman_stuck`, until a
 stop reaps it). The engine keeps at most 10 Brakeman runs and the
-records 50, apart from a person's runs (100 and 500).
+records 50, apart from a person's runs (100 and 500). The desk keeps the
+newest 500 requests and every open or pinned one, pruning the rest as it
+starts and after each turn. A turn starts only from a configuration that
+still holds against the catalog and the folders as they are then (an
+agent changed or hidden since the save fails the turn, "the
+configuration no longer holds"), and its session only from the agent's
+catalog entry its arguments were made for (`agent_changed` otherwise,
+the turn failed with the engine's words). The desk takes queued
+requests once the server listens; as the server stops, the turn in
+progress is left as it is (the next start finds it `interrupted`), its
+launch outstanding is waited for, and the records' owner lock goes only
+once the turn's processes are stopped.
 
 **What a turn cannot do.** A run of class `brakeman` is not resumed and
-takes no member: `POST /api/runs/{run}/resume`, `…/members` and
-`…/members/{name}/resume` answer `409 brakeman_run` ("ask Brakeman
+takes no member: `POST /api/runs/{run}/resume`, `…/members`,
+`…/members/{name}/resume` and its session's `POST
+/api/sessions/{id}/resume` answer `409 brakeman_run` ("ask Brakeman
 again"), and Dispatch's run link to it (`POST
 /api/dispatch/tickets/{key}/links`, kind `run`) answers `409
 brakeman_run`. Its session forms no crew, adds no member and reaches no
@@ -3282,8 +3294,8 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/brakeman` | `{config, current, queue, turnsToday, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns a day, mode `invoked`), the request holding the slot or `null`, the queued requests oldest first, the turns charged to today |
-| `PUT /api/brakeman/config` | `{rev, config}` → `{config}`, its `rev` bumped and `updatedAt` stamped; `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode, or whose read-only mode does not hold: Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules, so Codex is refused with that reason); at most 64 KiB |
+| `GET /api/brakeman` | `{config, current, queue, turnsToday, warnings?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns a day, mode `invoked`), the request holding the slot or `null`, the queued requests oldest first, the turns charged to today, `warnings` as the configuration's save answers them; on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
+| `PUT /api/brakeman/config` | `{rev, config}` → `{config, warnings?}`, its `rev` bumped and `updatedAt` stamped; `warnings` the words Settings shows beside the agent chosen, for an agent whose read-only mode does not hold (Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules: Codex is taken, with that limit said); `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode); at most 64 KiB |
 | `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}`; `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
 | `GET /api/brakeman/requests?after=&limit=` | `{requests, next}`, newest first, at most 100 a page; `next` the id to ask after, `""` for none |
 | `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |

@@ -110,6 +110,8 @@ func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logge
 		hs.Close()
 	})
 	endAtCleanup(t, srv)
+	// Listening: Brakeman's desk starts, as conductor serve starts it.
+	srv.StartBrakeman()
 	return &testEnv{t: t, srv: srv, http: hs, root: root, client: hs.Client()}
 }
 
@@ -1371,6 +1373,7 @@ func (e *testEnv) serve(srv *Server) *testEnv {
 	hs := httptest.NewServer(srv.Handler())
 	e.t.Cleanup(hs.Close)
 	endAtCleanup(e.t, srv)
+	srv.StartBrakeman()
 	return &testEnv{t: e.t, srv: srv, http: hs, root: e.root, client: hs.Client()}
 }
 

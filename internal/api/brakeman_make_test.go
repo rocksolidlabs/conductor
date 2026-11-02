@@ -113,12 +113,12 @@ func (f *obsFixture) recoverNow(t *testing.T) {
 	}
 }
 
-// pruneUnder makes 500 newer closed requests and prunes: the request
-// before them is kept only if it is pinned.
+// pruneUnder makes two newer closed requests and prunes keeping one: the
+// request before them is kept only if it is pinned.
 func (f *obsFixture) pruneUnder(t *testing.T) {
 	t.Helper()
 	st := f.desk.st
-	for i := range brakeman.Keep {
+	for i := range 2 {
 		r, _, err := st.Create(brakeman.Request{OpID: fmt.Sprintf("filler-%d-%d", i, bkOps.Add(1)), Kind: brakeman.KindBriefing})
 		if err != nil {
 			t.Fatal(err)
@@ -127,7 +127,7 @@ func (f *obsFixture) pruneUnder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := st.Prune(); err != nil {
+	if _, err := st.PruneKeeping(1); err != nil {
 		t.Fatal(err)
 	}
 }

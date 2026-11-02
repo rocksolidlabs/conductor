@@ -226,7 +226,19 @@ func (rs *Records) prune() error {
 	if err != nil {
 		return err
 	}
-	if len(entries) <= min(maxRecords, maxBrakemanRecords) {
+	// Nothing is read while neither class can be past its cap: every
+	// record counts towards a person's, and a Brakeman turn's record is
+	// named for its crew (brakeman-<n>.json: LaunchNamedWith holds a
+	// turn's crew id to ClassBrakeman), so the names with that prefix are
+	// at least its records. A save past 50 records reads none of them
+	// until that many turns are kept.
+	turns := 0
+	for _, en := range entries {
+		if strings.HasPrefix(en.Name, ClassBrakeman+"-") {
+			turns++
+		}
+	}
+	if len(entries) <= maxRecords && turns <= maxBrakemanRecords {
 		return nil
 	}
 	all, err := rs.load(entries)

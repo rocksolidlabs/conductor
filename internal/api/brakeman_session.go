@@ -265,8 +265,10 @@ func (s *Server) handleSessionBrakemanBrief(w http.ResponseWriter, r *http.Reque
 	}
 	if req.HasBrief {
 		// The repeat of a kept brief: compared as kept, never resolved
-		// again, whatever the records and the request say now.
-		b, err := brakeman.DecodeBrief(body.Brief, req.Config.Permissions, brakemanFacts{s: s})
+		// or checked again against the catalog and the folders, whatever
+		// the records, the catalog and the request say now (a drafted
+		// crew's agent removed since is still the brief kept).
+		b, err := brakeman.DecodeBrief(body.Brief, req.Config.Permissions, keptFacts{brakemanFacts{s: s}})
 		if err != nil {
 			s.brakemanError(w, fmt.Errorf("%w: %s", brakeman.ErrBriefExists, id))
 			return
@@ -340,6 +342,14 @@ func (s *Server) handleSessionBrakemanBrief(w http.ResponseWriter, r *http.Reque
 	d.poke()
 	writeJSON(w, http.StatusCreated, map[string]any{"request": kept})
 }
+
+// keptFacts are the facts a repeat of a kept brief is decoded with: a
+// drafted crew was checked as the brief was kept, so it is not checked
+// again against what the catalog holds now; the decoding still
+// normalises it as it did, for the comparison with the brief kept.
+type keptFacts struct{ brakemanFacts }
+
+func (keptFacts) CheckCrew(json.RawMessage) error { return nil }
 
 // checkProposals holds each proposal to the guide's table: its operation
 // one the guide lists, and, for an operation whose route itself checks a
