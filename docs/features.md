@@ -3663,7 +3663,46 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   part broken; `TestHostSubmitLine` now answers a choice's keys.
 
   PR-10 (#482): proto, hostagent, signal, api, web: answer_as, a routed
-  answer for a hosted session. Planned.
+  answer for a hosted session. One host control message, server to host,
+  `answer_as{question, input?, text?, byName, bySubject?}` (`HostAnswerAsMsg`,
+  `Valid` holding every field to its bound, exactly one of input and text,
+  under 25 KB at its largest), the register's `answerAs` and the host's
+  `attention` gaining `kept` (at most two ids, a message past that dropped
+  whole), in `internal/proto`, `web/app/utils/protocol.ts` and
+  `docs/protocol.md` together. `conductor host` says `answerAs`, sends
+  what its session keeps with every attention (a change of either told,
+  the pair resent together by a retry) and applies an `answer_as` off its
+  control loop through one queue per connection (four held, a fifth
+  dropped and logged, one goroutine, each within the reply's deadline,
+  ended with the connection) as `Local.AnswerAs` or `Local.Submit` with the
+  question; a server's uplink to a switchyard says none, sends no `kept`
+  and drops an `answer_as` unread. The hub's copy takes attention and
+  `kept` from one message (`HostAttentionKept`); `HostedSession.AnswerAs`
+  sends only to a host that said so. `Host.Submit` and the router send a
+  hosted session's answers there (`sent`); the router routes a hosted
+  session only when its host said `answerAs` and only off a switchyard,
+  judging `HostView`, the host's own last report: a change the server
+  forwards shows in the listing at once, and judged from it a question the
+  host still showed read as set aside before the host said it kept it,
+  which `TestHostedSetAsidePastTheBound` found; a host back without
+  `answerAs` has its routed questions still resolved, none of its new
+  ones routed. A provider's answer under a context already ended sends
+  nothing. A connection's end withdraws its routed answers before it lets
+  its viewers go. Tests: in `internal/proto`
+  `TestHostAnswerAsBounds`, `TestRegisterAnswerAs`,
+  `TestHostAttentionKeptBounds`; in `internal/hostagent`
+  `TestAnswerAsApplied`, `TestAnswerAsInvalidDropped`,
+  `TestAnswerAsNeverInTheControlLoop`, `TestAnswerAsQueueBounded`,
+  `TestAnswerAsWithdrawnBeforeItsConnectionsViewers`,
+  `TestSwitchyardAnswerAsRefused`, `TestKeptSent`,
+  `TestKeptSentWithItsAttention`; in `internal/signal` `TestHostedAnswerAs`,
+  `TestHostedKept`, `TestHostViewIsTheHostsReport`; in `internal/api`
+  `TestRoutedAnswerReachesAHostedSession`, `TestOlderHostUnsupported`,
+  `TestHostedSetAsidePastTheBound`,
+  `TestHostedAnsweredInTheTerminalResolved`,
+  `TestSwitchyardNeverRoutesAHostedSession`,
+  `TestHostedAnswerHonoursItsContext`,
+  `TestHostedResolvedAfterAnswerAsWithdrawn`.
 
   PR-11 (#483): store, ledger, api: the sync hooks after every local commit.
   Three hooks, each called under the lock that orders its commits, right

@@ -446,21 +446,37 @@ refusal is an HTTP error before the upgrade, `{"error": {code, message}}`:
 when longer, and stops when the session ends. Text frames are JSON; binary
 frames are RELAY envelopes.
 
-Host → server: `register{proto, host{name,version,user?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?}, resume?{sessionId,secret}}`
-(`user` ≤ 64 bytes is the OS user for "hosted by"; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
+Host → server: `register{proto, host{name,version,user?,answerAs?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?}, resume?{sessionId,secret}}`
+(`user` ≤ 64 bytes is the OS user for "hosted by"; `answerAs: true` says the host takes `answer_as` and
+sends `kept` with its `attention` (below): `conductor host` says it, a server publishing to a switchyard
+never does, an older host leaves it out and an older server ignores it; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
 a server publishing its sessions to a switchyard registers each with less: `command` is one word, the
 agent's id or else the program's name, never an argument; `cwd` the folder's last element; no `user`
 and no `branch`),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
-`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?,ask?}`
+`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?,ask?,kept?}`
 (`id` the id the host's session gave the change, which the server keeps,
 only as 1–32 bytes of printable ASCII, so that an answer from its listings
 names the question the host holds; an older server ignores it; a question
 asked again with the same words is sent again, its `id` new; `ask: true`,
 with `needs_input` only, says the question the host's session shows is the
 agent's own (see Attention), which the server's copy then keeps through a
-`done` it forwards; never sent to a switchyard),
+`done` it forwards; never sent to a switchyard; `kept`, from a host whose
+register said `answerAs` alone, the ids of the questions its session keeps
+without showing them, at most 2 (the agent's own question set aside, a
+question a held turn holds over), from the same snapshot as the rest of
+the message, so the server's decision router tells a question set aside
+from one that ended: a host sends its `attention` whenever what its
+session shows or keeps changes, a retry resending the pair it holds, and
+the server's copy takes the two from one message, an `attention` equal to
+the one shown with a new `kept` taking the `kept` and changing nothing
+else; a message whose `kept` holds more than 2 ids, or one that is not
+1–32 bytes of printable ASCII, is dropped whole (the connection stays);
+the server takes no `kept` from a host that did not say `answerAs` (one
+that resumes without it has the pair it last sent stand until its first
+`attention`, which then drops the `kept`), and an older server ignores the
+field),
 `activity{sessionId,entry,state?}`,
 `chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
@@ -582,6 +598,27 @@ one over 16 bytes, as none; an older server sends neither, and an older
 host ignores both, as before: each side decodes the other's messages
 without refusing unknown fields),
 `attention{state,message?,source,kind?,options?}` (API-originated change to broadcast),
+`answer_as{question, input?, text?, byName, bySubject?}` (an answer a
+decision router or a provider holds for the question the host's session
+shows: `question` its id, 1–32 bytes of printable ASCII; exactly one of
+`input`, a choice's keys of at most 48 bytes, and `text`, a line of at most
+4096; `byName` who answered, 1–40 characters on one line; `bySubject` at
+most 48 bytes of printable ASCII, no space; about 4.4 KB with a plain line
+of 4096 bytes, under 25 KB at its largest, far under the 64 KiB host
+message. Sent in the server's own lane, after `registered`, only to a host
+whose register said `answerAs`, and only by the owner's own server, never
+by a switchyard. It carries who answered, not a right to answer: the host
+applies it as its viewers' `answer`s are applied, under the question's
+claim, the first answer winning, a choice only when its keys are the
+`input` of one of the question's own `options`, a line as a `submit`
+naming the question, a line blank once cleaned refused; the result reaches
+the server as the host's `attention` and `activity` always do. The host
+holds at most 4 of them per connection, the one applying among them, and
+drops a fifth with a log line; one goroutine applies them in order, each
+within a reply's 10 s from its arrival, and the queue ends with the
+connection, a message waiting then dropped. One out of its bounds is
+dropped and logged; a host publishing to a switchyard drops one unread;
+an older host ignores a type it does not know),
 `activity{entry}` (an event reported through the API, for the host to record),
 `link_created{requestId, url, invite, linkId, role, label?, expiresAt?, runId?}`
 (`runId` for a link minted by `link_run`), `link_run_updated{requestId, runId, links}`
@@ -1411,7 +1448,21 @@ the question went to records one `status` entry, `routed: <kind> <name>,
 … (<rule>)`; the empty route, the free build's, records nothing, so a
 plain build's activity is as before. A provider answers the same way
 through its host (`Host.Submit` with `question` and `input` or `text`).
-Hosted sessions are not routed yet.
+A hosted session's question is routed the same way when its host's
+register said `answerAs`, and only by the owner's own server: the route's
+answer, or a provider's, travels to the host as `answer_as` (`Host.Submit`
+answers `sent`) and is applied there under the host's own claim, two
+answers that cross (a viewer's and the route's) ordered on the host; the
+router judges what the host said its session shows and keeps (`kept`),
+never a change the server forwarded and the host has not yet applied. A
+hosted route's `routed: …` entry goes to the host as an `activity` message
+of the server's own, which the host records and reports back; like a server
+session's own `status` entries it spends no token of the session's bucket,
+so the reports an agent makes cannot crowd it out. An
+older host's questions are routed by no one, as before, and a provider's
+answer to one is unsupported; a switchyard routes none and sends no
+`answer_as`. A line that answers no question is never typed into a hosted
+session.
 
 A reply to a question read off the screen is taken only while the screen
 still shows that question, too (a next question drawn after it and not asked

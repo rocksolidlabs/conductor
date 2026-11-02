@@ -875,6 +875,15 @@ type HostedSession struct {
 	// host does not replace here, as it does not on the host's session.
 	// Guarded by mu.
 	asked bool
+	// answerAs says the host's register said it takes answer_as and sends
+	// kept (proto.HostInfo.AnswerAs): its kept is the session's Info.Kept,
+	// and a routed answer goes to it (AnswerAs). Guarded by mu.
+	answerAs bool
+	// reported is the attention as the host last reported it, which a
+	// change the server forwards does not replace until the host applies
+	// it and tells it back: with info.Kept, the host's one snapshot
+	// (HostView). Guarded by mu.
+	reported session.Attention
 }
 
 // Owner is the hash of the host instance that registered the session, "" when none.
@@ -1178,7 +1187,7 @@ func (h *HostedSession) SetAttention(state session.AttentionState, message, sour
 // is told, so its viewers see the change too; without one the change is held
 // on the server. A change from the host (forward false) never spends one.
 func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, source, kind string, options []session.Option, forward bool) error {
-	return h.setAttention(state, message, source, kind, options, forward, "", false, "", "")
+	return h.setAttention(state, message, source, kind, options, forward, "", false, "", "", nil)
 }
 
 // Ask is SetAttentionFull, forwarded, for the agent's own question
@@ -1189,7 +1198,7 @@ func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, 
 // every report forwarded. A question the host has set aside shows here as
 // the host tells it.
 func (h *HostedSession) Ask(message, source, kind string, options []session.Option) error {
-	return h.setAttention(session.AttentionNeedsInput, message, source, kind, options, true, "", true, "", "")
+	return h.setAttention(session.AttentionNeedsInput, message, source, kind, options, true, "", true, "", "", nil)
 }
 
 // HostAttention records an attention change the host reports (forward
@@ -1199,10 +1208,7 @@ func (h *HostedSession) Ask(message, source, kind string, options []session.Opti
 // it is the agent's own question (Attention.Asked); answered is its mark as
 // one keys typed in the host's terminal have answered (Attention.Answered).
 func (h *HostedSession) HostAttention(state session.AttentionState, message, source, kind string, options []session.Option, id string, ask bool, answered, plan string) {
-	if !proto.ValidQuestionID(id) {
-		id = ""
-	}
-	_ = h.setAttention(state, message, source, kind, options, false, id, ask, answered, plan)
+	h.HostAttentionKept(state, message, source, kind, options, id, ask, answered, plan, nil)
 }
 
 // SetAttentionPlan is SetAttentionFull for a report that names the plan
@@ -1211,7 +1217,7 @@ func (h *HostedSession) HostAttention(state session.AttentionState, message, sou
 // its plans and tells its attention back with it (HostAttention's plan);
 // the server's copy carries it meanwhile.
 func (h *HostedSession) SetAttentionPlan(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, plan string) error {
-	return h.setAttention(state, message, source, kind, options, forward, "", false, "", plan)
+	return h.setAttention(state, message, source, kind, options, forward, "", false, "", plan, nil)
 }
 
 // setAttention is SetAttentionFull with the change's id: the host's, or,
@@ -1222,8 +1228,12 @@ func (h *HostedSession) SetAttentionPlan(state session.AttentionState, message, 
 // needs_input change (a question keys typed in the host's terminal have
 // answered: AnsweredTerminal). ask marks a needs_input change as the agent's own
 // question (Ask); a done forwarded while one shows is sent on to the host
-// and changes nothing here.
-func (h *HostedSession) setAttention(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, id string, ask bool, answered, plan string) error {
+// and changes nothing here. kept is what a host's report says its session
+// keeps (proto.HostAttentionMsg.Kept), taken with the attention under the
+// one lock, and from a host that said answerAs alone; a forwarded change
+// leaves what the host said last. A report that changes only what the
+// session keeps takes the kept and leaves the attention, its stamp too.
+func (h *HostedSession) setAttention(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, id string, ask bool, answered, plan string, kept []string) error {
 	if !state.Valid() {
 		return nil
 	}
@@ -1249,6 +1259,21 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 		return ErrRateLimited
 	}
 	att := session.Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, Answered: answered, Plan: plan}
+	if !forward {
+		if !h.answerAs {
+			kept = nil
+		}
+		if cur := h.info.Attention; !slices.Equal(h.info.Kept, kept) && sameAttention(cur, att) && cur.ID == id && h.asked == ask {
+			// What the session keeps changed, and nothing it shows: the
+			// router hears of it (OnChange), and nothing else changes.
+			h.info.Kept = slices.Clone(kept)
+			h.reported = cur
+			h.mu.Unlock()
+			h.notifyChange()
+			return nil
+		}
+		h.info.Kept = slices.Clone(kept)
+	}
 	if forward && state == session.AttentionDone && h.asked && h.info.Attention.State == session.AttentionNeedsInput {
 		// The agent's own question outlasts its turn's done, here as on the
 		// host, which is told the done and tells its attention back.
@@ -1271,6 +1296,9 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 		}
 	}
 	h.info.Attention = att
+	if !forward {
+		h.reported = att
+	}
 	h.asked = ask
 	h.mu.Unlock()
 	if forward && conn != nil {

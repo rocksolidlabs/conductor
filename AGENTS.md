@@ -261,6 +261,13 @@ add its rule here.
   them, `serverCaughtUp`), never for a word to stay the same over a few
   seconds; where nothing in the product caps the step, its bound only
   bounds a hang, and `test.setTimeout` is above that bound and the rest.
+- A frame a client has written is not a frame the server has read. A
+  send returns once the bytes are in the client's socket; the server's
+  read loop may take them much later, after what another connection sent
+  meanwhile. A test that needs one connection's frames queued ahead of
+  another's waits for the server's read after them (`viewerSeam.read`
+  with `wsClient.sent`, `viewerReads.await`), and holds the writer that
+  would drain them (`writerGate`) rather than trusting a full socket.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
