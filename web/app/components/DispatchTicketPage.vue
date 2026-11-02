@@ -61,7 +61,7 @@ const reads = ref(0)
 const resets = ref(0)
 const deleteOpen = ref(false)
 /** The ticket's plan revisions and launches (DS2), read with it. */
-const plan = useTicketPlans({ gate, ticket: () => ticket.value, changes: () => changes.value })
+const plan = useTicketPlans({ gate, key: () => (parseTicketKey(props.ticketKey) ? props.ticketKey : ''), ticket: () => ticket.value, changes: () => changes.value })
 
 useHead({ title: computed(() => (ticket.value ? `${ticket.value.key} ${ticket.value.title}` : props.ticketKey)) })
 

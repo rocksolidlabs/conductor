@@ -28,7 +28,7 @@ export const LAUNCHES_SHOWN = 5
  * it appears. Nothing polls. The operations (propose, approve, withdraw, launch) are the page's, each one operation with an op id the
  * browser mints; a revision an operation answered with is shown over an older list read, by its `rev`.
  */
-export function useTicketPlans(o: { gate: DispatchOrder; ticket: () => DispatchTicket | null; changes: () => readonly DispatchChange[] }) {
+export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; ticket: () => DispatchTicket | null; changes: () => readonly DispatchChange[] }) {
   const api = useDispatchApi()
   const ops = useDispatchOps(o.gate)
   const identity = useIdentity()
@@ -48,11 +48,13 @@ export function useTicketPlans(o: { gate: DispatchOrder; ticket: () => DispatchT
   /** What the server is known to refuse a launch for, from its replies. */
   const server = reactive<LaunchServer>({})
 
-  const key = () => o.ticket()?.key ?? ''
+  /** The ticket's key the page shows: its revisions are read by it, beside the ticket's own read. */
+  const key = () => o.key()
 
   /** The revisions shown: the list's, each replaced by an operation's answer that is later (a higher `rev`). */
   const plans = computed<PlanSummary[]>(() => {
-    const list = listed.value ?? o.ticket()?.approved ?? []
+    const shownTicket = o.ticket()
+    const list = listed.value ?? (shownTicket?.key === key() ? shownTicket.approved : undefined) ?? []
     const out = list.map((p) => {
       const a = answered.get(p.id)
       return a && a.rev > p.rev ? { ...p, ...a } : p
@@ -153,7 +155,7 @@ export function useTicketPlans(o: { gate: DispatchOrder; ticket: () => DispatchT
 
   // Another ticket on the page: nothing of this one's stays.
   watch(
-    () => o.ticket()?.id,
+    () => o.key(),
     (id, old) => {
       if (id === old) return
       listed.value = null
