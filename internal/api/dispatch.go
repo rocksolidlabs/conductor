@@ -417,10 +417,17 @@ func (s *Server) writeOp(w http.ResponseWriter, what string, rc dispatch.Receipt
 // display name that is not one, a query outside its vocabulary or past
 // its bound), 404 not_found for what it does not hold, 503
 // dispatch_unavailable for a store that cannot serve (nothing to read,
-// closed), and 500 store_failed, logged, for a failure of the database.
+// closed), 503 ledger_unavailable, logged, for a run's chain the chain
+// rule could not read (dispatch.ErrChainUnread), and 500 store_failed,
+// logged, for a failure of the database.
 func (s *Server) dispatchError(w http.ResponseWriter, what string, err error) {
 	words := strings.TrimPrefix(err.Error(), "dispatch: ")
 	switch {
+	case errors.Is(err, dispatch.ErrChainUnread):
+		// The chain rule judges no link on a chain it could not read: the
+		// operation wrote nothing, and may be sent again.
+		s.log.Warn("a run's chain could not be read", "what", what, "err", err)
+		writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", "a run's chain could not be read from the ledger, so nothing was kept; see the server's log")
 	case errors.Is(err, dispatch.ErrBadOpID), errors.Is(err, dispatch.ErrBadActor), errors.Is(err, dispatch.ErrBadBy), errors.Is(err, dispatch.ErrBadQuery):
 		writeError(w, http.StatusBadRequest, "invalid_request", words)
 	case errors.Is(err, dispatch.ErrNotFound):

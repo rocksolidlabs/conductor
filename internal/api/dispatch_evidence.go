@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -44,13 +45,11 @@ const (
 	// own page has it whole).
 	maxSummaryBlockers = 20
 	maxSummaryReason   = 200
-	// maxChainRuns bounds a walk of a run's chain: a hang's guard, far
-	// past any chain a person continues by hand, never a cap a page meets.
-	maxChainRuns = 10000
 	// maxContestedKeys bounds the other holders a contested entry names.
 	maxContestedKeys = 20
 	// chainWalkTimeout bounds a walk the store asks for inside one of its
-	// operations (SetRunChain), which holds the store's lock.
+	// operations (SetRunChain), which holds the store's lock: a walk past
+	// it fails the operation (dispatch.ErrChainUnread), nothing written.
 	chainWalkTimeout = 10 * time.Second
 )
 
@@ -130,7 +129,9 @@ func summarizeRun(r crew.Run, record bool) runSummary {
 }
 
 // runSummaryOf is the run with the id summarized, from the engine, else
-// its record, else the ledger's rows; nil for a run found nowhere.
+// its record, else the ledger's rows; nil for a run found nowhere, and for
+// one only the ledger could tell of while it cannot be read (unavailable
+// or closed), as runNode reads it: the entry answers without its run.
 func (s *Server) runSummaryOf(ctx context.Context, id string) (*runSummary, error) {
 	if r, ok := s.runs.Get(id); ok {
 		sum := summarizeRun(r, false)
@@ -149,11 +150,18 @@ func (s *Server) runSummaryOf(ctx context.Context, id string) (*runSummary, erro
 	if s.ledger == nil {
 		return nil, nil
 	}
+	unreadable := func(err error) bool { return errors.Is(err, ledger.ErrUnavailable) || errors.Is(err, ledger.ErrClosed) }
 	p, ok, err := s.ledger.Pointer(ctx, id)
+	if unreadable(err) {
+		return nil, nil
+	}
 	if err != nil || !ok {
 		return nil, err
 	}
 	tasks, err := s.ledger.Tasks(ctx, id)
+	if unreadable(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -207,23 +215,38 @@ func (s *Server) runNode(ctx context.Context, id string) (chainNode, bool, error
 	return chainNode{}, false, nil
 }
 
+// chainWalkSeam, when a test sets it, is asked before each run a chain's
+// walk reads (runChain), and an error it answers fails the walk, as a
+// ledger read's would.
+var chainWalkSeam atomic.Pointer[func(run string) error]
+
 // runChain is the chain of the run with the id: the run, every run it
 // continues and every run that continues it, found by walking the marks
 // both ways (runNode), oldest first by start, the anchor among them;
 // before says which of them come before the anchor (the runs it
-// continues, directly or not). Empty for a run found nowhere.
+// continues, directly or not). Empty for a run found nowhere. There is no
+// cap on a chain's runs: each is visited once, and the walk ends with the
+// context, failing, never with a part of the chain taken for all of it.
 func (s *Server) runChain(ctx context.Context, anchor string) (nodes []chainNode, before map[string]bool, err error) {
 	before = map[string]bool{}
 	seen := map[string]bool{}
 	byID := map[string]chainNode{}
 	queue := []string{anchor}
-	for len(queue) > 0 && len(seen) < maxChainRuns {
+	for len(queue) > 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		id := queue[0]
 		queue = queue[1:]
 		if id == "" || seen[id] {
 			continue
 		}
 		seen[id] = true
+		if f := chainWalkSeam.Load(); f != nil {
+			if err := (*f)(id); err != nil {
+				return nil, nil, err
+			}
+		}
 		n, ok, err := s.runNode(ctx, id)
 		if err != nil {
 			return nil, nil, err
@@ -255,30 +278,33 @@ func (s *Server) runChain(ctx context.Context, anchor string) (nodes []chainNode
 
 // chainRuns is the store's sight of a run's chain (SetRunChain): the runs
 // of the run's chain, read from the ledger, the engine and the records,
-// never from the store, inside whose operation it runs.
-func (s *Server) chainRuns(run string) []string {
+// never from the store, inside whose operation it runs. A walk that fails
+// (a ledger read's error, chainWalkTimeout) answers its error and no runs,
+// so the store judges no link on a part of a chain (dispatch.ErrChainUnread).
+func (s *Server) chainRuns(run string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), chainWalkTimeout)
 	defer cancel()
 	nodes, _, err := s.runChain(ctx, run)
 	if err != nil {
-		s.log.Warn("a run's chain could not be read", "run", run, "err", err)
+		return nil, err
 	}
 	out := make([]string, 0, len(nodes))
 	for _, n := range nodes {
 		out = append(out, n.id)
 	}
-	return out
+	return out, nil
 }
 
-// contested is a hand link's chain held by other tickets too: their keys
-// and the words saying how, with the remedy.
+// contested is a launched or hand-linked run's chain held by other
+// tickets too: their keys and the words saying how, with the remedy.
 type contested struct {
 	Keys  []string `json:"keys"`
 	Words string   `json:"words"`
 }
 
 // ticketRunEntry is one entry of a ticket's runs: a launch (launch, its
-// run once it has one, and what changed since), a run linked by hand
+// run once it has one, what changed since, and contested when its run's
+// chain is), a run linked by hand
 // (link, run, and contested when its chain is), or another run of a chain
 // the ticket holds (run, the launch or the link that holds it, and the
 // run it continues, absent for a run before the linked one).
@@ -335,12 +361,12 @@ func parseRunsCursor(s string) (runsCursor, error) {
 
 // ticketRunEntries is every entry of the ticket's runs, newest first,
 // none summarized: its launches, its live run links, and the other runs
-// of the chains they hold, each run once. A link whose chain other live
-// tickets hold too is contested: its run alone is an entry, marked with
-// the other holders' keys, and the chain's other runs are entries of no
-// ticket.
+// of the chains they hold, each run once. A launched or linked run whose
+// chain other live tickets hold too (by a launch or a live run link) is
+// contested: its run alone is an entry, marked with the other holders'
+// keys, and the chain's other runs are entries of no ticket.
 func (s *Server) ticketRunEntries(ctx context.Context, ds *dispatch.Store, key string, launches []dispatch.LaunchSummary, links []dispatch.Link) ([]ticketRunEntry, error) {
-	var out []ticketRunEntry
+	out := []ticketRunEntry{}
 	seen := map[string]bool{}
 	type anchor struct {
 		run    string
@@ -348,13 +374,38 @@ func (s *Server) ticketRunEntries(ctx context.Context, ds *dispatch.Store, key s
 		link   *dispatch.Link
 	}
 	var anchors []anchor
+	// contest is the contest of the run's chain when other live tickets
+	// hold it too, nil when this ticket holds it alone; launched says this
+	// ticket holds it by the run's launch, not a link.
+	contest := func(run string, launched bool) (*contested, error) {
+		holders, err := ds.ChainHolders(ctx, run)
+		if err != nil {
+			return nil, err
+		}
+		var others []dispatch.ChainHolder
+		for _, h := range holders {
+			if h.Key != key {
+				others = append(others, h)
+			}
+		}
+		if len(others) == 0 {
+			return nil, nil
+		}
+		return s.contestedWords(ctx, key, run, launched, others), nil
+	}
 	for i := range launches {
 		l := &launches[i]
 		e := ticketRunEntry{Kind: entryLaunch, Launch: l, at: l.CreatedAt, id: l.ID}
 		if l.State == dispatch.LaunchStarted {
 			e.runID = l.RunID
 			seen[l.RunID] = true
-			anchors = append(anchors, anchor{run: l.RunID, launch: l})
+			c, err := contest(l.RunID, true)
+			if err != nil {
+				return nil, err
+			}
+			if e.Contested = c; c == nil {
+				anchors = append(anchors, anchor{run: l.RunID, launch: l})
+			}
 		}
 		out = append(out, e)
 	}
@@ -365,19 +416,11 @@ func (s *Server) ticketRunEntries(ctx context.Context, ds *dispatch.Store, key s
 		}
 		seen[l.Ref] = true
 		e := ticketRunEntry{Kind: entryLink, Link: l, at: l.CreatedAt, id: l.ID, runID: l.Ref}
-		holders, err := ds.ChainHolders(ctx, l.Ref)
+		c, err := contest(l.Ref, false)
 		if err != nil {
 			return nil, err
 		}
-		var others []dispatch.ChainHolder
-		for _, h := range holders {
-			if h.Key != key {
-				others = append(others, h)
-			}
-		}
-		if len(others) > 0 {
-			e.Contested = s.contestedWords(ctx, l.Ref, others)
-		} else {
+		if e.Contested = c; c == nil {
 			anchors = append(anchors, anchor{run: l.Ref, link: l})
 		}
 		out = append(out, e)
@@ -385,7 +428,7 @@ func (s *Server) ticketRunEntries(ctx context.Context, ds *dispatch.Store, key s
 	for _, a := range anchors {
 		nodes, before, err := s.runChain(ctx, a.run)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: run %s: %w", dispatch.ErrChainUnread, a.run, err)
 		}
 		for _, n := range nodes {
 			if seen[n.id] {
@@ -403,10 +446,14 @@ func (s *Server) ticketRunEntries(ctx context.Context, ds *dispatch.Store, key s
 	return out, nil
 }
 
-// contestedWords is a contested entry of the run linked by hand: the
-// other holders' keys (at most maxContestedKeys) and the words, how the
-// first one's run stands to it and the remedy.
-func (s *Server) contestedWords(ctx context.Context, run string, others []dispatch.ChainHolder) *contested {
+// contestedWords is the contest of the ticket's (key's) entry of the run,
+// launched from it (launched) or linked to it by hand: the other holders'
+// keys (at most maxContestedKeys) and the words, how the first one's run
+// stands to it, by that ticket's launch or link, and the remedy: removing
+// a link, since a launch binds its run (the other's link when this ticket
+// launched the run, this ticket's when the other launched its run, either
+// when both are links).
+func (s *Server) contestedWords(ctx context.Context, key, run string, launched bool, others []dispatch.ChainHolder) *contested {
 	c := &contested{Keys: []string{}}
 	for _, h := range others {
 		if len(c.Keys) == maxContestedKeys {
@@ -415,14 +462,30 @@ func (s *Server) contestedWords(ctx context.Context, run string, others []dispat
 		c.Keys = append(c.Keys, h.Key)
 	}
 	h := others[0]
+	otherLaunched := h.Link == ""
+	remedy := "remove one of the links"
+	switch {
+	case launched && otherLaunched:
+		remedy = "two launches hold one chain, with no link to remove"
+	case launched:
+		remedy = "remove " + h.Key + "'s link"
+	case otherLaunched:
+		remedy = "remove " + key + "'s link"
+	}
+	holds := "which " + h.Key + " links"
+	if otherLaunched {
+		holds = "launched from " + h.Key
+	}
 	_, before, err := s.runChain(ctx, run)
 	switch {
+	case (err != nil || h.Run == run) && otherLaunched:
+		c.Words = fmt.Sprintf("run %s was launched from %s: %s", run, h.Key, remedy)
 	case err != nil || h.Run == run:
-		c.Words = fmt.Sprintf("run %s is linked to %s too: remove one of the links", run, h.Key)
+		c.Words = fmt.Sprintf("run %s is linked to %s too: %s", run, h.Key, remedy)
 	case before[h.Run]:
-		c.Words = fmt.Sprintf("run %s continues run %s, which %s links: remove one of the links", run, h.Run, h.Key)
+		c.Words = fmt.Sprintf("run %s continues run %s, %s: %s", run, h.Run, holds, remedy)
 	default:
-		c.Words = fmt.Sprintf("run %s, which %s links, continues run %s: remove one of the links", h.Run, h.Key, run)
+		c.Words = fmt.Sprintf("run %s, %s, continues run %s: %s", h.Run, holds, run, remedy)
 	}
 	return c
 }
@@ -512,7 +575,8 @@ func (s *Server) handleDispatchTicketRuns(w http.ResponseWriter, r *http.Request
 }
 
 // ticketRunsError answers a ledger or Dispatch read of a ticket's runs
-// that failed.
+// that failed: a run's chain that could not be walked is 503
+// ledger_unavailable (dispatchError), as is a ledger that cannot be read.
 func (s *Server) ticketRunsError(w http.ResponseWriter, err error) {
 	if errors.Is(err, ledger.ErrUnavailable) || errors.Is(err, ledger.ErrClosed) {
 		writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", err.Error())
