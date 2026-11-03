@@ -3463,7 +3463,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   context without its cancel, so a session whose client has gone still
   starts; `Launch` passes its own. `conductor host` starts its command
   through `hostagent.Options.Runtime`, which it leaves nil, the native one,
-  whatever is registered (RT7); the host keeps no handle on the process
+  whatever is registered (RT7), with its context's cancel removed, so a
+  host stopped as its command starts starts it, stops it and exits with
+  no error, as before; the host keeps no handle on the process
   but its session's. `internal/api` and `internal/hostagent` leave the
   boundary test's allowlist, which is `ext/local` and the two runners
   alone from here. Tests: `TestARuntimeTerminalDrivesALocal`,
@@ -3478,7 +3480,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestARuntimeThatIsAStarterIsStartedFirst`,
   `TestAPersonsSessionOutlivesItsRequest`; `TestAHostStartsThroughTheRuntime`,
   `TestAHostWithNoRuntimeRunsNatively`,
-  `TestAHostWhoseRuntimeRefusesTheStartFails`;
+  `TestAHostWhoseRuntimeRefusesTheStartFails`,
+  `TestAHostStoppedAsItStartsStartsAndStops`;
   `TestRunServeOffersTheRegisteredRuntime`, `TestRunHostRunsNatively`; the
   crew's Runtime tests check the launch's `Where`; every existing PTY,
   viewer and host test on the native Runtime.

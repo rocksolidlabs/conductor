@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
@@ -93,5 +94,25 @@ func TestAHostWhoseRuntimeRefusesTheStartFails(t *testing.T) {
 	fake := &sessiontest.FakeRuntime{}
 	if _, err := runHosted(t, Options{Name: "refused", Argv: []string{"/bin/agent"}, Dir: t.TempDir(), Runtime: fake}, nil); err == nil || !strings.Contains(err.Error(), "no answer for StartTerminal") {
 		t.Fatalf("Run: %v", err)
+	}
+}
+
+// A host stopped as its command starts (its context ended once it has
+// registered, before the start) still starts the command, then stops it,
+// and Run returns with no error, as before the seam: the start is not
+// bounded by Run's context.
+func TestAHostStoppedAsItStartsStartsAndStops(t *testing.T) {
+	_, hs := startServer(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	fake := &sessiontest.FakeRuntime{Base: local.Native()}
+	_, err := Run(ctx, Options{ServerURL: hs.URL, Token: hostToken, RelayOnly: true, Name: "stopped", Argv: []string{"/bin/cat"}, Dir: t.TempDir(), Runtime: fake,
+		Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Registered: func(string, string) { cancel() }})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls := fake.Asked("StartTerminal"); len(calls) != 1 || calls[0].Process.PID <= 0 {
+		t.Fatalf("the start: %+v", calls)
 	}
 }
