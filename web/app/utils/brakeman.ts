@@ -145,6 +145,14 @@ export interface BrakemanBrief {
   items: BriefItem[]
 }
 
+/**
+ * A brief as a reply carries it, with its items a list: the server writes a brief kept with none (its summary alone) as `items:
+ * null`, and the brief's groups read that as no items.
+ */
+export function keptBrief(b: (Omit<BrakemanBrief, 'items'> & { items?: BriefItem[] | null }) | null | undefined): BrakemanBrief | null {
+  return b ? { ...b, items: b.items ?? [] } : null
+}
+
 /** A ref's record at one time: what the turn read of it (`seen`), or what it was as the brief was kept (`now`). */
 export interface RefState {
   url?: string

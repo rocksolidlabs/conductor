@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanConfig, BriefItem } from './brakeman'
-import { BOUNDS, KINDS, KIND_SUBJECTS, NO_AGENT, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, formField, groupItems, kindWords, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, sameConfig, scopeJSONBytes, stateRank, stateWords, stopAction, unopened } from './brakeman'
+import { BOUNDS, KINDS, KIND_SUBJECTS, NO_AGENT, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, formField, groupItems, keptBrief, kindWords, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, sameConfig, scopeJSONBytes, stateRank, stateWords, stopAction, unopened } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -184,6 +184,15 @@ describe("a brief's items", () => {
     expect(groups.find((g) => g.group === 'drafts')!.items.map((x) => x.index)).toEqual([8, 11])
     expect(groups.find((g) => g.group === 'evidence')!.items.map((x) => x.index)).toEqual([0, 9])
     expect(groupItems([{ kind: 'fact/1', text: 'only', evidence: [`run:${RUN}`] }]).map((g) => g.group)).toEqual(['facts'])
+  })
+
+  it('of a brief kept with its summary alone are none, though the server writes them null', () => {
+    const b = keptBrief({ schema: 'brakeman.brief/1', title: 'Nothing changed', summary: 'Quiet.', items: null })!
+    expect(b.items).toEqual([])
+    expect(groupItems(b.items)).toEqual([])
+    expect(keptBrief({ schema: 'brakeman.brief/1', title: 't', summary: 's' })!.items).toEqual([])
+    expect(keptBrief(null)).toBeNull()
+    expect(keptBrief({ schema: 'brakeman.brief/1', title: 't', summary: 's', items })!.items).toBe(items)
   })
 
   it('name the facts an interpretation reads by their numbers', () => {

@@ -11,8 +11,9 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // one in progress, then runs with its session's link; the stub's brief, held by a gate until the spec opens it, arrives while a
 // terminal has the focus and takes neither the focus nor the page, and counts in the sidebar; the brief shows its provenance,
 // Brakeman's reading, the fact with its evidence linking to the run and the session, and the interpretation naming the fact; the
-// turn's run is stopped after it and the request leaves In progress; the page links Settings while Brakeman is on; and the server
-// started again on the same data shows the same brief.
+// turn's run is stopped after it and the request leaves In progress; the page links Settings while Brakeman is on; the server
+// started again on the same data shows the same brief; a brief kept with its summary alone shows its reading; a `brief:` link to an
+// item of a brief opened before scrolls to the item once it is drawn; and a brief opened in one tab is opened in the others.
 test.describe.configure({ mode: 'serial' })
 
 /** The cap of every wait a step makes without a bound of its own: the config's expect bound, an action's and the navigation's. */
@@ -212,4 +213,62 @@ test('the server started again on the same data shows the same brief', async ({ 
   await expect(fact.locator(`[data-ref-chip="run:${briefed.runId}"] [data-ref-link]`)).toHaveAttribute('href', `/runs/${briefed.runId}`)
   await expect(fact.locator(`[data-ref-chip="session:${briefed.sessionId}"]`)).toBeVisible()
   await expect(brief.locator('[data-brief-interpretation] [data-reads]')).toHaveText('reads fact 1')
+})
+
+test('a brief kept with its summary alone shows its reading', async ({ page }) => {
+  // The server writes a brief kept with no items as items:null; br-2's reply is made one.
+  await page.route(`${server!.baseURL}/api/brakeman/requests/br-2`, async (route) => {
+    const res = await route.fetch()
+    const body = (await res.json()) as { brief: { items: unknown } }
+    body.brief.items = null
+    await route.fulfill({ response: res, json: body })
+  })
+  await open(page, '/brakeman?request=br-2')
+  const brief = page.locator('[data-brief="br-2"]')
+  await expect(brief.locator('[data-brief-title]')).toHaveText('Stub brief for br-2', { timeout: 30_000 })
+  await expect(brief.locator('[data-brief-reading]')).toContainText('The stub read its request and what changed, and found its own turn.')
+  await expect(brief.locator('[data-brief-group]')).toHaveCount(0)
+})
+
+test('a brief: link to an item of a brief opened before scrolls to the item once it is drawn', async ({ page }) => {
+  // br-2 opened in this browser before, and every element the page scrolls to noted.
+  await page.addInitScript(() => {
+    if (localStorage.getItem('conductor.brakeman.opened') === null) localStorage.setItem('conductor.brakeman.opened', JSON.stringify(['br-2']))
+    const w = window as Window & { __scrolled?: string[] }
+    w.__scrolled = []
+    const into = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = function (this: Element, arg?: boolean | ScrollIntoViewOptions) {
+      w.__scrolled!.push(this.id)
+      return into.call(this, arg)
+    }
+  })
+  await open(page, '/brakeman?request=br-2#item-1')
+  await expect(page.locator('[data-brief="br-2"] #item-1')).toContainText('Nothing else happened that the stub was asked about.', { timeout: 30_000 })
+  await expect.poll(() => page.evaluate(() => (window as Window & { __scrolled?: string[] }).__scrolled)).toContain('item-1')
+})
+
+test('a brief opened in one tab is opened in the others, and stays opened', async ({ context, page }) => {
+  // The browser has opened none: br-2 is new in every tab.
+  await context.addInitScript(() => {
+    if (localStorage.getItem('conductor.brakeman.opened') === null) localStorage.setItem('conductor.brakeman.opened', '[]')
+  })
+  await open(page, '/brakeman')
+  const other = await context.newPage()
+  await open(other, '/brakeman')
+  for (const p of [page, other]) {
+    await expect(p.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-new]')).toBeVisible()
+    await expect(p.locator('[data-sidebar-brakeman]')).toContainText('1')
+  }
+  await page.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-open]').click()
+  await expect(page.locator('[data-brief="br-2"] [data-brief-title]')).toHaveText('Stub brief for br-2')
+  await expect(page.locator('[data-sidebar-brakeman]')).not.toContainText(/\d/)
+  // The other tab follows without a reload, and a reload of it finds br-2 opened.
+  await expect(other.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-new]')).toHaveCount(0)
+  await expect(other.locator('[data-sidebar-brakeman]')).not.toContainText(/\d/)
+  await other.reload()
+  await expect(other.locator('[data-brakeman-briefs] [data-request="br-2"]')).toBeVisible()
+  await expect(other.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-new]')).toHaveCount(0)
+  await expect(other.locator('[data-sidebar-brakeman]')).not.toContainText(/\d/)
+  expect(await other.evaluate(() => JSON.parse(localStorage.getItem('conductor.brakeman.opened') ?? 'null'))).toEqual(['br-2'])
+  await other.close()
 })
