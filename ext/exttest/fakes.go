@@ -681,13 +681,15 @@ func (f *FakeMedia) RoomRequests() []ext.RoomRequest {
 	return copyAll(f.rooms, func(r ext.RoomRequest) ext.RoomRequest { r.By = copyPrincipal(r.By); return r })
 }
 
-// FakeRuntime is a runtime that answers the Where a test sets. The Runtime
-// seam (docs/plans/runtime.md) gives it the interface's other methods.
+// FakeRuntime is a runtime that answers the Where a test sets, and
+// records and answers the interface's other methods as runtime.go says.
 type FakeRuntime struct {
+	changes
 	name string
 
-	mu    sync.Mutex
-	where ext.Where
+	mu     sync.Mutex
+	where  ext.Where
+	script runtimeScript // runtime.go
 }
 
 // NewFakeRuntime is a FakeRuntime named name that answers w.
@@ -698,11 +700,12 @@ func NewFakeRuntime(name string, w ext.Where) *FakeRuntime {
 // Name answers the fake's name.
 func (f *FakeRuntime) Name() string { return f.name }
 
-// SetWhere has Where answer w.
+// SetWhere has Where answer w, a script changed (Changed told).
 func (f *FakeRuntime) SetWhere(w ext.Where) {
 	f.mu.Lock()
 	f.where = w
 	f.mu.Unlock()
+	f.tell()
 }
 
 // Where answers the Where set.

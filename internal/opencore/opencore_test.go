@@ -40,6 +40,8 @@ func TestEachRuleCatchesItsPlant(t *testing.T) {
 		{"go-mod", Problem{Rule: RuleGoMod, File: "go.mod", Line: 9}, "require github.com/rocksolidlabs/conductor-cloud"},
 		{"feature-tag", Problem{Rule: RuleFeatureTag, File: "premium.go", Line: 1}, `"premium"`},
 		{"ext-std", Problem{Rule: RuleExtStd, File: "ext/plant.go", Line: 9}, "github.com/rocksolidlabs/conductor/internal/session"},
+		{"ext-std-local", Problem{Rule: RuleExtStd, File: "ext/local/plant.go", Line: 9}, "github.com/rocksolidlabs/conductor/internal/session"},
+		{"ext-std-runner", Problem{Rule: RuleExtStd, File: "ext/plant.go", Line: 8}, "github.com/rocksolidlabs/conductor/internal/pty"},
 		{"entitlements", Problem{Rule: RuleEntitlements, File: "internal/feature/gate.go", Line: 18}, "calls a method named Entitled"},
 	} {
 		t.Run(tc.fixture, func(t *testing.T) {
