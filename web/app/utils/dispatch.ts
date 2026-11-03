@@ -1,4 +1,4 @@
-import type { CloseRequirement, CloseState, DispatchChange, DispatchSort, DispatchTicket, Horizon, LabelColor, LaunchSummary, LinkVerified, PlanSummary, RelatedTicket, RunCandidate, TaskCandidates, TicketAttachment, TicketComment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary, Tracker, VerifiedReceipt } from '~/composables/useDispatch'
+import type { CandidateReceipt, CloseRequirement, CloseState, DispatchChange, DispatchSort, DispatchTicket, Horizon, LabelColor, LaunchSummary, LinkVerified, PlanSummary, RelatedTicket, RunCandidate, TaskCandidates, TicketAttachment, TicketComment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary, Tracker, VerifiedReceipt } from '~/composables/useDispatch'
 import type { Tone } from './tasks'
 
 // Dispatch's words (docs/plans/dispatch.md, "web/app"): the key parser; the vocabularies of a ticket's fields with their words, colours
@@ -1500,18 +1500,53 @@ export interface CandidateOption {
 }
 
 /**
- * A candidate's receipts in short, for the delivery form's choices: "2 checks passed", "1 of 2 failed: check never (exit 1)", "no check:
- * it cannot be verified", each with "accepted anyway" when a person took it so. What the server records is its own read of the ledger.
+ * Whether a receipt passes as the server's verification of a delivery reads it (api's candidateVerified): finished with exit 0, its tree
+ * unchanged, not timed out, no signal. A leftover child killed after the check's process exited (`killed`) is no failure of the check,
+ * as the engine's own reading of it says.
+ */
+export function receiptVerifies(r: Pick<CandidateReceipt, 'state' | 'exit' | 'signal' | 'stable' | 'timedOut'>): boolean {
+  return r.state === 'finished' && r.exit === 0 && r.stable && !r.timedOut && !r.signal
+}
+
+/** How an attempt that did not succeed ended, after "its attempt". */
+const ATTEMPT_ENDS: Partial<Record<RunCandidate['state'], string>> = {
+  failed: 'failed',
+  cancelled: 'was cancelled',
+  stopped: 'was stopped',
+  interrupted: 'was interrupted',
+  uncertain: 'ended uncertain',
+}
+
+/**
+ * A candidate's receipts in short, for the delivery form's choices, by the server's rule for a delivery's verification (passed when its
+ * attempt succeeded and every receipt passes, `receiptVerifies`): "2 checks passed", "1 of 2 failed: check never (exit 1)", "its check
+ * passed, but its attempt failed: it cannot be verified", "no check: it cannot be verified", each with "accepted anyway" when a person
+ * took it so. What the server records is its own read of the ledger.
  */
 export function candidateSummary(c: Pick<RunCandidate, 'receipts' | 'acceptedAnyway' | 'state'>): string {
   const n = c.receipts.length
   const anyway = c.acceptedAnyway ? ', accepted anyway' : ''
   if (!n) return `no check: it cannot be verified${anyway}`
-  const failed = c.receipts.filter((r) => !(r.state === 'finished' && r.exit === 0 && r.stable && !r.timedOut && !r.killed))
-  if (!failed.length) return `${n === 1 ? 'its check' : `${n} checks`} passed${anyway}`
-  const f = failed[0]!
-  const how = f.exit !== undefined && f.exit !== 0 ? ` (exit ${f.exit})` : f.state === 'finished' && !f.stable ? ' (changed the tree)' : ''
-  return `${failed.length} of ${n} failed: ${f.phase} ${f.id}${how}${anyway}`
+  const failed = c.receipts.filter((r) => !receiptVerifies(r))
+  if (failed.length) {
+    const f = failed[0]!
+    const how =
+      f.state !== 'finished'
+        ? ` (${f.state})`
+        : f.signal
+          ? ` (signal ${f.signal})`
+          : f.timedOut
+            ? ' (timed out)'
+            : f.exit !== undefined && f.exit !== 0
+              ? ` (exit ${f.exit})`
+              : !f.stable
+                ? ' (changed the tree)'
+                : ''
+    return `${failed.length} of ${n} failed: ${f.phase} ${f.id}${how}${anyway}`
+  }
+  const passed = `${n === 1 ? 'its check' : `${n} checks`} passed`
+  if (c.state !== 'succeeded') return `${passed}, but its attempt ${ATTEMPT_ENDS[c.state] ?? `is ${c.state}`}: it cannot be verified${anyway}`
+  return `${passed}${anyway}`
 }
 
 /**
@@ -1537,12 +1572,18 @@ export function candidateOptions(runs: ReadonlyArray<{ run: string; label?: stri
   return out
 }
 
-/** Whether the candidate a link names is shown withdrawn in its run's candidates read: its result taken back since it was delivered. */
+/**
+ * Whether the candidate a link names was withdrawn, as its run's candidates read say: its result taken back since it was delivered. A
+ * withdrawal takes back every attempt of the task up to its last one then, which the task's `withdrawn` says, so an attempt older than
+ * the six newest the read lists is known withdrawn too, not taken for one that was not.
+ */
 export function candidateWithdrawn(candidate: string | undefined, runs: ReadonlyMap<string, readonly TaskCandidates[]>): boolean {
   const c = parseCandidate(candidate)
   if (!c) return false
-  const found = runs.get(c.run)?.find((t) => t.task === c.task)?.candidates.find((x) => x.attempt === c.attempt && x.commit === c.commit)
-  return !!found?.withdrawn
+  const task = runs.get(c.run)?.find((t) => t.task === c.task)
+  if (!task) return false
+  if (c.attempt <= (task.withdrawn ?? 0)) return true
+  return !!task.candidates.find((x) => x.attempt === c.attempt && x.commit === c.commit)?.withdrawn
 }
 
 /** One of a ticket's decisions as its Decisions section shows it, newest first. */

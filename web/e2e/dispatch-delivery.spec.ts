@@ -63,10 +63,20 @@ async function launchFrom(api: Api, ticketKey: string, crew: string, note: strin
   return { plan: proposed.plan.id, launch: launched.launch }
 }
 
+/**
+ * Raises the test's timeout by a long wait's cap as the wait starts, so that the waits of one test, each within its own cap, never add up
+ * to more than the test is given (AGENTS.md, "Tests that do not flake"): the config's timeout is left for the rest.
+ */
+function budget(ms: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + ms)
+}
+
 /** A run read until `done` holds of it. */
-async function runUntil(api: Api, id: string, done: (r: Run) => boolean, message: string): Promise<Run> {
+async function runUntil(api: Api, id: string, done: (r: Run) => boolean, message: string, timeout = 120_000): Promise<Run> {
+  budget(timeout)
   let last = await api.run(id)
-  await expect.poll(async () => done((last = await api.run(id))), { timeout: 120_000, intervals: [500], message }).toBe(true)
+  await expect.poll(async () => done((last = await api.run(id))), { timeout, intervals: [500], message }).toBe(true)
   return last
 }
 
@@ -101,6 +111,7 @@ test("a delivery naming the final candidate is verified, the ticket closes once 
   expect(commit).toMatch(/^[0-9a-f]{40,64}$/)
 
   await page.goto(`/dispatch/${ticketKey.replace('-', '/')}`)
+  budget(30_000)
   await expect(page.locator('[data-ticket-title]')).toHaveText('Ship the login fix', { timeout: 30_000 })
   await expect(page.locator('[data-close-policy] [data-close-summary]')).toHaveText("To close: the owner's acceptance · a delivery link · a verified delivery")
   await expect(item(page, 'verified')).not.toHaveAttribute('data-met')
@@ -124,6 +135,7 @@ test("a delivery naming the final candidate is verified, the ticket closes once 
   await card.locator('[data-accept]').click()
   await expect(card).toHaveAttribute('data-accepted', 'met')
   await card.locator('[data-close]').click()
+  budget(30_000)
   await expect.poll(async () => (await storedTicket(api, ticketKey)).status, { timeout: 30_000, message: 'the ticket is done' }).toBe('done')
   await expect(card).toHaveAttribute('data-close-closed', '')
 
@@ -159,6 +171,7 @@ test('a candidate accepted anyway is not verified, with the words; the close ref
   const commit = await commitOf(api, run, 3)
 
   await page.goto(`/dispatch/${ticketKey.replace('-', '/')}`)
+  budget(30_000)
   await expect(page.locator('[data-ticket-title]')).toHaveText('Ship it anyway', { timeout: 30_000 })
   await deliver(page, 'https://github.com/acme/api/pull/13', 'build#3')
   const row = page.locator('[data-ticket-links] [data-link-kind="delivery"]')

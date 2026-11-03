@@ -875,12 +875,40 @@ describe("a delivery's candidate and its verification (DS2, PR-12)", () => {
     expect(candidateSummary(cand(1, { receipts: [receipt(), receipt({ id: 'tidy', stable: false })] }))).toBe('1 of 2 failed: check tidy (changed the tree)')
   })
 
+  it("sums a candidate's receipts by the server's rule for a verified delivery: a leftover child killed passes, a signal fails, the attempt must have succeeded", () => {
+    // A check whose leftover child was killed after its process exited 0: passed, as the server records it verified.
+    expect(candidateSummary(cand(1, { receipts: [receipt({ killed: true })] }))).toBe('its check passed')
+    // A signal fails the receipt, whatever the exit says.
+    expect(candidateSummary(cand(1, { receipts: [receipt(), receipt({ id: 'slow', exit: undefined, signal: 'killed' })] }))).toBe('1 of 2 failed: check slow (signal killed)')
+    expect(candidateSummary(cand(1, { receipts: [receipt({ signal: 'terminated' })] }))).toBe('1 of 1 failed: check test (signal terminated)')
+    expect(candidateSummary(cand(1, { receipts: [receipt({ id: 'slow', exit: undefined, timedOut: true })] }))).toBe('1 of 1 failed: check slow (timed out)')
+    expect(candidateSummary(cand(1, { receipts: [receipt({ state: 'interrupted', exit: undefined })] }))).toBe('1 of 1 failed: check test (interrupted)')
+    // Every check passed, but the attempt did not succeed: the server records it not verified.
+    expect(candidateSummary(cand(1, { state: 'failed' }))).toBe('its check passed, but its attempt failed: it cannot be verified')
+    expect(candidateSummary(cand(1, { state: 'uncertain', receipts: [receipt(), receipt({ id: 'lint' })] }))).toBe('2 checks passed, but its attempt ended uncertain: it cannot be verified')
+    expect(candidateSummary(cand(1, { state: 'cancelled', acceptedAnyway: { actor: 'admin', at: 'x', command: 'c1' } }))).toBe(
+      'its check passed, but its attempt was cancelled: it cannot be verified, accepted anyway',
+    )
+  })
+
   it('tells a delivered candidate withdrawn since from its run\'s candidates read now', () => {
     const byRun = new Map([['team-0000aaaa', tasks(work('build', cand(2, { withdrawn: true }), cand(1)))]])
     expect(candidateWithdrawn(`team-0000aaaa/build/2@${'2'.repeat(40)}`, byRun)).toBe(true)
     expect(candidateWithdrawn(`team-0000aaaa/build/1@${'1'.repeat(40)}`, byRun)).toBe(false)
     expect(candidateWithdrawn(`team-0000cccc/build/2@${'2'.repeat(40)}`, byRun)).toBe(false)
     expect(candidateWithdrawn(undefined, byRun)).toBe(false)
+  })
+
+  it('tells a delivered candidate withdrawn when it is older than the six its task lists, from the task\'s withdrawn', () => {
+    // Attempts 8 to 3 listed, none withdrawn; attempt 2 was, before them: the task's withdrawn says so.
+    const listed = [8, 7, 6, 5, 4, 3].map((n) => cand(n))
+    const byRun = new Map([['team-0000aaaa', tasks({ ...work('build', ...listed), more: 2, withdrawn: 2 })]])
+    expect(candidateWithdrawn(`team-0000aaaa/build/2@${'2'.repeat(40)}`, byRun)).toBe(true)
+    expect(candidateWithdrawn(`team-0000aaaa/build/1@${'1'.repeat(40)}`, byRun)).toBe(true)
+    expect(candidateWithdrawn(`team-0000aaaa/build/3@${'3'.repeat(40)}`, byRun)).toBe(false)
+    // A task with nothing withdrawn: an attempt past the listed ones is not.
+    const none = new Map([['team-0000aaaa', tasks({ ...work('build', ...listed), more: 2, withdrawn: 0 })]])
+    expect(candidateWithdrawn(`team-0000aaaa/build/2@${'2'.repeat(40)}`, none)).toBe(false)
   })
 })
 

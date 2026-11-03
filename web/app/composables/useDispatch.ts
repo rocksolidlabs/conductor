@@ -650,6 +650,10 @@ export interface TaskCandidates {
   kind: 'work' | 'review'
   candidates: RunCandidate[]
   more: number
+  /** The task's last attempt a withdrawal took back, 0 for none: every attempt at or below it was, whether or not it is listed. */
+  withdrawn?: number
+  /** How many of its attempts not listed a person accepted anyway: decisions its older candidates (`olderCandidates`) list. */
+  acceptedOlder?: number
 }
 
 /** A page of a run's candidates (GET /api/runs/{run}/candidates): at most 8 tasks in the crew's order, `next` the last one's id when more follow. */
@@ -925,6 +929,9 @@ export function useDispatchApi() {
     ticketRuns: (key: string, before = '') => request<TicketRunsPage>(`/api/dispatch/tickets/${enc(key)}/runs` + (before ? `?before=${enc(before)}` : '')),
     /** A page of a run's candidates with their receipts, from the ledger, `after` a page's `next` (a task's id). */
     runCandidates: (run: string, after = '') => request<RunCandidatesPage>(`/api/runs/${enc(run)}/candidates` + (after ? `?after=${enc(after)}` : '')),
+    /** A task's candidates older than attempt `before`, six at most, newest first: the page holds that task alone. */
+    olderCandidates: (run: string, task: string, before: number) =>
+      request<RunCandidatesPage>(`/api/runs/${enc(run)}/candidates?task=${enc(task)}&before=${before}`),
     /** An operation's receipt, read without acting. */
     receipt: (opId: string) => request<{ receipt: DispatchReceipt }>(`/api/dispatch/ops/${enc(opId)}`).then((r) => r.receipt),
   }
