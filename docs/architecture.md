@@ -240,7 +240,11 @@ checks against that commit in a detached checkout through `internal/proc`
 (argv, a timeout, the process group ended with the run, the output's head and
 tail), one at a time across the server, and the checkout compared with the
 commit after each; a failing check fails the attempt and the next one starts
-from that commit with what failed in its task file. A review's `needs_changes`
+from that commit with the check's receipt in its task file (`previous.check`:
+the ledger's identity of the row, how it ended, the last 2 KiB of its output)
+and its whole log beside it (`.conductor/previous/check-<id>.log`), read from
+the ledger, so a continuation's first attempt gets the same after a restart.
+A review's `needs_changes`
 reopens the task it reviewed and withdraws, transitively, whatever rested on
 the result. Every transition is one ledger transaction committed before the
 side effect it precedes (the reservation before the worktree, the launch
@@ -327,9 +331,11 @@ refusal of the store's rules is a failed receipt kept alone. The
 between replicas, merged by the field rules of `rules.go`. A read of more
 than one statement (a ticket with its sets, comments, links and close
 state; a list and its total) is one read transaction, so a reply
-describes one state whatever commits meanwhile. The store's one sight of
-the engine is `RunExists`, which the server gives it: a run link names a
-run the engine holds or has a record of. A ticket's attachments are files
+describes one state whatever commits meanwhile. The store sees the engine
+only through functions the server gives it: `RunExists` (a run link names a
+run the engine holds or has a record of), `SetRunTicket` (the ticket a run
+was launched from, by its package) and `SetRunChain` (the runs a run
+continues and is continued by). A ticket's attachments are files
 beside the database, one per content, named by its SHA-256
 (`attachments.go`): an upload writes and hashes its file, holds the hash
 with a lease (an `uploads` row) committed before the file is published
@@ -376,8 +382,15 @@ project requires, what is met, what is missing and why) is computed on
 every read and never stored, so an owner or criteria changed later read
 true at once. A move to `done` is the only change it gates, refused
 `close_policy` with what is missing; any other status follows any other.
-A `delivery` link is a URL a person adds; a `run` link names a run the
-engine holds or has a record of, one live ticket a run.
+A `delivery` link is a URL a person adds, which may name the candidate it
+delivers (`<run>/<task>/<n>@<commit>`); the API reads that candidate's check
+receipts from the ledger when the link is added and the store keeps them
+on the link (`delivery.go`), the one fact of a run's evidence Dispatch
+records, so the policy's `verified` (a delivery whose candidate passed every
+check on its commit) is a function of Dispatch's own rows. A `run` link
+names a run the engine holds or has a record of, and one live ticket holds
+a run's whole chain of continuations: a link into a chain another ticket
+holds, by a launch or a link, is refused (`run_linked`).
 
 Three clients reach the routes. The workbench's pages (below) and
 `conductor dispatch` use the workbench token, as the admin. An attempt
@@ -402,8 +415,9 @@ the ticket as the one before left it. `useDispatchLive.ts` re-reads on the
 `dispatch` event: a ticket's page at once for its own ticket and after
 the 250 ms window for the rest of its project, a list on its project's
 events, nothing polled. A ticket's page embeds `RunTasks.vue`, the run
-page's own Tasks rows, for each linked run, and the run page asks
-`GET /api/dispatch/links?run=` for its ticket's chip.
+page's own Tasks rows, for each run it shows, and the run page asks
+`GET /api/dispatch/links?run=` for its ticket's chip, or reads a launched
+run's `ticket` for its "Launched from CND-12 · plan r2".
 
 A ticket's plan revisions and launches (Program item DS2,
 `docs/plans/dispatch-evidence.md`) join Dispatch to Yardmaster without
@@ -436,6 +450,15 @@ checked by the launcher on the catalog entry it starts. A run's evidence
 is read through its launch: its run id names the run in the engine, its
 record and the ledger, whose rows (attempts, check receipts with their
 logs' SHA-256, results, commands) are the truth Dispatch never copies.
+`api/dispatch_evidence.go` answers a ticket's runs a page at a time (its
+launches, their runs and every continuation, found by walking the chain
+both ways, and its hand links), and `api/candidates.go` a run's candidates
+by task: each attempt's result commit with the receipts whose `subject` is
+that commit, so a receipt is never shown against a commit it did not
+check, each with `where` it ran, read from the ledger whether or not the
+engine still holds the run. The ticket page reads both again on the
+`dispatch` events of its ticket and the `run` events of the runs it shows,
+and counts a run's questions from the live sessions, never by polling.
 
 ## Switchyard
 

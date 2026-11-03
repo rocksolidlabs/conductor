@@ -1298,7 +1298,9 @@ failed or cancelled task (one more attempt), **Accept anyway** a failed task's
 last submitted commit as its result (asked first), **Cancel** a task (asked
 first), **Copy branch**. A row opens the task: its result (summary, issues, a
 review's findings) and every attempt with where it started, what it submitted
-and what failed it. The header says `3/7 tasks`, `1 failed`, `2 running`,
+and what failed it. An attempt after a failed check starts at the result that
+failed, its task file naming the check's receipt with the end of its output,
+and the whole log beside it (`.conductor/previous/check-<id>.log`). The header says `3/7 tasks`, `1 failed`, `2 running`,
 `1 checking` and `paused`, and **Pause** holds scheduling (attempts in
 flight go on, no task starts) until **Resume**. Every one of these is a
 command with a receipt: the browser mints an id, a reply lost to the network
@@ -1479,16 +1481,74 @@ says what the project's policy asks and which is met, and, unmet, why
 ("accepted for Alice; the owner is now Bob", "accepted before the criteria
 changed"). **Accept for Alice** records the acceptance for the owner and
 against the criteria as they stand; no status implies it. A delivery link is
-the merged pull request's or the release's URL, added by hand. **Close as
+the merged pull request's or the release's URL, added by hand; the link form's
+**The candidate it delivers** (none until picked) names one of the ticket's
+runs' results, and the link keeps that candidate's check receipts as they
+stood ("Verified: build#2 passed 2 checks", or what failed). A policy may ask
+for **a verified delivery**: a delivery naming a candidate whose checks all
+passed on its commit; a candidate with no check, or one accepted anyway, is
+not verified. **Close as
 done**, a drop on Done or `s` to Done is refused in those words until the
 policy is met; any other status is free. A new Dispatch project asks for the
 owner's acceptance, an external one for nothing.
 
-**Runs.** A ticket's page lists the managed runs linked to it, each with the
-run page's own Tasks rows, live while the server holds the run and from its
-record after; a run is linked from the form (picked or named by its id), one
-ticket a run. The run page shows the ticket's key beside the run's name and
-opens it. Launching a run from a ticket comes later.
+**Plan.** Below the criteria, **Propose a plan** makes a plan revision of the
+ticket (shown as `r1`, `r2`): a saved crew with tasks taken whole as it is
+now (its members with their agents and arguments, each agent's command as the
+catalog resolves it, its tasks with their member, kind, needs and checks, its
+project manifest, and the yolo choice, said plainly), the commit it starts
+from (`HEAD` unless another is named), source references checked at that
+commit (`internal/api/auth.go:40-60=the loop`), the attachments and comments
+to hand over, constraints, the decisions a person will make (recorded and
+shown; nothing holds work on them yet) and a note. A revision never changes:
+**Revise** makes the next one from it. **Approve**, with a note, is the
+operator's, and supersedes the revision approved before. The section says
+when an approval no longer holds: after an edit of the title, description or
+criteria **Approve again**; after a comment it hands over is edited or an
+agent's catalog entry changes, **Revise**; and when the crew was edited since.
+An edit of anything else (status, labels, a new comment) leaves it holding.
+
+**Launching.** **Launch from r2** asks first (the revision, its commit, the
+yolo choice, the run's label, `CND-12 Fix the login loop` unless changed),
+then starts a managed run at the revision's commit with its crew, and says
+why when it cannot: no approved revision, an approval that no longer holds,
+the ticket closed, the project archived, managed runs off or no ledger. The
+launch is recorded before the run starts, so a reply lost to the network and
+sent again answers the same run, never a second one. Every attempt of the run,
+a retry or a continuation after a restart included, is handed the ticket as
+it stood at the launch beside its task files: `.conductor/ticket.md`,
+`.conductor/package.json` and the attachments in `.conductor/attachments/`
+(under names of their own, `01-spec.png`). An edit of the ticket after the
+launch changes nothing of the run, and each attempt starts only the agent the
+revision approved: one whose catalog entry changed since fails at once,
+uncounted, and pauses the run with why.
+
+**Runs.** A ticket's page lists every launch (its plan revision, its state,
+why one failed), its run and the run's continuations, and the runs linked
+to it by hand, newest first, **Show older** for the rest. Each run shows its
+state, its tasks counted with the run page's own Tasks rows, its blockers and
+the questions its members wait on, each with **Open** on the member's
+session. Under it its **candidates**: each task's submitted results, newest
+first, with the commit (Copy), whether it is the task's result now, withdrawn
+or accepted anyway, and its check receipts as chips (passed, failed with its
+exit, timed out, interrupted) with where each ran; a review shows its verdict
+and its findings counted, their text read when opened, and the repairs say
+which attempt followed a failed check or a review's findings. A receipt opens
+in full (the argv, the commit, exit, duration, `stable`) with its log, whose
+SHA-256 as served is shown beside the one the ledger recorded. A run whose
+ticket changed after its launch says so ("The ticket changed after this run
+launched: the description; 2 comments since") with the history between, and
+offers **Revise** and **Launch a follow-up**, never an update of the run. The
+run page's header says "Launched from CND-12 · plan r2" and opens the ticket.
+A run is linked by hand from the form (picked or named by its id): one
+ticket a run and its continuations, and a run launched from a ticket is that
+ticket's already.
+
+**Decisions and people.** **Decisions** lists the approvals with their notes,
+the acceptance, the results accepted anyway, and the approved revision's
+decisions a person makes; **People** the owner, the assignees, who approved,
+launched and commented, the approved revision's agents with the commands they
+run, and each launch's agents with the version each reported.
 
 **The keys.** On a project's page: **J** **K** (or the arrows) move, **Enter**
 opens, **X** selects, **C** makes a ticket, and **S** **P** **A** **L** **M**
