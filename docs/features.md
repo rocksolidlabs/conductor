@@ -3434,14 +3434,18 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (PR-3 does), so every run is native as on main. `internal/crew` leaves
   the boundary test's allowlist. `sessiontest.FakeRuntime` is this
   repository's fake of the contract (every call recorded with its spec and
-  ref, each method scripted, or passed to `Base`; `PanicAfterStart`).
+  ref, each method scripted, or passed to `Base`; `PanicAfterStart`, whose
+  start is held unreaped by `pty.StartHeld` until it aborts the group, so
+  its panic leaves nothing running even once the leader has exited; its
+  file joins the boundary test's runner allowlist for that).
   Tests: `TestEveryProcessOfARunGoesThroughTheRuntime`,
   `TestADeclinedRunRunsNatively`, `TestALegacyRunIsOfferedNothing`,
   `TestAResultCrossesTheRuntimeWhole`, `TestARefusedSpecKeepsItsWords`,
   `TestSetRuntimeRefusals`, `TestAnEngineRunsNativelyByDefault`;
-  `TestFakeRuntimeRecordsWhatItIsAsked` and
-  `TestFakeRuntimePanicsAfterStartLeavingNothing`; every existing crew
-  test, its checks and steps now through the adapter.
+  `TestFakeRuntimeRecordsWhatItIsAsked`,
+  `TestFakeRuntimePanicsAfterStartLeavingNothing` and
+  `TestFakeRuntimePanicsAfterStartOnceTheLeaderExitedLeavingNothing`;
+  every existing crew test, its checks and steps now through the adapter.
 
   PR-3 (#492): sessions start through the Runtime, on the server and on a
   host. Planned.
