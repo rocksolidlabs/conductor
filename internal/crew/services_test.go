@@ -5,7 +5,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -259,43 +258,6 @@ func TestATreesServicesRunBesideItAndItsProbesWaitForThem(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
-// The native executor's probe asks the loopback through a client of its
-// own: a URL that answers is its status, the body read nothing of; a
-// redirect is the try's answer and is never followed (the server it points
-// at sees no request); a port nothing listens on is an error.
-func TestTheNativeProbeFollowsNoRedirect(t *testing.T) {
-	var elsewhere atomic.Int32
-	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { elsewhere.Add(1) }))
-	defer other.Close()
-	moved := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, other.URL+"/elsewhere", http.StatusFound)
-	}))
-	defer moved.Close()
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, strings.Repeat("x", 1<<20))
-	}))
-	defer up.Close()
-	ex := nativeExec()
-	if status, err := ex.probe(t.Context(), up.URL+"/", 10*time.Second); err != nil || status != http.StatusOK {
-		t.Fatalf("a URL that answers: %d %v", status, err)
-	}
-	if status, err := ex.probe(t.Context(), moved.URL+"/", 10*time.Second); err != nil || status != http.StatusFound {
-		t.Fatalf("a redirect: %d %v", status, err)
-	}
-	if n := elsewhere.Load(); n != 0 {
-		t.Fatalf("the redirect was followed: %d requests elsewhere", n)
-	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := "http://" + l.Addr().String() + "/"
-	l.Close()
-	if status, err := ex.probe(t.Context(), closed, 10*time.Second); err == nil {
-		t.Fatalf("a port nothing listens on answered %d", status)
-	}
-}
-
 // In an engine on the native probe, a probe over HTTP asks the tree's own
 // port on the loopback (here an httptest server's, the port scripted): it
 // passes when the URL answers, and one that answers a redirect never
@@ -313,7 +275,7 @@ func TestAnEngineProbeAsksTheLoopbackAndFollowsNoRedirect(t *testing.T) {
 		port := srv.Listener.Addr().(*net.TCPAddr).Port
 		dir := newRepo(t)
 		e, fl, l := managedEngine(t)
-		e.exec.probe = probeURL
+		e.exec.probe = proc.Probe
 		fl.ports.script(port)
 		m := Manifest{Ports: []string{"web"}, Services: []Check{serviceLoop("web", "web.pid", false)},
 			Ready: []Probe{{ID: "page", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/health", IntervalSeconds: 1}}, Preview: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/"}
@@ -339,7 +301,7 @@ func TestAnEngineProbeAsksTheLoopbackAndFollowsNoRedirect(t *testing.T) {
 		port := moved.Listener.Addr().(*net.TCPAddr).Port
 		dir := newRepo(t)
 		e, fl, l := managedEngine(t)
-		e.exec.probe = probeURL
+		e.exec.probe = proc.Probe
 		fl.ports.script(port)
 		m := Manifest{Ports: []string{"web"}, Services: []Check{serviceLoop("web", "web.pid", false)},
 			Ready: []Probe{{ID: "page", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", IntervalSeconds: 1, TimeoutSeconds: 3}}}
