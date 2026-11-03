@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -37,6 +38,7 @@ func (p *panicFirst) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext
 // then the process the Runtime started is gone and reaped. The server
 // serves on, and the attempt after it starts in the same Runtime.
 func TestAStartThatPanicsAfterItsProcessIsRefusedWithNoneLeft(t *testing.T) {
+	takesAnswered(t)
 	rt := &panicFirst{FakeRuntime: &sessiontest.FakeRuntime{Base: local.Native()},
 		panicker: &sessiontest.FakeRuntime{Base: local.Native(), PanicAfterStart: true}}
 	seam := nativeSeam()
@@ -66,5 +68,77 @@ func TestAStartThatPanicsAfterItsProcessIsRefusedWithNoneLeft(t *testing.T) {
 	}
 	if n := len(seam.Calls()); n != 0 {
 		t.Fatalf("the native Runtime was asked %v", methodsOf(seam))
+	}
+}
+
+// panicsIn is a Terminal that panics in method, Read or Process; the rest
+// is its terminal's.
+type panicsIn struct {
+	ext.Terminal
+	method string
+}
+
+func (p panicsIn) Read(b []byte) (int, error) {
+	if p.method == "Read" {
+		panic("the fake's terminal panics in Read")
+	}
+	return p.Terminal.Read(b)
+}
+
+func (p panicsIn) Process() ext.ProcessInfo {
+	if p.method == "Process" {
+		panic("the fake's terminal panics in Process")
+	}
+	return p.Terminal.Process()
+}
+
+// terminalPanics is a Runtime whose terminals start natively and panic in
+// method.
+type terminalPanics struct {
+	*sessiontest.FakeRuntime
+	method string
+}
+
+func (r terminalPanics) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Terminal, error) {
+	t, err := r.FakeRuntime.StartTerminal(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	return panicsIn{Terminal: t, method: r.method}, nil
+}
+
+// A registered Runtime's terminal that panics, in the session's pump's
+// Read or in the Process the start's log line reads, ends its session and
+// not the server: the guard logs the panic at error, naming the Runtime
+// and the method, and ends the process through the Runtime's Stop, killed
+// and reaped by the time the session's process is done; the server serves
+// on.
+func TestATerminalThatPanicsEndsItsSessionNotTheServer(t *testing.T) {
+	for _, method := range []string{"Read", "Process"} {
+		t.Run(method, func(t *testing.T) {
+			rt := terminalPanics{FakeRuntime: &sessiontest.FakeRuntime{Base: local.Native()}, method: method}
+			logs := &logBuffer{}
+			e := runtimeEnv(t, nativeSeam(), slog.New(slog.NewTextHandler(logs, nil)), withRuntime(rt))
+			l, aerr := e.srv.createLocalSession(createSessionRequest{AgentID: "cat", where: rt.Where()}, nil)
+			if aerr != nil {
+				t.Fatalf("the start: %+v", aerr)
+			}
+			<-l.Ended()
+			<-l.ProcessDone()
+			started := rt.Asked("StartTerminal")
+			if len(started) != 1 || started[0].Process.PID <= 0 {
+				t.Fatalf("the start: %+v", started)
+			}
+			// Reaped, not a zombie: a zombie still answers signal 0.
+			if err := syscall.Kill(started[0].Process.PID, 0); !errors.Is(err, syscall.ESRCH) {
+				t.Fatalf("the process of the terminal that panicked, %d: %v", started[0].Process.PID, err)
+			}
+			if l := logs.String(); !strings.Contains(l, "level=ERROR") || !strings.Contains(l, "provider=fake call=Terminal."+method+" failure=panic") {
+				t.Fatalf("the guard's log:\n%s", l)
+			}
+			if resp, out := e.do("GET", "/api/sessions", adminToken, nil); resp.StatusCode != http.StatusOK {
+				t.Fatalf("the server after the panic: %d %v", resp.StatusCode, out)
+			}
+		})
 	}
 }
