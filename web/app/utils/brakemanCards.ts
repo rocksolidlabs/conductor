@@ -1,0 +1,217 @@
+import type { RunInfo, RunTask, SessionInfo } from '~/composables/useSessions'
+import type { AttentionOption } from './protocol'
+import { liveAttention } from './attention'
+import { parseRef, refRoute, type BriefItem } from './brakeman'
+import { taskActions, type TaskCommand } from './tasks'
+
+// A brief's decision cards and proposals as Conductor's controls (docs/plans/brakeman.md, "web/app: decision cards, drafts,
+// handoffs and the entry points"; PR-7). A card's text is the brief's; its controls are read from the live record of what it is
+// about, never from what Brakeman wrote: an open question is answered in its session, the one place a question is answered; a
+// task's commands are those its state allows by the run page's own rules (taskActions), each carrying the revision of the run the
+// turn read, so a run that moved since is refused by the route itself (409 stale_revision) rather than acted on blind; a ticket
+// leads to its page. A proposal is a button only for an operation whose route itself refuses a stale revision (the guide's
+// Operation.Revision); any other is text with a link to the page that does it. Pure: no Nuxt, no fetch.
+
+/** What the card reads of the live records: the run (as the page holds it, or read) and the session the card is about. */
+export interface LiveRecords {
+  run?: (id: string) => Pick<RunInfo, 'id' | 'stoppedAt' | 'record' | 'resumedBy' | 'managed' | 'tasks'> | null | undefined
+  session?: (id: string) => Pick<SessionInfo, 'id' | 'name' | 'status' | 'attention'> | null | undefined
+}
+
+/** A decision card's controls, from the live record of its `about`. */
+export type CardControls =
+  | {
+      kind: 'question'
+      session: string
+      /** The session page, where the reply bar answers it. */
+      to: string
+      /** Whether the question is the one the session asks now. */
+      open: boolean
+      /** Its options, as the session reports them, while it is open. */
+      options: AttentionOption[]
+      words: string
+    }
+  | {
+      kind: 'task'
+      run: string
+      task: string
+      /** The commands the task's state allows, by taskActions' rules, in the run page's order. */
+      commands: TaskCommand[]
+      /** The run's revision the turn read: every command carries it. 0 when the brief names none (no command is offered then). */
+      expectedRevision: number
+      /** The run page at the task, where the person sees it as it is. */
+      to: string
+      words: string
+    }
+  | { kind: 'ticket'; to: string; words: string }
+  | { kind: 'none'; to: string | null; words: string }
+
+/** A revision as a brief or a resolution carries it ("7"), as the number a command expects, or 0 for none. */
+export function revisionOf(rev: string | undefined): number {
+  return rev && /^[1-9][0-9]{0,15}$/.test(rev) ? Number(rev) : 0
+}
+
+/** Who answers a decision in this build: the operator (DR1 and HM1 add named people). */
+export const ANSWERER = 'you, the operator'
+
+/**
+ * A decision card's controls from the live record of `about` (a `question:`, `task:` or `ticket:` ref). `seen` is the revision of
+ * `about` the turn read (its resolution's `seen.rev`), else the card's `subjectRevision`, which the server held equal to it.
+ */
+export function decisionControls(about: string, seen: string | undefined, live: LiveRecords): CardControls {
+  const r = parseRef(about)
+  if (!r) return { kind: 'none', to: null, words: `${about} is no record Conductor can read.` }
+  switch (r.kind) {
+    case 'question': {
+      const to = refRoute(about)!
+      const s = live.session?.(r.session!)
+      if (!s) return { kind: 'question', session: r.session!, to, open: false, options: [], words: 'The session is not listed here now: its question cannot be answered.' }
+      const a = liveAttention(s.attention)
+      if (!a || a.state !== 'needs_input' || a.id !== r.question) return { kind: 'question', session: s.id, to, open: false, options: [], words: `${s.name} no longer asks this question: it was answered, or it asks another now.` }
+      return { kind: 'question', session: s.id, to, open: true, options: a.options ?? [], words: `${s.name} asks it now. Answer it in the session, where its reply bar is.` }
+    }
+    case 'task': {
+      const to = refRoute(about)!
+      const run = live.run?.(r.run!)
+      const t = run?.tasks?.find((x) => x.id === r.task)
+      if (!run || !t) return { kind: 'none', to, words: `The task ${r.task} is not held here now: open its run.` }
+      return taskControls(run, t, revisionOf(seen), to)
+    }
+    case 'ticket':
+      return { kind: 'ticket', to: refRoute(about)!, words: `Decide it on ${r.ticket}'s page.` }
+  }
+  return { kind: 'none', to: refRoute(about), words: 'This build has no control for what the card is about: open its page.' }
+}
+
+/** The commands a task's card offers, by taskActions' rules, with the revision they carry. */
+function taskControls(run: Pick<RunInfo, 'id' | 'stoppedAt' | 'record' | 'resumedBy' | 'managed' | 'tasks'>, t: RunTask, expectedRevision: number, to: string): CardControls {
+  const a = taskActions(t, run)
+  const commands = (['retry', 'accept', 'cancel'] as const).filter((c) => a[c])
+  const base = { kind: 'task' as const, run: run.id, task: t.id, to }
+  if (!commands.length) return { ...base, commands: [], expectedRevision, words: `${t.id} is ${t.state}: nothing can be done to it from here now.` }
+  if (!expectedRevision) return { ...base, commands: [], expectedRevision: 0, words: 'Brakeman named no revision of the run it read: act from the run page, on the run as it is.' }
+  return { ...base, commands, expectedRevision, words: `${t.id} is ${t.state}. Each command carries revision ${expectedRevision} of the run, the one Brakeman read.` }
+}
+
+/** What a card's command button says. */
+export function commandLabel(c: TaskCommand): string {
+  return c === 'retry' ? 'Retry' : c === 'accept' ? 'Accept anyway…' : 'Cancel…'
+}
+
+/**
+ * What a card or a proposal says when its route refused the revision it carried: the run (or the ticket) moved on since Brakeman read
+ * it, nothing was done, and what it is now when the page has read it again.
+ */
+export function staleWords(what: 'run' | 'ticket', seen: number, now?: number, state?: string): string {
+  const moved = now && now !== seen ? `revision ${seen}; it is at revision ${now} now` : `revision ${seen}`
+  const is = state ? `, and ${state}` : ''
+  return `The ${what} has moved on since Brakeman read it (${moved}${is}). Nothing was done: look at it as it is before you act.`
+}
+
+/** Whether a refusal is the route's stale revision: a task command's receipt, or a Dispatch operation's. */
+export function isStale(e: unknown): boolean {
+  const x = e as { receipt?: { refusal?: string }; code?: string; body?: { error?: { code?: string } } }
+  return x?.receipt?.refusal === 'stale_revision' || x?.code === 'stale_revision' || x?.body?.error?.code === 'stale_revision'
+}
+
+/** An operation as the guide lists it (GET /api/guide?section=operations): its name and the revision its route checks. */
+export interface GuideOperation {
+  name: string
+  revision?: string
+  method?: string
+  path?: string
+}
+
+/** The operations a proposal's button sends, each through the client call its own page uses, and what its target is. */
+export const PROPOSAL_CALLS: Readonly<Record<string, { target: 'run' | 'task' | 'ticket'; label: (target: string) => string; ask?: boolean }>> = {
+  run_pause: { target: 'run', label: () => 'Pause the run' },
+  run_unpause: { target: 'run', label: () => 'Unpause the run' },
+  task_retry: { target: 'task', label: (t) => `Retry ${t}` },
+  task_accept: { target: 'task', label: (t) => `Accept ${t} anyway…`, ask: true },
+  task_cancel: { target: 'task', label: (t) => `Cancel ${t}…`, ask: true },
+  ticket_edit: { target: 'ticket', label: (t) => `Edit ${t}` },
+  ticket_comment_admin: { target: 'ticket', label: (t) => `Comment on ${t}` },
+  ticket_link: { target: 'ticket', label: (t) => `Link ${t}` },
+}
+
+/** A proposal's control: a button that sends its operation with its revision, or text with the page that does it. */
+export type ProposalControl =
+  | { kind: 'button'; op: string; target: 'run' | 'task' | 'ticket'; run?: string; task?: string; ticket?: string; label: string; ask: boolean; expectedRevision: number }
+  | { kind: 'text'; to: string | null; words: string }
+
+/**
+ * A proposal's control. `ops` is the guide's operations (null while they are not read, or could not be): a button only for an
+ * operation the guide marks as checking a revision, that this page sends, on a target of its kind, with the revision the turn read.
+ */
+export function proposalControl(p: Extract<BriefItem, { kind: 'proposal/1' }>, ops: readonly GuideOperation[] | null): ProposalControl {
+  const to = refRoute(p.target)
+  const text = (words: string): ProposalControl => ({ kind: 'text', to, words })
+  const guide = ops?.find((o) => o.name === p.op)
+  const call = PROPOSAL_CALLS[p.op]
+  if (!ops) return text('Do it from its page, on the record as it is.')
+  if (!guide) return text(`${p.op} is no operation this server lists: do what it says from its page.`)
+  if (!guide.revision || !call) return text(`${p.op} checks no revision on its route, so a button here could act on what moved since Brakeman read it: do it from its page, where you see it as it is.`)
+  const r = parseRef(p.target)
+  if (!r || r.kind !== call.target) return text(`${p.op} acts on a ${call.target}, and the proposal names ${p.target}: do it from its page.`)
+  const expectedRevision = revisionOf(p.expectedRevision)
+  if (!expectedRevision) return text('The proposal names no revision of what it acts on: do it from its page.')
+  const name = r.kind === 'task' ? r.task! : r.kind === 'ticket' ? r.ticket! : 'the run'
+  return { kind: 'button', op: p.op, target: call.target, run: r.run, task: r.task, ticket: r.ticket, label: call.label(name), ask: !!call.ask, expectedRevision }
+}
+
+/** A proposal's arguments for its Dispatch operation: a JSON object, without the fields the page sets itself (its id, revision and name). */
+export function proposalArgs(args: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return out
+  for (const [k, v] of Object.entries(args)) if (k !== 'opId' && k !== 'expectedRev' && k !== 'byName') out[k] = v
+  return out
+}
+
+/** A handoff package as Markdown, for Copy and for a ticket's comment: built from the brief's fields, which are Conductor's records. */
+export function handoffMarkdown(h: Extract<BriefItem, { kind: 'handoff/1' }>, label: (ref: string) => string = (r) => r): string {
+  const out = [`## Handoff: ${h.objective}`]
+  if (h.constraints) out.push('', '### Constraints', '', h.constraints)
+  if (h.decisions?.length) out.push('', '### Decisions made', '', ...h.decisions.map((d) => `- ${d}`))
+  if (h.revision) out.push('', '### Revision', '', `- ${label(h.revision)} (\`${h.revision}\`)`)
+  if (h.questions?.length) out.push('', '### Open questions', '', ...h.questions.map((q) => `- ${q}`))
+  if (h.evidence?.length) out.push('', '### Evidence', '', ...h.evidence.map((r) => `- ${label(r)} (\`${r}\`)`))
+  return out.join('\n') + '\n'
+}
+
+/** The tickets a handoff's refs name, which "Comment on the ticket" offers. */
+export function handoffTickets(h: Extract<BriefItem, { kind: 'handoff/1' }>): string[] {
+  const out: string[] = []
+  for (const ref of [...(h.evidence ?? []), ...(h.revision ? [h.revision] : [])]) {
+    const r = parseRef(ref)
+    const key = r?.kind === 'ticket' || r?.kind === 'comment' ? r.ticket! : ''
+    if (key && !out.includes(key)) out.push(key)
+  }
+  return out
+}
+
+/** A made draft's state in words, from the request's `made` entry: made (with its key or crew), being made, refused, deleted. */
+export function madeWords(m: { state: string; key?: string; crew?: string; why?: string } | undefined): string {
+  if (!m) return ''
+  switch (m.state) {
+    case 'made':
+      return m.key ? `Made as ${m.key}.` : m.crew ? `Saved as the crew ${m.crew}, not launched.` : 'Made.'
+    case 'pending':
+      return 'Being made: it finishes when it is asked again with the same id, or at the next start.'
+    case 'refused':
+      return `Refused: ${m.why || 'the store refused it'}. It can be made again.`
+    case 'deleted':
+      return 'It was saved and then deleted: it is not made again.'
+  }
+  return m.state
+}
+
+/** A draft ticket's blocks in words, with each edge's state once a make has written them: "blocks draft 2 (made)". */
+export function blocksWords(item: number, blocks: readonly number[] | undefined, edges: ReadonlyArray<{ from: number; to: number; state: string }> | undefined, title: (i: number) => string): string {
+  if (!blocks?.length) return ''
+  return `Blocks ${blocks
+    .map((to) => {
+      const e = edges?.find((x) => x.from === item && x.to === to)
+      return `${title(to)}${e ? ` (${e.state === 'made' ? 'related' : e.state === 'pending' ? 'related once both are made' : e.state})` : ''}`
+    })
+    .join(', ')}.`
+}

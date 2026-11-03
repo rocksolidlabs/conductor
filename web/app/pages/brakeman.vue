@@ -83,7 +83,7 @@ const unavailable = computed(() => bk.available.value === false)
 
           <UCard :ui="{ header: 'px-4 py-3', body: 'p-4' }">
             <template #header><SettingsCardTitle title="Ask Brakeman" description="One request a turn: Brakeman reads, then answers with one brief." /></template>
-            <BrakemanAsk :kind="typeof route.query.kind === 'string' ? route.query.kind : undefined" :subject="typeof route.query.subject === 'string' ? route.query.subject : undefined" :disabled="!config?.enabled || state?.readOnly" />
+            <BrakemanAsk :key="`${route.query.kind ?? ''} ${route.query.subject ?? ''}`" :kind="typeof route.query.kind === 'string' ? route.query.kind : undefined" :subject="typeof route.query.subject === 'string' ? route.query.subject : undefined" :disabled="!config?.enabled || state?.readOnly" />
           </UCard>
 
           <UCard v-if="current" :ui="{ header: 'px-4 py-3', body: 'p-4' }" data-brakeman-current>

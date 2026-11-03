@@ -61,14 +61,23 @@ export interface BrakemanStamp {
   account?: boolean
 }
 
-/** A draft made work by a person, or its claim (PR-7 shows them). */
+/** A draft made work by a person, or its claim (PR-7 shows them): pending, made, refused or deleted. */
 export interface BrakemanMade {
   item: number
   opId: string
   state: string
   key?: string
   crew?: string
+  rev?: number
   why?: string
+}
+
+/** A draft ticket's block of another, made a relation once both are tickets: pending, made, or refused. */
+export interface BrakemanEdge {
+  from: number
+  to: number
+  op: string
+  state: string
 }
 
 /** A request, brakeman/requests/br-<n>.json, as the routes answer it. */
@@ -92,6 +101,7 @@ export interface BrakemanRequest {
   hasBrief?: boolean
   briefAt?: string
   made?: BrakemanMade[]
+  edges?: BrakemanEdge[]
   strayRun?: string
   closedAt?: string
 }
@@ -122,6 +132,7 @@ export type BriefItem =
       whyHuman: string
       question: string
       alternatives: Array<{ label: string; tradeoffs: string }>
+      /** An alternative's index, or -1 (or null) for none. */
       recommendation: number | null
       uncertainty?: string
       blocked?: string[]

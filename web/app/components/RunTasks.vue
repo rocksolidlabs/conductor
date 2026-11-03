@@ -9,7 +9,8 @@ import { prerequisitesRefused, stepManifest, taskActions, taskDot, taskWords } f
  * order with its state, member, attempt, what it does in words, its result
  * commit, and what can be done with it (Open the attempt's session, Open
  * preview while the attempt's worktree answers behind its project
- * manifest's preview, Retry, Accept anyway, Cancel, Copy branch). The
+ * manifest's preview, Retry, Accept anyway, Cancel, Ask Brakeman why,
+ * Copy branch). The
  * selected task (`?task=`) opens its result and its attempts under the rows,
  * each attempt with what it submitted and its receipts (RunAttemptSteps).
  * A run with a project manifest shows its prerequisites' receipts above the
@@ -34,6 +35,9 @@ function agentOf(member: string): string {
 const short = (c?: string) => (c ? c.slice(0, 12) : '')
 const words = (t: RunTask) => taskWords(t, live.value)
 const acts = (t: RunTask) => taskActions(t, live.value)
+// Ask Brakeman why: the Brakeman page's composer, asking it to explain the task (shown where the server has Brakeman).
+const brakeman = useBrakeman()
+const askWhy = (t: RunTask) => `/brakeman?kind=explain&subject=${encodeURIComponent(`task:${props.run.id}/${t.id}`)}`
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
 function stateColor(state: RunTask['state']): 'success' | 'warning' | 'error' | 'neutral' | 'info' | 'primary' {
   switch (state) {
@@ -199,6 +203,7 @@ async function confirm() {
             <UButton v-if="acts(t).retry" label="Retry" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="outline" :loading="commands.busy.value === `${t.id}:retry`" :data-task-retry="t.id" @click="commands.send(t, 'retry')" />
             <UButton v-if="acts(t).accept" label="Accept anyway…" icon="i-lucide-check" size="xs" color="warning" variant="outline" :data-task-accept="t.id" @click="asking = { task: t, command: 'accept' }" />
             <UButton v-if="acts(t).cancel" icon="i-lucide-x" size="xs" color="error" variant="ghost" aria-label="Cancel the task" :data-task-cancel="t.id" @click="asking = { task: t, command: 'cancel' }" />
+            <UButton v-if="acts(t).askWhy && brakeman.available.value" label="Ask Brakeman why" icon="i-lucide-message-circle-question" size="xs" color="neutral" variant="ghost" :to="askWhy(t)" :data-task-ask-brakeman="t.id" />
             <UButton v-if="acts(t).copyBranch" icon="i-lucide-git-branch" size="xs" color="neutral" variant="ghost" aria-label="Copy branch" :data-task-copy-branch="t.id" @click="copy(t.attempt!.branch!, 'Branch copied')" />
           </div>
         </div>
