@@ -854,7 +854,7 @@ func TestEveryWriteOnADeletedTicketIsNotFound(t *testing.T) {
 	rc, err = relate(s, "r2", live[1], RelationBlocks, key)
 	want(t, rc, err, StatusDone, "")
 	incoming := rc.ID
-	rc, err = s.AddLink(ctx, testOp("l1"), key, NewLink{Kind: LinkDelivery, URL: "https://example.com/pull/1"})
+	rc, err = s.AddLink(ctx, testOp("l1"), key, NewLink{Kind: LinkDelivery, URL: "https://example.com/pull/1"}, nil)
 	want(t, rc, err, StatusDone, "")
 	link := rc.ID
 	rc, err = s.AcceptTicket(ctx, testOp("a1"), key, "")
@@ -871,7 +871,7 @@ func TestEveryWriteOnADeletedTicketIsNotFound(t *testing.T) {
 		// From the live end of a relation whose other end is deleted.
 		func(id string) (Receipt, error) { return s.RemoveRelation(ctx, testOp(id), live[1], incoming) },
 		func(id string) (Receipt, error) {
-			return s.AddLink(ctx, testOp(id), key, NewLink{Kind: LinkExternal, URL: "https://example.com/issues/2"})
+			return s.AddLink(ctx, testOp(id), key, NewLink{Kind: LinkExternal, URL: "https://example.com/issues/2"}, nil)
 		},
 		func(id string) (Receipt, error) { return s.RemoveLink(ctx, testOp(id), key, link) },
 		func(id string) (Receipt, error) { return s.AcceptTicket(ctx, testOp(id), key, "") },
@@ -917,7 +917,7 @@ func TestTheTicketReadIsWhole(t *testing.T) {
 	}
 	rc, err = s.DeleteTicket(ctx, testOp("d60"), "CND-60")
 	mustDone(t, "delete CND-60", rc, err)
-	rc, err = s.AddLink(ctx, testOp("k1"), key, NewLink{Kind: LinkDelivery, URL: "https://example.com/pull/1"})
+	rc, err = s.AddLink(ctx, testOp("k1"), key, NewLink{Kind: LinkDelivery, URL: "https://example.com/pull/1"}, nil)
 	mustDone(t, "link", rc, err)
 	// Two attachments, the second removed: the read carries the live one.
 	for i := range 2 {

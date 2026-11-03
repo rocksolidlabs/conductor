@@ -10,7 +10,7 @@ import (
 // archive that holds it.
 const (
 	WhySecret     = "secret"             // the workbench token, tls/
-	WhyLock       = "lock"               // a lock file: the token's, the ledger's owner lock, restore.lock
+	WhyLock       = "lock"               // a lock file: the token's, the ledger's and Brakeman's owner locks, restore.lock
 	WhyTemporary  = "temporary"          // a database's -wal, -shm or -journal, *.tmp, .probe-*, .restore-*, Dispatch's attachments/tmp/
 	WhyProvider   = "provider"           // ext/, a provider's own state
 	WhyNotRegular = "not a regular file" // a link, a device, a socket, a pipe
@@ -36,6 +36,7 @@ var leftOut = []leftRule{
 	{file: "workbench-token.lock", why: WhyLock},
 	{file: "restore.lock", why: WhyLock},
 	{file: "runs/owner.lock", why: WhyLock},
+	{file: "brakeman/owner.lock", why: WhyLock},
 	{dir: "tls", why: WhySecret},
 	{dir: "ext", why: WhyProvider},
 	{dir: "dispatch/attachments/tmp", why: WhyTemporary},

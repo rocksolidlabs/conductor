@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -133,11 +135,37 @@ func goneSoon(t *testing.T, pid int) bool {
 	return true
 }
 
-// counting is a seam whose start counts pty.Start's calls.
+// exited says the process pid has exited: gone, or a zombie its parent has
+// not reaped (as a held process's leader is until it is released).
+func exited(pid int) bool {
+	if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		_, rest, _ := strings.Cut(string(b), ") ") // after the command's name
+		return strings.HasPrefix(rest, "Z") || strings.HasPrefix(rest, "X")
+	} else if _, err := os.Stat("/proc/self/stat"); err == nil {
+		return true // a /proc without the pid: gone
+	}
+	out, _ := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	st := strings.TrimSpace(string(out))
+	return st == "" || strings.HasPrefix(st, "Z")
+}
+
+// exitedSoon waits for pid to have exited (exited).
+func exitedSoon(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(hang)
+	for !exited(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the process %d did not exit", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// counting is a seam whose start counts pty.StartHeld's calls.
 func counting(calls *atomic.Int32) *startSeam {
 	return &startSeam{start: func(s pty.Spec) (*pty.Process, error) {
 		calls.Add(1)
-		return pty.Start(s)
+		return pty.StartHeld(s)
 	}}
 }
 
@@ -150,8 +178,9 @@ func stopped(t *testing.T, term ext.Terminal) {
 // Linux in the directory opened even once its path names another (the
 // folder renamed after it was opened, as internal/pty's start tests have
 // it); elsewhere in the path checked to still name it. Output, input and a
-// resize reach the process, which exits 0, with a pid; the folder is
-// closed as soon as StartTerminal returns.
+// resize reach the process, which exits 0, with a pid. The folder is
+// lent: still open when StartTerminal returns (the Runtime neither closes
+// it nor needs it after), and the test closes it then.
 func TestNativeStartsATerminalInItsFolder(t *testing.T) {
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -179,7 +208,12 @@ func TestNativeStartsATerminalInItsFolder(t *testing.T) {
 		Argv: []string{"/bin/sh", "-c", "pwd -P; stty size; read line; stty size; echo got:$line; exit 0"},
 		Dir:  dir, DirFile: f, Env: testEnv(), Cols: 100, Rows: 30, Ref: ext.ProcessRef{Session: "s1"},
 	})
-	f.Close()
+	if _, serr := f.Stat(); serr != nil {
+		t.Fatalf("the lent folder was closed: %v", serr)
+	}
+	if cerr := f.Close(); cerr != nil {
+		t.Fatalf("closing the lent folder: %v", cerr)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,6 +239,71 @@ func TestNativeStartsATerminalInItsFolder(t *testing.T) {
 	}
 	if p := term.Process(); p.PID <= 0 || p.Group != p.PID || p.StartedAt.IsZero() {
 		t.Fatalf("process %+v", p)
+	}
+}
+
+// The terminal starts with exactly s.Env: a nil Env is an empty
+// environment, with a folder or without one, never the server's own (a
+// variable only the server has is not there); an empty one is empty; one
+// given is that one.
+func TestNativeStartGivesExactlyItsEnvironment(t *testing.T) {
+	t.Setenv("CONDUCTOR_TEST_SERVER_ONLY", "server-secret")
+	dir := t.TempDir()
+	given := []string{"ONLY=this", "CONDUCTOR_RUN=build-00000001"}
+	for _, c := range []struct {
+		name    string
+		env     []string
+		dirFile bool
+		want    []string
+	}{
+		{"nil", nil, false, nil},
+		{"nil with a folder", nil, true, nil},
+		{"empty", []string{}, false, nil},
+		{"empty with a folder", []string{}, true, nil},
+		{"given", given, false, given},
+		{"given with a folder", given, true, given},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			spec := ext.TerminalSpec{Argv: []string{"/bin/sh", "-c", "echo begin; /usr/bin/env; echo end"}, Dir: dir, Env: c.env}
+			if c.dirFile {
+				f, err := os.Open(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer f.Close()
+				spec.DirFile = f
+			}
+			term, err := Native().StartTerminal(context.Background(), spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stopped(t, term)
+			s := read(term)
+			s.waitFor(t, "end\r\n")
+			out := s.text()
+			// A failure names variables, never their values: the server's
+			// environment holds tokens.
+			if strings.Contains(out, "server-secret") {
+				t.Fatal("the server's environment reached the terminal: CONDUCTOR_TEST_SERVER_ONLY is set")
+			}
+			_, body, _ := strings.Cut(out, "begin\r\n")
+			body, _, _ = strings.Cut(body, "end\r\n")
+			var got []string
+			for _, l := range strings.Split(strings.TrimSpace(strings.ReplaceAll(body, "\r", "")), "\n") {
+				if k, _, _ := strings.Cut(l, "="); l != "" && k != "PWD" && k != "SHLVL" && k != "_" && k != "OLDPWD" { // the shell's own
+					got = append(got, l)
+				}
+			}
+			slices.Sort(got)
+			if want := slices.Sorted(slices.Values(c.want)); !slices.Equal(got, want) {
+				var names []string
+				for _, l := range got {
+					k, _, _ := strings.Cut(l, "=")
+					names = append(names, k)
+				}
+				t.Fatalf("the environment holds %q, want exactly %q", names, want)
+			}
+		})
 	}
 }
 
@@ -288,7 +387,7 @@ func TestNativeStartCancelledDuringTheForkIsTheCallers(t *testing.T) {
 	defer cancel()
 	seam := &startSeam{start: func(s pty.Spec) (*pty.Process, error) {
 		cancel()
-		return pty.Start(s)
+		return pty.StartHeld(s)
 	}}
 	term, err := native{seam: seam}.StartTerminal(ctx, ext.TerminalSpec{Argv: []string{"/bin/cat"}, Env: testEnv()})
 	if ctx.Err() == nil {
@@ -339,6 +438,42 @@ func TestNativeStartThatPanicsAfterTheForkLeavesNothing(t *testing.T) {
 		syscall.Kill(child, syscall.SIGKILL)
 		t.Fatalf("its group's %d outlived the panic", child)
 	}
+}
+
+// A panic once the leader has exited, while a descendant that ignores
+// SIGTERM and SIGHUP still runs in its group, leaves nothing either: the
+// process is held unreaped until StartTerminal returns, so the group's id
+// is still its own when the cleanup kills the group, and the descendant
+// is gone by the time the panic is recovered.
+func TestNativeStartThatPanicsOnceTheLeaderExitedLeavesNothing(t *testing.T) {
+	type boom struct{ n int }
+	dir := t.TempDir()
+	var leader, desc int
+	seam := &startSeam{after: func() {
+		leader = pidIn(t, filepath.Join(dir, "leader.pid"))
+		desc = pidIn(t, filepath.Join(dir, "desc.pid"))
+		exitedSoon(t, leader)
+		panic(boom{4})
+	}}
+	got := func() (v any) {
+		defer func() { v = recover() }()
+		native{seam: seam}.StartTerminal(context.Background(), ext.TerminalSpec{
+			// The leader exits once the descendant has set its traps.
+			Argv: []string{"/bin/sh", "-c", `sh -c 'trap "" TERM HUP; echo $$ > desc.pid; exec sleep 300' & while [ ! -s desc.pid ]; do sleep 0.01; done; echo $$ > leader.pid; exit 0`},
+			Dir:  dir, Env: testEnv(),
+		})
+		return nil
+	}()
+	if desc > 0 {
+		t.Cleanup(func() { syscall.Kill(desc, syscall.SIGKILL) })
+	}
+	if got != (boom{4}) {
+		t.Fatalf("the panic that left StartTerminal: %#v", got)
+	}
+	if !reaped(leader) {
+		t.Fatalf("the leader %d is still there", leader)
+	}
+	exitedSoon(t, desc) // killed: gone, or its new parent's zombie
 }
 
 // Stop asks the group: a leader and a child in its group, both ending on
@@ -401,7 +536,9 @@ func TestNativeStopForcesALeaderThatIgnoresTheAsk(t *testing.T) {
 }
 
 // A process that has exited is not signalled: Stop answers nil, and the
-// exit is the process's own.
+// exit is the process's own. That Stop sends no signal once Done is closed
+// is observed where the signal is sent, through internal/pty's kill seam
+// (TestStopAfterExitSendsNoSignal): the native Terminal's Stop is pty's.
 func TestNativeStopAfterExitSignalsNothing(t *testing.T) {
 	term, err := Native().StartTerminal(context.Background(), ext.TerminalSpec{Argv: []string{"/bin/sh", "-c", "exit 4"}, Env: testEnv()})
 	if err != nil {

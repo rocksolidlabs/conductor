@@ -1,4 +1,4 @@
-import type { Ref } from 'vue'
+import { effectScope, onBeforeUnmount, onMounted, watch, type Ref } from 'vue'
 import { anyStarting, asCapabilities, extensionsWords, has, type Capabilities } from '../utils/capabilities'
 
 /** The first re-read of a reply that has a provider still starting, after the reply; each later one waits twice the last, up to the most. */
@@ -33,12 +33,18 @@ export class CapabilitiesPoll {
     this.forToken = t
   }
 
-  /** Reads the route, unless what is known has no provider starting or a re-read is due already; a read on its way is shared. */
+  /** Reads the route while a reader shows, unless what is known has no provider starting or a re-read is due already; a read on its way is shared. */
   load(): Promise<void> {
     if (this.reading) return this.reading
+    if (this.readers === 0) return Promise.resolve()
     if (this.timer !== undefined) return Promise.resolve()
     if (this.caps.value && !anyStarting(this.caps.value)) return Promise.resolve()
     return this.readNow()
+  }
+
+  /** Whether a reader shows the capabilities. */
+  get shown(): boolean {
+    return this.readers > 0
   }
 
   /** A reader shows the capabilities: re-reads may be due. */
@@ -103,34 +109,58 @@ export class CapabilitiesPoll {
   }
 }
 
+/**
+ * Binds the poll to the workbench token for the app's lifetime, not a reader's: a token changed or forgotten while no reader shows
+ * still forgets the cache and drops a reply on its way, and a new token is read at once only while a reader shows. Returns the stop.
+ */
+export function followToken(p: CapabilitiesPoll, token: Ref<string>): () => void {
+  p.token(token.value)
+  const scope = effectScope(true)
+  scope.run(() =>
+    watch(token, (t) => {
+      p.token(t)
+      if (t && p.shown) void p.load()
+    }),
+  )
+  return () => scope.stop()
+}
+
+/**
+ * Registers the caller's component as a reader of `p` for as long as it is mounted, its first load after its first paint (the next
+ * animation frame) when `hasToken()`. A component unmounted before that frame cancels it, so no read is made for a reader that is gone.
+ */
+export function readWhileMounted(p: CapabilitiesPoll, hasToken: () => boolean) {
+  let frame: number | undefined
+  onMounted(() => {
+    p.attach()
+    frame = requestAnimationFrame(() => {
+      frame = undefined
+      if (hasToken()) void p.load()
+    })
+  })
+  onBeforeUnmount(() => {
+    if (frame !== undefined) cancelAnimationFrame(frame)
+    frame = undefined
+    p.detach()
+  })
+}
+
 let poll: CapabilitiesPoll | null = null
 
 /**
  * What the server has registered (GET /api/capabilities, admin), for a card or page that shows it: `caps` (null until read, or without
  * the workbench token), `words` for the Settings row ('' until read) and `has(kind)`, true for a provider of that kind that is ready. The
- * caller's setup registers it as a reader for as long as it is mounted.
+ * caller's setup registers it as a reader for as long as it is mounted; the token is followed for the app's lifetime (`followToken`).
  */
 export function useCapabilities() {
   const caps = useState<Capabilities | null>('capabilities', () => null)
   const admin = useWorkbenchToken()
   const { request } = useApi()
-  poll ??= new CapabilitiesPoll(() => request<unknown>('/api/capabilities'), caps)
-  const p = poll
-  onMounted(() => {
-    p.attach()
-    p.token(admin.token.value)
-    requestAnimationFrame(() => {
-      if (admin.hasToken.value) void p.load()
-    })
-  })
-  onBeforeUnmount(() => p.detach())
-  watch(
-    () => admin.token.value,
-    (t) => {
-      p.token(t)
-      if (t) void p.load()
-    },
-  )
+  if (!poll) {
+    poll = new CapabilitiesPoll(() => request<unknown>('/api/capabilities'), caps)
+    followToken(poll, admin.token)
+  }
+  readWhileMounted(poll, () => admin.hasToken.value)
   return {
     caps,
     words: computed(() => (caps.value ? extensionsWords(caps.value) : '')),

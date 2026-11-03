@@ -95,6 +95,23 @@ func TestCreateNeverDerivesTheReservedID(t *testing.T) {
 	}
 }
 
+// A crew a person names Brakeman is saved as brakeman-2: brakeman is a
+// Brakeman turn's crew id, which no derived id takes. One saved under it
+// before keeps it.
+func TestBrakemanIsATakenID(t *testing.T) {
+	s, _ := newStore(t)
+	c, err := s.Create(validCrew("", "Brakeman"))
+	if err != nil || c.ID != "brakeman-2" {
+		t.Fatalf("a crew named Brakeman got the id %q, %v", c.ID, err)
+	}
+	if err := s.Put(validCrew("brakeman", "Brakeman")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Get("brakeman"); err != nil || got.ID != "brakeman" {
+		t.Fatalf("a crew saved as brakeman before: %+v %v", got, err)
+	}
+}
+
 func TestListPagesThroughTheDirectory(t *testing.T) {
 	s, st := newStore(t)
 	for i := range 7 {
@@ -827,5 +844,129 @@ func TestTheStoresCopiesShareNoManifest(t *testing.T) {
 	got, err := s.Get(created.ID)
 	if err != nil || got.Manifest.Setup[0].Argv[0] != "npm" || got.Manifest.Ready[0].Argv[0] != "pg_isready" || created.Manifest == c.Manifest {
 		t.Fatalf("the stored manifest: %+v %v", got.Manifest, err)
+	}
+}
+
+const testOrigin = "brakeman:br-7/3/bk0123456789abcdef0123456789abcd"
+
+func TestCreateFromAnswersByOrigin(t *testing.T) {
+	s, _ := newStore(t)
+	c, made, err := s.CreateFrom(validCrew("", "Drafted"), testOrigin)
+	if err != nil || !made || c.Origin != testOrigin || c.ID != "drafted" {
+		t.Fatalf("the first make: %+v %v %v", c, made, err)
+	}
+	again, made, err := s.CreateFrom(validCrew("", "Drafted, edited"), testOrigin)
+	if err != nil || made || again.ID != c.ID || again.Name != "Drafted" {
+		t.Fatalf("the make again answers the crew it made: %+v %v %v", again, made, err)
+	}
+	page, total, _ := s.List(0, 10)
+	if total != 1 || len(page) != 1 {
+		t.Fatalf("one crew, not %d", total)
+	}
+	if _, _, err := s.CreateFrom(validCrew("", "Bad"), "brakeman:nothing"); err == nil {
+		t.Fatal("an origin of another shape")
+	}
+}
+
+func TestAnUpdateKeepsTheOrigin(t *testing.T) {
+	s, _ := newStore(t)
+	c, _, err := s.CreateFrom(validCrew("", "Drafted"), testOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit := validCrew("", "Renamed")
+	edit.Origin = ""
+	got, err := s.Update(c.ID, edit)
+	if err != nil || got.Origin != testOrigin {
+		t.Fatalf("an update without one: %+v %v", got, err)
+	}
+	edit.Origin = "brakeman:br-9/1/bkother"
+	if got, err = s.Update(c.ID, edit); err != nil || got.Origin != testOrigin {
+		t.Fatalf("an update with another: %+v %v", got, err)
+	}
+	if read, _ := s.Get(c.ID); read.Origin != testOrigin {
+		t.Fatalf("as read: %q", read.Origin)
+	}
+}
+
+func TestDuplicateAndCreateClearTheOrigin(t *testing.T) {
+	s, _ := newStore(t)
+	c, _, err := s.CreateFrom(validCrew("", "Drafted"), testOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dup, err := s.Duplicate(c.ID)
+	if err != nil || dup.Origin != "" {
+		t.Fatalf("a duplicate: %+v %v", dup, err)
+	}
+	body := validCrew("", "From a body")
+	body.Origin = testOrigin
+	made, err := s.Create(body)
+	if err != nil || made.Origin != "" {
+		t.Fatalf("a create whose body names an origin: %+v %v", made, err)
+	}
+	// The one crew holding it still answers it.
+	if again, ok, err := s.CreateFrom(validCrew("", "x"), testOrigin); err != nil || ok || again.ID != c.ID {
+		t.Fatalf("by origin after: %+v %v %v", again, ok, err)
+	}
+}
+
+func TestDeletingACrewWithAnOriginWritesItsTombstoneFirst(t *testing.T) {
+	s, st := newStore(t)
+	c, _, err := s.CreateFrom(validCrew("", "Drafted"), testOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crash := errors.New("the server stopped here")
+	afterTombstone = func() error { return crash }
+	t.Cleanup(func() { afterTombstone = nil })
+	if _, err := s.Delete(c.ID); !errors.Is(err, crash) {
+		t.Fatalf("the crash seam: %v", err)
+	}
+	afterTombstone = nil
+	// The tombstone is there, and the crew too: a crash between the two
+	// leaves the crew, never a crew gone without its tombstone.
+	tombs, err := os.ReadDir(filepath.Join(st.Dir(), originsDir))
+	if err != nil || len(tombs) != 1 {
+		t.Fatalf("the tombstone: %v %v", tombs, err)
+	}
+	if _, err := s.Get(c.ID); err != nil {
+		t.Fatalf("the crew is still there: %v", err)
+	}
+	if ok, err := s.Delete(c.ID); err != nil || !ok {
+		t.Fatalf("the delete done: %v %v", ok, err)
+	}
+	// A crew without an origin leaves none.
+	plain, err := s.Create(validCrew("", "Plain"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Delete(plain.ID); err != nil {
+		t.Fatal(err)
+	}
+	if tombs, _ = os.ReadDir(filepath.Join(st.Dir(), originsDir)); len(tombs) != 1 {
+		t.Fatalf("a plain crew's delete wrote a tombstone: %v", tombs)
+	}
+}
+
+func TestCreateFromATombstonedOriginSavesNothing(t *testing.T) {
+	s, st := newStore(t)
+	c, _, err := s.CreateFrom(validCrew("", "Drafted"), testOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another server on the same data directory deletes it.
+	other, _, err := NewStore(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := other.Delete(c.ID); err != nil || !ok {
+		t.Fatalf("the other's delete: %v %v", ok, err)
+	}
+	if got, made, err := s.CreateFrom(validCrew("", "Drafted"), testOrigin); !errors.Is(err, ErrOriginDeleted) || made || got.ID != "" {
+		t.Fatalf("a tombstoned origin: %+v %v %v", got, made, err)
+	}
+	if _, total, _ := s.List(0, 10); total != 0 {
+		t.Fatalf("%d crews saved", total)
 	}
 }

@@ -3372,8 +3372,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   grace, promises the leader alone; a panic leaves nothing running);
   `RegisterRuntime` refuses an invalid `Where` and `native`, which only the
   free default reports. `local.Native()` (`pty.Start` behind two checks of
-  the context and a test seam, a panic after the fork stopping the process
-  with no grace; `proc.Run` and `proc.Serve` with the environment whole;
+  the context and a test seam, with exactly the spec's environment (a nil
+  one empty, never the server's), the process held unreaped until the call
+  returns (`pty.StartHeld`), so a panic after the fork kills its whole
+  group while the group's id is still its own, even once its leader has
+  exited (`pty.Process.Abort`), and reaps it; `proc.Run` and `proc.Serve`
+  with the environment whole;
   `proc.Probe`; `proc.FreePort`), put by `local.Fill` in an empty Runtime
   slot. `internal/proc`: `Prepare` (the refusals `Run` gives, in its order
   and words, then the environment), `Spec.Environ`, `Probe` and
@@ -3388,6 +3392,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestNativeStartCancelledDuringTheForkIsTheCallers`,
   `TestNativeStartCompletedIsTheCallers`,
   `TestNativeStartThatPanicsAfterTheForkLeavesNothing`,
+  `TestNativeStartThatPanicsOnceTheLeaderExitedLeavesNothing`,
+  `TestNativeStartGivesExactlyItsEnvironment`,
+  `TestStartHeldIsReapedOnlyOnceReleased`,
+  `TestAbortEndsTheGroupOnceTheLeaderHasExited`,
   `TestNativeStopAsksTheGroup`, `TestNativeStopForcesALeaderThatIgnoresTheAsk`,
   `TestNativeStopAfterExitSignalsNothing`, `TestNativeStopPromisesTheLeaderOnly`,
   `TestStopKillWaitIsPtys`, `TestNativeRunIsProcRun`,
@@ -3396,15 +3404,17 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   boundary test `TestOnlyTheRunnersStartOrSignalAProcess` (every non-test
   Go file parsed whatever its tags: a raw start or signal outside
   `internal/pty`, `internal/proc`, `internal/gitcli`, `internal/nvim`,
-  `internal/agents`, `internal/reach` and `internal/cli/up.go`, or
-  `pty.Start`, `proc.Run` or `proc.Serve` used past the Runtime outside
+  `internal/agents`, `internal/reach` and `internal/cli/up.go` (an
+  `exec.Cmd` literal or `new(exec.Cmd)` among them), or `pty.Start`,
+  `pty.StartHeld`, `proc.Run` or `proc.Serve` used past the Runtime outside
   `ext/local`, the runners and the three files that start one today, fails
   naming the file, the line and article 12; its plants each reported);
   `TestPlainBuildRegistersNothing` (the filled Runtime the native one);
   `TestEachRuleCatchesItsPlant` (the amendment's plants);
   `TestPrepareRefusesAsRunDoes`, `TestRunWithEnvironGivesExactlyIt`,
   `TestEnvironBesideAllowIsRefused`, `TestAStartedThatPanicsEndsTheCommand`
-  and the probe's and the port's tests, moved; `TestFakeRuntimeRecordsAndRefuses`.
+  and the probe's and the port's tests, moved; `TestFakeRuntimeRecordsAndRefuses`,
+  `TestFakeRuntimeSetWhereTellsChanged`.
 
   PR-2 (#491): a managed run's trees run through the Runtime. The engine's
   tree executor is a Runtime's (`execFor`, replacing `nativeExec`): a
@@ -4055,29 +4065,44 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   a client it is given), `FakeEntitlements` (nothing allowed until set),
   `FakeMedia`, `FakeRuntime` (a `Where`; C10 adds its methods) and
   `FakeHost` (records every `Launch`, `Submit` and `Notify` with scripted
-  answers, refuses what the records' `Valid` refuses with
+  answers, the record and a callback each holding a copy of the request,
+  refuses what the records' `Valid` refuses with
   `ext.ErrRefused`, a `t.TempDir()` as `DataDir`, a logger into the
   test's log, `Block`, and `Close`, after which every call answers
   `context.Canceled`). The `Network` a provider under test is built with
   (`DialContext`, `Transport()`) records every dial and request with its
   context, refuses one under the context of one of the suite's calls
   (`ErrOnCallPath`) and, blocked, holds every one on a gate until it is
-  let go or its context ends. One check function per interface,
+  let go or its context ends, and lets no byte cross a connection
+  `DialContext` made, however long before (a gRPC or websocket client's
+  round trip on a held connection waits too) until it is let go, closed
+  or its deadline passes, as `net.Conn`'s; a request is recorded by
+  its scheme, host and path, never its query or user information. One
+  check function per interface,
   `Identity`, `Router`, `Context`, `Sink`, `Continuity`, `Entitlements`,
   `Media`, `Runtime` and `Starter`, each taking an `exttest.T` and the
   `Network`, and `RunAll(t, n, ext.Providers, ...RunOption)`, over the
   typed slots and every entry of `All`, each value once per kind, then
-  `Starter` once per value that is one; its checks by kind are one table
+  `Starter` once per value that is one (none with `Started()`, for values
+  already running: `Start` is checked with `Starter` on a value never
+  started); its checks by kind are one table
   (`byKind`) a ninth interface joins with a row, and an entry of a kind
   no row knows fails. Article 8 is checked by the network, never a clock:
   every call is made with the network open, from 32 goroutines at once
   for the methods that must be safe for concurrent use, then with it
   blocked and with a cancelled context, and fails on a dial or request
   under its context or on not returning within the wait the server's
-  guard gives that method; `Restore` alone may use the network on its
-  path, and must return its context's error once that ends while its
-  download waits on the gate. The package documentation says how a
-  provider's repository runs the suite in CI, with its service reachable
+  guard gives that method, `Name` among them; each `Route` is given a
+  question of its own, each resolved once, and `Notify` a notification of
+  each event the sink's `Events` lists, as the server types it; `Restore`
+  alone may use the
+  network on its path, must return its context's error once that ends
+  while its download waits on the gate, and fails a write made after it
+  returned whenever the suite sees it; `Starter` goes on only once the
+  closed host's refusals have reached the provider; Identity's tokens are
+  never printed, `[token]` standing in for them as they are and escaped,
+  and a URL in a check's words is shown by its scheme, host and path. The package
+  documentation says how a provider's repository runs the suite in CI, with its service reachable
   and unreachable, and how a new interface joins it. Tests:
   `TestFakes` (each fake, `FakeHost` and `FakeRuntime` among them, and all
   of them from 32 goroutines under `-race`), `TestSuitePassesEveryDefault`
@@ -4088,12 +4113,19 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestSuiteCatchesABreach` (a dial under the call's context, a wait on
   the network under a context of the provider's own, ok for the empty
   token, nine blocks, a `Start` waiting on its host, a route its decision
-  does not offer, a panic, `Events` that change, a bad name, a nil
-  provider: each failing check named through a recording `exttest.T`),
-  `TestRunAll`, `TestRestoreMayStream` (a `Restore` streaming from an
-  `httptest` server through the `Network` passes, ends with its context's
-  error while the gate is shut, and one answering nil then fails) and
-  `TestNetwork`, each checked to fail with its part broken; benchmarks of
+  does not offer, a panic, `Events` that change, new or in place, a round
+  trip over a connection held from before the call, a `Name` that asks
+  its service, a `Restore` that writes once its context ends, a round trip
+  only for the event a sink takes, a route fetched the first time a
+  question is routed, a bad name,
+  a nil provider: each failing check named through a recording
+  `exttest.T`), `TestRunAll`, `TestRestoreMayStream` (a `Restore`
+  streaming from an `httptest` server through the `Network` passes, ends
+  with its context's error while the gate is shut, and one answering nil
+  then fails), `TestRestoreEndedByADeadline`, `TestBreachWordsKeepTokens`,
+  `TestStarterDeliversTheRefusals`,
+  `TestNetwork` and `TestNetworkHoldsAConnection`, each checked to fail
+  with its part broken; benchmarks of
   the defaults and the fakes measure a call's time, which no check does.
 
   What the stream observed, item by item (PR-17, 2026-11-02). C1: main's

@@ -6,9 +6,43 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 )
+
+// SetWhere is a script changed: it tells Changed, so an Await that read
+// the old Where before it ends once the new one holds.
+func TestFakeRuntimeSetWhereTellsChanged(t *testing.T) {
+	f := NewFakeRuntime("vm", "vm")
+	changed := f.Changed()
+	f.SetWhere("other")
+	select {
+	case <-changed:
+	default:
+		t.Fatal("SetWhere did not tell Changed")
+	}
+	// The bound turns a lost tell into a failure, not a hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	checked := make(chan struct{})
+	got := make(chan error, 1)
+	var once bool
+	go func() {
+		got <- Await(ctx, f, func() bool {
+			if !once {
+				once = true
+				defer close(checked)
+			}
+			return f.Where() == "third"
+		})
+	}()
+	<-checked // the Await has read "other" and waits on Changed
+	f.SetWhere("third")
+	if err := <-got; err != nil {
+		t.Fatalf("Await after SetWhere: %v", err)
+	}
+}
 
 // FakeRuntime records every call of the Runtime's methods with its ref and
 // its spec (no DirFile, Log or Started kept), answers what a test scripts,
@@ -69,6 +103,11 @@ func TestFakeRuntimeRecordsAndRefuses(t *testing.T) {
 	}
 	if calls[4].Probe.URL != "http://127.0.0.1:1/" {
 		t.Errorf("the Probe record: %+v", calls[4].Probe)
+	}
+	// An answer is a copy too: changing its argv and env changes no later one.
+	calls[1].Terminal.Argv[0], calls[1].Terminal.Env[0], calls[2].Command.Argv[0] = "changed", "B=2", "changed"
+	if again := f.RuntimeCalls(); again[1].Terminal.Argv[0] != "agent" || again[1].Terminal.Env[0] != "A=1" || again[2].Command.Argv[0] != "make" {
+		t.Errorf("a changed answer changed the record: %+v %+v", again[1].Terminal, again[2].Command)
 	}
 
 	// Scripted, each method answers as its script does.
