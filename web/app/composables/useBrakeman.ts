@@ -42,7 +42,8 @@ export interface BrakemanReads {
  * request's state at once (a request the page has not read yet is read), and the request and the state are read again for the rest
  * (its run, its session, its words). A reply that says a request is less far along than the page has it (a read sent before the
  * event that moved it) is dropped: a request only goes forward (queued, starting, running, then closed). A snapshot (the stream
- * started again) reads the first page and the state again, since events were missed meanwhile.
+ * started again) reads the first page and the state again, since events were missed meanwhile; once older pages were read, it reads
+ * on from the first page until it meets the newest of the pages read before, so no request asked meanwhile is left between them.
  */
 export class BrakemanLive {
   readonly requests = new Map<string, BrakemanRequest>()
@@ -60,6 +61,8 @@ export class BrakemanLive {
   private stateAgain = false
   /** Whether pages after the first were read: `next` is then theirs. */
   private paged = false
+  /** The number of the newest request the pages read hold (the first page's newest as it was read), 0 before one. */
+  private newestPaged = 0
 
   constructor(changed: () => void = () => {}) {
     this.changed = changed
@@ -105,7 +108,9 @@ export class BrakemanLive {
     try {
       const page = await this.reads.page()
       for (const r of page.requests) this.apply(r)
-      if (!this.paged) this.next = page.next
+      if (this.paged) await this.fillGap(page.next)
+      else this.next = page.next
+      this.newestPaged = Math.max(this.newestPaged, ...page.requests.map((r) => requestNumber(r.id)))
       this.available = true
       this.problem = ''
     } catch (e) {
@@ -114,6 +119,30 @@ export class BrakemanLive {
       return
     }
     await this.readState()
+  }
+
+  /**
+   * Reads on after the first page (`after`) until a page reaches the newest request the pages read before held: the requests asked
+   * while the stream was down, more than a page of them, are then all held, and `next` stays the pages' own. A page that fails leaves
+   * `next` at the first one not read, so the next "older requests" reads on from the gap (through what the page holds already).
+   */
+  private async fillGap(after: string): Promise<void> {
+    let cursor = after
+    while (cursor && requestNumber(cursor) > this.newestPaged + 1) {
+      let page: { requests: BrakemanRequest[]; next: string }
+      try {
+        page = await this.reads!.page(cursor)
+      } catch {
+        this.next = cursor
+        this.paged = false
+        return
+      }
+      for (const r of page.requests) this.apply(r)
+      if (page.next === cursor || page.requests.some((r) => requestNumber(r.id) <= this.newestPaged)) return
+      cursor = page.next
+    }
+    // Nothing older is left to read past the gap: what the pages read before held is all the server keeps.
+    if (!cursor) this.next = ''
   }
 
   /** Reads the page after the oldest one read. */

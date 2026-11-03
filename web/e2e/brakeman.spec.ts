@@ -7,11 +7,12 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 
 // Brakeman on the app's pages (docs/plans/brakeman.md, PR-6), on a server of its own and its own data, so that its turns (runs and
 // sessions of their own) meet no other spec and a restart finds the same records: Settings saves Brakeman with the stub as its
-// agent and terminal screens off; a request asked from the page waits in the queue behind the one in progress, then runs with its
-// session's link; the stub's brief, held by a gate until the spec opens it, arrives while a terminal has the focus and takes
-// neither the focus nor the page, and counts in the sidebar; the brief shows its provenance, Brakeman's reading, the fact with its
-// evidence linking to the run and the session, and the interpretation naming the fact; the turn's run is stopped after it; and the
-// server started again on the same data shows the same brief.
+// agent and terminal screens off (None among the agents, and chosen); a request asked from the page waits in the queue behind the
+// one in progress, then runs with its session's link; the stub's brief, held by a gate until the spec opens it, arrives while a
+// terminal has the focus and takes neither the focus nor the page, and counts in the sidebar; the brief shows its provenance,
+// Brakeman's reading, the fact with its evidence linking to the run and the session, and the interpretation naming the fact; the
+// turn's run is stopped after it and the request leaves In progress; the page links Settings while Brakeman is on; and the server
+// started again on the same data shows the same brief.
 test.describe.configure({ mode: 'serial' })
 
 /** The cap of every wait a step makes without a bound of its own: the config's expect bound, an action's and the navigation's. */
@@ -19,10 +20,11 @@ const STEP_MS = 15_000
 test.use({ actionTimeout: STEP_MS, navigationTimeout: STEP_MS })
 // The turn's test waits on its steps one after another, each within a cap of its own: the explicit ones (the first request
 // running, the cancel written, the briefing running after the stop, its terminal's transport, the brief kept, the run stopped after
-// the desk's grace for the agent's last output, and the chip's changed mark), and STEP_MS for each of its 21 other expects, its 12
-// actions and its one navigation. Its timeout is their sum, and the config's 120 s above it for the API reads between the steps.
-const TURN_CAPS = [30_000, 15_000, 60_000, 30_000, 30_000, 60_000, 15_000]
-const TURN_STEPS = 21 + 12 + 1
+// the desk's grace for the agent's last output, the request off In progress once its slot is given up, and the chip's changed
+// mark), and STEP_MS for each of its 22 other expects, its 12 actions and its one navigation. Its timeout is their sum, and the
+// config's 120 s above it for the API reads between the steps.
+const TURN_CAPS = [30_000, 15_000, 60_000, 30_000, 30_000, 60_000, 30_000, 15_000]
+const TURN_STEPS = 22 + 12 + 1
 const TURN_BOUND = TURN_CAPS.reduce((a, b) => a + b, 0) + TURN_STEPS * STEP_MS
 
 interface Request {
@@ -31,6 +33,7 @@ interface Request {
   runId?: string
   sessionId?: string
   hasBrief?: boolean
+  reads?: number
 }
 
 let server: Started | null = null
@@ -94,9 +97,20 @@ test('Settings saves Brakeman with the stub as its agent and terminal screens of
   await expect(terminals).toHaveAttribute('aria-checked', 'false')
   await expect(card).toContainText("Lets Brakeman read what a session's screen shows")
   await card.getByRole('switch', { name: 'Brakeman on' }).click()
-  await card.locator('[data-brakeman-agent]').click()
+  // No agent yet: the select says None, which is an item of its own.
+  const agent = card.locator('[data-brakeman-agent]')
+  await expect(agent).toContainText('None')
+  await agent.click()
   await page.getByRole('option', { name: 'Brakeman (e2e stub)' }).click()
   // The stub's adapter is Claude Code's: it takes a model, and can be told to allow Conductor's tools.
+  await expect(card.locator('[data-brakeman-model]')).toBeVisible()
+  // None is chosen like any agent, and takes the agent's fields away; the stub chosen again for the save.
+  await agent.click()
+  await page.getByRole('option', { name: 'None', exact: true }).click()
+  await expect(agent).toContainText('None')
+  await expect(card.locator('[data-brakeman-model]')).toHaveCount(0)
+  await agent.click()
+  await page.getByRole('option', { name: 'Brakeman (e2e stub)' }).click()
   await expect(card.locator('[data-brakeman-model]')).toBeVisible()
   await card.locator('[data-brakeman-save]').click()
   await expect.poll(async () => {
@@ -109,6 +123,8 @@ test('Settings saves Brakeman with the stub as its agent and terminal screens of
 test('a briefing waits behind the turn in progress, then runs in its session, and its brief takes neither the focus nor the page', async ({ page }) => {
   test.setTimeout(TURN_BOUND + 120_000)
   await open(page, '/brakeman')
+  // Settings stays a link away while Brakeman is on, for a browser with no other way there.
+  await expect(page.locator('[data-brakeman-settings-link]')).toHaveAttribute('href', '/settings')
   const ask = page.locator('[data-brakeman-ask]')
   // The first request holds the slot (the stub waits at its gate).
   await ask.locator('[data-ask-kind]').click()
@@ -146,6 +162,8 @@ test('a briefing waits behind the turn in progress, then runs in its session, an
   // The gate opens: the stub submits its brief.
   writeFileSync(gate, 'open\n')
   await expect.poll(async () => (briefed = await request('br-2')).state, { timeout: 30_000 }).toBe('briefed')
+  // The stub submits only after its reads succeeded: the turn counted its read of the changes.
+  expect(briefed.reads).toBeGreaterThanOrEqual(1)
   // The sidebar counts it; the focus and the page are as they were.
   await expect(row).toContainText('1')
   expect(page.url()).toBe(url)
@@ -172,6 +190,8 @@ test('a briefing waits behind the turn in progress, then runs in its session, an
 
   // The turn's run is stopped once its brief is kept (after the desk's grace for the agent's last output).
   await expect.poll(async () => (await api.ok<{ run: Run }>('GET', `/api/runs/${briefed.runId}`)).run.state, { timeout: 60_000 }).toBe('stopped')
+  // Its slot given up (its run stopped, its process reaped), the request leaves In progress.
+  await expect(page.locator('[data-brakeman-current]')).toHaveCount(0, { timeout: 30_000 })
   // The run's chip says it has changed since the brief was kept, and still leads to the run.
   await expect(fact.locator(`[data-ref-chip="run:${briefed.runId}"]`)).toHaveAttribute('data-changed', 'true', { timeout: 15_000 })
   await fact.locator(`[data-ref-chip="run:${briefed.runId}"] [data-ref-link]`).click()

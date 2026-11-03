@@ -556,6 +556,27 @@ export const BRAKEMAN_ADAPTERS: Readonly<Record<string, { model: boolean; allowT
   codex: { model: true, allowTools: true },
 }
 
+/**
+ * The Agent select's value for no agent. A select's item may not have "" as its value (Reka's SelectItem throws: "" clears the
+ * selection), so None is this, which no catalog id can be (ids are `^[a-z0-9-]{1,32}$`, internal/catalog), and stands for `agentId` "".
+ */
+export const NO_AGENT = '_none'
+
+/** The Agent select's items: None, then each agent offered, by its catalog id. */
+export function agentItems(offered: ReadonlyArray<{ id: string; name: string; available?: boolean }>): Array<{ label: string; value: string }> {
+  return [{ label: 'None', value: NO_AGENT }, ...offered.map((a) => ({ label: a.available === false ? `${a.name} (not installed)` : a.name, value: a.id }))]
+}
+
+/** The Agent select's value for a configuration's `agentId`. */
+export function agentChoice(agentId: string | undefined): string {
+  return agentId || NO_AGENT
+}
+
+/** The `agentId` the Agent select's value saves. */
+export function agentIdOf(choice: string): string {
+  return choice === NO_AGENT ? '' : choice
+}
+
 /** The configuration's bounds (internal/brakeman/config.go). */
 export const BOUNDS = {
   turnMinutes: [1, 60],
