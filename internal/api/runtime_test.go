@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,6 +78,19 @@ func launchOne(t *testing.T, e *testEnv, c crew.Crew) string {
 // session.
 func attemptRef(sessionID, runID string, n int) ext.ProcessRef {
 	return ext.ProcessRef{Session: sessionID, Run: runID, Task: "build", Attempt: n, Tree: ledger.TreeWorktree}
+}
+
+// takesAnswered gives the guard's calls the test's minute (extWaiting) in
+// place of ext.TakesWait, for a test that needs the offered Runtime's
+// answer to Takes: the answer comes from a goroutine of the guard's, and a
+// loaded machine that schedules it late must not turn a run taken into one
+// declined. TestATakesThatPanicsOrStallsRunsNatively's late run keeps the
+// product's bound, the one test of it.
+func takesAnswered(t *testing.T) {
+	t.Helper()
+	wait := time.Minute
+	extWaiting.Store(&wait)
+	t.Cleanup(func() { extWaiting.Store(nil) })
 }
 
 // terminalRefs is the refs of the terminals f was asked to start.
@@ -181,6 +195,7 @@ func TestAnAttemptStartsInItsRunsRuntime(t *testing.T) {
 	for _, takes := range []bool{true, false} {
 		name := map[bool]string{true: "taken", false: "declined"}[takes]
 		t.Run(name, func(t *testing.T) {
+			takesAnswered(t)
 			seam := nativeSeam()
 			offered := &sessiontest.FakeRuntime{Base: local.Native(), TakesRun: func(ext.ProcessRef) bool { return takes }}
 			e := runtimeEnv(t, seam, nil, withRuntime(offered))
@@ -231,6 +246,7 @@ func TestARefusedStartIsStartFailed(t *testing.T) {
 // New given WithExtensions with a Runtime offers the engine it: a run it
 // takes has its attempt's session and its check in it.
 func TestWithExtensionsOffersTheEngineTheRuntime(t *testing.T) {
+	takesAnswered(t)
 	seam := nativeSeam()
 	offered := &sessiontest.FakeRuntime{Base: local.Native()}
 	e := runtimeEnv(t, seam, nil, withRuntime(offered))
@@ -275,14 +291,16 @@ func TestAServerWithNothingRegisteredStartsNatively(t *testing.T) {
 	}
 }
 
-// starterRuntime is a Runtime that is an ext.Starter: its Start waits for
-// release.
+// starterRuntime is a Runtime that is an ext.Starter: its Start counts
+// its calls and waits for release.
 type starterRuntime struct {
 	*sessiontest.FakeRuntime
 	release chan struct{}
+	starts  *atomic.Int32
 }
 
 func (s starterRuntime) Start(ctx context.Context, _ ext.Host) error {
+	s.starts.Add(1)
 	select {
 	case <-s.release:
 		return nil
@@ -294,9 +312,11 @@ func (s starterRuntime) Start(ctx context.Context, _ ext.Host) error {
 // A Runtime that is a Starter is started first: a run launched before its
 // Start has succeeded is not offered it and runs natively; one launched
 // after is offered it, and its attempt's session starts in it.
+// StartExtensions calls its Start once.
 func TestARuntimeThatIsAStarterIsStartedFirst(t *testing.T) {
+	takesAnswered(t)
 	seam := nativeSeam()
-	rt := starterRuntime{FakeRuntime: &sessiontest.FakeRuntime{Base: local.Native()}, release: make(chan struct{})}
+	rt := starterRuntime{FakeRuntime: &sessiontest.FakeRuntime{Base: local.Native()}, release: make(chan struct{}), starts: &atomic.Int32{}}
 	e := runtimeEnv(t, seam, nil, withRuntime(rt))
 	e.gitRepo(t)
 	e.srv.StartExtensions(t.Context())
@@ -324,6 +344,9 @@ func TestARuntimeThatIsAStarterIsStartedFirst(t *testing.T) {
 	if c := rt.Asked("Takes"); len(c) != 1 || c[0].Ref != (ext.ProcessRef{Run: late}) {
 		t.Fatalf("Takes: %+v", c)
 	}
+	if n := rt.starts.Load(); n != 1 {
+		t.Fatalf("the Runtime's Start was called %d times, want once", n)
+	}
 }
 
 // The guard answers a Takes that panics, or that does not answer within
@@ -332,6 +355,9 @@ func TestARuntimeThatIsAStarterIsStartedFirst(t *testing.T) {
 func TestATakesThatPanicsOrStallsRunsNatively(t *testing.T) {
 	for _, failure := range []string{"panic", "late"} {
 		t.Run(failure, func(t *testing.T) {
+			if failure == "panic" {
+				takesAnswered(t)
+			}
 			stall := make(chan struct{})
 			t.Cleanup(func() { close(stall) })
 			offered := &sessiontest.FakeRuntime{Base: local.Native(), TakesRun: func(ext.ProcessRef) bool {
@@ -384,4 +410,51 @@ func TestAPersonsSessionOutlivesItsRequest(t *testing.T) {
 		t.Fatalf("the start: %+v", calls)
 	}
 	e.stopAndWait(calls[0].Ref.Session)
+}
+
+// panickyService is a ServiceProcess whose Result panics; its Stop is
+// counted and ends it.
+type panickyService struct {
+	done  chan struct{}
+	stops *atomic.Int32
+}
+
+func (p panickyService) Done() <-chan struct{} { return p.done }
+
+func (p panickyService) Result() ext.CommandResult { panic("the fake's service panics in Result") }
+
+func (p panickyService) Stop(context.Context) error {
+	if p.stops.Add(1) == 1 {
+		close(p.done)
+	}
+	return nil
+}
+
+// A registered Runtime's service that panics is ended, not the server:
+// the guard logs the panic at error, naming the Runtime and the method,
+// stops the service through the Runtime's Stop once, and answers from then
+// on as a service that has ended, its result Exit -1 and the words.
+func TestAServiceThatPanicsIsEndedNotTheServer(t *testing.T) {
+	stops := &atomic.Int32{}
+	svc := panickyService{done: make(chan struct{}), stops: stops}
+	rt := &sessiontest.FakeRuntime{Service: func(ext.CommandSpec) (ext.ServiceProcess, error) { return svc, nil }}
+	logs := &logBuffer{}
+	e := runtimeEnv(t, nativeSeam(), slog.New(slog.NewTextHandler(logs, nil)), withRuntime(rt))
+	sp, err := e.srv.offered.Serve(t.Context(), ext.CommandSpec{Argv: []string{"serve"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := sp.Result(); r.Exit != -1 || r.Err != "the Runtime fake panicked in ServiceProcess.Result" {
+		t.Fatalf("the result of a service that panicked: %+v", r)
+	}
+	<-sp.Done()
+	if err := sp.Stop(t.Context()); err != nil {
+		t.Fatalf("a Stop after the panic: %v", err)
+	}
+	if n := stops.Load(); n != 1 {
+		t.Fatalf("the Runtime's Stop was called %d times, want once", n)
+	}
+	if l := logs.String(); !strings.Contains(l, "level=ERROR") || !strings.Contains(l, "provider=fake call=ServiceProcess.Result failure=panic") {
+		t.Fatalf("the guard's log:\n%s", l)
+	}
 }

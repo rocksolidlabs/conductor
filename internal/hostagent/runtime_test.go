@@ -2,6 +2,7 @@ package hostagent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -98,14 +99,14 @@ func TestAHostWhoseRuntimeRefusesTheStartFails(t *testing.T) {
 }
 
 // A host stopped as its command starts (its context ended once it has
-// registered, before the start) still starts the command, then stops it,
-// and Run returns with no error, as before the seam: the start is not
-// bounded by Run's context.
+// registered, before the start) still starts the command natively, then
+// stops it, and Run returns with no error, as before the seam: the native
+// start is not bounded by Run's context.
 func TestAHostStoppedAsItStartsStartsAndStops(t *testing.T) {
 	_, hs := startServer(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	fake := &sessiontest.FakeRuntime{Base: local.Native()}
+	fake := &sessiontest.FakeRuntime{Place: ext.WhereNative, Base: local.Native()}
 	_, err := Run(ctx, Options{ServerURL: hs.URL, Token: hostToken, RelayOnly: true, Name: "stopped", Argv: []string{"/bin/cat"}, Dir: t.TempDir(), Runtime: fake,
 		Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Registered: func(string, string) { cancel() }})
@@ -114,5 +115,47 @@ func TestAHostStoppedAsItStartsStartsAndStops(t *testing.T) {
 	}
 	if calls := fake.Asked("StartTerminal"); len(calls) != 1 || calls[0].Process.PID <= 0 {
 		t.Fatalf("the start: %+v", calls)
+	}
+}
+
+// heldStart is a Runtime whose StartTerminal tells entered it has been
+// called, then holds the start before its commitment point until its
+// context ends, and answers the context's error with nothing started.
+type heldStart struct {
+	*sessiontest.FakeRuntime
+	entered chan struct{}
+	ended   chan error
+}
+
+func (h heldStart) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Terminal, error) {
+	h.FakeRuntime.StartTerminal(ctx, s)
+	close(h.entered)
+	<-ctx.Done()
+	h.ended <- ctx.Err()
+	return nil, ctx.Err()
+}
+
+// A host stopped while a Runtime that is not the native one holds its
+// command's start is stopped: the start is bounded by Run's context, the
+// Runtime sees it end, and Run returns the start's error.
+func TestAHostStoppedWhileARuntimeHoldsItsStartReturns(t *testing.T) {
+	_, hs := startServer(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	rt := heldStart{FakeRuntime: &sessiontest.FakeRuntime{}, entered: make(chan struct{}), ended: make(chan error, 1)}
+	go func() {
+		<-rt.entered
+		cancel()
+	}()
+	_, err := Run(ctx, Options{ServerURL: hs.URL, Token: hostToken, RelayOnly: true, Name: "held", Argv: []string{"/bin/agent"}, Dir: t.TempDir(), Runtime: rt,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run: %v, want the start's context.Canceled", err)
+	}
+	if err := <-rt.ended; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the Runtime's start saw %v, not its context ended", err)
+	}
+	if n := len(rt.Asked("StartTerminal")); n != 1 {
+		t.Fatalf("%d starts asked", n)
 	}
 }

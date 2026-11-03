@@ -248,10 +248,17 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	procEnv := hostEnv(env)
-	// The start is not bounded by ctx: a host stopped as its command starts
-	// starts it and then stops it below, and returns as it always has, with
-	// the command's exit and no error.
-	term, err := opts.Runtime.StartTerminal(context.WithoutCancel(ctx), ext.TerminalSpec{Argv: opts.Argv, Dir: dir, DirFile: dirFile, Env: procEnv, Cols: cols, Rows: rows,
+	// The native start is not bounded by ctx, as pty.Start never was: a
+	// host stopped as its command starts starts it and then stops it below,
+	// and returns as it always has, with the command's exit and no error.
+	// Another Runtime's start is bounded by ctx, as its contract has it: one
+	// that ends before the Runtime's commitment point is a start that
+	// failed, and Run returns its error.
+	startCtx := ctx
+	if opts.Runtime.Where() == ext.WhereNative {
+		startCtx = context.WithoutCancel(ctx)
+	}
+	term, err := opts.Runtime.StartTerminal(startCtx, ext.TerminalSpec{Argv: opts.Argv, Dir: dir, DirFile: dirFile, Env: procEnv, Cols: cols, Rows: rows,
 		Ref: ext.ProcessRef{Session: registered.SessionID}})
 	dirFile.Close()
 	if err != nil {

@@ -38,7 +38,9 @@ native one (`local.Native()`, `pty.Start` as before), which a person's
 session, a resume, a legacy crew's member and an attempt of a run the
 offered one declined start in, and the one its engine offers managed runs,
 the registered one behind the guard (its `Takes` within `ext.TakesWait`, a
-process method's panic logged at error and refused) or, with none
+process method's panic logged at error and refused, and the terminal and
+the service it answers guarded too: a panic in one of their methods is
+logged at error and ends that process, never the server) or, with none
 registered, the native one; an attempt's session starts in its run's
 (`crew.LaunchSpec.Where`). `conductor host` starts its command the same
 way, through `hostagent.Options.Runtime`, the native one, whatever is
@@ -565,8 +567,12 @@ native Runtime whatever is registered, since a host runs no managed run.
 
 **The guard.** `New` wraps every provider in the guard
 (`internal/api/extensions.go`), defaults included, so no seam tells a
-default from a provider. A direct call goes through `extCall`: it runs
-within the interface's wait (`IdentityWait` 1 s, `RouteWait` 5 s,
+default from a provider, but for the Runtime: a registered one is wrapped
+(`internal/api/extruntime.go`), and the free default, `local.Native()`, is
+held as it is, since its `Takes` answers from the ref alone with no I/O and
+its process methods are what the server ran before the seam, so the
+guard would only add a goroutine to every run. A direct call goes through
+`extCall`: it runs within the interface's wait (`IdentityWait` 1 s, `RouteWait` 5 s,
 `ContextWait` 5 s, `ICEWait` 2 s), on a goroutine of its own whose context
 ends with the wait or the caller's, and answers the free default's answer
 when the call errs, panics, answers what the record's `Valid` refuses, or
