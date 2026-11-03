@@ -4218,9 +4218,15 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
 
   PR-10 (#467, PR #569): the Plan section, Propose and Revise, Approve and
   Approve again, Withdraw, the launch dialog (asks first; a lost reply
-  sent again under the same op id), the palette's rows. Its CI failure
-  was a spec typing into a menu still closing; AGENTS.md, Tests that do
-  not flake, gained "A menu that has closed is not gone". Checks:
+  sent again under the same op id), the palette's rows. Review rounds 1
+  and 2 found the launches by scanning the ticket's whole history, made
+  the dialogs confirm nothing until the revision's body is read, kept an
+  unsettled launch's op id and label across the dialog's closes (sent
+  again, never a second run), put the operation answers and the list's
+  404s through the page's ordering gate, and said an approval made again
+  in the history. Its CI failure was a spec typing into a menu still
+  closing; AGENTS.md, Tests that do not flake, gained "A menu that has
+  closed is not gone". Checks:
   typecheck, vitest (1,084 tests), `dispatch-plan.spec.ts` 30 of 30 with
   `--repeat-each 10`, `make test-e2e` (327 passed; one `answered.spec.ts`
   flake outside the PR, a line in #281), CI green on the merge it landed
@@ -4231,7 +4237,14 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   candidates with their receipts and where they ran, a receipt opened with
   its log and both hashes, the repairs, the "changed since" banner with
   Revise and Launch a follow-up, and the run page's "Launched from".
-  Checks: typecheck, vitest (1,120 tests), `make test-e2e` (332 passed);
+  Review round 1 kept every continuation of a chain by its run id, read
+  the pages again when a live run resumes a shown one, ordered a slow
+  404 with the reads, retried `run_changing` from the first read, read
+  each review task's findings on its own and said the blockers and a
+  partial history; round 2 read a run's candidates again on a snapshot,
+  kept an opened receipt by its task, attempt and key, and kept a repair
+  that submits the reviewed commit unchanged. Checks: typecheck, vitest
+  (1,120 tests), `make test-e2e` (332 passed);
   the Mac and Windows rows not run (no web step in them, no Go or
   `desktop/` change).
 
@@ -4264,8 +4277,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   ticket page on a phone on the LAN. None of them ran for this entry:
   starting the owner's agents spends the owner's subscriptions and meets
   their startup screens, which are the owner's to answer, and the phone
-  is the owner's. What the specs show in their place, with the e2e stub
-  agents on Linux in CI: a ticket's revision proposed, approved with a
+  is the owner's. So this PR leaves #471 open: the checks, with what each
+  showed, and the acceptance observation are recorded by a later docs PR
+  of the stream, which finishes it. What the specs show in their place,
+  with the e2e stub agents on Linux in CI: a ticket's revision proposed, approved with a
   note and launched, the run under Runs and "Launched from" on its page;
   the stub's committed file holding the first line it read from
   `.conductor/ticket.md`; a check failing on its first run and the repair

@@ -386,8 +386,10 @@ A `delivery` link is a URL a person adds, which may name the candidate it
 delivers (`<run>/<task>/<n>@<commit>`); the API reads that candidate's check
 receipts from the ledger when the link is added and the store keeps them
 on the link (`delivery.go`), the one fact of a run's evidence Dispatch
-records, so the policy's `verified` (a delivery whose candidate passed every
-check on its commit) is a function of Dispatch's own rows. A `run` link
+records, so the policy's `verified` (a delivery whose candidate's attempt
+succeeded and which has at least one receipt on its commit, every one
+finished with exit 0 and stable; a candidate with no check is not
+verified) is a function of Dispatch's own rows. A `run` link
 names a run the engine holds or has a record of, and one live ticket holds
 a run's whole chain of continuations: a link into a chain another ticket
 holds, by a launch or a link, is refused (`run_linked`).

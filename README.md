@@ -1506,8 +1506,10 @@ shown; nothing holds work on them yet) and a note. A revision never changes:
 operator's, and supersedes the revision approved before. The section says
 when an approval no longer holds: after an edit of the title, description or
 criteria **Approve again**; after a comment it hands over is edited or an
-agent's catalog entry changes, **Revise**; and when the crew was edited since.
-An edit of anything else (status, labels, a new comment) leaves it holding.
+agent's catalog entry changes, **Revise**. When the crew was edited since, it
+says so and the approval still holds: a launch runs the revision's crew as it
+was, and **Revise** takes the crew as it is now. An edit of anything else
+(status, labels, a new comment) leaves it holding.
 
 **Launching.** **Launch from r2** asks first (the revision, its commit, the
 yolo choice, the run's label, `CND-12 Fix the login loop` unless changed),
