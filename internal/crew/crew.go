@@ -156,6 +156,12 @@ type Crew struct {
 	Members   []Member  `json:"members"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// Origin is the Brakeman draft a person made this crew from
+	// ("brakeman:<request>/<item>/<op>", Store.CreateFrom), "" for every
+	// other crew. Only CreateFrom sets it, Update keeps the stored one
+	// whatever its body holds, and Create and Duplicate clear it, so at
+	// most one crew answers a draft's make.
+	Origin string `json:"origin,omitempty"`
 }
 
 // Limits enforced by Validate. There is no limit on the number of crews.

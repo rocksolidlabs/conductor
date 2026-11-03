@@ -400,6 +400,9 @@ type Local struct {
 	// read (and the turn taken with it) and everything the pump does with
 	// it.
 	beforeScan atomic.Pointer[func(chunk []byte)]
+	// afterBroadcast, a test's hook, runs with each chunk once it has gone
+	// out to the viewers, before the rest of what the pump does with it.
+	afterBroadcast atomic.Pointer[func(chunk []byte)]
 	// beforeSettle, a test's hook, runs as the settle timer fires, before
 	// it looks at anything (settled); afterTitle between readTitle's look
 	// at a title that matches and its change.
@@ -581,18 +584,12 @@ func (s *Local) pump() {
 			// not count as output for the quiet the run engine and the
 			// trust watcher wait for.
 			title := titleOnly.Match(chunk)
-			s.mu.Lock()
-			s.ring.Write(chunk)
-			s.hub.BroadcastLoud(proto.Encode(proto.TypeOutput, chunk))
-			if !title {
-				s.lastOutput = time.Now()
-			}
-			s.mu.Unlock()
-			s.paste.feed(chunk)
-			s.scanOutput(chunk, turn)
-			if s.pattern != nil {
-				s.pattern.Feed(chunk)
-			}
+			// The startup questions' watcher and the screen the questions
+			// are read from take the chunk before any viewer has it: keys
+			// are routed by them (startupMayShow, askedIn), and a viewer
+			// that answers what it was sent, at once (a routed answer, a
+			// crew's client), finds them showing it. The dialog the chunk
+			// erased is withdrawn after the viewers have the chunk.
 			var left string
 			s.feedMu.Lock()
 			if s.trust != nil && !title {
@@ -602,6 +599,21 @@ func (s *Local) pump() {
 				left = s.feedAsked(chunk)
 			}
 			s.feedMu.Unlock()
+			s.mu.Lock()
+			s.ring.Write(chunk)
+			s.hub.BroadcastLoud(proto.Encode(proto.TypeOutput, chunk))
+			if !title {
+				s.lastOutput = time.Now()
+			}
+			s.mu.Unlock()
+			if hook := s.afterBroadcast.Load(); hook != nil {
+				(*hook)(chunk)
+			}
+			s.paste.feed(chunk)
+			s.scanOutput(chunk, turn)
+			if s.pattern != nil {
+				s.pattern.Feed(chunk)
+			}
 			if left != "" {
 				s.withdraw(left)
 			}
@@ -778,6 +790,13 @@ func (s *Local) Dropped() uint64 { return s.dropped.Load() }
 
 // Activity returns the activity log, oldest first.
 func (s *Local) Activity() []ActivityEntry { return s.activity.Snapshot() }
+
+// ActivityThrough returns the activity log, oldest first, and the time it
+// is whole up to: an entry the session adds later, an attention's entry
+// stamped before the read among them, is of a time after it.
+func (s *Local) ActivityThrough() ([]ActivityEntry, time.Time) {
+	return s.activity.SnapshotThrough()
+}
 
 // notifyChange hands a fresh Info snapshot to the OnChange hook.
 func (s *Local) notifyChange() {
@@ -1983,7 +2002,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			if label == "" {
 				label = string(state)
 			}
-			s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: label}, state)
+			s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: label}, state)
 		}
 		return nil
 	}
@@ -2000,7 +2019,13 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// reply under way compares that stamp (pressEnter, answer), and
 		// its line in the chat is the one an answer refers to. The done
 		// has ended the turn, and is recorded as the report it is.
-		now := time.Now().UTC()
+		// The done's entry, and the question's shown again, stamped now
+		// and added once the lock is let go (Stamp).
+		n := 1
+		if !ownShown {
+			n = 2
+		}
+		now := s.activity.Stamp(n)
 		if !ownShown {
 			// What showed leaves, and a claim on it with it.
 			if cur.ID != "" && cur.ID != own.ID {
@@ -2149,7 +2174,9 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		s.releaseStrandedLocked()
 	}
 	if state != AttentionNone {
-		now := time.Now().UTC()
+		// Its entry is added at this time once the lock is let go
+		// (recordOwn below): stamped so until then (Stamp).
+		now := s.activity.Stamp(1)
 		att.Since = &now
 		att.ID = NewID()
 		if stillAnswered {
@@ -3505,10 +3532,10 @@ func (s *Local) recordStatusReconciled() {
 	}
 	switch att.State {
 	case AttentionNeedsInput:
-		s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: att.Message}, AttentionNeedsInput)
+		s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: att.Message}, AttentionNeedsInput)
 	case AttentionWorking:
 		// Labelled as a working change is (setAttentionLooked): by its state.
-		s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: string(AttentionWorking)}, AttentionWorking)
+		s.recordOwn(ActivityEntry{Type: ActivityAttention, Message: string(AttentionWorking)}, AttentionWorking)
 	}
 }
 
@@ -4940,17 +4967,86 @@ func (s *Local) handOverSize() {
 }
 
 // Stop terminates the process.
+//
+// The guard is the process, not the status: a stop returns at once only
+// once the process is reaped (ProcessDone). A session marked ended whose
+// process is not (a stop that failed, a read side that closed before its
+// child exited) is signalled again by every call, which answers that
+// stop's error; its status stays as it is, so a stop never makes a
+// session running again.
 func (s *Local) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	s.stopRequested = true
 	s.mu.Unlock()
-	if ended {
-		return nil
+	select {
+	case <-s.proc.Done():
+		if ended {
+			return nil
+		}
+	default:
 	}
 	err := s.proc.Stop(ctx, s.opts.StopGrace)
 	s.markEnded(StatusStopped)
 	return err
+}
+
+// ProcessDone is closed once the session's process has exited and been
+// waited for: the process's own Done. A session's status can read ended
+// before it (Stop marks it stopped whatever the process did), so what must
+// know the process is gone (the Brakeman desk's slot) waits on this.
+func (s *Local) ProcessDone() <-chan struct{} { return s.proc.Done() }
+
+// maxLastLine bounds LastLine.
+const maxLastLine = 200
+
+// LastLine is the last line of output the session kept that is not blank,
+// its escape sequences stripped and cut to at most maxLastLine bytes: what
+// an agent printed as it exited ("Please run /login").
+func (s *Local) LastLine() string {
+	text := strings.ReplaceAll(string(StripANSI(s.ring.Snapshot())), "\r", "\n")
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			l = strings.ToValidUTF8(l, "")
+			for len(l) > maxLastLine {
+				_, n := utf8.DecodeLastRuneInString(l)
+				l = l[:len(l)-n]
+			}
+			return l
+		}
+	}
+	return ""
+}
+
+// TailLines is the last n lines of output the session kept (at most n,
+// oldest first), their escape sequences stripped, each cut to at most
+// maxLastLine*4 bytes and made valid UTF-8, trailing blank lines left out:
+// what a person reading its screen sees of its end (the Brakeman desk's
+// screen read).
+func (s *Local) TailLines(n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	text := strings.ReplaceAll(string(StripANSI(s.ring.Snapshot())), "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := strings.Split(strings.TrimRight(text, " \t\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		l = strings.ToValidUTF8(strings.TrimRight(l, " \t"), "")
+		for len(l) > maxLastLine*4 {
+			_, k := utf8.DecodeLastRuneInString(l)
+			l = l[:len(l)-k]
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 // DisconnectLink evicts every subscription created through linkID as

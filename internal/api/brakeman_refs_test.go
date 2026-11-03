@@ -120,7 +120,7 @@ func newRefsFixture(t *testing.T) *refsFixture {
 	f.op = op.ID
 	f.ticket = done(ds.CreateTicket(ctx, op, dispatch.NewTicket{Project: "CND", Title: "The build fails"})).Key
 	f.comment = done(ds.AddComment(ctx, adminOp("Ann"), f.ticket, "It fails on main too.")).ID
-	done(ds.AddLink(ctx, adminOp("Ann"), f.ticket, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: f.run}))
+	done(ds.AddLink(ctx, adminOp("Ann"), f.ticket, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: f.run}, nil))
 
 	st, err := store.Open(t.TempDir())
 	if err != nil {

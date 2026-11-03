@@ -1,5 +1,6 @@
 import { dirname } from 'node:path'
 import { expect, test } from './fixtures'
+import type { Request } from '@playwright/test'
 
 // The desktop app's Settings page, under a stand-in for its bridge: the
 // folder picker browses the server's own folders (GET /api/paths, scope any,
@@ -97,28 +98,33 @@ test('in a browser, Settings says what the server is and who sponsors it', async
 })
 
 // A provider still starting as Settings opens (docs/plans/ext.md, C9): the row says so, the route is read again on its own, and the
-// row reads ready once the reply does, with no reload and the same token. It waits on the second request, never on the clock.
+// row reads ready once the reply does, with no reload and the same token. Every reply after the first is held until the test has
+// seen the starting row and set its mark, so the starting row holds for as long as the test needs it; nothing waits on the clock.
 test('the Extensions row shows a provider that was starting as ready once it is, with no reload', async ({ page, state }) => {
   const replies = [
     { providers: [{ kind: 'identity', name: 'cloud', state: 'starting' }, { kind: 'notifications', name: 'push', state: 'ready' }] },
     { providers: [{ kind: 'identity', name: 'cloud', state: 'ready' }, { kind: 'notifications', name: 'push', state: 'ready' }] },
   ]
-  let served = 0
-  await page.route('**/api/capabilities', (route) => route.fulfill({ json: replies[Math.min(served++, replies.length - 1)] }))
-  const first = page.waitForRequest('**/api/capabilities')
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const asked: Request[] = []
+  await page.route('**/api/capabilities', async (route) => {
+    const n = asked.push(route.request()) - 1
+    if (n > 0) await held
+    await route.fulfill({ json: replies[Math.min(n, replies.length - 1)] })
+  })
   await page.goto('/settings')
-  const asked = await first
-  // Asked for before the first reply can have been read, so the second request cannot pass it by.
-  const second = page.waitForRequest('**/api/capabilities')
   const row = page.locator('[data-about-card] [data-about-row="extensions"]')
   await expect(row).toHaveText('identity: cloud (starting) · notifications: push')
   // A mark on the page that a reload would lose.
   await page.evaluate(() => ((window as unknown as { capabilitiesMark: number }).capabilitiesMark = 1))
-  const again = await second
+  release()
   await expect(row).toHaveText('identity: cloud · notifications: push')
+  expect(asked.length).toBeGreaterThanOrEqual(2)
   expect(await page.evaluate(() => (window as unknown as { capabilitiesMark?: number }).capabilitiesMark)).toBe(1)
-  expect(asked.headers().authorization).toBe(`Bearer ${state.token}`)
-  expect(again.headers().authorization).toBe(`Bearer ${state.token}`)
+  expect(asked[0]!.headers().authorization).toBe(`Bearer ${state.token}`)
+  expect(asked[1]!.headers().authorization).toBe(`Bearer ${state.token}`)
+  await page.unroute('**/api/capabilities')
 })
 
 test('a "Runs in" field has a folder button that browses the allowed roots and fills it', async ({ page, state }) => {

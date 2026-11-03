@@ -25,8 +25,9 @@
 // Where, at most ext.MaxICEServers valid servers); the methods that must
 // be safe for concurrent use called from Goroutines goroutines at once
 // (run the suite under the race detector); a call with a cancelled
-// context returning; and Start returning with its host and the network
-// blocked, and taking a closed host's refusals.
+// context returning; Name returning with the network blocked too; and
+// Start returning with its host and the network blocked, and the closed
+// host's refusals reaching the provider while the check runs.
 //
 // Above all they check article 8 of the Conductor Program: every call
 // answers from what the provider holds on this machine, never with a round
@@ -49,18 +50,25 @@
 //
 // A provider's repository builds its provider with a Network in place of
 // its transport (Network.Transport for HTTP, Network.DialContext for
-// anything else), starts it when it is a Starter (with a FakeHost) and
-// runs RunAll, or a check function per interface, in an ordinary go test
-// under -race. It runs the suite twice: with its hosted service reachable
-// (a test instance, or an httptest stand-in reached through the Network),
-// and unreachable (the service's address answering nothing, or the
-// Network blocked before Start), since a provider answers as the free
-// default while its service is out of reach and must pass both:
+// anything else, a gRPC or websocket connection among them) and runs
+// RunAll, or a check function per interface, in an ordinary go test under
+// -race. A Starter's Start is checked on a value of its own, never
+// started (Starter starts it twice, with its host and the network
+// blocked); the checks of its calls run on a value started as the server
+// starts it, with a FakeHost, and RunAll is told so (Started), so that it
+// does not start a running value again. It runs the suite twice: with its
+// hosted service reachable (a test instance, or an httptest stand-in
+// reached through the Network), and unreachable (the service's address
+// answering nothing, or the Network blocked before Start), since a
+// provider answers as the free default while its service is out of reach
+// and must pass both:
 //
 //	func TestContract(t *testing.T) {
 //		for _, reachable := range []bool{true, false} {
 //			n := exttest.NewNetwork()
-//			p := provider.New(provider.Options{Transport: n.Transport(), Service: service(t, reachable)})
+//			opts := provider.Options{Transport: n.Transport(), Service: service(t, reachable)}
+//			exttest.Starter(t, n, provider.New(opts))
+//			p := provider.New(opts)
 //			if !reachable {
 //				n.Block()
 //			}
@@ -69,7 +77,7 @@
 //				t.Fatal(err)
 //			}
 //			n.Unblock()
-//			exttest.RunAll(t, n, ext.Providers{Identity: p, Notifications: []ext.NotificationSink{p}})
+//			exttest.RunAll(t, n, ext.Providers{Identity: p, Notifications: []ext.NotificationSink{p}}, exttest.Started())
 //			cancel()
 //		}
 //	}
@@ -93,13 +101,22 @@ import (
 	"github.com/rocksolidlabs/conductor/ext"
 )
 
-// RunOption changes what RunAll checks. None exists yet: the Runtime seam
-// (docs/plans/runtime.md) adds the first, for the checks that start
-// processes.
+// RunOption changes what RunAll checks. The Runtime seam
+// (docs/plans/runtime.md) adds one for the checks that start processes.
 type RunOption func(*runConfig)
 
 // runConfig is what RunAll's options set.
-type runConfig struct{}
+type runConfig struct {
+	started bool // the values are running: Starter is not run on them
+}
+
+// Started tells RunAll that the providers it is given are started
+// already, as the server starts them: it runs no Starter on them, since
+// starting a running value again checks nothing (a Start that does its
+// work once returns at once the second time) and may race the workers the
+// first began. Check Start with Starter on a value of its own, never
+// started.
+func Started() RunOption { return func(c *runConfig) { c.started = true } }
 
 // byKind is the check RunAll runs for a provider of each kind, in the order
 // RunAll runs them, with the suite's own inputs where a check takes some.
@@ -140,7 +157,8 @@ func as[I any](check func(T, *Network, I, *runConfig)) func(T, *Network, ext.Pro
 // Notifications lists, Continuity, Media, Runtime) and of every entry of
 // p.All (the entitlement source's among them), each value once per kind,
 // in the order of the kinds; and Starter for every distinct value that is
-// an ext.Starter, after the rest. ext.Freeze's answer holds every
+// an ext.Starter, after the rest, unless Started says the values are
+// running (Starter starts a value itself). ext.Freeze's answer holds every
 // registered provider in All; local.Fill's puts the free defaults in the
 // typed slots. An entry whose value is not its kind's interface, or of a
 // kind the suite knows no check for, fails.
@@ -231,6 +249,9 @@ func RunAll(t T, n *Network, p ext.Providers, opts ...RunOption) {
 				starters = append(starters, s)
 			}
 		}
+	}
+	if cfg.started {
+		return
 	}
 	for _, s := range starters {
 		Starter(t, n, s)

@@ -30,7 +30,8 @@ const mcpUsage = `Usage: conductor mcp
 Serves Conductor's MCP tools on stdin and stdout (JSON-RPC 2.0, one message a line):
 report, set_state, ask, form_crew, add_member, run_status and link, the skill's
 commands as tools, and guide, what the server says this session may do. The server registers it with agents that take an MCP server at
-launch; run it by hand only to try it.
+launch; run it by hand only to try it. A Brakeman turn's session (CONDUCTOR_BRAKEMAN
+set) lists brakeman_request, observe and brief_submit, and no crew or ticket tool.
 `
 
 // mcpProtocolVersion is the MCP revision answered when the client's is unknown.
@@ -73,23 +74,44 @@ var mcpHandled = map[string]bool{
 	"form_crew": true, "add_member": true, "run_status": true, "link": true,
 	"task_context": true, "task_result": true, "message_send": true, "inbox_read": true, "inbox_ack": true, "task_blocked": true, "task_checkpoint": true,
 	"ticket_read": true, "ticket_comment": true,
-	"guide": true,
+	"guide": true, "brakeman_request": true, "observe": true, "brief_submit": true,
 }
+
+// brakemanOnly is the tools a Brakeman turn's session alone lists, and
+// notForBrakeman the ones it does not (docs/plans/brakeman.md, owner
+// decisions 16 and 18): a worker never sees Brakeman's tools, and
+// Brakeman forms no crew, adds no member and reaches no ticket, which
+// the routes refuse it too (403 brakeman_cannot).
+var (
+	brakemanOnly   = map[string]bool{"brakeman_request": true, "observe": true, "brief_submit": true}
+	notForBrakeman = map[string]bool{"form_crew": true, "add_member": true, "ticket_read": true, "ticket_comment": true}
+)
 
 // mcpTools is the tools as tools/list gives them, from the server's table
 // of operations: its names, descriptions and schemas are the table's, so
 // the tools and the guide cannot drift (internal/api, guide.go).
-func mcpTools() []mcpTool { return mcpToolsFrom(api.Operations()) }
+// brakeman is a Brakeman turn's session (CONDUCTOR_BRAKEMAN set).
+func mcpTools(brakeman bool) []mcpTool { return mcpToolsFrom(api.Operations(), brakeman) }
 
-// mcpToolsFrom is the tools of ops that call has a handler for, in ops' order.
-func mcpToolsFrom(ops []api.Operation) []mcpTool {
+// mcpToolsFrom is the tools of ops that call has a handler for and the
+// session lists, in ops' order.
+func mcpToolsFrom(ops []api.Operation, brakeman bool) []mcpTool {
 	var out []mcpTool
 	for _, op := range ops {
-		if op.MCP != "" && mcpHandled[op.MCP] {
+		if op.MCP != "" && mcpHandled[op.MCP] && listedIn(op.MCP, brakeman) {
 			out = append(out, mcpTool{Name: op.MCP, Description: op.Description, InputSchema: op.Input})
 		}
 	}
 	return out
+}
+
+// listedIn reports whether a session lists the tool: a Brakeman turn's
+// all but the crew and ticket tools, any other all but Brakeman's.
+func listedIn(tool string, brakeman bool) bool {
+	if brakeman {
+		return !notForBrakeman[tool]
+	}
+	return !brakemanOnly[tool]
 }
 
 // mcpServer serves one agent.
@@ -169,7 +191,7 @@ func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError)
 	case "ping":
 		return map[string]any{}, nil
 	case "tools/list":
-		return map[string]any{"tools": mcpTools()}, nil
+		return map[string]any{"tools": mcpTools(s.getenv(envBrakeman) != "")}, nil
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -257,6 +279,14 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			return "", err
 		}
 		return "reported", nil
+	case "brakeman_request", "observe", "brief_submit":
+		c, err := brakemanClientFromEnv(s.getenv)
+		if err != nil {
+			return "", err
+		}
+		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		return c.tool(cctx, name, raw)
 	case "form_crew", "add_member", "run_status", "link", "task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint",
 		"ticket_read", "ticket_comment", "guide":
 		c, err := crewClientFromEnv(s.getenv)

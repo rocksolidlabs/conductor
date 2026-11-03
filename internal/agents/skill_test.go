@@ -63,6 +63,10 @@ func TestSkillText(t *testing.T) {
 		`"${CONDUCTOR_BIN:-conductor}" task ticket comment "the cause is the cache key, which ignores the locale; the fix is in the handler"`,
 		"with the ticket_read\ntool or the command below; a run with no ticket says so (no_ticket)", "with the ticket_comment tool",
 		"You read the ticket and comment on it, nothing more: you cannot change\n  it, close it or make another.",
+		// A run launched from a ticket (DS2 PR-13): where the package is,
+		// that the run follows it, and that a change is a person's to decide.
+		".conductor/ticket.md", ".conductor/package.json", ".conductor/attachments/",
+		"Your\n  run follows that package.", "a change that matters to your work is a\n  person's to decide: tell them, with a comment or task blocked, and never\n  act on it alone.",
 		"ever call notify or crew outside a Conductor session; the commands exit silently there",
 		"CONDUCTOR_AGENT", "at most 2 a session", "at most 12 members",
 	} {
@@ -419,5 +423,40 @@ func TestCodexPassesTheSessionsVariablesToItsMCPServer(t *testing.T) {
 	}
 	if strings.Contains(codexMCPEnv, "=") {
 		t.Error("a value went into the override: names only")
+	}
+}
+
+// The skill's Brakeman section is one short section, between the
+// ticket's and the rules, of at most six lines: CONDUCTOR_BRAKEMAN names
+// a turn, guide comes first, the request, observe and one brief, and
+// nothing written becomes work; the skill carries nothing else of
+// Brakeman's, so no agent carries a large static prompt.
+func TestTheSkillsBrakemanSectionIsShort(t *testing.T) {
+	const head = "\n## If you are Brakeman\n"
+	if strings.Count(Skill, head) != 1 {
+		t.Fatal("no Brakeman section, or more than one")
+	}
+	start := strings.Index(Skill, head) + len(head)
+	end := strings.Index(Skill[start:], "\n## ")
+	if end < 0 || strings.Index(Skill, "\n## Your ticket\n") > start || !strings.HasPrefix(Skill[start+end:], "\n## Rules\n") {
+		t.Fatal("the Brakeman section is not between the ticket's and the rules")
+	}
+	section := Skill[start : start+end]
+	var lines []string
+	for _, l := range strings.Split(section, "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > 6 {
+		t.Fatalf("%d lines, at most 6:\n%s", len(lines), section)
+	}
+	for _, want := range []string{"CONDUCTOR_BRAKEMAN is set", "Call guide first", "brakeman_request", "observe", "brief_submit", "evidence", "Nothing you write becomes work", "one brief", "your turn ends"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the section does not say %q", want)
+		}
+	}
+	if n := strings.Count(Skill, "Brakeman"); n != strings.Count(section, "Brakeman")+1 {
+		t.Errorf("Brakeman is named outside its section (%d times in the skill)", n)
 	}
 }

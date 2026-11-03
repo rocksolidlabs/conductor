@@ -61,8 +61,42 @@ const dispatchUsage = `Usage:
   conductor dispatch accept KEY-n [--note TEXT]
       record the owner's acceptance of a ticket, for its owner and criteria now
   conductor dispatch link KEY-n --kind delivery|run|external [--url U] [--ref R]
+                          [--candidate RUN/TASK/N@COMMIT]
       link a ticket: a delivery (a merged pull request, a release) or an
-      external link names its --url, a run its id as --ref
+      external link names its --url, a run its id as --ref; a delivery may name
+      the candidate it delivers, an attempt's result commit in full, whose
+      checks' receipt the link keeps (the close policy's verified)
+  conductor dispatch plans KEY-n
+      the ticket's plan revisions, newest first, one a line: rN, id, crew,
+      base, expected checks, state, the approval, and why an approval no
+      longer holds, with its remedy
+  conductor dispatch plan show KEY-n [N | ID]
+      a plan revision whole, by its number or its id: the approved one, else
+      the newest, when neither is given
+  conductor dispatch plan propose KEY-n --crew ID [--base REF] [--based-on N]
+                                  [--reference PATH[:START[-END]][=NOTE]]...
+                                  [--attachment NAME]... [--comment N]...
+                                  [--constraints-file F]
+                                  [--decision ID:KIND:QUESTION[@TASK,...]]...
+                                  [--note TEXT]
+      make the ticket's next plan revision from a saved crew with tasks, as it
+      is now, at the commit REF names (HEAD when not given); the references,
+      relative to the crew's folder, resolved at that commit; the attachments
+      by name and the comments by number to hand over; F a file of Markdown,
+      - for stdin; a decision's KIND approval or clarification, the tasks
+      that wait on it after the last @
+  conductor dispatch plan approve KEY-n N [--note TEXT]
+      approve revision N, the operator's act: it supersedes the approved one
+  conductor dispatch plan withdraw KEY-n N
+      withdraw revision N; the launches made from it keep naming it
+  conductor dispatch launch KEY-n [--plan N] [--label TEXT]
+      start a managed run from the ticket's approved revision (or revision N),
+      with its crew, commit and yolo choice, and print the run and its page;
+      the label is the ticket's key and title unless given
+  conductor dispatch runs KEY-n
+      the ticket's launches, the runs linked to it by hand and their
+      continuations, newest first, each run's state, tasks, questions and
+      blockers, and what changed of the ticket since each launch
 
 Statuses: backlog, ready, in_progress, in_review, done, cancelled. Priorities:
 none, low, medium, high, urgent, or 0 to 4. Horizons: now, next, later. Labels
@@ -79,11 +113,14 @@ without a second change.
 // maxDispatchReply bounds what conductor dispatch reads of a reply: the
 // smallest whole number of MiB above the largest reply any read it makes
 // can carry, a ticket's (api.MaxTicketReply, an operation's reply on one
-// among them) and a project's (api.MaxProjectReply, read for the names
-// of its labels and milestones), which internal/api's tests measure; a
-// page of 200 projects or tickets is far under it. Derived, never
+// among them), a project's (api.MaxProjectReply, read for the names of
+// its labels and milestones), a plan revision's with its body
+// (api.MaxPlanReply), a ticket's revisions (api.MaxPlansReply), a
+// launch's with its package (api.MaxLaunchReply) and a page of a
+// ticket's runs (api.MaxTicketRunsReply), which internal/api's tests
+// measure; a page of 200 projects or tickets is far under it. Derived, never
 // guessed: a reply bound raised there raises this.
-const maxDispatchReply = (max(api.MaxTicketReply, api.MaxProjectReply)>>20 + 1) << 20
+const maxDispatchReply = (max(api.MaxTicketReply, api.MaxProjectReply, api.MaxPlanReply, api.MaxPlansReply, api.MaxLaunchReply, api.MaxTicketRunsReply)>>20 + 1) << 20
 
 // dispatchPage is how many projects or tickets conductor dispatch asks
 // for a page at a time: the routes' most. A variable so that a test can
@@ -150,7 +187,7 @@ func encodeJSON(v any) ([]byte, error) {
 type dispatchFlags struct {
 	project, title, descriptionFile, priority, owner *string
 	status, q, milestone, horizon, note              *string
-	kind, url, ref                                   *string
+	kind, url, ref, candidate                        *string
 	json                                             *bool
 	statuses, labels, assignees                      multiFlag
 }
@@ -174,6 +211,9 @@ func runDispatch(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return 0, nil
 	}
 	sub, rest := args[0], args[1:]
+	if _, planned := dispatchPlannedArgs[sub]; planned {
+		return runDispatchPlanned(ctx, sub, rest, stdin, stdout, stderr)
+	}
 	takes, known := dispatchArgs[sub]
 	if !known {
 		fmt.Fprint(stderr, dispatchUsage)
@@ -210,6 +250,7 @@ func runDispatch(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		d.kind = fs.String("kind", "", "delivery, run or external (required)")
 		d.url = fs.String("url", "", "the link's URL, http or https: a delivery's or an external link's")
 		d.ref = fs.String("ref", "", "the link's reference: a run's id for a run link")
+		d.candidate = fs.String("candidate", "", "a delivery's candidate: RUN/TASK/N@COMMIT, an attempt's result commit in full")
 	}
 	fs.Usage = func() {
 		fmt.Fprint(stderr, dispatchUsage, "\nFlags of dispatch "+sub+":\n")
@@ -443,6 +484,13 @@ func (d dispatchFlags) write(sub, key string, pos []string, given map[string]boo
 			return nil, errors.New("a run link names its run: --ref <run id>")
 		case *d.kind != dispatch.LinkRun && *d.url == "":
 			return nil, fmt.Errorf("a %s link names its URL: --url", *d.kind)
+		case *d.candidate != "" && *d.kind != dispatch.LinkDelivery:
+			return nil, fmt.Errorf("only a delivery names a candidate, not a %s link", *d.kind)
+		}
+		if *d.candidate != "" {
+			if _, err := dispatch.ParseCandidate(*d.candidate); err != nil {
+				return nil, fmt.Errorf("--candidate is RUN/TASK/N@COMMIT, the commit in full: %q", *d.candidate)
+			}
 		}
 		body := map[string]any{"kind": *d.kind}
 		if *d.url != "" {
@@ -451,8 +499,11 @@ func (d dispatchFlags) write(sub, key string, pos []string, given map[string]boo
 		if *d.ref != "" {
 			body["ref"] = *d.ref
 		}
+		if *d.candidate != "" {
+			body["candidate"] = *d.candidate
+		}
 		return &dispatchWrite{key: key, path: ticketPath + "/links", body: body, print: func(o io.Writer, out dispatchReply) {
-			fmt.Fprintf(o, "%s linked: %s %s\n", key, *d.kind, oneLine(cmp.Or(*d.ref, *d.url)))
+			fmt.Fprintf(o, "%s linked: %s %s%s\n", key, *d.kind, oneLine(cmp.Or(*d.ref, *d.url)), candidateWords(out.Ticket, *d.candidate))
 		}}, nil
 	}
 	return nil, nil
@@ -917,7 +968,7 @@ func writeTicket(w io.Writer, v dispatch.TicketView, names ticketNames) {
 			if l.URL != "" && l.URL != l.Ref {
 				fmt.Fprintf(&b, " %s", oneLine(l.URL))
 			}
-			b.WriteString("\n")
+			b.WriteString(candidateWords(nil, l.Candidate) + verifiedWords(l.Verified) + "\n")
 			if l.Note != "" {
 				fmt.Fprintf(&b, "  %s\n", strings.ReplaceAll(textBlock(l.Note), "\n", "\n  "))
 			}
@@ -964,11 +1015,12 @@ func relatedText(r dispatch.RelatedTicket) string {
 
 // sessionTicket is what a session reads of its run's ticket (GET
 // /api/sessions/{id}/ticket): the ticket, its labels' rows and its
-// milestone's.
+// milestone's, and the launch, for a run launched from the ticket.
 type sessionTicket struct {
 	Ticket    dispatch.TicketView `json:"ticket"`
 	Labels    []dispatch.Label    `json:"labels"`
 	Milestone *dispatch.Milestone `json:"milestone"`
+	Launch    *sessionLaunchView  `json:"launch"`
 }
 
 // readSessionTicket reads the ticket the session's run is linked to,
@@ -986,13 +1038,17 @@ func readSessionTicket(ctx context.Context, c *crewClient) (json.RawMessage, ses
 	return raw, st, nil
 }
 
-// sessionTicketText is the session's ticket as writeTicket prints it.
+// sessionTicketText is the session's ticket as writeTicket prints it,
+// after what its launch says (launchText) for a run launched from it.
 func sessionTicketText(st sessionTicket) string {
 	var milestones []dispatch.Milestone
 	if st.Milestone != nil {
 		milestones = append(milestones, *st.Milestone)
 	}
 	var b strings.Builder
+	if st.Launch != nil {
+		b.WriteString(launchText(st.Ticket.Key, *st.Launch) + "\n\n")
+	}
 	writeTicket(&b, st.Ticket, namesOf(st.Labels, milestones))
 	return b.String()
 }

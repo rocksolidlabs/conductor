@@ -30,6 +30,10 @@ type changes struct {
 	ch  chan struct{}
 }
 
+// Every accessor of what a fake recorded answers copies, nested slices
+// too, so that a test that changes what it was answered changes nothing
+// the fake holds or answers later.
+
 // Changed is closed at the fake's next record (a call it was given, a
 // script changed): take it, read what the fake holds, and wait on it when
 // that is not yet enough, as Await does.
@@ -180,9 +184,8 @@ func (f *FakeRouter) SetErr(err error) {
 
 // Route records d and answers the route set for its id.
 func (f *FakeRouter) Route(_ context.Context, d ext.Decision) (ext.Route, error) {
-	d.Options = append([]ext.DecisionOption(nil), d.Options...)
 	f.mu.Lock()
-	f.decisions = append(f.decisions, d)
+	f.decisions = append(f.decisions, copyDecision(d))
 	r, err := copyRoute(f.routes[d.ID]), f.err
 	f.mu.Unlock()
 	f.tell()
@@ -204,7 +207,7 @@ func (f *FakeRouter) Resolved(_ context.Context, r ext.Resolution) {
 func (f *FakeRouter) Decisions() []ext.Decision {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]ext.Decision(nil), f.decisions...)
+	return copyAll(f.decisions, copyDecision)
 }
 
 // Resolutions answers the resolutions Resolved was told, in order.
@@ -259,9 +262,8 @@ func (f *FakeContext) NoteTouch(_ context.Context, t ext.TouchedFile) {
 
 // Context records q and answers the blocks set.
 func (f *FakeContext) Context(_ context.Context, q ext.ContextQuery) ([]ext.ContextBlock, error) {
-	q.Inputs = append([]ext.ContextInput(nil), q.Inputs...)
 	f.mu.Lock()
-	f.queries = append(f.queries, q)
+	f.queries = append(f.queries, copyQuery(q))
 	bs, err := append([]ext.ContextBlock(nil), f.blocks...), f.err
 	f.mu.Unlock()
 	f.tell()
@@ -282,7 +284,7 @@ func (f *FakeContext) Touches() []ext.TouchedFile {
 func (f *FakeContext) Queries() []ext.ContextQuery {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]ext.ContextQuery(nil), f.queries...)
+	return copyAll(f.queries, copyQuery)
 }
 
 // FakeSink is a notification sink that records what it is handed and,
@@ -462,9 +464,8 @@ func (f *FakeContinuity) Saved(_ context.Context, d ext.Doc) error { return f.re
 func (f *FakeContinuity) Deleted(_ context.Context, d ext.Doc) error { return f.record(true, d) }
 
 func (f *FakeContinuity) record(deleted bool, d ext.Doc) error {
-	d.Data = append([]byte(nil), d.Data...)
 	f.mu.Lock()
-	f.docs = append(f.docs, FakeDoc{Deleted: deleted, Doc: d})
+	f.docs = append(f.docs, FakeDoc{Deleted: deleted, Doc: copyDoc(d)})
 	err := f.err
 	f.mu.Unlock()
 	f.tell()
@@ -475,7 +476,7 @@ func (f *FakeContinuity) record(deleted bool, d ext.Doc) error {
 func (f *FakeContinuity) Docs() []FakeDoc {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]FakeDoc(nil), f.docs...)
+	return copyAll(f.docs, func(d FakeDoc) FakeDoc { d.Doc = copyDoc(d.Doc); return d })
 }
 
 // Restores answers the requests Restore was given, in order.
@@ -677,7 +678,7 @@ func (f *FakeMedia) ICERequests() []ext.ICERequest {
 func (f *FakeMedia) RoomRequests() []ext.RoomRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]ext.RoomRequest(nil), f.rooms...)
+	return copyAll(f.rooms, func(r ext.RoomRequest) ext.RoomRequest { r.By = copyPrincipal(r.By); return r })
 }
 
 // FakeRuntime is a runtime that answers the Where a test sets, and
@@ -711,6 +712,33 @@ func (f *FakeRuntime) Where() ext.Where {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.where
+}
+
+// copyAll is a copy of xs, each element copied by each; nil stays nil.
+func copyAll[E any](xs []E, each func(E) E) []E {
+	if xs == nil {
+		return nil
+	}
+	out := make([]E, len(xs))
+	for i, x := range xs {
+		out[i] = each(x)
+	}
+	return out
+}
+
+func copyDecision(d ext.Decision) ext.Decision {
+	d.Options = append([]ext.DecisionOption(nil), d.Options...)
+	return d
+}
+
+func copyQuery(q ext.ContextQuery) ext.ContextQuery {
+	q.Inputs = append([]ext.ContextInput(nil), q.Inputs...)
+	return q
+}
+
+func copyDoc(d ext.Doc) ext.Doc {
+	d.Data = append([]byte(nil), d.Data...)
+	return d
 }
 
 func copyPrincipal(p ext.Principal) ext.Principal {
