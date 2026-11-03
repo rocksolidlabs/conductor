@@ -64,7 +64,7 @@ const reads = ref(0)
 const resets = ref(0)
 const deleteOpen = ref(false)
 /** The ticket's plan revisions and launches (DS2), read with it. */
-const plan = useTicketPlans({ gate, key: () => (parseTicketKey(props.ticketKey) ? props.ticketKey : ''), ticket: () => ticket.value, changes: () => changes.value })
+const plan = useTicketPlans({ gate, key: () => (parseTicketKey(props.ticketKey) ? props.ticketKey : ''), ticket: () => ticket.value })
 /** The ticket's runs (DS2): its launches, hand-linked runs and their chains' runs, read with it. */
 const runs = useTicketRuns({ gate, key: () => (parseTicketKey(props.ticketKey) ? props.ticketKey : '') })
 

@@ -836,8 +836,11 @@ export function useDispatchApi() {
     ticket: (key: string) => request<{ ticket: DispatchTicket }>(`/api/dispatch/tickets/${enc(key)}`).then((r) => r.ticket),
     createTicket: (body: OpBody & NewTicket) => request<TicketReply>('/api/dispatch/tickets', { method: 'POST', body }),
     editTicket: (key: string, body: OpBody & TicketEdit) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/edit`, { method: 'POST', body }),
-    /** A page of a ticket's history after the change `after` (its seq; 0 from the start), oldest first. */
-    history: (key: string, after = 0) => request<HistoryPage>(`/api/dispatch/tickets/${enc(key)}/history` + (after ? `?after=${after}` : '')),
+    /** A page of a ticket's history after the change `after` (its seq; 0 from the start), oldest first, at most `limit` rows (1 to 500; 100 when absent). */
+    history: (key: string, after = 0, limit?: number) => {
+      const q = [after ? `after=${after}` : '', limit ? `limit=${limit}` : ''].filter(Boolean).join('&')
+      return request<HistoryPage>(`/api/dispatch/tickets/${enc(key)}/history` + (q ? `?${q}` : ''))
+    },
     /** The saved views a project's pages offer, by name: the project's own and every project's. */
     views: (project: string) => request<{ views: DispatchView[] }>(`/api/dispatch/views?project=${enc(project)}`).then((r) => r.views ?? []),
     createView: (body: OpBody & NewView) => request<ViewReply>('/api/dispatch/views', { method: 'POST', body }),

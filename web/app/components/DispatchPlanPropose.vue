@@ -2,14 +2,17 @@
 import type { DispatchTicket, NewPlan, NewPlanReference, PlanBody, PlanDecision, PlanSummary } from '~/composables/useDispatch'
 import type { CrewSummary } from '~/composables/useSessions'
 import type { TicketPlans } from '~/composables/useTicketPlans'
-import { PLAN_BOUNDS, parseReference, referenceText, revisionTag, shortCommit } from '~/utils/dispatchPlans'
+import { PLAN_BOUNDS, decisionsProblem, keptComments, nextDecisionId, parseReference, referenceText, revisionTag, shortCommit } from '~/utils/dispatchPlans'
 
 /**
  * Proposing a plan revision of a ticket (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): a saved crew with tasks, taken
  * whole as it is now (a crew without tasks, or one that runs on another machine, offered greyed with why: a revision is of a managed crew,
  * and the crew editor is where a crew changes); the commit it starts from, HEAD by default, which the server pins to a full commit id;
  * source references as rows (`path:12-30=note`); the ticket's attachments and recent comments to hand over, as checkboxes; constraints;
- * the decisions a person will make, as rows; a note. Revising prefills it all from the revision it revises, and the new one names it. The
+ * the decisions a person will make, as rows; a note. Revising prefills it all from the revision it revises, and the new one names it: a
+ * comment it handed over that is older than the recent ones the ticket's read carries is kept, offered beside them, never dropped for
+ * being out of sight. Nothing is proposed from a revision before its body is read: what it holds is carried over, never dropped for
+ * being unread, so until it is the dialog says why (with Read it again) and asks nothing, and the form is filled from it once it is. The
  * server reads the crew, the commit and the references and refuses, in words, what does not hold; the refusal is said in place.
  */
 const props = defineProps<{
@@ -53,6 +56,14 @@ const crewItems = computed(() =>
 const liveAttachments = computed(() => (props.ticket.attachments ?? []).filter((a) => !a.deletedAt))
 /** The recent comments offered: the newest live ones the ticket's read carries, at most the bound. */
 const recentComments = computed(() => (props.ticket.comments ?? []).filter((c) => !c.deletedAt).slice(-PLAN_BOUNDS.comments).reverse())
+/** The comments the revision revised handed over that are not among those offered: older ones, kept unless unticked. */
+const earlierComments = ref<string[]>([])
+/** A comment's words in its checkbox: its number, who wrote it and its start; an older one the ticket's read does not carry, said so. */
+function commentLabel(id: string, i: number): string {
+  const c = (props.ticket.comments ?? []).find((x) => x.id === id)
+  if (!c) return `An earlier comment (${i + 1} of ${earlierComments.value.length}), older than those this page has read`
+  return `#${c.n} ${c.author || c.by}: ${c.body.slice(0, 80)}${c.body.length > 80 ? '…' : ''}`
+}
 
 async function loadCrews() {
   crewsError.value = ''
@@ -63,8 +74,15 @@ async function loadCrews() {
   }
 }
 
-watch(open, (o) => {
-  if (!o) return
+/** Revising a revision whose body is not read yet: nothing is asked or sent until it is. */
+const waiting = computed(() => !!props.from && !props.from.body)
+const fromBodyError = computed(() => (props.from && !props.from.body ? (props.plans.bodyErrors.get(props.from.revision.id) ?? '') : ''))
+function readFromAgain() {
+  if (props.from) void props.plans.readBody(props.from.revision.id).catch(() => {})
+}
+
+/** The form as the dialog opens: empty, or the revision revised as its body holds it. */
+function fill() {
   const f = props.from
   const b = f?.body
   crew.value = f?.revision.crewId
@@ -72,14 +90,27 @@ watch(open, (o) => {
   refs.value = (b?.references ?? []).map((r) => referenceText(r))
   const live = new Set(liveAttachments.value.map((a) => a.id))
   attachments.value = (b?.attachments ?? []).filter((id) => live.has(id))
-  const liveComments = new Set((props.ticket.comments ?? []).filter((c) => !c.deletedAt).map((c) => c.id))
-  comments.value = (b?.comments ?? []).map((c) => c.id).filter((id) => liveComments.has(id))
+  comments.value = keptComments((b?.comments ?? []).map((c) => c.id), props.ticket.comments ?? [])
+  const offered = new Set(recentComments.value.map((c) => c.id))
+  earlierComments.value = comments.value.filter((id) => !offered.has(id))
   constraints.value = b?.constraints ?? ''
   decisions.value = (b?.decisions ?? []).map((d) => ({ ...d, before: [...d.before] }))
   note.value = ''
   error.value = ''
+}
+
+watch(open, (o) => {
+  if (!o) return
+  fill()
   void loadCrews()
 })
+// The revised revision's body read while the dialog is open (it was not when it opened): the form is filled from it.
+watch(
+  () => props.from?.body,
+  (b, old) => {
+    if (open.value && b && !old) fill()
+  },
+)
 
 // The picked crew's tasks, for the decisions' "before": read in full, since a list's summary carries none.
 watch(crew, async (id) => {
@@ -103,7 +134,7 @@ function removeRef(i: number) {
   refs.value = refs.value.filter((_, j) => j !== i)
 }
 function addDecision() {
-  if (decisions.value.length < PLAN_BOUNDS.decisions) decisions.value = [...decisions.value, { id: `d${decisions.value.length + 1}`, question: '', kind: 'approval', before: [] }]
+  if (decisions.value.length < PLAN_BOUNDS.decisions) decisions.value = [...decisions.value, { id: nextDecisionId(decisions.value), question: '', kind: 'approval', before: [] }]
 }
 function removeDecision(i: number) {
   decisions.value = decisions.value.filter((_, j) => j !== i)
@@ -119,12 +150,12 @@ const kindItems = [
 ]
 
 const blocked = computed(() => {
+  if (waiting.value) return `Revision ${props.from!.revision.n} is not read yet`
   if (!crew.value) return 'Pick a crew with tasks'
   if (refErrors.value.some((e) => e)) return 'A reference is not one'
   if (attachments.value.length > PLAN_BOUNDS.attachments) return `At most ${PLAN_BOUNDS.attachments} attachments`
   if (comments.value.length > PLAN_BOUNDS.comments) return `At most ${PLAN_BOUNDS.comments} comments`
-  if (decisions.value.some((d) => !d.question.trim() || !/^[a-z0-9][a-z0-9_-]{0,39}$/.test(d.id))) return 'Each decision has an id (a-z, 0-9, _ and -) and a question'
-  return ''
+  return decisionsProblem(decisions.value)
 })
 
 async function submit() {
@@ -157,6 +188,12 @@ async function submit() {
   <UModal v-model:open="open" :title="from ? `Revise ${revisionTag(from.revision.n)}` : 'Propose a plan revision'" :description="`Of ${ticket.key}: a saved crew with tasks, as it is now, and what every attempt is handed.`" :ui="{ content: 'max-w-2xl' }">
     <template #body>
       <form class="flex flex-col gap-4 text-sm" data-plan-propose-dialog @submit.prevent="submit">
+        <p v-if="waiting && fromBodyError" class="flex flex-wrap items-center gap-2 text-warning" data-plan-propose-body-error>
+          <span>Revision {{ from!.revision.n }} could not be read, so what it holds cannot be carried over: {{ fromBodyError }}</span>
+          <UButton label="Read it again" size="xs" color="neutral" variant="outline" data-plan-propose-body-retry @click="readFromAgain" />
+        </p>
+        <p v-else-if="waiting" class="text-dimmed" data-plan-propose-body-reading>Reading revision {{ from!.revision.n }}: what it holds is carried over before anything is proposed…</p>
+        <template v-else>
         <UFormField label="Crew" size="sm" :error="crewsError || undefined">
           <USelectMenu v-model="crew" :items="crewItems" value-key="value" placeholder="A saved crew with tasks…" class="w-full" data-plan-propose-crew />
         </UFormField>
@@ -195,6 +232,17 @@ async function submit() {
             @update:model-value="(v) => toggle('comments', c.id, v)"
           />
         </div>
+        <div v-if="earlierComments.length" class="flex flex-col gap-1.5">
+          <span class="text-xs font-medium text-muted">Earlier comments {{ from ? revisionTag(from.revision.n) : 'the revision' }} handed over <span class="text-dimmed">(older than the recent ones; kept unless unticked)</span></span>
+          <UCheckbox
+            v-for="(id, i) in earlierComments"
+            :key="id"
+            :model-value="comments.includes(id)"
+            :label="commentLabel(id, i)"
+            :data-plan-propose-earlier-comment="id"
+            @update:model-value="(v) => toggle('comments', id, v)"
+          />
+        </div>
 
         <UFormField label="Constraints" size="sm">
           <UTextarea v-model="constraints" :rows="2" autoresize :maxlength="PLAN_BOUNDS.constraints" placeholder="What the work must not do…" class="w-full" data-plan-propose-constraints />
@@ -219,6 +267,7 @@ async function submit() {
         <UFormField label="Note" hint="why this revision" size="sm">
           <UTextarea v-model="note" :rows="2" autoresize :maxlength="PLAN_BOUNDS.note" class="w-full" data-plan-propose-note />
         </UFormField>
+        </template>
 
         <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" title="Not proposed" :description="error" data-plan-propose-error />
         <div class="flex items-center justify-end gap-2">

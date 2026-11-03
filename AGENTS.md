@@ -277,6 +277,12 @@ add its rule here.
   gap. Feed the state that routes a viewer's answer before the viewer has
   the output, prove it with a stall after the send (`afterBroadcast`),
   and when one state is kept twice, wait on the copy the code decides by.
+- A control that only hurries what the page does by itself races it.
+  Read it again beside a read the page asks again on its own (a failed
+  re-read, retried with backoff) can vanish before the click lands, and
+  the click then waits for a button that never comes back
+  (`dispatch-plan.spec.ts`, #467). Press it until the state it leads to
+  is shown (`readAgain`), never once and blind.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

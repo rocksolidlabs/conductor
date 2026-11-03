@@ -1,4 +1,4 @@
-import type { DispatchChange, DispatchReceipt, DispatchTicket, LaunchSummary, NewPlanReference, PlanAgent, PlanBody, PlanSummary } from '~/composables/useDispatch'
+import type { DispatchChange, DispatchReceipt, DispatchTicket, HistoryPage, LaunchSummary, NewPlanReference, PlanAgent, PlanBody, PlanDecision, PlanSummary } from '~/composables/useDispatch'
 import type { RunInfo } from '~/composables/useSessions'
 
 // A ticket's Plan section in words (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): a plan revision's state and why its
@@ -126,12 +126,13 @@ export function argvLine(argv: readonly string[]): string {
 }
 
 /**
- * What a member's agent runs as the revision resolved it: the catalog's command, the session recipe's start arguments (`{id}` as the
- * session's id, filled at the start), the yolo recipe's arguments when yolo is on, then the member's own arguments.
+ * What a member's agent runs as the revision resolved it, in the order the server's launch builds it (internal/api/sessions.go,
+ * createLocalSession): the catalog's command, the session recipe's start arguments (`{id}` as the session's id, filled at the start), the
+ * member's own arguments, then the yolo recipe's arguments when yolo is on.
  */
 export function resolvedArgv(agent: Pick<PlanAgent, 'command' | 'startArgs' | 'yoloArgs'> | undefined, memberArgs: readonly string[] = []): string[] {
   if (!agent) return [...memberArgs]
-  return [...agent.command, ...agent.startArgs, ...agent.yoloArgs, ...memberArgs]
+  return [...agent.command, ...agent.startArgs, ...memberArgs, ...agent.yoloArgs]
 }
 
 /** The yolo choice said plainly (the plan's Owner decisions, 7): it is what an approval most needs to show. */
@@ -284,6 +285,17 @@ export function launchOutcome(r: { reply: { receipt: DispatchReceipt; launch: La
   return { state: 'refused', words: body.receipt?.error || f.message, code: f.code, receipt: body.receipt }
 }
 
+/**
+ * Whether a launch's failure leaves it unknown whether a run was made, so the same operation is sent again rather than taken for a
+ * refusal: no answer (the network), or a server failure that is no refusal it words (a 5xx but `ledger_unavailable`, which carries the
+ * launch when it is one still pending and is said before anything is kept when it is not). The route answers `500 store_failed` when
+ * the store failed after the launch was kept (its run started, the outcome not recorded or not read back): a refusal there, and another
+ * op id on the next press, would start a second run.
+ */
+export function launchUnresolved(f: Pick<LaunchFailure, 'status' | 'code'>): boolean {
+  return f.status === 0 || (f.status >= 500 && f.code !== 'ledger_unavailable')
+}
+
 /** A launch as the history's create row names it: what never changes of it (the run's id, the revision, the label, who made it, when). */
 export interface KnownLaunch {
   id: string
@@ -311,6 +323,74 @@ export function historyLaunches(changes: readonly DispatchChange[]): KnownLaunch
     out.push({ id: c.entityId, runId: v.runId ?? '', planId: v.planId ?? '', label: v.label ?? '', createdAt: v.createdAt ?? c.at, createdBy: v.createdBy ?? c.by ?? c.actor })
   }
   return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+}
+
+/**
+ * The launches a ticket's whole history names after the change `after` (its seq; 0 from the start), page after page (`read` one page
+ * after a seq) until a page says there is none after it, and the seq the next scan starts after: the last row read. Every launch is
+ * found however long the history is, and a later scan reads only what came since.
+ */
+export async function scanLaunches(read: (after: number) => Promise<HistoryPage>, after: number): Promise<{ launches: KnownLaunch[]; after: number }> {
+  const launches: KnownLaunch[] = []
+  for (;;) {
+    const page = await read(after)
+    const rows = page.changes ?? []
+    launches.push(...historyLaunches(rows))
+    const last = rows.at(-1)?.seq ?? after
+    const next = page.next ?? 0
+    // A page that names a next seq at or before the one it was read after would read it again for ever.
+    if (!next || next <= after) return { launches, after: Math.max(after, last) }
+    after = next
+  }
+}
+
+/** The launches of `shown` to read (again): those not read yet, and those read pending. A launch started or failed never changes. */
+export function launchesToRead(shown: readonly Pick<KnownLaunch, 'id'>[], read: ReadonlyMap<string, Pick<LaunchSummary, 'state'>>): string[] {
+  return shown.filter((l) => {
+    const s = read.get(l.id)?.state
+    return s !== 'started' && s !== 'failed'
+  }).map((l) => l.id)
+}
+
+/**
+ * The revisions shown: the list's, each replaced whole by an operation's answer that is later (a higher `rev`: the answer is the
+ * revision's whole summary, and a field it leaves out, `stale` among them, is one the revision no longer has), and the answers the list
+ * does not hold yet; newest first.
+ */
+export function withAnswers(list: readonly PlanSummary[], answered: ReadonlyMap<string, PlanSummary>): PlanSummary[] {
+  const out = list.map((p) => {
+    const a = answered.get(p.id)
+    return a && a.rev > p.rev ? a : p
+  })
+  for (const a of answered.values()) if (!out.some((p) => p.id === a.id)) out.push(a)
+  return out.sort((a, b) => b.n - a.n || b.createdAt.localeCompare(a.createdAt))
+}
+
+/**
+ * The comments a revision handed over that a revision of it keeps: every one but those the ticket's read shows deleted. The read carries
+ * only the recent comments, so one not among them is older, not gone, and is kept; the server refuses, in words, one deleted since.
+ */
+export function keptComments(handed: readonly string[], comments: readonly { id: string; deletedAt?: string }[]): string[] {
+  const deleted = new Set(comments.filter((c) => c.deletedAt).map((c) => c.id))
+  return handed.filter((id) => !deleted.has(id))
+}
+
+/** The id a new decision row takes: `d1`, `d2`, … the first no row has. */
+export function nextDecisionId(decisions: readonly Pick<PlanDecision, 'id'>[]): string {
+  const taken = new Set(decisions.map((d) => d.id.trim()))
+  for (let k = 1; ; k++) if (!taken.has(`d${k}`)) return `d${k}`
+}
+
+/** Why the decisions cannot be sent, in words, as the store would refuse them: an id not of its shape, a question empty, an id twice. '' when they can. */
+export function decisionsProblem(decisions: readonly Pick<PlanDecision, 'id' | 'question'>[]): string {
+  const seen = new Set<string>()
+  for (const d of decisions) {
+    const id = d.id.trim()
+    if (!d.question.trim() || !/^[a-z0-9][a-z0-9_-]{0,39}$/.test(id)) return 'Each decision has an id (a-z, 0-9, _ and -) and a question'
+    if (seen.has(id)) return `The decision ${id} is named twice`
+    seen.add(id)
+  }
+  return ''
 }
 
 /** A launch's state as its row says it. */
