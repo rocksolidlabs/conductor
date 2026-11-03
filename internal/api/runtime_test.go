@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -312,14 +313,18 @@ func (s starterRuntime) Start(ctx context.Context, _ ext.Host) error {
 // A Runtime that is a Starter is started first: a run launched before its
 // Start has succeeded is not offered it and runs natively; one launched
 // after is offered it, and its attempt's session starts in it.
-// StartExtensions calls its Start once.
+// StartExtensions calls its Start once. The Start's ext.StartWait is the
+// test's clock, never fired, so a slow early run cannot have the try
+// given up and Start called again.
 func TestARuntimeThatIsAStarterIsStartedFirst(t *testing.T) {
 	takesAnswered(t)
 	seam := nativeSeam()
 	rt := starterRuntime{FakeRuntime: &sessiontest.FakeRuntime{Base: local.Native()}, release: make(chan struct{}), starts: &atomic.Int32{}}
 	e := runtimeEnv(t, seam, nil, withRuntime(rt))
 	e.gitRepo(t)
+	clock := newFakeClock(e.srv)
 	e.srv.StartExtensions(t.Context())
+	clock.next(t, ext.StartWait)
 	early := launchOne(t, e, oneTaskCrew("early", e.root))
 	sid := runningAttempt(t, e, early, "build", 1)["sessionId"].(string)
 	if got := terminalRefs(seam); !slices.Equal(got, []ext.ProcessRef{attemptRef(sid, early, 1)}) {
@@ -410,6 +415,288 @@ func TestAPersonsSessionOutlivesItsRequest(t *testing.T) {
 		t.Fatalf("the start: %+v", calls)
 	}
 	e.stopAndWait(calls[0].Ref.Session)
+}
+
+// stubbornPanicker is a Terminal whose Read panics and whose first Stop
+// fails, leaving it running (its Done open), as a process that ignores
+// its signal would; each Stop is counted, and its number sent on stopped
+// once it has returned.
+type stubbornPanicker struct {
+	ext.Terminal
+	stops   *atomic.Int32
+	stopped chan int32
+}
+
+// heldDone is a Terminal whose Done waits for hold to close before it
+// answers: the guard's watch of the Runtime's Done, which calls it on a
+// goroutine of its own, is held there, as one the scheduler has not run.
+type heldDone struct {
+	ext.Terminal
+	hold <-chan struct{}
+}
+
+func (t heldDone) Done() <-chan struct{} {
+	<-t.hold
+	return t.Terminal.Done()
+}
+
+// heldRuntime is a Runtime whose terminals are heldDones of FakeProcs.
+type heldRuntime struct {
+	*sessiontest.FakeRuntime
+	hold <-chan struct{}
+}
+
+func (r heldRuntime) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Terminal, error) {
+	t, err := r.FakeRuntime.StartTerminal(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	return heldDone{Terminal: t, hold: r.hold}, nil
+}
+
+func (p stubbornPanicker) Read([]byte) (int, error) { panic("the fake's terminal panics in Read") }
+
+func (p stubbornPanicker) Stop(ctx context.Context, grace time.Duration) error {
+	n := p.stops.Add(1)
+	defer func() { p.stopped <- n }()
+	if n == 1 {
+		return errors.New("the process did not exit")
+	}
+	return p.Terminal.Stop(ctx, grace)
+}
+
+// stubbornRuntime is a Runtime whose terminals are stubbornPanickers of
+// FakeProcs.
+type stubbornRuntime struct {
+	*sessiontest.FakeRuntime
+	stops   *atomic.Int32
+	stopped chan int32
+	// hold, when set, holds the guard's watch of each terminal's Done
+	// (heldDone).
+	hold <-chan struct{}
+}
+
+func (r stubbornRuntime) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Terminal, error) {
+	t, err := r.FakeRuntime.StartTerminal(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	if r.hold != nil {
+		t = heldDone{Terminal: t, hold: r.hold}
+	}
+	return stubbornPanicker{Terminal: t, stops: r.stops, stopped: r.stopped}, nil
+}
+
+// A registered Runtime's terminal that panics and whose stop then fails
+// is still running, and its session says so: the session's process is
+// not done, and the session's next Stop asks the Runtime's Stop again,
+// whose success ends it; a Stop after that asks nothing.
+func TestATerminalThatPanicsAndWhoseStopFailsIsStoppedAgain(t *testing.T) {
+	fp := sessiontest.NewFakeProc()
+	t.Cleanup(func() { fp.End(0) })
+	rt := stubbornRuntime{FakeRuntime: &sessiontest.FakeRuntime{Terminal: func(ext.TerminalSpec) (*sessiontest.FakeProc, error) { return fp, nil }},
+		stops: &atomic.Int32{}, stopped: make(chan int32, 4)}
+	e := runtimeEnv(t, nativeSeam(), nil, withRuntime(rt))
+	l, aerr := e.srv.createLocalSession(createSessionRequest{AgentID: "cat", where: rt.Where()}, nil)
+	if aerr != nil {
+		t.Fatalf("the start: %+v", aerr)
+	}
+	stop := func(want int32) {
+		t.Helper()
+		select {
+		case n := <-rt.stopped:
+			if n != want {
+				t.Fatalf("stop %d returned, want %d", n, want)
+			}
+		case <-time.After(testWait):
+			t.Fatalf("stop %d not asked within %s", want, testWait)
+		}
+	}
+	stop(1) // the guard's, once Read has panicked; it fails
+	select {
+	case <-l.ProcessDone():
+		t.Fatal("the session's process is done although its stop failed")
+	default:
+	}
+	if fp.Stopped() {
+		t.Fatal("the process is stopped although its stop failed")
+	}
+	if err := l.Stop(t.Context()); err != nil {
+		t.Fatalf("the session's stop: %v", err)
+	}
+	stop(2)
+	if !fp.Stopped() {
+		t.Fatal("the session's stop did not reach the process")
+	}
+	select {
+	case <-l.ProcessDone():
+	case <-time.After(testWait):
+		t.Fatal("the session's process not done once its stop succeeded")
+	}
+	if err := l.Stop(t.Context()); err != nil {
+		t.Fatalf("a stop once the process is done: %v", err)
+	}
+	if n := rt.stops.Load(); n != 2 {
+		t.Fatalf("the Runtime's Stop was called %d times, want 2", n)
+	}
+}
+
+// A registered Runtime's terminal that panics and whose automatic stop
+// fails is stopped by the session's Stop under a context already ended: an
+// ended context forces a stop (ext.Terminal's Stop), never skips one, so
+// the Runtime's Stop is asked again. Its success ends the process before
+// the session's Stop returns, the guard's watch of the Runtime's Done held
+// all along, so the session is done and records the exit code.
+func TestAPanickedTerminalIsStoppedAgainUnderAnEndedContext(t *testing.T) {
+	fp := sessiontest.NewFakeProc()
+	t.Cleanup(func() { fp.End(0) })
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	rt := stubbornRuntime{FakeRuntime: &sessiontest.FakeRuntime{Terminal: func(ext.TerminalSpec) (*sessiontest.FakeProc, error) { return fp, nil }},
+		stops: &atomic.Int32{}, stopped: make(chan int32, 4), hold: hold}
+	e := runtimeEnv(t, nativeSeam(), nil, withRuntime(rt))
+	l, aerr := e.srv.createLocalSession(createSessionRequest{AgentID: "cat", where: rt.Where()}, nil)
+	if aerr != nil {
+		t.Fatalf("the start: %+v", aerr)
+	}
+	select {
+	case n := <-rt.stopped: // the guard's, once Read has panicked; it fails
+		if n != 1 {
+			t.Fatalf("stop %d returned, want 1", n)
+		}
+	case <-time.After(testWait):
+		t.Fatalf("the guard's stop not asked within %s", testWait)
+	}
+	ended, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := l.Stop(ended); err != nil {
+		t.Fatalf("the session's stop under an ended context: %v", err)
+	}
+	if n := rt.stops.Load(); n != 2 {
+		t.Fatalf("the Runtime's Stop was called %d times, want 2", n)
+	}
+	if !fp.Stopped() {
+		t.Fatal("the session's stop did not reach the process")
+	}
+	select {
+	case <-l.ProcessDone():
+	default:
+		t.Fatal("the session's process not done once its stop returned")
+	}
+	if c := l.Info().ExitCode; c == nil || *c != -1 {
+		t.Fatalf("the stopped session's exit code: %v, want -1", c)
+	}
+}
+
+// The guard's stop of a panicked process, its automatic stop failed,
+// reaches the Runtime's Stop under an ended context on every try, whether
+// the automatic stop still holds the guard's turn or has given it back.
+func TestAGuardsRetryUnderAnEndedContextReachesTheRuntime(t *testing.T) {
+	e := runtimeEnv(t, nativeSeam(), nil)
+	g := guardRuntime{s: e.srv, name: "fake"}
+	ended, cancel := context.WithCancel(t.Context())
+	cancel()
+	for i := range 32 {
+		stops := &atomic.Int32{}
+		failed := make(chan struct{})
+		p := g.guarded("Terminal", func(context.Context) error {
+			if stops.Add(1) == 1 {
+				defer close(failed)
+				return errors.New("the process did not exit")
+			}
+			return nil
+		}, func() <-chan struct{} { return nil })
+		p.fail("Read")
+		select {
+		case <-failed:
+		case <-time.After(testWait):
+			t.Fatalf("try %d: the guard's stop not asked within %s", i, testWait)
+		}
+		if err := p.stopBroken(ended); err != nil {
+			t.Fatalf("try %d: the retry under an ended context: %v", i, err)
+		}
+		if n := stops.Load(); n != 2 {
+			t.Fatalf("try %d: the Runtime's Stop was called %d times, want 2", i, n)
+		}
+		select {
+		case <-p.done:
+		default:
+			t.Fatalf("try %d: the process not done once its stop succeeded", i)
+		}
+	}
+}
+
+// A registered Runtime's terminal that a session stops is done, and its
+// exit code recorded, when the session's Stop returns, though the guard's
+// watch of the Runtime's Done has not run: the Runtime's Stop succeeding
+// is the process's end.
+func TestAStoppedTerminalsExitIsRecordedBeforeTheGuardsWatch(t *testing.T) {
+	fp := sessiontest.NewFakeProc()
+	t.Cleanup(func() { fp.End(0) })
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	rt := heldRuntime{FakeRuntime: &sessiontest.FakeRuntime{Terminal: func(ext.TerminalSpec) (*sessiontest.FakeProc, error) { return fp, nil }}, hold: hold}
+	e := runtimeEnv(t, nativeSeam(), nil, withRuntime(rt))
+	l, aerr := e.srv.createLocalSession(createSessionRequest{AgentID: "cat", where: rt.Where()}, nil)
+	if aerr != nil {
+		t.Fatalf("the start: %+v", aerr)
+	}
+	if err := l.Stop(t.Context()); err != nil {
+		t.Fatalf("the session's stop: %v", err)
+	}
+	if !fp.Stopped() {
+		t.Fatal("the session's stop did not reach the process")
+	}
+	select {
+	case <-l.ProcessDone():
+	default:
+		t.Fatal("the session's process not done once its stop returned")
+	}
+	if c := l.Info().ExitCode; c == nil || *c != -1 {
+		t.Fatalf("the stopped session's exit code: %v, want -1", c)
+	}
+}
+
+// heldService is a ServiceProcess whose Done waits for hold before it
+// answers, and whose Stop ends it.
+type heldService struct {
+	hold <-chan struct{}
+	done chan struct{}
+	once *sync.Once
+}
+
+func (s heldService) Done() <-chan struct{} {
+	<-s.hold
+	return s.done
+}
+
+func (s heldService) Result() ext.CommandResult { return ext.CommandResult{} }
+
+func (s heldService) Stop(context.Context) error {
+	s.once.Do(func() { close(s.done) })
+	return nil
+}
+
+// A registered Runtime's service is done when a Stop of it that succeeds
+// returns, though the guard's watch of the Runtime's Done has not run.
+func TestAStoppedServiceIsDoneWhenItsStopReturns(t *testing.T) {
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	svc := heldService{hold: hold, done: make(chan struct{}), once: &sync.Once{}}
+	rt := &sessiontest.FakeRuntime{Service: func(ext.CommandSpec) (ext.ServiceProcess, error) { return svc, nil }}
+	e := runtimeEnv(t, nativeSeam(), nil, withRuntime(rt))
+	sp, err := e.srv.offered.Serve(t.Context(), ext.CommandSpec{Argv: []string{"serve"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sp.Stop(t.Context()); err != nil {
+		t.Fatalf("the service's stop: %v", err)
+	}
+	select {
+	case <-sp.Done():
+	default:
+		t.Fatal("the service not done once its stop returned")
+	}
 }
 
 // panickyService is a ServiceProcess whose Result panics; its Stop is
