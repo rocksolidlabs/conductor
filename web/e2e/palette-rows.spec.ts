@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { expect, test, type Session } from './fixtures'
-import { freeProjectKey, makeProject, makeTicket, storedTicket } from './dispatch-helpers'
+import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
 
 // Every palette row does what it says (#332): each row run from the
 // palette, its visible effect asserted. A row named for showing something
@@ -29,11 +29,14 @@ function budget(waits: number) {
 const sessions: string[] = []
 const runs: string[] = []
 let crewId = ''
+/** The managed crew the ticket page's Plan rows plan from (DS2). */
+let planCrewId = ''
 
 test.afterAll(async ({ api }) => {
   for (const id of runs) await api.stopRun(id)
   for (const id of sessions) await api.stopSession(id)
   if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
+  if (planCrewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(planCrewId)}`)
 })
 
 /**
@@ -496,4 +499,80 @@ test("the Dispatch pages' rows (#409): go dispatch; the projects page's New proj
   await expect(toast(page, `${key}-1 copied`)).toBeVisible({ timeout: 15_000 })
   await runRow(page, 'page:back', `back to ${key}`)
   await expect(page).toHaveURL(new RegExp(`/dispatch/${key}$`))
+})
+
+// DS2 (docs/plans/dispatch-evidence.md, PR-10): the ticket page's group gains Propose a plan revision, Approve revision n, Launch from
+// revision n (asked first, in its dialog) and Open run; a ticket row's → gains Launch from the approved plan, which opens the ticket's
+// page with the launch dialog asking.
+test("the ticket page's Plan rows: Propose, Approve revision n, Launch from revision n, Open run; a ticket row's Launch from the approved plan", async ({ page, api }) => {
+  test.slow()
+  await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
+  planCrewId = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: `e2e plan rows ${Date.now().toString(36)}`,
+      goal: 'plan rows',
+      cwd: '',
+      where: 'server',
+      isolation: 'worktree',
+      openAfterLaunch: false,
+      yolo: null,
+      members: [{ name: 'builder', agentId: 'worker', prompt: '', start: { when: 'task' } }],
+      tasks: [{ id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.' }],
+    })
+  ).crew.id
+  const key = await freeProjectKey(api, 'PR')
+  await makeProject(api, key)
+  const ticketKey = await makeTicket(api, key, '1', { title: 'Rows of the plan' })
+  // Revision 1 proposed, approved and launched, revision 2 proposed, through the API: the rows are what is asserted.
+  const r1 = (await api.ok<{ plan: { id: string; rev: number } }>('POST', `/api/dispatch/tickets/${ticketKey}/plans`, { opId: opOf(key, 'r1'), crew: planCrewId })).plan
+  await api.ok('POST', `/api/dispatch/plans/${r1.id}/approve`, { opId: opOf(key, 'a1'), expectedRev: r1.rev })
+  const launched = await api.ok<{ launch: { runId: string } }>('POST', `/api/dispatch/tickets/${ticketKey}/launch`, { opId: opOf(key, 'l1'), plan: r1.id })
+  runs.push(launched.launch.runId)
+  await api.ok('POST', `/api/dispatch/tickets/${ticketKey}/plans`, { opId: opOf(key, 'r2'), crew: planCrewId })
+
+  await page.goto(`/dispatch/${key}/1`)
+  await expect(page.locator('[data-plan-section]')).toHaveAttribute('data-plan-approved', '1', { timeout: 30_000 })
+  await expect(page.locator(`[data-plan-launch-row][data-launch-run="${launched.launch.runId}"]`)).toHaveAttribute('data-launch-state', 'started')
+
+  // Propose a plan revision opens its dialog.
+  await runRow(page, 'page:plan-propose', 'propose a plan revision')
+  await expect(page.locator('[data-plan-propose-dialog]')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-plan-propose-dialog]')).toBeHidden()
+  // Approve revision 2 opens the approval of revision 2; revision 1, approved and holding, has no such row.
+  await runRow(page, 'page:plan-approve:2', 'approve revision 2')
+  await expect(page.locator('[data-plan-approve-dialog]')).toHaveAttribute('data-plan-revision', '2')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-plan-approve-dialog]')).toBeHidden()
+  budget(2)
+  const p = await openPalette(page)
+  await p.locator('input[data-palette-input]').fill('approve revision')
+  await expect(p.locator('[data-palette-row="page:plan-approve:1"]')).toHaveCount(0)
+  await closePalette(page)
+  // Launch from revision 1 asks first: its dialog, not a run.
+  await runRow(page, 'page:plan-launch:1', 'launch from revision 1')
+  await expect(page.locator('[data-launch-dialog]')).toHaveAttribute('data-launch-state', 'asking')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-launch-dialog]')).toBeHidden()
+  // Open run goes to the launched run's page (found by the run's label: "open run" alone reads as the open verb).
+  await runRow(page, `page:open-run:${launched.launch.runId}`, 'rows of the plan')
+  await expect(page).toHaveURL(new RegExp(`/runs/${launched.launch.runId}$`))
+
+  // A ticket row's Launch from the approved plan: the ticket's page, its launch dialog asking.
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  budget(5)
+  const palette = await openPalette(page)
+  await palette.locator('input[data-palette-input]').fill(ticketKey)
+  const row = palette.locator(`[data-palette-row="ticket:${ticketKey}"]`)
+  await expect(row).toBeVisible()
+  await row.focus()
+  await page.keyboard.press('ArrowRight')
+  await expect(row.locator('[data-palette-actions]')).toBeVisible()
+  await row.locator('[data-palette-action="launch-approved"]').click()
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}/1$`))
+  await expect(page.locator('[data-launch-dialog]')).toHaveAttribute('data-launch-revision', '1')
+  await expect(page.locator('[data-launch-dialog]')).toHaveAttribute('data-launch-state', 'asking')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-launch-dialog]')).toBeHidden()
 })

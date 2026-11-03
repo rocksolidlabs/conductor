@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { projectPath } from '~/utils/dispatch'
+import type { PaletteItem } from '~/composables/usePalette'
+import { TICKET_PLAN_ROWS } from '~/composables/useTicketPlans'
 
 // A ticket's page at /dispatch/<KEY>/<n> (docs/plans/dispatch.md, Owner decisions, 9): the ticket CND-12 at /dispatch/CND/12. Escape goes
 // back to the project's list (its filter kept when the list is where this page was opened from), its row focused again; it pauses in
@@ -39,6 +41,8 @@ defineShortcuts(
 
 const copy = useCopy()
 const palette = usePalette()
+const planRows = shallowRef<PaletteItem[]>([])
+provide(TICKET_PLAN_ROWS, planRows)
 palette.registerPage(() => ({
   label: `${ticketKey.value} · Dispatch`,
   rows: [
@@ -46,6 +50,7 @@ palette.registerPage(() => ({
     { key: 'page:copy-key', label: `Copy ${ticketKey.value}`, icon: 'i-lucide-copy', run: () => void copy(ticketKey.value, `${ticketKey.value} copied`) },
     { key: 'page:copy-link', label: 'Copy the link to this ticket', icon: 'i-lucide-link', run: () => void copy(window.location.href, 'Link copied') },
     { key: 'page:new-ticket', label: `New ticket in ${project.value}`, icon: 'i-lucide-ticket-plus', run: () => palette.askNewTicket(project.value) },
+    ...planRows.value,
   ],
 }))
 </script>

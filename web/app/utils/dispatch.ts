@@ -578,6 +578,8 @@ export interface ChangeNames {
   milestones?: ReadonlyMap<string, string>
   agents?: ReadonlyMap<string, string>
   tickets?: ReadonlyMap<string, string>
+  /** A ticket's plan revisions' numbers by id (DS2): a revision's rows say `plan revision 3`. */
+  plans?: ReadonlyMap<string, number>
 }
 
 /** An assignee's actor in words: the person's name, or the agent's name from the catalog (its id when the catalog lacks it). */
@@ -675,7 +677,7 @@ function ticketChange(c: DispatchChange, names: ChangeNames): string {
  * nothing its operation's other rows do not (a comment's body as it is added, the time an edit or a close was made).
  */
 export function changeWords(c: DispatchChange, names: ChangeNames = {}): string {
-  const words = c.entity === 'comment' ? commentChange(c) : ticketChange(c, names)
+  const words = c.entity === 'comment' ? commentChange(c) : c.entity === 'plan' ? planChange(c, names) : c.entity === 'launch' ? launchChange(c, names) : ticketChange(c, names)
   if (!words) return ''
   return c.op === 'reconcile' ? `${words} (a merge's repair)` : c.op === 'migrate' ? `${words} (an upgrade's)` : words
 }
@@ -685,6 +687,57 @@ function commentChange(c: DispatchChange): string {
   if (c.op === 'create') return 'commented'
   if (c.field === 'deleted_at') return c.value ? 'deleted a comment' : 'restored a comment'
   if (c.field === 'body') return c.prior ? 'edited a comment' : ''
+  return ''
+}
+
+/** A plan revision by its id in words: `plan revision 3`, or `a plan revision` for one the page has not read. */
+function revisionWords(id: string, names: ChangeNames): string {
+  const n = names.plans?.get(id)
+  return n ? `plan revision ${n}` : 'a plan revision'
+}
+
+/**
+ * One change of a ticket's plan revision (DS2) in words: its proposal, its approval (one entry with the revision it superseded), its
+ * withdrawal. An approval is said by its state's row; one made again of a revision approved already has none (the store records only the
+ * fields that change), and its time's row says it, which historyEntries leaves out beside a state's row of the same operation. The
+ * approval's other fields (who, at which revision of the ticket, its intent's digest) are its own record; its note is said when it has one.
+ */
+function planChange(c: DispatchChange, names: ChangeNames): string {
+  const rev = revisionWords(c.entityId, names)
+  if (c.op === 'create') return `proposed ${rev}`
+  switch (c.field) {
+    case 'state':
+      if (c.value === 'approved') return `approved ${rev}`
+      if (c.value === 'superseded') return `superseded ${rev}`
+      if (c.value === 'withdrawn') return `withdrew ${rev}`
+      return ''
+    case 'approved_at':
+      if (!c.value) return ''
+      return c.prior ? `approved ${rev} again` : `approved ${rev}`
+    case 'approved_note':
+      return c.value ? `noted "${c.value}"` : ''
+  }
+  return ''
+}
+
+/** One change of a ticket's launch (DS2) in words: the launch, naming its run and its revision, and how its run's start came out. */
+function launchChange(c: DispatchChange, names: ChangeNames): string {
+  if (c.op === 'create') {
+    let v: { runId?: unknown; planId?: unknown } = {}
+    try {
+      v = JSON.parse(c.value) as typeof v
+    } catch {
+      v = {}
+    }
+    const run = typeof v.runId === 'string' && v.runId ? ` ${v.runId}` : ''
+    return `launched the run${run} from ${typeof v.planId === 'string' ? revisionWords(v.planId, names) : 'a plan revision'}`
+  }
+  switch (c.field) {
+    case 'state':
+      return c.value === 'started' ? 'its run started' : ''
+    case 'why':
+      return c.value ? `the launch failed: ${c.value}` : ''
+  }
   return ''
 }
 
@@ -703,7 +756,8 @@ export interface HistoryEntry {
 /**
  * A ticket's history as entries, one per operation: an operation's changes are consecutive in the log, so a run of rows of one (actor,
  * opId) is one entry, oldest first. An acceptance is said once: by accepted_for's row when its operation has one, else by its time's (an
- * acceptance made again for the same owner, whose operation records its time and whatever else changed, and no accepted_for).
+ * acceptance made again for the same owner, whose operation records its time and whatever else changed, and no accepted_for). A plan
+ * revision's approval the same way: by its state's row when its operation has one, else by its time's (an approval made again).
  */
 export function historyEntries(changes: readonly DispatchChange[], names: ChangeNames = {}): HistoryEntry[] {
   const ops: DispatchChange[][] = []
@@ -716,8 +770,10 @@ export function historyEntries(changes: readonly DispatchChange[], names: Change
   for (const rows of ops) {
     const first = rows[0]!
     const forOwner = rows.some((c) => accepting(c, 'accepted_for'))
+    const approvedBy = new Set(rows.filter((c) => c.entity === 'plan' && c.field === 'state' && c.value === 'approved').map((c) => c.entityId))
     const lines = rows
       .filter((c) => !(forOwner && accepting(c, 'accepted_at')))
+      .filter((c) => !(c.entity === 'plan' && c.field === 'approved_at' && approvedBy.has(c.entityId)))
       .map((c) => changeWords(c, names))
       .filter((words) => words)
     if (lines.length) out.push({ key: `${first.actor}\n${first.opId}`, who: first.by || first.actor, at: first.at, lines, seq: rows.at(-1)!.seq })

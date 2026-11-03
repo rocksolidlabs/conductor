@@ -277,6 +277,19 @@ add its rule here.
   gap. Feed the state that routes a viewer's answer before the viewer has
   the output, prove it with a stall after the send (`afterBroadcast`),
   and when one state is kept twice, wait on the copy the code decides by.
+- A control that only hurries what the page does by itself races it.
+  Read it again beside a read the page asks again on its own (a failed
+  re-read, retried with backoff) can vanish before the click lands, and
+  the click then waits for a button that never comes back
+  (`dispatch-plan.spec.ts`, #467). Press it until the state it leads to
+  is shown (`readAgain`), never once and blind.
+- A menu that has closed is not gone. A select menu's content stays
+  mounted through its closing animation and keeps the focus in its
+  search field: text filled into the next field in that window lands in
+  the menu's search and opens it again, and the field stays empty
+  (`dispatch-plan.spec.ts`, #467). After picking an option, wait for the
+  listbox to be gone (`toHaveCount(0)`) before typing, and assert the
+  field holds what was typed (`toHaveValue`) before submitting.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
