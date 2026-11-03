@@ -30,7 +30,7 @@ const records = (r?: ReturnType<typeof run>, s?: Pick<SessionInfo, 'id' | 'name'
 describe("a decision card's controls from the live record", () => {
   it('offers a failed work task with a submitted result Retry and Accept anyway, and no Cancel, with the revision the turn read', () => {
     const c = decisionControls(`task:${RUN}/build`, '7', records(run([task({ state: 'failed', attempts: 3, attempt: { n: 3, state: 'failed', result: 'abc' } })])))
-    expect(c).toMatchObject({ kind: 'task', run: RUN, task: 'build', commands: ['retry', 'accept'], expectedRevision: 7, to: `/runs/${RUN}?task=build` })
+    expect(c).toMatchObject({ kind: 'task', run: RUN, task: 'build', commands: ['retry', 'accept'], expectedRevision: 7, to: `/runs/${RUN}?view=tasks&task=build` })
   })
 
   it('offers a failed task without a submitted result Retry alone, and a failed review task no Accept anyway', () => {
@@ -59,7 +59,7 @@ describe("a decision card's controls from the live record", () => {
     expect(c).toMatchObject({ kind: 'task', commands: [], expectedRevision: 0 })
     expect(c.words).toContain('named no revision')
     expect(decisionControls(`task:${RUN}/build`, '0', records(run([task({ state: 'failed' })])))).toMatchObject({ commands: [] })
-    expect(decisionControls(`task:${RUN}/gone`, '7', records(run([])))).toMatchObject({ kind: 'none', to: `/runs/${RUN}?task=gone` })
+    expect(decisionControls(`task:${RUN}/gone`, '7', records(run([])))).toMatchObject({ kind: 'none', to: `/runs/${RUN}?view=tasks&task=gone` })
     expect(decisionControls(`task:${RUN}/build`, '7', records())).toMatchObject({ kind: 'none' })
   })
 
