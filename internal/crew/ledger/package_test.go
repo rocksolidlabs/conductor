@@ -58,9 +58,10 @@ func plannedRow(id, pkg string) RunRow {
 }
 
 // A version 5 database (no ticket, no package on its runs) is brought to
-// version 6 as it opens: every run, attempt and check kept as it was, each
-// run's ticket and package empty, which is what a run no ticket launched
-// has; nothing is derived. A database of the version this Conductor
+// the version this Conductor writes as it opens: every run, attempt and
+// check kept as it was, each run's ticket and package empty, which is what
+// a run no ticket launched has, and each attempt and check native (version
+// 7); nothing is derived. A database of the version this Conductor
 // writes opens read-only under one that writes an earlier version, as
 // every newer database does: the rule prepare applies to any version
 // above its own, shown here with this version's columns read back.
@@ -72,7 +73,7 @@ func TestMigrationAddsTheRunsPackage(t *testing.T) {
 	newRun(t, l, "team-00000002")
 	attemptOf(t, l, "team-00000001", "build", 1, AttemptRunning)
 	if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
-		return tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "build", N: 1, ID: "unit", K: 1, Argv: []string{"go", "test"}, State: CheckFinished, Exit: 0, StartedAt: tx.Now(), FinishedAt: tx.Now(), Log: []byte("ok"), LogSHA256: "h"})
+		return tx.PutCheck(CheckRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, ID: "unit", K: 1, Argv: []string{"go", "test"}, State: CheckFinished, Exit: 0, StartedAt: tx.Now(), FinishedAt: tx.Now(), Log: []byte("ok"), LogSHA256: "h"})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -92,15 +93,19 @@ func TestMigrationAddsTheRunsPackage(t *testing.T) {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
 	var version int
-	if err := again.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != 6 || Version != 6 {
+	if err := again.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != Version {
 		t.Fatalf("version %d (%v), Version %d", version, err, Version)
 	}
 	for k, was := range before {
 		q := strings.SplitN(k, "/", 3)
 		now := rawRow(t, again, q[0], q[1], q[2])
-		if q[0] == "runs" {
+		switch q[0] {
+		case "runs":
 			// The two columns added, at the end of the row, empty.
 			was += ` ticket="" package=""`
+		case "attempts", "checks":
+			// Version 7's column, at the end of the row: native.
+			was += ` where_ran="native"`
 		}
 		if now != was {
 			t.Fatalf("%s after the migration:\n%s\nwas\n%s", k, now, was)

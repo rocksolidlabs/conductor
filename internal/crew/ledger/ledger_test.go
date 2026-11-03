@@ -570,12 +570,12 @@ func TestRecoverConcludesOnce(t *testing.T) {
 			if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: id, Member: "lead", Kind: "work", State: TaskRunning}); err != nil {
 				return err
 			}
-			if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: id, N: 1, Member: "lead", State: st, ReservedAt: tx.Now()}); err != nil {
+			if err := tx.PutAttempt(AttemptRow{Where: WhereNative, RunID: "team-00000001", TaskID: id, N: 1, Member: "lead", State: st, ReservedAt: tx.Now()}); err != nil {
 				return err
 			}
 		}
 		for k, st := range []string{CheckStarted, CheckRunning, CheckFinished} {
-			if err := tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "t4", N: 1, ID: "unit", K: k, Argv: []string{"go", "test"}, State: st, StartedAt: tx.Now()}); err != nil {
+			if err := tx.PutCheck(CheckRow{Where: WhereNative, RunID: "team-00000001", TaskID: "t4", N: 1, ID: "unit", K: k, Argv: []string{"go", "test"}, State: st, StartedAt: tx.Now()}); err != nil {
 				return err
 			}
 		}
@@ -656,10 +656,10 @@ func TestPrune(t *testing.T) {
 		if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: "build", Member: "lead", Kind: "work", State: TaskSucceeded}); err != nil {
 			return err
 		}
-		if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptSucceeded, ReservedAt: tx.Now()}); err != nil {
+		if err := tx.PutAttempt(AttemptRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptSucceeded, ReservedAt: tx.Now()}); err != nil {
 			return err
 		}
-		if err := tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "build", N: 1, ID: "unit", K: 1, Argv: []string{"true"}, State: CheckFinished, StartedAt: tx.Now(), Log: []byte("ok")}); err != nil {
+		if err := tx.PutCheck(CheckRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, ID: "unit", K: 1, Argv: []string{"true"}, State: CheckFinished, StartedAt: tx.Now(), Log: []byte("ok")}); err != nil {
 			return err
 		}
 		_, _, err := tx.Command("alice", "c1", "task.retry", "fp")
@@ -728,10 +728,10 @@ func TestBounds(t *testing.T) {
 		if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: "build", Member: "lead", Kind: "work", State: TaskRunning}); err != nil {
 			return err
 		}
-		if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now()}); err != nil {
+		if err := tx.PutAttempt(AttemptRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now()}); err != nil {
 			return err
 		}
-		return tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "build", N: 1, ID: "unit", K: 1, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, MaxLog+1)})
+		return tx.PutCheck(CheckRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, ID: "unit", K: 1, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, MaxLog+1)})
 	}); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("a log past the bound: %v", err)
 	}
@@ -1071,10 +1071,10 @@ func TestARunsLogsAreBoundedInAll(t *testing.T) {
 			if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: "build", Member: "lead", Kind: "work", State: TaskVerifying}); err != nil {
 				return err
 			}
-			if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now()}); err != nil {
+			if err := tx.PutAttempt(AttemptRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now()}); err != nil {
 				return err
 			}
-			return tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "build", N: 1, ID: id, K: k, Argv: []string{"true"}, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, size), LogSHA256: "abc", Tail: "tail"})
+			return tx.PutCheck(CheckRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, ID: id, K: k, Argv: []string{"true"}, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, size), LogSHA256: "abc", Tail: "tail"})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -1111,7 +1111,7 @@ func TestARunsLogsAreBoundedInAll(t *testing.T) {
 	}
 	// A row marked dropped stores no bytes, whatever it carries.
 	if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
-		return tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "build", N: 1, ID: "c64", K: 1, Argv: []string{"true"}, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, unit), LogDropped: true, LogSHA256: "abc", Tail: "tail"})
+		return tx.PutCheck(CheckRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, ID: "c64", K: 1, Argv: []string{"true"}, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, unit), LogDropped: true, LogSHA256: "abc", Tail: "tail"})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1158,7 +1158,7 @@ func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T)
 		if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: "build", Member: "lead", Kind: "work", State: TaskRunning, Repair: `{"review":"review"}`, Extra: 2}); err != nil {
 			return err
 		}
-		if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now(), Result: `{"summary":"built"}`, Checkpoint: `{"done":"half"}`}); err != nil {
+		if err := tx.PutAttempt(AttemptRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now(), Result: `{"summary":"built"}`, Checkpoint: `{"done":"half"}`}); err != nil {
 			return err
 		}
 		if err := tx.PutMessage(MessageRow{RunID: "team-00000001", Seq: 1, From: "lead", To: "docs", Text: "hello", CreatedAt: tx.Now()}); err != nil {
@@ -1187,7 +1187,7 @@ func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T)
 		t.Fatalf("the delivery was not kept: %+v", msgs)
 	}
 	if _, err := again.Transition(ctx, "team-00000001", func(tx *Tx) error {
-		return tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 2, Member: "lead", State: AttemptReserved, ReservedAt: tx.Now(), Result: strings.Repeat("x", MaxResult+1)})
+		return tx.PutAttempt(AttemptRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 2, Member: "lead", State: AttemptReserved, ReservedAt: tx.Now(), Result: strings.Repeat("x", MaxResult+1)})
 	}); err == nil || !strings.Contains(err.Error(), "more than") {
 		t.Fatalf("a result over the bound: %v", err)
 	}

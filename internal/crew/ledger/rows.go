@@ -162,6 +162,10 @@ type AttemptRow struct {
 	// what remains, notes, the commit it is tied to), at most
 	// MaxCheckpoint bytes; "" without one (#334, row 10).
 	Checkpoint string
+	// Where is where the attempt ran: its run's Runtime's Where (ext.Where;
+	// WhereNative for the native one), fixed when the attempt is made, at
+	// most MaxWhere bytes. A put refuses a row with none (ErrNoWhere).
+	Where string
 }
 
 // MessageRow is one message a member sent another (#334, row 9): its
@@ -232,6 +236,9 @@ type CheckRow struct {
 	// LogBytes is the log's size as kept, read with the row whether or not
 	// the log comes along; a put ignores it.
 	LogBytes int64
+	// Where is where the command ran: its attempt's Where, at most MaxWhere
+	// bytes. A put refuses a row with none (ErrNoWhere).
+	Where string
 }
 
 // PrerequisiteRow is one run of a project manifest's prerequisite in a
@@ -266,6 +273,9 @@ type PrerequisiteRow struct {
 	LogSHA256        string
 	Tail             string
 	LogBytes         int64
+	// Where is where the prerequisite ran: its run's Runtime's Where, at
+	// most MaxWhere bytes. A put refuses a row with none (ErrNoWhere).
+	Where string
 }
 
 // TreeRow is a tree's lifecycle: an attempt's worktree or the checkout of
@@ -331,7 +341,15 @@ const (
 	maxTicketID = 64
 	// MaxURL bounds a probe's URL kept with its receipt.
 	MaxURL = 2048
+	// MaxWhere bounds a row's Where: an ext.Where is 1 to 32 bytes.
+	MaxWhere = 32
 )
+
+// WhereNative is the Where of a row the native Runtime ran (ext.WhereNative,
+// whose text it is): every row a database before version 7 holds, and
+// every row a build of this repository writes until a Runtime of another
+// Where is registered.
+const WhereNative = "native"
 
 // maxCommands bounds the commands kept per run: past it a new one is
 // refused, since dropping an old receipt would let its resend run twice.

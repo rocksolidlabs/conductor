@@ -526,6 +526,11 @@ export interface RunAttempt {
    * the server has let go. On the server's loopback, not proxied: it opens in a new tab.
    */
   preview?: string
+  /**
+   * Where the attempt ran (C10): its run's Runtime's name for where it runs, `native` for this machine's processes; a run record saved
+   * before the server kept it has none. Not a crew's `where` (`server` or `host`).
+   */
+  where?: string
 }
 
 /**
@@ -562,6 +567,8 @@ export interface RunStep {
   /** The log was not kept (the run's logs were at their bound): its route answers 410; the hash stays. */
   logDropped?: boolean
   logSha256?: string
+  /** Where its command ran (C10): its attempt's `where`, or for a prerequisite its run's; `native` for this machine's processes. */
+  where: string
 }
 
 /** A prerequisite of a run as it goes (`RunInfo.manifest`): pending, running while its generation runs, passed, failed or interrupted. */

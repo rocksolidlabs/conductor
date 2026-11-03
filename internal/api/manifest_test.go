@@ -156,10 +156,10 @@ func TestTheReceiptRoutesAnswerFromTheLedger(t *testing.T) {
 	// A log the ledger dropped past the run's bound answers 410; a step
 	// still running has no log yet.
 	if _, err := e.srv.ledger.Transition(context.Background(), run.ID, func(tx *ledger.Tx) error {
-		if err := tx.PutCheck(ledger.CheckRow{RunID: run.ID, TaskID: "build", N: 1, ID: "big", K: 1, Phase: ledger.PhaseSetup, State: ledger.CheckFinished, StartedAt: tx.Now(), LogDropped: true, LogSHA256: "h"}); err != nil {
+		if err := tx.PutCheck(ledger.CheckRow{Where: ledger.WhereNative, RunID: run.ID, TaskID: "build", N: 1, ID: "big", K: 1, Phase: ledger.PhaseSetup, State: ledger.CheckFinished, StartedAt: tx.Now(), LogDropped: true, LogSHA256: "h"}); err != nil {
 			return err
 		}
-		return tx.PutCheck(ledger.CheckRow{RunID: run.ID, TaskID: "build", N: 1, ID: "slow", K: 1, Phase: ledger.PhaseSetup, State: ledger.CheckRunning, StartedAt: tx.Now()})
+		return tx.PutCheck(ledger.CheckRow{Where: ledger.WhereNative, RunID: run.ID, TaskID: "build", N: 1, ID: "slow", K: 1, Phase: ledger.PhaseSetup, State: ledger.CheckRunning, StartedAt: tx.Now()})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -505,11 +505,12 @@ func TestAReceiptWithoutALogIsNotFound(t *testing.T) {
 			{RunID: run.ID, TaskID: "build", N: 1, ID: "slow", K: 1, Phase: ledger.PhaseSetup, State: ledger.CheckRunning, Exit: -1, StartedAt: now},
 			{RunID: run.ID, TaskID: "build", N: 1, ID: "quiet", K: 1, Phase: ledger.PhaseSetup, State: ledger.CheckFinished, StartedAt: now, FinishedAt: now, LogSHA256: shaHex(nil)},
 		} {
+			row.Where = ledger.WhereNative
 			if err := tx.PutCheck(row); err != nil {
 				return err
 			}
 		}
-		return tx.PutPrerequisite(ledger.PrerequisiteRow{RunID: run.ID, ID: "late", K: 1, State: ledger.CheckRunning, Exit: -1, StartedAt: now})
+		return tx.PutPrerequisite(ledger.PrerequisiteRow{Where: ledger.WhereNative, RunID: run.ID, ID: "late", K: 1, State: ledger.CheckRunning, Exit: -1, StartedAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}

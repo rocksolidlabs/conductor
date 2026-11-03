@@ -59,11 +59,12 @@ func deliveryRun(t *testing.T, e *testEnv, run, from string) {
 			if state == ledger.AttemptFailed {
 				a.Stage = "check"
 			}
+			a.Where = ledger.WhereNative
 			if err := tx.PutAttempt(a); err != nil {
 				return err
 			}
 		}
-		if err := tx.PutAttempt(ledger.AttemptRow{TaskID: "rv", N: 1, Member: "lead", StartCommit: deliveryCommit(2), State: ledger.AttemptSucceeded,
+		if err := tx.PutAttempt(ledger.AttemptRow{Where: ledger.WhereNative, TaskID: "rv", N: 1, Member: "lead", StartCommit: deliveryCommit(2), State: ledger.AttemptSucceeded,
 			Result: result(crew.Result{Verdict: crew.VerdictApproved})}); err != nil {
 			return err
 		}
@@ -78,6 +79,7 @@ func deliveryRun(t *testing.T, e *testEnv, run, from string) {
 			{TaskID: "build", N: 6, ID: "test", K: 1, Subject: deliveryCommit(6), State: ledger.CheckFinished, Exit: 0, Stable: true},
 		} {
 			row.StartedAt, row.FinishedAt = at, at.Add(time.Second)
+			row.Where = ledger.WhereNative
 			if err := tx.PutCheck(row); err != nil {
 				return err
 			}
@@ -312,7 +314,7 @@ func TestDeliveryLinkResentAfterTheEvidenceChanged(t *testing.T) {
 	}
 	// Newer evidence: the attempt's check run again, failing.
 	if _, err := e.srv.ledger.Transition(t.Context(), run, func(tx *ledger.Tx) error {
-		return tx.PutCheck(ledger.CheckRow{TaskID: "build", N: 2, ID: "test", K: 9, Subject: deliveryCommit(2), State: ledger.CheckFinished, Exit: 1, StartedAt: tx.Now()})
+		return tx.PutCheck(ledger.CheckRow{Where: ledger.WhereNative, TaskID: "build", N: 2, ID: "test", K: 9, Subject: deliveryCommit(2), State: ledger.CheckFinished, Exit: 1, StartedAt: tx.Now()})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -362,6 +364,7 @@ func TestDeliveryWaitsForAnEndedAttemptsReceipts(t *testing.T) {
 		t.Helper()
 		if _, err := e.srv.ledger.Transition(t.Context(), run, func(tx *ledger.Tx) error {
 			for _, row := range rows {
+				row.Where = ledger.WhereNative
 				if err := tx.PutCheck(row); err != nil {
 					return err
 				}
@@ -376,7 +379,7 @@ func TestDeliveryWaitsForAnEndedAttemptsReceipts(t *testing.T) {
 	// and a seventeenth still running.
 	if _, err := e.srv.ledger.Transition(t.Context(), run, func(tx *ledger.Tx) error {
 		for n, state := range map[int]string{8: ledger.AttemptCancelled, 9: ledger.AttemptStopped} {
-			if err := tx.PutAttempt(ledger.AttemptRow{TaskID: "build", N: n, Member: "lead", StartCommit: deliveryCommit(n - 1), ResultCommit: deliveryCommit(n), State: state}); err != nil {
+			if err := tx.PutAttempt(ledger.AttemptRow{Where: ledger.WhereNative, TaskID: "build", N: n, Member: "lead", StartCommit: deliveryCommit(n - 1), ResultCommit: deliveryCommit(n), State: state}); err != nil {
 				return err
 			}
 		}

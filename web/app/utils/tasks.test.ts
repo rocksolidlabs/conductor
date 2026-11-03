@@ -142,7 +142,7 @@ describe('taskActions', () => {
 describe('stepWords and the receipt helpers (EN1)', () => {
   const at = '2026-10-31T10:00:00Z'
   const now = Date.parse('2026-10-31T10:02:30Z')
-  const step = (p: Partial<RunStep>): RunStep => ({ phase: 'setup', id: 'deps', k: 1, state: 'finished', tries: 1, startedAt: at, logBytes: 10, ...p })
+  const step = (p: Partial<RunStep>): RunStep => ({ phase: 'setup', id: 'deps', k: 1, state: 'finished', tries: 1, startedAt: at, logBytes: 10, where: 'native', ...p })
   it.each([
     [step({ exit: 0, duration: 4200 }), 'exited 0 in 4.2 s', 'success'],
     [step({ exit: 1, duration: 3000, error: 'exited 1: npm ERR!' }), 'exited 1 in 3.0 s', 'error'],

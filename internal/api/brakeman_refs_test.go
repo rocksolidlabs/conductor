@@ -75,8 +75,8 @@ func newRefsFixture(t *testing.T) *refsFixture {
 		steps := []error{
 			tx.PutRun(ledger.RunRow{ID: f.run, CrewID: "team", Crew: string(crewJSON), Base: f.base, State: ledger.RunStopped, CreatedAt: now, ClosedAt: now}),
 			tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: "work", State: "failed", Attempts: 1}),
-			tx.PutAttempt(ledger.AttemptRow{TaskID: "build", N: 1, Member: "lead", Branch: "attempt-build-1", StartCommit: f.base, ResultCommit: f.commit, State: ledger.AttemptFailed, ReservedAt: now, ClosedAt: now}),
-			tx.PutCheck(ledger.CheckRow{TaskID: "build", N: 1, ID: "test", K: 1, Argv: []string{"go", "test"}, Subject: f.commit, State: ledger.CheckFinished, Exit: 1, Log: log, LogSHA256: f.logSHA, StartedAt: now, FinishedAt: now}),
+			tx.PutAttempt(ledger.AttemptRow{Where: ledger.WhereNative, TaskID: "build", N: 1, Member: "lead", Branch: "attempt-build-1", StartCommit: f.base, ResultCommit: f.commit, State: ledger.AttemptFailed, ReservedAt: now, ClosedAt: now}),
+			tx.PutCheck(ledger.CheckRow{Where: ledger.WhereNative, TaskID: "build", N: 1, ID: "test", K: 1, Argv: []string{"go", "test"}, Subject: f.commit, State: ledger.CheckFinished, Exit: 1, Log: log, LogSHA256: f.logSHA, StartedAt: now, FinishedAt: now}),
 			tx.Event("task.failed", map[string]string{"task": "build"}),
 			tx.PutMessage(ledger.MessageRow{Seq: 1, From: "lead", To: "reviewer", Text: "over to you", CreatedAt: now, DeliveredAt: now}),
 		}

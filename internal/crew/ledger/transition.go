@@ -21,6 +21,10 @@ var (
 	ErrTooLarge = errors.New("ledger: too large")
 	// ErrNoRun says the run has no row.
 	ErrNoRun = errors.New("ledger: no such run")
+	// ErrNoWhere says an attempt's or a receipt's row does not say where
+	// it ran: a row is refused rather than taken as native, so a Runtime
+	// whose rows forgot it fails instead of passing for the native one.
+	ErrNoWhere = errors.New("ledger: the row does not say where it ran")
 	// ErrRunExists says CreateRun found a row of the run already: the id
 	// is another run's, whose row stays as it was.
 	ErrRunExists = errors.New("ledger: the run exists already")
@@ -308,15 +312,30 @@ func (t *Tx) PutAttempt(r AttemptRow) error {
 	if len(r.Checkpoint) > MaxCheckpoint {
 		return fmt.Errorf("ledger: the checkpoint of attempt %s/%d is more than %d bytes", r.TaskID, r.N, MaxCheckpoint)
 	}
-	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO attempts (run_id, task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at, result, checkpoint)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	if err := checkWhere(r.Where); err != nil {
+		return fmt.Errorf("attempt %s/%d: %w", r.TaskID, r.N, err)
+	}
+	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO attempts (run_id, task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at, result, checkpoint, where_ran)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id, task_id, n) DO UPDATE SET member = excluded.member, session_id = excluded.session_id, worktree = excluded.worktree,
 			branch = excluded.branch, start_commit = excluded.start_commit, result_commit = excluded.result_commit, state = excluded.state,
 			stage = excluded.stage, error = excluded.error, reserved_at = excluded.reserved_at, launched_at = excluded.launched_at,
-			prompted_at = excluded.prompted_at, closed_at = excluded.closed_at, result = excluded.result, checkpoint = excluded.checkpoint`,
+			prompted_at = excluded.prompted_at, closed_at = excluded.closed_at, result = excluded.result, checkpoint = excluded.checkpoint, where_ran = excluded.where_ran`,
 		t.runID, r.TaskID, r.N, r.Member, r.SessionID, r.Worktree, r.Branch, r.StartCommit, r.ResultCommit, r.State, r.Stage, r.Error,
-		stamp(r.ReservedAt), stamp(r.LaunchedAt), stamp(r.PromptedAt), stamp(r.ClosedAt), r.Result, r.Checkpoint)
+		stamp(r.ReservedAt), stamp(r.LaunchedAt), stamp(r.PromptedAt), stamp(r.ClosedAt), r.Result, r.Checkpoint, r.Where)
 	return err
+}
+
+// checkWhere refuses a row's Where that is missing (ErrNoWhere) or past
+// MaxWhere bytes (ErrTooLarge).
+func checkWhere(where string) error {
+	switch {
+	case where == "":
+		return ErrNoWhere
+	case len(where) > MaxWhere:
+		return fmt.Errorf("%w: where it ran is %d bytes", ErrTooLarge, len(where))
+	}
+	return nil
 }
 
 // PutMessage puts a message's row, new or changed (delivered, acked); a
@@ -380,6 +399,9 @@ func (t *Tx) PutCheck(r CheckRow) error {
 	if err := rowText(r.URL, r.Manifest, r.Error); err != nil {
 		return err
 	}
+	if err := checkWhere(r.Where); err != nil {
+		return fmt.Errorf("receipt %s/%d %s/%d: %w", r.TaskID, r.N, r.ID, r.K, err)
+	}
 	argv, err := encode(r.Argv, MaxPayload)
 	if err != nil {
 		return err
@@ -411,17 +433,17 @@ func (t *Tx) PutCheck(r CheckRow) error {
 		}
 	}
 	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO checks (run_id, task_id, n, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at,
-			exit, signal, timed_out, killed, stable, truncated, total, log, log_dropped, log_sha256, tail, phase, manifest, ports, tries, error, url)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			exit, signal, timed_out, killed, stable, truncated, total, log, log_dropped, log_sha256, tail, phase, manifest, ports, tries, error, url, where_ran)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id, task_id, n, id, k) DO UPDATE SET argv = excluded.argv, dir = excluded.dir, subject = excluded.subject, state = excluded.state,
 			pid = excluded.pid, pgroup = excluded.pgroup, process_started_at = excluded.process_started_at, started_at = excluded.started_at,
 			finished_at = excluded.finished_at, exit = excluded.exit, signal = excluded.signal, timed_out = excluded.timed_out, killed = excluded.killed,
 			stable = excluded.stable, truncated = excluded.truncated, total = excluded.total, log = excluded.log, log_dropped = excluded.log_dropped,
 			log_sha256 = excluded.log_sha256, tail = excluded.tail, phase = excluded.phase, manifest = excluded.manifest, ports = excluded.ports,
-			tries = excluded.tries, error = excluded.error, url = excluded.url`,
+			tries = excluded.tries, error = excluded.error, url = excluded.url, where_ran = excluded.where_ran`,
 		t.runID, r.TaskID, r.N, r.ID, r.K, argv, r.Dir, r.Subject, r.State, r.PID, r.Group, stamp(r.ProcessStartedAt), stamp(r.StartedAt), stamp(r.FinishedAt),
 		r.Exit, r.Signal, b2i(r.TimedOut), b2i(r.Killed), b2i(r.Stable), b2i(r.Truncated), r.Total, r.Log, b2i(r.LogDropped), r.LogSHA256, r.Tail,
-		phase, r.Manifest, ports, tries, r.Error, r.URL)
+		phase, r.Manifest, ports, tries, r.Error, r.URL, r.Where)
 	return err
 }
 
@@ -434,6 +456,9 @@ func (t *Tx) PutPrerequisite(r PrerequisiteRow) error {
 	}
 	if err := rowText(r.URL, r.Manifest, r.Error); err != nil {
 		return err
+	}
+	if err := checkWhere(r.Where); err != nil {
+		return fmt.Errorf("prerequisite %s/%d: %w", r.ID, r.K, err)
 	}
 	argv, err := encode(r.Argv, MaxPayload)
 	if err != nil {
@@ -454,16 +479,16 @@ func (t *Tx) PutPrerequisite(r PrerequisiteRow) error {
 		}
 	}
 	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO prerequisites (run_id, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at,
-			exit, signal, timed_out, killed, stable, truncated, total, log, log_dropped, log_sha256, tail, manifest, error, url)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			exit, signal, timed_out, killed, stable, truncated, total, log, log_dropped, log_sha256, tail, manifest, error, url, where_ran)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id, id, k) DO UPDATE SET argv = excluded.argv, dir = excluded.dir, subject = excluded.subject, state = excluded.state,
 			pid = excluded.pid, pgroup = excluded.pgroup, process_started_at = excluded.process_started_at, started_at = excluded.started_at,
 			finished_at = excluded.finished_at, exit = excluded.exit, signal = excluded.signal, timed_out = excluded.timed_out, killed = excluded.killed,
 			stable = excluded.stable, truncated = excluded.truncated, total = excluded.total, log = excluded.log, log_dropped = excluded.log_dropped,
-			log_sha256 = excluded.log_sha256, tail = excluded.tail, manifest = excluded.manifest, error = excluded.error, url = excluded.url`,
+			log_sha256 = excluded.log_sha256, tail = excluded.tail, manifest = excluded.manifest, error = excluded.error, url = excluded.url, where_ran = excluded.where_ran`,
 		t.runID, r.ID, r.K, argv, r.Dir, r.Subject, r.State, r.PID, r.Group, stamp(r.ProcessStartedAt), stamp(r.StartedAt), stamp(r.FinishedAt),
 		r.Exit, r.Signal, b2i(r.TimedOut), b2i(r.Killed), b2i(r.Stable), b2i(r.Truncated), r.Total, r.Log, b2i(r.LogDropped), r.LogSHA256, r.Tail,
-		r.Manifest, r.Error, r.URL)
+		r.Manifest, r.Error, r.URL, r.Where)
 	return err
 }
 
@@ -602,11 +627,11 @@ func (l *Ledger) Tasks(ctx context.Context, runID string) ([]TaskRow, error) {
 
 // Attempts reads a run's attempts, by task and number.
 func (l *Ledger) Attempts(ctx context.Context, runID string) ([]AttemptRow, error) {
-	db, err := l.conn()
+	db, version, err := l.connAt()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at, result, checkpoint
+	rows, err := db.QueryContext(ctx, `SELECT task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at, result, checkpoint, `+whereCol(version)+`
 		FROM attempts WHERE run_id = ? ORDER BY task_id, n`, runID)
 	if err != nil {
 		return nil, err
@@ -616,7 +641,7 @@ func (l *Ledger) Attempts(ctx context.Context, runID string) ([]AttemptRow, erro
 	for rows.Next() {
 		r := AttemptRow{RunID: runID}
 		var reserved, launched, prompted, closed string
-		if err := rows.Scan(&r.TaskID, &r.N, &r.Member, &r.SessionID, &r.Worktree, &r.Branch, &r.StartCommit, &r.ResultCommit, &r.State, &r.Stage, &r.Error, &reserved, &launched, &prompted, &closed, &r.Result, &r.Checkpoint); err != nil {
+		if err := rows.Scan(&r.TaskID, &r.N, &r.Member, &r.SessionID, &r.Worktree, &r.Branch, &r.StartCommit, &r.ResultCommit, &r.State, &r.Stage, &r.Error, &reserved, &launched, &prompted, &closed, &r.Result, &r.Checkpoint, &r.Where); err != nil {
 			return nil, err
 		}
 		r.ReservedAt, r.LaunchedAt, r.PromptedAt, r.ClosedAt = unstamp(reserved), unstamp(launched), unstamp(prompted), unstamp(closed)
@@ -625,13 +650,30 @@ func (l *Ledger) Attempts(ctx context.Context, runID string) ([]AttemptRow, erro
 	return out, rows.Err()
 }
 
-// checkCols are the checks columns a CheckRow is read from, in its scan
-// order, the log's own column (or NULL) last; prerequisiteCols the same of
-// a prerequisite's row.
-const (
-	checkCols        = `task_id, n, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at, exit, signal, timed_out, killed, stable, truncated, total, log_dropped, log_sha256, tail, phase, manifest, ports, tries, error, url, COALESCE(LENGTH(log), 0)`
-	prerequisiteCols = `id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at, exit, signal, timed_out, killed, stable, truncated, total, log_dropped, log_sha256, tail, manifest, error, url, COALESCE(LENGTH(log), 0)`
-)
+// checkCols are the checks columns a CheckRow is read from in a database
+// of the version given, in its scan order, the log's own column (or NULL)
+// last; prerequisiteCols the same of a prerequisite's row.
+func checkCols(version int) string {
+	return `task_id, n, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at, exit, signal, timed_out, killed, stable, truncated, total, log_dropped, log_sha256, tail, phase, manifest, ports, tries, error, url, ` + whereCol(version) + `, COALESCE(LENGTH(log), 0)`
+}
+
+func prerequisiteCols(version int) string {
+	return `id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at, exit, signal, timed_out, killed, stable, truncated, total, log_dropped, log_sha256, tail, manifest, error, url, ` + whereCol(version) + `, COALESCE(LENGTH(log), 0)`
+}
+
+// versionWhere is the version that added where_ran (migrations[6]).
+const versionWhere = 7
+
+// whereCol is where a row ran as a database of the version given has it:
+// its where_ran column from version 7, and below it, in a database a
+// failed migration or another owner's lock left unmigrated, 'native',
+// which is what ran every row such a database holds.
+func whereCol(version int) string {
+	if version >= versionWhere {
+		return "where_ran"
+	}
+	return "'" + WhereNative + "'"
+}
 
 // scanner is a row to scan: *sql.Row or *sql.Rows.
 type scanner interface{ Scan(dest ...any) error }
@@ -643,7 +685,7 @@ func scanCheck(sc scanner, runID string) (CheckRow, error) {
 	var timedOut, killed, stable, truncated, dropped int
 	var log []byte
 	if err := sc.Scan(&r.TaskID, &r.N, &r.ID, &r.K, &argv, &r.Dir, &r.Subject, &r.State, &r.PID, &r.Group, &pstarted, &started, &finished, &r.Exit, &r.Signal, &timedOut, &killed, &stable, &truncated, &r.Total,
-		&dropped, &r.LogSHA256, &r.Tail, &r.Phase, &r.Manifest, &ports, &r.Tries, &r.Error, &r.URL, &r.LogBytes, &log); err != nil {
+		&dropped, &r.LogSHA256, &r.Tail, &r.Phase, &r.Manifest, &ports, &r.Tries, &r.Error, &r.URL, &r.Where, &r.LogBytes, &log); err != nil {
 		return CheckRow{}, err
 	}
 	r.LogDropped = dropped != 0
@@ -671,7 +713,7 @@ func scanPrerequisite(sc scanner, runID string) (PrerequisiteRow, error) {
 	var timedOut, killed, stable, truncated, dropped int
 	var log []byte
 	if err := sc.Scan(&r.ID, &r.K, &argv, &r.Dir, &r.Subject, &r.State, &r.PID, &r.Group, &pstarted, &started, &finished, &r.Exit, &r.Signal, &timedOut, &killed, &stable, &truncated, &r.Total,
-		&dropped, &r.LogSHA256, &r.Tail, &r.Manifest, &r.Error, &r.URL, &r.LogBytes, &log); err != nil {
+		&dropped, &r.LogSHA256, &r.Tail, &r.Manifest, &r.Error, &r.URL, &r.Where, &r.LogBytes, &log); err != nil {
 		return PrerequisiteRow{}, err
 	}
 	r.LogDropped = dropped != 0
@@ -704,11 +746,11 @@ func (l *Ledger) Checks(ctx context.Context, runID, taskID string, n int, withLo
 	if taskID != "" {
 		where, args = where+" AND task_id = ? AND n = ?", append(args, taskID, n)
 	}
-	db, err := l.conn()
+	db, version, err := l.connAt()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT `+checkCols+`, `+logColumn(withLog)+` FROM checks `+where+` ORDER BY task_id, n, id, k`, args...)
+	rows, err := db.QueryContext(ctx, `SELECT `+checkCols(version)+`, `+logColumn(withLog)+` FROM checks `+where+` ORDER BY task_id, n, id, k`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -727,11 +769,11 @@ func (l *Ledger) Checks(ctx context.Context, runID, taskID string, n int, withLo
 // Check reads one receipt of an attempt, its log with it; ok is false
 // when there is no such row.
 func (l *Ledger) Check(ctx context.Context, runID, taskID string, n int, id string, k int) (CheckRow, bool, error) {
-	db, err := l.conn()
+	db, version, err := l.connAt()
 	if err != nil {
 		return CheckRow{}, false, err
 	}
-	r, err := scanCheck(db.QueryRowContext(ctx, `SELECT `+checkCols+`, log FROM checks WHERE run_id = ? AND task_id = ? AND n = ? AND id = ? AND k = ?`, runID, taskID, n, id, k), runID)
+	r, err := scanCheck(db.QueryRowContext(ctx, `SELECT `+checkCols(version)+`, log FROM checks WHERE run_id = ? AND task_id = ? AND n = ? AND id = ? AND k = ?`, runID, taskID, n, id, k), runID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CheckRow{}, false, nil
 	}
@@ -797,11 +839,11 @@ func (l *Ledger) CheckChanged(ctx context.Context, runID, taskID string, n int, 
 // Prerequisites reads a run's prerequisites' receipts, by id and k;
 // withLog says whether the log blobs come along.
 func (l *Ledger) Prerequisites(ctx context.Context, runID string, withLog bool) ([]PrerequisiteRow, error) {
-	db, err := l.conn()
+	db, version, err := l.connAt()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT `+prerequisiteCols+`, `+logColumn(withLog)+` FROM prerequisites WHERE run_id = ? ORDER BY id, k`, runID)
+	rows, err := db.QueryContext(ctx, `SELECT `+prerequisiteCols(version)+`, `+logColumn(withLog)+` FROM prerequisites WHERE run_id = ? ORDER BY id, k`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -820,11 +862,11 @@ func (l *Ledger) Prerequisites(ctx context.Context, runID string, withLog bool) 
 // Prerequisite reads one receipt of a run's prerequisite, its log with
 // it; ok is false when there is no such row.
 func (l *Ledger) Prerequisite(ctx context.Context, runID, id string, k int) (PrerequisiteRow, bool, error) {
-	db, err := l.conn()
+	db, version, err := l.connAt()
 	if err != nil {
 		return PrerequisiteRow{}, false, err
 	}
-	r, err := scanPrerequisite(db.QueryRowContext(ctx, `SELECT `+prerequisiteCols+`, log FROM prerequisites WHERE run_id = ? AND id = ? AND k = ?`, runID, id, k), runID)
+	r, err := scanPrerequisite(db.QueryRowContext(ctx, `SELECT `+prerequisiteCols(version)+`, log FROM prerequisites WHERE run_id = ? AND id = ? AND k = ?`, runID, id, k), runID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PrerequisiteRow{}, false, nil
 	}

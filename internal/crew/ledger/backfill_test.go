@@ -33,7 +33,7 @@ func (f fixture) put(t *testing.T, l *Ledger) {
 			}
 		}
 		for _, a := range f.attempts {
-			a.RunID, a.ReservedAt = f.id, tx.Now()
+			a.RunID, a.ReservedAt, a.Where = f.id, tx.Now(), WhereNative
 			if a.Member == "" {
 				a.Member = "m"
 			}

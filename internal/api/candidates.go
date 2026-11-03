@@ -42,10 +42,6 @@ const (
 	// candidateReadTries bounds the times a page's reads are made again
 	// because the run's revision moved while they were made.
 	candidateReadTries = 8
-	// whereNative is where every check runs until a runtime other than
-	// the native one exists (the Program, section 2.5, constraint 7): the
-	// ledger's checks rows carry no where yet, and this is their value.
-	whereNative = "native"
 )
 
 // candidateReceipt is one receipt of a candidate: a check's or a verify
@@ -108,9 +104,10 @@ type taskCandidates struct {
 	More       int            `json:"more"`
 }
 
-// candidateReceiptOf is a check row as a candidate's receipt.
+// candidateReceiptOf is a check row as a candidate's receipt, where it ran
+// its row's (the Runtime's, docs/plans/runtime.md).
 func candidateReceiptOf(row ledger.CheckRow) candidateReceipt {
-	rc := candidateReceipt{Phase: row.Phase, ID: row.ID, K: row.K, Where: whereNative, State: row.State, Signal: row.Signal, TimedOut: row.TimedOut,
+	rc := candidateReceipt{Phase: row.Phase, ID: row.ID, K: row.K, Where: row.Where, State: row.State, Signal: row.Signal, TimedOut: row.TimedOut,
 		Killed: row.Killed, Stable: row.Stable, Error: cutRunes(row.Error, maxReceiptError), StartedAt: row.StartedAt,
 		LogSHA256: row.LogSHA256, LogBytes: row.LogBytes, LogDropped: row.LogDropped}
 	if rc.Phase == "" {

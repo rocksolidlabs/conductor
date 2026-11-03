@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// version5Added is what versions 5 and 6 added, dropped: a database of
+// version5Added is what versions 5 to 7 added, dropped: a database of
 // this version made a version 4 one, for a migration's fixture (version
-// 6's own fixture drops version6Added alone).
+// 6's own fixture drops version6Added alone, version 7's version7Added).
 var version5Added = append(slices.Clone(version6Added),
 	"ALTER TABLE checks DROP COLUMN phase",
 	"ALTER TABLE checks DROP COLUMN manifest",
@@ -28,11 +28,19 @@ var version5Added = append(slices.Clone(version6Added),
 	"DROP TABLE trees",
 )
 
-// version6Added is what version 6 added, dropped: a version 6 database
-// made a version 5 one.
-var version6Added = []string{
+// version6Added is what versions 6 and 7 added, dropped: a database of
+// this version made a version 5 one.
+var version6Added = append(slices.Clone(version7Added),
 	"ALTER TABLE runs DROP COLUMN ticket",
 	"ALTER TABLE runs DROP COLUMN package",
+)
+
+// version7Added is what version 7 added, dropped: a database of this
+// version made a version 6 one.
+var version7Added = []string{
+	"ALTER TABLE attempts DROP COLUMN where_ran",
+	"ALTER TABLE checks DROP COLUMN where_ran",
+	"ALTER TABLE prerequisites DROP COLUMN where_ran",
 }
 
 // attemptOf puts a run's task and its attempt, for the rows that hang on
@@ -43,7 +51,7 @@ func attemptOf(t *testing.T, l *Ledger, runID, taskID string, n int, state strin
 		if err := tx.PutTask(TaskRow{RunID: runID, ID: taskID, Member: "lead", Kind: "work", State: TaskRunning}); err != nil {
 			return err
 		}
-		return tx.PutAttempt(AttemptRow{RunID: runID, TaskID: taskID, N: n, Member: "lead", State: state, ReservedAt: tx.Now()})
+		return tx.PutAttempt(AttemptRow{Where: WhereNative, RunID: runID, TaskID: taskID, N: n, Member: "lead", State: state, ReservedAt: tx.Now()})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +88,7 @@ func TestAVersion4DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T)
 		t.Fatal(err)
 	}
 	if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
-		return tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "build", N: 1, ID: "unit", K: 1, Argv: []string{"go", "test"}, State: CheckRunning, StartedAt: tx.Now(), Log: []byte("ok"), LogSHA256: "h"})
+		return tx.PutCheck(CheckRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, ID: "unit", K: 1, Argv: []string{"go", "test"}, State: CheckRunning, StartedAt: tx.Now(), Log: []byte("ok"), LogSHA256: "h"})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +148,7 @@ func TestAStepsRowCarriesItsPhaseAndWords(t *testing.T) {
 			{ID: "never", K: 4, Phase: PhaseReady, Manifest: "file:abc", Argv: []string{"test", "-e", "never"}, State: CheckFinished, Exit: -1, Error: "web exited 1 before the tree was ready"},
 			{ID: "unit", K: 3, Argv: []string{"go", "test"}, State: CheckFinished},
 		} {
-			r.RunID, r.TaskID, r.N, r.StartedAt = "team-00000001", "build", 1, tx.Now()
+			r.RunID, r.TaskID, r.N, r.StartedAt, r.Where = "team-00000001", "build", 1, tx.Now(), WhereNative
 			if err := tx.PutCheck(r); err != nil {
 				return err
 			}
@@ -183,7 +191,7 @@ func TestAStepsRowCarriesItsPhaseAndWords(t *testing.T) {
 		"error": {ID: "web", K: 5, Error: strings.Repeat("x", MaxPayload+1)},
 	} {
 		if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
-			r.RunID, r.TaskID, r.N, r.State, r.StartedAt = "team-00000001", "build", 1, CheckStarted, tx.Now()
+			r.RunID, r.TaskID, r.N, r.State, r.StartedAt, r.Where = "team-00000001", "build", 1, CheckStarted, tx.Now(), WhereNative
 			return tx.PutCheck(r)
 		}); !errors.Is(err, ErrTooLarge) {
 			t.Fatalf("%s past its bound: %v", name, err)
@@ -281,7 +289,7 @@ func TestAPrerequisitesReceiptIsARowOfItsOwn(t *testing.T) {
 	newRun(t, l, "team-00000001")
 	put := func(r PrerequisiteRow) error {
 		_, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
-			r.RunID = "team-00000001"
+			r.RunID, r.Where = "team-00000001", WhereNative
 			if r.StartedAt.IsZero() {
 				r.StartedAt = tx.Now()
 			}
@@ -352,13 +360,13 @@ func TestAPrerequisitesLogCountsTowardTheRunsBound(t *testing.T) {
 	maxRunLogs = 2 * unit
 	t.Cleanup(func() { maxRunLogs = old })
 	if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
-		if err := tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "build", N: 1, ID: "unit", K: 1, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, unit)}); err != nil {
+		if err := tx.PutCheck(CheckRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, ID: "unit", K: 1, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, unit)}); err != nil {
 			return err
 		}
-		if err := tx.PutPrerequisite(PrerequisiteRow{RunID: "team-00000001", ID: "node", K: 1, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, unit), LogSHA256: "h"}); err != nil {
+		if err := tx.PutPrerequisite(PrerequisiteRow{Where: WhereNative, RunID: "team-00000001", ID: "node", K: 1, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, unit), LogSHA256: "h"}); err != nil {
 			return err
 		}
-		return tx.PutPrerequisite(PrerequisiteRow{RunID: "team-00000001", ID: "node", K: 2, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, 1), LogSHA256: "h2"})
+		return tx.PutPrerequisite(PrerequisiteRow{Where: WhereNative, RunID: "team-00000001", ID: "node", K: 2, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, 1), LogSHA256: "h2"})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +375,7 @@ func TestAPrerequisitesLogCountsTowardTheRunsBound(t *testing.T) {
 		t.Fatalf("prerequisites: %+v", rows)
 	}
 	if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
-		return tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "build", N: 1, ID: "lint", K: 1, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, 1)})
+		return tx.PutCheck(CheckRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, ID: "lint", K: 1, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, 1)})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +406,7 @@ func TestATreeLeftOpenIsEndedByTheRecovery(t *testing.T) {
 	putTree(TreeRow{Kind: TreeWorktree, Dir: "/w/build.1", Commit: "abc", Manifest: "crew:1", Ports: map[string]int{"web": 4000}, Preview: "http://127.0.0.1:4000/", State: TreeReady})
 	putTree(TreeRow{Kind: TreeCheckout, Dir: "/w/build.1.check", Commit: "def", Manifest: "crew:1", State: TreeEnded, Why: "attempt 1 succeeded"})
 	if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
-		return tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "build", N: 1, ID: "deps", K: 1, Phase: PhaseSetup, Manifest: "crew:1", State: CheckRunning, StartedAt: tx.Now()})
+		return tx.PutCheck(CheckRow{Where: WhereNative, RunID: "team-00000001", TaskID: "build", N: 1, ID: "deps", K: 1, Phase: PhaseSetup, Manifest: "crew:1", State: CheckRunning, StartedAt: tx.Now()})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +473,7 @@ func TestTheRecoveryOfManyTreesFitsItsPayloads(t *testing.T) {
 			if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: id, Member: "lead", Kind: "work", State: TaskRunning}); err != nil {
 				return err
 			}
-			if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: id, N: 1, Member: "lead", State: AttemptRunning, ReservedAt: tx.Now()}); err != nil {
+			if err := tx.PutAttempt(AttemptRow{Where: WhereNative, RunID: "team-00000001", TaskID: id, N: 1, Member: "lead", State: AttemptRunning, ReservedAt: tx.Now()}); err != nil {
 				return err
 			}
 			for _, kind := range []string{TreeWorktree, TreeCheckout} {
@@ -523,7 +531,7 @@ func TestAServiceLeftOpenIsReportedByTheRecovery(t *testing.T) {
 			{ID: "unit", K: 1, Dir: "/w/build.1.check/app", Argv: []string{"go", "test"}, State: CheckRunning, PID: 4343, Group: 4343},
 			{ID: "old", K: 1, Phase: PhaseService, Dir: "/w/build.1/app", Argv: []string{"true"}, State: CheckFinished, PID: 4141},
 		} {
-			r.RunID, r.TaskID, r.N, r.Manifest, r.StartedAt = "team-00000001", "build", 1, "crew:1", tx.Now()
+			r.RunID, r.TaskID, r.N, r.Manifest, r.StartedAt, r.Where = "team-00000001", "build", 1, "crew:1", tx.Now(), WhereNative
 			if err := tx.PutCheck(r); err != nil {
 				return err
 			}
@@ -595,7 +603,7 @@ func TestTheRecoveryOfThirtyTwoServicesFitsOneTransaction(t *testing.T) {
 			if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: task, Member: "lead", Kind: "work", State: TaskVerifying}); err != nil {
 				return err
 			}
-			if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: task, N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now()}); err != nil {
+			if err := tx.PutAttempt(AttemptRow{Where: WhereNative, RunID: "team-00000001", TaskID: task, N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now()}); err != nil {
 				return err
 			}
 			for _, kind := range []string{TreeWorktree, TreeCheckout} {
@@ -608,7 +616,7 @@ func TestTheRecoveryOfThirtyTwoServicesFitsOneTransaction(t *testing.T) {
 				}
 				for j := range 4 {
 					id := fmt.Sprintf("%s-%d-%s", kind[:1], j, strings.Repeat("s", 30))
-					if err := tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: task, N: 1, ID: id, K: 1, Phase: PhaseService, Manifest: "crew:1", Dir: dir, Argv: argv,
+					if err := tx.PutCheck(CheckRow{Where: WhereNative, RunID: "team-00000001", TaskID: task, N: 1, ID: id, K: 1, Phase: PhaseService, Manifest: "crew:1", Dir: dir, Argv: argv,
 						State: CheckRunning, PID: 100000 + i*100 + j, Group: 100000 + i*100 + j, ProcessStartedAt: tx.Now(), StartedAt: tx.Now()}); err != nil {
 						return err
 					}

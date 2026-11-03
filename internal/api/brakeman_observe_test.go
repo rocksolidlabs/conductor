@@ -84,8 +84,8 @@ func (f *obsFixture) seed(t *testing.T) {
 				tx.PutRun(ledger.RunRow{ID: run, CrewID: crewID, Crew: string(crewJSON), State: state, CreatedAt: now}),
 				tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: "work", State: ledger.TaskFailed, Attempts: 1}),
 				tx.PutTask(ledger.TaskRow{ID: "deploy", Member: "lead", Kind: "work", State: ledger.TaskBlocked}),
-				tx.PutAttempt(ledger.AttemptRow{TaskID: "build", N: 1, Member: "lead", State: ledger.AttemptFailed, ReservedAt: now, ClosedAt: now}),
-				tx.PutCheck(ledger.CheckRow{TaskID: "build", N: 1, ID: "test", K: 1, Argv: []string{"go", "test"}, State: ledger.CheckFinished, Exit: 1, Log: f.log, LogSHA256: f.logSHA, StartedAt: now, FinishedAt: now}),
+				tx.PutAttempt(ledger.AttemptRow{Where: ledger.WhereNative, TaskID: "build", N: 1, Member: "lead", State: ledger.AttemptFailed, ReservedAt: now, ClosedAt: now}),
+				tx.PutCheck(ledger.CheckRow{Where: ledger.WhereNative, TaskID: "build", N: 1, ID: "test", K: 1, Argv: []string{"go", "test"}, State: ledger.CheckFinished, Exit: 1, Log: f.log, LogSHA256: f.logSHA, StartedAt: now, FinishedAt: now}),
 				tx.Event("task.failed", map[string]string{"task": "build"}),
 				tx.PutMessage(ledger.MessageRow{Seq: 1, From: "lead", To: "lead", Text: "noted", CreatedAt: now, DeliveredAt: now}),
 			} {
@@ -2154,7 +2154,7 @@ func TestAStatusOfTheLargestRunIsBounded(t *testing.T) {
 			if err := tx.PutTask(ledger.TaskRow{ID: task, Member: "lead", Kind: "work", State: ledger.TaskFailed, Attempts: 1}); err != nil {
 				return err
 			}
-			if err := tx.PutAttempt(ledger.AttemptRow{TaskID: task, N: 1, Member: "lead", State: ledger.AttemptFailed, Error: words, ReservedAt: now, ClosedAt: now}); err != nil {
+			if err := tx.PutAttempt(ledger.AttemptRow{Where: ledger.WhereNative, TaskID: task, N: 1, Member: "lead", State: ledger.AttemptFailed, Error: words, ReservedAt: now, ClosedAt: now}); err != nil {
 				return err
 			}
 		}
@@ -2254,7 +2254,7 @@ func TestTheGuideListsEachReadsOwnBound(t *testing.T) {
 	sum := sha256.Sum256(big)
 	if _, err := f.srv.ledger.Transition(t.Context(), f.run, func(tx *ledger.Tx) error {
 		now := tx.Now()
-		return tx.PutCheck(ledger.CheckRow{TaskID: "build", N: 1, ID: "big", K: 1, Argv: []string{"go", "test"}, State: ledger.CheckFinished, Exit: 1, Log: big, LogSHA256: hex.EncodeToString(sum[:]), StartedAt: now, FinishedAt: now})
+		return tx.PutCheck(ledger.CheckRow{Where: ledger.WhereNative, TaskID: "build", N: 1, ID: "big", K: 1, Argv: []string{"go", "test"}, State: ledger.CheckFinished, Exit: 1, Log: big, LogSHA256: hex.EncodeToString(sum[:]), StartedAt: now, FinishedAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}

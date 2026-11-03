@@ -196,7 +196,8 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 	e.mu.Lock()
 	k := a.nextK(ch.ID)
 	e.mu.Unlock()
-	row := ledger.CheckRow{RunID: r.id, TaskID: t.def.ID, N: a.n, ID: ch.ID, K: k, Phase: phase, Tries: 1, Argv: slices.Clone(ch.Argv), Dir: cwd, Subject: a.result, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC()}
+	row := ledger.CheckRow{RunID: r.id, TaskID: t.def.ID, N: a.n, ID: ch.ID, K: k, Phase: phase, Tries: 1, Argv: slices.Clone(ch.Argv), Dir: cwd, Subject: a.result, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC(),
+		Where: string(a.where)}
 	if tr != nil {
 		row.Ports = maps.Clone(tr.ports)
 		if step {
