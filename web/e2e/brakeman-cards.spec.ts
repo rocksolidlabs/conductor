@@ -172,6 +172,15 @@ function brief(rev: number, ticketRev: number) {
         args: { set: { title: 'The check never passes', description: 'build fails its check never,\non every attempt.' } },
       },
       { kind: 'draft_ticket/1', project: PROJECT, title: 'Finish what did not finish', priority: 1 },
+      { kind: 'draft_ticket/1', project: PROJECT, title: 'Asked while the page reads again', priority: 1 },
+      // Valid, and longer than a ticket's comment holds (16 KiB): twenty decisions and twenty questions of 500 bytes.
+      {
+        kind: 'handoff/1',
+        objective: 'Carry the whole check history',
+        decisions: Array.from({ length: 20 }, (_, i) => `decision ${i}: ${'d'.repeat(480)}`),
+        questions: Array.from({ length: 20 }, (_, i) => `question ${i}: ${'q'.repeat(480)}`),
+        evidence: [`ticket:${PROJECT}-1`],
+      },
     ],
   }
 }
@@ -329,6 +338,58 @@ test('a make that did not finish is finished from the card as it was sent, after
   await expect(d.locator('[data-draft-finish]')).toHaveCount(0)
 })
 
+test('a make kept before it is sent is finished after the page is read again with its reply out, through a refused token', async ({ page }) => {
+  // The first ask's reply never comes (held while the page is read again); the first finish is refused before the route runs (401:
+  // the token gate opens); with the token saved again the finish goes to the server. Each ask is the first's id and content.
+  // What the route does goes by the test's phase, never by a count: an ask held before the reload is held, whatever the page sends.
+  const bodies: unknown[] = []
+  let phase: 'hold' | 'refuse' | 'pass' = 'hold'
+  let held = 0
+  const holding = new Promise<void>(() => {})
+  await page.route('**/api/brakeman/requests/br-1/items/12/make', async (route) => {
+    bodies.push(route.request().postDataJSON())
+    if (phase === 'hold') {
+      held++
+      await holding // never answered: the page is read again with the reply out
+    } else if (phase === 'refuse') {
+      phase = 'pass'
+      await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unauthorized', message: 'workbench token required' } }) })
+    } else await route.continue()
+  })
+  await open(page, '/brakeman?request=br-1')
+  const d = page.locator('[data-brief="br-1"] [data-draft-ticket][data-draft-item="12"]')
+  const title = d.locator('[data-draft-title] input, input[data-draft-title]').first()
+  await title.fill('Kept while it was out', { timeout: 30_000 })
+  await d.locator('[data-draft-create]').click()
+  await expect.poll(() => held).toBeGreaterThanOrEqual(1)
+  // While the reply is out the card is the new make's, not one to finish.
+  await expect(d.locator('[data-draft-finish]')).toHaveCount(0)
+  await page.reload()
+  phase = 'refuse'
+  await expect(d.locator('[data-draft-finish]')).toBeVisible({ timeout: 30_000 })
+  await expect(title).toHaveValue('Kept while it was out')
+  await expect(title).toBeDisabled()
+  // Refused before the route ran: still kept, and the token gate asks for the token.
+  await d.locator('[data-draft-finish]').click()
+  await expect(d.locator('[data-draft-error]')).toContainText('workbench token required')
+  await expect(d.locator('[data-draft-finish]')).toBeVisible()
+  const gate = page.getByRole('dialog', { name: 'Workbench token' })
+  await gate.getByRole('button', { name: 'Save' }).click()
+  await expect(gate).toHaveCount(0)
+  await d.locator('[data-draft-finish]').click()
+  await expect(d).toHaveAttribute('data-made-state', 'made')
+  // The held ask, the refused finish and the finish that made it: one id and one content throughout.
+  expect(bodies.length).toBeGreaterThanOrEqual(3)
+  for (const b of bodies) expect(b).toEqual(bodies[0])
+  const key = (await request('br-1')).made!.find((m) => m.item === 12)!.key!
+  expect((await api.ok<{ ticket: { title: string } }>('GET', `/api/dispatch/tickets/${key}`)).ticket.title).toBe('Kept while it was out')
+  await page.reload()
+  await expect(d.locator('[data-made-link]')).toHaveText(key, { timeout: 30_000 })
+  await expect(d.locator('[data-draft-finish]')).toHaveCount(0)
+  // The held handler never returns: the page closes without waiting on it.
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
+})
+
 test('a draft crew is saved and opens in the crew editor, never launched', async ({ page }) => {
   await open(page, '/brakeman?request=br-1')
   const d = page.locator('[data-brief="br-1"] [data-draft-crew]')
@@ -348,14 +409,39 @@ test('a draft crew is saved and opens in the crew editor, never launched', async
 test('the handoff copies, and comments on its ticket', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await open(page, '/brakeman?request=br-1')
-  const h = page.locator('[data-brief="br-1"] [data-brief-handoff]')
+  const h = page.locator('[data-brief="br-1"] [data-brief-item="9"] [data-brief-handoff]')
   await expect(h.locator('[data-handoff-markdown]')).toContainText('Handoff: Get build past its check', { timeout: 30_000 })
+  await expect(h.locator('[data-handoff-bound]')).toHaveCount(0)
   await h.locator('[data-handoff-copy]').click()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('## Handoff: Get build past its check')
   await h.locator(`[data-handoff-comment="${PROJECT}-1"]`).click()
   await expect(h.locator(`[data-handoff-comment="${PROJECT}-1"]`)).toHaveText(`Commented on ${PROJECT}-1`)
   const comments = await api.ok<{ comments: Array<{ body: string; by: string }> }>('GET', `/api/dispatch/tickets/${PROJECT}-1/comments?after=0&limit=50`)
   expect(comments.comments.map((x) => [x.body.split('\n')[0], x.by])).toEqual([['## Handoff: Get build past its check', 'Nate']])
+})
+
+test("a handoff longer than a ticket's comment holds is commented as the person shortens it, and Copy keeps the whole", async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await open(page, '/brakeman?request=br-1')
+  const h = page.locator('[data-brief="br-1"] [data-brief-item="13"] [data-brief-handoff]')
+  await expect(h.locator('[data-handoff-bound]')).toContainText("more than a ticket's comment holds (16.0 KiB)", { timeout: 30_000 })
+  const button = h.locator(`[data-handoff-comment="${PROJECT}-1"]`)
+  await expect(button).toBeDisabled()
+  await h.locator('[data-handoff-copy]').click()
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('question 19:')
+  // Shortened to the bound exactly (in UTF-8 bytes, as Dispatch measures it), it is sent; a byte over, it is not.
+  const body = h.locator('[data-handoff-comment-body] textarea, textarea[data-handoff-comment-body]').first()
+  const head = '## Handoff: Carry the whole check history\n\n'
+  const fill = 'é'.repeat((16384 - head.length - 1) / 2)
+  await body.fill(head + fill + 'xx')
+  await expect(button).toBeDisabled()
+  await body.fill(head + fill + 'x')
+  await expect(h.locator('[data-handoff-comment-size]')).toHaveText('16.0 KiB of 16.0 KiB')
+  await button.click()
+  await expect(button).toHaveText(`Commented on ${PROJECT}-1`)
+  const comments = await api.ok<{ comments: Array<{ body: string }> }>('GET', `/api/dispatch/tickets/${PROJECT}-1/comments?after=0&limit=50`)
+  const sent = comments.comments.find((x) => x.body.startsWith('## Handoff: Carry the whole check history'))!
+  expect(Buffer.byteLength(sent.body, 'utf8')).toBe(16384)
 })
 
 test("the run page's Ask Brakeman why and the palette's Brakeman rows open the composer about the task and the run", async ({ page }) => {

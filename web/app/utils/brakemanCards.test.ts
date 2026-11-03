@@ -3,6 +3,7 @@ import type { RunInfo, RunTask, SessionInfo } from '~/composables/useSessions'
 import type { BriefItem } from './brakeman'
 import {
   blocksWords,
+  COMMENT_MAX,
   decisionControls,
   handoffMarkdown,
   handoffTickets,
@@ -13,9 +14,12 @@ import {
   proposalArgs,
   proposalControl,
   proposalSends,
+  reconcileMade,
   revisionOf,
+  sendKept,
   staleWords,
   unfinishedMake,
+  utf8Bytes,
   type GuideOperation,
   type LiveRecords,
 } from './brakemanCards'
@@ -203,8 +207,44 @@ describe('a make that did not finish', () => {
     expect(unfinishedMake({ status: 0 })).toBe(true)
     expect(unfinishedMake({ status: 500, code: 'make_failed' })).toBe(true)
     expect(unfinishedMake({ status: 503, code: 'store_unavailable' })).toBe(true)
-    for (const status of [400, 409, 413]) expect(unfinishedMake({ status })).toBe(false)
+    for (const status of [400, 404, 409, 410, 413]) expect(unfinishedMake({ status })).toBe(false)
     expect(unfinishedMake(new Error('x'))).toBe(false)
+  })
+  it('is kept for a refusal before the make route ran, which establishes nothing of its claim', () => {
+    // requireAdmin's 401 (and its 429 for too many), and a request that timed out on its way: the make handler never ran.
+    for (const status of [401, 408, 429]) expect(unfinishedMake({ status })).toBe(true)
+  })
+  it('is kept before it is sent, so a page read again while its reply is out still holds it', async () => {
+    const storage = new Map<string, string>()
+    let release: (v: string) => void = () => {}
+    const out = sendKept(
+      () => storage.set('br-1/11', 'op-1'),
+      () => storage.delete('br-1/11'),
+      () => new Promise<string>((done) => (release = done)),
+    )
+    // The reply is held: what a reload reads now is the kept make.
+    expect(storage.get('br-1/11')).toBe('op-1')
+    release('made')
+    await expect(out).resolves.toBe('made')
+    expect(storage.has('br-1/11')).toBe(false)
+  })
+  it('stays kept through a token refused on the finish, and is finished once the token is right again', async () => {
+    const storage = new Map<string, string>()
+    const keep = () => storage.set('br-1/11', 'op-1')
+    const forget = () => storage.delete('br-1/11')
+    const fail = (status: number) => () => Promise.reject(Object.assign(new Error(`status ${status}`), { status }))
+    // The backend failed after the claim: kept.
+    await expect(sendKept(keep, forget, fail(500))).rejects.toThrow('status 500')
+    expect(storage.get('br-1/11')).toBe('op-1')
+    // The finish is refused before the route runs (the token was cleared): still kept, the claim still pending.
+    await expect(sendKept(keep, forget, fail(401))).rejects.toThrow('status 401')
+    expect(storage.get('br-1/11')).toBe('op-1')
+    // The token restored, the finish is answered: forgotten.
+    await expect(sendKept(keep, forget, () => Promise.resolve('made'))).resolves.toBe('made')
+    expect(storage.has('br-1/11')).toBe(false)
+    // An answer that settles it forgets it too.
+    await expect(sendKept(keep, forget, fail(409))).rejects.toThrow('status 409')
+    expect(storage.has('br-1/11')).toBe(false)
   })
   it('is finished as it was sent while it is pending under its id, or not claimed at all', () => {
     expect(makeAgain({ state: 'pending', opId: 'op-1' }, kept)).toMatchObject({ kind: 'finish' })
@@ -222,5 +262,35 @@ describe('a make that did not finish', () => {
     expect(makeAgain({ state: 'pending', opId: 'op-2' }, undefined)).toEqual({ kind: 'none', words: PENDING_ELSEWHERE })
     expect(PENDING_ELSEWHERE).not.toContain('same id')
     expect(makeAgain(undefined, undefined)).toEqual({ kind: 'none', words: '' })
+  })
+})
+
+describe("a request's makes and edges, as replies bring them", () => {
+  const at = (s: number) => `2026-11-02T09:00:${String(s).padStart(2, '0')}.000Z`
+  it('never go back: a reply sent before another leaves an entry made and an edge related', () => {
+    const newer = { made: [{ item: 6, opId: 'a', state: 'made', key: 'BKC-2', at: at(1) }, { item: 7, opId: 'b', state: 'made', key: 'BKC-3', at: at(2) }], edges: [{ from: 6, to: 7, op: 'e', state: 'made' }] }
+    const older = { made: [{ item: 6, opId: 'a', state: 'made', key: 'BKC-2', at: at(1) }, { item: 7, opId: 'b', state: 'pending', at: at(2) }], edges: [{ from: 6, to: 7, op: 'e', state: 'pending' }] }
+    expect(reconcileMade(newer, older)).toEqual(newer)
+    // In order, each reply moves them on.
+    expect(reconcileMade(older, newer)).toEqual(newer)
+  })
+  it('keep what a reply lacks, and take a newer claim of an item over an older one', () => {
+    const had = { made: [{ item: 6, opId: 'a', state: 'refused', why: 'no such project', at: at(1) }], edges: [{ from: 6, to: 7, op: 'e', state: 'pending' }] }
+    expect(reconcileMade(had, {})).toEqual(had)
+    const again = { made: [{ item: 6, opId: 'c', state: 'pending', at: at(5) }] }
+    expect(reconcileMade(had, again).made).toEqual(again.made)
+    // A reply from before the new claim does not bring the refused one back.
+    expect(reconcileMade({ made: again.made }, had).made).toEqual(again.made)
+  })
+})
+
+describe("a handoff's comment", () => {
+  it("is measured in UTF-8 bytes against Dispatch's bound", () => {
+    expect(COMMENT_MAX).toBe(16384)
+    expect(utf8Bytes('é')).toBe(2)
+    // A valid handoff can pass it: twenty decisions and twenty questions of 500 bytes each.
+    const big: Extract<BriefItem, { kind: 'handoff/1' }> = { kind: 'handoff/1', objective: 'o', decisions: Array.from({ length: 20 }, () => 'd'.repeat(500)), questions: Array.from({ length: 20 }, () => 'q'.repeat(500)) }
+    expect(utf8Bytes(handoffMarkdown(big))).toBeGreaterThan(COMMENT_MAX)
+    expect(utf8Bytes('x'.repeat(COMMENT_MAX))).toBe(COMMENT_MAX)
   })
 })

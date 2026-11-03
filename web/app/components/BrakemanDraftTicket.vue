@@ -31,7 +31,9 @@ const priorities = [0, 1, 2, 3, 4].map((p) => ({ label: p === 0 ? 'none' : `P${p
 
 /** The make this browser asked that did not finish, and what the card does about it. */
 const kept = computed(() => bk.keptMake(props.request.id, props.index))
-const again = computed(() => makeAgain(made.value, kept.value))
+/** A new make on its way: kept before it is sent (useBrakeman's make), it is this card's to answer, not one to finish yet. */
+const creating = ref(false)
+const again = computed(() => makeAgain(made.value, creating.value ? undefined : kept.value))
 watch(
   again,
   (a) => {
@@ -73,6 +75,7 @@ async function create() {
     if (finishing.value) await bk.finishMake(props.request.id, props.index)
     else {
       const edit = { project: project.value.trim(), title: title.value, description: description.value, acceptance: acceptance.value, priority: priority.value, blocks: props.item.blocks, from: props.item.from }
+      creating.value = true
       await bk.make(props.request.id, props.index, { by: displayBy(identity.name.value) || undefined, edit })
     }
   } catch (e) {
@@ -81,6 +84,7 @@ async function create() {
     error.value = (e as Error).message
   } finally {
     sending.value = false
+    creating.value = false
   }
 }
 </script>

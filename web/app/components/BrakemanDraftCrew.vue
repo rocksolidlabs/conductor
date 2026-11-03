@@ -43,7 +43,9 @@ const summary = computed(() => {
 
 /** The save this browser asked that did not finish, and what the card does about it. */
 const kept = computed(() => bk.keptMake(props.request.id, props.index))
-const again = computed(() => makeAgain(made.value, kept.value))
+/** A new make on its way: kept before it is sent (useBrakeman's make), it is this card's to answer, not one to finish yet. */
+const creating = ref(false)
+const again = computed(() => makeAgain(made.value, creating.value ? undefined : kept.value))
 watch(
   again,
   (a) => {
@@ -78,6 +80,7 @@ async function save() {
     else {
       if (!parsed.value.ok) return
       const crew = { ...parsed.value.value, name: name.value.trim(), ...(goal.value.trim() ? { goal: goal.value.trim() } : {}) }
+      creating.value = true
       out = await bk.make(props.request.id, props.index, { by: displayBy(identity.name.value) || undefined, edit: { crew, gates: props.item.gates, from: props.item.from } })
     }
     // Saved, never launched: the crew editor shows it, where the person decides what next.
@@ -87,6 +90,7 @@ async function save() {
     error.value = (e as Error).message
   } finally {
     sending.value = false
+    creating.value = false
   }
 }
 </script>
