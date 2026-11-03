@@ -10,7 +10,8 @@ import { dispatchLive } from './useDispatchLive'
 // A run's candidates as DispatchCandidates reads them (Program item DS2, PR-11), against replies the test lets go: a run_changing reply
 // asked again after its second, on the first read too, with nothing said as a failure; two review tasks' findings opened while the
 // first one's reply is held back, both lists shown; a snapshot reading the pages again; a failure asked before a reply applied, or before
-// a snapshot, never said; the repairs' tasks read from the task route, a record's repair that never submitted included. useRunCandidates reads Nuxt's auto-imports (Vue's, useDispatch, useSessions,
+// a snapshot, never said; a failure that may pass asked again with no event; the repairs' tasks read from the task route, a record's
+// repair that never submitted included. useRunCandidates reads Nuxt's auto-imports (Vue's, useDispatch, useSessions,
 // onBeforeUnmount) as globals: each is stubbed, on fake timers.
 
 function held<T>() {
@@ -64,9 +65,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function candidates(runId = 'crew-0000aaaa') {
+async function candidates(runId = 'crew-0000aaaa', rev: number | undefined = 1) {
   const { useRunCandidates } = await import('./useRunCandidates')
-  const revision = vue.ref<number | undefined>(1)
+  const revision = vue.ref<number | undefined>(rev)
   return { revision, c: useRunCandidates({ runId: () => runId, revision: () => revision.value }) }
 }
 const tick = (ms = 0) => vi.advanceTimersByTimeAsync(ms)
@@ -155,6 +156,42 @@ describe("a run's candidates", () => {
     for (const f of unmount.splice(0)) f()
     dispatchLive().snapshot()
     expect(pagesSent).toHaveLength(2)
+  })
+
+  it("ask a snapshot's failure that may pass again with no further event, after the window doubled each time, until one answers", async () => {
+    // A record: no revision, none to move.
+    const { c } = await candidates('crew-0000aaaa', undefined)
+    pagesSent[0]!.ok(page)
+    await tick()
+    // A record's candidates, read again on a reconnect's snapshot, refused by a ledger that could not be read.
+    dispatchLive().snapshot()
+    pagesSent[1]!.fail(new ApiError(503, 'ledger_unavailable', 'the ledger could not be read'))
+    await tick()
+    expect(c.error.value).toBe('the ledger could not be read')
+    await tick(249)
+    expect(pagesSent).toHaveLength(2)
+    await tick(1)
+    expect(pagesSent).toHaveLength(3)
+    pagesSent[2]!.fail(new Error('the server could not be reached'))
+    await tick(499)
+    expect(pagesSent).toHaveLength(3)
+    await tick(1)
+    expect(pagesSent).toHaveLength(4)
+    pagesSent[3]!.ok(page)
+    await tick()
+    expect([c.error.value, c.tasks.value.map((t) => t.task)]).toEqual(['', ['review-a']])
+    await tick(10_000)
+    expect(pagesSent).toHaveLength(4)
+  })
+
+  it("ask the first read's failure that may pass again after the window, and a 404 never", async () => {
+    const { c } = await candidates()
+    pagesSent[0]!.fail(new ApiError(503, 'ledger_unavailable', 'the ledger could not be read'))
+    await tick(250)
+    expect([c.error.value, pagesSent.length]).toEqual(['the ledger could not be read', 2])
+    pagesSent[1]!.fail(new ApiError(404, 'not_found', 'no such run'))
+    await tick(10_000)
+    expect([c.error.value, pagesSent.length]).toEqual(['The server knows no such run.', 2])
   })
 
   it('drop a failure asked before a snapshot whose read answered, a 404 too', async () => {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { CandidateReceipt, RunCandidate } from '~/composables/useDispatch'
 import { candidateKey } from '~/composables/useRunCandidates'
-import { type ReceiptPick, candidateWords, findingsCount, findingsWords, pickReceipt, pickedReceipt, receiptChips, receiptKey, receiptName, receiptState, repairs } from '~/utils/dispatchEvidence'
+import { type ReceiptPick, candidateWords, findingsCount, findingsWords, followPick, pickReceipt, receiptChips, receiptKey, receiptName, receiptState, repairs } from '~/utils/dispatchEvidence'
 import { shortCommit } from '~/utils/dispatchPlans'
 
 /**
@@ -30,11 +30,14 @@ function severityColor(s: string): 'error' | 'warning' | 'neutral' | 'info' {
   return s === 'blocker' ? 'error' : s === 'major' ? 'warning' : s === 'minor' ? 'info' : 'neutral'
 }
 
-// A receipt opened in full, kept by its identity and found in the candidates as each read finds them: a check opened while it ran shows
-// the finished receipt and its log once a read has it.
+// A receipt opened in full, kept by its identity and followed into the candidates as each read finds them: a check opened while it ran
+// shows the finished receipt and its log once a read has it, and keeps showing it after a later read no longer holds the attempt.
 const receiptOpen = ref(false)
 const picked = ref<ReceiptPick | null>(null)
-const shown = computed(() => pickedReceipt(tasks.value, picked.value))
+watch(tasks, (t) => {
+  picked.value = followPick(t, picked.value)
+})
+const shown = computed(() => picked.value?.shown ?? null)
 function openReceipt(c: RunCandidate, r: CandidateReceipt) {
   picked.value = pickReceipt(c, r)
   receiptOpen.value = true

@@ -251,12 +251,12 @@ export function receiptVersion(r: CandidateReceipt): string {
   return [receiptKey(r), r.state, r.finishedAt ?? '', r.logSha256 ?? '', r.logBytes, r.logDropped].join('|')
 }
 
-/** A receipt opened in full, by its identity, and as it was when opened (shown while the candidates read hold it no longer). */
+/** A receipt opened in full, by its identity, and as the last read that held it had it (shown while the candidates read hold it no longer). */
 export interface ReceiptPick {
   task: string
   attempt: number
   key: string
-  opened: ShownReceipt
+  shown: ShownReceipt
 }
 export interface ShownReceipt {
   task: string
@@ -273,18 +273,20 @@ export function shownReceipt(c: RunCandidate, r: CandidateReceipt): ShownReceipt
 
 /** Picks a candidate's receipt to open in full. */
 export function pickReceipt(c: RunCandidate, r: CandidateReceipt): ReceiptPick {
-  return { task: c.task, attempt: c.attempt, key: receiptKey(r), opened: shownReceipt(c, r) }
+  return { task: c.task, attempt: c.attempt, key: receiptKey(r), shown: shownReceipt(c, r) }
 }
 
 /**
- * The receipt a pick names, from the candidates as read now: a running check opened stays opened as it finishes, its details and its log
- * the finished receipt's; as it was when opened while no read holds it; null for no pick.
+ * A pick followed into the candidates as read now, kept from read to read: the receipt it names as this read holds it, so a running check
+ * opened stays opened as it finishes, its details and its log the finished receipt's; as the last read that held it had it while a read
+ * holds it no longer (newer attempts can push an attempt out of the candidates' window), so a finished receipt shown never goes back to
+ * how it was when opened; null for no pick.
  */
-export function pickedReceipt(tasks: readonly TaskCandidates[], p: ReceiptPick | null): ShownReceipt | null {
+export function followPick(tasks: readonly TaskCandidates[], p: ReceiptPick | null): ReceiptPick | null {
   if (!p) return null
   const c = tasks.find((t) => t.task === p.task)?.candidates.find((x) => x.attempt === p.attempt)
   const r = c?.receipts.find((x) => receiptKey(x) === p.key)
-  return c && r ? shownReceipt(c, r) : p.opened
+  return c && r ? { ...p, shown: shownReceipt(c, r) } : p
 }
 
 /** How long a receipt ran, in milliseconds; undefined while it runs. */

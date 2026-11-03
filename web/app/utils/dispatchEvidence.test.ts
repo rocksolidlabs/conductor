@@ -15,8 +15,8 @@ import {
   launchEntryWords,
   logMatches,
   mergeEntries,
+  followPick,
   pickReceipt,
-  pickedReceipt,
   receiptChips,
   receiptDuration,
   receiptState,
@@ -277,16 +277,38 @@ describe('candidates', () => {
     const c = candidate({ attempt: 2, commit: 'c2', receipts: [receipt({ id: 'lint' }), running] })
     const pick = pickReceipt(c, running)
     const page = (r: CandidateReceipt): TaskCandidates[] => [{ task: 'build', kind: 'work', more: 0, candidates: [{ ...c, receipts: [receipt({ id: 'lint' }), r] }] }]
-    expect(pickedReceipt(page(running), pick)).toEqual({ task: 'build', attempt: 2, commit: 'c2', receipt: running })
+    expect(followPick(page(running), pick)?.shown).toEqual({ task: 'build', attempt: 2, commit: 'c2', receipt: running })
     const finished = receipt()
-    expect(pickedReceipt(page(finished), pick)?.receipt).toEqual(finished)
+    expect(followPick(page(finished), pick)?.shown.receipt).toEqual(finished)
     // Its full view reads the log again when it finished, never for the same receipt read again unchanged.
     expect(receiptVersion(finished)).not.toBe(receiptVersion(running))
     expect(receiptVersion({ ...running })).toBe(receiptVersion(running))
     // A review's receipt runs against the commit it reviewed; a read that no longer holds the receipt leaves it as it was opened.
     const r = candidate({ task: 'review', kind: 'review', attempt: 1, start: 'c2', receipts: [running] })
-    expect(pickedReceipt([], pickReceipt(r, running))).toEqual({ task: 'review', attempt: 1, commit: 'c2', receipt: running })
-    expect(pickedReceipt(page(finished), null)).toBeNull()
+    expect(followPick([], pickReceipt(r, running))?.shown).toEqual({ task: 'review', attempt: 1, commit: 'c2', receipt: running })
+    expect(followPick(page(finished), null)).toBeNull()
+  })
+
+  it('keep the finished receipt shown when a later read no longer holds its attempt, never the running one it was opened as', () => {
+    const running = receipt({ state: 'running', exit: undefined, finishedAt: undefined, logSha256: undefined, logBytes: 0 })
+    const finished = receipt({ exit: 0, logSha256: 'ab'.repeat(32), logBytes: 12 })
+    const c = candidate({ attempt: 1, commit: 'c1', receipts: [running] })
+    const page = (r: CandidateReceipt): TaskCandidates[] => [{ task: 'build', kind: 'work', more: 0, candidates: [{ ...c, receipts: [r] }] }]
+    // Six newer attempts from retries elsewhere: the candidates' window holds them and no longer the attempt opened.
+    const pushedOut: TaskCandidates[] = [
+      { task: 'build', kind: 'work', more: 1, candidates: [2, 3, 4, 5, 6, 7].map((n) => candidate({ attempt: n, commit: `c${n}`, receipts: [receipt()] })) },
+    ]
+    // Opened while it ran, read again finished, then read without it: each read follows the pick the last one left.
+    let pick = followPick(page(running), pickReceipt(c, running))
+    expect(pick?.shown.receipt).toEqual(running)
+    pick = followPick(page(finished), pick)
+    expect(pick?.shown.receipt).toEqual(finished)
+    pick = followPick(pushedOut, pick)
+    expect(pick?.shown).toEqual({ task: 'build', attempt: 1, commit: 'c1', receipt: finished })
+    expect(pick?.shown.receipt.finishedAt).toBe(finished.finishedAt)
+    expect(pick?.shown.receipt.logSha256).toBe('ab'.repeat(32))
+    // A read that holds it again follows it again.
+    expect(followPick(page(finished), pick)?.shown.receipt).toEqual(finished)
   })
 
   // A task as its route reads it: what it needs and every attempt, `at` the minute each started (and, by `end`, closed).
