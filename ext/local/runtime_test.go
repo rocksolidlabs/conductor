@@ -536,7 +536,9 @@ func TestNativeStopForcesALeaderThatIgnoresTheAsk(t *testing.T) {
 }
 
 // A process that has exited is not signalled: Stop answers nil, and the
-// exit is the process's own.
+// exit is the process's own. That Stop sends no signal once Done is closed
+// is observed where the signal is sent, through internal/pty's kill seam
+// (TestStopAfterExitSendsNoSignal): the native Terminal's Stop is pty's.
 func TestNativeStopAfterExitSignalsNothing(t *testing.T) {
 	term, err := Native().StartTerminal(context.Background(), ext.TerminalSpec{Argv: []string{"/bin/sh", "-c", "exit 4"}, Env: testEnv()})
 	if err != nil {

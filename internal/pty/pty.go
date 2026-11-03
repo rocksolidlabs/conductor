@@ -48,6 +48,10 @@ type Process struct {
 	mu   sync.Mutex
 	exit ExitStatus
 
+	// kill signals the process group: syscall.Kill, a test's recorder in
+	// the package's tests (set before Stop or Abort, never during one).
+	kill func(pid int, sig syscall.Signal) error
+
 	// hold, while open, keeps the process unreaped (StartHeld): its pid,
 	// and so its group's id, stay its own however soon it exits. holding
 	// says it is still open; under holdMu, which orders Abort's signal
@@ -109,7 +113,7 @@ func start(spec Spec, held bool) (*Process, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pty: start %s: %w", spec.Argv[0], err)
 	}
-	p := &Process{f: f, cmd: cmd, done: make(chan struct{}), hold: make(chan struct{}), holding: held}
+	p := &Process{f: f, cmd: cmd, done: make(chan struct{}), hold: make(chan struct{}), holding: held, kill: syscall.Kill}
 	if !held {
 		close(p.hold)
 	}
@@ -184,7 +188,7 @@ func (p *Process) Stop(ctx context.Context, grace time.Duration) error {
 	default:
 	}
 	pgid := -p.cmd.Process.Pid
-	_ = syscall.Kill(pgid, syscall.SIGTERM)
+	_ = p.kill(pgid, syscall.SIGTERM)
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
 	select {
@@ -193,7 +197,7 @@ func (p *Process) Stop(ctx context.Context, grace time.Duration) error {
 	case <-timer.C:
 	case <-ctx.Done():
 	}
-	_ = syscall.Kill(pgid, syscall.SIGKILL)
+	_ = p.kill(pgid, syscall.SIGKILL)
 	select {
 	case <-p.done:
 		return nil
@@ -225,7 +229,7 @@ func (p *Process) Abort() error {
 		p.holdMu.Unlock()
 		return p.Stop(context.Background(), 0)
 	}
-	_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
+	_ = p.kill(-p.cmd.Process.Pid, syscall.SIGKILL)
 	p.holding = false
 	close(p.hold)
 	p.holdMu.Unlock()
