@@ -20,21 +20,27 @@ export interface Chip {
   title?: string
 }
 
-/** An entry's identity among a ticket's runs: its kind and what it is of (the launch, the link, the run). */
+/**
+ * An entry's identity among a ticket's runs, by its kind: a launch's id, a hand link's id, a chain run's own run id. A chain run carries
+ * the launch or the link that holds its chain (every continuation of one chain the same), so it is never known by those. '' for a chain
+ * run whose summary did not answer (no engine, record or ledger holds it): nothing names it, and it is never taken for another.
+ */
 export function entryKey(e: TicketRunEntry): string {
-  return `${e.kind}:${e.launch?.id ?? e.link?.id ?? e.run?.id ?? ''}`
+  const of = e.kind === 'launch' ? e.launch?.id : e.kind === 'link' ? e.link?.id : e.run?.id
+  return of ? `${e.kind}:${of}` : ''
 }
 
-/** The run an entry shows: its summary's, else a started launch's run, else a hand link's; '' for a launch with no run. */
+/** The run an entry shows: a chain run's own, a started launch's run, a hand link's; '' for a launch with no run, and for a chain run unread. */
 export function entryRunId(e: TicketRunEntry): string {
   if (e.run) return e.run.id
   if (e.kind === 'launch') return e.launch?.state === 'started' ? (e.launch.runId ?? '') : ''
-  return e.link?.ref ?? ''
+  if (e.kind === 'link') return e.link?.ref ?? ''
+  return ''
 }
 
 /**
  * The entries of the pages read, in their order, each once: a page read again after a change may repeat an entry the page before it
- * ended on only if the order moved under the reads, and the first one stands.
+ * ended on only if the order moved under the reads, and the first one stands. An entry with no identity (entryKey's '') is kept.
  */
 export function mergeEntries(pages: ReadonlyArray<{ entries: readonly TicketRunEntry[] }>): TicketRunEntry[] {
   const seen = new Set<string>()
@@ -42,8 +48,8 @@ export function mergeEntries(pages: ReadonlyArray<{ entries: readonly TicketRunE
   for (const p of pages) {
     for (const e of p.entries ?? []) {
       const k = entryKey(e)
-      if (seen.has(k)) continue
-      seen.add(k)
+      if (k && seen.has(k)) continue
+      if (k) seen.add(k)
       out.push(e)
     }
   }
@@ -71,6 +77,24 @@ export function summaryState(s: Pick<RunSummary, 'state' | 'stoppedAt' | 'outcom
   if (s.state === 'finished') return { label: 'Finished', color: 'neutral' }
   if (questions > 0) return { label: `Needs input ${questions}`, color: 'warning' }
   return { label: s.record ? 'Recorded' : 'Running', color: s.record ? 'neutral' : 'success' }
+}
+
+/** A task of a run that its attempt in flight says is stopped: the task, why, who said so, when. */
+export interface RunBlocker {
+  task: string
+  reason: string
+  by: string
+  at: string
+}
+
+/**
+ * A run's blockers: what each attempt in flight says stops it. From the live store's run when it holds the run (its tasks' `blocker`,
+ * whole, as current as its last run event), else the summary's (cut to 200 characters by the server, as the read found them); none
+ * when neither is there.
+ */
+export function runBlockers(s: Pick<RunSummary, 'blockers'> | undefined, live: Pick<RunInfo, 'tasks'> | undefined): RunBlocker[] {
+  if (live) return (live.tasks ?? []).flatMap((t) => (t.blocker ? [{ task: t.id, reason: t.blocker.reason, by: t.blocker.by, at: t.blocker.at }] : []))
+  return (s?.blockers ?? []).map((b) => ({ task: b.task, reason: b.reason, by: b.by, at: b.at }))
 }
 
 /** A member of a run that waits on a person now: its name, its session, the question's words. */
@@ -103,17 +127,24 @@ export function runQuestions(s: Pick<RunSummary, 'record' | 'members' | 'questio
 
 /**
  * What the Runs section watches to read its summaries again, gathered for the window (gather), by run: for each run it shows, the live
- * store's reading of it (its revision, state, pause, outcome, stop, and its members with their sessions and statuses), which the store
- * reads again on the run's events and whenever a member session's status changes, and the status of each member session the live run
- * names. A question is not in it: the page counts those from the live sessions without a read.
+ * store's reading of it (its revision, state, pause, outcome, stop, the run that resumed it, and its members with their sessions and
+ * statuses), which the store reads again on the run's events and whenever a member session's status changes, the status of each member
+ * session the live run names, and the live runs that continue it (their `resumedFrom`). That last is what tells a continuation of a run
+ * the store does not hold live: a record resumed from another page is a new live run naming it, while the record itself, never in the
+ * live store, reads the same. A question is not in it: the page counts those from the live sessions without a read.
  */
-export function runsSignature(runs: readonly string[], runOf: (id: string) => RunInfo | undefined, sessions: readonly SessionInfo[]): Record<string, string> {
+export function runsSignature(runs: readonly string[], runOf: (id: string) => RunInfo | undefined, sessions: readonly SessionInfo[], liveRuns: readonly Pick<RunInfo, 'id' | 'resumedFrom'>[] = []): Record<string, string> {
   const out: Record<string, string> = {}
   for (const id of runs) {
     const l = runOf(id)
-    out[id] = JSON.stringify(
-      l ? [l.managed?.revision ?? 0, l.state, !!l.paused, l.outcome ?? '', l.stoppedAt ?? '', l.members.map((m) => [m.sessionId ?? '', m.status, m.sessionId ? (sessions.find((s) => s.id === m.sessionId)?.status ?? '') : ''])] : null,
-    )
+    const by = liveRuns
+      .filter((r) => r.resumedFrom === id)
+      .map((r) => r.id)
+      .sort()
+    out[id] = JSON.stringify([
+      l ? [l.managed?.revision ?? 0, l.state, !!l.paused, l.outcome ?? '', l.stoppedAt ?? '', l.resumedBy ?? '', l.members.map((m) => [m.sessionId ?? '', m.status, m.sessionId ? (sessions.find((s) => s.id === m.sessionId)?.status ?? '') : ''])] : null,
+      by,
+    ])
   }
   return out
 }
@@ -348,6 +379,17 @@ export function changesSince(changes: readonly DispatchChange[], launchId: strin
   const created = changes.find((c) => c.entity === 'launch' && c.entityId === launchId && c.op === 'create')
   if (!created) return null
   return changes.filter((c) => c.seq > created.seq && (c.entity === 'ticket' || c.entity === 'comment'))
+}
+
+/**
+ * What the history between a launch and now says of itself, beside its rows: the history is read oldest first, a page at a time, so the
+ * rows read (changesSince's) may not reach the launch ('unread'), may stop short of now ('partial': later rows not read yet, whether or
+ * not some were read), or be the whole of it with none ('none'); '' when the rows shown are all of it.
+ */
+export function changesSinceNote(rows: readonly unknown[] | null, more: boolean): 'unread' | 'partial' | 'none' | '' {
+  if (rows === null) return 'unread'
+  if (more) return 'partial'
+  return rows.length ? '' : 'none'
 }
 
 /** A launch entry's words: its state, and why a failed one failed. */

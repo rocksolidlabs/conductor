@@ -5,6 +5,7 @@ import {
   candidateWords,
   changedSinceWords,
   changesSince,
+  changesSinceNote,
   durationWords,
   entryKey,
   entryRunId,
@@ -17,6 +18,7 @@ import {
   receiptDuration,
   receiptState,
   repairs,
+  runBlockers,
   runQuestions,
   runsChanged,
   runsSignature,
@@ -49,6 +51,23 @@ describe("a ticket's run entries", () => {
     expect(entryRunId({ kind: 'launch', launch })).toBe('crew-0000aaaa')
     expect(entryRunId({ kind: 'launch', launch: { ...launch!, state: 'pending' } })).toBe('')
     expect(entryRunId({ kind: 'link', link: { id: 'k1', ref: 'crew-0000bbbb' } as TicketRunEntry['link'] })).toBe('crew-0000bbbb')
+  })
+
+  it("know a chain's runs by their own ids, though every continuation carries the launch or the link that holds the chain", () => {
+    const link = { id: 'k1', ref: 'crew-0000bbbb' } as TicketRunEntry['link']
+    const c1: TicketRunEntry = { kind: 'run', launch, run: summary({ id: 'crew-0000c001' }), continues: 'crew-0000aaaa' }
+    const c2: TicketRunEntry = { kind: 'run', launch, run: summary({ id: 'crew-0000c002' }), continues: 'crew-0000c001' }
+    const c3: TicketRunEntry = { kind: 'run', link, run: summary({ id: 'crew-0000c003' }), continues: 'crew-0000bbbb' }
+    expect([c1, c2, c3].map(entryKey)).toEqual(['run:crew-0000c001', 'run:crew-0000c002', 'run:crew-0000c003'])
+    expect([c1, c2, c3].map(entryRunId)).toEqual(['crew-0000c001', 'crew-0000c002', 'crew-0000c003'])
+    // Every continuation shown, on one page and across Show older's pages; the launch and the link themselves once each.
+    const all = mergeEntries([{ entries: [c2, c1, { kind: 'launch', launch }] }, { entries: [{ kind: 'launch', launch }, c3, { kind: 'link', link }] }])
+    expect(all.map(entryKey)).toEqual(['run:crew-0000c002', 'run:crew-0000c001', 'launch:l1', 'run:crew-0000c003', 'link:k1'])
+    // A chain run whose summary did not answer is named by nothing: it is kept, never taken for another, and shows no run.
+    const unread: TicketRunEntry = { kind: 'run', launch, continues: 'crew-0000c002' }
+    expect(entryKey(unread)).toBe('')
+    expect(entryRunId(unread)).toBe('')
+    expect(mergeEntries([{ entries: [unread, unread, c1] }])).toHaveLength(3)
   })
 
   it('merge page after page, each once, in their order', () => {
@@ -115,6 +134,48 @@ describe("a run summary", () => {
     // A run that only came with a read of the pages is no change: the read that brought it is its summary.
     expect(runsChanged(base, { ...base, r2: 'null' })).toBe(false)
     expect(runsChanged({ ...base, r2: 'null' }, base)).toBe(false)
+  })
+
+  it('is read again when a live run comes to continue a run it shows, a record the live store never holds among them', () => {
+    // A record resumed from another page: the record reads the same (the live store never holds it), the new live run names it.
+    const runs = ['crew-0000aaaa']
+    const runOf = () => undefined
+    const others = [{ id: 'crew-0000ffff' }]
+    const base = runsSignature(runs, runOf, [], others)
+    expect(runsChanged(base, runsSignature(runs, runOf, [], others))).toBe(false)
+    const resumed = [...others, { id: 'crew-0000c001', resumedFrom: 'crew-0000aaaa' }]
+    const now = runsSignature(runs, runOf, [], resumed)
+    expect(runsChanged(base, now)).toBe(true)
+    // Once read, the continuation is shown too, and the source's reading stands until another one comes.
+    const after = runsSignature([...runs, 'crew-0000c001'], (id) => (id === 'crew-0000c001' ? ({ id, state: 'running', members: [] } as unknown as RunInfo) : undefined), [], resumed)
+    expect(runsChanged(now, after)).toBe(false)
+    // A live run resumed: the run that resumed it is noted on it.
+    let live = { id: 'r1', state: 'running', members: [] } as unknown as RunInfo
+    const first = runsSignature(['r1'], () => live, [])
+    live = { ...live, resumedBy: 'r2' }
+    expect(runsChanged(first, runsSignature(['r1'], () => live, []))).toBe(true)
+  })
+})
+
+describe("a run's blockers", () => {
+  const at = '2026-11-01T10:00:00Z'
+  it("are the live run's, whole and as of its last run event, when the live store holds it", () => {
+    const long = 'x'.repeat(300)
+    const live = { tasks: [{ id: 'build', blocker: { reason: long, by: 'builder', at } }, { id: 'review' }, { id: 'hold', blocker: { reason: 'waits on the keys', message: 'm', by: 'asker', at } }] } as unknown as RunInfo
+    const s = summary({ blockers: [{ task: 'old', reason: 'gone by now', by: 'x', at }] })
+    expect(runBlockers(s, live)).toEqual([
+      { task: 'build', reason: long, by: 'builder', at },
+      { task: 'hold', reason: 'waits on the keys', by: 'asker', at },
+    ])
+    // A live run with no blocker left shows none, whatever the summary read before said.
+    expect(runBlockers(s, { tasks: [{ id: 'build' }] } as unknown as RunInfo)).toEqual([])
+  })
+
+  it("are the summary's for a run the live store does not hold, and none with neither", () => {
+    const s = summary({ blockers: [{ task: 'build', reason: 'the base is gone', by: 'builder', at }] })
+    expect(runBlockers(s, undefined)).toEqual([{ task: 'build', reason: 'the base is gone', by: 'builder', at }])
+    expect(runBlockers(undefined, undefined)).toEqual([])
+    expect(runBlockers(summary(), undefined)).toEqual([])
   })
 })
 
@@ -253,5 +314,15 @@ describe('changed since a launch', () => {
     const changes = [row(1, 'ticket', 't1', 'create'), row(2, 'launch', 'l1', 'create'), row(3, 'launch', 'l1'), row(4, 'ticket', 't1'), row(5, 'comment', 'c1', 'create'), row(6, 'plan', 'p2', 'create')]
     expect(changesSince(changes, 'l1')!.map((c) => c.seq)).toEqual([4, 5])
     expect(changesSince(changes, 'l9')).toBeNull()
+  })
+
+  it('says when the history read stops short of now: a launch found on an early page is not all that follows it', () => {
+    // The history is read oldest first: the launch's row on the first page, later edits on pages not read yet.
+    expect(changesSinceNote([], true)).toBe('partial')
+    expect(changesSinceNote([{}], true)).toBe('partial')
+    expect(changesSinceNote([], false)).toBe('none')
+    expect(changesSinceNote([{}], false)).toBe('')
+    expect(changesSinceNote(null, true)).toBe('unread')
+    expect(changesSinceNote(null, false)).toBe('unread')
   })
 })
