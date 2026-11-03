@@ -130,8 +130,10 @@ func TestAContinuationsAttemptsTakeTheirRunsNewWhere(t *testing.T) {
 	build.Checks = []Check{{ID: "ok", Argv: []string{"true"}}}
 	c := repoCrew(dir, build)
 	// At the base the setup passes; at the result it waits until the mark
-	// exists (the first server ends meanwhile), then passes.
-	c.Setup = []Check{{ID: "deps", Argv: []string{"sh", "-c", "test -e built.txt || exit 0; test -e " + mark + " && exit 0; sleep 30"}}}
+	// exists, however long that is (the first server is stopped
+	// meanwhile, ending it), then passes: only the continuation's attempt
+	// can pass it.
+	c.Setup = []Check{{ID: "deps", Argv: []string{"sh", "-c", "test -e built.txt || exit 0; " + gated(mark)}}}
 	run := launchManaged(t, e, c)
 	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
 	commitResult(t, e, a, "built.txt", "yes\n", "built")
@@ -172,8 +174,10 @@ func TestAContinuationsAttemptsTakeTheirRunsNewWhere(t *testing.T) {
 			t.Fatalf("the continued run's receipt %s/%d now says %q", c.ID, c.K, c.Where)
 		}
 	}
-	row := l.attemptRow(t, next.ID, "build", 2)
-	if row.Where != "second" || row.State != ledger.AttemptSucceeded {
+	// The engine's view is one change ahead of the ledger while the
+	// change commits: the row read once it is succeeded there.
+	row := l.attemptWhen(t, next.ID, "build", 2, succeededRow)
+	if row.Where != "second" {
 		t.Fatalf("the candidate verified again: %+v", row)
 	}
 	steps := l.stepRows(next.ID, "build", 2)

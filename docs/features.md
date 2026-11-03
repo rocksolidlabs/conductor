@@ -3511,7 +3511,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   does the crew tests' fake ledger, so every engine test holds it. The
   ledger keeps the version of the database it opened, and a database not
   yet migrated (another server still holding the owner lock, or a
-  migration that failed) is read with `native` in the column's place.
+  migration that failed) is read with `native` in the column's place; a
+  ledger that reads such a database reads its version again with the
+  rows, in one snapshot, so it reads the column once the owner has
+  migrated it.
   `AttemptState.Where` (absent from a run record saved before) and
   `StepState.Where` carry it to the run's read, the task read, the steps
   route and the prerequisites route, and a run's candidates (DS2) report
@@ -3521,13 +3524,20 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestAVersion4DatabaseGainsWhereOnce`,
   `TestAVersion6LedgerThatCannotMigrateIsRead`,
   `TestAnUpgradeBesideThePreviousOwnerReads`,
+  `TestAReaderSeesAnotherOwnersMigration`,
   `TestARowWithNoWhereIsRefused`, `TestARowKeepsItsWhere`,
   `TestWhereNativeIsExtNative`, and every downgrade fixture dropping the
   new columns; `TestAnAttemptAndItsChecksReportTheSameWhere`,
   `TestAContinuationsAttemptsTakeTheirRunsNewWhere`,
   `TestARecordWithoutWhereReadsWithout`;
   `TestAnAttemptAndItsChecksRanWhereTheyReport`,
-  `TestTheTaskReadReportsWhere`, `TestADeclinedRunsRowsSayNative`.
+  `TestTheTaskReadReportsWhere`, `TestADeclinedRunsRowsSayNative`. By
+  hand, the plan's Acceptance 2 on this build (on WSL and the Mac:
+  `example-todo-app-tasks` run to its end with real agents, every task
+  read and receipt `native`, `where_ran` holding `native` alone, and a
+  copy of a data directory a version 6 build wrote opened at version 7
+  with an interrupted run continued): not run yet; it waits on the live
+  check with real agents on WSL and on the owner's Mac.
 
   PR-5 (#494): the Runtime's public fake and contract check, for another
   module's CI (the premium repository first). `exttest.FakeRuntime`
