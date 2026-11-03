@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"fmt"
 	"io"
 	"reflect"
 	"slices"
@@ -168,8 +169,9 @@ func TestALegacyRunIsOfferedNothing(t *testing.T) {
 
 // A result crosses the Runtime whole: every exported field of proc.Result
 // has its ext.CommandResult field of the same name and kind (the process's
-// fields too), and a result a Runtime gives lands in the check's receipt
-// unchanged, its process as Started told it and as the result says it.
+// fields too), procResult carries each under its name, and a result a
+// Runtime gives lands in the check's receipt unchanged, its process as
+// Started told it and as the result says it.
 func TestAResultCrossesTheRuntimeWhole(t *testing.T) {
 	same := func(a, b reflect.Type) {
 		t.Helper()
@@ -193,12 +195,13 @@ func TestAResultCrossesTheRuntimeWhole(t *testing.T) {
 	process := ext.ProcessInfo{PID: 4242, Group: 4243, StartedAt: at}
 	scripted := ext.CommandResult{Process: process, Exit: 3, Signal: "", Head: []byte("head\n"), Tail: []byte("the tail\n"), Total: 12345, Truncated: true,
 		Started: at, Duration: 1500 * time.Millisecond, TimedOut: true, Killed: true, Err: "", LogErr: ""}
-	// Every field set, so a field dropped on the way is seen.
-	full := scripted
-	full.Signal, full.Canceled, full.Err, full.LogErr = "KILL", true, "went wrong", "log short"
-	if got := procResult(full); !reflect.DeepEqual(commandResultOf(got), full) {
-		t.Fatalf("procResult dropped a field:\n%+v\n%+v", got, full)
-	}
+	// Every field set by reflection, each to a value of its own, and read
+	// back by name: a field added to both types that procResult does not
+	// carry, or one it carries into another's place, is seen.
+	var full ext.CommandResult
+	n := 0
+	fillDistinct(t, reflect.ValueOf(&full).Elem(), &n)
+	sameByName(t, "CommandResult", reflect.ValueOf(full), reflect.ValueOf(procResult(full)))
 
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
@@ -228,12 +231,52 @@ func TestAResultCrossesTheRuntimeWhole(t *testing.T) {
 	}
 }
 
-// commandResultOf is r as a Runtime gives it, field for field: the inverse
-// of procResult, for the test.
-func commandResultOf(r proc.Result) ext.CommandResult {
-	return ext.CommandResult{Process: ext.ProcessInfo{PID: r.Process.PID, Group: r.Process.Group, StartedAt: r.Process.StartedAt},
-		Exit: r.Exit, Signal: r.Signal, Head: r.Head, Tail: r.Tail, Total: r.Total, Truncated: r.Truncated, Started: r.Started, Duration: r.Duration,
-		TimedOut: r.TimedOut, Canceled: r.Canceled, Killed: r.Killed, Err: r.Err, LogErr: r.LogErr}
+// fillDistinct sets every field of v, a struct's value that can be set,
+// and of the structs in it, to a non-zero value of its own, *n counting
+// them: a number, a string or bytes naming the count, true, or a time that
+// many seconds past a fixed one. A field of a kind it does not know fails
+// the test, so a new kind is taught here, not left zero.
+func fillDistinct(t *testing.T, v reflect.Value, n *int) {
+	t.Helper()
+	base := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	for i := range v.NumField() {
+		f := v.Field(i)
+		*n++
+		switch {
+		case f.Type() == reflect.TypeFor[time.Time]():
+			f.Set(reflect.ValueOf(base.Add(time.Duration(*n) * time.Second)))
+		case f.Kind() == reflect.Struct:
+			fillDistinct(t, f, n)
+		case f.Kind() == reflect.Int || f.Kind() == reflect.Int64:
+			f.SetInt(int64(*n))
+		case f.Kind() == reflect.String:
+			f.SetString(fmt.Sprintf("field %d", *n))
+		case f.Kind() == reflect.Bool:
+			f.SetBool(true)
+		case f.Kind() == reflect.Slice && f.Type().Elem().Kind() == reflect.Uint8:
+			f.SetBytes([]byte(fmt.Sprintf("field %d", *n)))
+		default:
+			t.Fatalf("%s.%s is a %s, which fillDistinct does not fill", v.Type(), v.Type().Field(i).Name, f.Type())
+		}
+	}
+}
+
+// sameByName wants every field of want, and of the structs in it, in got
+// under the same name with the same value.
+func sameByName(t *testing.T, path string, want, got reflect.Value) {
+	t.Helper()
+	for i := range want.NumField() {
+		name := want.Type().Field(i).Name
+		w, g := want.Field(i), got.FieldByName(name)
+		switch {
+		case !g.IsValid():
+			t.Errorf("%s.%s is not carried: %s has no %s", path, name, got.Type(), name)
+		case w.Kind() == reflect.Struct && w.Type() != reflect.TypeFor[time.Time]():
+			sameByName(t, path+"."+name, w, g)
+		case !reflect.DeepEqual(w.Interface(), g.Interface()):
+			t.Errorf("%s.%s is %v, carried as %v", path, name, w.Interface(), g.Interface())
+		}
+	}
 }
 
 // A spec proc.Prepare refuses is answered by the executor as proc.Run and
