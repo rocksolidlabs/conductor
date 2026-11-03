@@ -257,6 +257,10 @@ type Ledger struct {
 	onCommit    func(RunPointer)
 	onPrune     func(runID string, revision int64)
 	afterCommit func()
+	// inRead, when a test sets it, runs inside readAt's read transaction
+	// of an unmigrated database, after the version is read: the
+	// connection held, mu not.
+	inRead func()
 }
 
 // Errors of a ledger that cannot serve.
@@ -576,7 +580,10 @@ type querier interface {
 // of the database, so a migration committed before the rows are read is
 // seen with them and their where_ran column is read, never the literal
 // native in its place. A later version seen is kept (noteVersion), so the
-// reads after it ask the database.
+// reads after it ask the database, but only once the transaction is
+// rolled back: the ledger has one connection, and a holder of mu may wait
+// for it (Snapshot's VACUUM INTO, a transition), so mu is never taken
+// while the transaction holds it.
 func (l *Ledger) readAt(ctx context.Context, read func(q querier, version int) error) error {
 	db, version, err := l.connAt()
 	if err != nil {
@@ -591,13 +598,21 @@ func (l *Ledger) readAt(ctx context.Context, read func(q querier, version int) e
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() // a read that panics
 	v := version
 	if err := tx.QueryRowContext(ctx, "SELECT version FROM schema_version").Scan(&v); err != nil {
 		v = version
 	}
+	if l.inRead != nil {
+		l.inRead()
+	}
+	err = read(tx, v)
+	// A read-only transaction has nothing to undo; its rollback gives the
+	// connection back, whatever it answers (the deferred one then finds
+	// it done).
+	_ = tx.Rollback()
 	l.noteVersion(db, v)
-	return read(tx, v)
+	return err
 }
 
 // noteVersion keeps v as the version of db when it is later than the one

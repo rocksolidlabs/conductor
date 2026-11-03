@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -462,5 +463,69 @@ func TestWhereNativeIsExtNative(t *testing.T) {
 	}
 	if err := ext.Where(strings.Repeat("a", MaxWhere+1)).Valid(); err == nil {
 		t.Fatal("a Where past MaxWhere bytes is valid: the ledger's bound is not ext's")
+	}
+}
+
+// A reader of an unmigrated database (readAt's read transaction, the
+// ledger's one connection held) and a Snapshot (mu held, waiting for that
+// connection in its VACUUM INTO) overlap and both finish: the read gives
+// the connection back before it takes mu to keep a version, never the
+// other way round, which would leave each waiting on the other (Codex
+// round 2 on #588). The overlap is the seam's: the read holds, inside its
+// transaction, until the Snapshot waits for the connection (the pool's
+// wait count), then goes on.
+func TestAnUnmigratedReadAndASnapshotOverlap(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	seedWhere(t, l, WhereNative)
+	asVersion6(t, l)
+	l.Close()
+
+	old := takeLock
+	t.Cleanup(func() { takeLock = old })
+	takeLock = func(string) (*ownerLock, string, bool, error) {
+		return nil, "another server owns the ledger (test)", false, nil
+	}
+	reader := openLedger(t, dir)
+	takeLock = old
+	if ro, _ := reader.ReadOnly(); !ro {
+		t.Fatal("the reader opened as the owner")
+	}
+	db, err := reader.conn()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The deadline only ends the deadlock this test catches, so the test
+	// fails rather than hang; the overlap that passes never meets it.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	dst := filepath.Join(t.TempDir(), "copy.db")
+	snapped := make(chan error, 1)
+	reader.inRead = func() {
+		waits := db.Stats().WaitCount
+		go func() { snapped <- reader.Snapshot(ctx, dst) }()
+		for db.Stats().WaitCount == waits {
+			select {
+			case err := <-snapped:
+				snapped <- err
+				return // it finished without waiting: nothing overlaps
+			case <-ctx.Done():
+				return
+			default:
+				runtime.Gosched()
+			}
+		}
+	}
+	attempts, err := reader.Attempts(ctx, "team-00000001")
+	reader.inRead = nil
+	if err != nil || len(attempts) != 1 || attempts[0].Where != WhereNative {
+		t.Fatalf("the read beside the snapshot: %+v %v", attempts, err)
+	}
+	if err := <-snapped; err != nil {
+		t.Fatalf("the snapshot beside the read: %v", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("the read and the snapshot waited on each other until the deadline")
 	}
 }
