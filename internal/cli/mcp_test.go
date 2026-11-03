@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -267,6 +268,27 @@ func TestMcpTicketToolsAgainstTheServer(t *testing.T) {
 	}
 	if cs := a.ticket(t, "CND-1").Comments; len(cs) != 1 || cs[0].Author != "agent:a" || cs[0].Body != "from the <tool>" {
 		t.Fatalf("the ticket's comments: %+v", cs)
+	}
+}
+
+// ticket_read in an attempt of a run launched from its ticket (Program
+// item DS2, PR-13) says what the run was launched at first, then what
+// changed since and that the run follows the ticket as launched, as
+// conductor task ticket does.
+func TestMcpTicketReadSaysWhatItWasLaunchedAt(t *testing.T) {
+	a := newPlannedAPI(t)
+	launchedRev := a.ticket(t, "CND-1").Rev
+	_, sid, token := a.launched(t)
+	a.admin(t, "POST", "/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": "e1", "set": map[string]any{"title": "Fix the login loop now", "acceptance": "It never loops."}}, http.StatusOK)
+	a.mustDispatch(t, "comment", "CND-1", "one")
+	a.mustDispatch(t, "comment", "CND-1", "two")
+	now := a.ticket(t, "CND-1").Rev
+	read := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ticket_read","arguments":{}}}`
+	text, isErr := toolText(t, mcpRun(t, sessionEnv(a.hs.URL, sid, token), read)[0])
+	want := fmt.Sprintf("As launched: CND-1 at revision %d, plan revision 1, in .conductor/ticket.md (the package: .conductor/package.json, the attachments in .conductor/attachments/)."+
+		" Now at revision %d: the title and the acceptance criteria changed; 2 comments since. Your run follows the ticket as launched", launchedRev, now)
+	if isErr || !strings.HasPrefix(text, want) || !strings.Contains(text, "\n\n# CND-1: Fix the login loop now\n") {
+		t.Fatalf("ticket_read: %v\n%s\nwant the start\n%s", isErr, text, want)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
@@ -129,6 +130,14 @@ func (s *Server) handleBrakemanMake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "brakeman_not_owner", why)
 		return
 	}
+	// Admitted while the desk is open, and waited for by release before
+	// the owner lock goes: a make never runs its backend's operation
+	// beside the next owner's recovery of its claim.
+	if !d.admitMake() {
+		s.brakemanError(w, errDeskClosing)
+		return
+	}
+	defer d.madeDone()
 	var body makeBody
 	if err := decodeJSONLimit(w, r, &body, maxMakeBody); err != nil {
 		if errors.Is(err, errBodyTooLarge) {
@@ -150,8 +159,10 @@ func (s *Server) handleBrakemanMake(w http.ResponseWriter, r *http.Request) {
 	case !dispatch.OpIDPattern.MatchString(body.OpID):
 		writeError(w, http.StatusBadRequest, "invalid_request", "opId is 1 to 32 of A-Z, a-z, 0-9, . _ ~ -")
 		return
-	case len(by) > brakeman.MaxBy || strings.ContainsAny(by, "\n\t") || !utf8.ValidString(by):
-		writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("by is one line of at most %d bytes", brakeman.MaxBy))
+	case len(by) > brakeman.MaxBy || !utf8.ValidString(by) || strings.ContainsFunc(by, unicode.IsControl):
+		// Dispatch's display name holds no control character: a name it
+		// refuses would leave the claim pending for good.
+		writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("by is at most %d bytes with no control character", brakeman.MaxBy))
 		return
 	}
 	req, err := d.st.Get(id)
@@ -173,16 +184,8 @@ func (s *Server) handleBrakemanMake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in, err := s.makeInputOf(b, item, body.Edit, by)
-	var inv *brakeman.Invalid
-	switch {
-	case errors.As(err, &inv) && inv.Code == "not_a_draft":
-		writeError(w, http.StatusBadRequest, "not_a_draft", inv.Why)
-		return
-	case errors.As(err, &inv):
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"code": "invalid_draft", "message": inv.Error(), "field": inv.Field}})
-		return
-	case err != nil:
-		writeError(w, http.StatusBadRequest, "invalid_draft", err.Error())
+	if err != nil {
+		writeDraftError(w, err)
 		return
 	}
 	raw, err := marshalNoEscape(in)
@@ -237,6 +240,14 @@ func (s *Server) handleBrakemanMake(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Only a new claim is held to what the server holds now (a crew's
+	// agents in the catalog): a make done, deleted or under way answers
+	// as it was made, whatever changed since.
+	if err := s.checkMakeNow(in); err != nil {
+		lock.Unlock()
+		writeDraftError(w, err)
+		return
+	}
 	if err := d.st.PutMakeInput(id, item, raw); err != nil {
 		lock.Unlock()
 		s.brakemanError(w, err)
@@ -276,8 +287,14 @@ func (s *Server) finishMake(w http.ResponseWriter, r *http.Request, d *brakemanD
 	done, err := s.completeMake(ctx, d, id, m)
 	if err != nil {
 		var unopened *errRefStore
-		if errors.As(err, &unopened) {
+		switch {
+		case errors.As(err, &unopened):
 			writeError(w, http.StatusServiceUnavailable, "store_unavailable", unopened.Error())
+			return
+		case errors.Is(err, errDeskClosing):
+			// The server began to shut down during the make: its outcome
+			// is the next start's recovery's, from the backend's receipt.
+			s.brakemanError(w, err)
 			return
 		}
 		s.log.Warn("a Brakeman draft's make did not finish", "request", id, "item", m.Item, "err", err)
@@ -304,7 +321,7 @@ func (s *Server) answerMade(w http.ResponseWriter, r *http.Request, status int, 
 		if rc, ok, err := s.dispatch.Receipt(r.Context(), dispatch.ActorAdmin, m.Op); err == nil && ok {
 			out["receipt"] = rc
 		}
-		out["ticket"] = map[string]any{"key": m.Key, "url": ticketURL(m.Key, "")}
+		out["ticket"] = map[string]any{"key": m.Key, "url": ticketURL(m.Key)}
 	case m.Crew != "":
 		out["crew"] = map[string]any{"id": m.Crew, "url": "/crews/" + m.Crew}
 	}
@@ -332,11 +349,40 @@ func briefEdges(request string, b brakeman.Brief) []brakeman.Edge {
 	return out
 }
 
+// writeDraftError answers a make's input that is not a draft (400
+// not_a_draft) or not a valid one (400 invalid_draft, with its field).
+func writeDraftError(w http.ResponseWriter, err error) {
+	var inv *brakeman.Invalid
+	switch {
+	case errors.As(err, &inv) && inv.Code == "not_a_draft":
+		writeError(w, http.StatusBadRequest, "not_a_draft", inv.Why)
+	case errors.As(err, &inv):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"code": "invalid_draft", "message": inv.Error(), "field": inv.Field}})
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_draft", err.Error())
+	}
+}
+
+// checkMakeNow holds a new claim's input to what the server holds now: a
+// crew's body checked as POST /api/crews checks it, its agents in the
+// catalog among it. A ticket's fields are the draft's own bounds, checked
+// with its input (makeInputOf).
+func (s *Server) checkMakeNow(in makeInput) error {
+	if in.Kind != brakeman.ItemDraftCrew {
+		return nil
+	}
+	if err := (brakemanFacts{s: s}).CheckCrew(in.Crew); err != nil {
+		return &brakeman.Invalid{Code: "invalid_draft", Field: "crew", Why: err.Error()}
+	}
+	return nil
+}
+
 // makeInputOf is the canonical input of a make of the brief's item, the
 // draft as edited (edit, its own shape) or as written: a ticket's fields
-// held to the draft's bounds, a crew's body checked as POST /api/crews
-// checks it. An *brakeman.Invalid with Code not_a_draft for any other
-// item.
+// held to the draft's bounds, a crew's body as the JSON it is (checked
+// against the catalog, as POST /api/crews checks it, only for a new
+// claim: checkMakeNow). An *brakeman.Invalid with Code not_a_draft for
+// any other item.
 func (s *Server) makeInputOf(b brakeman.Brief, item int, edit json.RawMessage, by string) (makeInput, error) {
 	it := b.Items[item]
 	switch it.Kind {
@@ -362,9 +408,6 @@ func (s *Server) makeInputOf(b brakeman.Brief, item int, edit json.RawMessage, b
 		}
 		if len(x.Crew) == 0 {
 			return makeInput{}, &brakeman.Invalid{Code: "invalid_draft", Field: "crew", Why: "a draft crew is the body POST /api/crews takes"}
-		}
-		if err := (brakemanFacts{s: s}).CheckCrew(x.Crew); err != nil {
-			return makeInput{}, &brakeman.Invalid{Code: "invalid_draft", Field: "crew", Why: err.Error()}
 		}
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, x.Crew); err != nil {
@@ -432,7 +475,13 @@ func (s *Server) completeMake(ctx context.Context, d *brakemanDesk, id string, m
 			}
 		}
 		if !found {
-			if rc, err = ds.CreateTicket(ctx, dispatch.Op{Actor: dispatch.ActorAdmin, ID: m.Op, By: in.By}, *in.Ticket); err != nil {
+			rc, err = ds.CreateTicket(ctx, dispatch.Op{Actor: dispatch.ActorAdmin, ID: m.Op, By: in.By}, *in.Ticket)
+			switch {
+			case errors.Is(err, dispatch.ErrBadBy), errors.Is(err, dispatch.ErrBadOpID), errors.Is(err, dispatch.ErrBadActor):
+				// The same input is refused every time: settled refused,
+				// so the item can be made again, never left pending.
+				rc, err = dispatch.Receipt{OpID: m.Op, Status: dispatch.StatusFailed, Error: err.Error()}, nil
+			case err != nil:
 				return m, err
 			}
 		}
@@ -472,6 +521,10 @@ func (s *Server) completeMake(ctx context.Context, d *brakemanDesk, id string, m
 		return m, fmt.Errorf("the make's input is of %q", in.Kind)
 	}
 	out.At = d.now().UTC()
+	// The outcome is held to the entry's bound whole (its words cut to
+	// the room its other fields leave), so the write never refuses it
+	// and leaves the claim pending.
+	out = out.Fit()
 	if _, err := d.update(id, func(q *brakeman.Request) error {
 		i := slices.IndexFunc(q.Made, func(x brakeman.Made) bool {
 			return x.Item == m.Item && x.OpID == m.OpID && x.State == brakeman.MadePending
@@ -578,6 +631,10 @@ func (d *brakemanDesk) recoverMakes(ctx context.Context) {
 	}
 	edges := map[string]bool{}
 	for _, p := range pending {
+		if ctx.Err() != nil {
+			// The desk is closing: the rest is the next start's.
+			return
+		}
 		switch {
 		case p.Made != nil:
 			if _, err := d.s.completeMake(ctx, d, p.Request, *p.Made); err != nil {
@@ -597,7 +654,7 @@ func (d *brakemanDesk) recoverMakes(ctx context.Context) {
 func (d *brakemanDesk) recover() {
 	d.recovering.Store(true)
 	defer d.recovering.Store(false)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(d.recoverCtx, 2*time.Minute)
 	defer cancel()
 	d.recoverMakes(ctx)
 }

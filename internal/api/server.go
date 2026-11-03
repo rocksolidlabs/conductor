@@ -71,6 +71,11 @@ type Server struct {
 	viewerCloseWait time.Duration
 	// viewerSeam is nil but in tests (see viewerSeam).
 	viewerSeam *viewerSeam
+	// deliveryReplayed is nil but in tests: called once a delivery naming
+	// a candidate found no receipt in its first replay, before the ledger
+	// is read, so a test can commit a twin try of the operation there
+	// (addDelivery).
+	deliveryReplayed func(ctx context.Context, op dispatch.Op, key string, l dispatch.NewLink)
 	// keeper keeps the links a switchyard mints across its restarts
 	// (linkfiles.go); nil elsewhere.
 	keeper *linkKeeper
@@ -93,6 +98,10 @@ type Server struct {
 	// continuation and trying the mark again (resumeRecord). Under
 	// resumingMu.
 	recordMarks map[string]string
+	// continuations are the resumes and continuations under way
+	// (beginContinuation), whose runs no chain's walk judges until they
+	// end (continuingAt). Under resumingMu.
+	continuations map[*continuation]struct{}
 	// journaling holds the runs whose record is about to be written again
 	// (scheduleJournal), under journalMu.
 	journalMu  sync.Mutex
@@ -618,6 +627,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
 	mux.HandleFunc("GET /api/switchyard/status", s.requireAdmin(s.handleSwitchyardStatus))
 	mux.HandleFunc("GET /api/export", s.requireAdmin(s.handleExport))
+	mux.HandleFunc("GET /api/capabilities", s.requireAdmin(s.handleCapabilities))
 	mux.HandleFunc("GET /api/catalog", s.launching(s.handleCatalog))
 	mux.HandleFunc("POST /api/catalog", s.launching(s.handleSaveAgent))
 	mux.HandleFunc("POST /api/catalog/check", s.launching(s.handleCheckCommand))

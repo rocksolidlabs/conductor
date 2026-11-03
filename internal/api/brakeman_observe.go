@@ -153,6 +153,121 @@ type observer struct {
 	// coverage, set by a changes read a turn made from its own start, is
 	// what its pages reached, written into the request with the read.
 	coverage *brakeman.Coverage
+	// revsBefore is the ledger's revision of each run a runs read names,
+	// read just before its handler ran (deliveredRev), and engBefore the
+	// engine's hold of each, read before that; nil for another read.
+	revsBefore map[string]string
+	engBefore  map[string]engineHold
+}
+
+// engineHold is a run as the engine holds it (Engine.Settled): the
+// revision of its last commit, whether nothing of it waits for or is in a
+// commit, and whether the engine holds it at all.
+type engineHold struct {
+	rev     int64
+	settled bool
+	held    bool
+}
+
+// engineHoldOf is the engine's hold of the run id now.
+func (s *Server) engineHoldOf(id string) engineHold {
+	rev, settled, held := s.runs.Settled(id)
+	return engineHold{rev: rev, settled: settled, held: held}
+}
+
+// observeSeam, when a test sets it, runs at each stage of a turn's
+// shared read: "admitted" once what its path names is admitted, before
+// the revisions it is read at are taken; "answered" once the route's
+// handler answered, before its filter; "listed" once a read of changes
+// has read its parts, before its coverage is written.
+var observeSeam atomic.Pointer[func(stage string)]
+
+func atObserveSeam(stage string) {
+	if f := observeSeam.Load(); f != nil {
+		(*f)(stage)
+	}
+}
+
+// takeRevs reads, for a read of the runs' class, the engine's hold of
+// the run its path names (every run's for GET /api/runs) and then the
+// ledger's revision of it, just before the route's handler runs.
+func (o *observer) takeRevs(r *http.Request, class string) error {
+	s := o.rr.s
+	ld := s.ledger
+	if class != brakeman.ClassRuns || ld == nil {
+		return nil
+	}
+	o.revsBefore, o.engBefore = map[string]string{}, map[string]engineHold{}
+	id := r.PathValue("run")
+	if id == "" {
+		// The engine first, then the ledger: a commit the engine began
+		// before the ledger was read is seen unsettled, or as committed.
+		for _, run := range s.runs.List() {
+			o.engBefore[run.ID] = s.engineHoldOf(run.ID)
+		}
+		rows, err := ld.Runs(r.Context())
+		if err != nil {
+			return fmt.Errorf("the ledger's runs: %w", err)
+		}
+		for _, row := range rows {
+			o.revsBefore[row.ID] = strconv.FormatInt(row.Revision, 10)
+		}
+		return nil
+	}
+	if !crew.ValidRunID(id) {
+		return nil
+	}
+	o.engBefore[id] = s.engineHoldOf(id)
+	row, ok, err := ld.Run(r.Context(), id)
+	if err != nil {
+		return fmt.Errorf("the ledger's run %s: %w", id, err)
+	}
+	if ok {
+		o.revsBefore[id] = strconv.FormatInt(row.Revision, 10)
+	}
+	return nil
+}
+
+// deliveredRev is the revision a read of the run id was answered at: a
+// managed run's the ledger's, when it was the same just before the
+// route's handler ran and after it (every transition moves it) and the
+// engine, holding the run, held it settled at one revision throughout
+// (it changes its run before the transaction commits, so a handler that
+// read the engine's run then may have answered a state the ledger's
+// revision does not hold yet); "" otherwise, for what was delivered may
+// be either's; any other run's its record's.
+func (o *observer) deliveredRev(ctx context.Context, id string, run *refRun) (string, error) {
+	ld := o.rr.s.ledger
+	if !run.managed || ld == nil || o.revsBefore == nil {
+		return run.rev, nil
+	}
+	before, ok := o.revsBefore[id]
+	if !ok {
+		return "", nil
+	}
+	// The ledger first, then the engine: the reverse of takeRevs.
+	row, found, err := ld.Run(ctx, id)
+	if err != nil {
+		return "", fmt.Errorf("the ledger's run %s: %w", id, err)
+	}
+	if !found || strconv.FormatInt(row.Revision, 10) != before {
+		return "", nil
+	}
+	if !settledThrough(o.engBefore[id], o.rr.s.engineHoldOf(id)) {
+		return "", nil
+	}
+	return before, nil
+}
+
+// settledThrough reports whether the engine's two holds of a run, read
+// before a read of it and after, say nothing of it changed between that
+// its ledger has not committed: it held the run settled at one revision
+// both times, or held it neither time.
+func settledThrough(before, after engineHold) bool {
+	if !before.held && !after.held {
+		return true
+	}
+	return before.held && after.held && before.settled && after.settled && before.rev == after.rev
 }
 
 // note notes a read of ref (a turn's only).
@@ -308,12 +423,20 @@ func (s *Server) turnRead(w http.ResponseWriter, r *http.Request, tp *turnPrinci
 			return
 		}
 	}
+	atObserveSeam("admitted")
+	if next != nil {
+		if err := o.takeRevs(r, spec.class); err != nil {
+			s.observeError(w, err)
+			return
+		}
+	}
 	rec := newReplyRecorder()
 	if next != nil {
 		next(rec, r)
 	} else {
 		own[0](rec, r, o)
 	}
+	atObserveSeam("answered")
 	body := rec.body.Bytes()
 	if rec.status == http.StatusOK && spec.filter != nil {
 		if body, err = spec.filter(r, o, body); err != nil {
@@ -329,6 +452,11 @@ func (s *Server) turnRead(w http.ResponseWriter, r *http.Request, tp *turnPrinci
 	if _, err := d.st.NoteAnswer(req.ID, o.reads...); err != nil {
 		s.brakemanError(w, err)
 		return
+	}
+	if rec.status == http.StatusOK && spec.class != "" {
+		// The answer used its class whether or not it held an item a
+		// ref names (a page of projects): the brief's footprint counts it.
+		d.usedClass(req.ID, spec.class)
 	}
 	if o.coverage != nil {
 		if _, err := d.update(req.ID, func(q *brakeman.Request) error {
@@ -392,12 +520,21 @@ func (rr *replyRecorder) Write(b []byte) (int, error) {
 
 // withRef is the JSON object raw with "ref" set to ref.
 func withRef(raw json.RawMessage, ref string) (json.RawMessage, error) {
+	return withFields(raw, ref, "")
+}
+
+// withFields is the JSON object raw with "ref" set to ref and, when rev
+// is not empty, "revision" to rev: the run's revision it was read at.
+func withFields(raw json.RawMessage, ref, rev string) (json.RawMessage, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, err
 	}
 	b, _ := json.Marshal(ref)
 	m["ref"] = b
+	if rev != "" {
+		m["revision"], _ = json.Marshal(rev)
+	}
 	return marshalNoEscape(m)
 }
 
@@ -499,7 +636,7 @@ func (g refGrant) projectAdmitted(key string) bool {
 // remain; each with its ref, and only the page's noted at their state and
 // revision. A run's members' prompts alone can be 192 KB, and the engine
 // keeps maxRuns of them, more than one answer holds. A page holds one run
-// at least, so only a run past the bound alone is refused (413 bound).
+// at least: a run that alone passes the bound is given short (fitRun).
 func filterRuns(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	q, err := readQuery(r, "after", "limit")
 	var after string
@@ -570,15 +707,24 @@ func filterRuns(r *http.Request, o *observer, body []byte) ([]byte, error) {
 			continue
 		}
 		ref := "run:" + l.id
-		b, err := withRef(l.raw, ref)
+		rev, err := o.deliveredRev(r.Context(), l.id, run)
 		if err != nil {
 			return nil, err
 		}
-		if len(page) > 0 && used+len(b)+1 > maxTurnReply {
-			next = last
-			break
+		b, err := withFields(l.raw, ref, rev)
+		if err != nil {
+			return nil, err
 		}
-		o.noteRef(ref, brakeman.ClassRuns, run.state, run.rev)
+		if used+len(b)+1 > maxTurnReply {
+			if len(page) > 0 {
+				next = last
+				break
+			}
+			if b, err = fitRun(b, maxTurnReply-used-1); err != nil {
+				return nil, err
+			}
+		}
+		o.noteRef(ref, brakeman.ClassRuns, run.state, rev)
 		page = append(page, b)
 		used += len(b) + 1
 		last = l.id
@@ -595,7 +741,8 @@ func filterRuns(r *http.Request, o *observer, body []byte) ([]byte, error) {
 }
 
 // filterRun is GET /api/runs/{run} for a turn: the run and its tasks,
-// each with its ref and noted.
+// each with its ref and noted; a run past maxTurnReply is given short
+// (fitRun).
 func filterRun(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	id := r.PathValue("run")
 	var in struct {
@@ -608,11 +755,15 @@ func filterRun(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	rev, err := o.deliveredRev(r.Context(), id, run)
+	if err != nil {
+		return nil, err
+	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(in.Run, &m); err != nil {
 		return nil, err
 	}
-	o.noteRef("run:"+id, brakeman.ClassRuns, run.state, run.rev)
+	o.noteRef("run:"+id, brakeman.ClassRuns, run.state, rev)
 	if raw, ok := m["tasks"]; ok {
 		var tasks []json.RawMessage
 		if err := json.Unmarshal(raw, &tasks); err != nil {
@@ -630,7 +781,7 @@ func filterRun(r *http.Request, o *observer, body []byte) ([]byte, error) {
 			if tasks[i], err = withRef(t, ref); err != nil {
 				return nil, err
 			}
-			o.noteRef(ref, brakeman.ClassRuns, head.State, run.rev)
+			o.noteRef(ref, brakeman.ClassRuns, head.State, rev)
 		}
 		if m["tasks"], err = marshalNoEscape(tasks); err != nil {
 			return nil, err
@@ -638,7 +789,143 @@ func filterRun(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	}
 	b, _ := json.Marshal("run:" + id)
 	m["ref"] = b
-	return refreshed(body, "run", m)
+	if rev != "" {
+		m["revision"], _ = json.Marshal(rev)
+	}
+	// The answer's frame, {"run":…} and whatever else the route says
+	// beside it (record), is what the run leaves of the bound.
+	frame, err := refreshed(body, "run", json.RawMessage("0"))
+	if err != nil {
+		return nil, err
+	}
+	whole, err := marshalNoEscape(m)
+	if err != nil {
+		return nil, err
+	}
+	fit, err := fitRun(whole, maxTurnReply-(len(frame)-1))
+	if err != nil {
+		return nil, err
+	}
+	return refreshed(body, "run", fit)
+}
+
+// runCuts are what fitRun leaves out of a run past its room, in order:
+// first what the turn reads whole elsewhere, then what it needs least.
+//   - tasks: each task's result's text (summary, issues, findings), its
+//     latest attempt's checkpoint and error, and its blocker's message,
+//     which the task's own read (observe task) gives whole;
+//   - members: each member's prompt and args;
+//   - log: the run's log's oldest entries, the newest that fit kept;
+//   - chat: the run's chat's oldest messages, the newest that fit kept.
+var runCuts = []string{"tasks", "members", "log", "chat"}
+
+// fitRun is a run as a turn reads it, the JSON object raw, within room
+// bytes: raw itself when it fits, else the run with runCuts made one at a
+// time until it does, its cut naming each made. A managed run of 128
+// tasks, each with a 4,000-character summary, twenty issues and fifty
+// findings, is far past a turn's answer; its short form is not. A run
+// still past room with every cut made is refused 413 bound.
+func fitRun(raw json.RawMessage, room int) (json.RawMessage, error) {
+	if len(raw) <= room {
+		return raw, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	var cut []string
+	for _, c := range runCuts {
+		list, ok := m[c]
+		if !ok {
+			continue
+		}
+		cut = append(cut, c)
+		m["cut"], _ = json.Marshal(cut)
+		var err error
+		switch c {
+		case "tasks":
+			m[c], err = cutFields(list, map[string][]string{"result": {"summary", "issues", "findings"}, "attempt": {"checkpoint", "error"}, "blocker": {"message"}})
+		case "members":
+			m[c], err = cutFields(list, map[string][]string{"": {"prompt", "args"}})
+		default:
+			m[c], err = newestThatFit(m, c, room)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out, err := marshalNoEscape(m)
+		if err != nil {
+			return nil, err
+		}
+		if len(out) <= room {
+			return out, nil
+		}
+	}
+	return nil, newAPIError(http.StatusRequestEntityTooLarge, "bound", fmt.Sprintf("the run is larger than a turn's %d MiB even short", maxTurnReply>>20))
+}
+
+// cutFields is list, a JSON array of objects, with the fields drop names
+// left out: drop[""] of each object itself, drop[f] of the object in its
+// field f.
+func cutFields(list json.RawMessage, drop map[string][]string) (json.RawMessage, error) {
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(list, &items); err != nil {
+		return nil, err
+	}
+	for _, it := range items {
+		for f, fields := range drop {
+			if f == "" {
+				for _, k := range fields {
+					delete(it, k)
+				}
+				continue
+			}
+			raw, ok := it[f]
+			if !ok || string(raw) == "null" {
+				continue
+			}
+			var inner map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &inner); err != nil {
+				return nil, err
+			}
+			for _, k := range fields {
+				delete(inner, k)
+			}
+			b, err := marshalNoEscape(inner)
+			if err != nil {
+				return nil, err
+			}
+			it[f] = b
+		}
+	}
+	return marshalNoEscape(items)
+}
+
+// newestThatFit is m's list field, oldest first, cut to its newest
+// entries that leave m within room: none when the rest of m alone fills
+// it.
+func newestThatFit(m map[string]json.RawMessage, field string, room int) (json.RawMessage, error) {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(m[field], &entries); err != nil {
+		return nil, err
+	}
+	m[field] = json.RawMessage("[]")
+	rest, err := marshalNoEscape(m)
+	if err != nil {
+		return nil, err
+	}
+	free, from := room-len(rest), len(entries)
+	for from > 0 {
+		e, err := marshalNoEscape(entries[from-1])
+		if err != nil {
+			return nil, err
+		}
+		if free -= len(e) + 1; free < 0 {
+			break
+		}
+		from--
+	}
+	return marshalNoEscape(entries[from:])
 }
 
 // filterTask is GET /api/runs/{run}/tasks/{task} for a turn: the task,
@@ -660,12 +947,16 @@ func filterTask(r *http.Request, o *observer, body []byte) ([]byte, error) {
 		State string `json:"state"`
 	}
 	_ = json.Unmarshal(in.Task, &head)
-	taskRef := "task:" + runID + "/" + taskID
-	task, err := withRef(in.Task, taskRef)
+	rev, err := o.deliveredRev(r.Context(), runID, run)
 	if err != nil {
 		return nil, err
 	}
-	o.noteRef(taskRef, brakeman.ClassRuns, head.State, run.rev)
+	taskRef := "task:" + runID + "/" + taskID
+	task, err := withFields(in.Task, taskRef, rev)
+	if err != nil {
+		return nil, err
+	}
+	o.noteRef(taskRef, brakeman.ClassRuns, head.State, rev)
 	attempts := make([]json.RawMessage, 0, len(in.Attempts))
 	for _, a := range in.Attempts {
 		var am map[string]json.RawMessage
@@ -961,6 +1252,9 @@ func filterTicket(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	}
 	_ = json.Unmarshal(in.Ticket, &head)
 	o.noteRef("ticket:"+key, brakeman.ClassDispatch, head.Status, strconv.FormatInt(head.Rev, 10))
+	if err := filterRelated(r.Context(), o, m); err != nil {
+		return nil, err
+	}
 	if raw, ok := m["comments"]; ok {
 		comments, err := commentRefs(o, key, raw)
 		if err != nil {
@@ -971,6 +1265,139 @@ func filterTicket(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	b, _ := json.Marshal("ticket:" + key)
 	m["ref"] = b
 	return refreshed(body, "ticket", m)
+}
+
+// withheldTicket is a related ticket outside the grant as a ticket's read
+// shows it: its id and key, no title and no status.
+type withheldTicket struct {
+	ID       string `json:"id"`
+	Key      string `json:"key"`
+	Withheld string `json:"withheld"`
+}
+
+// filterRelated holds the tickets a ticket's read names beside it (its
+// parent, its children, its relations' other ends) to the grant: one
+// outside it is shown by its id and key alone, withheld, as a read of it
+// would be refused.
+func filterRelated(ctx context.Context, o *observer, m map[string]json.RawMessage) error {
+	admitted := map[string]bool{}
+	held := func(raw json.RawMessage) (json.RawMessage, error) {
+		if len(raw) == 0 {
+			return raw, nil
+		}
+		var t dispatch.RelatedTicket
+		if err := json.Unmarshal(raw, &t); err != nil {
+			return nil, err
+		}
+		ok, seen := admitted[t.Key]
+		if !seen {
+			var err error
+			if ok, err = o.ticketAdmitted(ctx, t.Key); err != nil {
+				return nil, err
+			}
+			admitted[t.Key] = ok
+		}
+		if ok {
+			return raw, nil
+		}
+		return marshalNoEscape(withheldTicket{ID: t.ID, Key: t.Key, Withheld: "outside the request's scope"})
+	}
+	if raw, ok := m["parent"]; ok && string(raw) != "null" {
+		out, err := held(raw)
+		if err != nil {
+			return err
+		}
+		m["parent"] = out
+	}
+	if raw, ok := m["children"]; ok {
+		var c map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &c); err != nil {
+			return err
+		}
+		var list []json.RawMessage
+		if err := json.Unmarshal(c["tickets"], &list); err != nil {
+			return err
+		}
+		for i := range list {
+			out, err := held(list[i])
+			if err != nil {
+				return err
+			}
+			list[i] = out
+		}
+		if list == nil {
+			list = []json.RawMessage{}
+		}
+		var err error
+		if c["tickets"], err = marshalNoEscape(list); err != nil {
+			return err
+		}
+		if m["children"], err = marshalNoEscape(c); err != nil {
+			return err
+		}
+	}
+	if raw, ok := m["relations"]; ok {
+		var list []map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return err
+		}
+		for _, rel := range list {
+			out, err := held(rel["other"])
+			if err != nil {
+				return err
+			}
+			rel["other"] = out
+		}
+		if list == nil {
+			list = []map[string]json.RawMessage{}
+		}
+		var err error
+		if m["relations"], err = marshalNoEscape(list); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// filterHistory is GET /api/dispatch/tickets/{key}/history for a turn:
+// each change with the ref of the operation that made it, the ticket
+// noted as read, and each operation once.
+func filterHistory(r *http.Request, o *observer, body []byte) ([]byte, error) {
+	key := r.PathValue("key")
+	var in struct {
+		Changes []json.RawMessage `json:"changes"`
+	}
+	if err := json.Unmarshal(body, &in); err != nil {
+		return nil, err
+	}
+	o.noteRef("ticket:"+key, brakeman.ClassDispatch, "history", "")
+	noted := map[string]bool{}
+	for i, c := range in.Changes {
+		var head struct {
+			Actor string `json:"actor"`
+			OpID  string `json:"opId"`
+			Op    string `json:"op"`
+		}
+		if err := json.Unmarshal(c, &head); err != nil {
+			return nil, err
+		}
+		ref := "op:" + head.Actor + "/" + head.OpID
+		if rf, err := brakeman.ParseRef(ref); err != nil || rf.Valid() != nil {
+			continue
+		}
+		if !noted[ref] {
+			noted[ref] = true
+			o.noteRef(ref, brakeman.ClassDispatch, head.Op, "")
+		}
+		var err error
+		if in.Changes[i], err = withRef(c, ref); err != nil {
+			return nil, err
+		}
+	}
+	if in.Changes == nil {
+		in.Changes = []json.RawMessage{}
+	}
+	return refreshed(body, "changes", in.Changes)
 }
 
 // commentRefs is a ticket's comments with their refs, each noted.
@@ -1179,13 +1606,109 @@ func (s *Server) handleBrakemanStatus(w http.ResponseWriter, r *http.Request, o 
 		writeError(w, http.StatusForbidden, "outside_scope", "outside the request's scope")
 		return
 	}
-	tasks, members, err := s.runStatus(ctx, o, run, runID)
-	if err != nil {
-		s.observeError(w, err)
-		return
+	// A managed run's tasks are read between two reads of its revision
+	// that agree (every transition moves it) while the engine held it
+	// settled at one revision throughout (it changes its run before the
+	// transaction commits: a status computed from its run then may hold
+	// what the ledger's revision does not yet), read again, the engine's
+	// run with them, when either moved between, so the revision answered
+	// is the one they were read at, or none. The engine's hold is read
+	// before the ledger's revision and after it, as a shared read's are
+	// (takeRevs, deliveredRev).
+	state, rev := run.state, run.rev
+	var tasks []taskStatus
+	var members []memberStatus
+	for try := range refRevTries {
+		var before, after string
+		engBefore := s.engineHoldOf(runID)
+		if before, state, err = s.freshRun(ctx, runID, run); err == nil {
+			tasks, members, err = s.runStatus(ctx, o, s.restatus(run, runID, state), runID)
+		}
+		if err == nil {
+			after, state, err = s.freshRun(ctx, runID, run)
+		}
+		if err != nil {
+			s.observeError(w, err)
+			return
+		}
+		settled := !run.managed || s.ledger == nil || settledThrough(engBefore, s.engineHoldOf(runID))
+		if before == after && settled {
+			rev = after
+			break
+		}
+		if try == refRevTries-1 {
+			rev = ""
+		}
 	}
-	o.noteRef("run:"+runID, brakeman.ClassRuns, run.state, run.rev)
-	writeJSON(w, http.StatusOK, map[string]any{"run": "run:" + runID, "state": run.state, "revision": run.rev, "tasks": tasks, "members": members})
+	o.noteRef("run:"+runID, brakeman.ClassRuns, state, rev)
+	for _, t := range tasks {
+		o.noteRef(t.Ref, brakeman.ClassRuns, t.State, rev)
+	}
+	out := map[string]any{"run": "run:" + runID, "state": state, "revision": rev, "tasks": tasks, "members": members}
+	if fitStatusWords(tasks, members) {
+		out["wordsCut"] = true
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// maxStatusWords bounds a status line's words, as encoded.
+const maxStatusWords = 1 << 10
+
+// fitStatusWords holds a run's status read to maxObserveReply: each line's
+// words (a record's, an attempt's error among them) cut to at most
+// maxStatusWords bytes as encoded, and to an even share of what the
+// lines leave when they need less, every ref, state and proof whole. It
+// reports whether it cut any. A run has at most 128 tasks and 12
+// members, whose lines without their words come to well under the bound.
+func fitStatusWords(tasks []taskStatus, members []memberStatus) bool {
+	n := len(tasks) + len(members)
+	if n == 0 {
+		return false
+	}
+	bare := 8 << 10 // the answer's own fields, with room
+	for _, t := range tasks {
+		t.Words = ""
+		bare += len(mustJSON(t)) + 1
+	}
+	for _, m := range members {
+		m.Words = ""
+		bare += len(mustJSON(m)) + 1
+	}
+	per := min(maxStatusWords, max(0, maxObserveReply-bare)/n)
+	cut := false
+	fit := func(c *computed) {
+		if w := fitJSON(c.Words, per); w != c.Words {
+			c.Words, cut = w, true
+		}
+	}
+	for i := range tasks {
+		fit(&tasks[i].computed)
+	}
+	for i := range members {
+		fit(&members[i].computed)
+	}
+	return cut
+}
+
+// fitJSON is the longest prefix of s, cut at a character, whose JSON
+// string, quotes and escapes counted, is at most n bytes beside its
+// quotes.
+func fitJSON(s string, n int) string {
+	size := func(t string) int { return len(mustJSON(t)) - 2 }
+	if size(s) <= n {
+		return s
+	}
+	target := min(len(s), n)
+	for target > 0 {
+		c := cutBytes(s, target)
+		got := size(c)
+		if got <= n || c == "" {
+			return c
+		}
+		// Each byte encodes to at most six: shrink by what is over.
+		target = len(c) - max(1, (got-n+5)/6)
+	}
+	return ""
 }
 
 // computed is a task's or a session's status as Conductor computes it:
@@ -1255,8 +1778,9 @@ func (s *Server) lastOutput(id string) (time.Time, bool) {
 
 // sessionStatus is a session's status: stopped once it ended, waiting on
 // a person while it asks, quiet when a server session's terminal has
-// written nothing for quietAfter (with no proof of anything), running
-// otherwise; a hosted session's quiet time is unknown, never quiet.
+// written nothing for quietAfter (since it began, when it has written
+// nothing yet; with no proof of anything), running otherwise; a hosted
+// session's quiet time is unknown, never quiet.
 func (s *Server) sessionStatus(info session.Info, now time.Time) computed {
 	switch {
 	case info.Status.Ended():
@@ -1275,12 +1799,47 @@ func (s *Server) sessionStatus(info session.Info, now time.Time) computed {
 	case info.Kind == session.KindHosted:
 		return computed{Status: statusRunning, Proof: proofNone, Quiet: "unknown"}
 	}
-	if at, ok := s.lastOutput(info.ID); ok && !at.IsZero() {
-		if quiet := now.Sub(at); quiet >= quietAfter {
+	if at, ok := s.lastOutput(info.ID); ok {
+		if at.IsZero() {
+			// Nothing written yet: silent since the session began.
+			at = info.CreatedAt
+		}
+		if quiet := now.Sub(at); !at.IsZero() && quiet >= quietAfter {
 			return computed{Status: statusQuiet, Proof: proofNone, QuietSeconds: int(quiet.Seconds()), Words: "the terminal has written nothing since " + at.UTC().Format(time.RFC3339)}
 		}
 	}
 	return computed{Status: statusRunning, Proof: proofNone}
+}
+
+// freshRun is a managed run's revision and state as the ledger holds
+// them now, one row's; any other run's as resolved.
+func (s *Server) freshRun(ctx context.Context, id string, run *refRun) (rev, state string, err error) {
+	if !run.managed || s.ledger == nil {
+		return run.rev, run.state, nil
+	}
+	row, ok, err := s.ledger.Run(ctx, id)
+	if err != nil || !ok {
+		return "", "", wrapNil(err, "the ledger's run %s", id)
+	}
+	return strconv.FormatInt(row.Revision, 10), row.State, nil
+}
+
+// restatus is run with the engine's run read now, never the one its
+// resolution cached (a status read again after a transition computes
+// from the engine's run as it is), and, for a managed run, the ledger's
+// state read with its revision.
+func (s *Server) restatus(run *refRun, id, state string) *refRun {
+	cur := *run
+	if r, ok := s.runs.Get(id); ok {
+		cur.run, cur.held = r, true
+		if !cur.managed {
+			cur.state = r.State
+		}
+	}
+	if cur.managed {
+		cur.state = state
+	}
+	return &cur
 }
 
 // runStatus is a run's tasks' statuses (a managed run's) and its members'
@@ -1323,7 +1882,6 @@ func (s *Server) runStatus(ctx context.Context, o *observer, run *refRun, runID 
 			return nil, nil, err
 		}
 		ref := "task:" + runID + "/" + t.ID
-		o.noteRef(ref, brakeman.ClassRuns, t.State, run.rev)
 		tasks = append(tasks, taskStatus{Ref: ref, State: t.State, computed: c})
 	}
 	return tasks, members, nil
@@ -1648,11 +2206,14 @@ func (o *observer) noteFootprint(req brakeman.Request) {
 
 // ---- the shared reads' table
 
-// sharedRead is a shared read a turn may make: its pattern, its handler
-// and its spec. routeBrakeman's caller registers each through reader.
+// sharedRead is a shared read a turn may make: its pattern, its spec and
+// the bound its route keeps of its reply (0 for a route that states
+// none), which the guide's observe_<what> entry lists. routeBrakeman's
+// caller registers each through reader.
 type sharedRead struct {
 	pattern string
 	spec    readSpec
+	reply   int
 }
 
 // brakemanReads are the shared reads the principal brakeman takes, each
@@ -1662,20 +2223,30 @@ type sharedRead struct {
 // its comments), the sessions and the touched files. Every other route
 // refuses the principal.
 var brakemanReads = []sharedRead{
-	{"GET /api/runs", readSpec{class: brakeman.ClassRuns, filter: filterRuns}},
-	{"GET /api/runs/{run}", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterRun}},
-	{"GET /api/runs/{run}/tasks/{task}", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterTask}},
-	{"GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterSteps}},
-	{"GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log", readSpec{class: brakeman.ClassLogs, admit: admitRunPath, filter: filterStepLog}},
-	{"GET /api/runs/{run}/commands/{command}", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterCommand}},
-	{"GET /api/runs/{run}/messages", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterMessages}},
-	{"GET /api/dispatch/projects", readSpec{class: brakeman.ClassDispatch, filter: filterProjects}},
-	{"GET /api/dispatch/tickets", readSpec{class: brakeman.ClassDispatch, filter: filterTickets}},
-	{"GET /api/dispatch/tickets/{key}", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterTicket}},
-	{"GET /api/dispatch/tickets/{key}/history", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath}},
-	{"GET /api/dispatch/tickets/{key}/comments", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterComments}},
-	{"GET /api/sessions", readSpec{class: brakeman.ClassSessions, filter: filterSessions}},
-	{"GET /api/touched", readSpec{class: brakeman.ClassTouched, filter: filterTouched}},
+	{"GET /api/runs", readSpec{class: brakeman.ClassRuns, filter: filterRuns}, 0},
+	{"GET /api/runs/{run}", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterRun}, 0},
+	{"GET /api/runs/{run}/tasks/{task}", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterTask}, 0},
+	{"GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterSteps}, 0},
+	{"GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log", readSpec{class: brakeman.ClassLogs, admit: admitRunPath, filter: filterStepLog}, ledger.MaxLog},
+	{"GET /api/runs/{run}/commands/{command}", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterCommand}, 0},
+	{"GET /api/runs/{run}/messages", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterMessages}, 0},
+	{"GET /api/dispatch/projects", readSpec{class: brakeman.ClassDispatch, filter: filterProjects}, maxProjectsPage},
+	{"GET /api/dispatch/tickets", readSpec{class: brakeman.ClassDispatch, filter: filterTickets}, 0},
+	{"GET /api/dispatch/tickets/{key}", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterTicket}, MaxTicketReply},
+	{"GET /api/dispatch/tickets/{key}/history", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterHistory}, 0},
+	{"GET /api/dispatch/tickets/{key}/comments", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterComments}, MaxTicketReply},
+	{"GET /api/sessions", readSpec{class: brakeman.ClassSessions, filter: filterSessions}, 0},
+	{"GET /api/touched", readSpec{class: brakeman.ClassTouched, filter: filterTouched}, 0},
+}
+
+// sharedReadReply is the bound the shared read of pattern keeps of its
+// reply, 0 for none stated or no such read.
+func sharedReadReply(pattern string) int {
+	i := slices.IndexFunc(brakemanReads, func(sr sharedRead) bool { return sr.pattern == pattern })
+	if i < 0 {
+		return 0
+	}
+	return brakemanReads[i].reply
 }
 
 // sharedReadSpec is the spec of a shared read's pattern, ok false for a

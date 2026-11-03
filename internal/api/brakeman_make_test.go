@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -438,6 +439,45 @@ func TestADraftCrewDeletedBeforeMadeIsNotRecreated(t *testing.T) {
 	}
 }
 
+// A make's outcome fits its entry's bound whole, however its claim's
+// fields are escaped: a crew saved under the longest opId, a name of 60
+// quotation marks and a 40-character id, deleted after a crash and
+// before the make was recorded, is recovered as deleted, its words cut
+// to the room the rest leaves, never left pending by a write the bound
+// refuses.
+func TestAMakesOutcomeFitsItsEntrysBound(t *testing.T) {
+	f := newObsFixture(t)
+	req := f.drafts(t, f.draftCrew(strings.Repeat("f", 40)))
+	crashAt(t, "committed")
+	opID := strings.Repeat("o", 32)
+	body := map[string]any{"opId": opID, "by": strings.Repeat(`"`, brakeman.MaxBy)}
+	if status, _, out := f.call(t, "POST", "/api/brakeman/requests/"+req+"/items/0/make", body); status != http.StatusInternalServerError {
+		t.Fatalf("the crash: %d %v", status, out)
+	}
+	if m := f.made(t, req, 0); m.State != brakeman.MadePending || m.OpID != opID {
+		t.Fatalf("the claim: %+v", m)
+	}
+	page, _, _ := f.srv.crews.List(0, 10)
+	if len(page) != 1 || len(page[0].ID) != 40 {
+		t.Fatalf("crews: %v", page)
+	}
+	if ok, err := f.srv.crews.Delete(page[0].ID); err != nil || !ok {
+		t.Fatalf("the delete: %v %v", ok, err)
+	}
+	f.recoverNow(t)
+	m := f.made(t, req, 0)
+	if m.State != brakeman.MadeDeleted || m.Why == "" {
+		t.Fatalf("recovered: %+v", m)
+	}
+	if b, _ := json.MarshalIndent(m, "    ", "  "); len(b)+4 > brakeman.MaxMadeBytes {
+		t.Fatalf("the outcome is %d bytes, past %d", len(b)+4, brakeman.MaxMadeBytes)
+	}
+	// Its words are the deletion's, cut at their end.
+	if !strings.HasPrefix(m.Why, crew.ErrOriginDeleted.Error()) {
+		t.Fatalf("the words: %q", m.Why)
+	}
+}
+
 // A ticket whose make stopped before Dispatch committed is made by the
 // recovery from its recorded input, with the person's edits and name,
 // once.
@@ -565,4 +605,196 @@ func TestDraftTicketsKeepTheirBlocksInEitherOrder(t *testing.T) {
 	}
 	f.recoverNow(t)
 	blocks(t, req)
+}
+
+// ---- review round 1 (#525)
+
+// A display name Dispatch would refuse (a control character in it) is
+// refused before any claim, so the item is never left pending; a claim
+// whose input Dispatch refuses so anyway is settled refused, and the item
+// can be made again.
+func TestADisplayNameDispatchRefusesClaimsNothing(t *testing.T) {
+	f := newObsFixture(t)
+	req := f.drafts(t, draftTicket("Named oddly"))
+	status, _, out := f.call(t, "POST", fmt.Sprintf("/api/brakeman/requests/%s/items/0/make", req), map[string]any{"opId": "odd-1", "by": "Ann\rB"})
+	if status != http.StatusBadRequest || errorCode(out) != "invalid_request" {
+		t.Fatalf("a control character in by: %d %v", status, out)
+	}
+	if m := f.made(t, req, 0); m.OpID != "" {
+		t.Fatalf("a claim after the refusal: %+v", m)
+	}
+	// A claim written with such a name (as a server before this check
+	// wrote one) is settled refused by the recovery.
+	raw, err := marshalNoEscape(makeInput{Kind: brakeman.ItemDraftTicket, By: "Ann\rB", Ticket: &dispatch.NewTicket{Project: "CND", Title: "Named oddly"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.desk.st.PutMakeInput(req, 0, raw); err != nil {
+		t.Fatal(err)
+	}
+	claim := brakeman.Made{Item: 0, OpID: "odd-2", Op: makeOp(req, 0, "odd-2"), Input: "00", State: brakeman.MadePending, At: time.Now().UTC()}
+	if _, err := f.desk.st.Update(req, func(q *brakeman.Request) error {
+		q.Made = append(q.Made, claim)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.recoverNow(t)
+	if m := f.made(t, req, 0); m.State != brakeman.MadeRefused {
+		t.Fatalf("the claim Dispatch refuses: %+v", m)
+	}
+	if status, out := f.make(t, req, 0, "odd-3", nil); status != http.StatusCreated {
+		t.Fatalf("made again: %d %v", status, out)
+	}
+}
+
+// The recovery the desk's start begins ends before Brakeman's owner lock
+// goes: while it is held at a make, a release that has begun keeps the
+// lock (a second server opening the records is read-only), and lets it go
+// once the recovery returns. The desk writes no outcome once it closes:
+// the claim stays for the next start, whose backend answers it once.
+func TestReleaseWaitsForTheStartsRecovery(t *testing.T) {
+	f := newObsFixture(t)
+	req := f.drafts(t, draftTicket("Recovered as the server stops"))
+	before := f.tickets(t)
+	crashAt(t, "claimed")
+	if status, _ := f.make(t, req, 0, "stop-1", nil); status != http.StatusInternalServerError {
+		t.Fatalf("the crash: %d", status)
+	}
+	held, letGo := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	atSeam(t, func(stage, _ string, _ int) error {
+		if stage == "committed" {
+			once.Do(func() {
+				close(held)
+				<-letGo
+			})
+		}
+		return nil
+	})
+	f.desk.startRecovery()
+	<-held
+	released := make(chan struct{})
+	go func() {
+		f.desk.release(context.Background())
+		close(released)
+	}()
+	if !waitFor(30*time.Second, f.desk.closing.Load) {
+		t.Fatal("the desk never began to close")
+	}
+	st, err := store.Open(f.dataDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := brakeman.Open(st, brakeman.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if ro, _ := other.ReadOnly(); !ro {
+		t.Fatal("the owner lock went while the recovery made a ticket")
+	}
+	close(letGo)
+	<-released
+	if n := f.tickets(t); n != before+1 {
+		t.Fatalf("%d tickets made", n-before)
+	}
+}
+
+// A make the route admitted ends before Brakeman's owner lock goes: held
+// after Dispatch's commit, a release that has begun keeps the lock (a
+// second server opening the records is read-only) and refuses a new make
+// (503 shutting_down), and lets the lock go once the make returns. Its
+// outcome is not written by a closing desk: the claim stays for the next
+// start, whose backend answers it once.
+func TestReleaseWaitsForAnHTTPMake(t *testing.T) {
+	f := newObsFixture(t)
+	req := f.drafts(t, draftTicket("Made as the server stops"), draftTicket("Asked as it stops"))
+	before := f.tickets(t)
+	held, letGo := make(chan struct{}), make(chan struct{})
+	var once, freed sync.Once
+	free := func() { freed.Do(func() { close(letGo) }) }
+	t.Cleanup(free)
+	atSeam(t, func(stage, _ string, item int) error {
+		if stage == "committed" && item == 0 {
+			once.Do(func() {
+				close(held)
+				<-letGo
+			})
+		}
+		return nil
+	})
+	made := make(chan int, 1)
+	go func() {
+		status, _ := f.make(t, req, 0, "stop-1", nil)
+		made <- status
+	}()
+	<-held
+	released := make(chan struct{})
+	go func() {
+		f.desk.release(context.Background())
+		close(released)
+	}()
+	if !waitFor(30*time.Second, f.desk.closing.Load) {
+		t.Fatal("the desk never began to close")
+	}
+	if status, out := f.make(t, req, 1, "stop-2", nil); status != http.StatusServiceUnavailable || errorCode(out) != "shutting_down" {
+		t.Fatalf("a make asked as the server stops: %d %v", status, out)
+	}
+	st, err := store.Open(f.dataDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := brakeman.Open(st, brakeman.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if ro, _ := other.ReadOnly(); !ro {
+		t.Fatal("the owner lock went while a make made a ticket")
+	}
+	select {
+	case <-released:
+		t.Fatal("the release returned while a make was under way")
+	default:
+	}
+	free()
+	<-released
+	if status := <-made; status != http.StatusServiceUnavailable {
+		t.Fatalf("the make whose outcome the closing desk did not write: %d", status)
+	}
+	if n := f.tickets(t); n != before+1 {
+		t.Fatalf("%d tickets made", n-before)
+	}
+	if m := f.made(t, req, 0); m.State != brakeman.MadePending {
+		t.Fatalf("the claim the next start completes: %+v", m)
+	}
+}
+
+// A make done answers its same opId as it was made, before anything is
+// checked against what the server holds now: a crew whose agent left the
+// catalog since is answered from its claim, while a new make of a draft
+// naming that agent is refused.
+func TestARepeatedMakeAnswersAfterItsAgentLeavesTheCatalog(t *testing.T) {
+	f := newObsFixture(t)
+	req := f.drafts(t, f.draftCrew("Kept"), f.draftCrew("Not yet"))
+	status, out := f.make(t, req, 0, "crew-1", nil)
+	if status != http.StatusCreated {
+		t.Fatalf("the make: %d %v", status, out)
+	}
+	cat := f.srv.Catalog().Clone()
+	if !cat.Hide("cat") {
+		t.Fatal("the catalog has no cat")
+	}
+	f.setCatalog(cat)
+	status, again := f.make(t, req, 0, "crew-1", nil)
+	if status != http.StatusOK || entityOf(t, again, "made")["state"] != brakeman.MadeDone || entityOf(t, again, "crew")["id"] != entityOf(t, out, "crew")["id"] {
+		t.Fatalf("the same opId after the agent left: %d %v", status, again)
+	}
+	if status, out := f.make(t, req, 1, "crew-2", nil); status != http.StatusBadRequest || errorCode(out) != "invalid_draft" {
+		t.Fatalf("a new make naming the agent gone: %d %v", status, out)
+	}
+	if m := f.made(t, req, 1); m.OpID != "" {
+		t.Fatalf("a claim after the refusal: %+v", m)
+	}
 }

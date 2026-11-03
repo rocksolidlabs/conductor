@@ -355,7 +355,13 @@ func (c *apiClient) doBody(ctx context.Context, method, path string, body, out a
 
 // doLimit is doBody with a reply of at most limit bytes, a whole number of MiB.
 func (c *apiClient) doLimit(ctx context.Context, method, path string, body, out any, limit int) error {
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	return c.doWithin(ctx, requestTimeout, method, path, body, out, limit)
+}
+
+// doWithin is doLimit bounded by timeout instead of requestTimeout: for a
+// request whose server takes longer by design (a launch from a ticket).
+func (c *apiClient) doWithin(ctx context.Context, timeout time.Duration, method, path string, body, out any, limit int) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var reader io.Reader
 	if body != nil {
@@ -392,13 +398,25 @@ func (c *apiClient) doLimit(ctx context.Context, method, path string, body, out 
 		return fmt.Errorf("the reply from %s is larger than %d MiB", c.host, limit>>20)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return c.statusError(resp.Status, reply)
+		return replyRefusal{status: resp.StatusCode, body: reply, err: c.statusError(resp.Status, reply)}
 	}
 	if err := json.Unmarshal(reply, out); err != nil {
 		return fmt.Errorf("unreadable reply from %s: %w", c.host, err)
 	}
 	return nil
 }
+
+// replyRefusal is a non-2xx reply: its words are statusError's, and it
+// keeps the status and the body (within the reply's limit) for a caller
+// that reads more of it than its error (a launch still pending).
+type replyRefusal struct {
+	status int
+	body   []byte
+	err    error
+}
+
+func (r replyRefusal) Error() string { return r.err.Error() }
+func (r replyRefusal) Unwrap() error { return r.err }
 
 // statusError is the error for a non-2xx reply: "code: message" from the API's
 // error envelope, else the status line.

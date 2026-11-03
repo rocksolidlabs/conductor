@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
@@ -155,14 +156,29 @@ func TestCompletionCompletes(t *testing.T) {
 			if got := complete(t, sh, script, dir, bin, "completion", ""); !slices.Equal(got, []string{"zsh", "bash", "install"}) {
 				t.Fatalf("completion words: %v", got)
 			}
-			if got := complete(t, sh, script, dir, bin, "dispatch", ""); !slices.Equal(got, []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link"}) {
+			if got := complete(t, sh, script, dir, bin, "dispatch", ""); !slices.Equal(got, []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs"}) {
 				t.Fatalf("dispatch words: %v", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "dispatch", "plan", ""); !slices.Equal(got, []string{"show", "propose", "approve", "withdraw"}) {
+				t.Fatalf("dispatch plan words: %v", got)
 			}
 			if got := complete(t, sh, script, dir, bin, "dispatch", "--status", ""); !slices.Equal(got, dispatch.Statuses) {
 				t.Fatalf("dispatch statuses: %v", got)
 			}
 			if got := complete(t, sh, script, dir, bin, "task", "ticket", ""); !slices.Equal(got, []string{"comment"}) {
 				t.Fatalf("task ticket words: %v", got)
+			}
+			// observe's parameters, after the what they are read with.
+			if got := complete(t, sh, script, dir, bin, "brakeman", "observe", ""); !has(got, "changes", "run", "task", "messages", "log") {
+				t.Fatalf("observe whats: %v", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "brakeman", "observe", "run", "--"); !has(got, "--run", "--task", "--limit", "--after", "--since", "--cursor", "--session", "--n", "--id", "--k") {
+				t.Fatalf("observe parameters: %v", got)
+			}
+			if sh == "bash" {
+				if got := complete(t, sh, script, dir, bin, "brakeman", "observe", "run", "--r"); !slices.Equal(got, []string{"--run"}) {
+					t.Fatalf("observe run --r: %v", got)
+				}
 			}
 			if got := complete(t, sh, script, dir, bin, "notify", "--"); !has(got, "--claude-hook", "--goose-hook", "--quiet") {
 				t.Fatalf("notify flags: %v", got)
@@ -228,7 +244,8 @@ func TestCompletionSpecMatchesEveryFlag(t *testing.T) {
 		"hooks": {{"hooks", "install", "-h"}, {"hooks", "status", "-h"}}, "completion": {{"completion", "install", "-h"}},
 		"skill": {{"skill", "-h"}}, "export": {{"export", "-h"}}, "restore": {{"restore", "-h"}}, "crew": {{"crew", "create", "-h"}}, "mcp": {{"mcp", "-h"}}, "task": {{"task", "context", "-h"}, {"task", "result", "-h"}, {"task", "send", "-h"}, {"task", "inbox", "-h"}, {"task", "ack", "-h"}, {"task", "blocked", "-h"}, {"task", "checkpoint", "-h"}, {"task", "ticket", "-h"}},
 		"brakeman": {{"brakeman", "request", "-h"}, {"brakeman", "brief", "-h"}, {"brakeman", "ask", "-h"}, {"brakeman", "status", "-h"}, {"brakeman", "list", "-h"}, {"brakeman", "show", "-h"}},
-		"dispatch": {{"dispatch", "projects", "-h"}, {"dispatch", "tickets", "-h"}, {"dispatch", "show", "-h"}, {"dispatch", "create", "-h"}, {"dispatch", "edit", "-h"}, {"dispatch", "comment", "-h"}, {"dispatch", "accept", "-h"}, {"dispatch", "link", "-h"}},
+		"dispatch": {{"dispatch", "projects", "-h"}, {"dispatch", "tickets", "-h"}, {"dispatch", "show", "-h"}, {"dispatch", "create", "-h"}, {"dispatch", "edit", "-h"}, {"dispatch", "comment", "-h"}, {"dispatch", "accept", "-h"}, {"dispatch", "link", "-h"},
+			{"dispatch", "plans", "-h"}, {"dispatch", "plan", "show", "-h"}, {"dispatch", "plan", "propose", "-h"}, {"dispatch", "plan", "approve", "-h"}, {"dispatch", "plan", "withdraw", "-h"}, {"dispatch", "launch", "-h"}, {"dispatch", "runs", "-h"}},
 	}
 	flagLine := regexp.MustCompile(`(?m)^  -([a-z][a-z0-9-]*)`)
 	for _, c := range completionSpec() {
@@ -240,6 +257,17 @@ func TestCompletionSpecMatchesEveryFlag(t *testing.T) {
 			}
 			for _, m := range flagLine.FindAllStringSubmatch(stderr.String(), -1) {
 				want["--"+m[1]] = true
+			}
+		}
+		if c.name == "brakeman" {
+			// observe takes each of its route's parameters as --KEY: every
+			// observe_<what> entry's input, its path's and its query's.
+			for _, op := range api.Operations() {
+				if props, ok := op.Input["properties"].(map[string]any); ok && strings.HasPrefix(op.Name, "observe_") {
+					for k := range props {
+						want["--"+k] = true
+					}
+				}
 			}
 		}
 		got := map[string]bool{}

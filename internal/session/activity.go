@@ -322,6 +322,27 @@ type Answer struct {
 type activityRing struct {
 	mu  sync.Mutex
 	buf []ActivityEntry
+	// stamped counts the times Stamp handed out for entries not yet added,
+	// by UnixNano: the log is whole only up to just before the earliest
+	// (SnapshotThrough).
+	stamped map[int64]int
+}
+
+// Stamp is the time of n entries the session will add (Add, with At the
+// time answered), stamped now: until each is added, SnapshotThrough says
+// the log is whole only up to just before it. The session stamps an entry
+// this way when its time must be another record's too (an attention's
+// Since) and it is added after the session's lock is let go; every
+// stamped entry must be added.
+func (r *activityRing) Stamp(n int) time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UTC()
+	if r.stamped == nil {
+		r.stamped = map[int64]int{}
+	}
+	r.stamped[now.UnixNano()] += n
+	return now
 }
 
 // Add appends e, stamping At when zero, cleaning its text with CleanEntry and
@@ -357,12 +378,19 @@ func (r *activityRing) CoalesceFile(e ActivityEntry) bool {
 
 // dropping the oldest entry past MaxActivity. It returns the stored entry.
 func (r *activityRing) Add(e ActivityEntry) ActivityEntry {
-	if e.At.IsZero() {
-		e.At = time.Now().UTC()
-	}
 	e = CleanEntry(e)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Stamped under the lock, in the order entries are added, so a
+	// snapshot taken before holds every entry of a time before its own
+	// (SnapshotThrough); one Stamp handed out is added now.
+	if e.At.IsZero() {
+		e.At = time.Now().UTC()
+	} else if k := e.At.UnixNano(); r.stamped[k] > 0 {
+		if r.stamped[k]--; r.stamped[k] == 0 {
+			delete(r.stamped, k)
+		}
+	}
 	if len(r.buf) >= MaxActivity {
 		copy(r.buf, r.buf[1:])
 		r.buf = r.buf[:MaxActivity-1]
@@ -376,6 +404,23 @@ func (r *activityRing) Snapshot() []ActivityEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]ActivityEntry(nil), r.buf...)
+}
+
+// SnapshotThrough copies the log, oldest first, with the time it is whole
+// up to: every entry the session adds later is of a time after it, so a
+// reader that has seen every entry of the copy has seen everything up to
+// it. It is now, or just before the earliest time stamped for an entry
+// not yet added (Stamp).
+func (r *activityRing) SnapshotThrough() ([]ActivityEntry, time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	through := time.Now().UTC()
+	for k := range r.stamped {
+		if at := time.Unix(0, k).UTC().Add(-time.Nanosecond); at.Before(through) {
+			through = at
+		}
+	}
+	return append([]ActivityEntry(nil), r.buf...), through
 }
 
 // Tail copies the newest n entries, oldest first.

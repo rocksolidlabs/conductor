@@ -16,7 +16,9 @@ const MaxFeedPage = 5000
 
 // FeedChange is one row of the change feed: a ChangeRow without its value
 // and prior text (a description's whole), with the keys of the ticket and
-// the project it is of instead of their ids, "" for neither.
+// the project it is of instead of their ids, "" for neither. Its actor and
+// op id name the operation's receipt (Receipt), the row's entity id
+// nothing of it.
 type FeedChange struct {
 	Seq      int64     `json:"seq"`
 	Entity   string    `json:"entity"`
@@ -28,6 +30,7 @@ type FeedChange struct {
 	At       time.Time `json:"at"`
 	Actor    string    `json:"actor"`
 	By       string    `json:"by,omitempty"`
+	OpID     string    `json:"opId"`
 }
 
 // ChangesAfter reads the changes of every project after the seq after (0
@@ -40,7 +43,7 @@ func (s *Store) ChangesAfter(ctx context.Context, after int64, limit int) ([]Fee
 	}
 	out := []FeedChange{}
 	err := s.read(ctx, func(q queryer) error {
-		rows, err := q.QueryContext(ctx, `SELECT c.seq, c.entity, c.entity_id, COALESCE(t.key, ''), COALESCE(p.key, ''), c.field, c.op, c.at, c.actor, c.by
+		rows, err := q.QueryContext(ctx, `SELECT c.seq, c.entity, c.entity_id, COALESCE(t.key, ''), COALESCE(p.key, ''), c.field, c.op, c.at, c.actor, c.by, c.op_id
 			FROM changes c LEFT JOIN tickets t ON t.id = c.ticket_id LEFT JOIN projects p ON p.id = c.project_id
 			WHERE c.seq > ? ORDER BY c.seq LIMIT ?`, after, limit)
 		if err != nil {
@@ -50,7 +53,7 @@ func (s *Store) ChangesAfter(ctx context.Context, after int64, limit int) ([]Fee
 		for rows.Next() {
 			var c FeedChange
 			var at string
-			if err := rows.Scan(&c.Seq, &c.Entity, &c.EntityID, &c.Ticket, &c.Project, &c.Field, &c.Op, &at, &c.Actor, &c.By); err != nil {
+			if err := rows.Scan(&c.Seq, &c.Entity, &c.EntityID, &c.Ticket, &c.Project, &c.Field, &c.Op, &at, &c.Actor, &c.By, &c.OpID); err != nil {
 				return err
 			}
 			c.At = unstamp(at)

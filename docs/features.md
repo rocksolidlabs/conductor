@@ -3921,10 +3921,156 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   broken.
 
   PR-16 (#488): api, web: GET /api/capabilities and the app card's
-  Extensions row. Planned.
+  Extensions row (C9). `internal/api/capabilities.go`: `GET
+  /api/capabilities`, admin, answers `{providers: [{kind, name, state}]}`,
+  one row per entry of `Providers.All` (the entitlement source's slot by
+  kind and name only), `state` `ready` once the provider's `Start` has
+  succeeded or for one that needs none, `starting` until then (the start
+  state's word, `started` since PR-4, renamed `ready` as the plan names
+  it); a plain build answers `{"providers": []}`, and no provider is asked
+  anything to answer. The web app's first reader of it:
+  `web/app/utils/capabilities.ts` (`has`, true only for a kind with a
+  provider ready, `extensionsWords`, an unknown state taken for
+  `starting`), `web/app/composables/useCapabilities.ts` (read after the
+  first paint of a reader, kept while none is `starting`, read again while
+  one is, 2 s after the last reply doubling to 60 s, only while a reader
+  is mounted, forgotten with the workbench token, a reply on its way for
+  the old token dropped), and Settings → The app's **Extensions** row
+  (`data-about-row="extensions"`). Tests: `TestCapabilitiesPlainBuild`
+  (`{"providers":[]}`, no token and a host token refused),
+  `TestCapabilitiesNamesProviders` (a provider in two slots starting before
+  its first try and after one failed, ready once a try succeeds, with no
+  restart; an entitlement-only provider, a context provider and a sink
+  ready from the first), `TestCapabilitiesReplyBounded` (the fullest
+  registry within 8 KiB); vitest `utils/capabilities.test.ts` and
+  `composables/useCapabilities.test.ts` (fake timers: re-read while
+  starting and not after, the waits 2, 4, 8, 16, 32, 60, 60 s, a failed
+  read keeping what is known, no re-read without a reader, the token's
+  change dropping the cache and a late reply); Playwright
+  `settings.spec.ts` (the row on the plain e2e server, and a route answered
+  through `page.route` starting then ready, the second request waited for,
+  the row ready with no reload and the same token).
 
-  PR-17 (#489): ext/exttest: a fake per interface and the contract suite;
-  the stream's features entry completed. Planned.
+  PR-17 (#489): `ext/exttest`, the standard library, `ext` and `ext/local`
+  only: a fake per interface and for `ext.Host`, each safe for concurrent
+  use, each that records with `Changed` (closed at its next record) and
+  `Await`, so a test waits on what a fake was given: `FakeIdentity` (tokens
+  to principals, never the empty one; `Remove` a revocation),
+  `FakeRouter` (records decisions and resolutions, answers the route
+  scripted for a question), `FakeContext` (records touches and queries,
+  answers scripted blocks), `FakeSink` (records; `Block` holds each
+  `Notify` until let go or its context ends), `FakeContinuity` (records
+  docs; `Restore` writes a scripted archive or streams a download through
+  a client it is given), `FakeEntitlements` (nothing allowed until set),
+  `FakeMedia`, `FakeRuntime` (a `Where`; C10 adds its methods) and
+  `FakeHost` (records every `Launch`, `Submit` and `Notify` with scripted
+  answers, the record and a callback each holding a copy of the request,
+  refuses what the records' `Valid` refuses with
+  `ext.ErrRefused`, a `t.TempDir()` as `DataDir`, a logger into the
+  test's log, `Block`, and `Close`, after which every call answers
+  `context.Canceled`). The `Network` a provider under test is built with
+  (`DialContext`, `Transport()`) records every dial and request with its
+  context, refuses one under the context of one of the suite's calls
+  (`ErrOnCallPath`) and, blocked, holds every one on a gate until it is
+  let go or its context ends, and lets no byte cross a connection
+  `DialContext` made, however long before (a gRPC or websocket client's
+  round trip on a held connection waits too) until it is let go, closed
+  or its deadline passes, as `net.Conn`'s; a request is recorded by
+  its scheme, host and path, never its query or user information. One
+  check function per interface,
+  `Identity`, `Router`, `Context`, `Sink`, `Continuity`, `Entitlements`,
+  `Media`, `Runtime` and `Starter`, each taking an `exttest.T` and the
+  `Network`, and `RunAll(t, n, ext.Providers, ...RunOption)`, over the
+  typed slots and every entry of `All`, each value once per kind, then
+  `Starter` once per value that is one (none with `Started()`, for values
+  already running: `Start` is checked with `Starter` on a value never
+  started); its checks by kind are one table
+  (`byKind`) a ninth interface joins with a row, and an entry of a kind
+  no row knows fails. Article 8 is checked by the network, never a clock:
+  every call is made with the network open, from 32 goroutines at once
+  for the methods that must be safe for concurrent use, then with it
+  blocked and with a cancelled context, and fails on a dial or request
+  under its context or on not returning within the wait the server's
+  guard gives that method, `Name` among them; each `Route` is given a
+  question of its own, each resolved once, and `Notify` a notification of
+  each event the sink's `Events` lists, as the server types it; `Restore`
+  alone may use the
+  network on its path, must return its context's error once that ends
+  while its download waits on the gate, and fails a write made after it
+  returned whenever the suite sees it; `Starter` goes on only once the
+  closed host's refusals have reached the provider; Identity's tokens are
+  never printed, `[token]` standing in for them as they are and escaped,
+  and a URL in a check's words is shown by its scheme, host and path. The package
+  documentation says how a provider's repository runs the suite in CI, with its service reachable
+  and unreachable, and how a new interface joins it. Tests:
+  `TestFakes` (each fake, `FakeHost` and `FakeRuntime` among them, and all
+  of them from 32 goroutines under `-race`), `TestSuitePassesEveryDefault`
+  (`RunAll` over `local.Fill(ext.Providers{})` and over every default as an
+  entry of `All`, the entitlement source's among them, and each check
+  alone), `TestSuitePassesEveryFake` (every fake, and a provider that
+  fetches its keys through the `Network` on a goroutine its `Start` began),
+  `TestSuiteCatchesABreach` (a dial under the call's context, a wait on
+  the network under a context of the provider's own, ok for the empty
+  token, nine blocks, a `Start` waiting on its host, a route its decision
+  does not offer, a panic, `Events` that change, new or in place, a round
+  trip over a connection held from before the call, a `Name` that asks
+  its service, a `Restore` that writes once its context ends, a round trip
+  only for the event a sink takes, a route fetched the first time a
+  question is routed, a bad name,
+  a nil provider: each failing check named through a recording
+  `exttest.T`), `TestRunAll`, `TestRestoreMayStream` (a `Restore`
+  streaming from an `httptest` server through the `Network` passes, ends
+  with its context's error while the gate is shut, and one answering nil
+  then fails), `TestRestoreEndedByADeadline`, `TestBreachWordsKeepTokens`,
+  `TestStarterDeliversTheRefusals`,
+  `TestNetwork` and `TestNetworkHoldsAConnection`, each checked to fail
+  with its part broken; benchmarks of
+  the defaults and the fakes measure a call's time, which no check does.
+
+  What the stream observed, item by item (PR-17, 2026-11-02). C1: main's
+  CI run 41383344892 (at c045df68, Go 1.26.10) passed, in its go job,
+  `cmd/conductor` (`TestPlainBuildRegistersNothing`: a plain build's
+  registry is empty), `ext`, `ext/local` and `internal/opencore`
+  (`TestModuleKeepsTheRules` in `make lint` and in the race suite,
+  `TestEachRuleCatchesItsPlant` in the latter), as run 41224370513 did on
+  PR-1's merge (63375be5); by hand on the WSL box, `conductor serve` built
+  at 8cf30cc5 (`make build-go`) on a scratch data directory logged no
+  extension line and served the workbench as before. C2, C3, C4, C5, C7
+  and C8: the tests their acceptance names passed in that same go job,
+  the whole race suite green. C6, by hand on 2026-11-02 (05:53 to 05:58
+  UTC), the commit 8cf30cc5 (`conductor v0.7.0-rc.18-700-g8cf30cc5`) on
+  both machines: on the WSL box (Linux 6.18 under WSL2, amd64), a server
+  with the e2e stub agents (`web/e2e/conductor.e2e.json`) and a scratch
+  repository, a crew of two members and two tasks whose managed run
+  succeeded (`build` at its second attempt, its check failing the first;
+  `docs` at its first), and a Dispatch project with two tickets and a
+  53-byte text attachment on the first; `conductor export --server
+  http://127.0.0.1:<port> --out conductor-export.zip` (the workbench token
+  in `CONDUCTOR_WORKBENCH_TOKEN`): 24 files, 32,755 bytes, six left out
+  (the databases' `-wal` and `-shm`, `runs/owner.lock`,
+  `dispatch/attachments/tmp/`); the server stopped; the archive copied by
+  `scp` to the Mac (macOS 27.0.1, arm64; the binary cross-built with
+  `GOOS=darwin GOARCH=arm64 make build-go`), its SHA-256 the same there;
+  `conductor restore --data-dir <an empty directory> conductor-export.zip`:
+  24 files restored; `conductor serve` on it; and in Chromium 1117
+  (headless, through an `ssh -L` tunnel), as on the WSL box before the
+  export: the crew's page, the run's Tasks view read from the ledger
+  (`build` succeeded by attempt 2 at commit 0274a7b896d8, `docs` by
+  attempt 1 at c3592e8a34b9), both tickets in the project's list, the
+  first's page naming its attachment, and the attachment's bytes (53, the
+  same SHA-256). The crew's working directory and its stub agents belong
+  to the WSL box (the configuration, not the data directory), so the Mac's
+  crew page says the directory does not exist there and the agents are
+  not in its catalog, as it should. C9: Settings → The app's
+  **Extensions** row read "None: the open-source feature set" in that
+  browser on both machines' plain builds, `GET /api/capabilities`
+  answering `{"providers":[]}`; PR-16's Playwright spec reads the row on
+  the e2e server in CI; and `TestSuitePassesEveryDefault` passed in this
+  PR's own CI (run 41399105691, the go job at the merge of 0db9005b into
+  its base, Go 1.26.10: `ext/exttest` ok) as under `-race` here, every
+  default passing the contract suite. With C1, the two clauses of the R0
+  gate this stream owns are observed: a plain build registers nothing,
+  and every default passes the contract suite.
 - **Governance: contributing under the DCO, the marks' owner, security
   reporting and the open-core pull request checklist (Program item B; #386
   and #387, 2026-10-28).** The plan is `docs/plans/governance.md` (PR #383).

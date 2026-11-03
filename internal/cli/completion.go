@@ -116,9 +116,10 @@ func completionSpec() []commandSpec {
 			{name: "--to", kind: flagValue}, {name: "--after", kind: flagValue}, {name: "--reason", kind: flagValue}, {name: "--message", kind: flagValue}, {name: "--done", kind: flagValue}, {name: "--remaining", kind: flagValue}, {name: "--notes", kind: flagValue}}, words: []string{"context", "result", "send", "inbox", "ack", "blocked", "checkpoint", "ticket"},
 			after: map[string][]string{"ticket": {"comment"}}},
 		{name: "guide", flags: api(flagSpec{name: "--section", kind: flagEnum, values: []string{"operations", "limits", "host", "receipts", "providers"}}, flagSpec{name: "--json"})},
-		// Every flag of every brakeman command (each takes its own), and
+		// Every flag of every brakeman command (each takes its own), with
+		// observe's parameters from the table's observe_<what> entries, and
 		// the request's kinds as ask's argument.
-		{name: "brakeman", flags: api(flagSpec{name: "--json"}, flagSpec{name: "--file", kind: flagFile}, flagSpec{name: "--subject", kind: flagValue}, flagSpec{name: "--note-file", kind: flagFile}, flagSpec{name: "--since", kind: flagValue}),
+		{name: "brakeman", flags: observeFlags(api(flagSpec{name: "--json"}, flagSpec{name: "--file", kind: flagFile}, flagSpec{name: "--subject", kind: flagValue}, flagSpec{name: "--note-file", kind: flagFile}, flagSpec{name: "--since", kind: flagValue})),
 			words: []string{"request", "observe", "brief", "ask", "status", "list", "show"}, after: map[string][]string{"ask": brakeman.Kinds, "observe": observeWhats()}},
 		{name: "up", flags: api(flagSpec{name: "--name", kind: flagValue}, flagSpec{name: "--resume", kind: flagValue}, flagSpec{name: "--open"}), crewID: true},
 		{name: "crews", flags: api(flagSpec{name: "--ids"})},
@@ -127,8 +128,11 @@ func completionSpec() []commandSpec {
 		{name: "dispatch", flags: api(flagSpec{name: "--project", kind: flagValue}, flagSpec{name: "--status", kind: flagEnum, values: dispatch.Statuses}, flagSpec{name: "--q", kind: flagValue}, flagSpec{name: "--json"},
 			flagSpec{name: "--title", kind: flagValue}, flagSpec{name: "--description-file", kind: flagFile}, flagSpec{name: "--priority", kind: flagEnum, values: dispatch.Priorities}, flagSpec{name: "--owner", kind: flagValue}, flagSpec{name: "--label", kind: flagValue},
 			flagSpec{name: "--assignee", kind: flagValue}, flagSpec{name: "--milestone", kind: flagValue}, flagSpec{name: "--horizon", kind: flagEnum, values: dispatch.Horizons[1:]}, flagSpec{name: "--note", kind: flagValue},
-			flagSpec{name: "--kind", kind: flagEnum, values: dispatch.LinkKinds}, flagSpec{name: "--url", kind: flagValue}, flagSpec{name: "--ref", kind: flagValue}),
-			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link"}},
+			flagSpec{name: "--kind", kind: flagEnum, values: dispatch.LinkKinds}, flagSpec{name: "--url", kind: flagValue}, flagSpec{name: "--ref", kind: flagValue}, flagSpec{name: "--candidate", kind: flagValue},
+			flagSpec{name: "--crew", kind: flagValue}, flagSpec{name: "--base", kind: flagValue}, flagSpec{name: "--based-on", kind: flagValue}, flagSpec{name: "--reference", kind: flagValue}, flagSpec{name: "--attachment", kind: flagValue},
+			flagSpec{name: "--comment", kind: flagValue}, flagSpec{name: "--constraints-file", kind: flagFile}, flagSpec{name: "--decision", kind: flagValue}, flagSpec{name: "--plan", kind: flagValue}, flagSpec{name: "--label", kind: flagValue}),
+			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs"},
+			after: map[string][]string{"plan": planVerbs}},
 		{name: "export", flags: api(flagSpec{name: "--data-dir", kind: flagFile}, flagSpec{name: "--config", kind: flagFile}, flagSpec{name: "--out", kind: flagFile})},
 		{name: "restore", flags: []flagSpec{{name: "--config", kind: flagFile}, {name: "--data-dir", kind: flagFile}, {name: "--provider"}}, file: true},
 		{name: "hooks", flags: []flagSpec{{name: "--home", kind: flagFile}, {name: "--data-dir", kind: flagFile}}, words: []string{"install", "status"}, after: map[string][]string{"install": adapters}},

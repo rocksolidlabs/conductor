@@ -121,7 +121,8 @@ async function expectRowsInPane(page: Page, api: Api, id: string, cwd: string, w
     .poll(
       async () => {
         const m = await measure()
-        return Math.round((m.rows - 1 - m.cursorRow) * 100) / 100
+        // + 0 makes a -0 (the cursor a hair past the row, rounded) the 0 it is: toBe compares with Object.is, and -0 is not 0 there.
+        return Math.round((m.rows - 1 - m.cursorRow) * 100) / 100 + 0
       },
       { timeout: 15_000, message: `${where}: the cursor on the last row` },
     )

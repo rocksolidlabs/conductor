@@ -3,9 +3,11 @@ package api
 import (
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"slices"
 	"strconv"
@@ -17,20 +19,37 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // What changed (GET /api/brakeman/changes) and what overlaps (GET
 // /api/brakeman/overlaps), docs/plans/brakeman.md, PR-4. What a briefing
-// covers is the server's record: the desk notes, per turn, how far the
-// pages of changes it delivered reach (a run's last event seq delivered
-// with nothing skipped before it, Dispatch's change seq likewise, each
-// session's window), and the next briefing starts from each part's last
-// complete watermark, so pages a turn never read are read again.
+// covers is the server's record: the desk notes, per turn, each item of
+// what changed it delivered, and each part's watermark is how far the
+// part's items as read now were delivered with none skipped before it (a
+// run's event seq, Dispatch's change seq, a session's time), so the next
+// briefing starts from each part's last complete watermark and pages a
+// turn never read are read again. A page's cursor is the place of its
+// last item in the answer's order, never an index: what left or joined
+// the list between two pages moves nothing else.
 
 // The parts what changed is read from: a run, Dispatch, a session.
 const (
 	partDispatch = "dispatch"
 )
+
+// The bounds of a page of changes beside its items: the parts no item of
+// the answer names, which the first page carries, at most
+// maxItemlessParts bytes of them; a cursor at most maxChangesCursor bytes.
+const (
+	maxItemlessParts = 64 << 10
+	maxChangesCursor = 2048
+)
+
+// dispatchFeedPage is the page of Dispatch's change feed one read of
+// what changed takes, dispatch.MaxFeedPage; a test makes it smaller, as
+// it makes changesWindow, keeping the two equal as they are here.
+var dispatchFeedPage = dispatch.MaxFeedPage
 
 // changeItem is one thing that changed: its ref, what happened, when, the
 // part it belongs to and, for a task, its status as Conductor computes
@@ -47,8 +66,67 @@ type changeItem struct {
 	// seq is the item's place in its part: a run's event seq, Dispatch's
 	// change seq; a session's items are placed by their time.
 	seq int64
+	// h tells apart two items alike but for their words.
+	h uint64
 	// taskID is the task an event names, for its status.
 	taskID string
+}
+
+// changePos is an item's place in the answer's order, which a page's
+// cursor names: the next page starts after it.
+type changePos struct {
+	At   time.Time `json:"at"`
+	Part string    `json:"part"`
+	Seq  int64     `json:"seq"`
+	Kind string    `json:"kind"`
+	Ref  string    `json:"ref"`
+	H    uint64    `json:"h,omitempty"`
+}
+
+func (it changeItem) pos() changePos {
+	return changePos{At: it.At, Part: it.Part, Seq: it.seq, Kind: it.Kind, Ref: it.Ref, H: it.h}
+}
+
+// comparePos orders two places: by time, then part, then the place in
+// the part, then kind, ref and words.
+func comparePos(a, b changePos) int {
+	return cmp.Or(a.At.Compare(b.At), strings.Compare(a.Part, b.Part), cmp.Compare(a.Seq, b.Seq),
+		strings.Compare(a.Kind, b.Kind), strings.Compare(a.Ref, b.Ref), cmp.Compare(a.H, b.H))
+}
+
+// id is the item's identity in a turn's record of what it was given.
+func (it changeItem) id() uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(mustJSON(it.pos())))
+	return h.Sum64()
+}
+
+// wordsHash is the hash of an item's words.
+func wordsHash(words string) uint64 {
+	if words == "" {
+		return 0
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(words))
+	return h.Sum64()
+}
+
+// encodeCursor is the cursor naming p; decodeCursor reads one back.
+func encodeCursor(p changePos) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(mustJSON(p)))
+}
+
+func decodeCursor(text string) (changePos, error) {
+	var p changePos
+	bad := errors.New("cursor is the next of the page before")
+	if len(text) > maxChangesCursor {
+		return p, bad
+	}
+	b, err := base64.RawURLEncoding.DecodeString(text)
+	if err != nil || store.DecodeStrict(b, &p) != nil {
+		return p, bad
+	}
+	return p, nil
 }
 
 // changePart is one part of what changed as read: where it was read from
@@ -65,10 +143,14 @@ type changePart struct {
 	Truncated bool      `json:"truncated,omitempty"`
 	Gap       bool      `json:"gap,omitempty"`
 	Why       string    `json:"why,omitempty"`
-	// last is the part's position as read when it gave nothing: the seq
-	// or the time it is complete up to.
+	// last is the part's place before its first item: the seq or the
+	// time it is complete up to before any of them; end, the seq of the
+	// last row it read (a run's event, a Dispatch change, its items or
+	// not); readAt, the time a session's window was read at or after.
 	last   int64
 	lastAt time.Time
+	end    int64
+	readAt time.Time
 	kind   string // "run", "session", partDispatch
 	id     string
 }
@@ -96,7 +178,10 @@ type changesStart struct {
 // start or the session is gone), messages, and Dispatch's changes, every
 // project's, a comment on an old ticket among them; each with its ref and
 // time, in time order, at most limit (1 to 200, 100 when absent) and
-// maxObserveReply bytes a page, next for the rest.
+// maxObserveReply bytes a page, next (the place of the page's last item)
+// for the rest. A page carries the parts its items are of; the first,
+// the parts no item is of as well (a watermark with nothing new, a gap),
+// partsOmitted counting those past their bound.
 func (s *Server) handleBrakemanChanges(w http.ResponseWriter, r *http.Request, o *observer) {
 	q, err := readQuery(r, "since", "cursor", "limit")
 	var sinceText, cursorText string
@@ -113,11 +198,9 @@ func (s *Server) handleBrakemanChanges(w http.ResponseWriter, r *http.Request, o
 	if err == nil && (limit < 0 || limit > maxChangesPage) {
 		err = fmt.Errorf("limit is 1 to %d", maxChangesPage)
 	}
-	offset := 0
+	var cursor changePos
 	if err == nil && cursorText != "" {
-		if offset, err = strconv.Atoi(cursorText); err != nil || offset < 0 || strconv.Itoa(offset) != cursorText {
-			err = errors.New("cursor is the next of the page before")
-		}
+		cursor, err = decodeCursor(cursorText)
 	}
 	var since time.Time
 	if err == nil && sinceText != "" {
@@ -142,14 +225,48 @@ func (s *Server) handleBrakemanChanges(w http.ResponseWriter, r *http.Request, o
 		s.observeError(w, err)
 		return
 	}
-	end := min(offset, len(items))
-	page := []changeItem{}
-	used := 4 << 10
-	for _, p := range parts {
-		used += len(mustJSON(p)) + 1
+	atObserveSeam("listed")
+	first := 0
+	if cursorText != "" {
+		first = len(items)
+		if i := slices.IndexFunc(items, func(it changeItem) bool { return comparePos(it.pos(), cursor) > 0 }); i >= 0 {
+			first = i
+		}
 	}
+	named := map[string]bool{}
+	for _, it := range items {
+		named[it.Part] = true
+	}
+	partOf := map[string]changePart{}
+	for _, p := range parts {
+		partOf[p.Part] = p
+	}
+	used := 4 << 10
+	shown := map[string]bool{}
+	pageParts := []changePart{}
+	omitted := 0
+	if cursorText == "" {
+		// The parts no item is of, on the first page, within their own
+		// bound: the rest of the page is the items' and their parts'.
+		itemless := 0
+		for _, p := range parts {
+			if named[p.Part] {
+				continue
+			}
+			size := len(mustJSON(p)) + 1
+			if itemless+size > maxItemlessParts {
+				omitted++
+				continue
+			}
+			itemless += size
+			shown[p.Part] = true
+			pageParts = append(pageParts, p)
+		}
+		used += itemless
+	}
+	page := []changeItem{}
 	statuses := map[string]*computed{}
-	for i := end; i < len(items) && len(page) < limit; i++ {
+	for i := first; i < len(items) && len(page) < limit; i++ {
 		it := items[i]
 		if it.taskID != "" {
 			c, err := s.itemStatus(r.Context(), o, strings.TrimPrefix(it.Part, "run:"), it.taskID, statuses)
@@ -160,24 +277,33 @@ func (s *Server) handleBrakemanChanges(w http.ResponseWriter, r *http.Request, o
 			it.Status = c
 		}
 		size := len(mustJSON(it)) + 1
+		if !shown[it.Part] {
+			size += len(mustJSON(partOf[it.Part])) + 1
+		}
 		if used+size > maxObserveReply {
 			break
 		}
 		used += size
+		if !shown[it.Part] {
+			shown[it.Part] = true
+			pageParts = append(pageParts, partOf[it.Part])
+		}
 		page = append(page, it)
-		end = i + 1
 	}
 	for _, it := range page {
 		o.noteRef(it.Ref, classOfRef(it.Ref), it.Kind, "")
 	}
 	next := ""
-	if end < len(items) {
-		next = strconv.Itoa(end)
+	if n := len(page); n > 0 && first+n < len(items) {
+		next = encodeCursor(page[n-1].pos())
 	}
 	if o.tp != nil && start.natural {
-		o.coverage = s.brakeman.cover(o.tp.req, offset, end, items, parts)
+		o.coverage = s.brakeman.cover(o.tp.req, page, items, parts, o.now)
 	}
-	out := map[string]any{"from": start.mode, "changes": page, "parts": parts, "next": next}
+	out := map[string]any{"from": start.mode, "changes": page, "parts": pageParts, "next": next}
+	if omitted > 0 {
+		out["partsOmitted"] = omitted
+	}
 	if !start.since.IsZero() {
 		out["since"] = start.since
 	}
@@ -275,6 +401,14 @@ func coverageTime(b *turnBriefing) time.Time {
 	if c.Dispatch != nil && !c.Dispatch.At.IsZero() && c.Dispatch.At.Before(at) {
 		at = c.Dispatch.At
 	}
+	// A part the coverage had no room for starts no later than its
+	// earliest change not given; one begun after the turn's reads listed
+	// their parts, no later than the first of them began.
+	for _, t := range []time.Time{c.OmittedFrom, c.ReadFrom} {
+		if !t.IsZero() && t.Before(at) {
+			at = t
+		}
+	}
 	return at
 }
 
@@ -286,8 +420,13 @@ func (s *Server) changes(ctx context.Context, o *observer, start changesStart) (
 	parts := []changePart{}
 	add := func(p changePart, its []changeItem) {
 		p.Part = cmpOr(p.Part, p.kind+":"+p.id)
+		if p.readAt.IsZero() {
+			// Read after the observer's time: what the part gives is
+			// whole up to then.
+			p.readAt = o.now
+		}
 		for i := range its {
-			its[i].Part = p.Part
+			its[i].Part, its[i].h = p.Part, wordsHash(its[i].Words)
 		}
 		parts = append(parts, p)
 		items = append(items, its...)
@@ -307,9 +446,7 @@ func (s *Server) changes(ctx context.Context, o *observer, start changesStart) (
 			return nil, nil, err
 		}
 	}
-	slices.SortStableFunc(items, func(a, b changeItem) int {
-		return cmp.Or(a.At.Compare(b.At), strings.Compare(a.Part, b.Part), cmp.Compare(a.seq, b.seq))
-	})
+	slices.SortStableFunc(items, func(a, b changeItem) int { return comparePos(a.pos(), b.pos()) })
 	return items, parts, nil
 }
 
@@ -465,28 +602,38 @@ func (s *Server) ledgerChanges(ctx context.Context, id string, p *changePart, w 
 		}
 		out = append(out, it)
 	}
-	if len(events) > 0 && len(out) == 0 {
-		p.last = events[len(events)-1].Seq
+	p.end = after
+	if len(events) > 0 {
+		p.end = events[len(events)-1].Seq
 	}
 	return out, nil
 }
 
 // heldRunChanges is a run without a ledger's launch and end, from the
-// engine's record of it.
+// engine's record of it, placed by the synthetic seqs 1 (its launch) and
+// 2 (its end): after a watermark by those seqs alone (the watermark's
+// time is when its coverage was written, after a launch or an end it may
+// have left unread), by time otherwise. What the part read reaches its
+// end, its launch's seq, or its end's once it ended, so a watermark moves
+// past what was given and stops before what was not.
 func heldRunChanges(run crew.Run, p *changePart, w *brakeman.Watermark) []changeItem {
 	var out []changeItem
 	from := p.At
 	var after int64
 	if w != nil {
-		after = w.Seq
+		after, from = w.Seq, time.Time{}
 	}
 	if run.StartedAt.After(from) && after < 1 {
 		out = append(out, changeItem{Ref: "run:" + run.ID, Kind: "run.launched", At: run.StartedAt, seq: 1, Words: run.Label})
 	}
-	if run.StoppedAt != nil && run.StoppedAt.After(from) && after < 2 {
-		out = append(out, changeItem{Ref: "run:" + run.ID, Kind: "run." + run.State, At: *run.StoppedAt, seq: 2})
+	end := int64(1)
+	if run.StoppedAt != nil {
+		end = 2
+		if run.StoppedAt.After(from) && after < 2 {
+			out = append(out, changeItem{Ref: "run:" + run.ID, Kind: "run." + run.State, At: *run.StoppedAt, seq: 2})
+		}
 	}
-	p.last = after
+	p.last, p.end = after, max(after, end)
 	return out
 }
 
@@ -513,6 +660,11 @@ func (s *Server) sessionChanges(ctx context.Context, o *observer, start changesS
 		}
 		ref := "session:" + info.ID
 		var its []changeItem
+		// The window is read after the observer's time: a session that
+		// gives nothing more is complete up to that time, never up to one
+		// after an entry its read did not see, nor past one the session
+		// stamped and has not added yet (ActivityThrough).
+		readAt := o.now
 		l, local := s.lookupLocal(info.ID)
 		if !local || info.Kind == session.KindHosted {
 			if a := info.Attention; a.State == session.AttentionNeedsInput && a.Since != nil && a.Since.After(from) {
@@ -524,7 +676,10 @@ func (s *Server) sessionChanges(ctx context.Context, o *observer, start changesS
 			}
 			p.Gap, p.Why = true, "a hosted session's window is its host's: only its question now"
 		} else {
-			window := l.Activity()
+			window, through := l.ActivityThrough()
+			if through.Before(readAt) {
+				readAt = through
+			}
 			if len(window) >= session.MaxActivity && window[0].At.After(from) {
 				p.Gap, p.Why = true, "the session's window starts after "+from.Format(time.RFC3339)
 			}
@@ -548,7 +703,7 @@ func (s *Server) sessionChanges(ctx context.Context, o *observer, start changesS
 		for i := range its {
 			its[i].seq = its[i].At.UnixNano()
 		}
-		p.lastAt = from
+		p.lastAt, p.readAt = from, readAt
 		if len(its) == 0 && p.From != "watermark" && !p.Gap {
 			continue
 		}
@@ -573,25 +728,29 @@ func (s *Server) dispatchChanges(ctx context.Context, o *observer, start changes
 		return nil
 	}
 	p, w := partStart(start, partDispatch, "")
-	var after int64
+	head, err := ds.Head(ctx)
+	if err != nil {
+		return fmt.Errorf("the head of Dispatch's changes: %w", err)
+	}
+	after := max(0, head-changesWindow)
 	if w != nil {
 		after = w.Seq
-	} else {
-		head, err := ds.Head(ctx)
-		if err != nil {
-			return fmt.Errorf("the head of Dispatch's changes: %w", err)
-		}
-		after = max(0, head-changesWindow)
 	}
-	limit := int(min(changesWindow+1, dispatch.MaxFeedPage))
+	// At most the window, and the feed's page: a page that fills short of
+	// the head read before it leaves changes unread, truncated.
+	limit := int(min(changesWindow, int64(dispatchFeedPage)))
 	rows, err := ds.ChangesAfter(ctx, after, limit)
 	if err != nil {
 		return fmt.Errorf("the changes of Dispatch: %w", err)
 	}
-	if len(rows) >= limit && int64(len(rows)) > changesWindow {
-		rows, p.Truncated = rows[:changesWindow], true
+	if len(rows) == limit && rows[len(rows)-1].Seq < head {
+		p.Truncated = true
+		p.Why = fmt.Sprintf("more than %d of Dispatch's changes since then", limit)
 	}
-	p.last = after
+	p.last, p.end = after, after
+	if len(rows) > 0 {
+		p.end = rows[len(rows)-1].Seq
+	}
 	admitted := map[string]bool{}
 	var its []changeItem
 	for i, c := range rows {
@@ -631,37 +790,94 @@ func (s *Server) dispatchChanges(ctx context.Context, o *observer, start changes
 		case c.Ticket != "":
 			it.Ref, it.Ticket = "ticket:"+c.Ticket, "ticket:"+c.Ticket
 		default:
-			it.Ref = "op:" + c.Actor + "/" + c.EntityID
+			// The operation's receipt: the actor and op id that made the
+			// change, never the entity's id.
+			it.Ref = "op:" + c.Actor + "/" + c.OpID
 			if r, err := brakeman.ParseRef(it.Ref); err != nil || r.Valid() != nil {
-				it.Ref = "op:" + c.Actor + "/x"
+				// A row whose operation no ref can cite (none this server
+				// writes) is passed over.
+				continue
 			}
 		}
 		its = append(its, it)
-	}
-	if len(rows) > 0 && len(its) == 0 {
-		p.last = rows[len(rows)-1].Seq
-	}
-	if len(its) == 0 && p.From != "watermark" && !p.Truncated && w == nil && len(rows) == 0 {
-		// Nothing changed since: Dispatch is still a part, complete up
-		// to its head.
-		p.last = after
 	}
 	add(p, its)
 	return nil
 }
 
-// cover is the coverage of a turn's read of changes that delivered
-// items[offset:end] (contiguous with what it was given before): for each
-// part, the last place delivered with nothing before it skipped, partial
-// where the part has more, was truncated or has a gap; a part delivered
-// nothing yet keeps the place it started from. Pages read out of order
-// add nothing.
-func (d *brakemanDesk) cover(req brakeman.Request, offset, end int, items []changeItem, parts []changePart) *brakeman.Coverage {
+// turnChanges is what the turn in progress was given of what changed,
+// each item by its identity (changeItem.id), and the visibility classes
+// its answers used: the slot's one turn at a time, begun again for
+// another request.
+type turnChanges struct {
+	req       string
+	delivered map[uint64]bool
+	classes   map[string]bool
+}
+
+// turnChangesOf is the record of the request id's turn. The caller holds
+// d.mu.
+func (d *brakemanDesk) turnChangesOf(id string) *turnChanges {
+	if d.turnReads == nil || d.turnReads.req != id {
+		d.turnReads = &turnChanges{req: id, delivered: map[uint64]bool{}, classes: map[string]bool{}}
+	}
+	return d.turnReads
+}
+
+// usedClass notes that an answer of the request id's turn used class.
+func (d *brakemanDesk) usedClass(id, class string) {
 	d.mu.Lock()
-	reached := d.reached[req.ID]
-	if offset <= reached && end > reached {
-		reached = end
-		d.reached[req.ID] = end
+	defer d.mu.Unlock()
+	d.turnChangesOf(id).classes[class] = true
+}
+
+// classesUsed is the classes the request id's turn's answers used, in
+// brakeman.Classes' order.
+func (d *brakemanDesk) classesUsed(id string) []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var out []string
+	if t := d.turnReads; t != nil && t.req == id {
+		for _, c := range brakeman.Classes {
+			if t.classes[c] {
+				out = append(out, c)
+			}
+		}
+	}
+	return out
+}
+
+// cover is the coverage of a turn's read of changes that delivered page,
+// of items as read now: page is added to what the turn was given, and
+// each part's watermark is how far its items, in the part's order, were
+// given with none before them skipped: past the last of them, to the end
+// of what the part read (a session's to when its window was read), when
+// all were; just before the first that was not, partial, otherwise; and
+// partial where the part was truncated or has a gap. A session's place
+// is a time, so an item not given at a time another was stops the
+// watermark before that time, and neither is passed over; nor is it ever
+// past when its window was read (an entry stamped then may not have been
+// added yet). readStart is when the read began, before it listed its
+// parts: a part it did not list (one begun since) has no watermark and is
+// read next time from no later than the earliest of the turn's reads'
+// starts (ReadFrom), and every other watermark's time is when its part
+// was read, never when the coverage is written.
+func (d *brakemanDesk) cover(req brakeman.Request, page, items []changeItem, parts []changePart, readStart time.Time) *brakeman.Coverage {
+	d.mu.Lock()
+	tc := d.turnChangesOf(req.ID)
+	for _, it := range page {
+		tc.delivered[it.id()] = true
+	}
+	byPart := map[string][]changeItem{}
+	for _, it := range items {
+		byPart[it.Part] = append(byPart[it.Part], it)
+	}
+	missed := map[string]int{}
+	for part, its := range byPart {
+		if !strings.HasPrefix(part, "session:") {
+			slices.SortStableFunc(its, func(a, b changeItem) int { return cmp.Compare(a.seq, b.seq) })
+		}
+		missed[part] = slices.IndexFunc(its, func(it changeItem) bool { return !tc.delivered[it.id()] })
 	}
 	d.mu.Unlock()
 	cov := &brakeman.Coverage{}
@@ -669,71 +885,105 @@ func (d *brakemanDesk) cover(req brakeman.Request, offset, end int, items []chan
 		*cov = *req.Coverage
 	}
 	now := d.now().UTC()
+	if !readStart.IsZero() && (cov.ReadFrom.IsZero() || readStart.Before(cov.ReadFrom)) {
+		cov.ReadFrom = readStart.UTC()
+	}
 	for _, p := range parts {
-		delivered, more := int64(-1), false
-		var deliveredAt time.Time
-		for i, it := range items {
-			if it.Part != p.Part {
-				continue
-			}
-			if i < reached {
-				delivered, deliveredAt = it.seq, it.At
-			} else {
-				more = true
-			}
+		its, u := byPart[p.Part], -1
+		if len(its) > 0 {
+			u = missed[p.Part]
 		}
-		wm := brakeman.Watermark{ID: p.id, Partial: more || p.Truncated || p.Gap, New: p.New, At: now}
+		wm := brakeman.Watermark{ID: p.id, Partial: u >= 0 || p.Truncated || p.Gap, New: p.New, At: now}
+		if !p.readAt.IsZero() && p.readAt.Before(now) {
+			wm.At = p.readAt
+		}
 		switch p.kind {
 		case "session":
-			wm.At = p.lastAt
-			if delivered >= 0 {
-				wm.At = deliveredAt
-			} else if !more {
-				wm.At = now
+			// The earlier of when the window was read and just before
+			// its first item not given.
+			if u >= 0 {
+				if at := its[u].At.Add(-time.Nanosecond); at.Before(wm.At) {
+					wm.At = at
+				}
+			}
+			if wm.At.Before(p.lastAt) {
+				wm.At = p.lastAt
 			}
 		default:
-			wm.Seq = p.last
+			wm.Seq = max(p.last, p.end)
 			if p.From == "watermark" {
 				wm.Seq = max(wm.Seq, p.Seq)
 			}
-			if delivered >= 0 {
-				wm.Seq = delivered
-			} else if more {
-				// Nothing delivered: complete only up to before its first.
-				for _, it := range items {
-					if it.Part == p.Part {
-						wm.Seq = max(wm.Seq, it.seq-1)
-						break
-					}
-				}
+			if u >= 0 {
+				// Every row before it was given, or passed over as older
+				// than the time or outside the grant.
+				wm.Seq = its[u].seq - 1
 			}
 		}
+		kept := true
 		switch p.kind {
 		case "run":
-			cov.Runs = putWatermark(cov.Runs, wm)
+			cov.Runs, kept = putWatermark(cov.Runs, wm)
 		case "session":
-			cov.Sessions = putWatermark(cov.Sessions, wm)
+			cov.Sessions, kept = putWatermark(cov.Sessions, wm)
 		default:
 			w := wm
 			w.ID = ""
 			cov.Dispatch = &w
 		}
+		if !kept {
+			// No room for its watermark: the next briefing reads it as a
+			// part with none, from no later than its first change not
+			// given.
+			if at := reachFrom(p, its, u, now); cov.OmittedFrom.IsZero() || at.Before(cov.OmittedFrom) {
+				cov.OmittedFrom = at
+			}
+		}
 	}
 	return cov
 }
 
+// reachFrom is the earliest time a change of the part not given may be
+// at, for a part the coverage has no room for: just before its first
+// item not given; for a part truncated or with a gap, no later than where
+// it was read from and its first item; for one given whole, when it was
+// read (now, when no time says it).
+func reachFrom(p changePart, its []changeItem, u int, now time.Time) time.Time {
+	at := now
+	if !p.readAt.IsZero() && p.readAt.Before(at) {
+		at = p.readAt
+	}
+	earlier := func(t time.Time) {
+		if !t.IsZero() && t.Before(at) {
+			at = t
+		}
+	}
+	if u >= 0 {
+		earlier(its[u].At.Add(-time.Nanosecond))
+	}
+	if p.Truncated || p.Gap {
+		earlier(p.At)
+		earlier(p.lastAt)
+		if len(its) > 0 {
+			earlier(slices.MinFunc(its, func(a, b changeItem) int { return a.At.Compare(b.At) }).At.Add(-time.Nanosecond))
+		}
+	}
+	return at
+}
+
 // putWatermark puts w in place of the one of its id, or adds it while
-// the list has room (brakeman.MaxWatermarks): a part left out starts at
-// the briefing's time, newly in scope, next time.
-func putWatermark(list []brakeman.Watermark, w brakeman.Watermark) []brakeman.Watermark {
+// the list has room (brakeman.MaxWatermarks); false when it had none: the
+// part is then read from the coverage's OmittedFrom, as one with no
+// watermark, next time.
+func putWatermark(list []brakeman.Watermark, w brakeman.Watermark) ([]brakeman.Watermark, bool) {
 	if i := slices.IndexFunc(list, func(o brakeman.Watermark) bool { return o.ID == w.ID }); i >= 0 {
 		list[i] = w
-		return list
+		return list, true
 	}
 	if len(list) >= brakeman.MaxWatermarks {
-		return list
+		return list, false
 	}
-	return append(list, w)
+	return append(list, w), true
 }
 
 // overlapTree is one live git work tree overlaps reads: an attempt's
