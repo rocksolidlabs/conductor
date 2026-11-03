@@ -1,7 +1,8 @@
 import { ApiError } from './useApi'
+import { dispatchLive } from './useDispatchLive'
 import type { RunCandidate, RunCandidatesPage, TaskCandidates } from './useDispatch'
 import type { Finding } from './useSessions'
-import { RUN_CHANGING_RETRY_MS, gather } from '~/utils/dispatchEvidence'
+import { RUN_CHANGING_RETRY_MS, type TaskDetail, gather, repairReads } from '~/utils/dispatchEvidence'
 import { latestReads } from '~/utils/latestReads'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 
@@ -11,14 +12,19 @@ export const candidateKey = (c: Pick<RunCandidate, 'task' | 'attempt'>) => `${c.
 /**
  * A run's candidates as DispatchCandidates shows them (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11): the pages
  * read from the ledger (GET /api/runs/{run}/candidates), a page of tasks at a time, More tasks reading one more by the last page's
- * `next`, every page read again from the start as one reply through the component's ordering gate; read when the run is named and,
- * gathered for RUN_EVENT_WINDOW_MS, when its revision moves. A read refused while the run moved through every one of its reads (503
- * run_changing, Retry-After: 1) is no failure, on the first read as on any other: what is shown stays and it is asked again after the
- * second. A review's findings, read from the task route (GET /api/runs/{run}/tasks/{task}, which has them whole) when the review is
- * opened, each review task's reads ordered on their own, so a second review opened while the first one's reply is on its way leaves both.
+ * `next`, every page read again from the start as one reply through the component's ordering gate; read when the run is named,
+ * gathered for RUN_EVENT_WINDOW_MS when its revision moves, and at once on a `snapshot` (the stream started over: what it missed is
+ * unknown, and a read that failed, or a record's, which has no revision to move, is read again). A read refused while the run moved
+ * through every one of its reads (503 run_changing, Retry-After: 1) is no failure, on the first read as on any other: what is shown
+ * stays and it is asked again after the second. A failure is said only while no reply asked after it was applied and no snapshot came
+ * after it was asked (a 404 is ordered by the gate as any reply), and a reply asked before a failure said leaves it said: what is shown
+ * is always the newest answer. Each task's own read (GET /api/runs/{run}/tasks/{task}, `details`): a review's, when it is opened, for
+ * its findings, which it has whole; and, after every read of the pages, each task the repairs read (repairReads), for every attempt with
+ * when it started, a repair that never submitted included, of a record too. Each task's reads are ordered on their own, so a second
+ * review opened while the first one's reply is on its way leaves both.
  */
 export function useRunCandidates(o: { runId: () => string; revision: () => number | undefined }) {
-  const { api, read } = useDispatch()
+  const { api, gate, readOrAbsent } = useDispatch()
   const sessions = useSessions()
 
   /** The pages read, in their order; null until the first read answered. */
@@ -27,6 +33,12 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
   const count = ref(1)
   const error = ref('')
   const loading = ref(false)
+  // The reads of the pages, numbered as they are asked: the last one applied (a reply or a 404), the last whose failure is said, and the
+  // last asked before the latest snapshot.
+  let asked = 0
+  let appliedN = 0
+  let errorN = 0
+  let floor = 0
 
   const tasks = computed<TaskCandidates[]>(() => {
     const out: TaskCandidates[] = []
@@ -39,9 +51,10 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
   async function readPages(): Promise<void> {
     const run = o.runId()
     const n = count.value
+    const mine = ++asked
     loading.value = true
     try {
-      await read(
+      await readOrAbsent(
         `candidates:${run}`,
         async () => {
           const out: RunCandidatesPage[] = []
@@ -54,20 +67,33 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
           }
           return out
         },
-        (out) => {
-          if (run !== o.runId()) return
-          pages.value = out
-          error.value = ''
+        {
+          apply: (out) => {
+            if (run !== o.runId()) return
+            pages.value = out
+            appliedN = mine
+            if (mine > errorN) error.value = ''
+            readRepairs()
+          },
+          absent: (e) => e instanceof ApiError && e.status === 404,
+          gone: () => {
+            if (run !== o.runId()) return
+            appliedN = errorN = mine
+            error.value = 'The server knows no such run.'
+          },
         },
       )
     } catch (e) {
       if (run !== o.runId()) return
+      // Superseded: a reply asked after it was applied, or a snapshot came after it was asked and its read answers instead.
+      if (mine <= appliedN || mine <= floor) return
       // The run moved through every read: what is shown stays (nothing, "Reading", before the first answer), asked again after a second.
       if (e instanceof ApiError && e.status === 503 && e.code === 'run_changing') {
         retry.ask()
         return
       }
-      error.value = e instanceof ApiError && e.status === 404 ? 'The server knows no such run.' : (e as Error).message
+      errorN = mine
+      error.value = (e as Error).message
     } finally {
       loading.value = false
     }
@@ -75,9 +101,19 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
   const reads = gather(readPages, RUN_EVENT_WINDOW_MS)
   /** A read refused while the run moved through every one of its reads, asked again after the second its Retry-After names. */
   const retry = gather(readPages, RUN_CHANGING_RETRY_MS)
+  // A snapshot reads the pages shown again, as it does the ticket page (useDispatchLive): no event of Dispatch's reads them otherwise.
+  const unwatch = dispatchLive().subscribe({
+    later: () => false,
+    read: readPages,
+    reset: () => {
+      gate.reset()
+      floor = asked
+    },
+  })
   onBeforeUnmount(() => {
     reads.stop()
     retry.stop()
+    unwatch()
   })
 
   async function more(): Promise<void> {
@@ -86,16 +122,48 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
     await readPages()
   }
 
-  // A review's findings, read from the task route when the review is opened: the candidates carry their counts alone.
+  // Each task's own read (the task route): its attempts whole, for the repairs (details) and a review's findings when it is opened.
   const opened = reactive(new Set<string>())
   const findings = reactive(new Map<string, Finding[]>())
   const findingsError = reactive(new Map<string, string>())
-  /** By review task: its reads, the last one asked applied (a reply carries every attempt of the task, so one task's reads are one thing). */
-  const findingReads = new Map<string, ReturnType<typeof latestReads>>()
+  const details = reactive(new Map<string, TaskDetail>())
+  const detailsError = reactive(new Map<string, string>())
+  /** By task: its reads, the last one asked applied (a reply carries every attempt of the task, so one task's reads are one thing). */
+  const taskReads = new Map<string, ReturnType<typeof latestReads>>()
   function readsOf(task: string) {
-    let r = findingReads.get(task)
-    if (!r) findingReads.set(task, (r = latestReads()))
+    let r = taskReads.get(task)
+    if (!r) taskReads.set(task, (r = latestReads()))
     return r
+  }
+  /** The tasks read since the pages last answered: a review's read names the task it reviews, read then if it was not. */
+  let round = new Set<string>()
+  function readTask(task: string): Promise<void> {
+    round.add(task)
+    const run = o.runId()
+    const of = (key: string) => key.startsWith(`${task}/`)
+    return readsOf(task).read(
+      () => sessions.runTask(run, task),
+      (r) => {
+        if (run !== o.runId()) return
+        details.set(task, { task: r.task, attempts: r.attempts })
+        detailsError.delete(task)
+        for (const a of r.attempts) findings.set(`${task}/${a.n}`, a.submitted?.findings ?? [])
+        for (const key of [...findingsError.keys()]) if (of(key)) findingsError.delete(key)
+        const sub = r.task.kind === 'review' ? r.task.needs?.[0] : undefined
+        if (sub && !round.has(sub)) void readTask(sub)
+      },
+      (e) => {
+        if (run !== o.runId()) return
+        detailsError.set(task, (e as Error).message)
+        // Every attempt of the task opened and still reading waited on this read: each says it failed, and is read again when reopened.
+        for (const key of opened) if (of(key) && !findings.has(key)) findingsError.set(key, (e as Error).message)
+      },
+    )
+  }
+  /** After the pages answered: the attempts of every task the repairs read, again, as the pages moved. */
+  function readRepairs() {
+    round = new Set()
+    for (const t of repairReads(tasks.value, details)) void readTask(t)
   }
   function toggleFindings(c: RunCandidate): Promise<void> {
     const k = candidateKey(c)
@@ -104,21 +172,7 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
       return Promise.resolve()
     }
     opened.add(k)
-    const run = o.runId()
-    const of = (key: string) => key.startsWith(`${c.task}/`)
-    return readsOf(c.task).read(
-      () => sessions.runTask(run, c.task),
-      (r) => {
-        if (run !== o.runId()) return
-        for (const a of r.attempts) findings.set(`${c.task}/${a.n}`, a.submitted?.findings ?? [])
-        for (const key of [...findingsError.keys()]) if (of(key)) findingsError.delete(key)
-      },
-      (e) => {
-        if (run !== o.runId()) return
-        // Every attempt of the task opened and still reading waited on this read: each says it failed, and is read again when reopened.
-        for (const key of opened) if (of(key) && !findings.has(key)) findingsError.set(key, (e as Error).message)
-      },
-    )
+    return readTask(c.task)
   }
 
   watch(
@@ -126,6 +180,8 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
     () => {
       pages.value = null
       count.value = 1
+      details.clear()
+      detailsError.clear()
       void readPages()
     },
     { immediate: true },
@@ -137,5 +193,5 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
     },
   )
 
-  return { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings }
+  return { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError }
 }

@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import type { CandidateReceipt, RunCandidate } from '~/composables/useDispatch'
-import type { RunTask } from '~/composables/useSessions'
 import { candidateKey } from '~/composables/useRunCandidates'
-import { candidateWords, findingsCount, findingsWords, receiptChips, receiptKey, receiptName, receiptState, repairs } from '~/utils/dispatchEvidence'
+import { type ReceiptPick, candidateWords, findingsCount, findingsWords, pickReceipt, pickedReceipt, receiptChips, receiptKey, receiptName, receiptState, repairs } from '~/utils/dispatchEvidence'
 import { shortCommit } from '~/utils/dispatchPlans'
 
 /**
@@ -11,7 +10,8 @@ import { shortCommit } from '~/utils/dispatchPlans'
  * a page of tasks at a time with More tasks following the page's `next`, so every task is reachable; each with its commit and Copy,
  * whether it stands as the task's result, was withdrawn or accepted anyway, and its receipts as chips with where each ran, opened in full
  * (DispatchReceipt) with the log and its hash; a review's verdict and its findings counted, their text read from the task route when the
- * review is opened (GET /api/runs/{run}/tasks/{task}, which has them whole); then the run's repairs (DispatchRepairs). The pages shown
+ * review is opened (GET /api/runs/{run}/tasks/{task}, which has them whole); then the run's repairs (DispatchRepairs), who took each up
+ * read from the same route, every attempt with when it started, one that never submitted included, a record's too. The pages shown
  * are read again from the start, gathered for the window, when the run's revision moves (its run events, through the live store): the
  * reads are useRunCandidates'. A list, never a table: one column on a phone.
  */
@@ -19,24 +19,24 @@ const props = defineProps<{
   runId: string
   /** The run's revision in the ledger as the live store holds it: a move reads the candidates again. Absent for a record. */
   revision?: number
-  /** The live run's tasks, for a repair attempt that has not submitted yet. */
-  liveTasks?: readonly RunTask[]
 }>()
 
 const copy = useCopy()
-const { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings } = useRunCandidates({ runId: () => props.runId, revision: () => props.revision })
-const fixes = computed(() => repairs(tasks.value, props.liveTasks))
+const { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError } = useRunCandidates({ runId: () => props.runId, revision: () => props.revision })
+const fixes = computed(() => repairs(tasks.value, details))
 const ckey = candidateKey
 
 function severityColor(s: string): 'error' | 'warning' | 'neutral' | 'info' {
   return s === 'blocker' ? 'error' : s === 'major' ? 'warning' : s === 'minor' ? 'info' : 'neutral'
 }
 
-// A receipt opened in full.
+// A receipt opened in full, kept by its identity and found in the candidates as each read finds them: a check opened while it ran shows
+// the finished receipt and its log once a read has it.
 const receiptOpen = ref(false)
-const shown = ref<{ task: string; attempt: number; commit: string; receipt: CandidateReceipt } | null>(null)
+const picked = ref<ReceiptPick | null>(null)
+const shown = computed(() => pickedReceipt(tasks.value, picked.value))
 function openReceipt(c: RunCandidate, r: CandidateReceipt) {
-  shown.value = { task: c.task, attempt: c.attempt, commit: (c.kind === 'review' ? c.start : c.commit) ?? '', receipt: r }
+  picked.value = pickReceipt(c, r)
   receiptOpen.value = true
 }
 
@@ -144,7 +144,7 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
     </ul>
     <UButton v-if="next" label="More tasks" icon="i-lucide-chevrons-down" size="xs" color="neutral" variant="ghost" class="self-start" :loading="loading" data-candidates-more @click="more" />
 
-    <DispatchRepairs :repairs="fixes" />
+    <DispatchRepairs :repairs="fixes" :errors="detailsError" />
     <DispatchReceipt v-model:open="receiptOpen" :run-id="runId" :task="shown?.task ?? ''" :attempt="shown?.attempt ?? 0" :commit="shown?.commit ?? ''" :receipt="shown?.receipt ?? null" />
   </div>
 </template>

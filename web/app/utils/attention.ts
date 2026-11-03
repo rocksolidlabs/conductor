@@ -99,6 +99,15 @@ export function newlyNeedingInput(prev: Map<string, SessionInfo>, next: Map<stri
   return out
 }
 
+/**
+ * The sessions of a list that may alert a person (a browser notification, the chime): all but a quiet one, a background Brakeman
+ * turn's (`crew.brakeman.quiet`), whose question Needs you still lists and which pages no one (docs/plans/brakeman.md, the
+ * invariant on Brakeman's questions).
+ */
+export function alerting(list: readonly SessionInfo[]): SessionInfo[] {
+  return list.filter((s) => !s.crew?.brakeman?.quiet)
+}
+
 /** Document title with the count of sessions needing input. */
 export function titleWithCount(base: string, count: number): string {
   return count > 0 ? `(${count}) ${base}` : base

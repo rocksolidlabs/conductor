@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1088,27 +1087,6 @@ func TestAPortsDrawsAreBounded(t *testing.T) {
 	}
 	stopRun(t, e, run.ID)
 	stopRun(t, e, holder.ID)
-}
-
-// The native executor draws a port of the loopback and lets it go: the
-// number it gives is free to bind. Another process may take a free number
-// between the two, so a number that cannot be bound is drawn again, three
-// times at most: one that the executor held would fail every time.
-func TestTheNativeExecutorDrawsAPortAndLetsItGo(t *testing.T) {
-	var errs []string
-	for range 3 {
-		n, err := nativeExec().port(t.Context())
-		if err != nil || n < 1 || n > maxPort {
-			t.Fatalf("drawn %d: %v", n, err)
-		}
-		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(n)))
-		if err == nil {
-			l.Close()
-			return
-		}
-		errs = append(errs, err.Error())
-	}
-	t.Fatalf("no drawn port could be bound: %v", errs)
 }
 
 // The bounds hold on the expanded form (EN1 PR-3): a manifest the rules

@@ -88,6 +88,6 @@ const selected = ref('')
     </ul>
 
     <RunTasks v-if="run" :run="run" :selected="selected" :now="now" @select="(id: string) => (selected = id)" @open="(id: string) => router.push(`/sessions/${id}`)" />
-    <DispatchCandidates v-if="managed" :run-id="runId" :revision="liveRun?.managed?.revision" :live-tasks="liveRun?.tasks" />
+    <DispatchCandidates v-if="managed" :run-id="runId" :revision="liveRun?.managed?.revision" />
   </div>
 </template>

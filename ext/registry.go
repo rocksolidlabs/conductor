@@ -128,7 +128,22 @@ func RegisterEntitlements(e EntitlementSource) { register(kindEntitlements, e) }
 func RegisterMedia(m MediaRoomProvider) { register(kindMedia, m) }
 
 // RegisterRuntime registers the runtime; one value, as RegisterIdentity.
-func RegisterRuntime(r Runtime) { register(kindRuntime, r) }
+// It panics too on a Where that Where.Valid refuses, and on WhereNative,
+// which only the free default reports, so a row that says native was run
+// by the native code.
+func RegisterRuntime(r Runtime) {
+	if r != nil && !nilValue(r) {
+		// Before the lock, as Name is read: a Where that reads the registry
+		// must not deadlock.
+		switch w := r.Where(); {
+		case w.Valid() != nil:
+			panic(fmt.Sprintf("ext: register %s %q: its where %q is not 1 to %d of a-z, 0-9 and '-' beginning with a letter", KindRuntime, r.Name(), string(w), MaxWhere))
+		case w == WhereNative:
+			panic(fmt.Sprintf("ext: register %s %q: its where is %q, which only the free default reports", KindRuntime, r.Name(), string(w)))
+		}
+	}
+	register(kindRuntime, r)
+}
 
 // RegisterContextProvider adds a context provider to its list, after those
 // registered before it. It panics on a nil provider, a bad name, a name the

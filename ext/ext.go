@@ -22,8 +22,9 @@
 //   - EntitlementSource: what the signed-in workspace may use of a paid
 //     feature. Only providers ask it; no code of this repository does.
 //   - MediaRoomProvider: ICE servers beside the configured ones, and rooms.
-//   - Runtime: where an attempt and its checks run (its methods come with
-//     the Runtime seam; until then it names its Where only).
+//   - Runtime: where the processes of a managed run (its attempts'
+//     terminals, their checks, steps, services, probes and ports) run,
+//     when it takes the run; natively otherwise.
 //
 // None of them is implemented in this repository. Each has a free default
 // (package ext/local) that does what Conductor does without it, and a plain
@@ -77,13 +78,15 @@
 // at a person's word, with no server running.
 //
 // The server calls every provider through a guard. Each call has a wait
-// (IdentityWait, RouteWait, ContextWait, ICEWait, DeliveryWait, StartWait),
-// a bound of a hang and never what a normal answer takes; a call past it,
-// one that errs or panics, and an answer its record's Valid refuses are
-// answered with the free default instead, call by call, with nothing
-// remembered about the failure, so a provider whose service comes back is
-// used again at its next call. Calls fed from queues (NoteTouch, Notify)
-// never hold the code that queues them: a full queue drops its oldest.
+// (IdentityWait, RouteWait, ContextWait, ICEWait, DeliveryWait, StartWait,
+// TakesWait; a Runtime's process methods have none, since a process that
+// started is not answered for by a default), a bound of a hang and never
+// what a normal answer takes; a call past it, one that errs or panics, and
+// an answer its record's Valid refuses are answered with the free default
+// instead, call by call, with nothing remembered about the failure, so a
+// provider whose service comes back is used again at its next call. Calls
+// fed from queues (NoteTouch, Notify) never hold the code that queues
+// them: a full queue drops its oldest.
 // While a provider has not started, or its service is unreachable,
 // Conductor is the open-source build, mid-session, with no restart.
 //
@@ -98,7 +101,9 @@
 // repository takes them: RoomJoin (Room has no caller until Program item
 // CL1's rooms, which add its check with it) and Entitlement (the private
 // repositories' providers ask the entitlement source; this repository
-// never does).
+// never does). The Runtime's are in-process Go types (a writer, a
+// callback, an open directory) with no JSON tags and no Valid: no hosted
+// service implements a Runtime.
 //
 // # Stability
 //
