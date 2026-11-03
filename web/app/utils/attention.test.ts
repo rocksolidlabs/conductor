@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { liveAttention, liveSession, ATTENTION_DOT_COLOR, answersInTerminal, choiceKey, firstChoice, isActive, needingInput, newlyNeedingInput, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
+import { alerting, liveAttention, liveSession, ATTENTION_DOT_COLOR, answersInTerminal, choiceKey, firstChoice, isActive, needingInput, newlyNeedingInput, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
   return {
@@ -34,6 +34,17 @@ describe('attention helpers', () => {
     expect(newlyNeedingInput(next, next2).map((x) => x.id)).toEqual(['a'])
     // first snapshot fires for everything already waiting
     expect(newlyNeedingInput(new Map(), next).map((x) => x.id)).toEqual(['a', 'b'])
+  })
+
+  it("counts a quiet Brakeman turn's question in Needs you and alerts no one for it; a person's request's turn alerts", () => {
+    // docs/plans/brakeman.md, the invariant on Brakeman's questions: the mark is the session's own, from its creation.
+    const brakeman = (id: string, quiet: boolean) => ({ ...s(id, 'needs_input', 't1'), name: `Brakeman · ${id}`, crew: { runId: 'brakeman-0a1b2c3d', crewId: 'brakeman', member: 'brakeman', brakeman: { request: id, quiet } } })
+    const prev = new Map<string, SessionInfo>()
+    const next = new Map<string, SessionInfo>([['br-1', brakeman('br-1', true)], ['br-2', brakeman('br-2', false)], ['p', s('p', 'needs_input', 't2')]])
+    expect(needingInput(next.values()).map((x) => x.id).sort()).toEqual(['br-1', 'br-2', 'p'])
+    const fresh = newlyNeedingInput(prev, next)
+    expect(fresh.map((x) => x.id).sort()).toEqual(['br-1', 'br-2', 'p'])
+    expect(alerting(fresh).map((x) => x.id).sort()).toEqual(['br-2', 'p'])
   })
 
   it('formats the title and active state', () => {
