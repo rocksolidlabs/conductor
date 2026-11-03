@@ -1,6 +1,6 @@
 import { DispatchOrder, through, throughOrAbsent, type AbsentOptions } from '~/utils/dispatchOrder'
 import { ApiError, type ApiErrorBody } from './useApi'
-import type { CrewCheck, CrewManifest, RunInfo } from './useSessions'
+import type { CrewCheck, CrewManifest, Finding, RunAttempt, RunInfo, RunStep, RunTask, RunTicket } from './useSessions'
 
 // Dispatch's client (docs/plans/dispatch.md, "web/app"; the routes in docs/protocol.md, Dispatch): the types of every reply, as
 // useSessions.ts holds the crews' and the runs', the dispatch event's beside them, and the routes over useApi. Every page's state goes
@@ -497,6 +497,140 @@ export interface LaunchReply {
   run: RunInfo | null
 }
 
+/** What changed of a ticket since a launch (its `ChangedSince`): the intent fields set since whose value is not the package's, the live comments added since, the ticket's revision now. */
+export interface LaunchChanges {
+  fields: Array<'title' | 'description' | 'acceptance'>
+  comments: number
+  rev: number
+}
+
+/** A member of a run as a ticket's runs show it: its name, its latest session (joined to the live sessions), its status. */
+export interface RunSummaryMember {
+  name: string
+  sessionId?: string
+  status: 'pending' | 'starting' | 'running' | 'ended'
+}
+
+/** What a task's attempt in flight said stops it, its reason cut to 200 characters (the run's own page has it whole). */
+export interface RunSummaryBlocker {
+  task: string
+  reason: string
+  by: string
+  at: string
+}
+
+/** A run as a ticket's runs summarize it (GET …/{key}/runs): from the engine, else its record, else the ledger's rows (`record` then). */
+export interface RunSummary {
+  id: string
+  label: string
+  state: RunInfo['state']
+  outcome?: RunInfo['outcome']
+  paused: boolean
+  startedAt: string
+  stoppedAt?: string
+  record: boolean
+  resumedFrom?: string
+  resumedBy?: string
+  ticket?: RunTicket
+  /** At most 12. */
+  members: RunSummaryMember[]
+  /** Its tasks counted by state. */
+  tasks: Partial<Record<RunTask['state'], number>>
+  /** How many of its members' sessions waited on a person when the reply was made: the page counts its own from the live sessions. */
+  questions: number
+  /** At most 20. */
+  blockers: RunSummaryBlocker[]
+}
+
+/** A launched or hand-linked run's chain held by other tickets too: their keys, and the words saying how, with the remedy. */
+export interface ContestedChain {
+  keys: string[]
+  words: string
+}
+
+/**
+ * One entry of a ticket's runs: a launch (its summary, its run once it started, what changed of the ticket since), a run linked by hand
+ * (the link and its run), or another run of a chain the ticket holds (the launch or the link that holds it, the run it continues).
+ */
+export interface TicketRunEntry {
+  kind: 'launch' | 'link' | 'run'
+  launch?: LaunchSummary
+  link?: TicketLink
+  run?: RunSummary
+  changed?: LaunchChanges
+  contested?: ContestedChain
+  continues?: string
+}
+
+/** A page of a ticket's runs, newest first: `next` the cursor of the page after it, absent on the last. */
+export interface TicketRunsPage {
+  entries: TicketRunEntry[]
+  next?: string
+}
+
+/** A receipt of a candidate: a check's or a verify step's run against its commit, where it ran, how it ended, its log's hash. */
+export interface CandidateReceipt {
+  phase: 'check' | 'verify'
+  id: string
+  k: number
+  /** The runtime it ran in: `native` until another exists. */
+  where: string
+  state: RunStep['state']
+  exit?: number
+  signal?: string
+  timedOut: boolean
+  killed: boolean
+  stable: boolean
+  /** Cut to 120 characters (the task route has it whole). */
+  error?: string
+  startedAt: string
+  finishedAt?: string
+  logSha256?: string
+  logBytes: number
+  logDropped: boolean
+}
+
+/** An attempt that submitted something, as a run's candidates show it: a work attempt's commit, a review's verdict and findings counted. */
+export interface RunCandidate {
+  task: string
+  kind: 'work' | 'review'
+  attempt: number
+  /** A work attempt's result. */
+  commit?: string
+  /** Where it started: a review's, the commit it reviewed. */
+  start?: string
+  state: RunAttempt['state']
+  stage?: string
+  /** It is the task's result now. */
+  standing: boolean
+  /** A withdrawal took it back. */
+  withdrawn: boolean
+  acceptedAnyway?: { actor: string; at: string; command: string }
+  verdict?: 'approved' | 'needs_changes'
+  /** A review's findings counted by severity; their text is the task route's. */
+  findings?: Partial<Record<Finding['severity'], number>>
+  /** The attempt's check and verify rows whose subject is the commit (for a review, the commit it reviewed), at most 16. */
+  receipts: CandidateReceipt[]
+}
+
+/** A task's candidates on a page: at most 6, newest first, `more` the rest (which the task route reads). */
+export interface TaskCandidates {
+  task: string
+  kind: 'work' | 'review'
+  candidates: RunCandidate[]
+  more: number
+}
+
+/** A page of a run's candidates (GET /api/runs/{run}/candidates): at most 8 tasks in the crew's order, `next` the last one's id when more follow. */
+export interface RunCandidatesPage {
+  run: string
+  /** False for a run not managed (no tasks, no candidates). */
+  managed: boolean
+  base?: string
+  candidates: TaskCandidates[]
+  next?: string
+}
+
 /** What every Dispatch write carries beside its fields: the op id the browser mints, the revision it expects (none: absent), the display name. */
 export interface OpBody {
   opId: string
@@ -754,6 +888,10 @@ export function useDispatchApi() {
     launch: (key: string, body: OpBody & { plan: string; label?: string }) => request<LaunchReply>(`/api/dispatch/tickets/${enc(key)}/launch`, { method: 'POST', body }),
     /** A launch whole, by its id. */
     launchRead: (id: string) => request<{ launch: LaunchRead }>(`/api/dispatch/launches/${enc(id)}`).then((r) => r.launch),
+    /** A page of a ticket's launches, hand-linked runs and their chains' runs, newest first, `before` a page's `next`. */
+    ticketRuns: (key: string, before = '') => request<TicketRunsPage>(`/api/dispatch/tickets/${enc(key)}/runs` + (before ? `?before=${enc(before)}` : '')),
+    /** A page of a run's candidates with their receipts, from the ledger, `after` a page's `next` (a task's id). */
+    runCandidates: (run: string, after = '') => request<RunCandidatesPage>(`/api/runs/${enc(run)}/candidates` + (after ? `?after=${enc(after)}` : '')),
     /** An operation's receipt, read without acting. */
     receipt: (opId: string) => request<{ receipt: DispatchReceipt }>(`/api/dispatch/ops/${enc(opId)}`).then((r) => r.receipt),
   }
