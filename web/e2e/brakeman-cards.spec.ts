@@ -12,7 +12,8 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // once the run has settled: decision cards on both tasks and proposals at the run's revision it read, two draft tickets (one blocking
 // the other), a draft crew and a handoff. The cards offer what the run page's rules allow (Retry and Accept anyway, no Cancel; Cancel,
 // no Retry); once the run has moved, the card's Retry and the pause proposal carry the revision Brakeman read and their routes refuse
-// them, said in words; a stop and a resume are text with the run page's link. The drafts are made work as edited, once; the crew is
+// them, said in words; a stop and a resume are text with the run page's link; a ticket's edit shows every field it sends and asks
+// with them first. The drafts are made work as edited, once, and a make that did not finish is finished as it was sent; the crew is
 // saved and opened in the editor, never launched; the handoff copies and comments on its ticket. The run page's tasks and the
 // palette ask Brakeman about the run and the task.
 test.describe.configure({ mode: 'serial' })
@@ -33,6 +34,7 @@ let gate = ''
 let briefFile = ''
 let runId = ''
 let seen = 0
+let ticketRev = 0
 let crewId = ''
 
 const failCrew = {
@@ -68,7 +70,8 @@ test.beforeAll(async () => {
   renderConfig(join(here, 'conductor.e2e.json'), config)
   const cfg = JSON.parse(readFileSync(config, 'utf8')) as { catalog: { agents: Array<{ id: string; env?: Record<string, string> }> } }
   const stub = cfg.catalog.agents.find((a) => a.id === 'brakeman-stub')!
-  stub.env = { ...stub.env, STUB_BRAKEMAN_WAIT: gate, STUB_BRAKEMAN_BRIEF: briefFile }
+  // The stub reads the ticket its edit proposal names, as a turn reads what it proposes to change: the proposal's rev is that read's.
+  stub.env = { ...stub.env, STUB_BRAKEMAN_WAIT: gate, STUB_BRAKEMAN_BRIEF: briefFile, STUB_BRAKEMAN_TICKET: `${PROJECT}-1` }
   writeFileSync(config, JSON.stringify(cfg, null, 2) + '\n')
   serverLog = join(root, 'server.log')
   server = await startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log: serverLog })
@@ -104,8 +107,11 @@ async function open(page: Page, path: string) {
 const request = (id: string) => api.ok<{ request: Request }>('GET', `/api/brakeman/requests/${id}`).then((r) => r.request)
 const runOf = () => api.ok<{ run: Run & { managed?: { revision: number }; paused?: boolean } }>('GET', `/api/runs/${encodeURIComponent(runId)}`).then((r) => r.run)
 
-/** The brief the stub submits: every item this spec drives, at the run's revision `rev`, which the turn reads as it stands. */
-function brief(rev: number) {
+/**
+ * The brief the stub submits: every item this spec drives, at the run's revision `rev`, which the turn reads as it stands, and the
+ * ticket's `ticketRev`. Items are named by their index: new ones go at the end.
+ */
+function brief(rev: number, ticketRev: number) {
   const r = String(rev)
   const build = `task:${runId}/build`
   const docs = `task:${runId}/docs`
@@ -156,6 +162,16 @@ function brief(rev: number) {
         gates: [{ task: 'lead', decision: 'Whether the check itself is wrong.' }],
       },
       { kind: 'handoff/1', objective: 'Get build past its check', constraints: 'The check stays.', decisions: ['docs waits'], questions: ['Is the check right?'], evidence: [build, `ticket:${PROJECT}-1`] },
+      // Its text says less than its arguments do: the card shows what the button sends, whatever the text says.
+      {
+        kind: 'proposal/1',
+        text: 'Name the ticket after its check.',
+        op: 'ticket_edit',
+        target: `ticket:${PROJECT}-1`,
+        expectedRevision: String(ticketRev),
+        args: { set: { title: 'The check never passes', description: 'build fails its check never,\non every attempt.' } },
+      },
+      { kind: 'draft_ticket/1', project: PROJECT, title: 'Finish what did not finish', priority: 1 },
     ],
   }
 }
@@ -172,7 +188,8 @@ test('a decision card offers what the run page allows, with the revision Brakema
   expect(task(settled, 'build').state).toBe('failed')
   expect(task(settled, 'docs').state).toBe('blocked')
   seen = settled.managed!.revision
-  writeFileSync(briefFile, JSON.stringify(brief(seen)))
+  ticketRev = (await api.ok<{ ticket: { rev: number } }>('GET', `/api/dispatch/tickets/${PROJECT}-1`)).ticket.rev
+  writeFileSync(briefFile, JSON.stringify(brief(seen, ticketRev)))
   writeFileSync(gate, 'open\n')
   await expect.poll(async () => (await request(asked.request.id)).state, { timeout: 60_000 }).toBe('briefed')
 
@@ -218,6 +235,27 @@ test('a decision card offers what the run page allows, with the revision Brakema
   expect((await runOf()).paused ?? false).toBe(false)
 })
 
+test("a ticket's proposal shows every field it sends, and asks with them before it edits the ticket", async ({ page }) => {
+  await open(page, '/brakeman?request=br-1')
+  const p = page.locator('[data-brief="br-1"] [data-proposal-op="ticket_edit"]')
+  // On the card, before anything is pressed: each field the edit sets, as it is sent.
+  await expect(p.locator('[data-proposal-args] [data-proposal-arg="set.title"]')).toHaveText('The check never passes', { timeout: 30_000 })
+  // Every character of it, its line break too (textContent: toHaveText would fold the whitespace).
+  await expect(p.locator('[data-proposal-args] [data-proposal-arg="set.description"]')).toHaveJSProperty('textContent', 'build fails its check never,\non every attempt.')
+  await expect(p.locator('[data-proposal-args] [data-proposal-arg]')).toHaveCount(2)
+  const stored = () => api.ok<{ ticket: { title: string; description: string; rev: number } }>('GET', `/api/dispatch/tickets/${PROJECT}-1`).then((r) => r.ticket)
+  await p.locator('[data-proposal-button]').click()
+  // Asked first, with the same fields; nothing is sent until the person says so.
+  const asked = page.locator('[data-proposal-confirm-args]')
+  await expect(asked.locator('[data-proposal-arg="set.title"]')).toHaveText('The check never passes')
+  await expect(asked.locator('[data-proposal-arg="set.description"]')).toHaveJSProperty('textContent', 'build fails its check never,\non every attempt.')
+  expect(await stored()).toMatchObject({ title: 'The build that never passes', rev: ticketRev })
+  await page.locator('[data-proposal-confirm]').click()
+  await expect.poll(async () => (await stored()).title).toBe('The check never passes')
+  expect((await stored()).description).toBe('build fails its check never,\non every attempt.')
+  await expect(p.locator('[data-proposal-refused]')).toHaveCount(0)
+})
+
 test('two draft tickets, one blocking the other, are made as edited with their relation, and once', async ({ page }) => {
   await open(page, '/brakeman?request=br-1')
   const b = page.locator('[data-brief="br-1"]')
@@ -252,11 +290,49 @@ test('two draft tickets, one blocking the other, are made as edited with their r
   await expect(b.locator('[data-draft-item="6"] [data-draft-create]')).toHaveCount(0)
 })
 
+test('a make that did not finish is finished from the card as it was sent, after the page is read again', async ({ page }) => {
+  // The first ask is answered as the route answers a backend that failed after the claim; the ask again goes to the server. The
+  // server's side (a claim left pending, finished by the same id and content, make_pending for another id) is Go's
+  // TestConcurrentMakesOfOneItemMakeOne; this is the page's: it keeps the id and the content, and asks again with exactly those.
+  const bodies: unknown[] = []
+  await page.route('**/api/brakeman/requests/br-1/items/11/make', async (route) => {
+    bodies.push(route.request().postDataJSON())
+    if (bodies.length === 1) {
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'make_failed', message: 'the make did not finish: it is completed when it is asked again with the same opId, or at the next start' } }) })
+    } else await route.continue()
+  })
+  await open(page, '/brakeman?request=br-1')
+  const d = page.locator('[data-brief="br-1"] [data-draft-ticket][data-draft-item="11"]')
+  const title = d.locator('[data-draft-title] input, input[data-draft-title]').first()
+  await title.fill('Finished as sent', { timeout: 30_000 })
+  await d.locator('[data-draft-create]').click()
+  await expect(d.locator('[data-draft-error]')).toContainText('did not finish')
+  await expect(d.locator('[data-draft-finish]')).toBeVisible()
+  await expect(d.locator('[data-draft-create]')).toHaveCount(0)
+  await expect(title).toBeDisabled()
+  // Read again, the page still holds the make, with the content it was asked with.
+  await page.reload()
+  await expect(d.locator('[data-draft-finish]')).toBeVisible({ timeout: 30_000 })
+  await expect(title).toHaveValue('Finished as sent')
+  await expect(title).toBeDisabled()
+  await d.locator('[data-draft-finish]').click()
+  await expect(d).toHaveAttribute('data-made-state', 'made')
+  expect(bodies).toHaveLength(2)
+  expect(bodies[1]).toEqual(bodies[0])
+  const key = (await request('br-1')).made!.find((m) => m.item === 11)!.key!
+  expect((await api.ok<{ ticket: { title: string } }>('GET', `/api/dispatch/tickets/${key}`)).ticket.title).toBe('Finished as sent')
+  const list = await api.ok<{ tickets: Array<{ key: string; title: string }> }>('GET', `/api/dispatch/tickets?project=${PROJECT}`)
+  expect(list.tickets.filter((t) => t.title === 'Finished as sent').map((t) => t.key)).toEqual([key])
+  // Made, the browser holds nothing more to finish: read again, the card is the ticket.
+  await page.reload()
+  await expect(d.locator('[data-made-link]')).toHaveText(key, { timeout: 30_000 })
+  await expect(d.locator('[data-draft-finish]')).toHaveCount(0)
+})
+
 test('a draft crew is saved and opens in the crew editor, never launched', async ({ page }) => {
   await open(page, '/brakeman?request=br-1')
   const d = page.locator('[data-brief="br-1"] [data-draft-crew]')
   await expect(d.locator('[data-draft-gates]')).toContainText('Whether the check itself is wrong.', { timeout: 30_000 })
-  const before = (await api.ok<{ runs: Array<{ id: string }> }>('GET', '/api/runs')).runs.length
   await d.locator('[data-draft-crew-name] input, input[data-draft-crew-name]').first().fill('Fix the check, as edited')
   await d.locator('[data-draft-create]').click()
   await expect(page).toHaveURL(/\/crews\/[a-z0-9-]+$/, { timeout: 30_000 })
@@ -264,8 +340,8 @@ test('a draft crew is saved and opens in the crew editor, never launched', async
   await expect(page.locator('[data-crew-editor]')).toBeVisible()
   expect((await api.ok<{ crew: { name: string } }>('GET', `/api/crews/${encodeURIComponent(id)}`)).crew.name).toBe('Fix the check, as edited')
   expect((await request('br-1')).made!.find((m) => m.item === 8)).toMatchObject({ state: 'made', crew: id })
-  // Saved, not launched: no run more than before.
-  expect((await api.ok<{ runs: Array<{ id: string }> }>('GET', '/api/runs')).runs.length).toBe(before)
+  // Saved, not launched: no run is of the crew (by its id, never by how many runs there are: Brakeman's turns are runs too).
+  expect((await api.ok<{ runs: Array<{ id: string; crewId?: string }> }>('GET', '/api/runs')).runs.filter((r) => r.crewId === id)).toEqual([])
   await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
 })
 

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanConfig, BriefItem } from './brakeman'
-import { BOUNDS, KINDS, KIND_SUBJECTS, NO_AGENT, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, formField, groupItems, keptBrief, kindWords, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, sameConfig, scopeJSONBytes, stateRank, stateWords, stopAction, unopened } from './brakeman'
+import { BOUNDS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, groupItems, keptBrief, kindWords, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, sameConfig, scopeJSONBytes, stateRank, stateWords, stopAction, unopened } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -339,5 +339,20 @@ describe("the configuration form's checks, the server's", () => {
     expect(Object.keys(configProblems(config({ scope: { sessions: Array.from({ length: 51 }, (_, i) => i.toString(16).padStart(16, '0')) } }), 'claude'))).toEqual(['scope.sessions'])
     // Until the catalog is read the agent is the server's to check.
     expect(configProblems(config({ agentId: 'aider' }), null)).toEqual({})
+  })
+})
+
+describe('the display name a request and a make keep', () => {
+  it("is held to the server's bound in bytes, cut where a character ends", () => {
+    const src = readFileSync(new URL('../../../internal/brakeman/request.go', import.meta.url), 'utf8')
+    expect(Number(/\bMaxBy\s*=\s*(\d+)/.exec(src)![1])).toBe(MAX_BY)
+    // 21 three-byte characters are 63 bytes, which the identity's 40 characters allow and the make route refuses: 20 are sent.
+    const cjk = '名'.repeat(21)
+    expect(new TextEncoder().encode(cjk).length).toBe(63)
+    expect(displayBy(cjk)).toBe('名'.repeat(20))
+    // A four-byte character that would cross the bound is left out whole, never cut in half.
+    expect(displayBy('a'.repeat(58) + '😀')).toBe('a'.repeat(58))
+    expect(displayBy('  Nate  ')).toBe('Nate')
+    expect(displayBy('Na\tte\r\n')).toBe('Na te')
   })
 })

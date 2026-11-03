@@ -33,8 +33,10 @@
 #                   brief whose fact cites its own session and run, and the
 #                   check receipt STUB_BRAKEMAN_CHECK names (or, once the gate
 #                   is open, the brief in the file STUB_BRAKEMAN_BRIEF names,
-#                   when it holds one: a spec's own items); through the CLI,
-#                   or the MCP tools with STUB_WORKER=mcp
+#                   when it holds one: a spec's own items, after reading the
+#                   ticket STUB_BRAKEMAN_TICKET names, as a turn reads what it
+#                   proposes to change); through the CLI, or the MCP tools
+#                   with STUB_WORKER=mcp
 # $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
 # start as Codex 0.161 draws it when its hooks are new or changed (round 13,
 # G2c): 1. Review hooks highlighted; a digit moves the highlight, Enter
@@ -740,6 +742,14 @@ brakeman_turn() {
 			brakeman_why='the gate never opened'
 			return 1
 		fi
+	fi
+	if [[ -n ${STUB_BRAKEMAN_TICKET:-} ]]; then
+		# The ticket a spec's proposal edits, read with its rev, as the turn's read of it.
+		case ${STUB_WORKER:-} in
+		mcp) mcp_call observe "{\"what\":\"ticket\",\"key\":$(json_str "$STUB_BRAKEMAN_TICKET")}" >/dev/null ;;
+		*) "$conductor" brakeman observe ticket --key "$STUB_BRAKEMAN_TICKET" >/dev/null 2>&1 ;;
+		esac
+		printf 'brakeman: %s: read the ticket %s\n' "$req" "$STUB_BRAKEMAN_TICKET" >>"$transcript"
 	fi
 	evidence=$(json_str "session:${CONDUCTOR_SESSION_ID:-}")
 	[[ -n $run ]] && evidence+=",$(json_str "run:$run")"

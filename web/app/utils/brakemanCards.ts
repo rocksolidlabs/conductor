@@ -122,16 +122,19 @@ export interface GuideOperation {
   path?: string
 }
 
-/** The operations a proposal's button sends, each through the client call its own page uses, and what its target is. */
+/**
+ * The operations a proposal's button sends, each through the client call its own page uses, and what its target is. A ticket's
+ * operation sends the proposal's arguments, which are not its text: it is asked first, with what it sends (proposalSends).
+ */
 export const PROPOSAL_CALLS: Readonly<Record<string, { target: 'run' | 'task' | 'ticket'; label: (target: string) => string; ask?: boolean }>> = {
   run_pause: { target: 'run', label: () => 'Pause the run' },
   run_unpause: { target: 'run', label: () => 'Unpause the run' },
   task_retry: { target: 'task', label: (t) => `Retry ${t}` },
   task_accept: { target: 'task', label: (t) => `Accept ${t} anyway…`, ask: true },
   task_cancel: { target: 'task', label: (t) => `Cancel ${t}…`, ask: true },
-  ticket_edit: { target: 'ticket', label: (t) => `Edit ${t}` },
-  ticket_comment_admin: { target: 'ticket', label: (t) => `Comment on ${t}` },
-  ticket_link: { target: 'ticket', label: (t) => `Link ${t}` },
+  ticket_edit: { target: 'ticket', label: (t) => `Edit ${t}…`, ask: true },
+  ticket_comment_admin: { target: 'ticket', label: (t) => `Comment on ${t}…`, ask: true },
+  ticket_link: { target: 'ticket', label: (t) => `Link ${t}…`, ask: true },
 }
 
 /** A proposal's control: a button that sends its operation with its revision, or text with the page that does it. */
@@ -167,6 +170,59 @@ export function proposalArgs(args: Record<string, unknown> | undefined): Record<
   return out
 }
 
+/**
+ * What a proposal's Dispatch operation sends, as the person reads it before pressing: each field of its arguments (proposalArgs) by
+ * its path ("set.title"), with its value as it is sent: a string as itself (a comment's body is its Markdown), anything else as JSON.
+ * Every field is listed: nothing the button sends is left off the page.
+ */
+export function proposalSends(args: Record<string, unknown> | undefined): Array<{ field: string; value: string }> {
+  const out: Array<{ field: string; value: string }> = []
+  const walk = (v: unknown, path: string) => {
+    if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length) {
+      for (const [k, x] of Object.entries(v)) walk(x, path ? `${path}.${k}` : k)
+      return
+    }
+    out.push({ field: path, value: typeof v === 'string' ? v : JSON.stringify(v) ?? String(v) })
+  }
+  for (const [k, v] of Object.entries(proposalArgs(args))) walk(v, k)
+  return out
+}
+
+/** A make this browser asked that did not finish: the id and the body it sent, the one ask the route finishes it on. */
+export interface KeptMake {
+  opId: string
+  body: { by?: string; edit?: unknown }
+  /** When it was asked (ms since the epoch), so a browser keeps the newest. */
+  at?: number
+}
+
+/**
+ * Whether a make's failure leaves it to be asked again with the same id and body: a reply lost twice (status 0), or the server's
+ * failure (500 make_failed: the backend failed after the claim, or before it; 503: a store not open). Any other answer settles it:
+ * made, refused, or another make holds the item.
+ */
+export function unfinishedMake(e: unknown): boolean {
+  const status = (e as { status?: number })?.status
+  return typeof status === 'number' && (status === 0 || status >= 500)
+}
+
+/** Being made under an ask this browser does not hold: the words for a pending entry with no make kept to finish. */
+export const PENDING_ELSEWHERE = "Being made: it finishes when the browser that asked it asks again, or at the server's next start."
+
+/**
+ * What a draft card does about a make that did not finish, from the request's entry for the item and the make this browser kept:
+ * `finish` it, asked again as it was sent (the form shows that content and takes no edit); `drop` the kept one, which an answer has
+ * settled (made, deleted, refused under its id) or another make holds (pending under another id); or `none`, nothing kept.
+ */
+export function makeAgain(made: { state: string; opId?: string } | undefined, kept: KeptMake | undefined): { kind: 'finish' | 'drop' | 'none'; words: string } {
+  const elsewhere = made?.state === 'pending' ? PENDING_ELSEWHERE : ''
+  if (!kept) return { kind: 'none', words: elsewhere }
+  if (made && (made.state === 'made' || made.state === 'deleted')) return { kind: 'drop', words: '' }
+  if (made && made.opId !== kept.opId && made.state === 'pending') return { kind: 'drop', words: elsewhere }
+  if (made && made.opId === kept.opId && made.state === 'refused') return { kind: 'drop', words: '' }
+  return { kind: 'finish', words: 'The make did not finish. Finish it as it was sent: the same ask again, which makes it once.' }
+}
+
 /** A handoff package as Markdown, for Copy and for a ticket's comment: built from the brief's fields, which are Conductor's records. */
 export function handoffMarkdown(h: Extract<BriefItem, { kind: 'handoff/1' }>, label: (ref: string) => string = (r) => r): string {
   const out = [`## Handoff: ${h.objective}`]
@@ -196,7 +252,7 @@ export function madeWords(m: { state: string; key?: string; crew?: string; why?:
     case 'made':
       return m.key ? `Made as ${m.key}.` : m.crew ? `Saved as the crew ${m.crew}, not launched.` : 'Made.'
     case 'pending':
-      return 'Being made: it finishes when it is asked again with the same id, or at the next start.'
+      return PENDING_ELSEWHERE
     case 'refused':
       return `Refused: ${m.why || 'the store refused it'}. It can be made again.`
     case 'deleted':
