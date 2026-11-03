@@ -183,8 +183,18 @@ const dispatchRoute = computed(() => route.path === '/dispatch' || route.path.st
 // happens when one does (no toast, no dialog, no navigation). Shown once the server says it has Brakeman (not a switchyard's).
 const brakeman = useBrakeman()
 const workbench = useWorkbenchToken()
-// Read with a token only: a read without one would ask for it.
-onMounted(() => watch(() => workbench.token.value, (t) => t && void brakeman.load(), { immediate: true }))
+// Read with a token only: a read without one would ask for it. A new token may be another server's, whose br-1 is not the one
+// held: what the store holds goes first, and replies to the reads sent with the token before are dropped.
+onMounted(() =>
+  watch(
+    () => workbench.token.value,
+    (t, before) => {
+      if (before !== undefined) brakeman.reset()
+      if (t) void brakeman.load()
+    },
+    { immediate: true },
+  ),
+)
 const brakemanCount = computed(() => brakeman.unopened.value.length)
 
 const nav = computed<NavigationMenuItem[]>(() => [

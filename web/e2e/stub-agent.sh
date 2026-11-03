@@ -705,20 +705,32 @@ task_attempt() {
 # STUB_BRAKEMAN_CHECK names) and whose interpretation reads that fact. Only
 # the gate's file releases the brief: a gate that never opens ends the turn
 # with none (status 1), so a brief never arrives before the spec opened it.
-# What it read and what the server answered go into the transcript.
+# Both reads must succeed, the request's naming $1, before anything is
+# submitted, and the submission must be taken: a read or a submission that
+# fails ends the turn with status 1 and its words in brakeman_why. What it
+# read and what the server answered go into the transcript.
 brakeman_turn() {
-	local req=$1 got changes brief reply evidence n=0
+	local req=$1 got changes brief reply evidence n=0 ok=1
 	case ${STUB_WORKER:-} in
 	mcp)
 		got=$(mcp_call brakeman_request '{}')
 		changes=$(mcp_call observe '{"what":"changes"}')
+		mcp_ok "$got" || ok=0
+		mcp_ok "$changes" || ok=0
 		;;
 	*)
-		got=$("$conductor" brakeman request --json 2>&1)
-		changes=$("$conductor" brakeman observe changes 2>&1)
+		got=$("$conductor" brakeman request --json 2>&1) || ok=0
+		changes=$("$conductor" brakeman observe changes 2>&1) || ok=0
 		;;
 	esac
+	[[ $got == *"$req"* ]] || ok=0
 	printf 'brakeman: %s: read %s bytes of its request and %s of the changes\n' "$req" "${#got}" "${#changes}" >>"$transcript"
+	if ((!ok)); then
+		printf 'brakeman: %s: a read failed: request %s; changes %s\n' "$req" "${got:0:200}" "${changes:0:200}" >>"$transcript"
+		printf 'stub: brief -> none, a read failed\n'
+		brakeman_why='a read failed'
+		return 1
+	fi
 	if [[ -n ${STUB_BRAKEMAN_WAIT:-} ]]; then
 		while [[ ! -e $STUB_BRAKEMAN_WAIT ]] && ((n < 9000)); do
 			sleep 0.1
@@ -727,6 +739,7 @@ brakeman_turn() {
 		if [[ ! -e $STUB_BRAKEMAN_WAIT ]]; then
 			printf 'brakeman: %s: the gate %s never opened: no brief\n' "$req" "$STUB_BRAKEMAN_WAIT" >>"$transcript"
 			printf 'stub: brief -> none, the gate never opened\n'
+			brakeman_why='the gate never opened'
 			return 1
 		fi
 	fi
@@ -747,14 +760,28 @@ brakeman_turn() {
 		brief="{\"schema\":\"brakeman.brief/1\",\"title\":\"Stub brief for $req\",\"summary\":\"The stub read its request and what changed, and found its own turn.\",\"items\":[{\"kind\":\"fact/1\",\"text\":\"This turn runs as its own session and run.\",\"evidence\":[$evidence]},{\"kind\":\"interpretation/1\",\"text\":\"Nothing else happened that the stub was asked about.\",\"facts\":[0]}]}"
 	fi
 	case ${STUB_WORKER:-} in
-	mcp) reply=$(mcp_call brief_submit "{\"brief\":$brief}") ;;
+	mcp)
+		reply=$(mcp_call brief_submit "{\"brief\":$brief}")
+		mcp_ok "$reply" || ok=0
+		;;
 	*)
 		printf '%s\n' "$brief" >"$transcripts/$id.brief.json"
-		reply=$("$conductor" brakeman brief --file "$transcripts/$id.brief.json" 2>&1)
+		reply=$("$conductor" brakeman brief --file "$transcripts/$id.brief.json" 2>&1) || ok=0
 		;;
 	esac
 	printf 'brief: %s\n' "${reply:0:300}" >>"$transcript"
 	printf 'stub: brief -> %s\n' "${reply:0:200}"
+	if ((!ok)); then
+		brakeman_why='the brief was refused'
+		return 1
+	fi
+}
+
+# mcp_ok reports whether $1, a tools/call reply line from mcp_call, is a
+# result the tool answered without error: present, a result, and neither a
+# JSON-RPC error nor a tool result with isError set.
+mcp_ok() {
+	[[ -n $1 && $1 == *'"result"'* && $1 != *'"error"'* && $1 != *'"isError":true'* ]]
 }
 
 # trust_dialog draws the folder-trust question as Codex 0.161 does (1. Trust
@@ -1063,13 +1090,13 @@ answer() {
 	title_working
 	report_working
 	if [[ -n ${STUB_BRAKEMAN:-} && -n ${CONDUCTOR_BRAKEMAN:-} && $line =~ ^Brakeman\ request\ (br-[1-9][0-9]{0,17})\ \( ]]; then
-		local req=${BASH_REMATCH[1]}
+		local req=${BASH_REMATCH[1]} brakeman_why=''
 		if brakeman_turn "$req"; then
 			title_ready done
 			report_done "brakeman $req: brief submitted" "$line"
 		else
 			title_ready done
-			report_done "brakeman $req: no brief, the gate never opened" "$line"
+			report_done "brakeman $req: no brief, $brakeman_why" "$line"
 		fi
 		return
 	fi

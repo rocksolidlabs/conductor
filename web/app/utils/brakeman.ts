@@ -158,6 +158,14 @@ export interface BrakemanBrief {
   items: BriefItem[]
 }
 
+/**
+ * A brief as a reply carries it, with its items a list: the server writes a brief kept with none (its summary alone) as `items:
+ * null`, and the brief's groups read that as no items.
+ */
+export function keptBrief(b: (Omit<BrakemanBrief, 'items'> & { items?: BriefItem[] | null }) | null | undefined): BrakemanBrief | null {
+  return b ? { ...b, items: b.items ?? [] } : null
+}
+
 /** A ref's record at one time: what the turn read of it (`seen`), or what it was as the brief was kept (`now`). */
 export interface RefState {
   url?: string
@@ -585,6 +593,27 @@ export function provenance(r: Pick<BrakemanRequest, 'id' | 'agent' | 'briefAt'>,
 export const BRAKEMAN_ADAPTERS: Readonly<Record<string, { model: boolean; allowTools: boolean }>> = {
   claude: { model: true, allowTools: true },
   codex: { model: true, allowTools: true },
+}
+
+/**
+ * The Agent select's value for no agent. A select's item may not have "" as its value (Reka's SelectItem throws: "" clears the
+ * selection), so None is this, which no catalog id can be (ids are `^[a-z0-9-]{1,32}$`, internal/catalog), and stands for `agentId` "".
+ */
+export const NO_AGENT = '_none'
+
+/** The Agent select's items: None, then each agent offered, by its catalog id. */
+export function agentItems(offered: ReadonlyArray<{ id: string; name: string; available?: boolean }>): Array<{ label: string; value: string }> {
+  return [{ label: 'None', value: NO_AGENT }, ...offered.map((a) => ({ label: a.available === false ? `${a.name} (not installed)` : a.name, value: a.id }))]
+}
+
+/** The Agent select's value for a configuration's `agentId`. */
+export function agentChoice(agentId: string | undefined): string {
+  return agentId || NO_AGENT
+}
+
+/** The `agentId` the Agent select's value saves. */
+export function agentIdOf(choice: string): string {
+  return choice === NO_AGENT ? '' : choice
 }
 
 /** The configuration's bounds (internal/brakeman/config.go). */

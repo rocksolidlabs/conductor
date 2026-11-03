@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BrakemanRequest, BrakemanState } from '../utils/brakeman'
 import { ApiError } from './useApi'
-import { BrakemanLive, asBrakemanEvent, sendTwice, type BrakemanReads } from './useBrakeman'
+import { BrakemanLive, asBrakemanEvent, keepOpened, sendTwice, type BrakemanReads } from './useBrakeman'
 
 // Brakeman's live store and its writes (docs/plans/brakeman.md, PR-6): an id kept across a lost reply, and the `brakeman` events
 // folded into the list.
@@ -141,6 +141,29 @@ describe('the brakeman events', () => {
     expect(changes).toBeGreaterThan(before)
   })
 
+  it('take the request in progress off the page once its slot is given up, though its state is the same', async () => {
+    // The brief's event is read inside the grace, while the briefed request still holds the slot; the server sends the request's
+    // event once more when the slot is given up, and the state read then holds no request in progress.
+    const f = fakeServer()
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    let slot: BrakemanRequest | null = req('br-1', 'running')
+    f.reads.state = async () => ({ config: {} as never, current: slot, queue: [], turnsToday: 1 })
+    f.server.set('br-1', req('br-1', 'running'))
+    await live.readFirst()
+    expect(live.state?.current?.id).toBe('br-1')
+    slot = req('br-1', 'briefed', { hasBrief: true })
+    f.server.set('br-1', slot)
+    live.event({ id: 'br-1', state: 'briefed' })
+    await settle()
+    expect([live.state?.current?.id, live.state?.current?.state]).toEqual(['br-1', 'briefed'])
+    slot = null
+    live.event({ id: 'br-1', state: 'briefed' })
+    await settle()
+    expect(live.state?.current).toBeNull()
+    expect(live.requests.get('br-1')!.state).toBe('briefed')
+  })
+
   it('are read off the stream only as they are', () => {
     expect(asBrakemanEvent({ id: 'br-3', state: 'running' })).toEqual({ id: 'br-3', state: 'running' })
     expect(asBrakemanEvent({ id: 'br-0', state: 'running' })).toBeNull()
@@ -155,6 +178,83 @@ describe('the brakeman events', () => {
     live.attach({ state: no, page: no, request: no })
     await live.readFirst()
     expect([live.available, live.problem]).toEqual([false, 'Brakeman needs a data directory'])
+  })
+})
+
+describe('the pages read', () => {
+  /** A server holding br-1 to br-<n> (`add` asks more), paged newest first 100 at a time after an id, as the route answers. */
+  function pagedServer(n: number) {
+    const server = new Map<string, BrakemanRequest>()
+    const add = (to: number) => {
+      for (let i = server.size + 1; i <= to; i++) server.set(`br-${i}`, req(`br-${i}`, 'briefed', { hasBrief: true }))
+    }
+    add(n)
+    let down = false
+    const reads: BrakemanReads = {
+      state: async () => ({ config: {} as never, current: null, queue: [], turnsToday: 0 }),
+      page: async (after) => {
+        if (down && after) throw new ApiError(0, 'network', 'Cannot reach the server')
+        const below = after ? Number(after.slice(3)) : server.size + 1
+        const ids = [...server.keys()].map((id) => Number(id.slice(3))).filter((i) => i < below).sort((a, b) => b - a)
+        const page = ids.slice(0, 100)
+        return { requests: page.map((i) => server.get(`br-${i}`)!), next: ids.length > 100 ? `br-${page.at(-1)}` : '' }
+      },
+      request: async (id) => ({ request: server.get(id)!, brief: null }),
+    }
+    return { reads, add, failPagesAfter: (on: boolean) => (down = on) }
+  }
+  const ids = (live: BrakemanLive) => live.list().map((r) => Number(r.id.slice(3)))
+  const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => to - i)
+
+  it('leave no request asked while the stream was down between the first page and those read before', async () => {
+    const f = pagedServer(101)
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    await live.readFirst()
+    await live.readMore()
+    expect(ids(live)).toEqual(range(1, 101))
+    expect(live.next).toBe('')
+    // br-102 to br-202 are asked while the stream is down: the first page read again holds br-103 to br-202.
+    f.add(202)
+    live.snapshot()
+    await settle()
+    await settle()
+    expect(ids(live)).toEqual(range(1, 202))
+    expect(live.next).toBe('')
+  })
+
+  it('keep the older requests to read once the gap is filled', async () => {
+    const f = pagedServer(250)
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    await live.readFirst()
+    await live.readMore()
+    expect(live.next).toBe('br-51')
+    f.add(400)
+    await live.readFirst()
+    expect(ids(live)).toEqual(range(51, 400))
+    expect(live.next).toBe('br-51')
+    await live.readMore()
+    expect(ids(live)).toEqual(range(1, 400))
+  })
+
+  it('read on from the gap when a page of it fails', async () => {
+    const f = pagedServer(101)
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    await live.readFirst()
+    await live.readMore()
+    f.add(202)
+    f.failPagesAfter(true)
+    await live.readFirst()
+    expect(live.requests.has('br-102')).toBe(false)
+    expect(live.next).toBe('br-103')
+    f.failPagesAfter(false)
+    await live.readMore()
+    expect(ids(live)).toEqual(range(1, 202))
+    expect(live.next).toBe('br-3')
+    await live.readMore()
+    expect(live.next).toBe('')
   })
 })
 
@@ -202,5 +302,116 @@ describe('a request a link names', () => {
     live.requests.delete('br-2')
     expect(await live.readNamed('br-2')).toBe('br-2 was pruned: the server keeps the newest 500 requests that are done.')
     expect(await live.readNamed('br-9')).toBe('br-9 is not kept here: the server keeps the newest 500 requests that are done.')
+  })
+})
+
+describe('a new token', () => {
+  /** Reads that answer with what `server` holds as each is sent (another server's, once the test swaps it), held while `hold`. */
+  function swappable() {
+    let server = new Map<string, BrakemanRequest>()
+    const held: Array<() => void> = []
+    let hold = false
+    const answer = <T>(v: T): Promise<T> => (hold ? new Promise((done) => held.push(() => done(v))) : Promise.resolve(v))
+    const reads: BrakemanReads = {
+      state: () => answer<BrakemanState>({ config: {} as never, current: [...server.values()].find((r) => r.state === 'running') ?? null, queue: [], turnsToday: 1 }),
+      page: () => answer({ requests: [...server.values()].reverse(), next: '' }),
+      request: (id) => answer({ request: server.get(id)!, brief: null }),
+    }
+    return {
+      reads,
+      swap: (next: Map<string, BrakemanRequest>) => (server = next),
+      holdReads: (on: boolean) => (hold = on),
+      release: async () => {
+        while (held.length) held.shift()!()
+        await settle()
+      },
+    }
+  }
+
+  it("drops what the store held, so another server's br-1 running is not taken for a regression of the briefed one", async () => {
+    const f = swappable()
+    f.swap(new Map([['br-1', req('br-1', 'briefed', { hasBrief: true, runId: 'run-before' })]]))
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    await live.readFirst()
+    expect(live.requests.get('br-1')!.state).toBe('briefed')
+    // The server is started again on fresh data with a fresh token: its br-1 is a new request, running.
+    f.swap(new Map([['br-1', req('br-1', 'running', { runId: 'run-after', sessionId: 'abcdef0123456789' })]]))
+    live.reset()
+    expect(live.list()).toEqual([])
+    expect(live.state).toBeNull()
+    expect(live.available).toBeUndefined()
+    await live.readFirst()
+    expect(live.requests.get('br-1')).toMatchObject({ state: 'running', runId: 'run-after' })
+    expect(live.state!.current!.runId).toBe('run-after')
+  })
+
+  it('drops the replies to reads sent with the token before, however they arrive', async () => {
+    const f = swappable()
+    f.swap(new Map([['br-1', req('br-1', 'briefed', { hasBrief: true, runId: 'run-before' })]]))
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    // Every kind of read goes out to the server before, and answers only after the reset.
+    f.holdReads(true)
+    const first = live.readFirst()
+    const one = live.readRequest('br-1')
+    const named = live.readNamed('br-1')
+    const state = live.readState()
+    const at = live.generation
+    f.swap(new Map([['br-1', req('br-1', 'running', { runId: 'run-after' })]]))
+    live.reset()
+    f.holdReads(false)
+    // The new token's reads answer first.
+    await live.readFirst()
+    expect(live.requests.get('br-1')).toMatchObject({ state: 'running', runId: 'run-after' })
+    // The old server's answers arrive now, and none of them is taken.
+    f.holdReads(true)
+    await f.release()
+    await Promise.all([first, one, named, state])
+    expect(live.requests.get('br-1')).toMatchObject({ state: 'running', runId: 'run-after' })
+    expect(live.state!.current!.runId).toBe('run-after')
+    // A write answered for the token before is not taken either.
+    live.apply(req('br-1', 'briefed', { runId: 'run-before' }), at)
+    expect(live.requests.get('br-1')!.runId).toBe('run-after')
+    // The state's reads after the reset are the new token's: a read asked now is sent, not folded into the old one.
+    f.holdReads(false)
+    f.swap(new Map([['br-1', req('br-1', 'briefed', { hasBrief: true, runId: 'run-after' })]]))
+    await live.readState()
+    expect(live.state!.current).toBeNull()
+  })
+})
+
+describe('the briefs a browser opened', () => {
+  /** One browser's storage, which every tab reads and writes. */
+  function storage() {
+    const kept = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => kept.get(k) ?? null,
+      setItem: (k: string, v: string) => void kept.set(k, v),
+      removeItem: (k: string) => void kept.delete(k),
+    })
+    return () => JSON.parse(kept.get('conductor.brakeman.opened') ?? 'null') as string[] | null
+  }
+  afterEach(() => void vi.unstubAllGlobals())
+
+  it('are kept with those another tab opened since this one read them', () => {
+    const stored = storage()
+    // Both tabs read the list empty; tab A opens br-1, then tab B, from its own stale list, opens br-2.
+    const tabA: string[] = []
+    const tabB: string[] = []
+    expect(keepOpened([...tabA, 'br-1'])).toEqual(['br-1'])
+    expect(keepOpened([...tabB, 'br-2'])).toEqual(['br-2', 'br-1'])
+    // Read again (the page reloaded), neither is new.
+    expect(stored()).toEqual(['br-2', 'br-1'])
+  })
+
+  it('are the newest 500, newest first', () => {
+    const stored = storage()
+    keepOpened(Array.from({ length: 499 }, (_, i) => `br-${i + 1}`))
+    keepOpened(['br-600', 'br-700'])
+    const kept = stored()!
+    expect(kept).toHaveLength(500)
+    expect(kept.slice(0, 3)).toEqual(['br-700', 'br-600', 'br-499'])
+    expect(kept).not.toContain('br-1')
   })
 })

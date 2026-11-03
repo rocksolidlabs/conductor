@@ -99,7 +99,8 @@ const unavailable = computed(() => bk.available.value === false)
         <UAlert v-if="unavailable" color="neutral" variant="subtle" icon="i-lucide-info" title="Brakeman is not here" :description="bk.problem.value" data-brakeman-unavailable />
         <template v-else>
           <p class="text-sm text-muted">
-            Brakeman is an agent of your choosing that reads what the crews, the runs and Dispatch hold, and answers with a brief whose facts link to their evidence. It reads and drafts; nothing it writes becomes work until you act.
+            Brakeman is an agent of your choosing that reads what the crews, the runs and Dispatch hold, and answers with a brief whose facts link to their evidence. It reads and drafts; nothing it writes becomes work until you act. Its agent, what it may see, its budget and whether it is on are in
+            <NuxtLink to="/settings" class="underline" data-brakeman-settings-link>Settings</NuxtLink>.
           </p>
           <UAlert v-if="state && !config?.enabled" color="neutral" variant="subtle" icon="i-lucide-power" title="Brakeman is off" data-brakeman-off>
             <template #description>Choose its agent and turn it on in <NuxtLink to="/settings" class="underline">Settings</NuxtLink>.</template>

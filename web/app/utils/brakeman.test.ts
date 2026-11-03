@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanConfig, BriefItem } from './brakeman'
-import { BOUNDS, KINDS, KIND_SUBJECTS, MAX_BY, askProblem, changedSince, configProblems, displayBy, formField, groupItems, kindWords, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, sameConfig, scopeJSONBytes, stateRank, stateWords, stopAction, unopened } from './brakeman'
+import { BOUNDS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, groupItems, keptBrief, kindWords, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, sameConfig, scopeJSONBytes, stateRank, stateWords, stopAction, unopened } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -186,6 +186,15 @@ describe("a brief's items", () => {
     expect(groupItems([{ kind: 'fact/1', text: 'only', evidence: [`run:${RUN}`] }]).map((g) => g.group)).toEqual(['facts'])
   })
 
+  it('of a brief kept with its summary alone are none, though the server writes them null', () => {
+    const b = keptBrief({ schema: 'brakeman.brief/1', title: 'Nothing changed', summary: 'Quiet.', items: null })!
+    expect(b.items).toEqual([])
+    expect(groupItems(b.items)).toEqual([])
+    expect(keptBrief({ schema: 'brakeman.brief/1', title: 't', summary: 's' })!.items).toEqual([])
+    expect(keptBrief(null)).toBeNull()
+    expect(keptBrief({ schema: 'brakeman.brief/1', title: 't', summary: 's', items })!.items).toBe(items)
+  })
+
   it('name the facts an interpretation reads by their numbers', () => {
     expect(readsWords([1], items)).toBe('reads fact 1')
     expect(readsWords([1, 5], items)).toBe('reads facts 1 and 2')
@@ -234,6 +243,22 @@ describe("the composer's checks, the server's", () => {
     expect(askProblem('ask', [], 'x'.repeat((16 << 10) + 1), '')).toContain('16 KiB')
     expect(askProblem('explain', [`run:${RUN}`], '', '2026-11-02T09:00:00Z')).toContain('Only a briefing')
     expect(askProblem('ask', Array.from({ length: 11 }, (_, i) => `ticket:CND-${i + 1}`), 'q', '')).toContain('at most 10')
+  })
+})
+
+describe("the Agent select's items", () => {
+  it('give None a value of its own, since a select item may not be "", and save it as no agent', () => {
+    const items = agentItems([{ id: 'claude', name: 'Claude Code' }, { id: 'codex', name: 'Codex', available: false }])
+    expect(items).toEqual([
+      { label: 'None', value: NO_AGENT },
+      { label: 'Claude Code', value: 'claude' },
+      { label: 'Codex (not installed)', value: 'codex' },
+    ])
+    expect(items.every((i) => i.value !== '')).toBe(true)
+    // No catalog id can be None's (ids are ^[a-z0-9-]{1,32}$).
+    expect(/^[a-z0-9-]{1,32}$/.test(NO_AGENT)).toBe(false)
+    expect([agentChoice(''), agentChoice(undefined), agentChoice('claude')]).toEqual([NO_AGENT, NO_AGENT, 'claude'])
+    expect([agentIdOf(NO_AGENT), agentIdOf('claude')]).toEqual(['', 'claude'])
   })
 })
 

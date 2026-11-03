@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/brakeman'
-import { BOUNDS, BRAKEMAN_ADAPTERS, configProblems, formField, sameConfig, scopeLines, scopeList } from '~/utils/brakeman'
+import { BOUNDS, BRAKEMAN_ADAPTERS, agentChoice, agentIdOf, agentItems as agentChoices, configProblems, formField, sameConfig, scopeLines, scopeList } from '~/utils/brakeman'
 import { ApiError } from '~/composables/useApi'
 
 /**
@@ -71,7 +71,14 @@ watch(
 
 /** The agents Brakeman can be: an adapter that registers Conductor's tools and has a read-only mode. */
 const offered = computed(() => agents.value.filter((a) => a.adapter && BRAKEMAN_ADAPTERS[a.adapter]))
-const agentItems = computed(() => [{ label: 'None', value: '' }, ...offered.value.map((a) => ({ label: a.available === false ? `${a.name} (not installed)` : a.name, value: a.id }))])
+const agentItems = computed(() => agentChoices(offered.value))
+/** The Agent select's value: None is a value of its own (a select item may not be ""), saved as no agent. */
+const agentModel = computed({
+  get: () => agentChoice(form.value?.agentId),
+  set: (v: string) => {
+    if (form.value) form.value.agentId = agentIdOf(v)
+  },
+})
 const adapter = computed(() => agents.value.find((a) => a.id === form.value?.agentId)?.adapter)
 const caps = computed(() => (adapter.value ? BRAKEMAN_ADAPTERS[adapter.value] : undefined))
 // Until the catalog is read the agent's adapter is not known: the server checks it on the save.
@@ -142,7 +149,7 @@ async function save() {
     <form v-else class="flex flex-col gap-4" @submit.prevent="save">
       <USwitch v-model="form.enabled" label="Brakeman on" description="Off, nothing is asked of its agent." data-brakeman-enabled />
       <UFormField label="Agent" description="Its turns run in the agent's own read-only mode, on your login." :error="fieldError('agentId')">
-        <USelect v-model="form.agentId" :items="agentItems" class="w-full" data-brakeman-agent />
+        <USelect v-model="agentModel" :items="agentItems" class="w-full" data-brakeman-agent />
       </UFormField>
       <UAlert v-for="w in warnings" :key="w" color="warning" variant="subtle" icon="i-lucide-shield-alert" :title="w" data-brakeman-warning />
       <p v-if="form.agentId && form.agentId !== saved?.agentId" class="text-xs text-muted" data-brakeman-warning-later>Once saved, Conductor says what this agent's read-only mode does not hold, if anything.</p>

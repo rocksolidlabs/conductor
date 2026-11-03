@@ -25,17 +25,20 @@ onMounted(async () => {
     brief.value = out.brief
     // A brief kept is resolved; its refs are read beside it, and a failure leaves the chips without their records.
     if (out.brief) refs.value = await bk.refs(props.request.id).catch(() => new Map())
-    emit('opened', props.request.id)
   } catch (e) {
     error.value = (e as Error).message
-  } finally {
     loading.value = false
+    return
   }
+  loading.value = false
+  // Opened once its items are drawn: the page scrolls to a `brief:` ref's item-<n> then, which is not there while it reads.
+  await nextTick()
+  emit('opened', props.request.id)
 })
 
 const when = (iso: string) => new Date(iso).toLocaleString()
 const line = computed(() => provenance(props.request, props.request.agent?.agentId ? `${props.request.agent.agentId}${props.request.agent.adapter ? ` (${props.request.agent.adapter})` : ''}` : undefined, when))
-const groups = computed(() => (brief.value ? groupItems(brief.value.items) : []))
+const groups = computed(() => groupItems(brief.value?.items ?? []))
 const items = computed<BriefItem[]>(() => brief.value?.items ?? [])
 </script>
 
