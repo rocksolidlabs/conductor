@@ -3434,14 +3434,18 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (PR-3 does), so every run is native as on main. `internal/crew` leaves
   the boundary test's allowlist. `sessiontest.FakeRuntime` is this
   repository's fake of the contract (every call recorded with its spec and
-  ref, each method scripted, or passed to `Base`; `PanicAfterStart`).
+  ref, each method scripted, or passed to `Base`; `PanicAfterStart`, whose
+  start is held unreaped by `pty.StartHeld` until it aborts the group, so
+  its panic leaves nothing running even once the leader has exited; its
+  file joins the boundary test's runner allowlist for that).
   Tests: `TestEveryProcessOfARunGoesThroughTheRuntime`,
   `TestADeclinedRunRunsNatively`, `TestALegacyRunIsOfferedNothing`,
   `TestAResultCrossesTheRuntimeWhole`, `TestARefusedSpecKeepsItsWords`,
   `TestSetRuntimeRefusals`, `TestAnEngineRunsNativelyByDefault`;
-  `TestFakeRuntimeRecordsWhatItIsAsked` and
-  `TestFakeRuntimePanicsAfterStartLeavingNothing`; every existing crew
-  test, its checks and steps now through the adapter.
+  `TestFakeRuntimeRecordsWhatItIsAsked`,
+  `TestFakeRuntimePanicsAfterStartLeavingNothing` and
+  `TestFakeRuntimePanicsAfterStartOnceTheLeaderExitedLeavingNothing`;
+  every existing crew test, its checks and steps now through the adapter.
 
   PR-3 (#492): sessions start through the Runtime, on the server and on a
   host. `createLocalSession` starts every server session's process through
@@ -3467,8 +3471,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   host stopped as its command starts starts it, stops it and exits with
   no error, as before; the host keeps no handle on the process
   but its session's. `internal/api` and `internal/hostagent` leave the
-  boundary test's allowlist, which is `ext/local` and the two runners
-  alone from here. Tests: `TestARuntimeTerminalDrivesALocal`,
+  boundary test's allowlist, which is `ext/local`, the two runners and
+  sessiontest's fake alone from here. Tests: `TestARuntimeTerminalDrivesALocal`,
   `TestARuntimeTerminalsExitIsAPtyExitStatus`;
   `TestASessionStartsThroughTheNativeRuntime`,
   `TestAPersonsSessionIsNotOffered`, `TestAnAttemptStartsInItsRunsRuntime`,

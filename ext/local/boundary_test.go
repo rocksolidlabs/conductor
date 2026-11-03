@@ -50,12 +50,18 @@ var runners = map[string][]string{
 	module + "/internal/proc": {"Run", "Serve"},
 }
 
-// runnersAllowed are where a runner may be used: the native Runtime and
-// the runners' own packages, and nowhere else (docs/plans/runtime.md, The
-// PRs: internal/crew's executor is the Runtime's since PR-2, the server's
-// and the host's session start since PR-3), so a session or a command that
+// runnersAllowed are where a runner may be used: the native Runtime, the
+// runners' own packages and sessiontest's FakeRuntime (test support no
+// production code imports, whose PanicAfterStart holds its start with
+// pty.StartHeld, as the native Runtime does, so its panic can end the
+// whole group), and nowhere else (docs/plans/runtime.md, The PRs:
+// internal/crew's executor is the Runtime's since PR-2, the server's and
+// the host's session start since PR-3), so a session or a command that
 // bypasses the Runtime fails this test.
-var runnersAllowed = []string{"ext/local", "internal/pty", "internal/proc"}
+var runnersAllowed = []string{
+	"ext/local", "internal/pty", "internal/proc",
+	"internal/session/sessiontest/fakeruntime.go",
+}
 
 // processSite is one place a process is started or signalled outside the
 // places allowed: the file (a slash path from the root), the line and the
