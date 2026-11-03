@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
 )
 
 // TestPlainBuildRegistersNothing: this test's binary links every package
@@ -31,6 +32,9 @@ func TestPlainBuildRegistersNothing(t *testing.T) {
 	}
 	if _, ok := ext.RuntimeProvider(); ok {
 		t.Error("a runtime is registered")
+	}
+	if rt := local.Fill(ext.Freeze()).Runtime; rt != local.Native() || rt.Where() != ext.WhereNative {
+		t.Errorf("the filled runtime is %#v, not the native one", rt)
 	}
 	if got := ext.ContextProviders(); len(got) != 0 {
 		t.Errorf("context providers registered: %d", len(got))
