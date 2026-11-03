@@ -1300,9 +1300,10 @@ first), **Copy branch**. A row opens the task: its result (summary, issues, a
 review's findings) and every attempt with where it started, what it submitted
 and what failed it. An attempt after a failed check starts at the result that
 failed, its task file naming the check's receipt with the end of its output,
-and the whole log beside it (`.conductor/previous/check-<id>.log`). The header says `3/7 tasks`, `1 failed`, `2 running`,
-`1 checking` and `paused`, and **Pause** holds scheduling (attempts in
-flight go on, no task starts) until **Resume**. Every one of these is a
+and the whole log beside it (`.conductor/previous/check-<id>.log`). The
+header says `3/7 tasks`, `1 failed`, `2 running`, `1 checking` and `paused`,
+and **Pause** holds scheduling (attempts in flight go on, no task starts)
+until **Resume**. Every one of these is a
 command with a receipt: the browser mints an id, a reply lost to the network
 is asked for once more with the same id and answered as the first, and a
 refusal says why. The palette lists the tasks under the page's group, each
