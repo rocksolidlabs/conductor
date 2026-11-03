@@ -104,6 +104,11 @@ func TestFakeRuntimeRecordsAndRefuses(t *testing.T) {
 	if calls[4].Probe.URL != "http://127.0.0.1:1/" {
 		t.Errorf("the Probe record: %+v", calls[4].Probe)
 	}
+	// An answer is a copy too: changing its argv and env changes no later one.
+	calls[1].Terminal.Argv[0], calls[1].Terminal.Env[0], calls[2].Command.Argv[0] = "changed", "B=2", "changed"
+	if again := f.RuntimeCalls(); again[1].Terminal.Argv[0] != "agent" || again[1].Terminal.Env[0] != "A=1" || again[2].Command.Argv[0] != "make" {
+		t.Errorf("a changed answer changed the record: %+v %+v", again[1].Terminal, again[2].Command)
+	}
 
 	// Scripted, each method answers as its script does.
 	f.SetTakes(false)

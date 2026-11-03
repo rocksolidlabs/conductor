@@ -80,18 +80,25 @@ func (f *FakeRuntime) SetPort(fn func(context.Context, ext.ProcessRef) (int, err
 	f.tell()
 }
 
-// RuntimeCalls answers the calls the fake was given, in order.
+// RuntimeCalls answers the calls the fake was given, in order: copies,
+// argv and env included, so changing one changes no later answer.
 func (f *FakeRuntime) RuntimeCalls() []RuntimeCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return slices.Clone(f.script.calls)
+	return copyAll(f.script.calls, copyCall)
+}
+
+// copyCall is c with its own argv and env slices.
+func copyCall(c RuntimeCall) RuntimeCall {
+	c.Terminal.Argv, c.Terminal.Env = slices.Clone(c.Terminal.Argv), slices.Clone(c.Terminal.Env)
+	c.Command.Argv, c.Command.Env = slices.Clone(c.Command.Argv), slices.Clone(c.Command.Env)
+	return c
 }
 
 // record notes c and answers the script as it is now.
 func (f *FakeRuntime) record(c RuntimeCall) runtimeScript {
-	c.Terminal.Argv, c.Terminal.Env, c.Terminal.DirFile = slices.Clone(c.Terminal.Argv), slices.Clone(c.Terminal.Env), nil
-	c.Command.Argv, c.Command.Env = slices.Clone(c.Command.Argv), slices.Clone(c.Command.Env)
-	c.Command.Log, c.Command.Started = nil, nil
+	c = copyCall(c)
+	c.Terminal.DirFile, c.Command.Log, c.Command.Started = nil, nil, nil
 	f.mu.Lock()
 	f.script.calls = append(f.script.calls, c)
 	s := f.script
