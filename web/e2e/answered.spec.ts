@@ -274,10 +274,12 @@ test('a choice clicked once its question was answered is refused, says so, and n
   expect(first.id).toMatch(/^[0-9a-f]{16}$/)
 
   // The stub's transcript: the one that holds this run's line (Codex's own session id is told only as its turn ends, after both
-  // approvals).
+  // approvals). Only transcripts (`<id>.txt`, appended in place) are read: the folder holds every stub's other files too, which
+  // a stub replaces by renaming a `.new` over them, so a file listed can be gone by its read.
   const transcript = () => {
     const dir = join(state.home, '.stub-sessions')
     for (const f of existsSync(dir) ? readdirSync(dir) : []) {
+      if (!f.endsWith('.txt')) continue
       const text = readFileSync(join(dir, f), 'utf8')
       if (text.includes(prompt)) return text
     }
