@@ -197,6 +197,60 @@ export interface KeptMake {
 }
 
 /**
+ * Where a browser keeps its unfinished makes: one storage entry per `<request>/<item>`, so a tab that keeps or forgets its make
+ * writes that entry alone and never another tab's (one shared entry, rewritten whole from each tab's own copy, lost the makes the
+ * other tabs kept after it was read).
+ */
+export const KEPT_PREFIX = 'conductor.brakeman.kept-make:'
+/** How many unfinished makes a browser keeps: the newest, by when they were asked, whichever tab asked them. */
+export const KEPT_MAX = 50
+
+/** The part of the browser's Storage the kept makes use. */
+export type KeptStorage = Pick<Storage, 'length' | 'key' | 'getItem' | 'setItem' | 'removeItem'>
+
+function keptNames(s: KeptStorage): string[] {
+  const names: string[] = []
+  for (let i = 0; i < s.length; i++) {
+    const name = s.key(i)
+    if (name?.startsWith(KEPT_PREFIX)) names.push(name)
+  }
+  return names
+}
+
+function parseKept(raw: string | null): KeptMake | null {
+  try {
+    const k = JSON.parse(raw ?? 'null') as KeptMake | null
+    return k && typeof k === 'object' && typeof k.opId === 'string' && k.body && typeof k.body === 'object' ? k : null
+  } catch {
+    return null
+  }
+}
+
+/** The unfinished makes the browser keeps, every tab's, by `<request>/<item>`; an entry that does not read as one is skipped. */
+export function readKeptMakes(s: KeptStorage): Record<string, KeptMake> {
+  const out: Record<string, KeptMake> = {}
+  for (const name of keptNames(s)) {
+    const k = parseKept(s.getItem(name))
+    if (k) out[name.slice(KEPT_PREFIX.length)] = k
+  }
+  return out
+}
+
+/** Keeps one make under its own entry, then drops the oldest beyond KEPT_MAX. */
+export function storeKeptMake(s: KeptStorage, key: string, k: KeptMake) {
+  s.setItem(KEPT_PREFIX + key, JSON.stringify(k))
+  const names = keptNames(s)
+  if (names.length <= KEPT_MAX) return
+  const byAge = names.map((name) => ({ name, at: parseKept(s.getItem(name))?.at ?? 0 })).sort((a, b) => b.at - a.at)
+  for (const { name } of byAge.slice(KEPT_MAX)) s.removeItem(name)
+}
+
+/** Forgets one make's entry, and only it. */
+export function dropKeptMake(s: KeptStorage, key: string) {
+  s.removeItem(KEPT_PREFIX + key)
+}
+
+/**
  * Whether a make's failure leaves it to be asked again with the same id and body: a failure that establishes nothing about the make.
  * A reply lost twice (status 0); the server's failure (500 make_failed: the backend failed after the claim, or before it; 503: a store
  * not open); or a refusal before the make route ran (401 for a token missing or wrong, 429 for too many of those, 408 for a request
