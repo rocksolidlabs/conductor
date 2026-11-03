@@ -3482,6 +3482,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestATakesThatPanicsOrStallsRunsNatively`,
   `TestAServerWithNothingRegisteredStartsNatively`,
   `TestARuntimeThatIsAStarterIsStartedFirst`,
+  `TestATerminalThatPanicsAndWhoseStopFailsIsStoppedAgain`,
   `TestAPersonsSessionOutlivesItsRequest`; `TestAHostStartsThroughTheRuntime`,
   `TestAHostWithNoRuntimeRunsNatively`,
   `TestAHostWhoseRuntimeRefusesTheStartFails`,

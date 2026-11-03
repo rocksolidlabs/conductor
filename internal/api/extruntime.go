@@ -192,9 +192,12 @@ func (g guardRuntime) Port(ctx context.Context, ref ext.ProcessRef) (n int, err 
 // the Runtime's own Stop (with no grace, for a terminal), bounded by
 // ext.StopKillWait, on a goroutine of its own, and from then on the
 // process answers as one that has ended: a read, a write or a resize the
-// words, its exit Code -1 (a service's result Exit -1) and the words, and
-// its Done closed once that stop has returned. Done is otherwise the
-// Runtime's, read on that goroutine too.
+// words, its exit Code -1 (a service's result Exit -1) and the words. Its
+// Done is the Runtime's, read on that goroutine too, or closed once a stop
+// of the guard's has succeeded: a stop that fails (errs or panics) leaves
+// the process running and Done open, and every later Stop asks the
+// Runtime's Stop again, one at a time, until one succeeds or the process
+// is done, as a session's stop is retried (session.Local's Stop).
 type guardProcess struct {
 	g     guardRuntime
 	what  string
@@ -202,19 +205,20 @@ type guardProcess struct {
 	once  sync.Once
 	words string
 	// failed is closed once a method has panicked, words set before it;
-	// ended once the guard's stop of the process has returned, stopErr
-	// set before it; done once the Runtime's Done or ended is.
-	failed  chan struct{}
-	ended   chan struct{}
-	stopErr error
-	done    chan struct{}
+	// ended once a stop of the guard's has succeeded; done once the
+	// Runtime's Done or ended is. stopping holds the one stop of the
+	// guard's under way.
+	failed   chan struct{}
+	ended    chan struct{}
+	stopping chan struct{}
+	done     chan struct{}
 }
 
 // guarded is a guardProcess of the Runtime's process what ("Terminal" or
 // "ServiceProcess"), ended by stop, whose Done is done; its watch of
 // done begins at once.
 func (g guardRuntime) guarded(what string, stop func(context.Context) error, done func() <-chan struct{}) *guardProcess {
-	p := &guardProcess{g: g, what: what, stop: stop, failed: make(chan struct{}), ended: make(chan struct{}), done: make(chan struct{})}
+	p := &guardProcess{g: g, what: what, stop: stop, failed: make(chan struct{}), ended: make(chan struct{}), stopping: make(chan struct{}, 1), done: make(chan struct{})}
 	go func() {
 		defer close(p.done)
 		var ch <-chan struct{}
@@ -242,12 +246,40 @@ func (p *guardProcess) fail(method string) {
 		p.words = fmt.Sprintf("the Runtime %s panicked in %s.%s", p.g.name, p.what, method)
 		close(p.failed)
 		go func() {
-			defer close(p.ended)
 			ctx, cancel := context.WithTimeout(context.Background(), ext.StopKillWait)
 			defer cancel()
-			p.stopErr = p.safeStop(ctx)
+			_ = p.stopBroken(ctx)
 		}()
 	})
+}
+
+// stopBroken is a stop of the process once it has panicked: nil at once
+// once the process is done (or a stop of the guard's has ended it, its
+// Done not yet closed); otherwise, after any stop of the guard's under
+// way, the Runtime's Stop asked again, its success ending the process
+// (ended), its failure answered and the process left as it is; ctx's
+// error if ctx ends first.
+func (p *guardProcess) stopBroken(ctx context.Context) error {
+	select {
+	case <-p.done:
+		return nil
+	case p.stopping <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-p.stopping }()
+	select {
+	case <-p.done:
+		return nil
+	case <-p.ended:
+		return nil
+	default:
+	}
+	if err := p.safeStop(ctx); err != nil {
+		return err
+	}
+	close(p.ended)
+	return nil
 }
 
 // safeStop is the Runtime's stop of the process, its panic the words.
@@ -272,17 +304,6 @@ func (p *guardProcess) broken() bool {
 
 // err is the words as an error, once broken.
 func (p *guardProcess) err() error { return errors.New(p.words) }
-
-// stopped is a Stop of a process that has panicked: the guard's stop's
-// answer once it has returned, ctx's error if ctx ends first.
-func (p *guardProcess) stopped(ctx context.Context) error {
-	select {
-	case <-p.ended:
-		return p.stopErr
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
 
 // guard runs fn, a call of the Runtime's method of the process; a panic
 // in it is the process's failure, and answers false.
@@ -343,7 +364,7 @@ func (t guardTerminal) Stop(ctx context.Context, grace time.Duration) (err error
 	if !t.broken() && t.guard("Stop", func() { err = t.t.Stop(ctx, grace) }) {
 		return err
 	}
-	return t.stopped(ctx)
+	return t.stopBroken(ctx)
 }
 
 func (t guardTerminal) Process() (info ext.ProcessInfo) {
@@ -378,5 +399,5 @@ func (s guardService) Stop(ctx context.Context) (err error) {
 	if !s.broken() && s.guard("Stop", func() { err = s.sp.Stop(ctx) }) {
 		return err
 	}
-	return s.stopped(ctx)
+	return s.stopBroken(ctx)
 }

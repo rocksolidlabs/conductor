@@ -412,6 +412,97 @@ func TestAPersonsSessionOutlivesItsRequest(t *testing.T) {
 	e.stopAndWait(calls[0].Ref.Session)
 }
 
+// stubbornPanicker is a Terminal whose Read panics and whose first Stop
+// fails, leaving it running (its Done open), as a process that ignores
+// its signal would; each Stop is counted, and its number sent on stopped
+// once it has returned.
+type stubbornPanicker struct {
+	ext.Terminal
+	stops   *atomic.Int32
+	stopped chan int32
+}
+
+func (p stubbornPanicker) Read([]byte) (int, error) { panic("the fake's terminal panics in Read") }
+
+func (p stubbornPanicker) Stop(ctx context.Context, grace time.Duration) error {
+	n := p.stops.Add(1)
+	defer func() { p.stopped <- n }()
+	if n == 1 {
+		return errors.New("the process did not exit")
+	}
+	return p.Terminal.Stop(ctx, grace)
+}
+
+// stubbornRuntime is a Runtime whose terminals are stubbornPanickers of
+// FakeProcs.
+type stubbornRuntime struct {
+	*sessiontest.FakeRuntime
+	stops   *atomic.Int32
+	stopped chan int32
+}
+
+func (r stubbornRuntime) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Terminal, error) {
+	t, err := r.FakeRuntime.StartTerminal(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	return stubbornPanicker{Terminal: t, stops: r.stops, stopped: r.stopped}, nil
+}
+
+// A registered Runtime's terminal that panics and whose stop then fails
+// is still running, and its session says so: the session's process is
+// not done, and the session's next Stop asks the Runtime's Stop again,
+// whose success ends it; a Stop after that asks nothing.
+func TestATerminalThatPanicsAndWhoseStopFailsIsStoppedAgain(t *testing.T) {
+	fp := sessiontest.NewFakeProc()
+	t.Cleanup(func() { fp.End(0) })
+	rt := stubbornRuntime{FakeRuntime: &sessiontest.FakeRuntime{Terminal: func(ext.TerminalSpec) (*sessiontest.FakeProc, error) { return fp, nil }},
+		stops: &atomic.Int32{}, stopped: make(chan int32, 4)}
+	e := runtimeEnv(t, nativeSeam(), nil, withRuntime(rt))
+	l, aerr := e.srv.createLocalSession(createSessionRequest{AgentID: "cat", where: rt.Where()}, nil)
+	if aerr != nil {
+		t.Fatalf("the start: %+v", aerr)
+	}
+	stop := func(want int32) {
+		t.Helper()
+		select {
+		case n := <-rt.stopped:
+			if n != want {
+				t.Fatalf("stop %d returned, want %d", n, want)
+			}
+		case <-time.After(testWait):
+			t.Fatalf("stop %d not asked within %s", want, testWait)
+		}
+	}
+	stop(1) // the guard's, once Read has panicked; it fails
+	select {
+	case <-l.ProcessDone():
+		t.Fatal("the session's process is done although its stop failed")
+	default:
+	}
+	if fp.Stopped() {
+		t.Fatal("the process is stopped although its stop failed")
+	}
+	if err := l.Stop(t.Context()); err != nil {
+		t.Fatalf("the session's stop: %v", err)
+	}
+	stop(2)
+	if !fp.Stopped() {
+		t.Fatal("the session's stop did not reach the process")
+	}
+	select {
+	case <-l.ProcessDone():
+	case <-time.After(testWait):
+		t.Fatal("the session's process not done once its stop succeeded")
+	}
+	if err := l.Stop(t.Context()); err != nil {
+		t.Fatalf("a stop once the process is done: %v", err)
+	}
+	if n := rt.stops.Load(); n != 2 {
+		t.Fatalf("the Runtime's Stop was called %d times, want 2", n)
+	}
+}
+
 // panickyService is a ServiceProcess whose Result panics; its Stop is
 // counted and ends it.
 type panickyService struct {
