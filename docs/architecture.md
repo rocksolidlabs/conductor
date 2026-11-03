@@ -10,8 +10,8 @@ runs of #334. **Brakeman** (#356, below) is the sidekick agent that watches
 the work, anticipates problems, summarizes progress and assists the people: an
 agent of the person's own choosing that Yardmaster runs for bounded turns, with
 the visibility of the operation the person grants it, not a part of the
-harness and never a scheduler. **Switchman**, to come, routes tasks and
-decisions between agents, crews and people.
+harness and never a scheduler. **Switchman**, to come, routes tasks
+between agents, crews and people.
 
 ## Server-hosted sessions
 

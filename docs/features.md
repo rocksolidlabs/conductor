@@ -3374,7 +3374,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   planted it (PR-3c); the overlaps test missed macOS's `/private/var`
   (PR-4, found by the Mac rows); a page that read a request inside its
   brief's grace kept its In progress card, and the Agent select's None
-  threw (PR-6). `internal/api`'s race tests took 840 to 1,690 s on the
+  threw (PR-6); and this PR's preflight found PR-4's
+  `TestARunReadBeforeItsChangeCommitsHasNoRevision` ending with its run's
+  attempt alive, so the engine started the next attempt's worktree while
+  the test's directory was removed (4 of 30 failed); the run is now
+  stopped first (30 of 30). `internal/api`'s race tests took 840 to 1,690 s on the
   loaded Linux box, once past the 30 m bound with no test failing. CI's
   `dco` check on a stacked PR counts `main`'s merge commits the base
   branch does not hold yet (PR-7), and clears once the base takes `main`.
