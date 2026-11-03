@@ -105,8 +105,14 @@ test("a revision proposed from a crew, approved with a note and launched; a seco
   await expect(propose).toBeVisible()
   await propose.locator('[data-plan-propose-crew]').click()
   await page.getByRole('option').filter({ hasText: crewName }).click()
+  // The crew menu gone before anything is typed: while its content is still mounted, closing, it keeps the focus in its search field,
+  // and what is typed lands there and opens it again (the note lost).
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(propose.locator('[data-plan-propose-crew]')).toContainText(crewName)
   await propose.getByRole('checkbox', { name: 'spec.txt' }).click()
-  await propose.locator('[data-plan-propose-note]').fill('The two-task crew.')
+  const note = propose.locator('[data-plan-propose-note]')
+  await note.fill('The two-task crew.')
+  await expect(note).toHaveValue('The two-task crew.')
   await propose.locator('[data-plan-propose-submit]').click()
   await expect(propose).toBeHidden()
   const featured = plan.locator('[data-plan-featured]')
