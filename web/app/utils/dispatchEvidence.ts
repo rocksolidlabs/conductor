@@ -1,5 +1,5 @@
 import type { CandidateReceipt, DispatchChange, LaunchChanges, RunCandidate, RunSummary, TaskCandidates, TicketRunEntry } from '~/composables/useDispatch'
-import type { Finding, RunInfo, RunStep, RunTask, SessionInfo } from '~/composables/useSessions'
+import type { Finding, RunAttempt, RunInfo, RunStep, RunTask, SessionInfo } from '~/composables/useSessions'
 import { isEnded, liveAttention } from './attention'
 
 // A ticket's runs and their evidence in words (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): the entries of a ticket's
@@ -363,53 +363,96 @@ export interface Repair {
   what: string
   /** The attempts that started at the commit: the same task's after a failed check, the reviewed task's after a review. */
   by: Array<{ task: string; attempt: number; state: string; commit?: string }>
+  /** The tasks whose attempts are not read yet (taskDetail), so `by` is not known: empty once it is. */
+  unread: string[]
+}
+
+/** A task as its own route reads it (GET /api/runs/{run}/tasks/{task}): what it needs, and every attempt, submitted or not, with its times. */
+export interface TaskDetail {
+  task: Pick<RunTask, 'id' | 'kind' | 'needs'>
+  attempts: readonly RunAttempt[]
+}
+
+/** An instant as a number to compare, -Infinity for none. */
+function instant(at: string | undefined): number {
+  const t = at ? Date.parse(at) : NaN
+  return Number.isFinite(t) ? t : -Infinity
 }
 
 /**
- * A run's repairs from its candidates (and, for an attempt that has not submitted yet, the live run's tasks): each failed check of a
- * work attempt with the same task's later attempts that started at its result, and each review that asked for changes with the attempts
- * of other tasks that started at the commit it reviewed. Oldest first.
- *
- * A review reviewed a result its task stood on, and a repair may submit the commit it started at unchanged (the engine takes an
- * unchanged commit), so the attempt a review read is not the last one with its commit: a review task reads each result of the task it
- * reviews once, a needs_changes taking the result away until a later attempt stands again, so its n-th verdict on a commit is on the n-th
- * attempt that stood with it (succeeded, or accepted anyway), and its repairs are the attempts that started at the commit after that one,
- * up to the one the review task's next verdict on it read.
+ * A run's repairs: each failed check of a work attempt (its candidates) with the same task's later attempts that started at its result,
+ * and each review that asked for changes with the attempts of the task it reviewed (its first need) that started at the commit it
+ * reviewed after its verdict, up to the next verdict that reopened that task. Oldest first. What asked for each is the candidates'; who
+ * took it up is the attempts as the task route reads them (`details`), every one of them, one that never submitted included (a repair
+ * stopped before it submitted, of a run the server let go too), with when each started: the engine reopens the reviewed task when a
+ * review says needs_changes, whichever review it is and whatever the others did (one cancelled by another's verdict says none), so a
+ * review's repairs are known by when they started, never by counting verdicts. A repair whose tasks are not read yet names them (unread).
  */
-export function repairs(tasks: readonly TaskCandidates[], live?: readonly RunTask[]): Repair[] {
+export function repairs(tasks: readonly TaskCandidates[], details: ReadonlyMap<string, TaskDetail> = new Map()): Repair[] {
   const out: Repair[] = []
   const all = tasks.flatMap((t) => t.candidates.map((c) => ({ ...c, task: t.task, kind: t.kind })))
-  const startedAt = (task: string, commit: string, after: number, until = Infinity) => {
-    const within = (n: number) => n > after && n <= until
-    const by = all.filter((c) => c.kind === 'work' && c.task === task && within(c.attempt) && c.start === commit).map((c) => ({ task: c.task, attempt: c.attempt, state: c.state, commit: c.commit }))
-    const a = live?.find((t) => t.id === task)?.attempt
-    if (a && within(a.n) && a.start === commit && !by.some((b) => b.attempt === a.n)) by.push({ task, attempt: a.n, state: a.state, commit: a.result })
-    return by.sort((x, y) => x.attempt - y.attempt)
-  }
+  const took = (task: string, as: readonly RunAttempt[]) => as.map((a) => ({ task, attempt: a.n, state: a.state, commit: a.result })).sort((x, y) => x.attempt - y.attempt)
+  // When each review that reviews `sub` reopened it: its needs_changes verdicts, by when their attempts closed.
+  const reopened = (sub: string) =>
+    [...details.values()]
+      .filter((d) => d.task.kind === 'review' && d.task.needs?.[0] === sub)
+      .flatMap((d) => d.attempts.filter((a) => a.state === 'succeeded' && a.submitted?.verdict === 'needs_changes').map((a) => instant(a.endedAt ?? a.startedAt)))
   for (const c of [...all].sort((a, b) => a.attempt - b.attempt)) {
     if (c.kind === 'work' && c.commit) {
       const failed = c.receipts.find((r) => receiptFailed(r))
       if (!failed) continue
-      out.push({ key: `check:${c.task}:${c.attempt}`, kind: 'check', task: c.task, attempt: c.attempt, commit: c.commit, what: receiptName(failed), by: startedAt(c.task, c.commit, c.attempt) })
+      const commit = c.commit
+      const as = details.get(c.task)?.attempts
+      const by = as ? took(c.task, as.filter((a) => a.n > c.attempt && a.start === commit)) : []
+      out.push({ key: `check:${c.task}:${c.attempt}`, kind: 'check', task: c.task, attempt: c.attempt, commit, what: receiptName(failed), by, unread: as ? [] : [c.task] })
     } else if (c.kind === 'review' && c.verdict === 'needs_changes' && c.start) {
       const start = c.start
-      // This verdict's place among the review task's verdicts on the commit: the n-th read the n-th attempt that stood with it.
-      const nth = all.filter((x) => x.task === c.task && x.kind === 'review' && x.verdict && x.start === start && x.attempt < c.attempt).length
-      const reviewed = [...new Set(all.filter((x) => x.kind === 'work' && x.commit === start).map((x) => x.task))]
-      const by = reviewed.flatMap((task) => {
-        const withCommit = all.filter((x) => x.kind === 'work' && x.task === task && x.commit === start)
-        const stood = withCommit
-          .filter((x) => x.state === 'succeeded' || !!x.acceptedAnyway)
-          .map((x) => x.attempt)
-          .sort((a, b) => a - b)
-        // None stood on the page (they are older, on the run's page): after the last attempt with the commit.
-        const read = stood[nth] ?? stood.at(-1) ?? Math.max(...withCommit.map((x) => x.attempt))
-        return startedAt(task, start, read, stood[nth + 1] ?? Infinity)
-      })
-      out.push({ key: `review:${c.task}:${c.attempt}`, kind: 'review', task: c.task, attempt: c.attempt, commit: start, what: findingsWords(c.findings) || 'changes', by })
+      const repair: Repair = { key: `review:${c.task}:${c.attempt}`, kind: 'review', task: c.task, attempt: c.attempt, commit: start, what: findingsWords(c.findings) || 'changes', by: [], unread: [] }
+      out.push(repair)
+      const rd = details.get(c.task)
+      const verdict = rd?.attempts.find((a) => a.n === c.attempt)
+      if (!rd || !verdict) {
+        repair.unread = [c.task]
+        continue
+      }
+      const sub = rd.task.needs?.[0]
+      if (!sub) continue
+      const sd = details.get(sub)
+      if (!sd) {
+        repair.unread = [sub]
+        continue
+      }
+      const at = instant(verdict.endedAt ?? verdict.startedAt)
+      const next = Math.min(...reopened(sub).filter((t) => t > at))
+      // The first of sub's attempts that started at or after an instant (one not launched yet is the newest): attempts of one task are
+      // numbered as they start.
+      const firstFrom = (t: number) => Math.min(...sd.attempts.filter((a) => !a.startedAt || instant(a.startedAt) >= t).map((a) => a.n))
+      const from = firstFrom(at)
+      const until = next === Infinity ? Infinity : firstFrom(next)
+      repair.by = took(sub, sd.attempts.filter((a) => a.n >= from && a.n < until && a.start === start))
     }
   }
   return out
+}
+
+/**
+ * The tasks whose attempts a run's repairs read (repairs' `details`): each work task with a candidate that failed a check, each review
+ * task with a needs_changes verdict, and the task each such review reviews, as its own read named it (none before it answered: that
+ * read names it then).
+ */
+export function repairReads(tasks: readonly TaskCandidates[], details: ReadonlyMap<string, TaskDetail>): string[] {
+  const out = new Set<string>()
+  for (const t of tasks) {
+    for (const c of t.candidates) {
+      if (t.kind === 'work' && c.commit && c.receipts.some((r) => receiptFailed(r))) out.add(t.task)
+      if (t.kind === 'review' && c.verdict === 'needs_changes' && c.start) {
+        out.add(t.task)
+        const sub = details.get(t.task)?.task.needs?.[0]
+        if (sub) out.add(sub)
+      }
+    }
+  }
+  return [...out]
 }
 
 const FIELD_WORDS: Record<LaunchChanges['fields'][number], string> = { title: 'the title', description: 'the description', acceptance: 'the acceptance criteria' }

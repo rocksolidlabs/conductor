@@ -24,6 +24,8 @@ const props = defineProps<{
   candidates?: readonly CandidateOption[]
   /** The runs' candidates are being read. */
   candidatesLoading?: boolean
+  /** A run's candidates could not be read, in words ('' when every read answered): they are asked again until one does. */
+  candidatesError?: string
   /** Whether a delivered candidate's result was withdrawn since, as its run's candidates read now say. */
   withdrawn?: (candidate: string) => boolean
 }>()
@@ -154,6 +156,7 @@ const tones = { warning: 'text-warning', error: 'text-error', muted: 'text-muted
       <UInput v-model="note" :maxlength="MAX_NOTE" placeholder="A note (optional)…" size="sm" class="w-full" aria-label="The link's note" data-link-note-input />
       <UFormField v-if="kind === 'delivery'" label="The candidate it delivers" :hint="candidatesLoading ? 'reading the runs…' : undefined" description="One of this ticket's runs' standing results: its receipts are recorded with the link, and say whether it is verified." size="sm">
         <USelect v-model="candidate" :items="candidateItems" size="sm" class="w-full" aria-label="The candidate it delivers" data-link-candidate-pick />
+        <p v-if="candidatesError" class="mt-1 text-xs text-warning" data-link-candidates-error>{{ candidatesError }}</p>
       </UFormField>
       <div class="flex justify-end gap-2">
         <UButton label="Cancel" color="neutral" variant="ghost" size="sm" data-link-cancel @click="cancel" />

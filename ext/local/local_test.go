@@ -144,10 +144,27 @@ func (f *fake) ICEServers(context.Context, ext.ICERequest) ([]ext.ICEServer, err
 func (f *fake) Room(context.Context, ext.RoomRequest) (ext.RoomJoin, bool, error) {
 	return ext.RoomJoin{URL: "https://room.example.org/r1"}, true, nil
 }
-func (f *fake) Where() ext.Where { return "fake" }
+func (f *fake) Where() ext.Where          { return "fake" }
+func (f *fake) Takes(ext.ProcessRef) bool { return true }
+func (f *fake) StartTerminal(context.Context, ext.TerminalSpec) (ext.Terminal, error) {
+	return nil, errors.New("fake: no terminal")
+}
+func (f *fake) Run(context.Context, ext.CommandSpec) ext.CommandResult {
+	return ext.CommandResult{Exit: -1, Err: "fake: no command"}
+}
+func (f *fake) Serve(context.Context, ext.CommandSpec) (ext.ServiceProcess, error) {
+	return nil, errors.New("fake: no service")
+}
+func (f *fake) Probe(context.Context, ext.ProbeSpec) (int, error) {
+	return 0, errors.New("fake: no probe")
+}
+func (f *fake) Port(context.Context, ext.ProcessRef) (int, error) {
+	return 0, errors.New("fake: no port")
+}
 
-// TestFill wants every empty slot to get its default, and a registered
-// provider, the lists, the runtime and All kept as they are.
+// TestFill wants every empty slot to get its default (the runtime's the
+// native one), and a registered provider, the lists and All kept as they
+// are.
 func TestFill(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		got := local.Fill(ext.Providers{})
@@ -156,12 +173,13 @@ func TestFill(t *testing.T) {
 			Router:     local.Router{},
 			Continuity: local.Continuity{},
 			Media:      local.Media{},
+			Runtime:    local.Native(),
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("Fill(empty) = %#v\nwant %#v", got, want)
 		}
-		if got.Context != nil || got.Notifications != nil || got.Runtime != nil || got.All != nil {
-			t.Errorf("Fill(empty) put something in a list, the runtime or All: %#v", got)
+		if got.Context != nil || got.Notifications != nil || got.All != nil {
+			t.Errorf("Fill(empty) put something in a list or All: %#v", got)
 		}
 		if again := local.Fill(got); !reflect.DeepEqual(again, got) {
 			t.Errorf("Fill(Fill(empty)) = %#v; want what Fill answered", again)
@@ -220,14 +238,27 @@ func TestFill(t *testing.T) {
 		if got.Media != ext.MediaRoomProvider(f) {
 			t.Errorf("Fill replaced the registered media provider with %#v", got.Media)
 		}
-		if got.Identity != (local.Identity{}) || got.Router != (local.Router{}) || got.Continuity != (local.Continuity{}) {
+		if got.Identity != (local.Identity{}) || got.Router != (local.Router{}) || got.Continuity != (local.Continuity{}) || got.Runtime != local.Native() {
 			t.Errorf("Fill left an empty slot without its default: %#v", got)
 		}
 		if len(got.All) != 1 || got.All[0].Value != ext.Provider(f) {
 			t.Errorf("Fill changed All, or listed a default in it: %#v", got.All)
 		}
-		if in.Identity != nil || in.Router != nil || in.Continuity != nil {
+		if in.Identity != nil || in.Router != nil || in.Continuity != nil || in.Runtime != nil {
 			t.Errorf("Fill changed its argument: %#v", in)
 		}
 	})
+}
+
+// Fill puts the native Runtime in an empty slot (named local, reporting
+// native, the value Native answers) and keeps a registered one.
+func TestFillGivesTheNativeRuntime(t *testing.T) {
+	got := local.Fill(ext.Providers{}).Runtime
+	if got == nil || got.Name() != local.Name || got.Where() != ext.WhereNative || got != local.Native() {
+		t.Fatalf("Fill(empty).Runtime = %#v", got)
+	}
+	f := &fake{name: "vm"}
+	if got := local.Fill(ext.Providers{Runtime: f}).Runtime; got != ext.Runtime(f) {
+		t.Fatalf("Fill replaced a registered runtime with %#v", got)
+	}
 }

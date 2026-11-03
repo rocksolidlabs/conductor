@@ -1,11 +1,12 @@
 import type { RunInfo, SessionInfo } from './useSessions'
 import { ApiError } from './useApi'
-import { liveSession, attentionFavicon, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
+import { liveSession, attentionFavicon, alerting, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
 import { eventAlert, type RoutedEvent } from '~/utils/events'
 import { formedCrew } from '~/utils/activity'
 import type { ActivityEntry, ChatMessage, SessionActivity } from '~/utils/protocol'
 import { RunStore } from '~/utils/runs'
 import { asDispatchEvent, dispatchLive } from './useDispatchLive'
+import { asBrakemanEvent, brakemanLive } from './useBrakeman'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
 /** Shortest gap between two chimes, so a burst of routed events plays one. */
@@ -175,11 +176,12 @@ export function useAttention() {
   /**
    * Alerts for sessions that newly need input, when the Events page routes
    * needs_input to Browser. They come from the session state, so each prompt
-   * alerts once.
+   * alerts once. A quiet session's question (a background Brakeman turn's)
+   * stays in Needs you and alerts no one (alerting).
    */
   function react(prev: Map<string, SessionInfo>, next: Map<string, SessionInfo>) {
     if (!import.meta.client) return
-    const fresh = newlyNeedingInput(prev, next)
+    const fresh = alerting(newlyNeedingInput(prev, next))
     if (!fresh.length || !events.routes.value.needs_input.browser) return
     for (const s of fresh) notify(`${s.name} needs input`, s.attention?.message || 'The agent is waiting for you.', `conductor-${s.id}`, s.id)
     chime()
@@ -293,6 +295,7 @@ export function useAttention() {
         // What changed while the stream was away: every run, once, and every Dispatch page open.
         runs.readAll().catch(() => {})
         dispatchLive().snapshot()
+        brakemanLive().snapshot()
       } else if (event === 'session') upsert(payload as SessionInfo)
       else if (event === 'removed') remove((payload as { id: string }).id)
       else if (event === 'run') {
@@ -303,6 +306,10 @@ export function useAttention() {
         // Something of Dispatch's changed: the pages it names or touches read again (useDispatchLive).
         const e = asDispatchEvent(payload)
         if (e) dispatchLive().event(e)
+      } else if (event === 'brakeman') {
+        // A Brakeman request changed state: the pages' list and the sidebar's count follow (useBrakeman). Nothing takes the focus.
+        const e = asBrakemanEvent(payload)
+        if (e) brakemanLive().event(e)
       } else if (event === 'activity') {
         const { sessionId, ...entry } = payload as SessionActivity
         offerFormedCrew(sessionId, entry)

@@ -11,7 +11,6 @@ import (
 	"io"
 	"io/fs"
 	"maps"
-	"net"
 	"net/http"
 	"os"
 	"path"
@@ -234,10 +233,10 @@ type treeService struct {
 // treeExec is everything a tree does on the machine that runs it: a
 // command, run as a check is (run), a service started (serve), one try of
 // a probe over HTTP (probe) and a port drawn for it (port). The native one
-// runs proc.Run and proc.Serve, fetches a URL with a client of the probe's
-// own (probeURL) and binds 127.0.0.1:0; a test replaces it whole, and the
-// Runtime seam (C10) wraps it, so nothing of a tree reaches the machine
-// but through it, and a probe or a port of a tree that is not on the
+// runs proc.Run and proc.Serve, fetches a URL with a client of the
+// probe's own (proc.Probe) and binds 127.0.0.1:0 (proc.FreePort); a test
+// replaces it whole, and the Runtime seam (C10) wraps it, so nothing of a
+// tree reaches the machine but through it, and a probe or a port of a tree that is not on the
 // server's machine is never the server's own loopback.
 type treeExec struct {
 	run   func(ctx context.Context, s proc.Spec) proc.Result
@@ -249,7 +248,7 @@ type treeExec struct {
 // nativeExec runs a tree's commands and services, probes its URLs and
 // draws its ports, on this machine.
 func nativeExec() treeExec {
-	return treeExec{run: proc.Run, serve: nativeServe, probe: probeURL, port: freePort}
+	return treeExec{run: proc.Run, serve: nativeServe, probe: proc.Probe, port: proc.FreePort}
 }
 
 // nativeServe starts a service on this machine (proc.Serve).
@@ -259,53 +258,6 @@ func nativeServe(ctx context.Context, s proc.Spec) (service, error) {
 		return nil, err
 	}
 	return svc, nil
-}
-
-// probeClient is the client of one try of a probe over HTTP: the probe's
-// interval its timeout, no proxy and no connection kept, and no redirect
-// followed (http.ErrUseLastResponse: a 3xx is the try's answer), so a
-// service, or a manifest at a result commit, answering a redirect off the
-// loopback makes the server fetch nothing there.
-func probeClient(interval time.Duration) *http.Client {
-	return &http.Client{
-		Timeout:       interval,
-		Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true},
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-}
-
-// probeURL is one try of a probe over HTTP on this machine: one GET of url
-// through a client of its own (probeClient), its status, the body closed
-// unread, so nothing of it is kept.
-func probeURL(ctx context.Context, url string, interval time.Duration) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return 0, err
-	}
-	resp, err := probeClient(interval).Do(req)
-	if err != nil {
-		return 0, err
-	}
-	resp.Body.Close()
-	return resp.StatusCode, nil
-}
-
-// freePort draws a port of this machine's loopback: a bind of 127.0.0.1:0,
-// its number taken and the listener closed, so that the tree's own can
-// bind it. Nothing holds the port on the host meanwhile; the engine's
-// lease (e.ports) keeps two live trees of this server off one number.
-func freePort(ctx context.Context) (int, error) {
-	var lc net.ListenConfig
-	l, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	addr, ok := l.Addr().(*net.TCPAddr)
-	if !ok || addr.Port == 0 {
-		return 0, fmt.Errorf("the loopback gave no port: %v", l.Addr())
-	}
-	return addr.Port, nil
 }
 
 // maxPortDraws bounds the numbers drawn for one port of a tree: a number

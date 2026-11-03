@@ -1,0 +1,274 @@
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { Api, expect, test, type Run } from './fixtures'
+import { renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
+
+// Brakeman on the app's pages (docs/plans/brakeman.md, PR-6), on a server of its own and its own data, so that its turns (runs and
+// sessions of their own) meet no other spec and a restart finds the same records: Settings saves Brakeman with the stub as its
+// agent and terminal screens off (None among the agents, and chosen); a request asked from the page waits in the queue behind the
+// one in progress, then runs with its session's link; the stub's brief, held by a gate until the spec opens it, arrives while a
+// terminal has the focus and takes neither the focus nor the page, and counts in the sidebar; the brief shows its provenance,
+// Brakeman's reading, the fact with its evidence linking to the run and the session, and the interpretation naming the fact; the
+// turn's run is stopped after it and the request leaves In progress; the page links Settings while Brakeman is on; the server
+// started again on the same data shows the same brief; a brief kept with its summary alone shows its reading; a `brief:` link to an
+// item of a brief opened before scrolls to the item once it is drawn; and a brief opened in one tab is opened in the others.
+test.describe.configure({ mode: 'serial' })
+
+/** The cap of every wait a step makes without a bound of its own: the config's expect bound, an action's and the navigation's. */
+const STEP_MS = 15_000
+test.use({ actionTimeout: STEP_MS, navigationTimeout: STEP_MS })
+// The turn's test waits on its steps one after another, each within a cap of its own: the explicit ones (the first request
+// running, the cancel written, the briefing running after the stop, its terminal's transport, the brief kept, the run stopped after
+// the desk's grace for the agent's last output, the request off In progress once its slot is given up, and the chip's changed
+// mark), and STEP_MS for each of its 22 other expects, its 12 actions and its one navigation. Its timeout is their sum, and the
+// config's 120 s above it for the API reads between the steps.
+const TURN_CAPS = [30_000, 15_000, 60_000, 30_000, 30_000, 60_000, 30_000, 15_000]
+const TURN_STEPS = 22 + 12 + 1
+const TURN_BOUND = TURN_CAPS.reduce((a, b) => a + b, 0) + TURN_STEPS * STEP_MS
+
+interface Request {
+  id: string
+  state: string
+  runId?: string
+  sessionId?: string
+  hasBrief?: boolean
+  reads?: number
+}
+
+let server: Started | null = null
+let api: Api
+let serverLog = ''
+let root = ''
+let gate = ''
+let start: () => Promise<Started>
+let briefed: Request
+
+test.beforeAll(async () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  // A root of its own each time the spec runs (a repeat starts again from no records, so its requests are br-1 and br-2), outside
+  // the suite's scratch root: a folder there is one more entry in the listings other specs' pickers read (settings.spec.ts).
+  root = mkdtempSync(join(tmpdir(), 'conductor-e2e-brakeman-'))
+  const home = join(root, 'home')
+  const data = join(root, 'data')
+  const repo = join(root, 'repo')
+  for (const d of [home, data, repo]) mkdirSync(d, { recursive: true })
+  scratchRepo(repo)
+  // The stub's gate: it submits its brief once this file exists, so a request holds running while the spec looks at it.
+  gate = join(root, 'gate')
+  const config = join(root, 'conductor.json')
+  renderConfig(join(here, 'conductor.e2e.json'), config)
+  const cfg = JSON.parse(readFileSync(config, 'utf8')) as { catalog: { agents: Array<{ id: string; env?: Record<string, string> }> } }
+  const stub = cfg.catalog.agents.find((a) => a.id === 'brakeman-stub')!
+  stub.env = { ...stub.env, STUB_BRAKEMAN_WAIT: gate }
+  writeFileSync(config, JSON.stringify(cfg, null, 2) + '\n')
+  serverLog = join(root, 'server.log')
+  start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log: serverLog })
+  server = await start()
+  api = new Api(server)
+})
+
+test.afterAll(async () => {
+  if (server) await stopServer(server.pid)
+  if (serverLog) {
+    mkdirSync('test-results', { recursive: true })
+    copyFileSync(serverLog, 'test-results/brakeman-server.log')
+  }
+  if (root) rmSync(root, { recursive: true, force: true })
+})
+
+/** The page on this spec's server, with its token where the workbench keeps it. */
+async function open(page: import('@playwright/test').Page, path: string) {
+  await page.addInitScript((t) => localStorage.setItem('conductor.workbenchToken', t), server!.token)
+  await page.goto(`${server!.baseURL}${path}`)
+}
+
+const request = (id: string) => api.ok<{ request: Request }>('GET', `/api/brakeman/requests/${id}`).then((r) => r.request)
+
+test('Settings saves Brakeman with the stub as its agent and terminal screens off', async ({ page }) => {
+  // The defaults, written on the first read, at the revision the save names.
+  const before = (await api.ok<{ config: { enabled: boolean; rev: number } }>('GET', '/api/brakeman')).config
+  expect(before.enabled).toBe(false)
+  await open(page, '/settings')
+  const card = page.locator('[data-brakeman-settings]')
+  await expect(card).toBeVisible()
+  // Terminal screens are off until a person turns them on, and say what they would let Brakeman read.
+  const terminals = card.getByRole('switch', { name: 'Terminal screens' })
+  await expect(terminals).toHaveAttribute('aria-checked', 'false')
+  await expect(card).toContainText("Lets Brakeman read what a session's screen shows")
+  await card.getByRole('switch', { name: 'Brakeman on' }).click()
+  // No agent yet: the select says None, which is an item of its own.
+  const agent = card.locator('[data-brakeman-agent]')
+  await expect(agent).toContainText('None')
+  await agent.click()
+  await page.getByRole('option', { name: 'Brakeman (e2e stub)' }).click()
+  // The stub's adapter is Claude Code's: it takes a model, and can be told to allow Conductor's tools.
+  await expect(card.locator('[data-brakeman-model]')).toBeVisible()
+  // None is chosen like any agent, and takes the agent's fields away; the stub chosen again for the save.
+  await agent.click()
+  await page.getByRole('option', { name: 'None', exact: true }).click()
+  await expect(agent).toContainText('None')
+  await expect(card.locator('[data-brakeman-model]')).toHaveCount(0)
+  await agent.click()
+  await page.getByRole('option', { name: 'Brakeman (e2e stub)' }).click()
+  await expect(card.locator('[data-brakeman-model]')).toBeVisible()
+  await card.locator('[data-brakeman-save]').click()
+  await expect.poll(async () => {
+    const c = (await api.ok<{ config: { enabled: boolean; agentId: string; visibility: { terminals: boolean; runs: boolean }; rev: number } }>('GET', '/api/brakeman')).config
+    return [c.enabled, c.agentId, c.visibility.terminals, c.visibility.runs, c.rev]
+  }, { timeout: 15_000 }).toEqual([true, 'brakeman-stub', false, true, before.rev + 1])
+  await expect(card.locator('[data-brakeman-save]')).toBeDisabled()
+})
+
+test('a briefing waits behind the turn in progress, then runs in its session, and its brief takes neither the focus nor the page', async ({ page }) => {
+  test.setTimeout(TURN_BOUND + 120_000)
+  await open(page, '/brakeman')
+  // Settings stays a link away while Brakeman is on, for a browser with no other way there.
+  await expect(page.locator('[data-brakeman-settings-link]')).toHaveAttribute('href', '/settings')
+  const ask = page.locator('[data-brakeman-ask]')
+  // The first request holds the slot (the stub waits at its gate).
+  await ask.locator('[data-ask-kind]').click()
+  await page.getByRole('option', { name: 'Overlapping changes' }).click()
+  await ask.locator('[data-ask-send]').click()
+  const current = page.locator('[data-brakeman-current]')
+  await expect(current.locator('[data-request="br-1"]')).toHaveAttribute('data-request-state', 'running', { timeout: 30_000 })
+  // The briefing waits in the queue.
+  await ask.locator('[data-ask-kind]').click()
+  await page.getByRole('option', { name: 'Brief me since…' }).click()
+  await ask.locator('[data-ask-send]').click()
+  const queued = page.locator('[data-brakeman-queue] [data-request="br-2"]')
+  await expect(queued).toHaveAttribute('data-request-state', 'queued')
+  await expect(queued.locator('[data-request-words]')).toHaveText('queued')
+  expect((await request('br-2')).state).toBe('queued')
+  // Stop ends the first: it is cancelled, and the briefing runs in its own session, which the page links.
+  await current.locator('[data-request="br-1"] [data-request-stop]').click()
+  await expect.poll(async () => (await request('br-1')).state, { timeout: 15_000 }).toBe('cancelled')
+  await expect(current.locator('[data-request="br-2"]')).toHaveAttribute('data-request-state', 'running', { timeout: 60_000 })
+  await expect(current.locator('[data-request="br-2"] [data-request-words]')).toHaveText('running in Brakeman · br-2')
+  const running = await request('br-2')
+  expect(running.sessionId).toMatch(/^[0-9a-f]{16}$/)
+  await expect(page.locator('[data-brakeman-briefs] [data-request="br-1"] [data-request-words]')).toHaveText('cancelled: a person cancelled it')
+  // Its terminal, from the page's link, with the focus in it.
+  await current.locator('[data-request="br-2"] [data-request-session]').click()
+  await expect(page).toHaveURL(new RegExp(`/sessions/${running.sessionId}$`))
+  await expect(page.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+  const terminal = page.locator('.terminal-host .xterm-helper-textarea').first()
+  await terminal.focus()
+  await page.evaluate(() => ((document.activeElement as HTMLElement & { __brakemanMark?: boolean }).__brakemanMark = true))
+  const url = page.url()
+  const row = page.locator('[data-sidebar-brakeman]')
+  await expect(row).toBeVisible()
+  await expect(row).not.toContainText(/\d/)
+  // The gate opens: the stub submits its brief.
+  writeFileSync(gate, 'open\n')
+  await expect.poll(async () => (briefed = await request('br-2')).state, { timeout: 30_000 }).toBe('briefed')
+  // The stub submits only after its reads succeeded: the turn counted its read of the changes.
+  expect(briefed.reads).toBeGreaterThanOrEqual(1)
+  // The sidebar counts it; the focus and the page are as they were.
+  await expect(row).toContainText('1')
+  expect(page.url()).toBe(url)
+  expect(await page.evaluate(() => (document.activeElement as HTMLElement & { __brakemanMark?: boolean } | null)?.__brakemanMark === true)).toBe(true)
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+
+  // The brief, opened from the sidebar's row.
+  await row.click()
+  await expect(page).toHaveURL(/\/brakeman$/)
+  await page.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-open]').click()
+  const brief = page.locator('[data-brief="br-2"]')
+  await expect(brief.locator('[data-brief-provenance]')).toContainText('brakeman-stub (claude) · its default model · version 2.1.287 · request br-2 · as of')
+  await expect(brief.locator('[data-brief-title]')).toHaveText('Stub brief for br-2')
+  await expect(brief.locator('[data-brief-reading]')).toContainText("Brakeman's reading")
+  await expect(brief.locator('[data-brief-reading]')).toContainText('The stub read its request and what changed, and found its own turn.')
+  const fact = brief.locator('[data-brief-fact]')
+  await expect(fact).toContainText('This turn runs as its own session and run.')
+  await expect(fact.locator(`[data-ref-chip="run:${briefed.runId}"] [data-ref-link]`)).toHaveAttribute('href', `/runs/${briefed.runId}`)
+  await expect(fact.locator(`[data-ref-chip="session:${briefed.sessionId}"] [data-ref-link]`)).toHaveAttribute('href', `/sessions/${briefed.sessionId}`)
+  await expect(brief.locator('[data-brief-interpretation]')).toContainText('Nothing else happened that the stub was asked about.')
+  await expect(brief.locator('[data-brief-interpretation] [data-reads]')).toHaveText('reads fact 1')
+  // Opened, it is no longer counted.
+  await expect(row).not.toContainText(/\d/)
+
+  // The turn's run is stopped once its brief is kept (after the desk's grace for the agent's last output).
+  await expect.poll(async () => (await api.ok<{ run: Run }>('GET', `/api/runs/${briefed.runId}`)).run.state, { timeout: 60_000 }).toBe('stopped')
+  // Its slot given up (its run stopped, its process reaped), the request leaves In progress.
+  await expect(page.locator('[data-brakeman-current]')).toHaveCount(0, { timeout: 30_000 })
+  // The run's chip says it has changed since the brief was kept, and still leads to the run.
+  await expect(fact.locator(`[data-ref-chip="run:${briefed.runId}"]`)).toHaveAttribute('data-changed', 'true', { timeout: 15_000 })
+  await fact.locator(`[data-ref-chip="run:${briefed.runId}"] [data-ref-link]`).click()
+  await expect(page).toHaveURL(new RegExp(`/runs/${briefed.runId}$`))
+})
+
+test('the server started again on the same data shows the same brief', async ({ page }) => {
+  await stopServer(server!.pid)
+  server = null
+  server = await start()
+  api = new Api(server)
+  expect((await request('br-2')).state).toBe('briefed')
+  await open(page, '/brakeman?request=br-2')
+  const brief = page.locator('[data-brief="br-2"]')
+  await expect(brief.locator('[data-brief-title]')).toHaveText('Stub brief for br-2', { timeout: 30_000 })
+  await expect(brief.locator('[data-brief-provenance]')).toContainText('request br-2')
+  const fact = brief.locator('[data-brief-fact]')
+  await expect(fact.locator(`[data-ref-chip="run:${briefed.runId}"] [data-ref-link]`)).toHaveAttribute('href', `/runs/${briefed.runId}`)
+  await expect(fact.locator(`[data-ref-chip="session:${briefed.sessionId}"]`)).toBeVisible()
+  await expect(brief.locator('[data-brief-interpretation] [data-reads]')).toHaveText('reads fact 1')
+})
+
+test('a brief kept with its summary alone shows its reading', async ({ page }) => {
+  // The server writes a brief kept with no items as items:null; br-2's reply is made one.
+  await page.route(`${server!.baseURL}/api/brakeman/requests/br-2`, async (route) => {
+    const res = await route.fetch()
+    const body = (await res.json()) as { brief: { items: unknown } }
+    body.brief.items = null
+    await route.fulfill({ response: res, json: body })
+  })
+  await open(page, '/brakeman?request=br-2')
+  const brief = page.locator('[data-brief="br-2"]')
+  await expect(brief.locator('[data-brief-title]')).toHaveText('Stub brief for br-2', { timeout: 30_000 })
+  await expect(brief.locator('[data-brief-reading]')).toContainText('The stub read its request and what changed, and found its own turn.')
+  await expect(brief.locator('[data-brief-group]')).toHaveCount(0)
+})
+
+test('a brief: link to an item of a brief opened before scrolls to the item once it is drawn', async ({ page }) => {
+  // br-2 opened in this browser before, and every element the page scrolls to noted.
+  await page.addInitScript(() => {
+    if (localStorage.getItem('conductor.brakeman.opened') === null) localStorage.setItem('conductor.brakeman.opened', JSON.stringify(['br-2']))
+    const w = window as Window & { __scrolled?: string[] }
+    w.__scrolled = []
+    const into = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = function (this: Element, arg?: boolean | ScrollIntoViewOptions) {
+      w.__scrolled!.push(this.id)
+      return into.call(this, arg)
+    }
+  })
+  await open(page, '/brakeman?request=br-2#item-1')
+  await expect(page.locator('[data-brief="br-2"] #item-1')).toContainText('Nothing else happened that the stub was asked about.', { timeout: 30_000 })
+  await expect.poll(() => page.evaluate(() => (window as Window & { __scrolled?: string[] }).__scrolled)).toContain('item-1')
+})
+
+test('a brief opened in one tab is opened in the others, and stays opened', async ({ context, page }) => {
+  // The browser has opened none: br-2 is new in every tab.
+  await context.addInitScript(() => {
+    if (localStorage.getItem('conductor.brakeman.opened') === null) localStorage.setItem('conductor.brakeman.opened', '[]')
+  })
+  await open(page, '/brakeman')
+  const other = await context.newPage()
+  await open(other, '/brakeman')
+  for (const p of [page, other]) {
+    await expect(p.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-new]')).toBeVisible()
+    await expect(p.locator('[data-sidebar-brakeman]')).toContainText('1')
+  }
+  await page.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-open]').click()
+  await expect(page.locator('[data-brief="br-2"] [data-brief-title]')).toHaveText('Stub brief for br-2')
+  await expect(page.locator('[data-sidebar-brakeman]')).not.toContainText(/\d/)
+  // The other tab follows without a reload, and a reload of it finds br-2 opened.
+  await expect(other.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-new]')).toHaveCount(0)
+  await expect(other.locator('[data-sidebar-brakeman]')).not.toContainText(/\d/)
+  await other.reload()
+  await expect(other.locator('[data-brakeman-briefs] [data-request="br-2"]')).toBeVisible()
+  await expect(other.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-new]')).toHaveCount(0)
+  await expect(other.locator('[data-sidebar-brakeman]')).not.toContainText(/\d/)
+  expect(await other.evaluate(() => JSON.parse(localStorage.getItem('conductor.brakeman.opened') ?? 'null'))).toEqual(['br-2'])
+  await other.close()
+})

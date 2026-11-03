@@ -43,6 +43,7 @@ import { PICK_KEYS, allPages, boardStep, milestoneProgress, moveEdit, newestRows
 import type { DispatchTicket, TicketSummary } from '~/composables/useDispatch'
 import { candidateName, candidateOptions, candidateRef, candidateSummary, candidateWithdrawn, parseCandidate, ticketDecisions, ticketPeople, verificationWords, verifiedShortfall } from './dispatch'
 import type { CandidateReceipt, LinkVerified, PlanSummary, RunCandidate, TaskCandidates, TicketLink } from '~/composables/useDispatch'
+import { launchBlockers, planRemedy } from './dispatchPlans'
 
 describe('the key parser', () => {
   it("reads a ticket's key as the store does: the project's key, a dash, a number without a leading zero", () => {
@@ -875,12 +876,40 @@ describe("a delivery's candidate and its verification (DS2, PR-12)", () => {
     expect(candidateSummary(cand(1, { receipts: [receipt(), receipt({ id: 'tidy', stable: false })] }))).toBe('1 of 2 failed: check tidy (changed the tree)')
   })
 
+  it("sums a candidate's receipts by the server's rule for a verified delivery: a leftover child killed passes, a signal fails, the attempt must have succeeded", () => {
+    // A check whose leftover child was killed after its process exited 0: passed, as the server records it verified.
+    expect(candidateSummary(cand(1, { receipts: [receipt({ killed: true })] }))).toBe('its check passed')
+    // A signal fails the receipt, whatever the exit says.
+    expect(candidateSummary(cand(1, { receipts: [receipt(), receipt({ id: 'slow', exit: undefined, signal: 'killed' })] }))).toBe('1 of 2 failed: check slow (signal killed)')
+    expect(candidateSummary(cand(1, { receipts: [receipt({ signal: 'terminated' })] }))).toBe('1 of 1 failed: check test (signal terminated)')
+    expect(candidateSummary(cand(1, { receipts: [receipt({ id: 'slow', exit: undefined, timedOut: true })] }))).toBe('1 of 1 failed: check slow (timed out)')
+    expect(candidateSummary(cand(1, { receipts: [receipt({ state: 'interrupted', exit: undefined })] }))).toBe('1 of 1 failed: check test (interrupted)')
+    // Every check passed, but the attempt did not succeed: the server records it not verified.
+    expect(candidateSummary(cand(1, { state: 'failed' }))).toBe('its check passed, but its attempt failed: it cannot be verified')
+    expect(candidateSummary(cand(1, { state: 'uncertain', receipts: [receipt(), receipt({ id: 'lint' })] }))).toBe('2 checks passed, but its attempt ended uncertain: it cannot be verified')
+    expect(candidateSummary(cand(1, { state: 'cancelled', acceptedAnyway: { actor: 'admin', at: 'x', command: 'c1' } }))).toBe(
+      'its check passed, but its attempt was cancelled: it cannot be verified, accepted anyway',
+    )
+  })
+
   it('tells a delivered candidate withdrawn since from its run\'s candidates read now', () => {
     const byRun = new Map([['team-0000aaaa', tasks(work('build', cand(2, { withdrawn: true }), cand(1)))]])
     expect(candidateWithdrawn(`team-0000aaaa/build/2@${'2'.repeat(40)}`, byRun)).toBe(true)
     expect(candidateWithdrawn(`team-0000aaaa/build/1@${'1'.repeat(40)}`, byRun)).toBe(false)
     expect(candidateWithdrawn(`team-0000cccc/build/2@${'2'.repeat(40)}`, byRun)).toBe(false)
     expect(candidateWithdrawn(undefined, byRun)).toBe(false)
+  })
+
+  it('tells a delivered candidate withdrawn when it is older than the six its task lists, from the task\'s withdrawn', () => {
+    // Attempts 8 to 3 listed, none withdrawn; attempt 2 was, before them: the task's withdrawn says so.
+    const listed = [8, 7, 6, 5, 4, 3].map((n) => cand(n))
+    const byRun = new Map([['team-0000aaaa', tasks({ ...work('build', ...listed), more: 2, withdrawn: 2 })]])
+    expect(candidateWithdrawn(`team-0000aaaa/build/2@${'2'.repeat(40)}`, byRun)).toBe(true)
+    expect(candidateWithdrawn(`team-0000aaaa/build/1@${'1'.repeat(40)}`, byRun)).toBe(true)
+    expect(candidateWithdrawn(`team-0000aaaa/build/3@${'3'.repeat(40)}`, byRun)).toBe(false)
+    // A task with nothing withdrawn: an attempt past the listed ones is not.
+    const none = new Map([['team-0000aaaa', tasks({ ...work('build', ...listed), more: 2, withdrawn: 0 })]])
+    expect(candidateWithdrawn(`team-0000aaaa/build/2@${'2'.repeat(40)}`, none)).toBe(false)
   })
 })
 
@@ -927,6 +956,21 @@ describe("a ticket's decisions and people (DS2, PR-12)", () => {
       ['accepted for Alice; the owner is now Bob', 'warning'],
       ['the description changed since revision 1 was approved', 'warning'],
     ])
+  })
+
+  it('says an approved revision whose agent changed does not hold, as Launch and the Plan\'s remedy say, and a changed crew alone still holds', () => {
+    const changed = plan(2, { state: 'approved', approvedAt: '2026-11-02T10:00:00Z', agentsChanged: true })
+    const rows = ticketDecisions({ plans: [changed], ticket: { close, links: [] }, runs: [] })
+    expect(rows.map((r) => [r.state, r.tone])).toEqual([['An agent of revision 2 resolves otherwise in the catalog now (its command, its recipes\' arguments or its environment)', 'warning']])
+    // The same picture as the remedy and the launch blockers: Revise, and no Launch.
+    expect(planRemedy(changed)).toBe('revise')
+    expect(launchBlockers(changed, { ticket: { key: 'CND-1', status: 'ready' }, project: 'CND', archived: false })).toHaveLength(1)
+    // A stale approval and a changed agent together: both said, in the order the blockers say them.
+    const both = ticketDecisions({ plans: [{ ...changed, stale: { words: 'the description changed since revision 2 was approved', remedy: 'approve' } }], ticket: { close, links: [] }, runs: [] })
+    expect(both[0]!.state).toBe('the description changed since revision 2 was approved; An agent of revision 2 resolves otherwise in the catalog now (its command, its recipes\' arguments or its environment)')
+    // A crew edited since stops nothing (the revision keeps the crew it was made from): the approval holds.
+    const crew = ticketDecisions({ plans: [plan(2, { state: 'approved', approvedAt: 'x', crewChanged: true })], ticket: { close, links: [] }, runs: [] })
+    expect(crew.map((r) => [r.state, r.tone])).toEqual([['holds', 'success']])
   })
 
   it('names each person once with every role, people before agents, and the comments of live comments alone', () => {

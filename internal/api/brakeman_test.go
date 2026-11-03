@@ -748,6 +748,43 @@ func TestABriefIsKeptBeforeTheRunStops(t *testing.T) {
 	b.slotFree(t)
 }
 
+// Giving the slot up sends the request's brakeman event once more, after
+// the slot is free: a page that read GET /api/brakeman inside the grace,
+// while the briefed request still held the slot, reads again and sees it
+// go, though the request's state did not change.
+func TestGivingTheSlotUpSendsTheRequestsEvent(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.fakeClock()
+	events := b.sse(t)
+	b.enable(t, "bk", nil)
+	id := b.briefing(t)
+	sid, tok, _ := b.turnSession(t, id)
+	run := b.runOf(t, sid)
+	if status, out := b.submit(t, sid, tok, "b1", factBrief("session:"+sid)); status != http.StatusCreated {
+		t.Fatalf("%d %v", status, out)
+	}
+	briefed := func(ev string) bool {
+		data, ok := strings.CutPrefix(ev, "brakeman ")
+		var e brakemanEvent
+		return ok && json.Unmarshal([]byte(data), &e) == nil && e.ID == id && e.State == brakeman.StateBriefed
+	}
+	// The brief's own event; inside the grace the request still holds the slot.
+	b.waitEvent(t, events, briefed)
+	if cur := entityOf(t, b.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, ""), "current"); cur["id"] != id {
+		t.Fatalf("inside the grace the slot is held by %v", cur)
+	}
+	c.add(brakemanGrace + time.Second)
+	b.settle(t)
+	b.runStopped(t, run)
+	b.slotFree(t)
+	// The release's: the same state, sent once the slot is free.
+	b.waitEvent(t, events, briefed)
+	if state := b.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, ""); state["current"] != nil {
+		t.Fatalf("the slot given up still shows %v", state["current"])
+	}
+}
+
 // A brief whose refs name nothing is refused 422 bad_refs naming each ref,
 // with nothing written; so is one whose ref lies outside the scope.
 func TestABriefNamesOnlyRefsThatResolve(t *testing.T) {

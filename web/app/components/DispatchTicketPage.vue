@@ -72,11 +72,14 @@ const plan = useTicketPlans({ gate, key: () => (parseTicketKey(props.ticketKey) 
 /** The ticket's runs (DS2): its launches, hand-linked runs and their chains' runs, read with it. */
 const runs = useTicketRuns({ gate, key: () => (parseTicketKey(props.ticketKey) ? props.ticketKey : '') })
 const attention = useAttention()
-/** The candidates of the ticket's runs (DS2, PR-12): what a delivery may name, a delivered one withdrawn since, the Accept anyway receipts. */
+/**
+ * The candidates of the ticket's runs (DS2, PR-12): what a delivery may name, a delivered one withdrawn since, the Accept anyway receipts.
+ * A delivery's run is read whether or not Runs has read the page it is on.
+ */
 const candidates = useTicketCandidates({
   gate,
   key: () => (parseTicketKey(props.ticketKey) ? props.ticketKey : ''),
-  runs: () => heldRuns(runs.entries.value, (id) => attention.runOf(id)?.managed?.revision),
+  runs: () => heldRuns(runs.entries.value, (id) => attention.runOf(id)?.managed?.revision, ticket.value?.key === props.ticketKey ? (ticket.value.links ?? []) : []),
 })
 
 useHead({ title: computed(() => (ticket.value ? `${ticket.value.key} ${ticket.value.title}` : props.ticketKey)) })
@@ -236,6 +239,7 @@ const live = useDispatchLive(
     reset: () => {
       gate.reset()
       plan.reset()
+      candidates.reset()
       resets.value++
     },
   },
@@ -823,7 +827,7 @@ const MAX_ACCEPTANCE = 16 << 10
             <DispatchDecisions :rows="decisions" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :now="now" />
 
             <DispatchClosePolicy :ticket="ticket" :locked="locked" :now="now" :accept="accept" :unaccept="unaccept" :close="closeTicket" />
-            <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" :candidates="deliveryChoices" :candidates-loading="candidates.loading.value" :withdrawn="withdrawn" />
+            <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" :candidates="deliveryChoices" :candidates-loading="candidates.loading.value" :candidates-error="candidates.error.value" :withdrawn="withdrawn" />
             <DispatchPeople :people="people" :plan="approvedPlan" :launches="knownLaunches" :agents="agents" />
 
             <DispatchRelations :ticket="ticket" :project="project" :locked="locked" :add="addRelation" :remove="removeRelation" />

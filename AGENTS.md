@@ -152,6 +152,12 @@ add its rule here.
   written by several as they left, unreadable, E576 on every later
   `:edit`). The product gives such a child state of its own or none
   (`-i NONE`), and a test proves it with the shared HOME, not around it.
+- A listing is a moment, not a promise. A folder other processes write
+  holds files they replace by renaming a `.new` over them: listed, such a
+  file can be gone by its read, and the ENOENT fails a test that had no
+  business opening it. Read the files the test made, by their id, or by
+  their kind (a stub's `<id>.txt`, appended in place) when the id is not
+  known yet.
 - A frame that must be dropped, a dialog that must be drawn inside a
   budget: read the moment off a seam the code exposes (`viewerSeam`,
   `beforeEnter`) rather than guessing it from a stall or a sleep. A stall
