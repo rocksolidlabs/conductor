@@ -50,12 +50,12 @@ var runners = map[string][]string{
 
 // runnersAllowed are where a runner may be used: the native Runtime, the
 // runners' own packages, and the files that start a process past the
-// Runtime until the seam's next pull requests move them behind it
-// (docs/plans/runtime.md, The PRs: PR-2 takes internal/crew's executor out,
-// PR-3 the server's and the host's session start).
+// Runtime until the seam's next pull request moves them behind it
+// (docs/plans/runtime.md, The PRs: PR-3 the server's and the host's
+// session start; internal/crew's executor is the Runtime's since PR-2).
 var runnersAllowed = []string{
 	"ext/local", "internal/pty", "internal/proc",
-	"internal/api/sessions.go", "internal/hostagent/agent.go", "internal/crew/steps.go",
+	"internal/api/sessions.go", "internal/hostagent/agent.go",
 }
 
 // processSite is one place a process is started or signalled outside the

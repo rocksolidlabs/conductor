@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -292,9 +294,16 @@ type Engine struct {
 	// repository at once (task.go).
 	ledger Ledger
 	gitMu  sync.Mutex
-	// exec is what a tree runs on the machine (steps.go: treeExec), native
-	// unless a test replaces it.
-	exec treeExec
+	// offered is the Runtime the engine offers its managed runs
+	// (SetRuntime; local.Native until it is set), exec its executor
+	// (execFor), whose functions a test may replace, and native the native
+	// Runtime, for every run offered nothing or that offered declines
+	// (runtime.go). offered and madeRun, set once the engine has made a run,
+	// are under mu; exec is written only before then.
+	offered ext.Runtime
+	exec    treeExec
+	native  ext.Runtime
+	madeRun bool
 	// checkSem bounds the checks running at once (checkSlots).
 	checkSem chan struct{}
 	// envPassthrough is the server's envPassthrough (SetEnvPassthrough):
@@ -436,6 +445,12 @@ type sessionMember struct {
 type run struct {
 	// managed says the run is a managed one (a crew with tasks, #334).
 	managed bool
+	// rt is the run's Runtime, chosen once as it is made (runtimeFor) and
+	// never changed: every process of its trees and prerequisites goes
+	// through it (execOf). taken says the engine's offered Runtime took
+	// it; a legacy run's is the native one, offered nothing.
+	rt    ext.Runtime
+	taken bool
 	// The managed run's tasks (plan order), the commit it started from
 	// (read once, at the launch, or the continuation's), whether its
 	// dispatch is paused and why when the run paused it, its attempts in
@@ -625,7 +640,7 @@ type member struct {
 func NewEngine(l Launcher, lookup func(sessionID string) (*session.Local, bool)) *Engine {
 	root, cut := context.WithCancel(context.Background())
 	return &Engine{launcher: l, lookup: lookup, await: awaitReady, now: time.Now,
-		runs: map[string]*run{}, exec: nativeExec(), teardownRoot: root, teardownCut: cut}
+		runs: map[string]*run{}, offered: local.Native(), exec: execFor(local.Native()), native: local.Native(), teardownRoot: root, teardownCut: cut}
 }
 
 // Launch is LaunchHeld for a caller that needs nothing more of the run once
@@ -1102,26 +1117,36 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 		}
 	}
 	r.pkg = pkg
-	// Under endMu as well: a run evict forgets has its record written
-	// (journalForgotten) in its turn among the saves, before the run is
-	// gone for a resume from that record to find.
-	e.endMu.Lock()
-	defer e.endMu.Unlock()
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if id != "" {
-		if e.runs[id] != nil {
+	// The run's Runtime is chosen for its id before the run takes e.mu
+	// (runtimeFor): a minted id another run of the engine holds by then is
+	// minted again, and its Runtime chosen again.
+	for {
+		want := id
+		if want == "" {
+			want = e.mintRunID(c.ID)
+		}
+		r.rt, r.taken = e.runtimeFor(r.managed, want)
+		// Under endMu as well: a run evict forgets has its record written
+		// (journalForgotten) in its turn among the saves, before the run is
+		// gone for a resume from that record to find.
+		e.endMu.Lock()
+		e.mu.Lock()
+		if e.runs[want] == nil {
+			r.id = want
+			break
+		}
+		e.mu.Unlock()
+		e.endMu.Unlock()
+		if id != "" {
 			cancel()
 			if r.teardownCancel != nil {
 				r.teardownCancel()
 			}
 			return nil, ErrRunExists
 		}
-		r.id = id
 	}
-	for r.id == "" || e.runs[r.id] != nil {
-		r.id = e.mintRunID(c.ID)
-	}
+	defer e.endMu.Unlock()
+	defer e.mu.Unlock()
 	e.evict()
 	e.runs[r.id] = r
 	e.held.Store(r.id, struct{}{})

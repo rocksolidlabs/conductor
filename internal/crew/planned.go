@@ -131,7 +131,8 @@ func checkCommit(ctx context.Context, dir, commit string) error {
 
 // mintRunID gives a new run of the crew its id: the crew's id, a dash and
 // eight hex digits, through the newRunID seam when a test sets it. The
-// caller holds e.mu.
+// caller holds none of the engine's locks (addRun mints before it takes
+// them).
 func (e *Engine) mintRunID(crewID string) string {
 	if e.newRunID != nil {
 		return e.newRunID(crewID)

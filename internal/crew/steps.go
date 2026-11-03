@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/proc"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -202,7 +203,7 @@ type tree struct {
 // tree's executor started it (treeExec.serve), and the engine sees its
 // end (Done, Result) and stops it (Stop: SIGTERM to its group, SIGKILL
 // after the grace or once ctx ends), and nothing of its pid but what its
-// receipt records. *proc.Service is the native one.
+// receipt records. A Runtime's ext.ServiceProcess is one (runtimeService).
 type service interface {
 	Done() <-chan struct{}
 	Result() proc.Result
@@ -232,32 +233,16 @@ type treeService struct {
 
 // treeExec is everything a tree does on the machine that runs it: a
 // command, run as a check is (run), a service started (serve), one try of
-// a probe over HTTP (probe) and a port drawn for it (port). The native one
-// runs proc.Run and proc.Serve, fetches a URL with a client of the
-// probe's own (proc.Probe) and binds 127.0.0.1:0 (proc.FreePort); a test
-// replaces it whole, and the Runtime seam (C10) wraps it, so nothing of a
-// tree reaches the machine but through it, and a probe or a port of a tree that is not on the
-// server's machine is never the server's own loopback.
+// a probe over HTTP (probe) and a port drawn for it (port), each given
+// what the process is for first (procRef). It is a Runtime's (execFor):
+// the run's, so nothing of a tree reaches the machine but through it, and
+// a probe or a port of a tree that is not on the server's machine is never
+// the server's own loopback. A test replaces the engine's functions.
 type treeExec struct {
-	run   func(ctx context.Context, s proc.Spec) proc.Result
-	serve func(ctx context.Context, s proc.Spec) (service, error)
-	probe func(ctx context.Context, url string, interval time.Duration) (status int, err error)
-	port  func(ctx context.Context) (int, error)
-}
-
-// nativeExec runs a tree's commands and services, probes its URLs and
-// draws its ports, on this machine.
-func nativeExec() treeExec {
-	return treeExec{run: proc.Run, serve: nativeServe, probe: proc.Probe, port: proc.FreePort}
-}
-
-// nativeServe starts a service on this machine (proc.Serve).
-func nativeServe(ctx context.Context, s proc.Spec) (service, error) {
-	svc, err := proc.Serve(ctx, s)
-	if err != nil {
-		return nil, err
-	}
-	return svc, nil
+	run   func(ctx context.Context, ref ext.ProcessRef, s proc.Spec) proc.Result
+	serve func(ctx context.Context, ref ext.ProcessRef, s proc.Spec) (service, error)
+	probe func(ctx context.Context, ref ext.ProcessRef, url string, interval time.Duration) (status int, err error)
+	port  func(ctx context.Context, ref ext.ProcessRef) (int, error)
 }
 
 // maxPortDraws bounds the numbers drawn for one port of a tree: a number
@@ -483,7 +468,7 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 				return nil, fmt.Errorf("the port %s: %d numbers drawn, each another tree's", name, maxPortDraws)
 			}
 			draws[name]++
-			n, err := e.exec.port(ctx)
+			n, err := e.execOf(r).port(ctx, procRef(r, a, kind))
 			if err != nil {
 				return nil, fmt.Errorf("the port %s could not be drawn: %w", name, err)
 			}
@@ -837,7 +822,7 @@ func (e *Engine) startService(ctx context.Context, r *run, a *attempt, t *tree, 
 	}
 	var p proc.Process
 	env := t.env(r.id)
-	svc, err := e.exec.serve(r.teardown, proc.Spec{Argv: slices.Clone(ch.Argv), Dir: t.cwd, Allow: slices.Clone(env.allow), Inject: maps.Clone(env.inject),
+	svc, err := e.execOf(r).serve(r.teardown, procRef(r, a, t.kind), proc.Spec{Argv: slices.Clone(ch.Argv), Dir: t.cwd, Allow: slices.Clone(env.allow), Inject: maps.Clone(env.inject),
 		Head: checkHead, Tail: checkTail, Log: log, LogLimit: ledger.MaxLog, Started: func(started proc.Process) { p = started }})
 	if err != nil {
 		e.mu.Lock()
@@ -1118,13 +1103,13 @@ func (e *Engine) runProbe(ctx context.Context, r *run, a *attempt, t *tree, p Pr
 		tries++
 		if len(p.Argv) > 0 {
 			output.Reset()
-			last = e.runCommand(tctx, t.cwd, p.Argv, max(time.Until(deadline), time.Millisecond), env, &output, nil)
+			last = e.runCommand(tctx, r, procRef(r, a, t.kind), t.cwd, p.Argv, max(time.Until(deadline), time.Millisecond), env, &output, nil)
 			passed = last.Exit == 0 && last.Err == "" && !last.TimedOut && !last.Canceled
 			if !passed {
 				lastWords = probeTryWords(last)
 			}
 		} else {
-			status, err := e.exec.probe(pctx, p.URL, interval)
+			status, err := e.execOf(r).probe(pctx, procRef(r, a, t.kind), p.URL, interval)
 			passed = err == nil && status < 300
 			line := fmt.Sprintf("try %d: answered %d %s\n", tries, status, http.StatusText(status))
 			switch {
@@ -1350,8 +1335,10 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 	}
 	man, dir, subject := r.baseMan, r.cwd, r.base
 	env := t.env(r.id)
+	ref := procRef(r, nil, "")
 	if t != nil {
 		man, dir, subject = t.man, t.cwd, t.commit
+		ref = procRef(r, a, t.kind)
 	} else {
 		// A prerequisite: the base's env names, which its generation
 		// approved before its first step.
@@ -1419,7 +1406,7 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 	stepCtx, endStep := context.WithCancel(ctx)
 	defer endStep()
 	var refused error
-	res := e.runCommand(stepCtx, dir, ch.Argv, stepTimeout(phase, ch), env, &log, func(p proc.Process) {
+	res := e.runCommand(stepCtx, r, ref, dir, ch.Argv, stepTimeout(phase, ch), env, &log, func(p proc.Process) {
 		running := row
 		running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
 		if err := e.transact(context.Background(), r, func() tx {
@@ -2339,12 +2326,13 @@ func sortSteps(steps []StepState) {
 	sort.SliceStable(steps, func(i, j int) bool { return steps[i].StartedAt.Before(steps[j].StartedAt) })
 }
 
-// runCommand runs one command of a tree, a check or a step, in dir
-// through the tree's executor: a process group of its own, no PTY, the
+// runCommand runs one command of r's, a check or a step, in dir through
+// the executor of r's Runtime, ref what it is for: a process group of its
+// own, no PTY, the
 // environment without Conductor's tokens (env passes the manifest's
 // approved names on and gives the tree's own names), the output's head and
 // tail kept, the log to log, whole within ledger.MaxLog.
-func (e *Engine) runCommand(ctx context.Context, dir string, argv []string, timeout time.Duration, env cmdEnv, log io.Writer, started func(proc.Process)) proc.Result {
-	return e.exec.run(ctx, proc.Spec{Argv: slices.Clone(argv), Dir: dir, Allow: slices.Clone(env.allow), Inject: maps.Clone(env.inject), Timeout: timeout,
+func (e *Engine) runCommand(ctx context.Context, r *run, ref ext.ProcessRef, dir string, argv []string, timeout time.Duration, env cmdEnv, log io.Writer, started func(proc.Process)) proc.Result {
+	return e.execOf(r).run(ctx, ref, proc.Spec{Argv: slices.Clone(argv), Dir: dir, Allow: slices.Clone(env.allow), Inject: maps.Clone(env.inject), Timeout: timeout,
 		Head: checkHead, Tail: checkTail, Log: log, LogLimit: ledger.MaxLog, Started: started})
 }
