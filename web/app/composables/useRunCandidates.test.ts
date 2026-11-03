@@ -3,12 +3,14 @@ import * as vue from 'vue'
 import { ApiError } from './useApi'
 import type { RunCandidate, RunCandidatesPage } from './useDispatch'
 import type { RunAttempt, RunTask } from './useSessions'
-import { DispatchOrder, through } from '../utils/dispatchOrder'
+import { type AbsentOptions, DispatchOrder, through, throughOrAbsent } from '../utils/dispatchOrder'
+import { repairs } from '../utils/dispatchEvidence'
 import { dispatchLive } from './useDispatchLive'
 
 // A run's candidates as DispatchCandidates reads them (Program item DS2, PR-11), against replies the test lets go: a run_changing reply
 // asked again after its second, on the first read too, with nothing said as a failure; two review tasks' findings opened while the
-// first one's reply is held back, both lists shown; a snapshot reading the pages again. useRunCandidates reads Nuxt's auto-imports (Vue's, useDispatch, useSessions,
+// first one's reply is held back, both lists shown; a snapshot reading the pages again; a failure asked before a reply applied, or before
+// a snapshot, never said; the repairs' tasks read from the task route, a record's repair that never submitted included. useRunCandidates reads Nuxt's auto-imports (Vue's, useDispatch, useSessions,
 // onBeforeUnmount) as globals: each is stubbed, on fake timers.
 
 function held<T>() {
@@ -45,6 +47,7 @@ beforeEach(() => {
         },
       },
       read: <T>(thing: string, send: () => Promise<T>, apply: (r: T) => void) => through(gate, thing, send, apply),
+      readOrAbsent: <T>(thing: string, send: () => Promise<T>, o: AbsentOptions<T>) => throughOrAbsent(gate, thing, send, o),
     }
   })
   vi.stubGlobal('useSessions', () => ({
@@ -152,6 +155,65 @@ describe("a run's candidates", () => {
     for (const f of unmount.splice(0)) f()
     dispatchLive().snapshot()
     expect(pagesSent).toHaveLength(2)
+  })
+
+  it('drop a failure asked before a snapshot whose read answered, a 404 too', async () => {
+    const { c, revision } = await candidates()
+    revision.value = undefined
+    dispatchLive().snapshot()
+    expect(pagesSent).toHaveLength(2)
+    pagesSent[1]!.ok(page)
+    await tick()
+    // The read asked before the snapshot fails after it: the page the snapshot's read found stays, with nothing said.
+    pagesSent[0]!.fail(new ApiError(404, 'not_found', 'no such run'))
+    await tick()
+    expect([c.error.value, c.tasks.value.map((t) => t.task)]).toEqual(['', ['review-a']])
+  })
+
+  it('drop a failure of a read asked before a reply applied, and keep a failure said under a reply asked before it', async () => {
+    {
+      const { c, revision } = await candidates()
+      revision.value = 2
+      await tick(250)
+      expect(pagesSent).toHaveLength(2)
+      pagesSent[1]!.ok(page)
+      await tick()
+      pagesSent[0]!.fail(new Error('the server could not be reached'))
+      await tick()
+      expect([c.error.value, c.tasks.value.map((t) => t.task)]).toEqual(['', ['review-a']])
+    }
+    // The later read fails, then the earlier answers: its page is shown, and the failure, the newest answer, stays said.
+    const { c, revision } = await candidates('crew-0000bbbb')
+    revision.value = 2
+    await tick(250)
+    expect(pagesSent.slice(2).map((p) => p.run)).toEqual(['crew-0000bbbb', 'crew-0000bbbb'])
+    pagesSent[3]!.fail(new Error('the server could not be reached'))
+    await tick()
+    pagesSent[2]!.ok(page)
+    await tick()
+    expect([c.error.value, c.tasks.value.map((t) => t.task)]).toEqual(['the server could not be reached', ['review-a']])
+  })
+
+  it("read the repairs' tasks after the pages: a record's repair that stopped before it submitted, and the task a review reviews", async () => {
+    const { c, revision } = await candidates()
+    revision.value = undefined
+    const failed: RunCandidate = { task: 'build', kind: 'work', attempt: 1, start: 'b0', commit: 'c1', state: 'failed', standing: false, withdrawn: false, receipts: [{ phase: 'check', id: 'unit', k: 1, where: 'native', state: 'finished', exit: 1, timedOut: false, killed: false, stable: true, startedAt: '2026-11-01T10:00:00Z', logBytes: 0, logDropped: false }] }
+    const asked: RunCandidate = { ...review('review'), start: 'c9' }
+    pagesSent[0]!.ok({ managed: true, candidates: [{ task: 'build', kind: 'work', more: 0, candidates: [failed] }, { task: 'review', kind: 'review', more: 0, candidates: [asked] }] } as RunCandidatesPage)
+    await tick()
+    expect(tasksSent.map((t) => t.task)).toEqual(['build', 'review'])
+    expect(repairs(c.tasks.value, c.details).map((r) => r.unread)).toEqual([['build'], ['review']])
+    // build/2 started at the failed result and was stopped (the server restarted): no candidate names it, its task's read does.
+    tasksSent[0]!.ok({ task: { id: 'build', kind: 'work' } as RunTask, attempts: [{ n: 1, start: 'b0', result: 'c1', state: 'failed' }, { n: 2, start: 'c1', state: 'stopped', startedAt: '2026-11-01T10:05:00Z' }] as RunAttempt[] })
+    await tick()
+    expect(repairs(c.tasks.value, c.details)[0]!.by).toEqual([{ task: 'build', attempt: 2, state: 'stopped', commit: undefined }])
+    // The review's read names the task it reviews, which no candidate pointed at: it is read then (build, read this round, is not again).
+    tasksSent[1]!.ok({ task: { id: 'review', kind: 'review', needs: ['deploy'] } as RunTask, attempts: [{ n: 1, start: 'c9', state: 'succeeded', submitted: { verdict: 'needs_changes', findings: [] } }] as unknown as RunAttempt[] })
+    await tick()
+    expect(tasksSent.map((t) => t.task)).toEqual(['build', 'review', 'deploy'])
+    tasksSent[2]!.fail(new Error('the task could not be read'))
+    await tick()
+    expect([repairs(c.tasks.value, c.details)[1]!.unread, c.detailsError.get('deploy')]).toEqual([['deploy'], 'the task could not be read'])
   })
 
   it('read the pages again, gathered for the window, when the run revision moves', async () => {

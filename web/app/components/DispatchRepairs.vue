@@ -5,10 +5,21 @@ import { shortCommit } from '~/utils/dispatchPlans'
 /**
  * A run's repairs (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11), oldest first: each failed check with the
  * attempt of the same task that started at the failed result, its whole log in its task file; each review that asked for changes with
- * the reviewed task's attempts that started at the commit it reviewed, its findings in their task files (utils/dispatchEvidence.ts,
- * repairs). An attempt that has not submitted yet is named from the live run; none yet is said so.
+ * the reviewed task's attempts that started at the commit it reviewed after its verdict, its findings in their task files
+ * (utils/dispatchEvidence.ts, repairs). Who took each up is read from the task route, an attempt that never submitted included; while
+ * that read is on its way it is said so, a failure of it in its words, and none yet is said so.
  */
-defineProps<{ repairs: readonly Repair[] }>()
+const props = defineProps<{
+  repairs: readonly Repair[]
+  /** By task: why its attempts could not be read. */
+  errors: ReadonlyMap<string, string>
+}>()
+
+/** Why a repair's attempts are not known, when the read of a task it waits on failed: '' while it reads. */
+function unreadError(r: Repair): string {
+  for (const t of r.unread) if (props.errors.has(t)) return props.errors.get(t) ?? ''
+  return ''
+}
 </script>
 
 <template>
@@ -24,7 +35,9 @@ defineProps<{ repairs: readonly Repair[] }>()
           <template v-else>
             <span class="font-medium">{{ r.task }}</span> attempt {{ r.attempt }} asked for changes ({{ r.what }}) on <code class="font-mono" :title="r.commit">{{ shortCommit(r.commit) }}</code>:
           </template>
-          <template v-if="r.by.length">
+          <span v-if="unreadError(r)" class="text-warning" data-repair-error>its attempts could not be read: {{ unreadError(r) }}</span>
+          <span v-else-if="r.unread.length" class="text-dimmed" data-repair-reading>reading its attempts…</span>
+          <template v-else-if="r.by.length">
             <template v-for="(b, i) in r.by" :key="`${b.task}/${b.attempt}`">
               {{ i ? ', ' : '' }}<span class="font-medium">{{ b.task }}</span> attempt {{ b.attempt }} started at {{ r.kind === 'check' ? 'its result' : 'the reviewed commit' }} ({{ b.state }})
             </template>

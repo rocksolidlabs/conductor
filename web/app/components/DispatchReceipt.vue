@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import type { CandidateReceipt } from '~/composables/useDispatch'
-import type { RunStep } from '~/composables/useSessions'
-import { durationWords, logMatches, receiptChips, receiptDuration, receiptName, receiptVersion, stepOf } from '~/utils/dispatchEvidence'
+import { durationWords, logMatches, receiptChips, receiptDuration, receiptName } from '~/utils/dispatchEvidence'
 import { shortCommit } from '~/utils/dispatchPlans'
 import { stepCommand } from '~/utils/tasks'
 
@@ -11,7 +10,8 @@ import { stepCommand } from '~/utils/tasks'
  * (exit, signal, timed out, interrupted, whether its tree stayed as it was: `stable`), how long it took, and its log, fetched with the
  * token from the step log route, never as a link the browser follows; the SHA-256 the route sent beside it (`X-Conductor-Log-SHA256`)
  * shown and compared with the one the receipt recorded. Save downloads the log's bytes as the server sent them. Never a pid or a
- * process group: a receipt says what ran and how it ended, never how its process was made.
+ * process group: a receipt says what ran and how it ended, never how its process was made. The reads are useReceiptRead's: read again
+ * when the receipt moves (a check that finishes), never for the same receipt handed over again unchanged.
  */
 const props = defineProps<{
   runId: string
@@ -23,55 +23,13 @@ const props = defineProps<{
 }>()
 const open = defineModel<boolean>('open', { default: false })
 
-const api = useSessions()
-
-const step = ref<RunStep | null>(null)
-const stepError = ref('')
-const log = ref<{ text: string; bytes: Uint8Array; sha256: string } | null>(null)
-const logError = ref('')
-const loading = ref(false)
-/** Each opening, counted: a read's answer is shown only in the opening it was made for. */
-let opened = 0
-
-// Read again when the receipt moves (a check that finishes), never for the same receipt read again unchanged (receiptVersion).
-watch(
-  () => [open.value, props.runId, props.task, props.attempt, props.receipt ? receiptVersion(props.receipt) : ''] as const,
-  async ([isOpen, run, task, n]) => {
-    const r = props.receipt
-    const mine = ++opened
-    step.value = null
-    stepError.value = ''
-    log.value = null
-    logError.value = ''
-    if (!isOpen || !r) return
-    loading.value = true
-    const steps = api
-      .runSteps(run, task, n)
-      .then((all) => {
-        if (mine === opened) step.value = stepOf(all, r) ?? null
-      })
-      .catch((e) => {
-        if (mine === opened) stepError.value = (e as Error).message
-      })
-    const read = r.logDropped
-      ? Promise.resolve().then(() => {
-          if (mine === opened) logError.value = "The log was not kept: the run's logs were at their bound. Its SHA-256 stays on the receipt."
-        })
-      : api
-          .stepLog(run, task, n, r.id, r.k)
-          .then((l) => {
-            if (mine === opened) log.value = l
-          })
-          .catch((e) => {
-            if (mine !== opened) return
-            const err = e as { status?: number; code?: string; message?: string }
-            logError.value = err.status === 410 || err.code === 'log_dropped' ? "The log was not kept: the run's logs were at their bound. Its SHA-256 stays on the receipt." : err.status === 404 ? 'This receipt has no log.' : err.message || 'The log could not be read.'
-          })
-    await Promise.all([steps, read])
-    if (mine === opened) loading.value = false
-  },
-  { immediate: true },
-)
+const { step, stepError, log, logError, loading } = useReceiptRead({
+  open: () => open.value,
+  runId: () => props.runId,
+  task: () => props.task,
+  attempt: () => props.attempt,
+  receipt: () => props.receipt,
+})
 
 const chips = computed(() => (props.receipt ? receiptChips(props.receipt) : []))
 const duration = computed(() => (props.receipt ? durationWords(receiptDuration(props.receipt)) : ''))

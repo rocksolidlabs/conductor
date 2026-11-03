@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CandidateReceipt, DispatchChange, RunCandidate, RunSummary, TaskCandidates, TicketRunEntry } from '../composables/useDispatch'
-import type { RunInfo, RunTask, SessionInfo } from '../composables/useSessions'
+import type { RunAttempt, RunInfo, SessionInfo } from '../composables/useSessions'
 import {
+  type TaskDetail,
   candidateWords,
   changedSinceWords,
   changesSince,
@@ -20,6 +21,7 @@ import {
   receiptDuration,
   receiptState,
   receiptVersion,
+  repairReads,
   repairs,
   runBlockers,
   runQuestions,
@@ -287,6 +289,19 @@ describe('candidates', () => {
     expect(pickedReceipt(page(finished), null)).toBeNull()
   })
 
+  // A task as its route reads it: what it needs and every attempt, `at` the minute each started (and, by `end`, closed).
+  type At = { n: number; start?: string; result?: string; state?: RunAttempt['state']; at?: number; end?: number; verdict?: 'approved' | 'needs_changes' }
+  const minute = (m: number | undefined) => (m === undefined ? undefined : new Date(Date.UTC(2026, 10, 1, 10, m)).toISOString())
+  function detail(id: string, kind: 'work' | 'review', attempts: At[], needs?: string[]): [string, TaskDetail] {
+    return [
+      id,
+      {
+        task: { id, kind, needs },
+        attempts: attempts.map((a) => ({ n: a.n, start: a.start, result: a.result, state: a.state ?? 'succeeded', startedAt: minute(a.at), endedAt: minute(a.end), submitted: a.verdict ? { verdict: a.verdict } : undefined }) as RunAttempt),
+      },
+    ]
+  }
+
   it('make their repairs: a failed check then the attempt at its result, a review then the reviewed task at the commit it reviewed', () => {
     const tasks: TaskCandidates[] = [
       {
@@ -306,26 +321,50 @@ describe('candidates', () => {
         candidates: [candidate({ task: 'review', kind: 'review', attempt: 2, start: 'c3', verdict: 'approved' }), candidate({ task: 'review', kind: 'review', attempt: 1, start: 'c2', verdict: 'needs_changes', findings: { major: 1 } })],
       },
     ]
-    expect(repairs(tasks)).toEqual([
-      { key: 'check:build:1', kind: 'check', task: 'build', attempt: 1, commit: 'c1', what: 'check fixed', by: [{ task: 'build', attempt: 2, state: 'succeeded', commit: 'c2' }] },
-      { key: 'review:review:1', kind: 'review', task: 'review', attempt: 1, commit: 'c2', what: '1 major', by: [{ task: 'build', attempt: 3, state: 'succeeded', commit: 'c3' }] },
+    const details = new Map([
+      detail('build', 'work', [
+        { n: 1, start: 'b0', result: 'c1', state: 'failed', at: 0, end: 1 },
+        { n: 2, start: 'c1', result: 'c2', at: 2, end: 3 },
+        { n: 3, start: 'c2', result: 'c3', at: 5, end: 6 },
+      ]),
+      detail('review', 'review', [{ n: 1, start: 'c2', at: 3, end: 4, verdict: 'needs_changes' }, { n: 2, start: 'c3', at: 6, end: 7, verdict: 'approved' }], ['build']),
     ])
+    expect(repairs(tasks, details)).toEqual([
+      { key: 'check:build:1', kind: 'check', task: 'build', attempt: 1, commit: 'c1', what: 'check fixed', by: [{ task: 'build', attempt: 2, state: 'succeeded', commit: 'c2' }], unread: [] },
+      { key: 'review:review:1', kind: 'review', task: 'review', attempt: 1, commit: 'c2', what: '1 major', by: [{ task: 'build', attempt: 3, state: 'succeeded', commit: 'c3' }], unread: [] },
+    ])
+    // Until a task's own read answers, who took a repair up is not known, and the repair names the task it waits on.
+    expect(repairs(tasks).map((r) => [r.key, r.by, r.unread])).toEqual([
+      ['check:build:1', [], ['build']],
+      ['review:review:1', [], ['review']],
+    ])
+    // The review read and the task it reviews not yet: both wait on that task.
+    expect(repairs(tasks, new Map([['review', details.get('review')!]])).map((r) => r.unread)).toEqual([['build'], ['build']])
+    expect(repairReads(tasks, new Map())).toEqual(['build', 'review'])
+    expect(repairReads(tasks.slice(1), details)).toEqual(['review', 'build'])
   })
 
-  it('keep a repair that submitted the reviewed commit unchanged, and give each review of one commit the attempts after the one it read', () => {
+  it('keep a repair that submitted the reviewed commit unchanged, and give each review the attempts that started after its verdict', () => {
     const review = (attempt: number) => candidate({ task: 'review', kind: 'review', attempt, start: 'c1', verdict: 'needs_changes', findings: { major: 1 } })
     // build/1 makes c1, review/1 asks for changes, build/2 starts at c1 and submits it unchanged.
     const once: TaskCandidates[] = [
       { task: 'build', kind: 'work', more: 0, candidates: [candidate({ attempt: 2, start: 'c1', commit: 'c1' }), candidate({ attempt: 1, start: 'b0', commit: 'c1' })] },
       { task: 'review', kind: 'review', more: 0, candidates: [review(1)] },
     ]
-    expect(repairs(once).map((r) => [r.key, r.by.map((b) => b.attempt)])).toEqual([['review:review:1', [2]]])
+    const build1 = { n: 1, start: 'b0', result: 'c1', at: 0, end: 1 }
+    const build2 = { n: 2, start: 'c1', result: 'c1', at: 3, end: 4 }
+    const onceRead = new Map([detail('build', 'work', [build1, build2]), detail('review', 'review', [{ n: 1, start: 'c1', at: 1, end: 2, verdict: 'needs_changes' }], ['build'])])
+    expect(repairs(once, onceRead).map((r) => [r.key, r.by.map((b) => b.attempt)])).toEqual([['review:review:1', [2]]])
     // review/2 reads build/2's c1 and asks again; build/3 starts at c1: the first review's repair is build/2 alone, the second's build/3.
     const twice: TaskCandidates[] = [
       { task: 'build', kind: 'work', more: 0, candidates: [candidate({ attempt: 3, start: 'c1', commit: 'c4' }), ...once[0]!.candidates] },
       { task: 'review', kind: 'review', more: 0, candidates: [review(2), review(1)] },
     ]
-    expect(repairs(twice).map((r) => [r.key, r.by.map((b) => b.attempt)])).toEqual([
+    const twiceRead = new Map([
+      detail('build', 'work', [build1, build2, { n: 3, start: 'c1', result: 'c4', at: 6, end: 7 }]),
+      detail('review', 'review', [{ n: 1, start: 'c1', at: 1, end: 2, verdict: 'needs_changes' }, { n: 2, start: 'c1', at: 4, end: 5, verdict: 'needs_changes' }], ['build']),
+    ])
+    expect(repairs(twice, twiceRead).map((r) => [r.key, r.by.map((b) => b.attempt)])).toEqual([
       ['review:review:1', [2]],
       ['review:review:2', [3]],
     ])
@@ -339,17 +378,52 @@ describe('candidates', () => {
       },
       { task: 'review', kind: 'review', more: 0, candidates: [review(1)] },
     ]
-    expect(repairs(checked).map((r) => [r.key, r.by.map((b) => b.attempt)])).toEqual([
+    const checkedRead = new Map([
+      detail('build', 'work', [{ ...build1, state: 'failed' }, { n: 2, start: 'c1', result: 'c1', at: 2, end: 3 }, { n: 3, start: 'c1', result: 'c5', at: 5, end: 6 }]),
+      detail('review', 'review', [{ n: 1, start: 'c1', at: 3, end: 4, verdict: 'needs_changes' }], ['build']),
+    ])
+    expect(repairs(checked, checkedRead).map((r) => [r.key, r.by.map((b) => b.attempt)])).toEqual([
       ['check:build:1', [2, 3]],
       ['review:review:1', [3]],
     ])
   })
 
-  it('name a repair attempt that has not submitted yet from the live run, and none before it starts', () => {
+  it("give a review cancelled before its verdict nothing, and the next review's repair the attempt after its own verdict", () => {
+    // review-a/1 asks for changes on c1 and the engine cancels review-b/1 with it; build/2 starts at c1 and submits it unchanged;
+    // review-b/2 asks for changes on c1; build/3 repairs it. Counting review-b's verdicts would give review-b/2 build/2.
+    const tasks: TaskCandidates[] = [
+      { task: 'build', kind: 'work', more: 0, candidates: [candidate({ attempt: 3, start: 'c1', commit: 'c3' }), candidate({ attempt: 2, start: 'c1', commit: 'c1' }), candidate({ attempt: 1, start: 'b0', commit: 'c1' })] },
+      { task: 'review-a', kind: 'review', more: 0, candidates: [candidate({ task: 'review-a', kind: 'review', attempt: 1, start: 'c1', verdict: 'needs_changes', findings: { major: 1 } })] },
+      { task: 'review-b', kind: 'review', more: 0, candidates: [candidate({ task: 'review-b', kind: 'review', attempt: 2, start: 'c1', verdict: 'needs_changes', findings: { minor: 1 } })] },
+    ]
+    const details = new Map([
+      detail('build', 'work', [
+        { n: 1, start: 'b0', result: 'c1', at: 0, end: 1 },
+        { n: 2, start: 'c1', result: 'c1', at: 3, end: 4 },
+        { n: 3, start: 'c1', result: 'c3', at: 6, end: 7 },
+      ]),
+      detail('review-a', 'review', [{ n: 1, start: 'c1', at: 1, end: 2, verdict: 'needs_changes' }], ['build']),
+      detail('review-b', 'review', [{ n: 1, start: 'c1', state: 'cancelled', at: 1, end: 2 }, { n: 2, start: 'c1', at: 4, end: 5, verdict: 'needs_changes' }], ['build']),
+    ])
+    expect(repairs(tasks, details).map((r) => [r.key, r.by.map((b) => `${b.task}/${b.attempt}`)])).toEqual([
+      ['review:review-a:1', ['build/2']],
+      ['review:review-b:2', ['build/3']],
+    ])
+  })
+
+  it('name a repair attempt that never submitted from the task route, a record whose live run is gone too, and none before it starts', () => {
     const tasks: TaskCandidates[] = [{ task: 'build', kind: 'work', more: 0, candidates: [candidate({ attempt: 1, commit: 'c1', state: 'failed', receipts: [receipt({ exit: 1 })] })] }]
-    expect(repairs(tasks)[0]!.by).toEqual([])
-    const live = [{ id: 'build', attempt: { n: 2, start: 'c1', state: 'running' } }] as unknown as RunTask[]
-    expect(repairs(tasks, live)[0]!.by).toEqual([{ task: 'build', attempt: 2, state: 'running', commit: undefined }])
+    expect(repairs(tasks, new Map([detail('build', 'work', [{ n: 1, start: 'b0', result: 'c1', state: 'failed', at: 0, end: 1 }])]))[0]!.by).toEqual([])
+    // build/2 started at the failed result and stopped before it submitted: absent from the candidates, there in the task's own read.
+    const read = new Map([detail('build', 'work', [{ n: 1, start: 'b0', result: 'c1', state: 'failed', at: 0, end: 1 }, { n: 2, start: 'c1', state: 'stopped', at: 2, end: 3 }])])
+    expect(repairs(tasks, read)[0]!.by).toEqual([{ task: 'build', attempt: 2, state: 'stopped', commit: undefined }])
+    // A repair of a review reserved but not launched yet (no startedAt) is the newest attempt: it is the review's.
+    const reviewed: TaskCandidates[] = [{ task: 'review', kind: 'review', more: 0, candidates: [candidate({ task: 'review', kind: 'review', attempt: 1, start: 'c1', verdict: 'needs_changes' })] }]
+    const reserved = new Map([
+      detail('build', 'work', [{ n: 1, start: 'b0', result: 'c1', at: 0, end: 1 }, { n: 2, start: 'c1', state: 'reserved' }]),
+      detail('review', 'review', [{ n: 1, start: 'c1', at: 1, end: 2, verdict: 'needs_changes' }], ['build']),
+    ])
+    expect(repairs(reviewed, reserved)[0]!.by).toEqual([{ task: 'build', attempt: 2, state: 'reserved', commit: undefined }])
   })
 })
 
