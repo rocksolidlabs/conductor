@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import type { BriefItem, RefResolution } from '~/utils/brakeman'
 import { readsWords, refRoute } from '~/utils/brakeman'
-import { isStale, proposalArgs, proposalControl, staleWords, type GuideOperation } from '~/utils/brakemanCards'
+import { isStale, proposalArgs, proposalControl, proposalSends, staleWords, type GuideOperation } from '~/utils/brakemanCards'
 import { commandBody, mintCommandId, sendCommand } from '~/utils/tasks'
 
 /**
  * A brief's proposal (docs/plans/brakeman.md, PR-7): its text and the operation it names, as a button only for an operation whose
  * route itself refuses a stale revision (the guide's Operation.Revision: a run's pause and unpause, a task's cancel, retry and accept,
  * a ticket's edit, comment and link), sent through the client calls their own pages use with the proposal's revision and asked first
- * where those pages ask first. A run's stop and resume, a crew's create and launch and any other operation are text with a link to
- * the page that does them, where the person acts on the live state: no comparison in the browser stands in for the route's check.
+ * where those pages ask first. A ticket's operation sends the proposal's arguments, which its text need not match: the card shows each
+ * field it sends, and the button asks first with them, so nothing goes out under the person's name that the person did not see. A
+ * run's stop and resume, a crew's create and launch and any other operation are text with a link to the page that does them, where
+ * the person acts on the live state: no comparison in the browser stands in for the route's check.
  */
 const props = defineProps<{ item: Extract<BriefItem, { kind: 'proposal/1' }>; items: readonly BriefItem[]; refs: ReadonlyMap<string, RefResolution> }>()
 
@@ -32,6 +34,8 @@ onMounted(async () => {
 })
 
 const control = computed(() => proposalControl(props.item, ops.value))
+/** What a ticket's operation sends, every field of it, shown on the card and in the dialog before it is sent. */
+const sends = computed(() => (control.value.kind === 'button' && control.value.target === 'ticket' ? proposalSends(props.item.args) : []))
 const to = computed(() => refRoute(props.item.target))
 const busy = ref(false)
 const asking = ref(false)
@@ -97,6 +101,12 @@ function press() {
       <span v-if="item.expectedRevision">· at revision {{ item.expectedRevision }}</span>
       <span v-if="readsWords(item.facts, items)">· {{ readsWords(item.facts, items) }}</span>
     </div>
+    <dl v-if="sends.length" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border border-default p-2 text-xs" data-proposal-args>
+      <template v-for="a in sends" :key="a.field">
+        <dt class="font-mono text-muted">{{ a.field }}</dt>
+        <dd class="whitespace-pre-wrap break-words font-mono" :data-proposal-arg="a.field">{{ a.value }}</dd>
+      </template>
+    </dl>
     <div v-if="control.kind === 'button'" class="flex flex-wrap items-center gap-2">
       <UButton :label="control.label" size="sm" color="neutral" variant="outline" :loading="busy" data-proposal-button @click="press" />
       <span class="text-xs text-muted">Its route refuses it if what it acts on has moved since Brakeman read it.</span>
@@ -108,6 +118,15 @@ function press() {
     <UAlert v-if="refusal" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="refusal" data-proposal-refused />
 
     <UModal v-model:open="asking" :title="control.kind === 'button' ? `${control.label.replace(/…$/, '')}?` : ''" description="Brakeman proposed it; you decide. Its route refuses it if the record has moved on since Brakeman read it.">
+      <template v-if="sends.length" #body>
+        <p class="mb-2 text-sm">It sends, under your name:</p>
+        <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs" data-proposal-confirm-args>
+          <template v-for="a in sends" :key="a.field">
+            <dt class="font-mono text-muted">{{ a.field }}</dt>
+            <dd class="whitespace-pre-wrap break-words font-mono" :data-proposal-arg="a.field">{{ a.value }}</dd>
+          </template>
+        </dl>
+      </template>
       <template #footer>
         <div class="flex w-full justify-end gap-2">
           <UButton label="Keep it" color="neutral" variant="ghost" @click="asking = false" />

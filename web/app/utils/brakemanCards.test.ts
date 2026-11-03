@@ -8,10 +8,14 @@ import {
   handoffTickets,
   isStale,
   madeWords,
+  makeAgain,
+  PENDING_ELSEWHERE,
   proposalArgs,
   proposalControl,
+  proposalSends,
   revisionOf,
   staleWords,
+  unfinishedMake,
   type GuideOperation,
   type LiveRecords,
 } from './brakemanCards'
@@ -118,7 +122,12 @@ describe("a proposal's control", () => {
     expect(proposalControl(p('run_pause', `run:${RUN}`, '7'), ops)).toEqual({ kind: 'button', op: 'run_pause', target: 'run', run: RUN, task: undefined, ticket: undefined, label: 'Pause the run', ask: false, expectedRevision: 7 })
     expect(proposalControl(p('task_cancel', `task:${RUN}/build`, '7'), ops)).toMatchObject({ kind: 'button', run: RUN, task: 'build', label: 'Cancel build…', ask: true })
     expect(proposalControl(p('task_accept', `task:${RUN}/build`, '7'), ops)).toMatchObject({ kind: 'button', ask: true })
-    expect(proposalControl(p('ticket_edit', 'ticket:CND-4', '3'), ops)).toMatchObject({ kind: 'button', ticket: 'CND-4', label: 'Edit CND-4', expectedRevision: 3 })
+    expect(proposalControl(p('ticket_edit', 'ticket:CND-4', '3'), ops)).toMatchObject({ kind: 'button', ticket: 'CND-4', label: 'Edit CND-4…', expectedRevision: 3 })
+  })
+
+  it("asks first for every ticket operation, which sends the proposal's arguments rather than its text", () => {
+    expect(proposalControl(p('ticket_edit', 'ticket:CND-4', '3'), ops)).toMatchObject({ kind: 'button', ask: true })
+    expect(proposalControl(p('ticket_comment_admin', 'ticket:CND-4', '3'), ops)).toMatchObject({ kind: 'button', label: 'Comment on CND-4…', ask: true })
   })
 
   it("is text with the page's link for a stop, a resume, a launch, an operation not listed, and while the guide is unread", () => {
@@ -143,6 +152,24 @@ describe("a proposal's control", () => {
     expect(proposalArgs({ title: 'x', opId: 'mine', expectedRev: 1, byName: 'Brakeman' })).toEqual({ title: 'x' })
     expect(proposalArgs(undefined)).toEqual({})
   })
+
+  it('lists every field it sends, by its path, with its value as sent', () => {
+    // A text that says "fix the typo" cannot hide an edit of the description: every field is on the page.
+    expect(proposalSends({ set: { title: 'Fix the typo', description: 'Replaced whole.', priority: 1 }, add: { labels: ['bug'] }, opId: 'mine', byName: 'Brakeman' })).toEqual([
+      { field: 'set.title', value: 'Fix the typo' },
+      { field: 'set.description', value: 'Replaced whole.' },
+      { field: 'set.priority', value: '1' },
+      { field: 'add.labels', value: '["bug"]' },
+    ])
+    // A comment's body as its Markdown, every line of it.
+    expect(proposalSends({ body: '## Why\n\n- the check' })).toEqual([{ field: 'body', value: '## Why\n\n- the check' }])
+    expect(proposalSends({ kind: 'blocks', to: 'CND-9', meta: {} })).toEqual([
+      { field: 'kind', value: 'blocks' },
+      { field: 'to', value: 'CND-9' },
+      { field: 'meta', value: '{}' },
+    ])
+    expect(proposalSends(undefined)).toEqual([])
+  })
 })
 
 describe('handoffs and drafts', () => {
@@ -161,10 +188,39 @@ describe('handoffs and drafts', () => {
     expect(madeWords({ state: 'made', crew: 'fix-it' })).toBe('Saved as the crew fix-it, not launched.')
     expect(madeWords({ state: 'refused', why: 'no such project' })).toBe('Refused: no such project. It can be made again.')
     expect(madeWords(undefined)).toBe('')
+    expect(madeWords({ state: 'pending' })).toBe(PENDING_ELSEWHERE)
     const title = (i: number) => `draft ${i + 1}`
     expect(blocksWords(0, [1], undefined, title)).toBe('Blocks draft 2.')
     expect(blocksWords(0, [1], [{ from: 0, to: 1, state: 'pending' }], title)).toBe('Blocks draft 2 (related once both are made).')
     expect(blocksWords(0, [1], [{ from: 0, to: 1, state: 'made' }], title)).toBe('Blocks draft 2 (related).')
     expect(blocksWords(0, [], undefined, title)).toBe('')
+  })
+})
+
+describe('a make that did not finish', () => {
+  const kept = { opId: 'op-1', body: { by: 'Nate', edit: { title: 'As sent' } } }
+  it('is kept for a lost reply or a failure of the server, and settled by any other answer', () => {
+    expect(unfinishedMake({ status: 0 })).toBe(true)
+    expect(unfinishedMake({ status: 500, code: 'make_failed' })).toBe(true)
+    expect(unfinishedMake({ status: 503, code: 'store_unavailable' })).toBe(true)
+    for (const status of [400, 409, 413]) expect(unfinishedMake({ status })).toBe(false)
+    expect(unfinishedMake(new Error('x'))).toBe(false)
+  })
+  it('is finished as it was sent while it is pending under its id, or not claimed at all', () => {
+    expect(makeAgain({ state: 'pending', opId: 'op-1' }, kept)).toMatchObject({ kind: 'finish' })
+    expect(makeAgain(undefined, kept)).toMatchObject({ kind: 'finish' })
+    // Refused once under another id, then this ask failed before its claim: it is still this browser's to finish.
+    expect(makeAgain({ state: 'refused', opId: 'op-0' }, kept)).toMatchObject({ kind: 'finish' })
+  })
+  it('is dropped once made, deleted, refused under its id, or held by another make', () => {
+    expect(makeAgain({ state: 'made', opId: 'op-1' }, kept).kind).toBe('drop')
+    expect(makeAgain({ state: 'deleted', opId: 'op-1' }, kept).kind).toBe('drop')
+    expect(makeAgain({ state: 'refused', opId: 'op-1' }, kept).kind).toBe('drop')
+    expect(makeAgain({ state: 'pending', opId: 'op-2' }, kept)).toEqual({ kind: 'drop', words: PENDING_ELSEWHERE })
+  })
+  it('says a pending make it holds nothing of is finished where it was asked, or at the next start, never by a step the page lacks', () => {
+    expect(makeAgain({ state: 'pending', opId: 'op-2' }, undefined)).toEqual({ kind: 'none', words: PENDING_ELSEWHERE })
+    expect(PENDING_ELSEWHERE).not.toContain('same id')
+    expect(makeAgain(undefined, undefined)).toEqual({ kind: 'none', words: '' })
   })
 })
