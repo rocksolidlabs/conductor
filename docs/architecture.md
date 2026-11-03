@@ -42,7 +42,8 @@ process method's panic logged at error and refused, and the terminal and
 the service it answers guarded too: a panic in one of their methods is
 logged at error and ends that process, never the server; a stop of it
 that fails leaves it running and not done, and the next stop asks the
-Runtime again) or, with none
+Runtime again, under an ended context too; one that succeeds ends it
+before it returns, so the session records its exit code) or, with none
 registered, the native one; an attempt's session starts in its run's
 (`crew.LaunchSpec.Where`). `conductor host` starts its command the same
 way, through `hostagent.Options.Runtime`, the native one, whatever is
