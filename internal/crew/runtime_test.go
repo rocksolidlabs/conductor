@@ -52,7 +52,7 @@ func lineOf(c sessiontest.RuntimeCall) string {
 // it, no token of the server's.
 func TestEveryProcessOfARunGoesThroughTheRuntime(t *testing.T) {
 	dir := newRepo(t)
-	e, _, l := managedEngine(t)
+	e, fl, l := managedEngine(t)
 	const id = "api-sweep-0000c10a"
 	e.newRunID = func(string) string { return id }
 	worktree := ext.ProcessRef{Run: id, Task: "build", Attempt: 1, Tree: ledger.TreeWorktree}
@@ -107,6 +107,10 @@ func TestEveryProcessOfARunGoesThroughTheRuntime(t *testing.T) {
 	if n := len(fake.Asked("StartTerminal")); n != 0 {
 		t.Fatalf("%d terminals started through the Runtime: the attempt's session is the launcher's", n)
 	}
+	// The launcher is told to start the attempt's session in it (PR-3).
+	if w := fl.wheres(); !reflect.DeepEqual(w, []string{"fake"}) {
+		t.Fatalf("the attempt's launch named the Runtimes %q, not the fake", w)
+	}
 	// The receipts are the Runtime's processes: the check ran, natively
 	// under the fake's Base, with a process of its own.
 	if c, ok := rowOf(l.stepRows(run.ID, "build", 1), "unit", 1); !ok || c.Phase != ledger.PhaseCheck || c.Exit != 0 || c.PID == 0 || string(c.Log) != "unit\n" {
@@ -119,7 +123,7 @@ func TestEveryProcessOfARunGoesThroughTheRuntime(t *testing.T) {
 // prerequisite, setup steps and check run on this machine.
 func TestADeclinedRunRunsNatively(t *testing.T) {
 	dir := newRepo(t)
-	e, _, l := managedEngine(t)
+	e, fl, l := managedEngine(t)
 	fake := &sessiontest.FakeRuntime{TakesRun: func(ext.ProcessRef) bool { return false }}
 	offer(t, e, fake)
 	build := work("build", "lead")
@@ -135,6 +139,9 @@ func TestADeclinedRunRunsNatively(t *testing.T) {
 	}
 	if r := runOf(t, e, run.ID); r.taken || r.rt.Where() != ext.WhereNative {
 		t.Fatalf("the declined run's Runtime: %q, taken %v", r.rt.Where(), r.taken)
+	}
+	if w := fl.wheres(); !reflect.DeepEqual(w, []string{string(ext.WhereNative)}) {
+		t.Fatalf("the declined run's attempt launched in %q, not natively", w)
 	}
 	if p := l.prereqRows(run.ID); len(p) != 1 || p[0].Exit != 0 || p[0].PID == 0 {
 		t.Fatalf("the prerequisite's receipt: %+v", p)
@@ -163,6 +170,11 @@ func TestALegacyRunIsOfferedNothing(t *testing.T) {
 	}
 	if r := runOf(t, e, run.ID); r.taken || r.rt.Where() != ext.WhereNative {
 		t.Fatalf("the legacy run's Runtime: %q, taken %v", r.rt.Where(), r.taken)
+	}
+	// A legacy member's launch names no Runtime: the launcher starts it
+	// natively.
+	if w := fl.wheres(); !reflect.DeepEqual(w, []string{""}) {
+		t.Fatalf("the legacy member's launch named %q", w)
 	}
 }
 

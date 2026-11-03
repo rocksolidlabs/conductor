@@ -94,7 +94,7 @@ func TestARelayViewerThatFallsBehindDoesNotStallTheHostSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer proc.Stop(context.Background(), time.Second)
-	a := &agent{opts: Options{}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
+	a := &agent{opts: Options{}, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
 	a.useConn(conn, pc)
 	a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
 
@@ -332,7 +332,7 @@ func TestAViewerMovingToTheRelayAfterItsChannelWentKeepsItsSlot(t *testing.T) {
 	}
 	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
 	local := session.NewLocal(session.Info{ID: "s", Cols: 80, Rows: 24}, proc, session.Options{MaxViewers: 1})
-	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: discardLog}
+	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog}
 	var mu sync.Mutex
 	var refused []string
 	a.sendHook = func(v any) {
@@ -386,7 +386,7 @@ func TestARelayAttachBeforeTheChannelsDetachFinishesKeepsTheSlot(t *testing.T) {
 	}
 	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
 	local := session.NewLocal(session.Info{ID: "s", Cols: 80, Rows: 24}, proc, session.Options{MaxViewers: 1})
-	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: discardLog}
+	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog}
 	var mu sync.Mutex
 	var refused []string
 	a.sendHook = func(v any) {

@@ -79,7 +79,7 @@ func testAgent(t *testing.T, opts Options) (*agent, chan any) {
 	local := session.NewLocal(session.Info{ID: "s", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
 	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
 	out := make(chan any, 256)
-	a := &agent{opts: opts, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	a := &agent{opts: opts, local: local, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	a.sendHook = func(v any) { out <- v }
 	return a, out
 }

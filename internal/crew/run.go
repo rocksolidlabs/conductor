@@ -82,6 +82,10 @@ type LaunchSpec struct {
 	// the session's own passthrough. Both nil without a project manifest.
 	Inject map[string]string
 	Allow  []string
+	// Where is the Runtime the session starts in: an attempt's is its
+	// run's Runtime's (the engine's offered one when it took the run, the
+	// native one otherwise); empty for a legacy member, started natively.
+	Where ext.Where
 }
 
 // Member states (MemberState.Status).

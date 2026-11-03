@@ -30,6 +30,9 @@ type Option func(*options)
 // options is what the options of New set.
 type options struct {
 	providers ext.Providers
+	// native stands in for the native Runtime (local.Native) in the tests;
+	// nil outside them.
+	native ext.Runtime
 }
 
 // WithExtensions gives the server the providers p, as the composition root

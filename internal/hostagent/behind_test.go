@@ -17,15 +17,24 @@ import (
 // a controller (typist) and a watcher. relayWait is the agent's.
 func behindAgent(t *testing.T, relayWait time.Duration) (a *agent, s *heldServer, typist, watcher *peer) {
 	t.Helper()
+	a, s, typist, watcher, _ = behindAgentProc(t, relayWait)
+	return a, s, typist, watcher
+}
+
+// behindAgentProc is behindAgent, and the cat's process, which nothing of
+// the agent's holds but its session.
+func behindAgentProc(t *testing.T, relayWait time.Duration) (a *agent, s *heldServer, typist, watcher *peer, proc *pty.Process) {
+	t.Helper()
 	s, c, pc := dialHeld(t, 0)
 	close(s.read)
 	dir := t.TempDir()
-	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: hostEnv(nil)})
+	var err error
+	proc, err = pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: hostEnv(nil)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { proc.Stop(context.Background(), time.Second) })
-	a = &agent{opts: Options{RelayOnly: true}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1", relayWait: relayWait}
+	a = &agent{opts: Options{RelayOnly: true}, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1", relayWait: relayWait}
 	a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
 	w := a.useConn(c, pc)
 	t.Cleanup(w.stop)
@@ -46,7 +55,7 @@ func behindAgent(t *testing.T, relayWait time.Duration) (a *agent, s *heldServer
 		}
 	}
 	t.Cleanup(a.closeAllPeers)
-	return a, s, a.peer("typist0123456789"), a.peer("watcher012345678")
+	return a, s, a.peer("typist0123456789"), a.peer("watcher012345678"), proc
 }
 
 // behind tells a, as the server does, that viewer id is behind or caught up.
@@ -188,7 +197,7 @@ func TestAViewerBehindLongerThanAFrameMayWaitIsLetGoAlone(t *testing.T) {
 // as it went before the host held a viewer behind, and the end's drain
 // bounds it.
 func TestTheSessionsLastOutputGoesToAViewerBehind(t *testing.T) {
-	a, s, typist, watcher := behindAgent(t, time.Minute)
+	a, s, typist, watcher, proc := behindAgentProc(t, time.Minute)
 	behind(t, a, watcher.id, true)
 	if err := a.local.Input(typist.sub, []byte("last words\n")); err != nil {
 		t.Fatal(err)
@@ -201,7 +210,7 @@ func TestTheSessionsLastOutputGoesToAViewerBehind(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	if err := a.proc.Stop(ctx, time.Second); err != nil {
+	if err := proc.Stop(ctx, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if got := relayedOutput(t, s, watcher.id, "last words", 10*time.Second); !bytes.Contains([]byte(got), []byte("last words")) {

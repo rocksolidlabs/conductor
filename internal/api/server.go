@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor"
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -79,9 +80,14 @@ type Server struct {
 	// keeper keeps the links a switchyard mints across its restarts
 	// (linkfiles.go); nil elsewhere.
 	keeper *linkKeeper
-	log    *slog.Logger
-	web    http.Handler
-	store  *store.Store
+	// native and offered are the server's two Runtimes, set in New and
+	// never changed after (extruntime.go): the native one, every session
+	// starts in but an attempt of a run the offered one took, and the one
+	// its engine offers managed runs.
+	native, offered ext.Runtime
+	log             *slog.Logger
+	web             http.Handler
+	store           *store.Store
 	// crews holds the saved crews, one file each in crews/ of the data
 	// directory; nil when there is no store.
 	crews *crew.Store
@@ -357,6 +363,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
 	s.installExtensions(o.providers)
+	s.installRuntimes(o.providers, o.native)
 	s.syncs = syncs
 	syncs.attach(s)
 	s.holdQueue(o.providers.Continuity, s.exts.sync.Name(), syncs.begin)
@@ -370,6 +377,12 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }
 	s.events = newEventHub()
 	s.runs = crew.NewEngine(s, s.lookupLocal)
+	// The Runtime the engine offers its managed runs, before any run is
+	// launched or continued (the ledger's recovery, a route's).
+	if err := s.runs.SetRuntime(s.offered); err != nil {
+		s.stopExtensions()
+		return nil, err
+	}
 	s.runOf = func(sessionID string) (string, bool) {
 		runID, _, ok := s.runs.MemberOf(sessionID)
 		return runID, ok

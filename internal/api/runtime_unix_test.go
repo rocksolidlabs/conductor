@@ -1,0 +1,70 @@
+//go:build unix
+
+package api
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"testing"
+
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
+	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
+)
+
+// panicFirst is a Runtime whose first StartTerminal starts natively, then
+// ends and reaps what it started and panics, as the contract has a Runtime
+// do (sessiontest's PanicAfterStart); every later call is the plain fake's.
+type panicFirst struct {
+	*sessiontest.FakeRuntime
+	panicker *sessiontest.FakeRuntime
+	n        atomic.Int32
+}
+
+func (p *panicFirst) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Terminal, error) {
+	if p.n.Add(1) == 1 {
+		return p.panicker.StartTerminal(ctx, s)
+	}
+	return p.FakeRuntime.StartTerminal(ctx, s)
+}
+
+// A start that panics once its process exists is refused as a start that
+// failed: the guard logs the panic at error, naming the Runtime, and by
+// then the process the Runtime started is gone and reaped. The server
+// serves on, and the attempt after it starts in the same Runtime.
+func TestAStartThatPanicsAfterItsProcessIsRefusedWithNoneLeft(t *testing.T) {
+	rt := &panicFirst{FakeRuntime: &sessiontest.FakeRuntime{Base: local.Native()},
+		panicker: &sessiontest.FakeRuntime{Base: local.Native(), PanicAfterStart: true}}
+	seam := nativeSeam()
+	logs := &logBuffer{}
+	e := runtimeEnv(t, seam, slog.New(slog.NewTextHandler(logs, nil)), withRuntime(rt))
+	e.gitRepo(t)
+	runID := launchOne(t, e, oneTaskCrew("panics", e.root))
+	sid := runningAttempt(t, e, runID, "build", 2)["sessionId"].(string)
+	started := rt.panicker.Asked("StartTerminal")
+	if len(started) != 1 || started[0].Process.PID <= 0 {
+		t.Fatalf("the panicking start: %+v", started)
+	}
+	// Reaped, not a zombie: a zombie still answers signal 0.
+	if err := syscall.Kill(started[0].Process.PID, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("the process of the start that panicked, %d: %v", started[0].Process.PID, err)
+	}
+	if l := logs.String(); !strings.Contains(l, "level=ERROR") || !strings.Contains(l, "the Runtime panicked") || !strings.Contains(l, "provider=fake call=StartTerminal") {
+		t.Fatalf("the guard's log:\n%s", l)
+	}
+	_, out := e.do("GET", "/api/runs/"+runID+"/tasks/build", adminToken, nil)
+	first := out["attempts"].([]any)[0].(map[string]any)
+	if first["state"] != "failed" || first["stage"] != "launch" {
+		t.Fatalf("the first attempt: %v", first)
+	}
+	if got := terminalRefs(rt.FakeRuntime); len(got) != 1 || got[0] != attemptRef(sid, runID, 2) {
+		t.Fatalf("the second attempt's session: %+v", got)
+	}
+	if n := len(seam.Calls()); n != 0 {
+		t.Fatalf("the native Runtime was asked %v", methodsOf(seam))
+	}
+}
