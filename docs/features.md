@@ -3268,6 +3268,152 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   owner's to decide (the plan's Acceptance). A later docs PR of the
   stream carries the owner's words; #561 holds the week, the desktop
   check and that PR.
+- **Brakeman, the first slice: briefs from the person's own agent, and the
+  guide from the running server (BK1 and BK0, #520 to #529, 2026-11-01 to
+  2026-11-03).** Program items BK1 and BK0, planned with BK2 and BK3 in
+  `docs/plans/brakeman.md` (PR #518). The first slice is the plan's PR-1 to
+  PR-8, built before DS2 and C9 are done and launching before `ext.Host`
+  exists, as the plan's decisions 3 and 22 put to the owner and the owner's
+  go-ahead of 2026-11-01 took. Brakeman is the sidekick agent: an agent of
+  the person's choosing, on their own login, that Yardmaster runs for
+  bounded turns (a read-only one-member run through the engine and
+  `crew.Launcher`, never yolo) to read the runs, Dispatch and the sessions
+  within the scope and visibility the person grants, and hand back a brief
+  whose every fact names evidence the server resolved; it drafts and
+  proposes, and nothing it writes becomes work until a person acts. Any
+  agent session reads the operating guide from the server. See the README
+  (Brakeman), `docs/architecture.md` (Brakeman) and `docs/protocol.md`
+  (Guide, Brakeman). What each PR shipped and the checks its body reports
+  over its review rounds; every merged PR's required checks ended green on
+  the head that merged:
+
+  PR-1 (#520, PR #565): `internal/brakeman` (the configuration, requests,
+  `brakeman.brief/1`, the ref grammar, the store with its op ids, day's
+  charges and pruning) and the ledger's owner lock moved to
+  `store.OwnerLock`, the ledger's tests unchanged. `Scope.Covers` checked
+  against a brute force over every pair of 1,024 scopes. Checks: lint,
+  lint-static, the module's race tests over three review rounds, each
+  round's tests failing with their fix reverted, the Mac rows, CI.
+
+  PR-2 (#521, PR #564): the guide (`GET /api/guide`, `GET
+  /api/sessions/{id}/guide`, the MCP tool `guide`, `conductor guide`) and
+  `tools/list` built from one table, held byte for byte to main's by a
+  golden test; each body schema held to what its route decodes and each
+  advertised bound to its route's. Checks: the module's race tests over
+  three rounds, the Mac rows, CI.
+
+  PR-3a (#522, PR #563): each agent's read-only mode, model flag and
+  Conductor-tools rule, checked against the CLIs nightly under the
+  `recipes` tier. What it found of the CLIs (Claude Code 2.1.314, Codex
+  0.163.0), each by hand: Claude Code's deny rule alone leaves `Task`,
+  `EnterWorktree`, `CronCreate` and others, so the mode also names the
+  built-in tools (`--tools=Read,Grep,Glob`) and keeps only Conductor's MCP
+  server (`--strict-mcp-config`; without it a connected claude.ai
+  connector's write tools were listed); Codex's `--sandbox read-only`
+  alone retried a blocked write as a question a yes would have granted, so
+  the mode adds a granular approval policy that turns escalations down;
+  Codex reaches Conductor's MCP server under the sandbox but asks before
+  every tool call ("Allow the conductor MCP server to run tool …?"; under
+  `codex exec` the call fails), and
+  `mcp_servers.conductor.default_tools_approval_mode="approve"` lets it
+  through, so "Run Conductor's tools without asking" covers Codex too; and
+  Codex's mode does not hold the person's own MCP servers or exec-policy
+  allow rules, with no flag that isolates them. Checks: the module's race
+  tests, `make test-recipes` with both CLIs, the Mac rows, CI.
+
+  PR-3b (#523, PR #567): a brief's refs resolved against each store, the
+  scope, the visibility and what the turn read, a revision other than the
+  one read refused. Checks: the module's race tests over three rounds,
+  each part disabled in turn failing its test, the Mac rows, CI.
+
+  PR-3c (#524, PR #568): the desk, a turn as a read-only run through
+  `launchTurn`, the watchdog and the slot, the restart, the request and
+  brief routes, the `brakeman` event, the refusals that keep a turn
+  Brakeman's. Codex is taken as Brakeman's agent with its gap as a
+  warning Settings shows (the owner's decision of 2026-11-01). Checks: the
+  module's race tests over three rounds, the new tests `-count=10`, each
+  fix undone failing its test, the Mac rows, CI.
+
+  PR-4 (#525, PR #575): the principal `brakeman` on the shared reads,
+  Brakeman's own reads (changes, status, screen, overlaps, briefs), the
+  read log and the coverage, earlier briefs withheld past the grant, and a
+  draft made a ticket or a saved crew by the operator, recovered after a
+  crash. Checks: the module's race tests over three rounds, the Mac rows,
+  CI.
+
+  PR-5 (#526, PR #577): the tools `brakeman_request`, `observe` and
+  `brief_submit`, listed only in a turn's session, and `conductor brakeman`;
+  `TestBrakemanBriefFromAFile` launches a real turn on a real server and
+  keeps its brief. Checks: the module's race tests over three rounds, the
+  Mac rows, CI.
+
+  PR-6 (#527, PR #578): Settings' Brakeman card, the Brakeman page, a brief
+  with its evidence chips, the sidebar's row, and the e2e stub's Brakeman.
+  Checks: typecheck, vitest (1,094 tests), the module's race tests,
+  `brakeman.spec.ts`, `sidebar.spec.ts` and `settings.spec.ts` (23 tests),
+  `make test-e2e` (319 passed; two Dispatch specs failed under load and
+  passed alone, #281), CI.
+
+  PR-7 (#528, PR #583): decision cards and proposals with Conductor's
+  controls from the live record, drafts made work, handoffs, the
+  palette's rows, "Ask Brakeman why" and the ticket page's menu. Checks:
+  typecheck, vitest (1,151 tests), `brakeman-cards.spec.ts` 50 of 50 with
+  `--repeat-each 10`, `make test-e2e` (339 passed; after its merges one
+  Dispatch spec timed out under load and passed alone, #281), CI.
+
+  PR-8 (#529): this entry, the README's Brakeman section, the repository
+  map's row for the desk and the guide, and the architecture's Brakeman
+  section and records. Docs only.
+
+  What was missing, slow or wrong along the way. The plan's estimates were
+  short: PR-1 came to about 6,100 changed lines against 1,500, and its
+  request bound of 32 KiB could not hold the fields it bounds (96 KiB). Bugs
+  of the stream, each fixed in the PR that found it: the recipe tests read
+  Claude Code's help through a pipe it closed early (229 of 313 lines;
+  PR-3a); an export would have carried `brakeman/owner.lock` and a restore
+  planted it (PR-3c); the overlaps test missed macOS's `/private/var`
+  (PR-4, found by the Mac rows); a page that read a request inside its
+  brief's grace kept its In progress card, and the Agent select's None
+  threw (PR-6). `internal/api`'s race tests took 840 to 1,690 s on the
+  loaded Linux box, once past the 30 m bound with no test failing. CI's
+  `dco` check on a stacked PR counts `main`'s merge commits the base
+  branch does not hold yet (PR-7), and clears once the base takes `main`.
+  Not run in the stream: the Windows preflight rows the plan names for
+  PR-3c and PR-6 (a launch and a process's shutdown change), and the Mac
+  rows it names for PR-6; the Mac rows ran on PR-1 to PR-5. The flakes
+  seen once are lines in #281.
+
+  **BK0's observation: pending.** A Codex session told nothing but "call
+  the guide tool" lists what it may do there and the limits it must keep,
+  and a plain session's guide differs from an attempt's. The second half
+  is held by `TestASessionsGuideListsItsScopesOnly` (a plain session, an
+  attempt, a ticket's member); the session with a real Codex is not yet
+  made.
+
+  **BK1's observation: pending.** On the owner's `conductor serve` with
+  Claude Code (and once with Codex) on the owner's own subscription,
+  configured in Settings, after an evening of real managed crews (one with
+  a check that fails until a retry, one with a task whose attempts are
+  spent, one whose member asks a question left unanswered overnight):
+  "Brief me since 18:00" yields a brief whose facts link to the runs, the
+  tasks, the failing check's receipt (its log hash equal to the step log
+  route's) and the open question, that tells the quiet session from the
+  failed task, and whose decision card for the spent task offers the
+  commands its state allows, one of which the owner presses with its
+  receipt; "Draft tickets" from a real ticket's discussion yields drafts
+  the owner edits and makes, with their blocking relation, and "Propose a
+  crew" a crew that saves and opens in the editor; the server restarted
+  and the model changed, "What changed since your last brief?" answers
+  from the earlier brief and its coverage. Until the owner makes these
+  turns, the specs drive them with the stub agent (`brakeman.spec.ts`,
+  `brakeman-cards.spec.ts`: a turn asked, its brief kept with a fact
+  citing its own run and session, a card's Retry with the revision read, a
+  stale revision refused with words, drafts made once, a restart finding
+  the same records). A later docs PR of the stream carries what the owner
+  saw; a bug the stream caused, found there, is fixed in the stream.
+  Neither item is done with this slice: BK0 waits for the guide's
+  providers (PR-9) and BK1 for the observation made again after PR-11,
+  with a ticket launched from an approved plan revision among the evidence.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
