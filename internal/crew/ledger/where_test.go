@@ -22,6 +22,13 @@ import (
 func seedWhere(t *testing.T, l *Ledger, where string) {
 	t.Helper()
 	newRun(t, l, "team-00000001")
+	putWhere(t, l, where)
+}
+
+// putWhere puts seedWhere's rows of the run, new or again, each where they
+// ran.
+func putWhere(t *testing.T, l *Ledger, where string) {
+	t.Helper()
 	if _, err := l.Transition(context.Background(), "team-00000001", func(tx *Tx) error {
 		if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: "build", Member: "lead", Kind: "work", State: TaskRunning}); err != nil {
 			return err
@@ -322,6 +329,49 @@ func TestAnUpgradeBesideThePreviousOwnerReads(t *testing.T) {
 	}
 	if a, err := waiting.Attempts(context.Background(), "team-00000001"); err != nil || len(a) != 2 || a[1].Where != "fake" {
 		t.Fatalf("the attempts once owned: %+v %v", a, err)
+	}
+}
+
+// A ledger reading a version 6 database read-only, another server its
+// owner, reads the rows that owner puts once it has migrated the database
+// to 7 by their column: the version is read again with the rows, in one
+// snapshot (readAt), never kept from the attach while the database moved
+// on, which would read every row as native.
+func TestAReaderSeesAnotherOwnersMigration(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	seedWhere(t, l, WhereNative)
+	asVersion6(t, l)
+	l.Close()
+
+	// The reader: the lock another's and not waited for, so it stays a
+	// reader, never migrating, while the owner opened next migrates.
+	old := takeLock
+	t.Cleanup(func() { takeLock = old })
+	takeLock = func(string) (*ownerLock, string, bool, error) {
+		return nil, "another server owns the ledger (test)", false, nil
+	}
+	reader := openLedger(t, dir)
+	takeLock = old
+	if ro, _ := reader.ReadOnly(); !ro {
+		t.Fatal("the reader opened as the owner")
+	}
+	if v := dbVersion(t, reader); v != 6 {
+		t.Fatalf("version %d before the owner's migration", v)
+	}
+	allWhere(t, readWhere(t, reader), WhereNative, "before the owner's migration")
+
+	owner := openLedger(t, dir)
+	if ro, why := owner.ReadOnly(); ro {
+		t.Fatalf("the owner opened read-only: %s", why)
+	}
+	if v := dbVersion(t, owner); v != 7 {
+		t.Fatalf("version %d after the owner's migration", v)
+	}
+	putWhere(t, owner, "fake")
+	allWhere(t, readWhere(t, reader), "fake", "the reader, after the owner's migration")
+	if v := dbVersion(t, reader); v != 7 {
+		t.Fatalf("the reader reads version %d", v)
 	}
 }
 

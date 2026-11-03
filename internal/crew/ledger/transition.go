@@ -627,27 +627,29 @@ func (l *Ledger) Tasks(ctx context.Context, runID string) ([]TaskRow, error) {
 
 // Attempts reads a run's attempts, by task and number.
 func (l *Ledger) Attempts(ctx context.Context, runID string) ([]AttemptRow, error) {
-	db, version, err := l.connAt()
-	if err != nil {
-		return nil, err
-	}
-	rows, err := db.QueryContext(ctx, `SELECT task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at, result, checkpoint, `+whereCol(version)+`
-		FROM attempts WHERE run_id = ? ORDER BY task_id, n`, runID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	var out []AttemptRow
-	for rows.Next() {
-		r := AttemptRow{RunID: runID}
-		var reserved, launched, prompted, closed string
-		if err := rows.Scan(&r.TaskID, &r.N, &r.Member, &r.SessionID, &r.Worktree, &r.Branch, &r.StartCommit, &r.ResultCommit, &r.State, &r.Stage, &r.Error, &reserved, &launched, &prompted, &closed, &r.Result, &r.Checkpoint, &r.Where); err != nil {
-			return nil, err
+	err := l.readAt(ctx, func(q querier, version int) error {
+		rows, err := q.QueryContext(ctx, `SELECT task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at, result, checkpoint, `+whereCol(version)+`
+		FROM attempts WHERE run_id = ? ORDER BY task_id, n`, runID)
+		if err != nil {
+			return err
 		}
-		r.ReservedAt, r.LaunchedAt, r.PromptedAt, r.ClosedAt = unstamp(reserved), unstamp(launched), unstamp(prompted), unstamp(closed)
-		out = append(out, r)
+		defer rows.Close()
+		for rows.Next() {
+			r := AttemptRow{RunID: runID}
+			var reserved, launched, prompted, closed string
+			if err := rows.Scan(&r.TaskID, &r.N, &r.Member, &r.SessionID, &r.Worktree, &r.Branch, &r.StartCommit, &r.ResultCommit, &r.State, &r.Stage, &r.Error, &reserved, &launched, &prompted, &closed, &r.Result, &r.Checkpoint, &r.Where); err != nil {
+				return err
+			}
+			r.ReservedAt, r.LaunchedAt, r.PromptedAt, r.ClosedAt = unstamp(reserved), unstamp(launched), unstamp(prompted), unstamp(closed)
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // checkCols are the checks columns a CheckRow is read from in a database
@@ -746,34 +748,37 @@ func (l *Ledger) Checks(ctx context.Context, runID, taskID string, n int, withLo
 	if taskID != "" {
 		where, args = where+" AND task_id = ? AND n = ?", append(args, taskID, n)
 	}
-	db, version, err := l.connAt()
-	if err != nil {
-		return nil, err
-	}
-	rows, err := db.QueryContext(ctx, `SELECT `+checkCols(version)+`, `+logColumn(withLog)+` FROM checks `+where+` ORDER BY task_id, n, id, k`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	var out []CheckRow
-	for rows.Next() {
-		r, err := scanCheck(rows, runID)
+	err := l.readAt(ctx, func(q querier, version int) error {
+		rows, err := q.QueryContext(ctx, `SELECT `+checkCols(version)+`, `+logColumn(withLog)+` FROM checks `+where+` ORDER BY task_id, n, id, k`, args...)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		out = append(out, r)
+		defer rows.Close()
+		for rows.Next() {
+			r, err := scanCheck(rows, runID)
+			if err != nil {
+				return err
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Check reads one receipt of an attempt, its log with it; ok is false
 // when there is no such row.
 func (l *Ledger) Check(ctx context.Context, runID, taskID string, n int, id string, k int) (CheckRow, bool, error) {
-	db, version, err := l.connAt()
-	if err != nil {
-		return CheckRow{}, false, err
-	}
-	r, err := scanCheck(db.QueryRowContext(ctx, `SELECT `+checkCols(version)+`, log FROM checks WHERE run_id = ? AND task_id = ? AND n = ? AND id = ? AND k = ?`, runID, taskID, n, id, k), runID)
+	var r CheckRow
+	err := l.readAt(ctx, func(q querier, version int) error {
+		var err error
+		r, err = scanCheck(q.QueryRowContext(ctx, `SELECT `+checkCols(version)+`, log FROM checks WHERE run_id = ? AND task_id = ? AND n = ? AND id = ? AND k = ?`, runID, taskID, n, id, k), runID)
+		return err
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return CheckRow{}, false, nil
 	}
@@ -839,34 +844,37 @@ func (l *Ledger) CheckChanged(ctx context.Context, runID, taskID string, n int, 
 // Prerequisites reads a run's prerequisites' receipts, by id and k;
 // withLog says whether the log blobs come along.
 func (l *Ledger) Prerequisites(ctx context.Context, runID string, withLog bool) ([]PrerequisiteRow, error) {
-	db, version, err := l.connAt()
-	if err != nil {
-		return nil, err
-	}
-	rows, err := db.QueryContext(ctx, `SELECT `+prerequisiteCols(version)+`, `+logColumn(withLog)+` FROM prerequisites WHERE run_id = ? ORDER BY id, k`, runID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	var out []PrerequisiteRow
-	for rows.Next() {
-		r, err := scanPrerequisite(rows, runID)
+	err := l.readAt(ctx, func(q querier, version int) error {
+		rows, err := q.QueryContext(ctx, `SELECT `+prerequisiteCols(version)+`, `+logColumn(withLog)+` FROM prerequisites WHERE run_id = ? ORDER BY id, k`, runID)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		out = append(out, r)
+		defer rows.Close()
+		for rows.Next() {
+			r, err := scanPrerequisite(rows, runID)
+			if err != nil {
+				return err
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Prerequisite reads one receipt of a run's prerequisite, its log with
 // it; ok is false when there is no such row.
 func (l *Ledger) Prerequisite(ctx context.Context, runID, id string, k int) (PrerequisiteRow, bool, error) {
-	db, version, err := l.connAt()
-	if err != nil {
-		return PrerequisiteRow{}, false, err
-	}
-	r, err := scanPrerequisite(db.QueryRowContext(ctx, `SELECT `+prerequisiteCols(version)+`, log FROM prerequisites WHERE run_id = ? AND id = ? AND k = ?`, runID, id, k), runID)
+	var r PrerequisiteRow
+	err := l.readAt(ctx, func(q querier, version int) error {
+		var err error
+		r, err = scanPrerequisite(q.QueryRowContext(ctx, `SELECT `+prerequisiteCols(version)+`, log FROM prerequisites WHERE run_id = ? AND id = ? AND k = ?`, runID, id, k), runID)
+		return err
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return PrerequisiteRow{}, false, nil
 	}

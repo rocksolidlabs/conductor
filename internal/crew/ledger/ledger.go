@@ -235,7 +235,9 @@ type Ledger struct {
 	// is attached (attach) and so again after a migration: below Version
 	// when the ledger opened read-only and unmigrated (the owner lock
 	// another's, the migration failed), so a reader asks only for the
-	// columns that database has (whereCol). 0 when it could not be read.
+	// columns that database has (whereCol), and reads the version again
+	// with its rows, since the owner may migrate it meanwhile (readAt). 0
+	// when it could not be read.
 	version int
 	lock    *ownerLock
 	// done ends awaitLock when the ledger is closed; ownedLate says the
@@ -556,6 +558,56 @@ func (l *Ledger) connAt() (*sql.DB, int, error) {
 		return nil, 0, fmt.Errorf("%w: %s", ErrUnavailable, l.why)
 	}
 	return l.db, l.version, nil
+}
+
+// querier is what a reader asks its rows of: the database, or a read
+// transaction of it (readAt).
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// readAt runs read, a reader whose columns depend on the version of the
+// database, with that version. From versionWhere on, the version the
+// ledger keeps is the database's columns' (no later version takes one
+// away), and read asks the database. Below it the ledger is read-only and
+// reads a database another server, the owner, may migrate at any moment:
+// the version and the rows are read in one read transaction, one snapshot
+// of the database, so a migration committed before the rows are read is
+// seen with them and their where_ran column is read, never the literal
+// native in its place. A later version seen is kept (noteVersion), so the
+// reads after it ask the database.
+func (l *Ledger) readAt(ctx context.Context, read func(q querier, version int) error) error {
+	db, version, err := l.connAt()
+	if err != nil {
+		return err
+	}
+	if version >= versionWhere {
+		return read(db, version)
+	}
+	// ReadOnly: a plain BEGIN, deferred, whose snapshot is the first read's,
+	// in place of the immediate one a write takes (dsn's _txlock).
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	v := version
+	if err := tx.QueryRowContext(ctx, "SELECT version FROM schema_version").Scan(&v); err != nil {
+		v = version
+	}
+	l.noteVersion(db, v)
+	return read(tx, v)
+}
+
+// noteVersion keeps v as the version of db when it is later than the one
+// kept and db is still the database the ledger reads.
+func (l *Ledger) noteVersion(db *sql.DB, v int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.db == db && v > l.version {
+		l.version = v
+	}
 }
 
 // dsn is the connection string: the file as a URI (its path escaped, so a
