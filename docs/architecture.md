@@ -269,13 +269,13 @@ the manifest resolved and its host names checked (`env`: only names the
 server's `envPassthrough` allows and its environment has), its ports drawn
 (`CONDUCTOR_PORT_<NAME>`, leased by the engine until the tree ends), its
 state directory made (`.conductor/state`, through an `os.Root`), its setup
-steps, its services (`proc.Serve`, under the run's teardown context, never
-the attempt's), its readiness probes (a command, or one `GET` on the
+steps, its services (the Runtime's `Serve`, under the run's teardown
+context, never the attempt's), its readiness probes (a command, or one `GET` on the
 loopback with no redirect followed), then `tree.ready` with the preview. The
 checkout runs the manifest's verify steps after the task's checks. The
 prerequisites run once per run in the crew's directory before the first
 attempt, and again at each unpause. Every step goes through the tree's
-executor (`treeExec`: `internal/proc` natively) and is a receipt: a `checks`
+executor (`treeExec`, the run's Runtime's) and is a receipt: a `checks`
 row with its phase (a `prerequisites` row for a prerequisite) holding its
 command, directory, manifest, exit, timing, words, log and SHA-256, read
 through `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps` and `GET
@@ -298,6 +298,23 @@ and `cleaning up` while trees end, and Open preview on the task's row and
 in the palette while the attempt's `preview` is set: a new tab, since the
 preview is on the server's loopback, not proxied, and an iframe of it would
 be mixed content under TLS.
+
+Where a run's trees and checks run is the Runtime's (`ext.Runtime`,
+`docs/plans/runtime.md`). The engine offers its managed runs one Runtime
+(`Engine.SetRuntime`, the native one by default) and keeps the native one
+beside it; a managed run's is chosen once, when it is made or continued,
+before it takes the engine's lock: the offered Runtime when its `Takes`
+answers true for the run, the native one otherwise, and a legacy crew's run
+is offered nothing. Every process of the run's trees goes through that
+Runtime's executor (`execFor`, `internal/crew/runtime.go`): its
+prerequisites, setup and verify steps, services, readiness probes, ports
+and checks, each naming what it is for (`ext.ProcessRef`: the run, and the
+attempt and tree for one of an attempt's). Conductor builds each command's
+environment (`proc.Prepare`, the filter that keeps its tokens and blocked
+loaders out) and the Runtime receives it whole; git, which makes and
+compares the trees, stays on the machine that holds the repository. The
+native Runtime is `internal/proc`, so with nothing registered a run's
+commands run as they always have, natively as the user.
 
 ## Dispatch
 

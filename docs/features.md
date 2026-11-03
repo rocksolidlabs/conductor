@@ -3406,7 +3406,32 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestEnvironBesideAllowIsRefused`, `TestAStartedThatPanicsEndsTheCommand`
   and the probe's and the port's tests, moved; `TestFakeRuntimeRecordsAndRefuses`.
 
-  PR-2 (#491): a managed run's trees run through the Runtime. Planned.
+  PR-2 (#491): a managed run's trees run through the Runtime. The engine's
+  tree executor is a Runtime's (`execFor`, replacing `nativeExec`): a
+  command's environment is built by `proc.Prepare` and handed to the
+  Runtime's `Run` or `Serve` whole, a spec `Prepare` refuses answered in
+  `proc.Run`'s words with the Runtime asked nothing, and the result read
+  back field for field; probes and ports go through its `Probe` and
+  `Port`. Each call names what its process is for (`ext.ProcessRef`: a
+  prerequisite its run, a step, service, probe or port its attempt and
+  tree, a check the attempt's `checkout`). `Engine.SetRuntime` gives the
+  engine the Runtime it offers its managed runs (refusing nil, an invalid
+  `Where` and a call once a run is made); `NewEngine` offers the native
+  one. A managed run's Runtime is chosen once, when the run is made or
+  continued and before it takes the engine's lock: the offered one when its
+  `Takes` answers true for `{Run}`, the native one otherwise; a legacy
+  crew's run is offered nothing. Nothing offers a registered Runtime yet
+  (PR-3 does), so every run is native as on main. `internal/crew` leaves
+  the boundary test's allowlist. `sessiontest.FakeRuntime` is this
+  repository's fake of the contract (every call recorded with its spec and
+  ref, each method scripted, or passed to `Base`; `PanicAfterStart`).
+  Tests: `TestEveryProcessOfARunGoesThroughTheRuntime`,
+  `TestADeclinedRunRunsNatively`, `TestALegacyRunIsOfferedNothing`,
+  `TestAResultCrossesTheRuntimeWhole`, `TestARefusedSpecKeepsItsWords`,
+  `TestSetRuntimeRefusals`, `TestAnEngineRunsNativelyByDefault`;
+  `TestFakeRuntimeRecordsWhatItIsAsked` and
+  `TestFakeRuntimePanicsAfterStartLeavingNothing`; every existing crew
+  test, its checks and steps now through the adapter.
 
   PR-3 (#492): sessions start through the Runtime, on the server and on a
   host. Planned.
