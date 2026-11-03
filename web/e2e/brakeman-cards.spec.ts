@@ -181,6 +181,9 @@ function brief(rev: number, ticketRev: number) {
         questions: Array.from({ length: 20 }, (_, i) => `question ${i}: ${'q'.repeat(480)}`),
         evidence: [`ticket:${PROJECT}-1`],
       },
+      // One tab's make that does not finish, another tab's that does.
+      { kind: 'draft_ticket/1', project: PROJECT, title: 'Asked in the first tab', priority: 1 },
+      { kind: 'draft_ticket/1', project: PROJECT, title: 'Asked in the second tab', priority: 1 },
     ],
   }
 }
@@ -388,6 +391,41 @@ test('a make kept before it is sent is finished after the page is read again wit
   await expect(d.locator('[data-draft-finish]')).toHaveCount(0)
   // The held handler never returns: the page closes without waiting on it.
   await page.unrouteAll({ behavior: 'ignoreErrors' })
+})
+
+test("a make that did not finish in one tab is still finished after another tab's make finished", async ({ page, context }) => {
+  // Both tabs are open before either makes: A's make is answered as a backend that failed after the claim, B's is made. B forgets
+  // its own make, and only it: A read again still holds its make, with the content it was asked with, and finishes it.
+  const bodies: unknown[] = []
+  await page.route('**/api/brakeman/requests/br-1/items/14/make', async (route) => {
+    bodies.push(route.request().postDataJSON())
+    if (bodies.length === 1) {
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'make_failed', message: 'the make did not finish: it is completed when it is asked again with the same opId, or at the next start' } }) })
+    } else await route.continue()
+  })
+  const other = await context.newPage()
+  await open(page, '/brakeman?request=br-1')
+  await open(other, '/brakeman?request=br-1')
+  const a = page.locator('[data-brief="br-1"] [data-draft-ticket][data-draft-item="14"]')
+  const b = other.locator('[data-brief="br-1"] [data-draft-ticket][data-draft-item="15"]')
+  const titleA = a.locator('[data-draft-title] input, input[data-draft-title]').first()
+  await expect(titleA).toBeEditable({ timeout: 30_000 })
+  await expect(b.locator('[data-draft-create]')).toBeVisible({ timeout: 30_000 })
+  await titleA.fill('Kept in the first tab')
+  await a.locator('[data-draft-create]').click()
+  await expect(a.locator('[data-draft-finish]')).toBeVisible()
+  await b.locator('[data-draft-create]').click()
+  await expect(b).toHaveAttribute('data-made-state', 'made')
+  await page.reload()
+  await expect(a.locator('[data-draft-finish]')).toBeVisible({ timeout: 30_000 })
+  await expect(titleA).toHaveValue('Kept in the first tab')
+  await a.locator('[data-draft-finish]').click()
+  await expect(a).toHaveAttribute('data-made-state', 'made')
+  expect(bodies).toHaveLength(2)
+  expect(bodies[1]).toEqual(bodies[0])
+  const key = (await request('br-1')).made!.find((m) => m.item === 14)!.key!
+  expect((await api.ok<{ ticket: { title: string } }>('GET', `/api/dispatch/tickets/${key}`)).ticket.title).toBe('Kept in the first tab')
+  await other.close()
 })
 
 test('a draft crew is saved and opens in the crew editor, never launched', async ({ page }) => {

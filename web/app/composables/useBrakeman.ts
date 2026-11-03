@@ -1,6 +1,6 @@
 import type { BrakemanBrief, BrakemanConfig, BrakemanRequest, BrakemanState, RefResolution } from '../utils/brakeman'
 import { closed, keptBrief, openedMark, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
-import { reconcileMade, sendKept, type KeptMake } from '../utils/brakemanCards'
+import { dropKeptMake, readKeptMakes, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
 
@@ -337,10 +337,6 @@ export function keepOpened(marks: Iterable<string>): string[] {
 /** Whether this page follows the opened ids other tabs write (one listener for the app's one list). */
 let followingOpened = false
 
-const KEPT_KEY = 'conductor.brakeman.kept-makes'
-/** How many unfinished makes a browser keeps: the newest, by when they were asked. */
-const KEPT_MAX = 50
-
 /** The request a make is of: its id, and when the server wrote it, which tells one server's br-1 from another's. */
 export type MakeOf = Pick<BrakemanRequest, 'id' | 'createdAt'>
 
@@ -352,22 +348,20 @@ export function keptKey(r: MakeOf, item: number): string {
   return `${r.id}/${item}@${r.createdAt}`
 }
 
-/** The makes this browser asked that did not finish, by keptKey. */
+/** The makes this browser asked that did not finish, by keptKey: every tab's, each kept under its own entry. */
 function readKept(): Record<string, KeptMake> {
   try {
-    const v = JSON.parse(localStorage.getItem(KEPT_KEY) ?? '{}') as Record<string, KeptMake>
-    if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
-    return Object.fromEntries(Object.entries(v).filter(([, k]) => k && typeof k.opId === 'string' && k.body && typeof k.body === 'object'))
+    return readKeptMakes(localStorage)
   } catch {
     return {}
   }
 }
 
-function writeKept(kept: Record<string, KeptMake>) {
+/** Keeps or forgets one make in the browser's storage, its entry alone (a refused storage keeps it for this visit). */
+function writeKept(key: string, k: KeptMake | undefined) {
   try {
-    const newest = Object.entries(kept).sort(([, a], [, b]) => (b.at ?? 0) - (a.at ?? 0)).slice(0, KEPT_MAX)
-    if (newest.length) localStorage.setItem(KEPT_KEY, JSON.stringify(Object.fromEntries(newest)))
-    else localStorage.removeItem(KEPT_KEY)
+    if (k) storeKeptMake(localStorage, key, k)
+    else dropKeptMake(localStorage, key)
   } catch {
     /* storage refused: the make is kept for this visit */
   }
@@ -527,8 +521,9 @@ export function useBrakeman() {
     const at = store.generation
     const key = keptKey(r, item)
     const keep = () => {
-      kept.value = { ...kept.value, [key]: { opId, body, at: Date.now() } }
-      writeKept(kept.value)
+      const k: KeptMake = { opId, body, at: Date.now() }
+      kept.value = { ...kept.value, [key]: k }
+      writeKept(key, k)
     }
     // A reply lost is asked again only with the token it was sent with: after a reset the server may be another one, and the make
     // stays kept for the one it was asked of.
@@ -558,7 +553,7 @@ export function useBrakeman() {
     const rest = { ...kept.value }
     delete rest[key]
     kept.value = rest
-    writeKept(rest)
+    writeKept(key, undefined)
   }
 
   /** Asks the item's unfinished make again, as it was sent: the same id and body, which the route finishes and never makes twice. */

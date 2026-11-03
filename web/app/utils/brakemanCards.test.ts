@@ -4,6 +4,9 @@ import type { BriefItem } from './brakeman'
 import {
   blocksWords,
   COMMENT_MAX,
+  dropKeptMake,
+  KEPT_MAX,
+  KEPT_PREFIX,
   decisionControls,
   handoffMarkdown,
   handoffTickets,
@@ -14,13 +17,17 @@ import {
   proposalArgs,
   proposalControl,
   proposalSends,
+  readKeptMakes,
   reconcileMade,
   revisionOf,
   sendKept,
   staleWords,
+  storeKeptMake,
   unfinishedMake,
   utf8Bytes,
   type GuideOperation,
+  type KeptMake,
+  type KeptStorage,
   type LiveRecords,
 } from './brakemanCards'
 
@@ -292,5 +299,71 @@ describe("a handoff's comment", () => {
     const big: Extract<BriefItem, { kind: 'handoff/1' }> = { kind: 'handoff/1', objective: 'o', decisions: Array.from({ length: 20 }, () => 'd'.repeat(500)), questions: Array.from({ length: 20 }, () => 'q'.repeat(500)) }
     expect(utf8Bytes(handoffMarkdown(big))).toBeGreaterThan(COMMENT_MAX)
     expect(utf8Bytes('x'.repeat(COMMENT_MAX))).toBe(COMMENT_MAX)
+  })
+})
+
+/** A browser's localStorage, shared by every tab of its origin. */
+function sharedStorage(): KeptStorage & { raw: Map<string, string> } {
+  const raw = new Map<string, string>()
+  return {
+    raw,
+    get length() {
+      return raw.size
+    },
+    key: (i) => [...raw.keys()][i] ?? null,
+    getItem: (k) => raw.get(k) ?? null,
+    setItem: (k, v) => void raw.set(k, String(v)),
+    removeItem: (k) => void raw.delete(k),
+  }
+}
+
+/** A tab as the composable is one: its own copy read once at start, and keep and forget writing the one make's entry. */
+function tab(s: KeptStorage) {
+  let kept = readKeptMakes(s)
+  return {
+    kept: () => kept,
+    make: (key: string, k: KeptMake, send: () => Promise<unknown>) =>
+      sendKept(
+        () => {
+          kept = { ...kept, [key]: k }
+          storeKeptMake(s, key, k)
+        },
+        () => {
+          const { [key]: _gone, ...rest } = kept
+          kept = rest
+          dropKeptMake(s, key)
+        },
+        send,
+      ),
+  }
+}
+
+describe("a browser's unfinished makes, across its tabs", () => {
+  it("survive another tab's make that finished: each tab writes its own make's entry alone", async () => {
+    const s = sharedStorage()
+    // Both tabs read the storage before either makes.
+    const a = tab(s)
+    const b = tab(s)
+    const edited: KeptMake = { opId: 'bkm-a', body: { by: 'Nate', edit: { title: 'Edited in A' } }, at: 1 }
+    await expect(a.make('br-1/14', edited, () => Promise.reject(Object.assign(new Error('the make did not finish'), { status: 500, code: 'make_failed' })))).rejects.toThrow()
+    expect(a.kept()['br-1/14']).toEqual(edited)
+    await b.make('br-1/15', { opId: 'bkm-b', body: { by: 'Nate' }, at: 2 }, () => Promise.resolve({ made: true }))
+    expect(b.kept()).toEqual({})
+    // A read again still holds its make, with the content it was asked with; B's left nothing.
+    expect(tab(s).kept()).toEqual({ 'br-1/14': edited })
+    expect([...s.raw.keys()]).toEqual([`${KEPT_PREFIX}br-1/14`])
+  })
+
+  it('keep the newest KEPT_MAX, whichever tab asked them, and skip an entry that does not read as one', () => {
+    const s = sharedStorage()
+    s.setItem(`${KEPT_PREFIX}br-9/1`, '{not json')
+    s.setItem(`${KEPT_PREFIX}br-9/2`, JSON.stringify({ opId: 7, body: {} }))
+    s.setItem('conductor.other', 'kept')
+    for (let i = 0; i < KEPT_MAX + 3; i++) storeKeptMake(s, `br-${i + 1}/0`, { opId: `bkm-${i}`, body: {}, at: 1000 + i })
+    const kept = readKeptMakes(s)
+    expect(Object.keys(kept)).toHaveLength(KEPT_MAX)
+    expect(kept['br-1/0']).toBeUndefined()
+    expect(kept[`br-${KEPT_MAX + 3}/0`]?.opId).toBe(`bkm-${KEPT_MAX + 2}`)
+    expect(s.getItem('conductor.other')).toBe('kept')
   })
 })
