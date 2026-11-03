@@ -209,6 +209,24 @@ export const KIND_SUBJECTS: Readonly<Record<string, { kinds: readonly string[]; 
 /** A note's bound, in bytes of UTF-8 (brakeman.MaxNote). */
 export const MAX_NOTE = 16 << 10
 
+/** A display name's bound, in bytes of UTF-8 (brakeman.MaxBy): what a request and a make keep as `by`. */
+export const MAX_BY = 60
+
+/**
+ * The display name as a request or a make keeps it: at most MAX_BY bytes with no control character (the make route refuses any, as
+ * Dispatch does), cut where a character ends. The identity takes 40 characters, which in a script of three-byte characters is past
+ * the bound: sent whole, the route would refuse it.
+ */
+export function displayBy(name: string): string {
+  const enc = new TextEncoder()
+  let out = ''
+  for (const ch of name.replace(/\p{Cc}/gu, ' ')) {
+    if (enc.encode(out + ch).length > MAX_BY) break
+    out += ch
+  }
+  return out.trim()
+}
+
 /** Why the composer cannot send what it holds, or "" when it can: the server's checks of a request (checkAsked). */
 export function askProblem(kind: string, subjects: readonly string[], note: string, since: string): string {
   const sk = KIND_SUBJECTS[kind]
