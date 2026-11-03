@@ -6,9 +6,43 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 )
+
+// SetWhere is a script changed: it tells Changed, so an Await that read
+// the old Where before it ends once the new one holds.
+func TestFakeRuntimeSetWhereTellsChanged(t *testing.T) {
+	f := NewFakeRuntime("vm", "vm")
+	changed := f.Changed()
+	f.SetWhere("other")
+	select {
+	case <-changed:
+	default:
+		t.Fatal("SetWhere did not tell Changed")
+	}
+	// The bound turns a lost tell into a failure, not a hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	checked := make(chan struct{})
+	got := make(chan error, 1)
+	var once bool
+	go func() {
+		got <- Await(ctx, f, func() bool {
+			if !once {
+				once = true
+				defer close(checked)
+			}
+			return f.Where() == "third"
+		})
+	}()
+	<-checked // the Await has read "other" and waits on Changed
+	f.SetWhere("third")
+	if err := <-got; err != nil {
+		t.Fatalf("Await after SetWhere: %v", err)
+	}
+}
 
 // FakeRuntime records every call of the Runtime's methods with its ref and
 // its spec (no DirFile, Log or Started kept), answers what a test scripts,

@@ -700,11 +700,12 @@ func NewFakeRuntime(name string, w ext.Where) *FakeRuntime {
 // Name answers the fake's name.
 func (f *FakeRuntime) Name() string { return f.name }
 
-// SetWhere has Where answer w.
+// SetWhere has Where answer w, a script changed (Changed told).
 func (f *FakeRuntime) SetWhere(w ext.Where) {
 	f.mu.Lock()
 	f.where = w
 	f.mu.Unlock()
+	f.tell()
 }
 
 // Where answers the Where set.
