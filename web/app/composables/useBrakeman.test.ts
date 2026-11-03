@@ -129,6 +129,29 @@ describe('the brakeman events', () => {
     expect(changes).toBeGreaterThan(before)
   })
 
+  it('take the request in progress off the page once its slot is given up, though its state is the same', async () => {
+    // The brief's event is read inside the grace, while the briefed request still holds the slot; the server sends the request's
+    // event once more when the slot is given up, and the state read then holds no request in progress.
+    const f = fakeServer()
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    let slot: BrakemanRequest | null = req('br-1', 'running')
+    f.reads.state = async () => ({ config: {} as never, current: slot, queue: [], turnsToday: 1 })
+    f.server.set('br-1', req('br-1', 'running'))
+    await live.readFirst()
+    expect(live.state?.current?.id).toBe('br-1')
+    slot = req('br-1', 'briefed', { hasBrief: true })
+    f.server.set('br-1', slot)
+    live.event({ id: 'br-1', state: 'briefed' })
+    await settle()
+    expect([live.state?.current?.id, live.state?.current?.state]).toEqual(['br-1', 'briefed'])
+    slot = null
+    live.event({ id: 'br-1', state: 'briefed' })
+    await settle()
+    expect(live.state?.current).toBeNull()
+    expect(live.requests.get('br-1')!.state).toBe('briefed')
+  })
+
   it('are read off the stream only as they are', () => {
     expect(asBrakemanEvent({ id: 'br-3', state: 'running' })).toEqual({ id: 'br-3', state: 'running' })
     expect(asBrakemanEvent({ id: 'br-0', state: 'running' })).toBeNull()
@@ -143,6 +166,83 @@ describe('the brakeman events', () => {
     live.attach({ state: no, page: no, request: no })
     await live.readFirst()
     expect([live.available, live.problem]).toEqual([false, 'Brakeman needs a data directory'])
+  })
+})
+
+describe('the pages read', () => {
+  /** A server holding br-1 to br-<n> (`add` asks more), paged newest first 100 at a time after an id, as the route answers. */
+  function pagedServer(n: number) {
+    const server = new Map<string, BrakemanRequest>()
+    const add = (to: number) => {
+      for (let i = server.size + 1; i <= to; i++) server.set(`br-${i}`, req(`br-${i}`, 'briefed', { hasBrief: true }))
+    }
+    add(n)
+    let down = false
+    const reads: BrakemanReads = {
+      state: async () => ({ config: {} as never, current: null, queue: [], turnsToday: 0 }),
+      page: async (after) => {
+        if (down && after) throw new ApiError(0, 'network', 'Cannot reach the server')
+        const below = after ? Number(after.slice(3)) : server.size + 1
+        const ids = [...server.keys()].map((id) => Number(id.slice(3))).filter((i) => i < below).sort((a, b) => b - a)
+        const page = ids.slice(0, 100)
+        return { requests: page.map((i) => server.get(`br-${i}`)!), next: ids.length > 100 ? `br-${page.at(-1)}` : '' }
+      },
+      request: async (id) => ({ request: server.get(id)!, brief: null }),
+    }
+    return { reads, add, failPagesAfter: (on: boolean) => (down = on) }
+  }
+  const ids = (live: BrakemanLive) => live.list().map((r) => Number(r.id.slice(3)))
+  const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => to - i)
+
+  it('leave no request asked while the stream was down between the first page and those read before', async () => {
+    const f = pagedServer(101)
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    await live.readFirst()
+    await live.readMore()
+    expect(ids(live)).toEqual(range(1, 101))
+    expect(live.next).toBe('')
+    // br-102 to br-202 are asked while the stream is down: the first page read again holds br-103 to br-202.
+    f.add(202)
+    live.snapshot()
+    await settle()
+    await settle()
+    expect(ids(live)).toEqual(range(1, 202))
+    expect(live.next).toBe('')
+  })
+
+  it('keep the older requests to read once the gap is filled', async () => {
+    const f = pagedServer(250)
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    await live.readFirst()
+    await live.readMore()
+    expect(live.next).toBe('br-51')
+    f.add(400)
+    await live.readFirst()
+    expect(ids(live)).toEqual(range(51, 400))
+    expect(live.next).toBe('br-51')
+    await live.readMore()
+    expect(ids(live)).toEqual(range(1, 400))
+  })
+
+  it('read on from the gap when a page of it fails', async () => {
+    const f = pagedServer(101)
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    await live.readFirst()
+    await live.readMore()
+    f.add(202)
+    f.failPagesAfter(true)
+    await live.readFirst()
+    expect(live.requests.has('br-102')).toBe(false)
+    expect(live.next).toBe('br-103')
+    f.failPagesAfter(false)
+    await live.readMore()
+    expect(ids(live)).toEqual(range(1, 202))
+    expect(live.next).toBe('br-3')
+    await live.readMore()
+    expect(live.next).toBe('')
   })
 })
 
