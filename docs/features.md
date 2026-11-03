@@ -3372,8 +3372,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   grace, promises the leader alone; a panic leaves nothing running);
   `RegisterRuntime` refuses an invalid `Where` and `native`, which only the
   free default reports. `local.Native()` (`pty.Start` behind two checks of
-  the context and a test seam, a panic after the fork stopping the process
-  with no grace; `proc.Run` and `proc.Serve` with the environment whole;
+  the context and a test seam, with exactly the spec's environment (a nil
+  one empty, never the server's), the process held unreaped until the call
+  returns (`pty.StartHeld`), so a panic after the fork kills its whole
+  group while the group's id is still its own, even once its leader has
+  exited (`pty.Process.Abort`), and reaps it; `proc.Run` and `proc.Serve`
+  with the environment whole;
   `proc.Probe`; `proc.FreePort`), put by `local.Fill` in an empty Runtime
   slot. `internal/proc`: `Prepare` (the refusals `Run` gives, in its order
   and words, then the environment), `Spec.Environ`, `Probe` and
@@ -3388,6 +3392,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestNativeStartCancelledDuringTheForkIsTheCallers`,
   `TestNativeStartCompletedIsTheCallers`,
   `TestNativeStartThatPanicsAfterTheForkLeavesNothing`,
+  `TestNativeStartThatPanicsOnceTheLeaderExitedLeavesNothing`,
+  `TestNativeStartGivesExactlyItsEnvironment`,
+  `TestStartHeldIsReapedOnlyOnceReleased`,
+  `TestAbortEndsTheGroupOnceTheLeaderHasExited`,
   `TestNativeStopAsksTheGroup`, `TestNativeStopForcesALeaderThatIgnoresTheAsk`,
   `TestNativeStopAfterExitSignalsNothing`, `TestNativeStopPromisesTheLeaderOnly`,
   `TestStopKillWaitIsPtys`, `TestNativeRunIsProcRun`,
@@ -3396,15 +3404,17 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   boundary test `TestOnlyTheRunnersStartOrSignalAProcess` (every non-test
   Go file parsed whatever its tags: a raw start or signal outside
   `internal/pty`, `internal/proc`, `internal/gitcli`, `internal/nvim`,
-  `internal/agents`, `internal/reach` and `internal/cli/up.go`, or
-  `pty.Start`, `proc.Run` or `proc.Serve` used past the Runtime outside
+  `internal/agents`, `internal/reach` and `internal/cli/up.go` (an
+  `exec.Cmd` literal or `new(exec.Cmd)` among them), or `pty.Start`,
+  `pty.StartHeld`, `proc.Run` or `proc.Serve` used past the Runtime outside
   `ext/local`, the runners and the three files that start one today, fails
   naming the file, the line and article 12; its plants each reported);
   `TestPlainBuildRegistersNothing` (the filled Runtime the native one);
   `TestEachRuleCatchesItsPlant` (the amendment's plants);
   `TestPrepareRefusesAsRunDoes`, `TestRunWithEnvironGivesExactlyIt`,
   `TestEnvironBesideAllowIsRefused`, `TestAStartedThatPanicsEndsTheCommand`
-  and the probe's and the port's tests, moved; `TestFakeRuntimeRecordsAndRefuses`.
+  and the probe's and the port's tests, moved; `TestFakeRuntimeRecordsAndRefuses`,
+  `TestFakeRuntimeSetWhereTellsChanged`.
 
   PR-2 (#491): a managed run's trees run through the Runtime. Planned.
 
