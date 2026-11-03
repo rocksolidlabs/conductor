@@ -30,7 +30,9 @@
 #                   and the changes, waits for the file STUB_BRAKEMAN_WAIT
 #                   names when one is named (a spec's gate), and submits one
 #                   brief whose fact cites its own session and run, and the
-#                   check receipt STUB_BRAKEMAN_CHECK names; through the CLI,
+#                   check receipt STUB_BRAKEMAN_CHECK names (or, once the gate
+#                   is open, the brief in the file STUB_BRAKEMAN_BRIEF names,
+#                   when it holds one: a spec's own items); through the CLI,
 #                   or the MCP tools with STUB_WORKER=mcp
 # $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
 # start as Codex 0.161 draws it when its hooks are new or changed (round 13,
@@ -719,7 +721,11 @@ brakeman_turn() {
 	evidence=$(json_str "session:${CONDUCTOR_SESSION_ID:-}")
 	[[ -n $run ]] && evidence+=",$(json_str "run:$run")"
 	[[ -n ${STUB_BRAKEMAN_CHECK:-} ]] && evidence+=",$(json_str "$STUB_BRAKEMAN_CHECK")"
-	brief="{\"schema\":\"brakeman.brief/1\",\"title\":\"Stub brief for $req\",\"summary\":\"The stub read its request and what changed, and found its own turn.\",\"items\":[{\"kind\":\"fact/1\",\"text\":\"This turn runs as its own session and run.\",\"evidence\":[$evidence]},{\"kind\":\"interpretation/1\",\"text\":\"Nothing else happened that the stub was asked about.\",\"facts\":[0]}]}"
+	if [[ -n ${STUB_BRAKEMAN_BRIEF:-} && -s $STUB_BRAKEMAN_BRIEF ]]; then
+		brief=$(<"$STUB_BRAKEMAN_BRIEF")
+	else
+		brief="{\"schema\":\"brakeman.brief/1\",\"title\":\"Stub brief for $req\",\"summary\":\"The stub read its request and what changed, and found its own turn.\",\"items\":[{\"kind\":\"fact/1\",\"text\":\"This turn runs as its own session and run.\",\"evidence\":[$evidence]},{\"kind\":\"interpretation/1\",\"text\":\"Nothing else happened that the stub was asked about.\",\"facts\":[0]}]}"
+	fi
 	case ${STUB_WORKER:-} in
 	mcp) reply=$(mcp_call brief_submit "{\"brief\":$brief}") ;;
 	*)
