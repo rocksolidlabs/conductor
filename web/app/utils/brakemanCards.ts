@@ -1,7 +1,7 @@
 import type { RunInfo, RunTask, SessionInfo } from '~/composables/useSessions'
 import type { AttentionOption } from './protocol'
 import { liveAttention } from './attention'
-import { parseRef, refRoute, type BriefItem } from './brakeman'
+import { parseRef, refRoute, type BrakemanEdge, type BrakemanMade, type BrakemanRequest, type BriefItem } from './brakeman'
 import { taskActions, type TaskCommand } from './tasks'
 
 // A brief's decision cards and proposals as Conductor's controls (docs/plans/brakeman.md, "web/app: decision cards, drafts,
@@ -197,13 +197,70 @@ export interface KeptMake {
 }
 
 /**
- * Whether a make's failure leaves it to be asked again with the same id and body: a reply lost twice (status 0), or the server's
- * failure (500 make_failed: the backend failed after the claim, or before it; 503: a store not open). Any other answer settles it:
- * made, refused, or another make holds the item.
+ * Whether a make's failure leaves it to be asked again with the same id and body: a failure that establishes nothing about the make.
+ * A reply lost twice (status 0); the server's failure (500 make_failed: the backend failed after the claim, or before it; 503: a store
+ * not open); or a refusal before the make route ran (401 for a token missing or wrong, 429 for too many of those, 408 for a request
+ * that took too long), which says nothing of a claim the make may hold. Any other answer settles it: made, refused, or another make
+ * holds the item.
  */
 export function unfinishedMake(e: unknown): boolean {
   const status = (e as { status?: number })?.status
-  return typeof status === 'number' && (status === 0 || status >= 500)
+  return typeof status === 'number' && (status === 0 || status === 401 || status === 408 || status === 429 || status >= 500)
+}
+
+/**
+ * Sends a make kept first: `keep` writes its id and body where a page read again finds them before `send` goes out, so a reload while
+ * the reply is out (the backend may claim the make and then fail) can still finish it; an answer that settles it `forget`s them, one
+ * that establishes nothing (unfinishedMake) leaves them kept.
+ */
+export async function sendKept<R>(keep: () => void, forget: () => void, send: () => Promise<R>): Promise<R> {
+  keep()
+  try {
+    const out = await send()
+    forget()
+    return out
+  } catch (e) {
+    if (!unfinishedMake(e)) forget()
+    throw e
+  }
+}
+
+/** How far along a made entry or an edge is: pending, then done (made, refused, deleted), which it never leaves. */
+const settledRank = (state: string) => (state === 'pending' ? 0 : 1)
+const claimedAt = (m: { at?: string }) => (m.at ? Date.parse(m.at) || 0 : 0)
+
+/**
+ * A request's `made` and `edges` as a reply gives them, reconciled with what the page has: a reply sent before another (two cards' makes
+ * answered out of order, a read sent before a make's answer) never takes an entry or an edge back. An item's entry goes from pending to
+ * done under its id and is replaced only by a newer claim (a refused one asked again); an edge goes from pending to made or refused; the
+ * server never removes either, so one the reply lacks is the page's.
+ */
+export function reconcileMade(had: Pick<BrakemanRequest, 'made' | 'edges'>, next: Pick<BrakemanRequest, 'made' | 'edges'>): Pick<BrakemanRequest, 'made' | 'edges'> {
+  const made = new Map<number, BrakemanMade>()
+  for (const m of had.made ?? []) made.set(m.item, m)
+  for (const n of next.made ?? []) {
+    const h = made.get(n.item)
+    const older = h && (h.opId === n.opId ? settledRank(n.state) < settledRank(h.state) : claimedAt(n) < claimedAt(h))
+    if (!older) made.set(n.item, n)
+  }
+  const edges = new Map<string, BrakemanEdge>()
+  for (const e of had.edges ?? []) edges.set(`${e.from}/${e.to}`, e)
+  for (const n of next.edges ?? []) {
+    const h = edges.get(`${n.from}/${n.to}`)
+    if (!h || settledRank(n.state) >= settledRank(h.state)) edges.set(`${n.from}/${n.to}`, n)
+  }
+  const out: Pick<BrakemanRequest, 'made' | 'edges'> = {}
+  if (made.size) out.made = [...made.values()]
+  if (edges.size) out.edges = [...edges.values()]
+  return out
+}
+
+/** Dispatch's bound on a comment's body, in bytes (MaxCommentBody, internal/dispatch/model.go). */
+export const COMMENT_MAX = 16 << 10
+
+/** A text's length in UTF-8 bytes, as the server measures a bound. */
+export function utf8Bytes(s: string): number {
+  return new TextEncoder().encode(s).length
 }
 
 /** Being made under an ask this browser does not hold: the words for a pending entry with no make kept to finish. */

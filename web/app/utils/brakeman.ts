@@ -70,6 +70,8 @@ export interface BrakemanMade {
   crew?: string
   rev?: number
   why?: string
+  /** When its claim was written (the server's time): a newer claim of the item replaces an older one. */
+  at?: string
 }
 
 /** A draft ticket's block of another, made a relation once both are tickets: pending, made, or refused. */

@@ -1,6 +1,6 @@
 import type { BrakemanBrief, BrakemanConfig, BrakemanRequest, BrakemanState, RefResolution } from '../utils/brakeman'
 import { closed, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
-import { unfinishedMake, type KeptMake } from '../utils/brakemanCards'
+import { reconcileMade, sendKept, type KeptMake } from '../utils/brakemanCards'
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
 
@@ -76,11 +76,14 @@ export class BrakemanLive {
     return [...this.requests.values()].sort((a, b) => requestNumber(b.id) - requestNumber(a.id))
   }
 
-  /** Takes a request as a reply gave it, unless the page has it further along already. */
+  /**
+   * Takes a request as a reply gave it, unless the page has it further along already; its makes and edges are reconciled with the
+   * page's (reconcileMade), since replies to two cards' makes of one request can arrive in either order.
+   */
   apply(r: BrakemanRequest) {
     const had = this.requests.get(r.id)
     if (had && stateRank(r.state) < stateRank(had.state)) return
-    this.requests.set(r.id, r)
+    this.requests.set(r.id, had ? { ...r, ...reconcileMade(had, r) } : r)
     this.changed()
   }
 
@@ -254,9 +257,10 @@ export function useBrakeman() {
   const version = useState<number>('brakemanVersion', () => 0)
   const opened = useState<string[] | null>('brakemanOpened', () => (import.meta.client ? readOpened() : null))
   /**
-   * The makes this browser asked whose answer left them to be asked again (a reply lost twice, the backend failing after the claim):
-   * each with its id and the body it sent, the one ask the route finishes it on (the same id with other content is op_conflict, and
-   * another id make_pending). Kept in the browser's storage too, so a page read again can still finish it.
+   * The makes this browser asked that have no answer yet, or whose answer left them to be asked again (a reply lost twice, the backend
+   * failing after the claim, a token refused before the route ran): each with its id and the body it sent, the one ask the route
+   * finishes it on (the same id with other content is op_conflict, and another id make_pending). Kept in the browser's storage before
+   * the make is sent, so a page read again while it is out can still finish it.
    */
   const kept = useState<Record<string, KeptMake>>('brakemanKeptMakes', () => (import.meta.client ? readKept() : {}))
   const store = brakemanLive()
@@ -359,25 +363,22 @@ export function useBrakeman() {
   }
 
   /**
-   * Makes a brief's draft work (PR-7's forms send it): {request, made, ticket?, crew?}. An answer that leaves the make to be asked
-   * again (unfinishedMake) keeps its id and body for finishMake; any other answer forgets them.
+   * Makes a brief's draft work (PR-7's forms send it): {request, made, ticket?, crew?}. Its id and body are kept for finishMake before
+   * it is sent (sendKept); an answer that settles it forgets them, one that establishes nothing (unfinishedMake) leaves them kept.
    */
   async function make(id: string, item: number, body: { by?: string; edit?: unknown } = {}, opId = mintCommandId()) {
-    const key = `${id}/${item}`
-    try {
-      const out = await sendTwice(
+    const keep = () => {
+      kept.value = { ...kept.value, [`${id}/${item}`]: { opId, body, at: Date.now() } }
+      writeKept(kept.value)
+    }
+    const out = await sendKept(keep, () => forgetMake(id, item), () =>
+      sendTwice(
         (b) => request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(id)}/items/${item}/make`, { method: 'POST', body: b }),
         { opId, ...body },
-      )
-      forgetMake(id, item)
-      store.apply(out.request)
-      return out
-    } catch (e) {
-      if (unfinishedMake(e)) kept.value = { ...kept.value, [key]: { opId, body, at: Date.now() } }
-      else forgetMake(id, item)
-      writeKept(kept.value)
-      throw e
-    }
+      ),
+    )
+    store.apply(out.request)
+    return out
   }
 
   /** The make of the item this browser asked that did not finish, or undefined. */
