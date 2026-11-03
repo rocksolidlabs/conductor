@@ -20,7 +20,9 @@ import (
 const module = "github.com/rocksolidlabs/conductor"
 
 // rawStarts are the calls that start or signal a process with no runner
-// between: by the package that declares them, by name.
+// between: by the package that declares them, by name. An exec.Cmd made
+// without Command (a composite literal, or new) is a raw start too
+// (cmdLiteral).
 var rawStarts = map[string][]string{
 	"os/exec":               {"Command", "CommandContext"},
 	"os":                    {"StartProcess", "FindProcess"},
@@ -41,10 +43,10 @@ var rawAllowed = []string{
 }
 
 // runners are the runners the Runtime wraps, by package: a session's
-// terminal (pty.Start), a check's command and a tree's service (proc.Run,
-// proc.Serve).
+// terminal (pty.Start, and pty.StartHeld, the native Runtime's), a check's
+// command and a tree's service (proc.Run, proc.Serve).
 var runners = map[string][]string{
-	module + "/internal/pty":  {"Start"},
+	module + "/internal/pty":  {"Start", "StartHeld"},
 	module + "/internal/proc": {"Run", "Serve"},
 }
 
@@ -126,7 +128,14 @@ func processSites(root string) ([]processSite, error) {
 	return sites, err
 }
 
-// fileSites is processSites for one parsed file.
+// fileSites is processSites for one parsed file. It reads the syntax
+// alone, with no type information, so it sees a site by its name: a raw
+// start called through a package, an exec.Cmd literal or new(exec.Cmd), a
+// runner called or taken as a value, and Kill or Signal on a selector
+// ending in Process. A *os.Process signalled through a variable of its own
+// (p := cmd.Process; p.Kill()), a start through a function value taken
+// from an allowed package, or a method value (f := cmd.Start) is not seen:
+// review catches those.
 func fileSites(fset *token.FileSet, f *ast.File, rel string) []processSite {
 	raw, runner := !allowedAt(rel, rawAllowed), !allowedAt(rel, runnersAllowed)
 	var sites []processSite
@@ -158,8 +167,27 @@ func fileSites(fset *token.FileSet, f *ast.File, rel string) []processSite {
 			names[name] = imp
 		}
 	}
+	// cmdType says whether e is os/exec's Cmd, under the file's name for
+	// the package (a raw start's place allowed or not: names holds os/exec
+	// only where it is not).
+	cmdType := func(e ast.Expr) (string, bool) {
+		sel, ok := ast.Unparen(e).(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Cmd" {
+			return "", false
+		}
+		x, ok := sel.X.(*ast.Ident)
+		if !ok || names[x.Name] != "os/exec" {
+			return "", false
+		}
+		return x.Name, true
+	}
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch n := n.(type) {
+		case *ast.CompositeLit:
+			// &exec.Cmd{Path: ...}: a command made without Command.
+			if name, ok := cmdType(n.Type); ok {
+				report(n.Type.Pos(), name+".Cmd{} (os/exec)")
+			}
 		case *ast.SelectorExpr:
 			x, ok := n.X.(*ast.Ident)
 			if !ok {
@@ -173,6 +201,13 @@ func fileSites(fset *token.FileSet, f *ast.File, rel string) []processSite {
 				report(n.Sel.Pos(), x.Name+"."+n.Sel.Name+" ("+imp+")")
 			}
 		case *ast.CallExpr:
+			// new(exec.Cmd): a command made without Command.
+			if fn, ok := ast.Unparen(n.Fun).(*ast.Ident); ok && fn.Name == "new" && len(n.Args) == 1 {
+				if name, ok := cmdType(n.Args[0]); ok {
+					report(n.Args[0].Pos(), "new("+name+".Cmd) (os/exec)")
+				}
+				return true
+			}
 			// cmd.Process.Kill(), cmd.Process.Signal(sig): a process
 			// signalled through what started it.
 			sel, ok := ast.Unparen(n.Fun).(*ast.SelectorExpr)
@@ -228,12 +263,18 @@ func boundaryPlants(t *testing.T) {
 			"func b() { x.CommandContext(nil, \"sh\") }\n" + // line 9
 			"func c() { exec.LookPath(\"sh\") }\n" +
 			"func d(cmd *exec.Cmd) { cmd.Process.Kill() }\n", // line 11
-		"internal/api/start.go":       "package api\n\nimport " + pty + "\n\nfunc e() { pty.Start(pty.Spec{}) }\n", // line 5
+		"internal/api/start.go": "package api\n\nimport " + pty + "\n\nfunc e() { pty.Start(pty.Spec{}) }\n", // line 5
+		"internal/api/held.go":  "package api\n\nimport p " + pty + "\n\nvar held = p.StartHeld\n",           // line 5
+		"internal/api/lit.go": "package api\n\nimport e \"os/exec\"\n\n" +
+			"func n() { c := &e.Cmd{Path: \"/bin/sh\"}; c.Start() }\n" + // line 5
+			"func o() { c := new(e.Cmd); c.Path = \"/bin/sh\"; c.Start() }\n" + // line 6
+			"func q(c *e.Cmd) e.Cmd { return e.Cmd{} }\n", // line 7: the literal, not the types
+		"internal/gitcli/lit.go":      "package gitcli\n\nimport \"os/exec\"\n\nvar _ = &exec.Cmd{}\n",
 		"internal/crew/plant.go":      "package crew\n\nimport " + proc + "\n\nfunc f() { proc.Run(nil, proc.Spec{}) }\n",
 		"internal/hostagent/plant.go": "package hostagent\n\nimport p " + proc + "\n\nvar serve = p.Serve\n",
 		"internal/api/plant_test.go":  "package api\n\nimport \"os/exec\"\n\nfunc g() { exec.Command(\"sh\") }\n",
 		"ext/local/native.go": "package local\n\nimport (\n\t" + pty + "\n\t" + proc + "\n)\n\n" +
-			"var _, _, _ = pty.Start, proc.Run, proc.Serve\n",
+			"var _, _, _, _ = pty.Start, pty.StartHeld, proc.Run, proc.Serve\n",
 		"internal/proc/run.go":         "package proc\n\nimport \"os/exec\"\n\nfunc h() { exec.Command(\"sh\") }\n",
 		"internal/gitcli/x/plant.go":   "package x\n\nimport \"os/exec\"\n\nfunc i() { exec.Command(\"git\") }\n",
 		"internal/api/testdata/x.go":   "package x\n\nimport \"os/exec\"\n\nfunc j() { exec.Command(\"sh\") }\n",
@@ -266,6 +307,10 @@ func boundaryPlants(t *testing.T) {
 	slices.Sort(got)
 	want := []string{
 		"internal/api/dot.go:3: a dot import of os/exec",
+		"internal/api/held.go:5: p.StartHeld (" + module + "/internal/pty)",
+		"internal/api/lit.go:5: e.Cmd{} (os/exec)",
+		"internal/api/lit.go:6: new(e.Cmd) (os/exec)",
+		"internal/api/lit.go:7: e.Cmd{} (os/exec)",
 		"internal/api/plant.go:11: Process.Kill",
 		"internal/api/plant.go:8: exec.Command (os/exec)",
 		"internal/api/plant.go:9: x.CommandContext (os/exec)",
