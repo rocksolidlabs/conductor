@@ -1,5 +1,5 @@
 import { ApiError } from './useApi'
-import { dispatchLive } from './useDispatchLive'
+import { type DispatchWatch, dispatchLive } from './useDispatchLive'
 import type { RunCandidate, RunCandidatesPage, TaskCandidates } from './useDispatch'
 import type { Finding } from './useSessions'
 import { RUN_CHANGING_RETRY_MS, gather } from '~/utils/dispatchEvidence'
@@ -16,7 +16,9 @@ export const candidateKey = (c: Pick<RunCandidate, 'task' | 'attempt'>) => `${c.
  * gathered for RUN_EVENT_WINDOW_MS when its revision moves, and at once on a `snapshot` (the stream started over: what it missed is
  * unknown, and a read that failed, or a record's, which has no revision to move, is read again). A read refused while the run moved
  * through every one of its reads (503 run_changing, Retry-After: 1) is no failure, on the first read as on any other: what is shown
- * stays and it is asked again after the second. A review's findings, read from the task route (GET /api/runs/{run}/tasks/{task}, which has them whole) when the review is
+ * stays and it is asked again after the second. Any other failure but a 404 may pass (the server out of reach, 503 ledger_unavailable): it is
+ * said, and asked again through the live store's retry (DispatchLive: after the window, doubled up to DISPATCH_RETRY_MAX_MS) until one
+ * answers or a snapshot reads the pages, so a record, whose revision never moves, catches up with no further event. A review's findings, read from the task route (GET /api/runs/{run}/tasks/{task}, which has them whole) when the review is
  * opened, each review task's reads ordered on their own, so a second review opened while the first one's reply is on its way leaves both.
  */
 export function useRunCandidates(o: { runId: () => string; revision: () => number | undefined }) {
@@ -38,7 +40,8 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
   const managed = computed(() => pages.value?.[0]?.managed ?? true)
   const next = computed(() => pages.value?.at(-1)?.next ?? '')
 
-  async function readPages(): Promise<void> {
+  /** One read of the pages: resolves once it answered or was no failure (a run_changing asked again, a run left), rejects with a failure that may pass, said first. */
+  async function readOnce(): Promise<void> {
     const run = o.runId()
     const n = count.value
     loading.value = true
@@ -69,16 +72,29 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
         retry.ask()
         return
       }
-      error.value = e instanceof ApiError && e.status === 404 ? 'The server knows no such run.' : (e as Error).message
+      if (e instanceof ApiError && e.status === 404) {
+        error.value = 'The server knows no such run.'
+        return
+      }
+      error.value = (e as Error).message
+      throw e
     } finally {
       loading.value = false
     }
   }
+  // A snapshot reads the pages shown again, as it does the ticket page (useDispatchLive): no event of Dispatch's reads them otherwise.
+  // A read of the watch's that fails is asked again by the live store, after the window, doubled each time.
+  const live: DispatchWatch = { later: () => false, read: readOnce, reset: () => gate.reset() }
+  const unwatch = dispatchLive().subscribe(live)
+  /** A read the page asks of itself (its first, a revision's, More tasks, a run_changing's retry): a failure that may pass is asked again as the live watch's is. */
+  function readPages(): Promise<void> {
+    const read = readOnce()
+    dispatchLive().ask(live, () => read)
+    return read.catch(() => undefined)
+  }
   const reads = gather(readPages, RUN_EVENT_WINDOW_MS)
   /** A read refused while the run moved through every one of its reads, asked again after the second its Retry-After names. */
   const retry = gather(readPages, RUN_CHANGING_RETRY_MS)
-  // A snapshot reads the pages shown again, as it does the ticket page (useDispatchLive): no event of Dispatch's reads them otherwise.
-  const unwatch = dispatchLive().subscribe({ later: () => false, read: readPages, reset: () => gate.reset() })
   onBeforeUnmount(() => {
     reads.stop()
     retry.stop()
