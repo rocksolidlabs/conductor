@@ -4,6 +4,7 @@ import type { BrakemanConfig, BrakemanRequest, BrakemanState } from '../utils/br
 import { makeAgain } from '../utils/brakemanCards'
 import { ApiError } from './useApi'
 import { BrakemanLive, asBrakemanEvent, brakemanLive, keepOpened, sendTwice, useBrakeman, type BrakemanReads } from './useBrakeman'
+import { requestNumber } from '../utils/brakeman'
 
 // Brakeman's live store and its writes (docs/plans/brakeman.md, PR-6): an id kept across a lost reply, and the `brakeman` events
 // folded into the list.
@@ -383,38 +384,72 @@ describe('a new token', () => {
   })
 })
 
-describe('the briefs a browser opened', () => {
-  /** One browser's storage, which every tab reads and writes. */
-  function storage() {
-    const kept = new Map<string, string>()
-    vi.stubGlobal('localStorage', {
-      getItem: (k: string) => kept.get(k) ?? null,
-      setItem: (k: string, v: string) => void kept.set(k, v),
-      removeItem: (k: string) => void kept.delete(k),
-    })
-    return () => JSON.parse(kept.get('conductor.brakeman.opened') ?? 'null') as string[] | null
+/**
+ * One browser's storage, which every tab reads and writes; `touched` is called before each call to it (a test runs another tab's
+ * write there). Returns the marks of the briefs it keeps opened, newest first, as a page read again finds them.
+ */
+function browserStorage(touched: () => void = () => {}) {
+  const markNumber = (m: string) => requestNumber(m.split('@')[0]!)
+  const kept = new Map<string, string>()
+  const prefix = 'conductor.brakeman.opened/'
+  vi.stubGlobal('localStorage', {
+    get length() {
+      touched()
+      return kept.size
+    },
+    key: (i: number) => (touched(), [...kept.keys()][i] ?? null),
+    getItem: (k: string) => (touched(), kept.get(k) ?? null),
+    setItem: (k: string, v: string) => (touched(), void kept.set(k, v)),
+    removeItem: (k: string) => (touched(), void kept.delete(k)),
+  })
+  return {
+    kept,
+    opened: () => [...kept.keys()].filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length)).sort((a, b) => markNumber(b) - markNumber(a) || (b < a ? -1 : b > a ? 1 : 0)),
   }
-  afterEach(() => void vi.unstubAllGlobals())
+}
 
-  it('are kept with those another tab opened since this one read them', () => {
-    const stored = storage()
-    // Both tabs read the list empty; tab A opens br-1, then tab B, from its own stale list, opens br-2.
-    const tabA: string[] = []
-    const tabB: string[] = []
-    expect(keepOpened([...tabA, 'br-1'])).toEqual(['br-1'])
-    expect(keepOpened([...tabB, 'br-2'])).toEqual(['br-2', 'br-1'])
-    // Read again (the page reloaded), neither is new.
-    expect(stored()).toEqual(['br-2', 'br-1'])
+describe('the briefs a browser opened', () => {
+  afterEach(() => void vi.unstubAllGlobals())
+  const at = '2026-11-02T09:00:00Z'
+
+  it("are kept with those another tab opened, wherever the other tab's write falls among this one's", () => {
+    // How many calls to the storage one tab's keep makes, with nothing else written.
+    let calls = 0
+    browserStorage(() => calls++)
+    keepOpened([`br-1@${at}`])
+    expect(calls).toBeGreaterThan(0)
+    // Tab A opens br-1 and tab B br-2, B's whole write falling before each of A's calls in turn (and after the last).
+    for (let k = 0; k <= calls; k++) {
+      let n = 0
+      let tabB = false
+      const other = () => {
+        if (tabB || n++ !== k) return
+        tabB = true
+        keepOpened([`br-2@${at}`])
+      }
+      const s = browserStorage(other)
+      keepOpened([`br-1@${at}`])
+      other()
+      // Read again (the page reloaded), neither is new.
+      expect(s.opened(), `tab B's write before A's call ${k}`).toEqual([`br-2@${at}`, `br-1@${at}`])
+    }
   })
 
   it('are the newest 500, newest first', () => {
-    const stored = storage()
-    keepOpened(Array.from({ length: 499 }, (_, i) => `br-${i + 1}`))
-    keepOpened(['br-600', 'br-700'])
-    const kept = stored()!
+    const s = browserStorage()
+    keepOpened(Array.from({ length: 499 }, (_, i) => `br-${i + 1}@${at}`))
+    const kept = keepOpened([`br-600@${at}`, `br-700@${at}`])
     expect(kept).toHaveLength(500)
-    expect(kept.slice(0, 3)).toEqual(['br-700', 'br-600', 'br-499'])
-    expect(kept).not.toContain('br-1')
+    expect(kept.slice(0, 3)).toEqual([`br-700@${at}`, `br-600@${at}`, `br-499@${at}`])
+    expect(kept).not.toContain(`br-1@${at}`)
+    expect(s.opened()).toEqual(kept)
+  })
+
+  it('drop the one list kept before marks named their request, whose br-3 was any server\'s', () => {
+    const s = browserStorage()
+    s.kept.set('conductor.brakeman.opened', JSON.stringify(['br-3']))
+    expect(keepOpened([])).toEqual([])
+    expect(s.kept.has('conductor.brakeman.opened')).toBe(false)
   })
 })
 
@@ -485,8 +520,9 @@ describe('the makes kept, across a new token', () => {
     bk.reset()
     live.apply(other)
     made(() => Promise.resolve({ request: { ...first, made: [{ item: 1, opId: 'x', state: 'made', key: 'BKC-1' }] }, made: {} }))
-    await making
+    await expect(making).rejects.toThrow('The token changed before the make was answered')
     expect(live.requests.get('br-3')).toEqual(other)
+    // Made on the first server, so nothing is left to finish.
     expect(bk.keptMake(first, 1)).toBeUndefined()
     // Failed: the failure arrives after a reset, and the make is the first server's to finish, not the new one's.
     const fail = held()
@@ -500,6 +536,30 @@ describe('the makes kept, across a new token', () => {
     expect(live.requests.get('br-3')).toEqual(other)
   })
 
+  it("answered after a reset, give their card nothing to open: a crew card would open the server before's crew on the new one", async () => {
+    const bk = useBrakeman()
+    const live = brakemanLive()
+    // BrakemanDraftCrew's save: it opens /crews/<id> of the crew the make answers with.
+    const opened: string[] = []
+    const save = async () => {
+      const out = await bk.make(first, 1, { edit: { crew: { name: 'Late crew' } } })
+      if (out.crew?.id) opened.push(`/crews/${out.crew.id}`)
+    }
+    const made = held()
+    const saving = save()
+    // The token changes while the make is out, the card unmounted with the list, and the new server's br-3 read.
+    bk.reset()
+    live.apply(other)
+    made(() => Promise.resolve({ request: { ...first, made: [{ item: 1, opId: 'x', state: 'made', crew: 'old-crew' }] }, made: {}, crew: { id: 'old-crew', url: '/crews/old-crew' } }))
+    await expect(saving).rejects.toThrow('The token changed before the make was answered')
+    expect(opened).toEqual([])
+    expect(live.requests.get('br-3')).toEqual(other)
+    // Under one token, the crew made is the card's to open.
+    answers.push(() => Promise.resolve({ request: { ...other, made: [{ item: 1, opId: 'y', state: 'made', crew: 'new-crew' }] }, made: {}, crew: { id: 'new-crew', url: '/crews/new-crew' } }))
+    const out = await bk.make(other, 1, { edit: { crew: { name: 'Crew' } } })
+    expect(out.crew?.id).toBe('new-crew')
+  })
+
   it('whose reply was lost, are not asked again after a reset: the retry would go with the new token', async () => {
     const bk = useBrakeman()
     const lost = held()
@@ -510,6 +570,41 @@ describe('the makes kept, across a new token', () => {
     expect(sent).toHaveLength(1)
     expect(bk.keptMake(first, 1)).toMatchObject({ body: { edit: { title: 'Lost once' } } })
     expect(bk.keptMake(other, 1)).toBeUndefined()
+  })
+
+  describe('and the briefs opened', () => {
+    afterEach(() => void vi.unstubAllGlobals())
+
+    it("are the request's they were opened of: another server's br-3, briefed after a reset, is new", async () => {
+      const s = browserStorage()
+      const bk = useBrakeman()
+      const live = brakemanLive()
+      // The first read of this browser: a request with no brief yet, so none is taken as opened.
+      live.available = true
+      live.apply(req('br-1', 'queued'))
+      await settle()
+      expect(bk.unopened.value).toEqual([])
+      // The first server's br-3 is briefed, new, and opened.
+      live.apply(first)
+      await settle()
+      expect(bk.unopened.value).toEqual(['br-3'])
+      bk.markOpened(first)
+      expect(bk.unopened.value).toEqual([])
+      // A new token, another server: its br-3 runs, then is briefed. Its brief is new, in the badge and the sidebar's count.
+      bk.reset()
+      live.available = true
+      live.apply({ ...other, state: 'running', hasBrief: false })
+      await settle()
+      expect(bk.unopened.value).toEqual([])
+      live.apply(other)
+      await settle()
+      expect(bk.unopened.value).toEqual(['br-3'])
+      // Read again, the browser keeps the first server's br-3 opened, and the other's is new still.
+      expect(s.opened()).toEqual([`br-3@${first.createdAt}`])
+      bk.markOpened(other)
+      expect(bk.unopened.value).toEqual([])
+      expect(s.opened()).toEqual([`br-3@${other.createdAt}`, `br-3@${first.createdAt}`])
+    })
   })
 
   describe('and the other writes', () => {

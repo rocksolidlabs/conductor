@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanConfig, BriefItem } from './brakeman'
-import { BOUNDS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, formMove, groupItems, keptBrief, kindWords, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, sameConfig, scopeJSONBytes, stateRank, stateWords, stopAction, unopened } from './brakeman'
+import { BOUNDS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, formMove, groupItems, keptBrief, kindWords, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, sameConfig, scopeJSONBytes, stateRank, stateWords, stopAction, unopened } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -210,9 +210,12 @@ describe("a brief's items", () => {
   })
 
   it('count as not opened until this browser opened them', () => {
-    const list = [{ id: 'br-3', hasBrief: true }, { id: 'br-2', hasBrief: false }, { id: 'br-1', hasBrief: true }]
+    const at = '2026-11-02T09:00:00Z'
+    const list = [{ id: 'br-3', hasBrief: true, createdAt: at }, { id: 'br-2', hasBrief: false, createdAt: at }, { id: 'br-1', hasBrief: true, createdAt: at }]
     expect(unopened(list, new Set())).toEqual(['br-3', 'br-1'])
-    expect(unopened(list, new Set(['br-1']))).toEqual(['br-3'])
+    expect(unopened(list, new Set([openedMark(list[2]!)]))).toEqual(['br-3'])
+    // Another server's br-1, written at another time, is not the one opened.
+    expect(unopened(list, new Set(['br-1@2026-10-30T08:00:00Z']))).toEqual(['br-3', 'br-1'])
   })
 })
 

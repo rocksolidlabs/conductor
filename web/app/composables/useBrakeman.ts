@@ -1,5 +1,5 @@
 import type { BrakemanBrief, BrakemanConfig, BrakemanRequest, BrakemanState, RefResolution } from '../utils/brakeman'
-import { closed, keptBrief, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
+import { closed, keptBrief, openedMark, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
 import { reconcileMade, sendKept, type KeptMake } from '../utils/brakemanCards'
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
@@ -275,33 +275,63 @@ export function brakemanLive(): BrakemanLive {
   return (live ??= new BrakemanLive())
 }
 
-const OPENED_KEY = 'conductor.brakeman.opened'
-/** How many opened ids a browser keeps: the newest requests kept are 500, so an older one is never counted again. */
+/**
+ * Where a browser keeps a brief opened: a key of its own per brief, `<prefix><openedMark>`. Two tabs opening two briefs at once each
+ * write their own key, so neither can write over the other's (one list read and written again could: both read it, then each wrote
+ * its own over the other's).
+ */
+const OPENED_PREFIX = 'conductor.brakeman.opened/'
+/** Set once the first read in a browser took the briefs there were as opened: from then on a brief without its key is new. */
+const OPENED_BEGUN = 'conductor.brakeman.opened-begun'
+/** The one list of ids kept before marks named their request's time: another server's br-3 matched it, so it is dropped. */
+const OPENED_LIST = 'conductor.brakeman.opened'
+/** How many opened marks a browser keeps: the newest requests kept are 500, so an older one is never counted again. */
 const OPENED_MAX = 500
 
-/** The ids of the briefs this browser opened, or null when it has kept none yet. */
+/** A mark's request number, then its time, newest first. */
+function newestFirst(marks: string[]): string[] {
+  const parts = (m: string) => {
+    const at = m.indexOf('@')
+    return at < 0 ? ([requestNumber(m), ''] as const) : ([requestNumber(m.slice(0, at)), m.slice(at + 1)] as const)
+  }
+  return marks.sort((a, b) => {
+    const [na, ta] = parts(a)
+    const [nb, tb] = parts(b)
+    return nb - na || (tb < ta ? -1 : tb > ta ? 1 : 0)
+  })
+}
+
+/** The marks of the briefs this browser opened (openedMark), newest first, or null when its first read has not begun them yet. */
 function readOpened(): string[] | null {
   try {
-    const raw = localStorage.getItem(OPENED_KEY)
-    const v = raw ? JSON.parse(raw) : null
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : null
+    const marks: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k?.startsWith(OPENED_PREFIX)) marks.push(k.slice(OPENED_PREFIX.length))
+    }
+    return marks.length || localStorage.getItem(OPENED_BEGUN) !== null ? newestFirst(marks) : null
   } catch {
     return null
   }
 }
 
 /**
- * Keeps `ids` as opened with those the storage holds already (another tab's, opened since this one read them), and returns them
- * all, newest first: a tab never writes over what another opened.
+ * Keeps `marks` as opened, each under its own key, and returns all the browser keeps (another tab's too), newest first, past the
+ * newest OPENED_MAX dropped. Nothing is read before it is written, so a tab never writes over what another opened.
  */
-export function keepOpened(ids: Iterable<string>): string[] {
-  const all = [...new Set([...(readOpened() ?? []), ...ids])].sort((a, b) => requestNumber(b) - requestNumber(a)).slice(0, OPENED_MAX)
+export function keepOpened(marks: Iterable<string>): string[] {
+  const mine = [...new Set(marks)]
   try {
-    localStorage.setItem(OPENED_KEY, JSON.stringify(all))
+    for (const m of mine) localStorage.setItem(OPENED_PREFIX + m, '1')
+    localStorage.setItem(OPENED_BEGUN, '1')
+    localStorage.removeItem(OPENED_LIST)
+    const all = readOpened() ?? []
+    for (const m of all.slice(OPENED_MAX)) localStorage.removeItem(OPENED_PREFIX + m)
+    return all.slice(0, OPENED_MAX)
   } catch {
     /* storage refused: the count is this visit's */
+    return newestFirst(mine)
   }
-  return all
 }
 
 /** Whether this page follows the opened ids other tabs write (one listener for the app's one list). */
@@ -348,13 +378,15 @@ export function useBrakeman() {
   const { request } = useApi()
   const version = useState<number>('brakemanVersion', () => 0)
   const opened = useState<string[] | null>('brakemanOpened', () => (import.meta.client ? readOpened() : null))
-  // A brief opened in another tab is opened here too.
+  // A brief opened in another tab is opened here too: the event's key is the brief's own mark. A tab whose first read has not run
+  // yet takes all the browser keeps, since the other tab's first read began them.
   if (import.meta.client && !followingOpened) {
     followingOpened = true
     window.addEventListener('storage', (e) => {
-      if (e.key !== OPENED_KEY) return
-      const ids = readOpened()
-      if (ids) opened.value = [...new Set([...(opened.value ?? []), ...ids])]
+      if (!e.key?.startsWith(OPENED_PREFIX) || e.newValue === null) return
+      const mark = e.key.slice(OPENED_PREFIX.length)
+      if (opened.value === null) opened.value = readOpened()
+      else if (!opened.value.includes(mark)) opened.value = [...opened.value, mark]
     })
   }
   /**
@@ -403,15 +435,19 @@ export function useBrakeman() {
     (list) => {
       if (opened.value !== null || store.available !== true) return
       // Another tab may have taken the first read meanwhile: its list is this one's.
-      opened.value = readOpened() ?? keepOpened(list.filter((r) => r.hasBrief).map((r) => r.id))
+      opened.value = readOpened() ?? keepOpened(list.filter((r) => r.hasBrief).map(openedMark))
     },
     { immediate: true },
   )
 
-  /** Marks a brief opened in this browser. */
-  function markOpened(id: string) {
-    if (opened.value?.includes(id)) return
-    opened.value = keepOpened([...(opened.value ?? []), id])
+  /**
+   * Marks a brief opened in this browser: the request as the card drew it, whose time tells it from another server's request of the
+   * same id (a new token's br-3 is not this one).
+   */
+  function markOpened(r: Pick<BrakemanRequest, 'id' | 'createdAt'>) {
+    const mark = openedMark(r)
+    if (opened.value?.includes(mark)) return
+    opened.value = [...new Set([...(opened.value ?? []), ...keepOpened([mark])])]
   }
 
   /** Reads the state and the first page; pages call it as they open, the sidebar once. */
@@ -500,6 +536,9 @@ export function useBrakeman() {
       request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(r.id)}/items/${item}/make`, { method: 'POST', body: b }),
     )
     const out = await sendKept(keep, () => forget(key), () => sendTwice(send, { opId, ...body }))
+    // Answered after a reset: the ticket or crew is the server's before, perhaps another one's, so the caller is given nothing of it
+    // to open here (a crew card would open /crews/<its id> on the new server).
+    if (store.generation !== at) throw new Error('The token changed before the make was answered: it was made on the server it was asked of, and shows there.')
     store.apply(out.request, at)
     return out
   }
@@ -545,7 +584,8 @@ export function useBrakeman() {
 
   /**
    * The token changed: what the store holds is dropped (the server may be another one), and so are replies to reads and writes sent
-   * before. The makes kept stay, each its own request's (keptKey): another server's requests never find them.
+   * before. The makes kept stay, each its own request's (keptKey), and so do the briefs opened (openedMark): another server's requests
+   * never find them.
    */
   function reset() {
     store.reset()

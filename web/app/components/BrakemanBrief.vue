@@ -11,7 +11,7 @@ import { groupItems, provenance, readsWords } from '~/utils/brakeman'
  * refs are read once, as the brief is opened.
  */
 const props = defineProps<{ request: BrakemanRequest }>()
-const emit = defineEmits<{ opened: [id: string] }>()
+const emit = defineEmits<{ opened: [request: BrakemanRequest] }>()
 
 const bk = useBrakeman()
 const brief = ref<BrakemanBrief | null>(null)
@@ -33,7 +33,7 @@ onMounted(async () => {
   loading.value = false
   // Opened once its items are drawn: the page scrolls to a `brief:` ref's item-<n> then, which is not there while it reads.
   await nextTick()
-  emit('opened', props.request.id)
+  emit('opened', props.request)
 })
 
 const when = (iso: string) => new Date(iso).toLocaleString()

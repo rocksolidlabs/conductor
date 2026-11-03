@@ -793,10 +793,18 @@ export function scopeList(text: string): string[] {
     .filter(Boolean)
 }
 
-/** The briefed requests of a list this browser has not opened, newest first. */
-export function unopened(requests: Iterable<Pick<BrakemanRequest, 'id' | 'hasBrief'>>, opened: ReadonlySet<string>): string[] {
+/**
+ * A brief's mark as opened in a browser: its request's id and when the server wrote it, which tells one server's br-3 from another's
+ * (a new token may be another server's, whose br-3 is not the one opened).
+ */
+export function openedMark(r: Pick<BrakemanRequest, 'id' | 'createdAt'>): string {
+  return `${r.id}@${r.createdAt}`
+}
+
+/** The briefed requests of a list this browser has not opened (their openedMark not among `opened`), newest first. */
+export function unopened(requests: Iterable<Pick<BrakemanRequest, 'id' | 'hasBrief' | 'createdAt'>>, opened: ReadonlySet<string>): string[] {
   const out: string[] = []
-  for (const r of requests) if (r.hasBrief && !opened.has(r.id)) out.push(r.id)
+  for (const r of requests) if (r.hasBrief && !opened.has(openedMark(r))) out.push(r.id)
   return out
 }
 

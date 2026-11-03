@@ -49,8 +49,9 @@ function toggle(id: string) {
   void router.replace({ query: { ...route.query, request: openId.value === id ? undefined : id }, hash: '' })
 }
 // A brief opened from a link (a `brief:` ref's #item-<n>) scrolls to its item once it is drawn.
-function opened(id: string) {
-  bk.markOpened(id)
+function opened(r: BrakemanRequest) {
+  const id = r.id
+  bk.markOpened(r)
   nextTick(() => {
     if (route.hash) document.getElementById(route.hash.slice(1))?.scrollIntoView({ block: 'center' })
     else document.querySelector(`[data-brakeman-briefs] [data-request="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' })

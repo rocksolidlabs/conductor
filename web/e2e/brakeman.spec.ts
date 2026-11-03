@@ -231,9 +231,13 @@ test('a brief kept with its summary alone shows its reading', async ({ page }) =
 })
 
 test('a brief: link to an item of a brief opened before scrolls to the item once it is drawn', async ({ page }) => {
-  // br-2 opened in this browser before, and every element the page scrolls to noted.
-  await page.addInitScript(() => {
-    if (localStorage.getItem('conductor.brakeman.opened') === null) localStorage.setItem('conductor.brakeman.opened', JSON.stringify(['br-2']))
+  // br-2 opened in this browser before (its mark: its id and when this server wrote it), and every element the page scrolls to noted.
+  const { request } = await api.ok<{ request: { createdAt: string } }>('GET', '/api/brakeman/requests/br-2')
+  await page.addInitScript((mark) => {
+    if (localStorage.getItem('conductor.brakeman.opened-begun') === null) {
+      localStorage.setItem('conductor.brakeman.opened-begun', '1')
+      localStorage.setItem(`conductor.brakeman.opened/${mark}`, '1')
+    }
     const w = window as Window & { __scrolled?: string[] }
     w.__scrolled = []
     const into = Element.prototype.scrollIntoView
@@ -241,7 +245,7 @@ test('a brief: link to an item of a brief opened before scrolls to the item once
       w.__scrolled!.push(this.id)
       return into.call(this, arg)
     }
-  })
+  }, `br-2@${request.createdAt}`)
   await open(page, '/brakeman?request=br-2#item-1')
   await expect(page.locator('[data-brief="br-2"] #item-1')).toContainText('Nothing else happened that the stub was asked about.', { timeout: 30_000 })
   await expect.poll(() => page.evaluate(() => (window as Window & { __scrolled?: string[] }).__scrolled)).toContain('item-1')
@@ -250,7 +254,7 @@ test('a brief: link to an item of a brief opened before scrolls to the item once
 test('a brief opened in one tab is opened in the others, and stays opened', async ({ context, page }) => {
   // The browser has opened none: br-2 is new in every tab.
   await context.addInitScript(() => {
-    if (localStorage.getItem('conductor.brakeman.opened') === null) localStorage.setItem('conductor.brakeman.opened', '[]')
+    if (localStorage.getItem('conductor.brakeman.opened-begun') === null) localStorage.setItem('conductor.brakeman.opened-begun', '1')
   })
   await open(page, '/brakeman')
   const other = await context.newPage()
@@ -269,6 +273,8 @@ test('a brief opened in one tab is opened in the others, and stays opened', asyn
   await expect(other.locator('[data-brakeman-briefs] [data-request="br-2"]')).toBeVisible()
   await expect(other.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-new]')).toHaveCount(0)
   await expect(other.locator('[data-sidebar-brakeman]')).not.toContainText(/\d/)
-  expect(await other.evaluate(() => JSON.parse(localStorage.getItem('conductor.brakeman.opened') ?? 'null'))).toEqual(['br-2'])
+  const { request } = await api.ok<{ request: { createdAt: string } }>('GET', '/api/brakeman/requests/br-2')
+  const marks = () => Object.keys(localStorage).filter((k) => k.startsWith('conductor.brakeman.opened/'))
+  expect(await other.evaluate(marks)).toEqual([`conductor.brakeman.opened/br-2@${request.createdAt}`])
   await other.close()
 })
