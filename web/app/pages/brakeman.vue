@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import type { BrakemanRequest } from '~/utils/brakeman'
-import { closed, kindWords, refLabel, stateWords } from '~/utils/brakeman'
+import { closed, kindWords, refLabel, stateWords, stopAction } from '~/utils/brakeman'
 
 // The Brakeman page (docs/plans/brakeman.md, PR-6): ask Brakeman, follow the request in progress (its session's terminal, its
 // run, Stop), the queue, and the briefs newest first. A brief is opened in place; `?request=br-n` opens one (a `brief:` ref leads
-// here). Nothing on this page moves on its own when a request changes: a brief that arrives shows in the list, and the sidebar
-// counts it until it is opened.
+// here), read by itself when it is older than the pages read. Nothing on this page moves on its own when a request changes: a brief
+// that arrives shows in the list, and the sidebar counts it until it is opened.
 useHead({ title: 'Brakeman' })
 
 const bk = useBrakeman()
@@ -14,9 +14,10 @@ const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 
-onMounted(() => {
+onMounted(async () => {
   live.start()
-  void bk.load()
+  await bk.load()
+  void showNamed()
 })
 
 const state = computed(() => bk.state.value)
@@ -33,13 +34,27 @@ const at = (iso?: string) => (iso ? new Date(iso).toLocaleString() : '')
 
 /** The brief open on the page: the query's request. */
 const openId = computed(() => (typeof route.query.request === 'string' ? route.query.request : ''))
+/** Why the request the query names cannot be shown ("" when it can, or none is named). */
+const named = ref('')
+// The request a link names is read by itself when the pages read do not hold it (one older than the first 100).
+async function showNamed() {
+  const id = openId.value
+  named.value = ''
+  if (!id) return
+  const words = await bk.readNamed(id)
+  if (openId.value === id) named.value = words
+}
+watch(openId, () => void showNamed())
 function toggle(id: string) {
   void router.replace({ query: { ...route.query, request: openId.value === id ? undefined : id }, hash: '' })
 }
 // A brief opened from a link (a `brief:` ref's #item-<n>) scrolls to its item once it is drawn.
 function opened(id: string) {
   bk.markOpened(id)
-  if (route.hash) nextTick(() => document.getElementById(route.hash.slice(1))?.scrollIntoView({ block: 'center' }))
+  nextTick(() => {
+    if (route.hash) document.getElementById(route.hash.slice(1))?.scrollIntoView({ block: 'center' })
+    else document.querySelector(`[data-brakeman-briefs] [data-request="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' })
+  })
 }
 
 const busy = ref('')
@@ -49,6 +64,17 @@ async function cancel(r: BrakemanRequest) {
     await bk.cancel(r.id)
   } catch (e) {
     toast.add({ title: `${r.id} not cancelled`, description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
+  } finally {
+    busy.value = ''
+  }
+}
+/** Stop on the request in progress: an open one is cancelled, a closed one the desk still holds has its run stopped (stopAction). */
+async function stop(r: BrakemanRequest) {
+  busy.value = r.id
+  try {
+    await bk.stop(r)
+  } catch (e) {
+    toast.add({ title: `${r.id} not stopped`, description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
   } finally {
     busy.value = ''
   }
@@ -93,7 +119,18 @@ const unavailable = computed(() => bk.available.value === false)
               <span class="text-muted" data-request-words>{{ words(current) }}</span>
               <NuxtLink v-if="current.sessionId" :to="`/sessions/${encodeURIComponent(current.sessionId)}`" class="underline" data-request-session>Watch its terminal</NuxtLink>
               <NuxtLink v-if="current.runId" :to="`/runs/${encodeURIComponent(current.runId)}`" class="underline" data-request-run>Its run</NuxtLink>
-              <UButton label="Stop" icon="i-lucide-square" size="sm" color="neutral" variant="outline" class="ml-auto" :loading="busy === current.id" data-request-stop @click="cancel(current)" />
+              <UButton
+                v-if="stopAction(current)"
+                :label="stopAction(current) === 'stop_run' ? 'Stop its run' : 'Stop'"
+                icon="i-lucide-square"
+                size="sm"
+                color="neutral"
+                variant="outline"
+                class="ml-auto"
+                :loading="busy === current.id"
+                :data-request-stop="stopAction(current)"
+                @click="stop(current)"
+              />
             </div>
           </UCard>
 
@@ -110,6 +147,7 @@ const unavailable = computed(() => bk.available.value === false)
 
           <section class="flex flex-col gap-2" data-brakeman-briefs>
             <h2 class="text-sm font-semibold text-highlighted">Briefs</h2>
+            <UAlert v-if="named" color="warning" variant="subtle" icon="i-lucide-search-x" :title="named" data-brakeman-named-missing />
             <p v-if="!done.length" class="text-sm text-muted">No brief yet.</p>
             <UCard v-for="r in done" :key="r.id" :ui="{ body: 'p-3 sm:p-4' }" :data-request="r.id" :data-request-state="r.state">
               <div class="flex flex-wrap items-center gap-2 text-sm">

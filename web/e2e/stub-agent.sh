@@ -28,7 +28,8 @@
 #   STUB_BRAKEMAN=1 the stub is Brakeman's agent: on the line a turn types
 #                   ("Brakeman request br-n (<kind>): …") it reads its request
 #                   and the changes, waits for the file STUB_BRAKEMAN_WAIT
-#                   names when one is named (a spec's gate), and submits one
+#                   names when one is named (a spec's gate; none if it never
+#                   appears), and submits one
 #                   brief whose fact cites its own session and run, and the
 #                   check receipt STUB_BRAKEMAN_CHECK names; through the CLI,
 #                   or the MCP tools with STUB_WORKER=mcp
@@ -686,10 +687,14 @@ task_attempt() {
 # brakeman_turn does the Brakeman request $1 (STUB_BRAKEMAN=1): it reads the
 # request and what changed (conductor brakeman request and observe changes,
 # or the brakeman_request and observe tools), waits for STUB_BRAKEMAN_WAIT's
-# file to exist when one is named (at most 120 s), then submits a brief whose
+# file to exist when one is named (at most 15 min, the turn's own default
+# deadline: the spec's steps before it opens the gate are its bound, not the
+# stub's), then submits a brief whose
 # one fact cites the session and the run it runs as (and the check receipt
-# STUB_BRAKEMAN_CHECK names) and whose interpretation reads that fact. What it
-# read and what the server answered go into the transcript.
+# STUB_BRAKEMAN_CHECK names) and whose interpretation reads that fact. Only
+# the gate's file releases the brief: a gate that never opens ends the turn
+# with none (status 1), so a brief never arrives before the spec opened it.
+# What it read and what the server answered go into the transcript.
 brakeman_turn() {
 	local req=$1 got changes brief reply evidence n=0
 	case ${STUB_WORKER:-} in
@@ -704,10 +709,15 @@ brakeman_turn() {
 	esac
 	printf 'brakeman: %s: read %s bytes of its request and %s of the changes\n' "$req" "${#got}" "${#changes}" >>"$transcript"
 	if [[ -n ${STUB_BRAKEMAN_WAIT:-} ]]; then
-		while [[ ! -e $STUB_BRAKEMAN_WAIT ]] && ((n < 1200)); do
+		while [[ ! -e $STUB_BRAKEMAN_WAIT ]] && ((n < 9000)); do
 			sleep 0.1
 			n=$((n + 1))
 		done
+		if [[ ! -e $STUB_BRAKEMAN_WAIT ]]; then
+			printf 'brakeman: %s: the gate %s never opened: no brief\n' "$req" "$STUB_BRAKEMAN_WAIT" >>"$transcript"
+			printf 'stub: brief -> none, the gate never opened\n'
+			return 1
+		fi
 	fi
 	evidence=$(json_str "session:${CONDUCTOR_SESSION_ID:-}")
 	[[ -n $run ]] && evidence+=",$(json_str "run:$run")"
@@ -1031,9 +1041,13 @@ answer() {
 	report_working
 	if [[ -n ${STUB_BRAKEMAN:-} && -n ${CONDUCTOR_BRAKEMAN:-} && $line =~ ^Brakeman\ request\ (br-[1-9][0-9]{0,17})\ \( ]]; then
 		local req=${BASH_REMATCH[1]}
-		brakeman_turn "$req"
-		title_ready done
-		report_done "brakeman $req: brief submitted" "$line"
+		if brakeman_turn "$req"; then
+			title_ready done
+			report_done "brakeman $req: brief submitted" "$line"
+		else
+			title_ready done
+			report_done "brakeman $req: no brief, the gate never opened" "$line"
+		fi
 		return
 	fi
 	if [[ -n ${STUB_WORKER:-} && -n ${CONDUCTOR_TASK:-} && $line =~ ^Conductor\ (task|review)\ \"([a-z0-9_-]+)\",\ attempt\ ([0-9]+): ]]; then

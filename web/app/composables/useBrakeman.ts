@@ -1,5 +1,5 @@
 import type { BrakemanBrief, BrakemanConfig, BrakemanRequest, BrakemanState, RefResolution } from '../utils/brakeman'
-import { closed, requestNumber, stateRank, unopened } from '../utils/brakeman'
+import { closed, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
 
@@ -135,6 +135,25 @@ export class BrakemanLive {
       return request
     } catch {
       return undefined
+    }
+  }
+
+  /**
+   * Reads a request a link names (`?request=br-n`, a `brief:` ref) when the page does not have it: one older than the pages read is
+   * read by itself, and shows among the rest. "" when the page has it, or the words for why it cannot be shown: the server keeps the
+   * newest 500 closed requests, so an older one is pruned (410) or gone (404).
+   */
+  async readNamed(id: string): Promise<string> {
+    if (!this.reads || this.requests.has(id)) return ''
+    try {
+      const { request } = await this.reads.request(id)
+      this.apply(request)
+      return ''
+    } catch (e) {
+      const status = (e as { status?: number }).status
+      if (status === 404) return `${id} is not kept here: the server keeps the newest 500 requests that are done.`
+      if (status === 410) return `${id} was pruned: the server keeps the newest 500 requests that are done.`
+      return `${id} could not be read: ${(e as Error).message}`
     }
   }
 
@@ -290,6 +309,23 @@ export function useBrakeman() {
     return out.request
   }
 
+  /**
+   * Stops the request holding the slot (stopAction): an open one is cancelled; a closed one the desk still holds has its run stopped
+   * (POST /api/runs/{run}/stop), which a cancel would not do. Null when there is nothing to stop.
+   */
+  async function stop(r: Pick<BrakemanRequest, 'id' | 'state' | 'runId'>) {
+    switch (stopAction(r)) {
+      case 'cancel':
+        return cancel(r.id)
+      case 'stop_run':
+        await request(`/api/runs/${encodeURIComponent(r.runId!)}/stop`, { method: 'POST' })
+        void store.readRequest(r.id)
+        void store.readState()
+        return null
+    }
+    return null
+  }
+
   /** Makes a brief's draft work (PR-7's forms send it): {request, made, ticket?, crew?}. */
   async function make(id: string, item: number, body: { by?: string; edit?: unknown } = {}) {
     const out = await sendTwice(
@@ -313,5 +349,5 @@ export function useBrakeman() {
     return new Map((out.refs ?? []).map((r) => [r.ref, r]))
   }
 
-  return { state, requests, available, problem, hasMore, unopened: unopenedIds, markOpened, load, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), saveConfig, ask, cancel, make, brief, refs, closed }
+  return { state, requests, available, problem, hasMore, unopened: unopenedIds, markOpened, load, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, brief, refs, closed }
 }

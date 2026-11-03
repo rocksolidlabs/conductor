@@ -145,3 +145,50 @@ describe('the brakeman events', () => {
     expect([live.available, live.problem]).toEqual([false, 'Brakeman needs a data directory'])
   })
 })
+
+describe('a request a link names', () => {
+  /** A server holding br-1 to br-<n>, whose first page is the newest 100 (MaxPage), as the route answers it. */
+  function manyServer(n: number, pruned: string[] = []) {
+    const server = new Map<string, BrakemanRequest>()
+    for (let i = 1; i <= n; i++) server.set(`br-${i}`, req(`br-${i}`, 'briefed', { hasBrief: true }))
+    const reads: string[] = []
+    const r: BrakemanReads = {
+      state: async () => ({ config: {} as never, current: null, queue: [], turnsToday: 0 }),
+      page: async () => ({ requests: [...server.values()].reverse().slice(0, 100), next: n > 100 ? `br-${n - 99}` : '' }),
+      request: async (id) => {
+        reads.push(id)
+        if (pruned.includes(id)) throw new ApiError(410, 'pruned', 'pruned')
+        const got = server.get(id)
+        if (!got) throw new ApiError(404, 'not_found', 'no such request')
+        return { request: got, brief: null }
+      },
+    }
+    return { reads: r, asked: reads }
+  }
+
+  it('is read by itself when it is older than the first page, and listed with the rest', async () => {
+    const f = manyServer(101)
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    await live.readFirst()
+    expect(live.requests.has('br-1')).toBe(false)
+    expect(await live.readNamed('br-1')).toBe('')
+    expect(live.requests.get('br-1')?.hasBrief).toBe(true)
+    expect(live.list().at(-1)!.id).toBe('br-1')
+    // One the page holds is not read again.
+    expect(await live.readNamed('br-50')).toBe('')
+    expect(f.asked).toEqual(['br-1'])
+    // The pages after the first still follow on from the first.
+    expect(live.next).toBe('br-2')
+  })
+
+  it('says why one the server no longer keeps cannot be shown', async () => {
+    const f = manyServer(3, ['br-2'])
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    await live.readFirst()
+    live.requests.delete('br-2')
+    expect(await live.readNamed('br-2')).toBe('br-2 was pruned: the server keeps the newest 500 requests that are done.')
+    expect(await live.readNamed('br-9')).toBe('br-9 is not kept here: the server keeps the newest 500 requests that are done.')
+  })
+})

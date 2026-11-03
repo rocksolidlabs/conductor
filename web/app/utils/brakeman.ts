@@ -357,17 +357,18 @@ export function parseRef(s: string): ParsedRef | null {
   return null
 }
 
-/** A ticket's page: /dispatch/<project>/<number>, at a comment when one is named. */
-function ticketPath(key: string, comment?: string): string {
+/** A ticket's page: /dispatch/<project>/<number>. */
+function ticketPath(key: string): string {
   const dash = key.lastIndexOf('-')
-  const path = `/dispatch/${encodeURIComponent(key.slice(0, dash))}/${key.slice(dash + 1)}`
-  return comment ? `${path}#comment-${encodeURIComponent(comment)}` : path
+  return `/dispatch/${encodeURIComponent(key.slice(0, dash))}/${key.slice(dash + 1)}`
 }
 
 /**
- * Where a person follows a ref in the app (the server's refURL, internal/api/brakeman_refs.go), or null for one with no page: a
- * Dispatch receipt. A check receipt and a command receipt are read from the API with the token, which a link would not carry, so
- * their chip leads to the run page at the task, where the receipt is shown.
+ * The page a person follows a ref to in the app (the server's refURL, internal/api/brakeman_refs.go, for the kinds it gives a page),
+ * or null for one with no page of its own: a Dispatch receipt, whose page is its ticket's as the resolution names it (refPage). A
+ * task, an attempt and a check open the run page's Tasks view at the task, whatever view this browser chose last (the page selects
+ * no one attempt: they are listed under the task). A check receipt, a command receipt and a comment are read from the API with the
+ * token, which a link would not carry (receiptPath): their chip leads to the page they belong to, the comment's to its ticket's.
  */
 export function refRoute(ref: string): string | null {
   const r = parseRef(ref)
@@ -381,10 +382,9 @@ export function refRoute(ref: string): string | null {
     case 'command':
       return run
     case 'task':
-      return `${run}?task=${encodeURIComponent(r.task!)}`
     case 'attempt':
     case 'check':
-      return `${run}?task=${encodeURIComponent(r.task!)}&attempt=${r.n}`
+      return `${run}?view=tasks&task=${encodeURIComponent(r.task!)}`
     case 'session':
     case 'question':
       return `/sessions/${encodeURIComponent(r.session!)}`
@@ -393,9 +393,48 @@ export function refRoute(ref: string): string | null {
     case 'ticket':
       return ticketPath(r.ticket!)
     case 'comment':
-      return ticketPath(r.ticket!, r.comment)
+      return ticketPath(r.ticket!)
     case 'brief':
       return `/brakeman?request=${encodeURIComponent(r.request!)}#item-${r.item}`
+  }
+  return null
+}
+
+/** Whether a URL the server gave is a path of the app's own pages: one slash, then no API route. */
+function appPage(u: string | undefined): u is string {
+  return !!u && u.startsWith('/') && !u.startsWith('//') && !u.startsWith('/api/')
+}
+
+/**
+ * The page a ref's chip links to: the one its resolution names when that is a page of the app (a Dispatch receipt's ticket or
+ * project, as the server read it), else refRoute's.
+ */
+export function refPage(ref: string, resolution?: RefResolution): string | null {
+  const u = resolution?.now.url
+  return appPage(u) ? u : refRoute(ref)
+}
+
+/**
+ * The API route a ref's record is read from with the token, for the kinds whose record no page shows by itself: a check receipt's
+ * log, a command receipt (GET /api/runs/{run}/commands/{command}), a Dispatch receipt of the admin's (GET /api/dispatch/ops/{opId},
+ * which reads only the admin's), and a comment, by the route its resolution names (the comment's number is the server's, not the
+ * ref's). Null for every other kind.
+ */
+export function receiptPath(ref: string, resolution?: RefResolution): string | null {
+  const r = parseRef(ref)
+  if (!r) return null
+  const e = encodeURIComponent
+  switch (r.kind) {
+    case 'check':
+      return `/api/runs/${e(r.run!)}/tasks/${e(r.task!)}/attempts/${r.n}/steps/${e(r.check!)}/${r.k}/log`
+    case 'command':
+      return `/api/runs/${e(r.run!)}/commands/${e(r.command!)}`
+    case 'op':
+      return r.actor === 'admin' ? `/api/dispatch/ops/${e(r.op!)}` : null
+    case 'comment': {
+      const u = resolution?.now.url
+      return u?.startsWith(`/api/dispatch/tickets/${e(r.ticket!)}/comments?`) ? u : null
+    }
   }
   return null
 }
@@ -524,6 +563,7 @@ export const BOUNDS = {
   turnsPerDay: [1, 500],
   selector: 50,
   path: 4096,
+  scopeBytes: 8 << 10,
 } as const
 
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/
@@ -533,6 +573,32 @@ const SCOPE_PATTERNS: Record<keyof BrakemanScope, { re?: RegExp; words: string }
   crews: { re: /^[a-z0-9][a-z0-9-]{0,63}$/, words: "a crew's id" },
   runs: { re: RUN, words: "a run's id" },
   sessions: { re: HEX, words: "a session's id, 16 hex digits" },
+}
+
+/**
+ * How many bytes Go's json.Marshal writes for a scope (the server's MaxScopeBytes check, Scope.validate): its selectors in the
+ * struct's order, an empty one left out (omitempty), each string escaped as encoding/json escapes it: `"`, `\`, and \b, \f, \n,
+ * \r and \t short, other control characters and `<`, `>`, `&`, U+2028 and U+2029 as `\u` and four digits.
+ */
+export function scopeJSONBytes(scope: BrakemanScope): number {
+  const str = (v: string) => {
+    let n = 2
+    for (const ch of v) {
+      const c = ch.codePointAt(0)!
+      if (ch === '"' || ch === '\\' || ch === '\b' || ch === '\f' || ch === '\n' || ch === '\r' || ch === '\t') n += 2
+      else if (c < 0x20 || ch === '<' || ch === '>' || ch === '&' || c === 0x2028 || c === 0x2029) n += 6
+      else n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4
+    }
+    return n
+  }
+  const parts: number[] = []
+  for (const key of ['projects', 'repos', 'crews', 'runs', 'sessions'] as const) {
+    const list = scope[key]
+    if (!list?.length) continue
+    // "key":[a,b]
+    parts.push(key.length + 3 + 2 + list.reduce((sum, v) => sum + str(v), 0) + (list.length - 1))
+  }
+  return 2 + parts.reduce((a, b) => a + b, 0) + Math.max(0, parts.length - 1)
 }
 
 /** Why a folder is refused as the server refuses it (absPath), or "". */
@@ -590,6 +656,7 @@ export function configProblems(c: BrakemanConfig, adapter: string | null): Recor
     const twice = list.find((v, i) => list.indexOf(v) !== i)
     if (twice !== undefined) out[`scope.${key}`] = `${twice} is named twice.`
   }
+  if (scopeJSONBytes(c.scope) > BOUNDS.scopeBytes) out.scope = `The scope is at most ${BOUNDS.scopeBytes >> 10} KiB as the server keeps it: name fewer, or shorter.`
   const b = c.budget
   const bound = (field: keyof BrakemanBudget, words: string) => {
     const [lo, hi] = BOUNDS[field]
@@ -600,6 +667,47 @@ export function configProblems(c: BrakemanConfig, adapter: string | null): Recor
   bound('readsPerTurn', 'Reads a turn')
   bound('turnsPerDay', 'Turns a day')
   return out
+}
+
+/**
+ * The form's field a refusal belongs to: the server names an entry of a selector by its index (`scope.repos[3]`), the form shows the
+ * selector's words. A field the form draws no control for (`permissions.observe`, `wake.mode`, a model while the agent shows no model
+ * field) is the caller's to show elsewhere.
+ */
+export function formField(field: string): string {
+  return field.replace(/\[\d+\]$/, '')
+}
+
+/** Whether two configurations hold the same settings, whatever their revisions: a form untouched since it was read is its base. */
+export function sameConfig(a: BrakemanConfig, b: BrakemanConfig): boolean {
+  const norm = (c: BrakemanConfig) => {
+    const { rev: _rev, updatedAt: _at, ...rest } = c
+    return stable({ ...rest, account: rest.account || undefined, model: rest.model || undefined, scope: Object.fromEntries(Object.entries(rest.scope ?? {}).filter(([, v]) => v?.length)) })
+  }
+  return norm(a) === norm(b)
+}
+
+/** JSON with every object's keys in order, so two values are compared by what they hold. */
+function stable(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stable).join(',')}]`
+  if (v && typeof v === 'object') {
+    return `{${Object.entries(v as Record<string, unknown>)
+      .filter(([, x]) => x !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, x]) => `${JSON.stringify(k)}:${stable(x)}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(v)
+}
+
+/**
+ * What Stop does to the request holding the slot: an open one is cancelled (the server stops its run after); a closed one the desk
+ * still holds (the brief's grace for the agent's last output, a stop that left a process) has its run stopped, since cancelling a
+ * closed request does nothing; one with no run has nothing to stop.
+ */
+export function stopAction(r: Pick<BrakemanRequest, 'state' | 'runId'>): 'cancel' | 'stop_run' | null {
+  if (!closed(r.state)) return 'cancel'
+  return r.runId ? 'stop_run' : null
 }
 
 /** A scope selector as the form's text holds it, one entry a line, and back. */

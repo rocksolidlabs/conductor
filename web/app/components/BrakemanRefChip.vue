@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import type { RefResolution } from '~/utils/brakeman'
-import { changedSince, parseRef, refLabel, refRoute } from '~/utils/brakeman'
+import { changedSince, parseRef, receiptPath, refLabel, refPage } from '~/utils/brakeman'
 
 /**
  * One piece of evidence a brief cites (docs/plans/brakeman.md, PR-6): a chip labelled by what the ref names, a link to where the person
  * follows it, and "changed since" when the record the page has live (a run's state and revision, a task's state, a session's status)
- * differs from what it was as the brief was kept. A check receipt's chip carries its log's SHA-256, as kept.
+ * differs from what it was as the brief was kept. A check receipt's chip carries its log's SHA-256, as kept. A record no page shows
+ * by itself (a check's log, a command receipt, a Dispatch receipt, a comment) is read from the chip (BrakemanReceipt), with the token.
  */
 const props = defineProps<{ refName: string; resolution?: RefResolution }>()
 
@@ -16,7 +17,8 @@ const label = computed(() =>
     run: (id) => live.runNames.value[id],
   }),
 )
-const to = computed(() => refRoute(props.refName))
+const to = computed(() => refPage(props.refName, props.resolution))
+const receipt = computed(() => receiptPath(props.refName, props.resolution))
 
 /** What the page has live of the record, in the words the server's resolution keeps (internal/api/brakeman_refs.go). */
 const liveState = computed<{ state?: string; rev?: string } | undefined>(() => {
@@ -56,6 +58,7 @@ const title = computed(() => {
       <NuxtLink v-if="to && !deleted" :to="to" class="truncate hover:underline" data-ref-link>{{ label }}</NuxtLink>
       <span v-else class="truncate">{{ label }}<template v-if="deleted"> (deleted)</template></span>
       <span v-if="resolution?.now.sha256" class="font-mono text-[10px] text-muted">{{ resolution.now.sha256.slice(0, 12) }}</span>
+      <BrakemanReceipt v-if="receipt && !deleted" :ref-name="refName" :path="receipt" :label="label" :kept-sha256="resolution?.now.sha256" />
     </UBadge>
     <UBadge v-if="changed" label="changed since" color="warning" variant="subtle" size="sm" data-ref-changed />
   </span>
