@@ -312,14 +312,18 @@ func (s starterRuntime) Start(ctx context.Context, _ ext.Host) error {
 // A Runtime that is a Starter is started first: a run launched before its
 // Start has succeeded is not offered it and runs natively; one launched
 // after is offered it, and its attempt's session starts in it.
-// StartExtensions calls its Start once.
+// StartExtensions calls its Start once. The Start's ext.StartWait is the
+// test's clock, never fired, so a slow early run cannot have the try
+// given up and Start called again.
 func TestARuntimeThatIsAStarterIsStartedFirst(t *testing.T) {
 	takesAnswered(t)
 	seam := nativeSeam()
 	rt := starterRuntime{FakeRuntime: &sessiontest.FakeRuntime{Base: local.Native()}, release: make(chan struct{}), starts: &atomic.Int32{}}
 	e := runtimeEnv(t, seam, nil, withRuntime(rt))
 	e.gitRepo(t)
+	clock := newFakeClock(e.srv)
 	e.srv.StartExtensions(t.Context())
+	clock.next(t, ext.StartWait)
 	early := launchOne(t, e, oneTaskCrew("early", e.root))
 	sid := runningAttempt(t, e, early, "build", 1)["sessionId"].(string)
 	if got := terminalRefs(seam); !slices.Equal(got, []ext.ProcessRef{attemptRef(sid, early, 1)}) {
