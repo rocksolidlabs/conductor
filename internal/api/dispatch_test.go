@@ -521,7 +521,7 @@ func TestDispatchProjectRoutes(t *testing.T) {
 	}
 	e.expect(t, "POST", "/api/dispatch/projects/CND/edit", map[string]any{"opId": opID(), "expectedRev": rev, "name": "Lost"}, http.StatusConflict, "stale_revision")
 	e.expect(t, "POST", "/api/dispatch/projects/NOPE/edit", map[string]any{"opId": opID(), "name": "x"}, http.StatusNotFound, "not_found")
-	e.expect(t, "POST", "/api/dispatch/projects/CND/edit", map[string]any{"opId": opID(), "closeRequires": []string{"verified"}}, http.StatusConflict, "invalid")
+	e.expect(t, "POST", "/api/dispatch/projects/CND/edit", map[string]any{"opId": opID(), "closeRequires": []string{"merged"}}, http.StatusConflict, "invalid")
 	e.expect(t, "POST", "/api/dispatch/projects/C/edit", map[string]any{"opId": opID(), "name": "x"}, http.StatusBadRequest, "invalid_request")
 
 	// Archived: every write under it refused, archived again refused.
@@ -1701,6 +1701,16 @@ func (f filler) file(i int) string {
 	return f.text(dispatch.MaxAttachmentName, i)
 }
 
+// largestCandidate is the ith delivery's candidate at its bound,
+// MaxLinkCandidate bytes; largestVerified a verification receipt at the
+// column's bound, MaxLinkVerified bytes of JSON.
+func largestCandidate(i int) string {
+	tail := fmt.Sprintf("/build/%d@%s", i+1, strings.Repeat("a", 64))
+	return strings.Repeat("c", dispatch.MaxLinkCandidate-len(tail)-len("-ffffffff")) + "-ffffffff" + tail
+}
+
+var largestVerified = `{"receipts":[{"where":"` + strings.Repeat("w", dispatch.MaxLinkVerified-len(`{"receipts":[{"where":""}]}`)) + `"}]}`
+
 // largestTicket is what buildLargestTicket made, as the ticket's read
 // must give it back.
 type largestTicket struct {
@@ -1769,8 +1779,11 @@ func buildLargestTicket(t *testing.T, e *testEnv, f filler, key string) largestT
 		want.relationTitles = append(want.relationTitles, title)
 	}
 	for i := range dispatch.MaxLinks {
-		l := dispatch.NewLink{Kind: dispatch.LinkExternal, Ref: f.text(dispatch.MaxLinkRef, i), URL: f.url(dispatch.MaxLinkURL, i), Note: f.runes(dispatch.MaxLinkNote, i)}
-		done(ds.AddLink(ctx, op(), want.key, l))
+		l := dispatch.NewLink{Kind: dispatch.LinkDelivery, Ref: f.text(dispatch.MaxLinkRef, i), URL: f.url(dispatch.MaxLinkURL, i), Note: f.runes(dispatch.MaxLinkNote, i)}
+		done(ds.AddLink(ctx, op(), want.key, l, nil))
+		// Each a delivery naming a candidate with its receipt at their
+		// bounds, planted below as a merge may bring them.
+		l.Candidate = largestCandidate(i)
 		want.links = append(want.links, l)
 	}
 	var handed string
@@ -1823,6 +1836,14 @@ func buildLargestTicket(t *testing.T, e *testEnv, f filler, key string) largestT
 	// a local approval supersedes the others.
 	if _, err := tx.Exec("UPDATE plans SET state = ? WHERE ticket_id = ?", dispatch.PlanApproved, tk.ID); err != nil {
 		t.Fatal(err)
+	}
+	// Every link a delivery naming its candidate, its receipt at the
+	// column's bound (a local add's is under it: 16 receipts at their
+	// worst), as a merge may bring them.
+	for i, l := range tk.Links {
+		if _, err := tx.Exec("UPDATE links SET candidate = ?, verified = ? WHERE id = ?", largestCandidate(i), largestVerified, l.ID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
@@ -1896,7 +1917,8 @@ func TestDispatchTheLargestTicketIsUnderItsBound(t *testing.T) {
 				t.Fatalf("%d links", len(tk.Links))
 			}
 			for i, l := range tk.Links {
-				if w := want.links[i]; l.Ref != w.Ref || l.URL != w.URL || l.Note != w.Note || l.Kind != w.Kind || l.CreatedBy != want.by {
+				if w := want.links[i]; l.Ref != w.Ref || l.URL != w.URL || l.Note != w.Note || l.Kind != w.Kind || l.CreatedBy != want.by ||
+					l.Candidate != w.Candidate || string(l.Verified) != largestVerified {
 					t.Fatalf("link %d did not read back whole", i)
 				}
 			}
@@ -2196,7 +2218,7 @@ func TestDispatchRunTicketLookup(t *testing.T) {
 		if tk := lookup(run); tk != nil {
 			t.Fatalf("%s before any link: %v", run, tk)
 		}
-		done(ds.AddLink(ctx, adminOp(""), first, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}))
+		done(ds.AddLink(ctx, adminOp(""), first, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}, nil))
 		if tk := lookup(run); tk == nil || tk["key"] != first || tk["deletedAt"] != nil || tk["title"] != "First for "+run || tk["status"] != "backlog" {
 			t.Fatalf("%s linked: %v", run, tk)
 		}
@@ -2204,7 +2226,7 @@ func TestDispatchRunTicketLookup(t *testing.T) {
 		if tk := lookup(run); tk == nil || tk["key"] != first || tk["deletedAt"] == nil {
 			t.Fatalf("%s after its ticket's delete: %v", run, tk)
 		}
-		done(ds.AddLink(ctx, adminOp(""), second, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}))
+		done(ds.AddLink(ctx, adminOp(""), second, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}, nil))
 		if tk := lookup(run); tk == nil || tk["key"] != second || tk["deletedAt"] != nil {
 			t.Fatalf("%s linked again: %v", run, tk)
 		}
@@ -2218,7 +2240,7 @@ func TestDispatchRunTicketLookup(t *testing.T) {
 	}
 	// A run neither held nor recorded is no run to link.
 	tk := e.newDispatchTicket(t, "RUN", "Nothing", nil)["key"].(string)
-	if rc, err := ds.AddLink(ctx, adminOp(""), tk, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: "nobody-0000dead"}); err != nil || rc.Refusal != dispatch.RefusalNotFound {
+	if rc, err := ds.AddLink(ctx, adminOp(""), tk, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: "nobody-0000dead"}, nil); err != nil || rc.Refusal != dispatch.RefusalNotFound {
 		t.Fatalf("a run nobody has: %+v %v", rc, err)
 	}
 	for _, q := range []string{"", "?run=", "?run=not-a-run", "?run=" + live + "&run=" + live, "?run=" + live + "&bogus=1"} {
@@ -2791,7 +2813,7 @@ func TestDispatchSessionTicketIsReadWhereItsLinkIs(t *testing.T) {
 	e.newDispatchProject(t, "MOV", nil)
 	a := e.newDispatchTicket(t, "MOV", "A", nil)["key"].(string)
 	b := e.newDispatchTicket(t, "MOV", "B", nil)["key"].(string)
-	held := done(ds.AddLink(ctx, adminOp(""), a, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})).ID
+	held := done(ds.AddLink(ctx, adminOp(""), a, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}, nil)).ID
 	holder := a
 	read := "/api/sessions/" + sid + "/ticket"
 	t.Cleanup(func() { betweenTicketReads.Store(nil) })
@@ -2810,7 +2832,7 @@ func TestDispatchSessionTicketIsReadWhereItsLinkIs(t *testing.T) {
 		if rc, err := ds.RemoveLink(ctx, adminOp(""), holder, held); err != nil || rc.Status != dispatch.StatusDone {
 			t.Errorf("the link's remove: %+v %v", rc, err)
 		}
-		rc, err := ds.AddLink(ctx, adminOp(""), next, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})
+		rc, err := ds.AddLink(ctx, adminOp(""), next, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}, nil)
 		if err != nil || rc.Status != dispatch.StatusDone {
 			t.Errorf("the link's add: %+v %v", rc, err)
 		}
@@ -2877,7 +2899,7 @@ func TestDispatchSessionCommentResendKeepsItsTicket(t *testing.T) {
 	e.newDispatchProject(t, "RSN", nil)
 	a := e.newDispatchTicket(t, "RSN", "A", nil)["key"].(string)
 	b := e.newDispatchTicket(t, "RSN", "B", nil)["key"].(string)
-	link := done(ds.AddLink(ctx, adminOp(""), a, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})).ID
+	link := done(ds.AddLink(ctx, adminOp(""), a, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}, nil)).ID
 	op, refused := opID(), opID()
 	if c := entityOf(t, e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "on A"}, http.StatusCreated, ""), "comment"); c["n"] != 1.0 {
 		t.Fatalf("the first comment: %v", c)
@@ -2911,7 +2933,7 @@ func TestDispatchSessionCommentResendKeepsItsTicket(t *testing.T) {
 		}
 	}
 	done(ds.RemoveLink(ctx, adminOp(""), a, link))
-	link = done(ds.AddLink(ctx, adminOp(""), b, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})).ID
+	link = done(ds.AddLink(ctx, adminOp(""), b, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}, nil)).ID
 	resend("the link moved to B")
 	done(ds.RemoveLink(ctx, adminOp(""), b, link))
 	resend("the link removed")
@@ -2933,7 +2955,7 @@ func TestDispatchSessionCommentKeepsItsReceiptWhenTheReadAfterFails(t *testing.T
 	run, sid, tok := e.memberSession(t, "Unread")
 	e.newDispatchProject(t, "URD", nil)
 	key := e.newDispatchTicket(t, "URD", "A", nil)["key"].(string)
-	done(ds.AddLink(ctx, adminOp(""), key, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}))
+	done(ds.AddLink(ctx, adminOp(""), key, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}, nil))
 	var closed atomic.Bool
 	ds.OnChange(func([]dispatch.Change) {
 		if closed.CompareAndSwap(false, true) {
@@ -3019,7 +3041,7 @@ func TestDispatchSessionCommentOverlappingItsResend(t *testing.T) {
 		return ch
 	}
 	for i, then := range []string{"moved to B", "removed"} {
-		link := done(ds.AddLink(ctx, adminOp(""), a, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run})).ID
+		link := done(ds.AddLink(ctx, adminOp(""), a, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}, nil)).ID
 		op, body := opID(), fmt.Sprintf("overlapping %d", i)
 		// The seam holds the first request to reach it, the resend, until
 		// released, and lets the rest by.
@@ -3039,7 +3061,7 @@ func TestDispatchSessionCommentOverlappingItsResend(t *testing.T) {
 		}
 		done(ds.RemoveLink(ctx, adminOp(""), a, link))
 		if then == "moved to B" {
-			done(ds.AddLink(ctx, adminOp(""), b, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}))
+			done(ds.AddLink(ctx, adminOp(""), b, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}, nil))
 		}
 		e.expectAs(t, tok, "POST", comment, map[string]any{"opId": op, "body": "other"}, http.StatusConflict, "op_conflict")
 		close(release)
@@ -3089,7 +3111,7 @@ func sessionReadOfTheLargest(t *testing.T, e *testEnv, f filler, want largestTic
 	}
 	last := tk.Links[len(tk.Links)-1]
 	done(ds.RemoveLink(ctx, adminOp(want.by), want.key, last.ID))
-	done(ds.AddLink(ctx, adminOp(want.by), want.key, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run, URL: last.URL, Note: last.Note}))
+	done(ds.AddLink(ctx, adminOp(want.by), want.key, dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run, URL: last.URL, Note: last.Note}, nil))
 	project, _, _ := dispatch.ParseKey(want.key)
 	description := f.text(dispatch.MaxMilestoneDescription, 0)
 	done(ds.EditMilestone(ctx, adminOp(want.by), project, tk.MilestoneID, dispatch.MilestoneEdit{Description: &description}))

@@ -380,3 +380,53 @@ func TestFileEventsAreBoundedAndCoalesced(t *testing.T) {
 		t.Fatalf("the rest: %+v", files[1:])
 	}
 }
+
+// An entry stamped before it is added (an attention's, whose time is its
+// Since, added once the session's lock is let go) holds the window's
+// reach: a read between its stamp and its add is whole only up to just
+// before it, so a reader that moves past what it read never moves past
+// the entry still to come; once it is added the reach is now again, and
+// an entry added later is of a time after a reach read before it.
+func TestAStampedEntryHoldsTheWindowsReach(t *testing.T) {
+	var r activityRing
+	r.Add(ActivityEntry{Type: ActivityProgress, Message: "before"})
+	at := r.Stamp(2)
+	r.Add(ActivityEntry{Type: ActivityProgress, Message: "between"})
+	snap, through := r.SnapshotThrough()
+	if !through.Before(at) {
+		t.Fatalf("read between the stamp and its entries: whole up to %v, the stamp %v", through, at)
+	}
+	for _, e := range snap {
+		if e.Type == ActivityAttention {
+			t.Fatalf("the stamped entry is in the read: %+v", snap)
+		}
+	}
+	r.Add(ActivityEntry{At: at, Type: ActivityAttention, Message: "done"})
+	if _, through = r.SnapshotThrough(); !through.Before(at) {
+		t.Fatalf("one of the stamp's two entries still to come: whole up to %v, the stamp %v", through, at)
+	}
+	r.Add(ActivityEntry{At: at, Type: ActivityAttention, Message: "asked"})
+	snap, through = r.SnapshotThrough()
+	if through.Before(at) || len(snap) != 4 {
+		t.Fatalf("every entry added: whole up to %v, the stamp %v, %d entries", through, at, len(snap))
+	}
+	if e := r.Add(ActivityEntry{Type: ActivityProgress, Message: "after"}); e.At.Before(through) {
+		t.Fatalf("an entry added after a read is of %v, before the read's reach %v", e.At, through)
+	}
+}
+
+// A session's attention change stamps its entry with the attention's
+// Since, and the window's reach covers it once it is added.
+func TestAnAttentionsEntryIsOfItsSince(t *testing.T) {
+	s, _ := newLocal(t, t.TempDir())
+	s.SetAttention(AttentionNeedsInput, "Proceed?", SourceAPI)
+	since := s.Info().Attention.Since
+	window, through := s.ActivityThrough()
+	if since == nil || len(window) == 0 {
+		t.Fatalf("no attention entry: %v %+v", since, window)
+	}
+	last := window[len(window)-1]
+	if last.Type != ActivityAttention || !last.At.Equal(*since) || through.Before(*since) {
+		t.Fatalf("the entry %+v, Since %v, whole up to %v", last, *since, through)
+	}
+}

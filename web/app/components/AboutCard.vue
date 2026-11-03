@@ -8,14 +8,17 @@ import { copyrightLine, CREDIT, LICENSE, LICENSE_URL, NOTICES_PATH, SOURCE_URL, 
 const props = defineProps<{ versions?: { app: string; server: string; electron: string; chrome: string } | null }>()
 const serverHost = useServerHost()
 serverHost.load()
+/** What the server has registered beside the open-source feature set (GET /api/capabilities): a capability, never a plan. */
+const capabilities = useCapabilities()
 
 const rows = computed(() => {
   const v = props.versions
   const server = versionOn(v?.server || serverHost.version.value, serverHost.host.value)
-  const out: Array<{ key: string; label: string; value: string; mono?: boolean }> = []
+  const out: Array<{ key: string; label: string; value: string; mono?: boolean; wrap?: boolean }> = []
   if (v?.app) out.push({ key: 'app', label: 'Conductor', value: v.app, mono: true })
   if (server) out.push({ key: 'server', label: 'Server', value: server, mono: true })
   if (v?.electron) out.push({ key: 'runtime', label: 'Runtime', value: `electron ${v.electron} · chrome ${v.chrome}`, mono: true })
+  if (capabilities.words.value) out.push({ key: 'extensions', label: 'Extensions', value: capabilities.words.value, wrap: true })
   return out
 })
 </script>
@@ -28,7 +31,7 @@ const rows = computed(() => {
       <dl class="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
         <template v-for="r in rows" :key="r.key">
           <dt class="text-muted">{{ r.label }}</dt>
-          <dd class="min-w-0 truncate text-highlighted" :class="{ 'font-mono': r.mono }" :data-about-row="r.key">{{ r.value }}</dd>
+          <dd class="min-w-0 text-highlighted" :class="{ 'font-mono': r.mono, truncate: !r.wrap, 'break-words': r.wrap }" :data-about-row="r.key">{{ r.value }}</dd>
         </template>
         <dt class="text-muted">License</dt>
         <dd data-about-license><ULink :to="LICENSE_URL" target="_blank" class="text-primary">{{ LICENSE }}</ULink> · <ULink :to="SOURCE_URL" target="_blank" class="text-primary">Source</ULink> · <ULink :to="NOTICES_PATH" external target="_blank" class="text-primary" data-about-notices>Third-party notices</ULink></dd>

@@ -61,7 +61,7 @@ type extSlots struct {
 	media    ext.MediaRoomProvider
 	// all is every registered provider (ext.Providers.All), unwrapped: what
 	// the providers' Start (StartExtensions, through extStarters) and GET
-	// /api/capabilities (C9) read. No call is made through it.
+	// /api/capabilities (capabilities.go) read. No call is made through it.
 	all []ext.Entry
 }
 
@@ -944,7 +944,8 @@ func copyRoute(r ext.Route) ext.Route {
 
 // Registered is every provider the composition root gave the server
 // (WithExtensions), its kind and name, in the registry's order: none for
-// the free build. It is what GET /api/capabilities (C9) will list.
+// the free build. It is what GET /api/capabilities lists, with each
+// provider's state (capabilities.go).
 func (s *Server) Registered() []ext.Registration {
 	out := make([]ext.Registration, 0, len(s.exts.all))
 	for _, e := range s.exts.all {
