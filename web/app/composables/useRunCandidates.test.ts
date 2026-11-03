@@ -4,10 +4,11 @@ import { ApiError } from './useApi'
 import type { RunCandidate, RunCandidatesPage } from './useDispatch'
 import type { RunAttempt, RunTask } from './useSessions'
 import { DispatchOrder, through } from '../utils/dispatchOrder'
+import { dispatchLive } from './useDispatchLive'
 
 // A run's candidates as DispatchCandidates reads them (Program item DS2, PR-11), against replies the test lets go: a run_changing reply
 // asked again after its second, on the first read too, with nothing said as a failure; two review tasks' findings opened while the
-// first one's reply is held back, both lists shown. useRunCandidates reads Nuxt's auto-imports (Vue's, useDispatch, useSessions,
+// first one's reply is held back, both lists shown; a snapshot reading the pages again. useRunCandidates reads Nuxt's auto-imports (Vue's, useDispatch, useSessions,
 // onBeforeUnmount) as globals: each is stubbed, on fake timers.
 
 function held<T>() {
@@ -134,6 +135,23 @@ describe("a run's candidates", () => {
     await again
     expect(c.findings.get('review-a/2')?.map((f) => f.message)).toEqual(['new 2'])
     expect([...c.findingsError.keys()]).toEqual([])
+  })
+
+  it('read the pages again on a snapshot: a failure said before it is read again, a record with no revision too', async () => {
+    const { c, revision } = await candidates()
+    revision.value = undefined
+    pagesSent[0]!.fail(new Error('the server could not be reached'))
+    await tick()
+    expect(c.error.value).toBe('the server could not be reached')
+    dispatchLive().snapshot()
+    expect(pagesSent).toHaveLength(2)
+    pagesSent[1]!.ok(page)
+    await tick()
+    expect([c.error.value, c.tasks.value.map((t) => t.task)]).toEqual(['', ['review-a']])
+    // Gone from the page: a snapshot reads nothing for it.
+    for (const f of unmount.splice(0)) f()
+    dispatchLive().snapshot()
+    expect(pagesSent).toHaveLength(2)
   })
 
   it('read the pages again, gathered for the window, when the run revision moves', async () => {

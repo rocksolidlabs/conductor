@@ -243,6 +243,50 @@ export function receiptKey(r: Pick<CandidateReceipt, 'phase' | 'id' | 'k'>): str
   return `${r.phase}:${r.id}:${r.k}`
 }
 
+/**
+ * What of a receipt its full view reads its step and its log for: its identity, how far it got, and its log's record. Equal for the same
+ * receipt read again unchanged (each candidates reply is new objects), so a re-read reads nothing again; a check that finishes moves it.
+ */
+export function receiptVersion(r: CandidateReceipt): string {
+  return [receiptKey(r), r.state, r.finishedAt ?? '', r.logSha256 ?? '', r.logBytes, r.logDropped].join('|')
+}
+
+/** A receipt opened in full, by its identity, and as it was when opened (shown while the candidates read hold it no longer). */
+export interface ReceiptPick {
+  task: string
+  attempt: number
+  key: string
+  opened: ShownReceipt
+}
+export interface ShownReceipt {
+  task: string
+  attempt: number
+  /** The commit it ran against: a work attempt's result, the commit a review reviewed. */
+  commit: string
+  receipt: CandidateReceipt
+}
+
+/** A candidate's receipt as its full view shows it. */
+export function shownReceipt(c: RunCandidate, r: CandidateReceipt): ShownReceipt {
+  return { task: c.task, attempt: c.attempt, commit: (c.kind === 'review' ? c.start : c.commit) ?? '', receipt: r }
+}
+
+/** Picks a candidate's receipt to open in full. */
+export function pickReceipt(c: RunCandidate, r: CandidateReceipt): ReceiptPick {
+  return { task: c.task, attempt: c.attempt, key: receiptKey(r), opened: shownReceipt(c, r) }
+}
+
+/**
+ * The receipt a pick names, from the candidates as read now: a running check opened stays opened as it finishes, its details and its log
+ * the finished receipt's; as it was when opened while no read holds it; null for no pick.
+ */
+export function pickedReceipt(tasks: readonly TaskCandidates[], p: ReceiptPick | null): ShownReceipt | null {
+  if (!p) return null
+  const c = tasks.find((t) => t.task === p.task)?.candidates.find((x) => x.attempt === p.attempt)
+  const r = c?.receipts.find((x) => receiptKey(x) === p.key)
+  return c && r ? shownReceipt(c, r) : p.opened
+}
+
 /** How long a receipt ran, in milliseconds; undefined while it runs. */
 export function receiptDuration(r: Pick<CandidateReceipt, 'startedAt' | 'finishedAt'>): number | undefined {
   if (!r.finishedAt) return undefined
@@ -323,14 +367,21 @@ export interface Repair {
  * A run's repairs from its candidates (and, for an attempt that has not submitted yet, the live run's tasks): each failed check of a
  * work attempt with the same task's later attempts that started at its result, and each review that asked for changes with the attempts
  * of other tasks that started at the commit it reviewed. Oldest first.
+ *
+ * A review reviewed a result its task stood on, and a repair may submit the commit it started at unchanged (the engine takes an
+ * unchanged commit), so the attempt a review read is not the last one with its commit: a review task reads each result of the task it
+ * reviews once, a needs_changes taking the result away until a later attempt stands again, so its n-th verdict on a commit is on the n-th
+ * attempt that stood with it (succeeded, or accepted anyway), and its repairs are the attempts that started at the commit after that one,
+ * up to the one the review task's next verdict on it read.
  */
 export function repairs(tasks: readonly TaskCandidates[], live?: readonly RunTask[]): Repair[] {
   const out: Repair[] = []
   const all = tasks.flatMap((t) => t.candidates.map((c) => ({ ...c, task: t.task, kind: t.kind })))
-  const startedAt = (task: string, commit: string, after: number) => {
-    const by = all.filter((c) => c.kind === 'work' && c.task === task && c.attempt > after && c.start === commit).map((c) => ({ task: c.task, attempt: c.attempt, state: c.state, commit: c.commit }))
+  const startedAt = (task: string, commit: string, after: number, until = Infinity) => {
+    const within = (n: number) => n > after && n <= until
+    const by = all.filter((c) => c.kind === 'work' && c.task === task && within(c.attempt) && c.start === commit).map((c) => ({ task: c.task, attempt: c.attempt, state: c.state, commit: c.commit }))
     const a = live?.find((t) => t.id === task)?.attempt
-    if (a && a.n > after && a.start === commit && !by.some((b) => b.attempt === a.n)) by.push({ task, attempt: a.n, state: a.state, commit: a.result })
+    if (a && within(a.n) && a.start === commit && !by.some((b) => b.attempt === a.n)) by.push({ task, attempt: a.n, state: a.state, commit: a.result })
     return by.sort((x, y) => x.attempt - y.attempt)
   }
   for (const c of [...all].sort((a, b) => a.attempt - b.attempt)) {
@@ -340,10 +391,18 @@ export function repairs(tasks: readonly TaskCandidates[], live?: readonly RunTas
       out.push({ key: `check:${c.task}:${c.attempt}`, kind: 'check', task: c.task, attempt: c.attempt, commit: c.commit, what: receiptName(failed), by: startedAt(c.task, c.commit, c.attempt) })
     } else if (c.kind === 'review' && c.verdict === 'needs_changes' && c.start) {
       const start = c.start
+      // This verdict's place among the review task's verdicts on the commit: the n-th read the n-th attempt that stood with it.
+      const nth = all.filter((x) => x.task === c.task && x.kind === 'review' && x.verdict && x.start === start && x.attempt < c.attempt).length
       const reviewed = [...new Set(all.filter((x) => x.kind === 'work' && x.commit === start).map((x) => x.task))]
       const by = reviewed.flatMap((task) => {
-        const after = Math.max(...all.filter((x) => x.task === task && x.commit === start).map((x) => x.attempt))
-        return startedAt(task, start, after)
+        const withCommit = all.filter((x) => x.kind === 'work' && x.task === task && x.commit === start)
+        const stood = withCommit
+          .filter((x) => x.state === 'succeeded' || !!x.acceptedAnyway)
+          .map((x) => x.attempt)
+          .sort((a, b) => a - b)
+        // None stood on the page (they are older, on the run's page): after the last attempt with the commit.
+        const read = stood[nth] ?? stood.at(-1) ?? Math.max(...withCommit.map((x) => x.attempt))
+        return startedAt(task, start, read, stood[nth + 1] ?? Infinity)
       })
       out.push({ key: `review:${c.task}:${c.attempt}`, kind: 'review', task: c.task, attempt: c.attempt, commit: start, what: findingsWords(c.findings) || 'changes', by })
     }

@@ -1,4 +1,5 @@
 import { ApiError } from './useApi'
+import { dispatchLive } from './useDispatchLive'
 import type { RunCandidate, RunCandidatesPage, TaskCandidates } from './useDispatch'
 import type { Finding } from './useSessions'
 import { RUN_CHANGING_RETRY_MS, gather } from '~/utils/dispatchEvidence'
@@ -11,14 +12,15 @@ export const candidateKey = (c: Pick<RunCandidate, 'task' | 'attempt'>) => `${c.
 /**
  * A run's candidates as DispatchCandidates shows them (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11): the pages
  * read from the ledger (GET /api/runs/{run}/candidates), a page of tasks at a time, More tasks reading one more by the last page's
- * `next`, every page read again from the start as one reply through the component's ordering gate; read when the run is named and,
- * gathered for RUN_EVENT_WINDOW_MS, when its revision moves. A read refused while the run moved through every one of its reads (503
- * run_changing, Retry-After: 1) is no failure, on the first read as on any other: what is shown stays and it is asked again after the
- * second. A review's findings, read from the task route (GET /api/runs/{run}/tasks/{task}, which has them whole) when the review is
+ * `next`, every page read again from the start as one reply through the component's ordering gate; read when the run is named,
+ * gathered for RUN_EVENT_WINDOW_MS when its revision moves, and at once on a `snapshot` (the stream started over: what it missed is
+ * unknown, and a read that failed, or a record's, which has no revision to move, is read again). A read refused while the run moved
+ * through every one of its reads (503 run_changing, Retry-After: 1) is no failure, on the first read as on any other: what is shown
+ * stays and it is asked again after the second. A review's findings, read from the task route (GET /api/runs/{run}/tasks/{task}, which has them whole) when the review is
  * opened, each review task's reads ordered on their own, so a second review opened while the first one's reply is on its way leaves both.
  */
 export function useRunCandidates(o: { runId: () => string; revision: () => number | undefined }) {
-  const { api, read } = useDispatch()
+  const { api, gate, read } = useDispatch()
   const sessions = useSessions()
 
   /** The pages read, in their order; null until the first read answered. */
@@ -75,9 +77,12 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
   const reads = gather(readPages, RUN_EVENT_WINDOW_MS)
   /** A read refused while the run moved through every one of its reads, asked again after the second its Retry-After names. */
   const retry = gather(readPages, RUN_CHANGING_RETRY_MS)
+  // A snapshot reads the pages shown again, as it does the ticket page (useDispatchLive): no event of Dispatch's reads them otherwise.
+  const unwatch = dispatchLive().subscribe({ later: () => false, read: readPages, reset: () => gate.reset() })
   onBeforeUnmount(() => {
     reads.stop()
     retry.stop()
+    unwatch()
   })
 
   async function more(): Promise<void> {
