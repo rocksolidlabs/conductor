@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import type { DispatchChange, DispatchReceipt, DispatchTicket, Horizon, NewLink, OpBody, PlanSummary, ProjectRead, TicketAttachment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary } from '~/composables/useDispatch'
+import type { DispatchChange, DispatchReceipt, DispatchTicket, Horizon, LaunchSummary, NewLink, OpBody, PlanSummary, ProjectRead, TicketAttachment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { DISPATCH_RETRY_MAX_MS, ticketWatch } from '~/composables/useDispatchLive'
 import { refusalWords } from '~/composables/useDispatchOps'
-import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, acceptChangedWords, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type AcceptSeen, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
+import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, acceptChangedWords, candidateOptions, candidateWithdrawn, ticketDecisions, ticketPeople, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type AcceptSeen, type ChangeNames, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
 import { catchUp, serially } from '~/utils/dispatchOrder'
 import type { PaletteItem } from '~/composables/usePalette'
 import { TICKET_PLAN_ROWS } from '~/composables/useTicketPlans'
 import { approvable, launchBlockers, revisionTag } from '~/utils/dispatchPlans'
+import { heldRuns } from '~/composables/useTicketCandidates'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -29,7 +30,13 @@ import { approvable, launchBlockers, revisionTag } from '~/utils/dispatchPlans'
  * to it, each with the run page's task rows (DispatchRuns.vue). Every operation on the ticket goes through the one queue of its edits, an
  * attachment's, a relation's, an acceptance's and a link's among them, since each bumps the ticket's revision. One column on a phone.
  * Its Plan (DS2, DispatchPlan) follows the acceptance criteria: its plan revisions and launches are read with the ticket, on every event
- * naming it (a `plan` or a `launch` event among them) and on a snapshot, and the palette's page group gains the Plan's rows.
+ * naming it (a `plan` or a `launch` event among them) and on a snapshot, and the palette's page group gains the Plan's rows. Its Runs
+ * (DS2, DispatchRuns) follow the Plan: every launch, hand-linked run and run of a chain the ticket holds, a page at a time, each with its
+ * tasks, questions, candidates, receipts and repairs, and what changed of the ticket since a launch; read with the ticket, and again when
+ * a run it shows changes in the live store. Then (DS2, PR-12) its Decisions (DispatchDecisions: approvals with their notes, the
+ * acceptance, Accept anyway receipts, decision records), its Delivery (the close card, with `verified`, and the links, a delivery naming
+ * the candidate it delivers with its verification), and its People (DispatchPeople: owner, assignees, approvers, launchers, commenters,
+ * the plan's agents and each launch's with their versions). The runs' candidates they read are read once for all three (useTicketCandidates).
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -62,6 +69,18 @@ const resets = ref(0)
 const deleteOpen = ref(false)
 /** The ticket's plan revisions and launches (DS2), read with it. */
 const plan = useTicketPlans({ gate, key: () => (parseTicketKey(props.ticketKey) ? props.ticketKey : ''), ticket: () => ticket.value })
+/** The ticket's runs (DS2): its launches, hand-linked runs and their chains' runs, read with it. */
+const runs = useTicketRuns({ gate, key: () => (parseTicketKey(props.ticketKey) ? props.ticketKey : '') })
+const attention = useAttention()
+/**
+ * The candidates of the ticket's runs (DS2, PR-12): what a delivery may name, a delivered one withdrawn since, the Accept anyway receipts.
+ * A delivery's run is read whether or not Runs has read the page it is on.
+ */
+const candidates = useTicketCandidates({
+  gate,
+  key: () => (parseTicketKey(props.ticketKey) ? props.ticketKey : ''),
+  runs: () => heldRuns(runs.entries.value, (id) => attention.runOf(id)?.managed?.revision, ticket.value?.key === props.ticketKey ? (ticket.value.links ?? []) : []),
+})
 
 useHead({ title: computed(() => (ticket.value ? `${ticket.value.key} ${ticket.value.title}` : props.ticketKey)) })
 
@@ -154,7 +173,7 @@ async function readProject(): Promise<void> {
  * else resolves to whether the gate took the ticket's answer.
  */
 async function reload(): Promise<boolean> {
-  const results = await Promise.allSettled([readTicket(), readHistory(), readProject(), plan.read()])
+  const results = await Promise.allSettled([readTicket(), readHistory(), readProject(), plan.read(), runs.read()])
   const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
   if (failed) {
     error.value = (failed.reason as Error).message
@@ -220,6 +239,7 @@ const live = useDispatchLive(
     reset: () => {
       gate.reset()
       plan.reset()
+      candidates.reset()
       resets.value++
     },
   },
@@ -235,15 +255,15 @@ const locked = computed(() => !ticket.value || deleted.value || archived.value)
 const words = computed(() => (ticket.value ? ticketWords(ticket.value) : null))
 const labelsById = computed(() => new Map((projectRead.value?.labels ?? []).map((l) => [l.id, l])))
 const milestonesById = computed(() => new Map((projectRead.value?.milestones ?? []).map((m) => [m.id, m])))
-const entries = computed(() =>
-  historyEntries(changes.value, {
-    labels: new Map([...labelsById.value].map(([id, l]) => [id, l.name])),
-    milestones: new Map([...milestonesById.value].map(([id, m]) => [id, m.name])),
-    agents: new Map(agents.value.map((a) => [a.id, a.name])),
-    tickets: ticketNames.value,
-    plans: new Map(plan.plans.value.map((p) => [p.id, p.n])),
-  }),
-)
+/** The names the history's words take: labels, milestones, agents, tickets and plan revisions by id. */
+const historyNames = computed<ChangeNames>(() => ({
+  labels: new Map([...labelsById.value].map(([id, l]) => [id, l.name])),
+  milestones: new Map([...milestonesById.value].map(([id, m]) => [id, m.name])),
+  agents: new Map(agents.value.map((a) => [a.id, a.name])),
+  tickets: ticketNames.value,
+  plans: new Map(plan.plans.value.map((p) => [p.id, p.n])),
+}))
+const entries = computed(() => historyEntries(changes.value, historyNames.value))
 
 /** The tickets the page knows the keys of, by id, for the history's words: the parent, the children, the relations' other ends. */
 const ticketNames = computed(() => {
@@ -255,6 +275,27 @@ const ticketNames = computed(() => {
   for (const r of t.relations ?? []) out.set(r.other.id, r.other.key)
   return out
 })
+
+/** What a delivery may name: the standing results of the ticket's runs. */
+const deliveryChoices = computed(() => candidateOptions(candidates.runs.value))
+const withdrawn = (candidate: string) => candidateWithdrawn(candidate, candidates.byRun)
+/** The launches the page knows, each once, newest first: the Plan's and the Runs'. */
+const knownLaunches = computed<LaunchSummary[]>(() => {
+  const out = new Map<string, LaunchSummary>()
+  for (const e of runs.entries.value) if (e.launch) out.set(e.launch.id, e.launch)
+  for (const [id, l] of plan.launches) if (!out.has(id) || (out.get(id)!.rev ?? 0) < l.rev) out.set(id, l)
+  return [...out.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+})
+const decisions = computed(() => (ticket.value ? ticketDecisions({ plans: plan.plans.value, ticket: ticket.value, runs: candidates.runs.value }) : []))
+/** The approved revision with its body, once read: its required decisions, its agents. */
+const approvedPlan = computed(() => {
+  const a = plan.approved.value
+  const body = a ? plan.bodies.get(a.id) : undefined
+  return a && body ? { n: a.n, body } : null
+})
+const people = computed(() =>
+  ticket.value ? ticketPeople({ ticket: ticket.value, plans: plan.plans.value, launches: knownLaunches.value, agentName: (id) => agents.value.find((a) => a.id === id)?.name }) : [],
+)
 
 /** The ticket's attachments as the browser shows them: images and downloads through object URLs of their content, fetched with the token. */
 const files = useDispatchAttachments(() => ticket.value?.attachments ?? [])
@@ -634,7 +675,12 @@ const comments = useTemplateRef<{ insert: (text: string) => void }>('comments')
 // The Plan section's rows in the palette's page group (DS2): Propose a plan revision, Approve revision n, Launch from revision n (asked
 // first, in its dialog) and Open run, each opening its dialog once the palette has closed. Launch from the approved plan, the Tickets
 // group's row, opens this page with ?launch=approved, which opens the dialog once the revisions are read, or says why not.
-const planSection = useTemplateRef<{ propose: () => void; approve: (p: PlanSummary) => void; launch: () => boolean }>('planSection')
+const planSection = useTemplateRef<{ propose: (p?: PlanSummary | null) => void; approve: (p: PlanSummary) => void; launch: () => boolean }>('planSection')
+
+/** Revise, from a launch's banner: a new revision from the one that launched it, prefilled. */
+function reviseFrom(planId: string) {
+  planSection.value?.propose(plan.plans.value.find((p) => p.id === planId) ?? null)
+}
 const palette = usePalette()
 const route = useRoute()
 const router = useRouter()
@@ -790,10 +836,13 @@ const askBrakeman = computed(() =>
             <TicketMarkdown :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text, base) => saveText('description', text, base)" :disabled="locked" name="description" :attachment-url="files.resolver.value" />
             <TicketMarkdown :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" :attachment-url="files.resolver.value" />
             <DispatchPlan ref="planSection" :ticket="ticket" :plans="plan" :project="project" :archived="archived" :locked="locked" :agents="agents" :now="now" />
+            <DispatchRuns :links="ticket.links ?? []" :runs="runs" :changes="changes" :names="historyNames" :history-more="!!historyNext" :locked="locked" :now="now" :add="linkRun" :remove="removeLink" @revise="reviseFrom" @follow-up="planSection?.launch()" />
+
+            <DispatchDecisions :rows="decisions" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :now="now" />
 
             <DispatchClosePolicy :ticket="ticket" :locked="locked" :now="now" :accept="accept" :unaccept="unaccept" :close="closeTicket" />
-            <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" />
-            <DispatchRuns :links="ticket.links ?? []" :locked="locked" :now="now" :add="linkRun" :remove="removeLink" />
+            <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" :candidates="deliveryChoices" :candidates-loading="candidates.loading.value" :candidates-error="candidates.error.value" :withdrawn="withdrawn" />
+            <DispatchPeople :people="people" :plan="approvedPlan" :launches="knownLaunches" :agents="agents" />
 
             <DispatchRelations :ticket="ticket" :project="project" :locked="locked" :add="addRelation" :remove="removeRelation" />
             <DispatchAttachments :attachments="ticket.attachments ?? []" :locked="locked" :now="now" :upload="upload" :remove="removeAttachment" :image="files.image" :download="files.download" @insert="(md: string) => comments?.insert(md)" />
