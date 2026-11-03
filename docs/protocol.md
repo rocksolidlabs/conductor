@@ -3524,7 +3524,11 @@ bytes, resolved as the brief is kept against the record it names.
 **The `brakeman` event.** After each change of a request's state the
 server sends `brakeman` on `GET /api/events`: `{id, state}`, at most 200
 bytes, `state` the one the records hold as the event is sent, so the last
-event a request's changes send carries its state now. Like a `run` event it is state a page cannot do without: a client
+event a request's changes send carries its state now. It is sent once
+more, with the same state, when the turn gives the slot up (after a
+brief's grace, once its run is stopped and its processes reaped): a page
+that read `GET /api/brakeman` while the closed request still held the
+slot reads it again, and `current` is then another request or `null`. Like a `run` event it is state a page cannot do without: a client
 that cannot keep up is dropped and reads again on its next `snapshot`.
 It reaches the pages alone, never a webhook.
 
