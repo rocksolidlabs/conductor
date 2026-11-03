@@ -3572,9 +3572,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestAnAttemptAndItsChecksReportTheSameWhere`,
   `TestTheTaskReadReportsWhere` and the ledger's migration test (named
   `TestAVersion6DatabaseIsBroughtToVersion7`, the schema being 7) green
-  in CI and on the Mac's row in PR-4's checks and again in PR-5's; the
-  contract checks above green against the native Runtime on Linux and on
-  the Mac. By hand, runs 2 and 3 (the example crew with real agents to its
+  in CI and on the Mac's row in PR-4's checks, and in PR-5's whole-module
+  race run on Linux and on the Mac; the contract checks above green
+  against the native Runtime on Linux and on the Mac. By hand, runs 2 and 3 (the example crew with real agents to its
   end on WSL and on the Mac, every `where` `native`, a version 6 ledger
   upgraded; a real agent's session, `conductor host` against a server on
   the same machine and the Windows desktop app, each as before) are not
