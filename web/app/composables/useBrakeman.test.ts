@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { computed, ref, watch, type Ref } from 'vue'
 import type { BrakemanRequest, BrakemanState } from '../utils/brakeman'
+import { makeAgain } from '../utils/brakemanCards'
 import { ApiError } from './useApi'
-import { BrakemanLive, asBrakemanEvent, keepOpened, sendTwice, type BrakemanReads } from './useBrakeman'
+import { BrakemanLive, asBrakemanEvent, brakemanLive, keepOpened, sendTwice, useBrakeman, type BrakemanReads } from './useBrakeman'
 
 // Brakeman's live store and its writes (docs/plans/brakeman.md, PR-6): an id kept across a lost reply, and the `brakeman` events
 // folded into the list.
@@ -413,5 +415,100 @@ describe('the briefs a browser opened', () => {
     expect(kept).toHaveLength(500)
     expect(kept.slice(0, 3)).toEqual(['br-700', 'br-600', 'br-499'])
     expect(kept).not.toContain('br-1')
+  })
+})
+
+describe('the makes kept, across a new token', () => {
+  // useBrakeman reads Nuxt's auto-imports (useApi, useState, computed, watch) as globals: each is stubbed, and the make route is the
+  // test's, answering as each case says.
+  type Answer = () => Promise<unknown>
+  let states: Map<string, Ref<unknown>>
+  let answers: Answer[]
+  let sent: Array<{ path: string; body: unknown }>
+  beforeEach(() => {
+    states = new Map()
+    answers = []
+    sent = []
+    vi.stubGlobal('useState', <T>(key: string, init: () => T) => {
+      if (!states.has(key)) states.set(key, ref(init()))
+      return states.get(key) as Ref<T>
+    })
+    vi.stubGlobal('computed', computed)
+    vi.stubGlobal('watch', watch)
+    vi.stubGlobal('useApi', () => ({
+      request: (path: string, opts: { body?: unknown } = {}) => {
+        sent.push({ path, body: opts.body })
+        return answers.shift()!()
+      },
+    }))
+    brakemanLive().reset()
+  })
+  afterEach(() => void vi.unstubAllGlobals())
+
+  /** One server's br-3 and another's: the same id, written at other times. */
+  const first = req('br-3', 'briefed', { hasBrief: true, createdAt: '2026-11-02T09:00:00.123456789Z' })
+  const other = req('br-3', 'briefed', { hasBrief: true, createdAt: '2026-11-03T10:30:00.987654321Z' })
+  const failed = () => Promise.reject(new ApiError(500, 'make_failed', 'the backend failed'))
+  /** An answer the test gives when it says. */
+  function held() {
+    let answer!: (v: Answer) => void
+    const out = new Promise<unknown>((done, fail) => (answer = (v) => void v().then(done, fail)))
+    answers.push(() => out)
+    return answer
+  }
+
+  it("are the request's they were asked of: another server's br-3 finds none to finish, and the first server's still does", async () => {
+    const bk = useBrakeman()
+    answers.push(failed)
+    await expect(bk.make(first, 1, { edit: { title: 'For the first server' } })).rejects.toThrow('the backend failed')
+    expect(bk.keptMake(first, 1)).toMatchObject({ body: { edit: { title: 'For the first server' } } })
+    // A new token, another server: its br-3 has a draft at item 1 and no make.
+    bk.reset()
+    expect(bk.keptMake(other, 1)).toBeUndefined()
+    expect(makeAgain(undefined, bk.keptMake(other, 1)).kind).toBe('none')
+    expect(() => bk.finishMake(other, 1)).toThrow('This browser holds no make of it to finish.')
+    expect(sent).toHaveLength(1)
+    // The first server's request, under any token, still finishes its make, as it was sent.
+    const kept = bk.keptMake(first, 1)!
+    answers.push(() => Promise.resolve({ request: { ...first, made: [{ item: 1, opId: kept.opId, state: 'made', key: 'BKC-1' }] }, made: {} }))
+    await bk.finishMake(first, 1)
+    expect(sent[1]).toEqual({ path: '/api/brakeman/requests/br-3/items/1/make', body: { opId: kept.opId, edit: { title: 'For the first server' } } })
+    expect(bk.keptMake(first, 1)).toBeUndefined()
+  })
+
+  it("answered after a reset, are not taken into the new token's store, nor kept for its requests", async () => {
+    const bk = useBrakeman()
+    const live = brakemanLive()
+    // Made: the reply arrives after the reset, once the new server's br-3 is read.
+    const made = held()
+    const making = bk.make(first, 1, { edit: { title: 'Made late' } })
+    bk.reset()
+    live.apply(other)
+    made(() => Promise.resolve({ request: { ...first, made: [{ item: 1, opId: 'x', state: 'made', key: 'BKC-1' }] }, made: {} }))
+    await making
+    expect(live.requests.get('br-3')).toEqual(other)
+    expect(bk.keptMake(first, 1)).toBeUndefined()
+    // Failed: the failure arrives after a reset, and the make is the first server's to finish, not the new one's.
+    const fail = held()
+    const failing = bk.make(first, 2, { edit: { title: 'Failed late' } })
+    bk.reset()
+    live.apply(other)
+    fail(failed)
+    await expect(failing).rejects.toThrow('the backend failed')
+    expect(bk.keptMake(other, 2)).toBeUndefined()
+    expect(bk.keptMake(first, 2)).toMatchObject({ body: { edit: { title: 'Failed late' } } })
+    expect(live.requests.get('br-3')).toEqual(other)
+  })
+
+  it('whose reply was lost, are not asked again after a reset: the retry would go with the new token', async () => {
+    const bk = useBrakeman()
+    const lost = held()
+    const making = bk.make(first, 1, { edit: { title: 'Lost once' } })
+    bk.reset()
+    lost(() => Promise.reject(new ApiError(0, 'network', 'Cannot reach the server')))
+    await expect(making).rejects.toThrow('The token changed before the make was asked again')
+    expect(sent).toHaveLength(1)
+    expect(bk.keptMake(first, 1)).toMatchObject({ body: { edit: { title: 'Lost once' } } })
+    expect(bk.keptMake(other, 1)).toBeUndefined()
   })
 })

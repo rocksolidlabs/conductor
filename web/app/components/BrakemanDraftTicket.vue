@@ -30,14 +30,14 @@ const priority = ref(props.item.priority ?? 0)
 const priorities = [0, 1, 2, 3, 4].map((p) => ({ label: p === 0 ? 'none' : `P${p}`, value: p }))
 
 /** The make this browser asked that did not finish, and what the card does about it. */
-const kept = computed(() => bk.keptMake(props.request.id, props.index))
+const kept = computed(() => bk.keptMake(props.request, props.index))
 /** A new make on its way: kept before it is sent (useBrakeman's make), it is this card's to answer, not one to finish yet. */
 const creating = ref(false)
 const again = computed(() => makeAgain(made.value, creating.value ? undefined : kept.value))
 watch(
   again,
   (a) => {
-    if (a.kind === 'drop') bk.forgetMake(props.request.id, props.index)
+    if (a.kind === 'drop') bk.forgetMake(props.request, props.index)
   },
   { immediate: true },
 )
@@ -72,11 +72,11 @@ async function create() {
   sending.value = true
   error.value = ''
   try {
-    if (finishing.value) await bk.finishMake(props.request.id, props.index)
+    if (finishing.value) await bk.finishMake(props.request, props.index)
     else {
       const edit = { project: project.value.trim(), title: title.value, description: description.value, acceptance: acceptance.value, priority: priority.value, blocks: props.item.blocks, from: props.item.from }
       creating.value = true
-      await bk.make(props.request.id, props.index, { by: displayBy(identity.name.value) || undefined, edit })
+      await bk.make(props.request, props.index, { by: displayBy(identity.name.value) || undefined, edit })
     }
   } catch (e) {
     // Made already (another tab, a reply lost twice): the request read again shows what it became.

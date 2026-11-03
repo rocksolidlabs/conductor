@@ -311,7 +311,18 @@ const KEPT_KEY = 'conductor.brakeman.kept-makes'
 /** How many unfinished makes a browser keeps: the newest, by when they were asked. */
 const KEPT_MAX = 50
 
-/** The makes this browser asked that did not finish, by `<request>/<item>`. */
+/** The request a make is of: its id, and when the server wrote it, which tells one server's br-1 from another's. */
+export type MakeOf = Pick<BrakemanRequest, 'id' | 'createdAt'>
+
+/**
+ * Where a make is kept: `<request>/<item>@<createdAt>`. A new token may be another server's, whose br-1 is another request written at
+ * another time: it never finds this one's make, and the server it was asked of (the same request, under any token) still does.
+ */
+export function keptKey(r: MakeOf, item: number): string {
+  return `${r.id}/${item}@${r.createdAt}`
+}
+
+/** The makes this browser asked that did not finish, by keptKey. */
 function readKept(): Record<string, KeptMake> {
   try {
     const v = JSON.parse(localStorage.getItem(KEPT_KEY) ?? '{}') as Record<string, KeptMake>
@@ -350,7 +361,8 @@ export function useBrakeman() {
    * The makes this browser asked that have no answer yet, or whose answer left them to be asked again (a reply lost twice, the backend
    * failing after the claim, a token refused before the route ran): each with its id and the body it sent, the one ask the route
    * finishes it on (the same id with other content is op_conflict, and another id make_pending). Kept in the browser's storage before
-   * the make is sent, so a page read again while it is out can still finish it.
+   * the make is sent, so a page read again while it is out can still finish it. Each is the request's it was asked of (keptKey), so a
+   * new token, which may be another server's, finds only its own.
    */
   const kept = useState<Record<string, KeptMake>>('brakemanKeptMakes', () => (import.meta.client ? readKept() : {}))
   const store = brakemanLive()
@@ -455,30 +467,35 @@ export function useBrakeman() {
    * Makes a brief's draft work (PR-7's forms send it): {request, made, ticket?, crew?}. Its id and body are kept for finishMake before
    * it is sent (sendKept); an answer that settles it forgets them, one that establishes nothing (unfinishedMake) leaves them kept.
    */
-  async function make(id: string, item: number, body: { by?: string; edit?: unknown } = {}, opId = mintCommandId()) {
+  async function make(r: MakeOf, item: number, body: { by?: string; edit?: unknown } = {}, opId = mintCommandId()) {
     const at = store.generation
+    const key = keptKey(r, item)
     const keep = () => {
-      kept.value = { ...kept.value, [`${id}/${item}`]: { opId, body, at: Date.now() } }
+      kept.value = { ...kept.value, [key]: { opId, body, at: Date.now() } }
       writeKept(kept.value)
     }
-    const out = await sendKept(keep, () => forgetMake(id, item), () =>
-      sendTwice(
-        (b) => request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(id)}/items/${item}/make`, { method: 'POST', body: b }),
-        { opId, ...body },
-      ),
-    )
+    // A reply lost is asked again only with the token it was sent with: after a reset the server may be another one, and the make
+    // stays kept for the one it was asked of.
+    const send = (b: { opId: string; by?: string; edit?: unknown }) =>
+      store.generation === at
+        ? request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(r.id)}/items/${item}/make`, { method: 'POST', body: b })
+        : Promise.reject(new ApiError(0, 'network', 'The token changed before the make was asked again: it is kept for the server it was asked of.'))
+    const out = await sendKept(keep, () => forget(key), () => sendTwice(send, { opId, ...body }))
     store.apply(out.request, at)
     return out
   }
 
   /** The make of the item this browser asked that did not finish, or undefined. */
-  function keptMake(id: string, item: number): KeptMake | undefined {
-    return kept.value[`${id}/${item}`]
+  function keptMake(r: MakeOf, item: number): KeptMake | undefined {
+    return kept.value[keptKey(r, item)]
   }
 
   /** Forgets the item's unfinished make: it was answered, or another make holds the item. */
-  function forgetMake(id: string, item: number) {
-    const key = `${id}/${item}`
+  function forgetMake(r: MakeOf, item: number) {
+    forget(keptKey(r, item))
+  }
+
+  function forget(key: string) {
     if (!(key in kept.value)) return
     const rest = { ...kept.value }
     delete rest[key]
@@ -487,10 +504,10 @@ export function useBrakeman() {
   }
 
   /** Asks the item's unfinished make again, as it was sent: the same id and body, which the route finishes and never makes twice. */
-  function finishMake(id: string, item: number) {
-    const k = keptMake(id, item)
+  function finishMake(r: MakeOf, item: number) {
+    const k = keptMake(r, item)
     if (!k) throw new Error('This browser holds no make of it to finish.')
-    return make(id, item, k.body, k.opId)
+    return make(r, item, k.body, k.opId)
   }
 
   /** A request whole, with its brief (null until one is kept; its items a list, none for a brief of its summary alone). */
@@ -507,7 +524,10 @@ export function useBrakeman() {
     return new Map((out.refs ?? []).map((r) => [r.ref, r]))
   }
 
-  /** The token changed: what the store holds is dropped (the server may be another one), and so are replies to reads sent before. */
+  /**
+   * The token changed: what the store holds is dropped (the server may be another one), and so are replies to reads and writes sent
+   * before. The makes kept stay, each its own request's (keptKey): another server's requests never find them.
+   */
   function reset() {
     store.reset()
   }
