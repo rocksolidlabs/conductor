@@ -43,6 +43,7 @@ import { PICK_KEYS, allPages, boardStep, milestoneProgress, moveEdit, newestRows
 import type { DispatchTicket, TicketSummary } from '~/composables/useDispatch'
 import { candidateName, candidateOptions, candidateRef, candidateSummary, candidateWithdrawn, parseCandidate, ticketDecisions, ticketPeople, verificationWords, verifiedShortfall } from './dispatch'
 import type { CandidateReceipt, LinkVerified, PlanSummary, RunCandidate, TaskCandidates, TicketLink } from '~/composables/useDispatch'
+import { launchBlockers, planRemedy } from './dispatchPlans'
 
 describe('the key parser', () => {
   it("reads a ticket's key as the store does: the project's key, a dash, a number without a leading zero", () => {
@@ -955,6 +956,21 @@ describe("a ticket's decisions and people (DS2, PR-12)", () => {
       ['accepted for Alice; the owner is now Bob', 'warning'],
       ['the description changed since revision 1 was approved', 'warning'],
     ])
+  })
+
+  it('says an approved revision whose agent changed does not hold, as Launch and the Plan\'s remedy say, and a changed crew alone still holds', () => {
+    const changed = plan(2, { state: 'approved', approvedAt: '2026-11-02T10:00:00Z', agentsChanged: true })
+    const rows = ticketDecisions({ plans: [changed], ticket: { close, links: [] }, runs: [] })
+    expect(rows.map((r) => [r.state, r.tone])).toEqual([['An agent of revision 2 resolves otherwise in the catalog now (its command, its recipes\' arguments or its environment)', 'warning']])
+    // The same picture as the remedy and the launch blockers: Revise, and no Launch.
+    expect(planRemedy(changed)).toBe('revise')
+    expect(launchBlockers(changed, { ticket: { key: 'CND-1', status: 'ready' }, project: 'CND', archived: false })).toHaveLength(1)
+    // A stale approval and a changed agent together: both said, in the order the blockers say them.
+    const both = ticketDecisions({ plans: [{ ...changed, stale: { words: 'the description changed since revision 2 was approved', remedy: 'approve' } }], ticket: { close, links: [] }, runs: [] })
+    expect(both[0]!.state).toBe('the description changed since revision 2 was approved; An agent of revision 2 resolves otherwise in the catalog now (its command, its recipes\' arguments or its environment)')
+    // A crew edited since stops nothing (the revision keeps the crew it was made from): the approval holds.
+    const crew = ticketDecisions({ plans: [plan(2, { state: 'approved', approvedAt: 'x', crewChanged: true })], ticket: { close, links: [] }, runs: [] })
+    expect(crew.map((r) => [r.state, r.tone])).toEqual([['holds', 'success']])
   })
 
   it('names each person once with every role, people before agents, and the comments of live comments alone', () => {

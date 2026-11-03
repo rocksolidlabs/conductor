@@ -1,4 +1,5 @@
 import type { CandidateReceipt, CloseRequirement, CloseState, DispatchChange, DispatchSort, DispatchTicket, Horizon, LabelColor, LaunchSummary, LinkVerified, PlanSummary, RelatedTicket, RunCandidate, TaskCandidates, TicketAttachment, TicketComment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary, Tracker, VerifiedReceipt } from '~/composables/useDispatch'
+import { planReasons } from './dispatchPlans'
 import type { Tone } from './tasks'
 
 // Dispatch's words (docs/plans/dispatch.md, "web/app"): the key parser; the vocabularies of a ticket's fields with their words, colours
@@ -1618,8 +1619,19 @@ export function ticketDecisions(o: {
   const out: DecisionRow[] = []
   for (const p of o.plans) {
     if (!p.approvedAt) continue
+    // An approved revision holds only while nothing stops its launch: the same blocking reasons Launch and the Plan's remedy read (a stale
+    // approval, an agent that resolves otherwise now), so Decisions never says "holds" of a revision that must be revised first.
+    const blocking = p.state === 'approved' ? planReasons(p).filter((r) => r.blocks) : []
     const state =
-      p.state === 'approved' ? (p.stale ? p.stale.words : 'holds') : p.state === 'superseded' ? 'superseded by a later approval' : p.state === 'withdrawn' ? 'withdrawn since' : p.state
+      p.state === 'approved'
+        ? blocking.length
+          ? blocking.map((r) => r.words).join('; ')
+          : 'holds'
+        : p.state === 'superseded'
+          ? 'superseded by a later approval'
+          : p.state === 'withdrawn'
+            ? 'withdrawn since'
+            : p.state
     out.push({
       key: `approval:${p.id}`,
       kind: 'approval',
@@ -1627,7 +1639,7 @@ export function ticketDecisions(o: {
       by: p.approvedBy || 'admin',
       title: `Approved plan r${p.n} (${p.crewName})`,
       state,
-      tone: p.state === 'approved' && !p.stale ? 'success' : p.state === 'approved' ? 'warning' : 'muted',
+      tone: p.state === 'approved' ? (blocking.length ? 'warning' : 'success') : 'muted',
       note: p.approvedNote ?? '',
     })
   }
