@@ -89,8 +89,18 @@ async function candidatesOf(api: Api, run: string, taskId: string): Promise<Cand
   return r.candidates.find((t) => t.task === taskId)?.candidates ?? []
 }
 
+/**
+ * Raises the running test's timeout by the cap of a long wait as the step is about to make it (AGENTS.md, Tests that do not flake), as
+ * dispatch-plan.spec.ts does: the run's waits are two minutes each, and their sum is above the slow test's timeout.
+ */
+function budget(ms: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + ms)
+}
+
 /** A run read until `done` holds of it. */
 async function runUntil(api: Api, id: string, done: (r: Run) => boolean, message: string, timeout = 120_000): Promise<Run> {
+  budget(timeout)
   let last = await api.run(id)
   await expect.poll(async () => done((last = await api.run(id))), { timeout, intervals: [500], message }).toBe(true)
   return last
@@ -138,12 +148,14 @@ test('a launched run under Runs: its candidates with their receipts and where th
 
   // Attempt 1 of build submitted and its check runs, held at the gate; hold's attempt runs too. The run paused there, the title and the
   // description edited, then the gate opened: the check fails, and no attempt starts while the run is paused.
+  budget(120_000)
   await expect.poll(async () => (await candidatesOf(api, run, 'build'))[0]?.receipts[0]?.state ?? '', { timeout: 120_000, message: "build's first check runs" }).toMatch(/^(started|running)$/)
   await runUntil(api, run, (r) => task(r, 'hold').state === 'running' && !!member(r, 'asker').sessionId, "hold's attempt runs")
   await api.ok('POST', `/api/runs/${encodeURIComponent(run)}/pause`, { commandId: `${key.toLowerCase()}-pause` })
   const before = await storedTicket(api, ticketKey)
   await api.ok('POST', `/api/dispatch/tickets/${ticketKey}/edit`, { opId: opOf(key, 'e1'), expectedRev: before.rev, set: { title: 'Fix the login loop, and the logout', description: 'It loops, and logging out loops too.' } })
   writeFileSync(join(gateDir, 'open'), '')
+  budget(60_000)
   await expect.poll(async () => (await candidatesOf(api, run, 'build'))[0]?.receipts[0]?.state ?? '', { timeout: 60_000, message: "build's first check ends" }).toBe('finished')
   const paused = await api.run(run)
   expect([paused.paused, task(paused, 'build').attempts]).toEqual([true, 1])
