@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, ref, watch, type Ref } from 'vue'
-import type { BrakemanRequest, BrakemanState } from '../utils/brakeman'
+import type { BrakemanConfig, BrakemanRequest, BrakemanState } from '../utils/brakeman'
 import { makeAgain } from '../utils/brakemanCards'
 import { ApiError } from './useApi'
 import { BrakemanLive, asBrakemanEvent, brakemanLive, keepOpened, sendTwice, useBrakeman, type BrakemanReads } from './useBrakeman'
@@ -510,5 +510,52 @@ describe('the makes kept, across a new token', () => {
     expect(sent).toHaveLength(1)
     expect(bk.keptMake(first, 1)).toMatchObject({ body: { edit: { title: 'Lost once' } } })
     expect(bk.keptMake(other, 1)).toBeUndefined()
+  })
+
+  describe('and the other writes', () => {
+    const lost = () => Promise.reject(new ApiError(0, 'network', 'Cannot reach the server'))
+
+    it("whose reply was lost, are asked again with the token they were sent with, and never with the next one's", async () => {
+      const bk = useBrakeman()
+      // Under one token a lost reply is asked once more, with the same id.
+      answers.push(lost, () => Promise.resolve({ request: { ...first, state: 'cancelled' } }), () => Promise.resolve({ config: {}, current: null, queue: [], turnsToday: 0 }))
+      await bk.cancel('br-3')
+      await settle()
+      expect(sent.map((s) => s.path)).toEqual(['/api/brakeman/requests/br-3/cancel', '/api/brakeman/requests/br-3/cancel', '/api/brakeman'])
+      expect(sent[1]).toEqual(sent[0])
+      sent.length = 0
+      // A cancel of the first server's br-3, its reply lost after a reset: sent again it would cancel the new server's br-3.
+      const cancelling = held()
+      const cancel = bk.cancel('br-3')
+      bk.reset()
+      cancelling(lost)
+      await expect(cancel).rejects.toThrow('The token changed before the cancel of br-3 was sent again')
+      // An ask, likewise: sent again it would start a turn on the new server.
+      const asking = held()
+      const ask = bk.ask({ kind: 'briefing' })
+      bk.reset()
+      asking(lost)
+      await expect(ask).rejects.toThrow('The token changed before the ask was sent again')
+      expect(sent.map((s) => s.path)).toEqual(['/api/brakeman/requests/br-3/cancel', '/api/brakeman/requests'])
+    })
+
+    it("a configuration saved, answered after a reset, is not shown over the new server's, though its revision is the same", async () => {
+      const bk = useBrakeman()
+      const live = brakemanLive()
+      const conf = (over: Partial<BrakemanConfig>) => ({ enabled: true, agentId: 'claude', cwd: '/srv', allowConductorTools: false, visibility: {} as never, scope: {}, permissions: { observe: true, draft: true, propose: true }, wake: { mode: 'invoked' }, budget: { turnMinutes: 15, readsPerTurn: 300, turnsPerDay: 40 }, rev: 2, ...over }) as BrakemanConfig
+      const saving = held()
+      const save = bk.saveConfig(conf({ rev: 1, cwd: '/first' }))
+      // A reset, and the new server's configuration read: revision 2 as well.
+      bk.reset()
+      const second: BrakemanState = { config: conf({ cwd: '/second' }), current: null, queue: [], turnsToday: 0 }
+      live.state = second
+      saving(() => Promise.resolve({ config: conf({ cwd: '/first' }) }))
+      await expect(save).rejects.toThrow('The token changed before the save was answered')
+      expect(live.state).toEqual(second)
+      expect(bk.state.value?.config.cwd).toBe('/second')
+      expect(bk.generation.value).toBe(live.generation)
+      // Nothing more was sent for the token before: no read of its state after the save.
+      expect(sent).toHaveLength(1)
+    })
   })
 })

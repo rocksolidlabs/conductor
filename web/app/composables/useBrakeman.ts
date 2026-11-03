@@ -419,9 +419,23 @@ export function useBrakeman() {
     return store.readFirst()
   }
 
-  /** Saves the configuration read at `rev`: {config, warnings?}. */
+  /**
+   * A write's send, asked again (sendTwice) only with the token it was first sent with: useApi reads the token on every call, and
+   * after a reset the server may be another one, whose br-3 is not this one's. The retry is refused instead (`again`), as a reply lost
+   * twice is.
+   */
+  function sameToken<B, R>(at: number, again: string, send: (b: B) => Promise<R>): (b: B) => Promise<R> {
+    return (b) => (store.generation === at ? send(b) : Promise.reject(new ApiError(0, 'network', again)))
+  }
+
+  /**
+   * Saves the configuration read at `rev`: {config, warnings?}. A reply that arrives after a reset is the token before's (perhaps
+   * another server's configuration): it is refused, and neither the store nor the form takes it.
+   */
   async function saveConfig(config: BrakemanConfig) {
+    const at = store.generation
     const out = await request<{ config: BrakemanConfig; warnings?: string[] }>('/api/brakeman/config', { method: 'PUT', body: { rev: config.rev, config } })
+    if (store.generation !== at) throw new Error("The token changed before the save was answered: the configuration shown is this server's.")
     if (store.state) store.state = { ...store.state, config: out.config, warnings: out.warnings }
     version.value++
     void store.readState()
@@ -431,7 +445,10 @@ export function useBrakeman() {
   /** Asks Brakeman: the request kept (201) or the one this id asked already (200). */
   async function ask(body: { kind: string; subjects?: string[]; note?: string; since?: string; by?: string }) {
     const at = store.generation
-    const out = await sendTwice((b) => request<{ request: BrakemanRequest }>('/api/brakeman/requests', { method: 'POST', body: b }), { opId: mintCommandId(), ...body })
+    const send = sameToken(at, 'The token changed before the ask was sent again: see whether the server it was sent to has it.', (b: typeof body & { opId: string }) =>
+      request<{ request: BrakemanRequest }>('/api/brakeman/requests', { method: 'POST', body: b }),
+    )
+    const out = await sendTwice(send, { opId: mintCommandId(), ...body })
     store.apply(out.request, at)
     void store.readState()
     return out.request
@@ -440,7 +457,10 @@ export function useBrakeman() {
   /** Cancels a request: a queued one leaves the queue, one under way is written cancelled and its run stopped after. */
   async function cancel(id: string) {
     const at = store.generation
-    const out = await sendTwice((b) => request<{ request: BrakemanRequest }>(`/api/brakeman/requests/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: b }), { opId: mintCommandId() })
+    const send = sameToken(at, `The token changed before the cancel of ${id} was sent again: see whether the server it was sent to cancelled it.`, (b: { opId: string }) =>
+      request<{ request: BrakemanRequest }>(`/api/brakeman/requests/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: b }),
+    )
+    const out = await sendTwice(send, { opId: mintCommandId() })
     store.apply(out.request, at)
     void store.readState()
     return out.request
@@ -476,10 +496,9 @@ export function useBrakeman() {
     }
     // A reply lost is asked again only with the token it was sent with: after a reset the server may be another one, and the make
     // stays kept for the one it was asked of.
-    const send = (b: { opId: string; by?: string; edit?: unknown }) =>
-      store.generation === at
-        ? request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(r.id)}/items/${item}/make`, { method: 'POST', body: b })
-        : Promise.reject(new ApiError(0, 'network', 'The token changed before the make was asked again: it is kept for the server it was asked of.'))
+    const send = sameToken(at, 'The token changed before the make was asked again: it is kept for the server it was asked of.', (b: { opId: string; by?: string; edit?: unknown }) =>
+      request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(r.id)}/items/${item}/make`, { method: 'POST', body: b }),
+    )
     const out = await sendKept(keep, () => forget(key), () => sendTwice(send, { opId, ...body }))
     store.apply(out.request, at)
     return out
@@ -532,5 +551,11 @@ export function useBrakeman() {
     store.reset()
   }
 
-  return { state, requests, available, problem, hasMore, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, brief, refs, closed }
+  /** The store's generation, which a reset moves: what was read or set under one is not the next one's (Settings' form). */
+  const generation = computed(() => {
+    void version.value
+    return store.generation
+  })
+
+  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, brief, refs, closed }
 }

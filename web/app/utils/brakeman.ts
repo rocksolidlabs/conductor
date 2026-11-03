@@ -747,6 +747,18 @@ export function sameConfig(a: BrakemanConfig, b: BrakemanConfig): boolean {
   return norm(a) === norm(b)
 }
 
+/**
+ * What Settings' form does when the token or the configuration saved moves: `set` it from the configuration saved, `drop` it, or
+ * `keep` it. A form set under another token (the store's generation, which a reset moves) is never kept, edited or not: the server
+ * may be another one, whose revision 2 is not the revision the form was read at, so its settings would be saved over another's. A
+ * form of this token's follows the configuration saved until it is changed here.
+ */
+export function formMove(form: { gen: number; edited: boolean } | null, gen: number, saved: boolean): 'set' | 'drop' | 'keep' {
+  if (form && form.gen !== gen) return saved ? 'set' : 'drop'
+  if (!saved) return 'keep'
+  return !form || !form.edited ? 'set' : 'keep'
+}
+
 /** JSON with every object's keys in order, so two values are compared by what they hold. */
 function stable(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(stable).join(',')}]`
