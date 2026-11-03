@@ -14,9 +14,12 @@ import {
   launchEntryWords,
   logMatches,
   mergeEntries,
+  pickReceipt,
+  pickedReceipt,
   receiptChips,
   receiptDuration,
   receiptState,
+  receiptVersion,
   repairs,
   runBlockers,
   runQuestions,
@@ -267,6 +270,23 @@ describe('candidates', () => {
     expect(findingsWords({ nit: 1, blocker: 2 })).toBe('2 blocker, 1 nit')
   })
 
+  it('keep a receipt opened in full by its identity: a running check opened shows the finished receipt once a read has it', () => {
+    const running = receipt({ state: 'running', exit: undefined, finishedAt: undefined, logSha256: undefined, logBytes: 0 })
+    const c = candidate({ attempt: 2, commit: 'c2', receipts: [receipt({ id: 'lint' }), running] })
+    const pick = pickReceipt(c, running)
+    const page = (r: CandidateReceipt): TaskCandidates[] => [{ task: 'build', kind: 'work', more: 0, candidates: [{ ...c, receipts: [receipt({ id: 'lint' }), r] }] }]
+    expect(pickedReceipt(page(running), pick)).toEqual({ task: 'build', attempt: 2, commit: 'c2', receipt: running })
+    const finished = receipt()
+    expect(pickedReceipt(page(finished), pick)?.receipt).toEqual(finished)
+    // Its full view reads the log again when it finished, never for the same receipt read again unchanged.
+    expect(receiptVersion(finished)).not.toBe(receiptVersion(running))
+    expect(receiptVersion({ ...running })).toBe(receiptVersion(running))
+    // A review's receipt runs against the commit it reviewed; a read that no longer holds the receipt leaves it as it was opened.
+    const r = candidate({ task: 'review', kind: 'review', attempt: 1, start: 'c2', receipts: [running] })
+    expect(pickedReceipt([], pickReceipt(r, running))).toEqual({ task: 'review', attempt: 1, commit: 'c2', receipt: running })
+    expect(pickedReceipt(page(finished), null)).toBeNull()
+  })
+
   it('make their repairs: a failed check then the attempt at its result, a review then the reviewed task at the commit it reviewed', () => {
     const tasks: TaskCandidates[] = [
       {
@@ -289,6 +309,39 @@ describe('candidates', () => {
     expect(repairs(tasks)).toEqual([
       { key: 'check:build:1', kind: 'check', task: 'build', attempt: 1, commit: 'c1', what: 'check fixed', by: [{ task: 'build', attempt: 2, state: 'succeeded', commit: 'c2' }] },
       { key: 'review:review:1', kind: 'review', task: 'review', attempt: 1, commit: 'c2', what: '1 major', by: [{ task: 'build', attempt: 3, state: 'succeeded', commit: 'c3' }] },
+    ])
+  })
+
+  it('keep a repair that submitted the reviewed commit unchanged, and give each review of one commit the attempts after the one it read', () => {
+    const review = (attempt: number) => candidate({ task: 'review', kind: 'review', attempt, start: 'c1', verdict: 'needs_changes', findings: { major: 1 } })
+    // build/1 makes c1, review/1 asks for changes, build/2 starts at c1 and submits it unchanged.
+    const once: TaskCandidates[] = [
+      { task: 'build', kind: 'work', more: 0, candidates: [candidate({ attempt: 2, start: 'c1', commit: 'c1' }), candidate({ attempt: 1, start: 'b0', commit: 'c1' })] },
+      { task: 'review', kind: 'review', more: 0, candidates: [review(1)] },
+    ]
+    expect(repairs(once).map((r) => [r.key, r.by.map((b) => b.attempt)])).toEqual([['review:review:1', [2]]])
+    // review/2 reads build/2's c1 and asks again; build/3 starts at c1: the first review's repair is build/2 alone, the second's build/3.
+    const twice: TaskCandidates[] = [
+      { task: 'build', kind: 'work', more: 0, candidates: [candidate({ attempt: 3, start: 'c1', commit: 'c4' }), ...once[0]!.candidates] },
+      { task: 'review', kind: 'review', more: 0, candidates: [review(2), review(1)] },
+    ]
+    expect(repairs(twice).map((r) => [r.key, r.by.map((b) => b.attempt)])).toEqual([
+      ['review:review:1', [2]],
+      ['review:review:2', [3]],
+    ])
+    // A result that failed its check stood for no review: the check's repair that resubmitted it unchanged is what the review read.
+    const checked: TaskCandidates[] = [
+      {
+        task: 'build',
+        kind: 'work',
+        more: 0,
+        candidates: [candidate({ attempt: 3, start: 'c1', commit: 'c5' }), candidate({ attempt: 2, start: 'c1', commit: 'c1' }), candidate({ attempt: 1, start: 'b0', commit: 'c1', state: 'failed', receipts: [receipt({ exit: 1 })] })],
+      },
+      { task: 'review', kind: 'review', more: 0, candidates: [review(1)] },
+    ]
+    expect(repairs(checked).map((r) => [r.key, r.by.map((b) => b.attempt)])).toEqual([
+      ['check:build:1', [2, 3]],
+      ['review:review:1', [3]],
     ])
   })
 

@@ -2,7 +2,7 @@
 import type { CandidateReceipt, RunCandidate } from '~/composables/useDispatch'
 import type { RunTask } from '~/composables/useSessions'
 import { candidateKey } from '~/composables/useRunCandidates'
-import { candidateWords, findingsCount, findingsWords, receiptChips, receiptKey, receiptName, receiptState, repairs } from '~/utils/dispatchEvidence'
+import { type ReceiptPick, candidateWords, findingsCount, findingsWords, pickReceipt, pickedReceipt, receiptChips, receiptKey, receiptName, receiptState, repairs } from '~/utils/dispatchEvidence'
 import { shortCommit } from '~/utils/dispatchPlans'
 
 /**
@@ -32,11 +32,13 @@ function severityColor(s: string): 'error' | 'warning' | 'neutral' | 'info' {
   return s === 'blocker' ? 'error' : s === 'major' ? 'warning' : s === 'minor' ? 'info' : 'neutral'
 }
 
-// A receipt opened in full.
+// A receipt opened in full, kept by its identity and found in the candidates as each read finds them: a check opened while it ran shows
+// the finished receipt and its log once a read has it.
 const receiptOpen = ref(false)
-const shown = ref<{ task: string; attempt: number; commit: string; receipt: CandidateReceipt } | null>(null)
+const picked = ref<ReceiptPick | null>(null)
+const shown = computed(() => pickedReceipt(tasks.value, picked.value))
 function openReceipt(c: RunCandidate, r: CandidateReceipt) {
-  shown.value = { task: c.task, attempt: c.attempt, commit: (c.kind === 'review' ? c.start : c.commit) ?? '', receipt: r }
+  picked.value = pickReceipt(c, r)
   receiptOpen.value = true
 }
 

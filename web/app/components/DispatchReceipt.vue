@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { CandidateReceipt } from '~/composables/useDispatch'
 import type { RunStep } from '~/composables/useSessions'
-import { durationWords, logMatches, receiptChips, receiptDuration, receiptName, stepOf } from '~/utils/dispatchEvidence'
+import { durationWords, logMatches, receiptChips, receiptDuration, receiptName, receiptVersion, stepOf } from '~/utils/dispatchEvidence'
 import { shortCommit } from '~/utils/dispatchPlans'
 import { stepCommand } from '~/utils/tasks'
 
@@ -33,9 +33,11 @@ const loading = ref(false)
 /** Each opening, counted: a read's answer is shown only in the opening it was made for. */
 let opened = 0
 
+// Read again when the receipt moves (a check that finishes), never for the same receipt read again unchanged (receiptVersion).
 watch(
-  () => [open.value, props.runId, props.task, props.attempt, props.receipt] as const,
-  async ([isOpen, run, task, n, r]) => {
+  () => [open.value, props.runId, props.task, props.attempt, props.receipt ? receiptVersion(props.receipt) : ''] as const,
+  async ([isOpen, run, task, n]) => {
+    const r = props.receipt
     const mine = ++opened
     step.value = null
     stepError.value = ''
