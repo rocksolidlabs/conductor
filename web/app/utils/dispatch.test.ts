@@ -41,6 +41,8 @@ import {
 } from './dispatch'
 import { PICK_KEYS, allPages, boardStep, milestoneProgress, moveEdit, newestRows, paletteListed, patchRows, pickAdds, pickEdit, pickHeld, roadmapStep, targetWords, ticketSummaryOf, typedPick, withMoves, withPatched } from './dispatch'
 import type { DispatchTicket, TicketSummary } from '~/composables/useDispatch'
+import { candidateName, candidateOptions, candidateRef, candidateSummary, candidateWithdrawn, parseCandidate, ticketDecisions, ticketPeople, verificationWords, verifiedShortfall } from './dispatch'
+import type { CandidateReceipt, LinkVerified, PlanSummary, RunCandidate, TaskCandidates, TicketLink } from '~/composables/useDispatch'
 
 describe('the key parser', () => {
   it("reads a ticket's key as the store does: the project's key, a dash, a number without a leading zero", () => {
@@ -283,7 +285,7 @@ describe("the close card's words (PR-11)", () => {
 describe("the close policy's editor", () => {
   it('keeps the policy in its order, each requirement once, nothing it does not know', () => {
     expect(closeRequiresOf(['delivery', 'acceptance', 'delivery'])).toEqual(['acceptance', 'delivery'])
-    expect(closeRequiresOf(['verified', 'delivery'])).toEqual(['delivery'])
+    expect(closeRequiresOf(['verified', 'delivery', 'merged'])).toEqual(['delivery', 'verified'])
     expect(closeRequiresOf([])).toEqual([])
   })
   it('tells two policies apart whatever their order', () => {
@@ -446,6 +448,7 @@ describe("a ticket's history", () => {
     expect(changeWords(row({ op: 'remove', field: 'labels', value: 'l9' }), names)).toBe('removed the label a label since deleted')
     expect(changeWords(row({ field: 'milestone_id', value: 'm1' }), names)).toBe('set the milestone to v1.0')
     expect(changeWords(row({ op: 'add', field: 'links', value: '{"kind":"delivery"}' }))).toBe('added a delivery link')
+    expect(changeWords(row({ op: 'add', field: 'links', value: `{"kind":"delivery","candidate":"team-0000aaaa/build/2@${'a'.repeat(40)}"}` }))).toBe('added a delivery link naming build#2')
     expect(changeWords(row({ field: 'deleted_at', value: '2026-10-30T10:00:00Z' }))).toBe('deleted it')
     expect(changeWords(row({ field: 'accepted_for', value: 'Alice' }))).toBe('accepted it for Alice')
     expect(changeWords(row({ op: 'reconcile', field: 'parent_id', value: '' }))).toBe("cleared the parent (a merge's repair)")
@@ -787,5 +790,167 @@ describe('a name typed into the owner and assignee pickers', () => {
     expect(typedPick('owner', '  Priya ', ['', 'Nate'])).toBe('Priya')
     expect(typedPick('owner', 'x'.repeat(70), [])).toBe('x'.repeat(60))
     expect(typedPick('assignees', '   ', [])).toBeNull()
+  })
+})
+
+describe("a delivery's candidate and its verification (DS2, PR-12)", () => {
+  const commit = 'c'.repeat(40)
+  const ref = `team-0000aaaa/build/2@${commit}`
+  const rc = (p: Partial<LinkVerified['receipts'][number]> = {}) => ({ phase: 'check' as const, id: 'test', k: 1, where: 'native', exit: 0, stable: true, ...p })
+  const verified = (p: Partial<LinkVerified> = {}): LinkVerified => ({ at: '2026-11-03T10:00:00Z', passed: true, attempt: 2, receipts: [rc(), rc({ id: 'lint' })], ...p })
+
+  it('reads and writes a candidate as the store keeps it, and names it the store\'s way', () => {
+    expect(parseCandidate(ref)).toEqual({ run: 'team-0000aaaa', task: 'build', attempt: 2, commit })
+    expect(candidateRef({ run: 'team-0000aaaa', task: 'build', attempt: 2, commit })).toBe(ref)
+    expect(candidateName(ref)).toBe('build#2')
+    expect(parseCandidate(`team-0000aaaa/build/2@${'c'.repeat(64)}`)?.commit).toHaveLength(64)
+    for (const bad of ['', 'team-0000aaaa/build/2', `team-0000aaaa/build/0@${commit}`, `build/2@${commit}`, `team-0000aaaa/build/2@${commit.slice(1)}`, `team-0000aaaa/build/2@${'C'.repeat(40)}`]) {
+      expect(parseCandidate(bad), bad).toBeNull()
+    }
+    expect(candidateName('not a candidate')).toBe('not a candidate')
+  })
+
+  it("says a delivery verified from the receipt it recorded, or how it fell short, in the store's words", () => {
+    expect(verificationWords({ candidate: ref, verified: verified() })).toMatchObject({ state: 'verified', text: 'Verified: build#2 passed 2 checks', tone: 'success', withdrawn: '' })
+    expect(verificationWords({ candidate: ref, verified: verified({ receipts: [rc()] }) }).text).toBe('Verified: build#2 passed its check')
+    const failed = verified({ passed: false, receipts: [rc(), rc({ id: 'never', exit: 1 })] })
+    expect(verificationWords({ candidate: ref, verified: failed })).toMatchObject({ state: 'unverified', text: 'Not verified: build#2 failed the check never (exit 1)', tone: 'warning' })
+    expect(verifiedShortfall({ receipts: [] })).toBe('ran no check')
+    expect(verifiedShortfall({ receipts: [rc({ phase: 'verify', id: 'lint', exit: undefined })] })).toBe('did not finish the verify step lint')
+    expect(verifiedShortfall({ receipts: [rc({ stable: false })] })).toBe('passed the check test but not stably')
+    expect(verifiedShortfall({ receipts: [rc()] })).toBe('passed its checks, but its attempt did not succeed')
+    expect(verificationWords({ candidate: ref, verified: verified({ passed: false, receipts: [] }) }).text).toBe('Not verified: build#2 ran no check')
+    // A delivery naming no candidate says nothing of verification; one whose receipt cannot be read says so.
+    expect(verificationWords({}).state).toBe('none')
+    expect(verificationWords({ candidate: ref }).text).toBe("Not verified: build#2's verification receipt cannot be read")
+    // A withdrawal later leaves the receipt as it was, and the row says it.
+    expect(verificationWords({ candidate: ref, verified: verified() }, true)).toMatchObject({ state: 'verified', withdrawn: "build#2's result was withdrawn after this was recorded; the receipt stays true of its commit." })
+  })
+
+  it("puts verified on the close card: the passing delivery's candidate named, else the server's words why not", () => {
+    const delivery = (id: string, p: Partial<TicketLink> = {}): TicketLink => ({ id, kind: 'delivery', ref: id, url: `https://h/${id}`, note: '', createdAt: '', createdBy: '', ...p })
+    const base = { owner: 'Alice', status: 'in_review' as const, acceptedAt: '', links: [] as TicketLink[] }
+    const met = closeCard({
+      ...base,
+      links: [delivery('a', { candidate: ref, verified: verified() })],
+      close: { requires: ['delivery', 'verified'], met: { acceptance: false, delivery: true, verified: true }, missing: [] },
+    })
+    expect(met.summary).toBe('To close: a delivery link · a verified delivery')
+    expect(met.items.map((i) => [i.requirement, i.met, i.state])).toEqual([
+      ['delivery', true, 'Delivered: one link'],
+      ['verified', true, 'Verified: build#2 passed 2 checks'],
+    ])
+    const unmet = closeCard({
+      ...base,
+      links: [delivery('a', { candidate: ref, verified: verified({ passed: false, receipts: [rc({ id: 'never', exit: 1 })] }) })],
+      close: { requires: ['verified'], met: { acceptance: false, delivery: true, verified: false }, missing: ['verified'], verifiedWhy: 'the delivered candidate build#2 failed the check never (exit 1)' },
+    })
+    expect(unmet.items[0]).toMatchObject({ requirement: 'verified', met: false, state: 'The delivered candidate build#2 failed the check never (exit 1)' })
+    // A server before PR-9 answers no verified at all: unmet, said as no candidate.
+    const old = closeCard({ ...base, close: { requires: ['verified'], met: { acceptance: false, delivery: false }, missing: ['verified'] } })
+    expect(old.items[0]).toMatchObject({ met: false, state: 'No delivery names a candidate' })
+    expect(closeRefusalWords(['acceptance', 'verified'])).toBe("It needs the owner's acceptance and a verified delivery to be done.")
+    expect(policyWords(['verified', 'acceptance'])).toBe("the owner's acceptance and a verified delivery")
+  })
+
+  const receipt = (p: Partial<CandidateReceipt> = {}): CandidateReceipt => ({ phase: 'check', id: 'test', k: 1, where: 'native', state: 'finished', exit: 0, timedOut: false, killed: false, stable: true, startedAt: '', logBytes: 0, logDropped: false, ...p })
+  const cand = (attempt: number, p: Partial<RunCandidate> = {}): RunCandidate => ({ task: 'build', kind: 'work', attempt, commit: String(attempt).repeat(40), state: 'succeeded', standing: false, withdrawn: false, receipts: [receipt()], ...p })
+  const tasks = (...ts: TaskCandidates[]) => ts
+  const work = (task: string, ...cs: RunCandidate[]): TaskCandidates => ({ task, kind: 'work', candidates: cs.map((c) => ({ ...c, task })), more: 0 })
+
+  it("offers each run's standing work results, with their receipts in short, never a review's, a withdrawn one or one twice", () => {
+    const runs = [
+      { run: 'team-0000bbbb', label: 'CND-12 again', tasks: tasks(work('build', cand(3, { standing: true, receipts: [receipt(), receipt({ id: 'lint' })] }), cand(2), cand(1)), { task: 'review', kind: 'review', candidates: [cand(1, { kind: 'review', task: 'review', standing: true, verdict: 'approved' })], more: 0 }) },
+      { run: 'team-0000aaaa', label: '', tasks: tasks(work('build', cand(3, { standing: true, state: 'failed', acceptedAnyway: { actor: 'admin', at: 'x', command: 'c1' }, receipts: [receipt({ id: 'never', exit: 1 })] })), work('docs', cand(1, { standing: true, withdrawn: true }))) },
+      { run: 'team-0000bbbb', label: 'CND-12 again', tasks: tasks(work('build', cand(3, { standing: true }))) },
+    ]
+    const opts = candidateOptions(runs)
+    expect(opts.map((o) => o.value)).toEqual([`team-0000bbbb/build/3@${'3'.repeat(40)}`, `team-0000aaaa/build/3@${'3'.repeat(40)}`])
+    expect(opts.map((o) => [o.label, o.description])).toEqual([
+      ['build#3 · 3333333', 'CND-12 again: 2 checks passed'],
+      ['build#3 · 3333333', 'team-0000aaaa: 1 of 1 failed: check never (exit 1), accepted anyway'],
+    ])
+    expect(candidateSummary(cand(1, { receipts: [] }))).toBe('no check: it cannot be verified')
+    expect(candidateSummary(cand(1, { receipts: [receipt()] }))).toBe('its check passed')
+    expect(candidateSummary(cand(1, { receipts: [receipt(), receipt({ id: 'tidy', stable: false })] }))).toBe('1 of 2 failed: check tidy (changed the tree)')
+  })
+
+  it('tells a delivered candidate withdrawn since from its run\'s candidates read now', () => {
+    const byRun = new Map([['team-0000aaaa', tasks(work('build', cand(2, { withdrawn: true }), cand(1)))]])
+    expect(candidateWithdrawn(`team-0000aaaa/build/2@${'2'.repeat(40)}`, byRun)).toBe(true)
+    expect(candidateWithdrawn(`team-0000aaaa/build/1@${'1'.repeat(40)}`, byRun)).toBe(false)
+    expect(candidateWithdrawn(`team-0000cccc/build/2@${'2'.repeat(40)}`, byRun)).toBe(false)
+    expect(candidateWithdrawn(undefined, byRun)).toBe(false)
+  })
+})
+
+describe("a ticket's decisions and people (DS2, PR-12)", () => {
+  const plan = (n: number, p: Partial<PlanSummary> = {}): PlanSummary => ({ id: `p${n}`, ticketId: 't1', n, crewId: 'team', crewName: 'the team', base: 'b'.repeat(40), digest: '', bytes: 0, state: 'proposed', createdAt: `2026-11-0${n}T09:00:00Z`, createdBy: 'Nate', fingerprint: '', rev: 1, ...p })
+  const close = { requires: [] as never[], met: { acceptance: true, delivery: false }, missing: [] as never[] }
+
+  it('lists the approvals with their notes, the acceptance, the Accept anyway receipts and the decision records, newest first', () => {
+    const rows = ticketDecisions({
+      plans: [
+        plan(2, { state: 'approved', approvedAt: '2026-11-02T10:00:00Z', approvedBy: 'Nate', approvedNote: 'Ship the smaller fix.' }),
+        plan(1, { state: 'superseded', approvedAt: '2026-11-01T10:00:00Z', approvedBy: 'Priya' }),
+        plan(3),
+      ],
+      ticket: {
+        acceptedAt: '2026-11-04T10:00:00Z',
+        acceptedBy: 'Alice',
+        acceptedFor: 'Alice',
+        acceptedNote: 'It holds.',
+        close,
+        links: [
+          { id: 'd1', kind: 'decision', ref: 'dr-1', url: '', note: 'from the other replica', createdAt: '2026-11-01T08:00:00Z', createdBy: 'Sam' },
+          { id: 'd2', kind: 'decision', ref: 'dr-2', url: '', note: '', createdAt: '2026-11-01T08:00:00Z', createdBy: 'Sam', deletedAt: 'x' },
+          { id: 'l1', kind: 'delivery', ref: 'u', url: 'u', note: '', createdAt: '2026-11-05T08:00:00Z', createdBy: 'Sam' },
+        ],
+      },
+      runs: [{ run: 'team-0000aaaa', label: 'CND-12', tasks: [{ task: 'build', kind: 'work', more: 0, candidates: [{ task: 'build', kind: 'work', attempt: 3, commit: 'c'.repeat(40), state: 'failed', standing: true, withdrawn: false, acceptedAnyway: { actor: 'Nate', at: '2026-11-03T10:00:00Z', command: 'c1' }, receipts: [] }] }] }],
+    })
+    expect(rows.map((r) => [r.kind, r.title, r.by, r.state, r.note])).toEqual([
+      ['acceptance', 'Accepted for Alice', 'Alice', 'holds', 'It holds.'],
+      ['accepted-anyway', 'Accepted build#3 anyway', 'Nate', 'CND-12: no check: it cannot be verified', ''],
+      ['approval', 'Approved plan r2 (the team)', 'Nate', 'holds', 'Ship the smaller fix.'],
+      ['approval', 'Approved plan r1 (the team)', 'Priya', 'superseded by a later approval', ''],
+      ['record', 'A decision record', 'Sam', 'dr-1', 'from the other replica'],
+    ])
+    expect(rows[1]!.run).toBe('team-0000aaaa')
+    // A stale approval says why; an acceptance no longer met says the server's words.
+    const stale = ticketDecisions({
+      plans: [plan(1, { state: 'approved', approvedAt: 'x', stale: { words: 'the description changed since revision 1 was approved', remedy: 'approve' } })],
+      ticket: { acceptedAt: 'y', acceptedFor: 'Alice', close: { ...close, met: { acceptance: false, delivery: false }, why: 'accepted for Alice; the owner is now Bob' }, links: [] },
+      runs: [],
+    })
+    expect(stale.map((r) => [r.state, r.tone])).toEqual([
+      ['accepted for Alice; the owner is now Bob', 'warning'],
+      ['the description changed since revision 1 was approved', 'warning'],
+    ])
+  })
+
+  it('names each person once with every role, people before agents, and the comments of live comments alone', () => {
+    const people = ticketPeople({
+      ticket: {
+        owner: 'Alice',
+        assignees: ['person:Bob', 'agent:claude', 'Alice'],
+        comments: [
+          { id: 'c1', ticketId: 't1', n: 1, author: 'admin', by: 'Nate', body: '', createdAt: '', rev: 1 },
+          { id: 'c2', ticketId: 't1', n: 2, author: 'agent:builder', by: '', body: '', createdAt: '', rev: 1 },
+          { id: 'c3', ticketId: 't1', n: 3, author: 'admin', by: 'Gone', body: '', createdAt: '', deletedAt: 'x', rev: 1 },
+        ],
+      },
+      plans: [plan(1, { approvedAt: 'x', approvedBy: 'Nate' }), plan(2)],
+      launches: [{ createdBy: 'Priya' }, { createdBy: 'Nate' }],
+      agentName: (id) => (id === 'claude' ? 'Claude Code' : undefined),
+    })
+    expect(people.map((p) => [p.kind, p.name, p.roles.join(' ')])).toEqual([
+      ['person', 'Alice', 'owner assignee'],
+      ['person', 'Bob', 'assignee'],
+      ['person', 'Nate', 'approver launcher commenter'],
+      ['person', 'Priya', 'launcher'],
+      ['agent', 'Claude Code', 'assignee'],
+      ['agent', 'builder', 'commenter'],
+    ])
   })
 })

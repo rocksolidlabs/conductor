@@ -13,8 +13,8 @@ export type TicketStatus = 'backlog' | 'ready' | 'in_progress' | 'in_review' | '
 export type Horizon = '' | 'now' | 'next' | 'later'
 /** A project's tracker: its own (native), or a pointer at another one by its URL (external). */
 export type Tracker = 'native' | 'external'
-/** What a project's close policy may require before a ticket is done. */
-export type CloseRequirement = 'acceptance' | 'delivery'
+/** What a project's close policy may require before a ticket is done: `verified` a delivery whose candidate passed its checks (DS2). */
+export type CloseRequirement = 'acceptance' | 'delivery' | 'verified'
 /** The twelve colours a label may have, by name; the UI maps each to one of the brand's scales (utils/dispatch.ts). */
 export type LabelColor = 'gray' | 'brown' | 'red' | 'orange' | 'amber' | 'yellow' | 'lime' | 'green' | 'teal' | 'cyan' | 'blue' | 'indigo'
 /** What a list is sorted by: its updated or created time, its priority, its status, its title, its key, its milestone. */
@@ -181,12 +181,40 @@ export interface TicketRelation {
   other: RelatedTicket
 }
 
+/** One receipt of a delivery's verification receipt: a check's or a verify step's run against the candidate's commit, where it ran. */
+export interface VerifiedReceipt {
+  phase: 'check' | 'verify'
+  id: string
+  k: number
+  where: string
+  /** Absent when it never finished. */
+  exit?: number
+  stable: boolean
+  logSha256?: string
+}
+
+/**
+ * A delivery's verification receipt (DS2, PR-9): the candidate's receipts as the ledger had them when the link was added, recorded then and
+ * never changed; `passed` when the attempt succeeded and every receipt finished with exit 0, stable, false for a candidate with no check.
+ */
+export interface LinkVerified {
+  at: string
+  passed: boolean
+  attempt: number
+  receipts: VerifiedReceipt[]
+}
+
 export interface TicketLink {
   id: string
-  kind: 'delivery' | 'run' | 'external'
+  /** `decision` is reserved for durable decision records (Program item DR1): refused on a local write, kept when a merge brings one. */
+  kind: 'delivery' | 'run' | 'external' | 'decision'
   ref: string
   url: string
   note: string
+  /** A delivery's candidate, `<run>/<task>/<n>@<commit>` (DS2). */
+  candidate?: string
+  /** That candidate's verification receipt, when it names one. */
+  verified?: LinkVerified
   createdAt: string
   createdBy: string
   deletedAt?: string
@@ -221,9 +249,12 @@ export interface TicketComment {
 /** A ticket's close policy as read: what its project requires, what it meets, what it lacks, and why an acceptance on record is unmet. */
 export interface CloseState {
   requires: CloseRequirement[]
-  met: { acceptance: boolean; delivery: boolean }
+  /** `verified` is absent from a server before DS2's PR-9, read as unmet. */
+  met: { acceptance: boolean; delivery: boolean; verified?: boolean }
   missing: CloseRequirement[]
   why?: string
+  /** Why `verified` is unmet: "the delivered candidate build#2 failed the check test (exit 1)", "no delivery names a candidate". */
+  verifiedWhy?: string
 }
 
 /** A ticket in full, as its page reads it (GET /api/dispatch/tickets/{key}), from one read transaction. */
@@ -766,10 +797,12 @@ export type LinkKind = TicketLink['kind']
  * run's id as its `ref`, a run the engine holds or has a record of and no other live ticket holds.
  */
 export interface NewLink {
-  kind: LinkKind
+  kind: Exclude<LinkKind, 'decision'>
   ref?: string
   url?: string
   note?: string
+  /** A delivery's candidate, `<run>/<task>/<n>@<commit>`: the server reads its verification receipt from the ledger (DS2). */
+  candidate?: string
 }
 
 /** How far a file's upload has gone, in bytes. */
