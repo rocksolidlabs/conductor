@@ -47,6 +47,14 @@ type Process struct {
 
 	mu   sync.Mutex
 	exit ExitStatus
+
+	// hold, while open, keeps the process unreaped (StartHeld): its pid,
+	// and so its group's id, stay its own however soon it exits. holding
+	// says it is still open; under holdMu, which orders Abort's signal
+	// before the reap.
+	hold    chan struct{}
+	holdMu  sync.Mutex
+	holding bool
 }
 
 // KillWait is the most Stop waits for the process after SIGKILL: Stop
@@ -57,7 +65,15 @@ const KillWait = 5 * time.Second
 var ErrNoCommand = errors.New("pty: empty command")
 
 // Start launches spec in a new session with a PTY of the requested size.
-func Start(spec Spec) (*Process, error) {
+func Start(spec Spec) (*Process, error) { return start(spec, false) }
+
+// StartHeld is Start with the process held unreaped until Release or
+// Abort, whichever comes first: Done is not closed before one of them,
+// however soon the process exits, so its pid and its group's id cannot be
+// another's when Abort signals the group.
+func StartHeld(spec Spec) (*Process, error) { return start(spec, true) }
+
+func start(spec Spec, held bool) (*Process, error) {
 	if len(spec.Argv) == 0 || strings.TrimSpace(spec.Argv[0]) == "" {
 		return nil, ErrNoCommand
 	}
@@ -93,12 +109,16 @@ func Start(spec Spec) (*Process, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pty: start %s: %w", spec.Argv[0], err)
 	}
-	p := &Process{f: f, cmd: cmd, done: make(chan struct{})}
+	p := &Process{f: f, cmd: cmd, done: make(chan struct{}), hold: make(chan struct{}), holding: held}
+	if !held {
+		close(p.hold)
+	}
 	go p.wait()
 	return p, nil
 }
 
 func (p *Process) wait() {
+	<-p.hold
 	err := p.cmd.Wait()
 	st := ExitStatus{Code: -1}
 	if err == nil {
@@ -174,6 +194,42 @@ func (p *Process) Stop(ctx context.Context, grace time.Duration) error {
 	case <-ctx.Done():
 	}
 	_ = syscall.Kill(pgid, syscall.SIGKILL)
+	select {
+	case <-p.done:
+		return nil
+	case <-time.After(KillWait):
+		return errors.New("pty: process did not exit after SIGKILL")
+	}
+}
+
+// Release lets a held process (StartHeld) be reaped: from here it is as
+// Start's. It does nothing on a process not held, or released already.
+func (p *Process) Release() {
+	p.holdMu.Lock()
+	defer p.holdMu.Unlock()
+	if p.holding {
+		p.holding = false
+		close(p.hold)
+	}
+}
+
+// Abort ends a held process (StartHeld) and its whole group: SIGKILL to
+// the group while the leader is unreaped, so the group's id is still its
+// own whether or not the leader has exited, then the reap, waited for at
+// most KillWait, and the PTY closed. A member that left the group (its own
+// setsid) is not reached. On a process released already it is Stop with
+// no grace.
+func (p *Process) Abort() error {
+	p.holdMu.Lock()
+	if !p.holding {
+		p.holdMu.Unlock()
+		return p.Stop(context.Background(), 0)
+	}
+	_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
+	p.holding = false
+	close(p.hold)
+	p.holdMu.Unlock()
+	defer p.f.Close()
 	select {
 	case <-p.done:
 		return nil

@@ -23,10 +23,10 @@ var _ ext.Runtime = native{}
 type native struct{ seam *startSeam }
 
 // startSeam is the tests' way into StartTerminal: gate runs before the
-// second check of the context, start in place of pty.Start (counting its
-// calls, or ending the context while it runs), and after once it has
-// returned. Each is nil outside the tests but start, which is pty.Start
-// when nil.
+// second check of the context, start in place of pty.StartHeld (counting
+// its calls, or ending the context while it runs), and after once it has
+// returned. Each is nil outside the tests but start, which is
+// pty.StartHeld when nil.
 type startSeam struct {
 	gate  func()
 	start func(pty.Spec) (*pty.Process, error)
@@ -42,9 +42,10 @@ func (native) Where() ext.Where { return ext.WhereNative }
 // Takes answers true for every ref: the native Runtime runs every run.
 func (native) Takes(ext.ProcessRef) bool { return true }
 
-// StartTerminal is pty.Start behind two checks of the context, the
-// second its commitment point: an ended context at either is answered
-// with its error and no pty.Start made. pty.Start takes no context and
+// StartTerminal is pty.Start (held until it returns, pty.StartHeld)
+// behind two checks of the context, the second its commitment point: an
+// ended context at either is answered with its error and no pty.Start
+// made. A nil s.Env is an empty environment. pty.Start takes no context and
 // cannot be interrupted (a fork and an exec, bounded by the kernel), so a
 // context that ends while it runs, or after, changes nothing: its
 // Terminal is returned, the caller's. pty.Start is done with s.DirFile
@@ -53,7 +54,7 @@ func (r native) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Term
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	start := pty.Start
+	start := pty.StartHeld
 	if r.seam != nil {
 		if r.seam.gate != nil {
 			r.seam.gate()
@@ -65,23 +66,32 @@ func (r native) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Term
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	p, err := start(pty.Spec{Argv: s.Argv, Dir: s.Dir, DirFile: s.DirFile, Env: s.Env, Cols: s.Cols, Rows: s.Rows})
+	// Exactly s.Env: an empty environment when s has none, never the
+	// server's own, which pty.Start gives a nil one (as os/exec does).
+	env := s.Env
+	if env == nil {
+		env = []string{}
+	}
+	p, err := start(pty.Spec{Argv: s.Argv, Dir: s.Dir, DirFile: s.DirFile, Env: env, Cols: s.Cols, Rows: s.Rows})
 	if err != nil {
 		return nil, err
 	}
-	// From here the process is this call's until it returns: a panic on the
-	// way (the seam's hook, in the tests) stops it with no grace, which
-	// kills its group and reaps it, and goes on unchanged.
+	// From here the process is this call's until it returns, held unreaped
+	// (pty.StartHeld): a panic on the way (the seam's hook, in the tests)
+	// aborts it, which kills its whole group while the leader's id is
+	// still its own, even once the leader has exited, and reaps it; the
+	// panic goes on unchanged. The return releases it, the caller's.
 	returned := false
 	defer func() {
 		if !returned {
-			p.Stop(context.Background(), 0)
+			p.Abort()
 		}
 	}()
 	t := &nativeTerminal{p: p, started: time.Now()}
 	if r.seam != nil && r.seam.after != nil {
 		r.seam.after()
 	}
+	p.Release()
 	returned = true
 	return t, nil
 }
