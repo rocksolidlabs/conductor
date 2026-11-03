@@ -24,6 +24,7 @@ type RuntimeCall struct {
 // the calls it was given; under the fake's mu.
 type runtimeScript struct {
 	declines bool
+	base     ext.Runtime
 	start    func(context.Context, ext.TerminalSpec) (ext.Terminal, error)
 	run      func(context.Context, ext.CommandSpec) ext.CommandResult
 	serve    func(context.Context, ext.CommandSpec) (ext.ServiceProcess, error)
@@ -36,6 +37,18 @@ type runtimeScript struct {
 func (f *FakeRuntime) SetTakes(takes bool) {
 	f.mu.Lock()
 	f.script.declines = !takes
+	f.mu.Unlock()
+	f.tell()
+}
+
+// SetBase has every method a test has not scripted (StartTerminal, Run,
+// Serve, Probe and Port) passed to base, recorded first as any call is, so
+// a test does a run's real work under a Where of the fake's (base
+// local.Native() for this machine's processes); nil: those methods refuse
+// again. Name, Where and Takes stay the fake's own.
+func (f *FakeRuntime) SetBase(base ext.Runtime) {
+	f.mu.Lock()
+	f.script.base = base
 	f.mu.Unlock()
 	f.tell()
 }
@@ -117,49 +130,67 @@ func (f *FakeRuntime) Takes(ref ext.ProcessRef) bool {
 	return !f.record(RuntimeCall{Method: "Takes", Ref: ref}).declines
 }
 
-// StartTerminal answers as scripted; unscripted, an error naming it, with
-// nothing started.
+// StartTerminal answers as scripted; unscripted, as its base does, or with
+// no base an error naming it, with nothing started.
 func (f *FakeRuntime) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Terminal, error) {
 	sc := f.record(RuntimeCall{Method: "StartTerminal", Ref: s.Ref, Terminal: s})
-	if sc.start == nil {
-		return nil, errors.New(f.unscripted("StartTerminal"))
+	switch {
+	case sc.start != nil:
+		return sc.start(ctx, s)
+	case sc.base != nil:
+		return sc.base.StartTerminal(ctx, s)
 	}
-	return sc.start(ctx, s)
+	return nil, errors.New(f.unscripted("StartTerminal"))
 }
 
-// Run answers as scripted; unscripted, Exit -1 with words naming it.
+// Run answers as scripted; unscripted, as its base does, or with no base
+// Exit -1 with words naming it.
 func (f *FakeRuntime) Run(ctx context.Context, s ext.CommandSpec) ext.CommandResult {
 	sc := f.record(RuntimeCall{Method: "Run", Ref: s.Ref, Command: s})
-	if sc.run == nil {
-		return ext.CommandResult{Exit: -1, Err: f.unscripted("Run")}
+	switch {
+	case sc.run != nil:
+		return sc.run(ctx, s)
+	case sc.base != nil:
+		return sc.base.Run(ctx, s)
 	}
-	return sc.run(ctx, s)
+	return ext.CommandResult{Exit: -1, Err: f.unscripted("Run")}
 }
 
-// Serve answers as scripted; unscripted, an error naming it, with nothing
-// started.
+// Serve answers as scripted; unscripted, as its base does, or with no base
+// an error naming it, with nothing started.
 func (f *FakeRuntime) Serve(ctx context.Context, s ext.CommandSpec) (ext.ServiceProcess, error) {
 	sc := f.record(RuntimeCall{Method: "Serve", Ref: s.Ref, Command: s})
-	if sc.serve == nil {
-		return nil, errors.New(f.unscripted("Serve"))
+	switch {
+	case sc.serve != nil:
+		return sc.serve(ctx, s)
+	case sc.base != nil:
+		return sc.base.Serve(ctx, s)
 	}
-	return sc.serve(ctx, s)
+	return nil, errors.New(f.unscripted("Serve"))
 }
 
-// Probe answers as scripted; unscripted, an error naming it.
+// Probe answers as scripted; unscripted, as its base does, or with no base
+// an error naming it.
 func (f *FakeRuntime) Probe(ctx context.Context, s ext.ProbeSpec) (int, error) {
 	sc := f.record(RuntimeCall{Method: "Probe", Ref: s.Ref, Probe: s})
-	if sc.probe == nil {
-		return 0, errors.New(f.unscripted("Probe"))
+	switch {
+	case sc.probe != nil:
+		return sc.probe(ctx, s)
+	case sc.base != nil:
+		return sc.base.Probe(ctx, s)
 	}
-	return sc.probe(ctx, s)
+	return 0, errors.New(f.unscripted("Probe"))
 }
 
-// Port answers as scripted; unscripted, an error naming it.
+// Port answers as scripted; unscripted, as its base does, or with no base
+// an error naming it.
 func (f *FakeRuntime) Port(ctx context.Context, ref ext.ProcessRef) (int, error) {
 	sc := f.record(RuntimeCall{Method: "Port", Ref: ref})
-	if sc.port == nil {
-		return 0, errors.New(f.unscripted("Port"))
+	switch {
+	case sc.port != nil:
+		return sc.port(ctx, ref)
+	case sc.base != nil:
+		return sc.base.Port(ctx, ref)
 	}
-	return sc.port(ctx, ref)
+	return 0, errors.New(f.unscripted("Port"))
 }

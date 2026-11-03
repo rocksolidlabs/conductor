@@ -3,6 +3,7 @@ package exttest
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -48,7 +49,8 @@ func TestFakeRuntimeSetWhereTellsChanged(t *testing.T) {
 // its spec (no DirFile, Log or Started kept), answers what a test scripts,
 // and, unscripted, its refusal: StartTerminal, Serve, Probe and Port an
 // error naming the method, Run Exit -1 with those words, Takes true unless
-// set. It passes the suite's Runtime check.
+// set. It passes the suite's checks that start nothing (Runtime): RunAll
+// would also ask for a RuntimeCase, its Where not native.
 func TestFakeRuntimeRecordsAndRefuses(t *testing.T) {
 	ctx := context.Background()
 	f := NewFakeRuntime("vm", "vm")
@@ -142,5 +144,143 @@ func TestFakeRuntimeRecordsAndRefuses(t *testing.T) {
 		t.Errorf("%d calls recorded, want 12", n)
 	}
 
-	RunAll(t, nil, ext.Providers{Runtime: f})
+	Runtime(t, nil, f)
+}
+
+// With a base, every method a test has not scripted passes to it, each
+// call recorded first; a scripted one answers its script; Takes and Where
+// stay the fake's.
+func TestFakeRuntimeBasePassesUnscriptedCalls(t *testing.T) {
+	ctx := context.Background()
+	base := NewFakeRuntime("base", "base")
+	base.SetRun(func(context.Context, ext.CommandSpec) ext.CommandResult { return ext.CommandResult{Exit: 5} })
+	base.SetPort(func(context.Context, ext.ProcessRef) (int, error) { return 40001, nil })
+	base.SetProbe(func(context.Context, ext.ProbeSpec) (int, error) { return 204, nil })
+	term := NewFakeTerminal(ext.ProcessInfo{PID: 7})
+	base.SetStartTerminal(func(context.Context, ext.TerminalSpec) (ext.Terminal, error) { return term, nil })
+	errServe := errors.New("base serve")
+	base.SetServe(func(context.Context, ext.CommandSpec) (ext.ServiceProcess, error) { return nil, errServe })
+	base.SetTakes(false)
+
+	f := NewFakeRuntime("vm", "vm")
+	f.SetBase(base)
+	ref := ext.ProcessRef{Run: "build-00000001"}
+	if !f.Takes(ref) {
+		t.Error("Takes passed to the base")
+	}
+	if got, err := f.StartTerminal(ctx, ext.TerminalSpec{Argv: []string{"agent"}, Ref: ref}); got != term || err != nil {
+		t.Errorf("StartTerminal: %v %v", got, err)
+	}
+	if res := f.Run(ctx, ext.CommandSpec{Argv: []string{"make"}, Ref: ref}); res.Exit != 5 {
+		t.Errorf("Run: %+v", res)
+	}
+	if _, err := f.Serve(ctx, ext.CommandSpec{Ref: ref}); !errors.Is(err, errServe) {
+		t.Errorf("Serve: %v", err)
+	}
+	if n, err := f.Probe(ctx, ext.ProbeSpec{Ref: ref}); n != 204 || err != nil {
+		t.Errorf("Probe: %d %v", n, err)
+	}
+	if n, err := f.Port(ctx, ref); n != 40001 || err != nil {
+		t.Errorf("Port: %d %v", n, err)
+	}
+	f.SetRun(func(context.Context, ext.CommandSpec) ext.CommandResult { return ext.CommandResult{Exit: 9} })
+	if res := f.Run(ctx, ext.CommandSpec{}); res.Exit != 9 {
+		t.Errorf("a scripted Run with a base: %+v", res)
+	}
+	var methods []string
+	for _, c := range f.RuntimeCalls() {
+		methods = append(methods, c.Method)
+	}
+	if got := strings.Join(methods, " "); got != "Takes StartTerminal Run Serve Probe Port Run" {
+		t.Errorf("the fake recorded %s", got)
+	}
+	if n := len(base.RuntimeCalls()); n != 5 {
+		t.Errorf("the base was given %d calls, want 5 (Takes and the scripted Run are the fake's)", n)
+	}
+	f.SetBase(nil)
+	if res := f.Run(ctx, ext.CommandSpec{}); res.Exit != 9 {
+		t.Errorf("a scripted Run with the base gone: %+v", res)
+	}
+	f.SetRun(nil)
+	if res := f.Run(ctx, ext.CommandSpec{}); res.Exit != -1 || !strings.Contains(res.Err, "not scripted") {
+		t.Errorf("an unscripted Run with no base: %+v", res)
+	}
+	if f.Where() != "vm" {
+		t.Errorf("Where %q", f.Where())
+	}
+}
+
+// A FakeTerminal is a pipe: what the test prints the caller reads, what
+// the caller writes the test reads back, resizes and stops recorded; End
+// ends its output and closes Done; Stop ends it as the ask does natively
+// and closes it.
+func TestFakeTerminalIsAPipe(t *testing.T) {
+	term := NewFakeTerminal(ext.ProcessInfo{PID: 41, Group: 41})
+	changed := term.Changed()
+	go term.Print([]byte("hello"))
+	buf := make([]byte, 16)
+	if n, err := term.Read(buf); err != nil || string(buf[:n]) != "hello" {
+		t.Fatalf("Read: %q %v", buf[:n], err)
+	}
+	if _, err := term.Write([]byte("typed\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-changed:
+	default:
+		t.Error("a write did not tell Changed")
+	}
+	if err := term.Resize(120, 40); err != nil {
+		t.Fatal(err)
+	}
+	if string(term.Typed()) != "typed\n" || len(term.Sizes()) != 1 || term.Sizes()[0] != (TerminalSize{Cols: 120, Rows: 40}) {
+		t.Errorf("Typed %q, Sizes %v", term.Typed(), term.Sizes())
+	}
+	if term.Process().PID != 41 {
+		t.Errorf("Process %+v", term.Process())
+	}
+	select {
+	case <-term.Done():
+		t.Fatal("Done before the end")
+	default:
+	}
+	term.End(ext.ExitStatus{Code: 2})
+	term.End(ext.ExitStatus{Code: 3}) // the first end holds
+	<-term.Done()
+	if _, err := term.Read(buf); !errors.Is(err, io.EOF) {
+		t.Errorf("Read after the end: %v", err)
+	}
+	if st := term.Exit(); st.Code != 2 {
+		t.Errorf("Exit %+v", st)
+	}
+	if err := term.Stop(context.Background(), time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if st := term.Exit(); st.Code != 2 {
+		t.Errorf("Stop after the end changed Exit: %+v", st)
+	}
+	if _, err := term.Write([]byte("x")); err == nil {
+		t.Error("Write after Stop")
+	}
+	if err := term.Resize(1, 1); err == nil {
+		t.Error("Resize after Stop")
+	}
+
+	running := NewFakeTerminal(ext.ProcessInfo{})
+	if err := running.Stop(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	<-running.Done()
+	if st := running.Exit(); st.Code != 143 || st.Signal != "terminated" {
+		t.Errorf("a running terminal stopped: %+v", st)
+	}
+	if _, err := running.Print([]byte("late")); err == nil {
+		t.Error("Print after Stop")
+	}
+	if _, err := running.Read(buf); !errors.Is(err, io.EOF) {
+		t.Errorf("Read after Stop: %v", err)
+	}
+	if got := running.Stops(); len(got) != 1 || got[0] != 0 {
+		t.Errorf("Stops %v", got)
+	}
 }

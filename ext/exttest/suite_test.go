@@ -152,6 +152,7 @@ func (k *keyedIdentity) Start(ctx context.Context, h ext.Host) error {
 // server starts it (RunAll told so), its Start on a value of its own.
 func TestSuitePassesEveryFake(t *testing.T) {
 	n := NewNetwork()
+	rc := helperCase(t)
 	srv := keyService(t)
 	keyed := func() *keyedIdentity {
 		return &keyedIdentity{FakeIdentity: NewFakeIdentity("fake-identity"), client: &http.Client{Transport: n.Transport()}, url: srv.URL}
@@ -182,6 +183,7 @@ func TestSuitePassesEveryFake(t *testing.T) {
 	media.SetServers([]ext.ICEServer{{URLs: []string{"turn:turn.example.com:3478?transport=udp"}, Username: "u", Credential: "c"}})
 	media.SetRoom(ext.RoomJoin{URL: "https://rooms.example.com/r1"}, true)
 	rt := NewFakeRuntime("fake-runtime", ext.WhereNative)
+	rt.SetBase(local.Native())
 
 	p := ext.Providers{
 		Identity: id, Router: router, Context: []ext.ContextProvider{cx},
@@ -194,7 +196,7 @@ func TestSuitePassesEveryFake(t *testing.T) {
 	}
 	errs := record(t, func(t T) {
 		Starter(t, n, keyed())
-		RunAll(t, n, p, Started())
+		RunAll(t, n, p, Started(), WithRuntimeCase(rc))
 		Identity(t, n, id, []string{"tok-admin"}, []string{UnknownToken})
 	})
 	for _, e := range errs {
