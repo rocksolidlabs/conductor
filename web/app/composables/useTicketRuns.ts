@@ -1,6 +1,6 @@
 import { ApiError } from './useApi'
 import type { TicketRunsPage } from './useDispatch'
-import { through, type DispatchOrder } from '~/utils/dispatchOrder'
+import { throughOrAbsent, type DispatchOrder } from '~/utils/dispatchOrder'
 import { RUN_CHANGING_RETRY_MS, entryRunId, gather, mergeEntries, runsChanged, runsSignature } from '~/utils/dispatchEvidence'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 
@@ -9,9 +9,10 @@ import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
  * …/{key}/runs), newest first, every launch, hand-linked run and continuation on some page, Show older reading the next by the last
  * page's `next`. The pages shown are read again from the start as one reply through the page's ordering gate, as its history is: with the
  * ticket on every dispatch event naming it (the page's reload) and on a snapshot, and, gathered for RUN_EVENT_WINDOW_MS, when a run they
- * show changes in the live store (its run events, and its member sessions' changes, which the store reads it again for) or a member
- * session of one changes status. A question changes a session, not a run: the section counts those from the live sessions without a
- * read (utils/dispatchEvidence.ts, runQuestions). Nothing polls.
+ * show changes in the live store (its run events, and its member sessions' changes, which the store reads it again for), a member
+ * session of one changes status, or a live run continuing one appears (a record resumed from another page). A question changes a
+ * session, not a run: the section counts those from the live sessions without a read (utils/dispatchEvidence.ts, runQuestions).
+ * Nothing polls.
  */
 export function useTicketRuns(o: { gate: DispatchOrder; key: () => string }) {
   const api = useDispatchApi()
@@ -39,14 +40,19 @@ export function useTicketRuns(o: { gate: DispatchOrder; key: () => string }) {
   /** A read refused while a run of the chain is resumed, asked again after the second its Retry-After names. */
   const retry = gather(() => read(), RUN_CHANGING_RETRY_MS)
 
-  /** Reads the pages shown again, from the start, as one reply. Rejects when the read failed. */
+  /**
+   * Reads the pages shown again, from the start, as one reply. Rejects when the read failed. A ticket with no row (a 404) is ordered
+   * through the gate as any reply (throughOrAbsent), so a slow one never empties what a later read found. A read refused while a run of
+   * a chain shown is resumed (503 run_changing, Retry-After: 1) is no failure, on the first read as on any other: what is shown stays
+   * (nothing, "Reading", before the first answer), it is asked again after the second, and it resolves.
+   */
   async function read(): Promise<void> {
     const k = o.key()
     if (!k) return
     const n = count.value
     loading.value = true
     try {
-      await through(
+      await throughOrAbsent(
         o.gate,
         `runs:${k}`,
         async () => {
@@ -60,21 +66,24 @@ export function useTicketRuns(o: { gate: DispatchOrder; key: () => string }) {
           }
           return out
         },
-        (out) => {
-          if (k !== o.key()) return
-          pages.value = out
-          error.value = ''
+        {
+          apply: (out) => {
+            if (k !== o.key()) return
+            pages.value = out
+            error.value = ''
+          },
+          absent: notFound,
+          gone: () => {
+            if (k !== o.key()) return
+            pages.value = []
+            error.value = ''
+          },
         },
       )
     } catch (e) {
-      if (notFound(e)) {
-        if (k === o.key()) pages.value = []
-        return
-      }
-      // A run of a chain shown being resumed (503 run_changing, Retry-After: 1): the pages shown stay, and are asked again after the
-      // second; the resume ends by itself, and its run events read them again too.
-      if (changing(e) && pages.value) {
-        retry.ask()
+      // The resume ends by itself, and its run events read the pages again too.
+      if (changing(e)) {
+        if (k === o.key()) retry.ask()
         return
       }
       if (k === o.key()) error.value = (e as Error).message
@@ -91,10 +100,11 @@ export function useTicketRuns(o: { gate: DispatchOrder; key: () => string }) {
     await read().catch(() => {})
   }
 
-  // The runs shown, as the live store holds them, with their member sessions: a change reads the pages again.
+  // The runs shown, as the live store holds them, with their member sessions and the live runs that continue them: a change reads the
+  // pages again.
   const shown = computed(() => entries.value.map(entryRunId).filter(Boolean))
   watch(
-    () => runsSignature(shown.value, (id) => live.runOf(id), live.sessions.value),
+    () => runsSignature(shown.value, (id) => live.runOf(id), live.sessions.value, live.runs.value),
     (now, before) => {
       if (before && runsChanged(before, now)) reads.ask()
     },

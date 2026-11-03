@@ -1,11 +1,9 @@
 <script setup lang="ts">
-import type { CandidateReceipt, RunCandidate, RunCandidatesPage, TaskCandidates } from '~/composables/useDispatch'
-import type { Finding, RunTask } from '~/composables/useSessions'
-import { ApiError } from '~/composables/useApi'
-import { RUN_CHANGING_RETRY_MS, candidateWords, findingsCount, findingsWords, gather, receiptChips, receiptKey, receiptName, receiptState, repairs } from '~/utils/dispatchEvidence'
+import type { CandidateReceipt, RunCandidate } from '~/composables/useDispatch'
+import type { RunTask } from '~/composables/useSessions'
+import { candidateKey } from '~/composables/useRunCandidates'
+import { candidateWords, findingsCount, findingsWords, receiptChips, receiptKey, receiptName, receiptState, repairs } from '~/utils/dispatchEvidence'
 import { shortCommit } from '~/utils/dispatchPlans'
-import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
-import { latestReads } from '~/utils/latestReads'
 
 /**
  * A run's candidates (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11), read from the ledger (GET
@@ -14,8 +12,8 @@ import { latestReads } from '~/utils/latestReads'
  * whether it stands as the task's result, was withdrawn or accepted anyway, and its receipts as chips with where each ran, opened in full
  * (DispatchReceipt) with the log and its hash; a review's verdict and its findings counted, their text read from the task route when the
  * review is opened (GET /api/runs/{run}/tasks/{task}, which has them whole); then the run's repairs (DispatchRepairs). The pages shown
- * are read again from the start, gathered for the window, when the run's revision moves (its run events, through the live store). A list,
- * never a table: one column on a phone.
+ * are read again from the start, gathered for the window, when the run's revision moves (its run events, through the live store): the
+ * reads are useRunCandidates'. A list, never a table: one column on a phone.
  */
 const props = defineProps<{
   runId: string
@@ -25,113 +23,11 @@ const props = defineProps<{
   liveTasks?: readonly RunTask[]
 }>()
 
-const { api, read } = useDispatch()
-const sessions = useSessions()
 const copy = useCopy()
-
-const pages = ref<RunCandidatesPage[] | null>(null)
-const count = ref(1)
-const error = ref('')
-const loading = ref(false)
-
-const tasks = computed<TaskCandidates[]>(() => {
-  const out: TaskCandidates[] = []
-  for (const p of pages.value ?? []) for (const t of p.candidates ?? []) if (!out.some((x) => x.task === t.task)) out.push(t)
-  return out
-})
-const managed = computed(() => pages.value?.[0]?.managed ?? true)
-const next = computed(() => pages.value?.at(-1)?.next ?? '')
+const { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings } = useRunCandidates({ runId: () => props.runId, revision: () => props.revision })
 const fixes = computed(() => repairs(tasks.value, props.liveTasks))
+const ckey = candidateKey
 
-async function readPages(): Promise<void> {
-  const run = props.runId
-  const n = count.value
-  loading.value = true
-  try {
-    await read(
-      `candidates:${run}`,
-      async () => {
-        const out: RunCandidatesPage[] = []
-        let after = ''
-        for (let i = 0; i < n; i++) {
-          const p = await api.runCandidates(run, after)
-          out.push(p)
-          if (!p.next) break
-          after = p.next
-        }
-        return out
-      },
-      (out) => {
-        if (run !== props.runId) return
-        pages.value = out
-        error.value = ''
-      },
-    )
-  } catch (e) {
-    if (run !== props.runId) return
-    // The run moved through every read (503 run_changing, Retry-After: 1): the pages shown stay, asked again after a second.
-    if (e instanceof ApiError && e.status === 503 && e.code === 'run_changing') {
-      retry.ask()
-      if (pages.value) return
-    }
-    error.value = e instanceof ApiError && e.status === 404 ? 'The server knows no such run.' : (e as Error).message
-  } finally {
-    loading.value = false
-  }
-}
-const reads = gather(readPages, RUN_EVENT_WINDOW_MS)
-/** A read refused while the run moved through every one of its reads, asked again after the second its Retry-After names. */
-const retry = gather(readPages, RUN_CHANGING_RETRY_MS)
-onBeforeUnmount(() => {
-  reads.stop()
-  retry.stop()
-})
-watch(
-  () => props.runId,
-  () => {
-    pages.value = null
-    count.value = 1
-    void readPages()
-  },
-  { immediate: true },
-)
-watch(
-  () => props.revision,
-  (now, before) => {
-    if (now !== before) reads.ask()
-  },
-)
-
-async function more() {
-  if (!next.value) return
-  count.value++
-  await readPages()
-}
-
-// A review's findings, read from the task route when the review is opened: the candidates carry their counts alone.
-const opened = reactive(new Set<string>())
-const findings = reactive(new Map<string, Finding[]>())
-const findingsError = reactive(new Map<string, string>())
-const findingReads = latestReads()
-const ckey = (c: Pick<RunCandidate, 'task' | 'attempt'>) => `${c.task}/${c.attempt}`
-function toggleFindings(c: RunCandidate) {
-  const k = ckey(c)
-  if (opened.has(k)) {
-    opened.delete(k)
-    return
-  }
-  opened.add(k)
-  const run = props.runId
-  void findingReads.read(
-    () => sessions.runTask(run, c.task),
-    (r) => {
-      if (run !== props.runId) return
-      for (const a of r.attempts) findings.set(`${c.task}/${a.n}`, a.submitted?.findings ?? [])
-      findingsError.delete(k)
-    },
-    (e) => findingsError.set(k, (e as Error).message),
-  )
-}
 function severityColor(s: string): 'error' | 'warning' | 'neutral' | 'info' {
   return s === 'blocker' ? 'error' : s === 'major' ? 'warning' : s === 'minor' ? 'info' : 'neutral'
 }

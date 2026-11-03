@@ -2,7 +2,7 @@
 import type { RunSummary } from '~/composables/useDispatch'
 import type { RunInfo } from '~/composables/useSessions'
 import { runTitle, shortRunId } from '~/utils/crewWords'
-import { runQuestions, summaryBadges, summaryState } from '~/utils/dispatchEvidence'
+import { runBlockers, runQuestions, summaryBadges, summaryState } from '~/utils/dispatchEvidence'
 import { revisionTag } from '~/utils/dispatchPlans'
 import { runBadge, runState } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
@@ -41,7 +41,7 @@ const state = computed(() => {
   return null
 })
 const badges = computed(() => (props.run?.managed ? taskBadges(props.run) : props.summary ? summaryBadges(props.summary) : []))
-const blockers = computed(() => props.summary?.blockers ?? [])
+const blockers = computed(() => runBlockers(props.summary, liveRun.value))
 const managed = computed(() => !!props.run?.managed || Object.keys(props.summary?.tasks ?? {}).length > 0)
 const ticket = computed(() => props.summary?.ticket ?? props.run?.ticket)
 

@@ -29,6 +29,8 @@ const props = defineProps<{
   /** The ticket's history read so far, and the names its words take: the history between a launch and now. */
   changes: readonly DispatchChange[]
   names: ChangeNames
+  /** Whether the history has later rows not read yet (it is read oldest first): what follows a launch may be among them. */
+  historyMore: boolean
   locked: boolean
   now: number
   /** A run linked by its id: '' once the store has it, else why not, in words. */
@@ -194,7 +196,7 @@ async function showOlder() {
           </template>
         </UAlert>
 
-        <DispatchChangedSince v-if="e.kind === 'launch' && e.launch && e.changed" :launch="e.launch" :changed="e.changed" :rows="since(e.launch.id)" :locked="locked" :now="now" @revise="emit('revise', e.launch!.planId)" @follow-up="emit('followUp')" />
+        <DispatchChangedSince v-if="e.kind === 'launch' && e.launch && e.changed" :launch="e.launch" :changed="e.changed" :rows="since(e.launch.id)" :more="historyMore" :locked="locked" :now="now" @revise="emit('revise', e.launch!.planId)" @follow-up="emit('followUp')" />
 
         <DispatchRunCard v-if="entryRunId(e)" :run-id="entryRunId(e)" :summary="e.run" :run="runOf(entryRunId(e))" :now="now">
           <template #actions>
