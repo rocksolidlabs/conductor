@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanConfig, BriefItem } from './brakeman'
-import { BOUNDS, KINDS, KIND_SUBJECTS, askProblem, changedSince, configProblems, groupItems, kindWords, parseRef, provenance, readsWords, refLabel, refRoute, stateRank, stateWords, unopened } from './brakeman'
+import { BOUNDS, KINDS, KIND_SUBJECTS, askProblem, changedSince, configProblems, formField, groupItems, kindWords, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, sameConfig, scopeJSONBytes, stateRank, stateWords, stopAction, unopened } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -66,17 +66,17 @@ describe('the kinds and the states, in words', () => {
 describe('a ref, to its route and its label', () => {
   const cases: Array<[string, string | null, string]> = [
     [`run:${RUN}`, `/runs/${RUN}`, `run ${RUN}`],
-    [`task:${RUN}/build`, `/runs/${RUN}?task=build`, 'task build'],
-    [`attempt:${RUN}/build/2`, `/runs/${RUN}?task=build&attempt=2`, 'build, attempt 2'],
-    [`check:${RUN}/build/2/unit/1`, `/runs/${RUN}?task=build&attempt=2`, 'check unit of build, attempt 2'],
-    [`check:${RUN}/build/2/unit/3`, `/runs/${RUN}?task=build&attempt=2`, 'check unit of build, attempt 2 (run 3)'],
+    [`task:${RUN}/build`, `/runs/${RUN}?view=tasks&task=build`, 'task build'],
+    [`attempt:${RUN}/build/2`, `/runs/${RUN}?view=tasks&task=build`, 'build, attempt 2'],
+    [`check:${RUN}/build/2/unit/1`, `/runs/${RUN}?view=tasks&task=build`, 'check unit of build, attempt 2'],
+    [`check:${RUN}/build/2/unit/3`, `/runs/${RUN}?view=tasks&task=build`, 'check unit of build, attempt 2 (run 3)'],
     [`command:${RUN}/c-1`, `/runs/${RUN}`, 'command c-1'],
     [`event:${RUN}/12`, `/runs/${RUN}`, `event 12 of ${RUN}`],
     [`message:${RUN}/3`, `/runs/${RUN}`, `message 3 of ${RUN}`],
     [`session:${SESSION}`, `/sessions/${SESSION}`, `session ${SESSION}`],
     [`question:${SESSION}/fedcba9876543210`, `/sessions/${SESSION}`, `question in ${SESSION}`],
     ['ticket:CND-4', '/dispatch/CND/4', 'CND-4'],
-    ['comment:CND-4/00112233aabbccdd', '/dispatch/CND/4#comment-00112233aabbccdd', 'comment on CND-4'],
+    ['comment:CND-4/00112233aabbccdd', '/dispatch/CND/4', 'comment on CND-4'],
     ['op:admin/abc.1', null, 'receipt abc.1'],
     [`commit:${RUN}/${'a'.repeat(40)}`, `/runs/${RUN}`, 'commit aaaaaaaa'],
     [`file:${SESSION}//home/me/repo/main.go`, `/sessions/${SESSION}?tab=files&open=%2Fhome%2Fme%2Frepo%2Fmain.go`, 'main.go'],
@@ -93,6 +93,50 @@ describe('a ref, to its route and its label', () => {
     const kinds = [...src.matchAll(/\bRef[A-Z][a-z]+\s*=\s*"([a-z]+)"/g)].map((m) => m[1])
     expect(kinds.length).toBe(15)
     expect([...new Set(cases.map(([ref]) => ref.slice(0, ref.indexOf(':'))))].sort()).toEqual([...kinds].sort())
+  })
+
+  it("opens a task's page on the Tasks view, as the server's refURL does, whatever view this browser chose last", () => {
+    const src = readFileSync(new URL('../../../internal/api/brakeman_refs.go', import.meta.url), 'utf8')
+    expect(src).toContain('case brakeman.RefTask, brakeman.RefAttempt:')
+    expect(src).toContain('return run + "?view=tasks&task=" + url.QueryEscape(ref.Task)')
+    for (const ref of [`task:${RUN}/build`, `attempt:${RUN}/build/2`, `check:${RUN}/build/2/unit/1`]) {
+      const u = new URL(refRoute(ref)!, 'http://x')
+      expect(u.pathname).toBe(`/runs/${RUN}`)
+      expect([...u.searchParams.entries()]).toEqual([['view', 'tasks'], ['task', 'build']])
+    }
+  })
+
+  it("links a chip to the page its resolution names, never to an API route, which a link would carry no token to", () => {
+    const at = (url: string) => ({ ref: '', seen: {}, now: { url } })
+    // A Dispatch receipt has no page of its own: its ticket's, as the server read it.
+    expect(refPage('op:admin/abc.1')).toBeNull()
+    expect(refPage('op:admin/abc.1', at('/dispatch/CND/4'))).toBe('/dispatch/CND/4')
+    expect(refPage(`task:${RUN}/build`, at(`/runs/${RUN}?view=tasks&task=build`))).toBe(`/runs/${RUN}?view=tasks&task=build`)
+    // An API route, or what is no path of the app's, leaves the chip on refRoute's page.
+    expect(refPage(`check:${RUN}/build/2/unit/1`, at(`/api/runs/${RUN}/tasks/build/attempts/2/steps/unit/1/log`))).toBe(`/runs/${RUN}?view=tasks&task=build`)
+    expect(refPage('comment:CND-4/00112233aabbccdd', at('/api/dispatch/tickets/CND-4/comments?after=2&limit=1'))).toBe('/dispatch/CND/4')
+    expect(refPage(`run:${RUN}`, at('//elsewhere.example/x'))).toBe(`/runs/${RUN}`)
+    expect(refPage(`run:${RUN}`, at('https://elsewhere.example/x'))).toBe(`/runs/${RUN}`)
+  })
+
+  it('reads a receipt, a log and a comment from their API routes', () => {
+    const at = (url: string) => ({ ref: '', seen: {}, now: { url } })
+    expect(receiptPath(`check:${RUN}/build/2/unit/3`)).toBe(`/api/runs/${RUN}/tasks/build/attempts/2/steps/unit/3/log`)
+    expect(receiptPath(`command:${RUN}/c-1`)).toBe(`/api/runs/${RUN}/commands/c-1`)
+    // GET /api/dispatch/ops/{opId} reads the admin's receipts only.
+    expect(receiptPath('op:admin/abc.1')).toBe('/api/dispatch/ops/abc.1')
+    expect(receiptPath('op:brakeman/abc.1')).toBeNull()
+    // A comment by the route its resolution names (its number is the server's), and only its own ticket's.
+    expect(receiptPath('comment:CND-4/00112233aabbccdd', at('/api/dispatch/tickets/CND-4/comments?after=2&limit=1'))).toBe('/api/dispatch/tickets/CND-4/comments?after=2&limit=1')
+    expect(receiptPath('comment:CND-4/00112233aabbccdd', at('/api/dispatch/tickets/CND-5/comments?after=2&limit=1'))).toBeNull()
+    expect(receiptPath('comment:CND-4/00112233aabbccdd', at('/dispatch/CND/4'))).toBeNull()
+    expect(receiptPath('comment:CND-4/00112233aabbccdd')).toBeNull()
+    for (const ref of [`run:${RUN}`, `task:${RUN}/build`, `session:${SESSION}`, 'ticket:CND-4', 'brief:br-7/2']) expect(receiptPath(ref), ref).toBeNull()
+    // The server's routes, as refURL and commentURL write them.
+    const src = readFileSync(new URL('../../../internal/api/brakeman_refs.go', import.meta.url), 'utf8')
+    expect(src).toContain('"/attempts/" + strconv.Itoa(ref.N) + "/steps/" + esc(ref.Check) + "/" + strconv.Itoa(ref.K) + "/log"')
+    expect(src).toContain('return "/api/runs/" + esc(ref.Run) + "/commands/" + esc(ref.Command)')
+    expect(src).toContain('"/api/dispatch/tickets/" + url.PathEscape(key) + "/comments?after="')
   })
 
   it('uses the names the page knows', () => {
@@ -163,6 +207,17 @@ describe("a brief's items", () => {
   })
 })
 
+describe('Stop on the request in progress', () => {
+  it('cancels an open request, and stops the run of a closed one the desk still holds', () => {
+    expect(stopAction({ state: 'running', runId: RUN })).toBe('cancel')
+    expect(stopAction({ state: 'starting' })).toBe('cancel')
+    // The brief's grace, or a stop that left a process: a cancel of a closed request does nothing.
+    expect(stopAction({ state: 'briefed', runId: RUN })).toBe('stop_run')
+    expect(stopAction({ state: 'timed_out', runId: RUN })).toBe('stop_run')
+    expect(stopAction({ state: 'cancelled' })).toBeNull()
+  })
+})
+
 describe("the composer's checks, the server's", () => {
   it('holds each kind to its subjects and its note', () => {
     expect(askProblem('briefing', [], '', '')).toBe('')
@@ -191,6 +246,45 @@ describe("the configuration form's checks, the server's", () => {
     expect(BOUNDS.turnsPerDay).toEqual([n('MinTurnsPerDay'), n('MaxTurnsPerDay')])
     expect(BOUNDS.selector).toBe(n('MaxSelector'))
     expect(BOUNDS.path).toBe(n('MaxPath'))
+    const shift = /\bMaxScopeBytes\s*=\s*(\d+)\s*<<\s*(\d+)/.exec(src)!
+    expect(BOUNDS.scopeBytes).toBe(Number(shift[1]) << Number(shift[2]))
+  })
+
+  it("counts a scope's bytes as Go's json.Marshal writes it", () => {
+    // The lengths encoding/json gives these (go run, Go 1.26): <, > and & and U+2028 escaped long, ", \, \b, \f, \n, \r, \t short.
+    expect(scopeJSONBytes({})).toBe(2)
+    expect(scopeJSONBytes({ repos: [] })).toBe(2)
+    expect(scopeJSONBytes({ repos: ['/a<b>&c', '/q"\\', '/é', '/\u2028', '/\u0001\b\f\n\r\t', '/😀'] })).toBe(89)
+    expect(scopeJSONBytes({ projects: ['CND', 'AB'], runs: ['x-0a1b2c3d'], sessions: ['0123456789abcdef'] })).toBe(79)
+  })
+
+  it('refuses a scope past its bound as JSON, whose every entry is good', () => {
+    const repos = (last: number) => [...Array.from({ length: 49 }, (_, i) => `/home/me/code/${String(i).padStart(146, '0')}`), `/home/me/code/${'9'.repeat(last - 14)}`]
+    expect(scopeJSONBytes({ repos: repos(191) })).toBe(8192)
+    expect(configProblems(config({ scope: { repos: repos(191) } }), 'claude')).toEqual({})
+    expect(scopeJSONBytes({ repos: repos(192) })).toBe(8193)
+    expect(Object.keys(configProblems(config({ scope: { repos: repos(192) } }), 'claude'))).toEqual(['scope'])
+  })
+
+  it("names the form's field a refusal of an entry belongs to", () => {
+    expect(formField('scope.repos[3]')).toBe('scope.repos')
+    expect(formField('scope.runs')).toBe('scope.runs')
+    expect(formField('scope')).toBe('scope')
+    expect(formField('permissions.observe')).toBe('permissions.observe')
+  })
+
+  it('tells a form left untouched from one being edited, whatever the revision saved since', () => {
+    const read = config({ rev: 1, enabled: true })
+    // Saved elsewhere at revision 2, off: the form still holds what it was read as, so it follows; it is no edit of its own.
+    const savedSince = config({ rev: 2, enabled: false })
+    expect(sameConfig(read, read)).toBe(true)
+    expect(sameConfig({ ...read, rev: 1 }, savedSince)).toBe(false)
+    expect(sameConfig(config({ rev: 1 }), config({ rev: 7, updatedAt: '2026-11-02T09:00:00Z' }))).toBe(true)
+    // Empty and absent are the same: an account or model left empty, a selector with no entry, keys in another order.
+    expect(sameConfig(config({ account: '', model: '' }), config({ scope: { repos: [] } }))).toBe(true)
+    const reordered = Object.fromEntries(Object.entries(read).reverse()) as typeof read
+    expect(sameConfig(read, reordered)).toBe(true)
+    expect(sameConfig(read, config({ scope: { repos: ['/home/me'] } }))).toBe(false)
   })
 
   it('takes a configuration the server takes', () => {

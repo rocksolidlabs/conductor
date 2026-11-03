@@ -14,6 +14,17 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // server started again on the same data shows the same brief.
 test.describe.configure({ mode: 'serial' })
 
+/** The cap of every wait a step makes without a bound of its own: the config's expect bound, an action's and the navigation's. */
+const STEP_MS = 15_000
+test.use({ actionTimeout: STEP_MS, navigationTimeout: STEP_MS })
+// The turn's test waits on its steps one after another, each within a cap of its own: the explicit ones (the first request
+// running, the cancel written, the briefing running after the stop, its terminal's transport, the brief kept, the run stopped after
+// the desk's grace for the agent's last output, and the chip's changed mark), and STEP_MS for each of its 21 other expects, its 12
+// actions and its one navigation. Its timeout is their sum, and the config's 120 s above it for the API reads between the steps.
+const TURN_CAPS = [30_000, 15_000, 60_000, 30_000, 30_000, 60_000, 15_000]
+const TURN_STEPS = 21 + 12 + 1
+const TURN_BOUND = TURN_CAPS.reduce((a, b) => a + b, 0) + TURN_STEPS * STEP_MS
+
 interface Request {
   id: string
   state: string
@@ -96,7 +107,7 @@ test('Settings saves Brakeman with the stub as its agent and terminal screens of
 })
 
 test('a briefing waits behind the turn in progress, then runs in its session, and its brief takes neither the focus nor the page', async ({ page }) => {
-  test.setTimeout(180_000)
+  test.setTimeout(TURN_BOUND + 120_000)
   await open(page, '/brakeman')
   const ask = page.locator('[data-brakeman-ask]')
   // The first request holds the slot (the stub waits at its gate).

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/brakeman'
-import { BOUNDS, BRAKEMAN_ADAPTERS, configProblems, scopeLines, scopeList } from '~/utils/brakeman'
+import { BOUNDS, BRAKEMAN_ADAPTERS, configProblems, formField, sameConfig, scopeLines, scopeList } from '~/utils/brakeman'
 import { ApiError } from '~/composables/useApi'
 
 /**
@@ -10,7 +10,8 @@ import { ApiError } from '~/composables/useApi'
  * the account (the folder the agent's login lives in, or its default login), the model (for an agent with a model flag), the folder
  * its turns run in, what it may see (terminal screens off until turned on), its scope, whether it may draft and propose, and its
  * budget. The form checks what the server checks; the server's own words are shown for what it refuses, and beside an agent whose
- * read-only mode does not hold (its warnings).
+ * read-only mode does not hold (its warnings). What is refused of a field the form draws no control for (the scope as a whole, an
+ * operation's grant, the wake mode, a model while the agent shows no model field) is said above Save.
  */
 const bk = useBrakeman()
 const api = useSessions()
@@ -18,6 +19,8 @@ const toast = useToast()
 
 const agents = ref<AgentInfo[]>([])
 const form = ref<BrakemanConfig | null>(null)
+/** The configuration the form was last set from: a form that still holds it is untouched, and follows the one saved. */
+const base = ref<BrakemanConfig | null>(null)
 const scopeText = reactive<Record<keyof BrakemanScope, string>>({ projects: '', repos: '', crews: '', runs: '', sessions: '' })
 const saving = ref(false)
 const serverError = ref<{ field?: string; message: string } | null>(null)
@@ -26,6 +29,7 @@ const saved = computed(() => bk.state.value?.config ?? null)
 const available = computed(() => bk.available.value)
 
 function reset(c: BrakemanConfig) {
+  base.value = JSON.parse(JSON.stringify(c)) as BrakemanConfig
   form.value = JSON.parse(JSON.stringify(c)) as BrakemanConfig
   for (const k of Object.keys(scopeText) as Array<keyof BrakemanScope>) scopeText[k] = scopeLines(c.scope[k])
   serverError.value = null
@@ -50,17 +54,17 @@ const body = computed<BrakemanConfig | null>(() => {
   const c = { ...form.value, scope, account: form.value.account?.trim() || undefined, model: form.value.model?.trim() || undefined, cwd: form.value.cwd.trim() }
   return c
 })
-const dirty = computed(() => !!saved.value && !!body.value && JSON.stringify(normal(body.value)) !== JSON.stringify(normal(saved.value)))
-function normal(c: BrakemanConfig) {
-  const { rev: _rev, updatedAt: _at, ...rest } = c
-  return { ...rest, account: rest.account || undefined, model: rest.model || undefined }
-}
+/** Whether the form holds what is not saved: Save is offered for it. */
+const dirty = computed(() => !!saved.value && !!body.value && !sameConfig(body.value, saved.value))
+/** Whether the form was changed here since it was set: compared with what it was set from, not with what is saved now. */
+const edited = computed(() => !!base.value && !!body.value && !sameConfig(body.value, base.value))
 
-// The form follows the configuration saved until it is changed here.
+// The form follows the configuration saved until it is changed here: a save from elsewhere replaces a form left untouched, and
+// leaves one being edited as it is (its save then meets the newer revision and is refused stale).
 watch(
   () => saved.value?.rev,
   () => {
-    if (saved.value && (!form.value || !dirty.value)) reset(saved.value)
+    if (saved.value && (!form.value || !edited.value)) reset(saved.value)
   },
   { immediate: true },
 )
@@ -74,7 +78,23 @@ const caps = computed(() => (adapter.value ? BRAKEMAN_ADAPTERS[adapter.value] : 
 const problems = computed(() => (body.value ? configProblems(body.value, agents.value.length ? (adapter.value ?? '') : null) : {}))
 /** The server's words for the agent saved (Codex's read-only mode leaves its own MCP servers and exec-policy allow rules). */
 const warnings = computed(() => (form.value?.agentId && form.value.agentId === saved.value?.agentId ? (bk.state.value?.warnings ?? []) : []))
-const fieldError = (field: string) => problems.value[field] || (serverError.value?.field === field ? serverError.value.message : undefined)
+/** The fields the form draws a control for, by the names the server gives them; `scope` is the scope's fieldset. */
+const controls = computed(() => {
+  const out = new Set(['agentId', 'account', 'cwd', 'scope', 'budget.turnMinutes', 'budget.readsPerTurn', 'budget.turnsPerDay'])
+  for (const k of Object.keys(scopeText)) out.add(`scope.${k}`)
+  if (caps.value?.model) out.add('model')
+  if (caps.value?.allowTools) out.add('allowConductorTools')
+  return out
+})
+const fieldError = (field: string) => problems.value[field] || (serverError.value?.field && formField(serverError.value.field) === field ? serverError.value.message : undefined)
+/** What is refused of no field the form shows, said above Save: the server's refusal with no field or none drawn, and the form's own. */
+const unshown = computed(() => {
+  const out: string[] = []
+  for (const [field, words] of Object.entries(problems.value)) if (!controls.value.has(field)) out.push(words)
+  const e = serverError.value
+  if (e && (!e.field || !controls.value.has(formField(e.field)))) out.push(e.message)
+  return out
+})
 
 const visibility: Array<{ key: keyof BrakemanVisibility; label: string; description: string }> = [
   { key: 'runs', label: 'Runs', description: 'Runs, tasks, attempts, check receipts, messages and blockers.' },
@@ -152,6 +172,7 @@ async function save() {
             <UTextarea v-model="scopeText[f.key]" :rows="2" :placeholder="f.placeholder" class="w-full font-mono text-xs" :data-brakeman-scope="f.key" />
           </UFormField>
         </div>
+        <p v-if="fieldError('scope')" class="text-xs text-error" data-brakeman-scope-error>{{ fieldError('scope') }}</p>
       </fieldset>
 
       <fieldset class="flex flex-col gap-2">
@@ -174,7 +195,7 @@ async function save() {
         </UFormField>
       </fieldset>
 
-      <UAlert v-if="serverError && !serverError.field" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="serverError.message" data-brakeman-save-error />
+      <UAlert v-for="w in unshown" :key="w" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="w" data-brakeman-save-error />
       <div class="flex items-center gap-3">
         <UButton type="submit" label="Save Brakeman" icon="i-lucide-save" :loading="saving" :disabled="!dirty || Object.keys(problems).length > 0" data-brakeman-save />
         <NuxtLink v-if="saved?.enabled" to="/brakeman" class="text-sm underline">Open Brakeman</NuxtLink>
