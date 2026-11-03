@@ -291,7 +291,7 @@ test('a crew run published to the switchyard is shared through it: Share says wo
   await page.keyboard.press('Enter')
   const transcripts = join(home2, '.stub-sessions')
   await expect
-    .poll(() => existsSync(transcripts) && readdirSync(transcripts).some((f) => readFileSync(join(transcripts, f), 'utf8').includes('hello crew through the switchyard')), { timeout: 20_000, message: 'the member got the line' })
+    .poll(() => existsSync(transcripts) && readdirSync(transcripts).some((f) => f.endsWith('.txt') && readFileSync(join(transcripts, f), 'utf8').includes('hello crew through the switchyard')), { timeout: 20_000, message: 'the member got the line' })
     .toBe(true)
 
   // Revoked at home, the link is gone at the switchyard and the viewer is cut off.
