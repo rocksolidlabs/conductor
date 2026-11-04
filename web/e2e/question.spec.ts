@@ -132,10 +132,17 @@ test("a question at the server's bound reads whole in the row, and the pointer o
   await expectWhole(prompt)
 
   // The pointer over the question and then onto a choice moves nothing: the choice is where it was, under the pointer.
+  // At the sidebar's 200 px (#437) the row is taller than the list shows: the choice is brought into view, and the pointer goes
+  // over the question where it shows above the choices, since a hover at the question's middle would scroll the list.
   const choice = row.locator('[data-row-choice="3"]')
+  await choice.scrollIntoViewIfNeeded()
   const before = (await choice.boundingBox())!
   const pt = { x: before.x + before.width / 2, y: before.y + before.height / 2 }
-  await prompt.hover()
+  const words = (await prompt.boundingBox())!
+  const over = { x: words.x + words.width / 2, y: words.y + words.height - 6 }
+  await page.mouse.move(over.x, over.y)
+  expect(await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('[data-row-prompt]'), over)).toBe(true)
+  expect((await choice.boundingBox())!.y).toBe(before.y)
   await expectWhole(prompt)
   await page.mouse.move(pt.x, pt.y)
   await expectWhole(prompt)

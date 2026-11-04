@@ -772,6 +772,20 @@ test('the save that restarts the server keeps the section in view in the address
     const l = await layoutOf(page)
     return Math.abs(l.sections.find((s) => s.id === 'running')!.top - l.body.top - 24) <= 1
   }).toBe(true)
+  // Saved from the top of a page whose address names another section, the address names none, so the page that follows opens
+  // at the top, where the person was (#433's review).
+  const sections = await boxOf(page.locator('[data-settings-sections]'))
+  await page.mouse.move(sections.left + sections.width / 2, 300)
+  await page.mouse.wheel(0, -100000)
+  await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBe(0)
+  await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
+  await page.locator('[data-switchyard-enabled]').click()
+  expect((await layoutOf(page)).body.scrollTop).toBe(0)
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  await page.locator('[data-save-settings]').click()
+  await expect(page.getByText('Saved; the server restarted', { exact: true }).last()).toBeVisible()
+  await expect(page).toHaveURL(/\/settings$/)
+  expect((await layoutOf(page)).body.scrollTop).toBe(0)
   // A save that does not restart leaves the address as it is.
   await page.goto('/settings')
   await settled(page, 'linux')
@@ -779,6 +793,156 @@ test('the save that restarts the server keeps the section in view in the address
   await page.locator('[data-save-settings]').click()
   await expect(page.getByText('Saved', { exact: true })).toBeVisible()
   await expect(page).toHaveURL(/\/settings$/)
+})
+
+test('a second click on Save while the first is under way saves once', async ({ page, state }) => {
+  await standIn(page, state, 'linux')
+  await page.goto('/settings?section=running')
+  await settled(page, 'linux')
+  await page.locator('[data-yolo-switch]').click()
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  // Scrolled by hand from the section the address names to the end, so the save writes the section in view first and has that to
+  // wait on.
+  const sections = await boxOf(page.locator('[data-settings-sections]'))
+  await page.mouse.move(sections.left + sections.width / 2, 300)
+  await page.mouse.wheel(0, 100000)
+  await expect(page.locator('[data-settings-nav-entry="app"]')).toHaveAttribute('aria-current', 'true')
+  // Two clicks in one task: the second lands before anything the first awaits has answered, and before Vue redraws the button.
+  await page.locator('[data-save-settings]').evaluate((e: HTMLElement) => {
+    e.click()
+    e.click()
+  })
+  await expect(page.getByText('Saved; the server restarted', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL(/\/settings\?section=app$/)
+  expect(await page.evaluate(() => (window as unknown as { e2eSets: object[] }).e2eSets.length)).toBe(1)
+})
+
+test('a scroll by hand after a choice moves the mark to the section in view', async ({ page, state }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await standIn(page, state, 'linux')
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  await page.locator('[data-settings-nav-entry="folders"]').click()
+  await expect(page).toHaveURL(/\/settings\?section=folders$/)
+  await expect(page.locator('[data-settings-nav-entry="folders"]')).toHaveAttribute('aria-current', 'true')
+  // The wheel over the sections, until all but the foot of Where agents work has gone above the body's top: How agents run is the
+  // section in view though the one chosen still shows.
+  const start = (await layoutOf(page)).body.scrollTop
+  const folders = await boxOf(page.locator('[data-settings-section="folders"]'))
+  const sections = await boxOf(page.locator('[data-settings-sections]'))
+  await page.mouse.move(sections.left + sections.width / 2, 450)
+  const dy = Math.round(folders.height - 30)
+  await page.mouse.wheel(0, dy)
+  await expect.poll(async () => Math.abs((await layoutOf(page)).body.scrollTop - (start + dy)) <= 1).toBe(true)
+  const l = await layoutOf(page)
+  const f = l.sections.find((s) => s.id === 'folders')!
+  expect(f.bottom).toBeGreaterThan(l.body.top)
+  await expect(page.locator('[data-settings-nav-entry="running"]')).toHaveAttribute('aria-current', 'true')
+  await expect(page.locator('[data-settings-nav-entry][aria-current]')).toHaveCount(1)
+})
+
+test('a window made shorter moves the mark to the section in view, and a restart save writes that one', async ({ page, state }) => {
+  // A tall window, Yolo changed at the top, then the body scrolled by hand to its end: The app, the last section, is marked.
+  await page.setViewportSize({ width: 1440, height: 1400 })
+  await standIn(page, state, 'linux')
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  await page.locator('[data-yolo-switch]').click()
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  const sections = await boxOf(page.locator('[data-settings-sections]'))
+  await page.mouse.move(sections.left + sections.width / 2, 450)
+  await page.mouse.wheel(0, 100000)
+  await expect.poll(async () => body(page).evaluate((b) => b.scrollTop > 0 && b.scrollTop + b.clientHeight >= b.scrollHeight - 1)).toBe(true)
+  await expect(page.locator('[data-settings-nav-entry="app"]')).toHaveAttribute('aria-current', 'true')
+  // Only the height changes: the sections keep their size and the body its scroll, so no scroll event and no change to the
+  // sections says the body is shorter (#433's review). The section a quarter of the way down the visible body is the one marked.
+  const before = (await layoutOf(page)).body.scrollTop
+  await page.setViewportSize({ width: 1440, height: 700 })
+  await expect.poll(async () => (await layoutOf(page)).body.clientHeight).toBeLessThan(700)
+  const l = await layoutOf(page)
+  expect(l.body.scrollTop).toBe(before)
+  const line = l.body.top + l.body.clientHeight / 4
+  const expected = l.sections.filter((s) => s.top <= line).at(-1)!.id
+  expect(expected).not.toBe('app')
+  await expect(page.locator(`[data-settings-nav-entry="${expected}"]`)).toHaveAttribute('aria-current', 'true')
+  await expect(page.locator('[data-settings-nav-entry][aria-current]')).toHaveCount(1)
+  // The save bar is outside the body, so the click scrolls nothing: the restart's address names the section in view.
+  await page.locator('[data-save-settings]').click()
+  await expect(page.getByText('Saved; the server restarted', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`/settings\\?section=${expected}$`))
+})
+
+test('a restart save made while a scroll\'s mark is still to come writes the section in view, not the one marked before', async ({ page, state }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await standIn(page, state, 'linux')
+  await page.goto('/settings?section=folders')
+  await settled(page, 'linux')
+  await expect(page.locator('[data-settings-nav-entry="folders"]')).toHaveAttribute('aria-current', 'true')
+  // Yolo changed (the click is the person's own, so the mark follows the scroll alone from here), then Where agents work brought
+  // back to the top of the body and marked.
+  await page.locator('[data-yolo-switch]').click()
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  await body(page).evaluate((b) => {
+    const s = b.querySelector('[data-settings-section="folders"]')!
+    b.scrollTop += s.getBoundingClientRect().top - b.getBoundingClientRect().top - 24
+  })
+  await expect(page.locator('[data-settings-nav-entry="folders"]')).toHaveAttribute('aria-current', 'true')
+  await expect(page).toHaveURL(/\/settings\?section=folders$/)
+  // The body scrolled to How agents run with the page's frames held, so the scroll's mark is still to come when Save is pressed
+  // (#433's review): the save reads the section in view itself.
+  const held = await body(page).evaluate(async (b) => {
+    const w = window as unknown as { requestAnimationFrame: typeof requestAnimationFrame }
+    const raf = w.requestAnimationFrame
+    const frames: FrameRequestCallback[] = []
+    w.requestAnimationFrame = (cb) => {
+      frames.push(cb)
+      return frames.length
+    }
+    try {
+      const scrolled = new Promise((resolve) => b.addEventListener('scroll', resolve, { once: true }))
+      const s = b.querySelector('[data-settings-section="running"]')!
+      b.scrollTop += s.getBoundingClientRect().top - b.getBoundingClientRect().top - 24
+      await scrolled
+      const marked = document.querySelector('[data-settings-nav-entry][aria-current]')?.getAttribute('data-settings-nav-entry')
+      const pending = frames.length > 0
+      document.querySelector<HTMLElement>('[data-save-settings]')!.click()
+      return { marked, pending }
+    } finally {
+      w.requestAnimationFrame = raf
+      for (const cb of frames) raf(cb)
+    }
+  })
+  expect(held).toEqual({ marked: 'folders', pending: true })
+  await expect(page.getByText('Saved; the server restarted', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL(/\/settings\?section=running$/)
+  await expect(page.locator('[data-settings-nav-entry="running"]')).toHaveAttribute('aria-current', 'true')
+})
+
+test('Settings chosen again in the same page goes back to the top, from a section or from a scroll by hand', async ({ page, state }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await standIn(page, state, 'linux')
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  const settingsLink = page.locator('#dashboard-sidebar-main').getByRole('link', { name: 'Settings', exact: true })
+  const atTop = async () => {
+    await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBe(0)
+    await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
+    await expect(page).toHaveURL(/\/settings$/)
+  }
+  // From a section the address names: the sidebar's Settings is a new address, plain /settings.
+  await page.locator('[data-settings-nav-entry="app"]').click()
+  await expect(page).toHaveURL(/\/settings\?section=app$/)
+  await expect(page.locator('[data-settings-nav-entry="app"]')).toHaveAttribute('aria-current', 'true')
+  await settingsLink.click()
+  await atTop()
+  // From a scroll by hand on plain /settings: the same address again, which Vue Router refuses as a duplicate.
+  const sections = await boxOf(page.locator('[data-settings-sections]'))
+  await page.mouse.move(sections.left + sections.width / 2, 450)
+  await page.mouse.wheel(0, 1500)
+  await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBeGreaterThan(1000)
+  await expect(page.locator('[data-settings-nav-entry="switchyard"]')).not.toHaveAttribute('aria-current', 'true')
+  await settingsLink.click()
+  await atTop()
 })
 
 for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {

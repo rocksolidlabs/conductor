@@ -53,31 +53,61 @@ export function writeSidebarMode(storage: KeyValueStore, mode: SidebarMode): voi
   }
 }
 
-/** The full sidebar's width in percent of the window: the bounds and the default the layout's UDashboardSidebar declares. */
-export const SIDEBAR_SIZE = { min: 14, default: 18, max: 26 } as const
-/** The width a drag left, per browser, beside the mode: with Nuxt UI's persistence off, nothing else keeps it over a reload. */
-export const SIDEBAR_SIZE_KEY = 'conductor.sidebar.size'
-
-export function clampSidebarSize(size: number): number {
-  return Math.min(SIDEBAR_SIZE.max, Math.max(SIDEBAR_SIZE.min, size))
+/**
+ * The full sidebar's width, in rem (the unit of the layout's UDashboardGroup): it opens at its minimum, 12.5 rem (200 px), on
+ * every screen, and a drag widens it up to 26 % of the window, never below the minimum (#437). Nuxt UI clamps only during a
+ * drag: `sidebarBounds` gives the bounds of a window for the drag, and `SIDEBAR_WIDTH` keeps the drawn width within them as
+ * the window changes.
+ */
+export const SIDEBAR_SIZE = { min: 12.5, maxShare: 0.26 } as const
+/** The full sidebar's bounds in a window, in rem. */
+export interface SidebarBounds {
+  min: number
+  max: number
 }
 
-/** The width saved for this browser, within the sidebar's bounds; the default when there is none or it is not a number. */
-export function readSidebarSize(storage: KeyValueStore): number {
+/** The bounds in a window `windowWidth` px wide, with `remPx` px to the rem: the maximum is 26 % of the window, never below the minimum. */
+export function sidebarBounds(windowWidth: number, remPx = 16): SidebarBounds {
+  const max = Number.isFinite(windowWidth) && Number.isFinite(remPx) && remPx > 0 ? Math.floor(((windowWidth * SIDEBAR_SIZE.maxShare) / remPx) * 100) / 100 : 0
+  return { min: SIDEBAR_SIZE.min, max: Math.max(SIDEBAR_SIZE.min, max) }
+}
+
+/** The full sidebar's drawn width: the width Nuxt UI holds (`--width`), within the bounds of the window as it is now. */
+export const SIDEBAR_WIDTH = `clamp(${SIDEBAR_SIZE.min}rem, var(--width), max(${SIDEBAR_SIZE.min}rem, ${SIDEBAR_SIZE.maxShare * 100}vw))`
+
+/** The width a drag left, in rem, per browser, beside the mode: with Nuxt UI's persistence off, nothing else keeps it over a reload. */
+export const SIDEBAR_SIZE_KEY = 'conductor.sidebar.width'
+/** The width before #437, in percent of the window: dropped once, so every browser opens at the minimum. */
+export const LEGACY_SIDEBAR_SIZE_KEY = 'conductor.sidebar.size'
+
+export function clampSidebarSize(size: number, bounds: SidebarBounds): number {
+  return Math.min(bounds.max, Math.max(bounds.min, size))
+}
+
+/**
+ * The width saved for this browser, within the bounds of the window it opens in; the minimum when there is none, it is not a
+ * number, or storage throws. A width saved before #437 is removed on the way.
+ */
+export function readSidebarSize(storage: KeyValueStore, bounds: SidebarBounds): number {
+  try {
+    if (storage.getItem(LEGACY_SIDEBAR_SIZE_KEY) !== null) storage.removeItem(LEGACY_SIDEBAR_SIZE_KEY)
+  } catch {
+    /* not removed: tried again on the next read */
+  }
   try {
     const size = Number(storage.getItem(SIDEBAR_SIZE_KEY) || Number.NaN)
-    if (Number.isFinite(size)) return clampSidebarSize(size)
+    if (Number.isFinite(size)) return clampSidebarSize(size, bounds)
   } catch {
-    /* no storage: the default */
+    /* no storage: the minimum */
   }
-  return SIDEBAR_SIZE.default
+  return bounds.min
 }
 
-/** Saves a width within the sidebar's bounds, to two decimals; a value that is not a number is not saved. */
-export function writeSidebarSize(storage: KeyValueStore, size: number): void {
+/** Saves a width within the bounds, to two decimals; a value that is not a number is not saved. */
+export function writeSidebarSize(storage: KeyValueStore, size: number, bounds: SidebarBounds): void {
   if (!Number.isFinite(size)) return
   try {
-    storage.setItem(SIDEBAR_SIZE_KEY, String(Math.round(clampSidebarSize(size) * 100) / 100))
+    storage.setItem(SIDEBAR_SIZE_KEY, String(Math.round(clampSidebarSize(size, bounds) * 100) / 100))
   } catch {
     /* ignore */
   }

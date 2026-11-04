@@ -81,7 +81,7 @@ export interface ScrollView {
  * The section in view: the last whose top has reached the top of the visible part (a quarter of the way down, so a section scrolled
  * to is marked though the one above still shows its foot), the last section once the body is scrolled to its end, and the first
  * before any is reached. A section just chosen (`chosen`) stays marked while any of it is visible, since a short one near the end
- * cannot be scrolled to the top.
+ * cannot be scrolled to the top; the page stops passing it at the person's own scroll, key or click.
  */
 export function sectionInView(boxes: readonly SectionBox[], view: ScrollView, chosen?: SettingsSectionId | null): SettingsSectionId | null {
   if (!boxes.length) return null

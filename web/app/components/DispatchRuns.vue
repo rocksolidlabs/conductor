@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import type { DispatchChange, TicketLink, TicketRunEntry } from '~/composables/useDispatch'
+import type { DispatchChange, TicketLink, TicketRunEntry, TicketStatus } from '~/composables/useDispatch'
 import type { TicketRuns } from '~/composables/useTicketRuns'
 import { runTitle, shortRunId } from '~/utils/crewWords'
 import { historyEntries, ticketPath, type ChangeNames } from '~/utils/dispatch'
-import { changesSince, entryKey, entryRunId, launchEntryWords } from '~/utils/dispatchEvidence'
+import { changesSince, entryKey, entryRunId, launchEntryWords, launchRunState } from '~/utils/dispatchEvidence'
 import { launchStateWords, revisionTag } from '~/utils/dispatchPlans'
 import { linkedRunRecords } from '~/utils/linkedRuns'
 import { relativeTime } from '~/utils/sessions'
@@ -32,6 +32,8 @@ const props = defineProps<{
   /** Whether the history has later rows not read yet (it is read oldest first): what follows a launch may be among them. */
   historyMore: boolean
   locked: boolean
+  /** The ticket's status: a closed one (done or cancelled) launches nothing until it is reopened. */
+  status: TicketStatus
   now: number
   /** A run linked by its id: '' once the store has it, else why not, in words. */
   add: (run: string) => Promise<string>
@@ -56,6 +58,9 @@ const entries = computed<TicketRunEntry[]>(() => {
 
 /** The runs shown as the live store holds them, else their records (linkedRunRecords). */
 const { runOf } = linkedRunRecords(() => entries.value.map(entryRunId).filter(Boolean), live)
+
+/** A launch's run's state for its changed-since banner: the live store's or its record's, else the runs read's summary. */
+const stateOf = (e: TicketRunEntry) => launchRunState(runOf(entryRunId(e)), e.run, live.sessions.value)
 
 /** The history between a launch and now, in the history's words; null when the history read so far does not reach the launch. */
 function since(launchId: string) {
@@ -196,7 +201,7 @@ async function showOlder() {
           </template>
         </UAlert>
 
-        <DispatchChangedSince v-if="e.kind === 'launch' && e.launch && e.changed" :launch="e.launch" :changed="e.changed" :rows="since(e.launch.id)" :more="historyMore" :locked="locked" :now="now" @revise="emit('revise', e.launch!.planId)" @follow-up="emit('followUp')" />
+        <DispatchChangedSince v-if="e.kind === 'launch' && e.launch && e.changed" :launch="e.launch" :changed="e.changed" :rows="since(e.launch.id)" :more="historyMore" :locked="locked" :status="status" :state="stateOf(e)" :now="now" @revise="emit('revise', e.launch!.planId)" @follow-up="emit('followUp')" />
 
         <DispatchRunCard v-if="entryRunId(e)" :run-id="entryRunId(e)" :summary="e.run" :run="runOf(entryRunId(e))" :now="now">
           <template #actions>
