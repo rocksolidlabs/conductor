@@ -197,11 +197,13 @@ test("the close policy ticked in the New project dialog, and edited on the proje
   const dialog = page.locator('[data-new-project]')
   await dialog.locator('[data-new-project-key]').fill(key)
   await dialog.locator('[data-new-project-name]').fill(`E2E project ${key}`)
-  // A project of Dispatch's own asks for the owner's acceptance by default; ticked otherwise, both.
+  // A project of Dispatch's own asks for the owner's acceptance by default; ticked otherwise, both. A verified delivery (DS2) is offered
+  // too, unticked.
   const policy = dialog.locator('[data-new-project-policy]')
   await expect(policy.locator('[data-close-requirement="acceptance"]')).toHaveAttribute('aria-checked', 'true')
   await expect(policy.locator('[data-close-requirement="delivery"]')).toHaveAttribute('aria-checked', 'false')
-  await expect(policy.locator('[data-close-requirement]')).toHaveCount(2)
+  await expect(policy.locator('[data-close-requirement="verified"]')).toHaveAttribute('aria-checked', 'false')
+  await expect(policy.locator('[data-close-requirement]')).toHaveCount(3)
   await policy.locator('[data-close-requirement="delivery"]').click()
   await page.locator('[data-new-project-submit]').click()
   await expect(page).toHaveURL(new RegExp(`/dispatch/${key}$`))

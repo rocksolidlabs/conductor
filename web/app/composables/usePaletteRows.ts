@@ -89,6 +89,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   // Through the app's Tickets gate (usePalette), which a snapshot resets: the next edit expects the revision the store has.
   const ticketOps = useDispatchOps(palette.ticketsGate)
   const renameModal = useRenameModal()
+  const brakeman = useBrakeman()
+  const route = useRoute()
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
   const showExited = ref(false)
 
@@ -549,6 +551,35 @@ export function usePaletteRows(ctx: PaletteContext) {
       }))
   }
 
+  /**
+   * The Brakeman group (docs/plans/brakeman.md, PR-7), where the server has Brakeman: each row opens the Brakeman page's composer
+   * with what to ask and about what, the run, the task or the ticket the page shows; the person sends it there.
+   */
+  function brakemanItems(): PaletteItem[] {
+    if (brakeman.available.value !== true) return []
+    const ask = (key: string, label: string, kind: string, subject?: string, detail?: string): PaletteItem => ({
+      key: `brakeman:${key}`,
+      label,
+      detail,
+      icon: 'i-lucide-notebook-pen',
+      run: () => go(`/brakeman?kind=${kind}${subject ? `&subject=${encodeURIComponent(subject)}` : ''}`),
+    })
+    const out = [ask('briefing', 'Ask Brakeman: brief me since…', 'briefing')]
+    const run = route.path.startsWith('/runs/') ? String(route.params.run ?? '') : ''
+    if (run) {
+      out.push(ask('explain-run', 'Ask Brakeman: explain this run', 'explain', `run:${run}`, attention.runNames.value[run] || run))
+      const task = typeof route.query.task === 'string' ? route.query.task : ''
+      if (task) out.push(ask('explain-task', 'Ask Brakeman: explain this task', 'explain', `task:${run}/${task}`, task))
+    }
+    const ticket = route.path.startsWith('/dispatch/') && route.params.number ? `${String(route.params.project)}-${String(route.params.number)}` : ''
+    if (ticket) {
+      out.push(ask('draft-tickets', 'Ask Brakeman: draft tickets from this ticket', 'draft_tickets', `ticket:${ticket}`, ticket))
+      out.push(ask('propose-crew', 'Ask Brakeman: propose a crew for this ticket', 'propose_crew', `ticket:${ticket}`, ticket))
+    }
+    out.push({ key: 'brakeman:open', label: 'Open Brakeman', icon: 'i-lucide-notebook-pen', run: () => go('/brakeman') })
+    return out
+  }
+
   function sharedItems(): PaletteItem[] {
     return joined.list.value.map((e) => ({
       key: `shared:${e.id}`,
@@ -826,6 +857,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     groups.push({ id: 'shared', label: 'Shared with you', rows: sharedItems() })
     groups.push({ id: 'artifacts', label: 'Artifacts', rows: artifactItems() })
     groups.push({ id: 'goto', label: 'Go to', rows: [...pageItems(), ...settingsItem()] })
+    groups.push({ id: 'brakeman', label: 'Brakeman', rows: brakemanItems() })
     groups.push({ id: 'actions', label: 'Actions', rows: actionItems() })
     return groups
   }
