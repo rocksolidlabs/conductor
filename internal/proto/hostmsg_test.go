@@ -231,9 +231,9 @@ func TestHostAttentionMsgCarriesTheMark(t *testing.T) {
 
 // registered's recipe (#293): its wire names, absent when there is none
 // (an older host and an older server read each other as before), and its
-// bounds: Check refuses what is past the catalog's own, and a registered
-// whose recipe is at MaxHostRecipe, with the most ICE servers a welcome
-// carries a host, fits a host message.
+// bounds: Check refuses what is past the catalog's own. That registered
+// stays within a host message with one is the server's to keep
+// (registeredMessage in internal/api).
 func TestRegisteredRecipeWireShapeAndBounds(t *testing.T) {
 	b, _ := json.Marshal(Registered{T: HostRegistered, Links: []string{}})
 	if strings.Contains(string(b), "recipe") {
@@ -282,25 +282,5 @@ func TestRegisteredRecipeWireShapeAndBounds(t *testing.T) {
 		if bad.Check() == nil {
 			t.Errorf("%s: checked", name)
 		}
-	}
-
-	// The largest registered a server sends: a recipe whose encoding is MaxHostRecipe, the most ICE servers, links.
-	big := HostRecipe{TrustPrompt: strings.Repeat("t", MaxHostRecipe-64)}
-	enc, _ := json.Marshal(big)
-	big.TrustPrompt += strings.Repeat("t", MaxHostRecipe-len(enc))
-	if enc, _ = json.Marshal(big); len(enc) != MaxHostRecipe {
-		t.Fatalf("the recipe is %d bytes, not %d", len(enc), MaxHostRecipe)
-	}
-	ice := make([]ICEServer, 8)
-	for i := range ice {
-		ice[i] = ICEServer{URLs: []string{"turn:" + strings.Repeat("h", 200) + ":3478"}, Username: strings.Repeat("u", 256), Credential: strings.Repeat("c", 256)}
-	}
-	links := make([]string, 64)
-	for i := range links {
-		links[i] = strings.Repeat("l", 32)
-	}
-	b, _ = json.Marshal(Registered{T: HostRegistered, SessionID: strings.Repeat("s", 16), Secret: strings.Repeat("x", 64), ShareBaseURL: "https://" + strings.Repeat("h", 253), Resumed: true, ICEServers: ice, Links: links, Recipe: &big})
-	if len(b) > MaxHostMessage {
-		t.Fatalf("the largest registered is %d bytes, past %d", len(b), MaxHostMessage)
 	}
 }

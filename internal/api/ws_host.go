@@ -128,8 +128,11 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	// An open host, which presented no token, is handed the configured
 	// servers alone: no media provider is asked for it (iceServersFor).
 	ice := s.iceServersFor(ctx, ext.ICERequest{Purpose: icePurposeHost, Session: info.ID}, open)
-	registered, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice, Links: s.liveLinkIDs(info.ID),
+	registered, dropped := registeredMessage(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice, Links: s.liveLinkIDs(info.ID),
 		Recipe: s.hostRecipe(reg.Session.AgentID)})
+	if dropped {
+		s.log.Warn("registered with the agent's recipe is past a host message; the hosted session watches no questions", "session", info.ID, "agent", reg.Session.AgentID)
+	}
 	if err := writeText(ctx, c, registered); err != nil {
 		return
 	}
@@ -739,11 +742,28 @@ func (s *Server) hostRunLinkUpdate(hs *signal.HostedSession, hc *hostConnState, 
 	_ = hs.Tell(proto.RunLinkUpdated{T: proto.HostRunLinkUpdated, RequestID: m.RequestID, RunID: m.Run.ID, Links: len(changed)})
 }
 
+// registeredMessage is m encoded. The recipe is the one part of it that is
+// left out to fit (#293): a registered with it past proto.MaxHostMessage
+// (the most ICE servers a provider answers, every URL and credential at
+// its bound and escaped, beside the configured ones and the links) is sent
+// without it, and dropped says so; the host then watches nothing, as it
+// does with no recipe. What is past the bound without one is sent as it
+// was before the recipe.
+func registeredMessage(m proto.Registered) (b []byte, dropped bool) {
+	b, _ = json.Marshal(m)
+	if m.Recipe == nil || len(b) <= proto.MaxHostMessage {
+		return b, false
+	}
+	m.Recipe = nil
+	b, _ = json.Marshal(m)
+	return b, true
+}
+
 // hostRecipe is what a hosted session of the agent agentID watches on its
 // screen (#293): the catalog's recipe for it, as a server session of the
 // agent is started with (agents.Recipe); nil when the catalog has no such
 // agent, when it has nothing to watch, and when its encoding is past
-// proto.MaxHostRecipe, which the catalog's own bounds keep it under.
+// proto.MaxHostRecipe, which the built-in entries are far under.
 func (s *Server) hostRecipe(agentID string) *proto.HostRecipe {
 	if agentID == "" {
 		return nil
