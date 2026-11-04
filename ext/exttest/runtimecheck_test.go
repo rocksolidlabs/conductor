@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/local"
@@ -82,12 +83,15 @@ func TestTheContractHoldsForTheFake(t *testing.T) {
 type broken struct {
 	ext.Runtime
 	where     ext.Where
-	takes     chan struct{} // Takes waits on it
-	extraEnv  bool          // StartTerminal adds a variable
-	ignoreCtx bool          // StartTerminal starts under any context
-	noStarted bool          // Run never calls Started
-	swallow   bool          // Run recovers its Started's panic
-	follow    bool          // Probe follows a redirect
+	takes     chan struct{}   // Takes waits on it
+	extraEnv  bool            // StartTerminal adds a variable
+	ignoreCtx bool            // StartTerminal starts under any context
+	noStarted bool            // Run never calls Started
+	swallow   bool            // Run recovers its Started's panic
+	follow    bool            // Probe follows a redirect
+	stopNoCtx bool            // a Terminal's Stop ignores its context
+	serveBg   bool            // Serve looks at its context once, then serves under none
+	leak      context.Context // Run lets its Started's panic go, the process running under leak
 }
 
 func (b *broken) Name() string     { return "broken" }
@@ -107,7 +111,29 @@ func (b *broken) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Ter
 	if b.ignoreCtx {
 		ctx = context.Background()
 	}
-	return b.Runtime.StartTerminal(ctx, s)
+	term, err := b.Runtime.StartTerminal(ctx, s)
+	if b.stopNoCtx && term != nil {
+		term = ctxlessStop{term}
+	}
+	return term, err
+}
+
+// ctxlessStop is a Terminal whose Stop waits out its grace whatever its
+// context does.
+type ctxlessStop struct{ ext.Terminal }
+
+func (t ctxlessStop) Stop(_ context.Context, grace time.Duration) error {
+	return t.Terminal.Stop(context.Background(), grace)
+}
+
+func (b *broken) Serve(ctx context.Context, s ext.CommandSpec) (ext.ServiceProcess, error) {
+	if b.serveBg {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		ctx = context.Background()
+	}
+	return b.Runtime.Serve(ctx, s)
 }
 
 func (b *broken) Run(ctx context.Context, s ext.CommandSpec) (res ext.CommandResult) {
@@ -120,6 +146,24 @@ func (b *broken) Run(ctx context.Context, s ext.CommandSpec) (res ext.CommandRes
 				res = ext.CommandResult{Exit: -1, Err: "swallowed"}
 			}
 		}()
+	}
+	if b.leak != nil && s.Started != nil {
+		started, panicked, done := s.Started, make(chan any, 1), make(chan ext.CommandResult, 1)
+		s.Started = func(info ext.ProcessInfo) {
+			defer func() {
+				if p := recover(); p != nil {
+					panicked <- p
+				}
+			}()
+			started(info)
+		}
+		go func() { done <- b.Runtime.Run(b.leak, s) }()
+		select {
+		case p := <-panicked:
+			panic(p) // what it began still running
+		case res := <-done:
+			return res
+		}
 	}
 	return b.Runtime.Run(ctx, s)
 }
@@ -145,17 +189,28 @@ func (b *broken) Probe(ctx context.Context, s ext.ProbeSpec) (int, error) {
 func TestRunAllChecksTheRuntime(t *testing.T) {
 	stalled := make(chan struct{})
 	defer close(stalled)
+	leak, stopLeak := context.WithCancel(context.Background())
+	defer stopLeak()
 	for _, c := range []struct {
 		name string
 		b    *broken
 		want []string
+		// wait is the case's Wait for a row that runs one out: long
+		// enough for the helper to start under load, short enough that
+		// the row does not take the default minute. Zero is the default.
+		wait time.Duration
 	}{
-		{"Takes waits", &broken{where: ext.WhereNative, takes: stalled}, []string{"Takes did not return within"}},
-		{"another environment", &broken{extraEnv: true}, []string{"exactly its Env", "EXTRA"}},
-		{"a start under an ended context", &broken{ignoreCtx: true}, []string{"ended before the call returned a Terminal"}},
-		{"no Started", &broken{noStarted: true}, []string{"Run called Started 0 times"}},
-		{"a panic swallowed", &broken{swallow: true}, []string{"Run returned after its Started panicked"}},
-		{"a redirect followed", &broken{follow: true}, []string{"want 302, the redirect not followed"}},
+		{"Takes waits", &broken{where: ext.WhereNative, takes: stalled}, []string{"Takes did not return within"}, 0},
+		{"another environment", &broken{extraEnv: true}, []string{"exactly its Env", "EXTRA"}, 0},
+		{"a start under an ended context", &broken{ignoreCtx: true}, []string{"ended before the call returned a Terminal"}, 0},
+		// A Started never called leaves the panic check's helper to run
+		// out its Run's Timeout, the case's Wait.
+		{"no Started", &broken{noStarted: true}, []string{"Run called Started 0 times"}, 5 * time.Second},
+		{"a panic swallowed", &broken{swallow: true}, []string{"Run returned after its Started panicked"}, 0},
+		{"a redirect followed", &broken{follow: true}, []string{"want 302, the redirect not followed"}, 0},
+		{"a Stop deaf to its context", &broken{stopNoCtx: true}, []string{"of its context's end", "the context's end forces the process"}, 10 * time.Second},
+		{"a service deaf to its context", &broken{serveBg: true}, []string{"after its context ended once it ran: a context's end ends the service"}, 10 * time.Second},
+		{"a process left running past a panic", &broken{leak: leak}, []string{"Run let its Started's panic go with the process it started still running"}, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			c.b.Runtime = local.Native()
@@ -164,7 +219,9 @@ func TestRunAllChecksTheRuntime(t *testing.T) {
 			}
 			var opts []RunOption
 			if c.b.where != ext.WhereNative { // the native Where's static checks run alone
-				opts = append(opts, WithRuntimeCase(helperCase(t)))
+				rc := helperCase(t)
+				rc.Wait = c.wait
+				opts = append(opts, WithRuntimeCase(rc))
 			}
 			errs := record(t, func(t T) { RunAll(t, nil, ext.Providers{Runtime: c.b}, opts...) })
 			if !said(errs, c.want...) {
@@ -226,6 +283,80 @@ func TestRunAllWithoutACaseRefusesAnotherRuntime(t *testing.T) {
 	}
 	if errs := record(t, func(t T) { RunAll(t, nil, ext.Providers{Runtime: local.Native()}) }); len(errs) != 0 {
 		t.Fatalf("RunAll of the native Runtime with no case: %q", errs)
+	}
+}
+
+// lateStart is the native Runtime whose StartTerminal waits for gate
+// before it starts: it sees whether the DirFile it was lent is still open
+// then, and its Terminal tells stopped at its Stop.
+type lateStart struct {
+	ext.Runtime
+	gate    chan struct{}
+	dirErr  error
+	stopped chan struct{}
+}
+
+func (l *lateStart) Name() string     { return "late" }
+func (l *lateStart) Where() ext.Where { return "late" }
+func (l *lateStart) Takes(ext.ProcessRef) bool {
+	return true
+}
+
+func (l *lateStart) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Terminal, error) {
+	<-l.gate
+	_, l.dirErr = s.DirFile.Stat()
+	term, err := l.Runtime.StartTerminal(ctx, s)
+	if term == nil {
+		close(l.stopped)
+		return nil, err
+	}
+	return stopTold{term, l.stopped}, err
+}
+
+type stopTold struct {
+	ext.Terminal
+	stopped chan struct{}
+}
+
+func (t stopTold) Stop(ctx context.Context, grace time.Duration) error {
+	err := t.Terminal.Stop(ctx, grace)
+	close(t.stopped)
+	return err
+}
+
+// A StartTerminal that returns only after the case's Wait fails the check,
+// and what it hands back then is still ended: its Terminal is stopped, and
+// the DirFile it was lent stays open until its call has unwound.
+func TestALateTerminalIsStoppedAndItsDirFileKept(t *testing.T) {
+	l := &lateStart{Runtime: local.Native(), gate: make(chan struct{}), stopped: make(chan struct{})}
+	rc := helperCase(t)
+	errs := record(t, func(t T) {
+		c, ok := begin(t, nil, "RuntimeExec", l)
+		if !ok {
+			return
+		}
+		defer c.done()
+		// The gate opens only once the check has given up, so its Wait
+		// running out is certain, however loaded the machine.
+		x := &execCheck{c: c, r: l, rc: rc, wait: time.Millisecond}
+		dir, _ := x.dir()
+		if term, _, ok := x.start(context.Background(), "a late StartTerminal", ext.TerminalSpec{
+			Argv: x.argv("hold"), Dir: dir, Env: x.env("late"), Ref: ext.ProcessRef{Session: "exttest-late"},
+		}); ok || term != nil {
+			t.Errorf("a StartTerminal past its Wait answered ok %v, %v", ok, term)
+		}
+	})
+	if !said(errs, "a late StartTerminal did not return within") {
+		t.Errorf("the check did not say the start was late: %q", errs)
+	}
+	close(l.gate)
+	select {
+	case <-l.stopped:
+	case <-time.After(DefaultRuntimeWait + ext.StopKillWait): // the start's and the Stop's bounds
+		t.Fatal("the Terminal handed back late was never stopped")
+	}
+	if l.dirErr != nil {
+		t.Errorf("the DirFile was closed before the late StartTerminal unwound: %v", l.dirErr)
 	}
 }
 

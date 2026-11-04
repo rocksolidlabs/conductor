@@ -3557,23 +3557,31 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   context ended before the call answered with its error and no
   `Terminal`, and one that ends after one, two or three looks at it with
   one of the two answers the contract allows; `Stop` asked (the helper
-  exits 0 on the ask), forced once its context ends or past its grace
-  (the helper says it was asked and ignores it) and after an exit;
+  exits 0 on the ask), forced once its context ends (under a grace longer
+  than the wait after the end, so only the end can force it) or past its
+  grace (the helper says it was asked and ignores it) and after an exit;
   `Run`'s argv never a shell, its directory and exact environment, its
   exit code, head, tail and log within `LogLimit`, `Started` once before
   any output, a timeout told from a cancel, an ended context; a `Started`
-  that panics leaving `Run` and `Serve` as that panic; `Serve` started
-  and stopped; `Port` a number the helper binds, and `Probe` one try with
-  no redirect followed and no request under an ended context. `RunAll`
+  that panics leaving `Run` and `Serve` as that panic with nothing left
+  running (the helper, listening on a `Port`, answers a `Probe` before the
+  panic and none after it); `Serve` started and stopped, and ended by its
+  context ending once it runs; `Port` a number the helper binds, and
+  `Probe` one try with no redirect followed and no request under an ended
+  context. A `Terminal` or service a call hands back past the case's
+  `Wait` is stopped, and `DirFile` closed only once the call has unwound.
+  `RunAll`
   runs it with `WithRuntimeCase`'s case (variadic, so C9's callers
   compile unchanged) and fails a Runtime that is not the native one given
   none, naming the option; the native one with none runs its static
   checks alone. Tests: `TestTheContractHoldsForTheNativeRuntime`,
   `TestTheContractHoldsForTheFake` (with and without a base),
-  `TestRunAllChecksTheRuntime` (six Runtimes each breaking one rule),
+  `TestRunAllChecksTheRuntime` (nine Runtimes each breaking one rule),
   `TestRunAllTakesTheRuntimeCase`,
   `TestRunAllWithoutACaseRefusesAnotherRuntime`,
   `TestFakeRuntimeBasePassesUnscriptedCalls`, `TestFakeTerminalIsAPipe`,
+  `TestFakeTerminalStopWaitsForAConcurrentEnd`,
+  `TestALateTerminalIsStoppedAndItsDirFileKept`,
   `TestTheExecutionChecksParts`; C9's `TestSuitePassesEveryFake` passes
   the test binary's case, its fake given the native base.
 
