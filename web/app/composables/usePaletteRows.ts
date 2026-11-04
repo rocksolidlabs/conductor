@@ -5,7 +5,8 @@ import { taskCounts } from '~/utils/tasks'
 import { usePalette, type PaletteItem } from '~/composables/usePalette'
 import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
-import { rowActions, type Action } from '~/utils/actions'
+import { rowActions, sessionTarget, type Action } from '~/utils/actions'
+import { hostedReason } from '~/utils/clone'
 import { answersInTerminal, isActive, isEnded, needingInput, waitsForTerminal } from '~/utils/attention'
 import type { FeedEntry } from '~/utils/events'
 import { joinedDot, joinedPath } from '~/utils/joined'
@@ -89,6 +90,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   // Through the app's Tickets gate (usePalette), which a snapshot resets: the next edit expects the revision the store has.
   const ticketOps = useDispatchOps(palette.ticketsGate)
   const renameModal = useRenameModal()
+  const cloneModal = useCloneModal()
   const brakeman = useBrakeman()
   const route = useRoute()
   const integrations = ref<Awaited<ReturnType<typeof api.integrations>>['integrations']>([])
@@ -295,13 +297,21 @@ export function usePaletteRows(ctx: PaletteContext) {
     const row = sessionRow(s)
     const live = sessionLive(s.status)
     const own = rowActions(
-      { kind: 'session', name: s.name, live, inRun: !!s.crew, renamable: s.kind === 'server', id: s.id },
+      sessionTarget(s, live),
       {
         open: () => go(`/sessions/${s.id}`),
         openRun: () => s.crew && go(`/runs/${encodeURIComponent(s.crew.runId)}`),
         share: () => ctx.share({ sessionId: s.id, sessionName: s.name }),
         yard: () => go(`/yard?focus=${encodeURIComponent(s.id)}`),
         rename: () => renameModal.show(s),
+        clone: () => {
+          ctx.close()
+          cloneModal.show(s)
+        },
+        cloneWithOptions: () => {
+          ctx.close()
+          void cloneModal.withOptions(s)
+        },
         stop: () => void stopSession(s),
       },
     ).flat()
@@ -369,9 +379,21 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
     const s = page?.sessionId ? attention.sessions.value.find((x) => x.id === page.sessionId) : undefined
     if (s) {
-      // The agent, the directory and yolo: the command a session shows carries the flags a launch generates (its session id, its
-      // adapter's, yolo's), never the arguments typed at launch, so none are cloned (Codex's round on #303).
-      out.push({ key: `action:launch-like:${s.id}`, label: `Launch another like ${s.name}`, detail: `${s.agentId} · ${shortCwd(s.cwd)}${s.yolo ? ' · yolo' : ''} · the arguments typed at its launch are not kept`, agentId: s.agentId, run: () => ctx.launch({ agentId: s.agentId, cwd: s.cwd, yolo: s.yolo }) })
+      // Clone with options… (#434): the Launch dialog filled in with what the session was launched with, its arguments as given and
+      // its yolo choice; a hosted session cannot be cloned.
+      const hosted = s.kind !== 'server'
+      out.push({
+        key: `action:launch-like:${s.id}`,
+        label: `Launch another like ${s.name}`,
+        detail: hosted ? hostedReason(s.hostName) : `${s.agentId} · ${shortCwd(s.cwd)} · its agent, directory, arguments and yolo, to change`,
+        agentId: s.agentId,
+        disabled: hosted,
+        run: () => {
+          if (hosted) return
+          ctx.close()
+          void cloneModal.withOptions(s)
+        },
+      })
     }
     return out
   }

@@ -5,7 +5,7 @@ import type { DropdownMenuItem } from '@nuxt/ui'
  * A row's actions on a phone (design 3e), opened by a long press in place of
  * the context menu: the row's name and meta on top, then what hover offers
  * on a desktop as 44 px buttons (a session: Open, Share…, Show in the Yard,
- * Rename…, Stop…; a run's header: Open run, Share run, Stop run…), then Cancel. Stop
+ * Rename…, Clone…, Clone with options…, Stop…; a run's header: Open run, Share run, Stop run…), then Cancel. Stop
  * asks again, in the row. No swipe actions: a swipe that stops a session is
  * too easy to make by accident.
  */
@@ -22,19 +22,21 @@ function act(item: DropdownMenuItem) {
     <template #body>
       <div class="flex flex-col gap-1" data-row-sheet>
         <template v-for="(group, g) in items" :key="g">
-          <UButton
-            v-for="item in group"
-            :key="String(item.label)"
-            :label="item.label"
-            :icon="item.icon"
-            :color="item.color ?? 'neutral'"
-            variant="ghost"
-            size="lg"
-            class="min-h-11 justify-start"
-            :disabled="item.disabled"
-            :data-row-sheet-item="item.label"
-            @click="act(item)"
-          />
+          <template v-for="item in group" :key="String(item.label)">
+            <UButton
+              :label="item.label"
+              :icon="item.icon"
+              :color="item.color ?? 'neutral'"
+              variant="ghost"
+              size="lg"
+              class="min-h-11 justify-start"
+              :disabled="item.disabled"
+              :data-row-sheet-item="item.label"
+              @click="act(item)"
+            />
+            <!-- Why an item is disabled, under it (a hosted session's clones, #434). -->
+            <p v-if="item.description" class="-mt-1 px-3 pb-1 text-xs text-muted" :data-row-sheet-reason="item.label">{{ item.description }}</p>
+          </template>
         </template>
         <UButton label="Cancel" color="neutral" variant="outline" size="lg" class="mt-2 min-h-11" data-row-sheet-cancel @click="open = false" />
       </div>

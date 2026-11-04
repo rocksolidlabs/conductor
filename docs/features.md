@@ -254,6 +254,29 @@ open deferred item from rounds 1 and 2, then the features below.
   browser under `conductor.sidebar.width` (rem); the percent width kept before
   under `conductor.sidebar.size` is removed on first read, so every browser
   opens at the minimum once. Below lg nothing changed.
+- **Session clone (#434).** A server session's menu (More, a right-click, the
+  phone's long-press sheet, the palette's row actions) has Clone… and Clone
+  with options…, loose or a run's member, running, starting or exited.
+  Clone… asks only for a name, which must be no listed session's (server or
+  hosted, running or ended, ignoring case; checked on the server for clones
+  only), and starts the source's agent in its resolved directory with its
+  launch arguments as given and its yolo choice, sent as true or false. Clone
+  with options… opens the Launch dialog titled "Clone <name>", filled in with
+  the same (the arguments launched as recorded while their line is left as
+  it was), the name empty and the agent never another than the source's
+  unless picked; the palette's Launch another like <name> opens it too. Both
+  go through `POST /api/sessions/{id}/clone` (`docs/protocol.md`), which
+  takes what the body leaves out from the source's launch, never its
+  environment, and holds the name from its check until the clone is
+  registered; `GET /api/sessions/{id}` gives an admin the `launch` it reads.
+  A clone is a new launch: a new agent conversation, a loose session (a
+  member's has nothing of its run), the source untouched. A hosted session's
+  entries are disabled ("Runs on <machine>: Conductor cannot start a session
+  there yet"); a Yardmaster attempt's Clone… is, and Clone with options…
+  warns that its result needs its worktree clean; both dialogs warn when the
+  directory is a run's worktree (`.conductor/worktrees/`), where two agents
+  then share one working tree. Conductor makes and removes no worktree for a
+  clone.
 - **Example crews.** `conductor serve --examples` (env `CONDUCTOR_EXAMPLES` set
   to `1` or `true`) seeds example crews once: ids `example-todo-app`,
   `example-test-fixer`, `example-docs-writer`, `example-dependency-upgrade`; a

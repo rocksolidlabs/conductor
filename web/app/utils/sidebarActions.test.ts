@@ -3,23 +3,46 @@ import type { SessionInfo } from '~/composables/useSessions'
 import { ANSWER_IN_TERMINAL, TERMINAL_FIRST } from './attention'
 import { HOST_AWAY, accountItems, rowMenuItems, rowPrompt, sessionLive, stopQuestion } from './sidebarActions'
 
-const on = { open: () => {}, openRun: () => {}, share: () => {}, yard: () => {}, rename: () => {}, stop: () => {}, forget: () => {} }
-const shape = (groups: ReturnType<typeof rowMenuItems>) => groups.map((g) => g.map((i) => `${i.label}${i.kbds ? ` [${i.kbds.join('+')}]` : ''}${i.disabled ? ' (off)' : ''}${i.color ? ` ${i.color}` : ''}`))
+const on = { open: () => {}, openRun: () => {}, share: () => {}, yard: () => {}, rename: () => {}, clone: () => {}, cloneWithOptions: () => {}, stop: () => {}, forget: () => {} }
+const shape = (groups: ReturnType<typeof rowMenuItems>) => groups.map((g) => g.map((i) => `${i.label}${i.kbds ? ` [${i.kbds.join('+')}]` : ''}${i.disabled ? ' (off)' : ''}${i.color ? ` ${i.color}` : ''}${i.description ? ` — ${i.description}` : ''}`))
 
 describe('rowMenuItems', () => {
   it('offers a session Open, Share, the Yard and Stop; a member its run too', () => {
-    expect(shape(rowMenuItems({ kind: 'session', name: 'docs-sweep', live: true }, on))).toEqual([['Open [enter]'], ['Share… [S]', 'Show in the Yard'], ['Stop… [X] error']])
-    expect(shape(rowMenuItems({ kind: 'session', name: 'core', live: true, inRun: true }, on))).toEqual([['Open [enter]', 'Open the run [R]'], ['Share… [S]', 'Show in the Yard'], ['Stop… [X] error']])
+    expect(shape(rowMenuItems({ kind: 'session', name: 'docs-sweep', live: true }, on))).toEqual([['Open [enter]'], ['Share… [S]', 'Show in the Yard'], ['Clone…', 'Clone with options…'], ['Stop… [X] error']])
+    expect(shape(rowMenuItems({ kind: 'session', name: 'core', live: true, inRun: true }, on))).toEqual([['Open [enter]', 'Open the run [R]'], ['Share… [S]', 'Show in the Yard'], ['Clone…', 'Clone with options…'], ['Stop… [X] error']])
   })
 
   it('offers a server session Rename…, running or ended, before Stop; a hosted one none (#318)', () => {
-    expect(shape(rowMenuItems({ kind: 'session', name: 'docs-sweep', live: true, renamable: true }, on))).toEqual([['Open [enter]'], ['Share… [S]', 'Show in the Yard'], ['Rename…'], ['Stop… [X] error']])
-    expect(shape(rowMenuItems({ kind: 'session', name: 'old', live: false, renamable: true }, on))).toEqual([['Open [enter]'], ['Share… [S] (off)', 'Show in the Yard'], ['Rename…'], ['Stop… [X] (off) error']])
+    expect(shape(rowMenuItems({ kind: 'session', name: 'docs-sweep', live: true, renamable: true }, on))).toEqual([['Open [enter]'], ['Share… [S]', 'Show in the Yard'], ['Rename…'], ['Clone…', 'Clone with options…'], ['Stop… [X] error']])
+    expect(shape(rowMenuItems({ kind: 'session', name: 'old', live: false, renamable: true }, on))).toEqual([['Open [enter]'], ['Share… [S] (off)', 'Show in the Yard'], ['Rename…'], ['Clone…', 'Clone with options…'], ['Stop… [X] (off) error']])
     expect(shape(rowMenuItems({ kind: 'session', name: 'laptop', live: true, renamable: false }, on)).flat()).not.toContain('Rename…')
   })
 
+  it('offers every session Clone… and Clone with options…, loose or a member, running, starting or exited (#434)', () => {
+    for (const t of [
+      { kind: 'session' as const, name: 'loose', live: true, renamable: true },
+      { kind: 'session' as const, name: 'member', live: true, inRun: true, renamable: true },
+      { kind: 'session' as const, name: 'gone', live: false, renamable: true },
+    ]) {
+      const groups = shape(rowMenuItems(t, on))
+      expect(groups[groups.length - 2]).toEqual(['Clone…', 'Clone with options…'])
+    }
+  })
+
+  it("disables a hosted session's clones with the reason, and an attempt's Clone… alone (#434)", () => {
+    const hosted = shape(rowMenuItems({ kind: 'session', name: 'laptop', live: true, hosted: true, machine: 'studio' }, on))
+    const reason = 'Runs on studio: Conductor cannot start a session there yet'
+    expect(hosted[hosted.length - 2]).toEqual([`Clone… (off) — ${reason}`, `Clone with options… (off) — ${reason}`])
+    const attempt = shape(rowMenuItems({ kind: 'session', name: 'a · t1 #1', live: true, inRun: true, renamable: true, attempt: true }, on))
+    expect(attempt[attempt.length - 2]![0]).toMatch(/^Clone… \(off\) — A Yardmaster attempt/)
+    expect(attempt[attempt.length - 2]![1]).toBe('Clone with options…')
+    // Run headers and links shared with you are unchanged.
+    expect(shape(rowMenuItems({ kind: 'run', name: 'r', live: true }, on)).flat().join()).not.toContain('Clone')
+    expect(shape(rowMenuItems({ kind: 'shared', name: 'j', live: true }, on)).flat().join()).not.toContain('Clone')
+  })
+
   it('leaves an exited session nothing to stop or share, and still opens', () => {
-    expect(shape(rowMenuItems({ kind: 'session', name: 'old', live: false }, on))).toEqual([['Open [enter]'], ['Share… [S] (off)', 'Show in the Yard'], ['Stop… [X] (off) error']])
+    expect(shape(rowMenuItems({ kind: 'session', name: 'old', live: false }, on))).toEqual([['Open [enter]'], ['Share… [S] (off)', 'Show in the Yard'], ['Clone…', 'Clone with options…'], ['Stop… [X] (off) error']])
   })
 
   it('offers a run header Open run, Share run and Stop run', () => {
@@ -35,7 +58,7 @@ describe('rowMenuItems', () => {
     const calls: string[] = []
     const h = Object.fromEntries(Object.keys(on).map((k) => [k, () => void calls.push(k)])) as unknown as typeof on
     for (const g of rowMenuItems({ kind: 'session', name: 'x', live: true, inRun: true, renamable: true }, h)) for (const i of g) i.onSelect?.(new Event('select'))
-    expect(calls).toEqual(['open', 'openRun', 'share', 'yard', 'rename', 'stop'])
+    expect(calls).toEqual(['open', 'openRun', 'share', 'yard', 'rename', 'clone', 'cloneWithOptions', 'stop'])
   })
 })
 
