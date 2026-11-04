@@ -454,21 +454,21 @@ test("Dispatch's tickets (#409): a status picked back while the first pick is on
 })
 
 test('a chord pressed while the palette fades out is not swallowed (#323): Alt+/ during the fade opens it again', async ({ page }) => {
-  // The seam: the closing modal's fade (its content and overlay, 100 to 200 ms in the theme) is held for seconds, so that the chord
-  // lands while the closing palette is still in the page, every run, rather than inside a window a loaded machine may miss.
-  await page.addInitScript(() => {
-    document.addEventListener('DOMContentLoaded', () => {
-      const style = document.createElement('style')
-      style.textContent = '[data-state="closed"] { animation-duration: 5s !important; }'
-      document.head.append(style)
-    })
-  })
   await page.goto('/agents')
   await expect(page.locator('#dashboard-sidebar-main')).toBeAttached({ timeout: 30_000 })
   await page.keyboard.press('Control+k')
   const palette = page.locator('[data-palette]')
   await expect(palette).toBeVisible()
   const dialog = page.getByRole('dialog').filter({ has: palette })
+  // The gate: the closing palette's fade (its content's closing animation, 100 to 200 ms in the theme) is paused until the test
+  // lets it go, so the palette is still in the page, closed and fading, when the chord lands, every run: Reka's Presence keeps it
+  // mounted until that animation ends, and a paused one never ends.
+  await page.evaluate(() => {
+    const style = document.createElement('style')
+    style.id = 'hold-palette-fade'
+    style.textContent = '[role="dialog"][data-state="closed"]:has([data-palette]) { animation-play-state: paused !important; }'
+    document.head.append(style)
+  })
   // A row that closes the palette, run from the keyboard: the focus stays on it, inside the palette, while it fades.
   await palette.locator('input[data-palette-input]').fill('sidebar to the rail')
   const row = palette.locator('[data-palette-row="action:sidebar"]')
@@ -480,4 +480,8 @@ test('a chord pressed while the palette fades out is not swallowed (#323): Alt+/
   await page.keyboard.press('Alt+/')
   await expect(dialog).toHaveAttribute('data-state', 'open')
   await expect(palette).toBeVisible()
+  // Let the gate go: closed again, the palette fades and leaves the page, so it was the gate that held it.
+  await page.evaluate(() => document.getElementById('hold-palette-fade')?.remove())
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-palette]')).toHaveCount(0)
 })
