@@ -815,6 +815,14 @@ func TestCandidatesAreBoundToTheirCommits(t *testing.T) {
 			Result: result(crew.Result{Verdict: crew.VerdictNeedsChanges, Findings: []crew.Finding{{Severity: "blocker", Message: "x"}, {Severity: "major", Message: "y"}, {Severity: "major", Message: "z"}, {Severity: "nit", Message: "w"}}})}); err != nil {
 			return err
 		}
+		// Attempt 1 was accepted anyway once too, before a withdrawal took it back: a decision past the six listed.
+		if _, _, err := tx.Command("alice", "acc-0", "accept", "fp0"); err != nil {
+			return err
+		}
+		if err := tx.Settle("alice", "acc-0", ledger.CommandDone, crew.Receipt{CommandID: "acc-0", Intent: "accept", Status: ledger.CommandDone,
+			Task: &crew.ReceiptTask{ID: "t01", State: ledger.TaskSucceeded, Result: &crew.ReceiptResult{Attempt: 1, Commit: commit(1)}}}); err != nil {
+			return err
+		}
 		if _, _, err := tx.Command("admin", "acc-1", "accept", "fp"); err != nil {
 			return err
 		}
@@ -829,8 +837,29 @@ func TestCandidatesAreBoundToTheirCommits(t *testing.T) {
 	}
 	t01 := taskOn(t, page1, "t01")
 	cs := candidateList(t01)
-	if len(cs) != candidatesPerTask || t01["more"] != 1.0 || cs[0]["attempt"] != 7.0 || cs[5]["attempt"] != 2.0 {
+	// Attempt 1 is past the six listed, and withdrawn: the task's withdrawn says so.
+	// Attempt 1 is past the six listed, accepted anyway once: the task's acceptedOlder counts it.
+	if len(cs) != candidatesPerTask || t01["more"] != 1.0 || t01["withdrawn"] != 3.0 || t01["acceptedOlder"] != 1.0 || cs[0]["attempt"] != 7.0 || cs[5]["attempt"] != 2.0 {
 		t.Fatalf("t01: %v", t01)
+	}
+	if t02 := taskOn(t, page1, "t02"); t02["withdrawn"] != 0.0 || t02["acceptedOlder"] != 0.0 {
+		t.Fatalf("t02, never withdrawn nor accepted: %v", t02)
+	}
+	// The task's older candidates: before the oldest listed, the page holding t01 alone, with no next.
+	older := candidatesOf(t, again, synth, "task=t01&before=2")
+	if tcs := listOf(t, older, "candidates"); len(tcs) != 1 || older["next"] != nil || tcs[0]["more"] != 0.0 || tcs[0]["acceptedOlder"] != 0.0 || tcs[0]["withdrawn"] != 3.0 {
+		t.Fatalf("t01's older candidates: %v", older)
+	}
+	oc := candidateList(taskOn(t, older, "t01"))
+	if len(oc) != 1 || oc[0]["attempt"] != 1.0 || oc[0]["withdrawn"] != true || oc[0]["commit"] != commit(1) {
+		t.Fatalf("t01's attempt 1: %v", oc)
+	}
+	if acc, _ := oc[0]["acceptedAnyway"].(map[string]any); acc["actor"] != "alice" || acc["command"] != "acc-0" {
+		t.Fatalf("attempt 1's Accept anyway: %v", oc[0])
+	}
+	// The task named alone, with no before: its six newest, as on the page.
+	if one := candidatesOf(t, again, synth, "task=t01"); !reflect.DeepEqual(listOf(t, one, "candidates")[0], t01) || one["next"] != nil {
+		t.Fatalf("t01 alone: %v", one)
 	}
 	for _, c := range cs {
 		n := c["attempt"].(float64)
@@ -857,7 +886,8 @@ func TestCandidatesAreBoundToTheirCommits(t *testing.T) {
 		!reflect.DeepEqual(rvc[0]["findings"], map[string]any{"blocker": 1.0, "major": 2.0, "nit": 1.0}) {
 		t.Fatalf("rv: %v", rvc)
 	}
-	for _, q := range []string{"after=nope", "after=-x", "after=t01&after=t02", "bogus=1"} {
+	for _, q := range []string{"after=nope", "after=-x", "after=t01&after=t02", "bogus=1", "task=nope", "task=-x", "task=t01&after=t01", "before=2",
+		"task=t01&before=0", "task=t01&before=", "task=t01&before=x", "task=t01&before=1&before=2"} {
 		again.expect(t, "GET", "/api/runs/"+synth+"/candidates?"+q, nil, http.StatusBadRequest, "invalid_request")
 	}
 }
@@ -885,7 +915,7 @@ func TestTheCandidatesPageAtItsWorstIsUnderItsBound(t *testing.T) {
 		Findings: map[string]int{"blocker": 50, "major": 50, "minor": 50, "nit": 50}, Receipts: receipts}
 	page := make([]taskCandidates, candidateTasksPage)
 	for i := range page {
-		page[i] = taskCandidates{Task: strings.Repeat("t", 40), Kind: crew.TaskReview, More: 1 << 20}
+		page[i] = taskCandidates{Task: strings.Repeat("t", 40), Kind: crew.TaskReview, More: 1 << 20, Withdrawn: 1 << 20, AcceptedOlder: 1 << 20}
 		for range candidatesPerTask {
 			page[i].Candidates = append(page[i].Candidates, c)
 		}

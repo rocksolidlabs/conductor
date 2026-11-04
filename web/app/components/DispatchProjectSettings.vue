@@ -5,7 +5,7 @@ import { CLOSE_REQUIREMENTS, LABEL_COLOR_CHOICES, closeRequiresOf, labelDot, pol
 
 /**
  * A project's settings, from its page. Its close policy (PR-11): what a ticket needs before it is done, the owner's acceptance and a
- * delivery link, either, both or neither (`verified` is not offered: DS2 defines it), saved as one operation on the project's revision;
+ * delivery link and a verified delivery (DS2: one naming a candidate whose checks passed), any of them or none, saved as one operation on the project's revision;
  * every ticket page of the project reads its close card again on the project's event, so the card follows the policy with no reload.
  * Its labels and milestones (docs/plans/dispatch.md, PR-10), managed from its page: a label made, renamed, recoloured with one
  * of the twelve names the UI maps to the brand's scales (never a value of the client's own) and deleted; a milestone made, renamed,

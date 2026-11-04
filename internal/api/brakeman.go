@@ -523,8 +523,16 @@ func (d *brakemanDesk) prune() {
 // tend closes the turn at its deadline, stops its run once its request is
 // closed (a brief's after the grace), retries a stop that left a process,
 // and gives the slot up once the launch has returned and every member's
-// process is reaped.
+// process is reaped. Giving it up sends the request's brakeman event once
+// more, after the slot is free: a page that read GET /api/brakeman while
+// the closed request still held it reads again and sees it go.
 func (d *brakemanDesk) tend(t *deskTurn) time.Duration {
+	released := false
+	defer func() {
+		if released {
+			d.publish(t.id)
+		}
+	}()
 	now := d.now()
 	req, err := d.st.Get(t.id)
 	if err != nil {
@@ -556,6 +564,7 @@ func (d *brakemanDesk) tend(t *deskTurn) time.Duration {
 		d.turn, d.stopFails, d.stuck = nil, 0, false
 		d.pruneDue.Store(true)
 		d.poke()
+		released = true
 		return 0
 	}
 	if t.stopping || len(live) == 0 && t.runID == "" {

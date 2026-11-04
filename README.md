@@ -1298,9 +1298,12 @@ failed or cancelled task (one more attempt), **Accept anyway** a failed task's
 last submitted commit as its result (asked first), **Cancel** a task (asked
 first), **Copy branch**. A row opens the task: its result (summary, issues, a
 review's findings) and every attempt with where it started, what it submitted
-and what failed it. The header says `3/7 tasks`, `1 failed`, `2 running`,
-`1 checking` and `paused`, and **Pause** holds scheduling (attempts in
-flight go on, no task starts) until **Resume**. Every one of these is a
+and what failed it. An attempt after a failed check starts at the result that
+failed, its task file naming the check's receipt with the end of its output,
+and the whole log beside it (`.conductor/previous/check-<id>.log`). The
+header says `3/7 tasks`, `1 failed`, `2 running`, `1 checking` and `paused`,
+and **Pause** holds scheduling (attempts in flight go on, no task starts)
+until **Resume**. Every one of these is a
 command with a receipt: the browser mints an id, a reply lost to the network
 is asked for once more with the same id and answered as the first, and a
 refusal says why. The palette lists the tasks under the page's group, each
@@ -1479,16 +1482,76 @@ says what the project's policy asks and which is met, and, unmet, why
 ("accepted for Alice; the owner is now Bob", "accepted before the criteria
 changed"). **Accept for Alice** records the acceptance for the owner and
 against the criteria as they stand; no status implies it. A delivery link is
-the merged pull request's or the release's URL, added by hand. **Close as
+the merged pull request's or the release's URL, added by hand; the link form's
+**The candidate it delivers** (none until picked) names one of the ticket's
+runs' results, and the link keeps that candidate's check receipts as they
+stood ("Verified: build#2 passed 2 checks", or what failed). A policy may ask
+for **a verified delivery**: a delivery naming a candidate whose checks all
+passed on its commit; a candidate with no check, or one accepted anyway, is
+not verified. **Close as
 done**, a drop on Done or `s` to Done is refused in those words until the
 policy is met; any other status is free. A new Dispatch project asks for the
 owner's acceptance, an external one for nothing.
 
-**Runs.** A ticket's page lists the managed runs linked to it, each with the
-run page's own Tasks rows, live while the server holds the run and from its
-record after; a run is linked from the form (picked or named by its id), one
-ticket a run. The run page shows the ticket's key beside the run's name and
-opens it. Launching a run from a ticket comes later.
+**Plan.** Below the criteria, **Propose a plan** makes a plan revision of the
+ticket (shown as `r1`, `r2`): a saved crew with tasks taken whole as it is
+now (its members with their agents and arguments, each agent's command as the
+catalog resolves it, its tasks with their member, kind, needs and checks, its
+project manifest, and the yolo choice, said plainly), the commit it starts
+from (`HEAD` unless another is named), source references checked at that
+commit (`internal/api/auth.go:40-60=the loop`), the attachments and comments
+to hand over, constraints, the decisions a person will make (recorded and
+shown; nothing holds work on them yet) and a note. A revision never changes:
+**Revise** makes the next one from it. **Approve**, with a note, is the
+operator's, and supersedes the revision approved before. The section says
+when an approval no longer holds: after an edit of the title, description or
+criteria **Approve again**; after a comment it hands over is edited or an
+agent's catalog entry changes, **Revise**. When the crew was edited since, it
+says so and the approval still holds: a launch runs the revision's crew as it
+was, and **Revise** takes the crew as it is now. An edit of anything else
+(status, labels, a new comment) leaves it holding.
+
+**Launching.** **Launch from r2** asks first (the revision, its commit, the
+yolo choice, the run's label, `CND-12 Fix the login loop` unless changed),
+then starts a managed run at the revision's commit with its crew, and says
+why when it cannot: no approved revision, an approval that no longer holds,
+the ticket closed, the project archived, managed runs off or no ledger. The
+launch is recorded before the run starts, so a reply lost to the network and
+sent again answers the same run, never a second one. Every attempt of the run,
+a retry or a continuation after a restart included, is handed the ticket as
+it stood at the launch beside its task files: `.conductor/ticket.md`,
+`.conductor/package.json` and the attachments in `.conductor/attachments/`
+(under names of their own, `01-spec.png`). An edit of the ticket after the
+launch changes nothing of the run, and each attempt starts only the agent the
+revision approved: one whose catalog entry changed since fails at once,
+uncounted, and pauses the run with why.
+
+**Runs.** A ticket's page lists every launch (its plan revision, its state,
+why one failed), its run and the run's continuations, and the runs linked
+to it by hand, newest first, **Show older** for the rest. Each run shows its
+state, its tasks counted with the run page's own Tasks rows, its blockers and
+the questions its members wait on, each with **Open** on the member's
+session. Under it its **candidates**: each task's submitted results, newest
+first, with the commit (Copy), whether it is the task's result now, withdrawn
+or accepted anyway, and its check receipts as chips (passed, failed with its
+exit, timed out, interrupted) with where each ran; a review shows its verdict
+and its findings counted, their text read when opened, and the repairs say
+which attempt followed a failed check or a review's findings. A receipt opens
+in full (the argv, the commit, exit, duration, `stable`) with its log, whose
+SHA-256 as served is shown beside the one the ledger recorded. A run whose
+ticket changed after its launch says so ("The ticket changed after this run
+launched: the description; 2 comments since") with the history between, and
+offers **Revise** and **Launch a follow-up**, never an update of the run. The
+run page's header says "Launched from CND-12 · plan r2" and opens the ticket.
+A run is linked by hand from the form (picked or named by its id): one
+ticket a run and its continuations, and a run launched from a ticket is that
+ticket's already.
+
+**Decisions and people.** **Decisions** lists the approvals with their notes,
+the acceptance, the results accepted anyway, and the approved revision's
+decisions a person makes; **People** the owner, the assignees, who approved,
+launched and commented, the approved revision's agents with the commands they
+run, and each launch's agents with the version each reported.
 
 **The keys.** On a project's page: **J** **K** (or the arrows) move, **Enter**
 opens, **X** selects, **C** makes a ticket, and **S** **P** **A** **L** **M**
@@ -1551,6 +1614,85 @@ say first what it was launched at ("As launched: CND-12 at revision 7, plan
 revision 3, in .conductor/ticket.md. Now at revision 9: the description
 changed; 2 comments since."): the run follows the ticket as launched, and a
 change is a person's to decide.
+
+## Brakeman
+
+Brakeman is Conductor's sidekick agent: an agent of your own choosing, on your
+own agent subscription, that Yardmaster runs for bounded turns to read what the
+crews, the runs and Dispatch hold, explain it, and draft and propose what you
+may then do. It observes, explains, drafts and proposes; nothing it writes
+becomes work until a person acts, and it answers no question, approves nothing
+and schedules nothing. Each thing you ask is a **request**, each request one
+**turn** (a fresh session of the agent, run as an ordinary run you can watch
+and stop), and each turn hands back one **brief**. It is off until you turn it
+on, and a switchyard has none (see `docs/protocol.md`, Brakeman, and
+`docs/architecture.md`, Brakeman).
+
+**Settings → Brakeman.** The agent (Claude Code or Codex today: an agent whose
+adapter registers Conductor's tools and has a read-only mode); the account,
+the folder its login lives in (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), empty for
+its default login; the model, empty for the agent's default; the folder its
+turns run in; whether Conductor's tools run without asking (without it the
+agent asks before each one and the turn waits on you in Needs you); what it may
+see (runs, check logs, Dispatch, sessions, touched files, and terminal
+screens, off until you turn them on); its scope (all of it, or chosen
+projects, repositories, crews, runs and sessions); whether it may draft and
+propose; and its budget (15 minutes and 300 reads a turn, 40 turns a day by
+default). A turn always runs in the agent's own read-only mode and never with
+yolo. Under Codex, Settings says what that mode does not hold: Codex 0.163.0's
+read-only sandbox leaves your own MCP servers (one yes away from writing) and
+your exec-policy allow rules (a matching command runs outside it without
+asking), and no flag isolates them, so a Codex turn is read-only only for an
+account with neither.
+
+**Asking.** **Brakeman** in the sidebar's foot opens `/brakeman`: pick **Brief
+me since…**, **Explain this**, **Prepare a decision**, **Draft tickets**,
+**Propose a crew**, **Prepare a handoff**, **Find…**, **Overlapping changes**
+or **A question**, the runs, tasks, sessions or ticket it is about, a note and
+a time. The request shows queued, then running with its session and its run
+(watch the terminal, or Stop), then briefed; one turn runs at a time and 8
+wait. The palette's Brakeman rows, a task's **Ask Brakeman why** on the run
+page and a ticket's **Ask Brakeman** menu open the same form, filled in. A
+brief arriving adds a count to the sidebar's row and nothing else: no dialog,
+no toast, no change of page.
+
+**A brief** says which agent, model and version made it, for which request, as
+of when; then Brakeman's reading (its interpretation), the facts, each with
+its evidence as links (a run, a task, a check's receipt with its log's
+SHA-256, a ticket, a session, a question, a file, an earlier brief), marked
+"changed since" when the record moved after the brief was kept, the
+interpretations and the facts they read, proposals, outcomes with their
+receipts, and what was asked for: decision cards (the question, the
+alternatives, the recommendation and its uncertainty, what answering
+authorizes) whose buttons are Conductor's own, read from the live record (a
+failed task's Retry or Accept anyway, sent with the revision Brakeman read, so
+a run that moved is refused rather than acted on blind; a question answered on
+its session page); draft tickets and crews as forms you edit and **Create**
+(a crew is saved and opened in the editor, never launched); handoffs to copy
+or comment on a ticket. A brief is never kept with a claim you cannot follow:
+the server refuses one whose evidence names nothing or lies outside what
+Brakeman may see.
+
+**From a shell**, with the workbench token (`--server`, `--token` and
+`--insecure` as `conductor dispatch` takes them):
+
+```bash
+conductor brakeman ask briefing --since 18:00        # or explain --subject run:<run>, draft_tickets --subject ticket:CND-4, ...
+conductor brakeman status                             # on or off, the turn in progress, the queue, today's turns
+conductor brakeman list                               # the requests, newest first
+conductor brakeman show br-12                         # a request whole, with its brief
+conductor guide [--section operations] [--json]       # what this server says the caller may do here
+```
+
+In a turn's session the agent uses the MCP tools `brakeman_request`, `observe`
+and `brief_submit`, or `conductor brakeman request|observe|brief` with its
+session's token; no other session sees them. Any agent in a Conductor session
+can call the MCP tool `guide` (or `conductor guide`) to learn what this build
+lets it do there, its limits and its receipts, from the running server. The
+records are JSON files under `brakeman/` in the data directory: a restart
+keeps every request and brief, and a **Brief me since…** with no time starts
+where the last complete briefing's coverage ended, read from them, never from
+a conversation.
 
 ## Yolo
 

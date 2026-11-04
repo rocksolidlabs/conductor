@@ -179,6 +179,24 @@ const runRoute = computed(() => route.path.startsWith('/runs/'))
 // Dispatch's pages (its projects, a project's list, a ticket) keep it lit.
 const dispatchRoute = computed(() => route.path === '/dispatch' || route.path.startsWith('/dispatch/'))
 
+// Brakeman's row (docs/plans/brakeman.md, PR-6): the briefs this browser has not opened, counted as they arrive; nothing else
+// happens when one does (no toast, no dialog, no navigation). Shown once the server says it has Brakeman (not a switchyard's).
+const brakeman = useBrakeman()
+const workbench = useWorkbenchToken()
+// Read with a token only: a read without one would ask for it. A new token may be another server's, whose br-1 is not the one
+// held: what the store holds goes first, and replies to the reads sent with the token before are dropped.
+onMounted(() =>
+  watch(
+    () => workbench.token.value,
+    (t, before) => {
+      if (before !== undefined) brakeman.reset()
+      if (t) void brakeman.load()
+    },
+    { immediate: true },
+  ),
+)
+const brakemanCount = computed(() => brakeman.unopened.value.length)
+
 const nav = computed<NavigationMenuItem[]>(() => [
   { label: 'Yard', icon: 'i-lucide-layout-grid', to: '/yard', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
   { label: 'Roundhouse', icon: 'i-lucide-gallery-horizontal', to: '/roundhouse' },
@@ -191,6 +209,9 @@ const nav = computed<NavigationMenuItem[]>(() => [
   },
   { label: 'Dispatch', icon: 'i-lucide-ticket', to: '/dispatch', active: dispatchRoute.value },
   { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events' },
+  ...(brakeman.available.value
+    ? [{ label: 'Brakeman', icon: 'i-lucide-notebook-pen', to: '/brakeman', 'data-sidebar-brakeman': '', badge: brakemanCount.value ? { label: String(brakemanCount.value), color: 'primary' as const, variant: 'subtle' as const } : undefined }]
+    : []),
   ...(desktop.isDesktop.value ? [{ label: 'Settings', icon: 'i-lucide-settings', to: '/settings' }] : []),
 ])
 
@@ -200,6 +221,10 @@ const nav = computed<NavigationMenuItem[]>(() => [
 const railNav = computed<NavigationMenuItem[]>(() =>
   nav.value.map((item) => {
     const n = item.to === '/yard' ? attention.count.value : 0
+    if (item.to === '/brakeman') {
+      const b = brakemanCount.value
+      return { ...item, 'aria-label': b ? `${item.label}, ${b} new ${b === 1 ? 'brief' : 'briefs'}` : item.label, chip: b ? { color: 'primary' } : undefined }
+    }
     return { ...item, 'aria-label': n ? `${item.label}, ${n} ${n === 1 ? 'needs' : 'need'} you` : item.label, chip: n ? { color: 'warning' } : undefined }
   }),
 )
