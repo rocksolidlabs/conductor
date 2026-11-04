@@ -39,6 +39,7 @@ vi.mock('electron', async () => {
     }
     maximize() {
       this.maximized = true
+      this.emit('maximize')
     }
     show() {
       this.visible = true
@@ -94,6 +95,52 @@ describe('when the window keeps its bounds (#359)', () => {
     w.minimized = true
     quit([w])
     expect(readBounds(file)).toEqual({ x: 10, y: 20, width: 1000, height: 700, maximized: false })
+  })
+
+  // Windows: a maximized window minimized reports itself not maximized (the two states exclude each other), and its minimize
+  // comes with no unmaximize. Minimized as Windows has it, the window is kept as it was before (#376, review round 2).
+  function minimizeAsWindows() {
+    w.maximized = false
+    w.minimized = true
+    w.visible = false
+    w.emit('minimize')
+  }
+
+  it('keeps a maximized window maximized as the app quits with it minimized, though Windows reports it not maximized then', () => {
+    w.bounds = { x: 40, y: 30, width: 1100, height: 760 }
+    w.maximized = true
+    w.emit('maximize')
+    minimizeAsWindows()
+    quit([w])
+    expect(readBounds(file)).toEqual({ x: 40, y: 30, width: 1100, height: 760, maximized: true })
+  })
+
+  it('keeps a maximized window maximized as it closes minimized (the taskbar\'s Close)', () => {
+    w.bounds = { x: 40, y: 30, width: 1100, height: 760 }
+    w.maximized = true
+    w.emit('maximize')
+    minimizeAsWindows()
+    w.emit('close', { preventDefault() {} })
+    expect(readBounds(file)).toEqual({ x: 40, y: 30, width: 1100, height: 760, maximized: true })
+  })
+
+  it('keeps a window maximized and then restored as not maximized, minimized or not', () => {
+    w.bounds = { x: 40, y: 30, width: 1100, height: 760 }
+    w.maximized = true
+    w.emit('maximize')
+    w.maximized = false
+    w.emit('unmaximize')
+    minimizeAsWindows()
+    quit([w])
+    expect(readBounds(file)).toEqual({ x: 40, y: 30, width: 1100, height: 760, maximized: false })
+  })
+
+  it('keeps a maximize the window was given by maximize() through a minimize, and an unmaximize sent while minimized changes nothing', () => {
+    ;(w as unknown as { maximize(): void }).maximize()
+    minimizeAsWindows()
+    w.emit('unmaximize')
+    quit([w])
+    expect(readBounds(file)?.maximized).toBe(true)
   })
 
   it('keeps them as the window closes to the tray, and a quit while it is hidden leaves them as kept', () => {

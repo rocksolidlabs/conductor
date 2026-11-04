@@ -176,9 +176,20 @@ export function createWindow(o: WindowOptions): BrowserWindow {
   // The bounds are kept as the window closes (hidden to the tray or not) and as the app quits with it shown. The app's quit (the
   // tray's Quit, Cmd+Q, the menu) stops the server in main.ts's before-quit and then calls app.exit, which destroys every window
   // without a 'close': so the window keeps them on before-quit itself, shown or minimized. One hidden to the tray kept them as it
-  // was hidden (its 'close'); read again hidden, its maximized state is not reported alike on every platform.
+  // was hidden (its 'close'); read again hidden, its maximized state is not reported alike on every platform. A minimized window is
+  // not maximized on Windows (the two states exclude each other), so one maximized, then minimized, then quit or closed from the
+  // taskbar is kept as maximized was when it was minimized: followed by the window's own maximize and unmaximize, and read off the
+  // window only while it is not minimized.
+  let maximized = false
+  w.on('maximize', () => {
+    maximized = true
+  })
+  w.on('unmaximize', () => {
+    if (!w.isDestroyed() && !w.isMinimized()) maximized = false
+  })
   const keep = () => {
-    if (!w.isDestroyed()) writeBounds(boundsFile, { ...w.getNormalBounds(), maximized: w.isMaximized() })
+    if (w.isDestroyed()) return
+    writeBounds(boundsFile, { ...w.getNormalBounds(), maximized: w.isMinimized() ? maximized : w.isMaximized() })
   }
   const keepOnQuit = () => {
     if (!w.isDestroyed() && (w.isVisible() || w.isMinimized())) keep()
