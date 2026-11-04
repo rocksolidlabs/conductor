@@ -5614,16 +5614,20 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   clicks, its fade off under `prefers-reduced-motion`, mounted in `app.vue`
   so every page has it. A level other than 100% kept from before is said
   once per start of the app, to the first page that asks (`zoom()`'s
-  `announce`, `ZoomStart`), not on each page load. The percent has one
+  `announce`, `ZoomStart`), not on each page load; a page told a move
+  before that answer keeps the move, and a move made before any page asked
+  (the splash showing) leaves the level to say. The percent has one
   formula, `zoomPercent` in `desktop/src/zoom.ts` (`Math.round(100 *
   1.2 ** level)`); the page shows what the app sends. A browser, and an app
   whose bridge has no zoom event, render nothing. The stored level, its
   bounds (−3 to 5) and its step (0.5) are unchanged. Tests: desktop
-  `zoom.test.ts` (every step's percent, the bounds, `ZoomStart`) and
+  `zoom.test.ts` (every step's percent, the bounds, `ZoomStart`, and
+  `moveZoom`, main's move: at both bounds and to two workbench windows) and
   `menu.test.ts` (the View menu's zoom items); the Electron smoke (the
   menu's reset at 110%, the indicator's words and the level line after each
   move); web `useDesktopZoom.test.ts` and `desktop.test.ts`; Playwright
-  `zoom.spec.ts` with a stub bridge. Not yet seen in the installed app on
+  `zoom.spec.ts` with a stub bridge (the 1.5 s read up to the fade's start,
+  and no transition under reduced motion). Not yet seen in the installed app on
   Windows or macOS.
 - **An agent's links open in the browser its settings name (#436,
   2026-11-04).** The owner asked on 2026-10-30 for an agent's links,

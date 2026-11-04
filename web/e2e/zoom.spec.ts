@@ -11,7 +11,8 @@ import { expect, test, type Session } from './fixtures'
 test.describe.configure({ mode: 'serial' })
 
 type Zoom = { level: number; percent: number; bound: '' | 'largest' | 'smallest' }
-type Stubbed = { e2eZoom?: (z: Zoom) => void; e2eZoomAsks?: number }
+/** What the page keeps for the test: the stub's event, its asks, when the last move was told, and the last indicator's leave. */
+type Stubbed = { e2eZoom?: (z: Zoom) => void; e2eZoomAsks?: number; e2eZoomLastAt?: number; e2eZoomLeave?: { at: number; transition: string } }
 
 /** The app, stubbed: the zoom now is kept, and said to the first page that asks (once per "start", the session's storage) when not 100%. */
 async function stubApp(page: Page, token: string, url: string, kept: Zoom, opts: { event?: boolean } = {}) {
@@ -64,6 +65,9 @@ async function listening(page: Page) {
  * The moves, told in the page one by one; after each the page's drawing is awaited (a MutationObserver: a microtask, so no timer of
  * the page's can run between a move and its look). For each: how many indicators there are, the one's text, whether it is the same
  * element as the first move's, whether the focus is where it was before the moves, and whether a point at its middle hits it.
+ * The time of the last move is taken before it is told (the indicator's timer starts inside it), and in the same evaluation the
+ * indicator's leave is watched from then on: when its leave begins (the Transition's leave-active class, before the 300 ms fade,
+ * which would otherwise hide a timer that short), and the transition its style then runs (`leave`).
  */
 function move(page: Page, moves: Zoom[]) {
   return page.evaluate(async (moves) => {
@@ -84,6 +88,7 @@ function move(page: Page, moves: Zoom[]) {
     let first: HTMLElement | undefined
     const seen: Array<{ count: number; text: string; same: boolean; focusKept: boolean; hit: boolean }> = []
     for (const z of moves) {
+      w.e2eZoomLastAt = performance.now()
       w.e2eZoom!(z)
       await drawn(`${z.percent}%${z.bound ? `, the ${z.bound}` : ''}`)
       const el = all()[0]!
@@ -92,9 +97,32 @@ function move(page: Page, moves: Zoom[]) {
       const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
       seen.push({ count: all().length, text: el.textContent!.trim(), same: el === first, focusKept: document.activeElement === before, hit: !!at?.closest('[data-zoom-status]') })
     }
-    ;(window as unknown as { e2eZoomLastAt: number }).e2eZoomLastAt = performance.now()
+    const el = all()[0]!
+    w.e2eZoomLeave = undefined
+    const leaving = () => !el.isConnected || el.classList.contains('transition-opacity')
+    const left = () => (w.e2eZoomLeave = { at: performance.now(), transition: getComputedStyle(el).transitionProperty })
+    if (leaving()) left()
+    else {
+      const o = new MutationObserver(() => {
+        if (!leaving()) return
+        o.disconnect()
+        left()
+      })
+      o.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] })
+    }
     return seen
   }, moves)
+}
+
+/** The last move's indicator, gone: how long after the move its leave began, and the transition it ran. */
+async function leave(page: Page) {
+  await expect(page.locator('[data-zoom-indicator]')).toHaveCount(0, { timeout: 15_000 })
+  const l = await page.evaluate(() => {
+    const w = window as unknown as Stubbed
+    return w.e2eZoomLeave && { after: w.e2eZoomLeave.at - w.e2eZoomLastAt!, transition: w.e2eZoomLeave.transition }
+  })
+  expect(l).toBeTruthy()
+  return l!
 }
 
 test('moves show their level in one indicator, which goes after its time, on every workbench page', async ({ page, state }) => {
@@ -118,22 +146,10 @@ test('moves show their level in one indicator, which goes after its time, on eve
   expect(seen.map((s) => s.text)).toEqual(['110%', '120%', '131%'])
   expect(seen.every((s) => s.count === 1 && s.same)).toBe(true)
   await expect(status).toHaveAttribute('data-zoom-last', '131%')
-  // Gone after its time, which runs from the last move, never before it (the page's own clock, read in the page).
-  const gone = page.evaluate(
-    () =>
-      new Promise<number>((resolve) => {
-        const check = () => {
-          if (document.querySelector('[data-zoom-indicator]')) return false
-          resolve(performance.now() - (window as unknown as { e2eZoomLastAt: number }).e2eZoomLastAt)
-          return true
-        }
-        if (check()) return
-        const o = new MutationObserver(() => check() && o.disconnect())
-        o.observe(document.body, { subtree: true, childList: true })
-      }),
-  )
-  await expect(page.locator('[data-zoom-indicator]')).toHaveCount(0, { timeout: 15_000 })
-  expect(await gone).toBeGreaterThanOrEqual(1500)
+  // Gone after its 1.5 s, which run from the last move, never before them (the page's own clock, read in the page), with a fade.
+  const gone = await leave(page)
+  expect(gone.after).toBeGreaterThanOrEqual(1500)
+  expect(gone.transition).toBe('opacity')
 
   // At a bound a move still says the level, and that it is the largest or the smallest; a reset says 100%.
   const bounds = await move(page, [
@@ -148,6 +164,18 @@ test('moves show their level in one indicator, which goes after its time, on eve
   await page.goto('/settings')
   await listening(page)
   expect((await move(page, [{ level: -0.5, percent: 91, bound: '' }]))[0]!.text).toBe('91%')
+})
+
+test('under prefers-reduced-motion the indicator goes without its fade', async ({ page, state }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await stubApp(page, state.token, state.baseURL, AT_100)
+  await page.goto('/yard')
+  await expect(page.locator('[data-sidebar-menus]').first()).toBeVisible()
+  await listening(page)
+  expect((await move(page, [{ level: 0.5, percent: 110, bound: '' }]))[0]!.text).toBe('110%')
+  const gone = await leave(page)
+  expect(gone.after).toBeGreaterThanOrEqual(1500)
+  expect(gone.transition).toBe('none')
 })
 
 test('the indicator leaves the focus in the terminal and takes no clicks; typing goes on', async ({ page, api, state }) => {
