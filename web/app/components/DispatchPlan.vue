@@ -12,8 +12,8 @@ import { relativeTime } from '~/utils/sessions'
  * yet), else the newest proposed one; when its approval no longer holds, why, with the one remedy that cures it (Approve again after an
  * edit of the title, the description or the criteria; Revise after a comment handed over changed or an agent resolves otherwise); Launch
  * from it, asked first, or why Launch is not offered; the launches the ticket's history names, newest first, each with its run's link;
- * the other revisions folded below, newest first. Propose, Revise, Approve and Withdraw; every one an operation of the page. A ticket's
- * runs with their tasks, candidates and checks are not here yet: each run's page has them. One column on a phone.
+ * the other revisions folded below, newest first. Propose, Revise, Approve and Withdraw; every one an operation of the page. Every
+ * launch with its run, tasks, candidates and checks is under Runs (DispatchRuns), below. One column on a phone.
  */
 const props = defineProps<{
   ticket: DispatchTicket
@@ -198,8 +198,7 @@ defineExpose({ propose, approve, launch })
           <span v-if="plans.launches.get(l.id)?.state === 'failed'" class="w-full text-xs text-error" data-plan-launch-why>{{ plans.launches.get(l.id)!.why }}</span>
         </li>
       </ul>
-      <p v-if="launchCount > plans.shown.value.length" class="text-xs text-dimmed">{{ launchCount }} launches in all; the newest {{ plans.shown.value.length }} are shown.</p>
-      <p class="text-xs text-dimmed">A ticket's runs with their tasks, candidates and checks are not shown here yet: each run's page has them.</p>
+      <p v-if="launchCount > plans.shown.value.length" class="text-xs text-dimmed">{{ launchCount }} launches in all; the newest {{ plans.shown.value.length }} are shown here, and every one is under Runs.</p>
     </div>
 
     <div v-if="others.length" class="flex flex-col gap-1.5" data-plan-others>

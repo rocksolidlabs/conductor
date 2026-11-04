@@ -100,12 +100,19 @@ type runCandidate struct {
 }
 
 // taskCandidates is a task's candidates on a page: at most
-// candidatesPerTask, newest first, more the rest.
+// candidatesPerTask, newest first, more the rest. Withdrawn is the task's
+// last attempt a withdrawal took back (0 for none): every attempt at or
+// below it was, so a delivery naming one older than those listed still
+// learns that its result was withdrawn. AcceptedOlder counts the rest
+// that a person accepted anyway: a ticket's decisions, which the task's
+// older candidates (?task=&before=) list.
 type taskCandidates struct {
-	Task       string         `json:"task"`
-	Kind       string         `json:"kind"`
-	Candidates []runCandidate `json:"candidates"`
-	More       int            `json:"more"`
+	Task          string         `json:"task"`
+	Kind          string         `json:"kind"`
+	Candidates    []runCandidate `json:"candidates"`
+	More          int            `json:"more"`
+	Withdrawn     int            `json:"withdrawn"`
+	AcceptedOlder int            `json:"acceptedOlder"`
 }
 
 // candidateReceiptOf is a check row as a candidate's receipt.
@@ -158,7 +165,10 @@ var candidatesSeam atomic.Pointer[func(run string)]
 // managed, base, candidates, next?}, candidates at most candidateTasksPage
 // tasks in the crew's order from after the task ?after names, each with
 // its candidates, next the page's last task when more follow; under
-// MaxCandidatesReply. The run's tasks, attempts, receipts and commands are
+// MaxCandidatesReply. ?task= names one task instead, the page holding it
+// alone, and ?before= with it lists only its attempts below that number:
+// a task's older candidates, page by page, the next one before the
+// oldest listed. The run's tasks, attempts, receipts and commands are
 // four reads, made again while the run's revision moved between the first
 // and the last (at most candidateReadTries times), so a page pairs a task
 // row with the attempts of its own revision; 503 run_changing (Retry-After
@@ -177,13 +187,28 @@ func (s *Server) handleRunCandidates(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "a run id")
 		return
 	}
-	q, err := readQuery(r, "after")
-	var after string
+	q, err := readQuery(r, "after", "task", "before")
+	var after, only string
+	before := 0
 	if err == nil {
 		after, err = q.one("after")
 	}
-	if err == nil && after != "" && !crew.ValidTaskID(after) {
+	if err == nil {
+		only, err = q.one("task")
+	}
+	if err == nil {
+		before, err = q.count("before")
+	}
+	switch {
+	case err != nil:
+	case after != "" && !crew.ValidTaskID(after):
 		err = errors.New("after is a task id")
+	case only != "" && !crew.ValidTaskID(only):
+		err = errors.New("task is a task id")
+	case only != "" && after != "":
+		err = errors.New("after pages through the tasks, task names one: not both")
+	case len(q["before"]) > 0 && (only == "" || before < 1):
+		err = errors.New("before is an attempt's number, 1 or more, of the task named")
 	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -234,6 +259,14 @@ func (s *Server) handleRunCandidates(w http.ResponseWriter, r *http.Request) {
 		from = i + 1
 	}
 	tasks := c.Tasks[from:min(from+candidateTasksPage, len(c.Tasks))]
+	if only != "" {
+		i := slices.IndexFunc(c.Tasks, func(t crew.Task) bool { return t.ID == only })
+		if i < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "task names no task of the run")
+			return
+		}
+		from, tasks = i, c.Tasks[i:i+1]
+	}
 	var (
 		taskRows []ledger.TaskRow
 		attempts []ledger.AttemptRow
@@ -290,16 +323,22 @@ func (s *Server) handleRunCandidates(w http.ResponseWriter, r *http.Request) {
 			if tr.Kind != "" {
 				tc.Kind = tr.Kind
 			}
+			tc.Withdrawn = tr.Withdrawn
 		}
 		var submitted []ledger.AttemptRow
 		for _, a := range attempts {
-			if a.TaskID == t.ID && a.Result != "" {
+			if a.TaskID == t.ID && a.Result != "" && (before == 0 || a.N < before) {
 				submitted = append(submitted, a)
 			}
 		}
 		slices.SortFunc(submitted, func(a, b ledger.AttemptRow) int { return b.N - a.N })
 		if len(submitted) > candidatesPerTask {
 			tc.More = len(submitted) - candidatesPerTask
+			for _, a := range submitted[candidatesPerTask:] {
+				if _, ok := accepted[t.ID][a.N]; ok {
+					tc.AcceptedOlder++
+				}
+			}
 			submitted = submitted[:candidatesPerTask]
 		}
 		for _, a := range submitted {
@@ -308,7 +347,7 @@ func (s *Server) handleRunCandidates(w http.ResponseWriter, r *http.Request) {
 		out = append(out, tc)
 	}
 	reply := map[string]any{"run": runID, "managed": true, "base": row.Base, "candidates": out}
-	if from+len(tasks) < len(c.Tasks) {
+	if only == "" && from+len(tasks) < len(c.Tasks) {
 		reply["next"] = tasks[len(tasks)-1].ID
 	}
 	writeDispatch(w, http.StatusOK, reply)
