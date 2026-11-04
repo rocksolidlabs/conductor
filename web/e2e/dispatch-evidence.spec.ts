@@ -15,8 +15,10 @@ import { freeProjectKey, makeProject, makeTicket, mark, marked, opOf, sideways, 
 // opened, its shown hash the route's header. The run paused, the title and the description edited, the run unpaused: the banner names
 // them and every later candidate's file still holds the launch-time line. A member that asks a question while its task stays running
 // (`stub ask-wait`) shows under the run's questions with no task transition and no reload, and, answered, leaves them. The phone width
-// one column. The ticket is found by its key and the run by its id; every wait is on the state the ledger, the store or the page must
-// reach, never on the clock.
+// one column. Review round 1 of #590 added the live check's case: a run that finished, its ticket edited after, says it finished with
+// what it was given and offers a follow-up; the ticket made done with the page open, the follow-up goes and Revise stays, with no reload.
+// The ticket is found by its key and the run by its id; every wait is on the state the ledger, the store or the page must reach, never on
+// the clock.
 test.describe.configure({ mode: 'serial' })
 
 const ASK = `Which way, ${Date.now().toString(36)}?`
@@ -26,6 +28,8 @@ let crewId = ''
 let crewName = ''
 let gateDir = ''
 const runs: string[] = []
+/** The crews a later test made of its own, deleted with the first one. */
+const crews: string[] = []
 
 test.beforeAll(async ({ api }) => {
   gateDir = mkdtempSync(join(tmpdir(), 'conductor-evidence-'))
@@ -58,7 +62,7 @@ test.beforeAll(async ({ api }) => {
 
 test.afterAll(async ({ api }) => {
   for (const id of runs) await api.stopRun(id)
-  if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
+  for (const id of [crewId, ...crews].filter(Boolean)) await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
   if (gateDir) rmSync(gateDir, { recursive: true, force: true })
 })
 
@@ -164,6 +168,7 @@ test('a launched run under Runs: its candidates with their receipts and where th
   const changed = entry.locator('[data-changed-since]')
   await expect(changed).toHaveAttribute('data-changed-fields', 'title,description', { timeout: 30_000 })
   await expect(changed).toContainText('The ticket changed after this run launched: the title and the description')
+  await expect(changed.locator('[data-changed-text]')).toContainText('The run keeps working from what it was given: the ticket at its revision')
   await expect(page.locator('[data-ticket-title]')).toHaveText('Fix the login loop, and the logout')
   // Attempt 1's candidate: its commit, its failed receipt, where it ran.
   const cands = entry.locator(`[data-candidates][data-candidates-run="${run}"]`)
@@ -284,4 +289,59 @@ test("a phone shows a ticket's runs in one column, nothing wider than the screen
     const box = await el.boundingBox()
     expect(box && box.x >= 0 && box.x + box.width <= 390, 'within the screen').toBeTruthy()
   }
+})
+
+test("a finished run on a ticket edited after it says it finished with what it was given, and a done ticket offers Revise but no follow-up (#590)", async ({ page, api }) => {
+  // No close policy, so the ticket can be made done by its status alone.
+  const key = await freeProjectKey(api, 'EV')
+  await makeProject(api, key, [])
+  const crew = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: `e2e evidence finished ${Date.now().toString(36)}`,
+      goal: 'finish a run',
+      cwd: '',
+      where: 'server',
+      isolation: 'worktree',
+      openAfterLaunch: false,
+      yolo: null,
+      members: [{ name: 'builder', agentId: 'worker', prompt: '', start: { when: 'task' } }],
+      tasks: [{ id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.', checks: [{ id: 'smoke', argv: ['sh', '-c', 'exit 0'] }] }],
+    })
+  ).crew.id
+  crews.push(crew)
+  const ticketKey = await makeTicket(api, key, '1', { title: 'Finish the run', acceptance: 'It finishes.' })
+  const proposed = await api.ok<{ plan: { id: string } }>('POST', `/api/dispatch/tickets/${ticketKey}/plans`, { opId: opOf(key, 'r1'), crew })
+  await api.ok('POST', `/api/dispatch/plans/${proposed.plan.id}/approve`, { opId: opOf(key, 'ap1'), note: 'Go.' })
+  const launched = await api.ok<{ launch: { id: string; runId: string; state: string } }>('POST', `/api/dispatch/tickets/${ticketKey}/launch`, { opId: opOf(key, 'l1'), plan: proposed.plan.id })
+  const run = launched.launch.runId
+  runs.push(run)
+  expect(launched.launch.state).toBe('started')
+  await runUntil(api, run, (r) => r.outcome === 'succeeded', 'the run succeeds')
+
+  // The ticket edited after the run finished: the banner names it, the run finished with what it was given, and a follow-up is offered.
+  const before = await storedTicket(api, ticketKey)
+  await api.ok('POST', `/api/dispatch/tickets/${ticketKey}/edit`, { opId: opOf(key, 'e1'), expectedRev: before.rev, set: { title: 'Finish the run, and say so' } })
+  await page.goto(`/dispatch/${key}/1`)
+  budget(30_000)
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Finish the run, and say so', { timeout: 30_000 })
+  const changed = entryOf(page, run).locator('[data-changed-since]')
+  await expect(changed).toHaveAttribute('data-changed-fields', 'title', { timeout: 30_000 })
+  await expect(changed).toHaveAttribute('data-changed-run-state', 'finished')
+  const text = changed.locator('[data-changed-text]')
+  await expect(text).toContainText('The run finished with what it was given: the ticket at its revision')
+  await expect(text).toContainText('A change that matters is a new revision and a follow-up launch.')
+  await expect(changed.locator('[data-changed-follow-up]')).toBeVisible()
+  await expect(changed.locator('[data-changed-revise]')).toBeVisible()
+  await mark(page)
+
+  // The ticket made done by another's edit, with the page open: no follow-up, the words say it waits for a reopen, Revise stays.
+  const edited = await storedTicket(api, ticketKey)
+  await api.ok('POST', `/api/dispatch/tickets/${ticketKey}/edit`, { opId: opOf(key, 'e2'), expectedRev: edited.rev, set: { status: 'done' } })
+  expect((await storedTicket(api, ticketKey)).status).toBe('done')
+  await expect(changed.locator('[data-changed-follow-up]')).toHaveCount(0, { timeout: 30_000 })
+  await expect(text).toContainText('A change that matters is a new revision, and a follow-up launch once the ticket is reopened.')
+  await expect(text).toContainText('The run finished with what it was given')
+  await expect(changed).toHaveAttribute('data-changed-run-state', 'finished')
+  await expect(changed.locator('[data-changed-revise]')).toBeVisible()
+  expect(await marked(page)).toBe('kept')
 })
