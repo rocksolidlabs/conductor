@@ -86,6 +86,46 @@
 // its transport from a package variable its test sets before ext.Freeze,
 // and the test hands RunAll what Freeze answers.
 //
+// # The Runtime's execution checks
+//
+// Runtime checks what a Runtime answers without starting anything (its
+// Name and Where, constant; Takes from Goroutines goroutines at once
+// within ext.TakesWait). RuntimeExec checks the methods that start
+// processes, by driving a helper program through the Runtime where the
+// Runtime runs it: RunHelper is that program, its modes (what it does on
+// which argument) in its documentation, and a RuntimeCase names it (its
+// Argv, what it needs in its environment, the bound of each wait).
+// FakeRuntime with a base passes calls through to another Runtime, so a
+// test does real work under a Where of its own; NewFakeTerminal is a
+// Terminal over pipes for a scripted StartTerminal.
+//
+// RunAll runs RuntimeExec with the case WithRuntimeCase gives, and fails a
+// Runtime whose Where is not ext.WhereNative given none: the native one
+// alone may be checked without starting anything there (ext/local's tests
+// start its processes). A test binary is its own helper by Go's
+// helper-process pattern, its TestMain running RunHelper when it is given
+// HelperArg first; the premium repository passes its case so, the helper
+// found where its Runtime runs it (a guest given the test binary, built
+// for it):
+//
+//	func TestMain(m *testing.M) {
+//		if len(os.Args) > 1 && os.Args[1] == exttest.HelperArg {
+//			os.Exit(exttest.RunHelper(os.Args[2:]))
+//		}
+//		os.Exit(m.Run())
+//	}
+//
+//	func TestRuntimeContract(t *testing.T) {
+//		exe, _ := os.Executable()
+//		rc := exttest.RuntimeCase{Argv: []string{exe, exttest.HelperArg}, Env: []string{"GORACE=atexit_sleep_ms=0"}}
+//		exttest.RunAll(t, nil, ext.Providers{Runtime: provider.New()}, exttest.WithRuntimeCase(rc))
+//	}
+//
+// GORACE there keeps a race-built helper from waiting a second at each
+// exit, as the race detector does unless told; the helper is given
+// exactly the case's Env and the checks' own variables (EXTTEST_), so what
+// else it needs goes in Env too.
+//
 // # A new interface
 //
 // A ninth interface of ext joins the suite with its fake here, its check
@@ -101,13 +141,14 @@ import (
 	"github.com/rocksolidlabs/conductor/ext"
 )
 
-// RunOption changes what RunAll checks. The Runtime seam
-// (docs/plans/runtime.md) adds one for the checks that start processes.
+// RunOption changes what RunAll checks: Started, and WithRuntimeCase for
+// the checks that start processes.
 type RunOption func(*runConfig)
 
 // runConfig is what RunAll's options set.
 type runConfig struct {
-	started bool // the values are running: Starter is not run on them
+	started bool         // the values are running: Starter is not run on them
+	runtime *RuntimeCase // the Runtime's execution checks' case (WithRuntimeCase)
 }
 
 // Started tells RunAll that the providers it is given are started
@@ -138,7 +179,15 @@ var byKind = []struct {
 	{ext.KindSync, as(func(t T, n *Network, c ext.ContinuityStore, _ *runConfig) { Continuity(t, n, c) })},
 	{ext.KindEntitlements, as(func(t T, n *Network, e ext.EntitlementSource, _ *runConfig) { Entitlements(t, n, e) })},
 	{ext.KindMedia, as(func(t T, n *Network, m ext.MediaRoomProvider, _ *runConfig) { Media(t, n, m) })},
-	{ext.KindRuntime, as(func(t T, n *Network, r ext.Runtime, _ *runConfig) { Runtime(t, n, r) })},
+	{ext.KindRuntime, as(func(t T, n *Network, r ext.Runtime, c *runConfig) {
+		name, w, ok := runtimeStatic(t, n, r)
+		switch {
+		case c.runtime != nil:
+			RuntimeExec(t, r, *c.runtime)
+		case ok && w != ext.WhereNative:
+			t.Errorf("exttest: RunAll: the Runtime %q answers the Where %q and RunAll was given no WithRuntimeCase: a Runtime that is not the native one is checked starting processes too (RuntimeExec), with the helper its case names", name, w)
+		}
+	})},
 }
 
 // as is a row's check of a provider of interface I.

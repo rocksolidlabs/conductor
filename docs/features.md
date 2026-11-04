@@ -3694,7 +3694,65 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   with an interrupted run continued): not run yet; it waits on the live
   check with real agents on WSL and on the owner's Mac.
 
-  PR-5 (#494): the Runtime's public fake and contract check. Planned.
+  PR-5 (#494): the Runtime's public fake and contract check, for another
+  module's CI (the premium repository first). `exttest.FakeRuntime`
+  passes every method a test has not scripted to a base (`SetBase`, the
+  native Runtime for this machine's processes), each call recorded first,
+  its `Name`, `Where` and `Takes` its own; `exttest.FakeTerminal` is a
+  terminal over pipes for a scripted `StartTerminal`. C9's
+  `exttest.Runtime` keeps its signature and checks what starts nothing:
+  `Name` and `Where` valid and constant, `Takes` from 32 goroutines at
+  once within `ext.TakesWait`. `exttest.RuntimeExec` starts a helper
+  program through the Runtime (`exttest.RunHelper`, its modes documented
+  in the package; a test binary is its own helper when its `TestMain` is
+  given `exttest.HelperArg`) and holds it to the contract: a terminal in
+  the directory given (the helper reads a word the check wrote there, so
+  a tree mounted or copied passes) with exactly its `Env`, its output,
+  input, a resize and its exit, `DirFile` still the caller's to close; a
+  context ended before the call answered with its error and no
+  `Terminal`, and one that ends after one, two or three looks at it with
+  one of the two answers the contract allows; `Stop` asked (the helper
+  exits 0 on the ask), forced once its context ends (under a grace longer
+  than the wait after the end, so only the end can force it) or past its
+  grace (the helper says it was asked and ignores it) and after an exit;
+  `Run`'s argv never a shell, its directory and exact environment, its
+  exit code, head, tail and log within `LogLimit`, `Started` once before
+  any output, a timeout told from a cancel, an ended context; a `Started`
+  that panics leaving `Run` and `Serve` as that panic with nothing left
+  running (the helper, listening on a `Port`, answers a `Probe` before the
+  panic and none after it); `Serve` started and stopped, and ended by its
+  context ending once it runs; `Port` a number the helper binds, and
+  `Probe` one try with no redirect followed and no request under an ended
+  context. A `Terminal` or service a call hands back past the case's
+  `Wait` is stopped, and `DirFile` closed only once the call has unwound.
+  `RunAll`
+  runs it with `WithRuntimeCase`'s case (variadic, so C9's callers
+  compile unchanged) and fails a Runtime that is not the native one given
+  none, naming the option; the native one with none runs its static
+  checks alone. Tests: `TestTheContractHoldsForTheNativeRuntime`,
+  `TestTheContractHoldsForTheFake` (with and without a base),
+  `TestRunAllChecksTheRuntime` (nine Runtimes each breaking one rule),
+  `TestRunAllTakesTheRuntimeCase`,
+  `TestRunAllWithoutACaseRefusesAnotherRuntime`,
+  `TestFakeRuntimeBasePassesUnscriptedCalls`, `TestFakeTerminalIsAPipe`,
+  `TestFakeTerminalStopWaitsForAConcurrentEnd`,
+  `TestALateTerminalIsStoppedAndItsDirFileKept`,
+  `TestTheExecutionChecksParts`; C9's `TestSuitePassesEveryFake` passes
+  the test binary's case, its fake given the native base.
+
+  What was observed. By test (the Acceptance's first run):
+  `TestAnAttemptAndItsChecksRanWhereTheyReport`,
+  `TestAnAttemptAndItsChecksReportTheSameWhere`,
+  `TestTheTaskReadReportsWhere` and the ledger's migration test (named
+  `TestAVersion6DatabaseIsBroughtToVersion7`, the schema being 7) green
+  in CI and on the Mac's row in PR-4's checks, and in PR-5's whole-module
+  race run on Linux and on the Mac; the contract checks above green
+  against the native Runtime on Linux and on the Mac. By hand, runs 2 and 3 (the example crew with real agents to its
+  end on WSL and on the Mac, every `where` `native`, a version 6 ledger
+  upgraded; a real agent's session, `conductor host` against a server on
+  the same machine and the Windows desktop app, each as before) are not
+  yet run: they need the owner's machines and the agents' logins there,
+  and the item is Done once they are recorded here.
 - **The extension seams: the `ext` and `app` packages, the free defaults
   and the eight interfaces wired in (Program items C1 to C9; #473 to #489,
   started 2026-10-31).** The plan is `docs/plans/ext.md` (PR #453), cut

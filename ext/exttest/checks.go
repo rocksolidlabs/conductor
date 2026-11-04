@@ -810,16 +810,31 @@ func Media(t T, n *Network, m ext.MediaRoomProvider) {
 	})
 }
 
-// Runtime checks a runtime: a valid name; Where valid and the same every
-// time, with the network blocked too. Where takes no context: no guard
-// bounds it yet, so it is held to StartWait, the longest wait ext names
-// for a direct call. The Runtime seam (docs/plans/runtime.md) adds the
-// checks of its methods.
+// Runtime checks a runtime without starting anything: a valid name,
+// the same every time; Where valid and the same every time, with the
+// network blocked too; and Takes, asked of a sample ref from Goroutines
+// goroutines at once, with the network open and blocked, answering within
+// ext.TakesWait, the wait the server's guard gives it (it answers from the
+// ref alone, with no I/O and no wait). Name and Where take no context: no
+// guard bounds them, so they are held to StartWait, the longest wait ext
+// names for a direct call. RuntimeExec checks the methods that start
+// processes, and RunAll runs it with WithRuntimeCase's case.
 func Runtime(t T, n *Network, r ext.Runtime) {
+	t.Helper()
+	runtimeStatic(t, n, r)
+}
+
+// sampleRef is the ref Runtime asks Takes about: a managed run's.
+var sampleRef = ext.ProcessRef{Run: "exttest-00000001"}
+
+// runtimeStatic is Runtime, answering the Name and the Where r first
+// answered (ok false when it gave none, the failure said), so a caller
+// names r without calling it outside the checks' bounds.
+func runtimeStatic(t T, n *Network, r ext.Runtime) (string, ext.Where, bool) {
 	t.Helper()
 	c, ok := begin(t, n, "Runtime", r)
 	if !ok {
-		return
+		return c.name, "", false
 	}
 	defer c.done()
 	first, firstOK := run(c, "Where", ext.StartWait, open, func(context.Context) ext.Where { return r.Where() })
@@ -828,12 +843,23 @@ func Runtime(t T, n *Network, r ext.Runtime) {
 			c.found("Where is not valid: %v", err)
 		}
 	}
+	takes := func(ph phase) {
+		together(func() {
+			run(c, "Takes", ext.TakesWait, ph, func(context.Context) bool { return r.Takes(sampleRef) })
+		})
+	}
+	takes(open)
 	c.n.Block()
 	w, ok := run(c, "Where", ext.StartWait, blocked, func(context.Context) ext.Where { return r.Where() })
 	if ok && firstOK && w != first {
 		c.found("Where answered %q with the network blocked, after %q: a runtime's Where does not change", w, first)
 	}
+	if name, ok := run(c, "Name", ext.StartWait, blocked, func(context.Context) string { return r.Name() }); ok && name != c.name {
+		c.found("Name answered %q with the network blocked, after %q: a runtime's Name does not change", name, c.name)
+	}
+	takes(blocked)
 	c.n.Unblock()
+	return c.name, first, firstOK
 }
 
 // Starter checks a provider's Start: with a FakeHost and the network both
