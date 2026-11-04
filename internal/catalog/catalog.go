@@ -76,6 +76,12 @@ type Agent struct {
 	// server runs its adapter's version check otherwise). nil in a saved
 	// override takes the replaced agent's.
 	Probe *bool `json:"probe,omitempty"`
+	// Browser is the browser the agent's links open in (#436): what it
+	// opens with conductor open, the MCP tool open_url or its own opener
+	// ($BROWSER, set to Conductor's when the agent has none of its own).
+	// nil is the computer's default browser; nil in a saved override takes
+	// the replaced agent's, and {} is the default over it.
+	Browser *Browser `json:"browser,omitempty"`
 }
 
 // Probed reports whether the identity probe runs for the agent: unless Probe
@@ -426,6 +432,11 @@ func validate(a Agent) error {
 			return fmt.Errorf("agent %s: session: %w", a.ID, err)
 		}
 	}
+	if a.Browser != nil {
+		if err := validateBrowser(*a.Browser); err != nil {
+			return fmt.Errorf("agent %s: browser: %w", a.ID, err)
+		}
+	}
 	if len(a.EnvPassthrough) > maxEnvPassthrough {
 		return fmt.Errorf("agent %s: too many envPassthrough entries (at most %d)", a.ID, maxEnvPassthrough)
 	}
@@ -666,7 +677,7 @@ func (c *Catalog) ApplyOverlay(o Overlay) error {
 }
 
 // inherit returns a, an agent saved over prev (had says there was one), with
-// what it leaves to prev filled in: an adapter, a signal (or its working title), a site, a yolo recipe or a trust prompt it omits,
+// what it leaves to prev filled in: an adapter, a signal (or its working title), a site, a yolo recipe, a trust prompt or a browser it omits,
 // and every env value it holds as RedactedValue. The Agents page stores the
 // mask for a key whose value the editor did not change, so a value changed in
 // the config reaches the agent. A value equal to prev's counts as the mask: it
@@ -710,6 +721,9 @@ func inherit(a, prev Agent, had bool) Agent {
 		if a.Probe == nil && prev.Probe != nil {
 			v := *prev.Probe
 			a.Probe = &v
+		}
+		if a.Browser == nil {
+			a.Browser = prev.Browser.clone()
 		}
 	}
 	for k, v := range a.Env {
@@ -766,6 +780,7 @@ func (a Agent) clone() Agent {
 		v := *a.Probe
 		a.Probe = &v
 	}
+	a.Browser = a.Browser.clone()
 	return a
 }
 
