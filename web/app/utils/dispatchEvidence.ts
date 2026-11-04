@@ -1,6 +1,9 @@
-import type { CandidateReceipt, DispatchChange, LaunchChanges, RunCandidate, RunSummary, TaskCandidates, TicketRunEntry } from '~/composables/useDispatch'
+import type { CandidateReceipt, DispatchChange, LaunchChanges, LaunchSummary, RunCandidate, RunSummary, TaskCandidates, TicketRunEntry, TicketStatus } from '~/composables/useDispatch'
 import type { Finding, RunAttempt, RunInfo, RunStep, RunTask, SessionInfo } from '~/composables/useSessions'
 import { isEnded, liveAttention } from './attention'
+import { closedStatus } from './dispatch'
+import { revisionTag } from './dispatchPlans'
+import { runState, type RunState } from './runs'
 
 // A ticket's runs and their evidence in words (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): the entries of a ticket's
 // runs and the run each names, a run's candidates grouped by task and attempt, each receipt's chip (passed, failed with its exit, timed
@@ -473,6 +476,48 @@ export function changedSinceWords(c: LaunchChanges | undefined): string {
   const comments = c.comments ? `${c.comments} ${c.comments === 1 ? 'comment' : 'comments'} since` : ''
   if (!fields && !comments) return ''
   return `The ticket changed after this run launched: ${[fields, comments].filter(Boolean).join('; ')}`
+}
+
+/**
+ * A launched run's state as its changed-since banner judges it (#590): the run the live store holds, else its record (runState, brought
+ * up to date with the sessions), else the ticket's runs read's summary (stopped after a stop, finished once a managed run has its
+ * outcome); undefined when none of them knows the run.
+ */
+export function launchRunState(run: RunInfo | null | undefined, summary: Pick<RunSummary, 'state' | 'stoppedAt' | 'outcome'> | undefined, sessions: readonly SessionInfo[]): RunState | undefined {
+  if (run) return runState(run, sessions).state
+  if (!summary) return undefined
+  if (summary.stoppedAt) return 'stopped'
+  if (summary.outcome) return 'finished'
+  return summary.state
+}
+
+/**
+ * What the changed-since banner says of a launched run and the ticket, and what it offers (#590): what the run does with what it was
+ * given (the ticket at its revision then, the plan revision) by its state, that it keeps working only while it goes, and what a change
+ * that matters takes: a new revision and a follow-up launch, the follow-up once a closed ticket (done or cancelled) is reopened. Revise
+ * is offered on a ticket not locked (deleted or archived); Launch a follow-up on one not closed either, since a closed ticket launches
+ * nothing (launchBlockers) and the button would only say so. An edit of the ticket never rewrites a run, going or ended.
+ */
+export function changedSinceBanner(
+  launch: Pick<LaunchSummary, 'ticketRev' | 'planN'>,
+  changed: Pick<LaunchChanges, 'rev'>,
+  state: RunState | undefined,
+  ticket: { status: TicketStatus; locked: boolean },
+): { text: string; revise: boolean; followUp: boolean } {
+  const closed = closedStatus(ticket.status)
+  const lead =
+    state === 'running' || state === 'needs_input'
+      ? 'The run keeps working from what it was given'
+      : state === 'finished'
+        ? 'The run finished with what it was given'
+        : state === 'stopped'
+          ? 'The run was stopped with what it was given'
+          : state === 'interrupted'
+            ? 'The run was interrupted; continued, it works from what it was given'
+            : 'The run was launched with what it was given'
+  const next = closed ? 'A change that matters is a new revision, and a follow-up launch once the ticket is reopened.' : 'A change that matters is a new revision and a follow-up launch.'
+  const text = `${lead}: the ticket at its revision ${launch.ticketRev} and plan revision ${launch.planN} (${revisionTag(launch.planN)}). The ticket is at its revision ${changed.rev} now. ${next}`
+  return { text, revise: !ticket.locked, followUp: !ticket.locked && !closed }
 }
 
 /**

@@ -4,6 +4,7 @@ import type { RunAttempt, RunInfo, SessionInfo } from '../composables/useSession
 import {
   type TaskDetail,
   candidateWords,
+  changedSinceBanner,
   changedSinceWords,
   changesSince,
   changesSinceNote,
@@ -13,6 +14,7 @@ import {
   findingsWords,
   gather,
   launchEntryWords,
+  launchRunState,
   logMatches,
   mergeEntries,
   followPick,
@@ -456,6 +458,42 @@ describe('changed since a launch', () => {
     expect(changedSinceWords({ fields: [], comments: 1, rev: 9 })).toBe('The ticket changed after this run launched: 1 comment since')
     expect(changedSinceWords({ fields: [], comments: 0, rev: 9 })).toBe('')
     expect(changedSinceWords(undefined)).toBe('')
+  })
+
+  it('says what the run does with what it was given by its state, and offers no follow-up on a closed ticket (#590)', () => {
+    const launch = { ticketRev: 4, planN: 2 }
+    const changed = { rev: 7 }
+    const open = { status: 'in_progress', locked: false } as const
+    const given = 'the ticket at its revision 4 and plan revision 2 (r2). The ticket is at its revision 7 now.'
+    expect(changedSinceBanner(launch, changed, 'running', open)).toEqual({ text: `The run keeps working from what it was given: ${given} A change that matters is a new revision and a follow-up launch.`, revise: true, followUp: true })
+    expect(changedSinceBanner(launch, changed, 'needs_input', open).text).toMatch(/^The run keeps working from what it was given: /)
+    // The live check's case: the run finished, then the ticket was done. Nothing says it keeps working, and no follow-up is offered
+    // that would only say to reopen it; a revision still is.
+    expect(changedSinceBanner(launch, changed, 'finished', { status: 'done', locked: false })).toEqual({
+      text: `The run finished with what it was given: ${given} A change that matters is a new revision, and a follow-up launch once the ticket is reopened.`,
+      revise: true,
+      followUp: false,
+    })
+    expect(changedSinceBanner(launch, changed, 'finished', { status: 'cancelled', locked: false }).followUp).toBe(false)
+    expect(changedSinceBanner(launch, changed, 'finished', open)).toEqual({ text: `The run finished with what it was given: ${given} A change that matters is a new revision and a follow-up launch.`, revise: true, followUp: true })
+    expect(changedSinceBanner(launch, changed, 'stopped', open).text).toMatch(/^The run was stopped with what it was given: /)
+    expect(changedSinceBanner(launch, changed, 'interrupted', open).text).toMatch(/^The run was interrupted; continued, it works from what it was given: /)
+    expect(changedSinceBanner(launch, changed, undefined, open).text).toMatch(/^The run was launched with what it was given: /)
+    // A locked ticket (deleted, archived) offers neither.
+    expect(changedSinceBanner(launch, changed, 'running', { status: 'ready', locked: true })).toMatchObject({ revise: false, followUp: false })
+  })
+
+  it("judges a launched run's state by the live store or its record, else the runs read's summary (#590)", () => {
+    const run = (p: Partial<RunInfo>) => ({ id: 'crew-0000aaaa', members: [], state: 'running', needsInput: 0, startedAt: '', ...p }) as unknown as RunInfo
+    // A managed run whose every task is terminal is finished, whatever the summary read before it said.
+    expect(launchRunState(run({ managed: { revision: 3 }, outcome: 'succeeded' }), summary({ state: 'running' }), [])).toBe('finished')
+    expect(launchRunState(run({ managed: { revision: 3 }, stoppedAt: '2026-11-04T10:00:00Z' }), summary(), [])).toBe('stopped')
+    expect(launchRunState(run({ record: true, state: 'interrupted' } as Partial<RunInfo>), summary(), [])).toBe('interrupted')
+    // Not held and no record read yet: the summary's, stopped and finished as the run card reads them.
+    expect(launchRunState(undefined, summary({ outcome: 'failed' }), [])).toBe('finished')
+    expect(launchRunState(null, summary({ stoppedAt: '2026-11-04T10:00:00Z', outcome: 'cancelled' }), [])).toBe('stopped')
+    expect(launchRunState(undefined, summary({ state: 'needs_input' }), [])).toBe('needs_input')
+    expect(launchRunState(undefined, undefined, [])).toBeUndefined()
   })
 
   it("takes the ticket's own rows after the launch's create row, and none when the history read does not reach it", () => {

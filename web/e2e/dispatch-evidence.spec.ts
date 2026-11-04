@@ -164,6 +164,7 @@ test('a launched run under Runs: its candidates with their receipts and where th
   const changed = entry.locator('[data-changed-since]')
   await expect(changed).toHaveAttribute('data-changed-fields', 'title,description', { timeout: 30_000 })
   await expect(changed).toContainText('The ticket changed after this run launched: the title and the description')
+  await expect(changed.locator('[data-changed-text]')).toContainText('The run keeps working from what it was given: the ticket at its revision')
   await expect(page.locator('[data-ticket-title]')).toHaveText('Fix the login loop, and the logout')
   // Attempt 1's candidate: its commit, its failed receipt, where it ran.
   const cands = entry.locator(`[data-candidates][data-candidates-run="${run}"]`)
