@@ -69,7 +69,7 @@ function move(page: Page, moves: Zoom[]) {
   return page.evaluate(async (moves) => {
     const w = window as unknown as Stubbed
     const before = document.activeElement
-    const all = () => [...document.querySelectorAll<HTMLElement>('[data-zoom-indicator]')]
+    const all = () => Array.from(document.querySelectorAll<HTMLElement>('[data-zoom-indicator]'))
     const drawn = (want: string) =>
       new Promise<void>((resolve) => {
         const done = () => all().length === 1 && all()[0]!.textContent?.trim() === want
