@@ -116,6 +116,29 @@ export interface DesktopIceStatus {
   reason?: string
 }
 
+/**
+ * The workbench's zoom as the desktop app tells it (desktop/src/zoom.ts ZoomStatus): the level, the percent it reads, which the app
+ * computes (zoomPercent) and the page only shows, and whether it is the largest or the smallest the app allows ('' between).
+ */
+export interface DesktopZoom {
+  level: number
+  percent: number
+  bound: 'largest' | 'smallest' | ''
+}
+
+/** asDesktopZoom is what the app sent, read as a zoom status; null for anything else, which the page shows nothing for. */
+export function asDesktopZoom(v: unknown): DesktopZoom | null {
+  if (!v || typeof v !== 'object') return null
+  const { level, percent, bound } = v as Record<string, unknown>
+  if (typeof level !== 'number' || !Number.isFinite(level) || typeof percent !== 'number' || !Number.isInteger(percent) || percent <= 0) return null
+  return { level, percent, bound: bound === 'largest' || bound === 'smallest' ? bound : '' }
+}
+
+/** zoomWords is what the zoom indicator says of a level: its percent, and at a bound that it is the largest or the smallest. */
+export function zoomWords(z: DesktopZoom): string {
+  return `${z.percent}%${z.bound ? `, the ${z.bound}` : ''}`
+}
+
 export interface DesktopBridge {
   version: string
   platform: string
@@ -159,6 +182,13 @@ export interface DesktopBridge {
    * check for updates is under way; nothing stops then. Older apps lack it.
    */
   installUpdate?(version: string): Promise<'started' | 'gone' | 'busy'>
+  /**
+   * The workbench's zoom now, and whether this page is the one to say it: a level other than 100% kept from before, to the first
+   * page that asks after the app starts (once per start, not per page load). Older apps lack it.
+   */
+  zoom?(): Promise<DesktopZoom & { announce: boolean }>
+  /** Each zoom move by key or menu, one at a bound that changed nothing included: the zoom after it, to show. Older apps lack it. */
+  onZoom?(cb: (zoom: DesktopZoom) => void): () => void
 }
 
 /** What the workbench says of an update the desktop app downloaded, once per version (#290). */
