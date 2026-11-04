@@ -5600,6 +5600,31 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   Ctrl+- and Ctrl+0 (Cmd on macOS) before the page sees them, and keeps the
   level in its settings, since the server's port, and with it Chromium's
   per-origin zoom, changes at every start.
+- **The zoom level shown as it changes (#431, 2026-11-04).** The owner
+  asked on 2026-10-30 for a reset to 100% and for the app to say the level.
+  The View menu's reset reads **Reset Zoom to 100%** (it was Actual Size;
+  still Ctrl+0 / Cmd+0), and a disabled line above it shows the level
+  (`Zoom: 110%`); the menu is built again after every move. Each move by key
+  or menu, one at a bound that changes nothing included, is sent to the
+  workbench windows of the server's origin (`conductor:zoom`, the bridge's
+  `onZoom`), which show it for 1.5 s in one indicator at the top right,
+  updated in place with its time restarted (`ZoomIndicator`,
+  `useDesktopZoom`): the percent, and "the largest" or "the smallest" at
+  249 % and 58 %. It is a polite live region that takes no focus and no
+  clicks, its fade off under `prefers-reduced-motion`, mounted in `app.vue`
+  so every page has it. A level other than 100% kept from before is said
+  once per start of the app, to the first page that asks (`zoom()`'s
+  `announce`, `ZoomStart`), not on each page load. The percent has one
+  formula, `zoomPercent` in `desktop/src/zoom.ts` (`Math.round(100 *
+  1.2 ** level)`); the page shows what the app sends. A browser, and an app
+  whose bridge has no zoom event, render nothing. The stored level, its
+  bounds (−3 to 5) and its step (0.5) are unchanged. Tests: desktop
+  `zoom.test.ts` (every step's percent, the bounds, `ZoomStart`) and
+  `menu.test.ts` (the View menu's zoom items); the Electron smoke (the
+  menu's reset at 110%, the indicator's words and the level line after each
+  move); web `useDesktopZoom.test.ts` and `desktop.test.ts`; Playwright
+  `zoom.spec.ts` with a stub bridge. Not yet seen in the installed app on
+  Windows or macOS.
 - **A stopped run is recorded as stopped.** Stopping a run ends its members'
   sessions first, and the last one ending recorded the run as finished on a
   goroutine racing the stop's own record: about one stop in twenty kept

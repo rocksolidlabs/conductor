@@ -1792,8 +1792,12 @@ change, which the save's toast then says; **Open in browser** opens the same ser
 in. On Windows the server runs inside your WSL 2 distribution (the app sets
 it up on first run; the agents are the ones installed there). While the
 server starts, a small splash shows the version and what the app is doing.
-Ctrl+= and Ctrl+- (Cmd on macOS) zoom the workbench, Ctrl+0 resets it, and
-the app remembers the level.
+Ctrl+= and Ctrl+- (Cmd on macOS) zoom the workbench, Ctrl+0 or View ›
+**Reset Zoom to 100%** resets it, and the app remembers the level. Each
+move shows the new level in the workbench for a moment ("110%", or "249%,
+the largest" at a bound), without taking the focus, and the View menu
+shows the level on a line of its own; a level other than 100% kept from
+before is said once as the app starts.
 The macOS, Windows and AppImage builds update themselves from the GitHub
 releases: the app checks on start and every six hours and downloads an
 update in the background, and the update installs when you quit. The app
