@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { AGENT_ID_PATTERN, MASK, agentPayload, cloneId, commandCheck, commandOf, formErrors, formForClone, formFromAgent, signalOut, siteError, yoloOut } from './agentForm'
+import { AGENT_ID_PATTERN, MASK, agentPayload, browserOut, cloneId, commandCheck, commandOf, formErrors, formForClone, formFromAgent, signalOut, siteError, takesProfile, yoloOut } from './agentForm'
 import { slugId } from './argv'
 
 function counter() {
@@ -226,5 +226,45 @@ describe('the yolo recipe', () => {
     expect(formErrors({ ...ok(), yoloEnv: [{ uid: 1, key: 'BAD NAME', value: 'x' }] }).yolo).toBeTruthy()
     expect(formErrors({ ...ok(), yoloPending: '"open' }).yolo).toBeTruthy()
     expect(formErrors({ ...ok(), yoloEnv: [{ uid: 1, key: 'GOOSE_MODE', value: 'auto' }] })).toEqual({})
+  })
+})
+
+describe('the browser its links open in (#436)', () => {
+  const work: AgentInfo = { id: 'work', name: 'Work', command: ['claude'], allowArgs: true, browser: { name: 'edge', profile: 'Profile 2' } }
+  it('keeps the browser and the profile through load and save, and a clone', () => {
+    const f = formFromAgent(work, counter())
+    expect([f.browser, f.profile]).toEqual(['edge', 'Profile 2'])
+    expect(agentPayload(f, work).browser).toEqual({ name: 'edge', profile: 'Profile 2' })
+    const c = formForClone(work, ['work'], counter())
+    expect(agentPayload(c, work).browser).toEqual({ name: 'edge', profile: 'Profile 2' })
+  })
+  it('saves the default browser as {} over one the agent named, and nothing for an agent that named none', () => {
+    const f = formFromAgent(work, counter())
+    f.browser = 'default'
+    expect(agentPayload(f, work).browser).toEqual({})
+    const plain = formFromAgent(keyed, counter())
+    expect(plain.browser).toBe('default')
+    expect(agentPayload(plain, keyed).browser).toBeUndefined()
+    expect(agentPayload(formFromAgent(undefined, counter())).browser).toBeUndefined()
+  })
+  it('sends a profile only for Chrome, Edge and Brave, trimmed', () => {
+    expect(browserOut({ browser: 'firefox', profile: 'Profile 2' })).toEqual({ name: 'firefox' })
+    expect(browserOut({ browser: 'brave', profile: '  Default ' })).toEqual({ name: 'brave', profile: 'Default' })
+    expect(browserOut({ browser: 'chrome', profile: '' })).toEqual({ name: 'chrome' })
+    expect(takesProfile({ browser: 'safari' })).toBe(false)
+    expect(takesProfile({ browser: 'edge' })).toBe(true)
+  })
+  it("refuses a profile the server refuses: too long, a quote or a control character", () => {
+    const f = formFromAgent(work, counter())
+    expect(formErrors(f).profile).toBeUndefined()
+    f.profile = 'a"b'
+    expect(formErrors(f).profile).toBeTruthy()
+    f.profile = 'p'.repeat(101)
+    expect(formErrors(f).profile).toBeTruthy()
+    f.browser = 'firefox'
+    expect(formErrors(f).profile).toBeUndefined()
+  })
+  it('reads a browser the page does not know as the default', () => {
+    expect(formFromAgent({ ...work, browser: { name: 'opera' as never } }, counter()).browser).toBe('default')
   })
 })

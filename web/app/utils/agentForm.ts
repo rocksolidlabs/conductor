@@ -1,5 +1,7 @@
 import type { AgentInfo, AgentInput, AgentSignal, CommandCheckReply, YoloRecipe } from '~/composables/useSessions'
+import type { AgentBrowser } from '~/utils/protocol'
 import { hasOpenQuote, splitArgs } from './argv'
+import { BROWSERS, MAX_PROFILE, PROFILED, type BrowserName } from './opens'
 
 /** What GET /api/catalog shows in place of every stored env value (catalog.RedactedValue). Sent back, it keeps the stored value. */
 export const MASK = '***'
@@ -49,9 +51,13 @@ export interface AgentForm {
   yoloEnv: YoloRow[]
   /** "No yolo recipe": saved as `{}`, which also drops a built-in's. */
   yoloNone: boolean
+  /** Where its links open (#436): a browser of the five, or 'default', the computer's default browser. */
+  browser: BrowserName | 'default'
+  /** The browser's profile directory (Chrome, Edge, Brave): `Profile 2`; empty for none. */
+  profile: string
 }
 
-export type Field = 'name' | 'id' | 'command' | 'pattern' | 'env' | 'site' | 'yolo'
+export type Field = 'name' | 'id' | 'command' | 'pattern' | 'env' | 'site' | 'yolo' | 'profile'
 
 /** The form for `a`, or an empty one. Stored env values come in masked, by name; passthrough names follow as rows without a value. */
 export function formFromAgent(a: AgentInfo | undefined, uid: () => number): AgentForm {
@@ -77,7 +83,33 @@ export function formFromAgent(a: AgentInfo | undefined, uid: () => number): Agen
       .sort(([x], [y]) => x.localeCompare(y))
       .map(([key, value]) => ({ uid: uid(), key, value })),
     yoloNone: !!a?.yolo && !a.yolo.args?.length && !Object.keys(a.yolo.env ?? {}).length,
+    browser: a?.browser?.name && BROWSERS.some((b) => b.name === a.browser?.name) ? a.browser.name : 'default',
+    profile: a?.browser?.profile ?? '',
   }
+}
+
+/** Whether the form's browser takes a profile: Chrome, Edge and Brave. */
+export function takesProfile(f: Pick<AgentForm, 'browser'>): boolean {
+  return PROFILED.includes(f.browser)
+}
+
+/**
+ * The browser to save: the one chosen, with its profile when it takes one; for the default browser `{}` when the agent edited (or
+ * copied) names a browser, which the save would otherwise keep, and nothing otherwise.
+ */
+export function browserOut(f: Pick<AgentForm, 'browser' | 'profile'>, prev?: AgentInfo): AgentBrowser | undefined {
+  if (f.browser === 'default') return prev?.browser?.name ? {} : undefined
+  const profile = takesProfile(f) ? f.profile.trim() : ''
+  return profile ? { name: f.browser, profile } : { name: f.browser }
+}
+
+/** The server's rule for a profile (validateBrowser in internal/catalog), in words: '' when it may be saved. */
+export function profileError(f: Pick<AgentForm, 'browser' | 'profile'>): string {
+  if (!takesProfile(f)) return ''
+  const p = f.profile.trim()
+  if ([...p].length > MAX_PROFILE) return `A profile is at most ${MAX_PROFILE} characters`
+  if (/[\p{Cc}"'`]/u.test(p)) return 'A profile has no quote or control character'
+  return ''
 }
 
 /** The yolo arguments the form holds: its arguments, then what is typed and not yet one. */
@@ -127,6 +159,8 @@ export function formErrors(f: AgentForm): Partial<Record<Field, string>> {
   if (f.signal === 'pattern' && !f.pattern.trim()) e.pattern = 'Enter the pattern to look for'
   const site = siteError(f.site)
   if (site) e.site = site
+  const profile = profileError(f)
+  if (profile) e.profile = profile
   const seen = new Set<string>()
   for (const r of f.env) {
     const key = r.key.trim()
@@ -197,6 +231,7 @@ export function agentPayload(f: AgentForm, prev?: AgentInfo): AgentInput {
     session: prev?.session,
     // A copy with its probe off would be probed again by a later save that left it out (Codex's review of #291).
     probe: prev?.probe,
+    browser: browserOut(f, prev),
   }
 }
 
