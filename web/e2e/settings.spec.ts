@@ -872,6 +872,52 @@ test('a window made shorter moves the mark to the section in view, and a restart
   await expect(page).toHaveURL(new RegExp(`/settings\\?section=${expected}$`))
 })
 
+test('a restart save made while a scroll\'s mark is still to come writes the section in view, not the one marked before', async ({ page, state }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await standIn(page, state, 'linux')
+  await page.goto('/settings?section=folders')
+  await settled(page, 'linux')
+  await expect(page.locator('[data-settings-nav-entry="folders"]')).toHaveAttribute('aria-current', 'true')
+  // Yolo changed (the click is the person's own, so the mark follows the scroll alone from here), then Where agents work brought
+  // back to the top of the body and marked.
+  await page.locator('[data-yolo-switch]').click()
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  await body(page).evaluate((b) => {
+    const s = b.querySelector('[data-settings-section="folders"]')!
+    b.scrollTop += s.getBoundingClientRect().top - b.getBoundingClientRect().top - 24
+  })
+  await expect(page.locator('[data-settings-nav-entry="folders"]')).toHaveAttribute('aria-current', 'true')
+  await expect(page).toHaveURL(/\/settings\?section=folders$/)
+  // The body scrolled to How agents run with the page's frames held, so the scroll's mark is still to come when Save is pressed
+  // (#433's review): the save reads the section in view itself.
+  const held = await body(page).evaluate(async (b) => {
+    const w = window as unknown as { requestAnimationFrame: typeof requestAnimationFrame }
+    const raf = w.requestAnimationFrame
+    const frames: FrameRequestCallback[] = []
+    w.requestAnimationFrame = (cb) => {
+      frames.push(cb)
+      return frames.length
+    }
+    try {
+      const scrolled = new Promise((resolve) => b.addEventListener('scroll', resolve, { once: true }))
+      const s = b.querySelector('[data-settings-section="running"]')!
+      b.scrollTop += s.getBoundingClientRect().top - b.getBoundingClientRect().top - 24
+      await scrolled
+      const marked = document.querySelector('[data-settings-nav-entry][aria-current]')?.getAttribute('data-settings-nav-entry')
+      const pending = frames.length > 0
+      document.querySelector<HTMLElement>('[data-save-settings]')!.click()
+      return { marked, pending }
+    } finally {
+      w.requestAnimationFrame = raf
+      for (const cb of frames) raf(cb)
+    }
+  })
+  expect(held).toEqual({ marked: 'folders', pending: true })
+  await expect(page.getByText('Saved; the server restarted', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL(/\/settings\?section=running$/)
+  await expect(page.locator('[data-settings-nav-entry="running"]')).toHaveAttribute('aria-current', 'true')
+})
+
 test('Settings chosen again in the same page goes back to the top, from a section or from a scroll by hand', async ({ page, state }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await standIn(page, state, 'linux')

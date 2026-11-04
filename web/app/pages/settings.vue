@@ -216,6 +216,9 @@ function scrollToSection(id: SettingsSectionId | null) {
 async function keepSectionInQuery() {
   const el = body()
   if (!el) return
+  // The mark follows a scroll a frame later (onScroll): read the section in view now, so a save made before that frame writes
+  // where the person is, not where they were (#433's review).
+  spy()
   const id = el.scrollTop === 0 ? null : current.value
   const now = route.query.section
   if (id ? now === id : now === undefined) return
