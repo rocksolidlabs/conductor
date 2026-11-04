@@ -70,6 +70,6 @@ test('needs_changes reopens the reviewed task with the findings, and the review 
   expect(git(state.repo, 'cat-file', '-e', `${build.result?.commit}:stub-fixed.txt`)).toBe('')
   // Each review attempt looked at the build attempt of the same number.
   expect(rev.attempts.map((a) => a.start)).toEqual(b.attempts.map((a) => a.result))
-  expect(logged(last, 'task build: review review asked for changes (1 findings); attempt 2 starts at the reviewed commit')).toBe(true)
+  expect(logged(last, 'task build: review review asked for changes (1 finding); attempt 2 starts at the reviewed commit')).toBe(true)
   expect(logged(last, 'every task is done: the run succeeded')).toBe(true)
 })
