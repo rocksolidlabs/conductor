@@ -5640,7 +5640,8 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   a replaced agent's; the Agents page's editor has **Links open in** and
   **Profile**, the browsers the desktop app found marked. `conductor open
   <url>`, the MCP tool `open_url` and, for an agent with a browser set and no
-  `BROWSER` of its own, Conductor's opener as `BROWSER` (a script of one
+  `BROWSER` of its own while `agents.selfService` is on, Conductor's opener
+  as `BROWSER` (a script of one
   path, no space or colon, that hands its argument to `conductor open`) all
   reach `POST /api/sessions/{id}/open` (the session's token, never a hosted
   session, `agents.selfService`, an http(s) URL of at most 2 KiB, ten a
@@ -5650,9 +5651,10 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   `desktop/src/browsers.ts` (argv, no shell, `.bat` and `.cmd` refused,
   `open -a` on macOS, the default browser when none is named or found) and
   says what became of it; the agent's call answers in one line. With no app
-  streaming, after 10 s unclaimed, or from a managed run's attempt, the link
+  streaming, after 10 s unclaimed, from a managed run's attempt or a
+  Brakeman turn, or when the app that claimed it could not open it, the link
   is offered in a toast with Open. Each open is an `artifact` activity
-  entry. Claude Code 2.1.318 runs `$BROWSER` with the link as its one
+  entry, which the event bucket never drops. Claude Code 2.1.318 runs `$BROWSER` with the link as its one
   argument when it opens a link on Linux, and Codex 0.163.0 bundles Rust's
   `webbrowser`, which reads `BROWSER` on Linux; both read from their
   binaries, not checked live, and not on macOS. The workbench's own link

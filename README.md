@@ -520,7 +520,8 @@ URLs printed by an agent are clickable: a click offers **Open in new tab** or
 A link an agent opens for you (an artifact, a pull request, a preview, a
 sign-in page) goes through Conductor: `conductor open <url>`, the MCP tool
 `open_url`, or the agent's own opener, which an agent with a browser set gets
-as `BROWSER` unless it has one of its own. The Agents page's **Links open
+as `BROWSER` unless it has one of its own (and only while
+`agents.selfService` is on). The Agents page's **Links open
 in** names that agent's browser (Chrome, Edge, Firefox, Brave or Safari, with
 a profile for the Chromium three), so two accounts of one service, each
 signed in to its own browser, each get their own links. The desktop app

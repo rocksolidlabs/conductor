@@ -698,9 +698,9 @@ app's own OS, started with an argv and no shell, the default browser when
 none is named or found), then tells the server what became of it, which
 answers the agent. The request reaches the app over the connection its page
 already has to its server, so a server in WSL opens a Windows browser with
-nothing configured. With no app streaming, or for a managed run's attempt,
-the link is offered in the workbench in a toast; a plain browser tab never
-starts anything.
+nothing configured. With no app streaming, for a managed run's attempt or a
+Brakeman turn, or when the app could not open it, the link is offered in the
+workbench in a toast; a plain browser tab never starts anything.
 
 ## Extensions
 
