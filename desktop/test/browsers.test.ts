@@ -5,7 +5,7 @@ import { asBrowserChoice, browserArgv, candidates, findBrowser, installedBrowser
 const URL_ = 'https://claude.ai/artifact/0f1e2d3c?x=1&y=$(id)'
 
 /** A computer with the files given, whose spawn records every start and starts (or fails) as told. */
-function computer(platform: NodeJS.Platform, files: string[], o: { dirs?: string[]; fail?: boolean; links?: Record<string, string> } = {}) {
+function computer(platform: NodeJS.Platform, files: string[], o: { dirs?: string[]; fail?: boolean; links?: Record<string, string>; exit?: number } = {}) {
   const spawned: Array<{ file: string; args: string[]; options: unknown }> = []
   const external: string[] = []
   const d: BrowserDeps = {
@@ -19,7 +19,11 @@ function computer(platform: NodeJS.Platform, files: string[], o: { dirs?: string
       spawned.push({ file, args, options })
       const child = new EventEmitter() as EventEmitter & { unref: () => void }
       child.unref = vi.fn()
-      queueMicrotask(() => child.emit(o.fail ? 'error' : 'spawn', o.fail ? new Error('ENOENT') : undefined))
+      queueMicrotask(() => {
+        child.emit(o.fail ? 'error' : 'spawn', o.fail ? new Error('ENOENT') : undefined)
+        // A program that exits (macOS's open does, once it has launched the app, or could not).
+        if (!o.fail && o.exit !== undefined) child.emit('exit', o.exit, null)
+      })
       return child as never
     },
     openExternal: async (url) => {
@@ -113,6 +117,17 @@ describe('openUrl', () => {
     expect(await openUrl(URL_, { name: 'firefox' }, broken.d)).toBe('failed')
     expect(broken.spawned).toHaveLength(1)
     expect(broken.external).toEqual([URL_])
+  })
+  it('on macOS, takes open\'s exit as the start: 0 is the browser, anything else the default browser', async () => {
+    const edge = '/Applications/Microsoft Edge.app'
+    const ok = computer('darwin', [], { dirs: [edge], exit: 0 })
+    expect(await openUrl(URL_, { name: 'edge', profile: 'Profile 2' }, ok.d)).toBe('browser')
+    expect(ok.spawned.map((s) => s.file)).toEqual(['/usr/bin/open'])
+    expect(ok.external).toEqual([])
+    const refused = computer('darwin', [], { dirs: [edge], exit: 1 })
+    expect(await openUrl(URL_, { name: 'edge' }, refused.d)).toBe('failed')
+    expect(refused.spawned).toHaveLength(1)
+    expect(refused.external).toEqual([URL_])
   })
   it('refuses a link that is not http(s), starting nothing', async () => {
     const c = computer('linux', ['/usr/bin/firefox'])

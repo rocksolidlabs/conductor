@@ -143,8 +143,12 @@ export function browserArgv(program: string, choice: BrowserChoice, url: string,
   return { file: program, args: [...profile, url] }
 }
 
-/** start starts file with args, detached, without a shell, and says whether it started. */
-function start(d: BrowserDeps, file: string, args: string[]): Promise<boolean> {
+/**
+ * start starts file with args, detached, without a shell, and says whether it started. With helper (macOS's open, which starts the
+ * browser and exits), started is the helper's exit 0: its own start says only that the helper ran, and it exits 1 when it could not
+ * launch the app.
+ */
+function start(d: BrowserDeps, file: string, args: string[], helper: boolean): Promise<boolean> {
   return new Promise((resolve) => {
     let child: Pick<ChildProcess, 'once' | 'unref'>
     try {
@@ -155,8 +159,9 @@ function start(d: BrowserDeps, file: string, args: string[]): Promise<boolean> {
     }
     child.once('spawn', () => {
       child.unref()
-      resolve(true)
+      if (!helper) resolve(true)
     })
+    if (helper) child.once('exit', (code: number | null) => resolve(code === 0))
     child.once('error', () => resolve(false))
   })
 }
@@ -177,7 +182,7 @@ export async function openUrl(url: string, choice: BrowserChoice | null, d: Brow
     return 'missing'
   }
   const { file, args } = browserArgv(program, choice, url, d.platform)
-  if (await start(d, file, args)) return 'browser'
+  if (await start(d, file, args, d.platform === 'darwin')) return 'browser'
   await d.openExternal(url)
   return 'failed'
 }
