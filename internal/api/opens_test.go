@@ -174,6 +174,9 @@ func TestOpenSaysTheBrowserIsMissing(t *testing.T) {
 	if out := <-done; out["outcome"] != OpenedMissing || out["message"] != "opened in the default browser: edge is not installed on that computer" {
 		t.Fatalf("the answer %v", out)
 	}
+	if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].Message != "link for edge (Profile 2) opened in the default browser: edge is not installed on that computer" {
+		t.Fatalf("the activity %+v", acts)
+	}
 }
 
 // With no desktop app streaming the events, an open is offered in the
@@ -195,6 +198,33 @@ func TestOpenWithNoDesktopAppIsOfferedAtOnce(t *testing.T) {
 	}
 	if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].Message != "link offered in the workbench: no desktop app took it" || acts[0].URL != "http://localhost:3000/preview" {
 		t.Fatalf("the activity %+v", acts)
+	}
+}
+
+// An offered link of an agent that names a browser keeps that browser and
+// its profile in its activity entry, which holds only the message and the
+// URL: with no desktop app, a link meant for Edge's Profile 2 says so.
+func TestOfferedOpenRecordsTheBrowserAskedFor(t *testing.T) {
+	e := openEnv(t, nil)
+	id := e.createSession("edge-cat")
+	tok := agentOf(t, e, id)
+	resp, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": "https://claude.ai/artifact/work"})
+	if resp.StatusCode != http.StatusOK || out["outcome"] != OpenOffered || out["message"] != "offered in the workbench: no desktop app took it" {
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
+	if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].Message != "link for edge (Profile 2) offered in the workbench: no desktop app took it" || acts[0].URL != "https://claude.ai/artifact/work" {
+		t.Fatalf("the activity %+v", acts)
+	}
+	// Every outcome's entry names the browser and its profile; one for an
+	// agent that names none names no browser it was meant for.
+	edge := &catalog.Browser{Name: catalog.BrowserEdge, Profile: "Profile 2"}
+	for _, outcome := range []string{OpenedBrowser, OpenedDefault, OpenedMissing, OpenedFailed, OpenOffered, OpenHanded, openUnopened} {
+		if w := activityWords(outcome, edge); !strings.Contains(w, "edge (Profile 2)") || !strings.HasPrefix(w, "link ") {
+			t.Fatalf("%s: %q", outcome, w)
+		}
+		if w := activityWords(outcome, nil); strings.HasPrefix(w, "link for ") || w != "link "+openWords(outcome, nil) {
+			t.Fatalf("%s for no browser: %q", outcome, w)
+		}
 	}
 }
 
@@ -308,6 +338,10 @@ func TestOpenOfAnAttemptOrABrakemanTurnIsOffered(t *testing.T) {
 			if resp, _ := e.do("POST", "/api/opens/"+ev.ID+"/claim", adminToken, nil); resp.StatusCode != http.StatusNotFound {
 				t.Fatalf("a claim of the offer: %d", resp.StatusCode)
 			}
+			// The entry keeps the browser the link was meant for.
+			if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].Message != "link for edge (Profile 2) offered in the workbench: no desktop app took it" {
+				t.Fatalf("the activity %+v", acts)
+			}
 		})
 	}
 }
@@ -344,7 +378,7 @@ func TestOpenTheAppCouldNotOpenIsOffered(t *testing.T) {
 	if out := <-done; out["outcome"] != OpenOffered || out["message"] != words {
 		t.Fatalf("the agent's answer %v", out)
 	}
-	if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].Message != "link "+words || acts[0].URL != link {
+	if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].Message != "link for edge (Profile 2) "+words || acts[0].URL != link {
 		t.Fatalf("the activity %+v", acts)
 	}
 }
@@ -357,11 +391,11 @@ func TestOpenTheAppCouldNotOpenIsOffered(t *testing.T) {
 // finds no open (404), which the app offers itself.
 func TestOpenResultToldAsTheWaitEndsIsTheAnswer(t *testing.T) {
 	for name, tc := range map[string]struct {
-		outcome, answer, message string
-		offer                    bool
+		outcome, answer, message, activity string
+		offer                              bool
 	}{
-		"offered": {OpenOffered, OpenOffered, "offered in the workbench: the desktop app could not open it", true},
-		"browser": {OpenedBrowser, OpenedBrowser, "opened in edge (Profile 2)", false},
+		"offered": {OpenOffered, OpenOffered, "offered in the workbench: the desktop app could not open it", "link for edge (Profile 2) offered in the workbench: the desktop app could not open it", true},
+		"browser": {OpenedBrowser, OpenedBrowser, "opened in edge (Profile 2)", "link opened in edge (Profile 2)", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := openEnv(t, nil)
@@ -395,7 +429,7 @@ func TestOpenResultToldAsTheWaitEndsIsTheAnswer(t *testing.T) {
 					t.Fatalf("the offer %+v", offered)
 				}
 			}
-			if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].Message != "link "+tc.message {
+			if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].Message != tc.activity {
 				t.Fatalf("the activity %+v", acts)
 			}
 		})

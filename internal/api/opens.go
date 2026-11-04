@@ -251,7 +251,7 @@ func checkOpenURL(raw string) error {
 // an offer the workbench missed.
 func keptInActivity(link string, b *catalog.Browser) bool {
 	for _, outcome := range []string{OpenedBrowser, OpenedDefault, OpenedMissing, OpenedFailed, OpenOffered, OpenHanded, openUnopened} {
-		e := session.ActivityEntry{Type: session.ActivityArtifact, Message: "link " + openWords(outcome, b), URL: link}
+		e := session.ActivityEntry{Type: session.ActivityArtifact, Message: activityWords(outcome, b), URL: link}
 		if session.CleanEntry(e).URL != link {
 			return false
 		}
@@ -259,7 +259,22 @@ func keptInActivity(link string, b *catalog.Browser) bool {
 	return true
 }
 
-// openWords is what the tool and the activity entry say of an outcome.
+// activityWords is the message of the activity entry an open records: the
+// browser and profile the agent's settings name, whatever the outcome, and
+// what became of the link. An offered, handed or default-browser link would
+// otherwise keep no word of the browser it was meant for, and the entry
+// holds only its message and URL: "link for edge (Profile 2) offered in the
+// workbench: no desktop app took it". A link opened in that browser says it
+// once: "link opened in edge (Profile 2)".
+func activityWords(outcome string, b *catalog.Browser) string {
+	if !b.Named() || outcome == OpenedBrowser {
+		return "link " + openWords(outcome, b)
+	}
+	return "link for " + browserWords(b) + " " + openWords(outcome, b)
+}
+
+// openWords is what the tool says of an outcome, and the activity entry
+// after the browser asked for (activityWords).
 func openWords(outcome string, b *catalog.Browser) string {
 	named := "the browser named"
 	if b.Named() {
@@ -300,7 +315,8 @@ func browserWords(b *catalog.Browser) string {
 // minute, then 429 rate_limited. A managed run's attempt and a Brakeman turn
 // are never opened at once, nobody may be watching: their links are
 // offered. Each open is recorded in the session's activity as an artifact
-// entry with its URL and what became of it; the entry is the server's own,
+// entry with its URL, the browser asked for and what became of it
+// (activityWords); the entry is the server's own,
 // bounded by the minute's opens, and spends none of the event bucket, so a
 // burst of the agent's events cannot leave an open unrecorded.
 func (s *Server) handleSelfOpen(w http.ResponseWriter, r *http.Request) {
@@ -338,10 +354,10 @@ func (s *Server) handleSelfOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	msg := openWords(outcome, browser)
+	local.RecordServer(session.ActivityEntry{Type: session.ActivityArtifact, Message: activityWords(outcome, browser), URL: in.URL})
 	if outcome == openUnopened {
 		outcome = OpenOffered
 	}
-	local.RecordServer(session.ActivityEntry{Type: session.ActivityArtifact, Message: "link " + msg, URL: in.URL})
 	writeJSON(w, http.StatusOK, openReply{Outcome: outcome, Browser: browser, Message: msg})
 }
 
