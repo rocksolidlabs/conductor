@@ -1,5 +1,6 @@
+import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { BrowserWindow, shell, session, type BrowserWindowConstructorOptions } from 'electron'
+import { BrowserWindow, app, screen, shell, session, type BrowserWindowConstructorOptions } from 'electron'
 
 export interface WindowOptions {
   preload: string
@@ -7,6 +8,84 @@ export interface WindowOptions {
   origin: () => string
   icon?: string
   onClose?: (w: BrowserWindow, e: Electron.Event) => void
+  /** The workbench's zoom level (the app's, 0 is 100%): the first window is sized so that the page still draws its desktop layout. */
+  zoomLevel?: number
+  /** Where the window's bounds are kept across launches; userData/window-bounds.json by default. */
+  boundsFile?: string
+}
+
+/** A rectangle in screen (DIP) coordinates, as Electron's Rectangle. */
+export interface Rect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** The window's bounds as last left: its normal (restored) bounds, and whether it was maximized. */
+export interface SavedBounds extends Rect {
+  maximized?: boolean
+}
+
+/** The size the first window asks for, and its least. */
+export const WINDOW_SIZE = { width: 1440, height: 900 }
+export const WINDOW_MIN = { width: 390, height: 500 }
+/** The narrowest page, in CSS px, that the workbench draws its desktop layout at (Tailwind's lg, `web/app/layouts/default.vue`). */
+export const DESKTOP_LAYOUT_WIDTH = 1024
+/** What a window's frame and scrollbar take of its width, at most, on the platforms the app ships for. */
+const FRAME_WIDTH = 24
+
+/**
+ * firstBounds is where the workbench window opens (#359). Bounds kept from the last launch, while they still lie on a display and
+ * fit it; else WINDOW_SIZE fitted into the primary display's work area and centred there, maximized when that fitted size, at the
+ * app's zoom (each level a factor of 1.2), leaves the page narrower than its desktop layout. 1440 x 900 asked for on a display
+ * whose work area is smaller (a 1366 x 768 laptop, 1920 x 1080 at 150 % scaling: 1280 x 680 DIP) is not what Windows shows, and a
+ * zoom kept from an earlier install narrows the page further: the first window opened in the narrow layout.
+ */
+export function firstBounds(saved: SavedBounds | null, workAreas: Rect[], primary: Rect, zoomLevel = 0): { bounds: Rect; maximize: boolean } {
+  if (saved) {
+    const area = workAreas.find((a) => contains(a, saved.x + saved.width / 2, saved.y + saved.height / 2))
+    if (area) {
+      const width = Math.max(WINDOW_MIN.width, Math.min(saved.width, area.width))
+      const height = Math.max(WINDOW_MIN.height, Math.min(saved.height, area.height))
+      const x = Math.min(Math.max(saved.x, area.x), area.x + area.width - width)
+      const y = Math.min(Math.max(saved.y, area.y), area.y + area.height - height)
+      return { bounds: { x, y, width, height }, maximize: !!saved.maximized }
+    }
+  }
+  const width = Math.max(WINDOW_MIN.width, Math.min(WINDOW_SIZE.width, primary.width))
+  const height = Math.max(WINDOW_MIN.height, Math.min(WINDOW_SIZE.height, primary.height))
+  const bounds = { x: primary.x + Math.round((primary.width - width) / 2), y: primary.y + Math.round((primary.height - height) / 2), width, height }
+  const page = (width - FRAME_WIDTH) / Math.pow(1.2, zoomLevel)
+  return { bounds, maximize: page < DESKTOP_LAYOUT_WIDTH }
+}
+
+function contains(r: Rect, x: number, y: number): boolean {
+  return x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
+/** readBounds is the bounds kept in file, or null when there are none or they are not a window's. */
+export function readBounds(file: string): SavedBounds | null {
+  try {
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    const n = (k: string) => (typeof raw[k] === 'number' && Number.isFinite(raw[k]) ? (raw[k] as number) : NaN)
+    const b = { x: n('x'), y: n('y'), width: n('width'), height: n('height') }
+    if (Object.values(b).some(Number.isNaN) || b.width < WINDOW_MIN.width || b.height < WINDOW_MIN.height) return null
+    return { ...b, maximized: raw.maximized === true }
+  } catch {
+    return null
+  }
+}
+
+/** writeBounds keeps b in file (written whole, then renamed over it); a failure only costs the next launch its place. */
+export function writeBounds(file: string, b: SavedBounds): void {
+  try {
+    const tmp = `${file}.new`
+    writeFileSync(tmp, JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height, maximized: !!b.maximized }) + '\n', { mode: 0o600 })
+    renameSync(tmp, file)
+  } catch {
+    // The bounds are a convenience: the window opens at its default next time.
+  }
 }
 
 /** sameOrigin reports whether url is on the server's origin. */
@@ -66,11 +145,17 @@ export function logWindowOptions(dir: string): BrowserWindowConstructorOptions {
  * window.open on that origin as a window of the app and anything else in the system browser, and no permissions beyond the clipboard.
  */
 export function createWindow(o: WindowOptions): BrowserWindow {
+  const boundsFile = o.boundsFile ?? join(app.getPath('userData'), 'window-bounds.json')
+  const first = firstBounds(
+    readBounds(boundsFile),
+    screen.getAllDisplays().map((d) => d.workArea),
+    screen.getPrimaryDisplay().workArea,
+    o.zoomLevel,
+  )
   const w = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 390,
-    minHeight: 500,
+    ...first.bounds,
+    minWidth: WINDOW_MIN.width,
+    minHeight: WINDOW_MIN.height,
     title: 'Conductor',
     icon: o.icon,
     backgroundColor: '#263D35',
@@ -88,8 +173,37 @@ export function createWindow(o: WindowOptions): BrowserWindow {
     if (external(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
-  w.on('close', (e) => o.onClose?.(w, e))
-  w.once('ready-to-show', () => w.show())
+  // The bounds are kept as the window closes (hidden to the tray or not) and as the app quits with it shown. The app's quit (the
+  // tray's Quit, Cmd+Q, the menu) stops the server in main.ts's before-quit and then calls app.exit, which destroys every window
+  // without a 'close': so the window keeps them on before-quit itself, shown or minimized. One hidden to the tray kept them as it
+  // was hidden (its 'close'); read again hidden, its maximized state is not reported alike on every platform. A minimized window is
+  // not maximized on Windows (the two states exclude each other), so one maximized, then minimized, then quit or closed from the
+  // taskbar is kept as maximized was when it was minimized: followed by the window's own maximize and unmaximize, and read off the
+  // window only while it is not minimized.
+  let maximized = false
+  w.on('maximize', () => {
+    maximized = true
+  })
+  w.on('unmaximize', () => {
+    if (!w.isDestroyed() && !w.isMinimized()) maximized = false
+  })
+  const keep = () => {
+    if (w.isDestroyed()) return
+    writeBounds(boundsFile, { ...w.getNormalBounds(), maximized: w.isMinimized() ? maximized : w.isMaximized() })
+  }
+  const keepOnQuit = () => {
+    if (!w.isDestroyed() && (w.isVisible() || w.isMinimized())) keep()
+  }
+  app.on('before-quit', keepOnQuit)
+  w.on('closed', () => app.removeListener('before-quit', keepOnQuit))
+  w.on('close', (e) => {
+    keep()
+    o.onClose?.(w, e)
+  })
+  w.once('ready-to-show', () => {
+    if (first.maximize) w.maximize()
+    w.show()
+  })
   return w
 }
 

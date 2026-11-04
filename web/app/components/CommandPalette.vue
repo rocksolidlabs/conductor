@@ -338,12 +338,13 @@ function showInYard(row: PaletteItem) {
 }
 
 /**
- * No key of the palette reaches the page's handlers (the reply bar's digits, the pages' letters, the layout's chords): every
+ * No key of the open palette reaches the page's handlers (the reply bar's digits, the pages' letters, the layout's chords): every
  * keydown inside it stops here but Tab, which the modal's focus trap reads on its scope (whole-batch round). A button's own
- * Enter and Space are its default action, which propagation does not carry.
+ * Enter and Space are its default action, which propagation does not carry. Closed and still fading out, it stops nothing: a
+ * chord pressed in that moment (Alt+/ again) reaches the layout's listener (#323).
  */
 function onRootKey(e: KeyboardEvent) {
-  if (e.key !== 'Tab') e.stopPropagation()
+  if (palette.open.value && e.key !== 'Tab') e.stopPropagation()
 }
 
 /** The input's keys: ↓ into the list, ↵ the first row, Esc closes (the modal's own Escape listens on the document, which onRootKey keeps the key from). */

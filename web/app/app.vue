@@ -26,5 +26,6 @@ watch(
     <NuxtLayout>
       <NuxtPage />
     </NuxtLayout>
+    <ZoomIndicator />
   </UApp>
 </template>

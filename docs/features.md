@@ -1509,9 +1509,11 @@ request each from main.
   questions. The hook's report carries no choices, and its words say what is
   asked ("Claude Code has a plan for you to approve", or AskUserQuestion's
   own question); a permission question with no choices is answered in the
-  terminal. All of this is for the sessions the server launches: a hosted
-  session (`conductor host`) reads none of these dialogs and holds no
-  submission at them yet, so typed text and its Enter can reach one (#293). A label over 60 characters
+  terminal. All of this was for the sessions the server launches: a hosted
+  session (`conductor host`) read none of these dialogs and held no
+  submission at them, so typed text and its Enter could reach one (#293,
+  fixed by PR #598: a hosted session now watches them by the server's
+  recipe for its agent; see that entry). A label over 60 characters
   is cut at a word with an ellipsis. Codex reviewed the plan once and the
   code five times.
 - **An update is said once, in the workbench** (#294, issue #290).
@@ -2584,8 +2586,10 @@ exit" and Claude Code left. Now:
   typing (a crew's prompt, a handoff, a broadcast) already waited.
 - Found on the way: Codex 0.159's own "update available" dialog (Enter
   continues with the update) is not detected as needing input, so a session
-  sits on it silently; in `docs/tasks-todo.md`. `conductor host` watches no
-  trust question yet, so a hosted session's stays the terminal's to answer.
+  sits on it silently; in `docs/tasks-todo.md`. `conductor host` watched no
+  trust question then, so a hosted session's stayed the terminal's to
+  answer (#293, fixed by PR #598: the host now holds it by the server's
+  recipe for its agent).
 
 Tests: the catalog's defaults and validation; the session's question
 carrying its answers, Enter-by-text refused and the choice's keys answering;
@@ -4512,6 +4516,45 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   default passing the contract suite. With C1, the two clauses of the R0
   gate this stream owns are observed: a plain build registers nothing,
   and every default passes the contract suite.
+- **A hosted session watches its agent's questions, and four UI fixes (UIB
+  PR-1, PR #598: #293, #376, #327, #323, #359, 2026-11-04).** `conductor
+  host` built its session with none of what the catalog says to watch on
+  the agent's screen (#293). `registered` now carries `recipe`: the trust
+  question and its answers, the startup questions and those asked during
+  the work, the working title and whether the agent reports taking a
+  prompt, of the agent the host named by its id, built by
+  `agents.Recipe`, which the server's own sessions are compiled from too
+  (`agents.CompileRecipe`), so the two watch the same things. A hosted
+  session then holds the trust question and the startup ones at start,
+  raises Codex's command approval and Claude Code's dialogs with their
+  choices, refuses a line typed while one shows (a handoff, a broadcast, a
+  reply: `not_sent`) and reads Codex's working title. With no recipe (an
+  agent the server's catalog lacks, none named, an older server), one the
+  host refuses (past its bounds, a pattern that does not compile; the log
+  says why), and on a host publishing to a switchyard, whose catalog is
+  someone else's, the session works as before with the agent the host
+  names. The server leaves the recipe out past 24 KiB encoded and when
+  `registered` with it would be past a host message (64 KiB). The
+  recipe's `confirmSubmit` is set on the hosted session but changes
+  nothing yet: no submission on a host asks for the second Enter (hosted
+  crews are to come). The other four: the crew page's unsaved-changes bar
+  is an elevated panel with a forest edge, not an inverted slab, in both
+  themes and on a phone (#376); the quick reply bar's choices shrink and
+  wrap inside a 390 px window (#327); a chord pressed while the palette
+  fades out reaches the layout (#323); and the desktop app's first window
+  is fitted into the primary display's work area, maximized when the page
+  would still draw the narrow layout at the app's zoom, and keeps its
+  bounds across launches, written as it closes or hides to the tray and
+  as the app quits with it shown or minimized (#359; the list page beside
+  the sidebar was fixed by PR #362, its navigation now tested). Tests: Go
+  race tests of the wire shape and bounds, every built-in agent's recipe,
+  the server's `registered` (with the recipe left out where it would pass
+  a host message) and a hosted session given Codex's recipe raising the
+  stub's approval with its choices and refusing a handoff while it shows;
+  vitest of the window's sizing, its bounds file and when it writes it;
+  Playwright for each UI fix and `hosted-question.spec.ts` (a hosted Codex
+  stub's approval answered from the sidebar's row). By hand: not run (the
+  Windows install's first window, #359's report, is the owner's machine).
 - **Ticket to evidence: plan revisions, launch packages, a ticket's runs,
   candidates with their checks, deliveries that name one (DS2, #458 to
   #471, 2026-10-31 to 2026-11-03).** Program item DS2, planned in
@@ -5629,6 +5672,25 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   the field's text or, when empty, the server's default directory.
 - **Settings uses the whole width**: two columns of cards from `xl`, the
   save row under them.
+
+  Since #366 (in #362) one 48rem column, as two columns left a blank beside
+  every short card. Since #433 (2026-11-04) the desktop app's Settings fill
+  the panel's body up to 80rem, centered beyond: a navigation beside one
+  column of sections from `lg`, a sticky row of section links that scrolls
+  sideways below it, the section in view marked in forest with
+  `aria-current`. A setting is one row (label and description left, its
+  control right, at most 36rem) once the column is 48rem wide, a container
+  query since the sidebar resizes; stacked below that. The panel's body
+  scrolls, never the window. `/settings?section=<id>` (written with
+  `router.replace`) opens on a section once it has rendered; the ids are
+  `webrtc`, `switchyard`, `folders`, `running`, `agents`, `brakeman` and
+  `app`, kept stable, in `web/app/utils/settingsSections.ts`. A save that
+  restarts the server writes the section in view first, or none at the top,
+  so the window that follows the server lands where the person was. The
+  publishing notice's Settings opens `?section=switchyard`; every other way
+  in (the sidebar, the bottom bar, `G S`, `Alt+,`, the palette, the app
+  menu) opens at the top, on Settings too. In a browser the notice,
+  Brakeman and The app use the width, stacked, with no navigation.
 - **The splash** is a small frameless window shown as soon as Electron is
   ready, until the workbench window shows (or 20 s): the Conductor mark, the
   version, platform and Electron, what the app is doing (checking WSL,
@@ -5667,6 +5729,35 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   Ctrl+- and Ctrl+0 (Cmd on macOS) before the page sees them, and keeps the
   level in its settings, since the server's port, and with it Chromium's
   per-origin zoom, changes at every start.
+- **The zoom level shown as it changes (#431, 2026-11-04).** The owner
+  asked on 2026-10-30 for a reset to 100% and for the app to say the level.
+  The View menu's reset reads **Reset Zoom to 100%** (it was Actual Size;
+  still Ctrl+0 / Cmd+0), and a disabled line above it shows the level
+  (`Zoom: 110%`); the menu is built again after every move. Each move by key
+  or menu, one at a bound that changes nothing included, is sent to the
+  workbench windows of the server's origin (`conductor:zoom`, the bridge's
+  `onZoom`), which show it for 1.5 s in one indicator at the top right,
+  updated in place with its time restarted (`ZoomIndicator`,
+  `useDesktopZoom`): the percent, and "the largest" or "the smallest" at
+  249 % and 58 %. It is a polite live region that takes no focus and no
+  clicks, its fade off under `prefers-reduced-motion`, mounted in `app.vue`
+  so every page has it. A level other than 100% kept from before is said
+  once per start of the app, to the first page that asks (`zoom()`'s
+  `announce`, `ZoomStart`), not on each page load; a page told a move
+  before that answer keeps the move, and a move made before any page asked
+  (the splash showing) leaves the level to say. The percent has one
+  formula, `zoomPercent` in `desktop/src/zoom.ts` (`Math.round(100 *
+  1.2 ** level)`); the page shows what the app sends. A browser, and an app
+  whose bridge has no zoom event, render nothing. The stored level, its
+  bounds (−3 to 5) and its step (0.5) are unchanged. Tests: desktop
+  `zoom.test.ts` (every step's percent, the bounds, `ZoomStart`, and
+  `moveZoom`, main's move: at both bounds and to two workbench windows) and
+  `menu.test.ts` (the View menu's zoom items); the Electron smoke (the
+  menu's reset at 110%, the indicator's words and the level line after each
+  move); web `useDesktopZoom.test.ts` and `desktop.test.ts`; Playwright
+  `zoom.spec.ts` with a stub bridge (the 1.5 s read up to the fade's start,
+  and no transition under reduced motion). Not yet seen in the installed app on
+  Windows or macOS.
 - **A stopped run is recorded as stopped.** Stopping a run ends its members'
   sessions first, and the last one ending recorded the run as finished on a
   goroutine racing the stop's own record: about one stop in twenty kept

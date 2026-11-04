@@ -512,12 +512,13 @@ started cannot reach it after. A server that knows no revision ignores the
 field (it decodes host messages without refusing unknown fields), and an
 older host sends none.
 
-Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links}`
+Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?}`
 (`iceServers`: the configured ones, then the media provider's for the
 host's session, as the viewer's welcome carries them, none dropped for
 the frame: a host message holds 64 KiB; an open host, registered with no
 token, is handed the configured ones alone; `links`: the ids of the live links the server holds for the session, `[]`
-when none; an older server sends no field, which says nothing),
+when none; an older server sends no field, which says nothing;
+`recipe`, below),
 `viewer_join{viewerId, role, linkId?, linkLabel?, principal?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId}`, `stop{sessionId}`,
 `viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
@@ -637,6 +638,38 @@ host keeps its record), `error{code, message, requestId?}`
 (`requestId` names the link request a refusal answers: `invalid_role`,
 `invalid_request`, `rate_limited`, `link_refused`, `no_instance`, `not_found`,
 `store_unavailable`, `stale`).
+
+`registered.recipe` (#293) is what the server's catalog says to watch on
+the screen of the agent the host registered (`session.agentId`), so that a
+hosted session watches what a server session of the same agent watches:
+`{trustPrompt?, trustAnswers?: [{label, input}], questions?: [{prompt,
+words?, anytime?, answers?, answersFromScreen?, modeAnswers?,
+typedAnswers?}], workingTitle?, confirmSubmit?}`, the catalog's own fields
+(`internal/agents`' `Recipe`, which the server's own sessions are started
+with too). With it the host holds the trust question and the startup
+questions at start, raises the questions asked during the work with their
+choices (Codex's command approval, Claude Code's dialogs read off the
+screen), refuses a line typed into the session while one shows (a crew's
+handoff, a broadcast, a reply: `error{not_sent}`) and reads the working
+title. `confirmSubmit` (the agent reports taking a prompt) is carried and
+set on the hosted session as on a server one, where only a submission that
+asks for a second Enter gets it (a crew's prompt); no submission on a host
+asks for one yet, hosted crews being to come, so today it changes nothing
+there. It is absent
+when the catalog has no agent of that id (or none is named), when the
+agent has nothing to watch, from an older server, when its encoding is
+past 24 KiB (the built-in entries are far under it), and when `registered`
+with it would be past a host message (64 KiB: the ICE servers and the
+links have no bound of their own in it, so the server measures the whole
+message and sends it without the recipe, and logs why), and the
+host then works as it did, with the agent it names. Its bounds, which a
+host checks and refuses the recipe whole past (it logs why and watches
+nothing of it, as it does a pattern that does not compile): at most 8
+questions, each with a prompt; at most 6 answers to the trust question and
+to each question, a label of 1 to 60 characters (counted trimmed of
+surrounding spaces, as the catalog counts) and keys of 1 to 48 bytes;
+each pattern at most 200 bytes. A host publishing to a switchyard (the
+server's uplink) watches nothing of one; an older host ignores the field.
 
 A run link minted by `link_run` resolves on the join page as a run link does
 (`{run: {id, name, members}, role, label, switchyard}`), each member with

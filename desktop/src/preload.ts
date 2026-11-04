@@ -35,6 +35,14 @@ const bridge = {
     ipcRenderer.on('conductor:update', handler)
     return () => ipcRenderer.removeListener('conductor:update', handler)
   },
+  /** The workbench's zoom now (its level, the percent it reads, 'largest' or 'smallest' at a bound), and whether to say it: a level kept from before, to the first page that asks after a start. */
+  zoom: (): Promise<{ level: number; percent: number; bound: string; announce: boolean }> => ipcRenderer.invoke('conductor:zoom'),
+  /** Each zoom move by key or menu, one at a bound that changed nothing included: the status after it, to show. */
+  onZoom: (cb: (zoom: { level: number; percent: number; bound: string }) => void): (() => void) => {
+    const handler = (_e: unknown, zoom: { level: number; percent: number; bound: string }) => cb(zoom)
+    ipcRenderer.on('conductor:zoom', handler)
+    return () => ipcRenderer.removeListener('conductor:zoom', handler)
+  },
   onServerState: (cb: (state: unknown) => void): (() => void) => {
     const handler = (_e: unknown, state: unknown) => cb(state)
     ipcRenderer.on('conductor:serverState', handler)

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { reactive } from 'vue'
-import { plainCopy, desktopBridge, noticeWords, PLAIN_SWITCHYARD, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
+import { asDesktopZoom, zoomWords, plainCopy, desktopBridge, noticeWords, PLAIN_SWITCHYARD, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
 
 describe('desktop bridge', () => {
   it('is absent in a browser', () => {
@@ -109,5 +109,21 @@ describe('plainCopy', () => {
     expect(() => structuredClone(plain)).not.toThrow()
     expect(plain).toEqual({ allowedRoots: ['/home/me', '/srv'], defaultCwd: '/home/me', yolo: false, nested: { a: [1, 2] } })
     expect(plain).not.toBe(form)
+  })
+})
+
+describe("the desktop app's zoom (#431)", () => {
+  it('reads what the app sends, and nothing else', () => {
+    expect(asDesktopZoom({ level: 0.5, percent: 110, bound: '' })).toEqual({ level: 0.5, percent: 110, bound: '' })
+    expect(asDesktopZoom({ level: 5, percent: 249, bound: 'largest' })).toEqual({ level: 5, percent: 249, bound: 'largest' })
+    expect(asDesktopZoom({ level: -3, percent: 58, bound: 'smallest', announce: true })).toEqual({ level: -3, percent: 58, bound: 'smallest' })
+    expect(asDesktopZoom({ level: 1, percent: 120, bound: 'huge' })).toEqual({ level: 1, percent: 120, bound: '' })
+    for (const v of [null, undefined, 1, 'x', [], {}, { level: 1 }, { level: '1', percent: 120 }, { level: 1, percent: 12.5 }, { level: 1, percent: -1 }, { level: Infinity, percent: 120 }]) expect(asDesktopZoom(v)).toBeNull()
+  })
+  it('says the percent, and the bound when at one', () => {
+    expect(zoomWords({ level: 0, percent: 100, bound: '' })).toBe('100%')
+    expect(zoomWords({ level: 1.5, percent: 131, bound: '' })).toBe('131%')
+    expect(zoomWords({ level: 5, percent: 249, bound: 'largest' })).toBe('249%, the largest')
+    expect(zoomWords({ level: -3, percent: 58, bound: 'smallest' })).toBe('58%, the smallest')
   })
 })

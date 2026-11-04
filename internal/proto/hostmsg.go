@@ -135,6 +135,117 @@ type Registered struct {
 	// server without links sends []; an older server sends no field (nil
 	// to the host, which says nothing).
 	Links []string `json:"links"`
+	// Recipe is what the server's catalog says to watch on the screen of
+	// the agent the host registered (HostSession.AgentID), so that a hosted
+	// session watches what a server session of the same agent watches
+	// (#293). Absent when the catalog has no such agent, when it has
+	// nothing to watch, from an older server, when its encoding is past
+	// MaxHostRecipe, and when registered with it would be past
+	// MaxHostMessage; a host that is not given one, or is given one it
+	// refuses (HostRecipe.Check), works as it did without.
+	Recipe *HostRecipe `json:"recipe,omitempty"`
+}
+
+// HostRecipe is the part of an agent's catalog entry a session watches its
+// screen by (#293): the trust question and its answers, the other
+// questions, startup and anytime, the window title that says the agent
+// works, and whether the agent reports taking a prompt. The patterns are
+// the catalog's, RE2 source; the host compiles them as the server does.
+// ConfirmSubmit is set on the hosted session as on a server one, but only
+// a submission that asks for the second Enter gets it (a crew's prompt,
+// session.Submission.Confirm), and no submission on a host asks for one
+// yet: hosted crews are to come.
+type HostRecipe struct {
+	TrustPrompt   string           `json:"trustPrompt,omitempty"`
+	TrustAnswers  []RecipeAnswer   `json:"trustAnswers,omitempty"`
+	Questions     []RecipeQuestion `json:"questions,omitempty"`
+	WorkingTitle  string           `json:"workingTitle,omitempty"`
+	ConfirmSubmit bool             `json:"confirmSubmit,omitempty"`
+}
+
+// RecipeAnswer is one of a question's answers: its label and the keys that
+// pick it.
+type RecipeAnswer struct {
+	Label string `json:"label"`
+	Input string `json:"input"`
+}
+
+// RecipeQuestion is one of the agent's questions, as the catalog has it
+// (catalog.Question).
+type RecipeQuestion struct {
+	Prompt            string         `json:"prompt"`
+	Words             string         `json:"words,omitempty"`
+	Anytime           bool           `json:"anytime,omitempty"`
+	Answers           []RecipeAnswer `json:"answers,omitempty"`
+	AnswersFromScreen bool           `json:"answersFromScreen,omitempty"`
+	ModeAnswers       string         `json:"modeAnswers,omitempty"`
+	TypedAnswers      string         `json:"typedAnswers,omitempty"`
+}
+
+// Bounds of a HostRecipe: the catalog's own (catalog.MaxQuestions,
+// MaxTrustAnswers and the rest, a pattern's 200 bytes), and MaxHostRecipe
+// for its encoding. Beside the ICE servers and the links, which have no
+// bound of their own here, a recipe could still take registered past
+// MaxHostMessage: the server then sends it without the recipe.
+const (
+	MaxRecipeQuestions   = 8
+	MaxRecipeAnswers     = 6
+	MaxRecipeAnswerLabel = 60 // runes
+	MaxRecipeAnswerInput = 48 // bytes
+	MaxRecipePattern     = 200
+	MaxHostRecipe        = 24 << 10
+)
+
+// Check reports whether r is within its bounds: at most MaxRecipeQuestions
+// questions, each with a prompt; at most MaxRecipeAnswers answers to the
+// trust question and to each question, each with a label (at most
+// MaxRecipeAnswerLabel runes once trimmed, as the catalog counts) and
+// keys; every pattern at most MaxRecipePattern bytes. Whether a pattern
+// compiles is the host's to find, as the server's is when it starts a
+// session.
+func (r HostRecipe) Check() error {
+	if len(r.TrustPrompt) > MaxRecipePattern || len(r.WorkingTitle) > MaxRecipePattern {
+		return errors.New("recipe: a pattern past its bound")
+	}
+	if err := checkRecipeAnswers(r.TrustAnswers); err != nil {
+		return fmt.Errorf("recipe: trust answers: %w", err)
+	}
+	if len(r.Questions) > MaxRecipeQuestions {
+		return fmt.Errorf("recipe: more than %d questions", MaxRecipeQuestions)
+	}
+	for i, q := range r.Questions {
+		if q.Prompt == "" {
+			return fmt.Errorf("recipe: question %d has no prompt", i+1)
+		}
+		for _, p := range []string{q.Prompt, q.Words, q.ModeAnswers, q.TypedAnswers} {
+			if len(p) > MaxRecipePattern {
+				return fmt.Errorf("recipe: question %d: a pattern past its bound", i+1)
+			}
+		}
+		if err := checkRecipeAnswers(q.Answers); err != nil {
+			return fmt.Errorf("recipe: question %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+func checkRecipeAnswers(as []RecipeAnswer) error {
+	if len(as) > MaxRecipeAnswers {
+		return fmt.Errorf("more than %d answers", MaxRecipeAnswers)
+	}
+	for i, a := range as {
+		// The label is counted as the catalog counts it, trimmed: a label
+		// the catalog takes (padded, at its bound) is one Check takes, or a
+		// hosted session would lose its whole recipe over it.
+		label := strings.TrimSpace(a.Label)
+		if label == "" || utf8.RuneCountInString(label) > MaxRecipeAnswerLabel || !utf8.ValidString(a.Label) {
+			return fmt.Errorf("answer %d: a label of 1 to %d characters", i+1, MaxRecipeAnswerLabel)
+		}
+		if a.Input == "" || len(a.Input) > MaxRecipeAnswerInput {
+			return fmt.Errorf("answer %d: keys of 1 to %d bytes", i+1, MaxRecipeAnswerInput)
+		}
+	}
+	return nil
 }
 
 // HostStatusMsg reports the hosted process state.

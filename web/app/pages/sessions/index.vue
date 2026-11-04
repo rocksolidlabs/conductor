@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { groupSessions } from '~/utils/sessions'
+import { listLeavesFor, sessionWorthOpening } from '~/utils/sessions'
 
 // The phone's home screen (design 3e): the list is the first screen, not a
 // drawer. The filter on top, then the sessions and runs as the sidebar lists
@@ -13,16 +13,14 @@ const attention = useAttention()
 const admin = useWorkbenchToken()
 const wide = useMedia('(min-width: 64rem)')
 
-const target = computed(() => {
-  const g = groupSessions(attention.sessions.value)
-  return g.needs[0] ?? g.running[0] ?? null
-})
+const target = computed(() => sessionWorthOpening(attention.sessions.value))
 watch(
   [target, wide],
   ([t, w]) => {
     // At lg and up this page always leaves: the sidebar is the list, so staying would show it twice (#359). The home
     // decides what shows then: the session worth looking at, else its welcome.
-    if (w) navigateTo(t ? `/sessions/${t.id}` : '/', { replace: true })
+    const to = listLeavesFor(w, t)
+    if (to) navigateTo(to, { replace: true })
   },
   { immediate: true },
 )

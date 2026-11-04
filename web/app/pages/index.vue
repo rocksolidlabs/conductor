@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { groupSessions } from '~/utils/sessions'
+import { homeLeavesFor, sessionWorthOpening } from '~/utils/sessions'
 
 useHead({ title: 'Sessions' })
 
@@ -11,16 +11,13 @@ const wide = useMedia('(min-width: 64rem)')
 
 // The sidebar is the session list; this route only picks the first session
 // worth looking at (someone waiting, else the newest running one).
-const target = computed(() => {
-  const g = groupSessions(attention.sessions.value)
-  return g.needs[0] ?? g.running[0] ?? null
-})
+const target = computed(() => sessionWorthOpening(attention.sessions.value))
 
 watch(
   [target, wide],
   ([t, w]) => {
-    if (!w) navigateTo('/sessions', { replace: true })
-    else if (t) navigateTo(`/sessions/${t.id}`, { replace: true })
+    const to = homeLeavesFor(w, t)
+    if (to) navigateTo(to, { replace: true })
   },
   { immediate: true },
 )
