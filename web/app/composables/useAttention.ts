@@ -244,8 +244,9 @@ export function useAttention() {
     const signal = abort.signal
     try {
       // A page in a desktop app that opens agents' links says so (#436): while it streams, an agent's link waits for its claim.
-      const desktop = desktopBridge()?.openUrl ? { 'X-Conductor-Desktop': '1' } : {}
-      const res = await fetch(`${httpBase.value}/api/events`, { headers: { Authorization: `Bearer ${admin.token.value}`, ...desktop }, signal })
+      const headers: Record<string, string> = { Authorization: `Bearer ${admin.token.value}` }
+      if (desktopBridge()?.openUrl) headers['X-Conductor-Desktop'] = '1'
+      const res = await fetch(`${httpBase.value}/api/events`, { headers, signal })
       if (res.status === 401) {
         admin.needsToken.value = true
         store.value.error = 'Workbench token required'
