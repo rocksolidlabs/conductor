@@ -1087,6 +1087,13 @@ export function commentAuthor(c: Pick<TicketComment, 'author' | 'by'>): string {
   return c.author.startsWith('agent:') ? c.author.slice(6) : c.author || 'admin'
 }
 
+/** A comment a plan revision hands over, as its Plan says it: its number and who wrote it (commentAuthor), or that it is not read. */
+export function handedCommentWords(comments: readonly Pick<TicketComment, 'id' | 'n' | 'author' | 'by' | 'deletedAt'>[] | undefined, id: string): string {
+  const c = comments?.find((x) => x.id === id)
+  if (!c) return 'a comment not among the latest read'
+  return `#${c.n} by ${commentAuthor(c)}${c.deletedAt ? ' (deleted since)' : ''}`
+}
+
 // ---------------------------------------------------------------------------
 // A ticket's relations (PR-10): what it blocks, what blocks it ("depends on" is a blocks read from the other end), what it relates to.
 

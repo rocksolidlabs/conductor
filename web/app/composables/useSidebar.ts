@@ -1,4 +1,10 @@
-import { SIDEBAR_SIZE, clampSidebarSize, readSidebarMode, readSidebarSize, writeSidebarMode, writeSidebarSize, type SidebarMode } from '~/utils/sidebar'
+import { clampSidebarSize, readSidebarMode, readSidebarSize, sidebarBounds, writeSidebarMode, writeSidebarSize, type SidebarBounds, type SidebarMode } from '~/utils/sidebar'
+
+/** The full sidebar's bounds in this window, in rem (Nuxt UI's rem: the root element's font size). */
+function windowBounds(): SidebarBounds {
+  if (!import.meta.client) return sidebarBounds(Number.NaN)
+  return sidebarBounds(window.innerWidth, Number.parseFloat(getComputedStyle(document.documentElement).fontSize))
+}
 
 /**
  * The desktop sidebar's mode: full, or the icon rail. Kept in localStorage
@@ -7,8 +13,9 @@ import { SIDEBAR_SIZE, clampSidebarSize, readSidebarMode, readSidebarSize, write
  * monitor keeps its rail after a reload; an old "hidden" choice reads as the
  * rail. On narrow screens the sidebar is a slideover and the mode is ignored.
  *
- * The full sidebar's width (percent of the window) is kept beside it, read
- * once when the app starts; `resize` saves the width a drag left.
+ * The full sidebar's width (rem) is kept beside it, read once when the app
+ * starts within the window's bounds; `resize` saves the width a drag left.
+ * `bounds` follows the window once a component calls `follow` (#437).
  */
 export function useSidebar() {
   const mode = useState<SidebarMode>('sidebarMode', () => {
@@ -20,12 +27,13 @@ export function useSidebar() {
     }
   })
   const rail = computed(() => mode.value === 'rail')
+  const bounds = useState<SidebarBounds>('sidebarBounds', windowBounds)
   const size = useState<number>('sidebarSize', () => {
-    if (!import.meta.client) return SIDEBAR_SIZE.default
+    if (!import.meta.client) return bounds.value.min
     try {
-      return readSidebarSize(localStorage)
+      return readSidebarSize(localStorage, bounds.value)
     } catch {
-      return SIDEBAR_SIZE.default
+      return bounds.value.min
     }
   })
 
@@ -42,14 +50,24 @@ export function useSidebar() {
 
   function resize(width: number) {
     if (!Number.isFinite(width)) return
-    size.value = clampSidebarSize(width)
+    size.value = clampSidebarSize(width, bounds.value)
     if (import.meta.client) {
       try {
-        writeSidebarSize(localStorage, width)
+        writeSidebarSize(localStorage, width, bounds.value)
       } catch {
         /* ignore */
       }
     }
+  }
+
+  /** Follows the window's width (and the rem's size) into `bounds`, for the component's life; called in its setup. */
+  function follow() {
+    const measure = () => (bounds.value = windowBounds())
+    onMounted(() => {
+      measure()
+      window.addEventListener('resize', measure)
+    })
+    onBeforeUnmount(() => window.removeEventListener('resize', measure))
   }
 
   return {
@@ -59,6 +77,8 @@ export function useSidebar() {
     expand: () => set('full'),
     toggle: () => set(rail.value ? 'full' : 'rail'),
     size: readonly(size),
+    bounds: readonly(bounds),
     resize,
+    follow,
   }
 }

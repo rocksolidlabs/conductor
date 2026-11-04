@@ -2,6 +2,7 @@
 import type { DispatchTicket, NewPlan, NewPlanReference, PlanBody, PlanDecision, PlanSummary } from '~/composables/useDispatch'
 import type { CrewSummary } from '~/composables/useSessions'
 import type { TicketPlans } from '~/composables/useTicketPlans'
+import { commentAuthor } from '~/utils/dispatch'
 import { PLAN_BOUNDS, decisionsProblem, keptComments, nextDecisionId, parseReference, referenceText, revisionTag, shortCommit } from '~/utils/dispatchPlans'
 
 /**
@@ -62,7 +63,7 @@ const earlierComments = ref<string[]>([])
 function commentLabel(id: string, i: number): string {
   const c = (props.ticket.comments ?? []).find((x) => x.id === id)
   if (!c) return `An earlier comment (${i + 1} of ${earlierComments.value.length}), older than those this page has read`
-  return `#${c.n} ${c.author || c.by}: ${c.body.slice(0, 80)}${c.body.length > 80 ? '…' : ''}`
+  return `#${c.n} ${commentAuthor(c)}: ${c.body.slice(0, 80)}${c.body.length > 80 ? '…' : ''}`
 }
 
 async function loadCrews() {
@@ -227,7 +228,7 @@ async function submit() {
             v-for="c in recentComments"
             :key="c.id"
             :model-value="comments.includes(c.id)"
-            :label="`#${c.n} ${c.author || c.by}: ${c.body.slice(0, 80)}${c.body.length > 80 ? '…' : ''}`"
+            :label="`#${c.n} ${commentAuthor(c)}: ${c.body.slice(0, 80)}${c.body.length > 80 ? '…' : ''}`"
             :data-plan-propose-comment="c.n"
             @update:model-value="(v) => toggle('comments', c.id, v)"
           />

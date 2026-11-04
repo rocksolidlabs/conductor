@@ -95,7 +95,7 @@ func TestAReviewsNeedsChangesReopensTheTaskAndWithdrawsWhatRestedOnIt(t *testing
 		t.Fatalf("build reopened: %+v", second)
 	}
 	if r, _ := e.Get(run.ID); !slices.ContainsFunc(r.Log, func(l session.ActivityEntry) bool {
-		return l.Message == "task build: review review asked for changes (1 findings); attempt 2 starts at the reviewed commit"
+		return l.Message == "task build: review review asked for changes (1 finding); attempt 2 starts at the reviewed commit"
 	}) || slices.ContainsFunc(r.Log, func(l session.ActivityEntry) bool { return strings.HasPrefix(l.Message, "every task is done") }) {
 		t.Fatalf("the run log after the reopen: %+v", r.Log)
 	}

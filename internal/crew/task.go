@@ -2146,9 +2146,17 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 
 func resultWords(kind, commit string, res Result) string {
 	if kind == TaskReview {
-		return fmt.Sprintf("the verdict %s with %d findings", res.Verdict, len(res.Findings))
+		return fmt.Sprintf("the verdict %s with %s", res.Verdict, findingsWords(len(res.Findings)))
 	}
 	return "commit " + short(commit)
+}
+
+// findingsWords counts a review's findings in words: "1 finding", "2 findings".
+func findingsWords(n int) string {
+	if n == 1 {
+		return "1 finding"
+	}
+	return fmt.Sprintf("%d findings", n)
 }
 
 // isAncestor reports whether a is an ancestor of b, or b itself.
@@ -2258,13 +2266,13 @@ func (e *Engine) reopen(r *run, review *task, a *attempt, res *Result) (*task, [
 	}
 	sub.repair = &repair{review: review.def.ID, attempt: a.n, commit: sub.result.commit, summary: res.Summary, findings: slices.Clone(res.Findings)}
 	sub.result, sub.imported = nil, ""
-	why := fmt.Sprintf("review %s asked for changes: %d findings", review.def.ID, len(res.Findings))
+	why := fmt.Sprintf("review %s asked for changes: %s", review.def.ID, findingsWords(len(res.Findings)))
 	if len(sub.attempts)+sub.prior >= maxAttemptsPerTask+sub.extra {
 		sub.state, sub.reason = ledger.TaskFailed, fmt.Sprintf("review %s asked for changes and no attempt is left; retry it to allow one more", review.def.ID)
-		r.note(session.ActivityStatus, "task %s: review %s asked for changes (%d findings), and no attempt is left", sub.def.ID, review.def.ID, len(res.Findings))
+		r.note(session.ActivityStatus, "task %s: review %s asked for changes (%s), and no attempt is left", sub.def.ID, review.def.ID, findingsWords(len(res.Findings)))
 	} else {
 		sub.state, sub.reason = ledger.TaskReady, why
-		r.note(session.ActivityStatus, "task %s: review %s asked for changes (%d findings); attempt %d starts at the reviewed commit", sub.def.ID, review.def.ID, len(res.Findings), len(sub.attempts)+1)
+		r.note(session.ActivityStatus, "task %s: review %s asked for changes (%s); attempt %d starts at the reviewed commit", sub.def.ID, review.def.ID, findingsWords(len(res.Findings)), len(sub.attempts)+1)
 	}
 	r.markTask(sub)
 	events := []event{{"task.reopened", map[string]any{"task": sub.def.ID, "review": review.def.ID, "attempt": a.n, "findings": len(res.Findings), "state": sub.state}}}

@@ -145,7 +145,8 @@ export function taskWords(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'paused'>
       const r = t.result
       if (!r) return { text: 'succeeded', tone: 'success' }
       const kept = t.importedFrom ? ' (kept from the run continued)' : ''
-      if (t.kind === 'review') return { text: `${r.verdict === 'needs_changes' ? `asked for changes (${r.findings?.length ?? 0} findings)` : `approved${r.findings?.length ? ` with ${r.findings.length} notes` : ''}`}${kept}`, tone: 'success' }
+      const found = r.findings?.length ?? 0
+      if (t.kind === 'review') return { text: `${r.verdict === 'needs_changes' ? `asked for changes (${found} ${found === 1 ? 'finding' : 'findings'})` : `approved${found ? ` with ${found} ${found === 1 ? 'note' : 'notes'}` : ''}`}${kept}`, tone: 'success' }
       return { text: `succeeded by attempt ${r.attempt}${kept}${r.summary ? `: ${r.summary}` : ''}`, tone: 'success' }
     }
     case 'failed':

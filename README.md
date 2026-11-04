@@ -708,10 +708,15 @@ the full sidebar on Exited. Every shape has a tooltip naming it in words
 exited"). The rail keeps the mark, Launch, a search button that opens the
 command palette, the pages (the Yard's count as an amber chip) and
 the header's two menus. The panel button at the bottom of the rail brings the
-full sidebar back, as does **Ctrl+B**. The mode and the full sidebar's
-width are remembered per browser (localStorage keys `conductor.sidebar.mode`
-and `conductor.sidebar.size`; a hidden sidebar from an earlier version becomes
-the rail). On a phone the list is the home screen, not a drawer (`/sessions`):
+full sidebar back, as does **Ctrl+B**. The full sidebar opens at its
+narrowest, 12.5 rem (200 px) on every screen; drag its right edge to widen
+it, up to 26 % of the window, and on to the window's left edge for the rail;
+a double-click on the edge returns it to 200 px, and a narrower window keeps
+it within that window's bounds. The mode and the full sidebar's width are
+remembered per browser (localStorage keys `conductor.sidebar.mode` and
+`conductor.sidebar.width`, in rem; a hidden sidebar from an earlier version
+becomes the rail, and a width an earlier version saved, under
+`conductor.sidebar.size`, is dropped once). On a phone the list is the home screen, not a drawer (`/sessions`):
 the filter on top, prompts answered in place with full-width buttons, a row
 opening its page and **Back** returning to the list; a long press on a row
 opens its actions as a sheet (Open, Share…, Show in the Yard, Stop…; a run's

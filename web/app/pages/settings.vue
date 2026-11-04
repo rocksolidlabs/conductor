@@ -85,7 +85,8 @@ async function load() {
 
 async function save() {
   const b = desktop.bridge.value
-  if (!b) return
+  // One save at a time: a second click before the first is under way would set the settings and restart the server twice.
+  if (!b || saving.value) return
   error.value = ''
   switchyardChecked.value = switchyardKey()
   const refused = switchyardProblem(form)
@@ -93,15 +94,16 @@ async function save() {
     error.value = refused
     return
   }
-  // A restart moves the server to a fresh port and the app loads this page there with its path and query (desktop/src/window.ts,
-  // followOrigin): the section in view goes in the query first, so the page that follows opens on it (#433).
-  if (restarts.value) await keepSectionInQuery()
+  // Taken at once, before anything is awaited, so the button and the guard above hold from the first click (#433's review).
   saving.value = true
   // What this page can tell on its own, for an app that cannot say what became
   // of the save (older apps): taken before the save, since once the saved
   // settings are copied into the form nothing differs any more (#214).
   const restarting = restarts.value
   try {
+    // A restart moves the server to a fresh port and the app loads this page there with its path and query (desktop/src/window.ts,
+    // followOrigin): the section in view goes in the query first, so the page that follows opens on it (#433).
+    if (restarting) await keepSectionInQuery()
     // A plain copy: the form is reactive, and a Vue proxy cannot cross the
     // bridge ("An object could not be cloned", #348).
     const next = await b.settings.set(plainCopy(form))
@@ -150,12 +152,15 @@ const sections = computed(() => shownSections({ desktop: desktop.isDesktop.value
 const layout = ref<HTMLElement | null>(null)
 const nav = ref<HTMLElement | null>(null)
 const current = ref<SettingsSectionId | null>(null)
-/** The section last chosen, from the navigation or the address: marked while any of it shows (sectionInView). */
+/**
+ * The section last chosen, from the navigation or the address: marked while any of it shows (sectionInView), until the person
+ * scrolls, types or clicks (unpin), after which the mark follows the scroll alone.
+ */
 let chosen: SettingsSectionId | null = null
 /** Set once the page's sections have rendered (the bridge and the catalog answered): an address read before waits for it. */
 const loaded = ref(false)
-/** A section put in the query by this page without a choice (keepSectionInQuery): no scroll follows it. */
-let kept: SettingsSectionId | null = null
+/** The address this page wrote without a choice (keepSectionInQuery): a section, or none at the top. No scroll follows it. */
+let kept: { id: SettingsSectionId | null } | null = null
 const body = () => layout.value?.closest<HTMLElement>('[data-slot="body"]') ?? null
 const sectionEl = (id: SettingsSectionId) => layout.value?.querySelector<HTMLElement>(`[data-settings-section="${id}"]`) ?? null
 /** What the phone's sticky row of links covers at the top of the body; nothing beside the sections on a wide window. */
@@ -186,7 +191,10 @@ const onScroll = () => {
  * agent's badge, Brakeman's form, a card above it that the bridge or the catalog answered for) would move it out of place.
  */
 let pinned: SettingsSectionId | null = null
-const unpin = () => (pinned = null)
+const unpin = () => {
+  pinned = null
+  chosen = null
+}
 /** Puts a section's top at the top of the body, less its scroll margin (which clears the phone's row of links). The body alone scrolls. */
 function align(id: SettingsSectionId): boolean {
   const b = body()
@@ -204,12 +212,21 @@ function scrollToSection(id: SettingsSectionId | null) {
   if (!shown) body()?.scrollTo({ top: 0 })
   spy()
 }
+/** Writes the section in view in the address, or none at the top, where an older `?section=` would open the next page elsewhere. */
 async function keepSectionInQuery() {
   const el = body()
-  const id = current.value
-  if (!el || !id || el.scrollTop === 0 || sectionFromQuery(route.query.section) === id) return
-  kept = id
-  await router.replace({ query: { ...route.query, section: id } })
+  if (!el) return
+  // The mark follows a scroll a frame later (onScroll): read the section in view now, so a save made before that frame writes
+  // where the person is, not where they were (#433's review).
+  spy()
+  const id = el.scrollTop === 0 ? null : current.value
+  const now = route.query.section
+  if (id ? now === id : now === undefined) return
+  const query = { ...route.query }
+  if (id) query.section = id
+  else delete query.section
+  kept = { id }
+  await router.replace({ query })
 }
 // The address names a section: once the sections have rendered (WebRTC and the agents wait for the bridge and the catalog), and
 // again whenever it changes while the page is open (the publishing notice's Settings, the sidebar's Settings back to the top).
@@ -218,7 +235,7 @@ watch(
   async ([q, ready]) => {
     if (!ready || !desktop.isDesktop.value) return
     const id = sectionFromQuery(q)
-    if (id && id === kept) {
+    if (kept && kept.id === id) {
       kept = null
       return
     }
@@ -226,6 +243,13 @@ watch(
     scrollToSection(id)
   },
 )
+// The same address again (the sidebar's Settings on plain /settings, the notice's Settings on ?section=switchyard) changes neither
+// value the watcher above reads: Vue Router refuses it as a duplicate, which it hands to afterEach, and the page goes where the
+// address says as it would on a change.
+const stopDuplicates = router.afterEach((to, from, failure) => {
+  if (!failure || to.fullPath !== from.fullPath || to.path !== '/settings' || !loaded.value || !desktop.isDesktop.value) return
+  void nextTick(() => scrollToSection(sectionFromQuery(to.query.section)))
+})
 const UNPIN = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
 let resized: ResizeObserver | null = null
 onMounted(() => {
@@ -234,15 +258,18 @@ onMounted(() => {
   b.addEventListener('scroll', onScroll, { passive: true })
   for (const e of UNPIN) b.addEventListener(e, unpin, { passive: true })
   // The sections change size as what they wait on answers: the section held in view goes back to its place, and the mark follows.
+  // The body too: a window made shorter changes its visible part alone, with no scroll and no change to the sections.
   resized = new ResizeObserver(() => {
     if (pinned) align(pinned)
     spy()
   })
   const sectionsEl = layout.value?.querySelector('[data-settings-sections]')
   if (sectionsEl) resized.observe(sectionsEl)
+  resized.observe(b)
   spy()
 })
 onBeforeUnmount(() => {
+  stopDuplicates()
   const b = body()
   b?.removeEventListener('scroll', onScroll)
   for (const e of UNPIN) b?.removeEventListener(e, unpin)
