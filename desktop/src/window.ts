@@ -173,9 +173,20 @@ export function createWindow(o: WindowOptions): BrowserWindow {
     if (external(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
-  // The bounds are kept as the window closes (hidden to the tray or not) and when the app quits with it open.
-  w.on('close', (e) => {
+  // The bounds are kept as the window closes (hidden to the tray or not) and as the app quits with it shown. The app's quit (the
+  // tray's Quit, Cmd+Q, the menu) stops the server in main.ts's before-quit and then calls app.exit, which destroys every window
+  // without a 'close': so the window keeps them on before-quit itself, shown or minimized. One hidden to the tray kept them as it
+  // was hidden (its 'close'); read again hidden, its maximized state is not reported alike on every platform.
+  const keep = () => {
     if (!w.isDestroyed()) writeBounds(boundsFile, { ...w.getNormalBounds(), maximized: w.isMaximized() })
+  }
+  const keepOnQuit = () => {
+    if (!w.isDestroyed() && (w.isVisible() || w.isMinimized())) keep()
+  }
+  app.on('before-quit', keepOnQuit)
+  w.on('closed', () => app.removeListener('before-quit', keepOnQuit))
+  w.on('close', (e) => {
+    keep()
     o.onClose?.(w, e)
   })
   w.once('ready-to-show', () => {
