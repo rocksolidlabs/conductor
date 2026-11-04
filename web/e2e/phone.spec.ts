@@ -153,3 +153,34 @@ test('More holds the other pages, the alerts and your menu', async () => {
   await more.getByRole('button', { name: /Your name/ }).tap()
   await expect(phone.locator('[data-name-dialog]')).toBeVisible()
 })
+
+/** Every choice of the reply bar inside the window, and the page never wider than it (#327). */
+async function choicesOnScreen(bar: Locator) {
+  // The choices: every button of the bar but its Open plan.
+  const choices = bar.locator('button:not([data-quick-reply-plan])')
+  await expect(choices).toHaveCount(3)
+  const width = await phone.evaluate(() => window.innerWidth)
+  for (let i = 0; i < 3; i++) {
+    const box = (await choices.nth(i).boundingBox())!
+    expect(box.x, `choice ${i + 1} starts inside the window`).toBeGreaterThanOrEqual(0)
+    expect(box.x + box.width, `choice ${i + 1} ends inside the window`).toBeLessThanOrEqual(width)
+  }
+  expect(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth && document.body.scrollWidth <= window.innerWidth)).toBe(true)
+}
+
+test("a plan approval's three choices wrap inside the window, on the session page and the Yard's card", async ({ page, api }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'phone plan' })
+  sessions.push(s.id)
+  // Typed from the desktop's page: the phone only reads the bar.
+  await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
+  const screen = page.locator('.terminal-host .xterm-screen').first()
+  await expect(screen).toBeVisible()
+  await screen.click()
+  await page.keyboard.type('stub plan')
+  await page.keyboard.press('Enter')
+  await expect.poll(async () => (await api.session(s.id)).attention?.options?.length ?? 0, { timeout: 30_000, message: 'the plan is asked with its choices' }).toBe(3)
+  await phone.goto(`/sessions/${encodeURIComponent(s.id)}`)
+  await choicesOnScreen(phone.locator('[data-quick-reply]'))
+  await phone.goto(`/yard?focus=${encodeURIComponent(s.id)}`)
+  await choicesOnScreen(phone.locator('[data-yard-focus] [data-quick-reply]'))
+})
