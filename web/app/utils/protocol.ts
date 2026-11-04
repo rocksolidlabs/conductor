@@ -654,6 +654,42 @@ export interface HostRegisteredLinks {
   links?: string[]
 }
 
+/**
+ * The part of registered that says what the hosted session watches on its screen (#293): the catalog's recipe for the agent the
+ * host registered, as a server session of it watches. Absent when the catalog has no such agent or nothing to watch, from an older
+ * server, and past HOST_MAX_RECIPE bytes encoded; a host refuses one past the bounds below. The workbench never sees it.
+ */
+export interface HostRegisteredRecipe {
+  recipe?: HostRecipe
+}
+export interface HostRecipe {
+  trustPrompt?: string
+  trustAnswers?: HostRecipeAnswer[]
+  questions?: HostRecipeQuestion[]
+  workingTitle?: string
+  confirmSubmit?: boolean
+}
+export interface HostRecipeAnswer {
+  label: string
+  input: string
+}
+export interface HostRecipeQuestion {
+  prompt: string
+  words?: string
+  anytime?: boolean
+  answers?: HostRecipeAnswer[]
+  answersFromScreen?: boolean
+  modeAnswers?: string
+  typedAnswers?: string
+}
+/** The recipe's bounds: questions, answers to each (labels in characters, keys in bytes), a pattern's bytes, the encoding's bytes. */
+export const HOST_MAX_RECIPE_QUESTIONS = 8
+export const HOST_MAX_RECIPE_ANSWERS = 6
+export const HOST_MAX_RECIPE_ANSWER_LABEL = 60
+export const HOST_MAX_RECIPE_ANSWER_INPUT = 48
+export const HOST_MAX_RECIPE_PATTERN = 200
+export const HOST_MAX_RECIPE = 24 << 10
+
 /** A crew run as a switchyard shows it: what a host sends with link_run and link_run_update. */
 export interface HostRunGroup {
   id: string
