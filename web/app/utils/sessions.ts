@@ -22,6 +22,30 @@ export function groupSessions(list: SessionInfo[]): SessionGroups {
   return g
 }
 
+/** The session worth opening first: someone waiting (the newest signal), else the newest running one; none when neither. */
+export function sessionWorthOpening(list: SessionInfo[]): SessionInfo | null {
+  const g = groupSessions(list)
+  return g.needs[0] ?? g.running[0] ?? null
+}
+
+/**
+ * Where the home (`/`) goes (#359): below lg to the list, which is a page of its own there (design 3e); at lg and up to the session
+ * worth opening, else nowhere: it stays and shows its welcome, so that nothing moves under a dialog opened on it.
+ */
+export function homeLeavesFor(wide: boolean, target: Pick<SessionInfo, 'id'> | null): string | null {
+  if (!wide) return '/sessions'
+  return target ? `/sessions/${target.id}` : null
+}
+
+/**
+ * Where the list page (`/sessions`) goes (#359): nowhere below lg; at lg and up always away, since the sidebar is the list and
+ * staying would show it twice beside it: to the session worth opening, else to the home, which shows the welcome.
+ */
+export function listLeavesFor(wide: boolean, target: Pick<SessionInfo, 'id'> | null): string | null {
+  if (!wide) return null
+  return target ? `/sessions/${target.id}` : '/'
+}
+
 /** Case-insensitive substring match over name, path, host, user, branch and agent. */
 export function filterSessions(list: SessionInfo[], query: string): SessionInfo[] {
   const q = query.trim().toLowerCase()

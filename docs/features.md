@@ -1483,9 +1483,11 @@ request each from main.
   questions. The hook's report carries no choices, and its words say what is
   asked ("Claude Code has a plan for you to approve", or AskUserQuestion's
   own question); a permission question with no choices is answered in the
-  terminal. All of this is for the sessions the server launches: a hosted
-  session (`conductor host`) reads none of these dialogs and holds no
-  submission at them yet, so typed text and its Enter can reach one (#293). A label over 60 characters
+  terminal. All of this was for the sessions the server launches: a hosted
+  session (`conductor host`) read none of these dialogs and held no
+  submission at them, so typed text and its Enter could reach one (#293,
+  fixed by PR #598: a hosted session now watches them by the server's
+  recipe for its agent; see that entry). A label over 60 characters
   is cut at a word with an ellipsis. Codex reviewed the plan once and the
   code five times.
 - **An update is said once, in the workbench** (#294, issue #290).
@@ -2558,8 +2560,10 @@ exit" and Claude Code left. Now:
   typing (a crew's prompt, a handoff, a broadcast) already waited.
 - Found on the way: Codex 0.159's own "update available" dialog (Enter
   continues with the update) is not detected as needing input, so a session
-  sits on it silently; in `docs/tasks-todo.md`. `conductor host` watches no
-  trust question yet, so a hosted session's stays the terminal's to answer.
+  sits on it silently; in `docs/tasks-todo.md`. `conductor host` watched no
+  trust question then, so a hosted session's stayed the terminal's to
+  answer (#293, fixed by PR #598: the host now holds it by the server's
+  recipe for its agent).
 
 Tests: the catalog's defaults and validation; the session's question
 carrying its answers, Enter-by-text refused and the choice's keys answering;
@@ -4486,6 +4490,45 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   default passing the contract suite. With C1, the two clauses of the R0
   gate this stream owns are observed: a plain build registers nothing,
   and every default passes the contract suite.
+- **A hosted session watches its agent's questions, and four UI fixes (UIB
+  PR-1, PR #598: #293, #376, #327, #323, #359, 2026-11-04).** `conductor
+  host` built its session with none of what the catalog says to watch on
+  the agent's screen (#293). `registered` now carries `recipe`: the trust
+  question and its answers, the startup questions and those asked during
+  the work, the working title and whether the agent reports taking a
+  prompt, of the agent the host named by its id, built by
+  `agents.Recipe`, which the server's own sessions are compiled from too
+  (`agents.CompileRecipe`), so the two watch the same things. A hosted
+  session then holds the trust question and the startup ones at start,
+  raises Codex's command approval and Claude Code's dialogs with their
+  choices, refuses a line typed while one shows (a handoff, a broadcast, a
+  reply: `not_sent`) and reads Codex's working title. With no recipe (an
+  agent the server's catalog lacks, none named, an older server), one the
+  host refuses (past its bounds, a pattern that does not compile; the log
+  says why), and on a host publishing to a switchyard, whose catalog is
+  someone else's, the session works as before with the agent the host
+  names. The server leaves the recipe out past 24 KiB encoded and when
+  `registered` with it would be past a host message (64 KiB). The
+  recipe's `confirmSubmit` is set on the hosted session but changes
+  nothing yet: no submission on a host asks for the second Enter (hosted
+  crews are to come). The other four: the crew page's unsaved-changes bar
+  is an elevated panel with a forest edge, not an inverted slab, in both
+  themes and on a phone (#376); the quick reply bar's choices shrink and
+  wrap inside a 390 px window (#327); a chord pressed while the palette
+  fades out reaches the layout (#323); and the desktop app's first window
+  is fitted into the primary display's work area, maximized when the page
+  would still draw the narrow layout at the app's zoom, and keeps its
+  bounds across launches, written as it closes or hides to the tray and
+  as the app quits with it shown or minimized (#359; the list page beside
+  the sidebar was fixed by PR #362, its navigation now tested). Tests: Go
+  race tests of the wire shape and bounds, every built-in agent's recipe,
+  the server's `registered` (with the recipe left out where it would pass
+  a host message) and a hosted session given Codex's recipe raising the
+  stub's approval with its choices and refusing a handoff while it shows;
+  vitest of the window's sizing, its bounds file and when it writes it;
+  Playwright for each UI fix and `hosted-question.spec.ts` (a hosted Codex
+  stub's approval answered from the sidebar's row). By hand: not run (the
+  Windows install's first window, #359's report, is the owner's machine).
 - **Ticket to evidence: plan revisions, launch packages, a ticket's runs,
   candidates with their checks, deliveries that name one (DS2, #458 to
   #471, 2026-10-31 to 2026-11-03).** Program item DS2, planned in
