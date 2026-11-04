@@ -3268,6 +3268,161 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   owner's to decide (the plan's Acceptance). A later docs PR of the
   stream carries the owner's words; #561 holds the week, the desktop
   check and that PR.
+- **Brakeman, the first slice: briefs from the person's own agent, and the
+  guide from the running server (BK1 and BK0, #520 to #529, 2026-11-01 to
+  2026-11-03).** Program items BK1 and BK0, planned with BK2 and BK3 in
+  `docs/plans/brakeman.md` (PR #518). The first slice is the plan's PR-1 to
+  PR-8, built before DS2 and C9 are done and launching before `ext.Host`
+  exists, as the plan's decisions 3 and 22 put to the owner and the owner's
+  go-ahead of 2026-11-01 took. Brakeman is the sidekick agent: an agent of
+  the person's choosing, on their own login, that Yardmaster runs for
+  bounded turns (a read-only one-member run through the engine and
+  `crew.Launcher`, never yolo) to read the runs, Dispatch and the sessions
+  within the scope and visibility the person grants, and hand back a brief
+  whose every fact names evidence the server resolved; it drafts and
+  proposes, and nothing it writes becomes work until a person acts. Any
+  agent session reads the operating guide from the server. See the README
+  (Brakeman), `docs/architecture.md` (Brakeman) and `docs/protocol.md`
+  (Guide, Brakeman). What each PR shipped and the checks its body reports
+  over its review rounds; every merged PR's required checks ended green on
+  the head that merged:
+
+  PR-1 (#520, PR #565): `internal/brakeman` (the configuration, requests,
+  `brakeman.brief/1`, the ref grammar, the store with its op ids, day's
+  charges and pruning) and the ledger's owner lock moved to
+  `store.OwnerLock`, the ledger's tests unchanged. `Scope.Covers` checked
+  against a brute force over every pair of 1,024 scopes. Checks: lint,
+  lint-static, the module's race tests over three review rounds, each
+  round's tests failing with their fix reverted, the Mac rows, CI.
+
+  PR-2 (#521, PR #564): the guide (`GET /api/guide`, `GET
+  /api/sessions/{id}/guide`, the MCP tool `guide`, `conductor guide`) and
+  `tools/list` built from one table, held byte for byte to main's by a
+  golden test; each body schema held to what its route decodes and each
+  advertised bound to its route's. Checks: the module's race tests over
+  three rounds, the Mac rows, CI.
+
+  PR-3a (#522, PR #563): each agent's read-only mode, model flag and
+  Conductor-tools rule, checked against the CLIs nightly under the
+  `recipes` tier. What it found of the CLIs (Claude Code 2.1.314, Codex
+  0.163.0), each by hand: Claude Code's deny rule alone leaves `Task`,
+  `EnterWorktree`, `CronCreate` and others, so the mode also names the
+  built-in tools (`--tools=Read,Grep,Glob`) and keeps only Conductor's MCP
+  server (`--strict-mcp-config`; without it a connected claude.ai
+  connector's write tools were listed); Codex's `--sandbox read-only`
+  alone retried a blocked write as a question a yes would have granted, so
+  the mode adds a granular approval policy that turns escalations down;
+  Codex reaches Conductor's MCP server under the sandbox but asks before
+  every tool call ("Allow the conductor MCP server to run tool …?"; under
+  `codex exec` the call fails), and
+  `mcp_servers.conductor.default_tools_approval_mode="approve"` lets it
+  through, so "Run Conductor's tools without asking" covers Codex too; and
+  Codex's mode does not hold the person's own MCP servers or exec-policy
+  allow rules, with no flag that isolates them. Checks: the module's race
+  tests, `make test-recipes` with both CLIs, the Mac rows, CI.
+
+  PR-3b (#523, PR #567): a brief's refs resolved against each store, the
+  scope, the visibility and what the turn read, a revision other than the
+  one read refused. Checks: the module's race tests over three rounds,
+  each part disabled in turn failing its test, the Mac rows, CI.
+
+  PR-3c (#524, PR #568): the desk, a turn as a read-only run through
+  `launchTurn`, the watchdog and the slot, the restart, the request and
+  brief routes, the `brakeman` event, the refusals that keep a turn
+  Brakeman's. Codex is taken as Brakeman's agent with its gap as a
+  warning Settings shows (the owner's decision of 2026-11-01). Checks: the
+  module's race tests over three rounds, the new tests `-count=10`, each
+  fix undone failing its test, the Mac rows, CI.
+
+  PR-4 (#525, PR #575): the principal `brakeman` on the shared reads,
+  Brakeman's own reads (changes, status, screen, overlaps, briefs), the
+  read log and the coverage, earlier briefs withheld past the grant, and a
+  draft made a ticket or a saved crew by the operator, recovered after a
+  crash. Checks: the module's race tests over three rounds, the Mac rows,
+  CI.
+
+  PR-5 (#526, PR #577): the tools `brakeman_request`, `observe` and
+  `brief_submit`, listed only in a turn's session, and `conductor brakeman`;
+  `TestBrakemanBriefFromAFile` launches a real turn on a real server and
+  keeps its brief. Checks: the module's race tests over three rounds, the
+  Mac rows, CI.
+
+  PR-6 (#527, PR #578): Settings' Brakeman card, the Brakeman page, a brief
+  with its evidence chips, the sidebar's row, and the e2e stub's Brakeman.
+  Checks: typecheck, vitest (1,094 tests), the module's race tests,
+  `brakeman.spec.ts`, `sidebar.spec.ts` and `settings.spec.ts` (23 tests),
+  `make test-e2e` (319 passed; two Dispatch specs failed under load and
+  passed alone, #281), CI.
+
+  PR-7 (#528, PR #583): decision cards and proposals with Conductor's
+  controls from the live record, drafts made work, handoffs, the
+  palette's rows, "Ask Brakeman why" and the ticket page's menu. Checks:
+  typecheck, vitest (1,151 tests), `brakeman-cards.spec.ts` 50 of 50 with
+  `--repeat-each 10`, `make test-e2e` (339 passed; after its merges one
+  Dispatch spec timed out under load and passed alone, #281), CI.
+
+  PR-8 (#529): this entry, the README's Brakeman section, the repository
+  map's row for the desk and the guide, and the architecture's Brakeman
+  section and records. Docs only.
+
+  What was missing, slow or wrong along the way. The plan's estimates were
+  short: PR-1 came to about 6,100 changed lines against 1,500, and its
+  request bound of 32 KiB could not hold the fields it bounds (96 KiB). Bugs
+  of the stream, each fixed in the PR that found it: the recipe tests read
+  Claude Code's help through a pipe it closed early (229 of 313 lines;
+  PR-3a); an export would have carried `brakeman/owner.lock` and a restore
+  planted it (PR-3c); the overlaps test missed macOS's `/private/var`
+  (PR-4, found by the Mac rows); a page that read a request inside its
+  brief's grace kept its In progress card, and the Agent select's None
+  threw (PR-6); this PR's preflight found PR-4's
+  `TestARunReadBeforeItsChangeCommitsHasNoRevision` ending with its run's
+  attempt alive, so the engine started the next attempt's worktree while
+  the test's directory was removed (4 of 30 failed); the run is now
+  stopped first (30 of 30); and this PR's review found that PR-6's reset
+  for a new token and PR-7's unfinished makes, merged, offered another
+  server's `br-3` the first server's make to finish, its content and id
+  sent there; a make is now kept by the request it was asked of (its id
+  and when the server wrote it), and a lost reply is not asked again
+  after a reset. `internal/api`'s race tests took 840 to 1,690 s on the
+  loaded Linux box, once past the 30 m bound with no test failing. CI's
+  `dco` check on a stacked PR counts `main`'s merge commits the base
+  branch does not hold yet (PR-7), and clears once the base takes `main`.
+  Not run in the stream: the Windows preflight rows the plan names for
+  PR-3c and PR-6 (a launch and a process's shutdown change), and the Mac
+  rows it names for PR-6; the Mac rows ran on PR-1 to PR-5. The flakes
+  seen once are lines in #281.
+
+  **BK0's observation: pending.** A Codex session told nothing but "call
+  the guide tool" lists what it may do there and the limits it must keep,
+  and a plain session's guide differs from an attempt's. The second half
+  is held by `TestASessionsGuideListsItsScopesOnly` (a plain session, an
+  attempt, a ticket's member); the session with a real Codex is not yet
+  made.
+
+  **BK1's observation: pending.** On the owner's `conductor serve` with
+  Claude Code (and once with Codex) on the owner's own subscription,
+  configured in Settings, after an evening of real managed crews (one with
+  a check that fails until a retry, one with a task whose attempts are
+  spent, one whose member asks a question left unanswered overnight):
+  "Brief me since 18:00" yields a brief whose facts link to the runs, the
+  tasks, the failing check's receipt (its log hash equal to the step log
+  route's) and the open question, that tells the quiet session from the
+  failed task, and whose decision card for the spent task offers the
+  commands its state allows, one of which the owner presses with its
+  receipt; "Draft tickets" from a real ticket's discussion yields drafts
+  the owner edits and makes, with their blocking relation, and "Propose a
+  crew" a crew that saves and opens in the editor; the server restarted
+  and the model changed, "What changed since your last brief?" answers
+  from the earlier brief and its coverage. Until the owner makes these
+  turns, the specs drive them with the stub agent (`brakeman.spec.ts`,
+  `brakeman-cards.spec.ts`: a turn asked, its brief kept with a fact
+  citing its own run and session, a card's Retry with the revision read, a
+  stale revision refused with words, drafts made once, a restart finding
+  the same records). A later docs PR of the stream carries what the owner
+  saw; a bug the stream caused, found there, is fixed in the stream.
+  Neither item is done with this slice: BK0 waits for the guide's
+  providers (PR-9) and BK1 for the observation made again after PR-11,
+  with a ticket launched from an approved plan revision among the evidence.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
@@ -4221,6 +4376,243 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   default passing the contract suite. With C1, the two clauses of the R0
   gate this stream owns are observed: a plain build registers nothing,
   and every default passes the contract suite.
+- **Ticket to evidence: plan revisions, launch packages, a ticket's runs,
+  candidates with their checks, deliveries that name one (DS2, #458 to
+  #471, 2026-10-31 to 2026-11-03).** Program item DS2, planned in
+  `docs/plans/dispatch-evidence.md` (PR #452) and shipped as fourteen PRs.
+  A ticket now holds the record between what it asks and the run that
+  does it: a **plan revision** (`r1`, `r2`) is taken whole from a saved
+  crew with tasks (its members' agents as the catalog resolved them, the
+  commit it starts from, the references at that commit, the attachments
+  and comments handed over, constraints, the decisions a person makes),
+  never changes once made, and is approved by the operator against the
+  ticket's intent (its title, description and criteria). A **launch**
+  from the approved revision is recorded pending before anything runs,
+  under a run id Dispatch mints, with its **package** (the ticket as it
+  stood, the revision, the handed-over parts, frozen and hashed), and is
+  settled started or failed by what the ledger holds, so a resend or a
+  restart never makes a second run. The ledger keeps the package byte for
+  byte, continuations carry it, and every attempt is handed
+  `.conductor/ticket.md`, `package.json` and the attachments: editing the
+  ticket never rewrites an active run, and each attempt starts only the
+  agent the revision approved. The ticket's page shows the Plan, every
+  launch, run and continuation with its tasks, blockers and questions,
+  each exact **candidate** (an attempt's result commit) with the check
+  receipts whose subject is that commit, where each ran, a review's
+  findings and the repairs that followed, what changed of the ticket since
+  each launch, a **delivery** that names its candidate and keeps its
+  verification receipt (the close policy's `verified`), the Decisions and
+  the People. Evidence is read from the engine, the run records and the
+  ledger through the launch, never copied, but for that one receipt.
+  Every managed run, launched from a ticket or not, now hands the next
+  attempt a failed check's receipt and its whole log. No new dependency,
+  no frame or control message, no feature tag. See the README
+  (Dispatch), `docs/architecture.md` (Dispatch, Crew runs) and
+  `docs/protocol.md` (Dispatch, Crew runs). What each PR shipped and the
+  checks its body reports over its review rounds:
+
+  PR-1 (#458, PR #516): Dispatch's schema version 2 (`plans`, `launches`,
+  `launch_files`, three link columns) and its migration, revisions
+  proposed (fingerprinted by the request as sent), approved (the
+  operator's alone, superseding the one before), going stale with the
+  intent or with a handed-over comment edited (whose remedy is Revise,
+  never Approve again), withdrawn, and `Replay`, which answers a resend
+  before a route does any work, through the record's fingerprint once
+  its receipt is pruned. Review round 1 bounded a ticket's read to its ten
+  newest approved revisions and named in a stale approval only the fields
+  that still differ. Measured: the largest revision's read 2,111,486
+  bytes of 3,145,728; the largest ticket 2,963,133 of 3,145,728. Checks:
+  lint, lint-static, the module's race tests (one `internal/session` flake
+  outside the PR, a line in #281, passing alone), the Mac rows.
+
+  PR-2 (#459, PR #542): launches with their refusals in words (a closed
+  ticket, an archived project, a revision not approved, a stale approval,
+  a handed-over attachment or comment gone or edited, a launch past the
+  200th),
+  the minted run id, `StartedLaunch` and `FailedLaunch` once each, what
+  changed since a launch, the package and its derived attachment names
+  (`01-spec.png`: distinct and portable whatever a file system folds),
+  the sweep keeping a package's files, the reserved `decision` link kind,
+  and one ticket holding a run's whole chain of continuations, a
+  version 1 store's two-ticket chain kept as contested. Measured: the
+  package at its escaped worst 479,750 bytes of 524,288. Checks: lint,
+  lint-static, the module's race tests, two mutations each caught, the
+  Mac rows; the Windows rows not run (they hold only the desktop steps).
+
+  PR-3 (#460, PR #515): the ledger's schema version 6 (`runs.ticket`,
+  `runs.package`) and `CreateRun`, an insert that refuses an id the
+  ledger has, as every new run's first write; `Engine.LaunchPlanned` at
+  the revision's commit, under the minted id, the package checked against
+  its digest; `Run.Ticket`; continuations carrying the package. Review
+  rounds 1 and 2 made a managed run take no command before its launch is
+  recorded and leave nothing of a run whose first transaction the ledger
+  refused. Checks: lint, lint-static, the module's race tests, sixteen
+  mutations each caught, the Crews page's managed launch specs (8
+  passed), the Mac rows.
+
+  PR-4 (#461, PR #541): `ticket.md`, `package.json` and the attachments
+  in every attempt, a review's and a continuation's included, through
+  the attempt's `os.Root`, each copied, counted and hashed; an attachment
+  that does not match fails the attempt at stage `package`, uncounted,
+  and pauses the run; `task.json`'s `ticket` and `task.md`'s "Your
+  ticket"; `LaunchSpec.AgentSHA256` and stage `agent`. Review round 1 held
+  the attachments together to 16 MiB at the launch and kept a `package`
+  or `agent` failure across a checkpoint and a continuation. Checks:
+  lint, lint-static, the module's race tests, the Mac rows; the Windows
+  rows not run (no desktop step reaches `internal/crew`). Two unsigned
+  merge commits failed `dco`; the owner allowed the force-push that
+  signed them.
+
+  PR-5 (#462, PR #559): a failed check's receipt (the ledger's identity
+  of the row, how it ended, the tracked paths it changed, the last 2 KiB)
+  in the next attempt's `previous.check`, its whole log as
+  `.conductor/previous/check-<id>.log`, both read back from the ledger
+  after a restart and in a continuation, and the cut order that keeps
+  the handoff within the task file's bound at its worst. Review rounds 1
+  and 2 made a receipt the ledger cannot give pause the run, uncounted,
+  and a continuation from a version 4 ledger hand its receipt. Checks:
+  lint, lint-static, the module's race tests, the Mac rows.
+
+  PR-6 (#463, PR #544): the plan revision routes, proposing in the plan's
+  order (the replay first, the crew, its directory through `resolveCwd`,
+  the base made a full commit, the references resolved at it, a file-form
+  manifest read through `crew.ResolveManifest`, the yolo choice fixed),
+  `agentSelection` (the command, the start and yolo arguments, the
+  environment's names and a hash of their values, never a value),
+  `crewChanged` and `agentsChanged`, and the approve route refusing an
+  agent that resolves otherwise. Review rounds 2 and 3 added the agent's
+  adapter and signal and whether the yolo recipe applies to the
+  selection, and git's own failures answered `500 git_failed`. Checks:
+  lint, lint-static, the module's race tests (one failure of a route walk
+  this PR met, fixed in it), the Mac rows.
+
+  PR-7 (#464, PR #566): the launch route in its order (replay, the
+  ledger's ownership, the agents resolved again, the pending launch, one
+  settling at a time, a ledger row adopted only when its ticket and
+  package digest are the launch's), the reconcile after the ledger's
+  recovery inside the one `OnOwned` callback, `launchReady`, and each
+  attempt's session started only from the approved entry. Review rounds
+  1 to 3 made an approved agent deleted or hidden after the launch fail
+  its attempt at `agent`, a replay on a server with managed runs off
+  answer `503`, and a settling that cannot read release its hold.
+  `TestEditingTheTicketNeverRewritesAnActiveRun`, the acceptance
+  boundary's second half, is in it. Checks: lint, lint-static, the
+  module's race tests, each fix's test failing without it, the Mac rows.
+
+  PR-8 (#465, PR #570): a ticket's runs a page at a time (launches, their
+  runs and every continuation, hand links, a contested chain marked), a
+  run's candidates by task with each receipt's `where` (`native` until
+  item F), a legacy run answered from its record, and an attempt's ticket
+  read through its package. Review rounds 1 to 3 made a candidates read
+  that a run's transitions keep moving answer `503 run_changing`, a link
+  to a pruned run still hold its chain, and a link wait for a resume
+  being made. Checks: lint, lint-static, the module's race tests, each
+  fix's test failing without it, the Mac rows. No issue filed.
+
+  PR-9 (#466, PR #571): a delivery naming its candidate
+  (`<run>/<task>/<n>@<commit>`), its verification receipt read from the
+  ledger after the replay and kept outside the operation's fingerprint, a
+  contested chain's candidate refused, and the close policy's `verified`.
+  Review rounds 1 and 2 made two replicas' adds of one delivery read the
+  later receipt, a try overlapping a committed one answer its receipt,
+  and a candidate whose attempt has not finished every receipt be
+  refused. Measured: the largest ticket with fifty such deliveries
+  3,384,379 bytes of 3,670,016. Checks: lint, lint-static, the module's
+  race tests (one route test that still refused `verified`, fixed in the
+  PR), each fix's test failing without it, the Mac rows. No issue filed.
+
+  PR-10 (#467, PR #569): the Plan section, Propose and Revise, Approve and
+  Approve again, Withdraw, the launch dialog (asks first; a lost reply
+  sent again under the same op id), the palette's rows. Review rounds 1
+  and 2 found the launches by scanning the ticket's whole history, made
+  the dialogs confirm nothing until the revision's body is read, kept an
+  unsettled launch's op id and label across the dialog's closes (sent
+  again, never a second run), put the operation answers and the list's
+  404s through the page's ordering gate, and said an approval made again
+  in the history. Its CI failure was a spec typing into a menu still
+  closing; AGENTS.md, Tests that do not flake, gained "A menu that has
+  closed is not gone". Checks:
+  typecheck, vitest (1,084 tests), `dispatch-plan.spec.ts` 30 of 30 with
+  `--repeat-each 10`, `make test-e2e` (327 passed; one `answered.spec.ts`
+  flake outside the PR, a line in #281), CI green on the merge it landed
+  as.
+
+  PR-11 (#468, PR #581): the Runs section, each run's card with its
+  tasks, blockers and questions (counted from the live sessions), the
+  candidates with their receipts and where they ran, a receipt opened with
+  its log and both hashes, the repairs, the "changed since" banner with
+  Revise and Launch a follow-up, and the run page's "Launched from".
+  Review round 1 kept every continuation of a chain by its run id, read
+  the pages again when a live run resumes a shown one, ordered a slow
+  404 with the reads, retried `run_changing` from the first read, read
+  each review task's findings on its own and said the blockers and a
+  partial history; round 2 read a run's candidates again on a snapshot,
+  kept an opened receipt by its task, attempt and key, and kept a repair
+  that submits the reviewed commit unchanged. Checks: typecheck, vitest
+  (1,120 tests), `make test-e2e` (332 passed);
+  the Mac and Windows rows not run (no web step in them, no Go or
+  `desktop/` change).
+
+  PR-12 (#469, PR #582): the delivery form's candidate, the row's
+  verification, `verified` in the project dialogs and the close card, and
+  the Decisions and People sections. Checks: typecheck, vitest (1,124
+  tests), `dispatch-delivery.spec.ts`, `make test-e2e` (332 passed; one
+  `rename.spec.ts` flake outside the PR, a line in #281, passing alone).
+
+  PR-13 (#470, PR #576): `conductor dispatch plans`, `plan show`,
+  `plan propose`, `plan approve`, `plan withdraw`, `launch` and `runs`,
+  `link --candidate`, `conductor task ticket`'s and `ticket_read`'s "As
+  launched" part, and the skill's section. Review rounds 1 to 3 made a
+  launch answered pending be asked again, at most three posts in all,
+  then name the launch. Checks: lint, lint-static, the module's race
+  tests, the Mac rows. One test the PR met (`TestToolsListIsUnchanged`)
+  was fixed in it, and two unsigned merge commits were signed off by a
+  force-push on the owner's word.
+
+  PR-14 (#471): this entry, the README's Plan, Launching, Runs, Closing
+  and Decisions paragraphs, the architecture's Dispatch and Crew runs
+  sections checked against what merged and completed, and the repository
+  map's `internal/dispatch` row.
+
+  **By hand: not run.** The plan's by-hand checks need real agents on the
+  owner's own subscriptions: Claude Code and Codex on the WSL box and
+  Codex on the Mac launched from a real ticket, each reading
+  `.conductor/ticket.md` and an image attachment and working from them; a
+  real review citing the criteria; a real pull request delivered; the
+  ticket page on a phone on the LAN. None of them ran for this entry:
+  starting the owner's agents spends the owner's subscriptions and meets
+  their startup screens, which are the owner's to answer, and the phone
+  is the owner's. So this PR leaves #471 open: the checks, with what each
+  showed, and the acceptance observation are recorded by a later docs PR
+  of the stream, which finishes it. What the specs show in their place,
+  with the e2e stub agents on Linux in CI: a ticket's revision proposed, approved with a
+  note and launched, the run under Runs and "Launched from" on its page;
+  the stub's committed file holding the first line it read from
+  `.conductor/ticket.md`; a check failing on its first run and the repair
+  at that result passing; a review asking for changes once; a receipt's
+  log hash the step log route's header; the run paused, the ticket edited
+  and the run unpaused with the next candidate still holding the
+  launch-time line; a question shown and answered with no reload; a
+  delivery naming the final candidate, verified, and the ticket closed
+  under acceptance, delivery and `verified`; the phone width one column.
+
+  **The acceptance observation: pending.** The item is done when, on the
+  owner's `conductor serve` with real agents on the owner's own
+  subscriptions, a real ticket with acceptance criteria, an owner, an
+  image attachment and a source reference is planned with a crew of a
+  work task with two checks (one failing on its first run) and a review
+  task by the other agent, approved with a note and launched; paused
+  mid-run, its description edited and a comment added, unpaused, with the
+  next attempt's `ticket.md` the one launched and a follow-up launch
+  refused until revision 1 is approved again; and after the run the
+  ticket page shows every run, each candidate with its receipts (each log
+  hash the step log route's), the review's findings and the repair, a
+  pull request from the final candidate's branch delivered and verified,
+  and the ticket closed under acceptance, delivery and `verified` (the
+  plan's Acceptance). The owner's word that the page answered what was
+  asked, what was authorized, what ran, what was checked on which commit
+  and what was delivered goes here, with what was missing, slow or
+  wrong, in a later docs PR of the stream.
 - **Governance: contributing under the DCO, the marks' owner, security
   reporting and the open-core pull request checklist (Program item B; #386
   and #387, 2026-10-28).** The plan is `docs/plans/governance.md` (PR #383).

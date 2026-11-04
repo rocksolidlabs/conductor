@@ -19,13 +19,21 @@ export function useTaskCommands(runId: () => string) {
   }
   const icons: Record<TaskCommand, string> = { retry: 'i-lucide-rotate-ccw', accept: 'i-lucide-check', cancel: 'i-lucide-x' }
 
-  async function send(t: Pick<RunTask, 'id'>, command: TaskCommand): Promise<boolean> {
+  /**
+   * Sends the command; `expectedRevision` (a Brakeman card's, the run's revision the turn read) makes the route refuse it once the run
+   * has moved on (409 stale_revision), and `refused` takes a refusal in place of its toast, for a card that says it in place.
+   */
+  async function send(t: Pick<RunTask, 'id'>, command: TaskCommand, o: { expectedRevision?: number; refused?: (e: unknown) => void } = {}): Promise<boolean> {
     busy.value = `${t.id}:${command}`
     try {
-      const { receipt: r } = await sendCommand((body) => api.taskCommand(runId(), t.id, command, body), commandBody())
+      const { receipt: r } = await sendCommand((body) => api.taskCommand(runId(), t.id, command, body), commandBody(o.expectedRevision))
       toast.add({ title: done[command](t.id), description: r.repeat ? 'It was done already.' : undefined, icon: icons[command], color: 'success' })
       return true
     } catch (e) {
+      if (o.refused) {
+        o.refused(e)
+        return false
+      }
       toast.add({ title: `${t.id}: not ${command === 'cancel' ? 'cancelled' : command === 'retry' ? 'retried' : 'accepted'}`, description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: e instanceof CommandRefused ? 'warning' : 'error' })
       return false
     } finally {

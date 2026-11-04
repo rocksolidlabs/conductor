@@ -1,4 +1,5 @@
-import type { CloseRequirement, CloseState, DispatchChange, DispatchSort, DispatchTicket, Horizon, LabelColor, RelatedTicket, TicketAttachment, TicketComment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary, Tracker } from '~/composables/useDispatch'
+import type { CandidateReceipt, CloseRequirement, CloseState, DispatchChange, DispatchSort, DispatchTicket, Horizon, LabelColor, LaunchSummary, LinkVerified, PlanSummary, RelatedTicket, RunCandidate, TaskCandidates, TicketAttachment, TicketComment, TicketEdit, TicketLink, TicketRelation, TicketStatus, TicketSummary, Tracker, VerifiedReceipt } from '~/composables/useDispatch'
+import { planReasons } from './dispatchPlans'
 import type { Tone } from './tasks'
 
 // Dispatch's words (docs/plans/dispatch.md, "web/app"): the key parser; the vocabularies of a ticket's fields with their words, colours
@@ -257,6 +258,7 @@ export function assigneeOf(actor: string): { kind: 'person' | 'agent'; name: str
 const REQUIREMENT_WORDS: Record<CloseRequirement, string> = {
   acceptance: "the owner's acceptance",
   delivery: 'a delivery link',
+  verified: 'a verified delivery',
 }
 
 /** What a close policy requires, in words: "the owner's acceptance". */
@@ -300,13 +302,14 @@ export function runLinkedWords(holder?: string): string {
   return holder ? `The run is linked to ${holder} already: a run belongs to one ticket.` : 'The run is linked to another ticket already: a run belongs to one ticket.'
 }
 
-/** What a project's close policy may require, in the order a policy is kept and said: `verified` is not offered (DS2 defines it). */
+/** What a project's close policy may require, in the order a policy is kept and said: `verified` is DS2's (PR-9), and implies a delivery. */
 export const CLOSE_REQUIREMENTS: ReadonlyArray<{ value: CloseRequirement; label: string; description: string }> = [
   { value: 'acceptance', label: "The owner's acceptance", description: 'Recorded by a button of its own, for the owner and against the criteria as they stand' },
   { value: 'delivery', label: 'A delivery link', description: "The merged pull request's or the release's URL" },
+  { value: 'verified', label: 'A verified delivery', description: 'A delivery link naming a candidate of its runs whose checks all passed on its commit' },
 ]
 
-/** A close policy as the person ticked it, in the order the policy keeps (acceptance, then delivery), each once. */
+/** A close policy as the person ticked it, in the order the policy keeps (acceptance, delivery, then verified), each once. */
 export function closeRequiresOf(picked: readonly string[]): CloseRequirement[] {
   return CLOSE_REQUIREMENTS.map((r) => r.value).filter((r) => picked.includes(r))
 }
@@ -386,7 +389,7 @@ export interface CloseCardItem {
   requirement: CloseRequirement
   words: string
   met: boolean
-  /** "Accepted by Nate for Alice", "accepted for Alice; the owner is now Bob", "No delivery link yet". */
+  /** "Accepted by Nate for Alice", "accepted for Alice; the owner is now Bob", "No delivery link yet", "Verified: build#2 passed 2 checks". */
   state: string
 }
 
@@ -421,9 +424,11 @@ export function closeCard(t: ClosingTicket): CloseCard {
   else if (recorded) acceptance = { text: t.close.why || `Accepted by ${by} for ${t.acceptedFor}, no longer met`, tone: 'warning', recorded, met }
   else if (t.owner) acceptance = { text: `Not accepted yet: ${t.owner} is the owner`, tone: 'muted', recorded, met }
   else acceptance = { text: 'Not accepted yet: the ticket has no owner to accept it', tone: 'muted', recorded, met }
-  const delivered = deliveryLinks(t.links ?? []).length
+  const deliveries = deliveryLinks(t.links ?? [])
+  const delivered = deliveries.length
   const items = policy.items.map((i): CloseCardItem => {
     if (i.requirement === 'acceptance') return { ...i, state: acceptance.text }
+    if (i.requirement === 'verified') return { ...i, state: verifiedState(t.close, deliveries) }
     return { ...i, state: delivered ? `Delivered: ${delivered === 1 ? 'one link' : `${delivered} links`}` : 'No delivery link yet' }
   })
   return {
@@ -619,8 +624,9 @@ function ticketChange(c: DispatchChange, names: ChangeNames): string {
         return `${adds ? 'added' : 'removed'} ${kind === 'blocks' ? 'a blocking relation' : 'a relation'}`
       }
       case 'links': {
-        const kind = memberJSON(c.value).kind
-        return `${adds ? 'added' : 'removed'} ${typeof kind === 'string' ? `a ${kind} link` : 'a link'}`
+        const { kind, candidate } = memberJSON(c.value)
+        const naming = adds && kind === 'delivery' && typeof candidate === 'string' && candidate ? ` naming ${candidateName(candidate)}` : ''
+        return `${adds ? 'added' : 'removed'} ${typeof kind === 'string' ? `a ${kind} link` : 'a link'}${naming}`
       }
       case 'attachments': {
         const name = memberJSON(c.value).name
@@ -1395,4 +1401,340 @@ export function typedPick(field: 'owner' | 'assignees', query: string, values: r
   const value = field === 'owner' ? typed : `person:${typed}`
   const v = value.toLowerCase()
   return values.some((x) => x.toLowerCase() === v) ? null : value
+}
+
+// ---------------------------------------------------------------------------
+// A delivery's candidate, its verification, the decisions and the people (Program item DS2, docs/plans/dispatch-evidence.md, PR-12)
+
+/** A delivery's candidate parsed: the run, the task, the attempt and its result commit (`<run>/<task>/<n>@<commit>`, as the store keeps it). */
+export interface CandidateRef {
+  run: string
+  task: string
+  attempt: number
+  commit: string
+}
+
+/** A candidate as a link names it: `<run>/<task>/<n>@<commit>`, the ledger's own reference to the attempt with its result commit. */
+export function candidateRef(c: CandidateRef): string {
+  return `${c.run}/${c.task}/${c.attempt}@${c.commit}`
+}
+
+/** A link's candidate read, or null for none or one not of its shape (the store parses it; the page only names it). */
+export function parseCandidate(s: string | undefined): CandidateRef | null {
+  const m = /^([^/@]+)\/([^/@]+)\/([1-9][0-9]*)@([0-9a-f]{40}|[0-9a-f]{64})$/.exec(s ?? '')
+  if (!m) return null
+  return { run: m[1]!, task: m[2]!, attempt: Number(m[3]), commit: m[4]! }
+}
+
+/** A candidate as words name it, the store's way: `build#2`; the link's text as it is when it is not of the shape. */
+export function candidateName(s: string): string {
+  const c = parseCandidate(s)
+  return c ? `${c.task}#${c.attempt}` : s
+}
+
+/** A verification receipt's receipt as words name it, the store's way: "the check test", "the verify step lint". */
+function verifiedWhat(r: Pick<VerifiedReceipt, 'phase' | 'id'>): string {
+  return r.phase === 'verify' ? `the verify step ${r.id}` : `the check ${r.id}`
+}
+
+function verifiedPasses(r: VerifiedReceipt): boolean {
+  return r.exit === 0 && r.stable
+}
+
+/**
+ * How a recorded receipt that did not pass fell short, the store's words (internal/dispatch, delivery.go, shortfall): the first receipt
+ * that did not pass, else no check at all, else the attempt.
+ */
+export function verifiedShortfall(v: Pick<LinkVerified, 'receipts'>): string {
+  if (!v.receipts.length) return 'ran no check'
+  for (const r of v.receipts) {
+    if (r.exit === undefined || r.exit === null) return `did not finish ${verifiedWhat(r)}`
+    if (r.exit !== 0) return `failed ${verifiedWhat(r)} (exit ${r.exit})`
+    if (!r.stable) return `passed ${verifiedWhat(r)} but not stably`
+  }
+  return 'passed its checks, but its attempt did not succeed'
+}
+
+/** A delivery row's verification in words: verified or not, and how; `withdrawn` when the result was taken back since it was recorded. */
+export interface VerificationWords {
+  state: 'verified' | 'unverified' | 'none'
+  text: string
+  tone: Tone
+  /** "Its result was withdrawn after this was recorded": the recorded receipt stays true of its commit (the checks did pass on it). */
+  withdrawn: string
+}
+
+/**
+ * A delivery link's verification, from the receipt it recorded when it was added (never re-derived from the ledger): "Verified: build#2
+ * passed 2 checks", "Not verified: build#3 failed the check never (exit 1)", or nothing for a delivery naming no candidate. `withdrawn`
+ * says a withdrawal took the candidate's result back since, which leaves the receipt as it was.
+ */
+export function verificationWords(l: Pick<TicketLink, 'candidate' | 'verified'>, withdrawn = false): VerificationWords {
+  if (!l.candidate) return { state: 'none', text: '', tone: 'muted', withdrawn: '' }
+  const name = candidateName(l.candidate)
+  const later = withdrawn ? `${name}'s result was withdrawn after this was recorded; the receipt stays true of its commit.` : ''
+  const v = l.verified
+  if (!v || !Array.isArray(v.receipts)) return { state: 'unverified', text: `Not verified: ${name}'s verification receipt cannot be read`, tone: 'warning', withdrawn: later }
+  if (v.passed) {
+    const n = v.receipts.length
+    return { state: 'verified', text: `Verified: ${name} passed ${n === 1 ? 'its check' : `${n} checks`}`, tone: 'success', withdrawn: later }
+  }
+  return { state: 'unverified', text: `Not verified: ${name} ${verifiedShortfall(v)}`, tone: 'warning', withdrawn: later }
+}
+
+/** The close card's line for `verified`: the passing delivery's candidate named, else why not in the server's words (`verifiedWhy`). */
+function verifiedState(close: CloseState, deliveries: readonly TicketLink[]): string {
+  if (close.met.verified) {
+    const passing = [...deliveries].reverse().find((l) => l.candidate && l.verified?.passed)
+    return passing ? verificationWords(passing).text : 'Verified'
+  }
+  const why = close.verifiedWhy || 'no delivery names a candidate'
+  return why.charAt(0).toUpperCase() + why.slice(1)
+}
+
+/** A candidate a delivery may name, as the form offers it: its reference, its name and commit, and its receipts in short. */
+export interface CandidateOption {
+  value: string
+  label: string
+  description: string
+  run: string
+}
+
+/**
+ * Whether a receipt passes as the server's verification of a delivery reads it (api's candidateVerified): finished with exit 0, its tree
+ * unchanged, not timed out, no signal. A leftover child killed after the check's process exited (`killed`) is no failure of the check,
+ * as the engine's own reading of it says.
+ */
+export function receiptVerifies(r: Pick<CandidateReceipt, 'state' | 'exit' | 'signal' | 'stable' | 'timedOut'>): boolean {
+  return r.state === 'finished' && r.exit === 0 && r.stable && !r.timedOut && !r.signal
+}
+
+/** How an attempt that did not succeed ended, after "its attempt". */
+const ATTEMPT_ENDS: Partial<Record<RunCandidate['state'], string>> = {
+  failed: 'failed',
+  cancelled: 'was cancelled',
+  stopped: 'was stopped',
+  interrupted: 'was interrupted',
+  uncertain: 'ended uncertain',
+}
+
+/**
+ * A candidate's receipts in short, for the delivery form's choices, by the server's rule for a delivery's verification (passed when its
+ * attempt succeeded and every receipt passes, `receiptVerifies`): "2 checks passed", "1 of 2 failed: check never (exit 1)", "its check
+ * passed, but its attempt failed: it cannot be verified", "no check: it cannot be verified", each with "accepted anyway" when a person
+ * took it so. What the server records is its own read of the ledger.
+ */
+export function candidateSummary(c: Pick<RunCandidate, 'receipts' | 'acceptedAnyway' | 'state'>): string {
+  const n = c.receipts.length
+  const anyway = c.acceptedAnyway ? ', accepted anyway' : ''
+  if (!n) return `no check: it cannot be verified${anyway}`
+  const failed = c.receipts.filter((r) => !receiptVerifies(r))
+  if (failed.length) {
+    const f = failed[0]!
+    const how =
+      f.state !== 'finished'
+        ? ` (${f.state})`
+        : f.signal
+          ? ` (signal ${f.signal})`
+          : f.timedOut
+            ? ' (timed out)'
+            : f.exit !== undefined && f.exit !== 0
+              ? ` (exit ${f.exit})`
+              : !f.stable
+                ? ' (changed the tree)'
+                : ''
+    return `${failed.length} of ${n} failed: ${f.phase} ${f.id}${how}${anyway}`
+  }
+  const passed = `${n === 1 ? 'its check' : `${n} checks`} passed`
+  if (c.state !== 'succeeded') return `${passed}, but its attempt ${ATTEMPT_ENDS[c.state] ?? `is ${c.state}`}: it cannot be verified${anyway}`
+  return `${passed}${anyway}`
+}
+
+/**
+ * The candidates a delivery may name, from the ticket's runs' candidates (each run's tasks as the candidates route answers them), the
+ * runs in the order the Runs section shows them: each task's standing work result, a commit, not withdrawn, the same candidate once.
+ * The store takes only a run of a chain the ticket holds alone, and checks the rest itself; the form only offers.
+ */
+export function candidateOptions(runs: ReadonlyArray<{ run: string; label?: string; tasks: readonly TaskCandidates[] }>): CandidateOption[] {
+  const out: CandidateOption[] = []
+  const seen = new Set<string>()
+  for (const r of runs) {
+    for (const t of r.tasks) {
+      if (t.kind !== 'work') continue
+      for (const c of t.candidates) {
+        if (!c.standing || c.withdrawn || !c.commit) continue
+        const value = candidateRef({ run: r.run, task: t.task, attempt: c.attempt, commit: c.commit })
+        if (seen.has(value)) continue
+        seen.add(value)
+        out.push({ value, label: `${t.task}#${c.attempt} · ${c.commit.slice(0, 7)}`, description: `${r.label || r.run}: ${candidateSummary(c)}`, run: r.run })
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * Whether the candidate a link names was withdrawn, as its run's candidates read say: its result taken back since it was delivered. A
+ * withdrawal takes back every attempt of the task up to its last one then, which the task's `withdrawn` says, so an attempt older than
+ * the six newest the read lists is known withdrawn too, not taken for one that was not.
+ */
+export function candidateWithdrawn(candidate: string | undefined, runs: ReadonlyMap<string, readonly TaskCandidates[]>): boolean {
+  const c = parseCandidate(candidate)
+  if (!c) return false
+  const task = runs.get(c.run)?.find((t) => t.task === c.task)
+  if (!task) return false
+  if (c.attempt <= (task.withdrawn ?? 0)) return true
+  return !!task.candidates.find((x) => x.attempt === c.attempt && x.commit === c.commit)?.withdrawn
+}
+
+/** One of a ticket's decisions as its Decisions section shows it, newest first. */
+export interface DecisionRow {
+  key: string
+  kind: 'approval' | 'acceptance' | 'accepted-anyway' | 'record'
+  /** RFC 3339. */
+  at: string
+  by: string
+  /** "Approved plan r2 (the login crew)", "Accepted for Alice", "Accepted build#3 anyway". */
+  title: string
+  /** Its standing now: "superseded by a later approval", "the owner is now Bob". */
+  state: string
+  tone: Tone
+  note: string
+  /** The run an Accept anyway was of, a decision record's URL. */
+  run?: string
+  url?: string
+}
+
+/**
+ * A ticket's decisions (DS2's DispatchDecisions.vue), newest first, from the records the page reads: each plan revision's approval with its
+ * note (the one each revision holds now: an approval made again is in the history beside the one before), the owner's acceptance on
+ * record with its note, each candidate a person accepted anyway (the run's command receipt), and the `decision` links a merge brought
+ * (reserved for durable decision records, Program item DR1). A required decision of a revision is the Plan's: recorded, not held.
+ */
+export function ticketDecisions(o: {
+  plans: readonly PlanSummary[]
+  ticket: Pick<DispatchTicket, 'acceptedAt' | 'acceptedBy' | 'acceptedFor' | 'acceptedNote' | 'close' | 'links'>
+  runs: ReadonlyArray<{ run: string; label?: string; tasks: readonly TaskCandidates[] }>
+}): DecisionRow[] {
+  const out: DecisionRow[] = []
+  for (const p of o.plans) {
+    if (!p.approvedAt) continue
+    // An approved revision holds only while nothing stops its launch: the same blocking reasons Launch and the Plan's remedy read (a stale
+    // approval, an agent that resolves otherwise now), so Decisions never says "holds" of a revision that must be revised first.
+    const blocking = p.state === 'approved' ? planReasons(p).filter((r) => r.blocks) : []
+    const state =
+      p.state === 'approved'
+        ? blocking.length
+          ? blocking.map((r) => r.words).join('; ')
+          : 'holds'
+        : p.state === 'superseded'
+          ? 'superseded by a later approval'
+          : p.state === 'withdrawn'
+            ? 'withdrawn since'
+            : p.state
+    out.push({
+      key: `approval:${p.id}`,
+      kind: 'approval',
+      at: p.approvedAt,
+      by: p.approvedBy || 'admin',
+      title: `Approved plan r${p.n} (${p.crewName})`,
+      state,
+      tone: p.state === 'approved' ? (blocking.length ? 'warning' : 'success') : 'muted',
+      note: p.approvedNote ?? '',
+    })
+  }
+  const t = o.ticket
+  if (t.acceptedAt) {
+    const met = !!t.close.met.acceptance
+    out.push({
+      key: 'acceptance',
+      kind: 'acceptance',
+      at: t.acceptedAt,
+      by: t.acceptedBy || 'admin',
+      title: `Accepted for ${t.acceptedFor || 'the owner'}`,
+      state: met ? 'holds' : t.close.why || 'no longer met',
+      tone: met ? 'success' : 'warning',
+      note: t.acceptedNote ?? '',
+    })
+  }
+  for (const r of o.runs) {
+    for (const task of r.tasks) {
+      for (const c of task.candidates) {
+        if (!c.acceptedAnyway) continue
+        out.push({
+          key: `anyway:${r.run}/${task.task}/${c.attempt}`,
+          kind: 'accepted-anyway',
+          at: c.acceptedAnyway.at,
+          by: c.acceptedAnyway.actor || 'admin',
+          title: `Accepted ${task.task}#${c.attempt} anyway`,
+          // Its title says it was accepted anyway: the summary says what of its checks it was accepted over.
+          state: `${r.label || r.run}: ${candidateSummary({ ...c, acceptedAnyway: undefined })}${c.withdrawn ? '; withdrawn since' : ''}`,
+          tone: 'warning',
+          note: '',
+          run: r.run,
+        })
+      }
+    }
+  }
+  for (const l of o.ticket.links ?? []) {
+    if (l.kind !== 'decision' || l.deletedAt) continue
+    out.push({ key: `record:${l.id}`, kind: 'record', at: l.createdAt, by: l.createdBy || 'admin', title: 'A decision record', state: l.ref, tone: 'default', note: l.note, ...(l.url ? { url: l.url } : {}) })
+  }
+  return out.sort((a, b) => b.at.localeCompare(a.at) || a.key.localeCompare(b.key))
+}
+
+/** A person on a ticket, and what they are to it. */
+export interface PersonRow {
+  name: string
+  kind: 'person' | 'agent'
+  /** Of: owner, assignee, approver, launcher, commenter, in that order. */
+  roles: Array<'owner' | 'assignee' | 'approver' | 'launcher' | 'commenter'>
+}
+
+const ROLE_ORDER: PersonRow['roles'] = ['owner', 'assignee', 'approver', 'launcher', 'commenter']
+
+/**
+ * A ticket's people (DS2's DispatchPeople.vue): its owner and assignees, who approved its plan revisions, who launched its runs, and who
+ * commented (the comments the ticket's read carries, its last 50), each name once with every role it holds, people first in the order
+ * their first role comes, then agents. An agent assigned is named by its catalog name when `agentName` has it.
+ */
+export function ticketPeople(o: {
+  ticket: Pick<DispatchTicket, 'owner' | 'assignees' | 'comments'>
+  plans: readonly Pick<PlanSummary, 'approvedAt' | 'approvedBy'>[]
+  launches: readonly Pick<LaunchSummary, 'createdBy'>[]
+  agentName?: (id: string) => string | undefined
+}): PersonRow[] {
+  const rows = new Map<string, PersonRow>()
+  const add = (kind: PersonRow['kind'], name: string, role: PersonRow['roles'][number]) => {
+    const n = name.trim()
+    if (!n) return
+    const k = `${kind}:${n}`
+    const row = rows.get(k) ?? { name: n, kind, roles: [] }
+    if (!row.roles.includes(role)) row.roles.push(role)
+    rows.set(k, row)
+  }
+  const actor = (a: string): { kind: PersonRow['kind']; name: string } => {
+    const x = assigneeOf(a)
+    return x.kind === 'agent' ? { kind: 'agent', name: o.agentName?.(x.name) ?? x.name } : x
+  }
+  if (o.ticket.owner) add('person', o.ticket.owner, 'owner')
+  for (const a of o.ticket.assignees ?? []) {
+    const x = actor(a)
+    add(x.kind, x.name, 'assignee')
+  }
+  for (const p of o.plans) if (p.approvedAt) add('person', p.approvedBy || 'admin', 'approver')
+  for (const l of o.launches) add('person', l.createdBy || 'admin', 'launcher')
+  for (const c of o.ticket.comments ?? []) {
+    if (c.deletedAt) continue
+    add(c.author.startsWith('agent:') ? 'agent' : 'person', commentAuthor(c), 'commenter')
+  }
+  const out = [...rows.values()]
+  for (const r of out) r.roles.sort((a, b) => ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b))
+  const first = (r: PersonRow) => ROLE_ORDER.indexOf(r.roles[0]!)
+  return out.sort((a, b) => Number(a.kind === 'agent') - Number(b.kind === 'agent') || first(a) - first(b))
+}
+
+/** A member's agent at a launch's start in words: its version as its identity probe reported it, or that none was. */
+export function agentVersionWords(version: string): string {
+  return version ? version : 'no version reported'
 }

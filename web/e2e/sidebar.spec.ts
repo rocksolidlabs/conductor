@@ -392,7 +392,7 @@ test('alerts and your menu sit beside the name; the foot holds only the pages', 
   await expect(page.locator('[data-header-account]')).toHaveAttribute('aria-label', 'Your menu, Nate R')
   // The foot: the pages, nothing else.
   const foot = page.locator('#dashboard-sidebar-main').getByRole('navigation').last()
-  await expect(foot.getByRole('link')).toHaveText([/Yard/, /Roundhouse/, /Agents/, /Crews/, /Dispatch/, /Events/])
+  await expect(foot.getByRole('link')).toHaveText([/Yard/, /Roundhouse/, /Agents/, /Crews/, /Dispatch/, /Events/, /Brakeman/])
 })
 
 
