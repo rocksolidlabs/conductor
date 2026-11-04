@@ -721,7 +721,7 @@ func (e *Engine) reverify(r *run, t *task, m *member) {
 		start = c.commit
 	}
 	a := &attempt{t: t, m: m, n: n, state: ledger.AttemptReserved, ctx: ctx, cancel: cancel, reservedAt: time.Now().UTC(), inputs: r.inputs(t), start: start, provisional: true,
-		worktree: filepath.Join(r.cwd, worktreesDir, r.id, fmt.Sprintf("%s.%d", t.def.ID, n))}
+		worktree: filepath.Join(r.cwd, worktreesDir, r.id, fmt.Sprintf("%s.%d", t.def.ID, n)), where: r.rt.Where()}
 	t.attempts = append(t.attempts, a)
 	t.extra++
 	t.state, t.reason = ledger.TaskRunning, ""
@@ -1003,7 +1003,7 @@ func taskStateOfRow(st *TaskState, row ledger.TaskRow, hasRow bool, attempts []l
 // and checkpoint. What it submitted and its receipts are a task's own
 // read's (LoadedTask, the API's).
 func attemptStateOfRow(la ledger.AttemptRow) AttemptState {
-	as := AttemptState{N: la.N, SessionID: la.SessionID, Worktree: la.Worktree, Branch: la.Branch, Start: la.StartCommit, Result: la.ResultCommit, State: la.State, Stage: la.Stage, Error: la.Error}
+	as := AttemptState{N: la.N, SessionID: la.SessionID, Worktree: la.Worktree, Branch: la.Branch, Start: la.StartCommit, Result: la.ResultCommit, State: la.State, Stage: la.Stage, Error: la.Error, Where: la.Where}
 	if !la.LaunchedAt.IsZero() {
 		at := la.LaunchedAt
 		as.StartedAt = &at

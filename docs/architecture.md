@@ -341,6 +341,20 @@ compares the trees, stays on the machine that holds the repository. The
 native Runtime is `internal/proc`, so with nothing registered a run's
 commands run as they always have, natively as the user.
 
+The ledger records where each ran. An attempt's `where` is its run's
+Runtime's `Where`, set when the attempt is made and written with its
+reservation, before its worktree, its session or any of its processes
+exist; every receipt of the attempt (a check, a manifest's step) carries
+the same one from its first row, and a prerequisite's carries its run's,
+so an attempt and its checks report the same `where` by construction.
+`where_ran` is a column of the attempts, checks and prerequisites rows
+(schema version 7), and a put of a row with none is refused, so a
+Runtime whose rows forgot it fails rather than passing for the native one.
+Nothing rewrites it: the recovery concludes states and leaves it, and a
+continuation's attempts take the Runtime the continuation was given. The
+task read, the steps route and the prerequisites route report it; the run
+page shows nothing of it while `native` is its one value.
+
 ## Dispatch
 
 Dispatch is a component, Conductor's own work tracking: projects, tickets
@@ -1002,7 +1016,7 @@ still resolved. A switchyard routes and answers none.
 | `internal/store` | atomic JSON documents in the data directory, and plain files such as the generated workbench token |
 | `internal/agents` | hook adapters per agent: assets under `dataDir/hooks`, launch injection, on-demand install, payload mappers |
 | `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness and the trust hold, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`), run state, change reports, member resume |
-| `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events; recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, the server may not write the database file, or the database is damaged or newer |
+| `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events, each attempt, check and prerequisite row saying where it ran (`where_ran`, schema version 7); recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, the server may not write the database file, or the database is damaged or newer |
 | `internal/dispatch` | Dispatch's store: projects, tickets, their discussion and history in `dataDir/dispatch/dispatch.sqlite`; every write a typed operation with a kept receipt and its rows in the `changes` log; no HTTP, no session, no process |
 | `internal/brakeman` | Brakeman's records: its configuration, the requests people make of it, the briefs its turns hand back and their evidence refs, as JSON documents in `dataDir/brakeman/` under its own owner lock; no HTTP, no session, no process |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |

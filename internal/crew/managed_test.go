@@ -394,11 +394,20 @@ func (tx *fakeTx) CreateRun(r ledger.RunRow) error {
 	return nil
 }
 func (tx *fakeTx) PutTask(r ledger.TaskRow) error { tx.tasks = append(tx.tasks, r); return nil }
+
+// The puts refuse a row that does not say where it ran, as the ledger's
+// do (ledger.ErrNoWhere): every engine test holds I1 of the Runtime plan.
 func (tx *fakeTx) PutAttempt(r ledger.AttemptRow) error {
+	if r.Where == "" {
+		return fmt.Errorf("attempt %s/%d: %w", r.TaskID, r.N, ledger.ErrNoWhere)
+	}
 	tx.attempts = append(tx.attempts, r)
 	return nil
 }
 func (tx *fakeTx) PutCheck(r ledger.CheckRow) error {
+	if r.Where == "" {
+		return fmt.Errorf("receipt %s/%d %s/%d: %w", r.TaskID, r.N, r.ID, r.K, ledger.ErrNoWhere)
+	}
 	tx.l.mu.Lock()
 	drop := tx.l.dropLogs
 	tx.l.mu.Unlock()
@@ -411,6 +420,9 @@ func (tx *fakeTx) PutCheck(r ledger.CheckRow) error {
 	return nil
 }
 func (tx *fakeTx) PutPrerequisite(r ledger.PrerequisiteRow) error {
+	if r.Where == "" {
+		return fmt.Errorf("prerequisite %s/%d: %w", r.ID, r.K, ledger.ErrNoWhere)
+	}
 	tx.prereqs = append(tx.prereqs, r)
 	return nil
 }

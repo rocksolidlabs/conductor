@@ -745,7 +745,7 @@ func TestCandidatesAreBoundToTheirCommits(t *testing.T) {
 		}
 		rc := receipts[0].(map[string]any)
 		wantExit := map[int]float64{1: 1, 2: 0}[n]
-		if rc["id"] != "test" || rc["phase"] != ledger.PhaseCheck || rc["exit"] != wantExit || rc["where"] != whereNative || rc["logSha256"] == "" || rc["pid"] != nil {
+		if rc["id"] != "test" || rc["phase"] != ledger.PhaseCheck || rc["exit"] != wantExit || rc["where"] != ledger.WhereNative || rc["logSha256"] == "" || rc["pid"] != nil {
 			t.Fatalf("attempt %d's receipt: %v", n, rc)
 		}
 		i := slices.IndexFunc(rows, func(r ledger.CheckRow) bool { return r.ID == rc["id"] && float64(r.K) == rc["k"] })
@@ -796,6 +796,7 @@ func TestCandidatesAreBoundToTheirCommits(t *testing.T) {
 				// Never submitted: no candidate.
 				a.ResultCommit, a.Result, a.State, a.Stage = "", "", ledger.AttemptCancelled, ""
 			}
+			a.Where = ledger.WhereNative
 			if err := tx.PutAttempt(a); err != nil {
 				return err
 			}
@@ -807,11 +808,12 @@ func TestCandidatesAreBoundToTheirCommits(t *testing.T) {
 			{TaskID: "t01", N: 7, ID: "deps", K: 4, Phase: ledger.PhaseSetup, Subject: commit(7), State: ledger.CheckFinished},
 		} {
 			c.StartedAt = tx.Now()
+			c.Where = ledger.WhereNative
 			if err := tx.PutCheck(c); err != nil {
 				return err
 			}
 		}
-		if err := tx.PutAttempt(ledger.AttemptRow{TaskID: "rv", N: 1, Member: "lead", StartCommit: commit(7), State: ledger.AttemptSucceeded,
+		if err := tx.PutAttempt(ledger.AttemptRow{Where: ledger.WhereNative, TaskID: "rv", N: 1, Member: "lead", StartCommit: commit(7), State: ledger.AttemptSucceeded,
 			Result: result(crew.Result{Verdict: crew.VerdictNeedsChanges, Findings: []crew.Finding{{Severity: "blocker", Message: "x"}, {Severity: "major", Message: "y"}, {Severity: "major", Message: "z"}, {Severity: "nit", Message: "w"}}})}); err != nil {
 			return err
 		}
@@ -975,6 +977,7 @@ func TestCandidatesAreReadAtOneRevision(t *testing.T) {
 		if err := tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: crew.TaskWork, State: ledger.TaskVerifying, Attempts: 1}); err != nil {
 			return err
 		}
+		attempt.Where = ledger.WhereNative
 		return tx.PutAttempt(attempt)
 	}); err != nil {
 		t.Fatal(err)
@@ -994,6 +997,7 @@ func TestCandidatesAreReadAtOneRevision(t *testing.T) {
 			}
 			a := attempt
 			a.State, a.Stage = ledger.AttemptSucceeded, ""
+			a.Where = ledger.WhereNative
 			return tx.PutAttempt(a)
 		}); err != nil {
 			t.Error(err)
@@ -1027,6 +1031,7 @@ func TestCandidatesMovingThroughEveryReadAreRefused(t *testing.T) {
 		if err := tx.PutTask(verifying); err != nil {
 			return err
 		}
+		attempt.Where = ledger.WhereNative
 		return tx.PutAttempt(attempt)
 	}); err != nil {
 		t.Fatal(err)
@@ -1053,6 +1058,7 @@ func TestCandidatesMovingThroughEveryReadAreRefused(t *testing.T) {
 			if err := tx.PutTask(tr); err != nil {
 				return err
 			}
+			a.Where = ledger.WhereNative
 			return tx.PutAttempt(a)
 		}); err != nil {
 			t.Error(err)
@@ -1077,14 +1083,17 @@ func TestCandidatesMovingThroughEveryReadAreRefused(t *testing.T) {
 	}
 }
 
-// Every receipt carries where it ran: native, the only runtime until one
-// other exists, for a check's and a verify step's alike.
+// Every receipt carries where it ran, its row's: a check's and a verify
+// step's alike, native or another Runtime's, never a constant.
 func TestCandidatesCarryWhere(t *testing.T) {
 	e := readyEnv(t, nil)
 	if e.srv.ledger == nil {
 		t.Fatal("no ledger")
 	}
 	run := "where-0000abcd"
+	// Each receipt's row's where, by its id: one native, one another
+	// Runtime's.
+	wheres := map[string]string{ledger.PhaseCheck + "s": ledger.WhereNative, ledger.PhaseVerify + "s": "fake"}
 	c, _ := json.Marshal(crew.Crew{ID: "where", Name: "Where", Tasks: []crew.Task{{ID: "build", Member: "lead", Kind: crew.TaskWork}}})
 	sub := strings.Repeat("a", 40)
 	if _, err := e.srv.ledger.Transition(t.Context(), run, func(tx *ledger.Tx) error {
@@ -1094,11 +1103,11 @@ func TestCandidatesCarryWhere(t *testing.T) {
 		if err := tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: crew.TaskWork, State: ledger.TaskSucceeded, ResultAttempt: 1, ResultCommit: sub}); err != nil {
 			return err
 		}
-		if err := tx.PutAttempt(ledger.AttemptRow{TaskID: "build", N: 1, ResultCommit: sub, State: ledger.AttemptSucceeded, Result: `{"commit":"` + sub + `"}`}); err != nil {
+		if err := tx.PutAttempt(ledger.AttemptRow{Where: ledger.WhereNative, TaskID: "build", N: 1, ResultCommit: sub, State: ledger.AttemptSucceeded, Result: `{"commit":"` + sub + `"}`}); err != nil {
 			return err
 		}
 		for k, phase := range []string{ledger.PhaseCheck, ledger.PhaseVerify} {
-			if err := tx.PutCheck(ledger.CheckRow{TaskID: "build", N: 1, ID: phase + "s", K: k + 1, Phase: phase, Subject: sub, State: ledger.CheckFinished, StartedAt: tx.Now()}); err != nil {
+			if err := tx.PutCheck(ledger.CheckRow{Where: wheres[phase+"s"], TaskID: "build", N: 1, ID: phase + "s", K: k + 1, Phase: phase, Subject: sub, State: ledger.CheckFinished, StartedAt: tx.Now()}); err != nil {
 				return err
 			}
 		}
@@ -1111,8 +1120,8 @@ func TestCandidatesCarryWhere(t *testing.T) {
 		t.Fatalf("the candidates: %v", cs)
 	}
 	for _, r := range cs[0]["receipts"].([]any) {
-		if rc := r.(map[string]any); rc["where"] != "native" {
-			t.Fatalf("a receipt's where: %v", rc)
+		if rc := r.(map[string]any); rc["where"] != wheres[rc["id"].(string)] {
+			t.Fatalf("a receipt's where: %v, its row's %q", rc, wheres[rc["id"].(string)])
 		}
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -454,6 +455,10 @@ type attempt struct {
 	// failed is the receipt of the check or verify step that failed the
 	// attempt (verify), handed to the attempt after it (failedcheck.go).
 	failed *failedCheck
+	// where is where the attempt runs: its run's Runtime's Where, set as
+	// the attempt is made and never changed; its row and every receipt of
+	// it say it (ledger.AttemptRow.Where, CheckRow.Where).
+	where ext.Where
 }
 
 // input is a result a task starts from or has at hand.
@@ -511,6 +516,10 @@ type AttemptState struct {
 	// own; "" otherwise, for a run that is stopping, and for a run the
 	// engine has let go (steps.go).
 	Preview string `json:"preview,omitempty"`
+	// Where is where the attempt ran, its run's Runtime's Where (native for
+	// the native one): its row's. A run record saved before the ledger
+	// kept it has none.
+	Where string `json:"where,omitempty"`
 }
 
 // ResultState is a task's accepted result as the run reports it.
@@ -586,7 +595,7 @@ func (r *run) attemptState(a *attempt) AttemptState {
 // attemptStateOf is a as reported, without its preview. The caller holds
 // e.mu.
 func attemptStateOf(a *attempt) AttemptState {
-	as := AttemptState{N: a.n, SessionID: a.sessionID, Worktree: a.worktree, Branch: a.branch, Start: a.start, Result: a.result, State: a.state, Stage: a.stage, Error: a.err}
+	as := AttemptState{N: a.n, SessionID: a.sessionID, Worktree: a.worktree, Branch: a.branch, Start: a.start, Result: a.result, State: a.state, Stage: a.stage, Error: a.err, Where: string(a.where)}
 	if !a.launchedAt.IsZero() {
 		at := a.launchedAt
 		as.StartedAt = &at
@@ -1277,7 +1286,8 @@ func (e *Engine) pump(r *run) {
 			continue
 		}
 		ctx, cancel := context.WithCancel(r.ctx)
-		a := &attempt{t: t, m: m, n: len(t.attempts) + t.prior + 1, state: ledger.AttemptReserved, ctx: ctx, cancel: cancel, reservedAt: time.Now().UTC(), inputs: r.inputs(t), start: r.startCommit(t), provisional: true}
+		a := &attempt{t: t, m: m, n: len(t.attempts) + t.prior + 1, state: ledger.AttemptReserved, ctx: ctx, cancel: cancel, reservedAt: time.Now().UTC(), inputs: r.inputs(t), start: r.startCommit(t), provisional: true,
+			where: r.rt.Where()}
 		t.attempts = append(t.attempts, a)
 		t.state, t.reason = ledger.TaskRunning, ""
 		r.active++
@@ -1466,7 +1476,7 @@ func (r *run) attemptRow(a *attempt) ledger.AttemptRow {
 	}
 	row := ledger.AttemptRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, Member: a.m.def.Name, SessionID: a.sessionID, Worktree: a.worktree, Branch: a.branch,
 		StartCommit: a.start, ResultCommit: a.result, State: state, Stage: a.stage, Error: a.err,
-		ReservedAt: a.reservedAt, LaunchedAt: a.launchedAt, PromptedAt: a.promptedAt, ClosedAt: a.closedAt}
+		ReservedAt: a.reservedAt, LaunchedAt: a.launchedAt, PromptedAt: a.promptedAt, ClosedAt: a.closedAt, Where: string(a.where)}
 	if a.submitted != nil {
 		// The whole result, bounded by its validation, so a review's
 		// findings and a work task's issues outlive the server.

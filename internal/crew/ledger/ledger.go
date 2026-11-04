@@ -34,7 +34,7 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 6
+const Version = 7
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
@@ -68,7 +68,7 @@ var migrations = map[int][]string{
 		"ALTER TABLE checks ADD COLUMN url TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE runs ADD COLUMN paused_why TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE runs ADD COLUMN manifest TEXT NOT NULL DEFAULT ''",
-		prerequisitesTable,
+		prerequisitesTableV5,
 		treesTable,
 	},
 	// Version 6 (DS2, a run launched from a plan revision, #460): a run
@@ -79,6 +79,17 @@ var migrations = map[int][]string{
 	5: {
 		"ALTER TABLE runs ADD COLUMN ticket TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE runs ADD COLUMN package TEXT NOT NULL DEFAULT ''",
+	},
+	// Version 7 (C10, the Runtime, #493): every attempt and every receipt
+	// of a run (a task's check, a manifest's step, a prerequisite) says
+	// where it ran, the Runtime's Where (docs/plans/runtime.md). Before
+	// this version nothing could run a process of a run but the native
+	// code, so 'native' is what happened to every row a version 6
+	// database holds: nothing is guessed.
+	6: {
+		"ALTER TABLE attempts ADD COLUMN where_ran TEXT NOT NULL DEFAULT 'native'",
+		"ALTER TABLE checks ADD COLUMN where_ran TEXT NOT NULL DEFAULT 'native'",
+		"ALTER TABLE prerequisites ADD COLUMN where_ran TEXT NOT NULL DEFAULT 'native'",
 	},
 }
 
@@ -105,11 +116,47 @@ const messagesTable = `CREATE TABLE messages (
 		PRIMARY KEY (run_id, seq)
 	)`
 
-// prerequisitesTable holds a run's prerequisites' receipts (version 5):
-// the checks' columns but for the attempt's (task_id, n), the phase, the
-// ports and the tries, keyed by the run, the prerequisite's id and k, its
-// run's number in the run. A prerequisite runs before any attempt, so no
-// checks row can hold it (that table's key is an attempt's).
+// prerequisitesTableV5 is the prerequisites table as version 5 made it,
+// which migration 4 creates: the checks' columns but for the attempt's
+// (task_id, n), the phase, the ports and the tries, keyed by the run, the
+// prerequisite's id and k, its run's number in the run. A prerequisite
+// runs before any attempt, so no checks row can hold it (that table's key
+// is an attempt's). A migration's statements are history: the table as a
+// new database has it is prerequisitesTable, and a later version's column
+// is that version's migration, never this text's.
+const prerequisitesTableV5 = `CREATE TABLE prerequisites (
+		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+		id TEXT NOT NULL,
+		k INTEGER NOT NULL,
+		argv TEXT NOT NULL,
+		dir TEXT NOT NULL DEFAULT '',
+		subject TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL,
+		pid INTEGER NOT NULL DEFAULT 0,
+		pgroup INTEGER NOT NULL DEFAULT 0,
+		process_started_at TEXT NOT NULL DEFAULT '',
+		started_at TEXT NOT NULL,
+		finished_at TEXT NOT NULL DEFAULT '',
+		exit INTEGER NOT NULL DEFAULT -1,
+		signal TEXT NOT NULL DEFAULT '',
+		timed_out INTEGER NOT NULL DEFAULT 0,
+		killed INTEGER NOT NULL DEFAULT 0,
+		stable INTEGER NOT NULL DEFAULT 0,
+		truncated INTEGER NOT NULL DEFAULT 0,
+		total INTEGER NOT NULL DEFAULT 0,
+		log BLOB,
+		log_dropped INTEGER NOT NULL DEFAULT 0,
+		log_sha256 TEXT NOT NULL DEFAULT '',
+		tail TEXT NOT NULL DEFAULT '',
+		manifest TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		url TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, id, k)
+	)`
+
+// prerequisitesTable is the prerequisites table as Version has it, for a
+// new database: version 5's (prerequisitesTableV5) and where its receipt
+// ran (version 7).
 const prerequisitesTable = `CREATE TABLE prerequisites (
 		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
 		id TEXT NOT NULL,
@@ -137,6 +184,7 @@ const prerequisitesTable = `CREATE TABLE prerequisites (
 		manifest TEXT NOT NULL DEFAULT '',
 		error TEXT NOT NULL DEFAULT '',
 		url TEXT NOT NULL DEFAULT '',
+		where_ran TEXT NOT NULL DEFAULT 'native',
 		PRIMARY KEY (run_id, id, k)
 	)`
 
@@ -183,7 +231,15 @@ type Ledger struct {
 
 	readOnly bool
 	why      string
-	lock     *ownerLock
+	// version is the schema version of the database db reads, read as it
+	// is attached (attach) and so again after a migration: below Version
+	// when the ledger opened read-only and unmigrated (the owner lock
+	// another's, the migration failed), so a reader asks only for the
+	// columns that database has (whereCol), and reads the version again
+	// with its rows, since the owner may migrate it meanwhile (readAt). 0
+	// when it could not be read.
+	version int
+	lock    *ownerLock
 	// done ends awaitLock when the ledger is closed; ownedLate says the
 	// lock was taken after Open, onOwned is what runs then (OnOwned), and
 	// notified that it ran.
@@ -201,6 +257,10 @@ type Ledger struct {
 	onCommit    func(RunPointer)
 	onPrune     func(runID string, revision int64)
 	afterCommit func()
+	// inRead, when a test sets it, runs inside readAt's read transaction
+	// of an unmigrated database, after the version is read: the
+	// connection held, mu not.
+	inRead func()
 }
 
 // Errors of a ledger that cannot serve.
@@ -267,6 +327,7 @@ func Open(dir string) (*Ledger, error) {
 // An error is the chmod's alone, the lock let go. The caller holds mu, or
 // is Open.
 func (l *Ledger) attach(ctx context.Context, path string) error {
+	defer l.readVersion(ctx)
 	_, statErr := os.Lstat(path)
 	if l.readOnly && statErr != nil {
 		// Nothing to read, and not ours to make.
@@ -334,6 +395,20 @@ func (l *Ledger) attach(ctx context.Context, path string) error {
 		}
 	}
 	return nil
+}
+
+// readVersion keeps the version of the database the ledger reads
+// (l.version), 0 for none or one that will not say. The caller holds mu,
+// or is Open.
+func (l *Ledger) readVersion(ctx context.Context) {
+	l.version = 0
+	if l.db == nil {
+		return
+	}
+	var v int
+	if err := l.db.QueryRowContext(ctx, "SELECT version FROM schema_version").Scan(&v); err == nil {
+		l.version = v
+	}
 }
 
 // awaitLock tries for the owner lock every 250 ms for up to LockWait
@@ -471,15 +546,83 @@ func writable(ctx context.Context, db *sql.DB) error {
 
 // conn gives the database for a read, or why there is none.
 func (l *Ledger) conn() (*sql.DB, error) {
+	db, _, err := l.connAt()
+	return db, err
+}
+
+// connAt is conn with the version of the database it gives (l.version),
+// for a reader whose columns depend on it.
+func (l *Ledger) connAt() (*sql.DB, int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	switch {
 	case l.closed:
-		return nil, ErrClosed
+		return nil, 0, ErrClosed
 	case l.db == nil:
-		return nil, fmt.Errorf("%w: %s", ErrUnavailable, l.why)
+		return nil, 0, fmt.Errorf("%w: %s", ErrUnavailable, l.why)
 	}
-	return l.db, nil
+	return l.db, l.version, nil
+}
+
+// querier is what a reader asks its rows of: the database, or a read
+// transaction of it (readAt).
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// readAt runs read, a reader whose columns depend on the version of the
+// database, with that version. From versionWhere on, the version the
+// ledger keeps is the database's columns' (no later version takes one
+// away), and read asks the database. Below it the ledger is read-only and
+// reads a database another server, the owner, may migrate at any moment:
+// the version and the rows are read in one read transaction, one snapshot
+// of the database, so a migration committed before the rows are read is
+// seen with them and their where_ran column is read, never the literal
+// native in its place. A later version seen is kept (noteVersion), so the
+// reads after it ask the database, but only once the transaction is
+// rolled back: the ledger has one connection, and a holder of mu may wait
+// for it (Snapshot's VACUUM INTO, a transition), so mu is never taken
+// while the transaction holds it.
+func (l *Ledger) readAt(ctx context.Context, read func(q querier, version int) error) error {
+	db, version, err := l.connAt()
+	if err != nil {
+		return err
+	}
+	if version >= versionWhere {
+		return read(db, version)
+	}
+	// ReadOnly: a plain BEGIN, deferred, whose snapshot is the first read's,
+	// in place of the immediate one a write takes (dsn's _txlock).
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // a read that panics
+	v := version
+	if err := tx.QueryRowContext(ctx, "SELECT version FROM schema_version").Scan(&v); err != nil {
+		v = version
+	}
+	if l.inRead != nil {
+		l.inRead()
+	}
+	err = read(tx, v)
+	// A read-only transaction has nothing to undo; its rollback gives the
+	// connection back, whatever it answers (the deferred one then finds
+	// it done).
+	_ = tx.Rollback()
+	l.noteVersion(db, v)
+	return err
+}
+
+// noteVersion keeps v as the version of db when it is later than the one
+// kept and db is still the database the ledger reads.
+func (l *Ledger) noteVersion(db *sql.DB, v int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.db == db && v > l.version {
+		l.version = v
+	}
 }
 
 // dsn is the connection string: the file as a URI (its path escaped, so a
@@ -698,6 +841,7 @@ var schema = []string{
 		closed_at TEXT NOT NULL DEFAULT '',
 		result TEXT NOT NULL DEFAULT '',
 		checkpoint TEXT NOT NULL DEFAULT '',
+		where_ran TEXT NOT NULL DEFAULT 'native',
 		PRIMARY KEY (run_id, task_id, n),
 		FOREIGN KEY (run_id, task_id) REFERENCES tasks(run_id, id) ON DELETE CASCADE
 	)`,
@@ -733,6 +877,7 @@ var schema = []string{
 		tries INTEGER NOT NULL DEFAULT 1,
 		error TEXT NOT NULL DEFAULT '',
 		url TEXT NOT NULL DEFAULT '',
+		where_ran TEXT NOT NULL DEFAULT 'native',
 		PRIMARY KEY (run_id, task_id, n, id, k),
 		FOREIGN KEY (run_id, task_id, n) REFERENCES attempts(run_id, task_id, n) ON DELETE CASCADE
 	)`,

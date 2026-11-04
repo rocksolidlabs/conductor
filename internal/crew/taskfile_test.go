@@ -475,10 +475,10 @@ func TestAContinuationHandsAFailedReceiptAVersion4DatabaseKept(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer db.Close()
-		// What versions 5 and 6 added dropped (the ledger package's own
+		// What versions 5 to 7 added dropped (the ledger package's own
 		// tests keep the same list, version5Added), and k out of the
 		// check.finished events, which version 4 never wrote there.
-		for _, stmt := range []string{"ALTER TABLE runs DROP COLUMN ticket", "ALTER TABLE runs DROP COLUMN package", "ALTER TABLE checks DROP COLUMN phase", "ALTER TABLE checks DROP COLUMN manifest", "ALTER TABLE checks DROP COLUMN ports", "ALTER TABLE checks DROP COLUMN tries",
+		for _, stmt := range []string{"ALTER TABLE attempts DROP COLUMN where_ran", "ALTER TABLE checks DROP COLUMN where_ran", "ALTER TABLE prerequisites DROP COLUMN where_ran", "ALTER TABLE runs DROP COLUMN ticket", "ALTER TABLE runs DROP COLUMN package", "ALTER TABLE checks DROP COLUMN phase", "ALTER TABLE checks DROP COLUMN manifest", "ALTER TABLE checks DROP COLUMN ports", "ALTER TABLE checks DROP COLUMN tries",
 			"ALTER TABLE checks DROP COLUMN error", "ALTER TABLE checks DROP COLUMN url", "ALTER TABLE runs DROP COLUMN paused_why", "ALTER TABLE runs DROP COLUMN manifest", "DROP TABLE prerequisites", "DROP TABLE trees",
 			"UPDATE events SET payload = json_remove(payload, '$.k') WHERE kind = 'check.finished'", "UPDATE schema_version SET version = 4"} {
 			if _, err := db.Exec(stmt); err != nil {

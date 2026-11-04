@@ -795,7 +795,7 @@ func (e *Engine) startService(ctx context.Context, r *run, a *attempt, t *tree, 
 	k := a.nextK(ch.ID)
 	e.mu.Unlock()
 	row := ledger.CheckRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, ID: ch.ID, K: k, Phase: ledger.PhaseService, Manifest: t.man.identity(), Ports: maps.Clone(t.ports), Tries: 1,
-		Argv: slices.Clone(ch.Argv), Dir: t.cwd, Subject: t.commit, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC()}
+		Argv: slices.Clone(ch.Argv), Dir: t.cwd, Subject: t.commit, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC(), Where: string(a.where)}
 	if err := e.transact(ctx, r, func() tx {
 		out := ev("step.started", stepPayload(a, t, ledger.PhaseService, ch.ID, k, map[string]any{"manifest": row.Manifest}))
 		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(row) }
@@ -1063,7 +1063,7 @@ func (e *Engine) runProbe(ctx context.Context, r *run, a *attempt, t *tree, p Pr
 	k := a.nextK(p.ID)
 	e.mu.Unlock()
 	row := ledger.CheckRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, ID: p.ID, K: k, Phase: ledger.PhaseReady, Manifest: t.man.identity(), Ports: maps.Clone(t.ports), Tries: 0,
-		Argv: slices.Clone(p.Argv), URL: p.URL, Dir: t.cwd, Subject: t.commit, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC()}
+		Argv: slices.Clone(p.Argv), URL: p.URL, Dir: t.cwd, Subject: t.commit, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC(), Where: string(a.where)}
 	if err := e.transact(ctx, r, func() tx {
 		out := ev("step.started", stepPayload(a, t, ledger.PhaseReady, p.ID, k, map[string]any{"manifest": row.Manifest}))
 		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(row) }
@@ -1353,7 +1353,10 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 		k = r.prereqK[ch.ID]
 	}
 	e.mu.Unlock()
-	row := ledger.CheckRow{RunID: r.id, ID: ch.ID, K: k, Phase: phase, Manifest: man.identity(), Tries: 1, Argv: slices.Clone(ch.Argv), Dir: dir, Subject: subject, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC()}
+	// A step says where its attempt ran, a prerequisite where its run's
+	// Runtime runs it.
+	row := ledger.CheckRow{RunID: r.id, ID: ch.ID, K: k, Phase: phase, Manifest: man.identity(), Tries: 1, Argv: slices.Clone(ch.Argv), Dir: dir, Subject: subject, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC(),
+		Where: string(r.rt.Where())}
 	if t != nil {
 		row.Ports = maps.Clone(t.ports)
 	}
@@ -1368,7 +1371,7 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 		return p
 	}
 	if a != nil {
-		row.TaskID, row.N = a.t.def.ID, a.n
+		row.TaskID, row.N, row.Where = a.t.def.ID, a.n, string(a.where)
 	}
 	put := func(c ledger.CheckRow) func(LedgerTx) error {
 		if a != nil {
@@ -1556,7 +1559,8 @@ func (e *Engine) interruptedWhy(r *run, a *attempt, ch Check) string {
 func prerequisiteRow(c ledger.CheckRow) ledger.PrerequisiteRow {
 	return ledger.PrerequisiteRow{RunID: c.RunID, ID: c.ID, K: c.K, Manifest: c.Manifest, Error: c.Error, URL: c.URL, Argv: c.Argv, Dir: c.Dir, Subject: c.Subject,
 		State: c.State, PID: c.PID, Group: c.Group, ProcessStartedAt: c.ProcessStartedAt, StartedAt: c.StartedAt, FinishedAt: c.FinishedAt, Exit: c.Exit, Signal: c.Signal,
-		TimedOut: c.TimedOut, Killed: c.Killed, Stable: c.Stable, Truncated: c.Truncated, Total: c.Total, Log: c.Log, LogDropped: c.LogDropped, LogSHA256: c.LogSHA256, Tail: c.Tail}
+		TimedOut: c.TimedOut, Killed: c.Killed, Stable: c.Stable, Truncated: c.Truncated, Total: c.Total, Log: c.Log, LogDropped: c.LogDropped, LogSHA256: c.LogSHA256, Tail: c.Tail,
+		Where: c.Where}
 }
 
 // prereqReceipt is a prerequisite's latest receipt, as the run reports it,
@@ -2280,13 +2284,18 @@ type StepState struct {
 	LogBytes   int64          `json:"logBytes"`
 	LogDropped bool           `json:"logDropped,omitempty"`
 	LogSHA256  string         `json:"logSha256,omitempty"`
+	// Where is where the receipt's command ran: its attempt's Where, or a
+	// prerequisite's run's (native for the native Runtime).
+	Where string `json:"where"`
 }
 
 // StepStates is an attempt's receipts as reported, by when each started.
 func StepStates(rows []ledger.CheckRow) []StepState {
 	out := make([]StepState, 0, len(rows))
 	for _, c := range rows {
-		out = append(out, stepState(c.Phase, c.ID, c.K, c.State, c.Argv, c.URL, c.Dir, c.Subject, c.Manifest, c.Exit, c.TimedOut, c.Error, c.Ports, c.Tries, c.StartedAt, c.FinishedAt, c.LogBytes, c.LogDropped, c.LogSHA256))
+		st := stepState(c.Phase, c.ID, c.K, c.State, c.Argv, c.URL, c.Dir, c.Subject, c.Manifest, c.Exit, c.TimedOut, c.Error, c.Ports, c.Tries, c.StartedAt, c.FinishedAt, c.LogBytes, c.LogDropped, c.LogSHA256)
+		st.Where = c.Where
+		out = append(out, st)
 	}
 	sortSteps(out)
 	return out
@@ -2297,7 +2306,9 @@ func StepStates(rows []ledger.CheckRow) []StepState {
 func PrerequisiteStates(rows []ledger.PrerequisiteRow) []StepState {
 	out := make([]StepState, 0, len(rows))
 	for _, c := range rows {
-		out = append(out, stepState(ledger.PhasePrerequisite, c.ID, c.K, c.State, c.Argv, c.URL, c.Dir, c.Subject, c.Manifest, c.Exit, c.TimedOut, c.Error, nil, 1, c.StartedAt, c.FinishedAt, c.LogBytes, c.LogDropped, c.LogSHA256))
+		st := stepState(ledger.PhasePrerequisite, c.ID, c.K, c.State, c.Argv, c.URL, c.Dir, c.Subject, c.Manifest, c.Exit, c.TimedOut, c.Error, nil, 1, c.StartedAt, c.FinishedAt, c.LogBytes, c.LogDropped, c.LogSHA256)
+		st.Where = c.Where
+		out = append(out, st)
 	}
 	sortSteps(out)
 	return out

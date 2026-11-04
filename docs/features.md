@@ -3651,7 +3651,48 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   viewer and host test on the native Runtime.
 
   PR-4 (#493): every attempt and its evidence say where they ran (ledger
-  schema 6). Planned.
+  schema 7; the plan's 6 was taken by DS2's run package, #460). An
+  attempt's `where` is its run's Runtime's `Where`, set when it is made
+  (in the pump, and for a candidate a continuation verifies again) and
+  written with its reservation; every receipt of it (a check, a setup,
+  service, readiness or verify step) carries the same, and a
+  prerequisite's carries its run's. The ledger gains `where_ran` on the
+  attempts, checks and prerequisites tables (migration 6, three `ADD
+  COLUMN … DEFAULT 'native'`, every row an older database holds native,
+  which is what ran it); migration 4 keeps the prerequisites table as
+  version 5 made it (`prerequisitesTableV5`), so a version 4 database
+  reaches 7 with one column; `PutAttempt`, `PutCheck` and `PutPrerequisite`
+  refuse a row with no `where` (`ErrNoWhere`) or one past 32 bytes, and so
+  does the crew tests' fake ledger, so every engine test holds it. The
+  ledger keeps the version of the database it opened, and a database not
+  yet migrated (another server still holding the owner lock, or a
+  migration that failed) is read with `native` in the column's place; a
+  ledger that reads such a database reads its version again with the
+  rows, in one snapshot, so it reads the column once the owner has
+  migrated it.
+  `AttemptState.Where` (absent from a run record saved before) and
+  `StepState.Where` carry it to the run's read, the task read, the steps
+  route and the prerequisites route, and a run's candidates (DS2) report
+  their receipts' own where in place of a constant; the web app's
+  `RunAttempt.where` and `RunStep.where` follow the server's types, read by
+  no component. Tests: `TestAVersion6DatabaseIsBroughtToVersion7`,
+  `TestAVersion4DatabaseGainsWhereOnce`,
+  `TestAVersion6LedgerThatCannotMigrateIsRead`,
+  `TestAnUpgradeBesideThePreviousOwnerReads`,
+  `TestAReaderSeesAnotherOwnersMigration`,
+  `TestARowWithNoWhereIsRefused`, `TestARowKeepsItsWhere`,
+  `TestWhereNativeIsExtNative`, and every downgrade fixture dropping the
+  new columns; `TestAnAttemptAndItsChecksReportTheSameWhere`,
+  `TestAContinuationsAttemptsTakeTheirRunsNewWhere`,
+  `TestARecordWithoutWhereReadsWithout`;
+  `TestAnAttemptAndItsChecksRanWhereTheyReport`,
+  `TestTheTaskReadReportsWhere`, `TestADeclinedRunsRowsSayNative`. By
+  hand, the plan's Acceptance 2 on this build (on WSL and the Mac:
+  `example-todo-app-tasks` run to its end with real agents, every task
+  read and receipt `native`, `where_ran` holding `native` alone, and a
+  copy of a data directory a version 6 build wrote opened at version 7
+  with an interrupted run continued): not run yet; it waits on the live
+  check with real agents on WSL and on the owner's Mac.
 
   PR-5 (#494): the Runtime's public fake and contract check. Planned.
 - **The extension seams: the `ext` and `app` packages, the free defaults
