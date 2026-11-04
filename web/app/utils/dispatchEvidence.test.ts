@@ -461,7 +461,7 @@ describe('changed since a launch', () => {
   })
 
   it('says what the run does with what it was given by its state, and offers no follow-up on a closed ticket (#590)', () => {
-    const launch = { ticketRev: 4, planN: 2 }
+    const launch = { ticketRev: 4, planN: 2, state: 'started' } as const
     const changed = { rev: 7 }
     const open = { status: 'in_progress', locked: false } as const
     const given = 'the ticket at its revision 4 and plan revision 2 (r2). The ticket is at its revision 7 now.'
@@ -481,6 +481,23 @@ describe('changed since a launch', () => {
     expect(changedSinceBanner(launch, changed, undefined, open).text).toMatch(/^The run was launched with what it was given: /)
     // A locked ticket (deleted, archived) offers neither.
     expect(changedSinceBanner(launch, changed, 'running', { status: 'ready', locked: true })).toMatchObject({ revise: false, followUp: false })
+  })
+
+  it('says no run worked from what a failed launch was given, whatever state a run would have (#590, review round 1)', () => {
+    const failed = { ticketRev: 4, planN: 2, state: 'failed' } as const
+    const given = 'the ticket at its revision 4 and plan revision 2 (r2). The ticket is at its revision 7 now.'
+    // A failed launch has no run (the runs read gives it none), so its state is undefined; it is never "launched with what it was given".
+    expect(changedSinceBanner(failed, { rev: 7 }, undefined, { status: 'in_progress', locked: false })).toEqual({
+      text: `The launch failed, so no run worked from what it was given: ${given} A change that matters is a new revision and a follow-up launch.`,
+      revise: true,
+      followUp: true,
+    })
+    expect(changedSinceBanner(failed, { rev: 7 }, 'running', { status: 'done', locked: false })).toMatchObject({
+      text: expect.stringMatching(/^The launch failed, so no run worked from what it was given: .* once the ticket is reopened\.$/),
+      followUp: false,
+    })
+    // A pending launch whose run nothing knows yet keeps the plain words.
+    expect(changedSinceBanner({ ...failed, state: 'pending' }, { rev: 7 }, undefined, { status: 'in_progress', locked: false }).text).toMatch(/^The run was launched with what it was given: /)
   })
 
   it("judges a launched run's state by the live store or its record, else the runs read's summary (#590)", () => {
