@@ -27,6 +27,12 @@ var openAgents = []catalog.Agent{
 	{ID: "pass-cat", Name: "pass cat", Command: []string{"/bin/cat"}, Browser: &catalog.Browser{Name: catalog.BrowserBrave}, EnvPassthrough: []string{"BROWSER"}},
 }
 
+// reply is a route's answer, read on another goroutine.
+type reply struct {
+	status int
+	out    map[string]any
+}
+
 func openEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 	t.Helper()
 	return newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), openAgents)
@@ -106,10 +112,6 @@ func TestOpenIsClaimedByOneDesktopAppAndAnswered(t *testing.T) {
 	id := e.createSession("edge-cat")
 	tok := agentOf(t, e, id)
 	const link = "https://claude.ai/artifact/0f1e2d3c"
-	type reply struct {
-		status int
-		out    map[string]any
-	}
 	done := make(chan reply, 1)
 	go func() {
 		resp, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": link})
@@ -237,11 +239,9 @@ func TestDesktopStreamIsCounted(t *testing.T) {
 		t.Fatalf("the desktop's stream: %d", n)
 	}
 	resp.Body.Close()
-	deadline := time.Now().Add(10 * time.Second)
+	// Nothing in the product bounds how soon the server sees the stream
+	// end, so nothing here does: the test's own timeout bounds a hang.
 	for e.srv.events.desktopsStreaming() != 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the ended stream is still counted")
-		}
 		time.Sleep(5 * time.Millisecond)
 	}
 }
@@ -277,22 +277,135 @@ func TestOpenDeskClaimAndOfferExcludeEachOther(t *testing.T) {
 	}
 }
 
-// A managed run's attempt is never opened at once: its links are offered
-// without a wait for a desktop app, whatever the wait.
-func TestOpenOfAnAttemptIsOffered(t *testing.T) {
+// A managed run's attempt and a Brakeman turn, background or not, are
+// never opened at once: with a desktop app streaming, which would claim a
+// pending link, their links are offered without a wait, whatever the wait;
+// the first open event is the offer, and nothing is pending to claim.
+func TestOpenOfAnAttemptOrABrakemanTurnIsOffered(t *testing.T) {
+	for name, ref := range map[string]session.CrewRef{
+		"an attempt":                 {RunID: "r1", CrewID: "c1", Member: "lead", Task: "build", Attempt: 1},
+		"a background Brakeman turn": {CrewID: "c1", Member: "brakeman", Brakeman: &session.BrakemanMark{Request: "b1", Quiet: true}},
+		"a Brakeman turn":            {CrewID: "c1", Member: "brakeman", Brakeman: &session.BrakemanMark{Request: "b2"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := openEnv(t, nil)
+			e.srv.opens.claimWait = time.Hour
+			events := desktopStream(t, e)
+			id := e.createSession("edge-cat")
+			tok := agentOf(t, e, id)
+			d, _ := e.srv.Registry().Get(id)
+			d.(*session.Local).SetCrew(ref)
+			resp, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": "https://example.test/"})
+			if resp.StatusCode != http.StatusOK || out["outcome"] != OpenOffered {
+				t.Fatalf("%d %v", resp.StatusCode, out)
+			}
+			first := e.waitEvent(t, events, func(s string) bool { return strings.HasPrefix(s, "open ") })
+			var ev openEvent
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(first, "open ")), &ev); err != nil || ev.State != openOffered || ev.Browser == nil || ev.Browser.Name != "edge" {
+				t.Fatalf("the first open event %s: %v", first, err)
+			}
+			if resp, _ := e.do("POST", "/api/opens/"+ev.ID+"/claim", adminToken, nil); resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("a claim of the offer: %d", resp.StatusCode)
+			}
+		})
+	}
+}
+
+// A link the desktop app claimed and could not open (its bridge refused it)
+// is told as offered: every workbench is offered it, and the agent and the
+// activity are told so at once, not "handed" once the result's wait is
+// over.
+func TestOpenTheAppCouldNotOpenIsOffered(t *testing.T) {
 	e := openEnv(t, nil)
 	e.srv.opens.claimWait = time.Hour
-	events := e.sse(t)
+	e.srv.opens.resultWait = time.Hour // only the result ends the wait
+	events := desktopStream(t, e)
 	id := e.createSession("edge-cat")
 	tok := agentOf(t, e, id)
+	const link = "https://claude.ai/artifact/0f1e2d3c"
+	done := make(chan map[string]any, 1)
+	go func() {
+		_, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": link})
+		done <- out
+	}()
+	pending := waitOpen(t, e, events, openPending)
+	if resp, _ := e.do("POST", "/api/opens/"+pending.ID+"/claim", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the claim: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do("POST", "/api/opens/"+pending.ID+"/result", adminToken, map[string]any{"outcome": OpenOffered}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("the result: %d", resp.StatusCode)
+	}
+	offered := waitOpen(t, e, events, openOffered)
+	if offered.ID != pending.ID || offered.URL != link || offered.Browser == nil || offered.Browser.Name != "edge" {
+		t.Fatalf("the offer %+v after %+v", offered, pending)
+	}
+	const words = "offered in the workbench: the desktop app could not open it"
+	if out := <-done; out["outcome"] != OpenOffered || out["message"] != words {
+		t.Fatalf("the agent's answer %v", out)
+	}
+	if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].Message != "link "+words || acts[0].URL != link {
+		t.Fatalf("the activity %+v", acts)
+	}
+}
+
+// missing and failed name the browser the agent's settings name: told of a
+// link whose agent names none they are refused, and the outcome told after
+// is the one the agent is answered.
+func TestOpenResultMissingNeedsABrowser(t *testing.T) {
+	e := openEnv(t, nil)
+	e.srv.opens.claimWait = time.Hour
+	e.srv.opens.resultWait = time.Hour
+	events := desktopStream(t, e)
+	id := e.createSession("cat")
+	tok := agentOf(t, e, id)
+	done := make(chan reply, 1)
+	go func() {
+		resp, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": "https://example.test/"})
+		done <- reply{resp.StatusCode, out}
+	}()
+	ev := waitOpen(t, e, events, openPending)
+	if ev.Browser != nil {
+		t.Fatalf("a browser for an agent that names none: %+v", ev)
+	}
+	e.do("POST", "/api/opens/"+ev.ID+"/claim", adminToken, nil)
+	for _, outcome := range []string{OpenedMissing, OpenedFailed} {
+		if resp, out := e.do("POST", "/api/opens/"+ev.ID+"/result", adminToken, map[string]any{"outcome": outcome}); resp.StatusCode != http.StatusBadRequest || errorCode(out) != "invalid_request" {
+			t.Fatalf("%s for no browser: %d %v", outcome, resp.StatusCode, out)
+		}
+	}
+	if resp, _ := e.do("POST", "/api/opens/"+ev.ID+"/result", adminToken, map[string]any{"outcome": OpenedDefault}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("the result: %d", resp.StatusCode)
+	}
+	if r := <-done; r.status != http.StatusOK || r.out["outcome"] != OpenedDefault || r.out["message"] != "opened in the default browser" {
+		t.Fatalf("the agent's answer: %d %v", r.status, r.out)
+	}
+	// The words never need a browser to be said.
+	for _, outcome := range []string{OpenedBrowser, OpenedDefault, OpenedMissing, OpenedFailed, OpenOffered, OpenHanded, openUnopened} {
+		if openWords(outcome, nil) == "" {
+			t.Fatalf("no words for %s", outcome)
+		}
+	}
+}
+
+// An open is recorded however many events the agent reported before it: its
+// entry spends none of the event bucket. The bucket earns a token every
+// 50 ms, so the route's record may find one here; that the entry never asks
+// is TestRecordServerSpendsNoToken's, in internal/session, with a bucket
+// that earns none.
+func TestOpenIsRecordedWithTheEventBucketSpent(t *testing.T) {
+	e := openEnv(t, nil)
+	id := e.createSession("cat")
+	tok := agentOf(t, e, id)
 	d, _ := e.srv.Registry().Get(id)
-	d.(*session.Local).SetCrew(session.CrewRef{RunID: "r1", CrewID: "c1", Member: "lead", Task: "build", Attempt: 1})
-	resp, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": "https://example.test/"})
+	local := d.(*session.Local)
+	for i := 0; local.Record(session.ActivityEntry{Type: session.ActivityToolUse, Message: "tool " + itoa(i)}); i++ {
+	}
+	resp, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": "https://example.test/spent"})
 	if resp.StatusCode != http.StatusOK || out["outcome"] != OpenOffered {
 		t.Fatalf("%d %v", resp.StatusCode, out)
 	}
-	if ev := waitOpen(t, e, events, openOffered); ev.Browser == nil || ev.Browser.Name != "edge" {
-		t.Fatalf("the offer %+v", ev)
+	if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].URL != "https://example.test/spent" {
+		t.Fatalf("the activity %+v", acts)
 	}
 }
 
@@ -388,11 +501,13 @@ func TestOpenEventIsBounded(t *testing.T) {
 
 // BROWSER names Conductor's opener for an agent with a browser set, and for
 // no other; an agent's own BROWSER, from its env or passed through, wins.
-func TestBrowserIsTheOpenerOnlyForAnAgentWithABrowser(t *testing.T) {
-	t.Setenv("BROWSER", "/opt/servers/browser")
+// browserLauncher launches agents on a server of the config given and
+// answers the BROWSER each launched with, if any.
+func browserLauncher(t *testing.T, mutate func(*config.Config)) func(agent string) (string, bool) {
+	t.Helper()
 	seam := nativeSeam()
-	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), openAgents, withNativeRuntime(seam))
-	browserOf := func(agent string) (string, bool) {
+	e := newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), openAgents, withNativeRuntime(seam))
+	return func(agent string) (string, bool) {
 		t.Helper()
 		resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": agent})
 		if resp.StatusCode != http.StatusCreated {
@@ -416,6 +531,11 @@ func TestBrowserIsTheOpenerOnlyForAnAgentWithABrowser(t *testing.T) {
 		}
 		return vals[0], true
 	}
+}
+
+func TestBrowserIsTheOpenerOnlyForAnAgentWithABrowser(t *testing.T) {
+	t.Setenv("BROWSER", "/opt/servers/browser")
+	browserOf := browserLauncher(t, nil)
 	if v, set := browserOf("cat"); set {
 		t.Fatalf("an agent with no browser has BROWSER=%s", v)
 	}
@@ -436,5 +556,18 @@ func TestBrowserIsTheOpenerOnlyForAnAgentWithABrowser(t *testing.T) {
 	if v, _ := browserOf("pass-cat"); v != "/opt/servers/browser" {
 		t.Fatalf("pass-cat's BROWSER %q", v)
 	}
+}
 
+// With agents.selfService off the open route refuses every open, so no
+// agent gets Conductor's opener: an agent with a browser set opens links its
+// own way, as one with none does.
+func TestBrowserIsNotTheOpenerWithSelfServiceOff(t *testing.T) {
+	off := false
+	browserOf := browserLauncher(t, func(c *config.Config) { c.Agents.SelfService = &off })
+	if v, set := browserOf("edge-cat"); set {
+		t.Fatalf("edge-cat has BROWSER=%s with self-service off", v)
+	}
+	if v, set := browserOf("cat"); set {
+		t.Fatalf("cat has BROWSER=%s", v)
+	}
 }

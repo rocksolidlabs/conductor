@@ -61,15 +61,22 @@ const (
 )
 
 // The outcomes of an open: what the desktop app did (the first four), or
-// that it was offered in the workbench.
+// that it was offered in the workbench. The app tells OpenOffered too, for a
+// link it claimed and could not open (its bridge refused it), which the
+// server then offers in every workbench.
 const (
 	OpenedBrowser = "browser" // in the browser the agent's settings name
 	OpenedDefault = "default" // in the default browser: the agent names none
 	OpenedMissing = "missing" // in the default browser: the one named is not installed on that computer
 	OpenedFailed  = "failed"  // in the default browser: the one named did not start
-	OpenOffered   = "offered" // in the workbench: no desktop app took it
+	OpenOffered   = "offered" // in the workbench: no desktop app took it, or the one that did could not open it
 	OpenHanded    = "handed"  // to a desktop app, which has not said what became of it
 )
+
+// openUnopened is what open answers for a link the desktop app claimed and
+// could not open, offered since: the route answers OpenOffered, in words of
+// their own.
+const openUnopened = "unopened"
 
 // openEvent is the data of an `open` event.
 type openEvent struct {
@@ -173,6 +180,8 @@ func (d *openDesk) take(id string) (openEvent, int) {
 }
 
 // tell takes what the desktop app did with the open id it claimed, once.
+// missing and failed name the browser the agent's settings name: for a link
+// whose agent names none they are refused (400), as nothing could be missing.
 func (d *openDesk) tell(id, outcome string) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -182,6 +191,8 @@ func (d *openDesk) tell(id, outcome string) int {
 		return http.StatusNotFound
 	case !p.claimed || p.told:
 		return http.StatusConflict
+	case (outcome == OpenedMissing || outcome == OpenedFailed) && !p.ev.Browser.Named():
+		return http.StatusBadRequest
 	}
 	p.told = true
 	p.result <- outcome
@@ -212,17 +223,23 @@ func checkOpenURL(raw string) error {
 
 // openWords is what the tool and the activity entry say of an outcome.
 func openWords(outcome string, b *catalog.Browser) string {
+	named := "the browser named"
+	if b.Named() {
+		named = b.Name
+	}
 	switch outcome {
 	case OpenedBrowser:
 		return "opened in " + browserWords(b)
 	case OpenedDefault:
 		return "opened in the default browser"
 	case OpenedMissing:
-		return "opened in the default browser: " + b.Name + " is not installed on that computer"
+		return "opened in the default browser: " + named + " is not installed on that computer"
 	case OpenedFailed:
-		return "opened in the default browser: " + b.Name + " did not start"
+		return "opened in the default browser: " + named + " did not start"
 	case OpenHanded:
 		return "handed to the desktop app, which has not said what became of it"
+	case openUnopened:
+		return "offered in the workbench: the desktop app could not open it"
 	}
 	return "offered in the workbench: no desktop app took it"
 }
@@ -242,10 +259,12 @@ func browserWords(b *catalog.Browser) string {
 // name: POST /api/sessions/{id}/open {url}, 200 {outcome, browser, message}.
 // It takes the session's agent token or the workbench token, refuses a
 // hosted session, follows agents.selfService and opens selfOpensPerMinute a
-// minute, then 429 rate_limited. A managed run's attempt is never opened at
-// once, nobody may be watching: its links are offered. Each open is
-// recorded in the session's activity as an artifact entry with its URL and
-// what became of it.
+// minute, then 429 rate_limited. A managed run's attempt and a Brakeman turn
+// are never opened at once, nobody may be watching: their links are
+// offered. Each open is recorded in the session's activity as an artifact
+// entry with its URL and what became of it; the entry is the server's own,
+// bounded by the minute's opens, and spends none of the event bucket, so a
+// burst of the agent's events cannot leave an open unrecorded.
 func (s *Server) handleSelfOpen(w http.ResponseWriter, r *http.Request) {
 	local, ok := s.selfSession(w, r)
 	if !ok {
@@ -270,20 +289,24 @@ func (s *Server) handleSelfOpen(w http.ResponseWriter, r *http.Request) {
 		b := *a.Browser
 		browser = &b
 	}
-	managed := info.Crew != nil && info.Crew.Task != ""
+	managed := info.Crew != nil && (info.Crew.Task != "" || info.Crew.Brakeman != nil)
 	outcome, err := s.open(r.Context(), info.ID, in.URL, browser, managed)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "busy", err.Error())
 		return
 	}
 	msg := openWords(outcome, browser)
-	local.Record(session.ActivityEntry{Type: session.ActivityArtifact, Message: "link " + msg, URL: in.URL})
+	if outcome == openUnopened {
+		outcome = OpenOffered
+	}
+	local.RecordServer(session.ActivityEntry{Type: session.ActivityArtifact, Message: "link " + msg, URL: in.URL})
 	writeJSON(w, http.StatusOK, openReply{Outcome: outcome, Browser: browser, Message: msg})
 }
 
 // open tells the workbenches of the link and waits for a desktop app to
 // claim it and say what it did; unclaimed, managed, or with no desktop app
-// streaming the events, it is offered.
+// streaming the events, it is offered, and so is a link the app that claimed
+// it could not open (openUnopened).
 func (s *Server) open(ctx context.Context, sessionID, link string, browser *catalog.Browser, managed bool) (string, error) {
 	ev := openEvent{ID: "op-" + strings.ToLower(rand.Text()[:16]), SessionID: sessionID, URL: link, Browser: browser, State: openPending}
 	if managed || s.events.desktopsStreaming() == 0 {
@@ -313,6 +336,11 @@ func (s *Server) open(ctx context.Context, sessionID, link string, browser *cata
 	defer resultWait.Stop()
 	select {
 	case outcome := <-p.result:
+		if outcome == OpenOffered {
+			ev.State = openOffered
+			s.events.open(ev)
+			return openUnopened, nil
+		}
 		return outcome, nil
 	case <-resultWait.C:
 	case <-ctx.Done():
@@ -338,6 +366,8 @@ func (s *Server) handleClaimOpen(w http.ResponseWriter, r *http.Request) {
 
 // handleOpenResult is what the desktop app did with an open it claimed:
 // POST /api/opens/{id}/result {outcome}, the workbench's token; once.
+// offered is a link it could not open, which every workbench is then
+// offered; missing and failed only for a link whose agent names a browser.
 func (s *Server) handleOpenResult(w http.ResponseWriter, r *http.Request) {
 	var in openResult
 	if err := decodeJSONLimit(w, r, &in, 1<<10); err != nil {
@@ -345,14 +375,16 @@ func (s *Server) handleOpenResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch in.Outcome {
-	case OpenedBrowser, OpenedDefault, OpenedMissing, OpenedFailed:
+	case OpenedBrowser, OpenedDefault, OpenedMissing, OpenedFailed, OpenOffered:
 	default:
-		writeError(w, http.StatusBadRequest, "invalid_request", "outcome must be browser, default, missing or failed")
+		writeError(w, http.StatusBadRequest, "invalid_request", "outcome must be browser, default, missing, failed or offered")
 		return
 	}
 	switch s.opens.tell(r.PathValue("id"), in.Outcome) {
 	case http.StatusOK:
 		w.WriteHeader(http.StatusNoContent)
+	case http.StatusBadRequest:
+		writeError(w, http.StatusBadRequest, "invalid_request", "missing and failed are for a link whose agent names a browser")
 	case http.StatusConflict:
 		writeError(w, http.StatusConflict, "open_taken", "the link was not claimed, or its outcome was told already")
 	default:
