@@ -392,7 +392,12 @@ func TestTheLaunchGoesToAnAdminOnly(t *testing.T) {
 	runID := e.launchCrew(t, "Env", map[string]any{"name": "a", "agentId": "envy", "prompt": "", "args": []string{}, "start": map[string]any{"when": "immediately"}})
 	sid := e.waitRunning(t, runID, "a")
 	t.Cleanup(func() { e.stopAndWait(sid) })
-	resp, src := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "sh", "args": []string{"-i", "it's"}, "yolo": true})
+	// An agent that waits whatever its arguments: a session that ended would take its links with it.
+	echo := agentBody("echo")
+	echo["command"] = argsScript
+	echo["allowArgs"] = true
+	e.save(echo)
+	resp, src := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "echo", "args": []string{"-i", "it's"}, "yolo": true})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("launch: %d %v", resp.StatusCode, src)
 	}
@@ -401,7 +406,7 @@ func TestTheLaunchGoesToAnAdminOnly(t *testing.T) {
 
 	_, out := e.do("GET", "/api/sessions/"+id, adminToken, nil)
 	launch, _ := out["launch"].(map[string]any)
-	if launch == nil || launch["agentId"] != "sh" || launch["cwd"] != e.root || launch["yolo"] != true || len(launch) != 4 {
+	if launch == nil || launch["agentId"] != "echo" || launch["cwd"] != e.root || launch["yolo"] != true || len(launch) != 4 {
 		t.Fatalf("launch %v", out)
 	}
 	if args := launch["args"].([]any); len(args) != 2 || args[0] != "-i" || args[1] != "it's" {
@@ -414,7 +419,10 @@ func TestTheLaunchGoesToAnAdminOnly(t *testing.T) {
 		t.Fatalf("member's launch %v", out)
 	}
 	// A link's holder reads the session without it.
-	_, link := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "control"})
+	resp, link := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "control"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("link: %d %v", resp.StatusCode, link)
+	}
 	resp, out = e.do("GET", "/api/sessions/"+id, link["token"].(string), nil)
 	if resp.StatusCode != http.StatusOK || out["session"] == nil || out["launch"] != nil {
 		t.Fatalf("link: %d %v", resp.StatusCode, out)
