@@ -98,6 +98,8 @@ type Server struct {
 	// of one conversation at once make one session (#126). Under resumingMu.
 	resumingMu sync.Mutex
 	resuming   map[string]struct{}
+	// cloneNames holds the names clones are being made under (#434).
+	cloneNames cloneNames
 	// recordMarks are the continuations of records resumed (source to
 	// continuation) whose mark on the record (ResumedBy) could not be
 	// written: the claim stands in memory, a second resume answering the
@@ -716,6 +718,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.requireAdmin(s.handleDeleteSession))
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.launching(s.handleRenameSession))
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.launching(s.handleResumeSession))
+	mux.HandleFunc("POST /api/sessions/{id}/clone", s.launching(s.handleCloneSession))
 	mux.HandleFunc("GET /api/sessions/{id}/links", s.requireAdmin(s.handleListLinks))
 	mux.HandleFunc("POST /api/sessions/{id}/links", s.requireAdmin(s.handleCreateLink))
 	mux.HandleFunc("POST /api/sessions/{id}/paste", s.requireAdmin(s.handlePaste))

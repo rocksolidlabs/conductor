@@ -601,6 +601,11 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"session": d.Info(), "role": p.role(id)}
 	if p.admin {
 		out["links"] = s.sessionLinks(id, d)
+		// What a clone takes by default (#434): an admin's alone, and never
+		// the launch's environment.
+		if local, ok := d.(*session.Local); ok {
+			out["launch"] = launchOf(local.Launched())
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
