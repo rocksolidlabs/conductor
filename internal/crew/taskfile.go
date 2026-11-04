@@ -626,7 +626,7 @@ func taskMarkdown(f TaskFile) string {
 	if len(f.Checks) > 0 {
 		b.WriteString("## Checks\n\nAfter you submit, Conductor runs these in a fresh checkout of your result commit. Each must exit 0 without changing tracked files:\n\n")
 		for _, ch := range f.Checks {
-			fmt.Fprintf(&b, "- %s: `%s`", ch.ID, strings.Join(ch.Argv, " "))
+			fmt.Fprintf(&b, "- %s: `%s`", ch.ID, shellArgv(ch.Argv))
 			if ch.TimeoutSeconds > 0 {
 				fmt.Fprintf(&b, " (%ds)", ch.TimeoutSeconds)
 			}
@@ -739,6 +739,37 @@ func writeContext(b *strings.Builder, blocks []TaskContext) {
 		body := strings.TrimSuffix(c.Body, "\n")
 		fmt.Fprintf(b, "%s\n%s\n%s\n\n", fence, body, fence)
 	}
+}
+
+// shellArgv is an argv as one line a POSIX shell would read back as the
+// same words, so that where each argument ends is plain to the agent
+// reading task.md: an element made only of characters no shell treats
+// specially stands as it is, any other (a space, a quote, nothing at all)
+// goes in single quotes, each single quote in it ending the quotes, escaped
+// with a backslash and the quotes opened again. A check runs as its argv
+// (internal/proc), never through a shell: the quoting is only how the line
+// is read.
+func shellArgv(argv []string) string {
+	words := make([]string, len(argv))
+	for i, a := range argv {
+		words[i] = shellWord(a)
+	}
+	return strings.Join(words, " ")
+}
+
+// shellWord is one element of shellArgv's line.
+func shellWord(s string) string {
+	plain := s != ""
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("/._-+,:@%=", r)) {
+			plain = false
+			break
+		}
+	}
+	if plain {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // longestBacktickRun is the length of the longest run of backticks in s.
