@@ -5625,6 +5625,40 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   move); web `useDesktopZoom.test.ts` and `desktop.test.ts`; Playwright
   `zoom.spec.ts` with a stub bridge. Not yet seen in the installed app on
   Windows or macOS.
+- **An agent's links open in the browser its settings name (#436,
+  2026-11-04).** The owner asked on 2026-10-30 for an agent's links,
+  artifacts above all, to open in the browser of that agent's account: two
+  accounts of one service, each signed in to its own browser, each run as
+  its own agent (a clone with its own `CLAUDE_CONFIG_DIR`, #291). A catalog
+  agent takes `browser` `{name, profile?}` (chrome, edge, firefox, brave or
+  safari; a Chromium profile directory for the first, second and fourth),
+  kept by an override and a clone that leave it out, `{}` the default over
+  a replaced agent's; the Agents page's editor has **Links open in** and
+  **Profile**, the browsers the desktop app found marked. `conductor open
+  <url>`, the MCP tool `open_url` and, for an agent with a browser set and no
+  `BROWSER` of its own, Conductor's opener as `BROWSER` (a script of one
+  path, no space or colon, that hands its argument to `conductor open`) all
+  reach `POST /api/sessions/{id}/open` (the session's token, never a hosted
+  session, `agents.selfService`, an http(s) URL of at most 2 KiB, ten a
+  minute). The server starts no browser: an `open` event on the admins'
+  stream is claimed by the desktop app's page (the first claim wins, one
+  tab), which starts the named browser on its own computer through
+  `desktop/src/browsers.ts` (argv, no shell, `.bat` and `.cmd` refused,
+  `open -a` on macOS, the default browser when none is named or found) and
+  says what became of it; the agent's call answers in one line. With no app
+  streaming, after 10 s unclaimed, or from a managed run's attempt, the link
+  is offered in a toast with Open. Each open is an `artifact` activity
+  entry. Claude Code 2.1.318 runs `$BROWSER` with the link as its one
+  argument when it opens a link on Linux, and Codex 0.163.0 bundles Rust's
+  `webbrowser`, which reads `BROWSER` on Linux; both read from their
+  binaries, not checked live, and not on macOS. The workbench's own link
+  clicks (decision 8 of the issue) are not part of this change. Tests: Go
+  (`internal/catalog` browser, `internal/api` opens and the clone route,
+  `internal/agents` the opener, `internal/cli` the tool, the command and
+  Codex's `env_vars`), vitest (`agentForm`, `opens`), the desktop suite
+  (`browsers.test.ts`, `ipc-open.test.ts`) and Playwright
+  `open-url.spec.ts` with a stub bridge. Not yet seen in the installed app on
+  Windows, macOS or Linux.
 - **A stopped run is recorded as stopped.** Stopping a run ends its members'
   sessions first, and the last one ending recorded the run as finished on a
   goroutine racing the stop's own record: about one stop in twenty kept
