@@ -277,6 +277,29 @@ open deferred item from rounds 1 and 2, then the features below.
   directory is a run's worktree (`.conductor/worktrees/`), where two agents
   then share one working tree. Conductor makes and removes no worktree for a
   clone.
+- **The terminal's collapse and Preview plan (#432).** With a file open, the
+  editor's tab strip has Collapse the terminal beside Terminal only, its
+  mirror (`data-editor-collapse-terminal`, pressed while on), and the session
+  page's palette a row beside Fold, Collapse the terminal or Bring the
+  terminal back. Pressed, the editor takes the column and the terminal folds
+  to the bar a phone shows at its foot, saying the attention's words or the
+  agent's name, stacked or side by side; the bar or the button again brings
+  it back with the layout and the split it had. Only the person collapses
+  it: opening a file, Open plan and Preview plan never do. The collapse is
+  `collapsed` on the page's `TabsState` (`web/app/utils/editorTabs.ts`), so
+  it lasts the page and nothing keeps it per browser; T and Alt+T fold the
+  editor as ever and clear it, as the last tab's close does. Collapsed, the
+  terminal stays mounted and connected and asks no resize, its pane having
+  no height, and fits its pane again as it comes back. While a question
+  waits the reply bar stays under the folded terminal's bar, a phone's too,
+  which hid it before. A phone, where the terminal folds by itself, is
+  offered neither the button nor the row. Beside Open plan the reply bar
+  offers Preview plan (the eye of the editor's Preview), on the session
+  page, the Yard's focused tile and a join page: it opens the plan's tab, or
+  brings it to the front, rendered whatever it showed, unfolds the editor
+  and gives the preview the focus (`openPreview`), the terminal left as it
+  was; Source or Alt+P shows the editable source. Below `sm` both plan
+  buttons are icons alone. No key was added.
 - **Example crews.** `conductor serve --examples` (env `CONDUCTOR_EXAMPLES` set
   to `1` or `true`) seeds example crews once: ids `example-todo-app`,
   `example-test-fixer`, `example-docs-writer`, `example-dependency-upgrade`; a
