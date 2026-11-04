@@ -697,10 +697,15 @@ the full sidebar on Exited. Every shape has a tooltip naming it in words
 exited"). The rail keeps the mark, Launch, a search button that opens the
 command palette, the pages (the Yard's count as an amber chip) and
 the header's two menus. The panel button at the bottom of the rail brings the
-full sidebar back, as does **Ctrl+B**. The mode and the full sidebar's
-width are remembered per browser (localStorage keys `conductor.sidebar.mode`
-and `conductor.sidebar.size`; a hidden sidebar from an earlier version becomes
-the rail). On a phone the list is the home screen, not a drawer (`/sessions`):
+full sidebar back, as does **Ctrl+B**. The full sidebar opens at its
+narrowest, 12.5 rem (200 px) on every screen; drag its right edge to widen
+it, up to 26 % of the window, and on to the window's left edge for the rail;
+a double-click on the edge returns it to 200 px, and a narrower window keeps
+it within that window's bounds. The mode and the full sidebar's width are
+remembered per browser (localStorage keys `conductor.sidebar.mode` and
+`conductor.sidebar.width`, in rem; a hidden sidebar from an earlier version
+becomes the rail, and a width an earlier version saved, under
+`conductor.sidebar.size`, is dropped once). On a phone the list is the home screen, not a drawer (`/sessions`):
 the filter on top, prompts answered in place with full-width buttons, a row
 opening its page and **Back** returning to the list; a long press on a row
 opens its actions as a sheet (Open, Share…, Show in the Yard, Stop…; a run's
@@ -1792,8 +1797,12 @@ change, which the save's toast then says; **Open in browser** opens the same ser
 in. On Windows the server runs inside your WSL 2 distribution (the app sets
 it up on first run; the agents are the ones installed there). While the
 server starts, a small splash shows the version and what the app is doing.
-Ctrl+= and Ctrl+- (Cmd on macOS) zoom the workbench, Ctrl+0 resets it, and
-the app remembers the level.
+Ctrl+= and Ctrl+- (Cmd on macOS) zoom the workbench, Ctrl+0 or View ›
+**Reset Zoom to 100%** resets it, and the app remembers the level. Each
+move shows the new level in the workbench for a moment ("110%", or "249%,
+the largest" at a bound), without taking the focus, and the View menu
+shows the level on a line of its own; a level other than 100% kept from
+before is said once as the app starts.
 The macOS, Windows and AppImage builds update themselves from the GitHub
 releases: the app checks on start and every six hours and downloads an
 update in the background, and the update installs when you quit. The app

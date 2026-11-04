@@ -243,6 +243,17 @@ open deferred item from rounds 1 and 2, then the features below.
   active). Clicking an avatar opens the session; the rail has an expand
   button; `meta+B` / Alt+B toggles rail and full width. The choice is
   persisted per browser as before. Narrow screens keep the slideover.
+- **Sidebar width (#437).** The full sidebar opens at its minimum, 12.5 rem
+  (200 px) on every screen, and a drag on its edge widens it up to 26 % of the
+  window, never below the minimum; a drag on toward the window's left edge
+  gives the rail, a double-click returns to the minimum. The bounds are
+  `SIDEBAR_SIZE` and `sidebarBounds` in `web/app/utils/sidebar.ts`; the
+  layout's `UDashboardGroup` works in rem. Nuxt UI clamps only during a drag,
+  so the drawn width is `SIDEBAR_WIDTH`, a CSS clamp of Nuxt UI's `--width` to
+  the same bounds, which holds as the window changes. The width is kept per
+  browser under `conductor.sidebar.width` (rem); the percent width kept before
+  under `conductor.sidebar.size` is removed on first read, so every browser
+  opens at the minimum once. Below lg nothing changed.
 - **Example crews.** `conductor serve --examples` (env `CONDUCTOR_EXAMPLES` set
   to `1` or `true`) seeds example crews once: ids `example-todo-app`,
   `example-test-fixer`, `example-docs-writer`, `example-dependency-upgrade`; a
@@ -322,7 +333,7 @@ open deferred item from rounds 1 and 2, then the features below.
   slideover) and at 1024 px; they were only looked at in headless Chromium.
 - The sidebar's width across a Nuxt UI upgrade. Nuxt UI 4.11.2 has no size
   model or event for `UDashboardSidebar`, so the width kept in localStorage
-  (`conductor.sidebar.size`) is read from the `--width` style on the sidebar's
+  (`conductor.sidebar.width`) is read from the `--width` style on the sidebar's
   root after a drag or a double-click, and the saved width starts it through
   `defaultSize`; the headless check of this passed at 4.11.2 only.
 - Wording: the crew members table says "After X idle" where the engine and the
@@ -5635,6 +5646,25 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   the field's text or, when empty, the server's default directory.
 - **Settings uses the whole width**: two columns of cards from `xl`, the
   save row under them.
+
+  Since #366 (in #362) one 48rem column, as two columns left a blank beside
+  every short card. Since #433 (2026-11-04) the desktop app's Settings fill
+  the panel's body up to 80rem, centered beyond: a navigation beside one
+  column of sections from `lg`, a sticky row of section links that scrolls
+  sideways below it, the section in view marked in forest with
+  `aria-current`. A setting is one row (label and description left, its
+  control right, at most 36rem) once the column is 48rem wide, a container
+  query since the sidebar resizes; stacked below that. The panel's body
+  scrolls, never the window. `/settings?section=<id>` (written with
+  `router.replace`) opens on a section once it has rendered; the ids are
+  `webrtc`, `switchyard`, `folders`, `running`, `agents`, `brakeman` and
+  `app`, kept stable, in `web/app/utils/settingsSections.ts`. A save that
+  restarts the server writes the section in view first, or none at the top,
+  so the window that follows the server lands where the person was. The
+  publishing notice's Settings opens `?section=switchyard`; every other way
+  in (the sidebar, the bottom bar, `G S`, `Alt+,`, the palette, the app
+  menu) opens at the top, on Settings too. In a browser the notice,
+  Brakeman and The app use the width, stacked, with no navigation.
 - **The splash** is a small frameless window shown as soon as Electron is
   ready, until the workbench window shows (or 20 s): the Conductor mark, the
   version, platform and Electron, what the app is doing (checking WSL,
@@ -5673,6 +5703,35 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   Ctrl+- and Ctrl+0 (Cmd on macOS) before the page sees them, and keeps the
   level in its settings, since the server's port, and with it Chromium's
   per-origin zoom, changes at every start.
+- **The zoom level shown as it changes (#431, 2026-11-04).** The owner
+  asked on 2026-10-30 for a reset to 100% and for the app to say the level.
+  The View menu's reset reads **Reset Zoom to 100%** (it was Actual Size;
+  still Ctrl+0 / Cmd+0), and a disabled line above it shows the level
+  (`Zoom: 110%`); the menu is built again after every move. Each move by key
+  or menu, one at a bound that changes nothing included, is sent to the
+  workbench windows of the server's origin (`conductor:zoom`, the bridge's
+  `onZoom`), which show it for 1.5 s in one indicator at the top right,
+  updated in place with its time restarted (`ZoomIndicator`,
+  `useDesktopZoom`): the percent, and "the largest" or "the smallest" at
+  249 % and 58 %. It is a polite live region that takes no focus and no
+  clicks, its fade off under `prefers-reduced-motion`, mounted in `app.vue`
+  so every page has it. A level other than 100% kept from before is said
+  once per start of the app, to the first page that asks (`zoom()`'s
+  `announce`, `ZoomStart`), not on each page load; a page told a move
+  before that answer keeps the move, and a move made before any page asked
+  (the splash showing) leaves the level to say. The percent has one
+  formula, `zoomPercent` in `desktop/src/zoom.ts` (`Math.round(100 *
+  1.2 ** level)`); the page shows what the app sends. A browser, and an app
+  whose bridge has no zoom event, render nothing. The stored level, its
+  bounds (−3 to 5) and its step (0.5) are unchanged. Tests: desktop
+  `zoom.test.ts` (every step's percent, the bounds, `ZoomStart`, and
+  `moveZoom`, main's move: at both bounds and to two workbench windows) and
+  `menu.test.ts` (the View menu's zoom items); the Electron smoke (the
+  menu's reset at 110%, the indicator's words and the level line after each
+  move); web `useDesktopZoom.test.ts` and `desktop.test.ts`; Playwright
+  `zoom.spec.ts` with a stub bridge (the 1.5 s read up to the fade's start,
+  and no transition under reduced motion). Not yet seen in the installed app on
+  Windows or macOS.
 - **A stopped run is recorded as stopped.** Stopping a run ends its members'
   sessions first, and the last one ending recorded the run as finished on a
   goroutine racing the stop's own record: about one stop in twenty kept

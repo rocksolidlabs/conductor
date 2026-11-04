@@ -4,6 +4,7 @@ import type { DesktopSettings } from './settings'
 import { SettingsSaver } from './save'
 import type { ServerSupervisor, ServerStatus } from './server'
 import type { IceStatus } from './firewall'
+import { zoomStatus, type ZoomStatus } from './zoom'
 
 export interface IpcDeps {
   origin: () => string
@@ -36,6 +37,8 @@ export interface IpcDeps {
    * nothing stops then.
    */
   installUpdate?: (version: string) => 'started' | 'gone' | 'busy'
+  /** The workbench's zoom now, and whether this page is the one to say a level kept from before (once per start, ZoomStart). */
+  zoom?: () => ZoomStatus & { announce: boolean }
 }
 
 /** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
@@ -71,6 +74,7 @@ export function registerIpc(d: IpcDeps): void {
     guard((_e, version) => (typeof version === 'string' && d.installUpdate?.(version)) || 'gone'),
   )
   ipcMain.handle('conductor:notice', guard(() => d.notice()))
+  ipcMain.handle('conductor:zoom', guard(() => d.zoom?.() ?? { ...zoomStatus(0), announce: false }))
   ipcMain.handle(
     'conductor:settings:set',
     guard((_e, patch) => saver.save({ get: d.settings.get, set: d.settings.set, restart: () => d.supervisor.restart(), posix: !!d.wsl?.() }, patch as Partial<DesktopSettings>)),

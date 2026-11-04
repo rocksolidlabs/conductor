@@ -81,15 +81,59 @@ test('the app opens the workbench on its own server and stops it on quit', async
       wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
       wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
     }, keyCode)
+  // Each move shows its level in the workbench (#431), whose live region keeps the words last shown (data-zoom-last: the indicator
+  // itself goes after 1.5 s, which a loaded machine could spend before a look), and in the View menu's level line, built again.
+  const menuItem = (prefix: string) =>
+    app.evaluate(({ Menu }, prefix) => {
+      const find = (items: Electron.MenuItem[]): Electron.MenuItem | undefined => {
+        for (const it of items) {
+          if (it.label.startsWith(prefix)) return it
+          const sub = it.submenu ? find(it.submenu.items) : undefined
+          if (sub) return sub
+        }
+      }
+      const item = find(Menu.getApplicationMenu()?.items ?? [])
+      return item ? { label: item.label, enabled: item.enabled } : null
+    }, prefix)
+  const shown = page.locator('[data-zoom-status]')
   await press('0')
   await expect.poll(level).toBe(0)
+  await expect(shown).toHaveAttribute('data-zoom-last', '100%')
+  expect(await menuItem('Zoom: ')).toEqual({ label: 'Zoom: 100%', enabled: false })
   await press('=')
   await expect.poll(level).toBe(0.5)
+  await expect(shown).toHaveAttribute('data-zoom-last', '110%')
+  await expect.poll(() => menuItem('Zoom: ')).toEqual({ label: 'Zoom: 110%', enabled: false })
   await press('-')
   await press('-')
   await expect.poll(level).toBe(-0.5)
+  await expect(shown).toHaveAttribute('data-zoom-last', '91%')
+  await expect.poll(() => menuItem('Zoom: ')).toEqual({ label: 'Zoom: 91%', enabled: false })
   await press('0')
   await expect.poll(level).toBe(0)
+  await expect(shown).toHaveAttribute('data-zoom-last', '100%')
+  await expect.poll(() => menuItem('Zoom: ')).toEqual({ label: 'Zoom: 100%', enabled: false })
+  // View › Reset Zoom to 100%, found as Restart server is and clicked at 110%, brings the level to 0 and says 100%.
+  await press('=')
+  await expect.poll(level).toBe(0.5)
+  await expect(shown).toHaveAttribute('data-zoom-last', '110%')
+  expect(await menuItem('Reset Zoom to 100%')).toEqual({ label: 'Reset Zoom to 100%', enabled: true })
+  expect(await menuItem('Actual Size')).toBeNull()
+  await app.evaluate(({ Menu }) => {
+    const find = (items: Electron.MenuItem[]): Electron.MenuItem | undefined => {
+      for (const it of items) {
+        if (it.label === 'Reset Zoom to 100%') return it
+        const sub = it.submenu ? find(it.submenu.items) : undefined
+        if (sub) return sub
+      }
+    }
+    const item = find(Menu.getApplicationMenu()?.items ?? [])
+    if (!item) throw new Error('no Reset Zoom to 100% in the menu')
+    item.click()
+  })
+  await expect.poll(level).toBe(0)
+  await expect(shown).toHaveAttribute('data-zoom-last', '100%')
+  await expect.poll(() => menuItem('Zoom: ')).toEqual({ label: 'Zoom: 100%', enabled: false })
   // Server log (the Server menu) opens a window that shows the server's log, the lines so far and then live: it was an empty dark box
   // (no preload, so no line reached the page), seen by the owner on Windows on 2026-10-06.
   await app.evaluate(({ Menu }) => {
