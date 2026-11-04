@@ -165,15 +165,26 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibility)
 })
 
-/** Saves the full sidebar's width (Nuxt UI's `--width` on its root, in rem) once a drag or a double-click on the handle has set it. */
-async function keepWidth() {
+/** The width Nuxt UI holds for the full sidebar (`--width` on its root, in rem); NaN when it holds none. */
+function heldWidth(): number {
+  return Number.parseFloat(sidebarRoot()?.style.getPropertyValue('--width') ?? '')
+}
+/**
+ * Saves the full sidebar's held width once a drag or a double-click on the handle has set it. After a press, `before` is the
+ * width held when it began: a press that moved nothing saves nothing, so a width dragged in a wider window, held while a
+ * narrower one draws it clamped, is not overwritten by the narrower window's maximum (#437).
+ */
+async function keepWidth(before?: number) {
   await nextTick()
   if (sidebar.rail.value) return
-  sidebar.resize(Number.parseFloat(sidebarRoot()?.style.getPropertyValue('--width') ?? ''))
+  const width = heldWidth()
+  if (before !== undefined && width === before) return
+  sidebar.resize(width)
 }
 /** A drag ends where the pointer is let go, anywhere on the page: Nuxt UI listens on the document, so does this. */
 function keepWidthAfter(end: 'mouseup' | 'touchend') {
-  document.addEventListener(end, keepWidth, { once: true })
+  const before = heldWidth()
+  document.addEventListener(end, () => void keepWidth(before), { once: true })
 }
 
 // A run page keeps the Crews page lit in the foot: a run is the Crews page's.

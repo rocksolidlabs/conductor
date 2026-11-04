@@ -4702,50 +4702,80 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   was fixed in it, and two unsigned merge commits were signed off by a
   force-push on the owner's word.
 
-  PR-14 (#471): this entry, the README's Plan, Launching, Runs, Closing
-  and Decisions paragraphs, the architecture's Dispatch and Crew runs
-  sections checked against what merged and completed, and the repository
-  map's `internal/dispatch` row.
+  PR-14 (#471, PR #585): this entry, the README's Plan, Launching, Runs,
+  Closing and Decisions paragraphs, the architecture's Dispatch and Crew
+  runs sections checked against what merged and completed, and the
+  repository map's `internal/dispatch` row. It left the by-hand checks
+  and the acceptance observation to the stream's live check, below.
 
-  **By hand: not run.** The plan's by-hand checks need real agents on the
-  owner's own subscriptions: Claude Code and Codex on the WSL box and
-  Codex on the Mac launched from a real ticket, each reading
-  `.conductor/ticket.md` and an image attachment and working from them; a
-  real review citing the criteria; a real pull request delivered; the
-  ticket page on a phone on the LAN. None of them ran for this entry:
-  starting the owner's agents spends the owner's subscriptions and meets
-  their startup screens, which are the owner's to answer, and the phone
-  is the owner's. So this PR leaves #471 open: the checks, with what each
-  showed, and the acceptance observation are recorded by a later docs PR
-  of the stream, which finishes it. What the specs show in their place,
-  with the e2e stub agents on Linux in CI: a ticket's revision proposed, approved with a
-  note and launched, the run under Runs and "Launched from" on its page;
-  the stub's committed file holding the first line it read from
-  `.conductor/ticket.md`; a check failing on its first run and the repair
-  at that result passing; a review asking for changes once; a receipt's
-  log hash the step log route's header; the run paused, the ticket edited
-  and the run unpaused with the next candidate still holding the
-  launch-time line; a question shown and answered with no reload; a
-  delivery naming the final candidate, verified, and the ticket closed
-  under acceptance, delivery and `verified`; the phone width one column.
+  **By hand: the live check (2026-11-04, #590).** Run on the WSL box
+  against main 04830267, with real agents on the owner's subscriptions:
+  Claude Code 2.1.316 as the builder and Codex 0.163.0 as the reviewer,
+  the versions the launch recorded. A project closing under acceptance,
+  delivery and `verified`; a ticket with a description, criteria, an
+  owner and a comment; a saved crew of a work task with two checks (`grep
+  -qx "hello ds2" GREETING.txt`, and a script that fails its first run)
+  and a review task by the other agent. Revision 1 was proposed with a
+  source reference (`README.md:1-2`), the comment handed over and a note,
+  approved with a note, and launched from the ticket; the title and the
+  description were edited 11 s after the launch, while attempt 1 ran.
+  Attempt 1 failed the script's check (exit 1), attempt 2, made after the
+  edit, passed both, the review approved with one nit, and the run
+  succeeded in 3 min 15 s. Seen to hold: the ticket shows its approved
+  plan (stale after the edit, its remedy Approve again); its launch and
+  run, with what changed since; each exact candidate with the receipts on
+  its commit, where each ran and the review's finding, each step log's
+  SHA-256 the receipt's and the step log route's header; a delivery of a
+  running attempt and of the review's candidate refused, of the failed
+  `build#1` recorded unverified with the check that failed, of `build#2`
+  verified; Done refused for the missing acceptance, then accepted and
+  closed; and the edit rewrote nothing of the run (the launch, its
+  package and its digest the same before the edit, after it and after
+  the close; attempt 2's `ticket.md` byte for byte attempt 1's, the
+  ticket at its revision 1). Also seen: the launch's op id sent again
+  answered the same launch, with no second run, and a launch on the done
+  ticket refused ("reopen it to launch"). It found four display defects,
+  fixed in the stream's fix PR below. Not exercised: an image attachment
+  (the ticket had none), a pause (the edit was made while attempt 1 ran),
+  a follow-up launch refused until revision 1 is approved again, a real
+  pull request (the deliveries named placeholder URLs), Codex on the Mac,
+  the ticket page on a phone on the LAN, hand-linked runs, continuations
+  and contested chains, withdrawals, accept-anyway, candidates past the
+  sixth, and a server restart with a launch pending. What the specs show
+  besides, with the e2e stub agents on Linux in CI: a ticket's revision
+  proposed, approved with a note and launched, the run under Runs and
+  "Launched from" on its page; the stub's committed file holding the
+  first line it read from `.conductor/ticket.md`; a check failing on its
+  first run and the repair at that result passing; a review asking for
+  changes once; a receipt's log hash the step log route's header; the
+  run paused, the ticket edited and the run unpaused with the next
+  candidate still holding the launch-time line; a question shown and
+  answered with no reload; a delivery naming the final candidate,
+  verified, and the ticket closed under acceptance, delivery and
+  `verified`; a finished run on a done ticket offering Revise and no
+  follow-up; the phone width one column.
 
-  **The acceptance observation: pending.** The item is done when, on the
-  owner's `conductor serve` with real agents on the owner's own
-  subscriptions, a real ticket with acceptance criteria, an owner, an
-  image attachment and a source reference is planned with a crew of a
-  work task with two checks (one failing on its first run) and a review
-  task by the other agent, approved with a note and launched; paused
-  mid-run, its description edited and a comment added, unpaused, with the
-  next attempt's `ticket.md` the one launched and a follow-up launch
-  refused until revision 1 is approved again; and after the run the
-  ticket page shows every run, each candidate with its receipts (each log
-  hash the step log route's), the review's findings and the repair, a
-  pull request from the final candidate's branch delivered and verified,
-  and the ticket closed under acceptance, delivery and `verified` (the
-  plan's Acceptance). The owner's word that the page answered what was
+  The fix PR (#590 and #591, PR #595): a handed-over comment in the Plan
+  and in the proposal dialog named by its display name, not the account;
+  "1 note" and "1 finding" on the run card and the run page's tasks view,
+  and in Yardmaster's own words (a run's log, a reopened task's reason, a
+  submission receipt, #591); a check's argv in `task.md` written with
+  shell quoting where an element needs it (`grep -qx 'hello ds2'
+  GREETING.txt`; `task.json` keeps the argv, and the check still runs as
+  its argv, never through a shell); and the changed-since banner saying
+  what the run does by its state (it keeps working only while it goes),
+  offering no follow-up on a closed ticket. Review round 1 made a failed
+  launch's banner say no run worked from what it was given, added the
+  Playwright case of a finished run on a done ticket, and wrote this
+  record.
+
+  **The acceptance observation: the owner's word pending.** The live
+  check above observed each clause of the boundary on the WSL box with
+  the owner's agents; the parts of the observation it did not exercise
+  are named there. The owner's word that the page answered what was
   asked, what was authorized, what ran, what was checked on which commit
-  and what was delivered goes here, with what was missing, slow or
-  wrong, in a later docs PR of the stream.
+  and what was delivered, with what was missing, slow or wrong, goes
+  here when the owner gives it.
 - **Governance: contributing under the DCO, the marks' owner, security
   reporting and the open-core pull request checklist (Program item B; #386
   and #387, 2026-10-28).** The plan is `docs/plans/governance.md` (PR #383).

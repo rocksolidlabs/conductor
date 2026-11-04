@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import type { LaunchChanges, LaunchSummary } from '~/composables/useDispatch'
+import type { LaunchChanges, LaunchSummary, TicketStatus } from '~/composables/useDispatch'
 import type { HistoryEntry } from '~/utils/dispatch'
-import { changedSinceWords, changesSinceNote } from '~/utils/dispatchEvidence'
-import { revisionTag } from '~/utils/dispatchPlans'
+import { changedSinceBanner, changedSinceWords, changesSinceNote } from '~/utils/dispatchEvidence'
+import type { RunState } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
 
 /**
  * A launched run whose ticket changed after it launched (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11): which of
  * the title, the description and the acceptance criteria changed, and how many comments came since (the launch's `changed`); the
- * history between the launch and now in the history's own words, or as far as it is read, saying so; that the run keeps working from
- * what it was given; and Revise (a new plan revision) and Launch a follow-up (which needs the approval to hold again), never "update the
- * run": an edit of the ticket never rewrites a run in flight.
+ * history between the launch and now in the history's own words, or as far as it is read, saying so; what the run does with what it was
+ * given, by its state (it keeps working only while it goes, #590); and Revise (a new plan revision) and Launch a follow-up (which needs
+ * the approval to hold again; not offered on a closed ticket, which launches nothing until it is reopened), never "update the run": an
+ * edit of the ticket never rewrites a run.
  */
 const props = defineProps<{
   launch: LaunchSummary
@@ -20,12 +21,17 @@ const props = defineProps<{
   /** Whether the history has later rows not read yet (it is read oldest first): the rows may stop short of now. */
   more: boolean
   locked: boolean
+  /** The ticket's status: a closed one (done or cancelled) launches nothing until it is reopened. */
+  status: TicketStatus
+  /** The run's state (launchRunState); undefined when nothing knows the run. */
+  state: RunState | undefined
   now: number
 }>()
 const emit = defineEmits<{ revise: []; followUp: [] }>()
 
 const words = computed(() => changedSinceWords(props.changed))
 const note = computed(() => changesSinceNote(props.rows, props.more))
+const banner = computed(() => changedSinceBanner(props.launch, props.changed, props.state, { status: props.status, locked: props.locked }))
 const open = ref(false)
 </script>
 
@@ -40,14 +46,11 @@ const open = ref(false)
     :data-changed-fields="changed.fields.join(',')"
     :data-changed-comments="changed.comments"
     :data-changed-rev="changed.rev"
+    :data-changed-run-state="state"
   >
     <template #description>
       <div class="flex flex-col gap-2">
-        <p>
-          The run keeps working from what it was given: the ticket at its revision {{ launch.ticketRev }} and plan revision
-          {{ launch.planN }} ({{ revisionTag(launch.planN) }}). The ticket is at its revision {{ changed.rev }} now. A change that matters
-          is a new revision and a follow-up launch.
-        </p>
+        <p data-changed-text>{{ banner.text }}</p>
         <div class="flex flex-wrap items-center gap-2">
           <UButton
             :label="open ? 'Hide what changed' : 'What changed'"
@@ -59,10 +62,8 @@ const open = ref(false)
             data-changed-history-open
             @click="open = !open"
           />
-          <template v-if="!locked">
-            <UButton label="Revise" icon="i-lucide-file-pen-line" size="xs" color="neutral" variant="outline" data-changed-revise @click="emit('revise')" />
-            <UButton label="Launch a follow-up" icon="i-lucide-play" size="xs" color="neutral" variant="outline" data-changed-follow-up @click="emit('followUp')" />
-          </template>
+          <UButton v-if="banner.revise" label="Revise" icon="i-lucide-file-pen-line" size="xs" color="neutral" variant="outline" data-changed-revise @click="emit('revise')" />
+          <UButton v-if="banner.followUp" label="Launch a follow-up" icon="i-lucide-play" size="xs" color="neutral" variant="outline" data-changed-follow-up @click="emit('followUp')" />
         </div>
         <template v-if="open">
           <p v-if="note === 'unread'" class="text-xs text-muted" data-changed-history-note="unread">The history read so far ends before this launch: More history, below, reads on.</p>

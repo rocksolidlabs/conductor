@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { DispatchTicket, PlanBody } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
+import { handedCommentWords } from '~/utils/dispatch'
 import { argvLine, expectedChecks, resolvedArgv, shortCommit, yoloWords } from '~/utils/dispatchPlans'
 
 /**
@@ -22,11 +23,7 @@ const agentOf = (id: string) => props.body.agents.find((a) => a.id === id)
 const agentName = (id: string) => props.agents.find((a) => a.id === id)?.name ?? id
 const tasksOf = (member: string) => (props.body.crew.tasks ?? []).filter((t) => t.member === member).map((t) => t.id)
 const attachmentName = (id: string) => props.ticket.attachments?.find((a) => a.id === id)?.name ?? 'a file since removed'
-function commentWords(id: string): string {
-  const c = props.ticket.comments?.find((x) => x.id === id)
-  if (!c) return 'a comment not among the latest read'
-  return `#${c.n} by ${c.author || c.by || 'someone'}${c.deletedAt ? ' (deleted since)' : ''}`
-}
+const commentWords = (id: string) => handedCommentWords(props.ticket.comments, id)
 const manifestWords = computed(() => {
   const m = props.body.crew.manifest
   if (!m) return ''
