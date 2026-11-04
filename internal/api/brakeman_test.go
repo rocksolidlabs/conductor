@@ -1109,7 +1109,7 @@ func TestBrakemansTokenReachesNoAdminRoute(t *testing.T) {
 	own := map[string]bool{}
 	for _, p := range []string{"GET brakeman/request", "POST brakeman/brief", "GET ticket", "POST ticket/comments", "GET guide", "GET task",
 		"POST task/result", "POST messages", "GET inbox", "POST inbox/ack", "POST task/blocked", "POST task/checkpoint", "POST crew",
-		"POST run/members", "GET run", "POST links/agent", "GET files", "POST attention", "POST events"} {
+		"POST run/members", "GET run", "POST links/agent", "POST open", "GET files", "POST attention", "POST events"} {
 		method, path, _ := strings.Cut(p, " ")
 		own[method+" /api/sessions/{id}/"+path] = true
 	}
