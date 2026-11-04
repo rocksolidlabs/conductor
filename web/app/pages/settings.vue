@@ -255,12 +255,14 @@ onMounted(() => {
   b.addEventListener('scroll', onScroll, { passive: true })
   for (const e of UNPIN) b.addEventListener(e, unpin, { passive: true })
   // The sections change size as what they wait on answers: the section held in view goes back to its place, and the mark follows.
+  // The body too: a window made shorter changes its visible part alone, with no scroll and no change to the sections.
   resized = new ResizeObserver(() => {
     if (pinned) align(pinned)
     spy()
   })
   const sectionsEl = layout.value?.querySelector('[data-settings-sections]')
   if (sectionsEl) resized.observe(sectionsEl)
+  resized.observe(b)
   spy()
 })
 onBeforeUnmount(() => {

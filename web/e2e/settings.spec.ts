@@ -841,6 +841,37 @@ test('a scroll by hand after a choice moves the mark to the section in view', as
   await expect(page.locator('[data-settings-nav-entry][aria-current]')).toHaveCount(1)
 })
 
+test('a window made shorter moves the mark to the section in view, and a restart save writes that one', async ({ page, state }) => {
+  // A tall window, Yolo changed at the top, then the body scrolled by hand to its end: The app, the last section, is marked.
+  await page.setViewportSize({ width: 1440, height: 1400 })
+  await standIn(page, state, 'linux')
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  await page.locator('[data-yolo-switch]').click()
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  const sections = await boxOf(page.locator('[data-settings-sections]'))
+  await page.mouse.move(sections.left + sections.width / 2, 450)
+  await page.mouse.wheel(0, 100000)
+  await expect.poll(async () => body(page).evaluate((b) => b.scrollTop > 0 && b.scrollTop + b.clientHeight >= b.scrollHeight - 1)).toBe(true)
+  await expect(page.locator('[data-settings-nav-entry="app"]')).toHaveAttribute('aria-current', 'true')
+  // Only the height changes: the sections keep their size and the body its scroll, so no scroll event and no change to the
+  // sections says the body is shorter (#433's review). The section a quarter of the way down the visible body is the one marked.
+  const before = (await layoutOf(page)).body.scrollTop
+  await page.setViewportSize({ width: 1440, height: 700 })
+  await expect.poll(async () => (await layoutOf(page)).body.clientHeight).toBeLessThan(700)
+  const l = await layoutOf(page)
+  expect(l.body.scrollTop).toBe(before)
+  const line = l.body.top + l.body.clientHeight / 4
+  const expected = l.sections.filter((s) => s.top <= line).at(-1)!.id
+  expect(expected).not.toBe('app')
+  await expect(page.locator(`[data-settings-nav-entry="${expected}"]`)).toHaveAttribute('aria-current', 'true')
+  await expect(page.locator('[data-settings-nav-entry][aria-current]')).toHaveCount(1)
+  // The save bar is outside the body, so the click scrolls nothing: the restart's address names the section in view.
+  await page.locator('[data-save-settings]').click()
+  await expect(page.getByText('Saved; the server restarted', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`/settings\\?section=${expected}$`))
+})
+
 test('Settings chosen again in the same page goes back to the top, from a section or from a scroll by hand', async ({ page, state }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await standIn(page, state, 'linux')
