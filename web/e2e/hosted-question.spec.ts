@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { endHosted, expect, hostedName, hostedSession, test } from './fixtures'
 import { serverBinary, stubBash, stubPath } from './server'
@@ -18,17 +18,16 @@ test.afterAll(async ({ api }) => {
 })
 
 test("a hosted Codex's command approval is in the sidebar's row with its choices, answered from the page", async ({ page, api, state }) => {
-  // No startup question in the way: those are the trust spec's.
+  // No startup question in the way: those are the trust spec's. The session runs in the home, as the other hosted specs' do: a
+  // folder more in the root would push the root's own repo out of the folder picker's 50 entries (settings.spec.ts).
   for (const m of ['stub-hooks-review', 'stub-background', 'stub-update']) rmSync(join(state.home, '.codex', m), { force: true })
   const run = randomUUID()
-  const cwd = join(state.root, `hosted-question-${run}`)
-  mkdirSync(cwd, { recursive: true })
   const logFile = join(state.root, `hosted-question-${run}.log`)
   const log = openSync(logFile, 'a')
   hostName = hostedName('hosted-question')
   const agentSession = randomUUID()
   const bash = stubBash()
-  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', hostName, '--agent', 'codex', '--cwd', cwd, '--relay-only', '--no-local', '--', bash.command, stubPath, '--session-id', agentSession], {
+  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', hostName, '--agent', 'codex', '--cwd', state.home, '--relay-only', '--no-local', '--', bash.command, stubPath, '--session-id', agentSession], {
     env: { PATH: bash.path, LANG: 'C.UTF-8', HOME: state.home, CONDUCTOR_BIN: serverBinary(), STUB_IDENTITY: 'codex', STUB_REPORT: 'codex' },
     stdio: ['ignore', log, log],
   })
