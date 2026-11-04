@@ -5603,6 +5603,25 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   the field's text or, when empty, the server's default directory.
 - **Settings uses the whole width**: two columns of cards from `xl`, the
   save row under them.
+
+  Since #366 (in #362) one 48rem column, as two columns left a blank beside
+  every short card. Since #433 (2026-11-04) the desktop app's Settings fill
+  the panel's body up to 80rem, centered beyond: a navigation beside one
+  column of sections from `lg`, a sticky row of section links that scrolls
+  sideways below it, the section in view marked in forest with
+  `aria-current`. A setting is one row (label and description left, its
+  control right, at most 36rem) once the column is 48rem wide, a container
+  query since the sidebar resizes; stacked below that. The panel's body
+  scrolls, never the window. `/settings?section=<id>` (written with
+  `router.replace`) opens on a section once it has rendered; the ids are
+  `webrtc`, `switchyard`, `folders`, `running`, `agents`, `brakeman` and
+  `app`, kept stable, in `web/app/utils/settingsSections.ts`. A save that
+  restarts the server writes the section in view first, or none at the top,
+  so the window that follows the server lands where the person was. The
+  publishing notice's Settings opens `?section=switchyard`; every other way
+  in (the sidebar, the bottom bar, `G S`, `Alt+,`, the palette, the app
+  menu) opens at the top, on Settings too. In a browser the notice,
+  Brakeman and The app use the width, stacked, with no navigation.
 - **The splash** is a small frameless window shown as soon as Electron is
   ready, until the workbench window shows (or 20 s): the Conductor mark, the
   version, platform and Electron, what the app is doing (checking WSL,
