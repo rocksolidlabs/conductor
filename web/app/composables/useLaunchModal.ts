@@ -7,7 +7,7 @@ export interface LaunchPrefill {
   argv?: string[]
   yolo?: boolean
   /** Clone with options… (#434): the dialog is titled for the clone of this session, and clones it. */
-  clone?: { id: string; name: string; attempt: boolean }
+  clone?: { id: string; name: string; attempt: boolean; /** The source's directory as launched: a clone with the field blank runs there. */ cwd: string }
 }
 
 /** Open state of the Launch agent dialog, shared by the sidebar button, the N shortcut and the palette; `prefill` is taken as it opens. */

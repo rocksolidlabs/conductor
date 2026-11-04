@@ -67,7 +67,7 @@ export function clonePrefill(s: Pick<SessionInfo, 'id' | 'name' | 'crew'>, launc
     args: argsText(launch.args),
     argv: [...launch.args],
     yolo: launch.yolo === true,
-    clone: { id: s.id, name: s.name, attempt: isAttempt(s) },
+    clone: { id: s.id, name: s.name, attempt: isAttempt(s), cwd: launch.cwd },
   }
 }
 
@@ -91,6 +91,25 @@ export function cloneLaunchArgs(o: { shown: boolean; line: string; recorded?: { 
 /** A clone's directory as sent: the field exactly as it holds it (a name may end in a space), left out only when blank. */
 export function cloneCwd(line: string): string | undefined {
   return line.trim() ? line : undefined
+}
+
+/**
+ * The directory a clone launches in (#434 review round 2): the field's, or the source's own when the field is blank and the server
+ * takes the source's. The run's-worktree warning is judged by it, so a field cleared on a worktree's clone keeps the warning.
+ */
+export function cloneLaunchCwd(line: string, source: string): string {
+  return cloneCwd(line) ?? source
+}
+
+/**
+ * Hands out Clone with options…'s reads in the order they are asked (#434 review round 2): `next()` before a read, `current(n)`
+ * once it has answered. A read asked earlier that answers after a later one is superseded, and opens nothing.
+ */
+export function requestOrder(count: { value: number }) {
+  return {
+    next: () => ++count.value,
+    current: (n: number) => n === count.value,
+  }
 }
 
 /**
