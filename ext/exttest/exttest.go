@@ -180,12 +180,12 @@ var byKind = []struct {
 	{ext.KindEntitlements, as(func(t T, n *Network, e ext.EntitlementSource, _ *runConfig) { Entitlements(t, n, e) })},
 	{ext.KindMedia, as(func(t T, n *Network, m ext.MediaRoomProvider, _ *runConfig) { Media(t, n, m) })},
 	{ext.KindRuntime, as(func(t T, n *Network, r ext.Runtime, c *runConfig) {
-		w, ok := runtimeStatic(t, n, r)
+		name, w, ok := runtimeStatic(t, n, r)
 		switch {
 		case c.runtime != nil:
 			RuntimeExec(t, r, *c.runtime)
 		case ok && w != ext.WhereNative:
-			t.Errorf("exttest: RunAll: the Runtime %q answers the Where %q and RunAll was given no WithRuntimeCase: a Runtime that is not the native one is checked starting processes too (RuntimeExec), with the helper its case names", r.Name(), w)
+			t.Errorf("exttest: RunAll: the Runtime %q answers the Where %q and RunAll was given no WithRuntimeCase: a Runtime that is not the native one is checked starting processes too (RuntimeExec), with the helper its case names", name, w)
 		}
 	})},
 }

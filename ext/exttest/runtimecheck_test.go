@@ -2,11 +2,14 @@ package exttest
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,6 +95,32 @@ type broken struct {
 	stopNoCtx bool            // a Terminal's Stop ignores its context
 	serveBg   bool            // Serve looks at its context once, then serves under none
 	leak      context.Context // Run lets its Started's panic go, the process running under leak
+	// asyncStop, when set, makes a Terminal's Stop answer nil at once and
+	// stop the process on a goroutine of its own once asyncStop is closed;
+	// stops counts those goroutines.
+	asyncStop chan struct{}
+	stops     sync.WaitGroup
+	// ignoreTimeout makes Run ignore its Timeout (MaxCommandTimeout in its
+	// place) and honour its context; inFlight counts such Runs not yet
+	// returned.
+	ignoreTimeout bool
+	inFlight      atomic.Int32
+	// odd breaks one call of every Terminal or service: "panic M" makes M
+	// panic (M one of done, exit, read and stop, a Terminal's, or
+	// service-done); "block M" makes M wait on block, for the one the
+	// checks reach first, so the row runs out one Wait: the stop-asked
+	// Terminal's Done or Exit, the serve check's service's Done. A
+	// planted Stop panics once the real one has returned, so nothing is
+	// left running.
+	odd   string
+	block chan struct{}
+	// runPanics makes every Run panic before it starts anything.
+	runPanics bool
+	// both makes Serve hand back the service it started beside an error;
+	// services holds each one.
+	both     bool
+	mu       sync.Mutex
+	services []ext.ServiceProcess
 }
 
 func (b *broken) Name() string     { return "broken" }
@@ -115,7 +144,81 @@ func (b *broken) StartTerminal(ctx context.Context, s ext.TerminalSpec) (ext.Ter
 	if b.stopNoCtx && term != nil {
 		term = ctxlessStop{term}
 	}
+	if b.asyncStop != nil && term != nil {
+		term = laterStop{term, b}
+	}
+	if b.odd != "" && term != nil && (strings.HasPrefix(b.odd, "panic ") || s.Ref.Session == "exttest-stop-asked") {
+		term = oddTerminal{term, b.odd, b.block}
+	}
 	return term, err
+}
+
+// oddTerminal is a Terminal with one call broken, as its odd says
+// (broken's odd).
+type oddTerminal struct {
+	ext.Terminal
+	odd   string
+	block chan struct{}
+}
+
+func breaks(odd string, block chan struct{}, call string) {
+	switch odd {
+	case "panic " + call:
+		panic("exttest: a planted " + call)
+	case "block " + call:
+		<-block
+	}
+}
+
+func (t oddTerminal) Done() <-chan struct{} {
+	breaks(t.odd, t.block, "done")
+	return t.Terminal.Done()
+}
+
+func (t oddTerminal) Exit() ext.ExitStatus {
+	breaks(t.odd, t.block, "exit")
+	return t.Terminal.Exit()
+}
+
+func (t oddTerminal) Read(b []byte) (int, error) {
+	breaks(t.odd, t.block, "read")
+	return t.Terminal.Read(b)
+}
+
+func (t oddTerminal) Stop(ctx context.Context, grace time.Duration) error {
+	err := t.Terminal.Stop(ctx, grace)
+	breaks(t.odd, t.block, "stop")
+	return err
+}
+
+// oddService is a service whose Done is broken, as its odd says.
+type oddService struct {
+	ext.ServiceProcess
+	odd   string
+	block chan struct{}
+}
+
+func (s oddService) Done() <-chan struct{} {
+	breaks(s.odd, s.block, "service-done")
+	return s.ServiceProcess.Done()
+}
+
+// laterStop is a Terminal whose Stop answers nil before it has ended the
+// process: the real Stop runs on a goroutine once the broken's asyncStop is
+// closed.
+type laterStop struct {
+	ext.Terminal
+	b *broken
+}
+
+func (t laterStop) Stop(ctx context.Context, grace time.Duration) error {
+	t.b.stops.Add(1)
+	go func() {
+		defer t.b.stops.Done()
+		<-t.b.asyncStop
+		t.Terminal.Stop(ctx, grace)
+	}()
+	return nil
 }
 
 // ctxlessStop is a Terminal whose Stop waits out its grace whatever its
@@ -133,10 +236,28 @@ func (b *broken) Serve(ctx context.Context, s ext.CommandSpec) (ext.ServiceProce
 		}
 		ctx = context.Background()
 	}
-	return b.Runtime.Serve(ctx, s)
+	svc, err := b.Runtime.Serve(ctx, s)
+	if b.odd != "" && svc != nil && (strings.HasPrefix(b.odd, "panic ") || s.Ref.Run == "exttest-serve") {
+		svc = oddService{svc, b.odd, b.block}
+	}
+	if b.both && err == nil && svc != nil {
+		b.mu.Lock()
+		b.services = append(b.services, svc)
+		b.mu.Unlock()
+		err = errors.New("exttest: a service, and an error beside it")
+	}
+	return svc, err
 }
 
 func (b *broken) Run(ctx context.Context, s ext.CommandSpec) (res ext.CommandResult) {
+	if b.runPanics {
+		panic("exttest: a planted Run")
+	}
+	if b.ignoreTimeout {
+		s.Timeout = ext.MaxCommandTimeout
+		b.inFlight.Add(1)
+		defer b.inFlight.Add(-1)
+	}
 	if b.noStarted {
 		s.Started = nil
 	}
@@ -209,8 +330,24 @@ func TestRunAllChecksTheRuntime(t *testing.T) {
 		{"a panic swallowed", &broken{swallow: true}, []string{"Run returned after its Started panicked"}, 0},
 		{"a redirect followed", &broken{follow: true}, []string{"want 302, the redirect not followed"}, 0},
 		{"a Stop deaf to its context", &broken{stopNoCtx: true}, []string{"of its context's end", "the context's end forces the process"}, 10 * time.Second},
+		// The forced check's helper is never asked to end, so its wait for
+		// the ask runs out the case's Wait.
+		{"a Stop that returns before the process is reaped", &broken{asyncStop: make(chan struct{})}, []string{"Terminal.Stop of a process that exits on the ask answered nil with its Done not yet closed"}, 5 * time.Second},
+		// The timeout's Run runs out its bound, twice the case's Wait.
+		{"a Run deaf to its Timeout", &broken{ignoreTimeout: true}, []string{"Run past its timeout did not return within"}, 5 * time.Second},
 		{"a service deaf to its context", &broken{serveBg: true}, []string{"after its context ended once it ran: a context's end ends the service"}, 10 * time.Second},
 		{"a process left running past a panic", &broken{leak: leak}, []string{"Run let its Started's panic go with the process it started still running"}, 0},
+		// A call that blocks runs out one Wait; one that panics, none.
+		{"a Terminal's Done that blocks", &broken{odd: "block done", block: stalled}, []string{"Terminal.Done of the helper for stop-asked did not return within"}, 5 * time.Second},
+		{"a Terminal's Done that panics", &broken{odd: "panic done"}, []string{"Terminal.Done of the helper for stop-asked panicked: exttest: a planted done"}, 0},
+		{"a Terminal's Exit that blocks", &broken{odd: "block exit", block: stalled}, []string{"Terminal.Exit of the helper for stop-asked did not return within"}, 5 * time.Second},
+		{"a Terminal's Exit that panics", &broken{odd: "panic exit"}, []string{"Terminal.Exit of the helper for stop-asked panicked: exttest: a planted exit"}, 0},
+		{"a Terminal's Read that panics", &broken{odd: "panic read"}, []string{"the Terminal's Read panicked: exttest: a planted read"}, 0},
+		{"a Terminal's Stop that panics", &broken{odd: "panic stop"}, []string{"Terminal.Stop of a process that ignores the ask, its context ended, panicked: exttest: a planted stop"}, 0},
+		{"a service's Done that blocks", &broken{odd: "block service-done", block: stalled}, []string{"ServiceProcess.Done of the service did not return within"}, 5 * time.Second},
+		{"a service's Done that panics", &broken{odd: "panic service-done"}, []string{"ServiceProcess.Done of the service panicked: exttest: a planted service-done"}, 0},
+		{"a Run that panics", &broken{runPanics: true}, []string{"Run whose context was cancelled panicked: exttest: a planted Run"}, 0},
+		{"a service beside an error", &broken{both: true}, []string{"Serve of the helper answered", "a service, and an error beside it"}, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			c.b.Runtime = local.Native()
@@ -224,8 +361,32 @@ func TestRunAllChecksTheRuntime(t *testing.T) {
 				opts = append(opts, WithRuntimeCase(rc))
 			}
 			errs := record(t, func(t T) { RunAll(t, nil, ext.Providers{Runtime: c.b}, opts...) })
+			if c.b.asyncStop != nil {
+				close(c.b.asyncStop)
+				c.b.stops.Wait()
+			}
 			if !said(errs, c.want...) {
 				t.Fatalf("RunAll did not say %q: %q", c.want, errs)
+			}
+			// A Run that outlasted its bound was cancelled and waited for
+			// before RunAll returned: its helper is not left running.
+			if n := c.b.inFlight.Load(); n != 0 {
+				t.Errorf("%d Run(s) of the broken Runtime still running once RunAll returned", n)
+			}
+			// A service handed back beside an error was stopped: its Stop
+			// returns once Done is closed.
+			c.b.mu.Lock()
+			defer c.b.mu.Unlock()
+			if c.b.both && len(c.b.services) == 0 {
+				t.Error("the checks made no Serve that started a service")
+			}
+			for _, svc := range c.b.services {
+				select {
+				case <-svc.Done():
+				default:
+					t.Error("a service Serve handed back beside an error was still running once RunAll returned")
+					svc.Stop(context.Background())
+				}
 			}
 		})
 	}
@@ -283,6 +444,93 @@ func TestRunAllWithoutACaseRefusesAnotherRuntime(t *testing.T) {
 	}
 	if errs := record(t, func(t T) { RunAll(t, nil, ext.Providers{Runtime: local.Native()}) }); len(errs) != 0 {
 		t.Fatalf("RunAll of the native Runtime with no case: %q", errs)
+	}
+}
+
+// nameOnce is the native Runtime whose Name answers once, then blocks
+// until free is closed, or panics.
+type nameOnce struct {
+	ext.Runtime
+	calls  atomic.Int32
+	free   chan struct{}
+	panics bool
+}
+
+func (r *nameOnce) Name() string {
+	if r.calls.Add(1) > 1 {
+		if r.panics {
+			panic("exttest: a second Name")
+		}
+		<-r.free
+	}
+	return "named-once"
+}
+
+func (r *nameOnce) Where() ext.Where { return "elsewhere" }
+
+// RunAll names a Runtime it was given no case for by the name its checks
+// had, never by a call of its own: a Name that blocks or panics after its
+// first answer fails the checks' bounded call and leaves RunAll returning.
+func TestRunAllNamesTheRuntimeOnlyThroughItsChecks(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		panics bool
+		want   string
+	}{{"a Name that blocks", false, "Name did not return within"}, {"a Name that panics", true, "Name panicked"}} {
+		t.Run(c.name, func(t *testing.T) {
+			r := &nameOnce{Runtime: local.Native(), free: make(chan struct{}), panics: c.panics}
+			defer close(r.free)
+			got := make(chan []string, 1)
+			go func() { got <- record(t, func(t T) { RunAll(t, nil, ext.Providers{Runtime: r}) }) }()
+			// The static checks' bounds: Where twice and Name at StartWait,
+			// Takes twice at TakesWait; the test's own wait above them.
+			bound := 3*ext.StartWait + 2*ext.TakesWait + DefaultRuntimeWait
+			select {
+			case errs := <-got:
+				if !said(errs, c.want) || !said(errs, "WithRuntimeCase", `"named-once"`) {
+					t.Fatalf("RunAll did not say %q and name the Runtime: %q", c.want, errs)
+				}
+			case <-time.After(bound):
+				t.Fatalf("RunAll did not return within %s: it called Name outside the checks' bounds", bound)
+			}
+		})
+	}
+}
+
+// smallDefaults is the native Runtime with defaults CommandSpec allows and
+// no check may lean on: 32 bytes of head, tail and log when none is asked.
+type smallDefaults struct{ ext.Runtime }
+
+func (smallDefaults) Name() string     { return "small-defaults" }
+func (smallDefaults) Where() ext.Where { return "small" }
+
+func (smallDefaults) bounds(s ext.CommandSpec) ext.CommandSpec {
+	if s.Head == 0 {
+		s.Head = 32
+	}
+	if s.Tail == 0 {
+		s.Tail = 32
+	}
+	if s.LogLimit == 0 {
+		s.LogLimit = 32
+	}
+	return s
+}
+
+func (r smallDefaults) Run(ctx context.Context, s ext.CommandSpec) ext.CommandResult {
+	return r.Runtime.Run(ctx, r.bounds(s))
+}
+
+func (r smallDefaults) Serve(ctx context.Context, s ext.CommandSpec) (ext.ServiceProcess, error) {
+	return r.Runtime.Serve(ctx, r.bounds(s))
+}
+
+// A Runtime whose defaults are small passes: every check that reads a
+// command's output or its log asks for the bounds it needs.
+func TestARuntimeWithSmallDefaultsPasses(t *testing.T) {
+	rc := helperCase(t)
+	if errs := record(t, func(t T) { RunAll(t, nil, ext.Providers{Runtime: smallDefaults{local.Native()}}, WithRuntimeCase(rc)) }); len(errs) != 0 {
+		t.Fatalf("RunAll of a Runtime with small defaults: %q", errs)
 	}
 }
 

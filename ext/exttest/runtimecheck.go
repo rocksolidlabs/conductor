@@ -68,12 +68,15 @@ func WithRuntimeCase(c RuntimeCase) RunOption {
 //     within StopKillWait of the force; the context's end checked under a
 //     grace longer than the wait after it, so a Stop that waits out its
 //     grace and not its context fails), and signals nothing after an exit
-//     (nil). Descendants are not checked: the contract promises none.
+//     (nil). A nil is answered once the leader has been reaped: Done is
+//     closed the moment Stop returns. Descendants are not checked: the
+//     contract promises none.
 //   - Run runs an argv, never a shell (arguments with ;, $, ` and * printed
 //     as they are), in its Dir with exactly its Env; its exit code; the
 //     head and tail of its output and the log within LogLimit; Started
 //     once, before any output reaches the log; a timeout told from a
-//     cancel; an ended context answered promptly.
+//     cancel (a Run that outlasts its bound there is cancelled, and waited
+//     for); an ended context answered promptly.
 //   - A Started that panics leaves Run and Serve as that same panic, with
 //     nothing left running: the helper it started listens on a Port and
 //     answers a Probe before the panic, and none once the panic has left.
@@ -87,10 +90,12 @@ func WithRuntimeCase(c RuntimeCase) RunOption {
 //     and answers an ended context with an error and no request.
 //
 // Every call is bounded by rc's Wait, the product's caps added where a
-// method has one (StopKillWait), so a broken Runtime fails rather than
-// hangs; a Terminal or a service such a call hands back after its bound
-// is stopped once it returns, and a DirFile closed only once the call has
-// unwound.
+// method has one (StopKillWait), Done and Exit among them, and a panic of
+// one recovered, on the check's goroutine or one of its own, so a broken
+// Runtime fails rather than hangs or ends the test binary; a Terminal or a
+// service such a call hands back after its bound is stopped once it
+// returns, a service handed back beside an error stopped, and a DirFile
+// closed only once the call has unwound.
 func RuntimeExec(t T, r ext.Runtime, rc RuntimeCase) {
 	t.Helper()
 	if len(rc.Argv) == 0 || rc.Argv[0] == "" {
@@ -166,14 +171,34 @@ func bounded[R any](x *execCheck, what string, wait time.Duration, fn func() R) 
 // the check was handed late is left running.
 func owned[R any](x *execCheck, what string, wait time.Duration, fn func() R, release func(R)) (R, bool) {
 	x.c.t.Helper()
-	type answer struct {
-		v        R
-		returned bool
-		p        any
+	ch := async(fn)
+	a, in := within(ch, wait)
+	if !in {
+		x.errorf("%s did not return within %s (the case's Wait)", what, wait)
+		if release != nil {
+			late(ch, release)
+		}
+		var zero R
+		return zero, false
 	}
-	ch := make(chan answer, 1)
+	return a.took(x, what)
+}
+
+// answer is what a call made on a goroutine of its own gave: its value
+// once it returned, or the panic it left with (neither: runtime.Goexit).
+type answer[R any] struct {
+	v        R
+	returned bool
+	p        any
+}
+
+// async makes fn's call on a goroutine of its own and hands its answer to
+// the channel it returns, a panic recovered: a Runtime's call that panics
+// there fails a check, never the test binary.
+func async[R any](fn func() R) <-chan answer[R] {
+	ch := make(chan answer[R], 1)
 	go func() {
-		var a answer
+		var a answer[R]
 		defer func() {
 			if !a.returned {
 				a.p = recover()
@@ -183,35 +208,49 @@ func owned[R any](x *execCheck, what string, wait time.Duration, fn func() R, re
 		a.v = fn()
 		a.returned = true
 	}()
+	return ch
+}
+
+// within waits at most wait for ch's answer: false when none came.
+func within[R any](ch <-chan answer[R], wait time.Duration) (answer[R], bool) {
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
-	var zero R
 	select {
 	case a := <-ch:
-		switch {
-		case a.p != nil:
-			x.errorf("%s panicked: %v", what, a.p)
-			return zero, false
-		case !a.returned:
-			x.errorf("%s ended its goroutine without returning (runtime.Goexit)", what)
-			return zero, false
-		}
-		return a.v, true
+		return a, true
 	case <-timer.C:
-		x.errorf("%s did not return within %s (the case's Wait)", what, wait)
-		if release != nil {
-			go func() {
-				if a := <-ch; a.returned {
-					release(a.v)
-				}
-			}()
-		}
-		return zero, false
+		return answer[R]{}, false
 	}
 }
 
-// stopLate stops a Terminal handed back after its call's bound, on a
-// goroutine where no check is told.
+// took is a's value: ok false when the call panicked or ended its
+// goroutine, said.
+func (a answer[R]) took(x *execCheck, what string) (R, bool) {
+	x.c.t.Helper()
+	var zero R
+	switch {
+	case a.p != nil:
+		x.errorf("%s panicked: %v", what, a.p)
+		return zero, false
+	case !a.returned:
+		x.errorf("%s ended its goroutine without returning (runtime.Goexit)", what)
+		return zero, false
+	}
+	return a.v, true
+}
+
+// late gives release what a call answers after its bound, on a goroutine
+// of its own where no check is told, a panic of release's recovered.
+func late[R any](ch <-chan answer[R], release func(R)) {
+	go func() {
+		defer func() { _ = recover() }()
+		if a := <-ch; a.returned {
+			release(a.v)
+		}
+	}()
+}
+
+// stopLate stops a Terminal handed back after its call's bound.
 func stopLate(term ext.Terminal) {
 	if term != nil {
 		term.Stop(context.Background(), 0)
@@ -229,6 +268,30 @@ func stopLateService(a served) {
 	if a.svc != nil {
 		a.svc.Stop(context.Background())
 	}
+}
+
+// stopService stops a service a check is done with, or one handed back
+// beside an error, saying nothing of how: nothing a Serve started is left
+// running, whatever it answered.
+func (x *execCheck) stopService(svc ext.ServiceProcess) {
+	x.c.t.Helper()
+	if svc == nil {
+		return
+	}
+	bounded(x, "the cleanup's ServiceProcess.Stop", x.wait+ext.StopKillWait, func() error { return svc.Stop(context.Background()) })
+}
+
+// doneOf asks a Terminal's or a service's Done once, within the case's
+// Wait, for the channel the check waits on: ok false, said, when the call
+// did not return or answered no channel.
+func (x *execCheck) doneOf(what string, done func() <-chan struct{}) (<-chan struct{}, bool) {
+	x.c.t.Helper()
+	ch, ok := bounded(x, what, x.wait, done)
+	if ok && ch == nil {
+		x.errorf("%s answered a nil channel: it is closed once the process has exited", what)
+		return nil, false
+	}
+	return ch, ok
 }
 
 type started struct {
@@ -266,6 +329,38 @@ func (x *execCheck) start(ctx context.Context, what string, s ext.TerminalSpec) 
 	return a.term, a.err, ok
 }
 
+// stopAnswer is what a Terminal's Stop answered, and whether its Done was
+// closed the moment it returned.
+type stopAnswer struct {
+	err  error
+	done bool
+}
+
+// stopNow calls term's Stop and looks at done, its Done, as soon as it
+// returns: a Stop that answers nil returns once the leader has been
+// reaped, so its Done is closed then, never a wait later.
+func stopNow(ctx context.Context, term ext.Terminal, done <-chan struct{}, grace time.Duration) stopAnswer {
+	err := term.Stop(ctx, grace)
+	select {
+	case <-done:
+		return stopAnswer{err, true}
+	default:
+		return stopAnswer{err, false}
+	}
+}
+
+// stopped says what is wrong with a Stop's answer a: an error, or nil with
+// the process not yet reaped.
+func (x *execCheck) stopped(a stopAnswer, what string) {
+	x.c.t.Helper()
+	switch {
+	case a.err != nil:
+		x.errorf("%s answered %v, want nil", what, a.err)
+	case !a.done:
+		x.errorf("%s answered nil with its Done not yet closed: Stop returns nil once the leader has been reaped, never before", what)
+	}
+}
+
 // cleanup stops a terminal a check is done with, saying nothing of how.
 func (x *execCheck) cleanup(term ext.Terminal) {
 	if term == nil {
@@ -274,13 +369,14 @@ func (x *execCheck) cleanup(term ext.Terminal) {
 	bounded(x, "the cleanup's Terminal.Stop", ext.StopKillWait+x.wait, func() error { return term.Stop(context.Background(), 0) })
 }
 
-// awaitDone waits for term's process to have exited.
-func (x *execCheck) awaitDone(term ext.Terminal, what string) bool {
+// awaitDone waits for a process to have exited: done is its Terminal's
+// Done (doneOf).
+func (x *execCheck) awaitDone(done <-chan struct{}, what string) bool {
 	x.c.t.Helper()
 	timer := time.NewTimer(x.wait)
 	defer timer.Stop()
 	select {
-	case <-term.Done():
+	case <-done:
 		return true
 	case <-timer.C:
 		x.errorf("%s: Done was not closed within %s (the case's Wait)", what, x.wait)
@@ -337,10 +433,11 @@ func (x *execCheck) terminal() {
 	if !x.await(s, "exttest-got:hello", "the input reaching the process") {
 		return
 	}
-	if !x.awaitDone(term, "the terminal's helper, which exits 3 once it has read a line") {
+	done, ok := x.doneOf("Terminal.Done of the terminal's helper", term.Done)
+	if !ok || !x.awaitDone(done, "the terminal's helper, which exits 3 once it has read a line") {
 		return
 	}
-	if st := term.Exit(); st.Code != 3 || st.Signal != "" {
+	if st, ok := bounded(x, "Terminal.Exit of the terminal's helper", x.wait, term.Exit); ok && (st.Code != 3 || st.Signal != "") {
 		x.errorf("the terminal's helper exited 3, and Exit answered %+v", st)
 	}
 }
@@ -478,7 +575,7 @@ func (x *execCheck) terminalUnderEndedContexts() {
 // past the grace, and after an exit.
 func (x *execCheck) stops() {
 	dir, _ := x.dir()
-	begin := func(mode, check string) (ext.Terminal, *screen) {
+	begin := func(mode, check string) (ext.Terminal, *screen, <-chan struct{}) {
 		argv := x.argv(mode)
 		if mode == "exit" {
 			argv = x.argv(mode, "0")
@@ -487,31 +584,36 @@ func (x *execCheck) stops() {
 			Argv: argv, Dir: dir, Env: x.env(check), Ref: ext.ProcessRef{Session: "exttest-" + check},
 		})
 		if !ok {
-			return nil, nil
+			return nil, nil, nil
 		}
 		if err != nil || term == nil {
 			x.errorf("StartTerminal for %s answered %v, %v: want a Terminal", check, term, err)
 			x.cleanup(term)
-			return nil, nil
+			return nil, nil, nil
+		}
+		done, ok := x.doneOf("Terminal.Done of the helper for "+check, term.Done)
+		if !ok {
+			x.cleanup(term)
+			return nil, nil, nil
 		}
 		s := readOut(term)
 		if mode != "exit" && !x.await(s, "exttest-ready", "the helper for "+check) {
 			x.cleanup(term)
-			return nil, nil
+			return nil, nil, nil
 		}
-		return term, s
+		return term, s, done
 	}
 
 	// Asked: the helper exits 0 on the ask, within a grace it never reaches.
-	if term, _ := begin("asked", "stop-asked"); term != nil {
-		err, ok := bounded(x, "Terminal.Stop of a process that exits on the ask", x.wait+ext.StopKillWait+x.wait, func() error {
-			return term.Stop(context.Background(), x.wait)
+	if term, _, done := begin("asked", "stop-asked"); term != nil {
+		a, ok := bounded(x, "Terminal.Stop of a process that exits on the ask", x.wait+ext.StopKillWait+x.wait, func() stopAnswer {
+			return stopNow(context.Background(), term, done, x.wait)
 		})
-		if ok && err != nil {
-			x.errorf("Terminal.Stop of a process that exits on the ask answered %v, want nil", err)
+		if ok {
+			x.stopped(a, "Terminal.Stop of a process that exits on the ask")
 		}
-		if ok && x.awaitDone(term, "a Terminal stopped") {
-			if st := term.Exit(); st.Code != 0 || st.Signal != "" {
+		if ok && a.err == nil && a.done {
+			if st, ok := bounded(x, "Terminal.Exit of the helper for stop-asked", x.wait, term.Exit); ok && (st.Code != 0 || st.Signal != "") {
 				x.errorf("Terminal.Stop did not ask the process to end before forcing it: the helper exits 0 on the ask, and ended %+v", st)
 			}
 		}
@@ -522,46 +624,35 @@ func (x *execCheck) stops() {
 	// ignores it. The grace outlasts the ask's wait and the wait after the
 	// cancel together, so a Stop that waits out its grace and not its
 	// context cannot return in time.
-	if term, s := begin("ignore", "stop-forced"); term != nil {
+	if term, s, done := begin("ignore", "stop-forced"); term != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		grace := 3*x.wait + ext.StopKillWait
-		got := make(chan error, 1)
-		go func() { got <- term.Stop(ctx, grace) }()
-		asked := x.await(s, "exttest-asked", "Terminal.Stop asking the process to end (the helper prints exttest-asked at the ask)")
+		got := async(func() stopAnswer { return stopNow(ctx, term, done, grace) })
+		x.await(s, "exttest-asked", "Terminal.Stop asking the process to end (the helper prints exttest-asked at the ask)")
 		cancel()
-		timer := time.NewTimer(ext.StopKillWait + x.wait)
-		select {
-		case err := <-got:
-			if err != nil {
-				x.errorf("Terminal.Stop of a process that ignores the ask, its context ended, answered %v, want nil once the process is forced and reaped", err)
-			}
-			if asked {
-				x.awaitDone(term, "a Terminal forced")
-			}
-		case <-timer.C:
+		const what = "Terminal.Stop of a process that ignores the ask, its context ended,"
+		if a, in := within(got, ext.StopKillWait+x.wait); !in {
 			x.errorf("Terminal.Stop of a process that ignores the ask did not return within StopKillWait (%s) of its context's end, and the case's Wait, its grace (%s) not yet passed: the context's end forces the process", ext.StopKillWait, grace)
+		} else if v, ok := a.took(x, what); ok {
+			x.stopped(v, what)
 		}
-		timer.Stop()
 		x.cleanup(term)
 	}
 
 	// Forced past the grace: none given.
-	if term, _ := begin("ignore", "stop-grace"); term != nil {
-		err, ok := bounded(x, "Terminal.Stop with no grace of a process that ignores the ask", ext.StopKillWait+x.wait, func() error {
-			return term.Stop(context.Background(), 0)
+	if term, _, done := begin("ignore", "stop-grace"); term != nil {
+		a, ok := bounded(x, "Terminal.Stop with no grace of a process that ignores the ask", ext.StopKillWait+x.wait, func() stopAnswer {
+			return stopNow(context.Background(), term, done, 0)
 		})
-		if ok && err != nil {
-			x.errorf("Terminal.Stop with no grace of a process that ignores the ask answered %v, want nil once it is forced and reaped", err)
-		}
 		if ok {
-			x.awaitDone(term, "a Terminal forced past its grace")
+			x.stopped(a, "Terminal.Stop with no grace of a process that ignores the ask")
 		}
 		x.cleanup(term)
 	}
 
 	// After an exit: nothing to signal.
-	if term, _ := begin("exit", "stop-exited"); term != nil {
-		if x.awaitDone(term, "the helper that exits at once") {
+	if term, _, done := begin("exit", "stop-exited"); term != nil {
+		if x.awaitDone(done, "the helper that exits at once") {
 			err, ok := bounded(x, "Terminal.Stop after the process exited", x.wait, func() error { return term.Stop(context.Background(), x.wait) })
 			if ok && err != nil {
 				x.errorf("Terminal.Stop after the process exited answered %v, want nil", err)
@@ -590,9 +681,10 @@ func (sc *startCount) Write(b []byte) (int, error) {
 	return sc.log.Write(b)
 }
 
-// reportBound is the Head, Tail and LogLimit the report's Run asks for:
-// more than a report with a whole environment prints, so no Runtime's
-// default decides what the check sees.
+// reportBound is the Head, Tail and LogLimit the report's Run asks for,
+// and the LogLimit of every Run and Serve whose log the checks read: more
+// than a report with a whole environment prints, so no Runtime's default
+// decides what the check sees.
 const reportBound = 1 << 20
 
 // run checks a command's argv, directory, environment and exit, and
@@ -659,32 +751,24 @@ func (x *execCheck) runBounds() {
 	}
 
 	// A timeout: the helper never ends on its own.
-	if res, ok := bounded(x, "Run past its timeout", x.wait+x.wait, func() ext.CommandResult {
-		return x.r.Run(context.Background(), ext.CommandSpec{Argv: x.argv("hold"), Dir: dir, Env: env, Timeout: 100 * time.Millisecond})
-	}); ok && (!res.TimedOut || res.Canceled || res.Exit == 0) {
+	if res, ok := x.runEnding("Run past its timeout", x.wait+x.wait, ext.CommandSpec{Argv: x.argv("hold"), Dir: dir, Env: env, Timeout: 100 * time.Millisecond}); ok && (!res.TimedOut || res.Canceled || res.Exit == 0) {
 		x.errorf("Run past its Timeout answered TimedOut %v, Canceled %v, Exit %d: want TimedOut alone", res.TimedOut, res.Canceled, res.Exit)
 	}
 
 	// A cancel: the context ends once the helper says it is ready.
 	ctx, cancel := context.WithCancel(context.Background())
 	log = newScreen()
-	got := make(chan ext.CommandResult, 1)
-	go func() {
+	got := async(func() ext.CommandResult {
 		defer log.end()
-		got <- x.r.Run(ctx, ext.CommandSpec{Argv: x.argv("hold"), Dir: dir, Env: env, Timeout: x.wait + x.wait, Log: log})
-	}()
+		return x.r.Run(ctx, ext.CommandSpec{Argv: x.argv("hold"), Dir: dir, Env: env, Timeout: x.wait + x.wait, Log: log, LogLimit: reportBound})
+	})
 	x.await(log, "exttest-ready", "Run's helper, through the log,")
 	cancel()
-	timer := time.NewTimer(x.wait)
-	select {
-	case res := <-got:
-		if !res.Canceled || res.TimedOut || res.Exit == 0 {
-			x.errorf("Run whose context was cancelled answered Canceled %v, TimedOut %v, Exit %d: want Canceled alone", res.Canceled, res.TimedOut, res.Exit)
-		}
-	case <-timer.C:
+	if a, in := within(got, x.wait); !in {
 		x.errorf("Run did not return within %s (the case's Wait) of its context's cancel", x.wait)
+	} else if res, ok := a.took(x, "Run whose context was cancelled"); ok && (!res.Canceled || res.TimedOut || res.Exit == 0) {
+		x.errorf("Run whose context was cancelled answered Canceled %v, TimedOut %v, Exit %d: want Canceled alone", res.Canceled, res.TimedOut, res.Exit)
 	}
-	timer.Stop()
 
 	// An ended context: answered promptly.
 	ended, end := context.WithCancel(context.Background())
@@ -694,6 +778,32 @@ func (x *execCheck) runBounds() {
 	}); ok && (!res.Canceled || res.Exit == 0) {
 		x.errorf("Run under a context ended before the call answered Canceled %v, Exit %d: want Canceled", res.Canceled, res.Exit)
 	}
+}
+
+// runEnding is Run of s bounded by bound, under a context of its own that
+// is cancelled once the check is done with the call: a Run that outlasts
+// its bound (one that ignores its Timeout and honours its context) is
+// cancelled then and waited for within the case's Wait and StopKillWait,
+// so the helper it runs, which never ends on its own, is not left running.
+func (x *execCheck) runEnding(what string, bound time.Duration, s ext.CommandSpec) (ext.CommandResult, bool) {
+	x.c.t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	returned := make(chan struct{})
+	res, ok := bounded(x, what, bound, func() ext.CommandResult {
+		defer close(returned)
+		return x.r.Run(ctx, s)
+	})
+	cancel()
+	if !ok {
+		timer := time.NewTimer(x.wait + ext.StopKillWait)
+		defer timer.Stop()
+		select {
+		case <-returned:
+		case <-timer.C:
+			x.errorf("%s did not return within %s of its context's cancel either: what it runs may be left running", what, x.wait+ext.StopKillWait)
+		}
+	}
+	return res, ok
 }
 
 // startedPanic is what a check's Started panics with.
@@ -749,54 +859,31 @@ func (x *execCheck) startedPanics() {
 				listened = true
 				panic(p)
 			}}
-		type answer struct {
-			p        any
-			returned bool
-			svc      ext.ServiceProcess
-		}
-		ch := make(chan answer, 1)
-		go func() {
-			var a answer
-			defer func() {
-				if !a.returned {
-					a.p = recover()
-				}
-				ch <- a
-			}()
+		ch := async(func() ext.ServiceProcess {
 			if method == "Run" {
 				x.r.Run(context.Background(), spec)
-			} else {
-				a.svc, _ = x.r.Serve(context.Background(), spec)
+				return nil
 			}
-			a.returned = true
-		}()
-		timer := time.NewTimer(x.wait + x.wait)
-		select {
-		case a := <-ch:
-			switch {
-			case a.returned:
-				x.errorf("%s returned after its Started panicked: the same panic leaves it, once what it began is ended", method)
-				if a.svc != nil {
-					bounded(x, "the cleanup's ServiceProcess.Stop", x.wait+ext.StopKillWait, func() error { return a.svc.Stop(context.Background()) })
-				}
-			case a.p != p:
-				x.errorf("%s panicked with %v after its Started panicked: want the same panic, unchanged", method, a.p)
-			case !listened:
-				x.errorf("%s's helper (http %d) answered no Probe within %s (the case's Wait) of Started: it did not listen on the port Port answered", method, port.n, x.wait)
-			default:
-				if v, ok := bounded(x, "Probe once "+method+"'s panic had left", x.wait+x.wait, answers); ok && v {
-					x.errorf("%s let its Started's panic go with the process it started still running: the helper (http %d) answered a Probe once the panic had left; the Runtime ends and reaps what it began first", method, port.n)
-				}
-			}
-		case <-timer.C:
+			svc, _ := x.r.Serve(context.Background(), spec)
+			return svc
+		})
+		a, in := within(ch, x.wait+x.wait)
+		switch {
+		case !in:
 			x.errorf("%s did not return or panic within %s (the case's Wait, twice) after its Started panicked", method, x.wait+x.wait)
-			go func() {
-				if a := <-ch; a.svc != nil {
-					a.svc.Stop(context.Background())
-				}
-			}()
+			late(ch, func(svc ext.ServiceProcess) { stopLateService(served{svc: svc}) })
+		case a.returned:
+			x.errorf("%s returned after its Started panicked: the same panic leaves it, once what it began is ended", method)
+			x.stopService(a.v)
+		case a.p != p:
+			x.errorf("%s panicked with %v after its Started panicked: want the same panic, unchanged", method, a.p)
+		case !listened:
+			x.errorf("%s's helper (http %d) answered no Probe within %s (the case's Wait) of Started: it did not listen on the port Port answered", method, port.n, x.wait)
+		default:
+			if v, ok := bounded(x, "Probe once "+method+"'s panic had left", x.wait+x.wait, answers); ok && v {
+				x.errorf("%s let its Started's panic go with the process it started still running: the helper (http %d) answered a Probe once the panic had left; the Runtime ends and reaps what it began first", method, port.n)
+			}
 		}
-		timer.Stop()
 	}
 }
 
@@ -806,7 +893,7 @@ func (x *execCheck) serve() {
 	sc := newStartCount()
 	a, ok := owned(x, "Serve", x.wait, func() served {
 		svc, err := x.r.Serve(context.Background(), ext.CommandSpec{Argv: x.argv("hold"), Dir: dir, Env: x.env("serve"),
-			Log: sc, Started: sc.started, Ref: ext.ProcessRef{Run: "exttest-serve"}})
+			Log: sc, LogLimit: reportBound, Started: sc.started, Ref: ext.ProcessRef{Run: "exttest-serve"}})
 		return served{svc, err}
 	}, stopLateService)
 	if !ok {
@@ -814,10 +901,16 @@ func (x *execCheck) serve() {
 	}
 	if a.err != nil || a.svc == nil {
 		x.errorf("Serve of the helper answered %v, %v: want a ServiceProcess", a.svc, a.err)
+		x.stopService(a.svc)
+		return
+	}
+	done, ok := x.doneOf("ServiceProcess.Done of the service", a.svc.Done)
+	if !ok {
+		x.stopService(a.svc)
 		return
 	}
 	go func() {
-		<-a.svc.Done()
+		<-done
 		sc.log.end()
 	}()
 	x.await(sc.log, "exttest-ready", "the service's output reaching its log")
@@ -832,7 +925,7 @@ func (x *execCheck) serve() {
 			x.errorf("ServiceProcess.Stop answered %v, want nil", err)
 		}
 		select {
-		case <-a.svc.Done():
+		case <-done:
 		default:
 			x.errorf("ServiceProcess.Stop returned before the service was done: it returns once Done is closed")
 		}
@@ -849,14 +942,18 @@ func (x *execCheck) serve() {
 		svc, err := x.r.Serve(ended, ext.CommandSpec{Argv: x.argv("hold"), Dir: dir, Env: x.env("serve-ended")})
 		return served{svc, err}
 	}, stopLateService); ok && b.svc != nil {
-		timer := time.NewTimer(x.wait)
-		select {
-		case <-b.svc.Done():
-		case <-timer.C:
-			x.errorf("Serve under an ended context answered a service still running %s later: a context's end ends the service", x.wait)
-			bounded(x, "the cleanup's ServiceProcess.Stop", x.wait+ext.StopKillWait, func() error { return b.svc.Stop(context.Background()) })
+		if done, ok := x.doneOf("ServiceProcess.Done of the service Serve answered under an ended context", b.svc.Done); !ok {
+			x.stopService(b.svc)
+		} else {
+			timer := time.NewTimer(x.wait)
+			select {
+			case <-done:
+			case <-timer.C:
+				x.errorf("Serve under an ended context answered a service still running %s later: a context's end ends the service", x.wait)
+				x.stopService(b.svc)
+			}
+			timer.Stop()
 		}
-		timer.Stop()
 	}
 }
 
@@ -867,7 +964,7 @@ func (x *execCheck) serveUntilTheContextEnds(dir string) {
 	defer cancel()
 	log := newScreen()
 	a, ok := owned(x, "Serve under a context that ends once it runs", x.wait, func() served {
-		svc, err := x.r.Serve(ctx, ext.CommandSpec{Argv: x.argv("hold"), Dir: dir, Env: x.env("serve-ending"), Log: log,
+		svc, err := x.r.Serve(ctx, ext.CommandSpec{Argv: x.argv("hold"), Dir: dir, Env: x.env("serve-ending"), Log: log, LogLimit: reportBound,
 			Ref: ext.ProcessRef{Run: "exttest-serve-ending"}})
 		return served{svc, err}
 	}, stopLateService)
@@ -876,11 +973,16 @@ func (x *execCheck) serveUntilTheContextEnds(dir string) {
 	}
 	if a.err != nil || a.svc == nil {
 		x.errorf("Serve of the helper under a context that ends once it runs answered %v, %v: want a ServiceProcess", a.svc, a.err)
+		x.stopService(a.svc)
 		return
 	}
-	defer bounded(x, "the cleanup's ServiceProcess.Stop", x.wait+ext.StopKillWait, func() error { return a.svc.Stop(context.Background()) })
+	defer x.stopService(a.svc)
+	done, ok := x.doneOf("ServiceProcess.Done of the service under a context that ends once it runs", a.svc.Done)
+	if !ok {
+		return
+	}
 	go func() {
-		<-a.svc.Done()
+		<-done
 		log.end()
 	}()
 	if !x.await(log, "exttest-ready", "the service's output reaching its log, under a context that ends once it runs") {
@@ -890,7 +992,7 @@ func (x *execCheck) serveUntilTheContextEnds(dir string) {
 	timer := time.NewTimer(x.wait)
 	defer timer.Stop()
 	select {
-	case <-a.svc.Done():
+	case <-done:
 	case <-timer.C:
 		x.errorf("Serve's service was still running %s after its context ended once it ran: a context's end ends the service", x.wait)
 	}
@@ -920,7 +1022,7 @@ func (x *execCheck) portAndProbe() {
 	dir, _ := x.dir()
 	log := newScreen()
 	a, ok := owned(x, "Serve of the helper's http mode", x.wait, func() served {
-		svc, err := x.r.Serve(context.Background(), ext.CommandSpec{Argv: x.argv("http", strconv.Itoa(p.n)), Dir: dir, Env: x.env("probe"), Log: log, Ref: ref})
+		svc, err := x.r.Serve(context.Background(), ext.CommandSpec{Argv: x.argv("http", strconv.Itoa(p.n)), Dir: dir, Env: x.env("probe"), Log: log, LogLimit: reportBound, Ref: ref})
 		return served{svc, err}
 	}, stopLateService)
 	if !ok {
@@ -928,11 +1030,16 @@ func (x *execCheck) portAndProbe() {
 	}
 	if a.err != nil || a.svc == nil {
 		x.errorf("Serve of the helper's http mode answered %v, %v: want a ServiceProcess", a.svc, a.err)
+		x.stopService(a.svc)
 		return
 	}
-	defer bounded(x, "the cleanup's ServiceProcess.Stop", x.wait+ext.StopKillWait, func() error { return a.svc.Stop(context.Background()) })
+	defer x.stopService(a.svc)
+	done, ok := x.doneOf("ServiceProcess.Done of the helper's http mode", a.svc.Done)
+	if !ok {
+		return
+	}
 	go func() {
-		<-a.svc.Done()
+		<-done
 		log.end()
 	}()
 	if !x.await(log, "exttest-listening", fmt.Sprintf("the helper listening on the port Port answered (%d), which is free where the services listen", p.n)) {
@@ -971,6 +1078,7 @@ func (x *execCheck) portAndProbe() {
 type screen struct {
 	mu    sync.Mutex
 	out   []byte
+	broke string // why a Read ended the output, a panic recovered
 	more  chan struct{}
 	ended chan struct{}
 	once  sync.Once
@@ -985,6 +1093,13 @@ func readOut(r io.Reader) *screen {
 	s := newScreen()
 	go func() {
 		defer s.end()
+		defer func() {
+			if p := recover(); p != nil {
+				s.mu.Lock()
+				s.broke = fmt.Sprintf("Read panicked: %v", p)
+				s.mu.Unlock()
+			}
+		}()
 		buf := make([]byte, 4096)
 		for {
 			n, err := r.Read(buf)
@@ -1033,6 +1148,13 @@ func (x *execCheck) await(s *screen, want, what string) bool {
 		case <-s.ended:
 			if strings.Contains(s.text(), want) {
 				return true
+			}
+			s.mu.Lock()
+			broke := s.broke
+			s.mu.Unlock()
+			if broke != "" {
+				x.errorf("%s: the output ended without %q (the Terminal's %s): %q", what, want, broke, tail(s.text()))
+				return false
 			}
 			x.errorf("%s: the output ended without %q: %q", what, want, tail(s.text()))
 			return false

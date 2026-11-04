@@ -827,13 +827,14 @@ func Runtime(t T, n *Network, r ext.Runtime) {
 // sampleRef is the ref Runtime asks Takes about: a managed run's.
 var sampleRef = ext.ProcessRef{Run: "exttest-00000001"}
 
-// runtimeStatic is Runtime, answering the Where r first answered (ok false
-// when it gave none, the failure said).
-func runtimeStatic(t T, n *Network, r ext.Runtime) (ext.Where, bool) {
+// runtimeStatic is Runtime, answering the Name and the Where r first
+// answered (ok false when it gave none, the failure said), so a caller
+// names r without calling it outside the checks' bounds.
+func runtimeStatic(t T, n *Network, r ext.Runtime) (string, ext.Where, bool) {
 	t.Helper()
 	c, ok := begin(t, n, "Runtime", r)
 	if !ok {
-		return "", false
+		return c.name, "", false
 	}
 	defer c.done()
 	first, firstOK := run(c, "Where", ext.StartWait, open, func(context.Context) ext.Where { return r.Where() })
@@ -858,7 +859,7 @@ func runtimeStatic(t T, n *Network, r ext.Runtime) (ext.Where, bool) {
 	}
 	takes(blocked)
 	c.n.Unblock()
-	return first, firstOK
+	return c.name, first, firstOK
 }
 
 // Starter checks a provider's Start: with a FakeHost and the network both
