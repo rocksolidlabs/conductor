@@ -4,7 +4,7 @@ import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { ApiError } from '~/composables/useApi'
 import { launchListNote, serverAgents } from '~/utils/agents'
 import { splitArgs } from '~/utils/argv'
-import { ATTEMPT_WARNING, SHARED_TREE_WARNING, cloneName, cloneNameError, cloneRefusal, inRunWorktree } from '~/utils/clone'
+import { ATTEMPT_WARNING, SHARED_TREE_WARNING, cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneName, cloneNameError, cloneRefusal, inRunWorktree, missingSourceAgent, yoloStored } from '~/utils/clone'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
 import { plainOffMachine, showsRunsOn } from '~/utils/launch'
 import { effectiveYolo, yoloSummary } from '~/utils/yolo'
@@ -38,7 +38,10 @@ const state = reactive<{ agentId: string; runsOn: 'server' | 'local'; name: stri
 // unless picked: one this server does not offer is said so, with nothing picked.
 const cloning = ref<NonNullable<LaunchPrefill['clone']> | null>(null)
 const cloneArgv = ref<{ text: string; argv: string[] } | null>(null)
-const missingAgent = ref('')
+/** The source's agent, kept for the whole opening (#434 review round 1): the pick may be cleared, the source stays known. */
+const sourceAgent = ref('')
+/** Whether this opening's own catalog read has answered: before it, a cached catalog may still list an agent since gone. */
+const catalogRead = ref(false)
 const cloneNamed = computed(() => cloneName(state.name, live.sessions.value))
 const cloneNameMessage = computed(() => cloneNameError(cloneNamed.value))
 const sharedTree = computed(() => !!cloning.value && inRunWorktree(state.cwd))
@@ -60,14 +63,18 @@ const selected = computed(() => agents.value.find((a) => a.id === state.agentId)
 /** The server tab offers the agents installed on the server; My machine offers every agent: what is installed there is the host's. */
 const offered = computed(() => (state.runsOn === 'server' ? serverAgents(agents.value) : agents.value))
 const listNote = computed(() => launchListNote({ loading: loading.value, known: agents.value.length, offered: offered.value.length, onServer: state.runsOn === 'server' }))
+// A clone never falls back to another agent: the source's, not offered by this opening's read (gone, or not installed here), is said so.
+const missingAgent = computed(() => (cloning.value ? missingSourceAgent(sourceAgent.value, offered.value, catalogRead.value) : ''))
 // The pick stays one the tab offers.
 watch(offered, (list) => {
   if (!list.some((a) => a.id === state.agentId)) state.agentId = cloning.value ? '' : (list[0]?.id ?? '')
 })
 
-watch(open, async (v) => {
+// Every opening, and a prefill given while the dialog is open already (the palette's Clone with options… of another session).
+watch([open, launchModal.asked], async ([v]) => {
   if (!v) return
   error.value = ''
+  submitting.value = false
   knownHosted.value = new Set(live.sessions.value.filter((s) => s.kind === 'hosted').map((s) => s.id))
   state.yolo = undefined
   // A prefill (#303: Launch <agent> here, Launch another like this, the launch verb), taken once per opening: its agent is set
@@ -80,21 +87,18 @@ watch(open, async (v) => {
   if (p?.clone || cloning.value) Object.assign(state, { agentId: '', name: '', cwd: '', args: '', runsOn: 'server' })
   cloning.value = p?.clone ?? null
   cloneArgv.value = p?.clone && p.argv ? { text: p.args ?? '', argv: [...p.argv] } : null
-  missingAgent.value = ''
+  sourceAgent.value = p?.clone ? (p.agentId ?? '') : ''
+  catalogRead.value = false
   if (p?.cwd !== undefined) state.cwd = p.cwd
   if (p?.args !== undefined) state.args = p.args
   if (p?.yolo !== undefined) state.yolo = p.yolo
   let wantedAgent = p?.agentId
-  const wanted = (read = false) => {
+  const wanted = () => {
     if (opening !== openings) return
     if (wantedAgent && offered.value.some((a) => a.id === wantedAgent)) {
       state.agentId = wantedAgent
       wantedAgent = undefined
-      missingAgent.value = ''
-    } else if (cloning.value) {
-      // A clone never falls back to the first agent: the server's own catalog says the source's is not offered.
-      if (read && wantedAgent) missingAgent.value = wantedAgent
-    } else if (!state.agentId && offered.value[0]) state.agentId = offered.value[0].id
+    } else if (!cloning.value && !state.agentId && offered.value[0]) state.agentId = offered.value[0].id
   }
   if (cachedCatalog.value) {
     agents.value = cachedCatalog.value.agents
@@ -108,7 +112,8 @@ watch(open, async (v) => {
     cachedCatalog.value = info
     agents.value = info.agents
     yoloDefault.value = info.yoloDefault
-    wanted(true)
+    catalogRead.value = true
+    wanted()
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -120,7 +125,7 @@ watch(open, async (v) => {
 // the preview shows what the recipe adds, and an agent without one says so.
 const yolo = computed({
   get: () => effectiveYolo(state.yolo, yoloDefault.value),
-  set: (on: boolean) => (state.yolo = on === yoloDefault.value ? undefined : on),
+  set: (on: boolean) => (state.yolo = yoloStored(on, yoloDefault.value, !!cloning.value)),
 })
 const extraArgs = computed(() => (selected.value?.allowArgs && state.args.trim() ? splitArgs(state.args) : []))
 const yoloView = computed(() => yoloSummary(selected.value, yolo.value, extraArgs.value))
@@ -163,26 +168,30 @@ watch(arrived, (s) => {
   emit('launched', s)
 })
 
+/** Whether the arguments' line shows: the agent takes arguments, or it is the source's and its recorded ones are kept in sight. */
+const argsShown = computed(() => (cloning.value ? cloneArgsShown({ allowArgs: !!selected.value?.allowArgs, sameAgent: !!state.agentId && state.agentId === sourceAgent.value, recorded: cloneArgv.value?.argv }) : !!selected.value?.allowArgs))
+
 /** The arguments a clone launches with: the source's as recorded while their line is as it was, else the line split. */
 function cloneArgs(): string[] {
-  if (!selected.value?.allowArgs) return []
-  if (cloneArgv.value && state.args === cloneArgv.value.text) return cloneArgv.value.argv
-  return state.args.trim() ? splitArgs(state.args) : []
+  return cloneLaunchArgs({ shown: argsShown.value, line: state.args, recorded: cloneArgv.value, split: splitArgs })
 }
 
 async function submitClone(source: NonNullable<LaunchPrefill['clone']>) {
   if (!state.agentId || cloneNamed.value.problem) return
+  // The opening this clone is sent from: its answer closes the dialog or says its refusal only while that opening lasts.
+  const sentFrom = openings
+  const current = () => open.value && openings === sentFrom
   submitting.value = true
   error.value = ''
   try {
-    const session = await api.clone(source.id, { name: cloneNamed.value.name, agentId: state.agentId, cwd: state.cwd.trim() || undefined, args: cloneArgs(), yolo: yolo.value })
+    const session = await api.clone(source.id, { name: cloneNamed.value.name, agentId: state.agentId, cwd: cloneCwd(state.cwd), args: cloneArgs(), yolo: yolo.value })
     toast.add({ title: `Cloned ${source.name}`, description: `${session.name} is a new session like ${source.name}`, color: 'success', icon: 'i-lucide-copy' })
+    if (current()) open.value = false
     emit('launched', session)
-    open.value = false
   } catch (e) {
-    error.value = e instanceof ApiError ? cloneRefusal(e.code, e.message) : (e as Error).message
+    if (current()) error.value = e instanceof ApiError ? cloneRefusal(e.code, e.message) : (e as Error).message
   } finally {
-    submitting.value = false
+    if (openings === sentFrom) submitting.value = false
   }
 }
 
@@ -264,7 +273,13 @@ async function submit() {
           <UFormField label="Working directory" name="cwd" hint="must be under an allowed root">
             <DirInput v-model="state.cwd" :placeholder="cloning ? `${cloning.name}'s directory` : selected?.cwd || 'server default'" name="cwd" picker-title="Where the session runs" />
           </UFormField>
-          <UFormField v-if="selected?.allowArgs" label="Extra arguments" name="args" hint="appended to the command">
+          <UFormField
+            v-if="argsShown"
+            label="Extra arguments"
+            name="args"
+            :hint="selected?.allowArgs ? 'appended to the command' : 'this agent takes no extra arguments now'"
+            :help="selected?.allowArgs ? undefined : 'Recorded at its launch: the server refuses a clone with them; clear them to clone without'"
+          >
             <UInput v-model="state.args" placeholder="--model opus" class="w-full font-mono" data-launch-args />
           </UFormField>
           <div class="flex flex-col gap-1.5" data-launch-yolo>

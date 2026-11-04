@@ -14,11 +14,17 @@ export interface LaunchPrefill {
 export function useLaunchModal() {
   const open = useState<boolean>('launchOpen', () => false)
   const prefill = useState<LaunchPrefill | null>('launchPrefill', () => null)
+  // Counts the prefills given (#434 review round 1): one given while the dialog is open already (the palette's Clone with options…
+  // of another session, over the dialog) is taken as a new opening; a bare show() while it is open changes nothing in it.
+  const asked = useState<number>('launchAsked', () => 0)
   return {
     open,
     prefill,
+    asked,
     show: (p?: LaunchPrefill) => {
+      if (!p && open.value) return
       prefill.value = p ?? null
+      if (p) asked.value++
       open.value = true
     },
   }
