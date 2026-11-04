@@ -114,6 +114,18 @@ describe('the brakeman events', () => {
     expect(live.requests.get('br-1')!.state).toBe('briefed')
   })
 
+  it("never take a draft back: two cards' makes answered out of order leave both made, with their relation", async () => {
+    const live = new BrakemanLive()
+    const at = '2026-11-02T09:00:01.000Z'
+    const a = { item: 6, opId: 'a', state: 'made', key: 'BKC-2', at }
+    // The two replies of one briefed request, the later make's first: B made with the edge, then A's, sent while B was pending.
+    live.apply(req('br-1', 'briefed', { hasBrief: true, made: [a, { item: 7, opId: 'b', state: 'made', key: 'BKC-3', at }], edges: [{ from: 6, to: 7, op: 'e', state: 'made' }] }))
+    live.apply(req('br-1', 'briefed', { hasBrief: true, made: [a, { item: 7, opId: 'b', state: 'pending', at }], edges: [{ from: 6, to: 7, op: 'e', state: 'pending' }] }))
+    const r = live.requests.get('br-1')!
+    expect(r.made!.find((m) => m.item === 7)).toMatchObject({ state: 'made', key: 'BKC-3' })
+    expect(r.edges).toEqual([{ from: 6, to: 7, op: 'e', state: 'made' }])
+  })
+
   it('tell the pages each change, and a snapshot reads what was missed', async () => {
     const f = fakeServer()
     let changes = 0

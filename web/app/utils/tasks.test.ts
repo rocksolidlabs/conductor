@@ -113,12 +113,22 @@ describe('taskWords', () => {
 describe('taskActions', () => {
   const live = {}
   it('offers retry and accept on a failed task with a submitted commit, cancel on a live one, open and copy with an attempt', () => {
-    expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed', result: 'abc', sessionId: 's', branch: 'crew/r/build.3' } }), live)).toEqual({ retry: true, accept: true, cancel: false, open: true, copyBranch: true, showResult: false, preview: '' })
+    expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed', result: 'abc', sessionId: 's', branch: 'crew/r/build.3' } }), live)).toEqual({ retry: true, accept: true, cancel: false, open: true, copyBranch: true, showResult: false, preview: '', askWhy: true })
     expect(taskActions(task({ state: 'failed', attempt: { n: 3, state: 'failed' } }), live).accept).toBe(false)
     expect(taskActions(task({ state: 'failed', kind: 'review', attempt: { n: 1, state: 'failed', result: 'abc' } }), live).accept).toBe(false)
     expect(taskActions(task({ state: 'cancelled' }), live)).toMatchObject({ retry: true, accept: false, cancel: false })
     expect(taskActions(task({ state: 'running', attempt: { n: 1, state: 'running', sessionId: 's' } }), live)).toMatchObject({ retry: false, cancel: true, open: true })
     expect(taskActions(task({ state: 'succeeded', result: { attempt: 1, at: '' } }), live)).toMatchObject({ retry: false, cancel: false, showResult: true })
+  })
+  it('offers Ask Brakeman why on a task that failed, was cancelled or is blocked, or whose attempt reports a blocker', () => {
+    expect(taskActions(task({ state: 'failed' }), live).askWhy).toBe(true)
+    expect(taskActions(task({ state: 'cancelled' }), live).askWhy).toBe(true)
+    expect(taskActions(task({ state: 'blocked' }), live).askWhy).toBe(true)
+    expect(taskActions(task({ state: 'running', blocker: { reason: 'needs_decision', by: 'builder', at: '' } }), live).askWhy).toBe(true)
+    expect(taskActions(task({ state: 'running' }), live).askWhy).toBe(false)
+    expect(taskActions(task({ state: 'succeeded' }), live).askWhy).toBe(false)
+    // A record's task too: asking reads, it changes nothing.
+    expect(taskActions(task({ state: 'failed' }), { record: true }).askWhy).toBe(true)
   })
   it('offers nothing that changes a stopped run, a record or a run continued', () => {
     expect(taskActions(task({ state: 'failed', attempt: { n: 1, state: 'failed', result: 'abc' } }), { stoppedAt: 'x' })).toMatchObject({ retry: false, accept: false, cancel: false })

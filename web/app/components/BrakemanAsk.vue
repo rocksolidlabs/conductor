@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { BrakemanRequest } from '~/utils/brakeman'
-import { KINDS, KIND_SUBJECTS, askProblem, kindWords, parseRef } from '~/utils/brakeman'
+import { KINDS, KIND_SUBJECTS, askProblem, displayBy, kindWords, parseRef } from '~/utils/brakeman'
 
 /**
  * Asking Brakeman (docs/plans/brakeman.md, PR-6): a kind, the subjects it takes, picked from the runs, their tasks and the sessions
@@ -61,16 +61,6 @@ function addTicket() {
   ticketKey.value = ''
 }
 
-/** The display name as a request keeps it: one line of at most 60 bytes (brakeman.MaxBy), cut where a character ends. */
-function byName(name: string): string {
-  let out = ''
-  for (const ch of name.replace(/[\n\t]/g, ' ')) {
-    if (new TextEncoder().encode(out + ch).length > 60) break
-    out += ch
-  }
-  return out.trim()
-}
-
 /** The since field's local time as the server takes it: RFC 3339, in UTC. */
 const sinceISO = computed(() => {
   if (!since.value) return ''
@@ -89,7 +79,7 @@ async function send() {
       subjects: subjects.value.length ? subjects.value : undefined,
       note: note.value.trim() ? note.value : undefined,
       since: sinceISO.value || undefined,
-      by: byName(identity.name.value) || undefined,
+      by: displayBy(identity.name.value) || undefined,
     })
     note.value = ''
     subjects.value = []

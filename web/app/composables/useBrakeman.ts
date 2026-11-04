@@ -1,5 +1,6 @@
 import type { BrakemanBrief, BrakemanConfig, BrakemanRequest, BrakemanState, RefResolution } from '../utils/brakeman'
 import { closed, keptBrief, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
+import { dropKeptMake, readKeptMakes, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
 
@@ -104,12 +105,16 @@ export class BrakemanLive {
     return [...this.requests.values()].sort((a, b) => requestNumber(b.id) - requestNumber(a.id))
   }
 
-  /** Takes a request as a reply gave it, unless the page has it further along already or the reply was sent before a reset (`at`). */
+  /**
+   * Takes a request as a reply gave it, unless the page has it further along already; its makes and edges are reconciled with the
+   * page's (reconcileMade), since replies to two cards' makes of one request can arrive in either order. A reply sent before a reset
+   * (`at`) is dropped.
+   */
   apply(r: BrakemanRequest, at = this.gen) {
     if (at !== this.gen) return
     const had = this.requests.get(r.id)
     if (had && stateRank(r.state) < stateRank(had.state)) return
-    this.requests.set(r.id, r)
+    this.requests.set(r.id, had ? { ...r, ...reconcileMade(had, r) } : r)
     this.changed()
   }
 
@@ -299,6 +304,25 @@ export function keepOpened(ids: Iterable<string>): string[] {
   return all
 }
 
+/** The makes this browser asked that did not finish, by `<request>/<item>`: every tab's, each kept under its own entry. */
+function readKept(): Record<string, KeptMake> {
+  try {
+    return readKeptMakes(localStorage)
+  } catch {
+    return {}
+  }
+}
+
+/** Keeps or forgets one make in the browser's storage, its entry alone (a refused storage keeps it for this visit). */
+function writeKept(key: string, k: KeptMake | undefined) {
+  try {
+    if (k) storeKeptMake(localStorage, key, k)
+    else dropKeptMake(localStorage, key)
+  } catch {
+    /* storage refused: the make is kept for this visit */
+  }
+}
+
 /** Whether this page follows the opened ids other tabs write (one listener for the app's one list). */
 let followingOpened = false
 
@@ -307,6 +331,13 @@ export function useBrakeman() {
   const { request } = useApi()
   const version = useState<number>('brakemanVersion', () => 0)
   const opened = useState<string[] | null>('brakemanOpened', () => (import.meta.client ? readOpened() : null))
+  /**
+   * The makes this browser asked that have no answer yet, or whose answer left them to be asked again (a reply lost twice, the backend
+   * failing after the claim, a token refused before the route ran): each with its id and the body it sent, the one ask the route
+   * finishes it on (the same id with other content is op_conflict, and another id make_pending). Kept in the browser's storage before
+   * the make is sent, so a page read again while it is out can still finish it.
+   */
+  const kept = useState<Record<string, KeptMake>>('brakemanKeptMakes', () => (import.meta.client ? readKept() : {}))
   // A brief opened in another tab is opened here too.
   if (import.meta.client && !followingOpened) {
     followingOpened = true
@@ -414,15 +445,47 @@ export function useBrakeman() {
     return null
   }
 
-  /** Makes a brief's draft work (PR-7's forms send it): {request, made, ticket?, crew?}. */
-  async function make(id: string, item: number, body: { by?: string; edit?: unknown } = {}) {
+  /**
+   * Makes a brief's draft work (PR-7's forms send it): {request, made, ticket?, crew?}. Its id and body are kept for finishMake before
+   * it is sent (sendKept); an answer that settles it forgets them, one that establishes nothing (unfinishedMake) leaves them kept.
+   */
+  async function make(id: string, item: number, body: { by?: string; edit?: unknown } = {}, opId = mintCommandId()) {
     const at = store.generation
-    const out = await sendTwice(
-      (b) => request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(id)}/items/${item}/make`, { method: 'POST', body: b }),
-      { opId: mintCommandId(), ...body },
+    const keep = () => {
+      const k: KeptMake = { opId, body, at: Date.now() }
+      kept.value = { ...kept.value, [`${id}/${item}`]: k }
+      writeKept(`${id}/${item}`, k)
+    }
+    const out = await sendKept(keep, () => forgetMake(id, item), () =>
+      sendTwice(
+        (b) => request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(id)}/items/${item}/make`, { method: 'POST', body: b }),
+        { opId, ...body },
+      ),
     )
     store.apply(out.request, at)
     return out
+  }
+
+  /** The make of the item this browser asked that did not finish, or undefined. */
+  function keptMake(id: string, item: number): KeptMake | undefined {
+    return kept.value[`${id}/${item}`]
+  }
+
+  /** Forgets the item's unfinished make: it was answered, or another make holds the item. */
+  function forgetMake(id: string, item: number) {
+    const key = `${id}/${item}`
+    if (!(key in kept.value)) return
+    const rest = { ...kept.value }
+    delete rest[key]
+    kept.value = rest
+    writeKept(key, undefined)
+  }
+
+  /** Asks the item's unfinished make again, as it was sent: the same id and body, which the route finishes and never makes twice. */
+  function finishMake(id: string, item: number) {
+    const k = keptMake(id, item)
+    if (!k) throw new Error('This browser holds no make of it to finish.')
+    return make(id, item, k.body, k.opId)
   }
 
   /** A request whole, with its brief (null until one is kept; its items a list, none for a brief of its summary alone). */
@@ -444,5 +507,5 @@ export function useBrakeman() {
     store.reset()
   }
 
-  return { state, requests, available, problem, hasMore, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, brief, refs, closed }
+  return { state, requests, available, problem, hasMore, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, brief, refs, closed }
 }

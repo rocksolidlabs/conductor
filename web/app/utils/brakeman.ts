@@ -61,14 +61,25 @@ export interface BrakemanStamp {
   account?: boolean
 }
 
-/** A draft made work by a person, or its claim (PR-7 shows them). */
+/** A draft made work by a person, or its claim (PR-7 shows them): pending, made, refused or deleted. */
 export interface BrakemanMade {
   item: number
   opId: string
   state: string
   key?: string
   crew?: string
+  rev?: number
   why?: string
+  /** When its claim was written (the server's time): a newer claim of the item replaces an older one. */
+  at?: string
+}
+
+/** A draft ticket's block of another, made a relation once both are tickets: pending, made, or refused. */
+export interface BrakemanEdge {
+  from: number
+  to: number
+  op: string
+  state: string
 }
 
 /** A request, brakeman/requests/br-<n>.json, as the routes answer it. */
@@ -92,6 +103,7 @@ export interface BrakemanRequest {
   hasBrief?: boolean
   briefAt?: string
   made?: BrakemanMade[]
+  edges?: BrakemanEdge[]
   strayRun?: string
   closedAt?: string
 }
@@ -122,6 +134,7 @@ export type BriefItem =
       whyHuman: string
       question: string
       alternatives: Array<{ label: string; tradeoffs: string }>
+      /** An alternative's index, or -1 (or null) for none. */
       recommendation: number | null
       uncertainty?: string
       blocked?: string[]
@@ -205,6 +218,24 @@ export const KIND_SUBJECTS: Readonly<Record<string, { kinds: readonly string[]; 
 
 /** A note's bound, in bytes of UTF-8 (brakeman.MaxNote). */
 export const MAX_NOTE = 16 << 10
+
+/** A display name's bound, in bytes of UTF-8 (brakeman.MaxBy): what a request and a make keep as `by`. */
+export const MAX_BY = 60
+
+/**
+ * The display name as a request or a make keeps it: at most MAX_BY bytes with no control character (the make route refuses any, as
+ * Dispatch does), cut where a character ends. The identity takes 40 characters, which in a script of three-byte characters is past
+ * the bound: sent whole, the route would refuse it.
+ */
+export function displayBy(name: string): string {
+  const enc = new TextEncoder()
+  let out = ''
+  for (const ch of name.replace(/\p{Cc}/gu, ' ')) {
+    if (enc.encode(out + ch).length > MAX_BY) break
+    out += ch
+  }
+  return out.trim()
+}
 
 /** Why the composer cannot send what it holds, or "" when it can: the server's checks of a request (checkAsked). */
 export function askProblem(kind: string, subjects: readonly string[], note: string, since: string): string {

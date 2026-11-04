@@ -737,6 +737,15 @@ function moreHistory() {
 /** The Markdown fields' bounds, the store's, in bytes. */
 const MAX_DESCRIPTION = 64 << 10
 const MAX_ACCEPTANCE = 16 << 10
+
+// The menu's Brakeman entries (docs/plans/brakeman.md, PR-7): the Brakeman page's composer, asking about this ticket.
+const brakeman = useBrakeman()
+const askBrakeman = computed(() =>
+  [
+    { label: 'Draft tickets', kind: 'draft_tickets', icon: 'i-lucide-ticket-plus' },
+    { label: 'Propose a crew', kind: 'propose_crew', icon: 'i-lucide-users' },
+  ].map((x) => ({ label: x.label, icon: x.icon, to: `/brakeman?kind=${x.kind}&subject=${encodeURIComponent(`ticket:${props.ticketKey}`)}` })),
+)
 </script>
 
 <template>
@@ -754,6 +763,11 @@ const MAX_ACCEPTANCE = 16 << 10
             <span class="text-dimmed">/</span>
             <span class="flex-none font-mono" data-ticket-key>{{ ticketKey }}</span>
           </span>
+        </template>
+        <template v-if="brakeman.available.value" #right>
+          <UDropdownMenu :items="askBrakeman" :content="{ align: 'end' }">
+            <UButton label="Ask Brakeman" icon="i-lucide-notebook-pen" color="neutral" variant="ghost" size="sm" data-ticket-ask-brakeman />
+          </UDropdownMenu>
         </template>
       </UDashboardNavbar>
     </template>
