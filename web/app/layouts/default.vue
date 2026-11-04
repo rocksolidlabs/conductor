@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
-import { SIDEBAR_SIZE } from '~/utils/sidebar'
+import { SIDEBAR_SIZE, SIDEBAR_WIDTH } from '~/utils/sidebar'
 import { noticeWords, updateFailedWords, updateReadyWords } from '~/utils/desktop'
 
 const showToken = ref(false)
@@ -96,9 +96,11 @@ async function expandByButton() {
 // the group's persistence off, Nuxt UI keeps it for the visit only. Nuxt UI
 // takes the starting width from defaultSize when the sidebar sets up, and
 // goes back to defaultSize on a double-click on the handle: the saved width
-// for the first, 18 % again after mount for the second.
+// for the first, the minimum after mount for the second (#437). The bounds
+// follow the window, and SIDEBAR_WIDTH keeps the drawn width within them.
 const sidebarDefaultSize = ref(sidebar.size.value)
-onMounted(() => (sidebarDefaultSize.value = SIDEBAR_SIZE.default))
+onMounted(() => (sidebarDefaultSize.value = SIDEBAR_SIZE.min))
+sidebar.follow()
 
 // The share links joined from here: looked at again every minute, for the sidebar's Shared with you.
 const joined = useJoined()
@@ -163,7 +165,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibility)
 })
 
-/** Saves the full sidebar's width (Nuxt UI's `--width` on its root, in percent) once a drag or a double-click on the handle has set it. */
+/** Saves the full sidebar's width (Nuxt UI's `--width` on its root, in rem) once a drag or a double-click on the handle has set it. */
 async function keepWidth() {
   await nextTick()
   if (sidebar.rail.value) return
@@ -265,16 +267,17 @@ defineShortcuts({
 
 <template>
   <!-- Below lg the bottom bar needs the room; with viewport-fit=cover its padding reads the safe area. -->
-  <UDashboardGroup :persistent="false" class="pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0">
+  <UDashboardGroup :persistent="false" unit="rem" class="pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0">
     <!-- The rail's classes are lg: only: below lg the slideover gets the same header, body and footer classes, and keeps the full sidebar's. -->
     <UDashboardSidebar
       :id="SIDEBAR_ID"
       v-model:collapsed="railModel"
       collapsible
       :resizable="!sidebar.rail.value"
-      :min-size="SIDEBAR_SIZE.min"
+      :min-size="sidebar.bounds.value.min"
       :default-size="sidebarDefaultSize"
-      :max-size="SIDEBAR_SIZE.max"
+      :max-size="sidebar.bounds.value.max"
+      :style="sidebar.rail.value ? undefined : { width: SIDEBAR_WIDTH }"
       :ui="{
         header: sidebar.rail.value ? 'lg:px-0 lg:justify-center' : undefined,
         body: sidebar.rail.value ? 'gap-0 py-2 lg:px-1' : 'gap-0 py-2',

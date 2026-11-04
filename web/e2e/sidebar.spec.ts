@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { Locator, Page } from '@playwright/test'
 import { endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
 import { serverBinary, stubBash, stubPath } from './server'
 
@@ -94,6 +95,9 @@ test('a run sits whole in Needs you: its header, then its members, the one askin
   await expect(members.nth(0)).toHaveAttribute('data-row-state', 'needs')
   await expect(members.nth(0)).toContainText('review')
   await expect(members.nth(0).locator('[data-row-prompt]')).toContainText('Trust this folder?')
+  // At the sidebar's minimum (#437) the choices wrap inside it.
+  const choices = members.nth(0).locator('[data-row-answer] button')
+  for (let i = 0; i < (await choices.count()); i++) await fitsSidebar(page, choices.nth(i))
   await expect(members.nth(1)).toContainText('lead')
   await expect(members.nth(1).locator('[data-row-meta]')).toHaveText(/^claude · \d+[smh]/)
   // Other specs leave sessions behind: the counts are checked by shape, not by number.
@@ -229,6 +233,7 @@ test('a row offers Share, Stop and More on hover, with the same menu on a right-
   const row = page.locator(`[data-session-list] [data-sidebar-row="s:${alive!.id}"]`).first()
   await row.hover()
   await expect(row.locator('[data-row-actions]')).toBeVisible()
+  await fitsSidebar(page, row.locator('[data-row-actions]'))
   // Share opens the dialog on this session, with one link made and copied.
   await row.locator('[data-row-share]').click()
   const dialog = page.getByRole('dialog')
@@ -260,6 +265,7 @@ test('a member stops from its own row after the row asks; the run stops from its
   await lead.locator('[data-row-stop]').click()
   await expect(lead.locator('[data-row-stop-confirm]')).toHaveText('Stop lead?')
   await expect(lead).toContainText('Its terminal closes')
+  await fitsSidebar(page, lead.locator('[data-row-stop-buttons]'))
   await lead.locator('[data-confirm-stop]').click()
   await expect.poll(async () => (await api.session(leadId)).status, { timeout: 15_000 }).toMatch(/exited|stopped/)
   // Exited inside its run, with Resume; the run stays where review still asks.
@@ -267,9 +273,12 @@ test('a member stops from its own row after the row asks; the run stops from its
   await expect(lead.locator('[data-resume]')).toBeVisible()
   await expect(page.locator(`[data-sidebar-section="needs"] [data-sidebar-run-block="${runId}"]`)).toHaveCount(1)
   // The run from its header: it asks in the row, then every member ends and the block moves to Exited, whole.
-  await block.locator('[data-sidebar-run-group]').hover()
+  // Hovered at its play icon: at the sidebar's minimum (#437) the actions it shows cover the middle of the header.
+  await block.locator('[data-sidebar-run-group]').hover({ position: { x: 12, y: 12 } })
   await block.locator('[data-run-stop]').click()
   await expect(block.locator('[data-run-stop-confirm]')).toHaveText('Stop e2e sidebar crew?')
+  // The run header's confirm at the sidebar's minimum (#137, #437): its buttons whole inside it.
+  await fitsSidebar(page, block.locator('[data-run-stop-buttons]'))
   await block.locator('[data-confirm-stop]').click()
   await expect.poll(async () => !!(await api.run(runId)).stoppedAt, { timeout: 20_000 }).toBe(true)
   const exited = page.locator('[data-sidebar-section="exited"]').first()
@@ -452,3 +461,185 @@ test('the rail: the counts on top, a capsule holding its members, the corner til
   await api.stopRun(run2)
   await api.call('DELETE', `/api/crews/${encodeURIComponent(crew2)}`)
 })
+
+// The full sidebar's width (#437): it opens at its minimum, 12.5 rem (200 px), on every screen; a drag widens it up to 26 % of
+// the window and no narrower than the minimum, and on toward the window's edge gives the rail. Each case has its own page, so
+// its own browser context and storage.
+test.describe('the full sidebar\'s width', () => {
+  const MIN = 200
+  const handle = (page: Page) => page.locator('[role="separator"][aria-controls="dashboard-sidebar-main"]')
+  const width = (page: Page) => page.locator('#dashboard-sidebar-main').evaluate((el) => el.getBoundingClientRect().width)
+  const saved = (page: Page, key = 'conductor.sidebar.width') => page.evaluate((k) => localStorage.getItem(k), key)
+  /** Where the handle is: it is 0 px wide with a 12 px hit area, so the mouse goes to its box, not a locator's click. */
+  async function grip(page: Page) {
+    const box = (await handle(page).boundingBox())!
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+  }
+  /** Presses the handle and moves to each x in turn, holding; `release` lets go at the last. */
+  async function drag(page: Page, xs: number[], release = true) {
+    const at = await grip(page)
+    await page.mouse.move(at.x, at.y)
+    await page.mouse.down()
+    for (const x of xs) await page.mouse.move(x, at.y, { steps: 4 })
+    if (release) await page.mouse.up()
+  }
+  async function open(page: Page, path = '/crews') {
+    await page.goto(path)
+    await expect(handle(page)).toBeAttached()
+    await expect(page.locator('[data-session-list="sidebar"]')).toBeVisible()
+  }
+
+  for (const [w, h] of [
+    [1440, 900],
+    [2560, 1440],
+  ] as const) {
+    test(`with no saved width it opens at its minimum, 200 px, at ${w}×${h}`, async ({ page }) => {
+      await page.setViewportSize({ width: w, height: h })
+      await open(page)
+      await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+      expect(await saved(page)).toBeNull()
+    })
+  }
+
+  test('a drag widens it, and one past 26 % of the window stops there', async ({ page }) => {
+    await open(page)
+    await drag(page, [300])
+    await expect.poll(() => width(page)).toBeCloseTo(300, 0)
+    await expect.poll(() => saved(page)).toBe('18.75')
+    await drag(page, [900])
+    // 26 % of 1440 px.
+    await expect.poll(() => width(page)).toBeCloseTo(374.4, 0)
+    await expect.poll(() => saved(page)).toBe('23.4')
+  })
+
+  test('a drag left stops at the minimum, and going on to the window\'s edge gives the rail', async ({ page }) => {
+    await open(page)
+    await drag(page, [300])
+    await drag(page, [120], false)
+    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+    await page.mouse.move(1, (await grip(page)).y, { steps: 4 })
+    await page.mouse.up()
+    await expect(page.locator('[data-rail]')).toBeVisible()
+    await expect.poll(() => width(page)).toBe(64)
+    await expect(handle(page)).toHaveCount(0)
+  })
+
+  test('a reload keeps the width, and a double-click on the handle returns it to the minimum', async ({ page }) => {
+    await open(page)
+    await drag(page, [320])
+    await expect.poll(() => saved(page)).toBe('20')
+    await page.reload()
+    await expect(handle(page)).toBeAttached()
+    await expect.poll(() => width(page)).toBeCloseTo(320, 0)
+    const at = await grip(page)
+    await page.mouse.dblclick(at.x, at.y)
+    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+    await expect.poll(() => saved(page)).toBe('12.5')
+  })
+
+  test('the rail and back keeps the width', async ({ page }) => {
+    await open(page)
+    await drag(page, [310])
+    await page.locator('[data-sidebar-collapse]').click()
+    await expect(page.locator('[data-rail]')).toBeVisible()
+    await expect.poll(() => width(page)).toBe(64)
+    await page.locator('[data-rail-expand]').click()
+    await expect(page.locator('[data-session-list="sidebar"]')).toBeVisible()
+    await expect.poll(() => width(page)).toBeCloseTo(310, 0)
+  })
+
+  test('a width saved before this change is dropped once: the sidebar opens at the minimum, and a drag after that is kept', async ({ page }) => {
+    await open(page)
+    await page.evaluate(() => localStorage.setItem('conductor.sidebar.size', '24'))
+    await page.reload()
+    await expect(handle(page)).toBeAttached()
+    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+    expect(await saved(page, 'conductor.sidebar.size')).toBeNull()
+    await drag(page, [260])
+    await expect.poll(() => saved(page)).toBe('16.25')
+    await page.reload()
+    await expect(handle(page)).toBeAttached()
+    await expect.poll(() => width(page)).toBeCloseTo(260, 0)
+  })
+
+  test('resizing the window keeps the width within the new bounds', async ({ page }) => {
+    await open(page)
+    await drag(page, [900])
+    await expect.poll(() => width(page)).toBeCloseTo(374.4, 0)
+    // At 1024 px the most is 26 %, 266 px; a drag there stops at it too.
+    await page.setViewportSize({ width: 1024, height: 900 })
+    await expect.poll(() => width(page)).toBeCloseTo(266.24, 0)
+    await drag(page, [600])
+    await expect.poll(() => width(page)).toBeCloseTo(266.24, 0)
+    // Wider again: the width stays what it was, the drag's bound grows back.
+    await page.setViewportSize({ width: 2560, height: 1440 })
+    await expect.poll(() => width(page)).toBeCloseTo(266.24, 0)
+    await drag(page, [1500])
+    await expect.poll(() => width(page)).toBeCloseTo(665.6, 0)
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await expect.poll(() => width(page)).toBeCloseTo(374.4, 0)
+    // Narrowed while at the minimum: still the minimum.
+    const at = await grip(page)
+    await page.mouse.dblclick(at.x, at.y)
+    await page.setViewportSize({ width: 1024, height: 900 })
+    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+  })
+
+  test('at the minimum the header, Launch agent, the filter and a pending update sit inside the sidebar', async ({ page, state }) => {
+    // The desktop app's bridge with an update ready: the header's widest, its update button beside Alerts and your menu.
+    await page.addInitScript(
+      ({ token, url }) => {
+        ;(window as unknown as { conductorDesktop: unknown }).conductorDesktop = {
+          version: 'e2e',
+          platform: 'linux',
+          token: async () => token,
+          openExternal: async () => {},
+          settings: { get: async () => ({}), set: async (p: object) => p },
+          restartServer: async () => {},
+          openInBrowser: async () => {},
+          showLog: async () => {},
+          serverState: async () => ({ state: 'running', url, failures: 0 }),
+          notice: async () => '',
+          ice: async () => ({ forwarding: false, port: 0, publicIp: '', wslAddress: '', firewall: 'unknown' }),
+          allowIceFirewall: async () => 'unknown',
+          versions: async () => ({ app: 'e2e', electron: '', node: '', chrome: '', server: '' }),
+          onServerState: () => () => {},
+          update: async () => ({ ready: '0.7.0-rc.99', announce: false, failed: '' }),
+          onUpdate: () => () => {},
+          onInvite: () => () => {},
+          installUpdate: async () => 'gone',
+        }
+      },
+      { token: state.token, url: state.baseURL },
+    )
+    await open(page)
+    const root = page.locator('#dashboard-sidebar-main')
+    await expect(root.locator('[data-header-update]')).toBeVisible()
+    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+    const header = root.locator('[data-slot="header"]')
+    const parts = [
+      header.locator('[data-header-update]'),
+      header.locator('[data-header-alerts]'),
+      header.locator('[data-header-account]'),
+      header.locator('[data-sidebar-collapse]'),
+      root.getByRole('button', { name: /Launch agent/ }).first(),
+      root.getByRole('textbox').first(),
+    ]
+    for (const part of parts) await fitsSidebar(page, part)
+    expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
+  })
+})
+
+/** Nothing of the sidebar spills sideways, and `part` sits whole inside it: at the minimum width every spec runs at (#437). */
+async function fitsSidebar(page: Page, part: Locator) {
+  const root = page.locator('#dashboard-sidebar-main')
+  const sides = await root.evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    const spill = [el, ...Array.from(el.querySelectorAll('[data-slot="header"], [data-slot="body"], [data-slot="footer"]'))].filter((e) => e.scrollWidth > e.clientWidth)
+    return { left: r.left, right: r.right, spill: spill.length }
+  })
+  expect(sides.spill).toBe(0)
+  const box = (await part.boundingBox())!
+  expect(box.x).toBeGreaterThanOrEqual(sides.left)
+  expect(box.x + box.width).toBeLessThanOrEqual(sides.right)
+}
