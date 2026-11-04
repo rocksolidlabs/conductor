@@ -47,16 +47,17 @@ type selfLinkInput struct {
 }
 
 // selfCounters bound what each session may do: crews formed per hour,
-// links minted per day.
+// links minted per day, links opened per minute (opens.go).
 type selfCounters struct {
 	mu    sync.Mutex
 	crews map[string][]time.Time
 	links map[string][]time.Time
+	opens map[string][]time.Time
 	now   func() time.Time
 }
 
 func newSelfCounters() *selfCounters {
-	return &selfCounters{crews: map[string][]time.Time{}, links: map[string][]time.Time{}, now: time.Now}
+	return &selfCounters{crews: map[string][]time.Time{}, links: map[string][]time.Time{}, opens: map[string][]time.Time{}, now: time.Now}
 }
 
 // take records one use for id in m within window when fewer than limit are

@@ -54,6 +54,17 @@ func fakeSelf(t *testing.T) (*httptest.Server, *[]map[string]any) {
 		record(r, body)
 		_ = json.NewEncoder(w).Encode(map[string]any{"url": "http://example.test/join/tok", "link": map[string]any{"role": "view"}, "token": "tok"})
 	})
+	mux.HandleFunc("POST /api/sessions/s1/open", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		record(r, body)
+		if body["url"] == "ftp://example.test/" {
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"error":{"code":"invalid_url","message":"url must be an http:// or https:// URL with a host"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"outcome": "browser", "browser": map[string]any{"name": "edge", "profile": "Profile 2"}, "message": "opened in edge (Profile 2)"})
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, &seen

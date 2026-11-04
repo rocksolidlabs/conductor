@@ -350,6 +350,16 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		return nil, newAPIError(http.StatusBadRequest, "invalid_cwd", "working directory does not exist")
 	}
 	procEnv := pty.BuildEnv(pty.ParentEnv(), passthrough, env, inject)
+	// An agent whose links open in the browser its settings name (#436)
+	// opens them itself through Conductor's opener, unless it has a BROWSER
+	// of its own (its env, its envPassthrough, the launch's).
+	if agent.Browser.Named() && bin != "" {
+		if opener, err := agents.Opener(hooksDir, bin); err != nil {
+			s.log.Warn("the opener for BROWSER could not be written; the agent opens links its own way", "agent", agent.ID, "err", err)
+		} else {
+			procEnv = agents.WithOpener(procEnv, opener)
+		}
+	}
 	// An agent whose environment moves its configuration directory (a copy
 	// of Claude Code under a CLAUDE_CONFIG_DIR of its own, #291) reads its
 	// skills there: the skill goes there too.
