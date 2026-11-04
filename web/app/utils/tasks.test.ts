@@ -72,7 +72,10 @@ describe('taskWords', () => {
     [task({ state: 'verifying', attempts: 1, attempt: { n: 1, state: 'verifying' } }), 'attempt 1: checking the result', 'default'],
     [task({ state: 'succeeded', result: { attempt: 2, commit: 'abc', summary: 'built it', at: '' } }), 'succeeded by attempt 2: built it', 'success'],
     [task({ state: 'succeeded', kind: 'review', result: { attempt: 1, verdict: 'approved', at: '' } }), 'approved', 'success'],
-    [task({ state: 'succeeded', kind: 'review', result: { attempt: 1, verdict: 'needs_changes', findings: [{ severity: 'major', message: 'x' }], at: '' } }), 'asked for changes (1 findings)', 'success'],
+    [task({ state: 'succeeded', kind: 'review', result: { attempt: 1, verdict: 'needs_changes', findings: [{ severity: 'major', message: 'x' }], at: '' } }), 'asked for changes (1 finding)', 'success'],
+    [task({ state: 'succeeded', kind: 'review', result: { attempt: 1, verdict: 'needs_changes', findings: [{ severity: 'major', message: 'x' }, { severity: 'minor', message: 'y' }], at: '' } }), 'asked for changes (2 findings)', 'success'],
+    [task({ state: 'succeeded', kind: 'review', result: { attempt: 1, verdict: 'approved', findings: [{ severity: 'nit', message: 'x' }], at: '' } }), 'approved with 1 note', 'success'],
+    [task({ state: 'succeeded', kind: 'review', result: { attempt: 1, verdict: 'approved', findings: [{ severity: 'nit', message: 'x' }, { severity: 'nit', message: 'y' }, { severity: 'minor', message: 'z' }], at: '' } }), 'approved with 3 notes', 'success'],
     [task({ state: 'failed', reason: 'attempt 3 failed at check go: exited 1' }), 'attempt 3 failed at check go: exited 1', 'error'],
     [task({ state: 'cancelled' }), 'cancelled', 'muted'],
   ] as const)('%o → %s', (t, text, tone) => {

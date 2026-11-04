@@ -12,6 +12,7 @@ import {
   commentGaps,
   commentsRereadFrom,
   earlierComments,
+  handedCommentWords,
   inlineImage,
   isLabelColor,
   labelDot,
@@ -143,6 +144,19 @@ describe('the comments shown', () => {
     expect(commentAuthor({ author: 'admin', by: 'Nate' })).toBe('Nate')
     expect(commentAuthor({ author: 'admin', by: '' })).toBe('admin')
     expect(commentAuthor({ author: 'agent:builder', by: '' })).toBe('builder')
+  })
+
+  it("name a comment a plan revision hands over by the person's display name, else its actor (#590)", () => {
+    const handed = [
+      { id: 'c1', n: 1, author: 'admin', by: 'Dana Reyes' },
+      { id: 'c2', n: 2, author: 'admin', by: '' },
+      { id: 'c3', n: 3, author: 'agent:builder', by: '', deletedAt: '2026-11-04T00:00:00Z' },
+    ]
+    expect(handedCommentWords(handed, 'c1')).toBe('#1 by Dana Reyes')
+    expect(handedCommentWords(handed, 'c2')).toBe('#2 by admin')
+    expect(handedCommentWords(handed, 'c3')).toBe('#3 by builder (deleted since)')
+    expect(handedCommentWords(handed, 'c9')).toBe('a comment not among the latest read')
+    expect(handedCommentWords(undefined, 'c1')).toBe('a comment not among the latest read')
   })
 })
 
