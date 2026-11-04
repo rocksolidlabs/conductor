@@ -21,7 +21,7 @@ sequenceDiagram
   participant S as conductor serve
   participant P as PTY (claude, codex, …)
   B->>S: POST /api/sessions {agentId}
-  S->>P: fork with creack/pty
+  S->>P: start through the Runtime (native: creack/pty)
   B->>S: GET /ws/sessions/{id}?token=… + hello
   S-->>B: welcome, SCROLLBACK…, ready
   P-->>S: output
@@ -29,6 +29,26 @@ sequenceDiagram
   B->>S: INPUT / resize (control role only)
   S->>P: write / TIOCSWINSZ
 ```
+
+Every server session's process starts through a Runtime (`ext.Runtime`,
+`docs/plans/runtime.md`): `createLocalSession` builds its argv, folder
+(opened and checked) and environment, and hands them to the Runtime's
+`StartTerminal`, which answers a terminal the session drives through
+`session.RuntimeProcess`. The server keeps two Runtimes, set in `New`: the
+native one (`local.Native()`, `pty.Start` as before), which a person's
+session, a resume, a legacy crew's member and an attempt of a run the
+offered one declined start in, and the one its engine offers managed runs,
+the registered one behind the guard (its `Takes` within `ext.TakesWait`, a
+process method's panic logged at error and refused, and the terminal and
+the service it answers guarded too: a panic in one of their methods is
+logged at error and ends that process, never the server; a stop of it
+that fails leaves it running and not done, and the next stop asks the
+Runtime again, under an ended context too; one that succeeds ends it
+before it returns, so the session records its exit code) or, with none
+registered, the native one; an attempt's session starts in its run's
+(`crew.LaunchSpec.Where`). `conductor host` starts its command the same
+way, through `hostagent.Options.Runtime`, the native one, whatever is
+registered.
 
 `internal/session.Local` owns the PTY: a pump goroutine copies output into a
 256 KiB ring buffer and broadcasts it to subscribers. Each subscriber has its own
@@ -674,12 +694,17 @@ to `api.New` through `api.WithExtensions`. `New`'s options are read before
 it writes anything (the masked `catalog.json`, the crews' migration, the
 ledger's recovery), and a server made without the option holds
 `local.Fill(ext.Providers{})`, the free build. `runHost` closes the
-registry and uses nothing of it until the Runtime seam.
+registry and uses nothing of it: the host's command starts through the
+native Runtime whatever is registered, since a host runs no managed run.
 
 **The guard.** `New` wraps every provider in the guard
 (`internal/api/extensions.go`), defaults included, so no seam tells a
-default from a provider. A direct call goes through `extCall`: it runs
-within the interface's wait (`IdentityWait` 1 s, `RouteWait` 5 s,
+default from a provider, but for the Runtime: a registered one is wrapped
+(`internal/api/extruntime.go`), and the free default, `local.Native()`, is
+held as it is, since its `Takes` answers from the ref alone with no I/O and
+its process methods are what the server ran before the seam, so the
+guard would only add a goroutine to every run. A direct call goes through
+`extCall`: it runs within the interface's wait (`IdentityWait` 1 s, `RouteWait` 5 s,
 `ContextWait` 5 s, `ICEWait` 2 s), on a goroutine of its own whose context
 ends with the wait or the caller's, and answers the free default's answer
 when the call errs, panics, answers what the record's `Valid` refuses, or
@@ -970,7 +995,7 @@ still resolved. A switchyard routes and answers none.
 | `cmd/conductor` | the free build's entry point, `app.Main` with no provider registered; `serve`, `host`, `notify`, `hooks`, `skill`, `up`, `crews`, `completion`, `version` |
 | `app` | the public entry point: `Run` (`cli.Run`) and `Main` (signals, the error, the exit code), for this module's `main` and for one in another module that compiles providers in |
 | `ext` | the public extension API, standard library only: the eight interfaces (identity, decisions, context, notifications, sync through `ContinuityStore`, entitlements, media, runtime), their records with their bounds, waits and `Valid` methods, `Starter` and `Host`, and the registry a provider's `init` registers into and `Freeze` closes; a plain build registers nothing |
-| `ext/local` | the free defaults, standard library and `ext` only: `Identity`, `Router`, `Continuity`, `AllowAll` and `Media`, each what main does without a provider (no principal, the empty route, nothing kept, everything allowed, no ICE server or room), and `Fill`, the one place that asks, which puts the default in the identity, router, sync and media slots nothing is registered in; `AllowAll` is the entitlement source's default, which no slot holds, and the runtime slot stays as it is (nil when nothing is registered; its native default is the Runtime plan's) |
+| `ext/local` | the free defaults, standard library and `ext` only: `Identity`, `Router`, `Continuity`, `AllowAll` and `Media`, each what main does without a provider (no principal, the empty route, nothing kept, everything allowed, no ICE server or room), and `Fill`, the one place that asks, which puts the default in the identity, router, sync and media slots nothing is registered in; `AllowAll` is the entitlement source's default, which no slot holds; and `Native`, the native Runtime (`internal/pty` and `internal/proc`, the two packages of this module it may import), which `Fill` puts in the runtime slot |
 | `internal/cli` | flag parsing, help and completion text (the completion table and scripts, the rc-file line); no business logic |
 | `internal/config` | JSON config, `CONDUCTOR_*` overrides, validation |
 | `internal/catalog` | launchable agents (argv arrays, never shell strings), their yolo, trust and session recipes |
@@ -981,13 +1006,13 @@ still resolved. A switchyard routes and answers none.
 | `internal/dispatch` | Dispatch's store: projects, tickets, their discussion and history in `dataDir/dispatch/dispatch.sqlite`; every write a typed operation with a kept receipt and its rows in the `changes` log; no HTTP, no session, no process |
 | `internal/brakeman` | Brakeman's records: its configuration, the requests people make of it, the briefs its turns hand back and their evidence refs, as JSON documents in `dataDir/brakeman/` under its own owner lock; no HTTP, no session, no process |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |
-| `internal/pty` | process start, resize, stop; environment allowlist |
+| `internal/pty` | process start, resize, stop; environment allowlist; the native Runtime's terminal |
 | `internal/proc` | a bounded run of one command outside a PTY: argv, directory, timeout, the output's first and last bytes, the process group killed when the run ends; the managed-run checks' runner (#334) |
-| `internal/session` | ring buffer, fan-out hub, `Local` session (submissions, attention, trust watcher, the agent's own session), registry, bounded file reads |
+| `internal/session` | ring buffer, fan-out hub, `Local` session (submissions, attention, trust watcher, the agent's own session) over a `Process` (a Runtime's terminal through `RuntimeProcess`), registry, bounded file reads |
 | `internal/share` | share tokens (random, hashed at rest) and revocation |
 | `internal/signal` | hosted sessions: host connections, viewer brokering, relay |
-| `internal/api` | HTTP routes, admin/share/host authentication, viewer and host WebSockets; the operating guide (`guide.go`) and Brakeman's desk (`brakeman*.go`) |
-| `internal/hostagent` | `conductor host`: control connection, pion peers, relay, local terminal |
+| `internal/api` | HTTP routes, admin/share/host authentication, viewer and host WebSockets; the operating guide (`guide.go`) and Brakeman's desk (`brakeman*.go`); every server session started through a Runtime (the native one, or the one offered managed runs, `extruntime.go`) |
+| `internal/hostagent` | `conductor host`: control connection, pion peers, relay, local terminal; its command started through `Options.Runtime`, the native one |
 | `internal/notify` | `conductor notify`: reports from inside a session; hook payload mappers, the agent's own session id among what they read |
 | `internal/web` | embedded SPA with index fallback |
 | `web/` | Nuxt 4 + Nuxt UI 4 + xterm 6 workbench |

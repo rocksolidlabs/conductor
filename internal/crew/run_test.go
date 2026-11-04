@@ -38,6 +38,8 @@ type launchCall struct {
 	// agentSHA256 is the spec's AgentSHA256: the approved selection of a
 	// run launched from a ticket.
 	agentSHA256 string
+	// where is the spec's Where: the Runtime the session starts in.
+	where string
 }
 
 // fakeLauncher starts member sessions over fake processes, where the API
@@ -131,7 +133,7 @@ func (f *fakeLauncher) Reserve(ctx context.Context) (*session.Reservation, error
 func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Local, error) {
 	name, ref := spec.Name, spec.Ref
 	f.mu.Lock()
-	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume, maps.Clone(spec.Inject), slices.Clone(spec.Allow), spec.AgentSHA256})
+	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume, maps.Clone(spec.Inject), slices.Clone(spec.Allow), spec.AgentSHA256, string(spec.Where)})
 	err, block := f.fail[name], f.block[name]
 	f.mu.Unlock()
 	if err != nil {
@@ -210,6 +212,17 @@ func (f *fakeLauncher) launched() []string {
 		names = append(names, c.name)
 	}
 	return names
+}
+
+// wheres is the Where of every launch so far, in order.
+func (f *fakeLauncher) wheres() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, c := range f.calls {
+		out = append(out, c.where)
+	}
+	return out
 }
 
 // printOnce makes every process print a prompt and go quiet.

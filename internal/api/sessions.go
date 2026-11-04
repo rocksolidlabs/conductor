@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -65,6 +66,15 @@ type createSessionRequest struct {
 	// catalog entry whose selection it is (agentSelection), and is
 	// refused agent_changed otherwise, before any process exists.
 	agentSHA256 string
+	// ctx bounds the start of the session's process, never its life
+	// (ext.Runtime's StartTerminal): a person's launch and a resume give
+	// their request's without its cancel, since a session whose client
+	// has gone still starts; Launch gives its own. Nil is
+	// context.Background.
+	ctx context.Context
+	// where, set by Launch, is the Runtime the session starts in
+	// (crew.LaunchSpec.Where, runtimeAt): empty is the native one.
+	where ext.Where
 	// spawned, set by Launch for a Brakeman turn's member, is handed the
 	// session as soon as its process exists, before it is registered: the
 	// desk keeps it for its process (memberStarted) even when the
@@ -92,6 +102,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	req.ctx = context.WithoutCancel(r.Context())
 	local, aerr := s.createLocalSession(req, nil)
 	if aerr != nil {
 		writeAPIError(w, aerr)
@@ -127,7 +138,14 @@ func crewInject(ref *session.CrewRef) map[string]string {
 // and announced. It is the one path every server session takes, a crew
 // member's too: crewRef, when set, tags the session with its run (Info.Crew)
 // and gives its process CONDUCTOR_CREW, CONDUCTOR_RUN and CONDUCTOR_MEMBER.
+// Its process starts through a Runtime (req.where, runtimeAt), in the
+// folder opened and checked, with the environment built here.
 func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.CrewRef) (*session.Local, *apiError) {
+	rt, ok := s.runtimeAt(req.where)
+	if !ok {
+		s.log.Warn("session start failed", "agent", req.AgentID, "err", fmt.Sprintf("no Runtime of this server is %q", req.where))
+		return nil, newAPIError(http.StatusBadGateway, "start_failed", "could not start the agent process")
+	}
 	agent, ok := s.Catalog().Get(req.AgentID)
 	if !ok {
 		if req.agentSHA256 != "" {
@@ -336,13 +354,18 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// of Claude Code under a CLAUDE_CONFIG_DIR of its own, #291) reads its
 	// skills there: the skill goes there too.
 	s.installSkillInConfigDir(agent.Adapter, agents.ConfigDirOf(agent.Adapter, pty.Lookup(procEnv)), hooksDir)
-	proc, err := pty.Start(pty.Spec{
+	startCtx := req.ctx
+	if startCtx == nil {
+		startCtx = context.Background()
+	}
+	term, err := rt.StartTerminal(startCtx, ext.TerminalSpec{
 		Argv:    argv,
 		Dir:     cwd,
 		DirFile: dirFile,
 		Env:     procEnv,
 		Cols:    cols,
 		Rows:    rows,
+		Ref:     processRefOf(id, crewRef),
 	})
 	dirFile.Close()
 	if err != nil {
@@ -369,7 +392,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		ref := *crewRef
 		info.Crew = &ref
 	}
-	local := session.NewLocal(info, proc, session.Options{
+	local := session.NewLocal(info, session.RuntimeProcess(term), session.Options{
 		ScrollbackBytes: s.cfg.ScrollbackBytes,
 		MaxViewers:      s.cfg.MaxViewersPerSession,
 		FileView:        string(s.cfg.FileView),
@@ -406,7 +429,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		return nil, newAPIError(http.StatusConflict, "too_many_sessions", "session limit reached")
 	}
 	keepFolder = true
-	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", proc.PID(), "yolo", applied)
+	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", term.Process().PID, "yolo", applied)
 	if yolo && !applied {
 		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: noYoloRecipe(agent)})
 	}

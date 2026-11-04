@@ -30,6 +30,8 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -142,6 +144,12 @@ type Options struct {
 	// workbench, stops it and forwards its agent's reports, and leaves it off.
 	Switchyard bool
 
+	// Runtime starts the hosted command (docs/plans/runtime.md): nil is the
+	// native one (local.Native), as a nil Log is slog.Default. conductor
+	// host leaves it nil whatever is registered, since a host runs no
+	// managed run and a hosted session is a person's.
+	Runtime ext.Runtime
+
 	// transport, when set (tests), is the control connection's transport in
 	// place of the standard one: a test's names dialed to its own servers.
 	transport *http.Transport
@@ -168,6 +176,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 	if opts.Log == nil {
 		opts.Log = slog.Default()
+	}
+	if opts.Runtime == nil {
+		opts.Runtime = local.Native()
 	}
 	if opts.Insecure && config.PlainOffMachine(opts.ServerURL) {
 		opts.Log.Warn("--insecure: the server is plain http and not localhost or a loopback address; what passes between it and this host travels in the clear and unverified", "server", serverHost(opts.ServerURL))
@@ -237,7 +248,18 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	procEnv := hostEnv(env)
-	proc, err := pty.Start(pty.Spec{Argv: opts.Argv, Dir: dir, DirFile: dirFile, Env: procEnv, Cols: cols, Rows: rows})
+	// The native start is not bounded by ctx, as pty.Start never was: a
+	// host stopped as its command starts starts it and then stops it below,
+	// and returns as it always has, with the command's exit and no error.
+	// Another Runtime's start is bounded by ctx, as its contract has it: one
+	// that ends before the Runtime's commitment point is a start that
+	// failed, and Run returns its error.
+	startCtx := ctx
+	if opts.Runtime.Where() == ext.WhereNative {
+		startCtx = context.WithoutCancel(ctx)
+	}
+	term, err := opts.Runtime.StartTerminal(startCtx, ext.TerminalSpec{Argv: opts.Argv, Dir: dir, DirFile: dirFile, Env: procEnv, Cols: cols, Rows: rows,
+		Ref: ext.ProcessRef{Session: registered.SessionID}})
 	dirFile.Close()
 	if err != nil {
 		folder.Close()
@@ -260,7 +282,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		Branch:    session.GitBranch(dir),
 		CreatedAt: time.Now().UTC(),
 	}
-	local := session.NewLocal(info, proc, session.Options{
+	local := session.NewLocal(info, session.RuntimeProcess(term), session.Options{
 		ScrollbackBytes: opts.ScrollbackBytes,
 		MaxViewers:      opts.MaxViewers,
 		FileView:        opts.FileView,
@@ -279,7 +301,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		WatchGit:   true,
 	})
 	a.mu.Lock()
-	a.local, a.proc = local, proc
+	a.local = local
 	a.mu.Unlock()
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -316,7 +338,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	a.closeAllPeers()
 	// The viewers' editors end apart from them: none outlives the host.
 	local.WaitEditors()
-	exit := proc.Exit()
+	exit := term.Exit()
 	return Result{SessionID: a.sessionID(), ExitCode: exit.Code}, nil
 }
 
@@ -327,7 +349,6 @@ type agent struct {
 	cols  uint16
 	rows  uint16
 	local *session.Local
-	proc  *pty.Process
 	log   *slog.Logger
 
 	mu     sync.Mutex

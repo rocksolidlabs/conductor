@@ -73,7 +73,10 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return 2, errors.New("a command is required after --")
 	}
 	// The registry is closed in host mode too, so no provider registers
-	// mid-run; nothing of it is used here until the Runtime seam (C10).
+	// mid-run. Nothing of it is used: the host's command starts through
+	// the native Runtime (hostagent.Options.Runtime left nil) whatever is
+	// registered, since a host runs no managed run and a hosted session is
+	// a person's (docs/plans/runtime.md, decision RT7).
 	_ = extensions()
 	// The environment's server is read once the flags are, as conductor up
 	// reads it: never a flag's default, which usage messages print.

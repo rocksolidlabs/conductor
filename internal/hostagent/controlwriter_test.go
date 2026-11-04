@@ -326,7 +326,7 @@ func TestARelayedViewerWhoseFramesWaitTooLongIsLetGoAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer proc.Stop(context.Background(), time.Second)
-	a := &agent{opts: Options{}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1", relayWait: 300 * time.Millisecond, controlWait: 200 * time.Millisecond}
+	a := &agent{opts: Options{}, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1", relayWait: 300 * time.Millisecond, controlWait: 200 * time.Millisecond}
 	w := a.useConn(c, pc)
 	t.Cleanup(w.stop)
 	a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
@@ -605,7 +605,7 @@ func TestAStatusWatcherEndsWithItsConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer proc.Stop(context.Background(), time.Second)
-	a := &agent{opts: Options{}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
+	a := &agent{opts: Options{}, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
 	a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
 	for range 3 {
 		_, c, pc := dialHeld(t, 0)
@@ -799,7 +799,7 @@ func TestTheSessionsEndGoesAfterTheViewersLastFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer proc.Stop(context.Background(), time.Second)
-	a := &agent{opts: Options{Switchyard: true}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
+	a := &agent{opts: Options{Switchyard: true}, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
 	w := a.useConn(c, pc)
 	t.Cleanup(w.stop)
 	a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{OnActivity: a.onLocalActivity})
@@ -865,7 +865,7 @@ func TestARevocationGoesAtOnceUnlessTheSessionEnded(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer proc.Stop(context.Background(), time.Second)
-			a := &agent{opts: Options{Switchyard: true}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
+			a := &agent{opts: Options{Switchyard: true}, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
 			w := a.useConn(c, pc)
 			t.Cleanup(w.stop)
 			a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{OnActivity: a.onLocalActivity})

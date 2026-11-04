@@ -144,7 +144,7 @@ func activityTestAgent(t *testing.T, delayStatus time.Duration) (*agent, chan an
 	}
 	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
 	out := make(chan any, 64)
-	a := &agent{opts: Options{}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
+	a := &agent{opts: Options{}, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
 	a.sendHook = func(v any) { out <- v }
 	a.activity = newActivityForwarder(a.sendActivity, a.sendChat, a.log)
 	go a.activity.run(t.Context())

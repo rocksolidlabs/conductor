@@ -3603,7 +3603,52 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   every existing crew test, its checks and steps now through the adapter.
 
   PR-3 (#492): sessions start through the Runtime, on the server and on a
-  host. Planned.
+  host. `createLocalSession` starts every server session's process through
+  a Runtime's `StartTerminal` (its argv, the folder `openCwd` opened, the
+  environment Conductor built, the size, and its `ProcessRef`: the
+  session, and its run, task, attempt and `worktree` from its crew
+  reference), and the session drives the terminal through
+  `session.RuntimeProcess`. The server keeps two Runtimes, set in `New`:
+  the native one, which a person's session, a resume, a legacy crew's
+  member and an attempt of a declined run start in, and the one its engine
+  offers managed runs (`Engine.SetRuntime`, called in `New` before any run
+  is made): a registered Runtime behind the guard (its `Takes` within
+  `ext.TakesWait`, a late, failing or panicking answer, or one asked before
+  its `Start` has succeeded, a run declined; a process method's panic
+  logged at error and refused as a failed start), the free default
+  otherwise. An attempt's launch names its run's Runtime
+  (`crew.LaunchSpec.Where`); a launch naming none of the server's is
+  `start_failed`. A person's launch and a resume pass their request's
+  context without its cancel, so a session whose client has gone still
+  starts; `Launch` passes its own. `conductor host` starts its command
+  through `hostagent.Options.Runtime`, which it leaves nil, the native one,
+  whatever is registered (RT7), with its context's cancel removed, so a
+  host stopped as its command starts starts it, stops it and exits with
+  no error, as before; the host keeps no handle on the process
+  but its session's. `internal/api` and `internal/hostagent` leave the
+  boundary test's allowlist, which is `ext/local`, the two runners and
+  sessiontest's fake alone from here. Tests: `TestARuntimeTerminalDrivesALocal`,
+  `TestARuntimeTerminalsExitIsAPtyExitStatus`;
+  `TestASessionStartsThroughTheNativeRuntime`,
+  `TestAPersonsSessionIsNotOffered`, `TestAnAttemptStartsInItsRunsRuntime`,
+  `TestARefusedStartIsStartFailed`,
+  `TestWithExtensionsOffersTheEngineTheRuntime`,
+  `TestAStartThatPanicsAfterItsProcessIsRefusedWithNoneLeft`,
+  `TestATakesThatPanicsOrStallsRunsNatively`,
+  `TestAServerWithNothingRegisteredStartsNatively`,
+  `TestARuntimeThatIsAStarterIsStartedFirst`,
+  `TestATerminalThatPanicsAndWhoseStopFailsIsStoppedAgain`,
+  `TestAPanickedTerminalIsStoppedAgainUnderAnEndedContext`,
+  `TestAGuardsRetryUnderAnEndedContextReachesTheRuntime`,
+  `TestAStoppedTerminalsExitIsRecordedBeforeTheGuardsWatch`,
+  `TestAStoppedServiceIsDoneWhenItsStopReturns`,
+  `TestAPersonsSessionOutlivesItsRequest`; `TestAHostStartsThroughTheRuntime`,
+  `TestAHostWithNoRuntimeRunsNatively`,
+  `TestAHostWhoseRuntimeRefusesTheStartFails`,
+  `TestAHostStoppedAsItStartsStartsAndStops`;
+  `TestRunServeOffersTheRegisteredRuntime`, `TestRunHostRunsNatively`; the
+  crew's Runtime tests check the launch's `Where`; every existing PTY,
+  viewer and host test on the native Runtime.
 
   PR-4 (#493): every attempt and its evidence say where they ran (ledger
   schema 6). Planned.

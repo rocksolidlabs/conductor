@@ -91,7 +91,7 @@ func TestPeerDataChannelLoopback(t *testing.T) {
 	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
 
 	out := make(chan any, 64)
-	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	a.sendHook = func(v any) { out <- v }
 
 	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
@@ -457,7 +457,7 @@ func TestPeerCarriesChatOverTheDataChannel(t *testing.T) {
 	local := session.NewLocal(session.Info{ID: "s", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
 	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
 	out := make(chan any, 64)
-	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	a.sendHook = func(v any) { out <- v }
 	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 	if err := p.startWebRTC(nil); err != nil {
@@ -516,7 +516,7 @@ func TestPeerTakesTheSizeOnlyByAsking(t *testing.T) {
 	}
 	defer local.Detach(own)
 	out := make(chan any, 64)
-	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	a.sendHook = func(v any) { out <- v }
 	p := newPeer(a, "0123456789abcdef", session.RoleControl, "link1", "laptop", false)
 	if err := p.startWebRTC(nil); err != nil {
@@ -675,7 +675,7 @@ func TestAnOversizedSavePartOverTheDataChannelLetsTheViewerGo(t *testing.T) {
 	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
 	out := make(chan any, 64)
 	errs := make(chan proto.ViewerError, 4)
-	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	a.sendHook = func(v any) {
 		if e, ok := v.(proto.ViewerError); ok {
 			errs <- e

@@ -63,7 +63,8 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	room := s.runs.ChatRoom(ref.RunID)
 	name, renamed := s.memberSessionName(spec)
 	req := createSessionRequest{AgentID: spec.AgentID, Name: name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom,
-		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow, agentSHA256: spec.AgentSHA256}
+		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow, agentSHA256: spec.AgentSHA256,
+		ctx: ctx, where: spec.Where}
 	if spec.Class == crew.ClassBrakeman {
 		if aerr := s.brakemanLaunch(spec, &req, &ref); aerr != nil {
 			return nil, aerr

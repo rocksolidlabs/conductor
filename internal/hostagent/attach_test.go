@@ -66,7 +66,7 @@ func relayAgent(t *testing.T, gate *joinGate, maxViewers int) *agent {
 	}
 	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
 	local := session.NewLocal(session.Info{ID: "s", Cols: 80, Rows: 24}, proc, session.Options{OnActivity: gate.hook, Log: discardLog, MaxViewers: maxViewers})
-	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "s"}
+	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog, sessID: "s"}
 	a.useConn(conn, pc)
 	return a
 }
