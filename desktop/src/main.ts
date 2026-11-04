@@ -240,6 +240,7 @@ async function run() {
       preload: join(__dirname, 'preload.js'),
       origin,
       icon: iconPath(),
+      zoomLevel: settings.zoomLevel,
       onClose: (w, e) => {
         if (!quitting && settings.closeToTray && tray) {
           e.preventDefault()

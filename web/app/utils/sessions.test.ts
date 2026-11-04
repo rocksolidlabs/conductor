@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { agentInitials, filterSessions, groupSessions, initials, relativeTime, sessionMeta, shortCwd } from './sessions'
+import { agentInitials, filterSessions, groupSessions, homeLeavesFor, initials, listLeavesFor, relativeTime, sessionMeta, sessionWorthOpening, shortCwd } from './sessions'
 
 function s(p: Partial<SessionInfo>): SessionInfo {
   return { id: 'x', name: 'n', kind: 'server', agentId: 'claude', command: ['claude'], cwd: '/srv', status: 'running', cols: 80, rows: 24, viewers: 0, createdAt: '2026-09-28T10:00:00Z', ...p }
@@ -82,5 +82,31 @@ describe('initials', () => {
     expect(initials('Priya Shah')).toBe('PS')
     expect(initials('jd')).toBe('JD')
     expect(initials('')).toBe('?')
+  })
+})
+
+describe('the home and the list page at each width (#359)', () => {
+  const waiting = s({ id: 'w', attention: { state: 'needs_input', since: '2026-09-28T10:05:00Z' } as SessionInfo['attention'] })
+  const older = s({ id: 'r1', createdAt: '2026-09-28T09:00:00Z' })
+  const newer = s({ id: 'r2', createdAt: '2026-09-28T11:00:00Z' })
+  const ended = s({ id: 'e', status: 'exited' })
+
+  it('opens someone waiting first, else the newest running session, never an ended one', () => {
+    expect(sessionWorthOpening([older, waiting, newer])?.id).toBe('w')
+    expect(sessionWorthOpening([older, newer, ended])?.id).toBe('r2')
+    expect(sessionWorthOpening([ended])).toBe(null)
+    expect(sessionWorthOpening([])).toBe(null)
+  })
+  it('below lg the home goes to the list, which stays', () => {
+    expect(homeLeavesFor(false, null)).toBe('/sessions')
+    expect(homeLeavesFor(false, newer)).toBe('/sessions')
+    expect(listLeavesFor(false, null)).toBe(null)
+    expect(listLeavesFor(false, newer)).toBe(null)
+  })
+  it('at lg and up the list always leaves: to the session worth opening, else to the home, which stays on its welcome', () => {
+    expect(listLeavesFor(true, newer)).toBe('/sessions/r2')
+    expect(listLeavesFor(true, null)).toBe('/')
+    expect(homeLeavesFor(true, newer)).toBe('/sessions/r2')
+    expect(homeLeavesFor(true, null)).toBe(null)
   })
 })
