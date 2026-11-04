@@ -14,7 +14,7 @@ import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, refusedSwitchy
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
 import { createWindow, followOrigin, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
-import { nextZoom, zoomKey, type ZoomMove } from './zoom'
+import { nextZoom, zoomKey, zoomStatus, ZoomStart, type ZoomMove } from './zoom'
 import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
 import { allowIceThroughFirewall, firewallRuleExists, type IceStatus } from './firewall'
@@ -266,6 +266,8 @@ async function run() {
     })
   }
 
+  // A zoom level kept from before is said once per start, to the first workbench page that asks (ZoomStart).
+  const zoomStart = new ZoomStart()
   registerIpc({
     origin,
     token: () => token,
@@ -288,6 +290,7 @@ async function run() {
       return { ...updates.take(), failed }
     },
     installUpdate: (version) => restartForUpdate(version),
+    zoom: () => zoomStart.ask(settings.zoomLevel),
     mainWindow: () => main,
     inviteReady: (sender) => {
       if (main && !main.isDestroyed() && sender === main.webContents) delivery.pageReady()
@@ -308,13 +311,17 @@ async function run() {
   const applyZoom = (wc: Electron.WebContents) => {
     if (!wc.isDestroyed() && sameOrigin(wc.getURL(), origin())) wc.setZoomLevel(settings.zoomLevel)
   }
+  // Every move, one at a bound that changes nothing included, is shown in the workbench windows it zoomed and in the View menu.
   const zoom = (move: ZoomMove) => {
     const level = nextZoom(settings.zoomLevel, move)
     if (level !== settings.zoomLevel) {
       settings = { ...settings, zoomLevel: level }
       saveSettings(settingsFile, settings)
     }
+    zoomStart.moved()
     for (const w of BrowserWindow.getAllWindows()) applyZoom(w.webContents)
+    for (const w of workbenchWindows(BrowserWindow.getAllWindows(), origin())) w.webContents.send('conductor:zoom', zoomStatus(settings.zoomLevel))
+    setMenu()
   }
   app.on('web-contents-created', (_e, wc) => {
     if (wc.getType() !== 'window') return
@@ -327,16 +334,21 @@ async function run() {
     })
     wc.on('did-finish-load', () => applyZoom(wc))
   })
-  Menu.setApplicationMenu(
-    buildMenu({
-      settings: () => void show().loadURL(origin() + '/settings'),
-      openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)),
-      restart: () => void supervisor.restart().catch(() => {}),
-      showLog,
-      zoom,
-      dev,
-    }),
-  )
+  // Built again after each zoom move, for the level it shows.
+  function setMenu() {
+    Menu.setApplicationMenu(
+      buildMenu({
+        settings: () => void show().loadURL(origin() + '/settings'),
+        openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)),
+        restart: () => void supervisor.restart().catch(() => {}),
+        showLog,
+        zoom,
+        zoomLevel: settings.zoomLevel,
+        dev,
+      }),
+    )
+  }
+  setMenu()
   supervisor.on('state', (st) => {
     if (!main || main.isDestroyed()) return
     main.webContents.send('conductor:serverState', st)

@@ -46,3 +46,40 @@ export function nextZoom(level: number, move: ZoomMove): number {
   if (move === 'reset') return 0
   return clampZoom(level + (move === 'in' ? ZOOM_STEP : -ZOOM_STEP))
 }
+
+/** zoomPercent is a level as the percent it reads (Chromium's factor, 1.2 to the level): the one formula, which the menu and the page both show. */
+export function zoomPercent(level: number): number {
+  return Math.round(100 * 1.2 ** level)
+}
+
+/** What the workbench is told of the zoom: the level, its percent, and whether it is the largest or the smallest ('' between). */
+export interface ZoomStatus {
+  level: number
+  percent: number
+  bound: 'largest' | 'smallest' | ''
+}
+
+/** zoomStatus is a level as the workbench is told it. */
+export function zoomStatus(level: number): ZoomStatus {
+  return { level, percent: zoomPercent(level), bound: level >= ZOOM_MAX ? 'largest' : level <= ZOOM_MIN ? 'smallest' : '' }
+}
+
+/**
+ * ZoomStart says a level kept from before once per start of the app: the first workbench page to ask, when the level is not 100%,
+ * is told to say it (announce); every later ask, and every ask once a move has been shown, is not. A page load is not a start.
+ */
+export class ZoomStart {
+  private said = false
+
+  /** The status of level, and whether this ask is the one that says it. */
+  ask(level: number): ZoomStatus & { announce: boolean } {
+    const announce = !this.said && level !== 0
+    this.said = true
+    return { ...zoomStatus(level), announce }
+  }
+
+  /** A move was shown: the level kept from before is no longer news. */
+  moved(): void {
+    this.said = true
+  }
+}
