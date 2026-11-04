@@ -110,7 +110,7 @@ onMounted(() => chatUnread.listen())
 // A notice the desktop app owes once (an upgrade that changed what sharing does): one toast with the way to Settings.
 onMounted(async () => {
   const words = noticeWords((await desktop.bridge.value?.notice?.().catch(() => '')) ?? '')
-  if (words) toast.add({ ...words, icon: 'i-lucide-globe', color: 'info', duration: 20000, actions: [{ label: 'Settings', onClick: () => router.push('/settings') }] })
+  if (words) toast.add({ ...words, icon: 'i-lucide-globe', color: 'info', duration: 20000, actions: [{ label: 'Settings', onClick: () => router.push('/settings?section=switchyard') }] })
 })
 
 // An update the desktop app downloaded (#290): said once per version, in a toast that offers the restart, never in a dialog of

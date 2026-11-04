@@ -1,6 +1,7 @@
 import { dirname } from 'node:path'
 import { expect, test } from './fixtures'
-import type { Request } from '@playwright/test'
+import type { Locator, Page, Request } from '@playwright/test'
+import type { E2EState } from './state'
 
 // The desktop app's Settings page, under a stand-in for its bridge: the
 // folder picker browses the server's own folders (GET /api/paths, scope any,
@@ -63,11 +64,9 @@ test('the folder picker browses the server, outside the roots too, and fills the
   await picker.locator('[data-dir-picker-use]').click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await expect(page.getByLabel('Default working directory', { exact: true })).toHaveValue(state.repo)
-  // One column that reads top to bottom (#366): at most 48rem wide, each card below the one before it, and the save bar in
-  // the panel's footer, in reach wherever the page is scrolled.
-  const grid = await page.locator('[data-settings-grid]').boundingBox()
-  expect(grid!.width).toBeLessThanOrEqual(768)
-  const cards = await page.locator('[data-settings-grid] > *').evaluateAll((els) => els.map((e) => ({ top: e.getBoundingClientRect().top, bottom: e.getBoundingClientRect().bottom })))
+  // One column that reads top to bottom (#366), each card below the one before it, and the save bar in the panel's footer, in
+  // reach wherever the page is scrolled. How wide it is, and the navigation beside it (#433), are the tests below.
+  const cards = await page.locator('[data-settings-sections] > [data-settings-section]').evaluateAll((els) => els.map((e) => ({ top: e.getBoundingClientRect().top, bottom: e.getBoundingClientRect().bottom })))
   expect(cards.length).toBeGreaterThan(3)
   for (let i = 1; i < cards.length; i++) expect(cards[i]!.top).toBeGreaterThanOrEqual(cards[i - 1]!.bottom)
   await expect(page.locator('[data-settings-save-bar]')).toBeInViewport()
@@ -201,9 +200,11 @@ test('the app\'s publishing notice says what is published and leads to Settings'
   await expect(toast).toContainText('publish only to one whose operator you trust')
   await expect(toast).toContainText('Settings → Switchyard')
   await toast.getByRole('button', { name: 'Settings' }).click()
-  await expect(page).toHaveURL(/\/settings$/)
+  // The notice names Settings → Switchyard: its button opens that section (#433).
+  await expect(page).toHaveURL(/\/settings\?section=switchyard$/)
   const card = page.locator('[data-switchyard-settings]')
-  await expect(card).toBeVisible()
+  await expect(card).toBeInViewport()
+  await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
   // The card says what the switchyard is told and what it does.
   await expect(card).toContainText("never its chat, activity or command line")
   await expect(card).toContainText('It mints and checks the links and decides who joins')
@@ -517,3 +518,281 @@ test('the save toast says what became of the save, on the page that saved or the
   await expect(toast('Saved')).toBeVisible()
   await expect(toast('Saved; the server restarted')).toHaveCount(0)
 })
+
+// Settings on a wide window and a phone (#433): a navigation beside one column of sections (#366: never two side by side), the
+// whole as wide as the panel's body up to 80rem, each section no taller than the visible body at 1440 × 900; the section chosen in
+// `?section=`; below lg a sticky row of links, nothing else scrolling sideways, and the save bar above the bottom bar. The
+// stand-in bridge is the app's, as above; on win32 with an ICE status the WebRTC section and the WSL fields are laid out too.
+type Platform = 'linux' | 'win32'
+async function standIn(page: Page, state: E2EState, platform: Platform) {
+  const form = {
+    dataDir: state.data,
+    allowedRoots: [state.root],
+    defaultCwd: state.root,
+    yolo: false,
+    reach: 'off',
+    closeToTray: true,
+    wslDistro: '',
+    wslWindowsHome: false,
+    switchyardEnabled: false,
+    switchyardServer: '',
+    switchyardToken: '',
+    switchyardName: '',
+    noticed: ['publishing'],
+  }
+  await page.addInitScript(
+    ({ token, form, url, platform }) => {
+      const settings = { ...form }
+      const w = window as unknown as { conductorDesktop: unknown; e2eSets: object[] }
+      w.e2eSets = []
+      w.conductorDesktop = {
+        version: 'e2e',
+        platform,
+        token: async () => token,
+        openExternal: async () => {},
+        settings: {
+          get: async () => ({ ...settings }),
+          set: async (p: object) => {
+            w.e2eSets.push(p)
+            return Object.assign(settings, p)
+          },
+        },
+        restartServer: async () => {},
+        openInBrowser: async () => {},
+        showLog: async () => {},
+        serverState: async () => ({ state: 'running', url, failures: 0 }),
+        notice: async () => '',
+        ice: async () => ({ forwarding: true, port: 40001, publicIp: '203.0.113.7', wslAddress: '172.20.0.2', firewall: 'missing' }),
+        allowIceFirewall: async () => 'present',
+        versions: async () => ({ app: 'e2e', electron: '', node: '', chrome: '', server: '' }),
+        onServerState: () => () => {},
+      }
+    },
+    { token: state.token, form, url: state.baseURL, platform },
+  )
+}
+
+/** The sections this machine shows, in page order: what the navigation must list. */
+function expectedSections(platform: Platform) {
+  return [...(platform === 'win32' ? ['webrtc'] : []), 'switchyard', 'folders', 'running', 'agents', 'brakeman', 'app']
+}
+
+const body = (page: Page) => page.locator('[data-slot="body"]:has([data-settings-sections])')
+const boxOf = (l: Locator) => l.evaluate((e) => JSON.parse(JSON.stringify(e.getBoundingClientRect())) as DOMRect)
+/** Every section's box, in page order, and the body's visible part. */
+async function layoutOf(page: Page) {
+  return body(page).evaluate((b) => {
+    const r = (e: Element) => e.getBoundingClientRect()
+    const cs = getComputedStyle(b)
+    return {
+      body: { top: r(b).top, bottom: r(b).bottom, left: r(b).left, right: r(b).right, clientWidth: b.clientWidth, clientHeight: b.clientHeight, scrollWidth: b.scrollWidth, padLeft: parseFloat(cs.paddingLeft), padRight: parseFloat(cs.paddingRight), scrollTop: b.scrollTop },
+      sections: Array.from(b.querySelectorAll('[data-settings-section]')).map((e) => ({ id: e.getAttribute('data-settings-section')!, top: r(e).top, bottom: r(e).bottom, left: r(e).left, right: r(e).right, height: r(e).height })),
+      layout: (() => {
+        const l = b.querySelector('[data-desktop-settings], [data-settings-sections]')!
+        return { left: r(l).left, right: r(l).right, width: r(l).width }
+      })(),
+      doc: { scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth },
+    }
+  })
+}
+/** Waits for what the page renders once the bridge, the catalog and Brakeman answered. */
+async function settled(page: Page, platform: Platform) {
+  await expect(page.locator('[data-agent]').first()).toBeVisible()
+  await expect(page.locator('[data-brakeman-enabled]')).toBeVisible()
+  if (platform === 'win32') await expect(page.locator('[data-ice-status]')).toBeVisible()
+  await expect(page.locator('[data-settings-nav-entry]')).toHaveCount(expectedSections(platform).length)
+}
+
+for (const platform of ['linux', 'win32'] as const) {
+  for (const size of [{ width: 1440, height: 900 }, { width: 2560, height: 1440 }]) {
+    test(`on a wide window (${size.width} × ${size.height}, ${platform}) the navigation sits beside one column of sections that fills the body up to 80rem`, async ({ page, state }) => {
+      await page.setViewportSize(size)
+      await standIn(page, state, platform)
+      await page.goto('/settings')
+      await settled(page, platform)
+      if (platform === 'win32') await expect(page.locator('[data-wsl-paths]')).toBeVisible()
+      const nav = page.locator('[data-settings-nav]')
+      const entries = page.locator('[data-settings-nav-entry]')
+      expect(await entries.evaluateAll((es) => es.map((e) => e.getAttribute('data-settings-nav-entry')))).toEqual(expectedSections(platform))
+      const l = await layoutOf(page)
+      expect(l.sections.map((s) => s.id)).toEqual(expectedSections(platform))
+      // The navigation left of the sections, and the whole as wide as the body less its padding, up to 1280 px and centered beyond.
+      const n = await boxOf(nav)
+      expect(n.right).toBeLessThanOrEqual(l.sections[0]!.left)
+      const room = l.body.clientWidth - l.body.padLeft - l.body.padRight
+      expect(Math.abs(l.layout.width - Math.min(room, 1280))).toBeLessThanOrEqual(1)
+      if (room > 1280) expect(Math.abs(l.layout.left - l.body.left - (l.body.clientWidth - l.layout.width) / 2)).toBeLessThanOrEqual(1)
+      // One column: each section below the one before, all of one width.
+      for (let i = 1; i < l.sections.length; i++) {
+        expect(l.sections[i]!.top).toBeGreaterThanOrEqual(l.sections[i - 1]!.bottom)
+        expect(l.sections[i]!.left).toBe(l.sections[0]!.left)
+        expect(l.sections[i]!.right).toBe(l.sections[0]!.right)
+      }
+      // No section taller than the visible body at 1440 × 900, but Brakeman's: its form came after the issue and holds more than
+      // a screen (a question for the owner in #433's pull request).
+      if (size.width === 1440) for (const s of l.sections) if (s.id !== 'brakeman') expect(s.height, s.id).toBeLessThanOrEqual(l.body.clientHeight)
+      // The fields of a section as wide as this are rows: the label left of its control, which stops at 36rem.
+      const field = page.locator('[data-switchyard-server]')
+      const label = await boxOf(field.locator('label'))
+      const input = await boxOf(field.locator('input'))
+      expect(input.left).toBeGreaterThan(label.right)
+      expect(input.width).toBeLessThanOrEqual(576)
+      const roots = await boxOf(page.getByLabel('Allowed roots'))
+      expect(roots.width).toBeLessThanOrEqual(576)
+      await expect(page.locator('[data-settings-save-bar]')).toBeInViewport()
+      // The navigation stays in place as the sections scroll, and marks the section in view; each entry brings its own into view.
+      const before = await boxOf(nav)
+      for (const id of expectedSections(platform)) {
+        await page.locator(`[data-settings-nav-entry="${id}"]`).click()
+        await expect(page).toHaveURL(new RegExp(`/settings\\?section=${id}$`))
+        const section = page.locator(`[data-settings-section="${id}"]`)
+        await expect(section).toBeInViewport()
+        await expect(page.locator(`[data-settings-nav-entry="${id}"]`)).toHaveAttribute('aria-current', 'true')
+        await expect(page.locator('[data-settings-nav-entry][aria-current]')).toHaveCount(1)
+        expect((await boxOf(nav)).top).toBe(before.top)
+      }
+      // The window never scrolls: the body does.
+      expect(await page.evaluate(() => window.scrollY)).toBe(0)
+      expect((await layoutOf(page)).body.scrollTop).toBeGreaterThan(0)
+      await expect(page.locator('[data-settings-save-bar]')).toBeInViewport()
+    })
+  }
+
+  test(`/settings?section=<id> opens on that section once it has rendered, and an unknown one at the top (${platform})`, async ({ page, state }) => {
+    await standIn(page, state, platform)
+    for (const id of ['switchyard', 'agents', 'app'] as const) {
+      await page.goto(`/settings?section=${id}`)
+      await settled(page, platform)
+      // The section's top at the top of the body, less its scroll margin (the body's padding), or, for one too near the end to
+      // get there, the body scrolled to its end with the section whole in view.
+      await expect.poll(async () => {
+        const l = await layoutOf(page)
+        const x = l.sections.find((x) => x.id === id)!
+        const atEnd = await body(page).evaluate((b) => b.scrollTop > 0 && b.scrollTop + b.clientHeight >= b.scrollHeight - 1)
+        return Math.abs(x.top - l.body.top - 24) <= 1 || (atEnd && x.top >= l.body.top && x.bottom <= l.body.bottom)
+      }).toBe(true)
+      await expect(page.locator(`[data-settings-nav-entry="${id}"]`)).toHaveAttribute('aria-current', 'true')
+    }
+    for (const q of ['?section=nope', '?section=', '', platform === 'linux' ? '?section=webrtc' : '?section=Switchyard']) {
+      await page.goto(`/settings${q}`)
+      await settled(page, platform)
+      expect((await layoutOf(page)).body.scrollTop).toBe(0)
+    }
+  })
+
+  test.describe(`on a phone (390 × 844, ${platform})`, () => {
+    test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+
+    test(`one column, a sticky row of section links, nothing scrolling sideways, and the save bar above the bottom bar`, async ({ page, state }) => {
+      await standIn(page, state, platform)
+      await page.goto('/settings')
+      await settled(page, platform)
+      if (platform === 'win32') await expect(page.locator('[data-wsl-paths]')).toBeVisible()
+      const l = await layoutOf(page)
+      // One column, full width less a 16 px gutter.
+      expect(l.body.padLeft).toBe(16)
+      for (const s of l.sections) {
+        expect(s.left - l.body.left).toBe(16)
+        expect(l.body.left + l.body.clientWidth - s.right).toBe(16)
+      }
+      for (let i = 1; i < l.sections.length; i++) expect(l.sections[i]!.top).toBeGreaterThanOrEqual(l.sections[i - 1]!.bottom)
+      // Nothing scrolls sideways but the row of links.
+      expect(l.doc.scrollWidth).toBeLessThanOrEqual(l.doc.clientWidth)
+      expect(l.body.scrollWidth).toBeLessThanOrEqual(l.body.clientWidth)
+      // The fields stack, and the folder buttons stay beside their inputs.
+      const field = page.locator('[data-switchyard-server]')
+      expect((await boxOf(field.locator('input'))).top).toBeGreaterThan((await boxOf(field.locator('label'))).bottom)
+      const cwd = await boxOf(page.getByLabel('Default working directory', { exact: true }))
+      const pick = await boxOf(page.locator('[data-pick-dir="defaultCwd"]'))
+      expect(pick.left).toBeGreaterThanOrEqual(cwd.right)
+      expect(Math.abs(pick.top - cwd.top)).toBeLessThanOrEqual(4)
+      // The navbar fits: its buttons, icons alone, inside the window.
+      // The panel's navbar: the element before its body.
+      const navbar = body(page).locator('xpath=preceding-sibling::*[1]')
+      for (const b of ['[data-open-in-browser]', '[data-server-log]', '[data-restart-server]', '[data-fullscreen]']) {
+        const box = await boxOf(page.locator(b))
+        expect(box.right, b).toBeLessThanOrEqual(390)
+        expect(box.width, b).toBeLessThanOrEqual(40)
+      }
+      expect(await navbar.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true)
+      await expect(page.getByRole('button', { name: 'Restart server' })).toBeVisible()
+      // The row of links: across the top of the body, stuck there as the sections scroll, scrolling sideways within itself.
+      const nav = page.locator('[data-settings-nav]')
+      expect(await nav.evaluate((e) => getComputedStyle(e).flexDirection)).toBe('row')
+      const row = await boxOf(nav)
+      expect(Math.round(row.top)).toBe(Math.round(l.body.top))
+      expect(await nav.evaluate((e) => e.scrollWidth > e.clientWidth)).toBe(true)
+      await page.locator('[data-settings-nav-entry="app"]').click()
+      await expect(page).toHaveURL(/\/settings\?section=app$/)
+      const app = page.locator('[data-settings-section="app"]')
+      await expect(app).toBeInViewport()
+      expect((await boxOf(app)).top).toBeGreaterThanOrEqual((await boxOf(nav)).bottom)
+      expect(Math.round((await boxOf(nav)).top)).toBe(Math.round(l.body.top))
+      await expect(page.locator('[data-settings-nav-entry="app"]')).toHaveAttribute('aria-current', 'true')
+      await page.locator('[data-settings-nav-entry="running"]').click()
+      await expect(page).toHaveURL(/\/settings\?section=running$/)
+      const running = page.locator('[data-settings-section="running"]')
+      expect((await boxOf(running)).top).toBeGreaterThanOrEqual((await boxOf(nav)).bottom)
+      await expect(page.locator('[data-settings-nav-entry="running"]')).toHaveAttribute('aria-current', 'true')
+      // A field changed and saved, the save bar in the window and above the bottom bar.
+      await page.locator('[data-yolo-switch]').click()
+      const save = page.locator('[data-save-settings]')
+      await expect(save).toHaveText('Save and restart the server')
+      const bar = page.locator('[data-settings-save-bar]')
+      await expect(bar).toBeInViewport()
+      expect((await boxOf(bar)).bottom).toBeLessThanOrEqual((await boxOf(page.locator('[data-bottom-bar]'))).top)
+      await save.click()
+      await expect(page.getByText('Saved; the server restarted', { exact: true })).toBeVisible()
+      expect(await page.evaluate(() => (window as unknown as { e2eSets: Array<{ yolo?: boolean }> }).e2eSets.map((s) => s.yolo))).toEqual([true])
+      // The section in view went in the address before the restart, so the page that follows the server opens on it.
+      await expect(page).toHaveURL(/\/settings\?section=running$/)
+    })
+  })
+}
+
+test('the save that restarts the server keeps the section in view in the address, for the page that follows it', async ({ page, state }) => {
+  await standIn(page, state, 'linux')
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  // Scrolled by hand to How agents run, its Yolo changed and saved.
+  await page.locator('[data-yolo-switch]').scrollIntoViewIfNeeded()
+  await body(page).evaluate((b) => {
+    const s = b.querySelector('[data-settings-section="running"]')!
+    b.scrollTop += s.getBoundingClientRect().top - b.getBoundingClientRect().top - 24
+  })
+  await expect(page.locator('[data-settings-nav-entry="running"]')).toHaveAttribute('aria-current', 'true')
+  await expect(page).toHaveURL(/\/settings$/)
+  await page.locator('[data-yolo-switch]').click()
+  await page.locator('[data-save-settings]').click()
+  await expect(page).toHaveURL(/\/settings\?section=running$/)
+  // The page loaded there opens on it.
+  await page.reload()
+  await settled(page, 'linux')
+  await expect.poll(async () => {
+    const l = await layoutOf(page)
+    return Math.abs(l.sections.find((s) => s.id === 'running')!.top - l.body.top - 24) <= 1
+  }).toBe(true)
+  // A save that does not restart leaves the address as it is.
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  await page.locator('[data-tray-switch]').click()
+  await page.locator('[data-save-settings]').click()
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL(/\/settings$/)
+})
+
+for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+  test(`in a browser at ${size.width} wide, the notice, Brakeman and The app use the width, stacked, with no section navigation`, async ({ page }) => {
+    await page.setViewportSize(size)
+    await page.goto('/settings')
+    await expect(page.locator('[data-about-credit]')).toBeVisible()
+    await expect(page.locator('[data-settings-nav]')).toHaveCount(0)
+    const l = await layoutOf(page)
+    const room = l.body.clientWidth - l.body.padLeft - l.body.padRight
+    expect(Math.abs(l.layout.width - Math.min(room, 1280))).toBeLessThanOrEqual(1)
+    expect(l.sections.map((s) => s.id).at(-1)).toBe('app')
+    for (let i = 1; i < l.sections.length; i++) expect(l.sections[i]!.top).toBeGreaterThanOrEqual(l.sections[i - 1]!.bottom)
+    expect(l.doc.scrollWidth).toBeLessThanOrEqual(l.doc.clientWidth)
+    expect(l.body.scrollWidth).toBeLessThanOrEqual(l.body.clientWidth)
+  })
+}
