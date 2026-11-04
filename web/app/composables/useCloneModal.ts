@@ -1,5 +1,5 @@
 import type { SessionInfo } from '~/composables/useSessions'
-import { clonePrefill, hostedReason, isAttempt } from '~/utils/clone'
+import { clonePrefill, hostedReason, isAttempt, requestOrder } from '~/utils/clone'
 
 /** The session the Clone… dialog is open on (#434): its id, name and directory as the dialog opened, and whether it is an attempt. */
 export interface CloneTarget {
@@ -19,6 +19,9 @@ export function useCloneModal() {
   const target = useState<CloneTarget | null>('cloneTarget', () => null)
   // Counts the dialog's openings, as the Rename dialog's do: a reply of an earlier opening leaves a later one alone.
   const opening = useState<number>('cloneOpening', () => 0)
+  // Counts Clone with options…'s reads, shared by every caller (#434 review round 2): a read asked before another opens nothing
+  // once the later one is asked, whichever answers first.
+  const reads = requestOrder(useState<number>('cloneRead', () => 0))
   const launch = useLaunchModal()
   const api = useSessions()
   const toast = useToast()
@@ -35,12 +38,14 @@ export function useCloneModal() {
     },
     withOptions: async (s: SessionInfo) => {
       if (s.kind !== 'server') return refuse(s, hostedReason(s.hostName))
+      const read = reads.next()
       try {
         const { launch: l } = await api.get(s.id)
+        if (!reads.current(read)) return
         if (!l) throw new Error('the server did not say what it was launched with')
         launch.show(clonePrefill(s, l))
       } catch (e) {
-        refuse(s, (e as Error).message)
+        if (reads.current(read)) refuse(s, (e as Error).message)
       }
     },
   }

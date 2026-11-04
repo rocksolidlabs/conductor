@@ -371,7 +371,18 @@ test("both dialogs warn of a run's worktree, and say the server's refusals: a na
   await expect(dialog.locator('[data-clone-shared-tree]')).toHaveText(warning)
   await expect(dialog.locator('[data-clone-attempt]')).toHaveCount(0)
   await expect(dialog.getByRole('radio', { name: /Claude Code/ })).toHaveAttribute('aria-checked', 'true')
+  // The directory cleared, the clone runs in the source's, so the warning stays (review round 2); another directory has none.
+  const cwd = dialog.locator('[data-dir-input] input[role="combobox"]')
+  await cwd.fill('')
+  await expect(dialog.locator('[data-clone-shared-tree]')).toHaveText(warning)
+  await cwd.fill(state.repo)
+  await expect(dialog.locator('[data-clone-shared-tree]')).toHaveCount(0)
+  await cwd.fill('')
+  await expect(dialog.locator('[data-clone-shared-tree]')).toHaveText(warning)
+  await dialog.locator('[data-clone-name]').click()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
   await dialog.locator('[data-clone-name]').fill(foldedName(taken))
+  await expect(dialog.locator('[data-clone-name]')).toHaveValue(foldedName(taken))
   await dialog.locator('[data-launch-clone-submit]').click()
   await expect(dialog.locator('[data-launch-error]')).toContainText(`a session is named ${foldedName(taken)} already`)
   await page.keyboard.press('Escape')
@@ -498,6 +509,44 @@ test("the palette's Clone with options… of another session, over the open dial
   const clone = await opened(page, api)
   expect(clone.name).toBe(name)
   expect(await launched(api, clone)).toEqual({ agentId: 'claude', cwd: second.cwd, args: ['--model', 'haiku'], yolo: true })
+})
+
+test("Clone with options… of one session, then of another, is the other's when the first's read answers last", async ({ page, api }) => {
+  const first = await launch(api, { name: unique('e2e clone slow'), args: ['--model', 'opus'] })
+  const second = await launch(api, { name: unique('e2e clone quick'), args: ['--model', 'haiku'] })
+  await page.goto('/crews')
+  await expect(row(page, first)).toBeVisible()
+  // The first's read of its launch held until the second's dialog is open and typed in (review round 2).
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  let asked!: () => void
+  const reading = new Promise<void>((resolve) => (asked = resolve))
+  await page.route(`**/api/sessions/${first.id}`, async (route) => {
+    if (route.request().method() !== 'GET') return route.continue()
+    asked()
+    await held
+    await route.continue()
+  })
+  const r = row(page, first)
+  await r.hover()
+  await r.locator('[data-row-more]').click()
+  await page.getByRole('menuitem', { name: /^Clone with options…/ }).click()
+  await reading
+  const dialog = await withOptions(page, second)
+  await expect(dialog.getByRole('radio', { name: /Claude Code/ })).toHaveAttribute('aria-checked', 'true')
+  const name = unique('e2e clone of quick')
+  await dialog.locator('[data-clone-name]').fill(name)
+  const answered = page.waitForResponse((res) => res.url().endsWith(`/api/sessions/${first.id}`) && res.request().method() === 'GET')
+  release()
+  await (await answered).finished()
+  await expect(dialog.locator(`[data-launch-clone="${second.id}"]`)).toBeVisible()
+  await expect(dialog.locator('[data-launch-args]')).toHaveValue('--model haiku')
+  await expect(dialog.locator('[data-clone-name]')).toHaveValue(name)
+  await dialog.locator('[data-launch-clone-submit]').click()
+  const clone = await opened(page, api)
+  await page.unroute(`**/api/sessions/${first.id}`)
+  expect(clone.name).toBe(name)
+  expect(await launched(api, clone)).toEqual({ agentId: 'claude', cwd: second.cwd, args: ['--model', 'haiku'], yolo: false })
 })
 
 test("a clone's answer that comes after its dialog was cancelled leaves the next dialog alone", async ({ page, api }) => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { argsText, splitArgs } from './argv'
-import { cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneName, cloneNameError, clonePrefill, cloneRefusal, hostedReason, inRunWorktree, missingSourceAgent, nameTaken, yoloStored } from './clone'
+import { cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneLaunchCwd, cloneName, cloneNameError, clonePrefill, cloneRefusal, hostedReason, inRunWorktree, missingSourceAgent, nameTaken, requestOrder, yoloStored } from './clone'
 
 const sessions = [{ name: 'api-sweep' }, { name: 'Docs Run' }, { name: 'Ölbild' }]
 
@@ -30,7 +30,7 @@ describe('the prefill of Clone with options… (#434)', () => {
 
   it('carries the yolo choice as given, false as false', () => {
     const p = clonePrefill(source, { agentId: 'claude', cwd: '/repo', args: [], yolo: false })
-    expect(p).toEqual({ agentId: 'claude', cwd: '/repo', args: '', argv: [], yolo: false, clone: { id: 's1', name: 'api-sweep', attempt: false } })
+    expect(p).toEqual({ agentId: 'claude', cwd: '/repo', args: '', argv: [], yolo: false, clone: { id: 's1', name: 'api-sweep', attempt: false, cwd: '/repo' } })
     expect(Object.hasOwn(p, 'yolo')).toBe(true)
     expect(clonePrefill(source, { agentId: 'claude', cwd: '/repo', args: [], yolo: true }).yolo).toBe(true)
   })
@@ -108,6 +108,16 @@ describe('what Clone with options… sends (#434 review round 1)', () => {
     expect(cloneCwd('   ')).toBeUndefined()
   })
 
+  it("judges the run's-worktree warning by where the clone runs: a blank field is the source's directory (review round 2)", () => {
+    const tree = '/home/me/repo/.conductor/worktrees/r-1/build.1'
+    expect(cloneLaunchCwd('', tree)).toBe(tree)
+    expect(cloneLaunchCwd('  ', tree)).toBe(tree)
+    expect(inRunWorktree(cloneLaunchCwd('', tree))).toBe(true)
+    expect(cloneLaunchCwd('/home/me/repo', tree)).toBe('/home/me/repo')
+    expect(inRunWorktree(cloneLaunchCwd('/home/me/repo', tree))).toBe(false)
+    expect(inRunWorktree(cloneLaunchCwd(tree, '/home/me/repo'))).toBe(true)
+  })
+
   it("names the source's agent once this opening's read leaves it out, never before", () => {
     const offered = [{ id: 'codex' }]
     expect(missingSourceAgent('claude', offered, false)).toBe('')
@@ -124,5 +134,18 @@ describe('what Clone with options… sends (#434 review round 1)', () => {
     expect(yoloStored(true, true, false)).toBeUndefined()
     expect(yoloStored(false, false, false)).toBeUndefined()
     expect(yoloStored(true, false, false)).toBe(true)
+  })
+})
+
+describe("Clone with options…'s reads (#434 review round 2)", () => {
+  it('keeps only the read asked last, whichever answers first', () => {
+    const order = requestOrder({ value: 0 })
+    const a = order.next()
+    const b = order.next()
+    expect(order.current(b)).toBe(true)
+    expect(order.current(a)).toBe(false)
+    const c = order.next()
+    expect(order.current(b)).toBe(false)
+    expect(order.current(c)).toBe(true)
   })
 })

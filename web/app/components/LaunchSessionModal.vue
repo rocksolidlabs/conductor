@@ -4,7 +4,7 @@ import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { ApiError } from '~/composables/useApi'
 import { launchListNote, serverAgents } from '~/utils/agents'
 import { splitArgs } from '~/utils/argv'
-import { ATTEMPT_WARNING, SHARED_TREE_WARNING, cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneName, cloneNameError, cloneRefusal, inRunWorktree, missingSourceAgent, yoloStored } from '~/utils/clone'
+import { ATTEMPT_WARNING, SHARED_TREE_WARNING, cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneLaunchCwd, cloneName, cloneNameError, cloneRefusal, inRunWorktree, missingSourceAgent, yoloStored } from '~/utils/clone'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
 import { plainOffMachine, showsRunsOn } from '~/utils/launch'
 import { effectiveYolo, yoloSummary } from '~/utils/yolo'
@@ -44,7 +44,8 @@ const sourceAgent = ref('')
 const catalogRead = ref(false)
 const cloneNamed = computed(() => cloneName(state.name, live.sessions.value))
 const cloneNameMessage = computed(() => cloneNameError(cloneNamed.value))
-const sharedTree = computed(() => !!cloning.value && inRunWorktree(state.cwd))
+// Judged by where the clone runs: a blank field is the source's directory, which the server takes (#434 review round 2).
+const sharedTree = computed(() => !!cloning.value && inRunWorktree(cloneLaunchCwd(state.cwd, cloning.value.cwd)))
 
 // Where the agent runs is asked only when there are two answers: on a
 // workbench served from another machine. In the desktop app, or at this
