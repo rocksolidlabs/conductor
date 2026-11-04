@@ -168,9 +168,11 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     const grid = await host.evaluate((h) => `${h.dataset.cols} × ${h.dataset.rows}`)
     const kept = await keptLayout(page)
     const stacked = (await area.boundingBox())!.height
-    // The terminal stays connected through every collapse: no socket is opened again.
+    // The terminal stays mounted and connected through every collapse: the same element (marked here), and no socket opened again.
     const transport = page.locator('[data-transport-state]').first()
     await expect(transport).toHaveAttribute('data-transport-state', 'open')
+    await host.evaluate((h) => ((h as HTMLElement & { e2eMark?: string }).e2eMark = 'kept'))
+    const sameHost = () => host.evaluate((h) => (h as HTMLElement & { e2eMark?: string }).e2eMark ?? 'remounted')
     let sockets = 0
     page.on('websocket', () => sockets++)
 
@@ -214,9 +216,11 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     const now = (await api.session(s.id)) as Session & { rows: number }
     expect(`${now.cols} × ${now.rows}`).toBe(size)
     await expect(slot).toHaveAttribute('data-terminal-slot', 'folded')
-    // Brought back, it shows what the agent drew while it was collapsed: the stub's answer to the plan.
+    // Brought back, it is the terminal it was, never remounted or connected again, so its scrollback is its own (read by element, not
+    // by its text: the renderer CI's browser has draws no DOM rows).
     await termBar.click()
-    await expect(page.locator('.terminal-host .xterm-rows').first()).toContainText("User answered Claude's plan: 2")
+    await expect(slot).toHaveAttribute('data-terminal-slot', 'open')
+    expect(await sameHost()).toBe('kept')
     await expect(transport).toHaveAttribute('data-transport-state', 'open')
     expect(sockets).toBe(0)
 
@@ -263,6 +267,8 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     await expect(area).toHaveAttribute('data-editor-area', 'open')
     await expect(slot).toHaveAttribute('data-terminal-slot', 'open')
     expect(await keptLayout(page)).toEqual(keptStacked)
+    expect(await sameHost()).toBe('kept')
+    expect(sockets).toBe(0)
   } finally {
     await api.stopSession(s.id)
   }
