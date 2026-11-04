@@ -140,6 +140,33 @@ func TestCloneNameIsTrimmedCutAndRequired(t *testing.T) {
 	}
 }
 
+// A body past the route's bound (maxBody, 64 KiB, as docs/protocol.md says)
+// is refused 400 invalid_request, and nothing is made: the bound is the
+// decoder's, before the name or the source is looked at. One just under it
+// is read.
+func TestCloneBodyIsBounded(t *testing.T) {
+	e := newTestEnv(t, nil)
+	src := e.launch("cat", nil)["id"].(string)
+	// The JSON's own bytes around the padding: {"name":"…","args":["…"]}.
+	pad := func(name string, total int) map[string]any {
+		frame := len(`{"name":"` + name + `","args":[""]}`)
+		return map[string]any{"name": name, "args": []string{strings.Repeat("a", total-frame)}}
+	}
+	if code, out := e.cloneSession(src, pad("over-the-bound", maxBody+1)); code != http.StatusBadRequest || errorCode(out) != "invalid_request" {
+		t.Fatalf("a body of maxBody+1 bytes: %d %v", code, out)
+	}
+	for _, info := range e.srv.registry.List() {
+		if info.Name == "over-the-bound" {
+			t.Fatalf("a clone was made from a body past the bound: %+v", info)
+		}
+	}
+	// At the bound the body is read: cat takes no arguments, so the
+	// launch's own refusal answers, past the decoder.
+	if code, out := e.cloneSession(src, pad("at-the-bound", maxBody)); code != http.StatusBadRequest || errorCode(out) != "args_not_allowed" {
+		t.Fatalf("a body of maxBody bytes: %d %v", code, out)
+	}
+}
+
 // A name a listed session has, ignoring case, running or ended, is refused
 // 409 name_taken, and nothing is made.
 func TestCloneRefusesANameInUse(t *testing.T) {

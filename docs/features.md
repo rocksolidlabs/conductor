@@ -263,8 +263,11 @@ open deferred item from rounds 1 and 2, then the features below.
   launch arguments as given and its yolo choice, sent as true or false. Clone
   with options… opens the Launch dialog titled "Clone <name>", filled in with
   the same (the arguments launched as recorded while their line is left as
-  it was), the name empty and the agent never another than the source's
-  unless picked; the palette's Launch another like <name> opens it too. Both
+  it was, and shown even when the agent takes none now: the server refuses
+  them until the line is cleared), the name empty and the agent never
+  another than the source's unless picked, which is said once the dialog's
+  own read of the catalog leaves it out; the palette's Launch another like
+  <name> opens it too, over the dialog as well. Both
   go through `POST /api/sessions/{id}/clone` (`docs/protocol.md`), which
   takes what the body leaves out from the source's launch, never its
   environment, and holds the name from its check until the clone is

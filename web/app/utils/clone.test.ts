@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { argsText, splitArgs } from './argv'
-import { cloneName, cloneNameError, clonePrefill, cloneRefusal, hostedReason, inRunWorktree, nameTaken } from './clone'
+import { cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneName, cloneNameError, clonePrefill, cloneRefusal, hostedReason, inRunWorktree, missingSourceAgent, nameTaken, yoloStored } from './clone'
 
 const sessions = [{ name: 'api-sweep' }, { name: 'Docs Run' }, { name: 'Ölbild' }]
 
@@ -77,5 +77,52 @@ describe('what the clone dialogs say', () => {
     expect(cloneRefusal('invalid_cwd', 'working directory does not exist')).toBe('The directory cannot be used: working directory does not exist')
     expect(cloneRefusal('name_taken', 'a session is named x already')).toBe('a session is named x already')
     expect(cloneRefusal('too_many_sessions', 'session limit reached')).toBe('session limit reached (too_many_sessions)')
+  })
+})
+
+describe('what Clone with options… sends (#434 review round 1)', () => {
+  const recorded = { text: '--model opus "two words"', argv: ['--model', 'opus', 'two words'] }
+
+  it("keeps the source's recorded arguments in sight when its agent takes none now, and sends them untouched", () => {
+    expect(cloneArgsShown({ allowArgs: false, sameAgent: true, recorded: recorded.argv })).toBe(true)
+    expect(cloneLaunchArgs({ shown: true, line: recorded.text, recorded, split: splitArgs })).toEqual(recorded.argv)
+    // Cleared, none; another agent that takes none, none and no line.
+    expect(cloneLaunchArgs({ shown: true, line: '', recorded, split: splitArgs })).toEqual([])
+    expect(cloneArgsShown({ allowArgs: false, sameAgent: false, recorded: recorded.argv })).toBe(false)
+    expect(cloneLaunchArgs({ shown: false, line: recorded.text, recorded, split: splitArgs })).toEqual([])
+    expect(cloneArgsShown({ allowArgs: false, sameAgent: true, recorded: [] })).toBe(false)
+    expect(cloneArgsShown({ allowArgs: true, sameAgent: false, recorded: [] })).toBe(true)
+  })
+
+  it('launches the arguments as recorded while the line is as it was, and the line split once changed', () => {
+    const odd = { text: `"it's both"`, argv: [`it's "both" here`] }
+    expect(cloneLaunchArgs({ shown: true, line: odd.text, recorded: odd, split: splitArgs })).toEqual(odd.argv)
+    expect(cloneLaunchArgs({ shown: true, line: '--model sonnet', recorded, split: splitArgs })).toEqual(['--model', 'sonnet'])
+    expect(cloneLaunchArgs({ shown: true, line: '  ', recorded: null, split: splitArgs })).toEqual([])
+  })
+
+  it('sends the directory exactly as the field holds it, and leaves a blank one out', () => {
+    expect(cloneCwd('/repo/project ')).toBe('/repo/project ')
+    expect(cloneCwd(' /repo')).toBe(' /repo')
+    expect(cloneCwd('')).toBeUndefined()
+    expect(cloneCwd('   ')).toBeUndefined()
+  })
+
+  it("names the source's agent once this opening's read leaves it out, never before", () => {
+    const offered = [{ id: 'codex' }]
+    expect(missingSourceAgent('claude', offered, false)).toBe('')
+    expect(missingSourceAgent('claude', offered, true)).toBe('claude')
+    expect(missingSourceAgent('claude', [...offered, { id: 'claude' }], true)).toBe('')
+    expect(missingSourceAgent('', offered, true)).toBe('')
+  })
+
+  it("keeps a clone's yolo choice itself, whatever the default it is compared with", () => {
+    for (const def of [false, true]) {
+      for (const on of [false, true]) expect(yoloStored(on, def, true)).toBe(on)
+    }
+    // A launch keeps "the server's default" while the switch shows it.
+    expect(yoloStored(true, true, false)).toBeUndefined()
+    expect(yoloStored(false, false, false)).toBeUndefined()
+    expect(yoloStored(true, false, false)).toBe(true)
   })
 })

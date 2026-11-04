@@ -1,5 +1,5 @@
 import type { LaunchPrefill } from '~/composables/useLaunchModal'
-import type { SessionInfo, SessionLaunch } from '~/composables/useSessions'
+import type { AgentInfo, SessionInfo, SessionLaunch } from '~/composables/useSessions'
 import { argsText } from './argv'
 import { MAX_SESSION_NAME } from './protocol'
 import { renameDraft, type RenameDraft } from './sessionName'
@@ -69,6 +69,44 @@ export function clonePrefill(s: Pick<SessionInfo, 'id' | 'name' | 'crew'>, launc
     yolo: launch.yolo === true,
     clone: { id: s.id, name: s.name, attempt: isAttempt(s) },
   }
+}
+
+/**
+ * Clone with options…'s arguments (#434 review round 1). The line shows while the picked agent takes arguments, and also while it is
+ * the source's agent with arguments recorded although it takes none now (launched before its arguments were turned off, or a
+ * Brakeman member's own flags): they are never dropped unseen, and a clone sent with them is refused by the server, in the dialog,
+ * until the line is cleared. Left as it was, the line launches the recorded arguments themselves; changed, it is split; hidden,
+ * there are none.
+ */
+export function cloneArgsShown(o: { allowArgs: boolean; sameAgent: boolean; recorded: readonly string[] | undefined }): boolean {
+  return o.allowArgs || (o.sameAgent && !!o.recorded?.length)
+}
+
+export function cloneLaunchArgs(o: { shown: boolean; line: string; recorded?: { text: string; argv: readonly string[] } | null; split: (line: string) => string[] }): string[] {
+  if (!o.shown) return []
+  if (o.recorded && o.line === o.recorded.text) return [...o.recorded.argv]
+  return o.line.trim() ? o.split(o.line) : []
+}
+
+/** A clone's directory as sent: the field exactly as it holds it (a name may end in a space), left out only when blank. */
+export function cloneCwd(line: string): string | undefined {
+  return line.trim() ? line : undefined
+}
+
+/**
+ * The source's agent when Clone with options… cannot offer it, once this opening's own read of the catalog has answered (a cached
+ * catalog may still list an agent since removed or no longer installed); '' while it is offered or not yet known.
+ */
+export function missingSourceAgent(source: string, offered: readonly Pick<AgentInfo, 'id'>[], read: boolean): string {
+  return source && read && !offered.some((a) => a.id === source) ? source : ''
+}
+
+/**
+ * The yolo choice the switch stores. A launch keeps "the server's default" while the switch shows it; a clone always keeps the
+ * choice itself, sent as given: the default the switch is compared with may still be the cache's or none, before the catalog answers.
+ */
+export function yoloStored(on: boolean, serverDefault: boolean, cloning: boolean): boolean | undefined {
+  return cloning || on !== serverDefault ? on : undefined
 }
 
 /** What a server answers a clone with, as the dialogs say it. */
