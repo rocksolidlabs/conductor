@@ -284,3 +284,34 @@ func TestFakeTerminalIsAPipe(t *testing.T) {
 		t.Errorf("Stops %v", got)
 	}
 }
+
+// A Stop made while an End is under way returns once that End has closed
+// Done and ended the output, never before: a Stop that saw the end begun
+// and returned at once would leave its caller a Done still open and a Read
+// still blocked.
+func TestFakeTerminalStopWaitsForAConcurrentEnd(t *testing.T) {
+	buf := make([]byte, 1)
+	for range 500 {
+		term := NewFakeTerminal(ext.ProcessInfo{})
+		start := make(chan struct{})
+		ended := make(chan struct{})
+		go func() {
+			defer close(ended)
+			<-start
+			term.End(ext.ExitStatus{Code: 1})
+		}()
+		close(start)
+		if err := term.Stop(context.Background(), 0); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-term.Done():
+		default:
+			t.Fatal("Stop returned before Done was closed")
+		}
+		if _, err := term.Read(buf); !errors.Is(err, io.EOF) {
+			t.Fatalf("Read once Stop returned: %v, want io.EOF", err)
+		}
+		<-ended
+	}
+}

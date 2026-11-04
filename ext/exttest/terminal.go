@@ -33,12 +33,15 @@ type FakeTerminal struct {
 	outW *io.PipeWriter
 	done chan struct{}
 
+	// endOnce makes the first End the end: a concurrent End or Stop waits
+	// for it, so neither returns before Done is closed and the output ended.
+	endOnce sync.Once
+
 	mu     sync.Mutex
 	typed  []byte
 	sizes  []TerminalSize
 	stops  []time.Duration
 	exit   ext.ExitStatus
-	ended  bool
 	closed bool
 }
 
@@ -77,19 +80,17 @@ func (t *FakeTerminal) Stops() []time.Duration {
 // End is the process exiting with st: Done is closed and Exit answers st.
 // The terminal stays open, as a terminal whose process exited is until it
 // is stopped, its output ending (Read io.EOF). Ending an ended terminal
-// changes nothing.
+// changes nothing; an End or Stop made while another End is under way
+// returns once that one has closed Done and ended the output.
 func (t *FakeTerminal) End(st ext.ExitStatus) {
-	t.mu.Lock()
-	first := !t.ended
-	if first {
-		t.ended, t.exit = true, st
-	}
-	t.mu.Unlock()
-	if first {
+	t.endOnce.Do(func() {
+		t.mu.Lock()
+		t.exit = st
+		t.mu.Unlock()
 		t.outW.Close()
 		close(t.done)
 		t.tell()
-	}
+	})
 }
 
 // Read reads what the test printed; io.EOF once the process has ended or
