@@ -5654,7 +5654,8 @@ the RockSolid Labs Sponsor Kit (claude.ai/design).
   streaming, after 10 s unclaimed, from a managed run's attempt or a
   Brakeman turn, or when the app that claimed it could not open it, the link
   is offered in a toast with Open. Each open is an `artifact` activity
-  entry, which the event bucket never drops. Claude Code 2.1.318 runs `$BROWSER` with the link as its one
+  entry naming the browser and profile asked for, whatever became of the
+  link, which the event bucket never drops. Claude Code 2.1.318 runs `$BROWSER` with the link as its one
   argument when it opens a link on Linux, and Codex 0.163.0 bundles Rust's
   `webbrowser`, which reads `BROWSER` on Linux; both read from their
   binaries, not checked live, and not on macOS. The workbench's own link
