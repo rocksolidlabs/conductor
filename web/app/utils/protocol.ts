@@ -657,7 +657,9 @@ export interface HostRegisteredLinks {
 /**
  * The part of registered that says what the hosted session watches on its screen (#293): the catalog's recipe for the agent the
  * host registered, as a server session of it watches. Absent when the catalog has no such agent or nothing to watch, from an older
- * server, and past HOST_MAX_RECIPE bytes encoded; a host refuses one past the bounds below. The workbench never sees it.
+ * server, past HOST_MAX_RECIPE bytes encoded, and when registered with it would be past a host message (64 KiB); a host refuses one
+ * past the bounds below. confirmSubmit is set on the hosted session, but no submission on a host asks for the second Enter yet.
+ * The workbench never sees it.
  */
 export interface HostRegisteredRecipe {
   recipe?: HostRecipe

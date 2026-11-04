@@ -139,8 +139,9 @@ type Registered struct {
 	// the agent the host registered (HostSession.AgentID), so that a hosted
 	// session watches what a server session of the same agent watches
 	// (#293). Absent when the catalog has no such agent, when it has
-	// nothing to watch, from an older server, and when its encoding is past
-	// MaxHostRecipe; a host that is not given one, or is given one it
+	// nothing to watch, from an older server, when its encoding is past
+	// MaxHostRecipe, and when registered with it would be past
+	// MaxHostMessage; a host that is not given one, or is given one it
 	// refuses (HostRecipe.Check), works as it did without.
 	Recipe *HostRecipe `json:"recipe,omitempty"`
 }
@@ -150,6 +151,10 @@ type Registered struct {
 // questions, startup and anytime, the window title that says the agent
 // works, and whether the agent reports taking a prompt. The patterns are
 // the catalog's, RE2 source; the host compiles them as the server does.
+// ConfirmSubmit is set on the hosted session as on a server one, but only
+// a submission that asks for the second Enter gets it (a crew's prompt,
+// session.Submission.Confirm), and no submission on a host asks for one
+// yet: hosted crews are to come.
 type HostRecipe struct {
 	TrustPrompt   string           `json:"trustPrompt,omitempty"`
 	TrustAnswers  []RecipeAnswer   `json:"trustAnswers,omitempty"`
@@ -179,8 +184,9 @@ type RecipeQuestion struct {
 
 // Bounds of a HostRecipe: the catalog's own (catalog.MaxQuestions,
 // MaxTrustAnswers and the rest, a pattern's 200 bytes), and MaxHostRecipe
-// for its encoding, which keeps registered within MaxHostMessage beside
-// its ICE servers and links.
+// for its encoding. Beside the ICE servers and the links, which have no
+// bound of their own here, a recipe could still take registered past
+// MaxHostMessage: the server then sends it without the recipe.
 const (
 	MaxRecipeQuestions   = 8
 	MaxRecipeAnswers     = 6

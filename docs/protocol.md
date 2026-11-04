@@ -650,19 +650,24 @@ with too). With it the host holds the trust question and the startup
 questions at start, raises the questions asked during the work with their
 choices (Codex's command approval, Claude Code's dialogs read off the
 screen), refuses a line typed into the session while one shows (a crew's
-handoff, a broadcast, a reply: `error{not_sent}`), reads the working title,
-and presses a second Enter for a submission that asks for one when the
-agent does not report taking it (`confirmSubmit`). It is absent
+handoff, a broadcast, a reply: `error{not_sent}`) and reads the working
+title. `confirmSubmit` (the agent reports taking a prompt) is carried and
+set on the hosted session as on a server one, where only a submission that
+asks for a second Enter gets it (a crew's prompt); no submission on a host
+asks for one yet, hosted crews being to come, so today it changes nothing
+there. It is absent
 when the catalog has no agent of that id (or none is named), when the
-agent has nothing to watch, from an older server, and when its encoding is
-past 24 KiB (the catalog's bounds keep every entry far under it), and the
+agent has nothing to watch, from an older server, when its encoding is
+past 24 KiB (the built-in entries are far under it), and when `registered`
+with it would be past a host message (64 KiB: the ICE servers and the
+links have no bound of their own in it, so the server measures the whole
+message and sends it without the recipe, and logs why), and the
 host then works as it did, with the agent it names. Its bounds, which a
 host checks and refuses the recipe whole past (it logs why and watches
 nothing of it, as it does a pattern that does not compile): at most 8
 questions, each with a prompt; at most 6 answers to the trust question and
 to each question, a label of 1 to 60 characters and keys of 1 to 48 bytes;
-each pattern at most 200 bytes. A registered with a recipe at its bound
-still fits a host message (64 KiB). A host publishing to a switchyard (the
+each pattern at most 200 bytes. A host publishing to a switchyard (the
 server's uplink) watches nothing of one; an older host ignores the field.
 
 A run link minted by `link_run` resolves on the join page as a run link does
