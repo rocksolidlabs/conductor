@@ -22,8 +22,27 @@ async function typeLine(page: Page, sessionId: string, line: string) {
   await page.keyboard.press('Enter')
 }
 
-/** Clicks the terminal's cell at column `col`, row `row` (0-based), hovering first so that the link provider has run on the row. */
+/**
+ * Clicks the terminal's cell at column `col`, row `row` (0-based), hovering first so that the link provider has run on the row. The
+ * cell is placed by the session's size over the screen's box, so the size is read once the window has sized the session to its pane:
+ * the drawn grid (data-cols, data-rows) the session's, the same on two reads a second apart. Read at once after the editor closed, the
+ * pane had grown and the session not yet (#281): the click landed rows above the path.
+ */
 async function clickCell(page: Page, api: { session: (id: string) => Promise<Session> }, sessionId: string, col: number, row: number) {
+  const host = page.locator('.terminal-host').first()
+  let seen = ''
+  await expect
+    .poll(
+      async () => {
+        const s = (await api.session(sessionId)) as Session & { rows?: number }
+        const now = `${s.cols} × ${s.rows} ${await host.evaluate((h) => `${h.dataset.cols} × ${h.dataset.rows}`)}`
+        const held = now === `${s.cols} × ${s.rows} ${s.cols} × ${s.rows}` && now === seen
+        seen = now
+        return held
+      },
+      { timeout: 15_000, intervals: [1000], message: 'the window sizes the session to its pane' },
+    )
+    .toBe(true)
   const screen = page.locator('.terminal-host .xterm-screen').first()
   const box = await screen.boundingBox()
   const s = (await api.session(sessionId)) as Session & { rows?: number }
