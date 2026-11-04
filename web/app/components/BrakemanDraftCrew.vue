@@ -42,14 +42,14 @@ const summary = computed(() => {
 })
 
 /** The save this browser asked that did not finish, and what the card does about it. */
-const kept = computed(() => bk.keptMake(props.request.id, props.index))
+const kept = computed(() => bk.keptMake(props.request, props.index))
 /** A new make on its way: kept before it is sent (useBrakeman's make), it is this card's to answer, not one to finish yet. */
 const creating = ref(false)
 const again = computed(() => makeAgain(made.value, creating.value ? undefined : kept.value))
 watch(
   again,
   (a) => {
-    if (a.kind === 'drop') bk.forgetMake(props.request.id, props.index)
+    if (a.kind === 'drop') bk.forgetMake(props.request, props.index)
   },
   { immediate: true },
 )
@@ -76,12 +76,12 @@ async function save() {
   error.value = ''
   try {
     let out
-    if (finishing.value) out = await bk.finishMake(props.request.id, props.index)
+    if (finishing.value) out = await bk.finishMake(props.request, props.index)
     else {
       if (!parsed.value.ok) return
       const crew = { ...parsed.value.value, name: name.value.trim(), ...(goal.value.trim() ? { goal: goal.value.trim() } : {}) }
       creating.value = true
-      out = await bk.make(props.request.id, props.index, { by: displayBy(identity.name.value) || undefined, edit: { crew, gates: props.item.gates, from: props.item.from } })
+      out = await bk.make(props.request, props.index, { by: displayBy(identity.name.value) || undefined, edit: { crew, gates: props.item.gates, from: props.item.from } })
     }
     // Saved, never launched: the crew editor shows it, where the person decides what next.
     if (out.crew?.id) await router.push(`/crews/${encodeURIComponent(out.crew.id)}`)

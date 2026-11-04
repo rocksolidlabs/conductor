@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/brakeman'
-import { BOUNDS, BRAKEMAN_ADAPTERS, agentChoice, agentIdOf, agentItems as agentChoices, configProblems, formField, sameConfig, scopeLines, scopeList } from '~/utils/brakeman'
+import { BOUNDS, BRAKEMAN_ADAPTERS, agentChoice, agentIdOf, agentItems as agentChoices, configProblems, formField, formMove, sameConfig, scopeLines, scopeList } from '~/utils/brakeman'
 import { ApiError } from '~/composables/useApi'
 
 /**
@@ -21,6 +21,8 @@ const agents = ref<AgentInfo[]>([])
 const form = ref<BrakemanConfig | null>(null)
 /** The configuration the form was last set from: a form that still holds it is untouched, and follows the one saved. */
 const base = ref<BrakemanConfig | null>(null)
+/** The store's generation the form was set under: a reset (a new token, perhaps another server) leaves it another token's. */
+const formGen = ref(-1)
 const scopeText = reactive<Record<keyof BrakemanScope, string>>({ projects: '', repos: '', crews: '', runs: '', sessions: '' })
 const saving = ref(false)
 const serverError = ref<{ field?: string; message: string } | null>(null)
@@ -29,6 +31,7 @@ const saved = computed(() => bk.state.value?.config ?? null)
 const available = computed(() => bk.available.value)
 
 function reset(c: BrakemanConfig) {
+  formGen.value = bk.generation.value
   base.value = JSON.parse(JSON.stringify(c)) as BrakemanConfig
   form.value = JSON.parse(JSON.stringify(c)) as BrakemanConfig
   for (const k of Object.keys(scopeText) as Array<keyof BrakemanScope>) scopeText[k] = scopeLines(c.scope[k])
@@ -60,11 +63,18 @@ const dirty = computed(() => !!saved.value && !!body.value && !sameConfig(body.v
 const edited = computed(() => !!base.value && !!body.value && !sameConfig(body.value, base.value))
 
 // The form follows the configuration saved until it is changed here: a save from elsewhere replaces a form left untouched, and
-// leaves one being edited as it is (its save then meets the newer revision and is refused stale).
+// leaves one being edited as it is (its save then meets the newer revision and is refused stale). A form set under the token
+// before is never kept (formMove): the new server's revision may be the same number as the one it was read at.
 watch(
-  () => saved.value?.rev,
+  () => [bk.generation.value, saved.value?.rev],
   () => {
-    if (saved.value && (!form.value || !edited.value)) reset(saved.value)
+    const move = formMove(form.value ? { gen: formGen.value, edited: edited.value } : null, bk.generation.value, !!saved.value)
+    if (move === 'set') reset(saved.value!)
+    else if (move === 'drop') {
+      form.value = null
+      base.value = null
+      serverError.value = null
+    }
   },
   { immediate: true },
 )
@@ -124,11 +134,17 @@ async function save() {
   if (!c || Object.keys(problems.value).length) return
   saving.value = true
   serverError.value = null
+  const gen = bk.generation.value
   try {
     const out = await bk.saveConfig(c)
     reset(out.config)
     toast.add({ title: out.config.enabled ? 'Brakeman saved, on' : 'Brakeman saved, off', icon: 'i-lucide-check', color: 'success' })
   } catch (e) {
+    // Answered after a new token: the form is this server's now (formMove), and the answer is the token before's.
+    if (bk.generation.value !== gen) {
+      toast.add({ title: 'Not saved here', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'warning' })
+      return
+    }
     const field = e instanceof ApiError && typeof e.details.field === 'string' ? e.details.field : undefined
     serverError.value = { field, message: (e as Error).message }
     if (e instanceof ApiError && e.code === 'stale_revision') {

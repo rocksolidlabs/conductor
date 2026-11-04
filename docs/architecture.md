@@ -6,10 +6,11 @@ roles.
 The names follow the railroad. **Conductor** is the application, where people
 direct and supervise the work. **Yardmaster** is the agent harness: it manages
 the agents' execution, crews, tools, lifecycle and coordination, the managed
-runs of #334. **Brakeman**, to come (#356), is the sidekick agent that watches
+runs of #334. **Brakeman** (#356, below) is the sidekick agent that watches
 the work, anticipates problems, summarizes progress and assists the people: an
-agent powered by Yardmaster with privileged access to the operation's
-telemetry, not a part of the harness. **Switchman**, to come, routes tasks
+agent of the person's own choosing that Yardmaster runs for bounded turns, with
+the visibility of the operation the person grants it, not a part of the
+harness and never a scheduler. **Switchman**, to come, routes tasks
 between agents, crews and people.
 
 ## Server-hosted sessions
@@ -462,6 +463,123 @@ engine still holds the run. The ticket page reads both again on the
 `dispatch` events of its ticket and the `run` events of the runs it shows,
 and counts a run's questions from the live sessions, never by polling.
 
+## Brakeman
+
+Brakeman is the sidekick agent (`docs/plans/brakeman.md`, Program items BK0
+to BK3; what is here is the first slice, BK1's and BK0's first forms): an
+agent of the person's own choosing, on the person's own agent login, that
+Yardmaster runs for bounded turns. It observes, explains, drafts and
+proposes; nothing it writes becomes work until a person acts through the
+typed operations every client uses, and it answers no question, approves
+nothing and schedules nothing. It is off until a person configures it in
+Settings, so a build where nobody has does what it did before; a switchyard
+runs none (`403 switchyard`).
+
+**A turn is a run.** A person's request (`POST /api/brakeman/requests`:
+`briefing`, `explain`, `decision`, `draft_tickets`, `propose_crew`,
+`handoff`, `locate`, `overlaps` or `ask`, with subjects and a note) waits in
+the desk's queue (`internal/api/brakeman.go`, 8 at most; one turn at a
+time). The desk takes the oldest, charges the day's budget and launches
+through the engine (`Engine.LaunchNamedWith`, then `crew.Launcher`, the path
+every member takes; `launchTurn` is its one door, never `os/exec`) an
+unsaved one-member crew: the configured agent in the configured folder
+(through `openCwd`), isolation `none`, its arguments the adapter's
+read-only mode, then its model flag, then the rule that lets Conductor's
+MCP tools run without asking when the person allowed it; never yolo, never
+a managed run. The run carries `class: brakeman` and the request's id, its
+session is "Brakeman · br-n" with `CONDUCTOR_BRAKEMAN` set, and the line
+typed into it once it is ready names the request and the tools. Every turn
+is a fresh session: the agent reads its request, the earlier briefs and
+their coverage from the server, never from a conversation, so a restart or
+another model changes nothing it can know. The watchdog ends a turn at its
+deadline (15 minutes by default); the slot is given up only once the launch
+has returned and every process the turn made is reaped. A turn's run is
+never resumed and takes no member; its session forms no crew and reaches
+no ticket (`409 brakeman_run`, `403 brakeman_cannot`). A deadline, a
+cancel and turning Brakeman off write the closing state first and stop the
+run after; Stop on its run ends it as it ends any run.
+
+**What a turn reads.** Its session token, with `X-Conductor-Session`
+naming its session, is the principal `brakeman` on the shared reads (the
+runs with their tasks, steps, check logs, commands and messages;
+Dispatch's projects, tickets, history and comments; the sessions; the
+touched index), each answered by its own handler and filtered by the
+turn's grant (`brakeman_observe.go`): the configuration's snapshot at the
+turn's start intersected with the configuration now, by scope
+(`Scope.Admits` over projects, repositories, crews, runs and sessions) and
+by visibility (runs, logs, Dispatch, sessions, touched files, and terminal
+screens, off by default). Its own reads under `/api/brakeman/` add what
+changed since a time or since the last complete briefing's watermarks
+(`brakeman_changes.go`: the ledger's events, the sessions' activity
+windows with their gaps, Dispatch's change feed), the status Conductor
+computes, a screen, overlapping changes and earlier briefs. Each read
+counts against the turn's budget and goes into its read log, which is how
+the server knows what the turn saw and how far its coverage reaches; an
+earlier brief made under a wider scope or visibility is given only as its
+projection, none of its prose.
+
+**A brief** (`brakeman.brief/1`, `internal/brakeman/brief.go`) is the
+turn's one answer, submitted with the session's own token (`POST
+/api/sessions/{id}/brakeman/brief`, the MCP tool `brief_submit`, or
+`conductor brakeman brief`): facts, interpretations, proposals, verified
+outcomes, decision cards, draft tickets and crews, handoffs and overlaps,
+each typed and bounded. Every fact names evidence as refs (`run:`,
+`task:`, `check:`, `ticket:`, `question:`, `brief:` and the rest), and
+`brakeman_refs.go` resolves each against its own store, the grant and the
+read log before the brief is kept: a ref that names nothing, lies outside
+the grant or names a revision other than the one read is refused (`422
+bad_refs`), so the agent fixes it in its turn. What each ref was when read
+and when kept is kept beside the brief, and the page marks what changed
+since.
+
+**Drafts and controls.** A draft ticket or crew is a form; Create sends
+`POST …/items/{i}/make` (`brakeman_make.go`), which makes the ticket
+through Dispatch's own create under the actor `admin` with the person's
+name, its blocking relations once both ends exist, or saves the crew
+(with its `origin`, never launched), under an op id derived from the
+request, the item and the client's id: a repeat answers once, and a make a
+stop cut short is settled at the next start from the durable record
+(`recoverMakes`). A decision card's controls and a proposal's button are
+Conductor's, read from the live record (`web/app/utils/brakemanCards.ts`):
+a task's commands by the run page's rules, carrying the revision the turn
+read, so a run that moved is refused `409 stale_revision`; a question
+answered on its session page; a stop, a resume, a crew's creation or
+launch only as a link to the page that does them.
+
+**The guide** (`internal/api/guide.go`, BK0) is what an agent learns this
+build can do, from the running server rather than a static prompt. One
+table holds Conductor's operations (name, scope, route, MCP tool, CLI form,
+input schema, receipt, the revision the route checks, bounds), and the MCP
+server's `tools/list` is built from it, so a tool and its entry cannot
+drift. It is computed per caller (`GET /api/guide`, `GET
+/api/sessions/{id}/guide`, the MCP tool `guide`, `conductor guide`) and
+served in sections: an overview of at most 4 KiB, then the operations the
+caller's scopes reach, the limits read from the constants that enforce
+them, the host, the receipts, and the providers, said to be unknown until
+the guide reads `GET /api/capabilities` (the plan's PR-9). A plain
+session's guide is not an attempt's, and a turn's lists its `observe`
+reads and none of the crew or ticket tools.
+
+**The records** are JSON documents under the data directory's `brakeman/`
+(0700; `internal/brakeman`, which has no HTTP, no session, no process and
+no import of `internal/crew`): `config.json`, `state.json` (the last
+number, the op ids, the day's charges) and, per request,
+`requests/br-<n>.json` with its brief, the brief's resolutions, the
+turn's read log and a pending make's input beside it, each measured
+before it is written; the newest 500 requests are kept, and every open or
+pinned one. The desk owns them while it holds `brakeman/owner.lock`, taken
+by the ledger's own lock code (`store.OwnerLock`); a second server on the
+directory reads them and writes nothing (`503 brakeman_not_owner`).
+
+In the web app `useBrakeman.ts` is the client (the configuration, a page
+of requests, then the `brakeman` event of `GET /api/events`); Settings
+holds `BrakemanSettings.vue`, and `/brakeman` the composer, the request in
+progress, the queue and the briefs. The palette, a run's task actions and
+a ticket's page open the composer with a kind and a subject. A brief
+arriving adds a count to the sidebar's Brakeman row and nothing else; a
+question Brakeman's own session asks shows in Needs you as "Brakeman ·
+br-n".
+
 ## Switchyard
 
 A switchyard is the server in a mode (`config.Switchyard`): the signaling
@@ -844,13 +962,14 @@ still resolved. A switchyard routes and answers none.
 | `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness and the trust hold, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`), run state, change reports, member resume |
 | `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events; recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, the server may not write the database file, or the database is damaged or newer |
 | `internal/dispatch` | Dispatch's store: projects, tickets, their discussion and history in `dataDir/dispatch/dispatch.sqlite`; every write a typed operation with a kept receipt and its rows in the `changes` log; no HTTP, no session, no process |
+| `internal/brakeman` | Brakeman's records: its configuration, the requests people make of it, the briefs its turns hand back and their evidence refs, as JSON documents in `dataDir/brakeman/` under its own owner lock; no HTTP, no session, no process |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |
 | `internal/pty` | process start, resize, stop; environment allowlist |
 | `internal/proc` | a bounded run of one command outside a PTY: argv, directory, timeout, the output's first and last bytes, the process group killed when the run ends; the managed-run checks' runner (#334) |
 | `internal/session` | ring buffer, fan-out hub, `Local` session (submissions, attention, trust watcher, the agent's own session), registry, bounded file reads |
 | `internal/share` | share tokens (random, hashed at rest) and revocation |
 | `internal/signal` | hosted sessions: host connections, viewer brokering, relay |
-| `internal/api` | HTTP routes, admin/share/host authentication, viewer and host WebSockets |
+| `internal/api` | HTTP routes, admin/share/host authentication, viewer and host WebSockets; the operating guide (`guide.go`) and Brakeman's desk (`brakeman*.go`) |
 | `internal/hostagent` | `conductor host`: control connection, pion peers, relay, local terminal |
 | `internal/notify` | `conductor notify`: reports from inside a session; hook payload mappers, the agent's own session id among what they read |
 | `internal/web` | embedded SPA with index fallback |
@@ -961,6 +1080,13 @@ the newest 20,000 are dropped, the log still answering a resend of an
 operation that ran. A database a newer Conductor wrote, or one that fails
 its check, opens read-only: its reads are answered, its writes refused with
 why, and it is never written.
+
+Brakeman's records, `brakeman/` beside them, outlast a restart too: a
+request the restart finds starting or running reads `interrupted`, one
+still queued is launched by the next server's desk once it listens, and a
+make a stop cut short is settled from Dispatch's receipts and the crew
+store before Brakeman's routes serve. An export carries them as plain
+files and leaves `brakeman/owner.lock` out, as it does the ledger's.
 
 Export and restore (`internal/export`, Program item C6) move the data
 directory to another machine as one zip archive. `GET /api/export` writes it

@@ -1,5 +1,5 @@
 import type { BrakemanBrief, BrakemanConfig, BrakemanRequest, BrakemanState, RefResolution } from '../utils/brakeman'
-import { closed, keptBrief, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
+import { closed, keptBrief, openedMark, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
 import { dropKeptMake, readKeptMakes, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
@@ -106,9 +106,9 @@ export class BrakemanLive {
   }
 
   /**
-   * Takes a request as a reply gave it, unless the page has it further along already; its makes and edges are reconciled with the
-   * page's (reconcileMade), since replies to two cards' makes of one request can arrive in either order. A reply sent before a reset
-   * (`at`) is dropped.
+   * Takes a request as a reply gave it, unless the page has it further along already or the reply was sent before a reset (`at`); its
+   * makes and edges are reconciled with the page's (reconcileMade), since replies to two cards' makes of one request can arrive in
+   * either order.
    */
   apply(r: BrakemanRequest, at = this.gen) {
     if (at !== this.gen) return
@@ -275,36 +275,80 @@ export function brakemanLive(): BrakemanLive {
   return (live ??= new BrakemanLive())
 }
 
-const OPENED_KEY = 'conductor.brakeman.opened'
-/** How many opened ids a browser keeps: the newest requests kept are 500, so an older one is never counted again. */
+/**
+ * Where a browser keeps a brief opened: a key of its own per brief, `<prefix><openedMark>`. Two tabs opening two briefs at once each
+ * write their own key, so neither can write over the other's (one list read and written again could: both read it, then each wrote
+ * its own over the other's).
+ */
+const OPENED_PREFIX = 'conductor.brakeman.opened/'
+/** Set once the first read in a browser took the briefs there were as opened: from then on a brief without its key is new. */
+const OPENED_BEGUN = 'conductor.brakeman.opened-begun'
+/** The one list of ids kept before marks named their request's time: another server's br-3 matched it, so it is dropped. */
+const OPENED_LIST = 'conductor.brakeman.opened'
+/** How many opened marks a browser keeps: the newest requests kept are 500, so an older one is never counted again. */
 const OPENED_MAX = 500
 
-/** The ids of the briefs this browser opened, or null when it has kept none yet. */
+/** A mark's request number, then its time, newest first. */
+function newestFirst(marks: string[]): string[] {
+  const parts = (m: string) => {
+    const at = m.indexOf('@')
+    return at < 0 ? ([requestNumber(m), ''] as const) : ([requestNumber(m.slice(0, at)), m.slice(at + 1)] as const)
+  }
+  return marks.sort((a, b) => {
+    const [na, ta] = parts(a)
+    const [nb, tb] = parts(b)
+    return nb - na || (tb < ta ? -1 : tb > ta ? 1 : 0)
+  })
+}
+
+/** The marks of the briefs this browser opened (openedMark), newest first, or null when its first read has not begun them yet. */
 function readOpened(): string[] | null {
   try {
-    const raw = localStorage.getItem(OPENED_KEY)
-    const v = raw ? JSON.parse(raw) : null
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : null
+    const marks: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k?.startsWith(OPENED_PREFIX)) marks.push(k.slice(OPENED_PREFIX.length))
+    }
+    return marks.length || localStorage.getItem(OPENED_BEGUN) !== null ? newestFirst(marks) : null
   } catch {
     return null
   }
 }
 
 /**
- * Keeps `ids` as opened with those the storage holds already (another tab's, opened since this one read them), and returns them
- * all, newest first: a tab never writes over what another opened.
+ * Keeps `marks` as opened, each under its own key, and returns all the browser keeps (another tab's too), newest first, past the
+ * newest OPENED_MAX dropped. Nothing is read before it is written, so a tab never writes over what another opened.
  */
-export function keepOpened(ids: Iterable<string>): string[] {
-  const all = [...new Set([...(readOpened() ?? []), ...ids])].sort((a, b) => requestNumber(b) - requestNumber(a)).slice(0, OPENED_MAX)
+export function keepOpened(marks: Iterable<string>): string[] {
+  const mine = [...new Set(marks)]
   try {
-    localStorage.setItem(OPENED_KEY, JSON.stringify(all))
+    for (const m of mine) localStorage.setItem(OPENED_PREFIX + m, '1')
+    localStorage.setItem(OPENED_BEGUN, '1')
+    localStorage.removeItem(OPENED_LIST)
+    const all = readOpened() ?? []
+    for (const m of all.slice(OPENED_MAX)) localStorage.removeItem(OPENED_PREFIX + m)
+    return all.slice(0, OPENED_MAX)
   } catch {
     /* storage refused: the count is this visit's */
+    return newestFirst(mine)
   }
-  return all
 }
 
-/** The makes this browser asked that did not finish, by `<request>/<item>`: every tab's, each kept under its own entry. */
+/** Whether this page follows the opened ids other tabs write (one listener for the app's one list). */
+let followingOpened = false
+
+/** The request a make is of: its id, and when the server wrote it, which tells one server's br-1 from another's. */
+export type MakeOf = Pick<BrakemanRequest, 'id' | 'createdAt'>
+
+/**
+ * Where a make is kept: `<request>/<item>@<createdAt>`. A new token may be another server's, whose br-1 is another request written at
+ * another time: it never finds this one's make, and the server it was asked of (the same request, under any token) still does.
+ */
+export function keptKey(r: MakeOf, item: number): string {
+  return `${r.id}/${item}@${r.createdAt}`
+}
+
+/** The makes this browser asked that did not finish, by keptKey: every tab's, each kept under its own entry. */
 function readKept(): Record<string, KeptMake> {
   try {
     return readKeptMakes(localStorage)
@@ -323,30 +367,30 @@ function writeKept(key: string, k: KeptMake | undefined) {
   }
 }
 
-/** Whether this page follows the opened ids other tabs write (one listener for the app's one list). */
-let followingOpened = false
-
 /** Brakeman for a page: its state and requests, live, and the person's writes. */
 export function useBrakeman() {
   const { request } = useApi()
   const version = useState<number>('brakemanVersion', () => 0)
   const opened = useState<string[] | null>('brakemanOpened', () => (import.meta.client ? readOpened() : null))
+  // A brief opened in another tab is opened here too: the event's key is the brief's own mark. A tab whose first read has not run
+  // yet takes all the browser keeps, since the other tab's first read began them.
+  if (import.meta.client && !followingOpened) {
+    followingOpened = true
+    window.addEventListener('storage', (e) => {
+      if (!e.key?.startsWith(OPENED_PREFIX) || e.newValue === null) return
+      const mark = e.key.slice(OPENED_PREFIX.length)
+      if (opened.value === null) opened.value = readOpened()
+      else if (!opened.value.includes(mark)) opened.value = [...opened.value, mark]
+    })
+  }
   /**
    * The makes this browser asked that have no answer yet, or whose answer left them to be asked again (a reply lost twice, the backend
    * failing after the claim, a token refused before the route ran): each with its id and the body it sent, the one ask the route
    * finishes it on (the same id with other content is op_conflict, and another id make_pending). Kept in the browser's storage before
-   * the make is sent, so a page read again while it is out can still finish it.
+   * the make is sent, so a page read again while it is out can still finish it. Each is the request's it was asked of (keptKey), so a
+   * new token, which may be another server's, finds only its own.
    */
   const kept = useState<Record<string, KeptMake>>('brakemanKeptMakes', () => (import.meta.client ? readKept() : {}))
-  // A brief opened in another tab is opened here too.
-  if (import.meta.client && !followingOpened) {
-    followingOpened = true
-    window.addEventListener('storage', (e) => {
-      if (e.key !== OPENED_KEY) return
-      const ids = readOpened()
-      if (ids) opened.value = [...new Set([...(opened.value ?? []), ...ids])]
-    })
-  }
   const store = brakemanLive()
   const reads: BrakemanReads = {
     state: () => request<BrakemanState>('/api/brakeman'),
@@ -385,15 +429,19 @@ export function useBrakeman() {
     (list) => {
       if (opened.value !== null || store.available !== true) return
       // Another tab may have taken the first read meanwhile: its list is this one's.
-      opened.value = readOpened() ?? keepOpened(list.filter((r) => r.hasBrief).map((r) => r.id))
+      opened.value = readOpened() ?? keepOpened(list.filter((r) => r.hasBrief).map(openedMark))
     },
     { immediate: true },
   )
 
-  /** Marks a brief opened in this browser. */
-  function markOpened(id: string) {
-    if (opened.value?.includes(id)) return
-    opened.value = keepOpened([...(opened.value ?? []), id])
+  /**
+   * Marks a brief opened in this browser: the request as the card drew it, whose time tells it from another server's request of the
+   * same id (a new token's br-3 is not this one).
+   */
+  function markOpened(r: Pick<BrakemanRequest, 'id' | 'createdAt'>) {
+    const mark = openedMark(r)
+    if (opened.value?.includes(mark)) return
+    opened.value = [...new Set([...(opened.value ?? []), ...keepOpened([mark])])]
   }
 
   /** Reads the state and the first page; pages call it as they open, the sidebar once. */
@@ -401,9 +449,23 @@ export function useBrakeman() {
     return store.readFirst()
   }
 
-  /** Saves the configuration read at `rev`: {config, warnings?}. */
+  /**
+   * A write's send, asked again (sendTwice) only with the token it was first sent with: useApi reads the token on every call, and
+   * after a reset the server may be another one, whose br-3 is not this one's. The retry is refused instead (`again`), as a reply lost
+   * twice is.
+   */
+  function sameToken<B, R>(at: number, again: string, send: (b: B) => Promise<R>): (b: B) => Promise<R> {
+    return (b) => (store.generation === at ? send(b) : Promise.reject(new ApiError(0, 'network', again)))
+  }
+
+  /**
+   * Saves the configuration read at `rev`: {config, warnings?}. A reply that arrives after a reset is the token before's (perhaps
+   * another server's configuration): it is refused, and neither the store nor the form takes it.
+   */
   async function saveConfig(config: BrakemanConfig) {
+    const at = store.generation
     const out = await request<{ config: BrakemanConfig; warnings?: string[] }>('/api/brakeman/config', { method: 'PUT', body: { rev: config.rev, config } })
+    if (store.generation !== at) throw new Error("The token changed before the save was answered: the configuration shown is this server's.")
     if (store.state) store.state = { ...store.state, config: out.config, warnings: out.warnings }
     version.value++
     void store.readState()
@@ -413,7 +475,10 @@ export function useBrakeman() {
   /** Asks Brakeman: the request kept (201) or the one this id asked already (200). */
   async function ask(body: { kind: string; subjects?: string[]; note?: string; since?: string; by?: string }) {
     const at = store.generation
-    const out = await sendTwice((b) => request<{ request: BrakemanRequest }>('/api/brakeman/requests', { method: 'POST', body: b }), { opId: mintCommandId(), ...body })
+    const send = sameToken(at, 'The token changed before the ask was sent again: see whether the server it was sent to has it.', (b: typeof body & { opId: string }) =>
+      request<{ request: BrakemanRequest }>('/api/brakeman/requests', { method: 'POST', body: b }),
+    )
+    const out = await sendTwice(send, { opId: mintCommandId(), ...body })
     store.apply(out.request, at)
     void store.readState()
     return out.request
@@ -422,7 +487,10 @@ export function useBrakeman() {
   /** Cancels a request: a queued one leaves the queue, one under way is written cancelled and its run stopped after. */
   async function cancel(id: string) {
     const at = store.generation
-    const out = await sendTwice((b) => request<{ request: BrakemanRequest }>(`/api/brakeman/requests/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: b }), { opId: mintCommandId() })
+    const send = sameToken(at, `The token changed before the cancel of ${id} was sent again: see whether the server it was sent to cancelled it.`, (b: { opId: string }) =>
+      request<{ request: BrakemanRequest }>(`/api/brakeman/requests/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: b }),
+    )
+    const out = await sendTwice(send, { opId: mintCommandId() })
     store.apply(out.request, at)
     void store.readState()
     return out.request
@@ -449,31 +517,38 @@ export function useBrakeman() {
    * Makes a brief's draft work (PR-7's forms send it): {request, made, ticket?, crew?}. Its id and body are kept for finishMake before
    * it is sent (sendKept); an answer that settles it forgets them, one that establishes nothing (unfinishedMake) leaves them kept.
    */
-  async function make(id: string, item: number, body: { by?: string; edit?: unknown } = {}, opId = mintCommandId()) {
+  async function make(r: MakeOf, item: number, body: { by?: string; edit?: unknown } = {}, opId = mintCommandId()) {
     const at = store.generation
+    const key = keptKey(r, item)
     const keep = () => {
       const k: KeptMake = { opId, body, at: Date.now() }
-      kept.value = { ...kept.value, [`${id}/${item}`]: k }
-      writeKept(`${id}/${item}`, k)
+      kept.value = { ...kept.value, [key]: k }
+      writeKept(key, k)
     }
-    const out = await sendKept(keep, () => forgetMake(id, item), () =>
-      sendTwice(
-        (b) => request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(id)}/items/${item}/make`, { method: 'POST', body: b }),
-        { opId, ...body },
-      ),
+    // A reply lost is asked again only with the token it was sent with: after a reset the server may be another one, and the make
+    // stays kept for the one it was asked of.
+    const send = sameToken(at, 'The token changed before the make was asked again: it is kept for the server it was asked of.', (b: { opId: string; by?: string; edit?: unknown }) =>
+      request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(r.id)}/items/${item}/make`, { method: 'POST', body: b }),
     )
+    const out = await sendKept(keep, () => forget(key), () => sendTwice(send, { opId, ...body }))
+    // Answered after a reset: the ticket or crew is the server's before, perhaps another one's, so the caller is given nothing of it
+    // to open here (a crew card would open /crews/<its id> on the new server).
+    if (store.generation !== at) throw new Error('The token changed before the make was answered: it was made on the server it was asked of, and shows there.')
     store.apply(out.request, at)
     return out
   }
 
   /** The make of the item this browser asked that did not finish, or undefined. */
-  function keptMake(id: string, item: number): KeptMake | undefined {
-    return kept.value[`${id}/${item}`]
+  function keptMake(r: MakeOf, item: number): KeptMake | undefined {
+    return kept.value[keptKey(r, item)]
   }
 
   /** Forgets the item's unfinished make: it was answered, or another make holds the item. */
-  function forgetMake(id: string, item: number) {
-    const key = `${id}/${item}`
+  function forgetMake(r: MakeOf, item: number) {
+    forget(keptKey(r, item))
+  }
+
+  function forget(key: string) {
     if (!(key in kept.value)) return
     const rest = { ...kept.value }
     delete rest[key]
@@ -482,10 +557,10 @@ export function useBrakeman() {
   }
 
   /** Asks the item's unfinished make again, as it was sent: the same id and body, which the route finishes and never makes twice. */
-  function finishMake(id: string, item: number) {
-    const k = keptMake(id, item)
+  function finishMake(r: MakeOf, item: number) {
+    const k = keptMake(r, item)
     if (!k) throw new Error('This browser holds no make of it to finish.')
-    return make(id, item, k.body, k.opId)
+    return make(r, item, k.body, k.opId)
   }
 
   /** A request whole, with its brief (null until one is kept; its items a list, none for a brief of its summary alone). */
@@ -502,10 +577,20 @@ export function useBrakeman() {
     return new Map((out.refs ?? []).map((r) => [r.ref, r]))
   }
 
-  /** The token changed: what the store holds is dropped (the server may be another one), and so are replies to reads sent before. */
+  /**
+   * The token changed: what the store holds is dropped (the server may be another one), and so are replies to reads and writes sent
+   * before. The makes kept stay, each its own request's (keptKey), and so do the briefs opened (openedMark): another server's requests
+   * never find them.
+   */
   function reset() {
     store.reset()
   }
 
-  return { state, requests, available, problem, hasMore, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, brief, refs, closed }
+  /** The store's generation, which a reset moves: what was read or set under one is not the next one's (Settings' form). */
+  const generation = computed(() => {
+    void version.value
+    return store.generation
+  })
+
+  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, brief, refs, closed }
 }

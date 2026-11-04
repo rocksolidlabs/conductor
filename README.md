@@ -1615,6 +1615,85 @@ revision 3, in .conductor/ticket.md. Now at revision 9: the description
 changed; 2 comments since."): the run follows the ticket as launched, and a
 change is a person's to decide.
 
+## Brakeman
+
+Brakeman is Conductor's sidekick agent: an agent of your own choosing, on your
+own agent subscription, that Yardmaster runs for bounded turns to read what the
+crews, the runs and Dispatch hold, explain it, and draft and propose what you
+may then do. It observes, explains, drafts and proposes; nothing it writes
+becomes work until a person acts, and it answers no question, approves nothing
+and schedules nothing. Each thing you ask is a **request**, each request one
+**turn** (a fresh session of the agent, run as an ordinary run you can watch
+and stop), and each turn hands back one **brief**. It is off until you turn it
+on, and a switchyard has none (see `docs/protocol.md`, Brakeman, and
+`docs/architecture.md`, Brakeman).
+
+**Settings → Brakeman.** The agent (Claude Code or Codex today: an agent whose
+adapter registers Conductor's tools and has a read-only mode); the account,
+the folder its login lives in (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), empty for
+its default login; the model, empty for the agent's default; the folder its
+turns run in; whether Conductor's tools run without asking (without it the
+agent asks before each one and the turn waits on you in Needs you); what it may
+see (runs, check logs, Dispatch, sessions, touched files, and terminal
+screens, off until you turn them on); its scope (all of it, or chosen
+projects, repositories, crews, runs and sessions); whether it may draft and
+propose; and its budget (15 minutes and 300 reads a turn, 40 turns a day by
+default). A turn always runs in the agent's own read-only mode and never with
+yolo. Under Codex, Settings says what that mode does not hold: Codex 0.163.0's
+read-only sandbox leaves your own MCP servers (one yes away from writing) and
+your exec-policy allow rules (a matching command runs outside it without
+asking), and no flag isolates them, so a Codex turn is read-only only for an
+account with neither.
+
+**Asking.** **Brakeman** in the sidebar's foot opens `/brakeman`: pick **Brief
+me since…**, **Explain this**, **Prepare a decision**, **Draft tickets**,
+**Propose a crew**, **Prepare a handoff**, **Find…**, **Overlapping changes**
+or **A question**, the runs, tasks, sessions or ticket it is about, a note and
+a time. The request shows queued, then running with its session and its run
+(watch the terminal, or Stop), then briefed; one turn runs at a time and 8
+wait. The palette's Brakeman rows, a task's **Ask Brakeman why** on the run
+page and a ticket's **Ask Brakeman** menu open the same form, filled in. A
+brief arriving adds a count to the sidebar's row and nothing else: no dialog,
+no toast, no change of page.
+
+**A brief** says which agent, model and version made it, for which request, as
+of when; then Brakeman's reading (its interpretation), the facts, each with
+its evidence as links (a run, a task, a check's receipt with its log's
+SHA-256, a ticket, a session, a question, a file, an earlier brief), marked
+"changed since" when the record moved after the brief was kept, the
+interpretations and the facts they read, proposals, outcomes with their
+receipts, and what was asked for: decision cards (the question, the
+alternatives, the recommendation and its uncertainty, what answering
+authorizes) whose buttons are Conductor's own, read from the live record (a
+failed task's Retry or Accept anyway, sent with the revision Brakeman read, so
+a run that moved is refused rather than acted on blind; a question answered on
+its session page); draft tickets and crews as forms you edit and **Create**
+(a crew is saved and opened in the editor, never launched); handoffs to copy
+or comment on a ticket. A brief is never kept with a claim you cannot follow:
+the server refuses one whose evidence names nothing or lies outside what
+Brakeman may see.
+
+**From a shell**, with the workbench token (`--server`, `--token` and
+`--insecure` as `conductor dispatch` takes them):
+
+```bash
+conductor brakeman ask briefing --since 18:00        # or explain --subject run:<run>, draft_tickets --subject ticket:CND-4, ...
+conductor brakeman status                             # on or off, the turn in progress, the queue, today's turns
+conductor brakeman list                               # the requests, newest first
+conductor brakeman show br-12                         # a request whole, with its brief
+conductor guide [--section operations] [--json]       # what this server says the caller may do here
+```
+
+In a turn's session the agent uses the MCP tools `brakeman_request`, `observe`
+and `brief_submit`, or `conductor brakeman request|observe|brief` with its
+session's token; no other session sees them. Any agent in a Conductor session
+can call the MCP tool `guide` (or `conductor guide`) to learn what this build
+lets it do there, its limits and its receipts, from the running server. The
+records are JSON files under `brakeman/` in the data directory: a restart
+keeps every request and brief, and a **Brief me since…** with no time starts
+where the last complete briefing's coverage ended, read from them, never from
+a conversation.
+
 ## Yolo
 
 With yolo on (`"yolo": true` in the config, `CONDUCTOR_YOLO` set to `1` or
