@@ -14,7 +14,7 @@ import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, refusedSwitchy
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
 import { createWindow, followOrigin, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
-import { nextZoom, zoomKey, zoomStatus, ZoomStart, type ZoomMove } from './zoom'
+import { moveZoom, zoomKey, ZoomStart, type ZoomMove } from './zoom'
 import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
 import { allowIceThroughFirewall, firewallRuleExists, type IceStatus } from './firewall'
@@ -312,17 +312,19 @@ async function run() {
     if (!wc.isDestroyed() && sameOrigin(wc.getURL(), origin())) wc.setZoomLevel(settings.zoomLevel)
   }
   // Every move, one at a bound that changes nothing included, is shown in the workbench windows it zoomed and in the View menu.
-  const zoom = (move: ZoomMove) => {
-    const level = nextZoom(settings.zoomLevel, move)
-    if (level !== settings.zoomLevel) {
-      settings = { ...settings, zoomLevel: level }
-      saveSettings(settingsFile, settings)
-    }
-    zoomStart.moved()
-    for (const w of BrowserWindow.getAllWindows()) applyZoom(w.webContents)
-    for (const w of workbenchWindows(BrowserWindow.getAllWindows(), origin())) w.webContents.send('conductor:zoom', zoomStatus(settings.zoomLevel))
-    setMenu()
-  }
+  const zoom = (move: ZoomMove) =>
+    void moveZoom(move, {
+      level: () => settings.zoomLevel,
+      save: (level) => {
+        settings = { ...settings, zoomLevel: level }
+        saveSettings(settingsFile, settings)
+      },
+      apply: () => {
+        for (const w of BrowserWindow.getAllWindows()) applyZoom(w.webContents)
+      },
+      workbenches: () => workbenchWindows(BrowserWindow.getAllWindows(), origin()).map((w) => w.webContents),
+      menu: (level) => setMenu(level),
+    })
   app.on('web-contents-created', (_e, wc) => {
     if (wc.getType() !== 'window') return
     wc.on('before-input-event', (e, input) => {
@@ -335,7 +337,7 @@ async function run() {
     wc.on('did-finish-load', () => applyZoom(wc))
   })
   // Built again after each zoom move, for the level it shows.
-  function setMenu() {
+  function setMenu(zoomLevel: number) {
     Menu.setApplicationMenu(
       buildMenu({
         settings: () => void show().loadURL(origin() + '/settings'),
@@ -343,12 +345,12 @@ async function run() {
         restart: () => void supervisor.restart().catch(() => {}),
         showLog,
         zoom,
-        zoomLevel: settings.zoomLevel,
+        zoomLevel,
         dev,
       }),
     )
   }
-  setMenu()
+  setMenu(settings.zoomLevel)
   supervisor.on('state', (st) => {
     if (!main || main.isDestroyed()) return
     main.webContents.send('conductor:serverState', st)
