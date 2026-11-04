@@ -243,6 +243,17 @@ open deferred item from rounds 1 and 2, then the features below.
   active). Clicking an avatar opens the session; the rail has an expand
   button; `meta+B` / Alt+B toggles rail and full width. The choice is
   persisted per browser as before. Narrow screens keep the slideover.
+- **Sidebar width (#437).** The full sidebar opens at its minimum, 12.5 rem
+  (200 px) on every screen, and a drag on its edge widens it up to 26 % of the
+  window, never below the minimum; a drag on toward the window's left edge
+  gives the rail, a double-click returns to the minimum. The bounds are
+  `SIDEBAR_SIZE` and `sidebarBounds` in `web/app/utils/sidebar.ts`; the
+  layout's `UDashboardGroup` works in rem. Nuxt UI clamps only during a drag,
+  so the drawn width is `SIDEBAR_WIDTH`, a CSS clamp of Nuxt UI's `--width` to
+  the same bounds, which holds as the window changes. The width is kept per
+  browser under `conductor.sidebar.width` (rem); the percent width kept before
+  under `conductor.sidebar.size` is removed on first read, so every browser
+  opens at the minimum once. Below lg nothing changed.
 - **Example crews.** `conductor serve --examples` (env `CONDUCTOR_EXAMPLES` set
   to `1` or `true`) seeds example crews once: ids `example-todo-app`,
   `example-test-fixer`, `example-docs-writer`, `example-dependency-upgrade`; a
@@ -322,7 +333,7 @@ open deferred item from rounds 1 and 2, then the features below.
   slideover) and at 1024 px; they were only looked at in headless Chromium.
 - The sidebar's width across a Nuxt UI upgrade. Nuxt UI 4.11.2 has no size
   model or event for `UDashboardSidebar`, so the width kept in localStorage
-  (`conductor.sidebar.size`) is read from the `--width` style on the sidebar's
+  (`conductor.sidebar.width`) is read from the `--width` style on the sidebar's
   root after a drag or a double-click, and the saved width starts it through
   `defaultSize`; the headless check of this passed at 4.11.2 only.
 - Wording: the crew members table says "After X idle" where the engine and the
