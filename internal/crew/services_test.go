@@ -20,6 +20,8 @@ import (
 	"time"
 	"weak"
 
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/proc"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -102,8 +104,8 @@ func (g *gatedStop) Stop(ctx context.Context) error {
 func gateStops(t *testing.T, e *Engine) (called <-chan struct{}, open func()) {
 	gate, told := make(chan struct{}), make(chan struct{}, 16)
 	native := e.exec.serve
-	e.exec.serve = func(ctx context.Context, s proc.Spec) (service, error) {
-		svc, err := native(ctx, s)
+	e.exec.serve = func(ctx context.Context, ref ext.ProcessRef, s proc.Spec) (service, error) {
+		svc, err := native(ctx, ref, s)
 		if err != nil {
 			return nil, err
 		}
@@ -275,7 +277,7 @@ func TestAnEngineProbeAsksTheLoopbackAndFollowsNoRedirect(t *testing.T) {
 		port := srv.Listener.Addr().(*net.TCPAddr).Port
 		dir := newRepo(t)
 		e, fl, l := managedEngine(t)
-		e.exec.probe = proc.Probe
+		e.exec.probe = execFor(local.Native()).probe
 		fl.ports.script(port)
 		m := Manifest{Ports: []string{"web"}, Services: []Check{serviceLoop("web", "web.pid", false)},
 			Ready: []Probe{{ID: "page", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/health", IntervalSeconds: 1}}, Preview: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/"}
@@ -301,7 +303,7 @@ func TestAnEngineProbeAsksTheLoopbackAndFollowsNoRedirect(t *testing.T) {
 		port := moved.Listener.Addr().(*net.TCPAddr).Port
 		dir := newRepo(t)
 		e, fl, l := managedEngine(t)
-		e.exec.probe = proc.Probe
+		e.exec.probe = execFor(local.Native()).probe
 		fl.ports.script(port)
 		m := Manifest{Ports: []string{"web"}, Services: []Check{serviceLoop("web", "web.pid", false)},
 			Ready: []Probe{{ID: "page", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", IntervalSeconds: 1, TimeoutSeconds: 3}}}
@@ -334,7 +336,7 @@ func TestAServicesRowComesFirstAndARefusedRunningRowStopsIt(t *testing.T) {
 	e, _, l := managedEngine(t)
 	native := e.exec.serve
 	var startedFirst atomic.Bool
-	e.exec.serve = func(ctx context.Context, s proc.Spec) (service, error) {
+	e.exec.serve = func(ctx context.Context, ref ext.ProcessRef, s proc.Spec) (service, error) {
 		l.mu.Lock()
 		for _, c := range l.checks {
 			if c.Phase == ledger.PhaseService && c.ID == "web" && c.State == ledger.CheckStarted {
@@ -342,7 +344,7 @@ func TestAServicesRowComesFirstAndARefusedRunningRowStopsIt(t *testing.T) {
 			}
 		}
 		l.mu.Unlock()
-		return native(ctx, s)
+		return native(ctx, ref, s)
 	}
 	l.mu.Lock()
 	l.failOn, l.failOnce = "step.running[phase=service]", true
@@ -444,11 +446,11 @@ func TestATreeReadyTheLedgerRefusesIsNotCounted(t *testing.T) {
 // weakService is weak pointers to the log and the handle of the first
 // service of the attempt's worktree, taken under e.mu: the test keeps no
 // strong one.
-func weakService(e *Engine, runID, taskID string, n int) (weak.Pointer[bytes.Buffer], weak.Pointer[proc.Service]) {
+func weakService(e *Engine, runID, taskID string, n int) (weak.Pointer[bytes.Buffer], weak.Pointer[runtimeService]) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	ts := e.runs[runID].task(taskID).attempts[n-1].trees[0].services[0]
-	return weak.Make(ts.log), weak.Make(ts.svc.(*proc.Service))
+	return weak.Make(ts.log), weak.Make(ts.svc.(*runtimeService))
 }
 
 // collected runs the collector until p's value has gone, for at most 10 s,
@@ -563,8 +565,8 @@ func TestAServiceThatExitsBeforeTheTreeIsReadyFailsIt(t *testing.T) {
 			e, _, l := managedEngine(t)
 			if tc.atOnce {
 				native := e.exec.serve
-				e.exec.serve = func(ctx context.Context, s proc.Spec) (service, error) {
-					svc, err := native(ctx, s)
+				e.exec.serve = func(ctx context.Context, ref ext.ProcessRef, s proc.Spec) (service, error) {
+					svc, err := native(ctx, ref, s)
 					if err == nil {
 						<-svc.Done()
 					}
@@ -1147,8 +1149,8 @@ func TestAStopOwnsAServiceBeingStarted(t *testing.T) {
 		native := e.exec.serve
 		made := make(chan int, 1)
 		hold, release := held(t)
-		e.exec.serve = func(ctx context.Context, s proc.Spec) (service, error) {
-			svc, err := native(ctx, s)
+		e.exec.serve = func(ctx context.Context, ref ext.ProcessRef, s proc.Spec) (service, error) {
+			svc, err := native(ctx, ref, s)
 			if err == nil {
 				made <- svc.Result().Process.PID
 			}
@@ -1207,9 +1209,9 @@ func TestAStopOwnsAServiceBeingStarted(t *testing.T) {
 		e, _, l := managedEngine(t)
 		native := e.exec.serve
 		var served atomic.Int32
-		e.exec.serve = func(ctx context.Context, s proc.Spec) (service, error) {
+		e.exec.serve = func(ctx context.Context, ref ext.ProcessRef, s proc.Spec) (service, error) {
 			served.Add(1)
-			return native(ctx, s)
+			return native(ctx, ref, s)
 		}
 		reached := make(chan struct{}, 1)
 		hold, release := held(t)

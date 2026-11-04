@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/proc"
 )
@@ -225,13 +226,14 @@ func TestAnUnpauseWhileTheirGenerationRunsStartsNoSecond(t *testing.T) {
 	gate, pidFile := filepath.Join(t.TempDir(), "gate"), filepath.Join(t.TempDir(), "pid")
 	var mu sync.Mutex
 	runs := 0
-	e.exec.run = func(ctx context.Context, s proc.Spec) proc.Result {
+	native := e.exec.run
+	e.exec.run = func(ctx context.Context, ref ext.ProcessRef, s proc.Spec) proc.Result {
 		if len(s.Argv) == 3 && strings.Contains(s.Argv[2], gate) {
 			mu.Lock()
 			runs++
 			mu.Unlock()
 		}
-		return proc.Run(ctx, s)
+		return native(ctx, ref, s)
 	}
 	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Prerequisites: []Check{gatedPrerequisite("tools", gate, pidFile)}}, work("build", "lead")))
 	pidIn(t, pidFile)
@@ -625,13 +627,14 @@ func TestARefusedUnpauseWhileAGenerationEndsStartsNothing(t *testing.T) {
 	e, _, l := managedEngine(t)
 	var mu sync.Mutex
 	runs := 0
-	e.exec.run = func(ctx context.Context, s proc.Spec) proc.Result {
+	native := e.exec.run
+	e.exec.run = func(ctx context.Context, ref ext.ProcessRef, s proc.Spec) proc.Result {
 		if len(s.Argv) == 3 && s.Argv[2] == "exit 1" {
 			mu.Lock()
 			runs++
 			mu.Unlock()
 		}
-		return proc.Run(ctx, s)
+		return native(ctx, ref, s)
 	}
 	ending, proceed, resumed := make(chan struct{}, 1), make(chan struct{}), make(chan struct{})
 	var once sync.Once

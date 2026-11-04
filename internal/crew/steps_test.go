@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
 
@@ -544,7 +545,7 @@ const (
 func newFakePorts() *fakePorts { return &fakePorts{next: fakePortsFirst} }
 
 // port draws a number: the first scripted one, else the range's next.
-func (f *fakePorts) port(ctx context.Context) (int, error) {
+func (f *fakePorts) port(ctx context.Context, _ ext.ProcessRef) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -592,7 +593,7 @@ func newFakeProbes() *fakeProbes {
 }
 
 // probe is one try of the probe of url.
-func (f *fakeProbes) probe(ctx context.Context, url string, _ time.Duration) (int, error) {
+func (f *fakeProbes) probe(ctx context.Context, _ ext.ProcessRef, url string, _ time.Duration) (int, error) {
 	f.mu.Lock()
 	answer := f.answers[url]
 	f.asked[url]++

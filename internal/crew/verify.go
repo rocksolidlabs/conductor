@@ -241,7 +241,7 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 	sem := e.checkSlots()
 	select {
 	case sem <- struct{}{}:
-		res = e.runCommand(runCtx, cwd, ch.Argv, checkTimeout(ch), tr.env(r.id), &log, func(p proc.Process) {
+		res = e.runCommand(runCtx, r, procRef(r, a, ledger.TreeCheckout), cwd, ch.Argv, checkTimeout(ch), tr.env(r.id), &log, func(p proc.Process) {
 			running := row
 			running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
 			if err := e.transact(context.Background(), r, func() tx {
