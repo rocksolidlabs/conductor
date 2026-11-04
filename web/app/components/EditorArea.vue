@@ -8,7 +8,7 @@ import { heldChanges } from '~/utils/nvimHold'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel, savedAt } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
-import { activateTab, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, refusedWords, takeLine, tabsToClose, toggleFold, togglePreview, writeKeymap, type CloseScope, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
+import { activateTab, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, refusedWords, takeFocus, takeLine, tabsToClose, toggleCollapse, toggleFold, togglePreview, writeKeymap, type CloseScope, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
 import { dirOf, isMarkdownPath } from '~/utils/markdown'
 import { modeWords } from '~/utils/nvimKeys'
 import { crumbsOf } from '~/utils/fileTree'
@@ -18,7 +18,8 @@ import type { EditorLayout } from '~/utils/editorLayout'
  * The editor area (design 4b, 4c, 4f): a tab per file or URL open, the
  * active one in Monaco (or as an image, a binary's note, a URL's preview,
  * the words of a refused read), under a strip of tabs with the fold button
- * (T; Alt+T in the terminal) and × for all; folded, the strip alone stays
+ * (T; Alt+T in the terminal), the terminal's collapse beside it (#432; not
+ * on a phone, where the terminal folds by itself) and × for all; folded, the strip alone stays
  * above the terminal. The header: the breadcrumb from the working
  * directory down to the file, Ln/Col, copy path, open raw. Ctrl+Tab and
  * Ctrl+Shift+Tab switch tabs, Ctrl+W closes the active one.
@@ -456,6 +457,19 @@ function togglePreviewOf() {
   previewSeq.value++
   void nextTick(() => (previewing.value ? previewRef.value?.focus() : editorRef.value?.focus()))
 }
+// A tab opened as a preview (Preview plan, #432) gives its preview the focus once it shows; a tab with nothing to render lets it go.
+const phone = useIsPhone()
+watch(
+  () => [active.value?.takeFocus, previewing.value, previewRef.value, view.value?.state] as const,
+  ([take, on, preview, state]) => {
+    const t = active.value
+    if (!take || !t) return
+    if (on && preview) preview.focus()
+    else if (on || state === 'loading' || state === undefined) return
+    tabs.value = takeFocus(tabs.value, t.id)
+  },
+  { flush: 'post' },
+)
 function setDirty(id: string, d: boolean) {
   if (d) dirty.add(id)
   else dirty.delete(id)
@@ -808,6 +822,10 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           </UTooltip>
           <UTooltip text="Terminal only (T · Alt+T in the terminal)">
             <UButton icon="i-lucide-panel-bottom" size="xs" color="neutral" variant="ghost" aria-label="Terminal only" data-editor-fold @click="tabs = toggleFold(tabs)" />
+          </UTooltip>
+          <!-- Its mirror (#432): the terminal collapses to a bar at the column's foot, and back. Only when pressed; never on a phone. -->
+          <UTooltip v-if="!phone" text="Collapse the terminal">
+            <UButton :icon="tabs.collapsed ? 'i-lucide-panel-bottom-open' : 'i-lucide-panel-bottom-close'" size="xs" color="neutral" :variant="tabs.collapsed ? 'soft' : 'ghost'" aria-label="Collapse the terminal" :aria-pressed="!!tabs.collapsed" :data-editor-collapse-terminal="tabs.collapsed ? 'on' : 'off'" @click="tabs = toggleCollapse(tabs)" />
           </UTooltip>
           <UTooltip text="Close all">
             <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" aria-label="Close all files" data-editor-close-all @click="requestCloseAll()" />

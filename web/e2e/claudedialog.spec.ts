@@ -52,8 +52,8 @@ test("the plan's approval offers its own choices, the change of mode without a n
   // The reply bar: three choices, the change of mode without a number and outlined; the next one is the highlighted one.
   const bar = page.locator('[data-quick-reply]')
   await expect(bar.locator('[data-quick-reply-message]')).toHaveText(PLAN)
-  // The choices alone: the bar also offers Open plan for the plan the approval is about (#289).
-  const choices = bar.locator('button:not([data-quick-reply-plan])')
+  // The choices alone: the bar also offers Open plan and Preview plan for the plan the approval is about (#289, #432).
+  const choices = bar.locator('button:not([data-quick-reply-plan]):not([data-quick-reply-plan-preview])')
   await expect(choices).toHaveCount(3)
   const mode = bar.locator('button[data-choice-mode]')
   await expect(mode).toHaveCount(1)

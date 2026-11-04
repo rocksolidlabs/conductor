@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ChatQuote, FileRequester, FileWriter, NvimBridge } from '~/utils/protocol'
-import { clampSplit, SPLIT_DEFAULT, toggleFold, type CloseScope, type Keymap, type TabsState } from '~/utils/editorTabs'
+import { clampSplit, SPLIT_DEFAULT, toggleCollapse, toggleFold, type CloseScope, type Keymap, type TabsState } from '~/utils/editorTabs'
 import type { EditorPaletteState } from '~/utils/editorRows'
 import { clampSideSplit, editorWidth, fitsSide, layoutFor, MIN_TERMINAL_WIDTH, readLayout, readSplitFor, SIDE_SPLIT_DEFAULT, stepSplit, writeLayout, writeSplitFor, type EditorLayout } from '~/utils/editorLayout'
 
@@ -14,6 +14,12 @@ import { clampSideSplit, editorWidth, fitsSide, layoutFor, MIN_TERMINAL_WIDTH, r
  * column stacks whatever is kept. On a phone the editor takes the column
  * and the terminal folds to a bar at the foot that says what the agent is
  * doing; a tap brings the terminal back (the editor folds to its strip).
+ * Wider, the terminal folds the same way only when the person collapses it
+ * (#432; the strip's button, the palette's row): stacked or side by side,
+ * the bar at the column's foot, and the bar or the button again brings it
+ * back with the layout and the split it had. Folded, the terminal stays
+ * mounted and asks no resize (its pane has no height), and the reply bar
+ * stays under the bar while a question waits.
  */
 const emit = defineEmits<{ comment: [c: { quote: ChatQuote; text: string; toAgent: boolean }] }>()
 const props = defineProps<{
@@ -29,7 +35,7 @@ const props = defineProps<{
   cwd?: string
   rawUrl?: (path: string) => string | null
   hostAway?: string
-  /** What the phone's folded terminal bar says the agent is doing: the attention's message, else the agent's name. */
+  /** What the folded terminal's bar says the agent is doing: the attention's message, else the agent's name. */
   barText?: string
   readOnlyBadge?: boolean
 }>()
@@ -45,7 +51,8 @@ const column = ref<HTMLElement>()
 const kept = ref<EditorLayout>('stacked')
 const splits = reactive<Record<EditorLayout, number>>({ stacked: SPLIT_DEFAULT, side: SIDE_SPLIT_DEFAULT })
 const editorOpen = computed(() => tabs.value.tabs.length > 0 && !tabs.value.folded)
-const terminalFolded = computed(() => phone.value && editorOpen.value)
+/** The terminal under the editor folds to its bar: by itself on a phone, wider only as the person collapsed it (#432). */
+const terminalFolded = computed(() => editorOpen.value && (phone.value || !!tabs.value.collapsed))
 /** Whether the two share the column at all: the editor open, the terminal not folded away under it. */
 const shared = computed(() => editorOpen.value && !terminalFolded.value)
 /** The column's own width: a wide window whose column sits beside wide panels (a join page's Files and Chat) may still be too narrow for two panes. */
@@ -124,8 +131,9 @@ onMounted(() => {
 })
 onBeforeUnmount(() => observer?.disconnect())
 
+/** The bar brings the terminal back: on a phone the editor folds to its strip; wider, the collapse ends, the editor staying as it was. */
 function bringTerminalUp() {
-  tabs.value = toggleFold(tabs.value)
+  tabs.value = phone.value ? toggleFold(tabs.value) : toggleCollapse(tabs.value)
 }
 
 /** What a page reaches of the area through the column (#321): the palette's snapshot of the editor and the acts its rows run. */
@@ -205,9 +213,10 @@ defineExpose({
       <button v-if="terminalFolded" type="button" class="flex h-11 flex-none items-center gap-2 rounded-md border border-default bg-elevated/60 px-3 text-left text-xs" data-terminal-bar @click="bringTerminalUp">
         <UIcon name="i-lucide-square-terminal" class="size-4 flex-none text-muted" />
         <span class="min-w-0 flex-1 truncate font-medium text-highlighted">{{ barText || 'Terminal' }}</span>
-        <span class="flex-none text-muted">tap to bring it up</span>
+        <span class="flex-none text-muted">{{ phone ? 'tap to bring it up' : 'click to bring it back' }}</span>
       </button>
-      <slot v-else name="bar" />
+      <!-- The reply bar, under the folded terminal's bar too: a waiting question's choices stay at hand (#432, decision 2). -->
+      <slot name="bar" />
     </div>
   </div>
 </template>

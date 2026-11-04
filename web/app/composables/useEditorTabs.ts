@@ -1,6 +1,6 @@
 import { diffAgainst, type ChangeRow } from '~/utils/changes'
 import { commitAgainst, type CommitChangeRow } from '~/utils/commits'
-import { emptyTabs, openTab, toggleFold, type TabsState } from '~/utils/editorTabs'
+import { emptyTabs, openPreview, openTab, toggleFold, type TabsState } from '~/utils/editorTabs'
 
 /**
  * The files a page has open in its editor area (design 4b): the tabs, how a
@@ -16,6 +16,11 @@ export function useEditorTabs() {
   /** A file (a path the agent printed, one chosen in the Files pane, one typed there) opens in the editor area. */
   function openFile(loc: { path: string; line?: number; lineTo?: number }) {
     tabs.value = openTab(tabs.value, 'file', loc.path, loc.line, undefined, loc.lineTo)
+  }
+
+  /** A file shown rendered at once (Preview plan, #432): the plan an approval is about, read before answering. */
+  function previewFile(loc: { path: string }) {
+    tabs.value = openPreview(tabs.value, loc.path)
   }
 
   /** A URL the agent printed: a new tab, or a preview tab in the area. */
@@ -50,5 +55,5 @@ export function useEditorTabs() {
     alt_t: { usingInput: true, handler: fold },
   })
 
-  return { tabs, editorOpen, openFile, openUrl, openDiff, openCommitDiff, fold }
+  return { tabs, editorOpen, openFile, previewFile, openUrl, openDiff, openCommitDiff, fold }
 }
