@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -31,7 +32,45 @@ func openEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 	return newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), openAgents)
 }
 
-// openEvents is the open events of the stream, decoded.
+// desktopStream opens GET /api/events as a desktop app's workbench does
+// (desktopHeader), counted once it returns, and streams its events as sse
+// does.
+func desktopStream(t *testing.T, e *testEnv) <-chan string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), "GET", e.http.URL+"/api/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set(desktopHeader, "1")
+	resp, err := e.client.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("the desktop's stream: %v %v", resp, err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	events := make(chan string, 4096)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		sc.Buffer(nil, 1<<20)
+		var name string
+		for sc.Scan() {
+			line := sc.Text()
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				name = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				select {
+				case events <- name + " " + strings.TrimPrefix(line, "data: "):
+				case <-t.Context().Done():
+					return
+				}
+			}
+		}
+	}()
+	return events
+}
+
+// waitOpen waits for an open event of the state given, decoded.
 func waitOpen(t *testing.T, e *testEnv, events <-chan string, state string) openEvent {
 	t.Helper()
 	ev := e.waitEvent(t, events, func(s string) bool {
@@ -63,7 +102,7 @@ func openActivity(t *testing.T, e *testEnv, id string) []session.ActivityEntry {
 func TestOpenIsClaimedByOneDesktopAppAndAnswered(t *testing.T) {
 	e := openEnv(t, nil)
 	e.srv.opens.claimWait = time.Hour // only the claim ends the wait
-	events := e.sse(t)
+	events := desktopStream(t, e)
 	id := e.createSession("edge-cat")
 	tok := agentOf(t, e, id)
 	const link = "https://claude.ai/artifact/0f1e2d3c"
@@ -118,7 +157,7 @@ func TestOpenIsClaimedByOneDesktopAppAndAnswered(t *testing.T) {
 func TestOpenSaysTheBrowserIsMissing(t *testing.T) {
 	e := openEnv(t, nil)
 	e.srv.opens.claimWait = time.Hour
-	events := e.sse(t)
+	events := desktopStream(t, e)
 	id := e.createSession("edge-cat")
 	tok := agentOf(t, e, id)
 	done := make(chan map[string]any, 1)
@@ -134,12 +173,12 @@ func TestOpenSaysTheBrowserIsMissing(t *testing.T) {
 	}
 }
 
-// With no desktop app to claim it, an open is offered in the workbench:
-// the event says so after the pending one, a later claim is refused, and
-// the answer and the activity say it.
-func TestOpenUnclaimedIsOffered(t *testing.T) {
+// With no desktop app streaming the events, an open is offered in the
+// workbench at once, with no wait and no pending event; the answer and the
+// activity say it.
+func TestOpenWithNoDesktopAppIsOfferedAtOnce(t *testing.T) {
 	e := openEnv(t, nil)
-	e.srv.opens.claimWait = 0
+	e.srv.opens.claimWait = time.Hour // an open that waited would not answer
 	events := e.sse(t)
 	id := e.createSession("cat")
 	tok := agentOf(t, e, id)
@@ -147,16 +186,63 @@ func TestOpenUnclaimedIsOffered(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || out["outcome"] != OpenOffered || out["message"] != "offered in the workbench: no desktop app took it" || out["browser"] != nil {
 		t.Fatalf("%d %v", resp.StatusCode, out)
 	}
+	ev := e.waitEvent(t, events, func(s string) bool { return strings.HasPrefix(s, "open ") })
+	if !strings.Contains(ev, `"state":"offered"`) || !strings.Contains(ev, `"url":"http://localhost:3000/preview"`) || strings.Contains(ev, `"browser"`) {
+		t.Fatalf("the first open event %s", ev)
+	}
+	if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].Message != "link offered in the workbench: no desktop app took it" || acts[0].URL != "http://localhost:3000/preview" {
+		t.Fatalf("the activity %+v", acts)
+	}
+}
+
+// A desktop app that streams and does not claim (an app that is not
+// looking) has the open offered once the wait is over: the offer follows
+// the pending event, and a later claim is refused.
+func TestOpenUnclaimedIsOffered(t *testing.T) {
+	e := openEnv(t, nil)
+	e.srv.opens.claimWait = 0
+	events := desktopStream(t, e)
+	id := e.createSession("edge-cat")
+	tok := agentOf(t, e, id)
+	resp, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": "https://example.test/x"})
+	if resp.StatusCode != http.StatusOK || out["outcome"] != OpenOffered {
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
 	pending := waitOpen(t, e, events, openPending)
 	offered := waitOpen(t, e, events, openOffered)
-	if offered.ID != pending.ID || offered.URL != "http://localhost:3000/preview" || offered.Browser != nil {
+	if offered.ID != pending.ID || offered.URL != "https://example.test/x" || offered.Browser == nil || offered.Browser.Name != "edge" {
 		t.Fatalf("the offer %+v after %+v", offered, pending)
 	}
 	if resp, _ := e.do("POST", "/api/opens/"+pending.ID+"/claim", adminToken, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("a claim after the offer: %d", resp.StatusCode)
 	}
-	if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].Message != "link offered in the workbench: no desktop app took it" {
-		t.Fatalf("the activity %+v", acts)
+}
+
+// The desktop app's stream counts while it streams, and no longer once it
+// ends.
+func TestDesktopStreamIsCounted(t *testing.T) {
+	e := openEnv(t, nil)
+	_ = e.sse(t)
+	if n := e.srv.events.desktopsStreaming(); n != 0 {
+		t.Fatalf("a plain stream counted: %d", n)
+	}
+	req, _ := http.NewRequestWithContext(t.Context(), "GET", e.http.URL+"/api/events", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set(desktopHeader, "1")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := e.srv.events.desktopsStreaming(); n != 1 {
+		t.Fatalf("the desktop's stream: %d", n)
+	}
+	resp.Body.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	for e.srv.events.desktopsStreaming() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the ended stream is still counted")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

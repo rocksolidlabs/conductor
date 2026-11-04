@@ -40,13 +40,19 @@ const (
 	// characters of four bytes, escaped in six), the ids and the keys.
 	maxOpenEvent = 6*MaxOpenURL + 6*4*catalog.MaxBrowserProfile + 512
 	// openClaimWait is how long an open waits for a desktop app to claim
-	// it before it is offered in the workbench: the event's way to the app
-	// and the app's claim back, on a machine that may be loaded.
-	openClaimWait = 3 * time.Second
+	// it, while one streams the events, before it is offered in the
+	// workbench: the event's way to the app and the app's claim back, on a
+	// machine that may be loaded. With no desktop app streaming, an open
+	// is offered at once.
+	openClaimWait = 10 * time.Second
 	// openResultWait is how long an open claimed waits for the app to say
 	// what became of it: the browser's start, which the app waits on.
 	openResultWait = 15 * time.Second
 )
+
+// desktopHeader marks the events stream of a desktop app's workbench that
+// opens agents' links: X-Conductor-Desktop: 1.
+const desktopHeader = "X-Conductor-Desktop"
 
 // The states of an open event.
 const (
@@ -276,10 +282,11 @@ func (s *Server) handleSelfOpen(w http.ResponseWriter, r *http.Request) {
 }
 
 // open tells the workbenches of the link and waits for a desktop app to
-// claim it and say what it did; unclaimed, or managed, it is offered.
+// claim it and say what it did; unclaimed, managed, or with no desktop app
+// streaming the events, it is offered.
 func (s *Server) open(ctx context.Context, sessionID, link string, browser *catalog.Browser, managed bool) (string, error) {
 	ev := openEvent{ID: "op-" + strings.ToLower(rand.Text()[:16]), SessionID: sessionID, URL: link, Browser: browser, State: openPending}
-	if managed {
+	if managed || s.events.desktopsStreaming() == 0 {
 		ev.State = openOffered
 		s.events.open(ev)
 		return OpenOffered, nil
@@ -351,6 +358,20 @@ func (s *Server) handleOpenResult(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "no such link waits to be opened")
 	}
+}
+
+// desktop counts a desktop app's stream in (+1) or out (-1).
+func (h *eventHub) desktop(n int) {
+	h.mu.Lock()
+	h.desktops += n
+	h.mu.Unlock()
+}
+
+// desktopsStreaming is how many desktop apps' workbenches stream the events.
+func (h *eventHub) desktopsStreaming() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.desktops
 }
 
 // open queues an open event for every client, as droppable as activity: a
