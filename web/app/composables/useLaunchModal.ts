@@ -17,14 +17,19 @@ export function useLaunchModal() {
   // Counts the prefills given (#434 review round 1): one given while the dialog is open already (the palette's Clone with options…
   // of another session, over the dialog) is taken as a new opening; a bare show() while it is open changes nothing in it.
   const asked = useState<number>('launchAsked', () => 0)
+  // Counts every show() that opens the dialog or gives it a prefill (#434 review round 3): a Clone with options… read asked before
+  // a later opening, an ordinary Launch among them, opens nothing over it when it answers.
+  const shown = useState<number>('launchShown', () => 0)
   return {
     open,
     prefill,
     asked,
+    shown,
     show: (p?: LaunchPrefill) => {
       if (!p && open.value) return
       prefill.value = p ?? null
       if (p) asked.value++
+      shown.value++
       open.value = true
     },
   }

@@ -24,9 +24,12 @@ export const ATTEMPT_WARNING = "This session is a Yardmaster attempt: its result
 /** What both dialogs say of a directory under .conductor/worktrees/. */
 export const SHARED_TREE_WARNING = 'This is a run\'s worktree: two agents will work in one working tree.'
 
-/** Whether a directory is a run's worktree (under `.conductor/worktrees/`): a clone there shares one working tree with the member. */
+/**
+ * Whether a directory is a run's worktree (under `.conductor/worktrees/`): a clone there shares one working tree with the member. A
+ * relative path that starts with the folder counts too (#434 review round 3): the server resolves it against its own directory.
+ */
 export function inRunWorktree(cwd: string | undefined): boolean {
-  return !!cwd && /[\\/]\.conductor[\\/]worktrees[\\/]/.test(cwd + '/')
+  return !!cwd && /(^|[\\/])\.conductor[\\/]worktrees[\\/]/.test(cwd + '/')
 }
 
 /** Whether a session is a Yardmaster attempt (its run's task set). */

@@ -20,7 +20,8 @@ export function useCloneModal() {
   // Counts the dialog's openings, as the Rename dialog's do: a reply of an earlier opening leaves a later one alone.
   const opening = useState<number>('cloneOpening', () => 0)
   // Counts Clone with options…'s reads, shared by every caller (#434 review round 2): a read asked before another opens nothing
-  // once the later one is asked, whichever answers first.
+  // once the later one is asked, whichever answers first. A Launch dialog opened after the read was asked (an ordinary Launch,
+  // the launch verb) supersedes it too (#434 review round 3): its answer would replace what is being typed there.
   const reads = requestOrder(useState<number>('cloneRead', () => 0))
   const launch = useLaunchModal()
   const api = useSessions()
@@ -39,13 +40,15 @@ export function useCloneModal() {
     withOptions: async (s: SessionInfo) => {
       if (s.kind !== 'server') return refuse(s, hostedReason(s.hostName))
       const read = reads.next()
+      const since = launch.shown.value
+      const current = () => reads.current(read) && launch.shown.value === since
       try {
         const { launch: l } = await api.get(s.id)
-        if (!reads.current(read)) return
+        if (!current()) return
         if (!l) throw new Error('the server did not say what it was launched with')
         launch.show(clonePrefill(s, l))
       } catch (e) {
-        if (reads.current(read)) refuse(s, (e as Error).message)
+        if (current()) refuse(s, (e as Error).message)
       }
     },
   }

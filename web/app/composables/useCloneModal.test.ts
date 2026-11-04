@@ -81,4 +81,49 @@ describe("Clone with options…'s read of the source's launch", () => {
     await b
     expect(toasts).toEqual([expect.objectContaining({ title: 'name-b cannot be cloned', description: 'the network is down' })])
   })
+
+  // #434 review round 3: an ordinary Launch opened while the read is out holds a draft the late answer must not replace.
+  it('opens nothing over a Launch dialog opened after the read was asked', async () => {
+    const clone = useCloneModal()
+    const modal = useLaunchModal()
+    const a = clone.withOptions(session('a'))
+    modal.show()
+    expect(modal.open.value).toBe(true)
+    expect(modal.prefill.value).toBeNull()
+    const asked = modal.asked.value
+    held.get('a')!.answer()
+    await a
+    await settle()
+    expect(modal.prefill.value).toBeNull()
+    expect(modal.asked.value).toBe(asked)
+    expect(toasts).toEqual([])
+  })
+
+  it("opens nothing over the launch verb's prefill given after the read was asked, and says nothing of its failure", async () => {
+    const clone = useCloneModal()
+    const modal = useLaunchModal()
+    const a = clone.withOptions(session('a'))
+    modal.show({ agentId: 'codex', cwd: '/elsewhere' })
+    held.get('a')!.answer()
+    await a
+    await settle()
+    expect(modal.prefill.value).toEqual({ agentId: 'codex', cwd: '/elsewhere' })
+    modal.open.value = false
+    const b = clone.withOptions(session('b'))
+    modal.show()
+    held.get('b')!.fail(new Error('gone'))
+    await b
+    expect(toasts).toEqual([])
+  })
+
+  it('opens over a Launch dialog that was open before the read was asked', async () => {
+    const clone = useCloneModal()
+    const modal = useLaunchModal()
+    modal.show()
+    const a = clone.withOptions(session('a'))
+    modal.show()
+    held.get('a')!.answer()
+    await a
+    expect(modal.prefill.value?.clone?.id).toBe('a')
+  })
 })
