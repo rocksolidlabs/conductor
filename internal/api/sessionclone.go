@@ -110,7 +110,11 @@ func (s *Server) handleCloneSession(w http.ResponseWriter, r *http.Request) {
 	}
 	local, ok := d.(*session.Local)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "hosted_session", "the session runs on "+d.Info().HostName+": Conductor cannot start a session there yet")
+		machine := d.Info().HostName
+		if machine == "" {
+			machine = "another machine"
+		}
+		writeError(w, http.StatusBadRequest, "hosted_session", "the session runs on "+machine+": Conductor cannot start a session there yet")
 		return
 	}
 	name := session.CleanSessionName(req.Name)
