@@ -11,6 +11,11 @@ beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
 
 describe('the zoom indicator', () => {
+  it('shows a level for 1.5 s', () => {
+    // The issue's "about 1.5 s"; the tests below run on the constant, so it is pinned here.
+    expect(ZOOM_SHOWN_MS).toBe(1500)
+  })
+
   it('shows the percent the app sent, and goes after its time', () => {
     const z = new ZoomIndicator()
     z.show(at(0.5, 110))
@@ -122,6 +127,41 @@ describe('the zoom indicator in a page', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(second.zoom.shown.value).toBe('')
     second.app.unmount()
+  })
+
+  it('keeps a move shown when the answer of its getter, a level kept from before, lands after it', async () => {
+    // The getter's answer and the events come by separate ways: the getter held, a move to 131% told, then the kept 120% answered.
+    let answer!: (z: DesktopZoom & { announce: boolean }) => void
+    let cb: ((z: DesktopZoom) => void) | undefined
+    const held: Partial<DesktopBridge> = {
+      zoom: () => new Promise((resolve) => (answer = resolve)),
+      onZoom: (f) => ((cb = f), () => {}),
+    }
+    const { app: vue, zoom } = mount(held)
+    await vi.advanceTimersByTimeAsync(0)
+    cb?.(at(1.5, 131))
+    expect(zoom.shown.value).toBe('131%')
+    answer({ ...at(1, 120), announce: true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(zoom.shown.value).toBe('131%')
+    expect(zoom.last.value).toBe('131%')
+    vue.unmount()
+  })
+
+  it('says the kept level when what came before its answer was not a zoom status', async () => {
+    let answer!: (z: DesktopZoom & { announce: boolean }) => void
+    let cb: ((z: DesktopZoom) => void) | undefined
+    const held: Partial<DesktopBridge> = {
+      zoom: () => new Promise((resolve) => (answer = resolve)),
+      onZoom: (f) => ((cb = f), () => {}),
+    }
+    const { app: vue, zoom } = mount(held)
+    await vi.advanceTimersByTimeAsync(0)
+    cb?.({ level: 'x' } as unknown as DesktopZoom)
+    answer({ ...at(1, 120), announce: true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(zoom.shown.value).toBe('120%')
+    vue.unmount()
   })
 
   it('shows nothing and throws nothing without the bridge, or with a bridge that lacks the event', async () => {

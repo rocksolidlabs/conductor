@@ -14,16 +14,17 @@ export class ZoomIndicator {
   readonly last = ref('')
   private timer: ReturnType<typeof setTimeout> | undefined
 
-  /** Shows what the app told, read as a zoom status; anything else shows nothing. */
-  show(told: unknown): void {
+  /** Shows what the app told, read as a zoom status, and says whether it did; anything else shows nothing. */
+  show(told: unknown): boolean {
     const z = asDesktopZoom(told)
-    if (!z) return
+    if (!z) return false
     this.shown.value = this.last.value = zoomWords(z)
     clearTimeout(this.timer)
     this.timer = setTimeout(() => {
       this.timer = undefined
       this.shown.value = ''
     }, ZOOM_SHOWN_MS)
+    return true
   }
 
   stop(): void {
@@ -36,7 +37,9 @@ export class ZoomIndicator {
 /**
  * The desktop app's zoom, shown (#431): each move by key or menu that the app tells (the bridge's onZoom), and a level kept from
  * before once per start of the app (zoom()'s announce). The keys reach the app before the page, so the page learns of a move only
- * from it. Nothing in a browser, nor under an app whose bridge has no zoom event: `listening` is false and nothing renders.
+ * from it. The getter's answer and the events come by separate ways, so its answer can land after a move: once a move is shown, the
+ * level kept from before is old news and is not said over it. Nothing in a browser, nor under an app whose bridge has no zoom
+ * event: `listening` is false and nothing renders.
  */
 export function useDesktopZoom(bridge: () => DesktopBridge | null) {
   const indicator = new ZoomIndicator()
@@ -46,11 +49,14 @@ export function useDesktopZoom(bridge: () => DesktopBridge | null) {
     const b = bridge()
     if (typeof b?.onZoom !== 'function') return
     listening.value = true
-    off = b.onZoom((z) => indicator.show(z))
+    let moved = false
+    off = b.onZoom((z) => {
+      if (indicator.show(z)) moved = true
+    })
     if (typeof b.zoom !== 'function') return
     b.zoom()
       .then((z) => {
-        if (z?.announce) indicator.show(z)
+        if (z?.announce && !moved) indicator.show(z)
       })
       .catch(() => {})
   })
