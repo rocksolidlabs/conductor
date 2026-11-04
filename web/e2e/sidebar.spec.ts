@@ -97,6 +97,8 @@ test('a run sits whole in Needs you: its header, then its members, the one askin
   await expect(members.nth(0).locator('[data-row-prompt]')).toContainText('Trust this folder?')
   // At the sidebar's minimum (#437) the choices wrap inside it.
   const choices = members.nth(0).locator('[data-row-answer] button')
+  // The trust question's two answers, drawn before they are measured: a loop over none would check nothing.
+  await expect(choices).toHaveCount(2)
   for (let i = 0; i < (await choices.count()); i++) await fitsSidebar(page, choices.nth(i))
   await expect(members.nth(1)).toContainText('lead')
   await expect(members.nth(1).locator('[data-row-meta]')).toHaveText(/^claude · \d+[smh]/)
@@ -583,6 +585,29 @@ test.describe('the full sidebar\'s width', () => {
     await page.mouse.dblclick(at.x, at.y)
     await page.setViewportSize({ width: 1024, height: 900 })
     await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+  })
+
+  test('a press on the handle that moves nothing, in a narrower window, keeps the width dragged in the wider one', async ({ page }) => {
+    await page.setViewportSize({ width: 2560, height: 1440 })
+    await open(page)
+    await drag(page, [1500])
+    await expect.poll(() => width(page)).toBeCloseTo(665.6, 0)
+    await expect.poll(() => saved(page)).toBe('41.6')
+    // Narrower: drawn at that window's maximum, 26 % of 1440 px, while the dragged width is still held.
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await expect.poll(() => width(page)).toBeCloseTo(374.4, 0)
+    const at = await grip(page)
+    await page.mouse.move(at.x, at.y)
+    await page.mouse.down()
+    await page.mouse.up()
+    // Wider again: drawn at the held width in this visit. The press's save ran in its mouseup's tick, before the resize.
+    await page.setViewportSize({ width: 2560, height: 1440 })
+    await expect.poll(() => width(page)).toBeCloseTo(665.6, 0)
+    expect(await saved(page)).toBe('41.6')
+    // And after a reload in the same window, the same width: the visit and the saved width agree.
+    await page.reload()
+    await expect(handle(page)).toBeAttached()
+    await expect.poll(() => width(page)).toBeCloseTo(665.6, 0)
   })
 
   test('at the minimum the header, Launch agent, the filter and a pending update sit inside the sidebar', async ({ page, state }) => {
