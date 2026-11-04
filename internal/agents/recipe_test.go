@@ -3,6 +3,7 @@ package agents
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
@@ -75,5 +76,31 @@ func TestRecipeOfTheBuiltInAgents(t *testing.T) {
 		if _, err := CompileRecipe(&c.r); !errors.Is(err, c.want) {
 			t.Errorf("%+v: %v, want %v", c.r, err, c.want)
 		}
+	}
+}
+
+// Whatever the catalog takes, a host takes: an agent whose answer labels
+// are at the catalog's bound with spaces around them (the catalog counts
+// them trimmed) has a recipe Check passes, or a host would watch nothing
+// of it (#376, review round 2).
+func TestRecipeOfACatalogAgentPassesCheck(t *testing.T) {
+	label := "  " + strings.Repeat("é", catalog.MaxTrustAnswerLabel) + " "
+	a := catalog.Agent{ID: "padded", Name: "Padded", Command: []string{"padded"}, TrustPrompt: `Trust\s*this\s*folder\?`,
+		TrustAnswers: []catalog.Answer{{Label: label, Input: "1"}},
+		Questions:    []catalog.Question{{Prompt: `Proceed\?`, Answers: []catalog.Answer{{Label: label, Input: "y"}}}}}
+	cat := catalog.Default()
+	if err := cat.Upsert(a); err != nil {
+		t.Fatalf("the catalog refuses the agent: %v", err)
+	}
+	got, _ := cat.Get("padded")
+	r := Recipe(got)
+	if r == nil {
+		t.Fatal("no recipe")
+	}
+	if err := r.Check(); err != nil {
+		t.Fatalf("a recipe of an agent the catalog takes: %v", err)
+	}
+	if _, err := CompileRecipe(r); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -666,7 +666,8 @@ host then works as it did, with the agent it names. Its bounds, which a
 host checks and refuses the recipe whole past (it logs why and watches
 nothing of it, as it does a pattern that does not compile): at most 8
 questions, each with a prompt; at most 6 answers to the trust question and
-to each question, a label of 1 to 60 characters and keys of 1 to 48 bytes;
+to each question, a label of 1 to 60 characters (counted trimmed of
+surrounding spaces, as the catalog counts) and keys of 1 to 48 bytes;
 each pattern at most 200 bytes. A host publishing to a switchyard (the
 server's uplink) watches nothing of one; an older host ignores the field.
 

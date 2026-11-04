@@ -198,9 +198,11 @@ const (
 
 // Check reports whether r is within its bounds: at most MaxRecipeQuestions
 // questions, each with a prompt; at most MaxRecipeAnswers answers to the
-// trust question and to each question, each with a label and keys; every
-// pattern at most MaxRecipePattern bytes. Whether a pattern compiles is
-// the host's to find, as the server's is when it starts a session.
+// trust question and to each question, each with a label (at most
+// MaxRecipeAnswerLabel runes once trimmed, as the catalog counts) and
+// keys; every pattern at most MaxRecipePattern bytes. Whether a pattern
+// compiles is the host's to find, as the server's is when it starts a
+// session.
 func (r HostRecipe) Check() error {
 	if len(r.TrustPrompt) > MaxRecipePattern || len(r.WorkingTitle) > MaxRecipePattern {
 		return errors.New("recipe: a pattern past its bound")
@@ -232,7 +234,11 @@ func checkRecipeAnswers(as []RecipeAnswer) error {
 		return fmt.Errorf("more than %d answers", MaxRecipeAnswers)
 	}
 	for i, a := range as {
-		if strings.TrimSpace(a.Label) == "" || utf8.RuneCountInString(a.Label) > MaxRecipeAnswerLabel || !utf8.ValidString(a.Label) {
+		// The label is counted as the catalog counts it, trimmed: a label
+		// the catalog takes (padded, at its bound) is one Check takes, or a
+		// hosted session would lose its whole recipe over it.
+		label := strings.TrimSpace(a.Label)
+		if label == "" || utf8.RuneCountInString(label) > MaxRecipeAnswerLabel || !utf8.ValidString(a.Label) {
 			return fmt.Errorf("answer %d: a label of 1 to %d characters", i+1, MaxRecipeAnswerLabel)
 		}
 		if a.Input == "" || len(a.Input) > MaxRecipeAnswerInput {

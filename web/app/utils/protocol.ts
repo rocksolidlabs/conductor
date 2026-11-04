@@ -684,7 +684,7 @@ export interface HostRecipeQuestion {
   modeAnswers?: string
   typedAnswers?: string
 }
-/** The recipe's bounds: questions, answers to each (labels in characters, keys in bytes), a pattern's bytes, the encoding's bytes. */
+/** The recipe's bounds: questions, answers to each (labels in characters once trimmed, as the catalog counts; keys in bytes), a pattern's bytes, the encoding's bytes. */
 export const HOST_MAX_RECIPE_QUESTIONS = 8
 export const HOST_MAX_RECIPE_ANSWERS = 6
 export const HOST_MAX_RECIPE_ANSWER_LABEL = 60

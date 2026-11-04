@@ -283,4 +283,16 @@ func TestRegisteredRecipeWireShapeAndBounds(t *testing.T) {
 			t.Errorf("%s: checked", name)
 		}
 	}
+	// A label is counted trimmed, as the catalog counts it: one at the
+	// bound with spaces around it is the catalog's and passes; one past
+	// the bound once trimmed does not.
+	atBound := " " + strings.Repeat("é", MaxRecipeAnswerLabel) + " "
+	padded := HostRecipe{TrustAnswers: []RecipeAnswer{{Label: atBound, Input: "k"}}, Questions: []RecipeQuestion{{Prompt: "p", Answers: []RecipeAnswer{{Label: atBound, Input: "k"}}}}}
+	if err := padded.Check(); err != nil {
+		t.Errorf("a padded label at the bound: %v", err)
+	}
+	past := HostRecipe{TrustAnswers: []RecipeAnswer{{Label: " " + strings.Repeat("é", MaxRecipeAnswerLabel+1) + " ", Input: "k"}}}
+	if past.Check() == nil {
+		t.Error("a padded label past the bound: checked")
+	}
 }
