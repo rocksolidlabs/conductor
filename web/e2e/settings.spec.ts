@@ -772,6 +772,20 @@ test('the save that restarts the server keeps the section in view in the address
     const l = await layoutOf(page)
     return Math.abs(l.sections.find((s) => s.id === 'running')!.top - l.body.top - 24) <= 1
   }).toBe(true)
+  // Saved from the top of a page whose address names another section, the address names none, so the page that follows opens
+  // at the top, where the person was (#433's review).
+  const sections = await boxOf(page.locator('[data-settings-sections]'))
+  await page.mouse.move(sections.left + sections.width / 2, 300)
+  await page.mouse.wheel(0, -100000)
+  await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBe(0)
+  await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
+  await page.locator('[data-switchyard-enabled]').click()
+  expect((await layoutOf(page)).body.scrollTop).toBe(0)
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  await page.locator('[data-save-settings]').click()
+  await expect(page.getByText('Saved; the server restarted', { exact: true }).last()).toBeVisible()
+  await expect(page).toHaveURL(/\/settings$/)
+  expect((await layoutOf(page)).body.scrollTop).toBe(0)
   // A save that does not restart leaves the address as it is.
   await page.goto('/settings')
   await settled(page, 'linux')
@@ -779,6 +793,79 @@ test('the save that restarts the server keeps the section in view in the address
   await page.locator('[data-save-settings]').click()
   await expect(page.getByText('Saved', { exact: true })).toBeVisible()
   await expect(page).toHaveURL(/\/settings$/)
+})
+
+test('a second click on Save while the first is under way saves once', async ({ page, state }) => {
+  await standIn(page, state, 'linux')
+  await page.goto('/settings?section=running')
+  await settled(page, 'linux')
+  await page.locator('[data-yolo-switch]').click()
+  await expect(page.locator('[data-save-settings]')).toHaveText('Save and restart the server')
+  // Scrolled by hand from the section the address names to the end, so the save writes the section in view first and has that to
+  // wait on.
+  const sections = await boxOf(page.locator('[data-settings-sections]'))
+  await page.mouse.move(sections.left + sections.width / 2, 300)
+  await page.mouse.wheel(0, 100000)
+  await expect(page.locator('[data-settings-nav-entry="app"]')).toHaveAttribute('aria-current', 'true')
+  // Two clicks in one task: the second lands before anything the first awaits has answered, and before Vue redraws the button.
+  await page.locator('[data-save-settings]').evaluate((e: HTMLElement) => {
+    e.click()
+    e.click()
+  })
+  await expect(page.getByText('Saved; the server restarted', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL(/\/settings\?section=app$/)
+  expect(await page.evaluate(() => (window as unknown as { e2eSets: object[] }).e2eSets.length)).toBe(1)
+})
+
+test('a scroll by hand after a choice moves the mark to the section in view', async ({ page, state }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await standIn(page, state, 'linux')
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  await page.locator('[data-settings-nav-entry="folders"]').click()
+  await expect(page).toHaveURL(/\/settings\?section=folders$/)
+  await expect(page.locator('[data-settings-nav-entry="folders"]')).toHaveAttribute('aria-current', 'true')
+  // The wheel over the sections, until all but the foot of Where agents work has gone above the body's top: How agents run is the
+  // section in view though the one chosen still shows.
+  const start = (await layoutOf(page)).body.scrollTop
+  const folders = await boxOf(page.locator('[data-settings-section="folders"]'))
+  const sections = await boxOf(page.locator('[data-settings-sections]'))
+  await page.mouse.move(sections.left + sections.width / 2, 450)
+  const dy = Math.round(folders.height - 30)
+  await page.mouse.wheel(0, dy)
+  await expect.poll(async () => Math.abs((await layoutOf(page)).body.scrollTop - (start + dy)) <= 1).toBe(true)
+  const l = await layoutOf(page)
+  const f = l.sections.find((s) => s.id === 'folders')!
+  expect(f.bottom).toBeGreaterThan(l.body.top)
+  await expect(page.locator('[data-settings-nav-entry="running"]')).toHaveAttribute('aria-current', 'true')
+  await expect(page.locator('[data-settings-nav-entry][aria-current]')).toHaveCount(1)
+})
+
+test('Settings chosen again in the same page goes back to the top, from a section or from a scroll by hand', async ({ page, state }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await standIn(page, state, 'linux')
+  await page.goto('/settings')
+  await settled(page, 'linux')
+  const settingsLink = page.locator('#dashboard-sidebar-main').getByRole('link', { name: 'Settings', exact: true })
+  const atTop = async () => {
+    await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBe(0)
+    await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
+    await expect(page).toHaveURL(/\/settings$/)
+  }
+  // From a section the address names: the sidebar's Settings is a new address, plain /settings.
+  await page.locator('[data-settings-nav-entry="app"]').click()
+  await expect(page).toHaveURL(/\/settings\?section=app$/)
+  await expect(page.locator('[data-settings-nav-entry="app"]')).toHaveAttribute('aria-current', 'true')
+  await settingsLink.click()
+  await atTop()
+  // From a scroll by hand on plain /settings: the same address again, which Vue Router refuses as a duplicate.
+  const sections = await boxOf(page.locator('[data-settings-sections]'))
+  await page.mouse.move(sections.left + sections.width / 2, 450)
+  await page.mouse.wheel(0, 1500)
+  await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBeGreaterThan(1000)
+  await expect(page.locator('[data-settings-nav-entry="switchyard"]')).not.toHaveAttribute('aria-current', 'true')
+  await settingsLink.click()
+  await atTop()
 })
 
 for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
