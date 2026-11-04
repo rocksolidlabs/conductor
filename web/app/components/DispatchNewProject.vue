@@ -9,8 +9,9 @@ import { dispatchFailureWords } from '~/composables/useDispatchOps'
  * chosen now and never changed, its tickets' keys CND-1, CND-2…), its name, the folder of its repository (DirInput, completed from the
  * server's allowed roots; kept as text, used when something launches from it), and its tracker: Dispatch itself, or a pointer at
  * another one by its URL; and its close policy (PR-11), what a ticket needs before it is done: the owner's acceptance, a delivery link,
- * both or neither, ticked as the store's default is (the owner's acceptance for a project of Dispatch's, nothing for one tracked
- * elsewhere, which its tracker decides) until the person ticks otherwise; `verified` is not offered. A refusal (a key taken) shows in
+ * a verified delivery (DS2: one naming a candidate whose checks passed), any of them or none, ticked as the store's default is (the
+ * owner's acceptance for a project of Dispatch's, nothing for one tracked elsewhere, which its tracker decides) until the person ticks
+ * otherwise. A refusal (a key taken) shows in
  * the dialog. While the project is made the
  * dialog stays: Escape, a click outside, its close button and Cancel do nothing until the store has answered, so that answer closes the
  * opening it was made from and opens the project's page, never closing a later opening, or leaving its draft for that page. The project

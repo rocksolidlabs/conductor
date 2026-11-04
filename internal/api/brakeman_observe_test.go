@@ -1962,6 +1962,10 @@ func TestARunReadBeforeItsChangeCommitsHasNoRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := run.ID
+	// Stopped before the sessions are (stopEverything): build's attempt
+	// still runs at the end, and an engine that saw it end would start the
+	// next in the root's worktrees while the test's directories go.
+	t.Cleanup(func() { f.do("POST", "/api/runs/"+id+"/stop", adminToken, nil) })
 	runningAttempt(t, f.testEnv, id, "build", 1)
 	f.turn(t, func(c map[string]any) { c["budget"].(map[string]any)["readsPerTurn"] = brakeman.MaxReadsPerTurn })
 	settled := func() bool {

@@ -7,6 +7,7 @@ import { relativeTime } from '~/utils/sessions'
 import { commandBody, sendCommand, taskBadges } from '~/utils/tasks'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { ticketPath } from '~/utils/dispatch'
+import { revisionTag } from '~/utils/dispatchPlans'
 
 /**
  * The run page's header: the run named by its crew and its start, how many
@@ -18,7 +19,10 @@ import { ticketPath } from '~/utils/dispatch'
  * every member, and once stopped resume it as a new run. Each action calls
  * the server and hands the run as it is after it to the page (`changed`).
  * Beside its name, the Dispatch ticket the run is linked to, as a chip that
- * opens the ticket's page, "(deleted)" on it when the ticket is a tombstone.
+ * opens the ticket's page, "(deleted)" on it when the ticket is a tombstone;
+ * for a run launched from a ticket's plan revision (DS2), "Launched from
+ * CND-12 · plan r3" from the run's own `ticket`, which its continuations
+ * carry, opening the ticket.
  */
 const props = withDefaults(
   defineProps<{
@@ -185,6 +189,19 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
           data-run-ticket
           :data-run-ticket-key="ticket.key"
           :data-run-ticket-deleted="ticket.deletedAt ? '' : undefined"
+        />
+        <UButton
+          v-if="run?.ticket"
+          :to="ticketPath(run.ticket.key)"
+          :label="`Launched from ${run.ticket.key} · plan ${revisionTag(run.ticket.planN)}`"
+          icon="i-lucide-ticket"
+          size="xs"
+          color="neutral"
+          variant="soft"
+          class="flex-none self-center"
+          :title="`Launched from ${run.ticket.key} at its revision ${run.ticket.rev}, by plan revision ${run.ticket.planN}: the run follows the ticket as launched`"
+          data-run-launched-from
+          :data-run-launched-key="run.ticket.key"
         />
       </span>
     </template>

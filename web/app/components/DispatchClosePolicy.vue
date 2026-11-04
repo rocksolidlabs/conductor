@@ -10,7 +10,8 @@ import { relativeTime } from '~/utils/sessions'
  * against its criteria as they stand, with a note, and taken back by another; no status implies it. Close moves the ticket to Done: the
  * store decides, and a refusal is said here in the policy's words (the receipt's `missing`), whatever the card read, since the policy,
  * the owner or the criteria may have changed since. The card follows the project's policy edited elsewhere through the page's re-read on
- * the project's event.
+ * the project's event. A policy requiring `verified` (DS2) says it met by the delivered candidate that passed ("Verified: build#2 passed
+ * 2 checks"), else why not in the server's words ("The delivered candidate build#3 failed the check never (exit 1)").
  */
 const props = defineProps<{
   ticket: DispatchTicket

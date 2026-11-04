@@ -25,6 +25,18 @@
 #   STUB_CHOICES    a|b|c: the stub asks STUB_ASK (else "Which one?") with
 #                   these as choices (notify --choices) before its prompt;
 #                   the next line typed answers it
+#   STUB_BRAKEMAN=1 the stub is Brakeman's agent: on the line a turn types
+#                   ("Brakeman request br-n (<kind>): …") it reads its request
+#                   and the changes, waits for the file STUB_BRAKEMAN_WAIT
+#                   names when one is named (a spec's gate; none if it never
+#                   appears), and submits one
+#                   brief whose fact cites its own session and run, and the
+#                   check receipt STUB_BRAKEMAN_CHECK names (or, once the gate
+#                   is open, the brief in the file STUB_BRAKEMAN_BRIEF names,
+#                   when it holds one: a spec's own items, after reading the
+#                   ticket STUB_BRAKEMAN_TICKET names, as a turn reads what it
+#                   proposes to change); through the CLI, or the MCP tools
+#                   with STUB_WORKER=mcp
 # $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
 # start as Codex 0.161 draws it when its hooks are new or changed (round 13,
 # G2c): 1. Review hooks highlighted; a digit moves the highlight, Enter
@@ -683,6 +695,95 @@ task_attempt() {
 	fi
 }
 
+# brakeman_turn does the Brakeman request $1 (STUB_BRAKEMAN=1): it reads the
+# request and what changed (conductor brakeman request and observe changes,
+# or the brakeman_request and observe tools), waits for STUB_BRAKEMAN_WAIT's
+# file to exist when one is named (at most 15 min, the turn's own default
+# deadline: the spec's steps before it opens the gate are its bound, not the
+# stub's), then submits a brief whose
+# one fact cites the session and the run it runs as (and the check receipt
+# STUB_BRAKEMAN_CHECK names) and whose interpretation reads that fact. Only
+# the gate's file releases the brief: a gate that never opens ends the turn
+# with none (status 1), so a brief never arrives before the spec opened it.
+# Both reads must succeed, the request's naming $1, before anything is
+# submitted, and the submission must be taken: a read or a submission that
+# fails ends the turn with status 1 and its words in brakeman_why. What it
+# read and what the server answered go into the transcript.
+brakeman_turn() {
+	local req=$1 got changes brief reply evidence n=0 ok=1
+	case ${STUB_WORKER:-} in
+	mcp)
+		got=$(mcp_call brakeman_request '{}')
+		changes=$(mcp_call observe '{"what":"changes"}')
+		mcp_ok "$got" || ok=0
+		mcp_ok "$changes" || ok=0
+		;;
+	*)
+		got=$("$conductor" brakeman request --json 2>&1) || ok=0
+		changes=$("$conductor" brakeman observe changes 2>&1) || ok=0
+		;;
+	esac
+	[[ $got == *"$req"* ]] || ok=0
+	printf 'brakeman: %s: read %s bytes of its request and %s of the changes\n' "$req" "${#got}" "${#changes}" >>"$transcript"
+	if ((!ok)); then
+		printf 'brakeman: %s: a read failed: request %s; changes %s\n' "$req" "${got:0:200}" "${changes:0:200}" >>"$transcript"
+		printf 'stub: brief -> none, a read failed\n'
+		brakeman_why='a read failed'
+		return 1
+	fi
+	if [[ -n ${STUB_BRAKEMAN_WAIT:-} ]]; then
+		while [[ ! -e $STUB_BRAKEMAN_WAIT ]] && ((n < 9000)); do
+			sleep 0.1
+			n=$((n + 1))
+		done
+		if [[ ! -e $STUB_BRAKEMAN_WAIT ]]; then
+			printf 'brakeman: %s: the gate %s never opened: no brief\n' "$req" "$STUB_BRAKEMAN_WAIT" >>"$transcript"
+			printf 'stub: brief -> none, the gate never opened\n'
+			brakeman_why='the gate never opened'
+			return 1
+		fi
+	fi
+	if [[ -n ${STUB_BRAKEMAN_TICKET:-} ]]; then
+		# The ticket a spec's proposal edits, read with its rev, as the turn's read of it.
+		case ${STUB_WORKER:-} in
+		mcp) mcp_call observe "{\"what\":\"ticket\",\"key\":$(json_str "$STUB_BRAKEMAN_TICKET")}" >/dev/null ;;
+		*) "$conductor" brakeman observe ticket --key "$STUB_BRAKEMAN_TICKET" >/dev/null 2>&1 ;;
+		esac
+		printf 'brakeman: %s: read the ticket %s\n' "$req" "$STUB_BRAKEMAN_TICKET" >>"$transcript"
+	fi
+	evidence=$(json_str "session:${CONDUCTOR_SESSION_ID:-}")
+	[[ -n $run ]] && evidence+=",$(json_str "run:$run")"
+	[[ -n ${STUB_BRAKEMAN_CHECK:-} ]] && evidence+=",$(json_str "$STUB_BRAKEMAN_CHECK")"
+	if [[ -n ${STUB_BRAKEMAN_BRIEF:-} && -s $STUB_BRAKEMAN_BRIEF ]]; then
+		brief=$(<"$STUB_BRAKEMAN_BRIEF")
+	else
+		brief="{\"schema\":\"brakeman.brief/1\",\"title\":\"Stub brief for $req\",\"summary\":\"The stub read its request and what changed, and found its own turn.\",\"items\":[{\"kind\":\"fact/1\",\"text\":\"This turn runs as its own session and run.\",\"evidence\":[$evidence]},{\"kind\":\"interpretation/1\",\"text\":\"Nothing else happened that the stub was asked about.\",\"facts\":[0]}]}"
+	fi
+	case ${STUB_WORKER:-} in
+	mcp)
+		reply=$(mcp_call brief_submit "{\"brief\":$brief}")
+		mcp_ok "$reply" || ok=0
+		;;
+	*)
+		printf '%s\n' "$brief" >"$transcripts/$id.brief.json"
+		reply=$("$conductor" brakeman brief --file "$transcripts/$id.brief.json" 2>&1) || ok=0
+		;;
+	esac
+	printf 'brief: %s\n' "${reply:0:300}" >>"$transcript"
+	printf 'stub: brief -> %s\n' "${reply:0:200}"
+	if ((!ok)); then
+		brakeman_why='the brief was refused'
+		return 1
+	fi
+}
+
+# mcp_ok reports whether $1, a tools/call reply line from mcp_call, is a
+# result the tool answered without error: present, a result, and neither a
+# JSON-RPC error nor a tool result with isError set.
+mcp_ok() {
+	[[ -n $1 && $1 == *'"result"'* && $1 != *'"error"'* && $1 != *'"isError":true'* ]]
+}
+
 # trust_dialog draws the folder-trust question as Codex 0.161 does (1. Trust
 # and continue, highlighted; 2. Quit) and waits for Enter; arrows move the
 # selection and redraw, Esc quits, anything else is ignored. Enter on the
@@ -988,6 +1089,17 @@ answer() {
 	printf '%s\n' "${line:0:200}" >>"$transcript"
 	title_working
 	report_working
+	if [[ -n ${STUB_BRAKEMAN:-} && -n ${CONDUCTOR_BRAKEMAN:-} && $line =~ ^Brakeman\ request\ (br-[1-9][0-9]{0,17})\ \( ]]; then
+		local req=${BASH_REMATCH[1]} brakeman_why=''
+		if brakeman_turn "$req"; then
+			title_ready done
+			report_done "brakeman $req: brief submitted" "$line"
+		else
+			title_ready done
+			report_done "brakeman $req: no brief, $brakeman_why" "$line"
+		fi
+		return
+	fi
 	if [[ -n ${STUB_WORKER:-} && -n ${CONDUCTOR_TASK:-} && $line =~ ^Conductor\ (task|review)\ \"([a-z0-9_-]+)\",\ attempt\ ([0-9]+): ]]; then
 		task_attempt "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
 		title_ready done
