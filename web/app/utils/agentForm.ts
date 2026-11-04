@@ -95,10 +95,11 @@ export function takesProfile(f: Pick<AgentForm, 'browser'>): boolean {
 
 /**
  * The browser to save: the one chosen, with its profile when it takes one; for the default browser `{}` when the agent edited (or
- * copied) names a browser, which the save would otherwise keep, and nothing otherwise.
+ * copied) has a browser, one it names or the `{}` a save of the default left over a configured one, which a save leaving it out
+ * would give back to the configured agent; nothing otherwise.
  */
 export function browserOut(f: Pick<AgentForm, 'browser' | 'profile'>, prev?: AgentInfo): AgentBrowser | undefined {
-  if (f.browser === 'default') return prev?.browser?.name ? {} : undefined
+  if (f.browser === 'default') return prev?.browser ? {} : undefined
   const profile = takesProfile(f) ? f.profile.trim() : ''
   return profile ? { name: f.browser, profile } : { name: f.browser }
 }

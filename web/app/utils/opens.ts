@@ -73,6 +73,22 @@ export function offerWords(sessionName: string, ev: OpenEvent, inDesktop: boolea
   return { title: `${sessionName} opened a link`, description: `${ev.url}${where}` }
 }
 
+/**
+ * openOffered opens a link offered, on Open: in the desktop app through the bridge, in its agent's browser, saying (warn) what
+ * outcomeWords says of what became of it; in a plain tab in a new tab of this browser (windowOpen).
+ */
+export async function openOffered(ev: OpenEvent, bridge: Pick<DesktopBridge, 'openUrl'> | null, windowOpen: (url: string) => void, warn: (words: { title: string; description: string }) => void): Promise<void> {
+  if (!bridge?.openUrl) return windowOpen(ev.url)
+  let outcome: string
+  try {
+    outcome = (await bridge.openUrl(ev.url, ev.browser ?? null)).outcome
+  } catch {
+    return
+  }
+  const w = outcomeWords(outcome, ev.browser)
+  if (w) warn(w)
+}
+
 /** What routeOpen takes of the page: the bridge (null outside the app), the server's open routes, and the toasts. */
 export interface OpenRoute {
   bridge: Pick<DesktopBridge, 'openUrl'> | null
@@ -87,8 +103,9 @@ export interface OpenRoute {
 /**
  * routeOpen does with an open event what openAction says: in the desktop app it claims a pending link and, once it has it, opens it
  * through the bridge, once, and tells the server what became of it; a claim refused (another window of the app took it, or it was
- * offered) opens nothing, and a bridge that refused the link has it offered. An offered link is offered; a plain tab does nothing
- * with a pending one, and so does a page of an app older than the bridge's openUrl.
+ * offered) opens nothing. A bridge that refused the link is told as `offered`: the server then offers it to every workbench, this
+ * page among them, and answers the agent so; this page offers it itself only when the server could not be told. An offered link is
+ * offered; a plain tab does nothing with a pending one, and so does a page of an app older than the bridge's openUrl.
  */
 export async function routeOpen(ev: OpenEvent, r: OpenRoute): Promise<void> {
   const open = r.bridge?.openUrl
@@ -104,7 +121,12 @@ export async function routeOpen(ev: OpenEvent, r: OpenRoute): Promise<void> {
   try {
     outcome = (await open(ev.url, ev.browser ?? null)).outcome
   } catch {
-    return r.offer(ev)
+    try {
+      await r.result(ev.id, 'offered')
+    } catch {
+      r.offer(ev)
+    }
+    return
   }
   await r.result(ev.id, outcome).catch(() => {})
   const w = outcomeWords(outcome, ev.browser)

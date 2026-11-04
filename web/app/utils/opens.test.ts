@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { asOpenEvent, browserWords, offerWords, openAction, outcomeWords, routeOpen, type OpenRoute } from './opens'
+import { asOpenEvent, browserWords, offerWords, openAction, openOffered, outcomeWords, routeOpen, type OpenRoute } from './opens'
 import type { OpenEvent } from './protocol'
 
 const pending: OpenEvent = { id: 'op-1', sessionId: 's1', url: 'https://claude.ai/artifact/0f1e', browser: { name: 'edge', profile: 'Profile 2' }, state: 'pending' }
 const offered: OpenEvent = { ...pending, state: 'offered' }
 
-function route(bridge: OpenRoute['bridge'], o: { claimRefused?: boolean } = {}) {
+function route(bridge: OpenRoute['bridge'], o: { claimRefused?: boolean; resultRefused?: boolean } = {}) {
   const calls: string[] = []
   const r: OpenRoute = {
     bridge,
@@ -15,6 +15,7 @@ function route(bridge: OpenRoute['bridge'], o: { claimRefused?: boolean } = {}) 
     }),
     result: vi.fn(async (id: string, outcome: string) => {
       calls.push(`result ${id} ${outcome}`)
+      if (o.resultRefused) throw new Error('not_found')
     }),
     offer: vi.fn((ev: OpenEvent) => {
       calls.push(`offer ${ev.url}`)
@@ -57,10 +58,16 @@ describe('which way a link goes', () => {
     expect(calls).toEqual(['claim op-1'])
   })
 
-  it('offers a link the bridge refused', async () => {
+  it('tells the server a link the bridge refused as offered, which then offers it to every workbench, this one among them', async () => {
     const { r, calls } = route({ openUrl: async () => Promise.reject(new Error('refused')) })
     await routeOpen(pending, r)
-    expect(calls).toEqual(['claim op-1', 'offer https://claude.ai/artifact/0f1e'])
+    expect(calls).toEqual(['claim op-1', 'result op-1 offered'])
+  })
+
+  it('offers a link the bridge refused itself when the server cannot be told', async () => {
+    const { r, calls } = route({ openUrl: async () => Promise.reject(new Error('refused')) }, { resultRefused: true })
+    await routeOpen(pending, r)
+    expect(calls).toEqual(['claim op-1', 'result op-1 offered', 'offer https://claude.ai/artifact/0f1e'])
   })
 
   it('in a plain tab, or an app older than the bridge\'s openUrl, a pending link starts nothing and claims nothing', async () => {
@@ -70,6 +77,31 @@ describe('which way a link goes', () => {
       expect(calls).toEqual([])
       await routeOpen(offered, r)
       expect(calls).toEqual(['offer https://claude.ai/artifact/0f1e'])
+    }
+  })
+})
+
+describe('Open on a link offered', () => {
+  it('in the desktop app, opens it through the bridge in its agent\'s browser and says a browser not installed', async () => {
+    const openUrl = vi.fn(async () => ({ outcome: 'missing' }))
+    const windowOpen = vi.fn()
+    const warn = vi.fn()
+    await openOffered(offered, { openUrl }, windowOpen, warn)
+    expect(openUrl).toHaveBeenCalledWith('https://claude.ai/artifact/0f1e', { name: 'edge', profile: 'Profile 2' })
+    expect(warn).toHaveBeenCalledWith({ title: 'Edge is not installed on this computer', description: 'The link opened in the default browser.' })
+    expect(windowOpen).not.toHaveBeenCalled()
+  })
+  it('says nothing for a link opened in its browser, or one the bridge refused', async () => {
+    const warn = vi.fn()
+    await openOffered(offered, { openUrl: async () => ({ outcome: 'browser' }) }, vi.fn(), warn)
+    await openOffered(offered, { openUrl: async () => Promise.reject(new Error('refused')) }, vi.fn(), warn)
+    expect(warn).not.toHaveBeenCalled()
+  })
+  it('in a plain tab, or an app older than the bridge\'s openUrl, opens a tab of this browser', async () => {
+    for (const bridge of [null, {}]) {
+      const windowOpen = vi.fn()
+      await openOffered(offered, bridge, windowOpen, vi.fn())
+      expect(windowOpen).toHaveBeenCalledWith('https://claude.ai/artifact/0f1e')
     }
   })
 })

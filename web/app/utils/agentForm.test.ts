@@ -247,6 +247,15 @@ describe('the browser its links open in (#436)', () => {
     expect(agentPayload(plain, keyed).browser).toBeUndefined()
     expect(agentPayload(formFromAgent(undefined, counter())).browser).toBeUndefined()
   })
+  it('keeps the default saved over a configured browser through a second load and save', () => {
+    // The server answers the first save's {} as browser: {}; a later edit of that agent saves {} again, or inheritance gives the configured browser back.
+    const saved: AgentInfo = { ...work, browser: {} }
+    const f = formFromAgent(saved, counter())
+    expect(f.browser).toBe('default')
+    f.name = 'Work, renamed'
+    expect(agentPayload(f, saved).browser).toEqual({})
+    expect(agentPayload(formForClone(saved, ['work'], counter()), saved).browser).toEqual({})
+  })
   it('sends a profile only for Chrome, Edge and Brave, trimmed', () => {
     expect(browserOut({ browser: 'firefox', profile: 'Profile 2' })).toEqual({ name: 'firefox' })
     expect(browserOut({ browser: 'brave', profile: '  Default ' })).toEqual({ name: 'brave', profile: 'Default' })

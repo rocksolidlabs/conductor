@@ -1,6 +1,5 @@
 import { desktopBridge } from '~/utils/desktop'
-import { asOpenEvent, offerWords, routeOpen } from '~/utils/opens'
-import type { OpenEvent } from '~/utils/protocol'
+import { asOpenEvent, offerWords, openOffered, routeOpen } from '~/utils/opens'
 
 /**
  * The links agents open (#436), as the events stream tells them (`open`): in the desktop app, the page claims a pending link and
@@ -11,11 +10,7 @@ export function useLinkOpens() {
   const api = useSessions()
   const toast = useToast()
 
-  function openOffered(ev: OpenEvent) {
-    const bridge = desktopBridge()
-    if (bridge?.openUrl) void bridge.openUrl(ev.url, ev.browser ?? null).catch(() => {})
-    else window.open(ev.url, '_blank', 'noopener,noreferrer')
-  }
+  const warn = (w: { title: string; description: string }) => toast.add({ title: w.title, description: w.description, icon: 'i-lucide-triangle-alert', color: 'warning' })
 
   /** Takes the data of an `open` event; sessionName names the session that opened it. */
   function event(payload: unknown, sessionName: (id: string) => string) {
@@ -29,9 +24,9 @@ export function useLinkOpens() {
       result: (id, outcome) => api.openResult(id, outcome),
       offer: (e) => {
         const w = offerWords(sessionName(e.sessionId), e, !!bridge?.openUrl)
-        toast.add({ title: w.title, description: w.description, icon: 'i-lucide-external-link', color: 'neutral', actions: [{ label: 'Open', icon: 'i-lucide-external-link', onClick: () => openOffered(e) }] })
+        toast.add({ title: w.title, description: w.description, icon: 'i-lucide-external-link', color: 'neutral', actions: [{ label: 'Open', icon: 'i-lucide-external-link', onClick: () => void openOffered(e, desktopBridge(), (url) => window.open(url, '_blank', 'noopener,noreferrer'), warn) }] })
       },
-      warn: (w) => toast.add({ title: w.title, description: w.description, icon: 'i-lucide-triangle-alert', color: 'warning' }),
+      warn,
     })
   }
 
