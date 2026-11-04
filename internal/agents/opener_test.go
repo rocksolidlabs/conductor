@@ -1,6 +1,8 @@
 package agents
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,6 +80,43 @@ func TestOpenerAvoidsAPathWithASpace(t *testing.T) {
 	}
 	if _, err := Opener(t.TempDir(), "relative/conductor"); err == nil {
 		t.Fatal("a relative binary was taken")
+	}
+}
+
+// An opener that cannot be made executable (its mode not set) is an error,
+// so the launch sets no BROWSER, and is never put in place: no file for a
+// first one, and the opener there, which sessions already started run, is
+// left whole and 0700 when a new one for another binary cannot be.
+func TestOpenerItCannotMakeExecutableIsAnError(t *testing.T) {
+	hooks := filepath.Join(t.TempDir(), "hooks")
+	p := filepath.Join(hooks, openerName)
+	failing := func(string, fs.FileMode) error { return errors.New("no modes here") }
+	restore := ReplaceChmod(failing)
+	if got, err := Opener(hooks, "/usr/local/bin/conductor"); err == nil || got != "" {
+		t.Fatalf("a first opener with no mode: %q %v", got, err)
+	}
+	if _, err := os.Lstat(p); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a first opener with no mode was put in place: %v", err)
+	}
+	restore()
+	if _, err := Opener(hooks, "/usr/local/bin/conductor"); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(p)
+	t.Cleanup(ReplaceChmod(failing))
+	if got, err := Opener(hooks, "/opt/conductor/bin/conductor"); err == nil || got != "" {
+		t.Fatalf("a new opener with no mode: %q %v", got, err)
+	}
+	after, err := os.ReadFile(p)
+	if fi, _ := os.Stat(p); err != nil || string(after) != string(before) || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("the opener there was replaced: %q %v", after, err)
+	}
+	// One that holds the script and lost its mode is an error too.
+	if err := os.Chmod(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Opener(hooks, "/usr/local/bin/conductor"); err == nil {
+		t.Fatal("an opener 0600 was taken")
 	}
 }
 

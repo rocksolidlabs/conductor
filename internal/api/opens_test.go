@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -348,6 +349,143 @@ func TestOpenTheAppCouldNotOpenIsOffered(t *testing.T) {
 	}
 }
 
+// A result the desktop app tells as the open's wait for it ends (its timer,
+// or the agent's call gone) is the open's answer, never a 204 the open
+// then ignores: told in the moment between the wait's end and the open's
+// settling (the settling seam holds it there), an offered result offers
+// the link and is answered so; a result told once the open has settled
+// finds no open (404), which the app offers itself.
+func TestOpenResultToldAsTheWaitEndsIsTheAnswer(t *testing.T) {
+	for name, tc := range map[string]struct {
+		outcome, answer, message string
+		offer                    bool
+	}{
+		"offered": {OpenOffered, OpenOffered, "offered in the workbench: the desktop app could not open it", true},
+		"browser": {OpenedBrowser, OpenedBrowser, "opened in edge (Profile 2)", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := openEnv(t, nil)
+			e.srv.opens.claimWait = time.Hour
+			e.srv.opens.resultWait = 0 // the wait is over at once
+			told := make(chan int, 1)
+			e.srv.opens.settling = func(id string) {
+				resp, _ := e.do("POST", "/api/opens/"+id+"/result", adminToken, map[string]any{"outcome": tc.outcome})
+				told <- resp.StatusCode
+			}
+			events := desktopStream(t, e)
+			id := e.createSession("edge-cat")
+			tok := agentOf(t, e, id)
+			done := make(chan map[string]any, 1)
+			go func() {
+				_, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": "https://example.test/race"})
+				done <- out
+			}()
+			pending := waitOpen(t, e, events, openPending)
+			if resp, _ := e.do("POST", "/api/opens/"+pending.ID+"/claim", adminToken, nil); resp.StatusCode != http.StatusOK {
+				t.Fatalf("the claim: %d", resp.StatusCode)
+			}
+			if status := <-told; status != http.StatusNoContent {
+				t.Fatalf("the result told as the wait ended: %d", status)
+			}
+			if out := <-done; out["outcome"] != tc.answer || out["message"] != tc.message {
+				t.Fatalf("the agent's answer %v", out)
+			}
+			if tc.offer {
+				if offered := waitOpen(t, e, events, openOffered); offered.ID != pending.ID {
+					t.Fatalf("the offer %+v", offered)
+				}
+			}
+			if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].Message != "link "+tc.message {
+				t.Fatalf("the activity %+v", acts)
+			}
+		})
+	}
+	t.Run("after the settling", func(t *testing.T) {
+		e := openEnv(t, nil)
+		e.srv.opens.claimWait = time.Hour
+		e.srv.opens.resultWait = 0
+		events := desktopStream(t, e)
+		id := e.createSession("edge-cat")
+		tok := agentOf(t, e, id)
+		done := make(chan map[string]any, 1)
+		go func() {
+			_, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": "https://example.test/late"})
+			done <- out
+		}()
+		pending := waitOpen(t, e, events, openPending)
+		e.do("POST", "/api/opens/"+pending.ID+"/claim", adminToken, nil)
+		if out := <-done; out["outcome"] != OpenHanded {
+			t.Fatalf("the agent's answer %v", out)
+		}
+		if resp, _ := e.do("POST", "/api/opens/"+pending.ID+"/result", adminToken, map[string]any{"outcome": OpenOffered}); resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("a result after the open settled: %d", resp.StatusCode)
+		}
+	})
+}
+
+// The agent's call gone (its context cancelled) while the app it handed the
+// link to is about to tell: a result told before the open settles is its
+// answer, one told after finds no open.
+func TestOpenResultToldAsTheCallEndsIsTheAnswer(t *testing.T) {
+	e := openEnv(t, nil)
+	e.srv.opens.claimWait = time.Hour
+	e.srv.opens.resultWait = time.Hour // only the call's end ends the wait
+	told := make(chan int, 1)
+	e.srv.opens.settling = func(id string) {
+		resp, _ := e.do("POST", "/api/opens/"+id+"/result", adminToken, map[string]any{"outcome": OpenedDefault})
+		told <- resp.StatusCode
+	}
+	events := desktopStream(t, e)
+	id := e.createSession("edge-cat")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	type answer struct {
+		outcome string
+		err     error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		outcome, err := e.srv.open(ctx, id, "https://example.test/gone", nil, false)
+		done <- answer{outcome, err}
+	}()
+	pending := waitOpen(t, e, events, openPending)
+	if resp, _ := e.do("POST", "/api/opens/"+pending.ID+"/claim", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the claim: %d", resp.StatusCode)
+	}
+	cancel()
+	if status := <-told; status != http.StatusNoContent {
+		t.Fatalf("the result told as the call ended: %d", status)
+	}
+	if a := <-done; a.err != nil || a.outcome != OpenedDefault {
+		t.Fatalf("the open's answer %q %v", a.outcome, a.err)
+	}
+	if resp, _ := e.do("POST", "/api/opens/"+pending.ID+"/result", adminToken, map[string]any{"outcome": OpenedDefault}); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("a result after the open settled: %d", resp.StatusCode)
+	}
+}
+
+// settle takes a result tell left in the channel, whichever way the wait
+// ended, and once it has run no result is taken.
+func TestOpenDeskSettleTakesWhatWasTold(t *testing.T) {
+	d := newOpenDesk()
+	p, _ := d.add(openEvent{ID: "op-1"})
+	d.take("op-1")
+	if d.tell("op-1", OpenedBrowser) != http.StatusOK {
+		t.Fatal("the result")
+	}
+	if outcome, ok := d.settle(p); !ok || outcome != OpenedBrowser {
+		t.Fatalf("settled %q %v", outcome, ok)
+	}
+	q, _ := d.add(openEvent{ID: "op-2"})
+	d.take("op-2")
+	if _, ok := d.settle(q); ok {
+		t.Fatal("settled a result never told")
+	}
+	if status := d.tell("op-2", OpenedBrowser); status != http.StatusNotFound {
+		t.Fatalf("a result after the settling: %d", status)
+	}
+}
+
 // missing and failed name the browser the agent's settings name: told of a
 // link whose agent names none they are refused, and the outcome told after
 // is the one the agent is answered.
@@ -406,6 +544,55 @@ func TestOpenIsRecordedWithTheEventBucketSpent(t *testing.T) {
 	}
 	if acts := openActivity(t, e, id); len(acts) != 1 || acts[0].URL != "https://example.test/spent" {
 		t.Fatalf("the activity %+v", acts)
+	}
+}
+
+// Every link the route takes is recorded with its URL: CleanEntry drops a
+// URL whose entry passes a CONTROL frame, which & < > (six bytes each in
+// JSON) do well within 2048 bytes, so the route refuses such a link
+// (400 invalid_url, no open, nothing recorded)
+// and records the longest it takes whole, for an agent that names a
+// browser and for one that names none; a link of 2048 plain bytes is taken.
+func TestOpenedURLIsKeptInTheActivity(t *testing.T) {
+	for _, agent := range []string{"edge-cat", "cat"} {
+		t.Run(agent, func(t *testing.T) {
+			e := openEnv(t, nil)
+			id := e.createSession(agent)
+			tok := agentOf(t, e, id)
+			var browser *catalog.Browser
+			if a, ok := e.srv.Catalog().Get(agent); ok && a.Browser.Named() {
+				browser = a.Browser
+			}
+			const base = "https://example.test/?"
+			over := base + strings.Repeat("&", 2000)
+			if resp, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": over}); resp.StatusCode != http.StatusBadRequest || errorCode(out) != "invalid_url" {
+				t.Fatalf("a link its entry would drop: %d %v", resp.StatusCode, out)
+			}
+			if acts := openActivity(t, e, id); len(acts) != 0 {
+				t.Fatalf("a refused link was recorded: %+v", acts)
+			}
+			// The longest run of & the route takes, found as it judges.
+			n := 0
+			for keptInActivity(base+strings.Repeat("&", n+1), browser) {
+				n++
+			}
+			if n == 0 || len(base)+n >= len(over) {
+				t.Fatalf("the boundary %d", n)
+			}
+			for _, link := range []string{base + strings.Repeat("&", n), "https://example.test/" + strings.Repeat("a", MaxOpenURL-len("https://example.test/"))} {
+				resp, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": link})
+				if resp.StatusCode != http.StatusOK || out["outcome"] != OpenOffered {
+					t.Fatalf("a link of %d bytes: %d %v", len(link), resp.StatusCode, out)
+				}
+			}
+			if resp, _ := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": base + strings.Repeat("&", n+1)}); resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("one & past the boundary: %d", resp.StatusCode)
+			}
+			acts := openActivity(t, e, id)
+			if len(acts) != 2 || acts[0].URL != base+strings.Repeat("&", n) || len(acts[1].URL) != MaxOpenURL {
+				t.Fatalf("the activity %+v", acts)
+			}
+		})
 	}
 }
 

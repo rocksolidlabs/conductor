@@ -40,7 +40,9 @@ func openerScript(bin string) string {
 // browser its settings name. It goes into hooksDir when that path can be a
 // $BROWSER (OpenerPathOK), else into a directory of this user's own under
 // the system's temporary directory; a file that already holds it is left as
-// it is. It is 0700, as the directory it is in.
+// it is. It is 0700, as the directory it is in. An opener that cannot be made
+// 0700 (its mode not set) is an error and is not put in place: a file there
+// stays as it was, and the agent opens its links its own way.
 func Opener(hooksDir, bin string) (string, error) {
 	if err := checkBin(bin); err != nil {
 		return "", err
@@ -59,11 +61,8 @@ func Opener(hooksDir, bin string) (string, error) {
 	if !OpenerPathOK(p) {
 		return "", fmt.Errorf("no directory for the opener has a path $BROWSER can hold (no space, colon or percent sign): %s", p)
 	}
-	if _, err := replaceFile(p, p, []byte(openerScript(bin)), 0o700); err != nil {
-		var me *modeError
-		if !errors.As(err, &me) {
-			return "", err
-		}
+	if _, err := replaceExecutable(p, p, []byte(openerScript(bin)), 0o700); err != nil {
+		return "", err
 	}
 	return p, nil
 }

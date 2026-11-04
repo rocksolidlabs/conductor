@@ -124,6 +124,11 @@ type openDesk struct {
 	// claimWait and resultWait are openClaimWait and openResultWait; a
 	// test sets its own.
 	claimWait, resultWait time.Duration
+	// settling, when a test sets it, is called with the open's id once its
+	// wait for the result is over (the wait's end, or the agent's call
+	// gone) and before settle: a result told there is the one the open
+	// answers.
+	settling func(id string)
 }
 
 func newOpenDesk() *openDesk {
@@ -179,6 +184,23 @@ func (d *openDesk) take(id string) (openEvent, int) {
 	return p.ev, http.StatusOK
 }
 
+// settle ends the wait for p's result, under the lock tell takes: a result
+// told before it is what the open answers (ok), else p is removed and a
+// result told after it finds no open (404), which the app then offers
+// itself. Without it a result accepted between the wait's end and the
+// open's removal was answered 204 and never acted on.
+func (d *openDesk) settle(p *pendingOpen) (outcome string, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.pending, p.ev.ID)
+	if !p.told {
+		return "", false
+	}
+	// tell put it in the channel's one place under this lock, and only
+	// the wait that ended takes it.
+	return <-p.result, true
+}
+
 // tell takes what the desktop app did with the open id it claimed, once.
 // missing and failed name the browser the agent's settings name: for a link
 // whose agent names none they are refused (400), as nothing could be missing.
@@ -219,6 +241,22 @@ func checkOpenURL(raw string) error {
 		return errors.New("url must be an http:// or https:// URL with a host")
 	}
 	return nil
+}
+
+// keptInActivity reports whether link stays whole in the activity entry its
+// open records, whatever the outcome: session.CleanEntry drops a URL whose
+// entry would pass a CONTROL frame, which a link of MaxOpenURL bytes made
+// mostly of & < > (six bytes each in JSON) does. The route refuses such a
+// link, so every open it takes is recorded with its link, the way back to
+// an offer the workbench missed.
+func keptInActivity(link string, b *catalog.Browser) bool {
+	for _, outcome := range []string{OpenedBrowser, OpenedDefault, OpenedMissing, OpenedFailed, OpenOffered, OpenHanded, openUnopened} {
+		e := session.ActivityEntry{Type: session.ActivityArtifact, Message: "link " + openWords(outcome, b), URL: link}
+		if session.CleanEntry(e).URL != link {
+			return false
+		}
+	}
+	return true
 }
 
 // openWords is what the tool and the activity entry say of an outcome.
@@ -280,14 +318,18 @@ func (s *Server) handleSelfOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := local.Info()
-	if !s.selfLimits.take(s.selfLimits.opens, info.ID, selfOpensPerMinute, time.Minute) {
-		writeError(w, http.StatusTooManyRequests, "rate_limited", "this session has opened its links for the minute")
-		return
-	}
 	var browser *catalog.Browser
 	if a, ok := s.Catalog().Get(info.AgentID); ok && a.Browser.Named() {
 		b := *a.Browser
 		browser = &b
+	}
+	if !keptInActivity(in.URL, browser) {
+		writeError(w, http.StatusBadRequest, "invalid_url", "url has too many of & < > for its activity entry, which JSON writes as six bytes each")
+		return
+	}
+	if !s.selfLimits.take(s.selfLimits.opens, info.ID, selfOpensPerMinute, time.Minute) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "this session has opened its links for the minute")
+		return
 	}
 	managed := info.Crew != nil && (info.Crew.Task != "" || info.Crew.Brakeman != nil)
 	outcome, err := s.open(r.Context(), info.ID, in.URL, browser, managed)
@@ -334,18 +376,29 @@ func (s *Server) open(ctx context.Context, sessionID, link string, browser *cata
 	}
 	resultWait := time.NewTimer(s.opens.resultWait)
 	defer resultWait.Stop()
+	var outcome string
 	select {
-	case outcome := <-p.result:
-		if outcome == OpenOffered {
-			ev.State = openOffered
-			s.events.open(ev)
-			return openUnopened, nil
-		}
-		return outcome, nil
+	case outcome = <-p.result:
 	case <-resultWait.C:
 	case <-ctx.Done():
 	}
-	return OpenHanded, nil
+	if outcome == "" {
+		// The wait is over, and a result may have been told meanwhile or
+		// beside it: settle takes it or makes any later one fail.
+		if s.opens.settling != nil {
+			s.opens.settling(ev.ID)
+		}
+		var ok bool
+		if outcome, ok = s.opens.settle(p); !ok {
+			return OpenHanded, nil
+		}
+	}
+	if outcome == OpenOffered {
+		ev.State = openOffered
+		s.events.open(ev)
+		return openUnopened, nil
+	}
+	return outcome, nil
 }
 
 // handleClaimOpen is a desktop app's claim of an open: POST
