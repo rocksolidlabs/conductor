@@ -260,7 +260,8 @@ func actBudget() time.Duration {
 // after launchResendWait when the server answers a launch still being
 // started (503 ledger_unavailable naming it pending). The server answers
 // the act from its receipt and runs it once. An act left unsettled (its
-// reply lost every time, or its launch still pending) names its op id,
+// reply lost every time, its launch still pending, a later send refused
+// after one of those, or a send answered with a 5xx) names its op id,
 // for the same act to be asked again, never a new one, which would be a
 // second act. It answers the act in words, then the route's reply, and
 // the reply itself.
@@ -326,6 +327,11 @@ func (c *brakemanClient) send(ctx context.Context, name, opID, path string, payl
 	// pending is the launch a 503 named still being started: once the
 	// server has named one, an exit that does not settle it says so.
 	var pending *dispatch.LaunchSummary
+	// unsure is whether an earlier send may have run the act unseen: its
+	// reply lost, or a launch named pending. Until a receipt settles it,
+	// a refusal of a later send says nothing of that one, so the error
+	// names the op id.
+	unsure := false
 	for sends := 1; ; sends++ {
 		reply, err := c.post(ctx, actRequestTimeout(name), path, payload)
 		if err == nil {
@@ -333,6 +339,7 @@ func (c *brakemanClient) send(ctx context.Context, name, opID, path string, payl
 		}
 		var lost lostReply
 		if errors.As(err, &lost) {
+			unsure = true
 			if ctx.Err() == nil && sends < launchTries {
 				continue
 			}
@@ -343,12 +350,19 @@ func (c *brakemanClient) send(ctx context.Context, name, opID, path string, payl
 		}
 		l, ok := pendingLaunch(err)
 		if !ok {
-			if pending != nil && !failedLaunch(err) {
+			switch {
+			case failedLaunch(err):
+			case pending != nil:
 				return nil, fmt.Errorf("act %s: launch %s was still being started, and sending it again was answered without its outcome (%w): act again with opId %s for its outcome; another opId would be a second launch", name, oneLine(pending.ID), err, opID)
+			case unsure:
+				return nil, fmt.Errorf("act %s: an earlier send had no answer, so it may have run, and sending it again was answered without its outcome (%w): act again with opId %s for its outcome; another opId would be another act", name, err, opID)
+			case !refusedBeforeRunning(err):
+				return nil, fmt.Errorf("act %s: %w, so it may have run: act again with opId %s for its outcome; another opId would be another act", name, err, opID)
 			}
 			return nil, fmt.Errorf("act %s: %w", name, err)
 		}
 		pending = &l
+		unsure = true
 		if sends >= launchTries {
 			return nil, fmt.Errorf("act %s: launch %s is still being started after %d tries: act again with opId %s for its outcome; another opId would be a second launch", name, oneLine(l.ID), sends, opID)
 		}
@@ -360,6 +374,16 @@ func (c *brakemanClient) send(ctx context.Context, name, opID, path string, payl
 		case <-t.C:
 		}
 	}
+}
+
+// refusedBeforeRunning is whether a send's error says the act did not
+// run: a refusal under 500 (the route, or what stands in front of it,
+// refused the act before its handler ran it). A 5xx, a reply too large
+// or not JSON can come after the act's change was kept, and say nothing
+// of it.
+func refusedBeforeRunning(err error) bool {
+	var r replyRefusal
+	return errors.As(err, &r) && r.status < http.StatusInternalServerError
 }
 
 // post sends payload to path on the server's root as the turn (its token,

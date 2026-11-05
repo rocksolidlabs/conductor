@@ -1001,32 +1001,68 @@ func TestAnActIsNotBoundByTheSessionClientsTimeout(t *testing.T) {
 	}
 }
 
+// sendsTripper is a turn's transport that records each request's body as
+// the request reaches it, then answers it with answer (n is the send's
+// number, from 1): a send is counted the moment it is made, never only
+// once a server has accepted its connection and run its handler, which a
+// loaded machine can put past the request's own deadline.
+type sendsTripper struct {
+	mu     sync.Mutex
+	bodies []map[string]any
+	answer func(n int, r *http.Request) (*http.Response, error)
+}
+
+func (s *sendsTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	var b map[string]any
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		_ = r.Body.Close()
+	}
+	s.mu.Lock()
+	s.bodies = append(s.bodies, b)
+	n := len(s.bodies)
+	s.mu.Unlock()
+	return s.answer(n, r)
+}
+
+func (s *sendsTripper) sent() []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.bodies)
+}
+
+// trippedReply is a reply of status with body, as a server would answer.
+func trippedReply(r *http.Request, status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}
+}
+
+// actThrough is a turn's client whose every request goes to tr.
+func actThrough(t *testing.T, tr *sendsTripper) *brakemanClient {
+	t.Helper()
+	c := actTurn(t, "http://conductor.test")
+	c.client.Transport = tr
+	return c
+}
+
 // A launch whose every request outlasts its bound is sent launchTries
 // times, the same opId and body each time, and the error names the opId
 // to act with again, never advice to mint another, which would be a
-// second launch.
+// second launch. Each send is recorded as it is made and held until its
+// own deadline gives it up, so every one is counted however slow the
+// machine.
 func TestAnUnansweredActNamesItsOpID(t *testing.T) {
 	old := launchRequestTimeout
 	launchRequestTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { launchRequestTimeout = old })
-	var mu sync.Mutex
-	var bodies []map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var b map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&b)
-		mu.Lock()
-		bodies = append(bodies, b)
-		mu.Unlock()
-		// Held until the client gives the request up.
+	tr := &sendsTripper{answer: func(_ int, r *http.Request) (*http.Response, error) {
 		<-r.Context().Done()
-	}))
-	t.Cleanup(srv.Close)
-	_, _, err := actTurn(t, srv.URL).act(context.Background(), brakeman.ActLaunchApprovedPlan, map[string]string{"key": "CND-12"}, map[string]any{"plan": "0123456789abcdef"}, "bk-7")
-	mu.Lock()
-	defer mu.Unlock()
+		return nil, r.Context().Err()
+	}}
+	_, _, err := actThrough(t, tr).act(context.Background(), brakeman.ActLaunchApprovedPlan, map[string]string{"key": "CND-12"}, map[string]any{"plan": "0123456789abcdef"}, "bk-7")
 	if err == nil || !strings.Contains(err.Error(), "act again with opId bk-7") || !strings.Contains(err.Error(), "another opId would be another act") {
 		t.Fatalf("the error: %v", err)
 	}
+	bodies := tr.sent()
 	if len(bodies) != launchTries {
 		t.Fatalf("%d sends, want %d", len(bodies), launchTries)
 	}
@@ -1034,6 +1070,62 @@ func TestAnUnansweredActNamesItsOpID(t *testing.T) {
 		if !reflect.DeepEqual(b, bodies[0]) || b["opId"] != "bk-7" {
 			t.Fatalf("the sends: %+v", bodies)
 		}
+	}
+}
+
+// An act whose outcome no receipt has settled names its opId whatever
+// ends it: a refusal of a resend after a lost reply (503
+// dispatch_unavailable, a 403) says nothing of the first send, and a 5xx
+// can come after the act's change was kept. A refusal that settles it
+// (409 launch_failed) or one made before anything could have run (a 403
+// on the first send) is the refusal alone.
+func TestAnActWhoseOutcomeIsUnsureNamesItsOpID(t *testing.T) {
+	const (
+		unavailable = `{"error":{"code":"dispatch_unavailable","message":"Dispatch is read-only: the disk is full"}}`
+		forbidden   = `{"error":{"code":"forbidden","message":"the turn is not granted launch_approved_plan"}}`
+		internal    = `{"error":{"code":"internal","message":"the launch could not be answered"}}`
+		failed      = `{"error":{"code":"launch_failed","message":"the run could not be started"},"receipt":{"status":"done","id":"0123456789abcdef"},"launch":{"id":"0123456789abcdef","state":"failed"}}`
+	)
+	lost := func(r *http.Request) (*http.Response, error) { return nil, io.ErrUnexpectedEOF }
+	refuse := func(status int, body string) func(*http.Request) (*http.Response, error) {
+		return func(r *http.Request) (*http.Response, error) { return trippedReply(r, status, body), nil }
+	}
+	for _, tc := range []struct {
+		name    string
+		answers []func(*http.Request) (*http.Response, error)
+		names   bool
+	}{
+		{"lost, then 503 dispatch_unavailable", []func(*http.Request) (*http.Response, error){lost, refuse(http.StatusServiceUnavailable, unavailable)}, true},
+		{"lost, then 403", []func(*http.Request) (*http.Response, error){lost, refuse(http.StatusForbidden, forbidden)}, true},
+		{"a 500 on the first send", []func(*http.Request) (*http.Response, error){refuse(http.StatusInternalServerError, internal)}, true},
+		{"a 503 dispatch_unavailable on the first send", []func(*http.Request) (*http.Response, error){refuse(http.StatusServiceUnavailable, unavailable)}, true},
+		{"lost, then 409 launch_failed", []func(*http.Request) (*http.Response, error){lost, refuse(http.StatusConflict, failed)}, false},
+		{"a 403 on the first send", []func(*http.Request) (*http.Response, error){refuse(http.StatusForbidden, forbidden)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := &sendsTripper{answer: func(n int, r *http.Request) (*http.Response, error) {
+				if n > len(tc.answers) {
+					t.Errorf("send %d, after the last answer", n)
+					return nil, io.ErrUnexpectedEOF
+				}
+				return tc.answers[n-1](r)
+			}}
+			_, _, err := actThrough(t, tr).act(context.Background(), brakeman.ActLaunchApprovedPlan, map[string]string{"key": "CND-12"}, map[string]any{"plan": "0123456789abcdef"}, "")
+			bodies := tr.sent()
+			if err == nil || len(bodies) != len(tc.answers) {
+				t.Fatalf("%d sends: %v", len(bodies), err)
+			}
+			opID, _ := bodies[0]["opId"].(string)
+			for _, b := range bodies {
+				if !reflect.DeepEqual(b, bodies[0]) || len(opID) != 16 {
+					t.Fatalf("the sends: %+v", bodies)
+				}
+			}
+			named := strings.Contains(err.Error(), "act again with opId "+opID) && strings.Contains(err.Error(), "another opId would be another act")
+			if named != tc.names || !strings.HasPrefix(err.Error(), "act launch_approved_plan: ") {
+				t.Fatalf("the error names the opId %v, want %v: %v", named, tc.names, err)
+			}
+		})
 	}
 }
 
