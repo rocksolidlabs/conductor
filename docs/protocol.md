@@ -3667,7 +3667,8 @@ client side, with the turn's token and its session named, the `opId`
 minted when the turn gives none and sent once more with the same body
 when the reply is lost. A turn's guide lists the tool and the operations
 its request's `permissions.act` names, and `conductor mcp` lists the tool
-in a Brakeman turn's session only while that request names one; the
+in a Brakeman turn's session only while that guide lists one (it reads
+the guide, never the request, whose read marks the request read); the
 admin's guide lists them all. A proposal (`proposal/1`) may name a
 granted operation as its `op`, with `expectedRevision` the ticket's
 revision read; the request's `acts` say which of them Brakeman ran, and
