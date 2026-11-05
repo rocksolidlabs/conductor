@@ -322,6 +322,35 @@ test('a free-text prompt gets a reply field in the row; Enter sends the line and
   await expect(page).toHaveURL(/\/crews$/)
 })
 
+test('a reply being typed in a row keeps the focus and its keys while the rows change (#596)', async ({ page, api, state }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e reply kept' })
+  sessions.push(s.id)
+  await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which fix should I make?' })
+  await page.goto('/crews')
+  const list = page.locator('[data-session-list="sidebar"]')
+  const row = list.locator(`[data-sidebar-row="s:${s.id}"]`).first()
+  await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
+  const field = row.locator('[data-row-reply] input, input[data-row-reply]').first()
+  // The field takes the focus, so the list names the row (its focusin) as the row the keys act on.
+  await field.click()
+  await page.keyboard.type('fi')
+  await expect(field).toHaveValue('fi')
+
+  // Another session launched: the rows change, and the list's watch has run once its row is drawn (it follows that render).
+  const other = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e rows change' })
+  sessions.push(other.id)
+  await expect(list.locator(`[data-sidebar-row="s:${other.id}"]`).first()).toBeVisible({ timeout: 15_000 })
+  await expect(field).toBeFocused()
+
+  // The next keys are the reply's: an x is typed, not the list's Stop question, and Enter sends the line.
+  await page.keyboard.type('x')
+  await expect(field).toHaveValue('fix')
+  await expect(row.locator('[data-confirm-stop]')).toHaveCount(0)
+  await page.keyboard.press('Enter')
+  await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line was typed' }).toContain('fix\n')
+  expect((await api.session(s.id)).status).not.toMatch(/exited|stopped/)
+})
+
 test('the list takes the keys: ↓ from the filter, J K move, Escape leaves; a digit answers the focused row alone; X asks, Enter opens, R the run', async ({ page, api, state }) => {
   // Two sessions asking: the page open on one, the other answered from its row by a digit.
   const a = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e keys a' })
@@ -610,11 +639,16 @@ test.describe('the full sidebar\'s width', () => {
     await expect.poll(() => width(page)).toBeCloseTo(665.6, 0)
   })
 
-  test('at the minimum the header, Launch agent, the filter and a pending update sit inside the sidebar', async ({ page, state }) => {
-    // The desktop app's bridge with an update ready: the header's widest, its update button beside Alerts and your menu.
+  /**
+   * The desktop app's bridge, with `ready` the update it holds ('' for none); `found` changes it as the app's check does, and
+   * tells the page, which asks again.
+   */
+  async function desktopApp(page: Page, state: { token: string; baseURL: string }, ready: string) {
     await page.addInitScript(
-      ({ token, url }) => {
-        ;(window as unknown as { conductorDesktop: unknown }).conductorDesktop = {
+      ({ token, url, ready }) => {
+        const w = window as unknown as { conductorDesktop: unknown; e2eReady: string; e2eFound?: () => void }
+        w.e2eReady = ready
+        w.conductorDesktop = {
           version: 'e2e',
           platform: 'linux',
           token: async () => token,
@@ -629,14 +663,29 @@ test.describe('the full sidebar\'s width', () => {
           allowIceFirewall: async () => 'unknown',
           versions: async () => ({ app: 'e2e', electron: '', node: '', chrome: '', server: '' }),
           onServerState: () => () => {},
-          update: async () => ({ ready: '0.7.0-rc.99', announce: false, failed: '' }),
-          onUpdate: () => () => {},
+          update: async () => ({ ready: w.e2eReady, announce: false, failed: '' }),
+          onUpdate: (cb: () => void) => {
+            w.e2eFound = cb
+            return () => {}
+          },
           onInvite: () => () => {},
           installUpdate: async () => 'gone',
         }
       },
-      { token: state.token, url: state.baseURL },
+      { token: state.token, url: state.baseURL, ready },
     )
+  }
+  async function found(page: Page, ready: string) {
+    await page.evaluate((ready) => {
+      const w = window as unknown as { e2eReady: string; e2eFound?: () => void }
+      w.e2eReady = ready
+      w.e2eFound?.()
+    }, ready)
+  }
+
+  test('at the minimum the header, Launch agent, the filter and a pending update sit inside the sidebar', async ({ page, state }) => {
+    // The desktop app's bridge with an update ready: the header's widest, its update button beside Alerts and your menu.
+    await desktopApp(page, state, '0.7.0-rc.99')
     await open(page)
     const root = page.locator('#dashboard-sidebar-main')
     await expect(root.locator('[data-header-update]')).toBeVisible()
@@ -652,6 +701,48 @@ test.describe('the full sidebar\'s width', () => {
     ]
     for (const part of parts) await fitsSidebar(page, part)
     expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
+  })
+
+  test('at the minimum, with an update pending, the name keeps the width it has without one; wider, the header is as it was (#604)', async ({ page, state }) => {
+    await desktopApp(page, state, '')
+    await open(page)
+    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+    const root = page.locator('#dashboard-sidebar-main')
+    const header = root.locator('[data-slot="header"]')
+    const name = header.locator('[data-sidebar-name]')
+    const mark = header.locator('[data-sidebar-mark]')
+    const shown = async () => (await name.boundingBox())?.width ?? 0
+    // Without an update: the mark, and as much of the name as the row leaves.
+    await expect(header.locator('[data-sidebar-menus]')).toBeVisible()
+    await expect(header.locator('[data-header-update]')).toHaveCount(0)
+    await expect(mark).toBeVisible()
+    const without = await shown()
+    expect(without).toBeGreaterThan(0)
+    const menus = header.locator('[data-sidebar-menus]')
+    const menusWithout = (await menus.boundingBox())!.width
+
+    // The app's check finds one: its button joins the header, and the name keeps at least that width, every part inside.
+    await found(page, '0.7.0-rc.99')
+    await expect(header.locator('[data-header-update]')).toBeVisible()
+    expect(await shown()).toBeGreaterThanOrEqual(without)
+    for (const part of ['[data-header-update]', '[data-header-alerts]', '[data-header-account]', '[data-sidebar-collapse]']) await fitsSidebar(page, header.locator(part))
+    expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
+
+    // As wide as the minimum plus what the update's button takes, the name has its width back with the mark beside it: the
+    // mark steps aside only below that.
+    const extra = (await menus.boundingBox())!.width - menusWithout
+    expect(extra).toBeGreaterThan(0)
+    await drag(page, [MIN + Math.ceil(extra)])
+    await expect.poll(() => width(page)).toBeCloseTo(MIN + Math.ceil(extra), 0)
+    await expect(mark).toBeVisible()
+    expect(await shown()).toBeGreaterThanOrEqual(without)
+
+    // Wider, the mark stays beside the name with the update pending, as it always did.
+    await drag(page, [300])
+    await expect.poll(() => width(page)).toBeCloseTo(300, 0)
+    await expect(mark).toBeVisible()
+    await expect(header.locator('[data-header-update]')).toBeVisible()
+    for (const part of ['[data-header-update]', '[data-header-alerts]', '[data-header-account]', '[data-sidebar-collapse]']) await fitsSidebar(page, header.locator(part))
   })
 })
 

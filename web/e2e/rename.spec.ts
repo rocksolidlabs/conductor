@@ -199,6 +199,49 @@ test("a save's reply after its dialog was dismissed leaves the dialog opened sin
   expect((await api.session(b.id)).name).toBe('e2e next draft')
 })
 
+test('the list changing under a dialog opened from its row takes no focus from it, and Escape closes it while it saves (#596)', async ({ page, api }) => {
+  const a = await launch(api, 'e2e rename under list')
+  // A's rename is held at the network, so the dialog is saving (its Rename button disabled) all through the test.
+  let arrived!: () => void
+  const held = new Promise<void>((r) => (arrived = r))
+  let release!: () => void
+  const released = new Promise<void>((r) => (release = r))
+  await page.route(`**/api/sessions/${a.id}`, async (route) => {
+    if (route.request().method() !== 'PATCH') return route.continue()
+    arrived()
+    await released
+    await route.continue()
+  })
+  await page.goto('/crews')
+  const { dialog, field, save } = await renameFromRow(page, a)
+  await field.fill('e2e renamed under list')
+  await save.click()
+  await held
+  // The Rename button had the focus and went disabled as it saves: the browser leaves the focus on the body, the dialog open.
+  await expect(save).toBeDisabled()
+  const focusIn = () => page.evaluate(() => (document.activeElement?.closest('[data-session-list]') ? 'list' : document.activeElement?.closest('[role="dialog"]') ? 'dialog' : 'body'))
+  expect(await focusIn()).not.toBe('list')
+  // The moment a loaded machine leaves (#596): the list still names A's row as the one its keys act on while the dialog is
+  // open. On a quiet machine the focus moving into the dialog clears it a tick later; here the row's focusin is the last the
+  // list hears, and it moves no focus itself.
+  const rowLink = page.locator(`[data-session-list] [data-sidebar-row="s:${a.id}"] a[href]`).first()
+  await rowLink.dispatchEvent('focusin')
+  expect(await focusIn()).not.toBe('list')
+  // The rows change under the dialog: a session launched elsewhere comes into the list. The list gives a re-rendered row
+  // the focus back once the new row is drawn, so by the time the row shows any refocus has happened.
+  const c = await launch(api, 'e2e rename list grows')
+  await expect(page.locator(`[data-session-list] [data-sidebar-row="s:${c.id}"]`).first()).toBeVisible()
+  expect(await focusIn()).not.toBe('list')
+  await expect(rowLink).not.toBeFocused()
+  // Escape reaches the dialog, not the list, and closes it while the save is still held.
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  const replied = page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().endsWith(`/api/sessions/${a.id}`))
+  release()
+  expect((await replied).status()).toBe(200)
+  await expect(page.locator(`[data-session-list] [data-sidebar-row="s:${a.id}"]`).first()).toContainText('e2e renamed under list')
+})
+
 test("Rename… on another session from the palette, over an open dialog, starts that dialog afresh on the other session", async ({ page, api }) => {
   const a = await launch(api, 'e2e rename over')
   const b = await launch(api, 'e2e rename under palette')
