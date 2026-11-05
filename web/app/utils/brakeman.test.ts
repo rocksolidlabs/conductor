@@ -81,6 +81,10 @@ describe('a ref, to its route and its label', () => {
     [`commit:${RUN}/${'a'.repeat(40)}`, `/runs/${RUN}`, 'commit aaaaaaaa'],
     [`file:${SESSION}//home/me/repo/main.go`, `/sessions/${SESSION}?tab=files&open=%2Fhome%2Fme%2Frepo%2Fmain.go`, 'main.go'],
     ['brief:br-7/2', '/brakeman?request=br-7#item-2', 'br-7, item 3'],
+    // DS2's records (PR-10): a plan revision on its ticket's page, a candidate on its run's Tasks view, a launch read from the API.
+    ['plan:CND-4/2', '/dispatch/CND/4', 'CND-4 plan r2'],
+    ['launch:0123456789abcdef', null, 'launch 01234567'],
+    [`candidate:${RUN}/build/3`, `/runs/${RUN}?view=tasks&task=build`, 'candidate build, attempt 3'],
   ]
   it.each(cases)('%s', (ref, route, label) => {
     expect(parseRef(ref)).not.toBeNull()
@@ -91,15 +95,15 @@ describe('a ref, to its route and its label', () => {
   it('covers every kind of ref the server names', () => {
     const src = readFileSync(new URL('../../../internal/brakeman/refs.go', import.meta.url), 'utf8')
     const kinds = [...src.matchAll(/\bRef[A-Z][a-z]+\s*=\s*"([a-z]+)"/g)].map((m) => m[1])
-    expect(kinds.length).toBe(15)
+    expect(kinds.length).toBe(18)
     expect([...new Set(cases.map(([ref]) => ref.slice(0, ref.indexOf(':'))))].sort()).toEqual([...kinds].sort())
   })
 
   it("opens a task's page on the Tasks view, as the server's refURL does, whatever view this browser chose last", () => {
     const src = readFileSync(new URL('../../../internal/api/brakeman_refs.go', import.meta.url), 'utf8')
-    expect(src).toContain('case brakeman.RefTask, brakeman.RefAttempt:')
+    expect(src).toContain('case brakeman.RefTask, brakeman.RefAttempt, brakeman.RefCandidate:')
     expect(src).toContain('return run + "?view=tasks&task=" + url.QueryEscape(ref.Task)')
-    for (const ref of [`task:${RUN}/build`, `attempt:${RUN}/build/2`, `check:${RUN}/build/2/unit/1`]) {
+    for (const ref of [`task:${RUN}/build`, `attempt:${RUN}/build/2`, `check:${RUN}/build/2/unit/1`, `candidate:${RUN}/build/2`]) {
       const u = new URL(refRoute(ref)!, 'http://x')
       expect(u.pathname).toBe(`/runs/${RUN}`)
       expect([...u.searchParams.entries()]).toEqual([['view', 'tasks'], ['task', 'build']])
@@ -126,6 +130,8 @@ describe('a ref, to its route and its label', () => {
     // GET /api/dispatch/ops/{opId} reads the admin's receipts only.
     expect(receiptPath('op:admin/abc.1')).toBe('/api/dispatch/ops/abc.1')
     expect(receiptPath('op:brakeman/abc.1')).toBeNull()
+    // A launch from a ticket: its summary and its package, the route the server's refURL names.
+    expect(receiptPath('launch:0123456789abcdef')).toBe('/api/dispatch/launches/0123456789abcdef')
     // A comment by the route its resolution names (its number is the server's), and only its own ticket's.
     expect(receiptPath('comment:CND-4/00112233aabbccdd', at('/api/dispatch/tickets/CND-4/comments?after=2&limit=1'))).toBe('/api/dispatch/tickets/CND-4/comments?after=2&limit=1')
     expect(receiptPath('comment:CND-4/00112233aabbccdd', at('/api/dispatch/tickets/CND-5/comments?after=2&limit=1'))).toBeNull()
@@ -136,6 +142,7 @@ describe('a ref, to its route and its label', () => {
     const src = readFileSync(new URL('../../../internal/api/brakeman_refs.go', import.meta.url), 'utf8')
     expect(src).toContain('"/attempts/" + strconv.Itoa(ref.N) + "/steps/" + esc(ref.Check) + "/" + strconv.Itoa(ref.K) + "/log"')
     expect(src).toContain('return "/api/runs/" + esc(ref.Run) + "/commands/" + esc(ref.Command)')
+    expect(src).toContain('return "/api/dispatch/launches/" + esc(ref.Launch)')
     expect(src).toContain('"/api/dispatch/tickets/" + url.PathEscape(key) + "/comments?after="')
   })
 
@@ -145,7 +152,7 @@ describe('a ref, to its route and its label', () => {
   })
 
   it('takes no ref the server would refuse', () => {
-    for (const bad of ['', 'run', 'run:', 'run:Nope-0a1b2c3d', `task:${RUN}`, `attempt:${RUN}/build/0`, `attempt:${RUN}/build/01`, 'session:0123', 'ticket:cnd-4', `file:${SESSION}/relative`, `file:${SESSION}//a/../b`, 'brief:br-1/100', 'brief:br-0/1', `run:${RUN}\n`, 'nope:x', `run:${'a'.repeat(600)}-0a1b2c3d`]) {
+    for (const bad of ['plan:CND-4', 'plan:CND-4/0', 'plan:cnd-4/1', 'launch:0123', `candidate:${RUN}/build`, `candidate:${RUN}/build/0`, '', 'run', 'run:', 'run:Nope-0a1b2c3d', `task:${RUN}`, `attempt:${RUN}/build/0`, `attempt:${RUN}/build/01`, 'session:0123', 'ticket:cnd-4', `file:${SESSION}/relative`, `file:${SESSION}//a/../b`, 'brief:br-1/100', 'brief:br-0/1', `run:${RUN}\n`, 'nope:x', `run:${'a'.repeat(600)}-0a1b2c3d`]) {
       expect(parseRef(bad), bad).toBeNull()
     }
     expect(parseRef('op:a/b/c.1')).toEqual({ kind: 'op', actor: 'a/b', op: 'c.1' })
@@ -371,5 +378,18 @@ describe('the display name a request and a make keep', () => {
     expect(displayBy('a'.repeat(58) + '😀')).toBe('a'.repeat(58))
     expect(displayBy('  Nate  ')).toBe('Nate')
     expect(displayBy('Na\tte\r\n')).toBe('Na te')
+  })
+})
+
+describe("DS2's records in a brief (PR-11)", () => {
+  it("group a draft plan revision with the other drafts", () => {
+    const items: BriefItem[] = [
+      { kind: 'fact/1', text: 'f', evidence: ['ticket:CND-4'] },
+      { kind: 'draft_plan/1', ticket: 'ticket:CND-4', crew: 'team' },
+    ]
+    expect(groupItems(items).map((g) => [g.group, g.items.map((x) => x.index)])).toEqual([
+      ['facts', [0]],
+      ['drafts', [1]],
+    ])
   })
 })

@@ -6,7 +6,8 @@ import { groupItems, provenance, readsWords } from '~/utils/brakeman'
  * A brief as Conductor renders it (docs/plans/brakeman.md, PR-6): the provenance line (the agent, its model and version, the
  * request, when it was kept), the title, Brakeman's reading (its summary, marked as its interpretation), then the items in their
  * groups: facts with their evidence as chips, interpretations naming the facts they read, decision cards and proposals with
- * Conductor's controls (PR-7), verified outcomes with their receipt, the drafts as forms the person makes work, handoff packages,
+ * Conductor's controls (PR-7), verified outcomes with their receipt, the drafts as forms the person makes work (a draft plan revision
+ * proposed through DS2's own route, PR-11), handoff packages,
  * and the comparison and evidence panels. Each item is anchored at `item-<index>`, where a `brief:` ref leads. The brief and its
  * refs are read once, as the brief is opened.
  */
@@ -70,6 +71,7 @@ const items = computed<BriefItem[]>(() => brief.value?.items ?? [])
           <BrakemanDecision v-else-if="x.item.kind === 'decision/1'" :item="x.item" :index="x.index" :refs="refs" />
           <BrakemanDraftTicket v-else-if="x.item.kind === 'draft_ticket/1'" :request="request" :item="x.item" :index="x.index" :items="items" :refs="refs" />
           <BrakemanDraftCrew v-else-if="x.item.kind === 'draft_crew/1'" :request="request" :item="x.item" :index="x.index" :refs="refs" />
+          <BrakemanDraftPlan v-else-if="x.item.kind === 'draft_plan/1'" :request="request" :item="x.item" :index="x.index" :refs="refs" />
           <BrakemanHandoff v-else-if="x.item.kind === 'handoff/1'" :item="x.item" :refs="refs" />
           <div v-else-if="x.item.kind === 'overlap/1'" class="flex flex-col gap-1" data-brief-overlap>
             <p class="font-mono text-xs">{{ x.item.paths.join(', ') }}</p>

@@ -68,6 +68,8 @@ export interface BrakemanMade {
   state: string
   key?: string
   crew?: string
+  /** A draft plan revision proposed: the revision's id (its ticket's key in `key`). */
+  plan?: string
   rev?: number
   why?: string
   /** When its claim was written (the server's time): a newer claim of the item replaces an older one. */
@@ -146,6 +148,24 @@ export type BriefItem =
   | { kind: 'evidence/1'; title: string; refs: string[] }
   | { kind: 'draft_ticket/1'; project: string; title: string; description?: string; acceptance?: string; priority?: number; blocks?: number[]; from?: string[] }
   | { kind: 'draft_crew/1'; crew: { name?: string } & Record<string, unknown>; gates?: Array<{ task: string; decision: string }>; from?: string[] }
+  | {
+      kind: 'draft_plan/1'
+      /** The ticket: ref it is for. */
+      ticket: string
+      /** A saved crew's id, one with tasks. */
+      crew: string
+      base?: string
+      /** A plan: ref of the same ticket, the revision it revises. */
+      basedOn?: string
+      references?: Array<{ path: string; start?: number; end?: number; note?: string }>
+      attachments?: string[]
+      /** comment: refs of the same ticket, handed over. */
+      comments?: string[]
+      constraints?: string
+      decisions?: Array<{ id: string; question: string; kind: string; before?: string[] }>
+      note?: string
+      from?: string[]
+    }
   | { kind: 'handoff/1'; objective: string; constraints?: string; decisions?: string[]; revision?: string; questions?: string[]; evidence?: string[] }
   | { kind: 'overlap/1'; paths: string[]; between: string[]; evidence?: string[] }
 
@@ -318,6 +338,7 @@ export interface ParsedRef {
   path?: string
   request?: string
   item?: number
+  launch?: string
 }
 
 const RUN = /^[a-z0-9][a-z0-9-]{0,63}-[0-9a-f]{8}$/
@@ -392,6 +413,17 @@ export function parseRef(s: string): ParsedRef | null {
       const item = num(p[1], 0)
       return p.length === 2 && REQUEST.test(p[0]!) && item !== undefined && item < 100 ? { kind, request: p[0], item } : null
     }
+    case 'plan': {
+      // plan:<KEY-n>/<revision>, the revision's number from 1 (DS2's records, PR-10).
+      const n = num(p[1], 1)
+      return p.length === 2 && TICKET.test(p[0]!) && n ? { kind, ticket: p[0], n } : null
+    }
+    case 'launch':
+      return p.length === 1 && HEX.test(p[0]!) ? { kind, launch: p[0] } : null
+    case 'candidate': {
+      const n = num(p[2], 1)
+      return p.length === 3 && RUN.test(p[0]!) && TASK.test(p[1]!) && n ? { kind, run: p[0], task: p[1], n } : null
+    }
   }
   return null
 }
@@ -423,6 +455,7 @@ export function refRoute(ref: string): string | null {
     case 'task':
     case 'attempt':
     case 'check':
+    case 'candidate':
       return `${run}?view=tasks&task=${encodeURIComponent(r.task!)}`
     case 'session':
     case 'question':
@@ -432,6 +465,8 @@ export function refRoute(ref: string): string | null {
     case 'ticket':
       return ticketPath(r.ticket!)
     case 'comment':
+    case 'plan':
+      // A plan revision on its ticket's page, whose Plan section lists the revisions.
       return ticketPath(r.ticket!)
     case 'brief':
       return `/brakeman?request=${encodeURIComponent(r.request!)}#item-${r.item}`
@@ -470,6 +505,9 @@ export function receiptPath(ref: string, resolution?: RefResolution): string | n
       return `/api/runs/${e(r.run!)}/commands/${e(r.command!)}`
     case 'op':
       return r.actor === 'admin' ? `/api/dispatch/ops/${e(r.op!)}` : null
+    case 'launch':
+      // A launch from a ticket, its summary and package (GET /api/dispatch/launches/{id}): its run's page is the chip's own (refPage).
+      return `/api/dispatch/launches/${e(r.launch!)}`
     case 'comment': {
       const u = resolution?.now.url
       return u?.startsWith(`/api/dispatch/tickets/${e(r.ticket!)}/comments?`) ? u : null
@@ -515,6 +553,12 @@ export function refLabel(ref: string, names: { session?: (id: string) => string 
       return r.path!.split('/').pop() || r.path!
     case 'brief':
       return `${r.request}, item ${r.item! + 1}`
+    case 'plan':
+      return `${r.ticket} plan r${r.n}`
+    case 'launch':
+      return `launch ${r.launch!.slice(0, 8)}`
+    case 'candidate':
+      return `candidate ${r.task}, attempt ${r.n}`
   }
   return ref
 }
@@ -533,7 +577,7 @@ export const ITEM_GROUPS: ReadonlyArray<{ group: string; title: string; kinds: r
   { group: 'decisions', title: 'Decisions', kinds: ['decision/1'] },
   { group: 'proposals', title: 'Proposals', kinds: ['proposal/1'] },
   { group: 'outcomes', title: 'Verified outcomes', kinds: ['outcome/1'] },
-  { group: 'drafts', title: 'Drafts', kinds: ['draft_ticket/1', 'draft_crew/1'] },
+  { group: 'drafts', title: 'Drafts', kinds: ['draft_ticket/1', 'draft_crew/1', 'draft_plan/1'] },
   { group: 'handoffs', title: 'Handoffs', kinds: ['handoff/1'] },
   { group: 'overlaps', title: 'Overlapping changes', kinds: ['overlap/1'] },
   { group: 'evidence', title: 'Evidence', kinds: ['comparison/1', 'evidence/1'] },

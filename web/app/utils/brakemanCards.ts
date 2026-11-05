@@ -1,7 +1,9 @@
 import type { RunInfo, RunTask, SessionInfo } from '~/composables/useSessions'
 import type { AttentionOption } from './protocol'
 import { liveAttention } from './attention'
+import type { PlanSummary } from '~/composables/useDispatch'
 import { parseRef, refRoute, type BrakemanEdge, type BrakemanMade, type BrakemanRequest, type BriefItem } from './brakeman'
+import { approvable, planReasons, revisionTag } from './dispatchPlans'
 import { taskActions, type TaskCommand } from './tasks'
 
 // A brief's decision cards and proposals as Conductor's controls (docs/plans/brakeman.md, "web/app: decision cards, drafts,
@@ -44,6 +46,15 @@ export type CardControls =
       words: string
     }
   | { kind: 'ticket'; to: string; words: string }
+  | {
+      kind: 'plan'
+      /** The ticket the revision is of, and its number: the card reads the revision's live record by them (DS2's own read). */
+      ticket: string
+      n: number
+      /** The ticket's page, whose Plan section is where the revision is decided as well. */
+      to: string
+      words: string
+    }
   | { kind: 'none'; to: string | null; words: string }
 
 /** A revision as a brief or a resolution carries it ("7"), as the number a command expects, or 0 for none. */
@@ -79,8 +90,36 @@ export function decisionControls(about: string, seen: string | undefined, live: 
     }
     case 'ticket':
       return { kind: 'ticket', to: refRoute(about)!, words: `Decide it on ${r.ticket}'s page.` }
+    case 'plan':
+      return { kind: 'plan', ticket: r.ticket!, n: r.n!, to: refRoute(about)!, words: `Revision ${r.n} of ${r.ticket}'s plan, as Dispatch holds it now.` }
   }
   return { kind: 'none', to: refRoute(about), words: 'This build has no control for what the card is about: open its page.' }
+}
+
+/**
+ * A plan revision's card control, from the revision's live record as DS2's own read gives it (null: not there, or not read yet): DS2's
+ * Approve, offered by DS2's own rule (approvable: a proposed or superseded revision, or an approved one whose only staleness an approval
+ * cures, never one whose agents changed), labelled Approve again for an approved one; or none, with what the revision is now. The
+ * approval is the operator's, made through DS2's own dialog and route: Brakeman never approves.
+ */
+export function planCardControl(p: Pick<PlanSummary, 'n' | 'state' | 'stale' | 'agentsChanged' | 'crewChanged' | 'crewName'> | null | undefined, ticket: string, n: number): { approve: 'Approve' | 'Approve again' | null; words: string } {
+  const tag = `${ticket} ${revisionTag(n)}`
+  if (!p) return { approve: null, words: `${tag} is not among ${ticket}'s revisions now: open the ticket.` }
+  const reasons = planReasons(p).map((r) => r.words)
+  if (approvable(p)) {
+    const again = p.state === 'approved'
+    return {
+      approve: again ? 'Approve again' : 'Approve',
+      words: again ? `${tag} is approved, but its approval no longer holds: ${reasons.join('; ')}. You approve it again, or not.` : `${tag} is ${p.state}. You, the operator, approve it or not: Brakeman never does.`,
+    }
+  }
+  switch (p.state) {
+    case 'approved':
+      return { approve: null, words: reasons.length ? `${tag} is approved, and its approval no longer holds: ${reasons.join('; ')}. Revise it on the ticket.` : `${tag} is approved, and its approval holds.` }
+    case 'withdrawn':
+      return { approve: null, words: `${tag} was withdrawn: nothing approves it now.` }
+  }
+  return { approve: null, words: `${tag} is ${p.state}${reasons.length ? `: ${reasons.join('; ')}` : ''}. Open the ticket to revise it.` }
 }
 
 /** The commands a task's card offers, by taskActions' rules, with the revision they carry. */
@@ -357,10 +396,11 @@ export function handoffTickets(h: Extract<BriefItem, { kind: 'handoff/1' }>): st
 }
 
 /** A made draft's state in words, from the request's `made` entry: made (with its key or crew), being made, refused, deleted. */
-export function madeWords(m: { state: string; key?: string; crew?: string; why?: string } | undefined): string {
+export function madeWords(m: { state: string; key?: string; crew?: string; plan?: string; why?: string } | undefined): string {
   if (!m) return ''
   switch (m.state) {
     case 'made':
+      if (m.plan) return `Proposed as a revision of ${m.key}'s plan, under your name: the operator approves it or not.`
       return m.key ? `Made as ${m.key}.` : m.crew ? `Saved as the crew ${m.crew}, not launched.` : 'Made.'
     case 'pending':
       return PENDING_ELSEWHERE
