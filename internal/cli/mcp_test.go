@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/api"
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
 
@@ -608,6 +609,43 @@ func TestBrakemansToolsOnlyInABrakemanSession(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("%d requests sent from a worker's session", hits.Load())
+	}
+}
+
+// brief_submit's schema, as tools/list sends it, tells a brief's shape:
+// each item kind of internal/brakeman's table a branch of the items'
+// oneOf, with its example, and an example brief; a draft crew's crew is
+// the body crew_create takes. The live check's agent read Conductor's
+// source to learn it from a schema of {"type":"object"}.
+func TestBriefSubmitsSchemaIsTheBriefsShape(t *testing.T) {
+	res, _ := mcpRun(t, brakemanEnv("http://127.0.0.1:1", "s1", "tok"), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)[0]["result"].(map[string]any)
+	var brief map[string]any
+	for _, x := range res["tools"].([]any) {
+		if tl := x.(map[string]any); tl["name"] == "brief_submit" {
+			brief = tl["inputSchema"].(map[string]any)["properties"].(map[string]any)["brief"].(map[string]any)
+		}
+	}
+	if brief == nil {
+		t.Fatal("no brief_submit")
+	}
+	branches := brief["properties"].(map[string]any)["items"].(map[string]any)["items"].(map[string]any)["oneOf"].([]any)
+	kinds := brakeman.ItemKinds()
+	if len(branches) != len(kinds) {
+		t.Fatalf("%d branches, %d kinds", len(branches), len(kinds))
+	}
+	for i, k := range kinds {
+		br := branches[i].(map[string]any)
+		props := br["properties"].(map[string]any)
+		if props["kind"].(map[string]any)["const"] != k.Kind || len(props) != len(k.Fields)+1 || len(br["examples"].([]any)) != 1 {
+			t.Errorf("branch %d: %v", i, br)
+		}
+	}
+	if ex := brief["examples"].([]any); len(ex) != 1 || ex[0].(map[string]any)["schema"] != brakeman.BriefSchema {
+		t.Errorf("the example brief: %v", brief["examples"])
+	}
+	crew := branches[8].(map[string]any)["properties"].(map[string]any)["crew"].(map[string]any)
+	if crew["properties"].(map[string]any)["members"] == nil || crew["additionalProperties"] != false {
+		t.Errorf("a draft crew's crew is not crew_create's body: %v", crew)
 	}
 }
 

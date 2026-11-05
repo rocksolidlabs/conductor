@@ -98,11 +98,27 @@ func TestGuideTextCarriesTheServersInputs(t *testing.T) {
 	}
 }
 
+// The briefs section reads as its words, a line each, then its JSON
+// Schema, compact: what an agent reading the guide tool learns of a
+// brief's shape.
+func TestGuideTextSaysABriefsShape(t *testing.T) {
+	raw := `{"guide":1,"version":"` + version.Version + `","commit":"c","section":"briefs","briefs":{"schema":"brakeman.brief/1",` +
+		`"words":["A brief is one JSON object.","fact/1: text, evidence."],"refs":[],"jsonSchema":{"type": "object", "examples": [{"items": []}]}}}`
+	text, err := guideText([]byte(raw), "how")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "A brief is one JSON object.\nfact/1: text, evidence.\n\n" + `Its JSON Schema, with an example brief: {"type":"object","examples":[{"items":[]}]}`
+	if text != want {
+		t.Fatalf("got\n%s\nwant\n%s", text, want)
+	}
+}
+
 // --json prints the server's reply as it is: one JSON document naming its
 // section, the server's version and the section's content.
 func TestGuideJSON(t *testing.T) {
 	a := newDispatchAPI(t)
-	for _, section := range []string{"", "operations", "limits", "host", "receipts", "providers"} {
+	for _, section := range []string{"", "operations", "limits", "host", "receipts", "providers", "briefs"} {
 		args := []string{"--server", a.hs.URL, "--token", dispatchToken, "--json"}
 		if section != "" {
 			args = append(args, "--section", section)

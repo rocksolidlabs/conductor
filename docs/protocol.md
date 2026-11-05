@@ -2236,8 +2236,8 @@ no_section` for a name not below, `400 invalid_request` for any other
 parameter. Every reply is `{guide: 1, version, commit, section, <section>:
 …}`, `version` and `commit` the server's build, the content under the
 section's own name; encoded with HTML escaping off and measured so: the
-overview at most 4 KiB, each section at most 64 KiB, the six at most 256
-KiB, which a test holds with every entry at its largest (a past bound is
+overview at most 4 KiB, each section at most 64 KiB, the seven at most
+256 KiB, which a test holds with every entry at its largest (a past bound is
 `500 guide_bound`, never a cut reply). The sections:
 
 - `overview`: `{caller: {kind, session?, kinds?, run?, member?, scopes},
@@ -2266,7 +2266,9 @@ KiB, which a test holds with every entry at its largest (a past bound is
   `run` (a command's `expectedRevision`) or `ticket` (Dispatch's
   `expectedRev`), absent for a route that takes none (a run's stop and
   resume); `bounds` in bytes. A tool's description is its MCP
-  `tools/list` entry's, at most 1 KiB, and is not repeated here. A route
+  `tools/list` entry's, at most 1 KiB, and is not repeated here; nor is
+  `brief_submit`'s `brief`, whose JSON Schema is the `briefs` section's
+  (and `tools/list`'s): its `input` here names that section instead. A route
   that needs self-service (`agents.selfService`: `form_crew`,
   `add_member`, `run_status`, `link`) is listed only with it on, never on
   a switchyard (whose sessions are all hosted), and for a session only
@@ -2302,6 +2304,20 @@ KiB, which a test holds with every entry at its largest (a past bound is
   read from their types.
 - `providers`: `{known: false, providers: []}` until the server names its
   registered providers (Program item C9).
+- `briefs`: `{schema: "brakeman.brief/1", words, refs: [{kind, form,
+  names, example}], jsonSchema}`, the same for every caller: a Brakeman
+  brief's shape, made from `internal/brakeman`'s kind table
+  (`kinds.go`), the one source of both. `words` says it in lines: the
+  brief's fields, the rules every brief keeps, then each item kind with
+  its fields (required or not, type, bound) and its rule, then the ref
+  forms. `jsonSchema` is `brief_submit`'s `brief` as `tools/list` gives
+  it: each kind a branch of `items`' `oneOf` with its fields'
+  `maxLength`, `minItems`, `maxItems`, `minimum`, `maximum` and
+  `pattern` where JSON Schema says them (a byte bound in its field's
+  `description`), an example item each, an example brief, and a draft
+  crew's `crew` as `crew_create`'s input. A test holds every field of
+  the table, at its bounds and one past them, to what the brief's check
+  takes.
 
 ### Crew runs
 
@@ -3436,7 +3452,8 @@ and, with an account set, the adapter's configuration folder variable
 session is ready (at most 300 bytes): `Brakeman request br-n (<kind>):
 read it with the brakeman_request tool or "conductor brakeman request",
 and submit one brief with brief_submit or "conductor brakeman brief".
-Call guide for what you may read.` One turn at a time; the slot is held
+Call guide for what you may read, its briefs section for a brief's
+shape.` One turn at a time; the slot is held
 until the launch has returned and every member's process is reaped (a
 stop that leaves a process is retried every 10 s; after six failed
 retries the desk takes no new request, `503 brakeman_stuck`, until a
@@ -3514,7 +3531,7 @@ that is not a turn's:
 | Route | Body and answer |
 |---|---|
 | `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}}}`: the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together. The admin's token reads it too; read with the session's own, it marks the request read |
-| `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed. The `opId` is looked up first: the same `opId` and brief answer `200` with the request whatever its state now, another brief `409 brief_exists`; so does a submission that overlapped the one kept (both checked before either was kept). Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` and why (a field past its bound is refused, never cut; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; all of it against the configuration as the brief is kept, a save meanwhile having it checked again (`409 stale_revision` when the configuration keeps changing); nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
+| `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed. The `opId` is looked up first: the same `opId` and brief answer `200` with the request whatever its state now, another brief `409 brief_exists`; so does a submission that overlapped the one kept (both checked before either was kept). Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` and why (a field past its bound is refused, never cut; a brief with no item is refused, and a briefing's with no `fact/1`; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0; the why names what is taken beside what was sent: an unknown item kind with every kind, an unknown field with the fields its object takes, a value of another type with its field's type, a ref of no kind with the ref forms); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; all of it against the configuration as the brief is kept, a save meanwhile having it checked again (`409 stale_revision` when the configuration keeps changing); nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
 
 **What a turn reads.** A request whose bearer is a turn's session token
 and whose `X-Conductor-Session` header names that session, its request
@@ -3604,9 +3621,9 @@ an answer with no item a ref names (a page of projects) among them.
 
 **A brief**, schema `brakeman.brief/1`, at most 256 KiB as kept: `{schema,
 title, summary, uncertainty?, items}`, `title` at most 200 characters,
-`summary` (Brakeman's reading) at most 4 KiB, `uncertainty` 2 KiB, at
-most 100 items and 500 distinct refs across them; no `asOf` (what it
-covers is the server's record). Each item is `{kind, …its fields}`:
+`summary` (Brakeman's reading) at most 4 KiB, `uncertainty` 2 KiB, 1 to
+100 items (a briefing's at least one `fact/1`) and at most 500 distinct
+refs across them; no `asOf` (what it covers is the server's record). Each item is `{kind, …its fields}`:
 `fact/1` (`text`, `evidence` 1 to 10 refs), `interpretation/1` (`text`,
 `facts`: indexes of the brief's facts), `proposal/1` (`text`, `op`,
 `target`, `args?`, `expectedRevision?`, `facts?`), `outcome/1` (`text`,
@@ -3615,7 +3632,8 @@ covers is the server's record). Each item is `{kind, …its fields}`:
 `uncertainty?`, `blocked?`, `authorizes`, `evidence`, `subjectRevision?`),
 `comparison/1`, `evidence/1`, `draft_ticket/1` (at most 20, their `blocks`
 without a cycle), `draft_crew/1`, `handoff/1` and `overlap/1`, each with
-the bounds `internal/brakeman` holds them to. Drafts need the `draft`
+the bounds `internal/brakeman` holds them to, which the guide's `briefs`
+section and `brief_submit`'s input schema give, field by field. Drafts need the `draft`
 permission and proposals and decisions `propose`.
 
 **Refs** name records: `run:<run>`, `task:<run>/<task>`,

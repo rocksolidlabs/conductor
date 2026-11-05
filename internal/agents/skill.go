@@ -221,7 +221,7 @@ there is nothing more to do about it.
 ## If you are Brakeman
 
 - CONDUCTOR_BRAKEMAN is set: this session is one Brakeman turn, answering one request.
-- Call guide first, then read the request: brakeman_request, or "${CONDUCTOR_BIN:-conductor}" brakeman request.
+- Call guide first (its briefs section gives a brief's kinds, fields and refs), then read the request: brakeman_request, or "${CONDUCTOR_BIN:-conductor}" brakeman request.
 - Read before you write: observe (or brakeman observe WHAT) reads what you may see.
 - Every fact cites the evidence refs it rests on; your reading stays apart from the facts.
 - Nothing you write becomes work; a person decides. A tool may ask a person first: wait.

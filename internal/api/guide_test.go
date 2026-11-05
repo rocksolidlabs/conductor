@@ -801,3 +801,67 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 		}
 	}
 }
+
+// jsonOf is v as encoding/json reads it back: maps, lists and numbers,
+// so two values built differently compare by what they say.
+func jsonOf(t *testing.T, v any) any {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out any
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// The briefs section is internal/brakeman's kind table, the same for the
+// admin and for a Brakeman turn: its words are brakeman.Words, its JSON
+// Schema brief_submit's input's brief (every item kind, a draft crew's
+// crew the body crew_create takes), its refs the ref forms. The
+// operations section points to it for the brief rather than carry the
+// schema twice; tools/list carries it whole. The live check's agent had
+// {"type":"object"} and read Conductor's source to learn a brief.
+func TestTheBriefsSectionIsTheKindTable(t *testing.T) {
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	id := b.briefing(t)
+	sid, tok, _ := b.turnSession(t, id)
+	ops := Operations()
+	submit := ops[slices.IndexFunc(ops, func(o Operation) bool { return o.Name == "brief_submit" })]
+	crewCreate := ops[slices.IndexFunc(ops, func(o Operation) bool { return o.Name == "crew_create" })]
+	schema := submit.Input["properties"].(map[string]any)["brief"]
+	if !reflect.DeepEqual(jsonOf(t, schema), jsonOf(t, brakeman.BriefJSONSchema(bodySchema(crewInput{})))) {
+		t.Fatal("brief_submit's brief is not the kind table's schema")
+	}
+	draftCrew := jsonOf(t, schema).(map[string]any)["properties"].(map[string]any)["items"].(map[string]any)["items"].(map[string]any)["oneOf"].([]any)[8].(map[string]any)
+	crewBody := draftCrew["properties"].(map[string]any)["crew"].(map[string]any)
+	delete(crewBody, "description")
+	if draftCrew["properties"].(map[string]any)["kind"].(map[string]any)["const"] != brakeman.ItemDraftCrew || !reflect.DeepEqual(crewBody, jsonOf(t, crewCreate.Input)) {
+		t.Fatalf("a draft crew's crew is not crew_create's input: %v", crewBody)
+	}
+	for _, c := range []struct{ tok, path string }{{adminToken, "/api/guide"}, {tok, "/api/sessions/" + sid + "/guide"}} {
+		status, _, out := guideOf(t, b.testEnv, c.tok, c.path+"?section=briefs")
+		if status != http.StatusOK {
+			t.Fatalf("%s: %d %v", c.path, status, out)
+		}
+		sec := out["briefs"].(map[string]any)
+		if sec["schema"] != brakeman.BriefSchema || !reflect.DeepEqual(sec["words"], jsonOf(t, brakeman.Words())) ||
+			!reflect.DeepEqual(sec["refs"], jsonOf(t, brakeman.RefForms())) || !reflect.DeepEqual(sec["jsonSchema"], jsonOf(t, schema)) {
+			t.Errorf("%s: the briefs section is not the table's: %v", c.path, sec)
+		}
+		_, _, out = guideOf(t, b.testEnv, c.tok, c.path+"?section=operations")
+		for _, op := range out["operations"].([]any) {
+			op := op.(map[string]any)
+			if op["name"] != "brief_submit" {
+				continue
+			}
+			brief := op["input"].(map[string]any)["properties"].(map[string]any)["brief"].(map[string]any)
+			if !strings.Contains(brief["description"].(string), "the guide's briefs section") || brief["properties"] != nil {
+				t.Errorf("%s: the operations section's brief_submit: %v", c.path, brief)
+			}
+		}
+	}
+}

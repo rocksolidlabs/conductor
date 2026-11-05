@@ -396,6 +396,11 @@ func (s *Server) checkBrief(r *http.Request, req brakeman.Request, raw json.RawM
 	if err != nil {
 		return brakeman.Brief{}, nil, 0, refused(err)
 	}
+	// A briefing answers with facts (the live check kept one of its
+	// summary alone).
+	if err := brakeman.CheckAnswers(b, req.Kind); err != nil {
+		return brakeman.Brief{}, nil, 0, refused(err)
+	}
 	if err := checkProposals(b); err != nil {
 		return brakeman.Brief{}, nil, 0, refused(err)
 	}

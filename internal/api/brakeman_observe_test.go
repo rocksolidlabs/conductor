@@ -762,6 +762,12 @@ func TestASeenRevisionIsKeptBesideNow(t *testing.T) {
 	}
 }
 
+// readFact is a fact citing ref, which a briefing's brief holds beside
+// what a test is about (a briefing answers with at least one fact).
+func readFact(ref string) map[string]any {
+	return map[string]any{"kind": brakeman.ItemFact, "text": "the turn read it", "evidence": []string{ref}}
+}
+
 // A decision about a ticket that names a revision other than the one the
 // turn read is refused, saying which it read.
 func TestAStaleSubjectRevisionIsRefused(t *testing.T) {
@@ -771,7 +777,7 @@ func TestAStaleSubjectRevisionIsRefused(t *testing.T) {
 	seen, _ := f.readOf(t, "ticket:"+f.ticket)
 	rec := 0
 	decision := func(rev string) map[string]any {
-		return map[string]any{"schema": brakeman.BriefSchema, "title": "A decision", "summary": "One to make.", "items": []any{map[string]any{
+		return map[string]any{"schema": brakeman.BriefSchema, "title": "A decision", "summary": "One to make.", "items": []any{readFact("ticket:" + f.ticket), map[string]any{
 			"kind": brakeman.ItemDecision, "about": "ticket:" + f.ticket, "happened": "the build failed", "whyHuman": "only you can say",
 			"question": "Fix it now?", "alternatives": []any{map[string]any{"label": "Now", "tradeoffs": "costs today"}, map[string]any{"label": "Later", "tradeoffs": "risks tomorrow"}},
 			"recommendation": rec, "authorizes": "a retry", "evidence": []string{"ticket:" + f.ticket}, "subjectRevision": rev,
@@ -1750,7 +1756,7 @@ func TestAChangesReadKeepsTheRevisionRead(t *testing.T) {
 	if rd, _ := f.readOf(t, "ticket:"+f.ticket); rd.Rev != "" {
 		t.Fatalf("the changes' line of the ticket: %+v", rd)
 	}
-	decision := map[string]any{"schema": brakeman.BriefSchema, "title": "A decision", "summary": "One to make.", "items": []any{map[string]any{
+	decision := map[string]any{"schema": brakeman.BriefSchema, "title": "A decision", "summary": "One to make.", "items": []any{readFact("ticket:" + f.ticket), map[string]any{
 		"kind": brakeman.ItemDecision, "about": "ticket:" + f.ticket, "happened": "the build failed", "whyHuman": "only you can say",
 		"question": "Fix it now?", "alternatives": []any{map[string]any{"label": "Now", "tradeoffs": "costs today"}, map[string]any{"label": "Later", "tradeoffs": "risks tomorrow"}},
 		"recommendation": 0, "authorizes": "a retry", "evidence": []string{"ticket:" + f.ticket}, "subjectRevision": seen.Rev,

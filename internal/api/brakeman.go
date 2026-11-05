@@ -813,7 +813,7 @@ func brakemanLabel(req brakeman.Request) string {
 // brakemanLine is the line typed into a turn's session once it is ready,
 // at most maxBrakemanLine bytes.
 func brakemanLine(req brakeman.Request) string {
-	return "Brakeman request " + req.ID + " (" + req.Kind + `): read it with the brakeman_request tool or "conductor brakeman request", and submit one brief with brief_submit or "conductor brakeman brief". Call guide for what you may read.`
+	return "Brakeman request " + req.ID + " (" + req.Kind + `): read it with the brakeman_request tool or "conductor brakeman request", and submit one brief with brief_submit or "conductor brakeman brief". Call guide for what you may read, its briefs section for a brief's shape.`
 }
 
 // turnCrew is the crew a turn launches: one member, the configured agent
