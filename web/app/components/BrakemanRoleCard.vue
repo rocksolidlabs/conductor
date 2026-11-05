@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import type { BrakemanRole, RoleLogRow } from '~/utils/brakeman'
-import { clockTime, pauseAction, retryWords, roleWords, rowWords } from '~/utils/brakemanRole'
+import { ReadOrder, clockTime, pauseAction, retryWords, roleWords, rowWords } from '~/utils/brakemanRole'
 
 /**
  * Brakeman's background role on the Brakeman page (docs/plans/brakeman.md, BK3, PR-15): its state in words (an unavailable role says
  * why and what tries again), Pause and Resume, its durable notes with Clear, and its log of wakes, newest first, each with its source,
  * what it was about, the batch it joined and the request that batch made. The role and its log are read again on each of its
- * `brakeman` events; nothing here takes the focus or moves the page when the role changes.
+ * `brakeman` events and after a reconnect (the store's snapshot moves roleSeq too); reads that overlap are taken newest only
+ * (ReadOrder); nothing here takes the focus or moves the page when the role changes.
  */
 const props = defineProps<{ windowSeconds?: number; background: boolean }>()
 
@@ -21,14 +22,18 @@ const problem = ref('')
 /** How many rows of the log the page shows. */
 const LOG_ROWS = 50
 
+const reads = new ReadOrder()
+
 async function read() {
+  const ticket = reads.begin()
   try {
     const out = await bk.role(LOG_ROWS)
+    if (!reads.current(ticket)) return
     role.value = out.role
     log.value = out.log
     problem.value = ''
   } catch (e) {
-    problem.value = (e as Error).message
+    if (reads.current(ticket)) problem.value = (e as Error).message
   }
 }
 
@@ -52,7 +57,9 @@ async function toggle() {
   if (!a) return
   busy.value = true
   try {
-    role.value = { ...(role.value ?? { state: '' }), ...(await bk.roleAction(a)) }
+    const ticket = reads.begin()
+    const out = await bk.roleAction(a)
+    if (reads.current(ticket)) role.value = { ...(role.value ?? { state: '' }), ...out }
     await read()
   } catch (e) {
     toast.add({ title: a === 'pause' ? 'Not paused' : 'Not resumed', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
