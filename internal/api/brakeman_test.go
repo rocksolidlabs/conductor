@@ -369,14 +369,7 @@ func TestTheTurnCarriesItsRequestAndAccount(t *testing.T) {
 func TestTheStampProbesTheVersionWhenTheCacheIsCold(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
-	var probed atomic.Int64
-	b.srv.probes.mu.Lock()
-	b.srv.probes.entries = map[string]probeEntry{}
-	b.srv.probes.run = func(context.Context, []string, agents.Probe, map[string]string) agents.ProbeResult {
-		probed.Add(1)
-		return agents.ProbeResult{Ran: true, Identified: true, Version: "2.1.318"}
-	}
-	b.srv.probes.mu.Unlock()
+	probed := b.coldProbe(t, "2.1.318")
 	b.enable(t, "bk", nil)
 	bk, _ := b.srv.Catalog().Get("bk")
 	if _, ok := b.srv.cachedIdentity(bk); ok {
@@ -394,6 +387,54 @@ func TestTheStampProbesTheVersionWhenTheCacheIsCold(t *testing.T) {
 	if id, ok := b.srv.cachedIdentity(bk); !ok || id.Version != "2.1.318" || b.desk.stamp(b.desk.mustConfig(t)).Version != "2.1.318" {
 		t.Fatalf("the cache after the turn's probe: %+v %v", id, ok)
 	}
+}
+
+// coldProbe empties the probe cache, as a restart leaves it, and has the
+// probe report version: the count is the probe's runs.
+func (b *bkEnv) coldProbe(t *testing.T, version string) *atomic.Int64 {
+	t.Helper()
+	var probed atomic.Int64
+	b.srv.probes.mu.Lock()
+	b.srv.probes.entries = map[string]probeEntry{}
+	b.srv.probes.run = func(context.Context, []string, agents.Probe, map[string]string) agents.ProbeResult {
+		probed.Add(1)
+		return agents.ProbeResult{Ran: true, Identified: true, Version: version}
+	}
+	b.srv.probes.mu.Unlock()
+	return &probed
+}
+
+// The version the cold cache's probe reports is written before the
+// member starts, so a request closed before the launch's return is
+// written (a cancel here; a brief or the member's end alike) keeps it,
+// and the return's write, its stray run, still lands: a closed request
+// takes no change of its agent, and a version written with the return
+// failed that whole write.
+func TestTheProbedVersionOutlastsACloseDuringTheLaunch(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.coldProbe(t, "2.1.318")
+	b.enable(t, "bk", nil)
+	held, release := b.gateLaunch(t)
+	id := b.briefing(t)
+	<-held
+	if r, err := b.desk.st.Get(id); err != nil || r.State != brakeman.StateStarting || r.Agent.Version != "2.1.318" {
+		t.Fatalf("before the launch's return: %+v %v", r, err)
+	}
+	out := b.expect(t, "POST", "/api/brakeman/requests/"+id+"/cancel", map[string]any{"opId": "c1"}, http.StatusOK, "")
+	if entityOf(t, out, "request")["state"] != brakeman.StateCancelled {
+		t.Fatalf("cancel %v", out)
+	}
+	release()
+	var r brakeman.Request
+	if !waitFor(30*time.Second, func() bool { r, _ = b.desk.st.Get(id); return r.StrayRun != "" }) {
+		t.Fatalf("the launch's return was never written: %+v", r)
+	}
+	if r.State != brakeman.StateCancelled || r.Agent.Version != "2.1.318" || r.RunID != r.StrayRun {
+		t.Fatalf("after the launch returned %+v", r)
+	}
+	b.runStopped(t, r.StrayRun)
+	b.slotFree(t)
 }
 
 // mustConfig is the desk's configuration as its store holds it.

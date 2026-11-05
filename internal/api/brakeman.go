@@ -754,10 +754,22 @@ func (d *brakemanDesk) launch(ctx context.Context, t *deskTurn, req brakeman.Req
 	// The stamp's version is the probe cache's, which is cold after a
 	// restart until some page lists the agents: the probe is run here
 	// then, as a launch's own check runs it, and its version written
-	// with the launch's return.
-	version := ""
+	// before the member starts, while the request is starting. A request
+	// closed after (a brief, the member's end, a cancel) takes no change
+	// of its agent, and one closed before the launch has no turn to
+	// stamp.
 	if req.Agent.Version == "" {
-		version = d.probedVersion(ctx, req.Agent.AgentID)
+		if version := d.probedVersion(ctx, req.Agent.AgentID); version != "" {
+			_, uerr := d.update(req.ID, func(r *brakeman.Request) error {
+				if r.State == brakeman.StateStarting && r.Agent.Version == "" && r.Agent.AgentID == req.Agent.AgentID {
+					r.Agent.Version = version
+				}
+				return nil
+			})
+			if uerr != nil && !errors.Is(uerr, errDeskClosing) {
+				d.s.log.Warn("Brakeman's turn's agent version could not be written", "request", req.ID, "err", uerr)
+			}
+		}
 	}
 	c, sha, err := d.turnCrew(req, cfg)
 	var run *crew.Run
@@ -781,9 +793,6 @@ func (d *brakemanDesk) launch(ctx context.Context, t *deskTurn, req brakeman.Req
 	stray := false
 	_, uerr := d.update(req.ID, func(r *brakeman.Request) error {
 		fill := func() {
-			if r.Agent.Version == "" && r.Agent.AgentID == req.Agent.AgentID {
-				r.Agent.Version = version
-			}
 			if r.RunID == "" {
 				r.RunID = runID
 			}
