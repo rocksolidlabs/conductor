@@ -705,7 +705,11 @@ func (s *Server) runAct(ctx context.Context, rec *replyRecorder, ds *dispatch.St
 // answer that carries the operation's receipt; refused with the route's
 // words for a refusal before the store kept one (4xx); nothing for a
 // failure of the server (5xx without a receipt), which leaves the entry
-// pending for a retry under the same opId or the recovery.
+// pending for a retry under the same opId or the recovery. The outcome
+// copied, the request's brakeman event is sent: the copy changes no state
+// of the request's, so update sends none, and a page holding the request
+// (its brief kept, or its slot given up, while the act ran) would show the
+// act pending for as long as it stays open.
 func (s *Server) copyActOutcome(d *brakemanDesk, request, opID string, rec *replyRecorder) {
 	state, receipt, why := actOutcome(rec)
 	if state == "" {
@@ -721,7 +725,9 @@ func (s *Server) copyActOutcome(d *brakemanDesk, request, opID string, rec *repl
 		return nil
 	}); err != nil {
 		s.log.Warn("a Brakeman act's outcome could not be copied: it stays pending for the recovery", "request", request, "opId", opID, "err", err)
+		return
 	}
+	d.publish(request)
 }
 
 // actOutcome is an act's state, receipt and words from its operation's
