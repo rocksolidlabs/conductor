@@ -170,6 +170,11 @@ type brakemanDesk struct {
 	recoveries   sync.WaitGroup
 	recoverCtx   context.Context
 	stopRecovery context.CancelFunc
+	// role is BK3's background role (brakeman_role.go), src what its
+	// sources noted since its last pass; roleDone says its loop ended.
+	role     *crew.Role
+	src      *roleSources
+	roleDone chan struct{}
 	// making counts the makes the make route admitted (admitMake), which
 	// release waits for before the owner lock goes: a make admitted before
 	// the desk closed finishes its backend's operation here, never beside
@@ -214,7 +219,7 @@ type deskTurn struct {
 // with start, once the server is made and listening. nil on a switchyard
 // and when the store cannot be opened.
 func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
-	d := &brakemanDesk{s: s, wake: make(chan struct{}, 1), done: make(chan struct{}), loopDone: make(chan struct{}), read: map[string]bool{}}
+	d := &brakemanDesk{s: s, wake: make(chan struct{}, 1), done: make(chan struct{}), loopDone: make(chan struct{}), roleDone: make(chan struct{}), read: map[string]bool{}}
 	d.recoverCtx, d.stopRecovery = context.WithCancel(context.Background())
 	now := time.Now
 	d.clock.Store(&now)
@@ -229,6 +234,7 @@ func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 		s.log.Warn("Brakeman takes no turn: its records are read-only", "why", why)
 	}
 	d.st = bs
+	d.openRole()
 	// A store that took the owner lock as it opened is owned from here:
 	// its queue, read below, is the records'. One that waits for the lock
 	// is owned once OnOwned's function has read the queue again, under
@@ -250,6 +256,7 @@ func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 		d.recovered.Store(true)
 		d.admit.Unlock()
 		d.poke()
+		d.role.Poke()
 	})
 	d.loadQueue()
 	if ownedAtOpen {
@@ -325,9 +332,13 @@ func (s *Server) StartBrakeman() {
 	}
 }
 
-// start starts the loop, once; never after the desk closed.
+// start starts the loop and the role's, once; never after the desk
+// closed.
 func (d *brakemanDesk) start() {
-	d.startOnce.Do(func() { go d.loop() })
+	d.startOnce.Do(func() {
+		go d.loop()
+		go d.roleLoop()
+	})
 }
 
 // now is the desk's clock.
@@ -358,8 +369,12 @@ func (d *brakemanDesk) quiesce(ctx context.Context) {
 	// finishes (release waits for it).
 	d.stopRecovery()
 	d.stopOnce.Do(func() { close(d.done) })
-	d.startOnce.Do(func() { close(d.loopDone) })
+	d.startOnce.Do(func() {
+		close(d.loopDone)
+		close(d.roleDone)
+	})
 	<-d.loopDone
+	<-d.roleDone
 	d.mu.Lock()
 	if t := d.turn; t != nil && t.cancel != nil {
 		t.cancel()
@@ -1340,6 +1355,10 @@ func (s *Server) routeBrakeman(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/brakeman/screen", s.observeRoute(s.handleBrakemanScreen))
 	mux.HandleFunc("GET /api/brakeman/overlaps", s.observeRoute(s.handleBrakemanOverlaps))
 	mux.HandleFunc("GET /api/brakeman/briefs", s.observeRoute(s.handleBrakemanBriefs))
+	mux.HandleFunc("GET /api/brakeman/role", s.requireAdmin(s.handleBrakemanRole))
+	mux.HandleFunc("POST /api/brakeman/role", s.requireAdmin(s.handleBrakemanRoleAction))
+	mux.HandleFunc("POST /api/brakeman/role/notes", s.requireAdmin(s.handleBrakemanKeepNote))
+	mux.HandleFunc("DELETE /api/brakeman/role/notes", s.requireAdmin(s.handleBrakemanClearNotes))
 	mux.HandleFunc("GET /api/sessions/{id}/brakeman/request", s.handleSessionBrakemanRequest)
 	mux.HandleFunc("POST /api/sessions/{id}/brakeman/brief", s.handleSessionBrakemanBrief)
 }
@@ -1358,6 +1377,10 @@ type brakemanState struct {
 	ReadOnly bool   `json:"readOnly,omitempty"`
 	Why      string `json:"why,omitempty"`
 	Stuck    bool   `json:"stuck,omitempty"`
+	// MinutesToday is the day's minutes charged; Role BK3's role as it
+	// stands, without its log (GET /api/brakeman/role).
+	MinutesToday int              `json:"minutesToday"`
+	Role         *crew.RoleRecord `json:"role,omitempty"`
 }
 
 // handleBrakeman answers {config, current, queue, turnsToday}: the
@@ -1406,6 +1429,14 @@ func (s *Server) handleBrakeman(w http.ResponseWriter, r *http.Request) {
 	if out.TurnsToday, err = d.st.TurnsToday(d.now()); err != nil {
 		s.brakemanError(w, err)
 		return
+	}
+	if out.MinutesToday, err = d.st.MinutesToday(d.now()); err != nil {
+		s.brakemanError(w, err)
+		return
+	}
+	if rec, err := d.role.Record(); err == nil {
+		rec.Log, rec.Notes = nil, nil
+		out.Role = &rec
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -1499,6 +1530,7 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.poke()
+	d.role.Poke()
 	out := map[string]any{"config": saved}
 	if warn := brakeman.Warnings(saved, brakemanFacts{s: s}); len(warn) > 0 {
 		out["warnings"] = warn
@@ -1535,10 +1567,25 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	if body.Kind == brakeman.KindWake {
+		writeError(w, http.StatusBadRequest, "invalid_request", "a wake request is the background role's own: ask another kind")
+		return
+	}
 	in := brakeman.Request{OpID: body.OpID, Kind: body.Kind, Subjects: body.Subjects, Note: body.Note, Since: body.Since, By: body.By}
 	if f := d.beforeAdmit.Load(); f != nil {
 		(*f)()
 	}
+	// A request kept is a person's own, which the background role logs
+	// (and which tries again for it when it is unavailable): told once
+	// admission's locks are let go, since the role's step takes them.
+	var asked string
+	defer func() {
+		if asked != "" {
+			if err := d.role.Asked(crew.RoleWake{Subject: asked}); err != nil && !errors.Is(err, errDeskClosing) {
+				s.log.Warn("Brakeman's role could not note a person's request", "request", asked, "err", err)
+			}
+		}
+	}()
 	// Brakeman on is read and the request kept in admission's order
 	// (admit), so a save that turns Brakeman off is before this ask, which
 	// is refused, or after it, and cancels it with the queue.
@@ -1601,6 +1648,7 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		d.queue = append(d.queue, req.ID)
 		d.publish(req.ID)
 		d.poke()
+		asked = req.ID
 	}
 	writeJSON(w, status, map[string]any{"request": req})
 }
@@ -1847,8 +1895,9 @@ func (f brakemanFacts) CheckCrew(body json.RawMessage) error {
 // you shows its questions by; CONDUCTOR_BRAKEMAN names the request, set
 // as Conductor's own names are, unfiltered; the account is the adapter's
 // ConfigDirEnv; and the session's CrewRef carries the brakeman mark from
-// its creation (quiet false until BK3's background turns); and the agent's
-// entry is the one the turn's arguments were made for (agentSHA256).
+// its creation, quiet for a wake request's turn (BK3's background role),
+// whose questions page no one; and the agent's entry is the one the
+// turn's arguments were made for (agentSHA256).
 func (s *Server) brakemanLaunch(spec crew.LaunchSpec, req *createSessionRequest, ref *session.CrewRef) *apiError {
 	if s.brakeman == nil {
 		return newAPIError(http.StatusServiceUnavailable, "store_unavailable", "Brakeman needs a data directory")
@@ -1884,7 +1933,13 @@ func (s *Server) brakemanLaunch(spec crew.LaunchSpec, req *createSessionRequest,
 		}
 		req.Env[ad.ConfigDirEnv] = account
 	}
-	ref.Brakeman = &session.BrakemanMark{Request: spec.Request}
+	quiet := false
+	if r, err := s.brakeman.st.Get(spec.Request); err != nil {
+		return newAPIError(http.StatusConflict, "not_the_turn", "the turn's request "+spec.Request+" could not be read")
+	} else {
+		quiet = r.Kind == brakeman.KindWake
+	}
+	ref.Brakeman = &session.BrakemanMark{Request: spec.Request, Quiet: quiet}
 	return nil
 }
 

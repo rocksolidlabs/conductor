@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -101,6 +102,11 @@ type turnRequest struct {
 	Visibility  brakeman.Visibility  `json:"visibility"`
 	Permissions brakeman.Permissions `json:"permissions"`
 	Budget      turnBudget           `json:"budget"`
+	// Batch is a wake request's batch, the wakes the turn is about, as
+	// the background role holds it (BK3); Notes the role's durable notes,
+	// what the person chose to keep, for every turn.
+	Batch *crew.Batch     `json:"batch,omitempty"`
+	Notes []crew.RoleNote `json:"notes,omitempty"`
 }
 
 // bothVisible is the visibility two configurations allow together.
@@ -176,6 +182,12 @@ func (s *Server) handleSessionBrakemanRequest(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		s.brakemanError(w, err)
 		return
+	}
+	if req.Batch != "" {
+		out.Batch = d.roleBatch(req.Batch)
+	}
+	if rec, err := d.role.Record(); err == nil {
+		out.Notes = rec.Notes
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"request": out})
 }

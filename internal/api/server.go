@@ -420,6 +420,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.scheduleRunSync(runID)
 		// Its record follows it from its launch on (the journal).
 		s.scheduleJournal(runID)
+		// Brakeman's background role reads it on its next pass.
+		if s.brakeman != nil {
+			s.brakeman.runChanged(runID)
+		}
 	}
 	// A run's chat reaches the browsers' unread counts the same way a session's does.
 	s.runs.OnRunChat = func(runID string, m session.ChatMessage) {

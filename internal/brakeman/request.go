@@ -3,6 +3,7 @@ package brakeman
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -46,8 +47,11 @@ type Request struct {
 	Edges     []Edge     `json:"edges,omitempty"`    // draft tickets' blocks
 	Acts      []Act      `json:"acts,omitempty"`     // BK2's acts, written pending before the operation runs
 	StrayRun  string     `json:"strayRun,omitempty"` // a run its launch returned after it closed, stopped then
-	Coverage  *Coverage  `json:"coverage,omitempty"` // the server's watermarks of what the turn read
-	ClosedAt  time.Time  `json:"closedAt,omitzero"`
+	// Batch is a wake request's batch (BK3's role, PR-14): the wakes the
+	// turn reads through its request, by the batch's id (wb-<n>).
+	Batch    string    `json:"batch,omitempty"`
+	Coverage *Coverage `json:"coverage,omitempty"` // the server's watermarks of what the turn read
+	ClosedAt time.Time `json:"closedAt,omitzero"`
 }
 
 // Stamp is the agent a turn ran: its id, its adapter, the probed version,
@@ -221,11 +225,17 @@ const (
 	KindLocate       = "locate"
 	KindOverlaps     = "overlaps"
 	KindAsk          = "ask"
+	// KindWake is BK3's role's request (PR-14): one batch of wakes, no
+	// subjects, made by the role alone, never asked by a person.
+	KindWake = "wake"
 )
 
-// Kinds is every kind a request may have in this build (wake arrives with
-// BK3's role).
+// Kinds is every kind a person may ask in this build; KindWake is the
+// role's alone.
 var Kinds = []string{KindBriefing, KindExplain, KindDecision, KindDraftTickets, KindProposeCrew, KindHandoff, KindLocate, KindOverlaps, KindAsk}
+
+// batchPattern is a wake batch's id.
+var batchPattern = regexp.MustCompile(`^wb-[1-9][0-9]{0,17}$`)
 
 // The states of a request (docs/plans/brakeman.md, Events, orderings and
 // invariants).
@@ -318,6 +328,7 @@ var subjectKinds = map[string]struct {
 	KindLocate:       {nil, 0, 0, true},
 	KindOverlaps:     {nil, 0, 0, false},
 	KindAsk:          {nil, 0, MaxSubjects, true},
+	KindWake:         {nil, 0, 0, false},
 }
 
 func invalidRequest(field, why string, a ...any) error {
@@ -355,6 +366,10 @@ func (r *Request) checkAsked() error {
 		return invalidRequest("since", "only a briefing starts at a time")
 	case len(r.By) > MaxBy || strings.ContainsAny(r.By, "\n\t"):
 		return invalidRequest("by", "one line of at most %d bytes", MaxBy)
+	case r.Kind == KindWake && !batchPattern.MatchString(r.Batch):
+		return invalidRequest("batch", "a wake request names its batch (wb-<n>)")
+	case r.Kind != KindWake && r.Batch != "":
+		return invalidRequest("batch", "only a wake request names a batch")
 	}
 	for i, s := range r.Subjects {
 		if sk.kinds != nil && !slices.Contains(sk.kinds, s.Kind) {
@@ -375,7 +390,7 @@ func (r *Request) checkAsked() error {
 
 // sameAsk reports whether two requests ask the same: an op id's repeat.
 func sameAsk(a, b Request) bool {
-	return a.Kind == b.Kind && slices.Equal(a.Subjects, b.Subjects) && a.Note == b.Note && a.Since.Equal(b.Since)
+	return a.Kind == b.Kind && slices.Equal(a.Subjects, b.Subjects) && a.Note == b.Note && a.Since.Equal(b.Since) && a.Batch == b.Batch
 }
 
 // checkEntries holds the request's lists to their bounds and the rest of
