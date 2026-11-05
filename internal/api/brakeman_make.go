@@ -720,7 +720,7 @@ func (s *Server) proposeAsOperator(ctx context.Context, pm planMake, op, by stri
 		if reply.Error != nil {
 			msg = reply.Error.Code + ": " + reply.Error.Message
 		}
-		return proposed{}, fmt.Errorf("Dispatch's propose route answered %d: %s", rec.status, msg)
+		return proposed{}, fmt.Errorf("the propose route of Dispatch answered %d: %s", rec.status, msg)
 	case rec.status >= 400:
 		why := "Dispatch refused the proposal"
 		if reply.Error != nil {
@@ -728,7 +728,7 @@ func (s *Server) proposeAsOperator(ctx context.Context, pm planMake, op, by stri
 		}
 		return proposed{why: why}, nil
 	case reply.Receipt == nil || reply.Receipt.Status != dispatch.StatusDone:
-		return proposed{}, fmt.Errorf("Dispatch's propose route answered %d with no receipt done", rec.status)
+		return proposed{}, fmt.Errorf("the propose route of Dispatch answered %d with no receipt done", rec.status)
 	}
 	p := proposed{done: true, plan: reply.Receipt.ID}
 	if reply.Plan != nil {
