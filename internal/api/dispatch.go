@@ -104,8 +104,9 @@ func (s *Server) routeDispatch(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sessions/{id}/ticket", s.launchingAny(s.handleSessionTicket))
 	mux.HandleFunc("POST /api/sessions/{id}/ticket/comments", s.launchingAny(s.handleSessionTicketComment))
 	// A run's candidates are the admin's, as its task routes are
-	// (candidates.go); the ledger is read, never Dispatch's store.
-	mux.HandleFunc("GET /api/runs/{run}/candidates", s.requireAdmin(s.handleRunCandidates))
+	// (candidates.go), and a Brakeman turn's shared read (readable); the
+	// ledger is read, never Dispatch's store.
+	mux.HandleFunc("GET /api/runs/{run}/candidates", s.readable("GET /api/runs/{run}/candidates", s.handleRunCandidates))
 }
 
 // dispatchRoutes is Dispatch's routes, as routeDispatch adds them.

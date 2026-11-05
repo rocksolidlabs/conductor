@@ -1921,7 +1921,7 @@ its run, and on no other.
 | `GET /api/switchyard/status` | admin | on a switchyard only (`404` elsewhere): the landing page's operator figures, `{hosts, sessions, viewers, relayBytesHour, hostList: [{name, since, sessions, viewers}]}`, the live hosted sessions grouped by the publishing host, earliest first, and the bytes the relay carried in the last sixty minutes |
 | `GET /api/whoami` | admin | OS user running the server (the default display name); `host` is the machine's name (`""` when it cannot tell) and `switchyard` whether this server launches nothing; `home` the server user's home directory, when it has one (the settings picker's Home); `version` the server's version, as `conductor version` prints it (Settings → The app) |
 | `GET /api/export` | admin (a switchyard's too) | the data directory as one zip archive (`docs/plans/ext.md`, C6), streamed as it is made, nothing buffered whole: `200` with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="conductor-export-<UTC time>.zip"` (`20060102T150405Z`). The archive holds `data/` as the data directory holds it (the catalog, the crews, the runs' records, a switchyard's `links/` (hashes, never tokens), `hooks/` and any other file) with the ledger's and Dispatch's databases as snapshots (`VACUUM INTO`, consistent while the server writes), the attachment files the Dispatch snapshot's live rows and launch pins require, and `conductor-export.json` last: `{format: 1, version, createdAt, files: [{path, size, sha256}], left: [{path, why}]}`. Left out, and listed with why: the workbench token and its lock, `restore.lock`, `runs/owner.lock`, `brakeman/owner.lock`, the databases' `-wal`, `-shm` and `-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`, `tls/`, `ext/`, anything not a regular file or a directory, and a name not of `[A-Za-z0-9._-]` elements. The catalog is resolved against the configuration the server runs with, so saved agents' env values, configured ones they inherit among them, are in it in full: the archive is the person's own file. The records are copied before the ledger's snapshot, and none written after their copy is taken, so a record may lag its ledger, never lead it. A failure before the first byte is `500 internal`; one after it cuts the archive short, with no manifest, which no restore takes, and aborts the response (the connection dropped, or the stream reset, never a whole `200`), so the client's transfer fails; `503 no_data_dir` for a server with none |
-| `GET /api/capabilities` | admin | what is registered beside the open-source feature set (`docs/plans/ext.md`, C9): `{providers: [{kind, name, state}]}`, one row per provider in each slot it holds (one value in two slots is two rows under one name), in the registry's order (the kinds `identity`, `decisions`, `context`, `notifications`, `sync`, `entitlements`, `media`, `runtime`, then a list's registration order); `state` is `ready` once the provider's start has succeeded (or it needs none) and `starting` until then, its start tried again and its slot answering the free default meanwhile. A plain build answers `{"providers": []}`. No provider is asked anything to answer it, and a row says nothing a caller could gate a feature on: the web app shows a capability that is there, never a plan (Settings → The app, its Extensions row, read again while a provider is `starting`, 2 s after the last reply doubling to a minute). At most a few KB (six one-value slots and two lists of at most 16). A kind added later joins as a row of its own, and a field a kind needs is added to the row, left out when empty |
+| `GET /api/capabilities` | admin | what is registered beside the open-source feature set (`docs/plans/ext.md`, C9): `{providers: [{kind, name, state}]}`, one row per provider in each slot it holds (one value in two slots is two rows under one name), in the registry's order (the kinds `identity`, `decisions`, `context`, `notifications`, `sync`, `entitlements`, `media`, `runtime`, then a list's registration order); `state` is `ready` once the provider's start has succeeded (or it needs none) and `starting` until then, its start tried again and its slot answering the free default meanwhile. A plain build answers `{"providers": []}`. No provider is asked anything to answer it, and a row says nothing a caller could gate a feature on: the web app shows a capability that is there, never a plan (Settings → The app, its Extensions row, read again while a provider is `starting`, 2 s after the last reply doubling to a minute). At most a few KB (six one-value slots and two lists of at most 16). A kind added later joins as a row of its own, and a field a kind needs is added to the row, left out when empty. The guide's `providers` section (Guide, below) carries the same rows to the admin and to a session's agent, which this route does not answer |
 | `GET /api/catalog` | admin | `{agents, hidden, yoloDefault}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog; each agent, here and in the replies of the catalog routes below, also carries `source` (`built-in`, `config` or `saved`) and, for a saved agent that replaces a built-in or configured one, `replaces` (where that one came from); `available`, whether `command[0]` resolves on the server (the check of `POST /api/catalog/check`; any program of that name on the server's `PATH` counts, and a relative `command[0]` with a path separator counts without a lookup, since it resolves in the session's directory, which the server's own cannot stand for; the answer is kept 30 s per program, and the programs with no fresh answer are looked up together, at most 8 lookups at a time across all requests; a lookup that does not answer within 2 s (a `PATH` entry on a mount that stalls), or before the client goes away, counts as available, so the launch of such an agent is allowed and its spawn fails if the program is missing, and the lookup's answer is kept when it lands); and `site` when the agent has a website (an `https` URL: a built-in's, or the saved agent's); each agent also carries, when it has them, its `yolo` recipe `{args?, env?}` (its `env` values shown as they are: switches, not secrets), its `trustPrompt` and its `session` recipe `{startArgs?, newId?, idFrom?, idPolicy?, resumeArgs?, idPattern?, resumeNeedsCwd?}` (limits below); `yoloDefault` is the server's `yolo` setting, which a launch or a crew without `yolo` follows; each agent whose adapter has an identity probe (the real agent's `--version` line, checked against what it prints: Claude Code and Codex verified live, the others from their docs until the nightly recipes job confirms them) and whose program the lookup found at an absolute path also carries `identity` `{ran, pending?, identified, impostor?, verified, name?, version?, output?, error?}`: the program on the server run with its version flag (argv only, a spartan environment, 3 s, 4 KiB), its answer kept 10 min; `identified` with `version` when it is the agent, `impostor` when it is a known other program of that name (the Go migrations tool called goose; the agent's `available` is then `false`: it is not offered, and `POST /api/sessions` refuses it), `output` the first line it printed otherwise, `pending` when the probe is still under way (ask again), `verified` whether the adapter's expectation was checked against the real CLI (a verified probe that matches nothing means the program is not the agent; an unverified one leaves it unidentified and refuses nothing); an agent with `probe: false` is not probed |
 | `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source`, `replaces` and `available` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter`, `signal`, `site`, `yolo`, `trustPrompt` or `session` takes those of the agent it replaces, and a `signal` without `workingTitle` the replaced agent's `workingTitle`, and `"yolo": {}` or `"session": {}` says it has none; `browser` (#436), the browser the agent's links open in, is `{name, profile?}`, `name` one of `chrome`, `edge`, `firefox`, `brave` and `safari`, `profile` a Chromium profile directory (`Default`, `Profile 2`) for `chrome`, `edge` and `brave` alone, at most 100 characters with no control character, quote or space at either end; left out it is the replaced agent's, and `"browser": {}` is the computer's default browser over it, as no `browser` is for an agent of its own (a config file's agents take it too, and the catalog shows it unmasked); `***` is rejected for a key neither has; `site`, when present, must be an `https://` URL with a host name, a valid port if it has one, no user info and no white space, at most 200 bytes, a rule that also holds for the config's agents and for `catalog.json`; `400 invalid_agent` carries the validation message, an unknown `adapter` or a bad `site` included (the adapter check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
@@ -2290,8 +2290,11 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
   page, the self-service crews and links, a brief's size, items, refs,
   title, summary and draft tickets, Brakeman's queue, a body.
 - `host`: `{os, arch, switchyard, managedCrews, selfService, ledger:
-  {state, why?}, dispatch: {state, why?}, checksMaxConcurrent, sessions?,
-  agents: [{id, name, adapter?, installed, version?}], moreAgents?}`;
+  {state, why?}, dispatch: {state, why?}, checksMaxConcurrent,
+  extensions, sessions?, agents: [{id, name, adapter?, installed,
+  version?}], moreAgents?}`; `extensions` the kinds of provider
+  `GET /api/capabilities` names, each once in its order (`[]` for a plain
+  build), for every caller;
   `state` is `owned` (the ledger) or `open` (Dispatch), `read_only` or
   `absent`, `why` (at most 500 bytes) and `sessions` (how many the server
   lists) for the admin alone; `agents` the catalog's, at most 64 with
@@ -2302,8 +2305,14 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
 - `receipts`: `[{name, about, fields: [{name, type, optional?}]}]`, the
   formats a caller meets (`brakeman`, a request's; `ledger`, `dispatch`),
   read from their types.
-- `providers`: `{known: false, providers: []}` until the server names its
-  registered providers (Program item C9).
+- `providers`: `{known: true, providers: [{kind, name, state}]}`, the
+  rows `GET /api/capabilities` answers (Program item C9), the same for
+  the admin and for a session: each registered provider's kind, name and
+  `state` (`ready`, or `starting` until its start has succeeded). A plain
+  build answers `{known: true, providers: []}`. The guide reads the
+  route's rows and nothing else of the providers, and decides nothing
+  from them: it names what is registered, never what a caller may do
+  because of it.
 - `briefs`: `{schema: "brakeman.brief/1", words, refs: [{kind, form,
   names, example}], jsonSchema}`, the same for every caller: a Brakeman
   brief's shape, made from `internal/brakeman`'s kind table
@@ -3509,10 +3518,10 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 | `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |
 | `GET /api/brakeman/requests/{id}/refs` | `{refs: [{ref, seen, now}]}`, each `{url?, state?, rev?, sha256?, at?}`: what the turn read of each ref of the brief (`state` `unobserved` for one it never read) and what it was as the brief was kept; `404 no_brief` before one; at most 4 MiB |
 | `POST /api/brakeman/requests/{id}/cancel` | `{opId}` → `{request}`; a closed request answers as it stands |
-| `POST /api/brakeman/requests/{id}/items/{i}/make` | `{opId, by?, edit?}` → `201 {request, made, ticket?: {key, url}, receipt?, crew?: {id, url}}`: a `draft_ticket/1` made a ticket through Dispatch's own create under the actor `admin` with `by` as the display name (its `blocks` become `blocks` relations once both ends are tickets, whichever is made first), a `draft_crew/1` a saved crew (never launched) carrying `origin: "brakeman:<request>/<item>/<op>"`; `edit` the draft as the person changed it, in the draft's own shape, else the draft as written. Its op id is derived (`bk` + 30 hex digits of a SHA-256 of the request, the item and the `opId`), so the backend answers a repeat once. The same `opId` again answers what it made (`200`), as it was made, whatever changed since (a crew's agent gone from the catalog); an
+| `POST /api/brakeman/requests/{id}/items/{i}/make` | `{opId, by?, edit?}` → `201 {request, made, ticket?: {key, url}, receipt?, crew?: {id, url}, plan?}`: a `draft_ticket/1` made a ticket through Dispatch's own create under the actor `admin` with `by` as the display name (its `blocks` become `blocks` relations once both ends are tickets, whichever is made first), a `draft_crew/1` a saved crew (never launched) carrying `origin: "brakeman:<request>/<item>/<op>"`, a `draft_plan/1` a proposed plan revision of its ticket through Dispatch's own propose route (`POST /api/dispatch/tickets/{key}/plans`, its replay, the crew, git and the store's checks) under the actor `admin` with `by` as the display name, `plan` the revision as the ticket's revisions list it and `made` carrying its `key` and `plan` (the revision's id): a revision proposed waits for the operator's approval (`POST /api/dispatch/plans/{id}/approve`, the operator's alone), never approved by the make, and its `basedOn` (a `plan:` ref of the same ticket) and `comments` (`comment:` refs of the same ticket) are sent by their ids, another ticket's `400 invalid_draft`; a refusal of the propose route (no such crew, one without tasks, a base that names no commit) settles the make refused; `edit` the draft as the person changed it, in the draft's own shape, else the draft as written. Its op id is derived (`bk` + 30 hex digits of a SHA-256 of the request, the item and the `opId`), so the backend answers a repeat once. The same `opId` again answers what it made (`200`), as it was made, whatever changed since (a crew's agent gone from the catalog), and asked while that make is still under way waits for it and answers its outcome, never running the backend beside it; an
 outcome's words are cut to the room its other fields leave in the entry's
 600 bytes, so recording an outcome is never refused and never leaves the
-claim pending; a new make is checked against the catalog now; `409 already_made` with `key` or `crew` for another `opId` once made; `409 make_pending` with the `opId` of a make under way; `409 op_conflict` for the same `opId` with other content; a refused make answers `409` with its receipt's words and may be made again with a new `opId`; `400 not_a_draft` for any other item, `400 invalid_draft` with `field`, `400 invalid_request` for a `by` past 60 bytes or holding a control character (Dispatch's display name); `404` for a request pruned before the make claimed it (no backend called); `503 brakeman_not_owner` on a server without Brakeman's owner lock; `503 shutting_down` once the server shuts down (a make under way then finishes before the owner lock goes, its outcome written by the next start); at most 4 MiB |
+claim pending; a new make is checked against the catalog now; `409 already_made` with `key` or `crew` for another `opId` once made; `409 make_pending` with the `opId` of a make under way; `409 op_conflict` for the same `opId` with other content; `409 make_superseded` (with `made`, the item's entry now) for the same `opId` asked again while its make was settled and the item claimed again under another `opId` or other content, nothing run for it; a refused make answers `409` with its receipt's words and may be made again with a new `opId`; `400 not_a_draft` for any other item, `400 invalid_draft` with `field`, `400 invalid_request` for a `by` past 60 bytes or holding a control character (Dispatch's display name); `404` for a request pruned before the make claimed it (no backend called); `503 brakeman_not_owner` on a server without Brakeman's owner lock; `503 shutting_down` once the server shuts down (a make under way then finishes before the owner lock goes, its outcome written by the next start); at most 4 MiB |
 
 The kinds and their subjects: `briefing` (none; `since`, else since the
 last complete briefing), `explain` (one `run:`, `task:`, `attempt:`,
@@ -3542,7 +3551,9 @@ existing reads, each answered by its own handler: `GET /api/runs`, `GET
 route `…/steps/{id}/{k}/log` with its `X-Conductor-Log-SHA256` (`logs`),
 `GET /api/dispatch/projects`, `…/tickets`, `…/tickets/{key}`,
 `…/history` and `…/comments` (`dispatch`), `GET /api/sessions`
-(`sessions`) and `GET /api/touched` (`touched`). The principal's answer
+(`sessions`) and `GET /api/touched` (`touched`), and DS2's records:
+`GET /api/dispatch/tickets/{key}/plans` (`dispatch`) and `GET
+/api/runs/{run}/candidates` (`runs`). The principal's answer
 is the route's own, filtered by the turn's grant (the scope and
 visibility it began under, intersected with the configuration now), each
 item carrying `ref`, the ref a brief cites it by; a class not visible is
@@ -3553,7 +3564,25 @@ route answered and after, the run held by the server with no change of
 it waiting for its commit), absent when a transition came between. A
 ticket's parent, children and relations' other ends outside the grant
 are `{id, key, withheld}`, no title or status; a ticket's history's
-changes each carry the `op:` ref of the operation that made them. Each answer counts one read against `readsPerTurn`
+changes each carry the `op:` ref of the operation that made them. A
+ticket's plan revisions, for a turn, are `{plans, approved?, holds,
+launches}`: each revision as the route answers it with its `plan:` ref
+(its state as the ref records it, `stale` for an approved one whose
+approval no longer holds), `approved` the newest approved revision's ref
+(absent for none), `holds` whether its approval still holds (`false`
+for none, or once the ticket's intent or a handed-over comment changed
+since it was approved), and `launches` the ticket's launches, newest
+first, at most 200, each `{ref, id, plan, runId?, state, why?, createdAt,
+createdBy, startedAt?, rev}` with its `launch:` ref and the `plan:` ref
+it launched, never its package. A deleted ticket's revisions and
+launches, which the route answers at the states its deletion left, carry
+`deleted: true`, `holds` `false`, and are noted `deleted` with no rev, as
+their `plan:` and `launch:` refs resolve. A run's candidates, for a turn, carry
+each candidate's `candidate:` ref (noted `standing` while it is its
+task's result, `withdrawn` once taken back, else its attempt's state, at
+the commit it submitted, a review's the commit it reviewed) and each
+receipt's `check:` ref, noted at its state, the commit and its log's
+SHA-256. Each answer counts one read against `readsPerTurn`
 (`429 reads_spent` past it) and its items are noted in the turn's read
 log (at most 5,000 entries and 2 MiB, the oldest dropped first). Every
 route keeps its own bound, and a turn's answer is at most 4 MiB as
@@ -3585,7 +3614,9 @@ Brakeman's own reads, the admin's and the principal's, each at most 256
 KiB (the guide's `observe_<what>` entries carry each read's `reply`
 bound: these 256 KiB; a shared read its route's own, a check's log 1
 MiB, a ticket's read and a page of its comments 3 MiB, a page of
-projects 128 KiB, and a turn's 4 MiB where the route states none):
+projects 128 KiB, and a turn's 4 MiB where the route states none, and
+for a ticket's plan revisions and a run's candidates, whose 1 MiB each
+the refs and launches a turn's answer gains may pass):
 
 | Route | Query and answer |
 |---|---|
@@ -3629,9 +3660,19 @@ refs across them; no `asOf` (what it covers is the server's record). Each item i
 `target`, `args?`, `expectedRevision?`, `facts?`), `outcome/1` (`text`,
 `receipt`: a `check:`, `command:` or `op:` ref), `decision/1` (`about`,
 `happened`, `whyHuman`, `question`, `alternatives` 2 to 6, `recommendation`,
-`uncertainty?`, `blocked?`, `authorizes`, `evidence`, `subjectRevision?`),
+`uncertainty?`, `blocked?`, `authorizes`, `evidence`, `subjectRevision?`;
+`about` a `question:`, `task:`, `ticket:` or `plan:` ref, a `plan:` one
+resolved to its revision's state and `rev` like any ref; the app's
+pages draw neither such a card's Approve nor a `draft_plan/1` yet, which
+come with the pages' part, #532),
 `comparison/1`, `evidence/1`, `draft_ticket/1` (at most 20, their `blocks`
-without a cycle), `draft_crew/1`, `handoff/1` and `overlap/1`, each with
+without a cycle), `draft_crew/1`, `draft_plan/1` (`ticket`, a `ticket:`
+ref; `crew`, a saved crew's id; `base?` at most 256 bytes; `basedOn?`, a
+`plan:` ref; `references?` at most 20 `{path, start?, end?, note?}`;
+`attachments?` at most 8 ids; `comments?` at most 20 `comment:` refs;
+`constraints?` 8 KiB; `decisions?` at most 10 `{id, question, kind:
+approval | clarification, before?}`; `note?` 4 KiB; `from?`: Dispatch's
+own bounds for a proposal), `handoff/1` and `overlap/1`, each with
 the bounds `internal/brakeman` holds them to, which the guide's `briefs`
 section and `brief_submit`'s input schema give, field by field. Drafts need the `draft`
 permission and proposals and decisions `propose`.
@@ -3641,8 +3682,16 @@ permission and proposals and decisions `propose`.
 `command:<run>/<command>`, `event:<run>/<seq>`, `message:<run>/<seq>`,
 `session:<id>`, `question:<session>/<question>`, `ticket:<KEY-n>`,
 `comment:<KEY-n>/<id>`, `op:<actor>/<opId>`, `commit:<run>/<sha>`,
-`file:<session>/<path>` and `brief:<br-n>/<item>`, each at most 512
-bytes, resolved as the brief is kept against the record it names.
+`file:<session>/<path>`, `brief:<br-n>/<item>`, and DS2's records:
+`plan:<KEY-n>/<revision>` (a ticket's plan revision by its number from
+1: its state, `stale` for an approved one whose approval no longer
+holds, and its `rev`), `launch:<id>` (a launch from an approved
+revision: its state and `rev`) and `candidate:<run>/<task>/<n>` (an
+attempt that submitted something: `standing`, `withdrawn` or its
+attempt's state, at the commit it submitted), each at most 512 bytes,
+resolved as the brief is kept against the record it names (a plan
+revision and a launch admitted by their ticket, as a ticket is; a
+candidate by its run).
 
 **The `brakeman` event.** After each change of a request's state the
 server sends `brakeman` on `GET /api/events`: `{id, state}`, at most 200

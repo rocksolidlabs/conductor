@@ -1003,7 +1003,7 @@ func filterTask(r *http.Request, o *observer, body []byte) ([]byte, error) {
 		b, _ := json.Marshal(ref)
 		am["ref"] = b
 		if raw, ok := am["steps"]; ok {
-			steps, err := stepRefs(o, raw, runID, taskID, ah.N)
+			steps, err := stepRefs(r.Context(), o, raw, runID, taskID, ah.N)
 			if err != nil {
 				return nil, err
 			}
@@ -1023,11 +1023,24 @@ func filterTask(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	return append(out, '\n'), err
 }
 
-// stepRefs is an attempt's receipts with their refs, each noted.
-func stepRefs(o *observer, raw json.RawMessage, runID, taskID string, n int) (json.RawMessage, error) {
+// stepRefs is an attempt's receipts with their refs, each noted at the
+// state its check: ref resolves to (checkState, read from the ledger's
+// row: a step's answer says no kill and no signal), its subject and its
+// log's SHA-256.
+func stepRefs(ctx context.Context, o *observer, raw json.RawMessage, runID, taskID string, n int) (json.RawMessage, error) {
 	var steps []json.RawMessage
 	if err := json.Unmarshal(raw, &steps); err != nil {
 		return nil, err
+	}
+	rows := map[string]ledger.CheckRow{}
+	if ld := o.rr.s.ledger; ld != nil && o.tp != nil && len(steps) > 0 {
+		list, err := ld.Checks(ctx, runID, taskID, n, false)
+		if err != nil {
+			return nil, fmt.Errorf("the ledger's checks of %s: %w", runID, err)
+		}
+		for _, row := range list {
+			rows[row.ID+"/"+strconv.Itoa(row.K)] = row
+		}
 	}
 	for i, st := range steps {
 		var sh struct {
@@ -1043,12 +1056,9 @@ func stepRefs(o *observer, raw json.RawMessage, runID, taskID string, n int) (js
 			return nil, err
 		}
 		ref := fmt.Sprintf("check:%s/%s/%d/%s/%d", runID, taskID, n, sh.ID, sh.K)
-		state := sh.State
-		switch {
-		case sh.State == ledger.CheckFinished && sh.TimedOut:
-			state = "timed_out"
-		case sh.State == ledger.CheckFinished && sh.Exit != nil:
-			state = "exit:" + strconv.Itoa(*sh.Exit)
+		state := stepState(sh.State, sh.Exit, sh.TimedOut)
+		if row, ok := rows[sh.ID+"/"+strconv.Itoa(sh.K)]; ok && row.State == sh.State {
+			state = checkState(row)
 		}
 		o.noteHashed(ref, brakeman.ClassRuns, state, sh.Subject, sh.LogSHA)
 		var err error
@@ -1057,6 +1067,18 @@ func stepRefs(o *observer, raw json.RawMessage, runID, taskID string, n int) (js
 		}
 	}
 	return marshalNoEscape(steps)
+}
+
+// stepState is a receipt's state as a check: ref records it (checkState):
+// timed out, or its exit once it finished, else its row's state.
+func stepState(state string, exit *int, timedOut bool) string {
+	switch {
+	case state == ledger.CheckFinished && timedOut:
+		return "timed_out"
+	case state == ledger.CheckFinished && exit != nil:
+		return "exit:" + strconv.Itoa(*exit)
+	}
+	return state
 }
 
 // filterSteps is GET …/attempts/{n}/steps for a turn.
@@ -1068,7 +1090,7 @@ func filterSteps(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, err
 	}
-	steps, err := stepRefs(o, in.Steps, r.PathValue("run"), r.PathValue("task"), n)
+	steps, err := stepRefs(r.Context(), o, in.Steps, r.PathValue("run"), r.PathValue("task"), n)
 	if err != nil {
 		return nil, err
 	}
@@ -1295,6 +1317,223 @@ func filterTicket(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	b, _ := json.Marshal("ticket:" + key)
 	m["ref"] = b
 	return refreshed(body, "ticket", m)
+}
+
+// filterPlans is GET /api/dispatch/tickets/{key}/plans for a turn (Program
+// item DS2): the ticket's plan revisions as the route answers them, each
+// with its plan: ref and noted at its state and rev; beside them the
+// approved revision's ref (approved, absent when none is), whether its
+// approval still holds (holds: false for none, or for one whose approval
+// the ticket's intent or a handed-over comment has moved past), and the
+// launches made from the ticket's revisions, newest first, each with its
+// launch: ref and the plan: ref it launched, noted at its state and rev.
+// A deleted ticket's (the route answers them; its deletion leaves their
+// states as they were) are noted deleted with no rev, as its plan: and
+// launch: refs resolve (lookupEvidence), its approval holds false, and
+// the answer says deleted: a brief citing them at once shows no change.
+func filterPlans(r *http.Request, o *observer, body []byte) ([]byte, error) {
+	key := r.PathValue("key")
+	var in struct {
+		Plans []json.RawMessage `json:"plans"`
+	}
+	if err := json.Unmarshal(body, &in); err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	deleted, err := ticketDeleted(r.Context(), o, key)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]json.RawMessage, 0, len(in.Plans))
+	approved, holds := "", false
+	for _, raw := range in.Plans {
+		var head struct {
+			N     int             `json:"n"`
+			State string          `json:"state"`
+			Stale json.RawMessage `json:"stale"`
+			Rev   int64           `json:"rev"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			return nil, err
+		}
+		stale := len(head.Stale) > 0 && string(head.Stale) != "null"
+		ref := fmt.Sprintf("plan:%s/%d", key, head.N)
+		state, rev := planRefState(head.State, stale), strconv.FormatInt(head.Rev, 10)
+		if deleted {
+			state, rev = refDeleted, ""
+		}
+		o.noteRef(ref, brakeman.ClassDispatch, state, rev)
+		if head.State == dispatch.PlanApproved && approved == "" {
+			// The list is newest first: a merge may leave more than one
+			// approved, and the newest is the one a launch takes.
+			approved, holds = ref, !stale && !deleted
+		}
+		if raw, err = withRef(raw, ref); err != nil {
+			return nil, err
+		}
+		out = append(out, raw)
+	}
+	m["plans"], _ = marshalNoEscape(out)
+	if approved != "" {
+		m["approved"], _ = json.Marshal(approved)
+	}
+	m["holds"], _ = json.Marshal(holds)
+	if deleted {
+		m["deleted"], _ = json.Marshal(true)
+	}
+	launches, err := planLaunches(r.Context(), o, key, deleted)
+	if err != nil {
+		return nil, err
+	}
+	m["launches"], _ = marshalNoEscape(launches)
+	b, err := marshalNoEscape(m)
+	return append(b, '\n'), err
+}
+
+// planLaunch is a launch from a ticket's plan revision as a turn reads it
+// beside the revisions: its ref, the revision it launched, its run and its
+// state, never its package (GET /api/dispatch/launches/{id} has it).
+type planLaunch struct {
+	Ref       string    `json:"ref"`
+	ID        string    `json:"id"`
+	Plan      string    `json:"plan"`
+	Run       string    `json:"runId,omitempty"`
+	State     string    `json:"state"`
+	Why       string    `json:"why,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	CreatedBy string    `json:"createdBy"`
+	StartedAt time.Time `json:"startedAt,omitzero"`
+	Rev       int64     `json:"rev"`
+}
+
+// ticketDeleted reports whether the ticket key is a tombstone in
+// Dispatch's store: false for a live one, none, or no store.
+func ticketDeleted(ctx context.Context, o *observer, key string) (bool, error) {
+	ds, err := o.rr.dispatch()
+	if err != nil || ds == nil {
+		return false, err
+	}
+	tk, err := ds.Ticket(ctx, key)
+	switch {
+	case errors.Is(err, dispatch.ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("the ticket %s: %w", key, err)
+	}
+	return !tk.DeletedAt.IsZero(), nil
+}
+
+// planLaunches is the ticket's launches, newest first, at most
+// dispatch.MaxLaunches, each noted at its state and rev, or deleted with
+// no rev for a deleted ticket's.
+func planLaunches(ctx context.Context, o *observer, key string, deleted bool) ([]planLaunch, error) {
+	out := []planLaunch{}
+	ds, err := o.rr.dispatch()
+	if err != nil || ds == nil {
+		return out, err
+	}
+	list, err := ds.Launches(ctx, key, 0)
+	switch {
+	case errors.Is(err, dispatch.ErrNotFound):
+		return out, nil
+	case err != nil:
+		return nil, fmt.Errorf("the launches of %s: %w", key, err)
+	}
+	for _, l := range list {
+		pl := planLaunch{Ref: "launch:" + l.ID, ID: l.ID, Plan: fmt.Sprintf("plan:%s/%d", key, l.PlanN), Run: l.RunID, State: l.State,
+			Why: l.Why, CreatedAt: l.CreatedAt, CreatedBy: l.CreatedBy, StartedAt: l.StartedAt, Rev: l.Rev}
+		state, rev := l.State, strconv.FormatInt(l.Rev, 10)
+		if deleted {
+			state, rev = refDeleted, ""
+		}
+		o.noteRef(pl.Ref, brakeman.ClassDispatch, state, rev)
+		out = append(out, pl)
+	}
+	return out, nil
+}
+
+// filterCandidates is GET /api/runs/{run}/candidates for a turn (Program
+// item DS2): each candidate as the route answers it, with its candidate:
+// ref, noted at its state and commit, and each of its receipts with its
+// check: ref, noted as a receipt read on an attempt's steps is (its
+// exit, the commit it ran against and its log's SHA-256).
+func filterCandidates(r *http.Request, o *observer, body []byte) ([]byte, error) {
+	runID := r.PathValue("run")
+	var in struct {
+		Candidates []json.RawMessage `json:"candidates"`
+	}
+	if err := json.Unmarshal(body, &in); err != nil {
+		return nil, err
+	}
+	tasks := make([]json.RawMessage, 0, len(in.Candidates))
+	for _, raw := range in.Candidates {
+		var tm map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &tm); err != nil {
+			return nil, err
+		}
+		var list []json.RawMessage
+		if err := json.Unmarshal(tm["candidates"], &list); err != nil {
+			return nil, err
+		}
+		for i, c := range list {
+			var head struct {
+				Task      string            `json:"task"`
+				Kind      string            `json:"kind"`
+				Attempt   int               `json:"attempt"`
+				Commit    string            `json:"commit"`
+				Start     string            `json:"start"`
+				State     string            `json:"state"`
+				Standing  bool              `json:"standing"`
+				Withdrawn bool              `json:"withdrawn"`
+				Receipts  []json.RawMessage `json:"receipts"`
+			}
+			if err := json.Unmarshal(c, &head); err != nil {
+				return nil, err
+			}
+			ref := fmt.Sprintf("candidate:%s/%s/%d", runID, head.Task, head.Attempt)
+			state, rev := candidateRefState(head.Kind, head.Standing, head.Withdrawn, head.State, head.Commit, head.Start)
+			o.noteRef(ref, brakeman.ClassRuns, state, rev)
+			var cm map[string]json.RawMessage
+			if err := json.Unmarshal(c, &cm); err != nil {
+				return nil, err
+			}
+			receipts := make([]json.RawMessage, 0, len(head.Receipts))
+			for _, rc := range head.Receipts {
+				var rh candidateReceipt
+				if err := json.Unmarshal(rc, &rh); err != nil {
+					return nil, err
+				}
+				cref := fmt.Sprintf("check:%s/%s/%d/%s/%d", runID, head.Task, head.Attempt, rh.ID, rh.K)
+				// The receipt's row, as checkState reads it.
+				row := ledger.CheckRow{State: rh.State, TimedOut: rh.TimedOut, Killed: rh.Killed, Signal: rh.Signal}
+				if rh.Exit != nil {
+					row.Exit = *rh.Exit
+				}
+				o.noteHashed(cref, brakeman.ClassRuns, checkState(row), rev, rh.LogSHA256)
+				rc, err := withRef(rc, cref)
+				if err != nil {
+					return nil, err
+				}
+				receipts = append(receipts, rc)
+			}
+			cm["receipts"], _ = marshalNoEscape(receipts)
+			cm["ref"], _ = json.Marshal(ref)
+			var err error
+			if list[i], err = marshalNoEscape(cm); err != nil {
+				return nil, err
+			}
+		}
+		tm["candidates"], _ = marshalNoEscape(list)
+		t, err := marshalNoEscape(tm)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return refreshed(body, "candidates", tasks)
 }
 
 // withheldTicket is a related ticket outside the grant as a ticket's read
@@ -2265,6 +2504,11 @@ var brakemanReads = []sharedRead{
 	{"GET /api/dispatch/tickets/{key}", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterTicket}, MaxTicketReply},
 	{"GET /api/dispatch/tickets/{key}/history", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterHistory}, 0},
 	{"GET /api/dispatch/tickets/{key}/comments", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterComments}, MaxTicketReply},
+	// DS2's records: a ticket's plan revisions with its launches, and a
+	// run's candidates with their receipts. Each route's own bound with
+	// the refs a turn's answer gains is under the turn's (maxTurnReply).
+	{"GET /api/dispatch/tickets/{key}/plans", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterPlans}, 0},
+	{"GET /api/runs/{run}/candidates", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterCandidates}, 0},
 	{"GET /api/sessions", readSpec{class: brakeman.ClassSessions, filter: filterSessions}, 0},
 	{"GET /api/touched", readSpec{class: brakeman.ClassTouched, filter: filterTouched}, 0},
 }

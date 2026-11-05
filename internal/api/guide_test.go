@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/local"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
@@ -264,6 +266,11 @@ func TestEachSectionIsBounded(t *testing.T) {
 		for i := range h.Agents {
 			h.Agents[i].Version = worst(64)
 		}
+		// C9's fullest reply, every provider starting, in both sections
+		// that name it.
+		caps := fullestCapabilities(t)
+		h.Extensions = extensionKinds(caps)
+		content["providers"] = guideProvidersOf(caps)
 		content["host"] = h
 		replies, err := encodeGuide(c, content)
 		if err != nil {
@@ -415,16 +422,125 @@ func TestASwitchyardAnswersItsOwnGuide(t *testing.T) {
 	}
 }
 
-// Until the server names its providers (Program item C9), the guide says
-// it does not know them, for the admin and for a session.
-func TestProvidersAreUnknownBeforeC9(t *testing.T) {
+// guideProvidersAndHost reads the providers and host sections of the
+// guide at path with token: their content, decoded as a reader would,
+// refusing a field the providers section does not have.
+func guideProvidersAndHost(t *testing.T, e *testEnv, token, path string) (guideProviders, []string) {
+	t.Helper()
+	status, raw, _ := guideOf(t, e, token, path+"?section=providers")
+	if status != http.StatusOK {
+		t.Fatalf("%s providers: %d %s", path, status, raw)
+	}
+	var reply struct {
+		Guide     int            `json:"guide"`
+		Version   string         `json:"version"`
+		Commit    string         `json:"commit"`
+		Section   string         `json:"section"`
+		Providers guideProviders `json:"providers"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&reply); err != nil {
+		t.Fatalf("%s providers %s: %v", path, raw, err)
+	}
+	if reply.Providers.Providers == nil {
+		t.Fatalf("%s providers %s: no list", path, raw)
+	}
+	status, raw, _ = guideOf(t, e, token, path+"?section=host")
+	if status != http.StatusOK {
+		t.Fatalf("%s host: %d %s", path, status, raw)
+	}
+	var host struct {
+		Host struct {
+			Extensions []string `json:"extensions"`
+		} `json:"host"`
+	}
+	if err := json.Unmarshal(raw, &host); err != nil || host.Host.Extensions == nil {
+		t.Fatalf("%s host %s: no extensions (%v)", path, raw, err)
+	}
+	return reply.Providers, host.Host.Extensions
+}
+
+// A plain build's guide knows its providers, and there are none: the
+// providers section is {known: true, providers: []} and the host's
+// extensions [], for the admin and for a session, as GET
+// /api/capabilities answers {"providers": []}.
+func TestAnEmptyRegistryIsKnownAndEmpty(t *testing.T) {
 	e := newTestEnv(t, nil)
+	e.srv.StartExtensions(t.Context())
 	sid := e.createSession("cat")
+	if code, body := getCapabilities(t, e, adminToken); code != http.StatusOK || strings.TrimSpace(body) != `{"providers":[]}` {
+		t.Fatalf("the capabilities: %d %s", code, body)
+	}
 	for path, tok := range map[string]string{"/api/guide": adminToken, "/api/sessions/" + sid + "/guide": e.agentToken(sid)} {
 		status, raw, _ := guideOf(t, e, tok, path+"?section=providers")
-		if status != http.StatusOK || !strings.Contains(string(raw), `"providers":{"known":false,"providers":[]}`) {
+		if status != http.StatusOK || !strings.Contains(string(raw), `"providers":{"known":true,"providers":[]}`) {
 			t.Fatalf("%s: %d %s", path, status, raw)
 		}
+		if _, kinds := guideProvidersAndHost(t, e, tok, path); len(kinds) != 0 {
+			t.Fatalf("%s: a plain build's host names the extensions %q", path, kinds)
+		}
+	}
+}
+
+// The guide's providers section is GET /api/capabilities's rows, the
+// same for the admin and for a session, each provider's kind, name and
+// state (one still starting said so, then ready once its Start
+// succeeded, with no restart), and the host names their kinds, each
+// once. The providers are package-local fakes of these tests: a value in
+// two slots whose first Start fails (cloudSlots) and an entitlement
+// source with no Start (plansOnly), which the guide names by kind and
+// name and asks nothing.
+func TestTheGuideListsC9sProviders(t *testing.T) {
+	cloud := &cloudSlots{}
+	p := ext.Providers{
+		Identity: cloud, Media: cloud,
+		All: []ext.Entry{
+			{Kind: ext.KindIdentity, Name: "cloud", Value: cloud},
+			{Kind: ext.KindEntitlements, Name: "plans", Value: plansOnly{}},
+			{Kind: ext.KindMedia, Name: "cloud", Value: cloud},
+		},
+	}
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, WithExtensions(local.Fill(p)))
+	clock := newFakeClock(e.srv)
+	sid := e.createSession("cat")
+	paths := map[string]string{"/api/guide": adminToken, "/api/sessions/" + sid + "/guide": e.agentToken(sid)}
+	check := func(when, cloudState string) {
+		t.Helper()
+		code, body := getCapabilities(t, e, adminToken)
+		if code != http.StatusOK {
+			t.Fatalf("%s: the capabilities %d %s", when, code, body)
+		}
+		rows := capabilityRows(t, body)
+		want := []capabilityRow{
+			{Kind: ext.KindIdentity, Name: "cloud", State: cloudState},
+			{Kind: ext.KindEntitlements, Name: "plans", State: "ready"},
+			{Kind: ext.KindMedia, Name: "cloud", State: cloudState},
+		}
+		if !reflect.DeepEqual(rows, want) {
+			t.Fatalf("%s: the capabilities %+v, want %+v", when, rows, want)
+		}
+		for path, tok := range paths {
+			got, kinds := guideProvidersAndHost(t, e, tok, path)
+			if !got.Known || !reflect.DeepEqual(got.Providers, rows) {
+				t.Fatalf("%s: %s's providers %+v, want known and %+v", when, path, got, rows)
+			}
+			if want := []string{ext.KindIdentity, ext.KindEntitlements, ext.KindMedia}; !reflect.DeepEqual(kinds, want) {
+				t.Fatalf("%s: %s's host extensions %q, want %q", when, path, kinds, want)
+			}
+		}
+	}
+	check("before the first Start", "starting")
+	e.srv.StartExtensions(t.Context())
+	clock.next(t, ext.StartWait)
+	backoff := clock.next(t, extStartFirst)
+	check("after a Start that failed", "starting")
+	backoff.fire <- time.Now()
+	clock.next(t, ext.StartWait)
+	waitState(t, e.srv, "cloud", extStarted)
+	check("once a Start succeeded", "ready")
+	if n := cloud.starts.Load(); n != 2 {
+		t.Fatalf("cloud was started %d times, want 2: the guide asks a provider nothing", n)
 	}
 }
 
@@ -843,6 +959,17 @@ func TestTheBriefsSectionIsTheKindTable(t *testing.T) {
 	delete(crewBody, "description")
 	if draftCrew["properties"].(map[string]any)["kind"].(map[string]any)["const"] != brakeman.ItemDraftCrew || !reflect.DeepEqual(crewBody, jsonOf(t, crewCreate.Input)) {
 		t.Fatalf("a draft crew's crew is not crew_create's input: %v", crewBody)
+	}
+	// A draft plan's crew is a saved crew's id, as DraftPlan decodes it:
+	// never the body crew_create takes.
+	for _, b := range jsonOf(t, schema).(map[string]any)["properties"].(map[string]any)["items"].(map[string]any)["items"].(map[string]any)["oneOf"].([]any) {
+		props := b.(map[string]any)["properties"].(map[string]any)
+		if props["kind"].(map[string]any)["const"] != brakeman.ItemDraftPlan {
+			continue
+		}
+		if c := props["crew"].(map[string]any); c["type"] != "string" || c["properties"] != nil {
+			t.Fatalf("a draft plan's crew in brief_submit's schema: %v", c)
+		}
 	}
 	for _, c := range []struct{ tok, path string }{{adminToken, "/api/guide"}, {tok, "/api/sessions/" + sid + "/guide"}} {
 		status, _, out := guideOf(t, b.testEnv, c.tok, c.path+"?section=briefs")

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/store"
@@ -46,6 +47,33 @@ const (
 	MaxPathRef     = MaxPath
 )
 
+// A draft plan revision's bounds, Dispatch's own for a proposal
+// (internal/dispatch: MaxPlanReferences, MaxReferencePath,
+// MaxReferenceNote, MaxPlanAttachments, MaxPlanComments,
+// MaxPlanConstraints, MaxPlanDecisions, MaxDecisionQuestion,
+// MaxDecisionBefore, MaxPlanNote; internal/api's maxPlanBase), written
+// here since this package imports neither (internal/api's tests hold
+// them equal): a draft within them is one the propose route takes the
+// shape of.
+const (
+	MaxDraftPlanBase        = 256
+	MaxDraftPlanReferences  = 20
+	MaxDraftReferencePath   = 1024
+	MaxDraftReferenceNote   = 200 // characters
+	MaxDraftReferenceLine   = 1 << 24
+	MaxDraftPlanAttachments = 8
+	MaxDraftPlanComments    = 20
+	MaxDraftPlanConstraints = 8 << 10
+	MaxDraftPlanDecisions   = 10
+	MaxDraftDecisionAsk     = 500 // characters
+	MaxDraftDecisionBefore  = 8
+	MaxDraftPlanNote        = 4 << 10
+)
+
+// The kinds of a draft plan revision's decision, Dispatch's
+// (DecisionApproval, DecisionClarification).
+var draftDecisionKinds = []string{"approval", "clarification"}
+
 // The kinds of an item.
 const (
 	ItemFact           = "fact/1"
@@ -57,6 +85,7 @@ const (
 	ItemEvidence       = "evidence/1"
 	ItemDraftTicket    = "draft_ticket/1"
 	ItemDraftCrew      = "draft_crew/1"
+	ItemDraftPlan      = "draft_plan/1"
 	ItemHandoff        = "handoff/1"
 	ItemOverlap        = "overlap/1"
 )
@@ -75,6 +104,7 @@ type Item struct {
 	Evidence       *EvidencePanel
 	DraftTicket    *DraftTicket
 	DraftCrew      *DraftCrew
+	DraftPlan      *DraftPlan
 	Handoff        *Handoff
 	Overlap        *Overlap
 }
@@ -113,7 +143,7 @@ type Outcome struct {
 // Decision is a decision card. Conductor renders its controls from the
 // live record of About, never from these fields.
 type Decision struct {
-	About           Ref           `json:"about"` // a question:, task: or ticket: ref
+	About           Ref           `json:"about"` // a question:, task:, ticket: or plan: ref
 	Happened        string        `json:"happened"`
 	WhyHuman        string        `json:"whyHuman"`
 	Question        string        `json:"question"`              // at most 500 bytes
@@ -170,6 +200,45 @@ type DraftCrew struct {
 	From  []Ref           `json:"from,omitempty"`
 }
 
+// DraftPlan is a plan revision a person may propose for a ticket
+// (Program item DS2): a saved crew with tasks, the inputs handed over and
+// the decisions a person will make. A person proposes it through
+// Dispatch's own propose route under the actor admin, and the operator
+// alone approves it; Brakeman does neither.
+type DraftPlan struct {
+	Ticket      Ref              `json:"ticket"`                // the ticket: ref it is for
+	Crew        string           `json:"crew"`                  // a saved crew's id, one with tasks
+	Base        string           `json:"base,omitempty"`        // a branch, a tag, HEAD or a commit; HEAD when empty
+	BasedOn     *Ref             `json:"basedOn,omitempty"`     // a plan: ref of the ticket's, the revision it revises
+	References  []DraftReference `json:"references,omitempty"`  // at most 20
+	Attachments []string         `json:"attachments,omitempty"` // the ticket's attachments' ids, at most 8
+	Comments    []Ref            `json:"comments,omitempty"`    // comment: refs of the ticket's, at most 20
+	Constraints string           `json:"constraints,omitempty"` // Markdown, at most 8 KiB
+	Decisions   []DraftDecision  `json:"decisions,omitempty"`   // at most 10
+	Note        string           `json:"note,omitempty"`        // Markdown, at most 4 KiB
+	From        []Ref            `json:"from,omitempty"`
+}
+
+// DraftReference is a source reference a draft plan revision hands over:
+// a path relative to the crew's working directory, a line range and a
+// note, which the propose route resolves at the base.
+type DraftReference struct {
+	Path  string `json:"path"`
+	Start int    `json:"start,omitempty"`
+	End   int    `json:"end,omitempty"`
+	Note  string `json:"note,omitempty"`
+}
+
+// DraftDecision is a decision a person will make, named in a draft plan
+// revision: its id, its question, its kind (approval or clarification)
+// and the crew's tasks that wait on it.
+type DraftDecision struct {
+	ID       string   `json:"id"`
+	Question string   `json:"question"`
+	Kind     string   `json:"kind"`
+	Before   []string `json:"before,omitempty"`
+}
+
 // Gate is a decision a person makes before a draft crew's task.
 type Gate struct {
 	Task     string `json:"task"`
@@ -211,6 +280,7 @@ func (it Item) fields() (own bool, n int) {
 		{ItemEvidence, it.Evidence != nil},
 		{ItemDraftTicket, it.DraftTicket != nil},
 		{ItemDraftCrew, it.DraftCrew != nil},
+		{ItemDraftPlan, it.DraftPlan != nil},
 		{ItemHandoff, it.Handoff != nil},
 		{ItemOverlap, it.Overlap != nil},
 	} {
@@ -244,6 +314,8 @@ func (it Item) body() (any, error) {
 		v = it.DraftTicket
 	case ItemDraftCrew:
 		v = it.DraftCrew
+	case ItemDraftPlan:
+		v = it.DraftPlan
 	case ItemHandoff:
 		v = it.Handoff
 	case ItemOverlap:
@@ -319,6 +391,9 @@ func (it *Item) UnmarshalJSON(b []byte) error {
 	case ItemDraftCrew:
 		it.DraftCrew = &DraftCrew{}
 		dst = it.DraftCrew
+	case ItemDraftPlan:
+		it.DraftPlan = &DraftPlan{}
+		dst = it.DraftPlan
 	case ItemHandoff:
 		it.Handoff = &Handoff{}
 		dst = it.Handoff
@@ -738,6 +813,13 @@ func (it Item) Refs() []Ref {
 		out = append(out, it.DraftTicket.From...)
 	case ItemDraftCrew:
 		out = append(out, it.DraftCrew.From...)
+	case ItemDraftPlan:
+		x := it.DraftPlan
+		out = append(out, x.Ticket)
+		if x.BasedOn != nil {
+			out = append(out, *x.BasedOn)
+		}
+		out = append(append(out, x.Comments...), x.From...)
 	case ItemHandoff:
 		h := it.Handoff
 		if h.Revision != nil {
@@ -831,7 +913,7 @@ func checkItem(b *Brief, i int, it *Item, field string, p Permissions, f Facts) 
 		return invalidBrief(field, "a %s item holds another kind's fields", it.Kind)
 	}
 	switch it.Kind {
-	case ItemDraftTicket, ItemDraftCrew, ItemHandoff:
+	case ItemDraftTicket, ItemDraftCrew, ItemDraftPlan, ItemHandoff:
 		if !p.Draft {
 			return invalidBrief(field+".kind", "Brakeman may not draft here: a %s item is refused", it.Kind)
 		}
@@ -1008,6 +1090,8 @@ func checkItem(b *Brief, i int, it *Item, field string, p Permissions, f Facts) 
 			return invalidBrief(field+".crew", "%v", err)
 		}
 		return nil
+	case ItemDraftPlan:
+		return checkDraftPlan(field, it.DraftPlan)
 	case ItemHandoff:
 		x := it.Handoff
 		x.Objective, x.Constraints = cleanText(x.Objective), cleanText(x.Constraints)
@@ -1047,6 +1131,129 @@ func checkItem(b *Brief, i int, it *Item, field string, p Permissions, f Facts) 
 	return nil
 }
 
+// cleanName is cleanText for a text Dispatch keeps as a name (a
+// reference's note, a decision's question): a newline or a tab made a
+// space, since a name holds no control character.
+func cleanName(s string) string {
+	return cleanText(strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return ' '
+		}
+		return r
+	}, s))
+}
+
+// CheckDraftPlan cleans and checks a draft plan revision as a person
+// edited it, before it is proposed: the shapes and bounds a brief's
+// draft_plan/1 keeps (checkDraftPlan), an *Invalid with the code
+// invalid_draft naming the field (crew, references[0].path).
+func CheckDraftPlan(x *DraftPlan) error {
+	err := checkDraftPlan("draft", x)
+	var inv *Invalid
+	if errors.As(err, &inv) {
+		return &Invalid{Code: "invalid_draft", Field: strings.TrimPrefix(inv.Field, "draft."), Why: inv.Why}
+	}
+	return err
+}
+
+// DraftPlanBase reports whether base is one a draft plan revision may
+// name, by Dispatch's propose route's own rule (internal/api's
+// planBaseShape): at most MaxDraftPlanBase bytes, no rune
+// unicode.IsSpace or unicode.IsControl takes, not beginning with '-'.
+// Empty is HEAD.
+func DraftPlanBase(base string) bool {
+	return len(base) <= MaxDraftPlanBase && !strings.HasPrefix(base, "-") &&
+		!strings.ContainsFunc(base, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+}
+
+// checkDraftPlan holds a draft plan revision to the shapes and bounds
+// Dispatch's proposal keeps: the ticket it is for, a saved crew's id, the
+// base, the revision it revises, the references, attachments and comments
+// handed over, the constraints, the decisions and the note. What only the
+// records can say (the crew has tasks, a comment is the ticket's, a task a
+// decision waits on is the crew's, a path is at the base) the propose
+// route checks when a person proposes it.
+func checkDraftPlan(field string, x *DraftPlan) error {
+	x.Constraints, x.Note = cleanText(x.Constraints), cleanText(x.Note)
+	if err := oneRef(field+".ticket", x.Ticket, RefTicket); err != nil {
+		return err
+	}
+	if !crewIDPattern.MatchString(x.Crew) {
+		return invalidBrief(field+".crew", "a saved crew's id, matching %s", crewIDPattern)
+	}
+	if !DraftPlanBase(x.Base) {
+		return invalidBrief(field+".base", "a branch, a tag, HEAD or a commit: at most %d bytes, no space or control character, not beginning with '-'", MaxDraftPlanBase)
+	}
+	if x.BasedOn != nil {
+		if err := oneRef(field+".basedOn", *x.BasedOn, RefPlan); err != nil {
+			return err
+		}
+	}
+	if len(x.References) > MaxDraftPlanReferences {
+		return invalidBrief(field+".references", "at most %d", MaxDraftPlanReferences)
+	}
+	for j := range x.References {
+		r := &x.References[j]
+		rf := fmt.Sprintf("%s.references[%d]", field, j)
+		r.Note = cleanName(r.Note)
+		if r.Path == "" || len(r.Path) > MaxDraftReferencePath || !utf8.ValidString(r.Path) || strings.ContainsFunc(r.Path, func(c rune) bool { return c < 0x20 || isControl(c) }) {
+			return invalidBrief(rf+".path", "a path of 1 to %d bytes with no control character", MaxDraftReferencePath)
+		}
+		if r.Start < 0 || r.Start > MaxDraftReferenceLine {
+			return invalidBrief(rf+".start", "a line from 1 to %d, or 0 for the whole file", MaxDraftReferenceLine)
+		}
+		if r.End < 0 || r.End > MaxDraftReferenceLine {
+			return invalidBrief(rf+".end", "a line from 1 to %d, or 0 for none", MaxDraftReferenceLine)
+		}
+		if err := chars(rf+".note", r.Note, MaxDraftReferenceNote, false, invalidBrief); err != nil {
+			return err
+		}
+	}
+	if len(x.Attachments) > MaxDraftPlanAttachments {
+		return invalidBrief(field+".attachments", "at most %d", MaxDraftPlanAttachments)
+	}
+	for j, id := range x.Attachments {
+		if !hexIDPattern.MatchString(id) {
+			return invalidBrief(fmt.Sprintf("%s.attachments[%d]", field, j), "an attachment's id, 16 hex digits")
+		}
+	}
+	if err := refList(field+".comments", x.Comments, 0, MaxDraftPlanComments, RefComment); err != nil {
+		return err
+	}
+	if err := size(field+".constraints", x.Constraints, MaxDraftPlanConstraints, false, invalidBrief); err != nil {
+		return err
+	}
+	if len(x.Decisions) > MaxDraftPlanDecisions {
+		return invalidBrief(field+".decisions", "at most %d", MaxDraftPlanDecisions)
+	}
+	for j := range x.Decisions {
+		d := &x.Decisions[j]
+		df := fmt.Sprintf("%s.decisions[%d]", field, j)
+		d.Question = cleanName(d.Question)
+		if !taskIDPattern.MatchString(d.ID) {
+			return invalidBrief(df+".id", "a decision's id, of a task id's shape: matching %s", taskIDPattern)
+		}
+		if err := chars(df+".question", d.Question, MaxDraftDecisionAsk, true, invalidBrief); err != nil {
+			return err
+		}
+		if !slices.Contains(draftDecisionKinds, d.Kind) {
+			return invalidBrief(df+".kind", "one of %s", strings.Join(draftDecisionKinds, ", "))
+		}
+		if len(d.Before) > MaxDraftDecisionBefore {
+			return invalidBrief(df+".before", "at most %d", MaxDraftDecisionBefore)
+		}
+		for k, task := range d.Before {
+			if !taskIDPattern.MatchString(task) {
+				return invalidBrief(fmt.Sprintf("%s.before[%d]", df, k), "a task id, matching %s", taskIDPattern)
+			}
+		}
+	}
+	if err := size(field+".note", x.Note, MaxDraftPlanNote, false, invalidBrief); err != nil {
+		return err
+	}
+	return refList(field+".from", x.From, 0, 10)
+}
+
 // operationPattern is an operation's name as the guide lists it.
 var operationPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
@@ -1071,7 +1278,7 @@ func revision(field, rev string) error {
 func checkDecision(field string, x *Decision) error {
 	x.Happened, x.WhyHuman, x.Question = cleanText(x.Happened), cleanText(x.WhyHuman), cleanText(x.Question)
 	x.Uncertainty, x.Authorizes = cleanText(x.Uncertainty), cleanText(x.Authorizes)
-	if err := oneRef(field+".about", x.About, RefQuestion, RefTask, RefTicket); err != nil {
+	if err := oneRef(field+".about", x.About, RefQuestion, RefTask, RefTicket, RefPlan); err != nil {
 		return err
 	}
 	for _, t := range []struct {

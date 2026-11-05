@@ -30,6 +30,13 @@ const (
 	RefCommit   = "commit"   // commit:<run>/<sha>
 	RefFile     = "file"     // file:<session>/<path>, the path absolute
 	RefBrief    = "brief"    // brief:<br-n>/<item>
+	// DS2's records (Program item DS2, docs/plans/dispatch-evidence.md):
+	// a ticket's plan revision by its number, a launch from an approved
+	// revision, and a run's candidate, an attempt that submitted
+	// something.
+	RefPlan      = "plan"      // plan:<KEY-n>/<revision>, the revision's number from 1
+	RefLaunch    = "launch"    // launch:<id>
+	RefCandidate = "candidate" // candidate:<run>/<task>/<n>
 )
 
 // The shapes of a ref's parts, each the one its own package gives it,
@@ -64,15 +71,15 @@ const maxActor = 60
 type Ref struct {
 	Kind     string
 	Run      string // run, task, attempt, check, command, event, message, commit
-	Task     string // task, attempt, check
-	N        int    // attempt, check: the attempt's number, from 1
+	Task     string // task, attempt, check, candidate
+	N        int    // attempt, check, candidate: the attempt's number; plan: the revision's; each from 1
 	Check    string // check: the check's id
 	K        int    // check: the run of that check on that attempt, from 1
 	Command  string // command
 	Seq      int64  // event, message: from 1
 	Session  string // session, question, file
 	Question string // question
-	Ticket   string // ticket, comment: KEY-n
+	Ticket   string // ticket, comment, plan: KEY-n
 	Comment  string // comment
 	Actor    string // op
 	Op       string // op
@@ -80,6 +87,7 @@ type Ref struct {
 	Path     string // file: absolute and clean
 	Request  string // brief: br-n
 	Item     int    // brief: the item's index, from 0
+	Launch   string // launch: its id, 16 hex digits
 }
 
 // RefError is a ref that does not parse: the ref and why.
@@ -219,6 +227,29 @@ func ParseRef(s string) (Ref, error) {
 			return bad("an item is an index from 0 to %d", MaxItems-1)
 		}
 		r.Request, r.Item = parts[0], item
+	case RefPlan:
+		if !want(2) || !ticketKeyPattern.MatchString(parts[0]) {
+			return bad("want plan:<KEY-n>/<revision>")
+		}
+		n, ok := number(parts[1])
+		if !ok {
+			return bad("a plan revision's number is a whole number from 1")
+		}
+		r.Ticket, r.N = parts[0], int(n)
+	case RefLaunch:
+		if !want(1) || !hexIDPattern.MatchString(parts[0]) {
+			return bad("want launch:<id>, 16 hex digits")
+		}
+		r.Launch = parts[0]
+	case RefCandidate:
+		if !want(3) || !runIDPattern.MatchString(parts[0]) || !taskIDPattern.MatchString(parts[1]) {
+			return bad("want candidate:<run>/<task>/<n>")
+		}
+		n, ok := number(parts[2])
+		if !ok {
+			return bad("a candidate's attempt number is a whole number from 1")
+		}
+		r.Run, r.Task, r.N = parts[0], parts[1], int(n)
 	default:
 		return bad("no kind %q: a ref is one of %s", kind, refFormsWords())
 	}
@@ -285,6 +316,12 @@ func (r Ref) String() string {
 		return "file:" + r.Session + "/" + r.Path
 	case RefBrief:
 		return "brief:" + r.Request + "/" + itoa(r.Item)
+	case RefPlan:
+		return "plan:" + r.Ticket + "/" + itoa(r.N)
+	case RefLaunch:
+		return "launch:" + r.Launch
+	case RefCandidate:
+		return "candidate:" + r.Run + "/" + r.Task + "/" + itoa(r.N)
 	}
 	return ""
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,9 +28,12 @@ import (
 // Drafts made work, by a person (docs/plans/brakeman.md, Drafts made work;
 // PR-4): POST /api/brakeman/requests/{id}/items/{i}/make turns a brief's
 // draft_ticket/1 into a ticket through Dispatch's own operation under the
-// actor admin, with the person's name, and a draft_crew/1 into a saved
-// crew through the crew store's CreateFrom, never launched. Brakeman's own
-// token reaches none of it. Each make is written before what it starts
+// actor admin, with the person's name, a draft_crew/1 into a saved crew
+// through the crew store's CreateFrom, never launched, and a draft_plan/1
+// (PR-10) into a proposed plan revision of its ticket through Dispatch's
+// own propose route under the actor admin, with the person's name, which
+// the operator alone then approves. Brakeman's own token reaches none of
+// it. Each make is written before what it starts
 // (rule 5 of Events, orderings and invariants): its input, then its claim
 // (made pending, with the derived op id the backend keeps it under), then
 // the backend's operation, then its outcome; a server that dies between
@@ -65,9 +69,11 @@ func edgeOp(request string, from, to int) string {
 }
 
 // makeSeam, when a test sets it, runs at each stage of a make ("input"
-// after its input is written, "claimed" after its claim, "committed"
-// after the backend's operation, "edge" before an edge's relation); an
-// error it answers stops the make there, as a server that died would.
+// after its input is written, "claimed" after its claim, "waiting" when
+// its completion waits for another of the item's, "locked" once its
+// completion holds the item, "committed" after the backend's operation,
+// "edge" before an edge's relation); an error it answers stops the make
+// there, as a server that died would.
 var makeSeam atomic.Pointer[func(stage, request string, item int) error]
 
 func atMakeSeam(stage, request string, item int) error {
@@ -94,7 +100,16 @@ type makeInput struct {
 	Ticket *dispatch.NewTicket `json:"ticket,omitempty"`
 	Crew   json.RawMessage     `json:"crew,omitempty"`
 	Gates  []brakeman.Gate     `json:"gates,omitempty"`
+	Plan   *planMake           `json:"plan,omitempty"`
 	From   []brakeman.Ref      `json:"from,omitempty"`
+}
+
+// planMake is a draft plan revision's make as Dispatch's propose route is
+// given it: the ticket's key and the proposal, the revision it revises
+// resolved to its id and the comments to theirs when the make claimed it.
+type planMake struct {
+	Key     string               `json:"key"`
+	Request dispatch.PlanRequest `json:"request"`
 }
 
 // makeLock is the desk's mutex for one request's makes, held across a
@@ -113,12 +128,32 @@ func (d *brakemanDesk) makeLock(id string) *sync.Mutex {
 	return m
 }
 
+// completionLock is the desk's lock for one item's completion
+// (completeMake): a channel of one slot, taken by a send and given back
+// by a receive, so a wait for it ends with its context.
+func (d *brakemanDesk) completionLock(id string, item int) chan struct{} {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.completing == nil {
+		d.completing = map[string]chan struct{}{}
+	}
+	key := id + "/" + strconv.Itoa(item)
+	c, ok := d.completing[key]
+	if !ok {
+		c = make(chan struct{}, 1)
+		d.completing[key] = c
+	}
+	return c
+}
+
 // handleBrakemanMake makes a brief's draft work: {opId, by?, edit?} → 201
 // {request, made, ticket? | crew?}; the same opId again answers what it
 // made (200); 409 already_made with the key or crew for another opId once
 // made, 409 make_pending with the opId of a make under way, 409
-// op_conflict for the same opId with other content; 400 not_a_draft for
-// any item but a draft ticket or a draft crew; 404 for a request pruned
+// op_conflict for the same opId with other content, 409 make_superseded
+// for the same opId rejoined while its make was settled and the item
+// claimed again; 400 not_a_draft for
+// any item but a draft ticket, a draft crew or a draft plan revision; 404 for a request pruned
 // before the make claimed it, with no backend called; 503
 // brakeman_not_owner on a server that does not hold Brakeman's owner lock.
 func (s *Server) handleBrakemanMake(w http.ResponseWriter, r *http.Request) {
@@ -183,9 +218,21 @@ func (s *Server) handleBrakemanMake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("the brief has %d items", len(b.Items)))
 		return
 	}
-	in, err := s.makeInputOf(b, item, body.Edit, by)
-	if err != nil {
+	in, err := s.makeInputOf(r.Context(), b, item, body.Edit, by)
+	var inv *brakeman.Invalid
+	var unopened *errRefStore
+	switch {
+	case err == nil:
+	case errors.As(err, &inv):
 		writeDraftError(w, err)
+		return
+	case errors.As(err, &unopened):
+		// A draft plan revision's basedOn is read from Dispatch's store.
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", unopened.Error())
+		return
+	default:
+		s.log.Warn("a Brakeman draft's input could not be read", "request", id, "item", item, "err", err)
+		writeError(w, http.StatusInternalServerError, "store_failed", "the draft's input could not be read")
 		return
 	}
 	raw, err := marshalNoEscape(in)
@@ -287,9 +334,20 @@ func (s *Server) finishMake(w http.ResponseWriter, r *http.Request, d *brakemanD
 	done, err := s.completeMake(ctx, d, id, m)
 	if err != nil {
 		var unopened *errRefStore
+		var superseded *errMakeSuperseded
 		switch {
 		case errors.As(err, &unopened):
 			writeError(w, http.StatusServiceUnavailable, "store_unavailable", unopened.Error())
+			return
+		case errors.As(err, &superseded):
+			// The make this one rejoined was settled meanwhile and the
+			// item claimed again: nothing ran for it, and the item's
+			// entry is the other claim's.
+			out := map[string]any{"error": map[string]any{"code": "make_superseded", "message": superseded.Error()}}
+			if superseded.now.OpID != "" {
+				out["made"] = superseded.now
+			}
+			writeJSON(w, http.StatusConflict, out)
 			return
 		case errors.Is(err, errDeskClosing):
 			// The server began to shut down during the make: its outcome
@@ -317,13 +375,23 @@ func (s *Server) finishMake(w http.ResponseWriter, r *http.Request, d *brakemanD
 func (s *Server) answerMade(w http.ResponseWriter, r *http.Request, status int, req brakeman.Request, m brakeman.Made) {
 	out := map[string]any{"request": req, "made": m}
 	switch {
-	case m.Key != "" && s.dispatch != nil:
+	case m.Key != "" && m.Plan == "" && s.dispatch != nil:
 		if rc, ok, err := s.dispatch.Receipt(r.Context(), dispatch.ActorAdmin, m.Op); err == nil && ok {
 			out["receipt"] = rc
 		}
 		out["ticket"] = map[string]any{"key": m.Key, "url": ticketURL(m.Key)}
 	case m.Crew != "":
 		out["crew"] = map[string]any{"id": m.Crew, "url": "/crews/" + m.Crew}
+	case m.Plan != "" && s.dispatch != nil:
+		// The revision as the plans' route lists it, waiting for the
+		// operator's approval.
+		if p, err := s.planReplies(s.dispatch).byID(r.Context(), m.Plan, false); err == nil {
+			out["plan"] = p
+		}
+		if rc, ok, err := s.dispatch.Receipt(r.Context(), dispatch.ActorAdmin, m.Op); err == nil && ok {
+			out["receipt"] = rc
+		}
+		out["ticket"] = map[string]any{"key": m.Key, "url": ticketURL(m.Key)}
 	}
 	if m.State == brakeman.MadeRefused {
 		out["error"] = map[string]any{"code": "refused", "message": m.Why}
@@ -381,9 +449,10 @@ func (s *Server) checkMakeNow(in makeInput) error {
 // draft as edited (edit, its own shape) or as written: a ticket's fields
 // held to the draft's bounds, a crew's body as the JSON it is (checked
 // against the catalog, as POST /api/crews checks it, only for a new
-// claim: checkMakeNow). An *brakeman.Invalid with Code not_a_draft for
-// any other item.
-func (s *Server) makeInputOf(b brakeman.Brief, item int, edit json.RawMessage, by string) (makeInput, error) {
+// claim: checkMakeNow), a plan revision's proposal with the revision it
+// revises and its comments named by their ids (planMakeOf). An
+// *brakeman.Invalid with Code not_a_draft for any other item.
+func (s *Server) makeInputOf(ctx context.Context, b brakeman.Brief, item int, edit json.RawMessage, by string) (makeInput, error) {
 	it := b.Items[item]
 	switch it.Kind {
 	case brakeman.ItemDraftTicket:
@@ -414,8 +483,76 @@ func (s *Server) makeInputOf(b brakeman.Brief, item int, edit json.RawMessage, b
 			return makeInput{}, &brakeman.Invalid{Code: "invalid_draft", Field: "crew", Why: err.Error()}
 		}
 		return makeInput{Kind: it.Kind, By: by, Crew: compact.Bytes(), Gates: x.Gates, From: x.From}, nil
+	case brakeman.ItemDraftPlan:
+		x := *it.DraftPlan
+		if len(edit) > 0 {
+			x = brakeman.DraftPlan{}
+			if err := store.DecodeStrict(edit, &x); err != nil {
+				return makeInput{}, &brakeman.Invalid{Code: "invalid_draft", Field: "edit", Why: err.Error()}
+			}
+			if err := brakeman.CheckDraftPlan(&x); err != nil {
+				return makeInput{}, err
+			}
+		}
+		pm, err := s.planMakeOf(ctx, x)
+		if err != nil {
+			return makeInput{}, err
+		}
+		return makeInput{Kind: it.Kind, By: by, Plan: &pm, From: x.From}, nil
 	}
-	return makeInput{}, &brakeman.Invalid{Code: "not_a_draft", Field: "item", Why: fmt.Sprintf("item %d is %s: only a draft_ticket/1 or a draft_crew/1 is made work", item, it.Kind)}
+	return makeInput{}, &brakeman.Invalid{Code: "not_a_draft", Field: "item", Why: fmt.Sprintf("item %d is %s: only a draft_ticket/1, a draft_crew/1 or a draft_plan/1 is made work", item, it.Kind)}
+}
+
+// planMakeOf is a draft plan revision as Dispatch's propose route takes
+// it: its ticket's key, the crew, the base, the revision it revises (a
+// plan: ref of the same ticket, by its id now), the references, the
+// attachments, the comments (comment: refs of the same ticket, by their
+// ids), the constraints, the decisions and the note.
+func (s *Server) planMakeOf(ctx context.Context, x brakeman.DraftPlan) (planMake, error) {
+	bad := func(field, why string, a ...any) error {
+		return &brakeman.Invalid{Code: "invalid_draft", Field: field, Why: fmt.Sprintf(why, a...)}
+	}
+	key := x.Ticket.Ticket
+	req := dispatch.PlanRequest{Crew: x.Crew, Base: x.Base, Constraints: x.Constraints, Note: x.Note,
+		References: []dispatch.PlanReferenceRequest{}, Attachments: slices.Clone(x.Attachments), Comments: []string{}, Decisions: []dispatch.PlanDecision{}}
+	for _, r := range x.References {
+		req.References = append(req.References, dispatch.PlanReferenceRequest{Path: r.Path, Start: r.Start, End: r.End, Note: r.Note})
+	}
+	if req.Attachments == nil {
+		req.Attachments = []string{}
+	}
+	for i, c := range x.Comments {
+		if c.Ticket != key {
+			return planMake{}, bad(fmt.Sprintf("comments[%d]", i), "%s is not a comment of %s: a revision hands over its own ticket's comments", c, key)
+		}
+		req.Comments = append(req.Comments, c.Comment)
+	}
+	for _, d := range x.Decisions {
+		before := slices.Clone(d.Before)
+		if before == nil {
+			before = []string{}
+		}
+		req.Decisions = append(req.Decisions, dispatch.PlanDecision{ID: d.ID, Question: d.Question, Kind: d.Kind, Before: before})
+	}
+	if x.BasedOn != nil {
+		if x.BasedOn.Ticket != key {
+			return planMake{}, bad("basedOn", "%s is not a revision of %s", x.BasedOn, key)
+		}
+		ds := s.dispatch
+		if ds == nil {
+			return planMake{}, &errRefStore{what: "Dispatch's store"}
+		}
+		plans, err := ds.Plans(ctx, key)
+		if err != nil && !errors.Is(err, dispatch.ErrNotFound) {
+			return planMake{}, err
+		}
+		i := slices.IndexFunc(plans, func(p dispatch.PlanSummary) bool { return p.N == x.BasedOn.N })
+		if i < 0 {
+			return planMake{}, bad("basedOn", "%s has no revision %d", key, x.BasedOn.N)
+		}
+		req.BasedOn = plans[i].ID
+	}
+	return planMake{Key: key, Request: req}, nil
 }
 
 // checkTicketDraft holds an edited draft ticket to the draft's own bounds.
@@ -445,7 +582,53 @@ func checkTicketDraft(x brakeman.DraftTicket) error {
 // crew's by its origin, its tombstone, or a save under it. Then each edge
 // whose two ends are tickets is recorded. An error leaves the claim
 // pending, for the next ask or recoverMakes.
+//
+// One completion of an item runs at a time (completionLock), and one
+// that waited for another reads the item's entry again and answers it
+// when that one settled it: the same make asked again while it runs
+// would otherwise run the backend beside it, and a refusal one of them
+// read (a draft plan's crew deleted after the other had read it) could
+// settle the claim refused while the other's proposal commits. Before it
+// runs the backend it holds the item's claim to the one it was given:
+// still pending, under the same opId, op and input digest (a claim's
+// input is never rewritten while the claim stands, so the input read
+// next is that claim's). A completion that waited while the make it
+// rejoined was settled (refused, which leaves no receipt) and the item
+// was claimed again under another opId or other content answers
+// errMakeSuperseded and runs nothing: it would otherwise propose the new
+// claim's input under the old claim's op, which the new claim's outcome
+// never records, so the new claim's own completion would make it twice.
 func (s *Server) completeMake(ctx context.Context, d *brakemanDesk, id string, m brakeman.Made) (brakeman.Made, error) {
+	lock := d.completionLock(id, m.Item)
+	select {
+	case lock <- struct{}{}:
+	default:
+		if err := atMakeSeam("waiting", id, m.Item); err != nil {
+			return m, err
+		}
+		select {
+		case lock <- struct{}{}:
+		case <-ctx.Done():
+			return m, ctx.Err()
+		}
+	}
+	defer func() { <-lock }()
+	if err := atMakeSeam("locked", id, m.Item); err != nil {
+		return m, err
+	}
+	cur, err := d.st.Get(id)
+	if err != nil {
+		return m, err
+	}
+	i := slices.IndexFunc(cur.Made, func(x brakeman.Made) bool { return x.Item == m.Item })
+	switch {
+	case i < 0:
+		return m, &errMakeSuperseded{}
+	case cur.Made[i].OpID != m.OpID || cur.Made[i].Op != m.Op || cur.Made[i].Input != m.Input:
+		return m, &errMakeSuperseded{now: cur.Made[i]}
+	case cur.Made[i].State != brakeman.MadePending:
+		return cur.Made[i], nil
+	}
 	raw, err := d.st.MakeInput(id, m.Item)
 	if err != nil {
 		return m, fmt.Errorf("the make's input: %w", err)
@@ -517,6 +700,22 @@ func (s *Server) completeMake(ctx context.Context, d *brakemanDesk, id string, m
 			}
 			out.State, out.Crew, out.Rev, out.Why = brakeman.MadeDone, saved.ID, saved.ManifestRevision, ""
 		}
+	case brakeman.ItemDraftPlan:
+		if s.dispatch == nil || in.Plan == nil {
+			return m, &errRefStore{what: "Dispatch's store"}
+		}
+		res, err := s.proposeAsOperator(ctx, *in.Plan, m.Op, in.By)
+		if err != nil {
+			return m, err
+		}
+		if err := atMakeSeam("committed", id, m.Item); err != nil {
+			return m, err
+		}
+		if res.done {
+			out.State, out.Key, out.Plan, out.Rev, out.Why = brakeman.MadeDone, in.Plan.Key, res.plan, res.rev, ""
+		} else {
+			out.State, out.Why = brakeman.MadeRefused, cutBytes(res.why, brakeman.MaxWhy)
+		}
 	default:
 		return m, fmt.Errorf("the make's input is of %q", in.Kind)
 	}
@@ -542,6 +741,101 @@ func (s *Server) completeMake(ctx context.Context, d *brakemanDesk, id string, m
 		}
 	}
 	return out, nil
+}
+
+// errMakeSuperseded is a completion whose claim is no longer the item's:
+// it was settled and the item claimed again (another opId, or the same
+// with other content) before the completion held the item. now is the
+// item's entry as it stands, zero when it has none.
+type errMakeSuperseded struct{ now brakeman.Made }
+
+func (e *errMakeSuperseded) Error() string {
+	return "the make was settled and the item claimed again since"
+}
+
+// proposed is what Dispatch's propose route answered a draft plan
+// revision's make: done with the revision's id and rev, or refused with
+// its words.
+type proposed struct {
+	done bool
+	plan string
+	rev  int64
+	why  string
+}
+
+// proposeAsOperator proposes a draft plan revision through Dispatch's own
+// propose route (handleDispatchProposePlan: its replay first, then the
+// crew, git and the store's checks), as the workbench token's person
+// sends it: under the actor admin, the operator, with the person's name
+// as by and op, the make's derived id, as the operation's, so a make
+// asked again, or recovered after a crash, is answered from its receipt
+// and never proposes twice. Brakeman's principal is never its caller. A
+// refusal (a 4xx: no such crew, one without tasks, a comment not the
+// ticket's, a stale revision) settles the make refused; a failure of the
+// server's own (a 5xx: git, the store) is an error, the claim left
+// pending.
+func (s *Server) proposeAsOperator(ctx context.Context, pm planMake, op, by string) (proposed, error) {
+	body := map[string]any{"opId": op}
+	if by != "" {
+		body["byName"] = by
+	}
+	raw, err := json.Marshal(pm.Request)
+	if err != nil {
+		return proposed{}, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return proposed{}, err
+	}
+	for k, v := range fields {
+		body[k] = v
+	}
+	b, err := marshalNoEscape(body)
+	if err != nil {
+		return proposed{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/api/dispatch/tickets/"+url.PathEscape(pm.Key)+"/plans", bytes.NewReader(b))
+	if err != nil {
+		return proposed{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("key", pm.Key)
+	req = withPrincipal(req, principal{admin: true})
+	rec := newReplyRecorder()
+	s.handleDispatchProposePlan(rec, req)
+	var reply struct {
+		Receipt *dispatch.Receipt `json:"receipt"`
+		Plan    *struct {
+			ID  string `json:"id"`
+			Rev int64  `json:"rev"`
+		} `json:"plan"`
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(rec.body.Bytes(), &reply)
+	switch {
+	case rec.status >= 500:
+		msg := http.StatusText(rec.status)
+		if reply.Error != nil {
+			msg = reply.Error.Code + ": " + reply.Error.Message
+		}
+		return proposed{}, fmt.Errorf("the propose route of Dispatch answered %d: %s", rec.status, msg)
+	case rec.status >= 400:
+		why := "Dispatch refused the proposal"
+		if reply.Error != nil {
+			why = cmpOr(reply.Error.Message, reply.Error.Code, why)
+		}
+		return proposed{why: why}, nil
+	case reply.Receipt == nil || reply.Receipt.Status != dispatch.StatusDone:
+		return proposed{}, fmt.Errorf("the propose route of Dispatch answered %d with no receipt done", rec.status)
+	}
+	p := proposed{done: true, plan: reply.Receipt.ID}
+	if reply.Plan != nil {
+		p.plan, p.rev = cmpOr(reply.Plan.ID, p.plan), reply.Plan.Rev
+	}
+	return p, nil
 }
 
 // crewOfBody is the crew a draft crew's body makes, decoded strictly as
@@ -637,7 +931,8 @@ func (d *brakemanDesk) recoverMakes(ctx context.Context) {
 		}
 		switch {
 		case p.Made != nil:
-			if _, err := d.s.completeMake(ctx, d, p.Request, *p.Made); err != nil {
+			var superseded *errMakeSuperseded
+			if _, err := d.s.completeMake(ctx, d, p.Request, *p.Made); err != nil && !errors.As(err, &superseded) {
 				d.s.log.Warn("a Brakeman draft's make could not be recovered yet", "request", p.Request, "item", p.Made.Item, "err", err)
 			}
 		case p.Edge != nil && !edges[p.Request]:

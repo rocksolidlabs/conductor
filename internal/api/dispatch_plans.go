@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -552,9 +553,17 @@ func (s *Server) handleDispatchProposePlan(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	if f := proposeSeam.Load(); f != nil {
+		(*f)(key)
+	}
 	rc, err = ds.ProposePlan(ctx, op, key, body.PlanRequest, pb)
 	s.writeOp(w, "plan revision", rc, err, true, "plan", s.planAfter(ctx, ds, ""))
 }
+
+// proposeSeam, when a test sets it, runs in the propose route once the
+// proposal's body is built (the crew read, git run) and before the store
+// is asked to keep it.
+var proposeSeam atomic.Pointer[func(key string)]
 
 // planBody builds a proposal's body from its request (docs/plans/
 // dispatch-evidence.md, "Proposing"), in this order: the saved crew,
@@ -709,11 +718,8 @@ func encodeRaw(v any) json.RawMessage {
 // error is git's own failure (gitUnresolved), never the request's.
 func planBase(ctx context.Context, cwd, ref string) (string, string, error) {
 	ref = cmp.Or(ref, "HEAD")
-	switch {
-	case len(ref) > maxPlanBase:
-		return "", fmt.Sprintf("the base is more than %d bytes", maxPlanBase), nil
-	case strings.HasPrefix(ref, "-") || strings.ContainsFunc(ref, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }):
-		return "", fmt.Sprintf("the base %q is not a branch, a tag or a commit", ref), nil
+	if words := planBaseShape(ref); words != "" {
+		return "", words, nil
 	}
 	out, err := gitcli.Run(ctx, cwd, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	if err != nil && !gitUnresolved(err) {
@@ -724,6 +730,20 @@ func planBase(ctx context.Context, cwd, ref string) (string, string, error) {
 		return "", fmt.Sprintf("the base %q names no commit of the crew's working directory", ref), nil
 	}
 	return commit, "", nil
+}
+
+// planBaseShape is why ref cannot be a base, before git is asked: more
+// than maxPlanBase bytes, a space or control character, or a leading '-';
+// "" when it may be one. A draft plan revision's base is held to the same
+// rule (brakeman.DraftPlanBase, TestTheDraftPlansBoundsAreDispatchs).
+func planBaseShape(ref string) string {
+	switch {
+	case len(ref) > maxPlanBase:
+		return fmt.Sprintf("the base is more than %d bytes", maxPlanBase)
+	case strings.HasPrefix(ref, "-") || strings.ContainsFunc(ref, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }):
+		return fmt.Sprintf("the base %q is not a branch, a tag or a commit", ref)
+	}
+	return ""
 }
 
 // gitUnresolved reports whether err is git's answer that what it was asked

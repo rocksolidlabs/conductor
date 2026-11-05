@@ -34,6 +34,11 @@ var validRefs = []string{
 	"file:" + sessA + "//",
 	"brief:br-1/0",
 	"brief:br-12/99",
+	"plan:CND-12/1",
+	"plan:AB-999999999999999999/12",
+	"launch:" + commentA,
+	"candidate:" + runA + "/build/1",
+	"candidate:" + runA + "/a_b-c/12",
 }
 
 // TestRefGrammar holds each kind to its form: the valid ones parse, each
@@ -97,6 +102,18 @@ func TestRefGrammar(t *testing.T) {
 		"brief:br-1/100",
 		"brief:br-1/01",
 		"brief:1/1",
+		"plan:CND-12",
+		"plan:CND-12/0",
+		"plan:CND-12/01",
+		"plan:cnd-12/1",
+		"plan:CND-12/1/2",
+		"launch:" + commentA + "0",
+		"launch:0123456789ABCDEF",
+		"launch:",
+		"candidate:" + runA + "/build",
+		"candidate:" + runA + "/build/0",
+		"candidate:" + runA + "/Build/1",
+		"candidate:" + runA + "/build/1/2",
 		"run:" + runA + "\n",
 		"ticket:CND-12\x1b",
 		"file:" + sessA + "//a\u0085b",
@@ -179,6 +196,10 @@ func TestAConstructedRefIsHeldToTheGrammar(t *testing.T) {
 		{Kind: RefCommit, Run: runA, Commit: "abc"},
 		{Kind: RefFile, Session: sessA, Path: "relative"},
 		{Kind: RefBrief, Request: "br-1", Item: MaxItems},
+		{Kind: RefPlan, Ticket: "CND-1"}, // revision 0
+		{Kind: RefPlan, Ticket: "CND-1", N: 1, Run: runA},
+		{Kind: RefLaunch, Launch: "nope"},
+		{Kind: RefCandidate, Run: runA, Task: "build", N: 1, Check: "vet"},
 		{Kind: "nothing", Run: runA},
 	}
 	for _, r := range bad {

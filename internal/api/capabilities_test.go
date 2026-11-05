@@ -177,11 +177,11 @@ func TestCapabilitiesNamesProviders(t *testing.T) {
 	check("once a Start succeeded", "ready")
 }
 
-// The fullest registry the registry allows (a provider in each of the six
-// one-value slots and MaxPerList in each list, every name
-// ext.MaxProviderName bytes, every one starting) answers within
-// capabilitiesReplyMax.
-func TestCapabilitiesReplyBounded(t *testing.T) {
+// fullestRegistry is the fullest registry the registry allows: a provider
+// in each of the six one-value slots and MaxPerList in each list, every
+// name ext.MaxProviderName bytes.
+func fullestRegistry(t *testing.T) []ext.Entry {
+	t.Helper()
 	name := func(prefix string, i int) string {
 		n := fmt.Sprintf("%s-%d-", prefix, i)
 		return n + strings.Repeat("x", ext.MaxProviderName-len(n))
@@ -207,13 +207,29 @@ func TestCapabilitiesReplyBounded(t *testing.T) {
 			t.Fatalf("the test's name %q is not a longest one the registry takes", en.Name)
 		}
 	}
+	return all
+}
+
+// fullestCapabilities is the reply of the fullest registry
+// (fullestRegistry), every provider starting, the longer of the two
+// states.
+func fullestCapabilities(t *testing.T) capabilitiesReply {
+	t.Helper()
 	srv := newExtServer(t, nil)
-	srv.exts.all = all
-	// Every one starting: the longer of the two states.
-	for _, en := range all {
+	srv.exts.all = fullestRegistry(t)
+	for _, en := range srv.exts.all {
 		srv.extStarts = append(srv.extStarts, &extStarter{name: en.Name})
 	}
-	r := srv.capabilities()
+	return srv.capabilities()
+}
+
+// The fullest registry the registry allows (a provider in each of the six
+// one-value slots and MaxPerList in each list, every name
+// ext.MaxProviderName bytes, every one starting) answers within
+// capabilitiesReplyMax.
+func TestCapabilitiesReplyBounded(t *testing.T) {
+	all := fullestRegistry(t)
+	r := fullestCapabilities(t)
 	if len(r.Providers) != len(all) {
 		t.Fatalf("%d rows, want %d", len(r.Providers), len(all))
 	}
