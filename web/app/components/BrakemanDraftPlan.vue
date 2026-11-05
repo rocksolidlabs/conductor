@@ -3,7 +3,6 @@ import type { PlanSummary } from '~/composables/useDispatch'
 import type { BrakemanRequest, BriefItem, RefResolution } from '~/utils/brakeman'
 import { displayBy, parseRef, refRoute } from '~/utils/brakeman'
 import { draftPlanProblem, makeAgain, madeWords } from '~/utils/brakemanCards'
-import { revisionTag } from '~/utils/dispatchPlans'
 import { ApiError } from '~/composables/useApi'
 
 /**
@@ -19,7 +18,6 @@ const props = defineProps<{ request: BrakemanRequest; item: Extract<BriefItem, {
 
 const bk = useBrakeman()
 const identity = useIdentity()
-const dispatch = useDispatchApi()
 
 const req = computed(() => bk.requests.value.find((r) => r.id === props.request.id) ?? props.request)
 const made = computed(() => req.value.made?.find((m) => m.item === props.index))
@@ -69,31 +67,15 @@ const edit = computed(() => {
   if (x.attachments?.length) out.attachments = x.attachments
   if (x.comments?.length) out.comments = x.comments
   if (constraints.value.trim()) out.constraints = constraints.value
-  if (x.decisions?.length) out.decisions = x.decisions.map((d, i) => ({ ...d, question: questions.value[i]?.trim() || d.question }))
+  if (x.decisions?.length) out.decisions = x.decisions.map((d, i) => ({ ...d, question: (questions.value[i] ?? '').trim() }))
   if (note.value.trim()) out.note = note.value
   if (x.from?.length) out.from = x.from
   return out
 })
 const problem = computed(() => draftPlanProblem({ crew: crew.value, constraints: constraints.value, note: note.value, questions: questions.value }))
 
-/** The revision it became, as Dispatch lists it now: read once it is made, and from the make's answer. */
-const revision = ref<PlanSummary | null>(null)
-async function readRevision() {
-  const m = made.value
-  if (!m?.plan || !m.key) return
-  try {
-    revision.value = (await dispatch.plans(m.key)).find((p) => p.id === m.plan) ?? null
-  } catch {
-    /* the link to the ticket still leads to it */
-  }
-}
-watch(
-  () => made.value?.plan,
-  (id) => {
-    if (id && revision.value?.id !== id) void readRevision()
-  },
-  { immediate: true },
-)
+/** The revision the make answered with, shown until Dispatch's own read of it (BrakemanDraftRevision, which follows it from then on). */
+const answered = ref<PlanSummary | null>(null)
 
 const sending = ref(false)
 const error = ref('')
@@ -109,7 +91,7 @@ async function propose() {
       proposing.value = true
       out = await bk.make(props.request, props.index, { by: displayBy(identity.name.value) || undefined, edit: edit.value })
     }
-    if (out.plan) revision.value = out.plan
+    if (out.plan) answered.value = out.plan
   } catch (e) {
     if (e instanceof ApiError && e.code === 'already_made') void bk.readRequest(props.request.id)
     error.value = (e as Error).message
@@ -139,10 +121,7 @@ async function propose() {
     </ul>
     <template v-if="done">
       <p class="text-sm" data-made-words>{{ madeWords(made) }}</p>
-      <div class="flex flex-wrap items-center gap-2 text-xs text-muted" data-draft-plan-made :data-plan-revision="revision?.n ?? ''" :data-plan-state="revision?.state ?? ''">
-        <span v-if="revision">{{ key }} {{ revisionTag(revision.n) }} is {{ revision.state }}.</span>
-        <UButton :to="refRoute(item.ticket) ?? undefined" :label="revision ? `Open ${key} ${revisionTag(revision.n)}` : `Open ${key}`" icon="i-lucide-arrow-up-right" size="xs" color="neutral" variant="outline" data-made-link />
-      </div>
+      <BrakemanDraftRevision :ticket-key="made?.key || key" :plan-id="made?.plan ?? ''" :answered="answered" :to="refRoute(item.ticket) ?? undefined" />
     </template>
     <template v-else>
       <div class="grid gap-2 sm:grid-cols-2">

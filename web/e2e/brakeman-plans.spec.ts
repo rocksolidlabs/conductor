@@ -204,9 +204,9 @@ test("a decision card about a plan revision offers DS2's own Approve from its li
   await expect(control.locator('[data-plan-control-words]')).toContainText('its approval no longer holds')
 })
 
-test('a draft plan revision, edited, is proposed as revision 2 under the person\'s name, then approved on the ticket page', async ({ page }) => {
-  // The draft proposed: two waits of 30 s and seven steps.
-  budget(2 * 30_000 + 7 * STEP_MS)
+test('a draft plan revision, edited, is proposed as revision 2 under the person\'s name, then approved on the ticket page', async ({ page, context }) => {
+  // The draft proposed: two waits of 30 s and ten steps.
+  budget(2 * 30_000 + 10 * STEP_MS)
   await open(page, `/brakeman?request=${requestId}`)
   const d = page.locator(`[data-brief="${requestId}"] [data-draft-plan][data-draft-item="2"]`)
   await expect(d.locator('[data-draft-propose]')).toBeVisible({ timeout: 30_000 })
@@ -214,6 +214,11 @@ test('a draft plan revision, edited, is proposed as revision 2 under the person\
   await note.fill('Revises 1: keyed by locale, as the ticket asks.')
   await expect(note).toHaveValue('Revises 1: keyed by locale, as the ticket asks.')
   const question = d.locator('[data-draft-plan-decision="design"] input, input[data-draft-plan-decision="design"]').first()
+  // A question cleared is refused on the card, never sent as the drafted one in its place.
+  await question.fill('')
+  await expect(question).toHaveValue('')
+  await expect(d.getByText('Every decision needs its question')).toBeVisible()
+  await expect(d.locator('[data-draft-propose]')).toBeDisabled()
   await question.fill('Key by locale?')
   await expect(question).toHaveValue('Key by locale?')
   expect(await plans()).toHaveLength(1)
@@ -228,19 +233,24 @@ test('a draft plan revision, edited, is proposed as revision 2 under the person\
   expect(body.plan.body.note).toBe('Revises 1: keyed by locale, as the ticket asks.')
   expect(body.plan.body.decisions?.[0]?.question).toBe('Key by locale?')
   expect((await request(requestId)).made?.find((m) => m.item === 2)).toMatchObject({ state: 'made', key: KEY, plan: r2.id })
-  // Its link and the ticket page's Approve: four waits of 30 s and nine steps.
-  budget(4 * 30_000 + 9 * STEP_MS)
+  // Its link and the ticket page's Approve, with the brief open in another tab: six waits of 30 s and ten steps.
+  budget(6 * 30_000 + 10 * STEP_MS)
   const made = d.locator('[data-draft-plan-made]')
   await expect(made).toHaveAttribute('data-plan-revision', '2', { timeout: 30_000 })
   await expect(made).toHaveAttribute('data-plan-state', 'proposed')
+  // The brief stays open in another tab, its draft showing revision 2 proposed, while this one approves it on the ticket page.
+  const other = await context.newPage()
+  await open(other, `/brakeman?request=${requestId}`)
+  const stays = other.locator(`[data-brief="${requestId}"] [data-draft-item="2"] [data-draft-plan-made]`)
+  await expect(stays).toHaveAttribute('data-plan-state', 'proposed', { timeout: 30_000 })
   // The link opens the ticket, whose Plan section lists revision 2 beside the approved one, with DS2's own Approve.
   await d.locator('[data-made-link]').click()
   await expect(page).toHaveURL(new RegExp(`/dispatch/${PROJECT}/1$`))
   const section = page.locator('[data-plan-section]')
   await expect(section.locator('[data-plan-featured]')).toHaveAttribute('data-plan-revision', '1', { timeout: 30_000 })
-  const other = section.locator('[data-plan-others] [data-plan-revision="2"]')
-  await expect(other).toHaveAttribute('data-plan-state', 'proposed')
-  await other.locator('[data-plan-approve]').click()
+  const listed = section.locator('[data-plan-others] [data-plan-revision="2"]')
+  await expect(listed).toHaveAttribute('data-plan-state', 'proposed')
+  await listed.locator('[data-plan-approve]').click()
   const dialog = page.locator('[data-plan-approve-dialog]')
   await expect(dialog).toHaveAttribute('data-plan-revision', '2')
   await expect(dialog.locator('[data-plan-approve-yolo]')).toBeVisible({ timeout: 30_000 })
@@ -249,6 +259,10 @@ test('a draft plan revision, edited, is proposed as revision 2 under the person\
   await expect(section.locator('[data-plan-featured]')).toHaveAttribute('data-plan-revision', '2', { timeout: 30_000 })
   await expect(section.locator('[data-plan-featured]')).toHaveAttribute('data-plan-state', 'approved')
   expect([(await plan(1))?.state, (await plan(2))?.state]).toEqual(['superseded', 'approved'])
+  // The other tab, never reloaded, follows Dispatch: its draft says revision 2 is approved.
+  await expect(stays).toHaveAttribute('data-plan-state', 'approved', { timeout: 30_000 })
+  await expect(stays).toContainText(`${KEY} r2 is approved.`)
+  await other.close()
 
   // Back on the brief: the draft names revision 2 as Dispatch holds it now, and the card about revision 1 reads it superseded,
   // which DS2's rule lets the operator approve again (nothing is approved by reading it).

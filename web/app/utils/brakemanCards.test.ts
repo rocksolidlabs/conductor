@@ -332,6 +332,11 @@ describe("a draft plan revision's form", () => {
     expect(draftPlanProblem(form({ note: 'x'.repeat((4 << 10) + 1) }))).toBe('The note is at most 4 KiB.')
     expect(draftPlanProblem(form())).toBe('')
   })
+  it('refuses a decision whose question was cleared, rather than sending the drafted one in its place', () => {
+    expect(draftPlanProblem(form({ questions: ['Key by locale?', ''] }))).toBe('Every decision needs its question: say what the person will decide.')
+    expect(draftPlanProblem(form({ questions: ['  '] }))).toBe('Every decision needs its question: say what the person will decide.')
+    expect(draftPlanProblem(form({ questions: ['Key by locale?'] }))).toBe('')
+  })
 })
 
 describe("a request's acts, as replies bring them", () => {
