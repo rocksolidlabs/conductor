@@ -474,7 +474,8 @@ func refField(field string, head map[string]json.RawMessage, ref string) string 
 // (what, "a brief" or "a fact/1 item"; raw, its fields as sent) under
 // field ("" for the brief), naming what the object takes: an unknown
 // field with the fields of the object or list entry it was found in, a
-// value of the wrong type with the type its field takes.
+// value of the wrong type with the type its field takes, at its path down
+// to the list entry that holds it.
 func decodeRefusal(field, what string, fields []Field, err error, raw map[string]json.RawMessage) error {
 	at := func(name string) string {
 		if field == "" {
@@ -486,25 +487,27 @@ func decodeRefusal(field, what string, fields []Field, err error, raw map[string
 		if n, uerr := strconv.Unquote(name); uerr == nil {
 			name = n
 		}
-		if _, top := raw[name]; !top {
-			// Not the object's own: an entry of one of its lists.
-			for _, f := range fields {
-				if f.Type != FieldList || f.Of == nil || f.Of.Type != FieldEntry {
-					continue
-				}
-				var entries []map[string]json.RawMessage
-				_ = json.Unmarshal(raw[f.Name], &entries)
-				for j, e := range entries {
-					if _, ok := e[name]; ok {
-						return invalidBrief(at(fmt.Sprintf("%s[%d].%s", f.Name, j, name)), "no such field: %s %s entry takes %s", article(f.Name), f.Name, fieldNames(f.Of.Fields))
-					}
-				}
+		// The decoder names the field, not where it was: the object's own
+		// when it is sent there and the object takes no such field, else
+		// the first list entry that holds it and takes no such field (an
+		// alternative's evidence, a row's title: names the object takes
+		// itself).
+		if _, sent := raw[name]; !sent || hasField(fields, name) {
+			if path, entry, ok := unknownInEntry(fields, raw, name); ok {
+				return invalidBrief(at(path), "no such field: %s %s entry takes %s", article(entry.Name), entry.Name, fieldNames(entry.Of.Fields))
 			}
 		}
 		return invalidBrief(at(name), "no such field: %s takes %s", what, fieldNames(fields))
 	}
 	var te *json.UnmarshalTypeError
 	if errors.As(err, &te) && te.Field != "" {
+		top, _, _ := strings.Cut(te.Field, ".")
+		if f, ok := fieldAt(fields, top); ok {
+			if v, sent := raw[top]; sent && !fits(f, v) {
+				path, g := misfit(f, v, top)
+				return invalidBrief(at(path), "takes %s, not a JSON %s", typeWords(g), te.Value)
+			}
+		}
 		if f, ok := fieldAt(fields, te.Field); ok {
 			return invalidBrief(at(te.Field), "takes %s, not a JSON %s", typeWords(f), te.Value)
 		}
@@ -514,6 +517,88 @@ func decodeRefusal(field, what string, fields []Field, err error, raw map[string
 		field = "brief"
 	}
 	return invalidBrief(field, "%v", err)
+}
+
+// hasField reports whether fields holds one named name.
+func hasField(fields []Field, name string) bool {
+	return slices.ContainsFunc(fields, func(f Field) bool { return f.Name == name })
+}
+
+// unknownInEntry is the path (alternatives[1].evidence) of the first list
+// entry of raw, an object of fields, that holds name and takes no field
+// of that name, with the list's field.
+func unknownInEntry(fields []Field, raw map[string]json.RawMessage, name string) (string, Field, bool) {
+	for _, f := range fields {
+		if f.Type != FieldList || f.Of == nil || f.Of.Type != FieldEntry || hasField(f.Of.Fields, name) {
+			continue
+		}
+		var entries []map[string]json.RawMessage
+		_ = json.Unmarshal(raw[f.Name], &entries)
+		for j, e := range entries {
+			if _, ok := e[name]; ok {
+				return fmt.Sprintf("%s[%d].%s", f.Name, j, name), f, true
+			}
+		}
+	}
+	return "", Field{}, false
+}
+
+// fits reports whether v is of f's JSON type, through its lists and
+// entries, as the strict decoding reads it (null is any type's zero).
+func fits(f Field, v json.RawMessage) bool {
+	if string(bytes.TrimSpace(v)) == "null" {
+		return true
+	}
+	switch f.Type {
+	case FieldText, FieldName, FieldRef:
+		var s string
+		return json.Unmarshal(v, &s) == nil
+	case FieldInteger, FieldIndex:
+		var n int
+		return json.Unmarshal(v, &n) == nil
+	case FieldList:
+		var list []json.RawMessage
+		if json.Unmarshal(v, &list) != nil {
+			return false
+		}
+		return f.Of == nil || !slices.ContainsFunc(list, func(e json.RawMessage) bool { return !fits(*f.Of, e) })
+	case FieldEntry:
+		var m map[string]json.RawMessage
+		if json.Unmarshal(v, &m) != nil {
+			return false
+		}
+		return !slices.ContainsFunc(f.Fields, func(sub Field) bool { e, ok := m[sub.Name]; return ok && !fits(sub, e) })
+	}
+	return true // an object or an item, read as it is
+}
+
+// misfit is the innermost path under path, and its field, of the part of
+// v that does not fit f: a list's entry by its index, an entry's field by
+// its name.
+func misfit(f Field, v json.RawMessage, path string) (string, Field) {
+	switch f.Type {
+	case FieldList:
+		var list []json.RawMessage
+		if f.Of == nil || json.Unmarshal(v, &list) != nil {
+			return path, f
+		}
+		for j, e := range list {
+			if !fits(*f.Of, e) {
+				return misfit(*f.Of, e, fmt.Sprintf("%s[%d]", path, j))
+			}
+		}
+	case FieldEntry:
+		var m map[string]json.RawMessage
+		if json.Unmarshal(v, &m) != nil {
+			return path, f
+		}
+		for _, sub := range f.Fields {
+			if e, ok := m[sub.Name]; ok && !fits(sub, e) {
+				return misfit(sub, e, path+"."+sub.Name)
+			}
+		}
+	}
+	return path, f
 }
 
 // fieldAt is the field a dotted path names (alternatives.label), through

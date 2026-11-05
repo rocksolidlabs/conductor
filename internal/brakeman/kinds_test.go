@@ -165,16 +165,21 @@ func refOf(kind string, i int) string {
 	return fmt.Sprintf("run:fix-%08x", i+1)
 }
 
-// refKind is a ref kind f takes, and one it does not (none when f takes
-// any).
-func refKinds(f Field) (takes, not string) {
+// refSample is a ref of form's kind that no sample of a list repeats:
+// refOf's eighth for the kinds it makes, else the form's example.
+func refSample(form RefForm) string {
+	if r := refOf(form.Kind, 7); strings.HasPrefix(r, form.Kind+":") {
+		return r
+	}
+	return form.Example
+}
+
+// refKind is a ref kind f takes.
+func refKind(f Field) string {
 	if len(f.Refs) == 0 {
-		return RefRun, ""
+		return RefRun
 	}
-	if !slices.Contains(f.Refs, RefRun) {
-		return f.Refs[0], RefRun
-	}
-	return f.Refs[0], RefSession
+	return f.Refs[0]
 }
 
 // names is a valid name of each name field, for one an example leaves out.
@@ -206,8 +211,7 @@ func (c fieldCase) sample(f Field) any {
 		}
 		return e
 	case FieldRef:
-		k, _ := refKinds(f)
-		return refOf(k, 0)
+		return refOf(refKind(f), 0)
 	case FieldIndex:
 		return c.index
 	case FieldList:
@@ -225,8 +229,7 @@ func (c fieldCase) entries(f Field, n int, first any) []any {
 	for i := range out {
 		switch {
 		case f.Of.Type == FieldRef:
-			k, _ := refKinds(*f.Of)
-			out[i] = refOf(k, i)
+			out[i] = refOf(refKind(*f.Of), i)
 		case first != nil:
 			out[i] = deepCopy(c.t, first)
 		default:
@@ -318,10 +321,14 @@ func (c fieldCase) field(brief any, path []step, f Field) {
 			c.field(brief, append(slices.Clone(path), sub.Name), sub)
 		}
 	case FieldRef:
-		takes, not := refKinds(f)
-		set("a ref it takes", refOf(takes, 7), "")
-		if not != "" {
-			set("a "+not+" ref", refOf(not, 7), name)
+		// Every ref form: each kind the table lists taken, every other
+		// refused at the field (none listed: every kind taken).
+		for _, form := range refForms {
+			want := ""
+			if len(f.Refs) > 0 && !slices.Contains(f.Refs, form.Kind) {
+				want = name
+			}
+			set("a "+form.Kind+" ref", refSample(form), want)
 		}
 		set("no ref", "nope:1", name)
 	case FieldIndex:
@@ -617,6 +624,15 @@ func TestARefusalNamesWhatIsAccepted(t *testing.T) {
 		{[]byte(`{"schema":"brakeman.brief/1","title":"t","summary":"s","refs":[],"items":[` + fact + `]}`), "refs", []string{"no such field: a brief takes schema, title, summary, uncertainty, items"}},
 		{[]byte(`{"schema":"brakeman.brief/1","title":"t","summary":"s","items":{}}`), "items", []string{"takes 1 to 100 items"}},
 		{brief(`{"kind":"fact/1","text":"x","evidence":["run:` + exRun + `","runs:` + exRun + `"]}`), "items[0].evidence[1]", []string{`no kind "runs"`, "run:<run>, task:<run>/<task>", "brief:<br-n>/<item>"}},
+		// A field an entry does not take, of a name its item takes: the
+		// entry's, never the item's, which takes it.
+		{brief(fact + `,{"kind":"decision/1","about":"ticket:CND-1","evidence":["run:` + exRun + `"],"alternatives":[{"label":"a","tradeoffs":"x"},{"label":"b","tradeoffs":"y","evidence":["run:` + exRun + `"]}]}`), "items[1].alternatives[1].evidence", []string{"no such field: an alternatives entry takes label, tradeoffs"}},
+		{brief(fact + `,{"kind":"decision/1","about":"ticket:CND-1","alternatives":[{"label":"a","tradeoffs":"x"},{"label":"b","tradeoffs":"y","evidence":["run:` + exRun + `"]}]}`), "items[1].alternatives[1].evidence", []string{"no such field: an alternatives entry takes label, tradeoffs"}},
+		{brief(fact + `,{"kind":"comparison/1","title":"t","columns":["a","b"],"rows":[{"title":"r","cells":["x","y"]}]}`), "items[1].rows[0].title", []string{"no such field: a rows entry takes label, cells"}},
+		// A value of the wrong type in a list is named by its index.
+		{brief(fact + `,{"kind":"decision/1","about":"ticket:CND-1","alternatives":[{"label":"a","tradeoffs":"x"},{"label":5,"tradeoffs":"y"}]}`), "items[1].alternatives[1].label", []string{"takes text, at most", "characters, not a JSON number"}},
+		{brief(`{"kind":"fact/1","text":"x","evidence":["run:` + exRun + `",5]}`), "items[0].evidence[1]", []string{"takes a ref, not a JSON number"}},
+		{brief(fact + `,{"kind":"comparison/1","title":"t","columns":["a","b"],"rows":[{"label":"r","cells":["x","y"]},{"label":"s","cells":["x",true]}]}`), "items[1].rows[1].cells[1]", []string{"takes text, at most 500 bytes, not a JSON bool"}},
 	}
 	for _, c := range cases {
 		_, err := DecodeBrief(c.body, allowAll, goodFacts())
