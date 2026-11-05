@@ -278,8 +278,28 @@ identity, its hash compared with the log's.
 `fingerprint` once the receipt is pruned, as DS2's proposals and
 launches are):
 
-- `SubmitReview(ctx, op, key, NewReview) (Receipt, Review, error)`
-  (`review.submit`): the review and its findings in one transaction,
+**What a fingerprint covers.** The client's request, never what the
+server worked out from it: `Replay` runs before any evidence is read
+(step 1 of Sending a review), and evidence changes between two tries of
+one request (a receipt's class, a log pruned, a commit gone, a line
+located elsewhere). So each write takes its request and its evidence
+as two arguments, as DS2's `AddLink` takes `NewLink` and `Verified`
+apart (`internal/dispatch/links.go`), and `Replay` and `Apply` both
+fingerprint the same request type: `ReviewSubmitArgs{Key; Review
+NewReview}`, where `NewReview` is the body as decoded (candidate, base,
+verdict, summary, `via`, and each finding as sent: kind, intent,
+severity, path, side, lines, words, resolution, and for a check only
+`source`, `receipt`, `chosen` and `quote`), and `FindingMarkArgs{ID;
+Mark NewMark}` (candidate, verdict, note, `via`). `continueRun` is how
+to apply, not what is recorded, and is in neither (a resend without it
+after a lost reply is the same request). The evidence, `ReviewEvidence`
+(per finding, by its place `k`: `anchor_commit` and the filled
+`check_ref`) and `Located`, is checked against the request (one entry
+per finding, a `check_ref` only for a check finding, its receipt the
+one the request named), stored with the rows and never fingerprinted.
+
+- `SubmitReview(ctx, op, key, NewReview, ReviewEvidence) (Receipt,
+  Review, error)` (`review.submit`): the review and its findings in one transaction,
   each finding its own entity with its create row; a `request_changes`
   review is made with `app_state` `pending` and `app_try` 1, any other
   with `none`. Refused: an archived project (`archived`), a
@@ -303,8 +323,9 @@ launches are):
   made in (the reviewed run, or the continuation made for it), the
   command id, the run's revision after it, the number of the attempt that
   will start at the candidate.
-- `MarkFinding(ctx, op, id, NewMark) (Receipt, Mark, error)`
-  (`finding.mark`): a mark of the finding against a candidate. Refused:
+- `MarkFinding(ctx, op, id, NewMark, Located) (Receipt, Mark, error)`
+  (`finding.mark`): a mark of the finding against a candidate, `located`
+  the server's, kept with the mark and outside its fingerprint. Refused:
   a `resolved` mark on any candidate whose commit is the commit of the
   finding's own candidate, whatever its attempt (a Check again's attempt
   n+1, or a repair that committed nothing, holds the same code: "resolve
@@ -357,8 +378,9 @@ their test are `internal/api/events.go`'s (PR-4).
 **A person's change request in the repair** (`task.go`, `taskfile.go`).
 `TaskRepair` gains `Request *ChangeRequest` (JSON `request`, omitted for
 a review task's repair, so every `repair` the ledger holds reads as it
-did): `ChangeRequest{Review, By, Via, Base string; Changes
-[]RequestedChange}` and `RequestedChange{ID, Kind, Intent, Severity,
+did): `ChangeRequest{Review, By, Via, Base, Summary string; Changes
+[]RequestedChange}` (`Summary` the review's, at most `MaxReviewSummary`,
+which the repair's `summary` takes from it) and `RequestedChange{ID, Kind, Intent, Severity,
 Path, Side string; From, To int; Lines []string; Message, Resolution
 string; Check *RequestedCheck}`, `RequestedCheck` the receipt's identity,
 outcome, `class`, `chosen` and the excerpt, as Dispatch keeps them. The
@@ -380,10 +402,12 @@ the lines first, then the resolutions, then the messages past their first
 200 characters, each cut said in `cut`; ids, kinds, locations and
 severities are never cut.
 
-**The size it may be.** `FitChangeRequest(c Crew, task string, cr
-ChangeRequest) error` (exported; `c` the crew as the run was launched,
-the run row's `crew`, which a continuation carries unchanged) measures
-two things before anything is recorded anywhere. First the repair as the task row keeps it, with the largest
+**The size it may be.** `FitChangeRequest(c Crew, pkg *Package, task
+string, cr ChangeRequest) error` (exported; `c` the crew as the run was
+launched, the run row's `crew`, and `pkg` its launch package decoded from
+the run row's `package`, nil for a run no ticket launched, both of which
+a continuation carries unchanged; `cr` the whole request, the review's
+summary in it) measures two things before anything is recorded anywhere. First the repair as the task row keeps it, with the largest
 attempt and commit, against `ledger.MaxPayload` (64 KiB), as
 `Result.fitsLedger` does for a review task's findings. Then the repair
 attempt's task file as `fitTaskFile` would write it: the crew's goal, the
@@ -393,7 +417,9 @@ three texts `taskFile` takes from the run (`r.goal`), the member
 `maxTaskText`, 40 KiB, as `taskTextBytes` counts them), the crew's name
 and, for a run launched from a ticket, the ticket's references, title
 and package file paths as the run's package names them, the request
-after its cuts, and the largest parts an attempt's file carries beside
+after its cuts, its summary (never cut: up to 4,000 characters, as much
+as 24 KiB in `task.json` at six bytes an escaped byte, counted so), and
+the largest parts an attempt's file carries beside
 them (the attempt before, a failed check's tail, the inputs' references
 at their bounds), against `maxTaskFile` (64 KiB) for
 `task.md` and for `task.json` each. A batch past either is refused whole
@@ -513,8 +539,14 @@ checks in the checkout, `refusedBeforeChecks`: `checkout`, `manifest`,
 `setup <id>`, `service <id>`, `ready <id>`, `ready`; else `task_state`).
 The command's own change then records **a new attempt**: numbered next
 (n+1), not counted (`extra++`), its result the same commit, its state
-`verifying` and the task's `verifying`, with the `result.reverified`
-event, in the one transaction that settles the command's receipt (what
+`verifying` and the task's `verifying`, and, for a run that had
+finished (a task failing with its attempts spent finishes its run
+failed, and `settleRun` settles nothing while `r.outcome` is set), the
+run open again: `r.outcome` cleared and marked (`markRun`), the
+prerequisites its end interrupted armed again (`reopenPrerequisites`),
+as `retryTask` reopens one (no event of its own, as Retry has none: the
+run row's outcome and the revision say it); all of it with the
+`result.reverified` event, in the one transaction that settles the command's receipt (what
 `dispatchCandidate`'s record writes today, moved into the command). It
 is not left in `t.candidate`, which `taskRow` does not keep and which
 waits for the pump: a restart would lose it, and a paused run would
@@ -523,7 +555,8 @@ a session (`verify`, as `dispatchCandidate` does after its record),
 started by the command rather than by the pump, so a run whose
 scheduling is paused verifies it too, as `dispatchCandidate` verifies a
 recorded result whatever the pause. The command's undo takes attempt
-n+1 back whole (the attempt, `extra`, the task's state), so a refused
+n+1 back whole (the attempt, `extra`, the task's state, and the run's
+outcome and prerequisites' state as they were), so a refused
 commit retains nothing for a later one to write. A server that ends
 after the commit leaves attempt n+1 `verifying` with its result, which
 the recovery makes `interrupted` and the continuation verifies again
@@ -536,11 +569,14 @@ keeps its failing receipts unchanged. The candidates route
 (`candidateOf`, 16 receipts an attempt) and DS2's `candidateVerified`
 read each attempt alone, so repeated failures never crowd out a later
 pass, and a pass makes attempt n+1's candidate verified for a delivery.
-Passing, the task succeeds with attempt n+1's result and what needs it
-goes on; failing, it fails again at attempt n+1, which is then the
-standing failed candidate. A run the engine does not run refuses it
+Passing, the task succeeds with attempt n+1's result, what needs it
+goes on, and the run settles as every run does (`settleRun`: succeeded
+once its last task is); failing, it fails again at attempt n+1, which is
+then the standing failed candidate, and the run finishes failed again. A run the engine does not run refuses it
 (`task_state`): a person continues it first (Continue, on `main`), and
-Check again then works on the continuation's failed task.
+Check again then works on the continuation's failed task, the candidate
+still named by its own run (`Imported`, `<A>/<task>/<n>`), resolved to
+the continuation by the API (the recheck route, below).
 
 **The repair attempt says what it addressed** (`task.go`). `Result`
 gains `Addressed []Addressed` (`{id, note}`, JSON `addressed`, at most
@@ -591,8 +627,8 @@ with its test; every one the admin's, `requireAdmin`, and a switchyard's
 |---|---|
 | `GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff[?base=COMMIT]` | `{candidate, base, files: [{path, from?, status, added, removed, binary}], truncated}`; `base` the run's base unless given; a `base` that is not the run's base, the attempt's start or a result commit of the same task in the run's chain is `400 invalid_request`; `404 not_found` for an attempt with no result commit; `410 commit_gone` when a commit is no longer in the repository; at most 500 files, measured under `MaxDiffReply`, 256 KiB |
 | `GET /api/runs/{run}/tasks/{task}/attempts/{n}/diff/file?path=P&side=base\|candidate[&base=COMMIT]` | the file's bytes at that side's commit, `text/plain`, at most `gitcli.MaxShowBytes` (1 MiB), `X-Conductor-Truncated: 1` past it, `X-Conductor-Commit` the commit read; `404 not_found` for a path the commit does not have (an added file's base side, a deleted file's candidate side), `415 binary` for a file git calls binary |
-| `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/repair` | the prepared failed-check request, under `MaxRepairReply`, 512 KiB, the sum of its parts at their escaped worst (Go's JSON, six bytes for a byte it escapes): the finding about 80 KiB (its `argv` at the 8 KiB `validateArgv` allows, every byte a control character, 48 KiB with its 32 entries' quotes; the tail and the quote 2 KiB each, 12 KiB each; ids, commits, `previous` and the class's words under 4 KiB), `criteria` at most about 390 KiB (a package's 16 KiB of acceptance, 96 KiB of `<`; or a task's eight checks with their `argv` at the same worst), the rest under 4 KiB; whole, never cut: `{finding, criteria, plan?, ticket?, recheck}` where `finding` is a draft note of kind `check` (its `check_ref` filled from the receipt, the attempt before and the class), `criteria` the acceptance criteria of the run's package when it was launched from a ticket (DS2), else the task's checks as the crew names them, `plan` and `ticket` the launch's references, `recheck` `{allowed, attempt, commit, why?}`: whether Check again would be taken now, by the engine's own rule (the run held, the task failed, this attempt its standing failed candidate, `crew.Recheckable`), and in words why not; `404 not_found` for a receipt the ledger has not, `409 task_state` for a receipt that did not fail |
-| `POST /api/runs/{run}/tasks/{task}/recheck` | `{commandId, attempt, commit, expectedRevision?}` → `{receipt}`, the run commands' answers (`writeReceipt`): the candidate is the one the person chose, and `409 stale_candidate` when it is no longer the task's standing failed candidate, nothing checked |
+| `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/repair` | the prepared failed-check request, under `MaxRepairReply`, 512 KiB, the sum of its parts at their escaped worst (Go's JSON, six bytes for a byte it escapes): the finding about 80 KiB (its `argv` at the 8 KiB `validateArgv` allows, every byte a control character, 48 KiB with its 32 entries' quotes; the tail and the quote 2 KiB each, 12 KiB each; ids, commits, `previous` and the class's words under 4 KiB), `criteria` at most about 390 KiB (a package's 16 KiB of acceptance, 96 KiB of `<`; or a task's eight checks with their `argv` at the same worst), the rest under 4 KiB; whole, never cut: `{finding, criteria, plan?, ticket?, recheck}` where `finding` is a draft note of kind `check` (its `check_ref` filled from the receipt, the attempt before and the class), `criteria` the acceptance criteria of the run's package when it was launched from a ticket (DS2), else the task's checks as the crew names them, `plan` and `ticket` the launch's references, `recheck` `{allowed, run, revision, attempt, commit, why?}`: whether Check again would be taken now, by the engine's own rule (the run held, the task failed, this attempt its standing failed candidate, `crew.Recheckable`), judged on the run it would go to: the newest run of the receipt's chain (walking `continued_by` from the receipt's run, as a review's application does), so a receipt of run A that a continuation B carries is judged on B, B's failed task holding A's attempt as its standing failed candidate; `run` and `revision` name that run and its revision, `attempt` and `commit` the candidate as the receipt names it (A's), and `why` says in words why not ("continue run A first", "attempt 4 failed since"); `404 not_found` for a receipt the ledger has not, `409 task_state` for a receipt that did not fail |
+| `POST /api/runs/{run}/tasks/{task}/recheck` | `{commandId, attempt, commit, expectedRevision?}` → `{receipt, run, attempt}`, the run commands' answers (`writeReceipt`): `{run}`, `attempt` and `commit` name the candidate the person chose, in its own run, as the receipt and the CLI name it; the server resolves the run the command goes to (the newest of the chain, as `recheck.run` says) and calls `Engine.Recheck` there, with `Imported` the candidate's reference when that run is a continuation, `expectedRevision` that run's (the prepared request's `revision`); the reply's `run` and `attempt` are where the candidate is checked again (attempt n+1 of the continuation), and a resend is looked for by its command id along the chain from `{run}`, so it finds the receipt in the continuation that took it; `409 stale_candidate` when it is no longer the task's standing failed candidate there, `409 task_state` with "continue run A first" when no run of the chain is held, nothing checked |
 
 The repository is the run's crew directory as launched, through
 `resolveCwd` and `crew.CheckRepo`, as DS2's proposal resolves it; paths
@@ -646,7 +682,8 @@ two typed operations of two stores are made and settled the same way):
    from the ledger and refused when it is not the candidate's receipt
    (above). The request is built (`crew.ChangeRequest`) and measured
    (`FitChangeRequest`, with the run's crew as launched: its goal, the
-   task's member's prompt and the task, read from the run's row).
+   task's member's prompt and the task, and its launch package, both
+   read from the run's row, and the request whole, the summary in it).
    Whether the server holds the newest run of the candidate's chain is
    read here: when it does not (finished and let go, stopped, from
    before a restart) and the body has no `continueRun: true`, the answer
@@ -685,17 +722,32 @@ two typed operations of two stores are made and settled the same way):
    rows and `pendingMore`) when the pause's commit is refused too, and the
    run's next commit writes both (`TestARefusedChangesOwnRowsGoWithItsEvents`).
    The review stays `pending` ("Yardmaster took the request; the ledger
-   has not recorded it yet") and is settled when the receipt settles:
-   the API's `OnRunChange`, which the engine calls after every commit of
-   the run (`touch`), reads the command again (`reviewsSettling`, a set
-   of review ids per run, bounded by the in-flight map), `done` recording
-   it applied and `failed` refused. When the engine no longer holds the
-   run, or reports it settled with the command still `accepted`
-   (`Engine.Settled`, whose `dirty` counts the retained writes), nothing
-   left can commit it, and it is recorded refused in those words; a
-   restart leaves it to the reconcile below, where `accepted` and
-   `uncertain` are exact, the process that retained the change being
-   gone with it.
+   has not recorded it yet") and is settled when the receipt settles,
+   by a worker of the API's, never inside the engine's callback: the
+   engine calls `OnRunChange` after every commit of the run (`touch`)
+   under `e.mu`, where it must neither wait nor call the engine, and a
+   settlement reads the ledger, writes Dispatch and asks
+   `Engine.Settled`, which takes `e.mu`. So the review is registered
+   first (`reviewsSettling`, a set of review ids per run under its own
+   small lock, bounded by the in-flight map, one entry per review this
+   process is applying), the command read back after the registration,
+   and only then is an answer still `accepted` left to the worker; a
+   commit between the read-back and the worker's first look marks the
+   run as the callback does, so none is missed. `OnRunChange` only
+   marks the run in a set of runs to look at (the same small lock, held
+   for a map write and never across a call) and wakes the worker by a
+   send on a channel of one that never blocks (a wake already queued
+   covers it). The worker (`settleReviews`, one goroutine started with
+   the server on its context and ended in its Close before the stores
+   close) takes the marked runs, and for each review registered on one
+   reads its command from the ledger, outside `e.mu`: `done` records it
+   applied and `failed` refused, and the review leaves the set. When the
+   engine no longer holds the run, or reports it settled with the command
+   still `accepted` (`Engine.Settled`, whose `dirty` counts the retained
+   writes), nothing left can commit it, and it is recorded refused in
+   those words; a restart leaves it to the reconcile below, where
+   `accepted` and `uncertain` are exact, the process that retained the
+   change being gone with it.
 
 **Reconcile** (`reconcileReviews`, run beside `reconcileLaunches` in
 `ledgerRecovered`, before `s.launches.ready` is set). Every review still
@@ -753,8 +805,10 @@ sent again), `reviews KEY-n`, `review show ID`, `review retry ID
 --verdict resolved|open|withdrawn [--note TEXT]`, each write minting its op id and
 asking once more on a lost reply (DS1's rule), the reads under
 `maxDispatchReply`, which takes the new reply bounds; `conductor crew
-recheck RUN/TASK/N@COMMIT` (the failed candidate named, as the route
-takes it). `conductor task result` gains `--addressed
+recheck RUN/TASK/N@COMMIT` (the failed candidate named in its own run,
+as the route takes it, and the run and attempt the server checked it in
+printed from the reply: "checked again as attempt 4 of run B, a
+continuation of A"). `conductor task result` gains `--addressed
 ID[=NOTE]` (repeatable); the MCP tool `task_result`'s schema gains
 `addressed` (`internal/api/guide.go`, the one table the tools are built
 from, and the golden `internal/cli/testdata/tools-list-main.json`); no
@@ -774,16 +828,28 @@ done, and that a question is answered in the summary. The usage in
   (`utils/dispatchOrder.ts`), the writes minting their op ids and asking
   once more with the same id on a lost reply (`utils/tasks.ts`'s rule).
 - `composables/useReviewDraft.ts`: the draft of one candidate (its notes,
-  the verdict, the summary), kept in `localStorage` under the ticket and
-  the candidate, every read and write in `try`/`catch`, so a reload keeps
-  it and a private window works without it; a convenience of this
-  browser, never a record (the record is what Send review commits).
+  the verdict, the summary, and the base its diff was read against),
+  kept in `localStorage` under the ticket and the candidate, every read
+  and write in `try`/`catch`, so a reload keeps it and a private window
+  works without it; a convenience of this browser, never a record (the
+  record is what Send review commits). The draft's base is the review's:
+  a reload opens the diff at the draft's base, not the default; the base
+  picker moves the draft's base with it while the draft holds no
+  base-side note (a candidate-side line is the candidate's whatever the
+  base), and once it holds one the picker is locked to that base ("2
+  notes are on the base a1b2c3d: send or drop them to compare against
+  another"); Send review sends the draft's base, so a base-side note's
+  lines and the `anchor_commit` the server gives it are of one commit. A
+  stored draft whose base the page no longer offers (not the run's base,
+  the attempt's start or a result of the task in the chain) is shown
+  with its notes for the person to drop or copy, and not sent.
 - `utils/review.ts` (vitest `utils/review.test.ts`): a note from a
   selection (side, path, range, the lines cut to 12 of 200 bytes, as
   `makeQuote` cuts), the batch's checks and its measured size (the same
   arithmetic as `FitChangeRequest`, against the shared fixture), the
   words of an application (recorded, applied, refused) and of a located
-  state, a finding's state from its marks, the candidates of a ticket in
+  state, the run a Check again goes to and is shown in (`recheck.run`,
+  the reply's `run`), a finding's state from its marks, the candidates of a ticket in
   their lineage (`lineage`: from DS2's candidates and the task route,
   which attempt repaired which review or which failed check, through
   which continuation), the class's words, which actions a failed receipt
@@ -1011,7 +1077,11 @@ none of theirs, since none is touched. The tests each PR adds:
 request, kind and fields disagreeing, an external source),
 `TestReviewBounds` (each bound at its edge and one past),
 `TestReviewReplayAnswersTheSameReceipt` (and once its receipt is pruned,
-by the fingerprint), `TestApplicationSettlesOnlyItsTry`,
+by the fingerprint), `TestReplayIgnoresTheEvidence` (a review resent
+with another class and a check whose log was pruned since, and a mark
+resent with another `located`: the same receipt, never `op_conflict`,
+before and after the receipt's pruning; another finding's words under
+the same `opId`: `op_conflict`), `TestApplicationSettlesOnlyItsTry`,
 `TestRetryIsTheNextTryAndStopsAtFive`, `TestMarksAreALog`,
 `TestFindingStateIsTheLatestMark` (two marks at one time, the one
 order), `TestResolvedNeedsALaterCandidate` (a candidate of the finding's
@@ -1027,6 +1097,11 @@ own commit refused, whatever its attempt), `TestMarksPageEndsAtItsBound`,
 the class): `TestRecheckVerifiesTheFailedCandidateAgain` (passing:
 succeeded at that commit as attempt n+1, a candidate of its own;
 failing: failed again at n+1; attempt n's receipts unchanged either way),
+`TestRecheckReopensAFinishedRun` (a run finished failed by its one
+task's spent attempts: Check again makes it running, its outcome cleared
+in the ledger's run row, then succeeded when attempt n+1 passes; failed
+again when it fails; the command's commit refused through the fake
+ledger: the run still finished failed, its outcome unchanged),
 `TestRecheckIsBoundToTheChosenCandidate` (another attempt failed
 meanwhile: `stale_candidate`, nothing checked; a resend naming another
 candidate: a conflict), `TestRecheckAfterAFailureBeforeTheChecks` (a
@@ -1079,6 +1154,13 @@ reads too), `TestFitChangeRequestWithTheTasksText` (thirty 1,024-byte
 paths beside 40 KiB of instructions refused though the repair is under
 64 KiB; at the edge accepted, and its attempt's `task.md` and
 `task.json` written within 64 KiB each),
+`TestFitChangeRequestCountsTheSummaryAndThePackage` (a request with a
+4,000-character summary of `<` beside a launch package with its title
+at its cut and its attachments' paths at their bound, and the same
+request with no package and no summary: near the limit the second
+accepted and the first refused, and every accepted request's repair
+attempt writes `task.md` and `task.json` within 64 KiB each with the
+package's files beside them),
 `TestFitChangeRequestCountsTheGoalAndTheRole` (two crews with the same
 task definition, one with a short goal and member prompt, the other with
 both at their bounds beside the same instructions, near the combined
@@ -1116,6 +1198,11 @@ their worst as the criteria: each reply whole and under 512 KiB),
 allowed; a checkout's setup failure: allowed; a run the server let go and
 a task that moved on: not, with why), `TestRecheckRoute` (the candidate
 named; one that moved meanwhile `409 stale_candidate`),
+`TestRecheckAfterContinueThroughTheRoute` (run A's task failed, A
+continued as B: the prepared request of A's receipt says `allowed` with
+`run` B; the recheck route posted with A's candidate checks it in B and
+answers B and its attempt; a resend answers the same receipt; before
+the Continue, `allowed` false with "continue run A first"),
 `TestRecheckedCandidateIsVerifiedForADelivery` (`candidateVerified` on
 attempt n+1 after failures), `TestReviewDiffRoutesAreTheAdmins` (a session token
 and a view link refused, a switchyard `403`), and the guide's golden
@@ -1136,7 +1223,15 @@ pause's commit both refused through the fake ledger's `failOn`, the
 server running on: the review stays pending, then the run's next commit
 writes the repair and its receipt and the review is recorded applied,
 never refused first; and with the run let go before any commit: recorded
-refused),
+refused; and the run's next commit made through a seam at each point
+of the settlement's order, after the registration and before the
+read-back, and after the read-back and before the worker's first look:
+recorded applied each time, never left pending),
+`TestSettlementRunsOutsideTheEngine` (the settlement's ledger read held
+at a gate while the engine commits the same run again and another run
+launches: neither waits on it, so a settlement inside the callback, which
+would take `e.mu` again, fails the test by its timeout; the worker
+ended by the server's Close before the stores close),
 `TestSubmitReviewBindsEachFindingToItsCandidate` (another candidate's
 receipt, a passing receipt and a base-side anchor all bound by the
 server; a client's outcome fields are unknown fields),
@@ -1151,6 +1246,11 @@ applied by the reconcile),
 `TestReviewReconciledBetweenActsTwoTransactions` (the server ended
 through a test hook after `act`'s first transaction, beside
 `afterLookup`: on restart recorded refused, the task unchanged),
+`TestResendAfterTheEvidenceChanged` (a review sent, its reply lost, the
+receipt's log pruned and the receipt pruned from Dispatch, then resent
+with the same `opId` and without `continueRun`: answered by `Replay`
+before any evidence is read, the review as it stands, nothing recorded
+twice; a mark resent after its candidate's file changed: the same),
 `TestReviewViaIsTheServers` (`brakeman` from the admin refused; `web`
 and `cli` kept as the client's label beside the actor),
 `TestRequestAgainIsANewCommand`,
@@ -1179,7 +1279,9 @@ entities (`sync_test.go`).
 `TestDispatchReviewRetry`, `TestDispatchReviewContinue` (without
 `--continue` the words printed and nothing resent, for `review` and for
 `review retry`),
-`TestCrewRecheck` (the candidate named; one that moved refused),
+`TestCrewRecheck` (the candidate named; one that moved refused; after
+a Continue, A's candidate named and the continuation's run and attempt
+printed),
 `TestTaskResultAddressed` (CLI and the MCP tool),
 the tools golden (`testdata/tools-list-main.json`),
 `TestSkillSaysFindingsMayComeFromAPerson`, the completion table's test.
@@ -1192,15 +1294,21 @@ state from marks, the actions of a failed receipt: Check again by
 `utils/reviewLineage.test.ts` (a repair of a person's review, of a
 review task, of a failed check, through a continuation),
 `composables/useReviewDraft.test.ts` (kept per candidate, a storage that
-throws, a sent draft emptied), `composables/useReview.test.ts` (the
+throws, a sent draft emptied; the base kept with the draft: a reload
+opens at the draft's base, the base picker moves a draft of
+candidate-side notes and is locked by a base-side note, a stored base
+the page no longer offers is not sent), `composables/useReview.test.ts` (the
 ordering gate, one more ask with the same op id on a lost reply).
 
 **Playwright** (`web/e2e`): `review.spec.ts` (PR-6): a ticket launched
 from an approved revision of a stub worker crew; the Review view at the
 first candidate; lines selected on the candidate side of one file and
 the base side of another, a whole-file note and a general note, the
-draft kept through a reload, Send review as Request changes after its
-confirmation; the review shown recorded then applied with its attempt;
+draft kept through a reload, the base-side note's base kept too (the
+diff switched to the attempt's start before the note, the page reloaded:
+the diff opens at that base and the picker is locked, and the review
+sent records that base and the note's `anchor_commit` at it), Send
+review as Request changes after its confirmation; the review shown recorded then applied with its attempt;
 the repair attempt's candidate appearing, its receipts its own and the
 first candidate's unchanged; the batch past its size refused with
 nothing kept. `review-repair.spec.ts` (PR-7), its stub worker under
@@ -1215,7 +1323,12 @@ and the criteria, Check again offered because the prepared request says
 the engine takes it, and pressed: the task succeeds at the same commit
 as attempt n+1, a candidate of its own listing its passing receipt,
 attempt n's candidate its failing one unchanged, and Resolved refused
-for a finding of attempt n on attempt n+1, the same commit; a refused
+for a finding of attempt n on attempt n+1, the same commit; a check
+failing again on a run then stopped and continued (Continue on the run
+page): Prepare a repair from the first run's failed receipt offers Check
+again for the continuation, and pressed, the page shows the candidate
+checked again in the continuation's run, its new attempt's receipt
+there, the first run's receipts unchanged; a refused
 request (the task retried meanwhile)
 and Request again; the run page's Review entry; the phone width (one
 column, a note by typed lines, a mark). Each spec ends its strays
@@ -1309,7 +1422,7 @@ which owns that part), IN1a's external CI jobs
 | PR-2b | crew: a person's repair | `ChangeRequest` in `TaskRepair`, `task.md`'s person's findings and their cut order, `FitChangeRequest` with the crew's goal, the member's prompt and the task's text, and its fixture, `Engine.RequestChanges` and `reopenFor` (through `standingFailed`), `repair.start` for a candidate refused before its checks, `Result.Addressed`, the ledger's version 8 barrier; `docs/protocol.md`'s task file `repair.request` and result `addressed` | `internal/crew`, `internal/crew/ledger`, `docs/protocol.md` | the PR-2b tests above | PR-2a | PR-1 |
 | PR-2c | crew: the continuation that carries a person's repair | `ContinueRunWith` and `ContinueOptions`, `startContinued`'s import of a repaired task and its dependents, `repair.start` from `t.priorLast` for a refused candidate, the command's row and receipt in the first transaction | `internal/crew` | the PR-2c tests above | PR-2b | PR-1, PR-3 |
 | PR-3 | api: a candidate's diff, the prepared failed-check request, Check again | `gitrepo.Compare` (`diffTrees` shared with `CommitDetail`), the two diff routes, the repair-prepare route with `recheck`, the recheck route bound to its candidate, their guide rows, `docs/protocol.md`'s Crew runs rows | `internal/gitrepo`, `internal/api`, `docs/protocol.md` | the PR-3 tests above | PR-2a | PR-1, PR-2c |
-| PR-4 | api: reviews sent, applied, reconciled and marked | `dispatch_reviews.go` (the seven routes, the order of a request, the findings' binding, `continueRun` on the submit and the retry, `reviewsInFlight`, the read-back and `reviewsSettling` on `OnRunChange`), `reconcileReviews` in `ledgerRecovered` with every command status, `review_locate.go`, the guide rows, the sync adapter's entities, the `dispatch` event bound and `maxDispatchEach`'s arithmetic (`events.go`), `docs/protocol.md`'s Dispatch rows and event entities | `internal/api`, `docs/protocol.md` | the PR-4 tests above | PR-1, PR-2b, PR-2c, PR-3 | none |
+| PR-4 | api: reviews sent, applied, reconciled and marked | `dispatch_reviews.go` (the seven routes, the order of a request, the findings' binding, `continueRun` on the submit and the retry, `reviewsInFlight`, the read-back and `reviewsSettling`, the `settleReviews` worker that `OnRunChange` only wakes), `reconcileReviews` in `ledgerRecovered` with every command status, `review_locate.go`, the guide rows, the sync adapter's entities, the `dispatch` event bound and `maxDispatchEach`'s arithmetic (`events.go`), `docs/protocol.md`'s Dispatch rows and event entities | `internal/api`, `docs/protocol.md` | the PR-4 tests above | PR-1, PR-2b, PR-2c, PR-3 | none |
 | PR-5 | cli, agents: review from the CLI, `addressed`, the skill | `conductor dispatch review` (with `--continue`), `reviews`, `review show`, `review retry` (with `--continue`), `findings`, `finding marks`, `finding mark`, `conductor crew recheck`, `conductor task result --addressed`, `task_result`'s `addressed` in the guide table and the tools golden, the skill's text, usage and completion | `internal/cli`, `internal/agents`, `internal/api` (`guide.go` only) | the PR-5 tests above | PR-4 | PR-6 |
 | PR-6 | web: the Review view, its diff and the batch sent | `useReview`, `useReviewDraft`, `utils/review.ts`, `DiffEditor`'s `selectable` and `marks`, `DispatchReview`, `ReviewCandidate`, `ReviewFiles`, `ReviewNote`, `ReviewDraft`, `ReviewApplication`, the ticket page's `?view=review` and Review on candidates, the stub's repair from a person's request, `review.spec.ts` | `web/app/components`, `web/app/composables`, `web/app/utils`, `web/e2e` | vitest above (`review.test.ts`, `useReviewDraft.test.ts`, `useReview.test.ts`), `review.spec.ts` | PR-4 | PR-5 |
 | PR-7 | web, docs: findings across candidates, the failed-check panel, the whole view; the features entry | `ReviewFindings` (marks, located words, the agent's claims), `ReviewCheckFailure` (Prepare a repair, Check again), `ReviewLineage` and `utils/reviewLineage.ts`, requirements, plan, checks, decisions and delivery in the view, `DispatchRepairs`' person's repairs, the run page's entries, the palette rows, the phone layout, the stub's `addressed` and its `STUB_REVIEW_EDITS` edits, `review-repair.spec.ts`; `docs/architecture.md`, `docs/repository-map.md`, `README.md`, `docs/features.md` | `web/app/components`, `web/app/composables`, `web/app/utils`, `web/app/pages`, `web/e2e`, `docs`, `README.md` | vitest (`reviewLineage.test.ts`, more of `review.test.ts`), `review-repair.spec.ts` | PR-5, PR-6 | none |
@@ -1382,7 +1495,8 @@ taken.
 10. **Check again is a command of its own**, on a run the server runs:
     it verifies the failed candidate the person named again without a
     session, as a new uncounted attempt whose result is the same commit
-    and whose receipts are its own, and changes nothing else; for a run
+    and whose receipts are its own, and changes nothing else but opening
+    again a run that task's failure had finished; for a run
     it does not run, Continue first, then Check again in the
     continuation.
 11. **The base is the run's base by default**; the attempt's start or an
