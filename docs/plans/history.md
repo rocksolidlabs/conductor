@@ -255,7 +255,8 @@ type Record struct {
 	Crew     *Crew      `json:"crew,omitempty"`
 	ResumedFrom string  `json:"resumedFrom,omitempty"`
 	StartedAt time.Time `json:"startedAt"`
-	EndedAt   time.Time `json:"endedAt,omitzero"`
+	EndedAt   time.Time `json:"endedAt,omitzero"` // an observed end only: an exit or a stop the server saw
+	LostAt    time.Time `json:"lostAt,omitzero"`  // when the server stopped observing it ("lost", "host away"): its process's state unknown
 	Ending    string    `json:"ending,omitempty"` // "exited (exit 0)", "stopped", "lost", "host away"
 	Reopened  int       `json:"reopened,omitempty"` // a hosted record taken up again by its host (below)
 	Entries  []Entry    `json:"entries"`
@@ -328,7 +329,8 @@ Resume from that record is refused (`409 args_not_kept`, below), so no
 resume runs with arguments other than the ones launched. The variables'
 names at most 64, past it their count only (in the hash all the same).
 
-`MaxRecords` (2,000) counts ended records; a live record, and one with a
+`MaxRecords` (2,000) counts ended records (a `lost` or `host away` one
+among them: it is no session this server runs); a live record, and one with a
 `pending` resume, is never pruned and is not counted, and live records are
 bounded by the server's `MaxSessions` (config, 32 by default, at most
 10,000). Worst case on disk is (2,000 + `MaxSessions`) × 64 KiB, and one more
@@ -360,11 +362,11 @@ safe for concurrent use:
   is the goroutine that reads the host's connection and must not wait on a
   disk. **Begin on an id that already has a record** reopens it only when
   both are the same host's hosted session (`Host.Hosted`, the same
-  `Host.Owner`) and the record is open or ended `host away` or `lost`: a
+  `Host.Owner`) and the record is open or marked `host away` or `lost`: a
   hosted session's id is `HostedID(instance, localID)`
   (`internal/signal/hub.go`), the same after a server restart or after its
   host comes back past `DisconnectGrace`, and its process may have lived
-  through either. Reopened, `EndedAt` and `Ending` are cleared,
+  through either. Reopened, `LostAt` and `Ending` are cleared,
   `Reopened` counts it, a `status` entry says "taken up again by its host",
   and every earlier entry and `Seq` stay. Any other existing id is refused
   (`ErrExists`, logged): a server session's id is random and never comes
@@ -376,6 +378,11 @@ safe for concurrent use:
   (`eventHub.activity`: "concurrently and out of order"; `Local.record`
   calls `OnActivity` after its lock), so a record's entries are kept in
   order of `At`, then of arrival, never of arrival alone.
+- `Changed(id string)`: the session's metadata marked stale and the
+  writer woken; the writer reads it as it is then through `Current(id)`
+  (the API's callback, "The API's part of PR-1"), never from a snapshot a
+  caller hands it, and writes a record whose `Crew` or end it changed at
+  once.
 - `End(id string, end Ending)`: the end commit, the time and how it ended,
   set in memory and the writer woken to write it at once; never a disk
   write on the caller's goroutine (a sink or the registry's `OnRemove`). An
@@ -397,12 +404,17 @@ safe for concurrent use:
   the settlement always finds its record.
 - `Prune()`: past `MaxRecords` the oldest ended records go; a live one, and
   one with a `pending` resume, never.
-- `Recover()`, at open once the lock is held: a server session's record
-  with no `EndedAt` (the lock's holder before this one is gone, so its
-  process is too) is ended `lost` at its last write's time; a hosted
-  record with none is ended `host away`, since its process runs on its host
-  and may still be running: its host's next register reopens it (`Begin`,
-  above). A `pending` resume receipt is settled by the rule of "Resume from
+- `Recover()`, at open once the lock is held: a record with no end is
+  marked as no longer observed, never as ended: a server session's `lost`,
+  a hosted one's `host away`, `LostAt` its last write's time and `EndedAt`
+  left empty. That the lock's last holder is gone says nothing of the
+  session's process: a Runtime's context bounds its start, never its
+  process's life (`ext.Runtime.StartTerminal`, `ext/runtime.go`), nothing
+  promises that a guest's terminal ends with the server (Boxcar constraint
+  7), and even a native child can outlive a server that crashed. The
+  record page says "not observed since <time>; whether its process ended
+  is not known", and Resume from it asks first ("Resume from a record").
+  A hosted record's host's next register reopens it (`Begin`, above). A `pending` resume receipt is settled by the rule of "Resume from
   a record" below. Run once, before the first `Begin`.
 - `Seq` on every write, from a counter in `history/state.json` written
   before the record, so a mark never goes back after a restart.
@@ -441,8 +453,28 @@ at these places, each named as it is on `main`:
   read the same way after the end (native only, on the writer's
   goroutine), and is shown as "HEAD after the end", an observation.
 - **A server session's changes**: the `localChange` hook (`OnChange` of
-  every server session, `sessions.go`) copies the agent's own session id
-  in when its `Info` changes it.
+  every server session, `sessions.go`) calls the journal's `Changed(id)`,
+  which marks the record's metadata stale and wakes the writer, never
+  waiting; the `Info` the hook is handed is never copied. A session reads
+  its `Info` before it calls the hook, and its calls are not ordered
+  among themselves (`Local.notifyChange`, `internal/session/local.go`; the
+  race `hostagent`'s `noteChange` and `forwardChanges` document and
+  handle, #482), so a copied snapshot could put an older, higher Codex id
+  back over the lowest one the session chose, or a resumable id back to
+  not resumable. The writer instead reads the session as it is when it
+  gets to it, through a `Current(id)` callback the API hands `Open` (the
+  registry's `Info` of that id, as `publishLatest` reads `listedInfo`),
+  which is at least as new as every change marked before the read; a
+  change after the read marks it again. It answers the journal's own
+  `Meta` (the journal imports no session package), and from it the
+  record takes the agent's own session (`ID`, `Source`, `Resumable`), the
+  name, **the crew** and the status. A session adopted into a crew after
+  its start (`handleSelfCrew`, `internal/api/selfservice.go`:
+  `LaunchAdopting`, then `Local.SetCrew`) gets its `Crew` this way, and a
+  record whose `Crew` goes from none to one is written at once, as an end
+  is, not at the next flush. An ended `Info` (`Status.Ended()`, its exit
+  code and `EndedAt`) ends the record as `End` does, so an end never rests
+  on the status activity entry alone.
 - **A hosted session's add**: a new `OnAdded` callback on the hub
   (`internal/signal`), called by `Register` after `registry.Add` succeeds,
   which the API sets and which calls `Begin` from the session's `Info`
@@ -458,7 +490,15 @@ at these places, each named as it is on `main`:
   not the host's, and are never used for a hosted record.
 - **A hosted session's changes**: the hub's `OnChange` (`s.hosts.OnChange`,
   `server.go`), which carries a hosted `Info`; `localChange` is never
-  called for a hosted session.
+  called for a hosted session. It calls `Changed(id)` the same way, and
+  `Current` reads the hosted session's `Info` as it is then. A hosted
+  session's exit reaches the server twice: as the host's `status` activity
+  entry, which the host's bounded queue may drop (`activityForwarder`,
+  `internal/hostagent/activity.go`: a full queue drops the entry), and as
+  the host's status control message, which sets the hosted `Info`'s status
+  and exit code and calls `OnChange` with no activity entry
+  (`HostedSession.HostStatus`, `internal/signal/hosted.go`). The record's
+  end is taken from the ended `Info` whichever of the two arrives.
 - **Every session's entries and end**: a sink on the event hub
   (`eventHub.addSink`), which hands every activity entry of every session,
   server and hosted alike (`s.hosts.OnActivity` is the hub's `activity`
@@ -466,7 +506,11 @@ at these places, each named as it is on `main`:
   the session's removal from the registry (`session.Registry.OnRemove`,
   the registry's hook, not the hub's) to `End` as well, `host away` for a
   hosted session the hub let go past `DisconnectGrace` (`Hub.Expire`),
-  which proves nothing of its process. The hub's `chat` (the `OnChat` of
+  which proves nothing of its process (`LostAt`, no `EndedAt`). **A known
+  end is kept**: once a record holds an observed end (an exit or a stop,
+  from its `Info` or its status entry), a later removal or expiry changes
+  nothing, so "exited (exit 0)" never becomes "host away"; only a record
+  with no observed end is marked by a removal. The hub's `chat` (the `OnChat` of
   server sessions, `localChat`, and of hosted ones, `s.hosts.OnChat`)
   calls the journal's `Chat` for a session's chat (one call, never
   waiting; run chat stays the run record's).
@@ -512,7 +556,7 @@ its own (WAL, `synchronous=NORMAL` since it is a cache, foreign keys, a busy
 timeout, one connection), schema version 1:
 
 ```sql
-CREATE TABLE schema_version (version INTEGER NOT NULL);
+CREATE TABLE schema_version (version INTEGER NOT NULL, generation INTEGER NOT NULL); -- generation: bumped by every clear
 CREATE TABLE sources (
   key TEXT PRIMARY KEY,          -- "run:<id>", "check:<run>/<task>/<n>/<id>/<k>", "session:<id>", "ticket:<KEY-n>", "brief:<br-n>", "dispatch:feed"
   mark TEXT NOT NULL,            -- what the source said when it was read: a revision, a seq
@@ -686,10 +730,25 @@ most 16 terms):
   malformed value is refused with words (`ErrQuery`).
 
 Order: with words, FTS5's `bm25(entries_fts, 4, 2, 1)` (title, summary,
-body), then newer first; with filters alone, newer first. Class never weighs
-in the order. A page holds at most 100 entries (default 20) after a cursor,
+body), then newer first; with filters alone, newer first; in both, last by
+the entry's `key`, which is unique, so the order is total and entries of
+the same text, score and time keep one place each. Class never weighs in
+the order. A page holds at most 100 entries (default 20) after a cursor,
 with the total when it is at most 10,000 ("more than 10,000" past that,
-which the count stops at). Each entry comes with `snippet()` of its best
+which the count stops at). **The cursor** (`next`, opaque, at most 512
+bytes: base64 of JSON decoded with `DisallowUnknownFields`) holds the last
+row's sort values (its score as the float64 it was, which JSON carries
+exactly, its `at` and its `key`), a digest of the parsed query and the
+index's `generation`; the next page is the rows strictly after that tuple
+in the same order, compared as one row value as Dispatch compares its
+`(keys…, id)` (`internal/dispatch/query.go`). A cursor that does not
+decode, or of another query, is refused (`ErrCursor`, `400 bad_cursor`);
+one of an earlier generation (a reindex or a schema rebuild has cleared
+the index since) answers `409 stale_cursor` ("the history was rebuilt;
+search again"). Within a generation, sources indexed between two pages can
+move a row's score, so a row may be seen twice or missed, as a Dispatch
+page over tickets that changed may; the History page drops a key it
+already shows. Each entry comes with `snippet()` of its best
 column (at most 300 bytes, the match marked), its `repeats` (how many
 entries of the same digest and class exist and in how many anchors: "said in
 3 sessions", computed for the page's rows only), and at most 8 of its links
@@ -815,7 +874,10 @@ revisions (`Ledger.Pointers`, paged) against the indexed marks; the run
 records' and the briefs' files by size and modification time, a file whose
 stat differs hashed and compared with its mark. The hooks are the fast
 path; the reconcile is what makes a write by another server searchable
-within 30 s without a restart.
+within 30 s without a restart. PR-3's reconcile reads the ledger's
+pointers and the run records' files, the stores of its own sources; PR-4
+adds Dispatch's feed and the briefs' files with the ticket and brief
+sources.
 
 **The sources** (`history_sources.go`, PR-3 for sessions and runs, PR-4 for
 Dispatch and briefs), each a function from what its store holds to entries
@@ -881,11 +943,20 @@ and links, every field of the six taken from the record itself:
   as `candidate.verified` only by DS2's own verification predicate, the one
   a delivery's receipt is made by (`candidateVerified`,
   `dispatch_delivery.go`: the attempt ended `succeeded`, at least one
-  receipt, every receipt finished with exit 0, stable and no error), which
-  PR-3 factors into a pure function over the rows (`verifiedOf`, with no
-  change to what the delivery route answers, its tests unchanged), never
-  `candidateOf` alone, which only gathers the receipts; a failed setup or
-  service step as `step`. Links: `continues` to the run it continues;
+  receipt, every receipt finished with exit 0, stable, not timed out and
+  with no signal; it does not read a row's `Error`, which the engine's
+  `failedOutcome` does), which PR-3 factors into a pure function over the
+  rows (`verifiedOf`, that predicate exactly, with no change to what the
+  delivery route answers, its tests unchanged), never `candidateOf` alone,
+  which only gathers the receipts. The two predicates differ on one row: a
+  finished receipt at exit 0, stable, with no timeout or signal, that
+  carries an `Error`, which the delivery passes and the engine fails. HS1
+  keeps the delivery's predicate as it is (what a delivery keeps is DS2's,
+  and changing it is a change to that item's behaviour, named in PR-3's
+  issue for its own) and writes `candidate.verified` only when `verifiedOf`
+  holds and `crew.FailedOutcome` fails none of the candidate's receipts, so
+  no Checked ✓ stands over a receipt the history shows Checked ✗; a failed
+  setup or service step as `step`. Links: `continues` to the run it continues;
   `launched_from` to its ticket and plan revision (`Run.Ticket`); `handed`
   from a failed receipt to the attempt that was handed it; `passed_after`
   from a failed receipt to the first later receipt of the same check id on
@@ -951,8 +1022,17 @@ whose `refURL` is not a page of the app that shows that exact evidence
   PR-6);
 - a command receipt (`refURL` the API's JSON route,
   `/api/runs/<run>/commands/<id>`) opens the run page at the receipt
-  (`/runs/<run>?command=<id>`, PR-6): its intent, actor, time, state and
-  answer, read from that same route;
+  (`/runs/<run>?command=<id>&actor=<actor>`, PR-6): its intent, actor,
+  time, state and answer, read from an evidence reader scoped by the
+  entry's own actor, `GET /api/history/command?run=&actor=&id=` (admin,
+  PR-4), which reads `ld.Receipt(ctx, run, actor, id)` with the actor the
+  entry names and answers it with the receipt. The run's command route is
+  not that reader: it finds the caller's own receipt (`actorOf(r)`,
+  `internal/api/ledger.go`), the read a client that lost a reply makes
+  before it sends again, and `requireAdmin` also admits an identity
+  provider's administrator, whose actor is `user:<subject>`, so it would
+  open that administrator's receipt of the same id, or `404`, and it
+  answers no actor. That route and its retry semantics are unchanged;
 - a comment (`refURL` the ticket's page, which loads only its latest page
   of comments and locates none by its id; the resolver's `commentURL` is an
   API route) opens the ticket's page at the comment
@@ -969,7 +1049,7 @@ a page of 100 (no git, no disk read but a `stat`):
 
 | Entry | `availability.state` and its words |
 |---|---|
-| a session | `live` (listed, running), `listed` (ended, still listed: its page shows its last screen), `record` (only its record), `host_away` (a hosted session whose host is not connected now), `forgotten` (a link to a record no longer kept) |
+| a session | `live` (listed, running), `listed` (ended, still listed: its page shows its last screen), `record` (only its record), `lost` (only its record, which the server stopped observing while it ran: whether its process ended is not known), `host_away` (a hosted session whose host is not connected now), `forgotten` (a link to a record no longer kept) |
 | an attempt | `worktree` or `worktree_gone` (a `stat` of its worktree through the run's folder, when `where_ran` is `native`; any other `where` is said as the row has it, "on <where>", and not looked at from here) |
 | a check | `log` (the ledger holds its log), `log_dropped` (the run's bound dropped it; hash and tail kept), `pruned` (the run's rows are gone) |
 | a ticket, a comment | `deleted` for a tombstone; else the record's |
@@ -993,7 +1073,15 @@ execution: the end commit, an attempt's worktree); the launch's arguments kept (
 else "its arguments were too long to keep"); a server session, never a hosted one ("resume it on
 <host>: `conductor host` resumes it there"); never a managed attempt ("a
 managed run continues from its run page", `409 managed_run`'s words) nor a
-Brakeman turn; never a crew member of a legacy run from its record:
+Brakeman turn; a `lost` record (its process's state unknown, above) only
+with the person's second yes: offered with "the server stopped while this
+session ran on <where>; its process may still be running", since
+`liveAgentSession` sees only the registry, which lists no process the
+server lost; never a crew member of a legacy run from its record, a
+member known by the record's `Crew` or, for a record whose adoption the
+journal had not yet written when the server stopped, by a run record whose
+member state names the session (`MemberState.SessionID`, read through
+`crew.Records`):
 `handleResumeSession` hands a member to `resumeMember` and the engine
 (`Engine.ResumeMember`, `internal/crew/run.go`), which updates the member's
 state, the run's session mapping and its lifecycle through `crew.Launcher`
@@ -1010,9 +1098,10 @@ string as Dispatch's search has it (never logged: AGENTS.md):
 
 | Route | Answers |
 |---|---|
-| `GET /api/history?q=&limit=&after=` | `{entries: [Entry], next?, total, totalCapped?, indexing: {state, behind?, oldest?, dropped?}, readOnly?}`; `400 bad_query` with words; the reply at most 2 MiB (rows past it cut, `truncated: true`) |
+| `GET /api/history?q=&limit=&after=` | `{entries: [Entry], next?, total, totalCapped?, indexing: {state, behind?, oldest?, dropped?}, readOnly?}`; `400 bad_query` with words, `400 bad_cursor`, `409 stale_cursor`; the reply at most 2 MiB (rows past it cut, `truncated: true`) |
 | `GET /api/history/entry?key=` | one entry by its key (at most 512 bytes), its links each way (at most 100, each with its class, outcome, URL and label) and its full availability; `404 entry_gone` for a key the index no longer holds |
 | `GET /api/history/similar?key=&scope=&limit=` | `Similar`'s entries (at most 50), the entry's run chain left out; `scope` `repo` (the default) or `all` |
+| `GET /api/history/command?run=&actor=&id=` | `{command: {id, actor, intent, status, receipt, createdAt}}`: the receipt of that actor, never the caller's; `actor` at most 60 bytes, `id` in the command pattern; `404` when the ledger holds no such receipt, `503 ledger_unavailable` as the command route answers |
 | `POST /api/history/reindex` | `202 {indexing}` |
 
 An `Entry` as served:
@@ -1042,7 +1131,7 @@ these, PR-5 the resume) with every field and bound above.
 ### `internal/api`, `internal/cli` (PR-5): resume from a record, the CLI, the guide
 
 **Resume from a record.** `POST /api/history/sessions/{id}/resume` (admin),
-body `{commandId, withoutEnv?}` (`DisallowUnknownFields`; `commandId` in the
+body `{commandId, withoutEnv?, confirmLost?}` (`DisallowUnknownFields`; `commandId` in the
 pattern of run commands, at most 32 characters). It is an operation with
 four properties, stated here so the plan stands on its own: **its actor**
 is recorded (the admin's principal, `Principal.Subject` as C2 records it,
@@ -1076,8 +1165,11 @@ outcome it cannot know into a false one. Its order:
    whose `where` names a Runtime this server does not have answers `409
    runtime_gone`, and a record whose launch had variables answers `409
    env_not_kept` naming them, unless `withoutEnv: true`, which resumes
-   without them and says so in the reply's notice; a refusal settles the
-   receipt `failed` with its code;
+   without them and says so in the reply's notice, and a `lost` record
+   answers `409 lost_unconfirmed` with the words above unless
+   `confirmLost: true`, which the record page sends only once the person
+   has read them and asked again; a refusal settles the receipt `failed`
+   with its code;
 3. the launch is one function both routes share, `resumeLaunch` (factored
    out of `handleResumeSession` in PR-5, the route's answers and tests
    unchanged): it takes what to launch (a listed session's `Launched`, or
@@ -1100,7 +1192,7 @@ outcome it cannot know into a false one. Its order:
 4) is settled at `Recover` by what the data directory shows, never assumed:
 a record of the allocated session id exists (the new session's `Begin`
 wrote it, after its process started and before it could do anything that
-reaches the record) → `started`, naming it (its record is then ended
+reaches the record) → `started`, naming it (its record is then marked
 `lost` like any other the stop left); no such record → `uncertain` ("the
 server stopped while starting the session; its process may have started
 before its record was written"), since `StartTerminal` may have returned
@@ -1115,7 +1207,7 @@ on its own.
 [--json]` (a table: class, kind, title, the six fields; `--json` the reply),
 `history show <entry key>` (the entry and its links), `history similar <entry
 key> [--everywhere]`, `history sessions`, `history session <id>`, `history forget <id> |
---all`, `history resume <id> [--without-env]` (a fresh command id, sent
+--all`, `history resume <id> [--without-env] [--confirm-lost]` (a fresh command id, sent
 again once with the same id if the reply was lost, as `conductor dispatch
 launch` does), `history reindex`. Completion and help text in `internal/cli`
 as its other commands have them.
@@ -1160,17 +1252,18 @@ not have.
   count), the dropped count, what a record never keeps (a person's typed
   lines and keystrokes, said in one line), Resume (asks first; for a
   record with variables, the dialog names them and offers to resume
-  without them),
+  without them; for a `lost` record, it says its process may still be
+  running and sends `confirmLost` only on a second yes),
   Forget (asks first), and the receipts of earlier resumes (an `uncertain`
   one with its words).
 - The run page (`pages/runs/[run].vue`, `components/RunTasks.vue`,
   `RunAttemptSteps.vue`): `?attempt=<n>&step=<phase>/<id>/<k>` beside
   `?task=` opens that attempt's steps and that step's log with its SHA-256,
   as the ticket page's receipt does (`DispatchReceipt.vue`, reused); read as
-  `?task=` is, never written back. `?command=<id>` opens that command's
-  receipt (intent, actor, time, state, answer) from
-  `GET /api/runs/{run}/commands/{id}` in a panel of the run page, read the
-  same way.
+  `?task=` is, never written back. `?command=<id>&actor=<actor>` opens
+  that command's receipt (intent, actor, time, state, answer) from
+  `GET /api/history/command` (PR-4), the actor the URL names, in a panel of
+  the run page, read the same way.
 - The ticket page (`pages/dispatch/[project]/[n].vue`): `?comment=<k>`
   fetches that comment alone (the comment route with `after=k-1&limit=1`,
   as Brakeman's `commentURL` names it) and shows it marked at the head of
@@ -1322,9 +1415,23 @@ unchanged): the reported agent session is evidence, not a door.
   History search for the `brakeman` principal, each entry filtered by the
   request's grant as Brakeman's refs are (`refGrant`: an entry's class of
   record visible, its project or repository covered by the scope), cited in
-  a brief by the entry's own `ref`, never by an index id. Brakeman's plan
-  owns the observe tool, the grant and the brief; HS1 owns the search. No
-  attempt session gets a history tool in HS1.
+  a brief by the entry's own `ref`, never by an index id. A cited session
+  must also resolve: `lookupSessionPart` (`internal/api/brakeman_refs.go`)
+  reads only the registry and the engine's live members, so after a
+  restart a plain session's `session:` ref would read as missing, with no
+  project or repository to check a scope against, and `refURL` would name
+  its absent session page. PR-11 gives the resolver the journal as a third
+  source for a session the registry does not list: the record's
+  repository (`Repo`, the worktree's top it read at launch, compared as the
+  resolver's `top` compares a live session's; none for a hosted record, as
+  for a live hosted one) and its run (`Crew`, through `memberItem`) for the
+  grant's scope check, its state (`record`, or `lost`) as the ref's now, a
+  line in the turn's read log naming the record as the source read
+  (`brakeman.ReadLog`), and `refURL` the record page
+  (`/history/sessions/<id>`). Brakeman's plan owns the observe tool, the
+  grant, the brief and the resolver's rules; HS1 owns the search and the
+  record source it adds to the resolver. No attempt session gets a history
+  tool in HS1.
 
 Each of the three adds its paragraph to the features entry PR-8 writes.
 
@@ -1333,11 +1440,13 @@ Each of the three adds its paragraph to the features entry PR-8 writes.
 **The session record's states.** `open` (begun, its session live) →
 `ended` (its `status` end or its removal from the registry: `EndedAt` and
 `Ending` set, the writer woken to write it at once, the end commit read
-after on the writer's goroutine, native only) or `lost` (a server
-session's record found open by `Recover` after a stop the session did not
-see: ended at its last write's time) or `host away` (a hosted record found
-open by `Recover`, or let go by `Hub.Expire` past `DisconnectGrace`: its
-process runs on its host and may still be running). `host away` and `lost`
+after on the writer's goroutine, native only; from its status entry or
+its ended `Info`, whichever comes first, and kept against a later removal)
+or `lost` (a server session's record found open by `Recover` after a stop
+the session did not see: `LostAt` its last write's time, no `EndedAt`, its
+process's state unknown) or `host away` (a hosted record found open by
+`Recover`, or let go by `Hub.Expire` past `DisconnectGrace`: `LostAt`, no
+`EndedAt`; its process runs on its host and may still be running). `host away` and `lost`
 on a hosted record → `open` again when the same host's session registers
 under the same id (`Begin`'s reopening: same `Host.Owner`, `Reopened`
 counted, entries and `Seq` kept). A record exists in memory before its
@@ -1450,10 +1559,12 @@ stores it may write (Dispatch, which takes no owner lock; the ledger and
 Brakeman's store when it holds their locks) reaches no hook of the
 holder's, so the holder's indexer finds it by the reconcile (above), from
 the stores' durable positions, within 30 s.
-`TestAnEditByTheOtherServerBecomesSearchable` edits a ticket through a
-second server's Dispatch on the same data directory and finds the edit
-through the first's search after one reconcile (`reconcileNow`), with no
-restart.
+`TestAnEditByTheOtherServerBecomesSearchable` (PR-4, with the ticket
+source and the search route it needs) edits a ticket through a second
+server's Dispatch on the same data directory and finds the edit through
+the first's search after one reconcile (`reconcileNow`), with no restart;
+PR-3's `TestARunRecordByTheOtherServerIsIndexed` does the same for a run
+record, read back through the index's own `Entry`.
 
 **The export.** `history/sessions/` and `history/state.json` are carried by
 `conductor export` as the data directory's other files are (C6's `rest`), so
@@ -1527,9 +1638,14 @@ names and the hash only; the file grepped for the value);
 the count and hash kept, no argument, the record under 64 KiB with every
 other field at its bound); `TestPruneKeepsLiveAndPendingRecords` and
 `TestLiveRecordsPastMaxRecords` (more live than `MaxRecords`: none pruned,
-every ended one past the bound pruned); `TestRecoverEndsAnOpenRecordAsLost`
-(a server session's) and `TestRecoverEndsAHostedRecordHostAway`;
-`TestBeginReopensTheSameHostsRecord` (ended `host away`, then `lost`; the
+every ended one past the bound pruned); `TestRecoverMarksAnOpenRecordLost`
+(a server session's: `lost`, `LostAt` its last write, `EndedAt` empty) and
+`TestRecoverMarksAHostedRecordHostAway` (the same, `host away`);
+`TestAnOlderChangeNeverOvertakesANewerOne` (two `Changed` calls whose
+snapshots arrive older last, Codex's lowest id then a higher one and a
+resumable id then not resumable: the record holds what `Current` answers,
+the lowest id, resumable);
+`TestBeginReopensTheSameHostsRecord` (marked `host away`, then `lost`; the
 same owner reopens it with its entries and `Seq`; another owner, or a
 server session's id, refused `ErrExists`); `TestRecoverSettlesAPendingResume`
 (the allocated id's record there: `started`; none: `uncertain`);
@@ -1575,6 +1691,16 @@ order, `Seq` never back) and `TestAHostedRecordLetGoByExpiryIsReopened`
 (`Hub.Expire` past `DisconnectGrace`, then the same register);
 `TestTheRecordSurvivesARestart` (a server ended and started again on the
 same data directory; the record listed, ended);
+`TestACrewAdoptedAfterLaunchIsRecorded` (a session forms a crew around
+itself, `POST /api/sessions/{id}/crew`: the record's `Crew` written at
+once; the session ended, the server stopped and started again; the
+record's Resume answers `409 crew_member`, and a record whose adoption the
+journal had not written before the stop, by a seam, is refused the same
+way from the run record's member state, nothing launched in either);
+`TestAHostedExitIsKeptWithItsActivityDropped` (a host's `status` activity
+entry dropped at a full queue, its status message delivered: the record
+ends "exited (exit 0)" from its `Info`; `Hub.Expire` after it leaves that
+end, never `host away`);
 `TestHistorySessionRoutesAreAdminOnly` (a share link, a session token, no
 token), `TestHistorySessionsOffKeepsNoRecord`,
 `TestASwitchyardKeepsNoHistory`.
@@ -1597,6 +1723,10 @@ rows and FTS rows); `TestRemoveCascades`; `TestTermsIntersectAcrossColumns`,
 table over every filter name and its refusals),
 `TestAnUnknownFilterIsAWord`; `TestOrderNeverWeighsClass` (two entries of
 equal text, a `said` newer than a `checked`: the newer first);
+`TestTiedEntriesPageExactlyOnce` (250 entries of one text, one score and
+one time, paged by 20 and by 100: each key exactly once, in key order; a
+cursor of another query `ErrCursor`; one taken before a reindex
+`stale_cursor`);
 `TestTheBudgetDropsTheOldestFirst` (by entries and by bytes, `Stats` saying
 from when); `TestSimilarFindsTheSameCommandElsewhereAndLeavesTheChainOut`,
 `TestSimilarStaysInTheRepositoryAndRanksTheLineFirst` (two repositories
@@ -1627,7 +1757,10 @@ failed; `Killed` alone after an exit 0: passed; an error with exit 0:
 failed; `interrupted` kept as such; `started` and `running` not indexed
 until finished); `TestVerifiedIsTheDeliverysPredicate` (`verifiedOf`
 against `candidateVerified` over a table: a failed attempt whose checks
-passed, no receipt, an unstable tree, a cleanup kill);
+passed, no receipt, an unstable tree, a cleanup kill, and an exit-0,
+stable receipt that carries an `Error`: both pass it, the delivery route's
+answer unchanged, `crew.FailedOutcome` fails it, its `check` entry is
+failed and no `candidate.verified` entry is indexed for its candidate);
 `TestOnlyTheAdminsCommandsAreIndexed` (two actors with one command id in
 one run: one entry, its ref opening the admin's receipt);
 `TestAFinishedReceiptIsReadOnce` (its log read by `ledger.Check` once; the
@@ -1635,18 +1768,18 @@ run's later transitions read no log); `TestARunIsReadAtMostEvery2s`
 (through the indexer's clock seam); `BenchmarkTransitionWhileIndexing`
 (the medians and 99th percentiles in PR-3's body);
 `TestARecordOnlyChangeIsSeenAfterARestart`;
-`TestAnEditByTheOtherServerBecomesSearchable` (`reconcileNow`);
+`TestARunRecordByTheOtherServerIsIndexed` (a second server on the same
+data directory writes a run record; after one `reconcileNow` the first's
+index holds it, read through `history.Entry`, with no restart);
 `TestAChangeBetweenTheMarkAndTheReadIsReadAgain` (`afterMark`);
 `TestCatchUpAfterARestart` (runs made while no index existed, then a run
 pruned: indexed, then removed); `TestCatchUpRunsOnTheHistoryLockAlone`
 (another process holds the ledger's lock, this one the history lock: the
 records, the runs from their files and the ledger's rows through its
-read-only connection, and the tickets, all indexed at start);
-`TestCatchUpWithNoLedger` (the ledger fails to open: the session records,
-the run records and the tickets indexed, `indexing` saying the ledger is
-unavailable); `TestAReindexWithASecondServerSearching` (two servers on one
-data directory; the second's search, its connection open throughout,
-answers after the first's reindex with no restart);
+read-only connection, all indexed at start; PR-4 adds the tickets to it);
+`TestCatchUpWithNoLedger` (the ledger fails to open: the session records
+and the run records indexed, `indexing` saying the ledger is unavailable;
+PR-4 adds the tickets);
 `TestSiblingWorktreesAreOneRepository` (a plain session in a linked
 worktree and a Dispatch project at the main checkout: the session is the
 project's; a crew's run in a sibling worktree found by `Similar`'s
@@ -1679,7 +1812,18 @@ factored out); `TestHistorySearchRoutesAreAdminOnly`;
 `TestTheSearchReplyIsBounded` (2 MiB, `truncated`);
 `TestABadQueryIsRefusedWithWords`; `TestTheQueryIsNeverLogged` (the request
 log's lines for a search hold no `q`, nor a `key`);
-`TestHistoryAndDispatchReadWordsAlike`; `TestAGoneKeyAnswersEntryGone`.
+`TestHistoryAndDispatchReadWordsAlike`; `TestAGoneKeyAnswersEntryGone`;
+`TestAnEditByTheOtherServerBecomesSearchable` (`reconcileNow`);
+`TestAReindexWithASecondServerSearching` (two servers on one data
+directory; the second's search, its connection open throughout, answers
+after the first's reindex with no restart); the tickets added to PR-3's
+`TestCatchUpRunsOnTheHistoryLockAlone` and `TestCatchUpWithNoLedger`;
+`TestTheCommandReaderOpensTheIndexedActorsReceipt` (the workbench token
+and an identity provider's administrator each made a command of one id in
+one run: the indexed admin receipt, opened by the identity provider's
+administrator through `/api/history/command`, answers the admin's receipt
+with its actor; `/api/runs/{run}/commands/{id}` still answers each caller
+its own).
 
 **Go, `internal/api` and `internal/cli` (PR-5):**
 `TestResumeFromARecordAfterARestart` (a fake agent with a session recipe:
@@ -1689,8 +1833,14 @@ recorded id, its folder and yolo choice the record's);
 recipe, not resumable, held by a live session, folder gone with
 `ResumeNeedsCwd`, arguments not kept, a Runtime this server lacks,
 variables without `withoutEnv`, a legacy run's member (`409 crew_member`,
-nothing launched, the run's member state unchanged); each refusal
-settling its receipt `failed`);
+nothing launched, the run's member state unchanged), a `lost` record
+without `confirmLost` (`409 lost_unconfirmed`); each refusal settling its
+receipt `failed`);
+`TestARuntimeTerminalThatOutlivesTheServer` (a `sessiontest.FakeRuntime`
+whose terminal keeps running when the server stops: after the restart the
+record is `lost` with no `EndedAt`, its availability and record page say
+its process's state is not known, Resume is refused `409
+lost_unconfirmed`, and with `confirmLost` it launches);
 `TestTheSeventeenthResumeIsRefusedAndTheOldestStillAnswers` (16 receipts,
 refused ones among them; a 17th command id `409 resume_limit`, nothing
 reserved or launched; the server restarted; the oldest id sent again
@@ -1872,8 +2022,9 @@ record, its bounds, the journal with its lock, flush, prune, recover,
 forget, `history/state.json`); `history.sessions` in `internal/config`; in
 `internal/api` the journal opened with the data directory, `Begin` for
 server and hosted sessions (a hosted record's reopening), the hooks as
-named in "The API's part of PR-1" (`localChange`, `s.hosts.OnChange`, the
-hub's sink and `chat`, the registry's `OnRemove`), `End`, the agent's
+named in "The API's part of PR-1" (`localChange` and `s.hosts.OnChange`
+through `Changed` and `Current`, the hub's sink and `chat`, the registry's
+`OnRemove`), `End`, the agent's
 version and the launch revision read before `StartTerminal` (native only),
 the four record routes. Touches `internal/journal`, `internal/config`,
 `internal/signal` (the `OnAdded` callback, `HostChat`'s questions and
@@ -1896,7 +2047,7 @@ indexer (dirty set, marks, the pass, backoff, catch-up, reindex route); the
 session-record and run sources with every link (`session_of`, `continues`,
 `launched_from`, `handed`, `passed_after`, `reviews`, `reopened`), each
 finished receipt its own source, the run's composite mark, the per-run
-interval and the reconcile; `crew.FailedAtCheck`, `crew.FailingReceipt`
+interval and the reconcile over the ledger and the run records; `crew.FailedAtCheck`, `crew.FailingReceipt`
 and `crew.FailedOutcome` exported, `verifiedOf` factored out of
 `candidateVerified`; `BenchmarkTransitionWhileIndexing` with its numbers in
 the PR body; the export's `WhyDerived` row and lock row. Touches
@@ -1904,10 +2055,11 @@ the PR body; the export's `WhyDerived` row and lock row. Touches
 and PR-2.
 
 **PR-4: Dispatch's and Brakeman's sources, availability and the search
-routes.** The ticket and brief sources; `historyURL`; availability;
+routes.** The ticket and brief sources, with the reconcile's Dispatch feed
+and briefs' files; `historyURL`; availability;
 `resumeCheck` factored out of `handleResumeSession`; `GET /api/history`,
-`/api/history/entry`, `/api/history/similar`; `docs/protocol.md`'s History
-search rows. Touches `internal/api`, `docs/protocol.md`. Tests: PR-4's
+`/api/history/entry`, `/api/history/similar`, `/api/history/command`;
+`docs/protocol.md`'s History search rows. Touches `internal/api`, `docs/protocol.md`. Tests: PR-4's
 above. About 1,200 lines. Depends on PR-3.
 
 **PR-5: resume from a record, the CLI and the guide.** `POST
@@ -1958,7 +2110,14 @@ serve batches and findings (`docs/plans/review-repair.md`); if RV1 lands
 before DR1, PR-10 goes first and PR-9 follows it.
 
 **PR-11: Brakeman reads history within its grant.** As in "Later PRs".
-Touches `internal/api` (Brakeman's observe and the guide), `docs`. About 600
+Touches `internal/api` (Brakeman's observe, its reference resolver's
+record source and the guide), `docs`. Tests:
+`TestABriefCitesARecordOnlySessionAfterARestart` (a plain session in a
+repository, ended, the server restarted; a request whose grant is scoped
+to that repository finds it in its history section, cites it, and the
+citation resolves from the record within the scope, its read logged and
+its URL the record page; a record in another repository refused as any
+ref outside the grant is). About 700
 lines. Depends on PR-8 and on Brakeman's PR-9 to PR-13
 (`docs/plans/brakeman.md`); runs after PR-9 and PR-10 or before them, never
 beside them (`internal/api`).
