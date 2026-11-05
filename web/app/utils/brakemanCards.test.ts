@@ -15,6 +15,7 @@ import {
   madeWords,
   makeAgain,
   PENDING_ELSEWHERE,
+  planCardControl,
   proposalArgs,
   proposalControl,
   proposalSends,
@@ -388,5 +389,39 @@ describe("a browser's unfinished makes, across its tabs", () => {
     expect(kept['br-1/0']).toBeUndefined()
     expect(kept[`br-${KEPT_MAX + 3}/0`]?.opId).toBe(`bkm-${KEPT_MAX + 2}`)
     expect(s.getItem('conductor.other')).toBe('kept')
+  })
+})
+
+describe("a plan revision's card, DS2's Approve from its live record (PR-11)", () => {
+  const rev = (over: Record<string, unknown> = {}) => ({ n: 2, state: 'proposed' as const, crewName: 'team', ...over })
+
+  it('is a plan control for a plan: ref, which the card reads live by its ticket and number', () => {
+    expect(decisionControls('plan:CND-4/2', undefined, {})).toEqual({ kind: 'plan', ticket: 'CND-4', n: 2, to: '/dispatch/CND/4', words: "Revision 2 of CND-4's plan, as Dispatch holds it now." })
+  })
+
+  it("offers Approve by DS2's own rule, the operator's, and Approve again only where an approval cures what changed", () => {
+    expect(planCardControl(rev(), 'CND-4', 2)).toMatchObject({ approve: 'Approve' })
+    expect(planCardControl(rev(), 'CND-4', 2).words).toContain('Brakeman never does')
+    expect(planCardControl(rev({ state: 'superseded' }), 'CND-4', 2)).toMatchObject({ approve: 'Approve' })
+    expect(planCardControl(rev({ state: 'approved', stale: { words: 'The title was edited', remedy: 'approve' } }), 'CND-4', 2)).toMatchObject({ approve: 'Approve again' })
+    expect(planCardControl(rev({ state: 'approved', stale: { words: 'A comment it hands over was edited', remedy: 'revise' } }), 'CND-4', 2)).toMatchObject({ approve: null })
+  })
+
+  it('offers nothing for a revision approved and holding, withdrawn, whose agents changed, or not there', () => {
+    expect(planCardControl(rev({ state: 'approved' }), 'CND-4', 2)).toEqual({ approve: null, words: 'CND-4 r2 is approved, and its approval holds.' })
+    expect(planCardControl(rev({ state: 'withdrawn' }), 'CND-4', 2)).toMatchObject({ approve: null, words: 'CND-4 r2 was withdrawn: nothing approves it now.' })
+    expect(planCardControl(rev({ agentsChanged: true }), 'CND-4', 2)).toMatchObject({ approve: null })
+    expect(planCardControl(null, 'CND-4', 2)).toEqual({ approve: null, words: "CND-4 r2 is not among CND-4's revisions now: open the ticket." })
+  })
+
+  it("is text for a proposal of an operation a grant names, which the ticket's Plan section does", () => {
+    const ops: GuideOperation[] = [{ name: 'launch_approved_plan', scope: 'act', revision: 'ticket' }]
+    const c = proposalControl({ kind: 'proposal/1', text: 't', op: 'launch_approved_plan', target: 'ticket:CND-4', expectedRevision: '3' }, ops)
+    expect(c).toMatchObject({ kind: 'text', to: '/dispatch/CND/4' })
+    expect((c as { words: string }).words).toContain("ticket's Plan section")
+  })
+
+  it('says a proposed draft plan is the operator\'s to approve', () => {
+    expect(madeWords({ state: 'made', key: 'CND-4', plan: '0123456789abcdef' })).toBe("Proposed as a revision of CND-4's plan, under your name: the operator approves it or not.")
   })
 })

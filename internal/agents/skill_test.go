@@ -451,7 +451,7 @@ func TestTheSkillsBrakemanSectionIsShort(t *testing.T) {
 	if len(lines) > 6 {
 		t.Fatalf("%d lines, at most 6:\n%s", len(lines), section)
 	}
-	for _, want := range []string{"CONDUCTOR_BRAKEMAN is set", "Call guide first", "brakeman_request", "observe", "brief_submit", "evidence", "Nothing you write becomes work", "one brief", "your turn ends"} {
+	for _, want := range []string{"CONDUCTOR_BRAKEMAN is set", "Call guide first", "brakeman_request", "observe", "brief_submit", "evidence", "Nothing you write becomes work", "act", "granted", "one brief", "your turn ends"} {
 		if !strings.Contains(section, want) {
 			t.Errorf("the section does not say %q", want)
 		}

@@ -115,9 +115,24 @@ func bothVisible(a, b brakeman.Visibility) brakeman.Visibility {
 		Sessions: a.Sessions && b.Sessions, Touched: a.Touched && b.Touched, Terminals: a.Terminals && b.Terminals}
 }
 
-// bothPermit is the permissions two configurations allow together.
+// bothPermit is the permissions two configurations allow together: the
+// operations granted are those both grant that this build serves
+// (grantedActs), so the turn's request says what it may do and its act
+// tool is listed only then.
 func bothPermit(a, b brakeman.Permissions) brakeman.Permissions {
-	return brakeman.Permissions{Observe: a.Observe && b.Observe, Draft: a.Draft && b.Draft, Propose: a.Propose && b.Propose}
+	return brakeman.Permissions{Observe: a.Observe && b.Observe, Draft: a.Draft && b.Draft, Propose: a.Propose && b.Propose, Act: grantedActs(a, b)}
+}
+
+// grantedActs is the operations both a and b grant and this build serves
+// (actServed), in the closed list's order; nil for none.
+func grantedActs(a, b brakeman.Permissions) []string {
+	var out []string
+	for _, op := range brakeman.Grantable {
+		if slices.Contains(a.Act, op) && slices.Contains(b.Act, op) && actServed(op) == nil {
+			out = append(out, op)
+		}
+	}
+	return out
 }
 
 // handleSessionBrakemanRequest answers the turn's request: {request} with

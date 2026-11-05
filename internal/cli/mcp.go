@@ -31,7 +31,8 @@ Serves Conductor's MCP tools on stdin and stdout (JSON-RPC 2.0, one message a li
 report, set_state, ask, form_crew, add_member, run_status, link and open_url, the skill's
 commands as tools, and guide, what the server says this session may do. The server registers it with agents that take an MCP server at
 launch; run it by hand only to try it. A Brakeman turn's session (CONDUCTOR_BRAKEMAN
-set) lists brakeman_request, observe and brief_submit, and no crew or ticket tool.
+set) lists brakeman_request, observe and brief_submit, and no crew or ticket tool;
+it lists act too when the person has granted the turn an operation.
 `
 
 // mcpProtocolVersion is the MCP revision answered when the client's is unknown.
@@ -74,31 +75,36 @@ var mcpHandled = map[string]bool{
 	"form_crew": true, "add_member": true, "run_status": true, "link": true, "open_url": true,
 	"task_context": true, "task_result": true, "message_send": true, "inbox_read": true, "inbox_ack": true, "task_blocked": true, "task_checkpoint": true,
 	"ticket_read": true, "ticket_comment": true,
-	"guide": true, "brakeman_request": true, "observe": true, "brief_submit": true,
+	"guide": true, "brakeman_request": true, "observe": true, "brief_submit": true, "act": true,
 }
 
 // brakemanOnly is the tools a Brakeman turn's session alone lists, and
 // notForBrakeman the ones it does not (docs/plans/brakeman.md, owner
 // decisions 16 and 18): a worker never sees Brakeman's tools, and
 // Brakeman forms no crew, adds no member and reaches no ticket, which
-// the routes refuse it too (403 brakeman_cannot).
+// the routes refuse it too (403 brakeman_cannot). act is a turn's only
+// when the person granted it an operation (grantedOnly).
 var (
-	brakemanOnly   = map[string]bool{"brakeman_request": true, "observe": true, "brief_submit": true}
+	brakemanOnly   = map[string]bool{"brakeman_request": true, "observe": true, "brief_submit": true, "act": true}
+	grantedOnly    = map[string]bool{"act": true}
 	notForBrakeman = map[string]bool{"form_crew": true, "add_member": true, "ticket_read": true, "ticket_comment": true}
 )
 
 // mcpTools is the tools as tools/list gives them, from the server's table
 // of operations: its names, descriptions and schemas are the table's, so
 // the tools and the guide cannot drift (internal/api, guide.go).
-// brakeman is a Brakeman turn's session (CONDUCTOR_BRAKEMAN set).
-func mcpTools(brakeman bool) []mcpTool { return mcpToolsFrom(api.Operations(), brakeman) }
+// brakeman is a Brakeman turn's session (CONDUCTOR_BRAKEMAN set), granted
+// that its turn is granted an operation (its request's permissions.act).
+func mcpTools(brakeman, granted bool) []mcpTool {
+	return mcpToolsFrom(api.Operations(), brakeman, granted)
+}
 
 // mcpToolsFrom is the tools of ops that call has a handler for and the
 // session lists, in ops' order.
-func mcpToolsFrom(ops []api.Operation, brakeman bool) []mcpTool {
+func mcpToolsFrom(ops []api.Operation, brakeman, granted bool) []mcpTool {
 	var out []mcpTool
 	for _, op := range ops {
-		if op.MCP != "" && mcpHandled[op.MCP] && listedIn(op.MCP, brakeman) {
+		if op.MCP != "" && mcpHandled[op.MCP] && listedIn(op.MCP, brakeman, granted) {
 			out = append(out, mcpTool{Name: op.MCP, Description: op.Description, InputSchema: op.Input})
 		}
 	}
@@ -106,10 +112,11 @@ func mcpToolsFrom(ops []api.Operation, brakeman bool) []mcpTool {
 }
 
 // listedIn reports whether a session lists the tool: a Brakeman turn's
-// all but the crew and ticket tools, any other all but Brakeman's.
-func listedIn(tool string, brakeman bool) bool {
+// all but the crew and ticket tools, act only when it is granted an
+// operation; any other all but Brakeman's.
+func listedIn(tool string, brakeman, granted bool) bool {
 	if brakeman {
-		return !notForBrakeman[tool]
+		return !notForBrakeman[tool] && (granted || !grantedOnly[tool])
 	}
 	return !brakemanOnly[tool]
 }
@@ -191,7 +198,8 @@ func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError)
 	case "ping":
 		return map[string]any{}, nil
 	case "tools/list":
-		return map[string]any{"tools": mcpTools(s.getenv(envBrakeman) != "")}, nil
+		turn := s.getenv(envBrakeman) != ""
+		return map[string]any{"tools": mcpTools(turn, turn && s.granted(ctx))}, nil
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -211,6 +219,22 @@ func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError)
 		return map[string]any{"content": []map[string]any{{"type": "text", "text": text}}}, nil
 	}
 	return nil, &mcpError{Code: -32601, Message: "method not found: " + req.Method}
+}
+
+// granted reports whether the Brakeman turn this session is has been
+// granted an operation: its guide lists one under the scope act (the
+// snapshot and the configuration now together, as the server answers
+// them). A guide that cannot be read lists no act: the act routes refuse
+// it as ever.
+func (s *mcpServer) granted(ctx context.Context) bool {
+	c, err := brakemanClientFromEnv(s.getenv)
+	if err != nil {
+		return false
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	acts, err := c.grants(cctx)
+	return err == nil && len(acts) > 0
 }
 
 type unknownTool string
@@ -279,12 +303,18 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			return "", err
 		}
 		return "reported", nil
-	case "brakeman_request", "observe", "brief_submit":
+	case "brakeman_request", "observe", "brief_submit", "act":
 		c, err := brakemanClientFromEnv(s.getenv)
 		if err != nil {
 			return "", err
 		}
-		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		// An act may be a launch, which the server bounds by its own
+		// launch timeout: the tool waits past it, a reply lost asked again.
+		wait := 60 * time.Second
+		if name == "act" {
+			wait = 2 * (api.LaunchTimeout + 30*time.Second)
+		}
+		cctx, cancel := context.WithTimeout(ctx, wait)
 		defer cancel()
 		return c.tool(cctx, name, raw)
 	case "form_crew", "add_member", "run_status", "link", "open_url", "task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint",

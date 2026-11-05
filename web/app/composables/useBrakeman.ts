@@ -4,6 +4,7 @@ import { dropKeptMake, readKeptMakes, reconcileMade, sendKept, storeKeptMake, ty
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
 import type { DispatchWatch } from './useDispatchLive'
+import type { PlanSummary } from './useDispatch'
 
 // Brakeman's records on the app's pages (docs/plans/brakeman.md, PR-6): the configuration, the requests (a page of them, then
 // the `brakeman` events of GET /api/events folded in), and the person's writes (ask, cancel, make), each with an id the browser
@@ -554,7 +555,7 @@ export function useBrakeman() {
     // A reply lost is asked again only with the token it was sent with: after a reset the server may be another one, and the make
     // stays kept for the one it was asked of.
     const send = sameToken(at, 'The token changed before the make was asked again: it is kept for the server it was asked of.', (b: { opId: string; by?: string; edit?: unknown }) =>
-      request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(r.id)}/items/${item}/make`, { method: 'POST', body: b }),
+      request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string }; plan?: PlanSummary }>(`/api/brakeman/requests/${encodeURIComponent(r.id)}/items/${item}/make`, { method: 'POST', body: b }),
     )
     const out = await sendKept(keep, () => forget(key), () => sendTwice(send, { opId, ...body }))
     // Answered after a reset: the ticket or crew is the server's before, perhaps another one's, so the caller is given nothing of it

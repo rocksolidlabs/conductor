@@ -459,7 +459,7 @@ func TestEveryToolIsAnOperation(t *testing.T) {
 		}
 	}
 	listed := map[string]bool{}
-	for _, tl := range append(mcpTools(false), mcpTools(true)...) {
+	for _, tl := range append(mcpTools(false, false), mcpTools(true, true)...) {
 		listed[tl.Name] = true
 		if op, ok := byMCP[tl.Name]; !ok || tl.Description != op.Description {
 			t.Errorf("tool %s: not the table's", tl.Name)
@@ -489,13 +489,13 @@ func TestAnUnhandledToolIsNotListed(t *testing.T) {
 		}
 	}
 	ops := append(api.Operations(), api.Operation{Name: "not_yet", MCP: "not_yet", Summary: "s", Description: "d", Input: map[string]any{"type": "object"}})
-	for _, brakeman := range []bool{false, true} {
-		for _, tl := range mcpToolsFrom(ops, brakeman) {
+	for _, c := range []struct{ brakeman, granted bool }{{false, false}, {true, false}, {true, true}} {
+		for _, tl := range mcpToolsFrom(ops, c.brakeman, c.granted) {
 			if tl.Name == "not_yet" {
 				t.Fatal("a tool with no handler is listed")
 			}
 		}
-		if len(mcpToolsFrom(ops, brakeman)) != len(mcpTools(brakeman)) {
+		if len(mcpToolsFrom(ops, c.brakeman, c.granted)) != len(mcpTools(c.brakeman, c.granted)) {
 			t.Fatal("the listing changed")
 		}
 	}
@@ -586,7 +586,12 @@ func TestBrakemansToolsOnlyInABrakemanSession(t *testing.T) {
 	t.Cleanup(srv.Close)
 	brakemans := []string{"brakeman_request", "observe", "brief_submit"}
 	worker := listedTools(t, sessionEnv(srv.URL, "s1", "tok"))
+	if hits.Load() != 0 {
+		t.Fatalf("%d requests sent from a worker's session's listing", hits.Load())
+	}
+	// A turn's listing asks the server whether it is granted an act.
 	turn := listedTools(t, brakemanEnv(srv.URL, "s1", "tok"))
+	hits.Store(0)
 	for _, name := range brakemans {
 		if slices.Contains(worker, name) {
 			t.Errorf("a worker's session lists %s", name)
@@ -595,14 +600,17 @@ func TestBrakemansToolsOnlyInABrakemanSession(t *testing.T) {
 			t.Errorf("a Brakeman turn's session does not list %s", name)
 		}
 	}
-	for _, tl := range mcpTools(true) {
+	for _, tl := range mcpTools(true, true) {
 		op, ok := operation(tl.Name)
 		if !ok || tl.Description != op.Description || !reflect.DeepEqual(tl.InputSchema, op.Input) {
 			t.Errorf("tool %s is not the table's", tl.Name)
 		}
 	}
+	if slices.Contains(worker, "act") {
+		t.Error("a worker's session lists act")
+	}
 	s := &mcpServer{out: io.Discard, getenv: sessionEnv(srv.URL, "s1", "tok")}
-	for _, name := range brakemans {
+	for _, name := range append(brakemans, "act") {
 		if _, err := s.call(t.Context(), name, json.RawMessage(`{"what":"changes","brief":{}}`)); !errors.Is(err, errNotBrakeman) {
 			t.Errorf("%s in a worker's session: %v", name, err)
 		}
@@ -663,7 +671,7 @@ func TestNoCrewToolsForBrakeman(t *testing.T) {
 			t.Errorf("a Brakeman turn's session does not list %s", name)
 		}
 	}
-	if want := len(mcpTools(false)) - 4 + 3; len(turn) != want {
+	if want := len(mcpTools(false, false)) - 4 + 3; len(turn) != want {
 		t.Fatalf("%d tools, want %d: %v", len(turn), want, turn)
 	}
 }
@@ -779,5 +787,178 @@ func TestBriefSubmitResendsTheSameOpID(t *testing.T) {
 	defer mu.Unlock()
 	if len(opIDs) != 3 || len(opIDs[0]) != 16 || opIDs[0] != opIDs[1] || opIDs[2] != "mine-1" {
 		t.Fatalf("the posts' opIds: %q", opIDs)
+	}
+}
+
+// grantServer is a server of a Brakeman turn's session s1 whose guide
+// lists the operations act as granted, answering every act's route with
+// the reply of answer, its posts' paths, sessions and bodies kept in
+// order; lose, when set, cuts the connection of the first post.
+type grantServer struct {
+	*httptest.Server
+	mu           sync.Mutex
+	posts        []grantPost
+	requestReads int
+}
+
+type grantPost struct {
+	path, auth, session string
+	body                map[string]any
+}
+
+func newGrantServer(t *testing.T, act []string, lose bool) *grantServer {
+	t.Helper()
+	g := &grantServer{}
+	g.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/api/sessions/s1/guide" && r.URL.Query().Get("section") == "operations" {
+			ops := []map[string]any{{"name": "observe", "scope": "observe"}}
+			if len(act) > 0 {
+				ops = append(ops, map[string]any{"name": "act", "scope": "act"})
+			}
+			for _, a := range act {
+				ops = append(ops, map[string]any{"name": a, "scope": "act"})
+			}
+			b, _ := json.Marshal(map[string]any{"section": "operations", "operations": ops})
+			_, _ = w.Write(b)
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/api/sessions/s1/brakeman/request" {
+			// The listing must not mark the request read.
+			g.mu.Lock()
+			g.requestReads++
+			g.mu.Unlock()
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		g.mu.Lock()
+		g.posts = append(g.posts, grantPost{r.URL.EscapedPath(), r.Header.Get("Authorization"), r.Header.Get("X-Conductor-Session"), body})
+		n := len(g.posts)
+		g.mu.Unlock()
+		if lose && n == 1 {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				conn.Close()
+			}
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		if strings.HasSuffix(r.URL.Path, "/launch") {
+			_, _ = io.WriteString(w, `{"receipt":{"opId":"bk1","intent":"launch","status":"done","id":"0123456789abcdef"},"launch":{"id":"0123456789abcdef","runId":"r-1"},"run":{"id":"r-1"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"receipt":{"opId":"bk2","intent":"plan.propose","status":"done","id":"fedcba9876543210"},"plan":{"id":"fedcba9876543210","n":2,"state":"proposed"}}`)
+	}))
+	t.Cleanup(g.Close)
+	return g
+}
+
+func (g *grantServer) sent() []grantPost {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.posts)
+}
+
+// The act tool is a Brakeman turn's alone, and listed only while its
+// guide lists an operation the person granted it (the snapshot and the
+// configuration now, as the server answers them): a turn granted none,
+// or whose guide cannot be read, lists no act, and a worker's session
+// never does. The listing reads the guide, never the request, which a
+// read marks read. Its schema is the table's, its enum the operations
+// the table serves.
+func TestTheActToolIsListedOnlyWithAGrant(t *testing.T) {
+	granted := newGrantServer(t, []string{brakeman.ActLaunchApprovedPlan}, false)
+	none := newGrantServer(t, nil, false)
+	if got := listedTools(t, brakemanEnv(granted.URL, "s1", "tok")); !slices.Contains(got, "act") {
+		t.Errorf("a granted turn's tools: %v", got)
+	}
+	granted.mu.Lock()
+	reads := granted.requestReads
+	granted.mu.Unlock()
+	if reads != 0 {
+		t.Errorf("the listing read the request %d times", reads)
+	}
+	for name, env := range map[string]func(string) string{
+		"a turn granted none":          brakemanEnv(none.URL, "s1", "tok"),
+		"a turn the server can't read": brakemanEnv("http://127.0.0.1:1", "s1", "tok"),
+		"a worker's session":           sessionEnv(granted.URL, "s1", "tok"),
+	} {
+		if got := listedTools(t, env); slices.Contains(got, "act") {
+			t.Errorf("%s lists act: %v", name, got)
+		}
+	}
+	tl := mcpTools(true, true)
+	i := slices.IndexFunc(tl, func(x mcpTool) bool { return x.Name == "act" })
+	op, _ := operation("act")
+	if i < 0 || !reflect.DeepEqual(tl[i].InputSchema, op.Input) || tl[i].Description != op.Description {
+		t.Fatalf("the act tool is not the table's: %+v", tl)
+	}
+	enum := op.Input["properties"].(map[string]any)["operation"].(map[string]any)["enum"]
+	if fmt.Sprint(enum) != fmt.Sprint(actOperations()) || fmt.Sprint(actOperations()) != "[launch_approved_plan prepare_followup]" {
+		t.Fatalf("the operations: %v, the table's %v", enum, actOperations())
+	}
+}
+
+// act sends each operation to its own route by the table, with the
+// session's token and its name in X-Conductor-Session, the path's
+// parameters escaped into the path and the body as given with an opId
+// minted when the agent gives none; an operation that is none, a
+// parameter the route does not take and one it needs missing are refused
+// before anything is sent.
+func TestActSendsEachOperationToItsRoute(t *testing.T) {
+	g := newGrantServer(t, []string{brakeman.ActLaunchApprovedPlan, brakeman.ActPrepareFollowup}, false)
+	replies := mcpRun(t, brakemanEnv(g.URL, "s1", "agent-tok"),
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"act","arguments":{"operation":"launch_approved_plan","params":{"key":"CND-12"},"body":{"plan":"0123456789abcdef","expectedRev":3}}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"act","arguments":{"operation":"prepare_followup","params":{"key":"CND-12"},"body":{"crew":"team","basedOn":"0123456789abcdef"},"opId":"mine-1"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"act","arguments":{"operation":"ticket_close","params":{"key":"CND-12"}}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"act","arguments":{"operation":"launch_approved_plan","params":{"key":"CND-12","run":"r1"}}}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"act","arguments":{"operation":"launch_approved_plan","body":{"plan":"0123456789abcdef"}}}}`,
+		`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"act","arguments":{"operation":"act","params":{"key":"CND-12"}}}}`,
+	)
+	for i, want := range []string{"launch_approved_plan ran (opId ", "prepare_followup ran (opId mine-1): receipt fedcba9876543210, done; revision 2 (fedcba9876543210) proposed"} {
+		if text, isErr := toolText(t, replies[i]); isErr || !strings.HasPrefix(text, want) {
+			t.Errorf("reply %d: %q %v", i, text, isErr)
+		}
+	}
+	if text, _ := toolText(t, replies[0]); !strings.Contains(text, "receipt 0123456789abcdef, done; run r-1 launched") || !strings.Contains(text, `"runId": "r-1"`) {
+		t.Errorf("the launch's words: %q", text)
+	}
+	for i, want := range []string{"act: operation is one of launch_approved_plan, prepare_followup", "act launch_approved_plan takes the path parameters key", "act launch_approved_plan needs key", "act: operation is one of"} {
+		if text, isErr := toolText(t, replies[2+i]); !isErr || !strings.HasPrefix(text, want) {
+			t.Errorf("reply %d: %q %v", 2+i, text, isErr)
+		}
+	}
+	sent := g.sent()
+	if len(sent) != 2 {
+		t.Fatalf("%d posts: %+v", len(sent), sent)
+	}
+	launch, follow := sent[0], sent[1]
+	if launch.path != "/api/dispatch/tickets/CND-12/launch" || launch.auth != "Bearer agent-tok" || launch.session != "s1" ||
+		launch.body["plan"] != "0123456789abcdef" || launch.body["expectedRev"] != float64(3) || len(launch.body["opId"].(string)) != 16 {
+		t.Errorf("the launch: %+v", launch)
+	}
+	if follow.path != "/api/dispatch/tickets/CND-12/plans" || follow.body["opId"] != "mine-1" || follow.body["basedOn"] != "0123456789abcdef" || follow.session != "s1" {
+		t.Errorf("the follow-up: %+v", follow)
+	}
+}
+
+// An act whose reply is lost to the network is sent once more with the
+// same opId and body, which the server answers from the act's receipt.
+func TestActResendsTheSameOpIDAfterALostReply(t *testing.T) {
+	g := newGrantServer(t, []string{brakeman.ActLaunchApprovedPlan}, true)
+	replies := mcpRun(t, brakemanEnv(g.URL, "s1", "agent-tok"),
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"act","arguments":{"operation":"launch_approved_plan","params":{"key":"CND-12"},"body":{"plan":"0123456789abcdef"}}}}`,
+	)
+	if text, isErr := toolText(t, replies[0]); isErr || !strings.Contains(text, "run r-1 launched") {
+		t.Fatalf("the act: %q %v", text, isErr)
+	}
+	sent := g.sent()
+	if len(sent) != 2 || sent[0].body["opId"] != sent[1].body["opId"] || !reflect.DeepEqual(sent[0].body, sent[1].body) {
+		t.Fatalf("the posts: %+v", sent)
 	}
 }

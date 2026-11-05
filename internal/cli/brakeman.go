@@ -24,13 +24,14 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/notify"
 )
 
-// conductor brakeman and Brakeman's three MCP tools (docs/plans/
-// brakeman.md, PR-5). In a Brakeman turn's session (CONDUCTOR_BRAKEMAN,
-// set by the server) the turn reads its request, reads what it may see and
-// submits one brief, with the session's own token, as its MCP tools do for
-// an agent with MCP. With the workbench token a person asks Brakeman and
-// reads what it answered. Every route, schema and bound is the server's
-// table's (api.Operations): observe sends each what to its own route on
+// conductor brakeman and Brakeman's MCP tools (docs/plans/brakeman.md,
+// PR-5 and PR-13). In a Brakeman turn's session (CONDUCTOR_BRAKEMAN, set by
+// the server) the turn reads its request, reads what it may see, runs an
+// operation the person granted it and submits one brief, with the
+// session's own token, as its MCP tools do for an agent with MCP. With the
+// workbench token a person asks Brakeman and reads what it answered. Every
+// route, schema and bound is the server's table's (api.Operations):
+// observe sends each what, and act each operation, to its own route on
 // this side, and the server has no dispatcher of its own.
 
 // envBrakeman names the request a Brakeman turn's session answers.
@@ -46,6 +47,12 @@ In a Brakeman turn's session (CONDUCTOR_BRAKEMAN is set), with the session's tok
                                             ticket, history, comments, sessions or touched, and each
                                             --KEY one of its route's parameters (conductor guide
                                             --section operations lists them under observe_WHAT)
+  conductor brakeman act OPERATION [--KEY VALUE]... [--body-file F] [--op-id ID] [--json]
+                                            run an operation the person granted the turn (conductor
+                                            guide --section operations lists them, scope act): each
+                                            --KEY a path parameter of its route (--key CND-12), F its
+                                            body, a JSON object without opId (- for stdin), ID the
+                                            act's id, minted when absent
   conductor brakeman brief --file F         submit the turn's one brief (brakeman.brief/1) from the
                                             JSON file F, - for stdin; the turn ends once it is kept
 With the workbench token (--server, --token and --insecure as conductor dispatch takes them):
@@ -159,8 +166,211 @@ func (c *brakemanClient) tool(ctx context.Context, name string, raw json.RawMess
 			return "", fmt.Errorf("brief_submit: %w", err)
 		}
 		return c.submit(ctx, a.OpID, a.Brief)
+	case "act":
+		var a struct {
+			Operation string            `json:"operation"`
+			Params    map[string]string `json:"params"`
+			Body      map[string]any    `json:"body"`
+			OpID      string            `json:"opId"`
+		}
+		if err := strictJSON(raw, &a); err != nil {
+			return "", fmt.Errorf("act: %w", err)
+		}
+		text, _, err := c.act(ctx, a.Operation, a.Params, a.Body, a.OpID)
+		return text, err
 	}
 	return "", unknownTool(name)
+}
+
+// grants is the operations the turn is granted, as its guide's
+// operations section lists them (the scope act: the snapshot its turn
+// began under and the configuration now together), the act tool left
+// out. The guide is read, not the request: a read of the request marks
+// it read, which tells a turn whose agent gave up from one whose agent
+// never started (an MCP server is started before the agent reads).
+func (c *brakemanClient) grants(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.root+"/api/sessions/"+url.PathEscape(c.session)+"/guide?section=operations", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, stripURL(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("brakeman: the guide answered %d", resp.StatusCode)
+	}
+	var out struct {
+		Operations []struct{ Name, Scope string } `json:"operations"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSessionReply)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("brakeman: an unreadable guide: %w", err)
+	}
+	var acts []string
+	for _, op := range out.Operations {
+		if op.Scope == "act" && op.Name != "act" {
+			acts = append(acts, op.Name)
+		}
+	}
+	return acts, nil
+}
+
+// actOperations is every operation the table lists for a grant (scope
+// act), but the act tool itself, in the table's order.
+func actOperations() []string {
+	var out []string
+	for _, op := range api.Operations() {
+		if op.Scope == "act" && op.Name != "act" {
+			out = append(out, op.Name)
+		}
+	}
+	return out
+}
+
+// maxActReply bounds an act's reply: a launch's (its summary and its run)
+// or a proposal's revision, each under 1 MiB on the server.
+const maxActReply = 4 << 20
+
+// act runs the granted operation through its own route, the table's
+// entry of that name: params its path's parameters, body its body. The
+// op id is minted when empty (or taken from the body's opId) and sent
+// once more with the same body when the reply is lost (askTwice): the
+// server answers the act from its receipt and runs it once. It answers
+// the act in words, then the route's reply, and the reply itself.
+func (c *brakemanClient) act(ctx context.Context, name string, params map[string]string, body map[string]any, opID string) (string, json.RawMessage, error) {
+	op, ok := operation(name)
+	if name == "" || !ok || op.Scope != "act" || op.Name == "act" {
+		return "", nil, fmt.Errorf("act: operation is one of %s", strings.Join(actOperations(), ", "))
+	}
+	path := op.Path
+	for _, k := range slices.Sorted(maps.Keys(params)) {
+		p := "{" + k + "}"
+		if !strings.Contains(path, p) {
+			return "", nil, fmt.Errorf("act %s takes the path parameters %s", name, takes(pathParams(op.Path)))
+		}
+		path = strings.ReplaceAll(path, p, url.PathEscape(params[k]))
+	}
+	if m := regexp.MustCompile(`\{([a-z]+)\}`).FindStringSubmatch(path); m != nil {
+		return "", nil, fmt.Errorf("act %s needs %s", name, m[1])
+	}
+	b := map[string]any{}
+	maps.Copy(b, body)
+	if id, ok := b["opId"].(string); ok && opID == "" {
+		opID = id
+	} else if ok && id != opID {
+		return "", nil, errors.New("act: the body's opId and opId differ: give one")
+	}
+	if opID == "" {
+		opID = newOpID()
+	}
+	b["opId"] = opID
+	payload, err := encodeJSON(b)
+	if err != nil {
+		return "", nil, fmt.Errorf("act: %w", err)
+	}
+	if n := op.Bounds["body"]; n > 0 && len(payload) > n {
+		return "", nil, fmt.Errorf("act %s: the body is %d bytes, over its route's %d", name, len(payload), n)
+	}
+	var reply json.RawMessage
+	err = askTwice(ctx, func(ctx context.Context) error {
+		r, err := c.post(ctx, path, payload)
+		reply = r
+		return err
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("act %s: %w", name, err)
+	}
+	var b2 bytes.Buffer
+	if json.Indent(&b2, reply, "", "  ") != nil {
+		b2.Reset()
+		b2.Write(reply)
+	}
+	return actWords(name, opID, reply) + "\n\n" + b2.String(), reply, nil
+}
+
+// pathParams is a route's path parameters, as a schema's properties.
+func pathParams(path string) map[string]any {
+	out := map[string]any{}
+	for _, m := range regexp.MustCompile(`\{([a-z]+)\}`).FindAllStringSubmatch(path, -1) {
+		out[m[1]] = true
+	}
+	return out
+}
+
+// post sends payload to path on the server's root as the turn (its token,
+// its session named), answering the route's JSON reply: lostReply when
+// the network lost it, the route's words for a refusal.
+func (c *brakemanClient) post(ctx context.Context, path string, payload []byte) (json.RawMessage, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.root+path, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("X-Conductor-Session", c.session)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, lostReply{stripURL(err)}
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxActReply+1))
+	if err != nil {
+		return nil, lostReply{stripURL(err)}
+	}
+	if len(raw) > maxActReply {
+		return nil, fmt.Errorf("the server's reply is larger than %d MiB", maxActReply>>20)
+	}
+	if resp.StatusCode >= 300 {
+		var e struct {
+			Error struct{ Code, Message string } `json:"error"`
+		}
+		if json.Unmarshal(raw, &e) == nil && e.Error.Code != "" {
+			return nil, fmt.Errorf("%s (%s)", e.Error.Message, e.Error.Code)
+		}
+		return nil, fmt.Errorf("the server answered %d", resp.StatusCode)
+	}
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("the server answered %d with no JSON", resp.StatusCode)
+	}
+	return raw, nil
+}
+
+// actWords is an act's answer in one line: the operation, its id, its
+// receipt and what it made (a launch's run, a revision proposed).
+func actWords(operation, opID string, reply json.RawMessage) string {
+	var out struct {
+		Receipt *struct {
+			ID, Status string
+			Repeat     bool
+		} `json:"receipt"`
+		Launch *struct{ ID, RunID string } `json:"launch"`
+		Run    *struct{ ID string }        `json:"run"`
+		Plan   *struct {
+			ID    string
+			N     int
+			State string
+		} `json:"plan"`
+	}
+	_ = json.Unmarshal(reply, &out)
+	line := fmt.Sprintf("%s ran (opId %s)", operation, opID)
+	if r := out.Receipt; r != nil {
+		line += fmt.Sprintf(": receipt %s, %s", r.ID, r.Status)
+		if r.Repeat {
+			line += ", a repeat of the act already kept"
+		}
+	}
+	switch {
+	case out.Run != nil && out.Run.ID != "":
+		line += "; run " + out.Run.ID + " launched"
+	case out.Launch != nil && out.Launch.RunID != "":
+		line += "; run " + out.Launch.RunID
+	}
+	if p := out.Plan; p != nil && p.ID != "" {
+		line += fmt.Sprintf("; revision %d (%s) %s, for the operator to approve or not", p.N, p.ID, p.State)
+	}
+	return line
 }
 
 // strictJSON decodes a tool's arguments, refusing a field it does not take.
@@ -325,6 +535,20 @@ func observeFlags(flags []flagSpec) []flagSpec {
 	return flags
 }
 
+// actFlags is flags with each path parameter of the operations act runs
+// that flags do not name already, as a flag taking a value.
+func actFlags(flags []flagSpec) []flagSpec {
+	for _, name := range actOperations() {
+		op, _ := operation(name)
+		for _, k := range slices.Sorted(maps.Keys(pathParams(op.Path))) {
+			if !slices.ContainsFunc(flags, func(f flagSpec) bool { return f.name == "--"+k }) {
+				flags = append(flags, flagSpec{name: "--" + k, kind: flagValue})
+			}
+		}
+	}
+	return flags
+}
+
 // takes names a route's parameters, or says it takes none.
 func takes(props map[string]any) string {
 	if len(props) == 0 {
@@ -365,8 +589,11 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return 0, nil
 	}
 	sub, rest := args[0], args[1:]
-	if sub == "observe" {
+	switch sub {
+	case "observe":
 		return brakemanObserve(ctx, rest, stdout, stderr)
+	case "act":
+		return brakemanAct(ctx, rest, stdin, stdout, stderr)
 	}
 	fs := flag.NewFlagSet("brakeman "+sub, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -549,6 +776,84 @@ func brakemanObserve(ctx context.Context, args []string, stdout, stderr io.Write
 	_, err = io.WriteString(stdout, text)
 	return 0, err
 }
+
+// brakemanAct is conductor brakeman act OPERATION [--KEY VALUE]...
+// [--body-file F] [--op-id ID] [--json]: the keys are the route's path
+// parameters, read as pairs as observe reads its own.
+func brakemanAct(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
+		fmt.Fprint(stderr, brakemanUsage)
+		return 0, nil
+	}
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return 2, fmt.Errorf("brakeman act needs an operation: %s", strings.Join(actOperations(), ", "))
+	}
+	operation, params := args[0], map[string]string{}
+	var bodyFile, opID string
+	asJSON := false
+	for i := 1; i < len(args); i++ {
+		k, ok := strings.CutPrefix(args[i], "--")
+		if !ok || k == "" {
+			return 2, fmt.Errorf("brakeman act takes --KEY VALUE pairs: %q", args[i])
+		}
+		if k == "json" {
+			asJSON = true
+			continue
+		}
+		k, v, eq := strings.Cut(k, "=")
+		if !eq {
+			if i+1 == len(args) {
+				return 2, fmt.Errorf("brakeman act: --%s needs a value", k)
+			}
+			i++
+			v = args[i]
+		}
+		switch k {
+		case "body-file":
+			bodyFile = v
+		case "op-id":
+			opID = v
+		default:
+			if _, dup := params[k]; dup {
+				return 2, fmt.Errorf("brakeman act: --%s given twice", k)
+			}
+			params[k] = v
+		}
+	}
+	var body map[string]any
+	if bodyFile != "" {
+		raw, err := readBounded(bodyFile, stdin, maxActBodyFile)
+		if err != nil {
+			return 2, fmt.Errorf("--body-file: %w", err)
+		}
+		if err := json.Unmarshal(raw, &body); err != nil || body == nil {
+			return 2, fmt.Errorf("--body-file: the body is a JSON object")
+		}
+	}
+	c, err := brakemanClientFromEnv(os.Getenv)
+	if errors.Is(err, errNotInSession) {
+		return 1, fmt.Errorf("brakeman: not in a Conductor session (%s and %s are not set)", notify.EnvURL, notify.EnvToken)
+	}
+	if err != nil {
+		return 1, err
+	}
+	actx, cancel := context.WithTimeout(ctx, 2*(api.LaunchTimeout+30*time.Second))
+	defer cancel()
+	text, reply, err := c.act(actx, operation, params, body, opID)
+	if err != nil {
+		return 1, err
+	}
+	if asJSON {
+		_, err = stdout.Write(append(bytes.TrimRight(reply, "\n"), '\n'))
+		return 0, err
+	}
+	fmt.Fprintln(stdout, text)
+	return 0, nil
+}
+
+// maxActBodyFile bounds act's --body-file: the largest body a granted
+// operation's route takes (a proposal's 192 KiB).
+const maxActBodyFile = 256 << 10
 
 // parseSince reads --since: a time (RFC 3339, or a date and a time of
 // the day, local), a time of the day alone (its last occurrence, local),
