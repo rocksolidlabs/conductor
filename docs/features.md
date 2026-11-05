@@ -3621,8 +3621,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `launch_approved_plan` (DS2's launch, through `ext.Host`'s
   `LaunchApproved`) and `prepare_followup` (DS2's proposal of a revision
   based on the approved one). `request_repair` (RV1) and `route_decision`
-  (DR1) have no route yet, so a save that grants them is refused, which
-  is why #534 stays open. Checks over three review rounds: the module's
+  (DR1) have no route yet, so a save that grants them is refused. PR
+  #612 closed #534 on merge with these two unserved; #658 holds them.
+  Checks over three review rounds: the module's
   race tests each round, each round's new tests failing with their fix
   reverted, the Mac rows.
 
@@ -3661,7 +3662,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   Not in this stream: PR-18 (#539, `route_decision` to a human member's
   label as well as the operator), which waits for HM1 (human members as
   local labels, `docs/plans/decisions.md`) and is not in this wave; and
-  the two grants waiting for RV1's and DR1's routes (#534).
+  the two grants waiting for RV1's and DR1's routes (#658).
 
   What was missing, slow or wrong. PR-12's prerequisites were not all
   there: RV1 and DR1 have plans but no routes, so the closed list of four
@@ -3720,7 +3721,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestAnUnavailableRoleHoldsNothingElse`).
   Neither item is done with this entry: each is done once its observation
   is made and recorded here, a bug the stream caused found there fixed in
-  the stream.
+  the stream. #659 holds these two observations and BK0's real Codex
+  session, the docs PR that records them, and any stream bug they find.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
