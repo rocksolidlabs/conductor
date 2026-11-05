@@ -1161,7 +1161,7 @@ func (r *Request) pinned() bool {
 	if slices.ContainsFunc(r.Made, func(m Made) bool { return m.State == MadePending }) {
 		return true
 	}
-	if slices.ContainsFunc(r.Acts, func(a Act) bool { return a.State == "pending" }) {
+	if slices.ContainsFunc(r.Acts, func(a Act) bool { return a.State == ActPending }) {
 		return true
 	}
 	ticket := func(item int) bool {
@@ -1252,16 +1252,19 @@ func (s *Store) PruneKeeping(keep int) (int, error) {
 
 // PendingMake is a make the desk completes (PR-4): a made claim still
 // pending, or an edge whose two ends are tickets and whose relation is
-// not yet recorded.
+// not yet recorded; or an act (PR-12) still pending, whose outcome the
+// desk's recovery copies from the operation's store.
 type PendingMake struct {
 	Request string
 	Made    *Made // a claim pending
 	Edge    *Edge // an edge to record
+	Act     *Act  // an act pending
 }
 
 // Pending lists what Brakeman's records hold of other stores unfinished:
 // the made claims and edges the desk's recovery completes over Dispatch
-// and the crew store. Open completes none of them.
+// and the crew store, and the acts whose outcome it copies. Open
+// completes none of them.
 func (s *Store) Pending() ([]PendingMake, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1289,6 +1292,11 @@ func (s *Store) Pending() ([]PendingMake, error) {
 		for i := range r.Edges {
 			if e := r.Edges[i]; e.State == EdgePending && ticket(e.From) && ticket(e.To) {
 				out = append(out, PendingMake{Request: id, Edge: &r.Edges[i]})
+			}
+		}
+		for i := range r.Acts {
+			if r.Acts[i].State == ActPending {
+				out = append(out, PendingMake{Request: id, Act: &r.Acts[i]})
 			}
 		}
 	}

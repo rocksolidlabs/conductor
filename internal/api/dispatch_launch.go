@@ -318,8 +318,15 @@ func (s *Server) handleDispatchLaunch(w http.ResponseWriter, r *http.Request) {
 	// operations and its run's start, each within its own bound.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), LaunchTimeout)
 	defer cancel()
-	op := body.op(r)
-	rc, found, err := ds.Replay(ctx, op, dispatch.IntentTicketLaunch, dispatch.LaunchArgs{Key: key, Plan: body.Plan, Label: body.Label})
+	s.ticketLaunch(ctx, w, ds, body.op(r), key, body.Plan, body.Label)
+}
+
+// ticketLaunch is DS2's launch from a ticket, the one function the route
+// and ext.Host's LaunchApproved run: op under its actor, the ticket key,
+// the revision plan and the label, answered to w as the route answers
+// (handleDispatchLaunch), the operation replayed first.
+func (s *Server) ticketLaunch(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key, plan, label string) {
+	rc, found, err := ds.Replay(ctx, op, dispatch.IntentTicketLaunch, dispatch.LaunchArgs{Key: key, Plan: plan, Label: label})
 	switch {
 	case err != nil:
 		s.dispatchError(w, "launch", err)
@@ -331,7 +338,7 @@ func (s *Server) handleDispatchLaunch(w http.ResponseWriter, r *http.Request) {
 		s.answerLaunch(ctx, w, ds, rc, op)
 		return
 	}
-	if !dispatch.ValidID(body.Plan) {
+	if !dispatch.ValidID(plan) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "plan is a plan revision's id, 16 lower-case hex characters")
 		return
 	}
@@ -342,7 +349,7 @@ func (s *Server) handleDispatchLaunch(w http.ResponseWriter, r *http.Request) {
 	// The early refusal, in words, before anything is kept: an agent of
 	// the revision that resolves otherwise now. The gate is each attempt's
 	// own launch, which checks the entry it starts.
-	switch v, err := ds.Plan(ctx, body.Plan); {
+	switch v, err := ds.Plan(ctx, plan); {
 	case errors.Is(err, dispatch.ErrNotFound):
 		// The store refuses it not_found, its receipt kept.
 	case err != nil:
@@ -359,7 +366,7 @@ func (s *Server) handleDispatchLaunch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	rc, err = ds.Launch(ctx, op, key, body.Plan, body.Label)
+	rc, err = ds.Launch(ctx, op, key, plan, label)
 	if err != nil || rc.Status != dispatch.StatusDone {
 		s.writeOp(w, "launch", rc, err, true, "launch", func(dispatch.Receipt) (any, error) { return nil, nil })
 		return

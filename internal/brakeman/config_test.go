@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -282,15 +283,30 @@ func TestTheDefaultsAreOffAndTerminalsHidden(t *testing.T) {
 	}
 }
 
-// TestActMustBeEmptyInThisBuild: no operation can be granted before BK2.
-func TestActMustBeEmptyInThisBuild(t *testing.T) {
+// TestActIsTheClosedList: a grant is one of the four operations of the
+// closed list, each once, and only one whose route the server serves.
+func TestActIsTheClosedList(t *testing.T) {
 	c := onConfig()
-	c.Permissions.Act = []string{"run_retry"}
-	if inv := wantInvalid(t, Validate(c, goodFacts()), "permissions.act"); !strings.Contains(inv.Why, "must be empty") {
-		t.Errorf("act: %s", inv)
+	c.Permissions.Act = slices.Clone(Grantable)
+	if err := Validate(c, goodFacts()); err != nil {
+		t.Fatalf("the closed list: %v", err)
+	}
+	for _, op := range []string{"run_retry", "task_accept", "plan_approve", "decision_answer", "config_save", "ticket_close", ""} {
+		c.Permissions.Act = []string{op}
+		if inv := wantInvalid(t, Validate(c, goodFacts()), "permissions.act"); !strings.Contains(inv.Why, "is not an operation Brakeman can be granted") {
+			t.Errorf("%q: %s", op, inv)
+		}
+	}
+	c.Permissions.Act = []string{ActPrepareFollowup, ActPrepareFollowup}
+	wantInvalid(t, Validate(c, goodFacts()), "permissions.act")
+	f := goodFacts()
+	f.unserved = map[string]string{ActRequestRepair: "it waits for RV1"}
+	c.Permissions.Act = []string{ActRequestRepair}
+	if inv := wantInvalid(t, Validate(c, f), "permissions.act"); !strings.Contains(inv.Why, "it waits for RV1") {
+		t.Errorf("an unserved grant: %s", inv)
 	}
 	c.Enabled = false
-	wantInvalid(t, Validate(c, goodFacts()), "permissions.act")
+	wantInvalid(t, Validate(c, f), "permissions.act")
 }
 
 // TestScopeAdmits: each selector alone and together, a session in no run,

@@ -20,7 +20,11 @@ type principal struct {
 	// empty for every token of the server's own chain.
 	subject string
 	name    string
-	link    *share.Link
+	// as is the actor the principal's receipts are kept under when it is
+	// none of the token chain's nor an identity provider's: brakemanActor
+	// for an operation a Brakeman turn was granted (brakeman_act.go).
+	as   string
+	link *share.Link
 	// runOf answers the run a session is a member of, for a run link
 	// (Server.runOf).
 	runOf func(sessionID string) (runID string, ok bool)

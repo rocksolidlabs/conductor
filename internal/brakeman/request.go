@@ -176,8 +176,15 @@ const (
 	EdgeMade    = "made"
 )
 
-// Act is one of BK2's acts (PR-12), written pending before its operation
-// runs. No act is taken in this build: a request's Acts stays empty.
+// Act is one of BK2's acts (PR-12): an operation Brakeman was granted
+// (Permissions.Act) and ran through that operation's own route, written
+// pending before the operation runs and its outcome copied after, from
+// the receipt the operation's own store keeps. OpID is the turn's, Op the
+// derived idempotency key the operation ran under, Target the ref it
+// acted on (a ticket, a plan revision), Run the target's run where the
+// operation's receipt is keyed by one, Args the hex SHA-256 of its
+// arguments; Receipt names what the operation made or acted on (a
+// launch's id, a plan revision's) and Why a refusal's words.
 type Act struct {
 	OpID      string    `json:"opId"`
 	Operation string    `json:"operation"`
@@ -185,11 +192,23 @@ type Act struct {
 	Run       string    `json:"run,omitempty"`
 	Op        string    `json:"op"`
 	Args      string    `json:"args"`  // hex SHA-256 of the arguments
-	State     string    `json:"state"` // pending, done, refused, not_run
+	State     string    `json:"state"` // ActPending, ActDone, ActRefused, ActNotRun
 	Receipt   string    `json:"receipt,omitempty"`
 	Why       string    `json:"why,omitempty"`
 	At        time.Time `json:"at"`
 }
+
+// The states of an Act: pending while its operation may be running (a
+// crash leaves it so, for the desk's recovery), done or refused as the
+// operation's receipt says, not_run when the operation never committed
+// before the server stopped (never run by the recovery: the grant was the
+// turn's, and its turn has ended).
+const (
+	ActPending = "pending"
+	ActDone    = "done"
+	ActRefused = "refused"
+	ActNotRun  = "not_run"
+)
 
 // The kinds of a request.
 const (

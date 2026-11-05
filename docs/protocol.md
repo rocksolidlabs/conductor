@@ -3512,7 +3512,7 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 | Route | Body and answer |
 |---|---|
 | `GET /api/brakeman` | `{config, current, queue, turnsToday, warnings?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns a day, mode `invoked`), the request holding the slot or `null`, the queued requests oldest first, the turns charged to today, `warnings` as the configuration's save answers them; on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
-| `PUT /api/brakeman/config` | `{rev, config}` → `{config, warnings?}`, its `rev` bumped and `updatedAt` stamped; `warnings` the words Settings shows beside the agent chosen, for an agent whose read-only mode does not hold (Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules: Codex is taken, with that limit said); `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode); `503 shutting_down` once the server is shutting down (nothing saved, nothing cancelled); at most 64 KiB |
+| `PUT /api/brakeman/config` | `{rev, config}` → `{config, warnings?}`, its `rev` bumped and `updatedAt` stamped; `config.permissions.act` the operations granted, from the closed list (What a turn may do); `warnings` the words Settings shows beside the agent chosen, for an agent whose read-only mode does not hold (Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules: Codex is taken, with that limit said); `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode); `503 shutting_down` once the server is shutting down (nothing saved, nothing cancelled); at most 64 KiB |
 | `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}`; `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
 | `GET /api/brakeman/requests?after=&limit=` | `{requests, next}`, newest first, at most 100 a page; `next` the id to ask after, `""` for none |
 | `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |
@@ -3603,9 +3603,59 @@ attempt's checkpoint and error, its blocker's message: the task's own read
 gives them whole), `members` (each member's prompt and args), `log` and
 `chat` (their oldest entries, the newest that fit kept). The admin's
 answers are unchanged; every other route refuses the principal as it
-refuses no token. `401` for a token
+refuses no token, but the granted operations' own routes (What a turn may
+do, below). `401` for a token
 that is not the named session's, `403 not_brakeman` for a session that
 is no turn's, `409 turn_over` once its request is closed.
+
+**What a turn may do** (`docs/plans/brakeman.md`, BK2). Nothing but its
+brief, unless the person grants it operations in `permissions.act`, which
+only `PUT /api/brakeman/config` writes, from a closed list:
+`launch_approved_plan` (DS2's launch from a ticket's revision the operator
+approved and whose approval still holds), `prepare_followup` (DS2's
+proposal of a revision `basedOn` the approved one, which the operator
+still approves), `request_repair` (RV1's request for changes on a
+candidate) and `route_decision` (DR1's routing of a decision record to
+the operator, never its answer); the last two have no route in this build
+and are refused at the save (`400 invalid_config`, `field`
+`permissions.act`), as is any other name and a name twice. Approving a
+revision, answering a question, changing a gate, accepting a task,
+editing the configuration and closing or deleting a ticket are none of
+them. There is no act route of Brakeman's own: each operation is sent to
+its own route, `POST /api/dispatch/tickets/{key}/launch` and `POST
+/api/dispatch/tickets/{key}/plans`, as the principal `brakeman` (the
+turn's token, its session named in `X-Conductor-Session`), with the body
+that route takes and an `opId` of the turn's. An `opId` the request
+already holds is run again under its derived key, so the operation's own
+store answers it from its receipt, whatever the target's state now (`409
+op_conflict` for another operation, ticket or body under it; `409
+act_not_run` for one the server stopped before it ran). A new act is
+refused, nothing kept, in this order: `403 not_granted` unless both the
+configuration the turn began under and the configuration now grant it;
+`403 not_visible` unless `dispatch` is visible, `403 outside_scope` for a
+ticket outside the scope (a grant gives no read, a read no grant); `404
+not_found` for a ticket or revision not there or not the ticket's; `409
+stale_revision` for an `expectedRev` that is not the ticket's now; `409
+stale_target` for a revision that is not approved (the launch's, or a
+follow-up's `basedOn`) or, for a launch, whose approval no longer holds;
+`409 acts_spent` past 20 acts a request. Then the act is written
+`pending` into the request's `acts` (`{opId, operation, target:
+"ticket:<KEY-n>", op, args, state, receipt?, why?, at}`, at most 600
+bytes, `args` the SHA-256 of the body but its `opId` and `byName` with the
+ticket's key), the operation is run through its one function under the
+actor `brakeman` with the display name `Brakeman` and the derived op id
+(`bk` + 30 hex digits of a SHA-256 of `act`, the request and the
+`opId`), a launch through `ext.Host`'s `LaunchApproved`, and its outcome
+copied into the entry: `done` with `receipt` the id of what it made (the
+launch's, the revision's), `refused` with `why` (the store's receipt's
+words, or the route's for a refusal before the store); a failure of the
+server leaves it `pending`. The answer is the route's own, with its
+receipt. A server that stops between the operation and the copy, or
+before the operation, leaves the entry `pending`: before Brakeman's
+routes serve again, the desk reads Dispatch's receipt for `(brakeman,
+op)` and copies it, or, with none, marks the entry `not_run` ("the server
+stopped before it ran"), never run again; a request with an act
+`pending` is kept by the prune.
 
 Brakeman's own reads, the admin's and the principal's, each at most 256
 KiB (the guide's `observe_<what>` entries carry each read's `reply`

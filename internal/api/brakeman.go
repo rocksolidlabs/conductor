@@ -1821,6 +1821,10 @@ func (f brakemanFacts) CheckCwd(dir string) error {
 	return err
 }
 
+// ServesAct answers whether this build serves the route of the granted
+// operation op (actServed).
+func (f brakemanFacts) ServesAct(op string) error { return actServed(op) }
+
 func (f brakemanFacts) CheckCrew(body json.RawMessage) error {
 	var in crewInput
 	if err := store.DecodeStrict(body, &in); err != nil {

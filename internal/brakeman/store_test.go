@@ -225,6 +225,48 @@ func TestPruneKeepsAPinnedRequest(t *testing.T) {
 	}
 }
 
+// TestPruneKeepsARequestWithAPendingAct: a closed request whose act is
+// pending outlives Prune, and Pending lists the act for the desk's
+// recovery; once its outcome is copied (done, or not_run) it pins
+// nothing.
+func TestPruneKeepsARequestWithAPendingAct(t *testing.T) {
+	keepNewest = 0
+	t.Cleanup(func() { keepNewest = Keep })
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	for _, after := range []string{ActDone, ActNotRun} {
+		f := newFixture(t)
+		r := f.start("op-1")
+		act := Act{OpID: "a-1", Operation: ActLaunchApprovedPlan, Target: ref(t, "ticket:CND-1"), Op: "bk" + strings.Repeat("a", 30), Args: strings.Repeat("0", 64), State: ActPending, At: now}
+		if _, err := f.s.Update(r.ID, func(r *Request) error { r.Acts = []Act{act}; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		f.close(r.ID, StateInterrupted)
+		if _, err := f.s.Prune(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.s.Get(r.ID); err != nil {
+			t.Fatalf("a closed request with a pending act was pruned: %v", err)
+		}
+		pending, err := f.s.Pending()
+		if err != nil || len(pending) != 1 || pending[0].Act == nil || pending[0].Act.OpID != "a-1" || pending[0].Request != r.ID {
+			t.Fatalf("Pending: %+v %v", pending, err)
+		}
+		// A closed request takes its act's outcome, and nothing else of it.
+		if _, err := f.s.Update(r.ID, func(r *Request) error { r.Acts[0].State, r.Acts[0].Receipt = after, "0123456789abcdef"; return nil }); err != nil {
+			t.Fatalf("the outcome of a closed request's act: %v", err)
+		}
+		if _, err := f.s.Update(r.ID, func(r *Request) error { r.Acts[0].Operation = ActPrepareFollowup; return nil }); !errors.Is(err, ErrClosed) {
+			t.Fatalf("a closed request's act changed past its outcome: %v", err)
+		}
+		if _, err := f.s.Prune(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.s.Get(r.ID); err == nil {
+			t.Fatalf("a request whose act is %s stays pinned", after)
+		}
+	}
+}
+
 // TestOpenInterruptsWhatWasStartingOrRunning: a restart turns a starting
 // or running request into interrupted, with why, and leaves a queued one
 // queued.

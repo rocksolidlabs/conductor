@@ -21,12 +21,19 @@ type facts struct {
 	accountErr error
 	cwdErr     error
 	crewErr    error
-	crews      []string // the bodies CheckCrew was given
+	crews      []string          // the bodies CheckCrew was given
+	unserved   map[string]string // the grants ServesAct refuses, with why
 }
 
 func (f *facts) Agent(id string) (AgentFacts, bool) { a, ok := f.agents[id]; return a, ok }
 func (f *facts) CheckAccount(string) error          { return f.accountErr }
 func (f *facts) CheckCwd(string) error              { return f.cwdErr }
+func (f *facts) ServesAct(op string) error {
+	if why, ok := f.unserved[op]; ok {
+		return errors.New(why)
+	}
+	return nil
+}
 func (f *facts) CheckCrew(b json.RawMessage) error {
 	f.crews = append(f.crews, string(b))
 	return f.crewErr

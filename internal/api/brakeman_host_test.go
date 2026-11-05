@@ -138,20 +138,3 @@ func TestHostLaunchTurnIsLaunchTurn(t *testing.T) {
 		t.Fatalf("%d runs, want the turn's one", n)
 	}
 }
-
-// TestLaunchApprovedIsUnsupportedUntilPR12: the declared launch from an
-// approved plan revision answers ext.ErrUnsupported, from the desk's Host
-// and a provider's, and starts nothing.
-func TestLaunchApprovedIsUnsupportedUntilPR12(t *testing.T) {
-	t.Parallel()
-	b := brakemanEnv(t, nil)
-	r := ext.ApprovedLaunch{Ticket: "CND-1", Plan: "0123456789abcdef", OpID: "op-1", By: ada}
-	for _, h := range []ext.Host{b.srv.BrakemanHost(), testHost(b.srv, t.Context(), "cloud")} {
-		if _, err := h.LaunchApproved(t.Context(), r); !errors.Is(err, ext.ErrUnsupported) {
-			t.Fatalf("LaunchApproved: %v", err)
-		}
-	}
-	if n := len(b.srv.runs.List()); n != 0 {
-		t.Fatalf("%d runs launched", n)
-	}
-}

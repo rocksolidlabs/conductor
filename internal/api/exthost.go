@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -408,14 +411,121 @@ func (h *extHost) LaunchTurn(ctx context.Context, r ext.TurnLaunch) (ext.RunRef,
 	return ext.RunRef{ID: run.ID, Crew: run.CrewID, URL: h.s.publicBase(nil) + "/runs/" + url.PathEscape(run.ID)}, nil
 }
 
-// LaunchApproved is declared by Brakeman's PR-17 and wired to DS2's launch
-// from a ticket by its PR-12: until then it answers ext.ErrUnsupported and
-// starts nothing.
-func (h *extHost) LaunchApproved(_ context.Context, r ext.ApprovedLaunch) (ext.RunRef, error) {
+// LaunchApproved launches a managed run from the ticket r.Ticket's plan
+// revision r.Plan, which the operator approved and which still holds,
+// through DS2's one launch function (ticketLaunch), as POST
+// /api/dispatch/tickets/{key}/launch does: under r.OpID, so a retry
+// answers the launch it made and never starts a second run, and with
+// r.ExpectedRev the ticket's revision the caller read. The operation is
+// kept under the actor of the provider's principal (user:<subject>), or,
+// on the desk's Host, the actor brakeman. It answers the run; a revision
+// or ticket the store does not hold ext.ErrNotFound; every refusal (a
+// revision not approved, an approval that no longer holds, a ticket that
+// moved, managed runs off) ext.ErrRefused with the route's words; a
+// switchyard, or a server without a writable Dispatch store,
+// ext.ErrUnsupported. When ctx carries a reply sink (withReplySink), the
+// route's own answer is written there too.
+func (h *extHost) LaunchApproved(ctx context.Context, r ext.ApprovedLaunch) (ext.RunRef, error) {
 	if err := h.gone(); err != nil {
 		return ext.RunRef{}, err
 	}
-	return ext.RunRef{}, fmt.Errorf("%w: a launch from an approved plan revision through the Host comes with Brakeman's authorized actions", ext.ErrUnsupported)
+	if h.s.cfg.Switchyard.Enabled {
+		return ext.RunRef{}, fmt.Errorf("%w: this server coordinates hosted sessions and launches none", ext.ErrUnsupported)
+	}
+	r.Label = strings.TrimSpace(r.Label)
+	if err := r.Valid(); err != nil {
+		return ext.RunRef{}, refused("%v", err)
+	}
+	rec := newReplyRecorder()
+	defer func() {
+		if sink, ok := ctx.Value(replySinkKey{}).(*replyRecorder); ok && rec.status != 0 {
+			copyReply(sink, rec)
+		}
+	}()
+	ds, ok := h.s.dispatchWriter(rec)
+	if !ok {
+		return ext.RunRef{}, fmt.Errorf("%w: %s", ext.ErrUnsupported, replyWords(rec))
+	}
+	actor := ext.SubjectActor + r.By.Subject
+	if h.desk {
+		actor = brakemanActor
+	}
+	op := dispatch.Op{Actor: actor, ID: r.OpID, ExpectedRev: r.ExpectedRev, By: r.By.Name}
+	// As the route's: once begun, the launch runs to its end, each step
+	// within its own bound.
+	lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), LaunchTimeout)
+	defer cancel()
+	h.s.ticketLaunch(lctx, rec, ds, op, r.Ticket, r.Plan, r.Label)
+	return h.s.launchedRef(rec)
+}
+
+// replySinkKey is the context key of a reply sink: a replyRecorder a
+// Host call that answers as a route does (LaunchApproved) writes that
+// route's answer into, for a caller that answers it on (an act).
+type replySinkKey struct{}
+
+// withReplySink is ctx with the reply sink rec.
+func withReplySink(ctx context.Context, rec *replyRecorder) context.Context {
+	return context.WithValue(ctx, replySinkKey{}, rec)
+}
+
+// copyReply writes the answer from holds into to, as it was written.
+func copyReply(to, from *replyRecorder) {
+	for k, v := range from.header {
+		to.header[k] = v
+	}
+	to.WriteHeader(from.status)
+	_, _ = to.Write(from.body.Bytes())
+}
+
+// launchReply is a launch's answer as the route writes it.
+type launchReply struct {
+	Receipt *dispatch.Receipt `json:"receipt"`
+	Launch  *struct {
+		RunID string `json:"runId"`
+	} `json:"launch"`
+	Run *struct {
+		ID     string `json:"id"`
+		CrewID string `json:"crewId"`
+	} `json:"run"`
+	Error *apiError `json:"error"`
+}
+
+// replyWords is the error's words of a recorded answer, else its status.
+func replyWords(rec *replyRecorder) string {
+	var reply launchReply
+	if json.Unmarshal(rec.body.Bytes(), &reply) == nil && reply.Error != nil {
+		return reply.Error.Message
+	}
+	return http.StatusText(rec.status)
+}
+
+// launchedRef is the run a launch's recorded answer names, or its
+// refusal as the Host tells it: a run started answers its ref; 404
+// ext.ErrNotFound; any other refusal ext.ErrRefused with the route's
+// words and code (hostRefusal over its *apiError).
+func (s *Server) launchedRef(rec *replyRecorder) (ext.RunRef, error) {
+	var reply launchReply
+	_ = json.Unmarshal(rec.body.Bytes(), &reply)
+	if rec.status == http.StatusOK || rec.status == http.StatusCreated {
+		ref := ext.RunRef{}
+		if reply.Launch != nil {
+			ref.ID = reply.Launch.RunID
+		}
+		if reply.Run != nil {
+			ref.ID, ref.Crew = cmpOr(reply.Run.ID, ref.ID), reply.Run.CrewID
+		}
+		ref.URL = s.publicBase(nil) + "/runs/" + url.PathEscape(ref.ID)
+		return ref, nil
+	}
+	e := newAPIError(rec.status, "", http.StatusText(rec.status))
+	if reply.Error != nil {
+		e.Code, e.Message = reply.Error.Code, reply.Error.Message
+	}
+	if rec.status == http.StatusNotFound {
+		return ext.RunRef{}, fmt.Errorf("%w: %s", ext.ErrNotFound, e.Message)
+	}
+	return ext.RunRef{}, hostRefusal{e}
 }
 
 // hostRefusal is the server's own refusal of a Host's call, an
