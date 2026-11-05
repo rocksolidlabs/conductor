@@ -312,7 +312,7 @@ task's row and the run's event, so a hold and its release can never
 disagree with the task they hold.
 
 `Version` goes from 7 to 8; migration 7 runs four `CREATE TABLE`
-statements and three `CREATE INDEX` statements, and derives nothing: no
+statements and four `CREATE INDEX` statements, and derives nothing: no
 decision existed before it, so a version 7 database's rows are all
 correct as they are (the conservative migration rule the owner set for
 the version 3 to 4 change). A version 8 database opened by an older
@@ -370,8 +370,11 @@ CREATE TABLE decision_history (
   kind TEXT NOT NULL,                       -- below
   by TEXT NOT NULL DEFAULT '',
   detail TEXT NOT NULL DEFAULT '',          -- JSON, at most 2 KiB
+  op_id TEXT NOT NULL DEFAULT '',           -- an operator operation's opId or commandId
+  fingerprint TEXT NOT NULL DEFAULT '',     -- SHA-256 of that operation's body as sent
   PRIMARY KEY (decision, seq)
 );
+CREATE UNIQUE INDEX decision_ops ON decision_history(decision, by, op_id) WHERE op_id != '';
 CREATE TABLE decision_holds (
   run_id TEXT NOT NULL,
   task_id TEXT NOT NULL,
@@ -468,9 +471,15 @@ not written (counted in the next written row's detail as `dropped`).
 
 Bounds of the store, checked in the transaction that would pass them
 (`decision_limit`): at most 4 decisions open per attempt, 64 open per
-run, 1,000 per run in all; at most 32 response rows per decision
-(refusals included: past it a response is answered `decision_limit`
-without a row); at most 32 operator operations per decision (above). A
+run, 1,000 per run in all; at most 32 response rows per decision, of
+which at most 31 refused: the accepted one always has its place (a
+decision accepts one response in its life, `open` → `answered` once),
+so no run of refusals (stale revs, a router's answers) can leave a
+gate that nobody can approve. Past 31 refused rows a further refusal
+is answered with its receipt's words and `kept: false`, and keeps no
+row; its retry is judged again, and since a decision's state and rev
+only move forward it is refused again, so a repeat still gets the same
+answer; at most 32 operator operations per decision (above). A
 response's receipt is at most 8 KiB as encoded and the application
 receipt at most 4 KiB; a response whose receipt would pass its bound is
 refused `invalid` with no row, so every part of a record keeps its
@@ -800,6 +809,26 @@ records a `routed` history row. DR1's only destination is `{kind:
 `route_decision` grant does in BK2); any other kind is `invalid` until
 HM1 adds a person's label. It changes no state.
 
+**An operation repeats as a response does.** A comment, a more_info, a
+route and a cancel each write one history row (`commented`,
+`info_requested`, `routed`, `cancelled`) that keeps the operation's id
+(`op_id`: its `opId`, or a cancel's `commandId`) and the SHA-256 of its
+body as sent (`fingerprint`), `by` its actor, unique per decision
+(`decision_ops`). Each operation's transaction looks for its
+`(decision, actor, id)` first, before any recheck: found with the same
+fingerprint, it answers the receipt that row makes (`{decision, op,
+seq, at, rev, words}`, rebuilt from the row, whose `detail` keeps the
+rev it made), `repeat: true`, and changes nothing, so a retry after the
+decision moved on (answered, applied, closed, or moved to a
+continuation) still gets its first receipt, and a repeated `more_info`
+is typed once (its typing follows its first commit only); found with
+another fingerprint, `409 op_conflict`. The lookup is by the
+decision's `n`, which a continuation keeps (it moves `current_run`,
+never the rows), so no run-scoped command table is read and a
+continuation needs no rule of its own. A refused operation keeps no
+row; its retry is judged again and, state and rev only moving forward,
+refused again.
+
 **Continuations and recovery** (`continue.go`). A continuation's first
 transaction moves every open or answered decision of the run it
 continues to the continuation (`current_run`) with `Tx.MoveDecisions`,
@@ -920,10 +949,10 @@ with `DisallowUnknownFields` and bounded:
 | `POST /api/sessions/{id}/decisions/{did}/withdraw` | the attempt's own token | `{}` → `{decision}`; `409 decision_closed` |
 | `GET /api/decisions` | admin | `?state=&run=&ticket=&after=&limit=` (100) → `{decisions, next?}`, newest first, without history |
 | `GET /api/decisions/{did}` | admin | the record whole with its evidence's `refs` (at most 1 MiB as encoded, the sum of its parts at their bounds: the 16 KiB request, 32 receipts of at most 8 KiB (256 KiB), 256 history rows of at most 2 KiB of detail and 256 bytes of envelope (576 KiB), the 4 KiB application receipt and 20 ref resolutions of at most 2 KiB (40 KiB), 892 KiB in all; `TestTheFullestDecisionFitsItsBound` builds one with every part at its bound) |
-| `POST /api/decisions/{did}/respond` | admin | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (8 KiB) → `201 {receipt, decision}`; `200` repeat; `409 decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `429 decision_limit`; `503 decision_moved` |
-| `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}` |
-| `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (8 KiB) → `{receipt, decision}` |
-| `POST /api/decisions/{did}/route` | admin | `{opId, to: {kind: "operator"}, note?, expectedRev}` → `{receipt, decision}` |
+| `POST /api/decisions/{did}/respond` | admin | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (8 KiB) → `201 {receipt, decision}`; `200` repeat; `409 decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved` |
+| `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict` |
+| `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (8 KiB) → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict`; `429 decision_limit` |
+| `POST /api/decisions/{did}/route` | admin | `{opId, to: {kind: "operator"}, note?, expectedRev}` → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict`; `429 decision_limit` |
 
 `responseId`, `commandId` and `opId` take the shape the run commands'
 ids take (1 to 32 of `A-Z a-z 0-9 . _ ~ -`); the web mints them and
@@ -1157,9 +1186,13 @@ Brakeman use them is Brakeman's.
   `person:<name>` that person, with the responsibility or "", or why
   not ("no person of crew api holds security"). Defined here with its
   tests; PR-12's decisions are its callers.
-- `Run.People []Person` (JSON `people`) and `TaskState.Owner
-  string`, `TaskState.OwnerFrom string` (`task` | `acceptance`), set from
-  the crew as launched. A managed run's record rebuilt from the ledger
+- `Run.People []Person` (JSON `people`, omitted when empty) and
+  `TaskState.Owner string`, `TaskState.OwnerFrom string` (`task` |
+  `acceptance`), set from the crew as launched. A run's record
+  (`runs/<id>.json`) carries them only when the run is managed, whose
+  record the ledger can write again; a run without tasks keeps its
+  people in memory while the engine holds it and writes none into its
+  record (Events, HM1, Migration and downgrade). A managed run's record rebuilt from the ledger
   (`Recovered`, `syncRecords`) and a continuation (`ContinueRun`) read
   them from the run row's crew as launched (`crewAsLaunched`), so they
   are the launch's, never the saved crew's now.
@@ -1177,13 +1210,28 @@ Brakeman use them is Brakeman's.
   (`POST /api/crews`, `PUT /api/crews/{id}`, `GET /api/crews/{id}`); the
   list (`GET /api/crews`) gains each crew's people with their
   responsibilities, no notes. The bodies' bounds stay `crew.MaxEncoded`.
+- One conversion of a crew body. A `crewInput` becomes a `crew.Crew`
+  today in three hand-written copies: `readCrew` (`crews.go`, the crew
+  routes), `crewOfBody` (`brakeman_make.go`, the crew a Brakeman draft
+  makes) and `brakemanFacts.CheckCrew` (`brakeman.go`, the draft's
+  check). PR-9 replaces the three with one method, `crewInput.crew()`,
+  which carries `people` and each task's `owner` with every other field,
+  so a Brakeman draft's check runs `checkPeople` and making the draft
+  keeps its people; a field added later is added once.
 - The run routes (`GET /api/runs`, `GET /api/runs/{run}`, `GET /api/runs/
   {run}/tasks/{task}`) answer `people` and each task's `owner` and
   `ownerFrom`.
-- `GET /api/people` (admin): the names Conductor knows, each once:
-  `{people: [{name, dispatch: bool, crews: [{id, name,
-  responsibilities}]}], dispatchUnavailable?: true}`, by name; read from
-  Dispatch's directory and the crew store, written to neither. A name
+- `GET /api/people?q=&after=&limit=` (admin): the names Conductor
+  knows, each once, by name, in pages: `{people: [{name, dispatch: bool,
+  crews: [{id, name, responsibilities}], crewsMore?: true}], next?,
+  dispatchUnavailable?: true}`; at most `limit` names (1 to 200, 200
+  when absent), `next` the last name when more follow, which the next
+  page passes as `after`; `q` (at most 60 characters) keeps the names
+  that contain it, ignoring case, for the pickers and the palette; a
+  person's `crews` at most 20, with `crewsMore` past them (their page
+  lists up to 100, below). Neither store has a bound on its
+  names, so the reply has one of its own. Read from Dispatch's
+  directory and the crew store, written to neither. A name
   typed into a crew is not added to Dispatch's directory: the two stores
   stay apart, and the list is their union.
 - `GET /api/people/{name}` (admin): a person's work: `{name, crews:
@@ -1192,14 +1240,20 @@ Brakeman use them is Brakeman's.
   runs the engine holds and the managed runs' records, at most 200, the
   newest first, with `more: true` past them; `tickets` the counts of
   Dispatch's own query (`owner:` and `assignee:person:`) and the link to
-  that view; `decisions` empty until PR-12. `404 not_found` for a
-  name no store knows; the name is matched exactly, as Dispatch matches
-  it.
+  that view; `decisions` empty until PR-12; `crews` at most 100, with
+  `crewsMore`. `404 not_found` only for a name that no source of the page
+  knows: neither store, nor a run the engine holds or a managed run's
+  record (its `people` and its tasks' owners, as launched), nor, from
+  PR-12, a decision's `for`; so a person removed from the saved crew
+  after a launch still has a page, with that run's work on it. The name
+  is matched exactly, as Dispatch matches it.
 - `docs/protocol.md`: the crew body's `people` and `owner`, the run's
   `people`, `owner` and `ownerFrom`, the two people routes. No WebSocket
   frame or control message changes, so `internal/proto` and
   `web/app/utils/protocol.ts` are untouched; the HTTP types are in
-  `web/app/composables/useSessions.ts`.
+  `web/app/composables/useSessions.ts`. The two people routes' rows give
+  their bounds: the page of 200 names, `q`, the 20 and 100 crews, the 200
+  tasks.
 
 **`web/app`.**
 
@@ -1228,8 +1282,14 @@ Brakeman use them is Brakeman's.
   revision's body keeps the crew as the store did.
 - `pages/people/[name].vue` (new): the person's work from `GET /api/
   people/{name}`; every person chip links to it. One column on a phone.
-- `composables/usePalette.ts`: the `@` mode adds the people Conductor
-  knows (from `usePeople`), Enter opening their page.
+- `composables/usePaletteRows.ts`: the `@` mode's groups
+  (`peopleGroups`) are today the page's people (a session's viewers,
+  under the page's label) and "You" ("Your name…"); a group **People**
+  goes between them: a row per person Conductor knows, from `usePeople`
+  (the first page of `GET /api/people`, with what follows the `@` as
+  `q`), "nate · architecture owner in api", Enter opening their page.
+  The rows are made by a pure function, `personRows` in `utils/people.ts`
+  (new), which `peopleGroups` calls, so a vitest reaches them.
 
 **Whom a decision is for (PR-12, once DR1's PR-1 to PR-8 are on main).**
 No ledger schema change: what HM1 adds lives in the JSON columns DR1's
@@ -1241,10 +1301,16 @@ No ledger schema change: what HM1 adds lives in the JSON columns DR1's
   empty for none (the operator alone, as today), and a third kind,
   `DecisionAssignment = "assignment"`, beside approval and
   clarification: work a person does by hand before the tasks it names.
-  The store checks the shape; the API's proposal (`POST /api/dispatch/
-  tickets/{key}/plans`) checks that the label resolves in the
-  revision's crew (`400 invalid`: "no person of crew api holds
-  architecture"). Both live in the immutable body, so an older
+  The store checks the label's shape only: `role:` or `person:`, then 1
+  to 60 characters with no control character; `internal/dispatch` does
+  not import `internal/crew`, so it keeps no copy of the four
+  responsibilities and judges none. The API's proposal (`POST
+  /api/dispatch/tickets/{key}/plans`, in `internal/api`, which imports
+  both) resolves the label in the revision's crew with `crew.Holder`,
+  the one list of the four: an unknown responsibility and a
+  responsibility nobody holds are both `400 invalid` ("no person of
+  crew api holds architecture"; "role:legal is not one of
+  architecture, product, security, acceptance"). Both live in the immutable body, so an older
   revision's digest is unchanged (`for` omitted when empty) and a label
   resolves against the crew the revision was approved with, never the
   saved crew now. `conductor dispatch plan propose` gains
@@ -1256,18 +1322,33 @@ No ledger schema change: what HM1 adds lives in the JSON columns DR1's
   takes `for` from an agent. The server resolves the label with
   `Holder` over the run's crew as launched and writes it into the
   request JSON as `for: {label, person, responsibility}` (the label as
-  given, the person it named, the responsibility or ""), with the
-  `routed` history row `{to: [{kind: "person", name}], rule: "the
-  architecture owner (role:architecture)", by: "yardmaster"}` in the
-  same transaction. An agent's label no person of the run's crew holds
+  given, the person it named, the responsibility or ""), in the same
+  transaction, and DR1's opening `routed` row names the person beside
+  the operator, one row and not a second, so DR1's history count is
+  unchanged: `{to: [{kind: "operator"}, {kind: "person", name}], rule:
+  "local/1: the operator answers, for the architecture owner
+  (role:architecture)", by: "yardmaster"}`. An agent's label no person of the run's crew holds
   is refused (`400 invalid`, naming the crew's responsibilities and
   their holders); a decision with no `for` is routed to the operator as
   DR1 routes it. `RouteDecision` takes `{kind: "person", name}` and
   `{kind: "role", name: <responsibility>}` once they resolve in the
-  run's crew as launched, writing the same `for` and a `routed` row
-  (what Brakeman's PR-18 calls); it still changes no state.
+  run's crew as launched (what Brakeman's PR-18 calls). Such a route
+  changes whom the decision is for, so it is taken only while the
+  decision is `open` and at the `expectedRev` its body carries
+  (`decision_answered`, `decision_closed` or `stale_decision`
+  otherwise, the words a response gets, and no row); in one transaction
+  it rewrites the request's `for`, writes the `routed` row with the
+  label before and after, and bumps `rev`. A response made against a
+  card that said "for nate" is then `stale_decision` ("dr-7 is now for
+  ana, the security reviewer: routed by the operator"), so no answer is
+  recorded for a person its responder did not see. The request's
+  `fingerprint` is of the request as sent and does not change; DR1's
+  route to the operator is unchanged.
 - The response receipt (DR1's `ResponseReceipt`) gains `for` (`{person,
-  responsibility}`, copied from the request), beside `actor` and
+  responsibility}`, copied from the request at the rev the response was
+  accepted at; once a decision is answered no route changes `for`, and
+  the application, the typed line and the task file read it from the
+  receipt), beside `actor` and
   `byName`, which stay who answered; the typed line and the task file's
   "Decisions" say "answered by the operator for nate, the architecture
   owner". The policy stays `local/1`: the label never changes who may
@@ -1284,6 +1365,21 @@ No ledger schema change: what HM1 adds lives in the JSON columns DR1's
   skill's decisions paragraph gains one sentence: the task file's "Who
   answers for this work" names the holders, and `for` names the one the
   decision is for.
+- `web/app`, the proposal form: `composables/useDispatch.ts`'s
+  `PlanDecision` gains `for?: string` and the kind `'assignment'`;
+  `components/DispatchPlanPropose.vue` offers Assignment beside Approval
+  and Clarification (`kindItems`) and, on each decision row, a **For**
+  select: none, each responsibility held in the picked crew with its
+  holder ("architecture owner: nate"), and each person of it, read from
+  the crew (`GET /api/crews/{id}`). Revising keeps a decision's `for`:
+  the prefill (`fill`) already copies the body's decision whole, and
+  `submit` stops rebuilding it field by field: it sends what
+  `planDecisionsOut` in `utils/dispatchPlans.ts` (new) makes, `{id,
+  question, kind, before, for?}`, so no field is dropped. A `for` the
+  picked crew no longer resolves (the crew edited since, or another crew
+  picked) blocks Save with the words the server would refuse with
+  (`decisionsProblem` gains the check, handed the crew's people). The
+  revision's page shows each decision's `for` and the assignment kind.
 - `web/app`: `DecisionCard.vue`'s "who may answer" says "the operator,
   for nate (architecture owner)"; `DecisionRespond.vue`'s confirm says
   "You answer as the operator, for nate"; an assignment's card says
@@ -1409,7 +1505,7 @@ same transaction as the task and hold rows it changes.
 record (`runs/<id>.json`) is a cache of the ledger, as it is today, and
 gains the tasks' `holds`.
 
-**Migration.** Version 7 to 8: the four tables and three indexes, in one
+**Migration.** Version 7 to 8: the four tables and four indexes, in one
 transaction with the version's change; nothing read, nothing derived; a
 version 7 database's runs, tasks and attempts are unchanged and hold no
 decision. Tested by opening a version 7 database made by `main`'s code
@@ -1446,29 +1542,44 @@ person goes into the JSON of DR1's rows, in DR1's transactions.
   person's work call it), and `Holder` the only one that says whom a
   label names (the proposal's check, a gate, an agent's request and a
   route call it), so no two views disagree.
-- **A label resolves once, and is kept.** A decision's `for` resolves in
-  the transaction that opens it (a gate's in `CreateRun`'s, an agent's
-  in `RequestDecision`'s), against the run's crew as launched, which for
-  a launch from a ticket is the revision's crew byte for byte; the
-  request keeps the person it named, written before the commit and
-  before anyone is told. A continuation carries the record as DR1
-  carries it and resolves nothing again; a later edit of the saved crew
-  changes nothing about it. An answer records the actor that answered
-  and the label it answered for, side by side; in the open-source build
-  the operator (the admin grant, DR1's `local/1`) answers any label
-  (decision D4), and the rechecks at response and application are DR1's
-  (state, revision, subject, policy, membership); HM1 adds none, since
-  the label it recorded cannot change inside the run.
-- **Migration.** None to run: a crew file without `people` reads as
-  none, a run record without them reads as none, a revision without
-  `for` reads as none, and none of them is written again to add the
-  field (the conservative-migration rule). An older Conductor decodes
-  the crew store's files and the run records strictly
-  (`store.DecodeStrict`), so it treats a crew file or a run record that
-  holds `people` or `owner` as unreadable and leaves it out of its lists,
-  touching nothing on disk; a newer one reads them again. Every field
-  added to these files so far has behaved so, and the features entry
-  says it.
+- **A label resolves when it is set, and an answer keeps the one it
+  saw.** A decision's `for` resolves in the transaction that opens it (a
+  gate's in `CreateRun`'s, an agent's in `RequestDecision`'s), or in a
+  route's that changes it, always against the run's crew as launched,
+  which for a launch from a ticket is the revision's crew byte for byte;
+  the request keeps the person it named, written before the commit and
+  before anyone is told. A route that changes `for` is taken only while
+  the decision is open, at the rev its sender saw, and bumps `rev`, so a
+  response, which DR1 accepts only at the rev its responder saw
+  (`expectedRev`), is always for the person that rev named, and its
+  receipt keeps that `for`. Once answered, nothing changes `for`: the
+  application, the typed line and the task file read the receipt's. A
+  continuation carries the record as DR1 carries it and resolves nothing
+  again; a later edit of the saved crew changes nothing about it. In
+  the open-source build the operator (the admin grant, DR1's `local/1`)
+  answers any label (decision D4), and the rechecks at response and
+  application are DR1's (state, revision, subject, policy, membership);
+  HM1 adds none, since `expectedRev` is the recheck a route needs.
+- **Migration and downgrade.** None to run: a crew file without
+  `people` reads as none, a run record without them reads as none, a
+  revision without `for` reads as none, and none of them is written
+  again to add the field (the conservative-migration rule). An older
+  Conductor decodes the crew store's files and the run records strictly
+  (`store.DecodeStrict`), so it treats a file that holds `people` or
+  `owner` as unreadable and leaves it out of its lists. For a crew file
+  that is all: the crew store never deletes or writes over a file it
+  cannot read (`Create` skips its id; nothing prunes the store), and a
+  newer Conductor reads it again. A run record is not so safe:
+  `Records.prune` counts a record it cannot read as a person's and
+  deletes such records first once more than 500 are kept. So only a
+  managed run's record carries people and owners: it is a cache of the
+  ledger, whose run row keeps the crew as launched, and one an older
+  build deleted is written again by `syncRecords` at the newer one's
+  next start (the ledger's schema is unchanged by HM1, so the older
+  build opens it as its own). A run without tasks writes no people into
+  its record, which every older build reads as before; once it has
+  ended, its page shows no people. The features entry says what an
+  older build does with these files.
 - **Conflicts.** None in HM1: crews are not replicated, and a revision's
   body is immutable. CS1, which replicates DR1's records, carries `for`
   and `assignee` as written.
@@ -1543,7 +1654,10 @@ and holds a step at a seam to order what must be ordered.
   `TestAResponseIDAnswersItsReceipt` (accepted and refused alike);
   `TestAnOpenDecisionBlocksThePrune`; `TestDecisionBounds` (4 per
   attempt, 64 open per run, 1,000 per run, 32 responses, 32 operator
-  operations, an 8 KiB receipt); `TestTheHistoryCapHolds` (every kind
+  operations, an 8 KiB receipt); `TestRefusalsNeverTakeTheAnswersPlace`
+  (31 stale responses kept, a 32nd answered `kept: false` with no row,
+  then the operator's valid answer accepted, applied, and its gate's
+  task released); `TestAnOperationIDIsUniquePerDecision`; `TestTheHistoryCapHolds` (every kind
   written to its own bound, the mandatory rows all kept, `notified`
   dropped past 256 with `dropped` counted); `TestAnAnswerIsConditionalOnItsRun`
   (`Tx.Answer` changes nothing once `current_run` moved);
@@ -1622,9 +1736,15 @@ and holds a step at a seam to order what must be ordered.
   `TestPauseHoldsReleasedTasks`; `TestTheTaskFileCarriesTheAnswer`
   (golden, with `taskfile_golden_test.go`'s fixtures);
   `TestAReleasedGatesAnswerStaysInItsTasksFiles` (an applied
-  clarification gate's answer in each task it released, and again in
-  their attempts after a continuation);
-  `TestASupersedingRequestMovesTheHold`; `TestMoreInfoIsTypedAndBumpsRev`.
+  clarification gate's answer in each task it released, in a retried
+  attempt of one of them, and again in their attempts after a
+  continuation);
+  `TestASupersedingRequestMovesTheHold`; `TestMoreInfoIsTypedAndBumpsRev`;
+  `TestAnOperationRepeatsItsReceipt` (a comment, a more_info, a route
+  and a cancel each sent again after a lost reply: the same receipt, no
+  second row, the more_info typed once; sent again after the decision
+  was answered, and after a continuation moved it: the same receipt;
+  the same id with another body: `op_conflict`).
 - `internal/session` (`decision_test.go`):
   `TestADecisionQuestionRefusesEveryOtherAnswer` (`answer`, `AnswerAs`,
   `Submit` with its id); `TestADecisionQuestionOutlastsKeysAndTheScreen`;
@@ -1733,31 +1853,53 @@ read by a person on the desktop app and a phone's browser on the LAN
   continuation keep the launch's people and owners);
   `TestTaskFileNamesWhoAnswers` (a new golden) and the existing goldens
   unchanged for a crew without people; `TestStoreRoundTripsPeople` and a
-  legacy crew's JSON unchanged.
+  legacy crew's JSON unchanged; `TestARecordWithoutTasksKeepsNoPeople`
+  (a crew with start rules and people, run and ended: its record's JSON
+  has no `people` key); `TestAManagedRecordIsRebuiltWithItsPeople` (its
+  file deleted, as an older build's prune would: the next start's
+  `syncRecords` writes it again with the launch's people and owners).
 - `internal/api`: `TestCrewRoutesCarryPeople`, `TestRunRoutesCarryOwners`,
   `TestPeopleIsTheUnionOfTheStores` (a name in Dispatch only, in a crew
-  only, in both; Dispatch unavailable), `TestAPersonsWork` (tasks owned in
-  two runs, owned by fallback, tickets counted, `404` for an unknown
-  name, the bound of 200 with `more`), `TestPersonNameBoundIsDispatchs`.
-- PR-12: `internal/dispatch` `TestPlanDecisionFor` (the shape, an
-  older body's digest unchanged, the `assignment` kind); `internal/crew`
-  `TestAGateNamesItsLabel` (the request's `for`, the `routed` row, both
-  in `CreateRun`'s transaction), `TestALabelResolvesFromTheCrewAsLaunched`
+  only, in both; Dispatch unavailable), `TestPeopleIsPaged` (201 names:
+  a page of 200 with `next`, then one; `q`; a person in 21 crews: 20
+  and `crewsMore`), `TestAPersonsWork` (tasks owned in two runs, owned
+  by fallback, tickets counted, `404` for a name no source knows, a
+  person removed from the saved crew after the launch still answered
+  with that run's tasks, the bound of 200 with `more`),
+  `TestPersonNameBoundIsDispatchs`, `TestADraftsPeopleAreCheckedAndKept`
+  (a Brakeman draft whose people break `checkPeople` refused by its
+  check with those words; a good one made into a crew whose file holds
+  its people and owners).
+- PR-12: `internal/dispatch` `TestPlanDecisionFor` (the shape only:
+  `role:anything` passes the store, `role:` and a control character do
+  not; an older body's digest unchanged; the `assignment` kind);
+  `internal/crew` `TestAGateNamesItsLabel` (the request's `for`, the one
+  opening `routed` row naming both, in `CreateRun`'s transaction), `TestALabelResolvesFromTheCrewAsLaunched`
   (the saved crew edited after approval, and a continuation: the record's
   person unchanged), `TestAnAgentsLabelNoPersonHoldsIsRefused`,
   `TestAnAssignmentGateForAPerson` (Done releases, Not done cancels, as
-  DR1's gate does), `TestRouteDecisionToAPersonAndARole`;
+  DR1's gate does), `TestRouteDecisionToAPersonAndARole`,
+  `TestARouteChangesForOnlyWhileOpen` (a route to ana bumps rev and a
+  response at the older rev is `stale_decision` naming ana; a route
+  between the response and the application refused `decision_answered`,
+  the receipt's, the typed line's and the task file's `for` still nate;
+  a route of an applied decision refused `decision_closed`);
   `internal/crew/ledger` `TestDecisionsFilterByPerson`; `internal/api`
   `TestTheOperatorAnswersForALabel` (the receipt's `actor` `admin` and
-  `for` nate, architecture), `TestProposalRefusesALabelTheCrewLacks`,
+  `for` nate, architecture), `TestProposalRefusesALabelTheCrewLacks`
+  (nobody holds it; a responsibility not among the four),
   `TestAPersonsDecisions`; `internal/cli` `--for`, `--decision-for` and
   the tool schema golden (`testdata/tools-list-main.json`);
   `internal/agents` the skill's sentence.
 
 **vitest** (`npm --prefix web run typecheck`, `npm --prefix web test`):
 `utils/crews.test.ts` (`peopleProblems`, `toCrewInput` with people,
-`ownersFollowPeople`, `ownerOf`), `utils/palette.test.ts` (people in the
-`@` mode), and in PR-12 the "for" words in DR1's `utils/decisions.test.ts`.
+`ownersFollowPeople`, `ownerOf`), `utils/people.test.ts` (`personRows`:
+the words, the key, the page it opens, the order), and in PR-12 the
+"for" words in DR1's `utils/decisions.test.ts` and
+`utils/dispatchPlans.test.ts` (`planDecisionsOut` keeps `for` and the
+assignment kind; `decisionsProblem` names a `for` the crew no longer
+resolves).
 
 **Playwright** (`make test-e2e`, the specs alone first):
 `crew-people.spec.ts` (new): a crew given an architecture owner and an
@@ -1770,7 +1912,11 @@ palette's `@` row opening it. `tasks-editor.spec.ts`, `tasks.spec.ts`
 and `dispatch-plan.spec.ts` unchanged and green. PR-12:
 `decisions-people.spec.ts`: a plan revision whose approval is `for:
 role:architecture` before `build` and whose assignment is `for:
-person:ana` before `docs`, launched; the gates hold both tasks; the card
+person:ana` before `docs`, proposed through the page (the For select
+and the Assignment kind), then revised through the page with only its
+note changed, the revised revision's body read through the API still
+holding both `for`s; the revision approved and launched; the gates hold
+both tasks; the card
 says "for nate, the architecture owner"; the operator approves and the
 receipt's words say for whom; `build` starts; ana's page lists her
 assignment until it is answered Done, and `docs` then starts; DR1's
@@ -1781,7 +1927,10 @@ assignment until it is answered Done, and `docs` then starts; DR1's
 **By hand**, what the tests cannot show: a real agent (Claude Code or
 Codex) reading "Who answers for this work" in its task file and asking
 for the architecture owner's decision by its responsibility, not by
-typing in the terminal; the person's page on a phone on the LAN.
+typing in the terminal; the person's page in a phone's browser, against
+a server on the LAN Linux box or the Mac, never the WSL box (a phone
+reaches a server inside WSL only through networking that AGENTS.md
+forbids asking anyone to configure).
 
 ## Boxcar constraints
 
@@ -1987,10 +2136,12 @@ merges `main` in first. PR-12 waits for all of DR1. Brakeman's PR-18
 **PR-9** (`internal/crew`, `internal/api`, `docs/protocol.md`): `Person`,
 the responsibilities and their words, `Task.Owner`, `checkPeople` and the
 task-text count, `TaskOwner`, `Run.People` and the tasks' owners from the
-crew as launched (the launch, `Recovered`, `ContinueRun`), the task
-file's section, the crew and run routes' fields, `GET /api/people`, the
-protocol rows. Go only. Tests: the `internal/crew` tests and the
-`internal/api` tests above but `TestAPersonsWork`.
+crew as launched (the launch, `Recovered`, `ContinueRun`; in a
+managed run's record only), the task file's section, the crew and run
+routes' fields, `crewInput.crew()` in place of the three copies, `GET
+/api/people` with its pages, the protocol rows. Go only. Tests: the
+`internal/crew` tests and the `internal/api` tests above but
+`TestAPersonsWork`.
 
 **PR-10** (`web/app`, `web/e2e`): `CrewPeopleTable.vue`,
 `PersonPicker`'s `names` prop and `usePeople`, the Owner column, the
@@ -2000,9 +2151,10 @@ Tests: `crews.test.ts`; `crew-people.spec.ts` without the person's page.
 
 **PR-11** (`internal/api`, `web/app`, `web/e2e`, `docs/protocol.md`):
 `GET /api/people/{name}` and its row, `pages/people/[name].vue`, the
-chips' links, the palette's `@` people. Go and UI. Tests:
-`TestAPersonsWork`, `palette.test.ts`, the person's page and the palette
-row in `crew-people.spec.ts`.
+chips' links, the palette's `@` people (`usePaletteRows.ts`,
+`utils/people.ts`). Go and UI. Tests: `TestAPersonsWork`,
+`people.test.ts`, the person's page and the palette row in
+`crew-people.spec.ts`.
 
 **PR-12** (`internal/dispatch`, `internal/crew`, `internal/crew/ledger`,
 `internal/api`, `internal/cli`, `internal/agents`, `web/app`, `web/e2e`,
@@ -2010,8 +2162,10 @@ row in `crew-people.spec.ts`.
 `assignment` kind, the proposal's check, the CLI's flags, the gate's and
 the request's `for` resolved in their transactions, `RouteDecision`'s
 `person` and `role`, the receipt's `for`, the ledger filter, the routes'
-`for`, the person's decisions, the tool schema and the skill's sentence,
-the cards' words; the features entry, the repository map and the
+`for`, the route's `for` taken only while open, the person's decisions,
+the tool schema and the skill's sentence, the proposal form's For select
+and Assignment kind and `planDecisionsOut`, the cards' words; the
+features entry, the repository map and the
 architecture. Go and UI. Tests: the PR-12 tests above and
 `decisions-people.spec.ts`.
 
@@ -2194,8 +2348,11 @@ The boundary (the Program, section 4.3, HM1), in this plan's words: a
 person is in a crew as its architecture owner, and a gate for that
 responsibility is answered by the operator on the person's behalf.
 Observed by hand on the open-source build with no account (a plain
-build of this repository, nothing registered), with a real agent, on the
-server and from a phone on the LAN:
+build of this repository, nothing registered), with a real agent, on a
+server of its own on the LAN Linux box (or the Mac), steps 1 to 5 in a
+desktop browser and step 4's person page read again from a phone's
+browser on the same LAN; not on the WSL box, whose server a phone
+reaches only through networking that AGENTS.md forbids asking for:
 
 1. In the crew editor, add a person (nate) holding architecture owner and
    another (ana) holding acceptance owner; save; reload: both read back.
