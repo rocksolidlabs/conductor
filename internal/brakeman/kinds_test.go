@@ -624,6 +624,11 @@ func TestARefusalNamesWhatIsAccepted(t *testing.T) {
 		{[]byte(`{"schema":"brakeman.brief/1","title":"t","summary":"s","refs":[],"items":[` + fact + `]}`), "refs", []string{"no such field: a brief takes schema, title, summary, uncertainty, items"}},
 		{[]byte(`{"schema":"brakeman.brief/1","title":"t","summary":"s","items":{}}`), "items", []string{"takes 1 to 100 items"}},
 		{brief(`{"kind":"fact/1","text":"x","evidence":["run:` + exRun + `","runs:` + exRun + `"]}`), "items[0].evidence[1]", []string{`no kind "runs"`, "run:<run>, task:<run>/<task>", "brief:<br-n>/<item>"}},
+		// A text that reads as the bad ref is not where it was refused:
+		// only the kind's ref fields are looked in (description sorts
+		// before from).
+		{brief(fact + `,{"kind":"draft_ticket/1","project":"CND","title":"t","description":"ticket:CND","from":["ticket:CND"]}`), "items[1].from[0]", []string{`ref "ticket:CND"`}},
+		{brief(fact + `,{"kind":"outcome/1","text":"check:x","receipt":"check:x"}`), "items[1].receipt", []string{`ref "check:x"`}},
 		// A field an entry does not take, of a name its item takes: the
 		// entry's, never the item's, which takes it.
 		{brief(fact + `,{"kind":"decision/1","about":"ticket:CND-1","evidence":["run:` + exRun + `"],"alternatives":[{"label":"a","tradeoffs":"x"},{"label":"b","tradeoffs":"y","evidence":["run:` + exRun + `"]}]}`), "items[1].alternatives[1].evidence", []string{"no such field: an alternatives entry takes label, tradeoffs"}},
