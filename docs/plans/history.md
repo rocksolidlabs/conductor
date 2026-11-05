@@ -43,8 +43,9 @@ with its check receipts and their `where` (C10, `docs/plans/runtime.md`),
 the export (C6, `docs/plans/ext.md`), the event hub's sinks (C3) and
 Brakeman's first slice with its briefs and reference grammar (BK1's PR-1 to
 PR-8, `docs/plans/brakeman.md`). Three things HS1 indexes are not on main:
-DR1's decision records (`docs/plans/decisions.md`, Planned), RV1's review
-batches and findings (`docs/plans/review-repair.md`, Planned) and Brakeman's
+DR1's decision records (its plan, `docs/plans/decisions.md`, is in review
+and not yet on main), RV1's review batches and findings (its plan,
+`docs/plans/review-repair.md`, likewise in review) and Brakeman's
 own reads past its first slice (`docs/plans/brakeman.md`, PR-9 to PR-16,
 being built now). PR-9, PR-10 and PR-11 wait on them, each named there; the
 acceptance boundary needs none of them.
@@ -75,7 +76,8 @@ provider; the plan says "ext provider" for those.
    account and no network; it makes Yardmaster's, Dispatch's and Brakeman's
    records findable together.
 3. Nothing is gated by a flag: there is no paid part. Shared team history is
-   TS1's (`docs/plans/team-history.md`), a hosted service's work.
+   Program item TS1's, a hosted service's work; TS1 is not planned yet and
+   has no plan file.
 4. Inspection and export grow, and stop, revoke and required approvals are
    unchanged: the search is an inspection surface; the session records are
    plain JSON files in the data directory that `conductor export` carries; a
@@ -96,10 +98,12 @@ provider; the plan says "ext provider" for those.
    is.
 10. The repository contract holds: this plan before the code; race tests per
     package; vitest and Playwright for the palette and the pages; no new
-    dependency, so `make notices` has nothing to regenerate; no frame or
-    control message, so `internal/proto` and `web/app/utils/protocol.ts` are
-    untouched and `docs/protocol.md` gains the History routes (PR-1, PR-4,
-    PR-5).
+    dependency, so `make notices` has nothing to regenerate;
+    `docs/protocol.md` gains the History routes (PR-1, PR-4, PR-5). One
+    protocol change, PR-12's (what a host reports of its sessions: bounded
+    fields on the register message and one new host message), touches
+    `internal/proto`, `web/app/utils/protocol.ts` and `docs/protocol.md`
+    together, each field and the message with its size limit and a test.
 11. The railroad names keep their meaning, and "history" is told from the
     three existing uses (above); "workspace" is not used.
 12. Execution stays behind one seam: a resume from a record starts its
@@ -110,13 +114,13 @@ provider; the plan says "ext provider" for those.
 
 ## Why and what happens
 
-The Program's product questions (section 1.1) include which code, tests and
-prior decisions matter, and what result was produced, what checks ran and
-what was accepted; its work model (section 1.4) keeps a ticket's status, a
-process's state, a task's outcome, its verification and a person's
-acceptance as separate facts, and says an idle terminal or a conversational
-"done" establishes none of the later ones. History is where those facts are
-found again later, side by side and never merged. On `main` today:
+Someone coming back to a project wants to know what was tried, what was
+decided and what was proven, and those are different facts with different
+weight (the Program, sections 1.1 and 1.4): an agent saying it finished is
+something said, a check passing on a commit is something checked, and a
+person accepting the result is something decided; none stands in for
+another. History is where those facts are found again later, side by side
+and never merged. On `main` today:
 
 - A server session lives in the registry (`session.Registry`, in memory).
   Once it ends it stays listed until the server stops; after a restart
@@ -177,19 +181,27 @@ After this item ships:
   while it is listed and its record page after; a ticket, a comment, a plan
   revision or a brief opens where their own pages show them. → offers Open
   the session, Resume (only where the agent's session recipe, the host and
-  the run allow it, and why not otherwise), Find this elsewhere (the same
-  command's receipts in other crews' runs, passed first: "did another crew
-  solve this"), Copy the reference.
+  the run allow it, and why not otherwise), Find this elsewhere (receipts
+  of the same command in other crews' runs of the same repository, those
+  that hold the failure's own line first, passed before failed: "did
+  another crew solve this"; every repository only when asked), Copy the
+  reference.
 - **Session records.** Every session the server runs or hosts gets a record
   in the data directory (`history/sessions/<id>.json`) from its start: the
-  agent with its version and its own session id, the host, the folder, the
-  repository, the branch and the commit at its start and end, its launch
-  (arguments and the yolo choice; the variables' names, never their values),
-  its crew, run, task and attempt, and its conversation evidence as
-  Conductor saw it: the lines typed into it, the questions it asked and how
-  each was answered, what its agent reported (progress, errors, artifacts,
-  handoffs, refused tools), the files it reported touching and its chat, at
-  most 64 KiB, the newest 2,000 sessions kept. The record page
+  agent with its version and its own session id, the host and where it ran
+  (its Runtime), the folder, the repository, the branch and the commit
+  before its process started and at its end, its launch (arguments and the
+  yolo choice; the variables' names, never their values), its crew, run,
+  task and attempt, and its conversation evidence as Conductor saw it: the
+  lines Conductor typed into it (a crew's prompt, a broadcast), the
+  questions it asked with their choices and how each ended (the choice
+  picked, or withdrawn), its chat (what people posted there and what was
+  sent from it to the agent), what its agent reported (progress, errors,
+  artifacts, handoffs, refused tools) and the files it reported touching.
+  What a person typed into its terminal or its reply box is never kept (the
+  chat already refuses to repeat a typed line, since it may be a
+  credential: `answerWords`, `internal/session/chat.go`). At most 64 KiB a
+  record, the newest 2,000 ended sessions kept. The record page
   (`/history/sessions/<id>`) shows it, offers Resume from the record where
   the agent's recipe allows it (a resume after a restart), and Forget.
 - **The History page.** `/history` runs the same search with filter chips
@@ -231,17 +243,20 @@ type Record struct {
 	Kind     string     `json:"kind"`     // session.Kind as the session said it
 	Agent    Agent      `json:"agent"`
 	Host     Host       `json:"host"`
+	Where    string     `json:"where,omitempty"`  // the Runtime it ran in (createSessionRequest.where); "" native
 	Cwd      string     `json:"cwd"`
-	Repo     string     `json:"repo,omitempty"`   // the repository's top, gitcli.TopOf
+	Repo     string     `json:"repo,omitempty"`   // the repository's top
 	Branch   string     `json:"branch,omitempty"`
-	Start    string     `json:"startCommit,omitempty"` // HEAD at the start, a full id
-	End      string     `json:"endCommit,omitempty"`   // HEAD at the end
+	Start    string     `json:"startCommit,omitempty"` // HEAD read before the process started, a full id
+	StartFrom string    `json:"startFrom,omitempty"`   // "launch" (read before the start) | "attempt" (the ledger's) | "host" (PR-12)
+	End      string     `json:"endCommit,omitempty"`   // HEAD read after the end: an observation, not the launch's
 	Launch   *Launch    `json:"launch,omitempty"` // server sessions only
 	Crew     *Crew      `json:"crew,omitempty"`
 	ResumedFrom string  `json:"resumedFrom,omitempty"`
 	StartedAt time.Time `json:"startedAt"`
 	EndedAt   time.Time `json:"endedAt,omitzero"`
-	Ending    string    `json:"ending,omitempty"` // "exited (exit 0)", "stopped", "lost"
+	Ending    string    `json:"ending,omitempty"` // "exited (exit 0)", "stopped", "lost", "host away"
+	Reopened  int       `json:"reopened,omitempty"` // a hosted record taken up again by its host (below)
 	Entries  []Entry    `json:"entries"`
 	Dropped  int        `json:"dropped,omitempty"` // entries the bound let go, oldest first
 	Files    []File     `json:"files,omitempty"`
@@ -250,37 +265,73 @@ type Record struct {
 }
 type Agent struct { ID, Name, Adapter, Version string; Session *AgentSession }
 type AgentSession struct { ID, Source string; Resumable bool } // as session.AgentSession
-type Host struct { Name, User string; Hosted bool }
-type Launch struct { Args []string; EnvNames []string; EnvSHA256 string; Yolo, Renamed bool }
+type Host struct { Name, User, Owner string; Hosted bool } // Owner: the host instance's (signal.ownerOf), hosted only
+type Launch struct { Args []string; ArgCount int; ArgsSHA256 string; ArgsKept bool; EnvNames []string; EnvSHA256 string; Yolo, Renamed bool }
 type Crew struct { RunID, CrewID, Member, Task string; Attempt int; Brakeman string }
-type Entry struct { Seq int64; At time.Time; Type, ByName, Message, Op, Path, Tool, URL, To string; Choices []string; Answer string }
+type Entry struct { Seq int64; At time.Time; Kind, ID, Ref, Event, ByName, Message, Op, Path, Tool, URL, To string; Choices []string; Outcome string }
 type File struct { Path, Op string; Count int; Last time.Time }
-type Resume struct { CommandID, Actor, Session, State, Error string; At time.Time } // pending | started | failed
+type Resume struct { CommandID, Actor, Session, State, Error string; At time.Time } // pending | started | failed | uncertain; Session preallocated
 ```
 
-What an entry is taken from, by the activity entry's type
-(`session.ActivityEntry`): `input` (a line typed, `Op: typed`, or an answer,
-with the question it answered), `attention` when it sets a question (its
-message and choices) and when it ends one (how: answered, withdrawn, held
-over), `progress`, `artifact`, `handoff`, `error` and `tool_denied` (the
-agent's reports), `status` (start and end), and chat messages (the session's
-chat, which reaches no hub sink today: PR-1 gives the hub one call for the
-journal, below). `join`, `leave` and `link` are never kept (who watched is
-not evidence of the work, and a link's name may be a person's). `tool_use`
-is counted by tool in `Tools`, not kept one by one. A `file` entry folds
-into `Files`, one row per path and op with its count and last time, at most
-500 rows (the oldest by `Last` let go, counted in `Dropped`), and a path the
-session's deny list covers is never written (the deny list `/api/touched`
-applies, `session.DenyList`).
+An `Entry` keeps the identity its source gave it: `ID` a chat message's id
+(a question's is its `Attention.ID`), `Ref` the id of what it answers or
+withdraws, `Event` the chat's event, so two questions of the same words are
+two entries and each answer names the one it ended.
+
+What each kept entry is taken from, by its source on `main` (PR-1 changes
+nothing in `internal/session`; every source below exists today):
+
+| Entry (`Kind`) | Source | What it holds |
+|---|---|---|
+| `typed` | an activity `input` entry with `Op: typed` (`typedEntry`, `submit.go`: recorded only for a line Conductor types, `By` unset) | the line: a crew's prompt, a broadcast, a handoff typed in |
+| `question` | a chat message of kind `question` (`askInChat`, `chat.go`, posted as the session goes needs_input) | its `ID` (the attention's), its text and its choices' labels |
+| `answer` | a chat system message with `Event: answered` (`answeredInChat`) | `Ref` the question's id, `Outcome: answered`, `Message` the picked choice's label as `answerWords` gives it, or nothing when the answer was typed; who answered |
+| `answer` | a chat system message with `Event: withdrawn` (`leftInChatLocked`, `chat.go`) | `Ref` the question's id, `Outcome: withdrawn`, the reason |
+| `chat` | a chat message of kind `message` (a person's or an agent's post) and of kind `sent_to_agent` (`Ref` the message sent) | the text, who posted it |
+| `report` | an activity `progress`, `artifact`, `handoff`, `error` or `tool_denied` entry | its message, URL, target or tool |
+| `status` | an activity `status` entry; the session's end | the words |
+
+Not kept, and said so on the record page: what a person types into the
+terminal (keystrokes reach the PTY and no record), what a person submits
+from a reply box (an `input` entry with `By` set is not recorded today, and
+an answer's `input` entry holds the question's words, not the answer:
+`resolve`, `local.go`), a typed answer's text (the chat's `answered` line
+never repeats it, for it may be a credential, and the record follows the
+chat). An `attention` entry is not kept either: it holds only the label,
+and the question and its ending come from the chat with their ids. `join`,
+`leave` and `link` are never kept (who watched is not evidence of the work,
+and a link's name may be a person's), nor the chat's join and leave lines.
+`tool_use` is counted by tool in `Tools`, not kept one by one. A `file`
+entry folds into `Files`, one row per path and op with its count and last
+time, at most 500 rows (the oldest by `Last` let go, counted in `Dropped`),
+and a path the session's deny list covers is never written (the deny list
+`/api/touched` applies, `session.DenyList`). The session's chat reaches no
+hub sink today: PR-1 gives the hub's `chat` one call for the journal
+(below).
 
 **Bounds** (`bounds.go`): an entry's texts as the session bounds them
 already (`MaxAttentionMessage` 500 bytes, `MaxEventPath`, `MaxEventURL`,
 `MaxEventTool`); a chat line at most 2 KiB; a record at most 64 KiB as
 encoded (`MaxRecord`): past it the oldest entries go first, counted in
-`Dropped`, then the oldest `Files` rows; `Launch.Args` at most 64 elements
-of 4 KiB (the member-args bounds); at most 16 `Resumes`; at most 2,000
-records (`MaxRecords`). Worst case 128 MiB on disk; a typical record is a
-few KiB.
+`Dropped`, then the oldest `Files` rows. What is not an entry or a file is
+bounded to fit beside them: the launch at most 16 KiB encoded
+(`MaxLaunch`), at most 16 `Resumes`, `Tools` at most 64, the name, folder,
+branch and agent fields at their session bounds (all of it under 24 KiB),
+so dropping entries and files always brings a record under 64 KiB. A
+session may be launched with arguments past the launch's bound (the API
+takes 64 of 4 KiB, 256 KiB): such a launch keeps `ArgCount` and
+`ArgsSHA256` with `ArgsKept: false` and no argument, never a cut list, and
+Resume from that record is refused (`409 args_not_kept`, below), so no
+resume runs with arguments other than the ones launched. The variables'
+names at most 64, past it their count only (in the hash all the same).
+
+`MaxRecords` (2,000) counts ended records; a live record, and one with a
+`pending` resume, is never pruned and is not counted, and live records are
+bounded by the server's `MaxSessions` (config, 32 by default, at most
+10,000). Worst case on disk is (2,000 + `MaxSessions`) × 64 KiB, and one more
+record per resume in flight: about 127 MiB at the default, said in `history.sessions`'s config text; a typical
+record is a few KiB. When live records alone pass `MaxRecords`, every ended
+one past the bound is pruned and the live ones stay.
 
 **The launch's variables.** A session's launch may carry variables
 (`session.Launched.Env`), which may be secrets. The record keeps their
@@ -298,14 +349,36 @@ journal writes. Not held (another server owns the data directory):
 and the server logs once that its sessions are not recorded. Methods, each
 safe for concurrent use:
 
-- `Begin(r Record)`: the record of a session as it is added, written at once
-  (a session's record exists before its first entry is kept).
+- `Begin(r Record) error`: the record of a session as it is added, in
+  memory at once (a session's record exists before its first entry is
+  kept). A server session's is written at once by its caller
+  (`createLocalSession`, not a sink); a hosted one's is handed to the
+  writer, which writes it before anything else it holds, since its caller
+  is the goroutine that reads the host's connection and must not wait on a
+  disk. **Begin on an id that already has a record** reopens it only when
+  both are the same host's hosted session (`Host.Hosted`, the same
+  `Host.Owner`) and the record is open or ended `host away` or `lost`: a
+  hosted session's id is `HostedID(instance, localID)`
+  (`internal/signal/hub.go`), the same after a server restart or after its
+  host comes back past `DisconnectGrace`, and its process may have lived
+  through either. Reopened, `EndedAt` and `Ending` are cleared,
+  `Reopened` counts it, a `status` entry says "taken up again by its host",
+  and every earlier entry and `Seq` stay. Any other existing id is refused
+  (`ErrExists`, logged): a server session's id is random and never comes
+  back.
 - `Note(id string, e Entry)`, `Chat(id string, c Entry)`, `Touch(id string,
   f File)`, `Tool(id, name string)`: appended in memory, the record marked
   dirty; never waits on a disk (the caller is the hub's sink, which must
-  never wait).
-- `End(id string, end Ending)`: the end commit, the time and how it ended;
-  written at once.
+  never wait). The hub hands entries over concurrently and out of order
+  (`eventHub.activity`: "concurrently and out of order"; `Local.record`
+  calls `OnActivity` after its lock), so a record's entries are kept in
+  order of `At`, then of arrival, never of arrival alone.
+- `End(id string, end Ending)`: the end commit, the time and how it ended,
+  set in memory and the writer woken to write it at once; never a disk
+  write on the caller's goroutine (a sink or the registry's `OnRemove`). An
+  entry noted after `End` whose `At` is not after `EndedAt` (one an earlier
+  callback still carried) is kept in its place and written at the next
+  flush; one after `EndedAt` is dropped and counted in `Dropped`.
 - A writer goroutine writes each dirty record at most once every 5 s
   (`flushEvery`), and every one at `Close`, so a crash loses at most the
   last 5 s of entries, and a record is never written more often than that
@@ -315,10 +388,13 @@ safe for concurrent use:
   `ErrLive`), `ForgetAll()` (every record not live).
 - `Prune()`: past `MaxRecords` the oldest ended records go; a live one, and
   one with a `pending` resume, never.
-- `Recover()`, at open once the lock is held: a record with no `EndedAt`
-  whose session no server holds (the lock's holder before this one is gone,
-  so none can) is ended `lost` at its last write's time. Run once, before
-  the first `Begin`.
+- `Recover()`, at open once the lock is held: a server session's record
+  with no `EndedAt` (the lock's holder before this one is gone, so its
+  process is too) is ended `lost` at its last write's time; a hosted
+  record with none is ended `host away`, since its process runs on its host
+  and may still be running: its host's next register reopens it (`Begin`,
+  above). A `pending` resume receipt is settled by the rule of "Resume from
+  a record" below. Run once, before the first `Begin`.
 - `Seq` on every write, from a counter in `history/state.json` written
   before the record, so a mark never goes back after a restart.
 
@@ -333,24 +409,59 @@ keeps no journal and no index (its sessions are other people's, published to
 it), as it keeps no Dispatch.
 
 **The API's part of PR-1** (`internal/api/history_journal.go`): the server
-opens the journal with its data directory (none without one); `Begin` in
-`createLocalSession` once the session's `Info` is made and before
-`session.NewLocal` (so the record exists before the session can keep an
-entry; a session the registry then refuses, `too_many_sessions`, has its
-record removed), and for a hosted session (where `internal/signal`'s hub
-adds it to the registry, `hub.go`: a new `OnAdded` callback the API sets,
-called after the add, as `OnRemove` is called after a removal), from its
-`Info` and, for a server session, `Local.Launched()`; the agent's version
-from the probe cache (`cachedIdentity`, "" while it is cold, said so on the
-record page); the repository, branch and HEAD read with `gitcli` (argv, the
-C locale, 2 s each, off the session's start path on a goroutine of its own);
-a sink on the event hub (`eventHub.addSink`), which hands every activity
-entry of every session, server and hosted alike, to `Note`/`Touch`/`Tool`
-and the session's end (its `status` entry, or its removal from the registry,
-`OnRemove`) to `End`; the hub's `chat` calling the journal's `Chat` for a
-session's chat (one call, never waiting; run chat stays the run record's).
-The agent's own session id is copied in whenever the session's `Info`
-changes it (the `localChange` hook every attention change already calls).
+opens the journal with its data directory (none without one) and wires it
+at these places, each named as it is on `main`:
+
+- **A server session's start**, in `createLocalSession`: `Begin` once the
+  session's `Info` is made and before `session.NewLocal` (so the record
+  exists before the session can keep an entry; a session the registry then
+  refuses, `too_many_sessions`, has its record removed), from its `Info`,
+  its `Launched` and `req.where` as `Where`. **The launch revision** is read
+  before the process starts: for a session whose `where` is native, one
+  `git rev-parse` (argv, the C locale, 2 s; `--show-toplevel`, `HEAD` and
+  the branch's name in the one call, so the three describe one revision)
+  in the opened folder, before `rt.StartTerminal`, `StartFrom: launch`; a
+  read that times out or finds no repository leaves them empty, "not read"
+  on the record page. A crew member's attempt takes the ledger's start
+  commit for its attempt instead (the attempt's `StartCommit`, the
+  engine's own, `StartFrom: attempt`), read by the indexer from the ledger
+  rather than from git. A session whose `where` is not native gets no git
+  read on the server at all: its repository and commits are "on <where>"
+  and unknown, never the server's folder read natively. The end commit is
+  read the same way after the end (native only, on the writer's
+  goroutine), and is shown as "HEAD after the end", an observation.
+- **A server session's changes**: the `localChange` hook (`OnChange` of
+  every server session, `sessions.go`) copies the agent's own session id
+  in when its `Info` changes it.
+- **A hosted session's add**: a new `OnAdded` callback on the hub
+  (`internal/signal`), called by `Register` after `registry.Add` succeeds,
+  which the API sets and which calls `Begin` from the session's `Info`
+  (its host's name and user, `Host.Owner` from the hub's owner, the agent's
+  id, command, folder and branch as the host registered them). A hosted
+  record's agent version, its agent's own session id, its repository and
+  its commits are what its host reports and nothing else: on `main` a host
+  reports none of them (`proto.HostSession` carries the agent's id, the
+  command, the folder and the branch), so they stay empty and are said
+  "not reported by the host" until PR-12 adds them; the server's probe
+  cache and a git read on the server would describe the server's machine,
+  not the host's, and are never used for a hosted record.
+- **A hosted session's changes**: the hub's `OnChange` (`s.hosts.OnChange`,
+  `server.go`), which carries a hosted `Info`; `localChange` is never
+  called for a hosted session.
+- **Every session's entries and end**: a sink on the event hub
+  (`eventHub.addSink`), which hands every activity entry of every session,
+  server and hosted alike (`s.hosts.OnActivity` is the hub's `activity`
+  too), to `Note`/`Touch`/`Tool`, and a session's `status` end to `End`;
+  the session's removal from the registry (`session.Registry.OnRemove`,
+  the registry's hook, not the hub's) to `End` as well, `host away` for a
+  hosted session the hub let go past `DisconnectGrace` (`Hub.Expire`),
+  which proves nothing of its process. The hub's `chat` (the `OnChat` of
+  server sessions, `localChat`, and of hosted ones, `s.hosts.OnChat`)
+  calls the journal's `Chat` for a session's chat (one call, never
+  waiting; run chat stays the run record's).
+- **The agent's version** of a server session from the probe cache
+  (`cachedIdentity`, "" while it is cold, said so on the record page).
+
 The routes:
 
 | Route | Who | Answers |
@@ -377,13 +488,14 @@ timeout, one connection), schema version 1:
 ```sql
 CREATE TABLE schema_version (version INTEGER NOT NULL);
 CREATE TABLE sources (
-  key TEXT PRIMARY KEY,          -- "run:<id>", "session:<id>", "ticket:<KEY-n>", "brief:<br-n>"
+  key TEXT PRIMARY KEY,          -- "run:<id>", "check:<run>/<task>/<n>/<id>/<k>", "session:<id>", "ticket:<KEY-n>", "brief:<br-n>", "dispatch:feed"
   mark TEXT NOT NULL,            -- what the source said when it was read: a revision, a seq
   indexed_at TEXT NOT NULL,
   bytes INTEGER NOT NULL         -- the text its entries hold
 );
 CREATE TABLE entries (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY,        -- the FTS rowid only: never served, never a handle
+  key TEXT NOT NULL UNIQUE,      -- the entry's stable handle (below)
   source TEXT NOT NULL REFERENCES sources(key) ON DELETE CASCADE,
   kind TEXT NOT NULL,            -- the kinds table below
   class TEXT NOT NULL,           -- said | decided | checked | record, from the kind alone
@@ -421,6 +533,22 @@ CREATE INDEX entries_digest ON entries(digest);
 CREATE INDEX links_to ON links(to_ref, rel);
 ```
 
+**An entry's handle is its key, never its row id.** `Replace` deletes and
+inserts rows and a reindex makes the database again, and SQLite may give a
+deleted row's id to a new one, so the integer `id` is the FTS table's rowid
+and nothing else: no route, CLI command or page names it. An entry's `key`
+is made from what it is, the same on every read of its source and after
+every rebuild: its `ref` when the entry has one of its own (a check
+receipt's, a comment's, a plan revision's), else the anchor's ref and the
+entry's place in it (`session:<id>#e<seq>`, `session:<id>#f<path-hash>` for
+a `Files` row, `run:<id>#command/<actor>/<id>`,
+`ticket:<KEY-n>#plan.approved/<revision>`). A key the index no longer
+holds answers `404 entry_gone` ("this entry is no longer in the history"),
+never another entry; a key whose source was read again answers the entry
+as it is now. `TestAKeyOutlivesReplaceAndReindex` holds it: keys taken
+from a page, then the source replaced, removed and the whole index
+rebuilt; each key answers the same evidence or `entry_gone`.
+
 External content (not Dispatch's contentless table) because a row's snippet
 is drawn from its text (`snippet()`), which a contentless table cannot give;
 the FTS rows are written and deleted in the same transaction as their
@@ -436,16 +564,21 @@ made it, never from its words, how often they recur or who repeats them:
 
 | Class | Kinds | Made by |
 |---|---|---|
-| `record` | `session`, `run`, `task`, `attempt`, `ticket`, `plan`, `launch`, `step` (a project manifest's setup or service step that failed) | the stores' own objects |
+| `record` | `session`, `run`, `task`, `attempt`, `ticket`, `plan`, `launch`, `step` (a project manifest's setup or service step that failed); PR-9 adds `decision` (a DR1 decision request) | the stores' own objects |
 | `said` (Conversation) | `session.typed`, `session.answer`, `session.question`, `session.report`, `session.file`, `session.chat`, `attempt.result` (a submitted summary and issues), `review.verdict` and `review.finding` (an agent reviewer's), `attempt.checkpoint`, `attempt.blocker`, `message`, `comment`, `brief.item` | a person's or an agent's words as Conductor received them |
 | `decided` (Decision) | `command` (pause, unpause, cancel, retry, accept, accept anyway, with its actor), `plan.approved`, `plan.withdrawn`, `plan.superseded`, `ticket.accepted`, `ticket.unaccepted`, `ticket.closed`; PR-9 adds `decision.response`, PR-10 `review.batch` | a person's act the server recorded with a receipt |
-| `checked` (Checked) | `check` (a task's check), `verify` (a project manifest's verify step), `candidate.verified` (a result commit whose every check passed), `delivery.verified` (a delivery whose candidate's receipt is kept) | a receipt of something the server ran on an exact commit |
+| `checked` (Checked) | `check` (a task's check), `verify` (a project manifest's verify step), `candidate.verified` (a result commit whose every check passed), `delivery.verified` (a delivery whose candidate's receipt is kept); PR-10 adds `review.resolved` (a finding's resolution verified against a new candidate, by RV1's own receipt) | a receipt of something the server ran on an exact commit |
 
 A review's verdict is an agent's words (`said`) even though the engine acts
 on it: what the engine did is the task's next attempt and its `reopened`
 link, a record. A Brakeman brief's fact is `said` too (Brakeman's account),
 linked by `cites` to the records it names, which are indexed in their own
-classes. Nothing in the table is `checked` but a receipt.
+classes. Nothing in the table is `checked` but a receipt. The table is closed: a
+kind it does not hold is refused (`ErrKind`), so the PRs that index new
+records (PR-9, PR-10) change `internal/history`'s table, its bounds and its
+classification test in the same PR. A review finding stays `said` for good
+(`review.finding`); its verified resolution is a separate entry of its own
+`checked` kind, never the finding's class changed.
 
 **Entries in** (`put.go`): `Replace(ctx, source Source, entries []Entry,
 links []Link) error` replaces a source's entries and links in one
@@ -477,10 +610,20 @@ class.
 is parsed from the person's line by `ParseQuery(s)` (at most 512 bytes, at
 most 16 terms):
 
-- words, each a term (Dispatch's `matchTerms` rule: a term of one character
-  is dropped; the last word typed is a prefix from two characters), and
-  `"quoted phrases"`; every term must match (AND), in the title, the summary
-  or the body;
+- words, read by the same rule as Dispatch's search reads them
+  (`matchTerms`, `internal/dispatch/query.go`): a word with no letter or
+  digit is dropped, every other is quoted so that `OR`, `NOT`, `a:b` or
+  `CND-12` is a word to match and never FTS5 syntax, a word repeated is
+  kept once, and the last word is a prefix at any length; every term must
+  match (AND), in the title, the summary or the body. HS1 keeps its own
+  copy of that rule (`internal/history` imports nothing else of the
+  module), because the search mode shows Tickets and History for the same
+  typed line and the two must find the same words in it;
+  `TestHistoryAndDispatchReadWordsAlike` (`internal/api`, which imports
+  both) holds the two to one table of lines. HS1 adds two things Dispatch's
+  search has no use for, and only these differ: `"quoted phrases"` (a
+  phrase is one term, its words in order: a failing test's line), and the
+  filters below, which Dispatch's search does not take;
 - filters, each `name:value`, a comma for alternatives:
   `class:said|decided|checked|record` (also the words `conversation`,
   `decision`), `kind:`, `outcome:passed|failed|…`, `project:CND`, `repo:`
@@ -498,12 +641,23 @@ which the count stops at). Each entry comes with `snippet()` of its best
 column (at most 300 bytes, the match marked), its `repeats` (how many
 entries of the same digest and class exist and in how many anchors: "said in
 3 sessions", computed for the page's rows only), and at most 8 of its links
-each way. `Similar(ctx, id, limit)`: the entries whose `subject_key` is the
-entry's (the same command's receipts), outside its run's chain of
-continuations (given by the caller), passed first then newest, then those
-whose body matches the entry's distinctive line (the last non-empty line of
-a failed check's tail, as a phrase). `Entry(ctx, id)` and `Links(ctx, ref,
-limit)` (at most 100 each way) read one row.
+each way. `Similar(ctx, key, scope, limit)`, for "did another crew solve
+this": the receipts of the same command (`subject_key`, the SHA-256 of the
+argv) outside the entry's run chain (given by the caller), **in the
+entry's repository** (`repo`, or its project when it has one) unless
+`scope` is `all`, ranked: first those whose body also holds the entry's
+distinctive line (the last non-empty line of a failed check's tail, as a
+phrase), passed before failed, then the rest of the same command's, passed
+before failed, each group newest first; then, still in the repository,
+receipts of other commands that hold the distinctive line. A generic
+command (`go test ./...`, `make test`) is run by every crew of every
+repository, so matching on the argv alone across repositories would bury
+the one receipt that shares the failure under every passing run anywhere;
+`scope: all` (the route's `scope=all`, the CLI's `--everywhere`, the
+palette's "Find this in every repository") widens the same ranking to
+every repository. `TestSimilarStaysInTheRepositoryAndRanksTheLineFirst`
+holds it with two repositories whose crews share one argv. `Entry(ctx,
+key)` and `Links(ctx, ref, limit)` (at most 100 each way) read one row.
 
 **Measured.** `BenchmarkSearch` over 100,000 entries of mixed kinds (a
 fixture written by the test): a two-word search, a filtered page, a phrase,
@@ -533,17 +687,44 @@ from `brakeman/` saves), bounded at 10,000 keys: past that the set is
 emptied and a full catch-up is asked instead, so nothing is dropped. One
 goroutine takes the oldest key and indexes that source as it is now:
 
-1. the source's mark is read first (the run's ledger revision,
-   `ledger.Pointer`; the ticket's `rev` and its changes' last seq; the
-   record's `Seq`; the brief request's update time), then the source;
+1. the source's mark is read first, then the source (the marks are in
+   "Marks" below: a run's is its ledger revision with its record file's
+   hash, a ticket's its `rev` and its changes' last seq, a record's `Seq`,
+   a brief request's update time);
 2. its entries and links are built (the sources below), and `Replace` is
    called with the mark taken before the read, so a change between the two
    leaves the source dirty and read again, never marked as seen;
 3. a source that is gone (a run pruned, a record forgotten, a ticket's
-   project gone) is `Remove`d;
-4. one source at a time, through each store's own read functions, so the
-   ledger's one connection is held for one run's reads at a time and a
-   transition waits at most that long.
+   project gone) is `Remove`d, with every source it owns (a run's receipts,
+   below);
+4. one source at a time, through each store's own read functions.
+
+**A run is read in parts, never whole on every transition.** Every
+transition bumps the run's revision, and a pass that read every check row
+with its log (`Checks(..., withLog)`) through the ledger's one connection
+(`SetMaxOpenConns(1)`, `ledger.go`) would hold the engine's transitions
+behind it on every one. So:
+
+- a **finished check receipt is a source of its own**, `check:<run>/<task>/<n>/<id>/<k>`,
+  indexed once: a receipt recorded never changes once it is finished
+  (`candidateVerified`'s comment, `dispatch_delivery.go`), so its mark is
+  `finished` and it is never read again; its log is read by
+  `ledger.Check` for that one row, only when it is first indexed. A row
+  still `started` or `running` is not indexed as a receipt (it shows in its
+  attempt's entry as running) and is read when it finishes; an
+  `interrupted` row is indexed once, outcome `interrupted`, never passed or
+  failed;
+- the **run's own source** (`run:<id>`) is the run, its tasks, attempts,
+  commands and messages, read without any log (`Checks(..., false)` to list
+  which receipts are new), so its pass reads a few small rows;
+- a run source is read **at most once every 2 s** (`minRunInterval`),
+  however many transitions marked it, the last change always read after
+  the interval;
+- `BenchmarkTransitionWhileIndexing` (PR-3) measures a transition's latency
+  at the median and the 99th percentile with the indexer idle and with it
+  indexing a run of 128 tasks with 1 MiB logs, recorded in PR-3's body; a
+  99th percentile past 50 ms more than the idle one is a defect PR-3 fixes
+  before it is marked ready.
 
 At start, once the stores are open (after the ledger's recovery, inside the
 `OnOwned` callback that DS2's reconcile uses), a **catch-up** compares each
@@ -554,16 +735,35 @@ the same way. Searches during a catch-up answer what is indexed with
 `indexing: {state: "catching_up", behind: n}`. `POST /api/history/reindex`
 (admin) deletes the index and catches up from nothing: `202 {indexing}`.
 
+**Writes another process makes.** The commit hooks are this process's: the
+ledger's `OnCommit`, Dispatch's `OnCommit` and `store.Observe` tell only
+the process that committed. Dispatch takes no owner lock and is written by
+every server on the data directory (`internal/dispatch/dispatch.go`), and
+the ledger's and Brakeman's owners need not be the history lock's holder.
+So while it runs the indexer also **reconciles** against what the stores
+keep durably, every 30 s (`reconcileEvery`, driven in tests by a seam,
+`reconcileNow`): Dispatch's change feed after the last seq it indexed
+(`Store.ChangesAfter`, the position kept in the index's `sources` row
+`dispatch:feed`), every changed ticket marked dirty; the ledger's run
+revisions (`Ledger.Pointers`, paged) against the indexed marks; the run
+records' and the briefs' files by size and modification time, a file whose
+stat differs hashed and compared with its mark. The hooks are the fast
+path; the reconcile is what makes a write by another server searchable
+within 30 s without a restart.
+
 **The sources** (`history_sources.go`, PR-3 for sessions and runs, PR-4 for
 Dispatch and briefs), each a function from what its store holds to entries
 and links, every field of the six taken from the record itself:
 
 - **A session record** (source `session:<id>`): a `session` record entry
   (title the name; summary the agent, folder and how it ended; host from
-  `Host`; repo and branch; `commit_id` the end commit, else the start;
-  agent, its version and its own session id), then one `said` entry per kept
-  entry (`session.typed`, `.answer` with the question it answered in its
-  summary, `.question` with its choices, `.report`, `.chat`) and one per
+  `Host`; `where_ran` the record's `Where`; repo and branch; `commit_id`
+  the launch revision, a crew member's from its attempt's `StartCommit`;
+  agent, its version and its own session id, each empty and said so where
+  the record has none), then one `said` entry per kept entry
+  (`session.typed`, `.question` with its choices, `.answer` with its
+  outcome, answered or withdrawn, and the question it ended, joined by
+  `Ref`, in its summary, `.report`, `.chat`) and one per
   `Files` row (`session.file`, its path as title), each anchored to
   `session:<id>` and placed by `seq`; links `resumed_from` to the session it
   resumed. The project is the Dispatch project whose folder (`Project.Cwd`)
@@ -578,21 +778,49 @@ and links, every field of the six taken from the record itself:
   `session:<id>`; its submitted result as `attempt.result` (summary and
   issues), a review's verdict and findings as `review.verdict` and
   `review.finding` with `reviews` to the attempt it reviewed; its checkpoint
-  and blocker; each check receipt of phase `check` or `verify` as `check` or
-  `verify` (`checked`, outcome `passed` or `failed` as `checkState` judges
-  it: exit, signal, timeout, stability), title "`<check id>` on `<task>
-  #<n>`", body its argv and log as bounded above, `commit_id` its subject,
-  `where_ran` its row's, `subject_key` the SHA-256 of its argv); each
-  command receipt as `command` (`decided`, its intent and actor); each
-  message as `message`; a candidate whose checks all passed (DS2's
-  `candidateOf` over the same rows) as `candidate.verified`; a failed setup
-  or service step as `step`. Links: `continues` to the run it continues;
+  and blocker; each finished check receipt of phase `check` or `verify`, as
+  its own source (above), as `check` or `verify` (`checked`), title
+  "`<check id>` on `<task> #<n>`", body its argv and log as bounded above,
+  `commit_id` its subject, `where_ran` its row's, `subject_key` the SHA-256
+  of its argv, and `outcome` by the engine's own predicate, never by
+  `checkState` (Brakeman's display of a row, `brakeman_refs.go`, which
+  reads neither `Stable` nor `Error`): PR-3 exports `failedOutcome`
+  (`internal/crew/failedcheck.go`) as `crew.FailedOutcome`, and a finished
+  row is `failed` when it holds, else `passed`; so an exit-0 check that left
+  its checkout changed (`!Stable`) is failed, a leftover child killed after
+  the check's process exited (`Killed` alone) is not, as the engine and
+  `candidateVerified` read it; an `interrupted` row is `interrupted`, a
+  `started` or `running` one is not a receipt yet. Each command receipt of
+  the admin's actor (`adminActor`) as `command` (`decided`, its intent and
+  actor), ref `command:<run>/<id>`: the ledger keys a command by run, actor
+  and id (`Commands` returns every actor's), and Brakeman's grammar names
+  only the admin's receipt (`ld.Receipt(ctx, run, adminActor, id)`,
+  `brakeman_refs.go`), so another actor's receipt is not indexed until that
+  grammar names an actor, a change Brakeman's plan owns; the entry's key
+  (below) carries the actor all the same, so two actors' receipts of one id
+  never fold into one. Each message as `message`; a work attempt's result
+  as `candidate.verified` only by DS2's own verification predicate, the one
+  a delivery's receipt is made by (`candidateVerified`,
+  `dispatch_delivery.go`: the attempt ended `succeeded`, at least one
+  receipt, every receipt finished with exit 0, stable and no error), which
+  PR-3 factors into a pure function over the rows (`verifiedOf`, with no
+  change to what the delivery route answers, its tests unchanged), never
+  `candidateOf` alone, which only gathers the receipts; a failed setup or
+  service step as `step`. Links: `continues` to the run it continues;
   `launched_from` to its ticket and plan revision (`Run.Ticket`); `handed`
   from a failed receipt to the attempt that was handed it; `passed_after`
   from a failed receipt to the first later receipt of the same check id on
-  the same task that passed, in this run or along its continuations
-  (`continuedBy`); `reopened` from a review's `needs_changes` to the task's
-  next attempt.
+  the same task that passed, in this run or along its continuations;
+  `reopened` from a review's `needs_changes` to the task's next attempt.
+- **Who owns a link that crosses runs.** A link is written by the source of
+  its later end, never by its earlier one: `handed` by the run whose
+  attempt was handed the receipt, `passed_after` by the run of the passing
+  receipt, which looks back along its `continues` chain for the failed
+  receipts it is the first pass after. A run is continued only once it has
+  ended, so the earlier run's rows no longer change when its continuation
+  is read; the continuation's own passes, as they come, write the links,
+  and nothing needs the earlier run read again. A run pruned takes the
+  links its source wrote with it (`links.source`).
 - **Which attempt was handed which receipt** is the engine's rule, not a
   guess: PR-3 exports the two pure functions the engine's restart and
   continuation paths already use over the ledger's rows (`failedAtCheck` and
@@ -659,11 +887,15 @@ PR-4 with no change to what those routes answer): the agent still in the
 catalog with a session recipe; its own session id resumable and of the
 recipe's shape; no running session holding that conversation
 (`liveAgentSession`); the folder there, or the recipe not needing it
-(`ResumeNeedsCwd`); a server session, never a hosted one ("resume it on
+(`ResumeNeedsCwd`), looked at only when the record's `where` is native (any
+other is "on <where>", not looked at from here, and Resume is offered only
+while this server still has that Runtime, `runtimeAt`, else "its Runtime
+<where> is not on this server"); the launch's arguments kept (`ArgsKept`,
+else "its arguments were too long to keep"); a server session, never a hosted one ("resume it on
 <host>: `conductor host` resumes it there"); never a managed attempt ("a
 managed run continues from its run page", `409 managed_run`'s words) nor a
 Brakeman turn; a crew member of a legacy run through its run's member
-resume. `GET /api/history/entries/{id}` computes the rest: whether the
+resume. `GET /api/history/entry?key=` computes the rest: whether the
 result commit is in the repository (`git cat-file -e`, argv, 2 s), the
 worktree's branch, a log's size and hash.
 
@@ -673,15 +905,15 @@ string as Dispatch's search has it (never logged: AGENTS.md):
 | Route | Answers |
 |---|---|
 | `GET /api/history?q=&limit=&after=` | `{entries: [Entry], next?, total, totalCapped?, indexing: {state, behind?, oldest?, dropped?}, readOnly?}`; `400 bad_query` with words; the reply at most 2 MiB (rows past it cut, `truncated: true`) |
-| `GET /api/history/entries/{id}` | one entry, its links each way (at most 100, each with its class, outcome, URL and label) and its full availability |
-| `GET /api/history/entries/{id}/similar?limit=` | `Similar`'s entries (at most 50), the entry's run chain left out |
+| `GET /api/history/entry?key=` | one entry by its key (at most 512 bytes), its links each way (at most 100, each with its class, outcome, URL and label) and its full availability; `404 entry_gone` for a key the index no longer holds |
+| `GET /api/history/similar?key=&scope=&limit=` | `Similar`'s entries (at most 50), the entry's run chain left out; `scope` `repo` (the default) or `all` |
 | `POST /api/history/reindex` | `202 {indexing}` |
 
 An `Entry` as served:
 
 ```json
 {
-  "id": 1824, "kind": "check", "class": "checked", "outcome": "failed",
+  "key": "check:todo-3f2a91c0/build/1/unit/1", "kind": "check", "class": "checked", "outcome": "failed",
   "title": "unit on build #1", "snippet": "--- FAIL: [TestLoginRedirect] (0.02s)",
   "at": "2026-11-05T14:03:11Z",
   "source": {"store": "ledger", "label": "check receipt", "ref": "check:todo-3f2a91c0/build/1/unit/1"},
@@ -705,45 +937,67 @@ these, PR-5 the resume) with every field and bound above.
 
 **Resume from a record.** `POST /api/history/sessions/{id}/resume` (admin),
 body `{commandId, withoutEnv?}` (`DisallowUnknownFields`; `commandId` in the
-pattern of run commands, at most 32 characters), a typed operation in the
-Program's sense (section 1.5): the actor (the admin's principal,
-`Principal.Subject` as C2 records it, else the ledger's admin actor), the
-record as its scope, the agent's own session as its target, the command id
-for idempotency, and a receipt kept in the record (`Resumes`). Its order:
+pattern of run commands, at most 32 characters). It is an operation with
+four properties, stated here so the plan stands on its own: **its actor**
+is recorded (the admin's principal, `Principal.Subject` as C2 records it,
+else the ledger's admin actor); **its scope** is the record and **its
+target** the agent's own conversation; **it is idempotent** by its command
+id: the same id sent again, whatever happened to the first reply, answers
+the first one's receipt and starts nothing; **its receipt is durable**,
+kept in the record (`Resumes`), so a restart neither loses it nor turns an
+outcome it cannot know into a false one. Its order:
 
-1. the record read; a session the registry still lists is sent to the
-   session's own resume route's logic (`handleResumeSession`), so there is
-   one resume, not two;
-2. the same command id again answers its receipt: the session it started
-   (`200`), or its failure;
-3. `resumeCheck` (PR-4) refuses in the words of the resume routes (`400
+1. under the journal's lock for that record, the command id looked up: a
+   receipt of that id answers at once (`200` with the session it started,
+   `failed` with why, or `uncertain`, below), whether or not the registry
+   lists anything; else a receipt is **reserved**, `pending`, with a
+   session id allocated now for the session to come (`Resume.Session`,
+   `session.NewID`) and written to the record before anything else, so
+   every later step is under that receipt, the listed case too;
+2. `resumeCheck` (PR-4) refuses in the words of the resume routes (`400
    hosted_session`, `409 managed_run`, `409 brakeman_run`, `400
-   invalid_agent`, `409 already_resumed`, `400 invalid_cwd`), and a record
-   whose launch had variables answers `409 env_not_kept` naming them, unless
-   `withoutEnv: true`, which resumes without them and says so in the reply's
-   notice;
-4. the receipt written `pending` in the record (`End` order: before the
-   launch);
-5. the session made through `createLocalSession` exactly as
-   `handleResumeSession` makes one (the agent, the name, the folder through
-   `resolveCwd`, the arguments, the yolo choice, `resume` the agent's
-   session id, `resumedFrom` the record's id, holding the conversation
-   through `takeResume`), so it starts through the server's Runtime like
-   every session;
-6. the receipt settled `started` with the new session's id, or `failed` with
-   why; `201 {session, resumed, notice?, receipt}`.
+   invalid_agent`, `409 already_resumed`, `400 invalid_cwd`), a record
+   whose arguments were not kept answers `409 args_not_kept`, a record
+   whose `where` names a Runtime this server does not have answers `409
+   runtime_gone`, and a record whose launch had variables answers `409
+   env_not_kept` naming them, unless `withoutEnv: true`, which resumes
+   without them and says so in the reply's notice; a refusal settles the
+   receipt `failed` with its code;
+3. the launch is one function both routes share, `resumeLaunch` (factored
+   out of `handleResumeSession` in PR-5, the route's answers and tests
+   unchanged): it takes what to launch (a listed session's `Launched`, or
+   the record's launch, folder and `where`) and the allocated id, and
+   makes the session through `createLocalSession` (the agent, the name,
+   the folder through `resolveCwd`, the arguments, the yolo choice, the
+   record's `where` as the launch's, `resume` the agent's session id,
+   `resumedFrom` the record's id, holding the conversation through
+   `takeResume`), with the allocated id as the new session's id (a field
+   of `createSessionRequest` the resume alone sets), so it starts through
+   the server's Runtime like every session. A session the registry still
+   lists is launched from its own `Launched` by this same function, not by
+   calling its route, so the receipt in step 1 covers it;
+4. the receipt settled `started` with the new session's id, or `failed`
+   with why; `201 {session, resumed, notice?, receipt}`.
 
-A server that stopped between 4 and 6 finds the receipt `pending` at
-`Recover` and settles it `failed` ("the server stopped before the session
-started"); the same command id then answers that failure, and a new id may
-try again. A person resumes from a record only by asking: nothing resumes a
-session on its own.
+**A receipt left `pending` by a stop** (the server stopped between 1 and
+4) is settled at `Recover` by what the data directory shows, never assumed:
+a record of the allocated session id exists (the new session's `Begin`
+wrote it, after its process started and before it could do anything that
+reaches the record) → `started`, naming it (its record is then ended
+`lost` like any other the stop left); no such record → `uncertain` ("the
+server stopped while starting the session; its process may have started
+before its record was written"), since `StartTerminal` may have returned
+before the stop and `Begin` not yet run. The same command id then answers
+that receipt; a new command id may try again, and the record page shows an
+`uncertain` receipt with its words so the person can look before trying.
+A person resumes from a record only by asking: nothing resumes a session
+on its own.
 
 **The CLI** (`internal/cli/history.go`), with the workbench token like
 `conductor dispatch`: `conductor history search <words…> [--limit n]
 [--json]` (a table: class, kind, title, the six fields; `--json` the reply),
-`history show <entry id>` (the entry and its links), `history similar <entry
-id>`, `history sessions`, `history session <id>`, `history forget <id> |
+`history show <entry key>` (the entry and its links), `history similar <entry
+key> [--everywhere]`, `history sessions`, `history session <id>`, `history forget <id> |
 --all`, `history resume <id> [--without-env]` (a fresh command id, sent
 again once with the same id if the reply was lost, as `conductor dispatch
 launch` does), `history reindex`. Completion and help text in `internal/cli`
@@ -754,13 +1008,16 @@ History operations under scope `admin` (no MCP tool: the table's
 `tools/list` stays byte for byte as it is, which `TestToolsListIsUnchanged`
 holds), so `GET /api/guide` lists them with their CLI forms and bounds.
 
-### `web/app` (PR-6, PR-7): the palette's History, the run page's step, the pages
+### `web/app` (PR-6, PR-7): the record page and the run page's step, then the palette and the History page
 
-**PR-6, the palette.**
+The pages a palette row opens land before the palette: PR-6 builds every
+page a History row's Enter or → can reach (a session record, the run page
+at a step) and the record's Resume, on PR-5's route, so that when PR-7
+adds the palette and the History page no row leads to a page `main` does
+not have.
 
-- `utils/palette.ts`: `PaletteMode` gains `history` with prefix `~` in
-  `MODE_PREFIX`; `parsePrefix` and `dropPrefix` take it; the `?` modal's
-  prefix list shows it.
+**PR-6, the record page and the run page's step.**
+
 - `utils/history.ts` (pure, vitest): the reply's types;
   `historyDetail(entry, now)`, the detail line of the six fields in a fixed
   order (source · host · project · revision · when · availability), each
@@ -774,6 +1031,31 @@ holds), so `GET /api/guide` lists them with their CLI forms and bounds.
   outcome:withdrawn,superseded,needs_changes`; `class:checked
   outcome:passed` with the page's project; `host:<this machine>` and
   `kind:session`); `availabilityWords`.
+- `composables/useHistory.ts`: the record routes, `resumeRecord` with a
+  minted command id sent again once with the same id on a lost reply
+  (`utils/tasks.ts`'s rule), `forgetRecord`.
+- `pages/history/sessions/[id].vue`: a session record: its header (name,
+  agent with its version and own session, host, folder, repository, branch,
+  start and end commits, how it ended), its run, task and attempt with
+  links, its entries in order with anchors `#e<seq>` (a typed line, a
+  question with its choices and how it ended, a report, a file with its
+  count), the dropped count, what a record never keeps (a person's typed
+  lines and keystrokes, said in one line), Resume (asks first; for a
+  record with variables, the dialog names them and offers to resume
+  without them),
+  Forget (asks first), and the receipts of earlier resumes (an `uncertain`
+  one with its words).
+- The run page (`pages/runs/[run].vue`, `components/RunTasks.vue`,
+  `RunAttemptSteps.vue`): `?attempt=<n>&step=<phase>/<id>/<k>` beside
+  `?task=` opens that attempt's steps and that step's log with its SHA-256,
+  as the ticket page's receipt does (`DispatchReceipt.vue`, reused); read as
+  `?task=` is, never written back.
+
+**PR-7, the palette and the History page.**
+
+- `utils/palette.ts`: `PaletteMode` gains `history` with prefix `~` in
+  `MODE_PREFIX`; `parsePrefix` and `dropPrefix` take it; the `?` modal's
+  prefix list shows it.
 - `composables/useHistorySearch.ts`: the search as typed, 200 ms after the
   last key, one request in flight (the previous aborted), answers taken in
   the order asked (a sequence number: a slow answer to an earlier query is
@@ -787,9 +1069,11 @@ holds), so `GET /api/guide` lists them with their CLI forms and bounds.
   `historyDetail`, its badge, its link line as a third line, Enter opening
   its URL (a page in the app, the router; the raw log route never), → its
   actions (`Open evidence`, `Open the session` or `Open the record`,
-  `Resume` only when `availability.resume.offered` and for a listed session
-  through the existing resume route, `Find this elsewhere` setting the query
-  to the similar route's answer, `Copy reference`); a "Loading…" row while
+  `Resume` only when `availability.resume.offered`, through the record's
+  resume route (PR-5) for a listed session and a record alike, `Find this
+  elsewhere` setting the rows to the similar route's answer in the entry's
+  repository and `Find this in every repository` to its `scope=all`
+  answer, `Copy reference`); a "Loading…" row while
   the first answer is on its way and "Indexing: N sources behind" when the
   reply says so. In the search mode, from three characters, a History group
   of the five best rows after Tickets and before Shared with you, and its
@@ -798,34 +1082,15 @@ holds), so `GET /api/guide` lists them with their CLI forms and bounds.
   palette of `app.config.ts`: Checked ✓ success, Checked ✗ error, Decision
   primary, Conversation neutral) and its third line; nothing else of the
   component changes.
-- The run page (`pages/runs/[run].vue`, `components/RunTasks.vue`,
-  `RunAttemptSteps.vue`): `?attempt=<n>&step=<phase>/<id>/<k>` beside
-  `?task=` opens that attempt's steps and that step's log with its SHA-256,
-  as the ticket page's receipt does (`DispatchReceipt.vue`, reused); read as
-  `?task=` is, never written back.
-
-**PR-7, the pages.**
-
 - `pages/history/index.vue`: the search box (the palette's grammar), filter
   chips that write the query's filters (class, outcome, project from
   Dispatch's projects, host from the records, agent from the catalog,
   since), the results grouped under their anchors, paged with "Show more"
   (the reply's `next`), the indexing state; the URL keeps the query (`?q=`)
   so a search is a link. On a phone, one column, the detail line wrapped.
-- `pages/history/sessions/[id].vue`: a session record: its header (name,
-  agent with its version and own session, host, folder, repository, branch,
-  start and end commits, how it ended), its run, task and attempt with
-  links, its entries in order with anchors `#e<seq>` (a typed line, a
-  question with its choices and how it was answered, a report, a file with
-  its count), the dropped count, Resume (asks first; for a record with
-  variables, the dialog names them and offers to resume without them),
-  Forget (asks first), and the receipts of earlier resumes.
-- `composables/useHistory.ts`: the record routes, `resumeRecord` with a
-  minted command id sent again once with the same id on a lost reply
-  (`utils/tasks.ts`'s rule), `forgetRecord`.
-- The palette's record rows open the record page; the sidebar's foot of
-  pages and the palette's Go to gain History, with `G H` (free today) and a
-  terminal chord only where `chords.ts` has `Alt+H` free on every system.
+- The sidebar's foot of pages and the palette's Go to gain History, with
+  `G H` (free today) and a terminal chord only where `chords.ts` has
+  `Alt+H` free on every system.
 
 ### Docs (PR-8)
 
@@ -840,16 +1105,53 @@ as a cache of the stores, the classes, the indexer's marks).
 as three in `docs/dependencies.md`'s row (no version change).
 `docs/protocol.md` is already current from PR-1, PR-4 and PR-5.
 
+### `internal/proto`, `internal/hostagent`, `internal/signal` (PR-12): what a host reports of its sessions
+
+A hosted session runs on its host's machine, so its provenance is the
+host's to read: the server's probe cache and a git read of the hosted
+folder on the server's disk describe the wrong machine (PR-1 leaves them
+empty for that reason). PR-12 makes the host report them, through the
+three protocol places together:
+
+- `proto.HostSession` (the register message) gains `agentVersion` (at most
+  64 bytes), `repo` (at most `MaxCwd`), `startCommit` (40 or 64 lowercase
+  hex digits), each optional; the host reads `repo` and `startCommit` in
+  its own folder with `gitcli` (argv, the C locale, 2 s, one `rev-parse`)
+  before it starts the agent's process, and `agentVersion` from its own
+  probe of the agent where it has one.
+- one new host message, `session_info` (`proto.HostSessionInfo`, at most
+  2 KiB): `agentSession` (`{id, source, resumable}`, at the bounds of a
+  server session's `AgentSession`) when the hosted session's `Info`
+  changes it, and `endCommit` once its process has ended. The host sends it
+  only to a server whose `registered` reply says it takes it (a new
+  `sessionInfo: true` field; an older server sends none, and an older
+  server's `json.Unmarshal` of the register ignores the new fields).
+- the hub checks every field at its bound (a register or a message past
+  one refused, `ErrBadRegister` or the message dropped and logged) and
+  hands them to the journal through `OnAdded` and a new `OnSessionInfo`
+  callback; a host that reports none (an older host) leaves them empty and
+  the record says "not reported by the host", never a server's fact in
+  their place.
+- `web/app/utils/protocol.ts` gains the types, `docs/protocol.md` the
+  fields, the message and their bounds; `internal/hostagent` is the launch
+  site that reads them (Boxcar constraint 8).
+
+Resume of a hosted session stays the host's (`400 hosted_session`,
+unchanged): the reported agent session is evidence, not a door.
+
 ### Later PRs (PR-9 to PR-11): what waits on other items
 
 - **PR-9, DR1's decision records** (waits on DR1's PRs that serve
   DecisionRequest records, `docs/plans/decisions.md`): a source
-  `decision:<id>`: the request as `record` (its question, its subject
+  `decision:<id>`: the request as `decision` (`record`: its question, its subject
   revision as `revision` and `commit_id`, its scope), each response as
   `decision.response` (`decided`, its responder and rationale, `outcome` the
   option), its application receipt as a link (`applied`), a superseded or
   stale request said in its availability. DR1 owns the record, its states
-  and its receipts; HS1 indexes what DR1 serves and adds no field to it. The
+  and its receipts; HS1 indexes what DR1 serves and adds no field to it.
+  `internal/history`'s kinds table gains `decision` (`record`) and
+  `decision.response` (`decided`) in this PR, with their bounds and their
+  rows in `TestClassComesFromTheKindAlone`. The
   palette's "Rejected designs" question gains `decision.response` with a
   rejecting outcome.
 - **PR-10, RV1's review batches and findings** (waits on RV1,
@@ -857,12 +1159,16 @@ as three in `docs/dependencies.md`'s row (no version change).
   Request changes or Approve, by the reviewer, bound to its candidate and
   base revision), each finding as `review.finding` (`said`, its anchor in
   the candidate's diff), a finding's resolution verified against a new
-  candidate only as RV1's own receipt says (`checked` only then). RV1 owns
-  findings' identity across revisions; HS1 shows it.
+  candidate only as RV1's own receipt says, as an entry of its own,
+  `review.resolved` (`checked`, linked `resolves` to the finding), while the
+  finding stays `said`. RV1 owns findings' identity across revisions; HS1
+  shows it. `internal/history`'s kinds table gains `review.batch`
+  (`decided`) and `review.resolved` (`checked`) in this PR, with their
+  bounds and their rows in `TestClassComesFromTheKindAlone`.
 - **PR-11, Brakeman reads history within its grant** (waits on Brakeman's
-  PR-9 to PR-13 merging, `docs/plans/brakeman.md`, whose Brakeman capability
-  "locate relevant sessions, files, results and prior investigations" this
-  serves): Brakeman's `observe` gains a `history` section answering the
+  PR-9 to PR-13 merging, `docs/plans/brakeman.md`; it lets Brakeman find
+  earlier sessions, results and investigations, which Program item BK1
+  asks of it): Brakeman's `observe` gains a `history` section answering the
   History search for the `brakeman` principal, each entry filtered by the
   request's grant as Brakeman's refs are (`refGrant`: an entry's class of
   record visible, its project or repository covered by the scope), cited in
@@ -874,30 +1180,65 @@ Each of the three adds its paragraph to the features entry PR-8 writes.
 
 ## Events, orderings and invariants
 
-**The session record's states.** `open` (begun, its session live) → `ended`
-(its `status` entry or its removal from the registry: the end commit read,
-`EndedAt` and `Ending` written at once) or `lost` (found open by `Recover`
-after a stop the session did not see: ended at its last write's time). A
-record is written before its session can keep an entry (before
-`session.NewLocal` for a server session; at the hub's add for a hosted one,
-whose entries come from its host only once it is registered) and at its end
-at once; between, at most every 5 s. An `ended` or `lost` record changes
-only by a resume's receipt or by `Forget`.
+**The session record's states.** `open` (begun, its session live) →
+`ended` (its `status` end or its removal from the registry: `EndedAt` and
+`Ending` set, the writer woken to write it at once, the end commit read
+after on the writer's goroutine, native only) or `lost` (a server
+session's record found open by `Recover` after a stop the session did not
+see: ended at its last write's time) or `host away` (a hosted record found
+open by `Recover`, or let go by `Hub.Expire` past `DisconnectGrace`: its
+process runs on its host and may still be running). `host away` and `lost`
+on a hosted record → `open` again when the same host's session registers
+under the same id (`Begin`'s reopening: same `Host.Owner`, `Reopened`
+counted, entries and `Seq` kept). A record exists in memory before its
+session can keep an entry (begun before `session.NewLocal` for a server
+session, written at once there; at the hub's add for a hosted one, whose
+entries come from its host only once it is registered, written by the
+writer before anything else it holds) and is written at its end at once;
+between, at most every 5 s.
 
-**A resume's receipt.** `pending` (written before the session is made) →
-`started` (with the new session's id) or `failed` (with why; or settled by
-`Recover` after a stop). One command id, one receipt: a repeat answers it
-and makes nothing; two command ids for the same conversation race on
-`takeResume`, and the second answers `409 already_resumed`.
+**Entries reach a record out of order.** The hub calls its sinks on the
+goroutines that recorded the entries, concurrently and out of order, after
+the session's lock, so a session's end can reach `End` before an earlier
+report or chat line reaches `Note`. A record therefore places entries by
+`At` (then arrival), and after `End` still takes an entry whose `At` is
+not after `EndedAt`, writing it at the next flush; an entry after
+`EndedAt` is dropped and counted. An ended record changes only by such an
+earlier entry, by a resume's receipt, by a hosted record's reopening, or
+by `Forget`. `TestAnEarlierEntryHeldPastTheEndIsKept` holds a report's
+callback at a gate in a test sink until `End` has run and been written,
+then lets it go: the record holds it, in its place by `At`.
+
+**A resume's receipt.** `pending` (reserved under the record's lock, with
+the new session's id allocated, before any check or launch) → `started`
+(with that id), `failed` (with why, a refusal's code included), or, settled
+by `Recover` after a stop, `started` when the allocated id's record exists
+and `uncertain` when it does not. One command id, one receipt: a repeat
+answers it and makes nothing, whether or not the session is listed and
+whether or not the session it started has ended; two command ids for the
+same conversation race on `takeResume`, and the second answers `409
+already_resumed`.
 
 **Marks.** Every source's mark is read before the source, and recorded with
 the entries only when the read loaded (AGENTS.md, "Mark what you read with
-what you saw before reading it"): the ledger's run revision (every
-transition bumps it), Dispatch's ticket `rev` with its changes' last seq,
-the record's `Seq` (from `history/state.json`, written before the record, so
-it never goes back), the brief request's update time. A source changed
-between its mark and its read is read again on the next pass, because its
-commit marked it dirty after the mark was taken.
+what you saw before reading it"). A **run's mark covers every input its
+source reads**: `L<revision>/R<sha256>`, the ledger's run revision
+(`ledger.Pointer`, every transition bumps it) read before the rows and the
+SHA-256 of the record file `runs/<id>.json` as read, because the record
+changes without a transition (the engine's `crew.OnChange` sets a member's
+`AgentSession` and saves the record, `internal/crew/handoff.go`, with no
+ledger write); a legacy run, which has no ledger rows, has `R<sha256>`
+alone. A record change with the ledger's revision unchanged therefore
+changes the mark, and the catch-up after a restart sees it.
+`TestARecordOnlyChangeIsSeenAfterARestart` changes a member's agent
+session with no transition, restarts, and finds the new id indexed. A
+finished receipt's mark is `finished` (never read again); Dispatch's is the
+ticket's `rev` with its changes' last seq, and the feed's position for the
+reconcile; a session record's is its `Seq` (from `history/state.json`,
+written before the record, so it never goes back); a brief's is its
+request's update time. A source changed between its mark and its read is
+read again on the next pass, because its commit marked it dirty after the
+mark was taken (or the reconcile finds the mark behind).
 `TestAChangeBetweenTheMarkAndTheReadIsReadAgain` drives that through a seam
 (`afterMark`) in the indexer.
 
@@ -923,7 +1264,8 @@ retried after a backoff (1 s doubling to 1 min).
   `candidate.verified`); a `decided` entry names its actor and its receipt;
   a `said` entry names who said it and where.
 - Nothing a session record keeps is a variable's value, a share token, a
-  path its deny list covers, a viewer's arrival or a terminal's output.
+  path its deny list covers, a viewer's arrival, a terminal's output, or a
+  line a person typed into the terminal or a reply box.
 - The index's text is bounded by kind and in total; history older than the
   budget is dropped by age and the reply says from when it holds.
 - A Forget removes the record's file and, at the next pass, its entries; the
@@ -941,7 +1283,15 @@ version is rebuilt.
 writes the journal and the index; another serves the History routes
 read-only (its sessions unrecorded, said on its record list and in its log),
 keeps trying for the lock as the ledger does, and on taking it recovers the
-journal and catches the index up.
+journal and catches the index up. What the other server writes to the
+stores it may write (Dispatch, which takes no owner lock; the ledger and
+Brakeman's store when it holds their locks) reaches no hook of the
+holder's, so the holder's indexer finds it by the reconcile (above), from
+the stores' durable positions, within 30 s.
+`TestAnEditByTheOtherServerBecomesSearchable` edits a ticket through a
+second server's Dispatch on the same data directory and finds the edit
+through the first's search after one reconcile (`reconcileNow`), with no
+restart.
 
 **The export.** `history/sessions/` and `history/state.json` are carried by
 `conductor export` as the data directory's other files are (C6's `rest`), so
@@ -950,7 +1300,7 @@ refused in an archive (a new `WhyDerived` row in
 `internal/export/leftout.go`: "derived; rebuilt at the next start"), and
 `history/owner.lock` with the other locks (`WhyLock`). The sync adapter's
 allowlist (C6) is unchanged: what of history is shared across machines is
-TS1's to decide (`docs/plans/team-history.md`).
+for Program item TS1 to decide, an item not yet planned.
 
 ## Out of scope
 
@@ -960,10 +1310,11 @@ TS1's to decide (`docs/plans/team-history.md`).
   its version, its own session id and its session recipe; a reader of a
   provider's transcript would be a decision of its own, proposed first
   (Owner decisions, 2).
-- Keeping a terminal's output, scrollback or screen in a record.
-- Sharing history between machines or people, and conflict rules for it: TS1
-  over CS1 (`docs/plans/team-history.md`); HS1 only reserves the `origin`
-  column.
+- Keeping a terminal's output, scrollback or screen in a record, or what a
+  person types into the terminal or a reply box (Owner decisions, 4).
+- Sharing history between machines or people, and conflict rules for it:
+  Program item TS1's, over CS1's sync, an item not yet planned and with no
+  plan file; HS1 only reserves the `origin` column.
 - A store of accepted knowledge, embeddings, semantic or fuzzy search, and
   summaries of history written by a model: Brakeman summarizes on request,
   from the records (`docs/plans/brakeman.md`).
@@ -984,11 +1335,11 @@ TS1's to decide (`docs/plans/team-history.md`).
 ## Tests per surface
 
 Every PR runs, before each push, the checks of `docs/checks.md` for its
-surfaces: Go (PR-1 to PR-5, PR-9 to PR-11): `make lint`, `go test -race
+surfaces: Go (PR-1 to PR-5, PR-9 to PR-12): `make lint`, `go test -race
 -count=1 -timeout 30m ./...` (the whole module), `make lint-static`; web
-(PR-6, PR-7, PR-9, PR-10): `npm --prefix web run typecheck`, `npm --prefix
+(PR-6, PR-7, PR-9, PR-10, PR-12's `protocol.ts`): `npm --prefix web run typecheck`, `npm --prefix
 web test`, `make test-e2e` (the PR's specs alone first while iterating).
-PR-1 and PR-5 also run the Mac's row (`python3 scripts/preflight.py
+PR-1, PR-5 and PR-12 also run the Mac's row (`python3 scripts/preflight.py
 --machines mac --only go-test-race`, under the preflight lock): a record's
 files and modes on APFS and `gitcli` on macOS. No PR changes Python tooling,
 `desktop/` or a workflow, so the scripts suite, `make desktop-test` and the
@@ -999,25 +1350,61 @@ through a seam (`flushNow`) in every test that needs a write.
 
 **Go, `internal/journal` (PR-1):**
 `TestARecordIsWrittenBeforeItsFirstEntry`;
-`TestARecordKeepsEvidenceEntriesOnly` (join, leave and link never kept; tool
-use counted); `TestAFileFoldsIntoOneRowPerPathAndOp`;
+`TestARecordKeepsEvidenceEntriesOnly` (join, leave and link never kept, an
+attention entry never kept, tool use counted);
+`TestTwoQuestionsOfTheSameWordsAreTwoEntries` (each answer's `Ref` names
+its own); `TestAnEarlierEntryHeldPastTheEndIsKept` (a gate holds the
+earlier entry until `End` is written; kept in its place by `At`; one after
+`EndedAt` dropped and counted); `TestEndWritesOffTheCallersGoroutine` (the
+writer's disk held at a gate: `End` returns at once);
+`TestAFileFoldsIntoOneRowPerPathAndOp`;
 `TestADenyListedPathIsNeverWritten`; `TestAVariableValueIsNeverWritten` (the
 names and the hash only; the file grepped for the value);
 `TestARecordIsBoundedOldestEntriesFirst` (at 64 KiB exactly and one past);
-`TestPruneKeepsLiveAndPendingRecords`; `TestRecoverEndsAnOpenRecordAsLost`
-and settles a pending resume failed; `TestSeqNeverGoesBack` (a crash between
+`TestTheLargestValidLaunchFits` (64 arguments of 4 KiB: `ArgsKept` false,
+the count and hash kept, no argument, the record under 64 KiB with every
+other field at its bound); `TestPruneKeepsLiveAndPendingRecords` and
+`TestLiveRecordsPastMaxRecords` (more live than `MaxRecords`: none pruned,
+every ended one past the bound pruned); `TestRecoverEndsAnOpenRecordAsLost`
+(a server session's) and `TestRecoverEndsAHostedRecordHostAway`;
+`TestBeginReopensTheSameHostsRecord` (ended `host away`, then `lost`; the
+same owner reopens it with its entries and `Seq`; another owner, or a
+server session's id, refused `ErrExists`); `TestRecoverSettlesAPendingResume`
+(the allocated id's record there: `started`; none: `uncertain`);
+`TestSeqNeverGoesBack` (a crash between
 the state file and the record, by a seam); `TestForgetRefusesALiveSession`;
 `TestANewerRecordIsReadNotRewritten`; `TestReadOnlyWithoutTheLock` (two
 processes, as the ledger's lock test); `TestFilesAre0600InA0700Directory`
 (unix); 32 goroutines noting into 8 records under `-race`, every entry kept
 once in order of `Seq`.
 
-**Go, `internal/api` (PR-1):** `TestEveryServerSessionGetsARecord`,
-`TestAHostedSessionGetsARecord` (its host's name and user, its entries from
-the host's reports through the hub), `TestTheRecordSurvivesARestart` (a
-server ended and started again on the same data directory; the record
-listed, ended), `TestHistorySessionRoutesAreAdminOnly` (a share link, a
-session token, no token), `TestHistorySessionsOffKeepsNoRecord`,
+**Go, `internal/api` (PR-1):** `TestEveryServerSessionGetsARecord`;
+`TestWhatAPersonTypesIsNotKept` (a reply-box submission, keys typed into
+the terminal and a typed answer to a question: the record file grepped for
+each, none there; a line Conductor typed kept as `typed`);
+`TestQuestionsAndTheirEndsComeFromTheChat` (a question with choices, one
+answered by a choice, one withdrawn: ids, choices, `Ref` and outcome as the
+chat had them); `TestTheChatIsKeptWithWhatWasSentToTheAgent`;
+`TestTheStartCommitIsReadBeforeTheAgentRuns` (a `sessiontest.FakeRuntime`
+whose `StartTerminal` commits in the folder before it returns: the record's
+`startCommit` is the commit before it); `TestACrewMembersStartIsItsAttempts`;
+`TestANonNativeSessionGetsNoGitReadOnTheServer` (a FakeRuntime at another
+`where`: the git reader's seam never called, `Where` recorded, the record
+page's words "on <where>"); `TestAHostedSessionGetsARecord` (its host's
+name, user and owner, its entries through `s.hosts.OnActivity`, its chat
+through `s.hosts.OnChat`, its changes through `s.hosts.OnChange`, never
+`localChange`); `TestAHostedRecordBorrowsNothingFromTheServer` (agent
+version, own session id, repository and commits empty with the server's
+probe cache warm and the hosted folder a repository on the server's disk);
+`TestAHostedRecordSurvivesAServerRestart` (a host registered with an
+instance and a local id, the server restarted, the host registering again:
+one record, `host away` then reopened, entries from before and after in
+order, `Seq` never back) and `TestAHostedRecordLetGoByExpiryIsReopened`
+(`Hub.Expire` past `DisconnectGrace`, then the same register);
+`TestTheRecordSurvivesARestart` (a server ended and started again on the
+same data directory; the record listed, ended);
+`TestHistorySessionRoutesAreAdminOnly` (a share link, a session token, no
+token), `TestHistorySessionsOffKeepsNoRecord`,
 `TestASwitchyardKeepsNoHistory`.
 
 **Go, `internal/history` (PR-2):**
@@ -1027,12 +1414,17 @@ the table its class); `TestARepeatedSentenceStaysSaid` (the same body in ten
 sources: ten `said` entries, `repeats` 10 in 10 anchors, none of another
 class); `TestReplaceIsAllOrNothing` (a commit made to fail leaves the old
 rows and FTS rows); `TestRemoveCascades`; `TestTermsIntersectAcrossColumns`,
-`TestPrefixFromTwoLetters`, `TestAPhraseIsOneTerm`, `TestEachFilter` (a
+`TestTheLastWordIsAPrefix` (at one character and more),
+`TestAWordWithNoLetterOrDigitIsDropped`, `TestAPhraseIsOneTerm`, `TestEachFilter` (a
 table over every filter name and its refusals),
 `TestAnUnknownFilterIsAWord`; `TestOrderNeverWeighsClass` (two entries of
 equal text, a `said` newer than a `checked`: the newer first);
 `TestTheBudgetDropsTheOldestFirst` (by entries and by bytes, `Stats` saying
-from when); `TestSimilarFindsTheSameCommandElsewhereAndLeavesTheChainOut`;
+from when); `TestSimilarFindsTheSameCommandElsewhereAndLeavesTheChainOut`,
+`TestSimilarStaysInTheRepositoryAndRanksTheLineFirst` (two repositories
+whose crews run one generic argv: the other repository's passes are absent
+until `scope=all`; the receipt holding the failure's line ranks first);
+`TestAKeyOutlivesReplaceAndReindex`;
 `TestSnippetMarksTheMatch`; `BenchmarkSearch` (100,000 entries; the medians
 in PR-2's body).
 
@@ -1044,9 +1436,26 @@ attempt's own `previous.check`; `passed_after` to attempt 2's receipt);
 `TestHandedAcrossAContinuation` (the run stopped after attempt 1 failed,
 continued; the continuation's first attempt handed the source run's
 receipt); `TestAReviewsNeedsChangesLinksTheReopenedAttempt`;
-`TestACheckBodyIsItsArgvAndTheLogsEnds` (a 1 MiB log: the first 4 KiB and
-last 12 KiB indexed, a word from the middle not found);
-`TestAPassedCheckIndexesItsTailOnly`;
+`TestPassedAfterAContinuationIndexedLater` (the source run indexed while
+its continuation still runs; the continuation's pass then writes
+`passed_after` from the source's failed receipt; a catch-up after a
+restart keeps it); `TestACheckBodyIsItsArgvAndTheLogsEnds` (a 1 MiB log:
+the first 4 KiB and last 12 KiB indexed, a word from the middle not
+found); `TestAPassedCheckIndexesItsTailOnly`;
+`TestOutcomeIsTheEnginesPredicate` (exit 0 with the checkout changed:
+failed; `Killed` alone after an exit 0: passed; an error with exit 0:
+failed; `interrupted` kept as such; `started` and `running` not indexed
+until finished); `TestVerifiedIsTheDeliverysPredicate` (`verifiedOf`
+against `candidateVerified` over a table: a failed attempt whose checks
+passed, no receipt, an unstable tree, a cleanup kill);
+`TestOnlyTheAdminsCommandsAreIndexed` (two actors with one command id in
+one run: one entry, its ref opening the admin's receipt);
+`TestAFinishedReceiptIsReadOnce` (its log read by `ledger.Check` once; the
+run's later transitions read no log); `TestARunIsReadAtMostEvery2s`
+(through the indexer's clock seam); `BenchmarkTransitionWhileIndexing`
+(the medians and 99th percentiles in PR-3's body);
+`TestARecordOnlyChangeIsSeenAfterARestart`;
+`TestAnEditByTheOtherServerBecomesSearchable` (`reconcileNow`);
 `TestAChangeBetweenTheMarkAndTheReadIsReadAgain` (`afterMark`);
 `TestCatchUpAfterARestart` (runs made while no index existed, then a run
 pruned: indexed, then removed); `TestAPrunedRunLeavesTheIndex`;
@@ -1070,7 +1479,8 @@ case, and the resume routes' own tests unchanged after `resumeCheck` is
 factored out); `TestHistorySearchRoutesAreAdminOnly`;
 `TestTheSearchReplyIsBounded` (2 MiB, `truncated`);
 `TestABadQueryIsRefusedWithWords`; `TestTheQueryIsNeverLogged` (the request
-log's lines for a search hold no `q`).
+log's lines for a search hold no `q`, nor a `key`);
+`TestHistoryAndDispatchReadWordsAlike`; `TestAGoneKeyAnswersEntryGone`.
 
 **Go, `internal/api` and `internal/cli` (PR-5):**
 `TestResumeFromARecordAfterARestart` (a fake agent with a session recipe:
@@ -1078,54 +1488,86 @@ the new session's arguments are the recipe's resume arguments with the
 recorded id, its folder and yolo choice the record's);
 `TestResumeFromARecordRefuses` (a table: hosted, managed, Brakeman, no
 recipe, not resumable, held by a live session, folder gone with
-`ResumeNeedsCwd`, variables without `withoutEnv`);
-`TestTheSameCommandIDAnswersItsReceipt`;
-`TestAPendingReceiptIsSettledFailedAtRecover`;
-`TestAListedSessionResumesThroughItsOwnRoute`;
+`ResumeNeedsCwd`, arguments not kept, a Runtime this server lacks,
+variables without `withoutEnv`; each refusal settling its receipt
+`failed`); `TestTheSameCommandIDAnswersItsReceipt` (sent again while the
+new session runs and again after it has exited, for a listed session and
+for a record: the first receipt each time, one session started);
+`TestAPendingReceiptAfterAStop` (a stop held at a seam before the process
+is made: `uncertain`, nothing claimed; a stop after the new session's
+`Begin`: `started`, naming it); `TestAListedSessionAndARecordShareOneLaunch`
+(`resumeLaunch`, the session route's answers and tests unchanged);
+`TestANonNativeRecordResumesInItsRuntime` (a FakeRuntime at another
+`where`: the new session starts there, the folder not looked at
+natively);
 `TestResumeFromARecordStartsThroughTheRuntime` (`sessiontest.FakeRuntime`
 records the start); `TestTheGuideListsHistoryForTheAdminOnly` and
 `TestToolsListIsUnchanged`; `cli/history_test.go`:
 `TestHistorySearchPrintsTheSixFields`,
 `TestHistoryResumeSendsOneCommandIDTwice`, `TestHistoryForgetAll`.
 
-**vitest (PR-6, PR-7):** `utils/history.test.ts` (the detail line's order
-and omissions, every badge and that no `said` or `decided` entry has a ✓,
-the link line, repeats' words, the questions' queries, availability words);
-`utils/palette.test.ts` (`~` parsed and dropped, no other prefix changed);
-`composables/useHistorySearch.test.ts` (the debounce through fake timers, an
-abort, a slow earlier answer dropped, the cache, the token forgotten);
+**vitest (PR-6):** `utils/history.test.ts` (the detail line's order and
+omissions, every badge and that no `said` or `decided` entry has a ✓, the
+link line, repeats' words, the questions' queries, availability words);
 `composables/useHistory.test.ts` (the resume's command id sent twice on a
-lost reply, never a second id).
+lost reply, never a second id). **vitest (PR-7):** `utils/palette.test.ts`
+(`~` parsed and dropped, no other prefix changed);
+`composables/useHistorySearch.test.ts` (the debounce through fake timers, an
+abort, a slow earlier answer dropped, the cache, the token forgotten).
 
-**Playwright (PR-6, PR-7):** `history.spec.ts`, the acceptance boundary with
-the e2e stub worker: the crew of `tasks.spec.ts`, whose `fixed` check (`git
+**Playwright (PR-6):** `history-record.spec.ts`: a plain stub session with
+a session recipe ended, the server restarted on its data (the
+`tasks-resume.spec.ts` pattern), its record page opened by its URL (no
+palette row reaches it yet), Resume asked and answered, the new session's
+command line holding the recipe's `--resume` and the recorded id, its
+record naming the one it resumed; Forget removes the record; the run page
+opened at `?task=&attempt=&step=` shows that step's log and its SHA-256.
+
+**Playwright (PR-7):** `history.spec.ts`, the acceptance boundary with the
+e2e stub worker: the crew of `tasks.spec.ts`, whose `fixed` check (`git
 cat-file -e HEAD:stub-fixed.txt`) fails until the builder adds the file on
 its second attempt, is launched and succeeds; the palette opened after the
 sidebar's root is drawn (AGENTS.md: wait for the listener's component), `~
-stub-fixed` typed (a word of git's refusal in the receipt's log); the first
-row is the failed receipt with Checked ✗, the six fields and "Investigated
-by build #2"; Enter opens the run page at attempt 1's `fixed` step with the
-log's SHA-256 equal to the step log route's header; a plain session whose
-stub reported the same word shows as Conversation, never Checked; `~` alone
-lists the four questions, and "What was last verified" lists attempt 2's
-passing receipt; Find this elsewhere on a second crew's run of the same
-command lists it. Rows are found by their ids and titles, never by a count
-(`stopStrays` first). `history-pages.spec.ts`: a plain stub session with a
-session recipe ended, the server restarted on its data (the
-`tasks-resume.spec.ts` pattern), the record page reached from the palette,
-Resume asked and answered, the new session's command line holding the
-recipe's `--resume` and the recorded id, its record naming the one it
-resumed; Forget removes the record and its rows; the History page's chips
-write the query and a phone width shows one column. `palette.spec.ts` and
-`palette-keys.spec.ts` stay green with the seventh prefix. Each new spec run
-`--repeat-each 10` before its PR is marked ready.
+stub-fixed outcome:failed` typed (a word of git's refusal in the receipt's
+log, and the filter, since attempt 2's passing receipt holds the same word
+in its argv and bm25 does not fix which of the two comes first); the row
+whose key is attempt 1's receipt (`check:<run>/build/1/fixed/<k>`, found by
+its key or its title "fixed on build #1", never by its position) shows
+Checked ✗, the six fields and "Investigated by build #2"; Enter opens the
+run page at attempt 1's `fixed` step with the log's SHA-256 equal to the
+step log route's header; a plain session whose chat holds the same word
+(posted there and sent to its agent) shows as Conversation, never Checked;
+`~` alone lists the four questions, and "What was last verified" lists
+attempt 2's passing receipt, found by its key; Find this elsewhere on a
+second crew's run of the same command in the same repository lists it,
+found by its key. Rows are found by their keys and titles, never by a
+count or a place (`stopStrays` first). `history-page.spec.ts`: the record
+page of the restarted session reached from the palette's row; the History
+page's chips write the query; a phone width shows one column.
+`palette.spec.ts` and `palette-keys.spec.ts` stay green with the seventh
+prefix. Each new spec run `--repeat-each 10` before its PR is marked
+ready.
+
+**Go and vitest (PR-12):** `internal/proto`: each new field and the new
+message at its bound and one past it, refused; an old host's register
+(none of the fields) accepted; `protocol.ts`'s types beside them (vitest).
+`internal/hostagent`: `TestTheHostReadsItsLaunchRevisionBeforeItStarts`
+(the host's own folder, before its process starts) and
+`TestTheHostReportsItsAgentSession` (the hosted agent's session id
+reported when its `Info` changes it). `internal/api`:
+`TestAHostedRecordTakesWhatItsHostReports` (version, own session id,
+repository, start and end commits, `StartFrom: host`) and
+`TestAnOldHostsRecordSaysNotReported`.
 
 **By hand (PR-8's record):** what the stub cannot show: real Claude Code and
 Codex sessions recorded with their versions and own session ids (Codex's
 lowest-id policy), a plain Claude Code session resumed from its record after
 a restart (`--resume <id>`) and a Codex one (`resume <id>`, its folder
 needed), a hosted session from `conductor host` on the Mac (its host and
-user, "host away" once the host stops, no Resume from the server), the four
+user, "not reported by the host" for what an old host does not report,
+"host away" once the host stops and the same record taken up again when it
+comes back, no Resume from the server; PR-12's own observation adds the
+agent's version, own session and launch commit as the Mac reports them), the four
 questions asked of a real evening's runs, the History page on a phone on the
 LAN, and the index rebuilt on a data directory with a few hundred runs, with
 the time it took.
@@ -1157,11 +1599,22 @@ the time it took.
    no capability.
 7. **No evidence assumes a native process.** Honoured: every entry keeps the
    row's `where_ran`; availability looks at a worktree only when the row
-   says `native`, and says any other `where` as the row has it.
-8. **`hostagent` is a launch site as much as `api`.** Not touched: a hosted
-   session is recorded on the server from what its host already reports;
-   resuming it stays the host's (`400 hosted_session`, unchanged).
-   `internal/hostagent` is not changed.
+   says `native`, and says any other `where` as the row has it. A session
+   record keeps the `where` its session was started in
+   (`createSessionRequest.where`, `Record.Where`); the server reads git
+   (repository, branch, start and end commits) and checks the folder for
+   Resume only for a native one, says "on <where>" otherwise, and resumes a
+   record in the Runtime it names, or refuses (`409 runtime_gone`).
+   `TestANonNativeSessionGetsNoGitReadOnTheServer` and
+   `TestANonNativeRecordResumesInItsRuntime` hold it with
+   `sessiontest.FakeRuntime`.
+8. **`hostagent` is a launch site as much as `api`.** Honoured: PR-1
+   records a hosted session on the server from what its host already
+   reports and borrows nothing of the server's machine for it; PR-12 makes
+   the host, the launch site, read its own launch revision before its
+   process starts and report it with its agent's version and own session,
+   as the server does for its own sessions. Resuming a hosted session stays
+   the host's (`400 hosted_session`, unchanged).
 
 ## Open-core checklist
 
@@ -1190,10 +1643,14 @@ touch no common package or directory, as named.
 record, its bounds, the journal with its lock, flush, prune, recover,
 forget, `history/state.json`); `history.sessions` in `internal/config`; in
 `internal/api` the journal opened with the data directory, `Begin` for
-server and hosted sessions, the hub's sink and the chat call, `End`, the
-agent's version and the git reads, the four record routes. Touches
-`internal/journal`, `internal/config`, `internal/signal` (the `OnAdded`
-callback), `internal/api`, `docs/protocol.md`. Tests: PR-1's of
+server and hosted sessions (a hosted record's reopening), the hooks as
+named in "The API's part of PR-1" (`localChange`, `s.hosts.OnChange`, the
+hub's sink and `chat`, the registry's `OnRemove`), `End`, the agent's
+version and the launch revision read before `StartTerminal` (native only),
+the four record routes. Touches `internal/journal`, `internal/config`,
+`internal/signal` (the `OnAdded` callback), `internal/api`,
+`docs/protocol.md`; nothing in `internal/session` (every entry's source
+exists on `main`). Tests: PR-1's of
 `internal/journal` and `internal/api` above. About 1,300 lines. Depends on
 nothing. May run beside PR-2.
 
@@ -1208,39 +1665,49 @@ nothing. May run beside PR-1.
 (`commits.go`, the sync adapter registered through it unchanged); the
 indexer (dirty set, marks, the pass, backoff, catch-up, reindex route); the
 session-record and run sources with every link (`session_of`, `continues`,
-`launched_from`, `handed`, `passed_after`, `reviews`, `reopened`);
-`crew.FailedAtCheck` and `crew.FailingReceipt` exported; the export's
-`WhyDerived` row and lock row. Touches `internal/api`, `internal/crew`,
-`internal/export`. Tests: PR-3's above. About 1,400 lines. Depends on PR-1
+`launched_from`, `handed`, `passed_after`, `reviews`, `reopened`), each
+finished receipt its own source, the run's composite mark, the per-run
+interval and the reconcile; `crew.FailedAtCheck`, `crew.FailingReceipt`
+and `crew.FailedOutcome` exported, `verifiedOf` factored out of
+`candidateVerified`; `BenchmarkTransitionWhileIndexing` with its numbers in
+the PR body; the export's `WhyDerived` row and lock row. Touches
+`internal/api`, `internal/crew`, `internal/export`. Tests: PR-3's above. About 1,400 lines. Depends on PR-1
 and PR-2.
 
 **PR-4: Dispatch's and Brakeman's sources, availability and the search
 routes.** The ticket and brief sources; `historyURL`; availability;
 `resumeCheck` factored out of `handleResumeSession`; `GET /api/history`,
-`/entries/{id}`, `/entries/{id}/similar`; `docs/protocol.md`'s History
+`/api/history/entry`, `/api/history/similar`; `docs/protocol.md`'s History
 search rows. Touches `internal/api`, `docs/protocol.md`. Tests: PR-4's
 above. About 1,200 lines. Depends on PR-3.
 
 **PR-5: resume from a record, the CLI and the guide.** `POST
 /api/history/sessions/{id}/resume` with its receipts and `Recover`'s
-settling; `conductor history` and its completion; the guide's admin rows.
-Touches `internal/api`, `internal/journal` (the receipt's settling at
-recover), `internal/cli`, `docs/protocol.md`. Tests: PR-5's above. About
-1,000 lines. Depends on PR-4. May run beside PR-6.
+settling; `resumeLaunch` shared with `handleResumeSession`, and the
+allocated session id `createSessionRequest` takes from it; `conductor
+history` and its completion; the guide's admin rows. Touches
+`internal/api`, `internal/journal` (the receipt's reservation and its
+settling at recover), `internal/cli`, `docs/protocol.md`. Tests: PR-5's
+above. About 1,100 lines. Depends on PR-4.
 
-**PR-6: the palette's History and the run page's step.**
-`utils/palette.ts`'s `~`, `utils/history.ts`, `useHistorySearch`, the
-palette's history groups and the search mode's History group, the row's
-badge and third line, the run page's `?attempt=&step=`; `history.spec.ts`.
-Touches `web/app/utils`, `web/app/composables`, `web/app/components`,
-`web/app/pages/runs`, `web/e2e`. Tests: vitest and Playwright of PR-6 above.
-About 1,100 lines. Depends on PR-4. May run beside PR-5.
+**PR-6: the record page and the run page's step.** `utils/history.ts`,
+`useHistory`, `pages/history/sessions/[id].vue` with Resume and Forget on
+PR-5's routes, the run page's `?attempt=&step=`; `history-record.spec.ts`.
+No palette row yet, so nothing on `main` links to a page it does not have.
+Touches `web/app/utils`, `web/app/composables`, `web/app/pages/history`,
+`web/app/pages/runs`, `web/app/components`, `web/e2e`. Tests: vitest and
+Playwright of PR-6 above, a record-only session after a restart among
+them. About 1,000 lines. Depends on PR-5.
 
-**PR-7: the History page and the record page.** `pages/history/index.vue`,
-`pages/history/sessions/[id].vue`, `useHistory`, Go to's History row and
-chord; `history-pages.spec.ts`. Touches `web/app/pages/history`,
-`web/app/composables`, `web/app/components`, `web/app/utils`, `web/e2e`.
-Tests: PR-7's above. About 1,000 lines. Depends on PR-5 and PR-6.
+**PR-7: the palette's History and the History page.** `utils/palette.ts`'s
+`~`, `useHistorySearch`, the palette's history groups and the search
+mode's History group, the row's badge and third line,
+`pages/history/index.vue`, Go to's History row and chord;
+`history.spec.ts` and `history-page.spec.ts`. Every row it draws opens a
+page PR-6 or `main` already has. Touches `web/app/utils`,
+`web/app/composables`, `web/app/components`, `web/app/pages/history`,
+`web/e2e`. Tests: vitest and Playwright of PR-7 above. About 1,100 lines.
+Depends on PR-6.
 
 **PR-8: the docs and the features entry.** `docs/features.md`'s HS1 entry
 with each PR's checks and the by-hand record, the README's History section,
@@ -1249,11 +1716,14 @@ with each PR's checks and the by-hand record, the README's History section,
 no check applies but the links read. About 400 lines. Depends on PR-7.
 
 **PR-9: DR1's decision records.** As in "Later PRs". Touches `internal/api`,
-`web/app/utils`, `docs`. About 500 lines. Depends on PR-8 and on DR1's PRs
+`internal/history` (the kinds `decision` and `decision.response`, their
+bounds and classification rows), `web/app/utils`, `docs`. About 500 lines. Depends on PR-8 and on DR1's PRs
 that serve its records (`docs/plans/decisions.md`).
 
 **PR-10: RV1's review batches and findings.** As in "Later PRs". Touches
-`internal/api`, `web/app/utils`, `docs`. About 500 lines. Depends on PR-9
+`internal/api`, `internal/history` (the kinds `review.batch` and
+`review.resolved`, their bounds and classification rows), `web/app/utils`,
+`docs`. About 500 lines. Depends on PR-9
 (both change the sources file and the features entry) and on RV1's PRs that
 serve batches and findings (`docs/plans/review-repair.md`); if RV1 lands
 before DR1, PR-10 goes first and PR-9 follows it.
@@ -1264,18 +1734,32 @@ lines. Depends on PR-8 and on Brakeman's PR-9 to PR-13
 (`docs/plans/brakeman.md`); runs after PR-9 and PR-10 or before them, never
 beside them (`internal/api`).
 
+**PR-12: what a host reports of its sessions.** As in its section above:
+the register's new fields, `session_info`, the `registered` reply's
+`sessionInfo`, the host's reads before its process starts, the hub's
+checks and `OnSessionInfo`, the journal's hosted fields. Touches
+`internal/proto`, `internal/hostagent`, `internal/signal`, `internal/api`,
+`web/app/utils/protocol.ts`, `docs/protocol.md`. Tests: PR-12's above and
+the Mac's row. About 700 lines. Depends on PR-8; runs before, between or
+after PR-9 to PR-11, never beside them (`internal/api`). It adds its own
+paragraph and by-hand observation to the features entry; HS1's Done does
+not wait on it, since the acceptance boundary is a managed run on the
+server's own machine.
+
 ## Owner decisions
 
 Dated 2026-11-05. The defaults below are this plan's, inside the twelve
-articles; the owner may overturn any at the plan's review, and one
-overturned is rewritten here before the PRs are cut (the Program's
-convention, section 3.1).
+articles; the owner may overturn any at the plan's review. A default the
+owner overturns is rewritten in this section, dated, in the owner's words,
+and every part of the plan it touches is changed with it before the PRs
+are cut into issues; a PR already cut follows the plan as rewritten.
 
-1. **The Program's open decisions.** None is this item's. O4 (human policy
-   v1) blocks SW1 alone and O10 (Dispatch's conflict rules) blocks CS1
-   alone; both stay with those items' plan reviews as the status log of
-   2026-11-03 says. HS1 needs neither: it is local and single-machine, and
-   it reserves `origin` for TS1 without choosing how shared history merges.
+1. **No open decision of the Program's is this item's.** The ones still
+   open are about how decisions are routed to people and how synced
+   records conflict, which belong to the routing and sync items. HS1 needs
+   neither: it is local to one machine, routes nothing, and reserves
+   `origin` for team history (Program item TS1) without choosing how
+   shared history merges.
 2. **No provider transcript is read.** "Provider-aware" is taken as the
    agent, its version, its own session id with where it came from, and its
    session recipe, which decides Resume. Reading Claude Code's or Codex's
@@ -1290,9 +1774,14 @@ convention, section 3.1).
    misses the session they later want; the records are 0600 files under the
    data directory, admin-only, bounded (64 KiB, 2,000 records), carried by
    the export and forgettable one by one or all at once.
-4. **What a record keeps.** Typed lines, answers, questions with their
-   choices, the agent's reports, files touched (folded) and chat; never a
-   variable's value, a terminal's output, a viewer's arrival or a link. The
+4. **What a record keeps.** The lines Conductor typed, questions with
+   their choices and how each ended (the choice's label, or withdrawn),
+   the agent's reports, files touched (folded) and the session's chat;
+   never what a person typed into the terminal or a reply box (it may be a
+   credential, and the chat already refuses to repeat it), a variable's
+   value, a terminal's output, a viewer's arrival or a link. Keeping a
+   person's typed lines would be a change to `internal/session` and a
+   privacy decision of its own, proposed first. The
    bounds are the plan's guesses at what one session's evidence needs;
    PR-1's tests measure them and PR-1's body says what a real session took.
 5. **Three classes and records, named Conversation, Decision and Checked.**
@@ -1321,7 +1810,8 @@ convention, section 3.1).
     for a hosted session (its machine resumes it), a managed attempt (its
     run continues) or a Brakeman turn; the launch's variables are not kept,
     so a record launched with them resumes only with `withoutEnv`, which
-    says which were left out.
+    says which were left out; a launch whose arguments were too long to
+    keep is not resumed at all, never with a cut list.
 11. **Admin only.** The History routes take the workbench token; no attempt
     session gets a history tool; Brakeman reads history only through PR-11,
     within its grant.
@@ -1343,16 +1833,21 @@ agents), on the open-source build with no account, after PR-8 merges:
    worktree, as Yardmaster's live check used), run with real Claude Code as
    the worker and Codex as the reviewer, so attempt 1 fails the check and
    attempt 2, handed the receipt, passes; beside it a plain Claude Code
-   session in the same repository asked about the same failure;
+   session in the same repository asked about the same failure through its
+   chat (a message posted in the session's chat and sent to its agent,
+   which the record keeps; words typed into its terminal are not kept, and
+   the observation does not rely on them);
 2. the server restarted;
-3. in the palette, `~` and a word of the failing test's output: the first
-   rows are the failed receipt, Checked ✗, with its six fields true (the
-   source, this machine, the project's key, attempt 1's result commit, the
-   time, "log kept"), "Investigated by build #2" naming Claude Code and its
+3. in the palette, `~` and a word of the failing test's output: among the
+   rows (with `outcome:failed` added when the passing receipt shares the
+   word, since the ranking does not fix which comes first), the failed
+   receipt, found by its title ("<check> on build #1"), Checked ✗, with
+   its six fields true (the source, this machine, the project's key,
+   attempt 1's result commit, the time, "log kept"), "Investigated by build #2" naming Claude Code and its
    own session, and "passed at" attempt 2's commit; Enter opens the run page
    at that step's log, whose SHA-256 equals the step log route's; the plain
-   session's words show as Conversation, and its record opens on its record
-   page after the restart, where Resume resumes the Claude Code
+   session's chat line shows as Conversation, and its record opens on its
+   record page after the restart, where Resume resumes the Claude Code
    conversation;
 4. the three other questions asked the same way: a plan revision withdrawn
    for the ticket found as a Decision ("which design was rejected"), the
