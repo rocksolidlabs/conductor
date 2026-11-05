@@ -157,11 +157,13 @@ type brakemanDesk struct {
 	// stuck is set past brakemanStuck and refuses new requests.
 	stopFails int
 	stuck     bool
-	// makes holds each request's make mutex (makeLock); turnReads what
-	// the turn in progress was given of what changed (cover) and the
-	// classes its answers used (usedClass).
-	makes     map[string]*sync.Mutex
-	turnReads *turnChanges
+	// makes holds each request's make mutex (makeLock), completing each
+	// item's completion lock (completionLock); turnReads what the turn
+	// in progress was given of what changed (cover) and the classes its
+	// answers used (usedClass).
+	makes      map[string]*sync.Mutex
+	completing map[string]chan struct{}
+	turnReads  *turnChanges
 
 	// readMu orders a turn's reads: the count, the read log and the
 	// coverage of one read are written before the next is answered.

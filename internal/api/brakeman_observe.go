@@ -1327,6 +1327,10 @@ func filterTicket(r *http.Request, o *observer, body []byte) ([]byte, error) {
 // the ticket's intent or a handed-over comment has moved past), and the
 // launches made from the ticket's revisions, newest first, each with its
 // launch: ref and the plan: ref it launched, noted at its state and rev.
+// A deleted ticket's (the route answers them; its deletion leaves their
+// states as they were) are noted deleted with no rev, as its plan: and
+// launch: refs resolve (lookupEvidence), its approval holds false, and
+// the answer says deleted: a brief citing them at once shows no change.
 func filterPlans(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	key := r.PathValue("key")
 	var in struct {
@@ -1337,6 +1341,10 @@ func filterPlans(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	deleted, err := ticketDeleted(r.Context(), o, key)
+	if err != nil {
 		return nil, err
 	}
 	out := make([]json.RawMessage, 0, len(in.Plans))
@@ -1353,13 +1361,16 @@ func filterPlans(r *http.Request, o *observer, body []byte) ([]byte, error) {
 		}
 		stale := len(head.Stale) > 0 && string(head.Stale) != "null"
 		ref := fmt.Sprintf("plan:%s/%d", key, head.N)
-		o.noteRef(ref, brakeman.ClassDispatch, planRefState(head.State, stale), strconv.FormatInt(head.Rev, 10))
+		state, rev := planRefState(head.State, stale), strconv.FormatInt(head.Rev, 10)
+		if deleted {
+			state, rev = refDeleted, ""
+		}
+		o.noteRef(ref, brakeman.ClassDispatch, state, rev)
 		if head.State == dispatch.PlanApproved && approved == "" {
 			// The list is newest first: a merge may leave more than one
 			// approved, and the newest is the one a launch takes.
-			approved, holds = ref, !stale
+			approved, holds = ref, !stale && !deleted
 		}
-		var err error
 		if raw, err = withRef(raw, ref); err != nil {
 			return nil, err
 		}
@@ -1370,7 +1381,10 @@ func filterPlans(r *http.Request, o *observer, body []byte) ([]byte, error) {
 		m["approved"], _ = json.Marshal(approved)
 	}
 	m["holds"], _ = json.Marshal(holds)
-	launches, err := planLaunches(r.Context(), o, key)
+	if deleted {
+		m["deleted"], _ = json.Marshal(true)
+	}
+	launches, err := planLaunches(r.Context(), o, key, deleted)
 	if err != nil {
 		return nil, err
 	}
@@ -1395,9 +1409,27 @@ type planLaunch struct {
 	Rev       int64     `json:"rev"`
 }
 
+// ticketDeleted reports whether the ticket key is a tombstone in
+// Dispatch's store: false for a live one, none, or no store.
+func ticketDeleted(ctx context.Context, o *observer, key string) (bool, error) {
+	ds, err := o.rr.dispatch()
+	if err != nil || ds == nil {
+		return false, err
+	}
+	tk, err := ds.Ticket(ctx, key)
+	switch {
+	case errors.Is(err, dispatch.ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("the ticket %s: %w", key, err)
+	}
+	return !tk.DeletedAt.IsZero(), nil
+}
+
 // planLaunches is the ticket's launches, newest first, at most
-// dispatch.MaxLaunches, each noted at its state and rev.
-func planLaunches(ctx context.Context, o *observer, key string) ([]planLaunch, error) {
+// dispatch.MaxLaunches, each noted at its state and rev, or deleted with
+// no rev for a deleted ticket's.
+func planLaunches(ctx context.Context, o *observer, key string, deleted bool) ([]planLaunch, error) {
 	out := []planLaunch{}
 	ds, err := o.rr.dispatch()
 	if err != nil || ds == nil {
@@ -1413,7 +1445,11 @@ func planLaunches(ctx context.Context, o *observer, key string) ([]planLaunch, e
 	for _, l := range list {
 		pl := planLaunch{Ref: "launch:" + l.ID, ID: l.ID, Plan: fmt.Sprintf("plan:%s/%d", key, l.PlanN), Run: l.RunID, State: l.State,
 			Why: l.Why, CreatedAt: l.CreatedAt, CreatedBy: l.CreatedBy, StartedAt: l.StartedAt, Rev: l.Rev}
-		o.noteRef(pl.Ref, brakeman.ClassDispatch, l.State, strconv.FormatInt(l.Rev, 10))
+		state, rev := l.State, strconv.FormatInt(l.Rev, 10)
+		if deleted {
+			state, rev = refDeleted, ""
+		}
+		o.noteRef(pl.Ref, brakeman.ClassDispatch, state, rev)
 		out = append(out, pl)
 	}
 	return out, nil

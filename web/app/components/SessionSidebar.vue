@@ -4,7 +4,7 @@ import { choiceKey, newlyNeedingInput } from '~/utils/attention'
 import { sidebarRunFor } from '~/utils/crews'
 import { filterSessions } from '~/utils/sessions'
 import { joinedPath } from '~/utils/joined'
-import { blockSubtitle, focusRows, moveFocus, needsDotShown, reopenNeeds, rowMeta, sectionPreview, sidebarModel, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
+import { blockSubtitle, focusRows, mayRefocusRow, moveFocus, needsDotShown, reopenNeeds, rowMeta, sectionPreview, sidebarModel, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
 import { sessionTarget } from '~/utils/actions'
 import { rowMenuItems, sessionLive } from '~/utils/sidebarActions'
 import { replyFailure } from '~/utils/reply'
@@ -203,7 +203,9 @@ watch(rows, async () => {
   if (!id) return
   await nextTick()
   const el = rowEl(id)
-  if (el && !el.contains(document.activeElement)) el.focus()
+  // Only a focus that was lost, and never behind a modal: a dialog opened from the row keeps it, and its Escape with it, and a
+  // row's reply field keeps it and its keys (#596).
+  if (el && !el.contains(document.activeElement) && mayRefocusRow(document.activeElement, document.body, !!el.closest('[aria-hidden="true"]'))) el.focus()
 })
 function openRow(id: string) {
   const f = rows.value.find((r) => r.id === id)

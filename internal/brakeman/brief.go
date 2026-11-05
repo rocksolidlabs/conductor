@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/store"
@@ -1155,6 +1156,16 @@ func CheckDraftPlan(x *DraftPlan) error {
 	return err
 }
 
+// DraftPlanBase reports whether base is one a draft plan revision may
+// name, by Dispatch's propose route's own rule (internal/api's
+// planBaseShape): at most MaxDraftPlanBase bytes, no rune
+// unicode.IsSpace or unicode.IsControl takes, not beginning with '-'.
+// Empty is HEAD.
+func DraftPlanBase(base string) bool {
+	return len(base) <= MaxDraftPlanBase && !strings.HasPrefix(base, "-") &&
+		!strings.ContainsFunc(base, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+}
+
 // checkDraftPlan holds a draft plan revision to the shapes and bounds
 // Dispatch's proposal keeps: the ticket it is for, a saved crew's id, the
 // base, the revision it revises, the references, attachments and comments
@@ -1170,7 +1181,7 @@ func checkDraftPlan(field string, x *DraftPlan) error {
 	if !crewIDPattern.MatchString(x.Crew) {
 		return invalidBrief(field+".crew", "a saved crew's id, matching %s", crewIDPattern)
 	}
-	if len(x.Base) > MaxDraftPlanBase || strings.ContainsFunc(x.Base, func(r rune) bool { return r <= ' ' || r == 0x7f }) || strings.HasPrefix(x.Base, "-") {
+	if !DraftPlanBase(x.Base) {
 		return invalidBrief(field+".base", "a branch, a tag, HEAD or a commit: at most %d bytes, no space or control character, not beginning with '-'", MaxDraftPlanBase)
 	}
 	if x.BasedOn != nil {
