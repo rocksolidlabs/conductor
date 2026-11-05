@@ -384,9 +384,64 @@ func TestTheStampProbesTheVersionWhenTheCacheIsCold(t *testing.T) {
 		t.Fatalf("the route's stamp says %v", got)
 	}
 	// The next turn's stamp reads it from the cache the probe filled.
-	if id, ok := b.srv.cachedIdentity(bk); !ok || id.Version != "2.1.318" || b.desk.stamp(b.desk.mustConfig(t)).Version != "2.1.318" {
+	if id, ok := b.srv.cachedIdentity(bk); !ok || id.Version != "2.1.318" || b.desk.stamp(b.desk.mustConfig(t), &bk).Version != "2.1.318" {
 		t.Fatalf("the cache after the turn's probe: %+v %v", id, ok)
 	}
+}
+
+// The cold cache's probe, the stamp and the launch are of one catalog
+// entry: one edited while the probe runs (here its command) is not
+// launched under the version the entry before reported. The turn's crew
+// is the probed entry's, so the member's start refuses the edited one
+// (agent_changed), the turn fails with the engine's words, and no
+// session runs the new program.
+func TestAnEntryEditedWhileTheProbeRunsIsNotLaunchedUnderItsVersion(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	held, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	b.srv.probes.mu.Lock()
+	b.srv.probes.entries = map[string]probeEntry{}
+	b.srv.probes.run = func(_ context.Context, argv []string, _ agents.Probe, _ map[string]string) agents.ProbeResult {
+		if slices.Contains(argv, bkScript) {
+			once.Do(func() { close(held) })
+			<-gate
+			return agents.ProbeResult{Ran: true, Identified: true, Version: "2.1.318"}
+		}
+		return agents.ProbeResult{Ran: true, Identified: true, Version: "9.9.9"}
+	}
+	b.srv.probes.mu.Unlock()
+	t.Cleanup(func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	})
+	id := b.briefing(t)
+	select {
+	case <-held:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the turn's launch never probed the entry")
+	}
+	cat := b.srv.Catalog().Clone()
+	a, _ := cat.Get("bk")
+	a.Command = []string{"/bin/sh", "-c", "exec cat"}
+	if err := cat.Upsert(a); err != nil {
+		t.Fatal(err)
+	}
+	b.setCatalog(cat)
+	close(gate)
+	r := b.waitState(t, id, brakeman.StateFailed)
+	if !strings.Contains(r.Why, "the launch failed") || r.Agent.Version != "2.1.318" {
+		t.Fatalf("%+v", r)
+	}
+	b.srv.registry.Each(func(d session.Driver) {
+		if ref := d.Info().Crew; ref != nil && ref.Brakeman != nil && ref.Brakeman.Request == id {
+			t.Errorf("a session %s was started from the edited entry", d.Info().ID)
+		}
+	})
 }
 
 // coldProbe empties the probe cache, as a restart leaves it, and has the

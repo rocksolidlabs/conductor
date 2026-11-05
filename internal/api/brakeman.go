@@ -678,7 +678,12 @@ func (d *brakemanDesk) dequeue() time.Duration {
 		}
 		id := d.queue[0]
 		d.mu.Unlock()
-		req, err := d.st.Start(id, cfg, d.stamp(cfg))
+		// The agent's entry is chosen once, here: the stamp is its, the
+		// launch's probe runs it and the turn's crew is made from it, so a
+		// catalog edit meanwhile is refused at the member's start
+		// (agent_changed), never run under the version of the entry before.
+		a := d.entry(cfg)
+		req, err := d.st.Start(id, cfg, d.stamp(cfg, a))
 		switch {
 		case errors.Is(err, brakeman.ErrOverBudget), errors.Is(err, brakeman.ErrNotQueued), errors.Is(err, brakeman.ErrNotFound):
 			d.unqueue(id)
@@ -698,7 +703,7 @@ func (d *brakemanDesk) dequeue() time.Duration {
 		d.launches.Add(1)
 		d.s.track(func() {
 			defer d.launches.Done()
-			d.launch(ctx, t, req, cfg)
+			d.launch(ctx, t, req, cfg, a)
 		})
 		return untilPositive(req.Deadline, d.now())
 	}
@@ -711,32 +716,46 @@ func (d *brakemanDesk) unqueue(id string) {
 	d.mu.Unlock()
 }
 
-// stamp is the agent a turn under cfg runs: its id, adapter, the version
-// the probe cache knows (nothing is run for it here, under admit: a cold
-// cache is probed by the turn's launch, probedVersion), the model and
-// whether an account is set.
-func (d *brakemanDesk) stamp(cfg brakeman.Config) brakeman.Stamp {
+// entry is the configured agent's catalog entry a turn under cfg runs,
+// nil when the catalog has none.
+func (d *brakemanDesk) entry(cfg brakeman.Config) *catalog.Agent {
+	a, ok := d.s.Catalog().Get(cfg.AgentID)
+	if !ok {
+		return nil
+	}
+	return &a
+}
+
+// stamp is the agent a turn under cfg runs from its entry a: its id,
+// adapter, the version the probe cache knows of a (nothing is run for it
+// here, under admit: a cold cache is probed by the turn's launch,
+// probedVersion), the model and whether an account is set.
+func (d *brakemanDesk) stamp(cfg brakeman.Config, a *catalog.Agent) brakeman.Stamp {
 	st := brakeman.Stamp{AgentID: cfg.AgentID, Model: cfg.Model, Account: cfg.Account != ""}
-	if a, ok := d.s.Catalog().Get(cfg.AgentID); ok {
+	if a != nil {
 		st.Adapter = a.Adapter
-		if id, ok := d.s.cachedIdentity(a); ok && id.Identified && len(id.Version) <= maxStampVersion {
+		if id, ok := d.s.cachedIdentity(*a); ok && id.Identified && len(id.Version) <= maxStampVersion {
 			st.Version = id.Version
 		}
 	}
 	return st
 }
 
-// probedVersion is the version agentID's identity probe reports: the
-// cache's, else the probe's run now, waited on at most probeWait (its
+// probedVersion is the version the identity probe of the entry a reports:
+// the cache's, else the probe's run now, waited on at most probeWait (its
 // answer is kept for the next turn either way); "" when its adapter has
-// no probe, the agent turns it off, or it identifies nothing in time.
-func (d *brakemanDesk) probedVersion(ctx context.Context, agentID string) string {
-	cat := d.s.Catalog()
-	a, ok := cat.Get(agentID)
-	if !ok {
+// no probe, the agent turns it off, or it identifies nothing in time. It
+// probes a itself, never the catalog's entry of its id read again.
+func (d *brakemanDesk) probedVersion(ctx context.Context, a catalog.Agent) string {
+	if len(a.Command) == 0 {
 		return ""
 	}
-	id := d.s.identityFor(ctx, cat, []crew.Member{{AgentID: agentID}})(a)
+	var programs []string
+	if a.Probed() && agents.ProbeFor(a.Adapter) != nil {
+		programs = []string{a.Command[0]}
+	}
+	paths := d.s.lookups.warmPaths(ctx, programs)
+	id := d.s.identityOf(ctx, a, paths[a.Command[0]].path, false)
 	if id == nil || !id.Identified || len(id.Version) > maxStampVersion {
 		return ""
 	}
@@ -750,16 +769,19 @@ func (d *brakemanDesk) probedVersion(ctx context.Context, agentID string) string
 // run, when the close was a deadline, a cancel or Brakeman turned off,
 // recorded as the request's stray run and stopped. A launch that fails
 // closes the request failed with the engine's words.
-func (d *brakemanDesk) launch(ctx context.Context, t *deskTurn, req brakeman.Request, cfg brakeman.Config) {
+func (d *brakemanDesk) launch(ctx context.Context, t *deskTurn, req brakeman.Request, cfg brakeman.Config, a *catalog.Agent) {
 	// The stamp's version is the probe cache's, which is cold after a
 	// restart until some page lists the agents: the probe is run here
 	// then, as a launch's own check runs it, and its version written
 	// before the member starts, while the request is starting. A request
 	// closed after (a brief, the member's end, a cancel) takes no change
 	// of its agent, and one closed before the launch has no turn to
-	// stamp.
-	if req.Agent.Version == "" {
-		if version := d.probedVersion(ctx, req.Agent.AgentID); version != "" {
+	// stamp. The probe is of the entry the stamp was made from and the
+	// crew is made from (a), so the version written is the launched
+	// program's: an entry edited meanwhile is refused at the member's
+	// start, by the entry's SHA256.
+	if req.Agent.Version == "" && a != nil {
+		if version := d.probedVersion(ctx, *a); version != "" {
 			_, uerr := d.update(req.ID, func(r *brakeman.Request) error {
 				if r.State == brakeman.StateStarting && r.Agent.Version == "" && r.Agent.AgentID == req.Agent.AgentID {
 					r.Agent.Version = version
@@ -771,7 +793,7 @@ func (d *brakemanDesk) launch(ctx context.Context, t *deskTurn, req brakeman.Req
 			}
 		}
 	}
-	c, sha, err := d.turnCrew(req, cfg)
+	c, sha, err := d.turnCrew(req, cfg, a)
 	var run *crew.Run
 	if err == nil {
 		d.mu.Lock()
@@ -862,18 +884,18 @@ func brakemanLine(req brakeman.Request) string {
 // Conductor's tools, nothing a person typed; never yolo, never managed,
 // in the configured folder without a worktree. The configuration is held
 // to Validate again against the catalog and the folders as they are now
-// (an agent hidden, its adapter changed since the save), and the agent's
-// entry the arguments are made for is answered (agentSelection's
-// SHA256), which the member's session must start from.
-func (d *brakemanDesk) turnCrew(req brakeman.Request, cfg brakeman.Config) (crew.Crew, string, error) {
+// (an agent hidden, its adapter changed since the save); the arguments
+// are made for the entry a the turn was stamped from, and its
+// agentSelection's SHA256 is answered, which the member's session must
+// start from.
+func (d *brakemanDesk) turnCrew(req brakeman.Request, cfg brakeman.Config, a *catalog.Agent) (crew.Crew, string, error) {
 	if err := brakeman.Validate(cfg, brakemanFacts{s: d.s}); err != nil {
 		return crew.Crew{}, "", fmt.Errorf("the configuration no longer holds: %w", err)
 	}
-	a, ok := d.s.Catalog().Get(cfg.AgentID)
-	if !ok {
+	if a == nil {
 		return crew.Crew{}, "", fmt.Errorf("no agent %s in the catalog", cfg.AgentID)
 	}
-	args, err := turnArgs(a, cfg)
+	args, err := turnArgs(*a, cfg)
 	if err != nil {
 		return crew.Crew{}, "", err
 	}
@@ -889,7 +911,7 @@ func (d *brakemanDesk) turnCrew(req brakeman.Request, cfg brakeman.Config) (crew
 			Name: brakemanMember, AgentID: cfg.AgentID, Args: args,
 			Start: crew.Start{When: crew.StartImmediately}, Prompt: line,
 		}},
-	}, agentSelection(a, false).SHA256, nil
+	}, agentSelection(*a, false).SHA256, nil
 }
 
 // turnArgs is a turn's member's arguments under cfg for the agent's entry
