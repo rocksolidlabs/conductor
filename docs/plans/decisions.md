@@ -2556,10 +2556,11 @@ made).
 ### HM1, human members
 
 HM1's PRs are numbered after DR1's. PR-9 to PR-11 need only `main` and
-may be cut at any time, before, between or after DR1's; they share
-`internal/crew`, `internal/api` and `web/app` with DR1's PR-2 to PR-7,
-so none runs beside those, and whichever of two such PRs merges second
-merges `main` in first. PR-12 waits for all of DR1. Brakeman's PR-18
+may be cut at any time, before, between or after DR1's. Each runs
+beside only the DR1 PRs its "May run beside" cell names, which share no
+package or directory with it; with the others it shares `internal/crew`,
+`internal/api`, `web/app` or `docs`, so it does not run beside them, and
+whichever of two such PRs merges second merges `main` in first. PR-12 waits for all of DR1. Brakeman's PR-18
 (`docs/plans/brakeman.md`) waits for PR-12.
 
 | PR | Title | Touches | Depends on | May run beside | Size |
