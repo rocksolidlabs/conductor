@@ -3460,12 +3460,27 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   rows it names for PR-6; the Mac rows ran on PR-1 to PR-5. The flakes
   seen once are lines in #281.
 
-  **BK0's observation: pending.** A Codex session told nothing but "call
-  the guide tool" lists what it may do there and the limits it must keep,
-  and a plain session's guide differs from an attempt's. The second half
-  is held by `TestASessionsGuideListsItsScopesOnly` (a plain session, an
-  attempt, a ticket's member); the session with a real Codex is not yet
-  made.
+  **BK0's observation: half made.** The plan observes BK0 in two parts.
+  The providers part, after PR-9 (#530, in PR #605: the guide's
+  `providers` section read from C9's `GET /api/capabilities`, and the
+  host section's `extensions`), was checked by hand on 2026-11-05, on a
+  plain build of this stream's last branch (`conductor
+  v0.7.0-rc.21-44-g8d5057dd`, PR-16's, nothing registered) served on a
+  data directory of its own: `conductor guide --section providers`
+  answered "No providers registered: the open-source feature set.", its
+  `--json` `{"known": true, "providers": []}`, `GET /api/capabilities`
+  `{"providers": []}`, and the host section `"extensions": []`.
+  `TestTheGuideListsC9sProviders` and `TestAnEmptyRegistryIsKnownAndEmpty`
+  hold the section to the route's rows with a provider registered and
+  without one. Still pending: an official app's build listing the
+  providers it registers, which waits for a build that registers one, and
+  a real Codex session told only "call the guide tool" listing what it
+  may do there and the limits it must keep. A real agent did read the
+  guide unasked: in BK1's live check below, Claude Code went to the guide
+  for a brief's shape, did not find it, and so showed the gap that #603
+  closed with the guide's `briefs` section. That a plain session's guide
+  differs from an attempt's and from a ticket member's is held by
+  `TestASessionsGuideListsItsScopesOnly`.
 
   **BK1's live check, 2026-11-05: every clause but one, then fixed
   (#602).** Against `main` at 9723fdc6, on a `conductor serve` of its own
@@ -3511,9 +3526,31 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   step log route's, and the attempt's receipts'), which the live check
   found empty. The same drafts made twice from two briefs is as the plan
   has it: a make is one per item of a request, and two briefs' drafts
-  are two items, each made only by a person's Create. The clause is
-  observed again on #602's build with a fresh Claude Code turn given the
-  guide alone. Not exercised: Codex as Brakeman's agent, Retry on the
+  are two items, each made only by a person's Create.
+
+  **BK1's clause observed again, 2026-11-05, and the owner's judgement.**
+  On PR #603's head (`v0.7.0-rc.21-17-gaabb87ee`), on a `conductor serve`
+  of its own with a real Claude Code 2.1.318 (model `sonnet`) as
+  Brakeman's agent, configured in Settings, after one managed crew had
+  run: "Brief me since" 16:05 UTC was given only the turn's line. The
+  turn read its request, read twice through `observe`, and its first
+  `brief_submit` was kept (`201`). It read no source and asked no
+  permission, and its brief's facts cite the run, the task and the
+  attempt. Four bad briefs, sent by hand with that turn's own session
+  token while its agent was stopped (SIGSTOP), were each refused `400
+  invalid_brief`, naming the field and what is taken: `items[0].kind` (an
+  unknown `note/1`, and a `fact` without its version) with the eleven
+  kinds; `items` (empty) with "at least one item"; `items[0].refs` with
+  "a fact/1 item takes kind, text, evidence". The request was then
+  cancelled with nothing kept. The owner judged the first check's brief
+  `br-1` ("Brief me since 18:00"): it answered what happened, how
+  Conductor knows, and what needs them. With that judgement and this
+  recheck, every clause the live checks exercised held. The first check's
+  evening included a ticket launched from an approved plan revision. Both
+  checks ran before PR-11 (#532, in PR #656: a `plan:` ref's chip and
+  Approve on a card) was on `main`; `brakeman-plans.spec.ts` drives those
+  pages with the stub agent.
+  Not exercised: Codex as Brakeman's agent, Retry on the
   card, a turn with the read permission refused, an overnight wait, the
   Mac and Windows apps. Seen outside the stream, for the maintainers:
   after a restart the runs list answers none of the earlier runs though
@@ -3543,9 +3580,141 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   the same records). The live check above is the first of these
   observations; a bug the stream caused, found there, is fixed in the
   stream.
-  Neither item is done with this slice: BK0 waits for the guide's
-  providers (PR-9) and BK1 for the observation made again after PR-11,
-  with a ticket launched from an approved plan revision among the evidence.
+  Neither item was done with this slice: BK0 waited for the guide's
+  providers (PR-9) and BK1 for its observation made again after its
+  fix. How each ended is recorded above; the next entry has BK2 and BK3.
+- **Brakeman, the second and third slices: authorized actions and the
+  background role (BK2 and BK3, #530 to #538, 2026-11-04 to
+  2026-11-05).** Program items BK2 and BK3, with BK0's providers part,
+  planned in `docs/plans/brakeman.md` (rows PR-9 to PR-17) and shipped in
+  five batched PRs: B stacked on A, C and D each on B, and E on D with C
+  merged in. When this entry was
+  written, batch A had merged and B to E were in review; each PR's CI is
+  on the PR. See the README
+  (Brakeman), `docs/architecture.md` (Brakeman) and `docs/protocol.md`
+  (Brakeman: What a turn may do, The background role). Each batch, and
+  the checks its body reports:
+
+  Batch A (PR #605, merged): PR-9 (#530), the guide's `providers` from
+  C9's route and the host's `extensions`; PR-10 (#531), DS2's records as
+  evidence (`plan:`, `launch:` and `candidate:` refs, the reads `plans`
+  and `candidates`) and a plan revision drafted for the operator
+  (`draft_plan/1`, made through DS2's propose route as the admin under
+  the person's name). Checks: the module's race tests, the Mac rows, CI.
+
+  Batch B (PR #612): PR-17 (#533), `ext.Host` gains `LaunchTurn` and
+  `LaunchApproved`, and the desk launches every turn through the Host
+  the composition root gives it (Boxcar constraint 1); PR-12 (#534), the
+  authorized actions. A person grants operations in Settings
+  (`permissions.act`) from a closed list of four. No act route is
+  Brakeman's own: each operation's own route takes the principal
+  `brakeman`, and checks in order the grant (in the turn's snapshot and
+  in the configuration now), Dispatch's visibility, the scope (of the
+  ticket and of what the operation makes), the target's state (an
+  approval that no longer holds, a moved `expectedRev`) and 20 acts a
+  request at most. The act is then written `pending`, run through the
+  operation's one function under the actor `brakeman` with an op id
+  derived from the request and the turn's `opId`, and its receipt copied
+  onto the request. A retry is answered from its receipt, and an act a
+  stop cut short is settled at the next start from Dispatch's record or
+  marked `not_run`, never run again. This build serves two of the four:
+  `launch_approved_plan` (DS2's launch, through `ext.Host`'s
+  `LaunchApproved`) and `prepare_followup` (DS2's proposal of a revision
+  based on the approved one). `request_repair` (RV1) and `route_decision`
+  (DR1) have no route yet, so a save that grants them is refused, which
+  is why #534 stays open. Checks over three review rounds: the module's
+  race tests each round, each round's new tests failing with their fix
+  reverted, the Mac rows.
+
+  Batch C (PR #656): PR-11 (#532), DS2's records in a brief (their chips
+  and pages), the draft plan's form with "Propose as plan revision", and
+  a decision card about a `plan:` ref that opens DS2's own Approve, which
+  the operator presses, never Brakeman; PR-13 (#535), the MCP tool `act`
+  and `conductor brakeman act`, listed only in a turn whose guide names a
+  granted operation; the grants in Settings ("What it may run", each in
+  words; the two this build does not serve said to be not in this build
+  and not offered); a proposal Brakeman ran shown as "Brakeman did this"
+  with its receipt; and a run launched from a ticket saying who launched
+  it. Checks: the module's race tests, typecheck, vitest (1,364 tests),
+  `brakeman-plans.spec.ts` and `brakeman-act.spec.ts` 20 of 20 each with
+  `--repeat-each 10`, `make test-e2e` (410 passed), the Mac rows.
+
+  Batch D (PR #655): PR-14 (#536), the background role
+  (`internal/crew/role.go`, decision 2: a loop over ordinary bounded
+  turns that holds no process between them and polls no model; its record
+  `brakeman/role.json`) with its wake sources (a task failed with proof, a
+  question open past its wait, a run ended or paused, a ticket made
+  ready, a person's request, the briefing times), the batch window, the
+  cooldown and the day's minutes; PR-15 (#537), Settings' "In the
+  background", the Brakeman page's role card (its state in words, Pause
+  and Resume, the notes, the log of wakes) and `conductor brakeman role
+  on|off|pause|resume|status`. Checks: the module's race tests,
+  typecheck, vitest (1,357 of 1,359: the two that failed are its base's,
+  which PR-11 fixes), `brakeman-role.spec.ts` 30 of 30 with
+  `--repeat-each 10`, `make test-e2e` (403 passed and one failed, fixed
+  in the PR), the Mac rows.
+
+  Batch E (#538): this entry, the README's Brakeman section and the
+  architecture's, on a branch that merges batches C and D. Docs, with the
+  checks of the code it merges.
+
+  Not in this stream: PR-18 (#539, `route_decision` to a human member's
+  label as well as the operator), which waits for HM1 (human members as
+  local labels, `docs/plans/decisions.md`) and is not in this wave; and
+  the two grants waiting for RV1's and DR1's routes (#534).
+
+  What was missing, slow or wrong. PR-12's prerequisites were not all
+  there: RV1 and DR1 have plans but no routes, so the closed list of four
+  ships with two operations served. Bugs of the stream, each fixed in the
+  stream: PR-12's grant check ran after its body was read, so the
+  principal's walk of every route met a `400` where it expected a `403`
+  (fixed in batch B); batch B's review rounds found an act that could run
+  after the shutdown's stops, a launch past a given-up try, an act's
+  answer carrying Dispatch's records past the turn's grant, and a late act
+  wiping the next turn's footprint, each fixed with a test that fails
+  without its fix; PR-10's new refs broke two vitest cases that PR-11
+  fixed; and Settings' new switch, first named "Wake Brakeman on events",
+  was also matched by the specs' "Brakeman on" locator (now "Wake on
+  events"). Batches C and D, both stacked on B, touched the same files
+  (the request's fields in `docs/protocol.md`, the CLI's completion and
+  tests, Settings, a brief's card, the e2e stub), and this branch merges
+  them as unions. A flake seen once, `internal/reach`'s
+  `TestMapperMapsThroughUPnPAndUnmapsOnClose`, is a line in #281.
+  `internal/api`'s race tests took 1,194 to 1,298 s on the loaded Linux
+  box.
+
+  **BK2's observation: pending.** After this stream merges, the run's
+  owner session makes it, with a real agent as Brakeman's on the owner's
+  `conductor serve`: Brakeman, granted `launch_approved_plan`, launches a
+  ticket's approved revision, and the run page and the brief show the
+  receipt; asked to launch an unapproved revision, it is refused and says
+  so; with every read granted and no grant to act, every act is refused;
+  with a grant and a narrower visibility, the act on what it cannot see is
+  refused. Until then the stub agent drives the first and third
+  (`brakeman-act.spec.ts`), and Go race tests hold each clause
+  (`TestLaunchApprovedRefusesAnUnapprovedRevision`,
+  `TestLaunchApprovedRetryAfterALostReplyIsOneRun`,
+  `TestLaunchApprovedCarriesItsExpectedRev`, `TestAnUngrantedActIsRefused`,
+  `TestAReadGivesNoGrant`, `TestAGrantGivesNoRead`,
+  `TestNoGrantApprovesAnswersOrAccepts`, `TestBrakemanCannotGrantItself`).
+
+  **BK3's observation: pending.** Made the same way after the merge: a
+  task failing overnight wakes Brakeman once; a second failure inside the
+  window joins the same brief; the cooldown holds the next; the day's
+  budget stops it with words; a server restarted while a batch was
+  gathering fires that batch once; and, with Brakeman's agent logged out,
+  the role says it is unavailable while the crews run and their questions
+  are answered as before. Until then `brakeman-role.spec.ts` drives a
+  wake, its quiet question, its one brief, the cooldown and a pause with
+  the stub agent, and Go race tests hold the rest
+  (`TestWakesInTheWindowAreOneBatch`, `TestTheCooldownHoldsTheNextBatch`,
+  `TestTheBudgetStopsTurnsAndSaysSo`, `TestARestartFiresAnOpenBatchOnce`,
+  `TestACrashBetweenTheRequestAndTheRoleFiresOnce`, `TestNoModelIsPolled`,
+  `TestALoggedOutAgentMakesTheRoleUnavailable`,
+  `TestAnUnavailableRoleHoldsNothingElse`).
+  Neither item is done with this entry: each is done once its observation
+  is made and recorded here, a bug the stream caused found there fixed in
+  the stream.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
