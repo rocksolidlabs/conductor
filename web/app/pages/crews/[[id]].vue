@@ -584,7 +584,7 @@ usePalette().registerPage(() => ({
 
       <!-- One saved crew, or the new draft. -->
       <template v-else>
-        <div class="flex min-h-full flex-col gap-4 p-4 sm:p-6" :class="dirty && draft && 'pb-2'" data-crew-page>
+        <div class="flex min-h-full shrink-0 flex-col gap-4 p-4 sm:p-6" :class="dirty && draft && 'pb-2'" data-crew-page>
           <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
           <div v-if="unreadable" class="flex flex-col items-start gap-3" data-crew-unreadable>
             <UAlert color="error" variant="subtle" icon="i-lucide-file-warning" :title="`The file of ${routeId} cannot be used`" :description="unreadable" />

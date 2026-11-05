@@ -280,12 +280,64 @@ test('an id used twice, and a name the server refuses, hold Save with their word
   const env = page.locator('[data-manifest-field="env"]')
   await expect(env).toContainText("Env CONDUCTOR_TOKEN is Conductor's own: a CONDUCTOR_ name never comes from the host")
   await expect(saveIt).toHaveAttribute('data-save-problem', /^Env CONDUCTOR_TOKEN is Conductor's own/)
-  // Pressed without a hit test: on a page taller than the window the unsaved-changes bar rides up over the editor once it is
-  // scrolled (#592), and with the sidebar at 200 px (#437) it lands on this button. The removal is not what is tested here.
-  await env.getByRole('button').first().dispatchEvent('click')
+  await env.getByRole('button').first().click()
   await expect(env).not.toContainText('CONDUCTOR_TOKEN')
   await save(page)
   expect((await crewOf(api, id)).manifest).toEqual({ setup: [{ id: 'deps', argv: ['true'] }], cleanup: [{ id: 'tidy', argv: ['true'] }] })
+})
+
+test('on a crew page taller than the window the unsaved-changes bar stays at the bottom at every scroll, Save and Discard in reach (#592)', async ({ page, api }) => {
+  const id = await managedCrew(api, 'e2e manifest long page')
+  await openCrew(page, id)
+  await addStep(page, 'setup', 'setup step', 'deps', 'true')
+  await addName(page, 'Env names', 'NPM_TOKEN')
+  const bar = page.locator('[data-unsaved-bar]')
+  await expect(bar).toBeVisible()
+  // The page scrolls in the panel's body, the crew page's parent; its content is taller than the window.
+  const crewPage = page.locator('[data-crew-page]')
+  const tall = await crewPage.evaluate((el) => ({ content: el.scrollHeight, window: window.innerHeight }))
+  expect(tall.content).toBeGreaterThan(tall.window)
+
+  /** Scrolls the body to `to` (a share of what it can scroll) and reads where the bar, the body and the page's end are. */
+  const at = (to: number) =>
+    crewPage.evaluate((el, to) => {
+      const body = el.parentElement!
+      body.scrollTo({ top: to * (body.scrollHeight - body.clientHeight), behavior: 'instant' })
+      const sticky = document.querySelector('[data-unsaved-bar]')!.parentElement!.getBoundingClientRect()
+      const hits = Array.from(document.querySelectorAll<HTMLElement>('[data-unsaved-bar] button')).map((b) => {
+        const r = b.getBoundingClientRect()
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+        return { label: b.textContent?.trim() ?? '', reached: !!hit && b.contains(hit) }
+      })
+      return {
+        scrolled: body.scrollTop,
+        most: body.scrollHeight - body.clientHeight,
+        barTop: sticky.top,
+        barBottom: sticky.bottom,
+        bodyBottom: body.getBoundingClientRect().bottom,
+        pageBottom: el.getBoundingClientRect().bottom,
+        window: window.innerHeight,
+        hits,
+      }
+    }, to)
+
+  for (const [where, to] of [['top', 0], ['middle', 0.5], ['end', 1]] as const) {
+    const m = await at(to)
+    expect(m.bodyBottom, where).toBeCloseTo(m.window, 0)
+    expect(m.barBottom, where).toBeCloseTo(m.window, 0)
+    expect(m.hits, where).toEqual([
+      { label: 'Discard', reached: true },
+      { label: 'Save', reached: true },
+    ])
+    if (where === 'middle') expect(m.scrolled, where).toBeGreaterThan(m.barBottom - m.barTop)
+    if (where === 'end') {
+      expect(m.scrolled, where).toBeCloseTo(m.most, 0)
+      // At the end the bar sits under the page's last field rather than over it.
+      expect(m.pageBottom, where).toBeLessThanOrEqual(m.barTop + 1)
+    }
+  }
+  await save(page)
+  expect((await crewOf(api, id)).manifest).toEqual({ setup: [{ id: 'deps', argv: ['true'] }], env: ['NPM_TOKEN'] })
 })
 
 test('the file switch saves file: true and hides the lists, and gives them back when it is turned off', async ({ page, api }) => {
