@@ -403,6 +403,11 @@ func TestAnEntryEditedWhileTheProbeRunsIsNotLaunchedUnderItsVersion(t *testing.T
 	var once sync.Once
 	b.srv.probes.mu.Lock()
 	b.srv.probes.entries = map[string]probeEntry{}
+	// The launch waits on the held probe until the gate opens, not for
+	// the product's probeWait (2 s), which a loaded machine spends before
+	// the catalog is edited: it would launch the entry before with no
+	// version. The wait only bounds a hang; the gate ends it.
+	b.srv.probes.wait = 10 * time.Minute
 	b.srv.probes.run = func(_ context.Context, argv []string, _ agents.Probe, _ map[string]string) agents.ProbeResult {
 		if slices.Contains(argv, bkScript) {
 			once.Do(func() { close(held) })
