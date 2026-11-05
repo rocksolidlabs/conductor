@@ -130,6 +130,15 @@ describe('the brakeman events', () => {
     expect(r.edges).toEqual([{ from: 6, to: 7, op: 'e', state: 'made' }])
   })
 
+  it('never take an act back: two reads of a briefed request answered out of order leave its act done, with its receipt', async () => {
+    const live = new BrakemanLive()
+    const act = { opId: 'a1', operation: 'launch_approved_plan', target: 'ticket:CND-4', op: 'k', at: '2026-11-05T10:00:01.000Z' }
+    // The brief was kept while the act was pending; the read that saw it done is answered first, the one sent before it second.
+    live.apply(req('br-1', 'briefed', { hasBrief: true, acts: [{ ...act, state: 'done', receipt: '0123456789abcdef', at: '2026-11-05T10:00:02.000Z' }] }))
+    live.apply(req('br-1', 'briefed', { hasBrief: true, acts: [{ ...act, state: 'pending' }] }))
+    expect(live.requests.get('br-1')!.acts).toEqual([{ ...act, state: 'done', receipt: '0123456789abcdef', at: '2026-11-05T10:00:02.000Z' }])
+  })
+
   it('tell the pages each change, and a snapshot reads what was missed', async () => {
     const f = fakeServer()
     let changes = 0

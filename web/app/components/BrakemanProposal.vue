@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { BrakemanRequest, BriefItem, RefResolution } from '~/utils/brakeman'
-import { actFor, actReceiptRef, actWords, readsWords, refRoute, refTicket } from '~/utils/brakeman'
+import { LAUNCH_FOLLOW_FIRST_MS, LAUNCH_FOLLOW_MAX_MS, actFor, actReceiptRef, actShown, actWords, followLaunch, readsWords, refRoute, refTicket } from '~/utils/brakeman'
+import type { LaunchSummary } from '~/composables/useDispatch'
 import { isStale, proposalArgs, proposalControl, proposalSends, staleWords } from '~/utils/brakemanCards'
 import { commandBody, mintCommandId, sendCommand } from '~/utils/tasks'
 
@@ -15,7 +16,9 @@ import { commandBody, mintCommandId, sendCommand } from '~/utils/tasks'
  *
  * A proposal Brakeman ran itself, under a grant the person made (PR-13), says so: "Brakeman did this", with its receipt and a link to
  * the run it launched or the ticket it changed, from the request's acts as the server keeps them, never from the brief's words. A
- * proposal it was not granted, or did not run, stays a proposal.
+ * launch is done by its launch, not by its receipt, which Dispatch keeps before the run starts: the launch is read, and read again
+ * while it is pending, and only a launch started says "Brakeman did this" and links its run; a launch that failed says so with its
+ * words. A proposal it was not granted, or did not run, stays a proposal.
  */
 const props = defineProps<{ item: Extract<BriefItem, { kind: 'proposal/1' }>; items: readonly BriefItem[]; refs: ReadonlyMap<string, RefResolution>; request?: BrakemanRequest }>()
 
@@ -36,22 +39,32 @@ const req = computed(() => (props.request ? (bk.requests.value.find((r) => r.id 
 const act = computed(() => actFor(props.item, req.value?.acts))
 const receiptRef = computed(() => (act.value ? actReceiptRef(act.value) : null))
 const actTicket = computed(() => (act.value ? refTicket(act.value.target) : ''))
-/** The run an act's launch started, read from the launch its receipt names (GET /api/dispatch/launches/{id}), once. */
-const launchedRun = ref('')
+/** The launch an act's receipt names (GET /api/dispatch/launches/{id}), read until it has started or failed (followLaunch). */
+const launch = ref<LaunchSummary | null>(null)
+let following = 0
+let gone = false
+onBeforeUnmount(() => (gone = true))
 watch(
   receiptRef,
-  async (ref) => {
-    launchedRun.value = ''
+  (ref) => {
+    const g = ++following
+    launch.value = null
     if (!ref) return
-    try {
-      const l = await dispatch.launchRead(ref.slice('launch:'.length))
-      if (receiptRef.value === ref) launchedRun.value = l.runId
-    } catch {
-      /* the receipt's chip reads it again when opened */
-    }
+    void followLaunch({
+      read: () => dispatch.launchRead(ref.slice('launch:'.length)),
+      show: (l) => (launch.value = l),
+      stop: () => gone || g !== following,
+      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      firstMs: LAUNCH_FOLLOW_FIRST_MS,
+      maxMs: LAUNCH_FOLLOW_MAX_MS,
+    })
   },
   { immediate: true },
 )
+/** What the card shows of the act: a launch's by its launch (actShown). */
+const shown = computed(() => (act.value ? actShown(act.value, launch.value) : ''))
+/** The run the act's launch started: only a launch started has one. */
+const launchedRun = computed(() => (shown.value === 'done' && launch.value?.state === 'started' ? launch.value.runId : ''))
 /** What a ticket's operation sends, every field of it, shown on the card and in the dialog before it is sent. */
 const sends = computed(() => (control.value.kind === 'button' && control.value.target === 'ticket' ? proposalSends(props.item.args) : []))
 const to = computed(() => refRoute(props.item.target))
@@ -111,7 +124,7 @@ function press() {
 </script>
 
 <template>
-  <div class="flex flex-col gap-1.5" data-brief-proposal :data-proposal-op="item.op" :data-proposal-act="act?.state ?? ''">
+  <div class="flex flex-col gap-1.5" data-brief-proposal :data-proposal-op="item.op" :data-proposal-act="shown">
     <p class="text-sm">{{ item.text }}</p>
     <div class="flex flex-wrap items-center gap-1.5 text-xs text-muted">
       <span>Operation <code class="font-mono">{{ item.op }}</code> on</span>
@@ -125,10 +138,10 @@ function press() {
         <dd class="whitespace-pre-wrap break-words font-mono" :data-proposal-arg="a.field">{{ a.value }}</dd>
       </template>
     </dl>
-    <div v-if="act" class="flex flex-col gap-1 rounded-md border px-2 py-1.5" :class="act.state === 'done' ? 'border-primary/40 bg-primary/5' : 'border-default bg-elevated/40'" data-proposal-did>
+    <div v-if="act" class="flex flex-col gap-1 rounded-md border px-2 py-1.5" :class="shown === 'done' ? 'border-primary/40 bg-primary/5' : 'border-default bg-elevated/40'" data-proposal-did>
       <div class="flex flex-wrap items-center gap-1.5 text-sm">
-        <UBadge :label="act.state === 'done' ? 'Brakeman did this' : act.state === 'pending' ? 'Brakeman is doing this' : 'Not done'" :color="act.state === 'done' ? 'primary' : act.state === 'refused' ? 'warning' : 'neutral'" variant="subtle" size="sm" data-proposal-did-badge />
-        <span class="text-xs text-muted" data-proposal-did-words>{{ actWords(act) }}</span>
+        <UBadge :label="shown === 'done' ? 'Brakeman did this' : shown === 'pending' ? 'Brakeman is doing this' : 'Not done'" :color="shown === 'done' ? 'primary' : shown === 'refused' || shown === 'failed' ? 'warning' : 'neutral'" variant="subtle" size="sm" data-proposal-did-badge />
+        <span class="text-xs text-muted" data-proposal-did-words>{{ actWords(act, launch) }}</span>
       </div>
       <div v-if="act.state === 'done'" class="flex flex-wrap items-center gap-1.5 text-xs text-muted">
         <BrakemanRefChip v-if="receiptRef" :ref-name="receiptRef" data-proposal-did-receipt />
@@ -136,8 +149,9 @@ function press() {
         <UButton v-if="actTicket" :to="refRoute(`ticket:${actTicket}`) ?? undefined" :label="`${actTicket}, the ticket it changed`" icon="i-lucide-ticket" size="xs" color="neutral" variant="ghost" data-proposal-did-ticket />
       </div>
     </div>
-    <!-- Done, or under way: Brakeman's act is the proposal's outcome, and no control sends it again. -->
-    <template v-if="act?.state !== 'done' && act?.state !== 'pending'">
+    <!-- Done, or under way: Brakeman's act is the proposal's outcome, and no control sends it again. A launch that failed started
+         nothing: the proposal's control is offered again. -->
+    <template v-if="shown !== 'done' && shown !== 'pending'">
       <div v-if="control.kind === 'button'" class="flex flex-wrap items-center gap-2">
         <UButton :label="control.label" size="sm" color="neutral" variant="outline" :loading="busy" data-proposal-button @click="press" />
         <span class="text-xs text-muted">Its route refuses it if what it acts on has moved since Brakeman read it.</span>

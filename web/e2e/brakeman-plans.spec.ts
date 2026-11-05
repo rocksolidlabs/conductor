@@ -15,6 +15,17 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // store must reach.
 test.describe.configure({ mode: 'serial' })
 
+// A test's waits fit in its timeout (AGENTS.md): each step raises the test's timeout by the caps of the waits it is about to make
+// (budget, as palette-rows.spec.ts does), so the timeout is their sum, with the config's 120 s above it for what happens between them
+// (the API's calls, a page's load). A wait without a bound of its own (an expect, an expect.poll, a click, a fill) has STEP_MS.
+const STEP_MS = 15_000
+test.use({ actionTimeout: STEP_MS })
+/** Raises the running test's timeout by `ms`, the caps of the waits the step is about to make. */
+function budget(ms: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + ms)
+}
+
 interface Request {
   id: string
   state: string
@@ -147,8 +158,8 @@ function brief(planRev: number) {
 }
 
 test("a decision card about a plan revision offers DS2's own Approve from its live record, and approves as the operator", async ({ page }) => {
-  // The turn (one stub session, its start and its brief) is bounded by the server's own minutes; each wait below by its own cap.
-  test.setTimeout(240_000)
+  // The turn: its start and its brief, a minute each.
+  budget(2 * 60_000)
   const asked = await api.ok<{ request: Request }>('POST', '/api/brakeman/requests', { opId: 'bkp-ask-1', kind: 'propose_crew', subjects: [`ticket:${KEY}`] })
   requestId = asked.request.id
   await expect.poll(async () => (await request(requestId)).state, { timeout: 60_000 }).toBe('running')
@@ -156,6 +167,8 @@ test("a decision card about a plan revision offers DS2's own Approve from its li
   writeFileSync(gate, 'open\n')
   await expect.poll(async () => (await request(requestId)).state, { timeout: 60_000 }).toBe('briefed')
 
+  // The card and DS2's dialog: four waits of 30 s and ten steps.
+  budget(4 * 30_000 + 10 * STEP_MS)
   await open(page, `/brakeman?request=${requestId}`)
   const b = page.locator(`[data-brief="${requestId}"]`)
   await expect(b.locator('[data-brief-title]')).toHaveText('The cache key needs a plan', { timeout: 30_000 })
@@ -181,10 +194,19 @@ test("a decision card about a plan revision offers DS2's own Approve from its li
   await expect(control).toHaveAttribute('data-plan-state', 'approved', { timeout: 30_000 })
   await expect(control.locator('[data-plan-control-words]')).toHaveText(`${KEY} r1 is approved, and its approval holds.`)
   await expect(control.locator('[data-card-approve]')).toHaveCount(0)
+
+  // The ticket edited elsewhere while the brief is open (another person's edit, through the API): the card is read again on Dispatch's
+  // event, with no reload, and says the approval no longer holds, with DS2's Approve again. One wait of 30 s and one step.
+  budget(30_000 + STEP_MS)
+  const { ticket } = await api.ok<{ ticket: { rev: number } }>('GET', `/api/dispatch/tickets/${KEY}`)
+  await api.ok('POST', `/api/dispatch/tickets/${KEY}/edit`, { opId: 'bkp-title-2', expectedRev: ticket.rev, set: { title: 'Key the cache by locale, as asked' } })
+  await expect(control.locator('[data-card-approve]')).toHaveText('Approve again', { timeout: 30_000 })
+  await expect(control.locator('[data-plan-control-words]')).toContainText('its approval no longer holds')
 })
 
 test('a draft plan revision, edited, is proposed as revision 2 under the person\'s name, then approved on the ticket page', async ({ page }) => {
-  test.setTimeout(180_000)
+  // The draft proposed: two waits of 30 s and seven steps.
+  budget(2 * 30_000 + 7 * STEP_MS)
   await open(page, `/brakeman?request=${requestId}`)
   const d = page.locator(`[data-brief="${requestId}"] [data-draft-plan][data-draft-item="2"]`)
   await expect(d.locator('[data-draft-propose]')).toBeVisible({ timeout: 30_000 })
@@ -206,6 +228,8 @@ test('a draft plan revision, edited, is proposed as revision 2 under the person\
   expect(body.plan.body.note).toBe('Revises 1: keyed by locale, as the ticket asks.')
   expect(body.plan.body.decisions?.[0]?.question).toBe('Key by locale?')
   expect((await request(requestId)).made?.find((m) => m.item === 2)).toMatchObject({ state: 'made', key: KEY, plan: r2.id })
+  // Its link and the ticket page's Approve: four waits of 30 s and nine steps.
+  budget(4 * 30_000 + 9 * STEP_MS)
   const made = d.locator('[data-draft-plan-made]')
   await expect(made).toHaveAttribute('data-plan-revision', '2', { timeout: 30_000 })
   await expect(made).toHaveAttribute('data-plan-state', 'proposed')
@@ -228,6 +252,8 @@ test('a draft plan revision, edited, is proposed as revision 2 under the person\
 
   // Back on the brief: the draft names revision 2 as Dispatch holds it now, and the card about revision 1 reads it superseded,
   // which DS2's rule lets the operator approve again (nothing is approved by reading it).
+  // Back on the brief: two waits of 30 s and one step.
+  budget(2 * 30_000 + STEP_MS)
   await open(page, `/brakeman?request=${requestId}`)
   await expect(page.locator(`[data-brief="${requestId}"] [data-draft-item="2"] [data-draft-plan-made]`)).toHaveAttribute('data-plan-state', 'approved', { timeout: 30_000 })
   const control = page.locator(`[data-brief="${requestId}"] [data-decision-about="plan:${KEY}/1"] [data-plan-control]`)
