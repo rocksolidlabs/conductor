@@ -62,11 +62,19 @@ const error = ref('')
 
 /** Another draft by its index in the brief, as the blocks name it: once made, the ticket it became, with that ticket's title. */
 const draftTitle = (i: number) => draftName(i, props.items, req.value.made, (key) => bk.ticketTitle(key))
-/** The tickets the drafts this one blocks became: each one's title read from Dispatch, once, for the Blocks line. */
+/** The tickets the drafts this one blocks became, whose titles from Dispatch the Blocks line shows. */
 const blockedKeys = computed(() => (props.item.blocks ?? []).map((i) => madeKey(i, req.value.made)).filter((k): k is string => !!k))
-watch(blockedKeys, (keys) => keys.forEach((k) => void bk.readTicketTitle(k)), { immediate: true })
-/** And read again on Dispatch's events for them, and on a reconnect's snapshot: a ticket renamed since shows its new title. */
-useDispatchLive(bk.ticketTitlesWatch(() => blockedKeys.value))
+/**
+ * Each read again on Dispatch's events for them and on a reconnect's snapshot, while the card is drawn; and as the card is drawn, once
+ * its watch is subscribed, and as a key joins the line: a title kept from before (the brief closed, its ticket renamed meanwhile, the
+ * event seen by no card) is never the one shown. A read that fails is asked again by the live store.
+ */
+const titlesWatch = bk.ticketTitlesWatch(() => blockedKeys.value)
+const titles = useDispatchLive(titlesWatch, () => titles.ask(titlesWatch.read))
+watch(blockedKeys, (keys, was) => {
+  const joined = keys.filter((k) => !was.includes(k))
+  if (joined.length) titles.ask(() => Promise.all(joined.map((k) => bk.readTicketTitle(k, true))))
+})
 const blocks = computed(() => blocksWords(props.index, props.item.blocks, req.value.edges, draftTitle))
 
 async function create() {
