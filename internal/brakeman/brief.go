@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -448,10 +449,11 @@ func decodeItem(raw json.RawMessage, field string) (Item, error) {
 }
 
 // refField is the path of the field of an item (head, under field) that
-// holds ref: a ref field, or a list of refs at its index; field when none
-// does.
+// holds ref: a ref field, or a list of refs at its index, the first in
+// the fields' names' order when two do; field when none does.
 func refField(field string, head map[string]json.RawMessage, ref string) string {
-	for name, raw := range head {
+	for _, name := range slices.Sorted(maps.Keys(head)) {
+		raw := head[name]
 		var one string
 		if json.Unmarshal(raw, &one) == nil && one == ref {
 			return field + "." + name
