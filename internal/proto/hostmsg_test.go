@@ -228,3 +228,71 @@ func TestHostAttentionMsgCarriesTheMark(t *testing.T) {
 		t.Fatalf("the largest attention message is %d bytes", len(b))
 	}
 }
+
+// registered's recipe (#293): its wire names, absent when there is none
+// (an older host and an older server read each other as before), and its
+// bounds: Check refuses what is past the catalog's own. That registered
+// stays within a host message with one is the server's to keep
+// (registeredMessage in internal/api).
+func TestRegisteredRecipeWireShapeAndBounds(t *testing.T) {
+	b, _ := json.Marshal(Registered{T: HostRegistered, Links: []string{}})
+	if strings.Contains(string(b), "recipe") {
+		t.Fatalf("a registered without a recipe names one: %s", b)
+	}
+	r := HostRecipe{TrustPrompt: `Trust\s*this\s*folder\?`, TrustAnswers: []RecipeAnswer{{Label: "Yes", Input: "\r"}}, WorkingTitle: "Working",
+		ConfirmSubmit: true, Questions: []RecipeQuestion{{Prompt: "proceed", Words: "w", Anytime: true, Answers: []RecipeAnswer{{Label: "Yes, proceed", Input: "y"}}, AnswersFromScreen: true, ModeAnswers: "m", TypedAnswers: "t"}}}
+	b, _ = json.Marshal(Registered{T: HostRegistered, Links: []string{}, Recipe: &r})
+	for _, want := range []string{`"recipe":{`, `"trustPrompt":`, `"trustAnswers":[{"label":"Yes","input":"\r"}]`, `"workingTitle":"Working"`, `"confirmSubmit":true`,
+		`"questions":[{"prompt":"proceed","words":"w","anytime":true,"answers":[{"label":"Yes, proceed","input":"y"}],"answersFromScreen":true,"modeAnswers":"m","typedAnswers":"t"}]`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("registered %s lacks %s", b, want)
+		}
+	}
+	if err := r.Check(); err != nil {
+		t.Fatal(err)
+	}
+	var old Registered
+	if err := json.Unmarshal([]byte(`{"t":"registered","sessionId":"x","links":[]}`), &old); err != nil || old.Recipe != nil {
+		t.Fatalf("an older server's registered: %+v %v", old, err)
+	}
+
+	long := strings.Repeat("x", MaxRecipePattern+1)
+	answers := func(n int) []RecipeAnswer {
+		out := make([]RecipeAnswer, n)
+		for i := range out {
+			out[i] = RecipeAnswer{Label: "a", Input: "k"}
+		}
+		return out
+	}
+	for name, bad := range map[string]HostRecipe{
+		"a long trust prompt":    {TrustPrompt: long},
+		"a long working title":   {WorkingTitle: long},
+		"too many trust answers": {TrustAnswers: answers(MaxRecipeAnswers + 1)},
+		"an answer with no keys": {TrustAnswers: []RecipeAnswer{{Label: "a"}}},
+		"a blank label":          {TrustAnswers: []RecipeAnswer{{Label: " ", Input: "k"}}},
+		"a long label":           {TrustAnswers: []RecipeAnswer{{Label: strings.Repeat("é", MaxRecipeAnswerLabel+1), Input: "k"}}},
+		"long keys":              {TrustAnswers: []RecipeAnswer{{Label: "a", Input: strings.Repeat("k", MaxRecipeAnswerInput+1)}}},
+		"too many questions":     {Questions: make([]RecipeQuestion, MaxRecipeQuestions+1)},
+		"a question no prompt":   {Questions: []RecipeQuestion{{}}},
+		"a long question word":   {Questions: []RecipeQuestion{{Prompt: "p", Words: long}}},
+		"a long mode pattern":    {Questions: []RecipeQuestion{{Prompt: "p", ModeAnswers: long}}},
+		"a long typed pattern":   {Questions: []RecipeQuestion{{Prompt: "p", TypedAnswers: long}}},
+		"too many answers":       {Questions: []RecipeQuestion{{Prompt: "p", Answers: answers(MaxRecipeAnswers + 1)}}},
+	} {
+		if bad.Check() == nil {
+			t.Errorf("%s: checked", name)
+		}
+	}
+	// A label is counted trimmed, as the catalog counts it: one at the
+	// bound with spaces around it is the catalog's and passes; one past
+	// the bound once trimmed does not.
+	atBound := " " + strings.Repeat("é", MaxRecipeAnswerLabel) + " "
+	padded := HostRecipe{TrustAnswers: []RecipeAnswer{{Label: atBound, Input: "k"}}, Questions: []RecipeQuestion{{Prompt: "p", Answers: []RecipeAnswer{{Label: atBound, Input: "k"}}}}}
+	if err := padded.Check(); err != nil {
+		t.Errorf("a padded label at the bound: %v", err)
+	}
+	past := HostRecipe{TrustAnswers: []RecipeAnswer{{Label: " " + strings.Repeat("é", MaxRecipeAnswerLabel+1) + " ", Input: "k"}}}
+	if past.Check() == nil {
+		t.Error("a padded label past the bound: checked")
+	}
+}

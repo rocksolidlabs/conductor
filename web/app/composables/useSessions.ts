@@ -1,4 +1,4 @@
-import type { ChatMessage, ActivityEntry, Attention, AttentionKind, AttentionOption, Role } from '~/utils/protocol'
+import type { ChatMessage, ActivityEntry, AgentBrowser, Attention, AttentionKind, AttentionOption, OpenEvent, Role } from '~/utils/protocol'
 import type { Receipt } from '~/utils/tasks'
 import { toCrewInput, toCrewMember } from '~/utils/crews'
 import type { TouchedReply } from '~/utils/touchedIndex'
@@ -143,6 +143,8 @@ export interface AgentInfo {
   probe?: boolean
   /** What the adapter's probe found the program on the server to be; absent for an agent that is not probed. */
   identity?: Identity
+  /** The browser its links open in (#436); absent (or without a name) is the computer's default browser. */
+  browser?: AgentBrowser
 }
 
 /** The identity probe's answer: the program run with its version flag and its output matched against what the agent prints. */
@@ -191,6 +193,8 @@ export interface AgentInput {
   session?: SessionRecipe
   /** `false` turns the identity probe off; left out, a saved agent of its own is probed (a copy keeps its source's; #291). */
   probe?: boolean
+  /** The browser its links open in (#436); left out, an agent that replaces another keeps that one's; `{}` is the default browser. */
+  browser?: AgentBrowser
 }
 
 /** One answer to an agent's startup question: the label a page shows and the keys that pick it. */
@@ -821,6 +825,10 @@ export function useSessions() {
     /** Adds an agent or replaces the one with the same id (a built-in too); the server saves it in its data directory. */
     saveAgent: (a: AgentInput) => request<{ agent: AgentInfo }>('/api/catalog', { method: 'POST', body: a }).then((r) => r.agent),
     /** Makes a copy of the agent `from` under the body's id (#291): what the body leaves out that the form has no control for is the source's, and an env value of `***` is the source's value, copied and never shown; 409 `id_taken` for an id an agent has. */
+    /** A desktop app's claim of a link an agent opened (#436): the first claim has it, 409 `open_taken` after it or once it was offered. */
+    claimOpen: (id: string) => request<{ open: OpenEvent }>(`/api/opens/${encodeURIComponent(id)}/claim`, { method: 'POST' }).then((r) => r.open),
+    /** What the desktop app did with the link it claimed, once. */
+    openResult: (id: string, outcome: string) => request<void>(`/api/opens/${encodeURIComponent(id)}/result`, { method: 'POST', body: { outcome } }),
     cloneAgent: (from: string, a: AgentInput) => request<{ agent: AgentInfo }>(`/api/catalog/${encodeURIComponent(from)}/clone`, { method: 'POST', body: a }).then((r) => r.agent),
     /** Removes the saved override with this id, restoring a built-in it replaced; an agent without one is hidden instead. */
     deleteAgent: (id: string) => request<void>(`/api/catalog/${encodeURIComponent(id)}`, { method: 'DELETE' }),

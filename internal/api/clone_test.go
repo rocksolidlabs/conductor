@@ -289,3 +289,37 @@ func TestCatalogCloneLaunchesWithItsEnvAndSkill(t *testing.T) {
 		t.Fatalf("a relative configuration directory was made: %v", err)
 	}
 }
+
+// The browser an agent's links open in (#436) is saved, shown unmasked in
+// the catalog, kept by a clone whose body says nothing of it (a page older
+// than its control), and replaced by one that does ({} the default); a bad
+// one is refused.
+func TestCatalogBrowserIsSavedShownAndCloned(t *testing.T) {
+	e := newTestEnv(t, nil)
+	src := agentBody("work")
+	src["browser"] = map[string]any{"name": "edge", "profile": "Profile 2"}
+	e.save(src)
+	if b, _ := e.catalogAgent("work")["browser"].(map[string]any); b["name"] != "edge" || b["profile"] != "Profile 2" {
+		t.Fatalf("the catalog's agent: %v", e.catalogAgent("work"))
+	}
+	status, out := e.clone("work", map[string]any{"id": "work-copy", "name": "work copy", "command": []string{"/bin/cat"}})
+	if b, _ := out["agent"].(map[string]any)["browser"].(map[string]any); status != http.StatusCreated || b["name"] != "edge" || b["profile"] != "Profile 2" {
+		t.Fatalf("a clone that says nothing of the browser: %d %v", status, out)
+	}
+	status, out = e.clone("work", map[string]any{"id": "work-fox", "name": "work fox", "command": []string{"/bin/cat"}, "browser": map[string]any{"name": "firefox"}})
+	if b, _ := out["agent"].(map[string]any)["browser"].(map[string]any); status != http.StatusCreated || b["name"] != "firefox" || b["profile"] != nil {
+		t.Fatalf("a clone with a browser of its own: %d %v", status, out)
+	}
+	status, out = e.clone("work", map[string]any{"id": "work-default", "name": "work default", "command": []string{"/bin/cat"}, "browser": map[string]any{}})
+	if a, _ := e.srv.Catalog().Get("work-default"); status != http.StatusCreated || a.Browser.Named() {
+		t.Fatalf("a clone with the default browser: %d %v", status, out)
+	}
+	bad := agentBody("bad")
+	bad["browser"] = map[string]any{"name": "firefox", "profile": "work"}
+	if resp, out := e.do("POST", "/api/catalog", adminToken, bad); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a profile for firefox: %d %v", resp.StatusCode, out)
+	}
+	if status, out := e.clone("work", map[string]any{"id": "work-bad", "name": "work bad", "command": []string{"/bin/cat"}, "browser": map[string]any{"name": "lynx"}}); status != http.StatusBadRequest {
+		t.Fatalf("a clone with an unknown browser: %d %v", status, out)
+	}
+}

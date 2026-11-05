@@ -21,6 +21,9 @@ test('a new crew is drafted at /crews/new, saved from its bar, and listed with i
   await expect(page.locator('[data-crew-kind]')).toHaveText('New crew')
   const bar = page.locator('[data-unsaved-bar]')
   await expect(bar).toContainText('New crew, not saved yet')
+  // The bar is drawn on the app's own elevated surface, never the inverted one (#376).
+  await expect(bar).toHaveClass(/\bbg-elevated\b/)
+  await expect(bar).not.toHaveClass(/\bbg-inverted\b/)
   await page.getByLabel('Crew name').fill('e2e crews page')
   await page.getByLabel('Goal').fill('show the crews pages')
   // The default draft has one member; a second one starts after it.
@@ -50,11 +53,18 @@ test('a new crew is drafted at /crews/new, saved from its bar, and listed with i
 })
 
 test('an edit to the saved crew gets its own bar, which names what changed and discards it', async ({ page, api }) => {
+  // At a phone's width: the bar and its buttons stay inside the window (#376).
+  await page.setViewportSize({ width: 390, height: 800 })
   await page.goto(`/crews/${crewId}`)
   await page.getByLabel('Goal').fill('show the crews pages, edited')
   const bar = page.locator('[data-unsaved-bar]')
   await expect(bar).toContainText('Unsaved changes to the saved crew')
   await expect(bar.locator('[data-unsaved-words]')).toHaveText('Goal edited.')
+  await expect(bar).not.toHaveClass(/\bbg-inverted\b/)
+  for (const name of ['Discard', 'Save']) {
+    const box = await bar.getByRole('button', { name }).boundingBox()
+    expect(box && box.x >= 0 && box.x + box.width <= 390).toBe(true)
+  }
   await bar.getByRole('button', { name: 'Discard' }).click()
   await expect(bar).toHaveCount(0)
   await expect(page.getByLabel('Goal')).toHaveValue('show the crews pages')

@@ -3,6 +3,7 @@ import type { AgentInfo } from '~/composables/useSessions'
 import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/brakeman'
 import { BOUNDS, BRAKEMAN_ADAPTERS, agentChoice, agentIdOf, agentItems as agentChoices, configProblems, formField, formMove, sameConfig, scopeLines, scopeList } from '~/utils/brakeman'
 import { ApiError } from '~/composables/useApi'
+import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
 
 /**
  * Brakeman's card in Settings (docs/plans/brakeman.md, PR-6): its configuration, saved on the server (PUT /api/brakeman/config, at
@@ -164,25 +165,26 @@ async function save() {
     <p v-if="!form" class="text-sm text-muted">Reading Brakeman's configuration…</p>
     <form v-else class="flex flex-col gap-4" @submit.prevent="save">
       <USwitch v-model="form.enabled" label="Brakeman on" description="Off, nothing is asked of its agent." data-brakeman-enabled />
-      <UFormField label="Agent" description="Its turns run in the agent's own read-only mode, on your login." :error="fieldError('agentId')">
+      <UFormField label="Agent" description="Its turns run in the agent's own read-only mode, on your login." :error="fieldError('agentId')" :ui="fieldUi">
         <USelect v-model="agentModel" :items="agentItems" class="w-full" data-brakeman-agent />
       </UFormField>
       <UAlert v-for="w in warnings" :key="w" color="warning" variant="subtle" icon="i-lucide-shield-alert" :title="w" data-brakeman-warning />
       <p v-if="form.agentId && form.agentId !== saved?.agentId" class="text-xs text-muted" data-brakeman-warning-later>Once saved, Conductor says what this agent's read-only mode does not hold, if anything.</p>
-      <UFormField label="Account" description="The folder the agent's login lives in (its configuration folder); empty for its default login on this machine." :error="fieldError('account')">
+      <UFormField label="Account" description="The folder the agent's login lives in (its configuration folder); empty for its default login on this machine." :error="fieldError('account')" :ui="fieldUi">
         <DirInput v-model="form.account" placeholder="/home/me/.claude-work" picker-title="The agent's login folder" data-brakeman-account />
       </UFormField>
-      <UFormField v-if="caps?.model" label="Model" description="Empty for the agent's default." :error="fieldError('model')">
+      <UFormField v-if="caps?.model" label="Model" description="Empty for the agent's default." :error="fieldError('model')" :ui="fieldUi">
         <UInput v-model="form.model" class="w-full font-mono text-xs" placeholder="the agent's default" data-brakeman-model />
       </UFormField>
-      <UFormField label="Folder" description="Where its turns run; it reads there and changes nothing." :error="fieldError('cwd')">
+      <UFormField label="Folder" description="Where its turns run; it reads there and changes nothing." :error="fieldError('cwd')" :ui="fieldUi">
         <DirInput v-model="form.cwd" picker-title="The folder Brakeman's turns run in" data-brakeman-cwd />
       </UFormField>
-      <UFormField v-if="caps?.allowTools" label="Conductor's tools" :error="fieldError('allowConductorTools')">
+      <UFormField v-if="caps?.allowTools" label="Conductor's tools" :error="fieldError('allowConductorTools')" :ui="fieldUi">
         <USwitch v-model="form.allowConductorTools" label="Run Conductor's tools without asking" description="Without it the agent asks before each of Conductor's tools, and the turn waits on you in Needs you." data-brakeman-allow-tools />
       </UFormField>
 
-      <fieldset class="flex flex-col gap-2">
+      <!-- Two columns of switches once Settings' column has room for them (#433). -->
+      <fieldset class="grid gap-2 @3xl:grid-cols-2 @3xl:gap-x-8">
         <legend class="mb-1 text-sm font-medium">What it may see</legend>
         <USwitch v-for="v in visibility" :key="v.key" v-model="form.visibility[v.key]" :label="v.label" :description="v.description" :data-brakeman-visibility="v.key" />
       </fieldset>
@@ -198,11 +200,11 @@ async function save() {
         <p v-if="fieldError('scope')" class="text-xs text-error" data-brakeman-scope-error>{{ fieldError('scope') }}</p>
       </fieldset>
 
-      <fieldset class="flex flex-col gap-2">
+      <fieldset class="grid gap-2 @3xl:grid-cols-2 @3xl:gap-x-8">
         <legend class="mb-1 text-sm font-medium">What it may do</legend>
         <USwitch v-model="form.permissions.draft" label="Draft" description="Draft tickets, crews and handoffs, which you edit and make." data-brakeman-draft />
         <USwitch v-model="form.permissions.propose" label="Propose" description="Propose operations and prepare decisions, which you take." data-brakeman-propose />
-        <p v-if="!form.permissions.draft && !form.permissions.propose" class="text-xs text-muted">Observe only.</p>
+        <p v-if="!form.permissions.draft && !form.permissions.propose" class="text-xs text-muted @3xl:col-span-2">Observe only.</p>
       </fieldset>
 
       <fieldset class="grid gap-3 sm:grid-cols-3">

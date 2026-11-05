@@ -62,6 +62,46 @@ func TestActivityBroadcastAndReplay(t *testing.T) {
 	}
 }
 
+// RecordServer records an entry the server makes of an action it bounds
+// itself whatever the event bucket holds: with no token left, and none to be
+// earned (the bucket's last refill is ahead of the clock), Record drops an
+// artifact entry and RecordServer records it, broadcast and handed to
+// OnActivity as Record's would be (#436, an agent's link opened).
+func TestRecordServerSpendsNoToken(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		hooked []ActivityEntry
+	)
+	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, OnActivity: func(_ string, e ActivityEntry, _ AttentionState) {
+		if e.Type == ActivityArtifact {
+			mu.Lock()
+			hooked = append(hooked, e)
+			mu.Unlock()
+		}
+	}})
+	s.mu.Lock()
+	s.events = EventBucket{tokens: 0, last: time.Now().Add(time.Hour)}
+	s.mu.Unlock()
+	if s.Record(ActivityEntry{Type: ActivityArtifact, Message: "an agent's own"}) {
+		t.Fatal("an artifact entry recorded with the bucket empty")
+	}
+	s.RecordServer(ActivityEntry{Type: ActivityArtifact, Message: "link opened in edge", URL: "https://example.test/"})
+	var got []ActivityEntry
+	for _, e := range s.Activity() {
+		if e.Type == ActivityArtifact {
+			got = append(got, e)
+		}
+	}
+	if len(got) != 1 || got[0].Message != "link opened in edge" || got[0].URL != "https://example.test/" {
+		t.Fatalf("the artifact entries %+v", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(hooked) != 1 || hooked[0].Message != "link opened in edge" || s.Dropped() != 1 {
+		t.Fatalf("OnActivity was told %+v, dropped %d", hooked, s.Dropped())
+	}
+}
+
 func TestRecordRateLimitsPerSession(t *testing.T) {
 	var got int
 	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, OnActivity: func(string, ActivityEntry, AttentionState) { got++ }})

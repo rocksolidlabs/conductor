@@ -303,7 +303,7 @@ func TestASessionsGuideListsItsScopesOnly(t *testing.T) {
 	// A session in no run may form a crew; one in a run may add to it and
 	// read it, and forms none (409 in_a_run); one in a managed run only
 	// reads it, the run making its members itself (409 managed_run).
-	plainOps := []string{"report", "set_state", "ask", "form_crew", "link", "guide"}
+	plainOps := []string{"report", "set_state", "ask", "form_crew", "link", "guide", "open_url"}
 	memberOps := []string{"report", "set_state", "ask", "add_member", "run_status", "link"}
 	attemptOps := []string{"report", "set_state", "ask", "run_status", "link"}
 	taskOps := []string{"task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint"}
@@ -336,7 +336,7 @@ func TestASessionsGuideListsItsScopesOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 		sid := runningAttempt(t, e, run.ID, "build", 1)["sessionId"].(string)
-		check(t, e, sid, e.agentToken(sid), []string{"run_member", "attempt"}, slices.Concat(attemptOps, taskOps, []string{"guide"}))
+		check(t, e, sid, e.agentToken(sid), []string{"run_member", "attempt"}, slices.Concat(attemptOps, taskOps, []string{"guide", "open_url"}))
 		// What the guide leaves out, the route refuses.
 		status, data, out := e.callAs(t, e.agentToken(sid), http.MethodPost, "/api/sessions/"+sid+"/run/members", []byte(`{"name":"extra","agentId":"ready-cat","prompt":"","start":{"when":"immediately"}}`))
 		if status != http.StatusConflict || errCodeOf(out) != "managed_run" {
@@ -346,11 +346,11 @@ func TestASessionsGuideListsItsScopesOnly(t *testing.T) {
 	t.Run("ticket", func(t *testing.T) {
 		e := dispatchEnv(t)
 		run, sid, tok := e.memberSession(t, "Ticketed")
-		check(t, e, sid, tok, []string{"run_member"}, slices.Concat(memberOps, []string{"guide"}))
+		check(t, e, sid, tok, []string{"run_member"}, slices.Concat(memberOps, []string{"guide", "open_url"}))
 		e.newDispatchProject(t, "GDE", nil)
 		key := e.newDispatchTicket(t, "GDE", "Guided", nil)["key"].(string)
 		e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", map[string]any{"opId": opID(), "kind": "run", "ref": run}, http.StatusCreated, "")
-		check(t, e, sid, tok, []string{"run_member", "ticket_member"}, slices.Concat(memberOps, ticketOps, []string{"guide"}))
+		check(t, e, sid, tok, []string{"run_member", "ticket_member"}, slices.Concat(memberOps, ticketOps, []string{"guide", "open_url"}))
 	})
 	t.Run("self-service off", func(t *testing.T) {
 		e := newTestEnv(t, func(c *config.Config) { off := false; c.Agents.SelfService = &off })

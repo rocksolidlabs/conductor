@@ -619,16 +619,14 @@ usePalette().registerPage(() => ({
         </div>
         <!-- The unsaved-changes bar stays in view at the bottom of the page. -->
         <div v-if="dirty && draft" class="sticky bottom-0 px-4 pb-4 pt-2 sm:px-6">
-          <div class="flex flex-wrap items-center gap-x-2.5 gap-y-2 rounded-lg bg-inverted px-3.5 py-2.5 text-[13.5px] text-inverted shadow-lg" data-unsaved-bar>
-            <UIcon name="i-lucide-pencil" class="size-4 flex-none" />
-            <b class="font-semibold">{{ draft.id ? 'Unsaved changes to the saved crew' : 'New crew, not saved yet' }}</b>
-            <span class="min-w-0 opacity-75" data-unsaved-words>{{ changeWords }}</span>
-            <!-- Plain buttons: the bar is inverted, and the theme's buttons are drawn for the page's own background. -->
+          <!-- The app's own elevated surface in both themes; the forest edge and mark say there is unsaved work. -->
+          <div class="flex flex-wrap items-center gap-x-2.5 gap-y-2 rounded-lg border border-default border-l-4 border-l-primary bg-elevated px-3.5 py-2.5 text-[13.5px] text-default shadow-lg" data-unsaved-bar>
+            <UIcon name="i-lucide-pencil" class="size-4 flex-none text-primary" />
+            <b class="font-semibold text-highlighted">{{ draft.id ? 'Unsaved changes to the saved crew' : 'New crew, not saved yet' }}</b>
+            <span class="min-w-0 text-muted" data-unsaved-words>{{ changeWords }}</span>
             <div class="ml-auto flex flex-none items-center gap-2">
-              <button type="button" class="rounded-md px-2.5 py-1 text-sm font-medium ring-1 ring-inset ring-current/30 transition-colors hover:bg-current/10 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-current" :disabled="saving" @click="discard">Discard</button>
-              <button type="button" class="flex items-center gap-1.5 rounded-md bg-default px-3 py-1 text-sm font-medium text-highlighted transition-opacity hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-current" :disabled="invalid || saving || !!launchingKey" :title="saveProblem || undefined" :data-save-problem="saveProblem || undefined" @click="onSave">
-                <UIcon v-if="saving" name="i-lucide-loader-circle" class="size-3.5 animate-spin" />Save
-              </button>
+              <UButton label="Discard" color="neutral" variant="outline" size="sm" :disabled="saving" @click="discard" />
+              <UButton label="Save" color="primary" size="sm" :loading="saving" :disabled="invalid || saving || !!launchingKey" :title="saveProblem || undefined" :data-save-problem="saveProblem || undefined" @click="onSave" />
             </div>
           </div>
         </div>

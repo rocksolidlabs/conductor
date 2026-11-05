@@ -720,6 +720,14 @@ func (s *Local) Record(e ActivityEntry) bool {
 	return s.record(e, bucketed(e.Type), "")
 }
 
+// RecordServer records an entry the server makes itself, of an action it
+// bounds on its own (an agent's link opened, at most ten a minute, #436),
+// without asking the event bucket: the action has happened, and a burst of
+// the agent's reports must not drop the entry that says so.
+func (s *Local) RecordServer(e ActivityEntry) {
+	s.record(e, false, "")
+}
+
 // recordOwn records an entry the session makes itself without asking the
 // event bucket, whatever its type, and hands OnActivity the attention state
 // it records. It records the attention entry of an attention change the

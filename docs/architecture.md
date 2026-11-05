@@ -687,6 +687,21 @@ advertising the Windows address (`ice.udpPort`, `ice.publicIp`). The shell
 registers the `conductor:` scheme: an invite opens its own join page with
 `?server=`, which signals to the switchyard named.
 
+The shell is also where an agent's links open (#436). An agent asks with
+its session's token (`conductor open`, the MCP tool `open_url`, or the
+opener an agent with a browser set gets as `BROWSER`), and the server, which
+starts no browser itself, tells the event stream: a workbench page in the
+app (its stream marked `X-Conductor-Desktop`) claims the link, the first
+claim winning, and the bridge's `openUrl` starts the browser the agent's
+catalog entry names (`desktop/src/browsers.ts`: found by its name on the
+app's own OS, started with an argv and no shell, the default browser when
+none is named or found), then tells the server what became of it, which
+answers the agent. The request reaches the app over the connection its page
+already has to its server, so a server in WSL opens a Windows browser with
+nothing configured. With no app streaming, for a managed run's attempt or a
+Brakeman turn, or when the app could not open it, the link is offered in the
+workbench in a toast; a plain browser tab never starts anything.
+
 ## Extensions
 
 Conductor is open core: a paid feature is a provider that another module's

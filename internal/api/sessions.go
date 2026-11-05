@@ -281,43 +281,14 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		maps.Copy(env, yoloEnv)
 		maps.Copy(env, req.Env)
 	}
-	var trust *regexp.Regexp
-	if agent.TrustPrompt != "" {
-		if trust, err = catalog.CompilePattern(agent.TrustPrompt); err != nil {
-			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "the agent's trust prompt is invalid")
-		}
-	}
-	// A window title that says the agent works (Codex's, with the title its
-	// adapter's launch asks for) shows the session working.
-	var workingTitle *regexp.Regexp
-	if sig.WorkingTitle != "" {
-		if workingTitle, err = catalog.CompileWorkingTitle(sig.WorkingTitle); err != nil {
-			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "the agent's working title is invalid")
-		}
-	}
-	var questions []session.StartupQuestion
-	for _, q := range agent.Questions {
-		re, err := catalog.CompilePattern(q.Prompt)
-		if err != nil {
-			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "one of the agent's startup questions is invalid")
-		}
-		var words, mode, typed *regexp.Regexp
-		if q.Words != "" {
-			if words, err = catalog.CompilePattern(q.Words); err != nil {
-				return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "one of the agent's startup questions is invalid")
-			}
-		}
-		if q.ModeAnswers != "" {
-			if mode, err = catalog.CompilePattern(q.ModeAnswers); err != nil {
-				return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "one of the agent's startup questions is invalid")
-			}
-		}
-		if q.TypedAnswers != "" {
-			if typed, err = catalog.CompilePattern(q.TypedAnswers); err != nil {
-				return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "one of the agent's startup questions is invalid")
-			}
-		}
-		questions = append(questions, session.StartupQuestion{Pattern: re, Words: words, Anytime: q.Anytime, Answers: trustAnswers(q.Answers), FromScreen: q.AnswersFromScreen && q.Anytime, Mode: mode, Typed: typed})
+	// What the session watches on its screen: the trust question and its
+	// answers, the other questions, the window title that says the agent
+	// works (Codex's, with the title its adapter's launch asks for), and
+	// whether it reports taking a prompt. A hosted session of the same
+	// agent is handed the same recipe (agents.Recipe, ws_host.go).
+	watch, err := agents.CompileRecipe(agents.Recipe(agent))
+	if err != nil {
+		return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", err.Error())
 	}
 	id := session.NewID()
 	agentToken, _ := share.NewToken()
@@ -350,6 +321,18 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		return nil, newAPIError(http.StatusBadRequest, "invalid_cwd", "working directory does not exist")
 	}
 	procEnv := pty.BuildEnv(pty.ParentEnv(), passthrough, env, inject)
+	// An agent whose links open in the browser its settings name (#436)
+	// opens them itself through Conductor's opener, unless it has a BROWSER
+	// of its own (its env, its envPassthrough, the launch's). With
+	// agents.selfService off the open route refuses every open, so the
+	// agent keeps its own way of opening links.
+	if agent.Browser.Named() && bin != "" && s.cfg.SelfService() {
+		if opener, err := agents.Opener(hooksDir, bin); err != nil {
+			s.log.Warn("the opener for BROWSER could not be written; the agent opens links its own way", "agent", agent.ID, "err", err)
+		} else {
+			procEnv = agents.WithOpener(procEnv, opener)
+		}
+	}
 	// An agent whose environment moves its configuration directory (a copy
 	// of Claude Code under a CLAUDE_CONFIG_DIR of its own, #291) reads its
 	// skills there: the skill goes there too.
@@ -405,11 +388,11 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		OnChat:          s.localChat,
 		RunChat:         req.runChat,
 		Pattern:         pattern,
-		TrustPattern:    trust,
-		TrustAnswers:    trustAnswers(agent.TrustAnswers),
-		Questions:       questions,
-		WorkingTitle:    workingTitle,
-		ConfirmSubmit:   agents.ConfirmsSubmit(agent.Adapter, sig),
+		TrustPattern:    watch.TrustPattern,
+		TrustAnswers:    watch.TrustAnswers,
+		Questions:       watch.Questions,
+		WorkingTitle:    watch.WorkingTitle,
+		ConfirmSubmit:   watch.ConfirmSubmit,
 		WatchGit:        true,
 		Launched:        session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed},
 		Folder:          folder,
@@ -728,14 +711,4 @@ func (s *Server) installSkillInConfigDir(adapter, dir, hooksDir string) {
 	case changed:
 		s.log.Info("skill installed", "adapter", adapter, "path", path)
 	}
-}
-
-// trustAnswers are the catalog's answers to the agent's trust question as the
-// session's quick-reply choices for it.
-func trustAnswers(in []catalog.Answer) []session.Option {
-	out := make([]session.Option, 0, len(in))
-	for _, a := range in {
-		out = append(out, session.Option{Label: a.Label, Input: a.Input})
-	}
-	return out
 }

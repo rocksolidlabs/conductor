@@ -28,7 +28,7 @@ import (
 const mcpUsage = `Usage: conductor mcp
 
 Serves Conductor's MCP tools on stdin and stdout (JSON-RPC 2.0, one message a line):
-report, set_state, ask, form_crew, add_member, run_status and link, the skill's
+report, set_state, ask, form_crew, add_member, run_status, link and open_url, the skill's
 commands as tools, and guide, what the server says this session may do. The server registers it with agents that take an MCP server at
 launch; run it by hand only to try it. A Brakeman turn's session (CONDUCTOR_BRAKEMAN
 set) lists brakeman_request, observe and brief_submit, and no crew or ticket tool.
@@ -71,7 +71,7 @@ type mcpTool struct {
 // a tool the table names before its handler exists is never listed.
 var mcpHandled = map[string]bool{
 	"report": true, "set_state": true, "ask": true,
-	"form_crew": true, "add_member": true, "run_status": true, "link": true,
+	"form_crew": true, "add_member": true, "run_status": true, "link": true, "open_url": true,
 	"task_context": true, "task_result": true, "message_send": true, "inbox_read": true, "inbox_ack": true, "task_blocked": true, "task_checkpoint": true,
 	"ticket_read": true, "ticket_comment": true,
 	"guide": true, "brakeman_request": true, "observe": true, "brief_submit": true,
@@ -186,7 +186,7 @@ func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError)
 			"protocolVersion": pv,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"serverInfo":      map[string]any{"name": "conductor", "version": version.Version},
-			"instructions":    "Conductor shows this session to people in a browser. Report milestones, artifacts and handoffs with report; ask with ask when you need a decision; form a crew with form_crew when the work splits. Call guide to learn what you may do here.",
+			"instructions":    "Conductor shows this session to people in a browser. Report milestones, artifacts and handoffs with report; ask with ask when you need a decision; form a crew with form_crew when the work splits. Open a link meant for the person (an artifact, a pull request, a preview, a sign-in page) with open_url: it opens in the browser this agent's settings name. Call guide to learn what you may do here.",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -287,7 +287,7 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
 		return c.tool(cctx, name, raw)
-	case "form_crew", "add_member", "run_status", "link", "task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint",
+	case "form_crew", "add_member", "run_status", "link", "open_url", "task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint",
 		"ticket_read", "ticket_comment", "guide":
 		c, err := crewClientFromEnv(s.getenv)
 		if err != nil {
@@ -340,6 +340,9 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 				return "", err
 			}
 			return fmt.Sprint(out["url"]), nil
+		case "open_url":
+			link, _ := body["url"].(string)
+			return openLink(cctx, c, link)
 		case "task_context":
 			path := "/task"
 			if p, ok := body["page"].(float64); ok && p >= 1 {

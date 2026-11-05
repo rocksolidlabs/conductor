@@ -6,6 +6,14 @@ const bridge = {
   platform: process.platform,
   token: (): Promise<string> => ipcRenderer.invoke('conductor:token'),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('conductor:openExternal', url),
+  /**
+   * Opens an agent's link in the browser its settings name (#436), on this computer, one tab; with none named, or one not installed
+   * here, in the default browser. What became of it: 'browser', 'default', 'missing' (not installed) or 'failed' (did not start).
+   */
+  openUrl: (url: string, browser?: { name: string; profile?: string } | null): Promise<{ outcome: string }> =>
+    ipcRenderer.invoke('conductor:openUrl', url, browser ?? null),
+  /** The browsers of the five an agent may name that are installed on this computer. */
+  browsers: (): Promise<string[]> => ipcRenderer.invoke('conductor:browsers'),
   settings: {
     get: () => ipcRenderer.invoke('conductor:settings:get'),
     set: (patch: Record<string, unknown>) => ipcRenderer.invoke('conductor:settings:set', patch),
@@ -34,6 +42,14 @@ const bridge = {
     const handler = () => cb()
     ipcRenderer.on('conductor:update', handler)
     return () => ipcRenderer.removeListener('conductor:update', handler)
+  },
+  /** The workbench's zoom now (its level, the percent it reads, 'largest' or 'smallest' at a bound), and whether to say it: a level kept from before, to the first page that asks after a start. */
+  zoom: (): Promise<{ level: number; percent: number; bound: string; announce: boolean }> => ipcRenderer.invoke('conductor:zoom'),
+  /** Each zoom move by key or menu, one at a bound that changed nothing included: the status after it, to show. */
+  onZoom: (cb: (zoom: { level: number; percent: number; bound: string }) => void): (() => void) => {
+    const handler = (_e: unknown, zoom: { level: number; percent: number; bound: string }) => cb(zoom)
+    ipcRenderer.on('conductor:zoom', handler)
+    return () => ipcRenderer.removeListener('conductor:zoom', handler)
   },
   onServerState: (cb: (state: unknown) => void): (() => void) => {
     const handler = (_e: unknown, state: unknown) => cb(state)

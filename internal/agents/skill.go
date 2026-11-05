@@ -36,7 +36,7 @@ when CONDUCTOR_NOTIFY_URL and CONDUCTOR_NOTIFY_TOKEN are set.
 
 With Conductor's MCP server registered (Claude Code and Codex get it at
 launch), the same reports and crew actions are tools: report, set_state,
-ask, form_crew, add_member, run_status, link, task_context, task_result,
+ask, form_crew, add_member, run_status, link, open_url, task_context, task_result,
 message_send, inbox_read, inbox_ack, task_blocked, task_checkpoint,
 ticket_read and ticket_comment. Call those when you have them; the
 commands below do the same.
@@ -51,6 +51,14 @@ commands below do the same.
   deployment or a report (add --message to say what it is):
 
       "${CONDUCTOR_BIN:-conductor}" notify --event artifact --url <url>
+
+- A link meant for the person, such as an artifact, a pull request, a
+  preview or a sign-in page: open it with open_url, or this command, rather
+  than your own opener. It opens in the browser your agent's settings name,
+  where the right account is signed in; it prints what happened. Ten a
+  minute.
+
+      "${CONDUCTOR_BIN:-conductor}" open <url>
 
 - A handoff, when the next part of the work belongs to another member of the
   crew:

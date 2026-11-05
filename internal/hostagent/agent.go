@@ -223,6 +223,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	notifyURL := attentionURL(opts.ServerURL, registered.SessionID)
+	// What the session watches on its screen: the server's recipe for the
+	// agent the host named (#293), as a server session of it watches.
+	watch := a.watchOf(registered.Recipe)
 	// The binary the hooks run (the one the assets name when injectHooks
 	// wrote them), for what the agent runs itself (the skill).
 	bin, _ := agents.Binary()
@@ -299,6 +302,14 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		OnChat:     a.onLocalChat,
 		Pattern:    opts.Pattern,
 		WatchGit:   true,
+		// The trust question and the startup ones held at start, the
+		// questions asked during the work with their choices, typed text
+		// held while one shows, the working title (#293).
+		TrustPattern:  watch.TrustPattern,
+		TrustAnswers:  watch.TrustAnswers,
+		Questions:     watch.Questions,
+		WorkingTitle:  watch.WorkingTitle,
+		ConfirmSubmit: watch.ConfirmSubmit,
 	})
 	a.mu.Lock()
 	a.local = local
@@ -744,6 +755,28 @@ func (a *agent) registration(cols, rows uint16) proto.Register {
 	reg.Session.Command = []string{program}
 	reg.Session.Cwd = lastElement(a.dir)
 	return reg
+}
+
+// watchOf is what the session watches, compiled from the recipe the server
+// sent with registered (#293): nothing for a host publishing to a
+// switchyard (Options.Switchyard), whose catalog is someone else's, for
+// none (the server's catalog has no agent of the host's id, or an older
+// server), and for one past its bounds or whose patterns do not compile,
+// which the log tells. The session then works as it did without one.
+func (a *agent) watchOf(r *proto.HostRecipe) agents.Watch {
+	if r == nil || a.opts.Switchyard {
+		return agents.Watch{}
+	}
+	if err := r.Check(); err != nil {
+		a.log.Warn("the server's recipe for the agent is refused; its questions are not watched", "agent", a.opts.AgentID, "err", err)
+		return agents.Watch{}
+	}
+	w, err := agents.CompileRecipe(r)
+	if err != nil {
+		a.log.Warn("the server's recipe for the agent is refused; its questions are not watched", "agent", a.opts.AgentID, "err", err)
+		return agents.Watch{}
+	}
+	return w
 }
 
 // lastElement is the last element of a folder's path, "" for none.

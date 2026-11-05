@@ -68,6 +68,12 @@ describe('what the clone dialogs say', () => {
     expect(inRunWorktree('/home/me/repo/.conductor/worktrees')).toBe(true)
     expect(inRunWorktree('/home/me/repo')).toBe(false)
     expect(inRunWorktree('/home/me/repo/.conductor')).toBe(false)
+    expect(inRunWorktree('.conductor/worktrees/r-1/a')).toBe(true)
+    expect(inRunWorktree('./.conductor/worktrees/r-1/a')).toBe(true)
+    expect(inRunWorktree('.conductor\\worktrees\\r-1\\a')).toBe(true)
+    expect(inRunWorktree('C:\\repo\\.conductor\\worktrees\\r-1\\a')).toBe(true)
+    expect(inRunWorktree('.conductor')).toBe(false)
+    expect(inRunWorktree('x.conductor/worktrees/r-1/a')).toBe(false)
     expect(inRunWorktree(undefined)).toBe(false)
   })
 

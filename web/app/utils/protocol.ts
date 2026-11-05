@@ -227,6 +227,27 @@ export interface ActivityEntry {
 /** Data of an `activity` event on GET /api/events: an activity entry and the session it belongs to. */
 export type SessionActivity = ActivityEntry & { sessionId: string }
 
+/** A browser an agent's links open in (#436): the catalog's `browser` (internal/catalog/browser.go). */
+export interface AgentBrowser {
+  /** chrome, edge, firefox, brave or safari; absent is the computer's default browser. */
+  name?: 'chrome' | 'edge' | 'firefox' | 'brave' | 'safari'
+  /** A Chromium profile directory (`Profile 2`), for chrome, edge and brave alone; at most 100 characters. */
+  profile?: string
+}
+
+/**
+ * Data of an `open` event on GET /api/events (#436, docs/protocol.md "Opening a link"): a link an agent opened (≤ 2048 bytes), the
+ * browser its settings name, and whether it waits for a desktop app to claim it (`pending`) or is offered in the workbench because
+ * none did (`offered`). At most 15,200 bytes of data.
+ */
+export interface OpenEvent {
+  id: string
+  sessionId: string
+  url: string
+  browser?: AgentBrowser
+  state: 'pending' | 'offered'
+}
+
 export interface ICEServer {
   urls: string[]
   username?: string
@@ -653,6 +674,44 @@ export const HOST_MAX_ANSWER_AS_SUBJECT = 48
 export interface HostRegisteredLinks {
   links?: string[]
 }
+
+/**
+ * The part of registered that says what the hosted session watches on its screen (#293): the catalog's recipe for the agent the
+ * host registered, as a server session of it watches. Absent when the catalog has no such agent or nothing to watch, from an older
+ * server, past HOST_MAX_RECIPE bytes encoded, and when registered with it would be past a host message (64 KiB); a host refuses one
+ * past the bounds below. confirmSubmit is set on the hosted session, but no submission on a host asks for the second Enter yet.
+ * The workbench never sees it.
+ */
+export interface HostRegisteredRecipe {
+  recipe?: HostRecipe
+}
+export interface HostRecipe {
+  trustPrompt?: string
+  trustAnswers?: HostRecipeAnswer[]
+  questions?: HostRecipeQuestion[]
+  workingTitle?: string
+  confirmSubmit?: boolean
+}
+export interface HostRecipeAnswer {
+  label: string
+  input: string
+}
+export interface HostRecipeQuestion {
+  prompt: string
+  words?: string
+  anytime?: boolean
+  answers?: HostRecipeAnswer[]
+  answersFromScreen?: boolean
+  modeAnswers?: string
+  typedAnswers?: string
+}
+/** The recipe's bounds: questions, answers to each (labels in characters once trimmed, as the catalog counts; keys in bytes), a pattern's bytes, the encoding's bytes. */
+export const HOST_MAX_RECIPE_QUESTIONS = 8
+export const HOST_MAX_RECIPE_ANSWERS = 6
+export const HOST_MAX_RECIPE_ANSWER_LABEL = 60
+export const HOST_MAX_RECIPE_ANSWER_INPUT = 48
+export const HOST_MAX_RECIPE_PATTERN = 200
+export const HOST_MAX_RECIPE = 24 << 10
 
 /** A crew run as a switchyard shows it: what a host sends with link_run and link_run_update. */
 export interface HostRunGroup {

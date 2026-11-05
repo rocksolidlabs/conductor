@@ -85,12 +85,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       <UButton label="Open plan" icon="i-lucide-file-text" size="sm" color="neutral" variant="soft" class="flex-none" :ui="{ label: 'hidden sm:inline' }" aria-label="Open plan" :title="attention.plan" data-quick-reply-plan @click="emit('openPlan', attention!.plan!)" />
       <UButton label="Preview plan" icon="i-lucide-eye" size="sm" color="neutral" variant="soft" class="flex-none" :ui="{ label: 'hidden sm:inline' }" aria-label="Preview plan" :title="attention.plan" data-quick-reply-plan-preview @click="emit('previewPlan', attention!.plan!)" />
     </template>
-    <div v-if="options.length" class="ml-auto flex flex-wrap items-center gap-2 flex-none">
+    <!-- The choices shrink to the bar and wrap (#327): never wider than the window on a phone, every one on screen under a thumb. -->
+    <div v-if="options.length" class="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
       <UButton
         v-for="(o, i) in options"
         :key="i"
         :label="o.label"
         size="sm"
+        class="max-w-full"
         :variant="i === first ? 'solid' : 'outline'"
         :color="i === first ? 'primary' : o.mode ? 'warning' : 'neutral'"
         :title="o.mode ? MODE_CHOICE : undefined"
