@@ -389,6 +389,19 @@ export function moveFocus(rows: readonly FocusRow[], current: string | null, del
   return rows[Math.min(rows.length - 1, Math.max(0, i + delta))]!.id
 }
 
+/**
+ * Whether a row that re-rendered may take the focus back (#596): only when the focus was lost (on the body, or nowhere: the
+ * element it was on left the page as its row moved sections), and never while the row sits behind an open modal (a dialog or a
+ * menu hides the rest of the page from assistive technology, `aria-hidden`, and holds the focus even while it is on nothing, as
+ * when the Rename dialog's focused button goes disabled as it saves). Anything that holds the focus keeps it: a dialog, a
+ * field elsewhere, and in the list itself a row's reply field, its Stop question or a section's header, whose keys would
+ * otherwise drive the list.
+ */
+export function mayRefocusRow(active: Node | null, body: Node | null, behindModal: boolean): boolean {
+  if (behindModal) return false
+  return active === null || active === body
+}
+
 // ---------------------------------------------------------------------------
 // The rail, drawn from the same model (design 3d): a square is a session, a
 // capsule a run with its sessions inside, a corner tile a machine or a share;
