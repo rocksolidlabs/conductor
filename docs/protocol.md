@@ -3627,37 +3627,55 @@ its own route, `POST /api/dispatch/tickets/{key}/launch` and `POST
 turn's token, its session named in `X-Conductor-Session`), with the body
 that route takes and an `opId` of the turn's. First of all, whatever the
 body, `403 not_granted` unless both the configuration the turn began
-under and the configuration now grant the operation. An `opId` the
-request already holds is then run again under its derived key, so the
-operation's own store answers it from its receipt, whatever the target's
-state now (`409 op_conflict` for another operation, ticket or body under
-it; `409 act_not_run` for one the server stopped before it ran; one its
-store holds no receipt for is checked again as a new act is). A new act
-is refused, nothing kept, in this order:
-`403 not_visible` unless `dispatch` is visible, `403 outside_scope` for a
-ticket outside the scope (a grant gives no read, a read no grant); `404
-not_found` for a ticket or revision not there or not the ticket's; `409
-stale_revision` for an `expectedRev` that is not the ticket's now; `409
-stale_target` for a revision that is not approved (the launch's, or a
-follow-up's `basedOn`) or, for a launch, whose approval no longer holds;
-`409 acts_spent` past 20 acts a request. Then the act is written
+under and the configuration now grant the operation. The body is decoded
+once, as its route decodes it (unknown fields refused): what the act is
+checked by is what its operation is given, whatever the spelling or the
+order of its keys. An `opId` the request already holds answers `409
+op_conflict` for another operation, ticket or body under it and `409
+act_not_run` for one the server stopped before it ran; one whose
+operation committed (its receipt in Dispatch, or, the receipt pruned, the
+change its operation recorded) is run again under its derived key, so the
+operation's own store answers it, whatever the target's state now. Any
+other act, new or sent again after a refusal or a failure that left no
+receipt, is checked in admission's order (after a configuration's save
+or before it, the configuration read again under it, so a grant taken
+away or a visibility narrowed while it waited holds) and refused,
+nothing run, in this order: `403 not_granted` again; `403 not_visible`
+unless `dispatch` is visible; `403 outside_scope` for a ticket outside
+the scope, or for what the operation makes outside it: the launch's
+revision's crew, or the follow-up's `crew`, not in the scope's `crews`,
+or the repository of the folder it plans in not in its `repos` (a grant
+gives no read, a read no grant); `404 not_found` for a ticket or revision
+not there or not the ticket's; `409 stale_revision` for an `expectedRev`
+that is not the ticket's now; `409 stale_target` for a revision that is
+not approved (the launch's, or a follow-up's `basedOn`) or, for a launch,
+whose approval no longer holds; `409 turn_over` for a request no longer
+`starting` or `running`; `409 acts_spent` past 20 acts a request; `503
+shutting_down` once the server is shutting down. Then the act is written
 `pending` into the request's `acts` (`{opId, operation, target:
 "ticket:<KEY-n>", op, args, state, receipt?, why?, at}`, at most 600
-bytes, `args` the SHA-256 of the body but its `opId` and `byName` with the
-ticket's key), the operation is run through its one function under the
-actor `brakeman` with the display name `Brakeman` and the derived op id
-(`bk` + 30 hex digits of a SHA-256 of `act`, the request and the
-`opId`), a launch through `ext.Host`'s `LaunchApproved`, and its outcome
-copied into the entry: `done` with `receipt` the id of what it made (the
-launch's, the revision's), `refused` with `why` (the store's receipt's
-words, or the route's for a refusal before the store); a failure of the
-server leaves it `pending`. The answer is the route's own, with its
-receipt. A server that stops between the operation and the copy, or
-before the operation, leaves the entry `pending`: before Brakeman's
-routes serve again, the desk reads Dispatch's receipt for `(brakeman,
-op)` and copies it, or, with none, marks the entry `not_run` ("the server
-stopped before it ran"), never run again; a request with an act
-`pending` is kept by the prune.
+bytes, `args` the SHA-256 of the body as decoded but its `opId` and
+`byName`, with the ticket's key), a retry over its own entry, the
+operation is run through its one function under the actor `brakeman`
+with the display name `Brakeman` and the derived op id (`bk` + 30 hex
+digits of a SHA-256 of `act`, the request and the `opId`), a launch
+through `ext.Host`'s `LaunchApproved`, a follow-up through DS2's
+proposal, which holds its crew and folder to the scope again once the
+folder is resolved, before git runs there, and its `basedOn` approved in
+the store's own transaction (`409 stale_plan` for one withdrawn or
+superseded meanwhile), and its outcome copied into the entry: `done` with
+`receipt` the id of what it made (the launch's, the revision's), `refused`
+with `why` (the store's receipt's words, or the route's for a refusal
+before the store, cut to the room its other fields leave in the entry's
+600 bytes as encoded); a failure of the server leaves it `pending`. The
+answer is the route's own, with its receipt. An act under way when the
+server shuts down finishes before Brakeman's owner lock goes. A server
+that stops between the operation and the copy, or before the operation,
+leaves the entry `pending`: before Brakeman's routes serve again, the
+desk reads Dispatch's receipt for `(brakeman, op)`, or, the receipt
+pruned, the change its operation recorded, and copies it, or, with
+neither, marks the entry `not_run` ("the server stopped before it ran"),
+never run again; a request with an act `pending` is kept by the prune.
 
 Brakeman's own reads, the admin's and the principal's, each at most 256
 KiB (the guide's `observe_<what>` entries carry each read's `reply`

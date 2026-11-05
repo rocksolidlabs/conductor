@@ -198,6 +198,35 @@ type Act struct {
 	At        time.Time `json:"at"`
 }
 
+// Fit is a with its Why cut, at a character, to the longest prefix with
+// which the entry as the request's encoding writes it is within
+// MaxActBytes: words that JSON escapes (a quote, a control character) are
+// weighed as written, and each of the other fields is bounded on its own,
+// so an outcome written over a pending entry that fit always fits.
+func (a Act) Fit() Act {
+	if entrySize(a) <= MaxActBytes {
+		return a
+	}
+	// Where the words may be cut: at each character, and whole.
+	cuts := make([]int, 0, len(a.Why)+1)
+	for i := range a.Why {
+		cuts = append(cuts, i)
+	}
+	cuts = append(cuts, len(a.Why))
+	// cuts[lo] fits (none at all is taken to), cuts[hi] does not.
+	why, lo, hi := a.Why, 0, len(cuts)-1
+	for lo+1 < hi {
+		mid := (lo + hi) / 2
+		if a.Why = why[:cuts[mid]]; entrySize(a) <= MaxActBytes {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	a.Why = why[:cuts[lo]]
+	return a
+}
+
 // The states of an Act: pending while its operation may be running (a
 // crash leaves it so, for the desk's recovery), done or refused as the
 // operation's receipt says, not_run when the operation never committed

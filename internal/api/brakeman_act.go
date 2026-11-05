@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -81,10 +80,11 @@ func actOp(request, opID string) string {
 	return deriveOp("act", request, opID)
 }
 
-// actSeam, when a test sets it, runs at each stage of an act ("pending"
-// once it is written pending, before its operation; "committed" once the
-// operation answered, before its outcome is copied); an error it answers
-// stops the act there, as a server that died would.
+// actSeam, when a test sets it, runs at each stage of an act ("waiting"
+// once its body is read, before it waits for the request's make mutex;
+// "pending" once it is written pending, before its operation; "committed"
+// once the operation answered, before its outcome is copied); an error it
+// answers stops the act there, as a server that died would.
 var actSeam atomic.Pointer[func(stage, request, opID string) error]
 
 func atActSeam(stage, request, opID string) error {
@@ -117,32 +117,37 @@ func (s *Server) actable(pattern string, next http.HandlerFunc) http.HandlerFunc
 	}
 }
 
-// actBody is the fields of a granted operation's body an act reads
-// before the operation's route decodes it whole.
+// actBody is an act's body as its operation's route decodes it, the
+// fields its checks and its operation read: the one decoding, so what
+// the act is checked by is what its operation runs.
 type actBody struct {
-	OpID        string `json:"opId"`
-	ExpectedRev int64  `json:"expectedRev"`
-	Plan        string `json:"plan"`
-	BasedOn     string `json:"basedOn"`
-	Label       string `json:"label"`
+	OpID        string
+	ExpectedRev int64
+	// Plan and Label are a launch's.
+	Plan, Label string
+	// Propose is a follow-up's request (its crew and basedOn among it).
+	Propose dispatch.PlanRequest
 }
 
-// turnAct answers a Brakeman turn's act on the operation ar: refused in
-// this order (docs/plans/brakeman.md, "BK2 (PR-12)") unless its opId
-// names an act of the request already, which is run again under its
-// derived key so the operation's own store answers its receipt whatever
-// the target's state now (409 op_conflict for other content under it,
-// 409 act_not_run for one the server stopped before it ran; one the store
-// holds no receipt for is checked again as a new one is): the turn's
-// session the running request's (turnPrincipalOf); the grant, the
-// snapshot the turn began under and the configuration now (403
-// not_granted, checked first of all, before the body is read); the target's visibility (403 not_visible) and scope (403
-// outside_scope); the target's state as the operation requires (404
-// not_found, 409 stale_revision, 409 stale_target); at most
-// brakeman.MaxActs a request (409 acts_spent). Then it is written pending,
-// the operation run, and its receipt copied into the request; the answer
-// is the operation's route's own. The whole act holds the request's make
-// mutex, so no two acts of a request interleave.
+// turnAct answers a Brakeman turn's act on the operation ar
+// (docs/plans/brakeman.md, "BK2 (PR-12)"). The grant (the snapshot the
+// turn began under and the configuration now; 403 not_granted) is checked
+// first of all, before the body is read. An opId that names an act of the
+// request already answers 409 op_conflict for other content and 409
+// act_not_run for one the server stopped before it ran; one whose
+// operation committed (Dispatch's Committed, its receipt kept or pruned)
+// is run again under its derived key, so the operation's own store
+// answers it whatever the target's state now. Any other act, new or
+// retried, is admitted in admission's order (pendAct): refused in this
+// order, the grant again, the target's visibility (403 not_visible) and
+// scope, the ticket's and what the operation makes (403 outside_scope),
+// the target's state as the operation requires (404 not_found, 409
+// stale_revision, 409 stale_target), at most brakeman.MaxActs a request
+// (409 acts_spent); then written pending. The operation runs, its receipt
+// is copied into the request, and the answer is the operation's route's
+// own. The whole act holds the request's make mutex, so no two acts of a
+// request interleave, and is admitted as a make is (admitMake), so
+// release waits for it before the owner lock goes.
 func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincipal, ar actRoute) {
 	d := s.brakeman
 	ds, ok := s.dispatchWriter(w)
@@ -155,6 +160,14 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 		writeAPIError(w, aerr)
 		return
 	}
+	// Admitted while the desk is open, and waited for by release before
+	// the owner lock goes: an act never commits its operation beside the
+	// next owner's recovery of its entry.
+	if !d.admitMake() {
+		s.brakemanError(w, errDeskClosing)
+		return
+	}
+	defer d.madeDone()
 	key, ok := ticketKey(w, r)
 	if !ok {
 		return
@@ -171,6 +184,10 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
+	if err := atActSeam("waiting", tp.req.ID, body.OpID); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "shutting_down", err.Error())
+		return
+	}
 	mu := d.makeLock(tp.req.ID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -182,6 +199,7 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 	tp.req = req
 	target := brakeman.Ref{Kind: brakeman.RefTicket, Ticket: key}
 	op := actOp(req.ID, body.OpID)
+	admit := true
 	if i := slices.IndexFunc(req.Acts, func(a brakeman.Act) bool { return a.OpID == body.OpID }); i >= 0 {
 		a := req.Acts[i]
 		switch {
@@ -192,36 +210,28 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 			writeError(w, http.StatusConflict, "act_not_run", "the server stopped before the act ran; it is not run again")
 			return
 		}
-		// An act its operation's store holds no receipt for (refused before
-		// the store, or a failure of the server) runs anew if it runs at
-		// all: it is held to the checks again, the grant now among them.
-		switch _, found, err := ds.Receipt(ctx, brakemanActor, op); {
+		// An act whose operation committed is answered by its store,
+		// whatever the target's state now. One that did not (refused
+		// before the store, or a failure of the server) runs anew if it
+		// runs at all: it is held to the checks again and written pending
+		// again before it runs.
+		switch _, found, err := ds.Committed(ctx, brakemanActor, op); {
 		case err != nil:
 			s.dispatchError(w, "act", err)
 			return
-		case !found:
-			if aerr := s.admitAct(ctx, ds, tp, ar, key, body); aerr != nil {
-				writeAPIError(w, aerr)
-				return
-			}
+		case found:
+			admit = false
 		}
-	} else {
-		if aerr := s.admitAct(ctx, ds, tp, ar, key, body); aerr != nil {
-			writeAPIError(w, aerr)
-			return
-		}
-		if len(req.Acts) >= brakeman.MaxActs {
-			writeError(w, http.StatusConflict, "acts_spent", fmt.Sprintf("a request takes at most %d acts", brakeman.MaxActs))
-			return
-		}
+	}
+	if admit {
 		act := brakeman.Act{OpID: body.OpID, Operation: ar.op, Target: target, Op: op, Args: args, State: brakeman.ActPending, At: d.now().UTC()}
-		if _, err := d.update(req.ID, func(q *brakeman.Request) error {
-			if q.State != brakeman.StateStarting && q.State != brakeman.StateRunning {
-				return brakeman.ErrNotTurn
-			}
-			q.Acts = append(q.Acts, act)
-			return nil
-		}); err != nil {
+		var ae *apiError
+		switch err := s.pendAct(ctx, ds, tp, ar, key, body, act); {
+		case err == nil:
+		case errors.As(err, &ae):
+			writeAPIError(w, ae)
+			return
+		default:
 			s.brakemanError(w, err)
 			return
 		}
@@ -231,13 +241,57 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 		return
 	}
 	rec := newReplyRecorder()
-	s.runAct(ctx, rec, r, d, ar, key, op, body, raw)
+	s.runAct(ctx, rec, ds, tp, ar, key, op, body)
 	if err := atActSeam("committed", req.ID, body.OpID); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "shutting_down", err.Error())
 		return
 	}
 	s.copyActOutcome(d, req.ID, body.OpID, rec)
 	writeRecorded(w, rec)
+}
+
+// errActsSpent refuses an act past brakeman.MaxActs a request.
+var errActsSpent = newAPIError(http.StatusConflict, "acts_spent", fmt.Sprintf("a request takes at most %d acts", brakeman.MaxActs))
+
+// pendAct admits the act of the turn tp and writes it pending, new or
+// over the entry of its opId, in admission's order (the desk's admit,
+// which a configuration's save and quiesce take): the configuration read
+// again, so a grant taken away or a visibility narrowed while the act
+// waited holds; the checks of admitAct under it; then, in one Update, the
+// request still the turn's (starting or running; brakeman.ErrNotTurn
+// otherwise) and at most brakeman.MaxActs acts. An act admitted here is
+// before any save after it. An *apiError is the act's refusal; another
+// error is the desk's.
+func (s *Server) pendAct(ctx context.Context, ds *dispatch.Store, tp *turnPrincipal, ar actRoute, key string, body actBody, act brakeman.Act) error {
+	d := s.brakeman
+	d.admit.Lock()
+	defer d.admit.Unlock()
+	if d.closing.Load() {
+		return errDeskClosing
+	}
+	cfg, err := d.st.Config()
+	if err != nil {
+		return err
+	}
+	tp.cfg = cfg
+	if aerr := s.admitAct(ctx, ds, tp, ar, key, body); aerr != nil {
+		return aerr
+	}
+	_, err = d.update(tp.req.ID, func(q *brakeman.Request) error {
+		if q.State != brakeman.StateStarting && q.State != brakeman.StateRunning {
+			return brakeman.ErrNotTurn
+		}
+		if i := slices.IndexFunc(q.Acts, func(a brakeman.Act) bool { return a.OpID == act.OpID }); i >= 0 {
+			q.Acts[i] = act
+			return nil
+		}
+		if len(q.Acts) >= brakeman.MaxActs {
+			return errActsSpent
+		}
+		q.Acts = append(q.Acts, act)
+		return nil
+	})
+	return err
 }
 
 // writeRecorded writes a recorded answer to w.
@@ -250,21 +304,32 @@ func writeRecorded(w http.ResponseWriter, rec *replyRecorder) {
 	_, _ = w.Write(rec.body.Bytes())
 }
 
-// actArgs reads an act's body: its op id and the fields its checks need,
-// the body decoded as its route decodes it (unknown fields refused), and
-// the hex SHA-256 of its arguments, the ticket's key and every field but
-// the op id and the name, in a set order.
+// actArgs reads an act's body as its route decodes it (unknown fields
+// refused), once: what the checks read and what the operation is given
+// are the same decoded fields, whatever the spelling or the order of the
+// keys sent. args is the hex SHA-256 of the arguments as decoded, the
+// ticket's key and every field but the op id and the name, encoded in a
+// set order.
 func actArgs(ar actRoute, key string, raw []byte) (actBody, string, *apiError) {
 	var body actBody
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return actBody{}, "", newAPIError(http.StatusBadRequest, "invalid_request", err.Error())
-	}
-	var strict any = &ticketLaunchBody{}
-	if ar.op == brakeman.ActPrepareFollowup {
-		strict = &planProposeBody{}
-	}
-	if err := store.DecodeStrict(raw, strict); err != nil {
-		return actBody{}, "", newAPIError(http.StatusBadRequest, "invalid_request", err.Error())
+	var canon any
+	switch ar.op {
+	case brakeman.ActPrepareFollowup:
+		var b planProposeBody
+		if err := store.DecodeStrict(raw, &b); err != nil {
+			return actBody{}, "", newAPIError(http.StatusBadRequest, "invalid_request", err.Error())
+		}
+		body = actBody{OpID: b.OpID, ExpectedRev: b.ExpectedRev, Propose: b.PlanRequest}
+		b.OpID, b.ByName = "", ""
+		canon = b
+	default:
+		var b ticketLaunchBody
+		if err := store.DecodeStrict(raw, &b); err != nil {
+			return actBody{}, "", newAPIError(http.StatusBadRequest, "invalid_request", err.Error())
+		}
+		body = actBody{OpID: b.OpID, ExpectedRev: b.ExpectedRev, Plan: b.Plan, Label: b.Label}
+		b.OpID, b.ByName = "", ""
+		canon = b
 	}
 	if !dispatch.OpIDPattern.MatchString(body.OpID) {
 		return actBody{}, "", newAPIError(http.StatusBadRequest, "invalid_request", "opId is 1 to 32 letters, digits, '.', '_', '~' or '-'")
@@ -272,15 +337,10 @@ func actArgs(ar actRoute, key string, raw []byte) (actBody, string, *apiError) {
 	if body.ExpectedRev < 0 {
 		return actBody{}, "", newAPIError(http.StatusBadRequest, "invalid_request", "expectedRev is the ticket's revision, or 0 for none")
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return actBody{}, "", newAPIError(http.StatusBadRequest, "invalid_request", err.Error())
-	}
-	delete(fields, "opId")
-	delete(fields, "byName")
-	fields["key"], _ = json.Marshal(key)
-	// A map's keys are encoded in order: the same arguments, the same sum.
-	b, err := json.Marshal(fields)
+	b, err := json.Marshal(struct {
+		Key  string `json:"key"`
+		Args any    `json:"args"`
+	}{key, canon})
 	if err != nil {
 		return actBody{}, "", newAPIError(http.StatusBadRequest, "invalid_request", err.Error())
 	}
@@ -302,9 +362,10 @@ func actGrant(tp *turnPrincipal, op string) *apiError {
 	return nil
 }
 
-// admitAct checks a new act of the turn tp on the ticket key, in order:
-// the grant, the target's visibility and scope, and its state as the
-// operation requires. nil admits it.
+// admitAct checks an act of the turn tp on the ticket key, in order: the
+// grant, the target's visibility and scope, what the operation makes (a
+// run's or a revision's crew and repository) held to the scope too, and
+// the target's state as the operation requires. nil admits it.
 func (s *Server) admitAct(ctx context.Context, ds *dispatch.Store, tp *turnPrincipal, ar actRoute, key string, body actBody) *apiError {
 	if aerr := actGrant(tp, ar.op); aerr != nil {
 		return aerr
@@ -321,14 +382,97 @@ func (s *Server) admitAct(ctx context.Context, ds *dispatch.Store, tp *turnPrinc
 	case !ok:
 		return newAPIError(http.StatusForbidden, "outside_scope", "outside the request's scope")
 	}
-	return s.actTargetState(ctx, ds, ar, key, body)
+	if ar.op == brakeman.ActPrepareFollowup {
+		// The follow-up's crew and the folder it would plan in, as the
+		// proposal resolves them; the proposal holds them to the scope
+		// again once its folder is resolved (planGuard), before git runs.
+		if aerr := s.followupAdmitted(ctx, ds, o, key, body.Propose.Crew); aerr != nil {
+			return aerr
+		}
+	}
+	return s.actTargetState(ctx, ds, o, ar, key, body)
+}
+
+// followupAdmitted holds a follow-up's crew, and the folder a proposal of
+// it on the ticket key plans in, to the turn's scope. A crew or a project
+// the proposal cannot read is left to the proposal, which refuses it in
+// its own words.
+func (s *Server) followupAdmitted(ctx context.Context, ds *dispatch.Store, o *observer, key, crewID string) *apiError {
+	if !o.grant.crewAdmitted(crewID) {
+		return newAPIError(http.StatusForbidden, "outside_scope", "the crew "+cut(crewID, 64)+" is outside the request's scope")
+	}
+	if s.crews == nil || !o.grant.byRepo() {
+		return nil
+	}
+	c, err := s.crews.Get(crewID)
+	if err != nil {
+		return nil
+	}
+	project, _, _ := dispatch.ParseKey(key)
+	pv, err := ds.Project(ctx, project)
+	if err != nil {
+		return nil
+	}
+	cwd, err := s.resolveCwd(s.planCwd(pv, c))
+	if err != nil {
+		return nil
+	}
+	return actMakesAdmitted(ctx, o, crewID, cwd)
+}
+
+// actMakesAdmitted holds what an act makes, of the crew crewID in the
+// folder cwd, to the turn's scope: the crew to each scope's Crews and the
+// folder's repository root to its Repos, when they name any (its project
+// is the ticket's, held by ticketAdmitted). nil admits it.
+func actMakesAdmitted(ctx context.Context, o *observer, crewID, cwd string) *apiError {
+	if !o.grant.crewAdmitted(crewID) {
+		return newAPIError(http.StatusForbidden, "outside_scope", "the crew "+cut(crewID, 64)+" is outside the request's scope")
+	}
+	if !o.grant.byRepo() {
+		return nil
+	}
+	top, err := o.rr.top(ctx, cwd)
+	if err != nil {
+		var ae *apiError
+		if errors.As(err, &ae) {
+			return ae
+		}
+		return newAPIError(http.StatusInternalServerError, "git_failed", "the repository of the crew's working directory could not be read")
+	}
+	if !o.grant.repoAdmitted(top) {
+		return newAPIError(http.StatusForbidden, "outside_scope", "the crew's repository is outside the request's scope")
+	}
+	return nil
+}
+
+// crewAdmitted reports whether every scope of the grant that names crews
+// names crewID.
+func (g refGrant) crewAdmitted(crewID string) bool {
+	for _, s := range g.scopes {
+		if len(s.Crews) > 0 && !slices.Contains(s.Crews, crewID) {
+			return false
+		}
+	}
+	return true
+}
+
+// repoAdmitted reports whether every scope of the grant that names
+// repositories names the root top ("" for none, in none).
+func (g refGrant) repoAdmitted(top string) bool {
+	for _, s := range g.scopes {
+		if len(s.Repos) > 0 && !slices.Contains(s.Repos, top) {
+			return false
+		}
+	}
+	return true
 }
 
 // actTargetState checks the act's target is in the state its operation
 // requires: the ticket at the revision the act read (expectedRev, when
 // given), and the plan revision it names the ticket's own, approved, and
-// for a launch an approval that still holds. nil when it is.
-func (s *Server) actTargetState(ctx context.Context, ds *dispatch.Store, ar actRoute, key string, body actBody) *apiError {
+// for a launch an approval that still holds and a crew and repository in
+// the scope. nil when it is.
+func (s *Server) actTargetState(ctx context.Context, ds *dispatch.Store, o *observer, ar actRoute, key string, body actBody) *apiError {
 	tk, err := ds.Ticket(ctx, key)
 	switch {
 	case errors.Is(err, dispatch.ErrNotFound):
@@ -341,7 +485,7 @@ func (s *Server) actTargetState(ctx context.Context, ds *dispatch.Store, ar actR
 	}
 	id, what := body.Plan, "the revision to launch"
 	if ar.op == brakeman.ActPrepareFollowup {
-		id, what = body.BasedOn, "the approved revision a follow-up is based on (basedOn)"
+		id, what = body.Propose.BasedOn, "the approved revision a follow-up is based on (basedOn)"
 	}
 	if !dispatch.ValidID(id) {
 		return newAPIError(http.StatusBadRequest, "invalid_request", what+" is a plan revision's id, 16 lower-case hex characters")
@@ -360,6 +504,22 @@ func (s *Server) actTargetState(ctx context.Context, ds *dispatch.Store, ar actR
 		return newAPIError(http.StatusConflict, "stale_target", fmt.Sprintf("revision %d of %s is %s: Brakeman acts only on the revision the operator approved", p.N, key, p.State))
 	case ar.op == brakeman.ActLaunchApprovedPlan && p.Stale != nil:
 		return newAPIError(http.StatusConflict, "stale_target", fmt.Sprintf("the approval of revision %d of %s no longer holds: the operator approves it again or revises it", p.N, key))
+	case ar.op == brakeman.ActLaunchApprovedPlan:
+		// The run the launch makes: the revision's crew, in the folder
+		// the revision fixed on it.
+		v, err := ds.Plan(ctx, id)
+		if err != nil {
+			return newAPIError(http.StatusInternalServerError, "store_failed", "the plan revision could not be read")
+		}
+		var pb struct {
+			Crew struct {
+				Cwd string `json:"cwd"`
+			} `json:"crew"`
+		}
+		if err := json.Unmarshal(v.Body, &pb); err != nil {
+			return newAPIError(http.StatusInternalServerError, "store_failed", "the plan revision's crew could not be read")
+		}
+		return actMakesAdmitted(ctx, o, p.CrewID, pb.Crew.Cwd)
 	}
 	return nil
 }
@@ -367,13 +527,15 @@ func (s *Server) actTargetState(ctx context.Context, ds *dispatch.Store, ar actR
 // runAct runs the act's operation through its one function under the
 // actor brakeman, its op id op, answering to rec as the operation's route
 // does: a launch through the desk's ext.Host (LaunchApproved, DS2's
-// launch), a follow-up proposal through DS2's propose route.
-func (s *Server) runAct(ctx context.Context, rec *replyRecorder, r *http.Request, d *brakemanDesk, ar actRoute, key, op string, body actBody, raw []byte) {
+// launch), a follow-up proposal through DS2's (ticketPropose), held to
+// the turn's scope once its folder is resolved and to an approved base in
+// the store's transaction.
+func (s *Server) runAct(ctx context.Context, rec *replyRecorder, ds *dispatch.Store, tp *turnPrincipal, ar actRoute, key, op string, body actBody) {
 	switch ar.op {
 	case brakeman.ActLaunchApprovedPlan:
 		al := ext.ApprovedLaunch{Ticket: key, Plan: body.Plan, ExpectedRev: body.ExpectedRev, OpID: op, Label: body.Label,
 			By: ext.Principal{Subject: brakemanActor, Name: brakemanBy}}
-		ref, err := d.host().LaunchApproved(withReplySink(ctx, rec), al)
+		ref, err := s.brakeman.host().LaunchApproved(withReplySink(ctx, rec), al)
 		if rec.status != 0 {
 			return
 		}
@@ -385,20 +547,11 @@ func (s *Server) runAct(ctx context.Context, rec *replyRecorder, r *http.Request
 		}
 		writeDispatch(rec, http.StatusCreated, map[string]any{"run": map[string]any{"id": ref.ID, "crewId": ref.Crew}})
 	case brakeman.ActPrepareFollowup:
-		var fields map[string]json.RawMessage
-		_ = json.Unmarshal(raw, &fields)
-		fields["opId"], _ = json.Marshal(op)
-		fields["byName"], _ = json.Marshal(brakemanBy)
-		b, _ := json.Marshal(fields)
-		in, err := http.NewRequestWithContext(ctx, http.MethodPost, r.URL.Path, bytes.NewReader(b))
-		if err != nil {
-			writeError(rec, http.StatusInternalServerError, "store_failed", err.Error())
-			return
-		}
-		in.Header.Set("Content-Type", "application/json")
-		in.SetPathValue("key", key)
-		in = withPrincipal(in, principal{admin: true, as: brakemanActor})
-		s.handleDispatchProposePlan(rec, in)
+		o := s.newObserver(tp)
+		guard := &planGuard{admit: func(ctx context.Context, crewID, cwd string) *apiError {
+			return actMakesAdmitted(ctx, o, crewID, cwd)
+		}}
+		s.ticketPropose(ctx, rec, ds, dispatch.Op{Actor: brakemanActor, ID: op, ExpectedRev: body.ExpectedRev, By: brakemanBy}, key, body.Propose, guard)
 	}
 }
 
@@ -417,6 +570,7 @@ func (s *Server) copyActOutcome(d *brakemanDesk, request, opID string, rec *repl
 		for i := range q.Acts {
 			if a := &q.Acts[i]; a.OpID == opID && a.State != brakeman.ActNotRun {
 				a.State, a.Receipt, a.Why, a.At = state, receipt, why, d.now().UTC()
+				*a = a.Fit()
 			}
 		}
 		return nil
@@ -457,8 +611,9 @@ func receiptOutcome(rc dispatch.Receipt) (state, receipt, why string) {
 	return brakeman.ActRefused, rc.ID, cutWhy(cmpOr(rc.Error, rc.Refusal))
 }
 
-// maxActWhy bounds an act's words, so its entry stays within
-// brakeman.MaxActBytes.
+// maxActWhy bounds an act's words as they are read; Act.Fit then cuts
+// them to what its entry has room for within brakeman.MaxActBytes, as
+// encoded.
 const maxActWhy = 200
 
 // cutWhy is why cut to maxActWhy bytes on a character's boundary.
@@ -472,15 +627,16 @@ func cutWhy(why string) string {
 
 // completeAct completes an act the last owner left pending, from the
 // operation's own store by what the entry holds: Dispatch's receipt for
-// (brakeman, op) copied, done or refused, with its words; none, the
-// operation never committed, and the entry is marked not_run, never run
-// by the recovery (its turn has ended, and the grant was that turn's).
+// (brakeman, op) copied, done or refused, with its words, or, the receipt
+// pruned, the changes log's record that it committed (Committed); none,
+// the operation never committed, and the entry is marked not_run, never
+// run by the recovery (its turn has ended, and the grant was that turn's).
 func (s *Server) completeAct(ctx context.Context, d *brakemanDesk, request string, a brakeman.Act) error {
 	ds := s.dispatch
 	if ds == nil {
 		return &errRefStore{what: "Dispatch's store"}
 	}
-	rc, found, err := ds.Receipt(ctx, brakemanActor, a.Op)
+	rc, found, err := ds.Committed(ctx, brakemanActor, a.Op)
 	if err != nil {
 		return err
 	}
@@ -492,6 +648,7 @@ func (s *Server) completeAct(ctx context.Context, d *brakemanDesk, request strin
 		for i := range q.Acts {
 			if p := &q.Acts[i]; p.OpID == a.OpID && p.State == brakeman.ActPending {
 				p.State, p.Receipt, p.Why, p.At = state, receipt, why, d.now().UTC()
+				*p = p.Fit()
 			}
 		}
 		return nil
