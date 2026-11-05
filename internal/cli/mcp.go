@@ -222,9 +222,10 @@ func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError)
 }
 
 // granted reports whether the Brakeman turn this session is has been
-// granted an operation: its request's permissions.act, the snapshot and
-// the configuration now together, as the server answers them. A request
-// that cannot be read lists no act: the act routes refuse it as ever.
+// granted an operation: its guide lists one under the scope act (the
+// snapshot and the configuration now together, as the server answers
+// them). A guide that cannot be read lists no act: the act routes refuse
+// it as ever.
 func (s *mcpServer) granted(ctx context.Context) bool {
 	c, err := brakemanClientFromEnv(s.getenv)
 	if err != nil {

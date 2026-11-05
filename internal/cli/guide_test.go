@@ -59,11 +59,11 @@ func TestGuideInASession(t *testing.T) {
 func TestGuideWithTheWorkbenchToken(t *testing.T) {
 	a := newDispatchAPI(t)
 	code, out, errOut, err := guideCmd(t, "--server", a.hs.URL, "--token", dispatchToken)
-	if code != 0 || err != nil || !hasAll(out, "You are the admin (the workbench token); your scopes: admin, session, task, ticket, observe.") {
+	if code != 0 || err != nil || !hasAll(out, "You are the admin (the workbench token); your scopes: admin, session, task, ticket, observe, act.") {
 		t.Fatalf("overview: %d %v %q %q", code, err, out, errOut)
 	}
 	code, out, _, err = guideCmd(t, "--server", a.hs.URL, "--token", dispatchToken, "--section", "operations")
-	if code != 0 || err != nil || !hasAll(out, "run_pause [admin] POST /api/runs/{run}/pause", "checks the run's revision", "task_result [task]") {
+	if code != 0 || err != nil || !hasAll(out, "run_pause [admin] POST /api/runs/{run}/pause", "checks the run's revision", "task_result [task]", "launch_approved_plan [act] POST /api/dispatch/tickets/{key}/launch") {
 		t.Fatalf("operations: %d %v %q", code, err, out)
 	}
 	// An admin operation's input is its route's body: a Dispatch one's

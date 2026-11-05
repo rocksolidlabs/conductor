@@ -176,24 +176,39 @@ func (c *brakemanClient) tool(ctx context.Context, name string, raw json.RawMess
 	return "", unknownTool(name)
 }
 
-// grants is the operations the turn's request says it is granted: the
-// snapshot its turn began under and the configuration now together.
+// grants is the operations the turn is granted, as its guide's
+// operations section lists them (the scope act: the snapshot its turn
+// began under and the configuration now together), the act tool left
+// out. The guide is read, not the request: a read of the request marks
+// it read, which tells a turn whose agent gave up from one whose agent
+// never started (an MCP server is started before the agent reads).
 func (c *brakemanClient) grants(ctx context.Context) ([]string, error) {
-	raw, err := c.request(ctx)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.root+"/api/sessions/"+url.PathEscape(c.session)+"/guide?section=operations", nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, stripURL(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("brakeman: the guide answered %d", resp.StatusCode)
+	}
 	var out struct {
-		Request struct {
-			Permissions struct {
-				Act []string `json:"act"`
-			} `json:"permissions"`
-		} `json:"request"`
+		Operations []struct{ Name, Scope string } `json:"operations"`
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("brakeman: an unreadable request: %w", err)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSessionReply)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("brakeman: an unreadable guide: %w", err)
 	}
-	return out.Request.Permissions.Act, nil
+	var acts []string
+	for _, op := range out.Operations {
+		if op.Scope == "act" && op.Name != "act" {
+			acts = append(acts, op.Name)
+		}
+	}
+	return acts, nil
 }
 
 // actOperations is every operation the table lists for a grant (scope

@@ -790,14 +790,15 @@ func TestBriefSubmitResendsTheSameOpID(t *testing.T) {
 	}
 }
 
-// grantServer is a server of a Brakeman turn's session s1 whose request
-// names the operations act as granted, answering every act's route with
+// grantServer is a server of a Brakeman turn's session s1 whose guide
+// lists the operations act as granted, answering every act's route with
 // the reply of answer, its posts' paths, sessions and bodies kept in
 // order; lose, when set, cuts the connection of the first post.
 type grantServer struct {
 	*httptest.Server
-	mu    sync.Mutex
-	posts []grantPost
+	mu           sync.Mutex
+	posts        []grantPost
+	requestReads int
 }
 
 type grantPost struct {
@@ -810,9 +811,24 @@ func newGrantServer(t *testing.T, act []string, lose bool) *grantServer {
 	g := &grantServer{}
 	g.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodGet && r.URL.Path == "/api/sessions/s1/brakeman/request" {
-			b, _ := json.Marshal(map[string]any{"request": map[string]any{"id": "br-1", "kind": "briefing", "state": "running", "permissions": map[string]any{"observe": true, "act": act}}})
+		if r.Method == http.MethodGet && r.URL.Path == "/api/sessions/s1/guide" && r.URL.Query().Get("section") == "operations" {
+			ops := []map[string]any{{"name": "observe", "scope": "observe"}}
+			if len(act) > 0 {
+				ops = append(ops, map[string]any{"name": "act", "scope": "act"})
+			}
+			for _, a := range act {
+				ops = append(ops, map[string]any{"name": a, "scope": "act"})
+			}
+			b, _ := json.Marshal(map[string]any{"section": "operations", "operations": ops})
 			_, _ = w.Write(b)
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/api/sessions/s1/brakeman/request" {
+			// The listing must not mark the request read.
+			g.mu.Lock()
+			g.requestReads++
+			g.mu.Unlock()
+			http.NotFound(w, r)
 			return
 		}
 		if r.Method != http.MethodPost {
@@ -849,16 +865,23 @@ func (g *grantServer) sent() []grantPost {
 }
 
 // The act tool is a Brakeman turn's alone, and listed only while its
-// request says the person granted it an operation (the snapshot and the
+// guide lists an operation the person granted it (the snapshot and the
 // configuration now, as the server answers them): a turn granted none,
-// or whose request cannot be read, lists no act, and a worker's session
-// never does. Its schema is the table's, its enum the operations the
-// table serves.
+// or whose guide cannot be read, lists no act, and a worker's session
+// never does. The listing reads the guide, never the request, which a
+// read marks read. Its schema is the table's, its enum the operations
+// the table serves.
 func TestTheActToolIsListedOnlyWithAGrant(t *testing.T) {
 	granted := newGrantServer(t, []string{brakeman.ActLaunchApprovedPlan}, false)
 	none := newGrantServer(t, nil, false)
 	if got := listedTools(t, brakemanEnv(granted.URL, "s1", "tok")); !slices.Contains(got, "act") {
 		t.Errorf("a granted turn's tools: %v", got)
+	}
+	granted.mu.Lock()
+	reads := granted.requestReads
+	granted.mu.Unlock()
+	if reads != 0 {
+		t.Errorf("the listing read the request %d times", reads)
 	}
 	for name, env := range map[string]func(string) string{
 		"a turn granted none":          brakemanEnv(none.URL, "s1", "tok"),
