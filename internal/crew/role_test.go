@@ -44,8 +44,11 @@ type fakeRecords struct {
 	outcome  map[string]RoleOutcome
 	fires    int
 	refuse   *RoleRefused
-	// saveFails makes the next SaveRole fail, as a crash would.
-	saveFails bool
+	// saveFails makes the next SaveRole fail, as a crash would;
+	// settingsErr every RoleSettings, as a configuration that cannot be
+	// read.
+	saveFails   bool
+	settingsErr error
 	// afterFire runs once Fire has made its request.
 	afterFire func()
 }
@@ -78,10 +81,13 @@ func (f *fakeRecords) SaveRole(r RoleRecord) error {
 	return nil
 }
 
-func (f *fakeRecords) RoleSettings() RoleSettings {
+func (f *fakeRecords) RoleSettings() (RoleSettings, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.settings
+	if f.settingsErr != nil {
+		return RoleSettings{}, f.settingsErr
+	}
+	return f.settings, nil
 }
 
 func (f *fakeRecords) Fire(b Batch) (string, error) {
@@ -735,4 +741,95 @@ func TestForgetReadsTheRecordsAgain(t *testing.T) {
 	if r.Last != 1 || r.Open == nil || r.Open.ID != "wb-1" || len(r.Open.Wakes) != 2 || len(r.Log) != 2 || len(r.Notes) != 1 {
 		t.Fatalf("the record taken up: %+v", r)
 	}
+}
+
+// TestAPauseAcrossABriefingTimeFiresNoneUnstepped: the role is paused at
+// 06:30 and resumed at 08:00 with no step between (its loop held up), and
+// the 07:00 briefing that passed meanwhile wakes nothing: Pause and
+// Resume drop the briefing times' mark themselves.
+func TestAPauseAcrossABriefingTimeFiresNoneUnstepped(t *testing.T) {
+	zone := time.FixedZone("CST", -6*3600)
+	f := newRoleFixture(t)
+	f.rec.settings.Location, f.rec.settings.Briefings = zone, []string{"07:00"}
+	f.clock.t = time.Date(2026, 11, 5, 6, 0, 0, 0, zone)
+	f.step()
+	f.clock.add(30 * time.Minute)
+	if _, err := f.role.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	f.clock.add(90 * time.Minute) // 08:00
+	if _, err := f.role.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if next := f.step(); next != 23*time.Hour {
+		t.Fatalf("the next briefing is due in %s, want 23h", next)
+	}
+	if r := f.record(); len(r.Log) != 0 || r.Open != nil || r.State != RoleIdle {
+		t.Fatalf("the briefing passed while paused woke the role: %+v", r)
+	}
+}
+
+// TestUnreadableSettingsChangeNothing: a batch is gathering when the
+// settings cannot be read; past its window the step says so and changes
+// nothing (the batch neither dropped as if the role were off nor fired),
+// a wake is refused rather than taken for the role off, and once the
+// settings read again the batch fires, once.
+func TestUnreadableSettingsChangeNothing(t *testing.T) {
+	f := newRoleFixture(t)
+	f.failed("build", 1)
+	f.state(RoleGathering)
+	f.rec.mu.Lock()
+	f.rec.settingsErr = errors.New("config.json does not parse")
+	f.rec.mu.Unlock()
+	f.clock.add(3 * time.Minute)
+	if _, err := f.role.Step(); err == nil {
+		t.Fatal("the unreadable settings were not said")
+	}
+	if err := f.role.Wake(RoleWake{Source: WakeTaskFailed, Subject: "task:run-1/lint", Key: "attempts 1"}); err == nil {
+		t.Fatal("a wake was taken for the role off")
+	}
+	if r := f.record(); r.State != RoleGathering || r.Open == nil || len(r.Open.Wakes) != 1 || f.rec.fired() != 0 {
+		t.Fatalf("the unreadable settings changed the role: %+v", r)
+	}
+	f.rec.mu.Lock()
+	f.rec.settingsErr = nil
+	f.rec.mu.Unlock()
+	if r := f.state(RoleBriefing); r.Fired == nil || len(r.Fired.Wakes) != 1 || f.rec.fired() != 1 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// TestAgainPassesUnpoked: an owner whose sources kept what a pass could
+// not take (Again) has the loop pass again after the retry, with nothing
+// poking it and nothing of the role's own falling due.
+func TestAgainPassesUnpoked(t *testing.T) {
+	f := newRoleFixture(t)
+	f.role.retry = time.Millisecond
+	done := make(chan struct{})
+	passes := make(chan int, 4)
+	n := 0
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		f.role.Run(done, func() bool {
+			n++
+			if n == 1 {
+				f.role.Again()
+			}
+			passes <- n
+			return true
+		})
+	}()
+	for want := 1; want <= 2; want++ {
+		select {
+		case got := <-passes:
+			if got != want {
+				t.Fatalf("pass %d, want %d", got, want)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("pass %d never came", want)
+		}
+	}
+	close(done)
+	<-ended
 }

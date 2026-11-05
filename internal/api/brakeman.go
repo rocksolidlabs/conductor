@@ -180,6 +180,14 @@ type brakemanDesk struct {
 	role     *crew.Role
 	src      *roleSources
 	roleDone chan struct{}
+	// roleState is the role's state as its records last read or wrote it
+	// (roleUnknown, roleRunning, rolePausedState), and pausing counts the
+	// pauses a person asked that are not yet answered, marked under admit
+	// before the pause is written: the dequeue holds a wake request in the
+	// queue while either says paused (roleHolds), so no wake turn starts
+	// once a person has paused the role.
+	roleState atomic.Int32
+	pausing   atomic.Int32
 	// making counts the makes the make route admitted (admitMake), which
 	// release waits for before the owner lock goes: a make admitted before
 	// the desk closed finishes its backend's operation here, never beside
@@ -750,8 +758,14 @@ func (d *brakemanDesk) dequeue() time.Duration {
 			d.mu.Unlock()
 			return 0
 		}
-		id := d.queue[0]
+		queue := slices.Clone(d.queue)
 		d.mu.Unlock()
+		// The oldest that may start: a wake request waits while the role is
+		// paused (a person's turn behind it starts), and starts once resumed.
+		id := d.startable(queue)
+		if id == "" {
+			return 0
+		}
 		// The agent's entry is chosen once, here: the stamp is its, the
 		// launch's probe runs it and the turn's crew is made from it, so a
 		// catalog edit meanwhile is refused at the member's start

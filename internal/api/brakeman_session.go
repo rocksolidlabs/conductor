@@ -184,7 +184,11 @@ func (s *Server) handleSessionBrakemanRequest(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if req.Batch != "" {
-		out.Batch = d.roleBatch(req.Batch)
+		if b := d.roleBatch(req.Batch); b != nil {
+			// Only what the turn's grant admits: the configuration narrowed
+			// since the batch gathered narrows what the turn reads of it.
+			out.Batch = rr.visibleBatch(r.Context(), *b)
+		}
 	}
 	if rec, err := d.roleRecord(); err == nil {
 		out.Notes = rec.Notes

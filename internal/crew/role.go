@@ -219,8 +219,10 @@ type RoleRecords interface {
 	LoadRole() (r RoleRecord, ok bool, err error)
 	// SaveRole writes it.
 	SaveRole(r RoleRecord) error
-	// RoleSettings are the settings now.
-	RoleSettings() RoleSettings
+	// RoleSettings are the settings now; an error when they cannot be
+	// read, which is never taken for the role turned off: the role then
+	// changes nothing and tries again.
+	RoleSettings() (RoleSettings, error)
 	// Fire starts the batch's turn: a request made under an id the
 	// batch's own (wake-<batch>), so a batch fired again (a crash between
 	// the request and the role's write) answers the request it made. It
@@ -253,6 +255,11 @@ type Role struct {
 
 	poke  chan struct{}
 	steps atomic.Uint64
+	// again says the owner's sources hold what a pass could not take (a
+	// wake whose write failed, settings that could not be read): the loop
+	// passes again after retry, poked or not.
+	again atomic.Bool
+	retry time.Duration
 }
 
 // NewRole is the role of identity over records, on the clock now
@@ -261,8 +268,12 @@ func NewRole(identity string, records RoleRecords, now func() time.Time) *Role {
 	if now == nil {
 		now = time.Now
 	}
-	return &Role{identity: identity, records: records, now: now, poke: make(chan struct{}, 1)}
+	return &Role{identity: identity, records: records, now: now, poke: make(chan struct{}, 1), retry: RoleRetry}
 }
+
+// Again makes the loop pass again after RoleRetry though nothing pokes
+// it: the owner's sources kept what this pass could not take.
+func (r *Role) Again() { r.again.Store(true) }
 
 // Poke makes the loop step again.
 func (r *Role) Poke() {
@@ -288,6 +299,9 @@ func (r *Role) Run(done <-chan struct{}, before func() bool) {
 			next, _ = r.Step()
 		}
 		r.steps.Add(1)
+		if r.again.Swap(false) && (next <= 0 || next > r.retry) {
+			next = r.retry
+		}
 		timer.Stop()
 		var tick <-chan time.Time
 		if next > 0 {
@@ -543,7 +557,9 @@ func (r *Role) Wake(w RoleWake) error {
 	if err := checkWake(w); err != nil {
 		return err
 	}
-	if !r.records.RoleSettings().On {
+	if s, err := r.records.RoleSettings(); err != nil {
+		return err
+	} else if !s.On {
 		return nil
 	}
 	r.mu.Lock()
@@ -578,7 +594,9 @@ func (r *Role) Asked(w RoleWake) error {
 	if err := checkWake(w); err != nil {
 		return err
 	}
-	if !r.records.RoleSettings().On {
+	if s, err := r.records.RoleSettings(); err != nil {
+		return err
+	} else if !s.On {
 		return nil
 	}
 	r.mu.Lock()
@@ -612,7 +630,10 @@ func (r *Role) Hold(w RoleWake, due time.Time, still func() bool) {
 }
 
 // Pause pauses the role, from any state: no wake joins a batch and no
-// batch fires until Resume; a turn already running runs to its end.
+// batch fires until Resume; a turn already running runs to its end. The
+// briefing times' mark is dropped with it, so no briefing time that
+// passes while paused fires once resumed, whether or not a step ran
+// between.
 func (r *Role) Pause() (RoleRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -620,7 +641,7 @@ func (r *Role) Pause() (RoleRecord, error) {
 		if c.State == RolePaused {
 			return errNothing
 		}
-		c.State, c.Why, c.RetryAt = RolePaused, "paused by a person", time.Time{}
+		c.State, c.Why, c.RetryAt, c.Briefed = RolePaused, "paused by a person", time.Time{}, time.Time{}
 		return nil
 	})
 	if err != nil && !errors.Is(err, errNothing) {
@@ -630,7 +651,8 @@ func (r *Role) Pause() (RoleRecord, error) {
 }
 
 // Resume ends a pause: the role takes up what its record holds (a turn
-// still running, a cooldown not over, a batch open, else idle).
+// still running, a cooldown not over, a batch open, else idle), and its
+// next step looks at the briefing times afresh, from the resume on.
 func (r *Role) Resume() (RoleRecord, error) {
 	r.mu.Lock()
 	now := r.now()
@@ -639,6 +661,7 @@ func (r *Role) Resume() (RoleRecord, error) {
 			return errNothing
 		}
 		c.available(now)
+		c.Briefed = time.Time{}
 		return nil
 	})
 	out := cloneRole(r.rec)
@@ -766,7 +789,12 @@ func (r *Role) Step() (time.Duration, error) {
 	if err := r.load(); err != nil {
 		return RoleRetry, err
 	}
-	s := r.records.RoleSettings()
+	// Settings that cannot be read are not the role turned off: nothing
+	// changes (the batch gathering stays, unfired) until they can be.
+	s, err := r.records.RoleSettings()
+	if err != nil {
+		return RoleRetry, err
+	}
 	now := r.now()
 	c := cloneRole(r.rec)
 	dirty := false
@@ -780,8 +808,9 @@ func (r *Role) Step() (time.Duration, error) {
 	// the next falls due), so a role turned on or resumed fires no
 	// briefing of the past; a briefing time due wakes the role and tries
 	// again for an unavailable one. Off or paused, none is looked at and
-	// the mark is dropped, so a briefing time that passes meanwhile fires
-	// nothing once the role is on, or resumed, again.
+	// the mark is dropped (Pause and Resume drop it themselves), so a
+	// briefing time that passes meanwhile fires nothing once the role is
+	// on, or resumed, again.
 	switch {
 	case !s.On || c.State == RolePaused:
 		if !c.Briefed.IsZero() {

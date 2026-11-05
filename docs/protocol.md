@@ -3542,7 +3542,7 @@ that is not a turn's:
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}, batch?, notes?}}`: a wake request's `batch` as the role holds it (`{id, openedAt, wakes: [{source, subject?, count, first, last}], overflow?: {count, first, last}}`), the role's `notes` (`[{text, from?, at}]`) for every turn; the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together. The admin's token reads it too; read with the session's own, it marks the request read |
+| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}, batch?, notes?}}`: a wake request's `batch` as the role holds it (`{id, openedAt, wakes: [{source, subject?, count, first, last}], overflow?: {count, first, last}}`) with only the wakes whose subjects the turn's grant admits (the snapshot's and the configuration's scope and visibility together, as now; a subject that cannot be read now left out) and its `overflow` only under a grant that narrows neither the scope nor the runs', sessions' or Dispatch's visibility, the role's `notes` (`[{text, from?, at}]`) for every turn; the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together. The admin's token reads it too; read with the session's own, it marks the request read |
 | `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed. The `opId` is looked up first: the same `opId` and brief answer `200` with the request whatever its state now, another brief `409 brief_exists`; so does a submission that overlapped the one kept (both checked before either was kept). Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` (its path, a list's entry by its index: `items[1].alternatives[1].label`) and why (a field past its bound is refused, never cut; a brief with no item is refused, and a briefing's with no `fact/1`; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0; the why names what is taken beside what was sent: an unknown item kind with every kind, an unknown field with the fields its object takes, a value of another type with its field's type, a ref of no kind with the ref forms); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; all of it against the configuration as the brief is kept, a save meanwhile having it checked again (`409 stale_revision` when the configuration keeps changing); nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
 
 **What a turn reads.** A request whose bearer is a turn's session token
@@ -3802,8 +3802,10 @@ quiet session's entries.
 `config.wake.mode` `background` (and Brakeman on), Brakeman is woken by
 events: a task of a person's run failed with proof (the engine's failed
 state), a question open past `wake.questionMinutes` (1 to 1,440; 15), a
-run ended (stopped, finished, or every task terminal) or paused, a
-ticket moved to `ready` (Dispatch's changes read from the server's
+run ended (stopped, finished, or every task terminal) or paused (a
+managed run read as its ledger holds it: never a change whose
+transaction is pending or was refused), a ticket moved to `ready` (by
+the status that change set; Dispatch's changes read from the server's
 start, every row of each commit), a person's own request, and the
 briefing times `wake.briefings` (at most 24 `HH:MM`, the server's local
 zone, firing while it runs; one that passed while the server was stopped
@@ -3812,7 +3814,12 @@ paused fires nothing). None fires for a Brakeman turn's run or session,
 or for what a request made (a change under the actor `brakeman` or an op
 id a request derived; a run an act launched, known by its launch's maker
 in Dispatch, and its members' questions); while the role is off nothing
-fires, and what happened meanwhile wakes nothing once it is on. The
+fires, and what happened meanwhile wakes nothing once it is on. Nor
+does a source fire for a subject outside the configuration's scope or
+visibility. A wake whose write fails, and what the sources noted while
+the configuration cannot be read, are kept and taken on a later pass
+(Dispatch's feed read on from the change not yet taken); a configuration
+that cannot be read changes nothing of the role. The
 role is `idle`, then
 `gathering` once a wake opens a batch (`wb-<n>`, its id written as it
 opens), and once the window ends (`wake.windowSeconds`, 10 to 900; 120)
@@ -3826,7 +3833,10 @@ coalesced with a count, past them an `overflow` count with the first and
 last times; a wake whose source, subject and key the log holds already
 (a task's attempts, a question's time) is one fired before, after a
 restart too. `paused` (a person) gathers nothing (a wake is logged
-`held: "paused"`), and a turn running then runs to its end;
+`held: "paused"`), a turn running then runs to its end, and a wake
+request still queued (behind a person's turn) waits in the queue,
+starting once the role is resumed; the briefing times passed while
+paused fire nothing, whether or not the role stepped between;
 `unavailable` (a turn could not start: its launch refused, its agent
 exited before it read its request, or the day's turns or minutes spent)
 says why, keeps its batch (a turn that started none gives its wakes to
