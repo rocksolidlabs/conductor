@@ -397,6 +397,42 @@ func TestALogTailCarriesItsSHA(t *testing.T) {
 	f.expectRead(t, "/api/runs/"+f.run+"/tasks/build/attempts/1/steps", http.StatusOK, "")
 }
 
+// A check ref's seen snapshot keeps the log's SHA-256 the turn read it
+// with, as the step log route and the attempt's receipts give it, beside
+// the receipt's now: BK1's brief cites the failing check's receipt with
+// its log hash equal to the step log route's (the live check's seen held
+// none).
+func TestACheckRefKeepsTheLogHashItWasReadWith(t *testing.T) {
+	f := newObsFixture(t)
+	f.turn(t, nil)
+	ref := "check:" + f.run + "/build/1/test/1"
+	resp, _ := f.readRaw(t, "/api/runs/"+f.run+"/tasks/build/attempts/1/steps/test/1/log")
+	if resp.StatusCode != http.StatusOK || resp.Header.Get(logHashHeader) != f.logSHA || f.logSHA == "" {
+		t.Fatalf("the log: %d %q", resp.StatusCode, resp.Header.Get(logHashHeader))
+	}
+	if rd, ok := f.readOf(t, ref); !ok || rd.Class != brakeman.ClassLogs || rd.SHA256 != f.logSHA {
+		t.Fatalf("the log's read: %+v %v", rd, ok)
+	}
+	// The attempt's receipts, read after, give the same hash: the newest
+	// read stands and keeps it.
+	f.expectRead(t, "/api/runs/"+f.run+"/tasks/build/attempts/1/steps", http.StatusOK, "")
+	if rd, ok := f.readOf(t, ref); !ok || rd.Class != brakeman.ClassRuns || rd.SHA256 != f.logSHA {
+		t.Fatalf("the receipts' read: %+v %v", rd, ok)
+	}
+	f.submitFact(t, ref)
+	_, refs, err := f.desk.st.Brief(f.req)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("the brief's refs: %v %v", refs, err)
+	}
+	if refs[0].Seen.SHA256 != f.logSHA || refs[0].Now.SHA256 != f.logSHA || refs[0].Seen.State == "unobserved" {
+		t.Fatalf("seen %+v, now %+v", refs[0].Seen, refs[0].Now)
+	}
+	route := f.expect(t, "GET", "/api/brakeman/requests/"+f.req+"/refs", nil, http.StatusOK, "")["refs"].([]any)[0].(map[string]any)
+	if route["seen"].(map[string]any)["sha256"] != f.logSHA {
+		t.Fatalf("the refs route: %v", route)
+	}
+}
+
 // Each answer counts one read; past the turn's reads the next is refused
 // 429 reads_spent, and its items are noted in the read log.
 func TestReadsAreCountedAndBounded(t *testing.T) {
@@ -762,6 +798,12 @@ func TestASeenRevisionIsKeptBesideNow(t *testing.T) {
 	}
 }
 
+// readFact is a fact citing ref, which a briefing's brief holds beside
+// what a test is about (a briefing answers with at least one fact).
+func readFact(ref string) map[string]any {
+	return map[string]any{"kind": brakeman.ItemFact, "text": "the turn read it", "evidence": []string{ref}}
+}
+
 // A decision about a ticket that names a revision other than the one the
 // turn read is refused, saying which it read.
 func TestAStaleSubjectRevisionIsRefused(t *testing.T) {
@@ -771,7 +813,7 @@ func TestAStaleSubjectRevisionIsRefused(t *testing.T) {
 	seen, _ := f.readOf(t, "ticket:"+f.ticket)
 	rec := 0
 	decision := func(rev string) map[string]any {
-		return map[string]any{"schema": brakeman.BriefSchema, "title": "A decision", "summary": "One to make.", "items": []any{map[string]any{
+		return map[string]any{"schema": brakeman.BriefSchema, "title": "A decision", "summary": "One to make.", "items": []any{readFact("ticket:" + f.ticket), map[string]any{
 			"kind": brakeman.ItemDecision, "about": "ticket:" + f.ticket, "happened": "the build failed", "whyHuman": "only you can say",
 			"question": "Fix it now?", "alternatives": []any{map[string]any{"label": "Now", "tradeoffs": "costs today"}, map[string]any{"label": "Later", "tradeoffs": "risks tomorrow"}},
 			"recommendation": rec, "authorizes": "a retry", "evidence": []string{"ticket:" + f.ticket}, "subjectRevision": rev,
@@ -1750,7 +1792,7 @@ func TestAChangesReadKeepsTheRevisionRead(t *testing.T) {
 	if rd, _ := f.readOf(t, "ticket:"+f.ticket); rd.Rev != "" {
 		t.Fatalf("the changes' line of the ticket: %+v", rd)
 	}
-	decision := map[string]any{"schema": brakeman.BriefSchema, "title": "A decision", "summary": "One to make.", "items": []any{map[string]any{
+	decision := map[string]any{"schema": brakeman.BriefSchema, "title": "A decision", "summary": "One to make.", "items": []any{readFact("ticket:" + f.ticket), map[string]any{
 		"kind": brakeman.ItemDecision, "about": "ticket:" + f.ticket, "happened": "the build failed", "whyHuman": "only you can say",
 		"question": "Fix it now?", "alternatives": []any{map[string]any{"label": "Now", "tradeoffs": "costs today"}, map[string]any{"label": "Later", "tradeoffs": "risks tomorrow"}},
 		"recommendation": 0, "authorizes": "a retry", "evidence": []string{"ticket:" + f.ticket}, "subjectRevision": seen.Rev,

@@ -574,7 +574,13 @@ turn's one answer, submitted with the session's own token (`POST
 /api/sessions/{id}/brakeman/brief`, the MCP tool `brief_submit`, or
 `conductor brakeman brief`): facts, interpretations, proposals, verified
 outcomes, decision cards, draft tickets and crews, handoffs and overlaps,
-each typed and bounded. Every fact names evidence as refs (`run:`,
+each typed and bounded, at least one item and, for a briefing, at least
+one fact. Its shape is one table (`internal/brakeman/kinds.go`: each
+kind's fields, bounds, rule and example, and the ref forms), from which
+`brief_submit`'s input schema and the guide's `briefs` section are both
+made, so an agent learns a brief from the running server, never from
+Conductor's source; a test holds the table to what the check takes.
+Every fact names evidence as refs (`run:`,
 `task:`, `check:`, `ticket:`, `question:`, `brief:` and the rest), and
 `brakeman_refs.go` resolves each against its own store, the grant and the
 read log before the brief is kept: a ref that names nothing, lies outside
@@ -606,8 +612,9 @@ drift. It is computed per caller (`GET /api/guide`, `GET
 /api/sessions/{id}/guide`, the MCP tool `guide`, `conductor guide`) and
 served in sections: an overview of at most 4 KiB, then the operations the
 caller's scopes reach, the limits read from the constants that enforce
-them, the host, the receipts, and the providers, said to be unknown until
-the guide reads `GET /api/capabilities` (the plan's PR-9). A plain
+them, the host, the receipts, the providers, said to be unknown until
+the guide reads `GET /api/capabilities` (the plan's PR-9), and a brief's
+shape (`briefs`: in words and as its JSON Schema). A plain
 session's guide is not an attempt's, and a turn's lists its `observe`
 reads and none of the crew or ticket tools.
 

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -247,7 +249,7 @@ func (it Item) body() (any, error) {
 	case ItemOverlap:
 		v = it.Overlap
 	default:
-		return nil, fmt.Errorf("no item kind %q", it.Kind)
+		return nil, noKind(it.Kind)
 	}
 	return v, nil
 }
@@ -324,7 +326,7 @@ func (it *Item) UnmarshalJSON(b []byte) error {
 		it.Overlap = &Overlap{}
 		dst = it.Overlap
 	default:
-		return fmt.Errorf("no item kind %q", head.Kind)
+		return noKind(head.Kind)
 	}
 	// The kind is read above; the strict decode takes the rest, written
 	// back with <, > and & as they are: json.Marshal would escape them in
@@ -374,6 +376,11 @@ var ErrBriefAsOf = errors.New("brakeman: a brief carries no asOf: what it covers
 // field, a field of another item's kind, an asOf: each refused), cleans
 // its text and checks it (CheckBrief). The error is an *Invalid with the
 // code invalid_brief, or one that wraps ErrBound.
+//
+// A refusal of the decoding names what is accepted beside what was
+// sent, from the kind table (ItemKinds, BriefFields): an item's unknown
+// kind with every kind, an unknown field with the fields its object
+// takes, a value of the wrong type with the type its field takes.
 func DecodeBrief(body []byte, p Permissions, f Facts) (Brief, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(body, &top); err != nil {
@@ -382,11 +389,234 @@ func DecodeBrief(body []byte, p Permissions, f Facts) (Brief, error) {
 	if _, ok := top["asOf"]; ok {
 		return Brief{}, &Invalid{Code: CodeInvalidBrief, Field: "asOf", Why: ErrBriefAsOf.Error()}
 	}
-	var b Brief
-	if err := store.DecodeStrict(body, &b); err != nil {
-		return Brief{}, invalidBrief("brief", "%v", err)
+	// The brief's own fields first, its items each on its own, so a
+	// refusal names the item and the field it is about.
+	var doc struct {
+		Schema      string            `json:"schema"`
+		Title       string            `json:"title"`
+		Summary     string            `json:"summary"`
+		Uncertainty string            `json:"uncertainty,omitempty"`
+		Items       []json.RawMessage `json:"items"`
+	}
+	if err := store.DecodeStrict(body, &doc); err != nil {
+		return Brief{}, decodeRefusal("", "a brief", briefFields, err, top)
+	}
+	b := Brief{Schema: doc.Schema, Title: doc.Title, Summary: doc.Summary, Uncertainty: doc.Uncertainty}
+	if doc.Items != nil {
+		b.Items = make([]Item, len(doc.Items))
+	}
+	for i, raw := range doc.Items {
+		it, err := decodeItem(raw, fmt.Sprintf("items[%d]", i))
+		if err != nil {
+			return Brief{}, err
+		}
+		b.Items[i] = it
 	}
 	return b, CheckBrief(&b, p, f)
+}
+
+// noKind is the refusal of an item's kind this build does not know, with
+// every kind it does.
+func noKind(kind string) error {
+	return fmt.Errorf("no item kind %q: an item's kind is one of %s", kind, kindNames())
+}
+
+// decodeItem reads one item strictly, a refusal naming field (items[i])
+// and what its kind takes.
+func decodeItem(raw json.RawMessage, field string) (Item, error) {
+	var head map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &head); err != nil || head == nil {
+		return Item{}, invalidBrief(field, "an item is a JSON object: its kind (one of %s) beside that kind's fields", kindNames())
+	}
+	var kind string
+	if err := json.Unmarshal(head["kind"], &kind); err != nil || kind == "" {
+		return Item{}, invalidBrief(field+".kind", "is required: one of %s", kindNames())
+	}
+	spec, ok := kindSpec(kind)
+	if !ok {
+		return Item{}, invalidBrief(field+".kind", "%v", noKind(kind))
+	}
+	var it Item
+	if err := it.UnmarshalJSON(raw); err != nil {
+		var re *RefError
+		if errors.As(err, &re) {
+			// A ref that does not parse: the field holding it, by its text.
+			return Item{}, invalidBrief(refField(field, head, re.Ref), "%v", err)
+		}
+		return Item{}, decodeRefusal(field, "a "+kind+" item", append([]Field{{Name: "kind"}}, spec.Fields...), err, head)
+	}
+	return it, nil
+}
+
+// refField is the path of the field of an item (head, under field) that
+// holds ref: a ref field, or a list of refs at its index, the first in
+// the fields' names' order when two do; field when none does.
+func refField(field string, head map[string]json.RawMessage, ref string) string {
+	for _, name := range slices.Sorted(maps.Keys(head)) {
+		raw := head[name]
+		var one string
+		if json.Unmarshal(raw, &one) == nil && one == ref {
+			return field + "." + name
+		}
+		var list []any
+		if json.Unmarshal(raw, &list) == nil {
+			for j, v := range list {
+				if s, ok := v.(string); ok && s == ref {
+					return fmt.Sprintf("%s.%s[%d]", field, name, j)
+				}
+			}
+		}
+	}
+	return field
+}
+
+// decodeRefusal is the refusal of err, a strict decoding's of an object
+// (what, "a brief" or "a fact/1 item"; raw, its fields as sent) under
+// field ("" for the brief), naming what the object takes: an unknown
+// field with the fields of the object or list entry it was found in, a
+// value of the wrong type with the type its field takes, at its path down
+// to the list entry that holds it.
+func decodeRefusal(field, what string, fields []Field, err error, raw map[string]json.RawMessage) error {
+	at := func(name string) string {
+		if field == "" {
+			return name
+		}
+		return field + "." + name
+	}
+	if name, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
+		if n, uerr := strconv.Unquote(name); uerr == nil {
+			name = n
+		}
+		// The decoder names the field, not where it was: the object's own
+		// when it is sent there and the object takes no such field, else
+		// the first list entry that holds it and takes no such field (an
+		// alternative's evidence, a row's title: names the object takes
+		// itself).
+		if _, sent := raw[name]; !sent || hasField(fields, name) {
+			if path, entry, ok := unknownInEntry(fields, raw, name); ok {
+				return invalidBrief(at(path), "no such field: %s %s entry takes %s", article(entry.Name), entry.Name, fieldNames(entry.Of.Fields))
+			}
+		}
+		return invalidBrief(at(name), "no such field: %s takes %s", what, fieldNames(fields))
+	}
+	var te *json.UnmarshalTypeError
+	if errors.As(err, &te) && te.Field != "" {
+		top, _, _ := strings.Cut(te.Field, ".")
+		if f, ok := fieldAt(fields, top); ok {
+			if v, sent := raw[top]; sent && !fits(f, v) {
+				path, g := misfit(f, v, top)
+				return invalidBrief(at(path), "takes %s, not a JSON %s", typeWords(g), te.Value)
+			}
+		}
+		if f, ok := fieldAt(fields, te.Field); ok {
+			return invalidBrief(at(te.Field), "takes %s, not a JSON %s", typeWords(f), te.Value)
+		}
+		return invalidBrief(at(te.Field), "not a JSON %s", te.Value)
+	}
+	if field == "" {
+		field = "brief"
+	}
+	return invalidBrief(field, "%v", err)
+}
+
+// hasField reports whether fields holds one named name.
+func hasField(fields []Field, name string) bool {
+	return slices.ContainsFunc(fields, func(f Field) bool { return f.Name == name })
+}
+
+// unknownInEntry is the path (alternatives[1].evidence) of the first list
+// entry of raw, an object of fields, that holds name and takes no field
+// of that name, with the list's field.
+func unknownInEntry(fields []Field, raw map[string]json.RawMessage, name string) (string, Field, bool) {
+	for _, f := range fields {
+		if f.Type != FieldList || f.Of == nil || f.Of.Type != FieldEntry || hasField(f.Of.Fields, name) {
+			continue
+		}
+		var entries []map[string]json.RawMessage
+		_ = json.Unmarshal(raw[f.Name], &entries)
+		for j, e := range entries {
+			if _, ok := e[name]; ok {
+				return fmt.Sprintf("%s[%d].%s", f.Name, j, name), f, true
+			}
+		}
+	}
+	return "", Field{}, false
+}
+
+// fits reports whether v is of f's JSON type, through its lists and
+// entries, as the strict decoding reads it (null is any type's zero).
+func fits(f Field, v json.RawMessage) bool {
+	if string(bytes.TrimSpace(v)) == "null" {
+		return true
+	}
+	switch f.Type {
+	case FieldText, FieldName, FieldRef:
+		var s string
+		return json.Unmarshal(v, &s) == nil
+	case FieldInteger, FieldIndex:
+		var n int
+		return json.Unmarshal(v, &n) == nil
+	case FieldList:
+		var list []json.RawMessage
+		if json.Unmarshal(v, &list) != nil {
+			return false
+		}
+		return f.Of == nil || !slices.ContainsFunc(list, func(e json.RawMessage) bool { return !fits(*f.Of, e) })
+	case FieldEntry:
+		var m map[string]json.RawMessage
+		if json.Unmarshal(v, &m) != nil {
+			return false
+		}
+		return !slices.ContainsFunc(f.Fields, func(sub Field) bool { e, ok := m[sub.Name]; return ok && !fits(sub, e) })
+	}
+	return true // an object or an item, read as it is
+}
+
+// misfit is the innermost path under path, and its field, of the part of
+// v that does not fit f: a list's entry by its index, an entry's field by
+// its name.
+func misfit(f Field, v json.RawMessage, path string) (string, Field) {
+	switch f.Type {
+	case FieldList:
+		var list []json.RawMessage
+		if f.Of == nil || json.Unmarshal(v, &list) != nil {
+			return path, f
+		}
+		for j, e := range list {
+			if !fits(*f.Of, e) {
+				return misfit(*f.Of, e, fmt.Sprintf("%s[%d]", path, j))
+			}
+		}
+	case FieldEntry:
+		var m map[string]json.RawMessage
+		if json.Unmarshal(v, &m) != nil {
+			return path, f
+		}
+		for _, sub := range f.Fields {
+			if e, ok := m[sub.Name]; ok && !fits(sub, e) {
+				return misfit(sub, e, path+"."+sub.Name)
+			}
+		}
+	}
+	return path, f
+}
+
+// fieldAt is the field a dotted path names (alternatives.label), through
+// lists and entries; a list's entry stands for the list's own path.
+func fieldAt(fields []Field, path string) (Field, bool) {
+	name, rest, more := strings.Cut(path, ".")
+	i := slices.IndexFunc(fields, func(f Field) bool { return f.Name == name })
+	if i < 0 {
+		return Field{}, false
+	}
+	f := fields[i]
+	if !more {
+		return f, true
+	}
+	for f.Type == FieldList && f.Of != nil {
+		f = *f.Of
+	}
+	return fieldAt(f.Fields, rest)
 }
 
 func invalidBrief(field, why string, a ...any) error {
@@ -415,7 +645,10 @@ func CheckBrief(b *Brief, p Permissions, f Facts) error {
 	if err := size("uncertainty", b.Uncertainty, MaxUncertainty, false, invalidBrief); err != nil {
 		return err
 	}
-	if len(b.Items) > MaxItems {
+	switch {
+	case len(b.Items) == 0:
+		return invalidBrief("items", "at least one item: a brief cites what it rests on, a fact/1 with its evidence at least (the item kinds: %s)", kindNames())
+	case len(b.Items) > MaxItems:
 		return invalidBrief("items", "at most %d", MaxItems)
 	}
 	tickets := 0
@@ -450,6 +683,19 @@ func CheckBrief(b *Brief, p Permissions, f Facts) error {
 		return fmt.Errorf("%w: the brief is %d bytes as kept, at most %d", ErrBound, len(enc), MaxBrief)
 	}
 	return nil
+}
+
+// CheckAnswers holds a brief to what its request asks: a briefing, what
+// changed and how Conductor knows, answers with at least one fact, each
+// naming its evidence. The error is an *Invalid (invalid_brief).
+func CheckAnswers(b Brief, requestKind string) error {
+	if requestKind != KindBriefing {
+		return nil
+	}
+	if slices.ContainsFunc(b.Items, func(it Item) bool { return it.Kind == ItemFact }) {
+		return nil
+	}
+	return invalidBrief("items", "a briefing holds at least one fact/1 item, its text and the evidence it rests on: what changed, with the refs that show it")
 }
 
 // Refs is every ref the item names, in its fields' order.
@@ -888,3 +1134,11 @@ func blocksAcyclic(b *Brief) error {
 
 // encode is v as the store writes it (store.Encode).
 func encode(v any) ([]byte, error) { return store.Encode(v) }
+
+// article is "a" or "an", as a word beginning with s takes.
+func article(s string) string {
+	if s != "" && strings.ContainsRune("aeiou", rune(s[0])) {
+		return "an"
+	}
+	return "a"
+}

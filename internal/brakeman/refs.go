@@ -117,7 +117,7 @@ func ParseRef(s string) (Ref, error) {
 	}
 	kind, rest, ok := strings.Cut(s, ":")
 	if !ok {
-		return bad("no kind: a ref is kind:parts")
+		return bad("no kind: a ref is kind:parts, one of %s", refFormsWords())
 	}
 	r := Ref{Kind: kind}
 	parts := strings.Split(rest, "/")
@@ -220,7 +220,7 @@ func ParseRef(s string) (Ref, error) {
 		}
 		r.Request, r.Item = parts[0], item
 	default:
-		return bad("no kind %q", kind)
+		return bad("no kind %q: a ref is one of %s", kind, refFormsWords())
 	}
 	return r, nil
 }

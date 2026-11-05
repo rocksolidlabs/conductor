@@ -398,7 +398,7 @@ func (rr *refResolver) resolve(ctx context.Context, ref brakeman.Ref) (brakeman.
 	}
 	seen := brakeman.RefState{State: refUnobserved}
 	if observed {
-		seen = brakeman.RefState{URL: u, State: read.State, Rev: read.Rev, At: read.At}
+		seen = brakeman.RefState{URL: u, State: read.State, Rev: read.Rev, SHA256: read.SHA256, At: read.At}
 	}
 	return brakeman.Resolution{Ref: ref, Seen: fitState(seen), Now: fitState(now)}, "", nil
 }
@@ -460,7 +460,7 @@ func (rr *refResolver) resolveBrief(ref brakeman.Ref) (brakeman.Resolution, stri
 	now := brakeman.RefState{URL: refURL(ref), State: req.State, SHA256: hex.EncodeToString(sum[:]), At: req.BriefAt}
 	seen := brakeman.RefState{State: refUnobserved}
 	if read, ok := rr.seen[ref]; ok {
-		seen = brakeman.RefState{URL: now.URL, State: read.State, Rev: read.Rev, At: read.At}
+		seen = brakeman.RefState{URL: now.URL, State: read.State, Rev: read.Rev, SHA256: read.SHA256, At: read.At}
 	}
 	return brakeman.Resolution{Ref: ref, Seen: fitState(seen), Now: fitState(now)}, "", nil
 }
@@ -480,7 +480,7 @@ func (rr *refResolver) goneBrief(ref brakeman.Ref, why string) (brakeman.Resolut
 		return brakeman.Resolution{}, "outside the request's scope: " + ref.Request + " is gone, and the scope or visibility has narrowed since the turn read it", nil
 	}
 	u := refURL(ref)
-	seen := brakeman.RefState{URL: u, State: read.State, Rev: read.Rev, At: read.At}
+	seen := brakeman.RefState{URL: u, State: read.State, Rev: read.Rev, SHA256: read.SHA256, At: read.At}
 	now := brakeman.RefState{URL: u, State: refDeleted, At: rr.at}
 	return brakeman.Resolution{Ref: ref, Seen: fitState(seen), Now: fitState(now)}, "", nil
 }

@@ -372,6 +372,26 @@ export function madeWords(m: { state: string; key?: string; crew?: string; why?:
   return m.state
 }
 
+/**
+ * A brief's draft ticket as another card's Blocks line names it. Once made, by the ticket it became and that ticket's title as Dispatch
+ * holds it (ticketTitle, by the key: the person's edit, the brief's own title only if they kept it), else by its key alone until the
+ * title is read: never by the brief's title, which the person may have changed before making it. Until then, by the brief's title.
+ */
+export function draftName(i: number, items: readonly BriefItem[], made: ReadonlyArray<{ item: number; state: string; key?: string }> | undefined, ticketTitle: (key: string) => string | undefined): string {
+  const key = madeKey(i, made)
+  if (key) {
+    const t = ticketTitle(key)
+    return t ? `${key} "${t}"` : key
+  }
+  const it = items[i]
+  return it?.kind === 'draft_ticket/1' ? `"${it.title}"` : `item ${i + 1}`
+}
+
+/** The ticket the brief's item `i` became, when its make is made: its key, else undefined. */
+export function madeKey(i: number, made: ReadonlyArray<{ item: number; state: string; key?: string }> | undefined): string | undefined {
+  return made?.find((x) => x.item === i && x.state === 'made' && x.key)?.key
+}
+
 /** A draft ticket's blocks in words, with each edge's state once a make has written them: "blocks draft 2 (made)". */
 export function blocksWords(item: number, blocks: readonly number[] | undefined, edges: ReadonlyArray<{ from: number; to: number; state: string }> | undefined, title: (i: number) => string): string {
   if (!blocks?.length) return ''
