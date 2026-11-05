@@ -4554,14 +4554,15 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   window at every scroll of a long crew and sits under the last field at
   its end (#592). With an
   update pending, where the sidebar's header row is narrower than at the
-  minimum width plus the update button (a container query at 11.625 rem),
+  minimum width plus the update button (a container query at 11.5625 rem),
   the mark steps aside so that the name keeps at least the width it has
   there without the update; wider, nothing changes (#604). Tests: vitest of
   `mayRefocusRow`; Playwright for each, the list's change and the lost
   focus driven through the page (a row's focusin, a session launched) with
   a dialog and with a reply being typed, the bar measured at the top,
   middle and end of a scrolled crew, and the header's name measured with
-  and without the e2e bridge's update; each failed with its fix taken out.
+  and without the e2e bridge's update and at the minimum plus the update's
+  button; each failed with its fix taken out.
 - **A hosted session watches its agent's questions, and four UI fixes (UIB
   PR-1, PR #598: #293, #376, #327, #323, #359, 2026-11-04).** `conductor
   host` built its session with none of what the catalog says to watch on

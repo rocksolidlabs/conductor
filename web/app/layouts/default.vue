@@ -300,12 +300,12 @@ defineShortcuts({
           <img src="/brand/conductor-mark.svg" alt="" class="size-7 dark:hidden" />
           <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-7 hidden dark:block" />
         </div>
-        <!-- With an update pending the header holds one more button (about 1.625 rem with its gap). Where the row is narrower
-             than at the minimum width plus that button (11.625 rem: 12.5 rem less the border and padding, plus the button), the
-             mark steps aside so that the name keeps at least the width it has there without the update (#604); wider, nothing
-             changes. -->
+        <!-- With an update pending the header holds one more button (1.625 rem with its gap). Where the row's content is
+             narrower than at the minimum width plus that button (11.5625 rem: 12.5 rem less the header's 1 px border and 2 rem
+             padding and the row's 0.5 rem, 9.9375 rem, plus the button), the mark steps aside so that the name keeps at least the
+             width it has there without the update (#604); wider, nothing changes. -->
         <div v-else class="@container flex items-center gap-1.5 px-1 w-full min-w-0" data-sidebar-brand>
-          <span class="flex shrink-0" :class="update.ready.value && '@max-[11.625rem]:hidden'" data-sidebar-mark>
+          <span class="flex shrink-0" :class="update.ready.value && '@max-[11.5625rem]:hidden'" data-sidebar-mark>
             <img src="/brand/conductor-mark.svg" alt="" class="size-7 dark:hidden" />
             <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-7 hidden dark:block" />
           </span>

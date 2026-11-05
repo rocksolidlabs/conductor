@@ -718,6 +718,8 @@ test.describe('the full sidebar\'s width', () => {
     await expect(mark).toBeVisible()
     const without = await shown()
     expect(without).toBeGreaterThan(0)
+    const menus = header.locator('[data-sidebar-menus]')
+    const menusWithout = (await menus.boundingBox())!.width
 
     // The app's check finds one: its button joins the header, and the name keeps at least that width, every part inside.
     await found(page, '0.7.0-rc.99')
@@ -725,6 +727,15 @@ test.describe('the full sidebar\'s width', () => {
     expect(await shown()).toBeGreaterThanOrEqual(without)
     for (const part of ['[data-header-update]', '[data-header-alerts]', '[data-header-account]', '[data-sidebar-collapse]']) await fitsSidebar(page, header.locator(part))
     expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
+
+    // As wide as the minimum plus what the update's button takes, the name has its width back with the mark beside it: the
+    // mark steps aside only below that.
+    const extra = (await menus.boundingBox())!.width - menusWithout
+    expect(extra).toBeGreaterThan(0)
+    await drag(page, [MIN + Math.ceil(extra)])
+    await expect.poll(() => width(page)).toBeCloseTo(MIN + Math.ceil(extra), 0)
+    await expect(mark).toBeVisible()
+    expect(await shown()).toBeGreaterThanOrEqual(without)
 
     // Wider, the mark stays beside the name with the update pending, as it always did.
     await drag(page, [300])
