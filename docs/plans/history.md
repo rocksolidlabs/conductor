@@ -2098,13 +2098,19 @@ no check applies but the links read. About 400 lines. Depends on PR-7.
 
 **PR-9: DR1's decision records.** As in "Later PRs". Touches `internal/api`,
 `internal/history` (the kinds `decision` and `decision.response`, their
-bounds and classification rows), `web/app/utils`, `docs`. About 500 lines. Depends on PR-8 and on DR1's PRs
+bounds and classification rows), `web/app/utils`, `docs`. Tests: the two
+kinds' rows in `TestClassComesFromTheKindAlone`, a DR1 request and its
+response indexed and found by their keys, a superseded request said in its
+availability, and the palette's "Rejected designs" row in vitest. About 500 lines. Depends on PR-8 and on DR1's PRs
 that serve its records (`docs/plans/decisions.md`).
 
 **PR-10: RV1's review batches and findings.** As in "Later PRs". Touches
 `internal/api`, `internal/history` (the kinds `review.batch` and
 `review.resolved`, their bounds and classification rows), `web/app/utils`,
-`docs`. About 500 lines. Depends on PR-9
+`docs`. Tests: the two kinds' rows in `TestClassComesFromTheKindAlone`, a
+batch and its findings indexed and found by their keys, a finding that
+stays `said` beside its `review.resolved` entry, and the row's class badge
+in vitest. About 500 lines. Depends on PR-9
 (both change the sources file and the features entry) and on RV1's PRs that
 serve batches and findings (`docs/plans/review-repair.md`); if RV1 lands
 before DR1, PR-10 goes first and PR-9 follows it.
@@ -2129,7 +2135,8 @@ starts through its Runtime, the hub's checks and `OnSessionInfo`, the
 server's capture of a hosted agent's session from its hook
 (`session.NextAgentSession`), the journal's hosted fields. Touches
 `internal/proto`, `internal/hostagent`, `internal/signal`,
-`internal/session` (the pure policy function), `internal/api`,
+`internal/session` (the pure policy function), `internal/journal`
+(`Journal.AgentSession` and the hosted fields), `internal/api`,
 `web/app/utils/protocol.ts`, `docs/protocol.md`. Tests: PR-12's above and
 the Mac's row. About 700 lines. Depends on PR-8; runs before, between or
 after PR-9 to PR-11, never beside them (`internal/api`). It adds its own
@@ -2214,8 +2221,9 @@ are cut into issues; a PR already cut follows the plan as rewritten.
 
 ## Acceptance
 
-The boundary (the Program, section 4.3, HS1): "which session investigated
-this failure" is answered from the palette with a link to the evidence.
+The boundary (the Program, section 4.3, HS1): a person asks the palette
+which session looked into a given failure, and the row it gives opens the
+evidence itself.
 
 **Observed how.** On the owner's machine (or the WSL box with the owner's
 agents), on the open-source build with no account, after PR-8 merges:
