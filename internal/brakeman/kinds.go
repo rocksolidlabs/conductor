@@ -19,7 +19,7 @@ import (
 // The types of a field.
 const (
 	FieldText    = "text"    // a string; Max bytes, or characters when Chars
-	FieldName    = "name"    // a string matching Pattern, at most Max characters
+	FieldName    = "name"    // a string matching Pattern, at most Max characters; or one of Enum
 	FieldInteger = "integer" // a whole number from Min to Max
 	FieldObject  = "object"  // a JSON object, at most Max bytes
 	FieldEntry   = "entry"   // a list's object entry, of Fields
@@ -42,8 +42,10 @@ type Field struct {
 	Min   int  `json:"min,omitempty"`
 	Max   int  `json:"max,omitempty"`
 	Chars bool `json:"chars,omitempty"`
-	// Pattern is what a name matches.
-	Pattern string `json:"pattern,omitempty"`
+	// Pattern is what a name matches, and Enum, when set, the names it
+	// takes, one of them.
+	Pattern string   `json:"pattern,omitempty"`
+	Enum    []string `json:"enum,omitempty"`
 	// Refs are the kinds a ref takes, none for any.
 	Refs []string `json:"refs,omitempty"`
 	// Of is a list's entry.
@@ -78,6 +80,7 @@ const (
 	exSession  = "0a1b2c3d4e5f6071"
 	exQuestion = "8192a3b4c5d6e7f8"
 	exCommit   = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+	exLaunch   = "5f3e2d1c0b9a8f7e"
 )
 
 // refForms is every ref ParseRef reads, in Evidence references' order.
@@ -97,6 +100,9 @@ var refForms = []RefForm{
 	{RefCommit, "commit:<run>/<sha>", "a commit on a run's branches, its full id", "commit:" + exRun + "/" + exCommit},
 	{RefFile, "file:<session>/<path>", "a touched file, its path absolute", "file:" + exSession + "//home/me/app/cache.go"},
 	{RefBrief, "brief:<br-n>/<item>", "an earlier brief's item, from 0", "brief:br-1/0"},
+	{RefPlan, "plan:<KEY-n>/<revision>", "a ticket's plan revision, by its number from 1", "plan:CND-12/1"},
+	{RefLaunch, "launch:<id>", "a launch from an approved plan revision, 16 hex digits", "launch:" + exLaunch},
+	{RefCandidate, "candidate:<run>/<task>/<n>", "a run's candidate: attempt n of the task, which submitted something", "candidate:" + exRun + "/build/3"},
 }
 
 // RefForms is every ref a brief may cite, as Evidence references names
@@ -178,7 +184,7 @@ var kinds = []KindSpec{
 		Example: json.RawMessage(`{"kind":"outcome/1","text":"The retry passed its tests.","receipt":"check:` + exRun + `/build/4/tests/1"}`)},
 	{Kind: ItemDecision, Needs: "propose", Rule: "A decision card: Conductor draws its controls from the live record of about, never from these fields.",
 		Fields: []Field{
-			{Name: "about", Type: FieldRef, Required: true, Refs: []string{RefQuestion, RefTask, RefTicket}, About: "what is to be decided"},
+			{Name: "about", Type: FieldRef, Required: true, Refs: []string{RefQuestion, RefTask, RefTicket, RefPlan}, About: "what is to be decided: a plan: ref is a revision for the operator to approve"},
 			fText("happened", 2<<10, true, "what work occurred"),
 			fText("whyHuman", 1<<10, true, "why a person is needed"),
 			fText("question", 500, true, "the precise question"),
@@ -232,6 +238,31 @@ var kinds = []KindSpec{
 			fRefs("from", 0, 10, "what it was drafted from"),
 		},
 		Example: json.RawMessage(`{"kind":"draft_crew/1","crew":{"name":"Locale fix","goal":"Key the cache by locale.","cwd":"/home/me/app","where":"server","isolation":"worktree","openAfterLaunch":false,"members":[{"name":"writer","agentId":"claude","prompt":"Key the cache by locale and add a test.","start":{"when":"immediately"}}]},"from":["ticket:CND-12"]}`)},
+	{Kind: ItemDraftPlan, Needs: "draft", Rule: "A plan revision a person may propose for the ticket: a saved crew with tasks, the inputs handed over and the decisions a person will make. The person proposes it under their own name and the operator alone approves it: Brakeman does neither.",
+		Fields: []Field{
+			{Name: "ticket", Type: FieldRef, Required: true, Refs: []string{RefTicket}, About: "the ticket it is for"},
+			{Name: "crew", Type: FieldName, Required: true, Pattern: crewIDPattern.String(), Max: 64, About: "a saved crew's id, one with tasks"},
+			{Name: "base", Type: FieldName, Pattern: `^[^\s\x00-\x1f\x7f-][^\s\x00-\x1f\x7f]*$`, Max: MaxDraftPlanBase, About: "a branch, a tag, HEAD or a commit of the crew's repository; HEAD when left out"},
+			{Name: "basedOn", Type: FieldRef, Refs: []string{RefPlan}, About: "the ticket's revision it revises"},
+			{Name: "references", Type: FieldList, Max: MaxDraftPlanReferences, Of: &Field{Type: FieldEntry, Required: true, Fields: []Field{
+				fText("path", MaxDraftReferencePath, true, "a path relative to the crew's working directory, no control character"),
+				{Name: "start", Type: FieldInteger, Min: 0, Max: MaxDraftReferenceLine, About: "the first line, 0 for the whole file"},
+				{Name: "end", Type: FieldInteger, Min: 0, Max: MaxDraftReferenceLine, About: "the last line, 0 for none"},
+				fChars("note", MaxDraftReferenceNote, false, "why it matters, one line"),
+			}}, About: "the source the revision hands over, resolved at the base"},
+			{Name: "attachments", Type: FieldList, Max: MaxDraftPlanAttachments, Of: &Field{Type: FieldName, Required: true, Pattern: hexIDPattern.String(), Max: 16, About: "an attachment's id"}, About: "the ticket's attachments it hands over"},
+			fRefs("comments", 0, MaxDraftPlanComments, "the ticket's comments it hands over", RefComment),
+			fText("constraints", MaxDraftPlanConstraints, false, "what the work must keep, Markdown"),
+			{Name: "decisions", Type: FieldList, Max: MaxDraftPlanDecisions, Of: &Field{Type: FieldEntry, Required: true, Fields: []Field{
+				{Name: "id", Type: FieldName, Required: true, Pattern: taskIDPattern.String(), Max: 40, About: "the decision's id"},
+				fChars("question", MaxDraftDecisionAsk, true, "what a person decides, one line"),
+				{Name: "kind", Type: FieldName, Required: true, Enum: draftDecisionKinds, About: "an approval or a clarification"},
+				{Name: "before", Type: FieldList, Max: MaxDraftDecisionBefore, Of: &Field{Type: FieldName, Required: true, Pattern: taskIDPattern.String(), Max: 40, About: "a task's id"}, About: "the crew's tasks that wait on it"},
+			}}, About: "the decisions a person will make"},
+			fText("note", MaxDraftPlanNote, false, "the revision's note, Markdown"),
+			fRefs("from", 0, 10, "what it was drafted from"),
+		},
+		Example: json.RawMessage(`{"kind":"draft_plan/1","ticket":"ticket:CND-12","crew":"locale-fix","base":"main","basedOn":"plan:CND-12/1","references":[{"path":"cache/key.go","start":10,"end":40,"note":"where the key is made"}],"attachments":["` + exSession + `"],"comments":["comment:CND-12/` + exQuestion + `"],"constraints":"Keep the cache's file format.","decisions":[{"id":"design","question":"Key by locale or by language?","kind":"approval","before":["build"]}],"note":"Revises 1: the locale, not the language.","from":["ticket:CND-12"]}`)},
 	{Kind: ItemHandoff, Needs: "draft", Rule: "A handoff package, from Conductor's records: never an agent's conversation.",
 		Fields: []Field{
 			fText("objective", 2<<10, true, "what the work is for"),
@@ -369,6 +400,10 @@ func fieldSchema(f Field) map[string]any {
 			s["minLength"] = 1
 		}
 	case FieldName:
+		if len(f.Enum) > 0 {
+			s["type"], s["enum"] = "string", f.Enum
+			break
+		}
 		s["type"], s["pattern"], s["maxLength"] = "string", f.Pattern, f.Max
 	case FieldInteger:
 		s["type"], s["minimum"], s["maximum"] = "integer", f.Min, f.Max
@@ -487,6 +522,9 @@ func typeWords(f Field) string {
 	case FieldName:
 		if f.Name == "schema" {
 			return fmt.Sprintf("%q", BriefSchema)
+		}
+		if len(f.Enum) > 0 {
+			return "one of " + strings.Join(f.Enum, ", ")
 		}
 		return fmt.Sprintf("text matching %s", f.Pattern)
 	case FieldInteger:

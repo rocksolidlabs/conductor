@@ -161,6 +161,14 @@ func refOf(kind string, i int) string {
 		return fmt.Sprintf("ticket:CND-%d", i+1)
 	case RefCommit:
 		return fmt.Sprintf("commit:%s/%040x", exRun, i+1)
+	case RefComment:
+		return fmt.Sprintf("comment:CND-12/%016x", i+1)
+	case RefPlan:
+		return fmt.Sprintf("plan:CND-12/%d", i+1)
+	case RefCandidate:
+		return fmt.Sprintf("candidate:%s/build/%d", exRun, i+1)
+	case RefLaunch:
+		return fmt.Sprintf("launch:%016x", i+1)
 	}
 	return fmt.Sprintf("run:fix-%08x", i+1)
 }
@@ -293,6 +301,14 @@ func (c fieldCase) field(brief any, path []step, f Field) {
 	case FieldName:
 		if f.Name == "schema" {
 			set("another schema", "brakeman.brief/2", name)
+			return
+		}
+		if len(f.Enum) > 0 {
+			// One of its values: each taken, any other refused.
+			for _, v := range f.Enum {
+				set("as "+v, v, "")
+			}
+			set("outside its values", f.Enum[0]+"s", name)
 			return
 		}
 		cur, _ := get(brief, path)
@@ -433,7 +449,7 @@ func TestTheKindTableNamesEveryField(t *testing.T) {
 	if got, want := tableNames(briefFields), jsonNames(reflect.TypeFor[Brief]()); !slices.Equal(got, want) {
 		t.Errorf("the brief's fields: the table %v, Brief %v", got, want)
 	}
-	if len(kinds) != 11 {
+	if len(kinds) != 12 {
 		t.Fatalf("%d kinds", len(kinds))
 	}
 	for _, k := range kinds {
@@ -588,7 +604,7 @@ func TestEveryRefFormIsParsed(t *testing.T) {
 		}
 		seen[f.Kind] = true
 	}
-	for _, k := range []string{RefRun, RefTask, RefAttempt, RefCheck, RefCommand, RefEvent, RefMessage, RefSession, RefQuestion, RefTicket, RefComment, RefOp, RefCommit, RefFile, RefBrief} {
+	for _, k := range []string{RefRun, RefTask, RefAttempt, RefCheck, RefCommand, RefEvent, RefMessage, RefSession, RefQuestion, RefTicket, RefComment, RefOp, RefCommit, RefFile, RefBrief, RefPlan, RefLaunch, RefCandidate} {
 		if !seen[k] {
 			t.Errorf("no form of %s", k)
 		}

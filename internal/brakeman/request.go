@@ -147,6 +147,7 @@ type Made struct {
 	By    string    `json:"by,omitempty"`
 	Key   string    `json:"key,omitempty"`  // a ticket made: its key
 	Crew  string    `json:"crew,omitempty"` // a crew made: its id
+	Plan  string    `json:"plan,omitempty"` // a plan revision proposed: its id (Key its ticket's)
 	Rev   int64     `json:"rev,omitempty"`
 	Why   string    `json:"why,omitempty"` // a refusal's words, at most MaxWhy bytes
 	At    time.Time `json:"at"`

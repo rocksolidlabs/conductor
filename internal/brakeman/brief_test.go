@@ -709,3 +709,36 @@ func TestAnItemHoldsItsOwnKindsFields(t *testing.T) {
 		t.Errorf("why: %s", inv.Why)
 	}
 }
+
+// A draft plan revision is a draft: refused without the draft permission,
+// taken with it, its names' newlines made spaces (Dispatch keeps a
+// reference's note and a decision's question as one line), and a
+// decision card may be about a plan revision.
+func TestADraftPlanIsADraftForTheOperator(t *testing.T) {
+	plan := func() Item {
+		return Item{Kind: ItemDraftPlan, DraftPlan: &DraftPlan{Ticket: ref(t, "ticket:CND-12"), Crew: "locale-fix",
+			References: []DraftReference{{Path: "cache/key.go", Start: 1, End: 2, Note: "the key\nis made here"}},
+			Decisions:  []DraftDecision{{ID: "design", Question: "Locale\tor language?", Kind: "clarification", Before: []string{"build"}}}}}
+	}
+	b := goodBrief(t)
+	b.Items = append(b.Items, plan())
+	wantInvalid(t, CheckBrief(&b, Permissions{Observe: true, Propose: true}, goodFacts()), "items[1].kind")
+	b = goodBrief(t)
+	b.Items = append(b.Items, plan())
+	if err := check(b); err != nil {
+		t.Fatal(err)
+	}
+	if x := b.Items[1].DraftPlan; x.References[0].Note != "the key is made here" || x.Decisions[0].Question != "Locale or language?" {
+		t.Fatalf("the names as kept: %q %q", x.References[0].Note, x.Decisions[0].Question)
+	}
+	if got := b.Items[1].Refs(); len(got) != 1 || got[0].String() != "ticket:CND-12" {
+		t.Fatalf("its refs: %v", got)
+	}
+	d := decision(t)
+	d.Decision.About = ref(t, "plan:CND-12/2")
+	b = goodBrief(t)
+	b.Items = append(b.Items, d)
+	if err := check(b); err != nil {
+		t.Fatalf("a decision about a plan revision: %v", err)
+	}
+}

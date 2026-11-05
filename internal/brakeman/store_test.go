@@ -687,7 +687,13 @@ func TestARequestWithEveryListFullStillLoads(t *testing.T) {
 			r.Coverage.Sessions = append(r.Coverage.Sessions, w)
 		}
 		for i := range MaxMade {
+			// An entry holds a ticket's key, a crew's id, or a plan
+			// revision's key and id: a key and a crew's id together are
+			// more than any of them.
 			m := Made{Item: i, OpID: strings.Repeat("o", 32), Op: strings.Repeat("p", 32), Input: strings.Repeat("f", 64), State: MadeRefused, By: strings.Repeat(`"`, MaxBy), Key: "ABCDEF-1234567890", Crew: strings.Repeat("c", 64), Rev: 1 << 60, At: now}
+			if len(m.Crew) < len(`"plan":"`)+16+len(`",`) {
+				t.Fatal("a plan's id outweighs a crew's: fill the entry with it")
+			}
 			for entrySize(m) < MaxMadeBytes-1 {
 				m.Why += `"`
 			}
