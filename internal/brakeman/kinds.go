@@ -231,7 +231,7 @@ var kinds = []KindSpec{
 			}}, About: "the decisions a person makes before a task"},
 			fRefs("from", 0, 10, "what it was drafted from"),
 		},
-		Example: json.RawMessage(`{"kind":"draft_crew/1","crew":{"name":"Locale fix","goal":"Key the cache by locale.","cwd":"/home/me/app","members":[{"name":"writer","agentId":"claude","prompt":"Key the cache by locale and add a test."}]},"from":["ticket:CND-12"]}`)},
+		Example: json.RawMessage(`{"kind":"draft_crew/1","crew":{"name":"Locale fix","goal":"Key the cache by locale.","cwd":"/home/me/app","where":"server","isolation":"worktree","openAfterLaunch":false,"members":[{"name":"writer","agentId":"claude","prompt":"Key the cache by locale and add a test.","start":{"when":"immediately"}}]},"from":["ticket:CND-12"]}`)},
 	{Kind: ItemHandoff, Needs: "draft", Rule: "A handoff package, from Conductor's records: never an agent's conversation.",
 		Fields: []Field{
 			fText("objective", 2<<10, true, "what the work is for"),

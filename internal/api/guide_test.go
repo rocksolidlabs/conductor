@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"os"
@@ -864,4 +866,70 @@ func TestTheBriefsSectionIsTheKindTable(t *testing.T) {
 			}
 		}
 	}
+}
+
+// missingRequired names each field schema requires that v leaves out, and
+// each it does not take, through objects' properties and lists' items.
+func missingRequired(schema map[string]any, v any, path string) []string {
+	var out []string
+	switch v := v.(type) {
+	case map[string]any:
+		props, _ := schema["properties"].(map[string]any)
+		req, _ := schema["required"].([]any)
+		for _, name := range req {
+			if _, ok := v[name.(string)]; !ok {
+				out = append(out, path+"."+name.(string)+" left out")
+			}
+		}
+		for _, k := range slices.Sorted(maps.Keys(v)) {
+			sub, ok := props[k].(map[string]any)
+			if !ok {
+				if schema["additionalProperties"] == false {
+					out = append(out, path+"."+k+" not taken")
+				}
+				continue
+			}
+			out = append(out, missingRequired(sub, v[k], path+"."+k)...)
+		}
+	case []any:
+		if items, ok := schema["items"].(map[string]any); ok {
+			for i, e := range v {
+				out = append(out, missingRequired(items, e, fmt.Sprintf("%s[%d]", path, i))...)
+			}
+		}
+	}
+	return out
+}
+
+// The draft crew's example, as brief_submit's schema and the guide's
+// briefs section give it, is a crew POST /api/crews saves: every field
+// crew_create's schema requires, the crew validator's checks (a brief
+// holding it is taken with the server's own facts), and the route's 201.
+// The example once left out where, isolation, openAfterLaunch and a
+// member's start, and an agent that copied it was refused.
+func TestTheDraftCrewExampleIsACrewThatSaves(t *testing.T) {
+	t.Parallel()
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{{ID: "claude", Name: "Claude Code", Command: []string{"/bin/cat"}, Adapter: "claude"}})
+	k := brakeman.ItemKinds()[slices.IndexFunc(brakeman.ItemKinds(), func(k brakeman.KindSpec) bool { return k.Kind == brakeman.ItemDraftCrew })]
+	var ex struct {
+		Crew json.RawMessage `json:"crew"`
+	}
+	if err := json.Unmarshal(k.Example, &ex); err != nil {
+		t.Fatal(err)
+	}
+	var body any
+	if err := json.Unmarshal(ex.Crew, &body); err != nil {
+		t.Fatal(err)
+	}
+	if bad := missingRequired(jsonOf(t, bodySchema(crewInput{})).(map[string]any), body, "crew"); len(bad) > 0 {
+		t.Errorf("the example against crew_create's schema: %v", bad)
+	}
+	if err := (brakemanFacts{s: e.srv}).CheckCrew(ex.Crew); err != nil {
+		t.Errorf("the crew validator: %v", err)
+	}
+	brief := `{"schema":"` + brakeman.BriefSchema + `","title":"t","summary":"s","items":[` + string(brakeman.ItemKinds()[0].Example) + `,` + string(k.Example) + `]}`
+	if _, err := brakeman.DecodeBrief([]byte(brief), brakeman.Permissions{Observe: true, Draft: true, Propose: true}, brakemanFacts{s: e.srv}); err != nil {
+		t.Errorf("a brief of the example: %v", err)
+	}
+	e.expect(t, "POST", "/api/crews", body, http.StatusCreated, "")
 }
