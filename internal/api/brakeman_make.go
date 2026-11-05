@@ -197,8 +197,20 @@ func (s *Server) handleBrakemanMake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in, err := s.makeInputOf(r.Context(), b, item, body.Edit, by)
-	if err != nil {
+	var inv *brakeman.Invalid
+	var unopened *errRefStore
+	switch {
+	case err == nil:
+	case errors.As(err, &inv):
 		writeDraftError(w, err)
+		return
+	case errors.As(err, &unopened):
+		// A draft plan revision's basedOn is read from Dispatch's store.
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", unopened.Error())
+		return
+	default:
+		s.log.Warn("a Brakeman draft's input could not be read", "request", id, "item", item, "err", err)
+		writeError(w, http.StatusInternalServerError, "store_failed", "the draft's input could not be read")
 		return
 	}
 	raw, err := marshalNoEscape(in)
