@@ -3499,17 +3499,22 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   what the check takes, and the refusals name what is taken beside what
   was sent. A brief holds at least one item and a briefing at least one
   fact. A turn's launch runs the agent's probe when the cache is cold and
-  stamps the version it reports. A made draft is named in the other
-  card's Blocks line by its ticket and the title it was made with. The
-  clause is observed again on #602's build with a fresh Claude Code turn
-  given the guide alone. Not exercised: Codex as Brakeman's agent, Retry
-  on the card, a turn with the read permission refused, an overnight
-  wait, the Mac and Windows apps. Seen outside the stream, for the
-  maintainers: after a restart the runs list answers none of the earlier
-  runs though each is readable by id (#334's restart work); the spent
-  run's log says "the run succeeded" a few microseconds before the accept
-  that caused it; the same drafts can be made twice from two briefs; a
-  check ref's `seen` never carries the log hash.
+  stamps the version it reports before the member starts. A made draft
+  is named in the other card's Blocks line by its ticket and that
+  ticket's title, read from Dispatch by its key, after a reload too. A
+  check ref's `seen` keeps the log's SHA-256 the turn read it with (the
+  step log route's, and the attempt's receipts'), which the live check
+  found empty. The same drafts made twice from two briefs is as the plan
+  has it: a make is one per item of a request, and two briefs' drafts
+  are two items, each made only by a person's Create. The clause is
+  observed again on #602's build with a fresh Claude Code turn given the
+  guide alone. Not exercised: Codex as Brakeman's agent, Retry on the
+  card, a turn with the read permission refused, an overnight wait, the
+  Mac and Windows apps. Seen outside the stream, for the maintainers:
+  after a restart the runs list answers none of the earlier runs though
+  each is readable by id (#334's restart work); the spent run's log says
+  "the run succeeded" a few microseconds before the accept that caused
+  it.
 
   **BK1's observation, as the plan states it.** On the owner's `conductor serve` with
   Claude Code (and once with Codex) on the owner's own subscription,
