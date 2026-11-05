@@ -4,6 +4,7 @@ import type { BriefItem } from './brakeman'
 import {
   blocksWords,
   COMMENT_MAX,
+  compareAt,
   draftName,
   dropKeptMake,
   KEPT_MAX,
@@ -346,6 +347,34 @@ describe("a request's acts, as replies bring them", () => {
     expect(reconcileActs({ acts: [act({ state: 'not_run', at: at(2) })] }, pending).acts![0]!.state).toBe('not_run')
     expect(reconcileActs({ acts: [act({ state: 'refused', at: at(2) })] }, done).acts![0]!.state).toBe('done')
     expect(reconcileActs(done, { acts: [act({ state: 'refused', at: at(3) })] }).acts![0]!.state).toBe('done')
+  })
+  it('go from refused to pending when the act is asked again, by the later time the server wrote, and never by a reply sent before', () => {
+    const refused = { acts: [act({ state: 'refused', why: 'the base names no commit', at: at(2) })] }
+    const retried = { acts: [act({ state: 'pending', at: at(3) })] }
+    // The retry, written pending after the refusal, then its outcome.
+    expect(reconcileActs(refused, retried)).toEqual(retried)
+    expect(reconcileActs(reconcileActs(refused, retried), { acts: [act({ state: 'done', receipt: '0123456789abcdef', at: at(4) })] }).acts![0]!.state).toBe('done')
+    // Replies sent before: the first pending, answered after the refusal; the refusal, answered after the retry's pending.
+    expect(reconcileActs(refused, { acts: [act({})] })).toEqual(refused)
+    expect(reconcileActs(retried, refused)).toEqual(retried)
+    // The retry refused again: the later refusal, with its words.
+    expect(reconcileActs(retried, { acts: [act({ state: 'refused', why: 'refused again', at: at(5) })] }).acts![0]!.why).toBe('refused again')
+    // Within one millisecond, by the nanoseconds the server writes.
+    const r = { acts: [act({ state: 'refused', at: '2026-11-05T10:00:02.0000001Z' })] }
+    const p = { acts: [act({ state: 'pending', at: '2026-11-05T10:00:02.000000200Z' })] }
+    expect(reconcileActs(r, p)).toEqual(p)
+    expect(reconcileActs(p, r)).toEqual(p)
+    // At one instant the refusal is the later write.
+    const same = { acts: [act({ state: 'pending', at: at(2) })] }
+    expect(reconcileActs(same, refused)).toEqual(refused)
+    expect(reconcileActs(refused, same)).toEqual(refused)
+  })
+  it("compare the server's times to the nanosecond", () => {
+    expect(compareAt('2026-11-05T10:00:02.1Z', '2026-11-05T10:00:02.12Z')).toBeLessThan(0)
+    expect(compareAt('2026-11-05T10:00:02.000000002Z', '2026-11-05T10:00:02.000000001Z')).toBeGreaterThan(0)
+    expect(compareAt('2026-11-05T10:00:02Z', '2026-11-05T10:00:02.000Z')).toBe(0)
+    expect(compareAt('2026-11-05T11:00:02+01:00', '2026-11-05T10:00:02Z')).toBe(0)
+    expect(compareAt(undefined, '2026-11-05T10:00:02Z')).toBeLessThan(0)
   })
   it('keep what a reply lacks, each by its opId', () => {
     const had = { acts: [act({ state: 'done', receipt: '0123456789abcdef' })] }
