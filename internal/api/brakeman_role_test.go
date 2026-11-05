@@ -412,3 +412,30 @@ func TestTheRoleSpendsNoMoreThanTheDaysTurns(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+// TestATicketMadeReadyWakesTheRole: a ticket whose status a person moves
+// to ready wakes the role, once, from Dispatch's change feed; a move under
+// an op id a request derived (a make, an act) wakes nothing.
+func TestATicketMadeReadyWakesTheRole(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.background(t, "bk", nil)
+	b.expect(t, "POST", "/api/dispatch/projects", map[string]any{"opId": "p-1", "key": "CND", "name": "Conductor"}, http.StatusCreated, "")
+	b.expect(t, "POST", "/api/dispatch/tickets", map[string]any{"opId": "t-1", "project": "CND", "title": "Ship the role"}, http.StatusCreated, "")
+	b.expect(t, "POST", "/api/dispatch/tickets", map[string]any{"opId": "t-2", "project": "CND", "title": "Made by a make"}, http.StatusCreated, "")
+	b.expect(t, "POST", "/api/dispatch/tickets/CND-2/edit", map[string]any{"opId": deriveOp("make", "br-1", "0", "o"), "set": map[string]any{"status": "ready"}}, http.StatusOK, "")
+	b.expect(t, "POST", "/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": "e-1", "set": map[string]any{"status": "ready"}}, http.StatusOK, "")
+	var rows []crew.RoleLogRow
+	if !waitFor(30*time.Second, func() bool {
+		b.desk.role.Poke()
+		rows = b.roleRecord(t).Log
+		return len(rows) > 0
+	}) {
+		t.Fatal("the ticket made ready woke nothing")
+	}
+	b.roleSettle(t)
+	rows = b.roleRecord(t).Log
+	if len(rows) != 1 || rows[0].Source != crew.WakeTicketReady || rows[0].Subject != "ticket:CND-1" {
+		t.Fatalf("%+v", rows)
+	}
+}

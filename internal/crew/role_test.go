@@ -581,6 +581,7 @@ func TestAHeldWakeFiresIfStillDue(t *testing.T) {
 	open := true
 	at := f.clock.now().Add(15 * time.Minute)
 	f.role.Hold(RoleWake{Source: WakeQuestionOpen, Subject: "session:a", Key: "1", At: at}, at, func() bool { return open })
+	f.role.Hold(RoleWake{Source: WakeQuestionOpen, Subject: "session:a", Key: "1", At: at}, at, func() bool { return open })
 	f.role.Hold(RoleWake{Source: WakeQuestionOpen, Subject: "session:b", Key: "1", At: at}, at, func() bool { return false })
 	if next := f.step(); next != 15*time.Minute {
 		t.Fatalf("held for %s", next)

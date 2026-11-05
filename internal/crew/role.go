@@ -79,6 +79,8 @@ const (
 	maxWakeField = 512
 	maxWakeKey   = 64
 	maxRoleWhy   = 500
+	// MaxHeld bounds the wakes held for a time of their own (Hold).
+	MaxHeld = 1000
 	// RoleRetry is how soon a step that could not read or write its
 	// records, or start a turn for want of its store, is tried again.
 	RoleRetry = 30 * time.Second
@@ -524,9 +526,14 @@ func (r *Role) Asked(w RoleWake) error {
 
 // Hold keeps a wake that fires at due if still answers true then (a
 // question open past its threshold); one the log holds is dropped then.
+// A wake held already (its source, subject and key) is held once, and at
+// most MaxHeld are held, a new one past them dropped.
 func (r *Role) Hold(w RoleWake, due time.Time, still func() bool) {
 	r.mu.Lock()
-	r.held = append(r.held, heldWake{w: w, due: due, still: still})
+	same := func(h heldWake) bool { return h.w.Source == w.Source && h.w.Subject == w.Subject && h.w.Key == w.Key }
+	if len(r.held) < MaxHeld && !slices.ContainsFunc(r.held, same) {
+		r.held = append(r.held, heldWake{w: w, due: due, still: still})
+	}
 	r.mu.Unlock()
 	r.Poke()
 }
