@@ -3706,7 +3706,9 @@ bound, `receipt: dispatch` and `revision: ticket`), and the MCP tool `act`
 (`{operation, params?, body?, opId?}`: the operation by its name, its
 route's path parameters, its body without `opId`), which `conductor mcp`
 and `conductor brakeman act OPERATION --key KEY --body-file F [--op-id
-ID] [--json]` send to that operation's own route by the table, on the
+ID] [--json]` (`--json` printing `{"opId", "reply"}`: the act's `opId`,
+given or minted, beside the route's reply, whose receipt carries the
+derived id) send to that operation's own route by the table, on the
 client side, with the turn's token and its session named, the `opId`
 minted when the turn gives none and sent again with the same body, as
 `conductor dispatch launch` sends a launch: at once when the reply is

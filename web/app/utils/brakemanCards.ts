@@ -415,6 +415,8 @@ export function draftPlanProblem(f: { crew: string; constraints: string; note: s
   if (!f.crew.trim()) return 'A plan revision runs a saved crew with tasks: name its id.'
   if (utf8Bytes(f.constraints) > PLAN_BOUNDS.constraints) return `The constraints are at most ${PLAN_BOUNDS.constraints >> 10} KiB.`
   if (utf8Bytes(f.note) > PLAN_BOUNDS.note) return `The note is at most ${PLAN_BOUNDS.note >> 10} KiB.`
+  // A decision the draft names keeps its question: the server refuses an empty one (CheckDraftPlan), and the card sends what the field holds.
+  if (f.questions.some((q) => !q.trim())) return 'Every decision needs its question: say what the person will decide.'
   if (f.questions.some((q) => [...q].length > PLAN_BOUNDS.decisionQuestion)) return `A decision's question is at most ${PLAN_BOUNDS.decisionQuestion} characters.`
   return ''
 }

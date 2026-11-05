@@ -388,7 +388,7 @@ func TestMCPForEachAdapter(t *testing.T) {
 	dir := t.TempDir()
 	want := map[string][]string{
 		"claude": {"--mcp-config", filepath.Join(dir, "claude-mcp.json")},
-		"codex":  {"-c", `mcp_servers.conductor.command="/opt/conductor"`, "-c", `mcp_servers.conductor.args=["mcp"]`, "-c", "mcp_servers.conductor.env_vars=" + codexMCPEnv},
+		"codex":  {"-c", `mcp_servers.conductor.command="/opt/conductor"`, "-c", `mcp_servers.conductor.args=["mcp"]`, "-c", "mcp_servers.conductor.env_vars=" + codexMCPEnv, "-c", "mcp_servers.conductor.tool_timeout_sec=720"},
 	}
 	for _, a := range All() {
 		got := MCPFor(a.ID, dir)
