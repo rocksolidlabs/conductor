@@ -483,6 +483,12 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// it, and its handoff is typed into the member it names. OnActivity never
 	// waits, as a sink must not. The changes of server sessions reach the runs
 	// through localChange.
+	// Brakeman's background role takes a question opened (it only notes
+	// the session, and never waits), before the engine, whose sink and the
+	// touches' end the list.
+	if s.brakeman != nil {
+		s.events.addSink(s.brakeman.activity)
+	}
 	s.events.addSink(s.runs.OnActivity)
 	// The context providers: an attempt's context, and the files touched.
 	s.wireContext()

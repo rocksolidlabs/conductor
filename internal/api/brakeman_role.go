@@ -60,13 +60,13 @@ type roleSources struct {
 	paused map[string]bool
 }
 
-// openRole makes the desk's role and wires its sources: the activity
-// sink and Dispatch's changes here, the engine's run changes through
-// runChanged (the server's OnRunChange).
+// openRole makes the desk's role and wires Dispatch's changes to it; the
+// engine's run changes reach it through runChanged (the server's
+// OnRunChange) and the activity through its sink (activity), which New
+// adds before the engine's.
 func (d *brakemanDesk) openRole() {
 	d.src = &roleSources{runs: map[string]bool{}, questions: map[string]bool{}, paused: map[string]bool{}}
 	d.role = crew.NewRole(brakemanMember, roleRecords{d: d}, d.now)
-	d.s.events.addSink(d.activity)
 	if d.s.dispatch != nil {
 		d.s.dispatch.OnChange(d.ticketsChanged)
 	}
