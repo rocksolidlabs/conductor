@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/version"
@@ -978,12 +979,13 @@ func actTurn(t *testing.T, url string) *brakemanClient {
 // client's timeout: a launch the server takes past the session client's
 // 60 s is answered, not reported failed and launched again. The session
 // client's timeout is set below any request's, so an act it bounded
-// would fail on every send.
+// would fail on every send. Nor by the agent's MCP client: Codex is told
+// to wait for a tool longer than the act's whole budget.
 func TestAnActIsNotBoundByTheSessionClientsTimeout(t *testing.T) {
 	g := newGrantServer(t, []string{brakeman.ActLaunchApprovedPlan}, false)
 	c := actTurn(t, g.URL)
 	c.client.Timeout = time.Nanosecond
-	text, _, err := c.act(context.Background(), brakeman.ActLaunchApprovedPlan, map[string]string{"key": "CND-12"}, map[string]any{"plan": "0123456789abcdef"}, "")
+	text, _, _, err := c.act(context.Background(), brakeman.ActLaunchApprovedPlan, map[string]string{"key": "CND-12"}, map[string]any{"plan": "0123456789abcdef"}, "")
 	if err != nil || !strings.Contains(text, "run r-1 launched") {
 		t.Fatalf("the act: %q %v", text, err)
 	}
@@ -998,6 +1000,13 @@ func TestAnActIsNotBoundByTheSessionClientsTimeout(t *testing.T) {
 	}
 	if actBudget() < time.Duration(launchTries)*launchRequestTimeout {
 		t.Fatalf("an act's budget %v holds fewer than %d sends", actBudget(), launchTries)
+	}
+	// The agent's own MCP client waits the act out too: Codex gives a
+	// tool 60 s unless told otherwise, and the registration it is
+	// launched with tells it agents.MCPToolTimeout, which must hold the
+	// whole budget with the reply's way back beside it.
+	if agents.MCPToolTimeout < actBudget()+requestTimeout {
+		t.Fatalf("Codex waits %v for a tool, an act %v", agents.MCPToolTimeout, actBudget())
 	}
 }
 
@@ -1058,7 +1067,7 @@ func TestAnUnansweredActNamesItsOpID(t *testing.T) {
 		<-r.Context().Done()
 		return nil, r.Context().Err()
 	}}
-	_, _, err := actThrough(t, tr).act(context.Background(), brakeman.ActLaunchApprovedPlan, map[string]string{"key": "CND-12"}, map[string]any{"plan": "0123456789abcdef"}, "bk-7")
+	_, _, _, err := actThrough(t, tr).act(context.Background(), brakeman.ActLaunchApprovedPlan, map[string]string{"key": "CND-12"}, map[string]any{"plan": "0123456789abcdef"}, "bk-7")
 	if err == nil || !strings.Contains(err.Error(), "act again with opId bk-7") || !strings.Contains(err.Error(), "another opId would be another act") {
 		t.Fatalf("the error: %v", err)
 	}
@@ -1110,7 +1119,7 @@ func TestAnActWhoseOutcomeIsUnsureNamesItsOpID(t *testing.T) {
 				}
 				return tc.answers[n-1](r)
 			}}
-			_, _, err := actThrough(t, tr).act(context.Background(), brakeman.ActLaunchApprovedPlan, map[string]string{"key": "CND-12"}, map[string]any{"plan": "0123456789abcdef"}, "")
+			_, _, _, err := actThrough(t, tr).act(context.Background(), brakeman.ActLaunchApprovedPlan, map[string]string{"key": "CND-12"}, map[string]any{"plan": "0123456789abcdef"}, "")
 			bodies := tr.sent()
 			if err == nil || len(bodies) != len(tc.answers) {
 				t.Fatalf("%d sends: %v", len(bodies), err)
@@ -1162,7 +1171,7 @@ func TestAnActResendsALaunchStillBeingStarted(t *testing.T) {
 				_, _ = io.WriteString(w, `{"receipt":{"status":"done","id":"0123456789abcdef","repeat":true},"launch":{"id":"0123456789abcdef","runId":"r-1","state":"started"},"run":{"id":"r-1"}}`)
 			}))
 			t.Cleanup(srv.Close)
-			text, _, err := actTurn(t, srv.URL).act(context.Background(), brakeman.ActLaunchApprovedPlan, map[string]string{"key": "CND-12"}, map[string]any{"plan": "0123456789abcdef"}, "")
+			text, _, _, err := actTurn(t, srv.URL).act(context.Background(), brakeman.ActLaunchApprovedPlan, map[string]string{"key": "CND-12"}, map[string]any{"plan": "0123456789abcdef"}, "")
 			mu.Lock()
 			defer mu.Unlock()
 			opID, _ := bodies[0]["opId"].(string)

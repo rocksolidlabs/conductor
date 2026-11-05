@@ -417,7 +417,8 @@ func TestBrakemanOutsideASessionIsLoud(t *testing.T) {
 // conductor brakeman act in a granted turn's session: the operation sent
 // to its own route by the table with the session's token and its name,
 // the body read from a file with the opId given; the words name the
-// receipt and the run, --json prints the route's reply; a reply lost is
+// receipt and the run, --json prints the act's op id (minted here) beside
+// the route's reply; a reply lost is
 // sent once more with the same opId; a body that is no JSON object is a
 // usage error before anything is sent.
 func TestBrakemanActFromTheCommandLine(t *testing.T) {
@@ -436,8 +437,14 @@ func TestBrakemanActFromTheCommandLine(t *testing.T) {
 		t.Fatalf("act: %d %v %q", code, err, out)
 	}
 	code, out, _, err = brakemanCmd(t, `{"plan":"0123456789abcdef"}`, "act", "launch_approved_plan", "--key=CND-7", "--body-file", "-", "--json")
-	var reply map[string]any
-	if code != 0 || err != nil || json.Unmarshal([]byte(out), &reply) != nil || reply["run"].(map[string]any)["id"] != "r-1" {
+	var printed struct {
+		OpID  string `json:"opId"`
+		Reply struct {
+			Receipt struct{ ID string }
+			Run     struct{ ID string }
+		} `json:"reply"`
+	}
+	if code != 0 || err != nil || json.Unmarshal([]byte(out), &printed) != nil || printed.Reply.Run.ID != "r-1" || printed.Reply.Receipt.ID == "" {
 		t.Fatalf("act --json: %d %v %q", code, err, out)
 	}
 	sent := g.sent()
@@ -445,6 +452,11 @@ func TestBrakemanActFromTheCommandLine(t *testing.T) {
 	if len(sent) != 3 || sent[0].path != "/api/dispatch/tickets/CND-7/launch" || sent[0].body["opId"] != "mine-7" || sent[1].body["opId"] != "mine-7" ||
 		sent[1].body["expectedRev"] != float64(2) || sent[0].session != "s1" || sent[0].auth != "Bearer agent-tok" || len(sent[2].body["opId"].(string)) != 16 {
 		t.Fatalf("the posts: %+v", sent)
+	}
+	// The op id minted for the --json act is printed, the one the act was
+	// sent with and a proposal of it names, not its receipt's.
+	if printed.OpID != sent[2].body["opId"] || printed.OpID == printed.Reply.Receipt.ID {
+		t.Fatalf("act --json printed opId %q, sent %v, receipt %q", printed.OpID, sent[2].body["opId"], printed.Reply.Receipt.ID)
 	}
 	if err := os.WriteFile(body, []byte(`[1]`), 0o600); err != nil {
 		t.Fatal(err)

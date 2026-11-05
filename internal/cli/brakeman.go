@@ -52,7 +52,8 @@ In a Brakeman turn's session (CONDUCTOR_BRAKEMAN is set), with the session's tok
                                             guide --section operations lists them, scope act): each
                                             --KEY a path parameter of its route (--key CND-12), F its
                                             body, a JSON object without opId (- for stdin), ID the
-                                            act's id, minted when absent
+                                            act's id, minted when absent; --json prints
+                                            {"opId": ID, "reply": the route's reply}
   conductor brakeman brief --file F         submit the turn's one brief (brakeman.brief/1) from the
                                             JSON file F, - for stdin; the turn ends once it is kept
 With the workbench token (--server, --token and --insecure as conductor dispatch takes them):
@@ -171,7 +172,7 @@ func (c *brakemanClient) tool(ctx context.Context, name string, raw json.RawMess
 		if err := strictJSON(raw, &a); err != nil {
 			return "", fmt.Errorf("act: %w", err)
 		}
-		text, _, err := c.act(ctx, a.Operation, a.Params, a.Body, a.OpID)
+		text, _, _, err := c.act(ctx, a.Operation, a.Params, a.Body, a.OpID)
 		return text, err
 	}
 	return "", unknownTool(name)
@@ -263,30 +264,32 @@ func actBudget() time.Duration {
 // reply lost every time, its launch still pending, a later send refused
 // after one of those, or a send answered with a 5xx) names its op id,
 // for the same act to be asked again, never a new one, which would be a
-// second act. It answers the act in words, then the route's reply, and
-// the reply itself.
-func (c *brakemanClient) act(ctx context.Context, name string, params map[string]string, body map[string]any, opID string) (string, json.RawMessage, error) {
+// second act. It answers the act in words, then the route's reply; the
+// reply itself; and the act's op id, the one given or the one minted,
+// which a proposal of the act names (args.opId) and the route's receipt
+// does not (its id is derived from it).
+func (c *brakemanClient) act(ctx context.Context, name string, params map[string]string, body map[string]any, opID string) (string, json.RawMessage, string, error) {
 	op, ok := operation(name)
 	if name == "" || !ok || op.Scope != "act" || op.Name == "act" {
-		return "", nil, fmt.Errorf("act: operation is one of %s", strings.Join(actOperations(), ", "))
+		return "", nil, "", fmt.Errorf("act: operation is one of %s", strings.Join(actOperations(), ", "))
 	}
 	path := op.Path
 	for _, k := range slices.Sorted(maps.Keys(params)) {
 		p := "{" + k + "}"
 		if !strings.Contains(path, p) {
-			return "", nil, fmt.Errorf("act %s takes the path parameters %s", name, takes(pathParams(op.Path)))
+			return "", nil, "", fmt.Errorf("act %s takes the path parameters %s", name, takes(pathParams(op.Path)))
 		}
 		path = strings.ReplaceAll(path, p, url.PathEscape(params[k]))
 	}
 	if m := regexp.MustCompile(`\{([a-z]+)\}`).FindStringSubmatch(path); m != nil {
-		return "", nil, fmt.Errorf("act %s needs %s", name, m[1])
+		return "", nil, "", fmt.Errorf("act %s needs %s", name, m[1])
 	}
 	b := map[string]any{}
 	maps.Copy(b, body)
 	if id, ok := b["opId"].(string); ok && opID == "" {
 		opID = id
 	} else if ok && id != opID {
-		return "", nil, errors.New("act: the body's opId and opId differ: give one")
+		return "", nil, "", errors.New("act: the body's opId and opId differ: give one")
 	}
 	if opID == "" {
 		opID = newOpID()
@@ -294,21 +297,21 @@ func (c *brakemanClient) act(ctx context.Context, name string, params map[string
 	b["opId"] = opID
 	payload, err := encodeJSON(b)
 	if err != nil {
-		return "", nil, fmt.Errorf("act: %w", err)
+		return "", nil, "", fmt.Errorf("act: %w", err)
 	}
 	if n := op.Bounds["body"]; n > 0 && len(payload) > n {
-		return "", nil, fmt.Errorf("act %s: the body is %d bytes, over its route's %d", name, len(payload), n)
+		return "", nil, "", fmt.Errorf("act %s: the body is %d bytes, over its route's %d", name, len(payload), n)
 	}
 	reply, err := c.send(ctx, name, opID, path, payload)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 	var b2 bytes.Buffer
 	if json.Indent(&b2, reply, "", "  ") != nil {
 		b2.Reset()
 		b2.Write(reply)
 	}
-	return actWords(name, opID, reply) + "\n\n" + b2.String(), reply, nil
+	return actWords(name, opID, reply) + "\n\n" + b2.String(), reply, opID, nil
 }
 
 // pathParams is a route's path parameters, as a schema's properties.
@@ -927,12 +930,22 @@ func brakemanAct(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	}
 	actx, cancel := context.WithTimeout(ctx, actBudget())
 	defer cancel()
-	text, reply, err := c.act(actx, operation, params, body, opID)
+	text, reply, opID, err := c.act(actx, operation, params, body, opID)
 	if err != nil {
 		return 1, err
 	}
 	if asJSON {
-		_, err = stdout.Write(append(bytes.TrimRight(reply, "\n"), '\n'))
+		// The act's op id beside the route's reply: the reply's receipt
+		// carries the id derived from it, never the op id a proposal of
+		// the act names, and a minted one is known nowhere else.
+		out, err := json.Marshal(struct {
+			OpID  string          `json:"opId"`
+			Reply json.RawMessage `json:"reply"`
+		}{opID, reply})
+		if err != nil {
+			return 1, fmt.Errorf("act: %w", err)
+		}
+		_, err = stdout.Write(append(out, '\n'))
 		return 0, err
 	}
 	fmt.Fprintln(stdout, text)
