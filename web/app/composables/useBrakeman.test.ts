@@ -560,6 +560,17 @@ describe('the makes kept, across a new token', () => {
     expect(out.crew?.id).toBe('new-crew')
   })
 
+  it('made, keep the title they were made with for the other cards, the request\'s own, and nothing of one that failed', async () => {
+    const bk = useBrakeman()
+    answers.push(() => Promise.resolve({ request: { ...first, made: [{ item: 1, opId: 'x', state: 'made', key: 'BKC-1' }] }, made: {}, ticket: { key: 'BKC-1', url: '/dispatch/BKC-1' } }))
+    await bk.make(first, 1, { edit: { title: 'As the person edited it' } })
+    expect(bk.madeTitle(first, 1)).toBe('As the person edited it')
+    expect(bk.madeTitle(other, 1)).toBeUndefined()
+    answers.push(failed)
+    await expect(bk.make(first, 2, { edit: { title: 'Never made' } })).rejects.toThrow('the backend failed')
+    expect(bk.madeTitle(first, 2)).toBeUndefined()
+  })
+
   it('whose reply was lost, are not asked again after a reset: the retry would go with the new token', async () => {
     const bk = useBrakeman()
     const lost = held()

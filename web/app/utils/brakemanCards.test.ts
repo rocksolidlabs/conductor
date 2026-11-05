@@ -4,6 +4,7 @@ import type { BriefItem } from './brakeman'
 import {
   blocksWords,
   COMMENT_MAX,
+  draftName,
   dropKeptMake,
   KEPT_MAX,
   KEPT_PREFIX,
@@ -205,6 +206,28 @@ describe('handoffs and drafts', () => {
     expect(blocksWords(0, [1], [{ from: 0, to: 1, state: 'pending' }], title)).toBe('Blocks draft 2 (related once both are made).')
     expect(blocksWords(0, [1], [{ from: 0, to: 1, state: 'made' }], title)).toBe('Blocks draft 2 (related).')
     expect(blocksWords(0, [], undefined, title)).toBe('')
+  })
+  it('names a made draft by the ticket it became and the title it was made with, never the brief\'s title the person changed', () => {
+    // The live check: draft 7's title edited, both made as BK-2 and BK-3; draft 6's line named BK-3 by the brief's title.
+    const items: BriefItem[] = [
+      { kind: 'fact/1', text: 'f', evidence: ['run:r-00000000'] },
+      { kind: 'draft_ticket/1', project: 'BK', title: 'Add a CHANGELOG.md entry for RETRY.txt and the lint check', blocks: [2] },
+      { kind: 'draft_ticket/1', project: 'BK', title: 'Add a CHANGELOG.md entry for RETRY.txt and the lint check' },
+    ]
+    const asMade: Record<number, string> = { 2: 'Add a CHANGELOG.md entry for RETRY.txt and the newline lint check' }
+    const made = [
+      { item: 1, state: 'made', key: 'BK-2' },
+      { item: 2, state: 'made', key: 'BK-3' },
+    ]
+    const edges = [{ from: 1, to: 2, state: 'made' }]
+    const name = (m: typeof made | undefined, titles: Record<number, string>) => (i: number) => draftName(i, items, m, (j) => titles[j])
+    expect(blocksWords(1, [2], edges, name(made, asMade))).toBe('Blocks BK-3 "Add a CHANGELOG.md entry for RETRY.txt and the newline lint check" (related).')
+    // A page read again knows the ticket, not the title it was made with: the key alone, never the brief's title.
+    expect(blocksWords(1, [2], edges, name(made, {}))).toBe('Blocks BK-3 (related).')
+    // Not made yet: the brief's title, as drafted; a refused make is no ticket.
+    expect(blocksWords(1, [2], undefined, name(undefined, asMade))).toBe('Blocks "Add a CHANGELOG.md entry for RETRY.txt and the lint check".')
+    expect(draftName(2, items, [{ item: 2, state: 'refused' }], () => 'x')).toBe('"Add a CHANGELOG.md entry for RETRY.txt and the lint check"')
+    expect(draftName(0, items, made, () => undefined)).toBe('item 1')
   })
 })
 

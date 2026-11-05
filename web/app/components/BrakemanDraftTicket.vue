@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { BrakemanRequest, BriefItem, RefResolution } from '~/utils/brakeman'
 import { displayBy, refRoute } from '~/utils/brakeman'
-import { blocksWords, makeAgain, madeWords } from '~/utils/brakemanCards'
+import { blocksWords, draftName, makeAgain, madeWords } from '~/utils/brakemanCards'
 import { ApiError } from '~/composables/useApi'
 
 /**
@@ -60,11 +60,8 @@ const finishing = computed(() => again.value.kind === 'finish')
 const sending = ref(false)
 const error = ref('')
 
-/** A draft's title by its index in the brief, as the blocks name it. */
-const draftTitle = (i: number) => {
-  const it = props.items[i]
-  return it?.kind === 'draft_ticket/1' ? `"${it.title}"` : `item ${i + 1}`
-}
+/** Another draft by its index in the brief, as the blocks name it: once made, the ticket it became, with the title it was made with. */
+const draftTitle = (i: number) => draftName(i, props.items, req.value.made, (j) => bk.madeTitle(props.request, j))
 const blocks = computed(() => blocksWords(props.index, props.item.blocks, req.value.edges, draftTitle))
 
 async function create() {

@@ -291,6 +291,9 @@ test('two draft tickets, one blocking the other, are made as edited with their r
   expect(ticketA.priority).toBe(2)
   expect((await api.ok<{ ticket: { title: string } }>('GET', `/api/dispatch/tickets/${keyB}`)).ticket.title).toBe('Document the build, edited')
   await expect.poll(async () => (await api.ok<{ ticket: typeof ticketA }>('GET', `/api/dispatch/tickets/${keyA}`)).ticket.relations.filter((x) => !x.deletedAt).map((x) => [x.kind, x.other.key])).toEqual([['blocks', keyB]])
+  // The Blocks line names the other draft as it was made: the ticket it became and the title the person gave it, never the brief's
+  // (the live check's line kept the title Brakeman wrote).
+  await expect(a.locator('[data-draft-blocks]')).toHaveText(`Blocks ${keyB} "Document the build, edited" (related).`, { timeout: 30_000 })
   // Made again, under another id: nothing more is made, and the route names the ticket it became.
   const again = await api.call<{ error: { code: string; key: string } }>('POST', '/api/brakeman/requests/br-1/items/6/make', { opId: 'bkc-again-1', by: 'Nate' })
   expect([again.status, again.body.error.code, again.body.error.key]).toEqual([409, 'already_made', keyA])
@@ -300,6 +303,8 @@ test('two draft tickets, one blocking the other, are made as edited with their r
   await page.reload()
   await expect(b.locator('[data-draft-item="6"] [data-made-link]')).toHaveText(keyA, { timeout: 30_000 })
   await expect(b.locator('[data-draft-item="6"] [data-draft-create]')).toHaveCount(0)
+  // Read again, the page knows the ticket and not the title it was made with: the key alone, still never the brief's title.
+  await expect(b.locator('[data-draft-item="6"] [data-draft-blocks]')).toHaveText(`Blocks ${keyB} (related).`)
 })
 
 test('a make that did not finish is finished from the card as it was sent, after the page is read again', async ({ page }) => {

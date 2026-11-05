@@ -391,6 +391,11 @@ export function useBrakeman() {
    * new token, which may be another server's, finds only its own.
    */
   const kept = useState<Record<string, KeptMake>>('brakemanKeptMakes', () => (import.meta.client ? readKept() : {}))
+  /**
+   * The title each draft ticket this page made was made with, by keptKey: the person's edit, which the brief's own title is not, so
+   * another card's Blocks line names the ticket as made (draftName). A page read again knows only the ticket's key.
+   */
+  const madeTitles = useState<Record<string, string>>('brakemanMadeTitles', () => ({}))
   const store = brakemanLive()
   const reads: BrakemanReads = {
     state: () => request<BrakemanState>('/api/brakeman'),
@@ -534,8 +539,15 @@ export function useBrakeman() {
     // Answered after a reset: the ticket or crew is the server's before, perhaps another one's, so the caller is given nothing of it
     // to open here (a crew card would open /crews/<its id> on the new server).
     if (store.generation !== at) throw new Error('The token changed before the make was answered: it was made on the server it was asked of, and shows there.')
+    const title = (body.edit as { title?: unknown } | undefined)?.title
+    if (typeof title === 'string') madeTitles.value = { ...madeTitles.value, [key]: title }
     store.apply(out.request, at)
     return out
+  }
+
+  /** The title the draft ticket was made with, when this page made it. */
+  function madeTitle(r: MakeOf, item: number): string | undefined {
+    return madeTitles.value[keptKey(r, item)]
   }
 
   /** The make of the item this browser asked that did not finish, or undefined. */
@@ -592,5 +604,5 @@ export function useBrakeman() {
     return store.generation
   })
 
-  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, brief, refs, closed }
+  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, madeTitle, brief, refs, closed }
 }
