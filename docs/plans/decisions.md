@@ -353,7 +353,8 @@ CREATE INDEX decisions_current ON decisions(current_run, state);
 CREATE TABLE decision_responses (
   decision INTEGER NOT NULL REFERENCES decisions(n) ON DELETE CASCADE,
   k INTEGER NOT NULL,                       -- 1, 2, … in the order received
-  actor TEXT NOT NULL,                      -- "admin" or "user:<subject>" (actorOf)
+  actor TEXT NOT NULL,                      -- "admin" or "user:<subject>" (actorOf), the audit's words
+  authority TEXT NOT NULL,                  -- JSON {grant, via, subject?, boot} (authorityOf), what the policy checks
   response_id TEXT NOT NULL,                -- the client's idempotency key
   fingerprint TEXT NOT NULL,
   status TEXT NOT NULL,                     -- accepted | refused
@@ -375,6 +376,7 @@ CREATE TABLE decision_holds (
   run_id TEXT NOT NULL,
   task_id TEXT NOT NULL,
   decision INTEGER NOT NULL REFERENCES decisions(n) ON DELETE CASCADE,
+  released_at TEXT NOT NULL DEFAULT '',     -- set when the hold is released; the row stays
   PRIMARY KEY (run_id, task_id, decision),
   FOREIGN KEY (run_id, task_id) REFERENCES tasks(run_id, id) ON DELETE CASCADE
 );
@@ -402,11 +404,14 @@ takes the place of).
 "commit", commit}` (the asking attempt's worktree at its `HEAD` when it
 asked, filled in by the server when the request names none), `{kind:
 "candidate", run, task, n, commit}` (a task's submitted result, a DS2
-candidate), `{kind: "artifact", path, sha256}` (a file of the asking
-attempt's worktree, by its path relative to it and its SHA-256, which
-the server reads through the worktree's `os.Root` and refuses when it
-differs), and `{kind: "plan", plan, digest}` (a gate's: the run's plan
-revision).
+candidate), `{kind: "artifact", path, commit, sha256}` (a file as
+committed: its path relative to the worktree, the commit at the asking
+attempt's `HEAD` when it asked, and the SHA-256 of the file's blob at
+that commit, read from the repository's object store with `git
+cat-file` as an argv; the request is refused `artifact_uncommitted`
+when the worktree's file differs from that blob, so the agent commits
+what it asks about, and no recheck ever reads a live file), and `{kind:
+"plan", plan, digest}` (a gate's: the run's plan revision).
 
 `policy` (JSON): `{revision: "local/1", approver: "operator", quorum: 1,
 authority: [{kind: "operator"}]}`. The only policy of this repository is
@@ -416,6 +421,15 @@ workbench token, or an identity provider's principal with
 an application check the policy the decision was opened under against
 the one in force, and so that a later policy is a later revision of the
 same field.
+
+A response's `authority` is what the policy checks, kept apart from its
+`actor`, the audit's words: `grant` (`admin`, or none), `via`
+(`workbench`, `identity` or `router`) and the identity's `subject`, all
+from the principal the request authenticated (`authorityOf` in
+`internal/api`, beside `actorOf`), never from a body; `boot` is the
+server process's id, minted at its start. A router's answer offered to
+the engine has `via: router` and no grant, so it can never pass for an
+admin's answer whose subject it shares.
 
 `applied` (JSON), the execution owner's application receipt: `{at, by:
 "yardmaster", run, task?, attempt?, response, validated: true, how,
@@ -428,25 +442,51 @@ tasks are cancelled) or `noted` (a gate that holds no task).
 it records: `opened`, `routed` (`{to: [{kind, name}], rule, by}`; the
 operator by policy, and a registered router's destinations), `notified`
 (`{sinks, attention}`: what was told), `responded` (`{k, status}`),
-`applied`, `delivery.typing`, `delivery.entered`, `delivery.untyped`,
-`delivery.uncertain`, `delivery.task_file`, `commented` (`{text, by}`),
+`applied`, `refunded` (`{run, task, n}`: the attempt given back, I3),
+`delivery.typing`, `delivery.entered`, `delivery.untyped`,
+`delivery.uncertain`, `delivery.task_file` (written once, by the first
+attempt whose files carry the answer), `commented` (`{text, by}`),
 `info_requested` (`{text, by}`), `superseded`, `cancelled`, and, for a
 provider only, `assigned`, `delegated`, `escalated` and `expired`, which
-no code of this repository writes. At most 256 rows per decision: past
-that a `notified` or `delivery.*` row is not written (counted in the
-next written row's detail as `dropped`), and every other kind is.
+no code of this repository writes. A row's `detail` is at most 2 KiB as
+encoded.
+
+At most 256 rows per decision, a cap each kind's own bound keeps: one
+`opened`; two `routed` at the opening (the operator by policy, a
+registered router); at most 32 of the operator's operations together
+(`commented`, `info_requested` and a re-route's `routed`, on a final
+decision too; past them the operation is answered `decision_limit` with
+no row); at most 32 `responded`, one per response row (a router's
+refused answer is one of them); one `applied`; one `superseded` or
+`cancelled` (an applied approval's supersession, S1, included); at most
+one `refunded` (a decision holds its task, so no second attempt
+of it can wait on it, and a refund is never repeated, I3); at most three
+`delivery.*` (the typing, its end, and the task file). That is at most
+73 rows; `notified` rows take the rest, and past 256 a `notified` row is
+not written (counted in the next written row's detail as `dropped`).
+`TestTheHistoryCapHolds` writes every kind to its bound.
 
 Bounds of the store, checked in the transaction that would pass them
 (`decision_limit`): at most 4 decisions open per attempt, 64 open per
 run, 1,000 per run in all; at most 32 response rows per decision
 (refusals included: past it a response is answered `decision_limit`
-without a row).
+without a row); at most 32 operator operations per decision (above). A
+response's receipt is at most 8 KiB as encoded and the application
+receipt at most 4 KiB; a response whose receipt would pass its bound is
+refused `invalid` with no row, so every part of a record keeps its
+bound and the record its sum (the routes, `GET /api/decisions/{did}`).
 
 **Writers and readers** (`decisions.go`, new): `Tx.OpenDecision(row)`
 (answers the new `n`, or the existing row for a repeated `request_id`),
 `Tx.PutDecision(row)` (state, rev, why, applied, current_run),
-`Tx.Respond(n, row)`, `Tx.History(n, kind, by, detail)`, `Tx.Hold(run,
-task, n)` and `Tx.Release(run, task, n)`; `Ledger.Decision(ctx, n)` (the
+`Tx.Answer(n, run, rev)` (the conditional write of a response: it
+changes the row only while its `current_run` is `run`, its state `open`
+and its rev `rev`, and says whether it did), `Tx.MoveDecisions(from,
+to)` (a continuation's `UPDATE … RETURNING`: it moves every open or
+answered decision whose `current_run` is `from` and answers the rows as
+moved), `Tx.Respond(n, row)`, `Tx.History(n, kind, by, detail)`,
+`Tx.Hold(run, task, n)` and `Tx.Release(run, task, n)` (which sets
+`released_at` and keeps the row); `Ledger.Decision(ctx, n)` (the
 row with its responses and history), `Ledger.Decisions(ctx, Filter)`
 (by state, current run, ticket, task; newest first; pages of at most 100
 by `n`), `Ledger.Holds(ctx, run)`. `Prune` refuses a run that holds or
@@ -477,7 +517,8 @@ loaded with the run), and every task its holds (`task.holds`).
 - `Engine.RequestDecision(ctx, sessionID, req)`: the session's attempt
   (`attemptOf`, as `Blocked` finds it) must be running; the request is
   cleaned (`cleanText`) and checked against the bounds above; a
-  `subject` of kind `artifact` is read through the worktree; a `candidate`
+  `subject` of kind `artifact` is bound to its blob at the attempt's
+  `HEAD` (above); a `candidate`
   must name a submitted result of the run. One transaction: the decision
   row (`origin: agent`, the asking task, attempt, session and member, the
   run's ticket and plan revision, `policy` `local/1`), its `opened` and
@@ -487,7 +528,12 @@ loaded with the run), and every task its holds (`task.holds`).
   `decision.opened`. A repeated `requestId` with the same fingerprint
   answers the existing record and changes nothing; with another,
   `decision_conflict`. After the commit, in this order: the session's
-  question mirrors the decision (`session.Local.TryAskDecision`, below), the
+  question mirrors the decision (`session.Local.TryAskDecision`, below),
+  on the attempt's `askMu` as a blocker's question is asked
+  (`checkpoints.go`): the decision is read as open in the engine before
+  the ask and again after it, the mirror's question id is kept on the
+  engine's copy of the decision, and a decision answered, superseded or
+  cancelled meanwhile withdraws the mirror at once by that id; the
   router is told (`internal/api`, below), the browsers and sinks are told.
   The tool's reply never waits for any of them.
 - **Gates.** `startManaged`'s first transaction (`transactFirst`, whose
@@ -498,35 +544,99 @@ loaded with the run), and every task its holds (`task.holds`).
   digest, an approval's options "Approve" and "Reject", with a hold on
   every task its `before` names. A continuation does not open them again;
   it carries the run's (below). A crew launched without a ticket has no
-  gates (Owner decisions, 6).
+  gates (Owner decisions, 6). `startManaged` calls the gates' opener only
+  from PR-4 on, the PR that ships the response route with it (The PRs):
+  Dispatch's launch routes are on `main` already, so a gate opened before
+  a person can answer it would hold a real launch's tasks with no way to
+  release them but a cancel.
 
 **Holding.** `Engine.pump` gains one rule beside its `TaskReady` check:
 a task with a hold is not dispatched, whatever its needs, and `run.ready`
 gives it the reason "waits for decision dr-7", which the Tasks view's
 words show (`taskWords`, `web/app/utils/tasks.ts`). A held task's state stays what it is
 (`blocked` or `ready`): a hold is a fact beside the state, as a blocker
-is, so the ledger's task states, the run's outcome rules and every
-reader of them are unchanged. A run whose only unfinished tasks are held
-is running and idle; it ends only when its tasks do, so a decision is
-never closed by a run ending under it. Pause holds the dispatch as
-before; a decision may still be answered while paused, and its released
-tasks wait for Unpause.
+is, so the ledger's task states and every reader of them are unchanged.
+A run whose unfinished tasks are held and could still start is running
+and idle. The outcome rule (`run.settle`) counts a blocked task behind a
+need that failed or was cancelled (`doomed`) as finished, and a held
+task can be one, so the engine never leaves a decision open under work
+that has ended:
+
+- a decision whose held tasks are all finished or doomed is cancelled in
+  the transaction that finishes or dooms the last of them ("build
+  failed, so deploy will not start"), and its holds are released;
+- a gate that holds no task (a plan decision whose `before` is empty)
+  holds nothing and keeps no run open: it may be answered while the run
+  lasts (`how: noted`);
+- the transaction in which `settle` gives the run its outcome cancels
+  every decision of the run that is not final ("the run ended, failed,
+  before dr-3 was answered"), so a finished run holds no open decision,
+  shows none in Needs you, and `Prune` takes it.
+
+Pause holds the dispatch as before; a decision may still be answered
+while paused, and its released tasks wait for Unpause.
+
+**A waiting attempt gives up its place.** An attempt that waits on its
+decision keeps its session, so that the answer can be typed into it,
+and so it keeps its member and one of the run's slots too: `pump`
+dispatches no second attempt of a member (`activeAttempt`) and at most
+`maxActiveAttempts`, four, at once. So when `pump` finds a ready, unheld
+task that it does not dispatch only because its member, or the run's
+slots, are taken by attempts that wait on a decision and whose agents
+have ended their turn (the decision's mirrored question shows, which it
+does only at the turn's done), it parks the oldest such attempt: the
+attempt is closed as one that ends while it waits (below: given back,
+its hold kept), its session stopped through the attempt's ordinary end,
+and the answer then reaches the task's next attempt through its task
+file. An attempt whose agent is still working is never parked, and an
+attempt nothing waits for keeps its session. The tool's reply tells the
+agent to save a checkpoint before it asks, since a next attempt starts
+at it.
 
 **An attempt that ends while it waits.** In the transaction that closes
 an attempt (`closeAttempt`, `endAttempt`), when the attempt asked a
-decision that is open or answered and not applied: the attempt closes
-with stage `decision` and is not counted (`t.extra++`, the withdrawal's
-mechanism), the task stays held, and `attempt.waited` is the event. The
+decision that is open or answered and not applied, and its session
+ended without a result (the agent exited, the attempt was parked or
+stopped; an interruption is the continuation's, below): the attempt
+closes with stage `decision` and is not counted (`t.extra++`, the
+withdrawal's mechanism), the decision's history gains `refunded`
+naming the attempt, the task stays held, and `attempt.waited` is the
+event. An attempt that ends any other way is counted as today. The
 task's next attempt is dispatched only after the application, at the
 checkpoint's commit when there is one (`startCommit`), with the answer in
 its task file. A session that ends with its decision applied and typed is
 an ordinary end.
 
-**Responding.** `Engine.RespondDecision(ctx, id, resp, actor)`, under the
-actor the API names (`actorOf`). With the decision's current run held by
-the engine, through its `transact`; with it not held (stopped,
-interrupted, not continued), through `Ledger.Transition` on that run
-directly, changing no engine state. In one transaction:
+**A result while a decision waits.** A `task_result` from an attempt
+that has a decision open, or answered and not applied, is refused (`409
+decision_open`: "dr-7 is not answered yet: wait for its answer, or
+withdraw it with decision_withdraw"), so no dependent starts on work
+whose approval is still open (silence is never approval), and an attempt
+never succeeds or fails its checks while its decision waits. The
+engine's done-without-result reminder (`managedActivity`, typed once
+per attempt) is neither typed nor spent while the attempt has such a
+decision: the agent that ended its turn to wait is never told to submit,
+whether or not the mirrored question shows (an ask the session's rate
+limit refused, or one set aside while the agent works), and is reminded
+at its next done without a result once the decision is applied.
+
+**Responding.** `Engine.RespondDecision(ctx, id, resp, actor,
+authority)`, under the actor the API names (`actorOf`) and the authority
+it authenticated (`authorityOf`, the ledger above). With the decision's
+current run held by the engine, through its `transact`; with it not held
+(stopped, interrupted, not continued), through `Ledger.Transition` on
+that run directly, changing no engine state, and for the workbench token
+only: an identity principal's response to a run not held is refused
+(`409 not_held`: "dr-7's run is not running: continue it, or answer with
+the workbench token"), so no identity's answer waits for an application
+that its grant may not outlast (Applying, below). The choice between the
+two is made before the transaction, and a continuation (O6) may move the
+decision between that choice and the commit, so the transaction does not
+trust it: its answer is the conditional `Tx.Answer(n, run, rev)`, which
+changes nothing once the decision's `current_run` is another run, and
+`RespondDecision` then looks again and answers through the run that
+holds the decision now, at most three times (`503 decision_moved`
+after them, a reply the web asks once more). In one transaction:
 
 1. A row for `(decision, actor, responseId)` already there: its receipt,
    `repeat: true`, nothing else (the same content), or
@@ -543,28 +653,37 @@ directly, changing no engine state. In one transaction:
    (`stale_decision` otherwise). The answer must fit the type: an approval
    and an assignment take `choice`, a clarification `choice` or `text` (at
    most `ext.MaxAnswerText`, 4,096 bytes, cleaned as a submission is) or
-   both; a rationale is at most 2,000 characters (`invalid`, no row).
-3. Accepted: the response row and its receipt, the decision `answered`
-   with `answered_at`, rev + 1, `responded` history, the event
-   `decision.answered`.
+   both; a rationale is at most 2 KiB as encoded (`invalid`, no row).
+3. Accepted: the response row with its authority and its receipt, the
+   decision `answered` with `answered_at` (`Tx.Answer`), rev + 1,
+   `responded` history, the event `decision.answered`.
 
 The reply is the receipt (Recorded). The application follows.
 
 **Applying.** `Engine.applyDecisions(r)`, run after every transaction of a
 held run that answered a decision, and by a continuation's first steps.
 One transaction per decision: the decision `answered`; the rechecks again
-(the subject, the policy, the asking attempt's membership); then:
+(the subject, the policy, the asking attempt's membership, and the
+responder's authority, below); then:
 
 - origin agent, its attempt live (the same run chain, task, attempt and
   session, the session not ended): `how: typed`; the hold released; the
   delivery intent `delivery.typing`; after the commit the answer is typed
   as one line, "Decision dr-7 (approval) answered by Nate: Approve. Why:
-  … (receipt dr-7/1)", through the member's handoff queue, answering the
+  … (receipt dr-7/1)", by the member's deliverer (`handoff.go`) ahead of
+  every handoff it holds: an ordinary handoff waits while a question
+  shows (`UnlessWaiting` puts it back at the queue's head), and the
+  decision's mirrored question is one, so an answer queued behind such a
+  handoff would wait for itself. The answer goes in at the queue's head
+  marked as the decision's, and the deliverer submits it answering the
   mirrored question (`session.Submission.Question` its question id and
-  `Decision` its id) when it shows, else as a plain handoff line after
-  any held question (`UnlessWaiting`, the messages' rule); `delivery.
-  entered` once the Enter is written, `delivery.untyped` when the line
-  never went in (the next attempt's task file then carries it);
+  `Decision` its id, never `UnlessWaiting`) when the mirror shows, else
+  as a plain line after any other held question (`UnlessWaiting`, the
+  messages' rule); the ordinary handoffs follow it. Whether a mirror was
+  put up is read on the attempt's `askMu`, after any ask under way
+  (Opening, above), so a mirror asked late never outlives the answer;
+  `delivery.entered` once the Enter is written, `delivery.untyped` when
+  the line never went in (the next attempt's task file then carries it);
 - origin agent, its attempt gone: `how: task_file`; the hold released, so
   the task's next attempt is dispatched with the answer in its task file
   (`delivery.task_file` when that attempt's files are written);
@@ -577,10 +696,30 @@ One transaction per decision: the decision `answered`; the rechecks again
 - the application receipt written, the state `applied` with
   `closed_at`, the event `decision.applied`.
 
-A recheck that fails at application supersedes or cancels the decision
-with its words (`answered` → `superseded`), keeps the response, and
-releases nothing; the asking attempt, when live, is told in one line
-("Decision dr-7's answer was not applied: the candidate is now 9f2c1ab").
+The authority is rechecked from the response's `authority`, never from
+its actor: a `workbench` response holds (the operator's token is the
+server's, decision D4); a `router` one never got here; an `identity`
+one holds only when the server process that accepted it applies it
+(`boot`), which is the case whenever its run was held at the response
+(the application follows the response's commit, in the same process,
+after the principal was authenticated for that very request) and a run
+not held never takes one (`not_held`, above). One found after a restart
+(the crash fell between the response and its application) is not
+applied: nothing can recheck a grant without its token, which is never
+kept, so the decision is superseded by a fresh one, the same request
+and holds ("user:nate's answer could not be rechecked after the
+restart; dr-9 asks again"), and the operator answers again.
+
+A recheck that fails at application supersedes the decision with its
+words (`answered` → `superseded`) and keeps the response; what it held
+is disposed of in the same transaction, as every supersession's is
+(Disposing of the holds, below): an agent's decision's hold is
+released and its asking attempt, when live, told in one line
+("Decision dr-7's answer was not applied: the candidate is now
+9f2c1ab"), else its task's next attempt told in its task file; the
+holds of a gate, and of any decision whose answer's authority could not
+be rechecked (its question still stands), move to the fresh decision
+that takes its place.
 
 An agent's approval answered "no" is delivered as words: the agent
 decides what follows; only a gate's rejection cancels tasks (Owner
@@ -592,14 +731,29 @@ with its words in `why` and a history row:
 - S1, a candidate subject: a task's new submitted result (another attempt,
   a repair after a review's `needs_changes`, RV1's repair) supersedes
   every open or answered decision whose subject is that task's earlier
-  candidate.
-- S2, an artifact subject: the file's SHA-256 is read again at response
-  and at application while the asking attempt's worktree exists; another
-  digest supersedes ("README.md changed: sha256 3c1f… was 9ad0…").
+  candidate, and every applied approval of it: an applied approval keeps
+  its response and application receipts and its history, and becomes
+  `superseded` with the words of what moved (`applied` → `superseded`,
+  the one change of a final decision but a comment), so neither the card
+  nor a task file shows it as current any more.
+- S2, an artifact subject: the blob of its path at the commit the
+  answer's work rests on (the asking attempt's `HEAD` while that attempt
+  is live; otherwise the start commit of the attempt that will read the
+  answer, its checkpoint's when it has one) is read from the
+  repository's object store, never from a live file, at response and at
+  application; another digest supersedes ("README.md changed: sha256
+  3c1f… was 9ad0…"), and so does a commit or path that cannot be read
+  ("README.md cannot be read at 9f2c1ab: …"): an unreadable subject is
+  never counted as validated.
 - S3, the asking task withdrawn (a withdrawal, `withdraw`) or reopened
   (`reopen`): its decisions are cancelled ("the review reopened build").
-- S4, a commit subject is the tree the question was asked about: shown,
-  never rechecked (an agent may go on working on other files).
+- S4, a commit subject: a clarification's and an assignment's are the
+  tree the question was asked about, shown and never rechecked (an agent
+  may go on working on other files); an approval's is rechecked at
+  response and at application against the commit the answer's work
+  rests on, read as S2 reads it, and another commit supersedes ("HEAD is
+  now 9f2c1ab, was 3c1f2d0"). After its application an approval of a
+  commit or of a file is not rechecked again: acting on it moves both.
 - A plan subject never moves inside a run: a run is bound to its plan
   revision and a ticket's later edits never change it (DS2's rule), and a
   continuation carries the same package.
@@ -612,6 +766,25 @@ with its words in `why` and a history row:
 - The asking agent withdraws its own open decision
   (`WithdrawDecision`, the tool `decision_withdraw`): cancelled, its hold
   released.
+- The work under it ended: its held tasks all finished or doomed, or the
+  run given its outcome (Holding, above): cancelled, its holds released.
+
+**Disposing of the holds.** Every supersession and cancellation disposes
+of what the decision held in its own transaction, so no final decision
+keeps a hold. A supersession by a request (`supersedes`) moves the hold
+to the new decision. A gate superseded (its authority or policy failed
+its recheck at application; its plan subject never moves), or any
+decision whose answer's authority could not be rechecked, is replaced
+in the same transaction by a fresh decision of the same request (for a
+gate, the same plan decision) with the same holds, `superseded_by`
+naming it, so its tasks stay held for an answer. Any other supersession
+of an agent's decision releases its hold: the asking attempt, when
+live, is told in one line, else its task's next attempt reads the words
+in its task file ("dr-7 was superseded: the candidate is now 9f2c1ab;
+ask again if you still need it"), whether or not the attempt that asked
+has ended. A cancellation releases or cancels as its cause says, above.
+A released hold keeps its row with `released_at` set (the ledger,
+above), so a decision stays tied to the tasks it held.
 
 **Comments and more information.** `Engine.CommentDecision(ctx, id,
 opID, kind, text, actor)`: `kind` `comment` (kept in the history) or
@@ -629,19 +802,32 @@ HM1 adds a person's label. It changes no state.
 
 **Continuations and recovery** (`continue.go`). A continuation's first
 transaction moves every open or answered decision of the run it
-continues to the continuation (`current_run`), puts its holds on the
-continuation's tasks of the same ids, and for a task whose last attempt
-was interrupted while it waited on one of them gives that attempt back
-(`extra++`), since the crash left no close row to do it. Its next steps
-apply the answered ones. `crew.Recovered` (the record that
+continues to the continuation (`current_run`) with `Tx.MoveDecisions`,
+and the continuation's engine copy of them is made from the rows that
+write answers, never from what `readHistory` read before the
+transaction (the ledger's one connection orders the two writers): a
+response that committed first on the old run is moved as answered and
+applied next; one that comes after finds the row moved, changes
+nothing, and is answered through the continuation (Responding, above).
+The transaction puts the decisions' holds, released ones included, on
+the continuation's tasks of the same ids, and for a task whose last
+attempt was interrupted while it waited on one of them gives that
+attempt back (`extra++`, since the crash left no close row to do it)
+unless the decision's history already names that attempt `refunded`:
+the give-back writes that row, so a continuation of a continuation,
+which finds the same interrupted attempt last (`readHistory` walks the
+ancestors when a continuation made none), never gives it back twice.
+Its next steps apply the answered ones. `crew.Recovered` (the record that
 `internal/api`'s `syncRecords` writes from the ledger at start) shows the
 holds. The continuation's note now says "N uncertain launches waiting
 for a retry" where it said "waiting for a decision" of something that was
 not one.
 
 **The task file** (`taskfile.go`). `task.md` gains "## Decisions" when
-the task has any: each decision of the task's run chain that holds it or
-that it asked, with its question, its state and, once applied, the
+the task has any: each decision of the task's run chain that holds or
+held it (its hold rows, released ones included, so an applied gate's
+answer stays in every task it released) or that it asked, with its
+question, its state and, once applied, the
 answer, the rationale and who gave it; `task.json` gains `decisions`
 with the same, in the record's words. The section is bounded like the
 others and cut first by `fitTaskFile` into `task-more.json` after the
@@ -713,9 +899,11 @@ unchanged.
   destinations become a `routed` history row; `Resolved` is told when the
   decision reaches a final state, through the existing ordered list. An
   answer the router holds is offered to `RespondDecision` under
-  `user:<By.Subject>` with no grant, which `local/1` refuses
-  (`not_approver`): recorded as a refused response and a `routed` row's
-  `answer: "refused under local/1"`, never applied (Owner decisions, 8).
+  the actor `user:<By.Subject>` and the authority `{via: router}` with
+  no grant, which `local/1` refuses (`not_approver`) whatever principal
+  the subject also names: recorded as a refused response, its
+  `responded` history row saying "refused under local/1", never applied
+  (Owner decisions, 8).
 - `ext/exttest`'s fake router records `Request`; the `Router` contract
   check gains a case with it set and one with it empty.
 
@@ -726,13 +914,13 @@ with `DisallowUnknownFields` and bounded:
 
 | Route | Who | Body → reply |
 |---|---|---|
-| `POST /api/sessions/{id}/decisions` | the attempt's own token (scope task) | `{requestId, type, question, context?, options?, recommendation?, uncertainty?, authorizes?, evidence?, expertise?, subject?, supersedes?}` (24 KiB) → `201 {decision}` at once; `200` the same for a repeat; `409 decision_conflict`, `409 not_running`, `429 decision_limit`, `400 invalid` |
+| `POST /api/sessions/{id}/decisions` | the attempt's own token (scope task) | `{requestId, type, question, context?, options?, recommendation?, uncertainty?, authorizes?, evidence?, expertise?, subject?, supersedes?}` (24 KiB) → `201 {decision}` at once; `200` the same for a repeat; `409 decision_conflict`, `409 not_running`, `409 artifact_uncommitted`, `429 decision_limit`, `400 invalid` |
 | `GET /api/sessions/{id}/decisions` | the attempt's own token | its task's decisions (`{decisions}`, at most 100) |
 | `GET /api/sessions/{id}/decisions/{did}` | the attempt's own token | one of its task's, whole |
 | `POST /api/sessions/{id}/decisions/{did}/withdraw` | the attempt's own token | `{}` → `{decision}`; `409 decision_closed` |
 | `GET /api/decisions` | admin | `?state=&run=&ticket=&after=&limit=` (100) → `{decisions, next?}`, newest first, without history |
-| `GET /api/decisions/{did}` | admin | the record whole (at most 512 KiB: 16 KiB request, 32 receipts, 256 history rows) |
-| `POST /api/decisions/{did}/respond` | admin | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (8 KiB) → `201 {receipt, decision}`; `200` repeat; `409 decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `response_conflict`; `403 not_approver`; `429 decision_limit` |
+| `GET /api/decisions/{did}` | admin | the record whole with its evidence's `refs` (at most 1 MiB as encoded, the sum of its parts at their bounds: the 16 KiB request, 32 receipts of at most 8 KiB (256 KiB), 256 history rows of at most 2 KiB of detail and 256 bytes of envelope (576 KiB), the 4 KiB application receipt and 20 ref resolutions of at most 2 KiB (40 KiB), 892 KiB in all; `TestTheFullestDecisionFitsItsBound` builds one with every part at its bound) |
+| `POST /api/decisions/{did}/respond` | admin | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (8 KiB) → `201 {receipt, decision}`; `200` repeat; `409 decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `429 decision_limit`; `503 decision_moved` |
 | `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}` |
 | `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (8 KiB) → `{receipt, decision}` |
 | `POST /api/decisions/{did}/route` | admin | `{opId, to: {kind: "operator"}, note?, expectedRev}` → `{receipt, decision}` |
@@ -746,9 +934,14 @@ the free build's one approver is the operator; `403 not_approver` is the
 policy's refusal of a principal that got past it without the authority
 `local/1` names (a router's answer, below).
 
+- The result route (`task_result`, `POST /api/sessions/{id}/task/result`)
+  gains the refusal `409 decision_open` (A result while a decision
+  waits, above), its words in the operation's description.
 - The guide (`guide.go`, the one table of operations): `decision_request`,
-  `decision_read` and `decision_withdraw` (scope task, MCP tools with
-  their schemas), and `decision_respond`, `decision_cancel`,
+  `decision_list`, `decision_read` and `decision_withdraw` (scope task,
+  one per session route above, MCP tools with their schemas, so
+  `TestEverySessionRouteIsInTheTable` finds each), and
+  `decision_respond`, `decision_cancel`,
   `decision_comment` and `decision_route` (scope admin, `Receipt:
   "ledger"`, `Revision: "decision"`, a new precondition value the guide
   documents). `guideRules`' third line becomes "A question goes to a
@@ -770,20 +963,39 @@ policy's refusal of a principal that got past it without the authority
 - **The ticket page's decisions.** `GET /api/dispatch/tickets/{key}/
   decisions` (admin): the decisions whose `ticket` column is the ticket's
   id, newest first, at most 100. The `decision` link kind stays reserved
-  (Owner decisions, 12).
+  (Owner decisions, 12), and its refusal's words in
+  `internal/dispatch/links.go`, which say DR1 adds such records and would
+  be false once it has, become "a decision link is reserved: a decision
+  names its ticket itself, and the ticket's decisions are listed at
+  /api/dispatch/tickets/{key}/decisions"; `TestADecisionLinkIsRefused`
+  in `internal/dispatch` holds them.
+- **The evidence's refs.** `GET /api/decisions/{did}` carries `refs`,
+  one resolution per evidence ref, in the shape Brakeman's resolutions
+  have (`brakeman.Resolution`: the record now, its state, its digest or
+  revision, its receipt route; at most 2 KiB each as encoded), made by
+  `decision_refs.go` (new) through the per-kind lookups that
+  `brakeman_refs.go`'s `refResolver` uses, factored out of it so both
+  call the same ones; a decision's reader is the admin, so no Brakeman
+  grant narrows what it resolves. A ref that no longer resolves says so
+  (`deleted`, or `changed` with what it was). Comments carry text, never
+  refs. `TestADecisionResolvesItsEvidence`.
 - **Brakeman's reads.** The shared reads Brakeman's `observe` reaches are
   unchanged; `observe_decisions` and the `decision:<id>` ref are BK2's
   PR-12 (`docs/plans/brakeman.md`).
 
 ### `internal/cli` and `internal/agents`
 
-- MCP tools `decision_request`, `decision_read` and `decision_withdraw`
-  in `mcpHandled`, listed only in an attempt's session (scope task, as
-  `task_blocked`), each one call to its route; `decision_request`'s reply
-  is the record's id, its state and one line: "Pending. End your turn, or
-  go on with work that does not depend on it: the answer is typed into
-  this session as 'Decision dr-7 … answered', or, if this session has
-  ended, written into your task's next attempt's task file."
+- MCP tools `decision_request`, `decision_list`, `decision_read` and
+  `decision_withdraw` in `mcpHandled`, listed only in an attempt's
+  session (scope task, as `task_blocked`), each one call to its route;
+  `decision_request`'s reply is the record's id, its state and one line:
+  "Pending. End your turn, or go on with work that does not depend on
+  it; do not submit your result until it is answered. The answer is
+  typed into this session as 'Decision dr-7 … answered', or, if this
+  session has ended, written into your task's next attempt's task file,
+  which starts at your last checkpoint: save one before you end your
+  turn." The skill and the guide say the same (save a checkpoint, then
+  ask).
 - `conductor task decide --type T --question Q [--context TEXT]
   [--option "LABEL[: TRADEOFFS]"]... [--recommend N] [--uncertainty
   TEXT] [--authorizes TEXT] [--evidence REF]... [--subject commit|
@@ -813,12 +1025,18 @@ policy's refusal of a principal that got past it without the authority
   with the same id; a refusal's words from its receipt.
 - `composables/useDecisions.ts`: the open and answered decisions from
   `GET /api/decisions`, read again on a `decision` event from the one
-  events stream `useAttention.ts` holds (no second stream).
+  events stream `useAttention.ts` holds (no second stream), and on that
+  stream's `snapshot` (its reconnect), as `useAttention.ts` reads the
+  runs, Dispatch's pages and Brakeman's there: the stream replays no
+  event it missed while away, so a gate opened or a decision answered
+  meanwhile is read then. While the stream is down, the list is read
+  again on the cadence `useAttention.ts` reads the sessions at then.
 - `components/DecisionCard.vue`: the record: the question, the context
   (Markdown, as Dispatch renders a description), the alternatives with
   their tradeoffs and the recommended one marked, the uncertainty, what a
-  yes authorizes, the evidence refs as chips (`BrakemanRefChip.vue`'s
-  resolution of refs, reused), the subject (a commit or a candidate with
+  yes authorizes, the evidence refs as chips (`BrakemanRefChip.vue`,
+  reused, each handed its resolution from the record's `refs`: the chip
+  resolves nothing itself), the subject (a commit or a candidate with
   its short id linking to the task, a file with its digest, a plan
   revision as `r3`), who may answer ("the operator", from the policy),
   the history, and the four states. `components/DecisionRespond.vue`:
@@ -1085,7 +1303,9 @@ No ledger schema change: what HM1 adds lives in the JSON columns DR1's
 asking agent, while open). `open` → `expired` is a provider's only; no
 code of this repository sets it. `applied`, `superseded`, `cancelled` and
 `expired` are final: nothing changes a final decision but a `commented`
-history row. Every change bumps `rev`, writes one history row and one
+history row and one transition, `applied` → `superseded`, of an applied
+approval whose candidate a new result replaced (S1), which keeps its
+response and application receipts. Every change bumps `rev`, writes one history row and one
 run event (`decision.opened`, `decision.answered`, `decision.applied`,
 `decision.superseded`, `decision.cancelled`, `attempt.waited`) in the
 same transaction as the task and hold rows it changes.
@@ -1095,26 +1315,42 @@ same transaction as the task and hold rows it changes.
 - O1, an agent's request: the decision row, its history, the hold and the
   event commit; then the reply (`201`); then, after the commit and never
   before it, the session's mirrored question, the router's Route (through
-  C5's guard), the `decision` event and the notification. A crash after
+  C5's guard), the `decision` event and the notification. The mirror is
+  asked on the attempt's `askMu` with the decision read as open before
+  and after the ask; the application's delivery and every withdrawal of
+  the mirror take the same lock after it, so an ask that the reply
+  overtook either finds the decision resolved and asks nothing, or puts
+  up a mirror that the delivery answers or the withdrawal takes away,
+  never one left behind on a final decision. A crash after
   the commit and before the reply leaves an open decision the agent's
   retry with the same `requestId` finds (`200`, the same record).
 - O2, a gate: opened in the run's first transaction with its tasks' rows,
   so no attempt of a held task can be reserved before its hold exists.
 - O3, a response: authenticated (`requireAdmin`), decoded, then one
   transaction: the repeat check, the rechecks, the row and its receipt,
-  `answered`. The reply follows the commit. The application is a later
+  `answered` by the conditional `Tx.Answer`, which changes nothing once
+  a continuation has moved the decision (O6), and the response is then
+  answered through the run that holds it now. The reply follows the
+  commit. The application is a later
   transaction, so "recorded" and "applied" are two facts with two times.
 - O4, the application: one transaction rechecks and writes the receipt,
   `applied`, the hold's release (or the gate's cancellations) and the
   delivery intent; the typing or the next dispatch follows its commit,
   and `delivery.entered` or `delivery.untyped` is written after.
-- O5, an attempt that ends while it waits: the close transaction gives the
-  attempt back (`extra++`) and keeps the hold; the next attempt is
-  reserved only after O4 released it.
-- O6, a continuation: its first transaction re-points the decisions and
-  their holds and gives back an interrupted waiting attempt; the
-  application of the answered ones runs after it, in their own
-  transactions.
+- O5, an attempt that ends while it waits, without a result (its agent
+  exited, or `pump` parked it for a ready task of its member or for a
+  slot): the close transaction gives the attempt back (`extra++`),
+  writes `refunded` and keeps the hold; the next attempt is reserved
+  only after O4 released it.
+- O6, a continuation: its first transaction moves the decisions
+  (`Tx.MoveDecisions`, whose returned rows make the engine's copy) and
+  their holds, and gives back an interrupted waiting attempt that no
+  `refunded` row names; the application of the answered ones runs after
+  it, in their own transactions. A response and a continuation are both
+  writes of the one ledger connection, so one commits first: a response
+  first is moved as answered and applied; a continuation first leaves
+  the response's conditional write with nothing to change, and the
+  response is answered through the continuation.
 - O7, a supersession or cancellation is in the transaction of its cause
   (the new result's, the withdrawal's, the cancel's), so no application
   can run between the cause and its effect on the decision.
@@ -1125,11 +1361,15 @@ same transaction as the task and hold rows it changes.
   `answered` and sets `applied`; two applications of one decision cannot
   both commit, and a repeated response changes nothing.
 - I2, a held task is never dispatched: `pump` reads the holds under the
-  engine's lock, and a hold is released only in O4 or by a
-  cancellation.
-- I3, an unanswered decision consumes no attempt: an attempt closed while
-  its task's decision is open or answered and unapplied is given back, in
-  its close (O5) or in the continuation (O6).
+  engine's lock, and a hold is released only in O4, by a cancellation or
+  by a supersession's disposal (Disposing of the holds).
+- I3, an unanswered decision consumes no attempt: an attempt whose
+  session ended without a result while its task's decision was open or
+  answered and unapplied is given back once, in its close (O5) or in the
+  continuation (O6), and the `refunded` row that records it keeps any
+  later continuation from giving it back again. An attempt never ends
+  by its result while its decision waits (`decision_open`), so no
+  attempt that succeeded or failed its checks is given back.
 - I4, an answer reaches only the work it is for: it is typed only into
   the session of the attempt that asked, while that attempt is live and a
   member of the same task in the same run chain; otherwise it reaches that
@@ -1150,6 +1390,20 @@ same transaction as the task and hold rows it changes.
 - I9, one question, one answer path: a mirrored session question is
   answered only through its decision; the session refuses every other
   answer to it.
+- I10, no final decision holds a task: every supersession and
+  cancellation disposes of its holds in its own transaction, moving them
+  to the decision that takes its place or releasing them.
+- I11, no decision outlives the work under it: a decision whose held
+  tasks are all finished or doomed is cancelled then, and the
+  transaction that gives a run its outcome cancels every decision of it
+  that is not final.
+- I12, a waiting attempt holds back no other work: an attempt waiting on
+  its decision, its agent's turn ended, is parked as soon as its member
+  or its slot is what keeps a ready, unheld task from starting.
+- I13, a response is applied under the authority it was accepted with,
+  rechecked at application from the response's `authority`, never from
+  its actor; an identity's response that the accepting process did not
+  apply is never applied.
 
 **What the ledger holds** after each step is the record above; the run
 record (`runs/<id>.json`) is a cache of the ledger, as it is today, and
@@ -1288,33 +1542,88 @@ and holds a step at a seam to order what must be ordered.
   `TestARepeatedRequestIDIsTheSameDecision`;
   `TestAResponseIDAnswersItsReceipt` (accepted and refused alike);
   `TestAnOpenDecisionBlocksThePrune`; `TestDecisionBounds` (4 per
-  attempt, 64 open per run, 1,000 per run, 32 responses, 256 history
-  rows with `dropped`); `TestRecoverChangesNoDecision`;
-  `TestSnapshotCarriesDecisions`.
+  attempt, 64 open per run, 1,000 per run, 32 responses, 32 operator
+  operations, an 8 KiB receipt); `TestTheHistoryCapHolds` (every kind
+  written to its own bound, the mandatory rows all kept, `notified`
+  dropped past 256 with `dropped` counted); `TestAnAnswerIsConditionalOnItsRun`
+  (`Tx.Answer` changes nothing once `current_run` moved);
+  `TestMoveDecisionsAnswersTheMovedRows`; `TestAReleasedHoldKeepsItsRow`;
+  `TestRecoverChangesNoDecision`; `TestSnapshotCarriesDecisions`.
 - `internal/crew` (`decisions_test.go`, `decisions_restart_test.go`, with
   the fake ledger and fake sessions of `managed_test.go`):
-  `TestAnAgentsDecisionHoldsOnlyItsTask` (a sibling task dispatches and
-  finishes meanwhile); `TestAGateHoldsItsBeforeTasks` (gate on `deploy`;
+  `TestAnAgentsDecisionHoldsOnlyItsTask` (a sibling task of the same
+  member dispatches and finishes meanwhile: the waiting attempt, its
+  turn ended, is parked, given back, and its task's next attempt starts
+  after the answer); `TestAWorkingAttemptIsNeverParked` (the same, the
+  agent still working: the sibling waits until its turn ends);
+  `TestWaitingAttemptsFreeTheRunsSlots` (four tasks of four members
+  each wait on a decision, a fifth task is ready: one waiting attempt is
+  parked and the fifth dispatches); `TestAGateHoldsItsBeforeTasks` (gate on `deploy`;
   `build` runs; `deploy` starts only after the application);
   `TestTheReplyComesBeforeTheMirror` (a seam holding the session's ask:
-  the request's reply returned); `TestAResponseIsAppliedOnce` (two
+  the request's reply returned); `TestALateMirrorNeverOutlivesItsAnswer`
+  (the same seam held while the decision is answered and applied, then
+  cancelled in a second case; released: no question shows, the answer
+  typed once); `TestADecisionAnswerPassesAQueuedHandoff` (a handoff
+  queued while the mirror shows; the answer is typed first, the handoff
+  after); `TestAResponseIsAppliedOnce` (two
   application passes, one receipt, one typed line);
-  `TestAnAttemptEndedWhileWaitingIsNotCounted` (attempts 1 to 3 each end
-  waiting; the task never fails for attempts; attempt 4 starts after the
-  answer at the checkpoint, the answer in its task file);
+  `TestAResultWhileADecisionWaitsIsRefused` (`decision_open`, and
+  accepted once the decision is applied);
+  `TestNoReminderWhileADecisionWaits` (a done without a result while the
+  decision is open types nothing and leaves the reminder unspent; one
+  after the application is reminded);
+  `TestAnAttemptEndedWhileWaitingIsNotCounted` (attempt 1 asks dr-1 and
+  exits: given back, and no attempt is reserved while dr-1 is open; dr-1
+  answered, attempt 2 starts at the checkpoint with the answer in its
+  task file, asks dr-2 and exits; the same for attempt 3 and dr-3; after
+  dr-3's answer attempt 4 starts, so the task never failed for
+  attempts, and each refund has its `refunded` row);
+  `TestAnAttemptThatSubmittedIsCounted` (an attempt that failed its
+  checks after its decision was applied is counted as today);
   `TestAnAnswerRecordedWhileInterruptedIsAppliedOnContinue`;
+  `TestAResponseDuringAContinuationIsAppliedOnce` (a seam holding the
+  continuation between `readHistory` and its first transaction, a
+  response committed there on the old run: moved as answered and
+  applied once; and a seam holding the response between its choice of
+  run and its transaction while the continuation commits: retried
+  against the continuation, applied once);
   `TestAnInterruptedWaitingAttemptIsGivenBack`;
+  `TestAnInterruptedAttemptIsGivenBackOnce` (continued, stopped before
+  any dispatch, continued again: the task's `extra` is one more, not
+  two);
+  `TestADoomedGateIsCancelled` (`build` fails for good while `deploy`
+  is held: the gate is cancelled with the words, the run ends, `Prune`
+  takes it); `TestTheRunsEndCancelsItsDecisions`;
+  `TestAGateWithNoTaskKeepsNoRunOpen`;
   `TestATypingCutByARestartIsNeverTypedAgain` (`delivery.typing` without
   its end; the continuation writes `delivery.uncertain` and the task
   file); `TestAnAnswerNeverReachesAnotherAttempt` (the asking attempt
   gone, another task's attempt live: nothing typed into it);
   `TestANewCandidateSupersedesItsApproval` (S1);
-  `TestAnArtifactThatChangedSupersedes` (S2, the file rewritten between
-  the response and the application); `TestAReopenCancelsTheTasksDecisions`
+  `TestAnAppliedApprovalIsSupersededByANewCandidate` (approve candidate
+  A, its application done, candidate B submitted: `superseded`, the
+  response and application receipts kept, the history holding both);
+  `TestAnArtifactThatChangedSupersedes` (S2, the file committed again
+  with other bytes between the response and the application);
+  `TestAnUnreadableArtifactIsNeverValidated` (the asking worktree gone
+  and the next attempt's checkpoint holding other bytes, and a path
+  missing at that commit: superseded, never applied as validated);
+  `TestAnApprovalOfAMovedCommitIsSuperseded` (S4);
+  `TestASupersededDecisionLeavesNoHold` (its asking attempt already
+  ended: the task's next attempt dispatches, the words in its task
+  file); `TestASupersededGateMovesItsHolds`;
+  `TestAnIdentityAnswerIsNotAppliedAfterARestart` (an identity's
+  response committed, the server ended before its application: on the
+  continuation the decision is superseded by a fresh one with its holds,
+  nothing applied); `TestAReopenCancelsTheTasksDecisions`
   (S3); `TestARejectedGateCancelsItsTasks`;
   `TestTheRunWaitsOnAHeldTask` (no outcome while only held tasks remain);
   `TestPauseHoldsReleasedTasks`; `TestTheTaskFileCarriesTheAnswer`
   (golden, with `taskfile_golden_test.go`'s fixtures);
+  `TestAReleasedGatesAnswerStaysInItsTasksFiles` (an applied
+  clarification gate's answer in each task it released, and again in
+  their attempts after a continuation);
   `TestASupersedingRequestMovesTheHold`; `TestMoreInfoIsTypedAndBumpsRev`.
 - `internal/session` (`decision_test.go`):
   `TestADecisionQuestionRefusesEveryOtherAnswer` (`answer`, `AnswerAs`,
@@ -1334,7 +1643,11 @@ and holds a step at a seam to order what must be ordered.
   and `TestDecisionEventIsBounded`; `TestASinkGetsTheDecisionNotice` (with
   `ext/exttest`'s fake sink, never blocking the hub);
   `TestTheRouterIsToldEachDecisionOnce` (and never the mirrored session
-  question); `TestARoutersAnswerIsRefusedUnderLocalPolicy`;
+  question); `TestARoutersAnswerIsRefusedUnderLocalPolicy` (its
+  authority `via: router` with no grant, though its subject is an admin
+  principal's); `TestAnIdentityAnswerToARunNotHeldIsRefused`
+  (`not_held`, the workbench token's accepted);
+  `TestTheFullestDecisionFitsItsBound`; `TestADecisionResolvesItsEvidence`;
   `TestAnswerToADecisionIsRefused` (the WebSocket's `answer`);
   `TestTheGuideListsTheDecisionOperations` (and its bounds, measured by
   `TestEachSectionIsBounded`); `TestATicketListsItsDecisions`;
@@ -1342,6 +1655,7 @@ and holds a step at a seam to order what must be ordered.
 - `internal/hostagent`: `TestAnswerToADecisionIsRefused` (the peer's
   shared refusal).
 - `internal/config`: `TestDecisionIsAWebhookEvent`.
+- `internal/dispatch`: `TestADecisionLinkIsRefused` (the new words).
 - `ext/exttest`: the `Router` check with `Request` set and empty.
 - `internal/cli` (`decision_test.go`, `task_test.go`, `mcp_test.go`):
   `TestTaskDecideAndRead`, `TestTaskWithdraw`,
@@ -1355,7 +1669,9 @@ retried once with it; a refusal's words), `utils/attention.test.ts` (a
 decision's question offers no quick reply or number key),
 `utils/tasks.test.ts` (a held task's words and its Answer action),
 `composables/useDecisions.test.ts` (read again on a `decision` event,
-not on others), the palette rows' test.
+not on others; read again on the stream's `snapshot` after a decision
+changed while it was down, and on the sessions' cadence while it is
+down), the palette rows' test.
 
 **Playwright** (one run per worktree; `make test-e2e` builds the web app
 and the binary):
@@ -1479,7 +1795,12 @@ typing in the terminal; the person's page on a phone on the LAN.
 3. An attempt's context is files relative to its worktree: honoured; an
    answer that reaches a next attempt is in its `.conductor/task.md` and
    `task.json`, written through the worktree's `os.Root` as today; an
-   artifact subject is read through the same root; nothing an attempt
+   artifact subject is the blob at a commit, read from the repository's
+   object store, never the server's copy of a live file, so a guest's
+   copied tree cannot leave it stale; a live attempt's `HEAD` (the commit
+   an S2 or S4 recheck reads the subject at) is read from its worktree
+   natively, and under F the Runtime gives it, its objects coming back
+   as a result's commits do; nothing an attempt
    needs is only in the server's memory (the record is in the ledger, the
    answer in the file).
 4. The agent talks to the server over the network: honoured; the tools
@@ -1489,8 +1810,8 @@ typing in the terminal; the person's page on a phone on the LAN.
 6. Platform splits stay platform tags: not touched; nothing
    platform-specific is added.
 7. Evidence rows gain `where`: not touched; a decision is not evidence of a
-   process and assumes none (an artifact's digest is read through the
-   worktree, wherever the worktree is mounted); no row here assumes a
+   process and assumes none (an artifact's digest is its blob's at a
+   commit, wherever the worktree is mounted); no row here assumes a
    native process.
 8. `hostagent` is a launch site: not touched for launching; the host's
    peer only shares the session package's refusal of an answer to a
@@ -1556,11 +1877,11 @@ names only PRs that share no package or directory with it.
 | PR | Title | Touches | Depends on | May run beside | Size |
 |---|---|---|---|---|---|
 | PR-1 | ledger: the decision tables (schema version 8), their writers, reads, bounds, prune and migration | `internal/crew/ledger`, `docs` | none | none | ~1,000 |
-| PR-2 | crew: decisions opened by an attempt and by a plan's gates, the holds, the response, the application to a live attempt | `internal/crew`, `internal/session` | PR-1 | none | ~1,400 |
-| PR-3 | crew: an attempt that ends while it waits, continuations and recovery, supersession and cancellation, comments, the task file | `internal/crew` | PR-2 | PR-4 | ~1,300 |
-| PR-4 | api: the decision routes, the guide's operations, the event, the notifications, the ticket's decisions, the run's holds | `internal/api`, `internal/config`, `docs` | PR-2 | PR-3, PR-6 | ~1,400 |
-| PR-5 | session, proto, ext: the mirrored question and its refusal, the attention's `decision`, the router told of decision records | `internal/session`, `internal/proto`, `internal/api`, `internal/hostagent`, `ext`, `ext/exttest`, `web/app/utils`, `docs` | PR-3, PR-4 | PR-6 | ~1,100 |
-| PR-6 | cli, agents: the MCP tools, `conductor task decide`, `conductor decision`, the skill | `internal/cli`, `internal/agents` | PR-4 | PR-3, PR-5 | ~900 |
+| PR-2 | crew: decisions opened by an attempt and by a plan's gates (the opener not yet called at launch), the holds, the response, the application to a live attempt | `internal/crew`, `internal/session` | PR-1 | none | ~1,600 |
+| PR-3 | crew: an attempt that ends while it waits and the parking, the run's end, continuations and recovery, supersession and cancellation, comments, the task file | `internal/crew` | PR-2 | none | ~1,700 |
+| PR-4 | api: the decision routes, the guide's operations, the event in the three places, the notifications, the ticket's decisions, the evidence's refs, the run's holds; the gates opened at launch | `internal/api`, `internal/config`, `internal/dispatch`, `internal/crew` (the gates' one call), `web/app/utils/protocol.ts`, `docs` | PR-3 | none | ~1,600 |
+| PR-5 | session, proto, ext: the mirrored question and its refusal, the attention's `decision`, the router told of decision records | `internal/session`, `internal/proto`, `internal/api`, `internal/hostagent`, `ext`, `ext/exttest`, `web/app/utils`, `docs` | PR-4 | PR-6 | ~1,100 |
+| PR-6 | cli, agents: the MCP tools, `conductor task decide`, `conductor decision`, the skill | `internal/cli`, `internal/agents` | PR-4 | PR-5 | ~900 |
 | PR-7 | web: the decision card and its answer, the run page, the session's bar, Needs you, the palette, the ticket page; the stub worker and two specs | `web/app`, `web/e2e` | PR-5, PR-6 | none | ~1,400 |
 | PR-8 | e2e and docs: the restart spec, the gate's rejection, `docs/architecture.md`, the features entry | `web/e2e`, `docs` | PR-7 | none | ~500 |
 
@@ -1572,30 +1893,50 @@ ledger's list above. If RV1's ledger PR has merged, this one takes the
 next version and says so.
 
 **PR-2** (`internal/crew`, `internal/session`): `decisions.go`'s types,
-`RequestDecision` with its bounds and subjects, the gates in the first
-transaction, `pump`'s hold rule and the held task's words,
-`RespondDecision` (through `transact` or the ledger directly) with every
-recheck but the ones PR-3 adds, `applyDecisions` for a live attempt and
-for a gate (typed through the handoff queue; released; cancelled), and
-`session.Local.TryAskDecision` with the session's refusal of every other
-answer to it (the attention's field stays unexported to viewers until
-PR-5). No route yet: the engine is driven by its tests. Tests: the
-`internal/crew` list's opening, holding, applying and gate tests, and the
+`RequestDecision` with its bounds and subjects (the artifact's blob),
+the gates' opener for the first transaction, which `startManaged` does
+not call yet (PR-4 does, with the response route), `pump`'s hold rule
+and the held task's words, `RespondDecision` (through `transact` or the
+ledger directly, the conditional `Tx.Answer`, `not_held`) with every
+recheck but the ones PR-3 adds, the authority's recheck at application,
+`applyDecisions` for a live attempt and for a gate (typed by the
+member's deliverer ahead of its handoffs; released; cancelled), the
+mirror on the attempt's `askMu`, the result's `decision_open` refusal
+and the reminder held back, and `session.Local.TryAskDecision` with the
+session's refusal of every other answer to it (the attention's field
+stays unexported to viewers until PR-5). No route yet and no gate at a
+launch: the engine is driven by its tests, and nothing on `main`
+changes for a person. Tests: the `internal/crew` list's opening,
+holding, applying, mirror, handoff, result and gate tests, and the
 `internal/session` list.
 
-**PR-3** (`internal/crew`): the attempt given back while it waits (O5),
-the continuation's carry and give-back (O6), the
-typing's intent and its uncertain end (I6), S1 to S3 and every
+**PR-3** (`internal/crew`): the attempt given back while it waits (O5)
+with its `refunded` row, the parking of a waiting attempt (I12), the
+cancellations at a doomed gate and at the run's end (I11), the
+continuation's move and give-back (O6, `Tx.MoveDecisions`, the refund
+once), the typing's intent and its uncertain end (I6), S1 to S4 with an
+applied approval's supersession, the disposal of the holds (I10), every
 cancellation, `WithdrawDecision`, `CancelDecision`, `CommentDecision`,
-`RouteDecision`, the task file's section and the package section's new
-last line, the continuation note's words, `crew.Recovered`'s holds. Tests: the rest of the
-`internal/crew` list, `decisions_restart_test.go`, the task file golden.
+`RouteDecision`, the task file's section (released holds included) and
+the package section's new last line, the continuation note's words,
+`crew.Recovered`'s holds. Tests: the rest of the `internal/crew` list,
+`decisions_restart_test.go`, the task file golden.
 
-**PR-4** (`internal/api`, `internal/config`, `docs/protocol.md`): the
-routes table, the guide's seven operations and its rule line, the run and
-task reads' `holds`, the `decision` event, the notification and
-`EventDecision`, the ticket's decisions route. Tests: the `internal/api`
-list but the router's and the WebSocket's, and `internal/config`'s.
+**PR-4** (`internal/api`, `internal/config`, `internal/dispatch`,
+`internal/crew`, `web/app/utils/protocol.ts`, `docs/protocol.md`),
+after PR-3, whose `WithdrawDecision`, `CancelDecision`,
+`CommentDecision` and `RouteDecision` its routes and operations call:
+the routes table, the guide's eight operations and its rule line, the
+result route's `decision_open`, the run and task reads' `holds`, the
+`decision` event in all three places at once (`internal/api`'s stream,
+its type in `protocol.ts`, its row in `docs/protocol.md`), the
+notification and `EventDecision`, the ticket's decisions route, the
+decision link's refusal words, the evidence's `refs` (`decision_refs.go`
+and the lookups factored out of `brakeman_refs.go`), `authorityOf`, and
+`startManaged`'s call of the gates' opener, so that a gate first holds a
+launch's tasks on `main` in the PR that lets the operator answer it.
+Tests: the `internal/api` list but the router's and the WebSocket's,
+`internal/config`'s and `internal/dispatch`'s.
 
 **PR-5** (`internal/session`, `internal/proto`, `internal/api/router.go`,
 `internal/hostagent`, `ext`, `ext/exttest`, `web/app/utils/protocol.ts`,
@@ -1610,7 +1951,7 @@ Tests: `TestAttentionDecisionBound`, the two
 `TestAnswerToADecisionIsRefused`, `decisions_router_test.go`, the
 `ext/exttest` check.
 
-**PR-6** (`internal/cli`, `internal/agents`): the three MCP tools, the
+**PR-6** (`internal/cli`, `internal/agents`): the four MCP tools, the
 `task` subcommands, `conductor decision`, completion, the skill
 paragraph. Tests: the `internal/cli` and `internal/agents` lists.
 
@@ -1717,7 +2058,11 @@ not choose (the Program, section 3.1).
     timer ends a question today; the `expired` state is kept for a
     provider's escalation and written by no code here.
 11. **An agent's decision holds only its own task**; other tasks of its
-    run go on. Dependents of that task already wait on its result.
+    run go on. Dependents of that task already wait on its result, which
+    the task cannot submit while its decision waits. A waiting attempt
+    whose agent has ended its turn gives up its member and its slot when
+    a ready task needs them (it is parked, and given back), so a member's
+    other tasks and the run's other work are never held by it.
 12. **No Dispatch link per decision**: the record names its ticket, and
     the ticket page lists decisions by that column; the `decision` link
     kind DS2 reserved stays reserved and refused locally, for CS1's plan
@@ -1728,13 +2073,17 @@ not choose (the Program, section 3.1).
     task file of the task's next attempt (at most once per attempt, never
     retyped after a restart).
 14. **Subjects and staleness**: a candidate's approval is superseded by
-    the task's next candidate; an artifact's by a change of its digest; a
-    commit subject is shown and not rechecked; a plan subject never moves
-    inside a run.
+    the task's next candidate, even once applied; an artifact is a blob
+    at a commit, and its approval is superseded by a change of the blob
+    the work rests on, or by its being unreadable; an approval's commit
+    subject is rechecked until it is applied, and a clarification's or
+    an assignment's is shown and not rechecked; a plan subject never
+    moves inside a run.
 15. **The bounds** of The changes (500-character question, 4,000-character
     context, 2 to 6 alternatives, 20 evidence refs, 16 KiB request, 4
-    open per attempt, 64 per run, 1,000 per run, 32 responses, 256
-    history rows), each the existing bound of the nearest record
+    open per attempt, 64 per run, 1,000 per run, 32 responses, 32
+    operator operations, 256 history rows, a 1 MiB record), each the
+    existing bound of the nearest record
     (Dispatch's decision question, Brakeman's decision card, the
     blocker's message, the run commands' receipts) where there is one.
 16. **More information is a new request**: the operator's "Ask for more"
@@ -1794,25 +2143,36 @@ Claude Code and Codex against a server of its own on the WSL box (no
 networking configured by anyone) and the desktop app, in a scratch
 repository both agents trust:
 
-1. A Dispatch ticket's plan revision with two tasks and one gate,
-   `deploy-approval` before `deploy`; its launch. `build` (Claude Code)
-   runs and succeeds while `deploy` shows "waits for decision dr-1"; the
-   gate's subject is the run's plan revision `r1`.
-2. During `build`, its agent asks an approval about a file (an artifact
+1. A Dispatch ticket's plan revision with three tasks and one gate:
+   `build` and `lint`, independent of each other and both done by the
+   same member, `dev` (Claude Code), and `deploy` after `build`, with
+   the gate `deploy-approval` before `deploy`; its launch. `deploy`
+   shows "waits for decision dr-1" from the start; the gate's subject is
+   the run's plan revision `r1`. `build` comes first in the plan's
+   order, so `dev` takes it, and `lint` waits for `dev`.
+2. During `build`, before its result, its agent commits a file, saves a
+   checkpoint, and asks an approval about that file (an artifact
    subject) through `decision_request` from the skill alone: the tool
-   answers at once with `dr-2` and `open`, the agent ends its turn, the
-   session shows the question, and the run's other task goes on.
+   answers at once with `dr-2` and `open`, and the agent ends its turn;
+   the session shows the question. `lint` is ready and needs `dev`, so
+   the engine parks `build`'s waiting attempt: attempt 1 closes with
+   stage `decision`, the run's events show `attempt.waited`, and dr-2's
+   history a `refunded` row naming attempt 1; `lint` then runs on `dev`
+   and succeeds while dr-2 is open, so the run's other task goes on with
+   the same member.
 3. The server is stopped and started on the same data with dr-2 open;
    the operator answers dr-2 from the run page: Recorded, "waiting for the
    run to be continued". Continue: `build`'s next attempt starts at its
    checkpoint with the answer in its task file; the record shows one
-   `applied` row, and the attempt that was interrupted is not counted
-   (the task reads "attempt 2 of 3", not 3).
+   `applied` row; attempt 1 still reads stage `decision`, with its one
+   `refunded` row, so it was not counted (an attempt's number says
+   nothing of that: the next one is attempt 2 either way). `build` then
+   submits and succeeds.
 4. A second Approve of dr-2 from another tab gets the first's receipt
    (the same id) or, with a new id, "answered by" the operator.
 5. The operator approves dr-1: `deploy` starts and the run succeeds. A
    second run of the same revision rejects dr-1: `deploy` is cancelled
-   with the rejection's words, `build` unaffected.
+   with the rejection's words, `build` and `lint` unaffected.
 6. A share link with control opened on `build`'s session shows the
    question and cannot answer it.
 7. Codex as the asking agent in one of the runs, so both agents' use of
