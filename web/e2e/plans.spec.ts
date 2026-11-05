@@ -159,8 +159,20 @@ test('Open plan works on the Yard and on a shared session page too', async ({ pa
   }
 })
 
+/** The cap of each wait a step makes: the config's expect bound. */
+const STEP_MS = 15_000
+/**
+ * Raises the running test's timeout by `ms`, the caps of the waits a step is about to make (AGENTS.md, a test's timeout bounds a
+ * hang, not its steps): the timeout is their sum as the steps are taken, the config's 120 s above it for what lies between them.
+ */
+function budget(ms: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + ms)
+}
+
 /** Preview plan's one click (#432): the plan's tab in front, rendered, the preview with the focus; the terminal as it was, never folded. */
 async function previewsThePlan(page: Page) {
+  budget(30_000 + 8 * STEP_MS) // the rendered heading's 30 s, and eight more
   await page.locator('[data-quick-reply] [data-quick-reply-plan-preview]').click()
   const area = page.locator('[data-editor-area]')
   await expect(area).toHaveAttribute('data-editor-area', 'open')
@@ -180,6 +192,7 @@ test('Preview plan opens the plan rendered on the session page, the Yard and a s
   const plan = join(state.home, '.claude', 'plans', 'plan.md')
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e plan preview', cwd })
   try {
+    budget(STEP_MS + 30_000 + 3 * STEP_MS) // the screen, the approval, the button's words, label and icon
     await typeLine(page, s.id, 'stub plan')
     await expect.poll(async () => (await api.session(s.id)).attention?.plan, { timeout: 30_000, message: 'the approval names the plan' }).toBe(plan)
     const bar = page.locator('[data-quick-reply]')
@@ -191,6 +204,7 @@ test('Preview plan opens the plan rendered on the session page, the Yard and a s
     expect(await bar.locator('[data-quick-reply-plan], [data-quick-reply-plan-preview]').evaluateAll((els) => els.map((e) => e.hasAttribute('data-quick-reply-plan-preview')))).toEqual([false, true])
 
     // At a phone's 390 px both plan buttons are icons alone, inside the window, and the bar is no wider than it (#327).
+    budget(5 * STEP_MS)
     await page.setViewportSize({ width: 390, height: 844 })
     for (const b of [bar.locator('[data-quick-reply-plan]'), preview]) {
       await expect(b.locator('[data-slot="label"]')).toBeHidden()
@@ -204,6 +218,7 @@ test('Preview plan opens the plan rendered on the session page, the Yard and a s
     await expect(bar.locator('[data-quick-reply-plan] [data-slot="label"]')).toBeVisible()
 
     // The session page: a file already open and the editor folded; Preview plan opens the plan rendered and unfolds the editor.
+    budget(2 * STEP_MS)
     await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     await page.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
     const area = page.locator('[data-editor-area]')
@@ -213,23 +228,58 @@ test('Preview plan opens the plan rendered on the session page, the Yard and a s
     await previewsThePlan(page)
     await expect(area.locator('[data-editor-tab]')).toHaveCount(2)
     // Source (or Alt+P) shows the plan's editable source; a second Preview plan shows it rendered again, the same tab.
+    budget(STEP_MS + 30_000)
     await area.locator('[data-editor-preview]').click()
     await expect(area.locator('[data-editor-preview]')).toHaveAttribute('data-editor-preview', 'off')
     await expect(area.locator('.monaco-editor .view-lines')).toContainText('Create hello.txt containing hi.', { timeout: 30_000 })
     await previewsThePlan(page)
     await expect(area.locator('[data-editor-tab]')).toHaveCount(2)
     // Open plan is as it was: the tab to the front as it shows, rendered here.
+    budget(2 * STEP_MS)
     await bar.locator('[data-quick-reply-plan]').click()
     await expect(area.locator('[data-editor-preview]')).toHaveAttribute('data-editor-preview', 'on')
     await expect(page.locator('[data-terminal-slot]')).toHaveAttribute('data-terminal-slot', 'open')
 
+    // From the compare view (a save refused, the plan changed on disk meanwhile), Preview plan leaves it as Back to editing does and
+    // shows the plan rendered, the unsaved edit in it; the source still holds the edit, the conflict's bar still offers Reload.
+    budget(30_000 + 6 * STEP_MS)
+    await area.locator('[data-editor-preview]').click()
+    const lines = area.locator('.monaco-editor .view-lines')
+    await expect(lines).toContainText('Create hello.txt containing hi.', { timeout: 30_000 })
+    await lines.click()
+    await page.keyboard.press('Control+End')
+    await page.keyboard.type('Mine too.\n')
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
+    const onDisk = readFileSync(plan, 'utf8')
+    writeFileSync(plan, `${onDisk}The agent's line.\n`)
+    await page.keyboard.press('Control+s')
+    const conflict = area.locator('[data-editor-conflict]')
+    await expect(conflict).toBeVisible()
+    budget(30_000 + 2 * STEP_MS)
+    await conflict.locator('[data-editor-compare]').click()
+    await expect(area.locator('[data-editor-comparing]')).toBeVisible()
+    await expect(area.locator('[data-diff-editor]')).toContainText('Mine too.', { timeout: 30_000 })
+    await previewsThePlan(page)
+    await expect(area.locator('[data-editor-comparing]')).toHaveCount(0)
+    await expect(area.locator('[data-md-preview]')).toContainText('Mine too.')
+    budget(30_000 + 4 * STEP_MS)
+    await area.locator('[data-editor-preview]').click()
+    await expect(lines).toContainText('Mine too.', { timeout: 30_000 })
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
+    // Reload takes the plan as it is on disk, the edit dropped, so the pages below read it clean.
+    await conflict.locator('[data-editor-reload]').click()
+    await expect(conflict).toHaveCount(0)
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(0)
+
     // The Yard, focused on the session.
+    budget(STEP_MS)
     await page.goto(`/yard?focus=${s.id}`)
     await previewsThePlan(page)
     // A guest with a control link, on the bare join page.
     const { token } = await api.ok<{ token: string }>('POST', `/api/sessions/${s.id}/links`, { role: 'control' })
     const guestCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
     try {
+      budget(2 * STEP_MS + 30_000) // the page, its Join, the connection
       await guestCtx.addInitScript(() => localStorage.setItem('conductor.displayName', 'Priya'))
       const guest = await guestCtx.newPage()
       await guest.goto(`/join/${token}`)

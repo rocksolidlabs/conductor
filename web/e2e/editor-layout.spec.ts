@@ -101,6 +101,34 @@ function keptLayout(page: Page): Promise<Array<string | null>> {
   return page.evaluate((keys) => keys.map((k) => localStorage.getItem(k)), KEPT)
 }
 
+/** The cap of each wait a step makes: the config's expect bound. */
+const STEP_MS = 15_000
+/**
+ * Raises the running test's timeout by `ms`, the caps of the waits a step is about to make (AGENTS.md, a test's timeout bounds a
+ * hang, not its steps): the timeout is their sum as the steps are taken, the config's 120 s above it for what lies between them.
+ */
+function budget(ms: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + ms)
+}
+
+/** What the terminal's fits have done (TerminalView's seam): the passes made after its pane changed, and the resizes they asked. */
+function fits(host: Locator): Promise<{ passes: number; resizes: number }> {
+  return host.evaluate((h) => ({ passes: Number(h.dataset.fitPasses), resizes: Number(h.dataset.fitResizes) }))
+}
+
+/**
+ * Proves a change of the terminal's pane (the collapse) asked the session for no resize: the fit the change scheduled has run, past
+ * its debounce (a pass after `before`), and the passes since asked for none, the grid as drawn as it was. Read at once after the
+ * collapse, the debounce had not run yet and any answer passed (#432, review round 1).
+ */
+async function noResizeSince(host: Locator, before: { passes: number; resizes: number }, grid: string) {
+  budget(STEP_MS)
+  await expect.poll(async () => (await fits(host)).passes, { message: 'the terminal fits again after its pane changed' }).toBeGreaterThan(before.passes)
+  expect((await fits(host)).resizes, 'no resize asked while collapsed').toBe(before.resizes)
+  expect(await host.evaluate((h) => `${h.dataset.cols} × ${h.dataset.rows}`)).toBe(grid)
+}
+
 /**
  * The session's size once this window has sized it: attached (the session counts it as a viewer), the session at the terminal's drawn
  * grid (data-cols and data-rows), and the same on two reads a second apart, past the refit the bundled font may bring. The session is
@@ -108,6 +136,7 @@ function keptLayout(page: Page): Promise<Array<string | null>> {
  * nothing (AGENTS.md, a starting value is not a result).
  */
 async function settledSize(api: Api, id: string, host: Locator): Promise<string> {
+  budget(STEP_MS)
   let size = ''
   let seen = ''
   await expect
@@ -138,6 +167,7 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
   writeFileSync(join(cwd, 'notes.txt'), 'alpha\nbeta\n')
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e terminal collapse', cwd })
   try {
+    budget(STEP_MS + 30_000)
     await page.goto(`/sessions/${s.id}`)
     const screen = page.locator('.terminal-host .xterm-screen').first()
     await expect(screen).toBeVisible()
@@ -155,6 +185,7 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     const reply = page.locator('[data-quick-reply]')
     const host = page.locator('.terminal-host').first()
     const collapse = area.locator('[data-editor-collapse-terminal]')
+    budget(6 * STEP_MS)
     await expect(area).toHaveAttribute('data-editor-area', 'open')
     await expect(column).toHaveAttribute('data-editor-layout', 'stacked')
     // Opening a file collapses nothing.
@@ -170,6 +201,7 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     const stacked = (await area.boundingBox())!.height
     // The terminal stays mounted and connected through every collapse: the same element (marked here), and no socket opened again.
     const transport = page.locator('[data-transport-state]').first()
+    budget(STEP_MS)
     await expect(transport).toHaveAttribute('data-transport-state', 'open')
     await host.evaluate((h) => ((h as HTMLElement & { e2eMark?: string }).e2eMark = 'kept'))
     const sameHost = () => host.evaluate((h) => (h as HTMLElement & { e2eMark?: string }).e2eMark ?? 'remounted')
@@ -177,7 +209,9 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     page.on('websocket', () => sockets++)
 
     // Stacked: pressed, the editor takes the column and the terminal is the bar at its foot, saying the attention's words; the reply
-    // bar stays under it. The terminal is still there, its grid unchanged.
+    // bar stays under it. The terminal is still there, and the fit its pane's change brought asked no resize: its grid unchanged.
+    let before = await fits(host)
+    budget(7 * STEP_MS)
     await collapse.click()
     await expect(slot).toHaveAttribute('data-terminal-slot', 'folded')
     await expect(collapse).toHaveAttribute('data-editor-collapse-terminal', 'on')
@@ -188,8 +222,9 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     const tb = (await termBar.boundingBox())!
     await expect(reply).toBeVisible()
     expect((await reply.boundingBox())!.y).toBeGreaterThanOrEqual(tb.y + tb.height - 1)
-    expect(await host.evaluate((h) => `${h.dataset.cols} × ${h.dataset.rows}`)).toBe(grid)
+    await noResizeSince(host, before, grid)
     // The bar brings it back with its split; nothing was kept per browser by the collapse.
+    budget(3 * STEP_MS)
     await termBar.click()
     await expect(slot).toHaveAttribute('data-terminal-slot', 'open')
     await expect(termBar).toHaveCount(0)
@@ -201,8 +236,11 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
 
     // Collapsed, the waiting question's choices show under the bar and answer; the session kept its size. (Before any change of
     // layout: the stub draws its dialog once, and a terminal made narrower reflows the screen the server reads the dialog off.)
+    before = await fits(host)
+    budget(7 * STEP_MS) // the slot, the choices, the click, the stub's read, the attention, the slot again
     await collapse.click()
     await expect(slot).toHaveAttribute('data-terminal-slot', 'folded')
+    await noResizeSince(host, before, grid)
     const choices = reply.locator('button:not([data-quick-reply-plan]):not([data-quick-reply-plan-preview])')
     await expect(choices).toHaveCount(3)
     await expect(choices.nth(1)).toBeVisible()
@@ -216,6 +254,7 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     const now = (await api.session(s.id)) as Session & { rows: number }
     expect(`${now.cols} × ${now.rows}`).toBe(size)
     await expect(slot).toHaveAttribute('data-terminal-slot', 'folded')
+    expect((await fits(host)).resizes, 'no resize asked while collapsed').toBe(before.resizes)
     // Brought back, it is the terminal it was, never remounted or connected again, so its scrollback is its own (read by element, not
     // by its text: the renderer CI's browser has draws no DOM rows).
     await termBar.click()
@@ -224,15 +263,21 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     await expect(transport).toHaveAttribute('data-transport-state', 'open')
     expect(sockets).toBe(0)
 
-    // Side by side: collapsed, the bar is at the column's foot, full width; the button again brings the layout and its split back.
+    // Side by side: collapsed, the bar is at the column's foot, full width, and the terminal's host, wider now, asked no resize; the
+    // button again brings the layout and its split back.
+    budget(3 * STEP_MS)
     await area.locator('[data-editor-layout-switch]').click()
     await expect(column).toHaveAttribute('data-editor-layout', 'side')
     const side = (await area.boundingBox())!.width
     const keptSide = await keptLayout(page)
     const sideSize = await settledSize(api, s.id, host)
+    const sideGrid = await host.evaluate((h) => `${h.dataset.cols} × ${h.dataset.rows}`)
+    before = await fits(host)
+    budget(6 * STEP_MS)
     await collapse.click()
     await expect(slot).toHaveAttribute('data-terminal-slot', 'folded')
     await expect(column).toHaveAttribute('data-editor-layout', 'stacked')
+    await noResizeSince(host, before, sideGrid)
     const col = (await column.boundingBox())!
     const bar = (await termBar.boundingBox())!
     expect(bar.y + bar.height).toBeGreaterThan(col.y + col.height / 2)
@@ -243,6 +288,7 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     expect(Math.abs((await area.boundingBox())!.width - side)).toBeLessThan(3)
     expect(await keptLayout(page)).toEqual(keptSide)
     expect(await settledSize(api, s.id, host)).toBe(sideSize)
+    budget(4 * STEP_MS)
     await area.locator('[data-editor-layout-switch]').click()
     await expect(column).toHaveAttribute('data-editor-layout', 'stacked')
     const keptStacked = await keptLayout(page)
@@ -250,6 +296,7 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     await expect(slot).toHaveAttribute('data-terminal-slot', 'folded')
 
     // Alt+T folds the editor as ever, which ends the collapse: the terminal takes the column, and stays when the editor comes back.
+    budget(12 * STEP_MS)
     await page.keyboard.press('Alt+t')
     await expect(area).toHaveAttribute('data-editor-area', 'folded')
     await expect(slot).toHaveAttribute('data-terminal-slot', 'open')
@@ -269,6 +316,75 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     expect(await keptLayout(page)).toEqual(keptStacked)
     expect(await sameHost()).toBe('kept')
     expect(sockets).toBe(0)
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+/**
+ * The text of the input frames the page sends the session, from before the page loads: a frame is one byte of type and its payload
+ * (protocol.ts encodeFrame), 0x02 for input.
+ */
+function sentInput(page: Page, id: string): { text: string } {
+  const sent = { text: '' }
+  page.on('websocket', (ws) => {
+    if (!ws.url().includes(id)) return
+    ws.on('framesent', (f) => {
+      const b = typeof f.payload === 'string' ? Buffer.from(f.payload) : f.payload
+      if (b[0] === 0x02) sent.text += b.subarray(1).toString('utf8')
+    })
+  })
+  return sent
+}
+
+// Collapsed from the palette opened in the terminal (Alt+/, #432 review round 1): the palette gives the focus back to the terminal
+// as it closes, and the folded terminal hands it to its bar, so keys typed then reach no agent out of sight. The input frames of one
+// socket go in order: a key typed in the terminal brought back, seen sent, says every key typed before it was sent or never was.
+test('collapsed from the palette opened in the terminal, the terminal keeps no focus and a key typed is never sent', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'editor-collapse-focus')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e terminal collapse focus', cwd })
+  const input = sentInput(page, s.id)
+  try {
+    budget(30_000 + 5 * STEP_MS)
+    await page.goto(`/sessions/${s.id}`)
+    const textarea = page.locator('.terminal-host .xterm-helper-textarea').first()
+    await expect(textarea).toBeFocused({ timeout: 30_000 })
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await page.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area).toHaveAttribute('data-editor-area', 'open')
+    const slot = page.locator('[data-terminal-slot]')
+    await expect(slot).toHaveAttribute('data-terminal-slot', 'open')
+    await page.locator('.terminal-host .xterm-screen').first().click()
+    await expect(textarea).toBeFocused()
+
+    // The palette from the terminal, its row clicked; gone, it has given the focus back, and the bar has it.
+    budget(6 * STEP_MS)
+    await expect(page.locator('#dashboard-sidebar-main')).toBeAttached()
+    await page.keyboard.press('Alt+/')
+    const palette = page.locator('[data-palette]')
+    await expect(palette).toBeVisible()
+    await palette.locator('[data-palette-row="page:collapse-terminal"]').click()
+    await expect(slot).toHaveAttribute('data-terminal-slot', 'folded')
+    await expect(palette).toHaveCount(0)
+    const termBar = page.locator('[data-terminal-bar]')
+    await expect(termBar).toBeFocused()
+    expect(await page.evaluate(() => !!document.activeElement?.closest('[data-terminal-slot]'))).toBe(false)
+    const typed = input.text.length
+    await page.keyboard.type('zq')
+    await expect(slot).toHaveAttribute('data-terminal-slot', 'folded')
+
+    // Brought back, a key typed in the terminal is sent; the keys typed while it was collapsed never were.
+    budget(4 * STEP_MS)
+    await termBar.click()
+    await expect(slot).toHaveAttribute('data-terminal-slot', 'open')
+    await page.locator('.terminal-host .xterm-screen').first().click()
+    await expect(textarea).toBeFocused()
+    await page.keyboard.type('#')
+    await expect.poll(() => input.text.slice(typed), { message: 'the key typed in the terminal is sent' }).toContain('#')
+    expect(input.text.slice(typed)).not.toMatch(/[zq]/)
   } finally {
     await api.stopSession(s.id)
   }
