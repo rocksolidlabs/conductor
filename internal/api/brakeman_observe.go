@@ -272,19 +272,48 @@ func settledThrough(before, after engineHold) bool {
 
 // note notes a read of ref (a turn's only).
 func (o *observer) note(ref brakeman.Ref, class, state, rev string) {
-	if o.tp == nil || ref.IsZero() || !slices.Contains(brakeman.Classes, class) {
+	o.noteRead(brakeman.Read{Ref: ref, Class: class, State: state, Rev: rev})
+}
+
+// noteRead notes rd, read now: its state and revision cut to their
+// bounds, a SHA-256 that is not 64 hex digits left out.
+func (o *observer) noteRead(rd brakeman.Read) {
+	if o.tp == nil || rd.Ref.IsZero() || !slices.Contains(brakeman.Classes, rd.Class) {
 		return
 	}
-	o.reads = append(o.reads, brakeman.Read{Ref: ref, Class: class, State: cutBytes(state, brakeman.MaxRefState), Rev: cutBytes(rev, brakeman.MaxRevision), At: o.now})
+	rd.State, rd.Rev, rd.At = cutBytes(rd.State, brakeman.MaxRefState), cutBytes(rd.Rev, brakeman.MaxRevision), o.now
+	if !isSHA256(rd.SHA256) {
+		rd.SHA256 = ""
+	}
+	o.reads = append(o.reads, rd)
+}
+
+// isSHA256 reports whether s is a SHA-256 in 64 lower-case hex digits.
+func isSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range []byte(s) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // noteRef is note for a ref given as a string, which must parse.
 func (o *observer) noteRef(ref, class, state, rev string) {
+	o.noteHashed(ref, class, state, rev, "")
+}
+
+// noteHashed is noteRef with the SHA-256 of the content read (a check's
+// log), which the ref's seen snapshot keeps.
+func (o *observer) noteHashed(ref, class, state, rev, sha string) {
 	if o.tp == nil {
 		return
 	}
 	if r, err := brakeman.ParseRef(ref); err == nil {
-		o.note(r, class, state, rev)
+		o.noteRead(brakeman.Read{Ref: r, Class: class, State: state, Rev: rev, SHA256: sha})
 	}
 }
 
@@ -1008,6 +1037,7 @@ func stepRefs(o *observer, raw json.RawMessage, runID, taskID string, n int) (js
 			Subject  string `json:"subject"`
 			Exit     *int   `json:"exit"`
 			TimedOut bool   `json:"timedOut"`
+			LogSHA   string `json:"logSha256"`
 		}
 		if err := json.Unmarshal(st, &sh); err != nil {
 			return nil, err
@@ -1020,7 +1050,7 @@ func stepRefs(o *observer, raw json.RawMessage, runID, taskID string, n int) (js
 		case sh.State == ledger.CheckFinished && sh.Exit != nil:
 			state = "exit:" + strconv.Itoa(*sh.Exit)
 		}
-		o.noteRef(ref, brakeman.ClassRuns, state, sh.Subject)
+		o.noteHashed(ref, brakeman.ClassRuns, state, sh.Subject, sh.LogSHA)
 		var err error
 		if steps[i], err = withRef(st, ref); err != nil {
 			return nil, err
@@ -1165,7 +1195,7 @@ func filterStepLog(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	runID, taskID, id := r.PathValue("run"), r.PathValue("task"), r.PathValue("id")
 	if ld := o.rr.s.ledger; ld != nil {
 		if row, ok, err := ld.Check(r.Context(), runID, taskID, n, id, k); err == nil && ok {
-			o.noteRef(fmt.Sprintf("check:%s/%s/%d/%s/%d", runID, taskID, n, id, k), brakeman.ClassLogs, checkState(row), row.Subject)
+			o.noteHashed(fmt.Sprintf("check:%s/%s/%d/%s/%d", runID, taskID, n, id, k), brakeman.ClassLogs, checkState(row), row.Subject, row.LogSHA256)
 		}
 	}
 	return body, nil

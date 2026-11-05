@@ -1505,13 +1505,15 @@ func (s *Store) Brief(id string) (Brief, []Resolution, error) {
 }
 
 // Read is one answer a turn read: the ref it is cited by, its visibility
-// class, its revision or state, and when.
+// class, its revision or state, the SHA-256 of the content it read when
+// the answer gives one (a check's log), and when.
 type Read struct {
-	Ref   Ref       `json:"ref"`
-	Class string    `json:"class"`
-	Rev   string    `json:"rev,omitempty"`
-	State string    `json:"state,omitempty"`
-	At    time.Time `json:"at"`
+	Ref    Ref       `json:"ref"`
+	Class  string    `json:"class"`
+	Rev    string    `json:"rev,omitempty"`
+	State  string    `json:"state,omitempty"`
+	SHA256 string    `json:"sha256,omitempty"` // 64 hex digits
+	At     time.Time `json:"at"`
 }
 
 // ReadLog is a turn's read log: its newest reads, and how many older ones
@@ -1537,8 +1539,8 @@ func (s *Store) NoteAnswer(id string, reads ...Read) (ReadLog, error) {
 
 func (s *Store) noteReads(id string, count int, reads []Read) (ReadLog, error) {
 	for i, rd := range reads {
-		if rd.Ref.IsZero() || !slices.Contains(Classes, rd.Class) || len(rd.Rev) > MaxRevision || len(rd.State) > MaxRefState {
-			return ReadLog{}, fmt.Errorf("%w: reads[%d]: a ref, a class and a revision or state within their bounds", ErrBound, i)
+		if rd.Ref.IsZero() || !slices.Contains(Classes, rd.Class) || len(rd.Rev) > MaxRevision || len(rd.State) > MaxRefState || (rd.SHA256 != "" && !sha256Pattern.MatchString(rd.SHA256)) {
+			return ReadLog{}, fmt.Errorf("%w: reads[%d]: a ref, a class, a revision or state within their bounds and a SHA-256 of 64 hex digits", ErrBound, i)
 		}
 	}
 	s.mu.Lock()
