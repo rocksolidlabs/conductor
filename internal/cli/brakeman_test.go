@@ -412,3 +412,53 @@ func TestBrakemanOutsideASessionIsLoud(t *testing.T) {
 		t.Fatalf("%d requests sent", hits.Load())
 	}
 }
+
+// conductor brakeman role (docs/plans/brakeman.md, PR-15), with the
+// workbench token: on sets the background mode at the revision read and
+// says that Brakeman off wakes nothing; status says the role's state;
+// pause and resume are the role's own route's; off sets the mode back;
+// an action of none is a usage error before anything is sent.
+func TestBrakemanRoleWithTheWorkbenchToken(t *testing.T) {
+	a := newBrakemanAPI(t)
+	admin := []string{"--server", a.hs.URL, "--token", dispatchToken}
+	before := a.count()
+	if code, _, _, err := brakemanCmd(t, "", append([]string{"role", "sleep"}, admin...)...); code != 2 || err == nil {
+		t.Fatalf("an unknown action: %d %v", code, err)
+	}
+	if a.count() != before {
+		t.Fatal("a usage error sent a request")
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "on"}, admin...)...); code != 0 || err != nil || !strings.Contains(out, "Brakeman is off: nothing wakes it") {
+		t.Fatalf("on while off: %d %v %q", code, err, out)
+	}
+	a.enableBrakeman(t)
+	cfg := a.admin(t, "GET", "/api/brakeman", nil, http.StatusOK)["config"].(map[string]any)
+	if cfg["wake"].(map[string]any)["mode"] != "background" {
+		t.Fatalf("%v", cfg["wake"])
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "on"}, admin...)...); code != 0 || err != nil || out != "the background role is on: a window of 120 s, a cooldown of 30 min, 40 turns and 240 minutes a day\n" {
+		t.Fatalf("on: %d %v %q", code, err, out)
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "status"}, admin...)...); code != 0 || err != nil || !hasAll(out, "role: idle", "today: 0 minutes") {
+		t.Fatalf("status: %d %v\n%s", code, err, out)
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "pause"}, admin...)...); code != 0 || err != nil || out != "the background role is paused\n" {
+		t.Fatalf("pause: %d %v %q", code, err, out)
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "status", "--json"}, admin...)...); code != 0 || err != nil || !strings.Contains(out, `"state":"paused"`) {
+		t.Fatalf("status --json: %d %v %q", code, err, out)
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "status"}, admin...)...); code != 0 || err != nil || !strings.Contains(out, "role: paused: paused by a person") {
+		t.Fatalf("status paused: %d %v\n%s", code, err, out)
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "resume"}, admin...)...); code != 0 || err != nil || out != "the background role is idle\n" {
+		t.Fatalf("resume: %d %v %q", code, err, out)
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "off"}, admin...)...); code != 0 || err != nil || !strings.Contains(out, "runs only when asked") {
+		t.Fatalf("off: %d %v %q", code, err, out)
+	}
+	cfg = a.admin(t, "GET", "/api/brakeman", nil, http.StatusOK)["config"].(map[string]any)
+	if cfg["wake"].(map[string]any)["mode"] != "invoked" {
+		t.Fatalf("%v", cfg["wake"])
+	}
+}
