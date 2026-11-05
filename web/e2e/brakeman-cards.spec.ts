@@ -269,8 +269,8 @@ test("a ticket's proposal shows every field it sends, and asks with them before 
 })
 
 test('two draft tickets, one blocking the other, are made as edited with their relation, and once', async ({ page }) => {
-  // Its waits' caps add up to 240 s (five of 30 s, six of the config's 15 s), past the config's 120 s.
-  test.setTimeout(300_000)
+  // Its waits' caps add up to 315 s (six of 30 s, nine of the config's 15 s), past the config's 120 s.
+  test.setTimeout(360_000)
   await open(page, '/brakeman?request=br-1')
   const b = page.locator('[data-brief="br-1"]')
   const a = b.locator('[data-draft-ticket][data-draft-item="6"]')
@@ -310,6 +310,14 @@ test('two draft tickets, one blocking the other, are made as edited with their r
   // Renamed in Dispatch with the page open, the line follows: its event reads the title again, with no reload.
   await api.ok('POST', `/api/dispatch/tickets/${keyB}/edit`, { opId: `bkc-rename-${keyB}`, set: { title: 'Document the build, renamed' } })
   await expect(b.locator('[data-draft-item="6"] [data-draft-blocks]')).toHaveText(`Blocks ${keyB} "Document the build, renamed" (related).`, { timeout: 30_000 })
+  // Closed, renamed and opened again with no reload: the card reads the title anew as it is drawn, so a rename whose event reached no
+  // card shows, never the title kept from before.
+  const toggle = page.locator('[data-brakeman-briefs] [data-request="br-1"] [data-request-open]')
+  await toggle.click()
+  await expect(b).toHaveCount(0)
+  await api.ok('POST', `/api/dispatch/tickets/${keyB}/edit`, { opId: `bkc-rename-closed-${keyB}`, set: { title: 'Document the build, renamed while closed' } })
+  await toggle.click()
+  await expect(b.locator('[data-draft-item="6"] [data-draft-blocks]')).toHaveText(`Blocks ${keyB} "Document the build, renamed while closed" (related).`, { timeout: 30_000 })
 })
 
 test('a make that did not finish is finished from the card as it was sent, after the page is read again', async ({ page }) => {

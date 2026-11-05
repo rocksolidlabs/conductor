@@ -515,26 +515,45 @@ func decodeItem(raw json.RawMessage, field string) (Item, error) {
 		var re *RefError
 		if errors.As(err, &re) {
 			// A ref that does not parse: the field holding it, by its text.
-			return Item{}, invalidBrief(refField(field, head, re.Ref), "%v", err)
+			return Item{}, invalidBrief(refField(field, spec.Fields, head, re.Ref), "%v", err)
 		}
 		return Item{}, decodeRefusal(field, "a "+kind+" item", append([]Field{{Name: "kind"}}, spec.Fields...), err, head)
 	}
 	return it, nil
 }
 
-// refField is the path of the field of an item (head, under field) that
-// holds ref: a ref field, or a list of refs at its index, the first in
-// the fields' names' order when two do; field when none does.
-func refField(field string, head map[string]json.RawMessage, ref string) string {
-	for _, name := range slices.Sorted(maps.Keys(head)) {
-		raw := head[name]
-		var one string
-		if json.Unmarshal(raw, &one) == nil && one == ref {
-			return field + "." + name
+// refField is the path of the ref field of an item (head, under field;
+// fields, its kind's) that holds ref: a ref field, or a list of refs at
+// its index, the first in the fields' names' order when two do; field
+// when none does. Only the kind's ref fields are looked in: a text that
+// reads as the ref (a description of "ticket:CND") is not where it was
+// refused.
+func refField(field string, fields []Field, head map[string]json.RawMessage, ref string) string {
+	refs := map[string]bool{}
+	for _, f := range fields {
+		switch {
+		case f.Type == FieldRef:
+			refs[f.Name] = false
+		case f.Type == FieldList && f.Of != nil && f.Of.Type == FieldRef:
+			refs[f.Name] = true
 		}
-		var list []any
-		if json.Unmarshal(raw, &list) == nil {
-			for j, v := range list {
+	}
+	for _, name := range slices.Sorted(maps.Keys(head)) {
+		list, isRef := refs[name]
+		if !isRef {
+			continue
+		}
+		raw := head[name]
+		if !list {
+			var one string
+			if json.Unmarshal(raw, &one) == nil && one == ref {
+				return field + "." + name
+			}
+			continue
+		}
+		var entries []any
+		if json.Unmarshal(raw, &entries) == nil {
+			for j, v := range entries {
 				if s, ok := v.(string); ok && s == ref {
 					return fmt.Sprintf("%s.%s[%d]", field, name, j)
 				}
