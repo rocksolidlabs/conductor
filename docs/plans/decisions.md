@@ -1123,7 +1123,7 @@ with `DisallowUnknownFields` and bounded:
 | Route | Who | Body → reply |
 |---|---|---|
 | `POST /api/sessions/{id}/decisions` | the attempt's own token (scope task) | `{requestId, type, question, context?, options?, recommendation?, uncertainty?, authorizes?, evidence?, expertise?, subject?, supersedes?}` (24 KiB) → `201 {decision}` at once; `200` the same for a repeat; `409 decision_conflict`, `409 not_running`, `409 artifact_uncommitted`, `429 decision_limit`, `400 invalid` |
-| `GET /api/sessions/{id}/decisions` | the attempt's own token | its task's decisions (`{decisions}`, at most 100) |
+| `GET /api/sessions/{id}/decisions` | the attempt's own token | `?after=&limit=` → `{decisions, next?}`: its task's decisions, newest first, at most `limit` (1 to 100, 100 when absent), `next` the last id when more follow; each a summary, never the record: `{id, requestId, type, origin, state, rev, question, answer?, why?, supersededBy?, createdAt, answeredAt?, closedAt?, cut?}`, the question, the answer (the chosen option's label or the text) and `why` each cut at a character's end to 1 KiB as encoded (`cut: true` when one was), no context, options, evidence, receipts or history (`decision_read` reads one whole); a summary at most 4 KiB as encoded, so a page is at most 512 KiB (`maxDecisionSummaryPage`), under the session client's 4 MiB (`maxSessionReply`, `internal/cli/crew.go`) |
 | `GET /api/sessions/{id}/decisions/{did}` | the attempt's own token | one of its task's, whole |
 | `POST /api/sessions/{id}/decisions/{did}/withdraw` | the attempt's own token | `{}` → `{decision}`; `409 decision_closed` |
 | `GET /api/decisions` | admin | `?state=&run=&ticket=&after=&limit=` (100) → `{decisions, next?}`, newest first, without history |
@@ -1274,9 +1274,19 @@ policy's refusal of a principal that got past it without the authority
 - The run page (`RunTasks.vue`, `taskWords`, `utils/tasks.ts`): a held
   task's words and an Answer action opening the card in a modal; the
   task detail lists its decisions; the header counts "1 decision open".
-- The session: `AttentionBar.vue` shows a question with `decision` as
-  the decision's question with "Answer dr-7", opening the card, and offers
-  no quick reply or number key for it (`utils/attention.ts`).
+- The session's question bar: `QuickReplyBar.vue`, which holds the
+  session's question, its reply field and its number keys, and which the
+  session page (`pages/sessions/[id].vue`), the Yard's focused panel
+  (`pages/yard.vue`) and the shared session (`pages/join/[token].vue`)
+  mount (`AttentionBar.vue` is the Yard's attention chart and is not
+  changed). For an attention with `decision` it shows the decision's
+  question with "Answer dr-7" and offers no reply field, option buttons or
+  number keys (`decisionOf` in `utils/attention.ts`, PR-5); a new `answer`
+  emit carries the id, and the session page and the Yard open the card
+  in a modal (`DecisionCard.vue` with `DecisionRespond.vue`). The shared
+  session's viewer, whose link is refused every admin route whatever its
+  role, gets no Answer: the bar says "The operator answers dr-7 in
+  Conductor", and it emits nothing.
 - Needs you: `NeedsYouPill.vue` and the sidebar's Needs you count include
   open decisions that no shown session question mirrors (a gate's), each
   once; the palette (`usePaletteRows.ts`) gains a row per open decision
@@ -1433,6 +1443,24 @@ Brakeman use them is Brakeman's.
 - The run routes (`GET /api/runs`, `GET /api/runs/{run}`, `GET /api/runs/
   {run}/tasks/{task}`) answer `people` and each task's `owner` and
   `ownerFrom`.
+- A launch an older build made from a revision with people
+  (`restoreLaunchPeople`, `ledger.go`, at the ledger's recovery, before
+  `syncRecords`; Events, HM1, Migration and downgrade). For each launch
+  row `ld.Runs` lists (no `continued_from`) whose crew lists no people
+  and whose package names a Dispatch revision, the revision is read
+  (`ds.Plan`); when its digest is the package's `plan.digest`, its crew,
+  decoded through HM1's `Crew`, lists people, its members' names and its
+  tasks' ids are the launch row's, and `checkPeople` passes on the
+  launch row's crew with them, the people and the tasks' owners are
+  written into the launch row's crew by `Tx.RestorePeople` (new in
+  `internal/crew/ledger`: one `UPDATE` of that row's crew, made only
+  while the crew it holds lists no people, so it writes once and never
+  over a crew as launched with people). Anything else leaves the row as
+  it is and logs why (a digest that differs, a crew that does not
+  match); Dispatch unavailable leaves it for the next start. A row
+  whose revision lists no people, every pre-HM1 launch, costs one read
+  of that revision, at most `MaxPlanBody`, at each start and writes
+  nothing.
 - `GET /api/people?q=&after=&limit=` (admin): the names Conductor
   knows, each once, by name, in pages: `{people: [{name, dispatch: bool,
   crews: [{id, name, responsibilities}], crewsMore?: true}], next?,
@@ -1836,7 +1864,18 @@ person goes into the JSON of DR1's rows, in DR1's transactions.
   by it, because HM1 reads a run's people and owners only from the
   chain's launch row, which no continuation rewrites and `Prune` keeps
   while a continuation cites it, and HM1's next continuation writes them
-  into its own row again (The changes, HM1, `internal/crew`). A run without tasks writes no people into
+  into its own row again (The changes, HM1, `internal/crew`). The launch
+  row itself can lack them: an older build can launch a Dispatch
+  revision whose crew lists people and owners (its `launchPlanned`
+  decodes the revision's crew with `json.Unmarshal` into its `Crew`, and
+  its `LaunchPlanned` writes the rest), and no guard in a build already
+  shipped can refuse that. The revision is where they are kept: its body
+  is immutable and holds the crew as it was proposed, and the launch
+  row's package names it (`plan.id`, `plan.digest`). So at the ledger's
+  recovery, before `syncRecords`, HM1 makes such a launch row whole
+  (`restoreLaunchPeople`, The changes, HM1, `internal/api`), and the
+  record, a continuation and `Recovered` then read the people and owners
+  from it as from any launch row. A run without tasks writes no people into
   its record, which every older build reads as before; once it has
   ended, its page shows no people. The features entry says what an
   older build does with these files.
@@ -2096,7 +2135,12 @@ and holds a step at a seam to order what must be ordered.
   nothing applied; admitted at the recheck: applied; a provider late
   past `ext.IdentityWait`: superseded; the token in no ledger row and
   no log line);
-  `TestTheFullestDecisionFitsItsBound`; `TestADecisionResolvesItsEvidence`;
+  `TestTheFullestDecisionFitsItsBound`; `TestAFullDecisionListFitsItsBound`
+  (a task with 101 decisions, each with every part at its bound, its
+  question, answer and `why` of control characters that escape to six
+  bytes each: the first page is 100 summaries, cut and marked `cut`, at
+  most `maxDecisionSummaryPage`, with `next`, the second the last one);
+  `TestADecisionResolvesItsEvidence`;
   `TestAnswerToADecisionIsRefused` (the WebSocket's `answer`);
   `TestTheGuideListsTheDecisionOperations` (and its bounds, measured by
   `TestEachSectionIsBounded`); `TestATicketListsItsDecisions`;
@@ -2109,6 +2153,11 @@ and holds a step at a seam to order what must be ordered.
 - `internal/cli` (`decision_test.go`, `task_test.go`, `mcp_test.go`):
   `TestTaskDecideAndRead`, `TestTaskWithdraw`,
   `TestDecisionRespondSendsTheRev`, `TestMCPListsDecisionToolsOnlyInATask`,
+  `TestDecisionListFitsTheSessionClient` (the 100 fullest summaries of
+  `TestAFullDecisionListFitsItsBound` read through `conductor mcp`'s
+  `decision_list` and `conductor task decision`, the real session client
+  under `maxSessionReply`, both answered whole; `maxDecisionSummaryPage`
+  below `maxSessionReply`, asserted),
   `TestDecisionRequestToolAnswersPending`.
 - `internal/agents`: the skill test gains the decisions paragraph.
 
@@ -2116,7 +2165,8 @@ and holds a step at a seam to order what must be ordered.
 more disabled with its words for a gate and for an asker not live; the four
 states apart, each with its receipt; the id minted once and a lost reply
 retried once with it; a refusal's words), `utils/attention.test.ts` (a
-decision's question offers no quick reply or number key),
+decision's question offers no quick reply, option or number key, whatever
+the role, through `decisionOf`, the helper `QuickReplyBar.vue` reads),
 `utils/tasks.test.ts` (a held task's words and its Answer action),
 `composables/useDecisions.test.ts` (read again on a `decision` event,
 not on others; read again on the stream's `snapshot` after a decision
@@ -2129,7 +2179,11 @@ and the binary):
 - `decisions.spec.ts`: a crew of two tasks, `build` (the stub worker with
   `STUB_DECISION=approval`) and `docs` (no decision); `docs` finishes
   while `build` waits; the run page shows "waits for decision dr-1"; the
-  session's bar shows the question with Answer and no number keys; the
+  session's bar (`QuickReplyBar`) shows the question with Answer and no
+  reply field or number keys, on the session page and in the Yard's
+  focused panel, and Answer opens the card in a modal; a share link's
+  viewer of that session sees the question with "The operator answers
+  dr-1 in Conductor" and no Answer, reply field or number key; the
   operator answers in the card; the card shows Recorded, then Applied with
   "typed into build's attempt 1"; `stub-answer.txt` holds the answer;
   `build` succeeds; pressing Approve again in a second tab shows "answered
@@ -2203,7 +2257,21 @@ read by a person on the desktop app and a phone's browser on the LAN
   `syncRecords` rebuilds it with the launch's people and owners, the run
   routes answer them, and a further continuation carries them in its
   own row).
-- `internal/api`: `TestCrewRoutesCarryPeople`, `TestRunRoutesCarryOwners`,
+- `internal/crew/ledger`: `TestRestorePeopleWritesOnce` (a launch row
+  without people written with them; a second call, and a call on a row
+  that lists people, change nothing).
+- `internal/api`: `TestAnOlderBuildsLaunchLosesNoPeople` (the downgrade
+  before the first launch: a revision with people and owners proposed
+  and approved, its launch row written with the revision's crew decoded
+  and encoded through a copy of the pre-HM1 `Crew` type, as an older
+  build's `launchPlanned` and `LaunchPlanned` do, and its record so
+  written; the upgrade: the next start makes the launch row whole and
+  `syncRecords` the record, the run routes answer the people and
+  owners, and a continuation carries them in its own row; a revision
+  whose digest is not the package's, and one whose crew's tasks differ,
+  leave the row and the record without people and log why; a revision
+  without people writes nothing); `TestCrewRoutesCarryPeople`,
+  `TestRunRoutesCarryOwners`,
   `TestPeopleIsTheUnionOfTheStores` (a name in Dispatch only, in a crew
   only, in both; Dispatch unavailable), `TestPeopleIsPaged` (201 names:
   a page of 200 with `next`, then one; `q`; a person in 21 crews: 20
@@ -2374,7 +2442,7 @@ names only PRs that share no package or directory with it.
 | PR-2 | crew: decisions opened by an attempt and by a plan's gates (the opener not yet called at launch), the holds, the response, the application to a live attempt | `internal/crew`, `internal/session` | PR-1 | none | ~1,600 |
 | PR-3 | crew: an attempt that ends while it waits and the parking, the run's end, continuations and recovery, supersession and cancellation, comments, the task file | `internal/crew` | PR-2 | none | ~1,700 |
 | PR-4 | api, cli: the decision routes, the guide's operations with the four MCP tools' handlers, the event in the three places, the notifications, the ticket's decisions, the evidence's refs and baseline, the identity's recheck, the run's holds; the gates opened at launch | `internal/api`, `internal/cli` (the four MCP handlers), `internal/config`, `internal/dispatch`, `internal/crew` (the gates' one call), `web/app/utils/protocol.ts`, `docs` | PR-3 | none | ~1,800 |
-| PR-5 | session, proto, ext: the mirrored question and its refusal, the attention's `decision`, the router told of decision records | `internal/session`, `internal/proto`, `internal/api`, `internal/hostagent`, `ext`, `ext/exttest`, `web/app/utils`, `docs` | PR-4 | PR-6 | ~1,100 |
+| PR-5 | session, proto, ext: the mirrored question and its refusal, the attention's `decision`, the router told of decision records | `internal/session`, `internal/proto`, `internal/api`, `internal/hostagent`, `ext`, `ext/exttest`, `web/app/utils`, `web/app/components/QuickReplyBar.vue`, `docs` | PR-4 | PR-6 | ~1,100 |
 | PR-6 | cli, agents: `conductor task decide`, `conductor decision`, the skill | `internal/cli`, `internal/agents` | PR-4 | PR-5 | ~700 |
 | PR-7 | web: the decision card and its answer, the run page, the session's bar, Needs you, the palette, the ticket page; the stub worker and two specs | `web/app`, `web/e2e` | PR-5, PR-6 | none | ~1,400 |
 | PR-8 | e2e and docs: the restart spec, the gate's rejection, `docs/architecture.md`, the features entry | `web/e2e`, `docs` | PR-7 | none | ~500 |
@@ -2457,10 +2525,14 @@ the router seam's skip of mirrored questions and its routing of records,
 a router's answer refused under `local/1`, the fake router and its check.
 Between PR-4 and this PR a viewer's reply to a mirrored question is
 refused with the session's general refusal; this PR gives it its code and
-its words, and takes the reply box off the question.
+its words, and takes the reply box off the question: `decisionOf` in
+`web/app/utils/attention.ts`, and `QuickReplyBar.vue` offering no reply
+field, option buttons or number keys for an attention with `decision`
+(its Answer and the callers' modal are PR-7's).
 Tests: `TestAttentionDecisionBound`, the two
 `TestAnswerToADecisionIsRefused`, `decisions_router_test.go`, the
-`ext/exttest` check.
+`ext/exttest` check, `utils/attention.test.ts`'s decision cases, and
+`make test-e2e` with the existing quick-reply specs unchanged.
 
 **PR-6** (`internal/cli`, `internal/agents`): the `task` subcommands,
 `conductor decision`, completion, the skill paragraph (the four MCP
@@ -2469,7 +2541,8 @@ tools are PR-4's). Tests: the `internal/cli` list but PR-4's two and the
 
 **PR-7** (`web/app`, `web/e2e`): `utils/decisions.ts`,
 `useDecisions.ts`, `useTicketDecisions.ts`, `DecisionCard.vue`,
-`DecisionRespond.vue`, the run page, `AttentionBar.vue`, Needs you, the
+`DecisionRespond.vue`, the run page, `QuickReplyBar.vue`'s Answer with
+the modal in the session page and the Yard, Needs you, the
 palette rows, `DispatchDecisions.vue`; the stub worker's
 `STUB_DECISION`; `decisions.spec.ts` and the approve half of
 `decisions-gate.spec.ts`. Tests: the vitest list and those two specs.
@@ -2491,17 +2564,18 @@ merges `main` in first. PR-12 waits for all of DR1. Brakeman's PR-18
 
 | PR | Title | Touches | Depends on | May run beside | Size |
 |---|---|---|---|---|---|
-| PR-9 | crew, api: people in a crew, a task's owner, the run's people, the task file's "Who answers", `GET /api/people` | `internal/crew`, `internal/api`, `docs` | none (main) | PR-6 | ~1,100 |
+| PR-9 | crew, api: people in a crew, a task's owner, the run's people, the task file's "Who answers", `GET /api/people` | `internal/crew`, `internal/crew/ledger`, `internal/api`, `docs` | none (main) | PR-6 | ~1,100 |
 | PR-10 | web: the crew editor's People and Owner, the run page's people and owners, the revision's people | `web/app`, `web/e2e` | PR-9 | PR-1, PR-2, PR-3, PR-6 | ~900 |
 | PR-11 | api, web: a person's work, the people page, the palette's `@` people | `internal/api`, `web/app`, `web/e2e`, `docs` | PR-10 | PR-2, PR-3, PR-6 | ~800 |
 | PR-12 | dispatch, crew, ledger, api, cli, agents, web: whom a decision is for, an assignment for a person, the operator's answer for them, the features entry | `internal/dispatch`, `internal/crew`, `internal/crew/ledger`, `internal/api`, `internal/cli`, `internal/agents`, `web/app`, `web/e2e`, `docs` | PR-11, PR-8 (all of DR1) | none | ~1,300 |
 
-**PR-9** (`internal/crew`, `internal/api`, `docs/protocol.md`): `Person`,
+**PR-9** (`internal/crew`, `internal/crew/ledger`, `internal/api`,
+`docs/protocol.md`): `Person`,
 the responsibilities and their words, `Task.Owner`, `checkPeople` and the
 task-text count, `TaskOwner`, `Run.People` and the tasks' owners from the
 crew as launched (the launch, `Recovered`, `ContinueRun`, read from
-the chain's launch row; in a managed run's record only), the task
-file's section, the crew and run
+the chain's launch row; in a managed run's record only),
+`restoreLaunchPeople` and `Tx.RestorePeople`, the task file's section, the crew and run
 routes' fields, `crewInput.crew()` in place of the three copies, `GET
 /api/people` with its pages, the protocol rows. Go only. Tests: the
 `internal/crew` tests and the `internal/api` tests above but
