@@ -70,9 +70,10 @@ func edgeOp(request string, from, to int) string {
 
 // makeSeam, when a test sets it, runs at each stage of a make ("input"
 // after its input is written, "claimed" after its claim, "waiting" when
-// its completion waits for another of the item's, "committed" after the
-// backend's operation, "edge" before an edge's relation); an error it
-// answers stops the make there, as a server that died would.
+// its completion waits for another of the item's, "locked" once its
+// completion holds the item, "committed" after the backend's operation,
+// "edge" before an edge's relation); an error it answers stops the make
+// there, as a server that died would.
 var makeSeam atomic.Pointer[func(stage, request string, item int) error]
 
 func atMakeSeam(stage, request string, item int) error {
@@ -149,7 +150,9 @@ func (d *brakemanDesk) completionLock(id string, item int) chan struct{} {
 // {request, made, ticket? | crew?}; the same opId again answers what it
 // made (200); 409 already_made with the key or crew for another opId once
 // made, 409 make_pending with the opId of a make under way, 409
-// op_conflict for the same opId with other content; 400 not_a_draft for
+// op_conflict for the same opId with other content, 409 make_superseded
+// for the same opId rejoined while its make was settled and the item
+// claimed again; 400 not_a_draft for
 // any item but a draft ticket, a draft crew or a draft plan revision; 404 for a request pruned
 // before the make claimed it, with no backend called; 503
 // brakeman_not_owner on a server that does not hold Brakeman's owner lock.
@@ -331,9 +334,20 @@ func (s *Server) finishMake(w http.ResponseWriter, r *http.Request, d *brakemanD
 	done, err := s.completeMake(ctx, d, id, m)
 	if err != nil {
 		var unopened *errRefStore
+		var superseded *errMakeSuperseded
 		switch {
 		case errors.As(err, &unopened):
 			writeError(w, http.StatusServiceUnavailable, "store_unavailable", unopened.Error())
+			return
+		case errors.As(err, &superseded):
+			// The make this one rejoined was settled meanwhile and the
+			// item claimed again: nothing ran for it, and the item's
+			// entry is the other claim's.
+			out := map[string]any{"error": map[string]any{"code": "make_superseded", "message": superseded.Error()}}
+			if superseded.now.OpID != "" {
+				out["made"] = superseded.now
+			}
+			writeJSON(w, http.StatusConflict, out)
 			return
 		case errors.Is(err, errDeskClosing):
 			// The server began to shut down during the make: its outcome
@@ -574,7 +588,16 @@ func checkTicketDraft(x brakeman.DraftTicket) error {
 // when that one settled it: the same make asked again while it runs
 // would otherwise run the backend beside it, and a refusal one of them
 // read (a draft plan's crew deleted after the other had read it) could
-// settle the claim refused while the other's proposal commits.
+// settle the claim refused while the other's proposal commits. Before it
+// runs the backend it holds the item's claim to the one it was given:
+// still pending, under the same opId, op and input digest (a claim's
+// input is never rewritten while the claim stands, so the input read
+// next is that claim's). A completion that waited while the make it
+// rejoined was settled (refused, which leaves no receipt) and the item
+// was claimed again under another opId or other content answers
+// errMakeSuperseded and runs nothing: it would otherwise propose the new
+// claim's input under the old claim's op, which the new claim's outcome
+// never records, so the new claim's own completion would make it twice.
 func (s *Server) completeMake(ctx context.Context, d *brakemanDesk, id string, m brakeman.Made) (brakeman.Made, error) {
 	lock := d.completionLock(id, m.Item)
 	select {
@@ -590,11 +613,20 @@ func (s *Server) completeMake(ctx context.Context, d *brakemanDesk, id string, m
 		}
 	}
 	defer func() { <-lock }()
+	if err := atMakeSeam("locked", id, m.Item); err != nil {
+		return m, err
+	}
 	cur, err := d.st.Get(id)
 	if err != nil {
 		return m, err
 	}
-	if i := slices.IndexFunc(cur.Made, func(x brakeman.Made) bool { return x.Item == m.Item && x.OpID == m.OpID }); i >= 0 && cur.Made[i].State != brakeman.MadePending {
+	i := slices.IndexFunc(cur.Made, func(x brakeman.Made) bool { return x.Item == m.Item })
+	switch {
+	case i < 0:
+		return m, &errMakeSuperseded{}
+	case cur.Made[i].OpID != m.OpID || cur.Made[i].Op != m.Op || cur.Made[i].Input != m.Input:
+		return m, &errMakeSuperseded{now: cur.Made[i]}
+	case cur.Made[i].State != brakeman.MadePending:
 		return cur.Made[i], nil
 	}
 	raw, err := d.st.MakeInput(id, m.Item)
@@ -709,6 +741,16 @@ func (s *Server) completeMake(ctx context.Context, d *brakemanDesk, id string, m
 		}
 	}
 	return out, nil
+}
+
+// errMakeSuperseded is a completion whose claim is no longer the item's:
+// it was settled and the item claimed again (another opId, or the same
+// with other content) before the completion held the item. now is the
+// item's entry as it stands, zero when it has none.
+type errMakeSuperseded struct{ now brakeman.Made }
+
+func (e *errMakeSuperseded) Error() string {
+	return "the make was settled and the item claimed again since"
 }
 
 // proposed is what Dispatch's propose route answered a draft plan
@@ -889,7 +931,8 @@ func (d *brakemanDesk) recoverMakes(ctx context.Context) {
 		}
 		switch {
 		case p.Made != nil:
-			if _, err := d.s.completeMake(ctx, d, p.Request, *p.Made); err != nil {
+			var superseded *errMakeSuperseded
+			if _, err := d.s.completeMake(ctx, d, p.Request, *p.Made); err != nil && !errors.As(err, &superseded) {
 				d.s.log.Warn("a Brakeman draft's make could not be recovered yet", "request", p.Request, "item", p.Made.Item, "err", err)
 			}
 		case p.Edge != nil && !edges[p.Request]:
