@@ -1704,7 +1704,9 @@ In a turn's session the agent uses the MCP tools `brakeman_request`, `observe`
 and `brief_submit`, or `conductor brakeman request|observe|brief` with its
 session's token; no other session sees them. Any agent in a Conductor session
 can call the MCP tool `guide` (or `conductor guide`) to learn what this build
-lets it do there, its limits and its receipts, from the running server. The
+lets it do there, its limits and its receipts, from the running server; its
+`briefs` section, and `brief_submit`'s input schema, give a brief's item kinds
+with their fields, bounds and an example, so a turn needs no source to read. The
 records are JSON files under `brakeman/` in the data directory: a restart
 keeps every request and brief, and a **Brief me since…** with no time starts
 where the last complete briefing's coverage ended, read from them, never from

@@ -3467,7 +3467,51 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   attempt, a ticket's member); the session with a real Codex is not yet
   made.
 
-  **BK1's observation: pending.** On the owner's `conductor serve` with
+  **BK1's live check, 2026-11-05: every clause but one, then fixed
+  (#602).** Against `main` at 9723fdc6, on a `conductor serve` of its own
+  with a real Claude Code 2.1.318 as Brakeman's agent (configured in
+  Settings) and as every member, after three managed crews (a check that
+  failed until a retry, a task whose attempts were spent, a member's
+  question left open) and a ticket launched from an approved plan
+  revision: "Brief me since 18:00", "Draft tickets", "Propose a crew",
+  then a restart, a model changed in Settings and "What changed since
+  your last brief?". Observed: facts linking the runs, tasks, the failing
+  check's receipt and the open question; the quiet session told from the
+  failed task; the spent task's decision card offering Retry and Accept
+  anyway, Accept pressed with its receipt; drafts edited and made with
+  their blocking relation; a proposed crew saved and opened in the
+  editor; the restarted turn reading the earlier brief and its coverage.
+  The clause the stream's own code blocked: a brief produced by the
+  person's own agent. Nothing the server served told an agent a brief's
+  shape (`brief_submit`'s input was `{"type":"object"}`, the refusals
+  named only the wrong value), so the turns were refused 10, 3, 13 and 1
+  times, the first three kept only after the agent read Conductor's
+  source outside its folder. Found beside it: a brief of its summary
+  alone was kept, citing nothing; the first two briefs' provenance had no
+  agent version (the probe cache was cold after the start); a made
+  draft's Blocks line named the other draft by the brief's title, not the
+  one it was made with. The fix (#602): `internal/brakeman`'s kind table
+  (`kinds.go`) is the one source of `brief_submit`'s input schema (each
+  kind's fields with their bounds, an example of each, the ref forms, an
+  example brief, a draft crew's crew as `crew_create`'s input) and of the
+  guide's new `briefs` section, which says the same in words; a test
+  holds every field of the table, at its bounds and one past them, to
+  what the check takes, and the refusals name what is taken beside what
+  was sent. A brief holds at least one item and a briefing at least one
+  fact. A turn's launch runs the agent's probe when the cache is cold and
+  stamps the version it reports. A made draft is named in the other
+  card's Blocks line by its ticket and the title it was made with. The
+  clause is observed again on #602's build with a fresh Claude Code turn
+  given the guide alone. Not exercised: Codex as Brakeman's agent, Retry
+  on the card, a turn with the read permission refused, an overnight
+  wait, the Mac and Windows apps. Seen outside the stream, for the
+  maintainers: after a restart the runs list answers none of the earlier
+  runs though each is readable by id (#334's restart work); the spent
+  run's log says "the run succeeded" a few microseconds before the accept
+  that caused it; the same drafts can be made twice from two briefs; a
+  check ref's `seen` never carries the log hash.
+
+  **BK1's observation, as the plan states it.** On the owner's `conductor serve` with
   Claude Code (and once with Codex) on the owner's own subscription,
   configured in Settings, after an evening of real managed crews (one with
   a check that fails until a retry, one with a task whose attempts are
@@ -3486,8 +3530,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `brakeman-cards.spec.ts`: a turn asked, its brief kept with a fact
   citing its own run and session, a card's Retry with the revision read, a
   stale revision refused with words, drafts made once, a restart finding
-  the same records). A later docs PR of the stream carries what the owner
-  saw; a bug the stream caused, found there, is fixed in the stream.
+  the same records). The live check above is the first of these
+  observations; a bug the stream caused, found there, is fixed in the
+  stream.
   Neither item is done with this slice: BK0 waits for the guide's
   providers (PR-9) and BK1 for the observation made again after PR-11,
   with a ticket launched from an approved plan revision among the evidence.
