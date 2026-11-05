@@ -322,6 +322,35 @@ test('a free-text prompt gets a reply field in the row; Enter sends the line and
   await expect(page).toHaveURL(/\/crews$/)
 })
 
+test('a reply being typed in a row keeps the focus and its keys while the rows change (#596)', async ({ page, api, state }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e reply kept' })
+  sessions.push(s.id)
+  await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which fix should I make?' })
+  await page.goto('/crews')
+  const list = page.locator('[data-session-list="sidebar"]')
+  const row = list.locator(`[data-sidebar-row="s:${s.id}"]`).first()
+  await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
+  const field = row.locator('[data-row-reply] input, input[data-row-reply]').first()
+  // The field takes the focus, so the list names the row (its focusin) as the row the keys act on.
+  await field.click()
+  await page.keyboard.type('fi')
+  await expect(field).toHaveValue('fi')
+
+  // Another session launched: the rows change, and the list's watch has run once its row is drawn (it follows that render).
+  const other = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e rows change' })
+  sessions.push(other.id)
+  await expect(list.locator(`[data-sidebar-row="s:${other.id}"]`).first()).toBeVisible({ timeout: 15_000 })
+  await expect(field).toBeFocused()
+
+  // The next keys are the reply's: an x is typed, not the list's Stop question, and Enter sends the line.
+  await page.keyboard.type('x')
+  await expect(field).toHaveValue('fix')
+  await expect(row.locator('[data-confirm-stop]')).toHaveCount(0)
+  await page.keyboard.press('Enter')
+  await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line was typed' }).toContain('fix\n')
+  expect((await api.session(s.id)).status).not.toMatch(/exited|stopped/)
+})
+
 test('the list takes the keys: ↓ from the filter, J K move, Escape leaves; a digit answers the focused row alone; X asks, Enter opens, R the run', async ({ page, api, state }) => {
   // Two sessions asking: the page open on one, the other answered from its row by a digit.
   const a = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e keys a' })

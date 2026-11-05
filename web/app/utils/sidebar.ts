@@ -390,15 +390,16 @@ export function moveFocus(rows: readonly FocusRow[], current: string | null, del
 }
 
 /**
- * Whether a row that re-rendered may take the focus back (#596): never while it sits behind an open modal (a dialog or a menu
- * hides the rest of the page from assistive technology, `aria-hidden`, and holds the focus even while it is on nothing, as
- * when the Rename dialog's focused button goes disabled as it saves); otherwise only when the focus was lost (on the body, or
- * nowhere: the row it was on left the page) or is still in the list. Anything else that holds it keeps it.
+ * Whether a row that re-rendered may take the focus back (#596): only when the focus was lost (on the body, or nowhere: the
+ * element it was on left the page as its row moved sections), and never while the row sits behind an open modal (a dialog or a
+ * menu hides the rest of the page from assistive technology, `aria-hidden`, and holds the focus even while it is on nothing, as
+ * when the Rename dialog's focused button goes disabled as it saves). Anything that holds the focus keeps it: a dialog, a
+ * field elsewhere, and in the list itself a row's reply field, its Stop question or a section's header, whose keys would
+ * otherwise drive the list.
  */
-export function mayRefocusRow(active: Node | null, body: Node | null, list: Pick<Node, 'contains'> | null, behindModal: boolean): boolean {
+export function mayRefocusRow(active: Node | null, body: Node | null, behindModal: boolean): boolean {
   if (behindModal) return false
-  if (active === null || active === body) return true
-  return !!list && list.contains(active)
+  return active === null || active === body
 }
 
 // ---------------------------------------------------------------------------

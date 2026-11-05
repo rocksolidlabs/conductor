@@ -375,27 +375,27 @@ describe('focusRows and moveFocus', () => {
 })
 
 describe('mayRefocusRow (#596)', () => {
-  // Stand-ins for the elements (the suite runs without a DOM): only their identity and the list's contains are read.
+  // Stand-ins for the elements (the suite runs without a DOM): only their identity is read.
   const body = { name: 'body' } as unknown as Node
-  const row = { name: 'a row' } as unknown as Node
+  const reply = { name: "a row's reply field, in the list" } as unknown as Node
+  const stop = { name: "a row's Stop question, in the list" } as unknown as Node
   const dialog = { name: 'a dialog' } as unknown as Node
-  const list = { contains: (n: Node | null) => n === row }
 
-  it('gives a re-rendered row the focus back only when the focus was lost or is in the list', () => {
-    expect(mayRefocusRow(null, body, list, false)).toBe(true)
-    expect(mayRefocusRow(body, body, list, false)).toBe(true)
-    expect(mayRefocusRow(row, body, list, false)).toBe(true)
+  it('gives a re-rendered row the focus back only when the focus was lost', () => {
+    expect(mayRefocusRow(null, body, false)).toBe(true)
+    expect(mayRefocusRow(body, body, false)).toBe(true)
   })
 
-  it('never takes it from anything else that holds it: a dialog opened from the row keeps it', () => {
-    expect(mayRefocusRow(dialog, body, list, false)).toBe(false)
-    expect(mayRefocusRow(dialog, body, null, false)).toBe(false)
+  it('never takes it from anything that holds it: a dialog opened from the row, or a reply field or Stop question in the list', () => {
+    expect(mayRefocusRow(dialog, body, false)).toBe(false)
+    expect(mayRefocusRow(reply, body, false)).toBe(false)
+    expect(mayRefocusRow(stop, body, false)).toBe(false)
   })
 
   it('never takes it behind an open modal, even with the focus on nothing (a focused button gone disabled as it saves)', () => {
-    expect(mayRefocusRow(body, body, list, true)).toBe(false)
-    expect(mayRefocusRow(null, body, list, true)).toBe(false)
-    expect(mayRefocusRow(row, body, list, true)).toBe(false)
+    expect(mayRefocusRow(body, body, true)).toBe(false)
+    expect(mayRefocusRow(null, body, true)).toBe(false)
+    expect(mayRefocusRow(reply, body, true)).toBe(false)
   })
 })
 

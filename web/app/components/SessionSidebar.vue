@@ -203,9 +203,9 @@ watch(rows, async () => {
   if (!id) return
   await nextTick()
   const el = rowEl(id)
-  // Only a focus that was lost or is still in the list, and never behind a modal: a dialog opened from the row keeps it (#596),
-  // and its Escape with it.
-  if (el && !el.contains(document.activeElement) && mayRefocusRow(document.activeElement, document.body, listEl.value, !!el.closest('[aria-hidden="true"]'))) el.focus()
+  // Only a focus that was lost, and never behind a modal: a dialog opened from the row keeps it, and its Escape with it, and a
+  // row's reply field keeps it and its keys (#596).
+  if (el && !el.contains(document.activeElement) && mayRefocusRow(document.activeElement, document.body, !!el.closest('[aria-hidden="true"]'))) el.focus()
 })
 function openRow(id: string) {
   const f = rows.value.find((r) => r.id === id)
