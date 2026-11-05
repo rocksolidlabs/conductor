@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
-import { BOUNDS, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actReceiptRef, actWords, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actReceiptRef, actShown, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -480,12 +480,67 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
   })
 
   it('says "Brakeman did this" with its receipt only for an act done, and what became of any other', () => {
-    expect(actWords(act({}))).toBe('Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt 0123456789abcdef.')
+    expect(actWords(act({}), { state: 'started', runId: 'r-1' })).toBe('Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt 0123456789abcdef.')
+    expect(actWords(act({ operation: 'prepare_followup', receipt: 'fedcba9876543210' }))).toBe('Brakeman did this, under the grant "Prepare a follow-up" you gave it: receipt fedcba9876543210.')
     expect(actReceiptRef(act({}))).toBe('launch:0123456789abcdef')
     expect(actWords(act({ state: 'pending', receipt: undefined }))).toContain('is doing this')
     expect(actWords(act({ state: 'refused', receipt: undefined, why: 'revision 1 of CND-4 is proposed' }))).toBe('Brakeman tried this, under the grant "Launch an approved plan", and it was refused: revision 1 of CND-4 is proposed. Nothing was done.')
     expect(actWords(act({ state: 'not_run', receipt: undefined }))).toContain('not run again')
     for (const a of [act({ state: 'refused' }), act({ state: 'pending' }), act({ operation: 'prepare_followup' }), act({ receipt: 'nope' })]) expect(actReceiptRef(a)).toBeNull()
+  })
+
+  it('says a launch is done only once its run has started: pending while it is being started or unread, failed with its words', () => {
+    const a = act({})
+    // Dispatch keeps the launch, and its receipt done, before the run is started: the launch says what came of it.
+    expect([actShown(a, { state: 'started', runId: 'r-1' }), actWords(a, { state: 'started', runId: 'r-1' })]).toEqual(['done', 'Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt 0123456789abcdef.'])
+    expect([actShown(a, { state: 'pending', runId: 'r-1' }), actWords(a, { state: 'pending', runId: 'r-1' })]).toEqual(['pending', 'Brakeman launched this, under the grant "Launch an approved plan": receipt 0123456789abcdef. Its run is still being started.'])
+    expect([actShown(a, null), actWords(a, null)]).toEqual(['pending', 'Brakeman launched this, under the grant "Launch an approved plan": receipt 0123456789abcdef. Whether its run has started is not read yet.'])
+    const failed = { state: 'failed', runId: 'r-1', why: 'the agent could not be started' }
+    expect([actShown(a, failed), actWords(a, failed)]).toEqual(['failed', 'Brakeman launched this, under the grant "Launch an approved plan": receipt 0123456789abcdef, but the launch failed: the agent could not be started. No run was started.'])
+    for (const l of [{ state: 'started' }, { state: 'pending' }, failed, null]) expect(actWords(a, l)).not.toBe(actWords(act({ state: 'refused' })))
+    // Not a launch's act, or not done: its own state, whatever launch is given.
+    expect(actShown(act({ operation: 'prepare_followup', receipt: 'fedcba9876543210' }), null)).toBe('done')
+    expect(actShown(act({ state: 'refused' }), { state: 'started' })).toBe('refused')
+    expect(actShown(act({ state: 'pending', receipt: undefined }), failed)).toBe('pending')
+  })
+
+  it('reads a launch again while it is pending, and after a failed read, until it has started or failed, and stops when not wanted', async () => {
+    const answers: Array<{ state: string } | Error> = [{ state: 'pending' }, new Error('lost'), { state: 'pending' }, { state: 'failed' }, { state: 'started' }]
+    const shown: string[] = []
+    const waits: number[] = []
+    const settled = await followLaunch({
+      read: async () => {
+        const a = answers.shift()!
+        if (a instanceof Error) throw a
+        return a
+      },
+      show: (l) => shown.push(l.state),
+      stop: () => false,
+      wait: async (ms) => void waits.push(ms),
+      firstMs: 2000,
+      maxMs: 8000,
+    })
+    expect(settled).toEqual({ state: 'failed' })
+    expect(shown).toEqual(['pending', 'pending', 'failed'])
+    expect(waits).toEqual([2000, 4000, 8000])
+    expect(answers).toEqual([{ state: 'started' }])
+    // No longer wanted (the card shows another act): an answer that comes after is not shown, and nothing more is read.
+    let wanted = true
+    let reads = 0
+    const shownAfter: string[] = []
+    const stopped = await followLaunch({
+      read: async () => {
+        reads++
+        wanted = false
+        return { state: 'started' }
+      },
+      show: (l) => shownAfter.push(l.state),
+      stop: () => !wanted,
+      wait: async () => {},
+      firstMs: 2000,
+      maxMs: 8000,
+    })
+    expect([stopped, reads, shownAfter]).toEqual([null, 1, []])
   })
 
 })

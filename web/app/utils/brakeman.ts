@@ -932,9 +932,39 @@ export function actFor(p: Extract<BriefItem, { kind: 'proposal/1' }>, acts: read
   return acts.find((a) => a.opId === opId && a.operation === p.op && refTicket(a.target) === ticket)
 }
 
-/** What a proposal Brakeman ran says of the act: done with its receipt, under way, refused with the words, or never run. */
-export function actWords(a: BrakemanAct): string {
+/**
+ * The launch an act's receipt names (GET /api/dispatch/launches/{id}), as much of it as the act's card needs: Dispatch keeps the launch,
+ * and its receipt done, before the run is started, so the launch's own state says what came of it: pending while its run is being
+ * started, started with its run, failed with its words when the run never started.
+ */
+export interface ActLaunch {
+  state: 'pending' | 'started' | 'failed' | string
+  runId?: string
+  why?: string
+}
+
+/**
+ * What a proposal Brakeman ran shows of its act. A launch's act is done once its receipt is in, but the launch is done only once its
+ * run has started: until its launch is read, and while the launch is pending, it is under way (pending); a launch that failed is
+ * `failed`, never "Brakeman did this". Any other act is its own state.
+ */
+export function actShown(a: BrakemanAct, launch?: ActLaunch | null): string {
+  if (!actReceiptRef(a)) return a.state
+  if (!launch || launch.state === 'pending') return 'pending'
+  return launch.state === 'started' ? 'done' : 'failed'
+}
+
+/**
+ * What a proposal Brakeman ran says of the act: done with its receipt, under way, refused with the words, or never run. A launch's act
+ * says so by its launch (actShown): its run still being started, or the launch failed with its words and no run.
+ */
+export function actWords(a: BrakemanAct, launch?: ActLaunch | null): string {
   const what = grantLabel(a.operation)
+  const shown = actShown(a, launch)
+  if (a.state === 'done' && actReceiptRef(a)) {
+    if (shown === 'pending') return `Brakeman launched this, under the grant "${what}": receipt ${a.receipt}. ${launch ? 'Its run is still being started.' : 'Whether its run has started is not read yet.'}`
+    if (shown === 'failed') return `Brakeman launched this, under the grant "${what}": receipt ${a.receipt}, but the launch failed${launch?.why ? `: ${launch.why}` : ''}. No run was started.`
+  }
   switch (a.state) {
     case 'done':
       return `Brakeman did this, under the grant "${what}" you gave it${a.receipt ? `: receipt ${a.receipt}` : ''}.`
@@ -951,6 +981,47 @@ export function actWords(a: BrakemanAct): string {
 /** The ref of what an act made, for its receipt chip: a launch's (launch_approved_plan), else none (a revision is read on its ticket's page). */
 export function actReceiptRef(a: BrakemanAct): string | null {
   return a.state === 'done' && a.operation === 'launch_approved_plan' && a.receipt && HEX.test(a.receipt) ? `launch:${a.receipt}` : null
+}
+
+/** How followLaunch reads a launch, and when it stops. */
+export interface FollowLaunch<L extends ActLaunch> {
+  /** The launch read now: resolves with it; rejects when the read failed. */
+  read: () => Promise<L>
+  /** What the card shows, given each launch a read answered. */
+  show: (l: L) => void
+  /** Whether it is no longer wanted (the card shows another act, or is gone): nothing more is read or shown. */
+  stop: () => boolean
+  /** Waits that many milliseconds before the launch is read again. */
+  wait: (ms: number) => Promise<void>
+  /** The first wait, doubled after each read that left the launch unsettled, up to `maxMs`. */
+  firstMs: number
+  maxMs: number
+}
+
+/** A launch still pending, or a read of it that failed, is read again after this, doubled each time up to LAUNCH_FOLLOW_MAX_MS. */
+export const LAUNCH_FOLLOW_FIRST_MS = 2000
+export const LAUNCH_FOLLOW_MAX_MS = 8000
+
+/**
+ * The launch an act's receipt names, read until it is settled: a launch pending (its run still being started) and a read that failed
+ * are read again after `firstMs`, doubled up to `maxMs`, until the launch has started or failed, or it is no longer wanted. Each answer
+ * is shown as it comes. Answers the settled launch, or null once stopped.
+ */
+export async function followLaunch<L extends ActLaunch>(o: FollowLaunch<L>): Promise<L | null> {
+  let delay = o.firstMs
+  for (;;) {
+    if (o.stop()) return null
+    try {
+      const l = await o.read()
+      if (o.stop()) return null
+      o.show(l)
+      if (l.state !== 'pending') return l
+    } catch {
+      if (o.stop()) return null
+    }
+    await o.wait(delay)
+    delay = Math.min(delay * 2, o.maxMs)
+  }
 }
 
 /** A grant list with `op` granted (on) or not, in GRANTS' order, each once: what Settings' switches save as `permissions.act`. */

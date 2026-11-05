@@ -222,6 +222,34 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
   // Its receipt, read from the chip: the launch as Dispatch keeps it.
   await header.locator('[data-ref-receipt]').click()
   await expect(page.locator('[data-ref-receipt-text]')).toContainText(`"runId": "${launch.runId}"`, { timeout: 30_000 })
+
+  // A launch is done by its launch, not by its receipt, which Dispatch keeps done before the run is started: with the launch's route
+  // answering it pending, then failed (its answer rewritten in this page's reads alone), the brief says it is under way, then not done
+  // with the launch's words, and links no run either time. The brief reads a pending launch again by itself. Two waits of 30 s and
+  // eight steps.
+  budget(2 * 30_000 + 8 * STEP_MS)
+  let shownState = 'pending'
+  const launchRoute = `**/api/dispatch/launches/${launch.id}`
+  await page.route(launchRoute, async (route) => {
+    const r = await route.fetch()
+    const body = (await r.json()) as { launch: Launch & { why?: string } }
+    body.launch.state = shownState
+    if (shownState === 'failed') body.launch.why = 'the agent could not be started'
+    await route.fulfill({ response: r, json: body })
+  })
+  await open(page, `/brakeman?request=${id}`)
+  await expect(p.locator('[data-proposal-did-words]')).toHaveText(`Brakeman launched this, under the grant "Launch an approved plan": receipt ${launch.id}. Its run is still being started.`, { timeout: 30_000 })
+  await expect(p).toHaveAttribute('data-proposal-act', 'pending')
+  await expect(p.locator('[data-proposal-did-badge]')).toHaveText('Brakeman is doing this')
+  await expect(p.locator('[data-proposal-did-run]')).toHaveCount(0)
+  shownState = 'failed'
+  await expect(p).toHaveAttribute('data-proposal-act', 'failed', { timeout: 30_000 })
+  await expect(p.locator('[data-proposal-did-badge]')).toHaveText('Not done')
+  await expect(p.locator('[data-proposal-did-words]')).toHaveText(`Brakeman launched this, under the grant "Launch an approved plan": receipt ${launch.id}, but the launch failed: the agent could not be started. No run was started.`)
+  await expect(p.locator('[data-proposal-did-run]')).toHaveCount(0)
+  // A launch that failed started nothing: the proposal is offered again, as text with its page.
+  await expect(p.locator('[data-proposal-text]')).toBeVisible()
+  await page.unroute(launchRoute)
 })
 
 test('with the grant taken away, the act is refused and kept nowhere, and the proposal is a proposal only', async ({ page }) => {
