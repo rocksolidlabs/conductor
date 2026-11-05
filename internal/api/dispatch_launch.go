@@ -69,10 +69,13 @@ type launchGate struct {
 	// their launch, for the tests.
 	waits int
 	// beforePlanned runs with a launch's id just before the engine is
-	// asked for its run; beforeReconcile before the reconcile at the
-	// ledger's recovery; attempt with each session spec Launch is given,
-	// before it takes the catalog entry. Tests hold them; under mu.
+	// asked for its run; beforeStore with a ticket's key just before a new
+	// launch of it is given to the store; beforeReconcile before the
+	// reconcile at the ledger's recovery; attempt with each session spec
+	// Launch is given, before it takes the catalog entry. Tests hold them;
+	// under mu.
 	beforePlanned   func(launchID string)
+	beforeStore     func(key string)
 	beforeReconcile func()
 	attempt         func(crew.LaunchSpec)
 }
@@ -318,14 +321,19 @@ func (s *Server) handleDispatchLaunch(w http.ResponseWriter, r *http.Request) {
 	// operations and its run's start, each within its own bound.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), LaunchTimeout)
 	defer cancel()
-	s.ticketLaunch(ctx, w, ds, body.op(r), key, body.Plan, body.Label)
+	s.ticketLaunch(ctx, w, ds, body.op(r), key, body.Plan, body.Label, nil)
 }
 
 // ticketLaunch is DS2's launch from a ticket, the one function the route
 // and ext.Host's LaunchApproved run: op under its actor, the ticket key,
 // the revision plan and the label, answered to w as the route answers
-// (handleDispatchLaunch), the operation replayed first.
-func (s *Server) ticketLaunch(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key, plan, label string) {
+// (handleDispatchLaunch), the operation replayed first. admit, when set,
+// is asked in the store's transaction of a new launch, before anything is
+// kept (dispatch.Store.LaunchAdmitted): its error refuses the launch with
+// nothing kept and is answered as the store's error, after which the
+// caller answers in its own words (LaunchApproved, for a provider given
+// up while the launch waited). A launch it admitted runs to its end.
+func (s *Server) ticketLaunch(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key, plan, label string, admit func() error) {
 	rc, found, err := ds.Replay(ctx, op, dispatch.IntentTicketLaunch, dispatch.LaunchArgs{Key: key, Plan: plan, Label: label})
 	switch {
 	case err != nil:
@@ -366,7 +374,10 @@ func (s *Server) ticketLaunch(ctx context.Context, w http.ResponseWriter, ds *di
 			return
 		}
 	}
-	rc, err = ds.Launch(ctx, op, key, plan, label)
+	if f := gateSeam(&s.launches, &s.launches.beforeStore); f != nil {
+		f(key)
+	}
+	rc, err = ds.LaunchAdmitted(ctx, op, key, plan, label, admit)
 	if err != nil || rc.Status != dispatch.StatusDone {
 		s.writeOp(w, "launch", rc, err, true, "launch", func(dispatch.Receipt) (any, error) { return nil, nil })
 		return

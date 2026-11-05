@@ -3668,8 +3668,19 @@ superseded meanwhile), and its outcome copied into the entry: `done` with
 with `why` (the store's receipt's words, or the route's for a refusal
 before the store, cut to the room its other fields leave in the entry's
 600 bytes as encoded); a failure of the server leaves it `pending`. The
-answer is the route's own, with its receipt. An act under way when the
-server shuts down finishes before Brakeman's owner lock goes. A server
+answer is the route's status and its `receipt` and `error`, so a retry is
+answered by its receipt whatever the grant now; its `launch` or `plan`,
+Dispatch's records of the ticket, only while the configuration then and
+the turn's snapshot show `dispatch`, the ticket is in the scope and the
+turn has reads left, each noted in the read log at its state and rev and
+the answer counted as one read; never the `run`, which the turn reads
+through its own grant (`GET /api/runs/{run}`). An act's answer, and a
+refusal of it past `not_visible`, notes `dispatch` among the classes the
+turn's answers used, so a brief made from it carries `dispatch` in its
+footprint. An act whose operation has begun when the server shuts down is
+waited for before the server's runs are stopped, and Brakeman's owner
+lock goes after it; one that has not begun runs nothing (`503
+shutting_down`). A server
 that stops between the operation and the copy, or before the operation,
 leaves the entry `pending`: before Brakeman's routes serve again, the
 desk reads Dispatch's receipt for `(brakeman, op)`, or, the receipt

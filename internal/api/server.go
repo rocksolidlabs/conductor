@@ -1037,7 +1037,8 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// Brakeman's desk first: it writes no request's state from now on, so
 	// the turn the stops below end is left running in its records and the
 	// next start finds it interrupted; its launch outstanding is waited
-	// for, so the run and session it makes are among those stopped below.
+	// for, and every act whose operation has begun (no other begins), so
+	// the runs and sessions they make are among those stopped below.
 	// Its records, and their owner lock, are let go once the sessions are
 	// stopped (release, below).
 	if s.brakeman != nil {

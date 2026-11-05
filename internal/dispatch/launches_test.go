@@ -672,3 +672,29 @@ func TestARunIDIsMintedAgainWhenTaken(t *testing.T) {
 		t.Fatal("a launch with no run id kept something")
 	}
 }
+
+// A launch whose admission refuses in the transaction is not made and
+// keeps no receipt: the same op id launches once admission holds, and a
+// resend of a launch made is answered before admission is asked.
+func TestALaunchRefusedAtAdmissionKeepsNothing(t *testing.T) {
+	s, _, key := planTicket(t)
+	ctx := context.Background()
+	plan := simplePlan(t, s, key)
+	gone := errors.New("the caller's authority ended")
+	if _, err := s.LaunchAdmitted(ctx, testOp("l1"), key, plan, "", func() error { return gone }); !errors.Is(err, gone) {
+		t.Fatalf("a launch refused at admission: %v", err)
+	}
+	if _, found, err := s.Receipt(ctx, testOp("l1").Actor, "l1"); err != nil || found {
+		t.Fatalf("a receipt kept: %v %v", found, err)
+	}
+	if list, err := s.Launches(ctx, key, 0); err != nil || len(list) != 0 {
+		t.Fatalf("launches %+v %v", list, err)
+	}
+	asked := 0
+	rc, err := s.LaunchAdmitted(ctx, testOp("l1"), key, plan, "", func() error { asked++; return nil })
+	want(t, rc, err, StatusDone, "")
+	again, err := s.LaunchAdmitted(ctx, testOp("l1"), key, plan, "", func() error { asked++; return gone })
+	if err != nil || !again.Repeat || again.ID != rc.ID || asked != 1 {
+		t.Fatalf("the resend: %+v %v, admission asked %d times", again, err, asked)
+	}
+}
