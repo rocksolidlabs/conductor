@@ -160,7 +160,7 @@ func refClass(kind string) string {
 	switch kind {
 	case brakeman.RefSession, brakeman.RefQuestion:
 		return brakeman.ClassSessions
-	case brakeman.RefTicket, brakeman.RefComment, brakeman.RefOp:
+	case brakeman.RefTicket, brakeman.RefComment, brakeman.RefOp, brakeman.RefPlan, brakeman.RefLaunch:
 		return brakeman.ClassDispatch
 	case brakeman.RefFile:
 		return brakeman.ClassTouched
@@ -489,12 +489,14 @@ func (rr *refResolver) goneBrief(ref brakeman.Ref, why string) (brakeman.Resolut
 func (rr *refResolver) lookup(ctx context.Context, ref brakeman.Ref) (refFound, error) {
 	switch ref.Kind {
 	case brakeman.RefRun, brakeman.RefTask, brakeman.RefAttempt, brakeman.RefCheck, brakeman.RefCommand,
-		brakeman.RefEvent, brakeman.RefMessage, brakeman.RefCommit:
+		brakeman.RefEvent, brakeman.RefMessage, brakeman.RefCommit, brakeman.RefCandidate:
 		return rr.lookupRunPart(ctx, ref)
 	case brakeman.RefSession, brakeman.RefQuestion, brakeman.RefFile:
 		return rr.lookupSessionPart(ctx, ref)
 	case brakeman.RefTicket, brakeman.RefComment, brakeman.RefOp:
 		return rr.lookupDispatch(ctx, ref)
+	case brakeman.RefPlan, brakeman.RefLaunch:
+		return rr.lookupEvidence(ctx, ref)
 	}
 	return refFound{}, nil
 }
@@ -845,7 +847,142 @@ func (rr *refResolver) lookupRunPart(ctx context.Context, ref brakeman.Ref) (ref
 		if ok {
 			f.found, f.now = true, brakeman.RefState{State: "present", Rev: short}
 		}
+	case brakeman.RefCandidate:
+		if !r.managed {
+			break
+		}
+		c, ok, err := rr.candidate(ctx, ld, r, ref)
+		if err != nil {
+			return f, err
+		}
+		if ok {
+			state, rev := candidateRefState(c.Kind, c.Standing, c.Withdrawn, c.State, c.Commit, c.Start)
+			f.found, f.now = true, brakeman.RefState{State: state, Rev: rev}
+		}
 	}
+	return f, nil
+}
+
+// candidate is the run's candidate the ref names, as GET
+// /api/runs/{run}/candidates reads it (candidateOf): attempt n of the
+// task, when it submitted something; false for an attempt that did not,
+// or none.
+func (rr *refResolver) candidate(ctx context.Context, ld *ledger.Ledger, r *refRun, ref brakeman.Ref) (runCandidate, bool, error) {
+	tasks, err := ld.Tasks(ctx, ref.Run)
+	if err != nil {
+		return runCandidate{}, false, fmt.Errorf("the ledger's tasks of %s: %w", ref.Run, err)
+	}
+	i := slices.IndexFunc(tasks, func(t ledger.TaskRow) bool { return t.ID == ref.Task })
+	if i < 0 {
+		return runCandidate{}, false, nil
+	}
+	tr := tasks[i]
+	attempts, err := ld.Attempts(ctx, ref.Run)
+	if err != nil {
+		return runCandidate{}, false, fmt.Errorf("the ledger's attempts of %s: %w", ref.Run, err)
+	}
+	j := slices.IndexFunc(attempts, func(a ledger.AttemptRow) bool { return a.TaskID == ref.Task && a.N == ref.N })
+	if j < 0 || attempts[j].Result == "" {
+		return runCandidate{}, false, nil
+	}
+	kind := tr.Kind
+	if kind == "" {
+		// A row written before its kind was kept: the crew's.
+		var c crew.Crew
+		if json.Unmarshal([]byte(r.row.Crew), &c) == nil {
+			if k := slices.IndexFunc(c.Tasks, func(t crew.Task) bool { return t.ID == ref.Task }); k >= 0 {
+				kind = c.Tasks[k].Kind
+			}
+		}
+	}
+	return candidateOf(kind, tr, attempts[j], nil, nil), true, nil
+}
+
+// candidateRefState is a candidate's state and revision as a candidate:
+// ref records them, from its row as the candidates' route answers it:
+// withdrawn when a withdrawal took it back, standing while it is its
+// task's result, else its attempt's state; its revision the commit it
+// submitted, a review's the commit it reviewed.
+func candidateRefState(kind string, standing, withdrawn bool, state, commit, start string) (string, string) {
+	rev := commit
+	if kind == crew.TaskReview {
+		rev = start
+	}
+	switch {
+	case withdrawn:
+		return "withdrawn", rev
+	case standing:
+		return "standing", rev
+	}
+	return state, rev
+}
+
+// planRefState is a plan revision's state as a plan: ref records it: its
+// own (proposed, approved, superseded, withdrawn), or stale for an
+// approved one whose approval no longer holds (dispatch.PlanStale).
+func planRefState(state string, stale bool) string {
+	if state == dispatch.PlanApproved && stale {
+		return "stale"
+	}
+	return state
+}
+
+// lookupEvidence reads a ticket's plan revision, or a launch from one,
+// from Dispatch's store (Program item DS2): its state and revision, the
+// ticket it is of admitted as the ticket is (its project, its run
+// links); a deleted ticket's are deleted, never dropped.
+func (rr *refResolver) lookupEvidence(ctx context.Context, ref brakeman.Ref) (refFound, error) {
+	f := refFound{item: brakeman.ScopeItem{Kind: brakeman.ItemTicket, Project: projectOfKey(ref.Ticket)}}
+	ds, err := rr.dispatch()
+	if err != nil {
+		return f, fmt.Errorf("%s: %w", ref, err)
+	}
+	if ds == nil {
+		return f, nil
+	}
+	key := ref.Ticket
+	switch ref.Kind {
+	case brakeman.RefPlan:
+		plans, err := ds.Plans(ctx, key)
+		switch {
+		case errors.Is(err, dispatch.ErrNotFound):
+			return f, nil
+		case err != nil:
+			return f, fmt.Errorf("the plan revisions of %s: %w", key, err)
+		}
+		i := slices.IndexFunc(plans, func(p dispatch.PlanSummary) bool { return p.N == ref.N })
+		if i < 0 {
+			return f, nil
+		}
+		p := plans[i]
+		f.found, f.now = true, brakeman.RefState{State: planRefState(p.State, p.Stale != nil), Rev: strconv.FormatInt(p.Rev, 10),
+			At: firstTime(p.WithdrawnAt, p.ApprovedAt, p.CreatedAt)}
+	case brakeman.RefLaunch:
+		l, err := ds.LaunchByID(ctx, ref.Launch)
+		switch {
+		case errors.Is(err, dispatch.ErrNotFound):
+			return f, nil
+		case err != nil:
+			return f, fmt.Errorf("the launch %s: %w", ref.Launch, err)
+		}
+		key = l.TicketKey
+		f.item.Project = projectOfKey(key)
+		f.found, f.now = true, brakeman.RefState{State: l.State, Rev: strconv.FormatInt(l.Rev, 10), At: firstTime(l.StartedAt, l.CreatedAt)}
+	}
+	// The ticket's own tombstone makes what it holds deleted.
+	tk, err := ds.Ticket(ctx, key)
+	switch {
+	case errors.Is(err, dispatch.ErrNotFound):
+	case err != nil:
+		return f, fmt.Errorf("the ticket %s: %w", key, err)
+	case !tk.DeletedAt.IsZero():
+		f.found, f.deleted = false, true
+	}
+	links, err := rr.ticketLinks(ctx, key)
+	if err != nil {
+		return f, err
+	}
+	f.item.Links = links
 	return f, nil
 }
 
@@ -1277,7 +1414,7 @@ func refURL(ref brakeman.Ref) string {
 	switch ref.Kind {
 	case brakeman.RefRun, brakeman.RefEvent, brakeman.RefMessage, brakeman.RefCommit:
 		return run
-	case brakeman.RefTask, brakeman.RefAttempt:
+	case brakeman.RefTask, brakeman.RefAttempt, brakeman.RefCandidate:
 		// The Tasks view, whatever view this browser chose last, at the
 		// task: its attempts are listed under it (the page selects no one
 		// attempt).
@@ -1300,6 +1437,11 @@ func refURL(ref brakeman.Ref) string {
 		return ticketURL(ref.Ticket)
 	case brakeman.RefBrief:
 		return "/brakeman?request=" + url.QueryEscape(ref.Request) + "#item-" + strconv.Itoa(ref.Item)
+	case brakeman.RefPlan:
+		// The ticket's page, whose revisions it lists.
+		return ticketURL(ref.Ticket)
+	case brakeman.RefLaunch:
+		return "/api/dispatch/launches/" + esc(ref.Launch)
 	}
 	return ""
 }

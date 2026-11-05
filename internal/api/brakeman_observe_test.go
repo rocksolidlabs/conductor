@@ -239,9 +239,10 @@ func TestTheAdminsReadsAreUnchanged(t *testing.T) {
 		"/api/runs", "/api/runs/" + f.run, "/api/runs/" + f.run + "/tasks/build", "/api/runs/" + f.run + "/tasks/build/attempts/1/steps",
 		"/api/dispatch/projects", "/api/dispatch/tickets", "/api/dispatch/tickets/" + f.ticket, "/api/dispatch/tickets/" + f.ticket + "/history",
 		"/api/dispatch/tickets/" + f.ticket + "/comments", "/api/sessions", "/api/touched",
+		"/api/dispatch/tickets/" + f.ticket + "/plans", "/api/runs/" + f.run + "/candidates",
 	}
 	before, _ := f.desk.st.Get(f.req)
-	added := regexp.MustCompile(`"ref":"(run|task|attempt|check|command|message|ticket|comment|session|question|file):`)
+	added := regexp.MustCompile(`"ref":"(run|task|attempt|check|command|message|ticket|comment|session|question|file|plan|launch|candidate):`)
 	for _, p := range paths {
 		_, data, _ := f.call(t, "GET", p, nil)
 		if added.Match(data) {
