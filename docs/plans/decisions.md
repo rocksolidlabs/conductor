@@ -1,4 +1,4 @@
-# Durable decisions: a person's answer that outlasts the session that asked (Program item DR1)
+# Durable decisions and the people they are for (Program items DR1 and HM1)
 
 A decision request is a durable record: a question a crew's agent, or a
 ticket's approved plan revision, puts to a person, with its exact scope,
@@ -35,6 +35,17 @@ below builds on `main` as it is, and none waits on another item.
 C10 (the Runtime, `docs/plans/runtime.md`) is still In review for its
 Windows observation, but its code is on `main` and DR1 adds nothing that
 starts a process, so it does not matter here.
+
+**HM1's prerequisite** is DR1 itself (the Program, section 4.3), which is
+not on `main`: it is the part of this file above HM1's. HM1's parts are
+the last subsection of each section, "HM1, human members", and its PRs
+are PR-9 to PR-12. PR-9 to PR-11 (a crew's people and their
+responsibilities, a task's accountable owner, a person's work) build on
+`main` as it is, using Dispatch's people as local labels (DS1, decision
+D4) and nothing of DR1; PR-12 (whom a decision is for, and the
+operator's answer for them) waits for DR1's eight PRs. HM1 does not
+need ID1 or SW1, and does not presume BK3's role session (decision D18):
+a person is never a session.
 
 **The items this one meets, and who owns what they share.**
 
@@ -129,6 +140,44 @@ starts a process, so it does not matter here.
     task released by a decision is dispatched through the engine's
     existing dispatch and `crew.Launcher`.
 
+### HM1, human members
+
+1. **No premium code, no licence check.** A person in a crew is a local
+   label in the open-source repository; nothing asks whether a provider or
+   a plan is there to list one, assign one work or answer for one.
+2. **The open-source build is useful alone.** A crew names the people who
+   own its decisions and its tasks' outcomes, and the operator answers a
+   gate for them, with no account and no service.
+3. **Paid features gated by hosted dependencies.** The paid layer (SW1:
+   authenticated people, domain roles, quorum, delegation) arrives through
+   `ext.IdentityProvider` and `ext.DecisionRouter` from a hosted identity;
+   HM1 adds no flag that would stand in for it.
+4. **Stop, inspect, revoke, export, required approvals free.** A gate that
+   names a person is still answered by the operator with the control role
+   (decision D4); nothing about a label makes an approval optional, and the
+   crew's people go into an export with the crew's file.
+5. **Dependencies one way.** Not touched: HM1 imports nothing outside this
+   module.
+6. **No feature build tag.** Not touched: no build constraint is added.
+7. **The free default is what main does.** The empty route of
+   `ext/local`'s `Router` is unchanged: a task's owner is shown beside its
+   questions, and nothing routes or holds a question because a crew lists
+   a person (the routing is DR1's and, for a team, SW1's).
+8. **An unreachable provider answers as the free default.** Not touched:
+   HM1 calls no provider; a label resolves from the crew as launched.
+9. **CGO_ENABLED=0; the local store is modernc.org/sqlite.** Not touched:
+   people live in the crew's JSON file and the run row that already keeps
+   the crew as launched; no store is added.
+10. **The repository contract.** This plan before the code; one issue per
+    PR; race tests, vitest and Playwright per surface; the HTTP API's rows
+    in `docs/protocol.md` beside the routes; no new dependency.
+11. **The names.** "Person" and "people" in the crew, "accountable owner",
+    and the four responsibilities in plain words; Yardmaster, Dispatch and
+    Switchman keep their meanings; "workspace" is not used.
+12. **Execution behind one seam.** A person is never started: no session,
+    no `ext.Runtime` call, no worktree, no launch slot. The engine starts
+    attempts for members only, through `crew.Launcher`, as it does today.
+
 ## Why and what happens
 
 Today a person's answer lives only as long as the session that asked. A
@@ -198,6 +247,59 @@ session outside a managed run, a bell, a trust question, the agent's own
 `ask`) works exactly as on `main`. The free build's only approver is the
 operator: a guest on a share link, even one with control, sees a decision
 but cannot answer it.
+
+### HM1, human members
+
+A crew today is agents only: every `crew.Member` has an `AgentID`, a
+prompt and a start rule, and becomes a session. The people who decide
+whether the schema is right, whether the feature is what was asked, or
+whether the change is safe appear nowhere in it; they are whoever is
+watching a terminal. Dispatch already treats people as names (decision
+D4: a ticket's `owner` and `person:<name>` assignees, its people
+directory in `internal/dispatch/people.go`), but a crew and its run do
+not know them, so a gate cannot say whose decision it is and a task
+cannot say who answers for its outcome apart from the agent doing it.
+
+After HM1:
+
+- The crew editor has a **People** section: each person a name (offered
+  from the names Conductor knows: Dispatch's directory and the people of
+  every saved crew, or typed) with the responsibilities they hold in this
+  crew, from four: **architecture owner**, **product owner** (the domain
+  or product owner), **security reviewer** and **acceptance owner**, and
+  a short note. A person is never started: the editor says so beside the
+  section, and the run never makes a session, a worktree or a branch for
+  one.
+- Each task of a crew with tasks may name its **owner**, a person of the
+  crew, in a column of its own beside the member (the agent that does
+  it). A task with no owner of its own is owned by the crew's acceptance
+  owner when it has one; the run page says which ("owner ana, the
+  acceptance owner").
+- The run page's header lists the run's people and their
+  responsibilities as the crew was launched; each task row and detail
+  names its owner; an attempt's task file names its owner and who holds
+  each responsibility, so the agent knows whose decision a question is.
+- A person's name is a link to **their work**: the crews where they hold
+  a responsibility, the tasks they own in the runs the server holds, the
+  Dispatch tickets they own or are assigned, and (once DR1's records
+  exist) the decisions waiting for them. The palette's `@` mode lists
+  the people Conductor knows.
+- Once DR1's decision records exist (above), a plan revision's decision
+  names whom it is for: a responsibility (`role:architecture`) or a
+  person (`person:nate`); so may an agent's `decision_request`. The
+  record keeps the person the label named when it opened; the decision
+  card, the run page and the person's page say "for nate, the
+  architecture owner"; the operator answers it, and the response
+  receipt keeps who answered (the operator) and for whom (nate, the
+  architecture owner) side by side. A plan revision may also give a
+  person work of their own: a decision of kind `assignment` ("run the
+  migration on staging") for them, before the tasks that need it done,
+  answered Done or Not done, as DR1 applies an assignment.
+
+What does not change: who may answer (the operator, with the control
+role, decision D4), the empty route of the free `DecisionRouter`, the
+engine's launch and scheduling, and every crew saved without people,
+which reads, saves and runs byte for byte as before.
 
 ## The changes
 
@@ -760,6 +862,220 @@ policy's refusal of a principal that got past it without the authority
   section gains a paragraph on decisions; `docs/features.md` the item's
   entry, in the last PR.
 
+### HM1, human members
+
+**What main has and what it does not.** On main (9723fdc6): the crew
+model and Yardmaster (`internal/crew`), Dispatch's people as local
+labels with a ticket's owner and assignees (DS1, `internal/dispatch/
+people.go`, `PersonPicker.vue`), DS2's plan revisions with their
+`decisions` (`dispatch.PlanDecision {id, question, kind, before}`,
+recorded and shown, not held), the decision router's seam (C5,
+`ext/decisions.go`, `internal/api/router.go`) and the receipts' actor
+(`actorOf` in `internal/api/identity.go`: `admin` for the workbench
+token). Not on main: DR1's durable decision records and gates (this
+file's DR1 part, PR-1 to PR-8 above), and the authenticated layer (ID1,
+SW1), which HM1 does not need. HM1's PR-9 to PR-11 build on main alone;
+PR-12 waits for DR1's eight PRs.
+
+**Shared pieces and their owners.** The decision record, its tables,
+states, routes, receipts and cards are DR1's (above in this file); HM1
+owns the label: the crew's people, their responsibilities, a task's
+owner, the `for` a decision carries, its resolution to a person, and the
+`person` and `role` destinations DR1's `RouteDecision` refuses until
+HM1 (DR1, The changes, Routing). The decision page that shows "for
+nate" is MB0's (`docs/plans/decision-inbox.md`); it reads
+the fields HM1 adds. `route_decision` to a label is Brakeman's PR-18
+(`docs/plans/brakeman.md`), which waits for HM1's PR-12 and calls the
+`person` and `role` destinations PR-12 adds; the grant that lets
+Brakeman use them is Brakeman's.
+
+**`internal/crew` (crew.go, task.go, run.go, taskfile.go, continue.go).**
+
+- A new type and a new field of the crew:
+
+  ```go
+  // Person is a person of a crew: a local label (decision D4), never
+  // started. The name is the person, as in Dispatch's directory.
+  type Person struct {
+  	Name             string   `json:"name"`
+  	Responsibilities []string `json:"responsibilities,omitempty"`
+  	Note             string   `json:"note,omitempty"`
+  }
+  ```
+
+  `Crew.People []Person` (JSON `people`, omitted when empty): a list
+  of its own, never inside `Members`, so every loop of the engine over a crew's members (launch,
+  start rules, `Reserve`, the attempts' dispatch, the checks) is
+  untouched and cannot start a person.
+- The responsibilities, a closed list in this order:
+  `RespArchitecture = "architecture"`, `RespProduct = "product"`,
+  `RespSecurity = "security"`, `RespAcceptance = "acceptance"`
+  (`Responsibilities`), with their words in one table
+  (`ResponsibilityWords`: "architecture owner", "product owner",
+  "security reviewer", "acceptance owner").
+- `Task.Owner string` (JSON `owner`, omitted when empty): the
+  accountable person, a name of `Crew.People`, apart from
+  `Task.Member`, the agent.
+- `Crew.Validate` gains `checkPeople`: at most `maxPeople = 12`; a name
+  of 1 to 60 characters of valid UTF-8 with no control character,
+  exactly Dispatch's `person.name` rule (`checkField`, `MaxPersonName`),
+  so a crew's name and a ticket's owner are the same label (the editor
+  trims what is typed; the two bounds are held equal by a test in
+  `internal/api`, which imports both packages, since neither imports
+  the other); names unique in the crew and none a member's name, so "lead" is never both; each responsibility one of the
+  four, at most once per person, and held by at most one person of the
+  crew (the single approver of decision D4); a note of at most 500
+  characters on one line; a task's owner empty or a person of the crew.
+  A crew without tasks may list people (a crew with start rules has
+  owners too). `ValidateSave`'s `taskTextBytes` counts the people's
+  lines a task file carries, so the never-cut part stays within
+  `maxTaskText`.
+- `TaskOwner(c Crew, t Task) (Person, string, bool)`: the task's owner,
+  or else the crew's acceptance owner, with why (`"task"` or
+  `"acceptance"`), or none. The one rule the task file, the run's state
+  and the person's work use.
+- `Holder(c Crew, label string) (Person, string, error)`: the person a
+  label names in the crew, `role:<responsibility>` its one holder and
+  `person:<name>` that person, with the responsibility or "", or why
+  not ("no person of crew api holds security"). Defined here with its
+  tests; PR-12's decisions are its callers.
+- `Run.People []Person` (JSON `people`) and `TaskState.Owner
+  string`, `TaskState.OwnerFrom string` (`task` | `acceptance`), set from
+  the crew as launched. A managed run's record rebuilt from the ledger
+  (`Recovered`, `syncRecords`) and a continuation (`ContinueRun`) read
+  them from the run row's crew as launched (`crewAsLaunched`), so they
+  are the launch's, never the saved crew's now.
+- The task file: `TaskFile.Owner *TaskPerson` and `TaskFile.People
+  []TaskPerson` (`{name, responsibilities}`), and in `task.md` a section
+  "Who answers for this work" after the instructions: the owner and how
+  they came to own it, then each responsibility and its holder, then one
+  line: "Ask for a person's decision through Conductor; never act or
+  answer as them." Never cut (at most 12 lines); a crew without people
+  writes the task file byte for byte as today (the goldens unchanged).
+
+**`internal/api` (crews.go, runs, people.go new).**
+
+- The crew routes take and answer `people` and a task's `owner`
+  (`POST /api/crews`, `PUT /api/crews/{id}`, `GET /api/crews/{id}`); the
+  list (`GET /api/crews`) gains each crew's people with their
+  responsibilities, no notes. The bodies' bounds stay `crew.MaxEncoded`.
+- The run routes (`GET /api/runs`, `GET /api/runs/{run}`, `GET /api/runs/
+  {run}/tasks/{task}`) answer `people` and each task's `owner` and
+  `ownerFrom`.
+- `GET /api/people` (admin): the names Conductor knows, each once:
+  `{people: [{name, dispatch: bool, crews: [{id, name,
+  responsibilities}]}], dispatchUnavailable?: true}`, by name; read from
+  Dispatch's directory and the crew store, written to neither. A name
+  typed into a crew is not added to Dispatch's directory: the two stores
+  stay apart, and the list is their union.
+- `GET /api/people/{name}` (admin): a person's work: `{name, crews:
+  [...], tasks: [{run, runLabel, task, state, member, ownerFrom}],
+  tickets: {owner, assignee, href}, decisions: []}`, the tasks from the
+  runs the engine holds and the managed runs' records, at most 200, the
+  newest first, with `more: true` past them; `tickets` the counts of
+  Dispatch's own query (`owner:` and `assignee:person:`) and the link to
+  that view; `decisions` empty until PR-12. `404 not_found` for a
+  name no store knows; the name is matched exactly, as Dispatch matches
+  it.
+- `docs/protocol.md`: the crew body's `people` and `owner`, the run's
+  `people`, `owner` and `ownerFrom`, the two people routes. No WebSocket
+  frame or control message changes, so `internal/proto` and
+  `web/app/utils/protocol.ts` are untouched; the HTTP types are in
+  `web/app/composables/useSessions.ts`.
+
+**`web/app`.**
+
+- `components/CrewPeopleTable.vue` (new): a row per person: the name
+  (`PersonPicker.vue` with a new optional `names` prop fed by
+  `composables/usePeople.ts`, `GET /api/people`; without the prop it
+  reads Dispatch's directory as today), the responsibilities (a
+  multi-select of the four, one held by another row disabled with "held
+  by ana"), the note, remove. Under the table: "A person is never
+  started: no session, worktree or agent. They own decisions and
+  outcomes."
+- `components/CrewTasksTable.vue`: an **Owner** column (a select of the
+  crew's people and "none"; with none, the hint names the acceptance
+  owner when there is one).
+- `components/CrewEditor.vue`: the People section between the members
+  and the tasks.
+- `utils/crews.ts`: `toCrewInput` carries `people` and `owner`;
+  `peopleProblems` mirrors `checkPeople` under each row and in the Save
+  gate; `ownersFollowPeople` renames a task's owner with its person, by
+  key, as `tasksFollowMembers` does for members; `ownerOf` is
+  `TaskOwner`'s rule.
+- The run page: `CrewRunHeader.vue` the people as chips with their
+  responsibilities; `RunTasks.vue` the owner in each row and in the
+  detail; `DispatchPeople.vue` the people of the approved revision's
+  crew with their responsibilities ("as r3 was approved"), since the
+  revision's body keeps the crew as the store did.
+- `pages/people/[name].vue` (new): the person's work from `GET /api/
+  people/{name}`; every person chip links to it. One column on a phone.
+- `composables/usePalette.ts`: the `@` mode adds the people Conductor
+  knows (from `usePeople`), Enter opening their page.
+
+**Whom a decision is for (PR-12, once DR1's PR-1 to PR-8 are on main).**
+No ledger schema change: what HM1 adds lives in the JSON columns DR1's
+`decisions` table already has (`request`, the receipts, the history's
+`detail`).
+
+- `internal/dispatch` (model.go, plans.go): `PlanDecision.For string`
+  (JSON `for`, omitted when empty): `role:<responsibility>` or `person:<name>`,
+  empty for none (the operator alone, as today), and a third kind,
+  `DecisionAssignment = "assignment"`, beside approval and
+  clarification: work a person does by hand before the tasks it names.
+  The store checks the shape; the API's proposal (`POST /api/dispatch/
+  tickets/{key}/plans`) checks that the label resolves in the
+  revision's crew (`400 invalid`: "no person of crew api holds
+  architecture"). Both live in the immutable body, so an older
+  revision's digest is unchanged (`for` omitted when empty) and a label
+  resolves against the crew the revision was approved with, never the
+  saved crew now. `conductor dispatch plan propose` gains
+  `--decision-for ID=role:architecture`, and `assignment` as a
+  `--decision` kind.
+- `internal/crew` (DR1's `decisions.go`, `package.go`): a gate opened in
+  `CreateRun`'s transaction from `Package.Decisions` carries its `for`,
+  and an assignment gate DR1's type `assignment`; `RequestDecision`
+  takes `for` from an agent. The server resolves the label with
+  `Holder` over the run's crew as launched and writes it into the
+  request JSON as `for: {label, person, responsibility}` (the label as
+  given, the person it named, the responsibility or ""), with the
+  `routed` history row `{to: [{kind: "person", name}], rule: "the
+  architecture owner (role:architecture)", by: "yardmaster"}` in the
+  same transaction. An agent's label no person of the run's crew holds
+  is refused (`400 invalid`, naming the crew's responsibilities and
+  their holders); a decision with no `for` is routed to the operator as
+  DR1 routes it. `RouteDecision` takes `{kind: "person", name}` and
+  `{kind: "role", name: <responsibility>}` once they resolve in the
+  run's crew as launched, writing the same `for` and a `routed` row
+  (what Brakeman's PR-18 calls); it still changes no state.
+- The response receipt (DR1's `ResponseReceipt`) gains `for` (`{person,
+  responsibility}`, copied from the request), beside `actor` and
+  `byName`, which stay who answered; the typed line and the task file's
+  "Decisions" say "answered by the operator for nate, the architecture
+  owner". The policy stays `local/1`: the label never changes who may
+  answer (decision D4).
+- `internal/crew/ledger` (DR1's `decisions.go`): `Filter` gains `For` (a
+  person's name), read with `json_extract(request, '$.for.person')`
+  (JSON1 is compiled in, `docs/dependencies.md`), bounded as DR1's other
+  filters are.
+- `internal/api`: `GET /api/decisions?for=<name>`; `GET /api/people/
+  {name}` fills `decisions` with the person's open and answered ones (at
+  most 100); the decision event's data gains nothing.
+- `internal/cli`, `internal/agents`: `decision_request`'s schema and
+  `conductor task decide` gain `for` (`--for role:architecture`); the
+  skill's decisions paragraph gains one sentence: the task file's "Who
+  answers for this work" names the holders, and `for` names the one the
+  decision is for.
+- `web/app`: `DecisionCard.vue`'s "who may answer" says "the operator,
+  for nate (architecture owner)"; `DecisionRespond.vue`'s confirm says
+  "You answer as the operator, for nate"; an assignment's card says
+  what nate is to do; the person's page lists their decisions with the
+  card; MB0's page (`docs/plans/decision-inbox.md`) shows the same
+  through DR1's components.
+- Docs: `docs/protocol.md` (the decision bodies' `for`, the receipt's
+  `for`, the filter), the features entry, the repository map's
+  `internal/crew` row, `docs/architecture.md`'s crew section.
+
 ## Events, orderings and invariants
 
 **States of a decision.** `open` → `answered` (a response accepted) →
@@ -850,6 +1166,59 @@ one ledger. Inside one server, the run's transactions order every change;
 first response wins between people, by the order the transactions
 commit.
 
+### HM1, human members
+
+PR-9 to PR-11 touch no state machine and no schema: the crew store's
+file gains two fields, and the ledger's run row already keeps the crew as
+launched. PR-12 adds no state and no column either: Dispatch's plan body
+gains one optional field and one kind, and what a decision records of a
+person goes into the JSON of DR1's rows, in DR1's transactions.
+
+- **A person is never executed.** Nothing reads `Crew.People` to start,
+  reserve, add, resume or stop anything. The engine's loops over
+  `Members` and `Tasks` are unchanged, so no session, worktree, branch,
+  launch slot, `CONDUCTOR_NOTIFY_TOKEN` or `ext.Runtime` call is ever
+  made for a person; `form_crew` and `add_member` take members only, so
+  an agent never adds a person (a Brakeman draft may carry people as any
+  crew body does; making it work stays the operator's).
+- **The run's people are the launch's.** `Run.People`, `TaskState.Owner`
+  and `OwnerFrom` are set at launch from the crew as launched and never
+  change during the run; a continuation and a recovered record read them
+  from the run row's crew JSON. Editing the saved crew's people never
+  changes a live run (the Program's stable-plan rule): the next launch
+  takes the edit.
+- **One owner rule, one label rule.** `TaskOwner` is the only function
+  that says who owns a task (the task file, the run's state and the
+  person's work call it), and `Holder` the only one that says whom a
+  label names (the proposal's check, a gate, an agent's request and a
+  route call it), so no two views disagree.
+- **A label resolves once, and is kept.** A decision's `for` resolves in
+  the transaction that opens it (a gate's in `CreateRun`'s, an agent's
+  in `RequestDecision`'s), against the run's crew as launched, which for
+  a launch from a ticket is the revision's crew byte for byte; the
+  request keeps the person it named, written before the commit and
+  before anyone is told. A continuation carries the record as DR1
+  carries it and resolves nothing again; a later edit of the saved crew
+  changes nothing about it. An answer records the actor that answered
+  and the label it answered for, side by side; in the open-source build
+  the operator (the admin grant, DR1's `local/1`) answers any label
+  (decision D4), and the rechecks at response and application are DR1's
+  (state, revision, subject, policy, membership); HM1 adds none, since
+  the label it recorded cannot change inside the run.
+- **Migration.** None to run: a crew file without `people` reads as
+  none, a run record without them reads as none, a revision without
+  `for` reads as none, and none of them is written again to add the
+  field (the conservative-migration rule). An older Conductor decodes
+  the crew store's files and the run records strictly
+  (`store.DecodeStrict`), so it treats a crew file or a run record that
+  holds `people` or `owner` as unreadable and leaves it out of its lists,
+  touching nothing on disk; a newer one reads them again. Every field
+  added to these files so far has behaved so, and the features entry
+  says it.
+- **Conflicts.** None in HM1: crews are not replicated, and a revision's
+  body is immutable. CS1, which replicates DR1's records, carries `for`
+  and `assignee` as written.
+
 ## Out of scope
 
 - A durable record for questions outside managed runs (a plain session's
@@ -875,6 +1244,27 @@ commit.
   section 1.5).
 - Live plan revision and member resume of a managed run: still refused
   (`409 managed_run`).
+
+### HM1, human members
+
+- A crew task done by a person (a task row whose doer is a person, with
+  attempts and a result): a person's work is an assignment decision for
+  them (PR-12), which DR1 already holds and applies, and a person's
+  review of a candidate is RV1's (`docs/plans/review-repair.md`).
+- Authenticated people, a person bound to a principal, domain roles past
+  the four, several holders of one responsibility, groups, quorum,
+  delegation and escalation: SW1 and ID1 (decision D4).
+- Routing a session's ordinary question to a label, and Brakeman's
+  `route_decision` to one (its PR-18, which calls PR-12's destinations);
+  Switchman's team routing (SW1). The free router's empty route is
+  unchanged.
+- Notifying a person: there is no one to notify but the operator until
+  identity exists; the notifications stay DR1's and MB0's.
+- Adding a crew's names to Dispatch's directory, or Dispatch's names to
+  crews: the two stores stay apart and `GET /api/people` reads both.
+- People added to a live run, and editing a run's people: a managed run
+  keeps refusing a member change (`409 managed_run`), and a person change
+  is the same kind of change.
 
 ## Tests per surface
 
@@ -1007,6 +1397,76 @@ turn, and takes the typed answer as the person's; and the run page's card
 read by a person on the desktop app and a phone's browser on the LAN
 (MB0's page is MB0's check).
 
+### HM1, human members
+
+**Go, race** (`go test -race -count=1 -timeout 30m ./...`, `make lint`,
+`make lint-static`):
+
+- `internal/crew`: `TestValidateTakesPeople` (four responsibilities, a
+  task owner, a crew with start rules and people);
+  `TestValidateRefusesBadPeople` (a table: thirteen people, a name of 61
+  characters, a control character, a name used twice, a person named as a
+  member, an unknown responsibility, one held twice, one held by two
+  people, a note of 501 characters, a task owner not in the crew);
+  `TestTaskOwnerFallsBackToTheAcceptanceOwner`;
+  `TestAPersonIsNeverStarted` (a crew of two members and three people
+  launched, managed and not: the fake sessions made are the members'
+  attempts only, no worktree under the people's names, the reservations
+  counted for members only); `TestTheRunsPeopleAreTheLaunchs` (the saved
+  crew edited after launch; the run, its recovered record and its
+  continuation keep the launch's people and owners);
+  `TestTaskFileNamesWhoAnswers` (a new golden) and the existing goldens
+  unchanged for a crew without people; `TestStoreRoundTripsPeople` and a
+  legacy crew's JSON unchanged.
+- `internal/api`: `TestCrewRoutesCarryPeople`, `TestRunRoutesCarryOwners`,
+  `TestPeopleIsTheUnionOfTheStores` (a name in Dispatch only, in a crew
+  only, in both; Dispatch unavailable), `TestAPersonsWork` (tasks owned in
+  two runs, owned by fallback, tickets counted, `404` for an unknown
+  name, the bound of 200 with `more`), `TestPersonNameBoundIsDispatchs`.
+- PR-12: `internal/dispatch` `TestPlanDecisionFor` (the shape, an
+  older body's digest unchanged, the `assignment` kind); `internal/crew`
+  `TestAGateNamesItsLabel` (the request's `for`, the `routed` row, both
+  in `CreateRun`'s transaction), `TestALabelResolvesFromTheCrewAsLaunched`
+  (the saved crew edited after approval, and a continuation: the record's
+  person unchanged), `TestAnAgentsLabelNoPersonHoldsIsRefused`,
+  `TestAnAssignmentGateForAPerson` (Done releases, Not done cancels, as
+  DR1's gate does), `TestRouteDecisionToAPersonAndARole`;
+  `internal/crew/ledger` `TestDecisionsFilterByPerson`; `internal/api`
+  `TestTheOperatorAnswersForALabel` (the receipt's `actor` `admin` and
+  `for` nate, architecture), `TestProposalRefusesALabelTheCrewLacks`,
+  `TestAPersonsDecisions`; `internal/cli` `--for`, `--decision-for` and
+  the tool schema golden (`testdata/tools-list-main.json`);
+  `internal/agents` the skill's sentence.
+
+**vitest** (`npm --prefix web run typecheck`, `npm --prefix web test`):
+`utils/crews.test.ts` (`peopleProblems`, `toCrewInput` with people,
+`ownersFollowPeople`, `ownerOf`), `utils/palette.test.ts` (people in the
+`@` mode), and in PR-12 the "for" words in DR1's `utils/decisions.test.ts`.
+
+**Playwright** (`make test-e2e`, the specs alone first):
+`crew-people.spec.ts` (new): a crew given an architecture owner and an
+acceptance owner saved, read back after a reload, the second
+responsibility holder refused in the editor and by the server; launched
+with the stub worker: the header's people, each task row's owner and the
+fallback's words, the sessions of the run counted by its id equal to the
+attempts (none for a person), the person's page listing their tasks, the
+palette's `@` row opening it. `tasks-editor.spec.ts`, `tasks.spec.ts`
+and `dispatch-plan.spec.ts` unchanged and green. PR-12:
+`decisions-people.spec.ts`: a plan revision whose approval is `for:
+role:architecture` before `build` and whose assignment is `for:
+person:ana` before `docs`, launched; the gates hold both tasks; the card
+says "for nate, the architecture owner"; the operator approves and the
+receipt's words say for whom; `build` starts; ana's page lists her
+assignment until it is answered Done, and `docs` then starts; DR1's
+`decisions.spec.ts` and `decisions-gate.spec.ts` unchanged and green.
+
+**Scripts, desktop:** not touched.
+
+**By hand**, what the tests cannot show: a real agent (Claude Code or
+Codex) reading "Who answers for this work" in its task file and asking
+for the architecture owner's decision by its responsibility, not by
+typing in the terminal; the person's page on a phone on the LAN.
+
 ## Boxcar constraints
 
 1. The engine starts an attempt only through `crew.Launcher`: honoured; a
@@ -1036,6 +1496,27 @@ read by a person on the desktop app and a phone's browser on the LAN
    peer only shares the session package's refusal of an answer to a
    decision's question.
 
+### HM1, human members
+
+1. **Attempts only through `crew.Launcher`.** Honoured: a person is
+   started by nothing; the launcher's callers are unchanged.
+2. **`session.Local` drives a `session.Process`.** Not touched: no
+   session code changes.
+3. **An attempt's context is files under its worktree.** Honoured: the
+   owner and the people go into `.conductor/task.md` and `task.json`,
+   written through the `os.Root` as today; nothing an attempt needs about
+   people lives only in the server's memory.
+4. **The agent reaches the server over the network.** Honoured: the one
+   thing an agent sends about people, `decision_request`'s `for`, goes
+   over DR1's HTTP route with `CONDUCTOR_NOTIFY_TOKEN`.
+5. **Checks through `internal/proc`, with where they ran.** Not touched.
+6. **Platform splits stay platform tags; capabilities, never plans.** Not
+   touched: no platform code, and nothing is shown by plan.
+7. **Evidence rows carry `where`.** Not touched: HM1 adds no evidence
+   row; a decision's receipt is DR1's.
+8. **`hostagent` is a launch site too.** Not touched: a person launches
+   nothing on a server or a host.
+
 ## Open-core checklist
 
 - [x] Article 1: no premium code and no licence check; the router slot is
@@ -1048,6 +1529,19 @@ read by a person on the desktop app and a phone's browser on the LAN
       whatever is registered or reachable; stop, inspect (`GET
       /api/decisions/{id}`), revoke and export are untouched or extended,
       and none can lapse.
+
+### HM1, human members
+
+- [x] Article 1, no premium code or licence check: people, owners and
+  labels are plain open-source data; no provider is asked.
+- [x] Article 2, the free build useful alone: a crew's owners and a gate
+  answered for a person work with no account.
+- [x] Article 3, paid features gated by hosted dependencies: the
+  authenticated layer is SW1's and ID1's, behind their interfaces; HM1
+  adds no flag a fork could flip.
+- [x] Article 4, required approvals free and never degraded: a gate
+  naming a person still needs the operator's answer with the control
+  role, and the crew's people are exported with its file.
 
 ## The PRs
 
@@ -1133,6 +1627,53 @@ palette rows, `DispatchDecisions.vue`; the stub worker's
 entry (what shipped, the tests, and the acceptance observation once it is
 made).
 
+### HM1, human members
+
+HM1's PRs are numbered after DR1's. PR-9 to PR-11 need only `main` and
+may be cut at any time, before, between or after DR1's; they share
+`internal/crew`, `internal/api` and `web/app` with DR1's PR-2 to PR-7,
+so none runs beside those, and whichever of two such PRs merges second
+merges `main` in first. PR-12 waits for all of DR1. Brakeman's PR-18
+(`docs/plans/brakeman.md`) waits for PR-12.
+
+| PR | Title | Touches | Depends on | May run beside | Size |
+|---|---|---|---|---|---|
+| PR-9 | crew, api: people in a crew, a task's owner, the run's people, the task file's "Who answers", `GET /api/people` | `internal/crew`, `internal/api`, `docs` | none (main) | PR-6 | ~1,100 |
+| PR-10 | web: the crew editor's People and Owner, the run page's people and owners, the revision's people | `web/app`, `web/e2e` | PR-9 | PR-1, PR-2, PR-3, PR-6 | ~900 |
+| PR-11 | api, web: a person's work, the people page, the palette's `@` people | `internal/api`, `web/app`, `web/e2e`, `docs` | PR-10 | PR-2, PR-3, PR-6 | ~800 |
+| PR-12 | dispatch, crew, ledger, api, cli, agents, web: whom a decision is for, an assignment for a person, the operator's answer for them, the features entry | `internal/dispatch`, `internal/crew`, `internal/crew/ledger`, `internal/api`, `internal/cli`, `internal/agents`, `web/app`, `web/e2e`, `docs` | PR-11, PR-8 (all of DR1) | none | ~1,300 |
+
+**PR-9** (`internal/crew`, `internal/api`, `docs/protocol.md`): `Person`,
+the responsibilities and their words, `Task.Owner`, `checkPeople` and the
+task-text count, `TaskOwner`, `Run.People` and the tasks' owners from the
+crew as launched (the launch, `Recovered`, `ContinueRun`), the task
+file's section, the crew and run routes' fields, `GET /api/people`, the
+protocol rows. Go only. Tests: the `internal/crew` tests and the
+`internal/api` tests above but `TestAPersonsWork`.
+
+**PR-10** (`web/app`, `web/e2e`): `CrewPeopleTable.vue`,
+`PersonPicker`'s `names` prop and `usePeople`, the Owner column, the
+editor's section, `utils/crews.ts`'s functions, the run header's chips,
+`RunTasks.vue`'s owner, `DispatchPeople.vue`'s revision people. UI only.
+Tests: `crews.test.ts`; `crew-people.spec.ts` without the person's page.
+
+**PR-11** (`internal/api`, `web/app`, `web/e2e`, `docs/protocol.md`):
+`GET /api/people/{name}` and its row, `pages/people/[name].vue`, the
+chips' links, the palette's `@` people. Go and UI. Tests:
+`TestAPersonsWork`, `palette.test.ts`, the person's page and the palette
+row in `crew-people.spec.ts`.
+
+**PR-12** (`internal/dispatch`, `internal/crew`, `internal/crew/ledger`,
+`internal/api`, `internal/cli`, `internal/agents`, `web/app`, `web/e2e`,
+`docs`), once DR1's PR-8 has merged: `PlanDecision.For` and the
+`assignment` kind, the proposal's check, the CLI's flags, the gate's and
+the request's `for` resolved in their transactions, `RouteDecision`'s
+`person` and `role`, the receipt's `for`, the ledger filter, the routes'
+`for`, the person's decisions, the tool schema and the skill's sentence,
+the cards' words; the features entry, the repository map and the
+architecture. Go and UI. Tests: the PR-12 tests above and
+`decisions-people.spec.ts`.
+
 ## Owner decisions
 
 Dated 2026-11-05. Each is a default the owner may overturn with a row in
@@ -1201,6 +1742,46 @@ not choose (the Program, section 3.1).
     the first, so the history shows both and the answer binds to the
     second.
 
+### HM1, human members
+
+Dated 2026-11-05; defaults the owner can overturn with a row in the
+Program's status log (the Program, section 3.1).
+
+17. **One plan with DR1.** The Program gives DR1 and HM1 the same plan
+   path; HM1's part sits under DR1's in each section and its PRs follow
+   DR1's. HM1 resolves no open decision: O4 (human policy) blocks SW1 and
+   O10 (Dispatch's conflict rules) blocks CS1, and neither is needed for
+   a local label (decision D4).
+18. **People are a list of their own, never members.** A person in
+   `Members` would need an `AgentID` and a start rule and would pass
+   through every launch loop; a separate list makes "never started" true
+   by construction.
+19. **Four responsibilities, closed, one holder each per crew.** The four
+   the Program names, so a gate's label always names one person in the
+   open-source build (the single approver); more roles, several holders
+   and groups are SW1's.
+20. **A task's owner falls back to the crew's acceptance owner.** A task
+   with no owner of its own is owned by whoever accepts the crew's work;
+   computed, never stored, so changing the acceptance owner before the
+   next launch changes it.
+21. **The names are shared by reading.** `GET /api/people` is the union of
+   Dispatch's directory and the crews' people, and neither store writes
+   the other: a cross-store write would need a second receipt for one
+   save, and a typed name is still offered everywhere.
+22. **A person's work is an assignment, not a task row.** A person owns
+   tasks, answers decisions, does assignments (DR1's `assignment` type,
+   declared in a plan revision for them) and, with RV1, reviews; a crew
+   task whose doer is a person would need attempts and results the engine
+   cannot ask of a person, so none is added.
+23. **The operator answers for any label.** Decision D4's single approver
+   under DR1's `local/1`; the receipt keeps who answered and for whom
+   apart, so ID1 and SW1 can later let the person answer for themselves
+   as a new policy revision.
+24. **A label is resolved and recorded when the decision opens**, in the
+   request JSON DR1 keeps, with no ledger column: one person per label
+   in this build, and the person's page reads it through a filter on
+   that JSON.
+
 ## Acceptance
 
 The boundary (the Program, section 4.3, DR1): one authorized person
@@ -1246,3 +1827,31 @@ merges; setting the item's Status to Planned on approval, In progress at
 PR-1 and Done once the observation is recorded; and, if the owner wants
 it, the observation on the Windows desktop app, which is the owner's
 machine.
+
+### HM1, human members
+
+The boundary (the Program, section 4.3, HM1), in this plan's words: a
+person is in a crew as its architecture owner, and a gate for that
+responsibility is answered by the operator on the person's behalf.
+Observed by hand on the open-source build with no account (a plain
+build of this repository, nothing registered), with a real agent, on the
+server and from a phone on the LAN:
+
+1. In the crew editor, add a person (nate) holding architecture owner and
+   another (ana) holding acceptance owner; save; reload: both read back.
+2. Propose and approve a plan revision of a Dispatch ticket from that
+   crew, with a decision `schema` of kind approval `for: role:
+   architecture` before `build`; launch it.
+3. The run's header lists nate and ana with their words; `build`'s row
+   says its owner; the sessions list and `.conductor/worktrees/<run>/`
+   hold nothing for either person.
+4. The gate holds `build`; the decision views and nate's page say "for
+   nate, the architecture owner".
+5. Answer it as the operator; the receipt says by the operator, for nate;
+   `build` starts; nate's page no longer lists it.
+
+Done means those five observed and recorded in the features entry, with
+PR-9 to PR-12 merged and green and every defect the check finds fixed in
+the stream (AGENTS.md). The owner reviews this plan and its
+decisions, and either observes the check or reads its record; the rest is
+the agents'.
