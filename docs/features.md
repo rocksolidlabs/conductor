@@ -292,8 +292,11 @@ open deferred item from rounds 1 and 2, then the features below.
   `collapsed` on the page's `TabsState` (`web/app/utils/editorTabs.ts`), so
   it lasts the page and nothing keeps it per browser; T and Alt+T fold the
   editor as ever and clear it, as the last tab's close does. Collapsed, the
-  terminal stays mounted and connected and asks no resize, its pane having
-  no height, and fits its pane again as it comes back. While a question
+  terminal stays mounted and connected and asks no resize, its pane and its
+  host having no height (a phone's folded host keeps its 12rem), and fits
+  its pane again as it comes back; the focus is never left in it (the bar
+  takes it, as when the palette opened in the terminal closes), so no key
+  typed reaches the agent out of sight. While a question
   waits the reply bar stays under the folded terminal's bar, a phone's too,
   which hid it before. A phone, where the terminal folds by itself, is
   offered neither the button nor the row. Beside Open plan the reply bar
@@ -301,7 +304,8 @@ open deferred item from rounds 1 and 2, then the features below.
   page, the Yard's focused tile and a join page: it opens the plan's tab, or
   brings it to the front, rendered whatever it showed, unfolds the editor
   and gives the preview the focus (`openPreview`), the terminal left as it
-  was; Source or Alt+P shows the editable source. Below `sm` both plan
+  was; from Compare after a refused save it goes back to the edits first, as
+  Back to editing does. Source or Alt+P shows the editable source. Below `sm` both plan
   buttons are icons alone. No key was added.
 - **Example crews.** `conductor serve --examples` (env `CONDUCTOR_EXAMPLES` set
   to `1` or `true`) seeds example crews once: ids `example-todo-app`,

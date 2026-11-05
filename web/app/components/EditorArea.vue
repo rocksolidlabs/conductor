@@ -458,12 +458,18 @@ function togglePreviewOf() {
   void nextTick(() => (previewing.value ? previewRef.value?.focus() : editorRef.value?.focus()))
 }
 // A tab opened as a preview (Preview plan, #432) gives its preview the focus once it shows; a tab with nothing to render lets it go.
+// One showing Compare (a save refused, the file changed on disk) leaves it first, as Back to editing does: the unsaved edits stay,
+// and so does the conflict's bar, Save anyway and Reload with it.
 const phone = useIsPhone()
 watch(
-  () => [active.value?.takeFocus, previewing.value, previewRef.value, view.value?.state] as const,
-  ([take, on, preview, state]) => {
+  () => [active.value?.takeFocus, previewing.value, previewRef.value, view.value?.state, !!activeCompare.value] as const,
+  ([take, on, preview, state, comparing]) => {
     const t = active.value
     if (!take || !t) return
+    if (comparing) {
+      compare.value = null
+      return
+    }
     if (on && preview) preview.focus()
     else if (on || state === 'loading' || state === undefined) return
     tabs.value = takeFocus(tabs.value, t.id)

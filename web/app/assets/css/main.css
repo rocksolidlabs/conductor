@@ -112,8 +112,9 @@ html, body, #__nuxt {
 }
 
 /* Folded in the editor column (h-0: a phone with a file open), the host keeps the least height it always had, out of sight, as #189
-   left it; a scaled view keeps none, as before. */
-[data-terminal-slot="folded"] .terminal-host:not(.terminal-scale) {
+   left it; a scaled view keeps none, as before. Collapsed by the person wider (#432) it keeps none either: a host with no height
+   measures no size, so the fit asks no resize and the agent's screen keeps its cols and rows until the terminal comes back. */
+[data-terminal-slot="folded"]:not([data-terminal-collapsed]) .terminal-host:not(.terminal-scale) {
   min-height: 12rem;
 }
 
