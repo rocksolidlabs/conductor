@@ -2,8 +2,8 @@
 import type { PlanSummary } from '~/composables/useDispatch'
 import type { BrakemanRequest, BriefItem, RefResolution } from '~/utils/brakeman'
 import { displayBy, parseRef, refRoute } from '~/utils/brakeman'
-import { makeAgain, madeWords } from '~/utils/brakemanCards'
-import { PLAN_BOUNDS, revisionTag } from '~/utils/dispatchPlans'
+import { draftPlanProblem, makeAgain, madeWords } from '~/utils/brakemanCards'
+import { revisionTag } from '~/utils/dispatchPlans'
 import { ApiError } from '~/composables/useApi'
 
 /**
@@ -74,13 +74,7 @@ const edit = computed(() => {
   if (x.from?.length) out.from = x.from
   return out
 })
-const problem = computed(() => {
-  if (!crew.value.trim()) return 'A plan revision runs a saved crew with tasks: name its id.'
-  if (new TextEncoder().encode(constraints.value).length > PLAN_BOUNDS.constraints) return `The constraints are at most ${PLAN_BOUNDS.constraints >> 10} KiB.`
-  if (new TextEncoder().encode(note.value).length > PLAN_BOUNDS.note) return `The note is at most ${PLAN_BOUNDS.note >> 10} KiB.`
-  if (questions.value.some((q) => new TextEncoder().encode(q).length > PLAN_BOUNDS.decisionQuestion)) return `A decision's question is at most ${PLAN_BOUNDS.decisionQuestion} bytes.`
-  return ''
-})
+const problem = computed(() => draftPlanProblem({ crew: crew.value, constraints: constraints.value, note: note.value, questions: questions.value }))
 
 /** The revision it became, as Dispatch lists it now: read once it is made, and from the make's answer. */
 const revision = ref<PlanSummary | null>(null)

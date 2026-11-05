@@ -918,18 +918,18 @@ export function refTicket(ref: string): string {
 }
 
 /**
- * The act Brakeman ran for a proposal, when it ran one: its request's act of the proposal's operation on the proposal's ticket (an act's
- * target is its ticket; the proposal's a ticket: or a plan: of it), the one whose opId the proposal's arguments name when they name one,
- * else the latest. An act not run (refused before its operation, the server stopped first) is still the proposal's: the card says so.
- * Undefined when Brakeman ran none, which leaves the proposal a proposal.
+ * The act Brakeman ran for a proposal, when it ran one: the request's act whose opId the proposal's arguments name (`args.opId`, as the
+ * guide asks of a proposal of an act it ran), of the proposal's operation on the proposal's ticket (an act's target is its ticket; the
+ * proposal's a ticket: or a plan: of it). Nothing weaker ties them: two proposals of one operation on one ticket (two revisions, two
+ * follow-ups) are told apart only by the act each names, so a proposal that names none, or names an opId of no such act, stays a
+ * proposal, whatever else Brakeman ran. An act not run (refused before its operation, the server stopped first) is still the
+ * proposal's: the card says so.
  */
 export function actFor(p: Extract<BriefItem, { kind: 'proposal/1' }>, acts: readonly BrakemanAct[] | undefined): BrakemanAct | undefined {
   const ticket = refTicket(p.target)
-  if (!ticket || !acts?.length) return undefined
-  const mine = acts.filter((a) => a.operation === p.op && refTicket(a.target) === ticket)
-  const named = typeof p.args?.opId === 'string' ? mine.find((a) => a.opId === p.args!.opId) : undefined
-  if (named) return named
-  return mine.reduce<BrakemanAct | undefined>((last, a) => (!last || (a.at ?? '') >= (last.at ?? '') ? a : last), undefined)
+  const opId = typeof p.args?.opId === 'string' ? p.args.opId : ''
+  if (!ticket || !opId || !acts?.length) return undefined
+  return acts.find((a) => a.opId === opId && a.operation === p.op && refTicket(a.target) === ticket)
 }
 
 /** What a proposal Brakeman ran says of the act: done with its receipt, under way, refused with the words, or never run. */
@@ -968,4 +968,13 @@ export function withGrant(act: readonly string[] | undefined, op: string, on: bo
  */
 export function servedGrants(ops: ReadonlyArray<{ name: string; scope?: string }> | null): Set<string> | null {
   return ops ? new Set(ops.filter((o) => o.scope === 'act' && o.name !== 'act').map((o) => o.name)) : null
+}
+
+/**
+ * Whether Settings' switch for the grant `op` is held still: only turning a grant on is, while the guide is unread or its read failed
+ * (`served` null) or for a grant this server serves no route of. A grant that is on can always be turned off, whatever the guide: taking
+ * a grant away is its revoke, which needs nothing the guide says and never waits on a read (the Program's article 4).
+ */
+export function grantHeld(served: ReadonlySet<string> | null, on: boolean, op: string): boolean {
+  return !on && (!served || !served.has(op))
 }

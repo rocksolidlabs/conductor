@@ -15,6 +15,17 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // read by their ids, every wait on what the page or the store must reach.
 test.describe.configure({ mode: 'serial' })
 
+// A test's waits fit in its timeout (AGENTS.md): each step raises the test's timeout by the caps of the waits it is about to make
+// (budget, as palette-rows.spec.ts does), so the timeout is their sum, with the config's 120 s above it for what happens between them
+// (the API's calls, a page's load). A wait without a bound of its own (an expect, an expect.poll, a click, a fill) has STEP_MS.
+const STEP_MS = 15_000
+test.use({ actionTimeout: STEP_MS })
+/** Raises the running test's timeout by `ms`, the caps of the waits the step is about to make. */
+function budget(ms: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + ms)
+}
+
 interface Act {
   opId: string
   operation: string
@@ -121,6 +132,7 @@ async function ticketRev(): Promise<number> {
 }
 /** What the stub wrote of its act once it ran it: taken or refused, then the command's words. */
 async function actOut(): Promise<string> {
+  budget(60_000)
   await expect.poll(() => existsSync(`${actFile}.out`), { timeout: 60_000 }).toBe(true)
   return readFileSync(`${actFile}.out`, 'utf8')
 }
@@ -133,14 +145,16 @@ async function grant(act: string[]) {
 
 /**
  * One turn: what it acts on and the brief it submits written, its gate shut until then, then the request asked and the turn let through;
- * answers the request once briefed. The brief proposes the launch it acts on, at the ticket's revision the turn reads.
+ * answers the request once briefed. The act's id is `actId`, and the brief proposes the launch it acts on, at the ticket's revision the
+ * turn reads, naming that act (args.opId), as the guide asks of a proposal of an act Brakeman ran.
  */
-async function turn(opId: string): Promise<string> {
+async function turn(opId: string, actId: string): Promise<string> {
+  budget(120_000 + 60_000)
   rmSync(gate, { force: true })
   rmSync(`${actFile}.out`, { force: true })
   const rev = await ticketRev()
   writeFileSync(actFile, `launch_approved_plan ${KEY}\n`)
-  writeFileSync(`${actFile}.body`, JSON.stringify({ plan: planId, expectedRev: rev }))
+  writeFileSync(`${actFile}.body`, JSON.stringify({ plan: planId, expectedRev: rev, opId: actId }))
   writeFileSync(
     briefFile,
     JSON.stringify({
@@ -149,7 +163,7 @@ async function turn(opId: string): Promise<string> {
       summary: 'Revision 1 is approved and its approval holds: it can be launched.',
       items: [
         { kind: 'fact/1', text: `Revision 1 of ${KEY} is approved.`, evidence: [`ticket:${KEY}`] },
-        { kind: 'proposal/1', text: 'Launch revision 1.', op: 'launch_approved_plan', target: `ticket:${KEY}`, expectedRevision: String(rev), args: { plan: planId }, facts: [0] },
+        { kind: 'proposal/1', text: 'Launch revision 1.', op: 'launch_approved_plan', target: `ticket:${KEY}`, expectedRevision: String(rev), args: { plan: planId, opId: actId }, facts: [0] },
       ],
     }),
   )
@@ -162,9 +176,8 @@ async function turn(opId: string): Promise<string> {
 }
 
 test('granted in Settings, Brakeman launches the approved revision, and the brief and the run page show its receipt', async ({ page }) => {
-  // Two turns' worth of waits (the slot, the brief), the page's own bounded waits after them.
-  test.setTimeout(300_000)
-  // The grant, in Settings, with what it authorizes in words.
+  // The grant, in Settings, with what it authorizes in words: one wait of 30 s, then six steps and the poll of the saved grant.
+  budget(30_000 + 7 * STEP_MS)
   await open(page, '/settings')
   const g = page.locator('[data-brakeman-grant="launch_approved_plan"]')
   await expect(g).toHaveAttribute('data-grant-served', 'true', { timeout: 30_000 })
@@ -178,15 +191,17 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
   await page.locator('[data-brakeman-save]').click()
   await expect.poll(async () => (await api.ok<{ config: { permissions: { act?: string[] } } }>('GET', '/api/brakeman')).config.permissions.act).toEqual(['launch_approved_plan'])
 
-  const id = await turn('bka-ask-1')
-  expect(await actOut()).toMatch(/^taken\nlaunch_approved_plan ran \(opId [0-9a-f]{16}\): receipt [0-9a-f]{16}, done; run \S+ launched/)
+  const id = await turn('bka-ask-1', 'bka-act-1')
+  expect(await actOut()).toMatch(/^taken\nlaunch_approved_plan ran \(opId bka-act-1\): receipt [0-9a-f]{16}, done; run \S+ launched/)
   const acts = (await request(id)).acts ?? []
   expect(acts).toHaveLength(1)
-  expect(acts[0]).toMatchObject({ operation: 'launch_approved_plan', target: `ticket:${KEY}`, state: 'done' })
+  expect(acts[0]).toMatchObject({ opId: 'bka-act-1', operation: 'launch_approved_plan', target: `ticket:${KEY}`, state: 'done' })
   const launch = (await api.ok<{ launch: Launch }>('GET', `/api/dispatch/launches/${acts[0]!.receipt}`)).launch
   runs.push(launch.runId)
   expect([launch.createdBy, launch.state]).toEqual(['Brakeman', 'started'])
 
+  // The brief and the run page: five waits of 30 s and eight steps.
+  budget(5 * 30_000 + 8 * STEP_MS)
   await open(page, `/brakeman?request=${id}`)
   const p = page.locator(`[data-brief="${id}"] [data-proposal-op="launch_approved_plan"]`)
   await expect(p).toHaveAttribute('data-proposal-act', 'done', { timeout: 30_000 })
@@ -210,18 +225,19 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
 })
 
 test('with the grant taken away, the act is refused and kept nowhere, and the proposal is a proposal only', async ({ page }) => {
-  test.setTimeout(300_000)
   await grant([])
   const entries = async () => (await api.ok<{ entries?: unknown[] }>('GET', `/api/dispatch/tickets/${KEY}/runs`)).entries?.length ?? 0
   const before = await entries()
   expect(before).toBe(1)
-  const id = await turn('bka-ask-2')
+  const id = await turn('bka-ask-2', 'bka-act-2')
   const out = await actOut()
   expect(out).toMatch(/^refused\n/)
   expect(out).toContain('not_granted')
   expect((await request(id)).acts ?? []).toHaveLength(0)
   expect(await entries()).toBe(before)
 
+  // The brief: one wait of 30 s and three steps.
+  budget(30_000 + 3 * STEP_MS)
   await open(page, `/brakeman?request=${id}`)
   const p = page.locator(`[data-brief="${id}"] [data-proposal-op="launch_approved_plan"]`)
   await expect(p.locator('[data-proposal-text]')).toContainText("ticket's Plan section", { timeout: 30_000 })

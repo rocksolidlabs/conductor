@@ -1,6 +1,6 @@
 import type { BrakemanBrief, BrakemanConfig, BrakemanRequest, BrakemanState, RefResolution } from '../utils/brakeman'
 import { closed, keptBrief, openedMark, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
-import { dropKeptMake, readKeptMakes, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
+import { dropKeptMake, readKeptMakes, reconcileActs, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
 import type { DispatchWatch } from './useDispatchLive'
@@ -110,13 +110,14 @@ export class BrakemanLive {
   /**
    * Takes a request as a reply gave it, unless the page has it further along already or the reply was sent before a reset (`at`); its
    * makes and edges are reconciled with the page's (reconcileMade), since replies to two cards' makes of one request can arrive in
-   * either order.
+   * either order, and so are its acts (reconcileActs), whose outcome may come after its brief, so that two reads of one briefed
+   * request answered out of order never take a done act back to pending.
    */
   apply(r: BrakemanRequest, at = this.gen) {
     if (at !== this.gen) return
     const had = this.requests.get(r.id)
     if (had && stateRank(r.state) < stateRank(had.state)) return
-    this.requests.set(r.id, had ? { ...r, ...reconcileMade(had, r) } : r)
+    this.requests.set(r.id, had ? { ...r, ...reconcileMade(had, r), ...reconcileActs(had, r) } : r)
     this.changed()
   }
 

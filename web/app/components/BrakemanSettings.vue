@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/brakeman'
-import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, configProblems, formField, formMove, sameConfig, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
+import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, configProblems, formField, formMove, sameConfig, grantHeld, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
 import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
 
@@ -232,7 +232,7 @@ async function save() {
             :model-value="form.permissions.act?.includes(g.value) ?? false"
             :label="g.label"
             :description="served && !served.has(g.value) ? `${g.words} Not in this build: nothing serves it yet.` : g.words"
-            :disabled="!served || (!served.has(g.value) && !form.permissions.act?.includes(g.value))"
+            :disabled="grantHeld(served, form.permissions.act?.includes(g.value) ?? false, g.value)"
             :data-brakeman-grant="g.value"
             :data-grant-served="served ? served.has(g.value) : undefined"
             @update:model-value="(on: boolean) => grant(g.value, on)"

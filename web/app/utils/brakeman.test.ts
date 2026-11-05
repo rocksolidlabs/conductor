@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
-import { BOUNDS, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actReceiptRef, actWords, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, formMove, grantLabel, groupItems, keptBrief, kindWords, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actReceiptRef, actWords, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -432,22 +432,51 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
     expect(served.has('request_repair')).toBe(false)
   })
 
+  it('let a grant that is on be turned off whatever the guide, even unread or failed, and turned on only when the guide serves it', () => {
+    const served = servedGrants([{ name: 'launch_approved_plan', scope: 'act' }])
+    // The guide unread, or its read failed: a grant on can be turned off and saved without it; one off cannot be turned on.
+    expect(grantHeld(null, true, 'launch_approved_plan')).toBe(false)
+    expect(grantHeld(null, false, 'launch_approved_plan')).toBe(true)
+    expect(withGrant(['launch_approved_plan'], 'launch_approved_plan', false)).toEqual([])
+    // Read: a served grant either way; one not served only off, once on.
+    expect(grantHeld(served, false, 'launch_approved_plan')).toBe(false)
+    expect(grantHeld(served, true, 'launch_approved_plan')).toBe(false)
+    expect(grantHeld(served, false, 'request_repair')).toBe(true)
+    expect(grantHeld(served, true, 'request_repair')).toBe(false)
+  })
+
   const proposal = (op: string, target: string, args?: Record<string, unknown>): Extract<BriefItem, { kind: 'proposal/1' }> => ({ kind: 'proposal/1', text: 'Launch it.', op, target, args, expectedRevision: '3' })
   const act = (over: Partial<BrakemanAct>): BrakemanAct => ({ opId: 'a1', operation: 'launch_approved_plan', target: 'ticket:CND-4', op: 'bk' + '0'.repeat(30), state: 'done', receipt: '0123456789abcdef', at: '2026-11-05T10:00:00Z', ...over })
 
-  it("finds the act Brakeman ran for a proposal: its operation on the proposal's ticket, the one its args name, else the latest", () => {
+  it("finds the act Brakeman ran for a proposal by the opId the proposal names: its operation on the proposal's ticket, and no other", () => {
     const acts = [act({ opId: 'a1', at: '2026-11-05T10:00:00Z' }), act({ opId: 'a2', at: '2026-11-05T10:05:00Z', receipt: 'fedcba9876543210' }), act({ opId: 'f1', operation: 'prepare_followup', receipt: '1111111111111111' })]
-    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4'), acts)?.opId).toBe('a2')
-    expect(actFor(proposal('launch_approved_plan', 'plan:CND-4/2'), acts)?.opId).toBe('a2')
     expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4', { opId: 'a1' }), acts)?.opId).toBe('a1')
-    expect(actFor(proposal('prepare_followup', 'plan:CND-4/1'), acts)?.opId).toBe('f1')
-    // Not run for this proposal: another ticket, another operation, no acts, a target of no ticket.
-    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-5'), acts)).toBeUndefined()
-    expect(actFor(proposal('ticket_edit', 'ticket:CND-4'), acts)).toBeUndefined()
-    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4'), undefined)).toBeUndefined()
-    expect(actFor(proposal('run_pause', `run:${RUN}`), acts)).toBeUndefined()
+    expect(actFor(proposal('launch_approved_plan', 'plan:CND-4/2', { plan: '0123456789abcdef', opId: 'a2' }), acts)?.opId).toBe('a2')
+    expect(actFor(proposal('prepare_followup', 'plan:CND-4/1', { opId: 'f1' }), acts)?.opId).toBe('f1')
+    // Named by no opId, or by one of no act of its operation on its ticket: a proposal, though Brakeman ran another of the same kind there.
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4'), acts)).toBeUndefined()
+    expect(actFor(proposal('launch_approved_plan', 'plan:CND-4/2', { plan: '0123456789abcdef' }), acts)).toBeUndefined()
+    expect(actFor(proposal('prepare_followup', 'plan:CND-4/1', { opId: 'never-ran' }), acts)).toBeUndefined()
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4', { opId: 'f1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-5', { opId: 'a1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4', { opId: 7 }), acts)).toBeUndefined()
+    // Not run for this proposal: another operation, no acts, a target of no ticket.
+    expect(actFor(proposal('ticket_edit', 'ticket:CND-4', { opId: 'a1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4', { opId: 'a1' }), undefined)).toBeUndefined()
+    expect(actFor(proposal('run_pause', `run:${RUN}`, { opId: 'a1' }), acts)).toBeUndefined()
     expect(refTicket('comment:CND-4/00112233aabbccdd')).toBe('CND-4')
     expect(refTicket(`run:${RUN}`)).toBe('')
+  })
+
+  it('tells two proposals of one operation on one ticket apart: only the one Brakeman ran is done', () => {
+    const acts = [act({ opId: 'r1', receipt: '0123456789abcdef' })]
+    const ran = proposal('launch_approved_plan', 'plan:CND-4/1', { plan: '0123456789abcdef', opId: 'r1' })
+    const other = proposal('launch_approved_plan', 'plan:CND-4/2', { plan: 'fedcba9876543210' })
+    expect(actFor(ran, acts)?.state).toBe('done')
+    expect(actFor(other, acts)).toBeUndefined()
+    const followups = [act({ opId: 'f1', operation: 'prepare_followup', receipt: '1111111111111111' })]
+    expect(actFor(proposal('prepare_followup', 'ticket:CND-4', { crew: 'a', opId: 'f1' }), followups)?.opId).toBe('f1')
+    expect(actFor(proposal('prepare_followup', 'ticket:CND-4', { crew: 'b', opId: 'f2' }), followups)).toBeUndefined()
   })
 
   it('says "Brakeman did this" with its receipt only for an act done, and what became of any other', () => {
