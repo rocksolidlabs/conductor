@@ -3803,11 +3803,17 @@ quiet session's entries.
 events: a task of a person's run failed with proof (the engine's failed
 state), a question open past `wake.questionMinutes` (1 to 1,440; 15), a
 run ended (stopped, finished, or every task terminal) or paused, a
-ticket moved to `ready`, a person's own request, and the briefing times
-`wake.briefings` (at most 24 `HH:MM`, the server's local zone, firing
-while it runs). None fires for a Brakeman turn's run or session, or for
-what a request made (a change under the actor `brakeman` or an op id a
-request derived; a run an act launched). The role is `idle`, then
+ticket moved to `ready` (Dispatch's changes read from the server's
+start, every row of each commit), a person's own request, and the
+briefing times `wake.briefings` (at most 24 `HH:MM`, the server's local
+zone, firing while it runs; one that passed while the server was stopped
+fires once at its start, one that passed while the role was off or
+paused fires nothing). None fires for a Brakeman turn's run or session,
+or for what a request made (a change under the actor `brakeman` or an op
+id a request derived; a run an act launched, known by its launch's maker
+in Dispatch, and its members' questions); while the role is off nothing
+fires, and what happened meanwhile wakes nothing once it is on. The
+role is `idle`, then
 `gathering` once a wake opens a batch (`wb-<n>`, its id written as it
 opens), and once the window ends (`wake.windowSeconds`, 10 to 900; 120)
 it makes one request of kind `wake` naming the batch, under the op id
@@ -3823,7 +3829,8 @@ restart too. `paused` (a person) gathers nothing (a wake is logged
 `held: "paused"`), and a turn running then runs to its end;
 `unavailable` (a turn could not start: its launch refused, its agent
 exited before it read its request, or the day's turns or minutes spent)
-says why, keeps its batch, and tries again on a person's request, the
+says why, keeps its batch (a turn that started none gives its wakes to
+the next batch, under a new id), and tries again on a person's request, the
 next briefing time, or, for a budget spent, the next local day. The
 day's minutes, `budget.minutesPerDay` (10 to 1,440; 240), count every
 turn, whatever started it: a turn's reservation at its start is the
@@ -3835,7 +3842,10 @@ Needs you and reach no webhook, browser notification or Chime, and its
 deadline ends it unanswered. The role keeps no process and polls no
 model between turns; each change is written before what it starts, and
 a restart reads it back (a batch gathering fires once; a turn briefing
-follows its request, interrupted by the restart, to cooling). The log
+follows its request, interrupted by the restart, to cooling); a server
+waiting for the owner lock answers the role as the records hold it at
+each read, and takes up the record the last owner left once the lock is
+its own. The log
 keeps the newest 1,000 wakes; the notes (a brief's facts or
 interpretations a person kept, given to every turn) at most 64 KiB, 4
 KiB each. A change of the role sends the `brakeman` event `{id: "role",

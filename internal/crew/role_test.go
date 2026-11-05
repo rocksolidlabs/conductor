@@ -296,8 +296,18 @@ func TestTheBudgetStopsTurnsAndSaysSo(t *testing.T) {
 		t.Fatalf("%d turns %+v", f.rec.fired(), r.Fired)
 	}
 	f.rec.close("br-1", RoleOutcome{Unavailable: "the day's budget is spent: 240 of 240 minutes", RetryAt: tomorrow.Add(24 * time.Hour)})
-	if r := f.state(RoleUnavailable); !strings.Contains(r.Why, "240 of 240 minutes") {
+	r = f.state(RoleUnavailable)
+	if !strings.Contains(r.Why, "240 of 240 minutes") {
 		t.Fatalf("%+v", r)
+	}
+	// Closed over budget at its dequeue, the turn ran none: its batch is
+	// kept under a new id, fired the next day.
+	if r.Open == nil || r.Open.ID != "wb-2" || len(r.Open.Wakes) != 2 || r.Open.Wakes[0].Subject != "task:run-1/build" {
+		t.Fatalf("the batch was not kept: %+v", r.Open)
+	}
+	f.clock.add(24 * time.Hour)
+	if r := f.state(RoleBriefing); f.rec.fired() != 2 || r.Fired.ID != "wb-2" {
+		t.Fatalf("%d turns %+v", f.rec.fired(), r.Fired)
 	}
 }
 
@@ -404,9 +414,13 @@ func TestBriefingTimesInTheLocalZone(t *testing.T) {
 	zone := time.FixedZone("CST", -6*3600)
 	f.rec.settings.Location, f.rec.settings.Briefings = zone, []string{"07:00"}
 	f.clock.t = time.Date(2026, 11, 5, 6, 59, 0, 0, zone)
-	if next := f.step(); next != 0 {
-		// The first look marks the moment and fires nothing.
-		t.Fatalf("first step: %s", next)
+	// The first look marks the moment, fires nothing and sets the timer
+	// for the next briefing: nothing else need poke the role at 07:00.
+	if next := f.step(); next != time.Minute {
+		t.Fatalf("first step: the briefing is due in %s, want 1m", next)
+	}
+	if r := f.record(); len(r.Log) != 0 || r.Briefed.IsZero() {
+		t.Fatalf("the first look: %+v", r)
 	}
 	if next := f.step(); next != time.Minute {
 		t.Fatalf("the briefing is due in %s, want 1m (07:00 local is 13:00 UTC)", next)
@@ -489,8 +503,10 @@ func TestAPersonsRequestTriesAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	r = f.state(RoleBriefing)
-	if f.rec.fired() != 2 || r.Fired.Wakes[0].Subject != "task:run-1/lint" {
-		t.Fatalf("%+v", r)
+	// The batch whose turn could not start is the one that fires now,
+	// with the wake gathered since: build's and lint's.
+	if f.rec.fired() != 2 || r.Fired.ID != "wb-2" || len(r.Fired.Wakes) != 2 || r.Fired.Wakes[0].Subject != "task:run-1/build" || r.Fired.Wakes[1].Subject != "task:run-1/lint" {
+		t.Fatalf("%+v", r.Fired)
 	}
 	if row := r.Log[len(r.Log)-1]; row.Source != WakeRequest || row.Batch != "" || row.Held == "" {
 		t.Fatalf("the person's request in the log: %+v", row)
@@ -624,5 +640,99 @@ func TestARoleRecordReadsBackAsWritten(t *testing.T) {
 	}
 	if f.rec.doc.Schema != RoleSchema+1 {
 		t.Fatal("a later schema was rewritten")
+	}
+}
+
+// TestABriefingTimePassedWhilePausedOrOffFiresNone: a 07:00 briefing that
+// passes while the role is paused, or while it is off, wakes nothing once
+// it is resumed, or turned on, at 08:00; the next morning's fires.
+func TestABriefingTimePassedWhilePausedOrOffFiresNone(t *testing.T) {
+	zone := time.FixedZone("CST", -6*3600)
+	for _, how := range []string{"paused", "off"} {
+		t.Run(how, func(t *testing.T) {
+			f := newRoleFixture(t)
+			f.rec.settings.Location, f.rec.settings.Briefings = zone, []string{"07:00"}
+			f.clock.t = time.Date(2026, 11, 5, 6, 0, 0, 0, zone)
+			f.step()
+			if how == "paused" {
+				if _, err := f.role.Pause(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f.rec.settings.On = false
+			}
+			f.step()
+			f.clock.add(2 * time.Hour) // 08:00
+			f.step()
+			if how == "paused" {
+				if _, err := f.role.Resume(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f.rec.settings.On = true
+			}
+			if next := f.step(); next != 23*time.Hour {
+				t.Fatalf("the next briefing is due in %s, want 23h", next)
+			}
+			if r := f.record(); len(r.Log) != 0 || r.Open != nil || r.State != RoleIdle {
+				t.Fatalf("the briefing of the past woke the role: %+v", r)
+			}
+			f.clock.add(23 * time.Hour)
+			if r := f.state(RoleGathering); len(r.Log) != 1 || r.Log[0].Source != WakeBriefing {
+				t.Fatalf("%+v", r.Log)
+			}
+		})
+	}
+}
+
+// TestADueHeldWakeOutlivesAFailedWrite: a held question falls due and the
+// write of what it gathered fails; it is still held, and the step that
+// tries again gathers it.
+func TestADueHeldWakeOutlivesAFailedWrite(t *testing.T) {
+	f := newRoleFixture(t)
+	at := f.clock.now().Add(15 * time.Minute)
+	f.role.Hold(RoleWake{Source: WakeQuestionOpen, Subject: "session:a", Key: "1", At: at}, at, func() bool { return true })
+	f.clock.add(15 * time.Minute)
+	f.rec.saveFails = true
+	if _, err := f.role.Step(); err == nil {
+		t.Fatal("the failed write was not said")
+	}
+	if r := f.record(); len(r.Log) != 0 {
+		t.Fatalf("%+v", r)
+	}
+	r := f.state(RoleGathering)
+	if len(r.Log) != 1 || r.Log[0].Subject != "session:a" {
+		t.Fatalf("the held wake was lost with the write: %+v", r.Log)
+	}
+}
+
+// TestForgetReadsTheRecordsAgain: two roles over one set of records, as
+// two servers over one data directory: the one that does not hold them
+// reads them as they are (Peek), and once they are its (Forget) it takes
+// up the other's record, its batch, log and notes, never the record it
+// read before.
+func TestForgetReadsTheRecordsAgain(t *testing.T) {
+	f := newRoleFixture(t)
+	waiting := NewRole("brakeman", f.rec, f.clock.now)
+	if r, err := waiting.Record(); err != nil || r.Last != 0 {
+		t.Fatalf("%v %+v", err, r)
+	}
+	f.failed("build", 1)
+	if _, err := f.role.KeepNote(RoleNote{Text: "kept by the first"}); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := waiting.Peek(); err != nil || r.Open == nil || len(r.Notes) != 1 {
+		t.Fatalf("a peek: %v %+v", err, r)
+	}
+	waiting.Forget()
+	if err := waiting.Wake(RoleWake{Source: WakeTaskFailed, Subject: "task:run-1/lint", Key: "attempts 1"}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := waiting.Record()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Last != 1 || r.Open == nil || r.Open.ID != "wb-1" || len(r.Open.Wakes) != 2 || len(r.Log) != 2 || len(r.Notes) != 1 {
+		t.Fatalf("the record taken up: %+v", r)
 	}
 }

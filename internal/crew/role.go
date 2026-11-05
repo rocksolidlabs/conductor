@@ -173,7 +173,8 @@ type RoleRecord struct {
 	// CoolUntil is when the cooldown after the last turn ends.
 	CoolUntil time.Time `json:"coolUntil,omitzero"`
 	// Briefed is the moment the briefing times were last looked at: a
-	// briefing time after it and not after now is due.
+	// briefing time after it and not after now is due. Zero while the role
+	// is off or paused, and before its first look.
 	Briefed   time.Time    `json:"briefed,omitzero"`
 	Notes     []RoleNote   `json:"notes,omitempty"`
 	Log       []RoleLogRow `json:"log,omitempty"`
@@ -302,27 +303,53 @@ func (r *Role) Run(done <-chan struct{}, before func() bool) {
 	}
 }
 
-// load reads the record once. The caller holds mu.
+// load reads the record once, until Forget. The caller holds mu.
 func (r *Role) load() error {
 	if r.loaded {
 		return nil
 	}
-	rec, ok, err := r.records.LoadRole()
+	rec, err := readRole(r.records, r.identity)
 	if err != nil {
 		return err
 	}
+	r.rec, r.loaded = rec, true
+	return nil
+}
+
+// readRole reads the role of identity from records: idle before one is
+// written, an unknown state read as idle, a later schema refused.
+func readRole(records RoleRecords, identity string) (RoleRecord, error) {
+	rec, ok, err := records.LoadRole()
+	if err != nil {
+		return RoleRecord{}, err
+	}
 	if !ok {
-		rec = RoleRecord{Schema: RoleSchema, Identity: r.identity, State: RoleIdle}
+		rec = RoleRecord{Schema: RoleSchema, Identity: identity, State: RoleIdle}
 	}
 	if rec.Schema > RoleSchema {
-		return fmt.Errorf("%w: schema %d", ErrRoleLaterSchema, rec.Schema)
+		return RoleRecord{}, fmt.Errorf("%w: schema %d", ErrRoleLaterSchema, rec.Schema)
 	}
 	if !slices.Contains(RoleStates, rec.State) {
 		rec.State = RoleIdle
 	}
-	rec.Schema, rec.Identity = RoleSchema, r.identity
-	r.rec, r.loaded = rec, true
-	return nil
+	rec.Schema, rec.Identity = RoleSchema, identity
+	return rec, nil
+}
+
+// Forget drops the record read, so the next call reads the records
+// again: they changed hands (a server that waited for the owner lock
+// takes up the last owner's record, never the one it read meanwhile).
+func (r *Role) Forget() {
+	r.mu.Lock()
+	r.rec, r.loaded = RoleRecord{}, false
+	r.mu.Unlock()
+}
+
+// Peek reads the role from its records as they are now and keeps
+// nothing: what an owner that does not hold the records answers, since
+// the one that does may change them at any moment.
+func (r *Role) Peek() (RoleRecord, error) {
+	return readRole(r.records, r.identity)
 }
 
 // Record answers the role as it stands.
@@ -435,27 +462,73 @@ func (c *RoleRecord) gather(w RoleWake, now time.Time) {
 // else as a new one while there is room, else in the overflow.
 func (b *Batch) add(w RoleWake) {
 	at := w.At.UTC()
+	b.merge(BatchWake{Source: w.Source, Subject: w.Subject, Count: 1, First: at, Last: at})
+}
+
+// merge counts w's wakes in the batch, as add counts one.
+func (b *Batch) merge(w BatchWake) {
 	if i := slices.IndexFunc(b.Wakes, func(x BatchWake) bool { return x.Source == w.Source && x.Subject == w.Subject }); i >= 0 {
-		b.Wakes[i].Count++
-		if at.After(b.Wakes[i].Last) {
-			b.Wakes[i].Last = at
+		x := &b.Wakes[i]
+		x.Count += w.Count
+		if w.First.Before(x.First) {
+			x.First = w.First
+		}
+		if w.Last.After(x.Last) {
+			x.Last = w.Last
 		}
 		return
 	}
 	if len(b.Wakes) < MaxBatchWakes {
-		b.Wakes = append(b.Wakes, BatchWake{Source: w.Source, Subject: w.Subject, Count: 1, First: at, Last: at})
+		b.Wakes = append(b.Wakes, w)
 		return
 	}
+	b.overflow(Overflow{Count: w.Count, First: w.First, Last: w.Last})
+}
+
+// overflow counts o in the batch's overflow.
+func (b *Batch) overflow(o Overflow) {
 	if b.Overflow == nil {
-		b.Overflow = &Overflow{First: at, Last: at}
+		b.Overflow = &Overflow{First: o.First, Last: o.Last}
 	}
-	b.Overflow.Count++
-	if at.Before(b.Overflow.First) {
-		b.Overflow.First = at
+	b.Overflow.Count += o.Count
+	if o.First.Before(b.Overflow.First) {
+		b.Overflow.First = o.First
 	}
-	if at.After(b.Overflow.Last) {
-		b.Overflow.Last = at
+	if o.Last.After(b.Overflow.Last) {
+		b.Overflow.Last = o.Last
 	}
+}
+
+// keepFired gives the batch fired to the next turn, its own having
+// started none (its launch refused, its agent gone before it read its
+// request, the day's budget spent at its dequeue): its wakes join the
+// open batch ahead of those gathered since, or a batch opened now under
+// a new id, since the fired batch's id has its request, closed. The
+// role fires it once it can start a turn again.
+func (c *RoleRecord) keepFired(now time.Time) {
+	f := c.Fired
+	if f == nil {
+		return
+	}
+	b := &Batch{OpenedAt: now.UTC(), Wakes: []BatchWake{}}
+	if c.Open != nil {
+		b.ID, b.OpenedAt = c.Open.ID, c.Open.OpenedAt
+	} else {
+		c.Last++
+		b.ID = "wb-" + strconv.FormatInt(c.Last, 10)
+	}
+	for _, from := range []*Batch{f, c.Open} {
+		if from == nil {
+			continue
+		}
+		for _, w := range from.Wakes {
+			b.merge(w)
+		}
+		if from.Overflow != nil {
+			b.overflow(*from.Overflow)
+		}
+	}
+	c.Open = b
 }
 
 // Wake is a source firing: logged, and gathered into the open batch (the
@@ -703,29 +776,39 @@ func (r *Role) Step() (time.Duration, error) {
 			next = t
 		}
 	}
-	// The briefing times: the first look only marks the moment, so a role
-	// turned on fires no briefing of the past; a briefing time due wakes
-	// the role and tries again for an unavailable one.
-	if s.On && c.State != RolePaused {
-		if c.Briefed.IsZero() {
-			c.Briefed, dirty = now.UTC(), true
-		} else {
-			due, nb := briefingTimes(s, c.Briefed, now)
-			if !due.IsZero() {
-				w := RoleWake{Source: WakeBriefing, Key: due.Format("2006-01-02T15:04Z07:00"), At: due.UTC()}
-				c.Briefed = now.UTC()
-				if !c.fired(w) {
-					if c.State == RoleUnavailable {
-						c.available(now)
-					}
-					c.gather(w, now)
-				}
-				dirty = true
-			}
-			soon(nb)
+	// The briefing times: the first look only marks the moment (and when
+	// the next falls due), so a role turned on or resumed fires no
+	// briefing of the past; a briefing time due wakes the role and tries
+	// again for an unavailable one. Off or paused, none is looked at and
+	// the mark is dropped, so a briefing time that passes meanwhile fires
+	// nothing once the role is on, or resumed, again.
+	switch {
+	case !s.On || c.State == RolePaused:
+		if !c.Briefed.IsZero() {
+			c.Briefed, dirty = time.Time{}, true
 		}
+	case c.Briefed.IsZero():
+		c.Briefed, dirty = now.UTC(), true
+		_, nb := briefingTimes(s, now, now)
+		soon(nb)
+	default:
+		due, nb := briefingTimes(s, c.Briefed, now)
+		if !due.IsZero() {
+			w := RoleWake{Source: WakeBriefing, Key: due.Format("2006-01-02T15:04Z07:00"), At: due.UTC()}
+			c.Briefed = now.UTC()
+			if !c.fired(w) {
+				if c.State == RoleUnavailable {
+					c.available(now)
+				}
+				c.gather(w, now)
+			}
+			dirty = true
+		}
+		soon(nb)
 	}
-	// The held wakes whose time came, each once.
+	// The held wakes whose time came, each once: let go only once what
+	// they gathered is written, so a write that fails leaves them held for
+	// the step that tries again.
 	var keep []heldWake
 	for _, h := range r.held {
 		if h.due.After(now) {
@@ -738,7 +821,6 @@ func (r *Role) Step() (time.Duration, error) {
 			dirty = true
 		}
 	}
-	r.held = keep
 	var stepErr error
 	for range 4 {
 		before := c.State
@@ -752,9 +834,14 @@ func (r *Role) Step() (time.Duration, error) {
 					stepErr = err
 					soon(now.Add(RoleRetry))
 				} else if !out.Open {
-					c.Request = ""
-					c.CoolUntil = now.Add(s.Cooldown).UTC()
-					dirty = true
+					c.Request, dirty = "", true
+					if out.Unavailable != "" {
+						// The turn started none: its batch is kept, and no
+						// cooldown follows a turn that never ran.
+						c.keepFired(now)
+					} else {
+						c.CoolUntil = now.Add(s.Cooldown).UTC()
+					}
 				}
 			}
 		case RoleBriefing:
@@ -769,6 +856,9 @@ func (r *Role) Step() (time.Duration, error) {
 			}
 			c.Request, dirty = "", true
 			if out.Unavailable != "" {
+				// The turn started none: its batch is kept for the turn
+				// that tries again.
+				c.keepFired(now)
 				c.State, c.Why, c.RetryAt = RoleUnavailable, clip(out.Unavailable), out.RetryAt.UTC()
 				break
 			}
@@ -848,6 +938,7 @@ func (r *Role) Step() (time.Duration, error) {
 			return RoleRetry, err
 		}
 	}
+	r.held = keep
 	if next.IsZero() {
 		return 0, stepErr
 	}

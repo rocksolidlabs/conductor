@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -317,6 +319,16 @@ func TestALoggedOutAgentMakesTheRoleUnavailable(t *testing.T) {
 	if got := b.roleRecord(t).Log; len(got) != 3 || got[2].Source != crew.WakeRequest || got[2].Subject != ask {
 		t.Fatalf("%+v", got)
 	}
+	// The batch fired after the retry holds the first turn's wake, whose
+	// turn never started, and the one gathered since.
+	q, err := b.desk.st.Get(wake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fired := b.roleRecord(t).Fired
+	if fired == nil || fired.ID != q.Batch || len(fired.Wakes) != 2 || fired.Wakes[0].Subject != "task:run-1/build" || fired.Wakes[1].Subject != "task:run-1/lint" {
+		t.Fatalf("the batch fired %+v for %s", fired, q.Batch)
+	}
 }
 
 // TestAnUnavailableRoleHoldsNothingElse: while the role is unavailable a
@@ -437,5 +449,267 @@ func TestATicketMadeReadyWakesTheRole(t *testing.T) {
 	rows = b.roleRecord(t).Log
 	if len(rows) != 1 || rows[0].Source != crew.WakeTicketReady || rows[0].Subject != "ticket:CND-1" {
 		t.Fatalf("%+v", rows)
+	}
+}
+
+// TestARoleWaitingForTheLockTakesUpTheLastOwnersRecord: a second server
+// over the same data directory, waiting for the owner lock, answers the
+// role as the owner has it at each read, never a copy of its first; once
+// the lock is its own it takes up the record the first left (its batch,
+// log and notes), and its next wake joins that batch under the id given,
+// never one given before.
+func TestARoleWaitingForTheLockTakesUpTheLastOwnersRecord(t *testing.T) {
+	// Not parallel: the wait for the lock is the store package's, raised
+	// here so a loaded machine's slow shutdown is not what the test sees.
+	wait := brakeman.LockWait
+	brakeman.LockWait = 2 * time.Minute
+	t.Cleanup(func() { brakeman.LockWait = wait })
+	b := brakemanEnv(t, nil)
+	c := b.background(t, "bk", func(cfg map[string]any) { cfg["wake"].(map[string]any)["windowSeconds"] = brakeman.MaxWindowSeconds })
+	second := &bkEnv{testEnv: b.restart()}
+	second.desk = second.srv.brakeman
+	if st := second.expect(t, "GET", "/api/brakeman", nil, http.StatusOK, ""); st["readOnly"] != true {
+		t.Fatalf("the second server holds the records: %v", st)
+	}
+	if log, _ := second.expect(t, "GET", "/api/brakeman/role", nil, http.StatusOK, "")["log"].([]any); len(log) != 0 {
+		t.Fatalf("%v", log)
+	}
+	// The owner changes the role while the second server waits.
+	b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/build", Key: "attempts 1", At: c.now()})
+	if _, err := b.desk.role.KeepNote(crew.RoleNote{Text: "kept by the first server"}); err != nil {
+		t.Fatal(err)
+	}
+	got := second.expect(t, "GET", "/api/brakeman/role", nil, http.StatusOK, "")
+	if log, _ := got["log"].([]any); len(log) != 1 || entityOf(t, got, "role")["state"] != crew.RoleGathering {
+		t.Fatalf("the waiting server answered the role it read first: %v", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	b.srv.Shutdown(ctx)
+	if !waitFor(time.Minute, second.desk.recovered.Load) {
+		t.Fatal("the second server never took the records")
+	}
+	second.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/lint", Key: "attempts 1", At: time.Now()})
+	r := second.roleRecord(t)
+	if r.Last != 1 || r.Open == nil || r.Open.ID != "wb-1" || len(r.Open.Wakes) != 2 || len(r.Log) != 2 || len(r.Notes) != 1 {
+		t.Fatalf("the record taken up: %+v", r)
+	}
+	doc, ok, err := second.desk.st.Role()
+	if err != nil || !ok || !strings.Contains(string(doc), "kept by the first server") || !strings.Contains(string(doc), "task:run-1/build") {
+		t.Fatalf("role.json: %v %v %s", ok, err, doc)
+	}
+}
+
+// TestATicketMadeReadyWhileTheRoleIsOffWakesNothing: a ticket made ready
+// while the role is off wakes nothing once it is turned on, as nothing
+// else that fired meanwhile does; one made ready after wakes it.
+func TestATicketMadeReadyWhileTheRoleIsOffWakesNothing(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.background(t, "bk", nil)
+	b.expect(t, "POST", "/api/dispatch/projects", map[string]any{"opId": "p-1", "key": "CND", "name": "Conductor"}, http.StatusCreated, "")
+	b.expect(t, "POST", "/api/dispatch/tickets", map[string]any{"opId": "t-1", "project": "CND", "title": "While off"}, http.StatusCreated, "")
+	b.expect(t, "POST", "/api/dispatch/tickets", map[string]any{"opId": "t-2", "project": "CND", "title": "Once on"}, http.StatusCreated, "")
+	mode := func(m string) { b.configure(t, func(c map[string]any) { c["wake"].(map[string]any)["mode"] = m }) }
+	mode(brakeman.WakeInvoked)
+	b.expect(t, "POST", "/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": "e-1", "set": map[string]any{"status": "ready"}}, http.StatusOK, "")
+	b.roleSettle(t)
+	mode(brakeman.WakeBackground)
+	b.expect(t, "POST", "/api/dispatch/tickets/CND-2/edit", map[string]any{"opId": "e-2", "set": map[string]any{"status": "ready"}}, http.StatusOK, "")
+	if !waitFor(30*time.Second, func() bool {
+		b.desk.role.Poke()
+		return len(b.roleRecord(t).Log) > 0
+	}) {
+		t.Fatal("the ticket made ready once on woke nothing")
+	}
+	b.roleSettle(t)
+	if rows := b.roleRecord(t).Log; len(rows) != 1 || rows[0].Subject != "ticket:CND-2" {
+		t.Fatalf("%+v", rows)
+	}
+}
+
+// TestTheFirstCommitAfterAStartIsReadWhole: the first Dispatch commit
+// after the server starts moves a ticket to ready and sets two fields
+// after its status; its every row is read, and the ticket wakes the role.
+func TestTheFirstCommitAfterAStartIsReadWhole(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.background(t, "bk", nil)
+	b.expect(t, "POST", "/api/dispatch/projects", map[string]any{"opId": "p-1", "key": "CND", "name": "Conductor"}, http.StatusCreated, "")
+	b.expect(t, "POST", "/api/dispatch/tickets", map[string]any{"opId": "t-1", "project": "CND", "title": "Ship the role"}, http.StatusCreated, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	b.srv.Shutdown(ctx)
+	second := &bkEnv{testEnv: b.restart()}
+	second.desk = second.srv.brakeman
+	if !waitFor(30*time.Second, second.desk.recovered.Load) {
+		t.Fatal("the second server never took the records")
+	}
+	second.expect(t, "POST", "/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": "e-1", "set": map[string]any{"status": "ready", "priority": 2, "owner": "Ada"}}, http.StatusOK, "")
+	if !waitFor(30*time.Second, func() bool {
+		second.desk.role.Poke()
+		return len(second.roleRecord(t).Log) > 0
+	}) {
+		t.Fatal("the first commit's status row was never read")
+	}
+	if rows := second.roleRecord(t).Log; len(rows) != 1 || rows[0].Source != crew.WakeTicketReady || rows[0].Subject != "ticket:CND-1" {
+		t.Fatalf("%+v", rows)
+	}
+}
+
+// TestAWakeClosedAtItsDequeueIsFollowedUnpoked: a wake request closed
+// over budget at its dequeue (no run made) is followed by the role from
+// the request's own change: it is unavailable in the budget's words, its
+// batch kept, with nothing of the test's poking the role once the request
+// is queued.
+func TestAWakeClosedAtItsDequeueIsFollowedUnpoked(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.background(t, "bk", func(cfg map[string]any) { cfg["budget"].(map[string]any)["turnsPerDay"] = 2 })
+	ask := b.briefing(t)
+	sid, tok, _ := b.turnSession(t, ask)
+	b.waitState(t, ask, brakeman.StateRunning)
+	b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/build", Key: "attempts 1", At: c.now()})
+	c.add(time.Duration(brakeman.MinWindowSeconds) * time.Second)
+	var wake string
+	if !waitFor(30*time.Second, func() bool {
+		b.desk.role.Poke()
+		if r := b.roleRecord(t); r.State == crew.RoleBriefing {
+			wake = r.Request
+		}
+		return wake != ""
+	}) {
+		t.Fatalf("the batch never fired: %+v", b.roleRecord(t))
+	}
+	if r := b.waitState(t, wake, brakeman.StateQueued); r.Kind != brakeman.KindWake {
+		t.Fatalf("%+v", r)
+	}
+	b.configure(t, func(cfg map[string]any) { cfg["budget"].(map[string]any)["turnsPerDay"] = 1 })
+	// From here the test pokes the desk's loop, never the role's.
+	if status, out := b.submit(t, sid, tok, "b-1", factBrief("session:"+sid)); status != http.StatusCreated {
+		t.Fatalf("brief: %d %v", status, out)
+	}
+	c.add(brakemanGrace + time.Second)
+	b.settle(t)
+	b.waitState(t, wake, brakeman.StateOverBudget)
+	var r crew.RoleRecord
+	if !waitFor(30*time.Second, func() bool {
+		r = b.roleRecord(t)
+		return r.State == crew.RoleUnavailable
+	}) {
+		t.Fatalf("the role never followed its request's close: %+v", r)
+	}
+	if !strings.Contains(r.Why, "the day's budget is spent") || r.Open == nil || len(r.Open.Wakes) != 1 || r.Open.Wakes[0].Subject != "task:run-1/build" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// TestALegacyRunsEndWakesTheRole: a person's legacy run, its one member
+// ended, is finished, and its end (told to OnEnd alone, a session's
+// change) wakes the role.
+func TestALegacyRunsEndWakesTheRole(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.background(t, "bk", nil)
+	run, release, err := b.srv.runs.LaunchNamed(t.Context(), crew.Crew{ID: "team", Name: "Team", Cwd: b.root, Where: crew.WhereServer, Isolation: crew.IsolationNone,
+		Members: []crew.Member{{Name: "dev", AgentID: "bkfixed", Start: crew.Start{When: crew.StartImmediately}}}}, "a person's run")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sid string
+	if !waitFor(30*time.Second, func() bool {
+		r, _ := b.srv.runs.Get(run.ID)
+		if len(r.Members) > 0 {
+			sid = r.Members[0].SessionID
+		}
+		return sid != ""
+	}) {
+		t.Fatal("the person's crew never ran")
+	}
+	b.roleSettle(t)
+	if err := b.local(sid).Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(30*time.Second, func() bool {
+		r, _ := b.srv.runs.Get(run.ID)
+		return r.State == crew.RunFinished
+	}) {
+		t.Fatal("the run never finished")
+	}
+	var rows []crew.RoleLogRow
+	if !waitFor(30*time.Second, func() bool {
+		b.desk.role.Poke()
+		rows = b.roleRecord(t).Log
+		return slices.ContainsFunc(rows, func(row crew.RoleLogRow) bool {
+			return row.Source == crew.WakeRunEnded && row.Subject == "run:"+run.ID
+		})
+	}) {
+		t.Fatalf("the run's end woke nothing: %+v", rows)
+	}
+}
+
+// TestARunABrakemanActLaunchedWakesNothing: a run the desk's Host launched
+// (a granted launch_approved_plan act's) is known as Brakeman's from
+// Dispatch's launch, with no request naming it, and a question of its
+// member's wakes nothing; a person's run's member's question open past
+// the threshold wakes the role once, and one answered before it, nothing.
+func TestARunABrakemanActLaunchedWakesNothing(t *testing.T) {
+	l := newLaunchTest(t, nil, nil, bkAgents()...)
+	b := bkEnvOf(t, l.testEnv)
+	c := b.background(t, "bk", nil)
+	person, err := testHost(l.srv, t.Context(), "cloud").LaunchApproved(t.Context(), ext.ApprovedLaunch{Ticket: "CND-1", Plan: l.plan, OpID: "p-1", Label: "a person's", By: ada})
+	if err != nil {
+		t.Fatal(err)
+	}
+	desk, err := l.srv.BrakemanHost().LaunchApproved(t.Context(), ext.ApprovedLaunch{Ticket: "CND-1", Plan: l.plan, OpID: "p-2", Label: "Brakeman's", By: ada})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr, ok1 := l.srv.runs.Get(person.ID)
+	dr, ok2 := l.srv.runs.Get(desk.ID)
+	if !ok1 || !ok2 || pr.Ticket == nil || dr.Ticket == nil {
+		t.Fatalf("the runs: %v %v %+v %+v", ok1, ok2, pr.Ticket, dr.Ticket)
+	}
+	if page, _, _ := b.desk.st.List("", 10); len(page) != 0 {
+		t.Fatalf("a request names the launch: %+v", page)
+	}
+	if b.desk.madeByTurn(pr) || !b.desk.madeByTurn(dr) {
+		t.Fatalf("the person's run is Brakeman's %v; the desk's is %v", b.desk.madeByTurn(pr), b.desk.madeByTurn(dr))
+	}
+	// A question of a member of each run, and a third, answered before
+	// its threshold.
+	member := func(run string) string {
+		var sid string
+		if !waitFor(30*time.Second, func() bool {
+			r, _ := l.srv.runs.Get(run)
+			for _, m := range r.Members {
+				if m.SessionID != "" {
+					sid = m.SessionID
+				}
+			}
+			return sid != ""
+		}) {
+			t.Fatalf("run %s's member never started", run)
+		}
+		return sid
+	}
+	ps, ds := member(person.ID), member(desk.ID)
+	answered := b.createSession("cat")
+	for _, sid := range []string{ps, ds, answered} {
+		b.local(sid).SetAttentionFull(session.AttentionNeedsInput, "Allow Bash?", session.SourceAPI, session.KindPermission, []session.Option{{Label: "Yes", Input: "1"}})
+	}
+	b.roleSettle(t)
+	b.local(answered).SetAttention(session.AttentionWorking, "", session.SourceAPI)
+	c.add(time.Duration(brakeman.DefaultQuestionMinutes+1) * time.Minute)
+	b.roleSettle(t)
+	var questions []crew.RoleLogRow
+	for _, row := range b.roleRecord(t).Log {
+		if row.Source == crew.WakeQuestionOpen {
+			questions = append(questions, row)
+		}
+	}
+	if len(questions) != 1 || !strings.Contains(questions[0].Subject, ps) {
+		t.Fatalf("the questions that woke the role: %+v (the person's member %s, Brakeman's %s, answered %s)", questions, ps, ds, answered)
 	}
 }

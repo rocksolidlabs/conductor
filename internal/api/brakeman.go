@@ -258,6 +258,10 @@ func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 		d.recover()
 		d.admit.Lock()
 		d.loadQueue()
+		// The role takes up the record the last owner left, never the one
+		// read while this server waited (the routes read it afresh until
+		// recovered: roleRecord).
+		d.role.Forget()
 		d.recovered.Store(true)
 		d.admit.Unlock()
 		d.poke()
@@ -1248,8 +1252,12 @@ func (d *brakemanDesk) update(id string, fn func(*brakeman.Request) error) (brak
 // running and sends its event after a cancel was written and sent sends
 // cancelled again, never the running it wrote, so the events a page
 // folds end on the state the records end on. A request that cannot be
-// read sends nothing.
+// read sends nothing. It pokes the background role too, which follows a
+// wake request's state (Outcome) and has no timer of its own for it: a
+// request closed with no run (a launch refused, over budget at its
+// dequeue) is known only from here.
 func (d *brakemanDesk) publish(id string) {
+	defer d.role.Poke()
 	d.emit.Lock()
 	defer d.emit.Unlock()
 	r, err := d.st.Get(id)
@@ -1458,7 +1466,7 @@ func (s *Server) handleBrakeman(w http.ResponseWriter, r *http.Request) {
 		s.brakemanError(w, err)
 		return
 	}
-	if rec, err := d.role.Record(); err == nil {
+	if rec, err := d.roleRecord(); err == nil {
 		rec.Log, rec.Notes = nil, nil
 		out.Role = &rec
 	}

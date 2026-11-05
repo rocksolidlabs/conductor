@@ -51,13 +51,19 @@ type roleSources struct {
 	runs      map[string]bool
 	questions map[string]bool
 	tickets   bool
-	// ticketSeq is how far Dispatch's change feed was read; set from the
-	// first change a commit announces after the desk opened.
+	// ticketSeq is how far Dispatch's change feed was read: from its head
+	// as the desk opened (ticketBegun), so what was there before wakes
+	// nothing. ticketTop is the newest commit announced, which the feed is
+	// read on from while the role is off.
 	ticketSeq   int64
+	ticketTop   int64
 	ticketBegun bool
 	// paused are the runs last seen paused: a pause wakes the role as the
 	// run becomes paused, not at each change while it stays so.
 	paused map[string]bool
+	// made are the ticket launches whose maker was read (madeByTurn): true
+	// for a Brakeman act's. At most maxRoleSources, cleared past them.
+	made map[string]bool
 }
 
 // openRole makes the desk's role and wires Dispatch's changes to it; the
@@ -65,11 +71,33 @@ type roleSources struct {
 // OnRunChange) and the activity through its sink (activity), which New
 // adds before the engine's.
 func (d *brakemanDesk) openRole() {
-	d.src = &roleSources{runs: map[string]bool{}, questions: map[string]bool{}, paused: map[string]bool{}}
+	d.src = &roleSources{runs: map[string]bool{}, questions: map[string]bool{}, paused: map[string]bool{}, made: map[string]bool{}}
 	d.role = crew.NewRole(brakemanMember, roleRecords{d: d}, d.now)
-	if d.s.dispatch != nil {
-		d.s.dispatch.OnChange(d.ticketsChanged)
+	if ds := d.s.dispatch; ds != nil {
+		// The feed is read from its head now, before the desk hears of a
+		// commit: every row of a commit announced after is read, its first
+		// too (a commit's announcement names only its last seq).
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		head, err := ds.Head(ctx)
+		cancel()
+		if err != nil {
+			d.s.log.Warn("Brakeman's role reads Dispatch's changes from the next commit on", "err", err)
+		} else {
+			d.src.ticketSeq, d.src.ticketTop, d.src.ticketBegun = head, head, true
+		}
+		ds.OnChange(d.ticketsChanged)
 	}
+}
+
+// roleRecord is the role as the desk answers it: as the role holds it
+// once the desk owns Brakeman's records, else read from them as they are
+// now, since the owner may change them at any moment (and the role takes
+// them up afresh once they are this desk's: OnOwned's Forget).
+func (d *brakemanDesk) roleRecord() (crew.RoleRecord, error) {
+	if d.recovered.Load() {
+		return d.role.Record()
+	}
+	return d.role.Peek()
 }
 
 // roleLoop runs the role's loop until the desk ends: each pass drains
@@ -115,15 +143,14 @@ func (d *brakemanDesk) activity(sessionID string, e session.ActivityEntry, state
 // where it was last read, on the role's pass.
 func (d *brakemanDesk) ticketsChanged(changes []dispatch.Change) {
 	d.src.mu.Lock()
+	for _, c := range changes {
+		d.src.ticketTop = max(d.src.ticketTop, c.Seq)
+	}
 	if !d.src.ticketBegun && len(changes) > 0 {
-		// The feed is read from the first commit announced after the desk
-		// opened: what was there before wakes nothing.
+		// The head could not be read as the desk opened: the feed is read
+		// from after this commit, whose first seq is not known.
 		d.src.ticketBegun = true
-		for i, c := range changes {
-			if i == 0 || c.Seq-1 < d.src.ticketSeq {
-				d.src.ticketSeq = max(0, c.Seq-1)
-			}
-		}
+		d.src.ticketSeq = d.src.ticketTop
 	}
 	d.src.tickets = d.src.tickets || len(changes) > 0
 	d.src.mu.Unlock()
@@ -138,6 +165,12 @@ func (d *brakemanDesk) drainSources() {
 	d.src.mu.Unlock()
 	cfg, err := d.st.Config()
 	if err != nil || !cfg.Background() {
+		// Off: what the sources noted is dropped, and Dispatch's feed is
+		// read on from its newest commit, so a ticket made ready while the
+		// role was off wakes nothing once it is on, as nothing else does.
+		d.src.mu.Lock()
+		d.src.ticketSeq = max(d.src.ticketSeq, d.src.ticketTop)
+		d.src.mu.Unlock()
 		return
 	}
 	for id := range runs {
@@ -203,27 +236,50 @@ func (d *brakemanDesk) runWakes(run crew.Run) []crew.RoleWake {
 	return out
 }
 
-// madeByTurn reports whether a run is what a Brakeman request made: a
-// ticket's launch an act of a turn's ran (its launch the act's receipt).
+// madeByTurn reports whether a run is what a Brakeman act made: a
+// ticket's launch Dispatch keeps as made under Brakeman's actor, which
+// only the desk's Host launches under. Read from the launch's own create
+// row, written before its run started, so whatever became of the act's
+// request since (its receipt not yet copied, the request pruned, a
+// hundred newer) the run is known as Brakeman's. A launch whose maker
+// cannot be read is taken as Brakeman's: a wake missed is better than a
+// turn's run waking the next turn.
 func (d *brakemanDesk) madeByTurn(run crew.Run) bool {
-	if run.Ticket == nil || run.Ticket.Launch == "" {
+	if run.Ticket == nil || run.Ticket.Launch == "" || d.s.dispatch == nil {
 		return false
 	}
-	page, _, err := d.st.List("", brakeman.MaxPage)
-	if err != nil {
-		return false
+	id := run.Ticket.Launch
+	d.src.mu.Lock()
+	made, known := d.src.made[id]
+	d.src.mu.Unlock()
+	if known {
+		return made
 	}
-	for _, r := range page {
-		if slices.ContainsFunc(r.Acts, func(a brakeman.Act) bool { return a.Receipt == run.Ticket.Launch }) {
-			return true
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	actor, err := d.s.dispatch.LaunchActor(ctx, id)
+	switch {
+	case errors.Is(err, dispatch.ErrNotFound):
+		made = false
+	case err != nil:
+		d.s.log.Warn("Brakeman's role could not read who made a run's launch: it wakes nothing", "run", run.ID, "launch", id, "err", err)
+		return true
+	default:
+		made = actor == brakemanActor
 	}
-	return false
+	d.src.mu.Lock()
+	if len(d.src.made) >= maxRoleSources {
+		clear(d.src.made)
+	}
+	d.src.made[id] = made
+	d.src.mu.Unlock()
+	return made
 }
 
 // holdQuestion holds a wake for the session's open question, due once it
 // has been open for threshold, if it is still the one open then. A
-// Brakeman turn's session's question wakes nothing.
+// Brakeman turn's session's question wakes nothing, nor does one of a
+// member of a run a Brakeman act launched (madeByTurn).
 func (d *brakemanDesk) holdQuestion(sid string, threshold time.Duration) {
 	drv, ok := d.s.registry.Get(sid)
 	if !ok {
@@ -233,6 +289,11 @@ func (d *brakemanDesk) holdQuestion(sid string, threshold time.Duration) {
 	att := info.Attention
 	if (info.Crew != nil && info.Crew.Brakeman != nil) || att.State != session.AttentionNeedsInput || att.Since == nil {
 		return
+	}
+	if info.Crew != nil && info.Crew.RunID != "" {
+		if run, ok := d.s.runs.Get(info.Crew.RunID); ok && (run.Class == crew.ClassBrakeman || d.madeByTurn(run)) {
+			return
+		}
 	}
 	since := att.Since.UTC()
 	subject := "session:" + sid
@@ -437,7 +498,7 @@ type roleView struct {
 // roleBatch is the batch a wake request names, as the role holds it: the
 // last fired, or the one open; nil when neither is it.
 func (d *brakemanDesk) roleBatch(id string) *crew.Batch {
-	rec, err := d.role.Record()
+	rec, err := d.roleRecord()
 	if err != nil {
 		return nil
 	}
@@ -470,7 +531,7 @@ func (s *Server) handleBrakemanRole(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	rec, err := d.role.Record()
+	rec, err := d.roleRecord()
 	if err != nil {
 		s.brakemanError(w, err)
 		return

@@ -186,7 +186,7 @@ func (s *Server) handleSessionBrakemanRequest(w http.ResponseWriter, r *http.Req
 	if req.Batch != "" {
 		out.Batch = d.roleBatch(req.Batch)
 	}
-	if rec, err := d.role.Record(); err == nil {
+	if rec, err := d.roleRecord(); err == nil {
 		out.Notes = rec.Notes
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"request": out})
