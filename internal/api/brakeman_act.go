@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -9,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"sync/atomic"
 	"unicode/utf8"
 
@@ -82,7 +85,8 @@ func actOp(request, opID string) string {
 
 // actSeam, when a test sets it, runs at each stage of an act ("waiting"
 // once its body is read, before it waits for the request's make mutex;
-// "pending" once it is written pending, before its operation; "committed"
+// "pending" once it is written pending, or found committed, before its
+// operation or the answer of its kept refusal; "committed"
 // once the operation answered, before its outcome is copied); an error it
 // answers stops the act there, as a server that died would.
 var actSeam atomic.Pointer[func(stage, request, opID string) error]
@@ -137,7 +141,8 @@ type actBody struct {
 // act_not_run for one the server stopped before it ran; one whose
 // operation committed (Dispatch's Committed, its receipt kept or pruned)
 // is run again under its derived key, so the operation's own store
-// answers it whatever the target's state now. Any other act, new or
+// answers it whatever the target's state now, but for a refusal the store
+// kept, answered from the receipt as Committed read it, nothing run. Any other act, new or
 // retried, is admitted in admission's order (pendAct): refused in this
 // order, the grant again, the target's visibility (403 not_visible) and
 // scope, the ticket's and what the operation makes (403 outside_scope),
@@ -147,7 +152,9 @@ type actBody struct {
 // is copied into the request, and the answer is the operation's route's
 // own. The whole act holds the request's make mutex, so no two acts of a
 // request interleave, and is admitted as a make is (admitMake), so
-// release waits for it before the owner lock goes.
+// release waits for it before the owner lock goes; its operation begins
+// only while the desk is open (beginAct, 503 shutting_down otherwise), and
+// the shutdown waits for it before the server's runs are stopped.
 func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincipal, ar actRoute) {
 	d := s.brakeman
 	ds, ok := s.dispatchWriter(w)
@@ -200,6 +207,9 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 	target := brakeman.Ref{Kind: brakeman.RefTicket, Ticket: key}
 	op := actOp(req.ID, body.OpID)
 	admit := true
+	// kept is a refusal Dispatch kept for the act's operation, answered as
+	// it was read here.
+	var kept *dispatch.Receipt
 	if i := slices.IndexFunc(req.Acts, func(a brakeman.Act) bool { return a.OpID == body.OpID }); i >= 0 {
 		a := req.Acts[i]
 		switch {
@@ -214,11 +224,17 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 		// whatever the target's state now. One that did not (refused
 		// before the store, or a failure of the server) runs anew if it
 		// runs at all: it is held to the checks again and written pending
-		// again before it runs.
-		switch _, found, err := ds.Committed(ctx, brakemanActor, op); {
+		// again before it runs. A refusal the store kept is answered from
+		// the receipt read here, never sent to the operation again: a
+		// refusal writes no change row, so once the receipt is pruned the
+		// operation would run anew, unchecked and not pending.
+		switch rc, found, err := ds.Committed(ctx, brakemanActor, op); {
 		case err != nil:
 			s.dispatchError(w, "act", err)
 			return
+		case found && rc.Status != dispatch.StatusDone:
+			rc.Repeat = true
+			kept, admit = &rc, false
 		case found:
 			admit = false
 		}
@@ -241,14 +257,137 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 		return
 	}
 	rec := newReplyRecorder()
-	s.runAct(ctx, rec, ds, tp, ar, key, op, body)
+	if kept != nil {
+		// The route's own answer to its kept refusal, nothing run.
+		s.writeOp(rec, "act", *kept, nil, false, "", func(dispatch.Receipt) (any, error) { return nil, nil })
+	} else {
+		// The operation begins only while the desk is open, and the
+		// shutdown waits for it before the server's runs are stopped: a
+		// run an act launches is one those stops find. Refused once the
+		// desk closes, the entry stays pending, and the next start marks
+		// it not_run.
+		if !d.beginAct() {
+			s.brakemanError(w, errDeskClosing)
+			return
+		}
+		defer d.actDone()
+		s.runAct(ctx, rec, ds, tp, ar, key, op, body)
+	}
 	if err := atActSeam("committed", req.ID, body.OpID); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "shutting_down", err.Error())
 		return
 	}
 	s.copyActOutcome(d, req.ID, body.OpID, rec)
-	writeRecorded(w, rec)
+	s.answerAct(ctx, w, tp, key, rec)
 }
+
+// answerAct answers the turn tp's act on the ticket key with what its
+// operation's route answered (rec), as the turn may read it as it is
+// answered: the receipt and the error always, the act's own answer, so a
+// retry is answered by its receipt whatever the grant now; launch and
+// plan, Dispatch's records of the ticket, only while the configuration
+// now and the turn's snapshot show dispatch, the ticket is in the scope
+// and the turn has reads left, each noted in its read log at its state
+// and rev and the answer counted as one read; never the run, which the
+// turn reads through its grant (GET /api/runs/{run}). dispatch is noted
+// as a class the turn's answers used (the receipt and the words are
+// Dispatch's) for its brief's footprint. All of it under the reads'
+// mutex, before the answer is written, so a brief kept after the answer
+// carries what it delivered.
+func (s *Server) answerAct(ctx context.Context, w http.ResponseWriter, tp *turnPrincipal, key string, rec *replyRecorder) {
+	d := s.brakeman
+	d.readMu.Lock()
+	defer d.readMu.Unlock()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(rec.body.Bytes(), &m); err != nil {
+		// Not an object (no route answers so): nothing of it is given.
+		d.usedClass(tp.req.ID, brakeman.ClassDispatch)
+		writeError(w, cmp.Or(rec.status, http.StatusInternalServerError), "store_failed", "the operation's answer could not be read")
+		return
+	}
+	out := map[string]json.RawMessage{}
+	for _, k := range []string{"receipt", "error"} {
+		if v, ok := m[k]; ok {
+			out[k] = v
+		}
+	}
+	if o := s.actReader(ctx, tp, key); o != nil {
+		given := map[string]json.RawMessage{}
+		if v, ok := m["launch"]; ok && !isJSONNull(v) {
+			var l struct {
+				ID    string `json:"id"`
+				State string `json:"state"`
+				Rev   int64  `json:"rev"`
+			}
+			if json.Unmarshal(v, &l) == nil && l.ID != "" {
+				o.noteRef("launch:"+l.ID, brakeman.ClassDispatch, l.State, strconv.FormatInt(l.Rev, 10))
+				given["launch"] = v
+			}
+		}
+		if v, ok := m["plan"]; ok && !isJSONNull(v) {
+			var p struct {
+				N     int             `json:"n"`
+				State string          `json:"state"`
+				Stale json.RawMessage `json:"stale"`
+				Rev   int64           `json:"rev"`
+			}
+			if json.Unmarshal(v, &p) == nil && p.N > 0 {
+				stale := len(p.Stale) > 0 && !isJSONNull(p.Stale)
+				o.noteRef(fmt.Sprintf("plan:%s/%d", key, p.N), brakeman.ClassDispatch, planRefState(p.State, stale), strconv.FormatInt(p.Rev, 10))
+				given["plan"] = v
+			}
+		}
+		if len(given) > 0 {
+			if _, err := d.st.NoteAnswer(tp.req.ID, o.reads...); err != nil {
+				// Not noted, not given: the receipt answers alone.
+				s.log.Warn("a Brakeman act's answer could not be noted as read: its records are left out", "request", tp.req.ID, "err", err)
+			} else {
+				maps.Copy(out, given)
+			}
+		}
+	}
+	d.usedClass(tp.req.ID, brakeman.ClassDispatch)
+	b, err := marshalNoEscape(out)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store_failed", "the operation's answer could not be written")
+		return
+	}
+	h := w.Header()
+	for k, v := range rec.header {
+		h[k] = v
+	}
+	h.Del("Content-Length")
+	w.WriteHeader(cmp.Or(rec.status, http.StatusOK))
+	_, _ = w.Write(append(b, '\n'))
+}
+
+// actReader is the observer an act's answer is read by: the turn tp's
+// request and the configuration as they are now, while the turn may read
+// Dispatch's records of the ticket key (its request a turn's, reads left,
+// dispatch shown, the ticket in the scope); nil otherwise.
+func (s *Server) actReader(ctx context.Context, tp *turnPrincipal, key string) *observer {
+	d := s.brakeman
+	req, err := d.st.Get(tp.req.ID)
+	if err != nil || (req.State != brakeman.StateStarting && req.State != brakeman.StateRunning) || req.Reads >= req.Config.Budget.ReadsPerTurn {
+		return nil
+	}
+	cfg, err := d.st.Config()
+	if err != nil {
+		return nil
+	}
+	now := &turnPrincipal{session: tp.session, req: req, cfg: cfg}
+	o := s.newObserver(now)
+	if !o.grant.sees(brakeman.ClassDispatch) {
+		return nil
+	}
+	if ok, err := o.ticketAdmitted(ctx, key); err != nil || !ok {
+		return nil
+	}
+	return o
+}
+
+// isJSONNull reports whether raw is JSON's null.
+func isJSONNull(raw json.RawMessage) bool { return string(bytes.TrimSpace(raw)) == "null" }
 
 // errActsSpent refuses an act past brakeman.MaxActs a request.
 var errActsSpent = newAPIError(http.StatusConflict, "acts_spent", fmt.Sprintf("a request takes at most %d acts", brakeman.MaxActs))
@@ -292,16 +431,6 @@ func (s *Server) pendAct(ctx context.Context, ds *dispatch.Store, tp *turnPrinci
 		return nil
 	})
 	return err
-}
-
-// writeRecorded writes a recorded answer to w.
-func writeRecorded(w http.ResponseWriter, rec *replyRecorder) {
-	h := w.Header()
-	for k, v := range rec.header {
-		h[k] = v
-	}
-	w.WriteHeader(cmp.Or(rec.status, http.StatusOK))
-	_, _ = w.Write(rec.body.Bytes())
 }
 
 // actArgs reads an act's body as its route decodes it (unknown fields
@@ -365,7 +494,10 @@ func actGrant(tp *turnPrincipal, op string) *apiError {
 // admitAct checks an act of the turn tp on the ticket key, in order: the
 // grant, the target's visibility and scope, what the operation makes (a
 // run's or a revision's crew and repository) held to the scope too, and
-// the target's state as the operation requires. nil admits it.
+// the target's state as the operation requires. nil admits it. A refusal
+// past the visibility check is in Dispatch's words (a revision's state, a
+// ticket's rev, a revision's crew), so dispatch is noted as a class the
+// turn's answers used, under the reads' mutex, as answerAct notes it.
 func (s *Server) admitAct(ctx context.Context, ds *dispatch.Store, tp *turnPrincipal, ar actRoute, key string, body actBody) *apiError {
 	if aerr := actGrant(tp, ar.op); aerr != nil {
 		return aerr
@@ -376,6 +508,19 @@ func (s *Server) admitAct(ctx context.Context, ds *dispatch.Store, tp *turnPrinc
 	if !o.grant.sees(brakeman.ClassDispatch) {
 		return newAPIError(http.StatusForbidden, "not_visible", "Brakeman may not see "+brakeman.ClassDispatch)
 	}
+	aerr := s.admitVisibleAct(ctx, ds, o, ar, key, body)
+	if aerr != nil {
+		d := s.brakeman
+		d.readMu.Lock()
+		d.usedClass(tp.req.ID, brakeman.ClassDispatch)
+		d.readMu.Unlock()
+	}
+	return aerr
+}
+
+// admitVisibleAct is admitAct's checks once Dispatch is visible: the
+// ticket in the scope, what the operation makes, the target's state.
+func (s *Server) admitVisibleAct(ctx context.Context, ds *dispatch.Store, o *observer, ar actRoute, key string, body actBody) *apiError {
 	switch ok, err := o.ticketAdmitted(ctx, key); {
 	case err != nil:
 		return newAPIError(http.StatusInternalServerError, "store_failed", "the ticket's runs could not be read")

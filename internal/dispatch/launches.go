@@ -156,7 +156,22 @@ var memberPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
 // started: the receipt's id is the launch's, which the caller reads it by
 // (LaunchByID), and the API starts the run after the commit.
 func (s *Store) Launch(ctx context.Context, op Op, key, planID, label string) (Receipt, error) {
+	return s.LaunchAdmitted(ctx, op, key, planID, label, nil)
+}
+
+// LaunchAdmitted is Launch with admit, when set, asked first in the
+// transaction, under the store's lock, after a resend of the operation was
+// answered: its error ends the operation with that error, nothing kept,
+// no receipt (a caller whose authority ended while it waited for the
+// store, ext.Host's LaunchApproved for a provider given up), so the same
+// op id may be sent again once it holds.
+func (s *Store) LaunchAdmitted(ctx context.Context, op Op, key, planID, label string, admit func() error) (Receipt, error) {
 	return s.Apply(ctx, op, IntentTicketLaunch, LaunchArgs{Key: key, Plan: planID, Label: label}, func(t *tx) error {
+		if admit != nil {
+			if err := admit(); err != nil {
+				return err
+			}
+		}
 		tk, _, err := t.ticket(key, false)
 		if err != nil {
 			return err

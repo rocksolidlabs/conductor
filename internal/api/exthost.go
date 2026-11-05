@@ -423,7 +423,9 @@ func (h *extHost) LaunchTurn(ctx context.Context, r ext.TurnLaunch) (ext.RunRef,
 // revision not approved, an approval that no longer holds, a ticket that
 // moved, managed runs off) ext.ErrRefused with the route's words; a
 // switchyard, or a server without a writable Dispatch store,
-// ext.ErrUnsupported. When ctx carries a reply sink (withReplySink), the
+// ext.ErrUnsupported. A launch whose try is given up before the store
+// keeps it, at the call or while it waited, answers context.Canceled and
+// launches nothing. When ctx carries a reply sink (withReplySink), the
 // route's own answer is written there too.
 func (h *extHost) LaunchApproved(ctx context.Context, r ext.ApprovedLaunch) (ext.RunRef, error) {
 	if err := h.gone(); err != nil {
@@ -451,11 +453,27 @@ func (h *extHost) LaunchApproved(ctx context.Context, r ext.ApprovedLaunch) (ext
 		actor = brakemanActor
 	}
 	op := dispatch.Op{Actor: actor, ID: r.OpID, ExpectedRev: r.ExpectedRev, By: r.By.Name}
-	// As the route's: once begun, the launch runs to its end, each step
-	// within its own bound.
+	// The try's end is asked once more where the launch is kept, in the
+	// store's transaction (as Launch asks it as the engine is asked): a
+	// try given up while the call waited launches nothing and keeps no
+	// receipt. Once admitted, as the route's, the launch runs to its end,
+	// each step within its own bound, so what it kept is settled.
+	withdrawn := false
+	admit := func() error {
+		if err := h.gone(); err != nil {
+			withdrawn = true
+			return err
+		}
+		return nil
+	}
 	lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), LaunchTimeout)
 	defer cancel()
-	h.s.ticketLaunch(lctx, rec, ds, op, r.Ticket, r.Plan, r.Label)
+	h.s.ticketLaunch(lctx, rec, ds, op, r.Ticket, r.Plan, r.Label, admit)
+	if withdrawn {
+		rec = newReplyRecorder()
+		writeError(rec, http.StatusServiceUnavailable, "withdrawn", "the provider's start was given up before the launch was kept: nothing was launched")
+		return ext.RunRef{}, context.Canceled
+	}
 	return h.s.launchedRef(rec)
 }
 
