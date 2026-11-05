@@ -63,11 +63,10 @@ const error = ref('')
 /** Another draft by its index in the brief, as the blocks name it: once made, the ticket it became, with that ticket's title. */
 const draftTitle = (i: number) => draftName(i, props.items, req.value.made, (key) => bk.ticketTitle(key))
 /** The tickets the drafts this one blocks became: each one's title read from Dispatch, once, for the Blocks line. */
-watch(
-  () => (props.item.blocks ?? []).map((i) => madeKey(i, req.value.made)).filter((k): k is string => !!k),
-  (keys) => keys.forEach((k) => bk.readTicketTitle(k)),
-  { immediate: true },
-)
+const blockedKeys = computed(() => (props.item.blocks ?? []).map((i) => madeKey(i, req.value.made)).filter((k): k is string => !!k))
+watch(blockedKeys, (keys) => keys.forEach((k) => void bk.readTicketTitle(k)), { immediate: true })
+/** And read again on Dispatch's events for them, and on a reconnect's snapshot: a ticket renamed since shows its new title. */
+useDispatchLive(bk.ticketTitlesWatch(() => blockedKeys.value))
 const blocks = computed(() => blocksWords(props.index, props.item.blocks, req.value.edges, draftTitle))
 
 async function create() {

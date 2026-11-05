@@ -3499,9 +3499,14 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   what the check takes, and the refusals name what is taken beside what
   was sent. A brief holds at least one item and a briefing at least one
   fact. A turn's launch runs the agent's probe when the cache is cold and
-  stamps the version it reports before the member starts. A made draft
+  stamps the version it reports before the member starts; the probe,
+  the stamp and the crew are of one catalog entry, so an entry edited
+  meanwhile is refused at the member's start (`agent_changed`), never
+  launched under the version of the one before. A made draft
   is named in the other card's Blocks line by its ticket and that
-  ticket's title, read from Dispatch by its key, after a reload too. A
+  ticket's title, read from Dispatch by its key, after a reload too,
+  and read again on Dispatch's events for that ticket and on a
+  reconnect's snapshot, so a rename shows. A
   check ref's `seen` keeps the log's SHA-256 the turn read it with (the
   step log route's, and the attempt's receipts'), which the live check
   found empty. The same drafts made twice from two briefs is as the plan
