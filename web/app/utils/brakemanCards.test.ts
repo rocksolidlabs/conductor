@@ -414,6 +414,13 @@ describe("a plan revision's card, DS2's Approve from its live record (PR-11)", (
     expect(planCardControl(null, 'CND-4', 2)).toEqual({ approve: null, words: "CND-4 r2 is not among CND-4's revisions now: open the ticket." })
   })
 
+  it("is text for a proposal of an operation a grant names, which the ticket's Plan section does", () => {
+    const ops: GuideOperation[] = [{ name: 'launch_approved_plan', scope: 'act', revision: 'ticket' }]
+    const c = proposalControl({ kind: 'proposal/1', text: 't', op: 'launch_approved_plan', target: 'ticket:CND-4', expectedRevision: '3' }, ops)
+    expect(c).toMatchObject({ kind: 'text', to: '/dispatch/CND/4' })
+    expect((c as { words: string }).words).toContain("ticket's Plan section")
+  })
+
   it('says a proposed draft plan is the operator\'s to approve', () => {
     expect(madeWords({ state: 'made', key: 'CND-4', plan: '0123456789abcdef' })).toBe("Proposed as a revision of CND-4's plan, under your name: the operator approves it or not.")
   })

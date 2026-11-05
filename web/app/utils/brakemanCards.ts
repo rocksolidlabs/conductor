@@ -156,6 +156,8 @@ export function isStale(e: unknown): boolean {
 /** An operation as the guide lists it (GET /api/guide?section=operations): its name and the revision its route checks. */
 export interface GuideOperation {
   name: string
+  /** Who reaches it: admin, session, task, ticket, observe, or act (an operation the person may grant Brakeman). */
+  scope?: string
   revision?: string
   method?: string
   path?: string
@@ -192,7 +194,10 @@ export function proposalControl(p: Extract<BriefItem, { kind: 'proposal/1' }>, o
   const call = PROPOSAL_CALLS[p.op]
   if (!ops) return text('Do it from its page, on the record as it is.')
   if (!guide) return text(`${p.op} is no operation this server lists: do what it says from its page.`)
-  if (!guide.revision || !call) return text(`${p.op} checks no revision on its route, so a button here could act on what moved since Brakeman read it: do it from its page, where you see it as it is.`)
+  if (!guide.revision) return text(`${p.op} checks no revision on its route, so a button here could act on what moved since Brakeman read it: do it from its page, where you see it as it is.`)
+  // A launch and a follow-up revision (the operations a grant may name) are the ticket's Plan section's, which asks first and says what
+  // a launch runs; Brakeman runs them itself only when the person granted it.
+  if (!call) return text(guide.scope === 'act' ? `Do it from the ticket's Plan section, which says what it runs and asks first, or grant Brakeman "${p.op}" in Settings.` : `${p.op} has no button here: do it from its page, where you see it as it is.`)
   const r = parseRef(p.target)
   if (!r || r.kind !== call.target) return text(`${p.op} acts on a ${call.target}, and the proposal names ${p.target}: do it from its page.`)
   const expectedRevision = revisionOf(p.expectedRevision)

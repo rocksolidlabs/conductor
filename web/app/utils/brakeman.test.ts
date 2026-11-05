@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import type { BrakemanConfig, BriefItem } from './brakeman'
-import { BOUNDS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, formMove, groupItems, keptBrief, kindWords, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, sameConfig, scopeJSONBytes, stateRank, stateWords, stopAction, unopened } from './brakeman'
+import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
+import { BOUNDS, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actReceiptRef, actWords, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, formMove, grantLabel, groupItems, keptBrief, kindWords, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -392,4 +392,71 @@ describe("DS2's records in a brief (PR-11)", () => {
       ['drafts', [1]],
     ])
   })
+})
+
+describe("the grants in Settings and what Brakeman did under them (PR-13)", () => {
+  it("are the server's closed list, each with what it authorizes in words, none an approval", () => {
+    const src = readFileSync(new URL('../../../internal/brakeman/config.go', import.meta.url), 'utf8')
+    const names = Object.fromEntries([...src.matchAll(/\b(Act[A-Za-z]+)\s*=\s*"([a-z_]+)"/g)].map((m) => [m[1], m[2]]))
+    const list = /var Grantable = \[\]string\{([^}]*)\}/.exec(src)![1]!.split(',').map((k) => names[k.trim()])
+    expect(GRANTS.map((g) => g.value)).toEqual(list)
+    for (const g of GRANTS) {
+      expect(g.words.length).toBeGreaterThan(30)
+      expect(g.words).not.toMatch(/^Approve/)
+    }
+    expect(GRANTS.find((g) => g.value === 'launch_approved_plan')!.words).toContain('never approves')
+    expect(grantLabel('prepare_followup')).toBe('Prepare a follow-up')
+    expect(grantLabel('nope')).toBe('nope')
+  })
+
+  it('save a grant list in their order, each once, and a save with none as no grant', () => {
+    expect(withGrant(undefined, 'prepare_followup', true)).toEqual(['prepare_followup'])
+    expect(withGrant(['prepare_followup'], 'launch_approved_plan', true)).toEqual(['launch_approved_plan', 'prepare_followup'])
+    expect(withGrant(['launch_approved_plan', 'prepare_followup'], 'launch_approved_plan', false)).toEqual(['prepare_followup'])
+    expect(withGrant(['launch_approved_plan'], 'launch_approved_plan', true)).toEqual(['launch_approved_plan'])
+    // The server leaves an empty grant list out: a form with [] is the one saved without it.
+    expect(sameConfig(config({ permissions: { observe: true, draft: true, propose: true, act: [] } }), config())).toBe(true)
+    expect(sameConfig(config({ permissions: { observe: true, draft: true, propose: true, act: ['prepare_followup', 'launch_approved_plan'] } }), config({ permissions: { observe: true, draft: true, propose: true, act: ['launch_approved_plan', 'prepare_followup'] } }))).toBe(true)
+    expect(sameConfig(config({ permissions: { observe: true, draft: true, propose: true, act: ['launch_approved_plan'] } }), config())).toBe(false)
+  })
+
+  it("offer only the grants the server's guide lists under the scope act, and none while it is unread", () => {
+    expect(servedGrants(null)).toBeNull()
+    const served = servedGrants([
+      { name: 'act', scope: 'act' },
+      { name: 'launch_approved_plan', scope: 'act' },
+      { name: 'prepare_followup', scope: 'act' },
+      { name: 'run_pause', scope: 'admin' },
+    ])!
+    expect([...served].sort()).toEqual(['launch_approved_plan', 'prepare_followup'])
+    expect(served.has('request_repair')).toBe(false)
+  })
+
+  const proposal = (op: string, target: string, args?: Record<string, unknown>): Extract<BriefItem, { kind: 'proposal/1' }> => ({ kind: 'proposal/1', text: 'Launch it.', op, target, args, expectedRevision: '3' })
+  const act = (over: Partial<BrakemanAct>): BrakemanAct => ({ opId: 'a1', operation: 'launch_approved_plan', target: 'ticket:CND-4', op: 'bk' + '0'.repeat(30), state: 'done', receipt: '0123456789abcdef', at: '2026-11-05T10:00:00Z', ...over })
+
+  it("finds the act Brakeman ran for a proposal: its operation on the proposal's ticket, the one its args name, else the latest", () => {
+    const acts = [act({ opId: 'a1', at: '2026-11-05T10:00:00Z' }), act({ opId: 'a2', at: '2026-11-05T10:05:00Z', receipt: 'fedcba9876543210' }), act({ opId: 'f1', operation: 'prepare_followup', receipt: '1111111111111111' })]
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4'), acts)?.opId).toBe('a2')
+    expect(actFor(proposal('launch_approved_plan', 'plan:CND-4/2'), acts)?.opId).toBe('a2')
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4', { opId: 'a1' }), acts)?.opId).toBe('a1')
+    expect(actFor(proposal('prepare_followup', 'plan:CND-4/1'), acts)?.opId).toBe('f1')
+    // Not run for this proposal: another ticket, another operation, no acts, a target of no ticket.
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-5'), acts)).toBeUndefined()
+    expect(actFor(proposal('ticket_edit', 'ticket:CND-4'), acts)).toBeUndefined()
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4'), undefined)).toBeUndefined()
+    expect(actFor(proposal('run_pause', `run:${RUN}`), acts)).toBeUndefined()
+    expect(refTicket('comment:CND-4/00112233aabbccdd')).toBe('CND-4')
+    expect(refTicket(`run:${RUN}`)).toBe('')
+  })
+
+  it('says "Brakeman did this" with its receipt only for an act done, and what became of any other', () => {
+    expect(actWords(act({}))).toBe('Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt 0123456789abcdef.')
+    expect(actReceiptRef(act({}))).toBe('launch:0123456789abcdef')
+    expect(actWords(act({ state: 'pending', receipt: undefined }))).toContain('is doing this')
+    expect(actWords(act({ state: 'refused', receipt: undefined, why: 'revision 1 of CND-4 is proposed' }))).toBe('Brakeman tried this, under the grant "Launch an approved plan", and it was refused: revision 1 of CND-4 is proposed. Nothing was done.')
+    expect(actWords(act({ state: 'not_run', receipt: undefined }))).toContain('not run again')
+    for (const a of [act({ state: 'refused' }), act({ state: 'pending' }), act({ operation: 'prepare_followup' }), act({ receipt: 'nope' })]) expect(actReceiptRef(a)).toBeNull()
+  })
+
 })
