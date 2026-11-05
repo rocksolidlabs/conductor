@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { agentPayload, commandCheck, commandOf, formErrors, formForClone, formFromAgent, type AgentForm, type CommandCheck, type Field, type SignalKind } from '~/utils/agentForm'
+import { agentPayload, commandCheck, commandOf, formErrors, formForClone, formFromAgent, takesProfile, type AgentForm, type CommandCheck, type Field, type SignalKind } from '~/utils/agentForm'
 import { slugId } from '~/utils/argv'
+import { desktopBridge } from '~/utils/desktop'
+import { BROWSERS, MAX_PROFILE } from '~/utils/opens'
 
 /**
  * Add an agent to the catalog, edit one (`agent` set) or clone one (`clone`
  * set, #291). Saving replaces the agent with the same ID on the server, so an
  * edit sends the whole agent: fields this form has no control for (working
  * directory, icon, adapter, the tool-events flag, the trust prompt, the
- * session recipe) are carried over from the agent being edited. A clone is
+ * session recipe) are carried over from the agent being edited. "Links open
+ * in" is the browser its links open in (#436). A clone is
  * filled from the agent copied, under a new name and ID, and saved through
  * the clone route, which copies the stored values this form never sees.
  */
@@ -58,11 +61,22 @@ function reset() {
   scheduleCheck()
 }
 
+// The browsers the desktop app finds on this computer (#436), to mark in "Links open in"; none outside the app or from an older one.
+const found = ref<string[]>([])
+const browserItems = computed(() => [
+  { label: 'Default browser', value: 'default' },
+  ...BROWSERS.map((b) => ({ label: found.value.includes(b.name) ? `${b.label} · on this computer` : b.label, value: b.name })),
+])
+
 watch(open, (v) => {
   if (v) {
     // A toast from the last save sits over the footer buttons of a right-hand slideover.
     toast.clear()
     reset()
+    desktopBridge()
+      ?.browsers?.()
+      .then((list) => (found.value = Array.isArray(list) ? list : []))
+      .catch(() => {})
   } else {
     clearTimeout(checkTimer)
   }
@@ -252,6 +266,19 @@ async function testLaunch() {
           <UInput v-model="form.site" type="url" placeholder="https://" maxlength="200" autocapitalize="off" spellcheck="false" class="w-full" />
           <template #help>The Agents page links to it on any agent that has one.</template>
         </UFormField>
+
+        <div class="grid gap-3 sm:grid-cols-2" data-agent-browser>
+          <UFormField label="Links open in" name="browser" hint="optional">
+            <USelect v-model="form.browser" :items="browserItems" aria-label="Links open in" class="w-full" />
+          </UFormField>
+          <UFormField v-if="takesProfile(form)" label="Profile" name="profile" hint="optional" :error="shown.profile">
+            <UInput v-model="form.profile" placeholder="Profile 2" :maxlength="MAX_PROFILE" autocapitalize="off" spellcheck="false" class="w-full" />
+          </UFormField>
+          <p class="-mt-1 text-xs text-muted sm:col-span-2">
+            Where the desktop app opens the links this agent opens for you (conductor open, the open_url tool, its own opener), on its computer.
+            <template v-if="takesProfile(form)">A profile is the browser's profile folder, such as Default or Profile 2.</template>
+          </p>
+        </div>
 
         <div class="text-sm">
           <div class="font-medium text-default">Environment</div>

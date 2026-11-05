@@ -101,7 +101,7 @@ func TestMcpServesTheSkillsCommandsAsTools(t *testing.T) {
 	for _, tl := range tools {
 		names = append(names, tl.(map[string]any)["name"].(string))
 	}
-	if strings.Join(names, ",") != "report,set_state,ask,form_crew,add_member,run_status,link,task_context,task_result,message_send,inbox_read,inbox_ack,task_blocked,task_checkpoint,ticket_read,ticket_comment,guide" {
+	if strings.Join(names, ",") != "report,set_state,ask,form_crew,add_member,run_status,link,task_context,task_result,message_send,inbox_read,inbox_ack,task_blocked,task_checkpoint,ticket_read,ticket_comment,guide,open_url" {
 		t.Fatalf("tools %v", names)
 	}
 	for _, tl := range tools {
@@ -381,7 +381,7 @@ func TestMcpTicketCommentResendsAfterAStalledReply(t *testing.T) {
 // The golden file is main's tools/list reply before the tools were listed
 // from the table (docs/plans/brakeman.md, PR-2): its sixteen tools are
 // listed byte for byte as they were, in their order, and the guide after
-// them.
+// them, then open_url (#436).
 func TestToolsListIsUnchanged(t *testing.T) {
 	golden, err := os.ReadFile("testdata/tools-list-main.json")
 	if err != nil {
@@ -404,7 +404,7 @@ func TestToolsListIsUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	was, now := tools(golden), tools(out.Bytes())
-	if len(was) != 16 || len(now) != len(was)+1 {
+	if len(was) != 16 || len(now) != len(was)+2 {
 		t.Fatalf("%d tools before, %d now", len(was), len(now))
 	}
 	for i := range was {
@@ -412,11 +412,14 @@ func TestToolsListIsUnchanged(t *testing.T) {
 			t.Errorf("tool %d changed:\n was %s\n now %s", i, was[i], now[i])
 		}
 	}
-	var guide mcpTool
+	var guide, open mcpTool
 	if err := json.Unmarshal(now[len(was)], &guide); err != nil || guide.Name != "guide" || guide.InputSchema["type"] != "object" {
-		t.Fatalf("the last tool %s %v", now[len(was)], err)
+		t.Fatalf("the guide %s %v", now[len(was)], err)
 	}
-	// The whole reply is the golden's with the guide's entry added.
+	if err := json.Unmarshal(now[len(was)+1], &open); err != nil || open.Name != "open_url" || open.InputSchema["type"] != "object" {
+		t.Fatalf("the last tool %s %v", now[len(was)+1], err)
+	}
+	// The whole reply is the golden's with the guide's and open_url's entries added.
 	trimmed := strings.TrimRight(string(golden), "\n")
 	if !strings.HasPrefix(out.String(), strings.TrimSuffix(trimmed, "]}}")+",") {
 		t.Fatalf("the reply does not begin as main's did")

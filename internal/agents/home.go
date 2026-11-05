@@ -284,6 +284,18 @@ func (e *modeError) Unwrap() error { return e.err }
 // *modeError naming it. Directories it makes are 0700. A link or anything
 // else that is not a regular file is refused.
 func replaceFile(p, name string, data []byte, mode fs.FileMode) (bool, error) {
+	return replacing(p, name, data, mode, false)
+}
+
+// replaceExecutable is replaceFile for a file that is of no use without its
+// mode, a program: a mode it cannot set keeps the new content out, so the
+// file there, if any, stays as it was, and the error is a *modeError.
+func replaceExecutable(p, name string, data []byte, mode fs.FileMode) (bool, error) {
+	return replacing(p, name, data, mode, true)
+}
+
+// replacing is replaceFile, and replaceExecutable when strict.
+func replacing(p, name string, data []byte, mode fs.FileMode, strict bool) (bool, error) {
 	fi, err := existing(p, name)
 	if err != nil {
 		return false, err
@@ -322,6 +334,9 @@ func replaceFile(p, name string, data []byte, mode fs.FileMode) (bool, error) {
 	var modeErr error
 	if err := chmod(f.Name(), perm); err != nil {
 		modeErr = &modeError{&fs.PathError{Op: "chmod", Path: name, Err: pathErr(err)}}
+		if strict {
+			return false, modeErr
+		}
 	}
 	if _, err := f.Write(data); err != nil {
 		return false, err

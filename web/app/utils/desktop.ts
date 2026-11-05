@@ -1,3 +1,5 @@
+import type { AgentBrowser } from '~/utils/protocol'
+
 /** The desktop app's settings as its shell keeps them (desktop/src/settings.ts). */
 export interface DesktopSettings {
   dataDir: string
@@ -154,6 +156,14 @@ export interface DesktopBridge {
      */
     outcome?(): Promise<string>
   }
+  /**
+   * Opens an agent's link in the browser its settings name (#436), on this computer, one tab; none named, or one not installed here,
+   * in the default browser. What became of it: 'browser', 'default', 'missing' (not installed) or 'failed' (did not start). Older
+   * apps lack it.
+   */
+  openUrl?(url: string, browser?: AgentBrowser | null): Promise<{ outcome: string }>
+  /** The browsers of the five an agent may name that are installed on this computer, for the Agents page to mark. Older apps lack it. */
+  browsers?(): Promise<string[]>
   restartServer(): Promise<void>
   openInBrowser(): Promise<void>
   showLog(): Promise<void>

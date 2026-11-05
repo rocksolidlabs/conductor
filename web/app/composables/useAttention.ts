@@ -3,6 +3,7 @@ import { ApiError } from './useApi'
 import { liveSession, attentionFavicon, alerting, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
 import { eventAlert, type RoutedEvent } from '~/utils/events'
 import { formedCrew } from '~/utils/activity'
+import { desktopBridge } from '~/utils/desktop'
 import type { ActivityEntry, ChatMessage, SessionActivity } from '~/utils/protocol'
 import { RunStore } from '~/utils/runs'
 import { asDispatchEvent, dispatchLive } from './useDispatchLive'
@@ -95,6 +96,7 @@ export function useAttention() {
   const unread = useChatUnread()
   const { settings } = useAttentionSettings()
   const toast = useToast()
+  const opens = useLinkOpens()
 
   const sessions = computed(() => {
     void version.value
@@ -241,7 +243,10 @@ export function useAttention() {
     abort = new AbortController()
     const signal = abort.signal
     try {
-      const res = await fetch(`${httpBase.value}/api/events`, { headers: { Authorization: `Bearer ${admin.token.value}` }, signal })
+      // A page in a desktop app that opens agents' links says so (#436): while it streams, an agent's link waits for its claim.
+      const headers: Record<string, string> = { Authorization: `Bearer ${admin.token.value}` }
+      if (desktopBridge()?.openUrl) headers['X-Conductor-Desktop'] = '1'
+      const res = await fetch(`${httpBase.value}/api/events`, { headers, signal })
       if (res.status === 401) {
         admin.needsToken.value = true
         store.value.error = 'Workbench token required'
@@ -314,6 +319,9 @@ export function useAttention() {
         const { sessionId, ...entry } = payload as SessionActivity
         offerFormedCrew(sessionId, entry)
         events.push(sessionId, entry)
+      } else if (event === 'open') {
+        // A link an agent opened (#436): the desktop app opens it, a plain tab offers it once no app took it (useLinkOpens).
+        opens.event(payload, (id) => store.value.sessions.get(id)?.name || id)
       } else if (event === 'chat') {
         // A chat message of a session or a run: the unread counts, for the threads no page has open.
         const { sessionId, runId, ...m } = payload as { sessionId?: string; runId?: string } & ChatMessage

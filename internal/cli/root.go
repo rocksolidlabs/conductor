@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
@@ -20,6 +21,7 @@ Usage:
   conductor notify [flags]     report "needs input" from inside a session
   conductor crew create|add|status|link
                                form a crew around this session, from inside it
+  conductor open <url>         open a link for the person in the browser this session's agent names
   conductor task context|result|ticket
                                read this session's task in a managed run, submit its result, and
                                read and comment on the Dispatch ticket its run is linked to
@@ -86,6 +88,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runCrew(ctx, args[1:], stdin, stdout, stderr)
 	case "task":
 		return runTask(ctx, args[1:], stdin, stdout, stderr)
+	case "open":
+		return runOpen(ctx, args[1:], stdout, stderr, os.Getenv)
 	case "guide":
 		return runGuide(ctx, args[1:], stdout, stderr)
 	case "brakeman":

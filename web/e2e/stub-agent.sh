@@ -70,6 +70,9 @@
 # plan's approval and draw that dialog as Claude Code 2.1.304 draws it
 # (#288): its three choices, "1. Yes, and use auto mode" highlighted; 1 or
 # 2 picks at once and goes into the transcript as "plan: 1" or "plan: 2".
+# A line `stub open <url>` runs conductor open on the link, and `stub
+# browser <url>` runs $BROWSER on it as an agent's own opener does (#436);
+# each notes the command's one line in the transcript (open: …, browser: …).
 # A line `stub permission` sends the PermissionRequest hook of a Bash
 # command and draws no dialog, a permission whose choices the screen does
 # not show; the next key goes into the transcript as "permission: <key>".
@@ -1137,6 +1140,25 @@ answer() {
 	fi
 	if [[ $line == 'stub permission' ]]; then
 		claude_permission
+	fi
+	if [[ $line =~ ^stub\ open\ (https?://[^[:space:]]{1,2000})$ ]]; then
+		# A link opened for the person (#436): conductor open, and its
+		# one line in the transcript, which a spec waits on.
+		out=$("$conductor" open -- "${BASH_REMATCH[1]}" 2>&1) || true
+		printf '%s\n' "$out"
+		printf 'open: %s\n' "$out" >>"$transcript"
+	fi
+	if [[ $line =~ ^stub\ browser\ (https?://[^[:space:]]{1,2000})$ ]]; then
+		# The agent's own opener: $BROWSER, Conductor's for an agent with
+		# a browser set (#436), run as an agent runs it, the link its one
+		# argument.
+		if [[ -n ${BROWSER:-} ]]; then
+			out=$("$BROWSER" "${BASH_REMATCH[1]}" 2>&1) || true
+		else
+			out='no BROWSER'
+		fi
+		printf '%s\n' "$out"
+		printf 'browser: %s\n' "$out" >>"$transcript"
 	fi
 	if [[ $line =~ ^stub\ ask-wait\ (.{1,200})$ ]]; then
 		report --ask --message "${BASH_REMATCH[1]}"

@@ -6,6 +6,14 @@ const bridge = {
   platform: process.platform,
   token: (): Promise<string> => ipcRenderer.invoke('conductor:token'),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('conductor:openExternal', url),
+  /**
+   * Opens an agent's link in the browser its settings name (#436), on this computer, one tab; with none named, or one not installed
+   * here, in the default browser. What became of it: 'browser', 'default', 'missing' (not installed) or 'failed' (did not start).
+   */
+  openUrl: (url: string, browser?: { name: string; profile?: string } | null): Promise<{ outcome: string }> =>
+    ipcRenderer.invoke('conductor:openUrl', url, browser ?? null),
+  /** The browsers of the five an agent may name that are installed on this computer. */
+  browsers: (): Promise<string[]> => ipcRenderer.invoke('conductor:browsers'),
   settings: {
     get: () => ipcRenderer.invoke('conductor:settings:get'),
     set: (patch: Record<string, unknown>) => ipcRenderer.invoke('conductor:settings:set', patch),

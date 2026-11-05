@@ -517,6 +517,17 @@ and the guessing stops until insert mode is left.
 
 URLs printed by an agent are clickable: a click offers **Open in new tab** or
 **Preview in pane** (a sandboxed iframe; sites that forbid embedding stay blank).
+A link an agent opens for you (an artifact, a pull request, a preview, a
+sign-in page) goes through Conductor: `conductor open <url>`, the MCP tool
+`open_url`, or the agent's own opener, which an agent with a browser set gets
+as `BROWSER` unless it has one of its own (and only while
+`agents.selfService` is on). The Agents page's **Links open
+in** names that agent's browser (Chrome, Edge, Firefox, Brave or Safari, with
+a profile for the Chromium three), so two accounts of one service, each
+signed in to its own browser, each get their own links. The desktop app
+opens the link there; with no desktop app, the workbench shows it in a toast
+with **Open**, and a browser tab never opens anything on its own. Ten links
+a minute per session, each recorded in its activity.
 File locations such as `internal/api/server.go:42`, `./README.md` or Python
 traceback lines are underlined when the file exists in the session's working
 directory; clicking opens it in the Files tab at that line with syntax
@@ -1815,6 +1826,16 @@ computer. An update the app downloaded that did
 not install (it started again as the version before) is said once, with
 the way to the app's log. The deb and rpm builds are updated by your
 package manager.
+The app opens the links agents open (`conductor open`, `open_url`,
+`BROWSER`) in the browser the agent's settings name, on the computer the app
+runs on, Windows for a server in WSL, reached over the workbench's own
+connection to its server: nothing to configure. It finds the browser by its
+name in its usual place (Program Files or your AppData on Windows,
+/Applications on macOS, the PATH on Linux) and starts it with the profile
+switch and the link as arguments, never through a shell; with no browser
+named, or the one named not installed, the link opens in your default
+browser, and a toast says when the one named was not found. The Agents
+page's **Links open in** marks the browsers the app found.
 `make desktop-dev` runs it from a checkout; `desktop/README.md` has the rest.
 
 **Windows.** There is no Windows build of the server: the installer bundles
@@ -2052,6 +2073,11 @@ verified live; the other adapters' come from their documentation and refuse
 nothing until the nightly recipes job confirms them. `probe: false` on an
 agent turns the check off; `POST /api/catalog/check` runs it for an adapter.
 `GET /api/catalog` carries the result as `identity`.
+
+**Browser.** `"browser": {"name": "edge", "profile": "Profile 2"}` on an
+agent names where its links open (`chrome`, `edge`, `firefox`, `brave` or
+`safari`; a profile directory for the first, second and fourth); none is the
+default browser.
 
 ```json
 {

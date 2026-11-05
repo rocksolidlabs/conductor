@@ -29,6 +29,9 @@ const (
 type eventHub struct {
 	mu      sync.Mutex
 	clients map[chan []byte]struct{}
+	// desktops counts the streams of desktop apps' workbenches that open
+	// agents' links (desktopHeader).
+	desktops int
 	// sinks receive every activity entry after the clients: the notifier
 	// (the webhooks, then the providers' sinks; notify.go), the crew runs,
 	// then the context providers' touch sink (extcontext.go).
@@ -365,6 +368,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	ch := s.events.subscribe()
 	defer s.events.unsubscribe(ch)
+	// A desktop app's workbench, which opens agents' links (opens.go),
+	// says so: while one streams, an open waits for its claim.
+	if r.Header.Get(desktopHeader) == "1" {
+		s.events.desktop(+1)
+		defer s.events.desktop(-1)
+	}
 	// An identity provider's principal keeps the stream while the provider
 	// admits it (principalWatch), and loses it once it no longer does,
 	// from before the first byte is written: the revoke cuts a write under

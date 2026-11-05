@@ -111,6 +111,7 @@ func completionSpec() []commandSpec {
 			{name: "--file-edit", kind: flagEnum, values: []string{"control", "off"}}, {name: "--server-config", kind: flagFile}, {name: "--signal-pattern", kind: flagValue}, {name: "--link", kind: flagEnum, values: []string{"view", "control"}}, {name: "--log-level", kind: flagEnum, values: levels}}},
 		{name: "notify", flags: notifyFlags},
 		{name: "mcp"},
+		{name: "open"},
 		{name: "crew", flags: []flagSpec{{name: "--self", kind: flagValue}, {name: "--open"}, {name: "--ttl", kind: flagValue}, {name: "--label", kind: flagValue}, {name: "--quiet"}}, words: []string{"create", "add", "status", "link"}},
 		{name: "task", flags: []flagSpec{{name: "--page", kind: flagValue}, {name: "--json"}, {name: "--summary", kind: flagValue}, {name: "--commit", kind: flagValue}, {name: "--issue", kind: flagValue}, {name: "--verdict", kind: flagEnum, values: []string{"approved", "needs_changes"}}, {name: "--finding", kind: flagValue}, {name: "--file", kind: flagFile},
 			{name: "--to", kind: flagValue}, {name: "--after", kind: flagValue}, {name: "--reason", kind: flagValue}, {name: "--message", kind: flagValue}, {name: "--done", kind: flagValue}, {name: "--remaining", kind: flagValue}, {name: "--notes", kind: flagValue}}, words: []string{"context", "result", "send", "inbox", "ack", "blocked", "checkpoint", "ticket"},

@@ -452,6 +452,11 @@ func copyFromSource(a *catalog.Agent, src catalog.Agent) error {
 	if a.Probe == nil {
 		a.Probe = src.Probe
 	}
+	// A page older than the browser's control (#436) sends none: the copy
+	// opens its links where the source does. {} is the default browser.
+	if a.Browser == nil {
+		a.Browser = src.Browser
+	}
 	for _, k := range slices.Sorted(maps.Keys(a.Env)) {
 		if a.Env[k] != catalog.RedactedValue {
 			continue

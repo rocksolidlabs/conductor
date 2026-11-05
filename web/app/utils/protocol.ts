@@ -227,6 +227,27 @@ export interface ActivityEntry {
 /** Data of an `activity` event on GET /api/events: an activity entry and the session it belongs to. */
 export type SessionActivity = ActivityEntry & { sessionId: string }
 
+/** A browser an agent's links open in (#436): the catalog's `browser` (internal/catalog/browser.go). */
+export interface AgentBrowser {
+  /** chrome, edge, firefox, brave or safari; absent is the computer's default browser. */
+  name?: 'chrome' | 'edge' | 'firefox' | 'brave' | 'safari'
+  /** A Chromium profile directory (`Profile 2`), for chrome, edge and brave alone; at most 100 characters. */
+  profile?: string
+}
+
+/**
+ * Data of an `open` event on GET /api/events (#436, docs/protocol.md "Opening a link"): a link an agent opened (≤ 2048 bytes), the
+ * browser its settings name, and whether it waits for a desktop app to claim it (`pending`) or is offered in the workbench because
+ * none did (`offered`). At most 15,200 bytes of data.
+ */
+export interface OpenEvent {
+  id: string
+  sessionId: string
+  url: string
+  browser?: AgentBrowser
+  state: 'pending' | 'offered'
+}
+
 export interface ICEServer {
   urls: string[]
   username?: string

@@ -163,6 +163,8 @@ type Server struct {
 	reachMu sync.Mutex
 	reach   reachSource
 	certs   certSource
+	// opens holds the links agents opened that wait for a desktop app (opens.go).
+	opens *openDesk
 	// publisher publishes sessions to a rendezvous (SetPublisher); published
 	// holds the publications by session id, pubGone the ids that left before
 	// their publication landed (see publish.go).
@@ -374,6 +376,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	s.viewerCloseWait = closeWait
 	s.runSyncRetry = runSyncRetry
 	s.selfLimits = newSelfCounters()
+	s.opens = newOpenDesk()
 	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }
 	s.events = newEventHub()
 	s.runs = crew.NewEngine(s, s.lookupLocal)
@@ -713,6 +716,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/run/members", s.launchingAny(s.handleSelfAddMember))
 	mux.HandleFunc("GET /api/sessions/{id}/run", s.launchingAny(s.handleSelfRun))
 	mux.HandleFunc("POST /api/sessions/{id}/links/agent", s.handleSelfLink)
+	// An agent's links, opened by the desktop app in its agent's browser (opens.go).
+	mux.HandleFunc("POST /api/sessions/{id}/open", s.handleSelfOpen)
+	mux.HandleFunc("POST /api/opens/{id}/claim", s.requireAdmin(s.handleClaimOpen))
+	mux.HandleFunc("POST /api/opens/{id}/result", s.requireAdmin(s.handleOpenResult))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.requireAdmin(s.handleDeleteSession))
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.launching(s.handleRenameSession))
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.launching(s.handleResumeSession))
