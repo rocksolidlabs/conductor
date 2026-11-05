@@ -503,9 +503,23 @@ decision accepts one response in its life, `open` → `answered` once),
 so no run of refusals (stale revs, a router's answers) can leave a
 gate that nobody can approve. Past 31 refused rows a further refusal
 is answered with its receipt's words and `kept: false`, and keeps no
-row; its retry is judged again, and since a decision's state and rev
-only move forward it is refused again, so a repeat still gets the same
-answer; at most 32 operator operations per decision (above). A
+row, so it binds nothing: a refusal not kept is not a receipt, its
+retry with the same `responseId` and body is judged again as a new
+response, with every recheck at that moment, and its words say so
+("this refusal was not kept: sending it again is judged again"). Such a
+retry is accepted only when it passes then, its `expectedRev` the
+decision's rev at that moment among them. An `expectedRev` above the
+decision's rev names a rev nobody has read, so it is refused `invalid`
+(400, no row) at any count, never `stale_decision`. When a comment
+later brings the rev up to that number, the same body sent again
+passes that check and is accepted as a response made at that rev
+would be: a retry of an unkept refusal is a new response, and its
+`expectedRev` says which rev it answers, the rev the card read for any
+client that sends what it read. The other refusals hold on a
+retry: the policy, the state and the membership only move forward, and
+a past rev stays past; an authority the actor gains meanwhile is
+judged afresh, as a new response is. At most 32 operator operations
+per decision (above). A
 response's receipt is at most 8 KiB as encoded and the application
 receipt at most 4 KiB; a response whose receipt would pass its bound is
 refused `invalid` with no row, so every part of a record keeps its
@@ -521,7 +535,10 @@ to)` (a continuation's `UPDATE … RETURNING`: it moves every open or
 answered decision whose `current_run` is `from` and answers the rows as
 moved), `Tx.Respond(n, row)`, `Tx.History(n, kind, by, detail)`,
 `Tx.Hold(run, task, n)` and `Tx.Release(run, task, n)` (which sets
-`released_at` and keeps the row), `Tx.Refund(run, task, attempt,
+`released_at` and keeps the row; both refuse a `run` that is not the
+decision's `current_run`), `Tx.MoveHolds(from, to, at)` (a
+continuation's: its holds written under `to`, the active ones of `from`
+released at `at`, I16), `Tx.Refund(run, task, attempt,
 decision)` (an `INSERT … ON CONFLICT DO NOTHING` into
 `decision_refunds`, answering whether it wrote: false when that attempt
 was given back already, for this decision or any other);
@@ -543,7 +560,9 @@ continuation carries and what a task file says.
 
 **Types.** `DecisionRequest` (the request above, as decoded),
 `Decision` (the record as a run and the API report it: id, origin, type,
-refs, request, policy, state, rev, why, superseded by, the responses'
+refs, the asker (`{task, attempt, live}`, an agent's decision's asking
+attempt and whether it is live, Comments and more information),
+request, policy, state, rev, why, superseded by, the responses'
 receipts, the application receipt, the history), `Response` (`{responseID,
 choice *int, text, rationale, expectedRev, byName}`), `ResponseReceipt`
 (`{decision, k, status, code?, words, actor, byName, choice?, text?,
@@ -779,10 +798,28 @@ responder's authority, below); then:
   assignment's "Done": `how: released`, every hold released, the answer
   in each released task's task file; an approval's "Reject" and an
   assignment's "Not done": `how: cancelled`, each held task cancelled as
-  `CancelTask` cancels it, with the reason "rejected in dr-4 by Nate: …";
+  `CancelTask` cancels it, with the reason "rejected in dr-4 by Nate: …",
+  only after the decision is final (below);
   a gate with no task: `how: noted`;
 - the application receipt written, the state `applied` with
   `closed_at`, the event `decision.applied`.
+
+**A decision is final before the tasks it cancels.** A cancel of a task
+can end the run there and then (`cancelTask` calls `settleRun` when the
+task has no attempt in flight, `commands.go`), and the run's end and the
+work-ended rule (Holding, above) cancel every decision that is not
+final. So the transaction that cancels a gate's tasks, a Reject's or
+Not done's application or the operator's cancel without `release`,
+first makes the decision final in the engine's copy and in its rows:
+for the application the receipt (`how: cancelled`, the tasks it names),
+`applied` with `closed_at` and its holds released; for the operator's
+cancel `cancelled` with its `why` and its holds released. Only then does
+it cancel each held task. The settlement that the last cancel may reach,
+and the work-ended rule, find the decision final and leave it, so it
+makes one transition and writes one `applied` or one `cancelled` row,
+and the run's outcome, given by that settlement in the same
+transaction, comes after it: the events are `decision.applied` (or
+`decision.cancelled`), then each `task.cancelled`, then `run.finished`.
 
 The authority is rechecked from the response's `authority`, never from
 its actor: a `workbench` response holds (the operator's token is the
@@ -896,6 +933,31 @@ that `supersedes` dr-7). Neither changes the state; both bump `rev`, so
 a response made against the card before them is `stale_decision` with
 the comment's words. MB0's page offers both; DR1's card offers both too.
 
+A `more_info` has one recipient, the agent that asked, and only an open
+request of a live attempt can be superseded by a new one: a parked or
+ended attempt's task stays held, so no next attempt starts to read it,
+and a gate was asked by no agent. So a `more_info` is taken only while
+the decision is `open`, its origin `agent` and its asking attempt live
+(the same run chain, task, attempt and session, the session not ended:
+the test `how: typed` uses), checked in its transaction under the
+engine's lock; otherwise it is refused `409 no_recipient` with no row:
+"dr-7's agent has ended its attempt: comment, answer or cancel it"
+(parked or ended), "dr-4 is the plan's: no agent asked it, comment
+instead" (a gate), or "dr-7 is answered" (not open). The card shows
+Ask for more only when the record says the asking attempt is live
+(the record's `asker` `{task, attempt, live}`, from the engine) and
+disables it otherwise with the same words. The transaction that takes
+it clears the attempt's `turnEnded` mark (the agent will take a turn to
+answer it), so `pump` does not park the attempt before the agent's next
+done; the line is typed by the member's deliverer as a decision's
+answer is, at the queue's head with `Decision` its id. When the session
+ends between that commit and the typing (the agent exited), the line is
+not typed and nothing more is written: the `info_requested` row stays
+as the operator's question, the card shows it beside the attempt's end,
+and the decision is answered, commented on or cancelled as any whose
+agent has gone. A comment needs no recipient and is taken in every
+state.
+
 **Routing.** `Engine.RouteDecision(ctx, id, opID, to, note, actor)`
 records a `routed` history row. DR1's only destination is `{kind:
 "operator"}` (a re-route to the operator, with a note: what Brakeman's
@@ -919,8 +981,9 @@ another fingerprint, `409 op_conflict`. The lookup is by the
 decision's `n`, which a continuation keeps (it moves `current_run`,
 never the rows), so no run-scoped command table is read and a
 continuation needs no rule of its own. A refused operation keeps no
-row; its retry is judged again and, state and rev only moving forward,
-refused again.
+row and binds nothing: its retry is judged again as a new operation, as
+an unkept response is (the bounds, above), and an `expectedRev` above
+the decision's rev is refused `invalid` the same way.
 
 **Continuations and recovery** (`continue.go`). A continuation's first
 transaction moves every open or answered decision of the run it
@@ -931,8 +994,22 @@ transaction (the ledger's one connection orders the two writers): a
 response that committed first on the old run is moved as answered and
 applied next; one that comes after finds the row moved, changes
 nothing, and is answered through the continuation (Responding, above).
-The transaction puts the decisions' holds, released ones included, on
-the continuation's tasks of the same ids, and for a task whose last
+The transaction moves the decisions' holds with them
+(`Tx.MoveHolds(from, to, at)`): for each hold row of `from` of a moved
+decision, it writes the same `(task, decision)` row under the
+continuation, active when the row was active and released with its
+`released_at` when it was released, and sets `released_at` to `at`, the
+continuation's time, on each of `from`'s rows that was active (no
+history row: the decision's `current_run` and the continuation's
+event say it moved). So an active hold lives only under its decision's `current_run` (I16), and
+`Tx.Hold` and `Tx.Release` refuse a run that is not the decision's
+`current_run`: the application's and every disposal's release, made
+through the run that holds the decision now, leaves no active row
+behind in an ancestor, and an ancestor's record, which reports a hold
+only while its row is active under that run, shows no work held by a
+decision that went on without it. The task file reads the chain's rows,
+so the ancestor's released rows add nothing it does not already show.
+For a task whose last
 attempt was interrupted while it waited on one of them gives that
 attempt back (`extra++`, since the crash left no close row to do it)
 only when `Tx.Refund` writes its `decision_refunds` row, keyed by the
@@ -1053,7 +1130,7 @@ with `DisallowUnknownFields` and bounded:
 | `GET /api/decisions/{did}` | admin | the record whole with its evidence's `refs` (at most 1 MiB as encoded, the sum of its parts at their bounds: the 16 KiB request, its 10 KiB evidence baseline, 32 receipts of at most 8 KiB (256 KiB), 256 history rows of at most 2 KiB of detail and 256 bytes of envelope (576 KiB), the 4 KiB application receipt and 20 ref resolutions of at most 2 KiB (40 KiB), 902 KiB in all; `TestTheFullestDecisionFitsItsBound` builds one with every part at its bound) |
 | `POST /api/decisions/{did}/respond` | admin | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (8 KiB) → `201 {receipt, decision}`; `200` repeat; `409 decision_answered`, `decision_closed`, `stale_decision`, `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved` |
 | `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict` |
-| `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (8 KiB) → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict`; `429 decision_limit` |
+| `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (8 KiB) → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict`; `409 no_recipient` (a `more_info` without a live asking attempt); `429 decision_limit` |
 | `POST /api/decisions/{did}/route` | admin | `{opId, to: {kind: "operator"}, note?, expectedRev}` → `{receipt, decision}`; `200` the same for a repeat; `409 op_conflict`; `429 decision_limit` |
 
 `responseId`, `commandId` and `opId` take the shape the run commands'
@@ -1189,7 +1266,8 @@ policy's refusal of a principal that got past it without the authority
   revision as `r3`), who may answer ("the operator", from the policy),
   the history, and the four states. `components/DecisionRespond.vue`:
   the answer controls by type (a button per option, a text field for a
-  clarification, a rationale field, Comment and Ask for more), an
+  clarification, a rationale field, Comment and Ask for more, the latter
+  disabled with the record's words when its `asker` is not live), an
   approval's "Approve"/"Reject" asked first in a confirm, the receipt
   shown, a refusal's words (who answered first; what changed) with Read
   again. Brand palette and Nuxt UI only; the junction mark is not used.
@@ -1307,7 +1385,11 @@ Brakeman use them is Brakeman's.
   tests; PR-12's decisions are its callers.
 - `Run.People []Person` (JSON `people`, omitted when empty) and
   `TaskState.Owner string`, `TaskState.OwnerFrom string` (`task` |
-  `acceptance`), set from the crew as launched. A run's record
+  `acceptance`), set from the crew as launched. `internal/api`'s
+  `syncRecords` writes a managed run's record again, whatever its
+  revision, when the launch row's crew lists people and the record
+  carries none, as an older build writes it (Events, HM1, Migration and
+  downgrade). A run's record
   (`runs/<id>.json`) carries them only when the run is managed, whose
   record the ledger can write again; a run without tasks keeps its
   people in memory while the engine holds it and writes none into its
@@ -1560,9 +1642,10 @@ same transaction as the task and hold rows it changes.
   commit. The application is a later
   transaction, so "recorded" and "applied" are two facts with two times.
 - O4, the application: one transaction rechecks and writes the receipt,
-  `applied`, the hold's release (or the gate's cancellations) and the
-  delivery intent; the typing or the next dispatch follows its commit,
-  and `delivery.entered` or `delivery.untyped` is written after.
+  `applied`, the hold's release (or the gate's cancellations, made only
+  after the decision is `applied`, so a settlement they reach finds it
+  final) and the delivery intent; the typing or the next dispatch
+  follows its commit, and `delivery.entered` or `delivery.untyped` is written after.
 - O5, an attempt that ends while it waits, without a result (its agent
   exited, or `pump` parked it for a ready task of its member or for a
   slot): the close transaction gives the attempt back (`extra++`),
@@ -1572,7 +1655,9 @@ same transaction as the task and hold rows it changes.
   after the request), never for the mirror's showing.
 - O6, a continuation: its first transaction moves the decisions
   (`Tx.MoveDecisions`, whose returned rows make the engine's copy) and
-  their holds, and gives back an interrupted waiting attempt that no
+  their holds (`Tx.MoveHolds`: each active row released under the run
+  continued and written active under the continuation, at once), and
+  gives back an interrupted waiting attempt that no
   `decision_refunds` row names (keyed by the attempt, whatever decision
   it waited on), and ends with `regate`; the application of the answered ones runs after
   it, in their own transactions. A response and a continuation are both
@@ -1648,6 +1733,12 @@ same transaction as the task and hold rows it changes.
 - I15, decision answers never wait on one another: the answer whose
   mirror shows is delivered first, and another decision's answer is
   typed past a mirror, never behind it.
+- I16, a hold is active in one run only: an unreleased `decision_holds`
+  row is always under its decision's `current_run`; a continuation
+  releases the run continued's active rows in the transaction that
+  writes them under itself (`Tx.MoveHolds`), and `Tx.Hold` and
+  `Tx.Release` take only the decision's `current_run`. So a final
+  decision has no active row in any run of its chain (I10).
 
 **What the ledger holds** after each step is the record above; the run
 record (`runs/<id>.json`) is a cache of the ledger, as it is today, and
@@ -1725,7 +1816,20 @@ person goes into the JSON of DR1's rows, in DR1's transactions.
   ledger, whose run row keeps the crew as launched, and one an older
   build deleted is written again by `syncRecords` at the newer one's
   next start (the ledger's schema is unchanged by HM1, so the older
-  build opens it as its own). Opening the ledger as its own, an older
+  build opens it as its own). The older build may also write such a
+  record again itself, without people and owners, at the ledger's
+  current revision (its own `syncRecords` after its prune, or its
+  snapshots of a run it holds), and `syncRecords` skips a readable,
+  settled record whose `Managed.Revision` is the ledger's
+  (`internal/api/ledger.go`). So HM1's `syncRecords` judges the people
+  apart from the revision: a record it would skip is written again from
+  the ledger (`crew.Recovered`) when the chain's launch row's crew lists
+  people and the record carries none (`launchCrew`, read from the rows
+  `ld.Runs` already lists; a task owner always names one of the crew's
+  people, so a record without people has lost its owners too). A run
+  whose crew lists no people is skipped as today, so the check costs
+  one decode of the launch row's crew per run and writes nothing for
+  the runs every older build reads as before. Opening the ledger as its own, an older
   build may also continue such a run, and its continuation's row then
   holds the crew without `people` and owners (`json.Unmarshal` drops
   what its `Crew` lacks, and `addRun` writes the rest): nothing is lost
@@ -1813,11 +1917,20 @@ and holds a step at a seam to order what must be ordered.
   operations, an 8 KiB receipt); `TestRefusalsNeverTakeTheAnswersPlace`
   (31 stale responses kept, a 32nd answered `kept: false` with no row,
   then the operator's valid answer accepted, applied, and its gate's
-  task released); `TestAnOperationIDIsUniquePerDecision`; `TestTheHistoryCapHolds` (every kind
+  task released; and, in that order, past the 31: a response with
+  `expectedRev` one above the rev refused `invalid` with no row, a
+  comment bringing the rev up to it, and the same `responseId` and body
+  sent again judged as a new response and accepted, its receipt not
+  `repeat`; in a second case a retry of a past rev's refusal stays
+  `stale_decision`); `TestAnOperationIDIsUniquePerDecision`; `TestTheHistoryCapHolds` (every kind
   written to its own bound, the mandatory rows all kept, `notified`
   dropped past 256 with `dropped` counted); `TestAnAnswerIsConditionalOnItsRun`
   (`Tx.Answer` changes nothing once `current_run` moved);
   `TestMoveDecisionsAnswersTheMovedRows`; `TestAReleasedHoldKeepsItsRow`;
+  `TestMoveHoldsLeavesOneActiveRow` (an active and a released hold
+  moved: under `from` both released, the active one at the move's time;
+  under `to` the active one active and the released one released;
+  `Tx.Hold` and `Tx.Release` under `from` refused);
   `TestARefundIsOncePerAttempt` (`Tx.Refund` for one attempt under two
   decisions: the second writes nothing);
   `TestRecoverChangesNoDecision`; `TestSnapshotCarriesDecisions`.
@@ -1869,6 +1982,12 @@ and holds a step at a seam to order what must be ordered.
   run and its transaction while the continuation commits: retried
   against the continuation, applied once);
   `TestAnInterruptedWaitingAttemptIsGivenBack`;
+  `TestHoldsFollowTheDecisionAcrossContinuations` (a gate and an agent's
+  decision held across two continuations: after each, exactly one
+  active row per held task and decision, under the newest run; the gate
+  then answered and applied, the agent's decision cancelled by the
+  operator: every `decision_holds` row of the three runs released, and
+  the recovered records of the two ancestors report no task held);
   `TestAnInterruptedAttemptIsGivenBackOnce` (continued, stopped before
   any dispatch, continued again: the task's `extra` is one more, not
   two); `TestAReplacedDecisionKeepsTheRefund` (an identity's response
@@ -1916,6 +2035,14 @@ and holds a step at a seam to order what must be ordered.
   decision with its holds, nothing applied; and not confirmed at all
   while the run goes on: nothing applied); `TestAReopenCancelsTheTasksDecisions`
   (S3); `TestARejectedGateCancelsItsTasks`;
+  `TestRejectingTheLastHeldTaskEndsTheRunOnce` (a gate holding the run's
+  last unfinished task, which has no attempt, rejected: the decision
+  makes one transition, `answered` → `applied`, with one `applied`
+  history row, no `cancelled` row and a receipt `how: cancelled` naming
+  the task; the task cancelled, the run's outcome given in the same
+  transaction, `run.finished` once and after `decision.applied`; the
+  same with the operator's cancel without `release`: one `cancelled`
+  row);
   `TestTheRunWaitsOnAHeldTask` (no outcome while only held tasks remain);
   `TestPauseHoldsReleasedTasks`; `TestTheTaskFileCarriesTheAnswer`
   (golden, with `taskfile_golden_test.go`'s fixtures);
@@ -1924,6 +2051,14 @@ and holds a step at a seam to order what must be ordered.
   attempt of one of them, and again in their attempts after a
   continuation);
   `TestASupersedingRequestMovesTheHold`; `TestMoreInfoIsTypedAndBumpsRev`;
+  `TestMoreInfoNeedsALiveAsker` (a waiting attempt parked for a sibling
+  task, then a `more_info`: `409 no_recipient`, no history row, the rev
+  unchanged, nothing typed into any session, and a comment still taken;
+  the same for a gate, and for an agent's decision once answered);
+  `TestMoreInfoKeepsItsAttemptFromBeingParked` (a `more_info` taken
+  while the agent's turn had ended and a sibling task waits for the
+  member: not parked before the agent's next done, the line typed once,
+  and the agent's superseding request holds the task);
   `TestAnOperationRepeatsItsReceipt` (a comment, a more_info, a route
   and a cancel each sent again after a lost reply: the same receipt, no
   second row, the more_info typed once; sent again after the decision
@@ -1977,7 +2112,8 @@ and holds a step at a seam to order what must be ordered.
   `TestDecisionRequestToolAnswersPending`.
 - `internal/agents`: the skill test gains the decisions paragraph.
 
-**vitest.** `utils/decisions.test.ts` (the words of every state; the four
+**vitest.** `utils/decisions.test.ts` (the words of every state; Ask for
+more disabled with its words for a gate and for an asker not live; the four
 states apart, each with its receipt; the id minted once and a lost reply
 retried once with it; a refusal's words), `utils/attention.test.ts` (a
 decision's question offers no quick reply or number key),
@@ -2052,6 +2188,13 @@ read by a person on the desktop app and a phone's browser on the LAN
   has no `people` key); `TestAManagedRecordIsRebuiltWithItsPeople` (its
   file deleted, as an older build's prune would: the next start's
   `syncRecords` writes it again with the launch's people and owners);
+  `TestAnOlderBuildsRebuiltRecordGetsItsPeople` (the record kept, as an
+  older build writes it again: encoded through copies of the pre-HM1
+  `Run` and `TaskState` types, without people and owners, at the
+  ledger's current revision and settled; the next start's `syncRecords`
+  writes it again with the launch's people and owners, and the run
+  routes answer them; a record of a run whose crew lists no people, at
+  the current revision, is left byte for byte as it was);
   `TestAnOlderBuildsContinuationLosesNoPeople` (the downgrade: a run
   launched with people and owners, a continuation row written with its
   crew decoded and encoded through a copy of the pre-HM1 `Crew` type, as
