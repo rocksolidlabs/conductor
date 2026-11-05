@@ -13,6 +13,21 @@ export function splitArgs(s: string): string[] {
 }
 
 /**
+ * Arguments as a line splitArgs reads back to them (#434: a clone's arguments, shown to be changed): a plain word as it is, one
+ * with a space, a quote at its start or nothing in it in double quotes, or in single ones when it holds a double quote. An
+ * argument holding both quotes and a space cannot be written so; a dialog that shows this line keeps the arguments themselves
+ * for when the line is left as it was.
+ */
+export function argsText(args: readonly string[]): string {
+  return args
+    .map((a) => {
+      if (a !== '' && !/\s/.test(a) && !/^["']/.test(a)) return a
+      return a.includes('"') ? `'${a}'` : `"${a}"`
+    })
+    .join(' ')
+}
+
+/**
  * True while the text ends inside a quoted argument that splitArgs would not
  * close, as in `--model "gpt`. Typing a space there belongs to the argument.
  */

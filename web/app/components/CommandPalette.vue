@@ -565,7 +565,7 @@ const dotClass: Record<NonNullable<PaletteItem['state']>, string> = { needs: 'bg
                   </div>
                   <!-- The row's actions, revealed by →, folded by ←; each runs with its key. -->
                   <div v-if="revealed === row.key && row.actions?.length" class="mt-1.5 flex flex-wrap gap-1" data-palette-actions @click.stop>
-                    <UButton v-for="a in row.actions" :key="a.id" :label="a.label" :icon="a.icon" size="xs" color="neutral" variant="outline" :disabled="a.disabled" :data-palette-action="a.id" @click="runAction(row, a)">
+                    <UButton v-for="a in row.actions" :key="a.id" :label="a.label" :icon="a.icon" size="xs" color="neutral" variant="outline" :disabled="a.disabled" :title="a.reason" :data-palette-action="a.id" @click="runAction(row, a)">
                       <template v-if="a.kbds?.length" #trailing><span class="flex items-center gap-0.5"><UKbd v-for="(k, i) in a.kbds" :key="i" :value="k" size="sm" /></span></template>
                     </UButton>
                   </div>

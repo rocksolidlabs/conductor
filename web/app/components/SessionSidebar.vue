@@ -5,6 +5,7 @@ import { sidebarRunFor } from '~/utils/crews'
 import { filterSessions } from '~/utils/sessions'
 import { joinedPath } from '~/utils/joined'
 import { blockSubtitle, focusRows, moveFocus, needsDotShown, reopenNeeds, rowMeta, sectionPreview, sidebarModel, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
+import { sessionTarget } from '~/utils/actions'
 import { rowMenuItems, sessionLive } from '~/utils/sidebarActions'
 import { replyFailure } from '~/utils/reply'
 
@@ -27,6 +28,7 @@ const api = useSessions()
 const toast = useToast()
 const quick = useQuickReply()
 const renameModal = useRenameModal()
+const cloneModal = useCloneModal()
 
 const query = ref('')
 const filterInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('filterInput')
@@ -320,8 +322,8 @@ const sheet = computed(() => {
     title: s.name,
     meta: rowMeta(s, !!s.crew, now.value).join(' · '),
     items: rowMenuItems(
-      { kind: 'session', name: s.name, live: sessionLive(s.status), inRun: !!s.crew, renamable: s.kind === 'server' },
-      { open: () => router.push(`/sessions/${s.id}`), openRun: () => openRunOf(t), share: () => shareSession(t), yard: () => showInYard(t), rename: () => renameModal.show(s), stop: () => askStop(`s:${s.id}`) },
+      sessionTarget(s, sessionLive(s.status)),
+      { open: () => router.push(`/sessions/${s.id}`), openRun: () => openRunOf(t), share: () => shareSession(t), yard: () => showInYard(t), rename: () => renameModal.show(s), clone: () => cloneModal.show(s), cloneWithOptions: () => void cloneModal.withOptions(s), stop: () => askStop(`s:${s.id}`) },
     ),
   }
 })

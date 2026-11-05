@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { relativeTime, sessionMeta } from '~/utils/sessions'
 import { rowMeta, sessionOpen, type SessionRow } from '~/utils/sidebar'
+import { sessionTarget } from '~/utils/actions'
 import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/sidebarActions'
 
 /**
@@ -40,9 +41,10 @@ const confirming = defineModel<boolean>('confirming', { default: false })
 const question = computed(() => stopQuestion({ kind: 'session', name: s.value.name }))
 const prompt = computed(() => rowPrompt(props.row))
 
-const target = computed(() => ({ kind: 'session' as const, name: s.value.name, live: live.value, inRun: !!s.value.crew, renamable: s.value.kind === 'server' }))
-// Rename… opens the one dialog (#318), on the session as the row shows it.
+const target = computed(() => sessionTarget(s.value, live.value))
+// Rename… opens the one dialog (#318), on the session as the row shows it; Clone… and Clone with options… theirs (#434).
 const renameModal = useRenameModal()
+const cloneModal = useCloneModal()
 // An exited server session's row ends with Resume, outside the link; the hover actions stop short of it (#257).
 const resumable = computed(() => props.row.state === 'exited' && s.value.kind === 'server')
 // The Share tooltip, shown on hover or focus, would stay up once the share dialog closed and gave the focus back to the button:
@@ -56,6 +58,8 @@ const menu = computed(() =>
     share: () => emit('share', props.row),
     yard: () => emit('yard', props.row),
     rename: () => renameModal.show(s.value),
+    clone: () => cloneModal.show(s.value),
+    cloneWithOptions: () => void cloneModal.withOptions(s.value),
     stop: () => (confirming.value = true),
   }),
 )

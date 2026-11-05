@@ -28,7 +28,7 @@ export interface SessionInfo {
    * The run the session is a member of. A Brakeman turn's member carries `brakeman`: the request it does, and whether its questions
    * page no one (`quiet`, a background turn's), set from the session's creation.
    */
-  crew?: { runId: string; crewId: string; member: string; brakeman?: { request: string; quiet: boolean } }
+  crew?: { runId: string; crewId: string; member: string; brakeman?: { request: string; quiet: boolean }; task?: string; attempt?: number }
   attention?: Attention
   /** Who last answered a needs-input prompt (server-reported). */
   lastAnswer?: { by?: string; byName: string; at: string; message?: string }
@@ -40,6 +40,25 @@ export interface SessionInfo {
   agentSession?: AgentSession
   /** The session this one resumed or relaunched. */
   resumedFrom?: string
+}
+
+/** What a server session was launched with, as an admin reads it (GET /api/sessions/{id}, #434): what a clone takes by default. */
+export interface SessionLaunch {
+  agentId: string
+  cwd: string
+  /** The launch's own arguments, as given. */
+  args: string[]
+  /** The launch's yolo choice, not whether a recipe was applied. */
+  yolo: boolean
+}
+
+/** POST /api/sessions/{id}/clone: the clone's name, and what it changes of the source's launch. */
+export interface CloneRequest {
+  name: string
+  agentId?: string
+  cwd?: string
+  args?: string[]
+  yolo?: boolean
 }
 
 /** An agent's own session as Conductor knows it: the id it chose at launch (`set`), the one the agent's hooks reported (`hook`), or the one a resume took up (`resumed`). */
@@ -776,7 +795,9 @@ export function useSessions() {
     list: () => request<{ sessions: SessionInfo[] }>('/api/sessions').then((r) => r.sessions ?? []),
     /** The files every session's agent touched (#304): the palette's Touched group; `limit` files per session (the server's 500 when left out). */
     touched: (limit?: number) => request<TouchedReply>('/api/touched', limit ? { query: { limit: String(limit) } } : {}).then((r) => ({ sessions: r.sessions ?? [], truncated: !!r.truncated })),
-    get: (id: string, token?: string) => request<{ session: SessionInfo; role: Role; links?: ShareLink[] }>(`/api/sessions/${encodeURIComponent(id)}`, { token }),
+    get: (id: string, token?: string) => request<{ session: SessionInfo; role: Role; links?: ShareLink[]; launch?: SessionLaunch }>(`/api/sessions/${encodeURIComponent(id)}`, { token }),
+    /** Starts a new session like a server session (#434): what the body leaves out is the source's launch; the name must be no listed session's. */
+    clone: (id: string, body: CloneRequest) => request<SessionInfo>(`/api/sessions/${encodeURIComponent(id)}/clone`, { method: 'POST', body }),
     /** `yolo` overrides the server's default for this launch; left out, the default holds. */
     create: (body: { agentId: string; name?: string; cwd?: string; args?: string[]; cols?: number; rows?: number; yolo?: boolean }) =>
       request<SessionInfo>('/api/sessions', { method: 'POST', body }),

@@ -88,6 +88,8 @@ export interface Session {
   agentSession?: { id: string; resumable?: boolean; source?: string }
   /** The session this one resumed or relaunched. */
   resumedFrom?: string
+  /** Launched with its agent's yolo recipe applied. */
+  yolo?: boolean
 }
 
 /**

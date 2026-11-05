@@ -1,4 +1,6 @@
 import type { DropdownMenuItem } from '@nuxt/ui'
+import type { SessionInfo } from '~/composables/useSessions'
+import { ATTEMPT_REASON, hostedReason } from './clone'
 
 /**
  * The one action system (#302, principle 2): what a row of the sidebar, a
@@ -23,6 +25,8 @@ export interface Action {
   ask?: { title: string; detail: string }
   color?: 'error'
   disabled?: boolean
+  /** Why it is disabled, said beside it. */
+  reason?: string
   run: () => void
 }
 
@@ -34,6 +38,7 @@ export function toMenuItems(groups: readonly (readonly Action[])[]): DropdownMen
       if (a.icon) item.icon = a.icon
       if (a.kbds) item.kbds = a.kbds
       if (a.disabled !== undefined) item.disabled = a.disabled
+      if (a.reason) item.description = a.reason
       if (a.color) item.color = a.color
       return item
     }),
@@ -44,7 +49,7 @@ export function toMenuItems(groups: readonly (readonly Action[])[]): DropdownMen
  * What a row of the sidebar offers without opening it (design 3c): the same
  * list behind More, the right-click menu, a long press on a phone, and the
  * keys. A session: Open, Open the run (a member), Share…, Show in the Yard,
- * Rename… (a server session, #318), Stop…; a run's header: Open run, Share
+ * Rename… (a server session, #318), Clone… and Clone with options… (#434), Stop…; a run's header: Open run, Share
  * run, Stop run…; a link shared with you: Open, Forget.
  */
 export interface RowActionTarget {
@@ -56,8 +61,18 @@ export interface RowActionTarget {
   inRun?: boolean
   /** A server session, running or ended: it can be renamed here (a hosted one's host names it). */
   renamable?: boolean
+  /** A hosted session, on this machine: Conductor cannot start one there, so it is not cloned (#434). */
+  hosted?: boolean
+  machine?: string
+  /** A Yardmaster attempt (its run's task set): Clone… is not offered, Clone with options… is, with a warning (#434). */
+  attempt?: boolean
   /** The session's, run's or entry's id, named on the descriptors. */
   id?: string
+}
+
+/** A session's row as the menus read it: the sidebar's row, its sheet and the palette's row alike. */
+export function sessionTarget(s: SessionInfo, live: boolean): RowActionTarget {
+  return { kind: 'session', name: s.name, live, inRun: !!s.crew, renamable: s.kind === 'server', hosted: s.kind === 'hosted', machine: s.hostName, attempt: !!s.crew?.task, id: s.id }
 }
 
 export interface RowActionHandlers {
@@ -66,6 +81,8 @@ export interface RowActionHandlers {
   share?: () => void
   yard?: () => void
   rename?: () => void
+  clone?: () => void
+  cloneWithOptions?: () => void
   stop?: () => void
   forget?: () => void
 }
@@ -92,8 +109,16 @@ export function rowActions(t: RowActionTarget, on: RowActionHandlers): Action[][
     first,
     [a('share', 'Share…', on.share, { icon: 'i-lucide-share-2', kbds: ['S'], disabled: !t.live }), a('yard', 'Show in the Yard', on.yard, { icon: 'i-lucide-layout-grid' })],
     ...(t.renamable ? [[a('rename', 'Rename…', on.rename, { icon: 'i-lucide-pencil' })]] : []),
+    cloneGroup(t, on, a),
     [a('stop', 'Stop…', on.stop, { icon: 'i-lucide-square', kbds: ['X'], color: 'error', disabled: !t.live, ask: stopQuestion(t) })],
   ]
+}
+
+/** Clone… and Clone with options… (#434): a hosted session's both disabled, an attempt's Clone… disabled, each with its reason. */
+function cloneGroup(t: RowActionTarget, on: RowActionHandlers, a: (id: string, label: string, run: (() => void) | undefined, rest?: Partial<Action>) => Action): Action[] {
+  const hosted = t.hosted ? { disabled: true, reason: hostedReason(t.machine) } : {}
+  const quick = t.attempt && !t.hosted ? { disabled: true, reason: ATTEMPT_REASON } : hosted
+  return [a('clone', 'Clone…', on.clone, { icon: 'i-lucide-copy', ...quick }), a('clone-options', 'Clone with options…', on.cloneWithOptions, { icon: 'i-lucide-copy-plus', ...hosted })]
 }
 
 /** The question a row asks before it stops something, in the row itself. */

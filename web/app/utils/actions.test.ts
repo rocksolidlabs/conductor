@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { accountActions, rowActions, toMenuItems } from './actions'
+import type { SessionInfo } from '~/composables/useSessions'
+import { accountActions, rowActions, sessionTarget, toMenuItems } from './actions'
 import { accountItems, rowMenuItems } from './sidebarActions'
 
-const on = { open: () => {}, openRun: () => {}, share: () => {}, yard: () => {}, rename: () => {}, stop: () => {}, forget: () => {} }
+const on = { open: () => {}, openRun: () => {}, share: () => {}, yard: () => {}, rename: () => {}, clone: () => {}, cloneWithOptions: () => {}, stop: () => {}, forget: () => {} }
 const account = { name: () => {}, shortcuts: () => {}, theme: () => {}, token: () => {}, forget: () => {} }
 
 describe('the action descriptors', () => {
@@ -11,6 +12,8 @@ describe('the action descriptors', () => {
       { kind: 'session' as const, name: 'docs', live: true, id: 's1' },
       { kind: 'session' as const, name: 'core', live: false, inRun: true, id: 's2' },
       { kind: 'session' as const, name: 'renamed', live: true, renamable: true, id: 's3' },
+      { kind: 'session' as const, name: 'hosted', live: true, hosted: true, machine: 'studio', id: 's4' },
+      { kind: 'session' as const, name: 'attempt', live: true, inRun: true, renamable: true, attempt: true, id: 's5' },
       { kind: 'run' as const, name: 'nightly', live: true, id: 'r1' },
       { kind: 'shared' as const, name: 'review', live: true, id: 'j1' },
     ]) {
@@ -38,6 +41,33 @@ describe('the action descriptors', () => {
     expect(rename.disabled).toBeUndefined()
     expect(rename.ask).toBeUndefined()
     expect(rename.kbds).toBeUndefined()
+  })
+
+  it("clone a session, its reason said beside a disabled one (#434)", () => {
+    const clones = (t: Parameters<typeof rowActions>[0]) => rowActions(t, on).flat().filter((a) => a.id.startsWith('clone'))
+    const loose = clones({ kind: 'session', name: 'docs', live: false, renamable: true, id: 's1' })
+    expect(loose.map((a) => [a.id, a.label, a.target, a.disabled, a.reason])).toEqual([
+      ['clone', 'Clone…', 's1', undefined, undefined],
+      ['clone-options', 'Clone with options…', 's1', undefined, undefined],
+    ])
+    for (const a of clones({ kind: 'session', name: 'laptop', live: true, hosted: true, machine: 'studio', id: 's2' })) {
+      expect(a).toMatchObject({ disabled: true, reason: 'Runs on studio: Conductor cannot start a session there yet' })
+    }
+    const [quick, options] = clones({ kind: 'session', name: 'a · t1 #1', live: true, inRun: true, attempt: true, id: 's3' })
+    expect(quick).toMatchObject({ disabled: true })
+    expect(quick!.reason).toContain('Yardmaster attempt')
+    expect(options!.disabled).toBeUndefined()
+    // The reason is the menu item's description.
+    const item = toMenuItems([[quick!]])[0]![0]!
+    expect(item).toMatchObject({ label: 'Clone…', disabled: true, description: quick!.reason })
+  })
+
+  it("read a session's row from the session: hosted, an attempt", () => {
+    const base = { id: 's1', name: 'docs', kind: 'server', agentId: 'claude', command: [], cwd: '/r', status: 'running', cols: 80, rows: 24, viewers: 0, createdAt: '' } as SessionInfo
+    expect(sessionTarget(base, true)).toEqual({ kind: 'session', name: 'docs', live: true, inRun: false, renamable: true, hosted: false, machine: undefined, attempt: false, id: 's1' })
+    expect(sessionTarget({ ...base, kind: 'hosted', hostName: 'studio' }, true)).toMatchObject({ hosted: true, machine: 'studio', renamable: false })
+    expect(sessionTarget({ ...base, crew: { runId: 'r', crewId: 'c', member: 'a', task: 't1', attempt: 1 } }, false)).toMatchObject({ inRun: true, attempt: true, live: false })
+    expect(sessionTarget({ ...base, crew: { runId: 'r', crewId: 'c', member: 'a' } }, true)).toMatchObject({ inRun: true, attempt: false })
   })
 
   it('give the menu only what a menu shows', () => {

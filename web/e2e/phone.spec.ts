@@ -116,7 +116,7 @@ test("a long press opens the row's actions as a sheet; Stop asks again; a run's 
   await longPress(row.locator('a[href]').first())
   const sheet = phone.locator('[data-row-sheet]')
   await expect(sheet).toBeVisible()
-  await expect(sheet.getByRole('button')).toHaveText([/^Open/, /^Share…/, /^Show in the Yard/, /^Rename…/, /^Stop…/, /^Cancel/])
+  await expect(sheet.getByRole('button')).toHaveText([/^Open/, /^Share…/, /^Show in the Yard/, /^Rename…/, /^Clone…/, /^Clone with options…/, /^Stop…/, /^Cancel/])
   // Rename… opens the one dialog on the session (#318).
   await sheet.locator('[data-row-sheet-item="Rename…"]').tap()
   await expect(sheet).toBeHidden()
