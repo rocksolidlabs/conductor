@@ -6,9 +6,9 @@ import { draftQuestion, questionOf } from '~/utils/reply'
 const props = defineProps<{ attention?: Attention; agentName: string; role: Role; busy?: boolean }>()
 /**
  * Each reply names the question the bar showed as it was clicked, typed or keyed (its id; none from an older owner). `openPlan` is
- * the plan a plan approval is about (#289), to open in the editor.
+ * the plan a plan approval is about (#289), to open in the editor; `previewPlan` the same plan, to open rendered (#432).
  */
-const emit = defineEmits<{ reply: [text: string, question: string | undefined]; option: [index: number, question: string | undefined]; openPlan: [path: string] }>()
+const emit = defineEmits<{ reply: [text: string, question: string | undefined]; option: [index: number, question: string | undefined]; openPlan: [path: string]; previewPlan: [path: string] }>()
 
 const text = ref('')
 const show = computed(() => props.attention?.state === 'needs_input')
@@ -79,8 +79,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
            token breaks rather than overflows. -->
       <span class="break-words text-xs text-muted" data-quick-reply-message>{{ attention?.message || 'Answer here or in the terminal. First reply wins; everyone sees who answered.' }}</span>
     </div>
-    <!-- The plan the approval is about (#289), read in the editor before answering. -->
-    <UButton v-if="attention?.plan" label="Open plan" icon="i-lucide-file-text" size="sm" color="neutral" variant="soft" class="flex-none" :title="attention.plan" data-quick-reply-plan @click="emit('openPlan', attention!.plan!)" />
+    <!-- The plan the approval is about (#289), read in the editor before answering: as its source, or rendered (#432). Icons only
+         below sm, so that the two do not widen the bar on a phone (#327). -->
+    <template v-if="attention?.plan">
+      <UButton label="Open plan" icon="i-lucide-file-text" size="sm" color="neutral" variant="soft" class="flex-none" :ui="{ label: 'hidden sm:inline' }" aria-label="Open plan" :title="attention.plan" data-quick-reply-plan @click="emit('openPlan', attention!.plan!)" />
+      <UButton label="Preview plan" icon="i-lucide-eye" size="sm" color="neutral" variant="soft" class="flex-none" :ui="{ label: 'hidden sm:inline' }" aria-label="Preview plan" :title="attention.plan" data-quick-reply-plan-preview @click="emit('previewPlan', attention!.plan!)" />
+    </template>
     <!-- The choices shrink to the bar and wrap (#327): never wider than the window on a phone, every one on screen under a thumb. -->
     <div v-if="options.length" class="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
       <UButton

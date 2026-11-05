@@ -156,8 +156,8 @@ test('More holds the other pages, the alerts and your menu', async () => {
 
 /** Every choice of the reply bar inside the window, and the page never wider than it (#327). */
 async function choicesOnScreen(bar: Locator) {
-  // The choices: every button of the bar but its Open plan.
-  const choices = bar.locator('button:not([data-quick-reply-plan])')
+  // The choices: every button of the bar but its Open plan and Preview plan (#432).
+  const choices = bar.locator('button:not([data-quick-reply-plan]):not([data-quick-reply-plan-preview])')
   await expect(choices).toHaveCount(3)
   const width = await phone.evaluate(() => window.innerWidth)
   for (let i = 0; i < 3; i++) {

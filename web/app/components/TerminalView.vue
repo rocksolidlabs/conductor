@@ -83,6 +83,11 @@ const sessionSize = ref({ cols: 0, rows: 0 })
 // grid is the terminal as drawn (xterm's own columns and rows), on the host as data-cols and data-rows: the tests read a cell's
 // place from it beside the host's box, since the session's size (the API's) can lag a fit the page just made.
 const grid = ref({ cols: 0, rows: 0 })
+// The fits this view has made after its pane changed (fitAndResize) and the resizes they asked the session for, on the host as
+// data-fit-passes and data-fit-resizes: a test that proves no resize came of a change (the terminal collapsed, #432) waits for the
+// pass the change scheduled, past the debounce, and reads both at once.
+const fitPasses = ref(0)
+const fitResizes = ref(0)
 const welcomed = ref(false)
 function sizerView(): SizerView {
   return { fit: props.fit, mayFit: mayFit(), welcomed: welcomed.value, sizer: sizerKnown.value, sizedBy: sizedBy.value, me: subscriberId.value, compact: props.compact, ended: ended.value, roster: roster.value, cols: sessionSize.value.cols, rows: sessionSize.value.rows }
@@ -339,8 +344,12 @@ function scheduleResize() {
  * new size (the bundled font settling in), and then the fit is done again, `retries` times at most.
  */
 function fitAndResize(retries: number) {
+  fitPasses.value++
   const { cols, rows } = measure()
-  if (cols) transport?.resize(cols, rows)
+  if (cols && transport) {
+    fitResizes.value++
+    transport.resize(cols, rows)
+  }
   window.requestAnimationFrame(() => {
     if (retries > 0 && cols && overflows()) fitAndResize(retries - 1)
     else scheduleTileScale()
@@ -444,9 +453,13 @@ function applyFitMode() {
   }
 }
 
-/** Fit to my window (round 14): this window takes the session's size, at its own size. */
+/**
+ * Fit to my window (round 14): this window takes the session's size, at its own size. A pane with no size to give (the terminal
+ * collapsed under the editor, #432 review round 2) takes nothing: fitted there it would ask a row or none of every viewer.
+ */
 function takeSize() {
-  if (!term || !fit || !transport || !mayFit()) return
+  const h = host.value
+  if (!term || !fit || !transport || !mayFit() || !h?.clientWidth || !h.clientHeight) return
   const el = term.element
   if (el) el.style.transform = ''
   term.options.fontSize = props.fontSize
@@ -822,7 +835,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'">
     <UContextMenu :items="terminalMenu" :disabled="compact">
-      <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+      <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :data-fit-passes="fitPasses" :data-fit-resizes="fitResizes" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
     </UContextMenu>
 
     <div v-if="sizerChip" class="absolute right-2 bottom-2 z-10 flex items-center gap-2 rounded-md border border-default bg-default/90 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur-sm" data-terminal-sizer :data-sizer-by="sizedBy">

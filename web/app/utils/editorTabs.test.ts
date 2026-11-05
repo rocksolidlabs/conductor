@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activateTab, closeAllTabs, closeTab, cycleTab, editorHeight, emptyTabs, openTab, readSplit, SPLIT_DEFAULT, SPLIT_KEY, tabsToClose, tabTitle, takeLine, toggleFold, togglePreview, writeSplit } from './editorTabs'
+import { activateTab, closeAllTabs, closeTab, cycleTab, editorHeight, emptyTabs, openPreview, openTab, readSplit, SPLIT_DEFAULT, SPLIT_KEY, tabsToClose, tabTitle, takeFocus, takeLine, toggleCollapse, toggleFold, togglePreview, writeSplit } from './editorTabs'
 
 describe('the editor tabs', () => {
   it('opens one tab per file, brings an open one to the front at the line asked for, and unfolds', () => {
@@ -128,6 +128,86 @@ describe('the Markdown preview toggle', () => {
     s = togglePreview(s, 'file:/r/README.md')
     expect(s.tabs.map((t) => !!t.preview)).toEqual([false, false])
     expect(togglePreview(s, 'file:/nope').tabs.map((t) => !!t.preview)).toEqual([false, false])
+  })
+})
+
+describe('Preview plan (#432)', () => {
+  it('opens a new tab rendered and gives it the focus, the other tabs as they were, the editor unfolded, the terminal as it was', () => {
+    let s = openTab(emptyTabs(), 'file', '/r/README.md')
+    s = togglePreview(s, 'file:/r/README.md')
+    s = openTab(s, 'file', '/r/main.go')
+    s = toggleFold(s)
+    s = openPreview(s, '/h/.claude/plans/plan.md')
+    expect(s.tabs.map((t) => [t.path, !!t.preview, !!t.takeFocus])).toEqual([
+      ['/r/README.md', true, false],
+      ['/r/main.go', false, false],
+      ['/h/.claude/plans/plan.md', true, true],
+    ])
+    expect(s.active).toBe('file:/h/.claude/plans/plan.md')
+    expect(s.folded).toBe(false)
+    expect(!!s.collapsed).toBe(false)
+    // The focus is taken once.
+    s = takeFocus(s, 'file:/h/.claude/plans/plan.md')
+    expect(s.tabs.map((t) => !!t.takeFocus)).toEqual([false, false, false])
+  })
+
+  it('brings an open source tab to the front rendered, whatever it showed; a collapsed terminal stays collapsed', () => {
+    let s = openTab(openTab(emptyTabs(), 'file', '/h/plan.md'), 'file', '/r/a.go')
+    s = toggleCollapse(s)
+    s = openPreview(s, '/h/plan.md')
+    expect(s.tabs).toHaveLength(2)
+    expect(s.active).toBe('file:/h/plan.md')
+    expect(s.tabs.map((t) => !!t.preview)).toEqual([true, false])
+    expect(s.collapsed).toBe(true)
+    // Already rendered, it stays rendered: Preview plan never turns the preview off.
+    expect(openPreview(s, '/h/plan.md').tabs[0]!.preview).toBe(true)
+    // Open plan is as it was: the tab to the front, its preview untouched.
+    expect(openTab(togglePreview(s, 'file:/h/plan.md'), 'file', '/h/plan.md').tabs[0]!.preview).toBe(false)
+  })
+})
+
+describe("the terminal's collapse (#432)", () => {
+  const two = (): TabsState => openTab(openTab(emptyTabs(), 'file', '/r/a.go'), 'file', '/r/b.go')
+
+  it('is set by its button and cleared by the button again', () => {
+    let s = two()
+    expect(!!s.collapsed).toBe(false)
+    s = toggleCollapse(s)
+    expect(s.collapsed).toBe(true)
+    expect(s.folded).toBe(false)
+    s = toggleCollapse(s)
+    expect(s.collapsed).toBe(false)
+    // Nothing to collapse under with no tab open.
+    expect(toggleCollapse(emptyTabs())).toEqual(emptyTabs())
+  })
+
+  it("lasts through opening, switching and closing tabs other than the last", () => {
+    let s = toggleCollapse(two())
+    s = openTab(s, 'file', '/r/c.go')
+    s = activateTab(s, 'file:/r/a.go')
+    s = cycleTab(s)
+    s = closeTab(s, 'file:/r/c.go')
+    expect(s.collapsed).toBe(true)
+  })
+
+  it("is cleared by T's fold, and a folded editor comes back to take the column as the terminal collapses", () => {
+    let s = toggleFold(toggleCollapse(two()))
+    expect(s.folded).toBe(true)
+    expect(s.collapsed).toBe(false)
+    s = toggleFold(s)
+    expect(s.folded).toBe(false)
+    expect(s.collapsed).toBe(false)
+    s = toggleCollapse(toggleFold(s))
+    expect(s.folded).toBe(false)
+    expect(s.collapsed).toBe(true)
+  })
+
+  it("is cleared by the last tab's close and by closing all", () => {
+    let s = toggleCollapse(two())
+    s = closeTab(closeTab(s, 'file:/r/a.go'), 'file:/r/b.go')
+    expect(s).toEqual(emptyTabs())
+    expect(openTab(s, 'file', '/r/a.go').collapsed).toBeFalsy()
+    expect(closeAllTabs().collapsed).toBeFalsy()
   })
 })
 

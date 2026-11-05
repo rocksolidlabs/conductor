@@ -51,7 +51,7 @@ function onViewers(info: { count: number; list?: ViewerInfo[] }) {
 const status = ref('')
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
 // The editor area (design 4g): files open above the terminal, the Files pane beside it where there is room.
-const { tabs, openFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
+const { tabs, openFile, previewFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
 const filesPanel = ref(true)
 const terminal = ref<EditorTerminal & { requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean } | null>(null)
 const attention = ref<Attention>({ state: '' })
@@ -492,7 +492,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
           @open-url="openUrl"
         />
         <template #bar>
-          <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" />
+          <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
         </template>
       </EditorColumn>
       <aside v-if="filesPanel" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-lg border border-default bg-default" data-files-aside>

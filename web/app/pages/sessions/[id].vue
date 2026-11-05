@@ -8,7 +8,7 @@ import type { InspectorView } from '~/utils/inspector'
 import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
 import { shortCwd } from '~/utils/sessions'
 import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
-import { activateTab, toggleFold } from '~/utils/editorTabs'
+import { activateTab, toggleCollapse, toggleFold } from '~/utils/editorTabs'
 import { stopQuestion } from '~/utils/actions'
 import { resolveTyped } from '~/utils/fileTree'
 import { editorRows } from '~/utils/editorRows'
@@ -38,7 +38,7 @@ const share = ref(false)
 const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
 // The editor area (design 4b): the files open above the terminal (EditorColumn), the tabs this page's.
-const { tabs, openFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
+const { tabs, openFile, previewFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
 useShortcutsModal().registerPage(SESSION_SHORTCUTS)
 // The inspector's view (design 4h): the rail's item shown; `inspector` says whether the panel is open beside the rail.
 const tab = ref<InspectorView>('people')
@@ -430,6 +430,8 @@ defineShortcuts({
 const palette = usePalette()
 const inspectorRef = useTemplateRef<{ changes: ChangeRow[]; commits: CommitRow[]; status: FileHeader | null }>('inspectorRef')
 const columnRef = useTemplateRef<EditorColumnHandle>('columnRef')
+/** A phone folds the terminal under an open file by itself: the palette offers no collapse there, as the strip offers no button (#432). */
+const phone = useIsPhone()
 /**
  * Shows a view (#332): the inspector on it, or the chat sheet below xl; one already shown stays shown. The header's Files and
  * Chat buttons toggle (showFiles, showChat); a palette row or a session row's Open … says "open" and never hides.
@@ -465,6 +467,8 @@ palette.registerPage(() => {
     ['people', `Open People · ${viewers.value.length || s.viewers} here`, 'i-lucide-users'],
   ]
   const t = tabs.value
+  /** The terminal collapsed under the open editor, as EditorColumn folds it wider than a phone (#432): its pane has no height. */
+  const terminalCollapsed = t.tabs.length > 0 && !t.folded && !!t.collapsed && !phone.value
   const tabRows = t.tabs.map((tb) => ({
     key: `page:tab:${tb.id}`,
     label: tb.title,
@@ -520,8 +524,11 @@ palette.registerPage(() => {
       { key: 'page:mark-needs', label: 'Mark as needs input', icon: 'i-lucide-hand', run: () => signal('needs_input') },
       { key: 'page:mark-working', label: 'Mark as working', icon: 'i-lucide-loader-circle', run: () => signal('working') },
       { key: 'page:mark-clear', label: 'Clear signal', icon: 'i-lucide-x', run: () => signal('clear') },
-      ...(terminal.value?.sizerShown() ? [{ key: 'page:fit', label: 'Fit to my window', icon: 'i-lucide-maximize-2', run: () => terminal.value?.takeSize() }] : []),
+      // Not while the terminal is collapsed (#432, review round 2): its pane has no size to give the session.
+      ...(terminal.value?.sizerShown() && !terminalCollapsed ? [{ key: 'page:fit', label: 'Fit to my window', icon: 'i-lucide-maximize-2', run: () => terminal.value?.takeSize() }] : []),
       ...(t.tabs.length ? [{ key: 'page:fold', label: t.folded ? 'Bring the editor back' : 'Fold the editor to its tab strip', icon: 'i-lucide-panel-bottom', kbds: ['T'], run: () => (tabs.value = toggleFold(tabs.value)) }] : []),
+      // Its mirror (#432): the terminal collapses to a bar under the editor, and back; the strip's button does the same.
+      ...(t.tabs.length && !phone.value ? [{ key: 'page:collapse-terminal', label: t.collapsed && !t.folded ? 'Bring the terminal back' : 'Collapse the terminal', icon: t.collapsed && !t.folded ? 'i-lucide-panel-bottom-open' : 'i-lucide-panel-bottom-close', run: () => (tabs.value = toggleCollapse(tabs.value)) }] : []),
       // The editor's own rows (#321), with a file in front: its state read live through the column.
       ...editorRows(columnRef.value?.palette, { setKeymap: (k) => columnRef.value?.setKeymap(k), save: () => columnRef.value?.save(), close: (id) => columnRef.value?.requestClose(id), askAgent: () => columnRef.value?.askAgent() }),
       ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, run: () => showView(v) })),
@@ -607,7 +614,7 @@ palette.registerPage(() => {
           />
           <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
           <template #bar>
-            <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" />
+            <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
           </template>
         </EditorColumn>
         <!-- The inspector (design 4h): its rail stays at xl, the panel beside it open or collapsed. -->

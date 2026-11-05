@@ -115,7 +115,7 @@ async function switchOf(page: Page, key: string, query = ''): Promise<string | n
 }
 const toast = (page: Page, text: string | RegExp) => page.locator('li').filter({ hasText: text }).last()
 
-test('the session page: the views show and never hide, Share, Copy a view link, the marks, Fold, the tab rows, Stop', async ({ page, api, state, context }) => {
+test('the session page: the views show and never hide, Share, Copy a view link, the marks, Fold, Collapse the terminal, the tab rows, Stop', async ({ page, api, state, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   const cwd = join(state.root, 'rows-session')
   mkdirSync(cwd, { recursive: true })
@@ -170,6 +170,17 @@ test('the session page: the views show and never hide, Share, Copy a view link, 
   await expect(area).toHaveAttribute('data-editor-area', 'folded')
   await runRow(page, 'page:fold')
   await expect(area).toHaveAttribute('data-editor-area', 'open')
+  // Its mirror (#432): Collapse the terminal folds the terminal to its bar under the editor; the row, named again, brings it back.
+  const slot = page.locator('[data-terminal-slot]')
+  await expect(slot).toHaveAttribute('data-terminal-slot', 'open')
+  await expect((await openPalette(page)).locator('[data-palette-row="page:collapse-terminal"]')).toContainText('Collapse the terminal')
+  await runRow(page, 'page:collapse-terminal')
+  await expect(slot).toHaveAttribute('data-terminal-slot', 'folded')
+  await expect(area).toHaveAttribute('data-editor-area', 'open')
+  await expect((await openPalette(page)).locator('[data-palette-row="page:collapse-terminal"]')).toContainText('Bring the terminal back')
+  await runRow(page, 'page:collapse-terminal')
+  await expect(slot).toHaveAttribute('data-terminal-slot', 'open')
+  await expect(page.locator('[data-terminal-bar]')).toHaveCount(0)
   // Stop asks in the row; Enter stops.
   const palette = await runRow(page, 'page:stop')
   await expect(palette.locator('[data-palette-row="page:stop"] [data-palette-ask]')).toBeVisible()

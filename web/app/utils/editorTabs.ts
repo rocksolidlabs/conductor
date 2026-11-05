@@ -3,8 +3,10 @@
  * the active one shown, Ctrl+Tab and Ctrl+Shift+Tab to switch, × or
  * Ctrl+W to close, the strip's × for all; closing the last tab takes the
  * area away. Folded (T; Alt+T in the terminal) the strip stays as one line
- * above the terminal. The split with the terminal is a fraction of the
- * column, kept per browser. Pure: the page keeps the state, this moves it.
+ * above the terminal. The other way, the terminal collapses to a bar at the
+ * column's foot under an open editor, only when the person asks (#432). The
+ * split with the terminal is a fraction of the column, kept per browser.
+ * Pure: the page keeps the state, this moves it.
  */
 export type TabKind = 'file' | 'url' | 'diff'
 
@@ -26,12 +28,19 @@ export interface EditorTab {
   meta?: { status?: string; added?: number; removed?: number; base?: string; against?: string; rev?: string; short?: string; from?: string }
   /** A Markdown file shown rendered (the editor's Preview toggle, Alt+P, #166) rather than as source; kept per tab. */
   preview?: boolean
+  /** The tab's preview takes the focus once it shows (Preview plan, #432); cleared as it is taken. */
+  takeFocus?: boolean
 }
 
 export interface TabsState {
   tabs: EditorTab[]
   active: string | null
   folded: boolean
+  /**
+   * The terminal collapsed to a bar under the open editor (#432): set only by the person (the strip's button, the palette's row), and
+   * cleared by them, by folding the editor and by closing the last tab. It lasts the page; nothing keeps it per browser.
+   */
+  collapsed?: boolean
 }
 
 export const SPLIT_KEY = 'conductor.editor.split'
@@ -67,7 +76,21 @@ export function openTab(state: TabsState, kind: TabKind, path: string, line?: nu
   const had = state.tabs.find((t) => t.id === id)
   const title = meta?.rev ? `${meta.short || meta.rev.slice(0, 7)} ${tabTitle(kind, path)}` : tabTitle(kind, path)
   const tabs = had ? state.tabs.map((t) => (t.id === id ? { ...t, line, lineTo, meta: meta ?? t.meta } : t)) : [...state.tabs, { id, kind, path, title, line, lineTo, meta }]
-  return { tabs, active: id, folded: false }
+  return { ...state, tabs, active: id, folded: false }
+}
+
+/**
+ * Opens a file shown rendered (Preview plan, #432): its tab, or the open one brought to the front, with its preview on whatever it
+ * showed before and the focus to be taken by it; the area unfolds, the terminal stays as it was, the other tabs keep their choice.
+ */
+export function openPreview(state: TabsState, path: string): TabsState {
+  const s = openTab(state, 'file', path)
+  return { ...s, tabs: s.tabs.map((t) => (t.id === s.active ? { ...t, preview: true, takeFocus: true } : t)) }
+}
+
+/** The focus a tab was opened to give its preview, taken once. */
+export function takeFocus(state: TabsState, id: string): TabsState {
+  return { ...state, tabs: state.tabs.map((t) => (t.id === id && t.takeFocus ? { ...t, takeFocus: undefined } : t)) }
 }
 
 export function activateTab(state: TabsState, id: string): TabsState {
@@ -80,9 +103,11 @@ export function closeTab(state: TabsState, id: string): TabsState {
   const i = state.tabs.findIndex((t) => t.id === id)
   if (i < 0) return state
   const tabs = state.tabs.filter((t) => t.id !== id)
+  // The last tab's close empties the area: unfolded, and the terminal's collapse gone with it (#432).
+  if (!tabs.length) return emptyTabs()
   let active = state.active
   if (active === id) active = tabs[Math.min(i, tabs.length - 1)]?.id ?? null
-  return { tabs, active, folded: tabs.length ? state.folded : false }
+  return { ...state, tabs, active }
 }
 
 export function closeAllTabs(): TabsState {
@@ -97,9 +122,16 @@ export function cycleTab(state: TabsState, step: 1 | -1 = 1): TabsState {
   return { ...state, active: next.id, folded: false }
 }
 
+/** Folds the editor to its strip, or back (T); the terminal's collapse goes with it, the terminal taking the column. */
 export function toggleFold(state: TabsState): TabsState {
   if (!state.tabs.length) return state
-  return { ...state, folded: !state.folded }
+  return { ...state, folded: !state.folded, collapsed: false }
+}
+
+/** Collapses the terminal under the editor, or brings it back (#432): the mirror of the fold. A folded editor comes back to take the column. */
+export function toggleCollapse(state: TabsState): TabsState {
+  if (!state.tabs.length) return state
+  return { ...state, folded: false, collapsed: state.folded || !state.collapsed }
 }
 
 /** Shows the tab rendered rather than as source, or back: a Markdown file's Preview toggle (#166). Other tabs keep their choice. */

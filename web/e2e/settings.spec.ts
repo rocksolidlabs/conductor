@@ -1,4 +1,5 @@
-import { dirname } from 'node:path'
+import { mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { expect, test } from './fixtures'
 import type { Locator, Page, Request } from '@playwright/test'
 import type { E2EState } from './state'
@@ -9,11 +10,25 @@ import type { E2EState } from './state'
 // WSL distribution that is browsed.
 test.skip(process.platform === 'win32', 'POSIX paths')
 
+/**
+ * A folder of the test's own under the allowed root, holding the one folder it picks. A listing shows a folder's first 50 entries by
+ * name, and the scratch root holds a folder for every spec that ran before this one: the repository at its root ("repo") fell past
+ * the 50th as specs were added (#432 added three), so the picker is tried where the test knows what is listed (AGENTS.md, count only
+ * what the test made).
+ */
+function pickerFolder(root: string, name: string): { dir: string; pick: string } {
+  const dir = join(root, name)
+  const pick = join(dir, 'pick-me')
+  mkdirSync(pick, { recursive: true })
+  return { dir, pick }
+}
+
 test('the folder picker browses the server, outside the roots too, and fills the field', async ({ page, state }) => {
+  const own = pickerFolder(state.root, 'settings-picker')
   const form = {
     dataDir: state.data,
     allowedRoots: [state.root],
-    defaultCwd: state.root,
+    defaultCwd: own.dir,
     yolo: false,
     reach: 'off',
     closeToTray: true,
@@ -50,20 +65,24 @@ test('the folder picker browses the server, outside the roots too, and fills the
   await page.goto('/settings')
   await page.locator('[data-pick-dir="defaultCwd"]').click()
   const picker = page.getByRole('dialog')
-  await expect(picker.locator('[data-dir-picker-entry="repo"]')).toBeVisible()
-  // Up from the root lists its parent: outside the allowed roots, which only the any scope lists.
+  // It opens on the field's folder, listing what it holds.
+  await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(own.dir)
+  await expect(picker.locator('[data-dir-picker-entry="pick-me"]')).toBeVisible()
+  // Up to the root, then up from the root to its parent: outside the allowed roots, which only the any scope lists.
+  await picker.locator('[data-dir-picker-up]').click()
+  await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(state.root)
   await picker.locator('[data-dir-picker-up]').click()
   await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(dirname(state.root))
   await expect(picker.locator('[data-dir-picker-note]')).toContainText('Outside the allowed roots')
-  // Back in by typing the path, into the repository, and use it.
-  await picker.locator('[data-dir-picker-path]').fill(state.root)
+  // Back in by typing the path, into the folder by a click, and use it.
+  await picker.locator('[data-dir-picker-path]').fill(own.dir)
   await picker.locator('[data-dir-picker-path]').press('Enter')
-  await picker.locator('[data-dir-picker-entry="repo"]').click()
-  await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(state.repo)
+  await picker.locator('[data-dir-picker-entry="pick-me"]').click()
+  await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(own.pick)
   await expect(picker.locator('[data-dir-picker-note]')).toHaveCount(0)
   await picker.locator('[data-dir-picker-use]').click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
-  await expect(page.getByLabel('Default working directory', { exact: true })).toHaveValue(state.repo)
+  await expect(page.getByLabel('Default working directory', { exact: true })).toHaveValue(own.pick)
   // One column that reads top to bottom (#366), each card below the one before it, and the save bar in the panel's footer, in
   // reach wherever the page is scrolled. How wide it is, and the navigation beside it (#433), are the tests below.
   const cards = await page.locator('[data-settings-sections] > [data-settings-section]').evaluateAll((els) => els.map((e) => ({ top: e.getBoundingClientRect().top, bottom: e.getBoundingClientRect().bottom })))
@@ -137,11 +156,15 @@ test('a "Runs in" field has a folder button that browses the allowed roots and f
   await expect(picker.locator('[data-dir-picker-home]')).toHaveCount(0)
   await picker.locator('[data-dir-picker-up]').click()
   await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(state.root)
-  await picker.locator('[data-dir-picker-entry="repo"]').click()
-  await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(state.repo)
+  // Into a folder of the test's own by its path, then a click into the folder it holds, and use it.
+  const own = pickerFolder(state.root, 'runs-in-picker')
+  await picker.locator('[data-dir-picker-path]').fill(own.dir)
+  await picker.locator('[data-dir-picker-path]').press('Enter')
+  await picker.locator('[data-dir-picker-entry="pick-me"]').click()
+  await expect(picker.locator('[data-dir-picker-path]')).toHaveValue(own.pick)
   await picker.locator('[data-dir-picker-use]').click()
   await expect(page.locator('[data-dir-picker-path]')).toHaveCount(0)
-  await expect(field).toHaveValue(state.repo)
+  await expect(field).toHaveValue(own.pick)
 })
 
 // The one-time notice the desktop app hands the workbench (a fresh install's,
