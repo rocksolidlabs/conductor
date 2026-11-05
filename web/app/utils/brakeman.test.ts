@@ -81,6 +81,9 @@ describe('a ref, to its route and its label', () => {
     [`commit:${RUN}/${'a'.repeat(40)}`, `/runs/${RUN}`, 'commit aaaaaaaa'],
     [`file:${SESSION}//home/me/repo/main.go`, `/sessions/${SESSION}?tab=files&open=%2Fhome%2Fme%2Frepo%2Fmain.go`, 'main.go'],
     ['brief:br-7/2', '/brakeman?request=br-7#item-2', 'br-7, item 3'],
+    ['plan:CND-4/2', '/dispatch/CND/4', 'plan revision 2 of CND-4'],
+    ['launch:00112233aabbccdd', null, 'launch 00112233aabbccdd'],
+    [`candidate:${RUN}/build/2`, `/runs/${RUN}?view=tasks&task=build`, 'candidate build, attempt 2'],
   ]
   it.each(cases)('%s', (ref, route, label) => {
     expect(parseRef(ref)).not.toBeNull()
@@ -91,15 +94,15 @@ describe('a ref, to its route and its label', () => {
   it('covers every kind of ref the server names', () => {
     const src = readFileSync(new URL('../../../internal/brakeman/refs.go', import.meta.url), 'utf8')
     const kinds = [...src.matchAll(/\bRef[A-Z][a-z]+\s*=\s*"([a-z]+)"/g)].map((m) => m[1])
-    expect(kinds.length).toBe(15)
+    expect(kinds.length).toBe(18)
     expect([...new Set(cases.map(([ref]) => ref.slice(0, ref.indexOf(':'))))].sort()).toEqual([...kinds].sort())
   })
 
   it("opens a task's page on the Tasks view, as the server's refURL does, whatever view this browser chose last", () => {
     const src = readFileSync(new URL('../../../internal/api/brakeman_refs.go', import.meta.url), 'utf8')
-    expect(src).toContain('case brakeman.RefTask, brakeman.RefAttempt:')
+    expect(src).toContain('case brakeman.RefTask, brakeman.RefAttempt, brakeman.RefCandidate:')
     expect(src).toContain('return run + "?view=tasks&task=" + url.QueryEscape(ref.Task)')
-    for (const ref of [`task:${RUN}/build`, `attempt:${RUN}/build/2`, `check:${RUN}/build/2/unit/1`]) {
+    for (const ref of [`task:${RUN}/build`, `attempt:${RUN}/build/2`, `check:${RUN}/build/2/unit/1`, `candidate:${RUN}/build/2`]) {
       const u = new URL(refRoute(ref)!, 'http://x')
       expect(u.pathname).toBe(`/runs/${RUN}`)
       expect([...u.searchParams.entries()]).toEqual([['view', 'tasks'], ['task', 'build']])
@@ -145,7 +148,7 @@ describe('a ref, to its route and its label', () => {
   })
 
   it('takes no ref the server would refuse', () => {
-    for (const bad of ['', 'run', 'run:', 'run:Nope-0a1b2c3d', `task:${RUN}`, `attempt:${RUN}/build/0`, `attempt:${RUN}/build/01`, 'session:0123', 'ticket:cnd-4', `file:${SESSION}/relative`, `file:${SESSION}//a/../b`, 'brief:br-1/100', 'brief:br-0/1', `run:${RUN}\n`, 'nope:x', `run:${'a'.repeat(600)}-0a1b2c3d`]) {
+    for (const bad of ['', 'run', 'run:', 'run:Nope-0a1b2c3d', `task:${RUN}`, `attempt:${RUN}/build/0`, `attempt:${RUN}/build/01`, 'session:0123', 'ticket:cnd-4', `file:${SESSION}/relative`, `file:${SESSION}//a/../b`, 'brief:br-1/100', 'brief:br-0/1', 'plan:CND-4/0', 'plan:CND-4', 'launch:0011', `candidate:${RUN}/build`, `candidate:${RUN}/build/0`, `run:${RUN}\n`, 'nope:x', `run:${'a'.repeat(600)}-0a1b2c3d`]) {
       expect(parseRef(bad), bad).toBeNull()
     }
     expect(parseRef('op:a/b/c.1')).toEqual({ kind: 'op', actor: 'a/b', op: 'c.1' })
