@@ -1049,6 +1049,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// The providers' queues end as the webhooks' do: what waits in them is
 	// not delivered, and their goroutines are waited for with the others.
 	s.stopExtensions()
+	// No run from a ticket starts from now on (an act's or a route's
+	// launch past every other wait): those given to the engine before are
+	// waited for, so the stops below list them, and one still starting
+	// past ctx stops its own run.
+	s.launches.closeRuns(ctx)
 	var stops sync.WaitGroup
 	for _, run := range s.runs.List() {
 		if run.StoppedAt == nil {
@@ -1059,6 +1064,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// The trees still being ended, a run's stopped before the shutdown
 	// among them, end in the ledger they end in.
 	s.runs.Drain(ctx)
+	if f := gateSeam(&s.launches, &s.launches.afterStops); f != nil {
+		f()
+	}
 	// The sessions close together, their editors by one deadline: a
 	// hung editor per session, one after another, would outlast the
 	// desktop's grace for the server (Codex's review of #281).

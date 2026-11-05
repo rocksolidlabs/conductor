@@ -816,12 +816,19 @@ type turnChanges struct {
 }
 
 // turnChangesOf is the record of the request id's turn. The caller holds
-// d.mu.
+// d.mu. It is begun again only for the request holding the slot (or with
+// none holding it): a request another's turn holds it from (an act or a
+// read answered after its turn was cancelled and the next began) is given
+// a record nothing keeps, and the turn in progress keeps its own.
 func (d *brakemanDesk) turnChangesOf(id string) *turnChanges {
-	if d.turnReads == nil || d.turnReads.req != id {
-		d.turnReads = &turnChanges{req: id, delivered: map[uint64]bool{}, classes: map[string]bool{}}
+	if t := d.turnReads; t != nil && t.req == id {
+		return t
 	}
-	return d.turnReads
+	t := &turnChanges{req: id, delivered: map[uint64]bool{}, classes: map[string]bool{}}
+	if d.turn == nil || d.turn.id == id {
+		d.turnReads = t
+	}
+	return t
 }
 
 // usedClass notes that an answer of the request id's turn used class.

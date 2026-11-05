@@ -85,7 +85,8 @@ func actOp(request, opID string) string {
 
 // actSeam, when a test sets it, runs at each stage of an act ("waiting"
 // once its body is read, before it waits for the request's make mutex;
-// "pending" once it is written pending, before its operation; "committed"
+// "pending" once it is written pending, or found committed, before its
+// operation or the answer of its kept refusal; "committed"
 // once the operation answered, before its outcome is copied); an error it
 // answers stops the act there, as a server that died would.
 var actSeam atomic.Pointer[func(stage, request, opID string) error]
@@ -140,7 +141,8 @@ type actBody struct {
 // act_not_run for one the server stopped before it ran; one whose
 // operation committed (Dispatch's Committed, its receipt kept or pruned)
 // is run again under its derived key, so the operation's own store
-// answers it whatever the target's state now. Any other act, new or
+// answers it whatever the target's state now, but for a refusal the store
+// kept, answered from the receipt as Committed read it, nothing run. Any other act, new or
 // retried, is admitted in admission's order (pendAct): refused in this
 // order, the grant again, the target's visibility (403 not_visible) and
 // scope, the ticket's and what the operation makes (403 outside_scope),
@@ -205,6 +207,9 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 	target := brakeman.Ref{Kind: brakeman.RefTicket, Ticket: key}
 	op := actOp(req.ID, body.OpID)
 	admit := true
+	// kept is a refusal Dispatch kept for the act's operation, answered as
+	// it was read here.
+	var kept *dispatch.Receipt
 	if i := slices.IndexFunc(req.Acts, func(a brakeman.Act) bool { return a.OpID == body.OpID }); i >= 0 {
 		a := req.Acts[i]
 		switch {
@@ -219,11 +224,17 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 		// whatever the target's state now. One that did not (refused
 		// before the store, or a failure of the server) runs anew if it
 		// runs at all: it is held to the checks again and written pending
-		// again before it runs.
-		switch _, found, err := ds.Committed(ctx, brakemanActor, op); {
+		// again before it runs. A refusal the store kept is answered from
+		// the receipt read here, never sent to the operation again: a
+		// refusal writes no change row, so once the receipt is pruned the
+		// operation would run anew, unchecked and not pending.
+		switch rc, found, err := ds.Committed(ctx, brakemanActor, op); {
 		case err != nil:
 			s.dispatchError(w, "act", err)
 			return
+		case found && rc.Status != dispatch.StatusDone:
+			rc.Repeat = true
+			kept, admit = &rc, false
 		case found:
 			admit = false
 		}
@@ -245,17 +256,23 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 		writeError(w, http.StatusServiceUnavailable, "shutting_down", err.Error())
 		return
 	}
-	// The operation begins only while the desk is open, and the shutdown
-	// waits for it before the server's runs are stopped: a run an act
-	// launches is one those stops find. Refused once the desk closes, the
-	// entry stays pending, and the next start marks it not_run.
-	if !d.beginAct() {
-		s.brakemanError(w, errDeskClosing)
-		return
-	}
-	defer d.actDone()
 	rec := newReplyRecorder()
-	s.runAct(ctx, rec, ds, tp, ar, key, op, body)
+	if kept != nil {
+		// The route's own answer to its kept refusal, nothing run.
+		s.writeOp(rec, "act", *kept, nil, false, "", func(dispatch.Receipt) (any, error) { return nil, nil })
+	} else {
+		// The operation begins only while the desk is open, and the
+		// shutdown waits for it before the server's runs are stopped: a
+		// run an act launches is one those stops find. Refused once the
+		// desk closes, the entry stays pending, and the next start marks
+		// it not_run.
+		if !d.beginAct() {
+			s.brakemanError(w, errDeskClosing)
+			return
+		}
+		defer d.actDone()
+		s.runAct(ctx, rec, ds, tp, ar, key, op, body)
+	}
 	if err := atActSeam("committed", req.ID, body.OpID); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "shutting_down", err.Error())
 		return

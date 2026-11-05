@@ -78,6 +78,62 @@ type launchGate struct {
 	beforeStore     func(key string)
 	beforeReconcile func()
 	attempt         func(crew.LaunchSpec)
+	// afterStops runs once the shutdown has stopped the runs it lists and
+	// drained them, before the sessions close; a test holds it. Under mu.
+	afterStops func()
+	// closed is set as the shutdown begins its runs' stops (closeRuns):
+	// the engine is given no run from then on. starting counts the runs
+	// given to it before (admitRun), which the shutdown waits for before
+	// it lists the runs it stops. Under mu.
+	closed   bool
+	starting sync.WaitGroup
+}
+
+// errRunsClosed refuses a run's start once the server's shutdown has
+// begun its runs' stops.
+var errRunsClosed = errors.New("the server is shutting down: the run was not started")
+
+// admitRun admits a run's start by the engine, the last check before it:
+// false once the shutdown closed the gate (closeRuns), when nothing is
+// started. An admitted start ends with startDone.
+func (g *launchGate) admitRun() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return false
+	}
+	g.starting.Add(1)
+	return true
+}
+
+// startDone ends a start admitRun admitted, reporting whether the gate
+// closed while it ran: the shutdown's stops may have listed the runs
+// before its run was among them, and its caller stops it.
+func (g *launchGate) startDone() (late bool) {
+	g.mu.Lock()
+	late = g.closed
+	g.mu.Unlock()
+	g.starting.Done()
+	return late
+}
+
+// closeRuns closes the gate as the shutdown begins its runs' stops and
+// waits, as long as ctx allows, for the starts admitted before it, so
+// the runs they make are among those the stops list; a start still under
+// way past ctx stops its own run (launchPlanned).
+func (g *launchGate) closeRuns(ctx context.Context) {
+	g.mu.Lock()
+	g.closed = true
+	g.mu.Unlock()
+	started := make(chan struct{})
+	go func() {
+		g.starting.Wait()
+		close(started)
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+	}
 }
 
 // gateSeam reads one of the gate's seams under its lock.
@@ -593,8 +649,22 @@ func (s *Server) launchPlanned(ctx context.Context, ds *dispatch.Store, l dispat
 	if f := gateSeam(&s.launches, &s.launches.beforePlanned); f != nil {
 		f(l.ID)
 	}
+	// The last admission before the engine: once the shutdown has begun
+	// its runs' stops, no run starts (the launch is recorded failed with
+	// why); one admitted before is waited for by those stops, or, when it
+	// ends after the gate closed, stopped here, so no run outlives them.
+	if !s.launches.admitRun() {
+		return nil, noop, errRunsClosed
+	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runTimeout)
 	run, release, err := s.runs.LaunchPlanned(rctx, c, l.Label, crew.Planned{RunID: l.RunID, Base: body.Base, Digest: l.PackageSHA256, Package: []byte(l.Package)})
+	if s.launches.startDone() && run != nil {
+		sctx, scancel := context.WithTimeout(context.Background(), runTimeout)
+		if serr := s.runs.Stop(sctx, run.ID); serr != nil && !errors.Is(serr, crew.ErrRunNotFound) {
+			s.log.Warn("a run started as the server shut down could not be stopped", "launch", l.ID, "run", run.ID, "err", serr)
+		}
+		scancel()
+	}
 	done := func() { release(); cancel() }
 	if err != nil {
 		return nil, done, err
