@@ -41,6 +41,11 @@ func TestGuideInASession(t *testing.T) {
 	if code != 0 || err != nil || !hasAll(out, `"os"`, `"ledger"`) || strings.Contains(out, `"sessions"`) {
 		t.Fatalf("host: %d %v %q", code, err, out)
 	}
+	// A plain build's providers, as C9's route names them: none.
+	code, out, _, err = guideCmd(t, "--section", "providers")
+	if code != 0 || err != nil || out != "No providers registered: the open-source feature set.\n" {
+		t.Fatalf("providers: %d %v %q", code, err, out)
+	}
 	if code, _, _, err := guideCmd(t, "--section", "nope"); code != 1 || err == nil || !strings.Contains(err.Error(), "no_section") {
 		t.Fatalf("no section: %d %v", code, err)
 	}
@@ -111,6 +116,24 @@ func TestGuideTextSaysABriefsShape(t *testing.T) {
 	want := "A brief is one JSON object.\nfact/1: text, evidence.\n\n" + `Its JSON Schema, with an example brief: {"type":"object","examples":[{"items":[]}]}`
 	if text != want {
 		t.Fatalf("got\n%s\nwant\n%s", text, want)
+	}
+}
+
+// The providers section reads as the providers the server names, each
+// with its kind and state (C9's rows); none is the open-source feature
+// set, and a server that does not know them says so.
+func TestGuideTextNamesTheProviders(t *testing.T) {
+	for _, c := range []struct{ providers, want string }{
+		{`{"known":true,"providers":[{"kind":"identity","name":"cloud","state":"starting"},{"kind":"media","name":"cloud","state":"ready"}]}`,
+			"Providers registered beside the open-source feature set:\n- identity: cloud (starting)\n- media: cloud (ready)"},
+		{`{"known":true,"providers":[]}`, "No providers registered: the open-source feature set."},
+		{`{"known":false,"providers":[]}`, "The server does not say which providers it has registered."},
+	} {
+		raw := `{"guide":1,"version":"` + version.Version + `","commit":"c","section":"providers","providers":` + c.providers + `}`
+		text, err := guideText([]byte(raw), "how")
+		if err != nil || text != c.want {
+			t.Fatalf("%s: got %q (%v), want %q", c.providers, text, err, c.want)
+		}
 	}
 }
 

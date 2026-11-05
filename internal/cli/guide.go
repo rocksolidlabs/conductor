@@ -223,6 +223,27 @@ func guideText(raw []byte, how string) (string, error) {
 		if len(ops) == 0 {
 			b.WriteString("no operations")
 		}
+	case "providers":
+		// GET /api/capabilities's rows (C9), as the server names them:
+		// what this build adds beside the open-source feature set.
+		var pv struct {
+			Known     bool
+			Providers []struct{ Kind, Name, State string }
+		}
+		if err := json.Unmarshal(env["providers"], &pv); err != nil {
+			return "", fmt.Errorf("guide: unreadable providers: %w", err)
+		}
+		switch {
+		case !pv.Known:
+			b.WriteString("The server does not say which providers it has registered.")
+		case len(pv.Providers) == 0:
+			b.WriteString("No providers registered: the open-source feature set.")
+		default:
+			b.WriteString("Providers registered beside the open-source feature set:")
+			for _, p := range pv.Providers {
+				fmt.Fprintf(&b, "\n- %s: %s (%s)", p.Kind, p.Name, p.State)
+			}
+		}
 	case "briefs":
 		// A brief's shape: its words as lines, then its JSON Schema, an
 		// example brief inside it, compact.

@@ -750,6 +750,11 @@ type guideHost struct {
 	Dispatch     guideStore `json:"dispatch"`
 	// ChecksMaxConcurrent is checks.maxConcurrent.
 	ChecksMaxConcurrent int `json:"checksMaxConcurrent"`
+	// Extensions is the kinds of provider GET /api/capabilities names
+	// (C9), each once: what this build adds beside the open-source
+	// feature set, [] for a plain build. The providers section has the
+	// rows.
+	Extensions []string `json:"extensions"`
 	// Sessions is how many sessions the server lists, for the admin.
 	Sessions *int         `json:"sessions,omitempty"`
 	Agents   []guideAgent `json:"agents"`
@@ -768,13 +773,14 @@ func cutText(s string, n int) string {
 	return s[:n]
 }
 
-// guideHostSection is the host section for the caller: a session caller
-// sees no reasons and no session count, and only the agents it could
-// name (with self-service, on a server that launches).
-func (s *Server) guideHostSection(ctx context.Context, c guideCaller) guideHost {
+// guideHostSection is the host section for the caller, caps C9's
+// answer: a session caller sees no reasons and no session count, and
+// only the agents it could name (with self-service, on a server that
+// launches).
+func (s *Server) guideHostSection(ctx context.Context, c guideCaller, caps capabilitiesReply) guideHost {
 	admin := c.Kind == "admin"
 	h := guideHost{OS: runtime.GOOS, Arch: runtime.GOARCH, Switchyard: s.cfg.Switchyard.Enabled, ManagedCrews: s.cfg.ManagedCrews(),
-		SelfService: s.cfg.SelfService(), ChecksMaxConcurrent: s.cfg.CheckConcurrency(), Agents: []guideAgent{}}
+		SelfService: s.cfg.SelfService(), ChecksMaxConcurrent: s.cfg.CheckConcurrency(), Extensions: extensionKinds(caps), Agents: []guideAgent{}}
 	h.Ledger = guideStore{State: "absent"}
 	if s.ledger != nil {
 		h.Ledger.State = "owned"
@@ -849,11 +855,33 @@ func guideReceipts() []guideReceipt {
 	}
 }
 
-// guideProviders is the providers section: unknown until the server
-// says which providers it has registered (Program item C9).
+// guideProviders is the providers section: GET /api/capabilities's
+// answer (Program item C9), the same rows for the admin and for a
+// session, and known, which the server always is now: a plain build's is
+// known and empty. The guide reads the route's rows and nothing else of
+// ext, and decides nothing from them (article 1): it names what is
+// registered, never what a caller may do because of it.
 type guideProviders struct {
-	Known     bool     `json:"known"`
-	Providers []string `json:"providers"`
+	Known     bool            `json:"known"`
+	Providers []capabilityRow `json:"providers"`
+}
+
+// guideProvidersOf is the providers section of C9's reply.
+func guideProvidersOf(caps capabilitiesReply) guideProviders {
+	return guideProviders{Known: true, Providers: caps.Providers}
+}
+
+// extensionKinds is the kinds C9's reply names, each once, in its order
+// (the registry's): what the host section says this build adds beside
+// the open-source feature set, never nil.
+func extensionKinds(caps capabilitiesReply) []string {
+	out := []string{}
+	for _, r := range caps.Providers {
+		if !slices.Contains(out, r.Kind) {
+			out = append(out, r.Kind)
+		}
+	}
+	return out
 }
 
 // guideOverview is the overview's content.
@@ -877,6 +905,8 @@ func (s *Server) guideReplies(ctx context.Context, c guideCaller, ops []Operatio
 
 // guideContent is each section's content for the caller, by its name.
 func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operation) map[string]any {
+	// C9's answer, read once for both sections that name it.
+	caps := s.capabilities()
 	reached := []Operation{}
 	for _, op := range ops {
 		if s.reaches(c, op) {
@@ -890,9 +920,9 @@ func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operatio
 	return map[string]any{
 		"operations": reached,
 		"limits":     guideLimits(),
-		"host":       s.guideHostSection(ctx, c),
+		"host":       s.guideHostSection(ctx, c, caps),
 		"receipts":   guideReceipts(),
-		"providers":  guideProviders{Providers: []string{}},
+		"providers":  guideProvidersOf(caps),
 		"briefs":     guideBriefsSection(),
 	}
 }
