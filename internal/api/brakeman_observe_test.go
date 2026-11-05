@@ -294,7 +294,14 @@ func TestBrakemansPrincipalReadsOnlyTheNamedRoutes(t *testing.T) {
 		}
 		aresp.Body.Close()
 		_, shared := sharedReadSpec(pattern)
+		_, act := actRoutes[pattern]
 		switch {
+		case act:
+			// A granted operation's own route takes the principal, and
+			// refuses it an operation it is not granted (brakeman_act.go).
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("%s: the principal not granted it gets %d", pattern, resp.StatusCode)
+			}
 		case shared || slices.Contains(own, pattern):
 			if resp.StatusCode == http.StatusUnauthorized {
 				t.Errorf("%s: the principal is refused (%d)", pattern, resp.StatusCode)

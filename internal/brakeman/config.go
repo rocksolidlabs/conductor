@@ -93,12 +93,52 @@ type Scope struct {
 // is. Draft (draft_ticket/1, draft_crew/1, handoff/1) and Propose
 // (proposal/1, decision/1) are the person's to turn off; both off is
 // observe only, and a brief with an item they do not allow is refused.
-// Act names the operations BK2 grants; it must be empty in this build.
+// Act names the operations BK2 grants, from the closed list Grantable:
+// only the admin's configuration route writes it.
 type Permissions struct {
 	Observe bool     `json:"observe"`
 	Draft   bool     `json:"draft"`
 	Propose bool     `json:"propose"`
 	Act     []string `json:"act,omitempty"`
+}
+
+// The operations BK2 grants (docs/plans/brakeman.md, PR-12), each one
+// operation that Brakeman's principal sends to that operation's own
+// route: launching a ticket's approved plan revision (DS2's launch),
+// requesting a supported repair of a candidate (RV1's request changes),
+// preparing a follow-up revision of an approved one (DS2's proposal,
+// which a person still approves), routing a decision to the operator
+// (DR1's routing, never its answer). Approving a plan revision, answering
+// a decision, changing a gate, accepting a task, editing the
+// configuration and closing anything are none of them, whatever is
+// granted.
+const (
+	ActLaunchApprovedPlan = "launch_approved_plan"
+	ActRequestRepair      = "request_repair"
+	ActPrepareFollowup    = "prepare_followup"
+	ActRouteDecision      = "route_decision"
+)
+
+// Grantable is the closed list of the operations Brakeman may be
+// granted, in the order Settings shows them.
+var Grantable = []string{ActLaunchApprovedPlan, ActRequestRepair, ActPrepareFollowup, ActRouteDecision}
+
+// validateAct holds the grants to the closed list, each once, and to
+// what the server serves (Facts.ServesAct): an operation whose route this
+// build does not serve cannot be granted.
+func validateAct(act []string, f Facts) error {
+	for i, op := range act {
+		if !slices.Contains(Grantable, op) {
+			return invalidConfig("permissions.act", "%q is not an operation Brakeman can be granted: one of %s", op, strings.Join(Grantable, ", "))
+		}
+		if slices.Contains(act[:i], op) {
+			return invalidConfig("permissions.act", "%s is granted twice", op)
+		}
+		if err := f.ServesAct(op); err != nil {
+			return invalidConfig("permissions.act", "%s cannot be granted: %v", op, err)
+		}
+	}
+	return nil
 }
 
 // Wake is when Brakeman runs: only when invoked, until BK3's background
@@ -177,6 +217,9 @@ type Facts interface {
 	// crew's strict decoding and its Validate), so this package needs no
 	// internal/crew.
 	CheckCrew(body json.RawMessage) error
+	// ServesAct answers nil when the server serves the route of the
+	// granted operation op (one of Grantable), else why not in words.
+	ServesAct(op string) error
 }
 
 // AgentFacts is what Facts says of an agent.
@@ -297,8 +340,8 @@ func Validate(c Config, f Facts) error {
 	if c.Enabled && !p.Observe {
 		return invalidConfig("permissions.observe", "is true while Brakeman is on")
 	}
-	if len(p.Act) > 0 {
-		return invalidConfig("permissions.act", "no action can be granted in this build: it must be empty")
+	if err := validateAct(p.Act, f); err != nil {
+		return err
 	}
 	if c.Wake.Mode != WakeInvoked {
 		return invalidConfig("wake.mode", "must be %q in this build", WakeInvoked)

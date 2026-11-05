@@ -52,12 +52,25 @@ type bkEnv struct {
 // arguments).
 func brakemanEnv(t *testing.T, mutate func(*config.Config)) *bkEnv {
 	t.Helper()
-	e := newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{
+	e := newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), bkAgents())
+	return bkEnvOf(t, e)
+}
+
+// bkAgents is Brakeman's scripted agents, as brakemanEnv's catalog holds
+// them.
+func bkAgents() []catalog.Agent {
+	return []catalog.Agent{
 		{ID: "bk", Name: "bk", Command: []string{"/bin/sh", "-c", bkScript}, Adapter: "claude", AllowArgs: true},
 		{ID: "bkexit", Name: "bkexit", Command: []string{"/bin/sh", "-c", "echo 'Please run /login'; exit 3"}, Adapter: "claude", AllowArgs: true},
 		{ID: "bkcodex", Name: "bkcodex", Command: []string{"/bin/sh", "-c", "exec cat"}, Adapter: "codex", AllowArgs: true},
 		{ID: "bkfixed", Name: "bkfixed", Command: []string{"/bin/sh", "-c", bkScript}, Adapter: "claude"},
-	})
+	}
+}
+
+// bkEnvOf is e as a bkEnv: its limiter out of the way and every session
+// stopped when the test ends.
+func bkEnvOf(t *testing.T, e *testEnv) *bkEnv {
+	t.Helper()
 	e.srv.limiter = newRateLimiter(1e6, 1e6)
 	e.stopEverything(t)
 	if e.srv.brakeman == nil {

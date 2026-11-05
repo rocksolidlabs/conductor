@@ -44,7 +44,7 @@ type Request struct {
 	Footprint *Footprint `json:"footprint,omitempty"`
 	Made      []Made     `json:"made,omitempty"`     // drafts made work by a person
 	Edges     []Edge     `json:"edges,omitempty"`    // draft tickets' blocks
-	Acts      []Act      `json:"acts,omitempty"`     // BK2's acts; none in this build
+	Acts      []Act      `json:"acts,omitempty"`     // BK2's acts, written pending before the operation runs
 	StrayRun  string     `json:"strayRun,omitempty"` // a run its launch returned after it closed, stopped then
 	Coverage  *Coverage  `json:"coverage,omitempty"` // the server's watermarks of what the turn read
 	ClosedAt  time.Time  `json:"closedAt,omitzero"`
@@ -176,8 +176,15 @@ const (
 	EdgeMade    = "made"
 )
 
-// Act is one of BK2's acts (PR-12), written pending before its operation
-// runs. No act is taken in this build: a request's Acts stays empty.
+// Act is one of BK2's acts (PR-12): an operation Brakeman was granted
+// (Permissions.Act) and ran through that operation's own route, written
+// pending before the operation runs and its outcome copied after, from
+// the receipt the operation's own store keeps. OpID is the turn's, Op the
+// derived idempotency key the operation ran under, Target the ref it
+// acted on (a ticket, a plan revision), Run the target's run where the
+// operation's receipt is keyed by one, Args the hex SHA-256 of its
+// arguments; Receipt names what the operation made or acted on (a
+// launch's id, a plan revision's) and Why a refusal's words.
 type Act struct {
 	OpID      string    `json:"opId"`
 	Operation string    `json:"operation"`
@@ -185,11 +192,52 @@ type Act struct {
 	Run       string    `json:"run,omitempty"`
 	Op        string    `json:"op"`
 	Args      string    `json:"args"`  // hex SHA-256 of the arguments
-	State     string    `json:"state"` // pending, done, refused, not_run
+	State     string    `json:"state"` // ActPending, ActDone, ActRefused, ActNotRun
 	Receipt   string    `json:"receipt,omitempty"`
 	Why       string    `json:"why,omitempty"`
 	At        time.Time `json:"at"`
 }
+
+// Fit is a with its Why cut, at a character, to the longest prefix with
+// which the entry as the request's encoding writes it is within
+// MaxActBytes: words that JSON escapes (a quote, a control character) are
+// weighed as written, and each of the other fields is bounded on its own,
+// so an outcome written over a pending entry that fit always fits.
+func (a Act) Fit() Act {
+	if entrySize(a) <= MaxActBytes {
+		return a
+	}
+	// Where the words may be cut: at each character, and whole.
+	cuts := make([]int, 0, len(a.Why)+1)
+	for i := range a.Why {
+		cuts = append(cuts, i)
+	}
+	cuts = append(cuts, len(a.Why))
+	// cuts[lo] fits (none at all is taken to), cuts[hi] does not.
+	why, lo, hi := a.Why, 0, len(cuts)-1
+	for lo+1 < hi {
+		mid := (lo + hi) / 2
+		if a.Why = why[:cuts[mid]]; entrySize(a) <= MaxActBytes {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	a.Why = why[:cuts[lo]]
+	return a
+}
+
+// The states of an Act: pending while its operation may be running (a
+// crash leaves it so, for the desk's recovery), done or refused as the
+// operation's receipt says, not_run when the operation never committed
+// before the server stopped (never run by the recovery: the grant was the
+// turn's, and its turn has ended).
+const (
+	ActPending = "pending"
+	ActDone    = "done"
+	ActRefused = "refused"
+	ActNotRun  = "not_run"
+)
 
 // The kinds of a request.
 const (

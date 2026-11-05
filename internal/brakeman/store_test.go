@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
@@ -222,6 +223,81 @@ func TestPruneKeepsAPinnedRequest(t *testing.T) {
 	}
 	if _, err := f.s.Get(r.ID); err != nil {
 		t.Errorf("a pending act: %v", err)
+	}
+}
+
+// TestPruneKeepsARequestWithAPendingAct: a closed request whose act is
+// pending outlives Prune, and Pending lists the act for the desk's
+// recovery; once its outcome is copied (done, or not_run) it pins
+// nothing.
+func TestPruneKeepsARequestWithAPendingAct(t *testing.T) {
+	keepNewest = 0
+	t.Cleanup(func() { keepNewest = Keep })
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	for _, after := range []string{ActDone, ActNotRun} {
+		f := newFixture(t)
+		r := f.start("op-1")
+		act := Act{OpID: "a-1", Operation: ActLaunchApprovedPlan, Target: ref(t, "ticket:CND-1"), Op: "bk" + strings.Repeat("a", 30), Args: strings.Repeat("0", 64), State: ActPending, At: now}
+		if _, err := f.s.Update(r.ID, func(r *Request) error { r.Acts = []Act{act}; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		f.close(r.ID, StateInterrupted)
+		if _, err := f.s.Prune(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.s.Get(r.ID); err != nil {
+			t.Fatalf("a closed request with a pending act was pruned: %v", err)
+		}
+		pending, err := f.s.Pending()
+		if err != nil || len(pending) != 1 || pending[0].Act == nil || pending[0].Act.OpID != "a-1" || pending[0].Request != r.ID {
+			t.Fatalf("Pending: %+v %v", pending, err)
+		}
+		// A closed request takes its act's outcome, and nothing else of it.
+		if _, err := f.s.Update(r.ID, func(r *Request) error { r.Acts[0].State, r.Acts[0].Receipt = after, "0123456789abcdef"; return nil }); err != nil {
+			t.Fatalf("the outcome of a closed request's act: %v", err)
+		}
+		if _, err := f.s.Update(r.ID, func(r *Request) error { r.Acts[0].Operation = ActPrepareFollowup; return nil }); !errors.Is(err, ErrClosed) {
+			t.Fatalf("a closed request's act changed past its outcome: %v", err)
+		}
+		if _, err := f.s.Prune(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.s.Get(r.ID); err == nil {
+			t.Fatalf("a request whose act is %s stays pinned", after)
+		}
+	}
+}
+
+// TestAnActFitsWhateverItsWords: with every other field at its bound and
+// words that JSON escapes to six bytes a byte, two, or not at all, Fit
+// cuts the words at a character until the entry is within MaxActBytes,
+// and a request with every act so fitted is written.
+func TestAnActFitsWhateverItsWords(t *testing.T) {
+	f := newFixture(t)
+	r := f.start("op-1")
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	var acts []Act
+	for _, why := range []string{strings.Repeat("a", MaxWhy), strings.Repeat(`"`, MaxWhy), strings.Repeat("\x01", MaxWhy), strings.Repeat("é", MaxWhy), "a\x01\"é" + strings.Repeat("\x1f", MaxWhy)} {
+		a := Act{OpID: strings.Repeat("o", 32), Operation: pad("op", 64), Target: ref(t, "task:"+runA+"/build"), Run: pad("r", 73), Op: strings.Repeat("p", 32),
+			Args: strings.Repeat("f", 64), State: ActRefused, Receipt: pad("r", 73), Why: why, At: now}
+		if entrySize(a) <= MaxActBytes {
+			t.Fatalf("the words %q fit uncut: the case tests nothing", why[:8])
+		}
+		fit := a.Fit()
+		if n := entrySize(fit); n > MaxActBytes || fit.Why == "" || !strings.HasPrefix(why, fit.Why) || !utf8.ValidString(fit.Why) {
+			t.Fatalf("fitted to %d bytes, words %q", n, fit.Why)
+		}
+		if grown := fit; len(fit.Why) < len(why) {
+			_, n := utf8.DecodeRuneInString(why[len(fit.Why):])
+			grown.Why = why[:len(fit.Why)+n]
+			if entrySize(grown) <= MaxActBytes {
+				t.Fatalf("cut more than it needed: %d bytes with one more character", entrySize(grown))
+			}
+		}
+		acts = append(acts, fit)
+	}
+	if _, err := f.s.Update(r.ID, func(r *Request) error { r.Acts = acts; return nil }); err != nil {
+		t.Fatalf("the fitted acts: %v", err)
 	}
 }
 

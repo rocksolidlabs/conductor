@@ -34,9 +34,11 @@ type FakeHost struct {
 	launches []ext.LaunchRequest
 	submits  []ext.SubmitRequest
 	notices  []ext.Notification
+	approved []ext.ApprovedLaunch
 	launch   func(ext.LaunchRequest) (ext.RunRef, error)
 	submit   func(ext.SubmitRequest) (ext.SubmitResult, error)
 	notify   func(ext.Notification) error
+	approve  func(ext.ApprovedLaunch) (ext.RunRef, error)
 }
 
 // NewFakeHost is an open FakeHost whose DataDir is t.TempDir(). When t
@@ -72,6 +74,14 @@ func (w hostLog) Write(p []byte) (int, error) {
 func (h *FakeHost) OnLaunch(fn func(ext.LaunchRequest) (ext.RunRef, error)) {
 	h.mu.Lock()
 	h.launch = fn
+	h.mu.Unlock()
+}
+
+// OnLaunchApproved has LaunchApproved answer fn's answer for a valid
+// request.
+func (h *FakeHost) OnLaunchApproved(fn func(ext.ApprovedLaunch) (ext.RunRef, error)) {
+	h.mu.Lock()
+	h.approve = fn
 	h.mu.Unlock()
 }
 
@@ -200,6 +210,41 @@ func (h *FakeHost) Launch(ctx context.Context, r ext.LaunchRequest) (ext.RunRef,
 	return ext.RunRef{ID: id, Crew: r.Crew, URL: "/crews/" + r.Crew + "/runs/" + id}, nil
 }
 
+// LaunchTurn answers ext.ErrUnsupported, as a provider's Host does: a
+// Brakeman turn is launched by its desk alone.
+func (h *FakeHost) LaunchTurn(ctx context.Context, r ext.TurnLaunch) (ext.RunRef, error) {
+	if err := h.enter(ctx); err != nil {
+		return ext.RunRef{}, err
+	}
+	return ext.RunRef{}, fmt.Errorf("%w: a Brakeman turn is launched by its desk", ext.ErrUnsupported)
+}
+
+// LaunchApproved records r and answers a run (run-1, run-2, … counted
+// with Launch's), or what OnLaunchApproved set; the record and the
+// callback each hold a copy of their own, as Launch's.
+func (h *FakeHost) LaunchApproved(ctx context.Context, r ext.ApprovedLaunch) (ext.RunRef, error) {
+	if err := h.enter(ctx); err != nil {
+		return ext.RunRef{}, err
+	}
+	rec := r
+	rec.By = copyPrincipal(r.By)
+	r.By = copyPrincipal(r.By)
+	h.mu.Lock()
+	h.approved = append(h.approved, rec)
+	h.runs++
+	n, fn := h.runs, h.approve
+	h.mu.Unlock()
+	h.tell()
+	if err := r.Valid(); err != nil {
+		return ext.RunRef{}, fmt.Errorf("%w: %v", ext.ErrRefused, err)
+	}
+	if fn != nil {
+		return fn(r)
+	}
+	id := fmt.Sprintf("run-%d", n)
+	return ext.RunRef{ID: id, URL: "/runs/" + id}, nil
+}
+
 // Submit records r and answers "entered", or what OnSubmit set; the
 // record and the callback each hold a copy of their own, as Launch's.
 func (h *FakeHost) Submit(ctx context.Context, r ext.SubmitRequest) (ext.SubmitResult, error) {
@@ -258,6 +303,13 @@ func (h *FakeHost) Launches() []ext.LaunchRequest {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return copyAll(h.launches, func(r ext.LaunchRequest) ext.LaunchRequest { r.By = copyPrincipal(r.By); return r })
+}
+
+// ApprovedLaunches answers every LaunchApproved's request, in order.
+func (h *FakeHost) ApprovedLaunches() []ext.ApprovedLaunch {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return copyAll(h.approved, func(r ext.ApprovedLaunch) ext.ApprovedLaunch { r.By = copyPrincipal(r.By); return r })
 }
 
 // Submits answers every Submit's request, in order.

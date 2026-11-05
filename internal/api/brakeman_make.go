@@ -913,7 +913,9 @@ func (s *Server) completeEdges(ctx context.Context, d *brakemanDesk, id string) 
 
 // recoverMakes completes what the last owner left of the makes: each
 // pending claim from its recorded input, and each edge whose two ends are
-// tickets, deciding each from a durable record (completeMake). It runs
+// tickets, deciding each from a durable record (completeMake); and, as
+// recoverActs, each act left pending, from its operation's own store
+// (completeAct). It runs
 // once the desk's store holds the owner lock, before Brakeman's routes
 // serve; what it cannot complete now (Dispatch not open) is left pending
 // and logged.
@@ -939,6 +941,12 @@ func (d *brakemanDesk) recoverMakes(ctx context.Context) {
 			edges[p.Request] = true
 			if err := d.s.completeEdges(ctx, d, p.Request); err != nil {
 				d.s.log.Warn("a Brakeman draft's blocks could not be recovered yet", "request", p.Request, "err", err)
+			}
+		case p.Act != nil:
+			// recoverActs (brakeman_act.go): the act's outcome from its
+			// operation's own store.
+			if err := d.s.completeAct(ctx, d, p.Request, *p.Act); err != nil {
+				d.s.log.Warn("a Brakeman act's outcome could not be recovered yet", "request", p.Request, "opId", p.Act.OpID, "err", err)
 			}
 		}
 	}

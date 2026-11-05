@@ -686,6 +686,35 @@ type Host interface {
 	DataDir() (string, error)
 	// Log is the server's logger, naming the provider.
 	Log() *slog.Logger
+	// LaunchTurn launches a Brakeman turn as a run: an unsaved one-member
+	// crew of the agent in its adapter's read-only mode, never yolo,
+	// through the engine. Only the Host the server gives Brakeman's desk
+	// launches one, for the request holding the desk's slot; a provider's
+	// answers ErrUnsupported. (Brakeman's PR-17, docs/plans/brakeman.md.)
+	LaunchTurn(ctx context.Context, r TurnLaunch) (RunRef, error)
+	// LaunchApproved launches a managed run from a ticket's plan revision
+	// the operator approved and that still holds, as POST
+	// /api/dispatch/tickets/{key}/launch does; OpID makes a retry answer
+	// the launch it made. Declared by Brakeman's PR-17, wired to DS2's
+	// launch by its PR-12.
+	LaunchApproved(ctx context.Context, r ApprovedLaunch) (RunRef, error)
+}
+type TurnLaunch struct {
+	Agent      string `json:"agent"`            // a catalog agent's id, at most MaxAgentID
+	Model      string `json:"model,omitempty"`  // "" for its default, at most MaxModel
+	AllowTools bool   `json:"allowTools,omitempty"`
+	Folder     string `json:"folder"`  // absolute, at most MaxFolder
+	Line       string `json:"line"`    // typed once the session is ready, at most MaxTurnLine
+	Label      string `json:"label"`   // at most MaxRunLabel characters
+	Request    string `json:"request"` // br-<n>, at most MaxRequestRef
+}
+type ApprovedLaunch struct {
+	Ticket      string    `json:"ticket"`                // a ticket's key
+	Plan        string    `json:"plan"`                  // the revision's id, PlanIDLen hex
+	ExpectedRev int64     `json:"expectedRev,omitempty"` // the ticket's revision read; 0 for none
+	OpID        string    `json:"opId"`                  // at most MaxOpID: a retry answers the same launch
+	Label       string    `json:"label,omitempty"`
+	By          Principal `json:"by"`
 }
 type LaunchRequest struct {
 	Crew  string    `json:"crew"`

@@ -7,7 +7,9 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
@@ -60,6 +62,46 @@ func TestExtBoundsAreTheServers(t *testing.T) {
 		extOK := ext.SubmitRequest{Session: "s1", Question: q, Text: "t", By: by}.Valid() == nil
 		if extOK != proto.ValidQuestionID(q) {
 			t.Errorf("question id of %d bytes: ext takes it %v, proto.ValidQuestionID %v", len(q), extOK, proto.ValidQuestionID(q))
+		}
+	}
+}
+
+// TestExtLaunchBoundsAreTheServers holds the bounds of ext's TurnLaunch
+// and ApprovedLaunch to the stores' own: a catalog agent's id, a ticket's
+// key, a plan revision's id and an operation's id agree at the bound, one
+// past it and on the shape.
+func TestExtLaunchBoundsAreTheServers(t *testing.T) {
+	turn := func(agent string) bool {
+		return ext.TurnLaunch{Agent: agent, Folder: t.TempDir(), Line: "l", Label: "l", Request: "br-1"}.Valid() == nil
+	}
+	for _, id := range []string{strings.Repeat("a", ext.MaxAgentID), strings.Repeat("a", ext.MaxAgentID+1), "claude-2", "-", "A", "a_b", ""} {
+		if turn(id) != catalog.ValidID(id) {
+			t.Errorf("agent id %q: ext takes it %v, catalog.ValidID %v", id, turn(id), catalog.ValidID(id))
+		}
+	}
+	by := ext.Principal{Subject: "u-1", Name: "Ada"}
+	approved := func(edit func(*ext.ApprovedLaunch)) bool {
+		r := ext.ApprovedLaunch{Ticket: "CND-1", Plan: strings.Repeat("a", dispatch.IDLen), OpID: "op", By: by}
+		edit(&r)
+		return r.Valid() == nil
+	}
+	if ext.PlanIDLen != dispatch.IDLen {
+		t.Errorf("PlanIDLen: ext has %d, Dispatch %d", ext.PlanIDLen, dispatch.IDLen)
+	}
+	for _, key := range []string{"CND-1", "CNDXYZ-" + strings.Repeat("9", 18), "CND-" + strings.Repeat("9", 19), "CNDXYZW-1", "C-1", "cnd-1", "CND-0", "CND-01", "1ND-1", "CND"} {
+		_, _, want := dispatch.ParseKey(key)
+		if got := approved(func(r *ext.ApprovedLaunch) { r.Ticket = key }); got != want {
+			t.Errorf("ticket key %q: ext takes it %v, dispatch.ParseKey %v", key, got, want)
+		}
+	}
+	for _, id := range []string{strings.Repeat("f", dispatch.IDLen), strings.Repeat("f", dispatch.IDLen+1), strings.Repeat("F", dispatch.IDLen), "0123"} {
+		if got, want := approved(func(r *ext.ApprovedLaunch) { r.Plan = id }), dispatch.ValidID(id); got != want {
+			t.Errorf("plan id %q: ext takes it %v, dispatch.ValidID %v", id, got, want)
+		}
+	}
+	for _, id := range []string{strings.Repeat("o", ext.MaxOpID), strings.Repeat("o", ext.MaxOpID+1), "a.b_c~d-e", "a/b", "a b", ""} {
+		if got, want := approved(func(r *ext.ApprovedLaunch) { r.OpID = id }), dispatch.OpIDPattern.MatchString(id); got != want {
+			t.Errorf("op id %q: ext takes it %v, dispatch.OpIDPattern %v", id, got, want)
 		}
 	}
 }

@@ -69,12 +69,71 @@ type launchGate struct {
 	// their launch, for the tests.
 	waits int
 	// beforePlanned runs with a launch's id just before the engine is
-	// asked for its run; beforeReconcile before the reconcile at the
-	// ledger's recovery; attempt with each session spec Launch is given,
-	// before it takes the catalog entry. Tests hold them; under mu.
+	// asked for its run; beforeStore with a ticket's key just before a new
+	// launch of it is given to the store; beforeReconcile before the
+	// reconcile at the ledger's recovery; attempt with each session spec
+	// Launch is given, before it takes the catalog entry. Tests hold them;
+	// under mu.
 	beforePlanned   func(launchID string)
+	beforeStore     func(key string)
 	beforeReconcile func()
 	attempt         func(crew.LaunchSpec)
+	// afterStops runs once the shutdown has stopped the runs it lists and
+	// drained them, before the sessions close; a test holds it. Under mu.
+	afterStops func()
+	// closed is set as the shutdown begins its runs' stops (closeRuns):
+	// the engine is given no run from then on. starting counts the runs
+	// given to it before (admitRun), which the shutdown waits for before
+	// it lists the runs it stops. Under mu.
+	closed   bool
+	starting sync.WaitGroup
+}
+
+// errRunsClosed refuses a run's start once the server's shutdown has
+// begun its runs' stops.
+var errRunsClosed = errors.New("the server is shutting down: the run was not started")
+
+// admitRun admits a run's start by the engine, the last check before it:
+// false once the shutdown closed the gate (closeRuns), when nothing is
+// started. An admitted start ends with startDone.
+func (g *launchGate) admitRun() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return false
+	}
+	g.starting.Add(1)
+	return true
+}
+
+// startDone ends a start admitRun admitted, reporting whether the gate
+// closed while it ran: the shutdown's stops may have listed the runs
+// before its run was among them, and its caller stops it.
+func (g *launchGate) startDone() (late bool) {
+	g.mu.Lock()
+	late = g.closed
+	g.mu.Unlock()
+	g.starting.Done()
+	return late
+}
+
+// closeRuns closes the gate as the shutdown begins its runs' stops and
+// waits, as long as ctx allows, for the starts admitted before it, so
+// the runs they make are among those the stops list; a start still under
+// way past ctx stops its own run (launchPlanned).
+func (g *launchGate) closeRuns(ctx context.Context) {
+	g.mu.Lock()
+	g.closed = true
+	g.mu.Unlock()
+	started := make(chan struct{})
+	go func() {
+		g.starting.Wait()
+		close(started)
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+	}
 }
 
 // gateSeam reads one of the gate's seams under its lock.
@@ -318,8 +377,20 @@ func (s *Server) handleDispatchLaunch(w http.ResponseWriter, r *http.Request) {
 	// operations and its run's start, each within its own bound.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), LaunchTimeout)
 	defer cancel()
-	op := body.op(r)
-	rc, found, err := ds.Replay(ctx, op, dispatch.IntentTicketLaunch, dispatch.LaunchArgs{Key: key, Plan: body.Plan, Label: body.Label})
+	s.ticketLaunch(ctx, w, ds, body.op(r), key, body.Plan, body.Label, nil)
+}
+
+// ticketLaunch is DS2's launch from a ticket, the one function the route
+// and ext.Host's LaunchApproved run: op under its actor, the ticket key,
+// the revision plan and the label, answered to w as the route answers
+// (handleDispatchLaunch), the operation replayed first. admit, when set,
+// is asked in the store's transaction of a new launch, before anything is
+// kept (dispatch.Store.LaunchAdmitted): its error refuses the launch with
+// nothing kept and is answered as the store's error, after which the
+// caller answers in its own words (LaunchApproved, for a provider given
+// up while the launch waited). A launch it admitted runs to its end.
+func (s *Server) ticketLaunch(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key, plan, label string, admit func() error) {
+	rc, found, err := ds.Replay(ctx, op, dispatch.IntentTicketLaunch, dispatch.LaunchArgs{Key: key, Plan: plan, Label: label})
 	switch {
 	case err != nil:
 		s.dispatchError(w, "launch", err)
@@ -331,7 +402,7 @@ func (s *Server) handleDispatchLaunch(w http.ResponseWriter, r *http.Request) {
 		s.answerLaunch(ctx, w, ds, rc, op)
 		return
 	}
-	if !dispatch.ValidID(body.Plan) {
+	if !dispatch.ValidID(plan) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "plan is a plan revision's id, 16 lower-case hex characters")
 		return
 	}
@@ -342,7 +413,7 @@ func (s *Server) handleDispatchLaunch(w http.ResponseWriter, r *http.Request) {
 	// The early refusal, in words, before anything is kept: an agent of
 	// the revision that resolves otherwise now. The gate is each attempt's
 	// own launch, which checks the entry it starts.
-	switch v, err := ds.Plan(ctx, body.Plan); {
+	switch v, err := ds.Plan(ctx, plan); {
 	case errors.Is(err, dispatch.ErrNotFound):
 		// The store refuses it not_found, its receipt kept.
 	case err != nil:
@@ -359,7 +430,10 @@ func (s *Server) handleDispatchLaunch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	rc, err = ds.Launch(ctx, op, key, body.Plan, body.Label)
+	if f := gateSeam(&s.launches, &s.launches.beforeStore); f != nil {
+		f(key)
+	}
+	rc, err = ds.LaunchAdmitted(ctx, op, key, plan, label, admit)
 	if err != nil || rc.Status != dispatch.StatusDone {
 		s.writeOp(w, "launch", rc, err, true, "launch", func(dispatch.Receipt) (any, error) { return nil, nil })
 		return
@@ -575,8 +649,22 @@ func (s *Server) launchPlanned(ctx context.Context, ds *dispatch.Store, l dispat
 	if f := gateSeam(&s.launches, &s.launches.beforePlanned); f != nil {
 		f(l.ID)
 	}
+	// The last admission before the engine: once the shutdown has begun
+	// its runs' stops, no run starts (the launch is recorded failed with
+	// why); one admitted before is waited for by those stops, or, when it
+	// ends after the gate closed, stopped here, so no run outlives them.
+	if !s.launches.admitRun() {
+		return nil, noop, errRunsClosed
+	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runTimeout)
 	run, release, err := s.runs.LaunchPlanned(rctx, c, l.Label, crew.Planned{RunID: l.RunID, Base: body.Base, Digest: l.PackageSHA256, Package: []byte(l.Package)})
+	if s.launches.startDone() && run != nil {
+		sctx, scancel := context.WithTimeout(context.Background(), runTimeout)
+		if serr := s.runs.Stop(sctx, run.ID); serr != nil && !errors.Is(serr, crew.ErrRunNotFound) {
+			s.log.Warn("a run started as the server shut down could not be stopped", "launch", l.ID, "run", run.ID, "err", serr)
+		}
+		scancel()
+	}
 	done := func() { release(); cancel() }
 	if err != nil {
 		return nil, done, err

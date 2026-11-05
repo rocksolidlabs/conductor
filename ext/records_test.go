@@ -3,6 +3,8 @@ package ext_test
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -57,6 +59,8 @@ var records = []any{
 	&ext.RunRef{ID: "r1", Crew: "c1", URL: "https://conductor.example.com/runs/r1"},
 	&ext.SubmitRequest{Session: "s1", Question: "q1", Input: "1", Text: "yes", By: principal},
 	&ext.SubmitResult{Status: "entered"},
+	&ext.TurnLaunch{Agent: "claude", Model: "opus", AllowTools: true, Folder: "/src", Line: "Brakeman request br-1", Label: "Brakeman · briefing br-1", Request: "br-1"},
+	&ext.ApprovedLaunch{Ticket: "CND-12", Plan: "0123456789abcdef", ExpectedRev: 3, OpID: "op-1", Label: "nightly", By: principal},
 }
 
 func TestRecordsRoundTrip(t *testing.T) {
@@ -111,6 +115,9 @@ func TestRecordsRoundTrip(t *testing.T) {
 func TestValid(t *testing.T) {
 	long := func(n int) string { return strings.Repeat("a", n) }
 	by := ext.Principal{Subject: "u-1", Name: "Ada"}
+	abs := filepath.Join(os.TempDir(), "brakeman")
+	turn := ext.TurnLaunch{Agent: "claude", Model: "claude-opus-5-5", Folder: abs, Line: "Brakeman request br-1 (briefing)", Label: "Brakeman · briefing br-1", Request: "br-1"}
+	approved := ext.ApprovedLaunch{Ticket: "CND-12", Plan: "0123456789abcdef", ExpectedRev: 4, OpID: "bk0123456789abcdef0123456789abcd", Label: "nightly", By: by}
 	cases := []struct {
 		name string
 		err  error
@@ -240,6 +247,51 @@ func TestValid(t *testing.T) {
 		{"launch label with a control character", ext.LaunchRequest{Crew: "c", Label: "a\tb", By: by}.Valid(), false},
 		{"launch by no one", ext.LaunchRequest{Crew: "c"}.Valid(), false},
 
+		// TurnLaunch.
+		{"turn", turn.Valid(), true},
+		{"turn with its default model", with(turn, func(r *ext.TurnLaunch) { r.Model = "" }).Valid(), true},
+		{"turn model with a provider's path", with(turn, func(r *ext.TurnLaunch) { r.Model = "openai/gpt-5.4@high:x" }).Valid(), true},
+		{"turn model at its bound", with(turn, func(r *ext.TurnLaunch) { r.Model = long(ext.MaxModel) }).Valid(), true},
+		{"turn model past its bound", with(turn, func(r *ext.TurnLaunch) { r.Model = long(ext.MaxModel + 1) }).Valid(), false},
+		{"turn model beginning with a dash", with(turn, func(r *ext.TurnLaunch) { r.Model = "-x" }).Valid(), false},
+		{"turn model with a space", with(turn, func(r *ext.TurnLaunch) { r.Model = "a b" }).Valid(), false},
+		{"turn without an agent", with(turn, func(r *ext.TurnLaunch) { r.Agent = "" }).Valid(), false},
+		{"turn agent at its bound", with(turn, func(r *ext.TurnLaunch) { r.Agent = long(ext.MaxAgentID) }).Valid(), true},
+		{"turn agent past its bound", with(turn, func(r *ext.TurnLaunch) { r.Agent = long(ext.MaxAgentID + 1) }).Valid(), false},
+		{"turn agent in capitals", with(turn, func(r *ext.TurnLaunch) { r.Agent = "Claude" }).Valid(), false},
+		{"turn folder relative", with(turn, func(r *ext.TurnLaunch) { r.Folder = "src" }).Valid(), false},
+		{"turn without a folder", with(turn, func(r *ext.TurnLaunch) { r.Folder = "" }).Valid(), false},
+		{"turn folder past its bound", with(turn, func(r *ext.TurnLaunch) { r.Folder = filepath.Join(abs, long(ext.MaxFolder)) }).Valid(), false},
+		{"turn without a line", with(turn, func(r *ext.TurnLaunch) { r.Line = "" }).Valid(), false},
+		{"turn line at its bound", with(turn, func(r *ext.TurnLaunch) { r.Line = long(ext.MaxTurnLine) }).Valid(), true},
+		{"turn line past its bound", with(turn, func(r *ext.TurnLaunch) { r.Line = long(ext.MaxTurnLine + 1) }).Valid(), false},
+		{"turn line of two lines", with(turn, func(r *ext.TurnLaunch) { r.Line = "a\nb" }).Valid(), false},
+		{"turn without a label", with(turn, func(r *ext.TurnLaunch) { r.Label = "" }).Valid(), false},
+		{"turn label past its bound", with(turn, func(r *ext.TurnLaunch) { r.Label = long(ext.MaxRunLabel + 1) }).Valid(), false},
+		{"turn request at its bound", with(turn, func(r *ext.TurnLaunch) { r.Request = "br-" + strings.Repeat("9", ext.MaxRequestRef-3) }).Valid(), true},
+		{"turn request past its bound", with(turn, func(r *ext.TurnLaunch) { r.Request = "br-" + strings.Repeat("9", ext.MaxRequestRef-2) }).Valid(), false},
+		{"turn request with a leading zero", with(turn, func(r *ext.TurnLaunch) { r.Request = "br-01" }).Valid(), false},
+		{"turn request of another shape", with(turn, func(r *ext.TurnLaunch) { r.Request = "wb-1" }).Valid(), false},
+
+		// ApprovedLaunch.
+		{"approved launch", approved.Valid(), true},
+		{"approved launch without a label or a revision", with(approved, func(r *ext.ApprovedLaunch) { r.Label, r.ExpectedRev = "", 0 }).Valid(), true},
+		{"approved launch ticket of a long key", with(approved, func(r *ext.ApprovedLaunch) { r.Ticket = "CND123-" + strings.Repeat("9", 18) }).Valid(), true},
+		{"approved launch ticket number past 18 digits", with(approved, func(r *ext.ApprovedLaunch) { r.Ticket = "CND-" + strings.Repeat("9", 19) }).Valid(), false},
+		{"approved launch ticket project past its bound", with(approved, func(r *ext.ApprovedLaunch) { r.Ticket = "CNDXYZW-1" }).Valid(), false},
+		{"approved launch ticket in lower case", with(approved, func(r *ext.ApprovedLaunch) { r.Ticket = "cnd-1" }).Valid(), false},
+		{"approved launch ticket number zero", with(approved, func(r *ext.ApprovedLaunch) { r.Ticket = "CND-0" }).Valid(), false},
+		{"approved launch ticket without a number", with(approved, func(r *ext.ApprovedLaunch) { r.Ticket = "CND" }).Valid(), false},
+		{"approved launch plan short", with(approved, func(r *ext.ApprovedLaunch) { r.Plan = "0123" }).Valid(), false},
+		{"approved launch plan in capitals", with(approved, func(r *ext.ApprovedLaunch) { r.Plan = "0123456789ABCDEF" }).Valid(), false},
+		{"approved launch revision below 0", with(approved, func(r *ext.ApprovedLaunch) { r.ExpectedRev = -1 }).Valid(), false},
+		{"approved launch op id at its bound", with(approved, func(r *ext.ApprovedLaunch) { r.OpID = long(ext.MaxOpID) }).Valid(), true},
+		{"approved launch op id past its bound", with(approved, func(r *ext.ApprovedLaunch) { r.OpID = long(ext.MaxOpID + 1) }).Valid(), false},
+		{"approved launch without an op id", with(approved, func(r *ext.ApprovedLaunch) { r.OpID = "" }).Valid(), false},
+		{"approved launch op id with a slash", with(approved, func(r *ext.ApprovedLaunch) { r.OpID = "a/b" }).Valid(), false},
+		{"approved launch label past its bound", with(approved, func(r *ext.ApprovedLaunch) { r.Label = long(ext.MaxRunLabel + 1) }).Valid(), false},
+		{"approved launch by no one", with(approved, func(r *ext.ApprovedLaunch) { r.By = ext.Principal{} }).Valid(), false},
+
 		// Where.
 		{"where native", ext.WhereNative.Valid(), true},
 		{"where at its bound", ext.Where(long(ext.MaxWhere)).Valid(), true},
@@ -261,6 +313,12 @@ func TestValid(t *testing.T) {
 	if !ext.ValidName("cloud-2") || ext.ValidName("") || ext.ValidName("a.b") {
 		t.Error("ValidName disagrees with its rule")
 	}
+}
+
+// with is a copy of r changed by edit.
+func with[T any](r T, edit func(*T)) T {
+	edit(&r)
+	return r
 }
 
 // make8 is MaxDestinations destinations of one kind.

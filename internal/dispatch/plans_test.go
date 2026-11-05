@@ -918,3 +918,58 @@ func TestIntentDigest(t *testing.T) {
 		}
 	}
 }
+
+// TestProposeFollowupNeedsAnApprovedBase: a follow-up names its base, and
+// the base is approved in the proposal's own transaction: one only
+// proposed, or withdrawn after it was approved, is refused stale_plan with
+// nothing made; an approved one is proposed as ProposePlan proposes, and
+// its resend is answered by its receipt.
+func TestProposeFollowupNeedsAnApprovedBase(t *testing.T) {
+	s, _, key := planTicket(t)
+	ctx := context.Background()
+	body := testPlanBody("crew")
+	proposed := propose(t, s, "p1", key, PlanRequest{Crew: "crew", Base: "HEAD"}, body)
+	plans := func() int { return count(t, s, "SELECT COUNT(*) FROM plans") }
+	before := plans()
+
+	rc, err := s.ProposeFollowup(ctx, testOp("f0"), key, PlanRequest{Crew: "crew", Base: "HEAD"}, body)
+	want(t, rc, err, StatusFailed, RefusalInvalid)
+	rc, err = s.ProposeFollowup(ctx, testOp("f1"), key, PlanRequest{Crew: "crew", Base: "HEAD", BasedOn: proposed}, body)
+	want(t, rc, err, StatusFailed, RefusalStalePlan)
+	if !strings.Contains(rc.Error, "is proposed") {
+		t.Fatalf("the words: %q", rc.Error)
+	}
+	if n := plans(); n != before {
+		t.Fatalf("%d revisions made by refusals", n-before)
+	}
+
+	// Approving p3 supersedes p2; p3 is then withdrawn.
+	superseded := propose(t, s, "p2", key, PlanRequest{Crew: "crew", Base: "HEAD"}, body)
+	approve(t, s, "a2", superseded, "go")
+	withdrawn := propose(t, s, "p3", key, PlanRequest{Crew: "crew", Base: "HEAD"}, body)
+	approve(t, s, "a3", withdrawn, "go")
+	rc, err = s.WithdrawPlan(ctx, adminOp("w3"), withdrawn)
+	want(t, rc, err, StatusDone, "")
+	before = plans()
+	for _, base := range []string{superseded, withdrawn} {
+		rc, err = s.ProposeFollowup(ctx, testOp("f-"+base), key, PlanRequest{Crew: "crew", Base: "HEAD", BasedOn: base}, body)
+		want(t, rc, err, StatusFailed, RefusalStalePlan)
+	}
+	if n := plans(); n != before {
+		t.Fatalf("%d revisions made by refusals", n-before)
+	}
+
+	approved := propose(t, s, "p4", key, PlanRequest{Crew: "crew", Base: "HEAD"}, body)
+	approve(t, s, "a4", approved, "go")
+	req := PlanRequest{Crew: "crew", Base: "HEAD", BasedOn: approved}
+	rc, err = s.ProposeFollowup(ctx, testOp("f3"), key, req, body)
+	want(t, rc, err, StatusDone, "")
+	if v := planOf(t, s, rc.ID); v.State != PlanProposed || v.BasedOn != approved {
+		t.Fatalf("the follow-up: %+v", v.PlanSummary)
+	}
+	again, err := s.ProposePlan(ctx, testOp("f3"), key, req, body)
+	want(t, again, err, StatusDone, "")
+	if !again.Repeat || again.ID != rc.ID {
+		t.Fatalf("the resend: %+v", again)
+	}
+}
