@@ -3664,15 +3664,22 @@ route's path parameters, its body without `opId`), which `conductor mcp`
 and `conductor brakeman act OPERATION --key KEY --body-file F [--op-id
 ID] [--json]` send to that operation's own route by the table, on the
 client side, with the turn's token and its session named, the `opId`
-minted when the turn gives none and sent once more with the same body
-when the reply is lost. A turn's guide lists the tool and the operations
+minted when the turn gives none and sent again with the same body, as
+`conductor dispatch launch` sends a launch: at once when the reply is
+lost, after a wait when the launch is answered still being started (503
+`ledger_unavailable` naming it pending), within three sends in all, each
+request waiting its route's own bound (a launch's, `api.LaunchTimeout`
+and a request's beside it), never the session client's; an act left
+unsettled names its `opId` to send again. A turn's guide lists the tool and the operations
 its request's `permissions.act` names, and `conductor mcp` lists the tool
 in a Brakeman turn's session only while that guide lists one (it reads
 the guide, never the request, whose read marks the request read); the
 admin's guide lists them all. A proposal (`proposal/1`) may name a
 granted operation as its `op`, with `expectedRevision` the ticket's
-revision read; the request's `acts` say which of them Brakeman ran, and
-the app shows such a proposal as "Brakeman did this" with its receipt. A server that stops between the operation and the copy, or
+revision read, and the `opId` of the act it ran in `args.opId`; the
+request's `acts` say which of them Brakeman ran, and the app shows a
+proposal as "Brakeman did this" with its receipt only when an act of the
+request has the `opId` it names, of its operation on its ticket. A server that stops between the operation and the copy, or
 before the operation, leaves the entry `pending`: before Brakeman's
 routes serve again, the desk reads Dispatch's receipt for `(brakeman,
 op)` and copies it, or, with none, marks the entry `not_run` ("the server

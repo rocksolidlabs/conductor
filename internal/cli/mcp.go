@@ -309,10 +309,10 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			return "", err
 		}
 		// An act may be a launch, which the server bounds by its own
-		// launch timeout: the tool waits past it, a reply lost asked again.
+		// launch timeout: the tool waits for every send act makes of it.
 		wait := 60 * time.Second
 		if name == "act" {
-			wait = 2 * (api.LaunchTimeout + 30*time.Second)
+			wait = actBudget()
 		}
 		cctx, cancel := context.WithTimeout(ctx, wait)
 		defer cancel()

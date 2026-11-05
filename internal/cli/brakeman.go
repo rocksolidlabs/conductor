@@ -20,6 +20,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/notify"
 )
 
@@ -227,12 +228,42 @@ func actOperations() []string {
 // or a proposal's revision, each under 1 MiB on the server.
 const maxActReply = 4 << 20
 
+// actRequestTimeout bounds one request of an act: a launch's as
+// conductor dispatch launch waits for it (launchRequestTimeout, the
+// server's own bound on a launch and a request's time beside it), any
+// other operation's as the session client waits for a request. The
+// session client's own timeout never bounds an act (post), so a launch
+// the server is still starting is never reported failed at 60 s.
+func actRequestTimeout(name string) time.Duration {
+	if name == brakeman.ActLaunchApprovedPlan {
+		return launchRequestTimeout
+	}
+	return actSessionTimeout
+}
+
+// actSessionTimeout is a request's bound in the session client
+// (crewClientFromEnv), which an act's other operations keep.
+const actSessionTimeout = 60 * time.Second
+
+// actBudget is the most a whole act waits, every send it makes: each of
+// launchTries at its own bound, with the wait before a resend of a
+// launch still pending. The tool and the command give an act this.
+func actBudget() time.Duration {
+	return time.Duration(launchTries) * (launchRequestTimeout + launchResendWait)
+}
+
 // act runs the granted operation through its own route, the table's
 // entry of that name: params its path's parameters, body its body. The
 // op id is minted when empty (or taken from the body's opId) and sent
-// once more with the same body when the reply is lost (askTwice): the
-// server answers the act from its receipt and runs it once. It answers
-// the act in words, then the route's reply, and the reply itself.
+// again with the same body, as conductor dispatch launch sends a launch,
+// within launchTries sends in all: at once when the reply is lost, and
+// after launchResendWait when the server answers a launch still being
+// started (503 ledger_unavailable naming it pending). The server answers
+// the act from its receipt and runs it once. An act left unsettled (its
+// reply lost every time, or its launch still pending) names its op id,
+// for the same act to be asked again, never a new one, which would be a
+// second act. It answers the act in words, then the route's reply, and
+// the reply itself.
 func (c *brakemanClient) act(ctx context.Context, name string, params map[string]string, body map[string]any, opID string) (string, json.RawMessage, error) {
 	op, ok := operation(name)
 	if name == "" || !ok || op.Scope != "act" || op.Name == "act" {
@@ -267,14 +298,9 @@ func (c *brakemanClient) act(ctx context.Context, name string, params map[string
 	if n := op.Bounds["body"]; n > 0 && len(payload) > n {
 		return "", nil, fmt.Errorf("act %s: the body is %d bytes, over its route's %d", name, len(payload), n)
 	}
-	var reply json.RawMessage
-	err = askTwice(ctx, func(ctx context.Context) error {
-		r, err := c.post(ctx, path, payload)
-		reply = r
-		return err
-	})
+	reply, err := c.send(ctx, name, opID, path, payload)
 	if err != nil {
-		return "", nil, fmt.Errorf("act %s: %w", name, err)
+		return "", nil, err
 	}
 	var b2 bytes.Buffer
 	if json.Indent(&b2, reply, "", "  ") != nil {
@@ -293,10 +319,57 @@ func pathParams(path string) map[string]any {
 	return out
 }
 
+// send posts the act opID of the operation name until it is settled, as
+// act says: its reply, or the error that ends it, naming the op id when
+// the act may have run.
+func (c *brakemanClient) send(ctx context.Context, name, opID, path string, payload []byte) (json.RawMessage, error) {
+	// pending is the launch a 503 named still being started: once the
+	// server has named one, an exit that does not settle it says so.
+	var pending *dispatch.LaunchSummary
+	for sends := 1; ; sends++ {
+		reply, err := c.post(ctx, actRequestTimeout(name), path, payload)
+		if err == nil {
+			return reply, nil
+		}
+		var lost lostReply
+		if errors.As(err, &lost) {
+			if ctx.Err() == nil && sends < launchTries {
+				continue
+			}
+			if pending != nil {
+				return nil, fmt.Errorf("act %s: launch %s was still being started, and sending it again had no answer (%w): act again with opId %s for its outcome; another opId would be a second launch", name, oneLine(pending.ID), err, opID)
+			}
+			return nil, fmt.Errorf("act %s: no answer came (%w), so it may have run: act again with opId %s for its outcome; another opId would be another act", name, err, opID)
+		}
+		l, ok := pendingLaunch(err)
+		if !ok {
+			if pending != nil && !failedLaunch(err) {
+				return nil, fmt.Errorf("act %s: launch %s was still being started, and sending it again was answered without its outcome (%w): act again with opId %s for its outcome; another opId would be a second launch", name, oneLine(pending.ID), err, opID)
+			}
+			return nil, fmt.Errorf("act %s: %w", name, err)
+		}
+		pending = &l
+		if sends >= launchTries {
+			return nil, fmt.Errorf("act %s: launch %s is still being started after %d tries: act again with opId %s for its outcome; another opId would be a second launch", name, oneLine(l.ID), sends, opID)
+		}
+		t := time.NewTimer(launchResendWait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil, fmt.Errorf("act %s: launch %s is still being started, interrupted: act again with opId %s for its outcome; another opId would be a second launch", name, oneLine(l.ID), opID)
+		case <-t.C:
+		}
+	}
+}
+
 // post sends payload to path on the server's root as the turn (its token,
-// its session named), answering the route's JSON reply: lostReply when
-// the network lost it, the route's words for a refusal.
-func (c *brakemanClient) post(ctx context.Context, path string, payload []byte) (json.RawMessage, error) {
+// its session named), within timeout and never the session client's own
+// bound, answering the route's JSON reply: lostReply when the network
+// lost it or timeout passed, a replyRefusal (its status, its body, the
+// route's words) for a refusal.
+func (c *brakemanClient) post(ctx context.Context, timeout time.Duration, path string, payload []byte) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.root+path, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
@@ -304,7 +377,11 @@ func (c *brakemanClient) post(ctx context.Context, path string, payload []byte) 
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("X-Conductor-Session", c.session)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.client.Do(req)
+	// The session client with its redirect rule, but bounded by timeout:
+	// its own Timeout would cut a launch the server is still starting.
+	client := *c.client
+	client.Timeout = 0
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, lostReply{stripURL(err)}
 	}
@@ -320,10 +397,11 @@ func (c *brakemanClient) post(ctx context.Context, path string, payload []byte) 
 		var e struct {
 			Error struct{ Code, Message string } `json:"error"`
 		}
+		words := fmt.Errorf("the server answered %d", resp.StatusCode)
 		if json.Unmarshal(raw, &e) == nil && e.Error.Code != "" {
-			return nil, fmt.Errorf("%s (%s)", e.Error.Message, e.Error.Code)
+			words = fmt.Errorf("%s (%s)", e.Error.Message, e.Error.Code)
 		}
-		return nil, fmt.Errorf("the server answered %d", resp.StatusCode)
+		return nil, replyRefusal{status: resp.StatusCode, body: raw, err: words}
 	}
 	if !json.Valid(raw) {
 		return nil, fmt.Errorf("the server answered %d with no JSON", resp.StatusCode)
@@ -823,7 +901,7 @@ func brakemanAct(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	if err != nil {
 		return 1, err
 	}
-	actx, cancel := context.WithTimeout(ctx, 2*(api.LaunchTimeout+30*time.Second))
+	actx, cancel := context.WithTimeout(ctx, actBudget())
 	defer cancel()
 	text, reply, err := c.act(actx, operation, params, body, opID)
 	if err != nil {
