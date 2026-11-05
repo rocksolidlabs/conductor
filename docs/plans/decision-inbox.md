@@ -438,6 +438,17 @@ question carries the task's Cancel), and each is guarded by its own.
   commands (Item identity), each with the run's revision as read as its
   `Expect`, not the question's id, so a Cancel after the run moved is
   refused `stale_revision` while the same question still shows.
+  **A turn held for the terminal** (attention `needs_input` whose source
+  is `submit`: a submission's text typed and its Enter not confirmed,
+  the hold of `submit.go`) has an id and no kind, but it is no question:
+  the session refuses every reply naming it (`waitsLocked`, `local.go`),
+  as the page's `waitsForTerminal` (`utils/attention.ts`) already tells
+  the sessions list. Its item offers no `answer` action, neither a choice
+  nor a line; its brief and its one scope say "Claude Code's turn is
+  held for keys typed in its terminal: open the terminal to go on", and
+  the session's terminal is the first entry of its evidence (on a link,
+  the member's terminal tab through `decision_evidence` when the session
+  is in the link's scope; outside it, the words alone).
 - *Task*: `Revision` is the run's revision as read, and each command's
   `Expect`, which it carries as `expectedRevision`, so a run that moved
   since is refused by the engine (`409 stale_revision`), nothing done.
@@ -546,9 +557,16 @@ the kept result of a question by id (the existing `results`, the last
 64), read under the session's lock. The kept `Answer` gains `ReqID`, the
 winning answer's request id (`proto.Answer.ReqID`, which the page mints
 fresh per action), so a browser's own attempt and the winner are told
-apart by id (Events, Recent). The result is in memory: a session gone or
-past 64 later questions forgets it, and the step then says `unknown`,
-never a guess. **A hosted session's question has no result on the
+apart by id (Events, Recent). The kept result gains its **resumption**
+too, `Resumed {at, how}`, set once, under the session's lock, by the
+first attention change after the answer was taken: the agent `working`
+(`how: working`), a next question (`asked`), the session's end
+(`ended`). So the resumed step reads what happened when it happened,
+never the attention at the read: a question answered, worked on and its
+turn done before the first track read (or a reload) still reads resumed
+done at the time the work began, the same from every browser. The
+result is in memory: a session gone or past 64 later questions forgets
+it, and the step then says `unknown`, never a guess. **A hosted session's question has no result on the
 server**: the host's claim takes the answer and the server keeps no
 claim; the activity's `input` entry is not a receipt of it (an
 `ActivityEntry` has no question field, `Local.resolve` records only the
@@ -558,7 +576,13 @@ question the server reports *recorded* and *validated* as `unknown`
 ("the host holds this answer; this server keeps no record of it"), the
 page shows its own reply's word there (the host answered the quick
 reply's request, accepted or refused, `useQuickReply`), and *resumed*
-reads the hosted session's attention since.
+reads the same milestone, kept by the server from the hosted session's
+attention as its host syncs it: for its last 64 questions by id, the
+first change the server saw after the question left `needs_input`
+(`working`, a next question, the end), in memory. A question past them,
+or one whose leaving the server did not see (the server restarted, the
+host's updates lost), reads resumed `unknown`, "it is not known here
+whether the work went on", never inferred from the attention now.
 
 **Routes kept by question id** (`internal/api/router.go`): when a
 registered router answers with destinations, the server keeps that route
@@ -587,13 +611,15 @@ link"):
   before it acts: the list carries no action's input or scope.
 - `GET /api/inbox/track?ref=<ref>&receipt=<id>&attempt=<reqId>`: the four
   delivery steps of one action, from its durable receipt: a command id
-  (the ledger's receipt of the admin's actor, then the task's state and
-  attempts since), a Dispatch op id (the operation's receipt; its
+  (the ledger's receipt of the admin's actor, by its status, `accepted`,
+  `done`, `failed` or `uncertain` (The four steps, below), then the
+  task's state and attempts since), a Dispatch op id (the operation's receipt; its
   validation is the operation's own outcome, and the approval's current
   validity is the item's `Now`, apart from the steps), a question id with
   the browser's attempt (the session's kept result: the attempt's
-  `ReqID` the winner's or another's; then its attention since: `working`
-  or a new question is resumed; withdrawn, ended, another's answer is the
+  `ReqID` the winner's or another's; then its kept resumption, never its
+  attention now: `working` or a next question is resumed, the end is the
+  reason, none yet is `waiting`; withdrawn or another's answer is the
   reason). At most 8 KiB.
 
 None of the three routes writes. The page acts through each operation's
@@ -660,7 +686,11 @@ page's files are named for the inbox.
   the page's return to view (one in flight, one queued), with the tracks
   of the recent actions not yet final, and keeps this browser's recent
   actions (below). An action's steps are final when its resumed step is
-  `done` or `not_applicable`, or its validated step `refused`.
+  `done` or `not_applicable`, or its validated step `refused`; a command
+  whose receipt is `accepted` is never final (its settlement, or the
+  recovery's `uncertain`, follows), and an `uncertain` one is final once
+  its resumed step is read from the task, since the ledger never changes
+  it again.
 - `utils/inbox.ts` (pure): the order (oldest first), the words of each
   step, `reconcileDelivery` (a `done` or `refused` seen stays; a later
   `unknown` or `waiting` never replaces it; the reply's own word for a
@@ -724,9 +754,22 @@ item and track) read what no record holds (PR-1, Routes). Where the two
 plans' names differ after review, PR-3 follows DR1's.
 
 What the inbox reads of DR1's record is DR1's own record as its plan
-gives it: `GET /api/decisions` (the open and answered ones, newest first,
-`?state=&run=&after=`, at most 100 a page) for the list, and
-`GET /api/decisions/{did}` for one: its id and type, its state (`open`,
+gives it. For the list, DR1's `GET /api/decisions` and
+`Ledger.Decisions` page newest first by the record's number with no
+count, which the inbox's merge cannot use: it takes each source's oldest
+items after the `(since, ref)` cursor, a page and one, and a complete
+total, and with more than 100 open records the oldest are not on a
+newest-first first page. So the inbox reads its own query,
+`ledger.Ledger.InboxDecisions(ctx, states, after, limit) (page, next,
+total)`: DR1's records in the given states (`open`, `answered`), oldest
+first by `(created_at, id)`, which is the inbox's key for a `decision`
+item (its `since` the record's `created_at`, its ref `decision:` and the
+id, so the ids' order is the refs'), at most `limit` after the cursor,
+`next` when more follow and `total` a count of them all. It is a
+read-only query over DR1's table by state (DR1's index on state serves
+it), no schema change, beside DR1's own; PR-3 adds it in
+`internal/crew/ledger` unless DR1's plan takes it in review, and then
+PR-3 calls DR1's. For one record, `GET /api/decisions/{did}`'s read: its id and type, its state (`open`,
 `answered`, `applied`, `superseded`, `cancelled`, `expired`), its `rev`,
 its run, task, attempt, session and question, its subject, its options,
 recommendation, uncertainty, what it authorizes, its evidence, its
@@ -736,9 +779,17 @@ its history.
 
 PR-3:
 
-- **`decision` items** from DR1's open records, and Recent from DR1's
-  records closed in the last 24 hours (at most 50), kept on the server,
-  not in the browser. A question DR1 holds a record for is that record's
+- **`decision` items** from DR1's open records. DR1's **answered**
+  records, whose response is recorded and not yet applied (DR1 sets
+  `answered_at` at the response and `closed_at` only with a final state,
+  so an answer to an interrupted run stays `answered` until its
+  continuation applies it), are listed with them as tracking items under
+  "Answered, not yet applied", whatever their age, until DR1 gives them a
+  final state: the summary gains `tracking` (true for these), they are
+  paged and counted in `total` with the open ones and left out of the
+  bar's number. Recent holds DR1's records closed in the last 24 hours
+  (at most 50), kept on the server, not in the browser. So no record is
+  in neither list. A question DR1 holds a record for is that record's
   item: the derived `question` item for the same session and question id
   is dropped, so the two never both show
   (`TestADecisionRecordReplacesItsQuestion`).
@@ -769,13 +820,31 @@ PR-3:
   the owner answers `unsupported` until this PR serves it): `head` (the
   record without its receipts and history: the request, its evidence
   baseline, the state, `rev`, the policy, the subject and the
-  application receipt, at most 36 KiB), `refs` (the 20 ref resolutions,
-  at most 44 KiB with their keys), `responses` (8 receipts a frame, newest first, at most
-  64 KiB, with `next`) and `history` (32 rows a frame, newest first, at
-  most 72 KiB, with `next`), each a `TypeDecision` frame under its 128
-  KiB; the join page assembles the record from its parts, every page of
-  them, before it hands it to DR1's card, so DR1's components see the
-  same record the route serves, at most its 1 MiB in the page.
+  application receipt, at most 36 KiB, with its 20 ref resolutions, at
+  most 44 KiB with their keys, read with it: at most 80 KiB),
+  `responses` (8 receipts a frame, newest first, at most 64 KiB, with
+  `next`) and `history` (32 rows a frame, newest first, at most 72 KiB,
+  with `next`), each a `TypeDecision` frame under its 128 KiB. **One
+  record, one revision.** DR1 bumps a record's `rev` with every change
+  and writes one history row with it (DR1's plan: every change bumps
+  `rev`), so `rev` marks the record whole. Every part is cut from one
+  whole read of the record (DR1's `Ledger.Decision`, the record with its
+  responses and history in one read, and its ref resolutions made in the
+  same request, as the route makes them) and carries the `rev` it was
+  cut from; every request after `head` names the `rev` its `head` had,
+  and a part whose read finds another `rev` is not served: the reply is
+  `decide_refused` `record_moved` with the new `rev`, and the join page
+  drops what it assembled and starts again from `head`. The ref
+  resolutions ride in `head`, so they are of the same moment as the
+  record's state, as the route's are. The page hands DR1's card only a
+  record whose every part carried one `rev`, so DR1's components see a
+  record the route could have served at that `rev`, never an open head
+  beside an applied history, at most its 1 MiB in the page. A record
+  that changes faster than it can be read is bounded: after 4 restarts
+  in a row the page shows the last record it assembled whole (or the
+  item's own fields when there is none) with "this decision changed
+  while it was read; reading again on its next change", and reads again
+  at the next `decisions_changed`.
 - **Brakeman's cards about `decision:<id>`** (Brakeman PR-12) attach to
   the record's item as cards about any other ref do.
 - **The event**: the page re-reads on DR1's `event: decision`
@@ -799,9 +868,26 @@ PR-3:
   `DecisionRespond.vue` (the controls by type: an option, a line, Approve
   and Reject asked first, Comment and Ask for more, a rationale), as
   DR1's plan builds them; nothing of the record is drawn twice.
+- **DR1's card on a link.** `DecisionCard.vue` draws its evidence as
+  `BrakemanRefChip.vue` chips, which compute workbench routes
+  (`refRoute`) and embed `BrakemanReceipt.vue`, which reads its receipt
+  over HTTP (`useApi`); a link holder has neither. So the chip and the
+  receipt take their navigation and their reads from an injected
+  `refAccess` (`{route(ref), read(ref)}`, Vue's `provide` and `inject`),
+  whose default is today's (`refRoute`, `useApi`), so every page that
+  shows them now is unchanged and DR1's `DecisionCard.vue` is not edited.
+  The join page provides the link's: `route` its route function (a
+  member's terminal tab for a session in scope, none otherwise, with
+  "open it on the desktop or the LAN"), `read` through
+  `decision_evidence` by the chip's ref (a check's log tail; a receipt
+  the lane does not serve shown as its label and ref). It is a change to
+  Brakeman's two components with their defaults kept;
+  `brakeman-cards.spec.ts` and DR1's specs pass as they are.
 - Recent for DR1 records from the server's Recent; the browser's recent
   list keeps only actions on items DR1 does not hold (questions, tasks,
-  plan revisions).
+  plan revisions). A DR1 record answered and not yet applied stays on the
+  page under "Answered, not yet applied", from the server's list (PR-3),
+  never dropped with a browser's entry.
 - **The ticket page.** DR1's plan replaces `DispatchDecisions.vue`'s
   "recorded and shown, not held" note with the ticket's records; PR-4
   adds to each a link to its item on the decision page.
@@ -819,8 +905,9 @@ the server that owns them, end to end, the way a terminal does: over
 WebRTC, through the switchyard's relay only when ICE fails (where the
 relay carries them as it carries terminal bytes). The switchyard stores
 nothing of a decision. It changes in four places: its relay carries the
-lane's frame (`proto.DecodeRelay`'s list of inner types: output, input,
-control, scrollback, file, file write, and now `TypeDecision`); its
+lane's frames (`proto.DecodeRelay`'s list of inner types: output, input,
+control, scrollback, file, file write, and now `TypeDecision` and
+`TypeDecide`); its
 `RelayToHost` drops the lane's writes and reads from a view-role viewer
 (`signal/hosted.go`, the list beside `submit` and `answer`); it keeps a
 run's desk (below); and its join page has the Decide tab, which it
@@ -844,7 +931,7 @@ switchyard that said so: at an older one the share dialog's switch is
 off with "This switchyard must be updated to answer decisions through
 its links", `POST …/links` with `decide: true` is refused `409
 switchyard_too_old`, and nothing is sent to it that it does not know (no
-`TypeDecision` in a relay envelope, which both sides decode strictly and
+`TypeDecision` or `TypeDecide` in a relay envelope, which both sides decode strictly and
 whose unknown inner type closes the host's connection, "bad relay
 envelope"). A newer switchyard in front of an older publisher serves a
 join page whose Decide tab waits for the welcome's `decisions: true`,
@@ -868,9 +955,9 @@ the link's actor, `link:<id>` with its label as the name (the engine
 command's `actor`, a Dispatch comment's), never as the workbench (Owner
 decisions, 9). The owner keeps with the link, in memory as its other
 facts, its **Recent**: the last 50 `{ref, receipt, attempt, at}` acted
-on through it, `attempt` the action's own identity: a `decide`'s `opId`,
-or the `reqId` of an `answer` sent on the link's own session (the join
-page always sends one there), so an item that closed after its action (a
+on through it, `attempt` the action's own identity, its `decide`'s
+`opId` (an answer to the link's own session's question included, which
+the join page's Decide tab sends as a `decide`), so an item that closed after its action (a
 retried task is no longer failed) stays readable on the link with its
 four steps for as long as the link stands, and two viewers of one link
 who answered one question keep two entries, each judged by its own
@@ -935,18 +1022,34 @@ nothing is cut silently (`internal/proto`, `web/app/utils/protocol.ts`,
 |---|---|---|---|---|
 | control `decisions_list` | viewer → owner | `{t, reqId, after?}`: a page of the scope's items | `MaxControl` (8 KiB); `reqId` at most 32 bytes, `after` 600 | `TestDecisionsListValid` |
 | control `decision_read` | viewer → owner | `{t, reqId, ref}`: one item's detail | `MaxControl`; `ref` 512 | `TestDecisionReadValid` |
-| control `decision_track` | viewer → owner | `{t, reqId, ref, receipt, attempt}`: the four steps of one action taken through this link, `attempt` that action's identity (the `decide`'s `opId`, or the `answer`'s `reqId`), apart from `reqId`, which names this request | `MaxControl`; `receipt` 512, `attempt` 32 | `TestDecisionTrackValid` |
-| control `decision_record` | viewer → owner | `{t, reqId, ref, part, after?}`: one part of a DR1 record in scope (`head`, `refs`, `responses`, `history`), a page of the last two; `unsupported` until PR-3 | `MaxControl`; `ref` 512, `part` one of four, `after` 64 | `TestDecisionRecordValid` |
-| control `decision_evidence` | viewer → owner | `{t, reqId, ref, n}`: a bounded read of the item's `n`th evidence entry | `MaxControl`; `n` below 20 | `TestDecisionEvidenceValid` |
-| control `decide` | viewer → owner | `{t, reqId, ref, action, revision, ticketRev?, input?, text?, opId}`: one action on an item, `revision` the action's `Expect` and `ticketRev` its `TicketRev` | `MaxControl`; `reqId` and `opId` at most 32 bytes, `ref` 512, `action` one of the item's action names, `revision` 64, `input` at most `MaxAnswerInput` raw bytes, exact (288 encoded at worst), `text` at most `MaxSubmit` (4 KiB) | `TestDecideValid` |
+| control `decision_track` | viewer → owner | `{t, reqId, ref, receipt, attempt}`: the four steps of one action taken through this link, `attempt` that action's identity (the `decide`'s `opId`), apart from `reqId`, which names this request | `MaxControl`; `receipt` 512, `attempt` 32 | `TestDecisionTrackValid` |
+| control `decision_record` | viewer → owner | `{t, reqId, ref, part, rev?, after?}`: one part of a DR1 record in scope (`head` with its ref resolutions, `responses`, `history`), a page of the last two, `rev` the record's revision its `head` carried (required after `head`; another `rev` found is `record_moved`); `unsupported` until PR-3 | `MaxControl`; `ref` 512, `part` one of three, `rev` 20 digits, `after` 64 | `TestDecisionRecordValid` |
+| control `decision_evidence` | viewer → owner | `{t, reqId, ref, evidence}`: a bounded read of one evidence entry of the item `ref`, named by the entry's own ref as the phone shows it (`evidence`), never by its place in a list | `MaxControl`; `ref` and `evidence` 512 each | `TestDecisionEvidenceValid` |
+| frame `TypeDecide` (0x0A) | viewer → owner | JSON `{reqId, ref, action, revision, ticketRev?, input?, choice?, text?, rationale?, opId}`: one action on an item, `revision` the action's `Expect` and `ticketRev` its `TicketRev`; `input` a question's choice keys alone (terminal keys, exact); `choice` a DR1 option's index; `text` a question's line, or a DR1 response's or comment's text; `rationale` a DR1 response's (`decide`, below) | 32 KiB (`MaxDecide`), decoded strictly (`DisallowUnknownFields`): `reqId` and `opId` at most 32 bytes, `ref` 512, `action` one of the item's action names, `revision` 64, `input` at most `MaxAnswerInput` raw bytes, exact (288 encoded at worst), `choice` 0 to 5, `text` at most `MaxSubmit` raw bytes (4 KiB; 24 KiB encoded at worst), `rationale` at most 2 KiB encoded (DR1's bound): about 28 KiB at worst; under a data channel's message cap, as a file write's part (`MaxWritePart`) is | `TestDecideValid`, `TestDecideFrameAtItsBounds` |
 | frame `TypeDecision` (0x09) | owner → viewer | JSON `{reqId, list?, item?, track?, evidence?, record?}`, one of: a page of at most 25 summaries in `(since, ref)` order with `next` and `total`; one item with its detail; four steps; an evidence read (a check log's last 4 KiB, or a member's published session id); one part of a DR1 record (from PR-3) | 128 KiB (`MaxDecision`); fragmented by `TypeChunk` on a data channel as a file frame is | `TestDecisionFrameBounded`, `protocol.test.ts` |
 | control `decisions_changed` | owner → viewer | `{t, seq}`: the scope's items changed; the viewer lists again (one list in flight, one queued) | `MaxControl` | `TestDecisionsChangedValid` |
 | control `decide_ok` | owner → viewer | `{t, reqId, receipt, repeat?}`: the operation's receipt ref; `repeat` when the operation already held the `opId` | `MaxControl` | `TestDecideOkValid` |
-| error `decide_refused` | owner → viewer | the error message with `reqId`, a code (`stale_revision`, `not_in_scope`, `not_decision_link`, `not_found`, `question_answered`, `too_many_requests`, `unsupported`) and words | `MaxControl` | `TestDecideRefusedCodes` |
+| error `decide_refused` | owner → viewer | the error message with `reqId`, a code (`stale_revision`, `not_in_scope`, `not_decision_link`, `not_found`, `question_answered`, `too_many_requests`, `unsupported`, `invalid`, `record_moved` with the record's new `rev`, and DR1's own codes as its operation gives them, `response_conflict` among them) and words | `MaxControl` | `TestDecideRefusedCodes` |
 | `welcome`, field `decisions` | owner → viewer | `true` to a decision link's viewer; absent otherwise and from an older owner | a boolean in the welcome (`MaxControl`) | `TestWelcomeSaysDecisions` |
 | host message `registered`, field `decisions` | switchyard → publisher | `true` from a switchyard that relays `TypeDecision`, keeps desks and serves the Decide tab (set from PR-7, which adds the tab); absent from an older one and from a PR-6 build | a boolean in a message bounded by `MaxHostMessage` (64 KiB) | `TestRegisteredSaysDecisions` |
 | host message `register_desk` | publisher → switchyard | `{t, proto, host, localId, run: {id, name}, resume?}`: the first message of a desk's connection; `host` the uplink's `HostInfo` with its `Instance` required, `localId` the desk's stable local id (`desk:` and the run's id), `resume` the `{sessionId, secret}` of a desk whose connection dropped, as a session's `Register` carries | `MaxHostMessage`; `host` and `resume` as `Register`'s, `localId` `MaxLocalID`, `id` and `name` the run group's bounds | `TestRegisterDeskValid` |
 | `RunGroup.desk` | publisher → switchyard, in the run's sync | the desk's id, absent with no desk | the run group's bound | `TestRunGroupDeskValid` |
+
+**Why `decide` is a frame.** A control message is at most `MaxControl`,
+8 KiB, checked on its encoded payload before anything reads it
+(`proto.Decode`, `frame.go`), and a line `MaxSubmit` permits encodes past
+it: 4,096 quotation marks are 8,192 bytes escaped before the message's
+other fields, and a DR1 response adds its rationale (2 KiB encoded)
+beside a clarification's text. So `decide` travels as a frame of its own
+type, `TypeDecide`, bounded by the sum of its fields' encoded worst
+cases, and every permitted text arrives unchanged; the reads stay
+controls (their fields are ids, refs and cursors, under 2 KiB encoded at
+worst). `main`'s own `submit` and `answer` controls, whose `Text` is
+also up to `MaxSubmit`, have the same excess for a line of escaping
+characters: a defect outside this stream (the reply bar's, on `main`
+today), filed as its own issue when this plan is cut. The lane does not
+lean on it: the Decide tab sends every action as a `decide`, its own
+session's question included (`decide`, below).
 
 **Paging.** The scope's items in a stable order, `(since, ref)`; `after`
 is the last item's `since` and `ref` from the page before; `total` the
@@ -969,7 +1072,16 @@ published id (the publisher maps its own id to the published one, the
 page opens as that member's terminal tab. Any other entry (a ticket, a run page, a plan
 revision, a session outside the scope) shows its label and ref and "open
 it on the desktop or the LAN", no link. A ref outside the scope is
-refused `not_in_scope`. `InboxItem.vue` takes the join page's route
+refused `not_in_scope`. The entry is named by its ref, never by its
+index: the inbox computes an item's evidence on each read, so after
+another viewer's retry and its next attempt's failure, or a newer
+Brakeman card, the third entry can be another check. A ref names one
+thing for good (a `check:` ref one ledger row of one attempt, a
+`session:` ref one session), so the owner serves what the ref names
+when it is in the link's scope, whether or not the item lists it now,
+and the reply carries the ref it answers, which the phone checks
+against the entry it unfolded; a ref that names nothing is
+`not_found`. `InboxItem.vue` takes the join page's route
 function there.
 
 **The owner's side.** Four places serve the lane through one interface,
@@ -1006,10 +1118,13 @@ entry not final. The viewer also tracks its Recent again after a
 reconnect's welcome.
 
 **`decide`** maps to the item's own operation, never a new one. A
-question of the connection's own session is answered with the `answer`
-message the connection already takes (the viewer is the session's
-subscriber; its claim, and first response wins, as ever), never with
-`decide`. A question of another member's session in a run link's scope
+question of the connection's own session is answered by a `decide` with
+`answer` that the owner applies exactly as that connection's own
+`answer` message (the viewer is the session's subscriber; its claim, and
+first response wins, as ever), with the `decide`'s `opId` as the
+answer's request id, so a line of any permitted text reaches it whole
+and the Decide tab has one path (the terminal tab's reply bar keeps
+sending `answer`, as today). A question of another member's session in a run link's scope
 is a `decide` with `answer`, applied through that question's claim as a
 routed answer is (`AnswerAs` for a choice, `Submit` with the question
 and the link's name for a line), with the link as the actor and the
@@ -1023,7 +1138,24 @@ known by attempt whichever path answered; `retry`,
 with the action's `Expect` (the message's `revision`) as the expected
 revision and `opId` as the command id; any other action through the operation the inbox names for
 it (each action's server-side `do`, never serialized, which PR-3 gives
-DR1's kinds once DR1 accepts a link's actor). The actor is the
+DR1's kinds once DR1 accepts a link's actor). **DR1's response whole.**
+For DR1's kinds the frame's fields map one to one onto DR1's own
+bodies, nothing dropped or merged (`decideArgs` carries every field of
+the frame): `answer`, `approve` and `reject` onto
+`POST /api/decisions/{did}/respond`'s `{responseId: opId, choice, text,
+rationale, expectedRev: revision}` (an approval's Approve and Reject are
+its options, sent as `choice`; a clarification may carry `choice` and
+`text` both), and `more_info` and `comment` onto the comment
+operation's `{opId, kind, text, expectedRev}`. `input` is never a DR1
+field: it is terminal keys, a question's alone, and a `decide` on a DR1
+record carrying it is refused `invalid`. DR1 checks each field's bound
+and the response's fingerprint as its route does (the same `responseId`
+with another body is DR1's `response_conflict`, carried as the
+refusal's code), so a response through the lane is the response the
+route would record. On the join page, `DecisionRespond.vue`'s body goes
+through a transport adapter (`utils/transport/decide.ts`, the lane's
+client of PR-7, given DR1's kinds in PR-4) that maps it onto the frame
+field for field. The actor is the
 connection's link, never a field of the message. **A repeat first**: a
 `decide` whose `opId` the operation already holds for this link's actor
 (the ledger's receipt keyed by run, actor and command id; Dispatch's by
@@ -1049,7 +1181,8 @@ the "Answer decisions from this link" switch (control role only; off
 with the words at a switchyard without `decisions`), and the link's row
 says so. The join page (`pages/join/[token].vue`) of a decision link
 opens on a **Decide** tab with the same `InboxItem` cards, fed by the
-lane (`utils/transport/base.ts` takes `TypeDecision` and the controls),
+lane (`utils/transport/base.ts` takes `TypeDecision` and the controls
+and sends `TypeDecide`),
 paged with More, acting through `decide`, unfolding evidence through
 `decision_evidence`, its Recent read through `decision_track`, with the
 terminal one tab away; a run link's join page shows the run's items above
@@ -1060,7 +1193,7 @@ or a session the person picks.
 ### Docs
 
 Each PR adds its own rows to `docs/protocol.md` (PR-1 the inbox routes,
-PR-3 DR1's items in the inbox, PR-5 the lane's messages, the frame and
+PR-3 DR1's items in the inbox, PR-5 the lane's messages, its two frames and
 the welcome's field, PR-6 `registered`'s field, `register_desk` and the
 run group's desk). PR-6 adds an "Answering from a phone" section to
 `docs/architecture.md`: the two paths, what the switchyard sees, the
@@ -1095,14 +1228,16 @@ subject now:
 
 | Item | Available | Recorded | Validated | Resumed |
 |---|---|---|---|---|
-| question of a server session, before DR1 | the attention showed the id | the session's kept result by id: this attempt's `ReqID` the winner's (done, by, when) or another's (refused: "another answer first", by whom); forgotten (the session gone, 64 questions later): `unknown` | the same claim (the session is the owner: one step, said so) | attention `working`, or a next question; else the reason (withdrawn, another's answer, ended) |
-| question of a hosted session | the attention showed the id | `unknown` on the server ("the host holds this answer"); the page shows the host's word on its own request | as recorded | the hosted session's attention since |
-| task | the task's state allowed the command | the command's receipt in the ledger | the receipt's status (`done`, or the refusal) | retry: the next attempt running; accept: the dependents dispatched; cancel: does not apply (its dependents are blocked, and the step says so) |
+| question of a server session, before DR1 | the attention showed the id | the session's kept result by id: this attempt's `ReqID` the winner's (done, by, when) or another's (refused: "another answer first", by whom); forgotten (the session gone, 64 questions later): `unknown` | the same claim (the session is the owner: one step, said so) | the kept result's resumption (`Resumed`, set when the attention first left the question): `working` or a next question, done at its time; the session's end, the reason; none yet, `waiting`; the result forgotten, `unknown`; else the reason (withdrawn, another's answer) |
+| question of a hosted session | the attention showed the id | `unknown` on the server ("the host holds this answer"); the page shows the host's word on its own request | as recorded | the resumption the server kept as the hosted session's attention left the question; `unknown` where it saw none |
+| task | the task's state allowed the command | the command's receipt in the ledger, whatever its status (the row is the record) | by the receipt's status, of the four the ledger has (`internal/crew/ledger/rows.go`): `accepted`, `waiting` ("the engine took it and is applying it"); `done`, done; `failed`, refused with its code and words; `uncertain` (recovery's word for a command accepted and never settled before a stop, `transition.go`), `unknown`: "the server stopped while the engine applied this; what it did is read from the task" | retry: the next attempt running; accept: the dependents dispatched; cancel: does not apply (its dependents are blocked, and the step says so); for an `uncertain` receipt, read once from the task's record since the command's acceptance: the command's effect there (a next attempt started after it, the task accepted or cancelled after it) is done, "it took effect before the stop"; none is `not_applicable`, "nothing shows it took effect; the task's commands are offered again" |
 | plan | proposed, or approved and stale | the Dispatch operation's receipt | the operation's own outcome: done, or its refusal (`stale_revision`, withdrawn) | does not apply: "a launch from the ticket page starts it" |
 | decision (DR1) | DR1's four states, as DR1's record reports them and DR1's card draws them (PR-3, PR-4) | | | |
 
-Each step is a historical fact: receipts are kept and never rewritten,
-so two reads give the same steps or later ones, from any browser. What
+Each step is a historical fact: receipts are kept and settled once (a
+command's `accepted` becomes `done` or `failed`, or `uncertain` by the
+recovery after a stop) and never rewritten after, so two reads give the
+same steps or later ones, from any browser. What
 can change afterwards is the subject, not the step, and it is shown
 apart, as the item's `Now`: an approval that held when it was taken and
 no longer holds because the ticket was edited since ("The approval no
@@ -1148,7 +1283,8 @@ the inbox stores nothing but the routes kept by question id (in memory),
 desk are in memory as the links and publications are, the session's
 kept result gains its request id in memory, and the browser's recent
 list is a per-browser convenience that may be empty at any read. PR-3
-reads DR1's tables through DR1's routes and changes none of them.
+reads DR1's tables through DR1's reads and the inbox's one query
+(`InboxDecisions`), and changes none of them.
 
 ## Out of scope
 
@@ -1189,6 +1325,11 @@ The new tests, by PR:
   the options' and whose scope names each key.
 - `TestInboxLeavesOutAQuestionAnsweredInTheTerminal` and
   `…ASessionNoLongerListed`.
+- `TestInboxHeldTurnOffersNoAnswer`: a submission held for the terminal
+  (the hold `hold_test.go` makes): one item with no `answer` action, its
+  words sending the person to the terminal and the session's terminal
+  first in its evidence; an `answer` naming its id sent anyway refused
+  by the session, nothing typed.
 - `TestABlockerIsOneItem`: an attempt reports a blocker (`Engine.Blocked`):
   one item, the session's question, naming the task and the blocker and
   carrying Cancel; no task item; the task failing later is then its own.
@@ -1250,11 +1391,25 @@ The new tests, by PR:
   validated done, resumed waiting until the next attempt runs, then done;
   at an old revision: validated refused with `stale_revision`, resumed
   not applicable.
+- `TestInboxTrackACommandAcrossARestart`: a retry held between its
+  acceptance and its settlement (a seam between `Engine.act`'s two
+  transactions): recorded done, validated `waiting`, not final; the
+  server stopped there and started again over its data directory
+  (servers ended later first, AGENTS.md), the recovery making the receipt
+  `uncertain`: validated `unknown` with its words, resumed read from the
+  task (the continuation's next attempt: done; none: not applicable),
+  final, the same from a second read; let go without a stop: validated
+  done.
 - `TestInboxTrackQuestion`: answered through the claim: recorded and
   validated done at the answer's time, resumed done once the attention is
   `working`; withdrawn by the screen: the reason; two answers with two
   request ids: the loser's track says "another answer first" and the
   winner's done; the result forgotten past 64: `unknown`.
+- `TestInboxTrackReadsTheKeptResumption`: a question answered, the stub
+  working and its turn done (the attention `idle`) before the first
+  track read: resumed done at the time it worked, from two reads as two
+  browsers; a hosted question the same from the milestone the server
+  kept, and `unknown` for one whose leaving the server did not see.
 - `TestInboxTrackHostedQuestion`: a hosted session's question: recorded
   and validated `unknown` with the words, resumed from its attention.
 - `TestInboxTrackPlanApproval`: the approval's validated step stays done
@@ -1263,13 +1418,16 @@ The new tests, by PR:
   the same steps.
 - `TestInboxIsAdminOnly`, `TestInboxOnASwitchyard` (`403 switchyard`).
 - `TestQuestionResult` in `internal/session`: the kept result by id with
-  its request id, the 65th forgotten.
+  its request id and its resumption, set once at the first attention
+  change after the answer and not changed by later ones, the 65th
+  forgotten.
 
 **PR-2** (vitest, Playwright):
 
 - `utils/inbox.test.ts`: the order; each step's words; `reconcileDelivery`
   never moving a step back over replies in either order and keeping a
-  `done` over a later `unknown`; the recent list (50 kept, older than a
+  `done` over a later `unknown`; an `accepted` command still tracked and
+  an `uncertain` one final once its resumed step is read; the recent list (50 kept, older than a
   day dropped, storage that throws read as empty, the reply's outcome
   written into its entry); `phoneLanding` (below `lg` with an open item:
   `/decisions`; at `lg`, or with none: stay); `notificationTarget` (below
@@ -1300,8 +1458,10 @@ The new tests, by PR:
   receipt's steps; a retry at an old revision refused with the words and
   nothing done (the revision moved through a seam: a second retry from
   the API first, never a sleep); a plan revision approved, its yolo
-  words shown first; the evidence unfolded and the session's terminal
-  opened from it; the item counted by its ref, never by the list's
+  words shown first; a submission held for the terminal (made as
+  `held.spec.ts` makes one) shown with no choice and no line, its words
+  and its terminal link, which opens the session's terminal; the
+  evidence unfolded and the session's terminal opened from it; the item counted by its ref, never by the list's
   length (`stopStrays` first); the events stream cut (the page's route
   to `/api/events` aborted) while the question is answered through the
   API and another asked, then let back: the first card gone and the
@@ -1318,6 +1478,33 @@ The new tests, by PR:
 **PR-3** (Go race; `internal/api`):
 
 - `TestADecisionRecordReplacesItsQuestion`.
+- `TestAnAnsweredDecisionStaysTracked`: a gate of a run answered while
+  the run is interrupted (its server stopped mid-run and started again
+  over the data directory, no continuation yet): the record `answered`,
+  listed as a tracking item with DR1's four states (recorded, not
+  applied), on every page read and after another restart, and not in the
+  bar's count; the run continued: applied, out of the tracking items and
+  into Recent.
+- `TestInboxPagesDecisions` (`internal/api`) and `TestInboxDecisions`
+  (`internal/crew/ledger`): 230 open DR1 records over three runs, made
+  interleaved with questions, failed tasks and plan revisions, read page
+  by page from the cursor: every item once, in `(since, ref)` order,
+  none repeated, `total` right on every page; the query alone oldest
+  first with its count.
+- `TestADecisionRecordReadAcrossAChange`: `head` read, then a response
+  recorded and applied before the history's first page (the lane held at
+  a seam after `head`): the history request at the head's `rev` refused
+  `record_moved` with the new `rev`; read again from `head`, the
+  assembled record equal to `GET /api/decisions/{did}`'s at the new
+  `rev`, never a mix; the ref resolutions those of `head`'s read.
+- `TestDecideCarriesADR1ResponseWhole`: a clarification's `decide` with a
+  choice, a 4,096-byte text of escaping characters and a rationale at its
+  bound mapped onto DR1's respond body field for field, the recorded
+  response equal to the same body sent to `/respond` (through the
+  action's `do` once DR1 accepts a link's actor; before, the mapping
+  against DR1's operation called as the admin); the same `opId` with
+  another text refused `response_conflict`; an `input` on a DR1 record
+  refused `invalid`.
 - `TestInboxDecisionActionsUseDR1sRoutes`: answer, approve and reject
   through the respond operation, more information and a comment through
   the comment operation, each with its id and the record's `rev`; a
@@ -1350,12 +1537,25 @@ through DR1's card, the server restarted (a server of the spec's own
 over its data directory, stopped and started again as `brakeman.spec.ts`
 does), the item's four states the same after; Ask for more information
 keeps it open and names the note; a response at a stale record refused
-with words; the ticket page's records linking to the item.
+with words; the ticket page's records linking to the item; a gate
+answered while its run is interrupted still shown under "Answered, not
+yet applied" after a reload, until the run is continued. Vitest: the
+record's assembler (parts of one `rev` handed whole to DR1's card, a
+`record_moved` starting again from `head`, four restarts then the
+words); `utils/transport/decide.test.ts`, `DecisionRespond.vue`'s body of
+a choice, a clarification's text and a rationale mapped onto the frame
+field for field; `BrakemanRefChip` and `BrakemanReceipt` with an injected
+`refAccess`, their link and their read the access's and no `useApi`
+call, and with none, today's.
 `web/e2e/switchyard.spec.ts` gains the gate over the desk: a run whose
 plan requires a decision before its first task, its decision link
 opened in a phone context at the spec's switchyard with no member
 alive, the gate's card drawn from the assembled record and, once DR1
-accepts a decision link's actor, answered there with its four states.
+accepts a decision link's actor, answered there with its four states;
+the card's evidence chips there: a check chip's log read through the
+lane, a session chip opening the member's terminal tab, the others their
+words, and no request from the join page to the server's `/api/` (the
+spec watches the page's requests).
 
 **PR-5** (Go race and vitest; `internal/proto`, `internal/share`,
 `internal/session`, `internal/api`, `web/app/utils/protocol.ts`):
@@ -1367,6 +1567,22 @@ accepts a decision link's actor, answered there with its four states.
   `TestDecisionsChangedValid`, `TestDecideRefusedCodes`,
   `TestWelcomeSaysDecisions`; `utils/protocol.test.ts` cases for each in
   the same PR.
+- `TestDecideFrameAtItsBounds`: the committed fixture
+  `internal/proto/testdata/decide-max.json` (a `text` of 4,096 quotation
+  marks, a rationale of 2 KiB encoded of escaping characters, an `input`
+  of 48 escaping bytes, every id at its bound) read by `proto.Decode` and
+  the strict decoder, every field equal byte for byte; Go's encoder's
+  frame for the same values at most `MaxDecide`; one byte past it
+  refused; `protocol.test.ts` encodes the same values under the bound and
+  decodes the fixture equal.
+- `TestDecideRefusesAHeldTurn`: a run link's `decide` with `answer` naming
+  a member's turn held for the terminal refused `question_answered`,
+  nothing typed; the item listed with no answer action.
+- `TestDecisionEvidenceByItsRef`: an item's detail read; another viewer
+  retries the task and its next attempt fails (the item's evidence now
+  leads with attempt 2's check); the first phone unfolds attempt 1's
+  check by its ref: attempt 1's log, the reply naming that ref; a check
+  of another run refused `not_in_scope`.
 - `TestADecisionLinkNeedsControl` (`share`, `api`).
 - `TestADecisionLinkReceivesItsScope`: a run link sees the run's items and
   no other run's; a session link its session's question and task.
@@ -1379,8 +1595,8 @@ accepts a decision link's actor, answered there with its four states.
   `link:<id>`, and `decision_track` reads that receipt, not the admin's.
 - `TestALinksLosingViewerReadsAnotherAnswerFirst`: two viewers of one
   run decision link answer one question with two attempts, once through
-  `answer` on the asking session's own link and once through `decide`
-  for another member's question (`AnswerAs`, and a line through
+  a `decide` on the asking session's own link (applied as its `answer`)
+  and once through `decide` for another member's question (`AnswerAs`, and a line through
   `Submit`); the loser's connection closed and a new one opened, its
   `decision_track` with its attempt reads recorded refused, "another
   answer first", and the winner's done; `TestAnswerAsKeepsTheRequestID`
@@ -1446,9 +1662,10 @@ accepts a decision link's actor, answered there with its four states.
   stopped: the desk ends once its linger has fired; the last decision
   link revoked: it ends.
 - `TestRelayCarriesDecisionFrames` (`internal/proto`, `internal/api`): a
-  relayed `TypeDecision` reaches the viewer and the host's connection
-  stays; `TestRelayDropsTheLaneFromAViewer` (`internal/signal`): a
-  view-role viewer's `decide` and reads are dropped at the relay.
+  relayed `TypeDecision` reaches the viewer and a relayed `TypeDecide`
+  the owner, and the host's connection stays;
+  `TestRelayDropsTheLaneFromAViewer` (`internal/signal`): a view-role
+  viewer's `decide` and reads are dropped at the relay.
 - `TestNoDecisionLinkAtAnOlderSwitchyard`: a switchyard whose
   `registered` says nothing of decisions and which closes
   `register_desk`: `decide: true` refused `409 switchyard_too_old`, no
@@ -1468,7 +1685,9 @@ already publishes to the spec's switchyard mints a decision link for a
 managed run whose task fails; a phone context opens the link at the
 switchyard, sees the item, unfolds its failed check's log, retries it,
 and its steps reach resumed, read again from the link's Recent after the
-item closed; the run's member's question answered the same way; a run
+item closed; the run's member's question answered the same way; a
+member's turn held for the terminal shown with no answer controls, its
+terminal tab one tap away; a run
 whose only member has ended still answered through the desk; over the
 switchyard's relay, which the spec forces as it does for its host (a CI
 box may have no route for ICE).
@@ -1540,7 +1759,7 @@ their estimates in review, so none here is planned above about 1,400.
 | PR-5 | proto, share, session, api: decision links and the lane at the server, the server's desk route | `internal/proto`, `internal/share`, `internal/session`, `internal/api`, `web/app/utils/protocol.ts` and its test, `docs/protocol.md` | PR-1 (`internal/api`, `docs/protocol.md`), PR-2 (`web/app`) | none | ~1,300 |
 | PR-6 | proto, signal, api, hostagent, cli: the lane through a switchyard, the run's desk | `internal/proto`, `internal/signal`, `internal/api`, `internal/hostagent`, `internal/cli`, `docs/protocol.md`, `docs/architecture.md` | PR-5 (`internal/proto`, `internal/api`, `docs/protocol.md`) | none | ~1,300 |
 | PR-7 | web, cli: a decision link's join page, the share switch, the switchyard's `decisions` turned on, through a switchyard | `web/app`, `web/e2e`, `internal/cli` (the switchyard's `Options.Decisions`) | PR-2 and PR-5 (`web/app`), PR-6 (the switchyard's side the spec drives, `internal/cli`) | PR-3 | ~1,000 |
-| PR-3 | api: DR1's records as items, through DR1's routes | `internal/api`, `docs/protocol.md` | PR-6 (`internal/api`, `docs/protocol.md`), DR1's PRs that serve the record, its respond and comment operations and its event (`docs/plans/decisions.md`) | PR-7 | ~700 |
+| PR-3 | api: DR1's records as items, through DR1's routes | `internal/api`, `internal/crew/ledger` (`InboxDecisions`, unless DR1's plan takes it), `docs/protocol.md` | PR-6 (`internal/api`, `docs/protocol.md`), DR1's PRs that serve the record, its respond and comment operations and its event (`docs/plans/decisions.md`) | PR-7 | ~700 |
 | PR-4 | web: DR1's records on the page, through DR1's card, and the ticket page's links | `web/app`, `web/e2e` | PR-3, PR-7 (`web/app`), DR1's web PR (`DecisionCard.vue`, `DecisionRespond.vue`) | none | ~600 |
 | PR-8 | the acceptance check, what it finds fixed, the features entry | `docs`, `README.md`, and the packages a found bug lives in | PR-4, PR-7 | none | ~300 and what the check finds |
 
@@ -1555,7 +1774,8 @@ bounds, the three kinds, the blocker as one item, Brakeman's card, the
 routes kept by question id, the blocking walk, the scope words, the
 plan's two revisions and yolo words), the three routes and
 `inbox_test.go`; `crew.TaskCommands` and its fixture; `dispatch.Store.
-OpenPlans`; `session.Local.QuestionResult` and the kept request id; the
+OpenPlans`; `session.Local.QuestionResult`, the kept request id and the kept
+resumption (the server's for a hosted question too); the
 routes' rows in `docs/protocol.md` (HTTP API). Tests: PR-1's above.
 
 **PR-2** (`web/app`, `web/e2e`): the page, its components and the
@@ -1571,7 +1791,7 @@ above.
 
 **PR-5** (`internal/proto`, `internal/share`, `internal/session`,
 `internal/api`, `web/app/utils/protocol.ts`, `docs`): `Decide` on a link,
-the link routes' `decide` field, the frame, the lane's messages and the
+the link routes' `decide` field, the two frames (`TypeDecision`, `TypeDecide`), the lane's messages and the
 welcome's field in all three protocol places with `protocol.test.ts`,
 `session.AttachOptions.Decisions`, `AnswerAs` keeping the request id it
 is given (`session.Actor.ReqID`) as the kept result's `ReqID`, the link's
@@ -1601,7 +1821,9 @@ on the session's and the run's links with its words at an older
 switchyard, the loopback origin's offer of a decision link; the
 switchyard spec's decision link test. Tests: PR-7's above.
 
-**PR-3** (`internal/api`): the `decision` kind from DR1's routes, the
+**PR-3** (`internal/api`, `internal/crew/ledger`): the `decision` kind
+from DR1's routes and the inbox's ascending query with its count
+(`InboxDecisions`), answered records kept as tracking items, the
 dedupe against questions, the actions through DR1's respond and comment
 operations, DR1's four states carried as the record reports them, Recent
 on the server, cards about `decision:` refs, the re-read on DR1's event,
