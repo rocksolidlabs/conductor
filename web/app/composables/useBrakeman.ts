@@ -3,6 +3,7 @@ import { closed, keptBrief, openedMark, requestNumber, stateRank, stopAction, un
 import { dropKeptMake, readKeptMakes, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
+import type { DispatchWatch } from './useDispatchLive'
 
 // Brakeman's records on the app's pages (docs/plans/brakeman.md, PR-6): the configuration, the requests (a page of them, then
 // the `brakeman` events of GET /api/events folded in), and the person's writes (ask, cancel, make), each with an id the browser
@@ -368,6 +369,9 @@ function writeKept(key: string, k: KeptMake | undefined) {
 }
 
 /** Brakeman for a page: its state and requests, live, and the person's writes. */
+/** How many title reads each `<generation>:<key>` has asked: a read's answer is taken only while it is the latest (readTicketTitle). */
+const titleReads = new Map<string, number>()
+
 export function useBrakeman() {
   const { request } = useApi()
   const version = useState<number>('brakemanVersion', () => 0)
@@ -391,6 +395,13 @@ export function useBrakeman() {
    * new token, which may be another server's, finds only its own.
    */
   const kept = useState<Record<string, KeptMake>>('brakemanKeptMakes', () => (import.meta.client ? readKept() : {}))
+  /**
+   * The title of each ticket a made draft became, as Dispatch holds it (GET /api/dispatch/tickets/{key}): the person's edit, which the
+   * brief's own title is not, so another card's Blocks line names the ticket as made (draftName), in this tab or another, before a
+   * reload or after. By the token's generation and the key, since a new token's server has its own BK-3: its title once read (absent
+   * while the first read is out) and the ticket's id, which Dispatch's events name it by (ticketTitlesWatch).
+   */
+  const ticketTitles = useState<Record<string, { title?: string; id?: string }>>('brakemanTicketTitles', () => ({}))
   const store = brakemanLive()
   const reads: BrakemanReads = {
     state: () => request<BrakemanState>('/api/brakeman'),
@@ -538,6 +549,60 @@ export function useBrakeman() {
     return out
   }
 
+  /**
+   * Reads the title of the ticket `key` from Dispatch: a made draft's, which another card's Blocks line names. Asked first, once for the
+   * token it is asked under: a read that fails leaves nothing, so the next ask reads again, and the line names the key alone meanwhile.
+   * Asked `again` (a Dispatch event names the ticket, a reconnect's snapshot), it is read anew, the title shown kept until the answer
+   * and kept too when the read fails, which then rejects so the live store asks it again. Only the latest read's answer is taken, so a
+   * slow read sent before a rename never puts the title back.
+   */
+  function readTicketTitle(key: string, again = false): Promise<void> {
+    const at = `${store.generation}:${key}`
+    const held = at in ticketTitles.value
+    if (held && !again) return Promise.resolve()
+    if (!held) ticketTitles.value = { ...ticketTitles.value, [at]: {} }
+    const n = (titleReads.get(at) ?? 0) + 1
+    titleReads.set(at, n)
+    const latest = () => titleReads.get(at) === n && at in ticketTitles.value
+    const drop = () => {
+      if (!latest() || ticketTitles.value[at]?.title !== undefined) return
+      const rest = { ...ticketTitles.value }
+      delete rest[at]
+      ticketTitles.value = rest
+    }
+    return request<{ ticket: { id?: unknown; title?: unknown } }>(`/api/dispatch/tickets/${encodeURIComponent(key)}`).then(
+      (r) => {
+        const { id, title } = r.ticket ?? {}
+        if (typeof title !== 'string') return drop()
+        if (latest()) ticketTitles.value = { ...ticketTitles.value, [at]: { title, id: typeof id === 'string' ? id : undefined } }
+      },
+      (e: unknown) => {
+        drop()
+        if (again) throw e
+      },
+    )
+  }
+
+  /** The title of the ticket `key` as Dispatch holds it, once readTicketTitle has read it under this token. */
+  function ticketTitle(key: string): string | undefined {
+    return ticketTitles.value[`${store.generation}:${key}`]?.title
+  }
+
+  /**
+   * The Dispatch watch (useDispatchLive) of the tickets `keys` names, whose titles a card's Blocks line shows: each read again at once
+   * for an event of that ticket (by its id, once read), and after the window for an event of its project that names no ticket (the one
+   * a commit of more than 64 sends) or while its id is not known yet; every one at once on a snapshot (a reconnect), which is how a
+   * rename missed meanwhile shows.
+   */
+  function ticketTitlesWatch(keys: () => readonly string[]): DispatchWatch {
+    const held = () => keys().map((k) => ({ key: k, project: k.slice(0, k.lastIndexOf('-')), id: ticketTitles.value[`${store.generation}:${k}`]?.id }))
+    return {
+      now: (e) => e.entity === 'ticket' && e.ticket !== '' && held().some((t) => t.id === e.ticket),
+      later: (e) => e.entity === 'ticket' && e.project !== '' && held().some((t) => t.project === e.project && (e.ticket === '' || !t.id)),
+      read: () => Promise.all(keys().map((k) => readTicketTitle(k, true))),
+    }
+  }
+
   /** The make of the item this browser asked that did not finish, or undefined. */
   function keptMake(r: MakeOf, item: number): KeptMake | undefined {
     return kept.value[keptKey(r, item)]
@@ -592,5 +657,5 @@ export function useBrakeman() {
     return store.generation
   })
 
-  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, brief, refs, closed }
+  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, readTicketTitle, ticketTitle, ticketTitlesWatch, brief, refs, closed }
 }

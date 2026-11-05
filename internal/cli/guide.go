@@ -27,8 +27,10 @@ const guideUsage = `Usage: conductor guide [--section S] [--json] [--server URL]
 What the running Conductor server says you may do here. Without --section,
 the overview: the server's version, who you are and what you may do, and the
 sections with their sizes. With it, that section: operations (what you may
-call, with its MCP tool, command, route and input), limits, host, receipts or
-providers. --json prints the server's reply as it is.
+call, with its MCP tool, command, route and input), limits, host, receipts,
+providers, or briefs (a Brakeman brief's shape: its item kinds with their
+fields and bounds, the ref forms, its JSON Schema with an example). --json
+prints the server's reply as it is.
 
 In a Conductor session it reads the session's guide with the session's token.
 Elsewhere, or with --server or --token, it reads the admin's guide with the
@@ -44,7 +46,7 @@ func runGuide(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 	fs := flag.NewFlagSet("guide", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	server := addAPIFlags(fs)
-	section := fs.String("section", "", "the section: operations, limits, host, receipts or providers (the overview unless given)")
+	section := fs.String("section", "", "the section: operations, limits, host, receipts, providers or briefs (the overview unless given)")
 	asJSON := fs.Bool("json", false, "print the server's reply as it is")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, guideUsage, "\nFlags:\n")
@@ -220,6 +222,23 @@ func guideText(raw []byte, how string) (string, error) {
 		}
 		if len(ops) == 0 {
 			b.WriteString("no operations")
+		}
+	case "briefs":
+		// A brief's shape: its words as lines, then its JSON Schema, an
+		// example brief inside it, compact.
+		var briefs struct {
+			Words      []string
+			JSONSchema json.RawMessage
+		}
+		if err := json.Unmarshal(env["briefs"], &briefs); err != nil {
+			return "", fmt.Errorf("guide: unreadable briefs: %w", err)
+		}
+		for _, w := range briefs.Words {
+			fmt.Fprintf(&b, "%s\n", w)
+		}
+		var schema bytes.Buffer
+		if json.Compact(&schema, briefs.JSONSchema) == nil {
+			fmt.Fprintf(&b, "\nIts JSON Schema, with an example brief: %s", schema.String())
 		}
 	default:
 		var out bytes.Buffer

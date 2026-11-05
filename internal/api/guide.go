@@ -72,6 +72,10 @@ type Operation struct {
 	Bounds map[string]int `json:"bounds,omitempty"`
 	// needs is what the server must allow for the operation to be listed.
 	needs opNeeds
+	// guideInput is Input as the guide's operations section gives it,
+	// when another section carries the whole of it (brief_submit's
+	// brief, the briefs section); nil for Input itself.
+	guideInput map[string]any
 }
 
 // opNeeds is what an operation needs of the server and of its caller.
@@ -118,7 +122,7 @@ const (
 )
 
 // The guide's sections, in the overview's order, beside the overview.
-var guideSections = []string{"operations", "limits", "host", "receipts", "providers"}
+var guideSections = []string{"operations", "limits", "host", "receipts", "providers", "briefs"}
 
 // The guide's three lines, for every caller.
 var guideRules = []string{
@@ -273,11 +277,17 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Description: "When this session is a Brakeman turn (CONDUCTOR_BRAKEMAN is set): the request you are to answer, its kind and subjects as resolved now, the note and since, the last briefing you may build on, the scope and visibility you may read under and what your budget has left. Read it first.",
 			CLI:         []string{"conductor", "brakeman", "request"},
 			Input:       obj(map[string]any{})},
+		// Its input's brief is the brief's JSON Schema, made from
+		// internal/brakeman's kind table (as the guide's briefs section's
+		// words are), a draft crew's crew the body crew_create takes;
+		// the operations section, which tools/list need not repeat,
+		// points to the briefs section for it.
 		{Name: "brief_submit", MCP: "brief_submit", Scope: "observe", Method: http.MethodPost, Path: sessions + "/brakeman/brief", needs: needLauncher, Receipt: "brakeman",
 			Summary:     "Submit your turn's one brief (brakeman.brief/1): every fact names its evidence, every ref resolves in your scope; the same opId again answers it.",
-			Description: "Submit your Brakeman turn's one brief, schema brakeman.brief/1: a title, your reading (summary), and items (facts with evidence refs, interpretations naming facts, proposals naming an operation of the guide, outcomes naming a receipt, decision cards, drafts). Every ref must resolve inside your scope and visibility, and a revision you name must be the one you read; a refusal names what to fix. The same opId and brief again answer the kept one. Your turn ends once it is kept.",
+			Description: "Submit your Brakeman turn's one brief, schema brakeman.brief/1: a title, your reading (summary), and at least one item (facts with evidence refs, interpretations naming facts, proposals naming an operation of the guide, outcomes naming a receipt, decision cards, drafts); a briefing holds at least one fact. The brief's input schema gives every item kind with its fields, bounds and an example, and the ref forms; the guide's briefs section says the same in words. Every ref must resolve inside your scope and visibility, and a revision you name must be the one you read; a refusal names what to fix. The same opId and brief again answer the kept one. Your turn ends once it is kept.",
 			CLI:         []string{"conductor", "brakeman", "brief", "--file", "BRIEF.json"},
-			Input:       obj(map[string]any{"opId": str("your id for this submission, 1 to 32 of A-Z a-z 0-9 . _ ~ -"), "brief": map[string]any{"type": "object", "description": "the brief, schema brakeman.brief/1"}}, "brief"),
+			Input:       obj(map[string]any{"opId": str("your id for this submission, 1 to 32 of A-Z a-z 0-9 . _ ~ -"), "brief": brakeman.BriefJSONSchema(bodySchema(crewInput{}))}, "brief"),
+			guideInput:  obj(map[string]any{"opId": str("your id for this submission, 1 to 32 of A-Z a-z 0-9 . _ ~ -"), "brief": map[string]any{"type": "object", "description": "the brief, schema brakeman.brief/1: its JSON Schema and its shape in words are the guide's briefs section"}}, "brief"),
 			Bounds:      map[string]int{"body": maxBriefBody, "brief": brakeman.MaxBrief, "refs": brakeman.MaxRefsDoc}},
 		// What a Brakeman turn reads (brakeman_observe.go): the observe
 		// tool sends each what to its own route, by the entries below
@@ -315,7 +325,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// The guide itself.
 		{Name: "guide", MCP: "guide", Scope: "session", Method: http.MethodGet, Path: sessions + "/guide",
 			Summary:     "This guide, from the running server: the overview without a section, else the section named.",
-			Description: "What this Conductor server lets you do here, from the server itself: without a section, an overview (the server's version, who you are and what you may do, the sections and their sizes); with one, that section: operations (what you may call, with its tool, command, route and input), limits, host, receipts or providers.",
+			Description: "What this Conductor server lets you do here, from the server itself: without a section, an overview (the server's version, who you are and what you may do, the sections and their sizes); with one, that section: operations (what you may call, with its tool, command, route and input), limits, host, receipts, providers, or briefs (a Brakeman brief's shape: its item kinds, their fields and bounds, the ref forms, an example).",
 			CLI:         []string{"conductor", "guide", "--section", "SECTION"},
 			Input:       obj(map[string]any{"section": map[string]any{"type": "string", "enum": guideSections, "description": "the section to read; the overview when not given"}}),
 			Bounds:      map[string]int{"overview": maxGuideOverview, "section": maxGuideSection}},
@@ -326,7 +336,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Input:       obj(map[string]any{"url": str("the http:// or https:// link, at most 2048 bytes")}, "url"),
 			Bounds:      map[string]int{"body": maxOpenBody, "url": MaxOpenURL}},
 		{Name: "server_guide", Scope: "admin", Method: http.MethodGet, Path: "/api/guide",
-			Summary: "The guide for the workbench token: every operation, the server's limits, host, receipts and providers.",
+			Summary: "The guide for the workbench token: every operation, the server's limits, host, receipts, providers and a brief's shape.",
 			CLI:     []string{"conductor", "guide", "--server", "URL", "--section", "SECTION"},
 			Input:   map[string]any{"type": "object", "description": "no body; ?section= names the section"},
 			Bounds:  map[string]int{"overview": maxGuideOverview, "section": maxGuideSection}},
@@ -871,6 +881,9 @@ func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operatio
 	for _, op := range ops {
 		if s.reaches(c, op) {
 			op.Description = ""
+			if op.guideInput != nil {
+				op.Input = op.guideInput
+			}
 			reached = append(reached, op)
 		}
 	}
@@ -880,7 +893,31 @@ func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operatio
 		"host":       s.guideHostSection(ctx, c),
 		"receipts":   guideReceipts(),
 		"providers":  guideProviders{Providers: []string{}},
+		"briefs":     guideBriefsSection(),
 	}
+}
+
+// guideBriefs is the briefs section: a Brakeman brief's shape in words
+// and as its JSON Schema (brief_submit's input's brief), both made from
+// internal/brakeman's kind table, and the ref forms. It is the same for
+// every caller: what a brief is, whoever reads it.
+type guideBriefs struct {
+	Schema     string             `json:"schema"`
+	Words      []string           `json:"words"`
+	Refs       []brakeman.RefForm `json:"refs"`
+	JSONSchema map[string]any     `json:"jsonSchema"`
+}
+
+// guideBriefsSection is the briefs section.
+func guideBriefsSection() guideBriefs {
+	return guideBriefs{Schema: brakeman.BriefSchema, Words: brakeman.Words(), Refs: brakeman.RefForms(), JSONSchema: briefSubmitSchema()}
+}
+
+// briefSubmitSchema is the brief's JSON Schema as brief_submit's input
+// gives it.
+func briefSubmitSchema() map[string]any {
+	op := operationsTable()[slices.IndexFunc(operationsTable(), func(o Operation) bool { return o.Name == "brief_submit" })]
+	return op.Input["properties"].(map[string]any)["brief"].(map[string]any)
 }
 
 // encodeGuide is each section's reply and the overview naming their

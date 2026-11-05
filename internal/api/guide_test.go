@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"os"
@@ -800,4 +802,134 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 			t.Errorf("%s: no caller's guide lists it, so its body bound is untried", op.Name)
 		}
 	}
+}
+
+// jsonOf is v as encoding/json reads it back: maps, lists and numbers,
+// so two values built differently compare by what they say.
+func jsonOf(t *testing.T, v any) any {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out any
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// The briefs section is internal/brakeman's kind table, the same for the
+// admin and for a Brakeman turn: its words are brakeman.Words, its JSON
+// Schema brief_submit's input's brief (every item kind, a draft crew's
+// crew the body crew_create takes), its refs the ref forms. The
+// operations section points to it for the brief rather than carry the
+// schema twice; tools/list carries it whole. The live check's agent had
+// {"type":"object"} and read Conductor's source to learn a brief.
+func TestTheBriefsSectionIsTheKindTable(t *testing.T) {
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	id := b.briefing(t)
+	sid, tok, _ := b.turnSession(t, id)
+	ops := Operations()
+	submit := ops[slices.IndexFunc(ops, func(o Operation) bool { return o.Name == "brief_submit" })]
+	crewCreate := ops[slices.IndexFunc(ops, func(o Operation) bool { return o.Name == "crew_create" })]
+	schema := submit.Input["properties"].(map[string]any)["brief"]
+	if !reflect.DeepEqual(jsonOf(t, schema), jsonOf(t, brakeman.BriefJSONSchema(bodySchema(crewInput{})))) {
+		t.Fatal("brief_submit's brief is not the kind table's schema")
+	}
+	draftCrew := jsonOf(t, schema).(map[string]any)["properties"].(map[string]any)["items"].(map[string]any)["items"].(map[string]any)["oneOf"].([]any)[8].(map[string]any)
+	crewBody := draftCrew["properties"].(map[string]any)["crew"].(map[string]any)
+	delete(crewBody, "description")
+	if draftCrew["properties"].(map[string]any)["kind"].(map[string]any)["const"] != brakeman.ItemDraftCrew || !reflect.DeepEqual(crewBody, jsonOf(t, crewCreate.Input)) {
+		t.Fatalf("a draft crew's crew is not crew_create's input: %v", crewBody)
+	}
+	for _, c := range []struct{ tok, path string }{{adminToken, "/api/guide"}, {tok, "/api/sessions/" + sid + "/guide"}} {
+		status, _, out := guideOf(t, b.testEnv, c.tok, c.path+"?section=briefs")
+		if status != http.StatusOK {
+			t.Fatalf("%s: %d %v", c.path, status, out)
+		}
+		sec := out["briefs"].(map[string]any)
+		if sec["schema"] != brakeman.BriefSchema || !reflect.DeepEqual(sec["words"], jsonOf(t, brakeman.Words())) ||
+			!reflect.DeepEqual(sec["refs"], jsonOf(t, brakeman.RefForms())) || !reflect.DeepEqual(sec["jsonSchema"], jsonOf(t, schema)) {
+			t.Errorf("%s: the briefs section is not the table's: %v", c.path, sec)
+		}
+		_, _, out = guideOf(t, b.testEnv, c.tok, c.path+"?section=operations")
+		for _, op := range out["operations"].([]any) {
+			op := op.(map[string]any)
+			if op["name"] != "brief_submit" {
+				continue
+			}
+			brief := op["input"].(map[string]any)["properties"].(map[string]any)["brief"].(map[string]any)
+			if !strings.Contains(brief["description"].(string), "the guide's briefs section") || brief["properties"] != nil {
+				t.Errorf("%s: the operations section's brief_submit: %v", c.path, brief)
+			}
+		}
+	}
+}
+
+// missingRequired names each field schema requires that v leaves out, and
+// each it does not take, through objects' properties and lists' items.
+func missingRequired(schema map[string]any, v any, path string) []string {
+	var out []string
+	switch v := v.(type) {
+	case map[string]any:
+		props, _ := schema["properties"].(map[string]any)
+		req, _ := schema["required"].([]any)
+		for _, name := range req {
+			if _, ok := v[name.(string)]; !ok {
+				out = append(out, path+"."+name.(string)+" left out")
+			}
+		}
+		for _, k := range slices.Sorted(maps.Keys(v)) {
+			sub, ok := props[k].(map[string]any)
+			if !ok {
+				if schema["additionalProperties"] == false {
+					out = append(out, path+"."+k+" not taken")
+				}
+				continue
+			}
+			out = append(out, missingRequired(sub, v[k], path+"."+k)...)
+		}
+	case []any:
+		if items, ok := schema["items"].(map[string]any); ok {
+			for i, e := range v {
+				out = append(out, missingRequired(items, e, fmt.Sprintf("%s[%d]", path, i))...)
+			}
+		}
+	}
+	return out
+}
+
+// The draft crew's example, as brief_submit's schema and the guide's
+// briefs section give it, is a crew POST /api/crews saves: every field
+// crew_create's schema requires, the crew validator's checks (a brief
+// holding it is taken with the server's own facts), and the route's 201.
+// The example once left out where, isolation, openAfterLaunch and a
+// member's start, and an agent that copied it was refused.
+func TestTheDraftCrewExampleIsACrewThatSaves(t *testing.T) {
+	t.Parallel()
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{{ID: "claude", Name: "Claude Code", Command: []string{"/bin/cat"}, Adapter: "claude"}})
+	k := brakeman.ItemKinds()[slices.IndexFunc(brakeman.ItemKinds(), func(k brakeman.KindSpec) bool { return k.Kind == brakeman.ItemDraftCrew })]
+	var ex struct {
+		Crew json.RawMessage `json:"crew"`
+	}
+	if err := json.Unmarshal(k.Example, &ex); err != nil {
+		t.Fatal(err)
+	}
+	var body any
+	if err := json.Unmarshal(ex.Crew, &body); err != nil {
+		t.Fatal(err)
+	}
+	if bad := missingRequired(jsonOf(t, bodySchema(crewInput{})).(map[string]any), body, "crew"); len(bad) > 0 {
+		t.Errorf("the example against crew_create's schema: %v", bad)
+	}
+	if err := (brakemanFacts{s: e.srv}).CheckCrew(ex.Crew); err != nil {
+		t.Errorf("the crew validator: %v", err)
+	}
+	brief := `{"schema":"` + brakeman.BriefSchema + `","title":"t","summary":"s","items":[` + string(brakeman.ItemKinds()[0].Example) + `,` + string(k.Example) + `]}`
+	if _, err := brakeman.DecodeBrief([]byte(brief), brakeman.Permissions{Observe: true, Draft: true, Propose: true}, brakemanFacts{s: e.srv}); err != nil {
+		t.Errorf("a brief of the example: %v", err)
+	}
+	e.expect(t, "POST", "/api/crews", body, http.StatusCreated, "")
 }

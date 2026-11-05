@@ -4,6 +4,7 @@ import type { BrakemanConfig, BrakemanRequest, BrakemanState } from '../utils/br
 import { makeAgain } from '../utils/brakemanCards'
 import { ApiError } from './useApi'
 import { BrakemanLive, asBrakemanEvent, brakemanLive, keepOpened, sendTwice, useBrakeman, type BrakemanReads } from './useBrakeman'
+import { DispatchLive } from './useDispatchLive'
 import { requestNumber } from '../utils/brakeman'
 
 // Brakeman's live store and its writes (docs/plans/brakeman.md, PR-6): an id kept across a lost reply, and the `brakeman` events
@@ -558,6 +559,114 @@ describe('the makes kept, across a new token', () => {
     answers.push(() => Promise.resolve({ request: { ...other, made: [{ item: 1, opId: 'y', state: 'made', crew: 'new-crew' }] }, made: {}, crew: { id: 'new-crew', url: '/crews/new-crew' } }))
     const out = await bk.make(other, 1, { edit: { crew: { name: 'Crew' } } })
     expect(out.crew?.id).toBe('new-crew')
+  })
+
+  it('made, name their ticket by its title as Dispatch holds it: read once a token, again after a failed read, never from a make\'s edit', async () => {
+    const bk = useBrakeman()
+    // A make that answers 200 with the item refused is no ticket: nothing of its edit is kept as a title.
+    answers.push(() => Promise.resolve({ request: { ...first, made: [{ item: 1, opId: 'x', state: 'refused', why: 'no project' }] }, made: { state: 'refused' } }))
+    await bk.make(first, 1, { edit: { title: 'Never made' } })
+    expect(bk.ticketTitle('BKC-1')).toBeUndefined()
+    // The ticket's title is Dispatch's, read once however many cards ask.
+    let answer: (v: unknown) => void = () => {}
+    answers.push(() => new Promise((done) => (answer = done)))
+    bk.readTicketTitle('BKC-1')
+    bk.readTicketTitle('BKC-1')
+    expect(sent.filter((s) => s.path === '/api/dispatch/tickets/BKC-1')).toHaveLength(1)
+    expect(bk.ticketTitle('BKC-1')).toBeUndefined()
+    answer({ ticket: { key: 'BKC-1', title: 'Made in another tab' } })
+    await settle()
+    expect(bk.ticketTitle('BKC-1')).toBe('Made in another tab')
+    // A read that fails leaves nothing, and the next ask reads again.
+    answers.push(() => Promise.reject(new ApiError(0, 'network', 'Cannot reach the server')))
+    bk.readTicketTitle('BKC-2')
+    await settle()
+    expect(bk.ticketTitle('BKC-2')).toBeUndefined()
+    answers.push(() => Promise.resolve({ ticket: { key: 'BKC-2', title: 'Read again' } }))
+    bk.readTicketTitle('BKC-2')
+    await settle()
+    expect(bk.ticketTitle('BKC-2')).toBe('Read again')
+    // A new token's server has its own BKC-1.
+    bk.reset()
+    expect(bk.ticketTitle('BKC-1')).toBeUndefined()
+  })
+
+  it('made, name their ticket by its title as Dispatch holds it now: read again on its events and on a snapshot, the latest read taken', async () => {
+    vi.useFakeTimers()
+    try {
+      const bk = useBrakeman()
+      const live = new DispatchLive(250)
+      live.subscribe(bk.ticketTitlesWatch(() => ['BKC-1']))
+      const reads = () => sent.filter((s) => s.path === '/api/dispatch/tickets/BKC-1').length
+      answers.push(() => Promise.resolve({ ticket: { id: 't1', key: 'BKC-1', title: 'First title' } }))
+      await bk.readTicketTitle('BKC-1')
+      expect(bk.ticketTitle('BKC-1')).toBe('First title')
+      // Renamed in Dispatch: its event, by the ticket's id, reads it again at once; the old title shows until the answer.
+      let answer: (v: unknown) => void = () => {}
+      answers.push(() => new Promise((done) => (answer = done)))
+      live.event({ seq: 1, entity: 'ticket', id: 't1', ticket: 't1', project: 'BKC' })
+      expect(reads()).toBe(2)
+      expect(bk.ticketTitle('BKC-1')).toBe('First title')
+      answer({ ticket: { id: 't1', key: 'BKC-1', title: 'Renamed' } })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(bk.ticketTitle('BKC-1')).toBe('Renamed')
+      // Another ticket's event, or another project's, reads nothing; the collapsed event of its project does, after the window.
+      live.event({ seq: 2, entity: 'ticket', id: 't2', ticket: 't2', project: 'BKC' })
+      live.event({ seq: 3, entity: 'ticket', id: '', ticket: '', project: 'API' })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(reads()).toBe(2)
+      answers.push(() => Promise.resolve({ ticket: { id: 't1', key: 'BKC-1', title: 'Renamed in bulk' } }))
+      live.event({ seq: 4, entity: 'ticket', id: '', ticket: '', project: 'BKC' })
+      await vi.advanceTimersByTimeAsync(250)
+      expect([reads(), bk.ticketTitle('BKC-1')]).toEqual([3, 'Renamed in bulk'])
+      // A reconnect's snapshot reads it again; a read that fails keeps the title shown and is asked again by the live store.
+      answers.push(() => Promise.reject(new ApiError(0, 'network', 'Cannot reach the server')))
+      answers.push(() => Promise.resolve({ ticket: { id: 't1', key: 'BKC-1', title: 'Renamed while away' } }))
+      live.snapshot()
+      await vi.advanceTimersByTimeAsync(0)
+      expect([reads(), bk.ticketTitle('BKC-1')]).toEqual([4, 'Renamed in bulk'])
+      await vi.advanceTimersByTimeAsync(250)
+      expect([reads(), bk.ticketTitle('BKC-1')]).toEqual([5, 'Renamed while away'])
+      // A slow read sent before a rename never puts the title back over the read after it.
+      let slow: (v: unknown) => void = () => {}
+      answers.push(() => new Promise((done) => (slow = done)))
+      answers.push(() => Promise.resolve({ ticket: { id: 't1', key: 'BKC-1', title: 'Latest' } }))
+      const first = bk.readTicketTitle('BKC-1', true)
+      await bk.readTicketTitle('BKC-1', true)
+      slow({ ticket: { id: 't1', key: 'BKC-1', title: 'Stale' } })
+      await first
+      expect(bk.ticketTitle('BKC-1')).toBe('Latest')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('made, name their ticket by the title Dispatch holds as a card is drawn again: a rename no watch saw is read by the first read', async () => {
+    // The card's first read (BrakemanDraftTicket: useDispatchLive's first, through the live store's ask) reads every title it shows
+    // anew: a brief closed, its blocked ticket renamed, the event seen by no card, and opened again shows the rename, not the title kept.
+    const bk = useBrakeman()
+    const live = new DispatchLive(250)
+    const watch = bk.ticketTitlesWatch(() => ['BKC-1'])
+    const reads = () => sent.filter((s) => s.path === '/api/dispatch/tickets/BKC-1').length
+    let stop = live.subscribe(watch)
+    answers.push(() => Promise.resolve({ ticket: { id: 't1', key: 'BKC-1', title: 'First title' } }))
+    live.ask(watch, watch.read)
+    await settle()
+    expect([reads(), bk.ticketTitle('BKC-1')]).toEqual([1, 'First title'])
+    // Closed: the rename's event reaches no watch.
+    stop()
+    live.event({ seq: 1, entity: 'ticket', id: 't1', ticket: 't1', project: 'BKC' })
+    expect(reads()).toBe(1)
+    // Opened again: the first read reads it anew, the kept title shown until the answer.
+    stop = live.subscribe(watch)
+    let answer: (v: unknown) => void = () => {}
+    answers.push(() => new Promise((done) => (answer = done)))
+    live.ask(watch, watch.read)
+    expect([reads(), bk.ticketTitle('BKC-1')]).toEqual([2, 'First title'])
+    answer({ ticket: { id: 't1', key: 'BKC-1', title: 'Renamed while closed' } })
+    await settle()
+    expect(bk.ticketTitle('BKC-1')).toBe('Renamed while closed')
+    stop()
   })
 
   it('whose reply was lost, are not asked again after a reset: the retry would go with the new token', async () => {
