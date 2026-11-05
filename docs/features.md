@@ -3678,7 +3678,13 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   events"). Batches C and D, both stacked on B, touched the same files
   (the request's fields in `docs/protocol.md`, the CLI's completion and
   tests, Settings, a brief's card, the e2e stub), and this branch merges
-  them as unions. A flake seen once, `internal/reach`'s
+  them as unions. Merged, they met one bug neither showed alone: batch C's
+  words for an act (`conductor brakeman act`, the `act` tool) named the
+  launched run from the answer's `run`, which batch B's second review
+  round took out of an act's answer, so `brakeman-act.spec.ts` failed on
+  "run … launched"; the words now name the run from Dispatch's launch,
+  launched once it is started (fixed in batch E, with
+  `TestActWordsNameTheRunFromTheLaunch`). A flake seen once, `internal/reach`'s
   `TestMapperMapsThroughUPnPAndUnmapsOnClose`, is a line in #281.
   `internal/api`'s race tests took 1,194 to 1,298 s on the loaded Linux
   box.
