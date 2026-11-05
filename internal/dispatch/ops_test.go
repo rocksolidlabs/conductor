@@ -1064,3 +1064,45 @@ func TestReplayAfterPruningChecksTheContent(t *testing.T) {
 		t.Fatalf("the proposal's id as a link's add: %+v %v", rc, found)
 	}
 }
+
+// TestCommittedOutlastsItsReceipt: an operation that committed is found
+// by Committed after its receipt is pruned, with what it made for a
+// proposal and a launch; a refusal and an operation never given are not,
+// before the prune or after it.
+func TestCommittedOutlastsItsReceipt(t *testing.T) {
+	s, _, key := planTicket(t)
+	ctx := context.Background()
+	id := propose(t, s, "p1", key, PlanRequest{Crew: "crew", Base: "HEAD"}, testPlanBody("crew"))
+	approve(t, s, "a1", id, "go")
+	launched := mustLaunch(t, s, "l1", key, id, "")
+	rc, err := s.ProposePlan(ctx, testOp("bad"), key, PlanRequest{Crew: "crew", Base: "HEAD", BasedOn: "0123456789abcdef"}, testPlanBody("crew"))
+	want(t, rc, err, StatusFailed, RefusalNotFound)
+	check := func(when string) {
+		t.Helper()
+		for _, c := range []struct {
+			op, id string
+		}{{"p1", id}, {"l1", launched.ID}} {
+			rc, found, err := s.Committed(ctx, "test", c.op)
+			if err != nil || !found || rc.Status != StatusDone || rc.ID != c.id {
+				t.Fatalf("%s, %s: %+v %v %v", when, c.op, rc, found, err)
+			}
+		}
+		if rc, found, err := s.Committed(ctx, "test", "never"); err != nil || found {
+			t.Fatalf("%s, an operation never given: %+v %v %v", when, rc, found, err)
+		}
+		if rc, found, err := s.Committed(ctx, "other", "p1"); err != nil || found {
+			t.Fatalf("%s, another actor's: %+v %v %v", when, rc, found, err)
+		}
+	}
+	check("kept")
+	if rc, found, err := s.Committed(ctx, "test", "bad"); err != nil || !found || rc.Refusal != RefusalNotFound {
+		t.Fatalf("a refusal kept: %+v %v %v", rc, found, err)
+	}
+	if _, err := s.db.Exec("DELETE FROM ops"); err != nil {
+		t.Fatal(err)
+	}
+	check("pruned")
+	if rc, found, err := s.Committed(ctx, "test", "bad"); err != nil || found {
+		t.Fatalf("a refusal pruned: %+v %v %v", rc, found, err)
+	}
+}
