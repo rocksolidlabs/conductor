@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"time"
 	"unicode/utf8"
 )
@@ -37,6 +38,48 @@ type Host interface {
 	DataDir() (string, error)
 	// Log is the server's logger, naming the provider.
 	Log() *slog.Logger
+	// LaunchTurn launches a Brakeman turn as a run: an unsaved one-member
+	// crew of the agent in its adapter's read-only mode, never yolo,
+	// through the engine, the one scheduler. Only the Host the server
+	// gives Brakeman's desk launches one, for the request holding the
+	// desk's slot; a provider's Host answers ErrUnsupported (a turn starts
+	// from a request Brakeman's desk holds).
+	LaunchTurn(ctx context.Context, r TurnLaunch) (RunRef, error)
+	// LaunchApproved launches a managed run from a ticket's plan revision
+	// that the operator approved and that still holds, as POST
+	// /api/dispatch/tickets/{key}/launch does: OpID is the launch's
+	// operation id, so a retry answers the launch it made and never starts
+	// a second run.
+	LaunchApproved(ctx context.Context, r ApprovedLaunch) (RunRef, error)
+}
+
+// TurnLaunch is a Brakeman turn to launch: the catalog agent, its model
+// ("" for its default), whether Conductor's tools are allowed without
+// asking (where its adapter can say so), the folder the turn runs in, the
+// line typed once its session is ready, the run's label and the request
+// the turn is.
+type TurnLaunch struct {
+	Agent      string `json:"agent"`
+	Model      string `json:"model,omitempty"`
+	AllowTools bool   `json:"allowTools,omitempty"`
+	Folder     string `json:"folder"`
+	Line       string `json:"line"`
+	Label      string `json:"label"`
+	Request    string `json:"request"`
+}
+
+// ApprovedLaunch is a launch from a ticket's approved plan revision: the
+// ticket's key, the revision's id, the ticket's revision the caller read
+// (ExpectedRev, 0 for none: a ticket that moved since is refused), the
+// launch's operation id, the run's label ("" for the ticket's key and
+// title) and who asks.
+type ApprovedLaunch struct {
+	Ticket      string    `json:"ticket"`
+	Plan        string    `json:"plan"`
+	ExpectedRev int64     `json:"expectedRev,omitempty"`
+	OpID        string    `json:"opId"`
+	Label       string    `json:"label,omitempty"`
+	By          Principal `json:"by"`
 }
 
 // LaunchRequest is a saved crew to launch as a run, and who asks.
@@ -87,6 +130,20 @@ const (
 	MaxQuestionRef = 32
 	// MaxAnswerInput bounds a choice's keys, in bytes (proto.MaxAnswerInput).
 	MaxAnswerInput = 48
+	// MaxAgentID bounds a catalog agent's id, in bytes (the catalog's own).
+	MaxAgentID = 32
+	// MaxModel bounds a model's name, in bytes (Brakeman's configuration's).
+	MaxModel = 100
+	// MaxFolder bounds a folder's absolute path, in bytes.
+	MaxFolder = 4096
+	// MaxTurnLine bounds the line typed into a turn's session, in bytes.
+	MaxTurnLine = 300
+	// MaxRequestRef bounds a Brakeman request's id (br-<n>), in bytes.
+	MaxRequestRef = 12
+	// MaxOpID bounds an operation's id, in bytes (Dispatch's OpIDPattern).
+	MaxOpID = 32
+	// PlanIDLen is a plan revision's id's length: lower-case hex.
+	PlanIDLen = 16
 )
 
 // Valid checks r against its bounds: a crew id of 1 to MaxCrewID of a-z,
@@ -136,6 +193,60 @@ func (r SubmitRequest) Valid() error {
 		if err := typed(rec, "text", r.Text); err != nil {
 			return err
 		}
+	}
+	if err := r.By.Valid(); err != nil {
+		return invalid(rec, "by: %v", err)
+	}
+	return nil
+}
+
+// Valid checks r against its bounds: an agent id of 1 to MaxAgentID of
+// a-z, 0-9 and '-'; a model of at most MaxModel of letters, digits and
+// ._:/@- beginning with a letter or a digit, or none; an absolute folder
+// of at most MaxFolder bytes on one line; a line of 1 to MaxTurnLine
+// bytes on one line; a label of 1 to MaxRunLabel characters on one line;
+// and a request id br-<n>, n from 1 with no leading zero. Whether the
+// agent can be Brakeman's and the request holds the slot is the server's
+// to answer.
+func (r TurnLaunch) Valid() error {
+	const rec = "turn launch"
+	switch {
+	case !agentID(r.Agent):
+		return invalid(rec, "agent %q is not a catalog agent's id", r.Agent)
+	case r.Model != "" && !model(r.Model):
+		return invalid(rec, "model %q is not a model's name", r.Model)
+	case r.Folder == "" || len(r.Folder) > MaxFolder || !oneLine(r.Folder) || !filepath.IsAbs(r.Folder):
+		return invalid(rec, "folder is not an absolute path of at most %d bytes", MaxFolder)
+	case r.Line == "" || len(r.Line) > MaxTurnLine || !oneLine(r.Line):
+		return invalid(rec, "line is not one line of 1 to %d bytes", MaxTurnLine)
+	case r.Label == "" || !oneLine(r.Label) || utf8.RuneCountInString(r.Label) > MaxRunLabel:
+		return invalid(rec, "label is not one line of 1 to %d characters", MaxRunLabel)
+	case !requestID(r.Request):
+		return invalid(rec, "request %q is not a Brakeman request's id", r.Request)
+	}
+	return nil
+}
+
+// Valid checks r against its bounds: a ticket's key (a project key of an
+// upper-case letter and 1 to 5 upper-case letters or digits, a dash, a
+// number from 1 with no leading zero); a plan revision's id of PlanIDLen
+// lower-case hex; an ExpectedRev not below 0; an op id of 1 to MaxOpID of
+// letters, digits and ._~-; a label of at most MaxRunLabel characters on
+// one line; and a valid By. Whether the revision is the ticket's, approved
+// and still holding is the server's to answer.
+func (r ApprovedLaunch) Valid() error {
+	const rec = "approved launch"
+	switch {
+	case !ticketKey(r.Ticket):
+		return invalid(rec, "ticket %q is not a ticket's key", r.Ticket)
+	case !lowerHex(r.Plan, PlanIDLen):
+		return invalid(rec, "plan %q is not a plan revision's id", r.Plan)
+	case r.ExpectedRev < 0:
+		return invalid(rec, "expectedRev is below 0")
+	case !opID(r.OpID):
+		return invalid(rec, "opId %q is not an operation's id", r.OpID)
+	case !oneLine(r.Label) || utf8.RuneCountInString(r.Label) > MaxRunLabel:
+		return invalid(rec, "label is not one line of at most %d characters", MaxRunLabel)
 	}
 	if err := r.By.Valid(); err != nil {
 		return invalid(rec, "by: %v", err)

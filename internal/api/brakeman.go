@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
@@ -68,6 +69,10 @@ const (
 type brakemanDesk struct {
 	s  *Server
 	st *brakeman.Store
+	// hostRef is the ext.Host the desk launches through, the one the
+	// composition root gave it (SetBrakemanHost); nil until then, the
+	// server's own desk Host (BrakemanHost) answering.
+	hostRef atomic.Pointer[ext.Host]
 	// clock is the desk's clock and its store's: time.Now, a test's own
 	// otherwise.
 	clock atomic.Pointer[func() time.Time]
@@ -279,6 +284,32 @@ func (d *brakemanDesk) notOwner() error {
 		return fmt.Errorf("%w: %s", brakeman.ErrNotOwner, why)
 	}
 	return fmt.Errorf("%w: the last owner's queue is still being read", brakeman.ErrNotOwner)
+}
+
+// BrakemanHost is the ext.Host the server gives Brakeman's desk: the one
+// a provider's Start gets, but for the desk, so its LaunchTurn launches the
+// turn of the request holding the desk's slot, and the operations it runs
+// for a turn are the actor brakeman's. It lasts as long as the server.
+func (s *Server) BrakemanHost() ext.Host {
+	return &extHost{s: s, name: brakemanMember, ctx: context.Background(), desk: true}
+}
+
+// SetBrakemanHost gives Brakeman's desk the ext.Host it launches through:
+// the composition root's (runServe gives it BrakemanHost), a test's own
+// otherwise. Without one the desk launches through BrakemanHost. Nothing
+// on a server without a desk.
+func (s *Server) SetBrakemanHost(h ext.Host) {
+	if s.brakeman != nil && h != nil {
+		s.brakeman.hostRef.Store(&h)
+	}
+}
+
+// host is the ext.Host the desk launches through.
+func (d *brakemanDesk) host() ext.Host {
+	if h := d.hostRef.Load(); h != nil {
+		return *h
+	}
+	return d.s.BrakemanHost()
 }
 
 // StartBrakeman starts Brakeman's desk: its loop, which takes the queued
@@ -793,21 +824,25 @@ func (d *brakemanDesk) launch(ctx context.Context, t *deskTurn, req brakeman.Req
 			}
 		}
 	}
-	c, sha, err := d.turnCrew(req, cfg, a)
-	var run *crew.Run
+	tl, sha, err := d.turnRequest(req, cfg, a)
+	var ref ext.RunRef
 	if err == nil {
 		d.mu.Lock()
 		t.agentSHA256 = sha
 		d.mu.Unlock()
-		run, err = d.s.launchTurn(ctx, c, brakemanLabel(req), crew.LaunchOpts{Class: crew.ClassBrakeman, Request: req.ID})
+		// The desk's one door: the Host the composition root gave it
+		// (SetBrakemanHost), whose LaunchTurn is launchTurn.
+		ref, err = d.host().LaunchTurn(ctx, tl)
 	}
 	if f := d.afterLaunch.Load(); f != nil {
 		(*f)(req.ID)
 	}
 	runID, sessionID := "", ""
-	if run != nil {
-		runID = run.ID
-		if len(run.Members) > 0 {
+	if err == nil {
+		runID = ref.ID
+		// The member's session, from the engine, which holds the run it
+		// launched (a run that ended meanwhile included).
+		if run, ok := d.s.runs.Get(ref.ID); ok && len(run.Members) > 0 {
 			sessionID = run.Members[0].SessionID
 		}
 	}
@@ -879,68 +914,83 @@ func brakemanLine(req brakeman.Request) string {
 	return "Brakeman request " + req.ID + " (" + req.Kind + `): read it with the brakeman_request tool or "conductor brakeman request", and submit one brief with brief_submit or "conductor brakeman brief". Call guide for what you may read, its briefs section for a brief's shape.`
 }
 
-// turnCrew is the crew a turn launches: one member, the configured agent
-// in its adapter's read-only mode, then its model and, when allowed,
-// Conductor's tools, nothing a person typed; never yolo, never managed,
-// in the configured folder without a worktree. The configuration is held
-// to Validate again against the catalog and the folders as they are now
-// (an agent hidden, its adapter changed since the save); the arguments
-// are made for the entry a the turn was stamped from, and its
+// turnRequest is the turn a request launches, as the desk asks its Host
+// for it: the configured agent, its model and whether Conductor's tools
+// are allowed, the configured folder, the line, the label and the
+// request. The configuration is held to Validate again against the
+// catalog and the folders as they are now (an agent hidden, its adapter
+// changed since the save), and the crew the Host makes of it checked
+// (turnCrew) for the entry a the turn was stamped from, whose
 // agentSelection's SHA256 is answered, which the member's session must
 // start from.
-func (d *brakemanDesk) turnCrew(req brakeman.Request, cfg brakeman.Config, a *catalog.Agent) (crew.Crew, string, error) {
+func (d *brakemanDesk) turnRequest(req brakeman.Request, cfg brakeman.Config, a *catalog.Agent) (ext.TurnLaunch, string, error) {
 	if err := brakeman.Validate(cfg, brakemanFacts{s: d.s}); err != nil {
-		return crew.Crew{}, "", fmt.Errorf("the configuration no longer holds: %w", err)
+		return ext.TurnLaunch{}, "", fmt.Errorf("the configuration no longer holds: %w", err)
 	}
 	if a == nil {
-		return crew.Crew{}, "", fmt.Errorf("no agent %s in the catalog", cfg.AgentID)
+		return ext.TurnLaunch{}, "", fmt.Errorf("no agent %s in the catalog", cfg.AgentID)
 	}
-	args, err := turnArgs(*a, cfg)
+	tl := ext.TurnLaunch{
+		Agent: cfg.AgentID, Model: cfg.Model, AllowTools: cfg.AllowConductorTools,
+		Folder: cfg.Cwd, Line: brakemanLine(req), Label: brakemanLabel(req), Request: req.ID,
+	}
+	if _, err := turnCrew(*a, tl); err != nil {
+		return ext.TurnLaunch{}, "", err
+	}
+	return tl, agentSelection(*a, false).SHA256, nil
+}
+
+// turnCrew is the crew a turn launches: one member, the agent of the
+// entry a in its adapter's read-only mode, then its model and, when
+// allowed, Conductor's tools, nothing a person typed; never yolo, never
+// managed, in the turn's folder without a worktree, its line the member's
+// prompt.
+func turnCrew(a catalog.Agent, tl ext.TurnLaunch) (crew.Crew, error) {
+	args, err := turnArgs(a, tl.Agent, tl.Model, tl.AllowTools)
 	if err != nil {
-		return crew.Crew{}, "", err
+		return crew.Crew{}, err
 	}
-	line := brakemanLine(req)
-	if len(line) > maxBrakemanLine {
-		return crew.Crew{}, "", fmt.Errorf("the request's line is %d bytes, more than %d", len(line), maxBrakemanLine)
+	if len(tl.Line) > maxBrakemanLine {
+		return crew.Crew{}, fmt.Errorf("the request's line is %d bytes, more than %d", len(tl.Line), maxBrakemanLine)
 	}
 	no := false
 	return crew.Crew{
-		ID: brakemanMember, Name: "Brakeman", Cwd: cfg.Cwd, Where: crew.WhereServer, Isolation: crew.IsolationNone,
-		Goal: "Brakeman request " + req.ID, Yolo: &no,
+		ID: brakemanMember, Name: "Brakeman", Cwd: tl.Folder, Where: crew.WhereServer, Isolation: crew.IsolationNone,
+		Goal: "Brakeman request " + tl.Request, Yolo: &no,
 		Members: []crew.Member{{
-			Name: brakemanMember, AgentID: cfg.AgentID, Args: args,
-			Start: crew.Start{When: crew.StartImmediately}, Prompt: line,
+			Name: brakemanMember, AgentID: tl.Agent, Args: args,
+			Start: crew.Start{When: crew.StartImmediately}, Prompt: tl.Line,
 		}},
-	}, agentSelection(*a, false).SHA256, nil
+	}, nil
 }
 
-// turnArgs is a turn's member's arguments under cfg for the agent's entry
-// a: its adapter's ReadOnlyArgs, then ModelArgs(model), then
+// turnArgs is a turn's member's arguments for the agent's entry a: its
+// adapter's ReadOnlyArgs, then ModelArgs(model), then
 // AllowTools("conductor") when allowed.
-func turnArgs(a catalog.Agent, cfg brakeman.Config) ([]string, error) {
+func turnArgs(a catalog.Agent, agentID, model string, allowTools bool) ([]string, error) {
 	ad, ok := agents.Get(a.Adapter)
 	if !ok || ad.ReadOnlyArgs == nil {
-		return nil, fmt.Errorf("the agent %s has no read-only mode", cfg.AgentID)
+		return nil, fmt.Errorf("the agent %s has no read-only mode", agentID)
 	}
 	args := slices.Clone(ad.ReadOnlyArgs())
-	if cfg.Model != "" {
+	if model != "" {
 		if ad.ModelArgs == nil {
-			return nil, fmt.Errorf("the agent %s takes no model", cfg.AgentID)
+			return nil, fmt.Errorf("the agent %s takes no model", agentID)
 		}
-		args = append(args, ad.ModelArgs(cfg.Model)...)
+		args = append(args, ad.ModelArgs(model)...)
 	}
-	if cfg.AllowConductorTools && ad.AllowTools != nil {
+	if allowTools && ad.AllowTools != nil {
 		args = append(args, ad.AllowTools("conductor")...)
 	}
 	return args, nil
 }
 
-// launchTurn is the desk's one launch door: the folder resolved and
-// opened through openCwd, a crew whose yolo is not false or whose member
-// lacks its adapter's read-only arguments refused, then
-// Engine.LaunchNamedWith with the turn's class and request. The run is
-// released at once (the desk keeps it by its class and request). PR-17
-// puts ext.Host in front of it.
+// launchTurn is what the Host's LaunchTurn does, the desk's one launch
+// door behind it: the folder resolved and opened through openCwd, a crew
+// whose yolo is not false or whose member lacks its adapter's read-only
+// arguments refused, then Engine.LaunchNamedWith with the turn's class
+// and request. The run is released at once (the desk keeps it by its
+// class and request).
 func (s *Server) launchTurn(ctx context.Context, c crew.Crew, label string, opts crew.LaunchOpts) (*crew.Run, error) {
 	if c.Yolo == nil || *c.Yolo {
 		return nil, errors.New("a Brakeman turn never runs with yolo")

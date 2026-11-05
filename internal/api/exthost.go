@@ -262,6 +262,10 @@ type extHost struct {
 	name      string
 	ctx       context.Context
 	mayNotify bool
+	// desk is set on the Host the server gives Brakeman's desk
+	// (BrakemanHost), never on a provider's, whatever its name: only it
+	// launches a turn (LaunchTurn).
+	desk bool
 }
 
 var _ ext.Host = (*extHost)(nil)
@@ -353,6 +357,75 @@ func (h *extHost) launchError(id string, err error) error {
 	h.s.log.Warn("crew launch failed", "crew", id, "provider", h.name, "err", err)
 	return refused("%v", err)
 }
+
+// LaunchTurn launches the turn of the Brakeman request r.Request, the one
+// holding the desk's slot, as a read-only one-member run (turnCrew, then
+// launchTurn: the engine and crew.Launcher), and answers its run. Only the
+// desk's Host launches one: a provider's answers ext.ErrUnsupported, as a
+// switchyard and a server with no desk do. A request past its bounds, or
+// one not holding the slot, is ext.ErrRefused with the words why; an agent
+// the catalog lacks ext.ErrNotFound. A launch the engine or the folder
+// refuses answers its own error, which is ext.ErrRefused and keeps its
+// words (hostRefusal); one whose context ended, that context's error.
+func (h *extHost) LaunchTurn(ctx context.Context, r ext.TurnLaunch) (ext.RunRef, error) {
+	if err := h.gone(); err != nil {
+		return ext.RunRef{}, err
+	}
+	d := h.s.brakeman
+	switch {
+	case !h.desk:
+		return ext.RunRef{}, fmt.Errorf("%w: a Brakeman turn is launched by its desk, from a request it holds", ext.ErrUnsupported)
+	case h.s.cfg.Switchyard.Enabled || d == nil:
+		return ext.RunRef{}, fmt.Errorf("%w: this server keeps no Brakeman desk", ext.ErrUnsupported)
+	}
+	if err := r.Valid(); err != nil {
+		return ext.RunRef{}, refused("%v", err)
+	}
+	if _, _, ok := d.turnLaunch(r.Request); !ok {
+		return ext.RunRef{}, refused("the request %s does not hold the desk's slot", r.Request)
+	}
+	a, ok := h.s.Catalog().Get(r.Agent)
+	if !ok {
+		return ext.RunRef{}, fmt.Errorf("%w: no agent %s in the catalog", ext.ErrNotFound, r.Agent)
+	}
+	c, err := turnCrew(a, r)
+	if err != nil {
+		return ext.RunRef{}, hostRefusal{err}
+	}
+	bctx, end := h.bound(ctx)
+	defer end()
+	run, err := h.s.launchTurn(bctx, c, r.Label, crew.LaunchOpts{Class: crew.ClassBrakeman, Request: r.Request})
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return ext.RunRef{}, ctx.Err()
+	case err != nil && h.gone() != nil:
+		return ext.RunRef{}, context.Canceled
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return ext.RunRef{}, err
+	case err != nil:
+		return ext.RunRef{}, hostRefusal{err}
+	}
+	return ext.RunRef{ID: run.ID, Crew: run.CrewID, URL: h.s.publicBase(nil) + "/runs/" + url.PathEscape(run.ID)}, nil
+}
+
+// LaunchApproved is declared by Brakeman's PR-17 and wired to DS2's launch
+// from a ticket by its PR-12: until then it answers ext.ErrUnsupported and
+// starts nothing.
+func (h *extHost) LaunchApproved(_ context.Context, r ext.ApprovedLaunch) (ext.RunRef, error) {
+	if err := h.gone(); err != nil {
+		return ext.RunRef{}, err
+	}
+	return ext.RunRef{}, fmt.Errorf("%w: a launch from an approved plan revision through the Host comes with Brakeman's authorized actions", ext.ErrUnsupported)
+}
+
+// hostRefusal is the server's own refusal of a Host's call, an
+// ext.ErrRefused that keeps the server's words (its Error) and its error
+// (Unwrap: an *apiError's code reaches errors.As).
+type hostRefusal struct{ err error }
+
+func (e hostRefusal) Error() string        { return e.err.Error() }
+func (e hostRefusal) Unwrap() error        { return e.err }
+func (e hostRefusal) Is(target error) bool { return target == ext.ErrRefused }
 
 // Submit types r.Text into the server session r.Session, never into a
 // question it shows (Local.Submit with UnlessWaiting), or, with

@@ -102,3 +102,102 @@ func typed(record, field, s string) error {
 	}
 	return nil
 }
+
+// agentID reports whether s is a catalog agent's id: 1 to MaxAgentID of
+// a-z, 0-9 and '-'.
+func agentID(s string) bool {
+	if s == "" || len(s) > MaxAgentID {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// model reports whether s is a model's name: 1 to MaxModel of letters,
+// digits and ._:/@-, beginning with a letter or a digit.
+func model(s string) bool {
+	if s == "" || len(s) > MaxModel {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case i > 0 && strings.IndexByte("._:/@-", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// digits reports whether s is a number from 1 of at most max digits, with
+// no leading zero.
+func digits(s string, max int) bool {
+	if s == "" || len(s) > max || s[0] == '0' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// requestID reports whether s is a Brakeman request's id, br-<n>.
+func requestID(s string) bool {
+	n, ok := strings.CutPrefix(s, "br-")
+	return ok && len(s) <= MaxRequestRef && digits(n, MaxRequestRef-3)
+}
+
+// ticketKey reports whether s is a ticket's key: a project key (an
+// upper-case letter, then 1 to 5 upper-case letters or digits), a dash and
+// a number of at most 18 digits.
+func ticketKey(s string) bool {
+	project, n, ok := strings.Cut(s, "-")
+	if !ok || len(project) < 2 || len(project) > 6 || project[0] < 'A' || project[0] > 'Z' {
+		return false
+	}
+	for i := 1; i < len(project); i++ {
+		if c := project[i]; (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return digits(n, 18)
+}
+
+// lowerHex reports whether s is n lower-case hex digits.
+func lowerHex(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// opID reports whether s is an operation's id: 1 to MaxOpID of letters,
+// digits and ._~-.
+func opID(s string) bool {
+	if s == "" || len(s) > MaxOpID {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.IndexByte("._~-", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
