@@ -467,6 +467,8 @@ palette.registerPage(() => {
     ['people', `Open People · ${viewers.value.length || s.viewers} here`, 'i-lucide-users'],
   ]
   const t = tabs.value
+  /** The terminal collapsed under the open editor, as EditorColumn folds it wider than a phone (#432): its pane has no height. */
+  const terminalCollapsed = t.tabs.length > 0 && !t.folded && !!t.collapsed && !phone.value
   const tabRows = t.tabs.map((tb) => ({
     key: `page:tab:${tb.id}`,
     label: tb.title,
@@ -522,7 +524,8 @@ palette.registerPage(() => {
       { key: 'page:mark-needs', label: 'Mark as needs input', icon: 'i-lucide-hand', run: () => signal('needs_input') },
       { key: 'page:mark-working', label: 'Mark as working', icon: 'i-lucide-loader-circle', run: () => signal('working') },
       { key: 'page:mark-clear', label: 'Clear signal', icon: 'i-lucide-x', run: () => signal('clear') },
-      ...(terminal.value?.sizerShown() ? [{ key: 'page:fit', label: 'Fit to my window', icon: 'i-lucide-maximize-2', run: () => terminal.value?.takeSize() }] : []),
+      // Not while the terminal is collapsed (#432, review round 2): its pane has no size to give the session.
+      ...(terminal.value?.sizerShown() && !terminalCollapsed ? [{ key: 'page:fit', label: 'Fit to my window', icon: 'i-lucide-maximize-2', run: () => terminal.value?.takeSize() }] : []),
       ...(t.tabs.length ? [{ key: 'page:fold', label: t.folded ? 'Bring the editor back' : 'Fold the editor to its tab strip', icon: 'i-lucide-panel-bottom', kbds: ['T'], run: () => (tabs.value = toggleFold(tabs.value)) }] : []),
       // Its mirror (#432): the terminal collapses to a bar under the editor, and back; the strip's button does the same.
       ...(t.tabs.length && !phone.value ? [{ key: 'page:collapse-terminal', label: t.collapsed && !t.folded ? 'Bring the terminal back' : 'Collapse the terminal', icon: t.collapsed && !t.folded ? 'i-lucide-panel-bottom-open' : 'i-lucide-panel-bottom-close', run: () => (tabs.value = toggleCollapse(tabs.value)) }] : []),

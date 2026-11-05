@@ -453,9 +453,13 @@ function applyFitMode() {
   }
 }
 
-/** Fit to my window (round 14): this window takes the session's size, at its own size. */
+/**
+ * Fit to my window (round 14): this window takes the session's size, at its own size. A pane with no size to give (the terminal
+ * collapsed under the editor, #432 review round 2) takes nothing: fitted there it would ask a row or none of every viewer.
+ */
 function takeSize() {
-  if (!term || !fit || !transport || !mayFit()) return
+  const h = host.value
+  if (!term || !fit || !transport || !mayFit() || !h?.clientWidth || !h.clientHeight) return
   const el = term.element
   if (el) el.style.transform = ''
   term.options.fontSize = props.fontSize

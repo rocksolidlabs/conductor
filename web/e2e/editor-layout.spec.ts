@@ -390,6 +390,116 @@ test('collapsed from the palette opened in the terminal, the terminal keeps no f
   }
 })
 
+/** The resizes this page has sent the session that take its size (Fit to my window, `take`), counted as the socket sends them. */
+function sentTakes(page: Page, id: string): { count: number } {
+  const sent = { count: 0 }
+  page.on('websocket', (ws) => {
+    if (!ws.url().includes(id)) return
+    ws.on('framesent', (f) => {
+      const b = typeof f.payload === 'string' ? Buffer.from(f.payload) : f.payload
+      if (b[0] !== 0x03) return
+      try {
+        const m = JSON.parse(b.subarray(1).toString('utf8')) as { t?: string; take?: boolean }
+        if (m.t === 'resize' && m.take) sent.count++
+      } catch {
+        /* not JSON: no resize */
+      }
+    })
+  })
+  return sent
+}
+
+// Collapsed while another controller holds the size (#432, review round 2): the palette offers no Fit to my window, and the window's
+// own button, hidden in the folded slot, takes nothing (a pane with no height would hand every viewer a terminal one row tall).
+// Brought back, Fit to my window takes the size again. The frames of one socket go in order: the take sent after the terminal came
+// back, seen, says the click made while it was collapsed sent none.
+test('collapsed under another viewer\'s size, the terminal offers no Fit to my window and takes no size', async ({ page, api, state, browser }) => {
+  const cwd = join(state.root, 'editor-collapse-fit')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
+  await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e terminal collapse fit', cwd })
+  const takes = sentTakes(page, s.id)
+  const size = async () => {
+    const got = (await api.session(s.id)) as Session & { cols: number; rows: number }
+    return { cols: got.cols, rows: got.rows }
+  }
+  const contexts: Array<{ close: () => Promise<void> }> = []
+  try {
+    budget(30_000)
+    await page.goto(`/sessions/${s.id}`)
+    const host = page.locator('.terminal-host').first()
+    await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: 30_000 })
+    const bigCols = Number((await settledSize(api, s.id, host)).split(' × ')[0])
+
+    // A coworker on a control link takes the size at a smaller window; the owner's window then says who sizes it.
+    budget(30_000 + 3 * STEP_MS)
+    const { token } = await api.ok<{ token: string }>('POST', `/api/sessions/${s.id}/links`, { role: 'control' })
+    const laptopCtx = await browser.newContext({ viewport: { width: 900, height: 600 } })
+    contexts.push(laptopCtx)
+    await laptopCtx.addInitScript(() => localStorage.setItem('conductor.displayName', 'Jane'))
+    const laptop = await laptopCtx.newPage()
+    await laptop.goto(`/join/${token}`)
+    await laptop.getByRole('button', { name: 'Join session' }).click()
+    const laptopChip = laptop.locator('[data-terminal-sizer]')
+    await expect(laptopChip).toBeVisible({ timeout: 30_000 })
+    await laptopChip.locator('[data-fit-mine]').click()
+    await expect.poll(async () => (await size()).cols, { timeout: STEP_MS, message: "the coworker's window takes the size" }).toBeLessThan(bigCols)
+    const small = await size()
+    const chip = page.locator('[data-terminal-sizer]')
+    await expect(chip.locator('[data-sizer-name]')).toHaveText('Jane', { timeout: STEP_MS })
+
+    // A file open, the terminal shown: the palette offers Fit to my window.
+    budget(4 * STEP_MS)
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await page.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area).toHaveAttribute('data-editor-area', 'open')
+    const slot = page.locator('[data-terminal-slot]')
+    await expect(slot).toHaveAttribute('data-terminal-slot', 'open')
+    await expect(page.locator('#dashboard-sidebar-main')).toBeAttached()
+    const palette = page.locator('[data-palette]')
+    const fitRow = palette.locator('[data-palette-row="page:fit"]')
+    const collapseRow = palette.locator('[data-palette-row="page:collapse-terminal"]')
+    await page.keyboard.press('Alt+/')
+    await expect(palette).toBeVisible()
+    await expect(collapseRow).toContainText('Collapse the terminal')
+    await expect(fitRow).toHaveCount(1)
+    await page.keyboard.press('Escape')
+    await expect(palette).toHaveCount(0)
+
+    // Collapsed: the palette, its collapse row saying so, offers no Fit to my window; the window's own button, clicked where it
+    // hides, takes nothing.
+    budget(5 * STEP_MS)
+    await area.locator('[data-editor-collapse-terminal]').click()
+    await expect(slot).toHaveAttribute('data-terminal-slot', 'folded')
+    await expect.poll(() => host.evaluate((h) => h.clientHeight), { message: 'the collapsed pane has no height' }).toBe(0)
+    await page.keyboard.press('Alt+/')
+    await expect(palette).toBeVisible()
+    await expect(collapseRow).toContainText('Bring the terminal back')
+    await expect(fitRow).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await expect(palette).toHaveCount(0)
+    await chip.locator('[data-fit-mine]').dispatchEvent('click')
+
+    // Brought back, Fit to my window takes the size at the owner's window; that take is the only one this window sent.
+    budget(4 * STEP_MS)
+    await page.locator('[data-terminal-bar]').click()
+    await expect(slot).toHaveAttribute('data-terminal-slot', 'open')
+    await expect(chip.locator('[data-sizer-name]'), 'the coworker still sizes the session').toHaveText('Jane')
+    await page.keyboard.press('Alt+/')
+    await expect(palette).toBeVisible()
+    await fitRow.click({ timeout: STEP_MS })
+    await expect.poll(() => takes.count, { message: 'the take is sent' }).toBeGreaterThan(0)
+    expect(takes.count, 'no take sent while collapsed').toBe(1)
+    await expect.poll(async () => (await size()).cols, { timeout: STEP_MS, message: "the owner's window takes the size back" }).toBeGreaterThan(small.cols)
+    await expect(chip).toHaveCount(0)
+  } finally {
+    for (const c of contexts) await c.close()
+    await api.stopSession(s.id)
+  }
+})
+
 // On a phone the terminal already folds under an open file by itself: the strip offers no collapse there.
 test('a phone offers no collapse button', async ({ page, api, state }) => {
   const cwd = join(state.root, 'editor-collapse-phone')
