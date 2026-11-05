@@ -51,6 +51,9 @@ const (
 	brakemanStopWait = 15 * time.Second
 	// maxBrakemanLine bounds the line typed into a turn's session.
 	maxBrakemanLine = 300
+	// maxStampVersion bounds the agent's version a request's stamp
+	// takes; a longer one is left out.
+	maxStampVersion = 128
 	// maxBrakemanRequestReply bounds GET /api/brakeman/requests/{id}: the
 	// request's document and its brief's.
 	maxBrakemanRequestReply = brakeman.MaxRequestDoc + brakeman.MaxBrief
@@ -709,17 +712,35 @@ func (d *brakemanDesk) unqueue(id string) {
 }
 
 // stamp is the agent a turn under cfg runs: its id, adapter, the version
-// the probe cache knows (nothing is run for it), the model and whether an
-// account is set.
+// the probe cache knows (nothing is run for it here, under admit: a cold
+// cache is probed by the turn's launch, probedVersion), the model and
+// whether an account is set.
 func (d *brakemanDesk) stamp(cfg brakeman.Config) brakeman.Stamp {
 	st := brakeman.Stamp{AgentID: cfg.AgentID, Model: cfg.Model, Account: cfg.Account != ""}
 	if a, ok := d.s.Catalog().Get(cfg.AgentID); ok {
 		st.Adapter = a.Adapter
-		if id, ok := d.s.cachedIdentity(a); ok && id.Identified && len(id.Version) <= 128 {
+		if id, ok := d.s.cachedIdentity(a); ok && id.Identified && len(id.Version) <= maxStampVersion {
 			st.Version = id.Version
 		}
 	}
 	return st
+}
+
+// probedVersion is the version agentID's identity probe reports: the
+// cache's, else the probe's run now, waited on at most probeWait (its
+// answer is kept for the next turn either way); "" when its adapter has
+// no probe, the agent turns it off, or it identifies nothing in time.
+func (d *brakemanDesk) probedVersion(ctx context.Context, agentID string) string {
+	cat := d.s.Catalog()
+	a, ok := cat.Get(agentID)
+	if !ok {
+		return ""
+	}
+	id := d.s.identityFor(ctx, cat, []crew.Member{{AgentID: agentID}})(a)
+	if id == nil || !id.Identified || len(id.Version) > maxStampVersion {
+		return ""
+	}
+	return id.Version
 }
 
 // launch launches the turn's run and writes what its return says: running
@@ -730,6 +751,14 @@ func (d *brakemanDesk) stamp(cfg brakeman.Config) brakeman.Stamp {
 // recorded as the request's stray run and stopped. A launch that fails
 // closes the request failed with the engine's words.
 func (d *brakemanDesk) launch(ctx context.Context, t *deskTurn, req brakeman.Request, cfg brakeman.Config) {
+	// The stamp's version is the probe cache's, which is cold after a
+	// restart until some page lists the agents: the probe is run here
+	// then, as a launch's own check runs it, and its version written
+	// with the launch's return.
+	version := ""
+	if req.Agent.Version == "" {
+		version = d.probedVersion(ctx, req.Agent.AgentID)
+	}
 	c, sha, err := d.turnCrew(req, cfg)
 	var run *crew.Run
 	if err == nil {
@@ -752,6 +781,9 @@ func (d *brakemanDesk) launch(ctx context.Context, t *deskTurn, req brakeman.Req
 	stray := false
 	_, uerr := d.update(req.ID, func(r *brakeman.Request) error {
 		fill := func() {
+			if r.Agent.Version == "" && r.Agent.AgentID == req.Agent.AgentID {
+				r.Agent.Version = version
+			}
 			if r.RunID == "" {
 				r.RunID = runID
 			}

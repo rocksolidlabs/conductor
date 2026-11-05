@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
@@ -358,6 +359,82 @@ func TestTheTurnCarriesItsRequestAndAccount(t *testing.T) {
 	}
 	if r := b.request(t, id); r["agent"].(map[string]any)["account"] != true || r["agent"].(map[string]any)["agentId"] != "bk" {
 		t.Fatalf("the stamp %v", r["agent"])
+	}
+}
+
+// The stamp names the agent's version though the probe cache is cold,
+// as it is after a restart until a page lists the agents (the live
+// check's first two briefs carried none): the turn's launch runs the
+// probe and writes the version it reports with the launch's return.
+func TestTheStampProbesTheVersionWhenTheCacheIsCold(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	var probed atomic.Int64
+	b.srv.probes.mu.Lock()
+	b.srv.probes.entries = map[string]probeEntry{}
+	b.srv.probes.run = func(context.Context, []string, agents.Probe, map[string]string) agents.ProbeResult {
+		probed.Add(1)
+		return agents.ProbeResult{Ran: true, Identified: true, Version: "2.1.318"}
+	}
+	b.srv.probes.mu.Unlock()
+	b.enable(t, "bk", nil)
+	bk, _ := b.srv.Catalog().Get("bk")
+	if _, ok := b.srv.cachedIdentity(bk); ok {
+		t.Fatal("the cache is not cold")
+	}
+	id := b.briefing(t)
+	r := b.waitState(t, id, brakeman.StateRunning)
+	if r.Agent.Version != "2.1.318" || r.Agent.AgentID != "bk" || r.Agent.Adapter != "claude" || probed.Load() == 0 {
+		t.Fatalf("the stamp %+v after %d probes", r.Agent, probed.Load())
+	}
+	if got := b.request(t, id)["agent"].(map[string]any)["version"]; got != "2.1.318" {
+		t.Fatalf("the route's stamp says %v", got)
+	}
+	// The next turn's stamp reads it from the cache the probe filled.
+	if id, ok := b.srv.cachedIdentity(bk); !ok || id.Version != "2.1.318" || b.desk.stamp(b.desk.mustConfig(t)).Version != "2.1.318" {
+		t.Fatalf("the cache after the turn's probe: %+v %v", id, ok)
+	}
+}
+
+// mustConfig is the desk's configuration as its store holds it.
+func (d *brakemanDesk) mustConfig(t *testing.T) brakeman.Config {
+	t.Helper()
+	c, err := d.st.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// A brief with no items is refused, and a briefing with no fact (the
+// live check's restarted turn kept one of its summary alone, citing
+// nothing): 400 invalid_brief at items with the words why, nothing kept;
+// the turn's brief with a fact is then kept.
+func TestABriefingWithoutAFactIsRefused(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bk", nil)
+	id := b.briefing(t)
+	sid, tok, _ := b.turnSession(t, id)
+	run := b.runOf(t, sid)
+	empty := map[string]any{"schema": brakeman.BriefSchema, "title": "Quiet", "summary": "Nothing changed.", "items": []any{}}
+	panel := map[string]any{"schema": brakeman.BriefSchema, "title": "Quiet", "summary": "Nothing changed.",
+		"items": []any{map[string]any{"kind": brakeman.ItemEvidence, "title": "The run", "refs": []any{"run:" + run}}}}
+	for _, c := range []struct {
+		brief any
+		says  string
+	}{{empty, "at least one item"}, {panel, "a briefing holds at least one fact/1 item"}} {
+		status, out := b.submit(t, sid, tok, fmt.Sprintf("brief-%d", bkOps.Add(1)), c.brief)
+		e, _ := out["error"].(map[string]any)
+		if status != http.StatusBadRequest || e["code"] != "invalid_brief" || e["field"] != "items" || !strings.Contains(e["message"].(string), c.says) {
+			t.Fatalf("%v: %d %v", c.brief, status, out)
+		}
+	}
+	if r, err := b.desk.st.Get(id); err != nil || r.HasBrief || r.State != brakeman.StateRunning {
+		t.Fatalf("after the refusals: %+v %v", r, err)
+	}
+	if status, out := b.submit(t, sid, tok, "brief-fact", factBrief("session:"+sid, "run:"+run)); status != http.StatusCreated {
+		t.Fatalf("the brief with a fact: %d %v", status, out)
 	}
 }
 
