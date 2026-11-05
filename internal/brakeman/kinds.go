@@ -18,7 +18,7 @@ import (
 
 // The types of a field.
 const (
-	FieldText    = "text"    // a string; Max bytes, or characters when Chars
+	FieldText    = "text"    // a string; Max bytes, or characters when Chars; matching Pattern when set
 	FieldName    = "name"    // a string matching Pattern, at most Max characters; or one of Enum
 	FieldInteger = "integer" // a whole number from Min to Max
 	FieldObject  = "object"  // a JSON object, at most Max bytes
@@ -42,8 +42,8 @@ type Field struct {
 	Min   int  `json:"min,omitempty"`
 	Max   int  `json:"max,omitempty"`
 	Chars bool `json:"chars,omitempty"`
-	// Pattern is what a name matches, and Enum, when set, the names it
-	// takes, one of them.
+	// Pattern is what a name matches (and a text, when set), and Enum,
+	// when set, the names it takes, one of them.
 	Pattern string   `json:"pattern,omitempty"`
 	Enum    []string `json:"enum,omitempty"`
 	// Refs are the kinds a ref takes, none for any.
@@ -138,6 +138,13 @@ func fIndexes(name string, min, max int, about string) Field {
 func fTexts(name string, max, each int, about string) Field {
 	return Field{Name: name, Type: FieldList, Max: max, Of: &Field{Type: FieldText, Max: each, Required: true}, About: about}
 }
+
+// draftPlanBasePattern is DraftPlanBase's rule as a JSON Schema pattern
+// (ECMA-262): its first rune no '-', and none of them a rune
+// unicode.IsSpace or unicode.IsControl takes, which are these ranges
+// (TestTheBasePatternIsDispatchs). Its bound is in bytes, which a pattern
+// does not count.
+const draftPlanBasePattern = `^(?:[^\x00-\x20\x7f-\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000-][^\x00-\x20\x7f-\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*)?$`
 
 // revisionPattern is what revision takes.
 const revisionPattern = `^[A-Za-z0-9._:-]*$`
@@ -242,7 +249,7 @@ var kinds = []KindSpec{
 		Fields: []Field{
 			{Name: "ticket", Type: FieldRef, Required: true, Refs: []string{RefTicket}, About: "the ticket it is for"},
 			{Name: "crew", Type: FieldName, Required: true, Pattern: crewIDPattern.String(), Max: 64, About: "a saved crew's id, one with tasks"},
-			{Name: "base", Type: FieldName, Pattern: `^[^\s\x00-\x1f\x7f-][^\s\x00-\x1f\x7f]*$`, Max: MaxDraftPlanBase, About: "a branch, a tag, HEAD or a commit of the crew's repository; HEAD when left out"},
+			{Name: "base", Type: FieldText, Pattern: draftPlanBasePattern, Max: MaxDraftPlanBase, About: "a branch, a tag, HEAD or a commit of the crew's repository; HEAD when left out"},
 			{Name: "basedOn", Type: FieldRef, Refs: []string{RefPlan}, About: "the ticket's revision it revises"},
 			{Name: "references", Type: FieldList, Max: MaxDraftPlanReferences, Of: &Field{Type: FieldEntry, Required: true, Fields: []Field{
 				fText("path", MaxDraftReferencePath, true, "a path relative to the crew's working directory, no control character"),
@@ -333,8 +340,9 @@ func ExampleBrief() json.RawMessage {
 // BriefJSONSchema is a brief's JSON Schema, made from the table: every kind with
 // its fields, their bounds and an example, the ref forms, and an example
 // brief. crew is the schema of the body POST /api/crews takes (the API's;
-// internal/brakeman knows no crew), given as a draft crew's crew; nil
-// leaves it an object.
+// internal/brakeman knows no crew), given as a draft crew's crew and no
+// other field's (a draft plan's crew is a saved crew's id); nil leaves it
+// an object.
 func BriefJSONSchema(crew map[string]any) map[string]any {
 	branches := make([]any, len(kinds))
 	for i, k := range kinds {
@@ -342,7 +350,7 @@ func BriefJSONSchema(crew map[string]any) map[string]any {
 		required := []string{"kind"}
 		for _, f := range k.Fields {
 			s := fieldSchema(f)
-			if f.Name == "crew" && crew != nil {
+			if k.Kind == ItemDraftCrew && f.Name == "crew" && crew != nil {
 				s = crewSchema(crew, s)
 			}
 			props[f.Name] = s
@@ -395,6 +403,9 @@ func fieldSchema(f Field) map[string]any {
 		s["type"] = "string"
 		if f.Chars {
 			s["maxLength"] = f.Max
+		}
+		if f.Pattern != "" {
+			s["pattern"] = f.Pattern
 		}
 		if f.Required {
 			s["minLength"] = 1
@@ -517,6 +528,9 @@ func typeWords(f Field) string {
 		unit := "bytes"
 		if f.Chars {
 			unit = "characters"
+		}
+		if f.Pattern != "" {
+			return fmt.Sprintf("text matching %s, at most %d %s", f.Pattern, f.Max, unit)
 		}
 		return fmt.Sprintf("text, at most %d %s", f.Max, unit)
 	case FieldName:

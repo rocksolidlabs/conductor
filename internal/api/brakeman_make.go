@@ -69,9 +69,10 @@ func edgeOp(request string, from, to int) string {
 }
 
 // makeSeam, when a test sets it, runs at each stage of a make ("input"
-// after its input is written, "claimed" after its claim, "committed"
-// after the backend's operation, "edge" before an edge's relation); an
-// error it answers stops the make there, as a server that died would.
+// after its input is written, "claimed" after its claim, "waiting" when
+// its completion waits for another of the item's, "committed" after the
+// backend's operation, "edge" before an edge's relation); an error it
+// answers stops the make there, as a server that died would.
 var makeSeam atomic.Pointer[func(stage, request string, item int) error]
 
 func atMakeSeam(stage, request string, item int) error {
@@ -124,6 +125,24 @@ func (d *brakemanDesk) makeLock(id string) *sync.Mutex {
 		d.makes[id] = m
 	}
 	return m
+}
+
+// completionLock is the desk's lock for one item's completion
+// (completeMake): a channel of one slot, taken by a send and given back
+// by a receive, so a wait for it ends with its context.
+func (d *brakemanDesk) completionLock(id string, item int) chan struct{} {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.completing == nil {
+		d.completing = map[string]chan struct{}{}
+	}
+	key := id + "/" + strconv.Itoa(item)
+	c, ok := d.completing[key]
+	if !ok {
+		c = make(chan struct{}, 1)
+		d.completing[key] = c
+	}
+	return c
 }
 
 // handleBrakemanMake makes a brief's draft work: {opId, by?, edit?} → 201
@@ -549,7 +568,35 @@ func checkTicketDraft(x brakeman.DraftTicket) error {
 // crew's by its origin, its tombstone, or a save under it. Then each edge
 // whose two ends are tickets is recorded. An error leaves the claim
 // pending, for the next ask or recoverMakes.
+//
+// One completion of an item runs at a time (completionLock), and one
+// that waited for another reads the item's entry again and answers it
+// when that one settled it: the same make asked again while it runs
+// would otherwise run the backend beside it, and a refusal one of them
+// read (a draft plan's crew deleted after the other had read it) could
+// settle the claim refused while the other's proposal commits.
 func (s *Server) completeMake(ctx context.Context, d *brakemanDesk, id string, m brakeman.Made) (brakeman.Made, error) {
+	lock := d.completionLock(id, m.Item)
+	select {
+	case lock <- struct{}{}:
+	default:
+		if err := atMakeSeam("waiting", id, m.Item); err != nil {
+			return m, err
+		}
+		select {
+		case lock <- struct{}{}:
+		case <-ctx.Done():
+			return m, ctx.Err()
+		}
+	}
+	defer func() { <-lock }()
+	cur, err := d.st.Get(id)
+	if err != nil {
+		return m, err
+	}
+	if i := slices.IndexFunc(cur.Made, func(x brakeman.Made) bool { return x.Item == m.Item && x.OpID == m.OpID }); i >= 0 && cur.Made[i].State != brakeman.MadePending {
+		return cur.Made[i], nil
+	}
 	raw, err := d.st.MakeInput(id, m.Item)
 	if err != nil {
 		return m, fmt.Errorf("the make's input: %w", err)
