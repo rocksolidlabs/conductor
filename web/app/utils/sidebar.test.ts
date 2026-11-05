@@ -12,6 +12,7 @@ import {
   SIDEBAR_WIDTH,
   blockSubtitle,
   focusRows,
+  mayRefocusRow,
   moveFocus,
   needsDotShown,
   railModel,
@@ -370,6 +371,31 @@ describe('focusRows and moveFocus', () => {
     expect(moveFocus(rows, 'j:j1', 1)).toBe('j:j1')
     expect(moveFocus(rows, 'gone', 1)).toBe('s:a')
     expect(moveFocus([], 's:a', 1)).toBeNull()
+  })
+})
+
+describe('mayRefocusRow (#596)', () => {
+  // Stand-ins for the elements (the suite runs without a DOM): only their identity and the list's contains are read.
+  const body = { name: 'body' } as unknown as Node
+  const row = { name: 'a row' } as unknown as Node
+  const dialog = { name: 'a dialog' } as unknown as Node
+  const list = { contains: (n: Node | null) => n === row }
+
+  it('gives a re-rendered row the focus back only when the focus was lost or is in the list', () => {
+    expect(mayRefocusRow(null, body, list, false)).toBe(true)
+    expect(mayRefocusRow(body, body, list, false)).toBe(true)
+    expect(mayRefocusRow(row, body, list, false)).toBe(true)
+  })
+
+  it('never takes it from anything else that holds it: a dialog opened from the row keeps it', () => {
+    expect(mayRefocusRow(dialog, body, list, false)).toBe(false)
+    expect(mayRefocusRow(dialog, body, null, false)).toBe(false)
+  })
+
+  it('never takes it behind an open modal, even with the focus on nothing (a focused button gone disabled as it saves)', () => {
+    expect(mayRefocusRow(body, body, list, true)).toBe(false)
+    expect(mayRefocusRow(null, body, list, true)).toBe(false)
+    expect(mayRefocusRow(row, body, list, true)).toBe(false)
   })
 })
 
