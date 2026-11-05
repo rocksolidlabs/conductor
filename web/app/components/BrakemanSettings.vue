@@ -237,7 +237,7 @@ async function save() {
         <legend class="mb-1 text-sm font-medium">In the background</legend>
         <USwitch
           :model-value="form.wake.mode === 'background'"
-          label="Wake Brakeman on events"
+          label="Wake on events"
           description="A task that failed, a question left waiting, a run that ended or paused, a ticket made ready, and the briefing times below. Its turns ask no one anything that pages: their questions wait in Needs you."
           data-brakeman-background
           @update:model-value="setBackground"

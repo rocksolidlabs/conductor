@@ -128,7 +128,7 @@ test('Settings turns the background role on with its window, cooldown, briefing 
   await open(page, '/settings')
   const card = page.locator('[data-brakeman-settings]')
   await expect(card.locator('[data-brakeman-role-settings]')).toBeVisible()
-  await card.getByRole('switch', { name: 'Wake Brakeman on events' }).click()
+  await card.getByRole('switch', { name: 'Wake on events' }).click()
   await card.locator('[data-brakeman-window] input, input[data-brakeman-window]').first().fill('10')
   await card.locator('[data-brakeman-cooldown] input, input[data-brakeman-cooldown]').first().fill('30')
   await card.locator('[data-brakeman-briefings] input, input[data-brakeman-briefings]').first().fill('07:00, 18:30')

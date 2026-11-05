@@ -81,7 +81,7 @@ async function clear() {
     </template>
     <div class="flex flex-col gap-4 text-sm">
       <p v-if="!props.background" class="text-muted" data-role-off>
-        Brakeman runs only when asked. Turn on "Wake Brakeman on events" in <NuxtLink to="/settings" class="underline">Settings</NuxtLink> to let a failed task, a waiting question or a briefing time wake it.
+        Brakeman runs only when asked. Turn on "Wake on events" in <NuxtLink to="/settings" class="underline">Settings</NuxtLink> to let a failed task, a waiting question or a briefing time wake it.
       </p>
       <UAlert v-if="problem" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="problem" />
       <div v-if="role" class="flex flex-wrap items-center gap-3" :data-role-state="role.state">
