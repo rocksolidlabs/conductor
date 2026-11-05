@@ -214,15 +214,15 @@ describe('handoffs and drafts', () => {
       { kind: 'draft_ticket/1', project: 'BK', title: 'Add a CHANGELOG.md entry for RETRY.txt and the lint check', blocks: [2] },
       { kind: 'draft_ticket/1', project: 'BK', title: 'Add a CHANGELOG.md entry for RETRY.txt and the lint check' },
     ]
-    const asMade: Record<number, string> = { 2: 'Add a CHANGELOG.md entry for RETRY.txt and the newline lint check' }
+    const asMade: Record<string, string> = { 'BK-3': 'Add a CHANGELOG.md entry for RETRY.txt and the newline lint check' }
     const made = [
       { item: 1, state: 'made', key: 'BK-2' },
       { item: 2, state: 'made', key: 'BK-3' },
     ]
     const edges = [{ from: 1, to: 2, state: 'made' }]
-    const name = (m: typeof made | undefined, titles: Record<number, string>) => (i: number) => draftName(i, items, m, (j) => titles[j])
+    const name = (m: typeof made | undefined, titles: Record<string, string>) => (i: number) => draftName(i, items, m, (key) => titles[key])
     expect(blocksWords(1, [2], edges, name(made, asMade))).toBe('Blocks BK-3 "Add a CHANGELOG.md entry for RETRY.txt and the newline lint check" (related).')
-    // A page read again knows the ticket, not the title it was made with: the key alone, never the brief's title.
+    // Until the ticket's title is read from Dispatch: the key alone, never the brief's title.
     expect(blocksWords(1, [2], edges, name(made, {}))).toBe('Blocks BK-3 (related).')
     // Not made yet: the brief's title, as drafted; a refused make is no ticket.
     expect(blocksWords(1, [2], undefined, name(undefined, asMade))).toBe('Blocks "Add a CHANGELOG.md entry for RETRY.txt and the lint check".')

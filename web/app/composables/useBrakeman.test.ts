@@ -560,15 +560,34 @@ describe('the makes kept, across a new token', () => {
     expect(out.crew?.id).toBe('new-crew')
   })
 
-  it('made, keep the title they were made with for the other cards, the request\'s own, and nothing of one that failed', async () => {
+  it('made, name their ticket by its title as Dispatch holds it: read once a token, again after a failed read, never from a make\'s edit', async () => {
     const bk = useBrakeman()
-    answers.push(() => Promise.resolve({ request: { ...first, made: [{ item: 1, opId: 'x', state: 'made', key: 'BKC-1' }] }, made: {}, ticket: { key: 'BKC-1', url: '/dispatch/BKC-1' } }))
-    await bk.make(first, 1, { edit: { title: 'As the person edited it' } })
-    expect(bk.madeTitle(first, 1)).toBe('As the person edited it')
-    expect(bk.madeTitle(other, 1)).toBeUndefined()
-    answers.push(failed)
-    await expect(bk.make(first, 2, { edit: { title: 'Never made' } })).rejects.toThrow('the backend failed')
-    expect(bk.madeTitle(first, 2)).toBeUndefined()
+    // A make that answers 200 with the item refused is no ticket: nothing of its edit is kept as a title.
+    answers.push(() => Promise.resolve({ request: { ...first, made: [{ item: 1, opId: 'x', state: 'refused', why: 'no project' }] }, made: { state: 'refused' } }))
+    await bk.make(first, 1, { edit: { title: 'Never made' } })
+    expect(bk.ticketTitle('BKC-1')).toBeUndefined()
+    // The ticket's title is Dispatch's, read once however many cards ask.
+    let answer: (v: unknown) => void = () => {}
+    answers.push(() => new Promise((done) => (answer = done)))
+    bk.readTicketTitle('BKC-1')
+    bk.readTicketTitle('BKC-1')
+    expect(sent.filter((s) => s.path === '/api/dispatch/tickets/BKC-1')).toHaveLength(1)
+    expect(bk.ticketTitle('BKC-1')).toBeUndefined()
+    answer({ ticket: { key: 'BKC-1', title: 'Made in another tab' } })
+    await settle()
+    expect(bk.ticketTitle('BKC-1')).toBe('Made in another tab')
+    // A read that fails leaves nothing, and the next ask reads again.
+    answers.push(() => Promise.reject(new ApiError(0, 'network', 'Cannot reach the server')))
+    bk.readTicketTitle('BKC-2')
+    await settle()
+    expect(bk.ticketTitle('BKC-2')).toBeUndefined()
+    answers.push(() => Promise.resolve({ ticket: { key: 'BKC-2', title: 'Read again' } }))
+    bk.readTicketTitle('BKC-2')
+    await settle()
+    expect(bk.ticketTitle('BKC-2')).toBe('Read again')
+    // A new token's server has its own BKC-1.
+    bk.reset()
+    expect(bk.ticketTitle('BKC-1')).toBeUndefined()
   })
 
   it('whose reply was lost, are not asked again after a reset: the retry would go with the new token', async () => {

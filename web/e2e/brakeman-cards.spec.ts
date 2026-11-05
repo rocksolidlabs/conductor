@@ -269,6 +269,8 @@ test("a ticket's proposal shows every field it sends, and asks with them before 
 })
 
 test('two draft tickets, one blocking the other, are made as edited with their relation, and once', async ({ page }) => {
+  // Its waits' caps add up to 210 s (four of 30 s, six of the config's 15 s), past the config's 120 s.
+  test.setTimeout(300_000)
   await open(page, '/brakeman?request=br-1')
   const b = page.locator('[data-brief="br-1"]')
   const a = b.locator('[data-draft-ticket][data-draft-item="6"]')
@@ -303,8 +305,8 @@ test('two draft tickets, one blocking the other, are made as edited with their r
   await page.reload()
   await expect(b.locator('[data-draft-item="6"] [data-made-link]')).toHaveText(keyA, { timeout: 30_000 })
   await expect(b.locator('[data-draft-item="6"] [data-draft-create]')).toHaveCount(0)
-  // Read again, the page knows the ticket and not the title it was made with: the key alone, still never the brief's title.
-  await expect(b.locator('[data-draft-item="6"] [data-draft-blocks]')).toHaveText(`Blocks ${keyB} (related).`)
+  // Read again, the page names the ticket by its title as Dispatch holds it, read by its key: still the person's, never the brief's.
+  await expect(b.locator('[data-draft-item="6"] [data-draft-blocks]')).toHaveText(`Blocks ${keyB} "Document the build, edited" (related).`, { timeout: 30_000 })
 })
 
 test('a make that did not finish is finished from the card as it was sent, after the page is read again', async ({ page }) => {

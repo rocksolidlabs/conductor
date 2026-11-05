@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { BrakemanRequest, BriefItem, RefResolution } from '~/utils/brakeman'
 import { displayBy, refRoute } from '~/utils/brakeman'
-import { blocksWords, draftName, makeAgain, madeWords } from '~/utils/brakemanCards'
+import { blocksWords, draftName, madeKey, makeAgain, madeWords } from '~/utils/brakemanCards'
 import { ApiError } from '~/composables/useApi'
 
 /**
@@ -60,8 +60,14 @@ const finishing = computed(() => again.value.kind === 'finish')
 const sending = ref(false)
 const error = ref('')
 
-/** Another draft by its index in the brief, as the blocks name it: once made, the ticket it became, with the title it was made with. */
-const draftTitle = (i: number) => draftName(i, props.items, req.value.made, (j) => bk.madeTitle(props.request, j))
+/** Another draft by its index in the brief, as the blocks name it: once made, the ticket it became, with that ticket's title. */
+const draftTitle = (i: number) => draftName(i, props.items, req.value.made, (key) => bk.ticketTitle(key))
+/** The tickets the drafts this one blocks became: each one's title read from Dispatch, once, for the Blocks line. */
+watch(
+  () => (props.item.blocks ?? []).map((i) => madeKey(i, req.value.made)).filter((k): k is string => !!k),
+  (keys) => keys.forEach((k) => bk.readTicketTitle(k)),
+  { immediate: true },
+)
 const blocks = computed(() => blocksWords(props.index, props.item.blocks, req.value.edges, draftTitle))
 
 async function create() {
