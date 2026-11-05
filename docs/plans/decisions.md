@@ -487,7 +487,7 @@ registered router); at most 32 of the operator's operations together
 decision too; past them the operation is answered `decision_limit` with
 no row); at most 32 `responded`, one per response row (a router's
 refused answer is one of them); one `applied`; one `superseded` or
-`cancelled` (an applied approval's supersession, S1, included); at most
+`cancelled` (an applied approval's supersession, S1 or S4, included); at most
 one `refunded` (a decision holds its task, so no second attempt
 of it can wait on it, and a refund is never repeated, I3); at most three
 `delivery.*` (the typing, its end, and the task file). That is at most
@@ -497,7 +497,7 @@ not written (counted in the next written row's detail as `dropped`).
 
 Bounds of the store, checked in the transaction that would pass them
 (`decision_limit`): at most 4 decisions open per attempt, 64 open per
-run, 1,000 per run in all; at most 32 response rows per decision, of
+run, 1,000 per run in all, a replacement's place among them (below); at most 32 response rows per decision, of
 which at most 31 refused: the accepted one always has its place (a
 decision accepts one response in its life, `open` → `answered` once),
 so no run of refusals (stale revs, a router's answers) can leave a
@@ -525,6 +525,30 @@ receipt at most 4 KiB; a response whose receipt would pass its bound is
 refused `invalid` with no row, so every part of a record keeps its
 bound and the record its sum (the routes, `GET /api/decisions/{did}`).
 
+**A replacement always has its place.** The one decision this
+repository opens without a request or a gate's `regate` is the fresh
+decision that takes the place of one whose identity answer could not be
+rechecked (Applying, in `internal/crew`, below: a grant revoked or
+unconfirmed, or a response found after a restart). A policy recheck
+cannot fail here: `local/1` is the only policy and never stops being in
+force. So an identity's accepted response, from its acceptance until
+its application or its replacement, holds one place in the run that
+holds its decision (`current_run`; the place moves with the decision),
+counted in each bound's transaction from the rows (an `answered`
+decision whose accepted response's `authority.via` is `identity`). An
+opening (a request, a gate's `regate`) is refused `decision_limit` when
+the run's decisions in all and those places would pass 1,000; an
+identity's response is refused `decision_limit` (`429`, no row, judged
+again on a retry, as every bound's refusal is) when its own place would
+pass it: "dr-7's run has no room for the decision this answer would
+need if its recheck failed: answer with the workbench token". A
+workbench response needs no place, since its authority holds, and is
+never refused for one, so the operator can answer every decision at any
+count, and a replacement, opened only for a response that held a place,
+never passes the bound. For the bounds on open decisions (4 per
+attempt, 64 per run) such an `answered` decision counts as open, so its
+replacement, which is open where it was answered, passes neither.
+
 **Writers and readers** (`decisions.go`, new): `Tx.OpenDecision(row)`
 (answers the new `n`, or the existing row for a repeated `request_id`),
 `Tx.PutDecision(row)` (state, rev, why, applied, current_run),
@@ -547,7 +571,19 @@ row with its responses and history), `Ledger.Decisions(ctx, Filter)`
 (by state, current run, ticket, task; newest first; pages of at most 100
 by `n`), `Ledger.Holds(ctx, run)`. `Prune` refuses a run that holds or
 opened a decision that is not final (`ErrNotPrunable`: "decision dr-7
-is open"); a final one goes with its run. `Recover` changes no decision:
+is open"). A final decision the run opened goes with it (`run_id`'s
+cascade). A final decision the run holds and an ancestor opened (one a
+continuation moved to it: its `current_run` the run, its `run_id`
+another) is handed back in the prune's transaction, before the run's
+rows go: its `current_run` becomes the run the pruned one continued
+(`continued_from`, which `Prune` keeps while any run cites it, so it is
+there). So no decision names a run the ledger no longer has, and an
+operator's later operation on it (a comment, a re-route) is a
+transition of a run that exists. Its hold rows under the pruned run, all
+released (I10), go with that run's tasks; the ancestor's released rows
+stay, so the decision stays tied to the tasks it held there. A chain
+pruned from its newest run back hands such a decision back one run at a
+time, and the run that opened it takes it with it last. `Recover` changes no decision:
 open stays open, answered stays answered. `Snapshot` and `SnapshotFile`
 copy the new tables with the rest (`VACUUM INTO`), so an export carries
 them unchanged.
@@ -790,7 +826,9 @@ responder's authority, below); then:
   put up is read on the attempt's `askMu`, after any ask under way
   (Opening, above), so a mirror asked late never outlives the answer;
   `delivery.entered` once the Enter is written, `delivery.untyped` when
-  the line never went in (the next attempt's task file then carries it);
+  the line never went in (the next attempt's task file then carries it,
+  an approval of a commit or a file rechecked first against that
+  attempt's start: S4, below);
 - origin agent, its attempt gone: `how: task_file`; the hold released, so
   the task's next attempt is dispatched with the answer in its task file
   (`delivery.task_file` when that attempt's files are written);
@@ -842,6 +880,8 @@ admitted, or no answer in time (a provider that fails, is late or is
 busy has not said yes, and a gate is never released on what nobody
 said): the decision is superseded by a fresh one, the same request and
 holds ("user:nate's answer could not be rechecked; dr-9 asks again"),
+which always has its place among the run's bounds (A replacement always
+has its place, in the ledger, above),
 and the operator answers again, with the workbench token if the
 provider is away. One found after a restart (the crash fell between the
 response and its application; its `boot` another process's) has no
@@ -873,8 +913,24 @@ with its words in `why` and a history row:
   candidate, and every applied approval of it: an applied approval keeps
   its response and application receipts and its history, and becomes
   `superseded` with the words of what moved (`applied` → `superseded`,
-  the one change of a final decision but a comment), so neither the card
-  nor a task file shows it as current any more.
+  which S4's recheck of an undelivered approval also makes: the one
+  change of a final decision but a comment), so neither the card nor a
+  task file shows it as current any more. Its line may still be queued
+  or being typed (`delivery.typing` written and neither
+  `delivery.entered` nor `delivery.untyped`): a decision's line is
+  submitted with a `Withdrawn` channel the engine keeps on its copy of
+  the decision (`session.Submission.Withdrawn`), and the transaction
+  that supersedes it closes that channel under the engine's lock before
+  it commits, so no Enter of an answer is written after its decision
+  stopped being current. A line not yet begun is not typed; a line
+  whose text is typed has its Enter left out and the session's turn
+  held for a person (`holdTyped`), as any withdrawn submission's is;
+  either way `delivery.untyped` is written with "dr-7 was superseded
+  before its answer went in", and the asking attempt is told of the
+  supersession in one line (Disposing of the holds). A transaction that
+  fails after closing it leaves an applied decision whose line did not
+  go in, `delivery.untyped`'s ordinary case, rechecked at the next
+  attempt's start (S4).
 - S2, an artifact subject: the blob of its path at the commit the
   answer's work rests on (the asking attempt's `HEAD` while that attempt
   is live; otherwise the start commit of the attempt that will read the
@@ -891,8 +947,23 @@ with its words in `why` and a history row:
   may go on working on other files); an approval's is rechecked at
   response and at application against the commit the answer's work
   rests on, read as S2 reads it, and another commit supersedes ("HEAD is
-  now 9f2c1ab, was 3c1f2d0"). After its application an approval of a
-  commit or of a file is not rechecked again: acting on it moves both.
+  now 9f2c1ab, was 3c1f2d0"). Once its line has gone into the asking
+  attempt's session (`delivery.entered`) an approval of a commit or of a
+  file is not rechecked again: acting on it moves both. One whose line
+  is not known to have gone in (`delivery.untyped`, or
+  `delivery.uncertain` after a restart) was acted on by nobody, and the
+  task's next attempt may start elsewhere than the `HEAD` it was
+  validated at (`startCommit` takes the checkpoint after an exit
+  without a result). So before that attempt's task file is written, the
+  transaction that dispatches it rechecks such an approval against the
+  attempt's start commit, read as S2 reads it (the blob read before the
+  transaction, the transaction checking that the start it was read for
+  is still the attempt's): the commit the approval names, or a blob of
+  the same digest, carries it in the task file as applied
+  (`delivery.task_file`); another start supersedes it, `applied` →
+  `superseded`, with its words ("dr-7 approved 3c1f2d0; this attempt
+  starts at 9f2c1ab, its checkpoint: ask again if you still need it"),
+  and the task file says so, never that it was approved.
 - A plan subject never moves inside a run: a run is bound to its plan
   revision and a ticket's later edits never change it (DS2's rule), and a
   continuation carries the same package.
@@ -1260,8 +1331,17 @@ policy's refusal of a principal that got past it without the authority
   (Markdown, as Dispatch renders a description), the alternatives with
   their tradeoffs and the recommended one marked, the uncertainty, what a
   yes authorizes, the evidence refs as chips (`BrakemanRefChip.vue`,
-  reused, each handed its resolution from the record's `refs`: the chip
-  resolves nothing itself), the subject (a commit or a candidate with
+  each handed its resolution from the record's `refs`: the chip resolves
+  nothing itself). The chip compares what a brief kept with the page's
+  live state, which knows no ticket and never reads `seen`, so it gains
+  a `baseline` mode, the card's: "changed since" from the resolution
+  alone, its `seen` (the opening's baseline) against its `now` (state,
+  revision or digest; `changedFromBaseline`, new in `utils/brakeman.ts`),
+  for every kind, tickets and files included; a baseline that was
+  `unavailable` at the opening shows "not read when asked" instead of
+  either; a `now` of `deleted` shows deleted as today; the title says
+  what it was when asked and what it is now. A brief's chips keep their
+  mode. Then the subject (a commit or a candidate with
   its short id linking to the task, a file with its digest, a plan
   revision as `r3`), who may answer ("the operator", from the policy),
   the history, and the four states. `components/DecisionRespond.vue`:
@@ -1306,7 +1386,8 @@ policy's refusal of a principal that got past it without the authority
   `stub-decision.txt`, ends its turn, and on the typed line "Decision
   dr-N … answered" writes the answer into `stub-answer.txt` and goes on
   to commit and submit; `STUB_DECISION_EXIT=1` makes it exit after asking,
-  so its attempt ends while it waits.
+  so its attempt ends while it waits; `STUB_DECISION_EVIDENCE` (refs,
+  space-separated) is the request's `evidence`.
 
 ### Docs
 
@@ -1640,8 +1721,10 @@ asking agent, while open). `open` → `expired` is a provider's only; no
 code of this repository sets it. `applied`, `superseded`, `cancelled` and
 `expired` are final: nothing changes a final decision but a `commented`
 history row and one transition, `applied` → `superseded`, of an applied
-approval whose candidate a new result replaced (S1), which keeps its
-response and application receipts. Every change bumps `rev`, writes one history row and one
+approval whose candidate a new result replaced (S1) or whose undelivered
+line's subject is not where the task's next attempt starts (S4), which
+keeps its response and application receipts and withdraws its line if
+it has not gone in. Every change bumps `rev`, writes one history row and one
 run event (`decision.opened`, `decision.answered`, `decision.applied`,
 `decision.superseded`, `decision.cancelled`, `attempt.waited`) in the
 same transaction as the task and hold rows it changes.
@@ -1716,9 +1799,11 @@ same transaction as the task and hold rows it changes.
   attempt that succeeded or failed its checks is given back.
 - I4, an answer reaches only the work it is for: it is typed only into
   the session of the attempt that asked, while that attempt is live and a
-  member of the same task in the same run chain; otherwise it reaches that
-  task's next attempt through its task file; never another task's
-  attempt, never a member resumed.
+  member of the same task in the same run chain, and its Enter only while
+  its decision is current (a supersession withdraws its line); otherwise
+  it reaches that task's next attempt through its task file, an
+  undelivered approval only once rechecked against that attempt's start;
+  never another task's attempt, never a member resumed.
 - I5, silence is never approval: no timer, no default option and no
   router answer under `local/1` moves a decision out of `open`; a gate's
   tasks start only after an accepted response's application.
@@ -1730,7 +1815,8 @@ same transaction as the task and hold rows it changes.
   names, under the policy revision it was opened with, against the rev
   the person saw.
 - I8, a decision that is not final is never deleted: `Prune` refuses its
-  run.
+  run. No decision names a pruned run: `Prune` hands a final decision an
+  ancestor opened back to the run the pruned one continued.
 - I9, one question, one answer path: a mirrored session question is
   answered only through its decision; the session refuses every other
   answer to it.
@@ -1951,9 +2037,16 @@ and holds a step at a seam to order what must be ordered.
   `TestDecisionIDsAreNeverReused` (a pruned run's `n` not given again);
   `TestARepeatedRequestIDIsTheSameDecision`;
   `TestAResponseIDAnswersItsReceipt` (accepted and refused alike);
-  `TestAnOpenDecisionBlocksThePrune`; `TestDecisionBounds` (4 per
+  `TestAnOpenDecisionBlocksThePrune`;
+  `TestPruningAContinuationHandsItsDecisionsBack` (a decision opened in
+  A, moved to its continuation B and final there; `Prune(B)`: its
+  `current_run` is A, its responses and history kept, B's hold rows
+  gone and A's released rows kept, a comment through A commits, and
+  `Prune(A)` then takes it; a chain A, B, C pruned from C back);
+  `TestDecisionBounds` (4 per
   attempt, 64 open per run, 1,000 per run, 32 responses, 32 operator
-  operations, an 8 KiB receipt); `TestRefusalsNeverTakeTheAnswersPlace`
+  operations, an 8 KiB receipt; an answered decision with an identity
+  response counted as a place and as open); `TestRefusalsNeverTakeTheAnswersPlace`
   (31 stale responses kept, a 32nd answered `kept: false` with no row,
   then the operator's valid answer accepted, applied, and its gate's
   task released; and, in that order, past the 31: a response with
@@ -2056,6 +2149,20 @@ and holds a step at a seam to order what must be ordered.
   `TestAnAppliedApprovalIsSupersededByANewCandidate` (approve candidate
   A, its application done, candidate B submitted: `superseded`, the
   response and application receipts kept, the history holding both);
+  `TestASupersededApprovalIsNeverTyped` (approve candidate A, applied
+  `how: typed`, its line held by a seam of the fake session, which
+  honours `Withdrawn` as `session.Local` does, before its text;
+  candidate B submitted, then the seam let go: nothing typed,
+  `delivery.untyped` with its words, the agent told; the same with the
+  seam after the text and before its Enter: the Enter never written,
+  the turn held; and B submitted after `delivery.entered`: the line
+  entered, the decision superseded);
+  `TestAnUndeliveredApprovalIsRecheckedAtTheNextStart` (an approval of
+  `HEAD` C2, past the checkpoint C1, applied `how: typed`, the agent
+  exiting while a seam holds its line: the next attempt starts at C1,
+  the decision `superseded` with its words and the task file saying so,
+  never approved; the checkpoint at C2: carried as applied; an
+  artifact's blob other at C1: superseded);
   `TestAnArtifactThatChangedSupersedes` (S2, the file committed again
   with other bytes between the response and the application);
   `TestAnUnreadableArtifactIsNeverValidated` (the asking worktree gone
@@ -2072,7 +2179,14 @@ and holds a step at a seam to order what must be ordered.
   unchanged: an identity's response committed, the application held
   until `ConfirmAuthority` says not admitted: superseded by a fresh
   decision with its holds, nothing applied; and not confirmed at all
-  while the run goes on: nothing applied); `TestAReopenCancelsTheTasksDecisions`
+  while the run goes on: nothing applied);
+  `TestAReplacementAlwaysHasItsPlace` (a run of 998 decisions and an
+  open gate: an identity's response accepted, a new request then
+  refused `decision_limit`, `ConfirmAuthority` not admitted, the
+  replacement opened as the 1,000th, the workbench token's answer
+  applied and the gate's task released; with 999 and the gate: the
+  identity's response refused `decision_limit` with no row and the
+  workbench token's accepted); `TestAReopenCancelsTheTasksDecisions`
   (S3); `TestARejectedGateCancelsItsTasks`;
   `TestRejectingTheLastHeldTaskEndsTheRunOnce` (a gate holding the run's
   last unfinished task, which has no attempt, rejected: the decision
@@ -2161,7 +2275,9 @@ and holds a step at a seam to order what must be ordered.
   `TestDecisionRequestToolAnswersPending`.
 - `internal/agents`: the skill test gains the decisions paragraph.
 
-**vitest.** `utils/decisions.test.ts` (the words of every state; Ask for
+**vitest.** `utils/brakeman.test.ts` (`changedFromBaseline`: a state,
+a revision and a digest changed, each unchanged, an `unavailable`
+baseline, a deleted record), `utils/decisions.test.ts` (the words of every state; Ask for
 more disabled with its words for a gate and for an asker not live; the four
 states apart, each with its receipt; the id minted once and a lost reply
 retried once with it; a refusal's words), `utils/attention.test.ts` (a
@@ -2187,7 +2303,12 @@ and the binary):
   operator answers in the card; the card shows Recorded, then Applied with
   "typed into build's attempt 1"; `stub-answer.txt` holds the answer;
   `build` succeeds; pressing Approve again in a second tab shows "answered
-  by" the first. The palette's row opens the card.
+  by" the first. The palette's row opens the card. The stub's request
+  names a ticket and a run as evidence (`STUB_DECISION_EVIDENCE`); the
+  ticket is edited through Dispatch's route after the decision opened
+  (waited for on the record) and before the card's first read: in the
+  rendered card the ticket's chip shows "changed since" with its
+  revision at the request, and the run's chip shows none.
 - `decisions-gate.spec.ts`: a ticket's plan revision with a gate on
   `deploy` (DS2's propose and approve through the pages, as
   `dispatch-plan.spec.ts` does); the launch; `build` runs and succeeds;
@@ -2451,7 +2572,8 @@ names only PRs that share no package or directory with it.
 and migration of The changes (the `evidence` column and
 `decision_refunds` with the rest), `decisions.go`'s `Tx` writers
 (`Tx.Refund` among them) and the `Ledger` reads, the bounds, `Prune`'s refusal, `Recover` and the
-snapshot unchanged; no caller yet, so no behaviour changes. Tests: the
+snapshot unchanged, `Prune`'s hand-back of an ancestor's final
+decisions, the replacement's place counted in the bounds; no caller yet, so no behaviour changes. Tests: the
 ledger's list above. If RV1's ledger PR has merged, this one takes the
 next version and says so.
 
@@ -2475,7 +2597,9 @@ launch: the engine is driven by its tests, and nothing on `main`
 changes for a person. Tests: the `internal/crew` list's opening,
 holding, applying, mirror, handoff, result and gate tests, and the
 `internal/session` list, `TestTwoAnswersQueuedBeforeDeliveryAreBothTyped`
-and `TestARevokedIdentityIsNotApplied`.
+`TestARevokedIdentityIsNotApplied` and
+`TestAReplacementAlwaysHasItsPlace` (an identity's response refused when
+its place would pass the bound).
 
 **PR-3** (`internal/crew`): the attempt given back while it waits (O5)
 with its `refunded` row and its `decision_refunds` row, the parking of
@@ -2484,7 +2608,8 @@ doomed gate and at the run's end (I11), `regate` and `r.gates` in
 `retryTask`, `acceptTask`, a reopen and a continuation (I14), the
 continuation's move and give-back (O6, `Tx.MoveDecisions`, the refund
 once per attempt), the typing's intent and its uncertain end (I6), S1 to S4 with an
-applied approval's supersession, the disposal of the holds (I10), every
+applied approval's supersession, its line's withdrawal and an
+undelivered approval's recheck at the next attempt's start, the disposal of the holds (I10), every
 cancellation, `WithdrawDecision`, `CancelDecision`, `CommentDecision`,
 `RouteDecision`, the task file's section (released holds included) and
 the package section's new last line, the continuation note's words,
@@ -2543,8 +2668,9 @@ tools are PR-4's). Tests: the `internal/cli` list but PR-4's two and the
 `useDecisions.ts`, `useTicketDecisions.ts`, `DecisionCard.vue`,
 `DecisionRespond.vue`, the run page, `QuickReplyBar.vue`'s Answer with
 the modal in the session page and the Yard, Needs you, the
-palette rows, `DispatchDecisions.vue`; the stub worker's
-`STUB_DECISION`; `decisions.spec.ts` and the approve half of
+palette rows, `DispatchDecisions.vue`, `BrakemanRefChip.vue`'s
+`baseline` mode with `changedFromBaseline`; the stub worker's
+`STUB_DECISION` and `STUB_DECISION_EVIDENCE`; `decisions.spec.ts` and the approve half of
 `decisions-gate.spec.ts`. Tests: the vitest list and those two specs.
 
 **PR-8** (`web/e2e`, `docs`): `decisions-restart.spec.ts` with
