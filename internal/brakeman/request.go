@@ -44,7 +44,7 @@ type Request struct {
 	Footprint *Footprint `json:"footprint,omitempty"`
 	Made      []Made     `json:"made,omitempty"`     // drafts made work by a person
 	Edges     []Edge     `json:"edges,omitempty"`    // draft tickets' blocks
-	Acts      []Act      `json:"acts,omitempty"`     // BK2's acts; none in this build
+	Acts      []Act      `json:"acts,omitempty"`     // BK2's acts, written pending before the operation runs
 	StrayRun  string     `json:"strayRun,omitempty"` // a run its launch returned after it closed, stopped then
 	Coverage  *Coverage  `json:"coverage,omitempty"` // the server's watermarks of what the turn read
 	ClosedAt  time.Time  `json:"closedAt,omitzero"`

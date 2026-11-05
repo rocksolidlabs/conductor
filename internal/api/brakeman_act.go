@@ -132,10 +132,11 @@ type actBody struct {
 // names an act of the request already, which is run again under its
 // derived key so the operation's own store answers its receipt whatever
 // the target's state now (409 op_conflict for other content under it,
-// 409 act_not_run for one the server stopped before it ran): the turn's
+// 409 act_not_run for one the server stopped before it ran; one the store
+// holds no receipt for is checked again as a new one is): the turn's
 // session the running request's (turnPrincipalOf); the grant, the
 // snapshot the turn began under and the configuration now (403
-// not_granted); the target's visibility (403 not_visible) and scope (403
+// not_granted, checked first of all, before the body is read); the target's visibility (403 not_visible) and scope (403
 // outside_scope); the target's state as the operation requires (404
 // not_found, 409 stale_revision, 409 stale_target); at most
 // brakeman.MaxActs a request (409 acts_spent). Then it is written pending,
@@ -146,6 +147,12 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 	d := s.brakeman
 	ds, ok := s.dispatchWriter(w)
 	if !ok {
+		return
+	}
+	// A turn not granted the operation is refused first, whatever it
+	// sends: its reads give it no way past this.
+	if aerr := actGrant(tp, ar.op); aerr != nil {
+		writeAPIError(w, aerr)
 		return
 	}
 	key, ok := ticketKey(w, r)
@@ -184,6 +191,19 @@ func (s *Server) turnAct(w http.ResponseWriter, r *http.Request, tp *turnPrincip
 		case a.State == brakeman.ActNotRun:
 			writeError(w, http.StatusConflict, "act_not_run", "the server stopped before the act ran; it is not run again")
 			return
+		}
+		// An act its operation's store holds no receipt for (refused before
+		// the store, or a failure of the server) runs anew if it runs at
+		// all: it is held to the checks again, the grant now among them.
+		switch _, found, err := ds.Receipt(ctx, brakemanActor, op); {
+		case err != nil:
+			s.dispatchError(w, "act", err)
+			return
+		case !found:
+			if aerr := s.admitAct(ctx, ds, tp, ar, key, body); aerr != nil {
+				writeAPIError(w, aerr)
+				return
+			}
 		}
 	} else {
 		if aerr := s.admitAct(ctx, ds, tp, ar, key, body); aerr != nil {
@@ -268,18 +288,26 @@ func actArgs(ar actRoute, key string, raw []byte) (actBody, string, *apiError) {
 	return body, hex.EncodeToString(sum[:]), nil
 }
 
+// actGrant refuses an operation the turn tp is not granted: the grant is
+// the snapshot the turn began under and the configuration now, so a grant
+// taken away holds at once and one given waits for the next turn. nil
+// when it is granted.
+func actGrant(tp *turnPrincipal, op string) *apiError {
+	if !slices.Contains(tp.req.Config.Permissions.Act, op) || !slices.Contains(tp.cfg.Permissions.Act, op) {
+		return newAPIError(http.StatusForbidden, "not_granted", "Brakeman is not granted "+op+": only the person grants it, in Settings")
+	}
+	if err := actServed(op); err != nil {
+		return newAPIError(http.StatusForbidden, "not_granted", err.Error())
+	}
+	return nil
+}
+
 // admitAct checks a new act of the turn tp on the ticket key, in order:
 // the grant, the target's visibility and scope, and its state as the
 // operation requires. nil admits it.
 func (s *Server) admitAct(ctx context.Context, ds *dispatch.Store, tp *turnPrincipal, ar actRoute, key string, body actBody) *apiError {
-	// The grant: the snapshot the turn began under and the configuration
-	// now, so a grant taken away holds at once and one given waits for the
-	// next turn.
-	if !slices.Contains(tp.req.Config.Permissions.Act, ar.op) || !slices.Contains(tp.cfg.Permissions.Act, ar.op) {
-		return newAPIError(http.StatusForbidden, "not_granted", "Brakeman is not granted "+ar.op+": only the person grants it, in Settings")
-	}
-	if err := actServed(ar.op); err != nil {
-		return newAPIError(http.StatusForbidden, "not_granted", err.Error())
+	if aerr := actGrant(tp, ar.op); aerr != nil {
+		return aerr
 	}
 	// What the turn may see, checked apart from the grant: a grant gives
 	// no read.

@@ -3625,13 +3625,15 @@ them. There is no act route of Brakeman's own: each operation is sent to
 its own route, `POST /api/dispatch/tickets/{key}/launch` and `POST
 /api/dispatch/tickets/{key}/plans`, as the principal `brakeman` (the
 turn's token, its session named in `X-Conductor-Session`), with the body
-that route takes and an `opId` of the turn's. An `opId` the request
-already holds is run again under its derived key, so the operation's own
-store answers it from its receipt, whatever the target's state now (`409
-op_conflict` for another operation, ticket or body under it; `409
-act_not_run` for one the server stopped before it ran). A new act is
-refused, nothing kept, in this order: `403 not_granted` unless both the
-configuration the turn began under and the configuration now grant it;
+that route takes and an `opId` of the turn's. First of all, whatever the
+body, `403 not_granted` unless both the configuration the turn began
+under and the configuration now grant the operation. An `opId` the
+request already holds is then run again under its derived key, so the
+operation's own store answers it from its receipt, whatever the target's
+state now (`409 op_conflict` for another operation, ticket or body under
+it; `409 act_not_run` for one the server stopped before it ran; one its
+store holds no receipt for is checked again as a new act is). A new act
+is refused, nothing kept, in this order:
 `403 not_visible` unless `dispatch` is visible, `403 outside_scope` for a
 ticket outside the scope (a grant gives no read, a read no grant); `404
 not_found` for a ticket or revision not there or not the ticket's; `409

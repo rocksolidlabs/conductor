@@ -418,6 +418,36 @@ func TestAnActThatNeverRanIsMarkedNotRun(t *testing.T) {
 	}
 }
 
+// TestARetryWithNoReceiptIsCheckedAgain: an act left pending with no
+// receipt in its operation's store (the server failed before the
+// operation committed) is held to the checks again when it is sent again:
+// with its grant taken away meanwhile, refused, nothing launched; granted
+// again, it runs.
+func TestARetryWithNoReceiptIsCheckedAgain(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	holdActAt(t, "pending")
+	if status, out := f.launchAct(t, map[string]any{"opId": "a-1"}); status != http.StatusServiceUnavailable {
+		t.Fatalf("the act: %d %v", status, out)
+	}
+	actSeam.Store(nil)
+	f.bk.configure(t, func(c map[string]any) { c["permissions"].(map[string]any)["act"] = []any{brakeman.ActPrepareFollowup} })
+	if status, out := f.launchAct(t, map[string]any{"opId": "a-1"}); status != http.StatusForbidden || codeOf(out) != "not_granted" {
+		t.Fatalf("the retry with its grant taken away: %d %v", status, out)
+	}
+	if n := len(f.launches(t)); n != 0 {
+		t.Fatalf("%d launches", n)
+	}
+	f.bk.configure(t, func(c map[string]any) {
+		c["permissions"].(map[string]any)["act"] = []any{brakeman.ActLaunchApprovedPlan}
+	})
+	if status, out := f.launchAct(t, map[string]any{"opId": "a-1"}); status != http.StatusCreated {
+		t.Fatalf("the retry granted again: %d %v", status, out)
+	}
+	if acts := f.acts(t); len(acts) != 1 || acts[0].State != brakeman.ActDone {
+		t.Fatalf("acts %+v", acts)
+	}
+}
+
 // TestAnActsOpIDNamesOneAct: the same op id with other arguments is
 // refused, and with another operation too.
 func TestAnActsOpIDNamesOneAct(t *testing.T) {
