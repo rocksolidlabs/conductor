@@ -93,9 +93,6 @@ func actorOf(r *http.Request) string {
 // repository keeps for itself ("admin", Dispatch's "merge" and
 // "agent:<member>"): a provider's subject sees only its own receipts.
 func (p principal) actor() string {
-	if p.as != "" {
-		return p.as
-	}
 	if p.subject == "" {
 		return adminActor
 	}

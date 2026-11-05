@@ -432,7 +432,7 @@ export function parseRef(s: string): ParsedRef | null {
       return p.length === 2 && REQUEST.test(p[0]!) && item !== undefined && item < 100 ? { kind, request: p[0], item } : null
     }
     case 'plan': {
-      // plan:<KEY-n>/<revision>, the revision's number from 1 (DS2's records, PR-10).
+      // plan:<KEY-n>/<revision>, the revision's number from 1.
       const n = num(p[1], 1)
       return p.length === 2 && TICKET.test(p[0]!) && n ? { kind, ticket: p[0], n } : null
     }
@@ -454,9 +454,10 @@ function ticketPath(key: string): string {
 
 /**
  * The page a person follows a ref to in the app (the server's refURL, internal/api/brakeman_refs.go, for the kinds it gives a page),
- * or null for one with no page of its own: a Dispatch receipt, whose page is its ticket's as the resolution names it (refPage). A
- * task, an attempt and a check open the run page's Tasks view at the task, whatever view this browser chose last (the page selects
- * no one attempt: they are listed under the task). A check receipt, a command receipt and a comment are read from the API with the
+ * or null for one with no page of its own: a Dispatch receipt, whose page is its ticket's as the resolution names it (refPage), and a
+ * launch, which the server serves from its API route. A task, an attempt, a check and a candidate open the run page's Tasks view at
+ * the task, whatever view this browser chose last (the page selects no one attempt: they are listed under the task); a plan
+ * revision opens its ticket's page, which lists them. A check receipt, a command receipt and a comment are read from the API with the
  * token, which a link would not carry (receiptPath): their chip leads to the page they belong to, the comment's to its ticket's.
  */
 export function refRoute(ref: string): string | null {
@@ -484,7 +485,6 @@ export function refRoute(ref: string): string | null {
       return ticketPath(r.ticket!)
     case 'comment':
     case 'plan':
-      // A plan revision on its ticket's page, whose Plan section lists the revisions.
       return ticketPath(r.ticket!)
     case 'brief':
       return `/brakeman?request=${encodeURIComponent(r.request!)}#item-${r.item}`
@@ -572,9 +572,9 @@ export function refLabel(ref: string, names: { session?: (id: string) => string 
     case 'brief':
       return `${r.request}, item ${r.item! + 1}`
     case 'plan':
-      return `${r.ticket} plan r${r.n}`
+      return `plan revision ${r.n} of ${r.ticket}`
     case 'launch':
-      return `launch ${r.launch!.slice(0, 8)}`
+      return `launch ${r.launch}`
     case 'candidate':
       return `candidate ${r.task}, attempt ${r.n}`
   }

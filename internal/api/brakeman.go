@@ -126,6 +126,11 @@ type brakemanDesk struct {
 	// launches counts the turns' launches outstanding, which quiesce
 	// waits for.
 	launches sync.WaitGroup
+	// acting counts the acts whose operation has begun (beginAct), which
+	// quiesce waits for too, so a run an act launches is one the server's
+	// stops find. Added to under mu, with closing read there: no act
+	// begins its operation once quiesce began.
+	acting sync.WaitGroup
 	// pruneDue says the requests are pruned at the loop's next pass
 	// (Store.Prune): at the start and after each turn.
 	pruneDue atomic.Bool
@@ -152,11 +157,13 @@ type brakemanDesk struct {
 	// stuck is set past brakemanStuck and refuses new requests.
 	stopFails int
 	stuck     bool
-	// makes holds each request's make mutex (makeLock); turnReads what
-	// the turn in progress was given of what changed (cover) and the
-	// classes its answers used (usedClass).
-	makes     map[string]*sync.Mutex
-	turnReads *turnChanges
+	// makes holds each request's make mutex (makeLock), completing each
+	// item's completion lock (completionLock); turnReads what the turn
+	// in progress was given of what changed (cover) and the classes its
+	// answers used (usedClass).
+	makes      map[string]*sync.Mutex
+	completing map[string]chan struct{}
+	turnReads  *turnChanges
 
 	// readMu orders a turn's reads: the count, the read log and the
 	// coverage of one read are written before the next is answered.
@@ -340,10 +347,11 @@ var errDeskClosing = errors.New("brakeman: the server is shutting down")
 // quiesce takes the desk out of the server as it shuts down, before its
 // runs are stopped: no request's state is written by the desk from then
 // on (the turn in progress stays starting or running in the records, and
-// the next start finds it interrupted), the loop ends, and the launch
-// outstanding is cancelled and waited for, as long as ctx allows, so the
-// run and the session it makes are ones the stops after it find. It may
-// be called again.
+// the next start finds it interrupted), the loop ends, no act begins its
+// operation (beginAct), and the launch outstanding is cancelled and
+// waited for, with every act whose operation has begun, as long as ctx
+// allows, so the runs and the sessions they make are ones the stops after
+// it find. It may be called again.
 func (d *brakemanDesk) quiesce(ctx context.Context) {
 	// In admission's order: a save before it has written its
 	// cancellations, one after it is refused. Under mu too, as admitMake
@@ -368,6 +376,7 @@ func (d *brakemanDesk) quiesce(ctx context.Context) {
 	launched := make(chan struct{})
 	go func() {
 		d.launches.Wait()
+		d.acting.Wait()
 		close(launched)
 	}()
 	select {
@@ -457,6 +466,23 @@ func (d *brakemanDesk) admitMake() bool {
 
 // madeDone ends an admitted make.
 func (d *brakemanDesk) madeDone() { d.making.Done() }
+
+// beginAct lets an admitted act, written pending, run its operation:
+// false once the desk is closing (quiesce), when it runs nothing and its
+// entry stays pending for the next start's recovery. quiesce waits for
+// each act begun (actDone) before the server's runs are stopped.
+func (d *brakemanDesk) beginAct() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closing.Load() {
+		return false
+	}
+	d.acting.Add(1)
+	return true
+}
+
+// actDone ends an act begun.
+func (d *brakemanDesk) actDone() { d.acting.Done() }
 
 // poke makes the loop look again.
 func (d *brakemanDesk) poke() {

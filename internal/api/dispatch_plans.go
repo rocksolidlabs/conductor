@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -542,19 +543,48 @@ func (s *Server) handleDispatchProposePlan(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := opContext(r)
 	defer cancel()
-	op := body.op(r)
-	rc, found, err := ds.Replay(ctx, op, dispatch.IntentPlanPropose, dispatch.PlanProposeArgs{Key: key, PlanRequest: body.PlanRequest})
+	s.ticketPropose(ctx, w, ds, body.op(r), key, body.PlanRequest, nil)
+}
+
+// planGuard is what a follow-up a Brakeman act proposes is held to beyond
+// the operator's proposal (brakeman_act.go): admit, the crew and the
+// working directory it plans, checked before git runs there; and its base
+// approved in the store's own transaction (Store.ProposeFollowup).
+type planGuard struct {
+	admit func(ctx context.Context, crewID, cwd string) *apiError
+}
+
+// ticketPropose is plan.propose's one function, the propose route's and a
+// Brakeman act's (guard non-nil): the operation op replayed first, so a
+// resend is answered from its receipt whatever the crew or HEAD became
+// since, then the proposal's body built (planBody) and the store's checks
+// and bounds (ProposePlan, or ProposeFollowup for a guarded one), answered
+// to w as the route answers.
+func (s *Server) ticketPropose(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key string, req dispatch.PlanRequest, guard *planGuard) {
+	rc, found, err := ds.Replay(ctx, op, dispatch.IntentPlanPropose, dispatch.PlanProposeArgs{Key: key, PlanRequest: req})
 	if err != nil || found {
 		s.writeOp(w, "plan revision", rc, err, true, "plan", s.planAfter(ctx, ds, ""))
 		return
 	}
-	pb, ok := s.planBody(ctx, w, ds, key, body.PlanRequest)
+	pb, ok := s.planBody(ctx, w, ds, key, req, guard)
 	if !ok {
 		return
 	}
-	rc, err = ds.ProposePlan(ctx, op, key, body.PlanRequest, pb)
+	if f := proposeSeam.Load(); f != nil {
+		(*f)(key)
+	}
+	propose := ds.ProposePlan
+	if guard != nil {
+		propose = ds.ProposeFollowup
+	}
+	rc, err = propose(ctx, op, key, req, pb)
 	s.writeOp(w, "plan revision", rc, err, true, "plan", s.planAfter(ctx, ds, ""))
 }
+
+// proposeSeam, when a test sets it, runs in the propose route once the
+// proposal's body is built (the crew read, git run) and before the store
+// is asked to keep it.
+var proposeSeam atomic.Pointer[func(key string)]
 
 // planBody builds a proposal's body from its request (docs/plans/
 // dispatch-evidence.md, "Proposing"), in this order: the saved crew,
@@ -571,9 +601,10 @@ func (s *Server) handleDispatchProposePlan(w http.ResponseWriter, r *http.Reques
 // agent its members name as the catalog resolves it (agentSelection).
 // Every git command is an argv through internal/gitcli, in the C locale.
 // The attachments and comments are handed to the store as named, which
-// checks them and sets each comment's digest from its row. When it
-// reports false it has answered.
-func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, key string, req dispatch.PlanRequest) (dispatch.PlanBody, bool) {
+// checks them and sets each comment's digest from its row. A guard's
+// admit is asked of the crew and its working directory once that is
+// resolved, before git runs there. When it reports false it has answered.
+func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, key string, req dispatch.PlanRequest, guard *planGuard) (dispatch.PlanBody, bool) {
 	fail := func(status int, code, format string, args ...any) (dispatch.PlanBody, bool) {
 		writeError(w, status, code, fmt.Sprintf(format, args...))
 		return dispatch.PlanBody{}, false
@@ -613,9 +644,15 @@ func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispat
 		s.dispatchError(w, "ticket", err)
 		return dispatch.PlanBody{}, false
 	}
-	cwd, err := s.resolveCwd(cmp.Or(pv.Project.Cwd, c.Cwd, s.cfg.DefaultCwd))
+	cwd, err := s.resolveCwd(s.planCwd(pv, c))
 	if err != nil {
 		return fail(http.StatusConflict, dispatch.RefusalInvalid, "the crew's working directory: %s", err.Error())
+	}
+	if guard != nil && guard.admit != nil {
+		if aerr := guard.admit(ctx, c.ID, cwd); aerr != nil {
+			writeAPIError(w, aerr)
+			return dispatch.PlanBody{}, false
+		}
 	}
 	if err := crew.CheckRepo(ctx, cwd); err != nil {
 		if errors.Is(err, crew.ErrNotRepo) || errors.Is(err, crew.ErrNoGit) {
@@ -683,6 +720,13 @@ func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispat
 	}, true
 }
 
+// planCwd is the working directory a proposal of the crew c on a ticket
+// of the project pv plans, before resolveCwd: the project's folder when
+// it names one, else the crew's own, else the server's default.
+func (s *Server) planCwd(pv dispatch.ProjectView, c crew.Crew) string {
+	return cmp.Or(pv.Project.Cwd, c.Cwd, s.cfg.DefaultCwd)
+}
+
 // gitFailed answers a failure of git itself while a proposal is built:
 // 500 git_failed, logged with why; never a refusal of the request's.
 func (s *Server) gitFailed(w http.ResponseWriter, what string, err error) (dispatch.PlanBody, bool) {
@@ -709,11 +753,8 @@ func encodeRaw(v any) json.RawMessage {
 // error is git's own failure (gitUnresolved), never the request's.
 func planBase(ctx context.Context, cwd, ref string) (string, string, error) {
 	ref = cmp.Or(ref, "HEAD")
-	switch {
-	case len(ref) > maxPlanBase:
-		return "", fmt.Sprintf("the base is more than %d bytes", maxPlanBase), nil
-	case strings.HasPrefix(ref, "-") || strings.ContainsFunc(ref, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }):
-		return "", fmt.Sprintf("the base %q is not a branch, a tag or a commit", ref), nil
+	if words := planBaseShape(ref); words != "" {
+		return "", words, nil
 	}
 	out, err := gitcli.Run(ctx, cwd, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	if err != nil && !gitUnresolved(err) {
@@ -724,6 +765,20 @@ func planBase(ctx context.Context, cwd, ref string) (string, string, error) {
 		return "", fmt.Sprintf("the base %q names no commit of the crew's working directory", ref), nil
 	}
 	return commit, "", nil
+}
+
+// planBaseShape is why ref cannot be a base, before git is asked: more
+// than maxPlanBase bytes, a space or control character, or a leading '-';
+// "" when it may be one. A draft plan revision's base is held to the same
+// rule (brakeman.DraftPlanBase, TestTheDraftPlansBoundsAreDispatchs).
+func planBaseShape(ref string) string {
+	switch {
+	case len(ref) > maxPlanBase:
+		return fmt.Sprintf("the base is more than %d bytes", maxPlanBase)
+	case strings.HasPrefix(ref, "-") || strings.ContainsFunc(ref, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }):
+		return fmt.Sprintf("the base %q is not a branch, a tag or a commit", ref)
+	}
+	return ""
 }
 
 // gitUnresolved reports whether err is git's answer that what it was asked

@@ -1991,7 +1991,7 @@ its run, and on no other.
 | `GET /api/dispatch/plans/{id}` | admin | a plan revision whole: `{plan}`, its summary as the list gives it and `body`, the bytes it is kept as (Plan revisions, below), under 3 MiB (`MaxPlanReply`); `404 not_found` |
 | `POST /api/dispatch/plans/{id}/approve` | admin | approve a plan revision (`plan.approve`), the operator's: `{opId, expectedRev?, ticketRev?, note?, byName?}`, `expectedRev` the revision's and `ticketRev` the ticket's (`409 stale_revision` for either), `note` at most 1,000 characters of Markdown, the rationale; the ticket's other approved revision made `superseded`; reply `{receipt, plan}`; `409 stale_plan` ("…: revise it") when an agent of its body resolves otherwise in the catalog now, naming the agent and the part (its command, its session recipe's start arguments, its yolo recipe's arguments or its environment), no receipt kept, or when a comment it hands over was edited or deleted since it was made, its receipt kept; `409 invalid` for a withdrawn revision and for one approved whose approval holds; `404 not_found` |
 | `POST /api/dispatch/plans/{id}/withdraw` | admin | withdraw a plan revision (`plan.withdraw`): `{opId, expectedRev?, byName?}`, `expectedRev` the revision's; reply `{receipt, plan}`; `409 invalid` for one withdrawn already; `404 not_found` |
-| `POST /api/dispatch/tickets/{key}/launch` | admin | launch a managed run from a ticket's approved plan revision (`ticket.launch`; see Launches below): `{opId, plan, expectedRev?, label?, byName?}`, at most 4 KiB, `plan` the revision's id, `expectedRev` the ticket's, `label` the run's own name (at most 60 characters; the ticket's key and title, cut at a word, when absent); reply `201 {receipt, launch, run}` once the run's first ledger transaction is committed and the launch recorded started, `launch` its summary `{id, ticketId, ticketKey, planId, planN, runId, label, ticketRev, intent, criteria, packageSha256, state, why?, agents, createdAt, createdBy, fingerprint, startedAt?, rev}` (never the package), `run` as `GET /api/runs/{run}` answers it; the same `opId` again answers the same launch, `200` with the receipt's `repeat`, never a second run; `409 launch_failed {error, receipt, launch}` when the run could not be started (an agent not installed or not the one it claims, a working directory outside the allowed roots, the engine's refusal), the launch kept, `failed`, with why; `409 stale_plan` when an agent of the revision resolves otherwise in the catalog now, naming the agent and the part ("…: revise it"), no receipt kept, or when the store finds the approval stale (the ticket's intent changed: "approve it again or revise it"; a handed-over comment or attachment edited or gone: "revise it"), its receipt kept; `409 invalid` for a ticket closed or a revision not approved; `409 managed_off`; `503 ledger_unavailable` without a ledger, with one another server owns, and while the server takes the ledger over ("the server is taking over the ledger"), no launch kept; a pending launch replayed on a server that may not advance it is answered `503 ledger_unavailable {error, receipt, launch}`, still pending, never recorded failed |
+| `POST /api/dispatch/tickets/{key}/launch` | admin | launch a managed run from a ticket's approved plan revision (`ticket.launch`; see Launches below): `{opId, plan, expectedRev?, label?, byName?}`, at most 4 KiB, `plan` the revision's id, `expectedRev` the ticket's, `label` the run's own name (at most 60 characters; the ticket's key and title, cut at a word, when absent); reply `201 {receipt, launch, run}` once the run's first ledger transaction is committed and the launch recorded started, `launch` its summary `{id, ticketId, ticketKey, planId, planN, runId, label, ticketRev, intent, criteria, packageSha256, state, why?, agents, createdAt, createdBy, fingerprint, startedAt?, rev}` (never the package), `run` as `GET /api/runs/{run}` answers it; the same `opId` again answers the same launch, `200` with the receipt's `repeat`, never a second run; `409 launch_failed {error, receipt, launch}` when the run could not be started (an agent not installed or not the one it claims, a working directory outside the allowed roots, the engine's refusal), the launch kept, `failed`, with why; `409 stale_plan` when an agent of the revision resolves otherwise in the catalog now, naming the agent and the part ("…: revise it"), no receipt kept, or when the store finds the approval stale (the ticket's intent changed: "approve it again or revise it"; a handed-over comment or attachment edited or gone: "revise it"), its receipt kept; `409 invalid` for a ticket closed or a revision not approved; `409 managed_off`; `503 ledger_unavailable` without a ledger, with one another server owns, and while the server takes the ledger over ("the server is taking over the ledger"), no launch kept; a pending launch replayed on a server that may not advance it is answered `503 ledger_unavailable {error, receipt, launch}`, still pending, never recorded failed; once the server's shutdown begins stopping its runs, a launch not yet given to the engine starts no run (`409 launch_failed`, "the server is shutting down: the run was not started"), and the run of one the engine was still starting past the shutdown's wait is stopped as it starts |
 | `GET /api/dispatch/launches/{id}` | admin | a launch whole: `{launch}`, its summary as the launch answers it and `package`, the bytes it is kept as (Launches, below), under 1 MiB (`MaxLaunchReply`); `404 not_found` |
 | `GET /api/dispatch/tickets/{key}/runs` | admin | a page of a ticket's runs, of a ticket deleted or not (see A ticket's runs below): `{entries, next?}`, at most 10 entries, newest first, every launch, run and continuation of the ticket on some page (no cap, no count in place of an entry); `?before=` takes the page's `next`, an opaque cursor, absent on the last page; each entry `{kind, launch?, link?, run?, changed?, contested?, continues?}`: `kind` `launch` (`launch` its summary as the launch answers it, `run` its run once it started, `changed` what changed of the ticket since, `{fields, comments, rev}`), `link` (a run linked by hand: `link` the link, `run` its run), a launch's or a link's `contested` `{keys, words}` when other tickets hold its run's chain too (by a launch or a hand link; its chain's other runs are then no entries), or `run` (another run of a chain the ticket holds: `launch` or `link` the one that holds it, `continues` the run it continues, absent for a run before the linked one); a run is `{id, label, state, outcome?, paused, startedAt, stoppedAt?, record, resumedFrom?, resumedBy?, ticket?, members, tasks, questions, blockers}`, `members` at most 12 `{name, sessionId?, status}`, `tasks` its tasks counted by state, `questions` how many of its members' sessions waited on a person when the reply was made, `blockers` at most 20 `{task, reason, by, at}`, a reason cut to 200 characters; a run only the ledger has, while the ledger cannot be read, is an entry without its `run`; under 1 MiB (`MaxTicketRunsReply`); `404 not_found`; `503 ledger_unavailable` when a run's chain cannot be walked, `503 run_changing` (`Retry-After: 1`) while a run of it is being resumed; `400 invalid_request` for a cursor `next` did not give, and any other parameter |
 | `GET /api/dispatch/links?run={id}` | admin | the ticket a run is linked to, for the run page's chip: `{ticket: {id, key, title, status, deletedAt?}}`, the live ticket whose live `run` link names the run (one at most); else, when only deleted tickets' links name it, the one whose link is latest, with `deletedAt`; `{ticket: null}` when no live link names the run; `400 invalid_request` for a run id that is not one |
@@ -3519,10 +3519,10 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 | `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |
 | `GET /api/brakeman/requests/{id}/refs` | `{refs: [{ref, seen, now}]}`, each `{url?, state?, rev?, sha256?, at?}`: what the turn read of each ref of the brief (`state` `unobserved` for one it never read) and what it was as the brief was kept; `404 no_brief` before one; at most 4 MiB |
 | `POST /api/brakeman/requests/{id}/cancel` | `{opId}` → `{request}`; a closed request answers as it stands |
-| `POST /api/brakeman/requests/{id}/items/{i}/make` | `{opId, by?, edit?}` → `201 {request, made, ticket?: {key, url}, receipt?, crew?: {id, url}, plan?}`: a `draft_ticket/1` made a ticket through Dispatch's own create under the actor `admin` with `by` as the display name (its `blocks` become `blocks` relations once both ends are tickets, whichever is made first), a `draft_crew/1` a saved crew (never launched) carrying `origin: "brakeman:<request>/<item>/<op>"`, a `draft_plan/1` a proposed plan revision of its ticket through Dispatch's own propose route (`POST /api/dispatch/tickets/{key}/plans`, its replay, the crew, git and the store's checks) under the actor `admin` with `by` as the display name, `plan` the revision as the ticket's revisions list it and `made` carrying its `key` and `plan` (the revision's id): a revision proposed waits for the operator's approval (`POST /api/dispatch/plans/{id}/approve`, the operator's alone), never approved by the make, and its `basedOn` (a `plan:` ref of the same ticket) and `comments` (`comment:` refs of the same ticket) are sent by their ids, another ticket's `400 invalid_draft`; a refusal of the propose route (no such crew, one without tasks, a base that names no commit) settles the make refused; `edit` the draft as the person changed it, in the draft's own shape, else the draft as written. Its op id is derived (`bk` + 30 hex digits of a SHA-256 of the request, the item and the `opId`), so the backend answers a repeat once. The same `opId` again answers what it made (`200`), as it was made, whatever changed since (a crew's agent gone from the catalog); an
+| `POST /api/brakeman/requests/{id}/items/{i}/make` | `{opId, by?, edit?}` → `201 {request, made, ticket?: {key, url}, receipt?, crew?: {id, url}, plan?}`: a `draft_ticket/1` made a ticket through Dispatch's own create under the actor `admin` with `by` as the display name (its `blocks` become `blocks` relations once both ends are tickets, whichever is made first), a `draft_crew/1` a saved crew (never launched) carrying `origin: "brakeman:<request>/<item>/<op>"`, a `draft_plan/1` a proposed plan revision of its ticket through Dispatch's own propose route (`POST /api/dispatch/tickets/{key}/plans`, its replay, the crew, git and the store's checks) under the actor `admin` with `by` as the display name, `plan` the revision as the ticket's revisions list it and `made` carrying its `key` and `plan` (the revision's id): a revision proposed waits for the operator's approval (`POST /api/dispatch/plans/{id}/approve`, the operator's alone), never approved by the make, and its `basedOn` (a `plan:` ref of the same ticket) and `comments` (`comment:` refs of the same ticket) are sent by their ids, another ticket's `400 invalid_draft`; a refusal of the propose route (no such crew, one without tasks, a base that names no commit) settles the make refused; `edit` the draft as the person changed it, in the draft's own shape, else the draft as written. Its op id is derived (`bk` + 30 hex digits of a SHA-256 of the request, the item and the `opId`), so the backend answers a repeat once. The same `opId` again answers what it made (`200`), as it was made, whatever changed since (a crew's agent gone from the catalog), and asked while that make is still under way waits for it and answers its outcome, never running the backend beside it; an
 outcome's words are cut to the room its other fields leave in the entry's
 600 bytes, so recording an outcome is never refused and never leaves the
-claim pending; a new make is checked against the catalog now; `409 already_made` with `key` or `crew` for another `opId` once made; `409 make_pending` with the `opId` of a make under way; `409 op_conflict` for the same `opId` with other content; a refused make answers `409` with its receipt's words and may be made again with a new `opId`; `400 not_a_draft` for any other item, `400 invalid_draft` with `field`, `400 invalid_request` for a `by` past 60 bytes or holding a control character (Dispatch's display name); `404` for a request pruned before the make claimed it (no backend called); `503 brakeman_not_owner` on a server without Brakeman's owner lock; `503 shutting_down` once the server shuts down (a make under way then finishes before the owner lock goes, its outcome written by the next start); at most 4 MiB |
+claim pending; a new make is checked against the catalog now; `409 already_made` with `key` or `crew` for another `opId` once made; `409 make_pending` with the `opId` of a make under way; `409 op_conflict` for the same `opId` with other content; `409 make_superseded` (with `made`, the item's entry now) for the same `opId` asked again while its make was settled and the item claimed again under another `opId` or other content, nothing run for it; a refused make answers `409` with its receipt's words and may be made again with a new `opId`; `400 not_a_draft` for any other item, `400 invalid_draft` with `field`, `400 invalid_request` for a `by` past 60 bytes or holding a control character (Dispatch's display name); `404` for a request pruned before the make claimed it (no backend called); `503 brakeman_not_owner` on a server without Brakeman's owner lock; `503 shutting_down` once the server shuts down (a make under way then finishes before the owner lock goes, its outcome written by the next start); at most 4 MiB |
 
 The kinds and their subjects: `briefing` (none; `since`, else since the
 last complete briefing), `explain` (one `run:`, `task:`, `attempt:`,
@@ -3575,7 +3575,10 @@ for none, or once the ticket's intent or a handed-over comment changed
 since it was approved), and `launches` the ticket's launches, newest
 first, at most 200, each `{ref, id, plan, runId?, state, why?, createdAt,
 createdBy, startedAt?, rev}` with its `launch:` ref and the `plan:` ref
-it launched, never its package. A run's candidates, for a turn, carry
+it launched, never its package. A deleted ticket's revisions and
+launches, which the route answers at the states its deletion left, carry
+`deleted: true`, `holds` `false`, and are noted `deleted` with no rev, as
+their `plan:` and `launch:` refs resolve. A run's candidates, for a turn, carry
 each candidate's `candidate:` ref (noted `standing` while it is its
 task's result, `withdrawn` once taken back, else its attempt's state, at
 the commit it submitted, a review's the commit it reviewed) and each
@@ -3628,32 +3631,66 @@ its own route, `POST /api/dispatch/tickets/{key}/launch` and `POST
 turn's token, its session named in `X-Conductor-Session`), with the body
 that route takes and an `opId` of the turn's. First of all, whatever the
 body, `403 not_granted` unless both the configuration the turn began
-under and the configuration now grant the operation. An `opId` the
-request already holds is then run again under its derived key, so the
-operation's own store answers it from its receipt, whatever the target's
-state now (`409 op_conflict` for another operation, ticket or body under
-it; `409 act_not_run` for one the server stopped before it ran; one its
-store holds no receipt for is checked again as a new act is). A new act
-is refused, nothing kept, in this order:
-`403 not_visible` unless `dispatch` is visible, `403 outside_scope` for a
-ticket outside the scope (a grant gives no read, a read no grant); `404
-not_found` for a ticket or revision not there or not the ticket's; `409
-stale_revision` for an `expectedRev` that is not the ticket's now; `409
-stale_target` for a revision that is not approved (the launch's, or a
-follow-up's `basedOn`) or, for a launch, whose approval no longer holds;
-`409 acts_spent` past 20 acts a request. Then the act is written
+under and the configuration now grant the operation. The body is decoded
+once, as its route decodes it (unknown fields refused): what the act is
+checked by is what its operation is given, whatever the spelling or the
+order of its keys. An `opId` the request already holds answers `409
+op_conflict` for another operation, ticket or body under it and `409
+act_not_run` for one the server stopped before it ran; one whose
+operation committed (its receipt in Dispatch, or, the receipt pruned, the
+change its operation recorded) is run again under its derived key, so the
+operation's own store answers it, whatever the target's state now; a
+refusal the store kept is answered from that receipt as the act found
+it, nothing run (a refusal records no change, so its receipt pruned the
+operation would run anew). Any
+other act, new or sent again after a refusal or a failure that left no
+receipt, is checked in admission's order (after a configuration's save
+or before it, the configuration read again under it, so a grant taken
+away or a visibility narrowed while it waited holds) and refused,
+nothing run, in this order: `403 not_granted` again; `403 not_visible`
+unless `dispatch` is visible; `403 outside_scope` for a ticket outside
+the scope, or for what the operation makes outside it: the launch's
+revision's crew, or the follow-up's `crew`, not in the scope's `crews`,
+or the repository of the folder it plans in not in its `repos` (a grant
+gives no read, a read no grant); `404 not_found` for a ticket or revision
+not there or not the ticket's; `409 stale_revision` for an `expectedRev`
+that is not the ticket's now; `409 stale_target` for a revision that is
+not approved (the launch's, or a follow-up's `basedOn`) or, for a launch,
+whose approval no longer holds; `409 turn_over` for a request no longer
+`starting` or `running`; `409 acts_spent` past 20 acts a request; `503
+shutting_down` once the server is shutting down. Then the act is written
 `pending` into the request's `acts` (`{opId, operation, target:
 "ticket:<KEY-n>", op, args, state, receipt?, why?, at}`, at most 600
-bytes, `args` the SHA-256 of the body but its `opId` and `byName` with the
-ticket's key), the operation is run through its one function under the
-actor `brakeman` with the display name `Brakeman` and the derived op id
-(`bk` + 30 hex digits of a SHA-256 of `act`, the request and the
-`opId`), a launch through `ext.Host`'s `LaunchApproved`, and its outcome
-copied into the entry: `done` with `receipt` the id of what it made (the
-launch's, the revision's), `refused` with `why` (the store's receipt's
-words, or the route's for a refusal before the store); a failure of the
-server leaves it `pending`. The answer is the route's own, with its
-receipt.
+bytes, `args` the SHA-256 of the body as decoded but its `opId` and
+`byName`, with the ticket's key), a retry over its own entry, the
+operation is run through its one function under the actor `brakeman`
+with the display name `Brakeman` and the derived op id (`bk` + 30 hex
+digits of a SHA-256 of `act`, the request and the `opId`), a launch
+through `ext.Host`'s `LaunchApproved`, a follow-up through DS2's
+proposal, which holds its crew and folder to the scope again once the
+folder is resolved, before git runs there, and its `basedOn` approved in
+the store's own transaction (`409 stale_plan` for one withdrawn or
+superseded meanwhile), and its outcome copied into the entry: `done` with
+`receipt` the id of what it made (the launch's, the revision's), `refused`
+with `why` (the store's receipt's words, or the route's for a refusal
+before the store, cut to the room its other fields leave in the entry's
+600 bytes as encoded); a failure of the server leaves it `pending`. The
+answer is the route's status and its `receipt` and `error`, so a retry is
+answered by its receipt whatever the grant now; its `launch` or `plan`,
+Dispatch's records of the ticket, only while the configuration then and
+the turn's snapshot show `dispatch`, the ticket is in the scope and the
+turn has reads left, each noted in the read log at its state and rev and
+the answer counted as one read; never the `run`, which the turn reads
+through its own grant (`GET /api/runs/{run}`). An act's answer, and a
+refusal of it past `not_visible`, notes `dispatch` among the classes the
+turn's answers used, so a brief made from it carries `dispatch` in its
+footprint (that turn's own: one answered after its turn ended and the
+next began notes nothing in the next's). An act whose operation has begun
+when the server shuts down is waited for before the server's runs are
+stopped, as long as the shutdown allows, and Brakeman's owner lock goes
+after it; one that has not begun runs nothing (`503 shutting_down`), and
+a launch still under way once the stops begin starts no run (`409
+launch_failed`, "the server is shutting down: the run was not started").
 
 The guide's table lists each operation a grant may name that this build
 serves, under the grant's name with the scope `act` (`launch_approved_plan`
@@ -3681,12 +3718,12 @@ granted operation as its `op`, with `expectedRevision` the ticket's
 revision read, and the `opId` of the act it ran in `args.opId`; the
 request's `acts` say which of them Brakeman ran, and the app shows a
 proposal as "Brakeman did this" with its receipt only when an act of the
-request has the `opId` it names, of its operation on its ticket. A server that stops between the operation and the copy, or
-before the operation, leaves the entry `pending`: before Brakeman's
-routes serve again, the desk reads Dispatch's receipt for `(brakeman,
-op)` and copies it, or, with none, marks the entry `not_run` ("the server
-stopped before it ran"), never run again; a request with an act
-`pending` is kept by the prune.
+request has the `opId` it names, of its operation on its ticket. A server that stops between the operation and the copy, or before the operation,
+leaves the entry `pending`: before Brakeman's routes serve again, the
+desk reads Dispatch's receipt for `(brakeman, op)`, or, the receipt
+pruned, the change its operation recorded, and copies it, or, with
+neither, marks the entry `not_run` ("the server stopped before it ran"),
+never run again; a request with an act `pending` is kept by the prune.
 
 Brakeman's own reads, the admin's and the principal's, each at most 256
 KiB (the guide's `observe_<what>` entries carry each read's `reply`
@@ -3739,8 +3776,10 @@ refs across them; no `asOf` (what it covers is the server's record). Each item i
 `receipt`: a `check:`, `command:` or `op:` ref), `decision/1` (`about`,
 `happened`, `whyHuman`, `question`, `alternatives` 2 to 6, `recommendation`,
 `uncertainty?`, `blocked?`, `authorizes`, `evidence`, `subjectRevision?`;
-`about` a `question:`, `task:`, `ticket:` or `plan:` ref, a plan
-revision's card drawn with DS2's Approve from the live revision),
+`about` a `question:`, `task:`, `ticket:` or `plan:` ref, a `plan:` one
+resolved to its revision's state and `rev` like any ref; the app's
+pages draw neither such a card's Approve nor a `draft_plan/1` yet, which
+come with the pages' part, #532),
 `comparison/1`, `evidence/1`, `draft_ticket/1` (at most 20, their `blocks`
 without a cycle), `draft_crew/1`, `draft_plan/1` (`ticket`, a `ticket:`
 ref; `crew`, a saved crew's id; `base?` at most 256 bytes; `basedOn?`, a

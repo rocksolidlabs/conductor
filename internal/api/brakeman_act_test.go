@@ -3,17 +3,26 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // Brakeman's authorized actions (docs/plans/brakeman.md, PR-12; BK2). The
@@ -238,12 +247,15 @@ func TestAnActRunsTheOperationsOwnFunction(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("the act: %d %v", status, out)
 	}
+	// The route's answer, but its run, which the turn reads through its
+	// own grant (GET /api/runs/{run}).
 	admin := f.launch(t, f.testEnv, map[string]any{"byName": "Nate"}, http.StatusCreated, "")
+	delete(admin, "run")
 	if !sameKeys(out, admin) || !sameKeys(receiptOf(t, out), receiptOf(t, admin)) || !sameKeys(entityOf(t, out, "launch"), entityOf(t, admin, "launch")) {
 		t.Fatalf("the act's answer\n%v\nis not the route's\n%v", out, admin)
 	}
 	rc, launch := receiptOf(t, out), entityOf(t, out, "launch")
-	if rc["status"] != dispatch.StatusDone || rc["intent"] != dispatch.IntentTicketLaunch || rc["id"] != launch["id"] || launch["state"] != dispatch.LaunchStarted || entityOf(t, out, "run")["id"] != launch["runId"] {
+	if rc["status"] != dispatch.StatusDone || rc["intent"] != dispatch.IntentTicketLaunch || rc["id"] != launch["id"] || launch["state"] != dispatch.LaunchStarted || launch["runId"] == "" {
 		t.Fatalf("the act's launch: %v", out)
 	}
 	op := actOp(f.req, "a-1")
@@ -619,5 +631,825 @@ func TestLaunchApprovedCarriesItsExpectedRev(t *testing.T) {
 	now, _ := l.srv.dispatch.Ticket(t.Context(), "CND-1")
 	if _, err := h.LaunchApproved(context.Background(), ext.ApprovedLaunch{Ticket: "CND-1", Plan: l.plan, ExpectedRev: now.Rev, OpID: "p-2", By: ada}); err != nil {
 		t.Fatalf("read again: %v", err)
+	}
+}
+
+// TestLaunchApprovedHonoursAGivenUpTry: a provider's try given up while
+// its launch waits before the store keeps it launches nothing and keeps
+// no receipt (context.Canceled); a later try's launch under the same OpID
+// launches once.
+func TestLaunchApprovedHonoursAGivenUpTry(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	held, letGo := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	l.srv.launches.setSeams(func(g *launchGate) {
+		g.beforeStore = func(string) {
+			once.Do(func() {
+				close(held)
+				<-letGo
+			})
+		}
+	})
+	try, giveUp := context.WithCancel(context.Background())
+	h := testHost(l.srv, try, "cloud")
+	r := ext.ApprovedLaunch{Ticket: "CND-1", Plan: l.plan, OpID: "p-1", By: ada}
+	answered := make(chan error, 1)
+	go func() {
+		_, err := h.LaunchApproved(t.Context(), r)
+		answered <- err
+	}()
+	<-held
+	giveUp()
+	close(letGo)
+	if err := <-answered; !errors.Is(err, context.Canceled) {
+		t.Fatalf("a launch whose try was given up as it waited: %v", err)
+	}
+	if n := len(l.launches(t)); n != 0 {
+		t.Fatalf("%d launches", n)
+	}
+	if _, found, err := l.srv.dispatch.Receipt(t.Context(), ext.SubjectActor+ada.Subject, "p-1"); err != nil || found {
+		t.Fatalf("a receipt kept: %v %v", found, err)
+	}
+	next := testHost(l.srv, t.Context(), "cloud")
+	if ref, err := next.LaunchApproved(t.Context(), r); err != nil || ref.ID == "" {
+		t.Fatalf("the next try's launch: %+v %v", ref, err)
+	}
+	if n := len(l.launches(t)); n != 1 {
+		t.Fatalf("%d launches", n)
+	}
+}
+
+// atAct runs fn at each stage of an act (actSeam) for the rest of the
+// test.
+func atAct(t *testing.T, fn func(stage, request, opID string) error) {
+	t.Helper()
+	actSeam.Store(&fn)
+	t.Cleanup(func() { actSeam.Store(nil) })
+}
+
+// pruneActReceipt deletes the act's receipt from Dispatch's database, as
+// its prune would.
+func (f *actFixture) pruneActReceipt(t *testing.T, opID string) {
+	t.Helper()
+	if err := pruneReceipt(f.srv.dispatch, actOp(f.req, opID)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pruneReceipt deletes Brakeman's receipt of the operation op from the
+// database of the store ds, as its prune would: an error, never a
+// failure of the test, so a seam may call it.
+func pruneReceipt(ds *dispatch.Store, op string) error {
+	db, err := sql.Open("sqlite", filepath.Join(ds.Dir(), dispatch.File))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, err := db.Exec("PRAGMA busy_timeout = 10000"); err != nil {
+		return err
+	}
+	res, err := db.Exec("DELETE FROM ops WHERE actor = ? AND id = ?", brakemanActor, op)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("%d receipts pruned", n)
+	}
+	return nil
+}
+
+// TestARefusedActRetriedIsPendingBeforeItRuns: an act refused before
+// Dispatch kept a receipt (a base that names no commit yet), sent again
+// once it would pass, is written pending before its operation runs: a
+// server that stops after the operation committed and before the copy
+// leaves it pending, and the recovery completes it from the receipt.
+func TestARefusedActRetriedIsPendingBeforeItRuns(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	body := map[string]any{"opId": "f-1", "crew": f.crew.ID, "basedOn": f.plan, "base": "later"}
+	status, out := f.asTurn(t, http.MethodPost, "/api/dispatch/tickets/CND-1/plans", body)
+	if status != http.StatusConflict || codeOf(out) != dispatch.RefusalInvalid {
+		t.Fatalf("a base that names nothing yet: %d %v", status, out)
+	}
+	if acts := f.acts(t); len(acts) != 1 || acts[0].State != brakeman.ActRefused || acts[0].Receipt != "" {
+		t.Fatalf("the refused act %+v", acts)
+	}
+	gitIn(t, f.repo, "branch", "later")
+	var seen []brakeman.Act
+	atAct(t, func(stage, _, _ string) error {
+		if stage == "committed" {
+			seen = f.acts(t)
+			return errors.New("the server stopped")
+		}
+		return nil
+	})
+	if status, out := f.asTurn(t, http.MethodPost, "/api/dispatch/tickets/CND-1/plans", body); status != http.StatusServiceUnavailable {
+		t.Fatalf("the retry: %d %v", status, out)
+	}
+	actSeam.Store(nil)
+	if len(seen) != 1 || seen[0].State != brakeman.ActPending {
+		t.Fatalf("the act as its operation committed %+v", seen)
+	}
+	rc, found, err := f.srv.dispatch.Receipt(t.Context(), brakemanActor, actOp(f.req, "f-1"))
+	if err != nil || !found || rc.Status != dispatch.StatusDone {
+		t.Fatalf("the retry's receipt: %+v %v %v", rc, found, err)
+	}
+	f.endTurn(t)
+	f.bk.desk.recoverMakes(t.Context())
+	if acts := f.acts(t); len(acts) != 1 || acts[0].State != brakeman.ActDone || acts[0].Receipt != rc.ID {
+		t.Fatalf("acts after the recovery %+v", acts)
+	}
+}
+
+// TestAnActIsCheckedAgainAfterItWaits: an act that waited for the
+// request's make mutex is checked against the configuration and the
+// request as they are once it holds it: a grant taken away meanwhile
+// refuses a new act, and a request cancelled meanwhile refuses a retry
+// the store holds no receipt for; nothing runs either way.
+func TestAnActIsCheckedAgainAfterItWaits(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	// While it waits, the grant to launch is taken away.
+	atAct(t, func(stage, _, opID string) error {
+		if stage == "waiting" && opID == "a-1" {
+			f.bk.configure(t, func(c map[string]any) { c["permissions"].(map[string]any)["act"] = []any{brakeman.ActPrepareFollowup} })
+		}
+		return nil
+	})
+	if status, out := f.launchAct(t, map[string]any{"opId": "a-1"}); status != http.StatusForbidden || codeOf(out) != "not_granted" {
+		t.Fatalf("a grant taken away as the act waited: %d %v", status, out)
+	}
+	if acts, launches := f.acts(t), f.launches(t); len(acts) != 0 || len(launches) != 0 {
+		t.Fatalf("acts %+v, launches %+v", acts, launches)
+	}
+
+	// A follow-up left pending with no receipt, sent again while the
+	// request is cancelled.
+	atAct(t, func(stage, _, _ string) error {
+		if stage == "pending" {
+			return errors.New("the server stopped")
+		}
+		return nil
+	})
+	body := map[string]any{"opId": "f-1", "crew": f.crew.ID, "basedOn": f.plan}
+	if status, out := f.asTurn(t, http.MethodPost, "/api/dispatch/tickets/CND-1/plans", body); status != http.StatusServiceUnavailable {
+		t.Fatalf("the follow-up: %d %v", status, out)
+	}
+	plans := func() int {
+		ps, err := f.srv.dispatch.Plans(t.Context(), "CND-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(ps)
+	}
+	before := plans()
+	atAct(t, func(stage, _, _ string) error {
+		if stage == "waiting" {
+			f.expect(t, "POST", "/api/brakeman/requests/"+f.req+"/cancel", map[string]any{"opId": opID()}, http.StatusOK, "")
+		}
+		return nil
+	})
+	if status, out := f.asTurn(t, http.MethodPost, "/api/dispatch/tickets/CND-1/plans", body); status != http.StatusConflict || codeOf(out) != "turn_over" {
+		t.Fatalf("a retry of a cancelled request: %d %v", status, out)
+	}
+	if n := plans(); n != before {
+		t.Fatalf("%d revisions proposed", n-before)
+	}
+	if acts := f.acts(t); len(acts) != 1 || acts[0].State != brakeman.ActPending {
+		t.Fatalf("acts %+v", acts)
+	}
+}
+
+// TestReleaseWaitsForAnAct: an act held before its operation keeps
+// Brakeman's owner lock through a release that has begun (a second server
+// opening the records is read-only), a new act is refused 503
+// shutting_down meanwhile, and the release returns once the act has.
+func TestReleaseWaitsForAnAct(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	held, letGo := make(chan struct{}), make(chan struct{})
+	var once, freed sync.Once
+	free := func() { freed.Do(func() { close(letGo) }) }
+	t.Cleanup(free)
+	atAct(t, func(stage, _, opID string) error {
+		if stage == "pending" && opID == "a-1" {
+			once.Do(func() {
+				close(held)
+				<-letGo
+			})
+		}
+		return nil
+	})
+	acted := make(chan int, 1)
+	go func() {
+		status, _ := f.launchAct(t, map[string]any{"opId": "a-1"})
+		acted <- status
+	}()
+	<-held
+	released := make(chan struct{})
+	go func() {
+		f.bk.desk.release(context.Background())
+		close(released)
+	}()
+	if !waitFor(30*time.Second, f.bk.desk.closing.Load) {
+		t.Fatal("the desk never began to close")
+	}
+	if status, out := f.launchAct(t, map[string]any{"opId": "a-2"}); status != http.StatusServiceUnavailable || codeOf(out) != "shutting_down" {
+		t.Fatalf("an act sent as the server stops: %d %v", status, out)
+	}
+	st, err := store.Open(f.srv.store.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := brakeman.Open(st, brakeman.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if ro, _ := other.ReadOnly(); !ro {
+		t.Fatal("the owner lock went while an act was under way")
+	}
+	select {
+	case <-released:
+		t.Fatal("the release returned while an act was under way")
+	default:
+	}
+	free()
+	<-acted
+	<-released
+}
+
+// TestAnActForwardsWhatItWasCheckedBy: a body whose keys differ only in
+// case is decoded once, so the follow-up proposed is based on the
+// revision admission checked, and an opId spelled twice cannot replace
+// the derived key its receipt is kept under.
+func TestAnActForwardsWhatItWasCheckedBy(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	proposed := f.proposed(t, f.crew.ID, nil)
+	raw := json.RawMessage(`{"opId":"c-1","crew":"` + f.crew.ID + `","basedOn":"` + proposed + `","BASEDON":"` + f.plan + `"}`)
+	status, out := f.asTurn(t, http.MethodPost, "/api/dispatch/tickets/CND-1/plans", raw)
+	if status != http.StatusCreated {
+		t.Fatalf("the follow-up: %d %v", status, out)
+	}
+	if plan := entityOf(t, out, "plan"); plan["basedOn"] != f.plan {
+		t.Fatalf("checked against %s, proposed on %v", f.plan, plan["basedOn"])
+	}
+	raw = json.RawMessage(`{"opId":"c-2","crew":"` + f.crew.ID + `","basedOn":"` + f.plan + `","opid":"c-3","note":"again"}`)
+	if status, out := f.asTurn(t, http.MethodPost, "/api/dispatch/tickets/CND-1/plans", raw); status != http.StatusCreated {
+		t.Fatalf("the second follow-up: %d %v", status, out)
+	}
+	acts := f.acts(t)
+	if len(acts) != 2 {
+		t.Fatalf("acts %+v", acts)
+	}
+	if _, found, err := f.srv.dispatch.Receipt(t.Context(), brakemanActor, acts[1].Op); err != nil || !found {
+		t.Fatalf("no receipt under the act's derived key %s: %v %v", acts[1].Op, found, err)
+	}
+	for _, id := range []string{"c-2", "c-3"} {
+		if _, found, _ := f.srv.dispatch.Receipt(t.Context(), brakemanActor, id); found {
+			t.Fatalf("a receipt under the turn's own op id %s", id)
+		}
+	}
+}
+
+// TestAFollowupsBaseIsApprovedAsItCommits: a follow-up admitted while its
+// base was approved, the base withdrawn before the proposal commits, is
+// refused by Dispatch's own transaction (stale_plan), nothing proposed.
+func TestAFollowupsBaseIsApprovedAsItCommits(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	atAct(t, func(stage, _, _ string) error {
+		if stage == "pending" {
+			rc, err := f.srv.dispatch.WithdrawPlan(context.Background(), dispatch.Op{Actor: dispatch.ActorAdmin, ID: opID(), By: "Nate"}, f.plan)
+			if err != nil || rc.Status != dispatch.StatusDone {
+				t.Errorf("the withdrawal: %+v %v", rc, err)
+			}
+		}
+		return nil
+	})
+	before, err := f.srv.dispatch.Plans(t.Context(), "CND-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, out := f.asTurn(t, http.MethodPost, "/api/dispatch/tickets/CND-1/plans", map[string]any{"opId": "f-1", "crew": f.crew.ID, "basedOn": f.plan})
+	if status != http.StatusConflict || codeOf(out) != dispatch.RefusalStalePlan {
+		t.Fatalf("a base withdrawn before the commit: %d %v", status, out)
+	}
+	if after, err := f.srv.dispatch.Plans(t.Context(), "CND-1"); err != nil || len(after) != len(before) {
+		t.Fatalf("%d revisions, %d before: %v", len(after), len(before), err)
+	}
+	if acts := f.acts(t); len(acts) != 1 || acts[0].State != brakeman.ActRefused || !strings.Contains(acts[0].Why, "is withdrawn") {
+		t.Fatalf("acts %+v", acts)
+	}
+	if rc, found, err := f.srv.dispatch.Receipt(t.Context(), brakemanActor, actOp(f.req, "f-1")); err != nil || !found || rc.Refusal != dispatch.RefusalStalePlan {
+		t.Fatalf("Dispatch's receipt: %+v %v %v", rc, found, err)
+	}
+}
+
+// TestAnActsMakingIsHeldToTheScope: the run a launch makes and the crew a
+// follow-up plans are held to the scope's crews and repositories as the
+// ticket is. With the ticket in the scope through a run of its crew, an
+// act of that crew runs and an act of another crew is refused
+// outside_scope; with repositories named, an act whose crew's repository
+// is not among them is. Nothing is made by a refusal.
+func TestAnActsMakingIsHeldToTheScope(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	other := f.saveCrew(t, teamCrew("Other", "ready-cat"))
+	// CND-1 is linked to a stopped run of the fixture's crew.
+	run := f.crew.ID + "-0123abcd"
+	crewJSON, _ := json.Marshal(map[string]string{"id": f.crew.ID, "cwd": f.repo})
+	if _, err := f.srv.ledger.Transition(t.Context(), run, func(tx *ledger.Tx) error {
+		return tx.PutRun(ledger.RunRow{ID: run, CrewID: f.crew.ID, Crew: string(crewJSON), State: ledger.RunStopped, CreatedAt: tx.Now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.srv.records.Save(crew.Run{ID: run, CrewID: f.crew.ID, Name: f.crew.ID, Cwd: f.repo, State: crew.RunStopped, Managed: &crew.Managed{Revision: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	doneOf(t)(f.srv.dispatch.AddLink(t.Context(), adminOp("Ann"), "CND-1", dispatch.NewLink{Kind: dispatch.LinkRun, Ref: run}, nil))
+	f.endTurn(t)
+	f.turn(t, everyGrant, func(c map[string]any) { c["scope"] = map[string]any{"crews": []any{f.crew.ID}} })
+	if status, out := f.launchAct(t, map[string]any{"opId": "a-1"}); status != http.StatusCreated {
+		t.Fatalf("a launch of the crew in the scope: %d %v", status, out)
+	}
+	plans, err := f.srv.dispatch.Plans(t.Context(), "CND-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, out := f.asTurn(t, http.MethodPost, "/api/dispatch/tickets/CND-1/plans", map[string]any{"opId": "f-1", "crew": other.ID, "basedOn": f.plan}); status != http.StatusForbidden || codeOf(out) != "outside_scope" {
+		t.Fatalf("a follow-up of a crew outside the scope: %d %v", status, out)
+	}
+	// A revision of the other crew, approved by the operator.
+	theirs := f.proposed(t, other.ID, nil)
+	f.expect(t, "POST", "/api/dispatch/plans/"+theirs+"/approve", map[string]any{"opId": opID(), "byName": "Nate", "note": "Go."}, http.StatusOK, "")
+	launches := len(f.launches(t))
+	if status, out := f.launchAct(t, map[string]any{"opId": "a-2", "plan": theirs}); status != http.StatusForbidden || codeOf(out) != "outside_scope" {
+		t.Fatalf("a launch of a crew outside the scope: %d %v", status, out)
+	}
+
+	// The repositories: the crew's is not among them.
+	f.endTurn(t)
+	f.turn(t, everyGrant, func(c map[string]any) {
+		c["scope"] = map[string]any{"repos": []any{filepath.Join(t.TempDir(), "elsewhere")}}
+	})
+	if status, out := f.launchAct(t, map[string]any{"opId": "a-3", "plan": theirs}); status != http.StatusForbidden || codeOf(out) != "outside_scope" {
+		t.Fatalf("a launch outside the scope's repositories: %d %v", status, out)
+	}
+	if status, out := f.asTurn(t, http.MethodPost, "/api/dispatch/tickets/CND-1/plans", map[string]any{"opId": "f-2", "crew": f.crew.ID, "basedOn": theirs}); status != http.StatusForbidden || codeOf(out) != "outside_scope" {
+		t.Fatalf("a follow-up outside the scope's repositories: %d %v", status, out)
+	}
+	if n := len(f.launches(t)); n != launches {
+		t.Fatalf("%d launches made by refusals", n-launches)
+	}
+	now, err := f.srv.dispatch.Plans(t.Context(), "CND-1")
+	if err != nil || len(now) != len(plans)+1 {
+		t.Fatalf("%d revisions, %d before the refusals and one the operator's: %v", len(now), len(plans), err)
+	}
+	if acts := f.acts(t); len(acts) != 0 {
+		t.Fatalf("acts kept by refusals %+v", acts)
+	}
+}
+
+// TestACommittedActOutlivesItsPrunedReceipt: an act whose receipt Dispatch
+// pruned is answered as committed, never checked again as new: its retry
+// answers the launch it made though the ticket moved since, one launch;
+// and one stopped before its copy is completed done by the recovery from
+// the change its launch recorded.
+func TestACommittedActOutlivesItsPrunedReceipt(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	body := map[string]any{"opId": "a-1", "expectedRev": f.ticketRev(t)}
+	status, first := f.launchAct(t, body)
+	if status != http.StatusCreated {
+		t.Fatalf("the act: %d %v", status, first)
+	}
+	f.pruneActReceipt(t, "a-1")
+	f.edit(t, map[string]any{"description": "It loops twice."})
+	status, again := f.launchAct(t, map[string]any{"opId": "a-1", "expectedRev": body["expectedRev"]})
+	if status != http.StatusOK || receiptOf(t, again)["id"] != receiptOf(t, first)["id"] {
+		t.Fatalf("the retry after the prune: %d %v", status, again)
+	}
+	if acts, launches := f.acts(t), f.launches(t); len(acts) != 1 || acts[0].State != brakeman.ActDone || len(launches) != 1 {
+		t.Fatalf("acts %+v, launches %+v", acts, launches)
+	}
+
+	// Stopped before the copy, its receipt pruned before the recovery.
+	plan := f.approved(t, nil)
+	holdActAt(t, "committed")
+	if status, out := f.launchAct(t, map[string]any{"opId": "a-2", "plan": plan}); status != http.StatusServiceUnavailable {
+		t.Fatalf("the act: %d %v", status, out)
+	}
+	actSeam.Store(nil)
+	launches := f.launches(t)
+	f.pruneActReceipt(t, "a-2")
+	f.endTurn(t)
+	f.bk.desk.recoverMakes(t.Context())
+	acts := f.acts(t)
+	if len(acts) != 2 {
+		t.Fatalf("acts after the recovery %+v", acts)
+	}
+	made := slices.IndexFunc(launches, func(l dispatch.LaunchSummary) bool { return l.ID == acts[1].Receipt })
+	if len(launches) != 2 || acts[1].State != brakeman.ActDone || acts[1].Receipt == acts[0].Receipt || made < 0 {
+		t.Fatalf("acts after the recovery %+v, launches %+v", acts, launches)
+	}
+}
+
+// TestAnActsWordsFitItsEntry: a refusal whose words JSON escapes past the
+// room the entry has (a base of quotes, quoted again in the route's
+// words) is copied refused with its words cut to fit, never left pending.
+func TestAnActsWordsFitItsEntry(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	status, out := f.asTurn(t, http.MethodPost, "/api/dispatch/tickets/CND-1/plans", map[string]any{"opId": "f-1", "crew": f.crew.ID, "basedOn": f.plan, "base": strings.Repeat(`"`, 200)})
+	if status != http.StatusConflict || codeOf(out) != dispatch.RefusalInvalid {
+		t.Fatalf("the follow-up: %d %v", status, out)
+	}
+	acts := f.acts(t)
+	if len(acts) != 1 || acts[0].State != brakeman.ActRefused || acts[0].Why == "" || !strings.HasPrefix(acts[0].Why, "the base ") {
+		t.Fatalf("acts %+v", acts)
+	}
+	if b, _ := json.Marshal(acts[0]); len(b) > brakeman.MaxActBytes {
+		t.Fatalf("the entry is %d bytes", len(b))
+	}
+}
+
+// TestAShutdownLetsNoActLaunchPastItsStops: an act held after it was
+// written pending, before its operation, as the server begins to shut
+// down runs nothing once let go (503 shutting_down; the next start marks
+// it not_run), and one held inside its operation is waited for before
+// the runs are stopped, so the run it launched is stopped with the rest.
+func TestAShutdownLetsNoActLaunchPastItsStops(t *testing.T) {
+	type answer struct {
+		status int
+		out    map[string]any
+	}
+	shutdown := func(f *actFixture) <-chan struct{} {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			f.srv.Shutdown(ctx)
+		}()
+		if !waitFor(30*time.Second, f.bk.desk.closing.Load) {
+			t.Fatal("the shutdown never quiesced the desk")
+		}
+		return done
+	}
+	stopped := func(f *actFixture) {
+		for _, run := range f.srv.runs.List() {
+			if run.StoppedAt == nil {
+				t.Errorf("the run %s runs after the shutdown", run.ID)
+			}
+		}
+	}
+
+	t.Run("before its operation", func(t *testing.T) {
+		f := newActFixture(t, everyGrant, nil)
+		held, letGo := make(chan struct{}), make(chan struct{})
+		var once, freed sync.Once
+		free := func() { freed.Do(func() { close(letGo) }) }
+		t.Cleanup(free)
+		atAct(t, func(stage, _, opID string) error {
+			if stage == "pending" && opID == "a-1" {
+				once.Do(func() {
+					close(held)
+					<-letGo
+				})
+			}
+			return nil
+		})
+		acted := make(chan answer, 1)
+		go func() {
+			status, out := f.launchAct(t, map[string]any{"opId": "a-1"})
+			acted <- answer{status, out}
+		}()
+		<-held
+		done := shutdown(f)
+		free()
+		a := <-acted
+		<-done
+		if a.status != http.StatusServiceUnavailable || codeOf(a.out) != "shutting_down" {
+			t.Fatalf("an act let go as the server stops: %d %v", a.status, a.out)
+		}
+		stopped(f)
+		again := f.restart()
+		if list, err := again.srv.dispatch.Launches(t.Context(), "CND-1", 0); err != nil || len(list) != 0 {
+			t.Fatalf("launches after the shutdown: %+v %v", list, err)
+		}
+		if !waitFor(30*time.Second, func() bool {
+			r, err := again.srv.brakeman.st.Get(f.req)
+			return err == nil && len(r.Acts) == 1 && r.Acts[0].State == brakeman.ActNotRun
+		}) {
+			r, _ := again.srv.brakeman.st.Get(f.req)
+			t.Fatalf("the act after a restart: %+v", r.Acts)
+		}
+	})
+
+	t.Run("inside its operation", func(t *testing.T) {
+		f := newActFixture(t, everyGrant, nil)
+		held, letGo := make(chan struct{}), make(chan struct{})
+		var once, freed sync.Once
+		free := func() { freed.Do(func() { close(letGo) }) }
+		t.Cleanup(free)
+		f.srv.launches.setSeams(func(g *launchGate) {
+			g.beforePlanned = func(string) {
+				once.Do(func() {
+					close(held)
+					<-letGo
+				})
+			}
+		})
+		acted := make(chan answer, 1)
+		go func() {
+			status, out := f.launchAct(t, map[string]any{"opId": "a-1"})
+			acted <- answer{status, out}
+		}()
+		<-held
+		done := shutdown(f)
+		// The shutdown waits in the desk's quiesce: the webhooks, closed
+		// next, are not.
+		if f.srv.webhooks.ctx.Err() != nil {
+			t.Fatal("the shutdown went past the desk while an act's operation was under way")
+		}
+		free()
+		a := <-acted
+		<-done
+		if a.status != http.StatusCreated {
+			t.Fatalf("the act under way as the server stops: %d %v", a.status, a.out)
+		}
+		runID, _ := entityOf(t, a.out, "launch")["runId"].(string)
+		if !slices.ContainsFunc(f.srv.runs.List(), func(r crew.Run) bool { return r.ID == runID }) {
+			t.Fatalf("the act's run %s is not the engine's", runID)
+		}
+		stopped(f)
+	})
+
+	// The shutdown's wait runs out while the act is held inside its
+	// operation, before the engine is given its run; the act is let go
+	// once the shutdown has stopped the runs it lists, and answered
+	// before the sessions close and the ledger goes: it starts no run.
+	t.Run("past the shutdown's wait", func(t *testing.T) {
+		f := newActFixture(t, everyGrant, nil)
+		held, letGo := make(chan struct{}), make(chan struct{})
+		var once, freed sync.Once
+		free := func() { freed.Do(func() { close(letGo) }) }
+		t.Cleanup(free)
+		f.srv.launches.setSeams(func(g *launchGate) {
+			g.beforePlanned = func(string) {
+				once.Do(func() {
+					close(held)
+					<-letGo
+				})
+			}
+		})
+		acted := make(chan answer, 1)
+		go func() {
+			status, out := f.launchAct(t, map[string]any{"opId": "a-1"})
+			acted <- answer{status, out}
+		}()
+		<-held
+		var late answer
+		f.srv.launches.setSeams(func(g *launchGate) {
+			g.afterStops = func() {
+				free()
+				late = <-acted
+			}
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			f.srv.Shutdown(ctx)
+		}()
+		if !waitFor(30*time.Second, f.bk.desk.closing.Load) {
+			t.Fatal("the shutdown never quiesced the desk")
+		}
+		cancel()
+		<-done
+		if late.status != http.StatusConflict || codeOf(late.out) != "launch_failed" {
+			t.Fatalf("an act let go past the shutdown's stops: %d %v", late.status, late.out)
+		}
+		if l := entityOf(t, late.out, "launch"); l["state"] != dispatch.LaunchFailed || !strings.Contains(l["why"].(string), "shutting down") {
+			t.Fatalf("the act's launch: %v", l)
+		}
+		stopped(f)
+		if runs := f.srv.runs.List(); slices.ContainsFunc(runs, func(r crew.Run) bool { return r.Ticket != nil }) {
+			t.Fatalf("a run from the ticket after the shutdown: %+v", runs)
+		}
+	})
+}
+
+// TestAnActsAnswerIsReadThroughTheGrant: an act's answer gives the turn
+// what its grant reads as it is answered: with the runs hidden, no run,
+// the launch Dispatch keeps noted in its read log and counted as a read;
+// sent again once Dispatch is hidden too, its receipt alone, nothing
+// noted.
+func TestAnActsAnswerIsReadThroughTheGrant(t *testing.T) {
+	f := newActFixture(t, everyGrant, func(c map[string]any) { c["visibility"].(map[string]any)["runs"] = false })
+	reads := func() (int, []brakeman.Read) {
+		r, err := f.bk.desk.st.Get(f.req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		log, err := f.bk.desk.st.Reads(f.req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Reads, log.Reads
+	}
+	n0, log0 := reads()
+	status, out := f.launchAct(t, map[string]any{"opId": "a-1"})
+	if status != http.StatusCreated {
+		t.Fatalf("the act: %d %v", status, out)
+	}
+	if _, ok := out["run"]; ok {
+		t.Fatalf("a turn that may not see runs is given its run: %v", out)
+	}
+	launch := entityOf(t, out, "launch")
+	n1, log1 := reads()
+	if n1 != n0+1 || len(log1) != len(log0)+1 {
+		t.Fatalf("the answer counted %d reads and noted %d", n1-n0, len(log1)-len(log0))
+	}
+	if rd := log1[len(log1)-1]; rd.Ref.String() != "launch:"+launch["id"].(string) || rd.Class != brakeman.ClassDispatch || rd.State != dispatch.LaunchStarted {
+		t.Fatalf("the launch noted as %+v", rd)
+	}
+	f.bk.configure(t, func(c map[string]any) { c["visibility"].(map[string]any)["dispatch"] = false })
+	status, again := f.launchAct(t, map[string]any{"opId": "a-1"})
+	if status != http.StatusOK || receiptOf(t, again)["id"] != launch["id"] || again["launch"] != nil || again["run"] != nil {
+		t.Fatalf("the act again with Dispatch hidden: %d %v", status, again)
+	}
+	if n2, log2 := reads(); n2 != n1 || len(log2) != len(log1) {
+		t.Fatalf("the receipt alone counted %d reads and noted %d", n2-n1, len(log2)-len(log1))
+	}
+}
+
+// TestABriefFromAnActIsWithheldOnceItsSourceIsHidden: a turn that read
+// nothing of Dispatch but an act's answer keeps dispatch in its brief's
+// footprint, so the brief is withheld from a turn with Dispatch off.
+func TestABriefFromAnActIsWithheldOnceItsSourceIsHidden(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	status, out := f.launchAct(t, map[string]any{"opId": "a-1"})
+	if status != http.StatusCreated {
+		t.Fatalf("the act: %d %v", status, out)
+	}
+	runID := entityOf(t, out, "launch")["runId"].(string)
+	if status, out := f.bk.submit(t, f.sid, f.tok, "b-1", factBrief("run:"+runID)); status != http.StatusCreated {
+		t.Fatalf("the brief: %d %v", status, out)
+	}
+	early := f.req
+	if r, _ := f.bk.desk.st.Get(early); r.Footprint == nil || !slices.Contains(r.Footprint.Classes, brakeman.ClassDispatch) {
+		t.Fatalf("the brief's footprint: %+v", r.Footprint)
+	}
+	f.expect(t, "POST", "/api/runs/"+f.bk.runOf(t, f.sid)+"/stop", nil, http.StatusOK, "")
+	f.bk.slotFree(t)
+	f.turn(t, everyGrant, func(c map[string]any) { c["visibility"].(map[string]any)["dispatch"] = false })
+	status, briefs := f.asTurn(t, http.MethodGet, "/api/brakeman/briefs", nil)
+	if status != http.StatusOK {
+		t.Fatalf("the briefs: %d %v", status, briefs)
+	}
+	found := false
+	for _, b := range briefs["briefs"].([]any) {
+		if m := b.(map[string]any); m["id"] == early {
+			found = true
+			if whole(m) || m["withheld"] == nil {
+				t.Fatalf("the brief from an act, with Dispatch off: %v", m)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("the brief %s is not listed: %v", early, briefs)
+	}
+}
+
+// TestAnActsRefusalInDispatchsWordsIsInTheFootprint: an act refused past
+// the visibility check, in Dispatch's words (a revision only proposed),
+// notes dispatch among the classes the turn's answers used; one refused
+// as not visible does not.
+func TestAnActsRefusalInDispatchsWordsIsInTheFootprint(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	proposed := f.proposed(t, f.crew.ID, nil)
+	if status, out := f.launchAct(t, map[string]any{"opId": "a-1", "plan": proposed}); status != http.StatusConflict || codeOf(out) != "stale_target" {
+		t.Fatalf("a revision only proposed: %d %v", status, out)
+	}
+	if used := f.bk.desk.classesUsed(f.req); !slices.Contains(used, brakeman.ClassDispatch) {
+		t.Fatalf("the classes used: %v", used)
+	}
+
+	h := newActFixture(t, everyGrant, func(c map[string]any) { c["visibility"].(map[string]any)["dispatch"] = false })
+	if status, out := h.launchAct(t, map[string]any{"opId": "a-1"}); status != http.StatusForbidden || codeOf(out) != "not_visible" {
+		t.Fatalf("Dispatch hidden: %d %v", status, out)
+	}
+	if used := h.bk.desk.classesUsed(h.req); slices.Contains(used, brakeman.ClassDispatch) {
+		t.Fatalf("the classes used by a refusal that read nothing: %v", used)
+	}
+}
+
+// TestALateActKeepsTheNextTurnsFootprint: an act held after its
+// operation, its turn cancelled and the next turn begun meanwhile, is
+// answered once that turn has read Dispatch's projects (a read that notes
+// no ref): the next turn keeps dispatch among the classes its answers
+// used, so its brief's footprint carries it.
+func TestALateActKeepsTheNextTurnsFootprint(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	held, letGo := make(chan struct{}), make(chan struct{})
+	var once, freed sync.Once
+	free := func() { freed.Do(func() { close(letGo) }) }
+	t.Cleanup(free)
+	atAct(t, func(stage, _, opID string) error {
+		if stage == "committed" && opID == "a-1" {
+			once.Do(func() {
+				close(held)
+				<-letGo
+			})
+		}
+		return nil
+	})
+	// The first turn as it is now: f is the next turn's once it begins.
+	first := *f
+	acted := make(chan int, 1)
+	go func() {
+		status, _ := first.launchAct(t, map[string]any{"opId": "a-1"})
+		acted <- status
+	}()
+	<-held
+	f.endTurn(t)
+	f.turn(t, everyGrant, nil)
+	if status, out := f.asTurn(t, http.MethodGet, "/api/dispatch/projects", nil); status != http.StatusOK {
+		t.Fatalf("the next turn's read: %d %v", status, out)
+	}
+	if used := f.bk.desk.classesUsed(f.req); !slices.Contains(used, brakeman.ClassDispatch) {
+		t.Fatalf("the next turn's classes before the late answer: %v", used)
+	}
+	free()
+	<-acted
+	if used := f.bk.desk.classesUsed(f.req); !slices.Contains(used, brakeman.ClassDispatch) {
+		t.Fatalf("the next turn's classes after the late answer: %v", used)
+	}
+	if status, out := f.bk.submit(t, f.sid, f.tok, "b-1", factBrief("run:"+f.bk.runOf(t, f.sid))); status != http.StatusCreated {
+		t.Fatalf("the brief: %d %v", status, out)
+	}
+	if r, _ := f.bk.desk.st.Get(f.req); r.Footprint == nil || !slices.Contains(r.Footprint.Classes, brakeman.ClassDispatch) {
+		t.Fatalf("the next turn's footprint: %+v", r.Footprint)
+	}
+}
+
+// TestAKeptRefusalIsAnsweredFromItsReceipt: an act Dispatch refused with
+// its receipt kept (a follow-up whose base was superseded as it
+// committed), sent again once its base is approved again, its receipt
+// pruned after the act found it and before the operation would run, is
+// answered by that refusal as found, nothing proposed: never run anew
+// past its checks and its pending entry.
+func TestAKeptRefusalIsAnsweredFromItsReceipt(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	other := f.proposed(t, f.crew.ID, nil)
+	approve := func(id string) error {
+		rc, err := f.srv.dispatch.ApprovePlan(context.Background(), dispatch.Op{Actor: dispatch.ActorAdmin, ID: opID(), By: "Nate"}, id, 0, "Go.")
+		if err == nil && rc.Status != dispatch.StatusDone {
+			err = fmt.Errorf("refused: %s", rc.Error)
+		}
+		return err
+	}
+	var sent atomic.Int32
+	op := actOp(f.req, "f-1")
+	atAct(t, func(stage, _, opID string) error {
+		if stage != "pending" || opID != "f-1" {
+			return nil
+		}
+		var err error
+		if sent.Add(1) == 1 {
+			// The base superseded as the follow-up commits.
+			err = approve(other)
+		} else {
+			err = pruneReceipt(f.srv.dispatch, op)
+		}
+		if err != nil {
+			t.Errorf("at the act's %d send: %v", sent.Load(), err)
+		}
+		return nil
+	})
+	body := map[string]any{"opId": "f-1", "crew": f.crew.ID, "basedOn": f.plan}
+	status, out := f.asTurn(t, http.MethodPost, "/api/dispatch/tickets/CND-1/plans", body)
+	if status != http.StatusConflict || codeOf(out) != dispatch.RefusalStalePlan {
+		t.Fatalf("a base superseded as it commits: %d %v", status, out)
+	}
+	refused := receiptOf(t, out)
+	if err := approve(f.plan); err != nil {
+		t.Fatalf("the base approved again: %v", err)
+	}
+	before, err := f.srv.dispatch.Plans(t.Context(), "CND-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, again := f.asTurn(t, http.MethodPost, "/api/dispatch/tickets/CND-1/plans", body)
+	if status != http.StatusConflict || codeOf(again) != dispatch.RefusalStalePlan || receiptOf(t, again)["id"] != refused["id"] || receiptOf(t, again)["repeat"] != true {
+		t.Fatalf("the refusal sent again, its receipt pruned: %d %v", status, again)
+	}
+	if sent.Load() != 2 {
+		t.Fatalf("the act was sent %d times past its admission", sent.Load())
+	}
+	if after, err := f.srv.dispatch.Plans(t.Context(), "CND-1"); err != nil || len(after) != len(before) {
+		t.Fatalf("%d revisions, %d before: %v", len(after), len(before), err)
+	}
+	if rc, found, err := f.srv.dispatch.Receipt(t.Context(), brakemanActor, op); err != nil || found {
+		t.Fatalf("a receipt after the prune: %+v %v %v", rc, found, err)
+	}
+	if acts := f.acts(t); len(acts) != 1 || acts[0].State != brakeman.ActRefused || !strings.Contains(acts[0].Why, "superseded") {
+		t.Fatalf("acts %+v", acts)
 	}
 }

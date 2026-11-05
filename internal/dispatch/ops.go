@@ -870,6 +870,38 @@ func (s *Store) Receipt(ctx context.Context, actor, id string) (rc Receipt, foun
 	return rc, true, nil
 }
 
+// Committed answers whether the actor's operation with the id committed,
+// whether or not its receipt is still kept: the receipt, found, when the
+// store holds it (done, or a refusal kept); once it is pruned, from the
+// changes log, which keeps the operation's first row (n 0) for good, a
+// done Repeat receipt whose id is what that row made for a plan
+// revision's proposal or a launch (the receipt's id), none for another
+// operation. found is false when neither holds it: never given, a
+// refusal never kept, or one whose receipt is pruned (a refusal writes no
+// change row). A caller that must tell an operation that never committed
+// from one whose receipt went asks this, never Receipt alone.
+func (s *Store) Committed(ctx context.Context, actor, id string) (rc Receipt, found bool, err error) {
+	if rc, found, err = s.Receipt(ctx, actor, id); err != nil || found {
+		return rc, found, err
+	}
+	db, err := s.conn()
+	if err != nil {
+		return Receipt{}, false, err
+	}
+	var entity, entityID, kind string
+	switch err := db.QueryRowContext(ctx, "SELECT entity, entity_id, op FROM changes WHERE actor = ? AND op_id = ? AND n = 0", actor, id).Scan(&entity, &entityID, &kind); {
+	case isNoRows(err):
+		return Receipt{}, false, nil
+	case err != nil:
+		return Receipt{}, false, err
+	}
+	rc = Receipt{OpID: id, Status: StatusDone, Repeat: true}
+	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch) {
+		rc.ID = entityID
+	}
+	return rc, true, nil
+}
+
 // OpTicket is the key of the ticket the actor's operation with the id
 // changed, read from the changes log, the ticket its first row (n 0)
 // names: the log keeps it after the receipt is pruned and after the

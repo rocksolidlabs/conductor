@@ -6,11 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
@@ -309,6 +312,39 @@ func TestObservePlansSaysWhetherTheApprovalHolds(t *testing.T) {
 	f.expectRead(t, "/api/dispatch/tickets/"+f.otherTicket+"/plans", http.StatusOK, "")
 }
 
+// A deleted ticket's plan revisions and launches, which the route still
+// answers at the states the deletion left, are read as their refs
+// resolve: noted deleted with no rev, the approval holding false and the
+// answer saying deleted, so a brief citing them at once shows nothing
+// changed between what the turn read and what is.
+func TestObservePlansOfADeletedTicketReadDeleted(t *testing.T) {
+	f := newDS2Fixture(t)
+	f.turn(t, nil)
+	doneOf(t)(f.srv.dispatch.DeleteTicket(t.Context(), adminOp("Ann"), f.ticket))
+	plan, launch := "plan:"+f.ticket+"/1", "launch:"+f.launch
+	out := f.expectRead(t, "/api/dispatch/tickets/"+f.ticket+"/plans", http.StatusOK, "")
+	if got := refsOf(t, out["plans"]); len(got) != 1 || got[0] != plan || out["holds"] != false || out["deleted"] != true {
+		t.Fatalf("the plans: %v holds %v deleted %v", got, out["holds"], out["deleted"])
+	}
+	for _, r := range []string{plan, launch} {
+		if rd, ok := f.readOf(t, r); !ok || rd.State != refDeleted || rd.Rev != "" {
+			t.Errorf("the read of %s: %+v %v", r, rd, ok)
+		}
+	}
+	if status, out := f.submit(t, f.sid, f.tok, fmt.Sprintf("b-%d", bkOps.Add(1)), factBrief(plan, launch)); status != http.StatusCreated {
+		t.Fatalf("the brief: %d %v", status, out)
+	}
+	_, res, err := f.desk.st.Brief(f.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []string{plan, launch} {
+		if got := byRef(res)[r]; got.Seen.State != refDeleted || got.Now.State != refDeleted || got.Seen.Rev != got.Now.Rev {
+			t.Errorf("the brief's resolution of %s: seen %+v now %+v", r, got.Seen, got.Now)
+		}
+	}
+}
+
 // A turn reads a run's candidates through the shared route: each with its
 // candidate: ref, noted standing at the commit it submitted, and each
 // receipt with its check: ref, noted with its log's SHA-256 as the step
@@ -473,6 +509,219 @@ func TestAPendingDraftPlanIsProposedOnce(t *testing.T) {
 	}
 }
 
+// A candidate's state is of one revision of its run, as the candidates'
+// route reads it: a verification committed between its task's row and
+// its attempt's (the attempt succeeded and made its task's result, both
+// rows in one transition) is read again, so the candidate is standing,
+// never the attempt's succeeded beside the task's earlier result.
+func TestACandidateIsReadAtOneRevision(t *testing.T) {
+	f := newDS2Fixture(t)
+	cfg := brakeman.DefaultConfig(f.root)
+	ctx := t.Context()
+	result, _ := json.Marshal(crew.Result{Summary: "built again", Commit: f.commit})
+	attempt := ledger.AttemptRow{Where: ledger.WhereNative, TaskID: "build", N: 3, Member: "lead", State: ledger.AttemptVerifying, StartCommit: f.commit, ResultCommit: f.commit, Result: string(result)}
+	if _, err := f.srv.ledger.Transition(ctx, f.candRun, func(tx *ledger.Tx) error {
+		attempt.ReservedAt = tx.Now()
+		if err := tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: crew.TaskWork, State: ledger.TaskRunning, Attempts: 3, ResultAttempt: 1}); err != nil {
+			return err
+		}
+		return tx.PutAttempt(attempt)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rr := f.srv.newRefResolver(f.desk.st, brakeman.Request{ID: "br-99", Config: brakeman.SnapshotOf(cfg)}, brakeman.ReadLog{}, cfg)
+	reads := 0
+	rr.taskRead = func() {
+		reads++
+		if reads > 1 {
+			return
+		}
+		if _, err := f.srv.ledger.Transition(ctx, f.candRun, func(tx *ledger.Tx) error {
+			attempt.State, attempt.ClosedAt = ledger.AttemptSucceeded, tx.Now()
+			if err := tx.PutAttempt(attempt); err != nil {
+				return err
+			}
+			return tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: crew.TaskWork, State: ledger.TaskSucceeded, Attempts: 3, ResultAttempt: 3})
+		}); err != nil {
+			t.Error(err)
+		}
+	}
+	cand := ref(t, "candidate:"+f.candRun+"/build/3")
+	got, err := rr.resolveAll(ctx, brakeman.Brief{Schema: brakeman.BriefSchema, Title: "t", Summary: "s", Items: []brakeman.Item{fact("the candidate", cand)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := got[0].Now; n.State != "standing" || n.Rev != f.commit || reads != 2 {
+		t.Fatalf("now %+v after %d reads", n, reads)
+	}
+}
+
+// The same make asked again while it runs waits for it: a rejoin whose
+// propose route would refuse what the first had already read (the crew
+// deleted after the first read it) never settles the make refused while
+// the first's proposal commits. The first is held inside the propose
+// route, past its crew; the second is let go once it waits (or, without
+// the wait, once it has answered).
+func TestARejoinedPlanMakeWaitsForTheFirst(t *testing.T) {
+	f := newDS2Fixture(t)
+	req := f.drafts(t, f.draftPlan(t))
+	var claimed sync.Once
+	waiting := make(chan struct{}, 1)
+	atSeam(t, func(stage, _ string, _ int) error {
+		var err error
+		switch stage {
+		case "claimed":
+			claimed.Do(func() { err = errors.New("the server stopped at claimed") })
+		case "waiting":
+			select {
+			case waiting <- struct{}{}:
+			default:
+			}
+		}
+		return err
+	})
+	if status, out := f.make(t, req, 0, "plan-1", nil); status != http.StatusInternalServerError {
+		t.Fatalf("the claim: %d %v", status, out)
+	}
+	held, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	hold := func(string) { once.Do(func() { close(held); <-release }) }
+	proposeSeam.Store(&hold)
+	t.Cleanup(func() { proposeSeam.Store(nil) })
+	type answer struct {
+		status int
+		out    map[string]any
+	}
+	first, second := make(chan answer, 1), make(chan answer, 1)
+	go func() {
+		status, out := f.make(t, req, 0, "plan-1", nil)
+		first <- answer{status, out}
+	}()
+	<-held
+	if _, err := f.srv.crews.Delete(f.crew.ID); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		status, out := f.make(t, req, 0, "plan-1", nil)
+		second <- answer{status, out}
+	}()
+	var early *answer
+	select {
+	case <-waiting:
+	case a := <-second:
+		early = &a
+	}
+	close(release)
+	a := <-first
+	b := answer{}
+	if early != nil {
+		b = *early
+	} else {
+		b = <-second
+	}
+	if a.status != http.StatusOK || b.status != http.StatusOK {
+		t.Errorf("the first rejoin %d %v, the second %d %v", a.status, a.out, b.status, b.out)
+	}
+	if m := f.made(t, req, 0); m.State != brakeman.MadeDone || m.Plan == "" {
+		t.Fatalf("made: %+v", m)
+	}
+	if plans, _ := f.srv.dispatch.Plans(t.Context(), f.ticket); len(plans) != 2 {
+		t.Fatalf("%d revisions", len(plans))
+	}
+}
+
+// A rejoin that waited while the make it rejoined was refused and the
+// item was claimed again (another opId, the draft corrected) runs
+// nothing: the new claim's input is never proposed under the old claim's
+// op, and the item is made once, by the new claim. The first of plan-1's
+// rejoins is refused by the propose route (its crew gone, which leaves no
+// receipt) and held after it until the second waits; the second, once it
+// holds the item, is held until the new claim's completion waits behind
+// it.
+func TestASupersededRejoinRunsNothing(t *testing.T) {
+	f := newDS2Fixture(t)
+	req := f.drafts(t, f.draftPlan(t))
+	other := teamCrew("Team two", "cat")
+	other.Cwd = f.repo
+	saved, err := f.srv.crews.Create(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims, commits, waits, locks atomic.Int32
+	firstHeld, secondWaits, newWaits := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	atSeam(t, func(stage, _ string, _ int) error {
+		switch stage {
+		case "claimed":
+			if claims.Add(1) == 1 {
+				return errors.New("the server stopped at claimed")
+			}
+		case "committed":
+			if commits.Add(1) == 1 {
+				close(firstHeld)
+				<-secondWaits
+			}
+		case "waiting":
+			switch waits.Add(1) {
+			case 1:
+				close(secondWaits)
+			case 2:
+				close(newWaits)
+			}
+		case "locked":
+			if locks.Add(1) == 2 {
+				<-newWaits
+			}
+		}
+		return nil
+	})
+	if status, out := f.make(t, req, 0, "plan-1", nil); status != http.StatusInternalServerError {
+		t.Fatalf("the claim: %d %v", status, out)
+	}
+	if _, err := f.srv.crews.Delete(f.crew.ID); err != nil {
+		t.Fatal(err)
+	}
+	type answer struct {
+		status int
+		out    map[string]any
+	}
+	first, second, again := make(chan answer, 1), make(chan answer, 1), make(chan answer, 1)
+	go func() {
+		status, out := f.make(t, req, 0, "plan-1", nil)
+		first <- answer{status, out}
+	}()
+	<-firstHeld
+	go func() {
+		status, out := f.make(t, req, 0, "plan-1", nil)
+		second <- answer{status, out}
+	}()
+	a := <-first
+	if made, _ := a.out["made"].(map[string]any); a.status != http.StatusOK || made["state"] != brakeman.MadeRefused {
+		t.Fatalf("the first rejoin: %d %v", a.status, a.out)
+	}
+	edit := *f.draftPlan(t).DraftPlan
+	edit.Crew = saved.ID
+	go func() {
+		status, out := f.make(t, req, 0, "plan-2", edit)
+		again <- answer{status, out}
+	}()
+	b := <-second
+	if b.status != http.StatusConflict || errorCode(b.out) != "make_superseded" {
+		t.Errorf("the second rejoin: %d %v", b.status, b.out)
+	}
+	if c := <-again; c.status != http.StatusCreated {
+		t.Fatalf("the new claim: %d %v", c.status, c.out)
+	}
+	if m := f.made(t, req, 0); m.OpID != "plan-2" || m.State != brakeman.MadeDone || m.Plan == "" {
+		t.Fatalf("made: %+v", m)
+	}
+	if _, found, err := f.srv.dispatch.Receipt(t.Context(), dispatch.ActorAdmin, makeOp(req, 0, "plan-1")); err != nil || found {
+		t.Fatalf("a receipt under plan-1's op: %v %v", found, err)
+	}
+	if plans, _ := f.srv.dispatch.Plans(t.Context(), f.ticket); len(plans) != 2 || plans[0].CrewID != saved.ID && plans[1].CrewID != saved.ID {
+		t.Fatalf("the revisions: %+v", plans)
+	}
+}
+
 // Brakeman never approves a plan revision: its token, granted every read,
 // reaches no approval route (answered as no token is), and Dispatch
 // refuses an approval by any actor but the operator.
@@ -522,6 +771,15 @@ func TestTheDraftPlansBoundsAreDispatchs(t *testing.T) {
 	} {
 		if c.got != c.want {
 			t.Errorf("%s: a draft keeps %d, Dispatch %d", c.name, c.got, c.want)
+		}
+	}
+	// A base the draft takes is one the propose route takes, and the
+	// other way round: a multi-byte base at the bound and past it, and
+	// the spaces and controls beyond ASCII's.
+	for _, base := range []string{"main", "HEAD~2", "-main", "main x", "main\tx", "main\u0085x", "main\u00a0x", "main\u2028x", "main\u3000x", "main\u007fx",
+		strings.Repeat("a", maxPlanBase), strings.Repeat("a", maxPlanBase+1), strings.Repeat("é", maxPlanBase/2), strings.Repeat("é", maxPlanBase/2+1), "réf/é"} {
+		if draft, route := brakeman.DraftPlanBase(base), planBaseShape(base) == ""; draft != route {
+			t.Errorf("the base %q: the draft takes it %v, the propose route %v", base, draft, route)
 		}
 	}
 	kinds := []string{dispatch.DecisionApproval, dispatch.DecisionClarification}

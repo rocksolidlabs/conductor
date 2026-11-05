@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // harness is a brief CheckBrief takes, as JSON values: a fact first, then
@@ -287,9 +290,13 @@ func (c fieldCase) field(brief any, path []step, f Field) {
 		if f.Chars {
 			unit = "é"
 		} else {
-			// Bytes, not characters: half as many two-byte runes and one
-			// more is past the bound.
+			// Bytes, not characters: half as many two-byte runes is at
+			// the bound, and one more is past it.
+			set("at its bytes in two-byte runes", strings.Repeat("é", f.Max/2), "")
 			set("past its bytes in two-byte runes", strings.Repeat("é", f.Max/2+1), name)
+		}
+		if f.Pattern != "" {
+			set("outside its pattern", "no way!", name)
 		}
 		set("at its bound", strings.Repeat(unit, f.Max), "")
 		set("one past", strings.Repeat(unit, f.Max+1), name)
@@ -551,6 +558,24 @@ func TestTheSchemaIsTheTable(t *testing.T) {
 	if !strings.Contains(string(enc), `"crew":{"description":"required; a JSON object, at most 65536 bytes; the body POST /api/crews takes","properties":{"name":{"type":"string"}},"type":"object"}`) {
 		t.Errorf("the crew's schema is not the draft crew's: %s", enc)
 	}
+	// And no other kind's: every other branch is the table's alone, a
+	// draft plan's crew the saved crew's id its decoder takes.
+	oneOf := func(s map[string]any) []any {
+		return s["properties"].(map[string]any)["items"].(map[string]any)["items"].(map[string]any)["oneOf"].([]any)
+	}
+	with, without := oneOf(BriefJSONSchema(crew)), oneOf(BriefJSONSchema(nil))
+	for i, k := range kinds {
+		if k.Kind != ItemDraftCrew && !reflect.DeepEqual(with[i], without[i]) {
+			t.Errorf("%s: the crew's schema changed it: %v", k.Kind, with[i])
+		}
+		if k.Kind != ItemDraftPlan {
+			continue
+		}
+		c := with[i].(map[string]any)["properties"].(map[string]any)["crew"].(map[string]any)
+		if c["type"] != "string" || c["pattern"] != crewIDPattern.String() {
+			t.Errorf("a draft plan's crew: %v", c)
+		}
+	}
 }
 
 func compact(t *testing.T, raw json.RawMessage) string {
@@ -708,5 +733,51 @@ func TestAnEmptyBriefIsRefused(t *testing.T) {
 	}
 	if err := CheckAnswers(goodBrief(t), KindBriefing); err != nil {
 		t.Errorf("a briefing with a fact: %v", err)
+	}
+}
+
+// A draft plan's base is held to one rule in three places: the schema's
+// pattern, DraftPlanBase, and Dispatch's propose route (whose own test
+// holds it to DraftPlanBase). The pattern, read as RE2 reads it, refuses
+// exactly the runes DraftPlanBase refuses, and the bound is in bytes.
+func TestTheBasePatternIsDispatchs(t *testing.T) {
+	re := regexp.MustCompile(regexp.MustCompile(`\\u([0-9a-f]{4})`).ReplaceAllString(draftPlanBasePattern, `\x{$1}`))
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if !utf8.ValidRune(r) {
+			continue
+		}
+		for _, s := range []string{"a" + string(r), string(r)} {
+			if re.MatchString(s) != DraftPlanBase(s) {
+				t.Errorf("%q: the pattern %v, DraftPlanBase %v", s, re.MatchString(s), DraftPlanBase(s))
+			}
+		}
+	}
+	for _, c := range []struct {
+		base string
+		ok   bool
+	}{
+		{"", true}, {"main", true}, {"-main", false}, {"main x", false}, {"main\u0085x", false}, {"main x", false}, {"main　x", false},
+		{strings.Repeat("é", MaxDraftPlanBase/2), true}, {strings.Repeat("é", MaxDraftPlanBase/2+1), false},
+	} {
+		if DraftPlanBase(c.base) != c.ok {
+			t.Errorf("%q: DraftPlanBase %v", c.base, !c.ok)
+		}
+		if strings.Contains(c.base, "é") {
+			// The pattern counts no bytes.
+			continue
+		}
+		if re.MatchString(c.base) != c.ok {
+			t.Errorf("%q: the pattern %v", c.base, !c.ok)
+		}
+	}
+	for _, k := range kinds {
+		if k.Kind != ItemDraftPlan {
+			continue
+		}
+		for _, f := range k.Fields {
+			if s := fieldSchema(f); f.Name == "base" && (s["pattern"] != draftPlanBasePattern || s["maxLength"] != nil || !strings.Contains(s["description"].(string), fmt.Sprintf("at most %d bytes", MaxDraftPlanBase))) {
+				t.Errorf("the base's schema: %v", s)
+			}
+		}
 	}
 }

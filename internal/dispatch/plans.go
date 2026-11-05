@@ -122,6 +122,21 @@ type planCrew struct {
 // (planCreated), never the body. Any actor may propose. The receipt's id
 // is the revision's.
 func (s *Store) ProposePlan(ctx context.Context, op Op, key string, req PlanRequest, body PlanBody) (Receipt, error) {
+	return s.proposePlan(ctx, op, key, req, body, false)
+}
+
+// ProposeFollowup is ProposePlan for a follow-up of an approved revision
+// (Brakeman's prepare_followup, docs/plans/brakeman.md, PR-12): the
+// revision it is based on is named (invalid otherwise) and, in the
+// transaction, approved (stale_plan otherwise), so one withdrawn or
+// superseded after its caller read it approved is refused. Its content is
+// ProposePlan's, so a resend is answered by the same receipt.
+func (s *Store) ProposeFollowup(ctx context.Context, op Op, key string, req PlanRequest, body PlanBody) (Receipt, error) {
+	return s.proposePlan(ctx, op, key, req, body, true)
+}
+
+// proposePlan is ProposePlan, and with approvedBase ProposeFollowup.
+func (s *Store) proposePlan(ctx context.Context, op Op, key string, req PlanRequest, body PlanBody, approvedBase bool) (Receipt, error) {
 	return s.Apply(ctx, op, IntentPlanPropose, PlanProposeArgs{Key: key, PlanRequest: req}, func(t *tx) error {
 		tk, _, err := t.ticket(key, false)
 		if err != nil {
@@ -134,15 +149,20 @@ func (s *Store) ProposePlan(ctx context.Context, op Op, key string, req PlanRequ
 		if err := checkCount("plan revisions on a ticket", n+1, MaxPlans); err != nil {
 			return err
 		}
+		if approvedBase && req.BasedOn == "" {
+			return refuse(RefusalInvalid, "a follow-up names the approved revision it is based on (basedOn)")
+		}
 		if req.BasedOn != "" {
-			var of string
-			switch err := t.tx.QueryRowContext(t.ctx, "SELECT ticket_id FROM plans WHERE id = ?", req.BasedOn).Scan(&of); {
+			var of, state string
+			switch err := t.tx.QueryRowContext(t.ctx, "SELECT ticket_id, state FROM plans WHERE id = ?", req.BasedOn).Scan(&of, &state); {
 			case isNoRows(err):
 				return refuse(RefusalNotFound, "no plan revision %s", req.BasedOn)
 			case err != nil:
 				return err
 			case of != tk.ID:
 				return refuse(RefusalNotFound, "the plan revision %s is not %s's", req.BasedOn, tk.Key)
+			case approvedBase && state != PlanApproved:
+				return refuse(RefusalStalePlan, "the plan revision %s is %s: a follow-up is based on an approved revision", req.BasedOn, state)
 			}
 		}
 		crew, err := readPlanCrew(body.Crew, req.Crew)
