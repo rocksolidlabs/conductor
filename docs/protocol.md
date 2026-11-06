@@ -3957,9 +3957,12 @@ sorted `name=value` lines, never a value; `yolo`, `renamed`); its `crew`
 `startedAt`; `endedAt` (an observed end: an exit, or a stop once the
 process is gone; a stop that failed leaves the record open), or `lostAt`
 when the server stopped observing it (`ending` `lost` for a server
-session's record found open at the next start, `host away` for a hosted
-one's, or for one its hub let go past the disconnect grace: whether its
-process ended is not known); `ending` (`exited (exit 0)`, `stopped`, …);
+session removed from the listing, or still running at a shutdown, while
+its process ran, and for a record found open at the next start; `host
+away` for a hosted one its hub let go past the disconnect grace, or whose
+host was connected at a shutdown: whether its process ended is not
+known); the end is read from the session itself, not from the order its
+events arrive in; `ending` (`exited (exit 0)`, `stopped`, …);
 `reopened`, how often its host took a hosted record up again under the
 same id; and its evidence: `entries[{seq, at, kind, id?, ref?, event?,
 byName?, message?, path?, tool?, url?, to?, choices?, outcome?}]` in order
@@ -3968,16 +3971,17 @@ broadcast, a handoff), `question` (the agent's question in the chat, `id`
 its id, `choices` its labels), `answer` (`ref` the question, `outcome`
 `answered` with the choice's label as the chat's `answered` line has it
 and none for a line typed, `answered_in_terminal` for keys typed in the
-terminal, `withdrawn` when the agent moved on), `chat` (a message posted,
+terminal, `withdrawn` when the agent moved on, or when the session's end
+was recorded with the question still open), `chat` (a message posted,
 `id` its id; with `event: "sent_to_agent"` and `ref`, the mark that one
 was sent to the agent), `report` (`event` `progress`, `artifact`,
 `handoff`, `error` or `tool_denied`), `status`; `files[{path, op, count,
 last}]`, one row per path and op, at most 500, a path the server's deny
 list covers never written in a server session's record; `tools`, tool uses counted by tool, at most 64;
 `dropped`, the entries and files its bounds let go, oldest first, and
-those that came after a server session's end (a hosted record keeps what
-its host sends, in its place by the host's clock, which its end, stamped
-by the server's, does not bound); `resumes`, the receipts of resumes from it.
+those that arrived once its end was recorded, whatever their time says
+(what arrives before is kept in its place by its own time, a host's clock
+for a hosted session); `resumes`, the receipts of resumes from it.
 Never kept: what a person types into a terminal or a reply box, a typed
 answer's text (whoever passed it on: a reply box, a provider, a route's
 answer on a host), a variable's value, who joined, left or came through a
