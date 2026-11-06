@@ -890,3 +890,44 @@ func TestFitPathCountsEscapes(t *testing.T) {
 		t.Fatal("a string that fits was cut")
 	}
 }
+
+// The head of a record (all but its entries and files) at every bound,
+// its strings written in quotes and backslashes, 16 receipts and 64 tools
+// of the longest names, fits MaxRecord with room left for entries:
+// dropping entries and files always brings a record under the bound.
+func TestTheHeadAtEveryBoundLeavesRoom(t *testing.T) {
+	q := strings.Repeat(`"\`, MaxCwd)
+	args := make([]string, 64)
+	for i := range args {
+		args[i] = strings.Repeat("a", 4096)
+	}
+	env := map[string]string{}
+	for i := range MaxEnvNames {
+		env[fmt.Sprintf("V%03d%s", i, strings.Repeat("N", 300))] = "v"
+	}
+	r := Record{V: V, ID: sid(1), Seq: 1 << 62, Name: q, Kind: "server", Agent: Agent{ID: q, Name: q, Adapter: q, Version: q, Session: &AgentSession{ID: q, Source: q, Resumable: true}},
+		Host: Host{Name: q, User: q, Owner: q, Hosted: true}, Where: q, Cwd: q, Repo: q, RepoCommon: q, Branch: q, Start: q, StartFrom: q, End: q,
+		Launch: LaunchOf(args, env, true, true), Crew: &Crew{RunID: q, CrewID: q, Member: q, Task: q, Attempt: 1 << 30, Brakeman: q}, ResumedFrom: q,
+		StartedAt: time.Now(), EndedAt: time.Now(), LostAt: time.Now(), Ending: q, Reopened: 1 << 30, Dropped: 1 << 30, Tools: map[string]int{}}
+	for i := range MaxResumes + 4 {
+		r.Resumes = append(r.Resumes, Resume{CommandID: q, Actor: q, Session: q, State: q, Error: q, At: time.Now()})
+		_ = i
+	}
+	fitRecord(&r)
+	for i := range MaxTools {
+		r.Tools[fitPath(fmt.Sprintf("%03d%s", i, q), MaxTool)] = 1 << 30
+	}
+	b, err := store.Encode(&r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := map[string]int{}
+	for name, v := range map[string]any{"launch": r.Launch, "resumes": r.Resumes, "tools": r.Tools, "cwd": r.Cwd, "agent": r.Agent, "host": r.Host, "crew": r.Crew} {
+		pb, _ := store.Encode(v)
+		parts[name] = len(pb)
+	}
+	t.Logf("the head at every bound: %d bytes (%v)", len(b), parts)
+	if len(b) > maxHead {
+		t.Fatalf("the head is %d bytes, past %d", len(b), maxHead)
+	}
+}

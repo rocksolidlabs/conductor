@@ -63,6 +63,11 @@ const (
 	MaxArg      = 4096
 	maxField    = 200 // an agent's or a host's field, a session's name
 	maxResumeEr = 200
+	maxEnvName  = 128
+	// maxHead is what all of a record but its entries and files takes at
+	// most, every field at its bound (TestTheHeadAtEveryBoundLeavesRoom):
+	// the rest of MaxRecord is its entries' and files'.
+	maxHead = 42 << 10
 )
 
 // How a record ended without an observed end (Ending): the server stopped
@@ -279,7 +284,7 @@ func LaunchOf(args []string, env map[string]string, yolo, renamed bool) *Launch 
 		l.EnvCount = len(names)
 		if len(names) <= MaxEnvNames {
 			for _, k := range names {
-				l.EnvNames = append(l.EnvNames, cutBytes(k, maxField))
+				l.EnvNames = append(l.EnvNames, fitPath(k, maxEnvName))
 			}
 		}
 	}
@@ -356,14 +361,14 @@ func escapedLen(r rune) int {
 // the head of a record (all but its entries and files) is bounded.
 func fitRecord(r *Record) {
 	r.Name = fitPath(r.Name, maxField)
-	r.Kind = cutBytes(r.Kind, 16)
+	r.Kind, r.Ending = fitPath(r.Kind, 16), fitPath(r.Ending, maxField)
 	r.Agent.ID = fitPath(r.Agent.ID, maxField)
 	r.Agent.Name = fitPath(r.Agent.Name, maxField)
 	r.Agent.Adapter = fitPath(r.Agent.Adapter, maxField)
 	r.Agent.Version = fitPath(r.Agent.Version, maxField)
 	if s := r.Agent.Session; s != nil {
 		c := *s
-		c.ID, c.Source = fitPath(c.ID, maxField), cutBytes(c.Source, 16)
+		c.ID, c.Source = fitPath(c.ID, maxField), fitPath(c.Source, 16)
 		r.Agent.Session = &c
 	}
 	r.Host.Name = fitPath(r.Host.Name, maxField)
@@ -376,7 +381,7 @@ func fitRecord(r *Record) {
 	r.Branch = fitPath(r.Branch, MaxBranch)
 	r.Start = fitPath(r.Start, 64)
 	r.End = fitPath(r.End, 64)
-	r.StartFrom = cutBytes(r.StartFrom, 16)
+	r.StartFrom = fitPath(r.StartFrom, 16)
 	r.ResumedFrom = fitPath(r.ResumedFrom, MaxID)
 	if c := r.Crew; c != nil {
 		x := *c
@@ -396,8 +401,8 @@ func fitRecord(r *Record) {
 	}
 	for i := range r.Resumes {
 		x := &r.Resumes[i]
-		x.CommandID, x.Actor, x.Session = fitPath(x.CommandID, MaxID), fitPath(x.Actor, MaxID), fitPath(x.Session, MaxID)
-		x.State, x.Error = cutBytes(x.State, 16), fitPath(x.Error, maxResumeEr)
+		x.CommandID, x.Actor, x.Session = fitPath(x.CommandID, 32), fitPath(x.Actor, MaxID), fitPath(x.Session, 16)
+		x.State, x.Error = fitPath(x.State, 16), fitPath(x.Error, maxResumeEr)
 	}
 	if r.Entries == nil {
 		r.Entries = []Entry{}
