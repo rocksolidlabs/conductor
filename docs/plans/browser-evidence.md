@@ -1999,8 +1999,9 @@ taken.
 
 ## Acceptance
 
-The boundary: selecting a broken control in Conductor's own app
-produces a ticket another agent repairs without a verbal description.
+The boundary: a person picks out a control that is broken in
+Conductor's own app, and the ticket made from that pick is enough for
+another agent to repair it, with nobody describing the fault in words.
 It is observed, not ticked:
 
 - Once PR-9 is merged, on the owner's `conductor serve` (WSL) with the
