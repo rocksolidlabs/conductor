@@ -1234,6 +1234,16 @@ func newMember(m Member) *member {
 }
 
 // member returns the member of r with the given name. The caller holds e.mu.
+// person reports whether name is one of the run's people as launched.
+func (r *run) person(name string) bool {
+	for _, p := range r.people {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *run) member(name string) *member {
 	for _, m := range r.members {
 		if m.def.Name == name {
@@ -1768,6 +1778,11 @@ func (r *run) admit(m Member) error {
 		return invalidf("too many members (at most %d)", maxMembers)
 	case r.member(m.Name) != nil:
 		return invalidf("member %s: the name is used twice", quote(m.Name))
+	case r.person(m.Name):
+		// checkPeople's rule, kept for a member added by hand: a run whose
+		// member took a person's name could not be resumed (ResumeRun
+		// checks the crew again, its people with it).
+		return invalidf("member %s: the name is a person's; a person is never a member, so the two names differ", quote(m.Name))
 	}
 	if err := m.checkTypedPrompt(r.goal); err != nil {
 		return err
