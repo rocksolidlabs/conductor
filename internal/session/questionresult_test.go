@@ -118,3 +118,34 @@ func TestQuestionResult(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// A question keys typed in the terminal reached (consumed) leaves as
+// answered there, whatever path lets it go: replaced by the agent's
+// working report, which forgets the question (and its consumption)
+// before the attention changes, or by the next question.
+func TestQuestionLeftAnsweredInTheTerminal(t *testing.T) {
+	s, _, _ := asking(t, Options{})
+	for _, next := range []func(){
+		func() { s.SetAttentionFull(AttentionWorking, "", SourceAPI, "", nil) },
+		func() { s.SetAttentionFull(AttentionNeedsInput, "Next?", SourceAPI, KindPrompt, dbChoices) },
+	} {
+		s.SetAttentionFull(AttentionNeedsInput, "Which database?", SourceAPI, KindPrompt, dbChoices)
+		q := s.Info().Attention
+		s.mu.Lock()
+		s.consumeLocked(q.ID)
+		s.mu.Unlock()
+		if a := s.Info().Attention; a.ID != q.ID || a.Answered != AnsweredTerminal {
+			t.Fatalf("consumed: %+v", a)
+		}
+		if _, ok := s.QuestionLeft(q.ID); ok {
+			t.Fatal("left while it still shows")
+		}
+		next()
+		if l, ok := s.QuestionLeft(q.ID); !ok || l.How != LeftTerminal {
+			t.Fatalf("left: %+v %v", l, ok)
+		}
+		if _, ok := s.QuestionResult(q.ID); ok {
+			t.Fatal("a result for keys typed in the terminal")
+		}
+	}
+}
