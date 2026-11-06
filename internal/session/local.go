@@ -3311,14 +3311,11 @@ const resultsKept = 64
 // claim's token: the write resolves the question with it once made
 // (resolve), or releases it (release). A dialog or a startup question
 // claimed is noted by its words, so that one drawn again before the
-// program moves on is that question still (sameDialog, startupStill). The
-// caller holds s.mu.
-func (s *Local) claimLocked(id string) (uint64, error) { return s.claimAsLocked(id, "") }
-
-// claimAsLocked is claimLocked for a reply that names the decision
-// decision (waitsAsLocked).
-func (s *Local) claimAsLocked(id, decision string) (uint64, error) {
-	if err := s.waitsAsLocked(id, decision); err != nil {
+// program moves on is that question still (sameDialog, startupStill).
+// decision is the decision the answer names ("" for none): a question
+// that mirrors another refuses it (waitsLocked). The caller holds s.mu.
+func (s *Local) claimLocked(id, decision string) (uint64, error) {
+	if err := s.waitsLocked(id, decision); err != nil {
 		return 0, err
 	}
 	if s.inputBusy() {
@@ -3362,7 +3359,7 @@ func (s *Local) claimQuestion(id string) (uint64, error) { return s.claimQuestio
 func (s *Local) claimQuestionAs(id, decision string) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.claimAsLocked(id, decision)
+	return s.claimLocked(id, decision)
 }
 
 // release lets the claim (id, token) go (CLAIMED to OPEN): its write was
@@ -3760,14 +3757,11 @@ func (s *Local) questionWaits(id string) error {
 func (s *Local) questionWaitsAs(id, decision string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.waitsAsLocked(id, decision)
+	return s.waitsLocked(id, decision)
 }
 
-// waitsLocked is questionWaits for a caller that holds s.mu.
-func (s *Local) waitsLocked(id string) error { return s.waitsAsLocked(id, "") }
-
-// waitsAsLocked is questionWaitsAs for a caller that holds s.mu.
-func (s *Local) waitsAsLocked(id, decision string) error {
+// waitsLocked is questionWaitsAs for a caller that holds s.mu.
+func (s *Local) waitsLocked(id, decision string) error {
 	if id == "" {
 		return ErrQuestionAnswered
 	}

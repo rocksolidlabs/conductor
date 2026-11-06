@@ -365,7 +365,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	source := s.info.Attention.Source
 	var gone error
 	if sub.Question != "" {
-		gone = s.waitsAsLocked(sub.Question, sub.Decision)
+		gone = s.waitsLocked(sub.Question, sub.Decision)
 	}
 	// A decision's line (Decision) waits for no question that mirrors a
 	// decision: that is Conductor's record, not the program asking.
