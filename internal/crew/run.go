@@ -403,6 +403,9 @@ type Engine struct {
 	// afterLookup, when set, runs once a command or RetryTask has looked
 	// its run up and before its change: a test evicts the run there.
 	afterLookup func(runID string)
+	// afterTaken, when set, runs in a command between its two
+	// transactions (SetAfterTakenForTest). Guarded by mu.
+	afterTaken func(runID, commandID string)
 	// afterRefused, when set, runs in a command once its taking was
 	// refused and before the refusal is handled (afterTransact): a test
 	// commits the run's launch there.
