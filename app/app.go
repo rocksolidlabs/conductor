@@ -5,12 +5,20 @@
 //
 // A main that links more modules than this one hands in its own
 // third-party notices text first, with SetThirdPartyNotices, so the server
-// serves the licences of what that binary ships:
+// serves the licences of what that binary ships. The text replaces this
+// module's embedded notices whole, and those list more than Go modules:
+// the npm packages and fonts of the web bundle, which every binary built
+// on this module embeds and serves, and the desktop app's. So a main's
+// text covers them too: this module's text (conductor.ThirdPartyNotices,
+// the module's root package) followed by the notices of the modules the
+// main adds, or a text generated over the main's whole build that lists
+// the web bundle's packages and fonts as well:
 //
 //	//go:embed THIRD_PARTY_NOTICES
-//	var notices string
+//	var added string // the notices of the modules this main adds
 //
 //	func main() {
+//		notices := conductor.ThirdPartyNotices + "\n" + added
 //		if err := app.SetThirdPartyNotices(notices); err != nil {
 //			fmt.Fprintln(os.Stderr, "conductor:", err)
 //			os.Exit(1)
@@ -39,8 +47,11 @@ const MaxThirdPartyNotices = cli.MaxNotices
 // SetThirdPartyNotices hands in the third-party notices text the server
 // serves at /third-party-notices.txt (on a switchyard too, with the same
 // headers) in place of this module's embedded THIRD_PARTY_NOTICES. Call it
-// before Run or Main: the server reads it once, when it starts. It
-// replaces the text and nothing else; it checks no licence, plan or build.
+// before Run or Main: the server reads it once, when it starts. The text
+// replaces the embedded one whole, the web bundle's npm packages and fonts
+// included, so it lists those as well as the main's own modules (the
+// package documentation shows how). It replaces the text and nothing else;
+// it checks no licence, plan or build.
 //
 // It refuses, with an error and changing nothing, an empty text (a main
 // that has none hands in none, and the embedded notices are served), a

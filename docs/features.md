@@ -4612,7 +4612,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   second text, and one handed in after a server of the process started:
   `runServe` reads the holder once, when it makes the server
   (`cli.SetNotices`, `api.WithNotices`), and that read closes it. A plain
-  build hands in nothing and serves the embedded text byte for byte.
+  build hands in nothing and serves the embedded text byte for byte. The
+  handed-in text replaces the embedded one whole, which lists the web
+  bundle's npm packages and fonts besides the Go modules, so the docs
+  (`app`, `ext`, `docs/repository-map.md`) show a `main` handing in
+  `conductor.ThirdPartyNotices` followed by the notices of the modules it
+  adds (review round 1).
   Tests: `TestNoticesServeTheTextAMainHandedIn` (the route with the text,
   with `""` and with none, on a server and a switchyard, the three
   headers), `TestNoticesHolderBounds` (empty, the limit and one byte over,
