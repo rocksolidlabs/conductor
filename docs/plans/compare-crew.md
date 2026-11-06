@@ -343,7 +343,8 @@ After this item ships, a person sees:
   - **Independence**: "no shared commit and no same patch", or "shares
     2 commits with approach-b", or "1 commit carries the same change as
     one of approach-b's" (a cherry-pick), with what it cannot see said
-    beside it ("a read of another lane's folder is not observed").
+    beside it ("a read of another lane's folder, or of what an agent
+    keeps for itself under its HOME, is not observed").
 
   Below them, under **Supporting information, not evidence**: each
   candidate's own summary of its result, each agent review's verdict and
@@ -568,7 +569,7 @@ its test:
 | 11 | Brakeman's comparison (its request, its turn, its brief) | nothing: Brakeman's tools (`brakeman_request`, `brief_submit`, `observe`, `act`) answer only a Brakeman turn's token, so a lane's token is refused them; the brief is read by the admin and by Brakeman, and reaches no task file, context, message, ticket comment or decision of a lane | PR-5 | `TestTheDraftReachesNoLane` |
 | 12 | Self-service that forms or grows a crew (`form_crew`, `add_member`) | refused to a managed run's member already (`needNoRun`, `needUnmanaged`) | PR-1b (test only) | `TestEveryAgentDoorIsListed` |
 | 13 | Its own session's tools (`report`, `set_state`, `ask`, `link`, `open_url`, `guide`) and the session read (`GET /api/sessions/{id}`) | the tools: its own session only, what it reports going to the people watching, never to another session; the session read takes no agent token (`handleGetSession` calls `authenticate`), so a lane's token is refused `401` there, as today | PR-1b (test only) | `TestEveryAgentDoorIsListed`, `TestTheSessionReadsTakeNoAgentToken` |
-| 14 | What Conductor does not own: the shared object store (`git log --all`), sibling folders, the network | partly observed, not prevented: shared commits and equivalent patches (PR-2), shown as independence findings; a read of a sibling folder or the network is not observed, and the page says so | PR-2 | `TestSharedCommitsAreFlagged`, `TestACherryPickIsFlagged` |
+| 14 | What Conductor does not own: the shared object store (`git log --all`), sibling folders, the network, and an agent's own state under its HOME (the memory, history and session stores an agent CLI keeps for itself, which every session of one HOME can read and which an agent may key by repository rather than by worktree) | partly observed, not prevented: shared commits and equivalent patches (PR-2), shown as independence findings; a read of a sibling folder, of the network or of an agent's own stored state is not observed, and the page says so | PR-2 | `TestSharedCommitsAreFlagged`, `TestACherryPickIsFlagged` |
 | 15 | RV1's review (#627, #631) | no agent tool: a person's Request changes reaches the selected lane's next attempt through its task file (door 2); for every other lane, and for every lane before an applied selection, the engine refuses it on any `main`: `request_changes` is not in `compareIntents` until PR-8a (PR-1), and a comparison's continuation repairs no lane but the selected one (PR-3) | PR-1, PR-3; the route's words in PR-6b or PR-8a | `TestACompareRunTakesOnlyItsListedCommands`, `TestAComparisonsContinuationRepairsOnlyTheSelected`, `TestRequestChangesOnAnUnselectedCandidateIsRefused` |
 | 16 | Any door a later row adds | closed until listed: `compareDoors` in `internal/api` (new, `compare_doors.go`) holds one entry per route pattern an agent's token may call, each with its rule (`own`, `lane`, `refused`, or a function). Every route that takes an agent's token takes it through one predicate, `agentTokenOK` (`attention.go`; called by `attentionPrincipal`, `taskSession`, `brakeman_session.go`, `brakeman_observe.go`, and #637's `decisionSession`); `authenticate` resolves no agent token. PR-1b gives `agentTokenOK` the request, and for a session of a compare lane it answers false for a pattern (`r.Pattern`) with no entry, or listed `refused`: the route answers as it does for a token it does not take (its `401`), so a route added later, by any plan, is closed to a comparison's lanes until its rule is written | PR-1b | `TestEveryAgentDoorIsListed`, `TestEveryAgentTokenPathIsGuarded`, `TestAnUnlistedDoorIsClosedToALane` |
 
@@ -1582,11 +1583,12 @@ in the first transaction of the run's continuation (PR-6a).
   another lane's work, each door returning what the table says; no
   member works in two lanes; a door not on the list is closed to a
   lane's session.
-- I4. Independence is observed, never assumed: shared commits,
-  equivalent patches and cross-lane touches are shown; their absence is
-  said with each check's limit (a read of another lane's folder is not
-  observed, a change rewritten by hand is not detected); what agents
-  report of their own file activity is not used as a measure.
+- I4. Independence is observed, never assumed: shared commits and
+  equivalent patches are shown; their absence is said with each check's
+  limit (a read of another lane's folder or of an agent's own stored
+  state is not observed, a change rewritten by hand is not detected);
+  what agents report of their own file activity is not used as a
+  measure.
 - I5. Alike: candidate tasks have identical checks; a row is comparable
   only when every condition holds and no candidate changed a test or
   build file, `unknown` when only that fails, and the page never shows a
@@ -2588,3 +2590,12 @@ states, its invariant and its test are in the row that builds it.
 - Brakeman's comparison read notes each candidate and receipt by its
   exact ref (`filterComparison`), so a brief that cites them after that
   read alone cites what was observed (Codex 7).
+
+## Changed in the final check
+
+- I4 no longer says cross-lane touches are shown: round 2 removed the
+  touched index as a measure, and I4 had kept its words.
+- Door 14 names an agent's own state under its HOME (its memory,
+  history and session stores) among what Conductor does not own: it is
+  not prevented and not observed, and the comparison's independence
+  words say so.
