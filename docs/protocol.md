@@ -2021,7 +2021,7 @@ its run, and on no other.
 | `GET /api/runs/{run}/messages` | admin | a managed run's messages in sequence: `{messages}` |
 | `POST /api/sessions/{id}/task/blocked` | the session's agent token, or admin | report what blocks the session's attempt (#334, row 10): body `{reason, message?}` (a reason of one to 500 characters, a message of at most 4,000); reply `{task}` with its `blocker` (`{reason, message?, by, at}`); the session then asks the message (else the reason) as its own question; a `working` or `done` report of the attempt, or its result, clears the blocker; `409 not_running` for an attempt not running; `404 not_an_attempt` |
 | `POST /api/sessions/{id}/task/checkpoint` | the session's agent token, or admin | save where the session's attempt got to, tied to the commit its worktree is at: body `{done, remaining, notes?}` (each at most 4,000 characters, `done` and `remaining` given); reply `{attempt}` with its `checkpoint` (`{done, remaining, notes?, commit, at}`), kept in the ledger; the task's next attempt reads it in its task file, and one after an attempt that ended without a result, or a continuation's first, starts at that commit; `409 no_commit` for a worktree with none; `409 not_running` |
-| `POST /api/sessions/{id}/task/result` | the session's agent token only | submit the attempt's result: body `{summary?, commit?, issues?, verdict?, findings?}` (a work task: the commit, HEAD when not given, with a summary of at most 4,000 characters and at most 20 issues; a review: the verdict, `approved` or `needs_changes`, with at most 50 findings `{severity, path?, line?, message}`); reply `201 {task}` once recorded (the task `verifying`, or `succeeded` when it has no checks), `200 {task}` for the same commit submitted again while the first is verified; `409` with why otherwise, the attempt running on: `dirty_worktree` (the paths in the message), `off_branch`, `commit_mismatch` (the worktree is not at the commit named), `not_from_input`, `review_changed`, `reserved_path`, `submodules`, `stale_attempt` (not the task's active attempt, or another commit while one is verified), `not_running`; `400 bad_result` for a result that does not fit the task's kind or its bounds; `403 agent_only` for the workbench token, as a result is always the agent's own; `404 not_an_attempt` |
+| `POST /api/sessions/{id}/task/result` | the session's agent token only | submit the attempt's result: body `{summary?, commit?, issues?, verdict?, findings?, addressed?}` (a work task: the commit, HEAD when not given, with a summary of at most 4,000 characters and at most 20 issues, and, for a repair a person asked for, `addressed`: at most 50 `{id, note?}`, each a change of the request by its id, once, with a note of at most 1,000 characters, which the attempt's row keeps with its result as its claim, never the change's resolution; a review: the verdict, `approved` or `needs_changes`, with at most 50 findings `{severity, path?, line?, message}`, and no `addressed`); reply `201 {task}` once recorded (the task `verifying`, or `succeeded` when it has no checks), `200 {task}` for the same commit submitted again while the first is verified; `409` with why otherwise, the attempt running on: `dirty_worktree` (the paths in the message), `off_branch`, `commit_mismatch` (the worktree is not at the commit named), `not_from_input`, `review_changed`, `reserved_path`, `submodules`, `stale_attempt` (not the task's active attempt, or another commit while one is verified), `not_running`; `400 bad_result` for a result that does not fit the task's kind or its bounds, or whose `addressed` names a change the attempt's repair does not have (`addressed names a change the request does not have`); `403 agent_only` for the workbench token, as a result is always the agent's own; `404 not_an_attempt` |
 | `GET /api/sessions/{id}/ticket` | the session's agent token, or admin | the Dispatch ticket the session's run is linked to (see Dispatch, An attempt's ticket), for `conductor task ticket` and the MCP tool `ticket_read`: `{ticket, labels, milestone}`, `ticket` as `GET /api/dispatch/tickets/{key}` reads it (its last 50 comments among it), `labels` the rows of its live labels, by name, and `milestone` its live milestone's row or `null`, which the project's routes give the admin alone; for a run launched from a ticket that ticket, by the run's package, whatever links say (a continuation's sessions find it too), the reply gaining `launch` `{id, rev, plan: {id, n}, digest, changed}` (`rev` the ticket's revision it was launched at, `changed` `{fields, comments, rev}`, what changed of the ticket since, `null` when this store has no such launch); else the live ticket whose live `run` link names the session's run, one at most, a deleted ticket's link holding none; `404 no_ticket` for a session that is no member of a run, for a run no live ticket holds, and for a run whose launching ticket is deleted (saying the run follows its package); `400 invalid_request` for any parameter; under 3.5 MiB, as the ticket's own read; a switchyard's `403 switchyard` |
 | `POST /api/sessions/{id}/ticket/comments` | the session's agent token, or admin | comment on that ticket (`comment.add`, Dispatch operations), for `conductor task ticket comment` and the MCP tool `ticket_comment`: body `{opId, body}`, `body` Markdown of 1 to 16 KiB; the comment is the session's member's, `agent:<member>` its author and the actor its operation is kept under, whichever token sent it, with no display name; reply `201 {receipt, comment}`, `200` for the same `opId` sent again, as the admin's comment route; `404 no_ticket` as above; `400 invalid_request` for a body that is not `{opId, body}`, `413 bound` past 64 KiB, and the store's refusals as the admin's route answers them; an agent reads its ticket and comments on it, nothing more; a switchyard's `403 switchyard` |
 | `GET /api/sessions/{id}/run` | the session's agent token, or admin | the session's run with the last 50 log entries, and the session's member name: `{run, member}`; `404 no_run` |
@@ -2973,6 +2973,62 @@ allows one more attempt, which starts at the reviewed commit with the
 findings. The run log says what was reopened and withdrawn, and the events
 `task.reopened`, `task.withdrawn` and `attempt.withdrawn` are recorded with
 the review's result.
+
+A person's Request changes (Program item RV1, `docs/plans/review-repair.md`)
+is the same repair transition with a person as its source, applied to a
+work task's standing candidate: its result (the task succeeded with that
+attempt and commit; in a continuation, named by its reference
+`<run>/<task>/<n>`), or its standing failed candidate (the last attempt a
+withdrawal has not taken back, or in a continuation with no attempt of its
+own the continued run's last, having submitted that commit). The result is
+dropped, the repair set, what rested on it withdrawn as above, a task whose
+attempts are spent granted one more (the request is its authority, as a
+retry's is), a finished run open again, a task a decision holds left held;
+nothing is typed into any session but the repair attempt's task line, and
+no decision is opened or answered. `task.reopened` names the Dispatch
+review (`review`) and who asked (`by`) beside `task`, `attempt` (the
+candidate's), `findings` (the changes counted) and `state`, and
+`imported` for a continuation's candidate. The repair attempt starts at the
+candidate, or, for a failed candidate refused before its checks (its
+checkout, its manifest, a setup, service or ready step), where that
+attempt started (`repair.start`), its task file naming the candidate's
+commit and branch and the refusal (`previous`). `task.json`'s `repair` is
+then `{review, attempt, commit, start?, summary?, request}`, the summary the
+review's (at most 4,000 characters, never cut) and `request` `{review, by,
+via?, base?, changes}`: `review` the Dispatch review's id and `by` who
+asked (at most 64 bytes and 200 characters), `base` the commit the
+candidate was read against, `changes` 1 to 50 (at least one a change asked
+for), each `{id, kind, intent, severity?, path?, side?, from?, to?, lines?,
+message?, resolution?, check?}`: `id` the finding's (at most 64 bytes, each
+once), `kind` `line`, `file`, `general` or `check`, `intent` `change`
+(with a `severity`, `blocker`, `major`, `minor` or `nit`), `question` or
+`note`, `path` at most 1,024 bytes on `side` `candidate` or `base`,
+`from`/`to` the lines, `lines` at most 12 of 200 bytes as the person saw
+them, `message` and `resolution` at most 1,000 characters each, and for a
+check `check` `{receipt, run?, task?, attempt?, phase?, id?, k?, subject?,
+exit?, signal?, timedOut?, stable, error?, logSha256?, logBytes?, tail?,
+class?, chosen?, quote?}` (the ledger's receipt identity at most 512 bytes,
+the server's class and the person's choice, `tail` and `quote` at most
+2 KiB each, `error` 500 bytes). `task.md`'s "Findings to address" says who
+asked for changes to which commit in which review against which base and
+where the attempt starts, their summary, then the changes asked for, the
+questions to answer in the summary and the notes, each with its id,
+severity, location, lines in a fence, words and "Asked:", a check's receipt
+with its class and its log (its file when `previous.check` wrote it), and
+asks for `addressed`. To fit 64 KiB, the changes' lines (a check's tail and
+quote with them), then their resolutions, then their words past 200
+characters are cut, each from the last, into `task-more.json`'s `changes`
+(by `id`, with the parts cut), after the findings and before the checks'
+commands; ids, kinds, intents, severities, paths, sides and line numbers
+are never cut. A request is measured before anything is recorded
+(`FitChangeRequest`): its repair at its largest within the ledger's 64 KiB
+payload, and its repair attempt's task files with the task's own text,
+the crew's people and the ticket within 64 KiB each, or it is refused
+whole, so an accepted one never fails at its attempt's start for its size.
+A row written before this (ledger version 8 or earlier) has neither
+`request` nor `start` and reads as before; the ledger's version 9 changes
+no table and is a barrier, so an older binary opens it read-only rather
+than dropping a request it does not know.
 
 **Commands with receipts.** A person's change to a managed run (pause,
 unpause, cancel, retry, accept) is a command: the client mints a `commandId`
