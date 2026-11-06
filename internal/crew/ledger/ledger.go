@@ -34,7 +34,7 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 7
+const Version = 8
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
@@ -91,6 +91,12 @@ var migrations = map[int][]string{
 		"ALTER TABLE checks ADD COLUMN where_ran TEXT NOT NULL DEFAULT 'native'",
 		"ALTER TABLE prerequisites ADD COLUMN where_ran TEXT NOT NULL DEFAULT 'native'",
 	},
+	// Version 8 (DR1, durable decisions, #634): the decision requests,
+	// their responses, history, holds and the attempts given back while
+	// one waited, tables of their own (decisions.go). No decision existed
+	// before this version, so a version 7 database's rows are all true as
+	// they are: nothing is derived.
+	7: decisionTables,
 }
 
 // migrationsGo run after a version's statements, in the same transaction:
@@ -784,8 +790,8 @@ func (l *Ledger) release() {
 // schema is the database as Version has it, made whole for a new one (an
 // older one is brought to it by migrations). Times are RFC 3339 text in
 // UTC; JSON is text; a run's rows go with it (ON DELETE CASCADE) when the
-// owner prunes it.
-var schema = []string{
+// owner prunes it. The decision tables (version 8) are decisionTables.
+var schema = append([]string{
 	`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
 	`CREATE TABLE runs (
 		id TEXT PRIMARY KEY,
@@ -903,4 +909,4 @@ var schema = []string{
 	messagesTable,
 	prerequisitesTable,
 	treesTable,
-}
+}, decisionTables...)
