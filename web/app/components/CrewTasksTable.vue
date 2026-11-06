@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { TASK_LIMITS, draftTask, taskRowProblems, type DraftCheck, type DraftMember, type DraftTask, type TaskShape } from '~/utils/crews'
+import { TASK_LIMITS, draftTask, ownerOf, taskRowProblems, type DraftCheck, type DraftMember, type DraftPerson, type DraftTask, type TaskShape } from '~/utils/crews'
 
 /**
  * The tasks of a managed crew (#334): who does what, after which results,
- * checked how. A row is a task: its id, its member, its kind, the tasks it
+ * checked how. A row is a task: its id, its member, its owner (a person of
+ * the crew, accountable for the outcome; none falls back to the crew's
+ * acceptance owner, which the "none" item names), its kind, the tasks it
  * needs, its instructions, its checks (a popover). What makes each attempt's
  * worktree usable is the project manifest's, under the table
  * (CrewManifestEditor). The server's rules are shown as they would be
@@ -12,24 +14,27 @@ import { TASK_LIMITS, draftTask, taskRowProblems, type DraftCheck, type DraftMem
 const tasks = defineModel<DraftTask[]>({ default: () => [] })
 const props = defineProps<{
   members: DraftMember[]
+  /** The crew's people: a task's owner is one of them. */
+  people?: DraftPerson[]
   isolation: 'none' | 'worktree'
   /** The ids of the project manifest's steps and probes (manifestIds): a task's new check is given none of them. */
   taken?: readonly string[]
 }>()
 
-const shape = computed<TaskShape>(() => ({ tasks: tasks.value, isolation: props.isolation, members: props.members }))
+const shape = computed<TaskShape>(() => ({ tasks: tasks.value, isolation: props.isolation, members: props.members, people: props.people }))
 
 // Every cell keeps its place in the one-column-per-field layout of a wide
 // table and moves to a card layout when the table is narrow. Full class
 // names: Tailwind scans them.
-const cols = 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_1.5rem] gap-x-2.5 gap-y-2 @min-[64rem]:grid-cols-[8rem_8rem_6.5rem_11rem_minmax(10rem,1fr)_7rem_1.5rem]'
+const cols = 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_1.5rem] gap-x-2.5 gap-y-2 @min-[64rem]:grid-cols-[8rem_8rem_7rem_6.5rem_10rem_minmax(9rem,1fr)_7rem_1.5rem]'
 const cell = {
   id: 'col-start-1 row-start-1 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
   member: 'col-start-2 row-start-1 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
+  owner: 'col-start-2 row-start-4 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
   kind: 'col-start-1 row-start-2 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
   needs: 'col-start-2 row-start-2 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
   instructions: 'col-start-1 col-span-2 row-start-3 @min-[64rem]:col-start-auto @min-[64rem]:col-span-1 @min-[64rem]:row-start-auto',
-  checks: 'col-start-1 col-span-2 row-start-4 @min-[64rem]:col-start-auto @min-[64rem]:col-span-1 @min-[64rem]:row-start-auto',
+  checks: 'col-start-1 row-start-4 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
   menu: 'col-start-3 row-start-1 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
 }
 
@@ -46,6 +51,30 @@ function pickMember(i: number, value: string) {
   const m = value.startsWith('#') ? props.members.find((x) => x.key === Number(value.slice(1))) : undefined
   update(i, m ? { member: m.name, memberKey: m.key } : { member: value, memberKey: undefined })
 }
+// An owner is picked by the person's key, so the task follows their name; one whose person is gone shows the last name, as not a person.
+const NONE = 'none'
+const personValue = (p: DraftPerson) => `#${p.key}`
+/** The "none" item names who owns the task then: the crew's acceptance owner, when there is one. */
+const noneLabel = computed(() => {
+  const fallback = ownerOf({ people: props.people }, {})
+  return fallback ? `none: ${fallback.name}, the acceptance owner` : 'none'
+})
+function ownerValue(t: DraftTask): string {
+  const p = t.ownerKey === undefined ? undefined : props.people?.find((x) => x.key === t.ownerKey)
+  if (p) return personValue(p)
+  return t.owner ? `name:${t.owner}` : NONE
+}
+function ownersFor(t: DraftTask) {
+  const items = [{ label: noneLabel.value, value: NONE }, ...(props.people ?? []).filter((p) => p.name).map((p) => ({ label: p.name, value: personValue(p) }))]
+  const v = ownerValue(t)
+  return v.startsWith('name:') ? [...items, { label: `${t.owner} (not a person)`, value: v }] : items
+}
+function pickOwner(i: number, value: string) {
+  if (value === NONE) return update(i, { owner: undefined, ownerKey: undefined })
+  const p = value.startsWith('#') ? props.people?.find((x) => personValue(x) === value) : undefined
+  if (p) update(i, { owner: p.name, ownerKey: p.key })
+}
+
 const kindItems = [
   { label: 'work', value: 'work', icon: 'i-lucide-hammer' },
   { label: 'review', value: 'review', icon: 'i-lucide-search-check' },
@@ -131,6 +160,7 @@ const focused = ref<number | null>(null)
       <div class="hidden border-b border-default bg-muted px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted @min-[64rem]:grid" :class="cols" aria-hidden="true">
         <span>Id</span>
         <span>Member</span>
+        <span>Owner</span>
         <span>Kind</span>
         <span>Needs</span>
         <span>Instructions</span>
@@ -142,6 +172,17 @@ const focused = ref<number | null>(null)
         <div class="grid items-start" :class="cols">
           <UInput :class="cell.id" :model-value="t.id" placeholder="id" maxlength="40" autocapitalize="off" spellcheck="false" :aria-label="`Id of ${who(t, i)}`" :ui="{ base: 'font-mono font-medium' }" class="w-full" @update:model-value="update(i, { id: String($event) })" />
           <USelect :class="cell.member" :model-value="memberOf(t)" :items="membersFor(t)" placeholder="Member" :aria-label="`Member of ${who(t, i)}`" class="w-full" data-task-member @update:model-value="pickMember(i, String($event))" />
+          <USelect
+            :class="cell.owner"
+            :model-value="ownerValue(t)"
+            :items="ownersFor(t)"
+            :disabled="!people?.length && !t.owner"
+            :title="people?.length ? undefined : 'Add people to the crew to name an owner'"
+            :aria-label="`Owner of ${who(t, i)}`"
+            class="w-full"
+            data-task-owner
+            @update:model-value="pickOwner(i, String($event))"
+          />
           <USelect :class="cell.kind" :model-value="t.kind" :items="kindItems" :aria-label="`Kind of ${who(t, i)}`" class="w-full" data-task-kind @update:model-value="setKind(i, $event as 'work' | 'review')" />
           <USelect :class="cell.needs" :model-value="t.needKeys" :items="needsFor(t)" multiple placeholder="nothing" :aria-label="`What ${who(t, i)} needs`" class="w-full" data-task-needs @update:model-value="update(i, { needKeys: $event as number[] })" />
           <UTextarea

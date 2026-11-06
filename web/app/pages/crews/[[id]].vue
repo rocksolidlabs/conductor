@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAfterDelete, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
+import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAfterDelete, peopleProblems, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 
@@ -191,7 +191,8 @@ const ruleProblem = computed(() => {
     if (err) return err
     if (!m.agentId) return `${m.name || 'A member'} needs an agent`
   }
-  return taskProblems(d)[0] ?? ''
+  // The server checks the tasks, then the people (internal/crew Validate).
+  return taskProblems(d)[0] ?? peopleProblems(d)[0] ?? ''
 })
 /** Why a save of the draft would be refused by the rules a crew is held to as it is saved only (taskSaveProblems); '' when not. */
 const saveOnlyProblem = computed(() => (draft.value ? (taskSaveProblems(draft.value)[0] ?? '') : ''))

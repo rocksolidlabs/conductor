@@ -417,6 +417,20 @@ export interface CrewTask {
   needs?: string[]
   /** At most 8, none for a review. */
   checks?: CrewCheck[]
+  /** The person accountable for its outcome, a name of the crew's `people`, apart from `member`, the agent that does it; absent for none (the crew's acceptance owner then). */
+  owner?: string
+}
+
+/** A person's responsibility in a crew: each held by at most one person of it (docs/plans/decisions.md, HM1). */
+export type Responsibility = 'architecture' | 'product' | 'security' | 'acceptance'
+
+/** A person of a crew: a local label, never started (no session, worktree or agent); they own decisions and outcomes. */
+export interface CrewPerson {
+  /** 1 to 60 characters, no control character (Dispatch's rule for a person's name), unique in the crew and none a member's. */
+  name: string
+  responsibilities?: Responsibility[]
+  /** At most 500 characters on one line. */
+  note?: string
 }
 
 /** A saved crew in full, as GET /api/crews/{id} answers it and the crew routes reply. */
@@ -438,6 +452,8 @@ export interface CrewInfo {
   yolo?: boolean
   /** At most 12. The whole crew is at most 1 MiB as its file. */
   members: CrewMember[]
+  /** At most 12: the persons who own the crew's decisions and its tasks' outcomes; absent for a crew without. */
+  people?: CrewPerson[]
   /** At most 128; present, the crew is managed (#334): every member starts by its tasks and `isolation` is `worktree`. */
   tasks?: CrewTask[]
   /** At most 8 commands run in every new attempt worktree before its member starts; only with tasks. The project manifest's setup phase as a crew saved before manifests holds it: never beside `manifest`. */
@@ -459,6 +475,8 @@ export interface CrewSummary {
   where: 'server' | 'host'
   isolation: 'none' | 'worktree'
   members: Array<{ name: string; agentId: string; start: CrewStart }>
+  /** The crew's people with their responsibilities, never their notes; absent for a crew without. */
+  people?: Array<Pick<CrewPerson, 'name' | 'responsibilities'>>
   updatedAt: string
 }
 
@@ -515,6 +533,9 @@ export interface RunTask {
   importedFrom?: string
   /** What the attempt in flight says stops it (#334, row 10), until it works on or ends. */
   blocker?: { reason: string; message?: string; by: string; at: string }
+  /** The person accountable for its outcome in the crew as launched, and how: the task names them, or the crew's acceptance owner; absent for no one. */
+  owner?: string
+  ownerFrom?: 'task' | 'acceptance'
 }
 
 /** Where an attempt got to, as it saved it: tied to its worktree's commit. */
@@ -717,6 +738,8 @@ export interface RunInfo {
   outcome?: 'succeeded' | 'failed' | 'cancelled'
   /** A managed run's tasks, in the crew's order. */
   tasks?: RunTask[]
+  /** The crew's people as launched, fixed for the run; absent for a crew without (and for the record of a run without tasks). */
+  people?: CrewPerson[]
   /**
    * A record of a run the server no longer holds (it ended before the server last started, or was evicted), as `GET /api/runs/{run}`
    * marks it and the crew's runs list it: read-only, nothing of it live, its `state` as recorded (`interrupted` for a run that was running
