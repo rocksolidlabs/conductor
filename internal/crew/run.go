@@ -2181,6 +2181,7 @@ func (e *Engine) GetWithDiffs(ctx context.Context, runID string) (Run, bool) {
 	wg.Wait()
 	e.mu.Lock()
 	out := r.snapshot(true, true)
+	e.withCommands(r, &out)
 	e.mu.Unlock()
 	e.refresh(&out)
 	return out, true

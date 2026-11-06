@@ -489,7 +489,7 @@ type TaskState struct {
 	Blocker *Blocker `json:"blocker,omitempty"`
 	// Commands are the task commands its state allows now (retry, accept,
 	// cancel, in that order), as TaskCommands judges them, in the engine's
-	// reads of a live run (Get, List, TaskOf); absent for none and in a
+	// reads of a live run (Get, GetWithDiffs, List, TaskOf); absent for none and in a
 	// record. The run page offers these and no others.
 	Commands []string `json:"commands,omitempty"`
 }

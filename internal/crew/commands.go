@@ -541,7 +541,7 @@ func (e *Engine) commandsOf(r *run, t *task) TaskCommandSet {
 	return out
 }
 
-// withCommands puts in the run's read out the task commands each of r's
+// withCommands puts in the run's read out (Get, GetWithDiffs, List) the task commands each of r's
 // tasks allows (TaskState.Commands), as TaskCommands judges them, so the
 // run page offers what the engine takes. The caller holds e.mu.
 func (e *Engine) withCommands(r *run, out *Run) {

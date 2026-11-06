@@ -192,6 +192,21 @@ func TestTaskCommandsFollowALiveRun(t *testing.T) {
 	if rc, err := e.Cancel(ctx, run.ID, "admin", Command{ID: "c1", ExpectedRevision: set.Revision}, "build"); !errors.Is(err, ErrTaskState) || rc.Status != ledger.CommandFailed {
 		t.Fatalf("a cancel the set leaves out: %+v %v", rc, err)
 	}
+	// Every read of the live run names them on its tasks: the run page's
+	// (GET /api/runs/{run} is GetWithDiffs), the list's and Get's.
+	reads := map[string]Run{}
+	reads["Get"], _ = e.Get(run.ID)
+	reads["GetWithDiffs"], _ = e.GetWithDiffs(ctx, run.ID)
+	for _, l := range e.List() {
+		if l.ID == run.ID {
+			reads["List"] = l
+		}
+	}
+	for name, rd := range reads {
+		if len(rd.Tasks) != 2 || !slices.Equal(rd.Tasks[0].Commands, []string{TaskRetry, TaskAccept}) || !slices.Equal(rd.Tasks[1].Commands, []string{TaskCancel}) {
+			t.Fatalf("%s names %+v", name, rd.Tasks)
+		}
+	}
 	set, _ = e.TaskCommands(run.ID, "build")
 	if rc, err := e.Accept(ctx, run.ID, "admin", Command{ID: "a1", ExpectedRevision: set.Revision}, "build"); err != nil || rc.Task == nil || rc.Task.State != ledger.TaskSucceeded || rc.Task.Result.Attempt != set.AcceptAttempt {
 		t.Fatalf("accept at its revision: %+v %v", rc, err)
