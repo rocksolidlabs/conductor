@@ -1446,10 +1446,11 @@ func forgotten(t *testing.T, ix *history.Index, id, word string) {
 	}
 }
 
-// A pass that runs inside a Forget, after its file is removed and before
-// the journal lets the record go from memory (an observer after the
-// indexer's, on the file's removal, waits for the indexer to settle), finds
-// the file gone and removes the record: never left until a restart.
+// A pass that runs inside a Forget, as its file is removed (an observer
+// after the indexer's, on the file's removal, waits for the indexer to
+// settle), finds the record gone (the journal hides a record it removes
+// from Get before its file goes) and removes it: never left until a
+// restart.
 func TestAForgetIsGoneFromTheIndexAtOnce(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id := forgettable(t, e, "zforgetinside")

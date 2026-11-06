@@ -696,10 +696,11 @@ func (h *historyIndexer) repoIdent(ctx context.Context, dir string) repoIdent {
 // take from its run (its attempt's StartCommit from the ledger, its run's
 // project), read before the mark is compared. A failed read of either
 // is the pass's error, retried after a backoff, never a mark over an
-// entry that lacks it. A record is indexed only while its file is kept:
-// one whose file is gone (forgotten, pruned) is removed, whatever the
-// journal still holds of it in memory, so a pass that runs while a Forget
-// is under way never writes it back.
+// entry that lacks it. A record a Forget, ForgetAll or Prune has chosen is
+// ErrNotFound to Get before its file is touched (the journal hides it
+// first), so a pass during the removal removes it, and one that read it
+// just before is followed by the pass its file's delete event asks; a
+// removal whose delete failed puts the record back with its file.
 func (h *historyIndexer) indexSession(ctx context.Context, ix *history.Index, id string) error {
 	key := hSessionRef(id)
 	rec, _, err := h.journal.Get(id)
@@ -711,15 +712,6 @@ func (h *historyIndexer) indexSession(ctx context.Context, ix *history.Index, id
 	}
 	if err != nil {
 		return err
-	}
-	// The file, looked at after the record was read: a Forget removes it
-	// before its hook marks this source, so a pass taken after that mark
-	// finds it gone, and a pass that read before it is followed by that
-	// one.
-	if kept, err := h.recordKept(id); err != nil {
-		return err
-	} else if !kept {
-		return ix.Remove(ctx, key)
 	}
 	pm := h.projectsOf(ctx)
 	mark := fmt.Sprintf("S%d/P%s", rec.Seq, pm.digest)
@@ -758,19 +750,6 @@ func (h *historyIndexer) indexSession(ctx context.Context, ix *history.Index, id
 	h.afterMark(key)
 	entries, links := sessionEntries(rec, place)
 	return ix.Replace(ctx, history.Source{Key: key, Mark: mark}, entries, links)
-}
-
-// recordKept says the file of the session record id is there.
-func (h *historyIndexer) recordKept(id string) (bool, error) {
-	f, err := h.data.OpenDoc(journal.Dir + "/" + journal.SessionsDir + "/" + id + ".json")
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	f.Close()
-	return true, nil
 }
 
 // runCwd is a run's folder: its record's, else its crew's as the ledger
