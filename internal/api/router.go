@@ -56,6 +56,9 @@ const (
 	maxUnresolved = 1024
 	// routerSkipLogEvery is how often the skips past the bound are logged.
 	routerSkipLogEvery = time.Minute
+	// routesKept bounds the routes with destinations kept by question
+	// (keptRoutes), server-wide, the oldest forgotten first.
+	routesKept = 256
 )
 
 // routeState is where a question the router saw is.
@@ -111,7 +114,16 @@ type decisionRouter struct {
 	telling  bool
 	skips    int // skipped past the bound since the last log
 	skipLog  time.Time
+	// routes are the routes with destinations a router gave, by the
+	// session and the question it was asked about, the last routesKept
+	// (routeOrder, oldest first): what the decision inbox names as routed
+	// to, never asked of the router on the read's path.
+	routes     map[routeKey]ext.Route
+	routeOrder []routeKey
 }
+
+// routeKey names a question by its session and its id.
+type routeKey struct{ session, question string }
 
 // newDecisionRouter is the router of s; nothing runs until a session
 // changes.
@@ -428,6 +440,7 @@ func (r *decisionRouter) route(drv session.Driver, d ext.Decision) {
 		r.unsent(d)
 	}
 	if len(rt.To) > 0 {
+		r.keepRoute(d.Session.ID, d.ID, rt)
 		r.s.recordRouted(drv, routedWords(rt))
 	}
 	if a := rt.Answer; a != nil {
@@ -435,6 +448,42 @@ func (r *decisionRouter) route(drv session.Driver, d ext.Decision) {
 		r.s.track(func() { r.apply(drv, d, answer) })
 	}
 	seam("routed", d.Session.ID, d.ID, rt, nil)
+}
+
+// keepRoute keeps rt as the route of the question id of the session: the
+// question the router was asked about, so a route that comes back after
+// the question was replaced lands on its own. The oldest past routesKept
+// is forgotten.
+func (r *decisionRouter) keepRoute(sess, id string, rt ext.Route) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.routes == nil {
+		r.routes = map[routeKey]ext.Route{}
+	}
+	k := routeKey{sess, id}
+	if _, kept := r.routes[k]; !kept {
+		r.routeOrder = append(r.routeOrder, k)
+		if len(r.routeOrder) > routesKept {
+			delete(r.routes, r.routeOrder[0])
+			r.routeOrder = slices.Delete(r.routeOrder, 0, 1)
+		}
+	}
+	r.routes[k] = ext.Route{To: slices.Clone(rt.To), Rule: rt.Rule}
+}
+
+// routeOf is the route with destinations kept for the question id of the
+// session, false for none.
+func (r *decisionRouter) routeOf(sess, id string) (ext.Route, bool) {
+	if r == nil {
+		return ext.Route{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rt, ok := r.routes[routeKey{sess, id}]
+	if ok {
+		rt.To = slices.Clone(rt.To)
+	}
+	return rt, ok
 }
 
 // unsent holds the question d, outstanding since its judge, as skipped:

@@ -3,6 +3,7 @@ package signal
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -38,15 +39,29 @@ func (h *HostedSession) HostAttentionKept(state session.AttentionState, message,
 // it (its question set aside, say, while the host has not yet said it
 // keeps it): the decision router judges from what the host said alone.
 func (h *HostedSession) HostView() session.Info {
+	info, _ := h.HostViewSeq()
+	return info
+}
+
+// hostViews orders the views every hosted session gives (HostViewSeq).
+var hostViews atomic.Uint64
+
+// HostViewSeq is HostView with the view's place in the order the session
+// gives its views: taken under the session's lock, so that a view with a
+// greater sequence is the session as it was at a later moment, never at
+// an earlier one, whichever reaches its reader first. Sequences grow
+// across every hosted session, never 0.
+func (h *HostedSession) HostViewSeq() (session.Info, uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	seq := hostViews.Add(1)
 	info := h.info
 	info.Viewers = len(h.viewers)
 	info.Attention = h.reported
 	if info.Status.Ended() {
 		info.Attention = h.info.Attention
 	}
-	return info
+	return info, seq
 }
 
 // TakesAnswers reports whether the session's host said answerAs as it

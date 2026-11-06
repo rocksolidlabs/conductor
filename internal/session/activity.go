@@ -310,12 +310,32 @@ func (b *EventBucket) Take(now time.Time) bool {
 	return true
 }
 
-// Answer records who last cleared a needs-input prompt.
+// Answer records who last cleared a needs-input prompt. ReqID and Resumed
+// are kept with a question's result alone (Local.QuestionResult), never
+// sent with the session's description: the winning reply's request id,
+// and what the session did first after the answer.
 type Answer struct {
-	By      string    `json:"by,omitempty"`
-	ByName  string    `json:"byName"`
-	At      time.Time `json:"at"`
-	Message string    `json:"message,omitempty"`
+	By      string      `json:"by,omitempty"`
+	ByName  string      `json:"byName"`
+	At      time.Time   `json:"at"`
+	Message string      `json:"message,omitempty"`
+	ReqID   string      `json:"-"`
+	Resumed *Resumption `json:"-"`
+}
+
+// How a session went on after a question's answer (Resumption.How).
+const (
+	ResumedWorking = "working" // the agent worked again
+	ResumedAsked   = "asked"   // a next question was asked
+	ResumedEnded   = "ended"   // the session ended
+)
+
+// Resumption is what a session did first after a question was answered,
+// and when: set once, by the first attention change after the answer that
+// is one of the three (Resumed*), never by a later one.
+type Resumption struct {
+	At  time.Time `json:"at"`
+	How string    `json:"how"`
 }
 
 // activityRing is a fixed-capacity log; Snapshot returns oldest first.
