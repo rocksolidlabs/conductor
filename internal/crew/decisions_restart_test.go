@@ -314,12 +314,12 @@ func TestATypingCutByARestartIsNeverTypedAgain(t *testing.T) {
 	close(release)
 	old.deliveries.Wait()
 	next := continueRun(t, e2, run.ID)
-	rec := decisionWhen(t, ld2, d.ID, "uncertain", hasKind(ledger.HistoryDeliveryUncertain))
+	decisionWhen(t, ld2, d.ID, "uncertain", hasKind(ledger.HistoryDeliveryUncertain))
 	b2 := attemptLine(t, e2, fl2, next.ID, "build", 2)
 	if _, f := taskFileOf(t, b2); decisionIn(t, f, d.ID).Answer != "btree" {
 		t.Fatalf("the task file: %+v", f.Decisions)
 	}
-	rec = decisionWhen(t, ld2, d.ID, "carried", hasKind(ledger.HistoryDeliveryTaskFile))
+	rec := decisionWhen(t, ld2, d.ID, "carried", hasKind(ledger.HistoryDeliveryTaskFile))
 	if kindCount(rec, ledger.HistoryDeliveryEntered) != 0 || kindCount(rec, ledger.HistoryDeliveryUntyped) != 0 {
 		t.Fatalf("history %q", historyKinds(rec))
 	}

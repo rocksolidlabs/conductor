@@ -596,8 +596,9 @@ func TestALateMirrorNeverOutlivesItsAnswer(t *testing.T) {
 		// The ask holds the attempt's askMu to its end, the withdrawal of
 		// a question asked too late among it.
 		a.askMu.Lock()
+		info := l.Info()
 		a.askMu.Unlock()
-		if info := l.Info(); info.Attention.Decision != "" {
+		if info.Attention.Decision != "" {
 			t.Fatalf("a cancelled decision's question stays: %+v", info.Attention)
 		}
 		stopRun(t, e, run.ID)

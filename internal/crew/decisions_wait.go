@@ -938,7 +938,7 @@ type operation struct {
 	// held makes the change in the run the engine holds: what it changes
 	// in memory, its refusal, and the history row it writes. Nil for an
 	// operation refused when the run is not held (notHeld's words).
-	held    func(r *run, d *decision, rec ledger.DecisionRecord) (detail opDetail, refusal error, after func())
+	held    func(r *run, d *decision, rec ledger.DecisionRecord) (detail opDetail, after func(), refusal error)
 	notHeld func(rec ledger.DecisionRecord) (detail opDetail, refusal error)
 	// rev says the operation bumps the decision's rev.
 	rev bool
@@ -1022,7 +1022,7 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 				if d != nil {
 					was = d.rev
 				}
-				dt, why, then := op.held(r, d, rec)
+				dt, then, why := op.held(r, d, rec)
 				if why != nil {
 					refused = why
 					return tx{}
@@ -1130,7 +1130,7 @@ func (e *Engine) CommentDecision(ctx context.Context, id, opID, kind, text, acto
 	switch kind {
 	case CommentKind:
 		return e.operate(ctx, id, operation{kind: ledger.HistoryCommented, opID: opID, fp: fingerprintOf([]string{kind, text}), actor: actor, rev: true,
-			held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, error, func()) {
+			held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 				return opDetail{Text: text, By: actor, Words: fmt.Sprintf("Comment kept on %s", id)}, nil, nil
 			},
 			notHeld: func(rec ledger.DecisionRecord) (opDetail, error) {
@@ -1141,22 +1141,22 @@ func (e *Engine) CommentDecision(ctx context.Context, id, opID, kind, text, acto
 		return OpReceipt{}, refuse(CodeInvalid, "a comment is a comment or a more_info, not %q", kind)
 	}
 	return e.operate(ctx, id, operation{kind: ledger.HistoryInfoRequested, opID: opID, fp: fingerprintOf([]string{kind, text}), actor: actor, rev: true,
-		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, error, func()) {
+		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			switch {
 			case rec.Origin == ledger.OriginPlan:
-				return opDetail{}, refuse(CodeNoRecipient, "%s is the plan's: no agent asked it, comment instead", id), nil
+				return opDetail{}, nil, refuse(CodeNoRecipient, "%s is the plan's: no agent asked it, comment instead", id)
 			case d == nil || d.state != ledger.DecisionOpen:
-				return opDetail{}, refuse(CodeNoRecipient, "%s is %s", id, cmpState(d, rec)), nil
+				return opDetail{}, nil, refuse(CodeNoRecipient, "%s is %s", id, cmpState(d, rec))
 			case d.a == nil || d.t == nil || d.t.active() != d.a || !d.a.closedAt.IsZero() || d.a.sessionID != rec.SessionID || !e.sessionLive(d.a.sessionID):
-				return opDetail{}, refuse(CodeNoRecipient, "%s's agent has ended its attempt: comment, answer or cancel it", id), nil
+				return opDetail{}, nil, refuse(CodeNoRecipient, "%s's agent has ended its attempt: comment, answer or cancel it", id)
 			}
 			d.a.turnEnded = false
 			line := fmt.Sprintf("The operator asks about %s: %s", id, text)
-			return opDetail{Text: text, By: actor, Words: fmt.Sprintf("Asked %s's agent for more", id)}, nil, func() {
+			return opDetail{Text: text, By: actor, Words: fmt.Sprintf("Asked %s's agent for more", id)}, func() {
 				e.mu.Lock()
 				e.tell(r, d, line)
 				e.mu.Unlock()
-			}
+			}, nil
 		},
 		notHeld: func(rec ledger.DecisionRecord) (opDetail, error) {
 			if rec.Origin == ledger.OriginPlan {
@@ -1202,7 +1202,7 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, to []Destin
 	}
 	dt := opDetail{Note: note, To: []any{map[string]string{"kind": "operator"}}, Rule: "local/1: the operator answers", By: actor, Words: fmt.Sprintf("%s is routed to the operator", id)}
 	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fingerprintOf([]string{"route", note}), actor: actor,
-		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, error, func()) {
+		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			return dt, nil, nil
 		},
 		notHeld: func(rec ledger.DecisionRecord) (opDetail, error) { return dt, nil }})
@@ -1220,9 +1220,9 @@ func (e *Engine) CancelDecision(ctx context.Context, id, commandID string, relea
 		return OpReceipt{}, err
 	}
 	return e.operate(ctx, id, operation{kind: ledger.HistoryCancelled, opID: commandID, fp: fingerprintOf([]any{"cancel", release, why}), actor: actor,
-		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, error, func()) {
+		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			if d == nil || !d.waits() || d.n == 0 {
-				return opDetail{}, refuse(CodeDecisionClosed, "%s is %s: it is not cancelled", id, cmpState(d, rec)), nil
+				return opDetail{}, nil, refuse(CodeDecisionClosed, "%s is %s: it is not cancelled", id, cmpState(d, rec))
 			}
 			words := "cancelled by the operator, not approved"
 			if why != "" {

@@ -198,7 +198,9 @@ func TestAnOperationRepeatsItsReceipt(t *testing.T) {
 
 	// A cancel, a command with a receipt.
 	wd := ask(t, e, w.Attempt.SessionID, clarification("q1", "Which tone?"))
-	cancel := func() (OpReceipt, error) { return e.CancelDecision(t.Context(), wd.ID, "c1", false, "not needed", "admin") }
+	cancel := func() (OpReceipt, error) {
+		return e.CancelDecision(t.Context(), wd.ID, "c1", false, "not needed", "admin")
+	}
 	k1, err := cancel()
 	if err != nil {
 		t.Fatal(err)
