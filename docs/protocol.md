@@ -2241,7 +2241,7 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
 `500 guide_bound`, never a cut reply). The sections:
 
 - `overview`: `{caller: {kind, session?, kinds?, run?, member?, scopes},
-  sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
+  may, limits, sections: [{name, bytes}], rules}`. `kind` is `admin` or `session`; a
   session's `kinds` are `plain` (in no run) or `run_member`, `attempt` (of
   a managed run) and `ticket_member` (of a run a live ticket's run link
   names), or `brakeman` (a Brakeman turn's, which is never a ticket's
@@ -2249,7 +2249,19 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
   `task` for an attempt, `ticket` for a ticket's member, `observe` for a
   Brakeman turn: its request and its brief, and `act` for a Brakeman turn
   the person granted an operation (What a turn may do); the admin's are
-  `admin`, `session`, `task`, `ticket`, `observe` and `act`). `bytes` is the size of that
+  `admin`, `session`, `task`, `ticket`, `observe` and `act`). `may` is
+  the names of the operations the caller may call, the `operations`
+  section's, in its order, so a caller told only to read the guide knows
+  what it may do without reading a section. `limits` is the headline
+  bounds that bind it, one line of words each, from the `limits`
+  section's entries for its scopes (a crew's members, tasks and checks and
+  a ticket's title and description for the admin; a report's message and
+  the self-service hour's crews and day's links for a session; a message,
+  an inbox and a result for an attempt; a comment for a ticket's member;
+  a brief's bytes, items, refs and summary for a Brakeman turn), then a
+  Brakeman turn's reads and minutes from the configuration its turn
+  began under, its acts a request (at most 20) when it is granted one,
+  and a JSON body's bound for every caller. `bytes` is the size of that
   section's reply. `rules` are three lines for every caller: a fact needs
   evidence; nothing an agent writes becomes work by itself; a question
   goes to a person with `ask`.
@@ -3680,7 +3692,11 @@ with `why` (the store's receipt's words, or the route's for a refusal
 before the store, cut to the room its other fields leave in the entry's
 600 bytes as encoded); a failure of the server leaves it `pending`. The
 answer is the route's status and its `receipt` and `error`, so a retry is
-answered by its receipt whatever the grant now; its `launch` or `plan`,
+answered by its receipt whatever the grant now, and beside a receipt
+`receiptRef`, the ref a brief cites that receipt by,
+`op:brakeman/<the receipt's opId>` (the derived op id: the receipt's own
+`id` is what the operation made, the launch's or the revision's, never a
+ref of the receipt); its `launch` or `plan`,
 Dispatch's records of the ticket, only while the configuration then and
 the turn's snapshot show `dispatch`, the ticket is in the scope and the
 turn has reads left, each noted in the read log at its state and rev and
@@ -3722,7 +3738,11 @@ granted operation as its `op`, with `expectedRevision` the ticket's
 revision read, and the `opId` of the act it ran in `args.opId`; the
 request's `acts` say which of them Brakeman ran, and the app shows a
 proposal as "Brakeman did this" with its receipt only when an act of the
-request has the `opId` it names, of its operation on its ticket. A server that stops between the operation and the copy, or before the operation,
+request has the `opId` it names, of its operation on its ticket; every
+other act of the request is shown apart, under "What Brakeman did", with
+its receipt, whether or not the brief names it. The act's words (the
+tool's text, the command's output) give the `receiptRef` and name the
+launch as the launch. A server that stops between the operation and the copy, or before the operation,
 leaves the entry `pending`: before Brakeman's routes serve again, the
 desk reads Dispatch's receipt for `(brakeman, op)`, or, the receipt
 pruned, the change its operation recorded, and copies it, or, with

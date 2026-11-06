@@ -251,7 +251,11 @@ func TestEachSectionIsBounded(t *testing.T) {
 		ops[i].Description = strings.Repeat("d", maxOpDescription)
 	}
 	long := strings.Repeat("x", 64)
-	callers := []guideCaller{adminCaller(), {Kind: "session", Session: long, Kinds: []string{"run_member", "attempt", "ticket_member"}, Run: long, Member: strings.Repeat("m", 40), Scopes: []string{"session", "task", "ticket"}, local: true}}
+	callers := []guideCaller{adminCaller(), {Kind: "session", Session: long, Kinds: []string{"run_member", "attempt", "ticket_member"}, Run: long, Member: strings.Repeat("m", 40), Scopes: []string{"session", "task", "ticket"}, local: true},
+		// A Brakeman turn granted every operation, its budget at its
+		// largest.
+		{Kind: "session", Session: long, Kinds: []string{"run_member", "brakeman"}, Run: long, Member: strings.Repeat("m", 40), Scopes: []string{"session", "observe", "act"}, local: true, brakeman: true,
+			acts: brakeman.Grantable, budget: brakeman.Budget{TurnMinutes: 60, ReadsPerTurn: 2000, TurnsPerDay: 500, MinutesPerDay: 1440}}}
 	for _, c := range callers {
 		content := e.srv.guideContent(t.Context(), c, ops)
 		h := content["host"].(guideHost)
@@ -367,6 +371,78 @@ func TestASessionsGuideListsItsScopesOnly(t *testing.T) {
 		sid := e.createSession("cat")
 		check(t, e, sid, e.agentToken(sid), []string{"plain"}, []string{"report", "set_state", "ask", "guide"})
 	})
+}
+
+// The overview says what the caller may do and within what, in a few
+// lines, without a section read: the operations it may call (the
+// operations section's names, in its order) and the headline limits that
+// bind it, each its own. A real Codex told only "call the guide tool"
+// answered with the version, its scope and the sections' names, which
+// was all the overview said.
+func TestTheOverviewListsWhatTheCallerMayDoAndItsLimits(t *testing.T) {
+	overview := func(t *testing.T, e *testEnv, token, path string) (may, limits []string, ops []string) {
+		t.Helper()
+		status, raw, out := guideOf(t, e, token, path)
+		if status != http.StatusOK || len(raw) > maxGuideOverview {
+			t.Fatalf("overview %d, %d bytes", status, len(raw))
+		}
+		ov := out["overview"].(map[string]any)
+		for _, x := range ov["may"].([]any) {
+			may = append(may, x.(string))
+		}
+		for _, x := range ov["limits"].([]any) {
+			limits = append(limits, x.(string))
+		}
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		_, _, sec := guideOf(t, e, token, path+sep+"section=operations")
+		return may, limits, opNames(t, sec)
+	}
+	has := func(limits []string, prefix string) bool {
+		return slices.ContainsFunc(limits, func(l string) bool { return strings.HasPrefix(l, prefix) })
+	}
+	t.Run("admin", func(t *testing.T) {
+		e := newTestEnv(t, nil)
+		may, limits, ops := overview(t, e, adminToken, "/api/guide")
+		if !slices.Equal(may, ops) || !slices.Contains(may, "run_stop") || !has(limits, "crew_members: at most") || !has(limits, "body: at most") {
+			t.Fatalf("the admin's overview: may %v, limits %v", may, limits)
+		}
+	})
+	t.Run("session", func(t *testing.T) {
+		e := newTestEnv(t, nil)
+		sid := e.createSession("cat")
+		may, limits, ops := overview(t, e, e.agentToken(sid), "/api/sessions/"+sid+"/guide")
+		if !slices.Equal(may, ops) || !slices.Contains(may, "ask") || slices.Contains(may, "run_stop") || slices.Contains(may, "observe") ||
+			!has(limits, "report_message: at most") || has(limits, "brief:") || has(limits, "crew_members") || !has(limits, "body: at most") {
+			t.Fatalf("a session's overview: may %v, limits %v", may, limits)
+		}
+	})
+	for _, granted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("a Brakeman turn granted %v", granted), func(t *testing.T) {
+			bk := brakemanEnv(t, nil)
+			bk.enable(t, "bk", func(c map[string]any) {
+				act := []any{}
+				if granted {
+					act = []any{brakeman.ActLaunchApprovedPlan}
+				}
+				p := c["permissions"].(map[string]any)
+				p["act"] = act
+				c["budget"].(map[string]any)["readsPerTurn"] = 123
+			})
+			req := bk.briefing(t)
+			sid, tok, _ := bk.turnSession(t, req)
+			may, limits, ops := overview(t, bk.testEnv, tok, "/api/sessions/"+sid+"/guide")
+			if !slices.Equal(may, ops) || !slices.Contains(may, "observe") || !slices.Contains(may, "brief_submit") || slices.Contains(may, "form_crew") ||
+				!has(limits, "brief: at most") || !has(limits, "this turn: at most 123 reads and") {
+				t.Fatalf("the turn's overview: may %v, limits %v", may, limits)
+			}
+			if slices.Contains(may, "act") != granted || slices.Contains(may, brakeman.ActLaunchApprovedPlan) != granted || has(limits, "acts: at most") != granted {
+				t.Fatalf("the turn's overview, granted %v: may %v, limits %v", granted, may, limits)
+			}
+		})
+	}
 }
 
 // A session's guide takes its own agent token or the admin's: another
@@ -1071,6 +1147,29 @@ func TestTheDraftCrewExampleIsACrewThatSaves(t *testing.T) {
 		t.Errorf("a brief of the example: %v", err)
 	}
 	e.expect(t, "POST", "/api/crews", body, http.StatusCreated, "")
+}
+
+// The rule a crew with tasks is refused by (a member started otherwise
+// than by its task: start.when must be "task") is in the draft crew's
+// guidance, where an agent writing one reads it: a real model's first
+// draft crew was refused by it, a rule the guidance did not state.
+func TestTheDraftCrewGuidanceStatesTheStartRule(t *testing.T) {
+	t.Parallel()
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{{ID: "claude", Name: "Claude Code", Command: []string{"/bin/cat"}, Adapter: "claude"}})
+	crewBody := json.RawMessage(`{"name":"Locale fix","cwd":"` + e.root + `","where":"server","isolation":"worktree","members":[{"name":"writer","agentId":"claude","prompt":"Fix it.","start":{"when":"immediately"}}],"tasks":[{"id":"fix","member":"writer","kind":"work","instructions":"Fix it."}]}`)
+	err := (brakemanFacts{s: e.srv}).CheckCrew(crewBody)
+	if err == nil || !strings.Contains(err.Error(), `start.when must be "task"`) {
+		t.Fatalf("a crew with tasks whose member starts at once: %v", err)
+	}
+	line := ""
+	for _, w := range guideBriefsSection().Words {
+		if strings.HasPrefix(w, brakeman.ItemDraftCrew+":") {
+			line = w
+		}
+	}
+	if !strings.Contains(line, `In a crew with tasks, every member's start.when is "task"`) {
+		t.Fatalf("the draft crew's guidance: %q", line)
+	}
 }
 
 // callAsTurn is callAs as a Brakeman turn: its session's token, the

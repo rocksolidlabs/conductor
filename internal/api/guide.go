@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -336,7 +337,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// holds, the snapshot and the configuration now together.
 		{Name: "act", MCP: "act", Scope: "act", Method: http.MethodPost, Path: actRouteOf(brakeman.ActLaunchApprovedPlan), needs: needLauncher, Receipt: "dispatch",
 			Summary:     "Run an operation the person granted you, through its own route: checked against the grant, your scope and its target's state, it leaves its receipt.",
-			Description: "When this session is a Brakeman turn the person granted operations to: run one (operation names it: " + strings.Join(actOperations(), ", ") + ") through that operation's own route, with its path parameters in params and its body in body, as the guide's entry of that operation gives them; opId is minted when you give none, and the same opId again answers the receipt kept. It is refused unless the person grants it now and did when your turn began, its target is within your scope and visibility, and in the state the operation needs (an approved revision whose approval still holds; the ticket's revision you read as expectedRev). It runs as Brakeman and answers its route's own answer with the receipt; a brief's proposal of the act names its opId in args.opId, which the page shows done with that receipt. Approving, answering, accepting and closing stay the person's: no grant does them.",
+			Description: "When this session is a Brakeman turn the person granted operations to: run one (operation names it: " + strings.Join(actOperations(), ", ") + ") through that operation's own route, with its path parameters in params and its body in body, as the guide's entry of that operation gives them; opId is minted when you give none, and the same opId again answers the receipt kept. It is refused unless the person grants it now and did when your turn began, its target is within your scope and visibility, and in the state the operation needs (an approved revision whose approval still holds; the ticket's revision you read as expectedRev). It runs as Brakeman and answers its route's own answer: the receipt, whose id is what it made (the launch's, the revision's), and receiptRef, the ref a brief cites the receipt by (op:brakeman/<the receipt's opId>, an outcome/1's receipt). Approving, answering, accepting and closing stay the person's: no grant does them.",
 			CLI:         []string{"conductor", "brakeman", "act", "OPERATION", "--key", "KEY", "--body-file", "BODY.json"},
 			Input: obj(map[string]any{
 				"operation": map[string]any{"type": "string", "enum": actOperations(), "description": "the operation granted: the guide's entry of that name gives its route and its body"},
@@ -351,7 +352,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// The guide itself.
 		{Name: "guide", MCP: "guide", Scope: "session", Method: http.MethodGet, Path: sessions + "/guide",
 			Summary:     "This guide, from the running server: the overview without a section, else the section named.",
-			Description: "What this Conductor server lets you do here, from the server itself: without a section, an overview (the server's version, who you are and what you may do, the sections and their sizes); with one, that section: operations (what you may call, with its tool, command, route and input), limits, host, receipts, providers, or briefs (a Brakeman brief's shape: its item kinds, their fields and bounds, the ref forms, an example).",
+			Description: "What this Conductor server lets you do here, from the server itself: without a section, an overview (the server's version, who you are, the operations you may call and the limits that bind you, the sections and their sizes); with one, that section: operations (what you may call, with its tool, command, route and input), limits, host, receipts, providers, or briefs (a Brakeman brief's shape: its item kinds, their fields and bounds, the ref forms, an example).",
 			CLI:         []string{"conductor", "guide", "--section", "SECTION"},
 			Input:       obj(map[string]any{"section": map[string]any{"type": "string", "enum": guideSections, "description": "the section to read; the overview when not given"}}),
 			Bounds:      map[string]int{"overview": maxGuideOverview, "section": maxGuideSection}},
@@ -678,6 +679,10 @@ type guideCaller struct {
 	// began under and the configuration now together (grantedActs): the
 	// act scope lists the act tool and these alone.
 	acts []string
+	// budget is a Brakeman turn's, the snapshot its turn began under: the
+	// overview's limits name its reads and its minutes. Zero when the
+	// request cannot be read.
+	budget brakeman.Budget
 }
 
 // adminCaller is the workbench token's: every scope.
@@ -709,7 +714,7 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 		c.Kinds = append(c.Kinds, "brakeman")
 		c.Scopes = append(c.Scopes, "observe")
 		c.brakeman = true
-		if c.acts = s.turnActs(ref.Brakeman.Request); len(c.acts) > 0 {
+		if c.acts, c.budget = s.turnActs(ref.Brakeman.Request); len(c.acts) > 0 {
 			c.Scopes = append(c.Scopes, "act")
 		}
 		return c
@@ -726,21 +731,25 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 // turnActs is the operations the request id's turn is granted, its
 // snapshot and the configuration now together; nil when none, or when
 // the records cannot be read (the guide then lists no act, and the act
-// routes refuse it as ever).
-func (s *Server) turnActs(id string) []string {
+// routes refuse it as ever); and the budget its snapshot holds, zero when
+// the request cannot be read.
+func (s *Server) turnActs(id string) ([]string, brakeman.Budget) {
 	d := s.brakeman
 	if d == nil {
-		return nil
+		return nil, brakeman.Budget{}
 	}
 	req, err := d.st.Get(id)
-	if err != nil || !req.Open() {
-		return nil
+	if err != nil {
+		return nil, brakeman.Budget{}
+	}
+	if !req.Open() {
+		return nil, req.Config.Budget
 	}
 	cfg, err := d.st.Config()
 	if err != nil {
-		return nil
+		return nil, req.Config.Budget
 	}
-	return grantedActs(req.Config.Permissions, cfg.Permissions)
+	return grantedActs(req.Config.Permissions, cfg.Permissions), req.Config.Budget
 }
 
 // reaches reports whether the caller is given op on this server.
@@ -980,11 +989,83 @@ func extensionKinds(caps capabilitiesReply) []string {
 	return out
 }
 
-// guideOverview is the overview's content.
+// guideOverview is the overview's content: who the caller is, what it
+// may call (the operations section's names, each whole there) and the
+// limits that bind it most (each whole in the limits section), the
+// sections and their sizes, and the rules. A caller told only to call the
+// guide learns there what it may do and within what, in a few lines.
 type guideOverview struct {
-	Caller   guideCaller        `json:"caller"`
+	Caller guideCaller `json:"caller"`
+	// May is the operations the caller may call, by name (an MCP tool's
+	// name where it has one), in the table's order.
+	May []string `json:"may"`
+	// Limits are the headline bounds that bind the caller, one a line,
+	// in words: its scopes' own, and a Brakeman turn's budget.
+	Limits   []string           `json:"limits"`
 	Sections []guideSectionSize `json:"sections"`
 	Rules    []string           `json:"rules"`
+}
+
+// overviewLimitNames are the limits section's entries the overview names
+// for a caller that reaches each scope, in this order, each once.
+var overviewLimitNames = []struct {
+	scope string
+	names []string
+}{
+	{"admin", []string{"crew_members", "crew_tasks", "task_checks", "check_timeout", "ticket_title", "ticket_description"}},
+	{"session", []string{"report_message", "self_crews", "self_links"}},
+	{"task", []string{"message", "inbox", "result_summary", "result_issues"}},
+	{"ticket", []string{"comment"}},
+	{"observe", []string{"brief", "brief_items", "brief_refs", "brief_summary"}},
+}
+
+// overviewLimits is the headline bounds that bind c, in words: its
+// scopes' entries of the limits section, a Brakeman turn's reads and
+// minutes from the snapshot its turn began under, its acts a request
+// with the act scope, and a JSON body's bound for everyone.
+func overviewLimits(c guideCaller) []string {
+	all := guideLimits()
+	var out, seen []string
+	add := func(name string) {
+		if slices.Contains(seen, name) {
+			return
+		}
+		if i := slices.IndexFunc(all, func(l guideLimit) bool { return l.Name == name }); i >= 0 {
+			seen = append(seen, name)
+			out = append(out, limitWords(all[i]))
+		}
+	}
+	for _, g := range overviewLimitNames {
+		if slices.Contains(c.Scopes, g.scope) {
+			for _, n := range g.names {
+				add(n)
+			}
+		}
+	}
+	if c.brakeman && c.budget.ReadsPerTurn > 0 {
+		out = append(out, fmt.Sprintf("this turn: at most %d reads and %d minutes, then it ends", c.budget.ReadsPerTurn, c.budget.TurnMinutes))
+	}
+	if slices.Contains(c.Scopes, "act") {
+		out = append(out, fmt.Sprintf("acts: at most %d a request, each only as the person granted it", brakeman.MaxActs))
+	}
+	add("body")
+	return out
+}
+
+// limitWords is a limit in one line: its name, its bound and what it
+// bounds.
+func limitWords(l guideLimit) string {
+	unit := ""
+	if l.Unit != "" {
+		unit = " " + l.Unit
+	}
+	switch {
+	case l.Pattern != "":
+		return fmt.Sprintf("%s: %s (%s)", l.Name, l.Pattern, l.About)
+	case l.Min > 0:
+		return fmt.Sprintf("%s: %d to %d%s (%s)", l.Name, l.Min, l.Max, unit, l.About)
+	}
+	return fmt.Sprintf("%s: at most %d%s (%s)", l.Name, l.Max, unit, l.About)
 }
 
 // guideSectionSize names a section and the size of its reply.
@@ -1050,7 +1131,12 @@ func briefSubmitSchema() map[string]any {
 // sizes, for the caller.
 func encodeGuide(c guideCaller, content map[string]any) (map[string][]byte, error) {
 	out := make(map[string][]byte, len(content)+1)
-	ov := guideOverview{Caller: c, Rules: guideRules}
+	ov := guideOverview{Caller: c, May: []string{}, Limits: overviewLimits(c), Rules: guideRules}
+	if ops, ok := content["operations"].([]Operation); ok {
+		for _, op := range ops {
+			ov.May = append(ov.May, op.Name)
+		}
+	}
 	for _, name := range guideSections {
 		b, err := guideReply(name, content[name])
 		if err != nil {

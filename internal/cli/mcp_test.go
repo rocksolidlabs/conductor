@@ -851,7 +851,7 @@ func newGrantServer(t *testing.T, act []string, lose bool) *grantServer {
 		w.WriteHeader(http.StatusCreated)
 		if strings.HasSuffix(r.URL.Path, "/launch") {
 			// As the server answers an act: Dispatch's launch, never the run.
-			_, _ = io.WriteString(w, `{"receipt":{"opId":"bk1","intent":"launch","status":"done","id":"0123456789abcdef"},"launch":{"id":"0123456789abcdef","runId":"r-1","state":"started"}}`)
+			_, _ = io.WriteString(w, `{"receipt":{"opId":"bk1","intent":"launch","status":"done","id":"0123456789abcdef"},"receiptRef":"op:brakeman/bk1","launch":{"id":"0123456789abcdef","runId":"r-1","state":"started"}}`)
 			return
 		}
 		_, _ = io.WriteString(w, `{"receipt":{"opId":"bk2","intent":"plan.propose","status":"done","id":"fedcba9876543210"},"plan":{"id":"fedcba9876543210","n":2,"state":"proposed"}}`)
@@ -922,12 +922,12 @@ func TestActSendsEachOperationToItsRoute(t *testing.T) {
 		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"act","arguments":{"operation":"launch_approved_plan","body":{"plan":"0123456789abcdef"}}}}`,
 		`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"act","arguments":{"operation":"act","params":{"key":"CND-12"}}}}`,
 	)
-	for i, want := range []string{"launch_approved_plan ran (opId ", "prepare_followup ran (opId mine-1): receipt fedcba9876543210, done; revision 2 (fedcba9876543210) proposed"} {
+	for i, want := range []string{"launch_approved_plan ran (opId ", "prepare_followup ran (opId mine-1): done; its receipt is op:brakeman/bk2, the ref a brief cites it by (an outcome/1's receipt); revision 2 (fedcba9876543210) proposed"} {
 		if text, isErr := toolText(t, replies[i]); isErr || !strings.HasPrefix(text, want) {
 			t.Errorf("reply %d: %q %v", i, text, isErr)
 		}
 	}
-	if text, _ := toolText(t, replies[0]); !strings.Contains(text, "receipt 0123456789abcdef, done; run r-1 launched") || !strings.Contains(text, `"runId": "r-1"`) {
+	if text, _ := toolText(t, replies[0]); !strings.Contains(text, "done; its receipt is op:brakeman/bk1, the ref a brief cites it by (an outcome/1's receipt); launch 0123456789abcdef; run r-1 launched") || !strings.Contains(text, `"receiptRef": "op:brakeman/bk1"`) || !strings.Contains(text, `"runId": "r-1"`) {
 		t.Errorf("the launch's words: %q", text)
 	}
 	for i, want := range []string{"act: operation is one of launch_approved_plan, prepare_followup", "act launch_approved_plan takes the path parameters key", "act launch_approved_plan needs key", "act: operation is one of"} {
