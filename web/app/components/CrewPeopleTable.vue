@@ -11,7 +11,8 @@ import { PEOPLE_LIMITS, RESPONSIBILITIES, RESPONSIBILITY_WORDS, draftPerson, peo
 const people = defineModel<DraftPerson[]>({ default: () => [] })
 const props = defineProps<{ members: readonly DraftMember[]; tasks?: readonly DraftTask[] }>()
 
-// The names Conductor knows, read as the table opens and again whenever a name picker opens.
+// The names Conductor knows, read as the table opens, again whenever a name picker opens, and as its search changes: those that contain
+// the text typed, which may be past the first page.
 const known = usePeople()
 onMounted(() => void known.load())
 
@@ -77,6 +78,7 @@ function remove(key: number) {
             data-person-name-picker
             @update:model-value="update(p.key, { name: $event })"
             @open="known.load()"
+            @search="known.load($event)"
           />
           <USelect
             :model-value="p.responsibilities ?? []"

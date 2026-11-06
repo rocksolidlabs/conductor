@@ -1,4 +1,5 @@
 import type { Responsibility } from './useSessions'
+import { PEOPLE_LIMITS } from '~/utils/crews'
 
 /** A person Conductor knows (GET /api/people): in Dispatch's directory, in saved crews, or both. */
 export interface KnownPerson {
@@ -20,9 +21,10 @@ export interface PeoplePage {
 
 /**
  * The names Conductor knows (docs/plans/decisions.md, HM1): the union of Dispatch's directory and the saved crews' people, read from both
- * and written to neither. `load` reads the first page again (200 names, `q` keeping those that contain it); a reply older than the last
- * read started is dropped, so a slow one never puts back names a newer one replaced. A failed read keeps the names read before: a typed
- * name is still taken.
+ * and written to neither. `load` reads the first page again (200 names, `q` keeping those that contain it, so a name past the first page
+ * of all is found by searching for it); a reply older than the last read started is dropped, so a slow one never puts back names a newer
+ * one replaced. A failed read keeps the names read before: a typed name is still taken. A `q` longer than a name (60 characters) is
+ * contained in no name, so it is answered with none, without a read the server would refuse.
  */
 export function usePeople() {
   const { request } = useApi()
@@ -40,6 +42,10 @@ export function usePeople() {
 
   async function load(q?: string): Promise<void> {
     const n = ++seq
+    if (q && [...q].length > PEOPLE_LIMITS.name) {
+      names.value = []
+      return
+    }
     try {
       const r = await page({ q })
       if (n === seq) names.value = r.people.map((p) => p.name)

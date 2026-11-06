@@ -9,7 +9,9 @@ import { initials } from '~/utils/sessions'
  * each time the picker opens, so a name another browser added is offered.
  *
  * Given `names` (a crew's person, HM1: the names Conductor knows, usePeople), it offers those instead and reads no directory; it says
- * `open` as it opens, so its owner can read them again. `create` words the row that takes a typed name.
+ * `open` as it opens, so its owner can read them again, and `search` with the text typed in its search field, so its owner can read the
+ * names that contain it (GET /api/people's `q`: a page holds 200 names, and the one typed may be past them). `create` words the row that
+ * takes a typed name.
  */
 const props = withDefaults(defineProps<{ modelValue: string; disabled?: boolean; placeholder?: string; names?: readonly string[]; create?: string; size?: 'sm' | 'md' }>(), {
   placeholder: undefined,
@@ -17,11 +19,15 @@ const props = withDefaults(defineProps<{ modelValue: string; disabled?: boolean;
   create: undefined,
   size: 'sm',
 })
-const emit = defineEmits<{ 'update:modelValue': [name: string]; open: [] }>()
+const emit = defineEmits<{ 'update:modelValue': [name: string]; open: []; search: [q: string] }>()
 
 const api = useDispatchApi()
 const people = ref<string[]>([])
 const open = ref(false)
+const term = ref('')
+watch(term, (q) => {
+  if (props.names) emit('search', q)
+})
 watch(open, (o) => {
   if (!o) return
   if (props.names) emit('open')
@@ -58,6 +64,7 @@ function pick(v: unknown) {
 <template>
   <USelectMenu
     v-model:open="open"
+    v-model:search-term="term"
     :model-value="modelValue || undefined"
     :items="items"
     create-item="always"
