@@ -18,9 +18,9 @@ const props = defineProps<{
   routeOf: (ref: string) => string | null
   /** This browser's latest action's steps on the item, when it acted: shown before the item's own. */
   delivery?: readonly DeliveryStep[]
-  /** The label of the action under way, if any. */
+  /** The label of this item's action under way, if any (another item's never shows here). */
   busy?: string
-  /** Why the last action was refused, in words. */
+  /** Why this item's last action was refused (or not sent), in words; for a question, where it can still be answered. */
   refusal?: string
   /** The words of an action whose outcome nobody confirmed (sent, and no word will come), with a way to read again; none otherwise. */
   unknown?: string
@@ -165,7 +165,15 @@ function sendComment() {
         <p class="text-sm text-pretty">{{ item.blocking.words }}</p>
         <UButton v-if="terminal && routeOf(terminal.ref)" :to="routeOf(terminal.ref)!" label="Open the terminal" icon="i-lucide-square-terminal" size="lg" class="min-h-11 self-start" data-inbox-terminal />
       </div>
-      <UAlert v-if="refusal" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="refusal" data-inbox-refusal />
+      <UAlert
+        v-if="refusal"
+        color="warning"
+        variant="subtle"
+        icon="i-lucide-triangle-alert"
+        :title="refusal"
+        :actions="item.kind === 'question' && terminal && routeOf(terminal.ref) ? [{ label: 'Open the terminal', icon: 'i-lucide-square-terminal', color: 'neutral', variant: 'outline', class: 'min-h-11', to: routeOf(terminal.ref)! }] : undefined"
+        data-inbox-refusal
+      />
       <UAlert
         v-if="unknown"
         color="neutral"

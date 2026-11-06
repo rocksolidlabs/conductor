@@ -5,6 +5,7 @@
 // (utils/decisions.ts is the durable decision record's).
 
 import { NO_QUESTION, ReplyError } from './reply'
+import { CommandRefused } from './tasks'
 
 /** One item as the list shows it, folded: no action's input or scope (the page reads the item before it acts). */
 export interface InboxSummary {
@@ -180,11 +181,12 @@ function settled(state: StepState | string): boolean {
 }
 
 /**
- * What the page knows of its own request, kept in the recent entry as its `outcome` (useInbox, "What the page knows of an answer"):
- * none yet (sent, no word: the reply is out, or the page went before it came); `accepted`, the owner's own word that it took it (an
- * answer's `answer_ok`, a command's or an operation's receipt); `refused: <words>`, the owner's own refusal; `unconfirmed`, the
- * request went and no word will come (an older owner that does not confirm answers, a connection lost or silent before its word).
- * A request that never left the browser has no entry at all.
+ * What the page knows of its own request, kept in the recent entry as its `outcome` (useInbox, "What the page knows of an answer"),
+ * one of four and no fifth, for every send the page makes (an answer, a task's command, a plan's operation; useInboxActs): none yet
+ * (sent: the reply is out, or the page went before it came); `accepted`, confirmed by a receipt (an answer's `answer_ok`, a
+ * command's or an operation's receipt); `refused: <words>`, refused by a receipt (the owner's own refusal, its words); `unconfirmed`,
+ * unknown: the request went and no receipt came (a transport failure, a reply lost, an older owner that does not confirm answers, a
+ * reply with no receipt). A request that never left the browser has no entry at all.
  */
 export type ReplyWord = string
 
@@ -195,7 +197,9 @@ export const UNCONFIRMED = 'unconfirmed'
  * The steps a page shows after a read: `next` (the server's), with every step the page had seen `done` or `refused` kept over a
  * later `waiting` or `unknown` (a step never moves back in a page's view, whatever order the reads come back in). Where the server
  * says `unknown` for the recorded and validated steps (a hosted session's question: the host holds the answer; or a session that
- * forgot it), the reply's own word on this browser's request fills them: the host took it, or refused it with words.
+ * forgot it), the reply's own word on this browser's request fills them: the host took it, or refused it with words. A refusal
+ * fills them where they are `waiting` too: the owner refused this request whatever the track says of the question (a question
+ * set aside or held over still waits to be shown again, and refuses every answer until then), so the steps end there.
  */
 export function reconcileDelivery(prev: readonly DeliveryStep[] | undefined, next: readonly DeliveryStep[], reply?: ReplyWord): DeliveryStep[] {
   const out = STEPS.map((name) => {
@@ -208,7 +212,8 @@ export function reconcileDelivery(prev: readonly DeliveryStep[] | undefined, nex
     const word = replyStep(reply)
     for (const name of ['recorded', 'validated'] as const) {
       const i = STEPS.indexOf(name)
-      if (out[i]!.state === 'unknown' && word) out[i] = { ...word, step: name }
+      const st = out[i]!.state
+      if (word && (st === 'unknown' || (word.state === 'refused' && st === 'waiting'))) out[i] = { ...word, step: name }
     }
   }
   // A refused action resumes nothing: whatever the question or the task did after (another answer won, the run went on), it was not
@@ -461,13 +466,47 @@ export function phoneOffer(origin: string): PhoneOffer {
 /**
  * What an answer's failure says of it: `not_sent` when nothing left this browser (no connection, a view-only link, a reply that
  * names no question the page could tell the session), `unconfirmed` when it went and no word came (`no_word`: the owner said nothing
- * in time; `closed`: the connection went first), `refused` for the owner's own refusal (`question_answered` and its other codes).
+ * in time; `closed`: the connection went first), `refused` for the owner's own refusal (`question_answered` and its other codes),
+ * which is the answer's receipt.
  */
 export function answerFailure(e: unknown): 'not_sent' | 'unconfirmed' | 'refused' {
   if (!(e instanceof ReplyError)) return 'not_sent'
   if (e.code === 'no_word' || e.code === 'closed') return 'unconfirmed'
   if (e.code === 'not_connected' || e.code === NO_QUESTION) return 'not_sent'
   return 'refused'
+}
+
+/**
+ * What a task command's or a plan operation's failure says of it: `refused` only for a refusal its receipt states (CommandRefused:
+ * the reply carried the operation's receipt); anything else (a transport failure, a reply lost after sendCommand's one retry, an
+ * answer with no receipt) is `unconfirmed`, never a refusal: the operation may have been done, and its track says.
+ */
+export function receiptFailure(e: unknown): 'unconfirmed' | 'refused' {
+  return e instanceof CommandRefused ? 'refused' : 'unconfirmed'
+}
+
+/**
+ * The words of an action whose outcome nobody confirmed, with a way to read again (never to send again by itself), or '' when its
+ * outcome is known: confirmed or refused by a receipt, its recorded step settled by the server's track, or the request still out
+ * from this page (`pending`). An action with no word and not pending went from an earlier load of the page, its reply never seen.
+ */
+export function unknownWords(e: RecentEntry | undefined, steps: readonly DeliveryStep[] | undefined, pending: boolean): string {
+  if (!e || pending || (e.outcome && e.outcome !== UNCONFIRMED)) return ''
+  const recorded = steps?.find((s) => s.step === 'recorded')?.state
+  if (recorded === 'done' || recorded === 'refused') return ''
+  if (e.attempt) return 'Your answer went, and nothing has said whether the session took it. Read again to see what the server knows now; answer again only if the agent still asks.'
+  return 'Your request went, and no receipt came back to say whether it was taken. Read again to see what the server knows now; act again only if the item still asks for it.'
+}
+
+/**
+ * Where a question an answer was refused for can still be answered, from the server's track of it read after the refusal (`steps`,
+ * as the server gave them): a question still waiting (shown to another answer under way, or set aside or held over to show again)
+ * is answered here once the page offers it again, or in the session's terminal; '' for one that is gone.
+ */
+export function whereToAnswer(steps: readonly DeliveryStep[] | undefined): string {
+  const recorded = steps?.find((s) => s.step === 'recorded')
+  if (recorded?.state !== 'waiting') return ''
+  return `The question still waits (${recorded.words}): answer it here once this page offers it again, or in the session's terminal.`
 }
 
 /** A request id for an answer, fresh per action, so this browser's attempt and the winner are told apart: 16 hex characters. */

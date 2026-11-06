@@ -455,3 +455,79 @@ test('at a desktop\'s width, a line typed on one item is not in the next one pic
   }
 })
 
+
+/** A plan revision waiting for its approval, on a ticket of its own: its item's ref and the revision's id. */
+async function planItem(title: string): Promise<{ ref: string; id: string }> {
+  await api.ok('POST', '/api/dispatch/projects', { opId: 'dec-p', key: PROJECT, name: 'Decisions' })
+  const { ticket } = await api.ok<{ ticket: { key: string } }>('POST', '/api/dispatch/tickets', { opId: `dec-${title}`, project: PROJECT, title })
+  const { plan } = await api.ok<{ plan: { id: string; n: number } }>('POST', `/api/dispatch/tickets/${ticket.key}/plans`, { opId: `dec-${title}-r`, crew: crewId })
+  return { ref: `plan:${ticket.key}/${plan.n}`, id: plan.id }
+}
+
+test("an Approve whose replies are lost is not confirmed, never refused: the card offers Read again and sends nothing more by itself", async ({ browser }) => {
+  const p = await planItem('lost-reply')
+  const page = await (await context(browser, false)).newPage()
+  // Every reply to the Approve is lost (a seam: the request fails in the browser, as a dropped connection's does).
+  let posts = 0
+  await page.route(`**/api/dispatch/plans/${p.id}/approve`, (route) => {
+    posts++
+    return route.abort('connectionreset')
+  })
+  budget(6)
+  await page.goto(`/decisions?item=${encodeURIComponent(p.ref)}`)
+  const item = page.locator(`[data-inbox-item="${p.ref}"]`)
+  await item.locator('[data-inbox-action="approve"]').click()
+  await expect(item.locator('[data-inbox-unknown]')).toBeVisible()
+  await expect(item.locator('[data-inbox-refusal]')).toHaveCount(0)
+  await expect.poll(async () => (await stepStates(page)).validated, { timeout: STEP_MS }).toBe('unknown')
+  await expect(page.locator(`[data-recent-row="${p.ref}"] [data-recent-word]`)).toHaveText('Not confirmed')
+  // The one send and its one retry with the same id (sendCommand's), nothing after.
+  expect(posts).toBe(2)
+
+  // Read again: nothing reached the server, so it still knows nothing of it, and nothing was sent again.
+  budget(3)
+  await page.unroute(`**/api/dispatch/plans/${p.id}/approve`)
+  await item.locator('[data-inbox-unknown]').getByRole('button', { name: 'Read again' }).click()
+  await expect.poll(async () => (await stepStates(page)).recorded, { timeout: STEP_MS }).toBe('unknown')
+  await expect(item.locator('[data-inbox-refusal]')).toHaveCount(0)
+  expect(posts).toBe(2)
+  // The person approves again, by hand: taken.
+  await item.locator('[data-inbox-action="approve"]').click()
+  await expect.poll(async () => (await stepStates(page)).validated, { timeout: STEP_MS }).toBe('done')
+})
+
+test("an action under way on one item shows nothing on the next one opened: neither its busy state nor, later, its refusal", async ({ browser }) => {
+  const a = await planItem('pending-a')
+  const b = await planItem('pending-b')
+  const page = await (await context(browser, false)).newPage()
+  // A's Approve is held at the network until the test refuses it (a seam), so it is under way while B is opened.
+  const held: { release?: () => Promise<void> } = {}
+  await page.route(`**/api/dispatch/plans/${a.id}/approve`, (route) => {
+    const body = route.request().postDataJSON() as { opId: string }
+    held.release = async () => {
+      const error = 'the revision moved on'
+      await route.fulfill({ status: 409, json: { error: { code: 'stale_revision', message: error }, receipt: { opId: body.opId, intent: 'plan.approve', status: 'failed', refusal: 'stale_revision', error } } })
+    }
+  })
+  budget(8)
+  await page.goto(`/decisions?item=${encodeURIComponent(a.ref)}`)
+  const itemA = page.locator(`[data-inbox-item="${a.ref}"]`)
+  await itemA.locator('[data-inbox-action="approve"]').click()
+  await expect.poll(() => !!held.release, { timeout: STEP_MS, message: "A's Approve is out" }).toBe(true)
+  await expect(itemA.locator('[data-inbox-action="approve"]')).toBeDisabled()
+
+  // B opened while A's is out: its controls are its own.
+  await page.locator(`[data-inbox-row="${b.ref}"]`).click()
+  const itemB = page.locator(`[data-inbox-item="${b.ref}"]`)
+  await expect(itemB).toBeVisible()
+  await expect(itemB.locator('[data-inbox-action="approve"]')).toBeEnabled()
+
+  // A refused: its Recent row says so, and B shows nothing of it.
+  await held.release!()
+  await expect(page.locator(`[data-recent-row="${a.ref}"] [data-recent-word]`)).toHaveText('Refused')
+  await expect(itemB.locator('[data-inbox-refusal]')).toHaveCount(0)
+  await expect(itemB.locator('[data-inbox-action="approve"]')).toBeEnabled()
+  // Back on A, the refusal is A's to show.
+  await page.locator(`[data-inbox-row="${a.ref}"]`).click()
+  await expect(itemA.locator('[data-inbox-refusal]')).toContainText('moved on')
+})

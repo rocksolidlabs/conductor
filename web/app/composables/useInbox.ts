@@ -77,14 +77,18 @@ export function emptyInbox(): InboxState {
  * What the page knows of an answer (and of a command or an operation) is kept in its recent entry, and only what is known is drawn:
  *
  * - sent: the entry is remembered before the request goes, with no `outcome`; its steps are the server's track alone.
- * - confirmed by the owner (`accepted`): the owner's own word on this request (an answer's `answer_ok`, a receipt); for a hosted
- *   session's question, whose recorded and validated steps the server cannot know, that word fills them (reconcileDelivery).
- * - refused by the owner (`refused: <words>`): the owner's own refusal; the action's steps end there, resumed not applicable.
- * - unknown (`unconfirmed`): the request went and no word will come: an older owner that never confirms an answer, a connection
- *   lost or silent before its word. Nothing is filled: the steps stay as the server's track says, unknown where it cannot know, and
- *   the page says so and offers to read again, never to send again by itself.
+ * - confirmed by a receipt (`accepted`): the owner's own word on this request (an answer's `answer_ok`, a receipt); for a hosted
+ *   session's question, whose recorded and validated steps the server cannot know, that word fills them (reconcileDelivery). A
+ *   command's or an operation's fills nothing: its own track says what became of it.
+ * - refused by a receipt (`refused: <words>`): the owner's own refusal, whatever the track says of the item (a question kept to
+ *   show again still waits); the action's steps end there, resumed not applicable.
+ * - unknown (`unconfirmed`): the request went and no receipt came: a transport failure, a reply lost or with no receipt, an older
+ *   owner that never confirms an answer. Nothing is filled: the steps stay as the server's track says, unknown where it cannot
+ *   know, and the page says so and offers to read again, never to send again by itself.
  * - not sent: the request never left the browser (a reply from this tab already under way, no connection): its entry is dropped
  *   (`forget`), for it is no action of this browser's.
+ *
+ * useInboxActs is the one place a send's outcome is decided and written here (remember, outcome, forget).
  *
  * The recent list the page follows is held in memory; the browser's storage keeps it across reloads where it can, and a storage that
  * is empty or throws loses none of the actions the page follows (mergeRecent).
@@ -239,23 +243,27 @@ export class InboxLive {
     this.publish()
   }
 
-  private async readTrack(e: RecentEntry, gen: number): Promise<void> {
+  /** Reads one action's steps: the server's as it gave them, or undefined when the read failed or a reset came first. */
+  private async readTrack(e: RecentEntry, gen: number): Promise<DeliveryStep[] | undefined> {
     try {
       const t = await this.bounded(this.reads!.track(e))
-      if (gen !== this.generation) return
+      if (gen !== this.generation) return undefined
       const key = trackKey(e)
       const outcome = this.state.recent.find((x) => trackKey(x) === key)?.outcome ?? e.outcome
       this.state = { ...this.state, tracks: { ...this.state.tracks, [key]: reconcileDelivery(this.state.tracks[key], t.steps, wordFor(e, outcome)) } }
+      return t.steps
     } catch {
       /* read again with the next read of the list */
+      return undefined
     }
   }
 
-  /** Reads one action's steps now (after its reply came back), whatever the list. */
-  async trackNow(e: RecentEntry): Promise<void> {
-    if (!this.reads) return
-    await this.readTrack(e, this.generation)
+  /** Reads one action's steps now (after its reply came back), whatever the list: the server's steps as read, or undefined. */
+  async trackNow(e: RecentEntry): Promise<DeliveryStep[] | undefined> {
+    if (!this.reads) return undefined
+    const steps = await this.readTrack(e, this.generation)
     this.publish()
+    return steps
   }
 
   /** Keeps an action in this browser's recent list, before its reply comes back: a reload while it is out still tracks it. */

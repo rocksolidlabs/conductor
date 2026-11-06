@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { ReplyError } from './reply'
+import { CommandRefused } from './tasks'
 import {
   addRecent,
   answerFailure,
+  receiptFailure,
+  unknownWords,
+  whereToAnswer,
   homeNext,
   inboxEmpty,
   mergeRecent,
@@ -109,6 +113,20 @@ describe('reconcileDelivery', () => {
     expect(stateOf(reconcileDelivery(undefined, hosted, UNCONFIRMED))).toEqual(['done', 'unknown', 'unknown', 'waiting'])
     // No word yet (sent): the server's track alone.
     expect(stateOf(reconcileDelivery(undefined, hosted))).toEqual(['done', 'unknown', 'unknown', 'waiting'])
+  })
+  it('takes an explicit refusal over a kept question\'s waiting steps: set aside or held over, it refused this answer', () => {
+    // The kept question's track (questionSteps): recorded and validated waiting, "set aside: the session keeps it to show again".
+    const kept = steps('done', 'waiting', 'waiting', 'waiting')
+    const refused = reconcileDelivery(undefined, kept, 'refused: this question was already answered: nothing was sent')
+    expect(stateOf(refused)).toEqual(['done', 'refused', 'refused', 'not_applicable'])
+    expect(refused[1]!.words).toBe('this question was already answered: nothing was sent')
+    expect(stepsFinal(refused)).toBe(true)
+    // A later read that still says waiting (the question kept on) moves nothing back.
+    expect(stateOf(reconcileDelivery(refused, kept, 'refused: this question was already answered: nothing was sent'))).toEqual(['done', 'refused', 'refused', 'not_applicable'])
+    // A confirmation fills only what the server cannot know (unknown), never a waiting step: the server's track says when it is taken.
+    expect(stateOf(reconcileDelivery(undefined, kept, 'accepted'))).toEqual(['done', 'waiting', 'waiting', 'waiting'])
+    // The refusal leaves what the server settled as it said it.
+    expect(stateOf(reconcileDelivery(undefined, steps('done', 'done', 'done', 'waiting'), 'refused: no'))).toEqual(['done', 'done', 'done', 'waiting'])
   })
   it("ends a refused hosted answer with a resumption that does not apply, even where another answer's resumed the question", () => {
     // Another answer won and the work went on: the question's resumption is done, but not this refused action's.
@@ -255,6 +273,39 @@ describe("an answer's failure", () => {
     expect(answerFailure(new ReplyError('no_word', 'no word'))).toBe('unconfirmed')
     expect(answerFailure(new ReplyError('closed', 'closed first'))).toBe('unconfirmed')
     expect(answerFailure(new ReplyError('question_answered', 'answered by Nate: nothing was sent'))).toBe('refused')
+  })
+})
+
+describe("a command's or an operation's failure", () => {
+  it('is a refusal only with its receipt: a transport failure, a lost reply or a reply with no receipt is unconfirmed', () => {
+    expect(receiptFailure(new CommandRefused('stale', { status: 'failed', refusal: 'stale_revision' } as never))).toBe('refused')
+    expect(receiptFailure(new TypeError('Failed to fetch'))).toBe('unconfirmed')
+    expect(receiptFailure(Object.assign(new Error('no receipt'), { status: 500 }))).toBe('unconfirmed')
+    expect(receiptFailure(Object.assign(new Error('lost'), { status: 0 }))).toBe('unconfirmed')
+  })
+})
+
+describe('an action nobody confirmed', () => {
+  const answer: RecentEntry = { ref: 'question:s/q', receipt: 'q', attempt: 'd1', at: 1 }
+  const command: RecentEntry = { ref: 'task:r/t', receipt: 'c1', at: 1 }
+  it('is said, with a read again, for every kind of send, until a receipt or the server\'s track says what became of it', () => {
+    expect(unknownWords(answer, steps('done', 'unknown', 'unknown', 'waiting'), false)).toContain('Your answer went')
+    expect(unknownWords({ ...command, outcome: UNCONFIRMED }, steps('done', 'unknown', 'unknown', 'unknown'), false)).toContain('no receipt came back')
+    // Out from this page: not yet; a receipt's word, either way: known.
+    expect(unknownWords(command, undefined, true)).toBe('')
+    expect(unknownWords({ ...command, outcome: 'accepted' }, undefined, false)).toBe('')
+    expect(unknownWords({ ...command, outcome: 'refused: stale' }, undefined, false)).toBe('')
+    // The server's track recorded it (or refused it): known.
+    expect(unknownWords({ ...command, outcome: UNCONFIRMED }, steps('done', 'done', 'done', 'waiting'), false)).toBe('')
+    expect(unknownWords(undefined, undefined, false)).toBe('')
+  })
+  it('says where a refused question can still be answered, from its track: waiting (kept or shown), and nowhere once it is gone', () => {
+    const kept = steps('done', 'waiting', 'waiting', 'waiting')
+    kept[1]!.words = 'set aside: the session keeps it to show again when the agent\'s turn is done or the held turn ends'
+    expect(whereToAnswer(kept)).toContain('set aside')
+    expect(whereToAnswer(kept)).toContain("in the session's terminal")
+    expect(whereToAnswer(steps('done', 'refused', 'not_applicable', 'not_applicable'))).toBe('')
+    expect(whereToAnswer(undefined)).toBe('')
   })
 })
 

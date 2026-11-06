@@ -1,24 +1,15 @@
 <script setup lang="ts">
 import { refRoute } from '~/utils/brakeman'
-import { isStale } from '~/utils/brakemanCards'
-import { DispatchOrder } from '~/utils/dispatchOrder'
-import { replyFailure } from '~/utils/reply'
 import { relativeTime } from '~/utils/sessions'
-import { CommandRefused, mintCommandId } from '~/utils/tasks'
 import { qrSvg } from '~/utils/qr'
 import {
-  answerFailure,
   inboxEmpty,
-  mintRequestId,
-  movedOnWords,
   phoneOffer,
-  planIdOf,
   recentFor,
-  refParts,
   showingWords,
   stateWords,
   trackKey,
-  UNCONFIRMED,
+  unknownWords,
   type InboxAction,
   type InboxItem,
   type RecentEntry,
@@ -37,12 +28,11 @@ const live = useAttention()
 const route = useRoute()
 const router = useRouter()
 const api = useSessions()
-const dispatch = useDispatchApi()
-const quick = useQuickReply()
 const bk = useBrakeman()
-const ops = useDispatchOps(new DispatchOrder())
-const cmdRun = ref('')
-const commands = useTaskCommands(() => cmdRun.value)
+/** Every send of the page, its outcome and each item's feedback (useInboxActs). */
+const acts = useInboxActs()
+/** The run page's question for Accept anyway and Cancel. */
+const commands = useTaskCommands(() => '')
 
 let stopTracking: (() => void) | undefined
 onMounted(() => {
@@ -66,8 +56,10 @@ const empty = computed(() => inboxEmpty(state.value))
 /** The open item as last read whole; null before it is read, or when it names nothing the server holds (`missing`). */
 const item = ref<InboxItem | null>(null)
 const missing = ref('')
-const refusal = ref('')
-const busy = ref('')
+/** The feedback of the item shown, and only of it: an action under way, or its refusal, on another item is that item's. */
+const shownFeedback = computed(() => (item.value ? acts.feedback.value[item.value.ref] : undefined))
+const busy = computed(() => shownFeedback.value?.busy ?? '')
+const refusal = computed(() => shownFeedback.value?.words ?? '')
 let reading = 0
 async function readItem() {
   const r = openRef.value
@@ -89,7 +81,6 @@ async function readItem() {
   }
 }
 watch(openRef, (r) => {
-  refusal.value = ''
   // Another item: the one shown goes until the new one is read, so nothing drawn for one is pressed for the other.
   if (item.value && item.value.ref !== r) item.value = null
   missing.value = ''
@@ -97,7 +88,7 @@ watch(openRef, (r) => {
 }, { immediate: true })
 // The list read again (an event, the stream's return): the open item is read again too, so a choice already made elsewhere is gone.
 watch(() => [state.value.items, state.value.total], () => {
-  if (openRef.value && !busy.value) void readItem()
+  if (openRef.value && !acts.pending(openRef.value)) void readItem()
 })
 
 function open(ref: string) {
@@ -118,16 +109,16 @@ const routeOf = (r: string): string | null => refRoute(r)
 const latest = computed<RecentEntry | undefined>(() => recentFor(state.value.recent, openRef.value, openAction.value))
 const delivery = computed(() => (latest.value ? state.value.tracks[trackKey(latest.value)] : undefined))
 /**
- * An answer this browser sent whose outcome nobody confirmed (an owner that never confirms, a connection lost before its word, a
- * page reloaded while it was out), and the server's track has not recorded it either: the card says so and offers to read again.
+ * An action this browser sent whose outcome nobody confirmed (no receipt came: a transport failure, a reply lost, an owner that
+ * never confirms, a page reloaded while it was out), and the server's track has not recorded it either: the card says so and offers
+ * to read again, never to send again by itself. A comment's (kept in no recent entry) is said by its feedback.
  */
-const unknown = computed(() => {
-  const e = latest.value
-  if (!e?.attempt || busy.value || (e.outcome && e.outcome !== UNCONFIRMED)) return ''
-  const recorded = delivery.value?.find((s) => s.step === 'recorded')?.state
-  if (recorded === 'done' || recorded === 'refused') return ''
-  return 'Your answer went, and nothing has said whether the session took it. Read again to see what the server knows now; answer again only if the agent still asks.'
-})
+const unknown = computed(() => shownFeedback.value?.unknown || unknownWords(latest.value, delivery.value, !!latest.value && out(latest.value)))
+/** Whether this action's request is still out from this page (its item's feedback names it, busy). */
+function out(e: RecentEntry): boolean {
+  const f = acts.feedback.value[e.ref]
+  return !!f?.busy && f.receipt === e.receipt && (f.attempt ?? '') === (e.attempt ?? '')
+}
 async function reread() {
   const e = latest.value
   if (e) await inbox.live.trackNow(e)
@@ -154,111 +145,25 @@ function confirmQuestion(a: InboxAction): { title: string; detail: string } {
 }
 
 /**
- * Does one action through its own operation's route, its receipt kept in this browser's recent list before the reply comes back.
- * The action names the item it was drawn for: one pressed for an item no longer shown does nothing.
+ * Does one action through its own operation's route (useInboxActs: its receipt kept in this browser's recent list before the reply
+ * comes back, its one outcome decided there). The action names the item it was drawn for: one pressed for an item no longer shown
+ * does nothing. Whatever item is shown when it comes back is read again.
  */
 async function act(ref: string, a: InboxAction, text?: string) {
   const it = item.value
-  if (!it || it.ref !== ref || busy.value) return
-  refusal.value = ''
-  busy.value = a.label
+  if (!it || it.ref !== ref || acts.pending(ref)) return
   // Opened from Recent on an earlier action: the card shows this one's steps from now on.
   if (openAction.value.receipt) void router.replace({ query: { ...route.query, receipt: undefined, attempt: undefined } })
-  try {
-    if (a.name === 'answer') await answer(it, a, text)
-    else if (a.name === 'retry' || a.name === 'accept' || a.name === 'cancel') await command(it, a)
-    else if (a.name === 'approve' || a.name === 'withdraw') await planOp(it, a)
-  } finally {
-    busy.value = ''
-    await readItem()
-    void inbox.changed()
-  }
-}
-
-async function answer(it: InboxItem, a: InboxAction, text?: string) {
-  const sessionId = refParts(it.ref).a
-  const s = live.sessions.value.find((x) => x.id === sessionId) ?? { id: sessionId, kind: 'server' as const, name: '' }
-  const reqId = mintRequestId()
-  const entry: RecentEntry = { ref: it.ref, receipt: a.expect, attempt: reqId, at: Date.now(), title: it.title, label: text === undefined ? a.label : 'A line' }
-  inbox.live.remember(entry)
-  try {
-    const out = await quick.answer(s, text === undefined ? { input: a.input ?? '' } : { text }, { question: a.expect, reqId })
-    if (out === 'not_sent') {
-      // Nothing left this tab: it is no action of this browser's.
-      inbox.live.forget(entry)
-      refusal.value = 'Not sent: a reply from this tab is already on its way to this session, or this tab answered this question already.'
-      return
-    }
-    // The owner's word, or none to come (an older owner): only the word is kept as taken.
-    inbox.live.outcome(entry.receipt, reqId, out === 'taken' ? 'accepted' : UNCONFIRMED)
-  } catch (e) {
-    const how = answerFailure(e)
-    if (how === 'not_sent') {
-      inbox.live.forget(entry)
-      const f = replyFailure(e, s.name || undefined)
-      refusal.value = [f.title, f.description].filter(Boolean).join(': ')
-      return
-    }
-    if (how === 'unconfirmed') inbox.live.outcome(entry.receipt, reqId, UNCONFIRMED)
-    else {
-      const f = replyFailure(e, s.name || undefined)
-      refusal.value = [f.title, f.description].filter(Boolean).join(': ')
-      inbox.live.outcome(entry.receipt, reqId, `refused: ${refusal.value}`)
-    }
-  }
-  await inbox.live.trackNow(entry)
-}
-
-async function command(it: InboxItem, a: InboxAction) {
-  const m = /\/api\/runs\/([^/]+)\/tasks\/([^/]+)\/(retry|accept|cancel)$/.exec(a.route)
-  if (!m) return
-  const [, run, task, name] = m as unknown as [string, string, string, 'retry' | 'accept' | 'cancel']
-  cmdRun.value = run
-  const commandId = mintCommandId()
-  const entry: RecentEntry = { ref: it.ref, receipt: commandId, at: Date.now(), title: it.title, label: a.label, ...(a.track && a.track !== it.ref ? { track: a.track } : {}) }
-  inbox.live.remember(entry)
-  let failed: unknown = null
-  const ok = await commands.send({ id: task }, name, { expectedRevision: Number(a.expect) || undefined, commandId, refused: (e) => (failed = e) })
-  if (ok) inbox.live.outcome(commandId, undefined, 'accepted')
-  else if (failed) {
-    const r = await live.refreshRun(run).catch(() => null)
-    const t = r?.tasks?.find((x) => x.id === task)
-    refusal.value = isStale(failed)
-      ? `The run moved on${r?.managed ? ` (revision ${r.managed.revision} now, the choice was read at ${a.expect})` : ''}${t ? `: ${t.id} is ${t.state} now` : ''}. Nothing was done.`
-      : (failed as Error).message
-    inbox.live.outcome(commandId, undefined, `refused: ${refusal.value}`)
-  }
-  await inbox.live.trackNow(entry)
-}
-
-async function planOp(it: InboxItem, a: InboxAction) {
-  const id = planIdOf(a.route)
-  if (!id) return
-  const opId = mintCommandId()
-  const entry: RecentEntry = { ref: it.ref, receipt: opId, at: Date.now(), title: it.title, label: a.label }
-  inbox.live.remember(entry)
-  try {
-    await ops.run((body) => (a.name === 'approve' ? dispatch.approvePlan(id, { ...body, ticketRev: a.ticketRev }) : dispatch.withdrawPlan(id, body)), {
-      thing: `plan:${id}`,
-      what: it.title,
-      expectedRev: Number(a.expect) || undefined,
-      opId,
-      raise: true,
-      done: a.name === 'approve' ? 'Approved: launching is a separate step on the ticket page' : 'Withdrawn',
-    })
-    inbox.live.outcome(opId, undefined, 'accepted')
-  } catch (e) {
-    const now = await api.inboxItem(it.ref).catch(() => null)
-    refusal.value = isStale(e) || (e instanceof CommandRefused && (e.receipt as { refusal?: string }).refusal === 'stale_revision') ? movedOnWords('plan', now) : (e as Error).message
-    inbox.live.outcome(opId, undefined, `refused: ${refusal.value}`)
-  }
-  await inbox.live.trackNow(entry)
+  await acts.act(it, a, text)
+  await readItem()
+  void inbox.changed()
 }
 
 /** Comment on the ticket a run of the item was launched from: Dispatch's comment operation; for the item shown, or not at all. */
 async function comment(ref: string, ticket: string, body: string) {
-  if (item.value?.ref !== ref) return
-  await ops.run((b) => dispatch.addComment(ticket, { ...b, body }), { thing: `ticket:${ticket}`, what: ticket, done: `Commented on ${ticket}` })
+  const it = item.value
+  if (it?.ref !== ref) return
+  await acts.comment(it, ticket, body)
 }
 
 /** Open on your phone (at lg and up): the page's address as a QR code, the address alone; on a loopback origin, the words why not. */
@@ -280,6 +185,8 @@ function recentWord(e: RecentEntry): { text: string; color: 'success' | 'warning
   const r = of('resumed')
   if (r === 'done') return { text: 'Work resumed', color: 'success' }
   if (r === 'not_applicable') return { text: 'Taken', color: 'neutral' }
+  // Went, and neither a receipt nor the server's track says what became of it.
+  if (unknownWords(e, steps, out(e))) return { text: 'Not confirmed', color: 'warning' }
   if (r) return { text: `Resumed: ${stateWords(r).toLowerCase()}`, color: 'warning' }
   return { text: 'Sent', color: 'neutral' }
 }

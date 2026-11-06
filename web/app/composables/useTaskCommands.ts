@@ -22,12 +22,14 @@ export function useTaskCommands(runId: () => string) {
   /**
    * Sends the command; `expectedRevision` (a Brakeman card's, the run's revision the turn read) makes the route refuse it once the run
    * has moved on (409 stale_revision), and `refused` takes a refusal in place of its toast, for a card that says it in place.
+   * `run`, when given, names the run in place of `runId` (the decision page sends to several runs, some at once).
    */
-  async function send(t: Pick<RunTask, 'id'>, command: TaskCommand, o: { expectedRevision?: number; refused?: (e: unknown) => void; commandId?: string } = {}): Promise<boolean> {
+  async function send(t: Pick<RunTask, 'id'>, command: TaskCommand, o: { expectedRevision?: number; refused?: (e: unknown) => void; commandId?: string; run?: string } = {}): Promise<boolean> {
     busy.value = `${t.id}:${command}`
+    const run = o.run ?? runId()
     try {
       // `commandId`, when given, is the id the caller minted and kept before sending (the decision page's recent list tracks it).
-      const { receipt: r } = await sendCommand((body) => api.taskCommand(runId(), t.id, command, body), commandBody(o.expectedRevision, o.commandId))
+      const { receipt: r } = await sendCommand((body) => api.taskCommand(run, t.id, command, body), commandBody(o.expectedRevision, o.commandId))
       toast.add({ title: done[command](t.id), description: r.repeat ? 'It was done already.' : undefined, icon: icons[command], color: 'success' })
       return true
     } catch (e) {
