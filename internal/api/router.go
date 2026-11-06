@@ -41,9 +41,14 @@ import (
 //
 // A question that mirrors a durable decision (Attention.Decision: a
 // managed run's, Program item DR1) is never routed as a session question:
-// the decision's record is routed instead (record), once, as it opens,
-// through the same guard, its bound and its list of resolutions, and told
-// Resolved when the record reaches a final state. Under the free build's
+// the decision's record is routed instead (record), as it opens, through
+// the same guard, its own count under the bound and the list of
+// resolutions, and told Resolved when the record reaches a final state.
+// The ledger is the truth and only its owner tells: when this server owns
+// it and the provider answers, it catches up with every decision the
+// ledger holds open or closed lately (catchUp), so a decision opened, or
+// closed, as one server gave the ledger to the next is told all the same,
+// and a router may be told of a decision more than once. Under the free build's
 // policy (local/1) the router's destinations become the record's routed
 // history row and an answer it holds is offered as a response under the
 // actor user:<subject> with the router's authority and no grant, which the
@@ -121,25 +126,36 @@ type decisionRouter struct {
 	working  map[string]bool // ids a worker reads now
 	workers  int
 	sessions map[string]*routedSession
-	// records are the durable decisions ("dr-<n>") seen open since the
-	// router began: outstanding, being told or skipped. One leaves once
-	// told Resolved, or at its final state when it was never routed; a
-	// decision opened before began (an earlier server's) is never routed
-	// here.
+	// records are the durable decisions ("dr-<n>") this server told the
+	// router of, or held for: outstanding, being told or skipped. One
+	// leaves once told Resolved, or at its final state when it was never
+	// routed. caught are the ids a catch-up marked, judged as the ledger
+	// holds them (judgeRecord); backoff the wait before a failed read is
+	// made again, by id ("" a catch-up's).
 	records map[string]routeState
-	began   time.Time
-	untold  int                 // routed ids outstanding or being told
-	told    []pendingResolution // first in, first out
-	telling bool
-	skips   int // skipped past the bound since the last log
-	skipLog time.Time
+	caught  map[string]bool
+	backoff map[string]time.Duration
+	// ledger is the ledger once this server owns it, since ownedAt
+	// (owned); begun says the router's provider answers (begin). Only
+	// with both are decisions read and told.
+	ledger  *ledger.Ledger
+	ownedAt time.Time
+	begun   bool
+	// untold counts the sessions' questions routed and not yet told
+	// Resolved, recordsUntold the decisions: each under bound.
+	untold        int
+	recordsUntold int
+	told          []pendingResolution // first in, first out
+	telling       bool
+	skips         int // skipped past the bound since the last log
+	skipLog       time.Time
 }
 
 // newDecisionRouter is the router of s; nothing runs until a session
 // changes.
 func newDecisionRouter(s *Server) *decisionRouter {
 	return &decisionRouter{s: s, bound: maxUnresolved, dirty: map[string]bool{}, working: map[string]bool{}, sessions: map[string]*routedSession{},
-		records: map[string]routeState{}, began: time.Now().UTC()}
+		records: map[string]routeState{}, caught: map[string]bool{}, backoff: map[string]time.Duration{}}
 }
 
 // routerSeam, when a test sets it, is told the router's steps for a
@@ -432,14 +448,17 @@ func (r *decisionRouter) tell() {
 		if len(r.told) == 0 {
 			r.told = nil
 		}
-		r.untold--
 		if p.r.Request != "" {
+			r.recordsUntold--
 			if r.records[p.r.Request] == routeResolving {
 				delete(r.records, p.r.Request)
 			}
-		} else if st := p.sess; r.sessions[p.r.Session.ID] == st && st.ids[p.r.ID] == routeResolving {
-			st.ids[p.r.ID] = routeResolved
-			r.pruneLocked(st)
+		} else {
+			r.untold--
+			if st := p.sess; r.sessions[p.r.Session.ID] == st && st.ids[p.r.ID] == routeResolving {
+				st.ids[p.r.ID] = routeResolved
+				r.pruneLocked(st)
+			}
 		}
 		r.mu.Unlock()
 	}
@@ -479,7 +498,7 @@ func (r *decisionRouter) unsent(d ext.Decision) {
 	if d.Request != "" {
 		if r.records[d.Request] == routeOutstanding {
 			r.records[d.Request] = routeSkipped
-			r.untold--
+			r.recordsUntold--
 		}
 		return
 	}
@@ -575,10 +594,13 @@ func decisionOf(info session.Info) ext.Decision {
 }
 
 // recordSeam, when a test sets it, is told the router's steps for a
-// durable decision: "routed" once its route is handled (the route the
-// guard answered; its destinations recorded and its answer offered, the
-// latter's refusal as err), "skipped" when it was not routed. Nil outside
-// tests.
+// durable decision: "read" before a worker reads its record and "done" as
+// that read ends, whatever it found; "routed" once its route is handled
+// (the route the guard answered; its destinations recorded and its answer
+// offered, the latter's refusal as err), "skipped" when it was not routed;
+// "caught" for each decision a catch-up marked (catchUp), and "caught up"
+// with the decision "" as a catch-up ends, err its listing's failure. Nil
+// outside tests.
 var recordSeam atomic.Pointer[func(step, decision string, rt ext.Route, err error)]
 
 func recordStep(step, decision string, rt ext.Route, err error) {
@@ -587,35 +609,184 @@ func recordStep(step, decision string, rt ext.Route, err error) {
 	}
 }
 
+// recordReadFault, when a test sets it, fails the read of a decision's
+// record with the error it answers (nil reads it). Nil outside tests.
+var recordReadFault atomic.Pointer[func(decision string) error]
+
+var (
+	// recordRetryFirst and recordRetryMost bound the wait before a
+	// decision's record, or a catch-up, whose read failed is read again:
+	// the first, doubling to the most. A test lowers them.
+	recordRetryFirst = time.Second
+	recordRetryMost  = time.Minute
+)
+
+// resolveLag is the longest the server that owned the ledger before this
+// one could have taken to tell the resolutions it had queued: every place
+// under the two bounds (the sessions' questions, the decisions), each told
+// within ext.DeliveryWait. A catch-up tells Resolved of every decision the
+// ledger closed from resolveLag before its last close (catchUp).
+const resolveLag = 2 * maxUnresolved * ext.DeliveryWait
+
+// owned tells the router that this server owns the ledger ld, since at
+// (ledgerRecovered, once its recovery is done: at the server's start, or
+// when it takes the owner lock over from another server). Only the
+// ledger's owner tells the router of decisions; once the router's provider
+// has begun too (begin), it catches up with what the ledger holds.
+func (r *decisionRouter) owned(ld *ledger.Ledger, at time.Time) {
+	r.mu.Lock()
+	r.ledger, r.ownedAt = ld, at
+	ready := r.begun
+	r.mu.Unlock()
+	if ready {
+		r.s.track(r.catchUp)
+	}
+}
+
+// begin tells the router that its provider answers (its Start succeeded,
+// or it needs none: the server's queue of it begun); once the server owns
+// the ledger too (owned), it catches up with what the ledger holds.
+func (r *decisionRouter) begin() {
+	r.mu.Lock()
+	r.begun = true
+	ready := r.ledger != nil
+	r.mu.Unlock()
+	if ready {
+		r.s.track(r.catchUp)
+	}
+}
+
+// readyLocked answers the ledger the router reads decisions from, or nil
+// until this server owns it and the router's provider has begun. The
+// caller holds r.mu.
+func (r *decisionRouter) readyLocked() *ledger.Ledger {
+	if !r.begun {
+		return nil
+	}
+	return r.ledger
+}
+
+// catchUp tells the router what the ledger holds, as a level, not as the
+// changes this server saw (Program item DR1, the router's hook): every
+// decision open is routed (Route), unless this server routed it already;
+// every one answered and not yet final is held for its Resolved, never
+// routed again; every one closed from resolveLag before the ledger's last
+// close before this server owned it is told Resolved. Each is marked
+// caught and read by a worker as any change is (readRecord, judgeRecord),
+// so nothing here waits on the provider. A router may so be told of a
+// decision more than once (the server before routed it, or told it
+// Resolved, and lost the ledger before it was known) and treats a repeat
+// as nothing new: ext.DecisionRouter says so. A listing that fails is
+// tried again after a wait.
+func (r *decisionRouter) catchUp() {
+	r.mu.Lock()
+	ld, at := r.readyLocked(), r.ownedAt
+	r.mu.Unlock()
+	if ld == nil || r.s.extCtx.Err() != nil {
+		return
+	}
+	ctx := r.s.extCtx
+	err := r.catchUpFrom(ctx, ld, at)
+	recordStep("caught up", "", ext.Route{}, err)
+	if err != nil && ctx.Err() == nil {
+		r.s.log.Warn("decision router: the ledger's decisions not read: read again", "err", err)
+		r.retry("", r.catchUp)
+	}
+}
+
+// catchUpFrom marks every decision catchUp tells the router of, in pages.
+func (r *decisionRouter) catchUpFrom(ctx context.Context, ld *ledger.Ledger, at time.Time) error {
+	filters := []ledger.DecisionFilter{{States: []string{ledger.DecisionOpen, ledger.DecisionAnswered}}}
+	last, closed, err := ld.LastClosed(ctx, at)
+	if err != nil {
+		return err
+	}
+	if closed {
+		filters = append(filters, ledger.DecisionFilter{ClosedSince: last.Add(-resolveLag)})
+	}
+	for _, f := range filters {
+		for {
+			rows, err := ld.Decisions(ctx, f)
+			if err != nil {
+				return err
+			}
+			r.mu.Lock()
+			for _, row := range rows {
+				r.caught[row.ID()] = true
+			}
+			r.mu.Unlock()
+			for _, row := range rows {
+				recordStep("caught", row.ID(), ext.Route{}, nil)
+				r.mark(row.ID())
+			}
+			if len(rows) < ledger.MaxDecisionsPage {
+				break
+			}
+			f.Before = rows[len(rows)-1].N
+		}
+	}
+	return nil
+}
+
+// retry runs again after a wait, doubling for the key from
+// recordRetryFirst to recordRetryMost, unless the server's extensions
+// have stopped by then.
+func (r *decisionRouter) retry(key string, again func()) {
+	r.mu.Lock()
+	wait := min(max(2*r.backoff[key], recordRetryFirst), recordRetryMost)
+	r.backoff[key] = wait
+	r.mu.Unlock()
+	t := time.AfterFunc(wait, func() {
+		if r.s.extCtx.Err() == nil {
+			again()
+		}
+	})
+	context.AfterFunc(r.s.extCtx, func() { t.Stop() })
+}
+
 // record notes that the durable decision id ("dr-<n>") changed
-// (Server.decisionTold, on the committing goroutine, after the commit): it
-// is marked as a session is, and a worker reads its record from the
-// ledger and judges from that read alone (readRecord), so a change made
-// while one reads it is read again after, and the last read is of the
-// record as it last committed. It never waits but on the router's own
-// lock.
+// (Server.decisionTold, on the committing goroutine, after the commit: so
+// only by the ledger's owner): it is marked as a session is, and a worker
+// reads its record from the ledger and judges from that read alone
+// (readRecord), so a change made while one reads it is read again after,
+// and the last read is of the record as it last committed. It never waits
+// but on the router's own lock.
 func (r *decisionRouter) record(id string) { r.mark(id) }
 
 // readRecord reads the record of the durable decision id (n) once and
-// judges from it: a record gone is forgotten.
+// judges from it, once the router reads decisions (readyLocked: before,
+// the catch-up reads them all). A read that fails is made again after a
+// wait (retry); a record gone is resolved when it was routed, and
+// forgotten.
 func (r *decisionRouter) readRecord(id string, n int64) {
-	ld := r.s.ledger
+	recordStep("read", id, ext.Route{}, nil)
+	defer recordStep("done", id, ext.Route{}, nil)
+	r.mu.Lock()
+	ld := r.readyLocked()
+	r.mu.Unlock()
 	if ld == nil {
 		return
 	}
-	rec, found, err := ld.Decision(r.s.extCtx, n)
+	var (
+		rec   ledger.DecisionRecord
+		found bool
+		err   error
+	)
+	if f := recordReadFault.Load(); f != nil {
+		err = (*f)(id)
+	}
+	if err == nil {
+		rec, found, err = ld.Decision(r.s.extCtx, n)
+	}
 	switch {
 	case err != nil:
 		if r.s.extCtx.Err() == nil {
-			r.s.log.Warn("decision router: a decision's record not read", "decision", id, "err", err)
+			r.s.log.Warn("decision router: a decision's record not read: read again", "decision", id, "err", err)
+			r.retry(id, func() { r.mark(id) })
 		}
 		return
 	case !found:
-		r.mu.Lock()
-		if r.records[id] != routeResolving && r.records[id] != routeOutstanding {
-			delete(r.records, id)
-		}
-		r.mu.Unlock()
+		r.goneRecord(id)
 		return
 	}
 	if d, ok := r.judgeRecord(rec); ok {
@@ -623,42 +794,91 @@ func (r *decisionRouter) readRecord(id string, n int64) {
 	}
 }
 
+// goneRecord resolves the decision id the ledger no longer holds (its run
+// deleted) when it was routed, and forgets it.
+func (r *decisionRouter) goneRecord(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.backoff, id)
+	delete(r.caught, id)
+	switch r.records[id] {
+	case routeOutstanding:
+		r.resolveRecordLocked(id, ext.SessionRef{}, time.Now().UTC())
+	case routeResolving:
+	default:
+		delete(r.records, id)
+	}
+}
+
+// resolveRecordLocked queues the Resolved of the decision id, outstanding
+// (its place under the bound taken). The caller holds r.mu.
+func (r *decisionRouter) resolveRecordLocked(id string, ref ext.SessionRef, now time.Time) {
+	r.records[id] = routeResolving
+	r.told = append(r.told, pendingResolution{r: ext.Resolution{ID: id, Request: id, Session: ref, At: now}})
+	r.tellLocked()
+}
+
 // judgeRecord judges a durable decision's record as a read left it: one
-// seen open for the first time, opened since the router began, is to be
-// routed once, through its bound (the answer); one routed that has reached
-// a final state is told Resolved, in order with the sessions'
-// resolutions; one never routed is forgotten at its final state.
+// open that this server has not routed is to be routed, through its bound
+// (the answer); one routed that has reached a final state is told
+// Resolved, in order with the sessions' resolutions. One a catch-up
+// marked (caught) is judged as the ledger holds it, whatever this server
+// saw: answered and not final, held for its Resolved; final, told
+// Resolved. One never routed is forgotten at its final state. A decision
+// holds a place under its own count of the bound (recordsUntold), never
+// one of the sessions' questions'.
 func (r *decisionRouter) judgeRecord(rec ledger.DecisionRecord) (ext.Decision, bool) {
 	id := rec.ID()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	delete(r.backoff, id)
+	caught := r.caught[id]
+	delete(r.caught, id)
 	state, seen := r.records[id]
 	now := time.Now().UTC()
-	if rec.Final() {
+	switch {
+	case rec.Final():
 		switch {
 		case state == routeOutstanding:
-			r.records[id] = routeResolving
-			r.told = append(r.told, pendingResolution{r: ext.Resolution{ID: id, Request: id, Session: recordRef(rec), At: now}})
-			r.tellLocked()
+			r.resolveRecordLocked(id, recordRef(rec), now)
+		case !seen && caught:
+			// Closed as the ledger was taken over: its router may have
+			// been told of it and not of its end.
+			if r.recordsUntold >= r.bound {
+				r.skippedLocked(now)
+				return ext.Decision{}, false
+			}
+			r.recordsUntold++
+			r.resolveRecordLocked(id, recordRef(rec), now)
 		case seen && state != routeResolving:
 			delete(r.records, id)
 		}
 		return ext.Decision{}, false
-	}
-	if seen || rec.State != ledger.DecisionOpen || rec.CreatedAt.Before(r.began) {
-		// Routed or skipped already; answered before the router read it
-		// open (it waits for no one); or an earlier server's to route.
+	case rec.State != ledger.DecisionOpen:
+		if caught && !seen {
+			// Answered and not yet final as the ledger was taken over: its
+			// router was told of it, or the operator answered first; it is
+			// told its end, and routed no more.
+			if r.recordsUntold >= r.bound {
+				r.records[id] = routeSkipped
+				r.skippedLocked(now)
+				return ext.Decision{}, false
+			}
+			r.records[id] = routeOutstanding
+			r.recordsUntold++
+		}
+		// Else answered before the router read it open: it waits for no
+		// one.
 		return ext.Decision{}, false
-	}
-	switch {
-	case r.untold >= r.bound:
+	case seen:
+		// Routed, or skipped, already.
+		return ext.Decision{}, false
+	case r.recordsUntold >= r.bound:
 		r.records[id] = routeSkipped
 		r.skippedLocked(now)
-	case !routerLive(r.s.exts.router):
-		r.records[id] = routeSkipped
 	default:
 		r.records[id] = routeOutstanding
-		r.untold++
+		r.recordsUntold++
 		return recordDecision(rec), true
 	}
 	recordStep("skipped", id, ext.Route{}, nil)
@@ -711,7 +931,7 @@ func (r *decisionRouter) routeRecord(d ext.Decision, rev int) {
 // (not_approver) and keeps the refusal as the response's receipt; it is
 // never applied. The answer's choice is its option's place ("1" first).
 func (r *decisionRouter) offer(d ext.Decision, a ext.Answer, rev int) error {
-	resp := crew.Response{ResponseID: crew.RouterOpID, Text: a.Text, ExpectedRev: rev, ByName: a.By.Name}
+	resp := crew.Response{ResponseID: crew.RouterResponseID, Text: a.Text, ExpectedRev: rev, ByName: a.By.Name}
 	if a.Input != "" {
 		n, err := strconv.Atoi(a.Input)
 		if err != nil || n < 1 {

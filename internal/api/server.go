@@ -372,6 +372,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	syncs.attach(s)
 	s.holdQueue(o.providers.Continuity, s.exts.sync.Name(), syncs.begin)
 	s.router = newDecisionRouter(s)
+	// The decision router reads the ledger's decisions once its provider
+	// answers (its Start succeeded, or it needs none: at New's end).
+	s.holdQueue(o.providers.Router, s.exts.router.Name(), s.router.begin)
 	s.relayBurstFloor = relayBurstFloor
 	s.hostPingEvery = hostPingEvery
 	s.hostGoneWait = writeTimeout

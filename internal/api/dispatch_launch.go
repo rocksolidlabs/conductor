@@ -226,7 +226,10 @@ func (s *Server) runTicket(run string) (string, bool) {
 // OnOwned callback): the pending launches are reconciled, and only then
 // are launches admitted (ready), so none is committed, or replayed, while
 // the reconcile could read it before its run's first transaction.
-func (s *Server) ledgerRecovered(ld *ledger.Ledger) {
+func (s *Server) ledgerRecovered(ld *ledger.Ledger, owned time.Time) {
+	// The decision router tells what this ledger holds from now on, and
+	// catches up with it (router.go).
+	s.router.owned(ld, owned)
 	if f := gateSeam(&s.launches, &s.launches.beforeReconcile); f != nil {
 		f()
 	}

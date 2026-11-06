@@ -366,11 +366,17 @@ func Identity(t T, n *Network, p ext.IdentityProvider, known, unknown []string) 
 // question Route was given, in order from one goroutine; and article 8
 // (Network). Each question is asked both as d's Request has it and as the
 // other: a session's question (Request empty) and a durable decision's
-// record (Request its ID, Kind "decision", no Source, each option picked
-// by its place, Program item DR1), told Resolved with its Request. A
+// record (Request its ID, a valid reference dr-<n> of its own, Kind
+// "decision", no Source, each option picked by its place, Program item
+// DR1), told Resolved with its Request. A record is routed twice and told
+// Resolved twice, as a server that takes the ledger over tells a router
+// again (ext.DecisionRouter): a repeat is answered as the first was. A
 // router that fetches a question's route on the call's path is caught on
 // the questions asked with the network blocked, which it has never been
 // given before.
+// decisionRef is a durable decision's reference, dr-<n>.
+var decisionRef = regexp.MustCompile(`^dr-[1-9][0-9]{0,17}$`)
+
 func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 	t.Helper()
 	c, ok := begin(t, n, "Router", r)
@@ -387,6 +393,12 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 		asked  int
 		routed []ext.Decision // given to Route, not yet to Resolved
 	)
+	// A record's reference is dr-<n>, each its own: past d's own number
+	// when d is a record.
+	base := int64(0)
+	if n, err := strconv.ParseInt(strings.TrimPrefix(d.Request, "dr-"), 10, 64); err == nil && n > 0 && n < 1<<40 {
+		base = n * 1000
+	}
 	question := func(record bool) ext.Decision {
 		mu.Lock()
 		defer mu.Unlock()
@@ -394,6 +406,9 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 		q := d
 		q.ID = fmt.Sprintf("%s-%d", d.ID, asked)
 		q.Options = append([]ext.DecisionOption(nil), d.Options...)
+		if record {
+			q.ID = fmt.Sprintf("dr-%d", base+int64(asked))
+		}
 		if record != (d.Request != "") {
 			// The other kind of question than d: a record for a session's
 			// question, a session's question for a record.
@@ -407,18 +422,27 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 		} else if record {
 			q.Request = q.ID
 		}
+		if record && !decisionRef.MatchString(q.Request) {
+			panic(fmt.Sprintf("exttest: a record's reference %q is not dr-<n>", q.Request))
+		}
 		routed = append(routed, q)
 		return q
 	}
 	routeOne := func(ph phase, record bool) {
 		q := question(record)
-		a, returned := run(c, "Route", ext.RouteWait, ph, func(ctx context.Context) answer {
-			rt, err := r.Route(ctx, q)
-			return answer{rt, err}
-		})
-		if returned && a.err == nil {
-			if err := a.r.Valid(q); err != nil {
-				c.found("Route answered a route not valid for its decision%s: %v", ph.words(), err)
+		times := 1
+		if record {
+			times = 2 // told again, as a server that takes the ledger over tells it
+		}
+		for range times {
+			a, returned := run(c, "Route", ext.RouteWait, ph, func(ctx context.Context) answer {
+				rt, err := r.Route(ctx, q)
+				return answer{rt, err}
+			})
+			if returned && a.err == nil {
+				if err := a.r.Valid(q); err != nil {
+					c.found("Route answered a route not valid for its decision%s: %v", ph.words(), err)
+				}
 			}
 		}
 	}
@@ -432,10 +456,16 @@ func Router(t T, n *Network, r ext.DecisionRouter, d ext.Decision) {
 		routed = nil
 		mu.Unlock()
 		for _, q := range qs {
-			run(c, "Resolved", ext.DeliveryWait, ph, func(ctx context.Context) struct{} {
-				r.Resolved(ctx, ext.Resolution{ID: q.ID, Session: q.Session, At: time.Now().UTC(), Request: q.Request})
-				return struct{}{}
-			})
+			times := 1
+			if q.Request != "" {
+				times = 2
+			}
+			for range times {
+				run(c, "Resolved", ext.DeliveryWait, ph, func(ctx context.Context) struct{} {
+					r.Resolved(ctx, ext.Resolution{ID: q.ID, Session: q.Session, At: time.Now().UTC(), Request: q.Request})
+					return struct{}{}
+				})
+			}
 		}
 	}
 	route(open)

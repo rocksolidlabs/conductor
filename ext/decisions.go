@@ -8,19 +8,27 @@ import (
 // DecisionRouter says whom a question a session asks goes to (Switchman's
 // team routing). Its free default answers the empty route: the people
 // watching answer, and the first answer wins. A durable decision (a managed
-// run's, Program item DR1) is routed as its record, once, when it opens
+// run's, Program item DR1) is routed as its record when it opens
 // (Decision.Request, Kind "decision"), never as the session question that
-// mirrors it; Resolved is told when the record reaches a final state.
+// mirrors it, and told Resolved when the record reaches a final state. The
+// ledger is the truth: a server that takes the ledger over (a restart, or
+// another server taking its owner lock) routes every decision the ledger
+// holds open and tells Resolved of every one it closed lately, so a router
+// may be told of the same decision more than once, Route or Resolved, and
+// treats a repeat (the same Request) as nothing new.
 type DecisionRouter interface {
 	Provider
-	// Route is told, once per question, a question a session shows, and
+	// Route is told, once per question, a question a session shows (a
+	// durable decision's record at least once: see above), and
 	// answers at once whom it went to and why; it may carry an answer the
 	// router already holds. It never waits for a person: an answer that
 	// comes later goes through Host.Submit. Safe for concurrent use.
 	Route(ctx context.Context, d Decision) (Route, error)
 	// Resolved is told that a question Route was given no longer waits:
 	// answered (by whoever), gone from the screen, or ended with its
-	// session. Called in order, from one goroutine.
+	// session; for a durable decision, that its record reached a final
+	// state, perhaps again, or of one routed by a server before. Called in
+	// order, from one goroutine.
 	Resolved(ctx context.Context, r Resolution)
 }
 

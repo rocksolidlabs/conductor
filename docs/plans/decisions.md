@@ -1169,14 +1169,21 @@ unchanged.
   C5's records compiles and behaves unchanged.
 - `internal/api/router.go`: a session question with `Decision` set is not
   routed as a session question (its record is). The decision record is
-  routed once, when it opens, through the same guard (`routeSent`, its
+  routed when it opens, through the same guard (`routeSent`, its
   wait and its slots): `ext.Decision{ID: "dr-7", Request: "dr-7",
   Session: <the asking session, or an empty id for a gate, with run and
   task>, Message: the question cut to `ext.Decision`'s 500 bytes at a
   character's end, Kind: "decision" (a new value beside `permission` and
   `prompt`, documented on the field), Options: the labels, Since}`; its
   destinations become a `routed` history row; `Resolved` is told when the
-  decision reaches a final state, through the existing ordered list. An
+  decision reaches a final state, through the existing ordered list. The
+  ledger is the truth: a server that takes the ledger over (a restart, or
+  another server taking its owner lock) routes every decision the ledger
+  holds open and tells Resolved of every one it closed lately, so a router
+  may be told of the same decision more than once, Route or Resolved, and
+  treats a repeat (the same Request) as nothing new; only the ledger's
+  owner tells the router anything, and the router's `routed` row is
+  written once per decision whatever it is told again. An
   answer the router holds is offered to `RespondDecision` under
   the actor `user:<By.Subject>` and the authority `{via: router}` with
   no grant, which `local/1` refuses (`not_approver`) whatever principal

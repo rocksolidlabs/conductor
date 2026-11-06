@@ -3981,15 +3981,24 @@ its session's question, with the decision's id as its attention's
 `decision` (see Attention), which takes no reply but the decision's.
 
 **Routed decisions.** On a build with a decision router registered
-(`ext.DecisionRouter`), a decision's record is told to it once, as it
-opens on this server, as `ext.Decision{id: dr-N, request: dr-N, session:
+(`ext.DecisionRouter`), a decision's record is told to it as it opens, as
+`ext.Decision{id: dr-N, request: dr-N, session:
 the asking attempt's (an empty id for a plan's gate) with its run and
 task, message: the question cut where a character ends to 500 bytes, kind:
 decision, options: the labels, each picked by its place ("1" first),
-since}`, through the router's guard and its bound, never the session
-question that mirrors it; it is told `Resolved` (with `request`) once,
-when the record reaches a final state. A route's destinations become a
-`routed` history row (by `router:<name>`, its `to` and `rule`); an answer
+since}`, through the router's guard and a bound of its own (1,024
+decisions routed and not yet told `Resolved`, beside the sessions'
+questions' 1,024), never the session question that mirrors it; it is told
+`Resolved` (with `request`) when the record reaches a final state. The
+ledger is the truth and only its owner tells the router: a server that
+takes the ledger over (at its start, or from another server holding its
+owner lock) routes every decision the ledger holds open, holds every one
+answered for its `Resolved`, and tells `Resolved` of every one closed
+from 2,048 × `ext.DeliveryWait` before the ledger's last close, so a
+router may be told of a decision more than once and treats a repeat (the
+same `request`) as nothing new. A route's destinations become one
+`routed` history row (by `router:<name>`, its `to` and `rule`; a repeat
+writes none); an answer
 it holds is offered as a response under the actor `user:<subject>` with
 the authority `{via: router}` and no grant, which `local/1` refuses
 (`not_approver`, "refused under local/1") whatever principal the subject
