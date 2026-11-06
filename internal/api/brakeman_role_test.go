@@ -337,6 +337,108 @@ func TestALoggedOutAgentMakesTheRoleUnavailable(t *testing.T) {
 	}
 }
 
+// typedInto is what reached the terminal of the request id's scripted
+// agent (bkSignInScript, bkUpdateScript): "" when nothing did.
+func (b *bkEnv) typedInto(t *testing.T, id string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(b.root, "typed-"+id+".txt"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// TestASignedOutAgentMakesTheRoleUnavailable: an agent that does not exit
+// signed out but waits at its sign-in screen (Claude Code's, found by the
+// built-in startup question that has no answers) ends its wake turn at
+// once, on the desk's clock that never reaches the turn's deadline, with
+// words that say what it shows; the turn is charged only the time it ran,
+// no key reaches the agent, and the role is unavailable with those words
+// and fires nothing more by itself (a later wake is gathered, not fired).
+// A person's own request against it says the same. The stub that exits
+// at once (TestALoggedOutAgentMakesTheRoleUnavailable) never met one
+// that waits.
+func TestASignedOutAgentMakesTheRoleUnavailable(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.background(t, "bksignin", nil)
+	id := b.failTask(t, c, "build")
+	q := b.waitState(t, id, brakeman.StateFailed)
+	if !strings.Contains(q.Why, "its login refused") || !strings.Contains(q.Why, "Browser didn't open? Use the url below to sign in") || strings.Contains(q.Why, "example.invalid") || q.Reads != 0 {
+		t.Fatalf("the turn: %+v", q)
+	}
+	r := b.waitRole(t, crew.RoleUnavailable)
+	if !strings.Contains(r.Why, "its login refused") || !r.RetryAt.IsZero() || r.Open == nil {
+		t.Fatalf("the role: %+v", r)
+	}
+	b.slotFree(t)
+	if m, err := b.desk.st.MinutesToday(c.now()); err != nil || m != 0 {
+		t.Fatalf("the turn was charged %d minutes (%v), not the moment it ran", m, err)
+	}
+	if got := b.typedInto(t, id); got != "" {
+		t.Fatalf("keys reached the sign-in screen: %q", got)
+	}
+	b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/lint", Key: "attempts 1", At: c.now()})
+	c.add(time.Hour)
+	b.roleSettle(t)
+	if r := b.roleRecord(t); r.State != crew.RoleUnavailable || r.Open == nil || len(r.Open.Wakes) != 2 {
+		t.Fatalf("the role fired into the same screen: %+v", r)
+	}
+	if page, _, _ := b.desk.st.List("", 10); len(page) != 1 {
+		t.Fatalf("an unavailable role started %d turns", len(page))
+	}
+	// A person's own request meets the same screen and says the same.
+	ask := b.briefing(t)
+	if q := b.waitState(t, ask, brakeman.StateFailed); !strings.Contains(q.Why, "its login refused") {
+		t.Fatalf("the person's request: %+v", q)
+	}
+	b.slotFree(t)
+	if got := b.typedInto(t, ask); got != "" {
+		t.Fatalf("keys reached the sign-in screen: %q", got)
+	}
+}
+
+// TestABackgroundTurnEndsAtAStartupQuestion: an agent that opens on a
+// startup question it has answers to (an update dialog) ends a wake turn,
+// whose questions page no one, with words naming the dialog and what a
+// person must do, the role unavailable with them, no key typed; a
+// person's own turn on the same agent is not ended by it: the dialog
+// shows under Needs you with its answers, for the person.
+func TestABackgroundTurnEndsAtAStartupQuestion(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.background(t, "bkupdate", nil)
+	id := b.failTask(t, c, "build")
+	q := b.waitState(t, id, brakeman.StateFailed)
+	if !strings.Contains(q.Why, "a background turn may not answer") || !strings.Contains(q.Why, "Update available") || !strings.Contains(q.Why, "answer it in a session of that agent") {
+		t.Fatalf("the turn: %+v", q)
+	}
+	if r := b.waitRole(t, crew.RoleUnavailable); !strings.Contains(r.Why, "Update available") {
+		t.Fatalf("the role: %+v", r)
+	}
+	b.slotFree(t)
+	if got := b.typedInto(t, id); got != "" {
+		t.Fatalf("keys reached the update dialog: %q", got)
+	}
+	ask := b.briefing(t)
+	_, _, l := b.turnSession(t, ask)
+	if !waitFor(30*time.Second, func() bool {
+		a := l.Info().Attention
+		return a.State == session.AttentionNeedsInput && a.Source == session.SourceTrust && len(a.Options) > 0
+	}) {
+		t.Fatalf("the person's turn never showed the dialog: %+v", l.Info().Attention)
+	}
+	b.settle(t)
+	if q, _ := b.desk.st.Get(ask); !q.Open() {
+		t.Fatalf("the person's turn was ended at a dialog the person may answer: %+v", q)
+	}
+	b.expect(t, "POST", "/api/brakeman/requests/"+ask+"/cancel", map[string]any{"opId": "c-1"}, http.StatusOK, "")
+	b.slotFree(t)
+	if got := b.typedInto(t, ask); got != "" {
+		t.Fatalf("keys reached the update dialog: %q", got)
+	}
+}
+
 // TestAnUnavailableRoleHoldsNothingElse: while the role is unavailable a
 // person's crew runs and a question its member asks is answered as ever:
 // nothing waits on Brakeman.

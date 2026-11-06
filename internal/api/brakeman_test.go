@@ -48,8 +48,9 @@ type bkEnv struct {
 // brakemanEnv is a server whose catalog holds the scripted agents: bk
 // (bkScript), bkexit (an agent that prints why and exits at once, as a
 // logged-out CLI does), bkcodex (Codex's adapter: its read-only mode
-// does not hold) and bkfixed (bkScript, an entry that takes no extra
-// arguments).
+// does not hold), bkfixed (bkScript, an entry that takes no extra
+// arguments), bksignin (a signed-out Claude Code at its sign-in screen)
+// and bkupdate (an agent at its update dialog).
 func brakemanEnv(t *testing.T, mutate func(*config.Config)) *bkEnv {
 	t.Helper()
 	e := newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), bkAgents())
@@ -64,7 +65,36 @@ func bkAgents() []catalog.Agent {
 		{ID: "bkexit", Name: "bkexit", Command: []string{"/bin/sh", "-c", "echo 'Please run /login'; exit 3"}, Adapter: "claude", AllowArgs: true},
 		{ID: "bkcodex", Name: "bkcodex", Command: []string{"/bin/sh", "-c", "exec cat"}, Adapter: "codex", AllowArgs: true},
 		{ID: "bkfixed", Name: "bkfixed", Command: []string{"/bin/sh", "-c", bkScript}, Adapter: "claude"},
+		{ID: "bksignin", Name: "bksignin", Command: []string{"/bin/sh", "-c", bkSignInScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
+		{ID: "bkupdate", Name: "bkupdate", Command: []string{"/bin/sh", "-c", bkUpdateScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("codex")},
 	}
+}
+
+// bkSignInScript is a signed-out Claude Code as #659's live check met it:
+// it does not exit, it draws its sign-in screen (the URL made up here)
+// and waits there, reading its terminal, never its request. What reaches
+// its terminal is kept in typed-<request>.txt: no key may.
+const bkSignInScript = `printf "Welcome to Claude Code\n\n Browser didn't open? Use the url below to sign in (c to copy)\n\nhttps://example.invalid/sign-in?code=true\n\n\n Paste code here if prompted > "; exec cat > "typed-$CONDUCTOR_BRAKEMAN.txt"`
+
+// bkUpdateScript is an agent that opens on its own update dialog, as
+// Codex did at the live check: Codex's words, waiting with its terminal
+// kept as bkSignInScript's is.
+const bkUpdateScript = `printf "  Update available! 0.1.0 -> 0.2.0\n\n> 1. Update now (runs npm install -g @openai/codex)\n  2. Skip\n  3. Skip until next version\n\n  Press enter to continue\n"; exec cat > "typed-$CONDUCTOR_BRAKEMAN.txt"`
+
+// builtInQuestions is the built-in agent id's startup questions, the
+// catalog's own, so a scripted agent is held by the patterns that ship.
+func builtInQuestions(id string) []catalog.Question {
+	a, ok := catalog.Default().Get(id)
+	if !ok {
+		panic("no built-in " + id)
+	}
+	var out []catalog.Question
+	for _, q := range a.Questions {
+		if !q.Anytime {
+			out = append(out, q)
+		}
+	}
+	return out
 }
 
 // bkEnvOf is e as a bkEnv: its limiter out of the way and every session

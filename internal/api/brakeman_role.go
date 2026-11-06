@@ -134,11 +134,14 @@ func (d *brakemanDesk) runChanged(runID string) {
 }
 
 // activity is the role's activity sink: a question opened notes its
-// session. It runs where the entry was recorded, so it never waits.
+// session, and pokes the desk, whose turn may be the one asking (its
+// agent held at a startup question: heldAtStartup). It runs where the
+// entry was recorded, so it never waits.
 func (d *brakemanDesk) activity(sessionID string, e session.ActivityEntry, state session.AttentionState) {
 	if e.Type != session.ActivityAttention || state != session.AttentionNeedsInput {
 		return
 	}
+	d.poke()
 	d.src.mu.Lock()
 	if len(d.src.questions) < maxRoleSources {
 		d.src.questions[sessionID] = true

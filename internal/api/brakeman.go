@@ -638,6 +638,20 @@ func (d *brakemanDesk) tend(t *deskTurn) time.Duration {
 			return brakemanRetry
 		}
 	}
+	if req.Open() {
+		if why := d.heldAtStartup(t, req); why != "" {
+			req, err = d.update(t.id, func(r *brakeman.Request) error {
+				if !r.Open() {
+					return nil
+				}
+				return r.To(brakeman.StateFailed, why, now)
+			})
+			if err != nil {
+				d.s.log.Warn("Brakeman's turn held at its agent's startup could not be ended", "request", t.id, "err", err)
+				return brakemanRetry
+			}
+		}
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if req.Open() {
@@ -675,6 +689,51 @@ func (d *brakemanDesk) tend(t *deskTurn) time.Duration {
 	runID, locals := t.runID, slices.Clone(t.locals)
 	d.s.track(func() { d.stopTurn(t, runID, locals) })
 	return 0
+}
+
+// heldAtStartup says why the turn t, which has not read its request,
+// cannot go on: its agent shows a startup question (the catalog's trust
+// question or its other startup screens, raised as a session's question
+// with source trust: Local.fireTrust) that the turn may not pass, and
+// which holds the turn's line, as every startup question holds a
+// submission, so the agent would wait there until the turn's minutes
+// end. One with no answers is a screen no answer of Conductor's passes
+// (Claude Code's sign-in, waiting for a browser or a pasted code): every
+// turn ends at it. One with answers (a trust question, an update dialog)
+// ends a background turn, whose questions page no one; a person's own
+// turn shows it under Needs you, to be answered there. No key is typed
+// into either: the turn ends and its run is stopped. "" for a turn that
+// read its request, or whose agent shows no such question.
+func (d *brakemanDesk) heldAtStartup(t *deskTurn, req brakeman.Request) string {
+	d.mu.Lock()
+	read := d.read[t.id]
+	locals := liveLocals(t.locals)
+	d.mu.Unlock()
+	if read {
+		return ""
+	}
+	for _, l := range locals {
+		att := l.Info().Attention
+		if att.State != session.AttentionNeedsInput || att.Source != session.SourceTrust {
+			continue
+		}
+		words := att.Message
+		var why string
+		switch {
+		case len(att.Options) == 0:
+			why = fmt.Sprintf("the agent waits at a screen no answer of Conductor's passes, its login refused (%q): sign it in from a session of its own, then ask Brakeman again or save its settings", words)
+		case req.Kind == brakeman.KindWake:
+			why = fmt.Sprintf("the agent shows a startup question a background turn may not answer (%q): answer it in a session of that agent, then ask Brakeman again or save its settings", words)
+		default:
+			continue
+		}
+		for len(why) > brakeman.MaxWhy {
+			_, n := utf8.DecodeLastRuneInString(why)
+			why = why[:len(why)-n]
+		}
+		return why
+	}
+	return ""
 }
 
 // untilPositive is how long until at, at least a millisecond.
