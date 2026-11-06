@@ -72,8 +72,15 @@ and operations is built by this plan's hosted-service rows (The PRs).
 This plan relies on nothing the sync plan's fourth review round removed
 or narrowed (what it holds across restores of its service and copies
 of a data directory): only its remote records and their doors, its
-sync status with this server's own device, a project's share and its
-one check of copied output, which that round kept as they were.
+sync status with this server's own device, workspace and person, a
+project's share and its one check of copied output, which that round
+kept as they were. It was read again at the sync plan's final text
+(its second final check), whose rule for a restore of its service, a
+deletion of a workspace's hosted data and a copy of a data directory is to refuse
+what those make uncertain rather than repair it; the rows here that
+cross those events follow it (a publish bound to its enrolment, PR-9;
+cards and publications after a restore of the service, PR-10 and
+PR-11).
 
 **What is on `main` and what is not.**
 
@@ -496,11 +503,23 @@ record (`internal/journal`'s `Record`) and nothing else:
 | `where` | `Where` | a registered Runtime's name, or empty for unknown |
 | `project`, `ticket` | from PR-6: the Dispatch project and ticket the session belongs to (below), when the workspace shares the project at the build | Dispatch's key patterns, or empty |
 | `repo` | the digest of the repository's root commits (below) | 64 hex, or empty |
-| `start`, `end`, `startFrom` | `Start`, `End`, `StartFrom` | full commit ids; `launch`, `attempt`, `host` |
+| `start`, `end`, `startFrom` | `Start`, `End`, `StartFrom`, as the record holds them (an attempt's session: below) | full commit ids or empty; `launch`, `attempt`, `host` |
 | `run`, `task`, `attempt` | `Crew.RunID` as its reference; the ordinal of `Crew.Task` in the run's crew as launched; `Crew.Attempt` | 16 hex; 1 to 128; integer |
 | `resumedFrom` | `ResumedFrom` | 16 hex |
 | `startedAt`, `endedAt`, `lostAt`, `ending`, `exit` | `StartedAt`, `EndedAt`, `LostAt`, how it ended | times; `exited`, `stopped`, `lost`, `host_away` or empty while live; the exit code |
 | `questions`, `answered`, `files` | counts of the record's `question` and `answer` entries and of its `Files` rows | integers |
+
+**An attempt's session carries no start commit of its own.** HS1 keeps
+an attempt's session with `Start` empty and `StartFrom: attempt`
+(`internal/api/history_journal.go`), its start commit being the
+attempt's, which the ledger holds and HS1's indexer joins. The session's
+card copies the record and joins nothing, so it goes with `start` empty
+and `startFrom: attempt`; the revision travels on the run's card
+(`tries[].start`, from the ledger), which the card page reads beside it
+by the run's reference and the attempt number when this server holds
+that card (PR-7). `TestAttemptSessionCardStartIsTheRunCards` (PR-5): an
+attempt's session card has `start` empty and `startFrom: attempt`, and
+its run's card has the attempt's start commit.
 
 **A run's card** (`kind: "run"`), from the ledger, read in one
 transaction (`ledger.CardRows`, PR-5):
@@ -511,7 +530,7 @@ transaction (`ledger.CardRows`, PR-5):
 | `ticket`, `project`, `repo` | from PR-6, its ticket (a run launched from a ticket's plan revision) and that ticket's project, when the workspace shares it at the build; the crew folder's repository digest | key patterns or empty; 64 hex |
 | `state`, `outcome`, `paused`, `continuedFrom`, `continuedBy`, `createdAt`, `closedAt` | C6's run pointer, with the two run ids as references | enumerations; 16 hex; times |
 | `tasks[]`: `n`, `kind`, `state`, `attempts`, `result`, `importedFrom`, `withdrawn` | each task in the crew's order: its ordinal, kind, `TaskRow.State`, attempts made, the standing result (`ResultAttempt` and `ResultCommit`), the continuation it was imported from (`ImportedFrom` as run reference, task ordinal, attempt), and the last attempt a withdrawal took back | 1 to 128; `work`, `review`; the ledger's task states; integers; `{attempt, commit}` or none; `{run, task, attempt}` or none; integer |
-| `tasks[].tries[]`: `n`, `session`, `start`, `result`, `outcome`, `where`, `handed` | each attempt: its number, its session's id, its start and result commits, its outcome, where it ran, and the check receipt it was handed as the engine recorded it (DS2's `previous.check`, a `TaskCheck`): `{run, task, attempt, phase, check, k}` with the run as its reference and the task and check as ordinals, so a receipt of an uncounted attempt or of the run a continuation came from is named as it is | integers, ids, commit ids, enumerations |
+| `tasks[].tries[]`: `n`, `session`, `start`, `result`, `outcome`, `where`, `handed` | each attempt: its number, its session's id, its start and result commits, its outcome, where it ran, and the check receipt it was handed as the engine recorded it (DS2's `previous.check`, a `TaskCheck`): `{run, task, attempt, phase, check, k}` with the run as its reference and the task and check as ordinals, so a receipt of an uncounted attempt or of the run a continuation came from is named as it is; a project manifest's verify step (`phase: verify`, `internal/crew/failedcheck.go`) is no check of the task and has no ordinal there, so its `handed` is `{run, task, attempt, phase: "verify"}` with no `check` and no `k`, the step's own id staying here, and the card stays valid | integers, ids, commit ids, enumerations |
 | `tasks[].checks[]`: `check`, `k`, `attempt`, `phase`, `subject`, `commit`, `outcome`, `exit`, `at`, `where` | each check receipt: the check's ordinal in its task, its run number, its attempt and phase, the SHA-256 of its argument list, the commit it checked, passed or failed or timed out, the exit code, when, where | integers; 64 hex; commit id; enumerations; time |
 | `omittedTries`, `omittedChecks` | attempts and receipts left out by the bound | integers |
 
@@ -566,18 +585,31 @@ and its `share_state` empty: the share confirmed, not pending, completing,
 dormant or no longer shared); in every other case, and whenever the read
 fails, the card goes with `project` and `ticket` empty. A build therefore
 never sends a key the store did not show as shared at that moment.
-Changes of a share reach cards already sent by marks: every commit of the
-Dispatch store that changes a project's share (a share, its confirmation
-or refusal, a rekey, `Dormant`, `Unshared`), seen through the commit hook
-the adapter already installs for its Dispatch change references (C6),
-marks every card whose repository maps to that project, coalesced, so
-the next delivery adds or drops the key; and the sync service drops a
-card's key from what it delivers to others once the project is no longer
-shared (PR-10, its own rule), so neither side alone holds the line.
+Changes reach cards already sent by marks, and the rule is blunt so that
+no input of the mapping is missed: **every commit of the Dispatch store
+that touches a project row** (a project made, edited, its folder among
+its fields, archived or deleted; a share, its confirmation or refusal, a
+rekey, `Dormant`, `Unshared`), seen through the commit hook the adapter
+already installs for its Dispatch change references (C6), **marks every
+key of the `history` source**, coalesced into one pass paged as a replay
+is. Every card is then built again against the projects as they now
+are, so the old mapping and the new are both covered: a project moved
+from repository A to repository B takes its key off A's cards and puts
+it on B's, and a second project made in the same repository leaves that
+repository's cards with no key until one of the two goes. Project rows
+change seldom; a pass over every card is what lets the rule be checked
+by reading it. A ticket's project is fixed when the ticket is made (its
+create row), and a run's ticket when the run is launched, so neither
+needs a mark of its own. The sync service also drops a card's key from
+what it delivers to others once the project is no longer shared (PR-10,
+its own rule), so neither side alone holds the line.
 `TestCardProjectFollowsTheShare` (PR-6): a project shared, confirmed,
 pending, dormant and no longer shared, and a share removed after its
 cards were sent: the key only while confirmed, every change delivered
-again.
+again; then the project's folder moved to another repository, and a
+second project made in the first repository and deleted again: after
+each, every card carries the key its mapping now gives, and a key
+delivered before is removed from the cards that no longer map to it.
 
 A card's `repo` is the SHA-256 of the repository's root commit ids,
 sorted and joined by newlines, kept only when it is certainly the
@@ -671,19 +703,28 @@ provenance is kept apart from content, by the one that needs it:
   keyed by its workspace, name and label (`v3`), with its owner,
   publisher, time, notes, digest and state; it lives in `remote/` (the
   provider's) and is never written into `versions/`;
-- an **install** records the source the person chose (`Install.Source`,
-  below): `local` (the import's receipt keeps the folder it came from), or
-  `{workspace, name, label, owner}` of the publication they installed;
+- an **install** records the source the person chose, named in the
+  request itself (PR-2's `source`, below) and kept **with each place it
+  wrote** (`Place.Source`; a template, which has no places, keeps it on
+  its install): `local` (the import's receipt keeps the folder it came
+  from), or `{workspace, name, label, owner}` of the publication they
+  installed;
 - a local version has no label of its own: it is shown as `local-` and
   the digest's first 8 hex.
 
-So one content copy serves every source, an update is judged by the
-install's source and never by the digest (PR-8), and a withdrawal names
+So one content copy serves every source, an update is judged by each
+place's source and never by the digest (PR-8), and a withdrawal names
 a publication (workspace, name, label), never a digest another
 publication may share. `TestOneDigestManySources` (PR-8): the same files
 imported here and published in two workspaces: one copy in `versions/`,
 three sources; an install from workspace A is offered A's next version
 only, and a withdrawal in B leaves A's install unmarked.
+`TestTwoPlacesTwoSources` (PR-8): workspace A's skill installed into
+Claude Code's directory, then workspace B's skill of the same name
+installed as a replacement into Codex's alone: each place keeps its own
+digest and source, Claude Code's is offered A's next version and
+Codex's B's, a withdrawal in A marks Claude Code's place only, and the
+export and a restore keep both.
 
 **What a version may hold** (`check.go`, every rule checked on every file
 before any byte is written, and again on a received version):
@@ -692,6 +733,17 @@ before any byte is written, and again on a received version):
 - a path of at most 200 bytes, at most 4 segments, each
   `^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$` (no leading dot, no `..`, no
   absolute path, no backslash); paths that differ only by case refused;
+- no path segment that the export leaves out by its name (the name
+  rules of `internal/export`'s `leftOut`: `*.tmp`, `*.sqlite-wal`,
+  `*.sqlite-shm`, `*.sqlite-journal`, `.probe-*`, `.restore-*`, the last
+  two already refused by the leading dot): refused `reserved_name`,
+  naming the path, so every file of a version survives an export and its
+  restore. The list is `internal/skills`'s own (`internal/export` reads
+  `internal/skills`, never the reverse), and
+  `TestSkillNamesSurviveTheExport` (`internal/export`, PR-2) holds that
+  every name rule of `leftOut` is refused by the version check, then
+  exports and restores a version whose files use every allowed name
+  shape and finds every file back, byte for byte, its digest the same;
 - regular files only: a link, a device, a socket or a pipe in the folder
   refuses the import, naming its path;
 - text only: valid UTF-8 with no NUL and no control character but tab,
@@ -888,11 +940,11 @@ type Installed struct {
 }
 type Install struct {
 	Kind    string    `json:"kind"`
-	Digest  string    `json:"digest"` // the version installed (placed, or kept for a template)
-	Source  Source    `json:"source"` // where the person installed it from
+	Digest  string    `json:"digest,omitempty"` // a template: the version kept; a skill: none, each place has its own
+	Source  *Source   `json:"source,omitempty"` // a template: where the person installed it from; a skill: none
 	At      time.Time `json:"at"`
-	By      string    `json:"by"`     // the actor of the operation
-	Places  []Place   `json:"places,omitempty"`
+	By      string    `json:"by"`               // the actor of the last operation
+	Places  []Place   `json:"places,omitempty"` // a skill
 }
 type Source struct {
 	From      string `json:"from"`                // local | workspace
@@ -901,15 +953,27 @@ type Source struct {
 	Owner     string `json:"owner,omitempty"`     // workspace: the name's owner, as the service named them at the install
 }
 type Place struct {
-	Target  string   `json:"target"`  // claude | codex | agents | agy, or "dir:<16 hex>" (below)
-	Dir     string   `json:"dir"`     // the target directory itself, as it was resolved when placed
-	Digest  string   `json:"digest"`  // what is placed there
-	Journal *Journal `json:"journal,omitempty"` // during a placement or removal (above)
+	Target  string    `json:"target"`  // claude | codex | agents | agy, or "dir:<16 hex>" (below)
+	Dir     string    `json:"dir"`     // the target directory itself, as it was resolved when placed
+	Digest  string    `json:"digest"`  // what is placed there
+	Source  Source    `json:"source"`  // where the person installed that digest from, for this place alone
+	At      time.Time `json:"at"`      // when it was placed
+	Journal *Journal  `json:"journal,omitempty"` // during a placement or removal (above)
 }
 type Journal struct {
 	Op, From, To, New, Old, Step string
 }
 ```
+
+**Each place has its own version and source.** An install, an update
+or a replacement names its targets and leaves the others as they were,
+and one stopped partway leaves some places changed ("The routes",
+below), so Claude Code's place may hold workspace A's `v3` while
+Codex's holds workspace B's skill of the same name. Nothing is judged
+for a skill as a whole: an update is offered, a withdrawal marked and
+**Another skill named ...** shown per place, by that place's own
+source; the row shows each place's version and source when they differ
+(`TestTwoPlacesTwoSources`, above).
 
 **Templates' crews** (`made.go`, PR-3): `skills/made.json` maps a crew id
 to the template version it was made from (`{name, digest, op}`), so the
@@ -921,38 +985,52 @@ version, save as template, new crew from template, apply, publish,
 cancel publishing) is an operation with the client's `op` id,
 `<unix seconds, 10 digits>-<16 to 48 of [A-Za-z0-9_-]>`, so an id says
 when it was made. Its receipt `{op, what, name, digest, state, places,
-crew?, fingerprint, at, actor}` has three states and two transitions:
-`started` (written and synced before the operation's first side
-effect, with `fingerprint`, the SHA-256 of the request's route and
-canonical body) → `done` or `failed` (with its reason), written after
-the last. The rules, each failing closed:
+crew?, fingerprint, at, actor}` has four states: `started` (written and
+synced before the operation's first side effect, with `fingerprint`,
+the SHA-256 of the request's route and canonical body, every field of
+the body among it, `source` included) → `done`, `partial` (an operation
+over several places that changed some and not the others, each place's
+result in `places`) or `failed` (with its reason), written after the
+last. The rules, each failing closed:
 
 - **The same `op` again** answers its receipt and does nothing (the
   Program, section 1.5); with another fingerprint it is `409 op_reused`
   and does nothing.
-- **An `op` whose receipt may have been pruned is refused.** Receipts
-  are kept at least 7 days and at most 10,000 (a write that would pass
-  10,000 receipts younger than 7 days is refused, `429
-  too_many_operations`); an `op` whose time is more than 7 days old, or
-  more than a day ahead of the server's clock, is refused `409
-  op_expired` before anything is looked up. So a replay of an old
-  install after an uninstall installs nothing: either its receipt is
-  still kept and answers, or its time is past the window and it is
-  refused.
+- **An `op` whose receipt may have been pruned is refused, by one
+  clock.** The `op`'s own time, read against the server's clock, decides
+  both sides. An `op` whose time is more than 7 days old, or more than
+  a day ahead of the server's clock, is refused `409 op_expired` before
+  anything is looked up; and a receipt is pruned only once its `op`'s
+  time is more than 7 days old, which is the moment that `op` starts
+  being refused, never by when the receipt was written (an `op` stamped
+  a day ahead keeps its receipt eight days). At most 10,000 receipts are
+  kept: a write that would pass 10,000 receipts whose `op` is still
+  inside the window is refused, `429 too_many_operations`. So a replay
+  of an old install after an uninstall installs nothing: either its
+  receipt is still kept and answers, or its time is past the window and
+  it is refused.
 - **A crash between a side effect and its receipt.** `Recover`, at
   `Open`, judges each `started` receipt by what is on disk, never by the
-  receipt alone, and writes `done` or `failed (interrupted)`: an import
+  receipt alone, and writes `done`, `partial` or `failed (interrupted)`: an import
   or a save as template is `done` if `versions/<digest>` is complete
   (the digest is recorded once staged, before the rename); an install,
   update or removal follows its places' placement journals (above),
-  `done` when every place it named holds its `to`; an apply is `done`
+  `done` when every place it named holds its `to`, `partial` when some
+  do, `failed (interrupted)` when none does; an apply is `done`
   if the crew's portable digest is the version's, else `failed`; a new
   crew from template is found by its origin (PR-3); a delete of a
   version is `done` if the version is gone; a publish is `done` if its
-  outbox file exists. A replay then answers that receipt.
+  outbox file exists; a cancellation of a publish is `done` if the
+  request's outbox file is gone (PR-9). A replay then answers that
+  receipt.
 
-`TestReplayAfterPruneRefused` (an install's receipt pruned by age, the
-skill removed, the old `op` sent again: `op_expired`, nothing placed),
+`TestReplayAfterPruneRefused` (an install's receipt pruned once its
+`op` left the window, the skill removed, the old `op` sent again: `op_expired`, nothing placed),
+`TestReceiptKeptWhileItsOpIsAccepted` (an `op` stamped 23 hours ahead
+accepted; the clock moved 7 days and 1 hour on, so the receipt is past 7
+days and its `op` is not: the prune keeps it and the same `op` answers
+it; moved past the `op`'s own 7 days: pruned, and the `op` refused
+`op_expired`),
 `TestReceiptAcrossACrash` (each operation stopped through a seam between
 its side effect and its receipt, then `Open` and the same `op` again:
 the original answer, never a second effect), `TestOpReusedRefused`.
@@ -964,9 +1042,20 @@ reads skills is a target with no change here), and `ConductorSkill()`
 An agent launched with a configuration directory of its own (`ConfigDirOf`,
 #291, read from that launch's own environment) reads skills there, so
 the directories a launch holds are computed from that launch's own
-environment, before its process starts (`skillsDirs(agent, env)`: the
-adapter's `SkillPath` directory and, with a configuration directory,
+environment, before its process starts (`skillsDirs(agent, env, cwd)`:
+the adapter's `SkillPath` directory and, with a configuration directory,
 its skills directory), and nothing is rebuilt later from the catalog.
+The configuration variable is read as the agent reads it: an absolute
+value as it is, and a relative one (which `ConfigDirOf` leaves alone,
+`internal/agents/skill.go`, because the agent takes it from its working
+directory) joined to that launch's own working directory, the folder
+`resolveCwd` gave it, before it is cleaned and its links resolved. So a
+Claude Code launch in the home folder with `CLAUDE_CONFIG_DIR=.agents`
+holds the `agents` target. A launch whose configuration directory cannot
+be resolved that way (its working directory unreadable, a link that
+cannot be followed) holds every target, the cautious side: no placement
+runs anywhere while it does. `ConfigDirOf` itself is unchanged, and its
+#291 caller still leaves a relative directory alone.
 Holds and placements compare **directories, not names**: each directory
 is cleaned and its links resolved (`filepath.EvalSymlinks`) where it
 exists, and two are the same target when `os.SameFile` says so, so
@@ -978,8 +1067,11 @@ directory that is no built-in target is listed as a target of its own,
 once a launch has used it; a skill is placed there only by a person's
 install into that target, never at a launch. `TestOneDirectoryOneTarget`
 (a configuration directory set to `~/.agents`, a link to `~/.claude`,
-two adapters on one directory: one target each time, and a placement
-into it refused while any of those sessions runs).
+two adapters on one directory, and the relative `CLAUDE_CONFIG_DIR=.agents`
+of a launch in the home folder: one target each time, and a placement
+into it refused while any of those sessions runs; the same relative
+value in another folder holds that folder's `.agents/skills`; a
+configuration directory that cannot be resolved holds every target).
 
 ### `internal/api`, `internal/cli` (PR-2): the routes, the sessions that hold a place, the CLI
 
@@ -1025,21 +1117,49 @@ under `skills/` or any target, and the workbench token admitted;
 
 | Route | Body → answer | Bounds |
 |---|---|---|
-| `GET /api/skills` | → `{skills: [Row], templates: [Row], conductor: {sha256, places}, targets: [{id, dir, agents}], readOnly?}`; a row: name, kind, the installed version (its digest, and its source with the label), its places' states with the sessions of this server that hold each, the versions kept | reply at most 1 MiB |
+| `GET /api/skills` | → `{skills: [Row], templates: [Row], conductor: {sha256, places}, targets: [{id, dir, agents}], readOnly?}`; a row: name, kind, each place's version (its digest, and its source with the label; a template's own), its places' states with the sessions of this server that hold each, the versions kept | reply at most 1 MiB |
 | `GET /api/skill-versions/{digest}` | → the version's manifest | 32 KiB |
 | `GET /api/skill-versions/{digest}/file?path=` | → `{path, mode, text}` | 513 KiB (a 256 KiB file, escaped) |
 | `GET /api/skills/{name}/compare?from=&to=` | `from`: a digest or `disk:<target>`; `to`: a digest → per file `{path, change: added \| removed \| changed \| same, from?, to?}` with both texts | reply at most 2 MiB, `truncated` past it |
 | `POST /api/skills/import` | `{op, path, kind, name?}` → `201 {version, receipt}`; `400 invalid_skill` naming the file and the rule | body 4 KiB |
-| `POST /api/skills/{name}/install` | `{op, digest, targets, expect?, replace?}` → `{receipt}`, every place `placed`, or nothing placed: `409 skill_in_use` naming each held target and its sessions; `409 version_changed` when `expect` (the installed digest the person saw) is not the installed one; `409 place_modified`, `409 place_changed`, `409 skill_not_ours`, naming the place | body 8 KiB |
+| `POST /api/skills/{name}/install` | `{op, digest, source, targets, expect?, replace?}` → `{receipt}` with each place's result; refused before anything is written: `409 skill_in_use` naming each held target and its sessions; `409 version_changed` when `expect` (the digest the person saw in a named place) is not the one there; `409 place_modified`, `409 place_changed`, `409 skill_not_ours`, naming the place; `409 source_unconfirmed` (PR-8) | body 8 KiB |
 | `POST /api/skills/{name}/remove` | `{op, targets, replace?}` → `{receipt}`; `409 skill_in_use` as install | body 8 KiB |
 | `DELETE /api/skill-versions/{digest}?op=` | → `204`; `409 version_in_use` while pinned (Prune's rule) | |
 
 Every body is read with `DisallowUnknownFields` and its limit, and every
 reply encoded as "The sizes on every wire" says. An update is an install
-of another digest with `expect`. An install or a removal is judged whole
-before anything is written: every target it names is checked for holds,
-modification and ownership under the place lock, and one refusal places
-nothing anywhere.
+of another digest with `expect`.
+
+**The source is in the request.** `source` is what the person chose in
+the dialog, sent with the digest they were shown, and so part of the
+operation's fingerprint: `{from: "local"}` names a version this machine
+keeps in `versions/`, and `{from: "workspace", workspace, name, label}`
+(PR-8) names one publication. The route never infers a publication from
+a digest (the same files may be imported here and published in two
+workspaces): it checks the named publication's record, and that its
+digest is the body's `digest`, under PR-8's source check, refusing `409
+source_unconfirmed` otherwise, and records that source on each place it
+writes. PR-2 takes `local` alone (`400 source_unsupported` for any other
+until PR-8).
+
+**Judged whole, then carried out place by place.** An install or a
+removal is judged whole before anything is written: every target it
+names is checked for holds, modification, ownership and its `expect`
+under the place lock, and one refusal places nothing anywhere. Past
+that point it is **not all or nothing**: the targets are written one
+after another, each target's swap whole (I11), and a failure on a later
+target (a full disk, a permission) or a crash leaves the targets already
+done with their new version and the rest as they were; nothing is
+rolled back. The receipt says which: `done` when every named place holds
+its `to`, `partial` with each place's result when some do, `failed` when
+none does, and `Recover` at `Open` finishes or undoes each place's own
+journal before judging the receipt the same way. The page shows each
+place's version, and the person installs again, under a new `op`, into
+the places left; the same `op` again answers its `partial` receipt and
+does nothing. `TestInstallStopsPartway` (two targets; a failure injected
+through a seam after the first target's swap, and then a crash at the
+same point followed by `Open`: the first place new, the second old, the
+receipt `partial` naming both, a replay of the `op` writing nothing).
 
 **The sessions that hold a place.** Each launch this server makes
 (`internal/api/sessions.go`, and the engine's attempts through
@@ -1062,7 +1182,10 @@ agent started in a shell) cannot be seen either.
 [--agents claude,codex] | update <name> <label|digest> | remove <name> |
 compare <name> [<from>] [<to>]`, with the workbench
 token, printing the receipt (an install refused for sessions in use
-names them); `import` sends the folder's path, which the
+names them, a `partial` one each place's result); a digest is sent with
+`source: local`, and from PR-8 a label with the source of that
+publication in the workspace this server is signed in to, printed
+before the install asks to go on; `import` sends the folder's path, which the
 server opens. Completion and usage text. The writes refuse to run inside
 a session (above). There is no MCP tool and no operating-guide row for
 agents: a skill is code an agent runs, and an agent installing its own
@@ -1072,8 +1195,8 @@ is out of bounds (Owner decisions, 13).
 `made.json` and `receipts.json` are carried as the data directory's other
 files are. `installed.json` is carried as `skills.ExportInstalled` makes
 it, the way `catalog.json` is carried as `export.ResolveCatalog` makes it:
-each install's digest and source and each place's target, `Dir` and
-digest, and no `Journal`. `skills/received/` and `skills/outbox/` are
+each place's target, `Dir`, digest and source (a template's digest and
+source), and no `Journal`. `skills/received/` and `skills/outbox/` are
 `WhyProvider` (the provider's, as `remote/` is), `skills/staging/` is
 `WhyTemporary` and `skills/owner.lock` `WhyLock`. A restore installs the
 versions and the record of what was installed, and places nothing: every
@@ -1095,11 +1218,15 @@ above; `docs/repository-map.md` the `internal/skills` row.
   only as a reference to the repository's (`file: true`); never the
   crew's `id`, `cwd`, `where`, `origin`, `yolo`, members' **arguments**,
   an **inline manifest**, `createdAt`, `updatedAt` or
-  `manifestRevision`. **No approval bypass travels**: a
-  crew made from a template, or one a template is applied to, keeps the
-  machine's default (approvals on) or the crew's own setting, and only its
-  person turns it off, on the crew, as today (article 4: required
-  approvals stay on, yolo off by default). A member's arguments are where
+  `manifestRevision`. **No approval bypass travels, and none is
+  inherited**: a crew made from a template is made with yolo set off,
+  explicitly (`FromPortable` sets `Yolo` to a false value, never leaves
+  it unset), because a crew whose yolo is unset takes the server's own
+  default at launch (`internal/api/runs.go`), which `--yolo` or
+  `CONDUCTOR_YOLO=1` turns on; a crew a template is applied to keeps its
+  own setting as it is under the lock (below); only its person turns
+  approvals off, on the crew, as today (article 4: required approvals
+  stay on, yolo off by default). A member's arguments are where
   a bypass rides without the yolo field (`--dangerously-skip-permissions`,
   `--dangerously-bypass-approvals-and-sandbox`, `internal/catalog`'s
   defaults, appended by `internal/api/sessions.go` whatever the yolo
@@ -1119,9 +1246,11 @@ above; `docs/repository-map.md` the `internal/skills` row.
   `DisallowUnknownFields` (`invalid_skill`). `TestTemplateCarriesNoYolo`
   makes a template from a yolo crew whose members carry each bypass
   argument and an inline manifest, makes a crew from it and launches it
-  through a recording launcher: the launched argv holds no bypass
-  argument and the crew no yolo and no manifest phase; an applied
-  version leaves the crew's own setting and arguments as they were.
+  through a recording launcher on a server whose own default is yolo
+  on (`CONDUCTOR_YOLO=1`): the crew's yolo is stored false, the launched
+  argv holds no bypass argument and the run no yolo and no manifest
+  phase; an applied version leaves the crew's own setting and arguments
+  as they were.
   `PortableOf(c)`, `FromPortable(p, cwd) (Crew, error)` (validated by the
   crew's own `Validate` once the folder is given), and `PortableDigest(p)`
   (SHA-256 of its canonical JSON). A template's `workflow.json` is a
@@ -1148,20 +1277,31 @@ above; `docs/repository-map.md` the `internal/skills` row.
   the `op` again.
 - `POST /api/skills/{name}/apply` `{op, crew, digest, expect}` → `{crew}`:
   a person applies a template version to a crew made from it. The check
-  and the write are one step: `crew.Store.UpdateIf(id, check, c)` (PR-3)
-  rereads the crew under the store's lock and calls `check(old)`, which
-  refuses `409 crew_changed` when the stored crew's portable digest is not
-  `expect` (what the person was shown), so an edit committed between the
-  page's read and the apply is never written over. Against launches, the
+  and the write are one step, and **the replacement is made from the
+  crew as it is under the lock**, never from an earlier read:
+  `crew.Store.UpdateWith(id, f)` (PR-3) rereads the crew under the
+  store's lock and calls `f(old)`, which refuses `409 crew_changed` when
+  `old`'s portable digest is not `expect` (what the person was shown)
+  and otherwise returns `crew.ApplyPortable(old, p)`: `old` with its
+  portable fields replaced by the version's, and everything else taken
+  from `old` as it is at that moment (its id, folder, `where`, `origin`,
+  yolo, times, its manifest unless the version names the repository's,
+  and each member's arguments, matched by the member's name; a member
+  the version adds has none). `UpdateWith` then keeps the identity and
+  times as `Update` does (`internal/crew/store.go`). So an edit committed
+  between the page's read and the apply is either a portable one,
+  refused, or one of the machine's fields, kept. Against launches, the
   apply runs under `crew.Engine.WhileNoRun(crewID, f)` (PR-3), which holds
   the lock a launch of that crew takes before it reads the crew file (the
   seam is added where the launch takes none today) and refuses `409
   crew_running` while a run of that crew is not final: a launch then
-  reads the crew wholly before the apply or wholly after it. The crew's
-  portable fields are replaced, its id, folder, `where`, `origin` and yolo
-  kept. A run already made keeps the crew as it was launched, as every
-  run does. `TestApplyChecksExpectUnderTheLock` commits an edit between
-  the route's read and the write through a seam; `TestApplyAgainstALaunch`
+  reads the crew wholly before the apply or wholly after it. A run
+  already made keeps the crew as it was launched, as every run does.
+  `TestApplyChecksExpectUnderTheLock` commits a portable edit between
+  the route's read and the write through a seam (refused);
+  `TestApplyKeepsAConcurrentEdit` commits, at the same seam, a change of
+  a member's arguments and of the crew's yolo choice, then applies: both
+  kept, the portable fields the version's; `TestApplyAgainstALaunch`
   holds a launch at a gate after its lock.
 - **What a template will run is shown apart from its JSON.** New crew
   from template and Apply each open a dialog (PR-4) that lists, before the
@@ -1186,8 +1326,8 @@ above; `docs/repository-map.md` the `internal/skills` row.
 
 - `pages/skills.vue` (`/skills`): two sections, **Skills** and **Workflow
   templates**, each a table (Nuxt UI `UTable`) of rows; a skill's row
-  shows its installed version (short digest, its source: local, or the
-  workspace's label and owner),
+  shows each place's version (short digest, its source: local, or the
+  workspace's label and owner; one line when every place agrees),
   each place as a badge (**Placed** `success`, **Modified here**
   `warning`, **Missing** `neutral`, **Not Conductor's** `neutral`,
   **Damaged** `error`), beside it **In use by 2 sessions** with their
@@ -1437,7 +1577,10 @@ above; `docs/repository-map.md` the `internal/skills` row.
   (`scope=workspace`) beside HS1's **Find this in every repository**.
 - **The card page**, `pages/history/remote/[device]/[kind]/[id].vue`: what
   the card holds, in the record page's layout; the ticket linked when the
-  project is shared here; commits shown with **Copy**; "Held on studio
+  project is shared here; commits shown with **Copy** (an attempt's
+  session, whose card has no start commit, shows its attempt's from the
+  run's card when this server holds it, else "started from attempt 2 of
+  its run"); "Held on studio
   (Ada's machine). Its record and its words stay there." and, for one's
   own server, **Open studio** (the `openURL`, only when it passed PR-6's
   rule, opened with `rel="noopener noreferrer"`) and the record's path
@@ -1486,32 +1629,37 @@ above; `docs/repository-map.md` the `internal/skills` row.
   keyed by its workspace, name and label (`v3`): the version's
   `SkillManifest` (its digest among it) and its state, `published`,
   `withdrawn` (by its owner or an admin), `publisher_left` (its owner or
-  its publisher is no longer a member of the workspace, PR-11), or the
-  answer to this server's own publish request (PR-9); at most 32 KiB.
+  its publisher is no longer a member of the workspace, PR-11),
+  `unconfirmed` (the service's database was restored and the
+  publication not yet confirmed again, PR-11), or the answer to this
+  server's own publish request (PR-9); at most 32 KiB.
   Two publications of the same files are two records over one digest.
   The Skills reply gains `available`: each `published` publication, by
   name, newest first, with its owner, publisher, time, notes and state;
   only while `remoteShown()`, and the reply's `remote: {state, since}`
   otherwise.
 - **A workspace version is installed only when it is certainly the one
-  published.** An install whose source is a publication is checked at
-  the person's act, under the place lock, and refused `409
+  published.** An install whose source (the body's `source`, PR-2) is a
+  publication is checked at the person's act, under the place lock,
+  against that publication and no other, and refused `409
   source_unconfirmed` with the reason the page shows, never deferred:
   the sync status not `current` at that moment (`sync_not_current`: a
   status merely behind is not enough); no `skill` record for that
   workspace, name and label, or one whose state is not `published`
-  (`not_published`, naming `withdrawn` or `publisher_left`); its digest
+  (`not_published`, naming `withdrawn`, `publisher_left` or
+  `unconfirmed`); its digest
   not the digest the person was shown, or the content in `received/`
   not that digest when read (`digest_mismatch`). A version already
   retained in `versions/` is installed from a publication only under the
   same check: the source is what is checked, not the bytes alone. The
-  source recorded is the one the person chose (`Install.Source`), and
-  nothing is ever installed, updated or removed for a person by a
-  record's arrival.
-- **An update is the same lineage.** `update: {from, to}` is offered on
-  an installed row only when the install's source is a publication of
-  a workspace, and a `published` record of the same workspace and name,
-  with the same owner as the install's source, has a later label (the
+  source recorded, on each place written, is the one the request named
+  (`Place.Source`), and nothing is ever installed, updated or removed
+  for a person by a record's arrival.
+- **An update is the same lineage, judged per place.** `update: {from,
+  to}` is offered on a place only when that place's source is a
+  publication of a workspace, and a `published` record of the same
+  workspace and name, with the same owner as that place's source, has a
+  later label (the
   service gives a name one owner in a workspace, its first publisher,
   and later versions of the name come only from that owner or an admin,
   PR-11). Any other version of the same name (beside a skill the person
@@ -1526,8 +1674,9 @@ above; `docs/repository-map.md` the `internal/skills` row.
   first, under the check above.
 - **A withdrawn version, or one whose publisher left.** Not offered and
   not installable (above); one installed stays installed, as the
-  person's, and its row says "withdrawn by its owner" (or "its publisher
-  left the workspace") while a record of its own source says so, judged
+  person's, and each place whose own source a record marks says
+  "withdrawn by its owner" (or "its publisher left the workspace") while
+  the record says so, judged
   by its workspace, name and label, never by its digest, so another
   publication of the same files is not marked; while other machines are
   not shown the row says nothing of it. A received copy that no
@@ -1552,12 +1701,17 @@ and after HS1's PR-11 (#630).
 
 - **The sign-in a publish is approved under.** The sync plan's status
   (`ext.SyncReport`, follows its final text) names this server's device
-  and its state, not the workspace or the person it is signed in as. PR-9
-  adds, as this plan's own fields, `Enrolment` (an opaque string the
-  provider changes whenever this server's workspace, its person or its
-  enrolment changes, and empty while not signed in) and `WorkspaceName`
-  (what the dialog shows); PR-13 fills them. With either empty,
-  publishing is not offered.
+  and the ids of the workspace and the person it is enrolled as
+  (`Workspace`, `Person`, which the sync plan added for this binding),
+  but not the enrolment itself: a re-enrolment of the same device, or a
+  workspace's hosted data deleted and begun again, keeps the same ids. PR-9 adds,
+  as this plan's own fields, `Enrolment` (an opaque string the provider
+  changes whenever this server's device, workspace, person or
+  enrolment changes or the workspace's hosted data is begun again, and
+  is empty while not enrolled) and `WorkspaceName` (what the dialog
+  shows); PR-13 fills them. With
+  `Enrolment`, `Workspace` or `WorkspaceName` empty, publishing is not
+  offered.
 - **Publish** (`POST /api/skills/{name}/publish` `{op, digest, notes,
   enrolment}`, this machine's own person only, `requireOwnPerson`). The
   dialog shows the workspace's name and carries the `enrolment` it was
@@ -1576,9 +1730,29 @@ and after HS1's PR-11 (#630).
   current enrolment it is (PR-11); at the first mismatch the request is
   removed unsent, its receipt `failed (sign_in_changed)`, and the page
   says "Not sent: this server's sign-in changed after you approved it.
-  Publish again to send it to <the new workspace>." **Cancel publishing**
-  (`POST /api/skills/{name}/publish/cancel {op}`) removes a request not
-  yet answered. `TestPublishRefusesAChangedSignIn` (the enrolment
+  Publish again to send it to <the new workspace>."
+- **Cancel publishing** (`POST /api/skills/publish/{request}/cancel`
+  `{op}`, this machine's own person only). `{request}` names the publish
+  to cancel by that publish's own `op` (its outbox file's name), so two
+  requests waiting for one name are told apart; `op` is the
+  cancellation's own, with its own receipt and fingerprint (the route
+  and the body, so `{request}` among them), as every write. It removes
+  `skills/outbox/<request>.json` if it is there and marks that key of
+  the `skills` source, which is then delivered `Deleted` (the provider
+  drops a request it has not sent, PR-13), and answers `cancelled`, or
+  `not_waiting` when the file is gone already (answered, dropped or
+  cancelled before); the publish's own receipt becomes `failed
+  (cancelled)`. The same cancel `op` again answers its receipt; a crash
+  between the removal and the receipt is judged at `Open` by the file
+  (gone: `done`). **A cancel cannot call back what was already sent**: a
+  request the provider sent before the cancel may still be published,
+  and the page says so ("If it was already sent, it is withdrawn on the
+  workspace's own pages"), where its owner withdraws it as any version.
+  `TestCancelNamesItsRequest` (two requests for one name, one cancelled
+  by its `op`, the other still delivered; the cancel's `op` again: its
+  receipt, nothing more; the cancel stopped through a seam after the
+  removal, then `Open`: `done`).
+- `TestPublishRefusesAChangedSignIn` (the enrolment
   changed between the dialog and the act: `409 sync_changed`, no
   outbox file), `TestOutboxDroppedAtASignInChange` (a request on disk,
   the enrolment changed: removed unsent, never delivered).
@@ -1640,7 +1814,12 @@ them, and reach no machine but through the sync provider.
   readable through a lapse, and new cards are refused); a card's project
   key kept, and the card delivered beyond its person's own devices, only
   while the workspace shares that project, the key dropped from what it
-  delivers once the share ends. The person name and the
+  delivers once the share ends; after a restore of the service's
+  database (follows the sync plan's final text) a
+  device's cards go to no one but its own person's servers until that
+  device's replay after the restore has ended, so a card the
+  backup held with the key of a project no longer shared is never handed
+  to a teammate. The person name and the
   `own` mark and its open link on a delivered record are fields a reply
   may gain (follows the sync plan's final text); the open link is a plain
   `https` address of the device's page, with no credential in it. Its
@@ -1666,14 +1845,21 @@ them, and reach no machine but through the sync provider.
   `skill` record then `withdrawn` on every member's server; versions and
   their manifests delivered to the server devices of the workspace's
   members (`skill` records and the files), never listed, searched or
-  served to anyone outside the workspace; at most 200 names and 20
+  served to anyone outside the workspace; after a restore of the
+  service's database (follows the sync plan's final
+  text) every publication the restored copy holds is delivered
+  `unconfirmed` until the name's owner or a workspace admin confirms it
+  on the hosted service's own pages, since a withdrawal made after the
+  backup is not in the copy (an `unconfirmed` publication is not offered
+  and not installable, PR-8); at most 200 names and 20
   versions a name kept per workspace; the export gains them; storage and
   lapse as PR-10's; its contract with vectors (a version at its bounds,
   every file of quotes and backslashes at 1 MiB in all, a binary file
   refused, an invisible character refused, a digest mismatch refused, a
   publish by a reviewer refused, a request whose enrolment is not the
   sending device's current one refused, a publication whose publisher
-  left turned `publisher_left`).
+  left turned `publisher_left`, every publication `unconfirmed` after a
+  restore until confirmed).
 
 ### The official build's PRs (PR-12, PR-13)
 
@@ -1696,7 +1882,8 @@ provider and carry the outage and lapse tests (article 8).
 - **PR-13, shared skills**: `SyncReport`'s `Enrolment` and
   `WorkspaceName` filled; publish requests from the `skills` source to
   the service, each sent only while the provider's enrolment is the
-  request's (removed unsent otherwise, never held), their answers as
+  request's (removed unsent otherwise, never held) and dropped unsent
+  when its key is delivered `Deleted` (a cancellation), their answers as
   `skill` records naming the enrolment and `op`; a clear or a revocation empties the received
   versions with the remote records (`ClearReceived`); received versions handed
   to `Host.PutSkillVersion` (files fetched once per digest, never on a
@@ -1720,9 +1907,9 @@ second schema version.
 |---|---|---|---|
 | `skills/versions/<digest>/` | one version's content this machine keeps: its manifest and files, written once by a rename of a staged directory; nothing of where it came from | `skills.Store` (Import, Retain) | yes |
 | `skills/received/<digest>/` | a version's content the provider handed over, until a person installs it, no `published` record names it (then pruned), or the provider clears | `skills.Store.Put` (PR-8), through `Host.PutSkillVersion` | no (`WhyProvider`) |
-| `skills/installed.json` | per name, the version installed, the source the person chose, and each place's target, directory, digest and placement journal | `skills.Store` | as `skills.ExportInstalled` makes it: no journal; a restore places nothing |
+| `skills/installed.json` | per name, each place's target, directory, digest, source and placement journal (a template's digest and source) | `skills.Store` | as `skills.ExportInstalled` makes it: no journal; a restore places nothing |
 | `skills/made.json` | which crew was made from which template version | `skills.Store` (PR-3) | yes |
-| `skills/receipts.json` | the operations' receipts, `started`, `done` or `failed`, kept at least 7 days and at most 10,000 | `skills.Store` | yes |
+| `skills/receipts.json` | the operations' receipts, `started`, `done`, `partial` or `failed`, each kept while its `op` is inside its 7-day window, at most 10,000 | `skills.Store` | yes |
 | `skills/outbox/<op>.json` | a publish request, bound to the enrolment it was approved under, until the service answers it, the person cancels it, or the enrolment changes | the publish routes (PR-9) | no (`WhyProvider`) |
 | `skills/staging/`, `skills/owner.lock` | a version being made; the lock | `skills.Store` | no |
 | holds (memory only) | which sessions of this server read which directories, from before their process starts until it has ended | this server's launches, through `skills.Store.Hold` | no |
@@ -1746,12 +1933,15 @@ placed --remove--> [held or seen not true?] refused | removing --> (none)
 placed --(a file changed by hand)--> modified  (seen by Inspect; nothing written)
 modified --install or remove without replace{seen}--> refused, place_modified
 launch --Hold(dirs), before the process--> held --(its process has ended)--> released
-receipt: started --(last side effect)--> done | failed;  started --(Recover, judged on disk)--> done | failed (interrupted)
+several places: each place as above, one after another; a failure or a crash past the first leaves the others as they were
+receipt: started --(last side effect)--> done | partial | failed;  started --(Recover, judged on disk)--> done | partial | failed (interrupted)
 ```
 
 Every check happens at the person's act, under the place lock, and the
-operation completes in that request or does nothing; no operation waits
-and nothing is settled later. `Recover`, at `Open`, before any hold can
+operation is carried out in that request or not at all; no operation
+waits and nothing is settled later. Past its checks, an operation over
+several places can end `partial`, its receipt naming each place's
+result, and nothing rolls back. `Recover`, at `Open`, before any hold can
 be taken: for each place with a journal, the table of "The placement
 journal", judged by what is on disk; then each `started` receipt, judged
 as "Receipts" says.
@@ -1769,7 +1959,8 @@ by every replay) only while the enrolment is unchanged, and removed
 unsent at the first change (`failed (sign_in_changed)`); answered by a
 `skill` remote record naming its enrolment and `op` (`published` with
 its label, or `refused` with words); the outbox file removed at that
-answer, or by **Cancel publishing**. Unanswered, it stays, at most 8,
+answer, or by **Cancel publishing** (its own `op`, naming the request's;
+a request already sent may still be published). Unanswered, it stays, at most 8,
 and the page says "waiting for the sync service since 14:02".
 
 **A received version** (PR-8): `Put` into `received/` (installs
@@ -1854,8 +2045,10 @@ untouched.
   approved, at the moment of approval.** A received version, a record's
   arrival and a restore change nothing installed by themselves
   (`TestReceivedVersionInstallsNothing`, `TestRestorePlacesNothing`);
-  every check (`expect`, `seen`, holds, the source) is made at the act
-  and the operation completes then or not at all; a workspace version is
+  every check (`expect`, `seen`, holds, the source the request names) is
+  made at the act and the operation is carried out then or not at all,
+  over several places possibly `partial`, its receipt naming each
+  (`TestInstallStopsPartway`); a workspace version is
   installed only while its publication is confirmed (`TestInstallRefusesAnUnconfirmedSource`);
   a template is applied to a crew only by a person, never to one whose
   run is not final, and only over the crew the person saw
@@ -1891,13 +2084,15 @@ untouched.
   and is found again at every replay (`TestPublishRefusesAChangedSignIn`,
   `TestOutboxDroppedAtASignInChange`, `TestOutboxRediscoveredAtReplay`).
 - **I15, an operation happens once, or is refused.** Its receipt is
-  `started` before its first side effect and `done` or `failed` after
-  its last; a replay answers the receipt; a receipt `started` at a crash
-  is judged on disk at `Open`; another body under the same `op` is
-  `op_reused`; an `op` older than the receipts' 7 days is `op_expired`,
-  so no pruned receipt lets an operation run twice
+  `started` before its first side effect and `done`, `partial` or
+  `failed` after its last; a replay answers the receipt; a receipt
+  `started` at a crash is judged on disk at `Open`; another body under
+  the same `op` is `op_reused`; one clock, the `op`'s own time, decides
+  both when an `op` is refused `op_expired` and when its receipt may be
+  pruned, so no pruned receipt lets an operation run twice
   (`TestReceiptAcrossACrash`, `TestReplayAfterPruneRefused`,
-  `TestOpReusedRefused`, `TestCrewFromTemplateOnceAcrossACrash`).
+  `TestReceiptKeptWhileItsOpIsAccepted`, `TestOpReusedRefused`,
+  `TestCrewFromTemplateOnceAcrossACrash`, `TestCancelNamesItsRequest`).
 
 **Migrations.** The history index goes to schema version 2: an index of
 version 1 is cleared in place and rebuilt from the stores and the remote
@@ -1935,7 +2130,11 @@ their vectors (PR-10, PR-11).
   `SKILL.md`).
 - Updating or installing anything by itself, on a schedule, at a
   version's arrival or at a restore, or later on a person's behalf: an
-  operation the person made completes in their request or not at all.
+  operation the person made is carried out in their request or not at
+  all.
+- An install over several targets that is all or nothing: past its
+  checks it is carried out target by target and may end `partial`
+  (its receipt names each place), never rolled back.
 - Holding a skills directory for sessions this server did not launch (a
   host's sessions, an agent started in a shell, another Conductor server
   under the same home): Conductor cannot know when those end, so it
@@ -1973,7 +2172,8 @@ The tests each PR adds:
 **`internal/skills` (PR-1, versions)**: `TestImportChecksEveryRule` (one
 case per rule: count, size, path, case-only twins, link, device, binary,
 NUL, control character, each bidirectional and zero-width code point and
-a leading byte-order mark, mode, a `SKILL.md` without its front matter or
+a leading byte-order mark, mode, a name the export leaves out
+(`reserved_name`), a `SKILL.md` without its front matter or
 with another name, kind `workflow` refused with no validator given),
 `TestDigestIsTheFiles` (the same files from two folders are one digest;
 a mode changed is another), `TestVersionIsImmutable`,
@@ -2002,7 +2202,10 @@ folder gone, the receipt `done` or `failed (interrupted)`);
 outside the allowed roots refused, a link swapped in after the check not
 followed), `TestInstallUpdateRemoveReceipts`, `TestInstallRefusesAStaleExpect`,
 `TestInstallIsWholeOrNothing` (two targets, one held: nothing placed in
-either), `TestHoldsCountTheAgentsThatReadTheTarget` (a Claude Code
+either), `TestInstallStopsPartway`, `TestInstallSourceIsTheRequests`
+(the body's `source` in the fingerprint: the same `op` with another
+source `op_reused`; a source other than `local` refused until PR-8),
+`TestSkillNamesSurviveTheExport` (`internal/export`), `TestHoldsCountTheAgentsThatReadTheTarget` (a Claude Code
 session holds `claude`, a pi session holds `agents`, a session with its
 own configuration directory holds that directory and not another's, one
 whose configuration directory is `~/.agents` holds `agents`, a hosted
@@ -2028,7 +2231,8 @@ equal but for the machine's fields), `TestTemplateCarriesNoYolo` (the
 launched argv), `TestTemplateCommandsAreAllListed`,
 `TestTemplateTooLargeRefused`, `TestCrewFromTemplateOnceAcrossACrash`,
 `TestBrakemanOriginsOnlyMeanBrakeman`, `TestApplyRefusedWhileRunning`,
-`TestApplyChecksExpectUnderTheLock`, `TestApplyAgainstALaunch`,
+`TestApplyChecksExpectUnderTheLock`, `TestApplyKeepsAConcurrentEdit`,
+`TestApplyAgainstALaunch`,
 `TestReceiptAcrossACrash` (for apply and save as template),
 `TestMadeFromSurvivesAndForgetsDeletedCrews`, `TestOlderCrewFilesUnchanged`
 (no crew file gains a field).
@@ -2072,7 +2276,11 @@ types against the table's patterns), `TestEveryCardBuiltIsValid`,
 `TestRunCardCarriesTaskState` (a standing result, a result withdrawn
 after its attempt passed, a result imported by a continuation),
 `TestHandedNamesTheReceipt` (a receipt of an uncounted attempt and one of
-the run a continuation came from, each named as the engine recorded it),
+the run a continuation came from, each named as the engine recorded it;
+a task with no checks whose project manifest's verify step fails its
+first attempt, and the attempt it is handed to: the card valid, `handed`
+with phase `verify` and no check ordinal),
+`TestAttemptSessionCardStartIsTheRunCards`,
 `TestCardBoundIsDeterministic`, `TestHistoryCardRevisionsRise`,
 `TestForgottenRecordsCardIsDeleted`, `TestBrakemanTurnsSendNoCard`,
 `TestKeptHereIsDeleted`, `TestShareOffSendsNoCard`,
@@ -2124,7 +2332,7 @@ first two stay in `versions/`, the third is gone from every route and
 the export), `TestOneDigestManySources`, `TestUpdateOnlyWithinALineage`
 (a workspace version beside a local import of the same name, and beside
 one of another owner: shown as another skill, never as an update),
-`TestInstallRefusesAnUnconfirmedSource`,
+`TestInstallRefusesAnUnconfirmedSource`, `TestTwoPlacesTwoSources`,
 `TestWithdrawnPrunedUnlessPinned`, `TestWithdrawnStaysInstalled`; vitest
 for the available list, the update banner, **Another skill named ...**
 and each refusal's words; the Playwright spec extended: seeded `skill`
@@ -2137,6 +2345,7 @@ verdict refused too), `TestPublishRefusesAChangedSignIn`,
 `TestOutboxDroppedAtASignInChange`, `TestOutboxRediscoveredAtReplay`,
 `TestOutboxClearedByTheAnswer` (an answer for another enrolment or `op`
 leaves it), `TestOutboxBound`, `TestPublishMyChanges`,
+`TestCancelNamesItsRequest`,
 `TestReceiptAcrossACrash` (for publish); `TestBrakemanSeesNoOtherMachine`
 (after #630); vitest for the publish dialog, its workspace line and the
 "Not sent" line.
@@ -2237,7 +2446,9 @@ calls it yet. Tests: PR-1's above.
 `Remove`, the placement journal and `Recover`; `agents.SkillDirs` and
 `ConductorSkill`. Nothing calls it yet. Tests: PR-1b's above.
 
-**PR-2**: the routes with their bounds and `requireOwnPerson`; the holds
+**PR-2**: the routes with their bounds and `requireOwnPerson`, the
+install's `source` (`local` only until PR-8) and its `partial`
+receipts; the holds
 taken at every launch of this server before its process starts and
 released when it has ended; the CLI with its refusal
 inside a session, and its completion; the export's rows and
@@ -2248,7 +2459,7 @@ update, compare and remove skills from the CLI.
 **PR-3**: `internal/crew/portable.go` (no yolo, no members' arguments,
 no inline manifest) and `ValidatePortable`, kind `workflow` in
 `internal/skills` through the caller's validator, `CreateFrom`'s
-template origin, `UpdateIf`, `Engine.WhileNoRun`, `skills.ImportBytes`
+template origin, `UpdateWith` and `ApplyPortable`, `Engine.WhileNoRun`, `skills.ImportBytes`
 and `made.go`, the three routes, the CLI's three commands, the protocol
 rows.
 
@@ -2286,7 +2497,8 @@ here on the record and run pages, `history-remote.spec.ts`.
 **PR-8**: `ext.SkillVersion` and its records, `Host.PutSkillVersion`,
 the remote kind `skill` as publications, `skills.Store.Put` into
 `received/` (content only), `Retain`, `ClearReceived` on the provider's
-clear, `Install.Source` and the source check at install, withdrawal and
+clear, the install's `source` as a publication and `Place.Source`, the
+source check at install, `unconfirmed`, withdrawal and
 a publisher who left, the reply's `available` and its lineage rule, the
 page's Available sections, banner, refusals and **Another skill named
 ...**, the fakes; the protocol rows.
@@ -2460,7 +2672,8 @@ choose (the Program, section 3.1).
     Every write names the version by its digest, after its files or its
     difference were shown; never by itself, never at a version's arrival
     or a restore, never later on the person's behalf: every check is made
-    at the act, which completes then or does nothing; a directory a
+    at the act, which is carried out then or not at all (over several
+    places possibly `partial`, its receipt naming each); a directory a
     session this server launched reads is refused while that session
     runs, and the person installs again once it ends; sessions this
     server did not launch (a host's, a shell's, another server's) are not
@@ -2485,8 +2698,10 @@ choose (the Program, section 3.1).
     in the repository stays a reference to it, named by the dialog.
     Arguments do not travel because an approval bypass rides in them and
     no list of such flags is certainly complete; the person adds a
-    crew's arguments on its page. A crew made from one asks for approvals unless its
-    person turns that off on the crew. It is applied to a crew only by a
+    crew's arguments on its page. A crew made from one is made with
+    yolo set off, whatever the server's own default, and asks for
+    approvals unless its person turns that off on the crew. It is
+    applied to a crew only by a
     person, over the crew the person saw, never to a crew whose run is
     not final.
 15. **Skills are placed on the server's own machine only**, never under
@@ -2751,3 +2966,101 @@ on a card or code placed without its person is the defect.
   key; the cache lasts an hour.
 - **14, the no-words tests**: scoped to the `history` source's
   documents; C6's crew and run documents keep their own contract.
+
+## Changed in review round 3
+
+Codex round 3's twelve findings, answered on #686. Each said a fix of an
+earlier round did not hold. This round keeps round 2's road: where a
+promise needed machinery that kept failing, the machinery goes and the
+promise is stated as narrowly as it is true. The two hard promises are
+unchanged: nothing of a session's output, of what a person typed or of
+a question's answer leaves a machine; and a shared skill reaches a
+machine only by its person's act on a version certainly the one its
+owner published. Where either is uncertain, the card goes without the
+field, or the skill is not installed, and the page says why.
+
+**Mechanisms removed.**
+
+- **All or nothing across targets.** No commit across several skills
+  directories is attempted: an install, update or removal is judged
+  whole, then carried out target by target, and may end `partial`
+  (finding 6).
+- **One version and one source for a whole skill.** `Install.Digest`
+  and `Install.Source` are gone for skills; each place keeps its own
+  (finding 3).
+- **The receipts' second clock.** Receipts are no longer pruned by
+  their own age: the `op`'s time alone decides when it is refused and
+  when its receipt may go (finding 5).
+- **Marks per project for the mapping.** A change to any project row
+  marks every card, instead of the cards one project maps to (finding 1).
+- **Writing a crew assembled from an earlier read.** `UpdateIf(id,
+  check, c)` becomes `UpdateWith(id, f)`, which builds the replacement
+  from the crew under the lock (finding 7).
+- **Inheriting the server's yolo default** in a crew made from a
+  template (finding 12).
+- **A cancel that shared its `op` with the publish** (finding 10).
+
+**Promises narrowed, and what a person or a teammate can still do.**
+
+- **An install over several agents' directories may end partway.** Each
+  directory still holds the old version or the new, never a mix; the
+  receipt and the page name each place's result, and the person installs
+  again into the places left.
+- **An attempt's session card carries no start commit** (finding 11).
+  The teammate still finds the revision: the run's card carries each
+  attempt's start and result commits, and the card page shows them
+  beside the session.
+- **A handed manifest verify step travels without its identity**
+  (finding 9). The teammate still sees that attempt 2 was handed attempt
+  1's failure of the project's verify step, and its outcome and commits;
+  the step's name stays with its holder.
+- **A skill may not hold a file named like a temporary or database
+  file** (`*.tmp`, `*.sqlite-wal`, ...; finding 8). Its author renames
+  the file; every version then survives an export and a restore whole.
+- **Cancel publishing stops only a request not yet sent.** A request
+  already sent may still be published; its owner withdraws it on the
+  workspace's own pages, as any version.
+- **After a restore of the hosted service** (the sync plan's final
+  text): a machine's cards reach only its own person's other servers
+  until that machine's replay has ended, and every publication is
+  `unconfirmed`, not installable, until its owner or an admin confirms
+  it. Teammates see the cards again after the replay, and install once
+  the owner confirms.
+- **A crew made from a template asks for approvals even on a server
+  whose own default is yolo on**; its person turns that off on the crew.
+
+**The findings.**
+
+- **1, the mapping's inputs**: every Dispatch commit that touches a
+  project row marks every card; `TestCardProjectFollowsTheShare` moves
+  a project's folder and adds and removes a second project.
+- **2, the source in the request**: the install body carries `source`,
+  checked against the named publication and part of the fingerprint;
+  `TestInstallSourceIsTheRequests`.
+- **3, provenance per place**: `Place.Source` beside `Place.Digest`,
+  updates and withdrawal judged per place, in the export too;
+  `TestTwoPlacesTwoSources`.
+- **4, relative configuration directories**: joined to the launch's own
+  working directory; one that cannot be resolved holds every target;
+  `TestOneDirectoryOneTarget` extended.
+- **5, one clock for receipts**: pruned only once their `op` is refused;
+  `TestReceiptKeptWhileItsOpIsAccepted`.
+- **6, several targets**: `partial` receipts, recovery per place, no
+  rollback; `TestInstallStopsPartway`.
+- **7, apply from the locked crew**: `UpdateWith` and `ApplyPortable`
+  keep every field of the machine as it is under the lock;
+  `TestApplyKeepsAConcurrentEdit`.
+- **8, names the export leaves out**: refused at import
+  (`reserved_name`); `TestSkillNamesSurviveTheExport`.
+- **9, manifest verify handoffs**: `handed` with phase `verify` and no
+  check ordinal; `TestHandedNamesTheReceipt` extended.
+- **10, cancellation**: its own `op`, the request in the route;
+  `TestCancelNamesItsRequest`.
+- **11, an attempt's session start**: no join; the run card carries it;
+  `TestAttemptSessionCardStartIsTheRunCards`.
+- **12, yolo off explicitly**: `FromPortable` stores yolo false;
+  `TestTemplateCarriesNoYolo` on a server whose default is yolo on.
+- **The sync plan's final text**: `SyncReport`'s `Workspace` and
+  `Person` named beside this plan's `Enrolment`, which also changes with
+  a re-enrolment or the workspace's hosted data begun again; the hosted rows' behaviour
+  after a restore of the service.
