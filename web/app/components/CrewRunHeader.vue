@@ -89,9 +89,11 @@ const member = ref<DraftMember[]>([])
 const adding = ref(false)
 const addError = ref('')
 const runNames = computed(() => props.run?.members.map((m) => m.name) ?? [])
+// The run's people's names, which the server refuses for a member added to the run (a person is never a member).
+const peopleNames = computed(() => props.run?.people?.map((p) => p.name) ?? [])
 const addInvalid = computed(() => {
   const m = member.value[0]
-  return !m || !m.agentId || !!memberNameError(m.name, runNames.value)
+  return !m || !m.agentId || !!memberNameError(m.name, runNames.value, peopleNames.value)
 })
 
 async function openAdd() {
@@ -103,7 +105,7 @@ async function openAdd() {
     addError.value = (e as Error).message
   }
   const first = agents.value[0]
-  member.value = first ? [draftMember({ name: memberNameFrom(first.id, runNames.value), agentId: first.id, prompt: '', start: { when: 'immediately' } })] : []
+  member.value = first ? [draftMember({ name: memberNameFrom(first.id, [...runNames.value, ...peopleNames.value]), agentId: first.id, prompt: '', start: { when: 'immediately' } })] : []
 }
 
 async function add() {
@@ -298,7 +300,7 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
     <template #body>
       <div class="flex flex-col gap-4">
         <UAlert v-if="addError" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="addError" />
-        <CrewMembersTable v-if="member.length" v-model="member" :agents="agents" :others="runNames" single />
+        <CrewMembersTable v-if="member.length" v-model="member" :agents="agents" :others="runNames" :people="peopleNames" single />
         <p v-else-if="!addError" class="text-sm text-muted">No agents in the catalog.</p>
       </div>
     </template>

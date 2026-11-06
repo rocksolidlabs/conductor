@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInfo, CrewCheck, CrewInfo, CrewMember, CrewManifest, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords } from './crews'
+import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
 import type { ManifestList, ManifestShape, TaskShape } from './crews'
 import { startSentence, startWords } from './crewWords'
 
@@ -208,6 +208,9 @@ describe('memberNameError', () => {
   it('refuses a name another member has', () => {
     expect(memberNameError('core', ['lead', 'core'])).toMatch(/another member/i)
     expect(memberNameError('core', ['lead'])).toBe('')
+    // A run's people's names: the server refuses a member that takes one (a person is never a member).
+    expect(memberNameError('nate', ['lead'], ['nate', 'ana'])).toBe("The name is a person's; a person is never a member, so the two names differ")
+    expect(memberNameError('core', ['lead'], ['nate'])).toBe('')
   })
 })
 
@@ -1102,7 +1105,69 @@ describe('people', () => {
       const fits = TASK_LIMITS.taskText - 2 * 3 - 'Build it.'.length
       const big: TaskShape = { ...managed, goal: '', members: managed.members.map((m) => ({ ...m, prompt: '' })), tasks: [{ ...managed.tasks![0]!, instructions: 'x'.repeat(fits) }] }
       expect(taskSaveProblems({ ...big, people: [] })).toEqual([])
-      expect(taskSaveProblems(big)[0]).toMatch(/^Task build: its goal, role, instructions and people are \d+ bytes as its task file keeps them, more than 40960$/)
+      // 40951 for the goal, role and instructions, and 254 for nate, the owner by the task, and the two people, as internal/crew
+      // taskPeopleBytes counts them.
+      expect(taskSaveProblems(big)).toEqual(['Task build: its goal, role, instructions and people are 41205 bytes as its task file keeps them, more than 40960'])
+    })
+
+    it("counts who answers for a task in its task file byte for byte as internal/crew's taskPeopleBytes does", () => {
+      // Each count is what Go's taskPeopleBytes gives for the same crew and task (checked against it on 2026-11-06): a quote, a U+2028,
+      // a two-byte character and HTML's characters in names; a note, never counted; the owner by the task, by the acceptance owner, none.
+      const people = [
+        { name: 'na"te\u2028', responsibilities: ['architecture' as const] },
+        { name: 'ané', responsibilities: ['acceptance' as const, 'product' as const], note: 'never counted' },
+        { name: '<bo>&' },
+      ]
+      const c = { ...managed, people }
+      expect(taskPeopleBytes(c, { owner: 'na"te\u2028' })).toBe(300)
+      expect(taskPeopleBytes(c, {})).toBe(311)
+      expect(taskPeopleBytes({ ...managed, people: [people[0]!, people[2]!] }, {})).toBe(127)
+      expect(taskPeopleBytes({ ...managed, people: [] }, { owner: 'nate' })).toBe(0)
+      expect(taskPeopleBytes(managed, managed.tasks![0]!)).toBe(254)
+      expect(taskPeopleBytes(managed, managed.tasks![1]!)).toBe(272)
+    })
+  })
+
+  describe('ownerChoices', () => {
+    it('offers none, naming the acceptance owner, and each named person by key; a task follows its person', () => {
+      const d = toDraft(managed)
+      const [nate, ana] = [d.people![0]!, d.people![1]!]
+      expect(ownerChoices(d.tasks![0]!, d.people)).toEqual({
+        value: `#${nate.key}`,
+        items: [
+          { label: 'none: ana, the acceptance owner', value: OWNER_NONE },
+          { label: 'nate', value: `#${nate.key}` },
+          { label: 'ana', value: `#${ana.key}` },
+        ],
+        disabled: false,
+      })
+      expect(ownerChoices(d.tasks![1]!, d.people).value).toBe(OWNER_NONE)
+      expect(ownerChoices({}, [])).toEqual({ value: OWNER_NONE, items: [{ label: 'none', value: OWNER_NONE }], disabled: true })
+    })
+
+    it("stays enabled while a removed person's owner is left, so that none can be chosen in a crew left without people", () => {
+      const d = toDraft({ ...managed, people: [managed.people![0]!] })
+      const nate = d.people![0]!
+      // nate's name cleared, then nate removed: the crew has no people, and build's owner is gone with no name.
+      const blank = ownersFollowPeople(d.tasks!, [{ ...nate, name: '' }])
+      const tasks = ownersFollowPeople(blank, [])
+      expect(tasks[0]).toMatchObject({ owner: '', ownerKey: nate.key })
+      expect(peopleProblems({ people: [], members: d.members, tasks })).toEqual(['Task build: its owner is gone: choose one, or none'])
+      const gone = ownerChoices(tasks[0]!, [])
+      expect(gone).toEqual({
+        value: OWNER_GONE,
+        items: [
+          { label: 'none', value: OWNER_NONE },
+          { label: 'a removed person (not a person)', value: OWNER_GONE },
+        ],
+        disabled: false,
+      })
+      // Removed with their name: shown by it, enabled too.
+      expect(ownerChoices(ownersFollowPeople(d.tasks!, [])[0]!, [])).toMatchObject({ value: 'name:nate', disabled: false })
+      // none chosen (CrewTasksTable's pickOwner): the problem is gone, and the select is disabled until people are added.
+      const none = [{ ...tasks[0]!, owner: undefined, ownerKey: undefined }, tasks[1]!]
+      expect(peopleProblems({ people: [], members: d.members, tasks: none })).toEqual([])
+      expect(ownerChoices(none[0]!, []).disabled).toBe(true)
     })
   })
 

@@ -126,6 +126,30 @@ export function ownersFollowPeople(tasks: readonly DraftTask[], people: Readonly
   })
 }
 
+/** The Owner select's value for a task naming no owner (ownerChoices). */
+export const OWNER_NONE = 'none'
+/** The Owner select's value for a task whose owner was a person removed while they had no name (ownerChoices). */
+export const OWNER_GONE = 'gone'
+
+/**
+ * A draft task's Owner select (CrewTasksTable): the value shown, the items (the "none" item naming the acceptance owner when there is one,
+ * then each named person by key) and whether it is disabled. A person is picked by key, so the task follows their name; an owner whose
+ * person is gone stays shown, as not a person ("a removed person" when they had no name), and the select stays enabled while it does,
+ * so the problem peopleProblems names ("its owner is gone: choose one, or none") can be answered with "none" in a crew left without people.
+ */
+export function ownerChoices(
+  t: Pick<DraftTask, 'owner' | 'ownerKey'>,
+  people: readonly DraftPerson[] = [],
+): { value: string; items: Array<{ label: string; value: string }>; disabled: boolean } {
+  const fallback = ownerOf({ people }, {})
+  const items = [{ label: fallback ? `none: ${fallback.name}, the acceptance owner` : 'none', value: OWNER_NONE }, ...people.filter((p) => p.name).map((p) => ({ label: p.name, value: `#${p.key}` }))]
+  const p = t.ownerKey === undefined ? undefined : people.find((x) => x.key === t.ownerKey)
+  if (p) return { value: `#${p.key}`, items, disabled: false }
+  if (t.owner) return { value: `name:${t.owner}`, items: [...items, { label: `${t.owner} (not a person)`, value: `name:${t.owner}` }], disabled: false }
+  if (t.ownerKey !== undefined) return { value: OWNER_GONE, items: [...items, { label: 'a removed person (not a person)', value: OWNER_GONE }], disabled: false }
+  return { value: OWNER_NONE, items, disabled: !people.length }
+}
+
 /**
  * Who owns a task's outcome in a crew (internal/crew TaskOwner, the one rule): the person the task names, or else the crew's acceptance
  * owner, with how; undefined for no one.
@@ -337,12 +361,16 @@ export function toCrewMember(m: CrewMember): CrewMember {
 /** A member's name as the server accepts it (internal/crew memberNamePattern): it becomes a branch and a worktree name. */
 export const MEMBER_NAME = /^[a-z0-9][a-z0-9._-]{0,39}$/
 
-/** Why the server would refuse a member name, or '' when it is fine: its pattern, what git refuses in a branch name, and a name another member has. */
-export function memberNameError(name: string, taken: readonly string[] = []): string {
+/**
+ * Why the server would refuse a member name, or '' when it is fine: its pattern, what git refuses in a branch name, a name another member
+ * has, and a name one of `people` has (a member added to a run with people: internal/crew refuses a person's name, run.admit).
+ */
+export function memberNameError(name: string, taken: readonly string[] = [], people: readonly string[] = []): string {
   if (!name) return 'Give the member a name'
   if (!MEMBER_NAME.test(name)) return 'Lower-case letters, digits, ".", "_" and "-", starting with a letter or digit, at most 40'
   if (name.includes('..') || name.endsWith('.') || name.endsWith('.lock')) return 'git refuses this as a branch name: no "..", and no "." or ".lock" at the end'
   if (taken.includes(name)) return 'Another member has this name'
+  if (people.includes(name)) return "The name is a person's; a person is never a member, so the two names differ"
   return ''
 }
 
@@ -653,7 +681,7 @@ export type TaskShape = Pick<CrewInput, 'setup' | 'isolation'> & {
  * How many bytes who answers for t takes in its task.json (internal/crew taskPeopleBytes): how its owner came to own it, the owner and the
  * crew's people, each as encodeTaskJSON writes it, a person by name and responsibilities, never the note; 0 for a crew without people.
  */
-function taskPeopleBytes(c: TaskShape, t: Pick<CrewTask, 'owner'>): number {
+export function taskPeopleBytes(c: TaskShape, t: Pick<CrewTask, 'owner'>): number {
   const people = c.people ?? []
   if (!people.length) return 0
   const named = (p: CrewPerson) => (p.responsibilities?.length ? { name: p.name, responsibilities: [...p.responsibilities] } : { name: p.name })

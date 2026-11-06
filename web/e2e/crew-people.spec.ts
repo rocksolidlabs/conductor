@@ -13,10 +13,13 @@ import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helper
 // listing the revision's people; the person's page (PR-11) reached from the header's chip, the task detail's owner, the ticket's People
 // and the palette's @ row, listing the tasks and tickets they own, its crews and tasks kept when a ticket list cannot be read, the page
 // of a name no one has; a person's tickets past the first twenty reached with Show more; names that are path words (`.`, `..`, a slash,
-// a percent sign) with pages of their own. Every crew, ticket and run is found by its id or key, never by a list's length.
+// a percent sign) with pages of their own. A person removed with their name cleared leaves the task's Owner enabled, so that "none"
+// answers the problem it leaves; a name past the first 200 people Conductor knows is offered when it is searched for; a live run's Add
+// an agent marks a person's name and holds the button. Every crew, ticket and run is found by its id or key, never by a list's length.
 test.describe.configure({ mode: 'serial' })
 
 let crewId = ''
+const crews: string[] = []
 const runs: string[] = []
 
 const crewBody = {
@@ -48,7 +51,7 @@ test.beforeAll(async ({ api }) => {
 
 test.afterAll(async ({ api }) => {
   for (const id of runs) await api.stopRun(id)
-  if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
+  for (const id of [crewId, ...crews]) if (id) await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
 })
 
 /**
@@ -308,4 +311,111 @@ test("a person's tickets past the first twenty are reached; names that are path 
     await expect(page.locator(`[data-person-page-name="${name}"] [data-person-ticket-list="${list}"]`).locator(`[data-person-ticket="${key}"]`)).toBeVisible({ timeout: 30_000 })
     expect(new URL(page.url()).pathname).toBe(personPath(name))
   }
+})
+
+test("a task's owner removed with their name cleared leaves the Owner enabled, and none answers it", async ({ page, api }) => {
+  // kai, the crew's only person, owns build, as saved.
+  const id = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      ...crewBody,
+      name: `e2e people gone ${Date.now().toString(36)}`,
+      people: [{ name: 'kai' }],
+      tasks: crewBody.tasks.map((t) => (t.id === 'build' ? { ...t, owner: 'kai' } : t)),
+    })
+  ).crew.id
+  crews.push(id)
+  await page.goto(`/crews/${encodeURIComponent(id)}`)
+  budget(30_000)
+  await expect(page.locator('[data-crew-person]')).toHaveCount(1, { timeout: 30_000 })
+  const save = page.locator('[data-unsaved-bar]').getByRole('button', { name: 'Save' })
+  const owner = page.locator('[data-crew-task][data-task-id="build"] [data-task-owner]')
+  await expect(owner).toContainText('kai')
+
+  // kai's name cleared, then kai removed: build's owner is gone, with no name to show.
+  const person = page.locator('[data-crew-person]').nth(0)
+  await person.locator('[data-person-name-picker] [data-slot="trailingClear"]').click()
+  await expect(person).toHaveAttribute('data-person-name', '')
+  await person.locator('[data-person-remove]').click()
+  await expect(page.locator('[data-crew-person]')).toHaveCount(0)
+  await expect(save).toBeDisabled()
+  await expect(save).toHaveAttribute('data-save-problem', /Task build: its owner is gone: choose one, or none/)
+  await expect(owner).toBeEnabled()
+  await expect(owner).toContainText('a removed person')
+
+  // none: the problem is answered, Save is open, and the Owner is disabled again with no person to name.
+  await owner.click()
+  await page.getByRole('option', { name: 'none', exact: true }).click()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(save).toBeEnabled()
+  await expect(owner).toBeDisabled()
+})
+
+test('a name past the first page of the people Conductor knows is offered when it is searched for', async ({ page, api }) => {
+  // 201 names Dispatch's directory gains, ordered after the e2e's other names (byte order): the last is past a first page of 200,
+  // whatever else is known.
+  const tag = Date.now().toString(36)
+  const names = Array.from({ length: 201 }, (_, i) => `zz-${tag}-${String(i).padStart(3, '0')}`)
+  budget(60_000)
+  for (let i = 0; i < names.length; i += 20) {
+    await Promise.all(names.slice(i, i + 20).map((name, j) => api.ok('POST', '/api/dispatch/people', { opId: `zz-${tag}-${i + j}`, name })))
+  }
+  const target = names[200]!
+  const first = await api.ok<{ people: Array<{ name: string }>; next?: string }>('GET', '/api/people')
+  expect(first.people.map((p) => p.name)).not.toContain(target)
+
+  const id = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { ...crewBody, name: `e2e people search ${tag}` })).crew.id
+  crews.push(id)
+  await page.goto(`/crews/${encodeURIComponent(id)}`)
+  budget(30_000)
+  await expect(page.locator('[data-crew-people-section]')).toBeVisible({ timeout: 30_000 })
+  await page.locator('[data-add-person]').click()
+  await page.locator('[data-crew-person]').nth(0).locator('[data-person-name-picker]').click()
+  await page.getByPlaceholder('A name…').fill(target)
+  // The known name, read with the search: not only the row that takes a typed name.
+  await expect(page.getByRole('option', { name: target, exact: true })).toBeVisible()
+  await expect(page.getByRole('option', { name: `Name them ${target}`, exact: true })).toHaveCount(0)
+  await page.getByRole('option', { name: target, exact: true }).click()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(page.locator('[data-crew-person]').nth(0)).toHaveAttribute('data-person-name', target)
+})
+
+test("a live run's Add an agent marks a person's name and holds the button, as the server refuses it", async ({ page, api }) => {
+  const id = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: `e2e people add ${Date.now().toString(36)}`,
+      cwd: '',
+      where: 'server',
+      isolation: 'none',
+      openAfterLaunch: false,
+      yolo: null,
+      members: [{ name: 'solo', agentId: 'codex', prompt: '', start: { when: 'immediately' } }],
+      people: [{ name: 'nate', responsibilities: ['architecture'] }],
+    })
+  ).crew.id
+  crews.push(id)
+  const run = await api.launchCrew(id)
+  runs.push(run.id)
+
+  await page.goto(`/runs/${encodeURIComponent(run.id)}`)
+  budget(30_000)
+  await expect(page.locator('[data-run-people] [data-run-person="nate"]')).toBeVisible({ timeout: 30_000 })
+  const addAgent = page.getByRole('button', { name: 'Add agent', exact: true })
+  await expect(addAgent).toBeEnabled()
+  await addAgent.click()
+  const dialog = page.getByRole('dialog', { name: 'Add an agent' })
+  const name = dialog.locator('[data-crew-member]').getByPlaceholder('name')
+  await expect(name).toBeVisible()
+  const addButton = dialog.getByRole('button', { name: 'Add to the run' })
+
+  await name.fill('nate')
+  await expect(dialog.locator('[data-name-error]')).toHaveText("The name is a person's; a person is never a member, so the two names differ")
+  await expect(addButton).toBeDisabled()
+  // The server refuses it the same way.
+  const refused = await api.call<{ error: { message: string } }>('POST', `/api/runs/${encodeURIComponent(run.id)}/members`, { name: 'nate', agentId: 'codex', prompt: '', start: { when: 'manual' } })
+  expect(refused.status).toBe(400)
+  expect(refused.body.error.message).toContain("the name is a person's")
+
+  await name.fill('helper')
+  await expect(dialog.locator('[data-name-error]')).toHaveCount(0)
+  await expect(addButton).toBeEnabled()
 })

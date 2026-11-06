@@ -1,4 +1,5 @@
 import type { Responsibility } from './useSessions'
+import { PEOPLE_LIMITS } from '~/utils/crews'
 import { oneReadAtATime, personSegment } from '~/utils/people'
 
 /** A person Conductor knows (GET /api/people): in Dispatch's directory, in saved crews, or both. */
@@ -53,16 +54,19 @@ export interface PersonWork {
 
 /**
  * The names Conductor knows (docs/plans/decisions.md, HM1): the union of Dispatch's directory and the saved crews' people, read from both
- * and written to neither. `load` reads the first page again (200 names, `q` keeping those that contain it), one read at a time: a `q`
- * asked while one is under way is read after it, the latest only, and a reply is dropped when a newer `q` was asked meanwhile, so a slow
- * one never puts back names a newer one replaced and typing sends no read per key. A failed read keeps the names read before: a typed
- * name is still taken.
+ * and written to neither. `load` reads the first page again (200 names, `q` keeping those that contain it, so a name past the first page
+ * of all is found by searching for it); a reply older than the last read started is dropped, so a slow one never puts back names a newer
+ * one replaced. A failed read keeps the names read before: a typed name is still taken. A `q` longer than a name (60 characters) is
+ * contained in no name, so it is answered with none, without a read the server would refuse. `search` is `load` for a `q` typed key by
+ * key (the palette's `@`), one read at a time: a `q` asked while one is under way is read after it, the latest only, and a reply is
+ * dropped when a newer `q` was asked meanwhile, so typing sends no read per key.
  */
 export function usePeople() {
   const { request } = useApi()
   const names = ref<string[]>([])
   /** The first page as read last, whole: for the palette's People. */
   const known = ref<KnownPerson[]>([])
+  let seq = 0
 
   /** One page of the people, as the server answers it. */
   function page(query: { q?: string; after?: string; limit?: number } = {}): Promise<PeoplePage> {
@@ -73,19 +77,36 @@ export function usePeople() {
     return request<PeoplePage>('/api/people', { query: q }).then((r) => ({ ...r, people: r.people ?? [] }))
   }
 
-  const read = oneReadAtATime(
-    (q) => page({ q }),
+  async function load(q?: string): Promise<void> {
+    const n = ++seq
+    if (q && [...q].length > PEOPLE_LIMITS.name) {
+      known.value = []
+      names.value = []
+      return
+    }
+    try {
+      const r = await page({ q })
+      if (n === seq) {
+        known.value = r.people
+        names.value = r.people.map((p) => p.name)
+      }
+    } catch {
+      // The names read before stay offered.
+    }
+  }
+
+  const search = oneReadAtATime(
+    (q) => ([...q].length > PEOPLE_LIMITS.name ? Promise.resolve<PeoplePage>({ people: [] }) : page({ q })),
     (r) => {
       known.value = r.people
       names.value = r.people.map((p) => p.name)
     },
   )
-  const load = (q?: string): Promise<void> => read(q ?? '')
 
   /** A person's work, by their name exactly (its segment by `personSegment`, the rule every link to their page uses). */
   function person(name: string): Promise<PersonWork> {
     return request<PersonWork>(`/api/people/${personSegment(name)}`).then((r) => ({ ...r, crews: r.crews ?? [], tasks: r.tasks ?? [], decisions: r.decisions ?? [] }))
   }
 
-  return { names, known, load, page, person }
+  return { names, known, load, search, page, person }
 }

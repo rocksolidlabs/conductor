@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { TASK_LIMITS, draftTask, ownerOf, taskRowProblems, type DraftCheck, type DraftMember, type DraftPerson, type DraftTask, type TaskShape } from '~/utils/crews'
+import { OWNER_NONE, TASK_LIMITS, draftTask, ownerChoices, taskRowProblems, type DraftCheck, type DraftMember, type DraftPerson, type DraftTask, type TaskShape } from '~/utils/crews'
 
 /**
  * The tasks of a managed crew (#334): who does what, after which results,
@@ -51,27 +51,12 @@ function pickMember(i: number, value: string) {
   const m = value.startsWith('#') ? props.members.find((x) => x.key === Number(value.slice(1))) : undefined
   update(i, m ? { member: m.name, memberKey: m.key } : { member: value, memberKey: undefined })
 }
-// An owner is picked by the person's key, so the task follows their name; one whose person is gone shows the last name, as not a person.
-const NONE = 'none'
-const personValue = (p: DraftPerson) => `#${p.key}`
-/** The "none" item names who owns the task then: the crew's acceptance owner, when there is one. */
-const noneLabel = computed(() => {
-  const fallback = ownerOf({ people: props.people }, {})
-  return fallback ? `none: ${fallback.name}, the acceptance owner` : 'none'
-})
-function ownerValue(t: DraftTask): string {
-  const p = t.ownerKey === undefined ? undefined : props.people?.find((x) => x.key === t.ownerKey)
-  if (p) return personValue(p)
-  return t.owner ? `name:${t.owner}` : NONE
-}
-function ownersFor(t: DraftTask) {
-  const items = [{ label: noneLabel.value, value: NONE }, ...(props.people ?? []).filter((p) => p.name).map((p) => ({ label: p.name, value: personValue(p) }))]
-  const v = ownerValue(t)
-  return v.startsWith('name:') ? [...items, { label: `${t.owner} (not a person)`, value: v }] : items
-}
+// An owner is picked by the person's key, so the task follows their name; one whose person is gone stays shown, as not a person, and
+// the select stays enabled while it does (ownerChoices).
+const owners = computed(() => tasks.value.map((t) => ownerChoices(t, props.people)))
 function pickOwner(i: number, value: string) {
-  if (value === NONE) return update(i, { owner: undefined, ownerKey: undefined })
-  const p = value.startsWith('#') ? props.people?.find((x) => personValue(x) === value) : undefined
+  if (value === OWNER_NONE) return update(i, { owner: undefined, ownerKey: undefined })
+  const p = value.startsWith('#') ? props.people?.find((x) => `#${x.key}` === value) : undefined
   if (p) update(i, { owner: p.name, ownerKey: p.key })
 }
 
@@ -174,10 +159,10 @@ const focused = ref<number | null>(null)
           <USelect :class="cell.member" :model-value="memberOf(t)" :items="membersFor(t)" placeholder="Member" :aria-label="`Member of ${who(t, i)}`" class="w-full" data-task-member @update:model-value="pickMember(i, String($event))" />
           <USelect
             :class="cell.owner"
-            :model-value="ownerValue(t)"
-            :items="ownersFor(t)"
-            :disabled="!people?.length && !t.owner"
-            :title="people?.length ? ownersFor(t).find((o) => o.value === ownerValue(t))?.label : 'Add people to the crew to name an owner'"
+            :model-value="owners[i]!.value"
+            :items="owners[i]!.items"
+            :disabled="owners[i]!.disabled"
+            :title="owners[i]!.disabled ? 'Add people to the crew to name an owner' : owners[i]!.items.find((o) => o.value === owners[i]!.value)?.label"
             :ui="{ content: 'w-max min-w-(--reka-select-trigger-width) max-w-[calc(100vw-2rem)]' }"
             :aria-label="`Owner of ${who(t, i)}`"
             class="w-full"

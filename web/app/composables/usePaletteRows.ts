@@ -754,8 +754,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   }
 
   // The people Conductor knows (HM1): the first page of GET /api/people, read again with what follows the `@` as `q` while the palette is
-  // open in that mode, one read at a time (usePeople: the latest `q` asked is read after the one under way, a reply older than the last
-  // asked is dropped), and a failed one keeps the rows read before.
+  // open in that mode, one read at a time (usePeople's `search`: the latest `q` asked is read after the one under way, a reply older
+  // than the last asked is dropped), and a failed one keeps the rows read before.
   watch(
     () => {
       if (!palette.open.value || !admin.hasToken.value) return null
@@ -763,7 +763,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       return mode === 'people' ? rest : null
     },
     (q) => {
-      if (q !== null) void people.load(q)
+      if (q !== null) void people.search(q)
     },
     { immediate: true },
   )
