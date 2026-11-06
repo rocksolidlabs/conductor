@@ -1,0 +1,22 @@
+{
+  "about": "The task commands a managed task's state allows (crew.TaskCommands), read by TestTaskCommandsFollowTheFixture against the engine and, from the decision page's PR, by tasks.test.ts against taskActions. Each row: the task's state and kind, its attempts in order (commit: the commit the attempt submitted, empty when it submitted none), how many of them a withdrawal took back, the run (live, stopped, continued by another run, its launch not recorded, a legacy run), the commands allowed in the order retry, accept, cancel, and the attempt an Accept anyway takes.",
+  "rows": [
+    {"name": "failed, every attempt submitted a commit", "state": "failed", "kind": "work", "attempts": [{"commit": "c1"}, {"commit": "c2"}, {"commit": "c3"}], "withdrawn": 0, "run": "live", "commands": ["retry", "accept"], "accept": 3},
+    {"name": "a failed review that submitted a commit", "state": "failed", "kind": "review", "attempts": [{"commit": "c1"}], "withdrawn": 0, "run": "live", "commands": ["retry", "accept"], "accept": 1},
+    {"name": "failed, the latest attempt submitted nothing", "state": "failed", "kind": "work", "attempts": [{"commit": "c1"}, {"commit": "c2"}, {"commit": ""}], "withdrawn": 0, "run": "live", "commands": ["retry", "accept"], "accept": 2},
+    {"name": "failed, no attempt submitted a commit", "state": "failed", "kind": "work", "attempts": [{"commit": ""}, {"commit": ""}], "withdrawn": 0, "run": "live", "commands": ["retry"]},
+    {"name": "failed, every commit taken back by a withdrawal", "state": "failed", "kind": "work", "attempts": [{"commit": "c1"}, {"commit": "c2"}], "withdrawn": 2, "run": "live", "commands": ["retry"]},
+    {"name": "failed, an attempt since the withdrawal submitted a commit", "state": "failed", "kind": "work", "attempts": [{"commit": "c1"}, {"commit": "c2"}, {"commit": "c3"}], "withdrawn": 2, "run": "live", "commands": ["retry", "accept"], "accept": 3},
+    {"name": "failed, no attempt yet", "state": "failed", "kind": "work", "attempts": [], "withdrawn": 0, "run": "live", "commands": ["retry"]},
+    {"name": "cancelled", "state": "cancelled", "kind": "work", "attempts": [{"commit": "c1"}], "withdrawn": 0, "run": "live", "commands": ["retry"]},
+    {"name": "succeeded", "state": "succeeded", "kind": "work", "attempts": [{"commit": "c1"}], "withdrawn": 0, "run": "live", "commands": []},
+    {"name": "blocked", "state": "blocked", "kind": "work", "attempts": [], "withdrawn": 0, "run": "live", "commands": ["cancel"]},
+    {"name": "ready", "state": "ready", "kind": "work", "attempts": [], "withdrawn": 0, "run": "live", "commands": ["cancel"]},
+    {"name": "running", "state": "running", "kind": "work", "attempts": [{"commit": ""}], "withdrawn": 0, "run": "live", "commands": ["cancel"]},
+    {"name": "verifying", "state": "verifying", "kind": "work", "attempts": [{"commit": "c1"}], "withdrawn": 0, "run": "live", "commands": ["cancel"]},
+    {"name": "failed in a stopped run", "state": "failed", "kind": "work", "attempts": [{"commit": "c1"}], "withdrawn": 0, "run": "stopped", "commands": ["retry", "accept"], "accept": 1},
+    {"name": "failed in a run continued by another", "state": "failed", "kind": "work", "attempts": [{"commit": "c1"}], "withdrawn": 0, "run": "continued", "commands": []},
+    {"name": "failed in a run whose launch is not recorded yet", "state": "failed", "kind": "work", "attempts": [{"commit": "c1"}], "withdrawn": 0, "run": "launching", "commands": []},
+    {"name": "failed in a legacy run", "state": "failed", "kind": "work", "attempts": [{"commit": "c1"}], "withdrawn": 0, "run": "legacy", "commands": []}
+  ]
+}

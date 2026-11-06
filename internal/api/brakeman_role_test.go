@@ -547,8 +547,8 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	id := b.failTask(t, c, "build")
 	b.launched(t, id)
 	_, _, l := b.turnSession(t, id)
-	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(l.TailLines(12), "\n"), "[ Sign in ]") }) {
-		t.Fatalf("the screen was never drawn: %q", l.TailLines(12))
+	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(l.ScreenLines(12), "\n"), "[ Sign in ]") }) {
+		t.Fatalf("the screen was never drawn: %q", l.ScreenLines(12))
 	}
 	// The screen went quiet and the request's line was typed into it, as
 	// into any agent's: the bound is counted only after that.
@@ -587,8 +587,8 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	ask := b.briefing(t)
 	b.launched(t, ask)
 	_, _, la := b.turnSession(t, ask)
-	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(la.TailLines(12), "\n"), "[ Sign in ]") }) {
-		t.Fatalf("the screen was never drawn: %q", la.TailLines(12))
+	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(la.ScreenLines(12), "\n"), "[ Sign in ]") }) {
+		t.Fatalf("the screen was never drawn: %q", la.ScreenLines(12))
 	}
 	b.typedWait(t, ask, "Brakeman request "+ask+" (briefing)")
 	by, _ = b.startBy(t, ask)
@@ -627,6 +627,43 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	b.settle(t)
 	if q, _ := b.desk.st.Get(r.Request); !q.Open() {
 		t.Fatalf("a turn whose agent read its request was ended at the bound: %+v", q)
+	}
+}
+
+// TestAScreensWordsLeaveAWrappedLinkOutWhole: the words of a turn whose
+// agent did not start are the screen's rows (ScreenLines), and a link
+// wrapped across rows, its one-time state on the next row, is left out
+// whole: a row that fills the screen's width runs on into the next. A
+// row short of it does not, and blank rows are dropped.
+func TestAScreensWordsLeaveAWrappedLinkOutWhole(t *testing.T) {
+	t.Parallel()
+	const cols = 20
+	rows := []string{
+		"  Acme Agent 9.0",
+		"",
+		"Open https://ex.inv/",
+		"device?state=SECRET1",
+		"23 to continue",
+		"  [ Sign in ]",
+	}
+	got := screenWordsOf(rows, cols)
+	if want := "Acme Agent 9.0 | Open [link] to continue | [ Sign in ]"; got != want {
+		t.Fatalf("the words: %q, want %q", got, want)
+	}
+	if strings.Contains(got, "SECRET") || strings.Contains(got, "state=") {
+		t.Fatalf("the link's state shows: %q", got)
+	}
+	// Read a row short of the width, the next row is its own line.
+	if got := screenWordsOf([]string{"Open https://ex.inv/a", "Press Enter"}, 80); got != "Open [link] | Press Enter" {
+		t.Fatalf("an unwrapped row: %q", got)
+	}
+	// The last screenWordLines lines not blank, the oldest dropped.
+	var many []string
+	for i := range screenWordLines + 3 {
+		many = append(many, fmt.Sprintf("line %d", i), "")
+	}
+	if got := screenWordsOf(many, 80); !strings.HasPrefix(got, "line 3 |") || !strings.HasSuffix(got, fmt.Sprintf("line %d", screenWordLines+2)) {
+		t.Fatalf("the last lines: %q", got)
 	}
 }
 

@@ -120,6 +120,9 @@ type Submission struct {
 	// typed whose Enter is not written lets the claim go (ErrLineStranded,
 	// the turn held). A line naming no question answers nothing.
 	Question string
+	// ReqID is the request id of the reply the line is (proto.Answer.ReqID),
+	// kept with the question's result when the line answers it.
+	ReqID string
 	// Withdrawn, when set, is closed once whoever sent the submission no
 	// longer stands (an extension's Host whose try was given up): as a
 	// revoked link does for By or From, it withdraws the submission
@@ -130,6 +133,15 @@ type Submission struct {
 	// go as the hold shows. A closed channel is seen at once: nothing
 	// waits for it to be passed on.
 	Withdrawn <-chan struct{}
+	// Decision, when set, names the durable decision whose answer the line
+	// is ("dr-<n>"; the run engine's application alone sets it): with
+	// Question, it may answer the question that mirrors that decision
+	// (Local.TryAskDecision), which refuses every other reply; with
+	// UnlessWaiting, it waits only for a question no decision mirrors, so
+	// that one decision's answer is typed past another decision's
+	// question, and a question that mirrors a decision coming during its
+	// pause does not hold its Enter back.
+	Decision string
 }
 
 // ErrSubmitPending says a submission's text was being taken when its time
@@ -178,10 +190,21 @@ type submitState struct {
 	wait        writeWait
 	aside       string
 	claim       *atomic.Uint64
+	// decision is the decision the line answers (Submission.Decision).
+	decision string
 }
 
 // claimed reports whether the submission holds a claim on its question.
 func (st submitState) claimed() bool { return st.claim != nil && st.claim.Load() != 0 }
+
+// settle gives up the claim the submission holds, resolved or not, as it
+// ends (claimSettled): a claim it resolved is gone already, and one it
+// handed on (strand) is no longer its own.
+func (st submitState) settle(s *Local, sub Submission) {
+	if st.claim != nil {
+		s.claimSettled(sub.Question, st.claim.Swap(0))
+	}
+}
 
 // strand is the submission's line typed and its Enter not written for
 // good: its claim is taken from it and kept as the stranded line's
@@ -209,6 +232,8 @@ func (st submitState) strand(s *Local, sub Submission, res SubmitResult, err err
 	}
 	s.mu.Lock()
 	s.strandedClaim, s.holdPending = claim, true
+	// No claimant resolves it now: its Enter is not written for good.
+	delete(s.claiming, claim.token)
 	s.mu.Unlock()
 	if err == nil {
 		err = ErrLineStranded
@@ -225,6 +250,11 @@ func (st submitState) strand(s *Local, sub Submission, res SubmitResult, err err
 // line naming no question answers nothing, and begins the next turn, whose
 // work removes the question; a reply naming it claims and resolves it.
 func (st submitState) comesAfter(att Attention) bool {
+	if st.decision != "" && att.Decision != "" {
+		// A decision's line is not held back by a question that mirrors a
+		// decision (Submission.Decision).
+		return false
+	}
 	return att.State == AttentionNeedsInput && att.Since != st.promptSince && !(st.aside != "" && att.ID == st.aside)
 }
 
@@ -351,7 +381,12 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	source := s.info.Attention.Source
 	var gone error
 	if sub.Question != "" {
-		gone = s.waitsLocked(sub.Question)
+		gone = s.waitsLocked(sub.Question, sub.Decision)
+	}
+	// A decision's line (Decision) waits for no question that mirrors a
+	// decision: that is Conductor's record, not the program asking.
+	if sub.Decision != "" && s.info.Attention.Decision != "" {
+		showing = false
 	}
 	// The agent's own question set aside as the submission begins
 	// (submitState.comesAfter): a person's line withdraws it as its text
@@ -401,10 +436,19 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// while the program is known not to read, and is withdrawn when
 		// the session ends its controller (not when the controller only
 		// goes): its text, and its Enter once the text is typed.
-		wait:  writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, from: from, gone: sub.Withdrawn},
-		aside: aside,
-		claim: new(atomic.Uint64),
+		wait:     writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, from: from, gone: sub.Withdrawn},
+		aside:    aside,
+		claim:    new(atomic.Uint64),
+		decision: sub.Decision,
 	}
+	// A claim the line made and did not resolve is given up as it ends
+	// (claimSettled): here, or by the goroutine it is handed to.
+	handed := false
+	defer func() {
+		if !handed {
+			st.settle(s, sub)
+		}
+	}()
 	if text != "" {
 		data := text
 		if s.paste.on() {
@@ -443,6 +487,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 			// accepted.
 			res.Typed = true
 			release = false
+			handed = true
 			go s.finishSubmission(landed, sub, text, st)
 			if errors.Is(err, ErrRevoked) {
 				return res, err
@@ -472,6 +517,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// its word given then (finishEntered), never before the last byte
 		// lands. The turn is given back: the Enter is in the writer's
 		// hands ahead of whatever comes next.
+		handed = true
 		go s.finishEntered(sub, res, st)
 		res.landed = nil
 		return res, ErrSubmitPending
@@ -483,6 +529,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// the program reads, holding the turn till then, so no other line
 		// joins its text.
 		release = false
+		handed = true
 		go s.finishEnter(sub, res, st)
 		return res, ErrSubmitPending
 	}
@@ -542,6 +589,7 @@ var errEnterLater = errors.New("session: the Enter is to be pressed later")
 // again, as for any.
 func (s *Local) finishEnter(sub Submission, res SubmitResult, st submitState) {
 	defer func() { <-s.submitting }()
+	defer st.settle(s, sub)
 	s.finishLine(sub, res, st)
 }
 
@@ -700,7 +748,11 @@ func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 		}
 	}
 	restore := over.ID != "" && cur.State == AttentionNeedsInput && cur.Source == SourceSubmit && !s.info.Status.Ended()
-	if over.ID != "" && !restore {
+	if over.ID != "" && !restore && over.ID == s.own.ID && s.own.Decision != "" && !s.info.Status.Ended() {
+		// A decision's question (TryAskDecision) waits for its decision:
+		// set aside, it shows again at the next done.
+		s.ownAside = true
+	} else if over.ID != "" && !restore {
 		// Gone with the hold (the session ended, or a question on the
 		// screen took the hold's place and the agent's went meanwhile).
 		reason := s.leftReasonLocked(over.ID)
@@ -821,6 +873,7 @@ func (s *Local) typedEntry(sub Submission, text string, st submitState) {
 // Enter, which is logged.
 func (s *Local) finishSubmission(landed <-chan error, sub Submission, text string, st submitState) {
 	defer func() { <-s.submitting }()
+	defer st.settle(s, sub)
 	select {
 	case err := <-landed:
 		if err != nil {
@@ -918,7 +971,7 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		// noted answered as the Enter is taken (its text did so for a line).
 		enter := wait.guard
 		wait.guard = func() error {
-			if err := s.questionWaits(sub.Question); err != nil {
+			if err := s.questionWaitsAs(sub.Question, sub.Decision); err != nil {
 				return err
 			}
 			if err := enter(); err != nil {
@@ -927,7 +980,7 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 			if err := s.stillOnScreen(sub.Question); err != nil {
 				return err
 			}
-			token, err := s.claimQuestion(sub.Question)
+			token, err := s.claimQuestionAs(sub.Question, sub.Decision)
 			if err != nil {
 				return err
 			}
@@ -1029,7 +1082,7 @@ func (s *Local) resolveLine(sub Submission, st submitState) {
 		by, name = sub.By.ID, sub.By.Name
 	}
 	// A line's text is never repeated in the chat (answerWords): the line resolves the question by whom alone.
-	s.resolve(sub.Question, token, by, name, nil)
+	s.resolve(sub.Question, token, by, name, sub.ReqID, nil)
 }
 
 // landEnter waits for a submission's Enter whose write had begun when its
@@ -1064,6 +1117,7 @@ func (s *Local) landEnter(sub Submission, res SubmitResult, st submitState) (Sub
 // finishEntered is landEnter for a submission accepted with its Enter
 // pending (Submit's ErrSubmitPending): its word once the Enter has landed.
 func (s *Local) finishEntered(sub Submission, res SubmitResult, st submitState) {
+	defer st.settle(s, sub)
 	res, err := s.landEnter(sub, res, st)
 	s.finished(sub, res, err)
 }
@@ -1121,7 +1175,7 @@ var errWaiting = errors.New("session: the session waits on a prompt")
 func (s *Local) textGuard(sub Submission, st submitState) func() error {
 	return func() error {
 		if sub.Question != "" {
-			if err := s.questionWaits(sub.Question); err != nil {
+			if err := s.questionWaitsAs(sub.Question, sub.Decision); err != nil {
 				return err
 			}
 		}
@@ -1129,7 +1183,7 @@ func (s *Local) textGuard(sub Submission, st submitState) func() error {
 		s.mu.Lock()
 		att := s.info.Attention
 		s.mu.Unlock()
-		showing := att.State == AttentionNeedsInput
+		showing := att.State == AttentionNeedsInput && !(sub.Decision != "" && att.Decision != "")
 		startup := s.startupOnScreen()
 		switch {
 		case sub.UnlessWaiting && (showing || dialog || startup):
@@ -1146,7 +1200,7 @@ func (s *Local) textGuard(sub Submission, st submitState) func() error {
 			if err := s.stillOnScreen(sub.Question); err != nil {
 				return err
 			}
-			token, err := s.claimQuestion(sub.Question)
+			token, err := s.claimQuestionAs(sub.Question, sub.Decision)
 			if err != nil {
 				return err
 			}

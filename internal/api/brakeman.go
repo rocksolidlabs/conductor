@@ -852,19 +852,40 @@ func (d *brakemanDesk) notStarted(t *deskTurn, waited time.Duration) string {
 var screenLinks = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://\S+`)
 
 // screenWords is what l's screen shows, for the words of a turn whose
-// agent did not start: its last lines not blank, links left out, joined
-// with " | ", the oldest dropped past brakemanScreenWords bytes. It reads
-// the session's screen as the screen read does (TailLines; ScreenLines,
-// the rows a terminal shows, once #695 is on main: this call is the one
-// line to change).
+// agent did not start: the rows a terminal shows of it (ScreenLines, as
+// the screen read answers), the whole screen read so that a line wrapped
+// across its rows is read whole.
 func screenWords(l *session.Local) string {
+	return screenWordsOf(l.ScreenLines(maxScreenLines), l.ScreenCols())
+}
+
+// screenWordLines is how many of the screen's last lines not blank a
+// turn's words draw on.
+const screenWordLines = 12
+
+// screenWordsOf is rows' words: a row that fills the screen's cols cells
+// joined with the next (a wrapped line, so a link that runs on is left out
+// whole), links left out, blank rows dropped, the last screenWordLines
+// joined with " | ", the oldest dropped past brakemanScreenWords bytes.
+func screenWordsOf(rows []string, cols int) string {
+	var joined []string
+	wrapped := false
+	for _, row := range rows {
+		if wrapped && len(joined) > 0 {
+			joined[len(joined)-1] += row
+		} else {
+			joined = append(joined, row)
+		}
+		wrapped = cols > 0 && utf8.RuneCountInString(row) >= cols
+	}
 	var lines []string
-	for _, line := range l.TailLines(12) {
+	for _, line := range joined {
 		line = strings.Join(strings.Fields(screenLinks.ReplaceAllString(line, "[link]")), " ")
 		if line != "" {
 			lines = append(lines, line)
 		}
 	}
+	lines = lines[len(lines)-min(screenWordLines, len(lines)):]
 	out := strings.Join(lines, " | ")
 	for len(out) > brakemanScreenWords && len(lines) > 1 {
 		lines = lines[1:]

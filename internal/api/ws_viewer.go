@@ -439,12 +439,18 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 // goroutine (nil once the keys landed or the line was entered,
 // session.ErrLineStranded for a line typed and not entered).
 func (s *Server) answer(sub *session.Subscription, local *session.Local, m proto.Answer, finished func(error)) error {
+	// The reply's request id is kept with the question's result, so the
+	// winner is told by its id (the decision inbox's track).
+	reqID := m.ReqID
+	if !proto.ValidAnswerReqID(reqID) {
+		reqID = ""
+	}
 	if m.Input != "" {
-		return local.AnswerInputFinished(context.Background(), sub, m.Question, []byte(m.Input), finished)
+		return local.AnswerInputReq(context.Background(), sub, m.Question, reqID, []byte(m.Input), finished)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
 	defer cancel()
-	_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub, Question: m.Question, Finished: func(res session.SubmitResult, err error) {
+	_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub, Question: m.Question, ReqID: reqID, Finished: func(res session.SubmitResult, err error) {
 		finished(session.AnswerWord(res, err))
 	}})
 	return err
