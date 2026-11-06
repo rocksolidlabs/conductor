@@ -543,7 +543,7 @@ func (rd *inboxRead) taskActions(it *inboxItem, run crew.Run, task crew.TaskStat
 	}
 	base := "/api/runs/" + run.ID + "/tasks/" + task.ID + "/"
 	for _, name := range set.Commands {
-		a := inboxAction{Name: name, Expect: rev, Route: "POST " + base + name}
+		a := inboxAction{Name: name, Expect: rev, Route: http.MethodPost + " " + base + name}
 		switch name {
 		case crew.TaskRetry:
 			start := "the commit its inputs give it"
@@ -681,7 +681,7 @@ func (rd *inboxRead) planItem(p dispatch.OpenPlan, open bool) *inboxItem {
 	rev := strconv.FormatInt(p.Rev, 10)
 	it := &inboxItem{Ref: ref, Subject: subject, Kind: inboxPlan, Since: p.CreatedAt, Answerer: inboxAnswerer, Revision: rev, BriefBy: "conductor", Actions: []inboxAction{}}
 	it.Title = fitText(fmt.Sprintf("%s revision %d: %s", p.Key, p.N, p.Title), 200)
-	route := "POST /api/dispatch/plans/" + p.ID + "/"
+	route := http.MethodPost + " /api/dispatch/plans/" + p.ID + "/"
 	approvable := p.State == dispatch.PlanProposed || (p.Stale != nil && p.Stale.Remedy == dispatch.RemedyApprove)
 	switch {
 	case p.State == dispatch.PlanProposed:
