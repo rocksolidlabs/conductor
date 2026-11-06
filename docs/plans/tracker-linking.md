@@ -298,6 +298,7 @@ rule), each with its test.
       Comment(ctx context.Context, c Credential, t Target, body string) (Comment, error)
       FindComment(ctx context.Context, c Credential, t Target, since time.Time, m Match) (Comment, Found, error)
       Close(ctx context.Context, c Credential, t Target, reason string) error
+      Marker(id string) string
   }
   ```
 
@@ -305,6 +306,14 @@ rule), each with its test.
   the item's own id, so no repository path, renamed or reused, can turn
   it to another item; `Close` refuses a `Target` of kind `change`
   (`ErrUnsupported`) in the adapter as well as in the store.
+
+  `Marker(id)` is the text that ends a publication's posted bytes and
+  that a settle's `Match` looks for: the adapter's, since another system
+  may not keep an HTML comment in a comment's body (GitHub's is
+  `<!-- conductor-publication:<id> -->`, below). It always holds the id
+  and is at most 128 bytes; the store keeps the text prepare was given
+  (`publications.marker`), so what Send posts and a settle matches are
+  the bytes previewed, whatever a later build's adapter would write.
 
   `Found` is `yes`, `no` (the whole window was read and no comment in it
   matches) or `unknown` (the window was not read whole: a page past the
@@ -315,7 +324,24 @@ rule), each with its test.
   author, and the comment found names its author either way.
   `Credential` is an opaque value the adapter alone opens (`tracker.Token(host, secret)` makes one; its `String` and its
   `fmt` and `slog` forms print `token(<fingerprint>)`), so no caller can
-  log a secret by printing what it holds.
+  log a secret by printing what it holds. An adapter opens it one way
+  only: `c.Transport(base http.RoundTripper) http.RoundTripper`, the
+  round tripper for requests to the system's **API host** (a token's
+  sets `Authorization` on each request it is given and does nothing
+  else), used for those requests alone; an address the system signs (an
+  image's, a job log's) is fetched with no credential at all (the GitHub
+  adapter's two clients, below). `c.ForWrite(w Write) Credential` is the
+  same credential tagged with the write it is for, `Write{Kind,
+  Publication, Try, PostSha256, Comment}`: `Kind` `comment` or `close`,
+  `Publication` the publication's id, `Try` its `attempt` (a comment) or
+  its `close_tries` (a close), `PostSha256` the posted bytes' digest (a
+  comment), `Comment` the publication's `remote_id` (a close). The API
+  hands every `Comment` and `Close` a tagged credential, and both refuse
+  an untagged one (`ErrUnsupported`, before any request). A token's
+  transport sends nothing of the tag to GitHub and names the publication
+  and the try in the write's log line; a credential of another source
+  (IN1b's) may carry the tag on, so it travels with the credential and
+  no adapter signature changes for it.
 - Errors, each a typed value the API maps to one HTTP answer:
   `ErrNotFound` (or no access: GitHub answers 404 for both),
   `ErrUnauthorized` (the token is refused), `ErrForbidden` (the token
@@ -360,13 +386,19 @@ rule), each with its test.
 
 The registry is a value the API makes, `tracker.Adapters{"github":
 github.New(opts)}`; nothing registers itself, and no `ext` type is
-involved (Owner decisions, 10).
+involved (Owner decisions, 10). Its keys are the systems, each its
+adapter's `System()`: a name of 1 to 16 bytes of `[a-z0-9-]` starting
+with a letter, never `native` or `dispatch` (`Adapters.Systems()` lists
+them, and refuses a name past that shape). The API hands that list to
+Dispatch's store when it opens it (`dispatch.Options.Systems`): the
+systems a ticket's `source` and its field owners may name.
 
 ### `internal/tracker/github` (new): the GitHub adapter
 
 GitHub's REST API over `net/http` and `encoding/json`, no client library
 (Owner decisions, 3). Files: `github.go` (the client, its options and its
-bounds), `read.go`, `images.go`, `checks.go`, `comments.go`, and
+bounds), `graphql.go` (the three documents), `read.go`, `images.go`,
+`checks.go`, `comments.go`, and
 `githubtest/` (a fake GitHub over `httptest`, serving the routes below
 from scripted items, counting every write by route, holding a request on
 a gate a test opens, and serving fixtures captured from github.com with
@@ -381,13 +413,20 @@ their hosts kept), each with its test.
   refused unless the host is a loopback address and the server runs with
   `CONDUCTOR_TRACKER_LOOPBACK=1`, which the tests and the e2e harness set
   and nothing else does.
-- The client is its own `http.Client`: a 15 s timeout a request (60 s
-  for an image), `CheckRedirect` refusing a redirect to another scheme,
-  past 5 hops, or to a host that is neither the API host nor one the
-  request's own rule admits (`ImageHost` for an image, `LogHost` for a
-  job's log, no other host for any other request), and stripping
-  `Authorization` from every redirect that leaves the API host (an
-  image's or a log's signed URL is fetched with no token at all); every
+- The client is two `http.Client`s of its own, a 15 s timeout a request
+  (60 s for an image), each refusing a redirect to another scheme or
+  past 5 hops. The **API client** makes the requests to the API host,
+  through the call's `c.Transport(base)` and no other way; its
+  `CheckRedirect` follows a redirect only within the API host (a renamed
+  repository's `301`) and hands any other back to the caller unfollowed
+  (`http.ErrUseLastResponse`), so a credential's transport never carries
+  a request for another host. The **signed-address client** fetches what
+  the API named on another host (an image's `src` in `body_html`, a job
+  log's `Location`) through the base transport alone, which holds no
+  credential, its `CheckRedirect` admitting only the hosts the request's
+  rule admits (`ImageHost` for an image, `LogHost` for a log). So a
+  token, or any credential, reaches the API host alone by construction,
+  never by stripping a header. Every
   request sends `Accept: application/vnd.github+json`,
   `X-GitHub-Api-Version: 2022-11-28` and `User-Agent:
   Conductor/<version>`.
@@ -444,15 +483,25 @@ their hosts kept), each with its test.
   and RV1's failed-check panel (PR-10) show "incomplete: N checks not
   read, see them on GitHub" beside the counts, and never show a set with
   `Incomplete` as passing. `CheckLog` reads a GitHub Actions job's log (`GET
-  /repos/{owner}/{repo}/actions/jobs/{id}/logs`, a redirect to a signed
-  URL under `LogHost`, fetched without the token) and keeps its last
+  /repos/{owner}/{repo}/actions/jobs/{id}/logs` by the API client, whose
+  `302` is handed back, its `Location` admitted by `LogHost` and fetched
+  by the signed-address client with no credential) and keeps its last
   `tail` bytes; a check of another app has no log (`ErrUnsupported`).
-- `Resolve` asks GraphQL `node(id:)` for the item's type (`Issue` is
+- The three GraphQL documents are constants of the package
+  (`graphql.go`: `ResolveDocument`, `AddCommentDocument`,
+  `CloseIssueDocument`), sent byte for byte as written, every value a
+  variable (`$id`; `$subjectId` and `$body`; `$issueId` and
+  `$stateReason`) and never text built into a document, so each is named
+  by its SHA-256 and a transport that admits only known documents can
+  recognise it. `Resolve` sends `ResolveDocument`, `node(id: $id)`, for
+  the item's type (`Issue` is
   kind `issue`, `PullRequest` kind `change`), number, URL, state and
   `repository { databaseId nameWithOwner }`; a node that is neither is
-  `ErrNotFound`. `Comment` is GraphQL's `addComment(input: {subjectId:
-  <node id>, body})`, answering the comment's `databaseId` and `url`;
-  `Close` is `closeIssue(input: {issueId: <node id>, stateReason})`. A
+  `ErrNotFound`. `Comment` sends `AddCommentDocument`, `addComment(input:
+  {subjectId: $subjectId, body: $body})`, answering the comment's
+  `databaseId` and `url`; `Close` sends `CloseIssueDocument`,
+  `closeIssue(input: {issueId: $issueId, stateReason: $stateReason})`.
+  `Marker(id)` is `<!-- conductor-publication:<id> -->`. A
   write's answer proves nothing was posted when it is HTTP `401` or
   `403`, or a `200` whose `data` for the mutation is `null` beside an
   error of type `NOT_FOUND`, `FORBIDDEN` or `UNPROCESSABLE`; every other
@@ -492,11 +541,11 @@ The reserved columns of `tickets`, filled here as DS1 reserved them:
 
 | Column | Meaning from version 4 |
 |---|---|
-| `source` | where the ticket was made: `native` (made in Dispatch), `github` (imported) |
+| `source` | where the ticket was made: `native` (made in Dispatch), or the imported item's system (`github`, the only one here), which must be one of `Options.Systems` on a local write (`invalid` otherwise; a row a replica merges is kept as written, CS1), so another system's item needs no schema change |
 | `external_id` | the linked item's identity, `github:<host>:<node id>` (`github:github.com:I_kwDO…`): the system, the host (lower case, at most 253 bytes) and GitHub's node id (at most 100 bytes of `[A-Za-z0-9_=-]`), so two Enterprise Server instances that issue the same node id hold two items; at most 360 bytes; `''` when none |
 | `external_url` | the linked issue's page (`https://github.com/<owner>/<repo>/issues/<n>` or `…/pull/<n>`), at most 2 KiB, `https`; `''` when none |
 | `external_snapshot` | JSON, at most 40 KiB as encoded: what GitHub said at the last read that changed it (below); `''` when none |
-| `authority` | JSON object of field to owner, at most 256 bytes: `{"of":"<16 hex>","title":"github","description":"github"}`, `of` the first 16 hex digits of the SHA-256 of the `external_id` it was set for (so a replica's merge can tell which linked item an owner change belongs to, "Field rules" below); a field not named is Dispatch's; `''` is every field Dispatch's |
+| `authority` | JSON object of field to owner, at most 256 bytes: `{"of":"<16 hex>","title":"github","description":"github"}`, an owner being `dispatch` or the linked item's system (`external_id`'s prefix, checked as `source` is), `of` the first 16 hex digits of the SHA-256 of the `external_id` it was set for (so a replica's merge can tell which linked item an owner change belongs to, "Field rules" below); a field not named is Dispatch's; `''` is every field Dispatch's |
 
 The snapshot (`model.go`, `ExternalSnapshot`, version 1): `{v, system,
 host, space, kind, id, nodeId, databaseId, url, title (GitHub's whole,
@@ -537,7 +586,7 @@ New tables:
 | `link_reads` | `link_id` PK (a live link of the ticket's, kind `delivery` or `external`), `ticket_id`, `system`, `host`, `kind` (`issue`, `change`), `node_id`, `state`, `merged` (0 or 1), `merged_at`, `merge_sha`, `head_sha`, `checks` (JSON, at most 32 KiB: at most 100 `{id, name, status, conclusion, url, app, hasLog, completedAt}` at the head commit), `checks_incomplete` (JSON, at most 1 KiB: the `Incomplete` words and `omitted`, empty when the set is whole), `updated_at` (GitHub's, of the item read), `read_at`, `issue_etag`, `pull_etag`, `error` (at most 200 characters: the last read's failure in words), `error_at`: a cache of the last read of a linked GitHub item. It is derived and local: no `changes` row, no `rev`, no receipt, never replicated (its class is `derived` below); a link removed drops its row in the same transaction |
 | `ticket_reads` | `ticket_id` PK, `external_id` (the identity it was read for), `updated_at` (GitHub's `updated_at` of the item read), `read_at`, `read_by`, `issue_etag`, `pull_etag`, `error` (at most 200 characters), `error_at`: when the linked issue was last read, and its validators. Derived and local as `link_reads` is (class `derived`): a refresh that finds nothing new writes this row alone, in a transaction of its own outside `Apply` (`RecordTicketRead`), so it needs no `changes` row and no receipt, which `Apply` would refuse (an operation that changes nothing is `invalid`, `ops.go`); unlinking drops it |
 | `store_instance` | `id` (32 hex, random), one row: this database's instance, written by the migration (or the create) and written again with a new value by a restore (`dispatch.Reissue`, under `internal/export` below), so a restored copy is never the instance it was exported from; derived and local (never a `changes` row, never replicated) |
-| `publications` | `id` PK (16 hex), `ticket_id`, `target` (`linked` for the ticket's linked issue, or `link:<id>` for a link to a GitHub issue or pull request), `target_kind` (`issue`, `change`), `target_url`, `target_ref` (`owner/repo#n`, where it was at prepare), `target_node_id` and `target_space_id` (the item's node id and its repository's id, read from GitHub at prepare: the destination, which no later write leaves), `instance` (the `store_instance` the publication was prepared in), `body` (Markdown, at most 16 KiB: exactly what the person approved, the marker not included, with `\r\n` made `\n` and trailing white space trimmed at prepare, the form a listing's match reads, so the bytes posted are the bytes matched), `post_sha256` (the SHA-256 of the exact bytes posted: the body, a blank line and the marker, which the id fixes at prepare, so prepare, the page, the CLI and Send all name this one digest), `parts` (JSON, at most 1 KiB: which offered parts the person ticked, for the record), `close_issue` (`''`, `completed`, `not_planned`; only for a target of kind `issue`), `state` (`draft`, `sending`, `sent`, `failed`, `unconfirmed`, `discarded`), `tries` (POSTs made, at most `MaxPublicationTries`, 5), `attempt` (the send that owns the row: `tries` when it began), `find_since` (the start of the settle's listing window, fixed at the first send: `sending_at` less 24 hours), `sent_as_id` and `sent_as_login` (the GitHub account whose token the send used: the credential's saved `accountId` and `login`; for a row restored from another instance, the author of the comment a Check found, the only sender such a row can know, P6), `remote_id`, `remote_url`, `close_state` (`''`, `pending`, `closing`, `closed`, `refused`), `close_tries` (`BeginClose`s made, at most 5), `close_error` (at most 200 characters), `error` (at most 200 characters), `sending_at`, `sent_at`, `sent_by`, `created_at`, `created_by`, `fingerprint` (the preparing operation's), `rev`; at most 100 per ticket |
+| `publications` | `id` PK (16 hex), `ticket_id`, `target` (`linked` for the ticket's linked issue, or `link:<id>` for a link to a GitHub issue or pull request), `target_kind` (`issue`, `change`), `target_url`, `target_ref` (`owner/repo#n`, where it was at prepare), `target_node_id` and `target_space_id` (the item's node id and its repository's id, read from GitHub at prepare: the destination, which no later write leaves), `instance` (the `store_instance` the publication was prepared in), `marker` (the adapter's `Marker(id)` given at prepare, at most 128 bytes, holding the id: the text the posted bytes end with and a settle looks for), `body` (Markdown, at most 16 KiB: exactly what the person approved, the marker not included, with `\r\n` made `\n` and trailing white space trimmed at prepare, the form a listing's match reads, so the bytes posted are the bytes matched), `post_sha256` (the SHA-256 of the exact bytes posted: the body, a blank line and `marker`, all fixed at prepare, so prepare, the page, the CLI and Send all name this one digest), `parts` (JSON, at most 1 KiB: which offered parts the person ticked, for the record), `close_issue` (`''`, `completed`, `not_planned`; only for a target of kind `issue`), `state` (`draft`, `sending`, `sent`, `failed`, `unconfirmed`, `discarded`), `tries` (POSTs made, at most `MaxPublicationTries`, 5), `attempt` (the send that owns the row: `tries` when it began), `find_since` (the start of the settle's listing window, fixed at the first send: `sending_at` less 24 hours), `sent_as_id` and `sent_as_login` (the GitHub account whose token the send used: the credential's saved `accountId` and `login`; for a row restored from another instance, the author of the comment a Check found, the only sender such a row can know, P6), `remote_id`, `remote_url`, `close_state` (`''`, `pending`, `closing`, `closed`, `refused`), `close_tries` (`BeginClose`s made, at most 5), `close_error` (at most 200 characters), `error` (at most 200 characters), `sending_at`, `sent_at`, `sent_by`, `created_at`, `created_by`, `fingerprint` (the preparing operation's), `rev`; at most 100 per ticket |
 
 Indexes: `tickets(external_id)`, `link_reads(ticket_id)`,
 `publications(ticket_id, created_at)`, `publications(state)`. No new
@@ -551,7 +600,7 @@ edit of a field GitHub owns; and `stale_read`, a read older than the one
 kept, below):
 
 - `ticket.import`, `ImportTicket(ctx, op, project, ImportArgs)`: makes a
-  ticket of `project` with `source: github`, the title and the
+  ticket of `project` with `source` the item's system (`github`), the title and the
   description made by `FromExternal(title, body)`, the one normalisation
   that import, refresh and giving a field back all use, so a refresh
   compares its output with the stored field and never GitHub's raw text:
@@ -563,10 +612,12 @@ kept, below):
   `bodyTruncated` set), `external_id`, `external_url`,
   `external_snapshot` (with the image manifest: the admitted images, at
   most 8, in the body's order, none with an attachment yet) and
-  `authority` `{"of":…,"title":"github","description":"github"}`, in one
+  `authority` `{"of":…,"title":"github","description":"github"}` (the
+  owners the item's system), in one
   operation with one `changes` row per field as every create writes;
   refused `external_linked` when a live ticket holds that identity
-  (system, host and node id), `archived` for an archived project.
+  (system, host and node id), `archived` for an archived project,
+  `invalid` for a system the store was not opened with.
   Status, priority, owner, labels, assignees and milestone are
   Dispatch's defaults or what the request names: GitHub's labels and
   assignees are in the snapshot, never mapped (Owner decisions, 4).
@@ -622,10 +673,11 @@ kept, below):
   says, and a run already launched keeps its package. A field Dispatch
   owns is never written by a refresh.
 - `ticket.authority`, `SetAuthority(ctx, op, key, field, owner, *SnapshotArgs)`:
-  `field` `title` or `description`, `owner` `github` or `dispatch`; to
+  `field` `title` or `description`, `owner` the linked item's system
+  (`github`) or `dispatch`, any other `invalid`; to
   `dispatch` sets the authority and writes one `adopt` row of the field
   with the text it holds, written although the text does not change, so
-  the record says which text Dispatch took over; to `github` takes the
+  the record says which text Dispatch took over; to the system takes the
   fresh read
   the API made a moment before (the new snapshot with GitHub's title and
   body, as a refresh hands them), checks its identity against the kept
@@ -635,7 +687,7 @@ kept, below):
   field back works
   whatever GitHub changed while Dispatch owned it, the store never keeps
   GitHub's body twice, and the history shows the local text replaced. A
-  ticket with no linked issue, or to `github` with no read, is `invalid`.
+  ticket with no linked issue, or to its system with no read, is `invalid`.
 - `ticket.edit` gains one rule: setting a field the authority gives
   GitHub is `external_owned` ("the title is GitHub's: edit it on GitHub
   and refresh, or take it over"), checked in the operation's transaction.
@@ -668,8 +720,11 @@ kept, below):
   `merged` (`invalid`) until PR-4, which accepts it together with the
   close route's reads, as DS1 refused `verified` until DS2 defined it: no
   project can be set to a requirement nothing yet meets.
-- `publication.prepare`, `PreparePublication(ctx, op, key, PublicationArgs, Target)`:
+- `publication.prepare`, `PreparePublication(ctx, op, key, PublicationArgs, Target, mark func(id string) string)`:
   a `draft` row with the target, the body as the person composed it,
+  `marker` (`mark` of the id the transaction draws: the adapter's
+  `Marker`, handed by the API apart from the request as a read is; one
+  that does not hold the id, or past 128 bytes, `invalid`),
   `post_sha256`, the ticked parts, `close_issue`, the store's `instance`,
   and the destination the API read from GitHub a moment before
   (`Resolve` by the node id: the linked issue's from `external_id`, a
@@ -801,7 +856,7 @@ bodies, `needYou` keeping only those; the API serves it (below).
 |---|---|---|
 | `source`, `closed_on` | scalar (DS1 lists `source` already) | `source` is written only at the ticket's create; `closed_on` travels with the gated close it records |
 | `external_id`, `external_url`, `external_snapshot`, `authority` | counterpart (new) | merged as one group by `ReconcileCounterpart`, never field by field (below) |
-| a publication's `id`, `ticket_id`, `target`, `target_kind`, `target_url`, `target_ref`, `target_node_id`, `target_space_id`, `instance`, `body`, `post_sha256`, `parts`, `close_issue`, `created_at`, `created_by` | immutable | a publication's content never changes once prepared |
+| a publication's `id`, `ticket_id`, `target`, `target_kind`, `target_url`, `target_ref`, `target_node_id`, `target_space_id`, `instance`, `marker`, `body`, `post_sha256`, `parts`, `close_issue`, `created_at`, `created_by` | immutable | a publication's content never changes once prepared |
 | a publication's `state`, `tries`, `attempt`, `close_tries`, `find_since`, `sent_as_id`, `sent_as_login`, `remote_id`, `remote_url`, `close_state`, `close_error`, `error`, `sending_at`, `sent_at`, `sent_by` | scalar | written by the replica that sends; only the instance that prepared a publication can send it (`instance`), so another replica's draft, or a restored copy's, is never sent |
 | `link_reads`, `ticket_reads` and `store_instance` (every column) | derived (new) | local: never a `changes` row, never shipped; each replica reads GitHub itself and has its own instance |
 
@@ -829,7 +884,8 @@ Two row kinds are added to the `changes` log's `op` (`ops.go`, beside
 its own kind, never by the rows beside it: `observe`, the field set to
 what a GitHub read made it (by `ticket.refresh` and by giving a field
 back; an import's are in its `create` row), and `adopt`, the field made
-Dispatch's keeping its text (`value` that text, `prior` `github`),
+Dispatch's keeping its text (`value` that text, `prior` the system
+that owned it, `github`),
 written by taking a field over and by unlinking even though the text
 does not change. `searchedBy` treats `observe` as a `set` of a searched
 field and `adopt` as changing no search entry; the ticket's history
@@ -1050,7 +1106,14 @@ so nothing but the operator can save, list or remove the token.
 The token is read from the file for each call (a remove takes effect at
 the next request, with no cache to empty), wrapped at once in a
 `tracker.Credential`, and never placed in a log attribute, an error, a
-reply, an event or a URL. Every slog line the GitHub paths write names
+reply, an event or a URL. Every tracker route gets its credential from
+one function, `credentialFor(ctx, ref tracker.Ref) (tracker.Credential,
+error)` in `trackers.go`: here the token for the ref's host (the
+environment's, else the file's), and `412 no_token` without one; no
+route reads the file or makes a `Credential` any other way, but the
+save's `Whoami`, which checks the token being given. It takes the whole
+ref (system, host, space) though this item chooses by host alone, so a
+later credential source (IN1b) chooses inside it and no route changes. Every slog line the GitHub paths write names
 the route, the ref and the status. A test captures every log line of a
 whole import, refresh, read and publication and fails on the token's
 bytes, its base64, or any `?` after a URL.
@@ -1066,7 +1129,7 @@ ticket's read, `readable`, and calls none), each a switchyard's 403:
 | `POST /api/dispatch/tickets/{key}/external` | `{opId, expectedRev, byName, url}` | reads the item and runs `ticket.link_external` |
 | `POST /api/dispatch/tickets/{key}/external/delete` | `{opId, expectedRev, byName}` | `ticket.unlink_external` |
 | `POST /api/dispatch/tickets/{key}/external/refresh` | `{opId, byName, images?: bool}` | reads the item with `ticket_reads`' validators, checks the identity (`409 moved` with the item it found); a `304` or unchanged content writes `ticket_reads` alone (`RecordTicketRead`), otherwise it runs `ticket.refresh`; then, **whatever the read found**, unless `images` is false, completes the manifest's pending entries (neither an attachment nor a skip) as the import's resend does, by image id under the same derived ids and within the ticket's attachment bound: from the signed URLs of this read's `body_html` when it answered `200`, and when it answered `304` (no body, and no signed URL is ever kept) from one more read without validators, made only when an entry is pending; an entry whose image the body no longer has fetches nothing and stays as it is; answers `200 {changed, receipt?, images}`, `receipt` only when `ticket.refresh` ran |
-| `POST /api/dispatch/tickets/{key}/external/authority` | `{opId, expectedRev, byName, field, owner}` | to `github` reads the item first and hands that read to `ticket.authority`, which writes the snapshot, the authority and the field from it |
+| `POST /api/dispatch/tickets/{key}/external/authority` | `{opId, expectedRev, byName, field, owner}` | to the item's system (`github`) reads the item first and hands that read to `ticket.authority`, which writes the snapshot, the authority and the field from it |
 | `POST /api/dispatch/tickets/{key}/links/{id}/read` | `{}` | reads a link's GitHub item (and, for a pull request, its checks at its head commit) and records it (`RecordRead`); `200 {read}` |
 | `GET /api/dispatch/tickets/{key}/links/{id}/read` | none | the link's last read whole, its checks included (the ticket's read carries each read's summary) |
 
@@ -1099,7 +1162,7 @@ budget cuts commits nothing and stays pending (R1).
 
 | Deadline | Routes | Its steps |
 |---|---|---|
-| `TrackerReadTimeout`, 90 s | preview, link, authority (to `github`), a link's read, prepare, Check | the lock, 15 s; the requests, 45 s (an item's two, a link's checks' up to 23, prepare's read and `Resolve`, Check's `Resolve` and up to 10 pages); one write, 30 s |
+| `TrackerReadTimeout`, 90 s | preview, link, authority (to the system), a link's read, prepare, Check | the lock, 15 s; the requests, 45 s (an item's two, a link's checks' up to 23, prepare's read and `Resolve`, Check's `Resolve` and up to 10 pages); one write, 30 s |
 | `ImportTimeout`, 150 s | import, refresh | the lock, 15 s; the reads, 45 s (a refresh's second read without validators included); the ticket's write, 30 s; the images, 60 s in all, their downloads and their `ticket.import_image` commits |
 | `PublishTimeout`, 195 s | send, Close now | the lock, 15 s; `Resolve` and the post, 30 s; `BeginSend` and the answer's settle, 2 × 30 s; then either a lost answer's listing and its settle (30 s and 30 s) or the close (`Resolve` and the close, 30 s; `BeginClose` and `SettleClose`, 2 × 30 s); Close now is the lock and the close alone |
 | `MergedCloseTimeout`, 75 s | a ticket's edit to `done` when its project requires `merged` | the links' locks, 15 s; the reads of at most 4 delivery links at once, 30 s; the edit, 30 s |
@@ -1142,8 +1205,8 @@ refused (Owner decisions, 8).
 
 | Route | Body | What it does |
 |---|---|---|
-| `GET /api/dispatch/tickets/{key}/publish/offer` | none | the parts the composer may offer, each as the exact Markdown it would insert: `deliveries` (the live delivery links' URLs and notes), `checks` (the delivered candidate's verification receipt: each check's name and passed or failed, no output), `key` (the ticket's key and title), and the targets; never a comment, a finding, a plan's text, a constraint, an attachment or a brief |
-| `POST /api/dispatch/tickets/{key}/publications` | `{opId, byName, target, body, parts, closeIssue}` | reads the target (`Resolve`, after a read of a link's URL for its node id; `412 no_token` with no token) and runs `publication.prepare` with it; `201 {receipt, publication, preview}`, `preview` the exact bytes to be posted (the body, a blank line, the marker `<!-- conductor-publication:<id> -->`) and `postSha256`, their SHA-256, the one digest Send takes |
+| `GET /api/dispatch/tickets/{key}/publish/offer` | none | the parts the composer may offer, each as the exact Markdown it would insert: `deliveries` (the live delivery links' URLs and notes), `checks` (the delivered candidate's verification receipt: each check's name and passed or failed, no output), `key` (the ticket's key and title), and the targets; never a comment, a finding, a plan's text, a constraint, an attachment or a brief. The parts are a list this route builds (`{name, markdown}`), and `parts` records the names ticked: a part offered only for some credentials (a byline naming the person, for a send that would not post as their own account: IN1b) is one more entry here, and changes nothing in the store, the digest or Send, since a part is bytes of the body the person approves. This item offers none: every send posts as the person's own account |
+| `POST /api/dispatch/tickets/{key}/publications` | `{opId, byName, target, body, parts, closeIssue}` | reads the target (`Resolve`, after a read of a link's URL for its node id; `412 no_token` with no token) and runs `publication.prepare` with it; `201 {receipt, publication, preview}`, `preview` the exact bytes to be posted (the body, a blank line, the adapter's marker, GitHub's `<!-- conductor-publication:<id> -->`) and `postSha256`, their SHA-256, the one digest Send takes |
 | `GET /api/dispatch/tickets/{key}/publications` | query `cursor?`, `needYou?` (`1`) | a page of the ticket's publications, newest first, at most 50, without bodies, and the next cursor (`Publications`); `needYou=1` keeps the ones a person can act on, which the ticket's `publicationsNeedYou` counts |
 | `GET /api/dispatch/publications/{id}` | none | the publication whole, its body and preview included (the ticket's read carries publications without their bodies) |
 | `POST /api/dispatch/publications/{id}/send` | `{opId, expectedRev, byName, postSha256}` | below; `200 {receipt, publication}` |
@@ -1161,12 +1224,14 @@ repository it was prepared for: prepare it again") or `404
 external_not_found`, and nothing is committed or sent, the publication
 as it was. Then `BeginSend` commits `sending`; only when it answers
 `owned` does the route post `Comment` to that `Target`, by its node id,
-with the preview's bytes (a resend of the same
+with the preview's bytes, through `credentialFor`'s credential tagged
+(`ForWrite`) with the publication, its `attempt` and `post_sha256` (a resend of the same
 `opId`, answered from its receipt, posts nothing and answers the row as
 it stands, settling it first when it is `sending`). An answer with the
 comment is settled `sent` with the comment's id and URL; then, if
 `closeIssue`, the close as `publication.close` says (`Resolve` again,
-`BeginClose`, `Close` by the node id unless GitHub shows it closed,
+`BeginClose`, `Close` by the node id unless GitHub shows it closed, its
+credential tagged with the close's try and the comment's `remote_id`,
 `SettleClose`), a refused close saying so on the publication without
 undoing the comment and leaving Close now. An answer that proves nothing
 was posted (the adapter's list: HTTP `401` or `403`, or GraphQL's
@@ -1397,7 +1462,8 @@ always Dispatch's (Owner decisions, 4). So:
   or published as new knowing that). A comment GitHub accepts late, or whose marker was edited out
   on GitHub, leaves its publication `unconfirmed`, which is never sent
   again (and the late one is found by a later Check). The marker is the
-  publication's id, unique, posted with the body, so a comment found with
+  adapter's text for the publication's id (`marker`, kept at prepare),
+  unique, posted with the body, so a comment found with
   it is that publication's and no other's. GitHub's comment API has no
   idempotency key, so this is the strongest promise it allows: one
   publication, at most one comment; the same text twice only as a second
@@ -1593,7 +1659,12 @@ each PR adds:
   refused), `TestLogHost` (the log hosts admitted only for a log, an image
   host refused for a log and a log host for an image, an Enterprise
   Server's own host, `http` refused), `TestCredentialNeverPrinted` (`%v`,
-  `%+v`, `%#v`, `slog` text and JSON handlers), `TestRemoteIDOpaque` (a
+  `%+v`, `%#v`, `slog` text and JSON handlers, a credential tagged by
+  `ForWrite` included), `TestCredentialTransport` (a token's transport
+  sets `Authorization` on the request it is given and nothing else; a
+  tagged credential carries its `Write`), `TestSystemNames` (`native`,
+  `dispatch`, an upper-case name and one of 17 bytes refused by
+  `Adapters.Systems`), `TestRemoteIDOpaque` (a
   fake adapter whose accounts and comments carry UUIDs: through
   `Account`, `Match` and `Comment` unchanged; an empty id and one of 65
   bytes refused).
@@ -1605,9 +1676,21 @@ each PR adds:
   `TestReadMovedRefused`, `TestErrorsMapped` (401, 403 with and without a
   rate limit, 404, 410, 422, 429, 5xx, a timeout through the fake's gate,
   a reset connection), `TestBodiesBounded` (each bound plus one byte),
-  `TestTokenOnlyToTheAPIHost` (a redirect to an image host and a log
-  host carries no `Authorization`; a redirect to any other host is
-  refused; the fake records every request's headers),
+  `TestTokenOnlyToTheAPIHost` (an image and a log fetched by the
+  signed-address client, which holds no credential, with no
+  `Authorization`; a redirect from the API host to another host handed
+  back and never followed through the credential's transport; a
+  redirect to any other host refused; the fake records every request's
+  headers), `TestDocumentsAreConstants` (each of the three calls over
+  many inputs, node ids, bodies with quotes, backslashes, `<`, `>`, `&`,
+  new lines and the marker, both reasons: the `query` the fake receives
+  is the constant byte for byte and every value is in `variables`; the
+  three SHA-256 values held in a golden, so a changed document is a
+  reviewed change), `TestMarker` (GitHub's exact bytes for an id),
+  `TestWriteTagNeverSentWithAToken` (a tagged comment and close: no
+  header or body byte of the tag reaches the fake; the write's log line
+  names the publication and the try; an untagged credential refused
+  before any request),
   `TestErrorsCarryNoQuery`, `TestChecksAtCommit` (statuses, Actions jobs
   and check runs, a job listed once, the Checks API's `403` to a
   fine-grained token giving an `Incomplete` entry and not an error),
@@ -1629,7 +1712,11 @@ each PR adds:
   made by the version 3 code, every row read back unchanged, the version
   4 shape read back from `sqlite_master`), `TestSchemaIndexes` (the list
   extended), `TestImportTicket`, `TestImportCutsTitleAndBody`,
-  `TestExternalLinkedOnce`, `TestExternalIdentityHasHost` (one node id on
+  `TestExternalLinkedOnce`, `TestSourceIsTheSystem` (a store opened with
+  `github` and a fake second system: an import of each writes `source`
+  and the owners as its system; a system the store was not opened with
+  `invalid`; an owner of another system than the linked item's
+  `invalid`), `TestExternalIdentityHasHost` (one node id on
   two hosts: two tickets, and a read of one host's item never passes the
   other's guard), `TestLinkAndUnlink`, `TestEditRefusedWhereGitHubOwns`,
   `TestRefreshWritesOnlyGitHubFields`, `TestRefreshNothingNewWritesNoChange`
@@ -1692,7 +1779,9 @@ each PR adds:
   every phase and part list, distinct ids, parts that join to one string
   distinct), `TestImportManifestReplay` (a resend's changed content and
   reordered images replayed, never `op_conflict`),
-  `TestPublicationTriesBound`, `TestQueryExternal`,
+  `TestPublicationTriesBound`, `TestPrepareKeepsTheMarker` (the marker
+  `mark` gives stored and inside `post_sha256`; one without the id, or
+  past 128 bytes, `invalid`; `marker` immutable), `TestQueryExternal`,
   `TestRulesClassesVersionFour` (every new field's class; the four
   counterpart columns `counterpart`; `link_reads`, `ticket_reads` and
   `store_instance` derived; `observe` and `adopt` rows, and `searchedBy`
@@ -1791,6 +1880,10 @@ each PR adds:
   `TestPublicationsRoute` (an actionable publication past the first ten
   listed by `needYou=1`, and Check and Close now from it; admin only),
   `TestDispatchReadEvent` (E1),
+  `TestEveryTrackerRouteUsesCredentialFor` (the test's seam swaps
+  `credentialFor` for one whose transport stamps a header: the fake sees
+  it on every API-host request of every route that calls GitHub, PR-4's
+  and then PR-5's, and on no image's or log's fetch),
   `TestNothingPublishedBySideEffect` (P2's list),
   `TestPublicationCarriesOnlyChosen` (P3),
   `TestPublishRefusesBrakemanAndSessions` (a Brakeman turn's principal and
@@ -1899,11 +1992,11 @@ page from the CLI and the guide). Every PR is in this repository.
 
 | PR | Title | Contains | Touches | Tests | Depends on | Parallel with |
 |---|---|---|---|---|---|---|
-| PR-1 | dispatch: the linked issue, field owners, links' reads and the merged close (schema version 4) | the migration 3 to 4 (four tables with `store_instance`, four indexes, `closed_on`), `Reissue`, the reserved columns' meaning, `ExternalSnapshot` and its bound, `FromExternal`, `DerivedOpID` with its parts, `ticket.import`, `ticket.import_image`, `ticket.link_external`, `ticket.unlink_external`, `ticket.refresh`, `ticket.authority`, `ticket.edit`'s `external_owned`, `external_linked`, `stale_read`, `RecordRead`, `RecordTicketRead`, `OnRead`, the links' checks with `checks_incomplete`, `RequireMerged` (refused in `close_requires` until PR-4) and `closed_on`, `Query.External`, the ticket read's new parts, the field classes, `derived`, `counterpart` and `ReconcileCounterpart` in `rules.go`, the `observe` and `adopt` rows | `internal/dispatch` | the `internal/dispatch` tests above but the publications' and the package's | RV1's PR-1 (`docs/plans/review-repair.md`: it edits `internal/dispatch`, its schema and `rules.go`; this PR takes version 4 after it) | PR-2, PR-3 |
-| PR-2 | tracker: the adapter contract and the GitHub adapter | `internal/tracker` (types, errors, `Parse`, `Repro`, `ImageHost`, `LogHost`, `Credential`), `internal/tracker/github` (the client, reads with both validators, images, checks with Actions jobs and logs and every cut said in `Incomplete`, `Resolve`, the comment and the close by node id over GraphQL with their answers sorted, find, rate limits, redirects), `githubtest` with the captured fixtures | `internal/tracker` | the `internal/tracker` and `internal/tracker/github` tests above | none | PR-1 |
-| PR-3 | api: the GitHub token, kept and left out | `trackers.go` (the three routes, the admin's alone and a switchyard's 403, the file under `trackerMu` with its per-host generation, `Whoami` before saving, per-call reads, `share.Equal`), `CONDUCTOR_GITHUB_TOKEN`, `CONDUCTOR_GITHUB_HOST` and `CONDUCTOR_TRACKER_LOOPBACK` in `internal/config`, the left-out row, `gitrepo.RemoteURL`, the guide's `tracker_status` and `tracker_set` rows, `docs/protocol.md`'s rows | `internal/api`, `internal/config`, `internal/export`, `internal/gitrepo`, `docs` | `TestTrackerToken*`, `TestGitHubTokenFromEnvironment`, `TestLeftOutCredentials`, `TestRemoteURL` | PR-2; RV1's PR-5 (its last PR in `internal/api` and `guide.go`, after its PR-3 and PR-4 in `internal/gitrepo`, `internal/api` and `docs/protocol.md`) | PR-1 |
-| PR-4 | api: import, link, refresh, field owners and links' reads | `dispatch_external.go` (the preview, import with its replay, manifest, `ImportTimeout` and resend, link, unlink, refresh with its per-ticket lock, authority, a link's read and its full read, the read after `link.add`, the close's reads for `merged`), `merged` accepted in `close_requires`, the error mapping, the ticket read's new parts in `MaxTicketReply`, `ticket_read`'s linked issue, the `dispatch_read` event, the guide's rows, `docs/protocol.md`'s rows | `internal/api`, `docs` | `TestImport*`, `TestRefresh*`, `TestLinkReadOnAdd`, `TestCloseReadsMerged`, `TestTrackerErrorsMapped`, `TestDispatchReadEvent`, `TestTrackerRouteDeadlines` (its routes; PR-5 adds send, Check and Close now), the guide's golden | PR-1, PR-2, PR-3 | none |
-| PR-5 | dispatch, api: publications sent once | `publications.go` (the table's operations, states and bounds, the destination fixed at prepare, `instance`, `owned`, the settle bound to its attempt and skipped when it changes nothing, `publication.close` with `close_tries`, `Publications` and `publicationsNeedYou`, `publication` in `rules.go` and the log), `dispatch_publish.go` (the offer, prepare with its `Resolve`, a publication's read, the ticket's publications page, send with its `Resolve`, settle by `sent_as_id` from `find_since`, check, Close now, discard, `settlePublications` in the background after start, the close), `Install`'s `Reissue` in `internal/export`, the `publication` event entity, the guide's rows, `docs/protocol.md`'s rows | `internal/dispatch`, `internal/api`, `internal/export`, `docs` | `TestPublication*`, `TestSendNeedsThePreviewedDigest`, `TestSettleSkipsUnchanged`, `TestCloseResumesFromClosing`, `TestServerOpsNeverNoop`, `TestPrepareTargetImmutable`, `TestSendRefusedAfterReissue`, `TestRestoreReissues`, `TestPublish*`, `TestPrepareVerifiesTarget`, `TestSendRefusesChangedTarget`, `TestNothingPublishedBySideEffect`, `TestPublicationCarriesOnlyChosen` | PR-4 | PR-8 |
+| PR-1 | dispatch: the linked issue, field owners, links' reads and the merged close (schema version 4) | the migration 3 to 4 (four tables with `store_instance`, four indexes, `closed_on`), `Reissue`, the reserved columns' meaning, `ExternalSnapshot` and its bound, `FromExternal`, `DerivedOpID` with its parts, `ticket.import`, `ticket.import_image`, `ticket.link_external`, `ticket.unlink_external`, `ticket.refresh`, `ticket.authority`, `ticket.edit`'s `external_owned`, `external_linked`, `stale_read`, `RecordRead`, `RecordTicketRead`, `OnRead`, the links' checks with `checks_incomplete`, `RequireMerged` (refused in `close_requires` until PR-4) and `closed_on`, `source` and the field owners as the item's system checked against `Options.Systems`, `Query.External`, the ticket read's new parts, the field classes, `derived`, `counterpart` and `ReconcileCounterpart` in `rules.go`, the `observe` and `adopt` rows | `internal/dispatch` | the `internal/dispatch` tests above but the publications' and the package's | RV1's PR-1 (`docs/plans/review-repair.md`: it edits `internal/dispatch`, its schema and `rules.go`; this PR takes version 4 after it) | PR-2, PR-3 |
+| PR-2 | tracker: the adapter contract and the GitHub adapter | `internal/tracker` (types, errors, `Parse`, `Repro`, `ImageHost`, `LogHost`, `Credential` with `Transport` and `ForWrite`, `Marker` in the contract, the registry's system names), `internal/tracker/github` (the API and signed-address clients, reads with both validators, images, checks with Actions jobs and logs and every cut said in `Incomplete`, the three constant GraphQL documents, `Resolve`, the comment and the close by node id with their answers sorted, GitHub's marker, find, rate limits, redirects), `githubtest` with the captured fixtures | `internal/tracker` | the `internal/tracker` and `internal/tracker/github` tests above | none | PR-1 |
+| PR-3 | api: the GitHub token, kept and left out | `trackers.go` (the three routes, the admin's alone and a switchyard's 403, the file under `trackerMu` with its per-host generation, `Whoami` before saving, per-call reads through `credentialFor`, `share.Equal`), `CONDUCTOR_GITHUB_TOKEN`, `CONDUCTOR_GITHUB_HOST` and `CONDUCTOR_TRACKER_LOOPBACK` in `internal/config`, the left-out row, `gitrepo.RemoteURL`, the guide's `tracker_status` and `tracker_set` rows, `docs/protocol.md`'s rows | `internal/api`, `internal/config`, `internal/export`, `internal/gitrepo`, `docs` | `TestTrackerToken*`, `TestGitHubTokenFromEnvironment`, `TestLeftOutCredentials`, `TestRemoteURL` | PR-2; RV1's PR-5 (its last PR in `internal/api` and `guide.go`, after its PR-3 and PR-4 in `internal/gitrepo`, `internal/api` and `docs/protocol.md`) | PR-1 |
+| PR-4 | api: import, link, refresh, field owners and links' reads | `dispatch_external.go` (the preview, import with its replay, manifest, `ImportTimeout` and resend, link, unlink, refresh with its per-ticket lock, authority, a link's read and its full read, the read after `link.add`, the close's reads for `merged`), `merged` accepted in `close_requires`, the error mapping, the ticket read's new parts in `MaxTicketReply`, `ticket_read`'s linked issue, the `dispatch_read` event, the guide's rows, `docs/protocol.md`'s rows | `internal/api`, `docs` | `TestImport*`, `TestRefresh*`, `TestLinkReadOnAdd`, `TestCloseReadsMerged`, `TestTrackerErrorsMapped`, `TestDispatchReadEvent`, `TestTrackerRouteDeadlines` (its routes; PR-5 adds send, Check and Close now), `TestEveryTrackerRouteUsesCredentialFor` (its routes; PR-5 adds its own), the guide's golden | PR-1, PR-2, PR-3 | none |
+| PR-5 | dispatch, api: publications sent once | `publications.go` (the table's operations, states and bounds, the destination fixed at prepare, `instance`, `marker` from the adapter, `owned`, the settle bound to its attempt and skipped when it changes nothing, `publication.close` with `close_tries`, `Publications` and `publicationsNeedYou`, `publication` in `rules.go` and the log), `dispatch_publish.go` (the offer, prepare with its `Resolve`, a publication's read, the ticket's publications page, send with its `Resolve` and its tagged credential, settle by `sent_as_id` from `find_since`, check, Close now, discard, `settlePublications` in the background after start, the close), `Install`'s `Reissue` in `internal/export`, the `publication` event entity, the guide's rows, `docs/protocol.md`'s rows | `internal/dispatch`, `internal/api`, `internal/export`, `docs` | `TestPublication*`, `TestPrepareKeepsTheMarker`, `TestSendNeedsThePreviewedDigest`, `TestSettleSkipsUnchanged`, `TestCloseResumesFromClosing`, `TestServerOpsNeverNoop`, `TestPrepareTargetImmutable`, `TestSendRefusedAfterReissue`, `TestRestoreReissues`, `TestPublish*`, `TestPrepareVerifiesTarget`, `TestSendRefusesChangedTarget`, `TestNothingPublishedBySideEffect`, `TestPublicationCarriesOnlyChosen` | PR-4 | PR-8 |
 | PR-6 | dispatch, crew: the package's source, steps to reproduce and evidence (package version 2) | `Package.Source` and `Package.Evidence`, the revision body's `source` choice with its pinned repro and its `stale_plan` at approval and launch, `PackageVersion` 2 in both packages with version 1 read, `MaxPackage` 640 KiB in `internal/dispatch` and `ledger.MaxPackage`, `ticketMarkdown`'s three parts with GitHub's text marked as quoted, `docs/protocol.md`'s package rows | `internal/dispatch`, `internal/crew` (the ledger's bound included), `docs` | `TestPackageVersionTwo`, `TestRefreshReproMakesApprovalStale`, `TestEvidenceWithoutCounterpart`, `TestPackageAtItsWorst`, `TestPackageVersion*Read`, `TestTicketMarkdownSource`, `TestPackageSourceBounds` | PR-5 | PR-8 |
 | PR-7 | cli, agents, api: the commands, the plan's choices over HTTP and the skill | `conductor trackers` and its `set` from standard input, `dispatch import`, `link-issue`, `unlink-issue`, `refresh`, `authority`, `read`, `publish`, `publish send`, `publish check`, `plan propose --repro --evidence`, the propose route's `source` field (`dispatch_plans.go`), `TestRunsPackageCarriesSource`, the skill's text, usage and completion | `internal/cli`, `internal/agents`, `internal/api` (`dispatch_plans.go` and `guide.go` only) | the `internal/cli` and `internal/agents` tests above, `TestRunsPackageCarriesSource` | PR-4, PR-5, PR-6 | PR-8 |
 | PR-8 | web: GitHub in Settings, import, the GitHub panel and links' reads | `SettingsGitHub`, `DispatchImport`, `DispatchExternal`, `DispatchHistory`'s words for `observe` and `adopt` rows, `DispatchLinks`' reads with their incomplete words, `merged` in the close policy and the project's settings, the editors read-only where GitHub owns, the palette's row and URL search, `useTracker`, `useDispatchLive`'s `dispatch_read`, `utils/tracker.ts`, `fake-github.ts` and the harness, `tracker-import.spec.ts`, `tracker-links.spec.ts` | `web/app/components`, `web/app/composables`, `web/app/utils`, `web/app/pages`, `web/e2e` | `utils/tracker.test.ts`, `useTracker.test.ts`, `useDispatchLive.test.ts`, the two specs | PR-4; RV1's PR-7 (its last PR in the pages and `web/e2e`) | PR-5, PR-6, PR-7 |
@@ -2064,3 +2157,47 @@ owner is needed for the token, the repository and the judgement of
 step 6's texts; the rest of the observation an agent can drive with the
 owner's token in the server's environment, never in a file of the
 repository or a log.
+
+## Changed after the review rounds
+
+The last round's findings came from the plan of IN1b (managed
+connections to a tracker), which builds on this plan's adapter and
+credential before any of this code exists. Where a shape costs this
+plan little and leaves its own code no worse, it is taken here; the
+rows, their count, their sizes and the acceptance are unchanged.
+
+- `internal/tracker/github`'s three GraphQL documents are constants
+  (`ResolveDocument`, `AddCommentDocument`, `CloseIssueDocument`, in
+  `graphql.go`), every value a variable; `TestDocumentsAreConstants`
+  (PR-2).
+- `tracker.Credential` gains `Transport(base)`, the one way an adapter
+  opens it, for the API host alone; the GitHub adapter's client is
+  split into the API client and the signed-address client, which holds
+  no credential (an image, a job's log: `CheckLog` takes the log's `302`
+  itself); `TestCredentialTransport`, `TestTokenOnlyToTheAPIHost`
+  reworded (PR-2).
+- `credentialFor(ctx, ref)` in `internal/api/trackers.go`, the one
+  function every tracker route gets its credential from;
+  `TestEveryTrackerRouteUsesCredentialFor` (PR-3 adds the function,
+  PR-4 and PR-5 the routes and the test).
+- `tickets.source` and the `authority` owner value are the linked
+  item's system, checked against `dispatch.Options.Systems`, which the
+  API fills from the registry (`Adapters.Systems()`, the names' shape);
+  `ticket.authority`'s `owner`, the authority route's `owner` and an
+  `adopt` row's `prior` follow; `TestSourceIsTheSystem`,
+  `TestSystemNames` (PR-1, PR-2).
+- `Adapter.Marker(id)`; `publications.marker` (immutable, at most 128
+  bytes), which `post_sha256`, the preview, the settle's `Match` and P1
+  now name; `PreparePublication` takes `mark`; `TestMarker`,
+  `TestPrepareKeepsTheMarker` (PR-2, PR-5).
+- `tracker.Write` and `Credential.ForWrite`: a comment's and a close's
+  credential carries the publication's id, its `attempt` or
+  `close_tries`, the comment's `post_sha256` or the close's comment
+  `remote_id`; `Comment` and `Close` refuse an untagged credential, and
+  a token sends none of it to GitHub; `TestWriteTagNeverSentWithAToken`
+  (PR-2, PR-5).
+- Not taken: the offered part `byline`. It exists only for a send that
+  does not post as the person's own account, and every send here does;
+  the offer route says where such a part is added, and IN1b adds it
+  there, with its default and its words, changing nothing in the store,
+  the digest or Send.
