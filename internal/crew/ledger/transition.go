@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -786,6 +787,69 @@ func (l *Ledger) Check(ctx context.Context, runID, taskID string, n int, id stri
 		return CheckRow{}, false, err
 	}
 	return r, true, nil
+}
+
+// Bounds of ChecksOn: the runs it reads (a chain of continuations) and the
+// rows it answers.
+const (
+	MaxChecksOnRuns = 64
+	MaxChecksOn     = 20
+)
+
+// ChecksOn reads the receipts of one task's check or step (phase and id)
+// whose subject is the commit given, in any of the runs named (a run and
+// its continuations), without their logs: at most MaxChecksOn, newest
+// first (attempt numbers run on across continuations, and k within an
+// attempt). They are read by the table's primary key, which begins with
+// the run's id and the task's; no index of its own. More than
+// MaxChecksOnRuns runs is refused.
+func (l *Ledger) ChecksOn(ctx context.Context, runs []string, taskID, phase, id, subject string) ([]CheckRow, error) {
+	if len(runs) == 0 {
+		return nil, nil
+	}
+	if len(runs) > MaxChecksOnRuns {
+		return nil, fmt.Errorf("ledger: %d runs asked, more than %d", len(runs), MaxChecksOnRuns)
+	}
+	args := make([]any, 0, len(runs)+4)
+	marks := make([]string, len(runs))
+	for i, r := range runs {
+		marks[i] = "?"
+		args = append(args, r)
+	}
+	args = append(args, taskID, id, phase, subject)
+	var out []CheckRow
+	err := l.readAt(ctx, func(q querier, version int) error {
+		rows, err := q.QueryContext(ctx, `SELECT run_id, `+checkCols(version)+`, NULL FROM checks WHERE run_id IN (`+strings.Join(marks, ", ")+`) AND task_id = ? AND id = ? AND phase = ? AND subject = ? ORDER BY n DESC, k DESC, run_id LIMIT `+strconv.Itoa(MaxChecksOn), args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var runID string
+			r, err := scanCheck(prefixed{rows, &runID}, "")
+			if err != nil {
+				return err
+			}
+			r.RunID = runID
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// prefixed is a row whose first column is scanned into first, the rest
+// by the scan it is handed to.
+type prefixed struct {
+	sc    scanner
+	first *string
+}
+
+func (p prefixed) Scan(dest ...any) error {
+	return p.sc.Scan(append([]any{p.first}, dest...)...)
 }
 
 // CheckChanged reads the tracked paths a receipt's command changed, which

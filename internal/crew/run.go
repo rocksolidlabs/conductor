@@ -401,6 +401,10 @@ type Engine struct {
 	// refused and before the refusal is handled (afterTransact): a test
 	// commits the run's launch there.
 	afterRefused func(runID string, err error)
+	// beforeRecheck, when set, runs once a Check again's change is
+	// committed and before its verification starts (recheckRecorded): a
+	// test ends the server there.
+	beforeRecheck func(runID string)
 	// afterVisit, when set, is called by withdraw for each task it visits,
 	// under e.mu: a test counts the visits.
 	afterVisit func(taskID string)

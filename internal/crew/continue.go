@@ -556,6 +556,12 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 				// Failed at a check: the next attempt is handed its receipt.
 				t.priorFailed = &priorFailed{n: la.N, state: la.State, stage: la.Stage, err: la.Error, result: la.ResultCommit, branch: la.Branch, check: fc}
 			}
+			if hasLast {
+				// The standing failed candidate of a task that fails here
+				// before it makes an attempt (standingFailed).
+				pl := ledger.AttemptRow{RunID: la.RunID, TaskID: la.TaskID, N: la.N, Member: la.Member, Branch: la.Branch, StartCommit: la.StartCommit, ResultCommit: la.ResultCommit, State: la.State, Stage: la.Stage, Error: la.Error, Result: la.Result, Where: la.Where}
+				t.priorLast = &pl
+			}
 			if hasLast && t.def.Kind == TaskWork && la.State == ledger.AttemptFailed && la.ResultCommit != "" && la.StartCommit != "" && refusedBeforeChecks(la.Stage) {
 				t.refused = &refusal{n: la.N, start: la.StartCommit, stage: la.Stage, err: la.Error, result: la.ResultCommit, branch: la.Branch}
 			}
@@ -761,6 +767,13 @@ func (e *Engine) dispatchCandidate(ctx context.Context, r *run, a *attempt, c ca
 		}, nil)
 		return
 	}
+	e.verifyRecorded(r, a)
+}
+
+// verifyRecorded verifies a, recorded as verifying its result (verify),
+// unless it closed meanwhile or its run stops, which close it. The caller
+// holds neither lock and counts a start in r.starts until it returns.
+func (e *Engine) verifyRecorded(r *run, a *attempt) {
 	e.mu.Lock()
 	closed := !a.closedAt.IsZero() || r.stopping
 	if !closed {

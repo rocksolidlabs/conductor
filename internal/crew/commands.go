@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -102,7 +104,14 @@ const (
 	RefusalNotFound      = "not_found"
 	RefusalStaleRevision = "stale_revision"
 	RefusalRunContinued  = "run_continued"
+	// RefusalStaleCandidate refuses a command bound to a candidate that is
+	// no longer the task's standing one (Recheck).
+	RefusalStaleCandidate = "stale_candidate"
 )
+
+// ErrStaleCandidate refuses a command bound to a candidate the task has
+// moved on from: another attempt is its standing one now.
+var ErrStaleCandidate = errors.New("the candidate is no longer the task's standing one")
 
 // refusalOf names the refusal err is.
 func refusalOf(err error) string {
@@ -115,6 +124,8 @@ func refusalOf(err error) string {
 		return RefusalStaleRevision
 	case errors.Is(err, ErrRunContinued):
 		return RefusalRunContinued
+	case errors.Is(err, ErrStaleCandidate):
+		return RefusalStaleCandidate
 	}
 	return RefusalTaskState
 }
@@ -545,6 +556,190 @@ func (e *Engine) Accept(ctx context.Context, runID, actor string, cmd Command, t
 		events, err := e.acceptTask(r, t, actor)
 		return t, events, err
 	}, nil)
+}
+
+// RecheckRequest names the failed candidate a Check again verifies again:
+// the task, the attempt that made it and its commit, and, in a
+// continuation, Imported, the candidate's reference in the run that made
+// it ("<run>/<task>/<n>", the continued run's attempt); "" names an attempt
+// of the run itself.
+type RecheckRequest struct {
+	Task     string `json:"task"`
+	Attempt  int    `json:"attempt"`
+	Commit   string `json:"commit"`
+	Imported string `json:"imported,omitempty"`
+}
+
+// Recheckable reports whether a failed attempt's verification is what
+// failed it, so its result can be checked again as it is: it failed with
+// a result commit at a check or a verify step (failedAtCheck), or before
+// the checks, as its checkout was made ready (refusedBeforeChecks: the
+// checkout, the manifest, a setup, service or ready step, the ready
+// phase).
+func Recheckable(a ledger.AttemptRow) bool {
+	if a.State != ledger.AttemptFailed || a.ResultCommit == "" {
+		return false
+	}
+	if _, _, ok := failedAtCheck(a); ok {
+		return true
+	}
+	return refusedBeforeChecks(a.Stage)
+}
+
+// Recheck is Check again, a command with a receipt (docs/plans/
+// review-repair.md, RV1): failed task's standing failed candidate, the
+// one rq names, is verified again as it is, the same commit, nothing
+// changed. Its change, in the command's transaction, records a new
+// attempt (numbered next, not counted against the task) whose result is
+// the candidate's commit and which is verifying, the task verifying, and
+// a finished run open again; once that is committed the engine verifies
+// it without a session, as a continuation verifies a result again
+// (verify), whether or not the run's scheduling is paused. The candidate's
+// own attempt and its receipts stay as they are: the new attempt's are its
+// own. Refused, nothing is recorded: a task that is not failed, or whose
+// verification did not fail it (task_state); a candidate that is no
+// longer the task's standing failed one (stale_candidate); a run the
+// engine does not run, stopped or let go (task_state: continue it, then
+// check again in its continuation).
+func (e *Engine) Recheck(ctx context.Context, runID, actor string, cmd Command, rq RecheckRequest) (Receipt, error) {
+	if e.ledger != nil {
+		if _, err := e.managedRun(runID); errors.Is(err, ErrRunNotFound) {
+			if _, ok, lerr := e.ledger.Load(ctx, runID); lerr == nil && ok {
+				return Receipt{}, fmt.Errorf("%w: run %s is not running on this server: continue it, then check again in its continuation", ErrTaskState, runID)
+			}
+		}
+	}
+	// made is the attempt the change recorded, verified once it is
+	// committed; was the run as the change found it, put back with the
+	// attempt taken back when the commit is refused.
+	var made *attempt
+	var in *run
+	var was struct {
+		state, reason, outcome string
+		pause                  pauseMark
+	}
+	rc, err := e.act(ctx, runID, actor, cmd, "recheck", []string{rq.Task, strconv.Itoa(rq.Attempt), rq.Commit}, func(r *run) (*task, []event, error) {
+		t := r.task(rq.Task)
+		if t == nil {
+			return nil, nil, ErrTaskNotFound
+		}
+		if r.stopping || r.stoppedAt != nil {
+			return t, nil, fmt.Errorf("%w: the run is stopped: continue it, then check again in its continuation", ErrTaskState)
+		}
+		if t.def.Kind != TaskWork {
+			return t, nil, fmt.Errorf("%w: a review task's verdict is not checked again", ErrTaskState)
+		}
+		if t.state != ledger.TaskFailed {
+			return t, nil, fmt.Errorf("%w: it is %s, and only a failed task's candidate is checked again", ErrTaskState, t.state)
+		}
+		fc, ok := r.standingFailed(t)
+		if !ok {
+			return t, nil, fmt.Errorf("%w: the task has no failed candidate since its withdrawal", ErrStaleCandidate)
+		}
+		named := rq.Imported
+		if named == "" {
+			named = fmt.Sprintf("%s/%s/%d", r.id, rq.Task, rq.Attempt)
+		}
+		if standing := fmt.Sprintf("%s/%s/%d", fc.RunID, fc.TaskID, fc.N); named != standing || fc.ResultCommit != rq.Commit {
+			return t, nil, staleCandidate(fc, rq)
+		}
+		if !Recheckable(fc) {
+			return t, nil, fmt.Errorf("%w: attempt %d failed at %s, not in its verification: retry the task instead", ErrTaskState, fc.N, cmp.Or(fc.Stage, fc.State))
+		}
+		m := r.member(t.def.Member)
+		if m == nil {
+			return t, nil, fmt.Errorf("%w: the task's member %s is not in the run", ErrTaskState, t.def.Member)
+		}
+		was.state, was.reason, was.outcome, was.pause = t.state, t.reason, r.outcome, r.pauseMarkOf()
+		a, events := e.recheckTask(r, t, m, fc, actor)
+		made, in = a, r
+		return t, events, nil
+	}, func(r *run) {
+		if made == nil {
+			return
+		}
+		a, t := made, made.t
+		made = nil
+		a.closedAt = time.Now().UTC()
+		a.cancel()
+		if i := slices.Index(t.attempts, a); i >= 0 {
+			t.attempts = slices.Delete(t.attempts, i, i+1)
+		}
+		delete(r.changedAttempts, a)
+		r.active--
+		t.extra--
+		t.state, t.reason = was.state, was.reason
+		if r.outcome != was.outcome {
+			r.outcome = was.outcome
+			r.markRun()
+		}
+		r.restorePause(was.pause)
+		r.markTask(t)
+		r.ready()
+		r.starts.Done()
+		r.note(session.ActivityError, "the ledger could not record the check again of task %s", t.def.ID)
+	})
+	if made != nil && err == nil {
+		go e.recheckRecorded(in, made)
+	}
+	return rc, err
+}
+
+// staleCandidate is the refusal of a Check again whose candidate is not
+// fc, the task's standing failed one, in words that name what stands.
+func staleCandidate(fc ledger.AttemptRow, rq RecheckRequest) error {
+	if fc.N > rq.Attempt {
+		return fmt.Errorf("%w: attempt %d failed since, at %s: check that one again", ErrStaleCandidate, fc.N, short(fc.ResultCommit))
+	}
+	return fmt.Errorf("%w: the task's failed candidate is attempt %d of run %s at %s, not attempt %d at %s", ErrStaleCandidate, fc.N, fc.RunID, short(fc.ResultCommit), rq.Attempt, short(rq.Commit))
+}
+
+// recheckTask records attempt n+1 of failed t, the Check again of fc, its
+// standing failed candidate: no session, fc's result commit its result and
+// fc's start its start (where a next attempt goes back to when it is
+// refused before its checks), what fc submitted its submission, verifying
+// and not counted against the task; the task verifying, the run open again
+// with the prerequisites its end interrupted armed again, as a retry
+// reopens it. The attempt is verified once the change is committed
+// (recheckRecorded), which holds a start of the run (r.starts) until then.
+// The caller holds e.mu, in the command's change.
+func (e *Engine) recheckTask(r *run, t *task, m *member, fc ledger.AttemptRow, actor string) (*attempt, []event) {
+	ctx, cancel := context.WithCancel(r.ctx)
+	n := len(t.attempts) + t.prior + 1
+	start := cmp.Or(fc.StartCommit, fc.ResultCommit)
+	res := decodeResult(fc.Result)
+	now := time.Now().UTC()
+	a := &attempt{t: t, m: m, n: n, state: ledger.AttemptVerifying, ctx: ctx, cancel: cancel, reservedAt: now, launchedAt: now, inputs: r.inputs(t), start: start, result: fc.ResultCommit, submitted: &res,
+		worktree: filepath.Join(r.cwd, worktreesDir, r.id, fmt.Sprintf("%s.%d", t.def.ID, n)), where: r.rt.Where()}
+	t.attempts = append(t.attempts, a)
+	t.extra++
+	t.state, t.reason = ledger.TaskVerifying, fmt.Sprintf("attempt %d checks again attempt %d's result %s, as %s asked", n, fc.N, short(fc.ResultCommit), actor)
+	r.active++
+	r.starts.Add(1)
+	r.markTask(t)
+	r.markAttempt(a)
+	if r.outcome != "" {
+		r.outcome = ""
+		r.markRun()
+	}
+	r.reopenPrerequisites()
+	r.ready()
+	r.note(session.ActivityStatus, "task %s: attempt %d checks again the result %s of attempt %d, as %s asked", t.def.ID, n, short(fc.ResultCommit), fc.N, actor)
+	payload := map[string]any{"task": t.def.ID, "attempt": n, "commit": fc.ResultCommit, "of": fc.N, "actor": actor}
+	if fc.RunID != r.id {
+		payload["from"] = fc.RunID
+	}
+	return a, []event{{"result.reverified", payload}}
+}
+
+// recheckRecorded verifies a Check again's attempt once its change is
+// committed, and lets go of the start recheckTask counted.
+func (e *Engine) recheckRecorded(r *run, a *attempt) {
+	defer r.starts.Done()
+	if e.beforeRecheck != nil {
+		e.beforeRecheck(r.id)
+	}
+	e.verifyRecorded(r, a)
 }
 
 // TaskContext is an attempt's task as written for its session: task.md
