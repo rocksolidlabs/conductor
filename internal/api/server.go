@@ -150,15 +150,19 @@ type Server struct {
 	readRevision    func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// recordRepos is each native server session's launch repository, by
 	// the identity of its common git directory (os.FileInfo), until its
-	// end commit is read (recordEndCommit); recorders each recorded
-	// session's hold on its record (*recorder), by its Driver, until it
-	// leaves the registry; recordsStop, closed as the journal's close
-	// begins (closeSessionRecords), ends the waits for processes still
-	// running (awaitProcessEnd).
+	// end commit is read (recordEndCommit); recCur, under recMu, the
+	// registration each record follows (*recorder), by its id, until its
+	// last reconcile (history_journal.go); recordsStop, closed as the
+	// journal's close begins (closeSessionRecords), ends the waits for
+	// processes still running (awaitProcessEnd).
 	recordRepos    sync.Map
-	recorders      sync.Map
+	recMu          sync.Mutex
+	recCur         map[string]*recorder
 	recordsStop    chan struct{}
 	stopRecordsOne sync.Once
+	// recordDeliver, when a test sets it, is handed each hint and stream
+	// callback of a recorded session in place of running it (deliver).
+	recordDeliver atomic.Pointer[func(func())]
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -706,7 +710,7 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	if s.dispatch != nil {
 		s.dispatch.Close()
 	}
-	s.closeSessionRecords(ctx, false)
+	s.closeSessionRecords(false)
 }
 
 // Handler returns the routed handler with middleware applied.
@@ -1230,10 +1234,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 			s.log.Warn("Dispatch's store did not close cleanly", "err", err)
 		}
 	}
-	// The sessions stopped and the hosts let go, every record is written
-	// as it stands: each session's end, and what it told its hooks as it
-	// ended, taken from the session itself (closeSessionRecords).
-	s.closeSessionRecords(ctx, true)
+	// The sessions stopped and the hosts let go, every record is
+	// reconciled a last time from its session and written
+	// (closeSessionRecords).
+	s.closeSessionRecords(true)
 }
 
 // Registry exposes the session index (used by tests and the CLI).

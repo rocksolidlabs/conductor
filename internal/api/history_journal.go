@@ -8,7 +8,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -23,28 +22,107 @@ import (
 // The session journal (docs/plans/history.md, Program item HS1, PR-1):
 // a record of every session the server runs or hosts, kept by
 // internal/journal under the data directory's history/. The server opens
-// it with its data directory (a switchyard keeps none) and feeds it from
-// the places a session's evidence passes. A recorded session holds its
-// record through a recorder, begun with it: a server session's at its
-// launch (createLocalSession: Begin, with the launch revision read before
-// its process starts), whose hooks wrap the session's own (recordHooks); a
-// hosted one's as the hub adds it (OnAdded), whose hooks the session keeps
-// (signal.SessionHooks). Every write names the record's instance the
-// recorder was begun with (journal.Instance), never an id alone: what a
-// session says after its record was forgotten is dropped, whatever session
-// holds its id by then, and what it says after it left the registry is
-// judged by that instance too. The registry's OnRemove (recordRemoved)
-// hands over its last state; the shutdown's last look takes each
-// session's end (closeSessionRecords).
+// it with its data directory (a switchyard keeps none) and keeps each
+// recorded session's record in step with the session.
+//
+// # The record follows the session (reconcile)
+//
+// A session's record is reconciled from the session's state, never
+// assembled from the order of its callbacks. One function, reconcile,
+// reads what is true of the session now and settles the difference into
+// its record (journal.Settle): its name, its agent's own session, its
+// crew, whether it has ended and how and when. Run twice, or after any
+// other write, it changes nothing more.
+//
+// The sources of truth, read under recMu:
+//
+//   - which registration the record follows: the recorder registered for
+//     its id (recCur). A recorder is one registration of a session: a
+//     server session's, begun at its launch; a hosted one's, begun as the
+//     hub adds it, and again each time its host registers it anew after
+//     the hub let it go (the record taken up again, its instance kept).
+//     A recorder that is not its id's (one a later registration replaced,
+//     one already final) reconciles nothing and keeps nothing.
+//   - whether the session is still the server's: the registry's entry for
+//     its id is this registration's session (registry.Get).
+//   - what the session is: the session object itself (Driver.Info), and a
+//     server session's process (ProcessDone): its end is one the server
+//     observed once its status has ended and, for a server session, its
+//     process is gone (a stop that failed leaves the status stopped while
+//     the process runs).
+//
+// reconcile runs, and the end is recorded, at exactly these moments:
+//
+//   - registration: once the registration is complete (a server session
+//     in the registry, registered; a hosted one added, beginHostedRecord),
+//     so whatever the session did before its recorder existed (an exit
+//     before the registry held it) is read then.
+//   - a hint (below): an observed end found is recorded.
+//   - removal: the registry's OnRemove (recordRemoved) runs it at once,
+//     before the removal returns. The session is no longer the registry's,
+//     so this run is final: the session's observed end, or, without one,
+//     host away for a hosted session and lost for a server one (its
+//     process's state unknown), and the recorder is let go. Nothing is owed
+//     afterwards. Should the hint of a removal be late (a hosted session
+//     re-registered meanwhile), the registration it names is no longer
+//     its id's and it changes nothing: the end of the record of a
+//     registration is read from what is registered now, never from the
+//     event.
+//   - shutdown: every recorder still registered, final: the session's own
+//     observed end, else the server stopped observing it (lost, host away)
+//     (closeSessionRecords).
+//   - the next start, for a record still open on disk (a process killed):
+//     the journal marks it lost or host away as it loads (journal.Open).
+//
+// A hint is a callback that says something may have changed: a session's
+// OnChange (its status, its name, its agent's session, its crew), and the
+// wait for a stopped session's process (awaitProcessEnd). It carries no
+// truth: it only runs reconcile, which reads the session again. A hint
+// late, repeated, out of order or lost is harmless: the next reconcile, at
+// the latest the removal's or the shutdown's, reads the same state. A
+// write the journal could not make is made again by the writer; reconcile
+// carries no retry state.
+//
+// The streams are not state: the activity entries (a file touched, a tool
+// used, a report, a line typed) and the chat lines. Each is appended while
+// its registration is its id's and its record is open, and dropped once
+// the end is recorded (journal.Note, journal.Chat): what a session says as
+// it ends reaches its record before the end is recorded only when it
+// comes first. A question still open when the end is recorded is recorded
+// as withdrawn by that end (the journal's closeQuestions), as the session's
+// own end withdraws it, so its outcome does not hang on a line that comes
+// later.
+//
+// One fact is still read in an order of events, and it is no lifecycle
+// fact: the end commit (recordEndCommit), a git read the journal's writer
+// makes after the end is recorded, through the session's folder, which the
+// session closes as it leaves the registry. A session removed before the
+// writer gets to it has none read (the record says so by its empty
+// endCommit); a git read under recMu would hold every reconcile behind a
+// disk.
+//
+// The server's recordDeliver, a test's seam, takes every hint and every
+// stream callback of a recorded session, to deliver late, in another
+// order, or not at all; registration, removal and shutdown run reconcile
+// themselves.
 
 // revisionTimeout bounds a record's git read.
 const revisionTimeout = 2 * time.Second
+
+// deliver runs f, a hint or a stream callback, or hands it to the test's
+// seam (recordDeliver).
+func (s *Server) deliver(f func()) {
+	if d := s.recordDeliver.Load(); d != nil {
+		(*d)(f)
+		return
+	}
+	f()
+}
 
 // openSessionRecords opens the journal over st: nil when it cannot be.
 func (s *Server) openSessionRecords(st *store.Store) *journal.Journal {
 	j, err := journal.Open(st, journal.Options{
 		Log:       s.log,
-		Current:   s.recordCurrent,
 		EndCommit: s.recordEndCommit,
 		Denied:    s.recordDenied,
 	})
@@ -53,60 +131,31 @@ func (s *Server) openSessionRecords(st *store.Store) *journal.Journal {
 		return nil
 	}
 	s.recordsStop = make(chan struct{})
+	s.recCur = map[string]*recorder{}
 	return j
 }
 
-// beforeRecordsWait, when set, runs as the shutdown's last look begins to
-// wait for a session's end to be told (closeSessionRecords): a test's
-// seam.
-var beforeRecordsWait func(id string)
-
-// closeSessionRecords closes the journal. At a shutdown (reconcile), the
-// sessions stopped, it takes one ordered look at every recorded session
-// still listed before the journal closes: a server session that ended is
-// waited for until its end has been handed to its hooks (EndTold: its
-// status entry, the question it withdrew, its change), as long as ctx
-// allows, so what it said as it ended is in its record; then its end is
-// taken from the session itself when the server observed it (observedEnd),
-// and its metadata read once more. The waits for processes still running
-// end first (awaitProcessEnd). The journal's last pass then writes every
-// record (journal.Close). A process killed instead of shut down writes
-// none of this: what was not yet written is lost, and the next start marks
-// a record left open lost (a hosted one host away), never ended.
-func (s *Server) closeSessionRecords(ctx context.Context, reconcile bool) {
+// closeSessionRecords closes the journal. At a shutdown (final), the
+// sessions stopped and the hosts let go, every registration still
+// recorded is reconciled a last time (the shutdown's moment): its
+// session's observed end, else lost (host away) as the server stops
+// observing it. The waits for processes still running end first
+// (awaitProcessEnd). The journal's last pass then writes every record
+// (journal.Close). A process killed instead of shut down writes none of
+// this: what was not yet written is lost, and the next start marks a
+// record left open lost (a hosted one host away), never ended.
+func (s *Server) closeSessionRecords(final bool) {
 	j := s.sessionRecords
 	if j == nil {
 		return
 	}
 	s.stopRecordsOne.Do(func() { close(s.recordsStop) })
-	if reconcile {
-		var listed []session.Driver
-		s.registry.Each(func(d session.Driver) { listed = append(listed, d) })
-		for _, d := range listed {
-			v, ok := s.recorders.Load(d)
-			if !ok {
-				continue
-			}
-			rc := v.(*recorder)
-			if l, local := d.(*session.Local); local && l.Info().Status.Ended() {
-				if f := beforeRecordsWait; f != nil {
-					f(l.Info().ID)
-				}
-				select {
-				case <-l.EndTold():
-				case <-ctx.Done():
-				}
-			}
-			info := d.Info()
-			if s.observedEnd(rc, d, info) {
-				end := journal.Ending{How: endingOf(info)}
-				if info.EndedAt != nil {
-					end.At = *info.EndedAt
-				}
-				j.End(rc.in, end)
-			}
-			j.Changed(rc.in)
+	if final {
+		s.recMu.Lock()
+		for _, rc := range s.recCur {
+			s.reconcileLocked(rc, true)
 		}
+		s.recMu.Unlock()
 	}
 	j.Close()
 }
@@ -172,25 +221,28 @@ func openedPath(dir *os.File, cwd string) (string, func() bool) {
 	}
 }
 
-// recorder is a recorded session's hold on its record: the instance its
-// record was begun with (journal.Instance), and what its hooks need of the
-// session without the registry, which may have let it go: whether it is
-// hosted, its folder (a server session's, fixed at its start; a hosted
-// one's as its host says it now), the session itself once made.
+// recorder is one registration of a recorded session (the package's
+// reconcile): the instance of its record (journal.Instance), whether it is
+// hosted, its folder (a server session's, fixed at its start), the session
+// (d, once made; hs for a hosted one) and whether its registration is
+// complete (attached). d, attached and watching are guarded by the
+// server's recMu.
 type recorder struct {
-	s      *Server
-	in     journal.Instance
-	hosted bool
-	cwd    string
-	hs     *signal.HostedSession
-	local  atomic.Pointer[session.Local]
-	// waiting: awaitProcessEnd waits for its process.
-	waiting atomic.Bool
+	in       journal.Instance
+	hosted   bool
+	cwd      string
+	hs       *signal.HostedSession
+	d        session.Driver
+	attached bool
+	// watching: a wait for its stopped session's process is under way
+	// (awaitProcessEnd).
+	watching bool
 }
 
 // beginServerRecord begins the record of a server session as it is made,
-// before the session can keep an entry, and answers its recorder: nil when
-// the session is not recorded.
+// before the session can keep an entry, and answers its recorder,
+// registered for its id: nil when the session is not recorded. Its
+// registration completes once the registry holds the session (registered).
 func (s *Server) beginServerRecord(info session.Info, launched session.Launched, agentAdapter, agentName string, version string, where ext.Where, rev gitcli.Revision, repo os.FileInfo) *recorder {
 	if !s.recording() {
 		return nil
@@ -220,6 +272,7 @@ func (s *Server) beginServerRecord(info session.Info, launched session.Launched,
 	case r.Start != "":
 		r.StartFrom = journal.StartFromLaunch
 	}
+	// Outside recMu: a server session's Begin writes its record.
 	in, err := s.sessionRecords.Begin(r)
 	if err != nil {
 		if !errors.Is(err, journal.ErrNotOwner) {
@@ -230,13 +283,17 @@ func (s *Server) beginServerRecord(info session.Info, launched session.Launched,
 	if repo != nil && rev.Top != "" {
 		s.recordRepos.Store(info.ID, repo)
 	}
-	return &recorder{s: s, in: in, cwd: info.Cwd}
+	rc := &recorder{in: in, cwd: info.Cwd}
+	s.recMu.Lock()
+	s.recCur[info.ID] = rc
+	s.recMu.Unlock()
+	return rc
 }
 
 // recordHooks has the session's own hooks in o feed rc's record after
-// them: its activity, its chat and its changes. Nothing changes for a
-// session not recorded (rc nil).
-func recordHooks(rc *recorder, o *session.Options) {
+// them: its changes as hints (reconcile), its activity and its chat as
+// streams. Nothing changes for a session not recorded (rc nil).
+func (s *Server) recordHooks(rc *recorder, o *session.Options) {
 	if rc == nil {
 		return
 	}
@@ -245,48 +302,67 @@ func recordHooks(rc *recorder, o *session.Options) {
 		if change != nil {
 			change(info)
 		}
-		rc.changed()
+		s.deliver(func() { s.reconcile(rc) })
 	}
 	o.OnActivity = func(id string, e session.ActivityEntry, st session.AttentionState) {
 		if activity != nil {
 			activity(id, e, st)
 		}
-		rc.activity(e)
+		s.deliver(func() { s.recordActivity(rc, e) })
 	}
 	o.OnChat = func(id string, m session.ChatMessage) {
 		if chat != nil {
 			chat(id, m)
 		}
-		rc.chat(m)
+		s.deliver(func() { s.recordChat(rc, m) })
 	}
 }
 
-// made is the session rc's record is for, once made: its hooks and the
-// server's look for it by it from then on.
-func (rc *recorder) made(l *session.Local) {
+// made is the server session rc's record is for, once made: what
+// reconcile reads from then on.
+func (s *Server) made(rc *recorder, l *session.Local) {
 	if rc == nil {
 		return
 	}
-	rc.local.Store(l)
-	rc.s.recorders.Store(session.Driver(l), rc)
+	s.recMu.Lock()
+	rc.d = l
+	s.recMu.Unlock()
+}
+
+// registered completes rc's registration, its session now in the
+// registry, and reconciles its record once (the registration's moment).
+func (s *Server) registered(rc *recorder) {
+	if rc == nil {
+		return
+	}
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	rc.attached = true
+	s.reconcileLocked(rc, false)
 }
 
 // abandon removes the record of a session the registry refused.
-func (rc *recorder) abandon() {
+func (s *Server) abandon(rc *recorder) {
 	if rc == nil {
 		return
 	}
-	if l := rc.local.Load(); l != nil {
-		rc.s.recorders.Delete(session.Driver(l))
+	s.recMu.Lock()
+	if s.recCur[rc.in.ID()] == rc {
+		delete(s.recCur, rc.in.ID())
 	}
-	rc.s.recordRepos.Delete(rc.in.ID())
-	rc.s.sessionRecords.Abandon(rc.in)
+	s.recMu.Unlock()
+	s.recordRepos.Delete(rc.in.ID())
+	s.sessionRecords.Abandon(rc.in)
 }
 
 // beginHostedRecord is the hub's OnAdded: the record of a hosted session,
 // from what its host registered, borrowing nothing of this server's
-// machine (no probe, no git read, no Runtime), and the session's own hooks
-// that feed it.
+// machine (no probe, no git read, no Runtime), its registration complete
+// and reconciled at once, and the session's own hooks that feed it. A
+// session its host registers again once the hub let it go is a new
+// registration of the same record (journal.Begin takes it up again): it
+// replaces the earlier one for its id, whose hints and streams change
+// nothing from then on.
 func (s *Server) beginHostedRecord(hs *signal.HostedSession, owner string) signal.SessionHooks {
 	if !s.recording() {
 		return signal.SessionHooks{}
@@ -302,6 +378,11 @@ func (s *Server) beginHostedRecord(hs *signal.HostedSession, owner string) signa
 		Branch:    info.Branch,
 		StartedAt: info.CreatedAt,
 	}
+	// Under recMu, the Begin (which never waits on a disk for a hosted
+	// record) and the registration together: a reconcile of the earlier
+	// registration comes wholly before or wholly after.
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
 	in, err := s.sessionRecords.Begin(r)
 	if err != nil {
 		if !errors.Is(err, journal.ErrNotOwner) {
@@ -309,91 +390,83 @@ func (s *Server) beginHostedRecord(hs *signal.HostedSession, owner string) signa
 		}
 		return signal.SessionHooks{}
 	}
-	rc := &recorder{s: s, in: in, hosted: true, hs: hs}
-	s.recorders.Store(session.Driver(hs), rc)
-	return signal.SessionHooks{Activity: rc.activity, Chat: rc.chat, Change: func(session.Info) { rc.changed() }}
-}
-
-// changed marks the record's metadata stale: the journal reads the session
-// as it is when it gets to it (recordCurrent).
-func (rc *recorder) changed() {
-	rc.s.sessionRecords.Changed(rc.in)
-}
-
-// activity is the record's part of the session's activity entry: a file's
-// path made absolute as the touched index keys it, under the session's own
-// folder, and a status entry that is the session's end taken as its end,
-// once observed: a hosted one's as its host says, a server one's only once
-// its process is gone (observedEnd). It never waits.
-func (rc *recorder) activity(e session.ActivityEntry) {
-	j := rc.s.sessionRecords
-	a := journal.Activity{At: e.At, Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool, Op: e.Op, Path: e.Path}
-	if e.Type == session.ActivityFile {
-		if rc.hosted {
-			a.Path = signal.HostAbs(rc.hs.Info().Cwd, e.Path)
-		} else {
-			a.Path = session.TouchedAbs(rc.cwd, e.Path)
-		}
+	rc := &recorder{in: in, hosted: true, hs: hs, d: hs, attached: true}
+	s.recCur[info.ID] = rc
+	s.reconcileLocked(rc, false)
+	return signal.SessionHooks{
+		Activity: func(e session.ActivityEntry) { s.deliver(func() { s.recordActivity(rc, e) }) },
+		Chat:     func(m session.ChatMessage) { s.deliver(func() { s.recordChat(rc, m) }) },
+		Change:   func(session.Info) { s.deliver(func() { s.reconcile(rc) }) },
 	}
-	j.Note(rc.in, a)
-	if e.Type != session.ActivityStatus || !isEnding(e.Message) {
+}
+
+// reconcile is a hint's: rc's record settled from its session as it is
+// now (the package's reconcile).
+func (s *Server) reconcile(rc *recorder) {
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	s.reconcileLocked(rc, false)
+}
+
+// reconcileLocked reads what is true of rc's session now and settles it
+// into its record: nothing for a registration that is not its id's or not
+// yet complete. The run is final when the session is no longer the
+// registry's (removal) or closing is set (shutdown): the session's
+// observed end, else lost (host away for a hosted session), and rc let go.
+// A server session whose status ended while its process runs has its
+// process waited for (awaitProcessEnd), a hint. The caller holds recMu.
+func (s *Server) reconcileLocked(rc *recorder, closing bool) {
+	id := rc.in.ID()
+	if s.recCur[id] != rc || !rc.attached {
 		return
 	}
-	if !rc.hosted {
-		l := rc.local.Load()
-		if l == nil || !rc.s.observedEnd(rc, l, l.Info()) {
-			return
-		}
-	}
-	j.End(rc.in, journal.Ending{At: e.At, How: e.Message})
-}
-
-// chat is the record's part of the session's chat: its own lines, never a
-// run's.
-func (rc *recorder) chat(m session.ChatMessage) {
-	if m.Scope != "" && m.Scope != proto.ChatScopeSession {
-		return
-	}
-	c := journal.ChatLine{ID: m.ID, At: m.At, Kind: m.Kind, Event: m.Event, ByName: m.By.Name, ByRole: string(m.By.Role), Text: m.Text, Ref: m.Ref, To: m.To}
-	for _, o := range m.Options {
-		c.Choices = append(c.Choices, o.Label)
-	}
-	rc.s.sessionRecords.Chat(rc.in, c)
-}
-
-// recordCurrent is the journal's Current: the session of the instance as
-// the registry lists it now, ended only once its end is observed
-// (observedEnd); none once the registry lists another session under its id
-// or none.
-func (s *Server) recordCurrent(in journal.Instance) (journal.Meta, bool) {
-	d, ok := s.registry.Get(in.ID())
-	if !ok {
-		return journal.Meta{}, false
-	}
-	v, ok := s.recorders.Load(d)
-	if !ok || v.(*recorder).in != in {
-		return journal.Meta{}, false
-	}
-	rc := v.(*recorder)
+	d := rc.d
 	info := d.Info()
-	m := journal.Meta{Name: info.Name, AgentSession: agentSessionOf(info.AgentSession), Crew: crewOfRef(info.Crew)}
-	if s.observedEnd(rc, d, info) {
-		m.Ended, m.Ending = true, endingOf(info)
+	cur, _ := s.registry.Get(id)
+	final := closing || cur != d
+	st := journal.State{Name: info.Name, AgentSession: agentSessionOf(info.AgentSession), Crew: crewOfRef(info.Crew), Final: final}
+	l, local := d.(*session.Local)
+	switch {
+	case observedEnd(d, info):
+		end := journal.Ending{How: endingOf(info)}
 		if info.EndedAt != nil {
-			m.EndedAt = *info.EndedAt
+			end.At = *info.EndedAt
 		}
+		st.End = &end
+	case final && rc.hosted:
+		st.End = &journal.Ending{How: journal.EndingHostAway, Lost: true}
+	case final:
+		st.End = &journal.Ending{How: journal.EndingLost, Lost: true}
+	case local && info.Status.Ended() && !rc.watching:
+		rc.watching = true
+		go s.awaitProcessEnd(rc, l)
 	}
-	return m, true
+	s.sessionRecords.Settle(rc.in, st)
+	if final {
+		delete(s.recCur, id)
+	}
+}
+
+// recordRemoved is the registry's OnRemove for the journal: the removal's
+// moment. The registration of the session that left, when it is still
+// its id's, is reconciled at once, final (reconcileLocked).
+func (s *Server) recordRemoved(id string, d session.Driver) {
+	if s.sessionRecords == nil {
+		return
+	}
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	if rc := s.recCur[id]; rc != nil && rc.d == d {
+		s.reconcileLocked(rc, false)
+	}
 }
 
 // observedEnd says the session's end is one the server observed: its
 // status ended and, for a server session, its process gone (ProcessDone).
 // A server session's status reads stopped once a stop was asked, whatever
 // the process did (Local.Stop marks it so when the process's stop failed
-// too): while that process runs its record is not ended, and its end is
-// recorded once the process is gone (awaitProcessEnd), or never, the
-// record then left open for the next start to mark lost.
-func (s *Server) observedEnd(rc *recorder, d session.Driver, info session.Info) bool {
+// too): while that process runs its record is not ended.
+func observedEnd(d session.Driver, info session.Info) bool {
 	if !info.Status.Ended() {
 		return false
 	}
@@ -406,27 +479,57 @@ func (s *Server) observedEnd(rc *recorder, d session.Driver, info session.Info) 
 		return true
 	default:
 	}
-	s.awaitProcessEnd(rc, l)
 	return false
 }
 
-// awaitProcessEnd records the end of a server session whose status ended
-// before its process did, once the process is gone; once a session, and
+// awaitProcessEnd is the hint of a server session whose status ended
+// before its process did: once the process is gone, rc is reconciled;
 // never after the journal's close begins (recordsStop).
 func (s *Server) awaitProcessEnd(rc *recorder, l *session.Local) {
-	if !rc.waiting.CompareAndSwap(false, true) {
+	select {
+	case <-l.ProcessDone():
+	case <-s.recordsStop:
 		return
 	}
-	go func() {
-		select {
-		case <-l.ProcessDone():
-		case <-s.recordsStop:
-			return
+	s.deliver(func() { s.reconcile(rc) })
+}
+
+// recordActivity is a stream: the record's part of the session's activity
+// entry, while rc is its id's registration (journal.Note keeps it while
+// the record is open): a file's path made absolute as the touched index
+// keys it, under the session's own folder (a hosted one's as its host
+// says it now).
+func (s *Server) recordActivity(rc *recorder, e session.ActivityEntry) {
+	a := journal.Activity{At: e.At, Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool, Op: e.Op, Path: e.Path}
+	if e.Type == session.ActivityFile {
+		if rc.hosted {
+			a.Path = signal.HostAbs(rc.hs.Info().Cwd, e.Path)
+		} else {
+			a.Path = session.TouchedAbs(rc.cwd, e.Path)
 		}
-		j := s.sessionRecords
-		j.End(rc.in, journal.Ending{How: endingOf(l.Info())})
-		j.Changed(rc.in)
-	}()
+	}
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	if s.recCur[rc.in.ID()] == rc {
+		s.sessionRecords.Note(rc.in, a)
+	}
+}
+
+// recordChat is a stream: the record's part of the session's chat, its
+// own lines, never a run's, while rc is its id's registration.
+func (s *Server) recordChat(rc *recorder, m session.ChatMessage) {
+	if m.Scope != "" && m.Scope != proto.ChatScopeSession {
+		return
+	}
+	c := journal.ChatLine{ID: m.ID, At: m.At, Kind: m.Kind, Event: m.Event, ByName: m.By.Name, ByRole: string(m.By.Role), Text: m.Text, Ref: m.Ref, To: m.To}
+	for _, o := range m.Options {
+		c.Choices = append(c.Choices, o.Label)
+	}
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	if s.recCur[rc.in.ID()] == rc {
+		s.sessionRecords.Chat(rc.in, c)
+	}
 }
 
 // endingOf is how an ended session's Info says it ended, in the words of
@@ -493,37 +596,6 @@ func (s *Server) recordEndCommit(ctx context.Context, r journal.Record) string {
 // server's, so it holds once the session has left the registry too.
 func (s *Server) recordDenied(path string) bool {
 	return session.DeniedBy(path, s.fileDeny())
-}
-
-// recordRemoved is the registry's OnRemove for the journal: what the
-// session was as it left is handed over for the metadata still to be read
-// (Gone), then a session that left with an end observed keeps it (the
-// Info's, when the journal has none yet), a hosted one let go without one
-// (its host away past the grace) is marked host away, which proves nothing
-// of its process, and a server session whose process still ran is marked
-// lost until it is seen gone (awaitProcessEnd). Its hooks still to come
-// keep its recorder, and its record's instance judges them.
-func (s *Server) recordRemoved(id string, d session.Driver) {
-	v, ok := s.recorders.LoadAndDelete(d)
-	if !ok || s.sessionRecords == nil {
-		return
-	}
-	rc := v.(*recorder)
-	j := s.sessionRecords
-	info := d.Info()
-	j.Gone(rc.in, journal.Meta{Name: info.Name, AgentSession: agentSessionOf(info.AgentSession), Crew: crewOfRef(info.Crew)})
-	switch {
-	case s.observedEnd(rc, d, info):
-		end := journal.Ending{How: endingOf(info)}
-		if info.EndedAt != nil {
-			end.At = *info.EndedAt
-		}
-		j.End(rc.in, end)
-	case info.Kind == session.KindHosted:
-		j.End(rc.in, journal.Ending{How: journal.EndingHostAway, Lost: true})
-	default:
-		j.End(rc.in, journal.Ending{How: journal.EndingLost, Lost: true})
-	}
 }
 
 func agentSessionOf(as *session.AgentSession) *journal.AgentSession {

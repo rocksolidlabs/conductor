@@ -1435,7 +1435,7 @@ func forgettable(t *testing.T, e *testEnv, word string) (string, journal.Instanc
 		t.Fatal(err)
 	}
 	e.srv.sessionRecords.Chat(in, journal.ChatLine{Kind: "message", Text: "the " + word + " line", ByName: "nate", At: histNow})
-	e.srv.sessionRecords.End(in, journal.Ending{How: "exited"})
+	e.srv.sessionRecords.Settle(in, journal.State{Name: r.Name, Crew: r.Crew, End: &journal.Ending{How: "exited"}, Final: true})
 	endedRecord(t, e, id)
 	if got := histFind(t, histSettle(t, e), word); len(got) < 2 {
 		t.Fatalf("the record's words before it is forgotten: %v", got)
@@ -1687,7 +1687,7 @@ func TestARunsTransitionReadsNoMemberAgain(t *testing.T) {
 	}
 	put(commitID(7))
 	// Ended and written: its record changes no more while the run moves.
-	e.srv.sessionRecords.End(in, journal.Ending{How: "exited"})
+	e.srv.sessionRecords.Settle(in, journal.State{Name: r.Name, Crew: r.Crew, End: &journal.Ending{How: "exited"}, Final: true})
 	endedRecord(t, e, id)
 	if h := histEntry(t, histSettle(t, e), hSessionRef(id)); h.Commit != commitID(7) {
 		t.Fatalf("the member's commit: %q", h.Commit)

@@ -419,21 +419,24 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		// directory the agent itself writes to.
 		Plans: agents.PlansDir(agent.Adapter, pty.Lookup(procEnv), cwd),
 	}
-	recordHooks(rc, &opts)
+	s.recordHooks(rc, &opts)
 	local := session.NewLocal(info, session.RuntimeProcess(term), opts)
-	rc.made(local)
+	s.made(rc, local)
 	local.SetAgentToken(agentToken)
 	if req.spawned != nil {
 		req.spawned(local)
 	}
 	if err := s.registry.AddReserved(local, req.reservation); err != nil {
-		rc.abandon()
+		s.abandon(rc)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = local.Stop(ctx)
 		return nil, newAPIError(http.StatusConflict, "too_many_sessions", "session limit reached")
 	}
 	keepFolder = true
+	// Its registration complete, its record reconciled once: an exit
+	// before the registry held it is read now.
+	s.registered(rc)
 	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", term.Process().PID, "yolo", applied)
 	if yolo && !applied {
 		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: noYoloRecipe(agent)})
