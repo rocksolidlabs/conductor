@@ -240,6 +240,9 @@ type runRows struct {
 type runPlace struct {
 	run, crew, project, repo, tree, host, ticket string
 	kinds, agents                                map[string]string
+	// needs are each task's dependencies as its crew declares them: a
+	// review's subject is its first (the engine's reopen).
+	needs map[string][]string
 	// agentSessions are the members' agents' own sessions, as the run's
 	// record keeps them, by the attempt each is the member's latest of
 	// ("<task>/<n>").
@@ -317,8 +320,9 @@ func checkEntry(p runPlace, r ledger.CheckRow, branch string) history.Entry {
 // its messages, its verified candidates and failed steps, and every link
 // whose later end is in it. chain is the runs it continues, nearest first,
 // each with its rows (none for a legacy run). rec is its record, nil for a
-// run the ledger alone holds.
-func runSource(p runPlace, rec *crew.Run, rows *runRows, chain []runRows) ([]history.Entry, []history.Link) {
+// run the ledger alone holds. kept are the handed links into attempts a
+// later withdrawal took back, as the index held them (keptHanded).
+func runSource(p runPlace, rec *crew.Run, rows *runRows, chain []runRows, kept []history.Link) ([]history.Entry, []history.Link) {
 	ref := hRunRef(p.run)
 	var out []history.Entry
 	var links []history.Link
@@ -418,7 +422,9 @@ func runSource(p runPlace, rec *crew.Run, rows *runRows, chain []runRows) ([]his
 		x.At, x.Where, x.Commit, x.Revision = hAt(r.FinishedAt, p.fallback), hField(r.Where), r.Subject, hField(branchOf[fmt.Sprintf("%s/%d", r.TaskID, r.N)])
 		x.Title = hTitle(fmt.Sprintf("%s step %s on %s #%d", r.Phase, r.ID, r.TaskID, r.N))
 		x.Summary = history.CheckSummary(r.Argv)
-		x.Body = history.Clip(cmp.Or(r.Error, r.Tail), history.MaxCheckBody)
+		// Its words of failure alone: a step's output (a service's or a
+		// setup's log) is terminal output the history does not index.
+		x.Body = history.Clip(r.Error, history.MaxCheckBody)
 		out = append(out, x)
 	}
 	// Commands: the admin's receipts alone, keyed by actor and id.
@@ -442,6 +448,7 @@ func runSource(p runPlace, rec *crew.Run, rows *runRows, chain []runRows) ([]his
 		out = append(out, x)
 	}
 	links = append(links, handedLinks(p.run, rows, chain)...)
+	links = append(links, kept...)
 	links = append(links, passedAfterLinks(p.run, rows, chain)...)
 	links = append(links, reviewLinks(p, rows, chain)...)
 	return out, dedupLinks(links)
@@ -549,49 +556,62 @@ type chainAttempt struct {
 	a   ledger.AttemptRow
 }
 
-// lastCounted is the last attempt of task before n that the engine counts
-// and keeps (crew.UncountedAttempt, the task's withdrawal) in rows.
-func lastCounted(rows *runRows, task string, n int) (ledger.AttemptRow, bool) {
-	withdrawn := 0
-	if i := slices.IndexFunc(rows.tasks, func(t ledger.TaskRow) bool { return t.ID == task }); i >= 0 {
-		withdrawn = rows.tasks[i].Withdrawn
+// withdrawnOf is each task's Withdrawn in rows.
+func withdrawnOf(rows *runRows) map[string]ledger.TaskRow {
+	out := map[string]ledger.TaskRow{}
+	for _, t := range rows.tasks {
+		out[t.ID] = t
 	}
-	var out ledger.AttemptRow
-	found := false
-	for _, a := range rows.attempts {
-		if a.TaskID == task && a.N < n && a.N > withdrawn && !crew.UncountedAttempt(a) && (!found || a.N > out.N) {
-			out, found = a, true
-		}
-	}
-	return out, found
+	return out
 }
 
-// handedLinks are the handed links whose attempt is the run's: the
-// receipt that failed the last counted attempt before it (in this run, or
-// back along the runs it continues for the first attempts of a
-// continuation), as the engine hands it (crew.FailingReceipt).
+// handedLinks are the handed links whose attempt is the run's, as the
+// engine hands a receipt (previousOf, readHistory): attempt b is handed
+// the receipt that failed (crew.FailingReceipt) the last attempt of its
+// task before it that is counted (crew.UncountedAttempt) and kept (above
+// the task's withdrawal), in this run or, when this run holds none, back
+// along the runs it continues, walking past a run whose attempts at the
+// task are all uncounted (the engine carries the receipt through them),
+// with the attempts each ancestor holds bounded as the engine bounds them
+// (above the continued run's withdrawal, within its count). An attempt a
+// later withdrawal took back (its number at or below its task's Withdrawn
+// now) is left out: the withdrawal before its launch is no longer in the
+// rows, so its handed link is the one the index wrote while it was
+// (keptHanded), never one rebuilt from today's boundary.
 func handedLinks(run string, rows *runRows, chain []runRows) []history.Link {
+	cur := withdrawnOf(rows)
+	var from map[string]ledger.TaskRow // the run continued: its rows bound every ancestor's
+	if len(chain) > 0 {
+		from = withdrawnOf(&chain[0])
+	}
 	var links []history.Link
 	for _, b := range rows.attempts {
-		src, p, ok := run, ledger.AttemptRow{}, false
-		if p, ok = lastCounted(rows, b.TaskID, b.N); !ok {
-			for i := range chain {
-				if p, ok = lastCounted(&chain[i], b.TaskID, b.N); ok {
-					src = chain[i].row.ID
-					break
-				}
-				if slices.ContainsFunc(chain[i].attempts, func(a ledger.AttemptRow) bool { return a.TaskID == b.TaskID }) {
-					break
+		w := cur[b.TaskID].Withdrawn
+		if b.N <= w {
+			continue
+		}
+		pick := func(as []ledger.AttemptRow, usable func(ledger.AttemptRow) bool) (ledger.AttemptRow, bool) {
+			var out ledger.AttemptRow
+			found := false
+			for _, a := range as {
+				if a.TaskID == b.TaskID && a.N < b.N && a.N > w && usable(a) && !crew.UncountedAttempt(a) && (!found || a.N > out.N) {
+					out, found = a, true
 				}
 			}
+			return out, found
+		}
+		src, checks := run, rows.checks
+		p, ok := pick(rows.attempts, func(ledger.AttemptRow) bool { return true })
+		for i := 0; !ok && i < len(chain); i++ {
+			row := from[b.TaskID]
+			if row.Attempts <= row.Withdrawn {
+				break // the continued run kept no attempt of the task
+			}
+			p, ok = pick(chain[i].attempts, func(a ledger.AttemptRow) bool { return a.N > row.Withdrawn && a.N <= row.Attempts })
+			src, checks = chain[i].row.ID, chain[i].checks
 		}
 		if !ok {
 			continue
-		}
-		checks := rows.checks
-		if src != run {
-			i := slices.IndexFunc(chain, func(c runRows) bool { return c.row.ID == src })
-			checks = chain[i].checks
 		}
 		fr, ok := crew.FailingReceipt(p, checks)
 		if !ok {
@@ -643,48 +663,96 @@ func passedAfterLinks(run string, rows *runRows, chain []runRows) []history.Link
 	return links
 }
 
-// reviewLinks are a review attempt's links: reviews to the work attempt
-// whose result it reviewed (its start), and, for needs_changes, reopened
-// to that task's next attempt.
-func reviewLinks(p runPlace, rows *runRows, chain []runRows) []history.Link {
-	all := []chainAttempt{}
-	for _, a := range rows.attempts {
-		all = append(all, chainAttempt{p.run, a})
+// reviewedBy is the work attempt a review attempt v reviewed, found as
+// the engine names it: the review's subject is the first task it needs
+// (its crew's Needs[0], reopen), and its start commit that task's result
+// when it was dispatched, the result of the subject's last attempt to
+// succeed with that commit before the review was reserved, in the review's
+// run or back along the runs it continues (a result imported by a
+// continuation). runs are the review's run first, then its ancestors.
+func reviewedBy(p runPlace, v ledger.AttemptRow, runs []runRows) (chainAttempt, bool) {
+	needs := p.needs[v.TaskID]
+	if len(needs) == 0 || v.StartCommit == "" {
+		return chainAttempt{}, false
 	}
-	for _, c := range chain {
-		for _, a := range c.attempts {
-			all = append(all, chainAttempt{c.row.ID, a})
-		}
-	}
-	var links []history.Link
-	for _, v := range rows.attempts {
-		if p.kinds[v.TaskID] != crew.TaskReview || v.StartCommit == "" {
-			continue
-		}
-		var res crew.Result
-		if v.Result == "" || json.Unmarshal([]byte(v.Result), &res) != nil {
-			continue
-		}
-		i := slices.IndexFunc(all, func(w chainAttempt) bool {
-			return w.a.TaskID != v.TaskID && p.kinds[w.a.TaskID] != crew.TaskReview && w.a.ResultCommit == v.StartCommit
-		})
-		if i < 0 {
-			continue
-		}
-		w := all[i]
-		from := attemptKey(p.run, v.TaskID, v.N)
-		links = append(links, history.Link{From: from, Rel: relReviews, To: attemptKey(w.run, w.a.TaskID, w.a.N)})
-		if res.Verdict != crew.VerdictNeedsChanges {
-			continue
-		}
-		next := 0
-		for _, a := range rows.attempts {
-			if a.TaskID == w.a.TaskID && a.N > w.a.N && (next == 0 || a.N < next) {
-				next = a.N
+	subject := needs[0]
+	for _, rr := range runs {
+		var out ledger.AttemptRow
+		found := false
+		for _, w := range rr.attempts {
+			if w.TaskID != subject || w.State != ledger.AttemptSucceeded || w.ResultCommit != v.StartCommit {
+				continue
+			}
+			if rr.row.ID == runs[0].row.ID && !v.ReservedAt.IsZero() && !w.ClosedAt.IsZero() && w.ClosedAt.After(v.ReservedAt) {
+				continue // closed after the review was reserved: not its subject
+			}
+			if !found || w.N > out.N {
+				out, found = w, true
 			}
 		}
-		if next > 0 {
-			links = append(links, history.Link{From: from, Rel: relReopened, To: attemptKey(p.run, w.a.TaskID, next)})
+		if found {
+			return chainAttempt{rr.row.ID, out}, true
+		}
+	}
+	return chainAttempt{}, false
+}
+
+// reviewLinks are the review links whose later end is the run's: reviews
+// from each of its review attempts to the work attempt it reviewed
+// (reviewedBy), and reopened from a needs_changes verdict to the reviewed
+// task's next attempt, the repair, which is the run's either because the
+// review is (its next attempt in the run) or because the review is an
+// ancestor's whose run ended before the repair began, carried into this
+// continuation (the task's first attempt here, when no run between holds
+// one).
+func reviewLinks(p runPlace, rows *runRows, chain []runRows) []history.Link {
+	runs := append([]runRows{*rows}, chain...)
+	needsChanges := func(v ledger.AttemptRow) bool {
+		var res crew.Result
+		return v.Result != "" && json.Unmarshal([]byte(v.Result), &res) == nil && res.Verdict == crew.VerdictNeedsChanges
+	}
+	next := func(as []ledger.AttemptRow, task string, after int) int {
+		n := 0
+		for _, a := range as {
+			if a.TaskID == task && a.N > after && (n == 0 || a.N < n) {
+				n = a.N
+			}
+		}
+		return n
+	}
+	var links []history.Link
+	for i, rr := range runs {
+		for _, v := range rr.attempts {
+			if p.kinds[v.TaskID] != crew.TaskReview || v.Result == "" {
+				continue
+			}
+			if i > 0 && !needsChanges(v) {
+				continue
+			}
+			w, ok := reviewedBy(p, v, runs[i:])
+			if !ok {
+				continue
+			}
+			from := attemptKey(rr.row.ID, v.TaskID, v.N)
+			if i == 0 {
+				links = append(links, history.Link{From: from, Rel: relReviews, To: attemptKey(w.run, w.a.TaskID, w.a.N)})
+				if !needsChanges(v) {
+					continue
+				}
+				if n := next(rows.attempts, w.a.TaskID, w.a.N); n > 0 {
+					links = append(links, history.Link{From: from, Rel: relReopened, To: attemptKey(p.run, w.a.TaskID, n)})
+				}
+				continue
+			}
+			// An ancestor's review: the repair is this run's only when
+			// neither its run nor any run between holds an attempt of the
+			// task after the one reviewed.
+			if slices.ContainsFunc(runs[1:i+1], func(c runRows) bool { return next(c.attempts, w.a.TaskID, w.a.N) > 0 }) {
+				continue
+			}
+			if n := next(rows.attempts, w.a.TaskID, w.a.N); n > 0 {
+				links = append(links, history.Link{From: from, Rel: relReopened, To: attemptKey(p.run, w.a.TaskID, n)})
+			}
 		}
 	}
 	return links
