@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import type { BrakemanConfig, BriefItem } from './brakeman'
-import { BOUNDS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, formMove, groupItems, keptBrief, kindWords, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, sameConfig, scopeJSONBytes, stateRank, stateWords, stopAction, unopened } from './brakeman'
+import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
+import { BOUNDS, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actReceiptRef, actShown, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -129,6 +129,8 @@ describe('a ref, to its route and its label', () => {
     // GET /api/dispatch/ops/{opId} reads the admin's receipts only.
     expect(receiptPath('op:admin/abc.1')).toBe('/api/dispatch/ops/abc.1')
     expect(receiptPath('op:brakeman/abc.1')).toBeNull()
+    // A launch from a ticket: its summary and its package, the route the server's refURL names.
+    expect(receiptPath('launch:0123456789abcdef')).toBe('/api/dispatch/launches/0123456789abcdef')
     // A comment by the route its resolution names (its number is the server's), and only its own ticket's.
     expect(receiptPath('comment:CND-4/00112233aabbccdd', at('/api/dispatch/tickets/CND-4/comments?after=2&limit=1'))).toBe('/api/dispatch/tickets/CND-4/comments?after=2&limit=1')
     expect(receiptPath('comment:CND-4/00112233aabbccdd', at('/api/dispatch/tickets/CND-5/comments?after=2&limit=1'))).toBeNull()
@@ -139,6 +141,7 @@ describe('a ref, to its route and its label', () => {
     const src = readFileSync(new URL('../../../internal/api/brakeman_refs.go', import.meta.url), 'utf8')
     expect(src).toContain('"/attempts/" + strconv.Itoa(ref.N) + "/steps/" + esc(ref.Check) + "/" + strconv.Itoa(ref.K) + "/log"')
     expect(src).toContain('return "/api/runs/" + esc(ref.Run) + "/commands/" + esc(ref.Command)')
+    expect(src).toContain('return "/api/dispatch/launches/" + esc(ref.Launch)')
     expect(src).toContain('"/api/dispatch/tickets/" + url.PathEscape(key) + "/comments?after="')
   })
 
@@ -375,4 +378,168 @@ describe('the display name a request and a make keep', () => {
     expect(displayBy('  Nate  ')).toBe('Nate')
     expect(displayBy('Na\tte\r\n')).toBe('Na te')
   })
+})
+
+describe("DS2's records in a brief (PR-11)", () => {
+  it("group a draft plan revision with the other drafts", () => {
+    const items: BriefItem[] = [
+      { kind: 'fact/1', text: 'f', evidence: ['ticket:CND-4'] },
+      { kind: 'draft_plan/1', ticket: 'ticket:CND-4', crew: 'team' },
+    ]
+    expect(groupItems(items).map((g) => [g.group, g.items.map((x) => x.index)])).toEqual([
+      ['facts', [0]],
+      ['drafts', [1]],
+    ])
+  })
+})
+
+describe("the grants in Settings and what Brakeman did under them (PR-13)", () => {
+  it("are the server's closed list, each with what it authorizes in words, none an approval", () => {
+    const src = readFileSync(new URL('../../../internal/brakeman/config.go', import.meta.url), 'utf8')
+    const names = Object.fromEntries([...src.matchAll(/\b(Act[A-Za-z]+)\s*=\s*"([a-z_]+)"/g)].map((m) => [m[1], m[2]]))
+    const list = /var Grantable = \[\]string\{([^}]*)\}/.exec(src)![1]!.split(',').map((k) => names[k.trim()])
+    expect(GRANTS.map((g) => g.value)).toEqual(list)
+    for (const g of GRANTS) {
+      expect(g.words.length).toBeGreaterThan(30)
+      expect(g.words).not.toMatch(/^Approve/)
+    }
+    expect(GRANTS.find((g) => g.value === 'launch_approved_plan')!.words).toContain('never approves')
+    expect(grantLabel('prepare_followup')).toBe('Prepare a follow-up')
+    expect(grantLabel('nope')).toBe('nope')
+  })
+
+  it('save a grant list in their order, each once, and a save with none as no grant', () => {
+    expect(withGrant(undefined, 'prepare_followup', true)).toEqual(['prepare_followup'])
+    expect(withGrant(['prepare_followup'], 'launch_approved_plan', true)).toEqual(['launch_approved_plan', 'prepare_followup'])
+    expect(withGrant(['launch_approved_plan', 'prepare_followup'], 'launch_approved_plan', false)).toEqual(['prepare_followup'])
+    expect(withGrant(['launch_approved_plan'], 'launch_approved_plan', true)).toEqual(['launch_approved_plan'])
+    // The server leaves an empty grant list out: a form with [] is the one saved without it.
+    expect(sameConfig(config({ permissions: { observe: true, draft: true, propose: true, act: [] } }), config())).toBe(true)
+    expect(sameConfig(config({ permissions: { observe: true, draft: true, propose: true, act: ['prepare_followup', 'launch_approved_plan'] } }), config({ permissions: { observe: true, draft: true, propose: true, act: ['launch_approved_plan', 'prepare_followup'] } }))).toBe(true)
+    expect(sameConfig(config({ permissions: { observe: true, draft: true, propose: true, act: ['launch_approved_plan'] } }), config())).toBe(false)
+  })
+
+  it("offer only the grants the server's guide lists under the scope act, and none while it is unread", () => {
+    expect(servedGrants(null)).toBeNull()
+    const served = servedGrants([
+      { name: 'act', scope: 'act' },
+      { name: 'launch_approved_plan', scope: 'act' },
+      { name: 'prepare_followup', scope: 'act' },
+      { name: 'run_pause', scope: 'admin' },
+    ])!
+    expect([...served].sort()).toEqual(['launch_approved_plan', 'prepare_followup'])
+    expect(served.has('request_repair')).toBe(false)
+  })
+
+  it('let a grant that is on be turned off whatever the guide, even unread or failed, and turned on only when the guide serves it', () => {
+    const served = servedGrants([{ name: 'launch_approved_plan', scope: 'act' }])
+    // The guide unread, or its read failed: a grant on can be turned off and saved without it; one off cannot be turned on.
+    expect(grantHeld(null, true, 'launch_approved_plan')).toBe(false)
+    expect(grantHeld(null, false, 'launch_approved_plan')).toBe(true)
+    expect(withGrant(['launch_approved_plan'], 'launch_approved_plan', false)).toEqual([])
+    // Read: a served grant either way; one not served only off, once on.
+    expect(grantHeld(served, false, 'launch_approved_plan')).toBe(false)
+    expect(grantHeld(served, true, 'launch_approved_plan')).toBe(false)
+    expect(grantHeld(served, false, 'request_repair')).toBe(true)
+    expect(grantHeld(served, true, 'request_repair')).toBe(false)
+  })
+
+  const proposal = (op: string, target: string, args?: Record<string, unknown>): Extract<BriefItem, { kind: 'proposal/1' }> => ({ kind: 'proposal/1', text: 'Launch it.', op, target, args, expectedRevision: '3' })
+  const act = (over: Partial<BrakemanAct>): BrakemanAct => ({ opId: 'a1', operation: 'launch_approved_plan', target: 'ticket:CND-4', op: 'bk' + '0'.repeat(30), state: 'done', receipt: '0123456789abcdef', at: '2026-11-05T10:00:00Z', ...over })
+
+  it("finds the act Brakeman ran for a proposal by the opId the proposal names: its operation on the proposal's ticket, and no other", () => {
+    const acts = [act({ opId: 'a1', at: '2026-11-05T10:00:00Z' }), act({ opId: 'a2', at: '2026-11-05T10:05:00Z', receipt: 'fedcba9876543210' }), act({ opId: 'f1', operation: 'prepare_followup', receipt: '1111111111111111' })]
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4', { opId: 'a1' }), acts)?.opId).toBe('a1')
+    expect(actFor(proposal('launch_approved_plan', 'plan:CND-4/2', { plan: '0123456789abcdef', opId: 'a2' }), acts)?.opId).toBe('a2')
+    expect(actFor(proposal('prepare_followup', 'plan:CND-4/1', { opId: 'f1' }), acts)?.opId).toBe('f1')
+    // Named by no opId, or by one of no act of its operation on its ticket: a proposal, though Brakeman ran another of the same kind there.
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4'), acts)).toBeUndefined()
+    expect(actFor(proposal('launch_approved_plan', 'plan:CND-4/2', { plan: '0123456789abcdef' }), acts)).toBeUndefined()
+    expect(actFor(proposal('prepare_followup', 'plan:CND-4/1', { opId: 'never-ran' }), acts)).toBeUndefined()
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4', { opId: 'f1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-5', { opId: 'a1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4', { opId: 7 }), acts)).toBeUndefined()
+    // Not run for this proposal: another operation, no acts, a target of no ticket.
+    expect(actFor(proposal('ticket_edit', 'ticket:CND-4', { opId: 'a1' }), acts)).toBeUndefined()
+    expect(actFor(proposal('launch_approved_plan', 'ticket:CND-4', { opId: 'a1' }), undefined)).toBeUndefined()
+    expect(actFor(proposal('run_pause', `run:${RUN}`, { opId: 'a1' }), acts)).toBeUndefined()
+    expect(refTicket('comment:CND-4/00112233aabbccdd')).toBe('CND-4')
+    expect(refTicket(`run:${RUN}`)).toBe('')
+  })
+
+  it('tells two proposals of one operation on one ticket apart: only the one Brakeman ran is done', () => {
+    const acts = [act({ opId: 'r1', receipt: '0123456789abcdef' })]
+    const ran = proposal('launch_approved_plan', 'plan:CND-4/1', { plan: '0123456789abcdef', opId: 'r1' })
+    const other = proposal('launch_approved_plan', 'plan:CND-4/2', { plan: 'fedcba9876543210' })
+    expect(actFor(ran, acts)?.state).toBe('done')
+    expect(actFor(other, acts)).toBeUndefined()
+    const followups = [act({ opId: 'f1', operation: 'prepare_followup', receipt: '1111111111111111' })]
+    expect(actFor(proposal('prepare_followup', 'ticket:CND-4', { crew: 'a', opId: 'f1' }), followups)?.opId).toBe('f1')
+    expect(actFor(proposal('prepare_followup', 'ticket:CND-4', { crew: 'b', opId: 'f2' }), followups)).toBeUndefined()
+  })
+
+  it('says "Brakeman did this" with its receipt only for an act done, and what became of any other', () => {
+    expect(actWords(act({}), { state: 'started', runId: 'r-1' })).toBe('Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt 0123456789abcdef.')
+    expect(actWords(act({ operation: 'prepare_followup', receipt: 'fedcba9876543210' }))).toBe('Brakeman did this, under the grant "Prepare a follow-up" you gave it: receipt fedcba9876543210.')
+    expect(actReceiptRef(act({}))).toBe('launch:0123456789abcdef')
+    expect(actWords(act({ state: 'pending', receipt: undefined }))).toContain('is doing this')
+    expect(actWords(act({ state: 'refused', receipt: undefined, why: 'revision 1 of CND-4 is proposed' }))).toBe('Brakeman tried this, under the grant "Launch an approved plan", and it was refused: revision 1 of CND-4 is proposed. Nothing was done.')
+    expect(actWords(act({ state: 'not_run', receipt: undefined }))).toContain('not run again')
+    for (const a of [act({ state: 'refused' }), act({ state: 'pending' }), act({ operation: 'prepare_followup' }), act({ receipt: 'nope' })]) expect(actReceiptRef(a)).toBeNull()
+  })
+
+  it('says a launch is done only once its run has started: pending while it is being started or unread, failed with its words', () => {
+    const a = act({})
+    // Dispatch keeps the launch, and its receipt done, before the run is started: the launch says what came of it.
+    expect([actShown(a, { state: 'started', runId: 'r-1' }), actWords(a, { state: 'started', runId: 'r-1' })]).toEqual(['done', 'Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt 0123456789abcdef.'])
+    expect([actShown(a, { state: 'pending', runId: 'r-1' }), actWords(a, { state: 'pending', runId: 'r-1' })]).toEqual(['pending', 'Brakeman launched this, under the grant "Launch an approved plan": receipt 0123456789abcdef. Its run is still being started.'])
+    expect([actShown(a, null), actWords(a, null)]).toEqual(['pending', 'Brakeman launched this, under the grant "Launch an approved plan": receipt 0123456789abcdef. Whether its run has started is not read yet.'])
+    const failed = { state: 'failed', runId: 'r-1', why: 'the agent could not be started' }
+    expect([actShown(a, failed), actWords(a, failed)]).toEqual(['failed', 'Brakeman launched this, under the grant "Launch an approved plan": receipt 0123456789abcdef, but the launch failed: the agent could not be started. No run was started.'])
+    for (const l of [{ state: 'started' }, { state: 'pending' }, failed, null]) expect(actWords(a, l)).not.toBe(actWords(act({ state: 'refused' })))
+    // Not a launch's act, or not done: its own state, whatever launch is given.
+    expect(actShown(act({ operation: 'prepare_followup', receipt: 'fedcba9876543210' }), null)).toBe('done')
+    expect(actShown(act({ state: 'refused' }), { state: 'started' })).toBe('refused')
+    expect(actShown(act({ state: 'pending', receipt: undefined }), failed)).toBe('pending')
+  })
+
+  it('reads a launch again while it is pending, and after a failed read, until it has started or failed, and stops when not wanted', async () => {
+    const answers: Array<{ state: string } | Error> = [{ state: 'pending' }, new Error('lost'), { state: 'pending' }, { state: 'failed' }, { state: 'started' }]
+    const shown: string[] = []
+    const waits: number[] = []
+    const settled = await followLaunch({
+      read: async () => {
+        const a = answers.shift()!
+        if (a instanceof Error) throw a
+        return a
+      },
+      show: (l) => shown.push(l.state),
+      stop: () => false,
+      wait: async (ms) => void waits.push(ms),
+      firstMs: 2000,
+      maxMs: 8000,
+    })
+    expect(settled).toEqual({ state: 'failed' })
+    expect(shown).toEqual(['pending', 'pending', 'failed'])
+    expect(waits).toEqual([2000, 4000, 8000])
+    expect(answers).toEqual([{ state: 'started' }])
+    // No longer wanted (the card shows another act): an answer that comes after is not shown, and nothing more is read.
+    let wanted = true
+    let reads = 0
+    const shownAfter: string[] = []
+    const stopped = await followLaunch({
+      read: async () => {
+        reads++
+        wanted = false
+        return { state: 'started' }
+      },
+      show: (l) => shownAfter.push(l.state),
+      stop: () => !wanted,
+      wait: async () => {},
+      firstMs: 2000,
+      maxMs: 8000,
+    })
+    expect([stopped, reads, shownAfter]).toEqual([null, 1, []])
+  })
+
 })

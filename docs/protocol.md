@@ -2273,8 +2273,9 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
   names), or `brakeman` (a Brakeman turn's, which is never a ticket's
   member); `scopes` are the operations' scopes it reaches (`session`, and
   `task` for an attempt, `ticket` for a ticket's member, `observe` for a
-  Brakeman turn: its request and its brief; the admin's are `admin`,
-  `session`, `task`, `ticket` and `observe`). `bytes` is the size of that
+  Brakeman turn: its request and its brief, and `act` for a Brakeman turn
+  the person granted an operation (What a turn may do); the admin's are
+  `admin`, `session`, `task`, `ticket`, `observe` and `act`). `bytes` is the size of that
   section's reply. `rules` are three lines for every caller: a fact needs
   evidence; nothing an agent writes becomes work by itself; a question
   goes to a person with `ask`.
@@ -3573,7 +3574,7 @@ that is not a turn's:
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}}}`: the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together. The admin's token reads it too; read with the session's own, it marks the request read |
+| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}}}`: the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together (`permissions.act` the operations both grant that this build serves, absent for none). The admin's token reads it too; read with the session's own, it marks the request read |
 | `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed. The `opId` is looked up first: the same `opId` and brief answer `200` with the request whatever its state now, another brief `409 brief_exists`; so does a submission that overlapped the one kept (both checked before either was kept). Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` (its path, a list's entry by its index: `items[1].alternatives[1].label`) and why (a field past its bound is refused, never cut; a brief with no item is refused, and a briefing's with no `fact/1`; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0; the why names what is taken beside what was sent: an unknown item kind with every kind, an unknown field with the fields its object takes, a value of another type with its field's type, a ref of no kind with the ref forms); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; all of it against the configuration as the brief is kept, a save meanwhile having it checked again (`409 stale_revision` when the configuration keeps changing); nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
 
 **What a turn reads.** A request whose bearer is a turn's session token
@@ -3724,8 +3725,34 @@ stopped, as long as the shutdown allows, and Brakeman's owner lock goes
 after it; one that has not begun runs nothing (`503 shutting_down`), and
 a launch still under way once the stops begin starts no run (`409
 launch_failed`, "the server is shutting down: the run was not started").
-A server
-that stops between the operation and the copy, or before the operation,
+
+The guide's table lists each operation a grant may name that this build
+serves, under the grant's name with the scope `act` (`launch_approved_plan`
+and `prepare_followup`: its route, the body that route decodes, its body
+bound, `receipt: dispatch` and `revision: ticket`), and the MCP tool `act`
+(`{operation, params?, body?, opId?}`: the operation by its name, its
+route's path parameters, its body without `opId`), which `conductor mcp`
+and `conductor brakeman act OPERATION --key KEY --body-file F [--op-id
+ID] [--json]` (`--json` printing `{"opId", "reply"}`: the act's `opId`,
+given or minted, beside the route's reply, whose receipt carries the
+derived id) send to that operation's own route by the table, on the
+client side, with the turn's token and its session named, the `opId`
+minted when the turn gives none and sent again with the same body, as
+`conductor dispatch launch` sends a launch: at once when the reply is
+lost, after a wait when the launch is answered still being started (503
+`ledger_unavailable` naming it pending), within three sends in all, each
+request waiting its route's own bound (a launch's, `api.LaunchTimeout`
+and a request's beside it), never the session client's; an act left
+unsettled names its `opId` to send again. A turn's guide lists the tool and the operations
+its request's `permissions.act` names, and `conductor mcp` lists the tool
+in a Brakeman turn's session only while that guide lists one (it reads
+the guide, never the request, whose read marks the request read); the
+admin's guide lists them all. A proposal (`proposal/1`) may name a
+granted operation as its `op`, with `expectedRevision` the ticket's
+revision read, and the `opId` of the act it ran in `args.opId`; the
+request's `acts` say which of them Brakeman ran, and the app shows a
+proposal as "Brakeman did this" with its receipt only when an act of the
+request has the `opId` it names, of its operation on its ticket. A server that stops between the operation and the copy, or before the operation,
 leaves the entry `pending`: before Brakeman's routes serve again, the
 desk reads Dispatch's receipt for `(brakeman, op)`, or, the receipt
 pruned, the change its operation recorded, and copies it, or, with

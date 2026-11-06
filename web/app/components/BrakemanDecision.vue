@@ -9,7 +9,8 @@ import type { TaskCommand } from '~/utils/tasks'
  * alternatives and their tradeoffs, the recommendation and its uncertainty, what is blocked, what answering authorizes, the evidence
  * and the revision it was read at); its controls are Conductor's own, from the live record of what it is about (utils/brakemanCards.ts):
  * an open question's options and "Answer in the session"; a task's commands by the run page's rules, each with the run's revision the
- * turn read, so a run that moved since is refused by its route and the card says what changed; a ticket's page.
+ * turn read, so a run that moved since is refused by its route and the card says what changed; a ticket's page; for a plan revision,
+ * DS2's own Approve from the revision's live record (BrakemanPlanControl, PR-11), which the operator alone presses.
  */
 const props = defineProps<{ item: Extract<BriefItem, { kind: 'decision/1' }>; index: number; refs: ReadonlyMap<string, RefResolution> }>()
 
@@ -127,6 +128,7 @@ function press(command: TaskCommand) {
         <UButton :to="controls.to" label="The run page" icon="i-lucide-arrow-up-right" size="sm" color="neutral" variant="ghost" data-decision-run />
       </div>
       <UButton v-else-if="controls.kind === 'ticket'" :to="controls.to" label="Open the ticket" icon="i-lucide-ticket" size="sm" color="neutral" variant="outline" class="self-start" data-decision-ticket />
+      <BrakemanPlanControl v-else-if="controls.kind === 'plan'" :ticket-key="controls.ticket" :n="controls.n" />
       <UButton v-else-if="controls.to" :to="controls.to" label="Open its page" icon="i-lucide-arrow-up-right" size="sm" color="neutral" variant="ghost" class="self-start" />
       <UAlert v-if="refusal" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="refusal" data-card-refused />
     </div>
