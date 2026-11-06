@@ -27,11 +27,22 @@ func TestDecisionFrameBounded(t *testing.T) {
 	if err != nil || f[0] != TypeDecision {
 		t.Fatalf("a small decision: %v %x", err, f[:1])
 	}
-	// A relay does not carry the lane yet: the switchyard's side is PR-6's.
-	inner := Encode(TypeDecision, []byte(`{}`))
-	env, _ := EncodeRelay(strings.Repeat("v", ViewerIDLen), inner)
-	if _, _, err := DecodeRelay(env[1:]); !errors.Is(err, ErrBadEnvelope) {
-		t.Fatalf("a relayed decision: %v", err)
+	// A relay does not carry the lane yet, either way: the switchyard's
+	// side is PR-6's, and until then both frames are refused in an
+	// envelope as any type it does not carry is.
+	for _, typ := range []byte{TypeDecision, TypeDecide} {
+		inner := Encode(typ, []byte(`{}`))
+		env, _ := EncodeRelay(strings.Repeat("v", ViewerIDLen), inner)
+		if _, _, err := DecodeRelay(env[1:]); !errors.Is(err, ErrBadEnvelope) {
+			t.Fatalf("a relayed 0x%02x: %v", typ, err)
+		}
+	}
+	// A DECIDE at its bound and one byte past it.
+	if _, err := Decode(Encode(TypeDecide, make([]byte, MaxDecide))); err != nil {
+		t.Fatalf("a decide at its bound: %v", err)
+	}
+	if _, err := Decode(Encode(TypeDecide, make([]byte, MaxDecide+1))); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("a decide past its bound: %v", err)
 	}
 }
 
@@ -55,6 +66,10 @@ func TestDecisionsListValid(t *testing.T) {
 	lane(t, CtlDecisionsList, `{"t":"decisions_list","reqId":"`+strings.Repeat("r", MaxDecisionReqID+1)+`"}`, false)
 	lane(t, CtlDecisionsList, `{"t":"decisions_list","reqId":"r 1"}`, false)
 	lane(t, CtlDecisionsList, `{"t":"decisions_list","reqId":"r1","extra":1}`, false)
+	for _, after := range []string{"]", "}", "{}", " x"} {
+		lane(t, CtlDecisionsList, `{"t":"decisions_list","reqId":"r1"}`+after, false)
+	}
+	lane(t, CtlDecisionsList, `{"t":"decisions_list","reqId":"r1"} `+"\n", true)
 	if _, _, ok, _ := DecodeLane(CtlChat, []byte(`{}`)); ok {
 		t.Fatal("chat is no lane message")
 	}
@@ -144,20 +159,24 @@ func TestDecideValid(t *testing.T) {
 			t.Fatalf("%s encoded: %v", name, err)
 		}
 	}
-	// Strict: an unknown field, a second object, a bad type.
+	// Strict: an unknown field, a second object, a bad type, a stray
+	// closing delimiter or anything else after the object.
 	for _, p := range []string{
 		`{"reqId":"r","ref":"task:a/b","action":"retry","revision":"1","opId":"o","by":"me"}`,
 		`{"reqId":"r","ref":"task:a/b","action":"retry","revision":"1","opId":"o"}{}`,
+		`{"reqId":"r","ref":"task:a/b","action":"retry","revision":"1","opId":"o"}]`,
+		`{"reqId":"r","ref":"task:a/b","action":"retry","revision":"1","opId":"o"}}`,
+		`{"reqId":"r","ref":"task:a/b","action":"retry","revision":"1","opId":"o"} x`,
 		`{"reqId":"r","ref":"task:a/b","action":"retry","revision":1,"opId":"o"}`,
 	} {
 		if _, err := DecodeDecide([]byte(p)); !errors.Is(err, ErrBadDecide) {
 			t.Fatalf("%s: %v", p, err)
 		}
-		if DecideReqID([]byte(p)) != "r" && !strings.HasSuffix(p, "{}") {
+		if DecideReqID([]byte(p)) != "r" && !strings.HasPrefix(p, `{"reqId":"r","ref":"task:a/b","action":"retry","revision":"1","opId":"o"}`) {
 			t.Fatalf("the reqId of %s", p)
 		}
 	}
-	if m, err := DecodeDecide([]byte(`{"reqId":"r","ref":"task:a/b","action":"retry","revision":"1","opId":"o"}`)); err != nil || m.Action != "retry" {
+	if m, err := DecodeDecide([]byte(`{"reqId":"r","ref":"task:a/b","action":"retry","revision":"1","opId":"o"} ` + "\n")); err != nil || m.Action != "retry" {
 		t.Fatalf("a retry: %+v %v", m, err)
 	}
 }
@@ -236,7 +255,7 @@ func TestDecisionsChangedValid(t *testing.T) {
 // its receipt at their bounds, escaping as much as they can.
 func TestDecideRefusedCodes(t *testing.T) {
 	for _, code := range []string{DecideStaleRevision, DecideNotInScope, DecideNotDecisionLink, DecideNotFound, DecideAnswered, DecideTooMany,
-		DecideUnsupported, DecideInvalid, DecideRecordMoved, DecideRevoked, DecideExpired} {
+		DecideUnsupported, DecideInvalid, DecideRecordMoved, DecideRevoked, DecideExpired, DecideOpConflict} {
 		m := fitsControl(t, DecideRefused{T: CtlDecideRefused, ReqID: strings.Repeat("r", MaxDecisionReqID), Code: code, Message: strings.Repeat("<", MaxDecideWords/6),
 			Rev: strings.Repeat("9", MaxDecisionRecordRev), Ref: strings.Repeat("<", MaxDecisionRef), Receipt: strings.Repeat("<", MaxDecisionReceipt)})
 		if m["code"] != code {
@@ -253,4 +272,31 @@ func TestWelcomeSaysDecisions(t *testing.T) {
 	if m := fitsControl(t, Welcome{T: CtlWelcome}); m["decisions"] != nil {
 		t.Fatalf("decisions on a welcome without: %v", m)
 	}
+}
+
+// Every lane request at its bounds, its strings of characters Go's encoder
+// escapes six bytes for one, fits MaxControl and decodes; an evidence ref
+// at its bound is valid and one past it is not.
+func TestLaneRequestsAtTheirBoundsFitMaxControl(t *testing.T) {
+	esc := func(n int) string { return strings.Repeat("<", n) }
+	for _, m := range []any{
+		DecisionsList{T: CtlDecisionsList, ReqID: esc(MaxDecisionReqID), After: esc(MaxDecisionCursor)},
+		DecisionRead{T: CtlDecisionRead, ReqID: esc(MaxDecisionReqID), Ref: esc(MaxDecisionRef)},
+		DecisionTrack{T: CtlDecisionTrack, ReqID: esc(MaxDecisionReqID), Ref: esc(MaxDecisionRef), Receipt: esc(MaxDecisionReceipt), Attempt: strings.Repeat("a", MaxDecisionAttempt)},
+		DecisionRecord{T: CtlDecisionRecord, ReqID: esc(MaxDecisionReqID), Ref: esc(MaxDecisionRef), Part: RecordHistory, Rev: strings.Repeat("9", MaxDecisionRecordRev), After: esc(MaxDecisionRecordAfter)},
+		DecisionEvidence{T: CtlDecisionEvidence, ReqID: esc(MaxDecisionReqID), Ref: esc(MaxDecisionRef), Evidence: esc(MaxDecisionRef)},
+	} {
+		b, err := json.Marshal(m)
+		if err != nil || len(b) > MaxControl {
+			t.Fatalf("%T at its bounds: %d bytes (%v)", m, len(b), err)
+		}
+		if _, err := Decode(Encode(TypeControl, b)); err != nil {
+			t.Fatalf("%T framed: %v", m, err)
+		}
+		h, _ := ParseHeader(b)
+		if _, _, ok, err := DecodeLane(h, b); !ok || err != nil {
+			t.Fatalf("%T decoded: %v %v", m, ok, err)
+		}
+	}
+	lane(t, CtlDecisionEvidence, `{"t":"decision_evidence","reqId":"r1","ref":"task:run-1/build","evidence":"`+strings.Repeat("e", MaxDecisionRef)+`"}`, true)
 }

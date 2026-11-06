@@ -133,7 +133,7 @@ describe('the decision lane', () => {
       expect(parseJSON(decodeFrame(encodeJSONFrame(FrameType.Control, m))!.payload)).toEqual(m)
     }
     expect(Object.values(DecideCode)).toEqual(['stale_revision', 'not_in_scope', 'not_decision_link', 'not_found', 'question_answered', 'too_many_requests',
-      'unsupported', 'invalid', 'record_moved', 'revoked', 'expired'])
+      'unsupported', 'invalid', 'record_moved', 'revoked', 'expired', 'op_conflict'])
     const welcome: Partial<Welcome> = { t: 'welcome', decisions: true }
     expect(welcome.decisions).toBe(true)
     expect(MAX_RATIONALE).toBe(2048)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"unicode/utf8"
 )
@@ -99,6 +100,10 @@ const (
 	DecideRecordMoved     = "record_moved"
 	DecideRevoked         = ErrCodeRevoked
 	DecideExpired         = ErrCodeExpired
+	// DecideOpConflict refuses a decide whose opId the link took before
+	// for another request (another item, action or argument): an opId names
+	// one operation, and nothing is done.
+	DecideOpConflict = "op_conflict"
 )
 
 // OpIDPattern bounds a decide's opId: the action's identity, which the
@@ -320,13 +325,8 @@ func encodedLen(s string) int {
 // (ErrBadDecide otherwise). The frame's size was checked by Decode.
 func DecodeDecide(payload []byte) (Decide, error) {
 	var m Decide
-	dec := json.NewDecoder(bytes.NewReader(payload))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&m); err != nil {
+	if err := decodeStrict(payload, &m); err != nil {
 		return Decide{}, fmt.Errorf("%w: %v", ErrBadDecide, err)
-	}
-	if dec.More() {
-		return Decide{}, fmt.Errorf("%w: more than one object", ErrBadDecide)
 	}
 	if !m.Valid() {
 		return Decide{}, fmt.Errorf("%w: past its bounds", ErrBadDecide)
@@ -386,14 +386,27 @@ func DecodeLane(t string, payload []byte) (msg any, reqID string, ok bool, err e
 	default:
 		return nil, "", false, nil
 	}
-	dec := json.NewDecoder(bytes.NewReader(payload))
-	dec.DisallowUnknownFields()
-	derr := dec.Decode(v)
+	derr := decodeStrict(payload, v)
 	reqID = laneReqID(payload)
 	if derr != nil || !v.Valid() {
 		return nil, reqID, true, fmt.Errorf("proto: a malformed %s", t)
 	}
 	return v, reqID, true, nil
+}
+
+// decodeStrict decodes payload into v as exactly one JSON value: no field
+// v does not know, and nothing after it but white space (a stray ']' or
+// '}' included, which a decoder's More would let pass).
+func decodeStrict(payload []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("more after the object")
+	}
+	return nil
 }
 
 // laneReqID is the reqId a lane request names, read leniently so a

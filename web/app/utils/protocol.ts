@@ -909,6 +909,8 @@ export const DecideCode = {
   RecordMoved: 'record_moved',
   Revoked: 'revoked',
   Expired: 'expired',
+  /** The opId was taken before for another request (another item, action or argument): nothing was done. */
+  OpConflict: 'op_conflict',
 } as const
 
 export interface DecisionsListMsg { t: 'decisions_list'; reqId: string; after?: string }
