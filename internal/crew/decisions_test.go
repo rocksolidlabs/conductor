@@ -1047,16 +1047,22 @@ func TestAResponsesRechecks(t *testing.T) {
 	decisionWhen(t, ld, d2.ID, "answered", inState(ledger.DecisionAnswered))
 }
 
-// refusingLedger is the real ledger, which refuses the next transition
-// once armed, before it writes anything: a commit the ledger refused.
+// refusingLedger is the real ledger, which refuses the next refuse
+// transitions, before it writes anything: commits the ledger refused.
 type refusingLedger struct {
 	sqlLedger
-	armed atomic.Bool
+	refuse atomic.Int32
 }
 
 func (l *refusingLedger) Transition(ctx context.Context, runID string, fn func(LedgerTx) error) (int64, error) {
-	if l.armed.CompareAndSwap(true, false) {
-		return 0, errors.New("the ledger refused the commit (test)")
+	for {
+		n := l.refuse.Load()
+		if n <= 0 {
+			break
+		}
+		if l.refuse.CompareAndSwap(n, n-1) {
+			return 0, errors.New("the ledger refused the commit (test)")
+		}
 	}
 	return l.sqlLedger.Transition(ctx, runID, fn)
 }
@@ -1080,9 +1086,9 @@ func TestARefusedApplicationIsCarriedWhole(t *testing.T) {
 	if err != nil || rc.Status != "accepted" {
 		t.Fatalf("the identity's response: %+v %v", rc, err)
 	}
-	rl.armed.Store(true)
+	rl.refuse.Store(1)
 	e.ConfirmAuthority(d.ID, rc.K, true)
-	if rl.armed.Load() {
+	if rl.refuse.Load() != 0 {
 		t.Fatal("no commit was refused")
 	}
 	rec := decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
@@ -1115,9 +1121,9 @@ func TestARefusedApplicationIsCarriedWhole(t *testing.T) {
 	if err != nil || rc.Status != "accepted" {
 		t.Fatalf("the identity's response: %+v %v", rc, err)
 	}
-	rl.armed.Store(true)
+	rl.refuse.Store(1)
 	e.ConfirmAuthority(g.ID, rc.K, false)
-	if rl.armed.Load() {
+	if rl.refuse.Load() != 0 {
 		t.Fatal("no commit was refused")
 	}
 	old := decisionWhen(t, ld, g.ID, "superseded", inState(ledger.DecisionSuperseded))
@@ -1173,10 +1179,15 @@ func TestAMirrorSetAsideBeforeItsLineIsWithdrawn(t *testing.T) {
 }
 
 // An older decision's ask that comes after a newer one's (askMu taken out
-// of their order) leaves the newer decision's question showing.
+// of their order) leaves the newer decision's question showing; so it does
+// after a request superseding the older one was refused by the ledger,
+// which put the older one back last among the run's decisions (#635,
+// review round 2).
 func TestAnOlderMirrorNeverReplacesANewer(t *testing.T) {
 	dir := newRepo(t)
-	e, fl, _ := decisionEngine(t)
+	e, fl, ld := decisionEngine(t)
+	rl := &refusingLedger{sqlLedger: sqlLedger{ld}}
+	e.UseLedger(rl)
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
 	b, l, _ := attemptOn(t, e, fl, run.ID, "build")
 	d1 := ask(t, e, b.Attempt.SessionID, DecisionRequest{RequestID: "q1", Type: ledger.DecisionClarification, Question: "Which index?"})
@@ -1193,6 +1204,19 @@ func TestAnOlderMirrorNeverReplacesANewer(t *testing.T) {
 	e.askMirror(r, a, older)
 	if got := l.Info().Attention; got.Decision != d2.ID {
 		t.Fatalf("the question after dr-1's late ask: %+v", got)
+	}
+	// A request superseding dr-1, its commit refused: dr-1 is open again.
+	rl.refuse.Store(1)
+	if _, _, err := e.RequestDecision(t.Context(), b.Attempt.SessionID, DecisionRequest{RequestID: "q3", Type: ledger.DecisionClarification, Question: "Which index now?", Supersedes: d1.ID}); err == nil {
+		t.Fatal("the superseding request's refused commit was not told")
+	}
+	if rl.refuse.Load() != 0 {
+		t.Fatal("no commit was refused")
+	}
+	decisionWhen(t, ld, d1.ID, "open", inState(ledger.DecisionOpen))
+	e.askMirror(r, a, older)
+	if got := l.Info().Attention; got.Decision != d2.ID {
+		t.Fatalf("the question after dr-1's late ask, its supersession refused: %+v", got)
 	}
 	stopRun(t, e, run.ID)
 }
@@ -1313,4 +1337,314 @@ func TestARejectedGateEndsTheRunOnceAfterAllItsTasks(t *testing.T) {
 	if finished != 1 || finish < lastCancel {
 		t.Fatalf("events %q", kinds)
 	}
+}
+
+// A replacement whose commit was refused, and the pause's after it, is
+// carried by the next commit, a task's cancellation: the replacement opens
+// with its number, and the task it holds stays cancelled in the ledger as
+// in the engine, its row never put back as the replacement's change saw
+// it (#635, review round 2).
+func TestACarriedReplacementNeverUndoesACancellation(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	rl := &refusingLedger{sqlLedger: sqlLedger{ld}}
+	e.UseLedger(rl)
+	run := launchGated(t, e, dir, "api-sweep-000000b5", repoCrew(dir, work("build", "lead"), work("deploy", "ops")), shipGate("deploy"))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	g := gateOf(t, e, ld, run.ID)
+	rc, err := e.RespondDecision(t.Context(), g.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1}, "user:nate", identity(e, "nate"))
+	if err != nil || rc.Status != "accepted" {
+		t.Fatalf("the identity's response: %+v %v", rc, err)
+	}
+	rl.refuse.Store(2)
+	e.ConfirmAuthority(g.ID, rc.K, false)
+	if n := rl.refuse.Load(); n != 0 {
+		t.Fatalf("%d commits were not refused", n)
+	}
+	if rec := decisionWhen(t, ld, g.ID, "answered", inState(ledger.DecisionAnswered)); rec.SupersededBy != "" {
+		t.Fatalf("the refused replacement was written: %+v", rec.DecisionRow)
+	}
+	if err := e.CancelTask(t.Context(), run.ID, "deploy"); err != nil {
+		t.Fatal(err)
+	}
+	old := decisionWhen(t, ld, g.ID, "superseded", inState(ledger.DecisionSuperseded))
+	decisionWhen(t, ld, old.SupersededBy, "open", inState(ledger.DecisionOpen))
+	if row := ledgerTask(t, ld, run.ID, "deploy"); row.State != ledger.TaskCancelled {
+		t.Fatalf("deploy's row in the ledger after its cancellation: %+v", row)
+	}
+	if ts := taskOf(t, e, run.ID, "deploy"); ts.State != ledger.TaskCancelled {
+		t.Fatalf("deploy in the engine: %+v", ts)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A dialog or a startup question the session finds as a decision's line
+// is taken, nothing typed (the writer's guard: the mirror looked at
+// first, then the screen), keeps the answer queued: once the agent is at
+// work again, the answer is typed, once (#635, review round 2).
+func TestADialogAsTheAnswerIsTakenKeepsItQueued(t *testing.T) {
+	for name, refusal := range map[string]error{"question": session.ErrQuestion, "trust": session.ErrTrustQuestion} {
+		t.Run(name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, fl, ld := decisionEngine(t)
+			run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+			b, l, p := attemptOn(t, e, fl, run.ID, "build")
+			d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
+			mirrorOf(t, l, d.ID)
+			var refused atomic.Bool
+			e.submitAnswer = func(ctx context.Context, l *session.Local, sub session.Submission) (session.SubmitResult, error) {
+				if refused.CompareAndSwap(false, true) {
+					// The dialog found as the text was taken: it shows, and
+					// nothing was typed.
+					l.SetAttention(session.AttentionNeedsInput, "Allow the command?", session.SourceAPI)
+					return session.SubmitResult{}, refusal
+				}
+				return l.Submit(ctx, sub)
+			}
+			answer(t, e, d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+			decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
+			infoWhen(t, l, "showing the dialog", func(info session.Info) bool { return info.Attention.Message == "Allow the command?" })
+			// The dialog answered: the agent works on.
+			l.SetAttention(session.AttentionWorking, "", session.SourceAPI)
+			lineWith(t, p, "Decision "+d.ID+" (approval) answered by Nate")
+			if !refused.Load() {
+				t.Fatal("the line was never refused")
+			}
+			if _, err := l.Submit(t.Context(), session.Submission{Text: "marker", ByName: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			lineWith(t, p, "marker")
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// holdingLedger is the real ledger, which holds run's first transition
+// once it has committed, closing at and waiting for gate (a launch's
+// first commit in the ledger, its engine not yet told), and tells read of
+// each decision read.
+type holdingLedger struct {
+	sqlLedger
+	run      string
+	at, gate chan struct{}
+	once     sync.Once
+	read     chan int64
+}
+
+func (l *holdingLedger) Transition(ctx context.Context, runID string, fn func(LedgerTx) error) (int64, error) {
+	rev, err := l.sqlLedger.Transition(ctx, runID, fn)
+	if runID == l.run && err == nil {
+		l.once.Do(func() {
+			close(l.at)
+			<-l.gate
+		})
+	}
+	return rev, err
+}
+
+func (l *holdingLedger) Decision(ctx context.Context, n int64) (ledger.DecisionRecord, bool, error) {
+	rec, ok, err := l.sqlLedger.Decision(ctx, n)
+	select {
+	case l.read <- n:
+	default:
+	}
+	return rec, ok, err
+}
+
+// A response read while the launch's first commit, which opened the run's
+// gate, is in the ledger and not yet the engine's is answered through the
+// run once that commit is through, never past the engine: the gate is
+// applied and its task starts (#635, review round 2).
+func TestAResponseDuringTheLaunchsCommitIsTheEngines(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	const runID = "api-sweep-000000b6"
+	hl := &holdingLedger{sqlLedger: sqlLedger{ld}, run: runID, at: make(chan struct{}), gate: make(chan struct{}), read: make(chan int64, 1)}
+	e.UseLedger(hl)
+	t.Cleanup(func() {
+		select {
+		case <-hl.gate:
+		default:
+			close(hl.gate)
+		}
+	})
+	e.gatesAtLaunch = true
+	plan := gatedPlan(t, runID, head(t, dir), shipGate("deploy"))
+	type launched struct {
+		run *Run
+		err error
+	}
+	done := make(chan launched, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		run, release, err := e.LaunchPlanned(ctx, repoCrew(dir, work("build", "lead"), work("deploy", "ops")), "CND-12 Fix the login loop", plan)
+		release()
+		done <- launched{run, err}
+	}()
+	<-hl.at
+	rows, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: runID})
+	if err != nil || len(rows) != 1 || rows[0].Origin != ledger.OriginPlan {
+		t.Fatalf("the launch's first commit holds no gate: %+v %v", rows, err)
+	}
+	g := rows[0].ID()
+	type responded struct {
+		rc  ResponseReceipt
+		err error
+	}
+	res := make(chan responded, 1)
+	go func() {
+		rc, err := e.RespondDecision(context.Background(), g, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1, ByName: "Nate"}, "admin", workbench(e))
+		res <- responded{rc, err}
+	}()
+	<-hl.read // the response's look, the launch's commit held
+	close(hl.gate)
+	l := <-done
+	if l.err != nil {
+		t.Fatal(l.err)
+	}
+	if got := <-res; got.err != nil || got.rc.Status != "accepted" {
+		t.Fatalf("the response: %+v %v", got.rc, got.err)
+	}
+	if app := applied(t, decisionWhen(t, ld, g, "applied", inState(ledger.DecisionApplied))); app.How != HowReleased || !slices.Equal(app.Tasks, []string{"deploy"}) {
+		t.Fatalf("the application: %+v", app)
+	}
+	waitAttempt(t, e, runID, "deploy", ledger.AttemptRunning)
+	stopRun(t, e, runID)
+}
+
+// A decision's line the program takes slowly (its text still being taken
+// when its time ran out: accepted, pending) keeps the decision's question
+// until its Enter is in: the Enter answers it, by the responder, and the
+// mirror is not withdrawn first (#635, review round 2).
+func TestAnAnswerTakenSlowlyAnswersItsMirror(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	fl.inputWait = 200 * time.Millisecond
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, l, p := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
+	q := mirrorOf(t, l, d.ID)
+	// The program takes nothing for now: the answer's text waits.
+	for len(p.Input) < cap(p.Input) {
+		p.Input <- nil
+	}
+	answer(t, e, d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
+	waitLogged(t, e, run.ID, "decision "+d.ID+"'s answer waits for lead to take its input", 1, 10*time.Second)
+	if a := l.Info().Attention; a.ID != q.ID {
+		t.Fatalf("the mirror went while its line was pending: %+v", a)
+	}
+	// The program reads again: the text, then its Enter.
+	lineWith(t, p, "Decision "+d.ID+" (approval) answered by Nate")
+	infoWhen(t, l, "its question answered by Nate", func(info session.Info) bool {
+		return info.Attention.ID != q.ID && info.LastAnswer != nil && info.LastAnswer.ByName == "Nate" && info.LastAnswer.Message == "Merge it?"
+	})
+	waitLogged(t, e, run.ID, "decision "+d.ID+"'s answer typed into lead", 1, 10*time.Second)
+	stopRun(t, e, run.ID)
+}
+
+// fillOpen writes n open decisions of the run straight into the ledger,
+// of no attempt: the run's open bound counts them, no attempt's does.
+func fillOpen(t *testing.T, ld *ledger.Ledger, runID string, n int) {
+	t.Helper()
+	body := `{"question":"Elsewhere?","subject":{"kind":"commit","commit":"` + strings.Repeat("b", 40) + `"}}`
+	if _, err := ld.Transition(context.Background(), runID, func(tx *ledger.Tx) error {
+		for i := range n {
+			if _, _, err := tx.OpenDecision(ledger.DecisionRow{Origin: ledger.OriginAgent, Type: ledger.DecisionClarification, TaskID: "docs",
+				Member: "writer", Fingerprint: fmt.Sprintf("open-%d", i), Request: body, Policy: policyJSON}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A request that supersedes an open decision takes its place among the
+// bounds: at the attempt's four open, and at the run's 64, a fifth request
+// is refused decision_limit and a superseding one opens (#635, review
+// round 2).
+func TestASupersedingRequestOpensAtTheBound(t *testing.T) {
+	for _, bound := range []string{"attempt", "run"} {
+		t.Run(bound, func(t *testing.T) {
+			dir := newRepo(t)
+			e, fl, ld := decisionEngine(t)
+			run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+			b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+			clar := func(id, q, sup string) DecisionRequest {
+				return DecisionRequest{RequestID: id, Type: ledger.DecisionClarification, Question: q, Supersedes: sup}
+			}
+			first := ask(t, e, b.Attempt.SessionID, clar("q1", "Which index?", ""))
+			if bound == "attempt" {
+				for i := 2; i <= ledger.MaxOpenPerAttempt; i++ {
+					ask(t, e, b.Attempt.SessionID, clar(fmt.Sprintf("q%d", i), fmt.Sprintf("Question %d?", i), ""))
+				}
+			} else {
+				fillOpen(t, ld, run.ID, ledger.MaxOpenPerRun-1)
+			}
+			var de *DecisionError
+			if _, _, err := e.RequestDecision(t.Context(), b.Attempt.SessionID, clar("over", "One more?", "")); !errors.As(err, &de) || de.Code != CodeDecisionLimit {
+				t.Fatalf("a request past the bound: %v", err)
+			}
+			d := ask(t, e, b.Attempt.SessionID, clar("again", "Which index, given the load?", first.ID))
+			if rec := decisionWhen(t, ld, first.ID, "superseded", inState(ledger.DecisionSuperseded)); rec.SupersededBy != d.ID || !strings.Contains(rec.Why, d.ID) {
+				t.Fatalf("%s: %+v", first.ID, rec.DecisionRow)
+			}
+			if got := activeHolds(t, ld, run.ID); slices.Contains(got, "build "+first.ID) || !slices.Contains(got, "build "+d.ID) {
+				t.Fatalf("holds %q", got)
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// Two responses that read the open decision before either committed: the
+// one that loses is refused decision_answered, and its words, the
+// receipt's as kept too, name who answered first (#635, review round 2).
+func TestALateResponseNamesWhoAnsweredFirst(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
+	at, gate := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	e.beforeRespond = func(int64) {
+		if first.CompareAndSwap(false, true) {
+			close(at)
+			<-gate
+		}
+	}
+	type responded struct {
+		rc  ResponseReceipt
+		err error
+	}
+	lost := make(chan responded, 1)
+	go func() {
+		rc, err := e.RespondDecision(context.Background(), d.ID, Response{ResponseID: "r1", Choice: choice(1), ExpectedRev: 1, ByName: "Ana"}, "admin", workbench(e))
+		lost <- responded{rc, err}
+	}()
+	<-at // Ana's response has read the decision open
+	answer(t, e, d.ID, Response{ResponseID: "r2", Choice: choice(0), ExpectedRev: 1, ByName: "Nate"})
+	close(gate)
+	got := <-lost
+	var de *DecisionError
+	if !errors.As(got.err, &de) || de.Code != CodeDecisionAnswered || !strings.Contains(got.rc.Words, "answered by Nate") {
+		t.Fatalf("the late response: %+v %v", got.rc, got.err)
+	}
+	rec := decisionWhen(t, ld, d.ID, "with the late response kept", func(rec ledger.DecisionRecord) bool { return len(rec.Responses) == 2 })
+	var kept ResponseReceipt
+	for _, r := range rec.Responses {
+		if r.Status == ledger.ResponseRefused {
+			if err := json.Unmarshal([]byte(r.Receipt), &kept); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !strings.Contains(kept.Words, "answered by Nate") {
+		t.Fatalf("the kept refusal: %+v", kept)
+	}
+	stopRun(t, e, run.ID)
 }

@@ -607,7 +607,6 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 	for _, t := range tasks {
 		r.hold(t, d)
 	}
-	rows := r.heldRows(tasks)
 	r.dec.opened++
 	prev := r.dec.lastGate[pd.ID]
 	row := ledger.DecisionRow{Origin: ledger.OriginPlan, Type: typ, Gate: pd.ID, Ticket: p.Ticket.ID, Plan: p.Plan.ID, PlanDigest: p.Plan.Digest,
@@ -628,6 +627,8 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 			return err
 		}
 		opened = got.N
+		// The held tasks' rows name it by number (renumber).
+		r.opened(d, got.N)
 		why := fmt.Sprintf("%s asks again: %s", got.ID(), cause)
 		switch {
 		case prev.id != "" && prev.rejected:
@@ -646,18 +647,9 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 				return err
 			}
 		}
-		// The held tasks' rows again, naming the gate by its number.
-		for _, h := range rows {
-			if err := h.put(ltx, map[*decision]int64{d: got.N}); err != nil {
-				return err
-			}
-		}
 		return ltx.Event("decision.opened", map[string]any{"decision": got.ID(), "origin": ledger.OriginPlan, "type": typ, "gate": pd.ID, "before": ids, "follows": prev.id})
 	}, func() {
 		d.n = opened
-		for _, h := range rows {
-			r.written(h)
-		}
 		r.note(session.ActivityStatus, "the plan's decision %s asks again as %s: %s", pd.ID, d.id(), cause)
 	})
 }

@@ -484,6 +484,10 @@ type Engine struct {
 	// decisions are read and before the change that marks them carried
 	// (taskDecisions): a test holds two readers there.
 	afterDecisionsRead func(task string)
+	// submitAnswer, when set, submits a decision's line in place of the
+	// session's Submit (typeAnswer): a test answers as the session's
+	// writer does when a dialog came as the text was taken.
+	submitAnswer func(ctx context.Context, l *session.Local, sub session.Submission) (session.SubmitResult, error)
 }
 
 // sessionMember is the member a session is, and its run.
@@ -520,9 +524,11 @@ type run struct {
 	checks    sync.WaitGroup
 	revision  int64
 	crewJSON  string // the crew as launched, for the ledger's run row
-	// decisions are the run's open and answered decisions, in the order
-	// they opened (decisions.go), and dec the rest of what it keeps of them
-	// (decisions_wait.go), under e.mu.
+	// decisions are the run's open and answered decisions (decisions.go),
+	// under e.mu. Their order is not their opening's: a supersession
+	// refused puts its target back last; what needs that order compares
+	// their numbers (newerOpen). dec is the rest of what it keeps of them
+	// (decisions_wait.go).
 	decisions []*decision
 	dec       runDecisions
 	// created says the run's row is in the ledger: its first transaction
@@ -584,7 +590,11 @@ type run struct {
 	messages []*message
 	// txMu orders the run's transitions (task.go: transition); the marks
 	// are what changed since the last one, drained by the next.
-	txMu            sync.Mutex
+	txMu sync.Mutex
+	// numbered are the decisions the transaction under way has opened,
+	// with the numbers the ledger gave them (decisions.go: opened), under
+	// txMu: the snapshot's held rows name them by number (renumber).
+	numbered        map[*decision]int64
 	changedTasks    map[*task]struct{}
 	changedAttempts map[*attempt]struct{}
 	runChanged      bool
