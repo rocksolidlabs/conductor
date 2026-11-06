@@ -34,10 +34,18 @@ type TaskFile struct {
 	Role         string `json:"role,omitempty"`
 	Kind         string `json:"kind"`
 	Instructions string `json:"instructions"`
-	Worktree     string `json:"worktree"`
-	Branch       string `json:"branch"`
-	Prefix       string `json:"prefix,omitempty"`
-	Start        string `json:"start"`
+	// Owner is the person accountable for the task's outcome and OwnerFrom
+	// how they came to own it (TaskOwner), People the crew's people as
+	// launched: who answers for this work (people.go). All absent for a
+	// crew without people, whose task file is what it was before them.
+	// Never cut.
+	Owner     *TaskPerson  `json:"owner,omitempty"`
+	OwnerFrom string       `json:"ownerFrom,omitempty"`
+	People    []TaskPerson `json:"people,omitempty"`
+	Worktree  string       `json:"worktree"`
+	Branch    string       `json:"branch"`
+	Prefix    string       `json:"prefix,omitempty"`
+	Start     string       `json:"start"`
 	// StartFrom says what the start commit is, in words: the run's base, a
 	// task's result, the commit a review approved, the attempt before's
 	// result, a checkpoint, or the commit a review asked changes of (#355).
@@ -219,6 +227,7 @@ func (e *Engine) taskFile(ctx context.Context, r *run, a *attempt, tr *tree, blo
 	t := a.t
 	f := TaskFile{Run: r.id, Crew: r.crewID, CrewName: r.name, Goal: r.goal, Task: t.def.ID, Attempt: a.n, MaxAttempts: maxAttemptsPerTask + t.extra, Member: a.m.def.Name, Role: a.m.def.Prompt, Kind: t.def.Kind,
 		Instructions: t.def.Instructions, Worktree: a.worktree, Branch: a.branch, Prefix: r.prefix, Start: a.start, Checks: append([]Check(nil), t.def.Checks...), WrittenAt: time.Now().UTC()}
+	f.Owner, f.OwnerFrom, f.People = taskPeople(Crew{People: r.people}, t.def)
 	if tr != nil {
 		f.Manifest = tr.task()
 	}
@@ -557,6 +566,7 @@ func taskMarkdown(f TaskFile) string {
 		fmt.Fprintf(&b, "Your role: %s\n\n", strings.TrimSpace(f.Role))
 	}
 	fmt.Fprintf(&b, "## Instructions\n\n%s\n\n", strings.TrimSpace(f.Instructions))
+	writePeople(&b, f)
 	if tk := f.Ticket; tk != nil {
 		fmt.Fprintf(&b, "## Your ticket\n\nThis run works for the ticket %s, %q, as it stood at its revision %d, when plan revision %d launched the run. ", tk.Key, f.ticketTitle, tk.Rev, tk.PlanN)
 		fmt.Fprintf(&b, "What it asks, its acceptance criteria, its constraints and what it hands over are in `%s/%s`; the launch package as Dispatch built it is `%s/%s` (SHA-256 %s)", taskDir, ticketFile, taskDir, packageFileName, tk.Digest)

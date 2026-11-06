@@ -124,6 +124,11 @@ func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, erro
 		return Loaded{}, false, nil
 	}
 	out := Loaded{Run: row}
+	// The chain's launch row's crew, as the SQL ledger's Load reads it.
+	out.Launch, _ = LaunchCrew(runID, func(id string) (ledger.RunRow, bool, error) {
+		r, ok := l.runs[id]
+		return r, ok, nil
+	})
 	for _, t := range l.tasks {
 		if t.RunID == runID {
 			out.Tasks = append(out.Tasks, t)

@@ -1,0 +1,42 @@
+{
+  "run": "r-0123456789ab",
+  "crew": "c-build",
+  "crewName": "Build crew",
+  "goal": "Ship the parser, tested.",
+  "task": "docs",
+  "attempt": 1,
+  "maxAttempts": 3,
+  "member": "writer",
+  "kind": "work",
+  "instructions": "Do docs.",
+  "owner": {
+    "name": "ana",
+    "responsibilities": [
+      "acceptance"
+    ]
+  },
+  "ownerFrom": "acceptance",
+  "people": [
+    {
+      "name": "nate",
+      "responsibilities": [
+        "architecture",
+        "product"
+      ]
+    },
+    {
+      "name": "ana",
+      "responsibilities": [
+        "acceptance"
+      ]
+    },
+    {
+      "name": "bo"
+    }
+  ],
+  "worktree": "/repo/.conductor/worktrees/r-0123456789ab/docs.1",
+  "branch": "crew/r-0123456789ab/docs.1",
+  "start": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "startFrom": "the run's base",
+  "writtenAt": "2026-11-05T12:00:00Z"
+}

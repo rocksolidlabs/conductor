@@ -57,8 +57,22 @@ var planBounds = map[string]struct {
 	"launch.label":         {60, true},
 	"launch.why":           {2000, true},
 	"launch.agent_version": {100, false},
-	"op.by":                {60, true},
-	"op.actor":             {60, false},
+	// Program item RV1's (docs/plans/review-repair.md, "Bounds"): a
+	// summary of 4,000 characters, a finding's words and resolution of
+	// 1,000 each, a path of 1,024 bytes, a line of 200, a quote of 2 KiB, a
+	// mark's note of 1,000 characters; why a request was refused and where
+	// a mark located the lines, which the plan leaves to the code.
+	"review.summary":     {4000, true},
+	"review.why":         {2000, true},
+	"finding.message":    {1000, true},
+	"finding.resolution": {1000, true},
+	"finding.path":       {1024, false},
+	"finding.line":       {200, false},
+	"finding.quote":      {2 << 10, false},
+	"mark.note":          {1000, true},
+	"mark.located":       {4 << 10, false},
+	"op.by":              {60, true},
+	"op.actor":           {60, false},
 }
 
 // atBound is a value of the rule's kind exactly at its bound, and past

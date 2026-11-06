@@ -497,7 +497,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			}
 		}
 		s.wireLaunches()
-		s.ledger = openLedger(context.Background(), st, s.records, log, fan.observeLedger, syncs.ledgerOwned, s.ledgerRecovered)
+		s.ledger = openLedger(context.Background(), st, s.records, log, fan.observeLedger, syncs.ledgerOwned, s.ledgerRecovered, s.restoreLaunchPeople)
 		if s.ledger == nil {
 			// Its runs are not gone: the sync store is never told they are.
 			syncs.unopened("the ledger")
@@ -728,6 +728,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/crews/{id}/duplicate", s.launching(s.handleDuplicateCrew))
 	mux.HandleFunc("POST /api/crews/{id}/launch", s.launching(s.handleLaunchCrew))
 	mux.HandleFunc("GET /api/crews/{id}/runs", s.launching(s.handleCrewRuns))
+	// The people Conductor knows: Dispatch's and the crews' (people.go).
+	mux.HandleFunc("GET /api/people", s.launching(s.handlePeople))
 	mux.HandleFunc("GET /api/paths", s.launching(s.handleListPaths))
 	mux.HandleFunc("GET /api/git/check", s.launching(s.handleGitCheck))
 	mux.HandleFunc("GET /api/runs", s.readable("GET /api/runs", s.launchingAny(s.handleListRuns)))
