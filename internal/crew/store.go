@@ -247,16 +247,49 @@ func (s *Store) read(id string) (Crew, error) {
 func (s *Store) List(offset, limit int) ([]Summary, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	all, _, err := s.summaries()
+	if err != nil {
+		return nil, 0, err
+	}
+	total := len(all)
+	from := min(max(offset, 0), total)
+	to := min(from+max(limit, 0), total)
+	return cloneSummaries(all[from:to]), total, nil
+}
+
+// Summaries returns the summaries of every crew, ordered as List orders
+// them, and how many of the crews' files were left out because they could
+// not be read or used (List's files left out), so a reader of every crew
+// knows when what it read is not all of them. A file gone between the
+// directory's listing and its read is no crew and is not counted.
+func (s *Store) Summaries() ([]Summary, int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all, unread, err := s.summaries()
+	if err != nil {
+		return nil, 0, err
+	}
+	return cloneSummaries(all), unread, nil
+}
+
+// summaries reads the directory and every crew's summary (summaryOf), in
+// List's order, counting the files left out but those gone since the
+// listing. The caller holds s.mu.
+func (s *Store) summaries() ([]Summary, int, error) {
 	entries, err := s.st.List()
 	if err != nil {
 		return nil, 0, err
 	}
 	seen := make(map[string]bool, len(entries))
 	all := make([]Summary, 0, len(entries))
+	unread := 0
 	for _, e := range entries {
 		seen[e.Name] = true
-		if c := s.summaryOf(e); c.err == nil {
+		switch c := s.summaryOf(e); {
+		case c.err == nil:
 			all = append(all, c.sum)
+		case !errors.Is(c.err, ErrNotFound):
+			unread++
 		}
 	}
 	for name := range s.sums {
@@ -267,10 +300,13 @@ func (s *Store) List(offset, limit int) ([]Summary, int, error) {
 	slices.SortFunc(all, func(a, b Summary) int {
 		return cmp.Or(strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)), strings.Compare(a.ID, b.ID))
 	})
-	total := len(all)
-	from := min(max(offset, 0), total)
-	to := min(from+max(limit, 0), total)
-	page := slices.Clone(all[from:to])
+	return all, unread, nil
+}
+
+// cloneSummaries copies sums deeply enough that a caller's changes never
+// reach the cache.
+func cloneSummaries(sums []Summary) []Summary {
+	page := slices.Clone(sums)
 	for i := range page {
 		page[i].Members = slices.Clone(page[i].Members)
 		page[i].People = slices.Clone(page[i].People)
@@ -278,7 +314,7 @@ func (s *Store) List(offset, limit int) ([]Summary, int, error) {
 			page[i].People[j].Responsibilities = slices.Clone(page[i].People[j].Responsibilities)
 		}
 	}
-	return page, total, nil
+	return page
 }
 
 // Get returns the crew with the given ID, read from its file: ErrNotFound when

@@ -78,6 +78,10 @@ type Server struct {
 	// is read, so a test can commit a twin try of the operation there
 	// (addDelivery).
 	deliveryReplayed func(ctx context.Context, op dispatch.Op, key string, l dispatch.NewLink)
+	// personDispatch is nil but in tests: what a person's work reads of
+	// Dispatch in its store's place (ticketReads), so a test fails one of
+	// its reads alone.
+	personDispatch ticketDirectory
 	// keeper keeps the links a switchyard mints across its restarts
 	// (linkfiles.go); nil elsewhere.
 	keeper *linkKeeper

@@ -3,6 +3,7 @@ package api
 import (
 	"cmp"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -195,19 +196,78 @@ type personWork struct {
 	// decision is for exists (docs/plans/decisions.md, HM1, PR-12).
 	Decisions           []any `json:"decisions"`
 	DispatchUnavailable bool  `json:"dispatchUnavailable,omitempty"`
-	// RecordsUnavailable says the managed runs' records could not be
-	// read: the tasks of the runs the engine holds are listed all the
-	// same.
+	// CrewsUnavailable says the saved crews, or some of them, could not
+	// be read: the crews listed are those read, and may not be all.
+	CrewsUnavailable bool `json:"crewsUnavailable,omitempty"`
+	// RecordsUnavailable says the managed runs' records, or some of them,
+	// could not be read: the tasks listed are those of the runs the
+	// engine holds and the records read, and may not be all.
 	RecordsUnavailable bool `json:"recordsUnavailable,omitempty"`
 }
 
-// personFromSegment is the name a person's path segment carries: the
-// segment with one leading "~" removed. The app writes "~" before "."
-// and "..", which a URL resolves as steps of its path, and before a name
-// that starts with "~" (web/app/utils/people.ts, personSegment), so every
-// name has a segment that reaches this route and none is read as another.
-func personFromSegment(segment string) string {
-	return strings.TrimPrefix(segment, "~")
+// A person's name in a path: the one rule every link to a person's page
+// and every read of their work uses (web/app/utils/people.ts, personSegment
+// and personFromSegment, the same rule; testdata/person-segments.json the
+// cases both are tested against). Any string the people rules allow is a
+// name, so a name is written as is only when nothing between the browser
+// and this route can read it as something else, and otherwise as a token
+// nothing reads:
+//
+//   - A plain name is written as itself, escaped as a segment (a space as
+//     %20, a character past ASCII as its UTF-8 bytes): every character an
+//     ASCII letter or digit, '-', '_', '.', ' ', or one past ASCII; the
+//     first neither '.' nor ' ', the last not ' '. Unescaped it holds no
+//     '/', '\', '%', '?', '#', ';' or '~' and is never "." or "..", so no
+//     decoding, second decoding or cleaning of the path (a browser's, the
+//     router's, this server's, the embedded app's, a proxy's) changes it
+//     or moves it out of its segment.
+//   - Any other name is written as "~" and the base64url of its UTF-8, with
+//     no padding: letters, digits, '-' and '_' after the "~", which nothing
+//     decodes or cleans either.
+//
+// A segment is read back only in the one form its name is written in, so
+// each name has one address and no address is another name's.
+
+// plainPersonName reports whether name is written as itself in a path.
+func plainPersonName(name string) bool {
+	if name == "" || name[0] == '.' || name[0] == ' ' || name[len(name)-1] == ' ' {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		switch c := name[i]; {
+		case c >= utf8.RuneSelf, 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9', c == '-', c == '_', c == '.', c == ' ':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// personSegment is the path segment of a person's name, escaped as a URL
+// writes it.
+func personSegment(name string) string {
+	if plainPersonName(name) {
+		return url.PathEscape(name)
+	}
+	return "~" + base64.RawURLEncoding.EncodeToString([]byte(name))
+}
+
+// personFromSegment is the name a segment carries, the segment unescaped as
+// the route's path value has it; false for a segment that is no name's (not
+// the one form personSegment writes for what it decodes to).
+func personFromSegment(segment string) (string, bool) {
+	token, coded := strings.CutPrefix(segment, "~")
+	if !coded {
+		return segment, plainPersonName(segment)
+	}
+	b, err := base64.RawURLEncoding.Strict().DecodeString(token)
+	name := string(b)
+	// The decoder passes line breaks over: the token must be the one
+	// written for the name.
+	if err != nil || name == "" || !utf8.Valid(b) || plainPersonName(name) || base64.RawURLEncoding.EncodeToString(b) != token {
+		return "", false
+	}
+	return name, true
 }
 
 // handlePerson answers GET /api/people/{name}: a person's work. The
@@ -218,47 +278,51 @@ func personFromSegment(segment string) string {
 // are assigned (counts and the list's links; null, with
 // dispatchUnavailable, while Dispatch is off or cannot be read). The name
 // is the path's segment (personFromSegment), matched exactly, as Dispatch
-// matches it; 404 not_found only for a name no source knows (neither
-// store, nor a run's people or its tasks' owners) when every source was
-// read, so a person removed from the saved crew after a launch still has
-// a page with that run's work on it, and a name only an unreadable source
-// could know is answered with what was read and which source was not
-// (dispatchUnavailable, recordsUnavailable), never as no one's.
+// matches it; 404 not_found for a segment that is no name's, and for a
+// name no source knows (neither store, nor a run's people or its tasks'
+// owners) when every source was read, every crew and record included, so
+// a person removed from the saved crew after a launch still has a page
+// with that run's work on it, and a name only an unread source could know
+// is answered with what was read and which list was not read whole
+// (crewsUnavailable, recordsUnavailable, dispatchUnavailable), never as
+// no one's.
 func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
-	name := personFromSegment(r.PathValue("name"))
+	name, ok := personFromSegment(r.PathValue("name"))
 	if !noQuery(w, r) {
 		return
 	}
-	// A name no store could hold is no one's: Dispatch's person.name rule.
-	if name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > crew.MaxPersonName || strings.ContainsFunc(name, unicode.IsControl) {
+	// A segment that is no name's, and a name no store could hold
+	// (Dispatch's person.name rule), are no one's.
+	if !ok || name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > crew.MaxPersonName || strings.ContainsFunc(name, unicode.IsControl) {
 		writeError(w, http.StatusNotFound, "not_found", "no such person")
 		return
 	}
 	out := personWork{Name: name, Crews: []personCrew{}, Tasks: []personTask{}, Decisions: []any{}}
 	known := false
+	// Every read below has its place in the reply: a list is read and holds
+	// rows, read and empty, or not read, wholly or for some of its records,
+	// and then says so (crewsUnavailable, recordsUnavailable,
+	// dispatchUnavailable), never drawn as fewer rows.
 	if s.crews != nil {
-		for offset := 0; ; offset += maxCrewPage {
-			page, total, err := s.crews.List(offset, maxCrewPage)
-			if err != nil {
-				s.log.Error("crews list failed", "err", err)
-				writeError(w, http.StatusInternalServerError, "store_failed", "could not read the crews")
-				return
-			}
-			for _, c := range page {
-				for _, p := range c.People {
-					if p.Name != name {
-						continue
-					}
-					known = true
-					if len(out.Crews) == maxWorkCrews {
-						out.CrewsMore = true
-						continue
-					}
-					out.Crews = append(out.Crews, personCrew{ID: c.ID, Name: c.Name, Responsibilities: append([]string{}, p.Responsibilities...)})
+		crews, unread, err := s.crews.Summaries()
+		if err != nil {
+			s.log.Warn("the crews could not be read for a person's work", "err", err)
+			out.CrewsUnavailable = true
+		} else if unread > 0 {
+			s.log.Warn("crews could not be read for a person's work", "unread", unread)
+			out.CrewsUnavailable = true
+		}
+		for _, c := range crews {
+			for _, p := range c.People {
+				if p.Name != name {
+					continue
 				}
-			}
-			if offset+len(page) >= total || len(page) == 0 {
-				break
+				known = true
+				if len(out.Crews) == maxWorkCrews {
+					out.CrewsMore = true
+					continue
+				}
+				out.Crews = append(out.Crews, personCrew{ID: c.ID, Name: c.Name, Responsibilities: append([]string{}, p.Responsibilities...)})
 			}
 		}
 	}
@@ -269,9 +333,12 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 		for _, run := range runs {
 			held[run.ID] = true
 		}
-		recorded, err := s.records.List("")
+		recorded, unread, err := s.records.ListRead("")
 		if err != nil {
 			s.log.Warn("run records could not be read for a person's work", "err", err)
+			out.RecordsUnavailable = true
+		} else if unread > 0 {
+			s.log.Warn("run records could not be read for a person's work", "unread", unread)
 			out.RecordsUnavailable = true
 		}
 		for _, run := range recorded {
@@ -299,8 +366,9 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 			out.Tasks = append(out.Tasks, personTask{Run: run.ID, RunLabel: cmp.Or(run.Label, run.Name), Task: t.ID, State: t.State, Member: t.Member, OwnerFrom: t.OwnerFrom})
 		}
 	}
-	out.DispatchUnavailable = s.dispatch == nil
-	if ds := s.dispatch; ds != nil {
+	ds := s.ticketReads()
+	out.DispatchUnavailable = ds == nil
+	if ds != nil {
 		// The directory's answer stands when the counts then fail: a
 		// person it lists is known whatever the lists say.
 		tickets, inDirectory, err := personTicketsOf(r.Context(), ds, name)
@@ -314,7 +382,7 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 			known = known || tickets.Owner > 0 || tickets.Assignee > 0
 		}
 	}
-	if !known && !out.DispatchUnavailable && !out.RecordsUnavailable {
+	if !known && !out.DispatchUnavailable && !out.RecordsUnavailable && !out.CrewsUnavailable {
 		writeError(w, http.StatusNotFound, "not_found", "no such person")
 		return
 	}
@@ -326,6 +394,18 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 type ticketDirectory interface {
 	People(context.Context) ([]dispatch.Person, error)
 	List(context.Context, dispatch.Query) (dispatch.Page, error)
+}
+
+// ticketReads is what a person's work reads of Dispatch: its store, or the
+// seam a test puts in its place (personDispatch); nil while Dispatch is off.
+func (s *Server) ticketReads() ticketDirectory {
+	if s.personDispatch != nil {
+		return s.personDispatch
+	}
+	if s.dispatch == nil {
+		return nil
+	}
+	return s.dispatch
 }
 
 // personTicketsOf reads what Dispatch holds for name: whether its directory

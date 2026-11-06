@@ -330,7 +330,8 @@ type recordFile struct {
 	name  string
 	run   Run
 	ok    bool
-	large bool // not read because it is over maxRecordSize
+	large bool  // not read because it is over maxRecordSize
+	err   error // why it could not be read (nil when ok, or when it is gone or holds another id)
 }
 
 // load reads the records named, keeping one that cannot be read as not ok.
@@ -339,8 +340,14 @@ func (rs *Records) load(entries []store.Entry) ([]recordFile, error) {
 	for _, en := range entries {
 		var r Run
 		ok, err := rs.st.LoadLimit(en.Name, &r, maxRecordSize)
+		if errors.Is(err, store.ErrChanged) {
+			// Another was renamed over it as it was read, as a save does:
+			// read again, once.
+			r = Run{}
+			ok, err = rs.st.LoadLimit(en.Name, &r, maxRecordSize)
+		}
 		if err != nil || !ok || r.ID+".json" != en.Name {
-			out = append(out, recordFile{name: en.Name, large: errors.Is(err, store.ErrTooLarge)})
+			out = append(out, recordFile{name: en.Name, large: errors.Is(err, store.ErrTooLarge), err: err})
 			continue
 		}
 		out = append(out, recordFile{name: en.Name, run: r, ok: true})
@@ -351,24 +358,40 @@ func (rs *Records) load(entries []store.Entry) ([]recordFile, error) {
 // List returns the records, newest first by start time; those of one crew
 // when crewID is not empty. A record that cannot be read is left out.
 func (rs *Records) List(crewID string) ([]Run, error) {
+	out, _, err := rs.ListRead(crewID)
+	return out, err
+}
+
+// ListRead is List with how many records it left out because they could
+// not be read: a file named for a run's record that is there and failed to
+// load (an I/O error, not JSON, past maxRecordSize, not a regular file),
+// whose run, and so whose crew, is unknown. A file gone between the
+// directory's listing and its read, one named for no run, and one holding
+// another run's id (no record, as Get answers) are none and not counted.
+func (rs *Records) ListRead(crewID string) ([]Run, int, error) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	entries, err := rs.st.List()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	files, err := rs.load(entries)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out := make([]Run, 0, len(files))
+	unread := 0
 	for _, f := range files {
-		if f.ok && (crewID == "" || f.run.CrewID == crewID) {
+		id, named := strings.CutSuffix(f.name, ".json")
+		switch {
+		case f.ok && (crewID == "" || f.run.CrewID == crewID):
 			out = append(out, f.run)
+		case !f.ok && f.err != nil && named && ValidRunID(id):
+			unread++
 		}
 	}
 	slices.SortFunc(out, func(a, b Run) int { return cmp.Or(b.StartedAt.Compare(a.StartedAt), strings.Compare(b.ID, a.ID)) })
-	return out, nil
+	return out, unread, nil
 }
 
 // Get returns one record.
