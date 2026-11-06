@@ -34,6 +34,40 @@ func (s *heldSink) Close(reason error) {
 	s.returned.Store(true)
 }
 
+// heldGates is a heldSink whose gates are opened once each, by the test or
+// by its cleanup (attachHeld): a test that fails with a gate shut leaves no
+// goroutine parked in the transport's write or close.
+type heldGates struct {
+	*heldSink
+	writesOnce, closesOnce sync.Once
+}
+
+// attachHeld attaches a heldGates to s with opts. However the test ends,
+// its cleanup opens both gates, ends the subscription and waits for its
+// transport to have closed.
+func attachHeld(t *testing.T, s *Local, opts AttachOptions) (*heldGates, *Subscription) {
+	t.Helper()
+	h := &heldGates{heldSink: newHeldSink()}
+	sub, err := s.AttachWith(opts, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		h.openWrites()
+		h.openCloses()
+		s.Detach(sub)
+		select {
+		case <-sub.Closed():
+		case <-time.After(time.Minute):
+			t.Error("the held viewer's transport never closed")
+		}
+	})
+	return h, sub
+}
+
+func (h *heldGates) openWrites() { h.writesOnce.Do(func() { close(h.writes) }) }
+func (h *heldGates) openCloses() { h.closesOnce.Do(func() { close(h.closes) }) }
+
 // countSink is a viewer that takes every frame at once and counts the output
 // it was handed, noting a marker in it.
 type countSink struct {
@@ -293,11 +327,7 @@ func TestARevokeWaitsForALinksViewerDroppedBefore(t *testing.T) {
 	for _, end := range []string{"revoke", "shutdown"} {
 		t.Run(end, func(t *testing.T) {
 			s, p := newLocal(t, t.TempDir())
-			held := newHeldSink()
-			sub, err := s.AttachWith(AttachOptions{Role: RoleControl, LinkID: "L", Name: "dropped"}, held)
-			if err != nil {
-				t.Fatal(err)
-			}
+			held, sub := attachHeld(t, s, AttachOptions{Role: RoleControl, LinkID: "L", Name: "dropped"})
 			waitDropped(t, s, sub, overflow(p))
 			ended := make(chan struct{})
 			go func() {
@@ -313,7 +343,7 @@ func TestARevokeWaitsForALinksViewerDroppedBefore(t *testing.T) {
 				t.Fatalf("the %s returned while the dropped viewer's transport was still open", end)
 			case <-time.After(200 * time.Millisecond):
 			}
-			close(held.writes)
+			held.openWrites()
 			if r := <-held.entered; !errors.Is(r, ErrSlowConsumer) {
 				t.Fatalf("closed for %v", r)
 			}
@@ -322,7 +352,7 @@ func TestARevokeWaitsForALinksViewerDroppedBefore(t *testing.T) {
 				t.Fatalf("the %s returned before the transport's close did", end)
 			case <-time.After(100 * time.Millisecond):
 			}
-			close(held.closes)
+			held.openCloses()
 			select {
 			case <-ended:
 			case <-time.After(3 * time.Second):
@@ -337,11 +367,7 @@ func TestARevokeWaitsForALinksViewerDroppedBefore(t *testing.T) {
 // connections open at once.
 func TestAClientStillClosingCountsTowardTheViewerCap(t *testing.T) {
 	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, MaxViewers: 2})
-	held := newHeldSink()
-	sub, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "dropped"}, held)
-	if err != nil {
-		t.Fatal(err)
-	}
+	held, sub := attachHeld(t, s, AttachOptions{Role: RoleView, Name: "dropped"})
 	waitDropped(t, s, sub, overflow(p))
 	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "second"}, newChanSink(false)); err != nil {
 		t.Fatalf("the second viewer: %v", err)
@@ -349,9 +375,9 @@ func TestAClientStillClosingCountsTowardTheViewerCap(t *testing.T) {
 	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "third"}, newChanSink(false)); !errors.Is(err, ErrTooManyViewers) {
 		t.Fatalf("a third viewer while the dropped one's transport is open: %v", err)
 	}
-	close(held.writes)
+	held.openWrites()
 	<-held.entered
-	close(held.closes)
+	held.openCloses()
 	<-sub.Closed()
 	// The slot comes back as AttachWith's watcher, woken by the close, takes
 	// the transport out: nothing of the product's bounds that wake, so the

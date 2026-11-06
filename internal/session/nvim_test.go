@@ -186,13 +186,19 @@ func TestNvimBridgeThroughTheSession(t *testing.T) {
 // editorsEnd makes the test wait, as it ends, for s's editors to have
 // ended: a connection's editors end on goroutines of their own as it goes
 // (closeNvims), and Neovim writes its state in the test's directories as it
-// leaves.
+// leaves. An editor still there then was never closed: the test fails
+// rather than leave a Neovim running past the directories it writes to.
+// The session ends an editor within its nvimEndWait; the minute past that
+// bounds a hang only.
 func editorsEnd(t *testing.T, s *Local) {
 	t.Helper()
 	t.Cleanup(func() {
-		deadline := time.Now().Add(15 * time.Second)
+		deadline := time.Now().Add(s.nvimEndWait + time.Minute)
 		for s.nvimCount.Load() != 0 && time.Now().Before(deadline) {
 			time.Sleep(20 * time.Millisecond)
+		}
+		if n := s.nvimCount.Load(); n != 0 {
+			t.Errorf("%d editors still running as the test ends: none closed them", n)
 		}
 	})
 }
@@ -1059,6 +1065,9 @@ func TestARefusalComesBeforeTheWordThatItsKeysAreDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The connection goes as the test ends, however it ends, and its editor
+	// with it, before editorsEnd waits for that.
+	t.Cleanup(func() { s.Detach(sub) })
 	id := openEditor(t, s, sub)
 	if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: "i", Seq: 1}); err != nil {
 		t.Fatal(err)
