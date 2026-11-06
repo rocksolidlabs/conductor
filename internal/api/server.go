@@ -521,6 +521,13 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		if d, ok := s.registry.Get(info.ID); ok {
 			if hs, ok := d.(*signal.HostedSession); ok {
 				s.hostedSeen.change(hs.HostViewSeq())
+				// Removed while its change was noted, its OnRemove may
+				// have forgotten it before the note: what the note kept
+				// goes with it (the registry lets a session go before
+				// its OnRemove, so one of the two forgets it last).
+				if _, ok := s.registry.Get(info.ID); !ok {
+					s.hostedSeen.gone(info.ID)
+				}
 			}
 		}
 		s.events.publishIf(info, s.listed)
