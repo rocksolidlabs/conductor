@@ -571,8 +571,37 @@ func TestTheReplyComesBeforeTheMirror(t *testing.T) {
 // applied: let go, the question asked is withdrawn at once, the answer
 // typed once as a line naming its decision, and no question shows. The
 // same while a superseding request takes the decision's place: its
-// question never stays, the new decision's does.
+// question never stays, the new decision's does; and while the operator
+// cancels it: no question stays.
 func TestALateMirrorNeverOutlivesItsAnswer(t *testing.T) {
+	t.Run("cancelled", func(t *testing.T) {
+		dir := newRepo(t)
+		e, fl, ld := decisionEngine(t)
+		at, gate := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		e.beforeMirror = func(int64) { once.Do(func() { close(at); <-gate }) }
+		run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+		b, l, _ := attemptOn(t, e, fl, run.ID, "build")
+		d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+		<-at
+		if _, err := e.CancelDecision(t.Context(), d.ID, "c1", false, "not needed", "admin"); err != nil {
+			t.Fatal(err)
+		}
+		decisionWhen(t, ld, d.ID, "cancelled", inState(ledger.DecisionCancelled))
+		r := runOf(t, e, run.ID)
+		e.mu.Lock()
+		a := r.task("build").active()
+		e.mu.Unlock()
+		close(gate)
+		// The ask holds the attempt's askMu to its end, the withdrawal of
+		// a question asked too late among it.
+		a.askMu.Lock()
+		a.askMu.Unlock()
+		if info := l.Info(); info.Attention.Decision != "" {
+			t.Fatalf("a cancelled decision's question stays: %+v", info.Attention)
+		}
+		stopRun(t, e, run.ID)
+	})
 	t.Run("answered", func(t *testing.T) {
 		dir := newRepo(t)
 		e, fl, ld := decisionEngine(t)

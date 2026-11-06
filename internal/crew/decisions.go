@@ -1730,7 +1730,9 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 			return fmt.Errorf("%w: %s is not answered in %s", ledger.ErrDecisionState, ledger.DecisionID(n), r.id)
 		}
 		row := old
-		row.N, row.RequestID = 0, ""
+		// Opened in the run that holds the decision now, a continuation's
+		// when it moved there.
+		row.N, row.RequestID, row.RunID = 0, "", ""
 		// Superseded first: the answer's place among the run's bounds is the
 		// replacement's (A replacement always has its place).
 		old.State, old.Rev, old.Why = ledger.DecisionSuperseded, old.Rev+1, why
