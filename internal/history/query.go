@@ -93,9 +93,10 @@ type Query struct {
 	// ExceptSources leaves out the entries of these sources (a source's
 	// key, session:<id>): the API's routes leave out a session record the
 	// journal no longer holds while the index still does, until the
-	// indexer's next pass removes it. Not part of the query's digest: it
-	// leaves rows out and moves none, so a cursor of the query with one
-	// set reads on in the query with another.
+	// indexer's next pass removes it. It leaves them out of everything the
+	// page says: its rows, its total, each row's repeats and links. Not
+	// part of the query's digest: it leaves rows out and moves none, so a
+	// cursor of the query with one set reads on in the query with another.
 	ExceptSources []string
 
 	terms   []string // FTS5 strings, each a condition of its own
@@ -440,8 +441,9 @@ func (q Query) conds(now time.Time) (conds []string, args []any) {
 	if len(q.ExceptCrews) > 0 {
 		conds = append(conds, "NOT "+in("e.crew", q.ExceptCrews))
 	}
-	if len(q.ExceptSources) > 0 {
-		conds = append(conds, "NOT "+in("e.source", q.ExceptSources))
+	if c, a := exceptSources("e.source", q.ExceptSources); c != "" {
+		conds = append(conds, c)
+		args = append(args, a...)
 	}
 	if q.since != nil {
 		conds = append(conds, "e.at >= ?")
@@ -825,16 +827,40 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 	if page.Total > MaxTotal {
 		page.Total, page.TotalCapped = MaxTotal, true
 	}
-	if err := decorate(ctx, tx, page.Entries, ids, q.match()); err != nil {
+	if err := decorate(ctx, tx, page.Entries, ids, q.match(), q.ExceptSources); err != nil {
 		return page, err
 	}
 	return page, nil
 }
 
+// exceptSources is the condition that leaves out the rows of the sources
+// given by their column col: one argument, the sources as a JSON array,
+// so that every statement that must leave them out (a page's rows, its
+// total, the repeats, the links, Similar's, Stats') takes them alike. ""
+// for none.
+func exceptSources(col string, sources []string) (string, []any) {
+	if len(sources) == 0 {
+		return "", nil
+	}
+	b, _ := json.Marshal(sources)
+	return col + " NOT IN (SELECT value FROM json_each(?))", []any{string(b)}
+}
+
+// sourcesJSON is the sources as exceptSources binds them, "[]" for none:
+// for a statement that always carries the condition.
+func sourcesJSON(sources []string) string {
+	if len(sources) == 0 {
+		return "[]"
+	}
+	b, _ := json.Marshal(sources)
+	return string(b)
+}
+
 // decorate gives each hit its snippet (from the match when there is one:
 // its best column with the match marked; else its summary or body), its
-// repeats and its links, each a statement for the whole page.
-func decorate(ctx context.Context, tx *sql.Tx, hits []Hit, ids []int64, match string) error {
+// repeats and its links, each a statement for the whole page; the entries
+// and links of the sources except are counted in none of them.
+func decorate(ctx context.Context, tx *sql.Tx, hits []Hit, ids []int64, match string, except []string) error {
 	if len(hits) == 0 {
 		return nil
 	}
@@ -870,8 +896,12 @@ func decorate(ctx context.Context, tx *sql.Tx, hits []Hit, ids []int64, match st
 		args = append(args, h.Digest)
 		refs[h.Ref] = true
 	}
-	err := each(ctx, tx, `SELECT digest, class, COUNT(*), COUNT(DISTINCT anchor) FROM entries
-		WHERE digest IN (`+marks(len(args))+`) GROUP BY digest, class`, args, func(rows *sql.Rows) error {
+	stmt := `SELECT digest, class, COUNT(*), COUNT(DISTINCT anchor) FROM entries WHERE digest IN (` + marks(len(args)) + `)`
+	if c, a := exceptSources("source", except); c != "" {
+		stmt += " AND " + c
+		args = append(args, a...)
+	}
+	err := each(ctx, tx, stmt+" GROUP BY digest, class", args, func(rows *sql.Rows) error {
 		var g group
 		var r Repeats
 		if err := rows.Scan(&g.digest, &g.class, &r.Count, &r.Anchors); err != nil {
@@ -883,7 +913,7 @@ func decorate(ctx context.Context, tx *sql.Tx, hits []Hit, ids []int64, match st
 	if err != nil {
 		return err
 	}
-	links, err := readLinks(ctx, tx, slices.Sorted(maps.Keys(refs)), pageLinks)
+	links, err := readLinks(ctx, tx, slices.Sorted(maps.Keys(refs)), pageLinks, except)
 	if err != nil {
 		return err
 	}
@@ -1007,8 +1037,9 @@ func each(ctx context.Context, tx *sql.Tx, stmt string, args []any, fn func(*sql
 
 // readLinks reads at most limit links each way of each ref, each with the
 // entry that stands for its other end when the index holds one (LinkEnd):
-// one statement a way.
-func readLinks(ctx context.Context, tx *sql.Tx, refs []string, limit int) (map[string]Links, error) {
+// one statement a way. A link a source of except wrote is not read, nor is
+// an entry of one taken to stand for a link's end.
+func readLinks(ctx context.Context, tx *sql.Tx, refs []string, limit int, except []string) (map[string]Links, error) {
 	out := map[string]Links{}
 	for _, r := range refs {
 		out[r] = Links{Out: []LinkEnd{}, In: []LinkEnd{}}
@@ -1020,20 +1051,26 @@ func readLinks(ctx context.Context, tx *sql.Tx, refs []string, limit int) (map[s
 		near, far string
 		in        bool
 	}{{"from_ref", "to_ref", false}, {"to_ref", "from_ref", true}} {
-		args := make([]any, 0, len(refs)+1)
+		// The arguments in the order the statement names them: the
+		// sources left out twice (the entries that may stand for an end),
+		// the refs, the sources left out (the links), the limit.
+		ex := sourcesJSON(except)
+		args := make([]any, 0, len(refs)+4)
+		args = append(args, ex, ex)
 		for _, r := range refs {
 			args = append(args, r)
 		}
-		args = append(args, limit)
+		args = append(args, ex, limit)
+		const notExcepted = " NOT IN (SELECT value FROM json_each(?))"
 		stmt := `SELECT near, rel, far, okey, kind, class, outcome, title FROM (
 			SELECT l.` + way.near + ` AS near, l.rel AS rel, l.` + way.far + ` AS far, o.key AS okey, o.kind AS kind, o.class AS class,
 				o.outcome AS outcome, ot.title AS title,
 				row_number() OVER (PARTITION BY l.` + way.near + ` ORDER BY l.rel, l.` + way.far + `) AS n
 				FROM links l LEFT JOIN entries o ON o.id = COALESCE(
-					(SELECT x.id FROM entries x WHERE x.key = l.` + way.far + `),
-					(SELECT x.id FROM entries x WHERE x.ref = l.` + way.far + ` ORDER BY x.key LIMIT 1))
+					(SELECT x.id FROM entries x WHERE x.key = l.` + way.far + ` AND x.source` + notExcepted + `),
+					(SELECT x.id FROM entries x WHERE x.ref = l.` + way.far + ` AND x.source` + notExcepted + ` ORDER BY x.key LIMIT 1))
 				LEFT JOIN texts ot ON ot.id = o.id
-			WHERE l.` + way.near + ` IN (` + marks(len(refs)) + `)) WHERE n <= ? ORDER BY near, rel, far`
+			WHERE l.` + way.near + ` IN (` + marks(len(refs)) + `) AND l.source` + notExcepted + `) WHERE n <= ? ORDER BY near, rel, far`
 		err := each(ctx, tx, stmt, args, func(rows *sql.Rows) error {
 			var near string
 			var end LinkEnd
@@ -1062,19 +1099,21 @@ func readLinks(ctx context.Context, tx *sql.Tx, refs []string, limit int) (map[s
 
 // Entry reads one entry by its key, with its repeats and its links (at
 // most 8 each way; Links reads more): ErrGone for a key the index no
-// longer holds, never another entry.
-func (ix *Index) Entry(ctx context.Context, key string) (Hit, error) {
+// longer holds, never another entry. The sources except are left out as
+// a search's ExceptSources are: an entry of one is ErrGone, and none of
+// their entries or links is in its repeats or links.
+func (ix *Index) Entry(ctx context.Context, key string, except ...string) (Hit, error) {
 	var hit Hit
 	err := ix.read(ctx, true, func(tx *sql.Tx, _ int64) error {
 		id, e, err := scanEntry(tx.QueryRowContext(ctx, "SELECT "+entryColumns+" FROM "+entryFrom+" WHERE e.key = ?", key))
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && slices.Contains(except, e.Source)) {
 			return ErrGone
 		}
 		if err != nil {
 			return err
 		}
 		hits := []Hit{{Entry: e}}
-		if err := decorate(ctx, tx, hits, []int64{id}, ""); err != nil {
+		if err := decorate(ctx, tx, hits, []int64{id}, "", except); err != nil {
 			return err
 		}
 		hit = hits[0]
@@ -1084,14 +1123,14 @@ func (ix *Index) Entry(ctx context.Context, key string) (Hit, error) {
 }
 
 // Links reads the links of a ref each way, at most limit (1 to MaxLinks)
-// each.
-func (ix *Index) Links(ctx context.Context, ref string, limit int) (Links, error) {
+// each; none a source of except wrote.
+func (ix *Index) Links(ctx context.Context, ref string, limit int, except ...string) (Links, error) {
 	if limit < 1 || limit > MaxLinks {
 		limit = MaxLinks
 	}
 	var links Links
 	err := ix.read(ctx, true, func(tx *sql.Tx, _ int64) error {
-		all, err := readLinks(ctx, tx, []string{ref}, limit)
+		all, err := readLinks(ctx, tx, []string{ref}, limit, except)
 		links = all[ref]
 		return err
 	})
@@ -1115,8 +1154,10 @@ const (
 // command's, passed before failed, each group newest first; then, in the
 // same scope, receipts of other commands that hold the line, newest
 // first. At most limit (1 to MaxSimilar). ErrGone for a key the index no
-// longer holds; nothing for an entry that is not a receipt.
-func (ix *Index) Similar(ctx context.Context, key, scope string, chain []string, limit int) ([]Hit, error) {
+// longer holds; nothing for an entry that is not a receipt. The sources
+// except are left out as a search's ExceptSources are: of its entry (then
+// ErrGone), its answers and their repeats and links.
+func (ix *Index) Similar(ctx context.Context, key, scope string, chain []string, limit int, except ...string) ([]Hit, error) {
 	if scope == "" {
 		scope = ScopeRepo
 	}
@@ -1129,7 +1170,7 @@ func (ix *Index) Similar(ctx context.Context, key, scope string, chain []string,
 	hits := []Hit{}
 	err := ix.read(ctx, true, func(tx *sql.Tx, _ int64) error {
 		_, e, err := scanEntry(tx.QueryRowContext(ctx, "SELECT "+entryColumns+" FROM "+entryFrom+" WHERE e.key = ?", key))
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && slices.Contains(except, e.Source)) {
 			return ErrGone
 		}
 		if err != nil {
@@ -1180,6 +1221,10 @@ func (ix *Index) Similar(ctx context.Context, key, scope string, chain []string,
 				return nil
 			}
 		}
+		if c, a := exceptSources("e.source", except); c != "" {
+			stmt += " AND " + c
+			args = append(args, a...)
+		}
 		stmt += " ORDER BY grp, e.at DESC, e.key LIMIT ?"
 		rows, err := tx.QueryContext(ctx, stmt, append(args, limit)...)
 		if err != nil {
@@ -1200,7 +1245,7 @@ func (ix *Index) Similar(ctx context.Context, key, scope string, chain []string,
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		return decorate(ctx, tx, hits, ids, "")
+		return decorate(ctx, tx, hits, ids, "", except)
 	})
 	return hits, err
 }

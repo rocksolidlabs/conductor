@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
@@ -58,6 +61,49 @@ const (
 // make), so nothing of what is at that path is learned from it.
 var worktreeGone = availabilityOf{State: availWorktreeGone, Words: "worktree not kept"}
 
+// answer is an availability or an eligibility answer: yes, no, or
+// unknown when what would tell could not be read now. Every answer the
+// history's routes give of whether something is there or may be done is
+// one, made by answerOf, so that no failed read is ever said as no.
+type answer string
+
+const (
+	answerYes     answer = "yes"
+	answerNo      answer = "no"
+	answerUnknown answer = "unknown"
+)
+
+// answerOf is the answer of a look that found the thing (found) or failed
+// with err. A failure that says the thing is not there (absent) is no; any
+// other failure (a permission, an I/O error, a store that could not be
+// read or decoded, a system that cannot look) is unknown, never no.
+func answerOf(found bool, err error) answer {
+	switch {
+	case err == nil && found:
+		return answerYes
+	case err == nil || absent(err):
+		return answerNo
+	}
+	return answerUnknown
+}
+
+// absent says err is a look's finding that the thing is not there: no such
+// file or record, a path that is not a directory, a folder outside the
+// allowed roots or a worktree not where its run puts it (refused alike, so
+// nothing of the path is learned), a folder that is no repository, a
+// commit git does not find (git's exit 1 with nothing said).
+func absent(err error) bool {
+	var exit *exec.ExitError
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, errNotADirectory) ||
+		errors.Is(err, errOutsideRoots) || errors.Is(err, errNotItsPlace) || errors.Is(err, journal.ErrNotFound) ||
+		errors.Is(err, brakeman.ErrNotFound) || errors.Is(err, gitcli.ErrNotRepo) || (errors.As(err, &exit) && exit.ExitCode() == 1)
+}
+
+// errNotItsPlace is a worktree a row names anywhere but where its run puts
+// it, or a step of that place that is a link or no directory: never looked
+// at further, said as a worktree not kept.
+var errNotItsPlace = errors.New("not where its run puts it")
+
 // availabilityOf is an entry's availability as served: its state and its
 // words; for a session's record entry on /api/history/entry, whether it
 // can be resumed; and what else the entry route reads.
@@ -70,22 +116,23 @@ type availabilityOf struct {
 	Log    *logKept      `json:"log,omitempty"`
 }
 
-// resumeOffer is whether Resume is offered, and why not or what it asks;
-// Confirm says it needs the person's second yes (a lost record); URL is
-// where the resume is instead (a crew member's run); Unknown says a check
-// could not be made now (the run records could not be read), so Resume is
-// not offered and the words say to try again: not a no.
+// resumeOffer is whether Resume is offered (yes, no, or unknown when a
+// check could not be made now: Resume is not offered and the words say
+// why, but it is not a no), and why not or what it asks; Confirm says it
+// needs the person's second yes (a lost record); URL is where the resume
+// is instead (a crew member's run).
 type resumeOffer struct {
-	Offered bool   `json:"offered"`
+	Offered answer `json:"offered"`
 	Why     string `json:"why,omitempty"`
 	Confirm bool   `json:"confirm,omitempty"`
 	URL     string `json:"url,omitempty"`
-	Unknown bool   `json:"unknown,omitempty"`
 }
 
+// commitInRepo is whether a result commit is in its run's repository:
+// yes, no, or unknown when git could not be asked in the folder opened.
 type commitInRepo struct {
 	ID      string `json:"id"`
-	Present bool   `json:"present"`
+	Present answer `json:"present"`
 }
 
 type logKept struct {
@@ -107,6 +154,11 @@ type availability struct {
 	kept     map[string]bool
 	briefs   map[string]availabilityOf
 	launches map[string]string
+	// gone is the sources the reply leaves out (except), read once and
+	// added to as the reply finds more (forgottenSources).
+	gone     []string
+	goneRead bool
+	goneErr  error
 }
 
 type attemptsRead struct {
@@ -121,11 +173,12 @@ type checksRead struct {
 
 // runFolder is a run's folder as this server opens it: the run's folder
 // as recorded (cwd), opened through its root by openCwd (f), which checks
-// it by resolveCwd, at real; err when it cannot be.
+// it by resolveCwd; err when it cannot be (answerOf tells a folder gone
+// from one that could not be read).
 type runFolder struct {
-	cwd, real string
-	f         *session.Folder
-	err       error
+	cwd string
+	f   *session.Folder
+	err error
 }
 
 func (s *Server) newAvailability(ctx context.Context, ix *history.Index) *availability {
@@ -194,8 +247,9 @@ func (av *availability) recordKept(id string) bool {
 }
 
 // forgottenSources is the sources of the hits whose session record the
-// journal no longer holds, each once: they are left out of the reply, and
-// the indexer is asked to read each again (its pass removes it).
+// journal no longer holds, each once: they are added to what the reply
+// leaves out (except), and the indexer is asked to read each again (its
+// pass removes it).
 func (av *availability) forgottenSources(hits []history.Hit) []string {
 	var out []string
 	for _, h := range hits {
@@ -205,22 +259,103 @@ func (av *availability) forgottenSources(hits []history.Hit) []string {
 		}
 		if src := hSessionRef(id); !slices.Contains(out, src) {
 			out = append(out, src)
-			if av.s.history != nil {
-				av.s.history.mark(src)
-			}
+			av.leaveOut(src)
 		}
 	}
 	return out
 }
 
+// leaveOut adds the source to what the reply leaves out, once, and asks
+// the indexer to read it again.
+func (av *availability) leaveOut(src string) {
+	if slices.Contains(av.gone, src) {
+		return
+	}
+	av.gone = append(av.gone, src)
+	if av.s.history != nil {
+		av.s.history.mark(src)
+	}
+}
+
+// maxSessionSourcePages bounds the pages of the index's session sources
+// (history.MaxSourcesPage each) a reply reads to find those forgotten:
+// several times the records the journal keeps (journal.MaxRecords).
+const maxSessionSourcePages = 16
+
+// errForgetting is a reply that cannot tell which records are forgotten:
+// the journal's list could not be read, or the index holds more session
+// sources than a reply reads. It is said as the history not ready.
+var errForgetting = fmt.Errorf("%w: the session records could not all be compared with the history; try again", history.ErrNotReady)
+
+// except is the sources the reply leaves out, so that a forgotten record
+// counts in nothing it answers (a row, a total, a cursor, a repeat, a
+// link, how far back the history holds): every session source the index
+// holds whose record the journal no longer answers for (recordKept). It
+// is read once, before the reply's first read of the index: the index's
+// session sources (in the order of their keys, from session:) against the
+// journal's own list of its records, each source the list lacks asked of
+// the journal again (Get: a record begun since the list is kept). Every
+// read of the index the reply makes takes it: a search's ExceptSources,
+// Entry's, Links', Similar's and Stats' except. A record forgotten after
+// it is read is found among the rows read (forgottenSources) and added.
+func (av *availability) except() ([]string, error) {
+	if av.goneRead || av.ix == nil {
+		return av.gone, av.goneErr
+	}
+	av.goneRead = true
+	held := map[string]bool{}
+	if j := av.s.sessionRecords; j != nil {
+		after := ""
+		for range journal.MaxRecords {
+			page, err := j.List(after, journal.MaxPage)
+			if err != nil {
+				av.goneErr = errForgetting
+				return nil, av.goneErr
+			}
+			for _, r := range page.Records {
+				held[r.ID] = true
+			}
+			if after = page.Next; after == "" {
+				break
+			}
+		}
+	}
+	const prefix = "session:"
+	after := prefix
+	for range maxSessionSourcePages {
+		srcs, err := av.ix.Sources(av.ctx, after, history.MaxSourcesPage)
+		if err != nil {
+			av.goneErr = err
+			return nil, err
+		}
+		for _, src := range srcs {
+			id, ok := strings.CutPrefix(src.Key, prefix)
+			if !ok {
+				return av.gone, nil
+			}
+			if !held[id] && !av.recordKept(id) {
+				av.leaveOut(src.Key)
+			}
+		}
+		if len(srcs) < history.MaxSourcesPage {
+			return av.gone, nil
+		}
+		after = srcs[len(srcs)-1].Key
+	}
+	av.goneErr = errForgetting
+	return nil, av.goneErr
+}
+
 // withoutForgotten is the hits whose session record, if any, the journal
 // still holds.
 func (av *availability) withoutForgotten(hits []history.Hit) []history.Hit {
-	gone := av.forgottenSources(hits)
-	if len(gone) == 0 {
+	if len(av.forgottenSources(hits)) == 0 {
 		return hits
 	}
-	return slices.DeleteFunc(slices.Clone(hits), func(h history.Hit) bool { return slices.Contains(gone, hSessionRef(recordOf(h.Entry))) })
+	return slices.DeleteFunc(slices.Clone(hits), func(h history.Hit) bool {
+		id := recordOf(h.Entry)
+		return id != "" && slices.Contains(av.gone, hSessionRef(id))
+	})
 }
 
 // linkKept says a link's other end may be served: it names no session
@@ -293,10 +428,10 @@ func (av *availability) brief(id string) availabilityOf {
 	out := availabilityOf{State: availUnknown, Words: "Brakeman's store is not open here"}
 	if av.s.brakeman != nil && av.s.brakeman.st != nil {
 		req, err := av.s.brakeman.st.Get(id)
-		switch {
-		case errors.Is(err, brakeman.ErrNotFound) || (err == nil && !req.HasBrief):
+		switch answerOf(err == nil && req.HasBrief, err) {
+		case answerNo:
 			out = availabilityOf{State: availPruned, Words: "pruned: Brakeman no longer keeps its brief"}
-		case err == nil:
+		case answerYes:
 			out = availabilityOf{State: availKept, Words: "kept by Brakeman"}
 		default:
 			out = availabilityOf{State: availUnknown, Words: "Brakeman's store could not be read; try again"}
@@ -331,51 +466,110 @@ func (av *availability) runFolder(run string) *runFolder {
 	}
 	rf := &runFolder{}
 	av.folders[run] = rf
+	var readErr error
 	if av.s.records != nil {
-		if rec, ok, err := av.s.records.Get(run); err == nil && ok {
+		rec, ok, err := av.s.records.Get(run)
+		if ok && err == nil {
 			rf.cwd = rec.Cwd
 		}
+		readErr = err
 	}
 	if rf.cwd == "" && av.s.ledger != nil {
-		if row, ok, err := av.s.ledger.Run(av.ctx, run); err == nil && ok {
+		row, ok, err := av.s.ledger.Run(av.ctx, run)
+		if ok && err == nil {
 			var c crew.Crew
-			if json.Unmarshal([]byte(row.Crew), &c) == nil {
+			if err = json.Unmarshal([]byte(row.Crew), &c); err == nil {
 				rf.cwd = c.Cwd
 			}
 		}
+		readErr = cmpOrErr(err, readErr)
 	}
 	if rf.cwd == "" {
-		rf.err = errors.New("the run's folder is not known")
+		// Not known: a read that failed, or neither the run's record nor
+		// its row names it. Either way not a folder found gone.
+		rf.err = fmt.Errorf("the run's folder is not known: %w", cmpOrErr(readErr, errFolderNotKnown))
 		return rf
 	}
-	if rf.f, rf.err = av.s.openCwd(rf.cwd); rf.err == nil {
-		rf.real = rf.f.Path()
-	}
+	rf.f, rf.err = av.s.openCwd(rf.cwd)
 	return rf
 }
 
-// worktreeKept says an attempt's worktree is where its run puts it
-// (<run's folder>/.conductor/worktrees/<run>/<task>.<n>, crew's
+// errFolderNotKnown is a run whose folder neither its record nor its row
+// names: unknown, never gone.
+var errFolderNotKnown = errors.New("neither the run's record nor its row names it")
+
+// cmpOrErr is the first error that is not nil.
+func cmpOrErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// worktreeKept answers whether an attempt's worktree is where its run puts
+// it (<run's folder>/.conductor/worktrees/<run>/<task>.<n>, crew's
 // worktreesDir) and there: each step of that path a directory, never a
 // link, looked at through the run's folder's root. A worktree its row
-// names anywhere else is not looked at.
-func (av *availability) worktreeKept(row ledger.AttemptRow) bool {
-	rf := av.runFolder(row.RunID)
-	if rf.err != nil {
-		return false
-	}
+// names anywhere else is not looked at (no). A folder or a step that
+// could not be looked at (its run's folder not known or not readable, a
+// step's look failing for any reason but its absence) is unknown.
+func (av *availability) worktreeKept(row ledger.AttemptRow) answer {
 	name := fmt.Sprintf("%s.%d", row.TaskID, row.N)
 	steps := []string{".conductor", "worktrees", row.RunID, name}
-	if row.Worktree != filepath.Join(append([]string{rf.cwd}, steps...)...) {
-		return false
+	rf := av.runFolder(row.RunID)
+	switch {
+	case rf.err != nil:
+		return answerOf(false, rf.err)
+	case row.Worktree != filepath.Join(append([]string{rf.cwd}, steps...)...):
+		return answerOf(false, errNotItsPlace)
 	}
 	for i := range steps {
 		fi, err := rf.f.Lstat(filepath.Join(steps[:i+1]...))
-		if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-			return false
+		if err == nil && (!fi.IsDir() || fi.Mode()&os.ModeSymlink != 0) {
+			err = errNotItsPlace
+		}
+		if err != nil {
+			return answerOf(false, err)
 		}
 	}
-	return true
+	return answerYes
+}
+
+// historyBeforeGit, when set (by a test), runs once an attempt's run
+// folder is open and before git is asked in it, where a test changes the
+// folder's path as another process could meanwhile.
+var historyBeforeGit func(folder string)
+
+// commitIn answers whether the commit id is in the repository of the
+// run's folder, asked of git in the folder this reply opened (its
+// directory itself, gitcli.RunIn), never at its path again: no when git
+// does not find it there or the folder is no repository; unknown when the
+// folder could not be opened or git asked in it (a system that cannot
+// start git in an open directory among it).
+func (av *availability) commitIn(run, id string) answer {
+	rf := av.runFolder(run)
+	if rf.err != nil {
+		return answerOf(false, rf.err)
+	}
+	dir, err := rf.f.Dir()
+	if err != nil {
+		return answerUnknown
+	}
+	defer dir.Close()
+	if historyBeforeGit != nil {
+		historyBeforeGit(rf.f.Path())
+	}
+	ctx, cancel := context.WithTimeout(av.ctx, revisionTimeout)
+	defer cancel()
+	_, err = gitcli.RunIn(ctx, dir, "rev-parse", "--verify", "--quiet", id+"^{commit}")
+	if errors.Is(err, fs.ErrNotExist) {
+		// git could not start in the folder opened (removed since): that
+		// says nothing of the commit.
+		return answerUnknown
+	}
+	return answerOf(err == nil, err)
 }
 
 // attempt is an attempt's: its worktree there or not, looked at through
@@ -396,20 +590,20 @@ func (av *availability) attempt(r brakeman.Ref, e history.Entry, full bool) avai
 		return availabilityOf{State: availPruned, Words: "pruned: the run's rows are gone"}
 	}
 	row := rows[i]
-	out := worktreeGone
-	if av.worktreeKept(row) {
+	var out availabilityOf
+	switch av.worktreeKept(row) {
+	case answerYes:
 		out = availabilityOf{State: availWorktree, Words: "worktree kept"}
 		if full {
 			out.Branch = row.Branch
 		}
+	case answerNo:
+		out = worktreeGone
+	default:
+		out = availabilityOf{State: availUnknown, Words: "its worktree could not be looked at; try again"}
 	}
 	if full && objectID(row.ResultCommit) {
-		if rf := av.runFolder(r.Run); rf.err == nil {
-			ctx, cancel := context.WithTimeout(av.ctx, revisionTimeout)
-			defer cancel()
-			_, err := gitcli.Run(ctx, rf.real, "cat-file", "-e", row.ResultCommit+"^{commit}")
-			out.Commit = &commitInRepo{ID: row.ResultCommit, Present: err == nil}
-		}
+		out.Commit = &commitInRepo{ID: row.ResultCommit, Present: av.commitIn(r.Run, row.ResultCommit)}
 	}
 	return out
 }
@@ -442,6 +636,8 @@ func (av *availability) check(r brakeman.Ref, full bool) availabilityOf {
 			if row, ok, err := ld.Check(av.ctx, r.Run, r.Task, r.N, r.Check, r.K); err == nil && ok {
 				out.Log = &logKept{Size: int64(len(row.Log)), SHA256: row.LogSHA256}
 				out.Words = fmt.Sprintf("log kept (%d bytes)", len(row.Log))
+			} else {
+				out.Words = "log kept (its size could not be read now)"
 			}
 		}
 		return out
@@ -458,37 +654,40 @@ func (av *availability) check(r brakeman.Ref, full bool) availabilityOf {
 // with the person's second yes.
 func (s *Server) resumeOfRecord(id string) *resumeOffer {
 	if s.sessionRecords == nil {
-		return &resumeOffer{Why: "this server keeps no history"}
+		return &resumeOffer{Offered: answerNo, Why: "this server keeps no history"}
 	}
 	rec, _, err := s.sessionRecords.Get(id)
-	if err != nil {
-		return &resumeOffer{Why: "its record is no longer kept"}
+	switch answerOf(err == nil, err) {
+	case answerNo:
+		return &resumeOffer{Offered: answerNo, Why: "its record is no longer kept"}
+	case answerUnknown:
+		return &resumeOffer{Offered: answerUnknown, Why: "its record could not be read now"}
 	}
 	return s.resumeOffered(rec)
 }
 
 // resumeOffered is resumeOfRecord's answer for the record rec: offered
 // (with Confirm for a lost record), not offered with why (and URL where
-// the resume is instead), or Unknown when whether it is a crew member
-// could not be read.
+// the resume is instead), or unknown when whether it is a crew member, or
+// whether the folder it needs is there, could not be read.
 func (s *Server) resumeOffered(rec journal.Record) *resumeOffer {
 	id := rec.ID
-	no := func(why string) *resumeOffer { return &resumeOffer{Why: why} }
+	no := func(why string) *resumeOffer { return &resumeOffer{Offered: answerNo, Why: why} }
 	if rec.Host.Hosted {
 		return no(fmt.Sprintf("resume it on %s: `conductor host` resumes it there", cmpOr(rec.Host.Name, "its host")))
 	}
 	run, member, err := s.memberOf(rec)
 	if err != nil {
-		return &resumeOffer{Unknown: true, Why: "whether it was a crew member's session could not be read; try again"}
+		return &resumeOffer{Offered: answerUnknown, Why: "whether it was a crew member's session could not be read; try again"}
 	}
 	if member {
 		switch {
 		case rec.Crew != nil && rec.Crew.Brakeman != "":
 			return no("a Brakeman turn is never resumed: ask Brakeman again")
 		case rec.Crew != nil && rec.Crew.Task != "":
-			return &resumeOffer{Why: "a managed run continues from its run page", URL: "/runs/" + run}
+			return &resumeOffer{Offered: answerNo, Why: "a managed run continues from its run page", URL: "/runs/" + run}
 		}
-		return &resumeOffer{Why: "resume it as the run's member, from its run", URL: "/runs/" + run}
+		return &resumeOffer{Offered: answerNo, Why: "resume it as the run's member, from its run", URL: "/runs/" + run}
 	}
 	if rec.Launch == nil || !rec.Launch.ArgsKept {
 		return no("its arguments were too long to keep")
@@ -507,6 +706,9 @@ func (s *Server) resumeOffered(rec journal.Record) *resumeOffer {
 	}
 	plan, aerr := s.resumeCheck(rec.Agent.ID, as, rec.Cwd)
 	if aerr != nil {
+		if plan.cwdErr != nil && answerOf(false, plan.cwdErr) == answerUnknown {
+			return &resumeOffer{Offered: answerUnknown, Why: "whether the session's working directory is there could not be read; try again"}
+		}
 		return no(aerr.Message)
 	}
 	if plan.id == "" {
@@ -516,9 +718,9 @@ func (s *Server) resumeOffered(rec journal.Record) *resumeOffer {
 		return no("nothing to resume yet: the agent had no turn")
 	}
 	if rec.Ending == journal.EndingLost || (!rec.LostAt.IsZero() && rec.EndedAt.IsZero()) {
-		return &resumeOffer{Offered: true, Confirm: true, Why: fmt.Sprintf("the server stopped while this session ran on %s; its process may still be running", cmpOr(rec.Where, string(ext.WhereNative)))}
+		return &resumeOffer{Offered: answerYes, Confirm: true, Why: fmt.Sprintf("the server stopped while this session ran on %s; its process may still be running", cmpOr(rec.Where, string(ext.WhereNative)))}
 	}
-	return &resumeOffer{Offered: true}
+	return &resumeOffer{Offered: answerYes}
 }
 
 // memberOf is the run a session is a member of: by its record's crew, by

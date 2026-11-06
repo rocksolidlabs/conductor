@@ -59,6 +59,9 @@ const (
 // historyReplyLimit is maxHistoryReply; a test lowers it.
 var historyReplyLimit = maxHistoryReply
 
+// historyWriteLimit is historyWriteTimeout; a test shortens it.
+var historyWriteLimit = historyWriteTimeout
+
 // historyGate counts the index's reads in flight, in all and by client.
 type historyGate struct {
 	mu  sync.Mutex
@@ -100,7 +103,8 @@ func (g *historyGate) inFlight() int {
 // the index, the read's context (its deadline) and its slot in the gate.
 // The slot is let go on every way out of the handler (release, deferred)
 // and before the reply is written (reply), so a client that stops reading
-// holds none; the write itself has its own deadline.
+// holds none; the write itself, to its last byte on the connection, has
+// its own deadline.
 type historyReq struct {
 	s      *Server
 	w      http.ResponseWriter
@@ -122,17 +126,32 @@ func (h *historyReq) release() {
 }
 
 // reply answers status and v: v encoded first, the slot let go, then
-// written within historyWriteTimeout.
+// written and flushed to the connection within historyWriteTimeout. A
+// Write may only fill the server's buffers, which net/http would flush
+// after the handler returns, with no deadline then: so the reply, its
+// length said, is flushed here, under the deadline, and only then is the
+// deadline cleared (the connection's next request has none of its own).
+// A client that stops reading fails the flush at the deadline, and its
+// connection is closed.
 func (h *historyReq) reply(status int, v any) {
 	var b bytes.Buffer
 	_ = json.NewEncoder(&b).Encode(v)
 	h.release()
 	rc := http.NewResponseController(h.w)
-	_ = rc.SetWriteDeadline(time.Now().Add(historyWriteTimeout))
+	_ = rc.SetWriteDeadline(time.Now().Add(historyWriteLimit))
 	h.w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	h.w.Header().Set("Content-Length", strconv.Itoa(b.Len()))
 	h.w.WriteHeader(status)
-	_, _ = h.w.Write(b.Bytes())
-	_ = rc.SetWriteDeadline(time.Time{})
+	_, err := h.w.Write(b.Bytes())
+	if err == nil {
+		err = rc.Flush()
+	}
+	// A write that failed (its deadline passed) leaves the deadline set:
+	// net/http closes the connection. A writer that cannot flush leaves
+	// nothing better to do than clear it.
+	if err == nil || errors.Is(err, http.ErrNotSupported) {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
 }
 
 // refuse answers an error in words, as writeError does.
@@ -181,8 +200,9 @@ func (s *Server) historyTimeout() time.Duration {
 }
 
 // historyIndexing is the reply's indexing: the indexer's state, the
-// index's (other_version, checking), and how far back it holds.
-func (s *Server) historyIndexing(ctx context.Context, ix *history.Index, pageState string) map[string]any {
+// index's (other_version, checking), and how far back it holds, the
+// sources the reply leaves out (except) left out of that too.
+func (s *Server) historyIndexing(ctx context.Context, ix *history.Index, pageState string, except []string) map[string]any {
 	out := map[string]any{"state": indexOpening}
 	if s.history != nil {
 		out = s.history.indexing()
@@ -191,7 +211,7 @@ func (s *Server) historyIndexing(ctx context.Context, ix *history.Index, pageSta
 		out["state"] = pageState
 	}
 	if ix != nil {
-		if st, err := ix.Stats(ctx); err == nil {
+		if st, err := ix.Stats(ctx, except...); err == nil {
 			if !st.Oldest.IsZero() {
 				out["oldest"] = st.Oldest
 			}
@@ -242,9 +262,12 @@ const maxForgottenTries = 3
 // filters, {entries, next?, total, totalCapped?, cut?, indexing,
 // readOnly?, truncated?, stale?}. Brakeman's own sessions and runs are
 // left out unless the line names a crew or the kind brief.item. A session
-// record the journal no longer holds is never served: a page that found
-// one is read again without it (stale says so), so neither its rows, its
-// count in total nor a cursor of it is answered.
+// record the journal no longer holds is never served, nor counted in
+// anything the reply says: the search leaves out every source the index
+// still holds of one (availability.except: its rows, its count in total,
+// in a row's repeats and links, in how far back the history holds, a
+// cursor of it), and a page that finds one forgotten since is read again
+// without it; stale says the index still held one.
 func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 	h, ok := s.historyRead(w, r, "q", "limit", "after")
 	if !ok {
@@ -284,7 +307,7 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 	}
 	readOnly := s.sessionRecords != nil && func() bool { ro, _ := s.sessionRecords.ReadOnly(); return ro }()
 	if ix == nil {
-		out := map[string]any{"entries": []any{}, "total": 0, "indexing": s.historyIndexing(ctx, nil, "")}
+		out := map[string]any{"entries": []any{}, "total": 0, "indexing": s.historyIndexing(ctx, nil, "", nil)}
 		if readOnly {
 			out["readOnly"] = true
 		}
@@ -293,21 +316,24 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 	}
 	av := s.newAvailability(ctx, ix)
 	defer av.close()
+	if _, err := av.except(); err != nil {
+		h.fail(err)
+		return
+	}
 	var page history.Page
 	for try := 0; ; try++ {
+		hq.ExceptSources = slices.Clone(av.gone)
 		if page, err = ix.Search(ctx, hq); err != nil {
 			h.fail(err)
 			return
 		}
-		gone := av.forgottenSources(page.Entries)
-		if len(gone) == 0 {
+		if len(av.forgottenSources(page.Entries)) == 0 {
 			break
 		}
 		if try+1 == maxForgottenTries {
 			h.refuse(http.StatusServiceUnavailable, "history_not_ready", "records are being forgotten; try again")
 			return
 		}
-		hq.ExceptSources = append(hq.ExceptSources, gone...)
 	}
 	entries, n := s.servePage(av, page.Entries)
 	next := page.Next
@@ -316,7 +342,7 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 		// the last row served.
 		next = page.After(n - 1)
 	}
-	out := map[string]any{"entries": entries, "total": page.Total, "indexing": s.historyIndexing(ctx, ix, page.State)}
+	out := map[string]any{"entries": entries, "total": page.Total, "indexing": s.historyIndexing(ctx, ix, page.State, hq.ExceptSources)}
 	if next != "" {
 		out["next"] = next
 	}
@@ -379,23 +405,28 @@ func (s *Server) handleHistoryEntry(w http.ResponseWriter, r *http.Request) {
 		h.refuse(http.StatusServiceUnavailable, "history_not_ready", "the history is not ready; try again")
 		return
 	}
-	hit, err := ix.Entry(ctx, key)
+	av := s.newAvailability(ctx, ix)
+	defer av.close()
+	except, err := av.except()
 	if err != nil {
 		h.fail(err)
 		return
 	}
-	av := s.newAvailability(ctx, ix)
-	defer av.close()
+	hit, err := ix.Entry(ctx, key, except...)
+	if err != nil {
+		h.fail(err)
+		return
+	}
 	if len(av.forgottenSources([]history.Hit{hit})) > 0 {
 		h.fail(history.ErrGone)
 		return
 	}
 	links := hit.Links
-	if l, err := ix.Links(ctx, hit.Ref, maxEntryLinks); err == nil {
+	if l, err := ix.Links(ctx, hit.Ref, maxEntryLinks, av.gone...); err == nil {
 		links = l
 	}
 	e := s.serveEntry(av, hit.Entry, hit.Snippet, hit.Repeats, links, true)
-	out := map[string]any{"entry": e, "indexing": s.historyIndexing(ctx, ix, "")}
+	out := map[string]any{"entry": e, "indexing": s.historyIndexing(ctx, ix, "", av.gone)}
 	// Within the reply's bound: the links past it are cut, the last
 	// first, and the reply says so.
 	for b, _ := json.Marshal(out); len(b)+1 > historyReplyLimit && len(e.Links) > 0; b, _ = json.Marshal(out) {
@@ -445,18 +476,23 @@ func (s *Server) handleHistorySimilar(w http.ResponseWriter, r *http.Request) {
 		h.refuse(http.StatusServiceUnavailable, "history_not_ready", "the history is not ready; try again")
 		return
 	}
-	hit, err := ix.Entry(ctx, key)
+	av := s.newAvailability(ctx, ix)
+	defer av.close()
+	except, err := av.except()
 	if err != nil {
 		h.fail(err)
 		return
 	}
-	av := s.newAvailability(ctx, ix)
-	defer av.close()
+	hit, err := ix.Entry(ctx, key, except...)
+	if err != nil {
+		h.fail(err)
+		return
+	}
 	if len(av.forgottenSources([]history.Hit{hit})) > 0 {
 		h.fail(history.ErrGone)
 		return
 	}
-	hits, err := ix.Similar(ctx, key, scope, runChain(ctx, ix, hit.Run), int(limit))
+	hits, err := ix.Similar(ctx, key, scope, runChain(ctx, ix, hit.Run, av.gone), int(limit), av.gone...)
 	if err != nil {
 		h.fail(err)
 		return
@@ -471,15 +507,16 @@ func (s *Server) handleHistorySimilar(w http.ResponseWriter, r *http.Request) {
 }
 
 // runChain is the runs a run continues and that continue it, as the
-// index's continues links say, at most maxRunChain each way.
-func runChain(ctx context.Context, ix *history.Index, run string) []string {
+// index's continues links say (none a source of except wrote), at most
+// maxRunChain each way.
+func runChain(ctx context.Context, ix *history.Index, run string, except []string) []string {
 	if run == "" {
 		return nil
 	}
 	chain := []string{run}
 	seen := map[string]bool{run: true}
 	for i := 0; i < len(chain) && len(chain) < 2*maxRunChain+1; i++ {
-		ls, err := ix.Links(ctx, hRunRef(chain[i]), history.MaxLinks)
+		ls, err := ix.Links(ctx, hRunRef(chain[i]), history.MaxLinks, except...)
 		if err != nil {
 			break
 		}
@@ -695,7 +732,7 @@ func (av *availability) launchURL(ref string) string {
 	}
 	u := ""
 	if av.ix != nil {
-		if h, err := av.ix.Entry(av.ctx, ref); err == nil && h.Kind == "launch" {
+		if h, err := av.ix.Entry(av.ctx, ref, av.gone...); err == nil && h.Kind == "launch" {
 			u = launchURL(h.Entry)
 		}
 	}

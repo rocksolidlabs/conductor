@@ -133,6 +133,10 @@ type resumePlan struct {
 	agent catalog.Agent
 	id    string
 	cwd   string
+	// cwdErr is why the folder was refused (resolveCwd's error), with the
+	// plan's refusal when the agent resumes only where it ran: the
+	// history's offer tells a folder gone from one it could not read.
+	cwdErr error
 }
 
 // resumeCheck applies the resume routes' rules to a session of the agent
@@ -157,7 +161,7 @@ func (s *Server) resumeCheck(agentID string, as *session.AgentSession, cwd strin
 	// or the server's default directory.
 	if _, err := s.resolveCwd(cwd); err != nil {
 		if id != "" && agent.Session.ResumeNeedsCwd {
-			return resumePlan{}, newAPIError(http.StatusBadRequest, "invalid_cwd", "the session's working directory is gone: "+err.Error())
+			return resumePlan{cwdErr: err}, newAPIError(http.StatusBadRequest, "invalid_cwd", "the session's working directory is gone: "+err.Error())
 		}
 		cwd = ""
 	}

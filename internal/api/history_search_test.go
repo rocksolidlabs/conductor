@@ -8,17 +8,21 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -28,6 +32,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/history"
 	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -479,36 +484,36 @@ func TestResumeOfferedByTheResumeRoutesRules(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		edit    func(r *journal.Record)
-		offered bool
+		offered answer
 		why     string
 		confirm bool
 	}{
-		{"resumable", func(*journal.Record) {}, true, "", false},
-		{"hosted", func(r *journal.Record) { r.Host = journal.Host{Name: "lab-box", Hosted: true} }, false, "resume it on lab-box: `conductor host` resumes it there", false},
-		{"a crew member", func(r *journal.Record) { r.Crew = &journal.Crew{RunID: "hist-00000027", Member: "lead"} }, false, "resume it as the run's member, from its run", false},
-		{"a managed attempt", func(r *journal.Record) { r.Crew = &journal.Crew{RunID: "hist-00000027", Task: "build", Attempt: 1} }, false, "a managed run continues from its run page", false},
-		{"a Brakeman turn", func(r *journal.Record) { r.Crew = &journal.Crew{RunID: "brakeman-00000002", Brakeman: "br-2"} }, false, "a Brakeman turn is never resumed: ask Brakeman again", false},
-		{"arguments not kept", func(r *journal.Record) { r.Launch.ArgsKept = false }, false, "its arguments were too long to keep", false},
-		{"a Runtime gone", func(r *journal.Record) { r.Where = "boxcar" }, false, "its Runtime boxcar is not on this server", false},
-		{"an agent gone", func(r *journal.Record) { r.Agent.ID = "nope" }, false, "the session's agent is no longer in the catalog", false},
-		{"a folder gone, needed", func(r *journal.Record) { r.Agent.ID, r.Cwd = "rec-cwd", filepath.Join(e.root, "gone") }, false, "the session's working directory is gone", false},
-		{"a folder gone, not needed", func(r *journal.Record) { r.Cwd = filepath.Join(e.root, "gone") }, true, "", false},
-		{"no turn yet", func(r *journal.Record) { r.Agent.Session = &journal.AgentSession{ID: conv.ID} }, false, "nothing to resume yet: the agent had no turn", false},
-		{"no recipe", func(r *journal.Record) { r.Agent.ID = "cat" }, false, "cat has no session recipe", false},
-		{"lost", func(r *journal.Record) { r.EndedAt, r.LostAt, r.Ending = time.Time{}, histNow, journal.EndingLost }, true, "the server stopped while this session ran on native", true},
+		{"resumable", func(*journal.Record) {}, answerYes, "", false},
+		{"hosted", func(r *journal.Record) { r.Host = journal.Host{Name: "lab-box", Hosted: true} }, answerNo, "resume it on lab-box: `conductor host` resumes it there", false},
+		{"a crew member", func(r *journal.Record) { r.Crew = &journal.Crew{RunID: "hist-00000027", Member: "lead"} }, answerNo, "resume it as the run's member, from its run", false},
+		{"a managed attempt", func(r *journal.Record) { r.Crew = &journal.Crew{RunID: "hist-00000027", Task: "build", Attempt: 1} }, answerNo, "a managed run continues from its run page", false},
+		{"a Brakeman turn", func(r *journal.Record) { r.Crew = &journal.Crew{RunID: "brakeman-00000002", Brakeman: "br-2"} }, answerNo, "a Brakeman turn is never resumed: ask Brakeman again", false},
+		{"arguments not kept", func(r *journal.Record) { r.Launch.ArgsKept = false }, answerNo, "its arguments were too long to keep", false},
+		{"a Runtime gone", func(r *journal.Record) { r.Where = "boxcar" }, answerNo, "its Runtime boxcar is not on this server", false},
+		{"an agent gone", func(r *journal.Record) { r.Agent.ID = "nope" }, answerNo, "the session's agent is no longer in the catalog", false},
+		{"a folder gone, needed", func(r *journal.Record) { r.Agent.ID, r.Cwd = "rec-cwd", filepath.Join(e.root, "gone") }, answerNo, "the session's working directory is gone", false},
+		{"a folder gone, not needed", func(r *journal.Record) { r.Cwd = filepath.Join(e.root, "gone") }, answerYes, "", false},
+		{"no turn yet", func(r *journal.Record) { r.Agent.Session = &journal.AgentSession{ID: conv.ID} }, answerNo, "nothing to resume yet: the agent had no turn", false},
+		{"no recipe", func(r *journal.Record) { r.Agent.ID = "cat" }, answerNo, "cat has no session recipe", false},
+		{"lost", func(r *journal.Record) { r.EndedAt, r.LostAt, r.Ending = time.Time{}, histNow, journal.EndingLost }, answerYes, "the server stopped while this session ran on native", true},
 	} {
 		r := base()
 		c.edit(&r)
 		got := e.srv.resumeOffered(r)
 		if got.Offered != c.offered || got.Confirm != c.confirm || !strings.HasPrefix(got.Why, c.why) {
-			t.Errorf("%s: %+v, want offered %v, %q", c.name, got, c.offered, c.why)
+			t.Errorf("%s: %+v, want offered %s, %q", c.name, got, c.offered, c.why)
 		}
 	}
 	// A member whose adoption the journal had not written when the server
 	// stopped: its run's record names it, read through the run records.
 	saveRecord(t, e.srv, crew.Run{ID: "hist-0000002d", Cwd: e.root, StartedAt: histNow,
 		Members: []crew.MemberState{{Name: "lead", AgentID: "rec", SessionID: base().ID, Status: crew.MemberEnded}}})
-	if got := e.srv.resumeOffered(base()); got.Offered || got.Unknown || got.URL != "/runs/hist-0000002d" || got.Why != "resume it as the run's member, from its run" {
+	if got := e.srv.resumeOffered(base()); got.Offered != answerNo || got.URL != "/runs/hist-0000002d" || got.Why != "resume it as the run's member, from its run" {
 		t.Fatalf("a member by its run's record: %+v", got)
 	}
 	if err := e.srv.records.Delete("hist-0000002d"); err != nil {
@@ -520,20 +525,20 @@ func TestResumeOfferedByTheResumeRoutesRules(t *testing.T) {
 	if err := os.WriteFile(unread, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.srv.resumeOffered(base()); got.Offered || !got.Unknown || got.Why != "whether it was a crew member's session could not be read; try again" {
+	if got := e.srv.resumeOffered(base()); got.Offered != answerUnknown || got.Why != "whether it was a crew member's session could not be read; try again" {
 		t.Fatalf("beside a run record that cannot be read: %+v", got)
 	}
 	if err := os.Remove(unread); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.srv.resumeOffered(base()); !got.Offered || got.Unknown {
+	if got := e.srv.resumeOffered(base()); got.Offered != answerYes {
 		t.Fatalf("once it is gone: %+v", got)
 	}
 	// A running session holding the conversation: the resume route's 409.
 	id := e.createSession("rec")
 	e.local(id).ReportAgentSession(conv.ID, session.PolicyLatest, true)
 	until(t, "the conversation held", func() bool { return e.srv.liveAgentSession(conv.ID) })
-	if got := e.srv.resumeOffered(base()); got.Offered || got.Why != "a running session holds that conversation" {
+	if got := e.srv.resumeOffered(base()); got.Offered != answerNo || got.Why != "a running session holds that conversation" {
 		t.Fatalf("held: %+v", got)
 	}
 }
@@ -1232,6 +1237,88 @@ func TestAFailedAvailabilityReadIsUnknown(t *testing.T) {
 	if a := av.check(ref(t, hCheckRef("hist-00000032", "build", 1, "unit", 1)), false); a.State != availUnknown {
 		t.Fatalf("a receipt with no ledger open: %v", a)
 	}
+	e.srv.ledger = ld
+
+	// The run's folder: a worktree's place that cannot be looked at (a
+	// step of it unreadable) is unknown, one removed is gone; a run whose
+	// folder is not known (its record unreadable, no row of it) unknown.
+	const run = "hist-00000035"
+	proj := filepath.Join(e.root, "unreadable")
+	histCreate(t, ld, run, "", histCrew(proj))
+	tree := func(n int) string {
+		return filepath.Join(proj, ".conductor", "worktrees", run, fmt.Sprintf("build.%d", n))
+	}
+	if err := os.MkdirAll(tree(1), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		for n := 1; n <= 2; n++ {
+			a := histAttempt("build", n, ledger.AttemptFailed, "", commitID(0), "")
+			a.Worktree = tree(n)
+			if err := tx.PutAttempt(a); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	at := func(n int) availabilityOf {
+		av := e.srv.newAvailability(t.Context(), nil)
+		defer av.close()
+		return av.attempt(ref(t, attemptKey(run, "build", n)), history.Entry{Where: ledger.WhereNative}, false)
+	}
+	if a := at(2); a.State != availWorktreeGone {
+		t.Fatalf("a worktree removed: %v", a)
+	}
+	if os.Geteuid() != 0 {
+		if err := os.Chmod(filepath.Join(proj, ".conductor"), 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(filepath.Join(proj, ".conductor"), 0o700) })
+		for n := 1; n <= 2; n++ {
+			if a := at(n); a.State != availUnknown {
+				t.Fatalf("attempt %d, its place unreadable: %v", n, a)
+			}
+		}
+		if err := os.Chmod(filepath.Join(proj, ".conductor"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const lost = "hist-00000036"
+	if err := os.WriteFile(filepath.Join(e.srv.cfg.DataDir, "runs", lost+".json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	av = e.srv.newAvailability(t.Context(), nil)
+	defer av.close()
+	for _, r := range []string{lost, "hist-00000037"} {
+		row := histAttempt("build", 1, ledger.AttemptFailed, "", commitID(0), "")
+		row.RunID, row.Worktree = r, filepath.Join(e.root, ".conductor", "worktrees", r, "build.1")
+		if got := av.worktreeKept(row); got != answerUnknown {
+			t.Fatalf("a run whose folder is not known (%s): %s", r, got)
+		}
+	}
+}
+
+// A session record the journal holds but cannot decode is served (no
+// Forget removed it), and whether it can be resumed is unknown, never no;
+// a record the journal does not find is no.
+func TestAnUnreadableRecordsResumeIsUnknown(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	e.stopAndWait(id)
+	histSettle(t, e)
+	e2 := restartServer(t, e)
+	histSettle(t, e2)
+	file := filepath.Join(e2.srv.cfg.DataDir, journal.Dir, journal.SessionsDir, id+".json")
+	if err := os.WriteFile(file, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := availOf(hsEntryOf(t, e2, hSessionRef(id)))["resume"].(map[string]any)
+	if r["offered"] != string(answerUnknown) || r["why"] != "its record could not be read now" {
+		t.Fatalf("an unreadable record's resume: %v", r)
+	}
+	if got := e2.srv.resumeOfRecord("00000000000000ff"); got.Offered != answerNo || got.Why != "its record is no longer kept" {
+		t.Fatalf("a record not found: %+v", got)
+	}
 }
 
 // keepBriefSplit keeps a brief on e's Brakeman store as another server
@@ -1335,4 +1422,252 @@ func TestABriefKeptDuringACatchUpIsFoundLater(t *testing.T) {
 	histGone(t, e.srv.history.index(), hBriefItemRef(id, 0))
 	histReconcile(t, e)
 	histEntry(t, e.srv.history.index(), hBriefItemRef(id, 0))
+}
+
+// hsPages pages through the search for line one row at a time, and
+// answers every page as served, its indexing reduced to how far back the
+// history holds and stale left out, with whether any page said stale.
+func hsPages(t *testing.T, e *testEnv, line string) (pages []map[string]any, stale bool) {
+	t.Helper()
+	for after := ""; ; {
+		q := url.Values{"q": {line}, "limit": {"1"}}
+		if after != "" {
+			q.Set("after", after)
+		}
+		status, page := hsGet(t, e, "/api/history", q, adminToken)
+		if status != http.StatusOK {
+			t.Fatalf("%q, a page: %d %v", line, status, page)
+		}
+		stale = stale || page["stale"] == true
+		delete(page, "stale")
+		ixg, _ := page["indexing"].(map[string]any)
+		page["indexing"] = ixg["oldest"]
+		pages = append(pages, page)
+		next, _ := page["next"].(string)
+		if next == "" || len(pages) > 50 {
+			return pages, stale
+		}
+		after = next
+	}
+}
+
+// A forgotten record counts in nothing a search answers, on any page: not
+// a row, the total, a cursor, a row's repeats or links, nor how far back
+// the history holds; with records forgotten older and newer than the kept
+// ones, the indexer held at a gate so the index still holds them, every
+// page of a search is the page served once the indexer's pass has
+// removed them. An entry and its similar ones the same.
+func TestAForgottenRecordCountsInNothing(t *testing.T) {
+	e := newTestEnv(t, nil)
+	old := e.createSession("cat")
+	kept := []string{e.createSession("cat"), e.createSession("cat")}
+	young := e.createSession("cat")
+	for _, id := range append([]string{old, young}, kept...) {
+		e.stopAndWait(id)
+	}
+	const gate = "hist-00000033"
+	saveRecord(t, e.srv, crew.Run{ID: gate, Label: "the gate", Cwd: e.root, StartedAt: histNow})
+	histSettle(t, e)
+	lines := []string{"kind:session", "session:" + strings.Join([]string{old, kept[0], kept[1], young}, ",")}
+
+	held, release := make(chan struct{}, 1), make(chan struct{})
+	var once sync.Once
+	let := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	freshIndexer(t, e, func(h *historyIndexer) {
+		h.afterMark = func(key string) {
+			if key == hRunRef(gate) {
+				select {
+				case held <- struct{}{}:
+				default:
+				}
+				<-release
+			}
+		}
+	})
+	saveRecord(t, e.srv, crew.Run{ID: gate, Label: "the gate, again", Cwd: e.root, StartedAt: histNow})
+	<-held
+	for _, id := range []string{old, young} {
+		if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("forget %s: %d %v", id, resp.StatusCode, out)
+		}
+		histEntry(t, e.srv.history.index(), hSessionRef(id)) // still indexed: the gate holds its removal
+	}
+	before := map[string][]map[string]any{}
+	for _, line := range lines {
+		pages, stale := hsPages(t, e, line)
+		if !stale {
+			t.Fatalf("%q: no page says the index still held a forgotten record", line)
+		}
+		before[line] = pages
+	}
+	entryBefore := hsEntryOf(t, e, hSessionRef(kept[0]))
+
+	let()
+	histSettle(t, e)
+	for _, id := range []string{old, young} {
+		histGone(t, e.srv.history.index(), hSessionRef(id))
+	}
+	for _, line := range lines {
+		after, stale := hsPages(t, e, line)
+		if stale {
+			t.Fatalf("%q: stale once the index holds none", line)
+		}
+		if !reflect.DeepEqual(before[line], after) {
+			t.Errorf("%q with the forgotten records still indexed:\n%v\nonce they are removed:\n%v", line, before[line], after)
+		}
+		if len(after) != 2 || after[0]["total"] != float64(2) || after[1]["total"] != float64(2) {
+			t.Errorf("%q: %d pages, %v: one kept record a page, each counting two", line, len(after), after)
+		}
+	}
+	if entryAfter := hsEntryOf(t, e, hSessionRef(kept[0])); !reflect.DeepEqual(entryBefore, entryAfter) {
+		t.Errorf("an entry beside forgotten records:\n%v\nonce they are removed:\n%v", entryBefore, entryAfter)
+	}
+}
+
+// historyRepo makes a repository at dir with one commit holding name, and
+// answers the commit's id.
+func historyRepo(t *testing.T, dir, name string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(name+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}, {"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", name}} {
+		if _, err := gitcli.Run(t.Context(), dir, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	id, err := gitcli.Run(t.Context(), dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(id)
+}
+
+// Whether a result commit is in its run's repository is asked of git in
+// the run's folder as this reply opened it, never at its path again: the
+// folder renamed and a link to another repository put at its path after
+// it was opened, the answer is the opened folder's (no), nothing of the
+// other's (which holds the commit); the folder removed after it was
+// opened, the answer is unknown, never no.
+func TestACommitIsLookedForInTheFolderOpened(t *testing.T) {
+	e := newTestEnv(t, nil)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("git starts in an open directory on Linux only; elsewhere the answer is unknown")
+	}
+	folder, other := filepath.Join(e.root, "proj"), filepath.Join(e.root, "other")
+	historyRepo(t, folder, "proj.txt")
+	onlyOther := historyRepo(t, other, "other.txt")
+	ld := e.srv.ledger
+	const run = "hist-00000034"
+	histCreate(t, ld, run, "", histCrew(folder))
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		return tx.PutAttempt(histAttempt("build", 1, ledger.AttemptFailed, "", commitID(0), onlyOther))
+	})
+	histSettle(t, e)
+	present := func() any {
+		c, _ := availOf(hsEntryOf(t, e, attemptKey(run, "build", 1)))["commit"].(map[string]any)
+		return c["present"]
+	}
+	if got := present(); got != string(answerNo) {
+		t.Fatalf("a commit its folder does not hold: %v", got)
+	}
+	t.Cleanup(func() { historyBeforeGit = nil })
+	historyBeforeGit = func(string) {
+		historyBeforeGit = nil
+		if err := os.Rename(folder, folder+".moved"); err != nil {
+			t.Error(err)
+		}
+		if err := os.Symlink(other, folder); err != nil {
+			t.Error(err)
+		}
+	}
+	if got := present(); got != string(answerNo) {
+		t.Fatalf("the folder swapped for a link to a repository holding the commit, after it was opened: %v, the opened folder's is no", got)
+	}
+	if err := os.Remove(folder); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(folder+".moved", folder); err != nil {
+		t.Fatal(err)
+	}
+	historyBeforeGit = func(string) {
+		historyBeforeGit = nil
+		if err := os.RemoveAll(folder); err != nil {
+			t.Error(err)
+		}
+	}
+	if got := present(); got != string(answerUnknown) {
+		t.Fatalf("the folder removed after it was opened: %v, want unknown", got)
+	}
+}
+
+// slowReader is a listener whose connections keep the least the system
+// lets a socket buffer for sending.
+type slowReader struct{ net.Listener }
+
+func (l slowReader) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if tc, ok := c.(*net.TCPConn); ok {
+		_ = tc.SetWriteBuffer(1)
+	}
+	return c, err
+}
+
+// A client that never reads its replies holds the connection's goroutine
+// no longer than the write's deadline: replies small enough for the
+// server's own buffers, asked for one after another on one connection by
+// a client that reads none, fill the socket, and the reply that no longer
+// fits fails at its deadline and the connection is closed, rather than
+// net/http's flush after the handler waiting on it for ever.
+func TestAClientThatNeverReadsHoldsNoConnection(t *testing.T) {
+	e := newTestEnv(t, nil)
+	histSettle(t, e)
+	historyWriteLimit = 200 * time.Millisecond
+	t.Cleanup(func() { historyWriteLimit = historyWriteTimeout })
+	closed := make(chan struct{})
+	var once sync.Once
+	ts := httptest.NewUnstartedServer(e.srv.Handler())
+	ts.Listener = slowReader{ts.Listener}
+	ts.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateClosed {
+			once.Do(func() { close(closed) })
+		}
+	}
+	ts.Start()
+	t.Cleanup(ts.Close)
+	d := net.Dialer{Control: func(_, _ string, c syscall.RawConn) error {
+		var serr error
+		if err := c.Control(func(fd uintptr) { serr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 1) }); err != nil {
+			return err
+		}
+		return serr
+	}}
+	conn, err := d.DialContext(t.Context(), "tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	req := "GET /api/history?q=x HTTP/1.1\r\nHost: " + ts.Listener.Addr().String() + "\r\nAuthorization: Bearer " + adminToken + "\r\n\r\n"
+	go func() {
+		for range 4000 {
+			if _, err := io.WriteString(conn, req); err != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-closed:
+	case <-time.After(2 * testWait):
+		t.Fatal("the connection of a client that reads nothing is held past every write's deadline")
+	}
+	if n := e.srv.historyReads.inFlight(); n != 0 {
+		t.Fatalf("%d slots held", n)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -682,6 +683,115 @@ func TestExceptSourcesLeavesTheirEntriesOut(t *testing.T) {
 	next, err := ix.Search(t.Context(), q)
 	if err != nil || !slices.Equal(keysOf(next.Entries), []string{"session:a#e1"}) {
 		t.Fatalf("the next page except session:b: %v %v", err, keysOf(next.Entries))
+	}
+}
+
+// The sources a search leaves out (ExceptSources, and Entry's, Links',
+// Similar's and Stats' except) count in nothing it answers: of a search,
+// on every page, the rows, the total, the cursors, each row's repeats and
+// links; of an entry, its repeats and links; Similar's answers; Stats'
+// oldest. Each answer with them left out is the answer once they are
+// removed, with sources left out older and newer than the kept ones.
+func TestExceptSourcesCountInNothing(t *testing.T) {
+	ix := openIndex(t, t.TempDir(), Options{})
+	gone := []string{"session:old", "session:new"}
+	for i, id := range []string{"old", "a", "b", "new"} {
+		at := t0.Add(time.Duration(i) * time.Minute)
+		said := chat("session:"+id+"#e1", id, "the turnstile jammed", at)
+		check := receipt("session:"+id+"#check", "run-"+id, "sha-go-test", "failed", "FAIL TestTurnstile", at)
+		check.Ref = "check:run-" + id + "/build/1/unit/1"
+		links := []Link{{From: "run:r1", Rel: "member", To: "session:" + id}}
+		if id == "a" {
+			links = append(links, Link{From: "session:a", Rel: "resumed_from", To: "session:old"})
+		}
+		if err := ix.Replace(t.Context(), Source{Key: "session:" + id, Mark: "m1"}, []Entry{said, check}, links); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type answer struct {
+		Pages   []Page
+		Entry   Hit
+		Links   Links
+		Similar []Hit
+		Oldest  time.Time
+	}
+	read := func(line string, except []string) answer {
+		t.Helper()
+		var a answer
+		q, err := ParseQuery(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q.Limit, q.ExceptSources = 1, except
+		for {
+			p, err := ix.Search(t.Context(), q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.after = nil
+			a.Pages = append(a.Pages, p)
+			if p.Next == "" {
+				break
+			}
+			q.After = p.Next
+		}
+		if a.Entry, err = ix.Entry(t.Context(), "session:a#e1", except...); err != nil {
+			t.Fatal(err)
+		}
+		if a.Links, err = ix.Links(t.Context(), "run:r1", MaxLinks, except...); err != nil {
+			t.Fatal(err)
+		}
+		if a.Similar, err = ix.Similar(t.Context(), "session:a#check", ScopeAll, nil, MaxSimilar, except...); err != nil {
+			t.Fatal(err)
+		}
+		st, err := ix.Stats(t.Context(), except...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.Oldest = st.Oldest
+		return a
+	}
+	lines := []string{"class:said", "turnstile", "kind:check"}
+	left := map[string]answer{}
+	for _, line := range lines {
+		left[line] = read(line, gone)
+	}
+	for _, key := range []string{"session:old#e1", "session:new#check"} {
+		if _, err := ix.Entry(t.Context(), key, gone...); !errors.Is(err, ErrGone) {
+			t.Fatalf("an entry of a source left out, %s: %v", key, err)
+		}
+		if _, err := ix.Similar(t.Context(), key, ScopeAll, nil, MaxSimilar, gone...); !errors.Is(err, ErrGone) {
+			t.Fatalf("Similar of a source left out, %s: %v", key, err)
+		}
+	}
+	for _, src := range gone {
+		if err := ix.Remove(t.Context(), src); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, line := range lines {
+		got, want := left[line], read(line, nil)
+		if line == "turnstile" {
+			// A score is the corpus's: the cursors of a search of words
+			// move once rows are removed, the rows themselves do not.
+			for _, ps := range [][]Page{got.Pages, want.Pages} {
+				for i := range ps {
+					ps[i].Next = ""
+				}
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%q with the sources left out:\n%+v\nonce they are removed:\n%+v", line, got, want)
+		}
+		if n := len(got.Pages); n != 2 || got.Pages[0].Total != 2 {
+			t.Errorf("%q: %d pages, total %d: the two kept rows, one a page", line, n, got.Pages[0].Total)
+		}
+	}
+	if r := left["class:said"].Pages[0].Entries[0].Repeats; r.Count != 2 || r.Anchors != 2 {
+		t.Fatalf("the repeats of a kept row: %+v", r)
+	}
+	if l := left["class:said"].Entry.Links; len(l.Out) != 1 || l.Out[0].Entry != nil {
+		t.Fatalf("a kept source's link to a ref of one left out: kept, with no entry of it standing for its end: %+v", l)
 	}
 }
 
