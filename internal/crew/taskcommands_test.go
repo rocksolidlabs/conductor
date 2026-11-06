@@ -104,6 +104,20 @@ func TestTaskCommandsFollowTheFixture(t *testing.T) {
 		if row.Accept > 0 && got.AcceptCommit != row.Attempts[row.Accept-1].Commit {
 			t.Errorf("%s: accept takes %q", row.Name, got.AcceptCommit)
 		}
+		e.mu.Lock()
+		e.order = append(e.order, r)
+		e.mu.Unlock()
+		// The runs' list names the same commands on the task (the run
+		// page's taskActions offers these; Get puts them in as List does),
+		// and so does the task's own read. A legacy run's read has no tasks.
+		if listed := e.List(); !slices.ContainsFunc(listed, func(l Run) bool {
+			return l.ID == r.id && (len(l.Tasks) == 0 && len(row.Commands) == 0 || len(l.Tasks) == 1 && slices.Equal(append([]string{}, l.Tasks[0].Commands...), row.Commands))
+		}) {
+			t.Errorf("%s: the runs' list names other commands", row.Name)
+		}
+		if st, _, err := e.TaskOf(r.id, "build"); err != nil || !slices.Equal(append([]string{}, st.Commands...), row.Commands) {
+			t.Errorf("%s: the task's read names %v (%v)", row.Name, st.Commands, err)
+		}
 		for _, name := range []string{TaskRetry, TaskAccept, TaskCancel} {
 			err := engineTakes(e, r, name)
 			if taken := err == nil; taken != slices.Contains(row.Commands, name) {

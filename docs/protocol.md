@@ -3071,7 +3071,10 @@ version 3 for the checkpoint column and the messages table; a version 2
 database is brought to it as it opens.
 
 The run reports `tasks` (each with its `state`, `reason`, `attempts`, latest
-`attempt`, `result` and, in a continuation, `importedFrom`), `paused` and, once every task is terminal, `outcome`
+`attempt`, `result`, in a continuation, `importedFrom`, and `commands`, the
+task commands its state allows now, `retry`, `accept` and `cancel` in that
+order, as the decision inbox's `crew.TaskCommands` judges them, absent for
+none and in a record: the run page offers these and no others), `paused` and, once every task is terminal, `outcome`
 (`succeeded` when all succeeded, `cancelled` when one was cancelled and none
 failed, `failed` otherwise): the run is `finished` then, its idle sessions
 kept for a look until a stop; a managed run is not finished by its sessions

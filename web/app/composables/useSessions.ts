@@ -515,6 +515,11 @@ export interface RunTask {
   importedFrom?: string
   /** What the attempt in flight says stops it (#334, row 10), until it works on or ends. */
   blocker?: { reason: string; message?: string; by: string; at: string }
+  /**
+   * The task commands its state allows now, as the engine judges them (`crew.TaskCommands`, the decision inbox's too): retry, accept,
+   * cancel, in that order; absent for none and in a record. The run page offers these and no others (taskActions).
+   */
+  commands?: Array<'retry' | 'accept' | 'cancel'>
 }
 
 /** Where an attempt got to, as it saved it: tied to its worktree's commit. */
