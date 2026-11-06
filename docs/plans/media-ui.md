@@ -118,8 +118,11 @@ Neither collides with a word the repository uses for something else
   serves the admin grant alone.
 - The server inside WSL reachable from outside Windows: issue #140 (the
   desktop app forwards the TLS listener into WSL and maps the router from
-  Windows). PR-14 is that issue's work, done in this stream because the
-  acceptance's phone needs it.
+  Windows). A clean install has no TLS listener to forward: the app starts
+  its server on loopback HTTP alone (`desktop/src/env.ts`), and the server
+  opens a TLS listener only when ACME or certificate files are configured
+  (`internal/config`'s `TLSEnabled`). PR-14 is that issue's work and the
+  listener's, done in this stream because the acceptance's phone needs it.
 - A provider: outside this repository. No row here waits on one; the
   item's acceptance (below) is observed with one. On a phone a huddle
   runs in the phone's browser; nothing here waits on a phone app.
@@ -222,8 +225,10 @@ provider that answers:
   page of their own server, which opens it or refuses ("You can't open
   this on your server"). Go only navigates.
 - **Invitations, removal, reconnect.** Invite lists who the room service
-  says may join; the invitee's open Conductor, and only theirs, shows
-  "Ana invites you to a huddle on PRJ-12 · Join". A dropped network shows
+  says may join; the open Conductor pages of the server the invitation
+  reached, and only its admin pages, show "Ana invites you to a huddle on
+  PRJ-12 · Join" (on a server of several people: "Ana sent this server
+  an invitation", since the server cannot tell which of them it names). A dropped network shows
   "Reconnecting…" and comes back into the same huddle with the mute state
   kept. A person removed, or whose access to the work ended, is told so
   in plain words, their devices are released at once, and the others'
@@ -277,7 +282,18 @@ the server authenticated, as every other seam does (`ext.Principal`):
   `ended {why: "elsewhere"}` ("You joined this huddle from another
   window."); joining another room while in one is refused with `4409`
   and the reason `elsewhere` ("You are in another huddle; leave it
-  first.").
+  first."). **The other participant drops the old device by itself**,
+  whatever the old device does with its end and whatever the room
+  service tells it first: the person id is the same on both devices, so
+  the client tells a connection apart by the DTLS fingerprint in its
+  SDP (each `RTCPeerConnection` makes its own certificate). A device that
+  receives `joined` offers to every person it lists, so the new device
+  always offers; an offer from a person whose fingerprint is not the one
+  of the connection the client already has with them comes from another
+  place of theirs, and the client closes that connection **before** it
+  answers the offer on a new one (I15). So the old device's media stop
+  at the new device's first offer, or at `left {person}` if that comes
+  first (I8).
 - **A person removed, or whose access ended, mid-call**: the room service
   ends their place (`ended {why: "removed" | "access" | "unconfirmed"}`),
   tells everyone else `left {person, why}`, and refuses their resume
@@ -398,16 +414,17 @@ server and `exttest.FakeHost`, both changed in the same row.
   - `RoomChanged(ref RoomRef)`: a room this server shows changed. The
     server coalesces calls per ref, at most one event a second each, and
     sends `room {kind, id, home}` (PR-4).
-  - `RoomInvited(inv RoomInvite)`: an invitation for one person of this
-    server. `RoomInvite {Kind, ID, Home, Room, By {Subject, Name}, To
-    string, Until time.Time}`: `To` the invitee's subject (`""` for this
-    server's operator; this plan's addition to the specification's
-    record, The hosted plan), `Until` at most `MaxRoomInvite` (10 minutes) ahead; `Valid`.
-    The server keeps at most `MaxPendingInvitations` (32) pending,
-    coalesced per room and recipient (a newer invitation of one room to
-    the same `To` replaces the older; two recipients of one room are two),
-    the oldest dropped, and sends `room_invite {…}`
-    to the invitee's events connections only (PR-4). `Host.Notify` hands
+  - `RoomInvited(inv RoomInvite)`: an invitation that reached this
+    server. `RoomInvite {Kind, ID, Home, Room, By {Subject, Name}, Until
+    time.Time}`, `Until` at most `MaxRoomInvite` (10 minutes) ahead;
+    `Valid`. It names no recipient: the provider is told of invitations
+    to this server's person, and the record carries nothing that tells
+    one of this server's principals from another, so the server never
+    claims to know which of them it is for. The server keeps at most
+    `MaxPendingInvitations` (32) pending, one per room (a newer
+    invitation of a room replaces the older), the oldest dropped, and
+    sends `room_invite {…}` to admin principals' events connections only
+    (PR-4). `Host.Notify` hands
     a notice to the notification sinks only (webhooks, a push provider),
     never to the app's pages, so this door, not a notice, is what the
     open app shows.
@@ -478,6 +495,20 @@ the TypeScript one and wants each inside its bound:
 | `join`, `renew`, `resume` (a 4,096-byte ticket and a 2,048-byte pass in their envelope) | `MaxRoomTicketFrame`, 8 KiB |
 | every other frame (a `candidate` at most 1 KiB) | `MaxRoomFrame`, 4 KiB |
 
+**Bounds on what accumulates** (the frame bounds above say nothing of
+how many frames wait): the app sends at most 20 frames a second, holding
+the rest in an outgoing queue of at most 256 frames and 1 MiB, and the
+socket's own buffer (`bufferedAmount`) is read before each send; a queue
+or a buffer past its bound is a socket that does not drain, which the
+app closes and resumes (The call, Liveness). On the receiving side each
+peer connection holds at most 64 remote candidates waiting for a remote
+description (the terminals' own cap, `utils/transport/webrtc.ts`), the
+65th and later dropped and counted, and at most 32 signals waiting for
+the negotiation step in progress (perfect negotiation runs one at a
+time); a 33rd closes that connection, which is then negotiated anew by
+the retry rule (The call, ICE). The fake room service holds the same
+kind of bounds (PR-3).
+
 `DecodeAppFrame(b []byte) (AppFrame, error)` and
 `DecodeServiceFrame(b []byte) (ServiceFrame, error)` check the frame's
 size for its type (read from a bounded first look at `t`, the largest
@@ -490,9 +521,8 @@ App to room service:
 | `join` | `ticket` (the `RoomJoin.Token`), `pass?` (a reviewer's own pass, 1 to `MaxRoomPass` (2,048) bytes of the token characters; PR-11); the first frame, within 10 s |
 | `resume` | `token` (from the last `joined.resume`: 43 characters of base64url, one use); in place of `join`, within 60 s of a drop |
 | `renew` | `ticket` (a ticket the server answered for `renew` = `joined.session`), `pass?` (as in `join`); every `joined.renewEvery` seconds |
-| `ping` | `n` (0 to 2^31−1); every 10 s, answered by `pong` |
 | `signal` | `to` (a `person`), `sdp?` `{type: offer \| answer, sdp}`, `candidate?` `{candidate, sdpMid?, sdpMLineIndex?}` (`sdpMid` at most 16 bytes); exactly one of the two |
-| `state` | `muted`, `sharing`, `camera`, `screenMid?`, `cameraMid?` (the `mid` of the transceiver that sends the screen and of the one that sends the camera, each 1 to 16 bytes of `[A-Za-z0-9_-]`, sent before the offer that carries them: browsers mark nothing in an SDP that tells a screen from a camera, so the room service checks a video section's `mid` against these and the other side shows a track by its `mid`) |
+| `state` | `muted`, `sharing`, `camera`, `screenMid?`, `cameraMid?` (the `mid` of the transceiver that sends the screen and of the one that sends the camera, each 1 to 16 bytes of `[A-Za-z0-9_-]`, sent before the offer that carries them: browsers mark nothing in an SDP that tells a screen from a camera, so the room service checks the `mid` of each video section the SDP's writer **sends** (direction `sendrecv` or `sendonly` in that SDP) against these, and the other side shows a track by its `mid`. A section the writer only receives (`recvonly`, as in the answer of a person who shares nothing), one that is `inactive`, and one rejected with port 0 carry nothing of the writer's and are not checked: an answer keeps the offer's sections and says only their direction, RFC 3264, sections 6 and 6.1) |
 | `invitees` | `after?` (a `next` from the last page): ask whom one may invite; an operator's place only |
 | `invite` | `person`; an operator's place only |
 | `remove` | `person`; an operator's place only |
@@ -512,7 +542,6 @@ Room service to app:
 | `invited` | `by` `{person, name}`, `room`, `kind`, `id`, `home` |
 | `point` | `from`, `kind`, `id` |
 | `ice` | `iceServers` (fresh relay credentials) |
-| `pong` | `n` |
 | `ending` | `at` |
 | `ended` | `why` (`EndReasons`: `left`, `removed`, `access`, `unconfirmed`, `elsewhere`, `time`, `unavailable`), `by?` `{person, name}` |
 | `error` | `code` (`rate`, `media_kind`, `not_allowed`, `no_room`, `bad_frame`), `message` (one line, at most 200 bytes) |
@@ -521,9 +550,18 @@ Close codes, constants of `ext`: `4400` bad frame or no `join`, `4401`
 bad ticket, pass or resume token, `4403` not allowed (the close reason
 `not_allowed`, `removed` or `not_entitled`), `4409` refused (the reason
 `room_full` or `elsewhere`), `4410` ended (after an `ended`), `4429` too
-many, `4503` unavailable, `1001` service stopping. A `1001` close, a
-dropped socket or a silent one (below) is **not** an end: the app
-resumes. This version of the protocol has no forwarded mode: the
+many, `4503` unavailable, `1001` service stopping. A `1001` close or a
+dropped socket is **not** an end: the app resumes. The protocol has no
+keepalive message (a room service's WebSocket pings, which the browser
+answers, are invisible to a page), so the app has no way to tell a quiet
+room from a room service that stopped answering on a socket it keeps
+open, and does not try (The call, Liveness). The room service refuses an
+SDP, answering `error {code: "media_kind"}` and relaying nothing, that
+sends a kind the room does not allow, a video section whose `mid` its
+writer has not declared in its last `state`, a screen while the other
+person shares, or more than two sending video sections; it handles one
+connection's frames in order, so a `state` sent before an offer is
+always read first. This version of the protocol has no forwarded mode: the
 messages a group needs are the later groups plan's, added with their own
 vectors.
 
@@ -575,20 +613,27 @@ real kind, `internal/roomfake` holds:
   each `joined` (a token past its minute or already used `4401`), a
   removed person's resume and fresh join to that room refused (`4403
   removed`),
-  `pong` to every `ping`, `invitees` from a list the test sets, paged,
+  `invitees` from a list the test sets, paged,
   `invite` and `remove` from an operator's place, `point` (the kinds'
   patterns checked), `stats` (counted, dropped), the end reasons, the
   close codes, `maxPeople` 2, `kinds` audio
-  (screen from PR-9, camera from PR-10; an SDP's `m=` lines read by a
-  small scanner, a `video` section refused while the kind is off).
+  (screen from PR-9, camera from PR-10; an SDP's `m=` lines and their
+  direction attributes read by a small scanner, a video section the
+  SDP's writer sends refused while the kind is off, a received,
+  `inactive` or rejected one never). Its own bounds: at most 20 frames a
+  second from a connection with a burst of 40 (past it `error {code:
+  "rate"}` and the frame dropped), at most 256 frames waiting to be
+  written to one person and 1,024 held for them by `hold` (past either,
+  that person's socket closed with no `ended`, as `drop` does).
   `iceServers` is empty: no relay, the two browsers on one machine
   connect on host candidates. It never stores or logs a frame's contents.
 - **Control seams for tests**, on the same listener under `/control/`,
   each behind a random control token: `drop` (close one person's socket
   with no `ended`, so the app resumes), `refuse-resume`, `end?why=`,
   `remove?person=`, `full`, `ending?in=`, `hold` and `release` (hold
-  every frame to one person, `pong` included, until released, the
-  socket left open), `stop` and `start` (close and reopen the listener),
+  every frame to one person until released, the socket left open),
+  `stop` and `start` (close the listener and every socket with no close
+  frame, as a stopped process does, then reopen the listener),
   `expire?person=` (the next renewal refused, so the place ends
   `unconfirmed`), and `GET /control/state` (people, their states, frames
   counted by type). Tests wait on these, never on a clock.
@@ -601,7 +646,7 @@ real kind, `internal/roomfake` holds:
   ws://127.0.0.1:<port>/rooms, Token, ExpiresAt, Room, Protocol}`;
   `Rooms` answers one state per ref from the service's state, scope `d`;
   each presence change calls `Host.RoomChanged`, each `invite`
-  `Host.RoomInvited` with the invitee's subject in `To`, and a room left
+  `Host.RoomInvited`, and a room left
   empty (closed after a grace the test sets, default 1 s)
   `Host.RecordHuddle` once. `ICEServers` adds none and records the
   requests' `By`.
@@ -643,8 +688,14 @@ real kind, `internal/roomfake` holds:
   themselves. Each state carries at most three people (the avatars the
   screen draws) and `more` the rest. Each ref must name work the
   principal may read and that exists here (a ticket's immutable id; a run, live or
-  recorded; a candidate of DS2's form whose run is known; a decision once
-  DR1's records are on `main`, PR-8); a ref that does not is dropped from
+  recorded; a decision once DR1's records are on `main`, PR-8; a
+  **candidate that exists**: Dispatch's `ParseCandidate` takes its form,
+  and then, as `internal/api/dispatch_delivery.go`'s `candidateVerified`
+  reads it, the ledger holds its run, the run's crew or task rows name
+  its task, the task has that attempt, and the attempt's result commit is
+  the candidate's commit, whether or not its checks passed; a ledger
+  that cannot be read now admits none, `existingCandidate` shared by
+  both routes); a ref that does not is dropped from
   the question with no word, so the route tells nobody what exists; the
   server sets each ref's `Ticket` from its own records before it asks. The
   reply is at most 256 KiB, the sum of 32 states at their bounds with
@@ -659,7 +710,11 @@ real kind, `internal/roomfake` holds:
   `TestJoinReplyBounded` builds that reply through the route and wants it
   inside the bound) or `409 {error: {code: "no_room"}}` when the
   provider answers ok false, fails, is late, panics or answers a join
-  `ValidAt` refuses. The server builds the `RoomRequest`: `By` the
+  `ValidAt` refuses, and, before any provider is asked, when the work
+  does not exist here by the same reading as the rooms route's (a
+  candidate that `existingCandidate` does not find, a ledger that cannot
+  be read now), so the join tells nobody more than the rooms route does.
+  The server builds the `RoomRequest`: `By` the
   principal, `Renew` the body's `renew`, `Ticket` from its own records
   (the ticket's own immutable id; a decision's ticket; the ticket whose
   links hold a run's or a candidate's chain; `""` for none), never from
@@ -684,15 +739,16 @@ real kind, `internal/roomfake` holds:
     a snapshot, as for sessions and runs (`events.go`), and the app reads
     its rooms again on the snapshot.
   - `room_invite {kind, id, home, room, by: {subject, name}, until}` (at
-    most 3 KiB), sent only to the events connections whose principal's
-    subject is the invitation's `To` (the operator's for `""`): the hub
-    keeps each connection's subject beside its channel. Never to a share
-    link's viewer or a reviewer, who joins from the decision page they
-    were given.
+    most 3 KiB), sent only to the events connections of admin
+    principals: the hub keeps each connection's grant beside its
+    channel. Never to a share link's viewer or a reviewer, who joins from
+    the decision page they were given. It names no recipient, and the app
+    words it by what the server knows (the state table, Invitation
+    received).
 - **`extHost`'s doors**: `RoomChanged` feeds the coalescer;
-  `RoomInvited` puts the invitation among the 32 pending (one per room
-  and recipient, `(Room, To)`, the newer replacing the older for the same
-  pair, the oldest dropped past 32), neither ever blocking the provider.
+  `RoomInvited` puts the invitation among the 32 pending (one per room,
+  the newer replacing the older, the oldest dropped past 32), neither
+  ever blocking the provider.
   `RecordHuddle` replays before it resolves anything, as Dispatch's
   replay contract asks (`Store.Replay(ctx, op, intent, args)`,
   `internal/dispatch/ops.go`, which compares the operation's
@@ -727,7 +783,8 @@ link needs and a ticket already holding 50 links still records its
 huddle. A local `link.huddle` is refused (`RefusalBound`, "this ticket
 holds 200 huddles") when the ticket already holds `MaxHuddleLinks`
 (200) live `huddle` links: that huddle is not recorded, and
-`RecordHuddle` answers the refusal. No operation removes a huddle link,
+`RecordHuddle` answers the refusal. No operation of a build holding
+PR-4 removes a huddle link,
 so the links are an add-only observed-remove set that converges in any
 delivery order (DS1's set rule, `internal/dispatch/rules.go`) with no
 eviction to reconcile; a merge keeps what it brings, as it keeps
@@ -746,8 +803,27 @@ bytes, inside `MaxActor`), its op id as above. The link's `ref` is
 `<room>@<since as RFC 3339>`; its `note` is "Huddle with Ana and Ben · 17
 min" (names Markdown-escaped, "and 3 more" past four, the duration in
 whole minutes; at most 200 bytes). A ticket's read grows by at most 200
-such links of at most 1 KiB each, however many a merge brought. The kind is text in the store, so no
-schema version changes and no migration runs.
+such links of at most 1 KiB each, however many a merge brought.
+
+**Older builds never write a store that holds huddle links.** A build
+from before PR-4 knows no `huddle` kind: its `link.remove`
+(`internal/dispatch/links.go`'s `RemoveLink`) removes a link of any kind,
+and its `link.add` counts every kind against `MaxLinks`. So the kind
+being text is not enough, and PR-4 raises Dispatch's schema `Version`
+by one, with a migration step that changes no table. Dispatch's open
+already refuses to write a database of a newer version ("written by a
+newer Conductor", `internal/dispatch/dispatch.go`, which then opens
+read-only): an older binary started on the data directory after PR-4's
+has run (a downgrade) reads the tickets and writes nothing, so it can
+neither remove a huddle link nor refuse an ordinary link because of one.
+Replication between machines (Program item CS1) is not on `main`, so no
+replica of an older build exists to receive a huddle link. The rule for
+it is the same one: a replica applies no change row written under a
+newer Dispatch schema version than its own, so a huddle link never
+reaches a build that does not know the kind. Should CS1's apply of
+replicated rows reach `main` before PR-4 without that rule, PR-4 adds it
+there (the version carried with each row, a newer one refused and kept
+for later), with `TestReplicaRefusesNewerSchemaRows`.
 
 `web/app/components/DispatchLinks.vue` leaves `huddle` out as it leaves
 out `run` and `decision`, so a huddle never shows as an external link
@@ -781,6 +857,25 @@ state change is announced in an ARIA live region (`HuddleAnnouncer.vue`).
   is not); `pointRoute(room, kind, id)` (PR-6, Show them below).
 - `composables/useHuddle.ts` (PR-5): the app's one call (`useState`), the
   presence of the refs the shown page registers, the device check's flow.
+  **The call belongs to the credential it started under**: the
+  workbench token `useWorkbenchToken()` holds when Join was pressed (a
+  person's own token for an identity provider's principal; for a
+  reviewer, PR-11, the principal its admission names, so a pass renewed
+  for the same reviewer keeps the call and one for anyone else ends it).
+  A watch on that token, kept for the app's lifetime as
+  `useCapabilities.ts`'s `followToken` keeps its own, does on any change,
+  a token forgotten or another one taken: the call ends at once (every
+  track stopped, every peer connection closed, `leave` sent on the old
+  socket and the socket closed), "The huddle ended: you signed out" is
+  shown, the pending invitations and the rooms' presence are cleared and
+  read again under the new token, if there is one. Every step that waits
+  (the join or renewal request, `getUserMedia`, `getDisplayMedia`, the
+  socket's opening, the device check) carries the generation of the
+  token it began under, and a result that arrives under another
+  generation is discarded: a late join reply opens no socket, a late
+  track is stopped at once and never shown, as `useCapabilities.ts`
+  drops a reply for another token. So Ana's join, answered after the page
+  took Ben's token, never opens a call on Ben's page.
 - Components: `HuddleControl.vue` (a page header's control and presence),
   `HuddleDeviceCheck.vue` (a modal), `HuddleDock.vue` (the layout's strip),
   `HuddlePeople.vue`, `HuddleIndicator.vue` (the sidebar header's line),
@@ -827,7 +922,7 @@ read the capabilities, asks `GET /api/rooms` for its decision (PR-11).
 | In the huddle | the people (name, speaking, muted, sharing; a person vouched by another's server as "Ben, through Ana's server"), the elapsed time; Mute (the M key while the focus is in no text field, terminal or editor, listed in the `?` list), the device menu, Invite (an operator's place only), Show them, Leave; Share screen from PR-9, Camera from PR-10. A docked strip at the page's foot that never covers a decision's answer buttons (the page gains the strip's height as bottom padding) |
 | One person's audio not connecting | beside that person, "Can't connect to Ben's audio · Try again" once the client's tries are spent (The call); the rest of the call goes on |
 | Invite (an operator's place: an admin principal, this server's own work) | the people the room service lists (`invitees`, a page at a time, "More"); "Invited Ben" for 10 minutes, then gone; "Copy link" when the room has an `InviteURL` |
-| Invitation received | a toast from `room_invite`: "Ana invites you to a huddle on PRJ-12 · Join · Dismiss"; Join opens the work's page in its device check when this server holds the work, else "This huddle is on another server; you can't join it from this server." |
+| Invitation received | a toast from `room_invite`, worded by what the server knows: on a server whose capabilities list no identity provider, its one person is the one invited, "Ana invites you to a huddle on PRJ-12 · Join · Dismiss"; on a server with one, "Ana sent this server an invitation to a huddle on PRJ-12 · Join · Dismiss"; no toast for the room the page's own call is in. Join opens the work's page in its device check when this server holds the work, else "This huddle is on another server; you can't join it from this server." The invitation grants nothing: the join that follows is the person's own, under their own grant |
 | Show them | sent: "Pointed Ben at task build"; received: "Ana is pointing at task build · Go"; Go navigates to the page the app builds itself, or shows "You can't open this on your server"; a kind or an id this app does not open (a finding, a file, a candidate Dispatch would refuse): "Ana pointed at something this app can't open yet", with no Go |
 | Room full | "This huddle is full (2 people)." Nothing else changes |
 | In another huddle | "You are in another huddle; leave it first." (`4409 elsewhere`) |
@@ -836,9 +931,9 @@ read the capabilities, asks `GET /api/rooms` for its decision (PR-11).
 | Access ending (a reviewer, five minutes before the admission ends; PR-11) | "Your access ends in 5 minutes · Renew access": opens the decision page's own renewal in a new tab; the renewed admission reaches this tab's next renewal and the call goes on; the new tab says "Access renewed; you can close this tab" |
 | Elsewhere | "You joined this huddle from another window." |
 | Reconnecting | "Reconnecting…" with the mute state kept and the call silent both ways until the room service answers again; back within 60 s, or "Could not reconnect · Rejoin". On a phone: "Your phone paused this page; the huddle comes back if you return within a minute" when a locked screen or another app in front suspends it |
-| Service unreachable | "Reconnecting…", then at 60 s without the room service, or at `ended {why: unavailable}`: "The huddle ended: the huddle service is unreachable." |
+| Service unreachable | "Reconnecting…", then 60 s after the socket to the room service closed with no answer since, or at `ended {why: unavailable}`: "The huddle ended: the huddle service is unreachable." |
 | Ending soon | "This huddle ends in 5 minutes (its <n>-hour limit)." (`ending`; the limit from `endsAt` and the room's `since`), then `time`: "The huddle reached its time limit." |
-| Screen sharing (PR-9) | Share screen opens the browser's picker (the desktop app's own); "You are sharing your screen · Stop"; the others see it in a resizable panel beside the work, fit or actual size; "Ben is sharing; ask them to stop first"; not offered on a phone |
+| Screen sharing (PR-9) | Share screen opens the browser's picker (the desktop app's own); "Starting to share…" until the other side's answer takes the screen (The call, One screen at a time), then "You are sharing your screen · Stop"; the others see it in a resizable panel beside the work, fit or actual size; Share screen disabled with "Ben is sharing; ask them to stop first" while the other's latest `person` says sharing; a claim refused or given up: "Only one screen can be shared at a time; sharing didn't start · Try again", or "Sharing didn't start · Try again" when no answer came; "Sharing stopped: the huddle reconnected" after a reconnect; not offered on a phone |
 | Cameras (PR-10) | Camera off by default, asked for on its press (blocked and missing as the microphone's); small tiles beside the people; never on a phone's collapsed sheet |
 | Phone (below `sm`, 640 px) | a bottom sheet above the bottom bar: collapsed, the names, Mute and Leave; expanded, the people, the devices, Invite; a shared screen full width above the sheet; the page scrolls above it; audio continues with the sheet collapsed while the page is in front |
 
@@ -880,7 +975,24 @@ the person's own grant, which refuses what they may not read.
 `joined.iceServers`, an audio transceiver, trickled candidates through
 `signal`, and perfect negotiation (the polite side the one whose `person`
 sorts higher). Mute sets the track's `enabled` false and sends `state`;
-nothing is renegotiated.
+nothing is renegotiated. **Who offers a new connection**: the client
+that receives `joined` offers to each person it lists; a client already
+in waits for that offer; a failed connection is made anew by the
+impolite side alone (ICE, below), the polite side closing its own and
+waiting. Every other offer is a renegotiation of a connection both
+sides hold. The work this takes is bounded (Bounds on what accumulates,
+in the protocol section).
+
+- **One place per person** (I15): the client keeps the DTLS
+  fingerprint of each connection's remote description. An offer from a
+  person whose fingerprint differs from the one the client's connection
+  with them took comes from another place of that person (a second
+  device, or the same client after its own reconnect): the client closes
+  that connection, stopping its senders, **before** it answers the offer
+  on a new one. When the client's own offer on a new connection is
+  waiting for its answer, perfect negotiation decides first (the
+  impolite side ignores the other offer; the polite side gives up its
+  own new connection and answers).
 
 - **Someone leaves, or is removed** (I8): on `left {person}`, whatever its
   `why`, and on its own `ended`, the client stops its senders to that
@@ -917,20 +1029,66 @@ nothing is renegotiated.
   `setConfiguration` and restarts ICE on a connection whose selected pair
   is a relay. An ICE failure restarts ICE; a connection that fails again
   is closed and negotiated anew after 2 s, then 4 s, then 8 s while both
-  people are `in`, whether or not the room service reports a change; after
-  the third, the person shows "Can't connect to Ben's audio · Try again",
-  whose press starts the tries over.
+  people are `in`, whether or not the room service reports a change (the
+  impolite side offers; I15 makes the other side drop its old one); an
+  offer with no answer within 10 s is rolled back and counts as a
+  failure; after the third, the person shows "Can't connect to Ben's
+  audio · Try again", whose press starts the tries over.
+- **One screen at a time** (PR-9). The room service refuses a screen
+  while the other person shares (an offer carrying it answered `error
+  {code: "media_kind"}` and not relayed); the app adds no claim message
+  and waits for no echo, and it shows or sends a screen only when it is
+  certain:
+  - *Asking.* Share screen is offered only while the other person's
+    latest `person` says `sharing` false and the client has no offer of
+    its own waiting. After the picker, the client checks that again
+    (else it stops the capture and says so), sends `state {sharing:
+    true, screenMid}`, and then the offer that adds the screen on a
+    transceiver of its own, made `sendonly`.
+  - *The grant* is the other side's answer to that offer, applied, with
+    the screen's section accepted (its port not 0). Only then does the
+    app say "You are sharing your screen"; a browser sends nothing on a
+    section before its answer is applied, so nothing of the screen
+    leaves before the grant.
+  - *Refused or given up*, every case ending the same way (the capture
+    stopped, the transceiver stopped, the offer rolled back if it is
+    still waiting, `state {sharing: false}` without `screenMid`, and the
+    words of the state table): `error {code: "media_kind"}` while that
+    offer waits (a client has one offer waiting at a time, so the error
+    is that offer's); the other person's `person {sharing: true}` before
+    the grant; the polite side's own offer given up in a collision; no
+    answer within 10 s. Two presses at once can thus end with one sharer
+    or with none, never with two.
+  - *Released* at Stop, at the capture's own end (the browser's stop
+    button), at Leave, at every end, and on entering `reconnecting`:
+    the capture is stopped and not taken up again after the reconnect
+    (a new press is needed). Each sends `state {sharing: false}` when
+    the socket is open.
+  - *Shown* by the other side only from the person whose latest
+    `person` says `sharing` with a `screenMid` equal to the track's
+    `mid`, on the connection it holds with that person now; any other
+    video track is not drawn.
+  The client never puts a track on a transceiver the other side opened,
+  so every video section it sends carries the `mid` it declared, and a
+  section it only receives is `recvonly` in its answer. Cameras (PR-10)
+  follow the same rules with `cameraMid`, one per person, with no
+  one-at-a-time rule.
 - **Renewal.** Every `renewEvery` the client asks
   `POST /api/rooms/join` again with `renew` set to `joined.session` and
   sends `renew` with that ticket; a refused renewal is tried at the next
   tick, and the room service decides when to end (`unconfirmed`).
-- **Liveness.** The client sends `ping` every 10 s; a socket on which no
-  frame has arrived for 25 s, a `join` or `resume` with no `joined` within
-  10 s, a dropped socket and a `1001` close all start **reconnecting**, the
-  silent socket closed by the client: a new socket with `resume` (backoff
-  0.5 s doubling to 8 s). 60 s after the last frame the room service
-  sent, the call ends with the unreachable words, whether the socket
-  closed or only went quiet.
+- **Liveness.** A dropped socket, a `1001` close, a `join` or `resume`
+  with no `joined` within 10 s (the socket then closed by the client),
+  and a socket that does not drain (the outgoing queue or
+  `bufferedAmount` past its bound, closed by the client) start
+  **reconnecting**: a new socket with `resume` (backoff 0.5 s doubling to
+  8 s). 60 s after the socket closed with no `joined` since, the call
+  ends with the unreachable words. A socket that stays open is the room
+  service's word: the app sends no keepalive (the protocol has none) and
+  never ends a call because a room is quiet. So a room service that
+  stops answering while its socket stays open is not noticed by the
+  app; one that stops (its process ended, its machine's connection
+  closed) closes the socket, and the call ends at 60 s (I11).
 - **Which refusals end the call** (I14). A resume's answer is read by
   its close code, and only one is recoverable:
   - `4401` (the resume token unknown, used or past its minute): the
@@ -992,74 +1150,70 @@ nothing is renegotiated.
   raises no firewall prompt; a prompt seen there is a defect of this
   stream, fixed in a fix PR of it.
 - **The server inside WSL reachable from outside Windows** (PR-14, issue
-  #140): the app forwards the server's TLS listener from Windows into the
-  distribution itself (a TCP forwarder beside its UDP forwarder, on the
-  port the server listens on, from every Windows interface to the
-  distribution's address, followed as that address changes), makes the
-  router's mapping from Windows (the mapping `internal/reach` makes on
-  Linux, made here by the app because the distribution sits behind
-  Hyper-V's NAT), and tells the server inside WSL the mapped address so
-  its reach reports it, through the handoff below. A phone's connection to that listener is inbound
-  and unsolicited, which no outbound socket's reply lets in, so the
-  forward needs an inbound TCP rule for its port, provisioned the way the
-  ICE port's UDP rule is: by the installer when it runs elevated, else by
-  the app's own elevated `netsh` with fixed arguments (`firewall.ts`; the
-  system's own consent, once; nothing typed, no setting to find). The
-  forward listens on Windows' LAN interfaces only once the rule exists,
-  so Windows' own "allow access" dialog never appears; until then the
-  page is not offered to another device.
-- **The mapping's handoff: one authority, one channel, a lease.**
-  - *Authority.* A server has one mapper. `conductor serve` gains
-    `--reach-mapper native|app` (default `native`, what `main` does).
-    The desktop app's WSL launcher (`launcher-wsl.ts`) passes `app`,
-    beside the `--exit-on-stdin-close` it passes today; with `app`,
-    `startReach` (`internal/cli/serve.go`) starts no native mapper (no
-    UPnP, PCP or NAT-PMP from inside the distribution, whose gateway is
-    Hyper-V's) and gives the server a `reach.AppMapper`, which maps
-    nothing and reports what the app last told it. The rest of
-    `startReach` is unchanged: the certificate's identifiers follow the
-    `AppMapper`'s changes through the same `OnChange` as the native
-    mapper's, so there is one source of the address the certificate
-    names. `--reach-mapper app` without `--exit-on-stdin-close` is
-    refused at start (exit 2, "the app mapper needs the app's stdin").
-  - *Channel.* The server's standard input, which only the app holds
-    (the launcher's own pipe; nothing else can write to it, so it needs
-    no token), and which today the server reads only to see it close.
-    With `app` it reads it as lines of JSON, each at most
-    `MaxReachLine` (512) bytes with its newline, decoded with
-    `DisallowUnknownFields`: `{"t": "mapped", "external": "<ip>:<port>",
-    "until": "<RFC 3339>"}` (a public IPv4 or IPv6 address, the TLS
-    listener's mapped port, `until` after now and at most 2 hours ahead)
-    and `{"t": "unmapped"}`. A line too long, of another type, or
-    invalid is skipped and counted in a debug line, never logged whole;
-    the server never writes to the app on this channel.
-  - *Lease and withdrawal.* `mapped` holds until its `until`; the app
-    asks the router for the mapping with a lease (two hours where the
-    router allows it) and sends `mapped` again at half the lease, after
-    renewing it. At `until` with no newer `mapped`, at `unmapped` (the
-    app lost or released the mapping, or the router refused its
-    renewal), and when stdin closes, the `AppMapper` reports no mapped
-    address (the reach's status `Mapped` false, the certificate's
-    identifiers cleared, as the native mapper's loss does today). An app
-    that dies closes the pipe, which ends the server
-    (`--exit-on-stdin-close`), and the router's own lease removes the
-    mapping; the app's clean quit deletes the mapping first.
-  - *States* (`AppMapper`): `none` (start) → `mapped` (a valid line) →
-    `mapped` (a later line, `until` moved) | `none` (`until` passed,
-    `unmapped`, stdin closed). Invariant: the reach reports a mapped
-    address only between a valid `mapped` line and its `until`.
-  - *Tests.* Go race (`internal/reach`, `internal/cli`):
-    `TestAppMapperTakesTheLine` (at 512 bytes, and one past skipped),
-    `TestAppMapperRefusesBadLines` (an unknown field, a private address,
-    `until` past or more than 2 hours ahead), `TestAppMapperLeaseEnds`
-    (a fake clock), `TestAppMapperUnmappedAndStdinClosed`,
-    `TestServeAppMapperStartsNoNativeMapper`,
-    `TestServeAppMapperNeedsStdin`, `TestCertIdentifiersFollowAppMapper`;
-    desktop: `router-map.test.ts` (the lease asked, renewed at half,
-    the `mapped` line written after each renewal, `unmapped` on a
-    refused renewal and at quit), `launcher-wsl.test.ts` (the flag
-    passed beside `--exit-on-stdin-close`). The words in
-    `docs/architecture.md` and `conductor serve --help`.
+  #140). Four things, all made by the app, none asked of the person:
+  - *A TLS listener.* A clean install has none to forward: the app
+    starts its server on loopback HTTP alone (`desktop/src/env.ts`),
+    and `conductor serve` opens a TLS listener only when ACME or
+    certificate files are configured (`internal/config`'s
+    `TLSEnabled`). With the app's reach setting at `auto`, its default,
+    and the server inside WSL, the WSL launcher (`launcher-wsl.ts`)
+    starts the server with three variables the server already reads:
+    `CONDUCTOR_TLS_ACME=1` with no domains (a certificate for the public
+    address, `tls-alpn-01` on 443, the six-day profile Let's Encrypt
+    gives an IP address: `internal/certs` as a Linux server uses it
+    today), `CONDUCTOR_TLS_LISTEN=:0` (a free port in the distribution,
+    which the `--print-listen` handshake's `tlsListen` already reports
+    to the app), and `CONDUCTOR_REACH=manual` (the public address by
+    STUN, the port forwarded by someone other than the server: here the
+    app). The server's code does not change. The settings `manual` and
+    `off` start the server as today, with no TLS listener; the macOS and
+    Linux desktop apps are unchanged.
+  - *Its firewall rule.* A phone's connection is inbound and
+    unsolicited, which no outbound socket's reply lets in, so the
+    forward's port needs an inbound TCP rule, provisioned the way the
+    ICE port's UDP rule is: by the installer when it runs elevated, else
+    by the app's own elevated `netsh` with fixed arguments (`firewall.ts`;
+    the system's own consent, once; nothing typed, no setting to find).
+  - *The forward.* A TCP forwarder beside the UDP one, from a Windows
+    port to the distribution's address and the handshake's `tlsListen`
+    port, followed as that address changes; it listens on Windows' LAN
+    interfaces only once the rule exists, so Windows' own "allow access"
+    dialog never appears, and closes a connection that comes before the
+    handshake.
+  - *The router's mapping,* made from Windows (UPnP IGD, PCP or
+    NAT-PMP, what `internal/reach` does on Linux, made here by the app
+    because the distribution sits behind Hyper-V's NAT): the public 443
+    to the forward's Windows port, a lease of two hours where the router
+    allows it, renewed at half, deleted at the app's quit.
+- **In what order, and what happens when a step fails.** The app makes
+  the rule, the forward's Windows port and the mapping first, then
+  starts the server and points the forward at the handshake's port, so
+  the certificate authority's first challenge finds the path open. If the
+  rule is refused or the router takes no mapping, the app starts the
+  server as today (`auto`, no TLS listener), the Settings page says in
+  one line why other devices cannot reach this server, and the app tries
+  again at its next start; the app's own window works in every case,
+  over loopback. The certificate manager serves nothing before its first
+  issuance, and the server offers its `https://` address (links,
+  `GET /api/reach`) only once the certificate is issued: the authority
+  issues it only after reaching the listener through the mapping and
+  the forward, so an address offered is one that was reached. A refused
+  order is tried again on the manager's backoff (one hour, doubling to a
+  day), the reach status giving its words.
+- **The server is told nothing after its start.** No channel from the
+  app to the server carries the mapping (round 2's lines on the server's
+  standard input are gone): the server's reach learns the public
+  address by STUN, and the port is the one the app mapped. So a mapping
+  the router drops later is not seen by the server. This is the narrower
+  promise: its `https://` address may stay offered until the
+  certificate's next renewal fails (six days at most) while a phone
+  cannot load it, until the app has mapped the port again (at its
+  lease's half, or at its next start). On Linux the server's own mapper
+  withdraws the address at once, as on `main`.
+- **Tests** (PR-14): desktop, `launcher-wsl.test.ts`,
+  `tcp-forwarder.test.ts`, `firewall.test.ts`, `router-map.test.ts`;
+  Go, `TestServeTLSFromAnEmptyDataDir` (Tests per surface). The words
+  in `docs/architecture.md`.
 
 ### Windows with the server inside WSL
 
@@ -1072,7 +1226,7 @@ machine's request for the server's page:
 | Path | From, to | Crosses the Hyper-V NAT? | What the desktop app does |
 |---|---|---|---|
 | The pages, `GET /api/rooms`, `POST /api/rooms/join`, the events, from the window | the window to the server in WSL | yes, as every page request today, over the connection the app already makes | nothing new |
-| The same, from a phone or another machine (the acceptance's second person) | the phone, on the LAN or a mobile network, to the server's `https://` address | yes, inbound to Windows and on into WSL; from a mobile network, inbound through the router too | PR-14: the TLS listener forwarded into WSL, its firewall rule, and the router's mapping, all made by the app |
+| The same, from a phone or another machine (the acceptance's second person) | the phone, on the LAN or a mobile network, to the server's `https://` address | yes, inbound to Windows and on into WSL; from a mobile network, inbound through the router too | PR-14: the TLS listener turned on and forwarded into WSL, its firewall rule, and the router's mapping, all made by the app |
 | The room service's WebSocket | the window, or the phone's browser, to the room service | no: outbound | nothing |
 | Direct media (UDP) | the window to the other person's browser | no: Windows' own interfaces gather the candidates | nothing to forward; the installer's program rule when it ran elevated (PR-7) |
 | A relay | the window, or the phone, to the relay the room service names | no: outbound | nothing |
@@ -1111,13 +1265,18 @@ principals, never a share link's viewer; on a phone, a huddle in the
 browser. This plan follows it, and nothing here waits on it. The Media
 seam and the room protocol are this repository's (Who owns what): a
 provider implements them, and its room service passes their vectors, at
-the tag that defines them. Where this plan states more than the
-specification (`RoomInvite.To` and invitations per room and recipient,
-`offered` on a server of several principals, `ping` and `pong`, the
-budgets on encoded bytes, the one-sharer echo, the join reply's 8 KiB,
-I13 and I14 in the client, the host's explicit ICE list first, huddle
-links without eviction, the mapping's handoff), the text and the vectors
-here are what a row builds and a provider's service is checked against.
+the tag that defines them. This plan asks of a provider and its room
+service nothing the specification does not give: review round 3 took
+out the three places where it did (`ping` and `pong`, a recipient on
+`RoomInvite`, and an echo confirming one sharer), and each promise that
+rested on one is now narrower (Changed in review round 3). Where it
+states more than the specification, the more is the open-source side's
+alone and asks nothing of a provider: `offered` on a server of several
+principals, the reply bounds of this server's own routes, the client's
+rules (I13 to I18), the host's explicit ICE list first, huddle links
+without eviction behind a raised schema version, a candidate's
+existence checked before its room is offered, and the TLS listener the
+desktop app turns on.
 
 ## Events, orderings and invariants
 
@@ -1130,8 +1289,8 @@ its own, which the client follows):
 | `checking` | Join pressed: the device check, a track held | `joining` (Join), `idle` (Cancel: the track stopped) |
 | `joining` | `POST /api/rooms/join` answered, the socket open, `join` sent | `in` (`joined`), `ended` (a close code, a `409`), `reconnecting` (no `joined` within 10 s) |
 | `in` | `joined` | `reconnecting`, `ended` |
-| `reconnecting` | the socket dropped, `1001`, or 25 s with no frame; every sender's track set to `null` and every received track muted on entry | `in` (`joined` after `resume`, or after one fresh `join` when the resume was refused `4401`; every old peer connection closed, new ones to `joined.people`), `ended` (60 s after the last frame; a terminal refusal: `4403`, `4409`, `4410`, `ended`; a second `4401`) |
-| `ended` | `ended`, a close code, 60 s, Leave, `pagehide` | `idle`; every track stopped and every peer connection closed on entry |
+| `reconnecting` | the socket dropped, `1001`, or a socket that does not drain; every sender's track set to `null`, every received track muted and a screen capture stopped on entry | `in` (`joined` after `resume`, or after one fresh `join` when the resume was refused `4401`; every old peer connection closed, new ones to `joined.people`), `ended` (60 s after the socket closed; a terminal refusal: `4403`, `4409`, `4410`, `ended`; a second `4401`) |
+| `ended` | `ended`, a close code, 60 s, Leave, `pagehide`, the credential changed or forgotten | `idle`; every track stopped and every peer connection closed on entry |
 
 **What is done before what.**
 
@@ -1157,12 +1316,21 @@ its own, which the client follows):
   provider; a provider that calls again after a crash, after the run
   moved to another ticket, or after the receipt was pruned, gets the
   first answer and nothing is written twice (`TestRecordHuddleOnce`).
-- `room_invite` events are pending at most 32, one per room and
-  recipient, the oldest dropped; the provider's call never waits on a
-  client.
+- `room_invite` events are pending at most 32, one per room, the oldest
+  dropped; the provider's call never waits on a client.
 - On a reconnect: senders silenced and received tracks muted on entering
   `reconnecting`; on its `joined`, every old peer connection closed
   before any new one is made (I13).
+- On an offer from another place of a person (another DTLS
+  fingerprint): the connection with their old place closed before the
+  offer is answered (I15).
+- On a credential changed or forgotten: the call ended, then the
+  invitations and presence cleared; a result of a step begun under the
+  old credential discarded (and a track it brings stopped) whenever it
+  arrives (I16).
+- A screen: `state` before the offer that carries it; the grant (the
+  answer applied) before "You are sharing"; on a refusal, the capture
+  stopped before the words are shown (I17).
 
 **Invariants**, each a named test:
 
@@ -1171,9 +1339,12 @@ its own, which the client follows):
 - I2. Joining grants nothing: the reply's token is accepted by no route of
   the server, and the principal's grants are the same after a join
   (`TestJoinGrantsNothing`).
-- I3. A room is offered only for work the principal may read and that
-  exists here; a provider's answer that is not one state per ref asked is
-  refused (`TestRoomsFilteredToReadable`, `TestGuardRoomsOneStatePerRef`).
+- I3. A room is offered, and joined, only for work the principal may
+  read and that exists here, a review's candidate by its run, task,
+  attempt and result commit in the ledger; a provider's answer that is
+  not one state per ref asked is refused (`TestRoomsFilteredToReadable`,
+  `TestRoomsCandidateMustExist`, `TestJoinCandidateMustExist`,
+  `TestGuardRoomsOneStatePerRef`).
 - I4. A media fault touches no session, run or decision: with the provider
   hanging, failing or panicking in `Room` and `Rooms`, a session's input
   echoes, a stub run's task proceeds and a question can be answered
@@ -1182,11 +1353,13 @@ its own, which the client follows):
 - I5. Every device track the app made is stopped at every end
   (`roomClient.test.ts`, `huddle-audio.spec.ts`, `huddle-states.spec.ts`).
 - I6. A `huddle` link is written only through `RecordHuddle`, once per
-  room session, never takes an ordinary link's place, is never removed,
-  and a ticket's read shows the same newest 200 on every replica that
-  holds the same links (`TestHuddleLinkRefusedOnLocalWrite`,
-  `TestRecordHuddleOnce`, `TestHuddleLinksApartFromLinks`,
-  `TestHuddleLinksMergeConverge`).
+  room session, never takes an ordinary link's place, is never removed
+  by a build that knows the kind, is never written by one that does not
+  (the schema version), and a ticket's read shows the same newest 200 on
+  every replica that holds the same links
+  (`TestHuddleLinkRefusedOnLocalWrite`, `TestRecordHuddleOnce`,
+  `TestHuddleLinksApartFromLinks`, `TestHuddleLinksMergeConverge`,
+  `TestOlderBuildOpensHuddleStoreReadOnly`).
 - I7. Every frame, record, route body and reply is within its bound on
   its encoded bytes (`TestRoomVectors`, `TestRoomFrameBudgets`,
   `roomProtocol.test.ts`, `TestRoomsReplyBounded`, `TestJoinBodyBounded`).
@@ -1202,13 +1375,16 @@ its own, which the client follows):
   calls the router alone (`huddlePoint.test.ts`: each kind in each room
   kind, a refused kind, a foreign home, a path with `..`; no request but
   the page's own reads after Go).
-- I10. Two people on one server are two, one person's two devices are one,
-  and an invitation reaches only its invitee (Who is who's tests;
-  `TestInvitationNotSentToOtherPrincipals`).
-- I11. A silent room service ends the call: with the socket open and
-  nothing delivered, the client reconnects at 25 s and ends at 60 s
-  (`roomClient.test.ts` on fake timers; `huddle-states.spec.ts` through the
-  fake's `hold`).
+- I10. Two people on one server are two, one person's two devices are
+  one, and an invitation reaches admin principals' pages only, worded by
+  what the server knows (Who is who's tests;
+  `TestInvitationNotSentToOtherPrincipals`: a reviewer's and a link
+  viewer's streams get none; `huddle.test.ts`: the two wordings).
+- I11. A closed room service ends the call: with the socket closed and no
+  `joined` since, the call ends 60 s after the close; a quiet open socket
+  ends nothing (`roomClient.test.ts` on fake timers: a close, then
+  resumes unanswered, ends at 60 s; ten quiet minutes on an open socket
+  end nothing; `huddle-states.spec.ts` through the fake's `stop`).
 - I12. No release build contains a fake (`TestReleaseLeavesOutTheFakes`).
 - I13. No peer connection outlives a gap in the room service's word:
   nothing is sent or played while the client is `reconnecting`, every
@@ -1228,12 +1404,45 @@ its own, which the client follows):
   fake's `drop` then `remove`, shows "Ana removed you" and makes no
   `POST /api/rooms/join` after the drop, counted by the page's request
   log).
+- I15. One place per person: an offer from a person's other place (a
+  DTLS fingerprint other than the one the connection took) closes the
+  connection with the old place before it is answered, so a displaced
+  device that ignores its own end is cut off while the other participant
+  stays connected throughout (`roomClient.test.ts`: Ben's second device
+  offers while Ana's socket never dropped, the old connection closed
+  before the answer; a renegotiation with the same fingerprint keeps the
+  connection; a collision of two new connections settled by politeness;
+  `huddle-states.spec.ts`'s "elsewhere while the other stays": Ben's
+  first context made to ignore its end, its inbound audio bytes stop
+  growing, read from `getStats` twice an interval apart, while Ana's
+  page never reconnects).
+- I16. A call belongs to the credential it started under: a token
+  forgotten or replaced ends it, and nothing begun under the old one
+  opens a call, a socket or a device afterwards (`useHuddle.test.ts`:
+  the token forgotten and replaced during the join request, during
+  `getUserMedia` and during a call; a late join reply and a late track
+  discarded, the track stopped; `huddle-states.spec.ts`'s "signed out
+  mid-call": every track `ended`, no socket left open).
+- I17. Never two screens: a screen is sent only after the other side's
+  answer takes it, a refusal or a collision stops the capture, and a
+  screen is drawn only from the person whose `person` declares its
+  `mid` (`roomClient.test.ts`: `media_kind` while the offer waits, the
+  other's `sharing` before the grant, no answer in 10 s, the polite
+  side's collision, a reconnect while sharing; `huddle-screen.spec.ts`).
+- I18. What waits is bounded: pending candidates, waiting signals, the
+  outgoing queue and the socket's buffer each have a bound and an
+  overflow rule (`roomClient.test.ts`: 1,000 valid candidates before any
+  offer, 64 kept; 100 offers while one is applied, the connection closed
+  at the 33rd and made anew; a socket whose `bufferedAmount` never
+  falls, closed and resumed; 1,000 frames to send, at most 20 a second
+  leave; `TestFakeBoundsWhatWaits`).
 
 **Stores.** The server stores nothing of a room but the `huddle` link.
-Dispatch's kind is text: no schema version, no migration; a replica
-running an older build keeps the link as it keeps an unknown reserved
-kind brought by a merge (DS1's rule for `decision`). The browser keeps
-the two device ids. The fake keeps everything in memory.
+Dispatch's schema version goes up by one in PR-4, with a migration that
+changes no table, so that a build that does not know the kind opens the
+store read-only and writes nothing to it (`internal/dispatch`, The
+changes, PR-4). The browser keeps the two device ids. The fake keeps
+everything in memory.
 
 **Protocol.** The room protocol in `ext/room.go`, its aliases in
 `internal/proto/room.go`, its TypeScript in `protocol.ts` and its words
@@ -1324,7 +1533,13 @@ notices change):
   `TestFakeRenewNamesTheSession`, `TestFakeSameSubjectIsOnePerson`,
   `TestFakeTwoSubjectsTwoPeople`, `TestFakeElsewhereInAnotherRoom`,
   `TestFakeRemovedCannotResume` (and cannot join that room afresh),
-  `TestFakeAnswersPing`,
+  `TestFakeSDPCheckByDirection` (an answer whose video section is
+  `recvonly`, from a person who shares nothing, taken; an `inactive` and
+  a port-0 section taken; a `sendonly` or `sendrecv` section with an
+  undeclared `mid` refused; a screen while the other shares refused),
+  `TestFakeBoundsWhatWaits` (the rate's `error`, the write queue and
+  `hold` at their bounds and one past, the socket closed),
+  `TestFakeStopClosesEverySocket`,
   `TestFakeControlSeams`, `TestFakeRoomClosedRecordsOnce`,
   `TestFakeKeepsNoFrames` (its logs searched for the SDPs and tickets);
   `internal/opencore`: `TestReleaseLeavesOutTheFakes`.
@@ -1334,6 +1549,11 @@ notices change):
   `d` room not offered), `TestRoomsNotOfferedByTheFreeDefault`,
   `TestRoomsRefsBounded`, `TestRoomRefParse` (a review's id with `@` and
   `:`, with and without a home), `TestRoomsFilteredToReadable`,
+  `TestRoomsCandidateMustExist` and `TestJoinCandidateMustExist` (a known
+  run with an unknown task, an attempt that does not exist, a result
+  commit that is not the candidate's, and the ledger unavailable: each
+  dropped from the rooms reply and `409 no_room` at the join, the
+  provider never asked; a candidate whose checks failed still offered),
   `TestRoomsReplyBounded`, `TestJoinReplyBounded` (a URL of 512 `&`, a
   4,096-byte token and a 64-byte room id, inside 8 KiB),
   `TestJoinNeedsReadAccess`, `TestJoinGuarded`
@@ -1346,12 +1566,11 @@ notices change):
   coalescer's clock seam), `TestRoomCoalescerFullSendsAll`,
   `TestRoomEventDropsASlowClient`, `TestRoomEventsAdminOnly`,
   `TestInvitationReachesTheEventsStream`,
-  `TestInvitationNotSentToOtherPrincipals` (two principals' streams and
-  the operator's; a reviewer's and a link viewer's get none),
-  `TestRoomInvitedBounded`, `TestInvitationsPerRoomAndRecipient` (Ana
-  invites Ben and Cara to one room before either is sent: both pending,
-  each to its own stream; a second invitation of Ben replaces his
-  first), `TestRecordHuddleOnce` (a retry; a retry after the run moved
+  `TestInvitationNotSentToOtherPrincipals` (every admin principal's
+  stream gets it; a reviewer's and a link viewer's get none),
+  `TestRoomInvitedBounded`, `TestInvitationsOnePerRoom` (a second
+  invitation of one room replaces the first; 33 rooms keep the newest
+  32), `TestRecordHuddleOnce` (a retry; a retry after the run moved
   to another ticket, replayed by its arguments; a retry after the
   receipt was pruned, answered from the link's fingerprint; a retry of
   an operation refused, which answers the refusal and never nil; a
@@ -1365,7 +1584,13 @@ notices change):
   replicas of 150 huddles each, their batches delivered in both orders
   and repeated: the same stored set, and the same newest 200 read, with
   the count of the rest, on each), `TestHuddleNoteBounded`,
-  `TestHuddleLinkKeptOnMerge`.
+  `TestHuddleLinkKeptOnMerge`, `TestOlderBuildOpensHuddleStoreReadOnly`
+  (a store at PR-4's schema version opened by a store at the version
+  before it, through the open's version seam: read-only, its
+  `link.remove` of a huddle link and its `link.add` both refused, the
+  links unchanged), `TestSchemaMigrationChangesNoTable` (a store of the
+  version before migrated: every table's definition and rows as they
+  were).
 - PR-8, `internal/api`: `TestRoomsDecisionNeedsItsRecord`,
   `TestJoinDecisionTicketFromRecord`.
 - PR-11, `internal/roomfake`: `TestFakeReviewerNeedsItsPass` (a
@@ -1375,12 +1600,15 @@ notices change):
   `TestJoinReviewerRefusedElsewhere`, `TestReviewerStreamRoomEvent`,
   `TestReviewerStreamNoRoomOutsideItsDecision`,
   `TestReviewerAdmissionReadAtEachRequest`.
-- PR-14, `internal/reach` and `internal/cli`: the handoff's tests (the
-  desktop section: `TestAppMapperTakesTheLine`,
-  `TestAppMapperRefusesBadLines`, `TestAppMapperLeaseEnds`,
-  `TestAppMapperUnmappedAndStdinClosed`,
-  `TestServeAppMapperStartsNoNativeMapper`,
-  `TestServeAppMapperNeedsStdin`, `TestCertIdentifiersFollowAppMapper`).
+- PR-14, `internal/cli` (a test of the server's code as it is, under the
+  settings the app now passes): `TestServeTLSFromAnEmptyDataDir` (the
+  app's three variables and `--print-listen`, an empty data directory,
+  a STUN answer and `internal/certs`' fake issuer: the handshake carries
+  `tlsListen`; the listener serves nothing before the first issuance;
+  the certificate is ordered for the STUN address and, once issued,
+  `GET /api/reach` gives the `https://` base; an order refused leaves
+  that base unoffered, the plain listener answering and the reach
+  status giving the error's words).
 
 **Vitest** (`npm --prefix web run typecheck`, `npm --prefix web test`):
 `roomProtocol.test.ts` (PR-2: the vectors through the TypeScript
@@ -1400,13 +1628,16 @@ closing the connection with them, `left` closing that person's
 connection before the change is drawn, a `signal` from someone not in the
 room dropped, a new `ice` restarting ICE on a relayed connection, ICE
 failing twice with the room service quiet and the tries then made on
-their own, a quiet socket reconnecting at 25 s and ending at 60 s, no
-`joined` within 10 s, every end stopping every track, all on fake timers
-and fake sockets); `deviceCheck.test.ts` (PR-5: no device before the
+their own by the impolite side, an offer unanswered for 10 s, a closed
+socket ending at 60 s and ten quiet minutes on an open one ending
+nothing (I11), no `joined` within 10 s, I15's, I17's and I18's cases,
+every end stopping every track, all on fake timers and fake sockets);
+`useHuddle.test.ts` (PR-5: I16's cases); `deviceCheck.test.ts` (PR-5: no device before the
 press, Cancel stopping the track, the blocked and missing words, the
 speaker list only with `setSinkId`), `huddle.test.ts` (PR-5: the state
 table's words, `secureEnough`, `offered` from capabilities and the
-reply); `huddlePoint.test.ts` (PR-6: `pointRoute` for `ticket`, `run`
+reply; PR-6: the invitation's two wordings by whether an identity
+provider is listed, and no toast for the call's own room); `huddlePoint.test.ts` (PR-6: `pointRoute` for `ticket`, `run`
 and `task` in each room kind, `decision`, `candidate`, `finding` and
 `file` answering "can't open this yet" with no Go, `pointable` against
 `points.json`, the refusals, Go calling only the router; PR-8:
@@ -1440,18 +1671,26 @@ context without the grant):
   ignore his `ended` by an init script that drops it; his inbound audio
   bytes stop growing, read twice an interval apart, while Ana's client
   is honest), access ended (the fake's `expire`), elsewhere (two contexts
-  of the operator's workbench token in one room), reconnecting after the
+  of the operator's workbench token in one room), elsewhere while the
+  other stays (Ana in, Ben's first context made to ignore its end, Ben's
+  second context joining: Ben's first context's inbound audio bytes stop
+  growing while Ana's page never reconnects; I15), signed out mid-call
+  (the token forgotten on Ana's page: every track `ended`, Ben sees
+  Ana leave; I16), reconnecting after the
   fake's `drop` and back in with the mute kept, the old
   `RTCPeerConnection` closed and a new one made (counted by the init
   script), removed while disconnected (the fake's `drop`, then `remove`:
   "Ana removed you from the huddle." and no `POST /api/rooms/join` after
-  the drop), "Could not reconnect" after `refuse-resume` and `stop`, a quiet socket through the fake's
-  `hold` ending at 60 s by the client's own clock, unreachable at the
-  fake's `ended {why: unavailable}`, ending soon at the fake's `ending`;
+  the drop), "Could not reconnect" after `refuse-resume` and `stop`,
+  unreachable after the fake's `stop` (the call ended 60 s after the
+  close by the client's own clock) and at the fake's `ended {why:
+  unavailable}`, ending soon at the fake's `ending`;
   each driven by a control seam, never a clock of the test's.
 - `huddle-invite.spec.ts` (PR-6): Invite lists the fake's people, a page
-  at a time; Ben's toast from `room_invite`, and none in a third
-  context of the operator; Join from the toast opens the work and its
+  at a time; Ben's toast from `room_invite` in the wording of a server
+  with an identity provider (the e2e binary registers one), none on
+  Ana's page, whose call is in that room, and none in a share link's
+  viewer; Join from the toast opens the work and its
   device check; Show them sends and Ben's Go opens the ticket, and a
   `finding` pointed in a ticket's room offers no Go.
 - `huddle-phone.spec.ts` (PR-6): at 390 by 844, the sheet collapsed and
@@ -1472,10 +1711,14 @@ context without the grant):
   joins its room and no other; its admission brought to its last five
   minutes through the fake's seam shows Access ending, and renewed in a
   second tab keeps the call.
-- `huddle-screen.spec.ts` (PR-9: two claims pressed at once, held by the
-  fake and released together, give one sharer and stop the other's
-  capture; a sharer dropped during the picker loses the claim),
-  `huddle-camera.spec.ts` (PR-10) with the fake devices.
+- `huddle-screen.spec.ts` (PR-9: Ana shares while Ben only receives,
+  Ben's `recvonly` answer taken and Ana's screen drawn on Ben's page by
+  its `mid`; two presses at once, held by the fake and released
+  together, never give two sharers, and each refused side's capture is
+  `ended` with its words shown; a sharer whose socket the fake drops
+  stops sharing and is not sharing after the reconnect),
+  `huddle-camera.spec.ts` (PR-10: one camera one way, the receiver's
+  answer `recvonly` and taken) with the fake devices.
 
 Every huddle spec follows `AGENTS.md`, Tests that do not flake: it waits
 for `room.json` before reading it; it looks for its rooms by the work's
@@ -1491,12 +1734,16 @@ choice, PR-10 `video` after a camera press), `packaging.test.ts` (PR-7: the
 usage string, the entitlement, the installer's rule added and removed in
 its elevated branch only; PR-10 the camera's), `picker.test.ts` (PR-9),
 `tcp-forwarder.test.ts` (PR-14: the forward followed as the
-distribution's address changes, no LAN listen without the rule),
-`firewall.test.ts` (PR-14: the TCP rule's fixed arguments and name),
-`router-map.test.ts` (PR-14: the lease asked and renewed at half, the
-`mapped` line written after each renewal, `unmapped` on a refused
-renewal and at quit), `launcher-wsl.test.ts` (PR-14: `--reach-mapper
-app` passed beside `--exit-on-stdin-close`). `make desktop-e2e` unchanged.
+distribution's address changes, pointed at the handshake's `tlsListen`
+port, connections before the handshake closed, no LAN listen without
+the rule), `firewall.test.ts` (PR-14: the TCP rule's fixed arguments and
+name), `router-map.test.ts` (PR-14: the lease asked and renewed at half,
+deleted at quit, a refusal reported), `launcher-wsl.test.ts` (PR-14:
+from the default settings and an empty data directory, the rule, the
+forward and the mapping made before the server starts and the three TLS
+and reach variables passed; with any of the three missing, the server
+started as today with none of them and the reason given to Settings;
+the settings `manual` and `off` unchanged). `make desktop-e2e` unchanged.
 
 **By hand, what tests cannot cover**, each made by the owner, who has the
 machines and a microphone, on one machine with two browsers against the
@@ -1588,10 +1835,10 @@ decisions, 14).
 | PR-5 | web: two people talk: the device check, the control on the ticket and run pages, the dock, mute, devices, presence, leave; the second e2e server | `web/app`, `web/e2e` | PR-3, PR-13 | PR-7 | ~600 + 600 |
 | PR-6 | web: the huddle's states, invitations, Show them, the phone sheet, the line in the history, media faults | `web/app`, `web/e2e` | PR-5 | PR-7 | ~650 + 750 |
 | PR-7 | desktop: the microphone in the desktop app: the permission handler after a press, macOS usage and entitlement, the Windows program rule when elevated | `desktop` | none | PR-1 to PR-6, PR-13, PR-15 | ~300 + 350 |
-| PR-14 | desktop, reach, cli: the server inside WSL reachable from outside Windows (#140), the mapping's handoff on stdin | `desktop`, `internal/reach`, `internal/cli`, `docs/architecture.md` | PR-7 (`desktop`) | PR-8, PR-11 | ~700 + 750 |
+| PR-14 | desktop: the server inside WSL reachable from outside Windows (#140): its TLS listener turned on, forwarded, its rule and the router's mapping | `desktop`, `internal/cli` (one test), `docs/architecture.md` | PR-7 (`desktop`) | PR-8, PR-11 | ~550 + 650 |
 | PR-8 | web, api: huddles on the decision page, the decision cards and the Review view | `web/app`, `web/e2e`, `internal/api` | PR-6; #637 and #640 (DR1), #647 and #652 (MB0), #631 (RV1) | PR-14 | ~450 + 500 |
 | PR-11 | api, web: a reviewer's huddle on its decision; the features entry | `internal/api`, `web/app`, `web/e2e`, `docs/protocol.md`, `docs/features.md`, `README.md` | PR-8; Program item ID1's open-source rows (the reviewer and its stream), by issue number once filed | PR-14 | ~500 + 600 |
-| PR-9 | web, desktop, roomfake: screen sharing | `web/app`, `web/e2e`, `desktop`, `internal/roomfake`, `docs/protocol.md`, `docs/features.md` | PR-11 (`web/app`, `docs`), PR-14 (`desktop`); the hosted plan's answer on one sharer | none | ~650 + 600 |
+| PR-9 | web, desktop, roomfake: screen sharing | `web/app`, `web/e2e`, `desktop`, `internal/roomfake`, `docs/features.md` | PR-11 (`web/app`, `docs`), PR-14 (`desktop`) | none | ~650 + 650 |
 | PR-10 | web, desktop, roomfake: cameras | `web/app`, `web/e2e`, `desktop`, `internal/roomfake`, `docs/features.md` | PR-9 | none | ~450 + 450 |
 
 Should DR1's, MB0's or RV1's rows be late, PR-9 and PR-10 may go before
@@ -1636,21 +1883,26 @@ the `Service`, its control seams, the `Provider`, the `Identity`,
 **PR-4** (`internal/api`, `internal/dispatch`, `web/app`, `docs`):
 `rooms.go` (the two routes, the access rules, the ref's parse, `offered`,
 the ticket's resolution, the rate limit), the two events, the coalescer
-and the pending invitations, the hub's subject per connection, `extHost`'s
-three doors built, `LinkHuddle`, `MaxHuddleLinks` and `link.huddle` in
-Dispatch, `DispatchLinks.vue`'s filter, the protocol rows and types. Kind
+and the pending invitations, the hub's grant per connection, `extHost`'s
+three doors built, `existingCandidate` for both routes, `LinkHuddle`,
+`MaxHuddleLinks` and `link.huddle` in Dispatch with its schema version
+raised and its no-op migration, `DispatchLinks.vue`'s filter, the
+protocol rows and types. Kind
 `decision` answers no room until PR-8 (no record to read). Tests: PR-4's
 above.
 
 **PR-13** (`web/app/utils`): `roomClient.ts`, the whole of The call
-above, with nothing drawn. Tests: `roomClient.test.ts`.
+above but One screen at a time (PR-9's), with nothing drawn: who offers,
+I15's fingerprint rule, the bounds on what waits (I18). Tests:
+`roomClient.test.ts`.
 
 **PR-5** (`web/app`, `web/e2e`): `huddle.ts`, `useHuddle.ts`,
 `HuddleControl`, `HuddleDeviceCheck`, `HuddleDock`, `HuddlePeople`,
 `HuddleIndicator`, `HuddleAnnouncer`; the control in
 `DispatchTicketPage.vue`'s and the run page's headers; the layout's dock;
-`useAttention.ts`'s two events; the bridge call to `mediaPress` where it
-exists; `web/e2e/huddle.ts` (the second server and its people);
+`useAttention.ts`'s two events; the call bound to its credential and
+every waiting step's generation (I16); the bridge call to `mediaPress`
+where it exists; `web/e2e/huddle.ts` (the second server and its people);
 `huddle-offer.spec.ts`, `huddle-audio.spec.ts`. Tests: the vitest files
 and specs named for PR-5.
 
@@ -1669,14 +1921,17 @@ record, `setPermissionCheckHandler`, `mediaPress` and `mediaAccess` in
 audio-input entitlement, `installer.nsh`'s program rule and its removal
 in its elevated branch. Tests: `window.test.ts`, `packaging.test.ts`.
 
-**PR-14** (`desktop`, `internal/reach`, `internal/cli`, `docs`): issue
-#140's work: the TCP forwarder of the TLS listener, the router's mapping
-from Windows with its lease, the forwarded listener's firewall rule, the
-mapping's handoff (`--reach-mapper app`, `reach.AppMapper`, the lines on
-stdin, the launcher passing the flag), `docs/architecture.md`'s lines
-and the flag's help. Tests: `tcp-forwarder.test.ts`,
-`firewall.test.ts`, `router-map.test.ts`, `launcher-wsl.test.ts`, the
-handoff's Go race tests; by hand, a phone on a mobile network.
+**PR-14** (`desktop`, `internal/cli`'s one test, `docs`): issue #140's
+work and the listener it needs: the WSL launcher turning on the TLS
+listener with the server's own variables, the TCP forwarder pointed at
+the handshake's `tlsListen`, the router's mapping from Windows with its
+lease, the forward's firewall rule, the order at start and the words
+when a step fails, `docs/architecture.md`'s lines. No server code and no
+new channel between the app and the server. Tests:
+`launcher-wsl.test.ts` (from the default settings and an empty data
+directory), `tcp-forwarder.test.ts`, `firewall.test.ts`,
+`router-map.test.ts`, `TestServeTLSFromAnEmptyDataDir`; by hand, a phone
+on a mobile network on a clean install.
 
 **PR-8** (`web/app`, `web/e2e`, `internal/api`): `HuddleControl` on
 DR1's `DecisionCard.vue` and in `DispatchDecisions.vue`, on MB0's
@@ -1707,10 +1962,11 @@ owner). Tests: PR-11's Go tests and `huddle-reviewer.spec.ts`.
 Share screen, `HuddleScreen` (the sharer's and the viewers' states, the
 panel, fit or actual size), `screenMid` sent in `state` before the offer
 that carries the screen and the others' screen shown by `person`'s
-`screenMid`, the one-sharer claim as the hosted plan settles it (and
-`docs/protocol.md` with the vectors if it changes), the fake's `screen`
-kind (a video section's `mid` checked against the sender's `screenMid`)
-and its one sharer, the desktop's
+`screenMid`, One screen at a time in `roomClient.ts` (asking, the
+grant, the refusals, the release, what is shown; I17), the fake's
+`screen` kind (each video section its writer sends checked against that
+writer's `screenMid`, by direction, and a screen refused while the
+other shares) and its one sharer, the desktop's
 display handler and picker and `mediaAccess('screen')`, the features
 entry extended. Tests: `huddle-screen.spec.ts`, `picker.test.ts`,
 `window.test.ts`'s display case.
@@ -1745,10 +2001,10 @@ topology is measured and decided by a later item's own plan).
    them (`TestReleaseLeavesOutTheFakes`); the huddle specs start it as a
    second server beside the plain one.
 3. **Invitations reach the open app through `Host.RoomInvited` and a
-   `room_invite` event** sent to the invitee's connections only, beside
-   `Host.Notify`, which reaches only the notification sinks (the hosted
-   plan has the door, the record `RoomInvite` and the event; the
-   recipient `To` is this plan's).
+   `room_invite` event** sent to admin principals' connections only,
+   beside `Host.Notify`, which reaches only the notification sinks (the
+   hosted plan's door, record and event, which name no recipient); the
+   toast's words claim no more than the server knows.
 4. **One call per tab, in the layout**: moving between pages keeps it;
    closing or reloading the tab leaves the huddle; a person's second tab
    or device that joins the same room ends the first ("elsewhere", the
@@ -1972,3 +2228,77 @@ may not is the defect.
   here waits on it, and "The hosted plan" says where this plan states
   more than its specification, which the rows build and a provider's
   service is checked against.
+
+## Changed in review round 3
+
+Codex round 3's nine findings, answered after the hosted plan's
+specification section was read at its final head. The rule of round 2
+holds, said once more: **whenever the app is not certain a person may
+join, what a track is, or that a connection is the one it asked for, it
+does not join, does not show it, or ends the connection, and says why.**
+Where a mechanism has now failed review twice, it is gone and the
+promise is stated narrower, in words a reader can check. Nothing here
+narrows the item's boundary: two people discuss a decision around the
+same work, audio first, then screen sharing, then optional cameras; a
+media fault never interrupts a session, a run or a decision; no device
+is opened before a press; nothing is recorded.
+
+- **Removed.**
+  - `ping` and `pong`, the client's 25 s silence rule, the fake's
+    answer and `TestFakeAnswersPing`: the specification has no
+    keepalive message, and a room service is not asked for one.
+  - `RoomInvite.To`, invitations kept per room and recipient, and
+    `room_invite` addressed by subject
+    (`TestInvitationsPerRoomAndRecipient`): the specification's record
+    names no recipient.
+  - Any claim message or echo for the one sharer: the client reads the
+    room service's refusal of a second screen (`media_kind`, which the
+    specification gives) and the other side's answer, nothing else.
+  - The mapping's handoff on the server's standard input
+    (`--reach-mapper`, `reach.AppMapper`, its lines, states and seven Go
+    tests): no channel runs from the desktop app to the server, so no
+    new wire needs a place in the protocol's three places.
+  - "No operation removes a huddle link" as a claim about every build.
+- **Narrowed promises.**
+  - A call ends 60 s after its socket to the room service closes with no
+    `joined` since. A room service that stops answering on a socket it
+    keeps open is not noticed by the app (I11).
+  - An invitation is shown on every admin page of the server it reached,
+    never to a reviewer or a share link's viewer; it says "invites you"
+    only on a server with one person, else "sent this server an
+    invitation" (I10).
+  - Never two screens at once; two presses at the same moment may give
+    none, and the refused side is told; a reconnect stops sharing (I17).
+  - The phone's `https://` address is offered only once its certificate
+    was issued through the router's mapping and the app's forward; a
+    mapping the router drops later is not seen by the server, whose
+    address may stay offered, unreachable, until the certificate's next
+    renewal fails, six days at most.
+  - Huddle links are never removed by a build that knows the kind, and
+    never written by one that does not (the schema version).
+- **Added, each with its order, its invariant and its test.** I15 (one
+  place per person, by the DTLS fingerprint, and who offers a new
+  connection); I16 (the call bound to its credential, every waiting step
+  to its generation); I17 (one screen at a time: asking, the grant, the
+  refusals, the release, what is drawn); I18 and "Bounds on what
+  accumulates" (pending candidates 64, waiting signals 32, 20 frames a
+  second out, an outgoing queue of 256 frames and 1 MiB, the socket's
+  buffer, and the fake's own bounds); `existingCandidate` in both room
+  routes; Dispatch's schema version raised with a migration that changes
+  no table; the SDP check by direction (`TestFakeSDPCheckByDirection`);
+  the TLS listener the desktop app turns on, the order at start, and the
+  words when a step fails (`TestServeTLSFromAnEmptyDataDir`,
+  `launcher-wsl.test.ts` from the default settings).
+- **The findings.** 1 (TLS on a clean install): the WSL launcher turns
+  the TLS listener on with the server's own variables, after the rule,
+  the forward and the mapping; a failed step leaves the server as today
+  and says why. 2 (the call and the principal): I16. 3 (the old device
+  while the other stays connected): I15. 4 (one sharer): One screen at a
+  time, I17, with no message the specification lacks. 5 (the SDP check
+  and received sections): the check reads only the sections the
+  writer sends; a `recvonly`, `inactive` or rejected section is never
+  checked; tested with one side only receiving. 6 (older Dispatch
+  writers): the schema version, and the replication rule for CS1. 7 (a
+  candidate's existence): `existingCandidate` in both routes. 8 (what
+  accumulates): I18. 9 (the handoff's wire): the handoff is removed, so
+  there is no wire to place.
