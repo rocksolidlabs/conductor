@@ -291,6 +291,19 @@ type Local struct {
 	dialogAnsweredAt uint64
 	results          map[string]*Answer
 	resultIDs        []string
+	// resuming is the id of the question last answered whose result
+	// waits for its resumption (Answer.Resumed): the first attention
+	// change after the answer that says how the session went on
+	// (noteResumedLocked). "" when none waits. Guarded by mu.
+	resuming string
+	// shownQ is the id of the question the attention last showed, and
+	// left the last resultsKept questions that went without an answer
+	// through their claim (leftIDs, oldest first): withdrawn by the
+	// screen or the agent, or answered by keys typed in the terminal
+	// (noteLeftLocked, QuestionLeft). Guarded by mu.
+	shownQ  string
+	left    map[string]Resumption
+	leftIDs []string
 	// keysIn splits what is written to the program into the keys it reads
 	// (keysWritten), every write made, in the writer's order. Guarded by mu.
 	keysIn keyReader
@@ -1007,6 +1020,8 @@ func (s *Local) readStatus(state, kind string, turn uint64) {
 // once the agent has declared its program status. The caller holds s.mu,
 // and calls it wherever the attention shown changes.
 func (s *Local) settleLocked(att Attention) {
+	s.noteResumedLocked(att)
+	s.noteLeftLocked(att)
 	if s.opts.WorkingTitle == nil && !s.statusSeen {
 		return
 	}
@@ -2711,7 +2726,17 @@ func (s *Local) AnswerInput(ctx context.Context, sub *Subscription, question str
 // or withdrawn meanwhile) or the session ended (ErrSessionEnded); any
 // other return is the word, and finished is not called.
 func (s *Local) AnswerInputFinished(ctx context.Context, sub *Subscription, question string, data []byte, finished func(error)) error {
-	return s.input(ctx, viewer(sub), question, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, finished)
+	return s.AnswerInputReq(ctx, sub, question, "", data, finished)
+}
+
+// AnswerInputReq is AnswerInputFinished for a reply that names its
+// request (proto.Answer.ReqID): the question's kept result records it as
+// the winner's (QuestionResult), so that two replies are told apart by
+// their ids.
+func (s *Local) AnswerInputReq(ctx context.Context, sub *Subscription, question, reqID string, data []byte, finished func(error)) error {
+	who := viewer(sub)
+	who.reqID = reqID
+	return s.input(ctx, who, question, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, finished)
 }
 
 // InputContext is Input waiting until ctx ends in place of
@@ -3087,7 +3112,7 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 			s.typedKeys(who, data, typedEnter)
 		}
 		if token != 0 {
-			s.resolve(question, token, who.id(), who.displayName(), data)
+			s.resolve(question, token, who.id(), who.displayName(), who.reqID, data)
 		}
 	}
 	landed, err := s.writeProc(ctx, data, o)
@@ -3326,7 +3351,7 @@ func (s *Local) release(id string, token uint64) {
 // of the turn shown again when one stands; one held over goes without
 // showing again. The agent's own question kept (own) goes with it. An
 // input entry with the question records the answer.
-func (s *Local) resolve(id string, token uint64, by, byName string, keys []byte) {
+func (s *Local) resolve(id string, token uint64, by, byName, reqID string, keys []byte) {
 	s.mu.Lock()
 	if s.claims[id] != (questionClaim{id: id, token: token}) {
 		s.mu.Unlock()
@@ -3347,7 +3372,13 @@ func (s *Local) resolve(id string, token uint64, by, byName string, keys []byte)
 	}
 	result := &Answer{By: by, ByName: byName, At: time.Now().UTC(), Message: q.Message}
 	s.info.LastAnswer = result
-	s.keepResultLocked(id, result)
+	// The kept result is a copy of its own, which alone carries the
+	// winning reply's request id and later its resumption: LastAnswer is
+	// shared with every description taken from now.
+	kept := *result
+	kept.ReqID = reqID
+	s.keepResultLocked(id, &kept)
+	s.resuming = id
 	if s.own.ID == id {
 		s.dropOwnLocked("")
 	}
@@ -3403,6 +3434,106 @@ func (s *Local) keepResultLocked(id string, result *Answer) {
 		}
 	}
 	s.results[id] = result
+}
+
+// noteResumedLocked sets the resumption of the question last answered
+// (resuming), once, from att, the attention now showing: the session
+// ended, the agent working, or a next question asked (the hold of the turn
+// is none: the work has not gone on). Any other attention leaves it
+// waiting. settleLocked calls it wherever the attention shown changes. The
+// caller holds s.mu.
+func (s *Local) noteResumedLocked(att Attention) {
+	if s.resuming == "" {
+		return
+	}
+	how := ""
+	switch {
+	case s.info.Status.Ended():
+		how = ResumedEnded
+	case att.State == AttentionWorking:
+		how = ResumedWorking
+	case att.State == AttentionNeedsInput && att.ID != "" && att.ID != s.resuming && att.Source != SourceSubmit:
+		how = ResumedAsked
+	default:
+		return
+	}
+	at := time.Now().UTC()
+	if att.Since != nil && how != ResumedEnded {
+		at = *att.Since
+	}
+	if r := s.results[s.resuming]; r != nil && r.Resumed == nil {
+		r.Resumed = &Resumption{At: at, How: how}
+	}
+	s.resuming = ""
+}
+
+// How a question went without an answer through its claim
+// (QuestionLeft).
+const (
+	LeftWithdrawn = "withdrawn" // the screen or the agent took it away
+	LeftTerminal  = "terminal"  // keys typed in the terminal answered it
+)
+
+// noteLeftLocked notes the question last shown as gone without an answer
+// when att, the attention now showing, no longer shows it, it has no
+// result, and the session does not keep it to show again (the agent's own
+// set aside, one a held turn holds over). The caller holds s.mu.
+func (s *Local) noteLeftLocked(att Attention) {
+	id := ""
+	if att.State == AttentionNeedsInput && att.Source != SourceSubmit {
+		id = att.ID
+	}
+	prev := s.shownQ
+	s.shownQ = id
+	if prev == "" || prev == id || s.results[prev] != nil || s.own.ID == prev || s.heldOver.ID == prev {
+		return
+	}
+	how := LeftWithdrawn
+	if s.consumed == prev {
+		how = LeftTerminal
+	}
+	if s.left == nil {
+		s.left = map[string]Resumption{}
+	}
+	if _, kept := s.left[prev]; !kept {
+		s.leftIDs = append(s.leftIDs, prev)
+		if len(s.leftIDs) > resultsKept {
+			delete(s.left, s.leftIDs[0])
+			s.leftIDs = s.leftIDs[1:]
+		}
+	}
+	s.left[prev] = Resumption{At: time.Now().UTC(), How: how}
+}
+
+// QuestionLeft is how the question named id went without an answer
+// through its claim, and when (LeftWithdrawn, LeftTerminal), for the last
+// resultsKept such questions; false for one answered, still shown, kept,
+// or forgotten.
+func (s *Local) QuestionLeft(id string) (Resumption, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.left[id]
+	return r, ok
+}
+
+// QuestionResult is the kept result of the question named id (the last
+// resultsKept questions'): who answered it and when, the winning reply's
+// request id (ReqID, "" for keys typed by an actor or a line naming none)
+// and, once the session went on, how (Resumed). false when the session
+// keeps none: never answered through its claim, or forgotten.
+func (s *Local) QuestionResult(id string) (Answer, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.results[id]
+	if r == nil {
+		return Answer{}, false
+	}
+	out := *r
+	if r.Resumed != nil {
+		res := *r.Resumed
+		out.Resumed = &res
+	}
+	return out, true
 }
 
 // consumeLocked marks the question instance named id, shown, as reached by

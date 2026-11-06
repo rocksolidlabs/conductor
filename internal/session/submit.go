@@ -118,6 +118,9 @@ type Submission struct {
 	// typed whose Enter is not written lets the claim go (ErrLineStranded,
 	// the turn held). A line naming no question answers nothing.
 	Question string
+	// ReqID is the request id of the reply the line is (proto.Answer.ReqID),
+	// kept with the question's result when the line answers it.
+	ReqID string
 	// Withdrawn, when set, is closed once whoever sent the submission no
 	// longer stands (an extension's Host whose try was given up): as a
 	// revoked link does for By or From, it withdraws the submission
@@ -1027,7 +1030,7 @@ func (s *Local) resolveLine(sub Submission, st submitState) {
 		by, name = sub.By.ID, sub.By.Name
 	}
 	// A line's text is never repeated in the chat (answerWords): the line resolves the question by whom alone.
-	s.resolve(sub.Question, token, by, name, nil)
+	s.resolve(sub.Question, token, by, name, sub.ReqID, nil)
 }
 
 // landEnter waits for a submission's Enter whose write had begun when its

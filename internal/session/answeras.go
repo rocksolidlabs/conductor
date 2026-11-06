@@ -67,6 +67,9 @@ type typist struct {
 	actor bool
 	name  string
 	gone  <-chan struct{}
+	// reqID is the request id of the reply the keys are (AnswerInputReq),
+	// kept with the question's result.
+	reqID string
 }
 
 // viewer is the typist sub.
