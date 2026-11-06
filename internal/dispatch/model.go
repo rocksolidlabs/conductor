@@ -299,9 +299,12 @@ const (
 	// its check's argv.
 	MaxCheckArgv = 32
 	// MaxCheckRef bounds a check finding's receipt (check_ref, JSON), in
-	// bytes as stored: its argv, its tail and its quote at their bounds
-	// beside the rest are under it, and a finding's create row with it
-	// stays under MaxChangeValue (reviews_test.go measures it).
+	// bytes as stored, so that a finding's create row with it stays under
+	// MaxChangeValue (reviews_test.go measures it). Its tail and its quote
+	// at their bounds and escaped worst (12 KiB each) beside the rest are
+	// under it, but not the argv a check may have: 8 KiB of control
+	// characters is some 48 KiB as JSON. So the store cuts the argv kept
+	// to fit and marks it cut (fitCheckRef), the whole argv the ledger's.
 	MaxCheckRef = 32 << 10
 	// MaxReviewTries bounds the tries of a request's application: the
 	// first and four sent again.

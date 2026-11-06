@@ -210,7 +210,8 @@ type FindingEvidence struct {
 // where it ran, its log's SHA-256 and size, the ledger's tail of the log,
 // the class the server worked out, the class the person chose and their
 // quote, and the attempt before the failing one. The log itself stays the
-// ledger's, opened by the identity.
+// ledger's, opened by the identity, and so does the whole argv when the
+// one kept is cut to fit MaxCheckRef (ArgvCut, fitCheckRef).
 type CheckRef struct {
 	Source    string         `json:"source"`
 	Receipt   string         `json:"receipt"`
@@ -222,6 +223,7 @@ type CheckRef struct {
 	K         int            `json:"k"`
 	Subject   string         `json:"subject"`
 	Argv      []string       `json:"argv"`
+	ArgvCut   bool           `json:"argvCut,omitempty"`
 	Exit      *int           `json:"exit,omitempty"`
 	Signal    string         `json:"signal,omitempty"`
 	TimedOut  bool           `json:"timedOut"`
@@ -456,9 +458,23 @@ type markAdded struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
+// The phases of a manifest's steps that make an attempt's tree, beside
+// PhaseCheck and PhaseVerify (the ledger's PhaseSetup, PhaseService and
+// PhaseReady): a step that failed there failed its attempt, so a person's
+// check finding may name its receipt as it names a check's.
+const (
+	PhaseSetup   = "setup"
+	PhaseService = "service"
+	PhaseReady   = "ready"
+)
+
 // receiptRefPattern is a ledger receipt's identity:
-// <run>/<task>/<n>/<phase>/<id>/<k>, its k 0 or more with no leading zero.
-var receiptRefPattern = regexp.MustCompile(`^([^/]+)/([^/]+)/([1-9][0-9]{0,5})/(check|verify)/([^/]+)/(0|[1-9][0-9]{0,5})$`)
+// <run>/<task>/<n>/<phase>/<id>/<k>, its k 0 or more with no leading zero,
+// its phase one whose failure fails an attempt: a task's check, a verify
+// step, or a setup, service or ready step of the tree (not cleanup, which
+// runs after the attempt is judged, nor a prerequisite, which is the run's
+// and no attempt's).
+var receiptRefPattern = regexp.MustCompile(`^([^/]+)/([^/]+)/([1-9][0-9]{0,5})/(check|verify|setup|service|ready)/([^/]+)/(0|[1-9][0-9]{0,5})$`)
 
 // receiptRef is a receipt's identity, parsed.
 type receiptRef struct {
@@ -515,8 +531,9 @@ func errEvidence(format string, args ...any) error {
 // ticket holds alone (run_linked for another ticket's or a contested
 // chain, invalid for a chain no ticket holds), the base a full commit; ev
 // is the server's evidence, one entry per finding (errEvidence when it
-// does not answer the request), stored with the rows and never part of
-// the fingerprint, which is the key and r alone. Refused: an archived
+// does not answer the request), stored with the rows (a check finding's
+// receipt made to fit as the ledger may hold it: fitTail, fitCheckRef)
+// and never part of the fingerprint, which is the key and r alone. Refused: an archived
 // project (archived), a deleted ticket (not_found), a request on a closed
 // ticket (invalid: "reopen the ticket to ask for changes"; a comment or
 // an approval of a closed ticket's candidate is kept), past MaxReviews
@@ -811,8 +828,6 @@ func bindCheck(k int, c Candidate, req CheckRequest, got *CheckRef) (*CheckRef, 
 		return nil, errEvidence("finding %d's class %q is none of %s", k, got.Class, strings.Join(FailureClasses, ", "))
 	case len(got.Argv) > MaxCheckArgv:
 		return nil, errEvidence("finding %d's argv holds %d arguments, more than %d", k, len(got.Argv), MaxCheckArgv)
-	case len(got.Tail) > MaxCheckExcerpt || !utf8.ValidString(got.Tail):
-		return nil, errEvidence("finding %d's tail is not at most %d bytes of UTF-8", k, MaxCheckExcerpt)
 	case !whereIDPattern.MatchString(got.Where):
 		return nil, errEvidence("finding %d's receipt ran at %q, no runtime's name", k, got.Where)
 	case got.LogSHA256 != "" && !sha256Pattern.MatchString(got.LogSHA256):
@@ -831,17 +846,106 @@ func bindCheck(k int, c Candidate, req CheckRequest, got *CheckRef) (*CheckRef, 
 	}
 	kept := *got
 	kept.Source, kept.Receipt, kept.Chosen, kept.Quote = req.Source, req.Receipt, req.Chosen, req.Quote
+	kept.Argv = slices.Clone(kept.Argv)
 	if kept.Argv == nil {
 		kept.Argv = []string{}
 	}
-	value, err := encodeValue(kept)
+	kept.Tail = fitTail(kept.Tail)
+	size, err := fitCheckRef(&kept)
 	if err != nil {
 		return nil, err
 	}
-	if len(value) > MaxCheckRef {
-		return nil, errEvidence("finding %d's receipt is %d bytes, more than %d", k, len(value), MaxCheckRef)
+	if size > MaxCheckRef {
+		return nil, errEvidence("finding %d's receipt is %d bytes with no argv, more than %d", k, size, MaxCheckRef)
 	}
 	return &kept, nil
+}
+
+// fitTail is a receipt's tail as a check finding keeps it: the last
+// MaxCheckExcerpt bytes of the output, in UTF-8. The ledger keeps the
+// output's last bytes cut at a byte offset, so the cut can fall inside a
+// character and binary output is no UTF-8 at all: a character cut at the
+// start is dropped, a run of bytes that is no UTF-8 becomes one U+FFFD,
+// and what that grew past the bound goes from the start, a character at a
+// time.
+func fitTail(tail string) string {
+	if len(tail) > MaxCheckExcerpt {
+		tail = tail[len(tail)-MaxCheckExcerpt:]
+	}
+	for i := 0; i < utf8.UTFMax-1 && tail != "" && !utf8.RuneStart(tail[0]); i++ {
+		tail = tail[1:]
+	}
+	tail = strings.ToValidUTF8(tail, string(utf8.RuneError))
+	for len(tail) > MaxCheckExcerpt {
+		_, n := utf8.DecodeRuneInString(tail)
+		tail = tail[n:]
+	}
+	return tail
+}
+
+// fitCheckRef cuts the argv of a check finding's receipt from its end
+// until the receipt encodes in MaxCheckRef bytes, and marks it cut
+// (ArgvCut): a check's argv may hold the 8 KiB the engine allows, every
+// byte a control character, six bytes as JSON, which is more than the
+// bound beside the rest. Whole arguments go from the end, then the last one
+// kept is cut to fit at a character's start; the whole argv stays the
+// ledger's, by the receipt's identity. It returns the receipt's size as
+// kept, over MaxCheckRef only when the rest is over it with no argv.
+func fitCheckRef(ref *CheckRef) (int, error) {
+	value, err := encodeValue(*ref)
+	if err != nil || len(value) <= MaxCheckRef {
+		return len(value), err
+	}
+	ref.ArgvCut = true
+	if value, err = encodeValue(*ref); err != nil {
+		return 0, err
+	}
+	// The argv encodes as [a,b,…]: an argument is its own encoding and,
+	// but the first, a comma.
+	over := len(value) - MaxCheckRef
+	for over > 0 && len(ref.Argv) > 0 {
+		last := len(ref.Argv) - 1
+		arg := ref.Argv[last]
+		size, err := encodedLen(arg)
+		if err != nil {
+			return 0, err
+		}
+		comma := min(last, 1)
+		if size+comma <= over || size-over < len(`""`) {
+			ref.Argv = ref.Argv[:last]
+			over -= size + comma
+			continue
+		}
+		// The longest start of arg whose encoding is size-over bytes at
+		// most, cut at a character's start (an empty one fits).
+		starts := []int{}
+		for i := range arg {
+			starts = append(starts, i)
+		}
+		lo, hi := 0, len(starts)-1 // starts[lo] fits; starts[0] is 0, ""
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			n, err := encodedLen(arg[:starts[mid]])
+			if err != nil {
+				return 0, err
+			}
+			if n <= size-over {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		ref.Argv[last] = arg[:starts[lo]]
+		break
+	}
+	value, err = encodeValue(*ref)
+	return len(value), err
+}
+
+// encodedLen is the bytes s takes as a stored value encodes it.
+func encodedLen(s string) (int, error) {
+	v, err := encodeValue(s)
+	return len(v), err
 }
 
 // short is a commit as words name it: its first seven characters.
@@ -1111,8 +1215,10 @@ func (t *tx) reviewRow(id string) (ChangeRow, ReviewSummary, error) {
 // (finding.mark): one mark's row, a row of the finding's marks log, and
 // one add row of the finding's marks naming it whole, with located, what
 // the server worked out of where the finding's lines are on that
-// candidate (JSON of at most MaxMarkLocated bytes, or none), kept with the
-// mark and never part of the fingerprint, which is the id and m alone.
+// candidate (JSON of at most MaxMarkLocated bytes, or none; an error
+// otherwise, never a refusal, so nothing is kept and the same op id may be
+// sent again with it right), kept with the mark and never part of the
+// fingerprint, which is the id and m alone.
 // The candidate is of the finding's task, of a run of a chain the
 // finding's ticket holds alone (holdsCandidate). Refused: a resolved mark
 // on a candidate whose commit is the finding's own candidate's, whatever
@@ -1187,7 +1293,9 @@ func (t *tx) markFinding(id string, m NewMark, located json.RawMessage) error {
 	}
 	if len(located) > 0 {
 		if err := checkField("mark.located", "where the lines are", string(located)); err != nil {
-			return fmt.Errorf("dispatch: the mark's evidence: %w", err)
+			// Located is the server's, outside the fingerprint: a plain
+			// error, never a refusal kept for the same op id.
+			return fmt.Errorf("dispatch: the mark's evidence: %v", err)
 		}
 	}
 	if err := t.holdsCandidate(tk, c.Run); err != nil {

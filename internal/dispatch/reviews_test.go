@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // A ticket's reviews (Program item RV1, docs/plans/review-repair.md,
@@ -209,6 +210,16 @@ func TestSubmitReviewKeepsItsCandidateAndBase(t *testing.T) {
 	if page.Reviews[1].Counts.Open != 5 {
 		t.Fatalf("the request's counts in the list: %+v", page.Reviews[1].Counts)
 	}
+	// A step of the tree that failed the attempt, setup, service or ready,
+	// is named as a check's receipt is.
+	for i, phase := range []string{PhaseSetup, PhaseService, PhaseReady} {
+		f := checkNote(candidate)
+		f.Check.Receipt = fmt.Sprintf("%s/build/2/%s/deps/%d", run, phase, i)
+		got := mustSubmit(t, s, opID("rv-step", i), key, request(candidate, f))
+		if c := got.Findings[0].Check; c == nil || c.Receipt != f.Check.Receipt || c.Phase != phase || c.ID != "deps" || c.K != i {
+			t.Fatalf("a %s step's receipt: %+v", phase, c)
+		}
+	}
 }
 
 // A review that cannot be repaired or does not say what it means is
@@ -231,6 +242,11 @@ func TestSubmitReviewRefusesWhatCannotBeRepaired(t *testing.T) {
 	external := checkNote(candidate)
 	external.Check.Source = CheckSourceExternal
 	otherAttempt := checkNote(candidateOf(run, 1, commitA))
+	ofPhase := func(phase string) NewFinding {
+		f := checkNote(candidate)
+		f.Check.Receipt = run + "/build/2/" + phase + "/deps/1"
+		return f
+	}
 	cases := []struct {
 		name    string
 		review  NewReview
@@ -256,6 +272,8 @@ func TestSubmitReviewRefusesWhatCannotBeRepaired(t *testing.T) {
 		{"an intent of none", request(candidate, with(func(f *NewFinding) { f.Intent = "demand" })), RefusalInvalid},
 		{"an external source", request(candidate, external), RefusalInvalid},
 		{"a receipt of another attempt", request(candidate, otherAttempt), RefusalInvalid},
+		{"a cleanup step's receipt", request(candidate, ofPhase("cleanup")), RefusalInvalid},
+		{"a prerequisite's receipt", request(candidate, ofPhase("prerequisite")), RefusalInvalid},
 		{"a class of none", request(candidate, func() NewFinding { f := checkNote(candidate); f.Check.Chosen = "gremlins"; return f }()), RefusalInvalid},
 		{"a run no ticket holds", request(candidateOf("loose-0000cafe", 2, commitA), lineChange("x")), RefusalInvalid},
 		{"another ticket's run", request(candidateOf(otherLaunch.RunID, 2, commitA), lineChange("x")), RefusalRunLinked},
@@ -296,7 +314,7 @@ func TestSubmitReviewRefusesWhatCannotBeRepaired(t *testing.T) {
 		},
 		func(ev ReviewEvidence) ReviewEvidence { ev.Findings[1].Check.Class = "who knows"; return ev },
 		func(ev ReviewEvidence) ReviewEvidence {
-			ev.Findings[1].Check.Tail = strings.Repeat("x", MaxCheckExcerpt+1)
+			ev.Findings[1].Check.Argv = slices.Repeat([]string{"x"}, MaxCheckArgv+1)
 			return ev
 		},
 	} {
@@ -316,6 +334,44 @@ func TestSubmitReviewRefusesWhatCannotBeRepaired(t *testing.T) {
 	}
 	rc, _, err := submit(s, "evidence", key, r)
 	want(t, rc, err, StatusDone, "")
+}
+
+// A receipt the ledger may hold is kept, made to fit: an argv of 32
+// arguments and 8 KiB, every byte a control character (some 48 KiB as
+// JSON), cut from its end to MaxCheckRef and marked cut; a tail cut by
+// the ledger inside a character kept from the next one; a tail of bytes
+// that are no UTF-8 kept as its last 2 KiB with U+FFFD for them.
+func TestACheckFindingKeepsTheLedgersWorstReceipt(t *testing.T) {
+	s, key, run := reviewTicket(t)
+	ctx := context.Background()
+	candidate := candidateOf(run, 2, commitA)
+	argv := append([]string{"sh"}, slices.Repeat([]string{strings.Repeat("\x01", 250)}, MaxCheckArgv-1)...)
+	for i, tc := range []struct{ tail, want string }{
+		{"\xa6" + strings.Repeat("x", MaxCheckExcerpt-1), strings.Repeat("x", MaxCheckExcerpt-1)},
+		{strings.Repeat("\xffy", MaxCheckExcerpt/2), strings.Repeat("\uFFFDy", MaxCheckExcerpt/4)},
+	} {
+		r := request(candidate, checkNote(candidate))
+		r.Findings[0].Check.Quote = strings.Repeat(`"`, MaxCheckExcerpt)
+		ev := evidenceOf(r)
+		ev.Findings[0].Check.Argv, ev.Findings[0].Check.Tail = slices.Clone(argv), tc.tail
+		rc, v, err := s.SubmitReview(ctx, testOp(opID("worst", i)), key, r, ev)
+		want(t, rc, err, StatusDone, "")
+		c := v.Findings[0].Check
+		value, _ := encodeValue(*c)
+		if len(value) > MaxCheckRef || !c.ArgvCut || len(c.Argv) == 0 || len(c.Argv) >= len(argv) {
+			t.Fatalf("case %d: the receipt kept is %d bytes, cut %v, %d arguments", i, len(value), c.ArgvCut, len(c.Argv))
+		}
+		last := len(c.Argv) - 1
+		if !slices.Equal(c.Argv[:last], argv[:last]) || !strings.HasPrefix(argv[last], c.Argv[last]) {
+			t.Fatalf("case %d: the argv kept is no start of the argv: %q", i, c.Argv)
+		}
+		if c.Tail != tc.want {
+			t.Fatalf("case %d: the tail kept is %d bytes (%q…), not %d", i, len(c.Tail), c.Tail[:min(len(c.Tail), 8)], len(tc.want))
+		}
+		if !utf8.ValidString(c.Tail) || len(c.Tail) > MaxCheckExcerpt {
+			t.Fatalf("case %d: the tail kept is %d bytes, UTF-8 %v", i, len(c.Tail), utf8.ValidString(c.Tail))
+		}
+	}
 }
 
 // Each bound at its edge and one past, end to end: a review's findings,
@@ -376,6 +432,52 @@ func TestReviewBounds(t *testing.T) {
 		f := checkNote(candidate)
 		f.Check.Quote = strings.Repeat("a", MaxCheckExcerpt+b2i(p))
 		check(fmt.Sprintf("a quote of 2 KiB (past %v)", p), map[bool]string{false: "", true: RefusalBound}[p], request(candidate, f))
+	}
+	// A check finding's receipt as the server fills it: an argv of 32
+	// arguments (33 is no ledger's: an error), a receipt of MaxCheckRef
+	// bytes kept whole and one a byte past it kept at MaxCheckRef with its
+	// argv cut, a tail of 2 KiB kept whole and one a byte past it kept as
+	// its last 2 KiB.
+	withRef := func(fill func(*CheckRef)) (Receipt, *CheckRef, error) {
+		t.Helper()
+		n++
+		r := request(candidate, checkNote(candidate))
+		ev := evidenceOf(r)
+		ev.Findings[0].Check.Chosen, ev.Findings[0].Check.Quote = r.Findings[0].Check.Chosen, r.Findings[0].Check.Quote
+		fill(ev.Findings[0].Check)
+		rc, v, err := s.SubmitReview(ctx, testOp(opID("b", n)), key, r, ev)
+		if err != nil || rc.Status != StatusDone {
+			return rc, nil, err
+		}
+		return rc, v.Findings[0].Check, nil
+	}
+	for _, p := range []bool{false, true} {
+		rc, c, err := withRef(func(c *CheckRef) { c.Argv = slices.Repeat([]string{"x"}, MaxCheckArgv+b2i(p)) })
+		switch {
+		case !p && (err != nil || len(c.Argv) != MaxCheckArgv):
+			t.Fatalf("an argv of 32: %+v %v", rc, err)
+		case p && (err == nil || !strings.Contains(err.Error(), "evidence")):
+			t.Fatalf("an argv of 33: %+v %v", rc, err)
+		}
+		var whole string
+		rc, c, err = withRef(func(c *CheckRef) {
+			c.Argv = []string{"go", ""}
+			v, _ := encodeValue(*c)
+			c.Argv[1] = strings.Repeat("a", MaxCheckRef-len(v)+b2i(p))
+			whole = c.Argv[1]
+		})
+		if err != nil || c == nil {
+			t.Fatalf("a receipt of MaxCheckRef (past %v): %+v %v", p, rc, err)
+		}
+		v, _ := encodeValue(*c)
+		if len(v) != MaxCheckRef || c.ArgvCut != p || len(c.Argv) != 2 || !strings.HasPrefix(whole, c.Argv[1]) || (c.Argv[1] == whole) == p {
+			t.Fatalf("a receipt of MaxCheckRef (past %v) kept as %d bytes, cut %v, its argument %d bytes of %d", p, len(v), c.ArgvCut, len(c.Argv[1]), len(whole))
+		}
+		tail := strings.Repeat("é", MaxCheckExcerpt/2)
+		rc, c, err = withRef(func(c *CheckRef) { c.Tail = strings.Repeat("x", b2i(p)) + tail })
+		if err != nil || c == nil || c.Tail != tail {
+			t.Fatalf("a tail of 2 KiB (past %v): %+v %v", p, rc, err)
+		}
 	}
 	// A ticket's reviews: 500, the rest written as rows.
 	tk := ticketOf(t, s, key)
@@ -510,6 +612,17 @@ func TestReplayIgnoresTheEvidence(t *testing.T) {
 	rc, first, err := s.SubmitReview(context.Background(), testOp("rv"), key, r, ev)
 	want(t, rc, err, StatusDone, "")
 	later := candidateOf(run, 3, commitB[:40])
+	// Located past its bound or no JSON is the caller's error, not a
+	// refusal: no receipt kept, and the same op id then marks.
+	for _, bad := range []string{`{"why":"` + strings.Repeat("x", MaxMarkLocated) + `"}`, `{"state":`} {
+		rc, _, err := mark(s, "mk", first.Findings[0].ID, later, FindingOpen, bad)
+		if err == nil || !strings.Contains(err.Error(), "evidence") {
+			t.Fatalf("located of %d bytes: %+v %v", len(bad), rc, err)
+		}
+		if _, found, _ := s.Receipt(context.Background(), "test", "mk"); found {
+			t.Fatalf("located of %d bytes kept a receipt", len(bad))
+		}
+	}
 	mrc, m, err := mark(s, "mk", first.Findings[0].ID, later, FindingOpen, `{"state":"moved","from":20,"to":22}`)
 	want(t, mrc, err, StatusDone, "")
 	changed := evidenceOf(r)
