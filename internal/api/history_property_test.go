@@ -820,8 +820,11 @@ func (m *propModel) forgetRandom() {
 	m.forget(ids[m.rng.IntN(len(ids))])
 }
 
-// random runs n random steps.
+// random runs n random steps, two sessions made first so that the steps
+// that need one (a held reconcile among them) have one from the start.
 func (m *propModel) random(n int) {
+	m.make(m.rng.IntN(3) == 0, m.rng.IntN(3) == 0)
+	m.make(m.rng.IntN(3) == 0, m.rng.IntN(3) == 0)
 	roLeft := 0
 	for step := range n {
 		what := ""
