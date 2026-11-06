@@ -1753,8 +1753,11 @@ once here.
   this design removes.
 - **A final record's end is the final read's.** When a reconcile sees the
   session gone from the registry, or in the shutdown's final pass, the
-  record's end is what the session object says at that read: its status
-  ended and its process gone, that end; otherwise `lost`, for good. What
+  record's end is what the session object says at that read, one of three
+  (the snapshot rule, S5, S21): its process still running, `lost`, for
+  good; its process gone with its status published, that end (the status,
+  exit code and `EndedAt` as published); its process gone before its
+  status is published, `exited` with no exit code at the read's time. What
   the process does after that read is never recorded.
 - **The end commit** is read by the writer after the end is recorded,
   through the session's own folder (`FolderDir`, by its handle where the
@@ -2064,8 +2067,14 @@ among them):
   it had published, or, at a final read before it published them,
   `exited` with no exit code at the read's time. A
   `lost` end is recorded only by a final read that showed the process
-  running (a removal's or the final pass's), or by the next start's
-  recovery for a record left open on disk;
+  running (a removal's or the final pass's), by the next start's
+  recovery for a record left open on disk, or by the owner's rule for a
+  record with no instance whose file has no end (a failed delete's, S11,
+  S35, S36: listed `lost` and that end written at the next pass). That
+  last is a legal move to `lost` with no final read and no restart, and
+  only there: a record whose instance is live never takes it, and a
+  read-only journal never takes it (it lists another server's open file as
+  it is);
 - I3: its name, agent's session and crew are what the session object
   showed at the last read that settled the record, each cut to its
   field's bound, never an older value;
@@ -2167,10 +2176,15 @@ folder is still unwritable; then the permission restored and `Flush`: the
 file there, the session's end then written over it),
 `TestAFailedDeleteKeepsTheRecord` and
 `TestAFailedDeleteOfAnUnwrittenEndIsListedLost` (S35, S36: for each of
-`Forget`, `ForgetAll` and `Prune`, an end settled with its write held at
-`beforeWrite`, the delete failed at `beforeDelete`: the row listed `lost`,
-forgotten again at once; and with a shutdown between: the file `lost`
-after `Close`, the next `Open` the same),
+`Forget`, `ForgetAll` and `Prune`, an end settled and its write kept from
+the file by holding its end commit in the test's `EndCommit`, which the
+writer calls on its own goroutine with none of the journal's locks held
+(`beforeWrite` runs under `wmu`, which every remover takes first, so a
+write held there would hold the removal too); the file read and found
+open before the removal, the delete failed at `beforeDelete`, the end
+commit let go after: the row listed `lost`, forgotten again at once; and
+with a shutdown between: the file `lost` after `Close`, the next `Open`
+the same),
 `TestALastWriteThatFailsIsLostAtTheNextStart` (S37),
 `TestReadOnlyWithoutTheLock` and `TestOpenSaysReadOnlyBeforeItsWaiterRuns`
 (S38). Each is proved as AGENTS.md asks of a race's test: `go test -race
