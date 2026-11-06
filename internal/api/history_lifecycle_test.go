@@ -438,3 +438,24 @@ func TestAHintCarriesNoTruth(t *testing.T) {
 		t.Fatalf("the name %q", r.Name)
 	}
 }
+
+// S17: a question, the session's end settled, then the choice's answered
+// line delivered: dropped and counted, the question withdrawn by the end.
+func TestAnAnswerAfterTheEndReadsWithdrawn(t *testing.T) {
+	e := newTestEnv(t, nil)
+	var mu sync.Mutex
+	var queued []func()
+	q := func(f func()) { mu.Lock(); queued = append(queued, f); mu.Unlock() }
+	e.srv.recordDeliver.Store(&q)
+	t.Cleanup(func() { e.srv.recordDeliver.Store(nil) })
+	lc := beginLaunch(t, e).make().add(t).register()
+	qid := "q-" + lc.id
+	e.srv.recordChat(lc.rc, session.ChatMessage{ID: qid, Kind: "question", Text: "Which?", By: session.ChatBy{Role: session.RoleAgent}, At: time.Now()})
+	lc.exit()
+	e.srv.reconcile(lc.rc) // the end settled
+	e.srv.recordChat(lc.rc, session.ChatMessage{ID: "a-" + lc.id, Kind: "system", Event: "answered", Ref: qid, Text: "Postgres", At: time.Now().Add(-time.Minute)})
+	r, raw := recordFile(t, e, lc.id)
+	if r.Ending != "exited (exit 0)" || !withdrawnOnce(r, qid) || r.Dropped != 1 || strings.Contains(string(raw), "Postgres") {
+		t.Fatalf("the record:\n%s", raw)
+	}
+}
