@@ -588,12 +588,10 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 		return page, err
 	}
 	defer ix.leave()
-	tx, gen, state, err := ix.readTx(ctx)
+	tx, end, gen, state, err := ix.readTx(ctx)
+	defer end()
 	if err != nil {
 		return page, err
-	}
-	if tx != nil {
-		defer tx.Rollback()
 	}
 	if state != "" {
 		page.State = state
