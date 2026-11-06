@@ -169,6 +169,12 @@ type Attention struct {
 	// so: Local.Ask), which the session keeps through its turn's done
 	// (Local.own). Kept by the session, never sent to a browser.
 	ask bool
+	// Decision is the durable decision this question mirrors, "dr-<n>"
+	// (Local.TryAskDecision), "" for any other question: answered only
+	// through the decision (ErrDecisionQuestion), and kept through keys,
+	// the screen and lines naming no decision. Not sent to viewers yet
+	// (docs/plans/decisions.md, PR-5 sends it).
+	Decision string `json:"-"`
 	// approval marks a dialog read off the screen as a plan's approval (its
 	// footer says so: planApprovalShown, #289): the one a late report of
 	// that approval names the plan for, and the one that keeps the plan of
