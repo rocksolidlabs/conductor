@@ -836,7 +836,9 @@ type HostedSession struct {
 	// connected, from the `file` entries it reports (HostActivity): what
 	// GET /api/touched lists for the session (#304). The host keeps the
 	// session's own index; this one begins with the connection.
-	touched        session.TouchedIndex
+	touched session.TouchedIndex
+	// hooks are the session's own (OnAdded's answer). Guarded by mu.
+	hooks          SessionHooks
 	relayOnly      bool
 	agentTokenHash [32]byte
 	hasAgentToken  bool
@@ -1345,8 +1347,15 @@ func OptionsFromProto(in []proto.AttentionOption) []session.Option {
 }
 
 func (h *HostedSession) notifyChange() {
+	info := h.Info()
 	if h.hub != nil && h.hub.OnChange != nil {
-		h.hub.OnChange(h.Info())
+		h.hub.OnChange(info)
+	}
+	h.mu.Lock()
+	own := h.hooks.Change
+	h.mu.Unlock()
+	if own != nil {
+		own(info)
 	}
 }
 
@@ -1838,9 +1847,13 @@ func (h *HostedSession) HostActivity(a proto.Activity, state string) {
 	if e.Type == session.ActivityFile && e.Op != "" && e.Path != "" {
 		h.touched.Note(HostAbs(h.info.Cwd, e.Path), e.Op, e.Tool, e.ByName, e.At)
 	}
+	own := h.hooks.Activity
 	h.mu.Unlock()
 	if h.hub != nil && h.hub.OnActivity != nil {
 		h.hub.OnActivity(id, e, recorded)
+	}
+	if own != nil {
+		own(e)
 	}
 }
 
@@ -1915,9 +1928,13 @@ func (h *HostedSession) HostChat(m proto.ChatMessage) {
 	}
 	h.mu.Lock()
 	sid := h.info.ID
+	own := h.hooks.Chat
 	h.mu.Unlock()
 	if h.hub != nil && h.hub.OnChat != nil {
 		h.hub.OnChat(sid, out)
+	}
+	if own != nil {
+		own(out)
 	}
 }
 

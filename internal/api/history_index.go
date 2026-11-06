@@ -697,10 +697,13 @@ func (h *historyIndexer) repoIdent(ctx context.Context, dir string) repoIdent {
 // project), read before the mark is compared. A failed read of either
 // is the pass's error, retried after a backoff, never a mark over an
 // entry that lacks it. A record a Forget, ForgetAll or Prune has chosen is
-// ErrNotFound to Get before its file is touched (the journal hides it
-// first), so a pass during the removal removes it, and one that read it
-// just before is followed by the pass its file's delete event asks; a
-// removal whose delete failed puts the record back with its file.
+// ErrNotFound to Get from that moment until the removal returns, and
+// nothing of its instance is written again (the journal's rule between
+// writers and removers), so a pass during the removal removes it, and one
+// that read it just before is followed by the pass its file's delete
+// event asks. A removal whose delete failed leaves the file as it was,
+// with no event: the record is indexed again by the next catch-up's
+// listing or its file's next change.
 func (h *historyIndexer) indexSession(ctx context.Context, ix *history.Index, id string) error {
 	key := hSessionRef(id)
 	rec, _, err := h.journal.Get(id)

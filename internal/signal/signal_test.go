@@ -1021,11 +1021,13 @@ func TestHostChatTakesTheAgentsQuestionAndItsEnds(t *testing.T) {
 func TestOnAddedHearsANewHostedSession(t *testing.T) {
 	hub := NewHub(session.NewRegistry(4), nil)
 	var order []string
-	hub.OnAdded = func(info session.Info, owner string) {
+	hub.OnAdded = func(hs *HostedSession, owner string) SessionHooks {
+		info := hs.Info()
 		if _, ok := hub.registry.Get(info.ID); !ok {
 			t.Error("added before the registry holds it")
 		}
 		order = append(order, "added "+info.ID+" "+owner)
+		return SessionHooks{Change: func(info session.Info) { order = append(order, "its own change "+info.ID) }}
 	}
 	hub.OnChange = func(info session.Info) { order = append(order, "changed "+info.ID) }
 	conn := NewHostConn()
@@ -1034,7 +1036,7 @@ func TestOnAddedHearsANewHostedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := hs.Info().ID
-	if len(order) < 2 || order[0] != "added "+id+" "+hs.Owner() || order[1] != "changed "+id {
+	if len(order) < 3 || order[0] != "added "+id+" "+hs.Owner() || order[1] != "changed "+id || order[2] != "its own change "+id {
 		t.Fatalf("order %q", order)
 	}
 	hs.HostDisconnected(conn)
@@ -1043,5 +1045,52 @@ func TestOnAddedHearsANewHostedSession(t *testing.T) {
 	}
 	if n := strings.Count(strings.Join(order, "\n"), "added "); n != 1 {
 		t.Fatalf("added %d times: %q", n, order)
+	}
+}
+
+// A hosted session's own hooks (OnAdded's answer) hear its entries and chat
+// messages after the hub's, and stay its own: the session of the same id
+// its host registers once the first was let go has its own, and an entry
+// the first one hands on after that reaches the first one's alone.
+func TestASessionsOwnHooksStayItsOwn(t *testing.T) {
+	reg := session.NewRegistry(4)
+	hub := NewHub(reg, nil)
+	var mu sync.Mutex
+	var heard []string
+	hear := func(s string) {
+		mu.Lock()
+		heard = append(heard, s)
+		mu.Unlock()
+	}
+	hub.OnActivity = func(_ string, e session.ActivityEntry, _ session.AttentionState) { hear("hub " + e.Message) }
+	hub.OnChat = func(_ string, m session.ChatMessage) { hear("hub chat " + m.Text) }
+	n := 0
+	hub.OnAdded = func(*HostedSession, string) SessionHooks {
+		n++
+		name := fmt.Sprint("session ", n)
+		return SessionHooks{
+			Activity: func(e session.ActivityEntry) { hear(name + " " + e.Message) },
+			Chat:     func(m session.ChatMessage) { hear(name + " chat " + m.Text) },
+		}
+	}
+	first, _, err := registerAs(hub, "instance-a", "1", NewHostConn())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.HostActivity(proto.Activity{Type: "progress", Message: "one"}, "")
+	first.HostChat(proto.ChatMessage{ID: "m1", Kind: "message", By: proto.ChatBy{ID: "v", Name: "Ada", Role: "control"}, Text: "hi"})
+	reg.Remove(first.Info().ID)
+	hub.Expire(time.Now())
+	second, resumed, err := registerAs(hub, "instance-a", "1", NewHostConn())
+	if err != nil || resumed || second == first || second.Info().ID != first.Info().ID {
+		t.Fatalf("registered again: %v resumed %v", err, resumed)
+	}
+	first.HostActivity(proto.Activity{Type: "progress", Message: "late"}, "")
+	second.HostActivity(proto.Activity{Type: "progress", Message: "two"}, "")
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"hub one", "session 1 one", "hub chat hi", "session 1 chat hi", "hub late", "session 1 late", "hub two", "session 2 two"}
+	if !slices.Equal(heard, want) {
+		t.Fatalf("heard %q, want %q", heard, want)
 	}
 }

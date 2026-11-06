@@ -1127,7 +1127,7 @@ func TestAnAttemptsStartCommitReachesItsSessionEntry(t *testing.T) {
 	id := session.NewID()
 	r := journal.Record{ID: id, Name: "lead", Kind: string(session.KindServer), Agent: journal.Agent{ID: "cat"}, Where: "native", Cwd: e.root, StartedAt: histNow,
 		StartFrom: journal.StartFromAttempt, Crew: &journal.Crew{RunID: "hist-00000013", CrewID: "hist", Member: "lead", Task: "build", Attempt: 1}}
-	if err := e.srv.sessionRecords.Begin(r); err != nil {
+	if _, err := e.srv.sessionRecords.Begin(r); err != nil {
 		t.Fatal(err)
 	}
 	ix := histSettle(t, e)
@@ -1421,20 +1421,21 @@ func histFind(t *testing.T, ix *history.Index, line string) []string {
 
 // forgettable is an ended server session's record, named by word and
 // holding a chat line of it, indexed and found by a search for it.
-func forgettable(t *testing.T, e *testEnv, word string) string {
+func forgettable(t *testing.T, e *testEnv, word string) (string, journal.Instance) {
 	t.Helper()
 	id := session.NewID()
 	r := journal.Record{ID: id, Name: word + " session", Kind: string(session.KindServer), Agent: journal.Agent{ID: "cat"}, Where: "native", Cwd: e.root, StartedAt: histNow}
-	if err := e.srv.sessionRecords.Begin(r); err != nil {
+	in, err := e.srv.sessionRecords.Begin(r)
+	if err != nil {
 		t.Fatal(err)
 	}
-	e.srv.sessionRecords.Chat(id, journal.ChatLine{Kind: "message", Text: "the " + word + " line", ByName: "nate", At: histNow})
-	e.srv.sessionRecords.End(id, journal.Ending{How: "exited"})
+	e.srv.sessionRecords.Chat(in, journal.ChatLine{Kind: "message", Text: "the " + word + " line", ByName: "nate", At: histNow})
+	e.srv.sessionRecords.End(in, journal.Ending{How: "exited"})
 	endedRecord(t, e, id)
 	if got := histFind(t, histSettle(t, e), word); len(got) < 2 {
 		t.Fatalf("the record's words before it is forgotten: %v", got)
 	}
-	return id
+	return id, in
 }
 
 // forgotten says the record id and its words are nowhere a search reaches.
@@ -1453,7 +1454,7 @@ func forgotten(t *testing.T, ix *history.Index, id, word string) {
 // restart.
 func TestAForgetIsGoneFromTheIndexAtOnce(t *testing.T) {
 	e := newTestEnv(t, nil)
-	id := forgettable(t, e, "zforgetinside")
+	id, _ := forgettable(t, e, "zforgetinside")
 	path := journal.Dir + "/" + journal.SessionsDir + "/" + id + ".json"
 	var inside atomic.Bool
 	e.srv.commits.add(commitObserver{data: func(ev store.Event) {
@@ -1487,7 +1488,7 @@ func TestAForgetDuringAPassIsNotWrittenBack(t *testing.T) {
 	}{{"a pass", false, false}, {"a reindex", true, false}, {"ForgetAll", false, true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newTestEnv(t, nil)
-			id := forgettable(t, e, "zforgetduring")
+			id, in := forgettable(t, e, "zforgetduring")
 			var held atomic.Bool
 			h := freshIndexer(t, e, func(h *historyIndexer) {
 				h.afterMark = func(key string) {
@@ -1510,7 +1511,7 @@ func TestAForgetDuringAPassIsNotWrittenBack(t *testing.T) {
 			if !held.Load() {
 				if !tc.reindex {
 					// A write of the record (its Seq) makes the pass read it.
-					e.srv.sessionRecords.Chat(id, journal.ChatLine{Kind: "message", Text: "one more", ByName: "nate", At: histNow})
+					e.srv.sessionRecords.Chat(in, journal.ChatLine{Kind: "message", Text: "one more", ByName: "nate", At: histNow})
 					e.srv.sessionRecords.Flush()
 				} else {
 					h.askReindex()
@@ -1529,7 +1530,7 @@ func TestAForgetDuringAPassIsNotWrittenBack(t *testing.T) {
 // write never happened) is removed by the next start's catch-up.
 func TestARecordForgottenWhileStoppedLeavesTheIndex(t *testing.T) {
 	e := newTestEnv(t, nil)
-	id := forgettable(t, e, "zforgetstopped")
+	id, _ := forgettable(t, e, "zforgetstopped")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	e.srv.Shutdown(ctx)
@@ -1668,7 +1669,8 @@ func TestARunsTransitionReadsNoMemberAgain(t *testing.T) {
 	id := session.NewID()
 	r := journal.Record{ID: id, Name: "lead", Kind: string(session.KindServer), Agent: journal.Agent{ID: "cat"}, Where: "native", Cwd: e.root, StartedAt: histNow,
 		StartFrom: journal.StartFromAttempt, Crew: &journal.Crew{RunID: "hist-00000034", CrewID: "hist", Member: "lead", Task: "build", Attempt: 1}}
-	if err := e.srv.sessionRecords.Begin(r); err != nil {
+	in, err := e.srv.sessionRecords.Begin(r)
+	if err != nil {
 		t.Fatal(err)
 	}
 	put := func(start string) {
@@ -1680,7 +1682,7 @@ func TestARunsTransitionReadsNoMemberAgain(t *testing.T) {
 	}
 	put(commitID(7))
 	// Ended and written: its record changes no more while the run moves.
-	e.srv.sessionRecords.End(id, journal.Ending{How: "exited"})
+	e.srv.sessionRecords.End(in, journal.Ending{How: "exited"})
 	endedRecord(t, e, id)
 	if h := histEntry(t, histSettle(t, e), hSessionRef(id)); h.Commit != commitID(7) {
 		t.Fatalf("the member's commit: %q", h.Commit)
@@ -1720,7 +1722,7 @@ func TestASessionMarkWaitsForItsLedgerRead(t *testing.T) {
 	c.failAttempts.Store(1)
 	r := journal.Record{ID: id, Name: "lead", Kind: string(session.KindServer), Agent: journal.Agent{ID: "cat"}, Where: "native", Cwd: e.root, StartedAt: histNow,
 		StartFrom: journal.StartFromAttempt, Crew: &journal.Crew{RunID: "hist-00000035", CrewID: "hist", Member: "lead", Task: "build", Attempt: 1}}
-	if err := e.srv.sessionRecords.Begin(r); err != nil {
+	if _, err := e.srv.sessionRecords.Begin(r); err != nil {
 		t.Fatal(err)
 	}
 	if h := histEntry(t, histSettle(t, e), hSessionRef(id)); h.Commit != commitID(9) {
