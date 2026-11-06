@@ -628,6 +628,7 @@ func freshIndexer(t *testing.T, e *testEnv, set func(h *historyIndexer)) *histor
 	e.srv.stopHistory()
 	old := e.srv.history
 	h := newHistoryIndexer(e.srv.store, e.srv.sessionRecords, old.ledger, e.srv.dispatch, old.host, e.srv.log)
+	h.brakeman = old.brakeman
 	if set != nil {
 		set(h)
 	}
@@ -929,6 +930,7 @@ func TestCatchUpAfterARestart(t *testing.T) {
 func TestCatchUpRunsOnTheHistoryLockAlone(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
 	seedDispatch(t, dir)
+	ticket := seedTicket(t, dir, "LCK", "held at start")
 	ld, err := ledger.Open(filepath.Join(dir, "runs"))
 	if err != nil {
 		t.Fatal(err)
@@ -949,6 +951,7 @@ func TestCatchUpRunsOnTheHistoryLockAlone(t *testing.T) {
 	if h := histEntry(t, ix, hCheckRef("hist-00000010", "build", 1, "unit", 1)); h.Outcome != "failed" {
 		t.Fatalf("the ledger's receipt: %+v", h.Entry)
 	}
+	histTicketAtStart(t, ix, ticket, "held at start")
 }
 
 // With no ledger (its database cannot be opened), the session records and
@@ -957,6 +960,7 @@ func TestCatchUpRunsOnTheHistoryLockAlone(t *testing.T) {
 func TestCatchUpWithNoLedger(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
 	seedDispatch(t, dir)
+	ticket := seedTicket(t, dir, "NOL", "no ledger")
 	// A database file that is a link: the ledger refuses to open.
 	if err := os.MkdirAll(filepath.Join(dir, "runs"), 0o700); err != nil {
 		t.Fatal(err)
@@ -977,6 +981,7 @@ func TestCatchUpWithNoLedger(t *testing.T) {
 	if got := e.srv.history.indexing(); got["ledger"] != "unavailable" {
 		t.Fatalf("indexing: %v", got)
 	}
+	histTicketAtStart(t, ix, ticket, "no ledger")
 }
 
 // git runs git in dir for a test, failing it on an error.

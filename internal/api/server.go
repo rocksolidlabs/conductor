@@ -138,7 +138,11 @@ type Server struct {
 	sessionRecords *journal.Journal
 	// history feeds the history's index from the session records and the
 	// runs (history_index.go); nil where there are no session records.
-	history      *historyIndexer
+	history *historyIndexer
+	// historyReads counts the history's reads in flight (history_search.go);
+	// historyHold, a test's, holds a read once it has its slot.
+	historyReads historyGate
+	historyHold  func(*http.Request)
 	commits      *commitFan // the commit hooks' observers (commits.go)
 	readRevision func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// planFacts keeps what the plan revisions' reads take from each
@@ -713,6 +717,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/history/sessions/{id}", s.requireAdmin(s.handleForgetHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions", s.requireAdmin(s.handleForgetHistorySessions))
 	mux.HandleFunc("POST /api/history/reindex", s.requireAdmin(s.handleHistoryReindex))
+	mux.HandleFunc("GET /api/history", s.requireAdmin(s.handleHistorySearch))
+	mux.HandleFunc("GET /api/history/entry", s.requireAdmin(s.handleHistoryEntry))
+	mux.HandleFunc("GET /api/history/similar", s.requireAdmin(s.handleHistorySimilar))
+	mux.HandleFunc("GET /api/history/command", s.requireAdmin(s.handleHistoryCommand))
 	mux.HandleFunc("GET /api/catalog", s.launching(s.handleCatalog))
 	mux.HandleFunc("POST /api/catalog", s.launching(s.handleSaveAgent))
 	mux.HandleFunc("POST /api/catalog/check", s.launching(s.handleCheckCommand))

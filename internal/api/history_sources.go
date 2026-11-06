@@ -343,6 +343,9 @@ func runSource(p runPlace, rec *crew.Run, rows *runRows, chain []runRows) ([]his
 		if rec.Ticket.PlanN > 0 {
 			links = append(links, history.Link{From: ref, Rel: relLaunched, To: hPlanRef(rec.Ticket.Key, rec.Ticket.PlanN)})
 		}
+		if rec.Ticket.Launch != "" {
+			links = append(links, history.Link{From: ref, Rel: relLaunched, To: hLaunchRef(rec.Ticket.Launch)})
+		}
 	}
 	if rows == nil {
 		// A legacy run: its members' sessions.

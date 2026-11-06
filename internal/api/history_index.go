@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -107,6 +108,9 @@ type historyIndexer struct {
 	journal  *journal.Journal
 	ledger   func() indexLedger // nil: no ledger in this process
 	dispatch *dispatch.Store
+	// brakeman is Brakeman's store, nil (or answering nil) when this
+	// process has none: the briefs' source (PR-4).
+	brakeman func() *brakeman.Store
 	path     string
 	host     string
 	log      *slog.Logger
@@ -126,6 +130,7 @@ type historyIndexer struct {
 	sessions bool // a project changed: every session source
 	reindex  bool
 	projects bool // Dispatch's projects changed: read them again
+	feed     bool // Dispatch committed: read its change feed (PR-4)
 	behind   int  // a catch-up's sources not read yet
 	state    string
 	checking bool
@@ -146,6 +151,10 @@ type historyIndexer struct {
 	pm       *projectMap
 	repos    map[string]repoIdent
 	runStats map[string]fileStat // the reconcile's last look at each run record
+	// briefStats is the reconcile's last look at each kept brief's file,
+	// and briefDir Brakeman's requests' folder, opened once (PR-4).
+	briefStats map[string]fileStat
+	briefDir   *store.Store
 	// endedChecks are the receipt rows (no logs) of attempts that have
 	// ended with every receipt finished: rows that never change, read
 	// once. A row of the ledger's is read past its log's pages, so a
@@ -169,6 +178,10 @@ type projectMap struct {
 	byRepo map[string]string
 }
 
+// The source that keeps the position of Dispatch's change feed the
+// indexer has read to (its mark, a seq): no entries of its own.
+const feedSource = "dispatch:feed"
+
 // newHistoryIndexer is an indexer over the journal's data directory; it
 // does nothing until start.
 func newHistoryIndexer(data *store.Store, j *journal.Journal, ld func() indexLedger, ds *dispatch.Store, host string, log *slog.Logger) *historyIndexer {
@@ -189,6 +202,7 @@ func newHistoryIndexer(data *store.Store, j *journal.Journal, ld func() indexLed
 		readAt:        map[string]time.Time{},
 		repos:         map[string]repoIdent{},
 		runStats:      map[string]fileStat{},
+		briefStats:    map[string]fileStat{},
 		endedChecks:   map[attemptID][]ledger.CheckRow{},
 	}
 }
@@ -202,11 +216,21 @@ func (h *historyIndexer) observer() commitObserver {
 				h.mark(hRunRef(id))
 			} else if id, ok := docID(ev.Path, journal.Dir+"/"+journal.SessionsDir+"/"); ok {
 				h.mark(hSessionRef(id))
+			} else if id, ok := briefDocID(ev.Path); ok {
+				h.mark(hBriefRef(id))
 			}
 		},
 		commit: func(p ledger.RunPointer) { h.mark(hRunRef(p.ID)) },
 		prune:  func(id string, _ int64) { h.mark(hRunRef(id)) },
 		dispatch: func(cs []dispatch.Change) {
+			// The tickets a commit changed are named by their ids, which
+			// this hook may not read the store to turn into keys: the
+			// change feed, read on the indexer's goroutine, names them by
+			// their keys (readFeed).
+			h.mu.Lock()
+			h.feed = true
+			h.mu.Unlock()
+			h.signal()
 			if slices.ContainsFunc(cs, func(c dispatch.Change) bool { return c.Entity == dispatch.EntityProject }) {
 				h.mu.Lock()
 				h.projects, h.sessions = true, true
@@ -485,6 +509,8 @@ func (h *historyIndexer) loop(ctx context.Context) {
 			step, h.sessions = "sessions", false
 		case len(h.requests) > 0 && h.requests[0] == nil:
 			step, h.requests = "reconcile", h.requests[1:]
+		case h.feed:
+			step, h.feed = "feed", false
 		}
 		var req chan struct{}
 		h.mu.Unlock()
@@ -500,6 +526,9 @@ func (h *historyIndexer) loop(ctx context.Context) {
 			continue
 		case "reconcile":
 			h.reconcile(ctx)
+			continue
+		case "feed":
+			h.readFeed(ctx)
 			continue
 		}
 		if key, ok := h.take(); ok {
@@ -581,6 +610,10 @@ func (h *historyIndexer) pass(ctx context.Context, key string) {
 		err = h.indexSession(ctx, ix, id)
 	case "run":
 		err = h.indexRun(ctx, ix, id)
+	case "ticket":
+		err = h.indexTicket(ctx, ix, id)
+	case "brief":
+		err = h.indexBrief(ctx, ix, id)
 	}
 	if err == nil {
 		h.backoff = 0
@@ -956,6 +989,11 @@ func (h *historyIndexer) runPlaceOf(ctx context.Context, id string, rec *crew.Ru
 		if rec.Ticket != nil {
 			p.ticket = rec.Ticket.Key
 		}
+		if rec.Class == crew.ClassBrakeman {
+			// A Brakeman turn's entries are its crew's, the search's
+			// default leaves them out (history_search.go).
+			p.crew = crew.ClassBrakeman
+		}
 		for _, m := range rec.Members {
 			p.agents["member:"+m.Name] = m.AgentID
 			if m.AgentSession != nil && m.Task != "" {
@@ -1075,7 +1113,7 @@ func (h *historyIndexer) catchUp(ctx context.Context, sessionsOnly bool) {
 		return
 	}
 	h.setState(indexCatchingUp)
-	keys, complete, err := h.storeSources(ctx, sessionsOnly)
+	keys, complete, head, err := h.storeSources(ctx, sessionsOnly)
 	if err != nil {
 		if ctx.Err() == nil {
 			h.log.Warn("the history's catch-up could not list the sources; trying again", "err", err)
@@ -1116,7 +1154,7 @@ func (h *historyIndexer) catchUp(ctx context.Context, sessionsOnly bool) {
 			if sessionsOnly && !strings.HasPrefix(k, "session:") {
 				continue
 			}
-			if (strings.HasPrefix(k, "session:") || strings.HasPrefix(k, "run:")) && !has[k] {
+			if indexedSource(k) && !has[k] {
 				has[k] = true
 				keys = append(keys, k)
 			}
@@ -1125,6 +1163,13 @@ func (h *historyIndexer) catchUp(ctx context.Context, sessionsOnly bool) {
 			break
 		}
 		after = page[len(page)-1].Key
+	}
+	if head != nil {
+		// The feed's position: every ticket was listed after it was read,
+		// so the feed reads on from there.
+		if err := ix.Replace(ctx, history.Source{Key: feedSource, Mark: strconv.FormatInt(*head, 10)}, nil, nil); err != nil && ctx.Err() == nil {
+			h.log.Warn("the history could not keep Dispatch's feed position", "err", err)
+		}
 	}
 	h.mu.Lock()
 	h.behind = len(keys)
@@ -1148,12 +1193,12 @@ func (h *historyIndexer) catchUp(ctx context.Context, sessionsOnly bool) {
 // every run the ledger has (when there is one to read) and every run
 // record. complete is false when a store could not be listed whole (no
 // ledger in this process is not that: its runs are then the records').
-func (h *historyIndexer) storeSources(ctx context.Context, sessionsOnly bool) ([]string, bool, error) {
+func (h *historyIndexer) storeSources(ctx context.Context, sessionsOnly bool) ([]string, bool, *int64, error) {
 	var keys []string
 	for after := ""; ; {
 		page, err := h.journal.List(after, journal.MaxPage)
 		if err != nil {
-			return nil, false, err
+			return nil, false, nil, err
 		}
 		for _, r := range page.Records {
 			if !r.Unreadable {
@@ -1166,8 +1211,13 @@ func (h *historyIndexer) storeSources(ctx context.Context, sessionsOnly bool) ([
 		after = page.Next
 	}
 	if sessionsOnly {
-		return keys, true, nil
+		return keys, true, nil, nil
 	}
+	tickets, briefs, head, err := h.dispatchSources(ctx)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	keys = append(append(keys, tickets...), briefs...)
 	runs := map[string]bool{}
 	ld := h.currentLedger()
 	h.setNoLedger(ld == nil)
@@ -1179,7 +1229,7 @@ func (h *historyIndexer) storeSources(ctx context.Context, sessionsOnly bool) ([
 				break
 			}
 			if err != nil {
-				return nil, false, err
+				return nil, false, nil, err
 			}
 			for _, p := range ps {
 				runs[p.ID] = true
@@ -1192,7 +1242,7 @@ func (h *historyIndexer) storeSources(ctx context.Context, sessionsOnly bool) ([
 	}
 	docs, err := h.data.ListDocs("runs")
 	if err != nil {
-		return nil, false, err
+		return nil, false, nil, err
 	}
 	for _, d := range docs {
 		if id, ok := strings.CutSuffix(d.Name, ".json"); ok && crew.ValidRunID(id) {
@@ -1205,7 +1255,7 @@ func (h *historyIndexer) storeSources(ctx context.Context, sessionsOnly bool) ([
 		keys = append(keys, hRunRef(id))
 	}
 	slices.Sort(keys)
-	return keys, true, nil
+	return keys, true, head, nil
 }
 
 // reconcile finds what another server wrote, which no hook of this
@@ -1279,12 +1329,16 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 			}
 		}
 	}
+	h.reconcileBriefs()
 	old := ""
 	if h.pm != nil {
 		old = h.pm.digest
 	}
 	h.mu.Lock()
 	h.projects = true
+	// Dispatch's feed after the position kept: what another server wrote
+	// to Dispatch, which takes no owner lock.
+	h.feed = h.dispatch != nil
 	h.mu.Unlock()
 	if pm := h.projectsOf(ctx); old != "" && pm.digest != old {
 		h.mu.Lock()
@@ -1347,6 +1401,12 @@ func (s *Server) openHistoryIndexer(fan *commitFan) {
 		}
 		return s.ledger
 	}, s.dispatch, host, s.log)
+	s.history.brakeman = func() *brakeman.Store {
+		if s.brakeman == nil {
+			return nil
+		}
+		return s.brakeman.st
+	}
 	fan.add(s.history.observer())
 }
 
