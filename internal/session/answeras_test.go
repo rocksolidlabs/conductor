@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -636,5 +637,32 @@ func TestAnswerAsRecordsTheName(t *testing.T) {
 	}
 	if line == nil || line.By.Name != "Ada" || line.By.ID != "" || line.Ref != q.ID || line.Text != "Postgres" {
 		t.Fatalf("the answered line: %+v", line)
+	}
+}
+
+// An actor's answer keeps the request id it is given (a decision link's
+// decide's opId) with the question's result, beside its name, as a
+// viewer's answer keeps its reqId; one past its bounds is kept as none,
+// and an actor that names none keeps none.
+func TestAnswerAsKeepsTheRequestID(t *testing.T) {
+	s, p, _ := asking(t, Options{})
+	q := askOwn(t, s, "Which database?", dbChoices...)
+	if err := s.AnswerAs(context.Background(), q.ID, "SQLite\r", Actor{Name: "phone", ReqID: "op-1"}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	r, ok := s.QuestionResult(q.ID)
+	if !ok || r.ReqID != "op-1" || r.ByName != "phone" || r.By != "" {
+		t.Fatalf("the kept result: %+v %v", r, ok)
+	}
+	for _, id := range []string{"", "a b", strings.Repeat("x", proto.MaxAnswerReqID+1)} {
+		q := askOwn(t, s, "Which database?", dbChoices...)
+		if err := s.AnswerAs(context.Background(), q.ID, "Postgres\r", Actor{Name: "phone", ReqID: id}); err != nil {
+			t.Fatal(err)
+		}
+		written(t, p)
+		if r, ok := s.QuestionResult(q.ID); !ok || r.ReqID != "" || r.ByName != "phone" {
+			t.Fatalf("a request id %q kept as %+v", id, r)
+		}
 	}
 }

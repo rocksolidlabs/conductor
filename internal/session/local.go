@@ -2403,6 +2403,10 @@ type AttachOptions struct {
 	// this client's and is not counted twice toward MaxViewers. Only a
 	// subscription of this session already ended counts.
 	Replaces *Subscription
+	// Decisions marks a decision link's client (docs/plans/decision-inbox.md,
+	// PR-5): its welcome says decisions, so it sends the lane's reads and
+	// decides, which its caller serves.
+	Decisions bool
 }
 
 // Attach registers a client without a display name. See AttachWith.
@@ -2552,6 +2556,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		RunChat:         room != nil,
 		Answer:          true,
 		SubmitAck:       true,
+		Decisions:       o.Decisions,
 		Cwd:             welcomeCwd(s.info.Cwd, s.fileAllowed(role)),
 	}))
 	if !sub.quiet {

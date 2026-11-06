@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"errors"
+
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // An answer with no connection behind it (the decision seam, Program item
@@ -25,6 +27,12 @@ type Actor struct {
 	Subject   string
 	Name      string
 	Withdrawn <-chan struct{}
+	// ReqID is the request id of the answer (a decision link's decide's
+	// opId), kept with the question's result as the winner's
+	// (QuestionResult), so an attempt is told from another by its id. At
+	// most proto.MaxAnswerReqID bytes of printable ASCII; another is kept
+	// as none.
+	ReqID string
 }
 
 // ErrNotAChoice refuses keys AnswerAs is given that are not one of the
@@ -53,6 +61,9 @@ func (s *Local) AnswerAs(ctx context.Context, question, input string, by Actor) 
 		return ErrQuestionAnswered
 	}
 	who := typist{actor: true, name: CleanName(by.Name), gone: by.Withdrawn}
+	if proto.ValidAnswerReqID(by.ReqID) {
+		who.reqID = by.ReqID
+	}
 	// The landing's word is nobody's to wait for: the question's resolve
 	// (or its refusal) is what follows it.
 	landed := func(error) {}

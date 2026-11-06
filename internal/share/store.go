@@ -21,6 +21,11 @@ type Link struct {
 	CreatedAt time.Time    `json:"createdAt"`
 	ExpiresAt *time.Time   `json:"expiresAt,omitempty"`
 	Revoked   bool         `json:"revoked"`
+	// Decide marks a decision link (docs/plans/decision-inbox.md, PR-5): a
+	// control link whose holder may also list, read and act on the
+	// decisions in its scope over its connection's lane. Only CreateDecision
+	// and CreateRunDecision set it, and only on a control link.
+	Decide bool `json:"decide,omitempty"`
 	// Owner, on a switchyard, is the hash of the host instance a durable
 	// link was minted for (kept on disk, outliving the host's absences);
 	// Addr the open host's address it counts against. Never in a reply.
@@ -34,7 +39,23 @@ type Link struct {
 	hash Hash
 	// lapsed says ExpireDue has told the hooks this link expired.
 	lapsed bool
+	// recent is a decision link's Recent: what was acted on through it
+	// (NoteRecent), in memory with the link and gone with it.
+	recent []Recent
 }
+
+// Recent is one action taken through a decision link: the item's ref,
+// the receipt its steps are read by, the action's own identity (its
+// decide's opId) and when it was taken.
+type Recent struct {
+	Ref     string    `json:"ref"`
+	Receipt string    `json:"receipt"`
+	Attempt string    `json:"attempt"`
+	At      time.Time `json:"at"`
+}
+
+// MaxRecent bounds a decision link's Recent: the newest kept.
+const MaxRecent = 50
 
 // Group is a crew run as a switchyard knows it: its name and its members.
 //
@@ -118,6 +139,60 @@ func (s *Store) Create(sessionID string, role session.Role, label string, ttl ti
 // the plaintext token.
 func (s *Store) CreateRunLink(runID string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
 	return s.create(&Link{RunID: runID}, s.byRun, runID, role, label, ttl, nil)
+}
+
+// ErrDecideNeedsControl refuses a decision link of any role but control.
+var ErrDecideNeedsControl = errors.New("share: a decision link is a control link")
+
+// CreateDecision issues a decision link to a session (Link.Decide): a
+// control link only (ErrDecideNeedsControl).
+func (s *Store) CreateDecision(sessionID string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
+	if role != session.RoleControl {
+		return nil, "", ErrDecideNeedsControl
+	}
+	return s.create(&Link{SessionID: sessionID, Decide: true}, s.bySession, sessionID, role, label, ttl, nil)
+}
+
+// CreateRunDecision issues a decision link to a crew run, as CreateDecision.
+func (s *Store) CreateRunDecision(runID string, role session.Role, label string, ttl time.Duration) (*Link, string, error) {
+	if role != session.RoleControl {
+		return nil, "", ErrDecideNeedsControl
+	}
+	return s.create(&Link{RunID: runID, Decide: true}, s.byRun, runID, role, label, ttl, nil)
+}
+
+// NoteRecent keeps r in the decision link linkID's Recent, the newest
+// MaxRecent, one entry per ref and attempt (the newest kept); false when
+// the store holds no such decision link.
+func (s *Store) NoteRecent(linkID string, r Recent) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.byID[linkID]
+	if !ok || !l.Decide {
+		return false
+	}
+	kept := l.recent[:0:0]
+	for _, o := range l.recent {
+		if o.Ref != r.Ref || o.Attempt != r.Attempt {
+			kept = append(kept, o)
+		}
+	}
+	kept = append(kept, r)
+	if len(kept) > MaxRecent {
+		kept = kept[len(kept)-MaxRecent:]
+	}
+	l.recent = kept
+	return true
+}
+
+// RecentOf is the decision link linkID's Recent, oldest first.
+func (s *Store) RecentOf(linkID string) []Recent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if l, ok := s.byID[linkID]; ok {
+		return append([]Recent(nil), l.recent...)
+	}
+	return nil
 }
 
 // create completes link, whose scope is set, and indexes it in scopes under
@@ -436,6 +511,7 @@ func (s *Store) DeleteRun(runID string) []string {
 
 func copyLink(l *Link) *Link {
 	cp := *l
+	cp.recent = nil
 	if l.Group != nil {
 		g := l.Group.clone()
 		cp.Group = &g

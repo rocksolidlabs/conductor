@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -527,5 +528,70 @@ func TestAGroupsRevisionIsNotWritten(t *testing.T) {
 	b, err := json.Marshal(Group{Name: "api", Revision: 42, Members: []GroupMember{{Name: "lead"}}})
 	if err != nil || strings.Contains(string(b), "42") || strings.Contains(strings.ToLower(string(b)), "revision") {
 		t.Fatalf("written as %s (%v)", b, err)
+	}
+}
+
+// A decision link is a control link: a view one is refused, nothing made;
+// a control one carries Decide, resolves as a link does and is revoked as
+// one is. A plain link does not carry it.
+func TestADecisionLinkNeedsControl(t *testing.T) {
+	s := NewStore()
+	if _, _, err := s.CreateDecision("s1", session.RoleView, "", 0); !errors.Is(err, ErrDecideNeedsControl) {
+		t.Fatalf("a view decision link: %v", err)
+	}
+	if _, _, err := s.CreateRunDecision("r1", session.RoleView, "", 0); !errors.Is(err, ErrDecideNeedsControl) {
+		t.Fatalf("a view run decision link: %v", err)
+	}
+	if n := len(s.ListBySession("s1")) + len(s.ListByRun("r1")); n != 0 {
+		t.Fatalf("%d links made", n)
+	}
+	l, tok, err := s.CreateDecision("s1", session.RoleControl, "phone", 0)
+	if err != nil || !l.Decide || l.Role != session.RoleControl {
+		t.Fatalf("a decision link: %+v %v", l, err)
+	}
+	got, err := s.Resolve(tok)
+	if err != nil || !got.Decide {
+		t.Fatalf("resolved: %+v %v", got, err)
+	}
+	rl, _, err := s.CreateRunDecision("r1", session.RoleControl, "", 0)
+	if err != nil || !rl.Decide || rl.RunID != "r1" {
+		t.Fatalf("a run decision link: %+v %v", rl, err)
+	}
+	plain, _, _ := s.Create("s1", session.RoleControl, "", 0)
+	if plain.Decide {
+		t.Fatal("a plain link decides")
+	}
+	if found, _ := s.Revoke("s1", l.ID); !found {
+		t.Fatal("not revoked")
+	}
+	if _, err := s.Resolve(tok); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("after the revoke: %v", err)
+	}
+}
+
+// A decision link's Recent keeps the newest MaxRecent, one entry per ref
+// and attempt, and goes with the link; a plain link keeps none.
+func TestADecisionLinksRecent(t *testing.T) {
+	s := NewStore()
+	l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "", 0)
+	plain, _, _ := s.CreateRunLink("r1", session.RoleControl, "", 0)
+	if s.NoteRecent(plain.ID, Recent{Ref: "task:r1/a", Attempt: "x"}) {
+		t.Fatal("a plain link noted")
+	}
+	at := time.Now()
+	for i := range MaxRecent + 5 {
+		s.NoteRecent(l.ID, Recent{Ref: "task:r1/a", Receipt: "c", Attempt: "op-" + strconv.Itoa(i), At: at})
+	}
+	s.NoteRecent(l.ID, Recent{Ref: "task:r1/a", Receipt: "c", Attempt: "op-10", At: at.Add(time.Second)})
+	got := s.RecentOf(l.ID)
+	if len(got) != MaxRecent || got[0].Attempt != "op-5" || got[len(got)-1].Attempt != "op-10" {
+		t.Fatalf("recent: %d, first %+v last %+v", len(got), got[0], got[len(got)-1])
+	}
+	if c, _ := s.Get(l.ID); c.recent != nil {
+		t.Fatal("a copy carries the recent list")
+	}
+	s.DeleteRun("r1")
+	if got := s.RecentOf(l.ID); got != nil {
+		t.Fatalf("after the run's links went: %v", got)
 	}
 }
