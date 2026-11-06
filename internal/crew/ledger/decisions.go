@@ -1052,7 +1052,8 @@ func (t *Tx) response(where string, args ...any) (ResponseRow, bool, error) {
 
 // History writes a row of decision n's history, next in its sequence, and
 // answers it. An operation (h.OpID set: an operator's comment, request for
-// information or re-route) its author sent before answers that row
+// information, re-route or cancel, the cancel within the final row's own
+// bound) its author sent before answers that row
 // (repeat), or ErrDecisionConflict when its fingerprint differs. Each kind
 // keeps its own bound (historyBounds), ErrDecisionLimit past it: one
 // opened, two routed besides the re-routes, MaxDecisionOperations
@@ -1072,7 +1073,7 @@ func (t *Tx) History(n int64, h HistoryRow) (HistoryRow, bool, error) {
 		return HistoryRow{}, false, invalid("history kind %q", h.Kind)
 	}
 	op := h.OpID != ""
-	if op && h.Kind != HistoryCommented && h.Kind != HistoryInfoRequested && h.Kind != HistoryRouted {
+	if op && h.Kind != HistoryCommented && h.Kind != HistoryInfoRequested && h.Kind != HistoryRouted && h.Kind != HistoryCancelled {
 		return HistoryRow{}, false, invalid("a %s row is no operation", h.Kind)
 	}
 	if !op && h.Fingerprint != "" {
@@ -1103,7 +1104,9 @@ func (t *Tx) History(n int64, h HistoryRow) (HistoryRow, bool, error) {
 		}
 	}
 	group, max := bound.group, bound.max
-	if op {
+	if op && h.Kind != HistoryCancelled {
+		// An operator's cancel keeps its command's id and stays the
+		// decision's one final row.
 		group, max = "ops", MaxDecisionOperations
 	}
 	var have int

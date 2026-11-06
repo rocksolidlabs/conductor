@@ -394,6 +394,8 @@ func (r *run) restorePause(m pauseMark) {
 // cancelled outright; what needs it is blocked for good, and the run may
 // end. The caller holds e.mu, in a transaction; t is not terminal.
 func (e *Engine) cancelTask(r *run, t *task) []event {
+	// What its attempts asked ends with it.
+	e.cancelAsked(r, t, t.def.ID+" was cancelled")
 	if a := t.active(); a != nil {
 		if a.sessionID != "" {
 			r.pendingStops = append(r.pendingStops, a.sessionID)
@@ -430,6 +432,8 @@ func (e *Engine) retryTask(r *run, t *task) []event {
 	r.reopenPrerequisites()
 	r.ready()
 	r.note(session.ActivityStatus, "task %s: retried, one more attempt allowed", t.def.ID)
+	// A gate's requirement outlives its decision (I14).
+	e.regate(r, t.def.ID+" was retried")
 	return []event{{"task.retried", map[string]any{"task": t.def.ID}}}
 }
 
@@ -466,6 +470,7 @@ func (e *Engine) acceptTask(r *run, t *task, actor string) ([]event, error) {
 	// Still open (what needs the task goes on): the prerequisites the
 	// run's end interrupted are armed again.
 	r.reopenPrerequisites()
+	e.regate(r, t.def.ID+" was accepted")
 	r.note(session.ActivityStatus, "task %s: attempt %d's result accepted by %s", t.def.ID, last.n, actor)
 	events := []event{{"task.accepted", map[string]any{"task": t.def.ID, "attempt": last.n, "actor": actor, "commit": last.result}}}
 	if r.outcome != "" {
@@ -527,6 +532,9 @@ func (e *Engine) Retry(ctx context.Context, runID, actor string, cmd Command, ta
 		if err := retryable(t); err != nil {
 			return t, nil, err
 		}
+		if err := r.retryNeedsRoom(t); err != nil {
+			return t, nil, err
+		}
 		return t, e.retryTask(r, t), nil
 	}, nil)
 }
@@ -540,6 +548,9 @@ func (e *Engine) Accept(ctx context.Context, runID, actor string, cmd Command, t
 			return nil, nil, ErrTaskNotFound
 		}
 		if err := acceptable(t); err != nil {
+			return t, nil, err
+		}
+		if err := r.retryNeedsRoom(t); err != nil {
 			return t, nil, err
 		}
 		events, err := e.acceptTask(r, t, actor)

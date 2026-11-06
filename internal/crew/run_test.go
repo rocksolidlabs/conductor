@@ -64,7 +64,9 @@ type fakeLauncher struct {
 	workingTitle *regexp.Regexp
 	titleSettle  time.Duration
 	// pause is every session's pause before an Enter; 5 ms when zero.
-	pause time.Duration
+	// pauses is a session's own, by its name, in its place.
+	pause  time.Duration
+	pauses map[string]time.Duration
 	// inputWait is every session's Options.InputWait; the default when zero.
 	inputWait time.Duration
 	// ended ends the engine's runs and its processes, once, at the first
@@ -135,6 +137,7 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 	f.mu.Lock()
 	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume, maps.Clone(spec.Inject), slices.Clone(spec.Allow), spec.AgentSHA256, string(spec.Where)})
 	err, block := f.fail[name], f.block[name]
+	pause := cmp.Or(f.pauses[name], f.pause, 5*time.Millisecond)
 	f.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -146,7 +149,7 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 	p := sessiontest.NewFakeProc()
 	info := session.Info{ID: session.NewID(), Name: name, AgentID: spec.AgentID, Cwd: spec.Cwd, Crew: &ref, Cols: 80, Rows: 24}
 	l := session.NewLocal(info, p, session.Options{Log: quietLog, OnActivity: f.activity, OnChange: f.change,
-		SubmitPause: cmp.Or(f.pause, 5*time.Millisecond), TrustPattern: f.trust, Questions: f.questions, InputWait: f.inputWait,
+		SubmitPause: pause, TrustPattern: f.trust, Questions: f.questions, InputWait: f.inputWait,
 		WorkingTitle: f.workingTitle, TitleSettle: f.titleSettle})
 	f.mu.Lock()
 	f.procs[name], f.locals[name], f.byID[info.ID] = p, l, l

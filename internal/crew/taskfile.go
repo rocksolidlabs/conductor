@@ -68,6 +68,10 @@ type TaskFile struct {
 	// Checkpoint is where the task's last attempt got to (checkpoints.go),
 	// when one was saved: what is done, what remains, notes, its commit.
 	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
+	// Decisions are the task's decisions in its run chain, asked by its
+	// attempts or holding it (decisions_taskfile.go): absent with none, so
+	// a task file without is what it was before decisions existed.
+	Decisions []TaskDecision `json:"decisions,omitempty"`
 	// More names the file that has what was cut to keep the task files
 	// within their bound (taskMoreFile), and Cut says what: context blocks,
 	// the inputs' summaries, the checkpoint, findings, the review's summary.
@@ -103,13 +107,14 @@ const taskMoreFile = "task-more.json"
 // was cut, and in its check the failed check's identity with whichever of
 // its tail, changed paths and argv were cut.
 type TaskMore struct {
-	Context       []TaskContext `json:"context,omitempty"`
-	Inputs        []TaskInput   `json:"inputs,omitempty"`
-	Checkpoint    *Checkpoint   `json:"checkpoint,omitempty"`
-	RepairSummary string        `json:"repairSummary,omitempty"`
-	Findings      []Finding     `json:"findings,omitempty"`
-	Checks        []Check       `json:"checks,omitempty"`
-	Previous      *TaskPrevious `json:"previous,omitempty"`
+	Decisions     []TaskDecision `json:"decisions,omitempty"`
+	Context       []TaskContext  `json:"context,omitempty"`
+	Inputs        []TaskInput    `json:"inputs,omitempty"`
+	Checkpoint    *Checkpoint    `json:"checkpoint,omitempty"`
+	RepairSummary string         `json:"repairSummary,omitempty"`
+	Findings      []Finding      `json:"findings,omitempty"`
+	Checks        []Check        `json:"checks,omitempty"`
+	Previous      *TaskPrevious  `json:"previous,omitempty"`
 }
 
 // TaskContext is one block of context a context provider gave an attempt:
@@ -223,6 +228,7 @@ func (e *Engine) taskFile(ctx context.Context, r *run, a *attempt, tr *tree, blo
 		f.Manifest = tr.task()
 	}
 	f.Context = blocks
+	f.Decisions = slices.Clone(a.decisions)
 	if rp := r.pkg; rp != nil {
 		p := rp.p
 		f.Ticket = &TaskTicket{Key: p.Ticket.Key, Rev: p.Ticket.Rev, Plan: p.Plan.ID, PlanN: p.Plan.N, Digest: rp.digest, Files: packageFilePaths(p)}
@@ -331,7 +337,7 @@ func (t *task) unusableBefore(a *attempt) *unusable {
 // after every cut is an error, never written.
 func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
 	// What is cut is cut from copies: the caller's slices stay as they are.
-	f.Inputs, f.Checks, f.Context = slices.Clone(f.Inputs), slices.Clone(f.Checks), slices.Clone(f.Context)
+	f.Inputs, f.Checks, f.Context, f.Decisions = slices.Clone(f.Inputs), slices.Clone(f.Checks), slices.Clone(f.Context), slices.Clone(f.Decisions)
 	if f.Repair != nil {
 		rp := *f.Repair
 		rp.Findings = slices.Clone(rp.Findings)
@@ -369,6 +375,16 @@ func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
 		return f.Previous.Check
 	}
 	cuts := []func() bool{
+		func() bool {
+			// The decisions first, whole: each is the ledger's, read again
+			// in task-more.json.
+			if len(f.Decisions) == 0 {
+				return false
+			}
+			m.Decisions, f.Decisions = f.Decisions, nil
+			f.Cut = append(f.Cut, fmt.Sprintf("the %d decisions", len(m.Decisions)))
+			return true
+		},
 		func() bool {
 			// A provider's view goes before anything of the task's own.
 			n := len(f.Context)
@@ -619,6 +635,7 @@ func taskMarkdown(f TaskFile) string {
 		}
 		b.WriteString("\n")
 	}
+	writeDecisions(&b, f.Decisions)
 	writeContext(&b, f.Context)
 	if len(f.Checks) == 0 && slices.ContainsFunc(f.Cut, func(s string) bool { return strings.HasSuffix(s, "checks' commands") }) {
 		b.WriteString("## Checks\n\nAfter you submit, Conductor runs checks in a fresh checkout of your result commit (their commands are in the file named under \"Cut to fit\"). Each must exit 0 without changing tracked files.\n\n")

@@ -489,9 +489,11 @@ func TestAResultWhileADecisionWaitsIsRefused(t *testing.T) {
 	e, fl, ld := decisionEngine(t)
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
 	b, _, p := attemptOn(t, e, fl, run.ID, "build")
-	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
+	// Committed before the ask: an approval of HEAD is superseded by a
+	// commit after it (S4).
 	writeFile(t, filepath.Join(b.Attempt.Worktree, "built.txt"), "b\n")
 	commitAll(t, b.Attempt.Worktree, "built")
+	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
 	var de *DecisionError
 	if _, err := e.SubmitResult(t.Context(), b.Attempt.SessionID, Result{Summary: "built"}); !errors.As(err, &de) || de.Code != CodeDecisionOpen || !strings.Contains(de.Words, d.ID+" is not answered yet") {
 		t.Fatalf("a result while %s is open: %v", d.ID, err)

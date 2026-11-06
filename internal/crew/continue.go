@@ -44,6 +44,10 @@ type Loaded struct {
 	Prerequisites []ledger.PrerequisiteRow
 	Imported      map[string]ledger.AttemptRow
 	FailedChecks  []ledger.CheckRow
+	// Holds are its decisions' holds of its tasks, active and released, and
+	// HeldDecisions the decisions of the active ones (decisions_continue.go).
+	Holds         []ledger.HoldRow
+	HeldDecisions map[int64]ledger.DecisionRow
 }
 
 // LoadImports reads into from.Imported the attempt rows of the results its
@@ -146,6 +150,10 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 	}
 	h, err := e.readHistory(ctx, from)
 	if err != nil {
+		undo()
+		return nil, err
+	}
+	if h.dec, err = e.readDecisionHistory(ctx, from); err != nil {
 		undo()
 		return nil, err
 	}
@@ -277,6 +285,9 @@ type history struct {
 	// failed is the receipt that failed each task's last attempt, when it
 	// failed at a check or a verify step, from the run that holds it.
 	failed map[string]*failedCheck
+	// dec is what the continuation takes of the chain's decisions
+	// (decisions_continue.go).
+	dec decisionHistory
 }
 
 // uncountedRow reports whether an attempt's row is one not counted: its
@@ -497,6 +508,7 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h history, old *run) error {
 	rows, last, refs, refOf := h.rows, h.last, h.refs, h.refOf
 	var imported, again, uncertain, held int
+	var answered []*decision
 	err := e.transactFirst(ctx, r, func() tx {
 		r.base, r.paused, r.pausedWhy, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.PausedWhy, from.Run.ID
 		r.markRun()
@@ -612,9 +624,12 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 			}
 			r.markTask(t)
 		}
+		// The decisions of the run continued, with their holds, before
+		// anything is readied on them (decisions_continue.go).
+		moveDecisions := e.continueDecisions(r, from, h, &answered)
 		r.ready()
 		e.settleRun(r)
-		r.note(session.ActivityStatus, "continues %s: %d results kept, %d verified again, %d waiting for a decision, %d messages carried", from.Run.ID, imported, again, uncertain, len(r.messages))
+		r.note(session.ActivityStatus, "continues %s: %d results kept, %d verified again, %d uncertain launches waiting for a retry, %d messages carried", from.Run.ID, imported, again, uncertain, len(r.messages))
 		w := ev("run.continued", map[string]any{"from": from.Run.ID, "base": r.base, "imported": imported, "reverified": again, "uncertain": uncertain, "messages": len(r.messages), "held": held})
 		w.more = func(ltx LedgerTx) error {
 			if err := ltx.Continued(from.Run.ID); err != nil {
@@ -627,7 +642,7 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 					return err
 				}
 			}
-			return nil
+			return moveDecisions(ltx)
 		}
 		return w
 	}, giveUp)
@@ -658,6 +673,9 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 		old.touch()
 		e.mu.Unlock()
 	}
+	// The answered decisions moved are applied now, each in its own
+	// transaction (O6).
+	e.readAnswers(ctx, r, answered)
 	e.pumpLocked(r)
 	return nil
 }
@@ -842,6 +860,9 @@ func Recovered(rec Run, from Loaded) Run {
 		t := &rec.Tasks[i]
 		row, ok := rows[t.ID]
 		taskStateOfRow(t, row, ok, from.Attempts, from.Imported)
+		// The decisions that hold it, as the ledger has its holds: active
+		// rows under this run only (I16).
+		t.Holds = recoveredHolds(from, t.ID)
 	}
 	now := time.Now().UTC()
 	for i := range rec.Members {

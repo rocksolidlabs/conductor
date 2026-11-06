@@ -464,6 +464,14 @@ type Engine struct {
 	// to take the next decision answer (nextAnswer): a test queues two
 	// answers there before either is typed.
 	beforeAnswer func(member string)
+	// beforeTyping, when set, runs as a decision's answer is about to be
+	// submitted to its session: a test holds the line there while its
+	// decision is superseded.
+	beforeTyping func(n int64)
+	// tryAsk, when set, asks a decision's question in place of the
+	// session's TryAskDecision: a test refuses it as the session's rate
+	// limit does.
+	tryAsk func(l *session.Local, id, question string) (string, error)
 }
 
 // sessionMember is the member a session is, and its run.
@@ -501,8 +509,10 @@ type run struct {
 	revision  int64
 	crewJSON  string // the crew as launched, for the ledger's run row
 	// decisions are the run's open and answered decisions, in the order
-	// they opened (decisions.go), under e.mu.
+	// they opened (decisions.go), and dec the rest of what it keeps of them
+	// (decisions_wait.go), under e.mu.
 	decisions []*decision
+	dec       runDecisions
 	// created says the run's row is in the ledger: its first transaction
 	// committed. Until then only a change that may be the run's first (its
 	// launch's, its continuation's, its stop's: transactFirst) is written,
@@ -1650,6 +1660,13 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 	r, m := sm.r, sm.m
 	m.poke()
 	isHandoff := entry.Type == session.ActivityHandoff
+	if !isHandoff && entry.Type == session.ActivityAttention && state == session.AttentionWorking && sm.a != nil {
+		// Its agent works again: an attempt that waits on a decision is
+		// not given up until its next done (decisions_wait.go: park).
+		e.mu.Lock()
+		sm.a.turnEnded = false
+		e.mu.Unlock()
+	}
 	if !isHandoff && entry.Type == session.ActivityAttention && (state == session.AttentionWorking || state == session.AttentionDone) && sm.a != nil {
 		// A blocker the attempt reported is cleared once it works on, or
 		// says it is done (checkpoints.go).
