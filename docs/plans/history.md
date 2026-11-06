@@ -1874,7 +1874,9 @@ once here.
   its handle where the system names one) and only from the launch's
   repository, by the file system's identity of its common directory,
   which the launch holds open until the end commit is read (or none is to
-  be read) where the system gives a removed directory's identity to the
+  be read: an abandonment, a lost end, the record removed by `Forget`,
+  `ForgetAll` or `Prune`, its delete failed or not, the journal closed)
+  where the system gives a removed directory's identity to the
   next one made (Linux's inode numbers): a repository made again at the
   launch's path never lends its commit. A session removed from the
   registry before the writer reads it (its folder closed with it) gets

@@ -1461,6 +1461,55 @@ func TestAFailedDeleteKeepsTheRecord(t *testing.T) {
 	}
 }
 
+// Every removal tells Removed of each record it took out of memory, its
+// delete failed or not (Forget, ForgetAll, Prune), and of nothing else: a
+// live record ForgetAll keeps is not told.
+func TestARemovalTellsRemoved(t *testing.T) {
+	var mu sync.Mutex
+	var told []string
+	took := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := told
+		told = nil
+		return out
+	}
+	j, _ := newJournal(t, Options{Removed: func(id string) {
+		mu.Lock()
+		told = append(told, id)
+		mu.Unlock()
+	}})
+	begin(t, j, serverRecord(sid(9)))
+	endedRecords(t, j, 1, 4)
+	if err := j.Forget(sid(1)); err != nil {
+		t.Fatal(err)
+	}
+	if got := took(); !slices.Equal(got, []string{sid(1)}) {
+		t.Fatalf("Forget told %v", got)
+	}
+	beforeDelete = func(string) error { return errors.New("a disk that did not answer") }
+	t.Cleanup(func() { beforeDelete = nil })
+	if err := j.Forget(sid(2)); err == nil {
+		t.Fatal("a forget whose delete failed answered nil")
+	}
+	if got := took(); !slices.Equal(got, []string{sid(2)}) {
+		t.Fatalf("a failed Forget told %v", got)
+	}
+	beforeDelete = nil
+	maxRecords = 2
+	t.Cleanup(func() { maxRecords = MaxRecords })
+	j.Prune()
+	if got := took(); !slices.Equal(got, []string{sid(2)}) {
+		t.Fatalf("Prune told %v", got)
+	}
+	if _, _, err := j.ForgetAll(); err != nil {
+		t.Fatal(err)
+	}
+	if got := took(); !slices.Equal(got, []string{sid(3), sid(4)}) {
+		t.Fatalf("ForgetAll told %v (the live record kept)", got)
+	}
+}
+
 // A journal that does not write answers its list from the files, reading
 // a file again only when its size or time changed: a file changed behind
 // its back with both kept is not read again, one changed is, one removed

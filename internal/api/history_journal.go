@@ -104,6 +104,7 @@ func (s *Server) openSessionRecords(st *store.Store) *journal.Journal {
 		Log:       s.log,
 		EndCommit: s.recordEndCommit,
 		Denied:    s.recordDenied,
+		Removed:   s.dropRecordRepo,
 	})
 	if err != nil {
 		s.log.Error("the session records could not be opened; sessions are not recorded", "err", err)
@@ -153,8 +154,8 @@ func (s *Server) closeSessionRecords(final bool) {
 	clear(s.recCur)
 	s.recMu.Unlock()
 	j.Close()
-	// What no end commit read let go: a record forgotten before its read,
-	// one Close gave up on.
+	// What no end commit read let go: one Close gave up on (a record
+	// removed before its read let its repository go then, Removed).
 	s.recordRepos.Range(func(id, _ any) bool {
 		s.dropRecordRepo(id.(string))
 		return true
@@ -239,7 +240,9 @@ func (r *launchRepo) close() {
 }
 
 // dropRecordRepo lets id's launch repository go: its end commit read, or
-// none to be read (an abandonment, a lost end, the journal closed).
+// none to be read (an abandonment, a lost end, the record removed by
+// Forget, ForgetAll or Prune whether or not its delete succeeded, the
+// journal's Removed, the journal closed).
 func (s *Server) dropRecordRepo(id string) {
 	if v, ok := s.recordRepos.LoadAndDelete(id); ok {
 		v.(*launchRepo).close()

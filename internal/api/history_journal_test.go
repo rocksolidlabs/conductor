@@ -743,6 +743,69 @@ func TestTheEndCommitIsTheLaunchRepositorys(t *testing.T) {
 	})
 }
 
+// A record removed before its end commit is read lets its launch
+// repository go at once, while the server runs on: the writer held in
+// one session's end-commit read, another session ends and its record is
+// forgotten; its repository's directory is closed then, not at the
+// shutdown. The held read then ends with its own commit.
+func TestARemovedRecordLetsItsRepositoryGo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	t.Setenv("HOME", t.TempDir())
+	e := newTestEnv(t, nil)
+	var armed atomic.Bool
+	reached, release := make(chan struct{}), make(chan struct{})
+	var held, let sync.Once
+	letGo := func() { let.Do(func() { close(release) }) }
+	t.Cleanup(letGo)
+	read := e.srv.readRevision
+	e.srv.readRevision = func(ctx context.Context, dir string) (gitcli.Revision, error) {
+		if armed.Load() {
+			first := false
+			held.Do(func() { first = true })
+			if first {
+				close(reached)
+				<-release
+			}
+		}
+		return read(ctx, dir)
+	}
+	wa, wb := filepath.Join(e.root, "held"), filepath.Join(e.root, "forgotten")
+	repoAt(t, wa, "first")
+	repoAt(t, wb, "first")
+	a, b := sessionIn(t, e, wa), sessionIn(t, e, wb)
+	v, ok := e.srv.recordRepos.Load(b)
+	if !ok {
+		t.Fatal("the launch kept no repository")
+	}
+	repoB := v.(*launchRepo)
+	head := commitAt(t, wa, "during the session")
+	armed.Store(true)
+	e.stopAndWait(a)
+	<-reached // the writer reads a's end commit, and waits
+	e.stopAndWait(b)
+	until(t, "b's end in its record", func() bool {
+		r, _, err := e.srv.sessionRecords.Get(b)
+		return err == nil && !r.EndedAt.IsZero()
+	})
+	if resp, out := e.do("DELETE", "/api/history/sessions/"+b, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("forget b: %d %v", resp.StatusCode, out)
+	}
+	if _, ok := e.srv.recordRepos.Load(b); ok {
+		t.Fatal("the forgotten record's repository is still kept")
+	}
+	if repoB.held != nil {
+		if _, err := repoB.held.Stat(); !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("the forgotten record's repository is still open: %v", err)
+		}
+	}
+	letGo()
+	if r := endedRecord(t, e, a); r.End != head {
+		t.Fatalf("the held read's end commit %q, want %q", r.End, head)
+	}
+}
+
 // stubbornProc is a process whose stop fails: it runs on until it ends
 // by itself (End).
 type stubbornProc struct{ *sessiontest.FakeProc }

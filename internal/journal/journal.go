@@ -126,6 +126,13 @@ type Options struct {
 	// session's files are judged by: such a file is never written. Called
 	// on the writer's goroutine.
 	Denied func(path string) bool
+	// Removed is told the id of each record a removal (Forget, ForgetAll,
+	// Prune) took out of memory, whether its file's delete then succeeded
+	// or not: no end commit is asked of that record from then on (a read
+	// already begun aside), so what the server keeps for that read it lets
+	// go. Called by the removal with wmu held and no other lock of the
+	// journal's; it must not call the journal.
+	Removed func(id string)
 }
 
 // Journal is the session records, opened by Open. Every method is safe
@@ -1565,7 +1572,8 @@ func (j *Journal) choose(id string) {
 // forgetLocked deletes the file of the record id, which the caller chose
 // (choose). A file not deleted is put back from the file with no instance
 // (restoreLocked): nothing that its instance held or that a hook of it
-// brings is written. The caller holds wmu.
+// brings is written, and no end commit is read for it. Either way Removed
+// is told. The caller holds wmu.
 func (j *Journal) forgetLocked(id string) error {
 	err := j.remove(id)
 	j.mu.Lock()
@@ -1573,6 +1581,9 @@ func (j *Journal) forgetLocked(id string) error {
 	j.mu.Unlock()
 	if err != nil {
 		j.restoreLocked(id)
+	}
+	if j.o.Removed != nil {
+		j.o.Removed(id)
 	}
 	return err
 }
