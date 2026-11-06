@@ -1637,11 +1637,12 @@ Brakeman is Conductor's sidekick agent: an agent of your own choosing, on your
 own agent subscription, that Yardmaster runs for bounded turns to read what the
 crews, the runs and Dispatch hold, explain it, and draft and propose what you
 may then do. It observes, explains, drafts and proposes; nothing it writes
-becomes work until a person acts, and it answers no question, approves nothing
-and schedules nothing. Each thing you ask is a **request**, each request one
-**turn** (a fresh session of the agent, run as an ordinary run you can watch
-and stop), and each turn hands back one **brief**. It is off until you turn it
-on, and a switchyard has none (see `docs/protocol.md`, Brakeman, and
+becomes work until a person acts, unless you grant it an operation to run
+itself (below), and it answers no question, approves nothing and schedules
+nothing. Each thing you ask is a **request**, each request one **turn** (a
+fresh session of the agent, run as an ordinary run you can watch and stop),
+and each turn hands back one **brief**. It is off until you turn it on, and a
+switchyard has none (see `docs/protocol.md`, Brakeman, and
 `docs/architecture.md`, Brakeman).
 
 **Settings → Brakeman.** The agent (Claude Code or Codex today: an agent whose
@@ -1653,8 +1654,9 @@ agent asks before each one and the turn waits on you in Needs you); what it may
 see (runs, check logs, Dispatch, sessions, touched files, and terminal
 screens, off until you turn them on); its scope (all of it, or chosen
 projects, repositories, crews, runs and sessions); whether it may draft and
-propose; and its budget (15 minutes and 300 reads a turn, 40 turns a day by
-default). A turn always runs in the agent's own read-only mode and never with
+propose; what it may run (below); whether it wakes on events (below); and
+its budget (15 minutes and 300 reads a turn, 40 turns and 240 minutes a day
+by default). A turn always runs in the agent's own read-only mode and never with
 yolo. Under Codex, Settings says what that mode does not hold: Codex 0.163.0's
 read-only sandbox leaves your own MCP servers (one yes away from writing) and
 your exec-policy allow rules (a matching command runs outside it without
@@ -1689,6 +1691,32 @@ or comment on a ticket. A brief is never kept with a claim you cannot follow:
 the server refuses one whose evidence names nothing or lies outside what
 Brakeman may see.
 
+**What it may run.** Settings' "What it may run" grants Brakeman operations
+from a closed list, each said in words: **Launch an approved plan** (a managed
+run from a ticket's plan revision you approved, while the approval holds) and
+**Prepare a follow-up** (a plan revision based on the approved one, which you
+then approve or not). **Request a repair** and **Route a decision** are listed
+as not in this build: nothing serves them yet. A granted operation goes to
+that operation's own route, which checks the grant (as the turn began and
+now), what Brakeman may see, its scope and the target's state, and leaves a
+receipt; the brief then shows the proposal as "Brakeman did this" with its
+receipt, and the run page says who launched the run. No grant approves,
+answers, accepts or closes anything, or changes these settings; reading gives
+no grant and a grant gives no read.
+
+**In the background.** With **Wake on events** on, Brakeman wakes by itself
+when a task fails with proof, a question has waited past its time (15 minutes
+by default), a run ends or pauses, a ticket is made ready, you ask, or at the
+briefing times you set (`HH:MM` in the server's zone, while it runs). It
+gathers what wakes it for a window (120 s) into one turn, then cools down (30
+minutes) before the next, and stops with words when the day's turns or
+minutes are spent. Between turns no process runs and no model is polled, and
+a restart carries on from Conductor's records (a batch that was gathering
+fires once). A background turn's question is listed in Needs you and
+notifies no one. The Brakeman page shows the role's state (an unavailable one
+says why and what tries again), Pause and Resume, the notes you keep from a
+brief's facts (**Keep as a note**, given to every turn), and its log of wakes.
+
 **From a shell**, with the workbench token (`--server`, `--token` and
 `--insecure` as `conductor dispatch` takes them):
 
@@ -1697,12 +1725,14 @@ conductor brakeman ask briefing --since 18:00        # or explain --subject run:
 conductor brakeman status                             # on or off, the turn in progress, the queue, today's turns
 conductor brakeman list                               # the requests, newest first
 conductor brakeman show br-12                         # a request whole, with its brief
+conductor brakeman role on|off|pause|resume|status    # the background role
 conductor guide [--section operations] [--json]       # what this server says the caller may do here
 ```
 
 In a turn's session the agent uses the MCP tools `brakeman_request`, `observe`
 and `brief_submit`, or `conductor brakeman request|observe|brief` with its
-session's token; no other session sees them. Any agent in a Conductor session
+session's token, and, in a turn granted an operation, `act` or `conductor
+brakeman act`; no other session sees them. Any agent in a Conductor session
 can call the MCP tool `guide` (or `conductor guide`) to learn what this build
 lets it do there, its limits and its receipts, from the running server; its
 `briefs` section, and `brief_submit`'s input schema, give a brief's item kinds
