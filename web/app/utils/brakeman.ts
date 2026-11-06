@@ -894,6 +894,10 @@ export interface BrakemanRole {
   state: string
   why?: string
   retryAt?: string
+  /** What made it unavailable (start, budget, off, stuck), which says what else tries again. */
+  reason?: string
+  /** The turns in a row whose agent did not start. */
+  tries?: number
   last?: number
   open?: RoleBatch
   fired?: RoleBatch
@@ -1083,6 +1087,41 @@ export function actShown(a: BrakemanAct, launch?: ActLaunch | null): string {
   if (!actReceiptRef(a)) return a.state
   if (!launch || launch.state === 'pending') return 'pending'
   return launch.state === 'started' ? 'done' : 'failed'
+}
+
+/** The launch an act's receipt names, by its id ("" for an act that is not a launch's done act): the key its launch is kept under. */
+export function actLaunchId(a: BrakemanAct): string {
+  const ref = actReceiptRef(a)
+  return ref ? ref.slice('launch:'.length) : ''
+}
+
+/**
+ * What a proposal, or an act's card, shows of the act, drawn afresh each time from the request's act and the launch its receipt names
+ * as last read (kept by the launch's id, never by the act's object): a re-read of the request hands the same act as a new object, and
+ * it shows what it showed, a launch that failed still failed. "" with no act.
+ */
+export function actShownFrom(a: BrakemanAct | undefined | null, launches: Readonly<Record<string, ActLaunch>>): string {
+  if (!a) return ''
+  const id = actLaunchId(a)
+  return actShown(a, id ? (launches[id] ?? null) : null)
+}
+
+/** Whether a proposal offers its own control: not while Brakeman's act of it is done or under way (a launch that failed is offered again). */
+export function proposalOffered(shown: string): boolean {
+  return shown !== 'done' && shown !== 'pending'
+}
+
+/** The launches the page keeps read at most: the oldest read is dropped past it. */
+export const MAX_KEPT_LAUNCHES = 200
+
+/** The launches kept with `id`'s read `l` added (or replaced), at most MAX_KEPT_LAUNCHES of them, the oldest dropped first. */
+export function keepLaunch<L extends ActLaunch>(kept: Readonly<Record<string, L>>, id: string, l: L): Record<string, L> {
+  const out: Record<string, L> = { ...kept }
+  delete out[id]
+  out[id] = l
+  const keys = Object.keys(out)
+  for (const k of keys.slice(0, Math.max(0, keys.length - MAX_KEPT_LAUNCHES))) delete out[k]
+  return out
 }
 
 /**

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { BrakemanRequest, BriefItem, RefResolution } from '~/utils/brakeman'
-import { actFor, actShown, readsWords, refRoute } from '~/utils/brakeman'
+import { actFor, actShownFrom, proposalOffered, readsWords, refRoute } from '~/utils/brakeman'
 import { isStale, proposalArgs, proposalControl, proposalSends, staleWords } from '~/utils/brakemanCards'
 import { commandBody, mintCommandId, sendCommand } from '~/utils/tasks'
 
@@ -34,10 +34,12 @@ const control = computed(() => proposalControl(props.item, ops.value))
 /** The act Brakeman ran for this proposal, from the request as the page holds it now (its events fold the acts' outcomes in). */
 const req = computed(() => (props.request ? (bk.requests.value.find((r) => r.id === props.request!.id) ?? props.request) : null))
 const act = computed(() => actFor(props.item, req.value?.acts))
-/** What the act's card shows of it (BrakemanActCard: a launch's by its launch, unread until the card has read it), "" with no act. */
-const cardShown = ref<string | null>(null)
-watch(act, () => (cardShown.value = null))
-const shown = computed(() => (act.value ? (cardShown.value ?? actShown(act.value, null)) : ''))
+/**
+ * What the act's card shows of it, "" with no act: drawn afresh from the act and the launch its receipt names as the page last read it
+ * (useActLaunches, which the card reads into), the same as the card draws it, so a re-read of the request keeps it.
+ */
+const launches = useActLaunches()
+const shown = computed(() => actShownFrom(act.value, launches.value))
 /** What a ticket's operation sends, every field of it, shown on the card and in the dialog before it is sent. */
 const sends = computed(() => (control.value.kind === 'button' && control.value.target === 'ticket' ? proposalSends(props.item.args) : []))
 const to = computed(() => refRoute(props.item.target))
@@ -111,10 +113,10 @@ function press() {
         <dd class="whitespace-pre-wrap break-words font-mono" :data-proposal-arg="a.field">{{ a.value }}</dd>
       </template>
     </dl>
-    <BrakemanActCard v-if="act" :act="act" @shown="(st) => (cardShown = st)" />
+    <BrakemanActCard v-if="act" :act="act" />
     <!-- Done, or under way: Brakeman's act is the proposal's outcome, and no control sends it again. A launch that failed started
          nothing: the proposal's control is offered again. -->
-    <template v-if="shown !== 'done' && shown !== 'pending'">
+    <template v-if="proposalOffered(shown)">
       <div v-if="control.kind === 'button'" class="flex flex-wrap items-center gap-2">
         <UButton :label="control.label" size="sm" color="neutral" variant="outline" :loading="busy" data-proposal-button @click="press" />
         <span class="text-xs text-muted">Its route refuses it if what it acts on has moved since Brakeman read it.</span>

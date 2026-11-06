@@ -250,9 +250,9 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
 
   // A launch is done by its launch, not by its receipt, which Dispatch keeps done before the run is started: with the launch's route
   // answering it pending, then failed (its answer rewritten in this page's reads alone), the brief says it is under way, then not done
-  // with the launch's words, and links no run either time. The brief reads a pending launch again by itself. Two waits of 30 s and
-  // eight steps.
-  budget(2 * 30_000 + 8 * STEP_MS)
+  // with the launch's words, and links no run either time. The brief reads a pending launch again by itself. Three waits of 30 s and
+  // eleven steps.
+  budget(3 * 30_000 + 11 * STEP_MS)
   let shownState = 'pending'
   const launchRoute = `**/api/dispatch/launches/${launch.id}`
   await page.route(launchRoute, async (route) => {
@@ -260,6 +260,21 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
     const body = (await r.json()) as { launch: Launch & { why?: string } }
     body.launch.state = shownState
     if (shownState === 'failed') body.launch.why = 'the agent could not be started'
+    await route.fulfill({ response: r, json: body })
+  })
+  // The page's event stream restarts again and again, each restart a snapshot after which the page reads its requests again (as the
+  // stream's restart does after a dropped connection): every read hands the request's act as a new object. Once `reread` is set, the
+  // reads name the request's agent version "re-read", which the brief's provenance line draws: the moment a read was taken in, read off
+  // the page rather than guessed.
+  let reread = false
+  const eventsRoute = '**/api/events'
+  await page.route(eventsRoute, (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'event: snapshot\ndata: []\n\n' }))
+  const requestsRoute = (u: URL) => u.pathname.startsWith('/api/brakeman/requests')
+  await page.route(requestsRoute, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    const r = await route.fetch()
+    const body = (await r.json()) as { request?: Request & { agent?: { version?: string } }; requests?: Array<Request & { agent?: { version?: string } }> }
+    for (const q of [body.request, ...(body.requests ?? [])]) if (reread && q?.id === id && q.agent) q.agent.version = 're-read'
     await route.fulfill({ response: r, json: body })
   })
   await open(page, `/brakeman?request=${id}`)
@@ -274,7 +289,15 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
   await expect(p.locator('[data-proposal-did-run]')).toHaveCount(0)
   // A launch that failed started nothing: the proposal is offered again, as text with its page.
   await expect(p.locator('[data-proposal-text]')).toBeVisible()
+  // And it stays offered once the request is read again: the same act, a new object, still failed (#691's review).
+  reread = true
+  await expect(page.locator(`[data-brief="${id}"] [data-brief-provenance]`)).toContainText('version re-read', { timeout: 30_000 })
+  await expect(p).toHaveAttribute('data-proposal-act', 'failed')
+  await expect(p.locator('[data-proposal-did]')).toHaveAttribute('data-act-shown', 'failed')
+  await expect(p.locator('[data-proposal-text]')).toBeVisible()
   await page.unroute(launchRoute)
+  await page.unroute(eventsRoute)
+  await page.unroute(requestsRoute)
 })
 
 test("an act the brief names in no proposal shows apart with its receipt, and the act's words give the ref that cites it", async ({ page }) => {

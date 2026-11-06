@@ -44,6 +44,14 @@ describe('the role in words', () => {
     expect(retryWords({ state: 'unavailable', retryAt: '2026-11-06T06:00:00Z' }, now)).toMatch(/^It tries again at .+, or sooner on your next request, a save of its settings or the next briefing time\.$/)
   })
 
+  it('says what else tries again by the reason the role is unavailable', () => {
+    const at = '2026-11-06T06:00:00Z'
+    expect(retryWords({ state: 'unavailable', retryAt: at, reason: 'start' }, now)).toMatch(/^It tries again at .+, or sooner on its agent reading a request \(yours, once it is signed in or past its screen\) or another agent, model or account saved in its settings\.$/)
+    expect(retryWords({ state: 'unavailable', retryAt: at, reason: 'budget' }, now)).toMatch(/or sooner on your next request, a change of its budget or the next briefing time\.$/)
+    expect(retryWords({ state: 'unavailable', reason: 'off' })).toMatch(/^It tries again on your next request, turning it on in its settings or the next briefing time\./)
+    expect(retryWords({ state: 'unavailable', reason: 'stuck' })).toMatch(/^It tries again on your next request or the next briefing time, once the last run is stopped\./)
+  })
+
   it("says a log row's wake and what became of it", () => {
     expect(rowWords({ source: 'task_failed', subject: 'task:team-0a1b2c3d/build', at: '', batch: 'wb-1', request: 'br-2' })).toEqual({ what: 'A task failed: task build', fate: 'wb-1 → br-2' })
     expect(rowWords({ source: 'task_failed', subject: 'task:team-0a1b2c3d/lint', at: '', batch: 'wb-2' })).toEqual({ what: 'A task failed: task lint', fate: 'waiting in wb-2' })

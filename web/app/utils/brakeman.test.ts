@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actReceiptRef, actShown, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -556,6 +556,45 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
     expect(actShown(act({ operation: 'prepare_followup', receipt: 'fedcba9876543210' }), null)).toBe('done')
     expect(actShown(act({ state: 'refused' }), { state: 'started' })).toBe('refused')
     expect(actShown(act({ state: 'pending', receipt: undefined }), failed)).toBe('pending')
+  })
+
+  it("draws a proposal's act afresh from the act and its launch as kept by the launch's id, so a re-read of the same act changes nothing", () => {
+    const a = act({})
+    expect(actLaunchId(a)).toBe('0123456789abcdef')
+    expect(actLaunchId(act({ operation: 'prepare_followup', receipt: 'fedcba9876543210' }))).toBe('')
+    const failed = { '0123456789abcdef': { state: 'failed', why: 'the agent could not be started' } }
+    // The request read again hands the same act as a new object: it shows failed still, and the proposal is offered again.
+    expect(actShownFrom(a, failed)).toBe('failed')
+    expect(actShownFrom({ ...a }, failed)).toBe('failed')
+    expect(proposalOffered(actShownFrom(structuredClone(a), failed))).toBe(true)
+    // Under way (the launch unread or pending, an act's receipt not in): no second control.
+    for (const [x, kept] of [
+      [a, {}],
+      [a, { '0123456789abcdef': { state: 'pending' } }],
+      [act({ state: 'pending', receipt: undefined }), failed],
+    ] as const) {
+      expect(actShownFrom({ ...x }, kept)).toBe('pending')
+      expect(proposalOffered(actShownFrom({ ...x }, kept))).toBe(false)
+    }
+    // Done: done, with no control; another launch's read does not count for it.
+    expect(actShownFrom({ ...a }, { '0123456789abcdef': { state: 'started', runId: 'r-1' } })).toBe('done')
+    expect(proposalOffered('done')).toBe(false)
+    expect(actShownFrom(act({ receipt: 'fedcba9876543210' }), failed)).toBe('pending')
+    // Refused or never run: the proposal is offered; no act: "".
+    expect(proposalOffered(actShownFrom(act({ state: 'refused', receipt: undefined }), {}))).toBe(true)
+    expect(actShownFrom(undefined, failed)).toBe('')
+    expect(proposalOffered('')).toBe(true)
+  })
+
+  it('keeps at most MAX_KEPT_LAUNCHES launches, the latest read of each, the oldest dropped first', () => {
+    let kept: Record<string, { state: string }> = {}
+    for (let i = 0; i < MAX_KEPT_LAUNCHES + 5; i++) kept = keepLaunch(kept, `l${i}`, { state: 'pending' })
+    expect(Object.keys(kept)).toHaveLength(MAX_KEPT_LAUNCHES)
+    expect(kept.l0).toBeUndefined()
+    expect(kept.l5).toEqual({ state: 'pending' })
+    kept = keepLaunch(kept, 'l5', { state: 'failed' })
+    expect(kept.l5).toEqual({ state: 'failed' })
+    expect(Object.keys(kept).at(-1)).toBe('l5')
   })
 
   it('reads a launch again while it is pending, and after a failed read, until it has started or failed, and stops when not wanted', async () => {

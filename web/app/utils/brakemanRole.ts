@@ -67,10 +67,18 @@ export function roleWords(r: Pick<BrakemanRole, 'state' | 'why' | 'open' | 'requ
   return r.state
 }
 
+/** What else tries again for an unavailable role, by the reason it is (the server's crew.SaveEnds and Role.Started). */
+const RETRY_ASKED: Record<string, string> = {
+  start: 'its agent reading a request (yours, once it is signed in or past its screen) or another agent, model or account saved in its settings',
+  budget: 'your next request, a change of its budget or the next briefing time',
+  off: 'your next request, turning it on in its settings or the next briefing time',
+  stuck: 'your next request or the next briefing time, once the last run is stopped',
+}
+
 /** What tries again for an unavailable role, in words ("" for a role that is not). */
-export function retryWords(r: Pick<BrakemanRole, 'state' | 'retryAt'>, now = new Date()): string {
+export function retryWords(r: Pick<BrakemanRole, 'state' | 'retryAt' | 'reason'>, now = new Date()): string {
   if (r.state !== 'unavailable') return ''
-  const asked = 'your next request, a save of its settings or the next briefing time'
+  const asked = RETRY_ASKED[r.reason ?? ''] ?? 'your next request, a save of its settings or the next briefing time'
   return r.retryAt ? `It tries again at ${clockTime(r.retryAt, now)}, or sooner on ${asked}.` : `It tries again on ${asked}. Meanwhile the wakes wait in its next batch, and nothing else waits on it.`
 }
 
