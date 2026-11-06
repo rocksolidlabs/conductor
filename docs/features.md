@@ -4780,6 +4780,26 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   default passing the contract suite. With C1, the two clauses of the R0
   gate this stream owns are observed: a plain build registers nothing,
   and every default passes the contract suite.
+- **Three sidebar and crew page fixes (UIB2, #596, #592, #604,
+  2026-11-05).** The sidebar's list gives a row that re-rendered the focus
+  back only when the focus was lost, and never to a row behind an open
+  modal, so a dialog opened from a row keeps the focus and its Escape, and
+  a row's reply field keeps the focus and its keys, while the list changes
+  under it (`mayRefocusRow` in `utils/sidebar.ts`; #596, seen once in CI as
+  `rename.spec.ts` timing out). The crew page grows with its content
+  (`shrink-0`), so the unsaved-changes bar stays at the bottom of the
+  window at every scroll of a long crew and sits under the last field at
+  its end (#592). With an
+  update pending, where the sidebar's header row is narrower than at the
+  minimum width plus the update button (a container query at 11.5625 rem),
+  the mark steps aside so that the name keeps at least the width it has
+  there without the update; wider, nothing changes (#604). Tests: vitest of
+  `mayRefocusRow`; Playwright for each, the list's change and the lost
+  focus driven through the page (a row's focusin, a session launched) with
+  a dialog and with a reply being typed, the bar measured at the top,
+  middle and end of a scrolled crew, and the header's name measured with
+  and without the e2e bridge's update and at the minimum plus the update's
+  button; each failed with its fix taken out.
 - **A hosted session watches its agent's questions, and four UI fixes (UIB
   PR-1, PR #598: #293, #376, #327, #323, #359, 2026-11-04).** `conductor
   host` built its session with none of what the catalog says to watch on

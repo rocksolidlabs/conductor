@@ -94,3 +94,20 @@ export function pauseAction(r: Pick<BrakemanRole, 'state'> | undefined): 'pause'
   if (!r) return null
   return r.state === 'paused' ? 'resume' : 'pause'
 }
+
+/**
+ * Orders a page's reads of one thing that may overlap (on mount, on each of the role's events, after a control): each read takes a
+ * ticket as it begins, and its reply is taken only while no read began after it, so an older reply arriving last never draws over a
+ * newer one.
+ */
+export class ReadOrder {
+  private last = 0
+  /** A read begins: its ticket. */
+  begin(): number {
+    return ++this.last
+  }
+  /** Whether the read with the ticket is still the newest begun. */
+  current(ticket: number): boolean {
+    return ticket === this.last
+  }
+}

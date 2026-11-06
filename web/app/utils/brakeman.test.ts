@@ -82,10 +82,9 @@ describe('a ref, to its route and its label', () => {
     [`commit:${RUN}/${'a'.repeat(40)}`, `/runs/${RUN}`, 'commit aaaaaaaa'],
     [`file:${SESSION}//home/me/repo/main.go`, `/sessions/${SESSION}?tab=files&open=%2Fhome%2Fme%2Frepo%2Fmain.go`, 'main.go'],
     ['brief:br-7/2', '/brakeman?request=br-7#item-2', 'br-7, item 3'],
-    // DS2's records (PR-10): a plan revision on its ticket's page, a candidate on its run's Tasks view, a launch read from the API.
-    ['plan:CND-4/2', '/dispatch/CND/4', 'CND-4 plan r2'],
-    ['launch:0123456789abcdef', null, 'launch 01234567'],
-    [`candidate:${RUN}/build/3`, `/runs/${RUN}?view=tasks&task=build`, 'candidate build, attempt 3'],
+    ['plan:CND-4/2', '/dispatch/CND/4', 'plan revision 2 of CND-4'],
+    ['launch:00112233aabbccdd', null, 'launch 00112233aabbccdd'],
+    [`candidate:${RUN}/build/2`, `/runs/${RUN}?view=tasks&task=build`, 'candidate build, attempt 2'],
   ]
   it.each(cases)('%s', (ref, route, label) => {
     expect(parseRef(ref)).not.toBeNull()
@@ -153,7 +152,7 @@ describe('a ref, to its route and its label', () => {
   })
 
   it('takes no ref the server would refuse', () => {
-    for (const bad of ['plan:CND-4', 'plan:CND-4/0', 'plan:cnd-4/1', 'launch:0123', `candidate:${RUN}/build`, `candidate:${RUN}/build/0`, '', 'run', 'run:', 'run:Nope-0a1b2c3d', `task:${RUN}`, `attempt:${RUN}/build/0`, `attempt:${RUN}/build/01`, 'session:0123', 'ticket:cnd-4', `file:${SESSION}/relative`, `file:${SESSION}//a/../b`, 'brief:br-1/100', 'brief:br-0/1', `run:${RUN}\n`, 'nope:x', `run:${'a'.repeat(600)}-0a1b2c3d`]) {
+    for (const bad of ['', 'run', 'run:', 'run:Nope-0a1b2c3d', `task:${RUN}`, `attempt:${RUN}/build/0`, `attempt:${RUN}/build/01`, 'session:0123', 'ticket:cnd-4', `file:${SESSION}/relative`, `file:${SESSION}//a/../b`, 'brief:br-1/100', 'brief:br-0/1', 'plan:CND-4/0', 'plan:CND-4', 'launch:0011', `candidate:${RUN}/build`, `candidate:${RUN}/build/0`, `run:${RUN}\n`, 'nope:x', `run:${'a'.repeat(600)}-0a1b2c3d`]) {
       expect(parseRef(bad), bad).toBeNull()
     }
     expect(parseRef('op:a/b/c.1')).toEqual({ kind: 'op', actor: 'a/b', op: 'c.1' })

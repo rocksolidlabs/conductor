@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { ROLE_STATES, WAKE_SOURCES, batchCount, pauseAction, retryWords, roleWords, rowWords, sourceWords } from './brakemanRole'
+import { ROLE_STATES, ReadOrder, WAKE_SOURCES, batchCount, pauseAction, retryWords, roleWords, rowWords, sourceWords } from './brakemanRole'
 
 // The background role's words and the controls' choices (docs/plans/brakeman.md, PR-15), against internal/crew/role.go's names.
 
@@ -56,5 +56,36 @@ describe('the role in words', () => {
     expect(pauseAction(undefined)).toBe(null)
     expect(pauseAction({ state: 'cooling' })).toBe('pause')
     expect(pauseAction({ state: 'paused' })).toBe('resume')
+  })
+})
+
+describe("the role card's reads", () => {
+  it('take a reply only while no read began after it: an older reply arriving last is dropped', async () => {
+    const order = new ReadOrder()
+    let shown = ''
+    const deferred = () => {
+      let resolve!: (v: string) => void
+      const p = new Promise<string>((r) => (resolve = r))
+      return { p, resolve }
+    }
+    const read = async (reply: Promise<string>) => {
+      const ticket = order.begin()
+      const v = await reply
+      if (order.current(ticket)) shown = v
+    }
+    const older = deferred()
+    const newer = deferred()
+    const a = read(older.p)
+    const b = read(newer.p)
+    newer.resolve('paused')
+    await b
+    older.resolve('idle')
+    await a
+    expect(shown).toBe('paused')
+    const last = deferred()
+    const c = read(last.p)
+    last.resolve('idle')
+    await c
+    expect(shown).toBe('idle')
   })
 })

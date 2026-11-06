@@ -459,6 +459,18 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)
 		}
+		if s.brakeman != nil {
+			// A run's end reaches Brakeman's background role too: a legacy
+			// run's last member ending is told to OnEnd alone, never to
+			// OnRunChange (its session's change carries it).
+			recordEnd := s.runs.OnEnd
+			s.runs.OnEnd = func(r crew.Run) {
+				if recordEnd != nil {
+					recordEnd(r)
+				}
+				s.brakeman.runChanged(r.ID)
+			}
+		}
 		s.wireLaunches()
 		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned, s.ledgerRecovered)
 		if s.ledger == nil {

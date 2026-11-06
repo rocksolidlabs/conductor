@@ -3514,15 +3514,15 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 |---|---|
 | `GET /api/brakeman` | `{config, current, queue, turnsToday, minutesToday, role?, warnings?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns and 240 minutes a day, mode `invoked` with a window of 120 s, a cooldown of 30 minutes, a question threshold of 15 minutes and no briefing time; a configuration written before the background role reads back with those wake fields and minutes), the request holding the slot or `null`, the queued requests oldest first, the turns and the minutes charged to today, `role` the background role as `GET /api/brakeman/role` answers it without its log and notes, `warnings` as the configuration's save answers them; on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
 | `PUT /api/brakeman/config` | `{rev, config}` → `{config, warnings?}`, its `rev` bumped and `updatedAt` stamped; `config.permissions.act` the operations granted, from the closed list (What a turn may do); `warnings` the words Settings shows beside the agent chosen, for an agent whose read-only mode does not hold (Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules: Codex is taken, with that limit said); `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode); `503 shutting_down` once the server is shutting down (nothing saved, nothing cancelled); at most 64 KiB |
-| `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}` (a kind of `wake` is refused `400 invalid_request`: it is the background role's own); `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
+| `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}` (a kind of `wake`, or an `opId` beginning `wake-`, is refused `400 invalid_request`: they are the background role's own); `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
 | `GET /api/brakeman/requests?after=&limit=` | `{requests, next}`, newest first, at most 100 a page; `next` the id to ask after, `""` for none |
 | `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |
 | `GET /api/brakeman/requests/{id}/refs` | `{refs: [{ref, seen, now}]}`, each `{url?, state?, rev?, sha256?, at?}`: what the turn read of each ref of the brief (`state` `unobserved` for one it never read) and what it was as the brief was kept; `404 no_brief` before one; at most 4 MiB |
 | `POST /api/brakeman/requests/{id}/cancel` | `{opId}` → `{request}`; a closed request answers as it stands |
-| `POST /api/brakeman/requests/{id}/items/{i}/make` | `{opId, by?, edit?}` → `201 {request, made, ticket?: {key, url}, receipt?, crew?: {id, url}, plan?}`: a `draft_ticket/1` made a ticket through Dispatch's own create under the actor `admin` with `by` as the display name (its `blocks` become `blocks` relations once both ends are tickets, whichever is made first), a `draft_crew/1` a saved crew (never launched) carrying `origin: "brakeman:<request>/<item>/<op>"`, a `draft_plan/1` a proposed plan revision of its ticket through Dispatch's own propose route (`POST /api/dispatch/tickets/{key}/plans`, its replay, the crew, git and the store's checks) under the actor `admin` with `by` as the display name, `plan` the revision as the ticket's revisions list it and `made` carrying its `key` and `plan` (the revision's id): a revision proposed waits for the operator's approval (`POST /api/dispatch/plans/{id}/approve`, the operator's alone), never approved by the make, and its `basedOn` (a `plan:` ref of the same ticket) and `comments` (`comment:` refs of the same ticket) are sent by their ids, another ticket's `400 invalid_draft`; a refusal of the propose route (no such crew, one without tasks, a base that names no commit) settles the make refused; `edit` the draft as the person changed it, in the draft's own shape, else the draft as written. Its op id is derived (`bk` + 30 hex digits of a SHA-256 of the request, the item and the `opId`), so the backend answers a repeat once. The same `opId` again answers what it made (`200`), as it was made, whatever changed since (a crew's agent gone from the catalog); an
+| `POST /api/brakeman/requests/{id}/items/{i}/make` | `{opId, by?, edit?}` → `201 {request, made, ticket?: {key, url}, receipt?, crew?: {id, url}, plan?}`: a `draft_ticket/1` made a ticket through Dispatch's own create under the actor `admin` with `by` as the display name (its `blocks` become `blocks` relations once both ends are tickets, whichever is made first), a `draft_crew/1` a saved crew (never launched) carrying `origin: "brakeman:<request>/<item>/<op>"`, a `draft_plan/1` a proposed plan revision of its ticket through Dispatch's own propose route (`POST /api/dispatch/tickets/{key}/plans`, its replay, the crew, git and the store's checks) under the actor `admin` with `by` as the display name, `plan` the revision as the ticket's revisions list it and `made` carrying its `key` and `plan` (the revision's id): a revision proposed waits for the operator's approval (`POST /api/dispatch/plans/{id}/approve`, the operator's alone), never approved by the make, and its `basedOn` (a `plan:` ref of the same ticket) and `comments` (`comment:` refs of the same ticket) are sent by their ids, another ticket's `400 invalid_draft`; a refusal of the propose route (no such crew, one without tasks, a base that names no commit) settles the make refused; `edit` the draft as the person changed it, in the draft's own shape, else the draft as written. Its op id is derived (`bk` + 30 hex digits of a SHA-256 of the request, the item and the `opId`), so the backend answers a repeat once. The same `opId` again answers what it made (`200`), as it was made, whatever changed since (a crew's agent gone from the catalog), and asked while that make is still under way waits for it and answers its outcome, never running the backend beside it; an
 outcome's words are cut to the room its other fields leave in the entry's
 600 bytes, so recording an outcome is never refused and never leaves the
-claim pending; a new make is checked against the catalog now; `409 already_made` with `key` or `crew` for another `opId` once made; `409 make_pending` with the `opId` of a make under way; `409 op_conflict` for the same `opId` with other content; a refused make answers `409` with its receipt's words and may be made again with a new `opId`; `400 not_a_draft` for any other item, `400 invalid_draft` with `field`, `400 invalid_request` for a `by` past 60 bytes or holding a control character (Dispatch's display name); `404` for a request pruned before the make claimed it (no backend called); `503 brakeman_not_owner` on a server without Brakeman's owner lock; `503 shutting_down` once the server shuts down (a make under way then finishes before the owner lock goes, its outcome written by the next start); at most 4 MiB |
+claim pending; a new make is checked against the catalog now; `409 already_made` with `key` or `crew` for another `opId` once made; `409 make_pending` with the `opId` of a make under way; `409 op_conflict` for the same `opId` with other content; `409 make_superseded` (with `made`, the item's entry now) for the same `opId` asked again while its make was settled and the item claimed again under another `opId` or other content, nothing run for it; a refused make answers `409` with its receipt's words and may be made again with a new `opId`; `400 not_a_draft` for any other item, `400 invalid_draft` with `field`, `400 invalid_request` for a `by` past 60 bytes or holding a control character (Dispatch's display name); `404` for a request pruned before the make claimed it (no backend called); `503 brakeman_not_owner` on a server without Brakeman's owner lock; `503 shutting_down` once the server shuts down (a make under way then finishes before the owner lock goes, its outcome written by the next start); at most 4 MiB |
 
 The kinds and their subjects: `briefing` (none; `since`, else since the
 last complete briefing), `explain` (one `run:`, `task:`, `attempt:`,
@@ -3533,7 +3533,8 @@ note as the discussion), `propose_crew` (one `ticket:`), `handoff` (one
 (none) and `ask` (the note, up to 10 subjects). A note is Markdown of at
 most 16 KiB. The background role's requests are of kind `wake`, no
 subjects, naming their `batch` (`wb-<n>`), kept under the op id
-`wake-<batch>` (see The background role); a wake turn's brief holds a
+`wake-<batch>` (see The background role), a prefix a person's request
+may not take; a wake turn's brief holds a
 `fact/1` as a briefing's does.
 
 **The turn's routes**, its session's own token (`agentTokenOK`), for
@@ -3543,7 +3544,7 @@ that is not a turn's:
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}, batch?, notes?}}`: a wake request's `batch` as the role holds it (`{id, openedAt, wakes: [{source, subject?, count, first, last}], overflow?: {count, first, last}}`), the role's `notes` (`[{text, from?, at}]`) for every turn; the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together (`permissions.act` the operations both grant that this build serves, absent for none). The admin's token reads it too; read with the session's own, it marks the request read |
+| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}, batch?, notes?}}`: a wake request's `batch` as the role holds it (`{id, openedAt, wakes: [{source, subject?, count, first, last}], overflow?: {count, first, last}}`) with only the wakes whose subjects the turn's grant admits (the snapshot's and the configuration's scope and visibility together, as now; a subject that cannot be read now left out) and its `overflow` only under a grant that narrows neither the scope nor the runs', sessions' or Dispatch's visibility, the role's `notes` (`[{text, from?, at}]`) for every turn; the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together (`permissions.act` the operations both grant that this build serves, absent for none). The admin's token reads it too; read with the session's own, it marks the request read |
 | `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed. The `opId` is looked up first: the same `opId` and brief answer `200` with the request whatever its state now, another brief `409 brief_exists`; so does a submission that overlapped the one kept (both checked before either was kept). Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` (its path, a list's entry by its index: `items[1].alternatives[1].label`) and why (a field past its bound is refused, never cut; a brief with no item is refused, and a briefing's with no `fact/1`; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0; the why names what is taken beside what was sent: an unknown item kind with every kind, an unknown field with the fields its object takes, a value of another type with its field's type, a ref of no kind with the ref forms); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; all of it against the configuration as the brief is kept, a save meanwhile having it checked again (`409 stale_revision` when the configuration keeps changing); nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
 
 **What a turn reads.** A request whose bearer is a turn's session token
@@ -3578,7 +3579,10 @@ for none, or once the ticket's intent or a handed-over comment changed
 since it was approved), and `launches` the ticket's launches, newest
 first, at most 200, each `{ref, id, plan, runId?, state, why?, createdAt,
 createdBy, startedAt?, rev}` with its `launch:` ref and the `plan:` ref
-it launched, never its package. A run's candidates, for a turn, carry
+it launched, never its package. A deleted ticket's revisions and
+launches, which the route answers at the states its deletion left, carry
+`deleted: true`, `holds` `false`, and are noted `deleted` with no rev, as
+their `plan:` and `launch:` refs resolve. A run's candidates, for a turn, carry
 each candidate's `candidate:` ref (noted `standing` while it is its
 task's result, `withdrawn` once taken back, else its attempt's state, at
 the commit it submitted, a review's the commit it reviewed) and each
@@ -3765,7 +3769,9 @@ turn's first read of changes began, before it listed the parts (kept
 even when a read listed none): a part begun after that listing, absent
 from its answer and with no watermark, is read from no later than it.
 A brief's footprint counts every class its turn's answers used,
-an answer with no item a ref names (a page of projects) among them.
+an answer with no item a ref names (a page of projects) among them, and
+the classes of the wake batch its request gave it (each wake's by its
+subject's kind; an overflow's runs, sessions and Dispatch).
 
 **A brief**, schema `brakeman.brief/1`, at most 256 KiB as kept: `{schema,
 title, summary, uncertainty?, items}`, `title` at most 200 characters,
@@ -3778,8 +3784,10 @@ refs across them; no `asOf` (what it covers is the server's record). Each item i
 `receipt`: a `check:`, `command:` or `op:` ref), `decision/1` (`about`,
 `happened`, `whyHuman`, `question`, `alternatives` 2 to 6, `recommendation`,
 `uncertainty?`, `blocked?`, `authorizes`, `evidence`, `subjectRevision?`;
-`about` a `question:`, `task:`, `ticket:` or `plan:` ref, a plan
-revision's card drawn with DS2's Approve from the live revision),
+`about` a `question:`, `task:`, `ticket:` or `plan:` ref, a `plan:` one
+resolved to its revision's state and `rev` like any ref; the app's
+pages draw neither such a card's Approve nor a `draft_plan/1` yet, which
+come with the pages' part, #532),
 `comparison/1`, `evidence/1`, `draft_ticket/1` (at most 20, their `blocks`
 without a cycle), `draft_crew/1`, `draft_plan/1` (`ticket`, a `ticket:`
 ref; `crew`, a saved crew's id; `base?` at most 256 bytes; `basedOn?`, a
@@ -3831,17 +3839,46 @@ quiet session's entries.
 `config.wake.mode` `background` (and Brakeman on), Brakeman is woken by
 events: a task of a person's run failed with proof (the engine's failed
 state), a question open past `wake.questionMinutes` (1 to 1,440; 15), a
-run ended (stopped, finished, or every task terminal) or paused, a
-ticket moved to `ready`, a person's own request, and the briefing times
-`wake.briefings` (at most 24 `HH:MM`, the server's local zone, firing
-while it runs). None fires for a Brakeman turn's run or session, or for
-what a request made (a change under the actor `brakeman` or an op id a
-request derived; a run an act launched). The role is `idle`, then
+run ended (stopped, finished, or every task terminal) or paused (a
+managed run read as its ledger holds it: never a change whose
+transaction is pending or was refused), a ticket moved to `ready` (by
+the status that change set; Dispatch's changes read from the server's
+start, every row of each commit, at most 20 pages of 500 a pass and
+the rest on the next pass at once), a person's own request (logged once,
+its op id asked again too; one whose write fails is kept and logged on a
+later pass), and the
+briefing times `wake.briefings` (at most 24 `HH:MM`, the server's local
+zone, firing while it runs; one that passed while the server was stopped
+fires once at its start, one that passed while the role was off or
+paused fires nothing, whether or not the role stepped between: a save
+that turns the role off or on drops the briefing times' mark before the
+configuration is written, and is refused `500 store_failed`, nothing
+saved, when the mark cannot be written). None fires for a Brakeman turn's run or session,
+or for what a request made (a change under the actor `brakeman` or an op
+id a request derived; a run an act launched, known by its launch's maker
+in Dispatch, and its members' questions); while the role is off nothing
+fires, what happened meanwhile wakes nothing once it is on, and a wake
+request still queued (behind a person's turn) as it is set to run only
+when asked is cancelled (a wake turn running runs to its end). Nor
+does a source fire for a subject outside the configuration's scope or
+visibility. A wake whose write fails, and what the sources noted while
+the configuration cannot be read, are kept and taken on a later pass
+(Dispatch's feed read on from the change not yet taken); a configuration
+that cannot be read changes nothing of the role. The
+role is `idle`, then
 `gathering` once a wake opens a batch (`wb-<n>`, its id written as it
 opens), and once the window ends (`wake.windowSeconds`, 10 to 900; 120)
-it makes one request of kind `wake` naming the batch, under the op id
-`wake-<batch>` (a crash between the request and the role's write finds
-the request made, so a batch fires once), and is `briefing`; when the
+the batch is frozen as the one firing (`firing`), written before its
+request is made, so a wake from then on joins the next batch and none
+joins a batch whose turn may have read it; it makes one request of kind
+`wake` naming the batch, under the op id `wake-<batch>` (a crash or a
+failed write between the request and the role's write finds the request
+made, so a batch fires once; a request found under that op id that is
+not the batch's own, kept by a person before the prefix was the role's,
+is passed over for `wake-<batch>.<k>`, k from 2 to 8), and is
+`briefing`; a turn refused before its request was made leaves the batch
+open under its own id, the wakes since folded in, fired once a turn can
+start; when the
 request closes it is `cooling` for `wake.cooldownMinutes` (0 to 1,440;
 30), then `idle`. Wakes while briefing, cooling or unavailable join the
 next batch. A batch holds at most 200 wakes, the same source and subject
@@ -3849,10 +3886,14 @@ coalesced with a count, past them an `overflow` count with the first and
 last times; a wake whose source, subject and key the log holds already
 (a task's attempts, a question's time) is one fired before, after a
 restart too. `paused` (a person) gathers nothing (a wake is logged
-`held: "paused"`), and a turn running then runs to its end;
+`held: "paused"`), a turn running then runs to its end, and a wake
+request still queued (behind a person's turn) waits in the queue,
+starting once the role is resumed; the briefing times passed while
+paused fire nothing, whether or not the role stepped between;
 `unavailable` (a turn could not start: its launch refused, its agent
 exited before it read its request, or the day's turns or minutes spent)
-says why, keeps its batch, and tries again on a person's request, the
+says why, keeps its batch (a turn that started none gives its wakes to
+the next batch, under a new id), and tries again on a person's request, the
 next briefing time, or, for a budget spent, the next local day. The
 day's minutes, `budget.minutesPerDay` (10 to 1,440; 240), count every
 turn, whatever started it: a turn's reservation at its start is the
@@ -3864,7 +3905,10 @@ Needs you and reach no webhook, browser notification or Chime, and its
 deadline ends it unanswered. The role keeps no process and polls no
 model between turns; each change is written before what it starts, and
 a restart reads it back (a batch gathering fires once; a turn briefing
-follows its request, interrupted by the restart, to cooling). The log
+follows its request, interrupted by the restart, to cooling); a server
+waiting for the owner lock answers the role as the records hold it at
+each read, and takes up the record the last owner left once the lock is
+its own. The log
 keeps the newest 1,000 wakes; the notes (a brief's facts or
 interpretations a person kept, given to every turn) at most 64 KiB, 4
 KiB each. A change of the role sends the `brakeman` event `{id: "role",
@@ -3872,7 +3916,7 @@ state}`.
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/brakeman/role?limit=` | `{role: {schema, identity, state, why?, retryAt?, last, open?, fired?, request?, coolUntil?, briefed?, notes?, updatedAt, minutesToday}, log: [{source, subject?, key?, at, batch?, request?, held?}]}`: the role, and its log newest first, `limit` rows (1 to 1,000; 200) |
+| `GET /api/brakeman/role?limit=` | `{role: {schema, identity, state, why?, retryAt?, last, open?, fired?, firing?, request?, coolUntil?, briefed?, notes?, updatedAt, minutesToday}, log: [{source, subject?, key?, at, batch?, request?, held?}]}`: the role, and its log newest first, `limit` rows (1 to 1,000; 200) |
 | `POST /api/brakeman/role` | `{action}`, `pause` or `resume` → `{role}`; `400 invalid_request` for another action |
 | `POST /api/brakeman/role/notes` | `{request, item}` → `{role}`: the text of a kept brief's `fact/1` or `interpretation/1` kept as a note, `from` its `brief:` ref; `400 not_a_note` for another kind; `404` for no such request or item; `413 bound` past the notes' 64 KiB |
 | `DELETE /api/brakeman/role/notes` | → `{role}`, the notes cleared |

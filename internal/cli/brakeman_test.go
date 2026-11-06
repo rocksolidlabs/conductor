@@ -458,6 +458,16 @@ func TestBrakemanRoleWithTheWorkbenchToken(t *testing.T) {
 	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "off"}, admin...)...); code != 0 || err != nil || !strings.Contains(out, "runs only when asked") {
 		t.Fatalf("off: %d %v %q", code, err, out)
 	}
+	// --json prints each action's reply as its route gave it.
+	for _, step := range []struct{ action, want string }{
+		{"on", `"mode":"background"`}, {"pause", `"state":"paused"`}, {"resume", `"state":"idle"`}, {"off", `"mode":"invoked"`},
+	} {
+		code, out, _, err := brakemanCmd(t, "", append([]string{"role", step.action, "--json"}, admin...)...)
+		var reply map[string]any
+		if code != 0 || err != nil || json.Unmarshal([]byte(out), &reply) != nil || !strings.Contains(out, step.want) {
+			t.Fatalf("%s --json: %d %v %q", step.action, code, err, out)
+		}
+	}
 	cfg = a.admin(t, "GET", "/api/brakeman", nil, http.StatusOK)["config"].(map[string]any)
 	if cfg["wake"].(map[string]any)["mode"] != "invoked" {
 		t.Fatalf("%v", cfg["wake"])

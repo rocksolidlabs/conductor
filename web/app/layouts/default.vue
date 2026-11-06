@@ -300,10 +300,16 @@ defineShortcuts({
           <img src="/brand/conductor-mark.svg" alt="" class="size-7 dark:hidden" />
           <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-7 hidden dark:block" />
         </div>
-        <div v-else class="flex items-center gap-1.5 px-1 w-full min-w-0">
-          <img src="/brand/conductor-mark.svg" alt="" class="size-7 dark:hidden" />
-          <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-7 hidden dark:block" />
-          <span class="font-semibold truncate">Conductor</span>
+        <!-- With an update pending the header holds one more button (1.625 rem with its gap). Where the row's content is
+             narrower than at the minimum width plus that button (11.5625 rem: 12.5 rem less the header's 1 px border and 2 rem
+             padding and the row's 0.5 rem, 9.9375 rem, plus the button), the mark steps aside so that the name keeps at least the
+             width it has there without the update (#604); wider, nothing changes. -->
+        <div v-else class="@container flex items-center gap-1.5 px-1 w-full min-w-0" data-sidebar-brand>
+          <span class="flex shrink-0" :class="update.ready.value && '@max-[11.5625rem]:hidden'" data-sidebar-mark>
+            <img src="/brand/conductor-mark.svg" alt="" class="size-7 dark:hidden" />
+            <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-7 hidden dark:block" />
+          </span>
+          <span class="font-semibold truncate" data-sidebar-name>Conductor</span>
           <!-- Alerts and your menu beside the name (design 3b): the foot holds only the pages. -->
           <SidebarHeaderMenus class="ml-auto" @token="showToken = true" />
           <UTooltip text="Collapse to the rail" :kbds="['meta', 'B']" ignore-non-keyboard-focus>

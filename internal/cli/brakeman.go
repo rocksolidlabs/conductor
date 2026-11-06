@@ -1331,7 +1331,8 @@ const roleStatusRows = 10
 // brakemanRole is conductor brakeman role (docs/plans/brakeman.md,
 // PR-15): on and off set the wake mode (background or invoked) at the
 // configuration's revision, pause and resume the role's own route, and
-// status the role with its last wakes.
+// status the role with its last wakes; with --json each prints its
+// route's reply as it came.
 func brakemanRole(ctx context.Context, c *apiClient, action string, asJSON bool, stdout io.Writer) (int, error) {
 	switch action {
 	case "on", "off":
@@ -1346,11 +1347,19 @@ func brakemanRole(ctx context.Context, c *apiClient, action string, asJSON bool,
 		if action == "on" {
 			cfg.Wake.Mode = brakeman.WakeBackground
 		}
+		var raw json.RawMessage
+		if err := c.doLimit(ctx, http.MethodPut, "/api/brakeman/config", map[string]any{"rev": cfg.Rev, "config": cfg}, &raw, wholeMiB(brakeman.MaxConfigDoc)); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: %w", action, err)
+		}
+		if asJSON {
+			_, err := stdout.Write(append(raw, '\n'))
+			return 0, err
+		}
 		var out struct {
 			Config brakeman.Config `json:"config"`
 		}
-		if err := c.doLimit(ctx, http.MethodPut, "/api/brakeman/config", map[string]any{"rev": cfg.Rev, "config": cfg}, &out, wholeMiB(brakeman.MaxConfigDoc)); err != nil {
-			return 1, fmt.Errorf("brakeman role %s: %w", action, err)
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: an unreadable reply: %w", action, err)
 		}
 		switch {
 		case action == "off":
@@ -1363,11 +1372,19 @@ func brakemanRole(ctx context.Context, c *apiClient, action string, asJSON bool,
 		}
 		return 0, nil
 	case "pause", "resume":
+		var raw json.RawMessage
+		if err := c.doLimit(ctx, http.MethodPost, "/api/brakeman/role", map[string]any{"action": action}, &raw, wholeMiB(brakeman.MaxRoleDoc)); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: %w", action, err)
+		}
+		if asJSON {
+			_, err := stdout.Write(append(raw, '\n'))
+			return 0, err
+		}
 		var out struct {
 			Role crew.RoleRecord `json:"role"`
 		}
-		if err := c.doLimit(ctx, http.MethodPost, "/api/brakeman/role", map[string]any{"action": action}, &out, wholeMiB(brakeman.MaxRoleDoc)); err != nil {
-			return 1, fmt.Errorf("brakeman role %s: %w", action, err)
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: an unreadable reply: %w", action, err)
 		}
 		fmt.Fprintf(stdout, "the background role is %s\n", out.Role.State)
 		return 0, nil

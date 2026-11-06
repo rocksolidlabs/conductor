@@ -147,8 +147,10 @@ export class BrakemanLive {
     void this.readState()
   }
 
-  /** The stream started again: what changed meanwhile is read. */
+  /** The stream started again: what changed meanwhile is read, the role's too (a page showing its log reads it again). */
   snapshot() {
+    this.roleSeq++
+    this.changed()
     void this.readFirst()
   }
 

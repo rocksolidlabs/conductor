@@ -677,6 +677,23 @@ func (s *Store) LaunchByID(ctx context.Context, id string) (LaunchView, error) {
 	return out, err
 }
 
+// LaunchActor reads the actor the launch with the id was made under: its
+// create row's in the changes log, written in the transaction that kept
+// the launch, before its run was started, and never pruned. Brakeman's
+// background role tells the runs a Brakeman act launched by it
+// (internal/api). ErrNotFound when no such row is kept.
+func (s *Store) LaunchActor(ctx context.Context, id string) (string, error) {
+	var actor string
+	err := s.read(ctx, func(q queryer) error {
+		err := q.QueryRowContext(ctx, "SELECT actor FROM changes WHERE entity = ? AND entity_id = ? AND op = ? ORDER BY seq LIMIT 1", EntityLaunch, id, OpCreate).Scan(&actor)
+		if isNoRows(err) {
+			return ErrNotFound
+		}
+		return err
+	})
+	return actor, err
+}
+
 // PendingLaunches reads every launch still pending, oldest first: what
 // the API's reconcile at start settles by what the ledger holds. A
 // version 1 database, read as it was found, has none.

@@ -147,11 +147,14 @@ describe('the brakeman events', () => {
     await live.readFirst()
     const before = changes
     f.server.set('br-1', req('br-1', 'briefed', { hasBrief: true }))
+    const roleSeq = live.roleSeq
     live.snapshot()
     await settle()
     await settle()
     expect(live.list().map((r) => r.id)).toEqual(['br-1'])
     expect(changes).toBeGreaterThan(before)
+    // The role's events missed meanwhile too: a page showing its log reads it again.
+    expect(live.roleSeq).toBe(roleSeq + 1)
   })
 
   it('take the request in progress off the page once its slot is given up, though its state is the same', async () => {
