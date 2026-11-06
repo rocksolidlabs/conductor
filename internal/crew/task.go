@@ -973,8 +973,34 @@ func ev(kind string, payload map[string]any) tx {
 // commit after it. A change that sets the run's outcome reports the end
 // once committed. Nothing is written for a change that changed nothing.
 func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo func()) error {
-	return e.commit(ctx, r, false, mutate, undo)
+	return e.commit(ctx, r, false, nil, mutate, undo)
 }
+
+// transactJudged is transact for a change the ledger's rows judge first:
+// judge reads them in the change's own transaction, under the ledger's
+// lock, before mutate runs, so nothing the engine holds in memory stands
+// in for them and no other writer comes between the judgement and the
+// change's rows (#637, review round 2). A refusal of judge's, or a
+// failure of the ledger's before mutate ran, comes back as errUnmade:
+// nothing of the run changed, nothing is carried, and nothing need be
+// paused. The order of the locks is the continuation move's: r.txMu, the
+// ledger's, then e.mu.
+func (e *Engine) transactJudged(ctx context.Context, r *run, judge func(LedgerTx) error, mutate func() tx, undo func()) error {
+	return e.commit(ctx, r, false, judge, mutate, undo)
+}
+
+// errNothing is a judged change that wrote nothing: its transaction is
+// rolled back, and the change committed as one that changed nothing.
+var errNothing = errors.New("the change wrote nothing")
+
+// errUnmade is a judged change's transaction that ended before its change
+// was made (transactJudged): its judge's refusal, the ledger's failure, or
+// the run's state refusing any change (errLaunching). The run is as it
+// was.
+type errUnmade struct{ err error }
+
+func (u errUnmade) Error() string { return u.err.Error() }
+func (u errUnmade) Unwrap() error { return u.err }
 
 // transactFirst is transact for a change that may be a managed run's first
 // transaction: its launch's (run.created), its continuation's
@@ -984,7 +1010,7 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 // taken before run.created would dispatch tasks before the prerequisites
 // were armed, or before a continuation's history was installed.
 func (e *Engine) transactFirst(ctx context.Context, r *run, mutate func() tx, undo func()) error {
-	return e.commit(ctx, r, true, mutate, undo)
+	return e.commit(ctx, r, true, nil, mutate, undo)
 }
 
 // errLaunching refuses a change of a managed run whose launch is not
@@ -992,68 +1018,101 @@ func (e *Engine) transactFirst(ctx context.Context, r *run, mutate func() tx, un
 // command on a task not in a state for it is.
 var errLaunching = fmt.Errorf("%w: the run's launch is not recorded yet, and it takes no change before it is", ErrTaskState)
 
-// commit is transact, and transactFirst when first is set.
-func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() tx, undo func()) error {
+// commit is transact, transactFirst when first is set, and
+// transactJudged when judge is.
+func (e *Engine) commit(ctx context.Context, r *run, first bool, judge func(LedgerTx) error, mutate func() tx, undo func()) error {
 	if e.ledger == nil {
 		return ErrNoLedger
 	}
 	r.txMu.Lock()
 	defer r.txMu.Unlock()
-	e.mu.Lock()
-	if r.unrecorded() && !first {
-		e.mu.Unlock()
-		return errLaunching
-	}
-	if r.foreign {
-		// Its id is another run's: nothing of it is written again.
-		e.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrRunExists, r.id)
-	}
-	t := mutate()
-	// What the change left with no work under it ends with it (I11), and
-	// the decisions it changed write with it (decisions_wait.go).
-	e.endedWork(r)
-	laterMore, laterDone := r.dec.more, r.dec.done
-	r.dec.more, r.dec.done = nil, nil
-	snap := r.drain()
-	pending, pendingMore, pendingLast, pendingDone := r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone
-	r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = nil, nil, nil, nil
-	events := append(slices.Clip(pending), writable(t.events)...)
-	more := slices.Clip(pendingMore)
-	if t.more != nil {
-		more = append(more, t.more)
-	}
-	more = append(more, laterMore...)
-	last := slices.Clip(pendingLast)
-	if t.last != nil {
-		last = append(last, t.last)
-	}
-	done := slices.Clip(pendingDone)
-	if t.done != nil {
-		done = append(done, t.done)
-	}
-	done = append(done, laterDone...)
-	if len(events) == 0 && len(more) == 0 && len(last) == 0 && snap.run == nil && len(snap.tasks) == 0 && len(snap.attempts) == 0 {
-		e.mu.Unlock()
-		return nil
-	}
-	if r.unrecorded() {
-		// The run's first transaction, or one after a first that the
-		// ledger refused for another reason: it writes the run's row
-		// first, with an insert that refuses an id the ledger has, so
-		// nothing of it (an event, a row of its own) lands on another
-		// run's row.
-		if snap.run == nil {
-			row := r.runRow(r.crewJSON)
-			snap.run = &row
+	var (
+		events                             []event
+		more, last, laterMore, pendingMore []func(LedgerTx) error
+		pendingLast                        []func(LedgerTx) error
+		done, laterDone, pendingDone       []func()
+		pending                            []event
+		snap                               snapshot
+		made                               bool
+	)
+	// prepare makes the change and takes what its commit writes, under
+	// e.mu: false when there is nothing to write.
+	prepare := func() (bool, error) {
+		if r.unrecorded() && !first {
+			return false, errLaunching
 		}
-		snap.create = true
+		if r.foreign {
+			// Its id is another run's: nothing of it is written again.
+			return false, fmt.Errorf("%w: %s", ErrRunExists, r.id)
+		}
+		made = true
+		t := mutate()
+		// What the change left with no work under it ends with it (I11), and
+		// the decisions it changed write with it (decisions_wait.go).
+		e.endedWork(r)
+		laterMore, laterDone = r.dec.more, r.dec.done
+		r.dec.more, r.dec.done = nil, nil
+		snap = r.drain()
+		pending, pendingMore, pendingLast, pendingDone = r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone
+		r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = nil, nil, nil, nil
+		events = append(slices.Clip(pending), writable(t.events)...)
+		more = slices.Clip(pendingMore)
+		if t.more != nil {
+			more = append(more, t.more)
+		}
+		more = append(more, laterMore...)
+		last = slices.Clip(pendingLast)
+		if t.last != nil {
+			last = append(last, t.last)
+		}
+		done = slices.Clip(pendingDone)
+		if t.done != nil {
+			done = append(done, t.done)
+		}
+		done = append(done, laterDone...)
+		if len(events) == 0 && len(more) == 0 && len(last) == 0 && snap.run == nil && len(snap.tasks) == 0 && len(snap.attempts) == 0 {
+			return false, nil
+		}
+		if r.unrecorded() {
+			// The run's first transaction, or one after a first that the
+			// ledger refused for another reason: it writes the run's row
+			// first, with an insert that refuses an id the ledger has, so
+			// nothing of it (an event, a row of its own) lands on another
+			// run's row.
+			if snap.run == nil {
+				row := r.runRow(r.crewJSON)
+				snap.run = &row
+			}
+			snap.create = true
+		}
+		r.committing = true
+		return true, nil
 	}
-	r.committing = true
-	e.mu.Unlock()
+	if judge == nil {
+		e.mu.Lock()
+		ok, err := prepare()
+		e.mu.Unlock()
+		if !ok {
+			return err
+		}
+	}
 	r.numbered = map[*decision]int64{}
 	defer func() { r.numbered = nil }()
 	rev, err := e.ledger.Transition(ctx, r.id, func(ltx LedgerTx) error {
+		if judge != nil {
+			if err := judge(ltx); err != nil {
+				return errUnmade{err}
+			}
+			e.mu.Lock()
+			ok, err := prepare()
+			e.mu.Unlock()
+			switch {
+			case err != nil:
+				return errUnmade{err}
+			case !ok:
+				return errUnmade{errNothing}
+			}
+		}
 		if err := snap.write(ltx); err != nil {
 			return err
 		}
@@ -1078,6 +1137,19 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 		// review round 2).
 		return snap.renumber(ltx, r.numbered)
 	})
+	if judge != nil {
+		// Refused or failed before the change was made: nothing of the run
+		// changed. A change that wrote nothing commits nothing either.
+		if um := (errUnmade{}); errors.As(err, &um) {
+			if errors.Is(um.err, errNothing) {
+				return nil
+			}
+			return um
+		}
+		if err != nil && !made {
+			return errUnmade{err}
+		}
+	}
 	e.mu.Lock()
 	r.committing = false
 	if err != nil {

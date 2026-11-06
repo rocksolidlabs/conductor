@@ -324,14 +324,19 @@ func (e *Engine) continueDecisions(r *run, from Loaded, h history) func(LedgerTx
 		// answered on the old run since it was read is moved as answered,
 		// with its answer read here, in the move's transaction, so it is
 		// the engine's once the move commits and never lost to a read
-		// after it (#636, review round 2).
+		// after it (#636, review round 2). Every copy takes its row's rev:
+		// an operation kept on the old run since (a comment) moved it
+		// (#637, review round 2).
 		for _, row := range rows {
-			if row.State != ledger.DecisionAnswered {
-				continue
-			}
 			e.mu.Lock()
 			d := r.decisionN(row.N)
-			stale := d != nil && d.state == ledger.DecisionOpen
+			if d == nil {
+				d = settledN(r, row.N)
+			}
+			if d != nil {
+				d.rev = max(d.rev, row.Rev)
+			}
+			stale := d != nil && row.State == ledger.DecisionAnswered && d.state == ledger.DecisionOpen
 			e.mu.Unlock()
 			if !stale {
 				continue

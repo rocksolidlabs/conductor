@@ -1022,8 +1022,11 @@ type operation struct {
 	opID, fp string
 	actor    string
 	// expectedRev is the rev the operator read: the operation is refused
-	// stale_decision in its transaction when the decision is at another
-	// (staleOp), after the look for a repeat of its id. 0 checks none:
+	// stale_decision when the decision's row is at another (staleOp),
+	// judged by the row in the transaction that applies the operation,
+	// before anything changes, whether or not the engine holds a copy of
+	// the decision (judge), after the look for a repeat of its id. 0
+	// checks none:
 	// the routes always send one (internal/api, decisions.go), and only
 	// the engine's own tests send none.
 	expectedRev int
@@ -1088,11 +1091,13 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			out     OpReceipt
 			refused error
 		)
-		// write is the operation's rows in its transaction; checkRev says
-		// it judges the rev read against the row's, the record's own,
-		// before it changes anything (a change the engine made first is
-		// judged by its own copy, in change).
-		write := func(ltx LedgerTx, dt opDetail, checkRev bool) error {
+		// judge is the operation's one judgement of the decision, in the
+		// transaction that applies it and before anything changes: its row
+		// still the run's the look chose, and at the rev the operator read.
+		// The row judges, never the engine's copy, which a write outside
+		// the run's transactions (a comment kept while a continuation read
+		// the decisions) leaves behind (#637, review round 2).
+		judge := func(ltx LedgerTx) error {
 			dtx, err := decisionsOf(ltx)
 			if err != nil {
 				return err
@@ -1104,10 +1109,31 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			if row.CurrentRun != rec.CurrentRun {
 				return errOpMoved
 			}
-			if checkRev {
-				if why := staleOp(id, op.expectedRev, row.Rev); why != nil {
-					return why
+			if why := staleOp(id, op.expectedRev, row.Rev); why != nil {
+				return why
+			}
+			if held {
+				// The engine's copy takes its row's rev, which the change
+				// then bumps.
+				e.mu.Lock()
+				if d := r.decisionN(n); d != nil {
+					d.rev = max(d.rev, row.Rev)
+				} else if d := settledN(r, n); d != nil {
+					d.rev = max(d.rev, row.Rev)
 				}
+				e.mu.Unlock()
+			}
+			return nil
+		}
+		// write is the operation's rows in its transaction, after judge.
+		write := func(ltx LedgerTx, dt opDetail) error {
+			dtx, err := decisionsOf(ltx)
+			if err != nil {
+				return err
+			}
+			row, ok, err := dtx.Decision(n)
+			if err != nil || !ok {
+				return cmpErr(err, fmt.Errorf("%w: %s", ledger.ErrNoDecision, id))
 			}
 			if op.rev {
 				row.Rev++
@@ -1151,13 +1177,6 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 					if d.a != nil {
 						wasEnded = d.a.turnEnded
 					}
-					// The rev read judged here, before the change: an
-					// answer committed since the look moved it (#637,
-					// review round 1).
-					if why := staleOp(id, op.expectedRev, d.rev); why != nil {
-						refused = why
-						return tx{}
-					}
 				}
 				dt, then, why := op.held(r, d, rec)
 				if why != nil {
@@ -1177,14 +1196,12 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 					}
 				}
 				after = then
-				// A decision the engine holds no copy of is judged by its row.
-				checkRev := d == nil
-				return tx{more: func(ltx LedgerTx) error { return write(ltx, dt, checkRev) }}
+				return tx{more: func(ltx LedgerTx) error { return write(ltx, dt) }}
 			}
 			if op.ahead {
-				err = e.transact(context.WithoutCancel(ctx), r, change, nil)
+				err = e.transactJudged(context.WithoutCancel(ctx), r, judge, change, nil)
 			} else {
-				err = e.transact(ctx, r, change, func() {
+				err = e.transactJudged(ctx, r, judge, change, func() {
 					if undo != nil {
 						undo()
 					}
@@ -1193,15 +1210,22 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			if moved {
 				continue
 			}
+			// Refused or failed before its change was made (judge, at the
+			// row's rev): nothing changed, nothing is carried or paused.
+			var um errUnmade
+			unmade := errors.As(err, &um)
+			if unmade {
+				err = um.err
+			}
 			var de *DecisionError
-			if !op.ahead && errors.As(err, &de) {
-				// Refused in its transaction (its row's rev), undone.
+			if (unmade || !op.ahead) && errors.As(err, &de) {
+				// Refused in its transaction, undone or never made.
 				refused, err = de, nil
 			}
 			if err == nil && refused == nil && after != nil {
 				after()
 			}
-			if err == nil && refused == nil || err != nil && op.ahead {
+			if !unmade && (err == nil && refused == nil || err != nil && op.ahead) {
 				// Committed, what it released is dispatched; refused, a
 				// change kept ahead pauses the run, whose pause's commit
 				// writes it.
@@ -1218,7 +1242,12 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			if op.rev {
 				dt.Rev = rec.Rev + 1
 			}
-			_, err = e.ledger.Transition(ctx, rec.CurrentRun, func(ltx LedgerTx) error { return write(ltx, dt, true) })
+			_, err = e.ledger.Transition(ctx, rec.CurrentRun, func(ltx LedgerTx) error {
+				if err := judge(ltx); err != nil {
+					return err
+				}
+				return write(ltx, dt)
+			})
 			var de *DecisionError
 			if errors.As(err, &de) {
 				refused, err = de, nil
