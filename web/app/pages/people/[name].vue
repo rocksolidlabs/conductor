@@ -4,7 +4,7 @@ import type { PersonWork } from '~/composables/usePeople'
 import { avatarTone } from '~/utils/avatar'
 import { responsibilityWords } from '~/utils/crews'
 import { statusWord, ticketPath } from '~/utils/dispatch'
-import { ownedHow, personFromSegment, readTicketsPage, type PersonTicketList } from '~/utils/people'
+import { ownedHow, personFromSegment, personLists, readTicketsPage, type PersonTicketList } from '~/utils/people'
 import { initials } from '~/utils/sessions'
 
 /**
@@ -12,8 +12,9 @@ import { initials } from '~/utils/sessions'
  * answer for. The crews where they hold a responsibility, the tasks they own in the runs the server holds and the managed runs' records
  * (as each run's crew was launched, so a person removed from the saved crew since keeps that run's tasks here), and Dispatch's tickets
  * they own or are assigned (the counts, then each list a page at a time, "Show more" reading the next by its cursor). The work is shown
- * as soon as it is read, and each ticket list is read on its own after it: a list that cannot be read says so in its place, and the rest
- * of the page stays. Read as the page opens and when the workbench token changes; nothing polls. One column on a phone.
+ * as soon as it is read, and each ticket list is read on its own after it. Every list is read and holding rows, read and empty, or not
+ * read, wholly or in part (`personLists`): one not read whole says so in its place, its rows read kept, and the rest of the page stays.
+ * Read as the page opens and when the workbench token changes; nothing polls. One column on a phone.
  */
 
 const route = useRoute()
@@ -21,8 +22,10 @@ const admin = useWorkbenchToken()
 const people = usePeople()
 const { api } = useDispatch()
 
-// The route's segment is the name by `personSegment`'s rule: one leading `~` removed.
-const name = computed(() => personFromSegment(String(route.params.name ?? '')))
+// The route's segment, unescaped, is the name by `personSegment`'s rule; one that is no name's is no one's page, and is not read.
+const segment = computed(() => String(route.params.name ?? ''))
+const named = computed(() => personFromSegment(segment.value))
+const name = computed(() => named.value ?? segment.value)
 useHead({ title: computed(() => `${name.value} · People`) })
 
 const work = ref<PersonWork | null>(null)
@@ -49,7 +52,14 @@ async function load(): Promise<void> {
     return
   }
   const n = ++seq
-  const who = name.value
+  const who = named.value
+  if (who === null) {
+    missing.value = true
+    work.value = null
+    error.value = ''
+    loading.value = false
+    return
+  }
   loading.value = true
   try {
     const w = await people.person(who)
@@ -97,11 +107,7 @@ function stateColor(state: string): 'success' | 'error' | 'neutral' | 'info' | '
   }
   return 'neutral'
 }
-/** Which of the page's sources could not be read, in words: what is shown may not be all of their work. */
-function unreadWords(w: PersonWork): string {
-  const parts = [w.dispatchUnavailable ? 'Dispatch' : '', w.recordsUnavailable ? "the records of the runs the server no longer holds" : ''].filter(Boolean)
-  return `${parts.join(' and ')} could not be read: this may not be all of their work.`
-}
+const read = computed(() => (work.value ? personLists(work.value) : null))
 const taskPath = (run: string, task: string) => `/runs/${encodeURIComponent(run)}?view=tasks&task=${encodeURIComponent(task)}`
 </script>
 
@@ -120,8 +126,7 @@ const taskPath = (run: string, task: string) => `/runs/${encodeURIComponent(run)
         <UAlert v-if="missing" color="neutral" variant="subtle" icon="i-lucide-user-x" :title="`Conductor knows no one named ${name}`" description="No saved crew, run or Dispatch ticket names them, and Dispatch's people do not list them." data-person-missing />
         <p v-else-if="!work && loading" class="text-sm text-muted">Reading their work…</p>
 
-        <template v-if="work">
-          <UAlert v-if="work.dispatchUnavailable || work.recordsUnavailable" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="unreadWords(work)" data-person-unread />
+        <template v-if="work && read">
           <p class="text-sm text-muted">
             A person is never started: no session, worktree or agent. They own decisions and outcomes.
             <span v-if="work.dispatch">They are among Dispatch's people.</span>
@@ -129,32 +134,34 @@ const taskPath = (run: string, task: string) => `/runs/${encodeURIComponent(run)
 
           <section class="flex flex-col gap-2" data-person-crews>
             <h2 class="text-xs font-semibold uppercase tracking-wide text-muted">Crews</h2>
-            <ul v-if="work.crews.length" class="flex flex-col gap-1">
+            <ul v-if="read.crews.state === 'rows'" class="flex flex-col gap-1">
               <li v-for="c in work.crews" :key="c.id" class="flex min-w-0 flex-wrap items-center gap-x-2 text-sm" :data-person-crew="c.id">
                 <NuxtLink :to="`/crews/${encodeURIComponent(c.id)}`" class="min-w-0 truncate font-medium text-highlighted hover:underline">{{ c.name }}</NuxtLink>
                 <span class="text-muted" data-person-crew-words>{{ responsibilityWords(c.responsibilities) || 'no responsibility' }}</span>
               </li>
               <li v-if="work.crewsMore" class="text-xs text-dimmed">More crews list them than are shown here.</li>
             </ul>
-            <p v-else class="text-sm text-dimmed">No saved crew lists them.</p>
+            <p v-else-if="read.crews.state === 'empty'" class="text-sm text-dimmed">No saved crew lists them.</p>
+            <p v-if="read.crews.unread" class="text-sm text-warning" data-person-list-unread="crews">{{ read.crews.unread }}</p>
           </section>
 
           <section class="flex flex-col gap-2" data-person-tasks>
             <h2 class="text-xs font-semibold uppercase tracking-wide text-muted">Tasks they own</h2>
-            <ul v-if="work.tasks.length" class="flex flex-col divide-y divide-default rounded-md border border-default">
+            <ul v-if="read.tasks.state === 'rows'" class="flex flex-col divide-y divide-default rounded-md border border-default">
               <li v-for="t in work.tasks" :key="`${t.run}/${t.task}`" class="flex min-w-0 flex-col gap-1 px-3 py-2 text-sm sm:flex-row sm:items-center sm:gap-3" :data-person-task="`${t.run}/${t.task}`" :data-person-task-from="t.ownerFrom">
                 <NuxtLink :to="taskPath(t.run, t.task)" class="font-mono font-semibold text-highlighted hover:underline">{{ t.task }}</NuxtLink>
                 <UBadge :label="t.state" :color="stateColor(t.state)" variant="subtle" size="sm" class="w-fit flex-none" />
                 <span class="min-w-0 truncate text-muted">in {{ t.runLabel }} · done by {{ t.member }}<span v-if="ownedHow(t)"> · {{ ownedHow(t) }}</span></span>
               </li>
             </ul>
-            <p v-else class="text-sm text-dimmed">They own no task of a run the server holds.</p>
+            <p v-else-if="read.tasks.state === 'empty'" class="text-sm text-dimmed">They own no task of a run the server holds.</p>
+            <p v-if="read.tasks.unread" class="text-sm text-warning" data-person-list-unread="tasks">{{ read.tasks.unread }}</p>
             <p v-if="work.more" class="text-xs text-dimmed">The newest 200 are shown.</p>
           </section>
 
           <section class="flex flex-col gap-2" data-person-tickets>
             <h2 class="text-xs font-semibold uppercase tracking-wide text-muted">Dispatch tickets</h2>
-            <p v-if="!work.tickets" class="text-sm text-dimmed" data-person-tickets-unavailable>Dispatch could not be read: the tickets they own or are assigned are not shown.</p>
+            <p v-if="!work.tickets" class="text-sm text-warning" data-person-tickets-unavailable data-person-list-unread="tickets">{{ read.tickets.unread }}</p>
             <template v-else>
               <p class="text-sm text-muted" data-person-ticket-counts>They own {{ work.tickets.owner }} and are assigned {{ work.tickets.assignee }}.</p>
               <div v-for="list in lists" :key="list.id" class="flex flex-col gap-1" :data-person-ticket-list="list.id" :data-person-ticket-shown="list.tickets.length">

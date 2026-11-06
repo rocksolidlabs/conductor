@@ -12,10 +12,12 @@ import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helper
 // the run counted by its id equal to its attempts (none for a person, and no worktree under a person's name), and the ticket's People
 // listing the revision's people; the person's page (PR-11) reached from the header's chip, the task detail's owner, the ticket's People
 // and the palette's @ row, listing the tasks and tickets they own, its crews and tasks kept when a ticket list cannot be read, the page
-// of a name no one has; a person's tickets past the first twenty reached with Show more; names that are path words (`.`, `..`, a slash,
-// a percent sign) with pages of their own. A person removed with their name cleared leaves the task's Owner enabled, so that "none"
-// answers the problem it leaves; a name past the first 200 people Conductor knows is offered when it is searched for; a live run's Add
-// an agent marks a person's name and holds the button. Every crew, ticket and run is found by its id or key, never by a list's length.
+// of a name no one has; a person's tickets past the first twenty reached with Show more; names that are path words or hold what a path
+// reads as more than a name (`.`, `..`, `~`, a slash climbing to the brand's image, a percent sign, a space, letters past ASCII, the
+// longest name) with pages of their own, loaded, reloaded and reached by a link. A person removed with their name cleared leaves the
+// task's Owner enabled, so that "none" answers the problem it leaves; a name past the first 200 people Conductor knows is offered when
+// it is searched for; a live run's Add an agent marks a person's name and holds the button. Every crew, ticket and run is found by its
+// id or key, never by a list's length.
 test.describe.configure({ mode: 'serial' })
 
 let crewId = ''
@@ -63,9 +65,13 @@ function budget(ms: number) {
   info.setTimeout(info.timeout + ms)
 }
 
-/** A person's page, by the app's rule (utils/people.ts, personSegment): a `~` before `.`, `..` and a name that starts with `~`. */
+/**
+ * A person's page, by the app's rule (utils/people.ts, personSegment): a plain name (ASCII letters and digits, `-`, `_`, `.`, a space,
+ * characters past ASCII; not starting with `.` or a space, not ending with a space) escaped as itself, any other `~` and its base64url.
+ */
 function personPath(name: string): string {
-  return `/people/${name === '.' || name === '..' || name.startsWith('~') ? '~' : ''}${encodeURIComponent(name)}`
+  const plain = !!name && !/^[. ]/.test(name) && !name.endsWith(' ') && [...name].every((c) => c.codePointAt(0)! >= 0x80 || /^[A-Za-z0-9._ -]$/.test(c))
+  return `/people/${plain ? encodeURIComponent(name) : `~${Buffer.from(name, 'utf8').toString('base64url')}`}`
 }
 
 /** Picks a name in a person row's name picker: the name Conductor knows, or the typed one; the menu is gone before the next field. */
@@ -287,8 +293,11 @@ test("a person's tickets past the first twenty are reached; names that are path 
   const owner = `pw/${Date.now().toString(36)} 50%`
   const keys: string[] = []
   for (let n = 1; n <= 21; n++) keys.push(await makeTicket(api, project, String(n), { title: `Owned ${n}`, owner }))
-  const dot = await makeTicket(api, project, 'dot', { title: 'Assigned to a dot', assignees: ['person:.'] })
-  const dots = await makeTicket(api, project, 'dots', { title: 'Owned by two dots', owner: '..' })
+  // Names that are path words, or hold what a path reads as more than a name, each owning a ticket.
+  const stamp = Date.now().toString(36)
+  const names = ['.', '..', '~', '~.', '~~', '../brand/conductor-favicon.svg', `a/b ${stamp}`, '50% c', `Ana Mar\u00eda ${stamp}`, '\u00e9'.repeat(60)]
+  const owns: string[] = []
+  for (const [n, name] of names.entries()) owns.push(await makeTicket(api, project, `w${n}`, { title: `Owned by a path word ${n}`, owner: name }))
 
   await page.goto(personPath(owner))
   budget(30_000)
@@ -301,15 +310,24 @@ test("a person's tickets past the first twenty are reached; names that are path 
   await expect(owned.locator('[data-person-ticket-part]')).toHaveCount(0)
   await expect(owned.locator('[data-person-ticket-more]')).toHaveCount(0)
 
-  // "." and "..": a URL would resolve them away, the page's path keeps them as names.
-  for (const [name, list, key] of [
-    ['..', 'owner', dots],
-    ['.', 'assignee', dot],
-  ] as const) {
+  // Each has its page, never another route's or another person's: loaded at its address, reloaded, and reached by the link the ticket's
+  // People draws, the address kept as written each time.
+  for (const [n, name] of names.entries()) {
+    const ticket = page.locator(`[data-person-page-name=${JSON.stringify(name)}] [data-person-ticket-list="owner"] [data-person-ticket="${owns[n]}"]`)
     await page.goto(personPath(name))
     budget(30_000)
-    await expect(page.locator(`[data-person-page-name="${name}"] [data-person-ticket-list="${list}"]`).locator(`[data-person-ticket="${key}"]`)).toBeVisible({ timeout: 30_000 })
-    expect(new URL(page.url()).pathname).toBe(personPath(name))
+    await expect(ticket, name).toBeVisible({ timeout: 30_000 })
+    expect(new URL(page.url()).pathname, name).toBe(personPath(name))
+    await page.reload()
+    budget(30_000)
+    await expect(ticket, name).toBeVisible({ timeout: 30_000 })
+    expect(new URL(page.url()).pathname, name).toBe(personPath(name))
+    await page.goto(`/dispatch/${owns[n]!.replace('-', '/')}`)
+    budget(30_000)
+    await page.locator(`[data-ticket-people] [data-people] [data-person=${JSON.stringify(name)}] [data-person-link]`).click({ timeout: 30_000 })
+    budget(30_000)
+    await expect(ticket, name).toBeVisible({ timeout: 30_000 })
+    expect(new URL(page.url()).pathname, name).toBe(personPath(name))
   }
 })
 

@@ -48,7 +48,9 @@ export interface PersonWork {
   decisions: unknown[]
   /** Dispatch is off or could not be read: no tickets, and `dispatch` true only when its directory was read and lists them. */
   dispatchUnavailable?: boolean
-  /** The managed runs' records could not be read: the tasks of the runs the server holds are listed all the same. */
+  /** The saved crews, or some of them, could not be read: the crews listed are those read, and may not be all. */
+  crewsUnavailable?: boolean
+  /** The managed runs' records, or some of them, could not be read: the tasks listed are those of the runs the server holds and the records read, and may not be all. */
   recordsUnavailable?: boolean
 }
 

@@ -1,4 +1,4 @@
-import type { KnownPerson, PersonTask } from '~/composables/usePeople'
+import type { KnownPerson, PersonTask, PersonWork } from '~/composables/usePeople'
 import type { PaletteItem } from '~/composables/usePalette'
 import type { TicketSummary, TicketsPage } from '~/composables/useDispatch'
 import { responsibilityWords } from './crews'
@@ -8,17 +8,55 @@ import { capGroup, type PaletteGroup } from './palette'
 // A person is a local label, never a session: their page lists their work, and a row opens it.
 
 /**
- * A person's name as one segment of a path, the one rule every link to their page and every read of their work uses: the name escaped,
- * with a `~` before it when it is `.` or `..` (which a URL resolves as steps of its path, `%2E` included) or starts with `~`, so every
- * name has a segment of its own and none is read as another. The server removes one leading `~` (`personFromSegment`).
+ * A person's name in a path: the one rule every link to their page and every read of their work uses, the server's too
+ * (internal/api/people.go, personSegment and personFromSegment; internal/api/testdata/person-segments.json the cases both are tested
+ * against). Any string the people rules allow is a name, so a name is written as is only when nothing between the browser and the route
+ * can read it as something else, and otherwise as a token nothing reads:
+ *
+ * - A plain name is written as itself, escaped as a segment (a space as `%20`, a character past ASCII as its UTF-8 bytes): every character
+ *   an ASCII letter or digit, `-`, `_`, `.`, a space, or one past ASCII; the first neither `.` nor a space, the last not a space. Unescaped
+ *   it holds no `/`, `\`, `%`, `?`, `#`, `;` or `~` and is never `.` or `..`, so no decoding, second decoding or cleaning of the path (the
+ *   browser's, the router's, the server's, a proxy's) changes it or moves it out of its segment.
+ * - Any other name is written as `~` and the base64url of its UTF-8, with no padding: letters, digits, `-` and `_` after the `~`.
+ *
+ * A segment is read back only in the one form its name is written in, so each name has one address and no address is another name's.
  */
-export function personSegment(name: string): string {
-  return (name === '.' || name === '..' || name.startsWith('~') ? '~' : '') + encodeURIComponent(name)
+export function plainPersonName(name: string): boolean {
+  if (!name || name[0] === '.' || name[0] === ' ' || name.endsWith(' ')) return false
+  for (const ch of name) {
+    if (ch.codePointAt(0)! < 0x80 && !/^[A-Za-z0-9._ -]$/.test(ch)) return false
+  }
+  return true
 }
 
-/** The name a person's path segment carries, unescaped as the router hands it: one leading `~` removed. */
-export function personFromSegment(segment: string): string {
-  return segment.startsWith('~') ? segment.slice(1) : segment
+function base64url(bytes: Uint8Array): string {
+  let s = ''
+  for (const b of bytes) s += String.fromCharCode(b)
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+/** The path segment of a person's name, escaped as a URL writes it. */
+export function personSegment(name: string): string {
+  if (plainPersonName(name)) return encodeURIComponent(name)
+  return `~${base64url(new TextEncoder().encode(name))}`
+}
+
+/** The name a segment carries, the segment unescaped as the router hands it; null for a segment that is no name's (not the one form `personSegment` writes for it). */
+export function personFromSegment(segment: string): string | null {
+  if (!segment.startsWith('~')) return plainPersonName(segment) ? segment : null
+  const token = segment.slice(1)
+  if (!/^[A-Za-z0-9_-]+$/.test(token) || token.length % 4 === 1) return null
+  let bytes: Uint8Array
+  let name: string
+  try {
+    const bin = atob(token.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (token.length % 4)) % 4))
+    bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
+    name = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
+  } catch {
+    return null
+  }
+  if (!name || plainPersonName(name) || base64url(bytes) !== token) return null
+  return name
 }
 
 /** A person's page: their name exactly, as the server matches it. */
@@ -146,5 +184,37 @@ export async function readTicketsPage(list: PersonTicketList, fetch: (query: str
   } catch (e) {
     if (!current()) return
     list.error = (e as Error).message || 'the tickets could not be read'
+  }
+}
+
+/**
+ * What one list of a person's page is, the rule every list there follows: read and holding rows, read and empty, or not read, wholly or
+ * for some of its records (a crew, a run's record, Dispatch). A list not read whole says so in its place (`unread`), with the rows read
+ * above it, and is never drawn as empty or as all there is.
+ */
+export interface PersonList {
+  state: 'rows' | 'empty' | 'unread'
+  /** What could not be read and what that leaves out, in words; '' when the list was read whole. */
+  unread: string
+}
+
+/** The person's page's lists (their crews, the tasks they own, Dispatch's tickets) by what the server read for each. */
+export function personLists(w: Pick<PersonWork, 'crews' | 'tasks' | 'tickets' | 'crewsUnavailable' | 'recordsUnavailable' | 'dispatchUnavailable'>): Record<'crews' | 'tasks' | 'tickets', PersonList> {
+  const list = (rows: number, unread: boolean, some: string, none: string): PersonList => ({
+    state: rows ? 'rows' : unread ? 'unread' : 'empty',
+    unread: unread ? (rows ? some : none) : '',
+  })
+  const tickets = w.tickets
+  return {
+    crews: list(w.crews.length, !!w.crewsUnavailable, 'Some saved crews could not be read: they may be in more crews than these.', 'Some saved crews could not be read: a crew that lists them may not be shown.'),
+    tasks: list(
+      w.tasks.length,
+      !!w.recordsUnavailable,
+      'Some records of runs the server no longer holds could not be read: they may own more tasks than these.',
+      'Some records of runs the server no longer holds could not be read: a task they own there may not be shown.',
+    ),
+    tickets: tickets
+      ? list(tickets.owner + tickets.assignee, false, '', '')
+      : { state: 'unread', unread: 'Dispatch could not be read: the tickets they own or are assigned are not shown.' },
   }
 }
