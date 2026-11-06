@@ -2,8 +2,10 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 )
@@ -264,6 +266,86 @@ func TestHowAQuestionLeaves(t *testing.T) {
 			t.Fatalf("set aside: left %v, kept %v", ok, s.Info().Kept)
 		}
 		p.exit()
+		leftAs(t, s, q.ID, LeftEnded)
+	})
+	t.Run("the session ends while the hold holds it over", func(t *testing.T) {
+		s, p, _ := asking(t, Options{})
+		id, err := s.TryAskID("Which heading style?", SourceAPI, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go holdNow(s)
+		heldShows(t, s)
+		if _, ok := s.QuestionLeft(id); ok || !slices.Contains(s.Info().Kept, id) {
+			t.Fatalf("held over: left %v, kept %v", ok, s.Info().Kept)
+		}
+		p.exit()
+		leftAs(t, s, id, LeftEnded)
+		if kept := s.Info().Kept; len(kept) != 0 {
+			t.Fatalf("kept past the end: %v", kept)
+		}
+	})
+	t.Run("answered as the session ends, its keys written before the end", func(t *testing.T) {
+		s, p, _ := asking(t, Options{})
+		q := ask(t, s)
+		owner := ownerOf(t, s)
+		// The keys written, held between their write and their resolve
+		// (beforeWritten) while the process ends.
+		reached, gate := make(chan struct{}), make(chan struct{})
+		var once, let sync.Once
+		pause := func(data []byte) {
+			if string(data) == "Postgres\r" {
+				once.Do(func() { close(reached); <-gate })
+			}
+		}
+		s.beforeWritten.Store(&pause)
+		t.Cleanup(func() { let.Do(func() { close(gate) }) })
+		word := make(chan error, 1)
+		go func() { word <- s.AnswerInputReq(context.Background(), owner, q.ID, "r1", []byte("Postgres\r"), nil) }()
+		if got := written(t, p); got != "Postgres\r" {
+			t.Fatalf("written %q", got)
+		}
+		<-reached
+		p.exit()
+		select {
+		case <-s.ended:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the session never ended")
+		}
+		// The end noted what it let go in its own step: not this question,
+		// whose claim's keys were written.
+		if l, ok := s.QuestionLeft(q.ID); ok {
+			t.Fatalf("left at the end with its keys written: %+v", l)
+		}
+		let.Do(func() { close(gate) })
+		if err := returnsWithin(t, 5*time.Second, "the word", func() error { return <-word }); err != nil {
+			t.Fatalf("the word: %v", err)
+		}
+		r, ok := s.QuestionResult(q.ID)
+		if !ok || r.ReqID != "r1" || r.Resumed == nil || r.Resumed.How != ResumedEnded || r.Resumed.At.Before(r.At) {
+			t.Fatalf("the result: %+v %v", r, ok)
+		}
+		if l, ok := s.QuestionLeft(q.ID); ok {
+			t.Fatalf("an answered question left: %+v", l)
+		}
+	})
+	t.Run("the session ends under a reply's keys the program has not taken", func(t *testing.T) {
+		s, p, _ := asking(t, Options{})
+		q := ask(t, s)
+		owner := ownerOf(t, s)
+		// The write begun and held in the program's read (onWrite) as the
+		// process ends: the keys never land.
+		inWrite, gate := make(chan struct{}), make(chan struct{})
+		var once, let sync.Once
+		p.onWrite = func() { once.Do(func() { close(inWrite); <-gate }) }
+		t.Cleanup(func() { let.Do(func() { close(gate) }) })
+		word := make(chan error, 1)
+		go func() { word <- s.AnswerInputReq(context.Background(), owner, q.ID, "r1", []byte("Postgres\r"), nil) }()
+		<-inWrite
+		p.exit()
+		if err := returnsWithin(t, 10*time.Second, "the word", func() error { return <-word }); !errors.Is(err, ErrSessionEnded) {
+			t.Fatalf("the word: %v", err)
+		}
 		leftAs(t, s, q.ID, LeftEnded)
 	})
 	t.Run("another question in its place", func(t *testing.T) {
