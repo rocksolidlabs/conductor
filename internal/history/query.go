@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -279,11 +280,17 @@ func (q *Query) addFilter(name, value string) error {
 }
 
 // parseWhen reads a since or until: a span back from now (24h, 7d, 2w),
-// a day (2026-11-01) or a time in RFC 3339.
+// a day (2026-11-01) or a time in RFC 3339. A span longer than a
+// time.Duration holds (some 292 years: 15250w is the most weeks) is
+// ErrQuery, never a product that wraps to a short one.
 func parseWhen(name, v string) (*when, error) {
 	if m := spanPattern.FindStringSubmatch(strings.ToLower(v)); m != nil {
-		n, _ := strconv.Atoi(m[1])
+		n, _ := strconv.ParseInt(m[1], 10, 64)
 		unit := map[string]time.Duration{"h": time.Hour, "d": 24 * time.Hour, "w": 7 * 24 * time.Hour}[m[2]]
+		if n > int64(math.MaxInt64/unit) {
+			return nil, badQuery("%s:%s is longer than a span can be (%dh, %dd or %dw at most)", name, v,
+				int64(math.MaxInt64/time.Hour), int64(math.MaxInt64/(24*time.Hour)), int64(math.MaxInt64/(7*24*time.Hour)))
+		}
 		return &when{Back: time.Duration(n) * unit}, nil
 	}
 	if t, err := time.Parse(time.DateOnly, v); err == nil {
@@ -577,7 +584,7 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 		}
 		after = &c
 	}
-	if err := ix.enter(); err != nil {
+	if err := ix.enterRead(ctx); err != nil {
 		return page, err
 	}
 	defer ix.leave()
@@ -862,9 +869,9 @@ func decorate(ctx context.Context, tx *sql.Tx, hits []Hit, ids []int64, match st
 const windowFrom = " FROM json_each(?) j CROSS JOIN entries e ON e.id = j.value"
 
 // snipOpen and snipClose are where snippet() marks a match (U+E000 and
-// U+E001, which no text of the index is expected to hold), so the match
-// can be found in a text that holds brackets of its own; clipSnippet
-// writes them as [ and ].
+// U+E001, which no text of the index holds: Entry.check writes a text's
+// own as U+FFFD), so the match can be found in a text that holds brackets
+// of its own; clipSnippet writes them as [ and ].
 const (
 	snipOpen  = "\uE000"
 	snipClose = "\uE001"
@@ -878,7 +885,8 @@ var markWords = strings.NewReplacer(snipOpen, "[", snipClose, "]")
 // and never through a mark, with … where it was cut. snippet() bounds its
 // window in tokens, not bytes, so long tokens before the match (hashes, a
 // path, a CJK sentence the tokenizer reads as one) would put it past a
-// cut from the start.
+// cut from the start. A match longer than the window keeps both its
+// marks: its start, cut, between them ("[start…]").
 func clipSnippet(s string, n int) string {
 	s = strings.ToValidUTF8(s, replacement)
 	if f := markWords.Replace(s); len(f) <= n {
@@ -888,15 +896,25 @@ func clipSnippet(s string, n int) string {
 	if o < 0 {
 		return Clip(markWords.Replace(s), n)
 	}
-	c := len(s)
+	c, inner := len(s), s[o+len(snipOpen):]
 	if i := strings.Index(s[o:], snipClose); i >= 0 {
 		c = o + i + len(snipClose)
+		inner = s[o+len(snipOpen) : c-len(snipClose)]
 	}
 	const cut = "…"
 	budget := n - 2*len(cut)
 	if c-o > budget {
-		// The match alone is longer than the bound: its start kept.
-		return Clip(markWords.Replace(s[o:c]), n-len(cut)) + cut
+		// The match alone is longer than the bound: its start kept inside
+		// both its marks, the room for them and every … kept first.
+		head, tail := "", ""
+		if o > 0 {
+			head = cut
+		}
+		if c < len(s) {
+			tail = cut
+		}
+		room := n - len(head) - len(tail) - len("[") - len(cut) - len("]")
+		return head + "[" + Clip(inner, room) + cut + "]" + tail
 	}
 	start := max(o-(budget-(c-o))/2, 0)
 	end := min(start+budget, len(s))

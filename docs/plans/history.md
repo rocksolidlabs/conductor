@@ -700,7 +700,13 @@ answers `SQLITE_CORRUPT` when a read or write meets a bad page anyway.
 `TestAnIndexNotClosedIsCheckedBeforeItIsSearched`,
 `TestCheckClearsADamagedIndex`, `TestACancelledOpenKeepsTheIndex`. `Close`
 returns only once every call begun before it has ended, so nothing writes
-the file after it (`TestCloseWaitsForAWrite`).
+the file after it, and so does every other `Close` made while it runs
+(`TestCloseWaitsForAWrite`). A clear marks the index open and owes it no
+check in its own transaction, so clears that overlap never read the
+owner's own mark as a crash (`TestOverlappingClearsOweNoCheck`). The
+package's doc says who may call what while what else runs (a write waits
+only for the write before it, a read only for a free reader, no lock held
+across either wait), and `life_test.go` holds each pair at a seam.
 
 **The kinds and their class** (`kinds.go`): one table, `classOf(kind)`, the
 only place an entry's class is decided. An entry's class comes from what
@@ -776,7 +782,8 @@ most 16 terms):
   `crew:` and `run:` (in `internal/crew`'s grammar: a crew's id of at most
   64 bytes, a run's that id, a dash and eight hex digits),
   `ticket:CND-12`, `session:`, `since:` and `until:` (`7d`, `24h`,
-  `2026-11-01`);
+  `2026-11-01`; a span longer than a Go duration holds, past `15250w`,
+  refused);
 - an unknown filter name is a word (so `http://x` searches for it), and a
   malformed value is refused with words (`ErrQuery`).
 
@@ -822,7 +829,9 @@ already shows. Each entry comes with `snippet()` of its best
 column (at most 300 bytes, the match marked: cut around its first match,
 never through a mark, `…` where it was cut, since `snippet()` bounds its
 window in tokens and long tokens before the match would put it past a cut
-from the start), its `repeats` (how many
+from the start; a match longer than the window keeps both marks around its
+cut start, `[start…]`; the marks are U+E000 and U+E001 until the cut, and a
+text's own are indexed as U+FFFD), its `repeats` (how many
 entries of the same digest and class exist and in how many anchors: "said in
 3 sessions", computed for the page's rows only), and at most 8 of its links
 each way, each far end with the entry that stands for its ref: the entry
@@ -1820,11 +1829,16 @@ from when); `TestSimilarFindsTheSameCommandElsewhereAndLeavesTheChainOut`,
 whose crews run one generic argv: the other repository's passes are absent
 until `scope=all`; the receipt holding the failure's line ranks first);
 `TestAKeyOutlivesReplaceAndReindex`;
-`TestSnippetMarksTheMatch` (with long tokens before the match);
+`TestSnippetMarksTheMatch` (with long tokens before the match, and text
+holding the marks), `TestClipSnippetKeepsItsMarks`;
 `TestASearchPastItsBoundsSaysSo`, `TestASearchNeverHoldsAWriteBack`,
 `TestCloseWaitsForAWrite`, `TestACancelledOpenKeepsTheIndex`,
 `TestAnIndexNotClosedIsCheckedBeforeItIsSearched`,
-`TestCheckClearsADamagedIndex`, `TestALinkFindsItsEndByItsReference`;
+`TestCheckClearsADamagedIndex`, `TestALinkFindsItsEndByItsReference`,
+`TestCloseWaitsForASearch`, `TestCloseWaitsForAClear`,
+`TestCloseWaitsForACheck`, `TestCloseDuringAMoveAside`,
+`TestAWriteNeverWaitsBehindSearches`, `TestOverlappingClearsOweNoCheck`,
+`TestAReaderReopensBesideASearch`;
 `BenchmarkSearch` (100,000 entries; the medians in PR-2's body).
 
 **Go, `internal/api` and `internal/crew` (PR-3):**
