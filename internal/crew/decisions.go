@@ -1546,22 +1546,18 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 	}
 	got, err := dtx.Respond(n, ledger.ResponseRow{Actor: actor, Authority: authRaw, ResponseID: resp.ResponseID, Fingerprint: fp, Status: status, Receipt: receiptJSON(rc)})
 	switch {
-	case errors.Is(err, ledger.ErrDecisionConflict):
-		return refuse(CodeResponseConflict, "response %s to %s was sent before with another body", resp.ResponseID, id)
 	case errors.Is(err, ledger.ErrDecisionLimit) && auth.Via == ViaIdentity:
 		return refuse(CodeDecisionLimit, "%s's run has no room for the decision this answer would need if its recheck failed: answer with the workbench token", id)
 	case err != nil:
 		return err
 	}
 	if got.Repeat {
-		var prev ResponseReceipt
-		_ = json.Unmarshal([]byte(got.Row.Receipt), &prev)
-		prev.Repeat, prev.K = true, got.Row.K
-		out.receipt, out.accepted, out.rev = prev, got.Row.Status == ledger.ResponseAccepted, d.Rev
-		if prev.Code != "" {
-			out.refusal = refuse(prev.Code, "%s", prev.Words)
-		}
-		return nil
+		// Never: replayed answered every row of (decision, actor,
+		// responseId) that rec holds, and rec is read in this
+		// transaction, whose writes are one at a time. A row Tx.Respond
+		// found that rec did not show fails the transaction, never
+		// answered with a receipt constructed again (#635, final step).
+		return fmt.Errorf("response %s to %s: the ledger holds a row this transaction's record did not show", resp.ResponseID, id)
 	}
 	rc.K = got.Row.K
 	if !got.Kept {
@@ -1606,8 +1602,8 @@ var errDecisionMoved = errors.New("the decision moved to another run")
 // again and no bound counted again can turn a response accepted once into
 // another outcome; it is looked up before any of them, in RespondDecision
 // on the record read before the transaction and again in the transaction
-// (respondTx), and Tx.Respond's own lookup stays the last guard. A saved
-// row is never changed, so a record read outside a transaction answers it
+// (respondTx), where a row Tx.Respond's own lookup finds after it fails
+// the transaction instead of being answered. A saved row is never changed, so a record read outside a transaction answers it
 // as well as one read inside.
 func replayed(rec ledger.DecisionRecord, actor, responseID, fp string) (ResponseReceipt, bool, error) {
 	for _, r := range rec.Responses {
