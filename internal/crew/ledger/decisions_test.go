@@ -311,7 +311,8 @@ func TestMigrationSevenToEightAddsOnlyTables(t *testing.T) {
 	if ro, why := again.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	if v := dbVersion(t, again); v != 8 || Version != 8 {
+	// Brought to Version: 8's tables, and 9 (a barrier) adds nothing.
+	if v := dbVersion(t, again); v != Version {
 		t.Fatalf("version %d after the migration, Version %d", v, Version)
 	}
 	wantTables := slices.Sorted(slices.Values(append(slices.Clone(v7Tables), "decisions", "decision_responses", "decision_history", "decision_holds", "decision_refunds")))

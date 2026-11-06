@@ -691,14 +691,15 @@ func parseImport(ref string) (runID, taskID string, n int, ok bool) {
 	return parts[0], parts[1], n, true
 }
 
-// decodeRepair reads a task row's repair; nil for an empty or unreadable
-// one.
+// decodeRepair reads a task row's repair, a review task's or a person's
+// (its start and request); nil for an empty or unreadable one. A row
+// written before a person's repair existed has neither and reads as it did.
 func decodeRepair(raw string) *repair {
 	var rp TaskRepair
 	if raw == "" || json.Unmarshal([]byte(raw), &rp) != nil {
 		return nil
 	}
-	return &repair{review: rp.Review, attempt: rp.Attempt, commit: rp.Commit, summary: rp.Summary, findings: rp.Findings}
+	return &repair{review: rp.Review, attempt: rp.Attempt, commit: rp.Commit, start: rp.Start, summary: rp.Summary, findings: rp.Findings, request: rp.Request}
 }
 
 // byN is the attempt row of the task numbered n, or a zero row.

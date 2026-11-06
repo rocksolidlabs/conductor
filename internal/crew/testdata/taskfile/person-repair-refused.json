@@ -1,0 +1,55 @@
+{
+  "run": "r-0123456789ab",
+  "crew": "c-build",
+  "crewName": "Build crew",
+  "goal": "Ship the parser, tested.",
+  "task": "build",
+  "attempt": 4,
+  "maxAttempts": 4,
+  "member": "lead",
+  "role": "You lead the build.",
+  "kind": "work",
+  "instructions": "Write the parser in parse.go & test it: <input> yields a tree.",
+  "worktree": "/repo/.conductor/worktrees/r-0123456789ab/build.3",
+  "branch": "crew/r-0123456789ab/build.3",
+  "start": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "startFrom": "where attempt 3 started: its result, which Nate asked changes of, was refused before its checks",
+  "previous": {
+    "attempt": 3,
+    "state": "failed",
+    "stage": "setup deps",
+    "error": "deps exited 1",
+    "result": "cccccccccccccccccccccccccccccccccccccccc",
+    "branch": "crew/r-0123456789ab/build.3"
+  },
+  "repair": {
+    "review": "4f1c2d3e5a6b7c8d",
+    "attempt": 3,
+    "commit": "cccccccccccccccccccccccccccccccccccccccc",
+    "start": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "request": {
+      "review": "4f1c2d3e5a6b7c8d",
+      "by": "Nate",
+      "changes": [
+        {
+          "id": "a1b2c3d4e5f60718",
+          "kind": "line",
+          "intent": "change",
+          "severity": "major",
+          "path": "parse.go",
+          "side": "candidate",
+          "from": 14,
+          "to": 16,
+          "lines": [
+            "func Parse(s string) *Tree {",
+            "\treturn parse(s, 0)",
+            "}"
+          ],
+          "message": "An empty input panics here.",
+          "resolution": "Return an error for an empty input."
+        }
+      ]
+    }
+  },
+  "writtenAt": "2026-10-31T12:00:00Z"
+}
