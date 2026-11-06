@@ -70,7 +70,7 @@ export function roleWords(r: Pick<BrakemanRole, 'state' | 'why' | 'open' | 'requ
 /** What tries again for an unavailable role, in words ("" for a role that is not). */
 export function retryWords(r: Pick<BrakemanRole, 'state' | 'retryAt'>, now = new Date()): string {
   if (r.state !== 'unavailable') return ''
-  const asked = 'your next request or the next briefing time'
+  const asked = 'your next request, a save of its settings or the next briefing time'
   return r.retryAt ? `It tries again at ${clockTime(r.retryAt, now)}, or sooner on ${asked}.` : `It tries again on ${asked}. Meanwhile the wakes wait in its next batch, and nothing else waits on it.`
 }
 

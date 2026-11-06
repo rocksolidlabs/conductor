@@ -29,6 +29,7 @@ function budget(ms: number) {
 interface Act {
   opId: string
   operation: string
+  op: string
   target: string
   state: string
   receipt?: string
@@ -148,24 +149,34 @@ async function grant(act: string[]) {
  * answers the request once briefed. The act's id is `actId`, and the brief proposes the launch it acts on, at the ticket's revision the
  * turn reads, naming that act (args.opId), as the guide asks of a proposal of an act Brakeman ran.
  */
-async function turn(opId: string, actId: string): Promise<string> {
+async function turn(opId: string, actId: string, propose = true): Promise<string> {
   budget(120_000 + 60_000)
   rmSync(gate, { force: true })
   rmSync(`${actFile}.out`, { force: true })
   const rev = await ticketRev()
   writeFileSync(actFile, `launch_approved_plan ${KEY}\n`)
   writeFileSync(`${actFile}.body`, JSON.stringify({ plan: planId, expectedRev: rev, opId: actId }))
+  const fact = { kind: 'fact/1', text: `Revision 1 of ${KEY} is approved.`, evidence: [`ticket:${KEY}`] }
   writeFileSync(
     briefFile,
-    JSON.stringify({
-      schema: 'brakeman.brief/1',
-      title: `${KEY}'s approved revision`,
-      summary: 'Revision 1 is approved and its approval holds: it can be launched.',
-      items: [
-        { kind: 'fact/1', text: `Revision 1 of ${KEY} is approved.`, evidence: [`ticket:${KEY}`] },
-        { kind: 'proposal/1', text: 'Launch revision 1.', op: 'launch_approved_plan', target: `ticket:${KEY}`, expectedRevision: String(rev), args: { plan: planId, opId: actId }, facts: [0] },
-      ],
-    }),
+    JSON.stringify(
+      propose
+        ? {
+            schema: 'brakeman.brief/1',
+            title: `${KEY}'s approved revision`,
+            summary: 'Revision 1 is approved and its approval holds: it can be launched.',
+            items: [fact, { kind: 'proposal/1', text: 'Launch revision 1.', op: 'launch_approved_plan', target: `ticket:${KEY}`, expectedRevision: String(rev), args: { plan: planId, opId: actId }, facts: [0] }],
+          }
+        : {
+            // As the live check's models briefed an act they ran: a fact, no proposal naming the act, and what they were unsure of as a
+            // Markdown list.
+            schema: 'brakeman.brief/1',
+            title: `${KEY} launched`,
+            summary: 'Revision 1 was launched.',
+            uncertainty: '- Whether its run has finished.\n- Whether its checks pass.',
+            items: [fact],
+          },
+    ),
   )
   const asked = await api.ok<{ request: Request }>('POST', '/api/brakeman/requests', { opId, kind: 'explain', subjects: [`ticket:${KEY}`] })
   // One turn at a time: a turn before this one holds the slot until its run has stopped (the brief's grace, then the stop).
@@ -206,7 +217,7 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
   await expect.poll(async () => (await api.ok<{ config: { permissions: { act?: string[] } } }>('GET', '/api/brakeman')).config.permissions.act).toEqual(['launch_approved_plan'])
 
   const id = await turn('bka-ask-1', 'bka-act-1')
-  expect(await actOut()).toMatch(/^taken\nlaunch_approved_plan ran \(opId bka-act-1\): receipt [0-9a-f]{16}, done; run \S+ launched/)
+  expect(await actOut()).toMatch(/^taken\nlaunch_approved_plan ran \(opId bka-act-1\): done; its receipt is op:brakeman\/bk[0-9a-f]{30}, the ref a brief cites it by \(an outcome\/1's receipt\); launch [0-9a-f]{16}; run \S+ launched/)
   const acts = (await request(id)).acts ?? []
   expect(acts).toHaveLength(1)
   expect(acts[0]).toMatchObject({ opId: 'bka-act-1', operation: 'launch_approved_plan', target: `ticket:${KEY}`, state: 'done' })
@@ -266,11 +277,39 @@ test('granted in Settings, Brakeman launches the approved revision, and the brie
   await page.unroute(launchRoute)
 })
 
+test("an act the brief names in no proposal shows apart with its receipt, and the act's words give the ref that cites it", async ({ page }) => {
+  // The grant is still on from the test before (serial).
+  const id = await turn('bka-ask-apart', 'bka-act-apart', false)
+  const out = await actOut()
+  const acts = (await request(id)).acts ?? []
+  expect(acts).toHaveLength(1)
+  expect(acts[0]).toMatchObject({ opId: 'bka-act-apart', state: 'done' })
+  const launch = (await api.ok<{ launch: Launch }>('GET', `/api/dispatch/launches/${acts[0]!.receipt}`)).launch
+  runs.push(launch.runId)
+  // The words name the receipt by the ref a brief cites it by, and the launch as the launch.
+  expect(out).toContain(`its receipt is op:brakeman/${acts[0]!.op},`)
+  expect(out).toContain(`; launch ${launch.id};`)
+
+  // The brief: one wait of 30 s and six steps.
+  budget(30_000 + 6 * STEP_MS)
+  await open(page, `/brakeman?request=${id}`)
+  const apart = page.locator(`[data-brief="${id}"] [data-brief-acts]`)
+  const card = apart.locator('[data-act="bka-act-apart"]')
+  await expect(card).toHaveAttribute('data-act-shown', 'done', { timeout: 30_000 })
+  await expect(card.locator('[data-proposal-did-badge]')).toHaveText('Brakeman did this')
+  await expect(card.locator(`[data-ref-chip="launch:${launch.id}"]`)).toBeVisible()
+  await expect(card.locator(`[data-proposal-did-run="${launch.runId}"]`)).toHaveAttribute('href', `/runs/${launch.runId}`)
+  await expect(page.locator(`[data-brief="${id}"] [data-brief-proposal]`)).toHaveCount(0)
+  // What Brakeman is unsure of is Markdown, drawn as the summary is: its list a list.
+  await expect(page.locator(`[data-brief="${id}"] [data-brief-uncertainty] li`)).toHaveCount(2)
+})
+
 test('with the grant taken away, the act is refused and kept nowhere, and the proposal is a proposal only', async ({ page }) => {
   await grant([])
   const entries = async () => (await api.ok<{ entries?: unknown[] }>('GET', `/api/dispatch/tickets/${KEY}/runs`)).entries?.length ?? 0
   const before = await entries()
-  expect(before).toBe(1)
+  // The two launches of the tests before it, each granted.
+  expect(before).toBe(2)
   const id = await turn('bka-ask-2', 'bka-act-2')
   const out = await actOut()
   expect(out).toMatch(/^refused\n/)

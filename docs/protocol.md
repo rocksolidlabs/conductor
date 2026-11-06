@@ -3509,9 +3509,17 @@ crew a person names Brakeman is saved as `brakeman-2`.
 **A request's states.** `queued` → `starting` → `running` →
 `briefed`; the others close it: `timed_out` (its deadline, which covers
 `starting`), `ended` (its session ended with no brief, after it read its
-request), `failed` (the launch failed, with the engine's words, or the
+request), `failed` (the launch failed, with the engine's words; the
 agent exited before it read its request: "is it logged in?", with its
-exit and last line), `over_budget` (at the dequeue the day's turns were
+exit and last line; or, before it read its request, its agent shows a
+startup question the turn may not pass, ended at once with the words of
+what it shows and no key typed into it: a startup question with no
+answers, a screen no key of Conductor's passes (Claude Code's sign-in
+screen, "its login refused"), ends any turn, and any startup question (a
+trust question, an update dialog) ends a wake turn, whose questions page
+no one, saying to answer it in a session of that agent; a person's own
+turn shows one with answers under Needs you, as before; the turn is
+charged the minutes it ran), `over_budget` (at the dequeue the day's turns were
 spent, or the day's minutes left fewer than 2), `cancelled` (a person, or Brakeman turned off, which cancels the
 turn in progress and the queue) and `interrupted` (the server stopped
 while it was starting or running; a restart finds it so). A deadline, a
@@ -3909,10 +3917,13 @@ request still queued (behind a person's turn) waits in the queue,
 starting once the role is resumed; the briefing times passed while
 paused fire nothing, whether or not the role stepped between;
 `unavailable` (a turn could not start: its launch refused, its agent
-exited before it read its request, or the day's turns or minutes spent)
-says why, keeps its batch (a turn that started none gives its wakes to
-the next batch, under a new id), and tries again on a person's request, the
-next briefing time, or, for a budget spent, the next local day. The
+exited before it read its request or was held at a startup question it
+may not pass, or the day's turns or minutes spent) says why, keeps its
+batch (a turn that started none gives its wakes to the next batch, under
+a new id), and tries again on a person's request, the next briefing
+time, a save of the configuration (`PUT /api/brakeman/config`: a budget
+raised fires the batch kept within its rules, one still spent says so
+again in words true now), or, for a budget spent, the next local day. The
 day's minutes, `budget.minutesPerDay` (10 to 1,440; 240), count every
 turn, whatever started it: a turn's reservation at its start is the
 least of `turnMinutes` and what the day has left, its deadline its start

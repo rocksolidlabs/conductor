@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actReceiptRef, actShown, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { renderMarkdown } from './markdown'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actsApart, readingBlocks, actReceiptRef, actShown, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -520,6 +521,18 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
     expect(actFor(proposal('prepare_followup', 'ticket:CND-4', { crew: 'b', opId: 'f2' }), followups)).toBeUndefined()
   })
 
+  it('shows apart every act of the request that no proposal shows, so an act the brief never names still shows', () => {
+    const acts = [act({ opId: 'a1' }), act({ opId: 'a2', receipt: 'fedcba9876543210' }), act({ opId: 'r1', state: 'refused', receipt: undefined })]
+    const fact: BriefItem = { kind: 'fact/1', text: 'CND-4 was launched.', evidence: ['ticket:CND-4'] }
+    // The live check's briefs: a fact and an outcome, no proposal naming the act; every act shows apart.
+    expect(actsApart([fact, { kind: 'outcome/1', text: 'Launched.', receipt: 'op:brakeman/bk' + '0'.repeat(30) }], acts).map((a) => a.opId)).toEqual(['a1', 'a2', 'r1'])
+    // A proposal that names one draws it; the rest show apart, in the order they ran.
+    expect(actsApart([fact, proposal('launch_approved_plan', 'ticket:CND-4', { opId: 'a2' })], acts).map((a) => a.opId)).toEqual(['a1', 'r1'])
+    expect(actsApart([fact, proposal('launch_approved_plan', 'ticket:CND-4', { opId: 'never-ran' })], acts)).toHaveLength(3)
+    expect(actsApart([fact], undefined)).toEqual([])
+    expect(actsApart([fact], [])).toEqual([])
+  })
+
   it('says "Brakeman did this" with its receipt only for an act done, and what became of any other', () => {
     expect(actWords(act({}), { state: 'started', runId: 'r-1' })).toBe('Brakeman did this, under the grant "Launch an approved plan" you gave it: receipt 0123456789abcdef.')
     expect(actWords(act({ operation: 'prepare_followup', receipt: 'fedcba9876543210' }))).toBe('Brakeman did this, under the grant "Prepare a follow-up" you gave it: receipt fedcba9876543210.')
@@ -584,4 +597,18 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
     expect([stopped, reads, shownAfter]).toEqual([null, 1, []])
   })
 
+})
+
+describe("Brakeman's reading", () => {
+  it('renders what it is unsure of as Markdown, as the summary is: a list stays a list', () => {
+    const blocks = readingBlocks({ summary: 'Two runs:\n\n- one failed\n- one passed', uncertainty: '- My read of the logs is partial.\n- This turn read no screen.' })
+    expect(blocks.map((b) => b.key)).toEqual(['summary', 'uncertainty'])
+    expect(blocks[1]!.label).toBe('Uncertain')
+    for (const b of blocks) {
+      const { html } = renderMarkdown(b.text, { dir: '', relativeLinks: false })
+      expect(html).toMatch(/<ul>\s*<li>/)
+    }
+    expect(readingBlocks({ summary: 'Quiet.' }).map((b) => b.key)).toEqual(['summary'])
+    expect(readingBlocks({ summary: 'Quiet.', uncertainty: '  ' }).map((b) => b.key)).toEqual(['summary'])
+  })
 })

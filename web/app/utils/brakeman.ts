@@ -1038,6 +1038,32 @@ export function actFor(p: Extract<BriefItem, { kind: 'proposal/1' }>, acts: read
 }
 
 /**
+ * The acts of a request that no proposal of its brief shows (actFor), in the order Brakeman ran them: the brief page shows them apart,
+ * under "What Brakeman did", each with its receipt, so every act a request holds shows on the page whether or not the brief names it
+ * (two real models briefed an act they ran without a proposal naming it, and it showed nowhere).
+ */
+export function actsApart(items: readonly BriefItem[], acts: readonly BrakemanAct[] | undefined): BrakemanAct[] {
+  if (!acts?.length) return []
+  const shown = new Set<BrakemanAct>()
+  for (const it of items) {
+    if (it.kind !== 'proposal/1') continue
+    const a = actFor(it, acts)
+    if (a) shown.add(a)
+  }
+  return acts.filter((a) => !shown.has(a))
+}
+
+/**
+ * Brakeman's reading as the brief page draws it: the summary, then what it is unsure of, each Markdown rendered the same way (a list
+ * written in either is drawn as a list); the uncertainty only when it has one.
+ */
+export function readingBlocks(b: Pick<BrakemanBrief, 'summary' | 'uncertainty'>): Array<{ key: 'summary' | 'uncertainty'; label?: string; text: string }> {
+  const out: Array<{ key: 'summary' | 'uncertainty'; label?: string; text: string }> = [{ key: 'summary', text: b.summary }]
+  if (b.uncertainty?.trim()) out.push({ key: 'uncertainty', label: 'Uncertain', text: b.uncertainty })
+  return out
+}
+
+/**
  * The launch an act's receipt names (GET /api/dispatch/launches/{id}), as much of it as the act's card needs: Dispatch keeps the launch,
  * and its receipt done, before the run is started, so the launch's own state says what came of it: pending while its run is being
  * started, started with its run, failed with its words when the run never started.
