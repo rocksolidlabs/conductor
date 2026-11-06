@@ -3979,14 +3979,17 @@ repository's common git directory, absolute), `branch` and `startCommit`
 read in one `git rev-parse` in the folder opened and checked, the one its
 process starts in, before it starts (`startFrom: "launch"`; an attempt of
 a managed run has `startFrom: "attempt"`, its start being the ledger's),
-and `endCommit`, HEAD read after its end at the folder's path, an
-observation kept only while that path is still the launch's repository
-(its top and common directory); its `launch` (server sessions: `args` only when the launch
+and `endCommit`, HEAD read once its process is gone in the session's own
+folder as it was opened (through its handle where the system has one), an
+observation kept only when the repository found there is the launch's by
+the file system's identity of its common directory, never by a path's
+text; its `launch` (server sessions: `args` only when the launch
 fits 16 KiB, else `argCount` and `argsSha256` with `argsKept: false`; the
 variables' `envNames`, at most 64, `envCount` and one `envSha256` over the
 sorted `name=value` lines, never a value; `yolo`, `renamed`); its `crew`
 (`runId, crewId, member, task?, attempt?, brakeman?`); `resumedFrom`;
-`startedAt`; `endedAt` (an observed end: an exit or a stop), or `lostAt`
+`startedAt`; `endedAt` (an observed end: an exit, or a stop once the
+process is gone; a stop that failed leaves the record open), or `lostAt`
 when the server stopped observing it (`ending` `lost` for a server
 session's record found open at the next start, `host away` for a hosted
 one's, or for one its hub let go past the disconnect grace: whether its
@@ -4006,7 +4009,9 @@ was sent to the agent), `report` (`event` `progress`, `artifact`,
 last}]`, one row per path and op, at most 500, a path the session's deny
 list covers never written; `tools`, tool uses counted by tool, at most 64;
 `dropped`, the entries and files its bounds let go, oldest first, and
-those that came after its end; `resumes`, the receipts of resumes from it.
+those that came after a server session's end (a hosted record keeps what
+its host sends, in its place by the host's clock, which its end, stamped
+by the server's, does not bound); `resumes`, the receipts of resumes from it.
 Never kept: what a person types into a terminal or a reply box, a typed
 answer's text (whoever passed it on: a reply box, a provider, a route's
 answer on a host), a variable's value, who joined, left or came through a

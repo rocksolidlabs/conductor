@@ -347,7 +347,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if where == "" {
 		where = ext.WhereNative
 	}
-	rev := s.launchRevision(where, cwd, dirFile)
+	rev, repo := s.launchRevision(where, cwd, dirFile)
 	term, err := rt.StartTerminal(startCtx, ext.TerminalSpec{
 		Argv:    argv,
 		Dir:     cwd,
@@ -389,7 +389,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		if id, ok := s.cachedIdentity(agent); ok && id.Identified {
 			version = id.Version
 		}
-		s.beginServerRecord(info, launched, agent.Adapter, agent.Name, version, where, rev)
+		s.beginServerRecord(info, launched, agent.Adapter, agent.Name, version, where, rev, repo)
 	}
 	local := session.NewLocal(info, session.RuntimeProcess(term), session.Options{
 		ScrollbackBytes: s.cfg.ScrollbackBytes,
@@ -424,6 +424,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if err := s.registry.AddReserved(local, req.reservation); err != nil {
 		if s.sessionRecords != nil {
 			s.sessionRecords.Abandon(id)
+			s.recordRepos.Delete(id)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

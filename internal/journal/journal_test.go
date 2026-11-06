@@ -273,11 +273,11 @@ func TestAFileFoldsIntoOneRowPerPathAndOp(t *testing.T) {
 func TestADenyListedPathIsNeverWritten(t *testing.T) {
 	var asked []string
 	var mu sync.Mutex
-	j, dir := newJournal(t, Options{Denied: func(id, path string) bool {
+	j, dir := newJournal(t, Options{Denied: func(id, path string) (bool, bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		asked = append(asked, id+" "+path)
-		return strings.HasPrefix(path, "/data/")
+		return strings.HasPrefix(path, "/data/"), true
 	}})
 	id := sid(1)
 	begin(t, j, serverRecord(id))
@@ -1206,27 +1206,27 @@ func TestPruneKeepsTheLastToEnd(t *testing.T) {
 
 // Close gives the end commits still being read closeWait, together, and
 // returns with every end written, without the commits not read by then,
-// even when the reads never return.
+// even when the reads never return. Close begins once one read is under
+// way, whichever pass took the others: every end is written all the same.
 func TestCloseGivesUpOnEndCommits(t *testing.T) {
 	old := closeWait
 	closeWait = 50 * time.Millisecond
 	t.Cleanup(func() { closeWait = old })
 	hung := make(chan struct{})
 	t.Cleanup(func() { close(hung) })
-	var reads sync.WaitGroup
+	started := make(chan struct{}, 8)
 	j, dir := newJournal(t, Options{EndCommit: func(context.Context, Record) string {
-		reads.Done()
+		started <- struct{}{}
 		<-hung
 		return "0123456789abcdef0123456789abcdef01234567"
 	}})
 	for i := range 3 {
 		begin(t, j, serverRecord(sid(i)))
 	}
-	reads.Add(3)
 	for i := range 3 {
 		j.End(sid(i), Ending{How: "stopped"})
 	}
-	reads.Wait() // every read under way, none returning
+	<-started // a read under way, never returning
 	if err := j.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1283,7 +1283,7 @@ func TestACrewTakenIsWrittenAtOnce(t *testing.T) {
 // The deny list judges the path a touch came with, never the path cut to
 // MaxPath: a denied name past the bound is not kept.
 func TestTheDenyListJudgesTheWholePath(t *testing.T) {
-	j, dir := newJournal(t, Options{Denied: func(_, path string) bool { return strings.HasSuffix(path, "/.env") }})
+	j, dir := newJournal(t, Options{Denied: func(_, path string) (bool, bool) { return strings.HasSuffix(path, "/.env"), true }})
 	id := sid(1)
 	begin(t, j, serverRecord(id))
 	long := "/w/" + strings.Repeat("a", MaxPath) + "/.env"
@@ -1303,7 +1303,7 @@ func TestAGoneSessionsPendingWorkIsKept(t *testing.T) {
 	slowFlush(t)
 	j, dir := newJournal(t, Options{
 		Current: func(string) (Meta, bool) { return Meta{}, false },
-		Denied:  func(string, string) bool { return true },
+		Denied:  func(string, string) (bool, bool) { return true, true },
 	})
 	id := sid(1)
 	begin(t, j, serverRecord(id))
@@ -1580,4 +1580,546 @@ func TestAnEndFoundInTheMetadataIsWrittenByItsPass(t *testing.T) {
 	if r, _ := onDisk(t, dir, sid(2)); !r.EndedAt.Equal(end) {
 		t.Fatalf("after Close: %+v", r)
 	}
+}
+
+// gateDelete holds every delete of a record's file until the test lets it
+// go, answering fail's error then.
+func gateDelete(t *testing.T, fail error) (entered <-chan string, release func()) {
+	in := make(chan string, 8)
+	gate := make(chan struct{})
+	var once sync.Once
+	beforeDelete = func(name string) error {
+		in <- name
+		<-gate
+		return fail
+	}
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(func() {
+		release()
+		beforeDelete = nil
+	})
+	return in, release
+}
+
+// messages is what the entries of r say, in their order.
+func messages(r Record) []string {
+	var out []string
+	for _, e := range r.Entries {
+		out = append(out, e.Message)
+	}
+	return out
+}
+
+// A hosted Begin of an id whose record a removal is deleting is a record
+// begun after the removal: the removal deletes the record it chose, and
+// the new one is written once the delete is done, nothing of the old one
+// in it. Should the delete fail, the record kept is taken up again, as a
+// Begin after the failed removal would: from its file, or from memory
+// when it was still there, what came meanwhile put among it.
+func TestAHostedBeginDuringItsRemoval(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		inMemory, failed bool
+	}{
+		{"from its file", false, false},
+		{"from memory", true, false},
+		{"from its file, the delete failed", false, true},
+		{"from memory, the delete failed", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			slowFlush(t)
+			dir := t.TempDir()
+			id := sid(1)
+			if !tc.inMemory {
+				writeRecord(t, dir, awayRecord(id, "o1"))
+			}
+			j := openAt(t, dir, Options{})
+			if tc.inMemory {
+				begin(t, j, hostedRecord(id, "o1"))
+				j.Note(id, Activity{Type: actProgress, Message: "before"})
+				j.End(id, Ending{How: EndingHostAway, Lost: true})
+				j.Flush()
+				if !inMemory(j, id) {
+					t.Fatal("the record left memory")
+				}
+			}
+			var fail error
+			if tc.failed {
+				fail = errors.New("a disk that did not answer")
+			}
+			entered, release := gateDelete(t, fail)
+			forgot := make(chan error, 1)
+			go func() { forgot <- j.Forget(id) }()
+			<-entered // the removal chose the record and holds its delete
+			begin(t, j, hostedRecord(id, "o1"))
+			j.Note(id, Activity{Type: actProgress, Message: "after"})
+			release()
+			if err := <-forgot; (err != nil) != tc.failed {
+				t.Fatalf("the removal answered %v", err)
+			}
+			j.Flush()
+			r, _ := onDisk(t, dir, id)
+			want, reopened := []string{"after"}, 0
+			if tc.failed {
+				want, reopened = []string{"before", "taken up again by its host", "after"}, 1
+			}
+			if got := messages(r); !slices.Equal(got, want) || r.Reopened != reopened || !r.LostAt.IsZero() || r.Ending != "" {
+				t.Fatalf("the record: entries %q reopened %d lost %v ending %q", got, r.Reopened, r.LostAt, r.Ending)
+			}
+			if page, _ := j.List("", 10); len(page.Records) != 1 || !page.Records[0].LostAt.IsZero() {
+				t.Fatalf("listed %+v", page.Records)
+			}
+			if err := j.Forget(id); !errors.Is(err, ErrLive) {
+				t.Fatalf("forget the record begun: %v", err)
+			}
+		})
+	}
+}
+
+// gateDenied is a Denied that holds its first question until the test
+// lets it go, then answers every path as answer does.
+func gateDenied(t *testing.T, answer func(path string) (bool, bool)) (o Options, entered <-chan string, release func()) {
+	in := make(chan string, 64)
+	gate := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	o.Denied = func(_, path string) (bool, bool) {
+		select {
+		case in <- path:
+		default:
+		}
+		<-gate
+		return answer(path)
+	}
+	return o, in, release
+}
+
+// A removal (Forget, ForgetAll, Prune) against a record in each state the
+// writer's fold passes through: an open record is refused or kept while it
+// folds; an ended one being folded (its deny list asked, held here) or
+// folded and being written (its write held) is deleted, and nothing of it
+// is written after.
+func TestARemovalAgainstTheFold(t *testing.T) {
+	removals := []struct {
+		name   string
+		setup  func(t *testing.T)
+		remove func(j *Journal, id string) (removed bool, err error)
+	}{
+		{"forget", func(*testing.T) {}, func(j *Journal, id string) (bool, error) {
+			err := j.Forget(id)
+			return err == nil, err
+		}},
+		{"forget all", func(*testing.T) {}, func(j *Journal, _ string) (bool, error) {
+			n, _, err := j.ForgetAll()
+			return n == 1, err
+		}},
+		{"prune", func(t *testing.T) {
+			// Set before the journal opens: its writer prunes too.
+			maxRecords = 0
+			t.Cleanup(func() { maxRecords = MaxRecords })
+		}, func(j *Journal, id string) (bool, error) {
+			j.Prune()
+			j.mu.Lock()
+			defer j.mu.Unlock()
+			_, kept := j.index[id]
+			return !kept, nil
+		}},
+	}
+	at := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
+	for _, rm := range removals {
+		t.Run(rm.name+", open, folding", func(t *testing.T) {
+			slowFlush(t)
+			rm.setup(t)
+			o, entered, release := gateDenied(t, func(string) (bool, bool) { return false, true })
+			j, dir := newJournal(t, o)
+			id := sid(1)
+			begin(t, j, serverRecord(id))
+			j.Touch(id, File{Path: "/w/main.go", Op: "edit", Last: at})
+			go j.Flush()
+			<-entered
+			removed, err := rm.remove(j, id)
+			if removed || (rm.name == "forget" && !errors.Is(err, ErrLive)) {
+				t.Fatalf("an open record removed: %v %v", removed, err)
+			}
+			release()
+			j.Flush()
+			if r, _ := onDisk(t, dir, id); len(r.Files) != 1 {
+				t.Fatalf("the open record's files %+v", r.Files)
+			}
+		})
+		t.Run(rm.name+", ended, folding", func(t *testing.T) {
+			slowFlush(t)
+			rm.setup(t)
+			o, entered, release := gateDenied(t, func(string) (bool, bool) { return false, true })
+			j, dir := newJournal(t, o)
+			id := sid(1)
+			begin(t, j, serverRecord(id))
+			j.Touch(id, File{Path: "/w/main.go", Op: "edit", Last: at})
+			j.End(id, Ending{At: at.Add(time.Second), How: "exited (exit 0)"})
+			<-entered // the end's pass asks the deny list, held
+			if removed, err := rm.remove(j, id); !removed || err != nil {
+				t.Fatalf("the ended record was not removed: %v", err)
+			}
+			release()
+			j.Flush()
+			if exists(dir, id) || inMemory(j, id) {
+				t.Fatal("the record removed while it folded was written again")
+			}
+			if page, _ := j.List("", 10); len(page.Records) != 0 {
+				t.Fatalf("listed %+v", page.Records)
+			}
+		})
+		t.Run(rm.name+", ended, folded", func(t *testing.T) {
+			slowFlush(t)
+			rm.setup(t)
+			j, dir := newJournal(t, Options{})
+			id := sid(1)
+			begin(t, j, serverRecord(id))
+			j.Touch(id, File{Path: "/w/main.go", Op: "edit", Last: at})
+			in := make(chan struct{}, 8)
+			gate := make(chan struct{})
+			beforeWrite = func(name string) error {
+				if name == SessionsDir+"/"+id+".json" {
+					in <- struct{}{}
+					<-gate
+				}
+				return nil
+			}
+			t.Cleanup(func() { beforeWrite = nil })
+			j.End(id, Ending{At: at.Add(time.Second), How: "exited (exit 0)"})
+			<-in // folded, its write under way and held
+			done := make(chan error, 1)
+			go func() {
+				removed, err := rm.remove(j, id)
+				if err == nil && !removed {
+					err = errors.New("not removed")
+				}
+				done <- err
+			}()
+			close(gate)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			beforeWrite = nil
+			j.Flush()
+			if exists(dir, id) || inMemory(j, id) {
+				t.Fatal("the record removed after its fold was written again")
+			}
+		})
+	}
+}
+
+// A touch the server can no longer judge (Denied answers it does not list
+// the session) is judged by the deny list the session left with (Gone),
+// also when the session left while the fold was asking: the list is read
+// again for it. Until that list comes the touch waits, written nowhere; in
+// a record a late hook brought back, whose Gone is past, it is refused.
+func TestATouchWaitsForTheListTheSessionLeftWith(t *testing.T) {
+	slowFlush(t)
+	c := newClock()
+	o, entered, release := gateDenied(t, func(string) (bool, bool) { return false, false })
+	o.Now = c.Now
+	j, dir := newJournal(t, o)
+	id := sid(1)
+	begin(t, j, serverRecord(id))
+	j.Touch(id, File{Path: "/w/secret.key", Op: "read"})
+	j.Touch(id, File{Path: "/w/main.go", Op: "edit"})
+	go j.Flush()
+	<-entered // the fold asks Denied, which will answer it no longer lists the session
+	j.Gone(id, Meta{Name: "cat #1"}, func(path string) bool { return path == "/w/secret.key" })
+	release()
+	j.Flush()
+	if r, raw := onDisk(t, dir, id); len(r.Files) != 1 || r.Files[0].Path != "/w/main.go" || bytes.Contains(raw, []byte("secret.key")) {
+		t.Fatalf("files %+v", r.Files)
+	}
+
+	// Another session, no list yet: the touch waits for it.
+	other := sid(2)
+	begin(t, j, serverRecord(other))
+	j.Touch(other, File{Path: "/w/kept.go", Op: "edit"})
+	j.Flush()
+	if r, _ := onDisk(t, dir, other); len(r.Files) != 0 {
+		t.Fatalf("judged with no list: %+v", r.Files)
+	}
+	j.Gone(other, Meta{Name: "cat #1"}, func(string) bool { return false })
+	j.End(other, Ending{At: c.Now().Add(time.Second), How: "exited (exit 0)"})
+	j.Flush()
+	if r, _ := onDisk(t, dir, other); len(r.Files) != 1 || r.Files[0].Path != "/w/kept.go" {
+		t.Fatalf("after its list came: %+v", r.Files)
+	}
+	// It leaves memory; a late touch brings it back, and no list will come.
+	c.add(2 * time.Hour)
+	j.Flush()
+	if inMemory(j, other) {
+		t.Fatal("the ended record is still in memory")
+	}
+	j.Touch(other, File{Path: "/w/late.go", Op: "edit", Last: c.Now().Add(-time.Hour)})
+	j.Flush()
+	if r, _ := onDisk(t, dir, other); len(r.Files) != 1 {
+		t.Fatalf("a late touch no list judged was kept: %+v", r.Files)
+	}
+}
+
+// A hosted record's entries and files carry its host's clock and its end
+// the server's: what the host sends is kept whatever the two clocks say,
+// in its place by the host's; a server record still drops what comes
+// after its end.
+func TestAHostedRecordKeepsItsHostsEvidenceByItsClock(t *testing.T) {
+	j, dir := newJournal(t, Options{})
+	hosted, server := sid(1), sid(2)
+	begin(t, j, hostedRecord(hosted, "o1"))
+	begin(t, j, serverRecord(server))
+	end := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
+	ahead := end.Add(time.Hour) // the host's clock, an hour ahead of the server's
+	for _, id := range []string{hosted, server} {
+		j.End(id, Ending{At: end, How: "exited (exit 0)"})
+		j.Note(id, Activity{At: ahead, Type: actProgress, Message: "before the exit, by the host's clock"})
+		j.Touch(id, File{Path: "/w/main.go", Op: "edit", Last: ahead})
+	}
+	j.Flush()
+	h, _ := onDisk(t, dir, hosted)
+	if got := messages(h); !slices.Equal(got, []string{"before the exit, by the host's clock"}) || len(h.Files) != 1 || h.Dropped != 0 {
+		t.Fatalf("the hosted record: entries %q files %+v dropped %d", got, h.Files, h.Dropped)
+	}
+	s, _ := onDisk(t, dir, server)
+	if len(s.Entries) != 0 || len(s.Files) != 0 || s.Dropped != 2 {
+		t.Fatalf("the server record: entries %+v files %+v dropped %d", s.Entries, s.Files, s.Dropped)
+	}
+}
+
+// Close's last pass held at its write: what comes then is refused (an
+// end, an entry), Close has not returned, and once it does the record
+// holds its first end, once, and what the last pass wrote; an end commit
+// read that answers after Close changes nothing on disk.
+func TestCloseLastPassHeld(t *testing.T) {
+	slowFlush(t)
+	old := closeWait
+	closeWait = 50 * time.Millisecond
+	t.Cleanup(func() { closeWait = old })
+	late := make(chan struct{})
+	lateClosed := sync.OnceFunc(func() { close(late) })
+	t.Cleanup(lateClosed)
+	started := make(chan struct{}, 1)
+	returned := make(chan struct{})
+	first, second := sid(1), sid(2)
+	j, dir := newJournal(t, Options{EndCommit: func(_ context.Context, r Record) string {
+		if r.ID != second {
+			return ""
+		}
+		defer close(returned)
+		started <- struct{}{}
+		<-late
+		return "0123456789abcdef0123456789abcdef01234567"
+	}})
+	begin(t, j, serverRecord(first))
+	begin(t, j, serverRecord(second))
+	at := time.Now().UTC()
+	j.End(first, Ending{At: at.Add(time.Second), How: "exited (exit 0)"})
+	j.Flush()
+	j.Note(first, Activity{At: at, Type: actStatus, Message: "kept by the last pass"})
+	j.End(second, Ending{How: "stopped"})
+	<-started
+	in := make(chan struct{}, 8)
+	gate := make(chan struct{})
+	beforeWrite = func(name string) error {
+		if name == SessionsDir+"/"+first+".json" {
+			in <- struct{}{}
+			<-gate
+		}
+		return nil
+	}
+	t.Cleanup(func() { beforeWrite = nil })
+	closed := make(chan struct{})
+	go func() {
+		j.Close()
+		close(closed)
+	}()
+	<-in // the last pass writes the first record, held
+	j.End(first, Ending{How: "stopped"})
+	j.Note(first, Activity{At: at, Type: actStatus, Message: "after Close began"})
+	select {
+	case <-closed:
+		t.Fatal("Close returned with its last pass held")
+	default:
+	}
+	close(gate)
+	<-closed
+	r, _ := onDisk(t, dir, first)
+	if got := messages(r); r.Ending != "exited (exit 0)" || !slices.Contains(got, "kept by the last pass") || slices.Contains(got, "after Close began") {
+		t.Fatalf("the first record after Close: ending %q entries %q", r.Ending, got)
+	}
+	before, _ := os.ReadFile(filepath.Join(dir, Dir, SessionsDir, second+".json"))
+	lateClosed()
+	<-returned
+	j.Flush()
+	after, _ := os.ReadFile(filepath.Join(dir, Dir, SessionsDir, second+".json"))
+	if s, _ := onDisk(t, dir, second); s.EndedAt.IsZero() || s.End != "" || !bytes.Equal(before, after) {
+		t.Fatalf("the second record after its late read: %+v", s)
+	}
+}
+
+// A fold under way (held at its deny list) while a removal deletes the
+// record and a hosted Begin of its id comes: the delete done, the record
+// begun after it takes nothing of the old one's touch; the delete failed,
+// the record taken up again takes it.
+func TestAFoldUnderWayFollowsTheRecordItsRemovalLeaves(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("the delete failed: %v", failed), func(t *testing.T) {
+			slowFlush(t)
+			// The deny list's first question is the touch below.
+			o, folding, releaseFold := gateDenied(t, func(string) (bool, bool) { return false, true })
+			j, dir := newJournal(t, o)
+			id := sid(1)
+			begin(t, j, hostedRecord(id, "o1"))
+			j.Note(id, Activity{Type: actProgress, Message: "before"})
+			j.End(id, Ending{How: EndingHostAway, Lost: true})
+			j.Flush()
+			j.Touch(id, File{Path: "/w/old.go", Op: "edit"})
+			flushed := make(chan struct{})
+			go func() {
+				j.Flush()
+				close(flushed)
+			}()
+			<-folding // the old record's touch is being judged, held
+			var fail error
+			if failed {
+				fail = errors.New("a disk that did not answer")
+			}
+			deleting, releaseDelete := gateDelete(t, fail)
+			forgot := make(chan error, 1)
+			go func() { forgot <- j.Forget(id) }()
+			<-deleting
+			begin(t, j, hostedRecord(id, "o1"))
+			j.Note(id, Activity{Type: actProgress, Message: "after"})
+			releaseDelete()
+			if err := <-forgot; (err != nil) != failed {
+				t.Fatalf("the removal answered %v", err)
+			}
+			releaseFold()
+			<-flushed
+			j.Flush()
+			r, _ := onDisk(t, dir, id)
+			want, files := []string{"after"}, 0
+			if failed {
+				want, files = []string{"before", "taken up again by its host", "after"}, 1
+			}
+			if got := messages(r); !slices.Equal(got, want) || len(r.Files) != files {
+				t.Fatalf("the record: entries %q files %+v", got, r.Files)
+			}
+		})
+	}
+}
+
+// listed says whether the journal's list holds id.
+func listed(t *testing.T, j *Journal, id string) bool {
+	t.Helper()
+	page, err := j.List("", MaxPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range page.Records {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// A forgotten record leaves what a reader is handed before its file goes:
+// held between the two (the delete held, the file still there), Get
+// answers ErrNotFound and List leaves it out, though the record was in
+// memory; a delete that fails puts it back. A Get already reading the
+// record's file when Forget begins ends before the record is hidden and
+// its file goes, and none after Forget hands it out.
+func TestAForgottenRecordIsHiddenBeforeItsFileGoes(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("the delete failed: %v", failed), func(t *testing.T) {
+			slowFlush(t)
+			j, dir := newJournal(t, Options{})
+			id := sid(1)
+			begin(t, j, serverRecord(id))
+			j.End(id, Ending{How: "exited (exit 0)"})
+			j.Flush()
+			if !inMemory(j, id) {
+				t.Fatal("the record left memory")
+			}
+			var fail error
+			if failed {
+				fail = errors.New("a disk that did not answer")
+			}
+			deleting, release := gateDelete(t, fail)
+			forgot := make(chan error, 1)
+			go func() { forgot <- j.Forget(id) }()
+			<-deleting // its file still there, its delete held
+			if !exists(dir, id) {
+				t.Fatal("the file went before the delete")
+			}
+			if _, _, err := j.Get(id); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("Get during the forget: %v", err)
+			}
+			if listed(t, j, id) {
+				t.Fatal("listed during the forget")
+			}
+			release()
+			if err := <-forgot; (err != nil) != failed {
+				t.Fatalf("the forget answered %v", err)
+			}
+			_, _, err := j.Get(id)
+			if failed != (err == nil) || failed != listed(t, j, id) {
+				t.Fatalf("after the forget: Get %v, listed %v", err, listed(t, j, id))
+			}
+		})
+	}
+	t.Run("a read under way", func(t *testing.T) {
+		slowFlush(t)
+		c := newClock()
+		j, dir := newJournal(t, Options{Now: c.Now})
+		id := sid(1)
+		begin(t, j, serverRecord(id))
+		j.End(id, Ending{At: c.Now(), How: "exited (exit 0)"})
+		j.Flush()
+		c.add(2 * time.Hour)
+		j.Flush()
+		if inMemory(j, id) {
+			t.Fatal("the record is still in memory")
+		}
+		reading, gate := make(chan struct{}), make(chan struct{})
+		beforeGet = func(string) {
+			close(reading)
+			<-gate
+		}
+		t.Cleanup(func() { beforeGet = nil })
+		got := make(chan error, 1)
+		go func() {
+			_, _, err := j.Get(id)
+			got <- err
+		}()
+		<-reading
+		beforeGet = nil
+		deleting, release := gateDelete(t, nil)
+		forgot := make(chan error, 1)
+		go func() { forgot <- j.Forget(id) }()
+		// The forget waits for the read under way before it hides the
+		// record (rmu): nothing is deleted meanwhile.
+		select {
+		case <-deleting:
+			t.Fatal("the file went while a read begun before was under way")
+		case err := <-forgot:
+			t.Fatalf("the forget returned while a read was under way: %v", err)
+		default:
+		}
+		close(gate)
+		if err := <-got; err != nil {
+			t.Fatalf("the read begun before the forget: %v", err)
+		}
+		<-deleting
+		release()
+		if err := <-forgot; err != nil || exists(dir, id) {
+			t.Fatalf("the forget: %v", err)
+		}
+		if _, _, err := j.Get(id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("a Get after the forget: %v", err)
+		}
+	})
 }

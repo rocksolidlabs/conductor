@@ -137,6 +137,18 @@ func (f *Folder) Close() error { return f.root.Close() }
 // (pty.Spec.DirFile).
 func (f *Folder) Dir() (*os.File, error) { return f.root.Open(".") }
 
+// FolderDir opens the session's folder as it was opened at its start (its
+// working directory, Options.Folder), wherever its path leads now: what a
+// read of the folder after the session's end must go through (the session
+// records' end commit). An error once the session has left the server
+// (Retire closes it) or when it has none.
+func (s *Local) FolderDir() (*os.File, error) {
+	if s.folder == nil {
+		return nil, errFolderGone
+	}
+	return s.folder.Dir()
+}
+
 // check reports whether the folder's path still names the folder, by its
 // links resolved: the paths a request's check speaks of are the folder's.
 func (f *Folder) check() error {

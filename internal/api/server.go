@@ -141,6 +141,15 @@ type Server struct {
 	history      *historyIndexer
 	commits      *commitFan // the commit hooks' observers (commits.go)
 	readRevision func(ctx context.Context, dir string) (gitcli.Revision, error)
+	// recordRepos is each native server session's launch repository, by
+	// the identity of its common git directory (os.FileInfo), until its
+	// end commit is read (recordEndCommit); awaitingEnd the sessions whose
+	// end waits for their process (awaitProcessEnd), which recordsStop,
+	// closed as the journal's close begins (closeSessionRecords), ends.
+	recordRepos    sync.Map
+	awaitingEnd    sync.Map
+	recordsStop    chan struct{}
+	stopRecordsOne sync.Once
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -692,9 +701,7 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	if s.dispatch != nil {
 		s.dispatch.Close()
 	}
-	if s.sessionRecords != nil {
-		s.sessionRecords.Close()
-	}
+	s.closeSessionRecords(false)
 }
 
 // Handler returns the routed handler with middleware applied.
@@ -1215,11 +1222,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}
 	}
 	// The sessions stopped and the hosts let go, every record is written
-	// as it stands: the next start finds a hosted one open and marks it
-	// host away.
-	if s.sessionRecords != nil {
-		s.sessionRecords.Close()
-	}
+	// as it stands, each session's end observed taken from the session
+	// itself, not from a hook that may still be on its way: the next start
+	// finds a hosted one open and marks it host away, and a server one
+	// whose process outlived its stop lost.
+	s.closeSessionRecords(true)
 }
 
 // Registry exposes the session index (used by tests and the CLI).
