@@ -180,15 +180,19 @@ checkpoint first, then ask:
   options, answered Done or Not done, for work a person does). Options are
   numbered from 0 in the order given; --recommend names one by its number.
 - It answers at once with the decision's id and open: "dr-7 open". dr-N is
-  how a decision is named: task decision dr-7 reads it whole, task withdraw
-  dr-7 withdraws it once you no longer need it, --supersedes dr-7 asks a
-  new one in its place. task decision lists your task's decisions.
+  how a decision is named: read it whole (without the id, your task's
+  decisions), withdraw it once you no longer need it, or ask a new one in
+  its place with --supersedes dr-7.
+
+      "${CONDUCTOR_BIN:-conductor}" task decision dr-7
+      "${CONDUCTOR_BIN:-conductor}" task withdraw dr-7
+
 - Then end your turn, or go on with work that does not depend on it; never
-  submit your result before its answer reaches you. The answer is typed into this
-  session as "Decision dr-7 (approval) answered by NAME: ANSWER. Why: ...
-  (receipt dr-7/1)", dr-7/1 being the first response to dr-7; if this
-  session has ended, it is in the Decisions section of the task file of
-  your task's next attempt, which starts at your checkpoint.
+  submit your result before its answer reaches you. The answer is typed
+  into this session as "Decision dr-7 (approval) answered by NAME: ANSWER.
+  Why: ... (receipt dr-7/1)", dr-7/1 being the first response to dr-7; if
+  this session has ended, it is in the Decisions section of the task file
+  of your task's next attempt, which starts at your checkpoint.
 - --evidence cites a record by its ref, repeatable: task:RUN/TASK,
   attempt:RUN/TASK/N, commit:RUN/SHA (in full), file:SESSION/PATH (the
   path absolute), ticket:KEY-n, run:RUN; RUN, TASK, N and SESSION are
