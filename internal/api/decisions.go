@@ -250,8 +250,7 @@ func (s *Server) handleSessionDecision(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSessionDecisionWithdraw withdraws an open decision the attempt
-// asked: {decision}; 409 not_running once the attempt or its run has
-// stopped.
+// asked: {decision}; 409 not_held once its run is being continued.
 func (s *Server) handleSessionDecisionWithdraw(w http.ResponseWriter, r *http.Request) {
 	sid, ok := s.decisionSession(w, r)
 	if !ok {

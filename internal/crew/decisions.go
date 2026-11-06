@@ -820,12 +820,82 @@ type repeatRequest struct{ n int64 }
 
 func (repeatRequest) Error() string { return "the request was sent before" }
 
-// historyDetail encodes a history row's detail.
+// historyDetail encodes a history row's detail within the ledger's bound
+// (ledger.MaxHistoryDetail), whatever it holds: a change that hands its
+// commit a row the ledger would refuse for its size has already changed
+// the engine, and a refused commit carries its writes to every later one,
+// which the same row then fails too (#636, review round 3). Past the
+// bound, its longest strings and lists are cut, longest first, the detail
+// marked "cut" (fitObject).
 func historyDetail(v any) string {
+	return fitJSON(v, ledger.MaxHistoryDetail)
+}
+
+// fitJSON encodes v, a JSON object, in at most limit bytes: as it is when it
+// fits, else as fitObject cuts it. An unencodable v is "" (no detail).
+func fitJSON(v any, limit int) string {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return ""
 	}
+	if len(b) <= limit {
+		return string(b)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return ""
+	}
+	return fitObject(m, len(b), limit)
+}
+
+// fitObject encodes m, whose encoding was size bytes, in at most limit: the
+// longest of its strings and lists cut first (a string to what fits, with
+// "…"; a list by its last elements), m["cut"] true, until it fits; when
+// nothing is left to cut, only its size, which always fits.
+func fitObject(m map[string]any, size, limit int) string {
+	m["cut"] = true
+	for range 64 {
+		b, err := json.Marshal(m)
+		if err != nil {
+			break
+		}
+		if len(b) <= limit {
+			return string(b)
+		}
+		over := len(b) - limit
+		key, longest := "", 0
+		for k, v := range m {
+			n := 0
+			switch v := v.(type) {
+			case string:
+				if len(v) > len("…") {
+					n = len(v)
+				}
+			case []any:
+				if len(v) > 0 {
+					vb, _ := json.Marshal(v)
+					n = len(vb)
+				}
+			}
+			if n > longest || n == longest && n > 0 && k < key {
+				key, longest = k, n
+			}
+		}
+		if longest == 0 {
+			break
+		}
+		switch v := m[key].(type) {
+		case string:
+			keep := max(len(v)-over-8, 0)
+			for keep > 0 && !utf8.RuneStart(v[keep]) {
+				keep--
+			}
+			m[key] = v[:keep] + "…"
+		case []any:
+			m[key] = v[:len(v)/2]
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"cut": true, "oversized": size})
 	return string(b)
 }
 
@@ -2030,7 +2100,10 @@ func (e *Engine) applyTx(r *run, d *decision) tx {
 		}
 	}
 	r.note(session.ActivityStatus, "decision %s applied: %s", d.id(), app.Words)
-	appJSON, _ := json.Marshal(app)
+	// Within the ledger's bound whatever the gate held (128 tasks' ids are
+	// more than it): the change below cannot be put back (#636, review
+	// round 3).
+	appJSON := fitJSON(app, ledger.MaxDecisionApplied)
 	n, rev := d.n, d.rev
 	return tx{events: events, more: func(ltx LedgerTx) error {
 		dtx, err := decisionsOf(ltx)
@@ -2044,7 +2117,7 @@ func (e *Engine) applyTx(r *run, d *decision) tx {
 		if !ok || row.State != ledger.DecisionAnswered || row.CurrentRun != r.id {
 			return fmt.Errorf("%w: %s is not answered in %s", ledger.ErrDecisionState, ledger.DecisionID(n), r.id)
 		}
-		row.State, row.Rev, row.Applied = ledger.DecisionApplied, max(rev, row.Rev+1), string(appJSON)
+		row.State, row.Rev, row.Applied = ledger.DecisionApplied, max(rev, row.Rev+1), appJSON
 		if err := dtx.PutDecision(row); err != nil {
 			return err
 		}

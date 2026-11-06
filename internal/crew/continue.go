@@ -670,7 +670,19 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 		old.resumedBy = r.id
 		old.resuming = false
 		// The decisions it held are the continuation's now: its copies go,
-		// so nothing finds or applies one through it (ConfirmAuthority).
+		// so nothing finds or applies one through it (ConfirmAuthority),
+		// and with them the holds its tasks show (Get, the saved record),
+		// which the move released in the ledger (#636, review round 3).
+		// Only the engine's mirror: the run continued writes nothing more.
+		for _, d := range old.decisions {
+			if d.n == 0 || !d.waits() {
+				continue
+			}
+			for _, t := range d.holds {
+				t.holds = slices.DeleteFunc(t.holds, func(x *decision) bool { return x == d })
+			}
+			d.holds = nil
+		}
 		old.decisions = slices.DeleteFunc(old.decisions, func(d *decision) bool { return d.n != 0 && d.waits() })
 		old.note(session.ActivityStatus, "continued as %s", r.id)
 		old.touch()

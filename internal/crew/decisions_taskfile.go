@@ -33,8 +33,23 @@ type TaskDecision struct {
 	Words     string `json:"words,omitempty"`
 }
 
-// maxTaskDecisions bounds the decisions a task file carries: the newest.
+// maxTaskDecisions bounds the decisions a task file carries that ended
+// without an answer that stands (superseded, cancelled): the newest. Every
+// decision that holds the task or whose answer stands (open, answered,
+// applied) is carried whatever its age, an applied gate's answer in every
+// task it released (#636, review round 3); past maxTaskFile the section
+// goes whole into task-more.json (fitTaskFile).
 const maxTaskDecisions = 20
+
+// standing reports whether a task file carries a decision in this state
+// whatever its age: it holds the task, or its answer stands.
+func standing(state string) bool {
+	switch state {
+	case ledger.DecisionOpen, ledger.DecisionAnswered, ledger.DecisionApplied:
+		return true
+	}
+	return false
+}
 
 // answerOf is a record's accepted answer in words: the option chosen and
 // the text, the rationale, and who gave it.
@@ -107,7 +122,9 @@ func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskD
 		// A change kept ahead (no undo): under no attempt's context, which
 		// a cancel or a stop ends, so that only the ledger refuses it.
 		err = e.transact(context.WithoutCancel(ctx), r, func() tx {
-			if !a.closedAt.IsZero() || a.start != start {
+			if !a.closedAt.IsZero() || a.start != start || e.continued(r) != nil {
+				// Its attempt gone, or its run continued (which writes
+				// nothing more): nothing is marked or superseded.
 				gone = true
 				return tx{}
 			}
@@ -195,8 +212,9 @@ func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskD
 // change of them made stale (taskDecisions).
 const maxTaskDecisionReads = 8
 
-// readTaskDecisions reads the newest maxTaskDecisions decisions of task
-// taskID in the run chain, oldest first, and rechecks each applied
+// readTaskDecisions reads the decisions of task taskID in the run chain
+// that a task file carries (every standing one, the newest
+// maxTaskDecisions of the others), oldest first, and rechecks each applied
 // approval whose line did not go in against start (S4): moved has the
 // words of those whose subject moved, carried the others not yet marked
 // carried by a task file. A recheck cut short by ctx is its error. The
@@ -205,11 +223,12 @@ func (e *Engine) readTaskDecisions(ctx context.Context, dl decisionLedger, r *ru
 	// Each run of the chain's own, by the run that holds it now: a
 	// decision of the chain is held by one of its runs, and another run's
 	// decisions about a task of the same id are never read in their place
-	// (#636, review round 1). The newest maxTaskDecisions of each run hold
-	// the chain's newest.
+	// (#636, review round 1). Every row, page by page: what the file must
+	// carry is chosen by its state, never by a page's end (#636, review
+	// round 3).
 	var rows []ledger.DecisionRow
 	for _, runID := range chain {
-		got, err := dl.Decisions(ctx, ledger.DecisionFilter{CurrentRun: runID, Task: taskID, Limit: maxTaskDecisions})
+		got, err := allDecisions(ctx, dl, ledger.DecisionFilter{CurrentRun: runID, Task: taskID})
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -218,16 +237,20 @@ func (e *Engine) readTaskDecisions(ctx context.Context, dl decisionLedger, r *ru
 	slices.SortFunc(rows, func(x, y ledger.DecisionRow) int { return cmp.Compare(y.N, x.N) })
 	rows = slices.CompactFunc(rows, func(x, y ledger.DecisionRow) bool { return x.N == y.N })
 	var recs []ledger.DecisionRecord
+	ended := 0
 	for _, row := range rows {
+		if !standing(row.State) {
+			if ended == maxTaskDecisions {
+				continue
+			}
+			ended++
+		}
 		rec, ok, err := dl.Decision(ctx, row.N)
 		if err != nil {
 			return nil, nil, nil, err
 		}
 		if ok {
 			recs = append(recs, rec)
-		}
-		if len(recs) == maxTaskDecisions {
-			break
 		}
 	}
 	slices.Reverse(recs) // oldest first
@@ -264,9 +287,15 @@ func (e *Engine) readTaskDecisions(ctx context.Context, dl decisionLedger, r *ru
 }
 
 // readStale reports whether a record read for a task file is no longer
-// as the engine has it: one read open or answered that the engine holds
-// in another state or not at all, one read applied that a change has
-// closed since (superseded). Final records never change. The caller holds
+// as the engine has it, in anything the read decided by: one read open or
+// answered that the engine holds in another state or not at all; one read
+// applied that a change has closed since (superseded), or whose line's
+// delivery the engine has moved past the one read (delivery.entered
+// written since: an approval whose line went in is not rechecked, S4;
+// #636, review round 3). Final records never change. Every change of the
+// run before the caller's has committed (txMu), and each makes its change
+// of a decision in the engine in its change (lineEnded, closeDecision),
+// so the engine's copy is the ledger's or ahead of it. The caller holds
 // e.mu, in a transaction's change.
 func (r *run) readStale(recs []ledger.DecisionRecord) bool {
 	for _, rec := range recs {
@@ -278,6 +307,11 @@ func (r *run) readStale(recs []ledger.DecisionRecord) bool {
 		case ledger.DecisionApplied:
 			if r.dec.unapplied[rec.N] {
 				return true
+			}
+			if d := settledN(r, rec.N); d != nil {
+				if last, _ := deliveryOf(rec); last != d.delivery {
+					return true
+				}
 			}
 		}
 	}

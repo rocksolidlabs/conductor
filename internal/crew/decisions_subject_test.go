@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -335,6 +336,55 @@ func TestAnArtifactThatChangedSupersedes(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
+// A supersession's words name what moved, here a file's path the request
+// may make long (six directories of 200 bytes): its history row is kept
+// within the ledger's bound whatever it holds, so the supersession, which
+// the engine has made, commits, the run is not paused, and the run's next
+// change commits after it (#636, review round 3).
+func TestALongArtifactPathIsSuperseded(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, p := attemptOn(t, e, fl, run.ID, "build")
+	wt := b.Attempt.Worktree
+	parts := []string{}
+	for i := range 6 {
+		parts = append(parts, strings.Repeat(string(rune('a'+i)), 200))
+	}
+	rel := strings.Join(append(parts, "notes.md"), "/")
+	if err := os.MkdirAll(filepath.Join(wt, filepath.Dir(rel)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(wt, rel), "one\n")
+	commitAll(t, wt, "notes")
+	req := approval("q1", "Publish the notes?")
+	req.Subject = &DecisionSubject{Kind: "artifact", Path: rel}
+	d := ask(t, e, b.Attempt.SessionID, req)
+	rc, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1}, "user:nate", identity(e, "nate"))
+	if err != nil || rc.Status != "accepted" {
+		t.Fatalf("the response: %+v %v", rc, err)
+	}
+	writeFile(t, filepath.Join(wt, rel), "two\n")
+	commitAll(t, wt, "notes again")
+	e.ConfirmAuthority(d.ID, rc.K, true)
+	rec := decisionWhen(t, ld, d.ID, "superseded", inState(ledger.DecisionSuperseded))
+	for _, h := range rec.History {
+		if h.Kind == ledger.HistorySuperseded && (len(h.Detail) > ledger.MaxHistoryDetail || !strings.Contains(h.Detail, `"cut":true`)) {
+			t.Fatalf("the supersession's detail, %d bytes: %s", len(h.Detail), h.Detail)
+		}
+	}
+	if !strings.Contains(rec.Why, "notes.md changed: sha256") {
+		t.Fatalf("%s's words: %q", d.ID, rec.Why)
+	}
+	lineWith(t, p, "Decision "+d.ID+"'s answer was not applied")
+	if paused(t, e, run.ID) {
+		t.Fatal("the supersession paused the run")
+	}
+	d2 := ask(t, e, b.Attempt.SessionID, clarification("q2", "Anything else?"))
+	decisionWhen(t, ld, d2.ID, "open", inState(ledger.DecisionOpen))
+	stopRun(t, e, run.ID)
+}
+
 // A subject that cannot be read is never validated: the asking attempt
 // gone, its file's blob at the next attempt's checkpoint other, or the
 // file missing there, supersedes the approval at the response, which is
@@ -542,6 +592,85 @@ func TestATaskFileReadsAgainWhatChangedAsItRead(t *testing.T) {
 	close(release)
 	if _, f := taskFileOf(t, attemptLine(t, e, fl, run.ID, "docs", 2)); decisionIn(t, f, d.ID).State != ledger.DecisionSuperseded {
 		t.Fatalf("docs's attempt 2's task file: %+v", f.Decisions)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// An approval's line that goes in while the asking task's next attempt
+// reads its decisions is read again, never superseded as it was read:
+// build's attempt 1 asks to approve its HEAD, the answer's line is held as
+// it is typed, the attempt ends, attempt 2 (at attempt 1's start, not the
+// approved commit) reads the approval typing and is held there, the line's
+// delivery.entered commits, and attempt 2's read, checked in its change,
+// finds the delivery moved: the approval stays applied, not rechecked
+// (S4), and the task file carries it applied (#636, review round 3).
+func TestAnEnteredLineIsReadAgainByTheTaskFile(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	var holding atomic.Bool
+	var once sync.Once
+	arrived, release := make(chan struct{}), make(chan struct{})
+	e.afterDecisionsRead = func(task string) {
+		if task == "build" && holding.Load() {
+			once.Do(func() {
+				close(arrived)
+				<-release
+			})
+		}
+	}
+	typing, enter := make(chan struct{}), make(chan struct{})
+	var typed atomic.Bool
+	e.submitAnswer = func(ctx context.Context, l *session.Local, sub session.Submission) (session.SubmitResult, error) {
+		if !typed.CompareAndSwap(false, true) {
+			return l.Submit(ctx, sub)
+		}
+		close(typing)
+		<-enter
+		return session.SubmitResult{Typed: true, Entered: true}, nil
+	}
+	t.Cleanup(func() {
+		for _, c := range []chan struct{}{release, enter} {
+			select {
+			case <-c:
+			default:
+				close(c)
+			}
+		}
+	})
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, l, p := attemptOn(t, e, fl, run.ID, "build")
+	wt := b.Attempt.Worktree
+	writeFile(t, filepath.Join(wt, "x.txt"), "x\n")
+	commitAll(t, wt, "x")
+	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
+	mirrorOf(t, l, d.ID)
+	answer(t, e, d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	select {
+	case <-typing:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the answer's line was not typed")
+	}
+	holding.Store(true)
+	p.End(0)
+	select {
+	case <-arrived:
+	case <-time.After(60 * time.Second):
+		t.Fatal("build's attempt 2 did not read its decisions")
+	}
+	close(enter)
+	decisionWhen(t, ld, d.ID, "entered", hasKind(ledger.HistoryDeliveryEntered))
+	close(release)
+	a2 := attemptLine(t, e, fl, run.ID, "build", 2)
+	if a2.Attempt.Start != b.Attempt.Start {
+		t.Fatalf("attempt 2 starts at %s, not at attempt 1's start %s", short(a2.Attempt.Start), short(b.Attempt.Start))
+	}
+	n, _ := ledger.ParseDecisionID(d.ID)
+	rec, ok, err := ld.Decision(t.Context(), n)
+	if err != nil || !ok || rec.State != ledger.DecisionApplied || kindCount(rec, ledger.HistorySuperseded) != 0 {
+		t.Fatalf("%s once attempt 2 started: %+v %q %v", d.ID, rec.DecisionRow, historyKinds(rec), err)
+	}
+	if _, f := taskFileOf(t, a2); decisionIn(t, f, d.ID).State != ledger.DecisionApplied {
+		t.Fatalf("attempt 2's task file: %+v", f.Decisions)
 	}
 	stopRun(t, e, run.ID)
 }

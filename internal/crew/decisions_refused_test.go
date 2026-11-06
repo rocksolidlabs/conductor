@@ -2,7 +2,9 @@ package crew
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -32,6 +34,25 @@ type kindRefusingLedger struct {
 	sqlLedger
 	on      atomic.Pointer[string]
 	refused chan string
+	// held, when set with the kind, holds the refused transition between
+	// its writes and its refusal (armHeld): the engine's change made, its
+	// commit not yet answered, e.mu free.
+	held atomic.Pointer[heldGate]
+}
+
+// heldGate is where an armed transition waits: reached is closed once it
+// has made its writes, and it refuses once release is closed.
+type heldGate struct {
+	reached, release chan struct{}
+}
+
+// armHeld refuses the next transition that writes an event of kind, held
+// between its writes and its refusal until release is closed.
+func (l *kindRefusingLedger) armHeld(kind string) *heldGate {
+	g := &heldGate{reached: make(chan struct{}), release: make(chan struct{})}
+	l.held.Store(g)
+	l.arm(kind)
+	return g
 }
 
 // refusing puts a kindRefusingLedger over the engine's ledger.
@@ -72,6 +93,10 @@ func (l *kindRefusingLedger) Transition(ctx context.Context, runID string, fn fu
 			return err
 		}
 		if w.saw && l.on.CompareAndSwap(kind, nil) {
+			if g := l.held.Swap(nil); g != nil {
+				close(g.reached)
+				<-g.release
+			}
 			l.refused <- *kind
 			return errRefusedTest
 		}
@@ -445,4 +470,118 @@ func TestARefusedContinuationMakesNothing(t *testing.T) {
 		t.Fatalf("the continuation does not hold %s", d.ID)
 	}
 	stopRun(t, e2, next.ID)
+}
+
+// A comment whose commit is refused puts nothing back over what happened
+// while it was in the ledger: the agent, whose turn had ended, reports it
+// works again while the comment's transaction is held there; refused, the
+// comment leaves the turn not ended, so pump never parks an agent that
+// works, and the decision at its rev (#636, review round 3).
+func TestARefusedOperationKeepsAWorkingReport(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	rl := refusing(e, ld)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, l, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	mirrorOf(t, l, d.ID)
+	reportDone(e, b.Attempt.SessionID)
+	r := runOf(t, e, run.ID)
+	ended := func() bool {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return r.task("build").active().turnEnded
+	}
+	if !ended() {
+		t.Fatal("the agent's done did not end its turn")
+	}
+	g := rl.armHeld("decision." + ledger.HistoryCommented)
+	errc := make(chan error, 1)
+	go func() {
+		_, err := e.CommentDecision(context.Background(), d.ID, "o1", 0, CommentKind, "Noted.", "admin")
+		errc <- err
+	}()
+	select {
+	case <-g.reached:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the comment's transaction did not reach the ledger")
+	}
+	reportWorking(e, b.Attempt.SessionID)
+	if ended() {
+		t.Fatal("the working report did not clear the turn's end")
+	}
+	close(g.release)
+	if err := <-errc; err == nil {
+		t.Fatal("a comment whose commit was refused answered")
+	}
+	if ended() {
+		t.Fatal("the refused comment put the turn's end back over the working report")
+	}
+	if rec := decisionWhen(t, ld, d.ID, "open", inState(ledger.DecisionOpen)); rec.Rev != 1 || kindCount(rec, ledger.HistoryCommented) != 0 {
+		t.Fatalf("after the refused comment: rev %d %q", rec.Rev, historyKinds(rec))
+	}
+	if rev, ok := engineHolds(t, e, run.ID, d.ID); !ok || rev != 1 {
+		t.Fatalf("the engine's copy after the refused comment: rev %d, held %v", rev, ok)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// An agent's withdrawal, its commit refused: the decision cancelled and its
+// hold released in the engine, and in the ledger by the pause's commit; the
+// withdrawal answers the ledger's refusal (#636, review round 3).
+func TestARefusedWithdrawalIsCarried(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	rl := refusing(e, ld)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	rl.arm("decision.cancelled")
+	if _, err := e.WithdrawDecision(t.Context(), b.Attempt.SessionID, d.ID); err == nil {
+		t.Fatal("a withdrawal whose commit was refused answered")
+	}
+	rl.wasRefused(t)
+	rec := decisionWhen(t, ld, d.ID, "cancelled", inState(ledger.DecisionCancelled))
+	if !strings.Contains(rec.Why, "withdrawn by its agent") {
+		t.Fatalf("%s's words: %q", d.ID, rec.Why)
+	}
+	if _, ok := engineHolds(t, e, run.ID, d.ID); ok {
+		t.Fatalf("the engine holds %s after its withdrawal", d.ID)
+	}
+	if got := activeHolds(t, ld, run.ID); len(got) != 0 || !paused(t, e, run.ID) {
+		t.Fatalf("holds %q, paused %v", got, paused(t, e, run.ID))
+	}
+	stopRun(t, e, run.ID)
+}
+
+// Every row a carried change hands its commit is one the ledger takes by
+// its content: a history row's detail and an application receipt fit the
+// ledger's bounds whatever they hold (a long path twice, a gate before 128
+// tasks, words of escaped characters), as JSON objects (#636, review
+// round 3).
+func TestAHistoryDetailFitsWhateverItHolds(t *testing.T) {
+	var ids []string
+	for i := range 128 {
+		ids = append(ids, fmt.Sprintf("%040d", i))
+	}
+	long := strings.Repeat("abcdefghij/", 120)
+	for name, v := range map[string]any{
+		"a path twice":   map[string]any{"moved": long + " changed", "why": cutWhy("dr-1 was superseded: " + long + " changed"), "rev": 3},
+		"a long gate":    map[string]any{"gate": "ship", "before": ids, "follows": "dr-1", "why": "asked again"},
+		"escapes":        map[string]any{"why": strings.Repeat("<\"é", 1000)},
+		"an operation":   opDetail{Text: strings.Repeat("x", 1800), By: strings.Repeat("b", ledger.MaxDecisionActor), Words: "Comment kept on dr-1", Rev: 2},
+		"nothing to cut": map[string]any{"a": 1},
+	} {
+		got := historyDetail(v)
+		var m map[string]any
+		if len(got) > ledger.MaxHistoryDetail || json.Unmarshal([]byte(got), &m) != nil {
+			t.Fatalf("%s: %d bytes: %.200s", name, len(got), got)
+		}
+	}
+	app := Application{By: "yardmaster", Run: "api-sweep-00000001", How: HowReleased, Tasks: ids, Words: "released " + strings.Join(ids, ", ")}
+	got := fitJSON(app, ledger.MaxDecisionApplied)
+	var back Application
+	if len(got) > ledger.MaxDecisionApplied || json.Unmarshal([]byte(got), &back) != nil || back.How != HowReleased {
+		t.Fatalf("the receipt: %d bytes: %.200s", len(got), got)
+	}
 }

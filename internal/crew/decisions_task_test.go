@@ -13,8 +13,8 @@ import (
 // Whose a decision is (#637, review round 3): every key an attempt's agent
 // supplies (a request id, a decision's id) is judged against the
 // attempt's own task where it is looked up, so another task's decision is
-// answered as one that does not exist; and a withdrawal is taken only
-// while the attempt runs, never once its run has stopped or is continued.
+// answered as one that does not exist; and a withdrawal is judged against
+// its run's continuation.
 
 // refusedAs is err's decision refusal, its id replaced by "dr-?", or fails
 // t.
@@ -92,44 +92,26 @@ func TestARequestIDIsItsTasks(t *testing.T) {
 }
 
 // A withdrawal is judged against the continuation's start, on each side
-// of it: taken while the run runs, the decision is cancelled and the
-// continuation neither moves it nor holds the task with it; once the run
-// is stopped, before its continuation, after the continuation's mark and
-// after it has read the decisions (held at each seam), it is refused
-// not_running and changes nothing, and the continuation moves the
+// of it: taken while the run runs, or once it is stopped and before its
+// continuation begins, the decision is cancelled and the continuation
+// neither moves it nor holds the task with it; after the continuation's
+// mark, and after it has read the decisions (held at each seam), it is
+// refused not_held, changes nothing, and the continuation moves the
 // decision open, with its hold.
 func TestAWithdrawalIsJudgedAgainstTheContinuation(t *testing.T) {
-	notRunning := func(t *testing.T, e *Engine, sid, id string) {
-		t.Helper()
-		_, err := e.WithdrawDecision(t.Context(), sid, id)
-		if de := refusedAs(t, err, id); de.Code != CodeNotRunning || !strings.Contains(de.Words, "stop here") {
-			t.Fatalf("a withdrawal once the run stopped: %v", err)
-		}
-	}
-	t.Run("before", func(t *testing.T) {
-		dir := newRepo(t)
-		e, fl, ld := decisionEngine(t)
-		run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
-		b, _, _ := attemptOn(t, e, fl, run.ID, "build")
-		d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
-		if w, err := e.WithdrawDecision(t.Context(), b.Attempt.SessionID, d.ID); err != nil || w.State != ledger.DecisionCancelled {
-			t.Fatalf("the withdrawal: %+v %v", w, err)
-		}
-		stopRun(t, e, run.ID)
-		next := continueRun(t, e, run.ID)
-		rec := decisionWhen(t, ld, d.ID, "cancelled", inState(ledger.DecisionCancelled))
-		if rec.CurrentRun != run.ID || len(activeHolds(t, ld, next.ID)) != 0 || len(taskOf(t, e, next.ID, "build").Holds) != 0 {
-			t.Fatalf("a withdrawn decision moved: run %s, holds %v %+v", rec.CurrentRun, activeHolds(t, ld, next.ID), taskOf(t, e, next.ID, "build").Holds)
-		}
-		stopRun(t, e, next.ID)
-	})
-	for _, seam := range []string{"stopped", "marked", "read"} {
+	for _, seam := range []string{"running", "stopped", "marked", "read"} {
 		t.Run(seam, func(t *testing.T) {
 			dir := newRepo(t)
 			e, fl, ld := decisionEngine(t)
 			run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
 			b, _, _ := attemptOn(t, e, fl, run.ID, "build")
 			d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+			withdraw := func() (Decision, error) { return e.WithdrawDecision(t.Context(), b.Attempt.SessionID, d.ID) }
+			if seam == "running" {
+				if w, err := withdraw(); err != nil || w.State != ledger.DecisionCancelled {
+					t.Fatalf("the withdrawal: %+v %v", w, err)
+				}
+			}
 			stopRun(t, e, run.ID)
 			at, gate := make(chan struct{}), make(chan struct{})
 			var once sync.Once
@@ -142,8 +124,8 @@ func TestAWithdrawalIsJudgedAgainstTheContinuation(t *testing.T) {
 			}
 			out := make(chan Run, 1)
 			go func() {
-				if seam == "stopped" {
-					// Not begun until the withdrawal has been refused.
+				if seam == "running" || seam == "stopped" {
+					// Not begun until the withdrawal has been judged.
 					<-gate
 				}
 				next, err := e.ContinueRun(context.Background(), run.ID, "")
@@ -154,17 +136,34 @@ func TestAWithdrawalIsJudgedAgainstTheContinuation(t *testing.T) {
 				}
 				out <- *next
 			}()
-			if seam != "stopped" {
+			moves := seam == "marked" || seam == "read"
+			switch {
+			case moves:
 				<-at
+				_, err := withdraw()
+				if de := refusedAs(t, err, d.ID); de.Code != CodeNotHeld || !strings.Contains(de.Words, "stop here") {
+					t.Fatalf("a withdrawal once the continuation began: %v", err)
+				}
+			case seam == "stopped":
+				if w, err := withdraw(); err != nil || w.State != ledger.DecisionCancelled {
+					t.Fatalf("the withdrawal of the stopped run's: %+v %v", w, err)
+				}
 			}
-			notRunning(t, e, b.Attempt.SessionID, d.ID)
 			close(gate)
 			next, ok := <-out
 			if !ok {
 				t.FailNow()
 			}
+			if !moves {
+				rec := decisionWhen(t, ld, d.ID, "cancelled", inState(ledger.DecisionCancelled))
+				if rec.CurrentRun != run.ID || len(activeHolds(t, ld, next.ID)) != 0 || len(taskOf(t, e, next.ID, "build").Holds) != 0 {
+					t.Fatalf("a withdrawn decision moved: run %s, holds %v %+v", rec.CurrentRun, activeHolds(t, ld, next.ID), taskOf(t, e, next.ID, "build").Holds)
+				}
+				stopRun(t, e, next.ID)
+				return
+			}
 			rec := decisionWhen(t, ld, d.ID, "moved", func(rec ledger.DecisionRecord) bool { return rec.CurrentRun == next.ID })
-			if rec.State != ledger.DecisionOpen || rec.Rev != 1 || strings.Contains(strings.Join(historyKinds(rec), ","), ledger.HistoryCancelled) {
+			if rec.State != ledger.DecisionOpen || rec.Rev != 1 || kindCount(rec, ledger.HistoryCancelled) != 0 {
 				t.Fatalf("the refused withdrawal changed %s: %s rev %d %q", d.ID, rec.State, rec.Rev, historyKinds(rec))
 			}
 			if got := activeHolds(t, ld, next.ID); len(got) != 1 || got[0] != "build "+d.ID {
@@ -172,6 +171,11 @@ func TestAWithdrawalIsJudgedAgainstTheContinuation(t *testing.T) {
 			}
 			if hs := taskOf(t, e, next.ID, "build").Holds; len(hs) != 1 || hs[0].ID != d.ID {
 				t.Fatalf("the continuation's task holds: %+v", hs)
+			}
+			// Moved: still refused, as the continuation's, not as an
+			// unknown id.
+			if _, err := withdraw(); refusedAs(t, err, d.ID).Code != CodeNotHeld {
+				t.Fatalf("a withdrawal after the move: %v", err)
 			}
 			stopRun(t, e, next.ID)
 		})
