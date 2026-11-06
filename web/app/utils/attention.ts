@@ -44,16 +44,26 @@ export function offeredChoices(a: Pick<Attention, 'state' | 'decision' | 'option
 }
 
 /**
- * Whether a question bar takes a reply to a from a viewer of role: a controller's, unless the session waits for its terminal
- * (waitsForTerminal), the question is answered in the terminal (answersInTerminal) or it mirrors a durable decision (decisionOf).
+ * Why a page takes no typed reply to a, in the words its reply field shows in place of one; undefined when it takes one. Every
+ * place that draws a reply field for an attention (the question bar, the sidebar's row and Needs you, the Yard's queue, the
+ * command palette) asks this one function: the session waits for its terminal (waitsForTerminal), the question is answered in
+ * the terminal (answersInTerminal), or it mirrors a durable decision (decisionOf), answered as that decision, where it says.
  */
-export function takesReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision'> | undefined, role: Role): boolean {
-  return role === 'control' && !waitsForTerminal(a) && !answersInTerminal(a) && !decisionOf(a)
+export function noReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision'> | undefined): string | undefined {
+  if (waitsForTerminal(a)) return TERMINAL_FIRST
+  if (answersInTerminal(a)) return ANSWER_IN_TERMINAL
+  const d = decisionOf(a)
+  return d ? decisionAnsweredBy(d) : undefined
 }
 
-/** What the question bar says in place of a reply for a question that mirrors decision id (decisionOf). */
-export function answeredAsDecision(id: string): string {
-  return `Answered as decision ${id}`
+/** Whether a page takes a typed reply to a from a viewer of role: a controller's, unless a takes none (noReply). */
+export function takesReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision'> | undefined, role: Role): boolean {
+  return role === 'control' && noReply(a) === undefined
+}
+
+/** Where a question that mirrors decision id (decisionOf) is answered, said in place of a reply: by the operator, in Conductor. */
+export function decisionAnsweredBy(id: string): string {
+  return `The operator answers ${id} in Conductor`
 }
 
 /** What a reply field says while the question is answered in the terminal (answersInTerminal). */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { alerting, liveAttention, liveSession, ATTENTION_DOT_COLOR, answeredAsDecision, answersInTerminal, choiceKey, decisionOf, firstChoice, isActive, needingInput, newlyNeedingInput, offeredChoices, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
+import { alerting, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, firstChoice, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
 import type { Attention, Role } from './protocol'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
@@ -145,7 +145,8 @@ describe("a durable decision's question (Program item DR1)", () => {
     expect(decisionOf({ state: 'needs_input' })).toBeUndefined()
     expect(decisionOf({ state: '', decision: 'dr-7' })).toBeUndefined()
     expect(decisionOf(undefined)).toBeUndefined()
-    expect(answeredAsDecision('dr-7')).toBe('Answered as decision dr-7')
+    // Where it is answered, never that it was: it waits for the operator.
+    expect(decisionAnsweredBy('dr-7')).toBe('The operator answers dr-7 in Conductor')
   })
 
   it('offers no reply field, choice or number key, whatever the role', () => {
@@ -165,5 +166,14 @@ describe("a durable decision's question (Program item DR1)", () => {
     expect(takesReply({ state: 'needs_input', source: 'submit' }, 'control')).toBe(false)
     expect(takesReply({ state: 'needs_input', kind: 'permission' }, 'control')).toBe(false)
     expect(offeredChoices({ state: 'working', options: yesNo })).toEqual([])
+  })
+
+  it('is the one answer every reply field reads: why none is taken, in its words, else undefined', () => {
+    expect(noReply(mirror)).toBe('The operator answers dr-7 in Conductor')
+    expect(noReply({ state: 'needs_input', source: 'submit' })).toBe(TERMINAL_FIRST)
+    expect(noReply({ state: 'needs_input', kind: 'permission' })).toBe(ANSWER_IN_TERMINAL)
+    expect(noReply({ state: 'needs_input', source: 'api', kind: 'prompt', options: yesNo })).toBeUndefined()
+    expect(noReply({ state: 'needs_input', source: 'api' })).toBeUndefined()
+    expect(noReply(undefined)).toBeUndefined()
   })
 })
