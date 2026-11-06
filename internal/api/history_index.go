@@ -71,6 +71,9 @@ const (
 	maxRunRecord = 4 << 20
 	// maxRepoCache bounds the folders whose repository is remembered.
 	maxRepoCache = 1024
+	// maxEndedAttempts bounds the ended attempts whose receipts the
+	// indexer remembers (endedChecks).
+	maxEndedAttempts = 4096
 )
 
 // The indexing states, as GET /api/history's indexing.state says them.
@@ -143,6 +146,12 @@ type historyIndexer struct {
 	pm       *projectMap
 	repos    map[string]repoIdent
 	runStats map[string]fileStat // the reconcile's last look at each run record
+	// endedChecks are the receipt rows (no logs) of attempts that have
+	// ended with every receipt finished: rows that never change, read
+	// once. A row of the ledger's is read past its log's pages, so a
+	// run's receipts are read an attempt at a time, each a short hold of
+	// the ledger's one connection, and an ended attempt's not again.
+	endedChecks map[attemptID][]ledger.CheckRow
 }
 
 type repoIdent struct{ top, common string }
@@ -180,6 +189,7 @@ func newHistoryIndexer(data *store.Store, j *journal.Journal, ld func() indexLed
 		readAt:        map[string]time.Time{},
 		repos:         map[string]repoIdent{},
 		runStats:      map[string]fileStat{},
+		endedChecks:   map[attemptID][]ledger.CheckRow{},
 	}
 }
 
@@ -818,7 +828,7 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 	var rows *runRows
 	var chain []runRows
 	if inLedger {
-		r, err := readRunRows(ctx, ld, id)
+		r, err := h.readRunRows(ctx, ld, id)
 		if err != nil {
 			return err
 		}
@@ -826,7 +836,7 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 		seen := map[string]bool{id: true}
 		for from := r.row.ContinuedFrom; from != "" && !seen[from] && len(chain) < maxRunChain; {
 			seen[from] = true
-			c, err := readRunRows(ctx, ld, from)
+			c, err := h.readRunRows(ctx, ld, from)
 			if errors.Is(err, errNoRun) {
 				break
 			}
@@ -874,8 +884,16 @@ func (h *historyIndexer) setNoLedger(gone bool) {
 // errNoRun is a run the ledger has no row of.
 var errNoRun = errors.New("no such run")
 
-// readRunRows reads a run's rows, its checks without their logs.
-func readRunRows(ctx context.Context, ld indexLedger, id string) (runRows, error) {
+// attemptID is an attempt of a run.
+type attemptID struct {
+	run, task string
+	n         int
+}
+
+// readRunRows reads a run's rows, its checks without their logs, an
+// attempt at a time: the receipts of an ended attempt whose every receipt
+// has finished are remembered, never read again.
+func (h *historyIndexer) readRunRows(ctx context.Context, ld indexLedger, id string) (runRows, error) {
 	var r runRows
 	row, ok, err := ld.Run(ctx, id)
 	if err != nil {
@@ -897,8 +915,23 @@ func readRunRows(ctx context.Context, ld indexLedger, id string) (runRows, error
 	if r.messages, err = ld.Messages(ctx, id); err != nil {
 		return r, err
 	}
-	if r.checks, err = ld.Checks(ctx, id, "", 0, false); err != nil {
-		return r, err
+	for _, a := range r.attempts {
+		key := attemptID{id, a.TaskID, a.N}
+		rows, ok := h.endedChecks[key]
+		if !ok {
+			if rows, err = ld.Checks(ctx, id, a.TaskID, a.N, false); err != nil {
+				return r, err
+			}
+			if slices.Contains(attemptEnded, a.State) && !slices.ContainsFunc(rows, func(c ledger.CheckRow) bool {
+				return c.State == ledger.CheckStarted || c.State == ledger.CheckRunning
+			}) {
+				if len(h.endedChecks) >= maxEndedAttempts {
+					clear(h.endedChecks)
+				}
+				h.endedChecks[key] = rows
+			}
+		}
+		r.checks = append(r.checks, rows...)
 	}
 	return r, nil
 }
@@ -1018,6 +1051,11 @@ func (h *historyIndexer) removeRun(ctx context.Context, ix *history.Index, id st
 	for key := range held {
 		if err := ix.Remove(ctx, key); err != nil {
 			return err
+		}
+	}
+	for a := range h.endedChecks {
+		if a.run == id {
+			delete(h.endedChecks, a)
 		}
 	}
 	return ix.Remove(ctx, hRunRef(id))

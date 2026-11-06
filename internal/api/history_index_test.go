@@ -1283,6 +1283,9 @@ func BenchmarkTransitionWhileIndexing(b *testing.B) {
 	log := strings.Repeat(strings.Repeat("z", 1023)+"\n", 1024)
 	for _, task := range c.Tasks {
 		tx("big-00000001", func(t *ledger.Tx) error {
+			if err := t.PutTask(ledger.TaskRow{ID: task.ID, Member: "lead", Kind: crew.TaskWork, State: ledger.TaskFailed, Attempts: 1}); err != nil {
+				return err
+			}
 			if err := t.PutAttempt(histAttempt(task.ID, 1, ledger.AttemptFailed, "check unit", commitID(0), commitID(1))); err != nil {
 				return err
 			}
@@ -1321,7 +1324,9 @@ func BenchmarkTransitionWhileIndexing(b *testing.B) {
 				b.Error(err)
 				return
 			}
+			// Each pass the first of the run: nothing remembered.
 			clear(h.readAt)
+			clear(h.endedChecks)
 			if err := h.indexRun(ctx, ix, "big-00000001"); err != nil {
 				b.Error(err)
 				return
