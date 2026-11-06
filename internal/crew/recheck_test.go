@@ -924,3 +924,53 @@ func TestRecheckWaitsForThePrerequisites(t *testing.T) {
 	}
 	stopRun(t, e, next.ID)
 }
+
+// Check again reopens a run a plan's gate holds work in, and leaves the
+// hold where it is: build's spent attempts finish the run failed with
+// deploy, which needs it, held by the gate; Check again's pass makes
+// deploy ready and still held with its words, no attempt of it dispatched,
+// the gate open and the run running; the operator's Approve then releases
+// it and it starts (docs/plans/decisions.md, Holding; reopenRun with #672's
+// holds).
+func TestRecheckLeavesAGatesHoldInPlace(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	mark := filepath.Join(t.TempDir(), "passes")
+	build := work("build", "lead")
+	build.Checks = []Check{markedCheck("test", mark)}
+	run := launchGated(t, e, dir, "api-sweep-000000c1", repoCrew(dir, build, work("deploy", "ops", "build")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	c3 := spend(t, e, run.ID, "build", "built.txt").Attempt.Result
+	waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+
+	mustMark(t, mark)
+	if rc, err := recheck(e, run.ID, "r1", "build", 3, c3); err != nil || rc.Status != ledger.CommandDone {
+		t.Fatalf("Check again: %+v %v", rc, err)
+	}
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 4)
+	dep := waitTaskWhere(t, e, run.ID, "deploy", "ready and held", func(ts TaskState) bool {
+		return ts.State == ledger.TaskReady && ts.Reason == "waits for decision "+g.ID
+	})
+	if dep.Attempts != 0 {
+		t.Fatalf("deploy dispatched past its gate: %+v", dep)
+	}
+	if r, _ := e.Get(run.ID); r.State != RunRunning || r.Outcome != "" {
+		t.Fatalf("the run reopened with a held task left: %s/%q", r.State, r.Outcome)
+	}
+	if rec := decisionWhen(t, ld, g.ID, "open", inState(ledger.DecisionOpen)); rec.Rev != 1 {
+		t.Fatalf("the gate after Check again: %+v", rec.DecisionRow)
+	}
+	if got := activeHolds(t, ld, run.ID); !slices.Equal(got, []string{"deploy " + g.ID}) {
+		t.Fatalf("holds after Check again: %q", got)
+	}
+	if ts := taskOf(t, e, run.ID, "deploy"); ts.Attempts != 0 {
+		t.Fatalf("deploy dispatched past its gate: %+v", ts)
+	}
+
+	answer(t, e, g.ID, Response{ResponseID: "a1", Choice: choice(0), ExpectedRev: 1})
+	if app := applied(t, decisionWhen(t, ld, g.ID, "applied", inState(ledger.DecisionApplied))); app.How != HowReleased || !slices.Equal(app.Tasks, []string{"deploy"}) {
+		t.Fatalf("the application: %+v", app)
+	}
+	waitAttempt(t, e, run.ID, "deploy", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+}
