@@ -14,6 +14,7 @@
 //
 //	config.json                    the configuration (Config)
 //	state.json                     the last number, the op ids, the day's charges
+//	role.json                      BK3's role (crew.RoleRecord, kept as the desk gives it), 1 MiB
 //	owner.lock                     the owner lock (store.OwnerLock)
 //	requests/br-<n>.json           a request (Request), 256 KiB
 //	requests/br-<n>-brief.json     its brief (Brief), 256 KiB
@@ -53,6 +54,8 @@ const (
 	RequestsDir  = "requests"
 	ConfigFile   = "config.json"
 	StateFile    = "state.json"
+	RoleFile     = "role.json"
+	MaxRoleDoc   = 1 << 20
 	Lock         = "owner.lock"
 	MaxConfigDoc = 64 << 10
 	MaxStateDoc  = 1 << 20
@@ -492,7 +495,7 @@ func (s *Store) Config() (Config, error) {
 		return Config{}, err
 	}
 	if ok {
-		return c, nil
+		return upgrade(c), nil
 	}
 	c = DefaultConfig(s.cwd)
 	c.Rev, c.UpdatedAt = 1, s.now().UTC()
@@ -562,7 +565,10 @@ func askSum(r Request) string {
 		Subjects []string  `json:"subjects"`
 		Note     string    `json:"note"`
 		Since    time.Time `json:"since"`
-	}{r.Kind, refStrings(r.Subjects), r.Note, r.Since.UTC()})
+		// Batch is a wake request's alone: a person's request sums as it
+		// did before the field.
+		Batch string `json:"batch,omitempty"`
+	}{r.Kind, refStrings(r.Subjects), r.Note, r.Since.UTC(), r.Batch})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
@@ -724,7 +730,7 @@ func (r Request) checkRecord(id string) error {
 	case r.CreatedAt.IsZero():
 		return errors.New("no createdAt")
 	}
-	ask := Request{OpID: r.OpID, Kind: r.Kind, Subjects: r.Subjects, Note: r.Note, Since: r.Since, By: r.By}
+	ask := Request{OpID: r.OpID, Kind: r.Kind, Subjects: r.Subjects, Note: r.Note, Since: r.Since, By: r.By, Batch: r.Batch}
 	return ask.checkAsked()
 }
 
@@ -803,7 +809,7 @@ func measureRequest(r Request) error {
 // Only an op id whose request never landed makes a new one. The request
 // is queued.
 func (s *Store) Create(in Request) (r Request, created bool, err error) {
-	ask := Request{OpID: in.OpID, Kind: in.Kind, Subjects: in.Subjects, Note: in.Note, Since: in.Since, By: in.By}
+	ask := Request{OpID: in.OpID, Kind: in.Kind, Subjects: in.Subjects, Note: in.Note, Since: in.Since, By: in.By, Batch: in.Batch}
 	if err := ask.checkAsked(); err != nil {
 		return Request{}, false, err
 	}
@@ -1005,15 +1011,18 @@ func clone(r Request) (Request, error) {
 
 // Start takes the queued request id as a turn starting at the
 // configuration c, in two writes in this order: state.json with the
-// request's charge in its start day's map (reserved: c's TurnMinutes),
-// then the request starting, its deadline its start plus the reservation,
-// with c's snapshot and the agent's stamp. The starting request is
+// request's charge in its start day's map (reserved: the least of c's
+// TurnMinutes and what the day's MinutesPerDay has left), then the
+// request starting, its deadline its start plus the reservation, so a
+// turn never runs past what the day has left, with c's snapshot and the
+// agent's stamp. The starting request is
 // measured before either write, so a start past a bound (ErrBound)
 // leaves no charge and the request queued. A charge already written for
 // the request (a crash between the two) is the same entry, never a
 // second; one written on an earlier day (a crash before midnight) is
-// moved to the day the turn starts, whose turns it must fit. A request
-// whose start would pass the day's turns is closed over_budget and
+// moved to the day the turn starts, whose turns and minutes it must fit.
+// A request whose start would pass the day's turns, or that the day's
+// minutes leave fewer than MinReservation, is closed over_budget and
 // ErrOverBudget answered.
 func (s *Store) Start(id string, c Config, stamp Stamp) (Request, error) {
 	s.mu.Lock()
@@ -1035,8 +1044,28 @@ func (s *Store) Start(id string, c Config, stamp Stamp) (Request, error) {
 	}
 	day := s.day(now)
 	chargedOn, charge, charged := chargeOf(st, id)
-	if !charged {
-		charge = Charge{Reserved: c.Budget.TurnMinutes}
+	var spent string
+	if chargedOn != day {
+		// A new charge, or one an earlier day holds: today's turns and
+		// minutes decide, and the reservation is what today has left.
+		// MinReservation is held against what the day has left, never
+		// against TurnMinutes: a turn of 1 minute is a turn.
+		reserve := c.Budget.TurnMinutes
+		if c.Budget.MinutesPerDay > 0 {
+			used := 0
+			for _, ch := range st.Days[day] {
+				used += ch.minutes()
+			}
+			left := c.Budget.MinutesPerDay - used
+			if left < MinReservation {
+				spent = fmt.Sprintf("the day's minutes are spent: %d of %d left", max(0, left), c.Budget.MinutesPerDay)
+			}
+			reserve = min(reserve, left)
+		}
+		if len(st.Days[day]) >= c.Budget.TurnsPerDay {
+			spent = fmt.Sprintf("the day's %d turns were spent", c.Budget.TurnsPerDay)
+		}
+		charge = Charge{Reserved: reserve}
 	}
 	starting := func(r *Request) error {
 		if err := r.To(StateStarting, "", now); err != nil {
@@ -1059,10 +1088,9 @@ func (s *Store) Start(id string, c Config, stamp Stamp) (Request, error) {
 		return Request{}, err
 	}
 	if chargedOn != day {
-		// A new charge, or one an earlier day holds: today's turns decide.
-		if len(st.Days[day]) >= c.Budget.TurnsPerDay {
+		if spent != "" {
 			r, err := s.updateLocked(id, func(r *Request) error {
-				return r.To(StateOverBudget, fmt.Sprintf("the day's %d turns were spent", c.Budget.TurnsPerDay), now)
+				return r.To(StateOverBudget, spent, now)
 			})
 			if err != nil {
 				return Request{}, err
@@ -1644,4 +1672,28 @@ func (s *Store) MakeInput(id string, item int) (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.readDoc(makeDoc(id, item), MaxMakeDoc)
+}
+
+// Role answers BK3's role's document (docs/plans/brakeman.md, PR-14),
+// brakeman/role.json, as it was written: the role is Yardmaster's
+// (crew.RoleRecord), which this package does not import, so it keeps the
+// document whole and the desk decodes it. ok is false before one is
+// written. A store that is read-only reads it too.
+func (s *Store) Role() (doc json.RawMessage, ok bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ok, err = s.st.LoadLimit(RoleFile, &doc, MaxRoleDoc)
+	return doc, ok, err
+}
+
+// SaveRole writes the role's document, measured first: refused past
+// MaxRoleDoc with nothing written, and by a store that does not own the
+// records (ErrNotOwner).
+func (s *Store) SaveRole(doc any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.writable(); err != nil {
+		return err
+	}
+	return s.write(s.st, RoleFile, doc, MaxRoleDoc)
 }

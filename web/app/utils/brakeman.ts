@@ -33,6 +33,18 @@ export interface BrakemanBudget {
   turnMinutes: number
   readsPerTurn: number
   turnsPerDay: number
+  /** The day's minutes, whatever started the turns (BK3, PR-14). */
+  minutesPerDay: number
+}
+
+/** When Brakeman runs: only when asked (`invoked`), or also woken in the background by the role (BK3). */
+export interface BrakemanWake {
+  mode: string
+  windowSeconds: number
+  cooldownMinutes: number
+  questionMinutes: number
+  /** "HH:MM" in the server's local zone. */
+  briefings?: string[]
 }
 
 /** Brakeman's configuration, brakeman/config.json, as GET /api/brakeman answers it and PUT /api/brakeman/config takes it. */
@@ -46,7 +58,7 @@ export interface BrakemanConfig {
   visibility: BrakemanVisibility
   scope: BrakemanScope
   permissions: BrakemanPermissions
-  wake: { mode: string }
+  wake: BrakemanWake
   budget: BrakemanBudget
   rev: number
   updatedAt?: string
@@ -125,6 +137,8 @@ export interface BrakemanRequest {
   edges?: BrakemanEdge[]
   acts?: BrakemanAct[]
   strayRun?: string
+  /** A wake request's batch (BK3): the wakes its turn is about. */
+  batch?: string
   closedAt?: string
 }
 
@@ -134,6 +148,9 @@ export interface BrakemanState {
   current: BrakemanRequest | null
   queue: BrakemanRequest[]
   turnsToday: number
+  /** The day's minutes charged, and the background role as it stands (GET /api/brakeman/role has its log). */
+  minutesToday?: number
+  role?: BrakemanRole
   /** The server's words for the agent saved, when its read-only mode does not hold (brakeman.Warnings). */
   warnings?: string[]
   readOnly?: boolean
@@ -233,8 +250,9 @@ export const KINDS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'ask', label: 'A question' },
 ]
 
-/** What the page calls a request's kind. */
+/** What the page calls a request's kind: a wake request is the background role's own, never one the composer offers. */
 export function kindWords(kind: string): string {
+  if (kind === 'wake') return 'Woken by events'
   return KINDS.find((k) => k.value === kind)?.label ?? kind
 }
 
@@ -327,7 +345,7 @@ export function stateWords(r: Pick<BrakemanRequest, 'state' | 'why' | 'sessionId
     case 'failed':
       return r.why ? `failed: ${r.why}` : 'failed'
     case 'over_budget':
-      return "not started: today's turns were spent"
+      return r.why ? `not started: ${r.why}` : "not started: today's budget was spent"
     case 'cancelled':
       return r.why ? `cancelled: ${r.why}` : 'cancelled'
     case 'interrupted':
@@ -683,6 +701,11 @@ export const BOUNDS = {
   turnMinutes: [1, 60],
   readsPerTurn: [10, 2000],
   turnsPerDay: [1, 500],
+  minutesPerDay: [10, 1440],
+  windowSeconds: [10, 900],
+  cooldownMinutes: [0, 1440],
+  questionMinutes: [1, 1440],
+  briefings: 24,
   selector: 50,
   path: 4096,
   scopeBytes: 8 << 10,
@@ -788,7 +811,38 @@ export function configProblems(c: BrakemanConfig, adapter: string | null): Recor
   bound('turnMinutes', 'Minutes a turn')
   bound('readsPerTurn', 'Reads a turn')
   bound('turnsPerDay', 'Turns a day')
+  bound('minutesPerDay', 'Minutes a day')
+  const w = c.wake
+  if (w.mode !== 'invoked' && w.mode !== 'background') out['wake.mode'] = 'Brakeman is woken only when asked, or in the background too.'
+  const wakeBound = (field: 'windowSeconds' | 'cooldownMinutes' | 'questionMinutes', words: string) => {
+    const [lo, hi] = BOUNDS[field]
+    const v = w[field]
+    if (!Number.isInteger(v) || v < lo || v > hi) out[`wake.${field}`] = `${words} ${lo} to ${hi}.`
+  }
+  wakeBound('windowSeconds', 'The window is')
+  wakeBound('cooldownMinutes', 'The cooldown is')
+  wakeBound('questionMinutes', 'A question wakes it after')
+  const times = w.briefings ?? []
+  const badTime = times.find((t) => !BRIEFING_TIME.test(t))
+  const twiceTime = times.find((t, i) => times.indexOf(t) !== i)
+  if (times.length > BOUNDS.briefings) out['wake.briefings'] = `At most ${BOUNDS.briefings} briefing times.`
+  else if (badTime !== undefined) out['wake.briefings'] = `${badTime} is not a time of day: HH:MM, 00:00 to 23:59.`
+  else if (twiceTime !== undefined) out['wake.briefings'] = `${twiceTime} is named twice.`
   return out
+}
+
+/** A briefing time, as the server takes one (internal/brakeman/config.go, briefingPattern). */
+export const BRIEFING_TIME = /^([01][0-9]|2[0-3]):[0-5][0-9]$/
+
+/** The briefing times as the form's text holds them, comma or space apart, and back. */
+export function briefingLine(times: readonly string[] | undefined): string {
+  return (times ?? []).join(', ')
+}
+export function briefingList(text: string): string[] {
+  return text
+    .split(/[\s,]+/)
+    .map((t) => t.trim())
+    .filter(Boolean)
 }
 
 /**
@@ -798,6 +852,57 @@ export function configProblems(c: BrakemanConfig, adapter: string | null): Recor
  */
 export function formField(field: string): string {
   return field.replace(/\[\d+\]$/, '')
+}
+
+/** A wake source firing, as the role's log keeps it (internal/crew/role.go, RoleLogRow). */
+export interface RoleLogRow {
+  source: string
+  subject?: string
+  key?: string
+  at: string
+  batch?: string
+  request?: string
+  held?: string
+}
+
+/** A batch's wakes of one source and subject, coalesced. */
+export interface BatchWake {
+  source: string
+  subject?: string
+  count: number
+  first: string
+  last: string
+}
+
+/** A batch: the wakes one turn reads. */
+export interface RoleBatch {
+  id: string
+  openedAt: string
+  wakes: BatchWake[]
+  overflow?: { count: number; first: string; last: string }
+}
+
+/** One of the role's notes: text a person kept from a brief. */
+export interface RoleNote {
+  text: string
+  from?: string
+  at: string
+}
+
+/** The background role (brakeman/role.json) as GET /api/brakeman and GET /api/brakeman/role answer it. */
+export interface BrakemanRole {
+  state: string
+  why?: string
+  retryAt?: string
+  last?: number
+  open?: RoleBatch
+  fired?: RoleBatch
+  request?: string
+  coolUntil?: string
+  briefed?: string
+  notes?: RoleNote[]
+  updatedAt?: string
+  minutesToday?: number
 }
 
 /** Whether two configurations hold the same settings, whatever their revisions: a form untouched since it was read is its base. */
