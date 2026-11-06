@@ -3904,9 +3904,9 @@ operation's receipt is `{decision, op, seq, at, rev, words, repeat?}`.
 when the request was made (the ref's record then): `{ref, seen, now,
 change?}`, `seen` the baseline's `{state, rev?, sha256?}`, `now` the
 record as it is (`{url, state, rev?, sha256?, at}`), and `change`
-`changed` (its state, revision or digest differ; a `run:` ref's state
-alone, as a run's revision moves with every transition of it, the
-decision's own opening among them), `deleted` (gone since) or `unread`
+`changed` (its state, revision or digest differ; a `run:` or a `task:`
+ref's state alone, as a run's revision, which is its tasks' too, moves
+with every transition of it, the decision's own opening among them), `deleted` (gone since) or `unread`
 (its store could not be read when the question was asked), absent when
 nothing changed. A resolution is at most 4 KiB as encoded, its escapes
 counted: past it its `now.url` is left out.

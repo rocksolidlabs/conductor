@@ -206,12 +206,34 @@ func cutWhy(why string) string {
 // reads the words in its task file. The caller holds e.mu, in a
 // transaction's change.
 func (e *Engine) supersedeAgent(r *run, d *decision, moved string) {
-	why := fmt.Sprintf("%s was superseded: %s; ask again if you still need it", d.id(), moved)
+	why := supersededWords(d.id(), moved)
 	tell := why
 	if d.state == ledger.DecisionAnswered {
-		tell = fmt.Sprintf("Decision %s's answer was not applied: %s", d.id(), moved)
+		tell = notAppliedWords(d.id(), moved)
 	}
 	e.closeDecision(r, d, ledger.DecisionSuperseded, why, "yardmaster", decisionOp{}, map[string]any{"moved": moved}, tell)
+}
+
+// The lines a decision's asking agent is told besides its answer
+// (answerWords), which the skill quotes (TestTheSkillQuotesTheEngine):
+// its decision superseded because what it was about moved, its answered
+// decision's answer not applied for that reason, the operator's request
+// for more, and the operator's cancel (why the cancel's words,
+// "cancelled by the operator, not approved[: WHY]").
+func supersededWords(id, moved string) string {
+	return fmt.Sprintf("%s was superseded: %s; ask again if you still need it", id, moved)
+}
+
+func notAppliedWords(id, moved string) string {
+	return fmt.Sprintf("Decision %s's answer was not applied: %s", id, moved)
+}
+
+func moreInfoWords(id, text string) string {
+	return fmt.Sprintf("The operator asks about %s: %s", id, text)
+}
+
+func cancelledWords(id, why string) string {
+	return fmt.Sprintf("Decision %s was %s", id, why)
 }
 
 // cancelAsked cancels the decisions t's attempts asked that are not final
@@ -1274,7 +1296,7 @@ func (e *Engine) CommentDecision(ctx context.Context, id, opID string, expectedR
 				return opDetail{}, nil, refuse(CodeNoRecipient, "%s's agent has ended its attempt: comment, answer or cancel it", id)
 			}
 			d.a.turnEnded = false
-			line := fmt.Sprintf("The operator asks about %s: %s", id, text)
+			line := moreInfoWords(id, text)
 			return opDetail{Text: text, By: actor, Words: fmt.Sprintf("Asked %s's agent for more", id)}, func() {
 				e.mu.Lock()
 				e.tell(r, d, line)
@@ -1438,7 +1460,7 @@ func (e *Engine) closeDecisionOp(r *run, d *decision, why, by string) {
 		return ltx.Event("decision.cancelled", map[string]any{"decision": row.ID(), "why": why, "tasks": tasks, "by": by})
 	}, func() {
 		e.withdrawMirror(d.a, d)
-		e.tell(r, d, fmt.Sprintf("Decision %s was cancelled by the operator: %s", d.id(), why))
+		e.tell(r, d, cancelledWords(d.id(), why))
 	})
 }
 

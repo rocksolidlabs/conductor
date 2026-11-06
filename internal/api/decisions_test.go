@@ -664,11 +664,12 @@ func TestADecisionResolvesItsEvidence(t *testing.T) {
 	if ticket["ref"] != "ticket:CND-1" || seen["rev"] == nil || seen["rev"] != now["rev"] || ticket["change"] != nil || now["url"] == nil {
 		t.Fatalf("the ticket's ref: %v", ticket)
 	}
-	if task := refs[1].(map[string]any); task["ref"] != "task:"+run+"/build" || task["seen"].(map[string]any)["state"] == nil {
+	// The run's revision, and its task's, moved with the decision's own
+	// opening: each ref is unchanged while its state is (#637, review
+	// round 1; the task's, #689, review round 1).
+	if task := refs[1].(map[string]any); task["ref"] != "task:"+run+"/build" || task["seen"].(map[string]any)["state"] == nil || task["change"] != nil {
 		t.Fatalf("the task's ref: %v", task)
 	}
-	// The run's revision moved with the decision's own opening: its ref is
-	// unchanged while its state is (#637, review round 1).
 	if r := refs[2].(map[string]any); r["ref"] != "run:"+run || r["change"] != nil {
 		t.Fatalf("the run's ref: %v", r)
 	}
