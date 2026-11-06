@@ -559,6 +559,7 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 		}
 	}
 	s.shot = NewScreenModelWatcher(matchNothing, patternQuiet, int(info.Cols), int(info.Rows), func(string) {}, s.screenQuiet)
+	s.shot.KeepShown() // what ScreenLines reads
 	if opts.WatchGit && info.Cwd != "" {
 		s.gitSeenStart()
 	}
@@ -5027,34 +5028,28 @@ func (s *Local) LastLine() string {
 	return ""
 }
 
-// TailLines is the last n lines of output the session kept (at most n,
-// oldest first), their escape sequences stripped, each cut to at most
-// maxLastLine*4 bytes and made valid UTF-8, trailing blank lines left out:
-// what a person reading its screen sees of its end (the Brakeman desk's
+// ScreenLines is what a person reading the session's terminal sees: its
+// screen's last n rows at most (shot, which every session keeps, as a
+// terminal shows it: Screen.Shown), oldest first, blank rows at the bottom
+// left out, each cut to at most maxLastLine*4 bytes (the Brakeman desk's
 // screen read).
-func (s *Local) TailLines(n int) []string {
+func (s *Local) ScreenLines(n int) []string {
 	if n <= 0 {
 		return nil
 	}
-	text := strings.ReplaceAll(string(StripANSI(s.ring.Snapshot())), "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	lines := strings.Split(strings.TrimRight(text, " \t\n"), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		return nil
+	rows := s.shot.Shown()
+	for len(rows) > 0 && rows[len(rows)-1] == "" {
+		rows = rows[:len(rows)-1]
 	}
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	out := make([]string, 0, len(lines))
-	for _, l := range lines {
-		l = strings.ToValidUTF8(strings.TrimRight(l, " \t"), "")
+	rows = rows[len(rows)-min(n, len(rows)):]
+	for i, l := range rows {
 		for len(l) > maxLastLine*4 {
 			_, k := utf8.DecodeLastRuneInString(l)
 			l = l[:len(l)-k]
 		}
-		out = append(out, l)
+		rows[i] = l
 	}
-	return out
+	return rows
 }
 
 // DisconnectLink evicts every subscription created through linkID as

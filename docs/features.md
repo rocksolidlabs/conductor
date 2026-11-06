@@ -3709,6 +3709,37 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestAReadGivesNoGrant`, `TestAGrantGivesNoRead`,
   `TestNoGrantApprovesAnswersOrAccepts`, `TestBrakemanCannotGrantItself`).
 
+  **A session's replay and Brakeman's screen read (#692, 2026-11-06).**
+  #659's live check watched a Codex session redraw its status row in
+  place for minutes, with no line feed. Opening its page drew the tail of
+  a colour sequence (`138;138;138;49m•`) as text: a replay began wherever
+  the scrollback's cut fell when no newline was in its first 4 KiB. The
+  ring now scans the bytes it drops, so it knows the stream's state at
+  its oldest byte, and a replay begins where a terminal can: never inside
+  an escape sequence, a control string (a title, a link, an image, a
+  clipboard write, whatever its length) or a character, and after a line
+  feed when one comes within 4 KiB of that start, as before. The bytes
+  given up are the rest of what the cut fell in, which draws nothing, and
+  at most 4 KiB more for the line. A synchronized update whose begin was
+  cut replays as the rest of its frame. A session's last line kept on its
+  exit (a turn's "Please run /login") reads the same replay. Brakeman's
+  screen read answered the kept output with its escapes stripped, split
+  at line breaks: for that session, one line of some 250 bullets after a
+  fragment. It answers the screen now: the rows of the screen model every
+  session keeps of its output (the one the bell's wait is looked at by),
+  at the terminal's size,
+  the alternate screen while the program is on it, the frame before a
+  synchronized update until it ends, blank rows at the bottom left out.
+  No session lacks one. Tests: `TestRingReplayStartsWhereATerminalCan`
+  (every cut of a stream of colours, a title, a synchronized update,
+  links, a DCS and characters of two to four bytes, and of one with line
+  feeds inside a clipboard write), `TestAnAttachReplaysNoFragment`,
+  `TestLastLineHasNoFragment`, `TestScreenLinesOfARowRedrawnInPlace`,
+  `TestScreenLinesOfAFullScreenDialog`,
+  `TestScreenLinesDuringASynchronizedUpdate` and
+  `TestTheScreenReadsAsATerminalShowsIt`, each failing on `main` before
+  the fix.
+
   **BK3's observation: pending.** Made the same way after the merge: a
   task failing overnight wakes Brakeman once; a second failure inside the
   window joins the same brief; the cooldown holds the next; the day's

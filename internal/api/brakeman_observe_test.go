@@ -25,6 +25,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
 // What Brakeman reads (docs/plans/brakeman.md, PR-4): a turn's session
@@ -492,6 +493,54 @@ func TestAHostedSessionsScreenIsUnavailable(t *testing.T) {
 	t.Cleanup(func() { f.srv.registry.Remove(h.info.ID) })
 	f.turn(t, func(c map[string]any) { c["visibility"].(map[string]any)["terminals"] = true })
 	f.expectRead(t, "/api/brakeman/screen?session="+h.info.ID, http.StatusConflict, "unavailable")
+}
+
+// A session's screen reads as a terminal shows it (#692): a program that
+// redraws one row in place past its scrollback reads as that row, a
+// full-screen dialog as its rows; a session outside the scope is refused.
+func TestTheScreenReadsAsATerminalShowsIt(t *testing.T) {
+	f := newObsFixture(t)
+	p := sessiontest.NewFakeProc()
+	l := session.NewLocal(session.Info{ID: session.NewID(), Name: "redraws", Kind: session.KindServer, Cwd: f.root, Cols: 80, Rows: 24}, p, session.Options{ScrollbackBytes: 4096})
+	if err := f.srv.registry.Add(l); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		f.srv.registry.Remove(l.Info().ID)
+		p.End(0)
+	})
+	id := l.Info().ID
+	f.turn(t, func(c map[string]any) { c["visibility"].(map[string]any)["terminals"] = true })
+	// shows waits until the session's screen reads want: the output that
+	// draws it has been fed to the screen the route reads.
+	shows := func(want ...string) {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); !slices.Equal(l.ScreenLines(len(want)), want); {
+			if time.Now().After(deadline) {
+				t.Fatalf("the screen never read %q: %q", want, l.ScreenLines(len(want)))
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	frame := "\r\x1b[38;2;138;138;138;49m•\x1b[0m Working"
+	if err := p.Print(strings.Repeat(frame, 4096/len(frame)+10) + "\r\x1b[2K• done"); err != nil {
+		t.Fatal(err)
+	}
+	shows("• done")
+	out := f.expectRead(t, "/api/brakeman/screen?session="+id, http.StatusOK, "")
+	if got := fmt.Sprint(out["lines"]); got != "[• done]" {
+		t.Fatalf("a row redrawn in place reads %s", got)
+	}
+	if err := p.Print("\x1b[?1049h\x1b[2J\x1b[1;1H╭─ Allow? ─╮\x1b[3;3H1. Yes\x1b[4;3H2. No\x1b[5;1H╰──────────╯"); err != nil {
+		t.Fatal(err)
+	}
+	shows("╭─ Allow? ─╮", "", "  1. Yes", "  2. No", "╰──────────╯")
+	out = f.expectRead(t, "/api/brakeman/screen?session="+id+"&lines=3", http.StatusOK, "")
+	if got := fmt.Sprint(out["lines"]); got != "[  1. Yes   2. No ╰──────────╯]" {
+		t.Fatalf("a dialog's last 3 rows read %s", got)
+	}
+	f.again(t, func(c map[string]any) { c["scope"] = map[string]any{"crews": []string{"team"}} })
+	f.expectRead(t, "/api/brakeman/screen?session="+id, http.StatusForbidden, "outside_scope")
 }
 
 // A hosted session's quiet time is unknown, never quiet.

@@ -67,6 +67,12 @@ type Screen struct {
 	// not ended it: a terminal shows the frame before it until it ends,
 	// and this screen holds half of the next.
 	syncing bool
+	// shown is the cells as the synchronized update under way began: the
+	// frame a terminal goes on showing until it ends (Shown), kept only by
+	// a screen that keepsShown (KeepShown). Its rows are reused by the
+	// next update.
+	shown      [][]rune
+	keepsShown bool
 	// layMain and layAlt are what each buffer's rows were laid out for
 	// (layout), lay the current buffer's (main's or alt's, as cells is):
 	// what one buffer draws or erases says nothing of the other.
@@ -576,6 +582,9 @@ func (s *Screen) csi(final byte) {
 						}
 						l.unclipAtEnd = false
 					}
+					if final == 'h' && !s.syncing && s.keepsShown {
+						s.saveShown()
+					}
 					s.syncing = final == 'h'
 				}
 			}
@@ -736,9 +745,40 @@ func (s *Screen) erasedWhole() {
 // Rows returns every row of the screen as its characters, a wide
 // character's tail left out and trailing spaces trimmed: what the screen
 // snapshot compares (Local.screenQuiet).
-func (s *Screen) Rows() []string {
-	out := make([]string, len(s.cells))
+func (s *Screen) Rows() []string { return rowsOf(s.cells) }
+
+// Shown is Rows as a terminal shows them: during a synchronized update, the
+// rows as it began, the frame before it, which a terminal goes on showing
+// until the update ends; otherwise the rows as they are. A screen that
+// does not keep that frame (KeepShown) answers Rows.
+func (s *Screen) Shown() []string {
+	if s.syncing && s.keepsShown {
+		return rowsOf(s.shown)
+	}
+	return s.Rows()
+}
+
+// KeepShown makes the screen keep, from the next synchronized update on,
+// the frame a terminal shows during one (Shown): a copy of the cells as
+// each begins, made into one buffer kept for the next, rows by cols runes
+// (7.5 KiB at 80 by 24, 977 KiB at 500 by 500).
+func (s *Screen) KeepShown() { s.keepsShown = true }
+
+// saveShown copies the cells into shown, as a synchronized update begins.
+func (s *Screen) saveShown() {
+	s.shown = s.shown[:min(len(s.shown), len(s.cells))]
 	for r, row := range s.cells {
+		if r == len(s.shown) {
+			s.shown = append(s.shown, nil)
+		}
+		s.shown[r] = append(s.shown[r][:0], row...)
+	}
+}
+
+// rowsOf is cells as Rows reads them.
+func rowsOf(cells [][]rune) []string {
+	out := make([]string, len(cells))
+	for r, row := range cells {
 		line := make([]rune, 0, len(row))
 		for _, c := range row {
 			if c != wideTail {

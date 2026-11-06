@@ -501,6 +501,28 @@ func (w *PatternWatcher) Rows() (rows []string, drawn bool) {
 	return nil, false
 }
 
+// KeepShown makes a screen watcher's screen keep the frame a terminal
+// shows during a synchronized update (Screen.KeepShown); nothing for the
+// others.
+func (w *PatternWatcher) KeepShown() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		sc.KeepShown()
+	}
+}
+
+// Shown returns a screen watcher's screen as a terminal shows its rows
+// (Screen.Shown); nil for the others.
+func (w *PatternWatcher) Shown() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		return sc.Shown()
+	}
+	return nil
+}
+
 // Size returns a screen watcher's screen size, 0 by 0 for the others.
 func (w *PatternWatcher) Size() (cols, rows int) {
 	w.mu.Lock()
