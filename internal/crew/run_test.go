@@ -73,6 +73,7 @@ type fakeLauncher struct {
 
 	mu           sync.Mutex
 	calls        []launchCall
+	reserves     int              // the Reserve calls that got a place
 	reserveFails error            // when set, every Reserve returns it
 	reserveHold  chan struct{}    // when set, Reserve waits for it to close, or for its context
 	fail         map[string]error // member name -> the error its launch returns
@@ -127,6 +128,9 @@ func (f *fakeLauncher) Reserve(ctx context.Context) (*session.Reservation, error
 			return nil, ctx.Err()
 		}
 	}
+	f.mu.Lock()
+	f.reserves++
+	f.mu.Unlock()
 	return &session.Reservation{}, nil
 }
 

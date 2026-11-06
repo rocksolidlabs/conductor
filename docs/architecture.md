@@ -517,12 +517,12 @@ and counts a run's questions from the live sessions, never by polling.
 ## Brakeman
 
 Brakeman is the sidekick agent (`docs/plans/brakeman.md`, Program items BK0
-to BK3; what is here is the first slice, BK1's and BK0's first forms): an
-agent of the person's own choosing, on the person's own agent login, that
-Yardmaster runs for bounded turns. It observes, explains, drafts and
-proposes; nothing it writes becomes work until a person acts through the
-typed operations every client uses, and it answers no question, approves
-nothing and schedules nothing. It is off until a person configures it in
+to BK3): an agent of the person's own choosing, on the person's own agent
+login, that Yardmaster runs for bounded turns. It observes, explains, drafts
+and proposes; nothing it writes becomes work until a person acts through the
+typed operations every client uses, or runs an operation the person granted
+it through that operation's own route (below), and it answers no question,
+approves nothing and schedules nothing. It is off until a person configures it in
 Settings, so a build where nobody has does what it did before; a switchyard
 runs none (`403 switchyard`).
 
@@ -532,7 +532,8 @@ runs none (`403 switchyard`).
 the desk's queue (`internal/api/brakeman.go`, 8 at most; one turn at a
 time). The desk takes the oldest, charges the day's budget and launches
 through the engine (`Engine.LaunchNamedWith`, then `crew.Launcher`, the path
-every member takes; `launchTurn` is its one door, never `os/exec`) an
+every member takes; the desk calls the `ext.Host` the composition root
+gives it, whose `LaunchTurn` is `launchTurn`, its one door, never `os/exec`) an
 unsaved one-member crew: the configured agent in the configured folder
 (through `openCwd`), isolation `none`, its arguments the adapter's
 read-only mode, then its model flag, then the rule that lets Conductor's
@@ -603,6 +604,41 @@ read, so a run that moved is refused `409 stale_revision`; a question
 answered on its session page; a stop, a resume, a crew's creation or
 launch only as a link to the page that does them.
 
+**What a turn may run** (BK2, `brakeman_act.go`). The person grants
+operations in `permissions.act` from a closed list (`brakeman.Grantable`):
+`launch_approved_plan` and `prepare_followup`, DS2's launch and proposal,
+are served; `request_repair` and `route_decision` wait for RV1's and DR1's
+routes and are refused at the save. There is no act route of Brakeman's:
+each operation's own route takes the principal `brakeman` and checks the
+grant (the turn's snapshot and the configuration now), the visibility, the
+scope, the target's state and the request's 20 acts, under the lock a
+configuration's save takes, so a grant taken away meanwhile holds; the
+act is written `pending` on the
+request, run through the operation's one function under the actor
+`brakeman` with an op id derived from the request and the turn's `opId`
+(a launch through `ext.Host`'s `LaunchApproved`), and its receipt copied
+back. A retry is answered by the operation's own store; an act a stop cut
+short is settled at the next start from Dispatch's record or marked
+`not_run` (`recoverActs`). The MCP tool `act` and `conductor brakeman act`
+send it, listed only in a turn whose guide names a granted operation.
+
+**The background role** (BK3, `internal/crew/role.go`, decision 2): a
+record, not a process. The loop is generic (it imports neither
+`internal/brakeman` nor `internal/api`) and asks `crew.RoleRecords`, which
+the desk implements (`brakeman_role.go`), for its records, its settings
+and a turn. The desk feeds it wakes: the engine's run changes (a task
+failed with proof, a run ended or paused), the activity sink (a question
+open past its wait), Dispatch's change feed (a ticket made `ready`), a
+person's request and the briefing times; none from a Brakeman turn or
+what an act made. A wake opens a batch (`gathering`); at the window's end
+the role makes one request of kind `wake` under the op id `wake-<batch>`
+and is `briefing`, then `cooling`, then `idle`; `paused` gathers nothing
+and `unavailable` says why and keeps its batch. Each change is written to
+`brakeman/role.json` before what it starts, so a restart reads it back and
+a batch fires once; the day's minutes bound every turn, whoever started
+it. A wake turn's session is marked quiet: its question is listed in Needs
+you and notifies no one.
+
 **The guide** (`internal/api/guide.go`, BK0) is what an agent learns this
 build can do, from the running server rather than a static prompt. One
 table holds Conductor's operations (name, scope, route, MCP tool, CLI form,
@@ -612,8 +648,9 @@ drift. It is computed per caller (`GET /api/guide`, `GET
 /api/sessions/{id}/guide`, the MCP tool `guide`, `conductor guide`) and
 served in sections: an overview of at most 4 KiB, then the operations the
 caller's scopes reach, the limits read from the constants that enforce
-them, the host, the receipts, the providers, said to be unknown until
-the guide reads `GET /api/capabilities` (the plan's PR-9), and a brief's
+them, the host (with the kinds of provider registered, `extensions`), the
+receipts, the providers (`GET /api/capabilities`'s rows; none in a plain
+build), and a brief's
 shape (`briefs`: in words and as its JSON Schema). A plain
 session's guide is not an attempt's, and a turn's lists its `observe`
 reads and none of the crew or ticket tools.
