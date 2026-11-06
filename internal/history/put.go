@@ -564,9 +564,8 @@ type Stats struct {
 	Dropped    int64     `json:"dropped,omitempty"`
 }
 
-// Stats reads the index's Stats; Entries and Oldest leave out the entries
-// of the sources except, as a search's ExceptSources does.
-func (ix *Index) Stats(ctx context.Context, except ...string) (Stats, error) {
+// Stats reads the index's Stats.
+func (ix *Index) Stats(ctx context.Context) (Stats, error) {
 	var st Stats
 	if err := ix.enterRead(ctx); err != nil {
 		return st, err
@@ -580,11 +579,7 @@ func (ix *Index) Stats(ctx context.Context, except ...string) (Stats, error) {
 	}
 	st.Generation = gen
 	var oldest sql.NullString
-	count, args := "SELECT COUNT(*), MIN(at) FROM entries", []any(nil)
-	if c, a := exceptSources("source", except); c != "" {
-		count, args = count+" WHERE "+c, a
-	}
-	if err := tx.QueryRowContext(ctx, count, args...).Scan(&st.Entries, &oldest); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*), MIN(at) FROM entries").Scan(&st.Entries, &oldest); err != nil {
 		return st, err
 	}
 	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM sources").Scan(&st.Sources, &st.Bytes); err != nil {

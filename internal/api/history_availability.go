@@ -36,9 +36,9 @@ import (
 // own rules, resumeCheck), whether a result commit is in its repository,
 // the worktree's branch, and a log's size and hash.
 
-// The availability states. A row whose session record the journal no
-// longer holds is never served (forgottenSources), so no row is ever said
-// to be forgotten.
+// The availability states. A forgotten record's rows are gone from the
+// index before its Forget answers, so no row is ever said to be
+// forgotten; an entry read checks its record once more (recordAnswer).
 const (
 	availLive         = "live"          // a session listed and running
 	availListed       = "listed"        // ended, still listed: its page shows its last screen
@@ -151,14 +151,11 @@ type availability struct {
 	attempts map[string]attemptsRead
 	checks   map[attemptID]checksRead
 	folders  map[string]*runFolder
-	kept     map[string]bool
 	briefs   map[string]availabilityOf
 	launches map[string]string
-	// gone is the sources the reply leaves out (except), read once and
-	// added to as the reply finds more (forgottenSources).
-	gone     []string
-	goneRead bool
-	goneErr  error
+	// records is the journal's answer for each session record an entry
+	// read asked of it (recordAnswer).
+	records map[string]answer
 }
 
 type attemptsRead struct {
@@ -183,7 +180,7 @@ type runFolder struct {
 
 func (s *Server) newAvailability(ctx context.Context, ix *history.Index) *availability {
 	return &availability{s: s, ctx: ctx, ix: ix, attempts: map[string]attemptsRead{}, checks: map[attemptID]checksRead{},
-		folders: map[string]*runFolder{}, kept: map[string]bool{}, briefs: map[string]availabilityOf{},
+		folders: map[string]*runFolder{}, records: map[string]answer{}, briefs: map[string]availabilityOf{},
 		launches: map[string]string{}}
 }
 
@@ -214,162 +211,41 @@ func recordOf(e history.Entry) string {
 	return ""
 }
 
-// refRecord is the session a ref names (session:<id>, question:<id>/<q>
-// and an entry's key session:<id>#...); "" for any other.
-func refRecord(ref string) string {
-	kind, rest, _ := strings.Cut(ref, ":")
-	switch kind {
-	case "session", "question":
-		id, _, _ := strings.Cut(rest, "/")
-		id, _, _ = strings.Cut(id, "#")
-		return id
+// recordAnswer is whether the journal still answers for the session's
+// record, by its own read (Get), once for the reply: yes when it finds
+// it, or finds a file it cannot decode (which no Forget has removed); no
+// when it does not (not found, or a server that keeps no records);
+// unknown when the read failed for any other reason. The index holds
+// nothing of a forgotten record once its Forget has answered (the
+// indexer drops its rows first, and no pass publishes a record the
+// journal no longer answers for), so a search reads the index alone; an
+// entry read (its key named by the caller) asks this once more, the last
+// line should the index ever be behind.
+func (av *availability) recordAnswer(id string) answer {
+	if a, ok := av.records[id]; ok {
+		return a
 	}
-	return ""
-}
-
-// recordKept says the journal still answers for the session's record: its
-// own read finds it (Get), or finds a file it cannot decode, which no
-// Forget has removed. Its "not found", or no journal, or a read that
-// failed, is not kept: what is not known to be kept is not served. Read
-// once a session for the reply.
-func (av *availability) recordKept(id string) bool {
-	if k, ok := av.kept[id]; ok {
-		return k
-	}
-	k := false
+	a := answerNo
 	if j := av.s.sessionRecords; j != nil {
 		_, _, err := j.Get(id)
-		var pe *store.ParseError
-		k = err == nil || errors.As(err, &pe)
+		if pe := (*store.ParseError)(nil); errors.As(err, &pe) {
+			err = nil
+		}
+		a = answerOf(err == nil, err)
 	}
-	av.kept[id] = k
-	return k
+	av.records[id] = a
+	return a
 }
 
-// forgottenSources is the sources of the hits whose session record the
-// journal no longer holds, each once: they are added to what the reply
-// leaves out (except), and the indexer is asked to read each again (its
-// pass removes it).
-func (av *availability) forgottenSources(hits []history.Hit) []string {
-	var out []string
-	for _, h := range hits {
-		id := recordOf(h.Entry)
-		if id == "" || av.recordKept(id) {
-			continue
-		}
-		if src := hSessionRef(id); !slices.Contains(out, src) {
-			out = append(out, src)
-			av.leaveOut(src)
-		}
+// entryRead checks an entry read by its key (the entry and similar
+// routes): history.ErrGone when its session record, if it is of one, is
+// no longer kept; nil when it is, when it is of none, or when the journal
+// could not be read now (its availability then says unknown).
+func (av *availability) entryRead(e history.Entry) error {
+	if id := recordOf(e); id != "" && av.recordAnswer(id) == answerNo {
+		return history.ErrGone
 	}
-	return out
-}
-
-// leaveOut adds the source to what the reply leaves out, once, and asks
-// the indexer to read it again.
-func (av *availability) leaveOut(src string) {
-	if slices.Contains(av.gone, src) {
-		return
-	}
-	av.gone = append(av.gone, src)
-	if av.s.history != nil {
-		av.s.history.mark(src)
-	}
-}
-
-// maxSessionSourcePages bounds the pages of the index's session sources
-// (history.MaxSourcesPage each) a reply reads to find those forgotten:
-// several times the records the journal keeps (journal.MaxRecords).
-const maxSessionSourcePages = 16
-
-// errForgetting is a reply that cannot tell which records are forgotten:
-// the journal's list could not be read, or the index holds more session
-// sources than a reply reads. It is said as the history not ready.
-var errForgetting = fmt.Errorf("%w: the session records could not all be compared with the history; try again", history.ErrNotReady)
-
-// except is the sources the reply leaves out, so that a forgotten record
-// counts in nothing it answers (a row, a total, a cursor, a repeat, a
-// link, how far back the history holds): every session source the index
-// holds whose record the journal no longer answers for (recordKept). It
-// is read once, before the reply's first read of the index: the index's
-// session sources (in the order of their keys, from session:) against the
-// journal's own list of its records, each source the list lacks asked of
-// the journal again (Get: a record begun since the list is kept). Every
-// read of the index the reply makes takes it: a search's ExceptSources,
-// Entry's, Links', Similar's and Stats' except. A record forgotten after
-// it is read is found among the rows read (forgottenSources) and added.
-func (av *availability) except() ([]string, error) {
-	if av.goneRead || av.ix == nil {
-		return av.gone, av.goneErr
-	}
-	av.goneRead = true
-	held := map[string]bool{}
-	if j := av.s.sessionRecords; j != nil {
-		after := ""
-		for range journal.MaxRecords {
-			page, err := j.List(after, journal.MaxPage)
-			if err != nil {
-				av.goneErr = errForgetting
-				return nil, av.goneErr
-			}
-			for _, r := range page.Records {
-				held[r.ID] = true
-			}
-			if after = page.Next; after == "" {
-				break
-			}
-		}
-	}
-	const prefix = "session:"
-	after := prefix
-	for range maxSessionSourcePages {
-		srcs, err := av.ix.Sources(av.ctx, after, history.MaxSourcesPage)
-		if err != nil {
-			av.goneErr = err
-			return nil, err
-		}
-		for _, src := range srcs {
-			id, ok := strings.CutPrefix(src.Key, prefix)
-			if !ok {
-				return av.gone, nil
-			}
-			if !held[id] && !av.recordKept(id) {
-				av.leaveOut(src.Key)
-			}
-		}
-		if len(srcs) < history.MaxSourcesPage {
-			return av.gone, nil
-		}
-		after = srcs[len(srcs)-1].Key
-	}
-	av.goneErr = errForgetting
-	return nil, av.goneErr
-}
-
-// withoutForgotten is the hits whose session record, if any, the journal
-// still holds.
-func (av *availability) withoutForgotten(hits []history.Hit) []history.Hit {
-	if len(av.forgottenSources(hits)) == 0 {
-		return hits
-	}
-	return slices.DeleteFunc(slices.Clone(hits), func(h history.Hit) bool {
-		id := recordOf(h.Entry)
-		return id != "" && slices.Contains(av.gone, hSessionRef(id))
-	})
-}
-
-// linkKept says a link's other end may be served: it names no session
-// record the journal no longer holds, by its ref or its entry's key.
-func (av *availability) linkKept(l history.LinkEnd) bool {
-	if id := refRecord(l.Ref); id != "" && !av.recordKept(id) {
-		return false
-	}
-	if l.Entry != nil {
-		if id := refRecord(l.Entry.Key); id != "" && !av.recordKept(id) {
-			return false
-		}
-	}
-	return true
+	return nil
 }
 
 // of is an entry's availability; full adds what the entry route reads.
@@ -400,14 +276,17 @@ func (av *availability) of(e history.Entry, full bool) availabilityOf {
 }
 
 // session is a session's availability: listed (running or ended), else
-// its record's (kept, lost while it ran, its host away). A row whose
-// record the journal no longer holds is not served, so it is never asked.
+// its record's (kept, lost while it ran, its host away); unknown when an
+// entry read asked the journal for its record and the read failed.
 func (av *availability) session(id string, record bool, e history.Entry) availabilityOf {
 	if d, ok := av.s.registry.Get(id); ok {
 		if !d.Info().Status.Ended() {
 			return availabilityOf{State: availLive, Words: "live"}
 		}
 		return availabilityOf{State: availListed, Words: "ended, listed"}
+	}
+	if av.records[recordOf(e)] == answerUnknown {
+		return availabilityOf{State: availUnknown, Words: "its record could not be read now; try again"}
 	}
 	switch {
 	case record && e.Outcome == journal.EndingLost:

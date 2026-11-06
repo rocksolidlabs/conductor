@@ -200,9 +200,8 @@ func (s *Server) historyTimeout() time.Duration {
 }
 
 // historyIndexing is the reply's indexing: the indexer's state, the
-// index's (other_version, checking), and how far back it holds, the
-// sources the reply leaves out (except) left out of that too.
-func (s *Server) historyIndexing(ctx context.Context, ix *history.Index, pageState string, except []string) map[string]any {
+// index's (other_version, checking), and how far back it holds.
+func (s *Server) historyIndexing(ctx context.Context, ix *history.Index, pageState string) map[string]any {
 	out := map[string]any{"state": indexOpening}
 	if s.history != nil {
 		out = s.history.indexing()
@@ -211,7 +210,7 @@ func (s *Server) historyIndexing(ctx context.Context, ix *history.Index, pageSta
 		out["state"] = pageState
 	}
 	if ix != nil {
-		if st, err := ix.Stats(ctx, except...); err == nil {
+		if st, err := ix.Stats(ctx); err == nil {
 			if !st.Oldest.IsZero() {
 				out["oldest"] = st.Oldest
 			}
@@ -253,21 +252,13 @@ func (h *historyReq) fail(err error) {
 	}
 }
 
-// maxForgottenTries bounds how many times a search is made again leaving
-// out the records it found forgotten: past it, the reply is a refusal.
-const maxForgottenTries = 3
-
 // handleHistorySearch answers GET /api/history?q=&limit=&after=: a page of
 // the entries whose text holds the line's words and that pass its
 // filters, {entries, next?, total, totalCapped?, cut?, indexing,
 // readOnly?, truncated?, stale?}. Brakeman's own sessions and runs are
-// left out unless the line names a crew or the kind brief.item. A session
-// record the journal no longer holds is never served, nor counted in
-// anything the reply says: the search leaves out every source the index
-// still holds of one (availability.except: its rows, its count in total,
-// in a row's repeats and links, in how far back the history holds, a
-// cursor of it), and a page that finds one forgotten since is read again
-// without it; stale says the index still held one.
+// left out unless the line names a crew or the kind brief.item. A
+// forgotten session record is in none of it: its rows are gone from the
+// index before its Forget answers, so the search reads the index alone.
 func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 	h, ok := s.historyRead(w, r, "q", "limit", "after")
 	if !ok {
@@ -307,34 +298,20 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 	}
 	readOnly := s.sessionRecords != nil && func() bool { ro, _ := s.sessionRecords.ReadOnly(); return ro }()
 	if ix == nil {
-		out := map[string]any{"entries": []any{}, "total": 0, "indexing": s.historyIndexing(ctx, nil, "", nil)}
+		out := map[string]any{"entries": []any{}, "total": 0, "indexing": s.historyIndexing(ctx, nil, "")}
 		if readOnly {
 			out["readOnly"] = true
 		}
 		h.reply(http.StatusOK, out)
 		return
 	}
-	av := s.newAvailability(ctx, ix)
-	defer av.close()
-	if _, err := av.except(); err != nil {
+	page, err := ix.Search(ctx, hq)
+	if err != nil {
 		h.fail(err)
 		return
 	}
-	var page history.Page
-	for try := 0; ; try++ {
-		hq.ExceptSources = slices.Clone(av.gone)
-		if page, err = ix.Search(ctx, hq); err != nil {
-			h.fail(err)
-			return
-		}
-		if len(av.forgottenSources(page.Entries)) == 0 {
-			break
-		}
-		if try+1 == maxForgottenTries {
-			h.refuse(http.StatusServiceUnavailable, "history_not_ready", "records are being forgotten; try again")
-			return
-		}
-	}
+	av := s.newAvailability(ctx, ix)
+	defer av.close()
 	entries, n := s.servePage(av, page.Entries)
 	next := page.Next
 	if n < len(page.Entries) {
@@ -342,7 +319,7 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 		// the last row served.
 		next = page.After(n - 1)
 	}
-	out := map[string]any{"entries": entries, "total": page.Total, "indexing": s.historyIndexing(ctx, ix, page.State, hq.ExceptSources)}
+	out := map[string]any{"entries": entries, "total": page.Total, "indexing": s.historyIndexing(ctx, ix, page.State)}
 	if next != "" {
 		out["next"] = next
 	}
@@ -354,9 +331,6 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 	}
 	if n < len(page.Entries) {
 		out["truncated"] = true
-	}
-	if len(hq.ExceptSources) > 0 {
-		out["stale"] = true
 	}
 	if readOnly {
 		out["readOnly"] = true
@@ -385,7 +359,7 @@ func (s *Server) servePage(av *availability, hits []history.Hit) (out []servedEn
 // its key, its links each way (at most maxEntryLinks) and its full
 // availability, within the reply's bound (linksCut past it); 404
 // entry_gone for a key the index no longer holds, or whose session record
-// the journal no longer holds.
+// the journal no longer holds (availability.entryRead).
 func (s *Server) handleHistoryEntry(w http.ResponseWriter, r *http.Request) {
 	h, ok := s.historyRead(w, r, "key")
 	if !ok {
@@ -407,26 +381,20 @@ func (s *Server) handleHistoryEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	av := s.newAvailability(ctx, ix)
 	defer av.close()
-	except, err := av.except()
+	hit, err := ix.Entry(ctx, key)
+	if err == nil {
+		err = av.entryRead(hit.Entry)
+	}
 	if err != nil {
 		h.fail(err)
-		return
-	}
-	hit, err := ix.Entry(ctx, key, except...)
-	if err != nil {
-		h.fail(err)
-		return
-	}
-	if len(av.forgottenSources([]history.Hit{hit})) > 0 {
-		h.fail(history.ErrGone)
 		return
 	}
 	links := hit.Links
-	if l, err := ix.Links(ctx, hit.Ref, maxEntryLinks, av.gone...); err == nil {
+	if l, err := ix.Links(ctx, hit.Ref, maxEntryLinks); err == nil {
 		links = l
 	}
 	e := s.serveEntry(av, hit.Entry, hit.Snippet, hit.Repeats, links, true)
-	out := map[string]any{"entry": e, "indexing": s.historyIndexing(ctx, ix, "", av.gone)}
+	out := map[string]any{"entry": e, "indexing": s.historyIndexing(ctx, ix, "")}
 	// Within the reply's bound: the links past it are cut, the last
 	// first, and the reply says so.
 	for b, _ := json.Marshal(out); len(b)+1 > historyReplyLimit && len(e.Links) > 0; b, _ = json.Marshal(out) {
@@ -438,8 +406,8 @@ func (s *Server) handleHistoryEntry(w http.ResponseWriter, r *http.Request) {
 
 // handleHistorySimilar answers GET /api/history/similar?key=&scope=&limit=:
 // the receipts of the same command elsewhere (history.Index.Similar), the
-// entry's run chain left out, at most history.MaxSimilar; a session record
-// the journal no longer holds is never among them.
+// entry's run chain left out, at most history.MaxSimilar; 404 entry_gone
+// as the entry route answers it.
 func (s *Server) handleHistorySimilar(w http.ResponseWriter, r *http.Request) {
 	h, ok := s.historyRead(w, r, "key", "scope", "limit")
 	if !ok {
@@ -478,26 +446,19 @@ func (s *Server) handleHistorySimilar(w http.ResponseWriter, r *http.Request) {
 	}
 	av := s.newAvailability(ctx, ix)
 	defer av.close()
-	except, err := av.except()
+	hit, err := ix.Entry(ctx, key)
+	if err == nil {
+		err = av.entryRead(hit.Entry)
+	}
 	if err != nil {
 		h.fail(err)
 		return
 	}
-	hit, err := ix.Entry(ctx, key, except...)
+	hits, err := ix.Similar(ctx, key, scope, runChain(ctx, ix, hit.Run), int(limit))
 	if err != nil {
 		h.fail(err)
 		return
 	}
-	if len(av.forgottenSources([]history.Hit{hit})) > 0 {
-		h.fail(history.ErrGone)
-		return
-	}
-	hits, err := ix.Similar(ctx, key, scope, runChain(ctx, ix, hit.Run, av.gone), int(limit), av.gone...)
-	if err != nil {
-		h.fail(err)
-		return
-	}
-	hits = av.withoutForgotten(hits)
 	entries, n := s.servePage(av, hits)
 	out := map[string]any{"entries": entries}
 	if n < len(hits) {
@@ -507,16 +468,15 @@ func (s *Server) handleHistorySimilar(w http.ResponseWriter, r *http.Request) {
 }
 
 // runChain is the runs a run continues and that continue it, as the
-// index's continues links say (none a source of except wrote), at most
-// maxRunChain each way.
-func runChain(ctx context.Context, ix *history.Index, run string, except []string) []string {
+// index's continues links say, at most maxRunChain each way.
+func runChain(ctx context.Context, ix *history.Index, run string) []string {
 	if run == "" {
 		return nil
 	}
 	chain := []string{run}
 	seen := map[string]bool{run: true}
 	for i := 0; i < len(chain) && len(chain) < 2*maxRunChain+1; i++ {
-		ls, err := ix.Links(ctx, hRunRef(chain[i]), history.MaxLinks, except...)
+		ls, err := ix.Links(ctx, hRunRef(chain[i]), history.MaxLinks)
 		if err != nil {
 			break
 		}
@@ -693,11 +653,6 @@ func (s *Server) serveEntry(av *availability, e history.Entry, snippet string, r
 		ends []history.LinkEnd
 	}{{"out", links.Out}, {"in", links.In}} {
 		for _, l := range way.ends {
-			if !av.linkKept(l) {
-				// A session record the journal no longer holds: not served,
-				// nor anything that names it.
-				continue
-			}
 			sl := servedLink{Rel: l.Rel, Dir: way.dir, Ref: l.Ref, Label: anchorLabel(l.Ref)}
 			kind, key, title := "", l.Ref, ""
 			if l.Entry != nil {
@@ -732,7 +687,7 @@ func (av *availability) launchURL(ref string) string {
 	}
 	u := ""
 	if av.ix != nil {
-		if h, err := av.ix.Entry(av.ctx, ref, av.gone...); err == nil && h.Kind == "launch" {
+		if h, err := av.ix.Entry(av.ctx, ref); err == nil && h.Kind == "launch" {
 			u = launchURL(h.Entry)
 		}
 	}

@@ -938,107 +938,171 @@ func histTicketAtStart(t *testing.T, ix *history.Index, key, title string) {
 	}
 }
 
-// A record forgotten is never served once Forget has answered, whatever
-// the index still holds: with the indexer held at a gate (its pass that
-// removes the record not yet run), a search answers none of the record's
-// rows, counts none in its total and names none in a cursor; an entry or
-// similar read of it answers entry_gone; a link to it is left out. Once
-// the indexer's pass has run, the index holds none of it either.
-func TestAForgottenRecordIsNeverServed(t *testing.T) {
-	e := newTestEnv(t, nil)
-	gone, kept := e.createSession("cat"), e.createSession("cat")
-	e.stopAndWait(gone)
-	e.stopAndWait(kept)
-	const gate = "hist-0000002f"
-	saveRecord(t, e.srv, crew.Run{ID: gate, Label: "the gate", Cwd: e.root, StartedAt: histNow})
-	histSettle(t, e)
-	both := "session:" + gone + "," + kept
-	if keys := hsKeys(hsSearch(t, e, both)); !slices.ContainsFunc(keys, func(k string) bool { return strings.HasPrefix(k, hSessionRef(gone)) }) {
-		t.Fatalf("the record is not indexed before: %v", keys)
+// wordsRecord begins and ends a session record named name whose chat says
+// each of lines, and answers its id.
+func wordsRecord(t *testing.T, e *testEnv, name string, lines ...string) string {
+	t.Helper()
+	id := session.NewID()
+	r := journal.Record{ID: id, Name: name, Kind: string(session.KindServer), Agent: journal.Agent{ID: "cat"}, Where: "native", Cwd: e.root, StartedAt: histNow}
+	in, err := e.srv.sessionRecords.Begin(r)
+	if err != nil {
+		t.Fatal(err)
 	}
-	keptTotal := hsSearch(t, e, "session:"+kept)["total"]
+	for _, l := range lines {
+		e.srv.sessionRecords.Chat(in, journal.ChatLine{Kind: "message", Text: l, ByName: "nate", At: histNow})
+	}
+	e.srv.sessionRecords.Settle(in, journal.State{Name: name, End: &journal.Ending{How: "exited"}, Final: true})
+	endedRecord(t, e, id)
+	return id
+}
 
-	// The indexer held at a pass of another source, the record forgotten.
-	held, release := make(chan struct{}, 1), make(chan struct{})
-	var once sync.Once
-	let := func() { once.Do(func() { close(release) }) }
-	t.Cleanup(let)
-	freshIndexer(t, e, func(h *historyIndexer) {
-		h.afterMark = func(key string) {
-			if key == hRunRef(gate) {
-				select {
-				case held <- struct{}{}:
-				default:
-				}
-				<-release
-			}
-		}
-	})
-	saveRecord(t, e.srv, crew.Run{ID: gate, Label: "the gate, again", Cwd: e.root, StartedAt: histNow})
-	<-held
-	if resp, out := e.do("DELETE", "/api/history/sessions/"+gone, adminToken, nil); resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("forget: %d %v", resp.StatusCode, out)
-	}
-	ix := e.srv.history.index()
-	histEntry(t, ix, hSessionRef(gone)) // the index still holds it: the gate held its removal
-
-	out := hsSearch(t, e, both)
-	for _, k := range hsKeys(out) {
-		if strings.HasPrefix(k, hSessionRef(gone)) {
-			t.Fatalf("a forgotten record's row is served: %v", hsKeys(out))
-		}
-	}
-	if out["total"] != keptTotal || out["stale"] != true {
-		t.Fatalf("the total: %v, the kept record's alone %v; stale %v", out["total"], keptTotal, out["stale"])
-	}
-	// Page by page, one row at a time: no row of it, no cursor naming it.
-	seen := 0
+// hsPages pages through the search for line one row at a time and answers
+// every page as served, but its cursor decoded without the index's
+// generation (a rebuilt index has another) and its indexing reduced to
+// how far back the history holds. It fails t when a row or a cursor is of
+// a source of gone.
+func hsPages(t *testing.T, e *testEnv, line string, gone ...string) []map[string]any {
+	t.Helper()
+	var pages []map[string]any
 	for after := ""; ; {
-		q := url.Values{"q": {both}, "limit": {"1"}}
+		q := url.Values{"q": {line}, "limit": {"1"}}
 		if after != "" {
 			q.Set("after", after)
 		}
 		status, page := hsGet(t, e, "/api/history", q, adminToken)
 		if status != http.StatusOK {
-			t.Fatalf("a page: %d %v", status, page)
+			t.Fatalf("%q, a page: %d %v", line, status, page)
 		}
 		for _, k := range hsKeys(page) {
-			if strings.HasPrefix(k, hSessionRef(gone)) {
-				t.Fatalf("a page serves %s", k)
+			for _, id := range gone {
+				if strings.HasPrefix(k, hSessionRef(id)) {
+					t.Fatalf("%q: a forgotten record's row is served: %s", line, k)
+				}
 			}
-			seen++
 		}
 		next, _ := page["next"].(string)
-		if next == "" {
-			break
+		if next != "" {
+			raw, err := base64.RawURLEncoding.DecodeString(next)
+			var c map[string]any
+			if err == nil {
+				err = json.Unmarshal(raw, &c)
+			}
+			if err != nil {
+				t.Fatalf("%q: a cursor: %v", line, err)
+			}
+			for _, id := range gone {
+				if strings.Contains(string(raw), id) {
+					t.Fatalf("%q: a cursor stops on a forgotten record: %s", line, raw)
+				}
+			}
+			delete(c, "g")
+			page["next"] = c
 		}
-		if raw, err := base64.RawURLEncoding.DecodeString(next); err != nil || bytes.Contains(raw, []byte(gone)) {
-			t.Fatalf("a cursor names the forgotten record: %s (%v)", raw, err)
+		ixg, _ := page["indexing"].(map[string]any)
+		page["indexing"] = ixg["oldest"]
+		pages = append(pages, page)
+		if next == "" || len(pages) > 50 {
+			return pages
 		}
 		after = next
 	}
-	if float64(seen) != keptTotal {
-		t.Fatalf("the pages served %d rows, the kept record holds %v", seen, keptTotal)
-	}
-	for _, path := range []string{"/api/history/entry", "/api/history/similar"} {
-		status, out := hsGet(t, e, path, url.Values{"key": {hSessionRef(gone)}}, adminToken)
-		if code, _ := hsErr(out); status != http.StatusNotFound || code != "entry_gone" {
-			t.Fatalf("%s of the forgotten record: %d %v", path, status, out)
-		}
-	}
-	av := e.srv.newAvailability(t.Context(), ix)
-	served := e.srv.serveEntry(av, history.Entry{Key: "run:" + gate, Kind: "run", Ref: "run:" + gate, Anchor: "run:" + gate, At: histNow}, "", history.Repeats{},
-		history.Links{Out: []history.LinkEnd{{Rel: relSessionOf, Ref: hSessionRef(gone)}, {Rel: relSessionOf, Ref: hSessionRef(kept)}},
-			In: []history.LinkEnd{{Rel: relResumedFrom, Ref: "session:" + kept, Entry: &history.Linked{Key: hSessionRef(gone), Kind: "session", Title: "the forgotten one"}}}}, false)
-	if len(served.Links) != 1 || served.Links[0].Ref != hSessionRef(kept) || served.Links[0].Dir != "out" {
-		t.Fatalf("the links served: %+v", served.Links)
-	}
+}
 
-	let()
-	histSettle(t, e)
-	histGone(t, e.srv.history.index(), hSessionRef(gone))
-	if out := hsSearch(t, e, both); out["stale"] != nil || out["total"] != keptTotal {
-		t.Fatalf("after the indexer's pass: %v", out)
+// Once a Forget has answered, a forgotten record is in nothing a search
+// answers, the search reading the index alone (the indexer drops a
+// record's rows before its Forget answers, the row below's guarantee):
+// with the indexer idle and with it held on another source while the
+// Forget runs, every page of a full-text search and of a filter's is the
+// page the same search answers on an index rebuilt from the records kept,
+// which never held the forgotten ones: the rows, the totals, which
+// matches are chosen and how they rank (each cursor's score among them),
+// how far back the history holds; no row or cursor is of a forgotten
+// record, and the entry and similar reads of one answer entry_gone. The
+// forgotten records hold the words searched for many times over, and a
+// long text without them, so that they would move every score.
+func TestAForgottenRecordIsInNoSearch(t *testing.T) {
+	for _, held := range []bool{false, true} {
+		t.Run(fmt.Sprintf("indexer held on another source %t", held), func(t *testing.T) {
+			e := newTestEnv(t, nil)
+			kept := []string{
+				wordsRecord(t, e, "zgannet quay", "the zgannet dived off the quay"),
+				wordsRecord(t, e, "harbour log", "a zgannet, then a tern over the long harbour wall at dusk, then the tide"),
+			}
+			gone := []string{
+				wordsRecord(t, e, "zgannet zgannet", "zgannet zgannet zgannet zgannet harbour", "zgannet harbour zgannet"),
+				wordsRecord(t, e, "padding", strings.Repeat("words that never match the line searched for ", 40)),
+			}
+			const gate = "hist-0000004a"
+			saveRecord(t, e.srv, crew.Run{ID: gate, Label: "the gate", Cwd: e.root, StartedAt: histNow})
+			histSettle(t, e)
+			lines := []string{"zgannet", "zgannet harbour", "kind:session"}
+			for _, line := range lines[:2] {
+				if got := hsKeys(hsSearch(t, e, line)); !slices.ContainsFunc(got, func(k string) bool { return strings.HasPrefix(k, hSessionRef(gone[0])) }) {
+					t.Fatalf("%q before the forget: %v", line, got)
+				}
+			}
+
+			let := func() {}
+			if held {
+				reached, release := make(chan struct{}), make(chan struct{})
+				var once sync.Once
+				let = sync.OnceFunc(func() { close(release) })
+				t.Cleanup(let) // a failed check leaves no pass held
+				freshIndexer(t, e, func(h *historyIndexer) {
+					h.afterMark = func(key string) {
+						if key == hRunRef(gate) {
+							once.Do(func() {
+								close(reached)
+								<-release
+							})
+						}
+					}
+				})
+				histSettle(t, e)
+				// Its text as long as before: the run's own entry weighs the
+				// same in every score held or not.
+				saveRecord(t, e.srv, crew.Run{ID: gate, Label: "the door", Cwd: e.root, StartedAt: histNow})
+				reachGate(t, reached)
+			}
+			for _, id := range gone {
+				if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+					t.Fatalf("forget %s: %d %v", id, resp.StatusCode, out)
+				}
+			}
+			got := map[string][]map[string]any{}
+			for _, line := range lines {
+				got[line] = hsPages(t, e, line, gone...)
+			}
+			entry := hsEntryOf(t, e, hSessionRef(kept[0]))
+			for _, id := range gone {
+				for _, path := range []string{"/api/history/entry", "/api/history/similar"} {
+					status, out := hsGet(t, e, path, url.Values{"key": {hSessionRef(id)}}, adminToken)
+					if code, _ := hsErr(out); status != http.StatusNotFound || code != "entry_gone" {
+						t.Fatalf("%s of a forgotten record: %d %v", path, status, out)
+					}
+				}
+			}
+
+			// The same searches on an index that never held them.
+			let()
+			histSettle(t, e)
+			if resp, out := e.do("POST", "/api/history/reindex", adminToken, nil); resp.StatusCode != http.StatusAccepted {
+				t.Fatalf("reindex: %d %v", resp.StatusCode, out)
+			}
+			histSettle(t, e)
+			for _, line := range lines {
+				want := hsPages(t, e, line, gone...)
+				if !reflect.DeepEqual(got[line], want) {
+					t.Errorf("%q once the records are forgotten:\n%v\non an index that never held them:\n%v", line, got[line], want)
+				}
+			}
+			if want := hsEntryOf(t, e, hSessionRef(kept[0])); !reflect.DeepEqual(entry, want) {
+				t.Errorf("a kept entry once the records are forgotten:\n%v\non an index that never held them:\n%v", entry, want)
+			}
+			if keys, p := hsKeys(hsSearch(t, e, "zgannet")), got["zgannet"]; len(keys) < 2 || len(p) != len(keys) || p[0]["total"] != float64(len(keys)) {
+				t.Errorf("the full-text pages: %v, the kept rows %v", p, keys)
+			}
+		})
 	}
 }
 
@@ -1300,8 +1364,36 @@ func TestAFailedAvailabilityReadIsUnknown(t *testing.T) {
 
 // A session record the journal holds but cannot decode is served (no
 // Forget removed it), and whether it can be resumed is unknown, never no;
-// a record the journal does not find is no.
+// one whose file cannot be read at all (an I/O failure, not its absence)
+// is served too, its availability and its resume unknown, never
+// entry_gone; a record the journal does not find is no.
 func TestAnUnreadableRecordsResumeIsUnknown(t *testing.T) {
+	t.Run("its file not readable", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads a file whatever its mode")
+		}
+		e := newTestEnv(t, nil)
+		id := e.createSession("cat")
+		e.stopAndWait(id)
+		histSettle(t, e)
+		e2 := restartServer(t, e)
+		histSettle(t, e2)
+		file := filepath.Join(e2.srv.cfg.DataDir, journal.Dir, journal.SessionsDir, id+".json")
+		if err := os.Chmod(file, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(file, 0o600) })
+		status, out := hsGet(t, e2, "/api/history/entry", url.Values{"key": {hSessionRef(id)}}, adminToken)
+		if status != http.StatusOK {
+			t.Fatalf("the entry of a record that cannot be read: %d %v", status, out)
+		}
+		av := availOf(out["entry"].(map[string]any))
+		r, _ := av["resume"].(map[string]any)
+		if av["state"] != availUnknown || r["offered"] != string(answerUnknown) || r["why"] != "its record could not be read now" {
+			t.Fatalf("a record that cannot be read: %v", av)
+		}
+	})
+
 	e := newTestEnv(t, nil)
 	id := e.createSession("cat")
 	e.stopAndWait(id)
@@ -1422,107 +1514,6 @@ func TestABriefKeptDuringACatchUpIsFoundLater(t *testing.T) {
 	histGone(t, e.srv.history.index(), hBriefItemRef(id, 0))
 	histReconcile(t, e)
 	histEntry(t, e.srv.history.index(), hBriefItemRef(id, 0))
-}
-
-// hsPages pages through the search for line one row at a time, and
-// answers every page as served, its indexing reduced to how far back the
-// history holds and stale left out, with whether any page said stale.
-func hsPages(t *testing.T, e *testEnv, line string) (pages []map[string]any, stale bool) {
-	t.Helper()
-	for after := ""; ; {
-		q := url.Values{"q": {line}, "limit": {"1"}}
-		if after != "" {
-			q.Set("after", after)
-		}
-		status, page := hsGet(t, e, "/api/history", q, adminToken)
-		if status != http.StatusOK {
-			t.Fatalf("%q, a page: %d %v", line, status, page)
-		}
-		stale = stale || page["stale"] == true
-		delete(page, "stale")
-		ixg, _ := page["indexing"].(map[string]any)
-		page["indexing"] = ixg["oldest"]
-		pages = append(pages, page)
-		next, _ := page["next"].(string)
-		if next == "" || len(pages) > 50 {
-			return pages, stale
-		}
-		after = next
-	}
-}
-
-// A forgotten record counts in nothing a search answers, on any page: not
-// a row, the total, a cursor, a row's repeats or links, nor how far back
-// the history holds; with records forgotten older and newer than the kept
-// ones, the indexer held at a gate so the index still holds them, every
-// page of a search is the page served once the indexer's pass has
-// removed them. An entry and its similar ones the same.
-func TestAForgottenRecordCountsInNothing(t *testing.T) {
-	e := newTestEnv(t, nil)
-	old := e.createSession("cat")
-	kept := []string{e.createSession("cat"), e.createSession("cat")}
-	young := e.createSession("cat")
-	for _, id := range append([]string{old, young}, kept...) {
-		e.stopAndWait(id)
-	}
-	const gate = "hist-00000033"
-	saveRecord(t, e.srv, crew.Run{ID: gate, Label: "the gate", Cwd: e.root, StartedAt: histNow})
-	histSettle(t, e)
-	lines := []string{"kind:session", "session:" + strings.Join([]string{old, kept[0], kept[1], young}, ",")}
-
-	held, release := make(chan struct{}, 1), make(chan struct{})
-	var once sync.Once
-	let := func() { once.Do(func() { close(release) }) }
-	t.Cleanup(let)
-	freshIndexer(t, e, func(h *historyIndexer) {
-		h.afterMark = func(key string) {
-			if key == hRunRef(gate) {
-				select {
-				case held <- struct{}{}:
-				default:
-				}
-				<-release
-			}
-		}
-	})
-	saveRecord(t, e.srv, crew.Run{ID: gate, Label: "the gate, again", Cwd: e.root, StartedAt: histNow})
-	<-held
-	for _, id := range []string{old, young} {
-		if resp, out := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
-			t.Fatalf("forget %s: %d %v", id, resp.StatusCode, out)
-		}
-		histEntry(t, e.srv.history.index(), hSessionRef(id)) // still indexed: the gate holds its removal
-	}
-	before := map[string][]map[string]any{}
-	for _, line := range lines {
-		pages, stale := hsPages(t, e, line)
-		if !stale {
-			t.Fatalf("%q: no page says the index still held a forgotten record", line)
-		}
-		before[line] = pages
-	}
-	entryBefore := hsEntryOf(t, e, hSessionRef(kept[0]))
-
-	let()
-	histSettle(t, e)
-	for _, id := range []string{old, young} {
-		histGone(t, e.srv.history.index(), hSessionRef(id))
-	}
-	for _, line := range lines {
-		after, stale := hsPages(t, e, line)
-		if stale {
-			t.Fatalf("%q: stale once the index holds none", line)
-		}
-		if !reflect.DeepEqual(before[line], after) {
-			t.Errorf("%q with the forgotten records still indexed:\n%v\nonce they are removed:\n%v", line, before[line], after)
-		}
-		if len(after) != 2 || after[0]["total"] != float64(2) || after[1]["total"] != float64(2) {
-			t.Errorf("%q: %d pages, %v: one kept record a page, each counting two", line, len(after), after)
-		}
-	}
-	if entryAfter := hsEntryOf(t, e, hSessionRef(kept[0])); !reflect.DeepEqual(entryBefore, entryAfter) {
-		t.Errorf("an entry beside forgotten records:\n%v\nonce they are removed:\n%v", entryBefore, entryAfter)
-	}
 }
 
 // historyRepo makes a repository at dir with one commit holding name, and
