@@ -306,10 +306,15 @@ someone made to try something out is never noticed.
 **After this item ships, with a workspace's sync registered and current**
 (the official build, signed in to a workspace, Program items ID1 and CS1):
 
-- **History across the workspace.** In the palette, `~ unit failed` lists
-  this machine's rows and, after them, other machines' rows of the
+- **History across the workspace.** In the palette, `~ CND-12 failed`
+  lists this machine's rows and, after them, other machines' rows of the
   projects the workspace shares, each marked **on studio · Ada** (the
-  machine and the person) and **reported 14:05**. A failed check's **Find
+  machine and the person) and **reported 14:05**. Another machine's row
+  is found by what its card holds, never by words: the shared project's
+  or ticket's key, the agent, the outcome, the machine (`on:studio`), a
+  short commit id in a receipt's line, and, the item's main way, the same
+  failed check (below); a word only a name or a session's text held (a
+  check called `unit`) finds this machine's rows alone. A failed check's **Find
   this elsewhere** gains **on every machine**: the same command (by the
   digest of its argument list, never the arguments) in the same
   repository (by the digest of its first commits, never a path), passed
@@ -1802,6 +1807,11 @@ them, and reach no machine but through the sync provider.
   sending device, decoded with unknown fields refused and every value
   checked against this plan's table; the newest `rev` of each card in an
   epoch, and a replay's end dropping what it did not list (C6's rule); a
+  card delivered `Deleted` (its record forgotten, kept here or pruned)
+  removed from the service at once and handed as a delete to every
+  machine it reached, never kept for a later replay to drop (a record
+  forgotten while its server cannot reach the service is withdrawn the
+  same way at that server's next delivery or replay); a
   card whose project is shared with the workspace delivered to every
   server device of the workspace's members, every other card to its
   person's own server devices only; each delivered with the sending
@@ -1838,7 +1848,11 @@ them, and reach no machine but through the sync provider.
   a device whose current enrolment is the request's `enrolment`, and
   published in that enrolment's workspace as its person, its answer
   naming that enrolment and `op`; a name's publications turned
-  `publisher_left` when their owner or publisher leaves the workspace;
+  `publisher_left` when their owner or publisher leaves the workspace,
+  and a name whose owner left owned by its next publisher (an operator
+  or an admin), whose versions name that new owner, so a member's place
+  installed under the old owner is never offered them as an update
+  (PR-8's lineage rule);
   **withdraw** by
   the name's owner or a workspace admin, signed in to the hosted service's
   own pages under ID1 (no route on a member's server withdraws), its
@@ -1876,6 +1890,8 @@ provider and carry the outage and lapse tests (article 8).
   History's search answers `remote: unreachable` and this machine's rows
   unchanged, back with no restart), the lapse (the same with `lapsed`,
   nothing local removed), a card with a planted unknown field never sent,
+  a record forgotten on one machine whose card leaves the other
+  machine's `remote/` files and its index at that delivery,
   and a Playwright run of the official build against its fake sync
   service showing another machine's row in the palette, its card page,
   and the one line once the service is stopped.
@@ -2431,7 +2447,7 @@ what they add (its public plan, `docs/plans/sync-seams.md`, names them).
 | PR-8 | open source | skills, api, ext, web: the workspace's versions, received apart, publications as records, `PutSkillVersion`, the source check at install, updates within a lineage | `internal/skills`, `internal/api`, `ext`, `ext/exttest`, `web/app`, `web/e2e`, `docs` | PR-4, PR-7; CS1's remote records on `main` | none | ~700 + 700 |
 | PR-9 | open source | api, skills, ext, web, docs: publishing bound to its enrolment, the features entry | `internal/api`, `internal/skills`, `internal/export`, `ext`, `web/app`, `docs` | PR-8; HS1's PR-11 (#630); the owner's answer on what counts as terminal output; CS1's check of copied output on `main` | none | ~550 + 650 |
 | PR-10 | hosted service | team history: cards kept per device, scope by shared project, delivery with names, revocation, export, contract | the sync service, its store and contract | CS1's service rows that serve remote records; ID1's members and devices; an open-source tag holding PR-9's `ext` types | none | ~600 + 700 |
-| PR-11 | hosted service | shared skills: versions per workspace, owners, publish rules, withdraw, delivery, export, contract | the sync service, its store and contract | PR-10; an open-source tag holding PR-9's | none (same service) | ~650 + 700 |
+| PR-11 | hosted service | shared skills: versions per workspace, owners, publish rules, withdraw, delivery, export, contract | the sync service, its store and contract | PR-10; an open-source tag holding PR-9's | PR-12 (other repository) | ~650 + 700 |
 | PR-12 | official build | the sync provider: cards out, cards in, the outage and lapse tests, the Playwright run | the sync provider | PR-10 deployed to staging; CS1's provider rows; an open-source tag holding PR-9's | PR-11 (other repository) | ~400 + 600 |
 | PR-13 | official build | the sync provider: publish requests, received versions, the outage and lapse tests, the Playwright run | the sync provider | PR-11 deployed to staging; PR-12 | none | ~400 + 550 |
 
@@ -2601,9 +2617,15 @@ choose (the Program, section 3.1).
    copied line; so there is no free text on a card for the answer to
    judge. The answer governs publishing alone: under the default a
    published skill's files and notes pass the check of copied output;
-   under the alternative publishing is unchanged, since a person
-   publishes every file after seeing it and is its writer for this rule.
-   **No row changes under the alternative.**
+   under the alternative publishing is unchanged on this plan's reading,
+   since a person publishes every file after seeing it and is its writer
+   for this rule. **The one row that changes** is PR-9, and only if the
+   owner holds the alternative to reach text an agent wrote even once a
+   person publishes it: then a template saved from a crew Brakeman
+   drafted (its `origin`) is not publishable, and the publish dialog says
+   that a file an agent wrote may not be sent (PR-11's check follows it).
+   PR-9 is cut after the answer, so no row before it depends on the
+   reading.
 3. **A card goes to the workspace only when its project is shared.** A
    session or run of a project the workspace shares (CS1's share, a
    person's act) is the team's history; everything else of a person's
@@ -2652,8 +2674,14 @@ choose (the Program, section 3.1).
     is withdrawn by the name's owner or a workspace admin, signed in to
     the hosted service's own pages; no route on a member's server
     withdraws. Withdrawing, or its owner or publisher leaving the
-    workspace, stops offering it and refuses any install of it, and
-    leaves what a person installed in place, marked withdrawn. A
+    workspace, stops offering it and refuses any install of it from the
+    workspace, and leaves what a person installed in place, marked
+    withdrawn (a copy a person installed is theirs, I13: placed again only
+    as their own, `local`, never offered as the workspace's). A name whose
+    owner left passes to its next publisher (an operator or an admin);
+    that publisher's versions are another lineage, shown as **Another
+    skill named ...** and installed only as a replacement, never as an
+    update. A
     workspace version is installed only while the sync status is current
     and the service's record confirms it published with the digest of the
     files here; anything less is refused, and the page says which.
@@ -3064,3 +3092,21 @@ field, or the skill is not installed, and the page says why.
   `Person` named beside this plan's `Enrolment`, which also changes with
   a re-enrolment or the workspace's hosted data begun again; the hosted rows' behaviour
   after a restore of the service.
+
+## Changed at the final check
+
+- **What finds another machine's row**: the palette's example no longer
+  matches a check's name, which no card holds; the line says what a
+  remote row is found by (a shared key, the agent, the outcome, the
+  machine, a receipt's short commit, the same failed check).
+- **Owner decisions, 2**: names PR-9 as the one row that changes if the
+  alternative reaches text an agent wrote even once a person publishes
+  it; nothing before PR-9 depends on the reading.
+- **A forgotten record's card**: PR-10 removes a card delivered
+  `Deleted` from the service at once and from every machine it reached;
+  PR-12 tests it on the receiving machine's files and index.
+- **An owner who left, and a withdrawn version kept**: a name whose
+  owner left passes to its next publisher as another lineage, never an
+  update (PR-11, Owner decisions 10); a withdrawal refuses installs from
+  the workspace, and a copy a person installed stays theirs (I13).
+- **The PRs**: PR-11 and PR-12 list each other as able to run beside.
