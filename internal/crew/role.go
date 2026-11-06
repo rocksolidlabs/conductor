@@ -86,7 +86,78 @@ const (
 	// RoleRetry is how soon a step that could not read or write its
 	// records, or start a turn for want of its store, is tried again.
 	RoleRetry = 30 * time.Second
+	// RoleStartRetry is how long a role whose turn's agent did not start
+	// (ReasonStart) waits before it tries again by itself, doubled for
+	// each such turn in a row (RoleRecord.Tries) up to RoleStartRetryMax:
+	// an agent signed out, or held at a screen, is not fired into again
+	// and again, and one signed in meanwhile is found within hours.
+	RoleStartRetry    = 10 * time.Minute
+	RoleStartRetryMax = 4 * time.Hour
 )
+
+// The reasons a role is unavailable, kept with its words (RoleRecord.Reason):
+// what ends it besides its retry time (SaveEnds, Started).
+const (
+	// ReasonBudget is the day's turns or minutes spent.
+	ReasonBudget = "budget"
+	// ReasonStart is a turn whose agent did not start: its launch refused,
+	// its agent exited or never read its request (signed out, held at a
+	// screen). A turn of the agent that reads its request ends it
+	// (Started), a person's own included.
+	ReasonStart = "start"
+	// ReasonOff is its owner off, or not running it in the background, as
+	// the turn was asked.
+	ReasonOff = "off"
+	// ReasonStuck is the last turn's run, which did not stop.
+	ReasonStuck = "stuck"
+)
+
+// RoleChange is what a save of the role's owner's configuration changed,
+// told apart by what each can end (SaveEnds).
+type RoleChange struct {
+	// Budget is the day's turns or minutes, or a turn's.
+	Budget bool
+	// Start is what the agent starts with: the agent, its model, its
+	// account, its folder, the tools it may call without asking.
+	Start bool
+	// On is the role turned on or off (its owner on, in the background).
+	On bool
+	// Other is anything else (what it may see, its grants, its wake's
+	// window, cooldown or briefing times).
+	Other bool
+}
+
+// SaveEnds reports whether a save that made the change ch ends an
+// unavailability kept for reason: a spent budget by a budget changed; a
+// turn whose agent did not start by a change of what the agent starts
+// with (another agent, model, account or folder: the same one signed out
+// would not start again); the role off by the role turned on or off; a
+// run that did not stop by none (stopping it does). A save that changes
+// nothing ends nothing. An unavailability kept before reasons were (no
+// reason) ends at any change, as every save then ended it.
+func SaveEnds(reason string, ch RoleChange) bool {
+	switch reason {
+	case ReasonBudget:
+		return ch.Budget
+	case ReasonStart:
+		return ch.Start
+	case ReasonOff:
+		return ch.On
+	case ReasonStuck:
+		return false
+	}
+	return ch.Budget || ch.Start || ch.On || ch.Other
+}
+
+// startRetry is how long the role waits, after the tries-th turn in a row
+// whose agent did not start, before it tries again by itself.
+func startRetry(tries int) time.Duration {
+	d := RoleStartRetry
+	for i := 1; i < tries && d < RoleStartRetryMax; i++ {
+		d *= 2
+	}
+	return min(d, RoleStartRetryMax)
+}
 
 // ErrRoleLaterSchema is a role record of a later schema: kept as it is,
 // and the role takes no step.
@@ -161,10 +232,16 @@ type RoleRecord struct {
 	State    string `json:"state"`
 	// Why says why the role is unavailable or paused, in words; RetryAt
 	// when an unavailable role tries again on its own (the next local day,
-	// for a budget spent), zero for on a person's request or the next
-	// briefing.
+	// for a budget spent; a wait that doubles, for an agent that did not
+	// start), zero for on a person's request or the next briefing; Reason
+	// what made it unavailable (ReasonBudget, ReasonStart, ...), which
+	// says what else ends it (SaveEnds, Started).
 	Why     string    `json:"why,omitempty"`
 	RetryAt time.Time `json:"retryAt,omitzero"`
+	Reason  string    `json:"reason,omitempty"`
+	// Tries counts the turns in a row whose agent did not start; a turn
+	// whose agent reads its request sets it back to 0.
+	Tries int `json:"tries,omitempty"`
 	// Last is the last batch number given; Open the batch gathering (or
 	// waiting while the role briefs, cools or is unavailable); Fired the
 	// last batch fired and Request its request while it runs. Firing says
@@ -201,20 +278,24 @@ type RoleSettings struct {
 
 // RoleOutcome is what became of a batch's request: still open, or closed;
 // closed with the turn unable to start (its launch refused, its agent
-// exited before it read its request, the day's budget spent), with why
-// and when the role tries again on its own (zero: on a person's request
-// or the next briefing).
+// exited or never read its request, the day's budget spent), with why,
+// its reason (ReasonStart, ReasonBudget) and when the role tries again on
+// its own (zero: on a person's request or the next briefing; for
+// ReasonStart, the role's own wait, startRetry).
 type RoleOutcome struct {
 	Open        bool
 	Unavailable string
+	Reason      string
 	RetryAt     time.Time
 }
 
 // RoleRefused is Fire's refusal of a turn that cannot start now (its
 // owner off, the budget spent, the queue full): the role is unavailable,
-// with Why, until RetryAt (zero: a person's request or the next briefing).
+// with Why and its Reason, until RetryAt (zero: a person's request or the
+// next briefing).
 type RoleRefused struct {
 	Why     string
+	Reason  string
 	RetryAt time.Time
 }
 
@@ -616,9 +697,12 @@ func (r *Role) Wake(w RoleWake) error {
 var errNothing = errors.New("nothing to change")
 
 // Asked is a person's own request: logged (it is its own turn, so it
-// joins no batch), and it tries again for an unavailable role. A request
-// told again (its key the log's already: a write that failed, retried,
-// or its op id asked again) changes nothing.
+// joins no batch), and it tries again for an unavailable role, but for
+// one whose agent did not start (ReasonStart): the person's turn is that
+// try, and the batch kept waits until the agent reads a request
+// (Started) or the role's retry time comes, never fired into the same
+// screen beside it. A request told again (its key the log's already: a
+// write that failed, retried, or its op id asked again) changes nothing.
 func (r *Role) Asked(w RoleWake) error {
 	w.Source = WakeRequest
 	if w.At.IsZero() {
@@ -640,7 +724,7 @@ func (r *Role) Asked(w RoleWake) error {
 			return errNothing
 		}
 		c.Log = append(c.Log, RoleLogRow{RoleWake: w, Held: "a person's own request"})
-		if c.State == RoleUnavailable {
+		if c.State == RoleUnavailable && c.Reason != ReasonStart {
 			c.available(now)
 		}
 		return nil
@@ -655,22 +739,57 @@ func (r *Role) Asked(w RoleWake) error {
 	return err
 }
 
-// Reconfigured is its owner's configuration saved: an unavailable role
-// looks again at once, as a person's request makes it (Asked), since what
-// refused its turn (a budget, an agent, an account) may be what the save
-// changed. It takes up what its record holds: a batch kept fires within
-// its rules on the next step (its window, the cooldown), and Fire weighs
-// the turn against the configuration now, so a budget raised clears "the
-// day's budget is spent" and one still spent makes the role unavailable
-// again in words true now. Any other state changes nothing.
-func (r *Role) Reconfigured() error {
+// Reconfigured is its owner's configuration saved with the change ch: an
+// unavailable role looks again at once, as a person's request makes it
+// (Asked), when the save changed what made it unavailable (SaveEnds, by
+// the reason kept with it): a budget raised, another agent or account for
+// one that did not start. It takes up what its record holds: a batch kept
+// fires within its rules on the next step (its window, the cooldown), and
+// Fire weighs the turn against the configuration now, so a budget raised
+// clears "the day's budget is spent" and one still spent makes the role
+// unavailable again in words true now. A save that changed nothing it
+// weighs, the role off, or any other state, changes nothing.
+func (r *Role) Reconfigured(ch RoleChange) error {
+	if s, err := r.records.RoleSettings(); err != nil {
+		return err
+	} else if !s.On {
+		return nil
+	}
 	r.mu.Lock()
 	now := r.now()
 	err := r.change(func(c *RoleRecord) error {
-		if c.State != RoleUnavailable {
+		if c.State != RoleUnavailable || !SaveEnds(c.Reason, ch) {
 			return errNothing
 		}
 		c.available(now)
+		return nil
+	})
+	r.mu.Unlock()
+	if errors.Is(err, errNothing) {
+		return nil
+	}
+	if err == nil {
+		r.Poke()
+	}
+	return err
+}
+
+// Started is a turn of the role's agent that read its request, the role's
+// own or a person's: the agent starts, so an unavailability for a turn
+// whose agent did not (ReasonStart) ends, and the batch it kept fires
+// within its rules; the count of such turns in a row starts again.
+func (r *Role) Started() error {
+	r.mu.Lock()
+	now := r.now()
+	err := r.change(func(c *RoleRecord) error {
+		ended := c.State == RoleUnavailable && c.Reason == ReasonStart
+		if !ended && c.Tries == 0 {
+			return errNothing
+		}
+		c.Tries = 0
+		if ended {
+			c.available(now)
+		}
 		return nil
 	})
 	r.mu.Unlock()
@@ -825,7 +944,7 @@ func (c *RoleRecord) derive(now time.Time) string {
 // available ends a pause or an unavailability: the state is what the
 // record's facts give.
 func (c *RoleRecord) available(now time.Time) {
-	c.Why, c.RetryAt = "", time.Time{}
+	c.Why, c.RetryAt, c.Reason = "", time.Time{}, ""
 	c.State = c.derive(now)
 }
 
@@ -915,7 +1034,10 @@ func (r *Role) Step() (time.Duration, error) {
 			w := RoleWake{Source: WakeBriefing, Key: due.Format("2006-01-02T15:04Z07:00"), At: due.UTC()}
 			c.Briefed = now.UTC()
 			if !c.fired(w) {
-				if c.State == RoleUnavailable {
+				// A briefing time tries again for an unavailable role, but
+				// for one whose agent did not start: its wake waits in the
+				// batch kept for the role's own retry (Asked says why).
+				if c.State == RoleUnavailable && c.Reason != ReasonStart {
 					c.available(now)
 				}
 				c.gather(w, now)
@@ -956,7 +1078,7 @@ func (r *Role) Step() (time.Duration, error) {
 				// Off: what was gathering is dropped, never fired later.
 				c.Open, c.State = nil, c.derive(now)
 			} else {
-				c.State, c.Why, c.RetryAt = RoleUnavailable, clip(refused.Why), refused.RetryAt.UTC()
+				c.State, c.Why, c.RetryAt, c.Reason = RoleUnavailable, clip(refused.Why), refused.RetryAt.UTC(), refused.Reason
 			}
 			dirty = true
 		case errors.Is(err, ErrRoleFired):
@@ -1017,11 +1139,20 @@ func (r *Role) Step() (time.Duration, error) {
 			c.Request, dirty = "", true
 			if out.Unavailable != "" {
 				// The turn started none: its batch is kept for the turn
-				// that tries again.
+				// that tries again. One whose agent did not start tries
+				// again after a wait that doubles with each in a row.
 				c.keepFired(now)
-				c.State, c.Why, c.RetryAt = RoleUnavailable, clip(out.Unavailable), out.RetryAt.UTC()
+				retry := out.RetryAt.UTC()
+				if out.Reason == ReasonStart {
+					c.Tries++
+					if retry.IsZero() {
+						retry = now.Add(startRetry(c.Tries)).UTC()
+					}
+				}
+				c.State, c.Why, c.RetryAt, c.Reason = RoleUnavailable, clip(out.Unavailable), retry, out.Reason
 				break
 			}
+			c.Tries = 0
 			c.CoolUntil = now.Add(s.Cooldown).UTC()
 			c.State = c.derive(now)
 		case RoleCooling:

@@ -49,8 +49,9 @@ type bkEnv struct {
 // (bkScript), bkexit (an agent that prints why and exits at once, as a
 // logged-out CLI does), bkcodex (Codex's adapter: its read-only mode
 // does not hold), bkfixed (bkScript, an entry that takes no extra
-// arguments), bksignin (a signed-out Claude Code at its sign-in screen)
-// and bkupdate (an agent at its update dialog).
+// arguments), bksignin (a signed-out Claude Code at its sign-in screen),
+// bkupdate (an agent at its update dialog) and bkunknown (an agent at a
+// full-screen prompt no catalog entry knows).
 func brakemanEnv(t *testing.T, mutate func(*config.Config)) *bkEnv {
 	t.Helper()
 	e := newTestEnvAgents(t, mutate, slog.New(slog.NewTextHandler(io.Discard, nil)), bkAgents())
@@ -67,19 +68,37 @@ func bkAgents() []catalog.Agent {
 		{ID: "bkfixed", Name: "bkfixed", Command: []string{"/bin/sh", "-c", bkScript}, Adapter: "claude"},
 		{ID: "bksignin", Name: "bksignin", Command: []string{"/bin/sh", "-c", bkSignInScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
 		{ID: "bkupdate", Name: "bkupdate", Command: []string{"/bin/sh", "-c", bkUpdateScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("codex")},
+		{ID: "bkunknown", Name: "bkunknown", Command: []string{"/bin/sh", "-c", bkUnknownScript}, Adapter: "claude", AllowArgs: true, Questions: builtInQuestions("claude")},
 	}
 }
+
+// bkRecord keeps every byte that reaches a scripted agent's terminal in
+// typed-<request>.txt as it arrives: the terminal is put in raw mode
+// first, so a key with no Enter after it (a digit, a letter) is read and
+// written at once, not held in the line discipline's buffer where no
+// test would see it.
+const bkRecord = `stty raw -echo; : > "typed-$CONDUCTOR_BRAKEMAN.txt"; `
+
+// bkKeep is the end of a scripted agent that waits at its screen: its
+// terminal's raw input kept (bkRecord), never its request read.
+const bkKeep = `exec cat > "typed-$CONDUCTOR_BRAKEMAN.txt"`
 
 // bkSignInScript is a signed-out Claude Code as #659's live check met it:
 // it does not exit, it draws its sign-in screen (the URL made up here)
 // and waits there, reading its terminal, never its request. What reaches
-// its terminal is kept in typed-<request>.txt: no key may.
-const bkSignInScript = `printf "Welcome to Claude Code\n\n Browser didn't open? Use the url below to sign in (c to copy)\n\nhttps://example.invalid/sign-in?code=true\n\n\n Paste code here if prompted > "; exec cat > "typed-$CONDUCTOR_BRAKEMAN.txt"`
+// its terminal is kept (bkRecord): no key may.
+const bkSignInScript = bkRecord + `printf "Welcome to Claude Code\r\n\r\n Browser didn't open? Use the url below to sign in (c to copy)\r\n\r\nhttps://example.invalid/sign-in?code=true\r\n\r\n\r\n Paste code here if prompted > "; ` + bkKeep
 
 // bkUpdateScript is an agent that opens on its own update dialog, as
 // Codex did at the live check: Codex's words, waiting with its terminal
 // kept as bkSignInScript's is.
-const bkUpdateScript = `printf "  Update available! 0.1.0 -> 0.2.0\n\n> 1. Update now (runs npm install -g @openai/codex)\n  2. Skip\n  3. Skip until next version\n\n  Press enter to continue\n"; exec cat > "typed-$CONDUCTOR_BRAKEMAN.txt"`
+const bkUpdateScript = bkRecord + `printf "  Update available! 0.1.0 -> 0.2.0\r\n\r\n> 1. Update now (runs npm install -g @openai/codex)\r\n  2. Skip\r\n  3. Skip until next version\r\n\r\n  Press enter to continue\r\n"; ` + bkKeep
+
+// bkUnknownScript is an agent at a full-screen prompt no catalog entry
+// knows (another program's sign-in, a version's new wording): the
+// alternate screen, a box, a link, and it waits, never reading its
+// request, its terminal kept as bkSignInScript's is.
+const bkUnknownScript = bkRecord + `printf "\033[?1049h\033[2J\033[H  Acme Agent 9.0\r\n\r\n  You are not signed in.\r\n  Open https://example.invalid/device?code=ABCD to continue\r\n\r\n  [ Sign in ]   [ Quit ]"; ` + bkKeep
 
 // builtInQuestions is the built-in agent id's startup questions, the
 // catalog's own, so a scripted agent is held by the patterns that ship.

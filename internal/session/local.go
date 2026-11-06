@@ -1098,6 +1098,9 @@ func (s *Local) fireTrust(text string) {
 			return
 		}
 		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, s.trust.LookedAt(), "")
+		if len(q.Answers) == 0 {
+			s.holdAnswerless(words)
+		}
 		// One held answered that the screen no longer shows (the program
 		// took the Escape) is cleared.
 		s.escGone()
@@ -4431,6 +4434,31 @@ func (s *Local) holdStartupAnswered(words, by, name string) {
 		}
 		s.heldAnswer = held
 	}
+}
+
+// holdAnswerless holds the startup question with words, asked with no
+// answers, as one keys reached is held (heldAnswer, by no one): a screen no
+// key of Conductor's passes (Claude Code's sign-in, waiting for a browser's
+// sign-in or a pasted code) is left by the program on its own, a person
+// signing in through the browser, with no key typed in the terminal. Held
+// so, it goes as every startup question goes once its screen is behind:
+// withdrawn when the screen, after output fed since it was asked, shows no
+// startup question (escGone). Nothing is consumed: the question reads as
+// waiting, not as answered in the terminal.
+func (s *Local) holdAnswerless(words string) {
+	if s.asked == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	att := s.info.Attention
+	if att.State != AttentionNeedsInput || att.Source != SourceTrust || att.ID == "" || len(att.Options) != 0 || !sameWords(att.words(), words) || s.heldAnswer.id == att.ID {
+		return
+	}
+	held := heldStartup{id: att.ID, fed: s.asked.Fed()}
+	held.cols, held.rows = s.asked.Size()
+	_, held.drawnCols, held.drawnRows = s.asked.DrawnAt()
+	s.heldAnswer = held
 }
 
 // escGone withdraws the startup question keys reached (heldAnswer) once the

@@ -520,7 +520,7 @@ func (s *Server) admitAct(ctx context.Context, ds *dispatch.Store, tp *turnPrinc
 	// What the turn may see, checked apart from the grant: a grant gives
 	// no read.
 	o := s.newObserver(tp)
-	if !o.grant.sees(brakeman.ClassDispatch) {
+	if !seesAny(actClasses, o.grant.sees) {
 		return newAPIError(http.StatusForbidden, "not_visible", "Brakeman may not see "+brakeman.ClassDispatch)
 	}
 	aerr := s.admitVisibleAct(ctx, ds, o, ar, key, body)

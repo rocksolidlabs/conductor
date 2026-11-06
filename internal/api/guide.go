@@ -75,6 +75,10 @@ type Operation struct {
 	Bounds map[string]int `json:"bounds,omitempty"`
 	// needs is what the server must allow for the operation to be listed.
 	needs opNeeds
+	// agentOnly says only the session's own token calls it: the admin's
+	// answers 403 agent_only (a task's result, a brief). Its route asks
+	// it (opAgentOnly), and the guide lists the operation to no admin.
+	agentOnly bool
 	// guideInput is Input as the guide's operations section gives it,
 	// when another section carries the whole of it (brief_submit's
 	// brief, the briefs section); nil for Input itself.
@@ -220,7 +224,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:         []string{"conductor", "task", "context"},
 			Input:       obj(map[string]any{"page": map[string]any{"type": "integer", "minimum": 1, "description": "the page to read"}}),
 			Bounds:      map[string]int{"page": taskPage}},
-		{Name: "task_result", MCP: "task_result", Scope: "task", Method: http.MethodPost, Path: sessions + "/task/result", needs: needLauncher,
+		{Name: "task_result", MCP: "task_result", Scope: "task", Method: http.MethodPost, Path: sessions + "/task/result", needs: needLauncher, agentOnly: true,
 			Summary:     "Submit your attempt's result, once: a work task its clean commit and a summary; a review its verdict and findings. Conductor checks it and decides the task.",
 			Description: "Submit your attempt's result, once. A work task: commit your work first (the worktree must be clean apart from .conductor/), then give a summary, the issues you know of, and the commit (HEAD unless given). A review: do not commit; give the verdict, approved or needs_changes, with findings {severity: blocker|major|minor|nit, path, line, message}. Conductor checks the commit and decides the task; a refusal says what to fix before you submit again. The same commit submitted twice is taken once. A done or a handoff does not finish a task; only this does.",
 			CLI:         []string{"conductor", "task", "result", "--summary", "TEXT"},
@@ -285,7 +289,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// words are), a draft crew's crew the body crew_create takes;
 		// the operations section, which tools/list need not repeat,
 		// points to the briefs section for it.
-		{Name: "brief_submit", MCP: "brief_submit", Scope: "observe", Method: http.MethodPost, Path: sessions + "/brakeman/brief", needs: needLauncher, Receipt: "brakeman",
+		{Name: "brief_submit", MCP: "brief_submit", Scope: "observe", Method: http.MethodPost, Path: sessions + "/brakeman/brief", needs: needLauncher, Receipt: "brakeman", agentOnly: true,
 			Summary:     "Submit your turn's one brief (brakeman.brief/1): every fact names its evidence, every ref resolves in your scope; the same opId again answers it.",
 			Description: "Submit your Brakeman turn's one brief, schema brakeman.brief/1: a title, your reading (summary), and at least one item (facts with evidence refs, interpretations naming facts, proposals naming an operation of the guide, outcomes naming a receipt, decision cards, drafts); a briefing holds at least one fact. The brief's input schema gives every item kind with its fields, bounds and an example, and the ref forms; the guide's briefs section says the same in words. Every ref must resolve inside your scope and visibility, and a revision you name must be the one you read; a refusal names what to fix. The same opId and brief again answer the kept one. Your turn ends once it is kept.",
 			CLI:         []string{"conductor", "brakeman", "brief", "--file", "BRIEF.json"},
@@ -683,6 +687,12 @@ type guideCaller struct {
 	// overview's limits name its reads and its minutes. Zero when the
 	// request cannot be read.
 	budget brakeman.Budget
+	// visible is what a Brakeman turn may see, its snapshot and the
+	// configuration now together, as its reads are checked (refGrant):
+	// an operation whose classes it sees none of is refused it (403
+	// not_visible), and the guide lists it not. Nothing when the records
+	// cannot be read.
+	visible brakeman.Visibility
 }
 
 // adminCaller is the workbench token's: every scope.
@@ -714,7 +724,7 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 		c.Kinds = append(c.Kinds, "brakeman")
 		c.Scopes = append(c.Scopes, "observe")
 		c.brakeman = true
-		if c.acts, c.budget = s.turnActs(ref.Brakeman.Request); len(c.acts) > 0 {
+		if c.acts, c.budget, c.visible = s.turnGrant(ref.Brakeman.Request); len(c.acts) > 0 {
 			c.Scopes = append(c.Scopes, "act")
 		}
 		return c
@@ -728,28 +738,97 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 	return c
 }
 
-// turnActs is the operations the request id's turn is granted, its
-// snapshot and the configuration now together; nil when none, or when
-// the records cannot be read (the guide then lists no act, and the act
-// routes refuse it as ever); and the budget its snapshot holds, zero when
-// the request cannot be read.
-func (s *Server) turnActs(id string) ([]string, brakeman.Budget) {
+// turnGrant is the operations the request id's turn is granted and what
+// it may see, its snapshot and the configuration now together (as its
+// routes check them: grantedActs, refGrant); none of either when the
+// records cannot be read or the request is closed (the guide then lists
+// nothing they gate, and the routes refuse it as ever); and the budget
+// its snapshot holds, zero when the request cannot be read.
+func (s *Server) turnGrant(id string) ([]string, brakeman.Budget, brakeman.Visibility) {
 	d := s.brakeman
 	if d == nil {
-		return nil, brakeman.Budget{}
+		return nil, brakeman.Budget{}, brakeman.Visibility{}
 	}
 	req, err := d.st.Get(id)
 	if err != nil {
-		return nil, brakeman.Budget{}
+		return nil, brakeman.Budget{}, brakeman.Visibility{}
 	}
 	if !req.Open() {
-		return nil, req.Config.Budget
+		return nil, req.Config.Budget, brakeman.Visibility{}
 	}
 	cfg, err := d.st.Config()
 	if err != nil {
-		return nil, req.Config.Budget
+		return nil, req.Config.Budget, brakeman.Visibility{}
 	}
-	return grantedActs(req.Config.Permissions, cfg.Permissions), req.Config.Budget
+	return grantedActs(req.Config.Permissions, cfg.Permissions), req.Config.Budget, bothVisible(req.Config.Visibility, cfg.Visibility)
+}
+
+// admits reports whether the caller c may call op on this server now:
+// the scope it reaches and what the server allows (reaches), then what
+// the operation's route refuses this caller for, from the same facts the
+// route reads: the admin an operation only a session's own token calls
+// (opAgentOnly: 403 agent_only), a Brakeman turn one whose classes it
+// sees none of (opClasses, seesAny: 403 not_visible). The guide's
+// operations section and the overview's may list are made by it, so an
+// operation a caller would be refused is never listed to it, and one it
+// may call never left out.
+func (s *Server) admits(c guideCaller, op Operation) bool {
+	if !s.reaches(c, op) {
+		return false
+	}
+	if c.Kind == "admin" && opAgentOnly(op.Name) {
+		return false
+	}
+	if c.brakeman && !seesAny(opClasses(op), c.visible.Has) {
+		return false
+	}
+	return true
+}
+
+// opAgentOnly reports whether the operation named takes only the
+// session's own token (Operation.agentOnly): its route asks this before
+// it refuses the admin's, as the guide does before it lists it.
+func opAgentOnly(name string) bool {
+	ops := operationsTable()
+	i := slices.IndexFunc(ops, func(o Operation) bool { return o.Name == name })
+	return i >= 0 && ops[i].agentOnly
+}
+
+// actClasses are what an act's route needs a turn to see (admitAct): a
+// grant gives no read.
+var actClasses = []string{brakeman.ClassDispatch}
+
+// ownReadClasses are the classes Brakeman's own reads (observeRoute) need
+// a turn to see one of, by path: turnRead refuses a turn that sees none
+// (403 not_visible) before the handler's own finer checks (a status of a
+// session needs sessions, of a run runs).
+var ownReadClasses = map[string][]string{
+	"/api/brakeman/screen":   {brakeman.ClassTerminals},
+	"/api/brakeman/status":   {brakeman.ClassRuns, brakeman.ClassSessions},
+	"/api/brakeman/overlaps": {brakeman.ClassRuns, brakeman.ClassSessions},
+}
+
+// opClasses are the visibility classes op reads, one of which a Brakeman
+// turn must see for its route to take it: a shared read's (its readSpec's
+// class), Brakeman's own reads' (ownReadClasses), an act's (actClasses);
+// nil for an operation no class gates.
+func opClasses(op Operation) []string {
+	switch {
+	case op.Scope == "act":
+		return actClasses
+	case op.Scope != "observe" || op.Method != http.MethodGet:
+		return nil
+	}
+	if spec, ok := sharedReadSpec(op.Method + " " + op.Path); ok && spec.class != "" {
+		return []string{spec.class}
+	}
+	return ownReadClasses[op.Path]
+}
+
+// seesAny reports whether a turn that sees what sees answers sees one of
+// classes; true for none.
+func seesAny(classes []string, sees func(string) bool) bool {
+	return len(classes) == 0 || slices.ContainsFunc(classes, sees)
 }
 
 // reaches reports whether the caller is given op on this server.
@@ -1086,7 +1165,7 @@ func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operatio
 	caps := s.capabilities()
 	reached := []Operation{}
 	for _, op := range ops {
-		if s.reaches(c, op) {
+		if s.admits(c, op) {
 			op.Description = ""
 			if op.guideInput != nil {
 				op.Input = op.guideInput

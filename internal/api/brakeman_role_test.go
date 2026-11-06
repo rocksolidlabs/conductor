@@ -282,9 +282,11 @@ func (s *Server) registryInfo(t *testing.T, id string) session.Info {
 
 // TestALoggedOutAgentMakesTheRoleUnavailable: an agent that exits before
 // it reads its request (a logged-out CLI) fails the wake turn, and the
-// role is unavailable with the words; it starts nothing by itself after
-// (a second failure is gathered, not fired) until a person's own request
-// tries again.
+// role is unavailable with the words and a retry of its own; it starts
+// nothing by itself before then (a second failure is gathered, not
+// fired), and a person's own request, which fails the same way, fires
+// nothing into the same state either. Its retry fires the batch kept,
+// whose turn fails again: the next retry waits twice as long.
 func TestALoggedOutAgentMakesTheRoleUnavailable(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
@@ -292,23 +294,34 @@ func TestALoggedOutAgentMakesTheRoleUnavailable(t *testing.T) {
 	id := b.failTask(t, c, "build")
 	b.waitState(t, id, brakeman.StateFailed)
 	r := b.waitRole(t, crew.RoleUnavailable)
-	if !strings.Contains(r.Why, "is it logged in?") || !strings.Contains(r.Why, "Please run /login") {
+	if !strings.Contains(r.Why, "is it logged in?") || !strings.Contains(r.Why, "Please run /login") || r.Reason != crew.ReasonStart {
 		t.Fatalf("%+v", r)
 	}
+	retry := r.RetryAt
 	b.slotFree(t)
 	b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/lint", Key: "attempts 1", At: c.now()})
-	c.add(time.Hour)
+	c.add(retry.Sub(c.now()) - time.Minute)
 	b.roleSettle(t)
-	if r := b.roleRecord(t); r.State != crew.RoleUnavailable || r.Open == nil {
+	if r := b.ledgerRole(t); r.State != crew.RoleUnavailable || r.Open == nil {
 		t.Fatalf("%+v", r)
 	}
 	if page, _, _ := b.desk.st.List("", 10); len(page) != 1 {
 		t.Fatalf("an unavailable role started %d turns", len(page))
 	}
-	// A person's own request tries again: the batch kept fires.
+	// A person's own request fails the same way, and fires nothing more.
 	ask := b.briefing(t)
 	b.waitState(t, ask, brakeman.StateFailed)
 	b.slotFree(t)
+	b.roleSettle(t)
+	if page, _, _ := b.desk.st.List("", 10); len(page) != 2 {
+		t.Fatalf("the person's request fired the batch into the same state: %d requests", len(page))
+	}
+	if got := b.ledgerRole(t).Log; len(got) != 3 || got[2].Source != crew.WakeRequest || got[2].Subject != ask {
+		t.Fatalf("%+v", got)
+	}
+	// The role's retry fires the batch kept: the first turn's wake, whose
+	// turn never started, and the one gathered since.
+	c.add(time.Minute)
 	var wake string
 	if !waitFor(30*time.Second, func() bool {
 		b.desk.role.Poke()
@@ -320,13 +333,8 @@ func TestALoggedOutAgentMakesTheRoleUnavailable(t *testing.T) {
 		}
 		return wake != ""
 	}) {
-		t.Fatal("the batch kept never fired after the person's request")
+		t.Fatal("the batch kept never fired at the role's retry")
 	}
-	if got := b.roleRecord(t).Log; len(got) != 3 || got[2].Source != crew.WakeRequest || got[2].Subject != ask {
-		t.Fatalf("%+v", got)
-	}
-	// The batch fired after the retry holds the first turn's wake, whose
-	// turn never started, and the one gathered since.
 	q, err := b.desk.st.Get(wake)
 	if err != nil {
 		t.Fatal(err)
@@ -335,15 +343,33 @@ func TestALoggedOutAgentMakesTheRoleUnavailable(t *testing.T) {
 	if fired == nil || fired.ID != q.Batch || len(fired.Wakes) != 2 || fired.Wakes[0].Subject != "task:run-1/build" || fired.Wakes[1].Subject != "task:run-1/lint" {
 		t.Fatalf("the batch fired %+v for %s", fired, q.Batch)
 	}
+	b.waitState(t, wake, brakeman.StateFailed)
+	if !waitFor(30*time.Second, func() bool {
+		b.desk.role.Poke()
+		r := b.ledgerRole(t)
+		return r.State == crew.RoleUnavailable && r.Tries == 2
+	}) {
+		t.Fatalf("the second turn that did not start: %+v", b.ledgerRole(t))
+	}
+	if r := b.ledgerRole(t); !r.RetryAt.Equal(c.now().Add(2 * crew.RoleStartRetry)) {
+		t.Fatalf("the next retry: %+v", r)
+	}
 }
 
-// typedInto is what reached the terminal of the request id's scripted
-// agent (bkSignInScript, bkUpdateScript): "" when nothing did.
+// typedInto is every byte that reached the terminal of the request id's
+// scripted agent (bkRecord: bkSignInScript, bkUpdateScript,
+// bkUnknownScript), read raw: "" when nothing did. The record is made
+// before the agent draws its screen, so one never made is a stub that did
+// not run, never "nothing typed".
 func (b *bkEnv) typedInto(t *testing.T, id string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(b.root, "typed-"+id+".txt"))
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
+	var data []byte
+	if !waitFor(30*time.Second, func() bool {
+		var err error
+		data, err = os.ReadFile(filepath.Join(b.root, "typed-"+id+".txt"))
+		return err == nil
+	}) {
+		t.Fatalf("%s's agent kept no record of its terminal", id)
 	}
 	return string(data)
 }
@@ -367,8 +393,9 @@ func TestASignedOutAgentMakesTheRoleUnavailable(t *testing.T) {
 	if !strings.Contains(q.Why, "its login refused") || !strings.Contains(q.Why, "Browser didn't open? Use the url below to sign in") || strings.Contains(q.Why, "example.invalid") || q.Reads != 0 {
 		t.Fatalf("the turn: %+v", q)
 	}
-	r := b.waitRole(t, crew.RoleUnavailable)
-	if !strings.Contains(r.Why, "its login refused") || !r.RetryAt.IsZero() || r.Open == nil {
+	b.waitRole(t, crew.RoleUnavailable)
+	r := b.ledgerRole(t)
+	if r.State != crew.RoleUnavailable || !strings.Contains(r.Why, "its login refused") || r.Reason != crew.ReasonStart || r.Tries != 1 || !r.RetryAt.Equal(c.now().Add(crew.RoleStartRetry)) || r.Open == nil {
 		t.Fatalf("the role: %+v", r)
 	}
 	b.slotFree(t)
@@ -379,9 +406,9 @@ func TestASignedOutAgentMakesTheRoleUnavailable(t *testing.T) {
 		t.Fatalf("keys reached the sign-in screen: %q", got)
 	}
 	b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/lint", Key: "attempts 1", At: c.now()})
-	c.add(time.Hour)
+	c.add(crew.RoleStartRetry - time.Minute)
 	b.roleSettle(t)
-	if r := b.roleRecord(t); r.State != crew.RoleUnavailable || r.Open == nil || len(r.Open.Wakes) != 2 {
+	if r := b.ledgerRole(t); r.State != crew.RoleUnavailable || r.Open == nil || len(r.Open.Wakes) != 2 {
 		t.Fatalf("the role fired into the same screen: %+v", r)
 	}
 	if page, _, _ := b.desk.st.List("", 10); len(page) != 1 {
@@ -436,6 +463,210 @@ func TestABackgroundTurnEndsAtAStartupQuestion(t *testing.T) {
 	b.slotFree(t)
 	if got := b.typedInto(t, ask); got != "" {
 		t.Fatalf("keys reached the update dialog: %q", got)
+	}
+}
+
+// ledgerRole is the role as its records hold it (the desk's store),
+// read afresh: what a restart would take up.
+func (b *bkEnv) ledgerRole(t *testing.T) crew.RoleRecord {
+	t.Helper()
+	r, err := b.desk.role.Peek()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// TestAnAgentAtAScreenNobodyKnowsDidNotStart: an agent that draws a
+// full-screen prompt no catalog entry knows (another program's sign-in, a
+// reworded screen) and never reads its request holds its turn only until
+// brakemanFirstRead, on the desk's clock, far short of the turn's 15
+// minutes: the turn ends failed, the agent did not start, with what its
+// screen shows (its link left out), charged the minutes it ran, no key
+// typed (its terminal's raw input kept). The role is unavailable with
+// those words and a retry of its own, read from its records; a wake is
+// gathered, not fired, and a person's own request in the same state says
+// the same at the same bound instead of waiting out its minutes. At the
+// role's retry the batch kept fires, and once the agent reads that
+// request (it started) the role counts from 0 again. No pattern is
+// involved: the bound is the fallback for every screen.
+func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.background(t, "bkunknown", nil)
+	id := b.failTask(t, c, "build")
+	b.waitState(t, id, brakeman.StateStarting, brakeman.StateRunning)
+	_, _, l := b.turnSession(t, id)
+	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(l.TailLines(12), "\n"), "[ Sign in ]") }) {
+		t.Fatalf("the screen was never drawn: %q", l.TailLines(12))
+	}
+	c.add(brakemanFirstRead - time.Second)
+	b.settle(t)
+	if q, _ := b.desk.st.Get(id); !q.Open() {
+		t.Fatalf("ended before its bound: %+v", q)
+	}
+	c.add(time.Second)
+	b.settle(t)
+	q := b.waitState(t, id, brakeman.StateFailed)
+	for _, want := range []string{"did not read its request in 5 minutes", "You are not signed in.", "[ Sign in ]", "[link]"} {
+		if !strings.Contains(q.Why, want) {
+			t.Fatalf("the turn's words lack %q: %+v", want, q)
+		}
+	}
+	if strings.Contains(q.Why, "example.invalid") || q.Reads != 0 {
+		t.Fatalf("the turn: %+v", q)
+	}
+	b.waitRole(t, crew.RoleUnavailable)
+	failedAt := c.now()
+	r := b.ledgerRole(t)
+	if r.Reason != crew.ReasonStart || r.Tries != 1 || !r.RetryAt.Equal(failedAt.Add(crew.RoleStartRetry)) || !strings.Contains(r.Why, "You are not signed in.") || r.Open == nil {
+		t.Fatalf("the role: %+v", r)
+	}
+	b.slotFree(t)
+	if m, err := b.desk.st.MinutesToday(c.now()); err != nil || m > int(brakemanFirstRead/time.Minute) {
+		t.Fatalf("the turn was charged %d minutes (%v), more than it ran", m, err)
+	}
+	if got := b.typedInto(t, id); got != "" {
+		t.Fatalf("keys reached the screen: %q", got)
+	}
+	// A person's own request in the same state: ended at the same bound.
+	ask := b.briefing(t)
+	b.waitState(t, ask, brakeman.StateStarting, brakeman.StateRunning)
+	_, _, la := b.turnSession(t, ask)
+	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(la.TailLines(12), "\n"), "[ Sign in ]") }) {
+		t.Fatalf("the screen was never drawn: %q", la.TailLines(12))
+	}
+	c.add(brakemanFirstRead)
+	b.settle(t)
+	if q := b.waitState(t, ask, brakeman.StateFailed); !strings.Contains(q.Why, "did not read its request in 5 minutes") || !strings.Contains(q.Why, "You are not signed in.") {
+		t.Fatalf("the person's request: %+v", q)
+	}
+	b.slotFree(t)
+	if got := b.typedInto(t, ask); got != "" {
+		t.Fatalf("keys reached the screen: %q", got)
+	}
+	// A wake meanwhile is gathered, not fired; nor is the batch by the
+	// person's request.
+	b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/lint", Key: "attempts 1", At: c.now()})
+	b.roleSettle(t)
+	if r := b.ledgerRole(t); r.State != crew.RoleUnavailable || r.Open == nil || len(r.Open.Wakes) != 2 {
+		t.Fatalf("the role fired into the same screen: %+v", r)
+	}
+	if page, _, _ := b.desk.st.List("", 10); len(page) != 2 {
+		t.Fatalf("%d requests, want the wake turn and the person's", len(page))
+	}
+	// The role's retry: the batch kept fires; its agent reads it now.
+	c.add(failedAt.Add(crew.RoleStartRetry).Sub(c.now()))
+	r = b.waitRole(t, crew.RoleBriefing)
+	if r.Fired == nil || len(r.Fired.Wakes) != 2 || r.Request == "" {
+		t.Fatalf("the retry: %+v", r)
+	}
+	sid, tok, _ := b.turnSession(t, r.Request)
+	if status, _ := b.readRequest(t, sid, tok); status != http.StatusOK {
+		t.Fatalf("read: %d", status)
+	}
+	if !waitFor(30*time.Second, func() bool { return b.ledgerRole(t).Tries == 0 }) {
+		t.Fatalf("the agent started, yet the role counts: %+v", b.ledgerRole(t))
+	}
+	c.add(brakemanFirstRead + time.Minute)
+	b.settle(t)
+	if q, _ := b.desk.st.Get(r.Request); !q.Open() {
+		t.Fatalf("a turn whose agent read its request was ended at the bound: %+v", q)
+	}
+}
+
+// TestAnAgentThatReadsLateWithinItsBoundIsNotEnded: an agent slow to
+// start (its first read four minutes in, as a loaded machine or a slow MCP
+// start may make it) runs its turn: the bound ends only a turn not read by
+// it, and is never looked at again once the request is read.
+func TestAnAgentThatReadsLateWithinItsBoundIsNotEnded(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.background(t, "bk", nil)
+	id := b.failTask(t, c, "build")
+	b.waitState(t, id, brakeman.StateRunning)
+	sid, tok, _ := b.turnSession(t, id)
+	c.add(brakemanFirstRead - time.Minute)
+	b.settle(t)
+	if status, _ := b.readRequest(t, sid, tok); status != http.StatusOK {
+		t.Fatalf("read: %d", status)
+	}
+	c.add(2 * time.Minute)
+	b.settle(t)
+	if q, _ := b.desk.st.Get(id); q.State != brakeman.StateRunning {
+		t.Fatalf("a turn read within its bound was ended: %+v", q)
+	}
+	if r := b.ledgerRole(t); r.State != crew.RoleBriefing || r.Tries != 0 {
+		t.Fatalf("the role: %+v", r)
+	}
+}
+
+// TestTheRecordOfATerminalCatchesOneKey: the scripted agents' record of
+// their terminal (bkRecord), which the tests that promise no key reached
+// a startup screen read, catches one byte with no Enter after it: a
+// digit typed into the terminal is in the record at once.
+func TestTheRecordOfATerminalCatchesOneKey(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.enable(t, "bkunknown", nil)
+	ask := b.briefing(t)
+	_, _, l := b.turnSession(t, ask)
+	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(l.TailLines(12), "\n"), "[ Sign in ]") }) {
+		t.Fatalf("the screen was never drawn: %q", l.TailLines(12))
+	}
+	if got := b.typedInto(t, ask); got != "" {
+		t.Fatalf("typed before any key: %q", got)
+	}
+	sub, err := l.AttachWith(session.AttachOptions{Role: session.RoleControl, Name: "Nate", Owner: true}, &gapSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Input(sub, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(30*time.Second, func() bool { return b.typedInto(t, ask) == "1" }) {
+		t.Fatalf("the record missed one key: %q", b.typedInto(t, ask))
+	}
+	b.expect(t, "POST", "/api/brakeman/requests/"+ask+"/cancel", map[string]any{"opId": "c-1"}, http.StatusOK, "")
+	b.slotFree(t)
+}
+
+// TestASaveWeighsOnlyWhatItChanged: the role unavailable because its
+// agent did not start (signed out at its sign-in screen) is left so by a
+// save that changes nothing, and by one that changes what cannot start it
+// (a grant, its visibility): same words, no request made. A save that
+// changes what the agent starts with (its model here; an account, an
+// agent) tries again: the batch kept fires.
+func TestASaveWeighsOnlyWhatItChanged(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.background(t, "bksignin", nil)
+	id := b.failTask(t, c, "build")
+	b.waitState(t, id, brakeman.StateFailed)
+	before := b.waitRole(t, crew.RoleUnavailable)
+	b.slotFree(t)
+	for name, mod := range map[string]func(map[string]any){
+		"nothing":    func(map[string]any) {},
+		"visibility": func(cfg map[string]any) { cfg["visibility"].(map[string]any)["touched"] = false },
+	} {
+		b.configure(t, mod)
+		b.roleSettle(t)
+		b.settle(t)
+		if r := b.ledgerRole(t); r.State != crew.RoleUnavailable || r.Why != before.Why || r.Reason != crew.ReasonStart || !r.RetryAt.Equal(before.RetryAt) {
+			t.Fatalf("a save of %s: %+v", name, r)
+		}
+		if page, _, _ := b.desk.st.List("", 10); len(page) != 1 {
+			t.Fatalf("a save of %s started a turn: %d requests", name, len(page))
+		}
+	}
+	b.configure(t, func(cfg map[string]any) { cfg["model"] = "sonnet" })
+	c.add(time.Duration(brakeman.MinWindowSeconds) * time.Second)
+	if !waitFor(30*time.Second, func() bool {
+		b.desk.role.Poke()
+		page, _, _ := b.desk.st.List("", 10)
+		return len(page) == 2
+	}) {
+		t.Fatalf("a save of the model did not try again: %+v", b.ledgerRole(t))
 	}
 }
 

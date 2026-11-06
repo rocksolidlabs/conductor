@@ -1264,3 +1264,120 @@ func TestATurnsGuideListsItsGrantedOperations(t *testing.T) {
 		}
 	}
 }
+
+// The overview's may list and the operations section are what the
+// routes admit, for this caller, now: one check (admits) makes the list
+// and refuses the call. Over the callers (the admin, a session, Brakeman
+// turns with a grant and without, with terminals on and off, with
+// Dispatch hidden), each operation listed is one its route takes past its
+// gates, and each left out that the caller's scopes reach is one its
+// route refuses: the admin an agent's own (403 agent_only), a turn a read
+// of a class it may not see (403 not_visible). The routes are called, not
+// the list compared with itself.
+func TestTheOverviewListsWhatTheRoutesAdmit(t *testing.T) {
+	fill := strings.NewReplacer("{run}", "run-none", "{task}", "t", "{n}", "1", "{id}", "1", "{k}", "1", "{command}", "c", "{key}", "CND-1")
+	mayOf := func(t *testing.T, e *testEnv, token, path string) []string {
+		t.Helper()
+		status, _, out := guideOf(t, e, token, path)
+		if status != http.StatusOK {
+			t.Fatalf("overview %d", status)
+		}
+		var may []string
+		for _, x := range out["overview"].(map[string]any)["may"].([]any) {
+			may = append(may, x.(string))
+		}
+		_, _, sec := guideOf(t, e, token, path+"?section=operations")
+		if !slices.Equal(may, opNames(t, sec)) {
+			t.Fatalf("may %v, the section %v", may, opNames(t, sec))
+		}
+		return may
+	}
+	gated := func(status int, out map[string]any, code string) bool {
+		e, _ := out["error"].(map[string]any)
+		return status == http.StatusForbidden && e["code"] == code
+	}
+
+	t.Run("the admin", func(t *testing.T) {
+		e := newTestEnv(t, nil)
+		sid := e.createSession("cat")
+		may := mayOf(t, e, adminToken, "/api/guide")
+		for _, op := range Operations() {
+			if !op.agentOnly {
+				continue
+			}
+			if slices.Contains(may, op.Name) {
+				t.Errorf("the admin is listed %s, an agent's own", op.Name)
+			}
+			status, _, out := e.callAs(t, adminToken, op.Method, strings.ReplaceAll(op.Path, "{id}", sid), []byte(`{}`))
+			if !gated(status, out, "agent_only") {
+				t.Errorf("%s with the admin's token: %d %v", op.Name, status, out)
+			}
+		}
+		for _, name := range []string{"run_stop", "task_context", "brakeman_request", "observe_screen", "act"} {
+			if !slices.Contains(may, name) {
+				t.Errorf("the admin is not listed %s", name)
+			}
+		}
+	})
+
+	t.Run("a session", func(t *testing.T) {
+		e := newTestEnv(t, nil)
+		sid := e.createSession("cat")
+		may := mayOf(t, e, e.agentToken(sid), "/api/sessions/"+sid+"/guide")
+		if slices.ContainsFunc(may, func(n string) bool {
+			return strings.HasPrefix(n, "observe") || n == "act" || n == "brief_submit" || n == "run_stop"
+		}) {
+			t.Fatalf("a session's may: %v", may)
+		}
+	})
+
+	for _, c := range []struct {
+		name                         string
+		granted, terminals, dispatch bool
+	}{
+		{"a turn granted, terminals on", true, true, true},
+		{"a turn granted nothing", false, true, true},
+		{"a turn granted, terminals off", true, false, true},
+		{"a turn granted, Dispatch hidden", true, false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			bk := brakemanEnv(t, nil)
+			bk.enable(t, "bk", func(cfg map[string]any) {
+				act := []any{}
+				if c.granted {
+					act = []any{brakeman.ActLaunchApprovedPlan}
+				}
+				cfg["permissions"].(map[string]any)["act"] = act
+				v := cfg["visibility"].(map[string]any)
+				v["terminals"], v["dispatch"] = c.terminals, c.dispatch
+			})
+			req := bk.briefing(t)
+			sid, tok, _ := bk.turnSession(t, req)
+			may := mayOf(t, bk.testEnv, tok, "/api/sessions/"+sid+"/guide")
+			if want := c.granted && c.dispatch; slices.Contains(may, "act") != want || slices.Contains(may, brakeman.ActLaunchApprovedPlan) != want {
+				t.Errorf("act listed %v, want %v: %v", slices.Contains(may, "act"), want, may)
+			}
+			if !slices.Contains(may, "brakeman_request") || !slices.Contains(may, "brief_submit") {
+				t.Errorf("the turn's own: %v", may)
+			}
+			// Every read: listed, its route takes it past its gate; not,
+			// its route refuses it not_visible.
+			for _, op := range Operations() {
+				if op.Scope != "observe" || op.Method != http.MethodGet || !strings.HasPrefix(op.Name, "observe_") {
+					continue
+				}
+				status, _, out := bk.callAsTurn(t, tok, sid, op.Method, fill.Replace(op.Path), nil)
+				listed := slices.Contains(may, op.Name)
+				if refused := gated(status, out, "not_visible"); listed == refused {
+					t.Errorf("%s listed %v, its route: %d %v", op.Name, listed, status, out)
+				}
+			}
+			if slices.Contains(may, "observe_screen") != c.terminals {
+				t.Errorf("observe_screen listed with terminals %v: %v", c.terminals, may)
+			}
+			if slices.Contains(may, "observe_tickets") != c.dispatch {
+				t.Errorf("observe_tickets listed with Dispatch %v: %v", c.dispatch, may)
+			}
+		})
+	}
+}
