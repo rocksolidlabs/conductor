@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -44,30 +46,12 @@ func pebbleBinary(t *testing.T) string {
 	return ""
 }
 
-func freePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
-}
-
 // fakeDNS answers every A question with 127.0.0.1 and everything else with
 // an empty answer, over UDP and TCP (Pebble's resolver dials TCP), so
 // Pebble resolves conductor.test to this machine.
 func fakeDNS(t *testing.T) string {
 	t.Helper()
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := udp.LocalAddr().(*net.UDPAddr).Port
-	tcp, err := net.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(port))
-	if err != nil {
-		t.Fatal(err)
-	}
+	udp, tcp := dnsPair(t)
 	t.Cleanup(func() { udp.Close(); tcp.Close() })
 	go func() {
 		buf := make([]byte, 1500)
@@ -108,6 +92,43 @@ func fakeDNS(t *testing.T) string {
 		}
 	}()
 	return udp.LocalAddr().String()
+}
+
+// dnsPort is the port a try of dnsPair asks for over UDP: 0, the kernel's
+// pick; a test replaces it to hand the first try a number whose TCP twin
+// is taken.
+var dnsPort = func() int { return 0 }
+
+// dnsPairTries bounds dnsPair's tries. A lost try is two binds, the second
+// refused at once, and at most a few in a hundred picks lose even with
+// thousands of TCP sockets on the loopback (measured): the bound only ends a
+// machine where every number is taken.
+const dnsPairTries = 1000
+
+// dnsPair binds the fake DNS's UDP and TCP listeners on one number, the one
+// address Pebble is given. The UDP bind picks it and the TCP bind asks for
+// the same number, which a TCP socket of this machine can hold already: a
+// connection an earlier test left in TIME_WAIT, a client's outbound port.
+// Linux refuses the listener then, SO_REUSEADDR or not (CI once lost it:
+// "listen tcp4 127.0.0.1:59020: bind: address already in use"). Both are
+// bound before either is used, so a try that loses closes the other and
+// starts over on a fresh pick, and once both are bound nothing can take them.
+func dnsPair(t *testing.T) (*net.UDPConn, net.Listener) {
+	t.Helper()
+	for try := 1; ; try++ {
+		udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: dnsPort()})
+		if err == nil {
+			var tcp net.Listener
+			tcp, err = net.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(udp.LocalAddr().(*net.UDPAddr).Port))
+			if err == nil {
+				return udp, tcp
+			}
+			udp.Close()
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) || try == dnsPairTries {
+			t.Fatalf("fake dns: no number free over both udp and tcp (try %d): %v", try, err)
+		}
+	}
 }
 
 func dnsAnswer(msg []byte) []byte {
@@ -160,7 +181,7 @@ type pebble struct {
 	// The ports Pebble validates against are the test's own: bound before
 	// Pebble starts and held, so no other socket can take them meanwhile
 	// (a port picked, closed and bound again later once lost that race in
-	// CI: "bind: address already in use").
+	// CI: "bind: address already in use"). These cannot lose.
 	tlsLn  net.Listener
 	httpLn net.Listener
 }
@@ -180,12 +201,21 @@ func listenLocal(t *testing.T) net.Listener {
 func portOf(ln net.Listener) int { return ln.Addr().(*net.TCPAddr).Port }
 
 // pebbleStartTries bounds the starts with fresh ports when Pebble finds one
-// of its own two taken by the time it binds it.
-const pebbleStartTries = 5
+// of its own two taken by the time it binds it. A lost start is a Pebble
+// that exits at its bind, some 50 ms after it began (measured): the bound
+// only ends a machine where every port is taken.
+const pebbleStartTries = 100
 
-// pebblePorts picks Pebble's directory and management ports for one start;
-// a test replaces it to hand Pebble a taken port.
-var pebblePorts = func(t *testing.T) (listen, mgmt int) { return freePort(t), freePort(t) }
+// pebblePorts binds Pebble's directory and management ports for one start
+// and holds them until start hands them over; a test replaces it to hand
+// Pebble a taken port.
+var pebblePorts = func(t *testing.T) (listen, mgmt net.Listener) { return listenLocal(t), listenLocal(t) }
+
+// heldElsewhere is a port another socket of the test holds: the hand-over
+// leaves it bound.
+type heldElsewhere struct{ net.Listener }
+
+func (heldElsewhere) Close() error { return nil }
 
 func startPebble(t *testing.T) *pebble {
 	t.Helper()
@@ -202,9 +232,10 @@ func startPebble(t *testing.T) *pebble {
 			p.fetchRoot(t, mgmt)
 			return p
 		}
-		// Pebble's own two ports are bound by Pebble, which the test cannot
-		// hold for it: a start that lost one to another socket is retried on
-		// fresh ones; anything else fails at once.
+		// Pebble's own two ports are bound by Pebble, which takes only an
+		// address: the test holds them until it starts Pebble and lets them
+		// go then, and a start that lost one to another socket in between is
+		// retried on fresh ones; anything else fails at once.
 		if try == pebbleStartTries || !strings.Contains(out, "address already in use") {
 			t.Fatalf("pebble did not come up (try %d):\n%s", try, out)
 		}
@@ -218,7 +249,8 @@ func startPebble(t *testing.T) *pebble {
 func (p *pebble) start(t *testing.T, bin, dns string) (mgmt int, ok bool, out string) {
 	t.Helper()
 	dir := t.TempDir()
-	listen, mgmt := pebblePorts(t)
+	listenLn, mgmtLn := pebblePorts(t)
+	listen, mgmt := portOf(listenLn), portOf(mgmtLn)
 	cfg := map[string]any{"pebble": map[string]any{
 		"listenAddress": "127.0.0.1:" + strconv.Itoa(listen), "managementListenAddress": "127.0.0.1:" + strconv.Itoa(mgmt),
 		"certificate": filepath.Join("testdata", "pebble", "https-cert.pem"), "privateKey": filepath.Join("testdata", "pebble", "https-key.pem"),
@@ -238,13 +270,23 @@ func (p *pebble) start(t *testing.T, bin, dns string) (mgmt int, ok bool, out st
 	cmd.Env = append(os.Environ(), "PEBBLE_VA_NOSLEEP=1")
 	buf := &lockedBuffer{}
 	cmd.Stdout, cmd.Stderr = buf, buf
+	// The hand-over: Pebble binds the two ports itself, so the test lets them
+	// go only now.
+	listenLn.Close()
+	mgmtLn.Close()
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	// The directory is polled until Pebble answers or exits: a poll is
+	// ended by Pebble's exit, not by the client's timeout (a start handed a
+	// port another listener holds connects to that listener, which never
+	// answers).
 	exited := make(chan struct{})
+	gone, cancel := context.WithCancel(context.Background())
 	go func() {
 		_ = cmd.Wait()
 		close(exited)
+		cancel()
 	}()
 	stop := func() {
 		_ = cmd.Process.Kill()
@@ -258,7 +300,8 @@ func (p *pebble) start(t *testing.T, bin, dns string) (mgmt int, ok bool, out st
 			return mgmt, false, buf.String()
 		default:
 		}
-		resp, err := p.httpCli.Get(p.dir)
+		req, _ := http.NewRequestWithContext(gone, http.MethodGet, p.dir, nil)
+		resp, err := p.httpCli.Do(req)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -440,17 +483,17 @@ var _ = pem.Decode
 var _ = strings.TrimSpace
 var _ = context.Background
 
-// A port Pebble binds itself can be taken between its pick and Pebble's
+// A port Pebble binds itself can be taken between the hand-over and Pebble's
 // bind (CI once lost the race); the start is tried again on fresh ports.
 // Here the first start is handed a port already in use.
 func TestPebbleStartsAgainWhenItsPortIsTaken(t *testing.T) {
 	taken := listenLocal(t)
 	first := true
 	orig := pebblePorts
-	pebblePorts = func(t *testing.T) (int, int) {
+	pebblePorts = func(t *testing.T) (net.Listener, net.Listener) {
 		if first {
 			first = false
-			return portOf(taken), freePort(t)
+			return heldElsewhere{taken}, listenLocal(t)
 		}
 		return orig(t)
 	}
@@ -458,5 +501,40 @@ func TestPebbleStartsAgainWhenItsPortIsTaken(t *testing.T) {
 	p := startPebble(t)
 	if first || p.root == nil || strings.Contains(p.dir, ":"+strconv.Itoa(portOf(taken))+"/") {
 		t.Fatalf("not started again on fresh ports: %s", p.dir)
+	}
+}
+
+// fakeDNS's TCP listener asks for the number its UDP bind picked, which a
+// TCP socket can hold already (CI once lost it); the pair is bound again on
+// a fresh pick. Here the first try is handed a number whose TCP twin is a
+// listener of the test's, and the fake answers over both on the address it
+// gives.
+func TestPebbleFakeDNSBindsAgainWhenItsTCPPortIsTaken(t *testing.T) {
+	taken := listenLocal(t)
+	first := true
+	orig := dnsPort
+	dnsPort = func() int {
+		if first {
+			first = false
+			return portOf(taken)
+		}
+		return orig()
+	}
+	t.Cleanup(func() { dnsPort = orig })
+	addr := fakeDNS(t)
+	if first || strings.HasSuffix(addr, ":"+strconv.Itoa(portOf(taken))) {
+		t.Fatalf("not bound again on a fresh pick: %s", addr)
+	}
+	for _, network := range []string{"udp", "tcp"} {
+		r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		}}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ips, err := r.LookupIP(ctx, "ip4", "conductor.test")
+		cancel()
+		if err != nil || len(ips) != 1 || !ips[0].Equal(net.IPv4(127, 0, 0, 1)) {
+			t.Fatalf("over %s: %v %v", network, ips, err)
+		}
 	}
 }

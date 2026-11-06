@@ -78,6 +78,10 @@ type launchGate struct {
 	beforeStore     func(key string)
 	beforeReconcile func()
 	attempt         func(crew.LaunchSpec)
+	// afterRecordRead runs with a run's id once resumeRecord has read its
+	// record, before the continuation's admission; a test holds it. Under
+	// mu.
+	afterRecordRead func(runID string)
 	// afterStops runs once the shutdown has stopped the runs it lists and
 	// drained them, before the sessions close; a test holds it. Under mu.
 	afterStops func()
@@ -338,6 +342,25 @@ func (s *Server) launchAdmission() *apiError {
 		return newAPIError(http.StatusServiceUnavailable, "ledger_unavailable", "the server is taking over the ledger")
 	}
 	return nil
+}
+
+// continuationAdmission refuses a managed run's continuation until the
+// ledger is this server's and taken over (503 ledger_unavailable, the
+// read-only reason, else "the server is taking over the ledger"): a
+// ledger whose owner lock was taken late is writable before the one
+// OnOwned callback has recovered it and restored the launches' people
+// (restoreLaunchPeople), and a continuation made in between would keep,
+// in its live state and its task files, a launch row not yet made whole.
+// ready follows both. nil admits it, and with no ledger ContinueRun
+// answers for itself.
+func (s *Server) continuationAdmission() *apiError {
+	if s.ledger == nil || s.launches.ready.Load() {
+		return nil
+	}
+	if ro, why := s.ledger.ReadOnly(); ro {
+		return newAPIError(http.StatusServiceUnavailable, "ledger_unavailable", why)
+	}
+	return newAPIError(http.StatusServiceUnavailable, "ledger_unavailable", "the server is taking over the ledger")
 }
 
 // handleDispatchLaunch launches a managed run from a ticket's approved

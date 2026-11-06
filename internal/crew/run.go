@@ -272,6 +272,12 @@ type Run struct {
 	// run, whose JSON is unchanged (LaunchNamedWith).
 	Class   string `json:"class,omitempty"`
 	Request string `json:"request,omitempty"`
+	// People are the crew's people as launched (people.go), fixed for the
+	// run; a continuation's and a recovered record's are the chain's
+	// launch's. A run without tasks keeps them while the engine holds it
+	// and writes none into its record (Records.Save), which every older
+	// build reads as before.
+	People []Person `json:"people,omitempty"`
 }
 
 // Managed is what a managed run's record carries beside the run: the
@@ -397,6 +403,9 @@ type Engine struct {
 	// afterLookup, when set, runs once a command or RetryTask has looked
 	// its run up and before its change: a test evicts the run there.
 	afterLookup func(runID string)
+	// afterTaken, when set, runs in a command between its two
+	// transactions (SetAfterTakenForTest). Guarded by mu.
+	afterTaken func(runID, commandID string)
 	// afterRefused, when set, runs in a command once its taking was
 	// refused and before the refusal is handled (afterTransact): a test
 	// commits the run's launch there.
@@ -444,6 +453,33 @@ type Engine struct {
 	// after the failed step's last commit and before its own change: a
 	// test lands an unpause there.
 	beforePrereqRefused func()
+
+	// boot is this server process's id, minted at its start (Boot): an
+	// identity's response to a decision is applied only by the process
+	// that accepted it (decisions.go).
+	boot string
+	// gatesAtLaunch opens a planned run's gates in its first transaction
+	// (openGates). Off until the response route ships with it
+	// (docs/plans/decisions.md, PR-4): a test turns it on.
+	gatesAtLaunch bool
+	// beforeMirror, when set, runs as a decision's question is about to be
+	// put to its session (askMirror), on the attempt's askMu, the decision
+	// read as open: a test holds the ask there. beforeRespond, when set, runs in RespondDecision
+	// once it has chosen the run to answer through and before its
+	// transaction: a test lands a change there.
+	beforeMirror  func(n int64)
+	beforeRespond func(n int64)
+	// beforeAnswer, when set, runs in a member's deliverer as it is about
+	// to take the next decision answer (nextAnswer): a test queues two
+	// answers there before either is typed. afterLook, when set, runs once
+	// the deliverer has taken one and looked for its mirror (mirror, ""
+	// for none) and before it types it: a test sets the mirror aside there.
+	beforeAnswer func(member string)
+	afterLook    func(member, mirror string)
+	// submitAnswer, when set, submits a decision's line in place of the
+	// session's Submit (typeAnswer): a test answers as the session's
+	// writer does when a dialog came as the text was taken.
+	submitAnswer func(ctx context.Context, l *session.Local, sub session.Submission) (session.SubmitResult, error)
 }
 
 // sessionMember is the member a session is, and its run.
@@ -480,6 +516,11 @@ type run struct {
 	checks    sync.WaitGroup
 	revision  int64
 	crewJSON  string // the crew as launched, for the ledger's run row
+	// decisions are the run's open and answered decisions (decisions.go),
+	// under e.mu. Their order is not their opening's: a supersession
+	// refused puts its target back last; what needs that order compares
+	// their numbers (newerOpen).
+	decisions []*decision
 	// created says the run's row is in the ledger: its first transaction
 	// committed. Until then only a change that may be the run's first (its
 	// launch's, its continuation's, its stop's: transactFirst) is written,
@@ -539,7 +580,11 @@ type run struct {
 	messages []*message
 	// txMu orders the run's transitions (task.go: transition); the marks
 	// are what changed since the last one, drained by the next.
-	txMu            sync.Mutex
+	txMu sync.Mutex
+	// numbered are the decisions the transaction under way has opened,
+	// with the numbers the ledger gave them (decisions.go: opened), under
+	// txMu: the snapshot's held rows name them by number (renumber).
+	numbered        map[*decision]int64
 	changedTasks    map[*task]struct{}
 	changedAttempts map[*attempt]struct{}
 	runChanged      bool
@@ -556,9 +601,14 @@ type run struct {
 	// pendingEvents and pendingMore are the events and the rows of their
 	// own (a message's, a command's receipt) of changes whose commit was
 	// refused with no undo, kept as the refusal comes (under txMu): the
-	// next commit writes them first, in order (transact).
+	// next commit writes them first, in order (transact). pendingLast are
+	// those changes' rows written after the events (tx.last), which the
+	// next commit writes after its own events, and pendingDone what runs
+	// once they are written (tx.done), after that commit, in order.
 	pendingEvents []event
 	pendingMore   []func(LedgerTx) error
+	pendingLast   []func(LedgerTx) error
+	pendingDone   []func()
 	// committing says a transaction has taken the run's changes and not
 	// yet heard from the ledger: refused, they come back to the run, which
 	// must still be there (dirty).
@@ -566,6 +616,10 @@ type run struct {
 	id, crewID, name, label, goal, cwd, isolation string
 	// class and request are the run's LaunchOpts, fixed when it is made.
 	class, request string
+	// people are the crew's people as launched, fixed when the run is
+	// made: read for what the run reports and the task files, never to
+	// start anything.
+	people []Person
 	// yolo is the run's yolo choice, fixed when it is made.
 	yolo bool
 	// changed is the engine's OnRunChange, or nil.
@@ -645,7 +699,11 @@ type member struct {
 	// maxHandoffs (handoff.go). delivering is set, under e.mu, while a
 	// goroutine types them (deliver), and read without it by poke; wake makes
 	// that goroutine look again.
-	handoffs   []handoff
+	handoffs []handoff
+	// answers are the decisions' answers waiting to be typed into the
+	// member's attempt that asked them, ahead of its handoffs
+	// (decisions.go: queueAnswer), under e.mu.
+	answers    []*answerLine
 	delivering atomic.Bool
 	wake       chan struct{}
 }
@@ -655,7 +713,7 @@ type member struct {
 func NewEngine(l Launcher, lookup func(sessionID string) (*session.Local, bool)) *Engine {
 	root, cut := context.WithCancel(context.Background())
 	return &Engine{launcher: l, lookup: lookup, await: awaitReady, now: time.Now,
-		runs: map[string]*run{}, offered: local.Native(), exec: execFor(local.Native()), native: local.Native(), teardownRoot: root, teardownCut: cut}
+		runs: map[string]*run{}, offered: local.Native(), exec: execFor(local.Native()), native: local.Native(), teardownRoot: root, teardownCut: cut, boot: newBoot()}
 }
 
 // Launch is LaunchHeld for a caller that needs nothing more of the run once
@@ -901,7 +959,7 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 	}
 	old.resuming = true
 	yolo := old.yolo
-	c := Crew{ID: old.crewID, Name: old.name, Goal: old.goal, Cwd: old.cwd, Where: WhereServer, Isolation: old.isolation, Yolo: &yolo}
+	c := Crew{ID: old.crewID, Name: old.name, Goal: old.goal, Cwd: old.cwd, Where: WhereServer, Isolation: old.isolation, Yolo: &yolo, People: old.people}
 	keeps := map[string]kept{}
 	for _, m := range old.members {
 		c.Members = append(c.Members, m.def)
@@ -1116,7 +1174,7 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed(),
-		class: p.opts.Class, request: p.opts.Request}
+		class: p.opts.Class, request: p.opts.Request, people: c.clone().People}
 	if r.managed {
 		// The crew's project manifest as launched, a legacy setup lifted
 		// into it, and the manifest at the pinned base, whose prerequisites
@@ -1224,6 +1282,16 @@ func newMember(m Member) *member {
 }
 
 // member returns the member of r with the given name. The caller holds e.mu.
+// person reports whether name is one of the run's people as launched.
+func (r *run) person(name string) bool {
+	for _, p := range r.people {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *run) member(name string) *member {
 	for _, m := range r.members {
 		if m.def.Name == name {
@@ -1758,6 +1826,11 @@ func (r *run) admit(m Member) error {
 		return invalidf("too many members (at most %d)", maxMembers)
 	case r.member(m.Name) != nil:
 		return invalidf("member %s: the name is used twice", quote(m.Name))
+	case r.person(m.Name):
+		// checkPeople's rule, kept for a member added by hand: a run whose
+		// member took a person's name could not be resumed (ResumeRun
+		// checks the crew again, its people with it).
+		return invalidf("member %s: the name is a person's; a person is never a member, so the two names differ", quote(m.Name))
 	}
 	if err := m.checkTypedPrompt(r.goal); err != nil {
 		return err
@@ -2191,7 +2264,7 @@ func (r *run) snapshot(withDiffs, withChat bool) Run {
 		Class: r.class, Request: r.request,
 		StartedAt: r.startedAt, StoppedAt: r.stoppedAt, Members: make([]MemberState, 0, len(r.members)),
 		ResumedFrom: r.resumedFrom, ResumedBy: r.resumedBy,
-		Log: append([]session.ActivityEntry{}, r.log...)}
+		Log: append([]session.ActivityEntry{}, r.log...), People: Crew{People: r.people}.clone().People}
 	for _, m := range r.members {
 		st := m.state
 		st.Diff = nil

@@ -677,12 +677,23 @@ A package of the index and its search, the standard library and
 `modernc.org/sqlite` only (no HTTP, no session, no other store): it is told
 entries and asked queries, and knows nothing of where entries come from.
 
-**The database** `history/index.sqlite`, 0600, opened as the ledger opens
-its own (WAL, `synchronous=NORMAL` since it is a cache, foreign keys, a busy
-timeout, one connection), schema version 1:
+**The database** `history/index.sqlite`, 0600 in a 0700 directory, opened
+as the ledger opens its own (WAL, `synchronous=NORMAL` since it is a cache,
+foreign keys, a busy timeout) but for its connections: the owner writes
+through one and reads through two others beside it, so in WAL a search
+never holds a write back and a write never holds a search (a write waits
+only for another write; `TestASearchNeverHoldsAWriteBack`), and a reader
+reads through two (PR-2's review, 2026-11-05: with the plan's one
+connection a one-entry `Replace` waited 780 ms behind a search); schema
+version 1:
 
 ```sql
-CREATE TABLE schema_version (version INTEGER NOT NULL, generation INTEGER NOT NULL); -- generation: bumped by every clear
+CREATE TABLE schema_version (version INTEGER NOT NULL,
+  generation INTEGER NOT NULL,   -- bumped by every clear; a file's first drawn at random
+  dropped INTEGER NOT NULL DEFAULT 0,   -- entries the budget let go (Stats)
+  open INTEGER NOT NULL DEFAULT 0,      -- set by the owner's Open, cleared by its Close
+  unchecked INTEGER NOT NULL DEFAULT 0  -- a Check is owed: the last owner did not close it
+);
 CREATE TABLE sources (
   key TEXT PRIMARY KEY,          -- "run:<id>", "check:<run>/<task>/<n>/<id>/<k>", "session:<id>", "ticket:<KEY-n>", "brief:<br-n>", "dispatch:feed"
   mark TEXT NOT NULL,            -- what the source said when it was read: a revision, a seq
@@ -712,23 +723,37 @@ CREATE TABLE entries (
   actor TEXT NOT NULL DEFAULT '',
   subject_key TEXT NOT NULL DEFAULT '',-- a check's SHA-256 of its argv: the same command elsewhere
   digest TEXT NOT NULL,          -- SHA-256 of the body folded: repeats grouped, never merged
-  title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '',
+  bytes INTEGER NOT NULL,        -- its texts' size, which the budget counts
   origin TEXT NOT NULL DEFAULT ''-- reserved for TS1: '' for this server's own
+);
+CREATE TABLE texts (             -- an entry's texts, a row beside it by the same id
+  id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+  title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE links (
   from_ref TEXT NOT NULL, rel TEXT NOT NULL, to_ref TEXT NOT NULL,
   source TEXT NOT NULL REFERENCES sources(key) ON DELETE CASCADE,
   PRIMARY KEY (from_ref, rel, to_ref)
 );
-CREATE VIRTUAL TABLE entries_fts USING fts5(title, summary, body, content = 'entries', content_rowid = 'id',
+CREATE VIRTUAL TABLE entries_fts USING fts5(title, summary, body, content = 'texts', content_rowid = 'id',
   tokenize = 'unicode61 remove_diacritics 2', prefix = '2 3');
 CREATE INDEX entries_at ON entries(class, at);
+CREATE INDEX entries_when ON entries(at);                       -- the budget's oldest first, filters' newest first
+CREATE INDEX entries_outcome ON entries(class, outcome, project); -- the palette's counts from the index alone
 CREATE INDEX entries_anchor ON entries(anchor);
-CREATE INDEX entries_ref ON entries(ref);
+CREATE INDEX entries_ref ON entries(ref, key);                  -- a link's end found by its ref (below)
+CREATE INDEX entries_source ON entries(source);                 -- every Replace deletes a source's rows
 CREATE INDEX entries_subject ON entries(subject_key) WHERE subject_key != '';
 CREATE INDEX entries_digest ON entries(digest);
 CREATE INDEX links_to ON links(to_ref, rel);
+CREATE INDEX links_source ON links(source);
 ```
+
+PR-2 measured the shape: with an entry's texts (up to 17 KiB) in its
+`entries` row, a receipt's row was a page of its own, and a filter's scan
+and a search's sort read and copied every match's texts (two words 129 ms,
+the filtered page 213 ms); with them in `texts`, 39 ms and 5 ms, and
+`entries_outcome` took the palette's counts from 80 ms to 8 ms.
 
 **An entry's handle is its key, never its row id.** `Replace` deletes and
 inserts rows and a reindex makes the database again, and SQLite may give a
@@ -776,8 +801,45 @@ lock). Only a file SQLite cannot open as a database, or one that fails its
 quick check and cannot be cleared, is moved aside (renamed
 `index.sqlite.damaged`, removed at the owner's next start) and made again;
 each reader compares the file it opened with the path (`os.SameFile` on a
-`stat`, at each search) and opens it again on a change. It is a cache:
+`stat`, at each search) and opens it again on a change. A file made again
+starts at a random generation (never 1 again), so a cursor of the old file
+answers `stale_cursor` in the new one. A cancelled context, a busy file or
+a full disk is never damage: the file is left as it was. It is a cache:
 nothing is lost that the stores do not hold; each of these is logged.
+
+**The quick check is off the start path.** `PRAGMA quick_check` reads the
+whole file (8 s for PR-2's 238 MB benchmark index, in memory: the driver
+is transpiled C and the check is CPU-bound), so the owner's `Open` does not
+run it: it opens at once, reading the schema's version and nothing more,
+and marks the index open (`schema_version.open`), which its `Close`
+clears. An owner that finds the mark still set (the last one crashed or
+was killed) owes the index a check (`unchecked`): until `Check(ctx)` has
+read it whole, every search of it, the owner's and a reader's, answers
+`indexing: {state: "checking"}` with no rows (`StateChecking`; an entry,
+its links and `Similar` answer not ready), never a row of a file not yet
+known to be sound, while writes, `Mark`, `Sources` and `Stats` go on.
+`Check` reads through one of the owner's readers, so writes go on beside
+it; sound, it ends the state; damaged, it clears the index in place, or
+moves the file aside when the clear meets the damage too, and the
+indexer's catch-up writes it again. A clean stop owes no check, and SQLite
+answers `SQLITE_CORRUPT` when a read or write meets a bad page anyway.
+`TestAnIndexNotClosedIsCheckedBeforeItIsSearched`,
+`TestCheckClearsADamagedIndex`, `TestACancelledOpenKeepsTheIndex`. A
+`Check` whose context ends before its move aside has begun answers the
+context's error and changes nothing, the index still owed its check; one
+that holds the index whole and has begun the move aside finishes it
+(`TestACancelledCheckChangesNothing`). `Close` returns only once every
+call begun before it has ended, each with its transaction committed or
+rolled back (a cancelled call waits for the rollback database/sql runs for
+it) and its connection back in its pool, and every connection is closed,
+so nothing reads or writes the file after it; so does every other `Close`
+made while it runs (`TestCloseWaitsForAWrite`,
+`TestCloseWaitsForACancelledRollback`). A clear marks the index open and owes it no
+check in its own transaction, so clears that overlap never read the
+owner's own mark as a crash (`TestOverlappingClearsOweNoCheck`). The
+package's doc says who may call what while what else runs (a write waits
+only for the write before it, a read only for a free reader, no lock held
+across either wait), and `life_test.go` holds each pair at a seam.
 
 **The kinds and their class** (`kinds.go`): one table, `classOf(kind)`, the
 only place an entry's class is decided. An entry's class comes from what
@@ -850,8 +912,11 @@ most 16 terms):
   `class:said|decided|checked|record` (also the words `conversation`,
   `decision`), `kind:`, `outcome:passed|failed|…`, `project:CND`, `repo:`
   (words of the repository's path), `host:`, `agent:` (a catalog id),
-  `crew:`, `run:`, `ticket:CND-12`, `session:`, `since:` and `until:` (`7d`,
-  `24h`, `2026-11-01`);
+  `crew:` and `run:` (in `internal/crew`'s grammar: a crew's id of at most
+  64 bytes, a run's that id, a dash and eight hex digits),
+  `ticket:CND-12`, `session:`, `since:` and `until:` (`7d`, `24h`,
+  `2026-11-01`; a span longer than a Go duration holds, past `15250w`,
+  refused);
 - an unknown filter name is a word (so `http://x` searches for it), and a
   malformed value is refused with words (`ErrQuery`).
 
@@ -861,8 +926,27 @@ the entry's `key`, which is unique, so the order is total and entries of
 the same text, score and time keep one place each. Class never weighs in
 the order. A page holds at most 100 entries (default 20) after a cursor,
 with the total when it is at most 10,000 ("more than 10,000" past that,
-which the count stops at). **The cursor** (`next`, opaque, at most 512
-bytes: base64 of JSON decoded with `DisallowUnknownFields`) holds the last
+which the count stops at). **The bounds of a search of words**
+(`MaxScanned`, `MaxRanked`, PR-2's review, 2026-11-05): bm25 is computed
+for every row it ranks, so a word in nearly every entry (`test`, `go`,
+`error`, a package's name, or a prefix of one or two letters) cost what
+ranking 85,000 rows does (850 to 940 ms on the benchmark index, and a
+write waited behind it). A search first asks the full-text index for its
+matches' rowids, newest indexed first, and stops at 10,001 (a walk of the
+doclist an `ORDER BY rowid DESC LIMIT` lets FTS5 stop). At most 10,000
+matches: it reads them, newest indexed first, with the filters applied,
+and ranks the newest 2,000 of those that pass by bm25, so a search that
+passes at most 2,000 is ranked whole, exactly as above; more passing is
+`cut: "ranked"`, the total still every one that passes. More than 10,000
+matches: it reads the newest indexed 10,000 and answers those that pass the
+filters newest first, unscored, `cut: "scanned"` (with no filters the
+total is "more than 10,000"; with filters it counts those it read that
+pass). A bound never makes an answer wrong: it says what was read, and the
+palette and the History page show it ("the newest 10,000 matches; add a
+word to rank them"). `TestASearchPastItsBoundsSaysSo`. **The cursor**
+(`next`, opaque, at most 2 KiB, since it carries the last row's key, which
+may itself be 512 bytes, each `"` escaped in its JSON: base64 of JSON
+decoded with `DisallowUnknownFields`) holds the last
 row's sort values (its score as the float64 it was, which JSON carries
 exactly, its `at` and its `key`), a digest of the parsed query and the
 index's `generation`; the next page is the rows strictly after that tuple
@@ -875,10 +959,18 @@ search again"). Within a generation, sources indexed between two pages can
 move a row's score, so a row may be seen twice or missed, as a Dispatch
 page over tickets that changed may; the History page drops a key it
 already shows. Each entry comes with `snippet()` of its best
-column (at most 300 bytes, the match marked), its `repeats` (how many
+column (at most 300 bytes, the match marked: cut around its first match,
+never through a mark, `…` where it was cut, since `snippet()` bounds its
+window in tokens and long tokens before the match would put it past a cut
+from the start; a match longer than the window keeps both marks around its
+cut start, `[start…]`; the marks are U+E000 and U+E001 until the cut, and a
+text's own are indexed as U+FFFD), its `repeats` (how many
 entries of the same digest and class exist and in how many anchors: "said in
 3 sessions", computed for the page's rows only), and at most 8 of its links
-each way. `Similar(ctx, key, scope, limit)`, for "did another crew solve
+each way, each far end with the entry that stands for its ref: the entry
+keyed by it, else the first by key of those whose ref it is (a command's
+key, `run:<id>#command/<actor>/<id>`, is not its ref,
+`command:<run>/<id>`; `TestALinkFindsItsEndByItsReference`). `Similar(ctx, key, scope, limit)`, for "did another crew solve
 this": the receipts of the same command (`subject_key`, the SHA-256 of the
 argv) outside the entry's run chain (given by the caller), **in the
 entry's repository** (`repo`, or its project when it has one) unless
@@ -898,9 +990,11 @@ key)` and `Links(ctx, ref, limit)` (at most 100 each way) read one row.
 
 **Measured.** `BenchmarkSearch` over 100,000 entries of mixed kinds (a
 fixture written by the test): a two-word search, a filtered page, a phrase,
-a prefix of two letters; the target is 50 ms at the median for each on the
-Linux box (Dispatch's target and box), measured in PR-2 and recorded in its
-body, the numbers past it reported without a target as Dispatch's PR-4 did.
+a prefix of two letters, and the searches that reach the bounds (a prefix
+of one letter, the fixture's most frequent word alone, with a second, and
+with filters); the target is 50 ms at the median for each on the Linux box
+(Dispatch's target and box), measured in PR-2 and recorded in its body,
+the numbers past it reported without a target as Dispatch's PR-4 did.
 
 ### `internal/api` (PR-3, PR-4): the indexer, the sources, the routes
 
@@ -916,7 +1010,16 @@ hooks require. The sync adapter's behaviour and tests do not change;
 
 **The indexer** (`history_index.go`, PR-3). Opened once the journal holds
 `history/owner.lock` (one writer of the index: the lock's holder; a server
-without it serves searches from the index as it is, read-only, and says so).
+without it serves searches from the index as it is, read-only, and says so),
+off the server's start path, as the ledger awaits its lock. The owner's
+`Open` does not check the file (above); when `Unchecked` says the last
+owner did not close it, the indexer runs `Check` in the background at once
+(a goroutine of its own, the server's context, never on the start path)
+and indexes beside it; searches meanwhile answer `indexing: {state:
+"checking"}`, and a `Check` that cleared the index or moved it aside is
+followed by a full catch-up (as after a reindex). The server's shutdown
+calls `Close`, which waits for a write in flight and marks the index
+closed, so the next start owes no check.
 A dirty set of source keys, filled by the commit hooks (a run's id from the
 ledger's commit and prune and from `runs/<id>.json` saves, with
 the session sources of the run's members; a ticket's key from Dispatch's
@@ -1230,7 +1333,7 @@ string as Dispatch's search has it (never logged: AGENTS.md):
 
 | Route | Answers |
 |---|---|
-| `GET /api/history?q=&limit=&after=` | `{entries: [Entry], next?, total, totalCapped?, indexing: {state, behind?, oldest?, dropped?}, readOnly?}`; `400 bad_query` with words, `400 bad_cursor`, `409 stale_cursor`; the reply at most 2 MiB (rows past it cut, `truncated: true`) |
+| `GET /api/history?q=&limit=&after=` | `{entries: [Entry], next?, total, totalCapped?, cut?, indexing: {state, behind?, oldest?, dropped?}, readOnly?}` (`cut` `ranked` or `scanned`, the search's bound, above; `state` also `checking`); `after` at most 2 KiB; `400 bad_query` with words, `400 bad_cursor`, `409 stale_cursor`; the reply at most 2 MiB (rows past it cut, `truncated: true`) |
 | `GET /api/history/entry?key=` | one entry by its key (at most 512 bytes), its links each way (at most 100, each with its class, outcome, URL and label) and its full availability; `404 entry_gone` for a key the index no longer holds |
 | `GET /api/history/similar?key=&scope=&limit=` | `Similar`'s entries (at most 50), the entry's run chain left out; `scope` `repo` (the default) or `all` |
 | `GET /api/history/command?run=&actor=&id=` | `{command: {id, actor, intent, status, receipt, createdAt}}`: the receipt of that actor, never the caller's; `actor` at most 60 bytes, `id` in the command pattern; `404` when the ledger holds no such receipt, `503 ledger_unavailable` as the command route answers |
@@ -2219,8 +2322,20 @@ from when); `TestSimilarFindsTheSameCommandElsewhereAndLeavesTheChainOut`,
 whose crews run one generic argv: the other repository's passes are absent
 until `scope=all`; the receipt holding the failure's line ranks first);
 `TestAKeyOutlivesReplaceAndReindex`;
-`TestSnippetMarksTheMatch`; `BenchmarkSearch` (100,000 entries; the medians
-in PR-2's body).
+`TestSnippetMarksTheMatch` (with long tokens before the match, and text
+holding the marks), `TestClipSnippetKeepsItsMarks`;
+`TestASearchPastItsBoundsSaysSo`, `TestASearchNeverHoldsAWriteBack`,
+`TestCloseWaitsForAWrite`, `TestACancelledOpenKeepsTheIndex`,
+`TestAnIndexNotClosedIsCheckedBeforeItIsSearched`,
+`TestCheckClearsADamagedIndex`, `TestALinkFindsItsEndByItsReference`,
+`TestCloseWaitsForASearch`, `TestCloseWaitsForAClear`,
+`TestCloseWaitsForACheck`, `TestCloseDuringAMoveAside`,
+`TestAWriteNeverWaitsBehindSearches`, `TestOverlappingClearsOweNoCheck`,
+`TestAReaderReopensBesideASearch`, `TestCloseWaitsForACancelledRollback`,
+`TestACancelledCheckChangesNothing`, `TestAWriteAndAClearTakeTurns`,
+`TestChecksTakeTurns`, `TestASoundCheckClearsAnEarlierCheckDamage`,
+`TestAMoveAsideWaitsForTheCallsRunning`;
+`BenchmarkSearch` (100,000 entries; the medians in PR-2's body).
 
 **Go, `internal/api` and `internal/crew` (PR-3):**
 `TestTheFanCallsEveryObserverInCommitOrder` and the sync adapter's tests
@@ -2520,8 +2635,10 @@ source exists on `main`). Tests: PR-1's of `internal/journal` and
 nothing. May run beside PR-2.
 
 **PR-2: the history index and its search.** `internal/history` whole (the
-schema, the kinds table, `Replace`, `Remove`, `Mark`, the bounds and the
-budget, `ParseQuery`, `Search`, `Similar`, `Entry`, `Links`, `Stats`),
+schema, the kinds table, `Replace`, `Remove`, `Mark`, `Sources` (a page of
+the indexed sources and their marks, which PR-3's catch-up compares with
+the stores), the bounds and the budget, `ParseQuery`, `Search`, `Similar`,
+`Entry`, `Links`, `Stats`, `Check` and `Unchecked`),
 `BenchmarkSearch` with its medians in the PR body. Touches
 `internal/history` only. Tests: PR-2's above. About 1,400 lines. Depends on
 nothing. May run beside PR-1.

@@ -37,6 +37,7 @@ import (
 
 // Server holds the shared state behind every route.
 type Server struct {
+	notices  string // served at /third-party-notices.txt (WithNotices)
 	cfg      *config.Config
 	registry *session.Registry
 	links    *share.Store
@@ -298,6 +299,9 @@ type Server struct {
 	// router is the decision router's seam over the sessions' questions
 	// (router.go).
 	router *decisionRouter
+	// hostedSeen is how the hosted sessions' questions went on, as their
+	// hosts synced them (the decision inbox's track, inbox.go).
+	hostedSeen hostedResumes
 	// launches admits and settles the launches from a ticket
 	// (dispatch_launch.go).
 	launches launchGate
@@ -318,7 +322,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if log == nil {
 		log = slog.Default()
 	}
-	o := options{providers: freeBuild()}
+	o := options{providers: freeBuild(), notices: conductor.ThirdPartyNotices}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -367,6 +371,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		home = ""
 	}
 	s := &Server{
+		notices:     o.notices,
 		cfg:         cfg,
 		base:        base,
 		overlay:     overlay,
@@ -502,7 +507,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			}
 		}
 		s.wireLaunches()
-		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned, s.ledgerRecovered)
+		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned, s.ledgerRecovered, s.restoreLaunchPeople)
 		if s.ledger == nil {
 			// Its runs are not gone: the sync store is never told they are.
 			syncs.unopened("the ledger")
@@ -539,6 +544,22 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}
 	s.hosts.OnChange = func(info session.Info) {
+		// How a question went on is read from what the host said, never
+		// from a change the server forwarded and the host has not applied;
+		// noted before the change is published, so that a browser that
+		// reads the track as the change reaches it reads what it says.
+		if d, ok := s.registry.Get(info.ID); ok {
+			if hs, ok := d.(*signal.HostedSession); ok {
+				s.hostedSeen.change(hs.HostViewSeq())
+				// Removed while its change was noted, its OnRemove may
+				// have forgotten it before the note: what the note kept
+				// goes with it (the registry lets a session go before
+				// its OnRemove, so one of the two forgets it last).
+				if _, ok := s.registry.Get(info.ID); !ok {
+					s.hostedSeen.gone(info.ID)
+				}
+			}
+		}
 		s.events.publishIf(info, s.listed)
 		s.router.mark(info.ID)
 		// A hosted session that ended takes its links with it, as a server
@@ -574,6 +595,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.pastes.closeAll(id)
 		s.router.mark(id)
 		s.recordRemoved(id, d)
+		s.hostedSeen.gone(id)
 	}
 	if cfg.Switchyard.Enabled && s.store != nil {
 		s.openLinkKeeper(s.store)
@@ -693,7 +715,7 @@ func (s *Server) WaitBackground(ctx context.Context) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
-	mux.HandleFunc("GET /third-party-notices.txt", handleNotices)
+	mux.HandleFunc("GET /third-party-notices.txt", s.handleNotices)
 	mux.HandleFunc("GET /api/reach", s.requireAdmin(s.handleReach))
 	mux.HandleFunc("GET /.well-known/acme-challenge/{token}", s.handleACMEChallenge)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
@@ -704,6 +726,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/history/sessions/{id}", s.requireAdmin(s.handleHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions/{id}", s.requireAdmin(s.handleForgetHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions", s.requireAdmin(s.handleForgetHistorySessions))
+	// The decision inbox, read-only (inbox.go, inbox_track.go).
+	mux.HandleFunc("GET /api/inbox", s.inboxOnly(s.handleInbox))
+	mux.HandleFunc("GET /api/inbox/item", s.inboxOnly(s.handleInboxItem))
+	mux.HandleFunc("GET /api/inbox/track", s.inboxOnly(s.handleInboxTrack))
 	mux.HandleFunc("GET /api/catalog", s.launching(s.handleCatalog))
 	mux.HandleFunc("POST /api/catalog", s.launching(s.handleSaveAgent))
 	mux.HandleFunc("POST /api/catalog/check", s.launching(s.handleCheckCommand))
@@ -719,6 +745,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/crews/{id}/duplicate", s.launching(s.handleDuplicateCrew))
 	mux.HandleFunc("POST /api/crews/{id}/launch", s.launching(s.handleLaunchCrew))
 	mux.HandleFunc("GET /api/crews/{id}/runs", s.launching(s.handleCrewRuns))
+	// The people Conductor knows: Dispatch's and the crews' (people.go).
+	mux.HandleFunc("GET /api/people", s.launching(s.handlePeople))
 	mux.HandleFunc("GET /api/paths", s.launching(s.handleListPaths))
 	mux.HandleFunc("GET /api/git/check", s.launching(s.handleGitCheck))
 	mux.HandleFunc("GET /api/runs", s.readable("GET /api/runs", s.launchingAny(s.handleListRuns)))
@@ -1031,14 +1059,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleNotices serves THIRD_PARTY_NOTICES, on a switchyard too: the
-// licences of what the binary and the app ship, for anyone (Settings → The
-// app links it, and the switchyard's footer).
-func handleNotices(w http.ResponseWriter, _ *http.Request) {
+// handleNotices serves THIRD_PARTY_NOTICES, or the text a main handed in
+// (WithNotices), on a switchyard too: the licences of what the binary and
+// the app ship, for anyone (Settings → The app links it, and the
+// switchyard's footer).
+func (s *Server) handleNotices(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-cache")
-	_, _ = io.WriteString(w, conductor.ThirdPartyNotices)
+	_, _ = io.WriteString(w, s.notices)
 }
 
 // newInstance is a random id for this process (16 hex digits).

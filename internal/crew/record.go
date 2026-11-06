@@ -159,15 +159,62 @@ func (rs *Records) Save(r Run) error {
 	// older one, or a legacy snapshot of the same run (a journal save
 	// queued before the run was known managed), is dropped. A record that
 	// cannot be read is not written over: its revision is unknown.
-	var have Run
-	ok, err := rs.st.LoadLimit(r.ID+".json", &have, maxGuardSize)
+	have, ok, err := rs.current(r.ID)
 	if err != nil {
-		return fmt.Errorf("records: %s.json cannot be read, so it is not replaced: %w", r.ID, err)
+		return err
 	}
 	if ok && have.Managed != nil && (r.Managed == nil || have.Managed.Revision > r.Managed.Revision) {
 		return nil
 	}
-	r, err = fit(r)
+	return rs.write(r)
+}
+
+// Mark names by as the continuation of the run with the given ID on its
+// record (ResumedBy), the record read and written again in one step under
+// the records' lock: what was written since the caller read it (the
+// people and owners a takeover's syncRecords restored at the same
+// revision, a newer revision) is kept, never undone by a snapshot read
+// before it. false, and nothing written, when there is no record.
+func (rs *Records) Mark(runID, by string) (bool, error) {
+	if !ValidRunID(runID) {
+		return false, fmt.Errorf("records: bad run id %q", runID)
+	}
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.closed {
+		return false, nil
+	}
+	have, ok, err := rs.current(runID)
+	if err != nil || !ok {
+		return false, err
+	}
+	have.ResumedBy = by
+	return true, rs.write(have)
+}
+
+// current is the record of the run with the given ID as it is on disk;
+// one that cannot be read is an error, as its revision is unknown. The
+// caller holds rs.mu.
+func (rs *Records) current(runID string) (Run, bool, error) {
+	var have Run
+	ok, err := rs.st.LoadLimit(runID+".json", &have, maxGuardSize)
+	if err != nil {
+		return Run{}, false, fmt.Errorf("records: %s.json cannot be read, so it is not replaced: %w", runID, err)
+	}
+	return have, ok, nil
+}
+
+// write writes r's record and drops the oldest past maxRecords. The
+// caller holds rs.mu.
+func (rs *Records) write(r Run) error {
+	// Only a managed run's record carries people: it is a cache of the
+	// ledger, whose run row keeps the crew as launched, so one an older
+	// build cannot read and prunes is written again (syncRecords). A
+	// legacy run's record stays what every older build reads.
+	if r.Managed == nil {
+		r.People = nil
+	}
+	r, err := fit(r)
 	if err != nil {
 		return err
 	}

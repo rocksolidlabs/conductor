@@ -443,14 +443,18 @@ func (c *brakemanClient) post(ctx context.Context, timeout time.Duration, path s
 }
 
 // actWords is an act's answer in one line: the operation, its id, its
-// receipt and what it made (a launch's run, a revision proposed).
+// receipt and what it made (a launch's run, a revision proposed). An
+// act's answer never carries the run (the turn reads it through its own
+// grant): a launch's run is named from Dispatch's launch, launched once
+// the launch is started; the run, when a reply has one, says the same.
 func actWords(operation, opID string, reply json.RawMessage) string {
 	var out struct {
 		Receipt *struct {
 			ID, Status string
 			Repeat     bool
 		} `json:"receipt"`
-		Launch *struct{ ID, RunID string } `json:"launch"`
+		Launch *struct{ ID, RunID, State string } `json:"launch"`
+		Run    *struct{ ID string }               `json:"run"`
 		Plan   *struct {
 			ID    string
 			N     int
@@ -465,10 +469,16 @@ func actWords(operation, opID string, reply json.RawMessage) string {
 			line += ", a repeat of the act already kept"
 		}
 	}
-	// The act's answer carries the launch, never the run: a launch with
-	// its run's id has started it.
-	if l := out.Launch; l != nil && l.RunID != "" {
-		line += "; run " + l.RunID + " launched"
+	switch {
+	case out.Run != nil && out.Run.ID != "":
+		line += "; run " + out.Run.ID + " launched"
+	case out.Launch != nil && out.Launch.RunID != "" && out.Launch.State == "started":
+		line += "; run " + out.Launch.RunID + " launched"
+	case out.Launch != nil && out.Launch.RunID != "":
+		line += "; run " + out.Launch.RunID
+		if out.Launch.State != "" {
+			line += ", its launch " + out.Launch.State
+		}
 	}
 	if p := out.Plan; p != nil && p.ID != "" {
 		line += fmt.Sprintf("; revision %d (%s) %s, for the operator to approve or not", p.N, p.ID, p.State)

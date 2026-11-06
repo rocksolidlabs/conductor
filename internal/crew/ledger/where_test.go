@@ -143,14 +143,11 @@ func dbVersion(t *testing.T, l *Ledger) int {
 	return v
 }
 
-// A version 6 database (no where_ran) is brought to version 7 as it
-// opens: each attempt, check, step and prerequisite row says native, which
+// A version 6 database (no where_ran) is brought to version 7, and on to
+// the version this Conductor writes, as it opens: each attempt, check, step and prerequisite row says native, which
 // is what ran every row a version 6 database holds, and its events are as
 // they were.
 func TestAVersion6DatabaseIsBroughtToVersion7(t *testing.T) {
-	if Version != 7 {
-		t.Fatalf("Version %d: this test is version 7's migration", Version)
-	}
 	dir := filepath.Join(t.TempDir(), "runs")
 	l := openLedger(t, dir)
 	ctx := context.Background()
@@ -163,7 +160,7 @@ func TestAVersion6DatabaseIsBroughtToVersion7(t *testing.T) {
 	if ro, why := again.ReadOnly(); ro {
 		t.Fatalf("read-only after the migration: %s", why)
 	}
-	if v := dbVersion(t, again); v != 7 {
+	if v := dbVersion(t, again); v != Version {
 		t.Fatalf("version %d after the migration", v)
 	}
 	if cols := whereColumns(t, again); cols["attempts"] != 1 || cols["checks"] != 1 || cols["prerequisites"] != 1 {
@@ -317,7 +314,7 @@ func TestAnUpgradeBesideThePreviousOwnerReads(t *testing.T) {
 	if ro, why := waiting.ReadOnly(); ro {
 		t.Fatalf("read-only once owned: %s", why)
 	}
-	if v := dbVersion(t, waiting); v != 7 {
+	if v := dbVersion(t, waiting); v != Version {
 		t.Fatalf("version %d once owned", v)
 	}
 	allWhere(t, readWhere(t, waiting), WhereNative, "once owned")
@@ -366,12 +363,12 @@ func TestAReaderSeesAnotherOwnersMigration(t *testing.T) {
 	if ro, why := owner.ReadOnly(); ro {
 		t.Fatalf("the owner opened read-only: %s", why)
 	}
-	if v := dbVersion(t, owner); v != 7 {
+	if v := dbVersion(t, owner); v != Version {
 		t.Fatalf("version %d after the owner's migration", v)
 	}
 	putWhere(t, owner, "fake")
 	allWhere(t, readWhere(t, reader), "fake", "the reader, after the owner's migration")
-	if v := dbVersion(t, reader); v != 7 {
+	if v := dbVersion(t, reader); v != Version {
 		t.Fatalf("the reader reads version %d", v)
 	}
 }
