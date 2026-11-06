@@ -39,6 +39,8 @@ export interface InboxAction {
   confirm?: boolean
   /** The operation's own route: `/ws/sessions/{id}` (the answer message), `POST /api/…`. */
   route: string
+  /** The ref the action's steps are read under, when not the item's own: a blocker's question tracks its task's Cancel as the task's. */
+  track?: string
 }
 
 export type StepName = 'available' | 'recorded' | 'validated' | 'resumed'
@@ -242,6 +244,8 @@ export interface RecentEntry {
   /** The owner's word on the request when it came (ReplyWord). */
   outcome?: string
   at: number
+  /** The ref the steps are read under, when not the item's (the action's `track`). */
+  track?: string
   /** The item's title and the action's label as they were, for the list. */
   title?: string
   label?: string
@@ -254,6 +258,7 @@ function entryOf(v: unknown): RecentEntry | null {
   const out: RecentEntry = { ref: e.ref, receipt: e.receipt, at: e.at }
   if (typeof e.attempt === 'string') out.attempt = e.attempt
   if (typeof e.outcome === 'string') out.outcome = e.outcome
+  if (typeof e.track === 'string') out.track = e.track
   if (typeof e.title === 'string') out.title = e.title
   if (typeof e.label === 'string') out.label = e.label
   return out

@@ -138,3 +138,20 @@ describe('the live inbox', () => {
     expect(JSON.parse(store.getItem(RECENT_KEY)!)[0].outcome).toBe('accepted')
   })
 })
+
+describe("a blocker's Cancel", () => {
+  it("is tracked under the ref its action names, the item's own kept for the list", async () => {
+    const srv = fakeServer()
+    const store = storage()
+    const asked: string[] = []
+    const reads: InboxReads = { ...srv.reads, track: (e) => (asked.push(e.track ?? e.ref), srv.reads.track(e)) }
+    const l = new InboxLive()
+    l.attach(reads, { storage: () => store })
+    l.remember({ ref: 'question:s1/q1', track: 'task:r1/build', receipt: 'c1', at: Date.now() })
+    const stop = l.track()
+    await l.changed()
+    expect(asked).toContain('task:r1/build')
+    expect(l.current.recent[0]!.ref).toBe('question:s1/q1')
+    stop()
+  })
+})

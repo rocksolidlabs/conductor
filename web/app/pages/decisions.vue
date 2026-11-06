@@ -159,7 +159,7 @@ async function command(it: InboxItem, a: InboxAction) {
   const [, run, task, name] = m as unknown as [string, string, string, 'retry' | 'accept' | 'cancel']
   cmdRun.value = run
   const commandId = mintCommandId()
-  const entry: RecentEntry = { ref: it.ref, receipt: commandId, at: Date.now(), title: it.title, label: a.label }
+  const entry: RecentEntry = { ref: it.ref, receipt: commandId, at: Date.now(), title: it.title, label: a.label, ...(a.track && a.track !== it.ref ? { track: a.track } : {}) }
   inbox.live.remember(entry)
   let failed: unknown = null
   const ok = await commands.send({ id: task }, name, { expectedRevision: Number(a.expect) || undefined, commandId, refused: (e) => (failed = e) })

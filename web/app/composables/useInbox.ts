@@ -246,7 +246,7 @@ export function useInbox() {
     if (!import.meta.client || listening) return
     listening = true
     l.attach(
-      { list: (after) => api.inbox(after), track: (e) => api.inboxTrack(e.ref, e.receipt, e.attempt) },
+      { list: (after) => api.inbox(after), track: (e) => api.inboxTrack(e.track ?? e.ref, e.receipt, e.attempt) },
       {
         storage: () => {
           try {
