@@ -12,25 +12,34 @@
 // Like internal/dispatch and internal/brakeman it has no HTTP, no session
 // and no process: it imports the standard library and internal/store
 // alone, and the API is its caller, which maps a session's activity and
-// chat onto Activity and ChatLine and answers Current, EndCommit and Denied.
+// chat onto Activity and ChatLine, reads its State, and answers EndCommit
+// and Denied.
 // The holder of history/owner.lock writes; another server reads the files.
 //
 // # Writers, removers and the rule between them
 //
 // A record is written by:
 //
-//   - Begin: a server session's record, written before Begin returns; a
-//     hosted session's, or the record of its id taken up again when the
-//     same host registers it again.
-//   - the hooks the API calls with what a session does: Note and Chat
-//     (its activity and chat, a file it touched among them), Changed (its
-//     metadata to read again), Gone (what it was as it left the registry),
-//     End (its end: the session's own, a stop's once its process is gone,
-//     the registry letting it go, the shutdown's last look).
-//   - the writer, outside the journal's lock: a record's earlier file
-//     merged into it (merge), its metadata read through Current, its end
-//     commit read (EndCommit), its touches asked of Denied (fold), then the
-//     record written (pass).
+//   - Begin: a server session's record, written before Begin returns (a
+//     write that fails is the writer's to try again); a hosted session's,
+//     or the record of its id taken up again when the same host registers
+//     it again.
+//   - Settle: what is true of the session now, as its server reads it
+//     from the session itself: its name, its agent's own session, its
+//     crew, and its end once it has one. Its caller reconciles the record
+//     with the session (internal/api's history_journal.go says when); a
+//     State settled again changes nothing, and an end, once recorded,
+//     stands.
+//   - the streams: Note and Chat (the session's activity and chat, a file
+//     it touched among them) and Tool. The promise: what a stream brings
+//     is kept while its record is open and dropped, counted in Dropped,
+//     once its end is recorded, whatever its time says. What the session
+//     would have told of a question after its end is the end's: an
+//     observed end ends every question still open in the record as
+//     withdrawn, as the session's own end withdraws it.
+//   - the writer, outside the journal's lock: a hosted record's earlier
+//     file merged into it (merge), its end commit read (EndCommit), its
+//     touches asked of Denied (fold), then the record written (pass).
 //   - the load at Open: every file read, a record found open marked no
 //     longer observed (lost, host away) and written.
 //
@@ -38,22 +47,22 @@
 // session the registry refused).
 //
 // The rule every writer passes through: what is written is an instance's.
-// Begin makes an instance of a record (taking a record up again keeps
-// its instance) and answers it (Instance); every hook names the instance
-// it was begun for, never an id alone, and is taken only while that
-// instance is the record of its id (held), its record brought back from
-// its file when it left memory after its end. The writer's work on a
-// record, done outside the lock, is kept only while that record is still
-// the one in memory. A removal ends the instance it chooses, under the
-// lock, at once and for good (choose). So, for each pair:
+// Begin makes an instance of a record (taking a record up again keeps its
+// instance) and answers it (Instance); every write names the instance it
+// was begun for, never an id alone, and is taken only while that instance
+// is the record of its id in memory. A record stays in memory until its
+// session's last State is in (State.Final) and its end is written, so no
+// write of a live instance ever finds its record gone; nothing brings a
+// record back from its file but a hosted Begin taking it up again. The
+// writer's work on a record, done outside the lock, is kept only while
+// that record is still the one in memory. A removal ends the instance it
+// chooses, under the lock, at once and for good (choose). So, for each
+// pair:
 //
-//   - a hook and a removal: the hook first, what it brought is in the
-//     record and goes with it; the removal first, the hook is dropped,
+//   - a write and a removal: the write first, what it brought is in the
+//     record and goes with it; the removal first, the write is dropped,
 //     whatever holds its id by then (a hosted session of the same id
 //     registered again after the Forget begins another instance).
-//   - a hook after the registry let its session go: judged the same way,
-//     by its instance: kept while that instance is its record's, dropped
-//     once a removal ended it.
 //   - the writer and a removal: the removal first, the writer's work finds
 //     its record gone from memory and keeps nothing of it; a write under
 //     way ends before the removal's delete (wmu), and none follows it.
@@ -61,15 +70,19 @@
 //     while its file goes), the Begin begins a new instance, written once
 //     the delete is done; should the delete fail, its first write replaces
 //     the file the delete left, nothing of the old record in it.
+//   - a hosted Begin and a merge under way (its record taken up before,
+//     its file still being read): admitted on what memory holds of the
+//     record as much as on its row, so an end observed during the merge
+//     refuses it (ErrExists) as an end on file does.
 //   - a removal whose delete fails: it answers the error, and that answer
 //     is the truth: the file stays as last written, its row is listed again
 //     and read from it, forgettable again, without an instance; what the
 //     ended instance held unwritten is dropped, and nothing of it is ever
 //     written. A restart reads that file as any other.
 //   - the load at Open and the rest: it runs before the first Begin. A row
-//     read from a file has no instance: no hook takes it; a hosted Begin of
-//     the same host takes it up again and gives it one.
-//   - Close and the rest: the last pass writes every record; a hook or a
+//     read from a file has no instance: no write takes it; a hosted Begin
+//     of the same host takes it up again and gives it one.
+//   - Close and the rest: the last pass writes every record; a write or a
 //     Begin after Close is refused. A process killed instead loses what was
 //     not yet written (at most flushEvery's evidence, an end not yet
 //     written): the next Open marks such a record, open on disk, lost (a

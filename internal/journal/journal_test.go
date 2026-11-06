@@ -98,6 +98,12 @@ func (j *Journal) at(id string) Instance {
 	return Instance{id: id}
 }
 
+// finish settles in's end as its session's removal does: its last State
+// (Final), the end in it.
+func finish(j *Journal, in Instance, e Ending) {
+	j.Settle(in, State{End: &e, Final: true})
+}
+
 func kinds(r Record) []string {
 	var out []string
 	for _, e := range r.Entries {
@@ -196,10 +202,11 @@ func TestTwoQuestionsOfTheSameWordsAreTwoEntries(t *testing.T) {
 	}
 }
 
-// An entry an earlier callback still carried when the session's end was
-// written (held at a gate here) is kept, in its place by its time; one
-// after the end is dropped and counted.
-func TestAnEarlierEntryHeldPastTheEndIsKept(t *testing.T) {
+// What a stream brings is kept while the record is open and dropped,
+// counted, once its end is recorded, whatever its time says: an entry an
+// earlier callback still carried (held at a gate here) as much as one
+// after the end.
+func TestAnEntryAfterTheEndIsDropped(t *testing.T) {
 	j, dir := newJournal(t, Options{})
 	id := sid(1)
 	begin(t, j, serverRecord(id))
@@ -211,9 +218,11 @@ func TestAnEarlierEntryHeldPastTheEndIsKept(t *testing.T) {
 		defer close(done)
 		<-gate
 		j.Note(j.at(id), Activity{At: at.Add(time.Second), Type: actProgress, Message: "held"})
+		j.Note(j.at(id), Activity{At: at.Add(time.Second), Type: actFile, Op: "edit", Path: "/w/held.go"})
+		j.Note(j.at(id), Activity{At: at.Add(time.Second), Type: actToolUse, Tool: "Edit"})
 	}()
 	j.Note(j.at(id), Activity{At: at.Add(2 * time.Second), Type: actStatus, Message: "exited (exit 0)"})
-	j.End(j.at(id), Ending{At: at.Add(2 * time.Second), How: "exited (exit 0)"})
+	finish(j, j.at(id), Ending{At: at.Add(2 * time.Second), How: "exited (exit 0)"})
 	j.Flush()
 	if r, _ := onDisk(t, dir, id); r.EndedAt.IsZero() || len(r.Entries) != 2 {
 		t.Fatalf("the end as written: %+v", r)
@@ -223,17 +232,53 @@ func TestAnEarlierEntryHeldPastTheEndIsKept(t *testing.T) {
 	j.Note(j.at(id), Activity{At: at.Add(3 * time.Second), Type: actProgress, Message: "too late"})
 	j.Flush()
 	r, _ := onDisk(t, dir, id)
-	var msgs []string
-	for _, e := range r.Entries {
-		msgs = append(msgs, e.Message)
-	}
-	if !slices.Equal(msgs, []string{"first", "held", "exited (exit 0)"}) || r.Dropped != 1 || r.Ending != "exited (exit 0)" {
-		t.Fatalf("entries %q dropped %d ending %q", msgs, r.Dropped, r.Ending)
+	if !slices.Equal(messages(r), []string{"first", "exited (exit 0)"}) || r.Dropped != 3 || len(r.Files) != 0 || len(r.Tools) != 0 || r.Ending != "exited (exit 0)" {
+		t.Fatalf("entries %q dropped %d files %+v tools %v ending %q", messages(r), r.Dropped, r.Files, r.Tools, r.Ending)
 	}
 }
 
-// End sets the end in memory and returns while the writer's disk is held:
-// the caller (a sink, the registry's hook) never waits on a disk.
+// A question still open when the session's observed end is recorded ends
+// with it, withdrawn, as the session's own end withdraws it: its outcome
+// does not hang on a line that would come after the end. One answered
+// keeps its answer; a lost end (the server no longer observing the
+// session) leaves a question as it was.
+func TestAnOpenQuestionEndsWithItsSession(t *testing.T) {
+	j, dir := newJournal(t, Options{})
+	at := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
+	id := sid(1)
+	in := begin(t, j, serverRecord(id))
+	j.Chat(in, ChatLine{ID: "q1", At: at, Kind: chatQuestion, Text: "Which port?"})
+	j.Chat(in, ChatLine{ID: "a1", At: at.Add(time.Second), Kind: chatSystem, Event: chatAnswered, Ref: "q1", Text: "8080"})
+	j.Chat(in, ChatLine{ID: "q2", At: at.Add(2 * time.Second), Kind: chatQuestion, Text: "Overwrite?"})
+	end := Ending{At: at.Add(3 * time.Second), How: "exited (exit 0)"}
+	j.Settle(in, State{End: &end})
+	j.Settle(in, State{End: &end, Final: true}) // settled again: nothing more
+	j.Chat(in, ChatLine{ID: "w2", At: at.Add(2 * time.Second), Kind: chatSystem, Event: chatWithdrawn, Ref: "q2"})
+	j.Flush()
+	r, _ := onDisk(t, dir, id)
+	var answers []Entry
+	for _, e := range r.Entries {
+		if e.Kind == KindAnswer {
+			answers = append(answers, e)
+		}
+	}
+	if len(answers) != 2 || answers[0].Ref != "q1" || answers[0].Outcome != OutcomeAnswered || answers[1].Ref != "q2" || answers[1].Outcome != OutcomeWithdrawn || !answers[1].At.Equal(end.At) || r.Dropped != 1 {
+		t.Fatalf("the answers %+v (dropped %d)", answers, r.Dropped)
+	}
+
+	lost := sid(2)
+	in = begin(t, j, serverRecord(lost))
+	j.Chat(in, ChatLine{ID: "q3", At: at, Kind: chatQuestion, Text: "Which port?"})
+	finish(j, in, Ending{How: EndingLost, Lost: true})
+	j.Flush()
+	if r, _ := onDisk(t, dir, lost); slices.Contains(kinds(r), KindAnswer) || r.Ending != EndingLost {
+		t.Fatalf("a lost record's question: %+v", r)
+	}
+}
+
+// Settle sets the end in memory and returns while the writer's disk is
+// held: the caller (a session's hook, the registry's) never waits on a
+// disk.
 func TestEndWritesOffTheCallersGoroutine(t *testing.T) {
 	j, dir := newJournal(t, Options{})
 	begin(t, j, serverRecord(sid(1)))
@@ -246,11 +291,11 @@ func TestEndWritesOffTheCallersGoroutine(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { beforeWrite = nil })
-	j.End(j.at(sid(1)), Ending{How: "stopped"})
+	finish(j, j.at(sid(1)), Ending{How: "stopped"})
 	<-entered // the writer is at the disk, held
-	j.End(j.at(sid(2)), Ending{How: "exited (exit 0)"})
+	finish(j, j.at(sid(2)), Ending{How: "exited (exit 0)"})
 	j.Note(j.at(sid(2)), Activity{Type: actProgress, Message: "noted while the disk is held"})
-	j.Changed(j.at(sid(2)))
+	j.Settle(j.at(sid(2)), State{Name: "renamed while the disk is held"})
 	close(gate)
 	j.Flush()
 	beforeWrite = nil
@@ -453,7 +498,7 @@ func endedRecords(t *testing.T, j *Journal, from, n int) {
 		r := serverRecord(sid(i))
 		r.StartedAt = at.Add(time.Duration(i) * time.Minute)
 		begin(t, j, r)
-		j.End(j.at(sid(i)), Ending{At: r.StartedAt.Add(time.Second), How: "exited (exit 0)"})
+		finish(j, j.at(sid(i)), Ending{At: r.StartedAt.Add(time.Second), How: "exited (exit 0)"})
 	}
 	j.Flush()
 }
@@ -540,35 +585,31 @@ func TestRecoverMarksAHostedRecordHostAway(t *testing.T) {
 	}
 }
 
-// The record takes the session as it is when the writer reads it
-// (Current), never a snapshot a change handed over: two changes whose
-// snapshots would arrive older last (Codex's lowest id, then a higher one;
-// a resumable id, then one not resumable) leave the lowest, resumable.
-func TestAnOlderChangeNeverOvertakesANewerOne(t *testing.T) {
-	var mu sync.Mutex
-	now := Meta{Name: "codex #1", AgentSession: &AgentSession{ID: "019a-lowest", Source: "hook", Resumable: true}}
-	j, dir := newJournal(t, Options{Current: func(Instance) (Meta, bool) {
-		mu.Lock()
-		defer mu.Unlock()
-		return now, true
-	}})
+// Settle takes what a State says of the session and nothing more each
+// time it is settled again: the same State settled twice writes nothing
+// more (idempotent), and a crew taken after the start is written at once.
+func TestSettleIsIdempotent(t *testing.T) {
+	j, dir := newJournal(t, Options{})
 	id := sid(1)
-	begin(t, j, serverRecord(id))
-	j.Changed(j.at(id)) // its snapshot: the higher id
-	j.Changed(j.at(id)) // its snapshot: not resumable
+	in := begin(t, j, serverRecord(id))
+	now := State{Name: "codex #1", AgentSession: &AgentSession{ID: "019a-lowest", Source: "hook", Resumable: true}}
+	j.Settle(in, now)
 	j.Flush()
 	r, _ := onDisk(t, dir, id)
 	if s := r.Agent.Session; s == nil || s.ID != "019a-lowest" || !s.Resumable || r.Name != "codex #1" {
 		t.Fatalf("the agent's session %+v, name %q", r.Agent.Session, r.Name)
 	}
-	mu.Lock()
-	now.Crew = &Crew{RunID: "todo-1", CrewID: "todo", Member: "lead"}
-	mu.Unlock()
-	j.Changed(j.at(id))
+	j.Settle(in, now)
 	j.Flush()
-	if r, _ := onDisk(t, dir, id); r.Crew == nil || r.Crew.RunID != "todo-1" {
-		t.Fatalf("the crew taken after the start: %+v", r.Crew)
+	if again, _ := onDisk(t, dir, id); again.Seq != r.Seq {
+		t.Fatalf("the same State settled again was written again: seq %d after %d", again.Seq, r.Seq)
 	}
+	now.Crew = &Crew{RunID: "todo-1", CrewID: "todo", Member: "lead"}
+	j.Settle(in, now)
+	until(t, "the crew written at once", func() bool {
+		r, _ := onDisk(t, dir, id)
+		return r.Crew != nil && r.Crew.RunID == "todo-1"
+	})
 }
 
 // The same host's hosted session registering under the same id takes its
@@ -605,7 +646,7 @@ func TestBeginReopensTheSameHostsRecord(t *testing.T) {
 		t.Fatalf("reopened %d, lost %v, ending %q, seq %d after %d, entries %q", r.Reopened, r.LostAt, r.Ending, r.Seq, away.Seq, msgs)
 	}
 	// Lost (its host let go of here), then the same host again.
-	j.End(j.at(id), Ending{How: EndingLost, Lost: true})
+	finish(j, j.at(id), Ending{How: EndingLost, Lost: true})
 	j.Flush()
 	begin(t, j, hostedRecord(id, "o1"))
 	j.Flush()
@@ -613,7 +654,7 @@ func TestBeginReopensTheSameHostsRecord(t *testing.T) {
 		t.Fatalf("reopened again: %+v", again)
 	}
 	// An observed end is never taken up again.
-	j.End(j.at(id), Ending{How: "exited (exit 0)"})
+	finish(j, j.at(id), Ending{How: "exited (exit 0)"})
 	j.Flush()
 	if _, err := j.Begin(hostedRecord(id, "o1")); !errors.Is(err, ErrExists) {
 		t.Fatalf("an ended record taken up again: %v", err)
@@ -872,7 +913,7 @@ func TestManyNotersIntoManyRecords(t *testing.T) {
 			for i := range each {
 				j.Note(j.at(sid(g%8)), Activity{Type: actProgress, Message: fmt.Sprintf("g%02d-%02d", g, i)})
 				if i%7 == 0 {
-					j.Changed(j.at(sid(g % 8)))
+					j.Settle(j.at(sid(g%8)), State{Name: fmt.Sprintf("g%02d", g)})
 				}
 			}
 		})
@@ -994,50 +1035,57 @@ func slowFlush(t *testing.T) {
 	t.Cleanup(func() { flushEvery = old })
 }
 
-// An entry an earlier callback still carried when the record left memory
-// after its end is kept in its place all the same, and a rename of the
-// ended session reaches the record: the record is read back from its file
-// and what came is merged in; one after the end is dropped and counted.
-func TestALateHookAfterEvictionIsKept(t *testing.T) {
+// until polls for ok, failing after a minute: a bound on a hang only.
+func until(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Minute)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("never: %s", what)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// An ended record stays in memory until its session's last State is in
+// (Final): what is settled of the session after its end (a rename, the
+// agent's own session reported after its exit, the State a removal hands
+// over) reaches the record however long after the end it comes, and once
+// the last State is in and written the record leaves memory. Nothing
+// brings it back: a stream after that changes nothing.
+func TestAnEndedRecordStaysUntilItsSessionIsDone(t *testing.T) {
 	c := newClock()
-	name := "cat #1"
-	var mu sync.Mutex
-	j, dir := newJournal(t, Options{Now: c.Now, Current: func(Instance) (Meta, bool) {
-		mu.Lock()
-		defer mu.Unlock()
-		return Meta{Name: name}, true
-	}})
+	j, dir := newJournal(t, Options{Now: c.Now})
 	id := sid(1)
-	begin(t, j, serverRecord(id))
+	in := begin(t, j, serverRecord(id))
 	at := c.Now()
-	j.Note(j.at(id), Activity{At: at, Type: actProgress, Message: "first"})
-	j.End(j.at(id), Ending{At: at.Add(2 * time.Second), How: "exited (exit 0)"})
+	end := Ending{At: at.Add(2 * time.Second), How: "exited (exit 0)"}
+	j.Settle(in, State{Name: "cat #1", End: &end})
+	j.Flush()
+	c.add(time.Hour)
+	j.Flush()
+	if !inMemory(j, id) {
+		t.Fatal("an ended record left memory before its session was done with it")
+	}
+	j.Settle(in, State{Name: "renamed", AgentSession: &AgentSession{ID: "019a", Source: "hook"}, End: &end})
+	j.Flush()
+	if r, _ := onDisk(t, dir, id); r.Name != "renamed" || r.Agent.Session == nil || r.Agent.Session.ID != "019a" {
+		t.Fatalf("the metadata after the end: %+v", r)
+	}
+	j.Settle(in, State{Name: "its last name", AgentSession: &AgentSession{ID: "019a", Source: "hook"}, End: &end, Final: true})
 	j.Flush()
 	c.add(time.Minute)
 	j.Flush()
 	if inMemory(j, id) {
-		t.Fatal("the ended record is still in memory")
+		t.Fatal("the record stayed in memory once its session was done with it")
 	}
-	j.Note(j.at(id), Activity{At: at.Add(time.Second), Type: actProgress, Message: "held"})
-	j.Note(j.at(id), Activity{At: at.Add(time.Hour), Type: actProgress, Message: "too late"})
-	mu.Lock()
-	name = "renamed"
-	mu.Unlock()
-	j.Changed(j.at(id))
+	_, before := onDisk(t, dir, id)
+	j.Note(in, Activity{At: at.Add(time.Second), Type: actProgress, Message: "too late"})
+	j.Settle(in, State{Name: "after it left", End: &end})
 	j.Flush()
-	r, _ := onDisk(t, dir, id)
-	var msgs []string
-	for _, e := range r.Entries {
-		msgs = append(msgs, e.Message)
-	}
-	if !slices.Equal(msgs, []string{"first", "held"}) || r.Dropped != 1 || r.Name != "renamed" || r.Ending != "exited (exit 0)" || r.EndedAt.IsZero() {
-		t.Fatalf("after the late hooks: entries %q dropped %d name %q ending %q", msgs, r.Dropped, r.Name, r.Ending)
-	}
-	// It leaves memory again.
-	c.add(time.Minute)
-	j.Flush()
-	if inMemory(j, id) {
-		t.Fatal("the record brought back stayed in memory")
+	r, after := onDisk(t, dir, id)
+	if r.Name != "its last name" || r.Ending != "exited (exit 0)" || !bytes.Equal(before, after) {
+		t.Fatalf("after the record left memory:\n%s", after)
 	}
 }
 
@@ -1072,24 +1120,53 @@ func awayRecord(id, owner string) Record {
 
 // An end observed while the earlier file of a hosted record taken up again
 // is still being read stands once it is merged: the record is ended, never
-// open again.
+// open again; a second Begin of its host meanwhile (the hub let the
+// session go and its host registered it again before the merge was done)
+// is refused by that end in memory, as by one on file, and leaves it as
+// it is. The question its file held open ends with it, and the name
+// settled during the merge is the record's. A lost end during the merge,
+// by contrast, is taken up again by the next Begin.
 func TestAnEndDuringTheMergeStands(t *testing.T) {
 	dir := t.TempDir()
 	id := sid(1)
-	writeRecord(t, dir, awayRecord(id, "o1"))
+	away := awayRecord(id, "o1")
+	away.Entries = append(away.Entries, Entry{Seq: 2, At: away.Entries[0].At.Add(time.Second), Kind: KindQuestion, ID: "q1", Message: "Which port?"})
+	writeRecord(t, dir, away)
 	j := openAt(t, dir, Options{})
 	entered, release := gateLoad(t)
-	begin(t, j, hostedRecord(id, "o1"))
+	in := begin(t, j, hostedRecord(id, "o1"))
 	<-entered
-	j.End(j.at(id), Ending{How: "exited (exit 0)"})
+	end := Ending{How: "exited (exit 0)"}
+	j.Settle(in, State{Name: "renamed during the merge", End: &end, Final: true})
+	if _, err := j.Begin(hostedRecord(id, "o1")); !errors.Is(err, ErrExists) {
+		t.Fatalf("a second Begin during the merge, after an end: %v", err)
+	}
 	release()
 	j.Flush()
 	r, _ := onDisk(t, dir, id)
-	if r.EndedAt.IsZero() || r.Ending != "exited (exit 0)" || !r.LostAt.IsZero() || r.Reopened != 1 {
+	if r.EndedAt.IsZero() || r.Ending != "exited (exit 0)" || !r.LostAt.IsZero() || r.Reopened != 1 || r.Name != "renamed during the merge" {
 		t.Fatalf("the end observed during the merge: %+v", r)
 	}
-	if got := kinds(r); !slices.Equal(got, []string{KindReport, KindStatus}) || r.Entries[0].Message != "before" {
+	if got := kinds(r); !slices.Equal(got, []string{KindReport, KindQuestion, KindStatus, KindAnswer}) || r.Entries[0].Message != "before" || r.Entries[3].Ref != "q1" || r.Entries[3].Outcome != OutcomeWithdrawn {
 		t.Fatalf("entries %+v", r.Entries)
+	}
+
+	// Lost during the merge: the same host's next Begin takes it up again.
+	id2 := sid(2)
+	writeRecord(t, dir, awayRecord(id2, "o1"))
+	j2 := reopenJournal(t, j, dir)
+	entered2, release2 := gateLoad(t)
+	in2 := begin(t, j2, hostedRecord(id2, "o1"))
+	<-entered2
+	finish(j2, in2, Ending{How: EndingHostAway, Lost: true})
+	again, err := j2.Begin(hostedRecord(id2, "o1"))
+	if err != nil || again != in2 {
+		t.Fatalf("a second Begin during the merge, after a lost end: %v (%v, %v)", err, again, in2)
+	}
+	release2()
+	j2.Flush()
+	if r, _ := onDisk(t, dir, id2); !r.open() || r.Ending != "" {
+		t.Fatalf("taken up again during the merge: %+v", r)
 	}
 }
 
@@ -1222,7 +1299,7 @@ func TestPruneKeepsTheLastToEnd(t *testing.T) {
 	long.StartedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	begin(t, j, long)
 	endedRecords(t, j, 1, 2)
-	j.End(j.at(sid(0)), Ending{At: time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC), How: "exited (exit 0)"})
+	finish(j, j.at(sid(0)), Ending{At: time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC), How: "exited (exit 0)"})
 	j.Flush()
 	if !exists(dir, sid(0)) || exists(dir, sid(1)) || !exists(dir, sid(2)) {
 		t.Fatalf("kept: long %v, first to end %v, second %v", exists(dir, sid(0)), exists(dir, sid(1)), exists(dir, sid(2)))
@@ -1249,7 +1326,7 @@ func TestCloseGivesUpOnEndCommits(t *testing.T) {
 		begin(t, j, serverRecord(sid(i)))
 	}
 	for i := range 3 {
-		j.End(j.at(sid(i)), Ending{How: "stopped"})
+		finish(j, j.at(sid(i)), Ending{How: "stopped"})
 	}
 	<-started // a read under way, never returning
 	if err := j.Close(); err != nil {
@@ -1267,25 +1344,16 @@ func TestCloseGivesUpOnEndCommits(t *testing.T) {
 // cannot come.
 func TestACrewTakenIsWrittenAtOnce(t *testing.T) {
 	slowFlush(t)
-	var mu sync.Mutex
-	var crew *Crew
-	j, dir := newJournal(t, Options{Current: func(Instance) (Meta, bool) {
-		mu.Lock()
-		defer mu.Unlock()
-		return Meta{Name: "cat #1", Crew: crew}, true
-	}})
+	j, dir := newJournal(t, Options{})
 	id := sid(1)
-	begin(t, j, serverRecord(id))
+	in := begin(t, j, serverRecord(id))
 	written := make(chan string, 8)
 	beforeWrite = func(name string) error {
 		written <- name
 		return nil
 	}
 	t.Cleanup(func() { beforeWrite = nil })
-	mu.Lock()
-	crew = &Crew{RunID: "run-1", CrewID: "team", Member: "lead"}
-	mu.Unlock()
-	j.Changed(j.at(id))
+	j.Settle(in, State{Name: "cat #1", Crew: &Crew{RunID: "run-1", CrewID: "team", Member: "lead"}})
 	for name := range written {
 		if name == SessionsDir+"/"+id+".json" {
 			break
@@ -1320,21 +1388,19 @@ func TestTheDenyListJudgesTheWholePath(t *testing.T) {
 	}
 }
 
-// What a session was as it left the server (Gone) serves the metadata
-// still to be read once Current no longer answers it: its last name is
-// taken; its touches are judged by the server's deny list as before.
+// The last State of a session (Final, as it left the server) is taken
+// whole, its last name with its end; the touches it held from before the
+// end are judged by the server's deny list as before.
 func TestAGoneSessionsPendingWorkIsKept(t *testing.T) {
 	slowFlush(t)
 	j, dir := newJournal(t, Options{
-		Current: func(Instance) (Meta, bool) { return Meta{}, false },
-		Denied:  func(path string) bool { return path == "/w/secret.key" },
+		Denied: func(path string) bool { return path == "/w/secret.key" },
 	})
 	id := sid(1)
 	in := begin(t, j, serverRecord(id))
 	j.Touch(in, File{Path: "/w/main.go", Op: "edit"})
 	j.Touch(in, File{Path: "/w/secret.key", Op: "read"})
-	j.Gone(in, Meta{Name: "its last name"})
-	j.End(in, Ending{How: "stopped"})
+	j.Settle(in, State{Name: "its last name", End: &Ending{How: "stopped"}, Final: true})
 	j.Flush()
 	r, _ := onDisk(t, dir, id)
 	if len(r.Files) != 1 || r.Files[0].Path != "/w/main.go" || r.Name != "its last name" || r.EndedAt.IsZero() {
@@ -1575,31 +1641,21 @@ func TestAReadOnlyListReadsOnlyWhatChanged(t *testing.T) {
 	}
 }
 
-// staleQuietly marks the record of id stale without waking the writer, as
-// a Changed whose wake the writer has not yet taken.
-func staleQuietly(j *Journal, id string) {
-	j.mu.Lock()
-	j.recs[id].stale = true
-	j.mu.Unlock()
-}
-
-// An end the writer finds in the metadata it reads is written by the same
-// pass: a Flush returns with it written, and so does Close, whose pass is
-// the last.
-func TestAnEndFoundInTheMetadataIsWrittenByItsPass(t *testing.T) {
+// An end settled is written by the writer's next pass whatever its tick:
+// a Flush returns with it written, and so does Close, whose pass is the
+// last.
+func TestAnEndSettledIsWrittenByTheNextPass(t *testing.T) {
 	slowFlush(t)
 	end := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
-	j, dir := newJournal(t, Options{Current: func(Instance) (Meta, bool) {
-		return Meta{Name: "cat #1", Ended: true, EndedAt: end, Ending: "exited (exit 0)"}, true
-	}})
-	begin(t, j, serverRecord(sid(1)))
-	begin(t, j, serverRecord(sid(2)))
-	staleQuietly(j, sid(1))
+	j, dir := newJournal(t, Options{})
+	in1 := begin(t, j, serverRecord(sid(1)))
+	in2 := begin(t, j, serverRecord(sid(2)))
+	j.Settle(in1, State{Name: "cat #1", End: &Ending{At: end, How: "exited (exit 0)"}})
 	j.Flush()
 	if r, _ := onDisk(t, dir, sid(1)); !r.EndedAt.Equal(end) {
 		t.Fatalf("after the Flush: %+v", r)
 	}
-	staleQuietly(j, sid(2))
+	j.Settle(in2, State{Name: "cat #2", End: &Ending{At: end, How: "exited (exit 0)"}})
 	j.Close()
 	if r, _ := onDisk(t, dir, sid(2)); !r.EndedAt.Equal(end) {
 		t.Fatalf("after Close: %+v", r)
@@ -1660,7 +1716,7 @@ func TestAHostedBeginDuringItsRemoval(t *testing.T) {
 			if tc.inMemory {
 				begin(t, j, hostedRecord(id, "o1"))
 				j.Note(j.at(id), Activity{Type: actProgress, Message: "before"})
-				j.End(j.at(id), Ending{How: EndingHostAway, Lost: true})
+				finish(j, j.at(id), Ending{How: EndingHostAway, Lost: true})
 				j.Flush()
 				if !inMemory(j, id) {
 					t.Fatal("the record left memory")
@@ -1701,7 +1757,7 @@ func TestAHostedBeginDuringItsRemoval(t *testing.T) {
 	}
 }
 
-// A hook names the instance it was begun for: one whose instance a Forget
+// A write names the instance it was begun for: one whose instance a Forget
 // ended is dropped, whatever record of its id there is by then (a hosted
 // session of the same id registered again), and none brings back a record
 // that is gone.
@@ -1710,14 +1766,14 @@ func TestAHookOfAForgottenInstanceIsDropped(t *testing.T) {
 	id := sid(1)
 	old := begin(t, j, hostedRecord(id, "o1"))
 	j.Note(old, Activity{Type: actProgress, Message: "kept, then forgotten"})
-	j.End(old, Ending{How: EndingHostAway, Lost: true})
+	finish(j, old, Ending{How: EndingHostAway, Lost: true})
 	j.Flush()
 	if err := j.Forget(id); err != nil {
 		t.Fatal(err)
 	}
 	j.Note(old, Activity{Type: actProgress, Message: "late, of the forgotten record"})
-	j.Changed(old)
-	j.End(old, Ending{How: "exited (exit 0)"})
+	j.Settle(old, State{Name: "renamed after the Forget"})
+	finish(j, old, Ending{How: "exited (exit 0)"})
 	j.Flush()
 	if exists(dir, id) || inMemory(j, id) {
 		t.Fatal("a hook of a forgotten record brought it back")
@@ -1727,8 +1783,7 @@ func TestAHookOfAForgottenInstanceIsDropped(t *testing.T) {
 	j.Touch(old, File{Path: "/w/forgotten.go", Op: "edit"})
 	j.Tool(old, "Bash")
 	j.Chat(old, ChatLine{ID: "m1", Kind: chatMessage, Text: "said in the forgotten session"})
-	j.Gone(old, Meta{Name: "the forgotten session's name"})
-	j.End(old, Ending{How: "exited (exit 0)"})
+	j.Settle(old, State{Name: "the forgotten session's name", End: &Ending{How: "exited (exit 0)"}, Final: true})
 	j.Note(in, Activity{Type: actProgress, Message: "the new one's"})
 	j.Flush()
 	r, _ := onDisk(t, dir, id)
@@ -1738,37 +1793,26 @@ func TestAHookOfAForgottenInstanceIsDropped(t *testing.T) {
 }
 
 // A delete that fails answers its error and writes nothing of the record
-// it chose: its file stays as last written, listed and read from it, also
-// when the record was being brought back from its file by a late hook (its
-// merge held here) with evidence not yet written; that evidence, and a
-// hook of its instance after, are dropped, never written. The record is
-// forgettable again, and its host's next registration takes it up from
-// its file, as after a restart.
+// it chose: its file stays as last written, listed and read from it; a
+// write of its instance after (a stream, a State) is dropped, never
+// written. The record is forgettable again, and its host's next
+// registration takes it up from its file, as after a restart.
 func TestAFailedDeleteWritesNothingOfTheRecord(t *testing.T) {
 	slowFlush(t)
-	c := newClock()
-	j, dir := newJournal(t, Options{Now: c.Now})
+	j, dir := newJournal(t, Options{})
 	id := sid(1)
 	old := begin(t, j, hostedRecord(id, "o1"))
-	j.Note(old, Activity{At: c.Now(), Type: actProgress, Message: "before"})
-	j.End(old, Ending{How: EndingHostAway, Lost: true})
+	j.Note(old, Activity{Type: actProgress, Message: "before"})
+	finish(j, old, Ending{How: EndingHostAway, Lost: true})
 	j.Flush()
-	c.add(2 * time.Hour)
-	j.Flush()
-	if inMemory(j, id) {
-		t.Fatal("the ended record is still in memory")
-	}
 	_, written := onDisk(t, dir, id)
-	merging, releaseMerge := gateLoad(t)
-	j.Note(old, Activity{At: c.Now(), Type: actProgress, Message: "late, not yet written"})
-	<-merging // brought back, its file being read, held
 	beforeDelete = func(string) error { return errors.New("a disk that did not answer") }
 	t.Cleanup(func() { beforeDelete = nil })
 	if err := j.Forget(id); err == nil {
 		t.Fatal("a forget whose delete failed answered nil")
 	}
-	j.Note(old, Activity{At: c.Now(), Type: actProgress, Message: "after the failed forget"})
-	releaseMerge()
+	j.Note(old, Activity{Type: actProgress, Message: "after the failed forget"})
+	j.Settle(old, State{Name: "renamed after the failed forget", End: &Ending{How: "exited (exit 0)"}, Final: true})
 	j.Flush()
 	if _, now := onDisk(t, dir, id); !bytes.Equal(now, written) {
 		t.Fatalf("the record whose delete failed was written:\n%s", now)
@@ -1787,7 +1831,7 @@ func TestAFailedDeleteWritesNothingOfTheRecord(t *testing.T) {
 	if r, _ := onDisk(t, dir, id); !slices.Equal(messages(r), []string{"before", "taken up again by its host"}) {
 		t.Fatalf("taken up again: %q", messages(r))
 	}
-	j.End(in, Ending{How: "exited (exit 0)"})
+	finish(j, in, Ending{How: "exited (exit 0)"})
 	j.Flush()
 	beforeDelete = nil
 	if err := j.Forget(id); err != nil || exists(dir, id) {
@@ -1875,7 +1919,7 @@ func TestARemovalAgainstTheFold(t *testing.T) {
 			id := sid(1)
 			begin(t, j, serverRecord(id))
 			j.Touch(j.at(id), File{Path: "/w/main.go", Op: "edit", Last: at})
-			j.End(j.at(id), Ending{At: at.Add(time.Second), How: "exited (exit 0)"})
+			finish(j, j.at(id), Ending{At: at.Add(time.Second), How: "exited (exit 0)"})
 			<-entered // the end's pass asks the deny list, held
 			if removed, err := rm.remove(j, id); !removed || err != nil {
 				t.Fatalf("the ended record was not removed: %v", err)
@@ -1906,7 +1950,7 @@ func TestARemovalAgainstTheFold(t *testing.T) {
 				return nil
 			}
 			t.Cleanup(func() { beforeWrite = nil })
-			j.End(j.at(id), Ending{At: at.Add(time.Second), How: "exited (exit 0)"})
+			finish(j, j.at(id), Ending{At: at.Add(time.Second), How: "exited (exit 0)"})
 			<-in // folded, its write under way and held
 			done := make(chan error, 1)
 			go func() {
@@ -1929,56 +1973,13 @@ func TestARemovalAgainstTheFold(t *testing.T) {
 	}
 }
 
-// A touch a late callback carries, stamped before the record's end, after
-// the record left memory brings it back as any late hook does: the fold
-// asks the deny list of it, which refuses one and keeps the other, neither
-// dropped as past the end nor left waiting.
-func TestALateTouchIsJudgedByTheDenyList(t *testing.T) {
-	slowFlush(t)
-	c := newClock()
-	var mu sync.Mutex
-	var asked []string
-	j, dir := newJournal(t, Options{Now: c.Now, Denied: func(path string) bool {
-		mu.Lock()
-		defer mu.Unlock()
-		asked = append(asked, path)
-		return path == "/w/secret.key"
-	}})
-	id := sid(1)
-	in := begin(t, j, serverRecord(id))
-	end := c.Now().Add(time.Second)
-	j.End(in, Ending{At: end, How: "exited (exit 0)"})
-	j.Flush()
-	c.add(2 * time.Hour)
-	j.Flush()
-	if inMemory(j, id) {
-		t.Fatal("the ended record is still in memory")
-	}
-	j.Touch(in, File{Path: "/w/late.go", Op: "edit", Last: end.Add(-time.Millisecond)})
-	j.Touch(in, File{Path: "/w/secret.key", Op: "read", Last: end.Add(-time.Millisecond)})
-	j.Flush()
-	r, raw := onDisk(t, dir, id)
-	if len(r.Files) != 1 || r.Files[0].Path != "/w/late.go" || bytes.Contains(raw, []byte("secret.key")) || r.Dropped != 0 {
-		t.Fatalf("the late touches: files %+v dropped %d", r.Files, r.Dropped)
-	}
-	j.mu.Lock()
-	waiting := 0
-	if x := j.recs[id]; x != nil {
-		waiting = len(x.touches)
-	}
-	j.mu.Unlock()
-	mu.Lock()
-	defer mu.Unlock()
-	if waiting != 0 || !slices.Equal(asked, []string{"/w/late.go", "/w/secret.key"}) {
-		t.Fatalf("the deny list was asked %q, %d touches waiting", asked, waiting)
-	}
-}
-
-// A hosted record's entries and files carry its host's clock and its end
-// the server's: what the host sends is kept whatever the two clocks say,
-// in its place by the host's; a server record still drops what comes
-// after its end.
-func TestAHostedRecordKeepsItsHostsEvidenceByItsClock(t *testing.T) {
+// What a stream brings is judged by when it arrives, never by the time it
+// carries: a hosted record's entries and files carry its host's clock and
+// its end the server's, and a host's clock may be ahead. Evidence that
+// arrives while the record is open is kept, in its place by its own time,
+// for a hosted record and a server one alike, whatever the end's time
+// says; what arrives after the end is recorded is dropped, counted.
+func TestEvidenceIsJudgedByItsArrivalNotItsClock(t *testing.T) {
 	j, dir := newJournal(t, Options{})
 	hosted, server := sid(1), sid(2)
 	begin(t, j, hostedRecord(hosted, "o1"))
@@ -1986,25 +1987,25 @@ func TestAHostedRecordKeepsItsHostsEvidenceByItsClock(t *testing.T) {
 	end := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
 	ahead := end.Add(time.Hour) // the host's clock, an hour ahead of the server's
 	for _, id := range []string{hosted, server} {
-		j.End(j.at(id), Ending{At: end, How: "exited (exit 0)"})
 		j.Note(j.at(id), Activity{At: ahead, Type: actProgress, Message: "before the exit, by the host's clock"})
 		j.Touch(j.at(id), File{Path: "/w/main.go", Op: "edit", Last: ahead})
+		finish(j, j.at(id), Ending{At: end, How: "exited (exit 0)"})
+		j.Note(j.at(id), Activity{At: end.Add(-time.Minute), Type: actProgress, Message: "after the exit was recorded"})
+		j.Touch(j.at(id), File{Path: "/w/late.go", Op: "edit", Last: end.Add(-time.Minute)})
 	}
 	j.Flush()
-	h, _ := onDisk(t, dir, hosted)
-	if got := messages(h); !slices.Equal(got, []string{"before the exit, by the host's clock"}) || len(h.Files) != 1 || h.Dropped != 0 {
-		t.Fatalf("the hosted record: entries %q files %+v dropped %d", got, h.Files, h.Dropped)
-	}
-	s, _ := onDisk(t, dir, server)
-	if len(s.Entries) != 0 || len(s.Files) != 0 || s.Dropped != 2 {
-		t.Fatalf("the server record: entries %+v files %+v dropped %d", s.Entries, s.Files, s.Dropped)
+	for _, id := range []string{hosted, server} {
+		r, _ := onDisk(t, dir, id)
+		if got := messages(r); !slices.Equal(got, []string{"before the exit, by the host's clock"}) || len(r.Files) != 1 || r.Files[0].Path != "/w/main.go" || r.Dropped != 2 {
+			t.Fatalf("record %s: entries %q files %+v dropped %d", id, got, r.Files, r.Dropped)
+		}
 	}
 }
 
-// Close's last pass held at its write: what comes then is refused (an
-// end, an entry), Close has not returned, and once it does the record
-// holds its first end, once, and what the last pass wrote; an end commit
-// read that answers after Close changes nothing on disk.
+// Close's last pass held at its write: what comes then is refused (a
+// State, its end in it), Close has not returned, and once it does the
+// record holds its first end, once, and what the last pass wrote; an end
+// commit read that answers after Close changes nothing on disk.
 func TestCloseLastPassHeld(t *testing.T) {
 	slowFlush(t)
 	old := closeWait
@@ -2028,10 +2029,11 @@ func TestCloseLastPassHeld(t *testing.T) {
 	begin(t, j, serverRecord(first))
 	begin(t, j, serverRecord(second))
 	at := time.Now().UTC()
-	j.End(j.at(first), Ending{At: at.Add(time.Second), How: "exited (exit 0)"})
+	end := Ending{At: at.Add(time.Second), How: "exited (exit 0)"}
+	j.Settle(j.at(first), State{End: &end})
 	j.Flush()
-	j.Note(j.at(first), Activity{At: at, Type: actStatus, Message: "kept by the last pass"})
-	j.End(j.at(second), Ending{How: "stopped"})
+	j.Settle(j.at(first), State{Name: "kept by the last pass", End: &end})
+	finish(j, j.at(second), Ending{How: "stopped"})
 	<-started
 	in := make(chan struct{}, 8)
 	gate := make(chan struct{})
@@ -2049,8 +2051,7 @@ func TestCloseLastPassHeld(t *testing.T) {
 		close(closed)
 	}()
 	<-in // the last pass writes the first record, held
-	j.End(j.at(first), Ending{How: "stopped"})
-	j.Note(j.at(first), Activity{At: at, Type: actStatus, Message: "after Close began"})
+	j.Settle(j.at(first), State{Name: "after Close began", End: &Ending{How: "stopped"}, Final: true})
 	select {
 	case <-closed:
 		t.Fatal("Close returned with its last pass held")
@@ -2059,8 +2060,8 @@ func TestCloseLastPassHeld(t *testing.T) {
 	close(gate)
 	<-closed
 	r, _ := onDisk(t, dir, first)
-	if got := messages(r); r.Ending != "exited (exit 0)" || !slices.Contains(got, "kept by the last pass") || slices.Contains(got, "after Close began") {
-		t.Fatalf("the first record after Close: ending %q entries %q", r.Ending, got)
+	if r.Ending != "exited (exit 0)" || r.Name != "kept by the last pass" {
+		t.Fatalf("the first record after Close: ending %q name %q", r.Ending, r.Name)
 	}
 	before, _ := os.ReadFile(filepath.Join(dir, Dir, SessionsDir, second+".json"))
 	lateClosed()
@@ -2069,64 +2070,6 @@ func TestCloseLastPassHeld(t *testing.T) {
 	after, _ := os.ReadFile(filepath.Join(dir, Dir, SessionsDir, second+".json"))
 	if s, _ := onDisk(t, dir, second); s.EndedAt.IsZero() || s.End != "" || !bytes.Equal(before, after) {
 		t.Fatalf("the second record after its late read: %+v", s)
-	}
-}
-
-// The writer's metadata read under way (held in Current, outside the
-// journal's lock) while a removal deletes the record and a hosted Begin of
-// its id comes: whether the delete is done or failed, what the read brings
-// back is not taken, and the record begun takes nothing of the old one. A
-// race test too: the read names its record by what never changes, and the
-// removal replaces no record the read holds.
-func TestAMetadataReadUnderWayAgainstARemoval(t *testing.T) {
-	for _, failed := range []bool{false, true} {
-		t.Run(fmt.Sprintf("the delete failed: %v", failed), func(t *testing.T) {
-			slowFlush(t)
-			reading, gate := make(chan Instance, 8), make(chan struct{})
-			var once sync.Once
-			releaseRead := func() { once.Do(func() { close(gate) }) }
-			t.Cleanup(releaseRead)
-			j, dir := newJournal(t, Options{Current: func(in Instance) (Meta, bool) {
-				reading <- in
-				<-gate
-				return Meta{Name: "read for the old record", Ended: true, Ending: "exited (exit 0)"}, true
-			}})
-			id := sid(1)
-			old := begin(t, j, hostedRecord(id, "o1"))
-			j.Note(old, Activity{Type: actProgress, Message: "before"})
-			j.End(old, Ending{How: EndingHostAway, Lost: true})
-			j.Flush()
-			j.Changed(old)
-			flushed := make(chan struct{})
-			go func() {
-				j.Flush()
-				close(flushed)
-			}()
-			if in := <-reading; in != old {
-				t.Fatalf("read for %+v", in)
-			}
-			var fail error
-			if failed {
-				fail = errors.New("a disk that did not answer")
-			}
-			deleting, releaseDelete := gateDelete(t, fail)
-			forgot := make(chan error, 1)
-			go func() { forgot <- j.Forget(id) }()
-			<-deleting
-			in := begin(t, j, hostedRecord(id, "o1"))
-			j.Note(in, Activity{Type: actProgress, Message: "after"})
-			releaseDelete()
-			if err := <-forgot; (err != nil) != failed {
-				t.Fatalf("the removal answered %v", err)
-			}
-			releaseRead()
-			<-flushed
-			j.Flush()
-			r, _ := onDisk(t, dir, id)
-			if got := messages(r); !slices.Equal(got, []string{"after"}) || r.Name == "read for the old record" || !r.EndedAt.IsZero() || r.Reopened != 0 {
-				t.Fatalf("the record: entries %q name %q ended %v reopened %d", got, r.Name, r.EndedAt, r.Reopened)
-			}
-		})
 	}
 }
 
@@ -2158,7 +2101,7 @@ func TestAForgottenRecordIsHiddenBeforeItsFileGoes(t *testing.T) {
 			j, dir := newJournal(t, Options{})
 			id := sid(1)
 			begin(t, j, serverRecord(id))
-			j.End(j.at(id), Ending{How: "exited (exit 0)"})
+			finish(j, j.at(id), Ending{How: "exited (exit 0)"})
 			j.Flush()
 			if !inMemory(j, id) {
 				t.Fatal("the record left memory")
@@ -2196,7 +2139,7 @@ func TestAForgottenRecordIsHiddenBeforeItsFileGoes(t *testing.T) {
 		j, dir := newJournal(t, Options{Now: c.Now})
 		id := sid(1)
 		begin(t, j, serverRecord(id))
-		j.End(j.at(id), Ending{At: c.Now(), How: "exited (exit 0)"})
+		finish(j, j.at(id), Ending{At: c.Now(), How: "exited (exit 0)"})
 		j.Flush()
 		c.add(2 * time.Hour)
 		j.Flush()
@@ -2241,4 +2184,45 @@ func TestAForgottenRecordIsHiddenBeforeItsFileGoes(t *testing.T) {
 			t.Fatalf("a Get after the forget: %v", err)
 		}
 	})
+}
+
+// Codex round 4, finding 2: a server session's record whose first write
+// fails is kept all the same: Begin answers its instance, so its session
+// keeps feeding it, and the writer writes it once the disk answers, with
+// its evidence and its end; it is forgettable once ended.
+func TestARecordWhoseFirstWriteFailedIsKept(t *testing.T) {
+	slowFlush(t)
+	j, dir := newJournal(t, Options{})
+	id := sid(1)
+	var mu sync.Mutex
+	failing := true
+	beforeWrite = func(name string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if failing && name == SessionsDir+"/"+id+".json" {
+			return errors.New("a disk that did not answer")
+		}
+		return nil
+	}
+	t.Cleanup(func() { beforeWrite = nil })
+	in, err := j.Begin(serverRecord(id))
+	if err != nil || in == (Instance{}) {
+		t.Fatalf("Begin with its first write failed: %v %+v", err, in)
+	}
+	if exists(dir, id) {
+		t.Fatal("the record was written though its write failed")
+	}
+	j.Note(in, Activity{Type: actProgress, Message: "kept"})
+	mu.Lock()
+	failing = false
+	mu.Unlock()
+	finish(j, in, Ending{How: "exited (exit 0)"})
+	j.Flush()
+	r, _ := onDisk(t, dir, id)
+	if r.EndedAt.IsZero() || !slices.Equal(messages(r), []string{"kept"}) {
+		t.Fatalf("the record once the disk answered: %+v", r)
+	}
+	if err := j.Forget(id); err != nil {
+		t.Fatalf("forget: %v", err)
+	}
 }
