@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,11 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
+
+// version8Added is what ledger version 8 added (the decision tables),
+// dropped, children first: the start of every list here that makes a
+// ledger an older version's (the ledger package's tests keep the same).
+var version8Added = []string{"DROP TABLE decision_refunds", "DROP TABLE decision_holds", "DROP TABLE decision_history", "DROP TABLE decision_responses", "DROP TABLE decisions"}
 
 // Where an attempt and its evidence ran (docs/plans/runtime.md, PR-4): an
 // attempt's where is its run's Runtime's, fixed as it is made, and its
@@ -237,7 +243,7 @@ func TestARecordWithoutWhereReadsWithout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, stmt := range []string{"ALTER TABLE attempts DROP COLUMN where_ran", "ALTER TABLE checks DROP COLUMN where_ran", "ALTER TABLE prerequisites DROP COLUMN where_ran", "UPDATE schema_version SET version = 6"} {
+	for _, stmt := range append(slices.Clone(version8Added), "ALTER TABLE attempts DROP COLUMN where_ran", "ALTER TABLE checks DROP COLUMN where_ran", "ALTER TABLE prerequisites DROP COLUMN where_ran", "UPDATE schema_version SET version = 6") {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
 		}
