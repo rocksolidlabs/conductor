@@ -21,6 +21,8 @@ import {
   STEP_TITLES,
   stepsFinal,
   ticketOf,
+  itemOf,
+  type InboxItem,
   withOutcome,
   writeRecentActions,
   mintRequestId,
@@ -187,5 +189,15 @@ describe('acting', () => {
     expect(refParts('question:s1/q1')).toEqual({ kind: 'question', a: 's1', b: 'q1' })
     expect(ticketOf({ kind: 'task', evidence: [{ ref: 'run:r', label: '' }, { ref: 'ticket:CND-12', label: '' }] })).toBe('CND-12')
     expect(ticketOf({ kind: 'plan', evidence: [{ ref: 'ticket:CND-12', label: '' }] })).toBe('')
+  })
+})
+
+describe('an item as the page draws it', () => {
+  it('reads the lists the server leaves null when empty as empty lists', () => {
+    const raw = { ref: 'question:s/q', blocking: { words: 'waits', refs: null }, actions: null } as unknown as InboxItem
+    const it = itemOf(raw)
+    expect(it.blocking.refs).toEqual([])
+    expect(it.actions).toEqual([])
+    expect(it.evidence).toEqual([])
   })
 })

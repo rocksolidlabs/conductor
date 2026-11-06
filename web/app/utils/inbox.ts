@@ -101,6 +101,19 @@ export interface InboxTrack {
   steps: DeliveryStep[]
 }
 
+/** An item as the page draws it: the lists the server leaves null when empty (a blocking's refs) as empty lists. */
+export function itemOf(it: InboxItem): InboxItem {
+  return {
+    ...it,
+    blocking: { words: it.blocking?.words ?? '', refs: it.blocking?.refs ?? [], ...(it.blocking?.more ? { more: it.blocking.more } : {}) },
+    actions: it.actions ?? [],
+    evidence: it.evidence ?? [],
+    routedTo: it.routedTo ?? [],
+    considered: it.considered ?? [],
+    delivery: it.delivery ?? [],
+  }
+}
+
 /** How many summaries a page of GET /api/inbox holds. */
 export const INBOX_PAGE = 150
 

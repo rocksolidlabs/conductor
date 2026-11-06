@@ -57,9 +57,9 @@ const isCheck = (r: string) => r.startsWith('check:')
     <ul v-if="open" class="flex flex-col gap-1" data-inbox-evidence-list>
       <li v-for="e in evidence" :key="e.ref" class="flex flex-col gap-1 rounded-md bg-elevated/40 px-2 py-1.5 text-sm" :data-evidence-ref="e.ref">
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <ULink v-if="routeOf(e.ref)" :to="routeOf(e.ref)!" class="min-h-11 inline-flex items-center text-primary break-all" data-evidence-link>{{ e.label }}</ULink>
+          <ULink v-if="routeOf(e.ref)" :to="routeOf(e.ref)!" class="inline-flex min-h-11 items-center text-primary break-all lg:min-h-8" data-evidence-link>{{ e.label }}</ULink>
           <span v-else class="break-all">{{ e.label }}</span>
-          <UButton v-if="isCheck(e.ref)" :label="logs[e.ref] ? 'Hide the log' : 'The log’s end'" icon="i-lucide-scroll-text" size="xs" color="neutral" variant="outline" class="min-h-11" :loading="logs[e.ref]?.loading" data-evidence-log-toggle @click="toggleLog(e.ref)" />
+          <UButton v-if="isCheck(e.ref)" :label="logs[e.ref] ? 'Hide the log' : 'The log’s end'" icon="i-lucide-scroll-text" size="xs" color="neutral" variant="outline" class="min-h-11 lg:min-h-8" :loading="logs[e.ref]?.loading" data-evidence-log-toggle @click="toggleLog(e.ref)" />
         </div>
         <pre v-if="logs[e.ref]?.text !== undefined" class="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-default p-2 font-mono text-xs" data-evidence-log>{{ logs[e.ref]!.text || '(the log is empty)' }}</pre>
         <p v-else-if="logs[e.ref]?.error" class="text-xs text-error" data-evidence-log-error>{{ logs[e.ref]!.error }}</p>

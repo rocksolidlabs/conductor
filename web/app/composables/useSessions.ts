@@ -1,4 +1,4 @@
-import type { InboxItem, InboxPage, InboxTrack } from '~/utils/inbox'
+import { itemOf, type InboxItem, type InboxPage, type InboxTrack } from '~/utils/inbox'
 import type { ChatMessage, ActivityEntry, AgentBrowser, Attention, AttentionKind, AttentionOption, OpenEvent, Role } from '~/utils/protocol'
 import type { Receipt } from '~/utils/tasks'
 import { toCrewInput, toCrewMember } from '~/utils/crews'
@@ -927,7 +927,7 @@ export function useSessions() {
     /** The decision inbox (Program item MB0): a page of the open items, oldest first; `after` the cursor a page's `next` gave. */
     inbox: (after?: string) => request<InboxPage>('/api/inbox', after ? { query: { after } } : {}),
     /** One item of the inbox whole, with its actions; for one no longer open, as it is now, with its delivery. */
-    inboxItem: (ref: string) => request<{ item: InboxItem }>('/api/inbox/item', { query: { ref } }).then((r) => r.item),
+    inboxItem: (ref: string) => request<{ item: InboxItem }>('/api/inbox/item', { query: { ref } }).then((r) => itemOf(r.item)),
     /** The four steps of one action, from its receipt: a command's id, an operation's id, or a question's id with the answer's request id. */
     inboxTrack: (ref: string, receipt: string, attempt?: string) =>
       request<InboxTrack>('/api/inbox/track', { query: { ref, receipt, ...(attempt ? { attempt } : {}) } }),
