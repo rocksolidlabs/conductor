@@ -881,6 +881,76 @@ func TestDecisionBounds(t *testing.T) {
 // answered; a comment that brings the rev up to it lets the unkept
 // refusal's retry be judged again as a new response, and accepted; a
 // kept refusal's retry stays the refusal it was.
+// TestAnAuthorityIsKeptInOneForm answers decisions with every spelling of
+// an authority the decoder accepts and finds each kept as the one
+// canonical text, so the SQL that counts the places replacements hold
+// reads what the Go policy read: an identity's answer spelled {"Via":...}
+// once kept its text, was an identity's to Respond and nobody's to
+// placeCond, and held no place for its replacement (#664, review round 3).
+func TestAnAuthorityIsKeptInOneForm(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	spellings := []struct {
+		name, auth, want string
+	}{
+		{"canonical", identityAuth, identityAuth},
+		{"a capital key", `{"grant":"admin","Via":"identity","subject":"ana","boot":"boot-1"}`, identityAuth},
+		{"every key upper case", `{"GRANT":"admin","VIA":"identity","SUBJECT":"ana","BOOT":"boot-1"}`, identityAuth},
+		{"an escaped key", `{"grant":"admin","\u0076ia":"identity","subject":"ana","boot":"boot-1"}`, identityAuth},
+		{"an escaped value", `{"grant":"admin","via":"identit\u0079","subject":"ana","boot":"boot-1"}`, identityAuth},
+		{"keys out of order", `{"boot":"boot-1","subject":"ana","via":"identity","grant":"admin"}`, identityAuth},
+		{"space between", " { \"grant\" : \"admin\" ,\n\t\"via\" : \"identity\" , \"subject\" : \"ana\" , \"boot\" : \"boot-1\" } ", identityAuth},
+		{"a key twice, the identity last", `{"grant":"admin","via":"workbench","Via":"identity","subject":"ana","boot":"boot-1"}`, identityAuth},
+		{"a key twice, the workbench last", `{"grant":"admin","via":"identity","via":"workbench","boot":"boot-1"}`, workbenchAuth},
+		{"the workbench, capital", `{"Grant":"admin","Via":"workbench","Boot":"boot-1"}`, workbenchAuth},
+	}
+	identities := 0
+	for i, sp := range spellings {
+		n := open(t, l, gateDecision(run, fmt.Sprintf("g%d", i)))
+		id := fmt.Sprintf("r%d", i)
+		var got Responded
+		in(t, l, run, func(tx *Tx) error {
+			d, _, err := tx.Decision(n)
+			if err != nil {
+				return err
+			}
+			if got, err = tx.Respond(n, ResponseRow{Actor: "admin", Authority: sp.auth, ResponseID: id, Fingerprint: "fp-" + id, Status: ResponseAccepted, Receipt: `{}`}); err != nil {
+				return err
+			}
+			if ok, err := tx.Answer(n, run, d.Rev); err != nil || !ok {
+				return fmt.Errorf("the answer of %s: %v %v", d.ID(), ok, err)
+			}
+			return nil
+		})
+		if got.Row.Authority != sp.want {
+			t.Errorf("%s: answered as %s, want %s", sp.name, got.Row.Authority, sp.want)
+		}
+		var kept string
+		if err := l.db.QueryRow("SELECT authority FROM decision_responses WHERE decision = ?", n).Scan(&kept); err != nil {
+			t.Fatal(err)
+		}
+		if kept != sp.want {
+			t.Errorf("%s: kept as %s, want %s", sp.name, kept, sp.want)
+		}
+		if sp.want == identityAuth {
+			identities++
+		}
+		// The place count (room's) reads each kept row as the policy did.
+		if c := countRows(t, l, "SELECT COUNT(*) FROM decisions d WHERE d.current_run = ? AND "+placeCond, run); c != identities {
+			t.Errorf("%s: %d decisions hold a place, want %d", sp.name, c, identities)
+		}
+	}
+	// A spelling of a field the shape does not have is still refused.
+	n := open(t, l, gateDecision(run, "g-unknown"))
+	if err := try(l, run, func(tx *Tx) error {
+		_, err := tx.Respond(n, ResponseRow{Actor: "admin", Authority: `{"via":"identity","boot":"b","vía":"x"}`, ResponseID: "r-x", Fingerprint: "fp", Status: ResponseAccepted, Receipt: `{}`})
+		return err
+	}); !errors.Is(err, ErrInvalidDecision) {
+		t.Fatalf("an authority with an unknown field: %v", err)
+	}
+}
+
 func TestRefusalsNeverTakeTheAnswersPlace(t *testing.T) {
 	ctx := context.Background()
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
