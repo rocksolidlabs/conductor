@@ -1670,6 +1670,46 @@ func (s *Local) TryAskID(message, source, kind string, options []Option) (string
 	return id, err
 }
 
+// TryAskDecision asks message as the agent's own question that mirrors
+// the durable decision named decision ("dr-<n>"), with no quick-reply
+// options: the answer is the decision's, never keys. It is TryAskID's
+// question (its id answered, "" when none was kept; ErrRateLimited with
+// no token) with three differences (docs/plans/decisions.md, the
+// session): a person's keys, the screen and a line naming no decision or
+// another decision never take it away, as they do the agent's own; a
+// reply to it (AnswerInput, AnswerAs, a Submit naming it) is refused with
+// ErrDecisionQuestion unless the submission names that decision
+// (Submission.Decision), which only the engine's application sets; and a
+// Submit naming a decision with UnlessWaiting waits only for a question no
+// decision mirrors. It leaves with the decision's answer typed into it,
+// WithdrawQuestion (its decision superseded or cancelled), the agent's
+// next question, or the session's end.
+func (s *Local) TryAskDecision(decision, message string) (string, error) {
+	if decision == "" {
+		return "", errors.New("session: a decision's question names its decision")
+	}
+	var id string
+	err := s.setAttentionLooked(AttentionNeedsInput, message, SourceAPI, "", nil, spendToken|agentAsks, anyTurn, 0, "", attentionOpt{asked: &id, decision: decision})
+	return id, err
+}
+
+// ErrDecisionQuestion refuses an answer to a question that mirrors a
+// durable decision (TryAskDecision) from anything but that decision's
+// application: nothing was written. It is an ErrQuestionAnswered too, the
+// general refusal a viewer's reply is told with.
+var ErrDecisionQuestion = errors.New("session: the question is answered as a decision")
+
+// decisionQuestionError is ErrDecisionQuestion naming its decision.
+type decisionQuestionError struct{ decision string }
+
+func (e *decisionQuestionError) Error() string {
+	return e.decision + " is answered as a decision: nothing was sent"
+}
+
+func (e *decisionQuestionError) Is(target error) bool {
+	return target == ErrDecisionQuestion || target == ErrQuestionAnswered
+}
+
 // attentionRules say how setAttention applies a change.
 type attentionRules uint32
 
@@ -1806,6 +1846,9 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 type attentionOpt struct {
 	only  string
 	asked *string
+	// decision is the durable decision the agent's question asked
+	// mirrors (TryAskDecision), "" for any other change.
+	decision string
 }
 
 func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64, plan string, opts ...attentionOpt) error {
@@ -1978,7 +2021,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// own question waits through its turn's done and its work in that
 		// turn, as it would shown.
 		if o := s.heldOver; o.ID != "" && !(state == o.State && message == o.Message && source == o.Source && kind == o.Kind && sameOptions(options, o.Options)) &&
-			!(o.ID == own.ID && (state == AttentionDone || state == AttentionWorking && inTurn)) {
+			!(o.ID == own.ID && (state == AttentionDone || state == AttentionWorking && inTurn || own.Decision != "")) {
 			// Withdrawn: a claim on it resolves nothing.
 			s.heldOver = Attention{}
 			s.forgetLocked(o.ID)
@@ -1993,6 +2036,9 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			s.heldOver, s.ownAside = own, false
 		case s.ownAside && inTurn && !ask && state != AttentionNone:
 			// Set aside still: another state in its turn.
+		case own.Decision != "" && !ask:
+			// A decision's question waits for its decision (TryAskDecision).
+			s.ownAside = true
 		default:
 			s.dropOwnLocked(ChatLeftAgent)
 		}
@@ -2101,7 +2147,8 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// The same question again: its words, its choices and, read off the
 	// screen, its whole list (a choice changed past what its label shows is
 	// another question, whose reply is weighed against the list now).
-	if cur.State == state && sameWords(cur.words(), words) && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) && cur.list == list {
+	if cur.State == state && sameWords(cur.words(), words) && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) && cur.list == list &&
+		opt.decision == "" && cur.Decision == "" {
 		if rows != "" && rows != cur.rows {
 			// The same question read at another width (the window
 			// resized, its rows broken elsewhere): it is told by its rows
@@ -2206,6 +2253,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// Kept from now, asked in the turn now running; the one kept
 		// before, if any, goes (its next question).
 		att.ask = true
+		att.Decision = opt.decision
 		prev := s.own.ID
 		s.own, s.ownAside, s.ownTurn = att, false, s.turn.Load()
 		if opt.asked != nil {
@@ -2220,6 +2268,11 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// already, a question on the screen showing over the hold.
 	case (ownShown || s.ownAside) && inTurn && !reached && state != AttentionNone:
 		// In its turn: set aside, to show again at the turn's done.
+		s.ownAside = true
+	case own.Decision != "" && opt.only != own.ID:
+		// A decision's question (TryAskDecision) outlasts a new turn, a
+		// clear and the keys that reached it: set aside, it shows again
+		// at the next done, until its decision is answered or withdrawn.
 		s.ownAside = true
 	default:
 		// A state after its turn's done (the agent at work in a new turn,
@@ -3258,10 +3311,11 @@ const resultsKept = 64
 // claim's token: the write resolves the question with it once made
 // (resolve), or releases it (release). A dialog or a startup question
 // claimed is noted by its words, so that one drawn again before the
-// program moves on is that question still (sameDialog, startupStill). The
-// caller holds s.mu.
-func (s *Local) claimLocked(id string) (uint64, error) {
-	if err := s.waitsLocked(id); err != nil {
+// program moves on is that question still (sameDialog, startupStill).
+// decision is the decision the answer names ("" for none): a question
+// that mirrors another refuses it (waitsLocked). The caller holds s.mu.
+func (s *Local) claimLocked(id, decision string) (uint64, error) {
+	if err := s.waitsLocked(id, decision); err != nil {
 		return 0, err
 	}
 	if s.inputBusy() {
@@ -3298,10 +3352,14 @@ func (s *Local) dropClaimLocked(c questionClaim) {
 // claimQuestion is claimLocked, asked as the writer takes a reply's write,
 // the last of its checks (writeWait.guard), so that the write is made when
 // it returns nil, and a reply to the same question after it is refused.
-func (s *Local) claimQuestion(id string) (uint64, error) {
+func (s *Local) claimQuestion(id string) (uint64, error) { return s.claimQuestionAs(id, "") }
+
+// claimQuestionAs is claimQuestion for a reply that names the decision
+// decision (waitsAsLocked).
+func (s *Local) claimQuestionAs(id, decision string) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.claimLocked(id)
+	return s.claimLocked(id, decision)
 }
 
 // release lets the claim (id, token) go (CLAIMED to OPEN): its write was
@@ -3690,15 +3748,27 @@ func (e *questionAnsweredError) Is(target error) bool { return target == ErrQues
 // answered it in the terminal (OPEN). ErrQuestionAnswered otherwise, with
 // the result when one is recorded for it.
 func (s *Local) questionWaits(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.waitsLocked(id)
+	return s.questionWaitsAs(id, "")
 }
 
-// waitsLocked is questionWaits for a caller that holds s.mu.
-func (s *Local) waitsLocked(id string) error {
+// questionWaitsAs is questionWaits for a reply that names the decision
+// decision ("" for none): a question mirroring another decision, or any
+// decision for a reply naming none, refuses it (ErrDecisionQuestion).
+func (s *Local) questionWaitsAs(id, decision string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.waitsLocked(id, decision)
+}
+
+// waitsLocked is questionWaitsAs for a caller that holds s.mu.
+func (s *Local) waitsLocked(id, decision string) error {
 	if id == "" {
 		return ErrQuestionAnswered
+	}
+	for _, q := range []Attention{s.info.Attention, s.own, s.heldOver} {
+		if q.ID == id && q.Decision != "" && q.Decision != decision {
+			return &decisionQuestionError{q.Decision}
+		}
 	}
 	att := s.info.Attention
 	// The session's turn held for a typed text (source submit) is no
@@ -3989,7 +4059,7 @@ func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, start
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, maybe) {
 		s.noteDialogAnswered(onScreen.words)
 	}
-	if person && s.own.ID != "" && s.ownAside {
+	if person && s.own.ID != "" && s.ownAside && s.own.Decision == "" {
 		s.dropOwnLocked(ChatLeftTerminal)
 		keptGone = true
 	}
