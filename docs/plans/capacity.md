@@ -266,20 +266,35 @@ type UsageInput struct {
 	Command []string          // the catalog agent's program, resolved, then its argv
 	Env     []string          // built as the launch builds it (below), then ConfigDirEnv=<folder> for an account with one
 	Dir     string            // <dataDir>/capacity/run, made 0700, empty
-	// Admit is asked, with the version this read itself found, before a
-	// version that needs leave (Qualification) is started; nil admits none.
+	// Admit is asked, with the version this read itself found, before
+	// Claude Code's `/usage` run is started, whatever the version
+	// (Qualification, and One owner in PR-2); nil admits none. A read
+	// that ends at `auth status` (signed out, key-paid) asks none.
 	Admit func(version string) (Admission, error)
 }
 
-// Admission is one version's leave to run. Done is called once, with
-// whether the run answered with a model turn.
-type Admission interface{ Done(turned bool) }
+// Admission is one run's leave to start. Done is called exactly once,
+// with what the run's own output proved.
+type Admission interface{ Done(o Outcome) }
+
+// Outcome is what one Claude Code run proved. Local only for a result
+// line with num_turns 0 and local_command "usage"; Turned for a result
+// line with num_turns above 0 or another local_command; Inconclusive for
+// every other end: a timeout, end of file or the child's exit before a
+// result line, a malformed line, an output bound passed.
+type Outcome int
+
+const (
+	Inconclusive Outcome = iota // the zero value: proves nothing
+	Local
+	Turned
+)
 
 type UsageReport struct {
 	State    string        // ok | signed_out | key_paid | unqualified | error
 	Words    string        // why, for every state but ok; at most 300 bytes
 	Version  string        // the version this read's own check found; "" when none
-	Turned   bool          // the program answered with a model turn
+	Outcome  Outcome       // what the run proved (Claude Code); Inconclusive for Codex
 	Plan     string        // the subscription or plan type as the tool says it; at most 40 bytes
 	Windows  []UsageWindow // at most 16
 	Credits  []UsageCredit // at most 4
@@ -323,15 +338,31 @@ gave as null stays nil. No reader fills a missing value.
 Qualification: the version a reader is judged by is never the identity
 probe's cache, which keeps an identity ten minutes by command, adapter
 and environment and so can describe a program that updated itself at the
-same path since. Each read, for both readers, resolves the program to
-its file (`exec.LookPath`, then `filepath.EvalSymlinks`), notes that
-file's identity (device, inode, size, modification time), runs
-`<file> --version` on the resolved file with the probe's parsing and
-bounds, notes the identity again, and starts the read on that same
-resolved file only when the two notes agree. A version it cannot parse,
-a `--version` that fails, or a file whose identity changed between the
-notes ends the read `unqualified` ("the program changed while it was
-checked", or the tool's words) with nothing started: it fails closed.
+same path since. Each read, for both readers, keeps the catalog's whole
+command, as the identity probe does (`RunProbe` runs `Command[0]` with
+`Command[1:]` before its own arguments, `internal/agents/probe.go`), so a
+wrapped command such as the e2e catalog's `[@BASH@, @STUB@]`, a
+`[bash, script]` or an `[npx, codex]` is asked as the tool it wraps,
+never as the wrapper. The read resolves `Command[0]` to its file
+(`exec.LookPath`, then `filepath.EvalSymlinks`) and every later element
+of the command that names an existing regular file (the script a
+wrapper runs) to its file the same way, notes each of those files'
+identity (device, inode, size, modification time), runs the resolved
+prefix followed by `--version` with the probe's parsing and bounds,
+notes the identities again, and starts the read with that same resolved
+prefix, followed by the reader's own arguments, only when every note
+agrees. The version checked is the one the whole prefix prints, parsed
+by the adapter's probe (`Probe.Match`, after `Probe.Reject`): the
+wrapped tool's, never the wrapper's; a prefix whose answer the probe
+does not identify as the adapter's tool (a wrapper printing its own
+version) is `unqualified` ("<command> does not answer as Claude Code").
+What a wrapper reaches without naming it as a file (a package runner's
+cache) has no identity to note: there the version the prefix prints is
+the gate, and a change between that print and the start is bounded by
+the turn guard below. A version it cannot parse, a `--version` that
+fails, or a file whose identity changed between the notes ends the read
+`unqualified` ("the program changed while it was checked", or the
+tool's words) with nothing started: it fails closed.
 The version found so is the one compared below, recorded, and named in
 the view (`ReadBy`). What the notes cannot see, a replacement in the
 moment between the second note and the start, is bounded by the turn
@@ -342,22 +373,39 @@ A version below `MinVersion` is `unqualified` with "read only from
 <MinVersion>". Codex's methods cost no turn whatever the version, so a
 Codex newer than `Qualified` is read, and the view says both versions
 ("read by 0.164.0, checked on 0.163.0"); a format that changed shows as
-`error` with the field that failed, never as a guess. A Claude Code newer
-than `Qualified` (a version not checked could answer `/usage` with a
-model turn) is started only under an admission (`UsageInput.Admit`),
-which the caller answers from the durable record of versions
-(`internal/capacity`'s `Versions`, PR-2): a version recorded `checked` is
-admitted for every read; one recorded `turned` or `interrupted`, or not
-recorded, is refused, and the view is `unqualified` with "2.1.320 is
-newer than the 2.1.318 the reader was checked on"; only the admin's
-explicit check (`POST /api/capacity/read` with `check: true`, the panel's
-"Check this version" with those words, `conductor capacity --read
---check`) asks for a version not recorded, or recorded `interrupted`, to
-be admitted once. The reader reports `Turned` and calls the admission's
-`Done` with it; a turn seen on any version, admitted or the `Qualified`
-one, is recorded `turned` by the caller and that version is never started
-again. `internal/agents` keeps no record itself: what is kept, and how it
-survives a restart, a crash and two accounts at once, is `Versions`'.
+`error` with the field that failed, never as a guess. Every Claude Code
+`/usage` run, of any version, is started only under an admission
+(`UsageInput.Admit`), since any run can answer `/usage` with a model
+turn, which the record must then hold: the caller answers it from the
+durable record of versions (`internal/capacity`'s `Versions`, PR-2), and
+only on the server that owns that record (One owner, PR-2). A version
+from `MinVersion` to `Qualified`, the ones the reader was checked
+against, is admitted for every read unless recorded `turned`; a newer
+version recorded `checked` is admitted for every read; one recorded
+`turned` or `interrupted`, or not recorded, is refused, and the view is
+`unqualified` with "2.1.320 is newer than the 2.1.318 the reader was
+checked on"; only the admin's explicit check (`POST /api/capacity/read`
+with `check: true`, the panel's "Check this version" with those words,
+`conductor capacity --read --check`) asks for a version not recorded, or
+recorded `interrupted`, to be admitted once. The reader ends every run
+with exactly one `Done`, with the `Outcome` the run's own output proved,
+and reports it (`UsageReport.Outcome`). A version becomes `checked` only
+from `Local`, a result line seen saying no turn was taken. `Turned` on
+any version, the `Qualified` one included, records it `turned`, and it
+is never started again. `Inconclusive` proves nothing either way: a
+check that ends so (killed at its timeout, its output ended or its child
+gone before the result line, a malformed line, a bound passed) records
+the version `interrupted`, refused to every read until the admin checks
+it again, and answers `error` with "the check of 2.1.320 ended without
+an answer: check it again"; an `Inconclusive` read of a version already
+admitted for every read leaves its record as it is (that version was
+already seen answering with no turn) and answers `error` with the tool's
+words. The invariant: no Claude Code program is started without the
+admin's explicit check unless a run of that version was seen answering
+`/usage` with no turn, and every run's outcome is recorded, by the
+server that admitted it, before the read answers. `internal/agents`
+keeps no record itself: what is kept, and how it survives a restart, a
+crash and two accounts at once, is `Versions`'.
 
 What runs where: the nightly `recipes` tier installs each tool with no
 login (`.github/workflows/nightly.yml`), so it checks what a signed-out
@@ -394,8 +442,10 @@ is the `/usage` command's words for people and names the person's
 folders), and the result line's `num_turns` and `local_command`. A result
 with `num_turns` above 0 or another `local_command` means this version
 answered `/usage` with a model turn: the report is `unqualified` with
-`Turned` set, and the caller records the version `turned` (`Versions`,
-PR-2), never run again. `apiKeySource` other than `none` on the init line is a second
+`Outcome` `Turned`, and the caller records the version `turned`
+(`Versions`, PR-2), never run again. Only a result line with `num_turns`
+0 and `local_command` `usage` is `Local`; a run that gives no result
+line, for any reason, is `Inconclusive`, never `Local`. `apiKeySource` other than `none` on the init line is a second
 guard: the report is `key_paid` and its windows are dropped.
 
 **Codex's reader** (`usage_codex.go`) starts `<command…> app-server
@@ -509,9 +559,17 @@ why, refuses every write (`409 accounts_not_owner`), and refuses a
 launch whose account would resolve to a registered account (not
 `default`, not Brakeman's `unlisted` folder, PR-4), with those words; so
 no server binds an account whose removal it cannot see. The same owner
-alone writes `capacity/versions.json` (below): a server without the lock
-admits `checked` versions it reads there and refuses a check (`409
-accounts_not_owner`), so it never admits what it could not record.
+alone writes `capacity/versions.json` (below), and since any Claude Code
+run can change what that record must hold (a turn on any version, a
+`checked` or the `Qualified` one included, records it `turned`), the
+owner alone starts one: a server without the lock starts no Claude Code
+program at all, for a read or a check, of any version; it answers the
+view `not_owner` ("another server over this data directory reads Claude
+Code's usage: <why>") and a check `409 accounts_not_owner`. Codex's
+reads, which cost no turn and change no record, are made by any server.
+So every Claude Code run is admitted, and its outcome recorded, by the
+one process that holds the record, and neither server, restarted or
+not, starts a version a run of it was seen to turn on.
 
 **Versions** (`versions.go`), one document `capacity/versions.json`
 (0600, at most 16 KiB) through `internal/store`: a record per adapter and
@@ -522,10 +580,14 @@ record, or `interrupted`, under the admin's check, becomes `checking`, and
 the document is saved (the store's atomic write) before `Admit` returns,
 so the record is on disk before the program starts; a second ask for a
 version in `checking` (another account at the same moment, or the same
-one) is refused `check_under_way` with words; `Done(false)` moves it to
-`checked`, `Done(true)` to `turned`, each saved before the read
-answers. A turn seen without an admission (the `Qualified` version
-answering with a turn) is recorded `turned` the same way. At open, every
+one) is refused `check_under_way` with words; `Done(Local)` moves it to
+`checked`, `Done(Turned)` to `turned` and `Done(Inconclusive)` to
+`interrupted`, each saved before the read answers, so a check becomes
+`checked` only from a run seen answering with no turn. A read of a
+version admitted for every read (`checked`, or from `MinVersion` to
+`Qualified`) takes no exclusive record: `Done(Turned)` records it
+`turned` the same way (a record is made for a `Qualified` version then),
+and `Local` or `Inconclusive` leave its record as it is. At open, every
 `checking` record is a check no process finished (a crash, a kill): it
 becomes `interrupted`, is never admitted by a read, and its view says "a
 check of 2.1.320 was interrupted: check it again"; only the admin's
@@ -562,7 +624,7 @@ type View struct {
 	Model   ViewModel   `json:"model"`   // chosen ("" for the agent's default), and the words shown
 	Account ViewAccount `json:"account"` // id, label, default, retired, plan
 	Host    ViewHost    `json:"host"`    // native, the server's name; undetermined; or remote
-	State   string      `json:"state"`   // ok | reading | unsupported | not_installed | signed_out | key_paid | unqualified | remote | env_set | unlisted | error | never_read
+	State   string      `json:"state"`   // ok | reading | unsupported | not_installed | signed_out | key_paid | unqualified | remote | env_set | unlisted | not_owner | error | never_read
 	Words   string      `json:"words,omitempty"`
 	Windows []Window    `json:"windows"` // source "provider"
 	Credits []Credit    `json:"credits"` // source "provider"
@@ -626,8 +688,10 @@ open, and `conductor capacity --read`. Every `GET`, the principal
 The `View`'s host follows the launch the query names, since the Runtime
 is chosen per managed run when the run is made (`Takes`): a session and
 a legacy crew's member always run natively (`native` and the server's
-name); so does a managed run whose members bind an account other than
-`default` (PR-4); a managed run on `default` is `native` when no
+name); so does a managed run in which the binding this agent and
+account would get is not `own` (a registered account, an entry pinned
+to a folder, a launch's own login variables: PR-4, Native until F); one
+in which it would be `own` is `native` when no
 Runtime other than the native one is registered, and otherwise
 `undetermined`, with the server's reading shown under "this server's
 login: if <Runtime> takes the run, its usage there is unknown", never as
@@ -681,22 +745,37 @@ additions (yolo's env, approved names, the request's env) set or pass
 the `ConfigDirEnv` takes `default` only too.
 
 **A binding names the login, not only the account.** `BoundAccount` is
-`{ID, Label, Folder, Source}`, and `Source` says where the login the
-process will use comes from: `account` (a registered account, its
+`{ID, Label, Folder, Source, Login}`, and `Source` says where the login
+the process will use comes from: `account` (a registered account, its
 folder), `own` (`default` with nothing setting the folder: the tool's own
 login, `Folder` empty), `pinned` (`default` on an entry whose built
 environment sets the folder: `Folder` is that folder), `unlisted`
 (Brakeman's folder not in Accounts, below) or `launch_env` (the launch's
-own additions set it: no folder recorded, since those values may be a
-key). The **effective login** of a binding is its adapter and `Folder`,
-`own` meaning the tool's default; two bindings are the same login only
-when both match. Every later use of a binding (an attempt, a resume, a
-continuation, a member started later) builds the entry's environment
-again and refuses `account_gone`, with words, when the effective login
-it would get differs from the bound one: a registered account removed or
-naming another folder, an `own` entry that now pins a folder, a `pinned`
-entry that now pins another or none. A `launch_env` binding is compared
-on its `Source` alone. **Brakeman's turn** keeps its
+own additions set the folder or one of the adapter's `AuthEnv`
+variables: no folder recorded, since those values may be a key).
+`Login` is a fingerprint of the authentication context the process
+gets: a SHA-256, under the fixed prefix `conductor-login/1`, of the
+adapter, then the value of its `ConfigDirEnv` and of each of its
+`AuthEnv` variables (or a mark that it is unset) in a fixed order, read
+from the whole environment the process is started with (the entry's,
+the server's passthrough and the launch's own additions alike, yolo's
+included). Only the hash is kept, beside the folder and, like it, in no
+reply; the values, a key among them, never are. The **effective login**
+of a binding is its adapter, its `Folder` (`own` meaning the tool's
+default) and its `Login`; two bindings are the same login only when all
+three match, so two catalog entries that share a folder but carry
+different keys are two logins. Every later use of a binding (an attempt,
+a resume, a continuation, a member started later) builds the whole
+environment it would start with again and refuses `account_gone`, with
+words, when the effective login it would get differs from the bound
+one: a registered account removed or naming another folder, an `own`
+entry that now pins a folder, a `pinned` entry that now pins another or
+none, a yolo recipe whose environment now sets another folder or key, a
+key that is now another. This holds for every `Source`, `launch_env`
+included: no use is compared on its `Source` alone. The invariant:
+every process started under a binding gets an environment whose
+fingerprint is the binding's `Login`, compared before it starts.
+**Brakeman's turn** keeps its
 configuration's `account` as a folder (`docs/plans/brakeman.md` owns it)
 and is bound from it: an empty `account` is `default` (the tool's own
 login, as today, never the adapter's registry default); a folder that a
@@ -747,7 +826,8 @@ member of the calling session's adapter takes the calling session's
 effective login, compared, never copied by id: the member's entry is
 built (`agentEnv`) and its binding resolved as a launch would resolve it
 with the calling session's account; when the effective login that gives
-differs from the calling session's, the member is refused (`400
+differs from the calling session's (another folder, or the same folder
+with another key: the fingerprints differ), the member is refused (`400
 invalid_account`, "this agent's entry uses another login than the
 session's: <where it is set>"). So a session of an entry pinned to
 `/work` (`claude-work`) may add another `claude-work` member, whose
@@ -766,9 +846,33 @@ engine records the crew as launched with each member's `Account`
 resolved to a concrete binding (`BoundAccount`, never empty) and its
 `Model` as given. That copy is what the ledger keeps already
 (`runs.crew`) for a managed run, and the engine's own copy of the crew
-for a legacy one, so every attempt, retry, repair, member added or
+for a legacy one, with the legacy run's record once the engine has
+forgotten it (below), so every attempt, retry, repair, member added or
 started later, resume and continuation reads the account and model from
 the run, never from the accounts document's default.
+
+**A legacy run's record keeps its bindings.** A legacy run has no
+`runs.crew` row: its record (`internal/crew/record.go`,
+`runs/<id>.json`) is the run as `GET /api/runs/{run}` answers it, and
+`Engine.ResumeRecord` rebuilds the crew from the record's members once
+the engine or the server has forgotten the run. That reply type carries
+no folder (below), so the record gains one storage-only field beside the
+run: the file is the `Run` with one more top-level field, `bound`
+(member name to `BoundAccount`, for every member), written by
+`Records.Save` from the engine's bound crew at every save, at most 128
+entries, inside the record's 4 MiB bound and never trimmed by `fit`.
+Every load of a record decodes this storage form (the store refuses an
+unknown field), and `Records.Get` and `Records.List` return the public
+`Run` alone, as every route and Brakeman's reads use it; a new `Records.Bound(runID)` returns
+the bindings, and only `ResumeRecord` reads it: it sets each member's
+`Account` from them and compares each member's effective login as every
+later use does (`account_gone` when it differs, never moved). A record
+from before this item has no `bound`: its members resume as a launch of
+`default` resolves at the resume, which is what `main` resumes. The
+invariant: every place a run is kept so it can be started again (the
+ledger's `runs.crew`, the engine's copy, a legacy record) keeps each
+member's whole binding, and every reply made from those places is made
+from a type with no binding field.
 
 **A binding's folder stays out of every run reply.** `MemberState` is
 also the run as routes return it: the admin's run routes, the session
@@ -777,9 +881,9 @@ token's self routes (`handleSelfCrew`, `handleSelfAddMember` and
 whole) and Brakeman's run reads (`filterRun`, `filterRuns`, which keep
 the members' fields). So the folder is never in it: `MemberState` gains
 `Account` as `{id, label, source}` and `Model`, a reply type with no
-folder field, and the folder lives only in the run's bound crew (the
-ledger's `runs.crew` and the engine's copy), which no route marshals,
-and in `session.Launched`. The saved crew a self route returns carries
+folder field, and the folder and the fingerprint live only in the run's
+bound crew (the ledger's `runs.crew`, the engine's copy and a legacy
+record's `bound`), which no route marshals, and in `session.Launched`. The saved crew a self route returns carries
 account ids only, as every saved crew does; a `BoundAccount` in any
 request body (a crew, a member, an approved revision's body) is refused,
 since only the engine binds. `LaunchSpec` gains `Account
@@ -788,14 +892,26 @@ arguments from them. A run whose member's effective login is no longer
 the bound one (its account removed, its id naming another folder, its
 entry pinned otherwise) refuses an attempt with words: the attempt fails at its launch (`account_gone`)
 before any process exists, and is never launched under another login.
-**Native until F.** The bound folder reaches the process as a path on
-this server, which a guest would not have, and handing a login into a
-guest is item F's decision, not this one's. So a managed run any of
-whose members binds an account other than `default` is offered to no
-Runtime (the engine's `runtimeFor` asks no `Takes` for it, as for a
-legacy crew, from the members' `Account` alone; `internal/crew` reads no
-capacity) and runs natively until item F defines how a Runtime receives
-a login. A crew JSON in the
+**Native until F.** A login that depends on this server (the folder a
+registered account, a pinned entry or Brakeman's unlisted folder names,
+or the login variables a launch's own additions set or pass) reaches the
+process as a path or a value on this server, which a guest would not
+have, and handing a login into a guest is item F's decision, not this
+one's. So eligibility is read from the effective binding, never from
+the id: a managed run is offered to a Runtime only when every member's
+binding has `Source` `own` (the tool's own login, with nothing setting
+its folder or a login variable at the launch); a run with any member
+bound `account`, `pinned`, `unlisted` or `launch_env` (a `pinned` one
+has the id `default`) is offered to no Runtime (the engine's
+`runtimeFor` asks no `Takes` for it, as for a legacy crew, from the
+members' bound `Source` alone; `internal/crew` reads no capacity) and
+runs natively until item F defines how a Runtime receives a login. The
+Runtime is chosen once, when the run is made, so a member added later
+cannot move the run: a run a Runtime took admits an added member only
+when its binding is `own`, and refuses another (`400 invalid_account`,
+"this run's Runtime cannot take a login from this server"). The
+invariant: no process on a Runtime other than the native one starts
+under a binding other than `own`. A crew JSON in the
 ledger from before this item has no `account`: it reads as `default`,
 which is what those runs ran under. A ticket's approved plan revision
 whose body names no account launches with the default at that launch,
@@ -908,8 +1024,8 @@ into the cache, then `OnRead`, then the `capacity` event: an event is
 never sent for a reading not yet kept, so a page that reads the view on
 the event sees it. A reading never goes to disk, never to a session,
 never into the ledger or Dispatch, and nothing in `internal/crew` reads
-it. `unsupported`, `not_installed`, `remote`, `env_set` and `unlisted`
-are answered without a read.
+it. `unsupported`, `not_installed`, `remote`, `env_set`, `unlisted` and
+`not_owner` are answered without a read.
 
 **A launch's binding.** For a session: resolve the account (under
 `accountsMu`, reading the default once) → build the environment and
@@ -927,8 +1043,11 @@ compares the effective login it would get with the bound one and refuses
 `account_gone` when they differ. A member added to a run, by the admin or
 by an agent, is resolved (Crews, above) before the run admits it, under
 a reservation, and the run's record holds its binding before it can
-start. A managed run binding an account other than `default` is offered
-to no Runtime. A ticket's launch freezes the revision's package as
+start. A managed run is offered to a Runtime only when every member's
+binding is `own`, and a run a Runtime took admits only `own` members: no
+process on a non-native Runtime starts under a login that depends on
+this server. Every process started under a binding is compared, before
+it starts, with the binding's `Login` fingerprint. A ticket's launch freezes the revision's package as
 today; the binding is in the run's crew, never written into the package.
 
 **What never happens.** No reading refuses, delays, pauses or reorders a
@@ -937,7 +1056,9 @@ another account, and no agent chooses one. No `GET` starts a read. No reading is
 and no estimate is added to a provider's figure. No reader sends a
 method or flag outside its fixed list, and none starts a program whose
 version it did not find itself at that read. No run reply, to anyone,
-carries a bound folder. No `turned` version is forgotten.
+carries a bound folder or a login's fingerprint. No `turned` version is
+forgotten, no check becomes `checked` without a run seen answering with
+no turn, and no server without the owner lock starts Claude Code.
 
 ## Out of scope
 
@@ -984,10 +1105,17 @@ fixture: two weekly windows, extra usage off, plan from `auth status`),
 `TestClaudeUsageKeepsNoText` (no byte of the fixture's people's text, and
 no email or organisation from `auth status`, in the report's JSON),
 `TestClaudeUsageRefusesModelTurn` (`num_turns` 1: `unqualified` with
-`Turned`, and the fake admission's `Done` called once with true),
+`Outcome` `Turned`, and the fake admission's `Done` called once with
+`Turned`), `TestClaudeUsageInconclusive` (a run killed at its shortened
+timeout once its pid file is written, one whose output ends before the
+result line, one whose child exits before it, a malformed line, and an
+output past its bound: each calls `Done` once with `Inconclusive`, never
+`Local`, and answers `error`; only a result line with `num_turns` 0 and
+`local_command` `usage` gives `Local`),
 `TestClaudeUsageNewerVersionNotStarted` (a version past `Qualified`: a
 nil `Admit`, or one that refuses, starts no process and answers
-`unqualified`; an admitting fake: one run, `Done(false)`),
+`unqualified`; an admitting fake: one run, `Done(Local)`; the
+`Qualified` version too is started only once `Admit` answers),
 `TestUsageVersionFromProgram` (a fake program on disk at a path whose
 identity probe is cached as `Qualified`, replaced at the same path by one
 that prints a newer version: the read runs `--version` on the new file,
@@ -995,6 +1123,14 @@ asks `Admit`, and with none starts nothing; the file replaced between
 the two identity notes through a seam (`afterVersion`): `unqualified`,
 nothing started; a `--version` that prints no version: `unqualified`;
 the same for the Codex reader's `MinVersion`),
+`TestUsageWrappedCommand` (a catalog command `[<bash>, <script>]`, the
+e2e catalog's shape, whose script answers `--version` as Claude Code
+2.1.318: the version checked is the script's, not Bash's; the read's
+argv is the resolved Bash, the resolved script, then the reader's own
+arguments; the script replaced between the two notes through
+`afterVersion`: `unqualified`, nothing started; a wrapper that prints
+its own version: `unqualified` with "does not answer as Claude Code";
+the same for Codex's `app-server` through a wrapper),
 `TestClaudeUsageSignedOut` (`loggedIn` false: `/usage` never run),
 `TestClaudeUsageKeyPaid` (an `authMethod` that is a key and a provider
 that is not Anthropic's: `key_paid`, and `/usage` never run; an init line
@@ -1046,8 +1182,14 @@ removed is in `Removed` and the mint refuses it; ids are the server's,
 never the label's), `TestVersionsAdmitOnce` (two accounts ask a check of one version at
 once, the first admission held at a gate: the `checking` record is on
 disk before `Admit` returns, the second ask is refused
-`check_under_way`; `Done(false)`: `checked`, admitted for every read
-after), `TestVersionsInterrupted` (a `checking` record on disk at open:
+`check_under_way`; `Done(Local)`: `checked`, admitted for every read
+after), `TestVersionsInconclusiveCheck` (a check ended
+`Done(Inconclusive)`: `interrupted` on disk before the read answers; the
+next read with no check is refused and starts nothing; after the
+document is opened again still `interrupted`; the admin's check admits
+it once; an `Inconclusive` read of a `checked` version leaves it
+`checked`, and a `Turned` one of the `Qualified` version records it
+`turned`), `TestVersionsInterrupted` (a `checking` record on disk at open:
 `interrupted`, refused to a read, admitted to the admin's check),
 `TestVersionsSurviveRestart` (`checked` and `turned` read back after the
 document is opened again; a `turned` version refused even to a check),
@@ -1074,13 +1216,15 @@ accounts, the most windows and the longest strings the bounds allow,
 over several catalog entries: every page within 128 KiB, `next` walks
 every view once), `TestCapacityHostByLaunch` (a session and a legacy
 member `native`; a managed run on `default` with a registered Runtime
-`undetermined`, with none `native`), `TestUsageEnvMatchesLaunch` (a
+`undetermined`, with none `native`; a managed run of an entry pinned to
+a folder `native` with a Runtime registered), `TestUsageEnvMatchesLaunch` (a
 server whose passthrough names `CLAUDE_CONFIG_DIR` and `https_proxy`:
 the reader's environment holds both as the session's would, and the
 `default` account reads the folder the session would get; a launch
 whose yolo env sets `ANTHROPIC_API_KEY` is `env_set`),
 `TestCapacityViewStates` (unsupported, not installed, never read,
-remote, `env_set`, a changed environment `stale`), `TestCapacityReadThenEvent` (the
+remote, `env_set`, `not_owner` for Claude Code on a server without the
+lock, a changed environment `stale`), `TestCapacityReadThenEvent` (the
 fake reader answers once the test opens its gate; the test waits for the
 `capacity` event and reads the view: `ok`), `TestCapacityEventBounded`,
 `TestCapacityRepliesBounded`, `TestCapacityMinInterval`,
@@ -1090,8 +1234,18 @@ fake reader answers once the test opens its gate; the test waits for the
 `TestCapacityTurnedSurvivesRestart` (a fake program that answers with a
 turn on a check: the version recorded `turned`; a new server over the
 same data directory: neither a read nor a check of it starts the
-program), `TestCapacityCheckNotOwner` (the second server's check refused
-`accounts_not_owner`, a `checked` version still read). `internal/export`
+program), `TestCapacityInconclusiveCheckSurvivesRestart` (checks of
+three new versions, the first killed at the shortened timeout, the
+second's output ending before its result line, the third's past the
+output bound: each recorded `interrupted`; the dialog's next read of
+each starts no program; a new server over the same data directory: the
+same), `TestCapacityCheckNotOwner` (two servers over one data
+directory; a version the first checked, whose fake program now answers
+with a turn: the second server's read of it, of the `Qualified` version
+and its check start no Claude Code program, answering `not_owner` and
+`409 accounts_not_owner`; the first's read records it `turned`; neither
+server, nor a third opened after both end, starts it again; a Codex read
+on the second server is made). `internal/export`
 (PR-3): `TestLeftOutCapacity` (an export holds `capacity/accounts.json`
 and `capacity/versions.json` and neither `capacity/owner.lock` nor
 anything under `capacity/run`; a restore of an archive holding either is
@@ -1120,21 +1274,40 @@ plain member (that account) and is refused the pinned one; a session
 whose launch set the login adds no `claude` member; on `form_crew` and
 `add_member` both), `TestBindingLoginChanged` (the pinned entry's
 folder changed in the catalog after the launch: the resume and the run's
-next attempt refused `account_gone`), `TestRunRepliesCarryNoFolder` (a
+next attempt refused `account_gone`; a session of a yolo recipe whose
+env sets `CLAUDE_CONFIG_DIR=/A`, the recipe changed to `/B`: the resume
+refused, and the same with its `ANTHROPIC_API_KEY` changed; two entries
+sharing one folder with different `ANTHROPIC_API_KEY`: a session of one
+adds no member of the other; a `launch_env` session's resume with its
+additions changed refused), `TestBindingFingerprint` (the same variables
+give the same `Login`; a changed key, folder or base URL another; no
+value of any variable in the binding's JSON), `TestLegacyRecordKeepsBindings`
+(a legacy run with a member on a registered account and one `pinned`,
+ended, forgotten by the engine, then a new server over the same data
+directory: the record's `bound` reads back whole; `ResumeRecord` with
+the pinned entry unchanged resumes with the bound folder, read from the
+stub's transcript; with the pinned entry's folder changed in the
+catalog, that member refused `account_gone`; a record without `bound`
+resumes on `default`), `TestRunRepliesCarryNoFolder` (a
 run with a member on a registered account and one `pinned`: no folder
 byte in `GET /api/runs`, `GET /api/runs/{run}`, the replies of
-`form_crew`, `add_member` and `GET /api/sessions/{id}/run`, or
-Brakeman's `observe runs` and `observe run`, with its Capacity class off
-and on; a `BoundAccount` in a crew body refused), `TestAddMemberBindsDefaultNow` (the admin's
+`form_crew`, `add_member` and `GET /api/sessions/{id}/run`, a run
+answered from its legacy record, or Brakeman's `observe runs` and
+`observe run`, with its Capacity class off and on, and no `bound` field
+and no fingerprint in any; a `BoundAccount` in a crew body refused), `TestAddMemberBindsDefaultNow` (the admin's
 add with no account: the default at the add, kept when the member starts
 later after the default changed), `TestLaunchPinnedByPassthrough` (a
 passthrough `CLAUDE_CONFIG_DIR`: another account refused, `default`
 taken), `TestBrakemanTurnBinding` (an empty account `default`, a
 registered folder its id, another folder `unlisted`: the process's
 environment, the binding and the view name the same folder),
-`TestNotOwnerBindsDefaultOnly`, `TestBoundRunNotOffered` (a managed run
-binding a non-default account: the registered Runtime's `Takes` is never
-asked; a run on `default` is offered as today),
+`TestNotOwnerBindsDefaultOnly`, `TestBoundRunNotOffered` (managed runs
+with a member on a registered account, a member of an entry pinned to a
+folder (bound `pinned` under the id `default`), a member whose yolo env
+sets `CLAUDE_CONFIG_DIR` (`launch_env`): the registered Runtime's
+`Takes` is never asked for any; a run whose members all bind `own` is
+offered as today; to a run the Runtime took, a member added with a
+`pinned` binding is refused and an `own` one admitted),
 `TestLaunchBindsAccount` (the session's environment
 has the folder; `Launched` the binding; the `launch` block has no folder
 for a link), `TestLaunchResolvesDefaultOnce`, `TestLaunchRefusesRetired`,
@@ -1219,9 +1392,11 @@ folder holds). Tests cannot reach the providers' real answers.
    own; nothing an attempt needs is only in memory (the binding is in
    `runs.crew`). The folder is a path on this server that a guest would
    not have, and handing a login into a guest is item F's to decide: a
-   managed run binding an account other than `default` is offered to no
-   Runtime and runs natively until F defines how a Runtime receives a
-   login (PR-4); before a launch, a run that could go to a registered
+   managed run with any member whose binding is not `own` (a registered
+   account, a folder an entry pins under the id `default`, an unlisted
+   folder, a launch's own login variables) is offered to no Runtime and
+   runs natively until F defines how a Runtime receives a login (PR-4);
+   before a launch, a run that could go to a registered
    Runtime shows its host as `undetermined`.
 4. The agent talks to the server over the network: not touched; no new
    path between an agent and the server.
@@ -1269,10 +1444,10 @@ to PR-7 build on them alone. BK3's background role is not (PR #655, issue
 
 | PR | Title | Contains | Touches | Tests | Depends on | Parallel with |
 |---|---|---|---|---|---|---|
-| PR-1 | agents: the usage readers of Claude Code and Codex, qualified against their tools | `Adapter.Usage`, `UsageReader`, `UsageInput`, `UsageReport`, the two readers, the version each read finds from the resolved program, `Admit` and `Turned` (with fake admissions; nothing kept), their fixtures (written by hand to the shapes read, no real account's ids or figures), the bounds and timeouts, the recipes checks | `internal/agents` | the PR-1 tests above, the `recipes` tier | none | PR-2 |
-| PR-2 | capacity: account references, readings and the cache | `internal/capacity`: `Accounts`, `Account`, `Validate` with `Facts`, the store document, retire and remove, `Versions` (the per-version record, its admission, recovery and bounds, on disk), `Reading`, `View`, the states and their words, `Cache` with its clock, reader and `OnRead` | `internal/capacity` | the PR-2 tests above | none | PR-1 |
-| PR-3 | api, cli: the accounts and capacity routes, the `capacity` event and the commands | `accounts.go`, `capacity.go` (the routes, `Facts` with `Bound` answering reservations alone until PR-4, the owner lock, the readers wired with `agentEnv` and admitted from `Versions`, the counts from the registry under `default`), the export table's two rows, the event and its bound, the guide rows, `conductor accounts` and `conductor capacity`, `docs/protocol.md`'s rows | `internal/api`, `internal/export`, `internal/cli`, `docs/protocol.md` | the PR-3 tests above | PR-1, PR-2 | none |
-| PR-4 | api, session, crew: a launch bound to its account and model | the session's `account` and `model`, `BoundAccount` and its effective login, `Launched`'s binding, resume and clone, `Member.Account` and `Model`, `bindMembers` on every launch path (the self routes, compared by effective login, and added members included), the reservations, `Bound` and the counts from the bindings, Brakeman's turn bound from its folder, a bound run offered to no Runtime, `MemberState`'s account without a folder, `LaunchSpec`, an attempt refused when its account is gone, the guide's launch schemas, `docs/protocol.md`'s launch fields | `internal/api`, `internal/session`, `internal/crew`, `docs/protocol.md` | the PR-4 tests above | PR-3 | none |
+| PR-1 | agents: the usage readers of Claude Code and Codex, qualified against their tools | `Adapter.Usage`, `UsageReader`, `UsageInput`, `UsageReport`, the two readers, the version each read finds from the catalog's whole resolved command prefix, `Admit`, `Done` and `Outcome` (with fake admissions; nothing kept), their fixtures (written by hand to the shapes read, no real account's ids or figures), the bounds and timeouts, the recipes checks | `internal/agents` | the PR-1 tests above, the `recipes` tier | none | PR-2 |
+| PR-2 | capacity: account references, readings and the cache | `internal/capacity`: `Accounts`, `Account`, `Validate` with `Facts`, the store document, retire and remove, `Versions` (the per-version record, its admission, the three outcomes, recovery and bounds, on disk), `Reading`, `View`, the states and their words, `Cache` with its clock, reader and `OnRead` | `internal/capacity` | the PR-2 tests above | none | PR-1 |
+| PR-3 | api, cli: the accounts and capacity routes, the `capacity` event and the commands | `accounts.go`, `capacity.go` (the routes, `Facts` with `Bound` answering reservations alone until PR-4, the owner lock, the readers wired with `agentEnv` and admitted from `Versions`, Claude Code run by the owner alone (`not_owner`), the counts from the registry under `default`), the export table's two rows, the event and its bound, the guide rows, `conductor accounts` and `conductor capacity`, `docs/protocol.md`'s rows | `internal/api`, `internal/export`, `internal/cli`, `docs/protocol.md` | the PR-3 tests above | PR-1, PR-2 | none |
+| PR-4 | api, session, crew: a launch bound to its account and model | the session's `account` and `model`, `BoundAccount` and its effective login with the `Login` fingerprint, `Launched`'s binding, a legacy record's `bound` and `Records.Bound`, resume and clone, `Member.Account` and `Model`, `bindMembers` on every launch path (the self routes, compared by effective login, and added members included), the reservations, `Bound` and the counts from the bindings, Brakeman's turn bound from its folder, a run with any binding but `own` offered to no Runtime and admitting no other member, `MemberState`'s account without a folder, `LaunchSpec`, an attempt refused when its account is gone, the guide's launch schemas, `docs/protocol.md`'s launch fields | `internal/api`, `internal/session`, `internal/crew`, `docs/protocol.md` | the PR-4 tests above | PR-3 | none |
 | PR-5 | web: Accounts in Settings, the capacity panel and the session launch dialog | `useAccounts`, `useCapacity`, `utils/capacity.ts`, `CapacityPanel`, `AccountsCard`, `AccountSelect`, `LaunchSessionModal`'s fields and panel, the stub's readers and fixtures, `capacity.spec.ts` | `web/app/components`, `web/app/composables`, `web/app/utils`, `web/app/pages`, `web/e2e` | vitest and Playwright above | PR-3, PR-4 | PR-6 |
 | PR-6 | brakeman, api, cli: Brakeman reads capacity and proposes from it | the `capacity` class, the `capacity:` ref and its copy at submit, `GET /api/capacity` in `brakemanReads`, `observe_capacity` and `capacity` in `observeWhats`, the guide's section and per-agent `usage`, Brakeman's request showing its view, `docs/protocol.md`'s rows | `internal/brakeman`, `internal/api`, `internal/cli`, `docs/protocol.md` | the PR-6 tests above | PR-4 | PR-5 |
 | PR-7 | web: crews, ticket launches and Brakeman's account | the members' fields in the crew editor, `CrewLaunchSheet`, `DispatchLaunch`'s lines, the run header, `BrakemanSettings`' account choice and Capacity switch, `BrakemanRefChip`'s `capacity:` ref, `capacity-crew.spec.ts` | `web/app/components`, `web/app/composables`, `web/app/pages`, `web/e2e` | vitest and Playwright above | PR-5, PR-6 | none |
@@ -1311,8 +1486,11 @@ taken.
    report only.** Sent only for a subscription login (`auth status`
    decides payment first) of a checked version, with no tools; a version
    newer than the one the reader was checked on runs only on the admin's
-   explicit check, once, and a turn records that version as turned on
-   disk, never run again; the people's text the command prints is
+   explicit check, once; only a run seen answering with no turn makes a
+   version checked, one that ends without an answer leaves it
+   interrupted, and a turn records that version as turned on disk, never
+   run again, Claude Code being run only by the server that holds that
+   record; the people's text the command prints is
    dropped unread; `auth status` is decoded into its four
    non-identifying fields. Chosen over reading every newer version on
    its own (a turn could be spent unasked) and over refusing every
@@ -1357,9 +1535,10 @@ taken.
     configuration and off for a saved one until the person turns it on.
 12. **Elsewhere is unknown, and a bound account stays native.** A
     session on another computer and a launch on a non-native Runtime
-    show unknown rather than the server's reading; a managed run binding
-    an account other than `default` runs natively until item F defines
-    how a Runtime receives a login.
+    show unknown rather than the server's reading; a managed run any of
+    whose members' logins depends on this server (any binding but `own`,
+    a pinned folder under the id `default` included) runs natively until
+    item F defines how a Runtime receives a login.
 13. **The admin sees folders; nobody else does.** Accounts and capacity
     are the admin's routes; a link's viewer sees no account; a run's
     members show an account's id and label, never its folder, on every
