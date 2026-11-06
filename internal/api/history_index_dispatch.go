@@ -95,6 +95,10 @@ func (h *historyIndexer) dispatchSources(ctx context.Context) (tickets, briefs [
 		}
 	}
 	if bs := h.brakemanStore(); bs != nil {
+		// The reconcile's first look, taken before the requests are
+		// listed: a brief kept after it changes its files past it, so the
+		// next reconcile reads what this listing could not.
+		h.lookAtBriefs(false)
 		for after := ""; ; {
 			page, next, err := bs.List(after, brakeman.MaxPage)
 			if err != nil {
@@ -110,7 +114,9 @@ func (h *historyIndexer) dispatchSources(ctx context.Context) (tickets, briefs [
 			}
 			after = next
 		}
-		h.lookAtBriefs(false) // the reconcile's first look: what the catch-up reads now
+		if h.briefsListed != nil {
+			h.briefsListed()
+		}
 	}
 	return tickets, briefs, head, nil
 }
@@ -284,13 +290,22 @@ func (h *historyIndexer) askCatchUp() {
 	h.signal()
 }
 
-// reconcileBriefs looks at the kept briefs' files: one whose size or
-// modification time changed, or that is new or gone, marks its brief
-// dirty (its pass reads it, or removes it).
+// reconcileBriefs looks at Brakeman's requests' files: a request whose
+// request or brief file changed in size or modification time, or that is
+// new or gone, marks its brief dirty (its pass reads it, or removes it).
 func (h *historyIndexer) reconcileBriefs() { h.lookAtBriefs(true) }
 
-// lookAtBriefs notes each kept brief's file's size and modification time,
-// marking dirty the briefs whose file changed when mark is set.
+// briefStat is a request's two files as a look saw them: the request
+// (br-<n>.json) and its kept brief (br-<n>-brief.json, zero while none).
+// Brakeman writes the brief's file before the request that says it keeps
+// one: a look between the two sees the brief and a request that keeps
+// none, and only the request's change after it says to read it again.
+type briefStat struct {
+	req, brief fileStat
+}
+
+// lookAtBriefs notes each request's files' sizes and modification times,
+// marking dirty the briefs whose files changed when mark is set.
 func (h *historyIndexer) lookAtBriefs(mark bool) {
 	if h.brakemanStore() == nil {
 		return
@@ -306,15 +321,20 @@ func (h *historyIndexer) lookAtBriefs(mark bool) {
 	if err != nil {
 		return
 	}
-	seen := map[string]bool{}
+	now := map[string]briefStat{}
 	for _, d := range docs {
-		id, ok := strings.CutSuffix(d.Name, "-brief.json")
-		if !ok || !briefIDPattern.MatchString(id) {
-			continue
-		}
-		key := hBriefRef(id)
-		seen[key] = true
 		st := fileStat{size: d.Size, mod: d.ModTime}
+		if id, ok := strings.CutSuffix(d.Name, "-brief.json"); ok && briefIDPattern.MatchString(id) {
+			b := now[hBriefRef(id)]
+			b.brief = st
+			now[hBriefRef(id)] = b
+		} else if id, ok := strings.CutSuffix(d.Name, ".json"); ok && briefIDPattern.MatchString(id) {
+			b := now[hBriefRef(id)]
+			b.req = st
+			now[hBriefRef(id)] = b
+		}
+	}
+	for key, st := range now {
 		if old, ok := h.briefStats[key]; !ok || old != st {
 			h.briefStats[key] = st
 			if mark {
@@ -323,16 +343,11 @@ func (h *historyIndexer) lookAtBriefs(mark bool) {
 		}
 	}
 	for key := range h.briefStats {
-		if !seen[key] {
+		if _, ok := now[key]; !ok {
 			delete(h.briefStats, key)
 			if mark {
 				h.mark(key)
 			}
 		}
 	}
-}
-
-// historyBriefDoc is a kept brief's file, as a data directory's path.
-func historyBriefDoc(id string) string {
-	return brakeman.Dir + "/" + brakeman.RequestsDir + "/" + id + "-brief.json"
 }

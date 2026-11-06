@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -46,8 +47,11 @@ const (
 	// index in flight: in all, and from one client.
 	maxHistoryReads          = 4
 	maxHistoryReadsPerClient = 2
-	// historyReadTimeout bounds one read of the index.
-	historyReadTimeout = 15 * time.Second
+	// historyReadTimeout bounds one read of the index, and
+	// historyWriteTimeout the write of its reply: a client that stops
+	// reading holds the handler no longer (its slot is let go before).
+	historyReadTimeout  = 15 * time.Second
+	historyWriteTimeout = 15 * time.Second
 	// maxEntryLinks bounds an entry's links each way (/api/history/entry).
 	maxEntryLinks = history.MaxLinks
 )
@@ -85,39 +89,95 @@ func (g *historyGate) leave(client string) {
 	}
 }
 
+// inFlight is the reads in flight, in all.
+func (g *historyGate) inFlight() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.all
+}
+
+// historyReq is one read of the index for a request: its query string,
+// the index, the read's context (its deadline) and its slot in the gate.
+// The slot is let go on every way out of the handler (release, deferred)
+// and before the reply is written (reply), so a client that stops reading
+// holds none; the write itself has its own deadline.
+type historyReq struct {
+	s      *Server
+	w      http.ResponseWriter
+	q      dispatchQuery
+	ix     *history.Index
+	ctx    context.Context
+	cancel context.CancelFunc
+	client string
+	held   bool
+}
+
+// release lets go of the read's slot and its context, once.
+func (h *historyReq) release() {
+	if h.held {
+		h.held = false
+		h.cancel()
+		h.s.historyReads.leave(h.client)
+	}
+}
+
+// reply answers status and v: v encoded first, the slot let go, then
+// written within historyWriteTimeout.
+func (h *historyReq) reply(status int, v any) {
+	var b bytes.Buffer
+	_ = json.NewEncoder(&b).Encode(v)
+	h.release()
+	rc := http.NewResponseController(h.w)
+	_ = rc.SetWriteDeadline(time.Now().Add(historyWriteTimeout))
+	h.w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	h.w.WriteHeader(status)
+	_, _ = h.w.Write(b.Bytes())
+	_ = rc.SetWriteDeadline(time.Time{})
+}
+
+// refuse answers an error in words, as writeError does.
+func (h *historyReq) refuse(status int, code, message string) {
+	h.reply(status, map[string]apiError{"error": {Code: code, Message: message}})
+}
+
 // historyRead opens a read of the index for a request: its query string
 // within its bound and of the names given, a slot in the gate, a deadline
 // and the index. ok false has answered.
-func (s *Server) historyRead(w http.ResponseWriter, r *http.Request, names ...string) (q dispatchQuery, ix *history.Index, ctx context.Context, done func(), ok bool) {
+func (s *Server) historyRead(w http.ResponseWriter, r *http.Request, names ...string) (*historyReq, bool) {
 	if s.historyUnavailable(w) {
-		return nil, nil, nil, nil, false
+		return nil, false
 	}
 	if len(r.URL.RawQuery) > maxHistoryQueryString {
 		writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("the query string is %d bytes, more than %d", len(r.URL.RawQuery), maxHistoryQueryString))
-		return nil, nil, nil, nil, false
+		return nil, false
 	}
 	q, err := readQuery(r, names...)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return nil, nil, nil, nil, false
+		return nil, false
 	}
 	client := clientKey(r)
 	if !s.historyReads.enter(client) {
 		writeError(w, http.StatusTooManyRequests, "history_busy", "too many history reads in flight; try again")
-		return nil, nil, nil, nil, false
+		return nil, false
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), historyReadTimeout)
-	done = func() {
-		cancel()
-		s.historyReads.leave(client)
-	}
+	ctx, cancel := context.WithTimeout(r.Context(), s.historyTimeout())
+	h := &historyReq{s: s, w: w, q: q, ctx: ctx, cancel: cancel, client: client, held: true}
 	if s.historyHold != nil {
-		s.historyHold(r)
+		s.historyHold(ctx, r)
 	}
 	if s.history != nil {
-		ix = s.history.index()
+		h.ix = s.history.index()
 	}
-	return q, ix, ctx, done, true
+	return h, true
+}
+
+// historyTimeout is a read's deadline: historyReadTimeout, or a test's.
+func (s *Server) historyTimeout() time.Duration {
+	if s.historyDeadline > 0 {
+		return s.historyDeadline
+	}
+	return historyReadTimeout
 }
 
 // historyIndexing is the reply's indexing: the indexer's state, the
@@ -143,40 +203,55 @@ func (s *Server) historyIndexing(ctx context.Context, ix *history.Index, pageSta
 	return out
 }
 
-// historyError answers an error of the index in words: a bad query or
-// cursor, a cursor of an index rebuilt since, an index not ready.
-func (s *Server) historyError(w http.ResponseWriter, err error) {
+// fail answers an error of the read in words, the read's context judged
+// first: a client that left gets no reply and is no failure of the
+// server's (nothing is logged), a read past its deadline is said as one;
+// then a bad query or cursor, a cursor of an index rebuilt since, an index
+// not ready.
+func (h *historyReq) fail(err error) {
 	words := func(err error, prefix error) string {
 		return strings.TrimPrefix(strings.TrimPrefix(err.Error(), prefix.Error()), ": ")
 	}
-	switch {
+	switch cerr := h.ctx.Err(); {
+	case errors.Is(cerr, context.Canceled) || (cerr == nil && errors.Is(err, context.Canceled)):
+		h.release()
+	case errors.Is(cerr, context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded):
+		h.refuse(http.StatusServiceUnavailable, "history_timeout", fmt.Sprintf("the history's read took longer than %s; narrow the search", h.s.historyTimeout()))
 	case errors.Is(err, history.ErrQuery):
-		writeError(w, http.StatusBadRequest, "bad_query", words(err, history.ErrQuery))
+		h.refuse(http.StatusBadRequest, "bad_query", words(err, history.ErrQuery))
 	case errors.Is(err, history.ErrCursor):
-		writeError(w, http.StatusBadRequest, "bad_cursor", "the cursor is not one of this search's pages")
+		h.refuse(http.StatusBadRequest, "bad_cursor", "the cursor is not one of this search's pages")
 	case errors.Is(err, history.ErrStaleCursor):
-		writeError(w, http.StatusConflict, "stale_cursor", "the history was rebuilt; search again")
+		h.refuse(http.StatusConflict, "stale_cursor", "the history was rebuilt; search again")
 	case errors.Is(err, history.ErrGone):
-		writeError(w, http.StatusNotFound, "entry_gone", "this entry is no longer in the history")
-	case errors.Is(err, history.ErrNotReady), errors.Is(err, history.ErrClosed), errors.Is(err, context.DeadlineExceeded):
-		writeError(w, http.StatusServiceUnavailable, "history_not_ready", "the history is not ready; try again")
+		h.refuse(http.StatusNotFound, "entry_gone", "this entry is no longer in the history")
+	case errors.Is(err, history.ErrNotReady), errors.Is(err, history.ErrClosed):
+		h.refuse(http.StatusServiceUnavailable, "history_not_ready", "the history is not ready; try again")
 	default:
-		s.log.Warn("a history read failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "the history could not be read")
+		h.s.log.Warn("a history read failed", "err", err)
+		h.refuse(http.StatusInternalServerError, "internal", "the history could not be read")
 	}
 }
+
+// maxForgottenTries bounds how many times a search is made again leaving
+// out the records it found forgotten: past it, the reply is a refusal.
+const maxForgottenTries = 3
 
 // handleHistorySearch answers GET /api/history?q=&limit=&after=: a page of
 // the entries whose text holds the line's words and that pass its
 // filters, {entries, next?, total, totalCapped?, cut?, indexing,
-// readOnly?, truncated?}. Brakeman's own sessions and runs are left out
-// unless the line names a crew or the kind brief.item.
+// readOnly?, truncated?, stale?}. Brakeman's own sessions and runs are
+// left out unless the line names a crew or the kind brief.item. A session
+// record the journal no longer holds is never served: a page that found
+// one is read again without it (stale says so), so neither its rows, its
+// count in total nor a cursor of it is answered.
 func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
-	q, ix, ctx, done, ok := s.historyRead(w, r, "q", "limit", "after")
+	h, ok := s.historyRead(w, r, "q", "limit", "after")
 	if !ok {
 		return
 	}
-	defer done()
+	defer h.release()
+	q, ix, ctx := h.q, h.ix, h.ctx
 	line, err := q.one("q")
 	var after string
 	if err == nil {
@@ -190,16 +265,16 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 		err = fmt.Errorf("limit is 1 to %d, not %d", history.MaxLimit, limit)
 	}
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad_query", err.Error())
+		h.refuse(http.StatusBadRequest, "bad_query", err.Error())
 		return
 	}
 	if len(after) > maxHistoryAfter {
-		writeError(w, http.StatusBadRequest, "bad_cursor", fmt.Sprintf("the cursor is %d bytes, more than %d", len(after), maxHistoryAfter))
+		h.refuse(http.StatusBadRequest, "bad_cursor", fmt.Sprintf("the cursor is %d bytes, more than %d", len(after), maxHistoryAfter))
 		return
 	}
 	hq, err := history.ParseQuery(line)
 	if err != nil {
-		s.historyError(w, err)
+		h.fail(err)
 		return
 	}
 	hq.Limit, hq.After = int(limit), after
@@ -213,27 +288,33 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 		if readOnly {
 			out["readOnly"] = true
 		}
-		writeJSON(w, http.StatusOK, out)
-		return
-	}
-	page, err := ix.Search(ctx, hq)
-	if err != nil {
-		s.historyError(w, err)
+		h.reply(http.StatusOK, out)
 		return
 	}
 	av := s.newAvailability(ctx, ix)
-	entries, cut := s.servePage(av, page.Entries)
-	next := page.Next
-	if cut < len(page.Entries) {
-		// The rows past the bound are the next page's: the same search,
-		// as many rows as were served, gives the cursor after them.
-		next = ""
-		if cut > 0 {
-			hq.Limit = cut
-			if again, err := ix.Search(ctx, hq); err == nil {
-				next = again.Next
-			}
+	defer av.close()
+	var page history.Page
+	for try := 0; ; try++ {
+		if page, err = ix.Search(ctx, hq); err != nil {
+			h.fail(err)
+			return
 		}
+		gone := av.forgottenSources(page.Entries)
+		if len(gone) == 0 {
+			break
+		}
+		if try+1 == maxForgottenTries {
+			h.refuse(http.StatusServiceUnavailable, "history_not_ready", "records are being forgotten; try again")
+			return
+		}
+		hq.ExceptSources = append(hq.ExceptSources, gone...)
+	}
+	entries, n := s.servePage(av, page.Entries)
+	next := page.Next
+	if n < len(page.Entries) {
+		// The rows past the bound are the next page's: it reads on from
+		// the last row served.
+		next = page.After(n - 1)
 	}
 	out := map[string]any{"entries": entries, "total": page.Total, "indexing": s.historyIndexing(ctx, ix, page.State)}
 	if next != "" {
@@ -245,24 +326,27 @@ func (s *Server) handleHistorySearch(w http.ResponseWriter, r *http.Request) {
 	if page.Cut != "" {
 		out["cut"] = page.Cut
 	}
-	if cut < len(page.Entries) {
+	if n < len(page.Entries) {
 		out["truncated"] = true
+	}
+	if len(hq.ExceptSources) > 0 {
+		out["stale"] = true
 	}
 	if readOnly {
 		out["readOnly"] = true
 	}
-	writeJSON(w, http.StatusOK, out)
+	h.reply(http.StatusOK, out)
 }
 
 // servePage serves a page's hits, as many as fit the reply's bound in
-// their order (n of them).
+// their order (n of them), the first always.
 func (s *Server) servePage(av *availability, hits []history.Hit) (out []servedEntry, n int) {
 	out = []servedEntry{}
 	used := 1024 // the reply's own fields
 	for _, h := range hits {
 		e := s.serveEntry(av, h.Entry, h.Snippet, h.Repeats, h.Links, false)
 		b, _ := json.Marshal(e)
-		if used+len(b)+1 > historyReplyLimit {
+		if len(out) > 0 && used+len(b)+1 > historyReplyLimit {
 			break
 		}
 		used += len(b) + 1
@@ -274,35 +358,42 @@ func (s *Server) servePage(av *availability, hits []history.Hit) (out []servedEn
 // handleHistoryEntry answers GET /api/history/entry?key=: one entry by
 // its key, its links each way (at most maxEntryLinks) and its full
 // availability, within the reply's bound (linksCut past it); 404
-// entry_gone for a key the index no longer holds.
+// entry_gone for a key the index no longer holds, or whose session record
+// the journal no longer holds.
 func (s *Server) handleHistoryEntry(w http.ResponseWriter, r *http.Request) {
-	q, ix, ctx, done, ok := s.historyRead(w, r, "key")
+	h, ok := s.historyRead(w, r, "key")
 	if !ok {
 		return
 	}
-	defer done()
+	defer h.release()
+	q, ix, ctx := h.q, h.ix, h.ctx
 	key, err := q.one("key")
 	if err == nil && (key == "" || len(key) > history.MaxRef) {
 		err = fmt.Errorf("key is an entry's key, 1 to %d bytes", history.MaxRef)
 	}
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad_key", err.Error())
+		h.refuse(http.StatusBadRequest, "bad_key", err.Error())
 		return
 	}
 	if ix == nil {
-		writeError(w, http.StatusServiceUnavailable, "history_not_ready", "the history is not ready; try again")
+		h.refuse(http.StatusServiceUnavailable, "history_not_ready", "the history is not ready; try again")
 		return
 	}
 	hit, err := ix.Entry(ctx, key)
 	if err != nil {
-		s.historyError(w, err)
+		h.fail(err)
+		return
+	}
+	av := s.newAvailability(ctx, ix)
+	defer av.close()
+	if len(av.forgottenSources([]history.Hit{hit})) > 0 {
+		h.fail(history.ErrGone)
 		return
 	}
 	links := hit.Links
 	if l, err := ix.Links(ctx, hit.Ref, maxEntryLinks); err == nil {
 		links = l
 	}
-	av := s.newAvailability(ctx, ix)
 	e := s.serveEntry(av, hit.Entry, hit.Snippet, hit.Repeats, links, true)
 	out := map[string]any{"entry": e, "indexing": s.historyIndexing(ctx, ix, "")}
 	// Within the reply's bound: the links past it are cut, the last
@@ -311,18 +402,20 @@ func (s *Server) handleHistoryEntry(w http.ResponseWriter, r *http.Request) {
 		e.Links = e.Links[:len(e.Links)/2]
 		out["entry"], out["linksCut"] = e, true
 	}
-	writeJSON(w, http.StatusOK, out)
+	h.reply(http.StatusOK, out)
 }
 
 // handleHistorySimilar answers GET /api/history/similar?key=&scope=&limit=:
 // the receipts of the same command elsewhere (history.Index.Similar), the
-// entry's run chain left out, at most history.MaxSimilar.
+// entry's run chain left out, at most history.MaxSimilar; a session record
+// the journal no longer holds is never among them.
 func (s *Server) handleHistorySimilar(w http.ResponseWriter, r *http.Request) {
-	q, ix, ctx, done, ok := s.historyRead(w, r, "key", "scope", "limit")
+	h, ok := s.historyRead(w, r, "key", "scope", "limit")
 	if !ok {
 		return
 	}
-	defer done()
+	defer h.release()
+	q, ix, ctx := h.q, h.ix, h.ctx
 	key, err := q.one("key")
 	var scope string
 	var limit int64
@@ -342,33 +435,39 @@ func (s *Server) handleHistorySimilar(w http.ResponseWriter, r *http.Request) {
 		err = fmt.Errorf("limit is 1 to %d, not %d", history.MaxSimilar, limit)
 	}
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad_query", err.Error())
+		h.refuse(http.StatusBadRequest, "bad_query", err.Error())
 		return
 	}
 	if limit == 0 {
 		limit = 10
 	}
 	if ix == nil {
-		writeError(w, http.StatusServiceUnavailable, "history_not_ready", "the history is not ready; try again")
+		h.refuse(http.StatusServiceUnavailable, "history_not_ready", "the history is not ready; try again")
 		return
 	}
 	hit, err := ix.Entry(ctx, key)
 	if err != nil {
-		s.historyError(w, err)
+		h.fail(err)
+		return
+	}
+	av := s.newAvailability(ctx, ix)
+	defer av.close()
+	if len(av.forgottenSources([]history.Hit{hit})) > 0 {
+		h.fail(history.ErrGone)
 		return
 	}
 	hits, err := ix.Similar(ctx, key, scope, runChain(ctx, ix, hit.Run), int(limit))
 	if err != nil {
-		s.historyError(w, err)
+		h.fail(err)
 		return
 	}
-	av := s.newAvailability(ctx, ix)
-	entries, cut := s.servePage(av, hits)
+	hits = av.withoutForgotten(hits)
+	entries, n := s.servePage(av, hits)
 	out := map[string]any{"entries": entries}
-	if cut < len(hits) {
+	if n < len(hits) {
 		out["truncated"] = true
 	}
-	writeJSON(w, http.StatusOK, out)
+	h.reply(http.StatusOK, out)
 }
 
 // runChain is the runs a run continues and that continue it, as the
@@ -399,11 +498,12 @@ func runChain(ctx context.Context, ix *history.Index, run string) []string {
 // the command receipt of that actor, the one an entry names, never the
 // caller's (the run's command route finds the caller's own: actorOf).
 func (s *Server) handleHistoryCommand(w http.ResponseWriter, r *http.Request) {
-	q, _, ctx, done, ok := s.historyRead(w, r, "run", "actor", "id")
+	h, ok := s.historyRead(w, r, "run", "actor", "id")
 	if !ok {
 		return
 	}
-	defer done()
+	defer h.release()
+	q, ctx := h.q, h.ctx
 	run, err := q.one("run")
 	var actor, id string
 	if err == nil {
@@ -416,32 +516,36 @@ func (s *Server) handleHistoryCommand(w http.ResponseWriter, r *http.Request) {
 		err = fmt.Errorf("a run's id, an actor of 1 to %d bytes and a command id of 1 to 32 letters, digits, '.', '_', '~' or '-'", maxHistoryActor)
 	}
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		h.refuse(http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	if s.ledger == nil {
-		writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", "the ledger could not be opened; see the server's log")
+		h.refuse(http.StatusServiceUnavailable, "ledger_unavailable", "the ledger could not be opened; see the server's log")
 		return
 	}
 	c, found, err := s.ledger.Receipt(ctx, run, actor, id)
+	if ctx.Err() != nil {
+		h.fail(ctx.Err())
+		return
+	}
 	if errors.Is(err, ledger.ErrUnavailable) || errors.Is(err, ledger.ErrClosed) {
-		writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", err.Error())
+		h.refuse(http.StatusServiceUnavailable, "ledger_unavailable", err.Error())
 		return
 	}
 	if err != nil {
 		s.log.Warn("a command receipt could not be read for the history", "run", run, "command", id, "err", err)
-		writeError(w, http.StatusInternalServerError, "internal", "the receipt could not be read")
+		h.refuse(http.StatusInternalServerError, "internal", "the receipt could not be read")
 		return
 	}
 	if !found {
-		writeError(w, http.StatusNotFound, "not_found", "no such command")
+		h.refuse(http.StatusNotFound, "not_found", "no such command")
 		return
 	}
 	var receipt json.RawMessage
 	if c.Receipt != "" {
 		receipt = json.RawMessage(c.Receipt)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"command": map[string]any{
+	h.reply(http.StatusOK, map[string]any{"command": map[string]any{
 		"id": c.ID, "actor": c.Actor, "intent": c.Intent, "status": c.Status, "receipt": receipt, "createdAt": c.CreatedAt,
 	}})
 }
@@ -542,12 +646,7 @@ func (s *Server) serveEntry(av *availability, e history.Entry, snippet string, r
 		Anchor:   servedAnchor{Ref: e.Anchor, Label: anchorLabel(e.Anchor), URL: historyURL("", e.Anchor, e.Anchor, 0, "", av.listed)},
 	}
 	if e.Kind == "launch" {
-		// Its run's page, its ticket's before it has one: refURL's is the
-		// API's.
-		out.URL = ticketURL(e.Ticket)
-		if e.Run != "" {
-			out.URL = "/runs/" + url.PathEscape(e.Run)
-		}
+		out.URL = launchURL(e)
 	}
 	if e.Agent != "" {
 		out.Agent = &servedAgent{ID: e.Agent, Name: s.agentName(e.Agent), Version: e.AgentVersion, Session: e.AgentSession}
@@ -557,6 +656,11 @@ func (s *Server) serveEntry(av *availability, e history.Entry, snippet string, r
 		ends []history.LinkEnd
 	}{{"out", links.Out}, {"in", links.In}} {
 		for _, l := range way.ends {
+			if !av.linkKept(l) {
+				// A session record the journal no longer holds: not served,
+				// nor anything that names it.
+				continue
+			}
 			sl := servedLink{Rel: l.Rel, Dir: way.dir, Ref: l.Ref, Label: anchorLabel(l.Ref)}
 			kind, key, title := "", l.Ref, ""
 			if l.Entry != nil {
@@ -564,11 +668,39 @@ func (s *Server) serveEntry(av *availability, e history.Entry, snippet string, r
 				kind, key, title = l.Entry.Kind, l.Entry.Key, l.Entry.Title
 			}
 			sl.URL = historyURL(kind, key, l.Ref, 0, title, av.listed)
+			if strings.HasPrefix(l.Ref, "launch:") {
+				sl.URL = av.launchURL(l.Ref)
+			}
 			out.Links = append(out.Links, sl)
 		}
 	}
 	out.Availability = av.of(e, full)
 	return out
+}
+
+// launchURL is a launch's page: its run's, its ticket's before it has one
+// (refURL's is the API's).
+func launchURL(e history.Entry) string {
+	if e.Run != "" {
+		return "/runs/" + url.PathEscape(e.Run)
+	}
+	return ticketURL(e.Ticket)
+}
+
+// launchURL is the page of the launch a link names: the launch's entry, as
+// the index holds it, read once for the reply; "" when it holds none.
+func (av *availability) launchURL(ref string) string {
+	if u, ok := av.launches[ref]; ok {
+		return u
+	}
+	u := ""
+	if av.ix != nil {
+		if h, err := av.ix.Entry(av.ctx, ref); err == nil && h.Kind == "launch" {
+			u = launchURL(h.Entry)
+		}
+	}
+	av.launches[ref] = u
+	return u
 }
 
 // agentName is a catalog agent's name, its id when the catalog no longer

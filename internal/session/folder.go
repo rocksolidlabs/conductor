@@ -133,6 +133,11 @@ func (f *Folder) Path() string {
 // Close closes the folder; what is under way finishes or fails.
 func (f *Folder) Close() error { return f.root.Close() }
 
+// Lstat describes rel, a path relative to the folder, through the
+// folder's root, a link at its last element not followed: nothing outside
+// the folder is looked at, whatever a link on the way names.
+func (f *Folder) Lstat(rel string) (os.FileInfo, error) { return f.root.Lstat(rel) }
+
 // Dir opens the folder's directory itself, for a process to start in
 // (pty.Spec.DirFile).
 func (f *Folder) Dir() (*os.File, error) { return f.root.Open(".") }

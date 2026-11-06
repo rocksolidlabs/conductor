@@ -3,18 +3,22 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -144,6 +148,31 @@ func TestTicketSourcesAreClassified(t *testing.T) {
 	}
 	if hsEntry(hsSearch(t, p.testEnv, "Looks right"), "ticket:CND-1#plan.approved/r1/approve-1") == nil {
 		t.Fatal("the approval's note is not found")
+	}
+	// A plan revision's entry is keyed by Brakeman's grammar: its ref
+	// parses, opens the page Brakeman's opens, and a brief citing it is
+	// joined to it.
+	plan1 := hsEntryOf(t, p.testEnv, "plan:CND-1/1")
+	if pr, err := brakeman.ParseRef(plan1["key"].(string)); err != nil || plan1["url"] == "" || plan1["url"] != refURL(pr) {
+		t.Fatalf("the plan revision's entry: %v (%v)", plan1, err)
+	}
+	brief := keepBrief(t, p.testEnv, brakeman.DefaultConfig(p.root), nil, fact("r1 was the plan", ref(t, "plan:CND-1/1")))
+	histSettle(t, p.testEnv)
+	if links := fmt.Sprint(hsEntryOf(t, p.testEnv, "plan:CND-1/1")["links"]); !strings.Contains(links, hBriefItemRef(brief, 0)) {
+		t.Fatalf("the brief's citation is not joined to the revision: %s", links)
+	}
+	// A ticket's earlier field values and a plan revision's body are never
+	// read: an old title and words only in a revision's note and
+	// constraints find nothing; the title as it is finds the ticket.
+	for _, title := range []string{"albatross", "pelican"} {
+		p.expect(t, "POST", "/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": opID(), "set": map[string]any{"title": title}}, http.StatusOK, "")
+	}
+	p.proposed(t, saved.ID, map[string]any{"note": "the quokka note", "constraints": "no quokka harmed"})
+	histSettle(t, p.testEnv)
+	for line, want := range map[string][]string{"albatross": {}, "quokka": {}, "pelican": {"ticket:CND-1"}} {
+		if keys := hsKeys(hsSearch(t, p.testEnv, line)); !slices.Equal(keys, want) {
+			t.Fatalf("%q finds %v, want %v", line, keys, want)
+		}
 	}
 	// The tombstone.
 	p.expect(t, "POST", "/api/dispatch/tickets/CND-1/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
@@ -317,12 +346,6 @@ func TestAvailabilityOfASession(t *testing.T) {
 	if a := av.session(id, true, history.Entry{Outcome: journal.EndingHostAway, Hosted: true}); a.State != availHostAway {
 		t.Fatalf("host away: %v", a)
 	}
-	if resp, _ := e2.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("forget: %d", resp.StatusCode)
-	}
-	if a := av.session(id, true, history.Entry{}); a.State != availForgotten {
-		t.Fatalf("forgotten: %v", a)
-	}
 }
 
 // A receipt's availability: its log kept, dropped by the run's bound, or
@@ -351,22 +374,22 @@ func TestAvailabilityOfACheck(t *testing.T) {
 
 // An attempt that ran in another Runtime (its where_ran a fake Runtime's)
 // is said as its row has it and its worktree never looked at; a native
-// one's is stat'd.
+// one's is looked at where its run puts it, through the run's folder.
 func TestAWhereOtherThanNativeIsNotLookedAt(t *testing.T) {
 	e := newTestEnv(t, nil)
 	ld := e.srv.ledger
-	histCreate(t, ld, "hist-00000026", "", histCrew(e.root))
-	there := filepath.Join(e.root, "wt")
-	if err := os.MkdirAll(there, 0o700); err != nil {
+	const run = "hist-00000026"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	tree := func(n int) string {
+		return filepath.Join(e.root, ".conductor", "worktrees", run, fmt.Sprintf("build.%d", n))
+	}
+	if err := os.MkdirAll(tree(2), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	histTx(t, ld, "hist-00000026", func(tx *ledger.Tx) error {
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
 		for i, w := range []string{"boxcar", ledger.WhereNative, ledger.WhereNative} {
 			a := histAttempt("build", i+1, ledger.AttemptFailed, "", commitID(0), "")
-			a.Where, a.Worktree = w, there
-			if i == 2 {
-				a.Worktree = filepath.Join(e.root, "gone")
-			}
+			a.Where, a.Worktree = w, tree(i+1)
 			if err := tx.PutAttempt(a); err != nil {
 				return err
 			}
@@ -375,12 +398,64 @@ func TestAWhereOtherThanNativeIsNotLookedAt(t *testing.T) {
 	})
 	histSettle(t, e)
 	for n, want := range map[int]string{1: availElsewhere, 2: availWorktree, 3: availWorktreeGone} {
-		a := availOf(hsEntryOf(t, e, attemptKey("hist-00000026", "build", n)))
+		a := availOf(hsEntryOf(t, e, attemptKey(run, "build", n)))
 		if a["state"] != want {
 			t.Fatalf("attempt %d: %v, want %s", n, a, want)
 		}
 		if n == 1 && a["words"] != "on boxcar: not looked at from here" {
 			t.Fatalf("the other Runtime's words: %v", a)
+		}
+		if n == 2 && a["branch"] != "conductor/build" {
+			t.Fatalf("the kept worktree's branch, its row's: %v", a)
+		}
+	}
+}
+
+// An attempt's worktree is looked at only where its run puts it, through
+// the run's folder's root: a row naming a folder outside it (an absolute
+// path, one through "..") or a link put in its place out of the folder is
+// answered as a worktree not kept, in the very words of one removed, with
+// no branch: nothing of the outside path (whether it is there, what it
+// holds) is learned from the answer.
+func TestAWorktreeOutsideItsRunIsNeverLookedAt(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	const run = "hist-0000002c"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	outside := t.TempDir() // there, a directory, beside no allowed root
+	tree := func(n int) string {
+		return filepath.Join(e.root, ".conductor", "worktrees", run, fmt.Sprintf("build.%d", n))
+	}
+	if err := os.MkdirAll(filepath.Dir(tree(1)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, tree(4)); err != nil {
+		t.Fatal(err)
+	}
+	worktrees := map[int]string{
+		2: outside,                                                                 // an absolute path outside the run's folder
+		3: tree(3) + strings.Repeat(string(filepath.Separator)+"..", 64) + outside, // up out of it, to the same folder
+		4: tree(4),                                                                 // its own place, a link out of the folder
+		5: tree(5),                                                                 // its own place, not there
+	}
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		for n := 2; n <= 5; n++ {
+			a := histAttempt("build", n, ledger.AttemptFailed, "", commitID(0), "")
+			a.Worktree = worktrees[n]
+			if err := tx.PutAttempt(a); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	histSettle(t, e)
+	removed := availOf(hsEntryOf(t, e, attemptKey(run, "build", 5)))
+	if removed["state"] != availWorktreeGone || removed["branch"] != nil {
+		t.Fatalf("a worktree not there: %v", removed)
+	}
+	for n := 2; n <= 4; n++ {
+		if a := availOf(hsEntryOf(t, e, attemptKey(run, "build", n))); !reflect.DeepEqual(a, removed) {
+			t.Errorf("attempt %d (%s): %v, a removed one's %v", n, worktrees[n], a, removed)
 		}
 	}
 }
@@ -424,33 +499,72 @@ func TestResumeOfferedByTheResumeRoutesRules(t *testing.T) {
 	} {
 		r := base()
 		c.edit(&r)
-		got := e.srv.resumeOffered(t.Context(), nil, r)
+		got := e.srv.resumeOffered(r)
 		if got.Offered != c.offered || got.Confirm != c.confirm || !strings.HasPrefix(got.Why, c.why) {
 			t.Errorf("%s: %+v, want offered %v, %q", c.name, got, c.offered, c.why)
 		}
+	}
+	// A member whose adoption the journal had not written when the server
+	// stopped: its run's record names it, read through the run records.
+	saveRecord(t, e.srv, crew.Run{ID: "hist-0000002d", Cwd: e.root, StartedAt: histNow,
+		Members: []crew.MemberState{{Name: "lead", AgentID: "rec", SessionID: base().ID, Status: crew.MemberEnded}}})
+	if got := e.srv.resumeOffered(base()); got.Offered || got.Unknown || got.URL != "/runs/hist-0000002d" || got.Why != "resume it as the run's member, from its run" {
+		t.Fatalf("a member by its run's record: %+v", got)
+	}
+	if err := e.srv.records.Delete("hist-0000002d"); err != nil {
+		t.Fatal(err)
+	}
+	// A run record that cannot be read could name it: whether it is a
+	// member is unknown, and unknown is not no.
+	unread := filepath.Join(e.srv.cfg.DataDir, "runs", "hist-0000002e.json")
+	if err := os.WriteFile(unread, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.srv.resumeOffered(base()); got.Offered || !got.Unknown || got.Why != "whether it was a crew member's session could not be read; try again" {
+		t.Fatalf("beside a run record that cannot be read: %+v", got)
+	}
+	if err := os.Remove(unread); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.srv.resumeOffered(base()); !got.Offered || got.Unknown {
+		t.Fatalf("once it is gone: %+v", got)
 	}
 	// A running session holding the conversation: the resume route's 409.
 	id := e.createSession("rec")
 	e.local(id).ReportAgentSession(conv.ID, session.PolicyLatest, true)
 	until(t, "the conversation held", func() bool { return e.srv.liveAgentSession(conv.ID) })
-	if got := e.srv.resumeOffered(t.Context(), nil, base()); got.Offered || got.Why != "a running session holds that conversation" {
+	if got := e.srv.resumeOffered(base()); got.Offered || got.Why != "a running session holds that conversation" {
 		t.Fatalf("held: %+v", got)
 	}
 }
 
-// Every search route is the admin's: no token, a session's agent token
-// and a host token are refused.
+// Every search route is the admin's: no token, a session's agent token, a
+// share link's token (view or control), a host token and a Brakeman
+// turn's agent token are each refused.
 func TestHistorySearchRoutesAreAdminOnly(t *testing.T) {
-	e := newTestEnv(t, nil)
+	b := brakemanEnv(t, nil)
+	e := b.testEnv
 	id := e.createSession("cat")
 	agent := e.agentToken(id)
+	links := map[string]string{}
+	for _, role := range []string{"view", "control"} {
+		resp, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": role})
+		tok, _ := lo["token"].(string)
+		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK || tok == "" {
+			t.Fatalf("a %s link: %d %v", role, resp.StatusCode, lo)
+		}
+		links[role] = tok
+	}
+	b.enable(t, "bk", nil)
+	_, turn, _ := b.turnSession(t, b.briefing(t))
 	for _, p := range []string{"/api/history?q=x", "/api/history/entry?key=run:x", "/api/history/similar?key=run:x", "/api/history/command?run=hist-00000028&actor=admin&id=c1"} {
-		for _, tok := range []string{"", agent, "test-host-token", "wrong"} {
-			if resp, _ := e.do("GET", p, tok, nil); resp.StatusCode != http.StatusUnauthorized {
-				t.Errorf("%s with %q: %d", p, tok, resp.StatusCode)
+		for name, tok := range map[string]string{"no token": "", "an agent token": agent, "a view link": links["view"], "a control link": links["control"],
+			"a host token": "test-host-token", "a Brakeman turn's token": turn, "a wrong token": "wrong"} {
+			if resp, _ := e.do("GET", p, tok, nil); resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
+				t.Errorf("%s with %s: %d", p, name, resp.StatusCode)
 			}
 		}
-		if resp, _ := e.do("GET", p, adminToken, nil); resp.StatusCode == http.StatusUnauthorized {
+		if resp, _ := e.do("GET", p, adminToken, nil); resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			t.Errorf("%s as the admin: %d", p, resp.StatusCode)
 		}
 	}
@@ -466,10 +580,10 @@ func TestTheSearchReplyIsBounded(t *testing.T) {
 	ix := histSettle(t, e)
 	var entries []history.Entry
 	for i := range 40 {
-		entries = append(entries, history.Entry{Key: fmt.Sprintf("session:00000000000000b1#e%d", i+1), Kind: "session.chat", Ref: "session:00000000000000b1",
-			Anchor: "session:00000000000000b1", At: histNow.Add(time.Duration(i) * time.Second), Title: "zeppelin", Summary: strings.Repeat("s", history.MaxSummary)})
+		entries = append(entries, history.Entry{Key: fmt.Sprintf("run:hist-00000034#message/%d", i+1), Kind: "message", Ref: "run:hist-00000034",
+			Anchor: "run:hist-00000034", At: histNow.Add(time.Duration(i) * time.Second), Title: "zeppelin", Summary: strings.Repeat("s", history.MaxSummary)})
 	}
-	if err := ix.Replace(t.Context(), history.Source{Key: "session:00000000000000b1", Mark: "x"}, entries, nil); err != nil {
+	if err := ix.Replace(t.Context(), history.Source{Key: "run:hist-00000034", Mark: "x"}, entries, nil); err != nil {
 		t.Fatal(err)
 	}
 	old := historyReplyLimit
@@ -493,16 +607,29 @@ func TestTheSearchReplyIsBounded(t *testing.T) {
 	if out["truncated"] != true || len(first) == 0 || len(first) >= 40 || len(raw) > historyReplyLimit || out["total"] != 40.0 {
 		t.Fatalf("a reply past its bound: %d bytes, %d entries, %v", len(raw), len(first), out["truncated"])
 	}
-	status, next := hsGet(t, e, "/api/history", url.Values{"q": {"zeppelin"}, "limit": {"100"}, "after": {out["next"].(string)}}, adminToken)
-	if status != http.StatusOK || len(hsKeys(next)) == 0 || slices.Contains(first, hsKeys(next)[0]) {
-		t.Fatalf("the next page: %d %v after %v", status, hsKeys(next), first)
+	// Page after page, each reading on from the last row served: every
+	// row once, in the search's order.
+	all := slices.Clone(first)
+	for next, _ := out["next"].(string); next != ""; {
+		status, page := hsGet(t, e, "/api/history", url.Values{"q": {"zeppelin"}, "limit": {"100"}, "after": {next}}, adminToken)
+		if status != http.StatusOK || len(hsKeys(page)) == 0 {
+			t.Fatalf("the next page: %d %v after %v", status, page, all)
+		}
+		all = append(all, hsKeys(page)...)
+		next, _ = page["next"].(string)
+	}
+	historyReplyLimit = old
+	whole := hsKeys(hsSearch(t, e, "zeppelin"))
+	historyReplyLimit = 16 << 10
+	if len(whole) != 40 || !slices.Equal(all, whole) {
+		t.Fatalf("the pages served %d rows %v, the search's order %v", len(all), all, whole)
 	}
 	// An entry's links past the bound are cut, and the reply says so.
 	var links []history.Link
 	for i := range history.MaxLinks {
-		links = append(links, history.Link{From: "session:00000000000000b1", Rel: "cites", To: fmt.Sprintf("run:%s-%08x", strings.Repeat("r", 60), i)})
+		links = append(links, history.Link{From: "run:hist-00000034", Rel: "cites", To: fmt.Sprintf("run:%s-%08x", strings.Repeat("r", 60), i)})
 	}
-	if err := ix.Replace(t.Context(), history.Source{Key: "session:00000000000000b1", Mark: "y"}, entries, links); err != nil {
+	if err := ix.Replace(t.Context(), history.Source{Key: "run:hist-00000034", Mark: "y"}, entries, links); err != nil {
 		t.Fatal(err)
 	}
 	status, one := hsGet(t, e, "/api/history/entry", url.Values{"key": {entries[0].Key}}, adminToken)
@@ -726,7 +853,7 @@ func TestHistoryReadsAreBoundedPerClient(t *testing.T) {
 	var once sync.Once
 	let := func() { once.Do(func() { close(release) }) }
 	t.Cleanup(let) // before the server's own end, which waits for its handlers
-	e.srv.historyHold = func(*http.Request) {
+	e.srv.historyHold = func(context.Context, *http.Request) {
 		held <- struct{}{}
 		<-release
 	}
@@ -804,4 +931,408 @@ func histTicketAtStart(t *testing.T, ix *history.Index, key, title string) {
 	if m := histMark(t, ix, feedSource); m == "" || m == "0" {
 		t.Fatalf("the feed's position: %q", m)
 	}
+}
+
+// A record forgotten is never served once Forget has answered, whatever
+// the index still holds: with the indexer held at a gate (its pass that
+// removes the record not yet run), a search answers none of the record's
+// rows, counts none in its total and names none in a cursor; an entry or
+// similar read of it answers entry_gone; a link to it is left out. Once
+// the indexer's pass has run, the index holds none of it either.
+func TestAForgottenRecordIsNeverServed(t *testing.T) {
+	e := newTestEnv(t, nil)
+	gone, kept := e.createSession("cat"), e.createSession("cat")
+	e.stopAndWait(gone)
+	e.stopAndWait(kept)
+	const gate = "hist-0000002f"
+	saveRecord(t, e.srv, crew.Run{ID: gate, Label: "the gate", Cwd: e.root, StartedAt: histNow})
+	histSettle(t, e)
+	both := "session:" + gone + "," + kept
+	if keys := hsKeys(hsSearch(t, e, both)); !slices.ContainsFunc(keys, func(k string) bool { return strings.HasPrefix(k, hSessionRef(gone)) }) {
+		t.Fatalf("the record is not indexed before: %v", keys)
+	}
+	keptTotal := hsSearch(t, e, "session:"+kept)["total"]
+
+	// The indexer held at a pass of another source, the record forgotten.
+	held, release := make(chan struct{}, 1), make(chan struct{})
+	var once sync.Once
+	let := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	freshIndexer(t, e, func(h *historyIndexer) {
+		h.afterMark = func(key string) {
+			if key == hRunRef(gate) {
+				select {
+				case held <- struct{}{}:
+				default:
+				}
+				<-release
+			}
+		}
+	})
+	saveRecord(t, e.srv, crew.Run{ID: gate, Label: "the gate, again", Cwd: e.root, StartedAt: histNow})
+	<-held
+	if resp, out := e.do("DELETE", "/api/history/sessions/"+gone, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("forget: %d %v", resp.StatusCode, out)
+	}
+	ix := e.srv.history.index()
+	histEntry(t, ix, hSessionRef(gone)) // the index still holds it: the gate held its removal
+
+	out := hsSearch(t, e, both)
+	for _, k := range hsKeys(out) {
+		if strings.HasPrefix(k, hSessionRef(gone)) {
+			t.Fatalf("a forgotten record's row is served: %v", hsKeys(out))
+		}
+	}
+	if out["total"] != keptTotal || out["stale"] != true {
+		t.Fatalf("the total: %v, the kept record's alone %v; stale %v", out["total"], keptTotal, out["stale"])
+	}
+	// Page by page, one row at a time: no row of it, no cursor naming it.
+	seen := 0
+	for after := ""; ; {
+		q := url.Values{"q": {both}, "limit": {"1"}}
+		if after != "" {
+			q.Set("after", after)
+		}
+		status, page := hsGet(t, e, "/api/history", q, adminToken)
+		if status != http.StatusOK {
+			t.Fatalf("a page: %d %v", status, page)
+		}
+		for _, k := range hsKeys(page) {
+			if strings.HasPrefix(k, hSessionRef(gone)) {
+				t.Fatalf("a page serves %s", k)
+			}
+			seen++
+		}
+		next, _ := page["next"].(string)
+		if next == "" {
+			break
+		}
+		if raw, err := base64.RawURLEncoding.DecodeString(next); err != nil || bytes.Contains(raw, []byte(gone)) {
+			t.Fatalf("a cursor names the forgotten record: %s (%v)", raw, err)
+		}
+		after = next
+	}
+	if float64(seen) != keptTotal {
+		t.Fatalf("the pages served %d rows, the kept record holds %v", seen, keptTotal)
+	}
+	for _, path := range []string{"/api/history/entry", "/api/history/similar"} {
+		status, out := hsGet(t, e, path, url.Values{"key": {hSessionRef(gone)}}, adminToken)
+		if code, _ := hsErr(out); status != http.StatusNotFound || code != "entry_gone" {
+			t.Fatalf("%s of the forgotten record: %d %v", path, status, out)
+		}
+	}
+	av := e.srv.newAvailability(t.Context(), ix)
+	served := e.srv.serveEntry(av, history.Entry{Key: "run:" + gate, Kind: "run", Ref: "run:" + gate, Anchor: "run:" + gate, At: histNow}, "", history.Repeats{},
+		history.Links{Out: []history.LinkEnd{{Rel: relSessionOf, Ref: hSessionRef(gone)}, {Rel: relSessionOf, Ref: hSessionRef(kept)}},
+			In: []history.LinkEnd{{Rel: relResumedFrom, Ref: "session:" + kept, Entry: &history.Linked{Key: hSessionRef(gone), Kind: "session", Title: "the forgotten one"}}}}, false)
+	if len(served.Links) != 1 || served.Links[0].Ref != hSessionRef(kept) || served.Links[0].Dir != "out" {
+		t.Fatalf("the links served: %+v", served.Links)
+	}
+
+	let()
+	histSettle(t, e)
+	histGone(t, e.srv.history.index(), hSessionRef(gone))
+	if out := hsSearch(t, e, both); out["stale"] != nil || out["total"] != keptTotal {
+		t.Fatalf("after the indexer's pass: %v", out)
+	}
+}
+
+// stalledWriter is a client that never reads: a write blocks until the
+// test lets it go, and the write deadline set on it is kept.
+type stalledWriter struct {
+	header   http.Header
+	status   atomic.Int64
+	deadline atomic.Pointer[time.Time]
+	writing  chan struct{}
+	release  chan struct{}
+	once     sync.Once
+}
+
+func newStalledWriter() *stalledWriter {
+	return &stalledWriter{header: http.Header{}, writing: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (w *stalledWriter) Header() http.Header  { return w.header }
+func (w *stalledWriter) WriteHeader(code int) { w.status.Store(int64(code)) }
+func (w *stalledWriter) Write([]byte) (int, error) {
+	w.once.Do(func() { close(w.writing) })
+	<-w.release
+	return 0, os.ErrDeadlineExceeded
+}
+func (w *stalledWriter) SetWriteDeadline(at time.Time) error {
+	if !at.IsZero() {
+		w.deadline.Store(&at)
+	}
+	return nil
+}
+
+// A read's slot is let go on every way out of its handler: before its
+// reply is written, so clients that never read hold none (and the write
+// has its own deadline); when the client leaves, which is no failure of
+// the server's (nothing logged, no 500); and at the read's deadline,
+// answered in its own words.
+func TestAReadsSlotIsLetGoOnEveryWayOut(t *testing.T) {
+	logs := &logBuffer{}
+	e := newTestEnvLogging(t, nil, slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	histSettle(t, e)
+
+	// Clients that never read, more of them from one address than its
+	// slots: each is served, none holds a slot.
+	var stalled []*stalledWriter
+	var wg sync.WaitGroup
+	for range maxHistoryReadsPerClient + 1 {
+		sw := newStalledWriter()
+		stalled = append(stalled, sw)
+		r := httptest.NewRequest("GET", "/api/history?q=x", nil)
+		r.Header.Set("Authorization", "Bearer "+adminToken)
+		r.RemoteAddr = "192.0.2.7:4000"
+		before := time.Now()
+		wg.Go(func() { e.srv.Handler().ServeHTTP(sw, r) })
+		<-sw.writing
+		if status := sw.status.Load(); status != http.StatusOK {
+			t.Fatalf("a read beside stalled ones: %d", status)
+		}
+		if d := sw.deadline.Load(); d == nil || d.Before(before) || d.After(time.Now().Add(historyWriteTimeout)) {
+			t.Fatalf("the write's deadline: %v", d)
+		}
+		if n := e.srv.historyReads.inFlight(); n != 0 {
+			t.Fatalf("%d slots held by replies being written", n)
+		}
+	}
+	for _, sw := range stalled {
+		close(sw.release)
+	}
+	wg.Wait()
+
+	// A client that leaves while its read is held.
+	held := make(chan struct{}, 1)
+	e.srv.historyHold = func(ctx context.Context, _ *http.Request) {
+		held <- struct{}{}
+		<-ctx.Done()
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	r, _ := http.NewRequestWithContext(ctx, "GET", e.http.URL+"/api/history?q=x", nil)
+	r.Header.Set("Authorization", "Bearer "+adminToken)
+	left := make(chan struct{})
+	go func() {
+		defer close(left)
+		if resp, err := e.client.Do(r); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-held
+	cancel()
+	<-left
+	until(t, "the slot of a read whose client left let go", func() bool { return e.srv.historyReads.inFlight() == 0 })
+	if out := logs.String(); strings.Contains(out, "a history read failed") || strings.Contains(out, "status=500") {
+		t.Fatalf("a client that left is logged as a failure:\n%s", out)
+	}
+
+	// The read's deadline: answered as one, the slot let go.
+	e.srv.historyDeadline = 50 * time.Millisecond
+	status, out := hsGet(t, e, "/api/history", url.Values{"q": {"x"}}, adminToken)
+	if code, msg := hsErr(out); status != http.StatusServiceUnavailable || code != "history_timeout" || !strings.Contains(msg, "took longer than 50ms") {
+		t.Fatalf("a read past its deadline: %d %v", status, out)
+	}
+	if n := e.srv.historyReads.inFlight(); n != 0 {
+		t.Fatalf("%d slots held after the deadline", n)
+	}
+}
+
+// An act made again keeps the note in effect at it: Dispatch writes a
+// note only when it changes, so an approval or an acceptance made again
+// with the same note writes no note row, and a note cleared is a row of
+// its own.
+func TestARepeatedActKeepsItsNote(t *testing.T) {
+	plan := func(seq int64, field, value, op string) dispatch.ChangeRow {
+		return dispatch.ChangeRow{Seq: seq, Entity: dispatch.EntityPlan, EntityID: "0000000000000001", Field: field, Value: value, OpID: op, Actor: adminActor}
+	}
+	tk := func(seq int64, field, value, op string) dispatch.ChangeRow {
+		return dispatch.ChangeRow{Seq: seq, Entity: dispatch.EntityTicket, EntityID: "0000000000000009", Field: field, Value: value, OpID: op, Actor: adminActor}
+	}
+	at := histNow.Format(time.RFC3339Nano)
+	rows := []dispatch.ChangeRow{
+		plan(2, "approved_note", "Ship it.", "a1"), plan(1, "approved_at", at, "a1"), // a note row before or after its act
+		plan(3, "approved_at", at, "a2"),                                     // again, the same note: no note row
+		plan(4, "approved_at", at, "a3"), plan(5, "approved_note", "", "a3"), // cleared
+		plan(6, "approved_at", at, "a4"),
+		tk(7, "accepted_at", at, "c1"), tk(8, "accepted_note", "Good.", "c1"),
+		tk(9, "accepted_at", "", "c2"), tk(10, "accepted_at", at, "c3"),
+	}
+	entries, _ := ticketEntries(ticketRead{v: dispatch.TicketView{Ticket: dispatch.Ticket{Key: "CND-9", Title: "Notes", CreatedAt: histNow}},
+		plans: []dispatch.PlanSummary{{ID: "0000000000000001", N: 1, CreatedAt: histNow}}, changes: rows})
+	got := map[string]string{}
+	for _, e := range entries {
+		got[e.Key] = e.Body
+	}
+	for key, want := range map[string]string{
+		"ticket:CND-9#plan.approved/r1/a1": "Ship it.", "ticket:CND-9#plan.approved/r1/a2": "Ship it.",
+		"ticket:CND-9#plan.approved/r1/a3": "", "ticket:CND-9#plan.approved/r1/a4": "",
+		"ticket:CND-9#ticket.accepted/c1": "Good.", "ticket:CND-9#ticket.accepted/c3": "Good.",
+	} {
+		if body, ok := got[key]; !ok || body != want {
+			t.Errorf("%s: %q (%v), want %q", key, body, ok, want)
+		}
+	}
+}
+
+// A launch linked from its run or to its plan revision opens its run's
+// page, its ticket's before it has a run: never no page at all.
+func TestALinkedLaunchOpensItsPage(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ix := histSettle(t, e)
+	const ran, waiting = "0000000000000a01", "0000000000000a02"
+	entries, links := ticketEntries(ticketRead{v: dispatch.TicketView{Ticket: dispatch.Ticket{Key: "CND-8", Title: "Launch", CreatedAt: histNow}},
+		plans:    []dispatch.PlanSummary{{ID: "0000000000000001", N: 1, CreatedAt: histNow}},
+		launches: []dispatch.LaunchSummary{{ID: ran, PlanN: 1, RunID: "hist-00000031", CreatedAt: histNow}, {ID: waiting, PlanN: 1, CreatedAt: histNow}}})
+	if err := ix.Replace(t.Context(), history.Source{Key: "ticket:CND-8", Mark: "Q1"}, entries, links); err != nil {
+		t.Fatal(err)
+	}
+	run := []history.Entry{{Key: "run:hist-00000031", Kind: "run", Ref: "run:hist-00000031", Anchor: "run:hist-00000031", At: histNow, Title: "the launched run"}}
+	if err := ix.Replace(t.Context(), history.Source{Key: "run:hist-00000031", Mark: "x"}, run,
+		[]history.Link{{From: "run:hist-00000031", Rel: relLaunched, To: hLaunchRef(ran)}}); err != nil {
+		t.Fatal(err)
+	}
+	urls := func(key string) map[string]string {
+		out := map[string]string{}
+		for _, l := range hsEntryOf(t, e, key)["links"].([]any) {
+			m := l.(map[string]any)
+			out[m["ref"].(string)], _ = m["url"].(string)
+		}
+		return out
+	}
+	if u := urls("run:hist-00000031")[hLaunchRef(ran)]; u != "/runs/hist-00000031" {
+		t.Fatalf("the run's launch: %q", u)
+	}
+	plan := urls("plan:CND-8/1")
+	if plan[hLaunchRef(ran)] != "/runs/hist-00000031" || plan[hLaunchRef(waiting)] != "/dispatch/CND/8" {
+		t.Fatalf("the revision's launches: %v", plan)
+	}
+}
+
+// A read of a store that failed is said unknown, never as evidence gone:
+// a receipt's and an attempt's rows not read (the read's context done),
+// the ledger not open.
+func TestAFailedAvailabilityReadIsUnknown(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	av := e.srv.newAvailability(ctx, nil)
+	defer av.close()
+	if a := av.check(ref(t, hCheckRef("hist-00000032", "build", 1, "unit", 1)), false); a.State != availUnknown {
+		t.Fatalf("a receipt whose rows were not read: %v", a)
+	}
+	if a := av.attempt(ref(t, attemptKey("hist-00000032", "build", 1)), history.Entry{Where: ledger.WhereNative}, false); a.State != availUnknown {
+		t.Fatalf("an attempt whose rows were not read: %v", a)
+	}
+	ld := e.srv.ledger
+	e.srv.ledger = nil
+	t.Cleanup(func() { e.srv.ledger = ld })
+	av = e.srv.newAvailability(t.Context(), nil)
+	if a := av.check(ref(t, hCheckRef("hist-00000032", "build", 1, "unit", 1)), false); a.State != availUnknown {
+		t.Fatalf("a receipt with no ledger open: %v", a)
+	}
+}
+
+// keepBriefSplit keeps a brief on e's Brakeman store as another server
+// would, its two writes apart: the brief's file first, then, at commit,
+// the request that says it keeps one. Between them it calls between,
+// with the request's file as it was before, and answers the request's id.
+func keepBriefSplit(t *testing.T, e *testEnv, between func(id string)) string {
+	t.Helper()
+	st := e.srv.brakeman.st
+	r, _, err := st.Create(brakeman.Request{OpID: fmt.Sprintf("split-%d", time.Now().UnixNano()), Kind: brakeman.KindBriefing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Start(r.ID, brakeman.DefaultConfig(e.root), brakeman.Stamp{AgentID: "cat"}); err != nil {
+		t.Fatal(err)
+	}
+	reqFile := filepath.Join(e.srv.cfg.DataDir, brakeman.Dir, brakeman.RequestsDir, r.ID+".json")
+	before, err := os.ReadFile(reqFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := brakeman.Brief{Schema: brakeman.BriefSchema, Title: "Split", Summary: "Kept in two writes.", Items: []brakeman.Item{fact("the gannet dived", ref(t, "run:hist-00000033"))}}
+	if _, err := st.KeepBrief(r.ID, brakeman.Kept{OpID: "brief-1", Brief: b}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(reqFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replace := func(body []byte) {
+		t.Helper()
+		tmp := reqFile + ".swap"
+		if err := os.WriteFile(tmp, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(tmp, reqFile); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replace(before) // the brief's file written, its request's commit not yet
+	between(r.ID)
+	replace(after) // the commit
+	return r.ID
+}
+
+// unhookedIndexer replaces e's indexer with one whose hooks are on no
+// fan: like another server's, it learns of a write only by a reconcile.
+func unhookedIndexer(t *testing.T, e *testEnv, set func(h *historyIndexer)) {
+	t.Helper()
+	histSettle(t, e)
+	e.srv.stopHistory()
+	old := e.srv.history
+	h := newHistoryIndexer(e.srv.store, e.srv.sessionRecords, old.ledger, e.srv.dispatch, old.host, e.srv.log)
+	h.brakeman = old.brakeman
+	h.after = func(d time.Duration) <-chan time.Time {
+		if d == h.reconcileTick {
+			return nil
+		}
+		return time.After(d)
+	}
+	if set != nil {
+		set(h)
+	}
+	e.srv.history = h
+	h.start()
+	histSettle(t, e)
+}
+
+// A brief another server keeps is found by a later reconcile, whichever
+// of its two writes a reconcile came between: the brief's file is there
+// and its request does not yet say it keeps one, so that pass removes it,
+// and the request's commit after it says to read it again.
+func TestAReconcileBetweenABriefsWritesFindsItLater(t *testing.T) {
+	e := newTestEnv(t, nil)
+	unhookedIndexer(t, e, nil)
+	id := keepBriefSplit(t, e, func(id string) {
+		histReconcile(t, e)
+		histGone(t, e.srv.history.index(), hBriefItemRef(id, 0))
+	})
+	histReconcile(t, e)
+	histEntry(t, e.srv.history.index(), hBriefItemRef(id, 0))
+}
+
+// A brief kept while a catch-up lists Brakeman's requests, after the
+// listing, is found by the next reconcile: the look at the files was
+// taken before the listing.
+func TestABriefKeptDuringACatchUpIsFoundLater(t *testing.T) {
+	e := newTestEnv(t, nil)
+	var once sync.Once
+	id := ""
+	unhookedIndexer(t, e, func(h *historyIndexer) {
+		h.briefsListed = func() {
+			once.Do(func() {
+				id = keepBrief(t, e, brakeman.DefaultConfig(e.root), nil, fact("the gannet dived", ref(t, "run:hist-00000033")))
+			})
+		}
+	})
+	if id == "" {
+		t.Fatal("the catch-up listed no requests")
+	}
+	histGone(t, e.srv.history.index(), hBriefItemRef(id, 0))
+	histReconcile(t, e)
+	histEntry(t, e.srv.history.index(), hBriefItemRef(id, 0))
 }

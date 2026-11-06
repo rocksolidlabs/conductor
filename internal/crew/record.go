@@ -386,6 +386,46 @@ func (rs *Records) Get(runID string) (Run, bool, error) {
 	return r, true, nil
 }
 
+// MemberOf finds the run whose record names the session as a member's
+// (MemberState.SessionID): the run's id and the member's name. A record
+// that cannot be read (an I/O error, not JSON, past maxRecordSize) could
+// name it, so when no readable record does, such a record is the error,
+// naming it: whether the session is a member is then not known. A file
+// that is no run's record (its name not a run id's, or the id in it not
+// its name) names none.
+func (rs *Records) MemberOf(sessionID string) (runID, member string, err error) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	entries, err := rs.st.List()
+	if err != nil {
+		return "", "", err
+	}
+	var unread error
+	for _, en := range entries {
+		id, ok := strings.CutSuffix(en.Name, ".json")
+		if !ok || !ValidRunID(id) {
+			continue
+		}
+		var r Run
+		found, err := rs.st.LoadLimit(en.Name, &r, maxRecordSize)
+		if err != nil {
+			if unread == nil {
+				unread = fmt.Errorf("records: the record %s: %w", en.Name, err)
+			}
+			continue
+		}
+		if !found || r.ID != id {
+			continue
+		}
+		for _, m := range r.Members {
+			if sessionID != "" && m.SessionID == sessionID {
+				return r.ID, m.Name, nil
+			}
+		}
+	}
+	return "", "", unread
+}
+
 // RecordMarks is a record's place in its run's chain: the run, the run it
 // resumed (ResumedFrom) and the run that resumed it (ResumedBy), and when
 // it started.

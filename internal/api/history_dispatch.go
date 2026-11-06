@@ -129,15 +129,32 @@ func ticketEntries(r ticketRead) ([]history.Entry, []history.Link) {
 
 	// The acts the ticket's history records, each keyed by the op id of
 	// the change that recorded it: an act made again is a decision of its
-	// own. A note is the same operation's note row.
-	notes := map[string]string{}
-	for _, c := range r.changes {
-		if c.Field == "approved_note" || c.Field == "accepted_note" {
-			notes[c.Entity+"\x00"+c.EntityID+"\x00"+c.OpID] = c.Value
+	// own. A note is the one in effect at the act: the same operation's
+	// note row, else the last one before it (Dispatch writes a field only
+	// when it changes, so an act made again with the same note writes no
+	// note row; a note cleared is a row of its own, its value "").
+	changes := slices.Clone(r.changes)
+	slices.SortStableFunc(changes, func(a, b dispatch.ChangeRow) int { return cmp.Compare(a.Seq, b.Seq) })
+	isNote := func(c dispatch.ChangeRow) bool { return c.Field == "approved_note" || c.Field == "accepted_note" }
+	opNotes := map[string]string{}
+	for _, c := range changes {
+		if isNote(c) {
+			opNotes[c.Entity+"\x00"+c.EntityID+"\x00"+c.Field+"\x00"+c.OpID] = c.Value
 		}
 	}
+	current := map[string]string{} // the note in effect, by entity and field
+	noteAt := func(c dispatch.ChangeRow, field string) string {
+		if v, ok := opNotes[c.Entity+"\x00"+c.EntityID+"\x00"+field+"\x00"+c.OpID]; ok {
+			return v
+		}
+		return current[c.Entity+"\x00"+c.EntityID+"\x00"+field]
+	}
 	seen := map[string]bool{}
-	for _, c := range r.changes {
+	for _, c := range changes {
+		if isNote(c) {
+			current[c.Entity+"\x00"+c.EntityID+"\x00"+c.Field] = c.Value
+			continue
+		}
 		x := base
 		x.At, x.Actor = hAt(c.At, e.At), hField(c.Actor)
 		by := cmp.Or(c.By, c.Actor)
@@ -154,7 +171,7 @@ func ticketEntries(r ticketRead) ([]history.Entry, []history.Link) {
 			x.Ref, x.Revision, x.Outcome = hPlanRef(key, n), fmt.Sprintf("r%d", n), act
 			x.Title = hTitle(fmt.Sprintf("r%d of %s %s by %s", n, key, act, by))
 			if act == dispatch.PlanApproved {
-				x.Body = hShortBody(notes[c.Entity+"\x00"+c.EntityID+"\x00"+c.OpID])
+				x.Body = hShortBody(noteAt(c, "approved_note"))
 			}
 		case c.Entity == dispatch.EntityTicket && c.Field == "accepted_at":
 			x.Kind = "ticket.accepted"
@@ -165,7 +182,7 @@ func ticketEntries(r ticketRead) ([]history.Entry, []history.Link) {
 			x.Ref, x.Outcome = ref, strings.TrimPrefix(x.Kind, "ticket.")
 			x.Title = hTitle(fmt.Sprintf("%s %s by %s", key, x.Outcome, by))
 			if x.Kind == "ticket.accepted" {
-				x.Body = hShortBody(notes[c.Entity+"\x00"+c.EntityID+"\x00"+c.OpID])
+				x.Body = hShortBody(noteAt(c, "accepted_note"))
 			}
 		case c.Entity == dispatch.EntityTicket && c.Field == "status" && isPerson(c.Actor) &&
 			(c.Value == dispatch.TicketDone || c.Value == dispatch.TicketCancelled):

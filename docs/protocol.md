@@ -4062,12 +4062,17 @@ id of the change that recorded it, with the operator), its launches, and
 each delivery whose candidate's verification receipt is kept (checked,
 `delivers` to the candidate's attempt). A ticket's history is read for
 those acts alone: no field's earlier value, nothing of a review or a
-finding. Dispatch's hook names a changed ticket by its id, so it only
-asks for the change feed, which is read on the indexer's goroutine from
-the position the index keeps (`dispatch:feed`); the same read is the
-reconcile's, so another server's edit is found within 30 s. A **brief**
-(`brief:<br-n>`) is read through Brakeman's store, its mark the brief's
-time and op id: one `brief.item` per fact, interpretation, proposal and
+finding. A plan revision's ref is Brakeman's, `plan:<KEY-n>/<n>`, so a
+brief that cites one is joined to it. An act's note is the one in effect
+at the act (Dispatch writes a note only when it changes). Dispatch's hook
+names a changed ticket by its id, so it only asks for the change feed,
+which is read on the indexer's goroutine from the position the index
+keeps (`dispatch:feed`); the same read is the reconcile's, so another
+server's edit is found within 30 s. A **brief** (`brief:<br-n>`) is read
+through Brakeman's store, its mark the brief's time and op id, and found
+by the reconcile from its request's file as well as its brief's (the
+brief is written before the request that says it keeps one; the files
+are looked at before the requests are listed): one `brief.item` per fact, interpretation, proposal and
 outcome (said: Brakeman's words), each `cites` the refs it names; what a
 person asked Brakeman is never read, and a brief whose turn could see the
 terminals' screens keeps its items' words out of the index. Brakeman's own
@@ -4078,7 +4083,14 @@ The search routes read only their query string (every parameter named,
 each once, the whole at most 12 KiB: `400 invalid_request` otherwise),
 never log it (the request line names the route), and answer `429
 history_busy` past two reads of the index in flight from one client or
-four in all; a read has 15 s. An entry as served is `{key, kind, class,
+four in all. A read has 15 s (`503 history_timeout` past it); its slot is
+let go before its reply is written, which has 15 s of its own, and a read
+whose client left is answered nothing and logged as no failure. A session
+record the journal no longer holds (forgotten, the index's removal of it
+not yet made) is never served: no row of it, no count of it in `total`,
+no cursor naming it, no link to it; a search that met one is made again
+without it (`stale: true`), and an entry or similar read of it answers
+`404 entry_gone`. An entry as served is `{key, kind, class,
 outcome?, title, summary?, snippet?, at, actor?, source{store, label,
 ref}, host{name?, user?, hosted?, where?}, project{key?, repo?, tree?},
 revision{label?, commit?}, agent?{id, name?, version?, session?}, crew?,
@@ -4090,19 +4102,26 @@ body (`snippet`, at most 300 bytes, is cut from it). `class` is `said`,
 that shows the evidence, never an API route: a check receipt the run page
 at its step (`/runs/<run>?view=tasks&task=&attempt=&step=<phase>/<id>/<k>`),
 a command receipt the run page at the receipt (`?command=&actor=`), a
-comment its ticket's page at it (`?comment=<n>`), a launch its run's page,
-a session `/sessions/<id>` while the server lists it and
+comment its ticket's page at it (`?comment=<n>`), a launch (an entry or a
+link's end) its run's page (its ticket's before it has a run), a session `/sessions/<id>` while the server lists it and
 `/history/sessions/<id>#e<seq>` after; every other ref the page Brakeman's
 references open. `availability.state` is `live`, `listed`, `record`,
-`lost` or `host_away` for a session (`forgotten` once its record is gone),
-`worktree`, `worktree_gone` or `elsewhere` (another Runtime's, not looked
-at) for an attempt, `log`, `log_dropped` or `pruned` for a receipt,
-`deleted` for a ticket's or a comment's tombstone, `kept` or `pruned` for
-a brief, else `kept`.
+`lost` or `host_away` for a session, `worktree`, `worktree_gone` or
+`elsewhere` (another Runtime's, not looked at) for an attempt, `pruned`
+for an attempt or a receipt whose run's rows are gone, `log`,
+`log_dropped` or `pruned` for a receipt, `deleted` for a ticket's or a
+comment's tombstone, `kept` or `pruned` for a brief (by Brakeman's store's
+own read), else `kept`; `unknown` wherever the store could not be read
+(the ledger not open, a read that failed): never said as gone. An
+attempt's worktree is looked at only where its run puts it
+(`<run's folder>/.conductor/worktrees/<run>/<task>.<n>`), through the
+run's folder as a launch opens it, each step a directory and never a
+link: anything else is `worktree_gone` in the same words, and its
+`branch` is its ledger row's.
 
 | Route | Who | Answers |
 |---|---|---|
-| `GET /api/history?q=&limit=&after=` | admin | `{entries[Entry], next?, total, totalCapped?, cut?, truncated?, indexing{state, behind?, ledger?, oldest?, dropped?}, readOnly?}`: the entries whose text holds the line's words (at most 512 bytes, 16 terms; `"quoted phrases"`; the filters `class: kind: outcome: project: repo: host: agent: crew: run: ticket: session: since: until:`) ranked, or newest first by filters alone; `limit` 1 to 100 (20 when absent); `after` a page's `next`, at most 2 KiB. `cut` is `ranked` or `scanned` past the search's bounds; `state` also `other_version`; the reply at most 2 MiB, the rows past it left to `next` with `truncated: true`. `400 bad_query` with words, `400 bad_cursor`, `409 stale_cursor` (the history was rebuilt), `503 history_not_ready` |
-| `GET /api/history/entry?key=` | admin | `{entry, indexing, linksCut?}`: one entry by its key (1 to 512 bytes; `400 bad_key`), its links each way (at most 100), and its full availability: for a session's record `resume{offered, why?, confirm?, url?}` by the resume routes' rules (a hosted session, a crew member, a managed attempt or a Brakeman turn never; a launch whose arguments were not kept or a Runtime the server lacks never; a lost record with `confirm`), for an attempt `commit{id, present}` and `branch`, for a receipt `log{size, sha256}`; the reply at most 2 MiB, its links cut past it (`linksCut: true`); `404 entry_gone` for a key the index no longer holds |
+| `GET /api/history?q=&limit=&after=` | admin | `{entries[Entry], next?, total, totalCapped?, cut?, truncated?, stale?, indexing{state, behind?, ledger?, oldest?, dropped?}, readOnly?}`: the entries whose text holds the line's words (at most 512 bytes, 16 terms; `"quoted phrases"`; the filters `class: kind: outcome: project: repo: host: agent: crew: run: ticket: session: since: until:`) ranked, or newest first by filters alone; `limit` 1 to 100 (20 when absent); `after` a page's `next`, at most 2 KiB. `cut` is `ranked` or `scanned` past the search's bounds; `state` also `other_version`; the reply at most 2 MiB, the rows past it left to `next` (the cursor after the last row served) with `truncated: true`. `400 bad_query` with words, `400 bad_cursor`, `409 stale_cursor` (the history was rebuilt), `503 history_not_ready` (also while records are being forgotten faster than a search can leave them out), `503 history_timeout` |
+| `GET /api/history/entry?key=` | admin | `{entry, indexing, linksCut?}`: one entry by its key (1 to 512 bytes; `400 bad_key`), its links each way (at most 100), and its full availability: for a session's record `resume{offered, why?, confirm?, url?, unknown?}` by the resume routes' rules (a hosted session, a crew member, a managed attempt or a Brakeman turn never; a launch whose arguments were not kept or a Runtime the server lacks never; a lost record with `confirm`; a crew member is known by its record, the engine's runs or a run record naming it, and when the run records cannot all be read `offered: false, unknown: true` with words to try again), for an attempt `commit{id, present}` and `branch`, for a receipt `log{size, sha256}`; the reply at most 2 MiB, its links cut past it (`linksCut: true`); `404 entry_gone` for a key the index no longer holds or whose session record the journal no longer holds; `503 history_timeout` |
 | `GET /api/history/similar?key=&scope=&limit=` | admin | `{entries[Entry], truncated?}`: the receipts of the same command elsewhere, the entry's run chain left out, in its repository (`scope` `repo`, the default) or every one (`all`), those that hold its failure's last line first, passed before failed; `limit` 1 to 50 (10 when absent); `400 bad_query`, `404 entry_gone` |
 | `GET /api/history/command?run=&actor=&id=` | admin | `{command{id, actor, intent, status, receipt, createdAt}}`: the receipt of that actor (at most 60 bytes), never the caller's; `id` 1 to 32 of `[A-Za-z0-9._~-]` (`400 invalid_request`); `404 not_found`, `503 ledger_unavailable` |

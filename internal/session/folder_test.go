@@ -720,3 +720,29 @@ func TestFindPathReadsAtMostItsBoundInAll(t *testing.T) {
 		t.Fatalf("a small tree: read %d, truncated %v, %d matches", w.read, h.Truncated, len(h.Matches))
 	}
 }
+
+// Lstat looks only inside the folder: a link at the last element is
+// described as a link, never followed, and a path through a link out of
+// the folder, or up out of it, is refused.
+func TestLstatStaysInTheFolder(t *testing.T) {
+	root, outside := linkTree(t)
+	if err := os.Symlink(filepath.Join(outside, "sub"), filepath.Join(root, "out")); err != nil {
+		t.Fatal(err)
+	}
+	f, err := OpenFolder(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if fi, err := f.Lstat(filepath.Join("sub", "deep")); err != nil || !fi.IsDir() {
+		t.Fatalf("a folder inside: %v %v", fi, err)
+	}
+	if fi, err := f.Lstat("out"); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link: %v %v", fi, err)
+	}
+	for _, rel := range []string{filepath.Join("out", "only-outside.txt"), filepath.Join("..", "outside", "sub"), filepath.Join(outside, "sub")} {
+		if fi, err := f.Lstat(rel); err == nil {
+			t.Fatalf("%s: described as %v", rel, fi)
+		}
+	}
+}

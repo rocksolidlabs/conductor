@@ -117,9 +117,12 @@ type historyIndexer struct {
 
 	// Seams: the clock, the timer, a pause between a source's mark and
 	// its read, the repository read, and the reconcile's period.
-	now           func() time.Time
-	after         func(time.Duration) <-chan time.Time
-	afterMark     func(key string)
+	now       func() time.Time
+	after     func(time.Duration) <-chan time.Time
+	afterMark func(key string)
+	// briefsListed, a test's, runs once a catch-up has listed Brakeman's
+	// requests (PR-4): nil in the product.
+	briefsListed  func()
 	repoOf        func(ctx context.Context, dir string) (top, common string, err error)
 	reconcileTick time.Duration
 
@@ -151,9 +154,10 @@ type historyIndexer struct {
 	pm       *projectMap
 	repos    map[string]repoIdent
 	runStats map[string]fileStat // the reconcile's last look at each run record
-	// briefStats is the reconcile's last look at each kept brief's file,
-	// and briefDir Brakeman's requests' folder, opened once (PR-4).
-	briefStats map[string]fileStat
+	// briefStats is the reconcile's last look at each request's files (its
+	// request and its brief), and briefDir Brakeman's requests' folder,
+	// opened once (PR-4).
+	briefStats map[string]briefStat
 	briefDir   *store.Store
 	// endedChecks are the receipt rows (no logs) of attempts that have
 	// ended with every receipt finished: rows that never change, read
@@ -202,7 +206,7 @@ func newHistoryIndexer(data *store.Store, j *journal.Journal, ld func() indexLed
 		readAt:        map[string]time.Time{},
 		repos:         map[string]repoIdent{},
 		runStats:      map[string]fileStat{},
-		briefStats:    map[string]fileStat{},
+		briefStats:    map[string]briefStat{},
 		endedChecks:   map[attemptID][]ledger.CheckRow{},
 	}
 }

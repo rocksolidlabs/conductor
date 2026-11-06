@@ -649,3 +649,70 @@ func TestExceptCrewsLeavesTheirEntriesOut(t *testing.T) {
 		t.Fatal("project: given")
 	}
 }
+
+// ExceptSources leaves a source's entries out of a search and out of its
+// total, of words and of filters alone; a cursor read with one set reads
+// on with another, for it moves no row.
+func TestExceptSourcesLeavesTheirEntriesOut(t *testing.T) {
+	ix := openIndex(t, t.TempDir(), Options{})
+	put(t, ix, "session:a", chat("session:a#e1", "a", "the turnstile jammed", t0))
+	put(t, ix, "session:b", chat("session:b#e1", "b", "the turnstile jammed again", t0.Add(time.Minute)))
+	put(t, ix, "session:c", chat("session:c#e1", "c", "the turnstile jammed at last", t0.Add(2*time.Minute)))
+	for _, line := range []string{"turnstile", "class:said"} {
+		q, err := ParseQuery(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q.ExceptSources = []string{"session:b"}
+		some, err := ix.Search(t.Context(), q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := keysOf(some.Entries); len(got) != 2 || slices.Contains(got, "session:b#e1") || some.Total != 2 {
+			t.Fatalf("%q except session:b: %v (total %d)", line, got, some.Total)
+		}
+	}
+	q, _ := ParseQuery("class:said")
+	q.Limit = 1
+	first, err := ix.Search(t.Context(), q)
+	if err != nil || first.Next == "" || !slices.Equal(keysOf(first.Entries), []string{"session:c#e1"}) {
+		t.Fatalf("a first page of one: %v %+v", err, first)
+	}
+	q.After, q.ExceptSources = first.Next, []string{"session:b"}
+	next, err := ix.Search(t.Context(), q)
+	if err != nil || !slices.Equal(keysOf(next.Entries), []string{"session:a#e1"}) {
+		t.Fatalf("the next page except session:b: %v %v", err, keysOf(next.Entries))
+	}
+}
+
+// A page's After(i) is the cursor after its entry i: the same rows follow
+// it as follow a page that ended there.
+func TestAfterIsTheCursorAfterAnEntry(t *testing.T) {
+	ix := openIndex(t, t.TempDir(), Options{})
+	for i, id := range []string{"a", "b", "c", "d"} {
+		put(t, ix, "session:"+id, chat("session:"+id+"#e1", id, "the turnstile jammed "+manyWords(i+1), t0.Add(time.Duration(i)*time.Minute)))
+	}
+	for _, line := range []string{"turnstile", "class:said"} {
+		q, _ := ParseQuery(line)
+		whole, err := ix.Search(t.Context(), q)
+		if err != nil || len(whole.Entries) != 4 {
+			t.Fatalf("%q: %v %v", line, err, keysOf(whole.Entries))
+		}
+		for i := range 3 {
+			q.Limit = i + 1
+			short, err := ix.Search(t.Context(), q)
+			if err != nil || short.Next != whole.After(i) {
+				t.Fatalf("%q: the cursor after %d: %q, a page of %d ends at %q (%v)", line, i, whole.After(i), i+1, short.Next, err)
+			}
+			q.Limit, q.After = 0, whole.After(i)
+			rest, err := ix.Search(t.Context(), q)
+			if err != nil || !slices.Equal(keysOf(rest.Entries), keysOf(whole.Entries[i+1:])) {
+				t.Fatalf("%q: after %d: %v, want %v (%v)", line, i, keysOf(rest.Entries), keysOf(whole.Entries[i+1:]), err)
+			}
+			q.After = ""
+		}
+		if whole.After(4) != "" || whole.After(-1) != "" {
+			t.Fatalf("%q: a cursor past the page", line)
+		}
+	}
+}

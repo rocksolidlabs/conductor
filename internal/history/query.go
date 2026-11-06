@@ -90,6 +90,13 @@ type Query struct {
 	// (docs/plans/history.md, "A Brakeman brief"). Part of the query's
 	// digest, so a cursor of one is refused by the other.
 	ExceptCrews []string
+	// ExceptSources leaves out the entries of these sources (a source's
+	// key, session:<id>): the API's routes leave out a session record the
+	// journal no longer holds while the index still does, until the
+	// indexer's next pass removes it. Not part of the query's digest: it
+	// leaves rows out and moves none, so a cursor of the query with one
+	// set reads on in the query with another.
+	ExceptSources []string
 
 	terms   []string // FTS5 strings, each a condition of its own
 	none    bool     // words were typed and none is kept: nothing matches
@@ -433,6 +440,9 @@ func (q Query) conds(now time.Time) (conds []string, args []any) {
 	if len(q.ExceptCrews) > 0 {
 		conds = append(conds, "NOT "+in("e.crew", q.ExceptCrews))
 	}
+	if len(q.ExceptSources) > 0 {
+		conds = append(conds, "NOT "+in("e.source", q.ExceptSources))
+	}
 	if q.since != nil {
 		conds = append(conds, "e.at >= ?")
 		args = append(args, stamp(q.since.time(now)))
@@ -465,6 +475,19 @@ type Page struct {
 	TotalCapped bool   `json:"totalCapped,omitempty"`
 	Cut         string `json:"cut,omitempty"`
 	State       string `json:"state,omitempty"`
+	// after is the cursor after each entry of the page, in its order: a
+	// reply that serves only the first rows of a page reads on from the
+	// last it served (After).
+	after []string
+}
+
+// After is the cursor of the rows after the page's entry i: the next
+// page of a reply that served the entries up to i and no more.
+func (p Page) After(i int) string {
+	if i < 0 || i >= len(p.after) {
+		return ""
+	}
+	return p.after[i]
 }
 
 // Hit is an entry as a search answers it: with its best column's snippet
@@ -730,8 +753,8 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 		return page, err
 	}
 	var ids []int64
-	var scores []float64
 	total := -1
+	digest := q.digest()
 	for rows.Next() {
 		var s float64
 		id, e, err := scanEntry(rows, &total, &s)
@@ -740,12 +763,12 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 			return page, err
 		}
 		if len(page.Entries) == limit {
-			last := page.Entries[limit-1]
-			page.Next = encodeCursor(cursor{Score: scores[limit-1], At: stamp(last.At), Key: last.Key, Query: q.digest(), V: Version, Gen: gen})
+			page.Next = page.after[limit-1]
 			break
 		}
-		ids, scores = append(ids, id), append(scores, s)
+		ids = append(ids, id)
 		page.Entries = append(page.Entries, Hit{Entry: e})
+		page.after = append(page.after, encodeCursor(cursor{Score: s, At: stamp(e.At), Key: e.Key, Query: digest, V: Version, Gen: gen}))
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
