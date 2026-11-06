@@ -1337,6 +1337,70 @@ func TestMoveHoldsLeavesOneActiveRow(t *testing.T) {
 	})
 }
 
+// MoveHolds copies only the holds of the decisions MoveDecisions moved: a
+// final decision stays with its run, and so do its released holds, through
+// a chain of continuations (a, b, c), while a moved decision's holds go
+// with it at each step.
+func TestMoveHoldsLeavesAFinalDecisionsHoldsBehind(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	const a, b, c = "team-00000001", "team-00000002", "team-00000003"
+	newRun(t, l, a)
+	tasksOf(t, l, a, "build", "deploy")
+	cancelled := open(t, l, gateDecision(a, "g1"))
+	kept := open(t, l, gateDecision(a, "g2"))
+	in(t, l, a, func(tx *Tx) error {
+		if err := tx.Hold(a, "build", cancelled); err != nil {
+			return err
+		}
+		if _, err := tx.Release(a, "build", cancelled); err != nil {
+			return err
+		}
+		return tx.Hold(a, "deploy", kept)
+	})
+	setState(t, l, a, cancelled, DecisionCancelled, "")
+	before, _ := l.Holds(ctx, a)
+	move := func(from, to string) {
+		t.Helper()
+		in(t, l, to, func(tx *Tx) error {
+			ds, err := tx.MoveDecisions(from, to)
+			if err == nil && (len(ds) != 1 || ds[0].N != kept) {
+				err = fmt.Errorf("moved %+v", ds)
+			}
+			if err != nil {
+				return err
+			}
+			moved, err := tx.MoveHolds(from, to, tx.Now())
+			if err == nil && moved != 1 {
+				err = fmt.Errorf("%d active holds moved", moved)
+			}
+			return err
+		})
+	}
+	finish(t, l, a)
+	continuation(t, l, a, b, "build", "deploy")
+	move(a, b)
+	finish(t, l, b)
+	continuation(t, l, b, c, "build", "deploy")
+	move(b, c)
+	ha, _ := l.Holds(ctx, a)
+	if len(ha) != 2 || ha[0].Decision != cancelled || !ha[0].ReleasedAt.Equal(before[0].ReleasedAt) || ha[1].Decision != kept || ha[1].ReleasedAt.IsZero() {
+		t.Fatalf("under the run that holds the cancelled decision: %+v", ha)
+	}
+	for _, run := range []string{b, c} {
+		hs, _ := l.Holds(ctx, run)
+		if len(hs) != 1 || hs[0].Decision != kept || hs[0].TaskID != "deploy" || hs[0].ReleasedAt.IsZero() != (run == c) {
+			t.Fatalf("under %s: %+v", run, hs)
+		}
+	}
+	if n := countRows(t, l, "SELECT COUNT(*) FROM decision_holds WHERE decision = ?", cancelled); n != 1 {
+		t.Fatalf("%d hold rows of the cancelled decision", n)
+	}
+	if rec := record(t, l, cancelled); rec.CurrentRun != a {
+		t.Fatalf("the cancelled decision is held by %s", rec.CurrentRun)
+	}
+}
+
 // An attempt is given back once, whatever decision it waited on.
 func TestARefundIsOncePerAttempt(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
