@@ -2,6 +2,7 @@ package api
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -169,9 +170,11 @@ type personTask struct {
 }
 
 // personTickets is what Dispatch holds for a person: how many live
-// tickets they own and how many name them an assignee, each Dispatch's own
-// list (GET /api/dispatch/tickets, owner= and assignee=person:), and that
-// list's link, by which the person's page reads them.
+// tickets they own and how many name them an assignee, each the total of
+// Dispatch's own list (GET /api/dispatch/tickets, owner= and
+// assignee=person:), and that list's link, which the person's page reads
+// and pages through with the list's cursor. Two lists, not one: every
+// condition of Dispatch's filter must hold, so no one list is the union.
 type personTickets struct {
 	Owner        int    `json:"owner"`
 	Assignee     int    `json:"assignee"`
@@ -192,6 +195,19 @@ type personWork struct {
 	// decision is for exists (docs/plans/decisions.md, HM1, PR-12).
 	Decisions           []any `json:"decisions"`
 	DispatchUnavailable bool  `json:"dispatchUnavailable,omitempty"`
+	// RecordsUnavailable says the managed runs' records could not be
+	// read: the tasks of the runs the engine holds are listed all the
+	// same.
+	RecordsUnavailable bool `json:"recordsUnavailable,omitempty"`
+}
+
+// personFromSegment is the name a person's path segment carries: the
+// segment with one leading "~" removed. The app writes "~" before "."
+// and "..", which a URL resolves as steps of its path, and before a name
+// that starts with "~" (web/app/utils/people.ts, personSegment), so every
+// name has a segment that reaches this route and none is read as another.
+func personFromSegment(segment string) string {
+	return strings.TrimPrefix(segment, "~")
 }
 
 // handlePerson answers GET /api/people/{name}: a person's work. The
@@ -201,12 +217,15 @@ type personWork struct {
 // in the crew's order, more past them), and Dispatch's tickets they own or
 // are assigned (counts and the list's links; null, with
 // dispatchUnavailable, while Dispatch is off or cannot be read). The name
-// is matched exactly, as Dispatch matches it; 404 not_found only for a
-// name no source knows (neither store, nor a run's people or its tasks'
-// owners), so a person removed from the saved crew after a launch still
-// has a page with that run's work on it.
+// is the path's segment (personFromSegment), matched exactly, as Dispatch
+// matches it; 404 not_found only for a name no source knows (neither
+// store, nor a run's people or its tasks' owners) when every source was
+// read, so a person removed from the saved crew after a launch still has
+// a page with that run's work on it, and a name only an unreadable source
+// could know is answered with what was read and which source was not
+// (dispatchUnavailable, recordsUnavailable), never as no one's.
 func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
+	name := personFromSegment(r.PathValue("name"))
 	if !noQuery(w, r) {
 		return
 	}
@@ -252,7 +271,8 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 		}
 		recorded, err := s.records.List("")
 		if err != nil {
-			s.log.Warn("run records", "err", err)
+			s.log.Warn("run records could not be read for a person's work", "err", err)
+			out.RecordsUnavailable = true
 		}
 		for _, run := range recorded {
 			if !held[run.ID] {
@@ -281,39 +301,51 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 	}
 	out.DispatchUnavailable = s.dispatch == nil
 	if ds := s.dispatch; ds != nil {
-		tickets, inDirectory, err := s.personTickets(r, ds, name)
+		// The directory's answer stands when the counts then fail: a
+		// person it lists is known whatever the lists say.
+		tickets, inDirectory, err := personTicketsOf(r.Context(), ds, name)
+		out.Dispatch = inDirectory
+		known = known || inDirectory
 		if err != nil {
 			s.log.Warn("Dispatch could not be read for a person's work", "err", err)
 			out.DispatchUnavailable = true
 		} else {
-			out.Tickets, out.Dispatch = tickets, inDirectory
-			known = known || inDirectory || tickets.Owner > 0 || tickets.Assignee > 0
+			out.Tickets = tickets
+			known = known || tickets.Owner > 0 || tickets.Assignee > 0
 		}
 	}
-	if !known {
+	if !known && !out.DispatchUnavailable && !out.RecordsUnavailable {
 		writeError(w, http.StatusNotFound, "not_found", "no such person")
 		return
 	}
 	writeDispatch(w, http.StatusOK, out)
 }
 
-// personTickets reads what Dispatch holds for name: whether its directory
+// ticketDirectory is what a person's work reads of Dispatch's store: its
+// directory and its lists.
+type ticketDirectory interface {
+	People(context.Context) ([]dispatch.Person, error)
+	List(context.Context, dispatch.Query) (dispatch.Page, error)
+}
+
+// personTicketsOf reads what Dispatch holds for name: whether its directory
 // has the name, and the counts of its own lists of the tickets the person
-// owns and of those they are assigned, with the lists' links.
-func (s *Server) personTickets(r *http.Request, ds *dispatch.Store, name string) (*personTickets, bool, error) {
-	people, err := ds.People(r.Context())
+// owns and of those they are assigned, with the lists' links. The
+// directory's answer is returned with a failed count's error.
+func personTicketsOf(ctx context.Context, ds ticketDirectory, name string) (*personTickets, bool, error) {
+	people, err := ds.People(ctx)
 	if err != nil {
 		return nil, false, err
 	}
 	inDirectory := slices.ContainsFunc(people, func(p dispatch.Person) bool { return p.Name == name })
 	assignee := "person:" + name
-	owned, err := ds.List(r.Context(), dispatch.Query{Filter: dispatch.Filter{Owner: name}, Limit: 1})
+	owned, err := ds.List(ctx, dispatch.Query{Filter: dispatch.Filter{Owner: name}, Limit: 1})
 	if err != nil {
-		return nil, false, err
+		return nil, inDirectory, err
 	}
-	assigned, err := ds.List(r.Context(), dispatch.Query{Filter: dispatch.Filter{Assignees: []string{assignee}}, Limit: 1})
+	assigned, err := ds.List(ctx, dispatch.Query{Filter: dispatch.Filter{Assignees: []string{assignee}}, Limit: 1})
 	if err != nil {
-		return nil, false, err
+		return nil, inDirectory, err
 	}
 	return &personTickets{
 		Owner:        owned.Total,

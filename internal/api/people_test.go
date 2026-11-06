@@ -770,3 +770,116 @@ func TestAPersonsWork(t *testing.T) {
 		t.Fatalf("kai: %d tasks, more %v, %+v", len(kai.Tasks), kai.More, kai.Tasks[:2])
 	}
 }
+
+// personSegment is the app's path segment for a person's name
+// (web/app/utils/people.ts, personSegment): a "~" before "." and "..",
+// which a URL resolves as steps of its path, and before a name that starts
+// with "~"; the name escaped as a segment.
+func personSegment(name string) string {
+	if name == "." || name == ".." || strings.HasPrefix(name, "~") {
+		name = "~" + name
+	}
+	return url.PathEscape(name)
+}
+
+// Names that are also path words reach their page through one rule: ".",
+// "..", a name with a slash or a percent sign, one that starts with "~";
+// "~zed" is zed's. The crews of a page are at most 100, with crewsMore.
+func TestAPersonsPathAndBounds(t *testing.T) {
+	e := newTestEnv(t, nil)
+	names := []string{".", "..", "a/b", "50% c", "~x", "zed"}
+	for _, name := range names {
+		e.expect(t, "POST", "/api/dispatch/people", map[string]any{"opId": opID(), "name": name}, http.StatusCreated, "")
+	}
+	for _, name := range names {
+		out := e.expect(t, "GET", "/api/people/"+personSegment(name), nil, http.StatusOK, "")
+		if out["name"] != name || out["dispatch"] != true {
+			t.Fatalf("%q: %v", name, out)
+		}
+	}
+	if out := e.expect(t, "GET", "/api/people/~zed", nil, http.StatusOK, ""); out["name"] != "zed" {
+		t.Fatalf("~zed: %v", out)
+	}
+	// "~x" written without its "~" is the name "x", which no one has.
+	e.expect(t, "GET", "/api/people/x", nil, http.StatusNotFound, "not_found")
+	e.expect(t, "GET", "/api/people/~", nil, http.StatusNotFound, "not_found")
+
+	for i := range 101 {
+		c := crew.Crew{Name: fmt.Sprintf("Crew %03d", i), Where: crew.WhereServer, Isolation: crew.IsolationNone, Members: []crew.Member{{Name: "lead", AgentID: "claude", Start: crew.Start{When: crew.StartImmediately}}}, People: []crew.Person{{Name: "kai", Responsibilities: []string{crew.RespProduct}}}}
+		if _, err := e.srv.crews.Create(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, _ := json.Marshal(e.expect(t, "GET", "/api/people/kai", nil, http.StatusOK, ""))
+	var kai personWork
+	if err := json.Unmarshal(b, &kai); err != nil {
+		t.Fatal(err)
+	}
+	if len(kai.Crews) != maxWorkCrews || !kai.CrewsMore || kai.Crews[0].Responsibilities[0] != crew.RespProduct {
+		t.Fatalf("kai in 101 crews: %d crews, more %v", len(kai.Crews), kai.CrewsMore)
+	}
+}
+
+// failingLists is Dispatch's store whose lists cannot be read.
+type failingLists struct{ *dispatch.Store }
+
+func (failingLists) List(context.Context, dispatch.Query) (dispatch.Page, error) {
+	return dispatch.Page{}, fmt.Errorf("the lists cannot be read")
+}
+
+// A source that cannot be read never makes a person no one's: with
+// Dispatch's lists failing, its directory still says zed is there; with
+// Dispatch closed, zed and a name nobody has are answered with
+// dispatchUnavailable and no tickets; with the run records unreadable, a
+// person whose only work is in a record is answered with
+// recordsUnavailable, the runs the engine holds listed all the same.
+func TestAPersonsWorkWhenASourceCannotBeRead(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.expect(t, "POST", "/api/dispatch/people", map[string]any{"opId": opID(), "name": "zed"}, http.StatusCreated, "")
+	if tk, in, err := personTicketsOf(t.Context(), failingLists{e.srv.dispatch}, "zed"); tk != nil || !in || err == nil {
+		t.Fatalf("the lists failing: %+v %v %v", tk, in, err)
+	}
+
+	// kai's only work is in a record.
+	run := crew.Run{ID: "kai-0000000a", CrewID: "kai", Name: "kai's", Cwd: e.root, State: crew.RunStopped, StartedAt: time.Now(), Managed: &crew.Managed{Revision: 1},
+		Tasks: []crew.TaskState{{ID: "t1", Member: "lead", State: ledger.TaskReady, Owner: "kai", OwnerFrom: crew.OwnerFromTask}}}
+	if err := e.srv.records.Save(run); err != nil {
+		t.Fatal(err)
+	}
+	work := func(name string) map[string]any {
+		t.Helper()
+		return e.expect(t, "GET", "/api/people/"+url.PathEscape(name), nil, http.StatusOK, "")
+	}
+	if kai := work("kai"); len(kai["tasks"].([]any)) != 1 || kai["recordsUnavailable"] != nil {
+		t.Fatalf("kai: %v", kai)
+	}
+	if os.Geteuid() == 0 {
+		t.Log("root reads a directory whatever its mode: the unreadable records are not tried")
+	} else {
+		// The records' directory listed by no one, its files still opened by
+		// name (the ledger beside them).
+		runs := filepath.Join(e.srv.cfg.DataDir, "runs")
+		if err := os.Chmod(runs, 0o300); err != nil {
+			t.Fatal(err)
+		}
+		kai := work("kai")
+		nobody := work("nobody")
+		if err := os.Chmod(runs, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if len(kai["tasks"].([]any)) != 0 || kai["recordsUnavailable"] != true || nobody["recordsUnavailable"] != true {
+			t.Fatalf("the records unreadable: kai %v, nobody %v", kai, nobody)
+		}
+		e.expect(t, "GET", "/api/people/nobody", nil, http.StatusNotFound, "not_found")
+	}
+
+	if err := e.srv.dispatch.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"zed", "nobody"} {
+		out := work(name)
+		if out["dispatchUnavailable"] != true || out["tickets"] != nil || out["dispatch"] != false || len(out["tasks"].([]any)) != 0 || len(out["crews"].([]any)) != 0 {
+			t.Fatalf("%s with Dispatch closed: %v", name, out)
+		}
+	}
+}
