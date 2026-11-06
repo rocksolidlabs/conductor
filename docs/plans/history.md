@@ -1682,7 +1682,8 @@ retried after a backoff (1 s doubling to 1 min).
   budget is dropped by age and the reply says from when it holds.
 - A Forget removes the record's file and, at the next pass, its entries: a
   record a Forget, ForgetAll or Prune has chosen is hidden from `Get` and
-  `List` before its file is touched (PR-1, review round 2), so a pass that
+  `List` until the removal returns, nothing of its instance written again
+  (PR-1's rule between writers and removers), so a pass that
   runs during the removal removes it, and one that read it just before is
   followed by the pass its file's delete event asks; a record whose file
   went while no server ran is removed by the next start's catch-up (PR-3,
