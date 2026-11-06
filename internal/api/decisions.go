@@ -1,7 +1,6 @@
 package api
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -226,21 +225,23 @@ func (s *Server) handleSessionDecisions(w http.ResponseWriter, r *http.Request) 
 	s.writeDecisionPage(w, r, f, true)
 }
 
-// handleSessionDecision reads one of an attempt's task's decisions whole.
+// handleSessionDecision reads one of an attempt's task's decisions whole:
+// the engine judges it the task's in the read that finds it
+// (crew.Engine.TaskDecision), and another task's is answered as an id no
+// decision has.
 func (s *Server) handleSessionDecision(w http.ResponseWriter, r *http.Request) {
 	sid, ok := s.decisionSession(w, r)
 	if !ok {
 		return
 	}
-	run, task, ok := s.attemptTask(w, sid)
-	if !ok || !noQuery(w, r) {
+	if _, _, ok := s.attemptTask(w, sid); !ok || !noQuery(w, r) {
+		return
+	}
+	if _, ok := s.decisionLedger(w); !ok {
 		return
 	}
 	did := r.PathValue("did")
-	if !s.taskHolds(w, r.Context(), run, task, did) {
-		return
-	}
-	d, err := s.runs.Decision(r.Context(), did)
+	d, err := s.runs.TaskDecision(r.Context(), sid, did)
 	if err != nil {
 		s.decisionError(w, "read", did, err, nil)
 		return
@@ -248,32 +249,8 @@ func (s *Server) handleSessionDecision(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"decision": d})
 }
 
-// taskHolds reports whether decision did is one of the task's in the run
-// that holds it (asked by it, or holding it), and answers 404 otherwise.
-func (s *Server) taskHolds(w http.ResponseWriter, ctx context.Context, run, task, did string) bool {
-	ld, ok := s.decisionLedger(w)
-	if !ok {
-		return false
-	}
-	n, ok := ledger.ParseDecisionID(did)
-	if !ok {
-		writeError(w, http.StatusNotFound, crew.CodeNotFound, "not a decision's id")
-		return false
-	}
-	rows, err := ld.Decisions(ctx, ledger.DecisionFilter{CurrentRun: run, Task: task, Before: n + 1, Limit: 1})
-	if err != nil {
-		s.taskError(w, "decision read", did, err)
-		return false
-	}
-	if len(rows) == 0 || rows[0].N != n {
-		writeError(w, http.StatusNotFound, crew.CodeNotFound, "no decision "+did+" of task "+task)
-		return false
-	}
-	return true
-}
-
 // handleSessionDecisionWithdraw withdraws an open decision the attempt
-// asked: {decision}.
+// asked: {decision}; 409 not_held once its run is being continued.
 func (s *Server) handleSessionDecisionWithdraw(w http.ResponseWriter, r *http.Request) {
 	sid, ok := s.decisionSession(w, r)
 	if !ok {
@@ -287,16 +264,10 @@ func (s *Server) handleSessionDecisionWithdraw(w http.ResponseWriter, r *http.Re
 	ctx, cancel := runContext(r)
 	defer cancel()
 	did := r.PathValue("did")
+	// Judged by its row in the transaction that would cancel it: another
+	// attempt's is answered as an id no decision has, one of its own that
+	// is final already decision_closed, in its words.
 	d, err := s.runs.WithdrawDecision(ctx, sid, did)
-	var de *crew.DecisionError
-	if errors.As(err, &de) && de.Code == crew.CodeNotFound {
-		// One of its own that is final already (asked in its run, by its
-		// task's attempt): closed, in its words.
-		run, task, n, _ := s.runs.AttemptOf(sid)
-		if rec, rerr := s.runs.Decision(ctx, did); rerr == nil && rec.OpenedIn == run && rec.Asker != nil && rec.Asker.Task == task && rec.Asker.Attempt == n && rec.ClosedAt != nil {
-			err = &crew.DecisionError{Code: crew.CodeDecisionClosed, Words: did + " is " + rec.State + ": " + cmp.Or(rec.Why, "it is closed")}
-		}
-	}
 	if err != nil {
 		s.decisionError(w, "withdraw", sid, err, nil)
 		return

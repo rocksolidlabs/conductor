@@ -300,7 +300,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Bounds:      map[string]int{"reply": maxDecisionReply}},
 		{Name: "decision_withdraw", MCP: "decision_withdraw", Scope: "task", Method: http.MethodPost, Path: sessions + "/decisions/{did}/withdraw", needs: needLauncher,
 			Summary:     "Withdraw an open decision you asked that you no longer need: your task waits for it no more.",
-			Description: "In a managed run, withdraw an open decision you asked that you no longer need: it is cancelled and your task waits for it no more. An answered one cannot be withdrawn.",
+			Description: "In a managed run, withdraw an open decision you asked that you no longer need: it is cancelled and your task waits for it no more. An answered one cannot be withdrawn, and none once your run is being continued (not_held: the decision stays open in the run that continues it, and this attempt's work is over).",
 			CLI:         []string{"conductor", "task", "withdraw", "dr-N"},
 			Input:       obj(map[string]any{"id": str("the decision's id, dr-N")}, "id"),
 			Bounds:      map[string]int{"body": maxDecisionAnswerBody}},
