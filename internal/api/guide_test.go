@@ -316,7 +316,7 @@ func TestASessionsGuideListsItsScopesOnly(t *testing.T) {
 	plainOps := []string{"report", "set_state", "ask", "form_crew", "link", "guide", "open_url"}
 	memberOps := []string{"report", "set_state", "ask", "add_member", "run_status", "link"}
 	attemptOps := []string{"report", "set_state", "ask", "run_status", "link"}
-	taskOps := []string{"task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint"}
+	taskOps := []string{"task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint", "decision_request", "decision_list", "decision_read", "decision_withdraw"}
 	ticketOps := []string{"ticket_read", "ticket_comment"}
 	check := func(t *testing.T, e *testEnv, sid, tok string, kinds []string, want []string) {
 		t.Helper()

@@ -397,7 +397,11 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("run")
 	if run, ok := s.runs.GetWithDiffs(r.Context(), id); ok {
-		writeJSON(w, http.StatusOK, map[string]any{"run": run})
+		reply := map[string]any{"run": run}
+		if ds := s.runDecisions(r.Context(), id, ""); ds != nil {
+			reply["decisions"] = ds
+		}
+		writeJSON(w, http.StatusOK, reply)
 		return
 	}
 	if s.records != nil {

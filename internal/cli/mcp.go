@@ -8,11 +8,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/api"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/notify"
 	"github.com/rocksolidlabs/conductor/internal/version"
 )
@@ -75,6 +79,7 @@ var mcpHandled = map[string]bool{
 	"form_crew": true, "add_member": true, "run_status": true, "link": true, "open_url": true,
 	"task_context": true, "task_result": true, "message_send": true, "inbox_read": true, "inbox_ack": true, "task_blocked": true, "task_checkpoint": true,
 	"ticket_read": true, "ticket_comment": true,
+	"decision_request": true, "decision_list": true, "decision_read": true, "decision_withdraw": true,
 	"guide": true, "brakeman_request": true, "observe": true, "brief_submit": true, "act": true,
 }
 
@@ -89,6 +94,11 @@ var (
 	grantedOnly    = map[string]bool{"act": true}
 	notForBrakeman = map[string]bool{"form_crew": true, "add_member": true, "ticket_read": true, "ticket_comment": true}
 )
+
+// taskOnly is the tools only an attempt's session of a managed run lists
+// (CONDUCTOR_TASK set): the decisions, which an attempt asks and waits
+// for (docs/plans/decisions.md, internal/cli).
+var taskOnly = map[string]bool{"decision_request": true, "decision_list": true, "decision_read": true, "decision_withdraw": true}
 
 // mcpTools is the tools as tools/list gives them, from the server's table
 // of operations: its names, descriptions and schemas are the table's, so
@@ -199,7 +209,11 @@ func (s *mcpServer) handle(ctx context.Context, req mcpRequest) (any, *mcpError)
 		return map[string]any{}, nil
 	case "tools/list":
 		turn := s.getenv(envBrakeman) != ""
-		return map[string]any{"tools": mcpTools(turn, turn && s.granted(ctx))}, nil
+		tools := mcpTools(turn, turn && s.granted(ctx))
+		if s.getenv("CONDUCTOR_TASK") == "" {
+			tools = slices.DeleteFunc(tools, func(t mcpTool) bool { return taskOnly[t.Name] })
+		}
+		return map[string]any{"tools": tools}, nil
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -318,7 +332,7 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		defer cancel()
 		return c.tool(cctx, name, raw)
 	case "form_crew", "add_member", "run_status", "link", "open_url", "task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint",
-		"ticket_read", "ticket_comment", "guide":
+		"ticket_read", "ticket_comment", "guide", "decision_request", "decision_list", "decision_read", "decision_withdraw":
 		c, err := crewClientFromEnv(s.getenv)
 		if err != nil {
 			return "", errNotInSession
@@ -328,6 +342,9 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		}
 		if name == "guide" {
 			c.prefix = "guide"
+		}
+		if strings.HasPrefix(name, "decision_") {
+			c.prefix = "decision"
 		}
 		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
@@ -441,6 +458,8 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		case "guide":
 			section, _ := body["section"].(string)
 			return guideToolText(cctx, c, section)
+		case "decision_request", "decision_list", "decision_read", "decision_withdraw":
+			return decisionTool(cctx, c, name, body)
 		case "ticket_comment":
 			text, _ := body["body"].(string)
 			if strings.TrimSpace(text) == "" {
@@ -454,6 +473,60 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		}
 	}
 	return "", unknownTool(name)
+}
+
+// decisionTool runs one of an attempt's decision tools, each one call to
+// its route (docs/plans/decisions.md, internal/cli): a request with its
+// id minted when it names none, so a reply lost is asked for once more
+// with it, and answered at once with the decision's id, its state and
+// what to do while it waits.
+func decisionTool(ctx context.Context, c *crewClient, name string, body map[string]any) (string, error) {
+	id, _ := body["id"].(string)
+	if name == "decision_read" || name == "decision_withdraw" {
+		if _, ok := ledger.ParseDecisionID(id); !ok {
+			return "", fmt.Errorf("%s needs the decision's id, dr-N", name)
+		}
+	}
+	var out map[string]any
+	var err error
+	switch name {
+	case "decision_request":
+		if r, _ := body["requestId"].(string); r == "" {
+			body["requestId"] = newOpID()
+		}
+		err = askTwice(ctx, func(ctx context.Context) error { return c.into(ctx, http.MethodPost, "/decisions", body, &out) })
+	case "decision_list":
+		q := url.Values{}
+		if a, _ := body["after"].(string); a != "" {
+			q.Set("after", a)
+		}
+		if l, ok := body["limit"].(float64); ok && l >= 1 {
+			q.Set("limit", strconv.Itoa(int(l)))
+		}
+		path := "/decisions"
+		if len(q) > 0 {
+			path += "?" + q.Encode()
+		}
+		out, err = c.call(ctx, http.MethodGet, path, nil)
+	case "decision_read":
+		out, err = c.call(ctx, http.MethodGet, "/decisions/"+id, nil)
+	case "decision_withdraw":
+		out, err = c.call(ctx, http.MethodPost, "/decisions/"+id+"/withdraw", map[string]any{})
+	}
+	if err != nil {
+		return "", err
+	}
+	if name == "decision_list" || name == "decision_read" {
+		b, err := json.MarshalIndent(out, "", "  ")
+		return string(b), err
+	}
+	d, _ := out["decision"].(map[string]any)
+	if name == "decision_withdraw" {
+		return fmt.Sprintf("%v is %v: your task waits for it no more", d["id"], d["state"]), nil
+	}
+	return fmt.Sprintf("%v %v. Pending. End your turn, or go on with work that does not depend on it; do not submit your result until it is answered. "+
+		"The answer is typed into this session as 'Decision %v … answered', or, if this session has ended, written into your task's next attempt's task file, "+
+		"which starts at your last checkpoint: save one before you end your turn.", d["id"], d["state"], d["id"]), nil
 }
 
 // inboxText lists an inbox reply's messages, one a line.
