@@ -1556,7 +1556,7 @@ type brakemanConfigBody struct {
 // gap said); 409 stale_revision for a rev not the stored one; 400 invalid_config
 // with the field and its words; 503 shutting_down once the server is
 // shutting down. Turning Brakeman off cancels the turn in progress and
-// the queue.
+// the queue; an unavailable role looks again (Role.Reconfigured).
 func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.brakemanDeskOf(w)
 	if !ok {
@@ -1617,6 +1617,12 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.brakemanError(w, err)
 		return
+	}
+	// An unavailable role looks again at what refused its turn (a budget
+	// raised, an agent or an account changed): the batch it kept fires
+	// within its rules, or the refusal is said again in words true now.
+	if err := d.role.Reconfigured(); err != nil {
+		s.log.Warn("Brakeman's role could not look again after the configuration's save", "err", err)
 	}
 	d.poke()
 	d.role.Poke()

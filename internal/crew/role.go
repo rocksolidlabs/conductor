@@ -655,6 +655,34 @@ func (r *Role) Asked(w RoleWake) error {
 	return err
 }
 
+// Reconfigured is its owner's configuration saved: an unavailable role
+// looks again at once, as a person's request makes it (Asked), since what
+// refused its turn (a budget, an agent, an account) may be what the save
+// changed. It takes up what its record holds: a batch kept fires within
+// its rules on the next step (its window, the cooldown), and Fire weighs
+// the turn against the configuration now, so a budget raised clears "the
+// day's budget is spent" and one still spent makes the role unavailable
+// again in words true now. Any other state changes nothing.
+func (r *Role) Reconfigured() error {
+	r.mu.Lock()
+	now := r.now()
+	err := r.change(func(c *RoleRecord) error {
+		if c.State != RoleUnavailable {
+			return errNothing
+		}
+		c.available(now)
+		return nil
+	})
+	r.mu.Unlock()
+	if errors.Is(err, errNothing) {
+		return nil
+	}
+	if err == nil {
+		r.Poke()
+	}
+	return err
+}
+
 // Hold keeps a wake that fires at due if still answers true then (a
 // question open past its threshold); one the log holds is dropped then.
 // A wake held already (its source, subject and key) is held once, and at

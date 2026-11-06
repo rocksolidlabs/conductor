@@ -431,6 +431,46 @@ func TestTheRoleSpendsNoMoreThanTheDaysTurns(t *testing.T) {
 	}
 }
 
+// TestASavedConfigurationIsLookedAtAgain: the role unavailable with the
+// day's turns spent looks again when the configuration is saved through
+// its route: turns raised but minutes now spent, it stays unavailable in
+// the words true now (the minutes, no longer the turns); the minutes
+// raised too, the batch it kept fires, a wake request made. Each step is
+// waited on in the role's record, never on a clock.
+func TestASavedConfigurationIsLookedAtAgain(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.background(t, "bk", func(cfg map[string]any) { cfg["budget"].(map[string]any)["turnsPerDay"] = 1 })
+	id := b.briefing(t)
+	b.waitState(t, id, brakeman.StateStarting, brakeman.StateRunning)
+	b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/build", Key: "attempts 1", At: c.now()})
+	c.add(time.Duration(brakeman.MinWindowSeconds) * time.Second)
+	if r := b.waitRole(t, crew.RoleUnavailable); !strings.Contains(r.Why, "1 of 1 turns") {
+		t.Fatalf("%+v", r)
+	}
+	b.configure(t, func(cfg map[string]any) {
+		bu := cfg["budget"].(map[string]any)
+		bu["turnsPerDay"], bu["minutesPerDay"] = 3, 10
+	})
+	var r crew.RoleRecord
+	if !waitFor(30*time.Second, func() bool {
+		b.desk.role.Poke()
+		r = b.roleRecord(t)
+		return r.State == crew.RoleUnavailable && strings.Contains(r.Why, "of 10 minutes")
+	}) {
+		t.Fatalf("the role after a save that still refuses: %+v", r)
+	}
+	if r.Open == nil || len(r.Open.Wakes) != 1 || r.Request != "" {
+		t.Fatalf("the batch is not kept: %+v", r)
+	}
+	b.configure(t, func(cfg map[string]any) { cfg["budget"].(map[string]any)["minutesPerDay"] = 240 })
+	r = b.waitRole(t, crew.RoleBriefing)
+	q, err := b.desk.st.Get(r.Request)
+	if err != nil || q.Kind != brakeman.KindWake || r.Why != "" || r.Fired == nil || len(r.Fired.Wakes) != 1 || r.Fired.Wakes[0].Subject != "task:run-1/build" {
+		t.Fatalf("the batch kept, fired: %+v %+v %v", r, q, err)
+	}
+}
+
 // TestATicketMadeReadyWakesTheRole: a ticket whose status a person moves
 // to ready wakes the role, once, from Dispatch's change feed; a move under
 // an op id a request derived (a make, an act) wakes nothing.
