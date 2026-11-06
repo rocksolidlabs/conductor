@@ -69,12 +69,20 @@ func TestSkillText(t *testing.T) {
 		// words by crew's TestTheSkillQuotesTheEngine).
 		"\"dr-7 open.\n  Pending. ...\". dr-7 is the decision's id", `"${CONDUCTOR_BIN:-conductor}" task decision dr-7`, `"${CONDUCTOR_BIN:-conductor}" task withdraw dr-7`,
 		"rev counts the\n  decision's changes and is nothing you send",
-		"never\n  submit your result before its answer reaches you", "Go on only once a decision is applied:\n  open and answered (the response recorded, not yet applied) still wait;\n  superseded, cancelled and expired mean no answer will come.",
+		"never\n  submit your result until its answer is applied", "Go on only once a decision is applied:\n  open and answered (the response recorded, not yet applied: it may still\n  be superseded or cancelled instead) still wait; superseded, cancelled\n  and expired mean no answer will come.",
+		// A list's answer is without its rationale: an applied decision is
+		// read whole before acting; a failed decide is looked for before
+		// asking again (#689, review round 2).
+		"read an applied decision whole (task decision dr-7) before you act\n  on it", "list them with task decision before you ask again, or you wait on two",
+		"give a requestId of your own: the same request with it\n  again replies with the same decision, never a second",
 		"dr-7/1 is the receipt of\n  the first response to dr-7, nothing you cite", "it overrides your recommendation",
 		"Ask again\n  with what was asked for in --context and --supersedes dr-7", "Take it as a no", "Never act\n  on its answer",
 		"Nothing is typed for the operator's comment or a re-route: keep\n  waiting.", "If the run stops or your session ends while you wait", "Decisions section says each\n  decision's state",
 		"Options are\n  numbered from 0", "answered Done or Not done", "what a yes --authorizes",
-		"Only refs to your own\n  work are taken", "task:RUN/TASK", "attempt:RUN/TASK/N", "check:RUN/TASK/N/CHECK/K", "commit:RUN/SHA (the full id", "message:RUN/SEQ", "plan:KEY-n/N",
+		"Only refs to your own\n  work are taken", "task:RUN/TASK", "attempt:RUN/TASK/N", "check:RUN/TASK/N/CHECK/K", "commit:RUN/SHA (the full id", "message:RUN/SEQ", "plan:KEY-n/REV (REV the number of the plan\n  revision that launched it, from the launch package, not an attempt's)",
+		// Each number is the cited record's own (#689, review round 2): N
+		// the attempt the record belongs to, a check's an earlier one's.
+		"N is the number of the attempt\n  the record belongs to: CONDUCTOR_ATTEMPT for your own, an earlier one's", "so a\n  check's N is an earlier attempt's, CHECK the check's id and K which run\n  of it on that attempt, from 1.",
 		"comment:KEY-n/ID and launch:ID", "ticket:KEY-n", "CONDUCTOR_SESSION_ID", "\"evidence[0]: REF resolves to nothing\"",
 		"artifact:PATH", "candidate:RUN/TASK/N@COMMIT",
 		// The ticket the run is linked to (DS1 PR-12): read it, comment on
@@ -108,6 +116,11 @@ func TestSkillText(t *testing.T) {
 	decisions, messages := strings.Index(body, "\n## Decisions\n"), strings.Index(body, "\n## Messages, blockers and checkpoints\n")
 	if strings.Count(body, "\n## Decisions\n") != 1 || !(task < decisions && decisions < messages) {
 		t.Errorf("the decisions' section is not between the task's and the messages': %d %d %d", task, decisions, messages)
+	}
+	// No number is said to be CONDUCTOR_ATTEMPT for every ref (#689,
+	// review round 2): a plan's revision and a check's attempt are not.
+	if strings.Contains(body, "N and SESSION are") {
+		t.Error("the skill says every ref's N is CONDUCTOR_ATTEMPT")
 	}
 	// A file: ref is outside an asker's grant (#683): never offered.
 	if strings.Contains(body, "file:SESSION") {

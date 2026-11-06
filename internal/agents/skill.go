@@ -179,7 +179,7 @@ checkpoint first, then ask:
   approval (2 to 6 options and what a yes --authorizes) or assignment (no
   options, answered Done or Not done, for work a person does). Options are
   numbered from 0 in the order given; --recommend names one by its number.
-- It answers at once with the decision's id and its state: "dr-7 open.
+- It replies at once with the decision's id and its state: "dr-7 open.
   Pending. ...". dr-7 is the decision's id, which task decision, task
   withdraw and --supersedes take. Without an id, task decision lists your
   task's decisions (id, type, state, rev, question, answer); rev counts the
@@ -190,24 +190,34 @@ checkpoint first, then ask:
       "${CONDUCTOR_BIN:-conductor}" task withdraw dr-7
 
 - Then end your turn, or go on with work that does not depend on it; never
-  submit your result before its answer reaches you (a result is refused,
+  submit your result until its answer is applied (a result is refused,
   decision_open, while one waits). Go on only once a decision is applied:
-  open and answered (the response recorded, not yet applied) still wait;
-  superseded, cancelled and expired mean no answer will come. task
-  decision says which of these each is.
+  open and answered (the response recorded, not yet applied: it may still
+  be superseded or cancelled instead) still wait; superseded, cancelled
+  and expired mean no answer will come. task decision says which of these
+  each is; its list shows an answer without the rationale it was given,
+  so read an applied decision whole (task decision dr-7) before you act
+  on it. A task decide that failed may still have opened its decision:
+  list them with task decision before you ask again, or you wait on two.
+  With --file, give a requestId of your own: the same request with it
+  again replies with the same decision, never a second.
 - --evidence cites a record by its ref, repeatable. Only refs to your own
   work are taken: run:RUN, task:RUN/TASK, attempt:RUN/TASK/N and
   check:RUN/TASK/N/CHECK/K (your task's), commit:RUN/SHA (the full id, git
   rev-parse HEAD, of a commit in your run's repository), session:SESSION
   and question:SESSION/ID (this session's), message:RUN/SEQ (a message to
   you, #SEQ as task inbox numbers it), and, in a run launched from a
-  ticket, ticket:KEY-n, plan:KEY-n/N (the plan revision that launched it),
+  ticket, ticket:KEY-n, plan:KEY-n/REV (REV the number of the plan
+  revision that launched it, from the launch package, not an attempt's),
   comment:KEY-n/ID and launch:ID (as the launch package in your task
-  folder names them). RUN, TASK, N and SESSION are CONDUCTOR_RUN,
-  CONDUCTOR_TASK, CONDUCTOR_ATTEMPT and CONDUCTOR_SESSION_ID. Any other
-  ref (a file:, another task's or run's) and one that names no record
-  refuse the whole request as "evidence[0]: REF resolves to nothing":
-  drop it and ask again. --subject is what it is about: commit (your
+  folder names them). RUN, TASK and SESSION are CONDUCTOR_RUN,
+  CONDUCTOR_TASK and CONDUCTOR_SESSION_ID. N is the number of the attempt
+  the record belongs to: CONDUCTOR_ATTEMPT for your own, an earlier one's
+  as your task file names it; checks run after an attempt submits, so a
+  check's N is an earlier attempt's, CHECK the check's id and K which run
+  of it on that attempt, from 1. Any other ref (a file:, another task's
+  or run's) and one that names no record refuse the whole request as
+  "evidence[0]: REF resolves to nothing": drop it and ask again. --subject is what it is about: commit (your
   HEAD, the default), artifact:PATH (a file committed in your worktree) or
   candidate:RUN/TASK/N@COMMIT (a result attempt N submitted).
 

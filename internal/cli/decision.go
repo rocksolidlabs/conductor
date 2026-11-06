@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -55,9 +54,12 @@ const decisionUsage = `Usage:
       changed since is refused; prints the receipt, dr-N/K (the K-th
       response to dr-N), and where the decision is now
   conductor decision cancel dr-N --why TEXT [--release]
-      cancel an open or answered decision: the tasks it holds are
-      cancelled with it, or released to run without its answer with
-      --release
+      cancel an open or answered decision. An agent's (asked by a task's
+      attempt): its task waits for it no more and goes on, told the
+      decision was cancelled, not approved, and to take it as a no;
+      --release changes nothing. A plan's gate (the plan's decision, list
+      shows "the plan's"): the tasks it holds are cancelled with it, or,
+      with --release, released to run without its answer
 
 dr-N is a decision's id, as every command and page names it. States: open,
 answered, applied, superseded, cancelled, expired.
@@ -187,7 +189,7 @@ func decideRequest(f decideFlags, stdin io.Reader) (crew.DecisionRequest, error)
 		if f.given() {
 			return req, errors.New("give --file or the flags, not both")
 		}
-		if err := readStrictJSON(*f.file, stdin, &req); err != nil {
+		if err := readOneJSON(*f.file, stdin, maxResultFile, &req); err != nil {
 			return req, err
 		}
 		return req, nil
@@ -238,36 +240,13 @@ func (f decideFlags) given() bool {
 		*f.supersedes != "" || *f.recommend != -1 || len(*f.options) > 0 || len(*f.evidence) > 0
 }
 
-// readStrictJSON reads the file named, or stdin for "-", as strict JSON
-// into v: an unknown field, or anything after the one value, is refused,
-// as the server refuses it.
-func readStrictJSON(file string, stdin io.Reader, v any) error {
-	var r io.Reader = stdin
-	if file != "-" {
-		f, err := os.Open(file)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		r = f
-	}
-	dec := json.NewDecoder(io.LimitReader(r, maxResultFile))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		return fmt.Errorf("%s: %w", file, err)
-	}
-	// One value and nothing after it, as the server reads a body.
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("%s: more after the request's JSON value", file)
-	}
-	return nil
-}
-
 // taskDecide sends the attempt's decision request, its requestId minted
 // when the file names none, once more with it on a lost reply; it prints
 // the decision's id and state with what to do now, in decision_request's
-// words: what to do while it waits, or, for a requestId sent before, the
-// decision as it is now (decisionRequestText).
+// words (decisionRequestText): what to do while it waits, or, for a
+// requestId sent before, the decision as it is now. An applied one's
+// words name its answer without the rationale it was given, which may
+// set a condition on it: a line after them says to read it whole first.
 func taskDecide(ctx context.Context, c *crewClient, req crew.DecisionRequest, stdout io.Writer) (int, error) {
 	if req.RequestID == "" {
 		req.RequestID = newOpID()
@@ -278,14 +257,18 @@ func taskDecide(ctx context.Context, c *crewClient, req crew.DecisionRequest, st
 	if err := askTwice(ctx, func(ctx context.Context) error { return c.into(ctx, http.MethodPost, "/decisions", req, &out) }); err != nil {
 		return 1, err
 	}
-	if id := out.Decision["id"]; out.Decision["state"] == ledger.DecisionAnswered {
-		// Recorded is not applied: the agent goes on only at applied.
-		fmt.Fprintf(stdout, "%v is %s. Do not go on with it yet; do not submit your result until it is applied: its answer is then typed into this session as "+
-			"'Decision %v … answered', or written into your task's next attempt's task file.\n", id, agentStateWords(ledger.DecisionAnswered), id)
-		return 0, nil
-	}
 	fmt.Fprintln(stdout, decisionRequestText(out.Decision))
+	if out.Decision["state"] == ledger.DecisionApplied {
+		fmt.Fprintln(stdout, readWholeWords(fmt.Sprint(out.Decision["id"])))
+	}
 	return 0, nil
+}
+
+// readWholeWords says to read an applied decision whole before acting on
+// it: a summary's answer is the option or text alone, and the rationale
+// given with it (a condition, a limit) is only in the whole record.
+func readWholeWords(id string) string {
+	return fmt.Sprintf("Before you act, read it whole, with the rationale its answer was given: conductor task decision %s", id)
 }
 
 // agentStateWords is a decision's state as the asking agent reads it in
@@ -368,7 +351,9 @@ func nextPage(after, next string) bool {
 
 // summaryText is a summary as task decision lists it: its id, type, state
 // and rev with its question, then what its state means for the agent
-// (agentStateWords), its answer and why, each on a line of its own.
+// (agentStateWords; at applied, to read it whole first, since a summary
+// has no rationale), its answer and why it closed, each on a line of its
+// own.
 func summaryText(s decisionSummary) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (%s, %s, rev %d", s.ID, s.Type, s.State, s.Rev)
@@ -376,12 +361,20 @@ func summaryText(s decisionSummary) string {
 		fmt.Fprintf(&b, ", the plan's %s", oneLine(s.Gate))
 	}
 	fmt.Fprintf(&b, "): %s\n", oneLine(s.Question))
-	fmt.Fprintf(&b, "  now: %s\n", agentStateWords(s.State))
+	if s.State == ledger.DecisionApplied {
+		// The summary's answer is without its rationale, which may set a
+		// condition on it: the agent reads the decision whole first.
+		fmt.Fprintf(&b, "  now: applied: read it whole before you go on, with the rationale its answer was given: task decision %s\n", s.ID)
+	} else {
+		fmt.Fprintf(&b, "  now: %s\n", agentStateWords(s.State))
+	}
 	if s.Answer != "" {
 		fmt.Fprintf(&b, "  answered: %s\n", oneLine(s.Answer))
 	}
 	if s.Why != "" {
-		fmt.Fprintf(&b, "  why: %s\n", oneLine(s.Why))
+		// The decision's own why, set when it closed, never a response's
+		// rationale (task decision dr-N reads those).
+		fmt.Fprintf(&b, "  why it closed: %s\n", oneLine(s.Why))
 	}
 	if s.SupersededBy != "" {
 		fmt.Fprintf(&b, "  superseded by %s\n", s.SupersededBy)
@@ -651,7 +644,7 @@ func runDecision(ctx context.Context, args []string, stdout, stderr io.Writer) (
 		why = fs.String("why", "", "the rationale, kept with the answer and typed with it")
 	case "cancel":
 		why = fs.String("why", "", "why it is cancelled (required)")
-		release = fs.Bool("release", false, "release the tasks it holds to run without its answer, instead of cancelling them")
+		release = fs.Bool("release", false, "a plan's gate: release the tasks it holds to run without its answer, instead of cancelling them; an agent's decision always releases its task, told to take it as a no")
 	}
 	fs.Usage = func() {
 		fmt.Fprint(stderr, decisionUsage, "\nFlags of decision "+sub+":\n")

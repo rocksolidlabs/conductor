@@ -79,13 +79,19 @@ commit). --evidence cites a record of your own work by its ref: run:RUN,
 task:RUN/TASK, attempt:RUN/TASK/N, check:RUN/TASK/N/CHECK/K (your task's),
 commit:RUN/SHA (the full id, in your run's repository), session:SESSION,
 question:SESSION/ID (this session's), message:RUN/SEQ (one to you), and in a
-run launched from a ticket ticket:KEY-n, plan:KEY-n/N (the revision that
-launched it), comment:KEY-n/ID and launch:ID (as its launch package names
-them); RUN, TASK, N and SESSION are CONDUCTOR_RUN, CONDUCTOR_TASK,
-CONDUCTOR_ATTEMPT and CONDUCTOR_SESSION_ID. Any other ref, a file: among
-them, and one that names no record refuse the request as one that
-"resolves to nothing". --file reads the request as JSON instead, as
-decision_request takes it, one value and nothing after it.
+run launched from a ticket ticket:KEY-n, plan:KEY-n/REV (REV the number of
+the plan revision that launched it, not an attempt's), comment:KEY-n/ID and
+launch:ID (as its launch package names them); RUN, TASK and SESSION are
+CONDUCTOR_RUN, CONDUCTOR_TASK and CONDUCTOR_SESSION_ID; N is the number of
+the attempt the record belongs to (CONDUCTOR_ATTEMPT for yours; a check's
+is an earlier attempt's, its checks run after it submits), CHECK the
+check's id and K which run of it on that attempt, from 1. Any other ref, a
+file: among them, and one that names no record refuse the request as one
+that "resolves to nothing". --file reads the request as JSON instead, as
+decision_request takes it: at most 1 MiB, one value and nothing after it
+but white space, no field it does not take; a requestId in it, sent again,
+replies with the same decision. A decide that failed may still have opened
+its decision: list them with task decision before you ask again.
 
 Outside a Conductor session, or in a session that is no attempt, every
 command says so and exits 1.
@@ -312,7 +318,7 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			if *summary != "" || *commit != "" || *verdict != "" || len(issues) > 0 || len(findings) > 0 {
 				return 2, errors.New("task result: give --file or the flags, not both")
 			}
-			if err := readResultFile(*file, stdin, &res); err != nil {
+			if err := readOneJSON(*file, stdin, maxResultFile, &res); err != nil {
 				return 2, fmt.Errorf("task result: %w", err)
 			}
 		} else {
@@ -366,26 +372,6 @@ func taskContext(ctx context.Context, c *crewClient, page int, asJSON bool, stdo
 		fmt.Fprint(stdout, text)
 	}
 	return 0, nil
-}
-
-// readResultFile reads a result as strict JSON from the file, or stdin
-// for "-".
-func readResultFile(file string, stdin io.Reader, res *crew.Result) error {
-	var r io.Reader = stdin
-	if file != "-" {
-		f, err := os.Open(file)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		r = f
-	}
-	dec := json.NewDecoder(io.LimitReader(r, maxResultFile))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(res); err != nil {
-		return fmt.Errorf("%s: %w", file, err)
-	}
-	return nil
 }
 
 // parseFinding reads "SEVERITY[:PATH[:LINE]] MESSAGE".

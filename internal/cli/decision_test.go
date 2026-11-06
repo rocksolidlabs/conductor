@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,9 +12,11 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 )
 
@@ -109,7 +112,7 @@ func TestTaskDecideAndRead(t *testing.T) {
 	out := mustTask(t, "decide", "--type", "approval", "--question", "Ship it?", "--context", "The tests pass.\nThe docs do not.",
 		"--option", "Ship: now, the docs after", "--option", "Hold", "--recommend", "0", "--uncertainty", "the docs", "--authorizes", "the deploy",
 		"--evidence", "task:"+d.run+"/build", "--subject", "commit")
-	if !strings.HasPrefix(out, "dr-1 open. Pending. ") || !hasAll(out, "do not submit your result until it is answered", "'Decision dr-1 … answered'", "save one before you end your turn") {
+	if !strings.HasPrefix(out, "dr-1 open. Pending. ") || !hasAll(out, "do not submit your result until its answer is applied", "'Decision dr-1 … answered by …'", "save one before you end your turn") {
 		t.Fatalf("decide: %q", out)
 	}
 	sent := d.posts(before, posts)
@@ -223,7 +226,7 @@ func TestDecisionRespondSendsTheRev(t *testing.T) {
 	respond := "/api/decisions/dr-1/respond"
 	before := d.count()
 	d.loseNext("POST", respond, 1)
-	code, out, _, err := d.decisionCmd(t, "respond", "dr-1", "--choice", "0", "--why", "the tests pass")
+	code, out, _, err := d.decisionCmd(t, "respond", "dr-1", "--choice", "0", "--why", "Only deploy after the backup")
 	if code != 0 || err != nil || !strings.HasPrefix(out, "Recorded: dr-1 answered by admin (receipt dr-1/1, rev 2)\ndr-1 is ") {
 		t.Fatalf("respond: %d %v %q", code, err, out)
 	}
@@ -232,7 +235,7 @@ func TestDecisionRespondSendsTheRev(t *testing.T) {
 		t.Fatalf("respond's requests: %v", seen)
 	}
 	first, again := seen[1].body, seen[2].body
-	if seen[1].reply != -1 || first["expectedRev"] != 1.0 || first["choice"] != 0.0 || first["rationale"] != "the tests pass" || first["text"] != nil ||
+	if seen[1].reply != -1 || first["expectedRev"] != 1.0 || first["choice"] != 0.0 || first["rationale"] != "Only deploy after the backup" || first["text"] != nil ||
 		!opIDShape.MatchString(fmt.Sprint(first["responseId"])) || again["responseId"] != first["responseId"] || again["expectedRev"] != 1.0 {
 		t.Fatalf("respond's bodies: %v %v", first, again)
 	}
@@ -240,8 +243,16 @@ func TestDecisionRespondSendsTheRev(t *testing.T) {
 		t.Fatalf("responses kept: %v", rs)
 	}
 	d.until(t, "dr-1 applied", func() bool { return d.decision(t, "dr-1")["state"] == "applied" })
-	if out := mustTask(t, "decision"); !strings.Contains(out, "dr-1 (approval, applied, rev ") || !strings.Contains(out, "\n  now: applied: go on with its answer\n  answered: Ship\n") {
+	// A conditional approval: the list's answer is the option alone, so
+	// it never says to go on with it, but to read the decision whole,
+	// where the condition is (#689, review round 2).
+	if out := mustTask(t, "decision"); !strings.Contains(out, "dr-1 (approval, applied, rev ") ||
+		!strings.Contains(out, "\n  now: applied: read it whole before you go on, with the rationale its answer was given: task decision dr-1\n  answered: Ship\n") ||
+		strings.Contains(out, "go on with") {
 		t.Fatalf("the attempt's list once applied:\n%s", out)
+	}
+	if out := mustTask(t, "decision", "dr-1"); !hasAll(out, "answer: Ship\n", "\n    why: Only deploy after the backup\n", "now: applied: go on with its answer\n") {
+		t.Fatalf("the attempt's read once applied:\n%s", out)
 	}
 	// A second answer, read at the rev now, is refused as answered.
 	if code, _, _, err := d.decisionCmd(t, "respond", "dr-1", "--choice", "1"); code != 1 || err == nil || !strings.HasPrefix(err.Error(), "decision_") {
@@ -251,7 +262,7 @@ func TestDecisionRespondSendsTheRev(t *testing.T) {
 	rev := int(d.decision(t, "dr-1")["rev"].(float64))
 	d.admin(t, "POST", "/api/decisions/dr-1/comment", map[string]any{"opId": "o1", "kind": "comment", "text": "Looks right.", "expectedRev": rev}, http.StatusOK)
 	code, out, _, err = d.decisionCmd(t, "show", "dr-1")
-	if code != 0 || err != nil || !hasAll(out, "dr-1: approval, applied, rev ", "answer: Ship\n", "responses:\n  dr-1/1 accepted by admin at ", "\n    why: the tests pass\n", "applied: ", "history:\n  1 ",
+	if code != 0 || err != nil || !hasAll(out, "dr-1: approval, applied, rev ", "answer: Ship\n", "responses:\n  dr-1/1 accepted by admin at ", "\n    why: Only deploy after the backup\n", "applied: ", "history:\n  1 ",
 		" commented by admin: Looks right.\n") {
 		t.Fatalf("show: %d %v\n%s", code, err, out)
 	}
@@ -432,17 +443,148 @@ func TestTheAgentReadsTheStatesApart(t *testing.T) {
 	if len(seen) != len(decisionStates) {
 		t.Errorf("states told alike: %v", seen)
 	}
+	var state atomic.Value
 	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/sessions/s1/decisions" {
 			http.Error(w, "unexpected", http.StatusTeapot)
 			return
 		}
-		_, _ = w.Write([]byte(`{"decision":{"id":"dr-7","state":"answered","answer":"Ship"}}`))
+		_, _ = fmt.Fprintf(w, `{"decision":{"id":"dr-7","state":%q,"answer":"Ship"}}`, state.Load())
 	}))
 	defer hs.Close()
 	inSession(t, hs)
+	// The route's words (decisionRequestText), as decision_request gives
+	// them: answered waits, applied goes on, and applied adds that the
+	// answer's rationale is read whole first.
+	state.Store("answered")
 	out := mustTask(t, "decide", "--type", "clarification", "--question", "Which schema?")
-	if !strings.HasPrefix(out, "dr-7 is answered: the response is recorded, not yet applied") || strings.Contains(out, "Go on with") || !strings.Contains(out, "do not submit your result until it is applied") {
+	if !strings.HasPrefix(out, "dr-7 is answered: Ship. The answer is recorded, not yet applied") || strings.Contains(out, "Go on with") ||
+		!strings.Contains(out, "do not submit your result until it is applied") || strings.Contains(out, "read it whole") {
 		t.Fatalf("an answered request: %q", out)
+	}
+	state.Store("applied")
+	out = mustTask(t, "decide", "--type", "clarification", "--question", "Which schema?")
+	if !strings.HasPrefix(out, "dr-7 is applied: Ship. Go on with your task with this answer") ||
+		!strings.HasSuffix(out, "\nBefore you act, read it whole, with the rationale its answer was given: conductor task decision dr-7\n") {
+		t.Fatalf("an applied request: %q", out)
+	}
+}
+
+// shellWords splits an example line of the skill as a shell would: words
+// apart at spaces, "..." kept whole, and $NAME (and ${NAME:-default})
+// read from the environment.
+func shellWords(t *testing.T, line string) []string {
+	t.Helper()
+	expand := func(s string) string {
+		return os.Expand(s, func(name string) string {
+			if n, def, ok := strings.Cut(name, ":-"); ok {
+				return cmp.Or(os.Getenv(n), def)
+			}
+			return os.Getenv(name)
+		})
+	}
+	var words []string
+	var cur strings.Builder
+	in, started := false, false
+	for i := 0; i < len(line); i++ {
+		switch c := line[i]; {
+		case c == '"':
+			in, started = !in, true
+		case c == ' ' && !in:
+			if started {
+				words = append(words, expand(cur.String()))
+				cur.Reset()
+				started = false
+			}
+		default:
+			cur.WriteByte(c)
+			started = true
+		}
+	}
+	if in {
+		t.Fatalf("an unclosed quote: %s", line)
+	}
+	if started {
+		words = append(words, expand(cur.String()))
+	}
+	return words
+}
+
+// Each command the skill's Decisions section shows is run as it stands,
+// against a real server, in the order it shows them: task decide makes
+// dr-7 (six asked and withdrawn before it) and replies as the skill quotes it, task
+// decision dr-7 reads it, task withdraw dr-7 withdraws it. A change to a
+// command that its example does not follow fails here (#689, review
+// round 2).
+func TestTheSkillsDecisionExamplesRun(t *testing.T) {
+	d := newDecisionAPI(t)
+	t.Setenv("CONDUCTOR_RUN", d.run)
+	t.Setenv("CONDUCTOR_TASK", "build")
+	t.Setenv("CONDUCTOR_BIN", "")
+	section := agents.Skill[strings.Index(agents.Skill, "\n## Decisions\n"):]
+	section = section[:strings.Index(section[1:], "\n## ")+1]
+	var examples [][]string
+	for _, line := range strings.Split(section, "\n") {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, `"${CONDUCTOR_BIN:-conductor}" `) {
+			examples = append(examples, shellWords(t, line))
+		}
+	}
+	if len(examples) != 3 {
+		t.Fatalf("the section's examples: %q", examples)
+	}
+	// Six asked and withdrawn before it (an attempt holds at most four
+	// open), so that the example's is dr-7.
+	for i := 1; i <= 6; i++ {
+		mustTask(t, "decide", "--type", "clarification", "--question", fmt.Sprintf("Question %d?", i))
+		mustTask(t, "withdraw", fmt.Sprintf("dr-%d", i))
+	}
+	skill := strings.Join(strings.Fields(agents.Skill), " ")
+	for _, words := range examples {
+		if words[0] != "conductor" || words[1] != "task" {
+			t.Fatalf("an example that is no task command: %q", words)
+		}
+		out := mustTask(t, words[2:]...)
+		switch words[2] {
+		case "decide":
+			// The skill quotes the reply's start: "dr-7 open. Pending. ...".
+			quoted := regexp.MustCompile(`"(dr-7 open\. Pending\.) \.\.\."`).FindStringSubmatch(skill)
+			if quoted == nil || !strings.HasPrefix(out, quoted[1]+" ") {
+				t.Errorf("decide's reply %q, the skill quotes %q", out, quoted)
+			}
+			if b := d.decision(t, "dr-7"); b["type"] != "approval" || b["state"] != "open" {
+				t.Errorf("dr-7 as decide made it: %v", b)
+			}
+		case "decision":
+			if !strings.HasPrefix(out, "dr-7: approval, open, rev 1\n") || !strings.Contains(out, "evidence:\n  task:"+d.run+"/build\n") {
+				t.Errorf("decision dr-7:\n%s", out)
+			}
+		case "withdraw":
+			if out != withdrawnWords("dr-7", "cancelled")+"\n" {
+				t.Errorf("withdraw dr-7: %q", out)
+			}
+		default:
+			t.Errorf("an example of no decision command: %q", words)
+		}
+	}
+}
+
+// decision cancel's help tells an agent's decision from a plan's gate:
+// cancelling an agent's never cancels its task, which goes on told to
+// take it as a no, and --release changes nothing there; a gate's tasks
+// are cancelled with it unless --release releases them (#689, review
+// round 2; crew.CancelDecision).
+func TestCancelsHelpTellsAgentsFromGates(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code, err := runDecision(t.Context(), []string{"cancel", "-h"}, &out, &errb); code != 0 || err != nil {
+		t.Fatalf("cancel -h: %d %v", code, err)
+	}
+	help := strings.Join(strings.Fields(errb.String()), " ")
+	if !hasAll(help, "An agent's (asked by a task's attempt): its task waits for it no more and goes on, told the decision was cancelled, not approved, and to take it as a no; --release changes nothing.",
+		"A plan's gate (the plan's decision, list shows \"the plan's\"): the tasks it holds are cancelled with it, or, with --release, released to run without its answer",
+		"a plan's gate: release the tasks it holds to run without its answer, instead of cancelling them; an agent's decision always releases its task, told to take it as a no") {
+		t.Fatalf("cancel's help:\n%s", errb.String())
+	}
+	if strings.Contains(help, "cancel an open or answered decision: the tasks it holds are cancelled with it") {
+		t.Fatalf("cancel's help still says every decision's tasks are cancelled:\n%s", errb.String())
 	}
 }
