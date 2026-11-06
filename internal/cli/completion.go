@@ -114,7 +114,10 @@ func completionSpec() []commandSpec {
 		{name: "open"},
 		{name: "crew", flags: []flagSpec{{name: "--self", kind: flagValue}, {name: "--open"}, {name: "--ttl", kind: flagValue}, {name: "--label", kind: flagValue}, {name: "--quiet"}}, words: []string{"create", "add", "status", "link"}},
 		{name: "task", flags: []flagSpec{{name: "--page", kind: flagValue}, {name: "--json"}, {name: "--summary", kind: flagValue}, {name: "--commit", kind: flagValue}, {name: "--issue", kind: flagValue}, {name: "--verdict", kind: flagEnum, values: []string{"approved", "needs_changes"}}, {name: "--finding", kind: flagValue}, {name: "--file", kind: flagFile},
-			{name: "--to", kind: flagValue}, {name: "--after", kind: flagValue}, {name: "--reason", kind: flagValue}, {name: "--message", kind: flagValue}, {name: "--done", kind: flagValue}, {name: "--remaining", kind: flagValue}, {name: "--notes", kind: flagValue}}, words: []string{"context", "result", "send", "inbox", "ack", "blocked", "checkpoint", "ticket"},
+			{name: "--to", kind: flagValue}, {name: "--after", kind: flagValue}, {name: "--reason", kind: flagValue}, {name: "--message", kind: flagValue}, {name: "--done", kind: flagValue}, {name: "--remaining", kind: flagValue}, {name: "--notes", kind: flagValue},
+			{name: "--type", kind: flagEnum, values: []string{"clarification", "approval", "assignment"}}, {name: "--question", kind: flagValue}, {name: "--context", kind: flagValue}, {name: "--option", kind: flagValue}, {name: "--recommend", kind: flagValue},
+			{name: "--uncertainty", kind: flagValue}, {name: "--authorizes", kind: flagValue}, {name: "--evidence", kind: flagValue}, {name: "--subject", kind: flagValue}, {name: "--supersedes", kind: flagValue}},
+			words: []string{"context", "result", "send", "inbox", "ack", "blocked", "checkpoint", "ticket", "decide", "decision", "withdraw"},
 			after: map[string][]string{"ticket": {"comment"}}},
 		{name: "guide", flags: api(flagSpec{name: "--section", kind: flagEnum, values: []string{"operations", "limits", "host", "receipts", "providers", "briefs"}}, flagSpec{name: "--json"})},
 		// Every flag of every brakeman command (each takes its own), with
@@ -136,6 +139,10 @@ func completionSpec() []commandSpec {
 			flagSpec{name: "--comment", kind: flagValue}, flagSpec{name: "--constraints-file", kind: flagFile}, flagSpec{name: "--decision", kind: flagValue}, flagSpec{name: "--plan", kind: flagValue}, flagSpec{name: "--label", kind: flagValue}),
 			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs"},
 			after: map[string][]string{"plan": planVerbs}},
+		// Every flag of every decision command, the states as --state's values.
+		{name: "decision", flags: api(flagSpec{name: "--state", kind: flagEnum, values: decisionStates}, flagSpec{name: "--run", kind: flagValue}, flagSpec{name: "--ticket", kind: flagValue}, flagSpec{name: "--json"},
+			flagSpec{name: "--choice", kind: flagValue}, flagSpec{name: "--text", kind: flagValue}, flagSpec{name: "--why", kind: flagValue}, flagSpec{name: "--release"}),
+			words: []string{"list", "show", "respond", "cancel"}},
 		{name: "export", flags: api(flagSpec{name: "--data-dir", kind: flagFile}, flagSpec{name: "--config", kind: flagFile}, flagSpec{name: "--out", kind: flagFile})},
 		{name: "restore", flags: []flagSpec{{name: "--config", kind: flagFile}, {name: "--data-dir", kind: flagFile}, {name: "--provider"}}, file: true},
 		{name: "hooks", flags: []flagSpec{{name: "--home", kind: flagFile}, {name: "--data-dir", kind: flagFile}}, words: []string{"install", "status"}, after: map[string][]string{"install": adapters}},

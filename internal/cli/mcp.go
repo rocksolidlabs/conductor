@@ -522,11 +522,9 @@ func decisionTool(ctx context.Context, c *crewClient, name string, body map[stri
 	}
 	d, _ := out["decision"].(map[string]any)
 	if name == "decision_withdraw" {
-		return fmt.Sprintf("%v is %v: your task waits for it no more", d["id"], d["state"]), nil
+		return withdrawnWords(d["id"], d["state"]), nil
 	}
-	return fmt.Sprintf("%v %v. Pending. End your turn, or go on with work that does not depend on it; do not submit your result until it is answered. "+
-		"The answer is typed into this session as 'Decision %v … answered', or, if this session has ended, written into your task's next attempt's task file, "+
-		"which starts at your last checkpoint: save one before you end your turn.", d["id"], d["state"], d["id"]), nil
+	return pendingWords(d["id"], d["state"]), nil
 }
 
 // inboxText lists an inbox reply's messages, one a line.
