@@ -477,9 +477,8 @@ it), as it keeps no Dispatch.
 opens the journal with its data directory (none without one) and wires it
 at these places, each named as it is on `main`:
 
-- **A server session's start**, in `createLocalSession`: the launch is
-  admitted at the session gate before anything of it starts ("The
-  admission rule", below); `Begin` once the session's `Info` is made and
+- **A server session's start**, in `createLocalSession`: `Begin` once
+  the session's `Info` is made and
   before `session.NewLocal` (so the record exists before the session can
   keep an entry; a session the registry then refuses, `too_many_sessions`,
   has its record removed, `Abandon`), from its `Info`,
@@ -606,9 +605,10 @@ the writer's to make again; `reconcile` keeps no retry state.
 its `Settle` and reads in this order:
 
 1. its recorder: nothing is done for a recorder that is not its id's in
-   `recCur` or, outside the shutdown's final pass, whose registration is
-   not complete (that registration's own reconcile reads what this one
-   would have);
+   `recCur`; outside the shutdown's final pass, for one whose
+   registration is not complete (that registration's own reconcile reads
+   what this one would have); in the final pass, for one whose session
+   object does not exist yet (the admission rule);
 2. **membership, first**: whether `registry.Get(id)` answers the
    recorder's session (a recorder whose session is not yet made is not a
    member);
@@ -646,95 +646,52 @@ server session's `Begin`, `Abandon`, the writer, `Close`), a session call
 that waits (`Stop`), or the end commit's git read. The lock order is
 `recMu`, then the registry's lock, then the session's own lock (`Local`'s
 or `HostedSession`'s), then the journal's `mu`; `recMu` and the journal's
-`wmu` are never held together, and the launch gate's lock is taken alone.
+`wmu` are never held together.
 `recMu` is never taken under any of the others: the registry calls
 `OnRemove` after its lock, a session calls its hooks after its lock
 (`Local.record`, `notifyChange`, `chatHook`; `HostedSession.notifyChange`,
 `HostActivity`, `HostChat`), and the hub calls `OnAdded` outside its own.
 
 **The admission rule.** A record is admitted the moment its `Begin`
-succeeds, and every admitted record is settled before the journal closes:
-by its registration's reconcile and the hints after it, by its removal, or
-by the shutdown's final pass, which settles every recorder in `recCur`,
-its registration complete or not. Against a launch in flight the shutdown
-orders itself through the gate the server already has for launches
-(`launchGate`, `s.launches`, `internal/api/dispatch_launch.go`), whose
-`closed` flag and `starting` count admit the engine's run starts today
-(`admitRun`, `startDone`, and `closeRuns`, which the shutdown calls before
-the runs' stops). The gate gains the same three for server sessions:
+succeeds, and its recorder exists from that moment, in `recCur`, whether
+or not its registration has completed. An admitted record is settled by
+its registration's reconcile and the hints after it, by its removal, or
+by the shutdown's final pass. The final pass (`closeSessionRecords`, last
+in `Server.Shutdown`, after the sessions' stops, `hosts.CloseAll` and the
+other stores) does, under `recMu`:
 
-- `admitSession`, in `createLocalSession` before anything of the launch
-  starts (before the launch revision's read and `rt.StartTerminal`), for
-  every server session the server makes (a route's, a clone's, a resume's,
-  an attempt's), recorded or not, whatever `history.sessions` says: one
-  rule for every launch, since a launch the shutdown would stop a moment
-  later is better refused cleanly whether or not history is kept (and
-  whether a record is begun is known only later);
-- `sessionDone`, once the launch's registration has completed
-  (`registered`) or failed (`abandon`, a start that failed, any return
-  after the admission), answering `late` when the gate closed and its
-  wait gave up while the launch was in flight;
-- `closeSessions(ctx)`, which the shutdown calls after the runs' drain
-  (after the `afterStops` seam) and before the sessions' stops
-  (`registry.Each(... Stop)`): it closes the gate and waits, as long as
-  the shutdown's `ctx` allows, for every admission in flight.
+1. marks the records closed (`recordsClosed`), and closes `recordsStop`,
+   which ends the process waits;
+2. settles every recorder it holds, its registration complete or not. One
+   whose session object exists (a server session's `Local` once
+   `session.NewLocal` has made it, `made`; a hosted session's, always) is
+   settled final from that session's state by the snapshot rule, so an
+   exit the session observed before the registry held it is recorded as
+   that exit. One whose session object does not exist yet is left as its
+   `Begin` wrote it, open on disk, for the next start's recovery to close
+   as `lost`;
+3. lets every recorder go (`recCur` emptied). The journal then closes
+   (`Close`, its last pass writing what was settled).
 
-So:
+After the mark nothing writes a record. `beginServerRecord` reads the mark
+under `recMu` before its `Begin` and begins nothing: the launch goes on
+without a record, the server stopping. A server `Begin` already under way
+as the mark is set writes its record, finds the mark when it would put its
+recorder in place, and puts none: its record stays open on disk, as step 2
+leaves one without its session object. `beginHostedRecord` reads the mark
+under the same lock as its `Begin` and begins or takes up nothing. A
+`made`, a `registered`, a hint or a stream that comes after finds no
+recorder of its id and writes nothing, so no `Settle` reaches a closed
+journal; and after `Close` the journal itself refuses every `Begin` and
+every write.
 
-- a launch that reaches the gate once it is closed starts nothing and
-  answers `503 shutting_down` (`errShuttingDown`): no process, no record;
-- a launch admitted before completes inside the deadline: its session is
-  in the registry before the stops list it, is stopped with the others,
-  and its record is settled from what the stop left (its observed end, or
-  `lost` when its process outlived the stop);
-- a launch still in flight when the deadline passes is not waited for.
-  The final pass settles its recorder from what the session is then (not
-  a member, so final: its observed end when its process is already gone,
-  else `lost`), and the launch's own `registered`, later, finds its
-  recorder no longer its id's and writes nothing. Its `sessionDone`
-  answers `late`, and the launch stops its own session, as a run started
-  past `ctx` stops its own run (`launchPlanned`), and answers `503
-  shutting_down`. A `Begin` that returns after the final pass, the journal
-  still open, finds `recordsClosed` under `recMu` and is settled at once,
-  final, `lost`, with no recorder kept; a `Begin` after `Close` is refused
-  and that session has no record; a `Begin` still writing as `Close` runs
-  leaves its record open on disk, and **the next start's recovery closes it
-  as `lost`**. Each of these ends `lost`, the server having stopped
-  observing the session.
-
-**An attempt refused at the gate** is read by the engine as it reads any
-launch error while its run stops, with nothing added. An attempt's launch
-that fails (`fail("launch", …)` in the engine's attempt start,
-`internal/crew/task.go`) is `stopped`, not `failed`, when its run's context
-has ended; `closeAttempt` leaves a stopped attempt's task ready ("attempt
-n stopped with the run"), not failed and not counted against the task's
-attempts, as `recordStop` does for the attempts a run's stop finds in
-flight. The gate closes only after the shutdown has stopped every run it
-lists (`stop` sets `stopping` and cancels the run's context before it
-waits) and drained them, so an attempt that meets the closed gate is one
-of a stopped run: it is `stopped`, and its run, stopped by the shutdown as
-the others are, is taken up by a continuation. A run the shutdown did not
-stop is the one exception ("Open in the design").
-
-A hosted session starts no process on the server and takes no admission:
-its `Begin`, its recorder and its first reconcile are one step under
-`recMu` (`beginHostedRecord`), so the final pass finds it wholly or not at
-all. The final pass sets `recordsClosed` under `recMu` before it settles,
-and a hosted registration after it begins no record and takes none up
-(the record stays as the final pass or the disk left it).
-
-The shutdown's order is then: Brakeman's quiesce, the runs' cut-off, the
-webhooks and the providers, `closeRuns`, the runs' stops and drain,
-**`closeSessions`**, the sessions' stops, the publications, `hosts.CloseAll`,
-the server's own goroutines, the run records, the ledger and Dispatch, and
-last **the final pass** (`recordsStop` closed, ending the process waits;
-`recordsClosed`; every recorder settled, final) and the journal's `Close`.
-`serve` drains the HTTP server only after `Server.Shutdown` returns
-(`internal/cli/serve.go`), so requests keep arriving throughout: the gate,
-not the drain, is what orders a launch against the shutdown.
-`docs/protocol.md` names `503 shutting_down` (the code Brakeman's routes
-already answer once the shutdown has begun) on the routes that launch a
-session.
+Nothing about launches changes: there is no admission to wait on, no new
+answer, nothing the engine reads differently, and the shutdown stops the
+runs and sessions it stops on `main` (`Server.Shutdown`). `serve` drains
+the HTTP server only after `Server.Shutdown` returns
+(`internal/cli/serve.go`), so a launch can run through the whole
+shutdown; the mark, read under `recMu`, is what orders its record against
+the final pass.
 
 **The hub's expiry removes only the registration it timed.**
 `Hub.Expire` (`internal/signal/hub.go`) times each hosted session whose
@@ -1689,9 +1646,9 @@ between, at most every 5 s.
 
 **The table.** Every moment that can touch a session's record:
 
-- **Bg**, a server registration in flight: the launch admitted, `Begin`
-  written, its recorder in `recCur` with no session yet or one the
-  registry does not hold yet.
+- **Bg**, a server registration in flight: `Begin` written, its recorder
+  in `recCur`, with no session object yet (before `session.NewLocal`) or
+  with one the registry does not hold yet.
 - **Rg**, a registration complete: `registered` after `AddReserved` (a
   server session); `beginHostedRecord` (a hosted one: `Begin`, recorder
   and reconcile in one step under `recMu`).
@@ -1708,10 +1665,9 @@ between, at most every 5 s.
   reconcile.
 - **Ra**, a hosted session registering again under the same id after the
   hub let it go: a new `HostedSession`, `OnAdded` again.
-- **Gc**, the shutdown's `closeSessions`: the gate closed, the admissions
-  in flight waited for.
-- **Fp**, the shutdown's final pass (`recordsClosed`, every recorder
-  settled final), then the journal's `Close`.
+- **Fp**, the shutdown's final pass: the mark (`recordsClosed`), every
+  recorder with its session object settled final, every recorder let go;
+  then the journal's `Close`.
 - **Wr**, the journal's writer: a merge, an end commit, a fold, a write,
   an eviction.
 - **Rv**, the next start's recovery (`Open`, or `awaitLock` once the lock
@@ -1730,12 +1686,12 @@ property test below.
 | S2 | Bg, Sm | The stream is appended: the recorder is its id's and the record open from `Begin`. | `recMu`, the journal's `mu` | the entry kept in its place by `At` | `TestARecordIsWrittenBeforeItsFirstEntry` |
 | S3 | Bg, Pe (the process exits before the registry holds it) | Pe changes the session; its hint finds the registration incomplete. Rg reads membership (present), then the state: an observed end. | `recMu`, membership first | ended, `exited (exit n)` | `TestAnExitBeforeTheRegistryHeldTheSessionIsRecorded` |
 | S4 | Bg, Rm (removed between `AddReserved` and `registered`: the stop route on an ended session, `GC`) | Rm's reconcile finds the registration incomplete and does nothing. Rg reads membership (absent: final), then the state. | `recMu`, membership first | its observed end, or `lost` when its process runs; the recorder let go | `TestARemovalBeforeTheRegistrationCompletes` |
-| S5 | Bg, Gc, the launch done inside the deadline | Gc waits on the admission; Rg reconciles and `sessionDone` ends it; the stops then stop the session; Fp settles final. | the gate's count | its observed end (`stopped (exit n)`, or the exit it had already made); `lost` when its process outlived the stop | `TestALaunchInFlightAtShutdownIsSettled` |
-| S6 | Bg, Fp, the launch held past the deadline with its process exited | Fp sets `recordsClosed` and settles the incomplete recorder: not a member, so final; the state shows an observed end. `Close` writes it. The launch's later `registered` finds its recorder gone; `sessionDone` answers `late`; the launch stops its own session and answers `503 shutting_down`. | `recMu`, `recordsClosed`, the instance rule | ended, `exited (exit n)` (`lost` had its process still run); nothing written after | `TestALaunchHeldPastTheShutdownsDeadlineIsSettled` |
-| S7 | Bg's `Begin` returning, Fp, past the deadline | After Fp with the journal open: `recordsClosed` read under `recMu`, settled at once, final, no recorder kept. After `Close`: refused. Still writing as `Close` runs: the file it wrote stays open. | `recMu`, `recordsClosed`, the journal's `closed` | `lost`; no record; open on disk, `lost` at the next start | `TestABeginAfterTheFinalPassIsSettledLost` |
-| S8 | Gc, a launch arriving | `admitSession` reads `closed`. | the gate's lock | no record: nothing started, `503 shutting_down` | `TestALaunchAfterTheGateClosedStartsNothing` |
+| S5 | Fp, Bg with its session object made (held before `AddReserved` or before `registered`) | Fp settles the recorder final from the session: its observed end if its process has exited (the session observed the exit before the registry held it), else `lost`; the recorder let go; `Close` writes it. | `recMu`, the snapshot rule | ended, `exited (exit n)`; or `lost` while its process runs | `TestALaunchInFlightAtShutdownIsSettled` |
+| S6 | Fp, Bg with no session object yet (`Begin` returned, `session.NewLocal` not) | Fp leaves the record as `Begin` wrote it, open, and lets the recorder go; `Close` writes nothing more of it. The next start's recovery reads it open. | `recMu`, the mark | open on disk; `lost` at the next start (a promise, below) | `TestALaunchBeforeItsSessionAtShutdownIsLostAtTheNextStart` |
+| S7 | Fp, a server `Begin` | Before the mark: an admitted record, S5 or S6. After it: `beginServerRecord` reads the mark under `recMu` and begins nothing; the launch goes on without a record. Under way as the mark is set: the record written open, the mark found when its recorder would go in, none put in. After `Close`: the journal refuses it. | `recMu`, the mark, the journal's `closed` | no record; or open on disk, `lost` at the next start | `TestABeginAfterTheFinalPassRecordsNothing` |
+| S8 | Fp, a registration completing late (`made`, `registered`) | After Fp the recorder is gone from `recCur`; `registered`'s reconcile finds no recorder of its id and writes nothing. No `Settle` reaches the closed journal. | `recMu`, the instance rule | as Fp left it (S5 or S6) | `TestALaunchInFlightAtShutdownIsSettled`, `TestALaunchBeforeItsSessionAtShutdownIsLostAtTheNextStart` (each lets its launch go after `Close`) |
 | S9 | Ab, Hn or Sm or Wr | `abandon` takes the recorder out of `recCur`, then `Abandon` ends the instance under `wmu`; a hint or a stream after finds no recorder; the writer's work finds its record gone. | `recMu`, the instance rule | no record | `TestARefusedLaunchLeavesNoRecord` |
-| S10 | Ab, Fp (past the deadline only: inside it Gc waits for the abandon) | Fp first settles the recorder final (`lost`, or its observed end); `Abandon` then removes it while the journal is open, and is refused once it is closed. Ab first: removed, Fp sees nothing. | `recMu`, the journal's `closed` | no record; or, after `Close`, a `lost` record of a launch the registry refused | `TestARefusedLaunchPastTheDeadline` |
+| S10 | Ab, Fp (a launch the registry refused as the shutdown ran) | Fp first: the recorder, its session object made, settled final (`lost`, or its observed end) and let go; `Abandon` then removes the record while the journal is open and is refused once it is closed. Ab first: removed; Fp finds no recorder. | `recMu`, the journal's `closed` | no record; or, after `Close`, the record Fp settled | `TestARefusedLaunchAtTheFinalPass` |
 | S11 | Hn, Hn | Each reads the session under `recMu`; the later reads at least as new. The `Info` a hint carries is never read. | `recMu` | the session's state at the later read (the lowest Codex id the session chose, resumable as it says) | `TestAHintCarriesNoTruth` |
 | S12 | Hn, Pe | A hint before the end reads no end; the end's own change is a hint; a server session whose status ended while its process runs is waited for (`awaitProcessEnd`), a hint at `ProcessDone`. A hint lost is made up by the next reconcile, at the latest Rm's or Fp's. | `recMu`, idempotence | ended once observed, once | `TestAFailedStopIsNoEnd`, `TestALostHintIsReadByTheRemoval` |
 | S13 | Hn, Rm after the hint's membership read | Hn reads membership present; meanwhile the process exits, the status ends and the stop route removes the session (its delete done, its reconcile waiting on `recMu`). Hn reads the state: an observed end, not final. Rm's reconcile reads the absence, final, and the state again: the same end. | `recMu`, membership first | ended with its observed end, its open questions withdrawn; the recorder let go | `TestAnEndBeforeTheRemovalIsNeverReadStale` |
@@ -1769,7 +1725,6 @@ property test below.
 | S41 | Pe (a hosted status), the host's going and Rm by `Expire` | The status message first: ended, and `Expire`'s final keeps it. `Expire` first: `host away`; no status follows from a host that is gone. | membership first, idempotence | `exited (exit n)`, or `host away` | `TestAHostedExitIsKeptWithItsActivityDropped` |
 | S42 | Rg (hosted), Sm of the same registration | No message of the host is handled between the hub's add and its hooks (one goroutine reads the connection and registers); a stream after `OnAdded` is the recorder's. | the connection's goroutine | kept | lock |
 | S43 | Rm by `Expire`, Ra of the same id in its gap | `Expire`, under the hub's lock, finds the session it timed still the hub's and the registry's and takes it out of both by identity; its `OnRemove` runs after the lock. Ra reads the hub under the same lock: before, it finds the old session and takes it back (`attach`, the same registration, its recorder unchanged); after, it adds a new `HostedSession` and `OnAdded` takes the record up. The old `OnRemove`, before Ra's `OnAdded`: final, `host away`, then taken up; after it: names a session that is not the recorder's, nothing. | the hub's lock, removal by identity, the instance rule | open: the same registration, or taken up again (`Reopened` one more); the new registration never removed | `TestAnExpiryNeverRemovesTheRegistrationThatReplacedIt` |
-| S44 | Gc, an attempt's launch | The engine's attempt start asks `Launch`; `createLocalSession` refuses it at the closed gate (`503 shutting_down`, nothing started). The engine's `fail("launch", …)` reads the run's context, ended by the shutdown's stop before the gate closed: the attempt is `stopped`, uncounted, its task ready, as `recordStop` closes the attempts in flight. | the shutdown's order (the runs' stops and drain before `closeSessions`), the run's context | no record; in the ledger the attempt `stopped`, its run stopped and taken up by a continuation | `TestAnAttemptRefusedAtTheGateIsStoppedNotCounted` |
 
 **Promises at the edges.** Each follows from the rules above and is said
 once here.
@@ -1805,27 +1760,13 @@ once here.
   each record still open on disk `lost` (a hosted one `host away`),
   `LostAt` its file's last write, never ended. A record whose end was
   written stays ended.
-- **Past the shutdown's deadline** a launch still in flight ends `lost`
-  (or with its observed end, when the final pass finds its process already
-  gone), at once or by the next start ("The admission rule").
+- **A launch caught by the shutdown before its session object** (its
+  record begun, `session.NewLocal` not yet returned when the final pass
+  ran, or its `Begin` under way as the mark was set) is recorded `lost` by
+  the next start, whatever its process did. A launch that reaches `Begin`
+  after the mark has no record.
 
-**Open in the design.**
-
-1. **A run not started from a ticket, during the shutdown** (S44). Only a
-   run from a ticket is admitted at the launch gate (`admitRun` in
-   `launchPlanned`); a run made otherwise (`POST /api/runs`, a crew a
-   session forms, a continuation) that starts after the shutdown has
-   listed the runs it stops is not stopped by it. Its context is still
-   live when its attempt meets the closed session gate, so
-   `fail("launch", …)` records that attempt `failed`, counted against its
-   task, and the next attempt is refused the same way until the task
-   fails. The run outliving the shutdown's stops is `main`'s; the gate
-   makes it show in the ledger. What it would take: those run starts
-   admitted at the same gate (`admitRun` and `startDone` around the
-   engine's start, as `launchPlanned` has them), so every run is stopped,
-   its context ended, before `closeSessions`; no new mechanism. Options:
-   (a) in PR-1, since S44's row rests on it; (b) an issue of its own, such
-   a run's attempts counted failed meanwhile.
+**Open in the design.** Nothing: every pair above has its outcome.
 
 **A resume's receipt.** `pending` (reserved under the record's lock, with
 the new session's id allocated, before any check or launch) → `started`
@@ -1944,6 +1885,9 @@ for Program item TS1 to decide, an item not yet planned.
   (Owner decisions, 2).
 - Keeping a terminal's output, scrollback or screen in a record, or what a
   person types into the terminal or a reply box (Owner decisions, 4).
+- Stopping a session launched after the shutdown's stops: on `main` such a
+  session is not stopped by the shutdown, and PR-1 leaves that as it is
+  (its record, if it began one, is settled by the final pass, S5 to S8).
 - Sharing history between machines or people, and conflict rules for it:
   Program item TS1's, over CS1's sync, an item not yet planned and with no
   plan file; HS1 only reserves the `origin` column.
@@ -2084,8 +2028,9 @@ all), `betweenReads` (a reconcile held between its membership read and its
 state read), `afterRegistryAdd` (a launch held between `AddReserved` and
 `registered`), `req.spawned` (a launch held before `AddReserved`),
 `afterBegin` (a server `Begin` returned, before its recorder is put in
-place), `afterSessionsClosed` (the gate closed, before its wait), the
-journal's `beforeWrite` and `beforeDelete`, and `Flush`.
+place), `beforeMade` (a server launch's recorder in place, before
+`session.NewLocal`), the journal's `beforeWrite` and `beforeDelete`, and
+`Flush`.
 
 `TestTheRecordFollowsTheSession`, a property test: a seeded random
 sequence (the seed printed, `CONDUCTOR_RECORD_SEED` replays one) of what
@@ -2097,8 +2042,9 @@ hosted session registered, disconnected, ended by its status message, let
 go, registered again under the same id with the earlier removal delayed;
 a rename, an agent's session set, a crew adopted; activity, touches, chat
 lines, a question and its answer; `Forget`, `ForgetAll`, `Prune`; a write
-made to fail; and the shutdown, its deadline met or spent while a launch
-is held. Every hint and stream is queued and delivered late, shuffled or
+made to fail; and the shutdown, run while a launch is held at
+`afterBegin`, at `beforeMade`, at `spawned` or at `afterRegistryAdd`, and
+the launch let go after `Close`. Every hint and stream is queued and delivered late, shuffled or
 not at all, and any step may run inside a reconcile held at
 `betweenReads`. After every step and at the end, against the model the
 test keeps of each session's truth:
@@ -2119,9 +2065,10 @@ test keeps of each session's truth:
 - I6: nothing of a forgotten or abandoned instance is written after its
   removal returns, and its record stays gone unless a hosted registration
   begins it afresh;
-- I7: after the shutdown no record is open on disk but one whose `Begin`
-  was still writing as `Close` ran, and the next `Open` marks that one
-  `lost`;
+- I7: after the shutdown no record is open on disk but one whose launch
+  had no session object when the final pass ran (or whose `Begin` was
+  under way at the mark), and the next `Open` marks those `lost`; nothing
+  is written after the mark but by `Close`'s last pass;
 - I8: a record's `Seq` only goes up, across a restart too.
 
 One test per row of the table that a lock alone does not settle, each
@@ -2132,20 +2079,19 @@ seams above (both orders where the row gives two):
 `TestARemovalBeforeTheRegistrationCompletes` (S4: a session held at
 `afterRegistryAdd`, its process exited, removed by the stop route, then
 let go: `exited (exit 0)`),
-`TestALaunchInFlightAtShutdownIsSettled` (S5: held at `spawned` with its
-process exited, the shutdown begun and its gate closed
-(`afterSessionsClosed`), then let go inside the deadline: `exited (exit
-0)`, the session stopped with the others),
-`TestALaunchHeldPastTheShutdownsDeadlineIsSettled` (S6: the same launch
-held while the shutdown runs with its `ctx` spent: the record `exited
-(exit 0)` once `Close` returns; let go, the launch answers `503
-shutting_down`, stops its own session and writes nothing; and a variant
-whose process still runs: `lost`),
-`TestABeginAfterTheFinalPassIsSettledLost` (S7, at `afterBegin`),
-`TestALaunchAfterTheGateClosedStartsNothing` (S8: `503 shutting_down`, no
-process started, no record),
+`TestALaunchInFlightAtShutdownIsSettled` (S5, S8: a launch held at
+`spawned` with its process exited, the shutdown run to its end: the
+record `exited (exit 0)`; let go after `Close`, the launch writes
+nothing; and a variant whose process still runs: `lost`; and the same
+held at `afterRegistryAdd`),
+`TestALaunchBeforeItsSessionAtShutdownIsLostAtTheNextStart` (S6, S8: a
+launch held at `beforeMade`, the shutdown run to its end: the record open
+on disk; let go, nothing written; the next `Open`: `lost`),
+`TestABeginAfterTheFinalPassRecordsNothing` (S7: a launch after the mark,
+no record and the session started; a `Begin` held at `afterBegin` across
+the mark: its record open, no recorder put in),
 `TestARefusedLaunchLeavesNoRecord` (S9) and
-`TestARefusedLaunchPastTheDeadline` (S10),
+`TestARefusedLaunchAtTheFinalPass` (S10),
 `TestAHintCarriesNoTruth` (S11: two hints handed an older `Info` last, the
 lowest Codex id then a higher one, resumable then not: the record holds the
 session's own),
@@ -2189,12 +2135,7 @@ file there, the session's end then written over it) and
 `internal/signal` and again through the server: `Expire` held at a seam
 after its critical section and before `OnRemove`, the same instance's
 host registering meanwhile; then a variant registering before it: the new
-registration listed, its record open, never `host away`),
-`TestAnAttemptRefusedAtTheGateIsStoppedNotCounted` (S44: a managed run's
-attempt held in its launch before the gate (`beforeAttempt`, the launch
-gate's attempt seam) while the shutdown stops the run and closes the gate
-(`afterSessionsClosed`); let go, the launch refused: the attempt `stopped`, its task ready,
-its attempt count unchanged). Each is proved as
+registration listed, its record open, never `host away`). Each is proved as
 AGENTS.md asks of a race's test: `go test -race -count=30` on the rows'
 tests, and the property test the same way, each run on a new seed.
 
@@ -2517,8 +2458,7 @@ forget, `history/state.json`); `history.sessions` in `internal/config`; in
 server and hosted sessions (a hosted record's reopening), the hooks as
 named in "The API's part of PR-1" (each recorded session's own hooks as
 hints and streams, `reconcile` through `Settle` under the snapshot rule,
-the registry's `OnRemove`, the session gate in `launchGate` and the
-shutdown's final pass), the agent's
+the registry's `OnRemove`, and the shutdown's final pass with its mark), the agent's
 version and the launch revision read before `StartTerminal` (native only),
 the four record routes. Touches `internal/journal`, `internal/config`,
 `internal/signal` (the `OnAdded` callback, `HostChat`'s questions and
