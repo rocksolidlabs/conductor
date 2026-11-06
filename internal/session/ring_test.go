@@ -83,6 +83,41 @@ func TestRingReplayStart(t *testing.T) {
 	}
 }
 
+// A ring is marked wrapped exactly when a byte written to it is no longer
+// held, whatever the writes' sizes: a write that exactly fills an empty
+// ring drops nothing, so its replay is every byte (#692, review round 3).
+func TestRingWrappedOnlyWhenBytesDropped(t *testing.T) {
+	const fill = "ab\ncd\x1b[m" // eight bytes; the start rule would cut "ab\n"
+	long := strings.Repeat("x", replayBound-4) + "\x1b[0m"
+	for _, tc := range []struct {
+		name     string
+		capacity int
+		writes   []string
+		wrapped  bool
+		want     string
+	}{
+		{"one write exactly fills an empty ring", 8, []string{fill}, false, fill},
+		{"one write exactly fills an empty ring of replayBound", replayBound, []string{long}, false, long},
+		{"writes add up to exactly the capacity", 8, []string{"ab\n", "cd", "\x1b[m"}, false, fill},
+		{"an empty write into a full ring", 8, []string{fill, ""}, false, fill},
+		{"a write of the capacity into a ring holding a byte", 8, []string{"Z", fill}, true, "cd\x1b[m"},
+		{"one write larger than the capacity", 8, []string{"Z" + fill}, true, "cd\x1b[m"},
+		{"one byte after a write that exactly filled", 8, []string{fill, "!"}, true, "cd\x1b[m!"},
+		{"one byte after writes that exactly filled", 8, []string{"ab\n", "cd\x1b[m", "!"}, true, "cd\x1b[m!"},
+	} {
+		r := NewRing(tc.capacity)
+		for _, w := range tc.writes {
+			r.Write([]byte(w))
+		}
+		if r.wrapped != tc.wrapped {
+			t.Errorf("%s: wrapped %v, want %v", tc.name, r.wrapped, tc.wrapped)
+		}
+		if got := string(r.Snapshot()); got != tc.want {
+			t.Errorf("%s: replays %.40q, want %.40q", tc.name, got, tc.want)
+		}
+	}
+}
+
 // Streams a program writes, each element whole: colour sequences, cursor
 // moves, titles ended by BEL and by ESC backslash, a synchronized update's
 // frame and characters of two, three and four bytes. What they draw is

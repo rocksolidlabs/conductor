@@ -28,9 +28,15 @@ func (r *Ring) Write(p []byte) (int, error) {
 	defer r.mu.Unlock()
 	n := len(p)
 	cap := len(r.buf)
+	if r.size+n > cap {
+		// At least one byte written is no longer held: only then may the
+		// oldest held byte be the tail of something (Snapshot). A write
+		// that exactly fills the ring drops nothing.
+		r.wrapped = true
+	}
 	if n >= cap {
 		copy(r.buf, p[n-cap:])
-		r.start, r.size, r.wrapped = 0, cap, true
+		r.start, r.size = 0, cap
 		return n, nil
 	}
 	end := (r.start + r.size) % cap
@@ -42,7 +48,6 @@ func (r *Ring) Write(p []byte) (int, error) {
 		overflow := r.size + n - cap
 		r.start = (r.start + overflow) % cap
 		r.size = cap
-		r.wrapped = true
 	} else {
 		r.size += n
 	}
