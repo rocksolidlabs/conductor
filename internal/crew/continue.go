@@ -35,9 +35,13 @@ import (
 // that hold them (LoadImports): empty unless read. FailedChecks are the
 // receipts that failed its attempts failed at a check or a verify step,
 // one each (failingReceipt), without their logs: a continuation hands the
-// one of a task's last attempt to its first (taskfile.go).
+// one of a task's last attempt to its first (taskfile.go). Launch is the
+// crew as launched of the run's chain, the crew JSON of its launch row
+// (LaunchCrew), where its people and its tasks' owners are read from; ""
+// reads the run's own row.
 type Loaded struct {
 	Run           ledger.RunRow
+	Launch        string
 	Tasks         []ledger.TaskRow
 	Attempts      []ledger.AttemptRow
 	Messages      []ledger.MessageRow
@@ -139,6 +143,12 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 	if err := json.Unmarshal([]byte(from.Run.Crew), &c); err != nil {
 		undo()
 		return nil, fmt.Errorf("the run's crew as launched cannot be read: %w", err)
+	}
+	// Its people and its tasks' owners are the launch's, which this
+	// continuation's row keeps too: a continuation an older build made
+	// wrote its row without them.
+	if launch, ok := launchCrewOf(from); ok {
+		c = c.withPeopleOf(launch)
 	}
 	if !c.Managed() {
 		undo()
@@ -823,6 +833,18 @@ func Recovered(rec Run, from Loaded) Run {
 		// run's binding was read says it too.
 		rec.Ticket = ticketOfRow(from.Run)
 	}
+	// The people and the tasks' owners are the launch's, whatever the
+	// record said: an older build writes it without them.
+	rec.People = nil
+	launch, read := launchCrewOf(from)
+	if read {
+		rec.People = launch.clone().People
+	}
+	for i := range rec.Tasks {
+		t := &rec.Tasks[i]
+		def, _ := launch.task(t.ID)
+		t.setOwner(launch, def)
+	}
 	rec.ResumedBy = from.Run.ContinuedBy
 	if from.Run.ContinuedFrom != "" {
 		rec.ResumedFrom = from.Run.ContinuedFrom
@@ -1057,6 +1079,10 @@ func LoadedTask(from Loaded, taskID string) (TaskState, []AttemptState, bool) {
 	}
 	if !known && !hasRow {
 		return TaskState{}, nil, false
+	}
+	if launch, ok := launchCrewOf(from); ok {
+		def, _ := launch.task(taskID)
+		st.setOwner(launch, def)
 	}
 	if hasRow {
 		if st.Member == "" {

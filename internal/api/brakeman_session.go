@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -101,6 +103,11 @@ type turnRequest struct {
 	Visibility  brakeman.Visibility  `json:"visibility"`
 	Permissions brakeman.Permissions `json:"permissions"`
 	Budget      turnBudget           `json:"budget"`
+	// Batch is a wake request's batch, the wakes the turn is about, as
+	// the background role holds it (BK3); Notes the role's durable notes,
+	// what the person chose to keep, for every turn.
+	Batch *crew.Batch     `json:"batch,omitempty"`
+	Notes []crew.RoleNote `json:"notes,omitempty"`
 }
 
 // bothVisible is the visibility two configurations allow together.
@@ -109,9 +116,24 @@ func bothVisible(a, b brakeman.Visibility) brakeman.Visibility {
 		Sessions: a.Sessions && b.Sessions, Touched: a.Touched && b.Touched, Terminals: a.Terminals && b.Terminals}
 }
 
-// bothPermit is the permissions two configurations allow together.
+// bothPermit is the permissions two configurations allow together: the
+// operations granted are those both grant that this build serves
+// (grantedActs), so the turn's request says what it may do and its act
+// tool is listed only then.
 func bothPermit(a, b brakeman.Permissions) brakeman.Permissions {
-	return brakeman.Permissions{Observe: a.Observe && b.Observe, Draft: a.Draft && b.Draft, Propose: a.Propose && b.Propose}
+	return brakeman.Permissions{Observe: a.Observe && b.Observe, Draft: a.Draft && b.Draft, Propose: a.Propose && b.Propose, Act: grantedActs(a, b)}
+}
+
+// grantedActs is the operations both a and b grant and this build serves
+// (actServed), in the closed list's order; nil for none.
+func grantedActs(a, b brakeman.Permissions) []string {
+	var out []string
+	for _, op := range brakeman.Grantable {
+		if slices.Contains(a.Act, op) && slices.Contains(b.Act, op) && actServed(op) == nil {
+			out = append(out, op)
+		}
+	}
+	return out
 }
 
 // handleSessionBrakemanRequest answers the turn's request: {request} with
@@ -177,7 +199,52 @@ func (s *Server) handleSessionBrakemanRequest(w http.ResponseWriter, r *http.Req
 		s.brakemanError(w, err)
 		return
 	}
+	if req.Batch != "" {
+		if b := d.roleBatch(req.Batch); b != nil {
+			// Only what the turn's grant admits: the configuration narrowed
+			// since the batch gathered narrows what the turn reads of it.
+			out.Batch = rr.visibleBatch(r.Context(), *b)
+		}
+	}
+	if rec, err := d.roleRecord(); err == nil {
+		out.Notes = rec.Notes
+	}
+	if own && out.Batch != nil {
+		// The batch given is read: its wakes' classes are noted, under the
+		// read mutex a brief is kept under, before the answer goes, so the
+		// brief's footprint carries them (a summary of a ticket made ready
+		// is withheld from a turn that may not see Dispatch).
+		d.readMu.Lock()
+		for _, c := range batchClasses(out.Batch) {
+			d.usedClass(id, c)
+		}
+		d.readMu.Unlock()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"request": out})
+}
+
+// batchClasses are the visibility classes a batch's wakes are of, by
+// their subjects' kinds; its overflow, which names none, counts every
+// class a wake may be of.
+func batchClasses(b *crew.Batch) []string {
+	used := map[string]bool{}
+	for _, w := range b.Wakes {
+		if kind, _, ok := strings.Cut(w.Subject, ":"); ok {
+			if c := refClass(kind); c != "" {
+				used[c] = true
+			}
+		}
+	}
+	if b.Overflow != nil {
+		used[brakeman.ClassRuns], used[brakeman.ClassSessions], used[brakeman.ClassDispatch] = true, true, true
+	}
+	var out []string
+	for _, c := range brakeman.Classes {
+		if used[c] {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // mustJSON is v as JSON, "" when it does not encode.

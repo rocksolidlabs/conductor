@@ -291,6 +291,36 @@ func (t *Tx) Continued(from string) error {
 	return nil
 }
 
+// ErrPeopleListed says RestorePeople found the run's crew listing people
+// already: the transition is undone, so a crew as launched with people is
+// never written over.
+var ErrPeopleListed = errors.New("ledger: the run's crew lists people already")
+
+// RestorePeople writes crew, the run's crew as launched with the people
+// and the tasks' owners an older build left out of it (docs/plans/
+// decisions.md, HM1, Migration and downgrade), into the run's row: one
+// UPDATE, made only while the crew the row holds lists no people, so it
+// writes once (ErrPeopleListed otherwise, which undoes the transition).
+// ErrNoRun for a run with no row.
+func (t *Tx) RestorePeople(crew string) error {
+	if len(crew) > MaxCrew {
+		return fmt.Errorf("%w: the crew is %d bytes", ErrTooLarge, len(crew))
+	}
+	if _, ok, err := t.Run(); err != nil {
+		return err
+	} else if !ok {
+		return ErrNoRun
+	}
+	res, err := t.tx.ExecContext(t.ctx, `UPDATE runs SET crew = ? WHERE id = ? AND COALESCE(json_array_length(crew, '$.people'), 0) = 0`, crew, t.runID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrPeopleListed
+	}
+	return nil
+}
+
 // PutTask puts a task's row, new or changed.
 func (t *Tx) PutTask(r TaskRow) error {
 	if len(r.Repair) > MaxPayload {
@@ -1322,7 +1352,10 @@ var ErrNotPrunable = errors.New("ledger: the run is still needed")
 // prerequisites', trees', commands' and events' with them, once the run
 // is closed, every tree of it ended, no prerequisite of it running, and
 // nothing cites it: a finished run can still be ending a tree, and its
-// rows are what the end and the recovery write.
+// rows are what the end and the recovery write. A run that holds or
+// opened a decision that is not final stays; the final decisions it
+// opened go with it, and those an ancestor opened are handed back to the
+// run it continued (pruneDecisions).
 func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	if l.readOnly {
 		return fmt.Errorf("%w: %s", ErrReadOnly, l.why)
@@ -1366,6 +1399,9 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	}
 	if cited > 0 {
 		return fmt.Errorf("%w: %d runs cite it", ErrNotPrunable, cited)
+	}
+	if err := pruneDecisions(ctx, tx, runID); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM runs WHERE id = ?", runID); err != nil {
 		return err

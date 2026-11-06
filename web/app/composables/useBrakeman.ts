@@ -1,21 +1,28 @@
-import type { BrakemanBrief, BrakemanConfig, BrakemanRequest, BrakemanState, RefResolution } from '../utils/brakeman'
+import type { BrakemanBrief, BrakemanConfig, BrakemanRequest, BrakemanRole, BrakemanState, RefResolution, RoleLogRow } from '../utils/brakeman'
 import { closed, keptBrief, openedMark, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
-import { dropKeptMake, readKeptMakes, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
+import { dropKeptMake, readKeptMakes, reconcileActs, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
 import type { DispatchWatch } from './useDispatchLive'
+import type { PlanSummary } from './useDispatch'
 
 // Brakeman's records on the app's pages (docs/plans/brakeman.md, PR-6): the configuration, the requests (a page of them, then
 // the `brakeman` events of GET /api/events folded in), and the person's writes (ask, cancel, make), each with an id the browser
 // mints and a reply lost to the network asked for once more with the same id, which the server answers as the first (the rule of
 // utils/tasks.ts). Which briefs this browser has opened is kept in its own storage: the sidebar counts the rest.
 
-/** A `brakeman` event's data as the stream sent it, or null for what is not one: `{id, state}`, at most 200 bytes. */
+/**
+ * A `brakeman` event's data as the stream sent it, or null for what is not one: `{id, state}`, at most 200 bytes; `id` a request's,
+ * or `role` for a change of the background role (BK3).
+ */
 export function asBrakemanEvent(v: unknown): { id: string; state: string } | null {
   if (v === null || typeof v !== 'object') return null
   const e = v as Record<string, unknown>
-  return typeof e.id === 'string' && /^br-[1-9][0-9]{0,17}$/.test(e.id) && typeof e.state === 'string' ? { id: e.id, state: e.state } : null
+  return typeof e.id === 'string' && (/^br-[1-9][0-9]{0,17}$/.test(e.id) || e.id === ROLE_EVENT) && typeof e.state === 'string' ? { id: e.id, state: e.state } : null
 }
+
+/** The `brakeman` event's id for a change of the background role. */
+export const ROLE_EVENT = 'role'
 
 /**
  * Sends a write once, and once more with the same body (so the same id) when the reply was lost to the network (status 0); a second
@@ -68,6 +75,8 @@ export class BrakemanLive {
   private newestPaged = 0
   /** How many times the store was reset: a reply to a read sent before the last reset is another token's, and is dropped. */
   private gen = 0
+  /** How many times the background role changed (its `brakeman` events): the role's log is read again on each. */
+  roleSeq = 0
 
   constructor(changed: () => void = () => {}) {
     this.changed = changed
@@ -109,18 +118,26 @@ export class BrakemanLive {
   /**
    * Takes a request as a reply gave it, unless the page has it further along already or the reply was sent before a reset (`at`); its
    * makes and edges are reconciled with the page's (reconcileMade), since replies to two cards' makes of one request can arrive in
-   * either order.
+   * either order, and so are its acts (reconcileActs), whose outcome may come after its brief, so that two reads of one briefed
+   * request answered out of order never take a done act back to pending.
    */
   apply(r: BrakemanRequest, at = this.gen) {
     if (at !== this.gen) return
     const had = this.requests.get(r.id)
     if (had && stateRank(r.state) < stateRank(had.state)) return
-    this.requests.set(r.id, had ? { ...r, ...reconcileMade(had, r) } : r)
+    this.requests.set(r.id, had ? { ...r, ...reconcileMade(had, r), ...reconcileActs(had, r) } : r)
     this.changed()
   }
 
-  /** A `brakeman` event: the request's state now, and a read of the rest. */
+  /** A `brakeman` event: the request's state now, and a read of the rest; for the role, the state read again. */
   event(e: { id: string; state: string }) {
+    if (e.id === ROLE_EVENT) {
+      this.roleSeq++
+      if (this.state?.role && this.state.role.state !== e.state) this.state = { ...this.state, role: { ...this.state.role, state: e.state } }
+      this.changed()
+      void this.readState()
+      return
+    }
     const had = this.requests.get(e.id)
     if (had && stateRank(e.state) >= stateRank(had.state) && had.state !== e.state) {
       this.requests.set(e.id, { ...had, state: e.state })
@@ -130,8 +147,10 @@ export class BrakemanLive {
     void this.readState()
   }
 
-  /** The stream started again: what changed meanwhile is read. */
+  /** The stream started again: what changed meanwhile is read, the role's too (a page showing its log reads it again). */
   snapshot() {
+    this.roleSeq++
+    this.changed()
     void this.readFirst()
   }
 
@@ -539,7 +558,7 @@ export function useBrakeman() {
     // A reply lost is asked again only with the token it was sent with: after a reset the server may be another one, and the make
     // stays kept for the one it was asked of.
     const send = sameToken(at, 'The token changed before the make was asked again: it is kept for the server it was asked of.', (b: { opId: string; by?: string; edit?: unknown }) =>
-      request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(r.id)}/items/${item}/make`, { method: 'POST', body: b }),
+      request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string }; plan?: PlanSummary }>(`/api/brakeman/requests/${encodeURIComponent(r.id)}/items/${item}/make`, { method: 'POST', body: b }),
     )
     const out = await sendKept(keep, () => forget(key), () => sendTwice(send, { opId, ...body }))
     // Answered after a reset: the ticket or crew is the server's before, perhaps another one's, so the caller is given nothing of it
@@ -651,11 +670,39 @@ export function useBrakeman() {
     store.reset()
   }
 
+  /** The background role whole, with its log newest first (GET /api/brakeman/role), at most `limit` rows. */
+  async function role(limit = 200) {
+    return request<{ role: BrakemanRole; log: RoleLogRow[] }>('/api/brakeman/role', { query: { limit: String(limit) } })
+  }
+
+  /** Pauses or resumes the background role: the role as it is after. */
+  async function roleAction(action: 'pause' | 'resume') {
+    const out = await request<{ role: BrakemanRole }>('/api/brakeman/role', { method: 'POST', body: { action } })
+    void store.readState()
+    return out.role
+  }
+
+  /** Keeps a brief's fact or interpretation as one of the role's notes. */
+  async function keepNote(requestId: string, item: number) {
+    return (await request<{ role: BrakemanRole }>('/api/brakeman/role/notes', { method: 'POST', body: { request: requestId, item } })).role
+  }
+
+  /** Clears the role's notes. */
+  async function clearNotes() {
+    return (await request<{ role: BrakemanRole }>('/api/brakeman/role/notes', { method: 'DELETE' })).role
+  }
+
+  /** How many times the role changed: a page that shows its log reads it again when this moves. */
+  const roleSeq = computed(() => {
+    void version.value
+    return store.roleSeq
+  })
+
   /** The store's generation, which a reset moves: what was read or set under one is not the next one's (Settings' form). */
   const generation = computed(() => {
     void version.value
     return store.generation
   })
 
-  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, readTicketTitle, ticketTitle, ticketTitlesWatch, brief, refs, closed }
+  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, readTicketTitle, ticketTitle, ticketTitlesWatch, brief, refs, closed, role, roleAction, keepNote, clearNotes, roleSeq }
 }

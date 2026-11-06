@@ -1930,8 +1930,8 @@ its run, and on no other.
 | `POST /api/catalog/check` | admin | body `{command, adapter?, env?}`, reply `{found, path?, unknown?, identity?}` (`identity` as `GET /api/catalog` carries it, when `adapter` names an adapter with a probe and the program was found: the probe runs now on the program found, with `env` as the agent's variables; `400 invalid_request` for an unknown adapter): whether `command[0]` resolves on the server (`exec.LookPath`), asked now and kept 30 s for the `available` of `GET /api/catalog`; nothing is run, and a missing program is `found:false`, not an error; `unknown` (with `found:false`) says the server did not judge the program, which `available` counts as installed: `relative` for a relative `command[0]` with a path separator, resolved at launch in the session's directory and not looked up here, and `timeout` when the lookup does not answer within 2 s (its answer is kept when it lands) |
 | `GET /api/paths` | admin | `scope` (optional): `roots` (the default, everything below) or `any`, which lists any directory the server's user can stat, a symbolic link to any directory included, the stat still first; `any` only with `paths.browse: any` (the desktop app sets it for its own server, for its settings picker), else `403 browse_off`; another value `400 invalid_request`. `prefix` (≤ 4096 bytes, no NUL; a relative one resolves against the server's own working directory, as a session's `cwd` does) and `limit` (a positive integer, default 50, at most 50: more counts as 50) in the query; reply `{dir, entries, truncated, more?, moreUnknown?}`: `dir` is the longest leading part of `prefix` that is an existing directory under an allowed root (symbolic links resolved, as a session's `cwd` is checked; the server's default working directory for an empty `prefix`), `entries` its child directories whose names start with the path element typed after `dir` (all of them when `prefix` names a directory), in name order, at most `limit` of the first 2000 entries the directory gives, hidden ones only when that element starts with a dot (a lone `.` after the last separator included), a symbolic link only when it leads to a directory under an allowed root, each `{name, path, git: {repo, commits}}` (`repo`: in a git working tree; `commits`: its `HEAD` is a commit; a child with no `.git` of its own carries its parent's marks, a symbolic link its target's; neither without `git` on the server; git is asked at most once per entry, one call at a time), `truncated` when more match than `limit`, when the directory has more than 2000 entries (the rest are not read), when the listing stopped at a symbolic link (the one after 50 that led nowhere usable, or any once the deadline has passed), or when the deadline passed before every entry was marked; `more` how many directories matching the typed element were left out past `limit` (round 14: the pickers say "30 more folders here"), and `moreUnknown` that there may be others besides (more than 2000 entries, or the listing stopped at a link); the 5 s deadline covers the whole request, and when it passes after the directory is found the listing keeps its entries, the git marks not yet asked for left false and `truncated` set, which is not an error; a directory the server cannot read lists nothing (`200`, no entries); the listing and the git check below refuse a chain of symbolic links longer than the kernel follows (about 40), which a launch's own resolution of a `cwd` would still accept; `400 invalid_cwd` when no part of `prefix` is such a directory, its message naming the allowed roots (`no directory in the prefix is under the allowed roots: <root>, <root>`), which the picker shows as it is; `400 invalid_request` for a bad `prefix` or `limit`; `500 list_failed` when the deadline passes before the directory is found (a prefix of very many elements through symbolic links); the path asked about is logged at debug level only |
 | `GET /api/git/check` | admin | `cwd` in the query (≤ 4096 bytes, no NUL; the server's default working directory when empty; resolved as the listing resolves it); reply `{inRepo, toplevel?, hasCommit, message}` by the rules a launch with `isolation: worktree` applies (`git -C <cwd> rev-parse`, under the allowed roots): `inRepo` when `cwd` is in a git working tree, `toplevel` its top, left out when it is not under an allowed root (a root may lie inside a repository, and a repository's `core.worktree` can name any directory), `hasCommit` when `HEAD` is a commit, `message` the words the launch's refusal would use, or that worktrees can be made: that `cwd` is in no repository, or in one with no commit, or that `git` is not installed (then `inRepo:false`), or, for a repository git refuses (owned by another user, unreadable), `git cannot use the working directory's repository:` and git's first line of stderr, which may name a configuration file or a repository path outside the roots; in a repository with a commit, a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, which the launch refuses first, answers `inRepo:true, hasCommit:true` with that refusal in `message`, so `message` is the verdict, not the two booleans; a preview: the launch's own refusal stays the authority (`409 not_a_repo`, or `400 invalid_crew` for the symbolic link); `400 invalid_cwd` as for a session; `500 git_failed` when git does not answer within 5 s (another failure to run it answers `200` with git's message) |
-| `GET /api/crews` | admin | `{crews, total}`: a page of the saved crews' summaries ordered by name (ignoring case), then id, each `{id, name, cwd, where, isolation, members: [{name, agentId, start}], updatedAt}`; `?offset=` from 0 (default 0), `?limit=` 1 to 500 (default 100), `400 invalid_request` otherwise; `total` counts every crew; `{crews: [], total: 0}` without a data directory |
-| `GET /api/crews/{id}` | admin | one crew in full, `{crew}`, shaped as before: `{id, name, goal, cwd, where, isolation, openAfterLaunch, viewLinkTtlSeconds?, tasks?, setup?, manifest?, manifestRevision?, yolo?, members, createdAt, updatedAt}` (`yolo` absent: the server's default; `true` or `false`: the crew's own choice; `tasks`, `setup` and `manifest` as the crew limits below have them; `manifestRevision` the server's count of the crew's project manifest changes, absent while it is 0), a member being `{name, agentId, prompt, args?, start: {when, member?}}`; `404` when unknown; `409 crew_unreadable` when its file cannot be used, the message saying why; `503 store_unavailable` |
+| `GET /api/crews` | admin | `{crews, total}`: a page of the saved crews' summaries ordered by name (ignoring case), then id, each `{id, name, cwd, where, isolation, members: [{name, agentId, start}], people?: [{name, responsibilities?}], updatedAt}` (`people` the crew's people with their responsibilities, never their notes, absent for a crew without people); `?offset=` from 0 (default 0), `?limit=` 1 to 500 (default 100), `400 invalid_request` otherwise; `total` counts every crew; `{crews: [], total: 0}` without a data directory |
+| `GET /api/crews/{id}` | admin | one crew in full, `{crew}`, shaped as before: `{id, name, goal, cwd, where, isolation, openAfterLaunch, viewLinkTtlSeconds?, tasks?, setup?, manifest?, manifestRevision?, yolo?, members, people?, createdAt, updatedAt}` (`people` and a task's `owner` as People in a crew below has them, absent for a crew without) (`yolo` absent: the server's default; `true` or `false`: the crew's own choice; `tasks`, `setup` and `manifest` as the crew limits below have them; `manifestRevision` the server's count of the crew's project manifest changes, absent while it is 0), a member being `{name, agentId, prompt, args?, start: {when, member?}}`; `404` when unknown; `409 crew_unreadable` when its file cannot be used, the message saying why; `503 store_unavailable` |
 | `POST /api/crews` | admin | create a crew: the body is a crew without `id`, `createdAt`, `updatedAt` and `manifestRevision`, which the server sets and rejects like any unknown field (`manifestRevision` 1 for a crew with a project manifest or a `setup`, absent for one without); the `id` comes from the name (lower case, every other run of characters a `-`, at most 40 characters, `crew` when nothing is left), then `-2`, `-3`… when taken; reply `201 {crew}`; `400 invalid_crew` carries the validation message, an agent the catalog does not have included; `503 store_unavailable` when there is no data directory |
 | `POST /api/crews/examples` | admin | seed the example crews (`example-todo-app`, `example-todo-app-tasks`, `example-test-fixer`, `example-docs-writer`, `example-dependency-upgrade`), as `conductor serve --examples` (or `CONDUCTOR_EXAMPLES` set to `1` or `true`) does at startup: each is saved unless an entry named `<id>.json` exists in `crews/`, usable or not (a symbolic link included), which is left alone whatever it holds; reply `200 {added, skipped}`, the ids each way in that order, each a list (`[]` when none); their `cwd` is the server's default working directory, their members use the `claude` and `codex` built-ins (not checked against the catalog: the launch checks), `where` is `server` and `isolation` `worktree`; each member that starts `after` another has a role prompt that begins by merging that member's branch, `crew/$CONDUCTOR_RUN/<member>`; `example-todo-app-tasks` has tasks instead of start rules (every member `start.when` `task`); `503 store_unavailable` without a data directory; `500 store_failed` when the directory cannot be read or a crew cannot be saved (the ones saved before it stay) |
 | `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create, so a crew as `GET` answers it goes back without `id`, `createdAt`, `updatedAt` and `manifestRevision`; `id` and `createdAt` never change, `updatedAt` is now, and `manifestRevision` is one more when the project manifest, a `setup` included, changed (a removal too) and stays as it was otherwise; reply `{crew}`; `400 invalid_crew` as for create; `404` when unknown; `409 crew_unreadable` when its file cannot be used (it is not replaced) |
@@ -1941,12 +1941,13 @@ its run, and on no other.
 | `GET /api/crews/{id}/runs` | admin | `{runs, live}`: the crew's runs, newest first, each as `GET /api/runs/{run}` answers it (without diffs): the `live` first ones the server holds, then the records of runs the server no longer holds, saved under `runs/<id>.json` in the data directory, at most 500 kept (the oldest by start dropped), never a terminal's contents; a run's record is written from its launch on (again a couple of seconds after each change, and as it ends, a reopened run again when it ends again) and read back after a restart, where the record of a run that was running when the server last stopped is marked `interrupted` (its running members `ended` with that `error`), never relaunched on its own; `404 not_found` for a crew neither saved nor recorded |
 | `POST /api/sessions/{id}/paste` | admin | answer a viewer's paste invite for a server session: `{offer, role, label?}`, `offer` a `cpi1.` blob (the viewer's SDP with every candidate gathered, deflated and base64url-encoded, ≤ 64 KiB), reply `201 {answer, role}` with the session's blob of the same form, which the viewer pastes back; the data channel then runs with no server between the two, as a host's does (hello over it, welcome, scrollback, input by role); at most 16 such peers a session, idle ones dropped after two minutes; `400 invalid_offer` for a blob that is not an offer, `400 hosted_session` for a hosted session (shared from its own machine), `409 session_ended` |
 | `GET /api/ice` | none (rate-limited) | `{stun}`: the configured ICE servers' `stun:` and `stuns:` URLs, in order, for a viewer gathering a paste invite's offer before it has any session; never a `turn:` URL, a user name or a credential, and never a media provider's server: the route never asks a provider, so a request nobody authenticated costs one nothing (the paste invite's answer, `POST /api/sessions/{id}/paste`, is handed the configured servers and the provider's, as a hosted viewer's welcome is) |
-| `GET /api/runs` | admin | `{runs}`: the runs in the server's memory, newest first, each with its `state` and `needsInput` (see Crew runs) |
+| `GET /api/people` | admin | the people Conductor knows (docs/plans/decisions.md, HM1): the union of Dispatch's directory and the saved crews' people, each name once, read from both and written to neither: `{people, next?, dispatchUnavailable?}`, `people` ordered by name as Dispatch orders its directory (byte for byte), each `{name, dispatch, crews, crewsMore?}`, `dispatch` whether the directory has the name, `crews` at most 20 of the crews that list it in the crews' order, each `{id, name, responsibilities}`, `crewsMore` `true` past them; at most `?limit=` names (1 to 200, 200 when absent), `next` the page's last name when more follow, which the next page passes as `?after=` (the names after it); `?q=` (at most 60 characters) keeps the names that contain it, ignoring case; `dispatchUnavailable: true` when Dispatch is off or cannot be read, the crews' people listed all the same; `400 invalid_request` for a parameter out of its bounds, given twice or unknown |
+| `GET /api/runs` | admin | `{runs}`: the runs in the server's memory, newest first, each with its `state` and `needsInput` (see Crew runs), and the crew's `people` as launched (People in a crew below) |
 | `GET /api/runs/{run}` | admin | `{run}` with each worktree member's `diff{added, removed}`, the run's `log`, whose entries Crew runs lists, and its `chat` (the run's chat messages, oldest first, at most 500; see Chat); for a run the server no longer holds (it ended before the server last started, or was evicted) but has a record of, `{run, record: true}` as it was last written (its `state` as recorded, `interrupted` for a run the server's end cut short), no diffs, and its page opens read-only: the run's actions (stop, members, broadcast, links) answer `404` for it as for any run not held, and `POST /api/runs/{run}/resume` resumes it from the record; `404` when unknown |
 | `POST /api/runs/{run}/members` | admin | add a member mid-run: body a crew member; reply `201 {run}`, once the session of a member that starts immediately exists; `400 invalid_crew` for an invalid member, a name the run has (`the name is used twice`), a prompt over 32756 bytes with the run's goal in it, an `after` naming no member of the run, a 13th member or an agent as at launch; a member whose session cannot be created answers as at launch (`409 not_a_repo`, `500 launch_failed`), and stays in the run, `ended` with its `error`, its name taken: adding it again under that name is `400 invalid_crew`; `409 run_stopped`; `404` when unknown |
 | `POST /api/runs/{run}/members/{name}/start` | admin | start a pending member by hand, whatever its start condition; reply `{run}` once its session exists, the member `starting` until its prompt is typed; a session that cannot be created answers as at launch (`409 not_a_repo`, `500 launch_failed`), the member `ended` with its `error`; `409 member_started`, `409 run_stopped`; `404` for an unknown run or member |
 | `POST /api/runs/{run}/members/{name}/resume` | admin | resume an ended member of the run (no body), in its working directory, its worktree and branch kept: a session tagged with the run that resumes the member's last `agentSession` with its agent's `session` recipe when the agent has one and the session was `resumable` (`resumed: true`; no prompt is typed, its conversation has it), and otherwise a fresh one whose role prompt is typed again once it is ready (`resumed: false`, with a `notice`); the member is `starting` with the new `sessionId` until its session is ready for a prompt (a resumed conversation, whose agent takes a while to show its prompt; a trust question holding it is noted) or until that prompt is typed (a fresh one), then `running`, so a handoff typed into it meanwhile waits, queued, and is typed once it is; noted in the run log; reply `201 {session, resumed, notice?}`, the new session's `Info` with `resumedFrom`; `404` for an unknown run or member; `409 still_running` for a member that is pending, starting or running; `409 run_stopped` only while a stop is under way or was cut short: an ended member of a run whose stop completed is resumed in place, which reopens the run (`stoppedAt` cleared, the log noting `reopened: <member> resumes`; the other ended members stay ended until resumed one by one, and a later stop stops it again); `409 already_resumed` when a running session holds that agent session; `400 invalid_agent` when the member's agent is no longer in the catalog; a session that cannot be created answers as at launch, the member `ended` with its `error` |
-| `POST /api/runs/{run}/resume` | admin | start a new run of a stopped (or finished) run's crew in which every member whose last `agentSession` is `resumable` continues its conversation in its kept worktree and branch, without a prompt (`starting` until its session is ready for one, then `running`; its next done starts the members after it), and the others start afresh under their start rules; reply `201 {run}`, the new run with `resumedFrom`, the old run from then on carrying `resumedBy` and staying stopped; `409 run_running` while the run goes; `409 run_stopped` when its stop was cut short; `409 already_resumed` for a run resumed already, or being resumed, with `run` naming the continuation; for a run the server no longer holds but has a record of (stopped, finished or interrupted), the same from the record: the crew as the record has it (each member's `prompt`, `args` and `start` as they ran, not the crew as saved since), each member with a `resumable` `agentSession` continuing it in its recorded `worktree` and `branch` (a worktree gone fails that member's start), the record then carrying `resumedBy` and resumed no more (`409 already_resumed`); `404` when unknown; a member whose session cannot be made ends with its `error`, as at launch |
+| `POST /api/runs/{run}/resume` | admin | start a new run of a stopped (or finished) run's crew in which every member whose last `agentSession` is `resumable` continues its conversation in its kept worktree and branch, without a prompt (`starting` until its session is ready for one, then `running`; its next done starts the members after it), and the others start afresh under their start rules; reply `201 {run}`, the new run with `resumedFrom`, the old run from then on carrying `resumedBy` and staying stopped; `409 run_running` while the run goes; `409 run_stopped` when its stop was cut short; `409 already_resumed` for a run resumed already, or being resumed, with `run` naming the continuation; a managed run's continuation is `503 ledger_unavailable` with a ledger another server owns, and while the server takes the ledger over ("the server is taking over the ledger": its recovery, the restore of its launches' people and the reconcile not yet done), no run made; for a run the server no longer holds but has a record of (stopped, finished or interrupted), the same from the record: the crew as the record has it (each member's `prompt`, `args` and `start` as they ran, not the crew as saved since), each member with a `resumable` `agentSession` continuing it in its recorded `worktree` and `branch` (a worktree gone fails that member's start), the record then carrying `resumedBy` and resumed no more (`409 already_resumed`); `404` when unknown; a member whose session cannot be made ends with its `error`, as at launch |
 | `POST /api/runs/{run}/stop` | admin | stop every member's session and, in a managed run, every service of its trees beside them (`SIGTERM` to the service's process group, `SIGKILL` after 5 s), before the stop is recorded and the trees end, their cleanup steps run (Project manifests, under Managed runs); reply `{run}` with `stoppedAt`, and `cleaning` above zero when a tree's end was still under way as the stop's 30 s ran out (it goes on); the worktrees stay; stopping again changes nothing; a session that does not stop cleanly is logged by the server and the run is stopped all the same; `404` when unknown |
 | `POST /api/runs/{run}/broadcast` | admin | type a line into members of the run: body `{text, members?, byName?}`, `members` empty or missing for every member; reply `{sent, skipped}`, `sent` the names typed into and `skipped` entries `{member, reason}` with `reason` `needs_input`, `not_running`, `unknown` or `no_enter` (typed, its carriage return left out because a question came up; see Crew runs); `400 invalid_request` for a text with nothing left, or over 4096 bytes, once made one line; `404` when unknown |
 | `GET /api/runs/{run}/links` | admin | `{links, published?, republish?}`: the run's share links, each with `runId` and `active`, the viewers attached through it to its members' sessions; with a switchyard configured, `published` says a member is published there now, and `republish: true` that a running member's publication the switchyard ended has not been made again, which the next run link does; `404` when unknown |
@@ -2031,7 +2032,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
-| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, see Brakeman), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
 
 The catalog routes persist their changes as `catalog.json` in the data
@@ -2117,7 +2118,32 @@ the body first: a crew that breaks one of these rules is refused with
 `400 invalid_crew` for that rule, ahead of an agent the catalog does not have
 and an unknown `id` (`404`); an agent the catalog does not have is `400 invalid_crew` whatever else
 holds. An error message quotes at most 80 characters of a value, with `…` where
-it was cut. A crew with `tasks` is a managed one (#334): every member's `start.when` is `task` (refused in a crew without tasks), `isolation` is `worktree`, at most 128 tasks, each `{id, member, kind, instructions, needs?, checks?}` with an `id` matching `^[a-z0-9][a-z0-9_-]{0,39}$` and unique, a `member` of the crew, a `kind` of `work` or `review`, `instructions` of at most 8000 characters, `needs` naming other tasks with no cycle (a review needs exactly one work task), and at most 8 `checks`, none for a review, each `{id, argv, timeoutSeconds?}` with an `id` as a task's, `argv` naming a program within the member-args bounds (at most 32 entries of 4096 bytes, 8 KiB in all; never a shell line) and `timeoutSeconds` 1 to 3600 (600 when left out); every member has a task; `setup`, only with tasks, is at most 8 such commands run in every new attempt worktree. A crew with tasks launches as a managed run (Managed runs below) when `crews.managed` is on (`409 managed_off` otherwise) and the ledger is the server's (`503 ledger_unavailable` otherwise); a managed run's members are never started, added or resumed by hand (`409 managed_run`), and its record is continued, not resumed, by the resume route.
+it was cut. A crew may name its people (People in a crew below), whatever its
+members' start rules. A crew with `tasks` is a managed one (#334): every member's `start.when` is `task` (refused in a crew without tasks), `isolation` is `worktree`, at most 128 tasks, each `{id, member, kind, instructions, needs?, checks?}` with an `id` matching `^[a-z0-9][a-z0-9_-]{0,39}$` and unique, a `member` of the crew, a `kind` of `work` or `review`, `instructions` of at most 8000 characters, `needs` naming other tasks with no cycle (a review needs exactly one work task), and at most 8 `checks`, none for a review, each `{id, argv, timeoutSeconds?}` with an `id` as a task's, `argv` naming a program within the member-args bounds (at most 32 entries of 4096 bytes, 8 KiB in all; never a shell line) and `timeoutSeconds` 1 to 3600 (600 when left out); every member has a task; `setup`, only with tasks, is at most 8 such commands run in every new attempt worktree. A crew with tasks launches as a managed run (Managed runs below) when `crews.managed` is on (`409 managed_off` otherwise) and the ledger is the server's (`503 ledger_unavailable` otherwise); a managed run's members are never started, added or resumed by hand (`409 managed_run`), and its record is continued, not resumed, by the resume route.
+People in a crew (docs/plans/decisions.md, HM1): `people`, at most 12, each
+`{name, responsibilities?, note?}`, are the persons who own the crew's
+decisions and its tasks' outcomes: local labels, as Dispatch's people are,
+never started (no session, worktree, branch or launch slot is ever made for
+one; a list of their own, never `members`). A `name` is 1 to 60 characters of
+valid UTF-8 with no control character, Dispatch's rule for a person's name,
+unique among the crew's people and none a member's name; `responsibilities`
+are of `architecture` (the architecture owner), `product` (the product
+owner), `security` (the security reviewer) and `acceptance` (the acceptance
+owner), each at most once per person and held by at most one person of the
+crew; a `note` is at most 500 characters on one line. A task's `owner`, when
+set, is a person of the crew, accountable for its outcome apart from its
+`member`, the agent that does it; a task without one is owned by the crew's
+acceptance owner when it has one. A run carries the crew's `people` as it
+was launched and each task its `owner` and `ownerFrom` (`task`, or
+`acceptance` for the fallback), fixed for the run: a continuation and a
+recovered record read them from the crew as the run chain's launch row
+keeps it, never from the saved crew; a managed run's record carries them, a
+run without tasks keeps them while the server holds it and writes none
+into its record. An older Conductor reads a crew file or a run record with
+`people` or `owner` as unreadable and leaves it out of its lists; a newer
+one reads it again, writes a managed run's record that lacks them again at
+its start, and gives a launch row an older one wrote from a plan revision
+with people its people again from that revision.
 A crew with tasks may have a project manifest, `manifest`
 (`docs/plans/project-manifests.md`): what makes a fresh tree of the project
 usable (a tree is an attempt's worktree or the checkout of its result), how
@@ -2247,8 +2273,9 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
   names), or `brakeman` (a Brakeman turn's, which is never a ticket's
   member); `scopes` are the operations' scopes it reaches (`session`, and
   `task` for an attempt, `ticket` for a ticket's member, `observe` for a
-  Brakeman turn: its request and its brief; the admin's are `admin`,
-  `session`, `task`, `ticket` and `observe`). `bytes` is the size of that
+  Brakeman turn: its request and its brief, and `act` for a Brakeman turn
+  the person granted an operation (What a turn may do); the admin's are
+  `admin`, `session`, `task`, `ticket`, `observe` and `act`). `bytes` is the size of that
   section's reply. `rules` are three lines for every caller: a fact needs
   evidence; nothing an agent writes becomes work by itself; a question
   goes to a person with `ask`.
@@ -2585,7 +2612,14 @@ checks' commands, the inputs after the first, the failed check's last
 output, the paths it changed and its command, the attempt before's error
 past 2,000 characters) into `.conductor/task-more.json` in full, which
 `task.json`'s `more` and `cut` (`the last N context blocks` among them) and
-a "Cut to fit" section of `task.md` name. An attempt after one that
+a "Cut to fit" section of `task.md` name. In a crew with people,
+`task.json`'s `owner` (`{name, responsibilities?}`), `ownerFrom` and
+`people` (each `{name, responsibilities?}`, never a note) and `task.md`'s
+"Who answers for this work", after the instructions (the owner and how they
+came to own it, each responsibility's holder, the rule that the agent asks
+for a person's decision through Conductor and never acts or answers as
+them), name who answers for the work as the run was launched, never cut;
+a crew without people writes neither, its task files as before. An attempt after one that
 failed at a check or a project manifest's verify step (DS2) is handed
 that receipt: `task.json`'s `previous.check`, `{receipt, run, task,
 attempt, phase, id, k, argv, subject, exit, signal?, timedOut, stable,
@@ -3067,7 +3101,8 @@ version 3 for the checkpoint column and the messages table; a version 2
 database is brought to it as it opens.
 
 The run reports `tasks` (each with its `state`, `reason`, `attempts`, latest
-`attempt`, `result` and, in a continuation, `importedFrom`), `paused` and, once every task is terminal, `outcome`
+`attempt`, `result`, in a continuation `importedFrom`, and, in a crew with
+people, its `owner` and `ownerFrom`), `paused` and, once every task is terminal, `outcome`
 (`succeeded` when all succeeded, `cancelled` when one was cancelled and none
 failed, `failed` otherwise): the run is `finished` then, its idle sessions
 kept for a look until a stop; a managed run is not finished by its sessions
@@ -3499,7 +3534,7 @@ crew a person names Brakeman is saved as `brakeman-2`.
 request), `failed` (the launch failed, with the engine's words, or the
 agent exited before it read its request: "is it logged in?", with its
 exit and last line), `over_budget` (at the dequeue the day's turns were
-spent), `cancelled` (a person, or Brakeman turned off, which cancels the
+spent, or the day's minutes left fewer than 2), `cancelled` (a person, or Brakeman turned off, which cancels the
 turn in progress and the queue) and `interrupted` (the server stopped
 while it was starting or running; a restart finds it so). A deadline, a
 cancel and turning Brakeman off write the closing state first and stop
@@ -3511,9 +3546,9 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/brakeman` | `{config, current, queue, turnsToday, warnings?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns a day, mode `invoked`), the request holding the slot or `null`, the queued requests oldest first, the turns charged to today, `warnings` as the configuration's save answers them; on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
+| `GET /api/brakeman` | `{config, current, queue, turnsToday, minutesToday, role?, warnings?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns and 240 minutes a day, mode `invoked` with a window of 120 s, a cooldown of 30 minutes, a question threshold of 15 minutes and no briefing time; a configuration written before the background role reads back with those wake fields and minutes), the request holding the slot or `null`, the queued requests oldest first, the turns and the minutes charged to today, `role` the background role as `GET /api/brakeman/role` answers it without its log and notes, `warnings` as the configuration's save answers them; on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
 | `PUT /api/brakeman/config` | `{rev, config}` → `{config, warnings?}`, its `rev` bumped and `updatedAt` stamped; `config.permissions.act` the operations granted, from the closed list (What a turn may do); `warnings` the words Settings shows beside the agent chosen, for an agent whose read-only mode does not hold (Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules: Codex is taken, with that limit said); `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode); `503 shutting_down` once the server is shutting down (nothing saved, nothing cancelled); at most 64 KiB |
-| `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}`; `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
+| `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}` (a kind of `wake`, or an `opId` beginning `wake-`, is refused `400 invalid_request`: they are the background role's own); `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
 | `GET /api/brakeman/requests?after=&limit=` | `{requests, next}`, newest first, at most 100 a page; `next` the id to ask after, `""` for none |
 | `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |
 | `GET /api/brakeman/requests/{id}/refs` | `{refs: [{ref, seen, now}]}`, each `{url?, state?, rev?, sha256?, at?}`: what the turn read of each ref of the brief (`state` `unobserved` for one it never read) and what it was as the brief was kept; `404 no_brief` before one; at most 4 MiB |
@@ -3530,7 +3565,11 @@ last complete briefing), `explain` (one `run:`, `task:`, `attempt:`,
 note as the discussion), `propose_crew` (one `ticket:`), `handoff` (one
 `task:`, `attempt:` or `session:`), `locate` (the note), `overlaps`
 (none) and `ask` (the note, up to 10 subjects). A note is Markdown of at
-most 16 KiB.
+most 16 KiB. The background role's requests are of kind `wake`, no
+subjects, naming their `batch` (`wb-<n>`), kept under the op id
+`wake-<batch>` (see The background role), a prefix a person's request
+may not take; a wake turn's brief holds a
+`fact/1` as a briefing's does.
 
 **The turn's routes**, its session's own token (`agentTokenOK`), for
 the request its launch marked it with, while that request is `starting`
@@ -3539,7 +3578,7 @@ that is not a turn's:
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}}}`: the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together. The admin's token reads it too; read with the session's own, it marks the request read |
+| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}, batch?, notes?}}`: a wake request's `batch` as the role holds it (`{id, openedAt, wakes: [{source, subject?, count, first, last}], overflow?: {count, first, last}}`) with only the wakes whose subjects the turn's grant admits (the snapshot's and the configuration's scope and visibility together, as now; a subject that cannot be read now left out) and its `overflow` only under a grant that narrows neither the scope nor the runs', sessions' or Dispatch's visibility, the role's `notes` (`[{text, from?, at}]`) for every turn; the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together (`permissions.act` the operations both grant that this build serves, absent for none). The admin's token reads it too; read with the session's own, it marks the request read |
 | `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed. The `opId` is looked up first: the same `opId` and brief answer `200` with the request whatever its state now, another brief `409 brief_exists`; so does a submission that overlapped the one kept (both checked before either was kept). Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` (its path, a list's entry by its index: `items[1].alternatives[1].label`) and why (a field past its bound is refused, never cut; a brief with no item is refused, and a briefing's with no `fact/1`; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0; the why names what is taken beside what was sent: an unknown item kind with every kind, an unknown field with the fields its object takes, a value of another type with its field's type, a ref of no kind with the ref forms); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; all of it against the configuration as the brief is kept, a save meanwhile having it checked again (`409 stale_revision` when the configuration keeps changing); nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
 
 **What a turn reads.** A request whose bearer is a turn's session token
@@ -3690,8 +3729,34 @@ stopped, as long as the shutdown allows, and Brakeman's owner lock goes
 after it; one that has not begun runs nothing (`503 shutting_down`), and
 a launch still under way once the stops begin starts no run (`409
 launch_failed`, "the server is shutting down: the run was not started").
-A server
-that stops between the operation and the copy, or before the operation,
+
+The guide's table lists each operation a grant may name that this build
+serves, under the grant's name with the scope `act` (`launch_approved_plan`
+and `prepare_followup`: its route, the body that route decodes, its body
+bound, `receipt: dispatch` and `revision: ticket`), and the MCP tool `act`
+(`{operation, params?, body?, opId?}`: the operation by its name, its
+route's path parameters, its body without `opId`), which `conductor mcp`
+and `conductor brakeman act OPERATION --key KEY --body-file F [--op-id
+ID] [--json]` (`--json` printing `{"opId", "reply"}`: the act's `opId`,
+given or minted, beside the route's reply, whose receipt carries the
+derived id) send to that operation's own route by the table, on the
+client side, with the turn's token and its session named, the `opId`
+minted when the turn gives none and sent again with the same body, as
+`conductor dispatch launch` sends a launch: at once when the reply is
+lost, after a wait when the launch is answered still being started (503
+`ledger_unavailable` naming it pending), within three sends in all, each
+request waiting its route's own bound (a launch's, `api.LaunchTimeout`
+and a request's beside it), never the session client's; an act left
+unsettled names its `opId` to send again. A turn's guide lists the tool and the operations
+its request's `permissions.act` names, and `conductor mcp` lists the tool
+in a Brakeman turn's session only while that guide lists one (it reads
+the guide, never the request, whose read marks the request read); the
+admin's guide lists them all. A proposal (`proposal/1`) may name a
+granted operation as its `op`, with `expectedRevision` the ticket's
+revision read, and the `opId` of the act it ran in `args.opId`; the
+request's `acts` say which of them Brakeman ran, and the app shows a
+proposal as "Brakeman did this" with its receipt only when an act of the
+request has the `opId` it names, of its operation on its ticket. A server that stops between the operation and the copy, or before the operation,
 leaves the entry `pending`: before Brakeman's routes serve again, the
 desk reads Dispatch's receipt for `(brakeman, op)`, or, the receipt
 pruned, the change its operation recorded, and copies it, or, with
@@ -3736,7 +3801,9 @@ turn's first read of changes began, before it listed the parts (kept
 even when a read listed none): a part begun after that listing, absent
 from its answer and with no watermark, is read from no later than it.
 A brief's footprint counts every class its turn's answers used,
-an answer with no item a ref names (a page of projects) among them.
+an answer with no item a ref names (a page of projects) among them, and
+the classes of the wake batch its request gave it (each wake's by its
+subject's kind; an overflow's runs, sessions and Dispatch).
 
 **A brief**, schema `brakeman.brief/1`, at most 256 KiB as kept: `{schema,
 title, summary, uncertainty?, items}`, `title` at most 200 characters,
@@ -3798,3 +3865,90 @@ notifications, Chime and webhooks only when its `crew.brakeman.quiet` is
 false (every turn a person asked for; a background turn's, Program item
 BK3, will be quiet): the server's webhooks and providers' sinks skip a
 quiet session's entries.
+
+**The background role** (`docs/plans/brakeman.md`, BK3; `internal/crew`,
+`role.go`, its record `brakeman/role.json`, at most 1 MiB). With
+`config.wake.mode` `background` (and Brakeman on), Brakeman is woken by
+events: a task of a person's run failed with proof (the engine's failed
+state), a question open past `wake.questionMinutes` (1 to 1,440; 15), a
+run ended (stopped, finished, or every task terminal) or paused (a
+managed run read as its ledger holds it: never a change whose
+transaction is pending or was refused), a ticket moved to `ready` (by
+the status that change set; Dispatch's changes read from the server's
+start, every row of each commit, at most 20 pages of 500 a pass and
+the rest on the next pass at once), a person's own request (logged once,
+its op id asked again too; one whose write fails is kept and logged on a
+later pass), and the
+briefing times `wake.briefings` (at most 24 `HH:MM`, the server's local
+zone, firing while it runs; one that passed while the server was stopped
+fires once at its start, one that passed while the role was off or
+paused fires nothing, whether or not the role stepped between: a save
+that turns the role off or on drops the briefing times' mark before the
+configuration is written, and is refused `500 store_failed`, nothing
+saved, when the mark cannot be written). None fires for a Brakeman turn's run or session,
+or for what a request made (a change under the actor `brakeman` or an op
+id a request derived; a run an act launched, known by its launch's maker
+in Dispatch, and its members' questions); while the role is off nothing
+fires, what happened meanwhile wakes nothing once it is on, and a wake
+request still queued (behind a person's turn) as it is set to run only
+when asked is cancelled (a wake turn running runs to its end). Nor
+does a source fire for a subject outside the configuration's scope or
+visibility. A wake whose write fails, and what the sources noted while
+the configuration cannot be read, are kept and taken on a later pass
+(Dispatch's feed read on from the change not yet taken); a configuration
+that cannot be read changes nothing of the role. The
+role is `idle`, then
+`gathering` once a wake opens a batch (`wb-<n>`, its id written as it
+opens), and once the window ends (`wake.windowSeconds`, 10 to 900; 120)
+the batch is frozen as the one firing (`firing`), written before its
+request is made, so a wake from then on joins the next batch and none
+joins a batch whose turn may have read it; it makes one request of kind
+`wake` naming the batch, under the op id `wake-<batch>` (a crash or a
+failed write between the request and the role's write finds the request
+made, so a batch fires once; a request found under that op id that is
+not the batch's own, kept by a person before the prefix was the role's,
+is passed over for `wake-<batch>.<k>`, k from 2 to 8), and is
+`briefing`; a turn refused before its request was made leaves the batch
+open under its own id, the wakes since folded in, fired once a turn can
+start; when the
+request closes it is `cooling` for `wake.cooldownMinutes` (0 to 1,440;
+30), then `idle`. Wakes while briefing, cooling or unavailable join the
+next batch. A batch holds at most 200 wakes, the same source and subject
+coalesced with a count, past them an `overflow` count with the first and
+last times; a wake whose source, subject and key the log holds already
+(a task's attempts, a question's time) is one fired before, after a
+restart too. `paused` (a person) gathers nothing (a wake is logged
+`held: "paused"`), a turn running then runs to its end, and a wake
+request still queued (behind a person's turn) waits in the queue,
+starting once the role is resumed; the briefing times passed while
+paused fire nothing, whether or not the role stepped between;
+`unavailable` (a turn could not start: its launch refused, its agent
+exited before it read its request, or the day's turns or minutes spent)
+says why, keeps its batch (a turn that started none gives its wakes to
+the next batch, under a new id), and tries again on a person's request, the
+next briefing time, or, for a budget spent, the next local day. The
+day's minutes, `budget.minutesPerDay` (10 to 1,440; 240), count every
+turn, whatever started it: a turn's reservation at its start is the
+least of `turnMinutes` and what the day has left, its deadline its start
+plus the reservation, and fewer than 2 minutes left close the request
+`over_budget`. A wake turn is a turn as any other; its session's mark is
+`brakeman: {request, quiet: true}`, so its questions are listed in
+Needs you and reach no webhook, browser notification or Chime, and its
+deadline ends it unanswered. The role keeps no process and polls no
+model between turns; each change is written before what it starts, and
+a restart reads it back (a batch gathering fires once; a turn briefing
+follows its request, interrupted by the restart, to cooling); a server
+waiting for the owner lock answers the role as the records hold it at
+each read, and takes up the record the last owner left once the lock is
+its own. The log
+keeps the newest 1,000 wakes; the notes (a brief's facts or
+interpretations a person kept, given to every turn) at most 64 KiB, 4
+KiB each. A change of the role sends the `brakeman` event `{id: "role",
+state}`.
+
+| Route | Body and answer |
+|---|---|
+| `GET /api/brakeman/role?limit=` | `{role: {schema, identity, state, why?, retryAt?, last, open?, fired?, firing?, request?, coolUntil?, briefed?, notes?, updatedAt, minutesToday}, log: [{source, subject?, key?, at, batch?, request?, held?}]}`: the role, and its log newest first, `limit` rows (1 to 1,000; 200) |
+| `POST /api/brakeman/role` | `{action}`, `pause` or `resume` → `{role}`; `400 invalid_request` for another action |
+| `POST /api/brakeman/role/notes` | `{request, item}` → `{role}`: the text of a kept brief's `fact/1` or `interpretation/1` kept as a note, `from` its `brief:` ref; `400 not_a_note` for another kind; `404` for no such request or item; `413 bound` past the notes' 64 KiB |
+| `DELETE /api/brakeman/role/notes` | → `{role}`, the notes cleared |

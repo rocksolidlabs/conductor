@@ -389,7 +389,7 @@ func TestBrakemanOutsideASessionIsLoud(t *testing.T) {
 	if err := os.WriteFile(file, []byte(`{}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmds := [][]string{{"request"}, {"observe", "changes"}, {"brief", "--file", file}}
+	cmds := [][]string{{"request"}, {"observe", "changes"}, {"brief", "--file", file}, {"act", "launch_approved_plan", "--key", "CND-1"}}
 	for _, args := range cmds {
 		if code, _, _, err := brakemanCmd(t, "", args...); code != 1 || err == nil || !strings.Contains(err.Error(), "not in a Conductor session") {
 			t.Errorf("%q outside a session: %d %v", args, code, err)
@@ -403,12 +403,151 @@ func TestBrakemanOutsideASessionIsLoud(t *testing.T) {
 		}
 	}
 	t.Setenv(envBrakeman, "br-1")
-	for _, args := range [][]string{{"brief"}, {"observe"}, {"observe", "--run", "r1"}, {"observe", "run", "--run"}, {"observe", "run", "run"}, {"observe", "run", "--run", "a", "--run", "b"}, {"request", "extra"}} {
+	for _, args := range [][]string{{"brief"}, {"observe"}, {"observe", "--run", "r1"}, {"observe", "run", "--run"}, {"observe", "run", "run"}, {"observe", "run", "--run", "a", "--run", "b"}, {"request", "extra"},
+		{"act"}, {"act", "--key", "CND-1"}, {"act", "launch_approved_plan", "key"}, {"act", "launch_approved_plan", "--key"}, {"act", "launch_approved_plan", "--key", "a", "--key", "b"}, {"act", "launch_approved_plan", "--body-file", file + ".none"}} {
 		if code, _, _, _ := brakemanCmd(t, "", args...); code != 2 {
 			t.Errorf("%q: exit %d, want 2", args, code)
 		}
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("%d requests sent", hits.Load())
+	}
+}
+
+// conductor brakeman role (docs/plans/brakeman.md, PR-15), with the
+// workbench token: on sets the background mode at the revision read and
+// says that Brakeman off wakes nothing; status says the role's state;
+// pause and resume are the role's own route's; off sets the mode back;
+// an action of none is a usage error before anything is sent.
+func TestBrakemanRoleWithTheWorkbenchToken(t *testing.T) {
+	a := newBrakemanAPI(t)
+	admin := []string{"--server", a.hs.URL, "--token", dispatchToken}
+	before := a.count()
+	if code, _, _, err := brakemanCmd(t, "", append([]string{"role", "sleep"}, admin...)...); code != 2 || err == nil {
+		t.Fatalf("an unknown action: %d %v", code, err)
+	}
+	if a.count() != before {
+		t.Fatal("a usage error sent a request")
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "on"}, admin...)...); code != 0 || err != nil || !strings.Contains(out, "Brakeman is off: nothing wakes it") {
+		t.Fatalf("on while off: %d %v %q", code, err, out)
+	}
+	a.enableBrakeman(t)
+	cfg := a.admin(t, "GET", "/api/brakeman", nil, http.StatusOK)["config"].(map[string]any)
+	if cfg["wake"].(map[string]any)["mode"] != "background" {
+		t.Fatalf("%v", cfg["wake"])
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "on"}, admin...)...); code != 0 || err != nil || out != "the background role is on: a window of 120 s, a cooldown of 30 min, 40 turns and 240 minutes a day\n" {
+		t.Fatalf("on: %d %v %q", code, err, out)
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "status"}, admin...)...); code != 0 || err != nil || !hasAll(out, "role: idle", "today: 0 minutes") {
+		t.Fatalf("status: %d %v\n%s", code, err, out)
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "pause"}, admin...)...); code != 0 || err != nil || out != "the background role is paused\n" {
+		t.Fatalf("pause: %d %v %q", code, err, out)
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "status", "--json"}, admin...)...); code != 0 || err != nil || !strings.Contains(out, `"state":"paused"`) {
+		t.Fatalf("status --json: %d %v %q", code, err, out)
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "status"}, admin...)...); code != 0 || err != nil || !strings.Contains(out, "role: paused: paused by a person") {
+		t.Fatalf("status paused: %d %v\n%s", code, err, out)
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "resume"}, admin...)...); code != 0 || err != nil || out != "the background role is idle\n" {
+		t.Fatalf("resume: %d %v %q", code, err, out)
+	}
+	if code, out, _, err := brakemanCmd(t, "", append([]string{"role", "off"}, admin...)...); code != 0 || err != nil || !strings.Contains(out, "runs only when asked") {
+		t.Fatalf("off: %d %v %q", code, err, out)
+	}
+	// --json prints each action's reply as its route gave it.
+	for _, step := range []struct{ action, want string }{
+		{"on", `"mode":"background"`}, {"pause", `"state":"paused"`}, {"resume", `"state":"idle"`}, {"off", `"mode":"invoked"`},
+	} {
+		code, out, _, err := brakemanCmd(t, "", append([]string{"role", step.action, "--json"}, admin...)...)
+		var reply map[string]any
+		if code != 0 || err != nil || json.Unmarshal([]byte(out), &reply) != nil || !strings.Contains(out, step.want) {
+			t.Fatalf("%s --json: %d %v %q", step.action, code, err, out)
+		}
+	}
+	cfg = a.admin(t, "GET", "/api/brakeman", nil, http.StatusOK)["config"].(map[string]any)
+	if cfg["wake"].(map[string]any)["mode"] != "invoked" {
+		t.Fatalf("%v", cfg["wake"])
+	}
+}
+
+// conductor brakeman act in a granted turn's session: the operation sent
+// to its own route by the table with the session's token and its name,
+// the body read from a file with the opId given; the words name the
+// receipt and the run, --json prints the act's op id (minted here) beside
+// the route's reply; a reply lost is
+// sent once more with the same opId; a body that is no JSON object is a
+// usage error before anything is sent.
+func TestBrakemanActFromTheCommandLine(t *testing.T) {
+	clearConductorEnv(t)
+	g := newGrantServer(t, []string{brakeman.ActLaunchApprovedPlan}, true)
+	t.Setenv("CONDUCTOR_NOTIFY_URL", g.URL+"/api/sessions/s1/attention")
+	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "agent-tok")
+	t.Setenv(envBrakeman, "br-1")
+	dir := t.TempDir()
+	body := filepath.Join(dir, "launch.json")
+	if err := os.WriteFile(body, []byte(`{"plan":"0123456789abcdef","expectedRev":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, _, err := brakemanCmd(t, "", "act", "launch_approved_plan", "--key", "CND-7", "--body-file", body, "--op-id", "mine-7")
+	if code != 0 || err != nil || !strings.HasPrefix(out, "launch_approved_plan ran (opId mine-7): receipt 0123456789abcdef, done; run r-1 launched") {
+		t.Fatalf("act: %d %v %q", code, err, out)
+	}
+	code, out, _, err = brakemanCmd(t, `{"plan":"0123456789abcdef"}`, "act", "launch_approved_plan", "--key=CND-7", "--body-file", "-", "--json")
+	var printed struct {
+		OpID  string `json:"opId"`
+		Reply struct {
+			Receipt struct{ ID string }
+			Launch  struct {
+				RunID string `json:"runId"`
+			}
+		} `json:"reply"`
+	}
+	if code != 0 || err != nil || json.Unmarshal([]byte(out), &printed) != nil || printed.Reply.Launch.RunID != "r-1" || printed.Reply.Receipt.ID == "" {
+		t.Fatalf("act --json: %d %v %q", code, err, out)
+	}
+	sent := g.sent()
+	// The first post lost, the second the same act; then the --json one.
+	if len(sent) != 3 || sent[0].path != "/api/dispatch/tickets/CND-7/launch" || sent[0].body["opId"] != "mine-7" || sent[1].body["opId"] != "mine-7" ||
+		sent[1].body["expectedRev"] != float64(2) || sent[0].session != "s1" || sent[0].auth != "Bearer agent-tok" || len(sent[2].body["opId"].(string)) != 16 {
+		t.Fatalf("the posts: %+v", sent)
+	}
+	// The op id minted for the --json act is printed, the one the act was
+	// sent with and a proposal of it names, not its receipt's.
+	if printed.OpID != sent[2].body["opId"] || printed.OpID == printed.Reply.Receipt.ID {
+		t.Fatalf("act --json printed opId %q, sent %v, receipt %q", printed.OpID, sent[2].body["opId"], printed.Reply.Receipt.ID)
+	}
+	if err := os.WriteFile(body, []byte(`[1]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _, err := brakemanCmd(t, "", "act", "launch_approved_plan", "--key", "CND-7", "--body-file", body); code != 2 || err == nil {
+		t.Fatalf("a body that is no object: %d %v", code, err)
+	}
+	if n := len(g.sent()); n != 3 {
+		t.Fatalf("%d posts after a usage error", n)
+	}
+}
+
+// An act's words name a launch's run from Dispatch's launch, since the
+// server's answer to an act never carries the run: launched once the
+// launch is started, its state otherwise; a reply with a run (an
+// admin's launch) says the same.
+func TestActWordsNameTheRunFromTheLaunch(t *testing.T) {
+	for _, c := range []struct{ reply, want string }{
+		{`{"receipt":{"id":"0123456789abcdef","status":"done"},"launch":{"id":"0123456789abcdef","runId":"r-1","state":"started"}}`,
+			"launch_approved_plan ran (opId a1): receipt 0123456789abcdef, done; run r-1 launched"},
+		{`{"receipt":{"id":"0123456789abcdef","status":"done"},"launch":{"id":"0123456789abcdef","runId":"r-1","state":"failed"}}`,
+			"launch_approved_plan ran (opId a1): receipt 0123456789abcdef, done; run r-1, its launch failed"},
+		{`{"receipt":{"id":"0123456789abcdef","status":"done"},"launch":{"id":"0123456789abcdef","runId":"r-1"},"run":{"id":"r-1"}}`,
+			"launch_approved_plan ran (opId a1): receipt 0123456789abcdef, done; run r-1 launched"},
+		{`{"receipt":{"id":"0123456789abcdef","status":"done"}}`,
+			"launch_approved_plan ran (opId a1): receipt 0123456789abcdef, done"},
+	} {
+		if got := actWords("launch_approved_plan", "a1", json.RawMessage(c.reply)); got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.reply, got, c.want)
+		}
 	}
 }
