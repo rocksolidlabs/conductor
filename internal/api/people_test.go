@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -522,6 +523,113 @@ func TestNoContinuationWhileTheLedgerIsTakenOver(t *testing.T) {
 	wantRunPeople(t, "the continuation", next)
 	if row, _, _ := l.srv.ledger.Run(ctx, next["id"].(string)); !crew.LaunchHasPeople(row.Crew) {
 		t.Fatalf("the continuation's row: %s", row.Crew)
+	}
+}
+
+// A resume from a record that read the record before a late takeover
+// rewrote it (held at afterRecordRead, after its read and before its
+// admission) marks the record as it is on disk once the continuation is
+// made, never the snapshot it read: the people and owners syncRecords
+// restored stay, and the mark is there. Two takeovers: the launch row
+// whole and the record an older build's at its revision (syncRecords
+// writes it again at that same revision, which an outdated mark would
+// overwrite), and the launch row an older build's too (its restore moves
+// the revision, which an outdated mark's save would be dropped behind,
+// the mark with it).
+func TestAResumeHeldOverATakeoverKeepsTheRestoredRecord(t *testing.T) {
+	for _, whole := range []bool{true, false} {
+		t.Run(fmt.Sprintf("launch row whole %v", whole), func(t *testing.T) {
+			var other *ledger.Ledger
+			l := newLaunchTest(t, lateLedger(t, &other), peopledLaunch)
+			ctx := t.Context()
+			pkg := string(l.pendingLaunch(t, dispatch.Op{Actor: dispatch.ActorAdmin, ID: opID()}).Package)
+			launched := l.crew
+			launched.Cwd = l.repo
+			var crewJSON string
+			if whole {
+				b, err := json.Marshal(launched)
+				if err != nil {
+					t.Fatal(err)
+				}
+				crewJSON = string(b)
+			} else {
+				crewJSON = olderCrew(launched)
+			}
+			runID := l.crew.ID + "-0000000a"
+			if _, err := other.Transition(ctx, runID, func(tx *ledger.Tx) error {
+				return tx.CreateRun(ledger.RunRow{ID: runID, CrewID: l.crew.ID, Crew: crewJSON, Base: l.head, State: ledger.RunStopped, Ticket: l.ticketID, Package: pkg, CreatedAt: tx.Now(), ClosedAt: tx.Now()})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			from, _, err := crew.SQLLedger(other).Load(ctx, runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := l.srv.records.Save(olderRecord(crew.Recovered(crew.Run{}, from))); err != nil {
+				t.Fatal(err)
+			}
+			reached, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			l.srv.launches.setSeams(func(g *launchGate) {
+				g.afterRecordRead = func(id string) {
+					if id != runID {
+						return
+					}
+					once.Do(func() { close(reached) })
+					<-release
+				}
+			})
+			t.Cleanup(func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			})
+			type answer struct {
+				status int
+				body   map[string]any
+				err    error
+			}
+			answered := make(chan answer, 1)
+			go func() {
+				req, _ := http.NewRequest("POST", l.http.URL+"/api/runs/"+runID+"/resume", nil)
+				req.Header.Set("Authorization", "Bearer "+adminToken)
+				resp, err := l.client.Do(req)
+				if err != nil {
+					answered <- answer{err: err}
+					return
+				}
+				defer resp.Body.Close()
+				var out map[string]any
+				err = json.NewDecoder(resp.Body).Decode(&out)
+				answered <- answer{status: resp.StatusCode, body: out, err: err}
+			}()
+			<-reached
+			// The resume holds the record an older build wrote; the takeover
+			// rewrites it with the people and owners meanwhile.
+			if err := other.Close(); err != nil {
+				t.Fatal(err)
+			}
+			waitUntil(t, "the ledger taken over", l.srv.launches.ready.Load)
+			wantRunPeople(t, "the record the takeover restored", runOf(t, l.testEnv, runID))
+			close(release)
+			a := <-answered
+			if a.err != nil || a.status != http.StatusCreated {
+				t.Fatalf("the resume: %d %v %v", a.status, a.body, a.err)
+			}
+			cont := a.body["run"].(map[string]any)["id"].(string)
+			t.Cleanup(func() { stopEveryRun(l.srv) })
+			rec, ok, err := l.srv.records.Get(runID)
+			if err != nil || !ok || rec.ResumedBy != cont {
+				t.Fatalf("the record's mark: %q, want %q (%v %v)", rec.ResumedBy, cont, ok, err)
+			}
+			src := runOf(t, l.testEnv, runID)
+			wantRunPeople(t, "the source after its mark", src)
+			if src["resumedBy"] != cont {
+				t.Fatalf("the source's resumedBy: %v", src["resumedBy"])
+			}
+		})
 	}
 }
 

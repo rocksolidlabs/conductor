@@ -352,6 +352,41 @@ func TestARecordsOpenClearsAMarkNamingNoRecord(t *testing.T) {
 	}
 }
 
+// Mark names the continuation on the record as it is on disk: what was
+// written after the caller's read (people, owners, a newer revision) is
+// kept; a run with no record gets none, and a bad id is refused.
+func TestMarkKeepsTheRecordOnDisk(t *testing.T) {
+	rs, _ := newRecords(t)
+	at := time.Now().UTC()
+	read := Run{ID: "crew-0000eeee", CrewID: "crew", Name: "Crew", State: RunStopped, StartedAt: at.Add(-time.Hour), StoppedAt: &at,
+		Managed: &Managed{Revision: 3}, Tasks: []TaskState{{ID: "build"}}}
+	if err := rs.Save(read); err != nil {
+		t.Fatal(err)
+	}
+	written := read
+	written.People = []Person{{Name: "nate", Responsibilities: []string{RespArchitecture}}}
+	written.Tasks = []TaskState{{ID: "build", Owner: "nate", OwnerFrom: OwnerFromTask}}
+	if err := rs.Save(written); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := rs.Mark(read.ID, "crew-0000ffff"); err != nil || !ok {
+		t.Fatalf("Mark: %v %v", ok, err)
+	}
+	got, ok, err := rs.Get(read.ID)
+	if err != nil || !ok || got.ResumedBy != "crew-0000ffff" || !reflect.DeepEqual(got.People, written.People) || got.Tasks[0].Owner != "nate" || got.Managed.Revision != 3 {
+		t.Fatalf("the record after Mark: %+v %v %v", got, ok, err)
+	}
+	if ok, err := rs.Mark("crew-00001234", "crew-0000ffff"); err != nil || ok {
+		t.Fatalf("Mark of no record: %v %v", ok, err)
+	}
+	if _, ok, _ := rs.Get("crew-00001234"); ok {
+		t.Fatal("Mark wrote a record of a run that had none")
+	}
+	if _, err := rs.Mark("../x", "crew-0000ffff"); err == nil {
+		t.Fatal("Mark took a bad run id")
+	}
+}
+
 // A record the engine still holds is never pruned, nor counted among the
 // 500: a run's record follows it from its launch on, so a long run's would
 // otherwise be the oldest and go, written again at the run's next change,

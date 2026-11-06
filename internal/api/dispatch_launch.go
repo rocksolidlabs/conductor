@@ -78,6 +78,10 @@ type launchGate struct {
 	beforeStore     func(key string)
 	beforeReconcile func()
 	attempt         func(crew.LaunchSpec)
+	// afterRecordRead runs with a run's id once resumeRecord has read its
+	// record, before the continuation's admission; a test holds it. Under
+	// mu.
+	afterRecordRead func(runID string)
 	// afterStops runs once the shutdown has stopped the runs it lists and
 	// drained them, before the sessions close; a test holds it. Under mu.
 	afterStops func()
