@@ -383,15 +383,17 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		info.Crew = &ref
 	}
 	launched := session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed}
-	// Its record exists before the session can keep an entry.
+	// Its record exists before the session can keep an entry, and the
+	// session's hooks feed it (recordHooks).
+	var rc *recorder
 	if s.recording() {
 		version := ""
 		if id, ok := s.cachedIdentity(agent); ok && id.Identified {
 			version = id.Version
 		}
-		s.beginServerRecord(info, launched, agent.Adapter, agent.Name, version, where, rev, repo)
+		rc = s.beginServerRecord(info, launched, agent.Adapter, agent.Name, version, where, rev, repo)
 	}
-	local := session.NewLocal(info, session.RuntimeProcess(term), session.Options{
+	opts := session.Options{
 		ScrollbackBytes: s.cfg.ScrollbackBytes,
 		MaxViewers:      s.cfg.MaxViewersPerSession,
 		FileView:        string(s.cfg.FileView),
@@ -416,16 +418,16 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		// its adapter and the environment the process was given: the
 		// directory the agent itself writes to.
 		Plans: agents.PlansDir(agent.Adapter, pty.Lookup(procEnv), cwd),
-	})
+	}
+	recordHooks(rc, &opts)
+	local := session.NewLocal(info, session.RuntimeProcess(term), opts)
+	rc.made(local)
 	local.SetAgentToken(agentToken)
 	if req.spawned != nil {
 		req.spawned(local)
 	}
 	if err := s.registry.AddReserved(local, req.reservation); err != nil {
-		if s.sessionRecords != nil {
-			s.sessionRecords.Abandon(id)
-			s.recordRepos.Delete(id)
-		}
+		rc.abandon()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = local.Stop(ctx)
@@ -490,7 +492,6 @@ func (s *Server) localChange(info session.Info) {
 	// The browsers get the session as it is when the hub sends it, not the
 	// snapshot handed here, which a later change may already have overtaken.
 	s.events.publishLatest(info.ID, s.listedInfo)
-	s.recordChanged(info.ID)
 	s.runs.OnChange(info)
 	if s.brakeman != nil {
 		s.brakeman.sessionChanged(info)

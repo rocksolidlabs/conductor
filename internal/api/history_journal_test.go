@@ -74,17 +74,54 @@ func entryKinds(r journal.Record) []string {
 	return out
 }
 
-// recordedFakeSession is newFakeSession with its record begun as
-// createLocalSession begins a server session's, and its chat wired to the
-// server's, so a test drives a real session's questions over a process in
-// memory.
-func recordedFakeSession(t *testing.T, e *testEnv, o session.Options) *fakeSession {
+// recordedLocal is a server session over proc in e's registry with its
+// record begun as createLocalSession begins one, its hooks (o's, else the
+// server's) feeding it after them (recordHooks): a hook o holds holds the
+// record's part too.
+func recordedLocal(t *testing.T, e *testEnv, proc session.Process, o session.Options) *session.Local {
 	t.Helper()
 	id := session.NewID()
-	info := session.Info{ID: id, Name: id, Kind: session.KindServer, AgentID: "cat", Cwd: e.root, CreatedAt: time.Now().UTC()}
-	e.srv.beginServerRecord(info, session.Launched{AgentID: "cat", Cwd: e.root}, "", "cat", "", ext.WhereNative, gitcli.Revision{}, nil)
-	o.OnChat = e.srv.localChat
-	return newFakeSession(t, e, id, o)
+	info := session.Info{ID: id, Name: id, Kind: session.KindServer, AgentID: "cat", Cwd: e.root, Cols: 80, Rows: 24, Status: session.StatusRunning, CreatedAt: time.Now().UTC()}
+	rc := e.srv.beginServerRecord(info, session.Launched{AgentID: "cat", Cwd: e.root}, "", "cat", "", ext.WhereNative, gitcli.Revision{}, nil)
+	if rc == nil {
+		t.Fatal("no record begun")
+	}
+	if o.ScrollbackBytes == 0 {
+		o.ScrollbackBytes = 4096
+	}
+	if o.Log == nil {
+		o.Log = slog.New(slog.DiscardHandler)
+	}
+	if o.OnChange == nil {
+		o.OnChange = e.srv.localChange
+	}
+	if o.OnActivity == nil {
+		o.OnActivity = e.srv.localActivity
+	}
+	if o.OnChat == nil {
+		o.OnChat = e.srv.localChat
+	}
+	recordHooks(rc, &o)
+	l := session.NewLocal(info, proc, o)
+	rc.made(l)
+	if err := e.srv.registry.Add(l); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.router.mark(id)
+	return l
+}
+
+// recordedFakeSession is a fake session (newFakeSession) recorded as
+// createLocalSession records a server session (recordedLocal), so a test
+// drives a real session's questions over a process in memory.
+func recordedFakeSession(t *testing.T, e *testEnv, o session.Options) *fakeSession {
+	t.Helper()
+	proc := sessiontest.NewFakeProc()
+	t.Cleanup(func() { proc.End(0) })
+	o.InputWait = testWait
+	fs := &fakeSession{proc: proc}
+	fs.l = recordedLocal(t, e, proc, o)
+	return fs
 }
 
 // Every server session gets a record from its start, on disk before its
@@ -864,29 +901,42 @@ func (stubbornProc) Stop(context.Context, time.Duration) error {
 	return errors.New("the process did not stop")
 }
 
-// stubbornSession is a recorded server session over a stubbornProc.
-func stubbornSession(t *testing.T, e *testEnv) (*session.Local, stubbornProc) {
+// stubbornSession is a recorded server session over a stubbornProc, its
+// hooks o's (recordedLocal).
+func stubbornSession(t *testing.T, e *testEnv, o session.Options) (*session.Local, stubbornProc) {
 	t.Helper()
-	id := session.NewID()
-	info := session.Info{ID: id, Name: id, Kind: session.KindServer, AgentID: "cat", Cwd: e.root, Cols: 80, Rows: 24, Status: session.StatusRunning, CreatedAt: time.Now().UTC()}
-	e.srv.beginServerRecord(info, session.Launched{AgentID: "cat", Cwd: e.root}, "", "cat", "", ext.WhereNative, gitcli.Revision{}, nil)
 	proc := stubbornProc{sessiontest.NewFakeProc()}
 	t.Cleanup(func() { proc.End(0) })
-	l := session.NewLocal(info, proc, session.Options{ScrollbackBytes: 4096, Log: slog.New(slog.DiscardHandler), OnChange: e.srv.localChange, OnActivity: e.srv.localActivity})
-	if err := e.srv.registry.Add(l); err != nil {
-		t.Fatal(err)
-	}
-	return l, proc
+	return recordedLocal(t, e, proc, o), proc
+}
+
+// holdEnding is an OnActivity that holds a server session's status entry
+// that is its end on its way to the record (the record's part comes after
+// the session's own hooks, recordHooks) until release is closed; reached is
+// closed once it holds it.
+func holdEnding(e *testEnv) (hook func(string, session.ActivityEntry, session.AttentionState), reached <-chan struct{}, release func()) {
+	in, gate := make(chan struct{}), make(chan struct{})
+	var once, held sync.Once
+	return func(id string, en session.ActivityEntry, st session.AttentionState) {
+		e.srv.localActivity(id, en, st)
+		if en.Type == session.ActivityStatus && isEnding(en.Message) {
+			held.Do(func() { close(in) })
+			<-gate
+		}
+	}, in, func() { once.Do(func() { close(gate) }) }
 }
 
 // A stop that failed is no end: the session reads stopped (Local.Stop
 // marks it whatever the process did) while its process runs, and its
-// record stays open; once the process is gone the record ends. At a
-// shutdown with the process still running the record is left open, and
-// the next start marks it lost, never ended.
+// record stays open; once the process is gone the record ends. Its status
+// entry held on its way to the record while the session is removed from
+// the listing (a second DELETE: marked lost) changes nothing once let go:
+// the session's own process says the end was not observed. At a shutdown
+// with the process still running the record is left open, and the next
+// start marks it lost, never ended.
 func TestAFailedStopIsNoEnd(t *testing.T) {
 	e := newTestEnv(t, nil)
-	l, proc := stubbornSession(t, e)
+	l, proc := stubbornSession(t, e, session.Options{})
 	id := l.Info().ID
 	if err := l.Stop(t.Context()); err == nil {
 		t.Fatal("the stop did not fail")
@@ -899,7 +949,37 @@ func TestAFailedStopIsNoEnd(t *testing.T) {
 		t.Fatalf("the end once the process was gone: %+v", r)
 	}
 
-	still, _ := stubbornSession(t, e)
+	hook, reached, release := holdEnding(e)
+	t.Cleanup(release)
+	removed, removedProc := stubbornSession(t, e, session.Options{OnActivity: hook})
+	rid := removed.Info().ID
+	stopped := make(chan error, 1)
+	go func() { stopped <- removed.Stop(context.Background()) }()
+	<-reached // stopped, its process running, its status entry held
+	if resp, _ := e.do("DELETE", "/api/sessions/"+rid, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("removing the stopped session: %d", resp.StatusCode)
+	}
+	release()
+	if err := <-stopped; err == nil {
+		t.Fatal("the stop did not fail")
+	}
+	until(t, "the session's end told", func() bool {
+		select {
+		case <-removed.EndTold():
+			return true
+		default:
+			return false
+		}
+	})
+	if r, _ := recordFile(t, e, rid); !r.EndedAt.IsZero() || r.LostAt.IsZero() || r.Ending != journal.EndingLost {
+		t.Fatalf("a removed session whose process runs, its status entry let go: %+v", r)
+	}
+	removedProc.End(0)
+	if r := endedRecord(t, e, rid); !strings.HasPrefix(r.Ending, "stopped") || !r.LostAt.IsZero() {
+		t.Fatalf("the end once the removed session's process was gone: %+v", r)
+	}
+
+	still, _ := stubbornSession(t, e, session.Options{})
 	sid := still.Info().ID
 	if err := still.Stop(t.Context()); err == nil {
 		t.Fatal("the stop did not fail")
@@ -911,43 +991,179 @@ func TestAFailedStopIsNoEnd(t *testing.T) {
 	}
 }
 
-// A session's last activity and change are told after its Ended closes,
-// so a shutdown can reach the journal before them: held here at the
-// journal's hook until the shutdown is over, the session's end is in its
-// record all the same, once, taken from the session; the next start
-// finds it ended, not lost.
+// A session's last activity and change, and the agent's question it
+// withdrew as it ended, are told after its Ended closes, so a shutdown can
+// reach the journal before them: the shutdown waits, before the journal
+// closes, for the session's end to be told (its status entry held here on
+// its way to the record until the shutdown waits for it), and the record
+// holds the end, once, and the question's withdrawal; the next start finds
+// it ended, not lost.
 func TestAShutdownKeepsAnEndWhoseHooksAreLate(t *testing.T) {
 	e := newTestEnv(t, nil)
-	reached, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	defer once.Do(func() { close(release) })
-	hook := e.srv.events.onActivity
-	e.srv.events.onActivity = func(sid string, en session.ActivityEntry, st session.AttentionState) {
-		if en.Type == session.ActivityStatus && isEnding(en.Message) {
-			close(reached)
-			<-release
-			defer close(returned)
-		}
-		hook(sid, en, st)
-	}
-	fs := recordedFakeSession(t, e, session.Options{})
+	hook, reached, release := holdEnding(e)
+	t.Cleanup(release)
+	fs := recordedFakeSession(t, e, session.Options{OnActivity: hook})
 	id := fs.l.Info().ID
+	q := fs.askOwn(t, "Which port?", nil)
+	if q == "" {
+		t.Fatal("no question asked")
+	}
 	fs.proc.End(0)
-	<-reached // the process gone, its status entry held on its way to the journal
+	<-reached // the process gone, its status entry held, the withdrawal queued behind it
+	waiting := make(chan struct{})
+	var once sync.Once
+	beforeRecordsWait = func(sid string) {
+		if sid == id {
+			once.Do(func() { close(waiting) })
+		}
+	}
+	t.Cleanup(func() { beforeRecordsWait = nil })
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	e.srv.Shutdown(ctx)
-	r, before := readRecordFile(t, e.srv.cfg.DataDir, id)
+	done := make(chan struct{})
+	go func() {
+		e.srv.Shutdown(ctx)
+		close(done)
+	}()
+	select {
+	case <-waiting: // the shutdown waits for what the session tells as it ends
+		release()
+	case <-done:
+	}
+	<-done
+	r, _ := readRecordFile(t, e.srv.cfg.DataDir, id)
 	if r.EndedAt.IsZero() || r.Ending != "exited (exit 0)" || !r.LostAt.IsZero() {
 		t.Fatalf("the record after the shutdown: %+v", r)
 	}
-	once.Do(func() { close(release) })
-	<-returned // told the journal, closed by then
-	if _, after := readRecordFile(t, e.srv.cfg.DataDir, id); !bytes.Equal(before, after) {
-		t.Fatal("the record changed after the journal closed")
+	withdrawn := slices.ContainsFunc(r.Entries, func(en journal.Entry) bool {
+		return en.Kind == journal.KindAnswer && en.Ref == q && en.Outcome == journal.OutcomeWithdrawn
+	})
+	if !withdrawn || !slices.Contains(entryKinds(r), journal.KindQuestion) {
+		t.Fatalf("the question and its withdrawal after the shutdown: %+v", r.Entries)
 	}
 	e2 := e.restart()
 	if r, _ := readRecordFile(t, e2.srv.cfg.DataDir, id); r.EndedAt.IsZero() || !r.LostAt.IsZero() || r.Ending != "exited (exit 0)" {
 		t.Fatalf("the record after the next start: %+v", r)
+	}
+}
+
+// A file the agent reported before its session left the registry, held on
+// its way to the record until the session was removed, is kept: its path
+// made absolute under the session's own folder, with no registry to ask.
+func TestAFileReportedBeforeTheSessionLeftIsKept(t *testing.T) {
+	e := newTestEnv(t, nil)
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	fs := recordedFakeSession(t, e, session.Options{OnActivity: func(id string, en session.ActivityEntry, st session.AttentionState) {
+		e.srv.localActivity(id, en, st)
+		if en.Type == session.ActivityFile {
+			close(reached)
+			<-gate
+		}
+	}})
+	id := fs.l.Info().ID
+	told := make(chan struct{})
+	go func() {
+		fs.l.Record(session.ActivityEntry{Type: session.ActivityFile, Op: "edit", Path: "main.go"})
+		close(told)
+	}()
+	<-reached
+	fs.proc.End(0)
+	<-fs.l.EndTold()
+	if resp, _ := e.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("removing the ended session: %d", resp.StatusCode)
+	}
+	release()
+	<-told
+	r, _ := recordFile(t, e, id)
+	if len(r.Files) != 1 || r.Files[0].Path != filepath.Join(e.root, "main.go") || r.EndedAt.IsZero() {
+		t.Fatalf("the file reported before the session left: files %+v ended %v", r.Files, r.EndedAt)
+	}
+}
+
+// What a hosted session reports is its record's, not its id's: an entry
+// held on its way to the record while the session is removed, its record
+// forgotten and its host registers the same session again (a new record of
+// the same id) is dropped once let go, never written into the new record.
+func TestAHostedEntryAfterItsRecordWasForgottenIsDropped(t *testing.T) {
+	e := newTestEnv(t, nil)
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	added := e.srv.hosts.OnAdded
+	first := true
+	e.srv.hosts.OnAdded = func(hs *signal.HostedSession, owner string) signal.SessionHooks {
+		h := added(hs, owner)
+		if first {
+			first = false
+			own := h.Activity
+			h.Activity = func(en session.ActivityEntry) {
+				if en.Message == "the forgotten session's" {
+					close(reached)
+					<-gate
+				}
+				own(en)
+			}
+		}
+		return h
+	}
+	hs, _ := registerHost(t, e, "instance-a", "1")
+	id := hs.Info().ID
+	told := make(chan struct{})
+	go func() {
+		hs.HostActivity(proto.Activity{Type: "progress", Message: "the forgotten session's", At: time.Now().UTC().Format(time.RFC3339Nano)}, "")
+		close(told)
+	}()
+	<-reached
+	exit := 0
+	hs.HostStatus(session.StatusExited, &exit)
+	if resp, _ := e.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("removing the ended session: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("forgetting its record: %d", resp.StatusCode)
+	}
+	e.srv.hosts.Expire(time.Now()) // the hub lets go of the session the registry dropped
+	again, _ := registerHost(t, e, "instance-a", "1")
+	if again == hs || again.Info().ID != id {
+		t.Fatal("not a new session of the same id")
+	}
+	again.HostActivity(proto.Activity{Type: "progress", Message: "the new session's", At: time.Now().UTC().Format(time.RFC3339Nano)}, "")
+	release()
+	<-told
+	r, raw := recordFile(t, e, id)
+	if bytes.Contains(raw, []byte("the forgotten session's")) || !slices.ContainsFunc(r.Entries, func(en journal.Entry) bool { return en.Message == "the new session's" }) {
+		t.Fatalf("the new record:\n%s", raw)
+	}
+}
+
+// With history.sessions off, a host taking back a session whose record an
+// earlier start kept (marked host away) has nothing it reports written:
+// the record is as that start left it.
+func TestRecordingOffKeepsNothingOfAHostTakingItsSessionBack(t *testing.T) {
+	e := newTestEnv(t, nil)
+	hs, _ := registerHost(t, e, "instance-a", "1")
+	id := hs.Info().ID
+	hs.HostActivity(proto.Activity{Type: "progress", Message: "while recorded", At: time.Now().UTC().Format(time.RFC3339Nano)}, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	e.srv.Shutdown(ctx)
+	off := false
+	e.srv.cfg.History.Sessions = &off
+	e2 := e.restart()
+	e2.srv.sessionRecords.Flush()
+	_, before := readRecordFile(t, e2.srv.cfg.DataDir, id)
+	again, _ := registerHost(t, e2, "instance-a", "1")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	again.HostActivity(proto.Activity{Type: "progress", Message: "while not recorded", At: now}, "")
+	again.HostActivity(proto.Activity{Type: "file", Op: "edit", Path: "main.go", At: now}, "")
+	again.HostChat(proto.ChatMessage{ID: "m1", Kind: "message", By: proto.ChatBy{ID: "v", Name: "Ada", Role: "control"}, Text: "said while not recorded"})
+	exit := 0
+	again.HostStatus(session.StatusExited, &exit)
+	if _, after := recordFile(t, e2, id); !bytes.Equal(before, after) {
+		t.Fatalf("the record changed while recording was off:\n%s", after)
 	}
 }
