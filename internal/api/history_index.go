@@ -170,11 +170,10 @@ type historyIndexer struct {
 	pm      *projectMap
 	repos   map[string]repoIdent
 	// repoTries counts a source's passes in a row whose repository read
-	// was not known; repoUnknown are the sources indexed without it, read
-	// again by each reconcile.
-	repoTries   map[string]int
-	repoUnknown map[string]bool
-	runStats    map[string]fileStat // the reconcile's last look at each run record
+	// was not known. The sources indexed without it are found by their
+	// marks (U), which the index keeps, never by a list of this process's.
+	repoTries map[string]int
+	runStats  map[string]fileStat // the reconcile's last look at each run record
 	// endedChecks are the receipt rows (no logs) of attempts that have
 	// ended with every receipt finished: rows that never change, read
 	// once. A row of the ledger's is read past its log's pages, so a
@@ -229,7 +228,6 @@ func newHistoryIndexer(data *store.Store, j *journal.Journal, ld func() indexLed
 		readAt:           map[string]time.Time{},
 		repos:            map[string]repoIdent{},
 		repoTries:        map[string]int{},
-		repoUnknown:      map[string]bool{},
 		runStats:         map[string]fileStat{},
 		endedChecks:      map[attemptID][]ledger.CheckRow{},
 		memberStarts:     map[string]string{},
@@ -847,13 +845,13 @@ func (h *historyIndexer) repoIdent(ctx context.Context, dir string) (repoIdent, 
 // repository: the pass fails and is read again after its backoff, up to
 // repoRetries times in a row; past them the pass writes its entries
 // without the repository and a mark that says so (unknown true: the mark
-// carries U), and every reconcile reads the source again, so the first
-// read that succeeds writes it whole.
+// carries U), and every reconcile reads again each source whose mark in
+// the index carries U, so the first read that succeeds writes it whole:
+// the run and its receipts alike.
 func (h *historyIndexer) repoFor(ctx context.Context, key, dir string) (id repoIdent, unknown bool, err error) {
 	id, err = h.repoIdent(ctx, dir)
 	if err == nil {
 		delete(h.repoTries, key)
-		delete(h.repoUnknown, key)
 		return id, false, nil
 	}
 	if ctx.Err() != nil {
@@ -867,9 +865,6 @@ func (h *historyIndexer) repoFor(ctx context.Context, key, dir string) (id repoI
 		return repoIdent{}, false, err
 	}
 	h.log.Warn("a history source's repository could not be read; indexed without it until it can", "source", key, "err", err)
-	if len(h.repoUnknown) < maxRepoCache {
-		h.repoUnknown[key] = true
-	}
 	return repoIdent{}, true, nil
 }
 
@@ -1242,6 +1237,7 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 		}
 	}
 	p := runPlaceOf(id, h.host, repo, project, rec, rows)
+	p.repoUnknown = unknown
 	var kept []history.Link
 	if rows != nil {
 		var err error
@@ -1447,13 +1443,25 @@ func runPlaceOf(id, host string, repo repoIdent, project string, rec *crew.Run, 
 	return p
 }
 
-// receiptMark is a finished receipt's mark: finished, and the project
-// its run is placed in (J<project>), which a project's change moves.
-func receiptMark(project string) string {
-	if project == "" {
-		return ledger.CheckFinished
+// receiptMark is a finished receipt's mark: finished, the project its
+// run is placed in (J<project>), which a project's change moves, and U
+// when its run's repository was not known, which the repository's
+// recovery clears.
+func receiptMark(p runPlace) string {
+	m := ledger.CheckFinished
+	if p.project != "" {
+		m += "/J" + p.project
 	}
-	return ledger.CheckFinished + "/J" + project
+	if p.repoUnknown {
+		m += "/U"
+	}
+	return m
+}
+
+// repoNotKnown says a mark carries U: its source was indexed without its
+// repository.
+func repoNotKnown(mark string) bool {
+	return slices.Contains(strings.Split(mark, "/"), "U")
 }
 
 // indexReceipts indexes each finished receipt the index does not hold
@@ -1466,7 +1474,7 @@ func (h *historyIndexer) indexReceipts(ctx context.Context, ix *history.Index, l
 	if err != nil {
 		return err
 	}
-	want := receiptMark(p.project)
+	want := receiptMark(p)
 	branch := map[string]string{}
 	for _, a := range rows.attempts {
 		branch[a.TaskID+"/"+strconv.Itoa(a.N)] = a.Branch
@@ -1480,7 +1488,7 @@ func (h *historyIndexer) indexReceipts(ctx context.Context, ix *history.Index, l
 			if old == want {
 				continue
 			}
-			if err := h.placeReceipt(ctx, ix, key, p.project, want); err != nil {
+			if err := h.placeReceipt(ctx, ix, key, p, want); err != nil {
 				return err
 			}
 			continue
@@ -1503,10 +1511,11 @@ func (h *historyIndexer) indexReceipts(ctx context.Context, ix *history.Index, l
 	return nil
 }
 
-// placeReceipt writes a held receipt's entry again under project, as the
-// index holds it (its body the log's ends read once, never again); one
-// whose entry the index's budget let go keeps none.
-func (h *historyIndexer) placeReceipt(ctx context.Context, ix *history.Index, key, project, mark string) error {
+// placeReceipt writes a held receipt's entry again under its run's
+// project and repository (p), as the index holds it (its body the log's
+// ends read once, never again); one whose entry the index's budget let go
+// keeps none.
+func (h *historyIndexer) placeReceipt(ctx context.Context, ix *history.Index, key string, p runPlace, mark string) error {
 	hit, err := ix.Entry(ctx, key)
 	var entries []history.Entry
 	switch {
@@ -1515,7 +1524,8 @@ func (h *historyIndexer) placeReceipt(ctx context.Context, ix *history.Index, ke
 		return err
 	default:
 		e := hit.Entry
-		e.Class, e.Digest, e.Source, e.Project = "", "", "", project
+		e.Class, e.Digest, e.Source = "", "", ""
+		e.Project, e.Repo, e.Tree = p.project, p.repo, p.tree
 		entries = []history.Entry{e}
 	}
 	return ix.Replace(ctx, history.Source{Key: key, Mark: mark, Generation: h.gen}, entries, nil)
@@ -1563,7 +1573,6 @@ func (h *historyIndexer) removeRun(ctx context.Context, ix *history.Index, id st
 		}
 	}
 	delete(h.repoTries, hRunRef(id))
-	delete(h.repoUnknown, hRunRef(id))
 	return ix.Remove(ctx, hRunRef(id))
 }
 
@@ -1786,9 +1795,34 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 			}
 		}
 	}
-	// The sources indexed without their repository, read again.
-	for key := range h.repoUnknown {
-		h.mark(key)
+	// The sources indexed without their repository, found by their marks
+	// (U) in the index, read again: the runs (whose passes place their
+	// receipts again) and the sessions.
+	for key, m := range marks {
+		if repoNotKnown(m) {
+			h.mark(key)
+		}
+	}
+	for after := "session:"; ; {
+		page, err := ix.Sources(ctx, after, history.MaxSourcesPage)
+		if err != nil {
+			h.log.Warn("the history's reconcile could not read the index", "err", err)
+			break
+		}
+		done := len(page) < history.MaxSourcesPage
+		for _, src := range page {
+			if !strings.HasPrefix(src.Key, "session:") {
+				done = true
+				break
+			}
+			if repoNotKnown(src.Mark) {
+				h.mark(src.Key)
+			}
+		}
+		if done {
+			break
+		}
+		after = page[len(page)-1].Key
 	}
 	old := ""
 	if h.pm != nil {

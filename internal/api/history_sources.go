@@ -248,6 +248,9 @@ type runPlace struct {
 	// ("<task>/<n>").
 	agentSessions map[string]string
 	fallback      time.Time
+	// repoUnknown: the run's repository could not be read (its mark and
+	// its receipts' carry U).
+	repoUnknown bool
 }
 
 // base is an entry of the run, its fields of the six filled.

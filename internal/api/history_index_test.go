@@ -2456,3 +2456,79 @@ func TestAStartWithARemovalOwedReadsNothing(t *testing.T) {
 	fail.Store(false)
 	forgotten(t, indexServed(t, h), id, "zforgetstart")
 }
+
+// receiptsOf are the keys of run's receipt sources in the index.
+func receiptsOf(t *testing.T, ix *history.Index, run string) []string {
+	t.Helper()
+	page, err := ix.Sources(t.Context(), "check:"+run+"/", history.MaxSourcesPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, s := range page {
+		if strings.HasPrefix(s.Key, "check:"+run+"/") {
+			out = append(out, s.Key)
+		}
+	}
+	return out
+}
+
+// Sources indexed without their repository (past the retries) are found
+// again by their marks, which the index keeps: after a restart (nothing
+// in the new process remembers them), the repository answering again,
+// a reconcile repairs every run and its receipts, and a search by the
+// repository finds them.
+func TestARepositoryNotKnownIsRepairedFromTheMarks(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.gitRepo(t)
+	var down atomic.Bool
+	down.Store(true)
+	set := func(h *historyIndexer) {
+		h.repoRetries = 1
+		h.after = func(d time.Duration) <-chan time.Time {
+			if d == h.reconcileTick {
+				return nil
+			}
+			return time.After(d)
+		}
+		h.repoOf = func(ctx context.Context, dir string) (string, string, error) {
+			if dir == e.root && down.Load() {
+				return "", "", errors.New("git rev-parse: timed out")
+			}
+			return gitcli.RepoOf(ctx, dir)
+		}
+	}
+	freshIndexer(t, e, set)
+	runs := []string{"hist-00000070", "hist-00000071", "hist-00000072"}
+	for i, run := range runs {
+		histCreate(t, e.srv.ledger, run, "", histCrew(e.root))
+		failedAt(t, e.srv.ledger, run, 1, 1, fmt.Sprintf("TestRepoLost%d", i))
+	}
+	ix := histSettle(t, e)
+	for _, run := range runs {
+		keys := receiptsOf(t, ix, run)
+		if len(keys) != 1 {
+			t.Fatalf("the receipts of %s: %v", run, keys)
+		}
+		for _, key := range append(keys, hRunRef(run)) {
+			if h := histEntry(t, ix, key); h.Repo != "" || !repoNotKnown(histMark(t, ix, key)) {
+				t.Fatalf("%s with its repository not known: repo %q, mark %s", key, h.Repo, histMark(t, ix, key))
+			}
+		}
+	}
+	down.Store(false)
+	freshIndexer(t, e, set) // a restart: the marks are all that remember
+	ix = histReconcile(t, e)
+	base := filepath.Base(e.root)
+	for i, run := range runs {
+		keys := receiptsOf(t, ix, run)
+		for _, key := range append(keys, hRunRef(run)) {
+			if h := histEntry(t, ix, key); h.Repo == "" || repoNotKnown(histMark(t, ix, key)) {
+				t.Fatalf("%s after the repository recovered: repo %q, mark %s", key, h.Repo, histMark(t, ix, key))
+			}
+		}
+		if got := histFind(t, ix, fmt.Sprintf("repo:%s TestRepoLost%d", base, i)); !slices.Contains(got, keys[0]) {
+			t.Fatalf("a search by the repository for %s's receipt: %v", run, got)
+		}
+	}
+}
