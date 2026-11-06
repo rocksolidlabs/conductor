@@ -331,10 +331,15 @@ func TestHostSubmitAnswer(t *testing.T) {
 	if entered.Load() != 1 || lost.Load() != 1 {
 		t.Fatalf("%d entered, %d refused: want one of each", entered.Load(), lost.Load())
 	}
+	// Each answer is recorded once by its question's words, never by its
+	// text, which may be a credential.
 	answered := 0
 	for _, in := range inputs(l) {
-		if in == "monday by Ada" || in == "tuesday by Ada" {
+		if in == "Which day? by Ada" {
 			answered++
+		}
+		if strings.Contains(in, "monday") || strings.Contains(in, "tuesday") {
+			t.Fatalf("an answer's text was recorded: %q", inputs(l))
 		}
 	}
 	if answered != 1 {

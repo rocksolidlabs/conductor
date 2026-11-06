@@ -55,20 +55,47 @@ func (s *Server) recording() bool {
 }
 
 // launchRevision is what a launch's folder is at before its process
-// starts: read for a native session only (a Runtime elsewhere runs on a
-// tree this server does not observe); a read that fails or times out
+// starts, read in the folder opened and checked (dir), the one the process
+// starts in, never again at its path: read for a native session only (a
+// Runtime elsewhere runs on a tree this server does not observe); a read
+// that fails or times out, or whose folder could not be named as opened,
 // leaves it empty.
-func (s *Server) launchRevision(where ext.Where, cwd string) gitcli.Revision {
+func (s *Server) launchRevision(where ext.Where, cwd string, dir *os.File) gitcli.Revision {
 	if !s.recording() || where != ext.WhereNative {
 		return gitcli.Revision{}
 	}
+	at, still := openedPath(dir, cwd)
 	ctx, cancel := context.WithTimeout(context.Background(), revisionTimeout)
 	defer cancel()
-	rev, err := s.readRevision(ctx, cwd)
-	if err != nil {
+	rev, err := s.readRevision(ctx, at)
+	if err != nil || !still() {
 		return gitcli.Revision{}
 	}
 	return rev
+}
+
+// openedPath is a path that names the directory dir holds open, for a git
+// read in it: its descriptor's (/proc/<pid>/fd/<n>, where the system has
+// one, as the process's own start uses, internal/pty), which nothing done
+// to cwd moves; else cwd, which still says whether cwd named it as the
+// read ended. It never names another directory than dir's: none (still
+// false) when dir cannot be read.
+func openedPath(dir *os.File, cwd string) (string, func() bool) {
+	if dir == nil {
+		return cwd, func() bool { return false }
+	}
+	want, err := dir.Stat()
+	if err != nil {
+		return cwd, func() bool { return false }
+	}
+	byHandle := "/proc/" + strconv.Itoa(os.Getpid()) + "/fd/" + strconv.FormatUint(uint64(dir.Fd()), 10)
+	if fi, err := os.Stat(byHandle); err == nil && os.SameFile(fi, want) {
+		return byHandle, func() bool { return true }
+	}
+	return cwd, func() bool {
+		fi, err := os.Stat(cwd)
+		return err == nil && os.SameFile(fi, want)
+	}
 }
 
 // beginServerRecord begins the record of a server session as it is made,
@@ -176,14 +203,18 @@ func isEnding(msg string) bool {
 
 // recordEndCommit is the journal's EndCommit: HEAD of a native server
 // session's folder after its end, an observation; nothing for any other.
-func (s *Server) recordEndCommit(r journal.Record) string {
+// The folder is read at its path, its process gone: a read is kept only
+// when the path still names the repository the launch was read in (its
+// top and its common directory), so a folder replaced since never lends
+// its commit.
+func (s *Server) recordEndCommit(ctx context.Context, r journal.Record) string {
 	if r.Host.Hosted || r.Where != string(ext.WhereNative) || r.Repo == "" {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), revisionTimeout)
+	ctx, cancel := context.WithTimeout(ctx, revisionTimeout)
 	defer cancel()
 	rev, err := s.readRevision(ctx, r.Cwd)
-	if err != nil {
+	if err != nil || rev.Top != r.Repo || (r.RepoCommon != "" && rev.Common != r.RepoCommon) {
 		return ""
 	}
 	return rev.Commit
@@ -249,16 +280,29 @@ func (s *Server) recordChat(id string, m session.ChatMessage) {
 	j.Chat(id, c)
 }
 
-// recordRemoved is the registry's OnRemove for the journal: a session
-// that left with an end keeps it (the Info's, when the journal has none
-// yet), a hosted one let go without one (its host away past the grace) is
-// marked host away, which proves nothing of its process.
+// recordRemoved is the registry's OnRemove for the journal: what the
+// session was as it left and its deny list are handed over for the work
+// the journal still holds of it (Gone), then a session that left with an
+// end keeps it (the Info's, when the journal has none yet), a hosted one
+// let go without one (its host away past the grace) is marked host away,
+// which proves nothing of its process.
 func (s *Server) recordRemoved(id string, d session.Driver) {
 	j := s.sessionRecords
 	if j == nil {
 		return
 	}
 	info := d.Info()
+	final := journal.Meta{Name: info.Name, AgentSession: agentSessionOf(info.AgentSession), Crew: crewOfRef(info.Crew)}
+	var denied func(string) bool
+	switch drv := d.(type) {
+	case *session.Local:
+		denied = drv.Denied
+	case *signal.HostedSession:
+		denied = func(string) bool { return false }
+	default:
+		denied = func(string) bool { return true }
+	}
+	j.Gone(id, final, denied)
 	switch {
 	case info.Status.Ended():
 		end := journal.Ending{How: endingOf(info)}

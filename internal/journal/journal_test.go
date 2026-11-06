@@ -3,6 +3,7 @@ package journal
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -929,5 +930,654 @@ func TestTheHeadAtEveryBoundLeavesRoom(t *testing.T) {
 	t.Logf("the head at every bound: %d bytes (%v)", len(b), parts)
 	if len(b) > maxHead {
 		t.Fatalf("the head is %d bytes, past %d", len(b), maxHead)
+	}
+}
+
+// clock is a test's clock, moved by hand.
+type clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newClock() *clock { return &clock{now: time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)} }
+
+func (c *clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *clock) add(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+}
+
+// inMemory says whether the record of id is held in memory.
+func inMemory(j *Journal, id string) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	_, ok := j.recs[id]
+	return ok
+}
+
+// slowFlush makes the writer's tick never come within a test, so only
+// what is urgent is written unless the test flushes.
+func slowFlush(t *testing.T) {
+	old := flushEvery
+	flushEvery = time.Hour
+	t.Cleanup(func() { flushEvery = old })
+}
+
+// An entry an earlier callback still carried when the record left memory
+// after its end is kept in its place all the same, and a rename of the
+// ended session reaches the record: the record is read back from its file
+// and what came is merged in; one after the end is dropped and counted.
+func TestALateHookAfterEvictionIsKept(t *testing.T) {
+	c := newClock()
+	name := "cat #1"
+	var mu sync.Mutex
+	j, dir := newJournal(t, Options{Now: c.Now, Current: func(string) (Meta, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		return Meta{Name: name}, true
+	}})
+	id := sid(1)
+	begin(t, j, serverRecord(id))
+	at := c.Now()
+	j.Note(id, Activity{At: at, Type: actProgress, Message: "first"})
+	j.End(id, Ending{At: at.Add(2 * time.Second), How: "exited (exit 0)"})
+	j.Flush()
+	c.add(time.Minute)
+	j.Flush()
+	if inMemory(j, id) {
+		t.Fatal("the ended record is still in memory")
+	}
+	j.Note(id, Activity{At: at.Add(time.Second), Type: actProgress, Message: "held"})
+	j.Note(id, Activity{At: at.Add(time.Hour), Type: actProgress, Message: "too late"})
+	mu.Lock()
+	name = "renamed"
+	mu.Unlock()
+	j.Changed(id)
+	j.Flush()
+	r, _ := onDisk(t, dir, id)
+	var msgs []string
+	for _, e := range r.Entries {
+		msgs = append(msgs, e.Message)
+	}
+	if !slices.Equal(msgs, []string{"first", "held"}) || r.Dropped != 1 || r.Name != "renamed" || r.Ending != "exited (exit 0)" || r.EndedAt.IsZero() {
+		t.Fatalf("after the late hooks: entries %q dropped %d name %q ending %q", msgs, r.Dropped, r.Name, r.Ending)
+	}
+	// It leaves memory again.
+	c.add(time.Minute)
+	j.Flush()
+	if inMemory(j, id) {
+		t.Fatal("the record brought back stayed in memory")
+	}
+}
+
+// gateLoad holds the merge of a record's earlier file at the read, until
+// the test lets it go.
+func gateLoad(t *testing.T) (entered <-chan string, release func()) {
+	in := make(chan string, 8)
+	gate := make(chan struct{})
+	var once sync.Once
+	beforeLoad = func(id string) error {
+		in <- id
+		<-gate
+		return nil
+	}
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(func() {
+		release()
+		beforeLoad = nil
+	})
+	return in, release
+}
+
+// awayRecord is a hosted record its host went away from, as a server
+// that stopped leaves it, with one entry.
+func awayRecord(id, owner string) Record {
+	r := hostedRecord(id, owner)
+	at := time.Date(2026, 11, 5, 8, 0, 0, 0, time.UTC)
+	r.V, r.StartedAt, r.LostAt, r.Ending = V, at, at.Add(time.Minute), EndingHostAway
+	r.Entries = []Entry{{Seq: 1, At: at.Add(time.Second), Kind: KindReport, Event: actProgress, Message: "before"}}
+	return r
+}
+
+// An end observed while the earlier file of a hosted record taken up again
+// is still being read stands once it is merged: the record is ended, never
+// open again.
+func TestAnEndDuringTheMergeStands(t *testing.T) {
+	dir := t.TempDir()
+	id := sid(1)
+	writeRecord(t, dir, awayRecord(id, "o1"))
+	j := openAt(t, dir, Options{})
+	entered, release := gateLoad(t)
+	begin(t, j, hostedRecord(id, "o1"))
+	<-entered
+	j.End(id, Ending{How: "exited (exit 0)"})
+	release()
+	j.Flush()
+	r, _ := onDisk(t, dir, id)
+	if r.EndedAt.IsZero() || r.Ending != "exited (exit 0)" || !r.LostAt.IsZero() || r.Reopened != 1 {
+		t.Fatalf("the end observed during the merge: %+v", r)
+	}
+	if got := kinds(r); !slices.Equal(got, []string{KindReport, KindStatus}) || r.Entries[0].Message != "before" {
+		t.Fatalf("entries %+v", r.Entries)
+	}
+}
+
+// A hosted record whose earlier file could not be read is never written
+// over: it is read again at the next pass and merged then, what came
+// meanwhile kept; one found of a later version is left as it is.
+func TestAFailedMergeReadIsReadAgainNotOverwritten(t *testing.T) {
+	dir := t.TempDir()
+	id := sid(1)
+	writeRecord(t, dir, awayRecord(id, "o1"))
+	_, before := onDisk(t, dir, id)
+	j := openAt(t, dir, Options{})
+	var fails sync.Mutex
+	failing := true
+	beforeLoad = func(string) error {
+		fails.Lock()
+		defer fails.Unlock()
+		if failing {
+			return errors.New("a disk that did not answer")
+		}
+		return nil
+	}
+	t.Cleanup(func() { beforeLoad = nil })
+	begin(t, j, hostedRecord(id, "o1"))
+	j.Note(id, Activity{Type: actProgress, Message: "after"})
+	j.Flush()
+	if _, now := onDisk(t, dir, id); !bytes.Equal(now, before) {
+		t.Fatalf("the record was written over after a failed read:\n%s", now)
+	}
+	fails.Lock()
+	failing = false
+	fails.Unlock()
+	j.Flush()
+	r, _ := onDisk(t, dir, id)
+	var msgs []string
+	for _, e := range r.Entries {
+		msgs = append(msgs, e.Message)
+	}
+	if r.Reopened != 1 || !r.LostAt.IsZero() || !slices.Equal(msgs, []string{"before", "taken up again by its host", "after"}) {
+		t.Fatalf("after the read: reopened %d lost %v entries %q", r.Reopened, r.LostAt, msgs)
+	}
+
+	// A file found of a later version as it is merged: never written.
+	id2 := sid(2)
+	writeRecord(t, dir, awayRecord(id2, "o1"))
+	j2 := reopenJournal(t, j, dir)
+	later := awayRecord(id2, "o1")
+	later.V = V + 1
+	writeRecord(t, dir, later)
+	_, laterBytes := onDisk(t, dir, id2)
+	begin(t, j2, hostedRecord(id2, "o1"))
+	j2.Flush()
+	if _, now := onDisk(t, dir, id2); !bytes.Equal(now, laterBytes) {
+		t.Fatalf("a later version's record was written over:\n%s", now)
+	}
+	if page, _ := j2.List("", 10); !slices.ContainsFunc(page.Records, func(s Summary) bool { return s.ID == id2 && s.Newer }) {
+		t.Fatalf("the later version's row: %+v", page.Records)
+	}
+}
+
+// reopenJournal closes j and opens another over dir, as a restart does.
+func reopenJournal(t *testing.T, j *Journal, dir string) *Journal {
+	t.Helper()
+	j.Close()
+	return openAt(t, dir, Options{})
+}
+
+// A record file this version cannot decode is kept as it is and is in
+// the index: listed as unreadable, refused to a Begin of its id (so
+// nothing writes over it), counted toward MaxRecords by its last write,
+// and forgettable.
+func TestAnUnreadableRecordIsListedBoundedAndForgettable(t *testing.T) {
+	t.Cleanup(func() { maxRecords = MaxRecords })
+	dir := t.TempDir()
+	sess := filepath.Join(dir, Dir, SessionsDir)
+	if err := os.MkdirAll(sess, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bad := func(id string) string {
+		return `{"v": 1, "id": "` + id + `", "unknown": 1, "entries": [{"message": "evidence before"}]}`
+	}
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, id := range []string{sid(1), sid(2)} {
+		p := filepath.Join(sess, id+".json")
+		if err := os.WriteFile(p, []byte(bad(id)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j := openAt(t, dir, Options{})
+	page, err := j.List("", 10)
+	if err != nil || len(page.Records) != 2 || !page.Records[0].Unreadable || !page.Records[1].Unreadable {
+		t.Fatalf("the list: %+v %v", page.Records, err)
+	}
+	if err := j.Begin(hostedRecord(sid(1), "o1")); !errors.Is(err, ErrExists) {
+		t.Fatalf("a hosted begin over an unreadable record: %v", err)
+	}
+	if err := j.Begin(serverRecord(sid(2))); !errors.Is(err, ErrExists) {
+		t.Fatalf("a begin over an unreadable record: %v", err)
+	}
+	j.Flush()
+	for _, id := range []string{sid(1), sid(2)} {
+		if b, err := os.ReadFile(filepath.Join(sess, id+".json")); err != nil || string(b) != bad(id) {
+			t.Fatalf("the unreadable %s was written over: %s %v", id, b, err)
+		}
+	}
+	if err := j.Forget(sid(1)); err != nil || exists(dir, sid(1)) {
+		t.Fatalf("forget an unreadable record: %v, still there %v", err, exists(dir, sid(1)))
+	}
+	// One ended record past a bound of one: the unreadable one, last
+	// written before it ended, goes.
+	maxRecords = 1
+	endedRecords(t, j, 3, 1)
+	j.Prune()
+	if exists(dir, sid(2)) || !exists(dir, sid(3)) {
+		t.Fatalf("pruned: unreadable kept %v, ended kept %v", exists(dir, sid(2)), exists(dir, sid(3)))
+	}
+}
+
+// Prune keeps the records that ended last: a session that started first
+// and ran longest, ended after two later ones, is kept as the newest ended
+// one, and the one that ended first goes.
+func TestPruneKeepsTheLastToEnd(t *testing.T) {
+	maxRecords = 2
+	t.Cleanup(func() { maxRecords = MaxRecords })
+	j, dir := newJournal(t, Options{})
+	long := serverRecord(sid(0))
+	long.StartedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	begin(t, j, long)
+	endedRecords(t, j, 1, 2)
+	j.End(sid(0), Ending{At: time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC), How: "exited (exit 0)"})
+	j.Flush()
+	if !exists(dir, sid(0)) || exists(dir, sid(1)) || !exists(dir, sid(2)) {
+		t.Fatalf("kept: long %v, first to end %v, second %v", exists(dir, sid(0)), exists(dir, sid(1)), exists(dir, sid(2)))
+	}
+}
+
+// Close gives the end commits still being read closeWait, together, and
+// returns with every end written, without the commits not read by then,
+// even when the reads never return.
+func TestCloseGivesUpOnEndCommits(t *testing.T) {
+	old := closeWait
+	closeWait = 50 * time.Millisecond
+	t.Cleanup(func() { closeWait = old })
+	hung := make(chan struct{})
+	t.Cleanup(func() { close(hung) })
+	var reads sync.WaitGroup
+	j, dir := newJournal(t, Options{EndCommit: func(context.Context, Record) string {
+		reads.Done()
+		<-hung
+		return "0123456789abcdef0123456789abcdef01234567"
+	}})
+	for i := range 3 {
+		begin(t, j, serverRecord(sid(i)))
+	}
+	reads.Add(3)
+	for i := range 3 {
+		j.End(sid(i), Ending{How: "stopped"})
+	}
+	reads.Wait() // every read under way, none returning
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		if r, _ := onDisk(t, dir, sid(i)); r.EndedAt.IsZero() || r.Ending != "stopped" || r.End != "" {
+			t.Fatalf("record %d after Close: %+v", i, r)
+		}
+	}
+}
+
+// A crew a session takes after its launch is written at once, not at the
+// next flush: the writer writes the record with the crew while its tick
+// cannot come.
+func TestACrewTakenIsWrittenAtOnce(t *testing.T) {
+	slowFlush(t)
+	var mu sync.Mutex
+	var crew *Crew
+	j, dir := newJournal(t, Options{Current: func(string) (Meta, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		return Meta{Name: "cat #1", Crew: crew}, true
+	}})
+	id := sid(1)
+	begin(t, j, serverRecord(id))
+	written := make(chan string, 8)
+	beforeWrite = func(name string) error {
+		written <- name
+		return nil
+	}
+	t.Cleanup(func() { beforeWrite = nil })
+	mu.Lock()
+	crew = &Crew{RunID: "run-1", CrewID: "team", Member: "lead"}
+	mu.Unlock()
+	j.Changed(id)
+	for name := range written {
+		if name == SessionsDir+"/"+id+".json" {
+			break
+		}
+	}
+	// The write begun is the crew's: the file holds it once it is done,
+	// with no flush and no tick (the deadline only bounds a hang).
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if r, _ := onDisk(t, dir, id); r.Crew != nil && r.Crew.RunID == "run-1" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the crew was never written at once")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The deny list judges the path a touch came with, never the path cut to
+// MaxPath: a denied name past the bound is not kept.
+func TestTheDenyListJudgesTheWholePath(t *testing.T) {
+	j, dir := newJournal(t, Options{Denied: func(_, path string) bool { return strings.HasSuffix(path, "/.env") }})
+	id := sid(1)
+	begin(t, j, serverRecord(id))
+	long := "/w/" + strings.Repeat("a", MaxPath) + "/.env"
+	j.Touch(id, File{Path: long, Op: "read"})
+	j.Touch(id, File{Path: "/w/main.go", Op: "read"})
+	j.Flush()
+	if r, _ := onDisk(t, dir, id); len(r.Files) != 1 || r.Files[0].Path != "/w/main.go" {
+		t.Fatalf("files %+v", r.Files)
+	}
+}
+
+// What a session was as it left the server and its deny list (Gone) serve
+// the work still pending once the server no longer lists it: its touches
+// are judged by its own deny list, not refused for want of one, and its
+// last name is taken.
+func TestAGoneSessionsPendingWorkIsKept(t *testing.T) {
+	slowFlush(t)
+	j, dir := newJournal(t, Options{
+		Current: func(string) (Meta, bool) { return Meta{}, false },
+		Denied:  func(string, string) bool { return true },
+	})
+	id := sid(1)
+	begin(t, j, serverRecord(id))
+	j.Touch(id, File{Path: "/w/main.go", Op: "edit"})
+	j.Touch(id, File{Path: "/w/secret.key", Op: "read"})
+	j.Gone(id, Meta{Name: "its last name"}, func(path string) bool { return path == "/w/secret.key" })
+	j.End(id, Ending{How: "stopped"})
+	j.Flush()
+	r, _ := onDisk(t, dir, id)
+	if len(r.Files) != 1 || r.Files[0].Path != "/w/main.go" || r.Name != "its last name" || r.EndedAt.IsZero() {
+		t.Fatalf("the gone session's record: files %+v name %q ended %v", r.Files, r.Name, r.EndedAt)
+	}
+}
+
+// heldThenFree makes the owner lock held for the journal until free is
+// called, then taken as the store takes it; failing makes every try after
+// the first an error instead.
+func heldThenFree(t *testing.T) (free func()) {
+	var mu sync.Mutex
+	held := true
+	takeLock = func(path string) (*store.OwnerLock, string, bool, error) {
+		mu.Lock()
+		h := held
+		mu.Unlock()
+		if h {
+			return nil, "another server holds it (a test)", true, nil
+		}
+		return store.TakeOwnerLock(path)
+	}
+	t.Cleanup(func() { takeLock = store.TakeOwnerLock })
+	return func() {
+		mu.Lock()
+		held = false
+		mu.Unlock()
+	}
+}
+
+// OnOwned's function never runs once Close has begun: a Close that comes
+// while the records are recovered (the lock just taken, the journal's lock
+// let go, its writes held) returns without it, and it is never begun.
+func TestOnOwnedNeverRunsAfterClose(t *testing.T) {
+	old := LockWait
+	LockWait = time.Minute
+	t.Cleanup(func() { LockWait = old })
+	dir := t.TempDir()
+	open := serverRecord(sid(1))
+	open.V, open.StartedAt = V, time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
+	writeRecord(t, dir, open)
+	free := heldThenFree(t)
+	j := openAt(t, dir, Options{})
+	var ran sync.Mutex
+	called := false
+	j.OnOwned(func() {
+		ran.Lock()
+		called = true
+		ran.Unlock()
+	})
+	entered := make(chan struct{}, 1)
+	gate := make(chan struct{})
+	beforeWrite = func(name string) error {
+		if name == SessionsDir+"/"+sid(1)+".json" {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-gate
+		}
+		return nil
+	}
+	t.Cleanup(func() { beforeWrite = nil })
+	free()
+	<-entered // recovery is writing the record found open, the lock held
+	closed := make(chan struct{})
+	go func() {
+		j.Close()
+		close(closed)
+	}()
+	for {
+		j.mu.Lock()
+		c := j.closed
+		j.mu.Unlock()
+		if c {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(gate)
+	<-closed
+	j.mu.Lock()
+	notified := j.notified
+	j.mu.Unlock()
+	ran.Lock()
+	defer ran.Unlock()
+	if notified || called {
+		t.Fatalf("OnOwned's function was begun after Close (notified %v, ran %v)", notified, called)
+	}
+}
+
+// Open says it is read-only before the waiter for the lock starts, which
+// changes what it says under the journal's lock (the race detector's
+// test: nothing else here takes that lock before the waiter writes).
+func TestOpenSaysReadOnlyBeforeItsWaiterRuns(t *testing.T) {
+	old := LockWait
+	LockWait = time.Minute
+	t.Cleanup(func() { LockWait = old })
+	tried := make(chan struct{})
+	var once sync.Once
+	calls := 0
+	takeLock = func(string) (*store.OwnerLock, string, bool, error) {
+		calls++
+		if calls == 1 {
+			return nil, "another server holds it (a test)", true, nil
+		}
+		once.Do(func() { close(tried) })
+		return nil, "", false, errors.New("a lock that failed")
+	}
+	t.Cleanup(func() { takeLock = store.TakeOwnerLock })
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := Open(st, Options{Log: quiet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-tried
+	j.Close()
+	if ro, why := j.ReadOnly(); !ro || why != "a lock that failed" {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+}
+
+// A record is measured with the Seq it is written with: one at exactly
+// MaxRecord whose Seq gains a digit as it is written is brought under the
+// bound, not written past it.
+func TestTheBoundCountsTheSeqWritten(t *testing.T) {
+	j, dir := newJournal(t, Options{})
+	id := sid(1)
+	begin(t, j, serverRecord(id))
+	j.mu.Lock()
+	x := j.recs[id]
+	j.seq = 99
+	x.r.Seq = 99
+	at := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
+	for i := 0; ; i++ {
+		x.r.Entries = append(x.r.Entries, Entry{Seq: int64(i + 1), At: at, Kind: KindStatus, Message: strings.Repeat("x", 400)})
+		if b, _ := store.Encode(&x.r); len(b) > MaxRecord-600 {
+			break
+		}
+	}
+	last := &x.r.Entries[len(x.r.Entries)-1]
+	b, _ := store.Encode(&x.r)
+	last.Message += strings.Repeat("y", MaxRecord-len(b))
+	if b, _ := store.Encode(&x.r); len(b) != MaxRecord {
+		j.mu.Unlock()
+		t.Fatalf("the record is %d bytes, want exactly %d", len(b), MaxRecord)
+	}
+	x.dirty = true
+	j.mu.Unlock()
+	j.Flush()
+	r, raw := onDisk(t, dir, id)
+	if r.Seq != 100 || len(raw) > MaxRecord {
+		t.Fatalf("written at Seq %d, %d bytes (bound %d)", r.Seq, len(raw), MaxRecord)
+	}
+}
+
+// A record whose file could not be deleted stays indexed, listed and
+// forgettable again; ForgetAll counts only what it deleted.
+func TestAFailedDeleteKeepsTheRecord(t *testing.T) {
+	j, dir := newJournal(t, Options{})
+	endedRecords(t, j, 1, 2)
+	beforeDelete = func(string) error { return errors.New("a disk that did not answer") }
+	t.Cleanup(func() { beforeDelete = nil })
+	if err := j.Forget(sid(1)); err == nil {
+		t.Fatal("a forget whose delete failed answered nil")
+	}
+	if n, _, err := j.ForgetAll(); err == nil || n != 0 {
+		t.Fatalf("forget all whose deletes failed: %d forgotten, %v", n, err)
+	}
+	if page, _ := j.List("", 10); len(page.Records) != 2 {
+		t.Fatalf("listed after the failed deletes: %+v", page.Records)
+	}
+	beforeDelete = nil
+	if err := j.Forget(sid(1)); err != nil || exists(dir, sid(1)) {
+		t.Fatalf("forget again: %v", err)
+	}
+	if n, _, err := j.ForgetAll(); err != nil || n != 1 || exists(dir, sid(2)) {
+		t.Fatalf("forget all again: %d %v", n, err)
+	}
+}
+
+// A journal that does not write answers its list from the files, reading
+// a file again only when its size or time changed: a file changed behind
+// its back with both kept is not read again, one changed is, one removed
+// leaves the list.
+func TestAReadOnlyListReadsOnlyWhatChanged(t *testing.T) {
+	dir := t.TempDir()
+	for i := 1; i <= 3; i++ {
+		r := serverRecord(sid(i))
+		r.V, r.StartedAt, r.EndedAt = V, time.Date(2026, 11, 5, 9, i, 0, 0, time.UTC), time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+		writeRecord(t, dir, r)
+	}
+	heldThenFree(t)
+	j := openAt(t, dir, Options{})
+	if ro, _ := j.ReadOnly(); !ro {
+		t.Fatal("the journal holds the lock")
+	}
+	names := func() map[string]string {
+		t.Helper()
+		page, err := j.List("", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, s := range page.Records {
+			out[s.ID] = s.Name
+		}
+		return out
+	}
+	if got := names(); len(got) != 3 {
+		t.Fatalf("the list: %v", got)
+	}
+	path := func(id string) string { return filepath.Join(dir, Dir, SessionsDir, id+".json") }
+	// The same size and time, other bytes: not read again.
+	fi, err := os.Stat(path(sid(1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path(sid(1)), bytes.Repeat([]byte{' '}, int(fi.Size())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path(sid(1)), fi.ModTime(), fi.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	// Renamed, a new size: read again.
+	r := serverRecord(sid(2))
+	r.V, r.Name, r.StartedAt, r.EndedAt = V, "renamed since", time.Date(2026, 11, 5, 9, 2, 0, 0, time.UTC), time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	writeRecord(t, dir, r)
+	if err := os.Remove(path(sid(3))); err != nil {
+		t.Fatal(err)
+	}
+	got := names()
+	if len(got) != 2 || got[sid(1)] != "cat #1" || got[sid(2)] != "renamed since" {
+		t.Fatalf("the list after the changes: %v", got)
+	}
+}
+
+// staleQuietly marks the record of id stale without waking the writer, as
+// a Changed whose wake the writer has not yet taken.
+func staleQuietly(j *Journal, id string) {
+	j.mu.Lock()
+	j.recs[id].stale = true
+	j.mu.Unlock()
+}
+
+// An end the writer finds in the metadata it reads is written by the same
+// pass: a Flush returns with it written, and so does Close, whose pass is
+// the last.
+func TestAnEndFoundInTheMetadataIsWrittenByItsPass(t *testing.T) {
+	slowFlush(t)
+	end := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	j, dir := newJournal(t, Options{Current: func(string) (Meta, bool) {
+		return Meta{Name: "cat #1", Ended: true, EndedAt: end, Ending: "exited (exit 0)"}, true
+	}})
+	begin(t, j, serverRecord(sid(1)))
+	begin(t, j, serverRecord(sid(2)))
+	staleQuietly(j, sid(1))
+	j.Flush()
+	if r, _ := onDisk(t, dir, sid(1)); !r.EndedAt.Equal(end) {
+		t.Fatalf("after the Flush: %+v", r)
+	}
+	staleQuietly(j, sid(2))
+	j.Close()
+	if r, _ := onDisk(t, dir, sid(2)); !r.EndedAt.Equal(end) {
+		t.Fatalf("after Close: %+v", r)
 	}
 }

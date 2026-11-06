@@ -799,9 +799,12 @@ func (s *Local) pressEnterHeld(sub Submission, res SubmitResult, st submitState)
 }
 
 // typedEntry records what Conductor typed itself (By unset), once its text
-// is written.
+// is written. A line that names a question is an answer, whoever passed it
+// on (a provider's Submit, a host's answer_as): its text may be a
+// credential and is never recorded; its Enter's resolve records the
+// answer as a reply's is, by the question's words.
 func (s *Local) typedEntry(sub Submission, text string, st submitState) {
-	if sub.By == nil {
+	if sub.By == nil && sub.Question == "" {
 		// A line Conductor typed (a crew's prompt, a broadcast), not an
 		// answer to a question: Op says so (OpTyped), and the inspector
 		// reads it as sent, not answered.

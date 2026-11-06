@@ -347,7 +347,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if where == "" {
 		where = ext.WhereNative
 	}
-	rev := s.launchRevision(where, cwd)
+	rev := s.launchRevision(where, cwd, dirFile)
 	term, err := rt.StartTerminal(startCtx, ext.TerminalSpec{
 		Argv:    argv,
 		Dir:     cwd,
