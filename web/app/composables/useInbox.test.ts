@@ -197,6 +197,38 @@ describe('what the page knows of an answer', () => {
   })
 })
 
+describe('a read that never answers', () => {
+  it('is given up on past its bound, and the next event reads again', async () => {
+    const srv = fakeServer()
+    let hang = true
+    const reads: InboxReads = { ...srv.reads, list: (after) => (hang ? new Promise<InboxPage>(() => {}) : srv.reads.list(after)) }
+    const l = new InboxLive()
+    let state: InboxState | null = null
+    l.attach(reads, { storage: () => storage(), apply: (s) => (state = s), waitMs: 20 })
+    const stuck = l.changed()
+    // Behind the read that never answers, an event's read is queued; once it is given up on, the queued one reads.
+    hang = false
+    srv.open.set('question:s1/q2', summary('question:s1/q2'))
+    void l.event()
+    await stuck
+    expect(state!.items.map((i) => i.ref)).toEqual(['question:s1/q2'])
+    expect(state!.error).toBe('')
+  })
+})
+
+describe("a command's acceptance", () => {
+  it("fills none of its steps: an uncertain receipt's validated step stays unknown", async () => {
+    const srv = fakeServer()
+    const { l, state } = liveOn(srv)
+    const e: RecentEntry = { ref: 'task:r/build', receipt: 'c1', at: Date.now() }
+    srv.tracks.set('c1', steps('done', 'done', 'unknown', 'not_applicable'))
+    l.remember(e)
+    l.outcome('c1', undefined, 'accepted')
+    await l.trackNow(e)
+    expect(state().tracks[trackKey(e)]!.map((s) => s.state)).toEqual(['done', 'done', 'unknown', 'not_applicable'])
+  })
+})
+
 describe('a failed read', () => {
   it('after an empty one, says nothing of what is open: the list is not drawn as empty', async () => {
     const srv = fakeServer()

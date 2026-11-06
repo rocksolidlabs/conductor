@@ -318,6 +318,14 @@ add its rule here.
   carriage returns taken out (`printed` and `printedUntil` in
   `internal/api`, `lines` in `ext/local`), and keep exact bytes for tests
   of the bytes themselves.
+- A read the page keeps one of in flight is bounded, or one request that
+  never answers holds every later read behind it. A spec that cut the
+  events stream with a route and removed it left one inbox read on the
+  page unanswered (the page's last route gone while the request was held
+  in it), and the live inbox, its next reads queued behind that one, never
+  showed what the stream's return brought (`decision-page.spec.ts`, CI on
+  #684). The inbox gives up on a read past `INBOX_READ_WAIT_MS`, and the
+  spec keeps a route on the page across the step it judges.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

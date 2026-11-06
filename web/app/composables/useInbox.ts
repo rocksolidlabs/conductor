@@ -45,6 +45,23 @@ export interface InboxState {
   tracks: Record<string, DeliveryStep[]>
 }
 
+/**
+ * How long one read of the inbox (a page of the list, an action's track) may take before it counts as failed: past it the read is
+ * given up on, so a request that never answers (a phone's connection dropped while it was out) never holds every later read behind it.
+ * It only bounds a hang: the routes answer in milliseconds.
+ */
+export const INBOX_READ_WAIT_MS = 20_000
+
+/**
+ * The owner's word a track is reconciled with (reconcileDelivery): an answer's, whose recorded and validated steps a hosted session's
+ * track cannot know; and any refusal the owner gave. A command's or an operation's acceptance fills nothing: its receipt's own
+ * track says what became of it, an uncertain one unknown.
+ */
+function wordFor(e: RecentEntry, outcome: string | undefined): string | undefined {
+  if (!outcome) return undefined
+  return e.attempt || outcome.startsWith('refused:') ? outcome : undefined
+}
+
 export function emptyInbox(): InboxState {
   return { items: [], total: 0, next: '', loaded: false, error: '', unavailable: '', recent: [], tracks: {} }
 }
@@ -86,17 +103,36 @@ export class InboxLive {
   private pages = 1
   /** How many pages tracking asks: a page on screen tracks its recent actions. */
   private trackers = 0
+  private waitMs = INBOX_READ_WAIT_MS
   /** How many reads of the list were sent, for the tests. */
   listReads = 0
 
   /** Hands the live inbox its reads, its storage and where its state goes. */
-  attach(reads: InboxReads, o: { storage?: () => Pick<Storage, 'getItem' | 'setItem'> | null; apply?: (s: InboxState) => void; ready?: () => boolean } = {}): void {
+  attach(reads: InboxReads, o: { storage?: () => Pick<Storage, 'getItem' | 'setItem'> | null; apply?: (s: InboxState) => void; ready?: () => boolean; waitMs?: number } = {}): void {
     this.reads = reads
+    if (o.waitMs) this.waitMs = o.waitMs
     if (o.storage) this.storage = o.storage
     if (o.apply) this.apply = o.apply
     if (o.ready) this.ready = o.ready
     this.state = { ...this.state, recent: mergeRecent(this.state.recent, readRecentActions(this.storage())) }
     this.publish()
+  }
+
+  /** A read, given up on past waitMs: its late answer, if one comes, is dropped. */
+  private bounded<T>(p: Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error(`The inbox did not answer within ${Math.round(this.waitMs / 1000)} s`)), this.waitMs)
+      p.then(
+        (v) => {
+          clearTimeout(t)
+          resolve(v)
+        },
+        (e) => {
+          clearTimeout(t)
+          reject(e)
+        },
+      )
+    })
   }
 
   get current(): InboxState {
@@ -171,7 +207,7 @@ export class InboxLive {
       let total = 0
       let next = ''
       for (let i = 0; i < this.pages; i++) {
-        const p = await reads.list(after)
+        const p = await this.bounded(reads.list(after))
         got.push(...p.items)
         total = p.total
         next = p.next ?? ''
@@ -205,11 +241,11 @@ export class InboxLive {
 
   private async readTrack(e: RecentEntry, gen: number): Promise<void> {
     try {
-      const t = await this.reads!.track(e)
+      const t = await this.bounded(this.reads!.track(e))
       if (gen !== this.generation) return
       const key = trackKey(e)
       const outcome = this.state.recent.find((x) => trackKey(x) === key)?.outcome ?? e.outcome
-      this.state = { ...this.state, tracks: { ...this.state.tracks, [key]: reconcileDelivery(this.state.tracks[key], t.steps, outcome) } }
+      this.state = { ...this.state, tracks: { ...this.state.tracks, [key]: reconcileDelivery(this.state.tracks[key], t.steps, wordFor(e, outcome)) } }
     } catch {
       /* read again with the next read of the list */
     }
@@ -244,9 +280,10 @@ export class InboxLive {
   outcome(receipt: string, attempt: string | undefined, word: string): void {
     const recent = withOutcome(mergeRecent(this.state.recent, readRecentActions(this.storage())), receipt, attempt, word)
     writeRecentActions(this.storage(), recent)
-    const key = trackKey({ ref: recent.find((x) => x.receipt === receipt && x.attempt === attempt)?.ref ?? '', receipt, attempt })
+    const entry = recent.find((x) => x.receipt === receipt && x.attempt === attempt)
+    const key = trackKey({ ref: entry?.ref ?? '', receipt, attempt })
     const steps = this.state.tracks[key]
-    this.state = { ...this.state, recent, tracks: steps ? { ...this.state.tracks, [key]: reconcileDelivery(steps, steps, word) } : this.state.tracks }
+    this.state = { ...this.state, recent, tracks: steps && entry ? { ...this.state.tracks, [key]: reconcileDelivery(steps, steps, wordFor(entry, word)) } : this.state.tracks }
     this.publish()
   }
 }
