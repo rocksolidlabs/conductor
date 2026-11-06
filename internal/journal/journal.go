@@ -20,7 +20,7 @@ import (
 // The journal's documents, under the data directory:
 //
 //	history/owner.lock          the owner lock (store.OwnerLock)
-//	history/state.json          the counter every write's Seq is taken from
+//	history/state.json          the mark past every Seq written (seqBlock on)
 //	history/sessions/<id>.json  a session's record (Record), MaxRecord bytes
 const (
 	Dir         = "history"
@@ -121,8 +121,13 @@ type Journal struct {
 	// it, a delete), taken before mu.
 	wmu sync.Mutex
 	mu  sync.Mutex
-	// seq is the counter: the last Seq given an entry or a write.
+	// seq is the counter: the last Seq given an entry or a write; high
+	// the mark state.json holds, past every Seq written. A write whose Seq
+	// passes it writes state.json first, with a mark seqBlock further on,
+	// so a Seq never goes back after a restart and the state file is
+	// written once per seqBlock writes, not with each.
 	seq      int64
+	high     int64
 	recs     map[string]*rec     // the records in memory: open, or ended a moment ago
 	index    map[string]*summary // every record on disk or in memory
 	readOnly bool
@@ -1041,8 +1046,13 @@ func foldFile(files []File, f File, dropped *int) []File {
 	return files
 }
 
-// write writes x: its Seq from the counter, the state file first, then the
-// record bounded to MaxRecord. The caller holds wmu.
+// seqBlock is how far past the Seq of the write that passes it the state
+// file's mark is put.
+const seqBlock = 1 << 12
+
+// write writes x: its Seq from the counter, the state file first when the
+// Seq passes its mark, then the record bounded to MaxRecord. The caller
+// holds wmu, so the writes' marks go up in turn.
 func (j *Journal) write(x *rec) error {
 	j.mu.Lock()
 	if j.recs[x.r.ID] != x {
@@ -1055,10 +1065,19 @@ func (j *Journal) write(x *rec) error {
 	r := cloneRecord(&x.r)
 	x.dirty, x.urgent = false, false
 	j.index[r.ID] = summaryOf(&x.r, false)
+	mark := int64(0)
+	if r.Seq > j.high {
+		mark = r.Seq + seqBlock
+	}
 	j.mu.Unlock()
-	if err := j.saveState(r.Seq); err != nil {
-		j.redirty(x)
-		return err
+	if mark > 0 {
+		if err := j.saveState(mark); err != nil {
+			j.redirty(x)
+			return err
+		}
+		j.mu.Lock()
+		j.high = mark
+		j.mu.Unlock()
 	}
 	if f := beforeWrite; f != nil {
 		if err := f(SessionsDir + "/" + r.ID + ".json"); err != nil {
@@ -1079,7 +1098,7 @@ func (j *Journal) redirty(x *rec) {
 	j.mu.Unlock()
 }
 
-// state is history/state.json.
+// state is history/state.json: Seq is the mark past every Seq written.
 type state struct {
 	V   int   `json:"v"`
 	Seq int64 `json:"seq"`
@@ -1456,7 +1475,7 @@ func (j *Journal) recoverLocked() error {
 		j.log.Warn("the session records' state was not read; its counter is taken from the records", "err", err)
 	}
 	j.mu.Lock()
-	j.seq = max(j.seq, st.Seq, maxSeq)
+	j.seq, j.high = max(j.seq, st.Seq, maxSeq), st.Seq
 	var changed []*rec
 	for _, f := range all {
 		r := f.r

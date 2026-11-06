@@ -407,6 +407,9 @@ type Revision struct {
 // and common directory alone; ErrNotRepo outside a repository.
 func RevisionOf(ctx context.Context, dir string) (Revision, error) {
 	out, err := Run(ctx, dir, "rev-parse", "--show-toplevel", "--git-common-dir", "HEAD", "--abbrev-ref", "HEAD")
+	if errors.Is(err, ErrNotRepo) || ctx.Err() != nil {
+		return Revision{}, err
+	}
 	if err != nil {
 		top, common, rerr := RepoOf(ctx, dir)
 		if rerr != nil {
