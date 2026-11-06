@@ -26,12 +26,27 @@ func TestRecheckTakenIsTheCommandsRule(t *testing.T) {
 	c3 := failed.Attempt.Result
 	ctx := context.Background()
 	rq := RecheckRequest{Task: "build", Attempt: 3, Commit: c3}
+	// The failure committed (the engine shows it before its ledger
+	// transaction ends); the run's revision then read on both sides of
+	// RecheckTaken: the run still commits as it finishes, and
+	// RecheckTaken's is the revision at its own moment, between the two.
+	l.attemptWhen(t, run.ID, "build", 3, failedRow)
+	l.taskWhen(t, run.ID, "build", "failed", func(r ledger.TaskRow) bool { return r.State == ledger.TaskFailed })
+	revision := func() int64 {
+		t.Helper()
+		got, ok := e.Get(run.ID)
+		if !ok || got.Managed == nil {
+			t.Fatalf("the run: %v %+v", ok, got.Managed)
+		}
+		return got.Managed.Revision
+	}
+	before := revision()
 	rev, err := e.RecheckTaken(run.ID, rq)
 	if err != nil {
 		t.Fatalf("the standing failed candidate: %v", err)
 	}
-	if got, _ := e.Get(run.ID); got.Managed == nil || got.Managed.Revision != rev {
-		t.Fatalf("revision %d, the run's %+v", rev, got.Managed)
+	if after := revision(); rev < before || rev > after || before == 0 {
+		t.Fatalf("revision %d, the run's %d before and %d after", rev, before, after)
 	}
 	if _, err := e.RecheckTaken(run.ID, RecheckRequest{Task: "build", Attempt: 2, Commit: c3}); !errors.Is(err, ErrStaleCandidate) {
 		t.Fatalf("attempt 2: %v", err)
