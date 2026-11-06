@@ -388,7 +388,7 @@ func TestMCPForEachAdapter(t *testing.T) {
 	dir := t.TempDir()
 	want := map[string][]string{
 		"claude": {"--mcp-config", filepath.Join(dir, "claude-mcp.json")},
-		"codex":  {"-c", `mcp_servers.conductor.command="/opt/conductor"`, "-c", `mcp_servers.conductor.args=["mcp"]`, "-c", "mcp_servers.conductor.env_vars=" + codexMCPEnv},
+		"codex":  {"-c", `mcp_servers.conductor.command="/opt/conductor"`, "-c", `mcp_servers.conductor.args=["mcp"]`, "-c", "mcp_servers.conductor.env_vars=" + codexMCPEnv, "-c", "mcp_servers.conductor.tool_timeout_sec=720"},
 	}
 	for _, a := range All() {
 		got := MCPFor(a.ID, dir)
@@ -451,7 +451,7 @@ func TestTheSkillsBrakemanSectionIsShort(t *testing.T) {
 	if len(lines) > 6 {
 		t.Fatalf("%d lines, at most 6:\n%s", len(lines), section)
 	}
-	for _, want := range []string{"CONDUCTOR_BRAKEMAN is set", "Call guide first", "brakeman_request", "observe", "brief_submit", "evidence", "Nothing you write becomes work", "one brief", "your turn ends"} {
+	for _, want := range []string{"CONDUCTOR_BRAKEMAN is set", "Call guide first", "brakeman_request", "observe", "brief_submit", "evidence", "Nothing you write becomes work", "act", "granted", "one brief", "your turn ends"} {
 		if !strings.Contains(section, want) {
 			t.Errorf("the section does not say %q", want)
 		}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,7 +58,7 @@ func TestTheGuideNamesThisBuild(t *testing.T) {
 		t.Fatalf("overview: %d %v", status, out)
 	}
 	ov := out["overview"].(map[string]any)
-	if c := ov["caller"].(map[string]any); c["kind"] != "admin" || fmt.Sprint(c["scopes"]) != "[admin session task ticket observe]" {
+	if c := ov["caller"].(map[string]any); c["kind"] != "admin" || fmt.Sprint(c["scopes"]) != "[admin session task ticket observe act]" {
 		t.Fatalf("caller %v", c)
 	}
 	if rules, _ := ov["rules"].([]any); len(rules) != 3 || !strings.Contains(fmt.Sprint(rules), "with ask") {
@@ -678,6 +679,8 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 		"ticket_create": ticketCreateBody{}, "ticket_edit": ticketEditBody{}, "ticket_comment_admin": commentBody{}, "ticket_link": linkBody{},
 		"crew_create": crewInput{}, "crew_launch": launchBody{},
 		"brakeman_config": brakemanConfigBody{}, "brakeman_ask": brakemanAskBody{}, "brakeman_cancel": brakemanCancelBody{},
+		// A Brakeman turn's granted operations take their routes' own bodies.
+		"launch_approved_plan": ticketLaunchBody{}, "prepare_followup": planProposeBody{},
 	}
 	seen := 0
 	for _, op := range Operations() {
@@ -867,9 +870,10 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 	key := e.newDispatchTicket(t, "BND", "Bounded", nil)["key"].(string)
 	e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", map[string]any{"opId": opID(), "kind": "run", "ref": run.ID}, http.StatusCreated, "")
 
-	// A Brakeman turn's session, whose guide lists its brief.
+	// A Brakeman turn's session, whose guide lists its brief, and, granted
+	// every operation this build serves, the act routes' own bodies.
 	bk := brakemanEnv(t, nil)
-	bk.enable(t, "bk", nil)
+	bk.enable(t, "bk", func(c map[string]any) { c["permissions"].(map[string]any)["act"] = everyGrant })
 	bsid, btok, _ := bk.turnSession(t, bk.briefing(t))
 
 	tried := map[string]bool{}
@@ -903,11 +907,19 @@ func TestEachBodyBoundIsItsRoutes(t *testing.T) {
 			if len(over) != n+1 || len(at) != n {
 				t.Fatalf("%s: bodies of %d and %d bytes", op.Name, len(over), len(at))
 			}
-			status, data, out := c.e.callAs(t, c.token, op.Method, path, []byte(over))
+			call := c.e.callAs
+			if op.Scope == "act" {
+				// A granted operation is the turn's on its own route as the
+				// principal brakeman: its session named.
+				call = func(t *testing.T, token, method, path string, body any) (int, []byte, map[string]any) {
+					return c.e.callAsTurn(t, token, c.sid, method, path, body.([]byte))
+				}
+			}
+			status, data, out := call(t, c.token, op.Method, path, []byte(over))
 			if status != http.StatusRequestEntityTooLarge && !strings.Contains(apiMessage(out), errBodyTooLarge.Error()) {
 				t.Errorf("%s: %d bytes, one past its bound, answers %d %.200s", op.Name, len(over), status, data)
 			}
-			status, data, out = c.e.callAs(t, c.token, op.Method, path, []byte(at))
+			status, data, out = call(t, c.token, op.Method, path, []byte(at))
 			if status != http.StatusBadRequest || !strings.Contains(apiMessage(out), `unknown field "boundProbe"`) {
 				t.Errorf("%s: %d bytes, at its bound, answers %d %.200s", op.Name, len(at), status, data)
 			}
@@ -1059,4 +1071,97 @@ func TestTheDraftCrewExampleIsACrewThatSaves(t *testing.T) {
 		t.Errorf("a brief of the example: %v", err)
 	}
 	e.expect(t, "POST", "/api/crews", body, http.StatusCreated, "")
+}
+
+// callAsTurn is callAs as a Brakeman turn: its session's token, the
+// session named in X-Conductor-Session.
+func (e *testEnv) callAsTurn(t *testing.T, token, sid, method, path string, body []byte) (int, []byte, map[string]any) {
+	t.Helper()
+	req, err := http.NewRequest(method, e.http.URL+path, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set(brakemanSessionHeader, sid)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(data, &out)
+	return resp.StatusCode, data, out
+}
+
+// A Brakeman turn's guide lists the act tool and the operations its
+// grant holds, the snapshot its turn began under and the configuration
+// now together, and its request says the same: a turn granted none lists
+// neither, a grant taken away mid-turn goes from both at once, and one
+// given mid-turn waits for the next turn. The admin's guide lists every
+// operation a grant may name, with its route, its body and its receipt.
+func TestATurnsGuideListsItsGrantedOperations(t *testing.T) {
+	bk := brakemanEnv(t, nil)
+	bk.enable(t, "bk", func(c map[string]any) {
+		c["permissions"].(map[string]any)["act"] = []string{brakeman.ActLaunchApprovedPlan}
+	})
+	req := bk.briefing(t)
+	sid, tok, _ := bk.turnSession(t, req)
+	look := func(t *testing.T, wantActs []string) {
+		t.Helper()
+		status, _, out := guideOf(t, bk.testEnv, tok, "/api/sessions/"+sid+"/guide?section=operations")
+		var acts []string
+		for _, n := range opNames(t, out) {
+			if n == "act" || slices.Contains(brakeman.Grantable, n) {
+				acts = append(acts, n)
+			}
+		}
+		want := []string(nil)
+		if len(wantActs) > 0 {
+			want = append([]string{"act"}, wantActs...)
+		}
+		if status != http.StatusOK || !slices.Equal(acts, want) {
+			t.Fatalf("the turn's act operations %d %v, want %v", status, acts, want)
+		}
+		_, _, out = guideOf(t, bk.testEnv, tok, "/api/sessions/"+sid+"/guide")
+		scopes := fmt.Sprint(out["overview"].(map[string]any)["caller"].(map[string]any)["scopes"])
+		if strings.Contains(scopes, "act") != (len(wantActs) > 0) {
+			t.Fatalf("the caller's scopes %s with acts %v", scopes, wantActs)
+		}
+		status, rr := bk.readRequest(t, sid, tok)
+		perm := rr["request"].(map[string]any)["permissions"].(map[string]any)
+		got, _ := perm["act"].([]any)
+		if status != http.StatusOK || fmt.Sprint(got) != fmt.Sprint(wantActs) && !(len(got) == 0 && len(wantActs) == 0) {
+			t.Fatalf("the request's permissions %d %v, want act %v", status, perm, wantActs)
+		}
+	}
+	look(t, []string{brakeman.ActLaunchApprovedPlan})
+	// Granted the follow-up too: the next turn's, not this one's.
+	bk.configure(t, func(c map[string]any) { c["permissions"].(map[string]any)["act"] = everyGrant })
+	look(t, []string{brakeman.ActLaunchApprovedPlan})
+	// Every grant taken away: at once.
+	bk.configure(t, func(c map[string]any) { c["permissions"].(map[string]any)["act"] = []string{} })
+	look(t, nil)
+
+	status, _, out := guideOf(t, bk.testEnv, adminToken, "/api/guide?section=operations")
+	ops := map[string]map[string]any{}
+	for _, x := range out["operations"].([]any) {
+		op := x.(map[string]any)
+		ops[op["name"].(string)] = op
+	}
+	for name, path := range map[string]string{"act": "/api/dispatch/tickets/{key}/launch", brakeman.ActLaunchApprovedPlan: "/api/dispatch/tickets/{key}/launch", brakeman.ActPrepareFollowup: "/api/dispatch/tickets/{key}/plans"} {
+		op := ops[name]
+		if status != http.StatusOK || op == nil || op["scope"] != "act" || op["path"] != path || op["receipt"] != "dispatch" {
+			t.Errorf("the admin's %s: %v", name, op)
+		}
+	}
+	for _, name := range []string{brakeman.ActRequestRepair, brakeman.ActRouteDecision} {
+		if ops[name] != nil {
+			t.Errorf("%s, which this build serves no route of, is listed", name)
+		}
+	}
 }
