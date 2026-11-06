@@ -1,7 +1,11 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,4 +72,20 @@ func TestAManagedRunIsContinuedThroughTheResumeRoute(t *testing.T) {
 		t.Fatalf("a second continuation: %d %v", resp.StatusCode, out)
 	}
 	_ = crew.RunInterrupted
+}
+
+// A continuation refused for a chain longer than the server reads is 409
+// chain_too_long, with the engine's words (#636, review round 4).
+func TestAChainTooLongIsItsOwnRefusal(t *testing.T) {
+	rec := httptest.NewRecorder()
+	(&Server{}).runError(rec, "resume run", "team-00000001", fmt.Errorf("%w: team-00000001 continues more than the 10000 runs a server reads of a chain", crew.ErrChainTooLong))
+	var body struct {
+		Error struct{ Code, Message string }
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusConflict || body.Error.Code != "chain_too_long" || !strings.Contains(body.Error.Message, "10000 runs") {
+		t.Fatalf("%d %+v", rec.Code, body)
+	}
 }
