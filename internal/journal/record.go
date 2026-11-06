@@ -1,13 +1,15 @@
 // Package journal is the session journal (docs/plans/history.md, Program
-// item HS1): one record of every session the server runs or hosts, kept
-// as a JSON document in the data directory's history/sessions/<id>.json
-// (the directory 0700, each file 0600) from the session's start: its
-// agent and that agent's own session, its host and where it ran, its
-// folder and commits, its launch, its crew, and the evidence Conductor saw
-// pass through it (the lines Conductor typed into it, its questions and how
-// each ended, its chat, what its agent reported, the files it reported
-// touching). What a person types into a terminal or a reply box is never
-// kept, nor a variable's value.
+// item HS1): one record of every server session, kept as a JSON document
+// in the data directory's history/sessions/<id>.json (the directory 0700,
+// each file 0600) from the session's start: its agent and that agent's own
+// session, its host and where it ran, its folder and commits, its launch,
+// its crew, and the evidence Conductor saw pass through it (the lines
+// Conductor typed into it, its questions and how each ended, its chat,
+// what its agent reported, the files it reported touching). What a person
+// types into a terminal or a reply box is never kept, nor a variable's
+// value. A hosted session has no record yet; the record's hosted fields
+// (Host.Hosted, Host.Owner, Reopened, EndingHostAway) are read as they are
+// and written by none of this package's callers.
 //
 // Like internal/dispatch and internal/brakeman it has no HTTP, no session
 // and no process: it imports the standard library and internal/store
@@ -21,15 +23,13 @@
 // A record is written by:
 //
 //   - Begin: a server session's record, written before Begin returns (a
-//     write that fails is the writer's to try again); a hosted session's,
-//     or the record of its id taken up again when the same host registers
-//     it again.
+//     write that fails is the writer's to try again).
 //   - Settle: what is true of the session now, as its server reads it
 //     from the session itself: its name, its agent's own session, its
 //     crew, and its end once it has one. Its caller reconciles the record
 //     with the session (internal/api's history_journal.go says when); a
 //     State settled again changes nothing, and an end, once recorded,
-//     stands.
+//     stands, observed or lost.
 //   - the streams: Note and Chat (the session's activity and chat, a file
 //     it touched among them) and Tool. The promise: what a stream brings
 //     is kept while its record is open and dropped, counted in Dropped,
@@ -37,56 +37,54 @@
 //     would have told of a question after its end is the end's: an
 //     observed end ends every question still open in the record as
 //     withdrawn, as the session's own end withdraws it.
-//   - the writer, outside the journal's lock: a hosted record's earlier
-//     file merged into it (merge), its end commit read (EndCommit), its
-//     touches asked of Denied (fold), then the record written (pass).
-//   - the load at Open: every file read, a record found open marked no
-//     longer observed (lost, host away) and written.
+//   - the writer, outside the journal's lock: its end commit read
+//     (EndCommit), its touches asked of Denied (fold), then the record
+//     written (pass).
+//   - the rule for a record with no instance (below): one whose file has
+//     no end is marked lost and written so.
 //
 // and removed by Forget, ForgetAll and Prune (and by Abandon, for a
 // session the registry refused).
 //
 // The rule every writer passes through: what is written is an instance's.
-// Begin makes an instance of a record (taking a record up again keeps its
-// instance) and answers it (Instance); every write names the instance it
-// was begun for, never an id alone, and is taken only while that instance
-// is the record of its id in memory. A record stays in memory until its
-// session's last State is in (State.Final) and its end is written, so no
-// write of a live instance ever finds its record gone; nothing brings a
-// record back from its file but a hosted Begin taking it up again. The
-// writer's work on a record, done outside the lock, is kept only while
-// that record is still the one in memory. A removal ends the instance it
-// chooses, under the lock, at once and for good (choose). So, for each
-// pair:
+// Begin makes an instance of a record and answers it (Instance); every
+// write names the instance it was begun for, never an id alone, and is
+// taken only while that instance is the record of its id in memory. A
+// record stays in memory until its session's last State is in
+// (State.Final) and its end is written, so no write of a live instance
+// ever finds its record gone; nothing brings a record back from its file.
+// The writer's work on a record, done outside the lock, is kept only
+// while that record is still the one in memory. A removal ends the
+// instance it chooses, under the lock, at once and for good (choose). So,
+// for each pair:
 //
 //   - a write and a removal: the write first, what it brought is in the
 //     record and goes with it; the removal first, the write is dropped,
-//     whatever holds its id by then (a hosted session of the same id
-//     registered again after the Forget begins another instance).
+//     whatever holds its id by then.
 //   - the writer and a removal: the removal first, the writer's work finds
 //     its record gone from memory and keeps nothing of it; a write under
 //     way ends before the removal's delete (wmu), and none follows it.
-//   - a hosted Begin and a removal of its id: the removal first (wmu held
-//     while its file goes), the Begin begins a new instance, written once
-//     the delete is done; should the delete fail, its first write replaces
-//     the file the delete left, nothing of the old record in it.
-//   - a hosted Begin and a merge under way (its record taken up before,
-//     its file still being read): admitted on what memory holds of the
-//     record as much as on its row, so an end observed during the merge
-//     refuses it (ErrExists) as an end on file does.
 //   - a removal whose delete fails: it answers the error, and that answer
-//     is the truth: the file stays as last written, its row is listed again
-//     and read from it, forgettable again, without an instance; what the
-//     ended instance held unwritten is dropped, and nothing of it is ever
-//     written. A restart reads that file as any other.
+//     is the truth: the file stays as last written, its row is put back
+//     from it, forgettable again, without an instance; what the ended
+//     instance held unwritten is dropped, and nothing of it is ever
+//     written. No later Begin takes its id.
 //   - the load at Open and the rest: it runs before the first Begin. A row
-//     read from a file has no instance: no write takes it; a hosted Begin
-//     of the same host takes it up again and gives it one.
+//     read from a file has no instance: no write takes it.
 //   - Close and the rest: the last pass writes every record; a write or a
 //     Begin after Close is refused. A process killed instead loses what was
-//     not yet written (at most flushEvery's evidence, an end not yet
-//     written): the next Open marks such a record, open on disk, lost (a
-//     server session's) or host away (a hosted one's), never ended.
+//     not yet written: the next Open marks each record still open on disk
+//     lost, never ended.
+//
+// # A record with no instance is never open
+//
+// Wherever a record with no instance comes from (a delete that failed,
+// the files read at Open, the files read once the owner lock is taken
+// late), the journal that holds the owner lock lists one whose file has
+// no end as lost (LostAt its file's last write, Ending lost, no EndedAt),
+// holds it in memory, dirty, and writes that end at its next pass, Close's
+// last among them. A read-only journal lists another server's files as
+// they are: their sessions are that server's.
 package journal
 
 import (

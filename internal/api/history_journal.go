@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -15,7 +14,6 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
-	"github.com/rocksolidlabs/conductor/internal/signal"
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
@@ -229,9 +227,7 @@ func openedPath(dir *os.File, cwd string) (string, func() bool) {
 // server's recMu.
 type recorder struct {
 	in       journal.Instance
-	hosted   bool
 	cwd      string
-	hs       *signal.HostedSession
 	d        session.Driver
 	attached bool
 	// watching: a wait for its stopped session's process is under way
@@ -355,51 +351,6 @@ func (s *Server) abandon(rc *recorder) {
 	s.sessionRecords.Abandon(rc.in)
 }
 
-// beginHostedRecord is the hub's OnAdded: the record of a hosted session,
-// from what its host registered, borrowing nothing of this server's
-// machine (no probe, no git read, no Runtime), its registration complete
-// and reconciled at once, and the session's own hooks that feed it. A
-// session its host registers again once the hub let it go is a new
-// registration of the same record (journal.Begin takes it up again): it
-// replaces the earlier one for its id, whose hints and streams change
-// nothing from then on.
-func (s *Server) beginHostedRecord(hs *signal.HostedSession, owner string) signal.SessionHooks {
-	if !s.recording() {
-		return signal.SessionHooks{}
-	}
-	info := hs.Info()
-	r := journal.Record{
-		ID:        info.ID,
-		Name:      info.Name,
-		Kind:      string(info.Kind),
-		Agent:     journal.Agent{ID: info.AgentID},
-		Host:      journal.Host{Name: info.HostName, User: info.HostUser, Owner: owner, Hosted: true},
-		Cwd:       info.Cwd,
-		Branch:    info.Branch,
-		StartedAt: info.CreatedAt,
-	}
-	// Under recMu, the Begin (which never waits on a disk for a hosted
-	// record) and the registration together: a reconcile of the earlier
-	// registration comes wholly before or wholly after.
-	s.recMu.Lock()
-	defer s.recMu.Unlock()
-	in, err := s.sessionRecords.Begin(r)
-	if err != nil {
-		if !errors.Is(err, journal.ErrNotOwner) {
-			s.log.Warn("the hosted session's record was not begun", "session", info.ID, "err", err)
-		}
-		return signal.SessionHooks{}
-	}
-	rc := &recorder{in: in, hosted: true, hs: hs, d: hs, attached: true}
-	s.recCur[info.ID] = rc
-	s.reconcileLocked(rc, false)
-	return signal.SessionHooks{
-		Activity: func(e session.ActivityEntry) { s.deliver(func() { s.recordActivity(rc, e) }) },
-		Chat:     func(m session.ChatMessage) { s.deliver(func() { s.recordChat(rc, m) }) },
-		Change:   func(session.Info) { s.deliver(func() { s.reconcile(rc) }) },
-	}
-}
-
 // reconcile is a hint's: rc's record settled from its session as it is
 // now (the package's reconcile).
 func (s *Server) reconcile(rc *recorder) {
@@ -433,8 +384,6 @@ func (s *Server) reconcileLocked(rc *recorder, closing bool) {
 			end.At = *info.EndedAt
 		}
 		st.End = &end
-	case final && rc.hosted:
-		st.End = &journal.Ending{How: journal.EndingHostAway, Lost: true}
 	case final:
 		st.End = &journal.Ending{How: journal.EndingLost, Lost: true}
 	case local && info.Status.Ended() && !rc.watching:
@@ -502,11 +451,7 @@ func (s *Server) awaitProcessEnd(rc *recorder, l *session.Local) {
 func (s *Server) recordActivity(rc *recorder, e session.ActivityEntry) {
 	a := journal.Activity{At: e.At, Type: e.Type, By: e.By, ByName: e.ByName, Message: e.Message, URL: e.URL, To: e.To, Tool: e.Tool, Op: e.Op, Path: e.Path}
 	if e.Type == session.ActivityFile {
-		if rc.hosted {
-			a.Path = signal.HostAbs(rc.hs.Info().Cwd, e.Path)
-		} else {
-			a.Path = session.TouchedAbs(rc.cwd, e.Path)
-		}
+		a.Path = session.TouchedAbs(rc.cwd, e.Path)
 	}
 	s.recMu.Lock()
 	defer s.recMu.Unlock()
@@ -541,16 +486,6 @@ func endingOf(info session.Info) string {
 	return string(info.Status)
 }
 
-// isEnding says a status entry's message is a session's end.
-func isEnding(msg string) bool {
-	for _, st := range []session.Status{session.StatusExited, session.StatusStopped} {
-		if msg == string(st) || strings.HasPrefix(msg, string(st)+" (exit ") {
-			return true
-		}
-	}
-	return false
-}
-
 // recordEndCommit is the journal's EndCommit: HEAD of a native server
 // session's folder after its end, an observation; nothing for any other.
 // The folder is the session's own, the one it was opened as (FolderDir),
@@ -563,7 +498,7 @@ func isEnding(msg string) bool {
 // none read.
 func (s *Server) recordEndCommit(ctx context.Context, r journal.Record) string {
 	v, ok := s.recordRepos.LoadAndDelete(r.ID)
-	if !ok || r.Host.Hosted || r.Where != string(ext.WhereNative) || r.Repo == "" {
+	if !ok || r.Where != string(ext.WhereNative) || r.Repo == "" {
 		return ""
 	}
 	want := v.(os.FileInfo)

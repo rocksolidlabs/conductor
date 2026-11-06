@@ -533,8 +533,6 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if cfg.MaxViewersPerSession > 0 {
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}
-	// A hosted session's record, its own hooks feeding it (recorder).
-	s.hosts.OnAdded = s.beginHostedRecord
 	s.hosts.OnChange = func(info session.Info) {
 		s.events.publishIf(info, s.listed)
 		s.router.mark(info.ID)

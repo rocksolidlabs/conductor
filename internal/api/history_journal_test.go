@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -256,38 +255,6 @@ func TestARoutedTypedAnswerIsNotKept(t *testing.T) {
 	}
 }
 
-// A typed answer a route sends a real `conductor host` session
-// (answer_as, which the host types naming its question, no By) never
-// reaches the hosted record: the host keeps no entry of its text, so none
-// reaches the server.
-func TestAHostedRoutedTypedAnswerIsNotKept(t *testing.T) {
-	const secret = "hosted-answer-secret-5"
-	seams := watchRouter(t)
-	f := &fakeRouter{route: func(_ context.Context, d ext.Decision) (ext.Route, error) {
-		return ext.Route{Answer: &ext.Answer{Text: secret, By: ada}}, nil
-	}}
-	e := routerEnv(t, f)
-	out := filepath.Join(e.root, "read")
-	id := startHost(t, e, []string{"/bin/sh", "-c", `exec cat > "$0"`, out})
-	until(t, "the host says answerAs", func() bool { return hostedSession(t, e, id).TakesAnswers() })
-	q := hostedQuestion(t, e, f, id, map[string]any{"state": "needs_input", "message": "What is the password?", "kind": "prompt"})
-	if got := seams.wait(t, "applied", q); got.err != nil {
-		t.Fatalf("applied: %v", got.err)
-	}
-	until(t, "the program read the answer", func() bool {
-		b, _ := os.ReadFile(out)
-		return strings.Contains(string(b), secret)
-	})
-	until(t, "the answer in the record", func() bool {
-		r, _, err := e.srv.sessionRecords.Get(id)
-		return err == nil && slices.ContainsFunc(r.Entries, func(e journal.Entry) bool { return e.Kind == journal.KindAnswer && e.Ref == q })
-	})
-	seams.settle(t, e, id)
-	if _, raw := recordFile(t, e, id); bytes.Contains(raw, []byte(secret)) {
-		t.Fatalf("the hosted record keeps the routed answer:\n%s", raw)
-	}
-}
-
 // A question and how it ended come from the chat with their ids: one with
 // choices answered by a choice (its label), one the agent moved past
 // (withdrawn), each answer naming its question.
@@ -429,58 +396,6 @@ func registerHost(t *testing.T, e *testEnv, instance, localID string) (*signal.H
 	return hs, conn
 }
 
-// The host's chat, through HostChat as the host's messages reach it: the
-// agent's question with its choices, its answered line, a line for keys
-// typed in the terminal and one for the agent moving on, each in the record
-// with its ids; refused or cut: the agent's role on a plain message, a
-// seventh choice, a label past 60 runes, a withdrawn line's own words.
-func TestAHostedQuestionAndItsEndsReachTheRecord(t *testing.T) {
-	e := newTestEnv(t, nil)
-	hs, _ := registerHost(t, e, "instance-a", "1")
-	id := hs.Info().ID
-	agent := proto.ChatBy{ID: "agent", Name: "claude", Role: "agent"}
-	ada := proto.ChatBy{ID: "v1", Name: "Ada", Role: "control"}
-	var opts []proto.AttentionOption
-	for i := range 7 {
-		opts = append(opts, proto.AttentionOption{Label: fmt.Sprintf("choice %d %s", i, strings.Repeat("long ", 20)), Input: fmt.Sprint(i + 1)})
-	}
-	at := time.Now().UTC()
-	stamp := func(n int) string { return at.Add(time.Duration(n) * time.Second).Format(time.RFC3339Nano) }
-	hs.HostChat(proto.ChatMessage{ID: "q1", At: stamp(1), Kind: "question", By: agent, Text: "Allow Bash?", Options: opts})
-	hs.HostChat(proto.ChatMessage{ID: "a1", At: stamp(2), Kind: "system", Event: "answered", Ref: "q1", Text: "choice 0", By: ada})
-	hs.HostChat(proto.ChatMessage{ID: "q2", At: stamp(3), Kind: "question", By: agent, Text: "Allow Edit?"})
-	hs.HostChat(proto.ChatMessage{ID: "w2", At: stamp(4), Kind: "system", Event: "withdrawn", Ref: "q2", Text: "terminal", By: proto.ChatBy{Name: "Conductor", Role: "control"}})
-	hs.HostChat(proto.ChatMessage{ID: "q3", At: stamp(5), Kind: "question", By: agent, Text: "Allow Write?"})
-	hs.HostChat(proto.ChatMessage{ID: "w3", At: stamp(6), Kind: "system", Event: "withdrawn", Ref: "q3", Text: "agent", By: proto.ChatBy{Name: "Conductor", Role: "control"}})
-	hs.HostChat(proto.ChatMessage{ID: "w4", At: stamp(7), Kind: "system", Event: "withdrawn", Ref: "q1", Text: "the host's own words", By: proto.ChatBy{Name: "Conductor", Role: "control"}})
-	hs.HostChat(proto.ChatMessage{ID: "m1", At: stamp(8), Kind: "message", By: agent, Text: "the agent posting as a person"})
-	r, raw := recordFile(t, e, id)
-	if bytes.Contains(raw, []byte("the host's own words")) || bytes.Contains(raw, []byte("the agent posting")) {
-		t.Fatalf("the record keeps what was refused:\n%s", raw)
-	}
-	if want := []string{"question", "answer", "question", "answer", "question", "answer", "answer"}; !slices.Equal(entryKinds(r), want) {
-		t.Fatalf("kinds %v, want %v", entryKinds(r), want)
-	}
-	q1 := r.Entries[0]
-	if q1.ID != "q1" || len(q1.Choices) != session.MaxAttentionOptions {
-		t.Fatalf("the first question %+v", q1)
-	}
-	for _, c := range q1.Choices {
-		if n := len([]rune(c)); n > session.MaxOptionLabel {
-			t.Fatalf("a choice of %d runes", n)
-		}
-	}
-	got := []string{}
-	for _, en := range r.Entries {
-		if en.Kind == journal.KindAnswer {
-			got = append(got, en.Ref+" "+en.Outcome)
-		}
-	}
-	if want := []string{"q1 answered", "q2 answered_in_terminal", "q3 withdrawn", "q1 withdrawn"}; !slices.Equal(got, want) {
-		t.Fatalf("answers %q, want %q", got, want)
-	}
-}
-
 // commitFirst is the native Runtime with a commit made in the folder
 // before the agent's process starts, as an agent that commits at once
 // would.
@@ -564,52 +479,32 @@ func TestANonNativeSessionGetsNoGitReadOnTheServer(t *testing.T) {
 	}
 }
 
-// A hosted session gets a record at its add: its host's name, user and
-// owner, its entries through the hub's activity, its chat through the
-// hub's chat, its changes through the hub's OnChange.
-func TestAHostedSessionGetsARecord(t *testing.T) {
+// A hosted session gets no record (PR-12 gives it one): a host registers
+// a session, reports activity and a chat line, and ends it; no record file
+// is made, no route lists or reads it, and the session's own page answers
+// as it does without the journal.
+func TestAHostedSessionGetsNoRecord(t *testing.T) {
 	e := newTestEnv(t, nil)
 	hs, _ := registerHost(t, e, "instance-a", "1")
 	id := hs.Info().ID
-	hs.HostActivity(proto.Activity{Type: "progress", Message: "built it", At: time.Now().UTC().Format(time.RFC3339Nano)}, "")
-	hs.HostActivity(proto.Activity{Type: "file", Op: "edit", Path: "main.go", At: time.Now().UTC().Format(time.RFC3339Nano)}, "")
-	hs.HostChat(proto.ChatMessage{ID: "m1", Kind: "message", By: proto.ChatBy{ID: "v", Name: "Ada", Role: "control"}, Text: "nice"})
-	r, _ := recordFile(t, e, id)
-	if !r.Host.Hosted || r.Host.Name != "laptop" || r.Host.User != "ada" || r.Host.Owner != hs.Owner() || r.Kind != "hosted" || r.Agent.ID != "claude" || r.Cwd != e.root || r.Branch != "main" {
-		t.Fatalf("the hosted record %+v", r)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	hs.HostActivity(proto.Activity{Type: "progress", Message: "built", At: now}, "")
+	hs.HostChat(proto.ChatMessage{ID: "m1", Kind: proto.ChatKindMessage, By: proto.ChatBy{Role: string(session.RoleAgent), Name: "claude"}, Text: "done", At: now})
+	if resp, got := e.do("GET", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the hosted session's own page: %d %v", resp.StatusCode, got)
 	}
-	if want := []string{journal.KindReport, journal.KindChat}; !slices.Equal(entryKinds(r), want) {
-		t.Fatalf("kinds %v", entryKinds(r))
+	code := 0
+	hs.HostStatus(session.StatusExited, &code)
+	e.srv.sessionRecords.Flush()
+	if _, err := os.Stat(filepath.Join(e.srv.cfg.DataDir, journal.Dir, journal.SessionsDir, id+".json")); !os.IsNotExist(err) {
+		t.Fatalf("a hosted session has a record file: %v", err)
 	}
-	if len(r.Files) != 1 || r.Files[0].Path != filepath.Join(e.root, "main.go") {
-		t.Fatalf("files %+v", r.Files)
+	resp, list := e.do("GET", "/api/history/sessions", adminToken, nil)
+	if recs, _ := list["records"].([]any); resp.StatusCode != http.StatusOK || len(recs) != 0 {
+		t.Fatalf("the list: %d %v", resp.StatusCode, list)
 	}
-	exit := 0
-	hs.HostStatus(session.StatusExited, &exit)
-	if r, _ = recordFile(t, e, id); r.Ending != "exited (exit 0)" || r.EndedAt.IsZero() {
-		t.Fatalf("its end from its change: %+v", r)
-	}
-}
-
-// A hosted record borrows nothing of the server's machine: no agent
-// version from the server's probe, no agent session, no repository and no
-// commit, though the hosted folder is a repository on the server's disk.
-func TestAHostedRecordBorrowsNothingFromTheServer(t *testing.T) {
-	e := newTestEnv(t, nil)
-	e.gitRepo(t)
-	var reads atomic.Int32
-	e.srv.readRevision = func(ctx context.Context, dir string) (gitcli.Revision, error) {
-		reads.Add(1)
-		return gitcli.RevisionOf(ctx, dir)
-	}
-	hs, conn := registerHost(t, e, "instance-a", "1")
-	id := hs.Info().ID
-	exit := 0
-	hs.HostStatus(session.StatusExited, &exit)
-	hs.HostDisconnected(conn)
-	r, _ := recordFile(t, e, id)
-	if r.Agent.Version != "" || r.Agent.Session != nil || r.Repo != "" || r.RepoCommon != "" || r.Start != "" || r.End != "" || r.Where != "" || r.Launch != nil || reads.Load() != 0 {
-		t.Fatalf("the hosted record took the server's facts (%d git reads): %+v", reads.Load(), r)
+	if resp, _ := e.do("GET", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the hosted session's record read: %d", resp.StatusCode)
 	}
 }
 
@@ -620,76 +515,6 @@ func restartServer(t *testing.T, e *testEnv) *testEnv {
 	defer cancel()
 	e.srv.Shutdown(ctx)
 	return e.restart()
-}
-
-// A hosted record outlives a restart of the server: marked host away as
-// the new server starts, then taken up again when the same host registers
-// again under the same instance and local id, one record, the entries from
-// before and after in order, its Seq never back.
-func TestAHostedRecordSurvivesAServerRestart(t *testing.T) {
-	e := newTestEnv(t, nil)
-	hs, _ := registerHost(t, e, "instance-a", "1")
-	id := hs.Info().ID
-	hs.HostActivity(proto.Activity{Type: "progress", Message: "before", At: time.Now().UTC().Format(time.RFC3339Nano)}, "")
-	before, _ := recordFile(t, e, id)
-	e2 := restartServer(t, e)
-	away, _ := readRecordFile(t, e2.srv.cfg.DataDir, id)
-	if away.Ending != journal.EndingHostAway || !away.EndedAt.IsZero() || away.LostAt.IsZero() {
-		t.Fatalf("after the restart: %+v", away)
-	}
-	again, _ := registerHost(t, e2, "instance-a", "1")
-	if again.Info().ID != id {
-		t.Fatalf("the id changed: %s", again.Info().ID)
-	}
-	again.HostActivity(proto.Activity{Type: "progress", Message: "after", At: time.Now().UTC().Format(time.RFC3339Nano)}, "")
-	r, _ := recordFile(t, e2, id)
-	var msgs []string
-	for _, en := range r.Entries {
-		msgs = append(msgs, en.Message)
-	}
-	if r.Reopened != 1 || r.Ending != "" || !r.LostAt.IsZero() || r.Seq <= away.Seq || away.Seq <= before.Seq || !slices.Equal(msgs, []string{"before", "taken up again by its host", "after"}) {
-		t.Fatalf("taken up again: reopened %d ending %q seq %d (away %d, before %d) entries %q", r.Reopened, r.Ending, r.Seq, away.Seq, before.Seq, msgs)
-	}
-}
-
-// A hosted session the hub lets go past DisconnectGrace is marked host
-// away, which proves nothing of its process, and taken up again when its
-// host registers once more.
-func TestAHostedRecordLetGoByExpiryIsReopened(t *testing.T) {
-	e := newTestEnv(t, nil)
-	hs, conn := registerHost(t, e, "instance-a", "1")
-	id := hs.Info().ID
-	hs.HostDisconnected(conn)
-	e.srv.hosts.Expire(time.Now().Add(signal.DisconnectGrace + time.Second))
-	if _, ok := e.srv.registry.Get(id); ok {
-		t.Fatal("the hosted session was not let go")
-	}
-	r, _ := recordFile(t, e, id)
-	if r.Ending != journal.EndingHostAway || !r.EndedAt.IsZero() || r.LostAt.IsZero() {
-		t.Fatalf("let go: %+v", r)
-	}
-	registerHost(t, e, "instance-a", "1")
-	if r, _ = recordFile(t, e, id); r.Reopened != 1 || r.Ending != "" || !r.LostAt.IsZero() {
-		t.Fatalf("taken up again: %+v", r)
-	}
-}
-
-// A hosted session's exit is kept from its Info when its status activity
-// entry never arrived (dropped at its host's full queue): the record ends
-// as the status message says, and the hub letting it go after leaves that
-// end.
-func TestAHostedExitIsKeptWithItsActivityDropped(t *testing.T) {
-	e := newTestEnv(t, nil)
-	hs, conn := registerHost(t, e, "instance-a", "1")
-	id := hs.Info().ID
-	exit := 0
-	hs.HostStatus(session.StatusExited, &exit)
-	hs.HostDisconnected(conn)
-	e.srv.hosts.Expire(time.Now().Add(signal.DisconnectGrace + time.Second))
-	r, _ := recordFile(t, e, id)
-	if r.Ending != "exited (exit 0)" || r.EndedAt.IsZero() || !r.LostAt.IsZero() {
-		t.Fatalf("the hosted exit: %+v", r)
-	}
 }
 
 // A record outlives its server: the server ended and another started on
@@ -1199,131 +1024,12 @@ func TestAnExitBeforeTheRegistryHeldTheSessionIsRecorded(t *testing.T) {
 	}
 }
 
-// Codex round 4, finding 1: the hub lets a hosted session go and its
-// removal is held on its way (the registry's OnRemove, gated here) while
-// its host registers the same session again, a new registration of the
-// same record. Let go, the old registration's removal finds the record
-// another's and changes nothing: the reconnected session's record stays
-// open, and Forget refuses it as live.
-func TestADelayedHostedRemovalLeavesTheReconnectedRecordOpen(t *testing.T) {
-	e := newTestEnv(t, nil)
-	hs, conn := registerHost(t, e, "instance-a", "1")
-	id := hs.Info().ID
-	reached, gate := make(chan struct{}), make(chan struct{})
-	var once, held sync.Once
-	release := func() { once.Do(func() { close(gate) }) }
-	t.Cleanup(release)
-	removing := e.srv.registry.OnRemove
-	e.srv.registry.OnRemove = func(rid string, d session.Driver) {
-		if d == session.Driver(hs) {
-			held.Do(func() { close(reached) })
-			<-gate
+// isEnding says a status entry's message is a session's end.
+func isEnding(msg string) bool {
+	for _, st := range []session.Status{session.StatusExited, session.StatusStopped} {
+		if msg == string(st) || strings.HasPrefix(msg, string(st)+" (exit ") {
+			return true
 		}
-		removing(rid, d)
 	}
-	hs.HostDisconnected(conn)
-	expired := make(chan struct{})
-	go func() {
-		e.srv.hosts.Expire(time.Now().Add(signal.DisconnectGrace + time.Second))
-		close(expired)
-	}()
-	<-reached // gone from the registry, its removal held
-	again, _ := registerHost(t, e, "instance-a", "1")
-	if again == hs || again.Info().ID != id {
-		t.Fatal("not a new registration of the same id")
-	}
-	release()
-	<-expired
-	r, _ := recordFile(t, e, id)
-	if !r.EndedAt.IsZero() || !r.LostAt.IsZero() || r.Ending != "" || r.Reopened != 1 {
-		t.Fatalf("the reconnected session's record: %+v", r)
-	}
-	if resp, _ := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusConflict {
-		t.Fatalf("forgetting the reconnected session's record: %d", resp.StatusCode)
-	}
-}
-
-// What a hosted session reports is its record's, not its id's: an entry
-// held on its way to the record while the session is removed, its record
-// forgotten and its host registers the same session again (a new record of
-// the same id) is dropped once let go, never written into the new record.
-func TestAHostedEntryAfterItsRecordWasForgottenIsDropped(t *testing.T) {
-	e := newTestEnv(t, nil)
-	reached, gate := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	release := func() { once.Do(func() { close(gate) }) }
-	t.Cleanup(release)
-	added := e.srv.hosts.OnAdded
-	first := true
-	e.srv.hosts.OnAdded = func(hs *signal.HostedSession, owner string) signal.SessionHooks {
-		h := added(hs, owner)
-		if first {
-			first = false
-			own := h.Activity
-			h.Activity = func(en session.ActivityEntry) {
-				if en.Message == "the forgotten session's" {
-					close(reached)
-					<-gate
-				}
-				own(en)
-			}
-		}
-		return h
-	}
-	hs, _ := registerHost(t, e, "instance-a", "1")
-	id := hs.Info().ID
-	told := make(chan struct{})
-	go func() {
-		hs.HostActivity(proto.Activity{Type: "progress", Message: "the forgotten session's", At: time.Now().UTC().Format(time.RFC3339Nano)}, "")
-		close(told)
-	}()
-	<-reached
-	exit := 0
-	hs.HostStatus(session.StatusExited, &exit)
-	if resp, _ := e.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("removing the ended session: %d", resp.StatusCode)
-	}
-	if resp, _ := e.do("DELETE", "/api/history/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("forgetting its record: %d", resp.StatusCode)
-	}
-	e.srv.hosts.Expire(time.Now()) // the hub lets go of the session the registry dropped
-	again, _ := registerHost(t, e, "instance-a", "1")
-	if again == hs || again.Info().ID != id {
-		t.Fatal("not a new session of the same id")
-	}
-	again.HostActivity(proto.Activity{Type: "progress", Message: "the new session's", At: time.Now().UTC().Format(time.RFC3339Nano)}, "")
-	release()
-	<-told
-	r, raw := recordFile(t, e, id)
-	if bytes.Contains(raw, []byte("the forgotten session's")) || !slices.ContainsFunc(r.Entries, func(en journal.Entry) bool { return en.Message == "the new session's" }) {
-		t.Fatalf("the new record:\n%s", raw)
-	}
-}
-
-// With history.sessions off, a host taking back a session whose record an
-// earlier start kept (marked host away) has nothing it reports written:
-// the record is as that start left it.
-func TestRecordingOffKeepsNothingOfAHostTakingItsSessionBack(t *testing.T) {
-	e := newTestEnv(t, nil)
-	hs, _ := registerHost(t, e, "instance-a", "1")
-	id := hs.Info().ID
-	hs.HostActivity(proto.Activity{Type: "progress", Message: "while recorded", At: time.Now().UTC().Format(time.RFC3339Nano)}, "")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	e.srv.Shutdown(ctx)
-	off := false
-	e.srv.cfg.History.Sessions = &off
-	e2 := e.restart()
-	e2.srv.sessionRecords.Flush()
-	_, before := readRecordFile(t, e2.srv.cfg.DataDir, id)
-	again, _ := registerHost(t, e2, "instance-a", "1")
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	again.HostActivity(proto.Activity{Type: "progress", Message: "while not recorded", At: now}, "")
-	again.HostActivity(proto.Activity{Type: "file", Op: "edit", Path: "main.go", At: now}, "")
-	again.HostChat(proto.ChatMessage{ID: "m1", Kind: "message", By: proto.ChatBy{ID: "v", Name: "Ada", Role: "control"}, Text: "said while not recorded"})
-	exit := 0
-	again.HostStatus(session.StatusExited, &exit)
-	if _, after := recordFile(t, e2, id); !bytes.Equal(before, after) {
-		t.Fatalf("the record changed while recording was off:\n%s", after)
-	}
+	return false
 }

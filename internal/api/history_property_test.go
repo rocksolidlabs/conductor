@@ -14,10 +14,8 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/journal"
-	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
-	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
 // callbackQueue holds the hints and stream callbacks of the recorded
@@ -69,17 +67,11 @@ func (q *callbackQueue) len() int {
 	return len(q.q)
 }
 
-// propReg is one registration of a session the property test made: a
-// server session, or a hosted one (a host registering the same instance
-// again after the hub let it go is another registration of the same id).
+// propReg is a server session the property test made.
 type propReg struct {
 	id       string
-	hosted   bool
-	instance string
 	l        *session.Local
 	proc     *sessiontest.FakeProc
-	hs       *signal.HostedSession
-	conn     *signal.HostConn
 	listed   bool // in the registry
 	ended    bool // its end observed (the test ended it and saw it end)
 	recorded bool // its recorder was its id's as it registered
@@ -136,7 +128,6 @@ func TestTheRecordFollowsTheSession(t *testing.T) {
 	q := holdCallbacks(t, e)
 	var regs []*propReg
 	recs := map[string]*propRecord{}
-	instances := 0
 	recOf := func(id string) *propRecord {
 		if recs[id] == nil {
 			recs[id] = &propRecord{}
@@ -178,8 +169,6 @@ func TestTheRecordFollowsTheSession(t *testing.T) {
 		switch {
 		case r.ended:
 			rec.how = "exited (exit 0)"
-		case r.hosted:
-			rec.how = journal.EndingHostAway
 		default:
 			rec.how = journal.EndingLost
 		}
@@ -221,16 +210,8 @@ func TestTheRecordFollowsTheSession(t *testing.T) {
 			if !r.recorded {
 				t.Fatalf("seed %d: a server session not recorded", seed)
 			}
-		case op == 1 && len(regs) < 8: // a hosted session registered
-			what = "hosted registered"
-			instances++
-			r := &propReg{hosted: true, instance: fmt.Sprintf("instance-%d", instances)}
-			r.hs, r.conn = registerHost(t, e, r.instance, "1")
-			r.id = r.hs.Info().ID
-			regs = append(regs, r)
-			registered(r, r.hs)
 		case op == 2: // a server session renamed
-			r := pick(func(r *propReg) bool { return !r.hosted })
+			r := pick(func(r *propReg) bool { return true })
 			if r == nil {
 				continue
 			}
@@ -247,80 +228,26 @@ func TestTheRecordFollowsTheSession(t *testing.T) {
 			}
 			what = "touched"
 			m := marker(r)
-			now := time.Now().UTC().Format(time.RFC3339Nano)
-			if r.hosted {
-				r.hs.HostActivity(proto.Activity{Type: "progress", Message: m, At: now}, "")
-				r.hs.HostActivity(proto.Activity{Type: "file", Op: "edit", Path: m + ".go", At: now}, "")
-			} else {
-				r.l.RecordServer(session.ActivityEntry{Type: session.ActivityProgress, Message: m})
-				r.l.RecordServer(session.ActivityEntry{Type: session.ActivityFile, Op: "edit", Path: m + ".go"})
-			}
+			r.l.RecordServer(session.ActivityEntry{Type: session.ActivityProgress, Message: m})
+			r.l.RecordServer(session.ActivityEntry{Type: session.ActivityFile, Op: "edit", Path: m + ".go"})
 		case op == 4: // a session ended
 			r := pick(func(r *propReg) bool { return r.listed && !r.ended })
 			if r == nil {
 				continue
 			}
 			what = "ended"
-			if r.hosted {
-				code := 0
-				r.hs.HostStatus(session.StatusExited, &code)
-			} else {
-				r.proc.End(0)
-				<-r.l.Ended()
-			}
+			r.proc.End(0)
+			<-r.l.Ended()
 			r.ended = true
-		case op == 5: // a session removed: a server one from the registry, a hosted one let go by the hub
+		case op == 5: // a session removed from the registry
 			r := pick(func(r *propReg) bool { return r.listed })
 			if r == nil {
 				continue
 			}
 			what = "removed"
-			if !r.hosted {
-				last(r)
-				r.listed = false
-				e.srv.registry.Remove(r.id)
-				break
-			}
-			if r.conn != nil {
-				r.hs.HostDisconnected(r.conn)
-				r.conn = nil
-			}
-			// The hub lets go of every hosted session away past the grace.
-			for _, o := range regs {
-				if o.hosted && o.listed && o.conn == nil {
-					last(o)
-					o.listed = false
-				}
-			}
-			e.srv.hosts.Expire(time.Now().Add(signal.DisconnectGrace + time.Second))
-		case op == 6: // a host away for a moment
-			r := pick(func(r *propReg) bool { return r.hosted && r.listed && r.conn != nil })
-			if r == nil {
-				continue
-			}
-			what = "disconnected"
-			r.hs.HostDisconnected(r.conn)
-			r.conn = nil
-		case op == 7: // a host back: the same registration within the grace, a new one after the hub let it go
-			r := pick(func(r *propReg) bool { return r.hosted && r.conn == nil && r == pickLatest(regs, r.instance) })
-			if r == nil {
-				continue
-			}
-			if r.listed {
-				what = "reconnected"
-				hs, conn := registerHost(t, e, r.instance, "1")
-				if hs != r.hs {
-					t.Fatalf("seed %d: a host back within the grace made a new session", seed)
-				}
-				r.conn = conn
-				break
-			}
-			what = "registered again"
-			n := &propReg{hosted: true, instance: r.instance}
-			n.hs, n.conn = registerHost(t, e, n.instance, "1")
-			n.id = n.hs.Info().ID
-			regs = append(regs, n)
-			registered(n, n.hs)
+			last(r)
+			r.listed = false
+			e.srv.registry.Remove(r.id)
 		case op == 8: // a record forgotten
 			if len(recs) == 0 {
 				continue
@@ -364,7 +291,7 @@ func TestTheRecordFollowsTheSession(t *testing.T) {
 		if !r.listed {
 			continue
 		}
-		if !r.hosted && !r.ended {
+		if !r.ended {
 			rec := recOf(r.id)
 			if r.recorded && !rec.forgotten && r.epoch == rec.epoch {
 				rec.final, rec.name, rec.lost, rec.how = true, r.name, false, "stopped"
@@ -402,15 +329,4 @@ func TestTheRecordFollowsTheSession(t *testing.T) {
 			}
 		}
 	}
-}
-
-// pickLatest is the last registration of instance.
-func pickLatest(regs []*propReg, instance string) *propReg {
-	var out *propReg
-	for _, r := range regs {
-		if r.hosted && r.instance == instance {
-			out = r
-		}
-	}
-	return out
 }
