@@ -890,8 +890,14 @@ func TestCatchUpAfterARestart(t *testing.T) {
 		}
 	}
 	rs.Close()
+	// A record this version cannot read: listed as unreadable by the
+	// journal, never indexed, and never a source retried for good.
+	if err := os.WriteFile(filepath.Join(e.srv.cfg.DataDir, journal.Dir, journal.SessionsDir, "00000000000000ff.json"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	e2 := e.restart()
 	ix := histSettle(t, e2)
+	histGone(t, ix, hSessionRef("00000000000000ff"))
 	histEntry(t, ix, "run:hist-0000000e")
 	histEntry(t, ix, "run:hist-0000000f")
 	e2.srv.Shutdown(ctx)

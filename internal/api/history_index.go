@@ -684,7 +684,10 @@ func (h *historyIndexer) repoIdent(ctx context.Context, dir string) repoIdent {
 func (h *historyIndexer) indexSession(ctx context.Context, ix *history.Index, id string) error {
 	key := hSessionRef(id)
 	rec, _, err := h.journal.Get(id)
-	if errors.Is(err, journal.ErrNotFound) || errors.Is(err, journal.ErrBadID) {
+	var unreadable *store.ParseError
+	if errors.Is(err, journal.ErrNotFound) || errors.Is(err, journal.ErrBadID) || errors.As(err, &unreadable) {
+		// Gone, or a file this version cannot decode (the journal lists it
+		// as unreadable and keeps it as it is): nothing to index.
 		return ix.Remove(ctx, key)
 	}
 	if err != nil {
@@ -1153,7 +1156,9 @@ func (h *historyIndexer) storeSources(ctx context.Context, sessionsOnly bool) ([
 			return nil, false, err
 		}
 		for _, r := range page.Records {
-			keys = append(keys, hSessionRef(r.ID))
+			if !r.Unreadable {
+				keys = append(keys, hSessionRef(r.ID))
+			}
 		}
 		if page.Next == "" {
 			break
