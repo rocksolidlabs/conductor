@@ -291,6 +291,34 @@ type Local struct {
 	dialogAnsweredAt uint64
 	results          map[string]*Answer
 	resultIDs        []string
+	// resuming is the questions answered whose results wait for their
+	// resumption (Answer.Resumed), oldest first, each its own: the first
+	// attention change after its answer that says how the session went on
+	// (noteResumedLocked). A second answer never takes the place of the
+	// first's. Guarded by mu.
+	resuming []string
+	// claiming is the tokens of the claims whose claimant may still
+	// resolve them: from claimLocked until resolve, or until the claimant
+	// gives it up unresolved (claimSettled, release, strand, the claim
+	// dropped or its question forgotten). endedQs is the questions whose
+	// claim stood with its claimant at the session's end (markEnded),
+	// with the question as it stood: the keys may have been written, so
+	// the question has not left until its claim settles: resolved (the
+	// answer taken, its resumption the end) or given up (left as ended).
+	// Guarded by mu.
+	claiming map[uint64]bool
+	endedQs  map[string]Attention
+	// holding is every question the session holds, shown or kept to show
+	// again (Info.Kept: the agent's own set aside, the one a held turn
+	// holds over), each with whether keys typed in the terminal reached
+	// it; shownQ is the one the attention showed at the last look; and
+	// left the last resultsKept questions that went for good without an
+	// answer through their claim (leftIDs, oldest first), each once, with
+	// how (Left*) and when (noteGoneLocked, QuestionLeft). Guarded by mu.
+	holding map[string]bool
+	shownQ  string
+	left    map[string]Resumption
+	leftIDs []string
 	// keysIn splits what is written to the program into the keys it reads
 	// (keysWritten), every write made, in the writer's order. Guarded by mu.
 	keysIn keyReader
@@ -660,6 +688,10 @@ func (s *Local) markEnded(status Status) {
 		return
 	}
 	s.info.Status = status
+	// A claim whose claimant may still resolve it stays, its question kept
+	// as it stands (endedQs): its keys may have been written, and the
+	// question leaves only as the claim settles. Every other claim goes.
+	s.endClaimsLocked()
 	// An ended session needs nothing: what it waited on goes with its
 	// process, in the critical section that ends it, so nothing ever sees an
 	// ended session that still needs input. Its history stays in the activity
@@ -670,10 +702,13 @@ func (s *Local) markEnded(status Status) {
 		s.signalAttention()
 	}
 	// Nor is anything kept to show again: the agent's own question goes
-	// with it, shown or set aside, and so do a claim on it, its
+	// with it, shown or set aside, and so does the one the hold of the
+	// turn holds over, each noted as gone (noteGoneLocked: left as ended,
+	// or answered in the terminal when keys reached it), with its
 	// consumption and the screen's baseline.
 	s.dropOwnLocked(ChatLeftAgent)
-	s.claims, s.consumed = nil, ""
+	s.heldOver = Attention{}
+	s.consumed = ""
 	s.shotWait, s.shotRows = "", nil
 	s.settleLocked(s.info.Attention)
 	now := time.Now().UTC()
@@ -1007,6 +1042,8 @@ func (s *Local) readStatus(state, kind string, turn uint64) {
 // once the agent has declared its program status. The caller holds s.mu,
 // and calls it wherever the attention shown changes.
 func (s *Local) settleLocked(att Attention) {
+	s.noteResumedLocked(att)
+	s.noteGoneLocked()
 	if s.opts.WorkingTitle == nil && !s.statusSeen {
 		return
 	}
@@ -1904,6 +1941,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		}
 		if opt.only != "" && s.heldOver.ID == opt.only {
 			s.heldOver = Attention{}
+			s.noteGoneLocked()
 			changed = true
 		}
 		s.mu.Unlock()
@@ -2764,7 +2802,17 @@ func (s *Local) AnswerInput(ctx context.Context, sub *Subscription, question str
 // or withdrawn meanwhile) or the session ended (ErrSessionEnded); any
 // other return is the word, and finished is not called.
 func (s *Local) AnswerInputFinished(ctx context.Context, sub *Subscription, question string, data []byte, finished func(error)) error {
-	return s.input(ctx, viewer(sub), question, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, finished)
+	return s.AnswerInputReq(ctx, sub, question, "", data, finished)
+}
+
+// AnswerInputReq is AnswerInputFinished for a reply that names its
+// request (proto.Answer.ReqID): the question's kept result records it as
+// the winner's (QuestionResult), so that two replies are told apart by
+// their ids.
+func (s *Local) AnswerInputReq(ctx context.Context, sub *Subscription, question, reqID string, data []byte, finished func(error)) error {
+	who := viewer(sub)
+	who.reqID = reqID
+	return s.input(ctx, who, question, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, finished)
 }
 
 // InputContext is Input waiting until ctx ends in place of
@@ -3140,7 +3188,7 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 			s.typedKeys(who, data, typedEnter)
 		}
 		if token != 0 {
-			s.resolve(question, token, who.id(), who.displayName(), data)
+			s.resolve(question, token, who.id(), who.displayName(), who.reqID, data)
 		}
 	}
 	landed, err := s.writeProc(ctx, data, o)
@@ -3150,26 +3198,36 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 			// written keys is done then. At most one write is begun at a
 			// time, so at most one such wait is under way. A reply's word
 			// (finished) waits for the landing: accepted meanwhile
-			// (ErrSubmitPending).
+			// (ErrSubmitPending). Landed as the session ends, the keys
+			// were written: the landing wins (as landEnter's).
 			go func() {
+				var werr error
 				select {
-				case werr := <-landed:
-					if werr == nil {
-						written()
-					}
-					if finished != nil {
-						finished(werr)
-					}
+				case werr = <-landed:
 				case <-s.ended:
-					if finished != nil {
-						finished(ErrSessionEnded)
+					select {
+					case werr = <-landed:
+					default:
+						werr = ErrSessionEnded
 					}
+				}
+				if werr == nil {
+					written()
+				} else {
+					s.claimSettled(question, token)
+				}
+				if finished != nil {
+					finished(werr)
 				}
 			}()
 			if finished != nil {
 				return ErrSubmitPending
 			}
+			return err
 		}
+		// Not written: a claim the writer made for the keys resolves
+		// nothing (claimSettled).
+		s.claimSettled(question, token)
 		return err
 	}
 	if hook := s.beforeWritten.Load(); hook != nil {
@@ -3288,6 +3346,12 @@ func (s *Local) dropOwnLocked(reason string) {
 	if reason != "" {
 		s.leftInChatLocked(id, reason)
 	}
+	// A person's keys withdrew it (rawKeys) or reached it: it left as
+	// answered in the terminal, as its card says.
+	if reason == ChatLeftTerminal {
+		s.typedLocked(id)
+	}
+	s.noteGoneLocked()
 }
 
 // questionClaim is the structured answer being written to a question
@@ -3327,6 +3391,10 @@ func (s *Local) claimLocked(id, decision string) (uint64, error) {
 		s.claims = map[string]questionClaim{}
 	}
 	s.claims[id] = c
+	if s.claiming == nil {
+		s.claiming = map[uint64]bool{}
+	}
+	s.claiming[c.token] = true
 	att := s.info.Attention
 	switch att.Source {
 	case SourceQuestion:
@@ -3344,8 +3412,60 @@ func (s *Local) claimedLocked(id string) bool { return id != "" && s.claims[id].
 // dropClaimLocked lets the claim c go, if it still stands. The caller
 // holds s.mu.
 func (s *Local) dropClaimLocked(c questionClaim) {
-	if c.id != "" && s.claims[c.id] == c {
-		delete(s.claims, c.id)
+	if c.id == "" || s.claims[c.id] != c {
+		return
+	}
+	delete(s.claims, c.id)
+	delete(s.claiming, c.token)
+	if _, ok := s.endedQs[c.id]; ok {
+		// Past the end, its question goes with it: left as ended.
+		delete(s.endedQs, c.id)
+		s.noteGoneLocked()
+	}
+}
+
+// endClaimsLocked is the claims at the session's end (markEnded): one
+// whose claimant may still resolve it (claiming) stands, its question
+// kept as it stands (endedQs), so that keys written before the end and
+// resolved after it are the question's answer, never its leaving; every
+// other goes. The caller holds s.mu.
+func (s *Local) endClaimsLocked() {
+	for id, c := range s.claims {
+		var q Attention
+		for _, a := range []Attention{s.info.Attention, s.heldOver, s.own} {
+			if a.ID == id {
+				q = a
+				break
+			}
+		}
+		if !s.claiming[c.token] || q.ID == "" {
+			delete(s.claims, id)
+			delete(s.claiming, c.token)
+			continue
+		}
+		if s.endedQs == nil {
+			s.endedQs = map[string]Attention{}
+		}
+		s.endedQs[id] = q
+	}
+}
+
+// claimSettled is the claimant of the claim (id, token) done with it
+// unresolved: its keys not written (the write failed, or the session
+// ended under it), or its line given up. Before the end the claim stands
+// as it did, a reply to the question refused until the question goes,
+// and it no longer holds the question at the end (endClaimsLocked);
+// after the end it goes now, and its question with it, left as ended.
+// Nothing for a claim resolved or let go, or for token 0.
+func (s *Local) claimSettled(id string, token uint64) {
+	if token == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.claiming, token)
+	if _, ok := s.endedQs[id]; ok {
+		s.dropClaimLocked(questionClaim{id: id, token: token})
 	}
 }
 
@@ -3384,28 +3504,43 @@ func (s *Local) release(id string, token uint64) {
 // of the turn shown again when one stands; one held over goes without
 // showing again. The agent's own question kept (own) goes with it. An
 // input entry with the question records the answer.
-func (s *Local) resolve(id string, token uint64, by, byName string, keys []byte) {
+func (s *Local) resolve(id string, token uint64, by, byName, reqID string, keys []byte) {
 	s.mu.Lock()
 	if s.claims[id] != (questionClaim{id: id, token: token}) {
 		s.mu.Unlock()
 		return
 	}
 	delete(s.claims, id)
+	delete(s.claiming, token)
 	att := s.info.Attention
 	shown := att.State == AttentionNeedsInput && att.ID == id
 	over := s.heldOver.ID == id
-	if !shown && !over {
+	// A claim that stood at the session's end, its keys written: the
+	// question kept as it stood then is the one answered (endClaimsLocked).
+	atEnd, ended := s.endedQs[id]
+	delete(s.endedQs, id)
+	if !shown && !over && !ended {
 		s.mu.Unlock()
 		return
 	}
 	q := att
-	if !shown {
+	switch {
+	case ended:
+		q = atEnd
+	case !shown:
 		q = s.heldOver
 		s.heldOver = Attention{}
 	}
 	result := &Answer{By: by, ByName: byName, At: time.Now().UTC(), Message: q.Message}
 	s.info.LastAnswer = result
-	s.keepResultLocked(id, result)
+	// The kept result is a copy of its own, which alone carries the
+	// winning reply's request id and later its resumption: LastAnswer is
+	// shared with every description taken from now.
+	kept := *result
+	kept.ReqID = reqID
+	s.keepResultLocked(id, &kept)
+	s.resuming = append(s.resuming, id)
+	delete(s.holding, id)
 	if s.own.ID == id {
 		s.dropOwnLocked("")
 	}
@@ -3436,6 +3571,10 @@ func (s *Local) resolve(id string, token uint64, by, byName string, keys []byte)
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
 	}
+	if ended {
+		// Answered as the session ended: the end is how it went on.
+		s.noteResumedLocked(s.info.Attention)
+	}
 	answered, answeredID, told := s.answeredInChat(id, by, byName, answerWords(q.Options, keys))
 	s.mu.Unlock()
 	if told {
@@ -3463,6 +3602,183 @@ func (s *Local) keepResultLocked(id string, result *Answer) {
 	s.results[id] = result
 }
 
+// noteResumedLocked sets the resumption of each question answered whose
+// result waits for one (resuming), once, from att, the attention now
+// showing: the session ended, the agent working, or a next question asked
+// (another than that one; the hold of the turn is none: the work has not
+// gone on). Any other attention leaves them waiting. Each answer keeps its
+// own: a second answer waiting beside the first never takes its place.
+// settleLocked calls it wherever the attention shown changes. The caller
+// holds s.mu.
+func (s *Local) noteResumedLocked(att Attention) {
+	if len(s.resuming) == 0 {
+		return
+	}
+	at := time.Now().UTC()
+	if att.Since != nil && !s.info.Status.Ended() {
+		at = *att.Since
+	}
+	s.resuming = slices.DeleteFunc(s.resuming, func(id string) bool {
+		r := s.results[id]
+		if r == nil || r.Resumed != nil {
+			// Forgotten past resultsKept, or set already.
+			return true
+		}
+		how := ""
+		switch {
+		case s.info.Status.Ended():
+			how = ResumedEnded
+		case att.State == AttentionWorking:
+			how = ResumedWorking
+		case att.State == AttentionNeedsInput && att.ID != "" && att.ID != id && att.Source != SourceSubmit:
+			how = ResumedAsked
+		default:
+			return false
+		}
+		r.Resumed = &Resumption{At: at, How: how}
+		return true
+	})
+}
+
+// How a question went for good without an answer through its claim
+// (QuestionLeft). One question leaves one way: keys typed in the terminal
+// first (they reached it, whatever let it go after), then the session's
+// end, then another question shown in its place, else withdrawn.
+const (
+	LeftTerminal   = "terminal"   // keys typed in the terminal answered it
+	LeftEnded      = "ended"      // the session ended while it was asked or kept
+	LeftSuperseded = "superseded" // another question was shown in its place
+	LeftWithdrawn  = "withdrawn"  // the agent or the screen took it away
+)
+
+// heldNowLocked is the questions the session holds now: the one the
+// attention shows (never the hold of the turn, which is no question),
+// those it keeps to show again (Info.Kept), and, past the end, those
+// whose claim stood with its claimant at the end (endedQs: not left
+// until the claim settles). The caller holds s.mu.
+func (s *Local) heldNowLocked() (shown string, now []string) {
+	if att := s.info.Attention; att.State == AttentionNeedsInput && att.Source != SourceSubmit {
+		shown = att.ID
+	}
+	now = []string{shown, s.own.ID, s.heldOver.ID}
+	for id := range s.endedQs {
+		now = append(now, id)
+	}
+	return shown, now
+}
+
+// noteGoneLocked notes, once each, the questions the session held (holding)
+// and holds no longer, shown nor kept, with no result: gone for good
+// without an answer through their claim, and how (Left*). It is called
+// in every step that lets a question go (settleLocked, wherever the
+// attention shown changes; forgetLocked; dropOwnLocked; the held over one
+// withdrawn), so that how a question left is noted in the step it left
+// in, under the session's lock, whichever path it took. A question
+// answered through its claim leaves through resolve, which takes it out
+// of holding with its result. The caller holds s.mu.
+func (s *Local) noteGoneLocked() {
+	shown, now := s.heldNowLocked()
+	if s.holding == nil {
+		s.holding = map[string]bool{}
+	}
+	if typed, ok := s.holding[s.consumed]; ok && !typed {
+		s.holding[s.consumed] = true
+	}
+	for id, typed := range s.holding {
+		if slices.Contains(now, id) {
+			continue
+		}
+		delete(s.holding, id)
+		if s.results[id] != nil {
+			continue
+		}
+		how := LeftWithdrawn
+		switch {
+		case typed:
+			how = LeftTerminal
+		case s.info.Status.Ended():
+			how = LeftEnded
+		case shown != "" && shown != s.shownQ:
+			how = LeftSuperseded
+		}
+		s.keepLeftLocked(id, how)
+	}
+	for _, id := range now {
+		if _, ok := s.holding[id]; id != "" && !ok {
+			s.holding[id] = s.consumed == id
+			s.forgetLeftLocked(id)
+		}
+	}
+	s.shownQ = shown
+}
+
+// typedLocked marks the question id the session holds as reached by keys
+// typed in the terminal: it leaves as answered there (LeftTerminal). The
+// caller holds s.mu.
+func (s *Local) typedLocked(id string) {
+	if _, ok := s.holding[id]; ok {
+		s.holding[id] = true
+	}
+}
+
+// keepLeftLocked keeps how the question id left, at most resultsKept,
+// the oldest forgotten first. The caller holds s.mu.
+func (s *Local) keepLeftLocked(id, how string) {
+	if s.left == nil {
+		s.left = map[string]Resumption{}
+	}
+	if _, kept := s.left[id]; kept {
+		return
+	}
+	s.leftIDs = append(s.leftIDs, id)
+	if len(s.leftIDs) > resultsKept {
+		delete(s.left, s.leftIDs[0])
+		s.leftIDs = s.leftIDs[1:]
+	}
+	s.left[id] = Resumption{At: time.Now().UTC(), How: how}
+}
+
+// forgetLeftLocked forgets how the question id left: it is held again
+// (shown again with its id), and leaves anew. The caller holds s.mu.
+func (s *Local) forgetLeftLocked(id string) {
+	if _, ok := s.left[id]; !ok {
+		return
+	}
+	delete(s.left, id)
+	s.leftIDs = slices.DeleteFunc(s.leftIDs, func(x string) bool { return x == id })
+}
+
+// QuestionLeft is how the question named id went for good without an
+// answer through its claim, and when (Left*), for the last resultsKept
+// such questions; false for one answered, still shown, kept to show
+// again, or forgotten.
+func (s *Local) QuestionLeft(id string) (Resumption, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.left[id]
+	return r, ok
+}
+
+// QuestionResult is the kept result of the question named id (the last
+// resultsKept questions'): who answered it and when, the winning reply's
+// request id (ReqID, "" for keys typed by an actor or a line naming none)
+// and, once the session went on, how (Resumed). false when the session
+// keeps none: never answered through its claim, or forgotten.
+func (s *Local) QuestionResult(id string) (Answer, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.results[id]
+	if r == nil {
+		return Answer{}, false
+	}
+	out := *r
+	if r.Resumed != nil {
+		res := *r.Resumed
+		out.Resumed = &res
+	}
+	return out, true
+}
+
 // consumeLocked marks the question instance named id, shown, as reached by
 // keys typed in the terminal (consumed): it takes no answer (waitsLocked),
 // and goes once the screen shows it gone or the next takes its place. Only
@@ -3473,6 +3789,7 @@ func (s *Local) consumeLocked(id string) {
 		return
 	}
 	s.consumed = id
+	s.typedLocked(id)
 	if att := s.info.Attention; att.State == AttentionNeedsInput && att.ID == id {
 		// The question shown reads answered in the terminal from here
 		// (attentionLocked, #258): every client hears so at once, through
@@ -3517,13 +3834,18 @@ func (s *Local) forgetLocked(id string) {
 		return
 	}
 	s.leftInChatLocked(id, s.leftReasonLocked(id))
-	delete(s.claims, id)
+	if c, ok := s.claims[id]; ok {
+		delete(s.claiming, c.token)
+		delete(s.claims, id)
+	}
+	delete(s.endedQs, id)
 	if s.consumed == id {
 		s.consumed = ""
 	}
 	if s.shotWait == id {
 		s.shotWait, s.shotRows = "", nil
 	}
+	s.noteGoneLocked()
 }
 
 // withdrawShownLocked withdraws the question showing without an answer:
@@ -4091,6 +4413,9 @@ func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, start
 		}
 	case SourceBell, SourceOSC, SourcePattern, SourceStatus:
 		if enter {
+			// A person's Enter answered the wait: it leaves as answered
+			// in the terminal.
+			s.typedLocked(att.ID)
 			s.withdrawShownLocked(SourceInput)
 			go s.notifyChange()
 		}
@@ -5097,34 +5422,40 @@ func (s *Local) LastLine() string {
 	return ""
 }
 
-// TailLines is the last n lines of output the session kept (at most n,
-// oldest first), their escape sequences stripped, each cut to at most
-// maxLastLine*4 bytes and made valid UTF-8, trailing blank lines left out:
-// what a person reading its screen sees of its end (the Brakeman desk's
-// screen read).
-func (s *Local) TailLines(n int) []string {
+// ScreenLines is ScreenRead's rows (the Brakeman desk's screen read).
+func (s *Local) ScreenLines(n int) []string {
+	rows, _ := s.ScreenRead(n)
+	return rows
+}
+
+// ScreenRead is what a person reading the session's terminal sees: the
+// last n rows at most of the screen every session keeps of its output
+// (shot, at the terminal's size: the alternate screen while the program
+// is on it), oldest first, blank rows at the bottom left out, each row's
+// trailing spaces too, each cut to at most maxLastLine*4 bytes: the
+// characters in the cells, whatever their attributes, as copying from a
+// terminal's own selection gives them. A program that redraws one row in
+// place reads as that row. updating says a synchronized update is under
+// way: the program has begun one and not ended it, and the rows are its
+// frame as far as it is drawn, which a terminal shows only once the update
+// ends (or its own timeout passes).
+func (s *Local) ScreenRead(n int) (rows []string, updating bool) {
 	if n <= 0 {
-		return nil
+		return nil, false
 	}
-	text := strings.ReplaceAll(string(StripANSI(s.ring.Snapshot())), "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	lines := strings.Split(strings.TrimRight(text, " \t\n"), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		return nil
+	rows, drawn := s.shot.Rows()
+	for len(rows) > 0 && rows[len(rows)-1] == "" {
+		rows = rows[:len(rows)-1]
 	}
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	out := make([]string, 0, len(lines))
-	for _, l := range lines {
-		l = strings.ToValidUTF8(strings.TrimRight(l, " \t"), "")
+	rows = rows[len(rows)-min(n, len(rows)):]
+	for i, l := range rows {
 		for len(l) > maxLastLine*4 {
 			_, k := utf8.DecodeLastRuneInString(l)
 			l = l[:len(l)-k]
 		}
-		out = append(out, l)
+		rows[i] = l
 	}
-	return out
+	return rows, !drawn
 }
 
 // DisconnectLink evicts every subscription created through linkID as

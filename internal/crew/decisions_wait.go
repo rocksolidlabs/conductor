@@ -583,7 +583,8 @@ func (r *run) gateTasks(pd PackageDecision, doomed map[*task]bool) []*task {
 }
 
 // regate is the end of every change that makes a task runnable again (a
-// retry, an accept, a reopen, a continuation): for each plan decision the
+// retry, an accept and a Check again, through reopenRun; a review's
+// reopen; a continuation): for each plan decision the
 // run chain has not released, the tasks it names that are unfinished and
 // not doomed are held by its standing decision, or by a fresh one opened
 // in this change ("dr-9 asks again: build was retried after dr-1 was
@@ -756,10 +757,11 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 	})
 }
 
-// retryNeedsRoom refuses a retry or an accept of t that would make a plan
+// retryNeedsRoom refuses a retry, an accept or a Check again of t (what
+// names the command in the refusal's words) that would make a plan
 // decision ask again in a run with no room for it (decision_limit): the
 // task stays as it was. The caller holds e.mu.
-func (r *run) retryNeedsRoom(t *task) error {
+func (r *run) retryNeedsRoom(t *task, what string) error {
 	if r.dec.gates == nil || r.pkg == nil {
 		return nil
 	}
@@ -795,7 +797,7 @@ func (r *run) retryNeedsRoom(t *task) error {
 	if len(asks) == 0 || r.decisionRoom(len(asks)) {
 		return nil
 	}
-	return refuse(CodeDecisionLimit, "the plan's decisions %s would ask again, and the run has room for %d more (%s): the retry is refused", strings.Join(asks, ", "), r.roomLeft(), r.roomWords())
+	return refuse(CodeDecisionLimit, "the plan's decisions %s would ask again, and the run has room for %d more (%s): the %s is refused", strings.Join(asks, ", "), r.roomLeft(), r.roomWords(), what)
 }
 
 // decisionsHeld counts what decisionRoom counts against the run's bound:
