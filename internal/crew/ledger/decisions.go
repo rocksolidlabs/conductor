@@ -349,7 +349,8 @@ func finalDecision(state string) bool {
 // ResponseRow is one response to a decision, accepted or refused, with its
 // receipt (JSON): K in the order received; Authority (JSON {grant, via,
 // subject?, boot}) is what the policy checks, kept apart from Actor, the
-// audit's words.
+// audit's words, and kept in its canonical text, whatever spelling of it
+// Respond was given (authorityOf).
 type ResponseRow struct {
 	Decision    int64
 	K           int
@@ -618,21 +619,39 @@ func checkPolicy(raw string) error {
 	return nil
 }
 
-// authorityOf decodes a response's authority, refusing one not of its shape.
-func authorityOf(raw string) (authorityShape, error) {
+// authorityOf decodes a response's authority, refusing one not of its
+// shape, and answers it with its canonical text, the one form a response
+// row keeps. The decoder takes spellings SQL reads otherwise: a key in
+// any case ("Via") or escaped ("\u0076ia"), a key given twice (the
+// decoder keeps the last, json_extract the first), keys in any order. A
+// row kept as typed could be an identity's to the policy and not to
+// placeCond's '$.via', and hold no place for its replacement; the
+// canonical text is the decoded value encoded again, so both read it
+// alike.
+func authorityOf(raw string) (authorityShape, string, error) {
 	var a authorityShape
 	if len(raw) > MaxAuthority {
-		return a, tooLarge("the authority", len(raw))
+		return a, "", tooLarge("the authority", len(raw))
 	}
 	if err := strict(raw, &a); err != nil {
-		return a, invalid("the authority: %v", err)
+		return a, "", invalid("the authority: %v", err)
 	}
 	switch a.Via {
 	case "workbench", ViaIdentity, "router":
 	default:
-		return a, invalid("an authority is via the workbench, an identity or a router, not %q", a.Via)
+		return a, "", invalid("an authority is via the workbench, an identity or a router, not %q", a.Via)
 	}
-	return a, nil
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(a); err != nil {
+		return a, "", invalid("the authority: %v", err)
+	}
+	canon := strings.TrimSuffix(b.String(), "\n")
+	if len(canon) > MaxAuthority {
+		return a, "", tooLarge("the authority", len(canon))
+	}
+	return a, canon, nil
 }
 
 // checkObject refuses text that is not "" or one JSON object within max
@@ -993,10 +1012,11 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 	if err := checkKeys(map[string]string{"the response id": r.ResponseID, "the fingerprint": r.Fingerprint}, MaxDecisionKey); err != nil {
 		return Responded{}, err
 	}
-	auth, err := authorityOf(r.Authority)
+	auth, canon, err := authorityOf(r.Authority)
 	if err != nil {
 		return Responded{}, err
 	}
+	r.Authority = canon
 	if err := checkObject("the response receipt", r.Receipt, MaxDecisionReceipt, false); err != nil {
 		return Responded{}, err
 	}
