@@ -579,6 +579,9 @@ func TestHistorySessionRoutesAreAdminOnly(t *testing.T) {
 		t.Fatalf("forget a live session: %d %v", resp.StatusCode, out)
 	}
 	e.stopAndWait(id)
+	// The session tells its last change after its Ended closes: its record
+	// is ended once that change's reconcile has read it.
+	endedRecord(t, e, id)
 	if resp, out := e.do("DELETE", "/api/history/sessions", adminToken, nil); resp.StatusCode != http.StatusOK || out["forgotten"] != float64(1) || out["kept"] != float64(0) {
 		t.Fatalf("forget all: %d %v", resp.StatusCode, out)
 	}
