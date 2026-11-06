@@ -712,7 +712,7 @@ func TestClassifyFailure(t *testing.T) {
 		{"a dropped log with no output", failedA, with(func(r *ledger.CheckRow) { r.LogDropped, r.Tail = true, "" }), nil, FailureUnavailable, "dropped"},
 		{"a dropped log with its tail kept", failedA, with(func(r *ledger.CheckRow) { r.LogDropped = true }), nil, FailureCode, "exited 1"},
 		{"a signal", failedA, with(func(r *ledger.CheckRow) { r.Exit, r.Signal = -1, "killed" }), nil, FailureCode, "signal killed"},
-		{"a timeout", failedA, with(func(r *ledger.CheckRow) { r.Exit, r.TimedOut, r.FinishedAt = -1, true, at.Add(600*time.Second) }), nil, FailureCode, "timed out after 10m0s: a hang in the code, or a machine too slow"},
+		{"a timeout", failedA, with(func(r *ledger.CheckRow) { r.Exit, r.TimedOut, r.FinishedAt = -1, true, at.Add(600*time.Second) }), nil, FailureCode, "timed out after 600 s: a hang in the code, or a machine too slow"},
 		{"a changed checkout", failedA, with(func(r *ledger.CheckRow) { r.Exit, r.Stable, r.Error = 0, false, "changed tracked files: a.txt" }), nil, FailureCode, "left the checkout changed"},
 		{"killed and exited non-zero", failedA, with(func(r *ledger.CheckRow) { r.Killed = true }), nil, FailureCode, "exited 1; a process it left behind"},
 	} {

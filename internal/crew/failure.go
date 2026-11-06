@@ -84,7 +84,7 @@ func ClassifyFailure(a ledger.AttemptRow, r ledger.CheckRow, same []ledger.Check
 	var words string
 	switch {
 	case r.TimedOut:
-		words = fmt.Sprintf("timed out after %s: a hang in the code, or a machine too slow", r.FinishedAt.Sub(r.StartedAt).Round(time.Second))
+		words = fmt.Sprintf("timed out after %d s: a hang in the code, or a machine too slow", int64(r.FinishedAt.Sub(r.StartedAt).Round(time.Second)/time.Second))
 	case r.Signal != "":
 		words = "ended by the signal " + r.Signal
 	case r.Exit != 0:
