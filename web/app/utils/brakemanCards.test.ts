@@ -9,16 +9,19 @@ import {
   KEPT_MAX,
   KEPT_PREFIX,
   decisionControls,
+  draftPlanProblem,
   handoffMarkdown,
   handoffTickets,
   isStale,
   madeWords,
   makeAgain,
   PENDING_ELSEWHERE,
+  planCardControl,
   proposalArgs,
   proposalControl,
   proposalSends,
   readKeptMakes,
+  reconcileActs,
   reconcileMade,
   revisionOf,
   sendKept,
@@ -314,6 +317,50 @@ describe("a request's makes and edges, as replies bring them", () => {
   })
 })
 
+describe("a draft plan revision's form", () => {
+  const form = (over: Partial<{ crew: string; constraints: string; note: string; questions: string[] }> = {}) => ({ crew: 'team', constraints: '', note: '', questions: [], ...over })
+  it("measures a decision's question in characters, as the server does, so a multibyte question within 500 characters is proposed", () => {
+    expect(draftPlanProblem(form({ questions: ['鍵'.repeat(200)] }))).toBe('')
+    expect(utf8Bytes('鍵'.repeat(200))).toBe(600)
+    expect(draftPlanProblem(form({ questions: ['鍵'.repeat(500), '😀'.repeat(500)] }))).toBe('')
+    expect(draftPlanProblem(form({ questions: ['鍵'.repeat(501)] }))).toBe("A decision's question is at most 500 characters.")
+    expect(draftPlanProblem(form({ questions: ['a'.repeat(501)] }))).toBe("A decision's question is at most 500 characters.")
+  })
+  it('names a crew, and keeps the constraints and the note within their bytes', () => {
+    expect(draftPlanProblem(form({ crew: ' ' }))).toBe('A plan revision runs a saved crew with tasks: name its id.')
+    expect(draftPlanProblem(form({ constraints: 'x'.repeat((8 << 10) + 1) }))).toBe('The constraints are at most 8 KiB.')
+    expect(draftPlanProblem(form({ note: 'x'.repeat((4 << 10) + 1) }))).toBe('The note is at most 4 KiB.')
+    expect(draftPlanProblem(form())).toBe('')
+  })
+  it('refuses a decision whose question was cleared, rather than sending the drafted one in its place', () => {
+    expect(draftPlanProblem(form({ questions: ['Key by locale?', ''] }))).toBe('Every decision needs its question: say what the person will decide.')
+    expect(draftPlanProblem(form({ questions: ['  '] }))).toBe('Every decision needs its question: say what the person will decide.')
+    expect(draftPlanProblem(form({ questions: ['Key by locale?'] }))).toBe('')
+  })
+})
+
+describe("a request's acts, as replies bring them", () => {
+  const at = (s: number) => `2026-11-05T10:00:${String(s).padStart(2, '0')}.000Z`
+  const act = (over: Record<string, unknown>) => ({ opId: 'a1', operation: 'launch_approved_plan', target: 'ticket:CND-4', op: 'k', state: 'pending', at: at(1), ...over })
+  it('never go back: a read sent while an act was pending, answered after the one that saw it done, leaves it done with its receipt', () => {
+    const done = { acts: [act({ state: 'done', receipt: '0123456789abcdef', at: at(2) })] }
+    const pending = { acts: [act({})] }
+    expect(reconcileActs(done, pending)).toEqual(done)
+    expect(reconcileActs(pending, done)).toEqual(done)
+    // Not run is as final as done; a refused act its store kept no receipt for may still run under its opId.
+    expect(reconcileActs({ acts: [act({ state: 'not_run', at: at(2) })] }, pending).acts![0]!.state).toBe('not_run')
+    expect(reconcileActs({ acts: [act({ state: 'refused', at: at(2) })] }, done).acts![0]!.state).toBe('done')
+    expect(reconcileActs(done, { acts: [act({ state: 'refused', at: at(3) })] }).acts![0]!.state).toBe('done')
+  })
+  it('keep what a reply lacks, each by its opId', () => {
+    const had = { acts: [act({ state: 'done', receipt: '0123456789abcdef' })] }
+    expect(reconcileActs(had, {})).toEqual(had)
+    expect(reconcileActs({}, {})).toEqual({})
+    const two = reconcileActs(had, { acts: [act({ opId: 'a2', at: at(4) })] }).acts!
+    expect(two.map((a) => [a.opId, a.state])).toEqual([['a1', 'done'], ['a2', 'pending']])
+  })
+})
+
 describe("a handoff's comment", () => {
   it("is measured in UTF-8 bytes against Dispatch's bound", () => {
     expect(COMMENT_MAX).toBe(16384)
@@ -388,5 +435,51 @@ describe("a browser's unfinished makes, across its tabs", () => {
     expect(kept['br-1/0']).toBeUndefined()
     expect(kept[`br-${KEPT_MAX + 3}/0`]?.opId).toBe(`bkm-${KEPT_MAX + 2}`)
     expect(s.getItem('conductor.other')).toBe('kept')
+  })
+})
+
+describe("a plan revision's card, DS2's Approve from its live record (PR-11)", () => {
+  const rev = (over: Record<string, unknown> = {}) => ({ n: 2, state: 'proposed' as const, crewName: 'team', ...over })
+
+  it('is a plan control for a plan: ref, which the card reads live by its ticket and number', () => {
+    expect(decisionControls('plan:CND-4/2', undefined, {})).toEqual({ kind: 'plan', ticket: 'CND-4', n: 2, to: '/dispatch/CND/4', words: "Revision 2 of CND-4's plan, as Dispatch holds it now." })
+  })
+
+  it("offers Approve by DS2's own rule, the operator's, and Approve again only where an approval cures what changed", () => {
+    expect(planCardControl(rev(), 'CND-4', 2)).toMatchObject({ approve: 'Approve' })
+    expect(planCardControl(rev(), 'CND-4', 2).words).toContain('Brakeman never does')
+    expect(planCardControl(rev({ state: 'superseded' }), 'CND-4', 2)).toMatchObject({ approve: 'Approve' })
+    expect(planCardControl(rev({ state: 'approved', stale: { words: 'The title was edited', remedy: 'approve' } }), 'CND-4', 2)).toMatchObject({ approve: 'Approve again' })
+    expect(planCardControl(rev({ state: 'approved', stale: { words: 'A comment it hands over was edited', remedy: 'revise' } }), 'CND-4', 2)).toMatchObject({ approve: null })
+  })
+
+  it('offers nothing for a revision approved and holding, withdrawn, whose agents changed, or not there', () => {
+    expect(planCardControl(rev({ state: 'approved' }), 'CND-4', 2)).toEqual({ approve: null, words: 'CND-4 r2 is approved, and its approval holds.' })
+    expect(planCardControl(rev({ state: 'withdrawn' }), 'CND-4', 2)).toMatchObject({ approve: null, words: 'CND-4 r2 was withdrawn: nothing approves it now.' })
+    expect(planCardControl(rev({ agentsChanged: true }), 'CND-4', 2)).toMatchObject({ approve: null })
+    expect(planCardControl(null, 'CND-4', 2)).toEqual({ approve: null, words: "CND-4 r2 is not among CND-4's revisions now: open the ticket." })
+  })
+
+  it("holds an approval whose saved crew alone changed, which the revision's frozen crew still launches, and says the crew changed beside it", () => {
+    const crew = planCardControl(rev({ state: 'approved', crewChanged: true }), 'CND-4', 2)
+    expect(crew.approve).toBeNull()
+    expect(crew.words).toMatch(/^CND-4 r2 is approved, and its approval holds\. The crew team was edited or removed since revision 2 was made; the revision keeps the crew as it was\.$/)
+    expect(crew.words).not.toContain('no longer holds')
+    // With a reason that blocks as well, only that one says why the approval no longer holds; the crew's is said beside it.
+    const both = planCardControl(rev({ state: 'approved', crewChanged: true, stale: { words: 'The title was edited', remedy: 'approve' } }), 'CND-4', 2)
+    expect(both.approve).toBe('Approve again')
+    expect(both.words).toMatch(/^CND-4 r2 is approved, but its approval no longer holds: The title was edited\. You approve it again, or not\. The crew team was edited/)
+    expect(planCardControl(rev({ crewChanged: true }), 'CND-4', 2)).toMatchObject({ approve: 'Approve' })
+  })
+
+  it("is text for a proposal of an operation a grant names, which the ticket's Plan section does", () => {
+    const ops: GuideOperation[] = [{ name: 'launch_approved_plan', scope: 'act', revision: 'ticket' }]
+    const c = proposalControl({ kind: 'proposal/1', text: 't', op: 'launch_approved_plan', target: 'ticket:CND-4', expectedRevision: '3' }, ops)
+    expect(c).toMatchObject({ kind: 'text', to: '/dispatch/CND/4' })
+    expect((c as { words: string }).words).toContain("ticket's Plan section")
+  })
+
+  it('says a proposed draft plan is the operator\'s to approve', () => {
+    expect(madeWords({ state: 'made', key: 'CND-4', plan: '0123456789abcdef' })).toBe("Proposed as a revision of CND-4's plan, under your name: the operator approves it or not.")
   })
 })

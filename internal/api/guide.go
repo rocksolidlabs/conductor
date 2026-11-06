@@ -49,7 +49,9 @@ type Operation struct {
 	// Scope is who reaches it: admin, session (any session), task (an
 	// attempt of a managed run) or ticket (a member of a run linked to a
 	// ticket) or observe (a Brakeman turn's session: its request and its
-	// brief; PR-4's reads join it).
+	// brief; PR-4's reads join it) or act (a Brakeman turn's session
+	// granted the operation by the person, PR-13: the act tool and the
+	// operations granted, each its own route's).
 	Scope  string `json:"scope"`
 	Method string `json:"method"`
 	// Path is the route's pattern, as the mux takes it after the method.
@@ -324,6 +326,28 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		observeOp("plans", "/api/dispatch/tickets/{key}/plans", "A ticket's plan revisions, newest first, each with its ref, state and rev; the approved one (approved) and whether its approval still holds (holds); the launches made from them, each with its ref. A deleted ticket's are read deleted (deleted: true), its approval holding false."),
 		observeOp("sessions", "/api/sessions", "The sessions in your scope: names, states, questions."),
 		observeOp("touched", "/api/touched", "The files the sessions in your scope touched.", "limit"),
+		// What a Brakeman turn may do once the person grants it
+		// (brakeman_act.go, PR-12): the act tool sends each operation to
+		// its own route, by the entries below (one per operation this
+		// build serves, named as the grant is), on the client side, as
+		// observe does; there is no act route of Brakeman's own. A turn's
+		// session token names its session in X-Conductor-Session on each.
+		// A turn's guide lists the tool and the operations its grant
+		// holds, the snapshot and the configuration now together.
+		{Name: "act", MCP: "act", Scope: "act", Method: http.MethodPost, Path: actRouteOf(brakeman.ActLaunchApprovedPlan), needs: needLauncher, Receipt: "dispatch",
+			Summary:     "Run an operation the person granted you, through its own route: checked against the grant, your scope and its target's state, it leaves its receipt.",
+			Description: "When this session is a Brakeman turn the person granted operations to: run one (operation names it: " + strings.Join(actOperations(), ", ") + ") through that operation's own route, with its path parameters in params and its body in body, as the guide's entry of that operation gives them; opId is minted when you give none, and the same opId again answers the receipt kept. It is refused unless the person grants it now and did when your turn began, its target is within your scope and visibility, and in the state the operation needs (an approved revision whose approval still holds; the ticket's revision you read as expectedRev). It runs as Brakeman and answers its route's own answer with the receipt; a brief's proposal of the act names its opId in args.opId, which the page shows done with that receipt. Approving, answering, accepting and closing stay the person's: no grant does them.",
+			CLI:         []string{"conductor", "brakeman", "act", "OPERATION", "--key", "KEY", "--body-file", "BODY.json"},
+			Input: obj(map[string]any{
+				"operation": map[string]any{"type": "string", "enum": actOperations(), "description": "the operation granted: the guide's entry of that name gives its route and its body"},
+				"params":    map[string]any{"type": "object", "description": "the route's path parameters, by name (key: the ticket's key)", "additionalProperties": map[string]any{"type": "string"}},
+				"body":      map[string]any{"type": "object", "description": "the route's body, as the operation's entry gives its schema, without opId"},
+				"opId":      str("your id for this act, 1 to 32 of A-Z a-z 0-9 . _ ~ -; minted when absent"),
+			}, "operation")},
+		actEntry(brakeman.ActLaunchApprovedPlan, ticketLaunchBody{},
+			"Launch a managed run from a ticket's plan revision the operator approved and whose approval still holds (plan: its id; expectedRev: the ticket's revision you read); the same launch for the same opId."),
+		actEntry(brakeman.ActPrepareFollowup, planProposeBody{},
+			"Propose a revision of a ticket's plan basedOn the approved one (its id), which the operator then approves or not: never approved by you."),
 		// The guide itself.
 		{Name: "guide", MCP: "guide", Scope: "session", Method: http.MethodGet, Path: sessions + "/guide",
 			Summary:     "This guide, from the running server: the overview without a section, else the section named.",
@@ -446,6 +470,44 @@ func observeOp(what, path, summary string, query ...string) Operation {
 	}
 	return Operation{Name: "observe_" + what, Scope: "observe", Method: http.MethodGet, Path: path, needs: needLauncher,
 		Summary: summary, Input: mcpObject(props), Bounds: map[string]int{"reply": bound}}
+}
+
+// actOperations is the operations a grant may name that this build
+// serves (actServed), in the closed list's order: the act tool's enum.
+func actOperations() []string {
+	var out []string
+	for _, op := range brakeman.Grantable {
+		if actServed(op) == nil {
+			out = append(out, op)
+		}
+	}
+	return out
+}
+
+// actRouteOf is the path of the route the granted operation op is sent
+// to (actRoutes), "" for one this build serves no route of.
+func actRouteOf(op string) string {
+	for pattern, ar := range actRoutes {
+		if ar.op == op {
+			_, path, _ := strings.Cut(pattern, " ")
+			return path
+		}
+	}
+	return ""
+}
+
+// actEntry is a granted operation as the guide lists it: its own route
+// (actRoutes) with the body that route decodes, its bound, the Dispatch
+// receipt it answers with and the ticket's revision it checks.
+func actEntry(op string, body any, summary string) Operation {
+	var bound int64
+	for _, ar := range actRoutes {
+		if ar.op == op {
+			bound = ar.bound
+		}
+	}
+	return Operation{Name: op, Scope: "act", Method: http.MethodPost, Path: actRouteOf(op), needs: needLauncher, Receipt: "dispatch", Revision: "ticket",
+		Summary: summary, Input: bodySchema(body), Bounds: map[string]int{"body": int(bound)}}
 }
 
 // runCommandOp is a run's command, with its receipt and revision.
@@ -612,11 +674,15 @@ type guideCaller struct {
 	// local says the session is a server session (not hosted); managed
 	// that its run is a managed one; brakeman that it is a Brakeman turn's.
 	local, managed, brakeman bool
+	// acts is a Brakeman turn's operations granted, the snapshot its turn
+	// began under and the configuration now together (grantedActs): the
+	// act scope lists the act tool and these alone.
+	acts []string
 }
 
 // adminCaller is the workbench token's: every scope.
 func adminCaller() guideCaller {
-	return guideCaller{Kind: "admin", Scopes: []string{"admin", "session", "task", "ticket", "observe"}}
+	return guideCaller{Kind: "admin", Scopes: []string{"admin", "session", "task", "ticket", "observe", "act"}}
 }
 
 // sessionCaller is d's: a session, a run's member, an attempt, a member
@@ -643,6 +709,9 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 		c.Kinds = append(c.Kinds, "brakeman")
 		c.Scopes = append(c.Scopes, "observe")
 		c.brakeman = true
+		if c.acts = s.turnActs(ref.Brakeman.Request); len(c.acts) > 0 {
+			c.Scopes = append(c.Scopes, "act")
+		}
 		return c
 	}
 	if inRun && s.dispatch != nil && !s.cfg.Switchyard.Enabled {
@@ -654,9 +723,34 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 	return c
 }
 
+// turnActs is the operations the request id's turn is granted, its
+// snapshot and the configuration now together; nil when none, or when
+// the records cannot be read (the guide then lists no act, and the act
+// routes refuse it as ever).
+func (s *Server) turnActs(id string) []string {
+	d := s.brakeman
+	if d == nil {
+		return nil
+	}
+	req, err := d.st.Get(id)
+	if err != nil || !req.Open() {
+		return nil
+	}
+	cfg, err := d.st.Config()
+	if err != nil {
+		return nil
+	}
+	return grantedActs(req.Config.Permissions, cfg.Permissions)
+}
+
 // reaches reports whether the caller is given op on this server.
 func (s *Server) reaches(c guideCaller, op Operation) bool {
 	if !slices.Contains(c.Scopes, op.Scope) {
+		return false
+	}
+	// A turn is given the act tool and the operations its grant holds,
+	// never another; the admin sees them all.
+	if op.Scope == "act" && c.Kind == "session" && op.Name != "act" && !slices.Contains(c.acts, op.Name) {
 		return false
 	}
 	if op.needs&needLauncher != 0 && s.cfg.Switchyard.Enabled {

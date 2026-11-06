@@ -1,9 +1,10 @@
 import type { BrakemanBrief, BrakemanConfig, BrakemanRequest, BrakemanState, RefResolution } from '../utils/brakeman'
 import { closed, keptBrief, openedMark, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
-import { dropKeptMake, readKeptMakes, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
+import { dropKeptMake, readKeptMakes, reconcileActs, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
 import { mintCommandId } from '../utils/tasks'
 import { ApiError } from './useApi'
 import type { DispatchWatch } from './useDispatchLive'
+import type { PlanSummary } from './useDispatch'
 
 // Brakeman's records on the app's pages (docs/plans/brakeman.md, PR-6): the configuration, the requests (a page of them, then
 // the `brakeman` events of GET /api/events folded in), and the person's writes (ask, cancel, make), each with an id the browser
@@ -109,13 +110,14 @@ export class BrakemanLive {
   /**
    * Takes a request as a reply gave it, unless the page has it further along already or the reply was sent before a reset (`at`); its
    * makes and edges are reconciled with the page's (reconcileMade), since replies to two cards' makes of one request can arrive in
-   * either order.
+   * either order, and so are its acts (reconcileActs), whose outcome may come after its brief, so that two reads of one briefed
+   * request answered out of order never take a done act back to pending.
    */
   apply(r: BrakemanRequest, at = this.gen) {
     if (at !== this.gen) return
     const had = this.requests.get(r.id)
     if (had && stateRank(r.state) < stateRank(had.state)) return
-    this.requests.set(r.id, had ? { ...r, ...reconcileMade(had, r) } : r)
+    this.requests.set(r.id, had ? { ...r, ...reconcileMade(had, r), ...reconcileActs(had, r) } : r)
     this.changed()
   }
 
@@ -539,7 +541,7 @@ export function useBrakeman() {
     // A reply lost is asked again only with the token it was sent with: after a reset the server may be another one, and the make
     // stays kept for the one it was asked of.
     const send = sameToken(at, 'The token changed before the make was asked again: it is kept for the server it was asked of.', (b: { opId: string; by?: string; edit?: unknown }) =>
-      request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string } }>(`/api/brakeman/requests/${encodeURIComponent(r.id)}/items/${item}/make`, { method: 'POST', body: b }),
+      request<{ request: BrakemanRequest; made: unknown; ticket?: { key: string; url: string }; crew?: { id: string; url: string }; plan?: PlanSummary }>(`/api/brakeman/requests/${encodeURIComponent(r.id)}/items/${item}/make`, { method: 'POST', body: b }),
     )
     const out = await sendKept(keep, () => forget(key), () => sendTwice(send, { opId, ...body }))
     // Answered after a reset: the ticket or crew is the server's before, perhaps another one's, so the caller is given nothing of it

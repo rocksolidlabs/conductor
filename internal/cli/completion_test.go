@@ -269,6 +269,15 @@ func TestCompletionSpecMatchesEveryFlag(t *testing.T) {
 					}
 				}
 			}
+			// act takes its operation's route's path parameters as --KEY,
+			// its body as --body-file and its id as --op-id.
+			for _, name := range actOperations() {
+				op, _ := operation(name)
+				for k := range pathParams(op.Path) {
+					want["--"+k] = true
+				}
+			}
+			want["--body-file"], want["--op-id"] = true, true
 		}
 		got := map[string]bool{}
 		for _, f := range c.flags {
