@@ -11,7 +11,12 @@ import { initials } from '~/utils/sessions'
  * Given `names` (a crew's person, HM1: the names Conductor knows, usePeople), it offers those instead and reads no directory; it says
  * `open` as it opens, so its owner can read them again. `create` words the row that takes a typed name.
  */
-const props = defineProps<{ modelValue: string; disabled?: boolean; placeholder?: string; names?: readonly string[]; create?: string }>()
+const props = withDefaults(defineProps<{ modelValue: string; disabled?: boolean; placeholder?: string; names?: readonly string[]; create?: string; size?: 'sm' | 'md' }>(), {
+  placeholder: undefined,
+  names: undefined,
+  create: undefined,
+  size: 'sm',
+})
 const emit = defineEmits<{ 'update:modelValue': [name: string]; open: [] }>()
 
 const api = useDispatchApi()
@@ -60,7 +65,7 @@ function pick(v: unknown) {
     :placeholder="placeholder ?? 'No owner'"
     :disabled="disabled"
     :search-input="{ placeholder: 'A name…' }"
-    size="sm"
+    :size="size"
     class="w-full"
     data-person-picker
     @update:model-value="pick"

@@ -177,7 +177,8 @@ const focused = ref<number | null>(null)
             :model-value="ownerValue(t)"
             :items="ownersFor(t)"
             :disabled="!people?.length && !t.owner"
-            :title="people?.length ? undefined : 'Add people to the crew to name an owner'"
+            :title="people?.length ? ownersFor(t).find((o) => o.value === ownerValue(t))?.label : 'Add people to the crew to name an owner'"
+            :ui="{ content: 'w-max min-w-(--reka-select-trigger-width) max-w-[calc(100vw-2rem)]' }"
             :aria-label="`Owner of ${who(t, i)}`"
             class="w-full"
             data-task-owner

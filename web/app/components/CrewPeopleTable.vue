@@ -70,6 +70,7 @@ function remove(key: number) {
             :model-value="p.name"
             :names="known.names.value"
             create="Name them {name}"
+            size="md"
             placeholder="A name"
             :aria-label="`Name of ${who(p, i)}`"
             class="col-start-1 row-start-1 @min-[48rem]:col-start-auto @min-[48rem]:row-start-auto"
