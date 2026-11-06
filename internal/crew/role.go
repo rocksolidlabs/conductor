@@ -35,6 +35,18 @@ import (
 // Poke) and at the one moment something falls due on its own (a window's
 // end, a cooldown's, a briefing time, a held wake), and a turn is an
 // ordinary run its owner launches.
+//
+// The role judges every outcome by the turn it belongs to, never by the
+// order the outcomes reach it. Turns are numbered in the order their
+// requests were made (the role's own and a person's alike); an outcome
+// carries its turn's number (RoleOutcome.Turn), a start too (Started),
+// and the role records the latest turn it knows to have started
+// (RoleRecord.LastStarted). A failure of turn N changes the role's state
+// only if no later turn has started since: an older turn's outcome that
+// reaches the role late is that turn's own (its request keeps it), and
+// changes nothing of the role. A person's turn whose agent read its
+// request while the role's own failed turn waited to be taken up leaves
+// the role available, the failed turn's batch kept for the next.
 
 // The role's states.
 const (
@@ -242,6 +254,10 @@ type RoleRecord struct {
 	// Tries counts the turns in a row whose agent did not start; a turn
 	// whose agent reads its request sets it back to 0.
 	Tries int `json:"tries,omitempty"`
+	// LastStarted is the number of the latest turn whose agent read its
+	// request (Started), the role's own or a person's: a failure of an
+	// earlier turn, taken up after it, changes nothing of the role.
+	LastStarted int64 `json:"lastStarted,omitempty"`
 	// Last is the last batch number given; Open the batch gathering (or
 	// waiting while the role briefs, cools or is unavailable); Fired the
 	// last batch fired and Request its request while it runs. Firing says
@@ -281,12 +297,16 @@ type RoleSettings struct {
 // exited or never read its request, the day's budget spent), with why,
 // its reason (ReasonStart, ReasonBudget) and when the role tries again on
 // its own (zero: on a person's request or the next briefing; for
-// ReasonStart, the role's own wait, startRetry).
+// ReasonStart, the role's own wait, startRetry). Turn is the request's
+// number in the order requests are made (0 when it is not known): a
+// failure of a turn earlier than one that started since (LastStarted) is
+// that turn's own, and changes nothing of the role.
 type RoleOutcome struct {
 	Open        bool
 	Unavailable string
 	Reason      string
 	RetryAt     time.Time
+	Turn        int64
 }
 
 // RoleRefused is Fire's refusal of a turn that cannot start now (its
@@ -774,18 +794,21 @@ func (r *Role) Reconfigured(ch RoleChange) error {
 	return err
 }
 
-// Started is a turn of the role's agent that read its request, the role's
-// own or a person's: the agent starts, so an unavailability for a turn
-// whose agent did not (ReasonStart) ends, and the batch it kept fires
-// within its rules; the count of such turns in a row starts again.
-func (r *Role) Started() error {
+// Started is turn number turn of the role's agent that read its request,
+// the role's own or a person's: the agent starts, so an unavailability for
+// a turn whose agent did not (ReasonStart) ends, and the batch it kept
+// fires within its rules; the count of such turns in a row starts again.
+// The latest such turn is recorded (LastStarted), so a failure of an
+// earlier turn that the role takes up after it changes nothing (Step).
+func (r *Role) Started(turn int64) error {
 	r.mu.Lock()
 	now := r.now()
 	err := r.change(func(c *RoleRecord) error {
 		ended := c.State == RoleUnavailable && c.Reason == ReasonStart
-		if !ended && c.Tries == 0 {
+		if !ended && c.Tries == 0 && turn <= c.LastStarted {
 			return errNothing
 		}
+		c.LastStarted = max(c.LastStarted, turn)
 		c.Tries = 0
 		if ended {
 			c.available(now)
@@ -1142,6 +1165,14 @@ func (r *Role) Step() (time.Duration, error) {
 				// that tries again. One whose agent did not start tries
 				// again after a wait that doubles with each in a row.
 				c.keepFired(now)
+				if out.Turn > 0 && c.LastStarted > out.Turn {
+					// A later turn's agent read its request since this
+					// turn was made: the agent starts, and this failure,
+					// taken up late, is this turn's own. The batch kept
+					// fires within its rules.
+					c.State = c.derive(now)
+					break
+				}
 				retry := out.RetryAt.UTC()
 				if out.Reason == ReasonStart {
 					c.Tries++

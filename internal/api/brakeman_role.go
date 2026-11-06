@@ -738,7 +738,8 @@ func (rr roleRecords) make(in brakeman.Request) (string, error) {
 // launch refused, its agent exited before it read its request, as a
 // logged-out CLI does, or never read it: held at a screen), its agent not
 // started, or over budget, unavailable in words with the reason; else
-// closed. A request gone (pruned) is closed.
+// closed. A request gone (pruned) is closed. A failure carries its turn's
+// number (the request's), which the role judges it by.
 func (rr roleRecords) Outcome(id string) (crew.RoleOutcome, error) {
 	r, err := rr.d.st.Get(id)
 	if errors.Is(err, brakeman.ErrNotFound) {
@@ -751,9 +752,9 @@ func (rr roleRecords) Outcome(id string) (crew.RoleOutcome, error) {
 	case r.Open():
 		return crew.RoleOutcome{Open: true}, nil
 	case r.State == brakeman.StateFailed:
-		return crew.RoleOutcome{Unavailable: "the turn could not start: " + r.Why, Reason: crew.ReasonStart}, nil
+		return crew.RoleOutcome{Unavailable: "the turn could not start: " + r.Why, Reason: crew.ReasonStart, Turn: brakeman.RequestNumber(r.ID)}, nil
 	case r.State == brakeman.StateOverBudget:
-		return crew.RoleOutcome{Unavailable: "the day's budget is spent: " + r.Why, Reason: crew.ReasonBudget, RetryAt: nextDay(rr.d.now())}, nil
+		return crew.RoleOutcome{Unavailable: "the day's budget is spent: " + r.Why, Reason: crew.ReasonBudget, RetryAt: nextDay(rr.d.now()), Turn: brakeman.RequestNumber(r.ID)}, nil
 	}
 	return crew.RoleOutcome{}, nil
 }

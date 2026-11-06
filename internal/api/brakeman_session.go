@@ -170,8 +170,9 @@ func (s *Server) handleSessionBrakemanRequest(w http.ResponseWriter, r *http.Req
 		d.mu.Unlock()
 		if first {
 			// The agent started: a role unavailable for one that did not
-			// (crew.ReasonStart) takes up its batch again.
-			if err := d.role.Started(); err != nil {
+			// (crew.ReasonStart) takes up its batch again, and a failure
+			// of an earlier turn it takes up later changes nothing.
+			if err := d.role.Started(brakeman.RequestNumber(id)); err != nil {
 				s.log.Warn("Brakeman's role could not note its agent started", "request", id, "err", err)
 			}
 		}
