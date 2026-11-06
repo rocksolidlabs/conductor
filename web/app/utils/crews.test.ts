@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInfo, CrewCheck, CrewInfo, CrewMember, CrewManifest, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, changedBetween, rebaseDraft, refusedAsStale, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
+import { argsFrom, changedBetween, refusedAsStale, revisionToSave, elsewhereWords, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
 import type { ManifestList, ManifestShape, TaskShape } from './crews'
 import { startSentence, startWords } from './crewWords'
 
@@ -1181,6 +1181,8 @@ describe('a save refused because the crew was saved elsewhere', () => {
   const R1 = 'a'.repeat(64)
   const R2 = 'b'.repeat(64)
   const read: CrewInfo = { ...info, revision: R1, people: [{ name: 'nate', responsibilities: ['architecture'] }] }
+  // What another page saved meanwhile: a person added.
+  const theirs: CrewInfo = { ...read, revision: R2, updatedAt: '2026-11-06T09:00:00Z', people: [...read.people!, { name: 'ana', responsibilities: ['acceptance'] }] }
 
   it('makes the draft from a crew read whole with that copy as its base, which crewKey leaves out', () => {
     const d = toDraft(read)
@@ -1191,57 +1193,83 @@ describe('a save refused because the crew was saved elsewhere', () => {
     expect(wire(toCrewInput(d))).not.toHaveProperty('revision')
   })
 
-  it('keeps every edit as it was, marked, and its base, after the refusal', () => {
+  it('leaves the draft exactly as typed, text still being typed included, with its base and the copy the server holds now beside it', () => {
+    const d = toDraft({ ...read, tasks: [{ id: 'build', member: 'lead', kind: 'work', instructions: 'build it' }], manifest: { setup: [{ id: 'deps', argv: ['npm', 'ci'] }] } })
+    const edited: DraftCrew = {
+      ...d,
+      goal: 'mine',
+      people: [...d.people!, { name: 'cy', key: 99 }],
+      tasks: [{ ...d.tasks![0]!, checks: [{ id: 'unit', argv: ['go', 'test'], pending: 'go vet "unclosed' }] }],
+      manifest: { ...d.manifest, setup: [{ ...d.manifest!.setup![0]!, pending: 'npm ci "half' }] },
+    }
+    for (const refused of [refusedAsStale(edited), refusedAsStale(edited, theirs)]) {
+      expect(refused.changedElsewhere).toBe(true)
+      expect(crewKey(refused)).toBe(crewKey(edited))
+      expect(wire(toCrewInput(refused))).toEqual(wire(toCrewInput(edited)))
+      expect(refused.people).toBe(edited.people)
+      expect(refused.tasks?.[0]?.checks?.[0]?.pending).toBe('go vet "unclosed')
+      expect(refused.manifest?.setup?.[0]?.pending).toBe('npm ci "half')
+      expect(refused.base?.revision).toBe(R1)
+    }
+    expect(refusedAsStale(edited).theirs).toBeUndefined()
+    expect(refusedAsStale(edited, theirs).theirs).toBe(theirs)
+  })
+
+  it('keeps a need on a task the other page renamed as the draft has it: the draft is never merged, so nothing drops it', () => {
+    const tasks = [
+      { id: 'build', member: 'lead', kind: 'work' as const, instructions: 'build it' },
+      { id: 'deploy', member: 'tests', kind: 'work' as const, instructions: 'ship it', needs: ['build'] },
+    ]
+    const d = toDraft({ ...read, tasks })
+    const renamed: CrewInfo = { ...read, revision: R2, tasks: [{ ...tasks[0]!, id: 'compile' }, { ...tasks[1]!, needs: ['compile'] }] }
+    const refused = refusedAsStale(d, renamed)
+    expect(toCrewInput(refused).tasks?.find((t) => t.id === 'deploy')?.needs).toEqual(['build'])
+    expect(elsewhereWords(refused)).toBe('1 task added (compile); 1 task removed (build); 1 task changed (deploy)')
+  })
+
+  it('says what changed there, from the copy the draft was made from and the one the server holds now', () => {
     const d = toDraft(read)
-    const edited = { ...d, goal: 'mine', people: [...d.people!, { name: 'cy', key: 99 }] }
-    const refused = refusedAsStale(edited)
-    expect(refused.changedElsewhere).toBe(true)
-    expect(crewKey(refused)).toBe(crewKey(edited))
-    expect(refused.people).toEqual(edited.people)
-    expect(refused.base?.revision).toBe(R1)
+    expect(elsewhereWords(d)).toBe('')
+    // Before the server's copy is read, or when the read failed, it cannot say.
+    expect(elsewhereWords(refusedAsStale(d))).toBe('something else changed')
+    expect(elsewhereWords(refusedAsStale(d, theirs))).toBe('1 person added (ana); the acceptance owner (none, now ana)')
+    // Saved again with nothing a field shows changed: the revision moved, the words cannot say how.
+    expect(elsewhereWords(refusedAsStale(d, { ...read, revision: R2, updatedAt: '2026-11-06T09:00:00Z' }))).toBe('something else changed')
   })
 
-  it('puts the edits on top of the crew read again: a person each page added is kept, and the next save is made from the fresh copy', () => {
-    const mine = refusedAsStale({ ...toDraft(read), people: [...toDraft(read).people!, { name: 'cy', key: 99 }] })
-    const fresh: CrewInfo = { ...read, revision: R2, updatedAt: '2026-11-06T09:00:00Z', people: [...read.people!, { name: 'ana', responsibilities: ['acceptance'] }] }
-    const out = rebaseDraft(mine, fresh)
-    expect(out.people?.map((p) => p.name)).toEqual(['nate', 'cy', 'ana'])
-    expect(out.people?.find((p) => p.name === 'ana')?.responsibilities).toEqual(['acceptance'])
-    expect(out.base).toBe(fresh)
-    expect(out.base?.revision).toBe(R2)
-    expect(out.changedElsewhere).toBeUndefined()
-    expect(out.elsewhere).toEqual(['ana added'])
+  it('saves after a refusal from the base, so the plain Save is refused again, and Save mine anyway over the copy the server holds now, never without it', () => {
+    const d = toDraft(read)
+    expect(revisionToSave(d)).toBe(R1)
+    expect(revisionToSave(d, true)).toBeUndefined()
+    expect(revisionToSave(refusedAsStale(d))).toBe(R1)
+    expect(revisionToSave(refusedAsStale(d), true)).toBeUndefined()
+    expect(revisionToSave(refusedAsStale(d, theirs))).toBe(R1)
+    expect(revisionToSave(refusedAsStale(d, theirs), true)).toBe(R2)
+    expect(revisionToSave(toDraft(defaultCrew([])), true)).toBeUndefined()
   })
 
-  it("keeps the draft's change where both changed one thing, takes the fresh read's where only it did, and a removal of either", () => {
-    const base: CrewInfo = { ...read, people: [{ name: 'nate', note: 'base' }, { name: 'ana' }, { name: 'bo' }] }
-    const d = toDraft(base)
-    // Mine: renamed the crew, changed nate's note, removed ana.
-    const mine = refusedAsStale({ ...d, name: 'Mine', people: [{ ...d.people![0]!, note: 'mine' }, d.people![2]!] })
-    // Elsewhere: a new goal, nate's note, bo removed, the lead's prompt.
-    const fresh: CrewInfo = { ...base, revision: R2, goal: 'theirs', people: [{ name: 'nate', note: 'theirs' }, { name: 'ana' }], members: [{ ...lead, prompt: 'theirs' }, tests] }
-    const out = rebaseDraft(mine, fresh)
-    expect(out.name).toBe('Mine')
-    expect(out.goal).toBe('theirs')
-    expect(wire(out.people?.map((p) => ({ name: p.name, note: p.note })))).toEqual([{ name: 'nate', note: 'mine' }])
-    expect(out.members.map((m) => m.prompt)).toEqual(['theirs', ''])
-    expect(out.elsewhere).toEqual(['goal', 'members', 'bo removed', 'nate changed'])
+  it('reads the crew again as the server holds it: the draft replaced, unmarked, its base the copy read', () => {
+    const again = toDraft(theirs)
+    expect(again.people?.map((p) => p.name)).toEqual(['nate', 'ana'])
+    expect(again.changedElsewhere).toBeUndefined()
+    expect(again.theirs).toBeUndefined()
+    expect(revisionToSave(again)).toBe(R2)
   })
 
-  it('keeps the arguments and step text still being typed in what came from the draft', () => {
-    const d = toDraft({ ...read, tasks: [{ id: 'build', member: 'lead', kind: 'work', instructions: 'build it' }] })
-    const typed = { ...d, members: [{ ...d.members[0]!, argsText: '--model  x' }, d.members[1]!], tasks: [{ ...d.tasks![0]!, instructions: 'mine', checks: [{ id: 'unit', argv: ['go', 'test'], pending: 'go vet' }] }] }
-    const fresh: CrewInfo = { ...read, revision: R2, goal: 'theirs', tasks: [{ id: 'build', member: 'lead', kind: 'work', instructions: 'build it' }] }
-    const out = rebaseDraft(refusedAsStale({ ...typed, base: { ...read, tasks: fresh.tasks } }), fresh)
-    expect(out.goal).toBe('theirs')
-    expect(out.members[0]?.argsText).toBe('--model  x')
-    expect(out.tasks?.[0]?.instructions).toBe('mine')
-    expect(out.tasks?.[0]?.checks?.[0]?.pending).toBe('go vet')
-    expect(out.tasks?.[0]?.memberKey).toBe(out.members[0]?.key)
-  })
-
-  it('says what changed between two reads, people by name', () => {
+  it('says what changed between two reads, counted and named, three names at most', () => {
     expect(changedBetween(read, read)).toEqual([])
-    expect(changedBetween(read, { ...read, name: 'x', people: [{ name: 'ana' }] })).toEqual(['name', 'ana added', 'nate removed'])
+    expect(changedBetween(read, { ...read, name: 'x', people: [{ name: 'ana' }] })).toEqual(['the name', '1 person added (ana)', '1 person removed (nate)'])
+    const many = ['ana', 'bo', 'cy', 'dee', 'x'.repeat(60)].map((name) => ({ name }))
+    expect(changedBetween({ ...read, people: undefined }, { ...read, people: many })).toEqual(['5 people added (ana, bo, cy and 2 more)'])
+    expect(changedBetween(read, { ...read, people: [{ name: 'y'.repeat(60) }] })[0]).toBe(`1 person added (${'y'.repeat(39)}…)`)
+    expect(changedBetween(read, { ...read, goal: 'g', cwd: '/x', yolo: true, members: [{ ...lead, prompt: 'p' }, tests], manifest: { setup: [{ id: 'deps', argv: ['npm', 'ci'] }] } })).toEqual([
+      'the goal',
+      'the working directory',
+      'how each run starts',
+      '1 member changed (lead)',
+      'the project manifest',
+    ])
+    const owned: CrewInfo = { ...read, people: [{ name: 'nate' }, { name: 'ana' }], tasks: [{ id: 'build', member: 'lead', kind: 'work', instructions: 'i', owner: 'nate' }] }
+    expect(changedBetween(owned, { ...owned, tasks: [{ ...owned.tasks![0]!, owner: 'ana' }] })).toEqual(["1 task's owner changed (build)"])
   })
 })

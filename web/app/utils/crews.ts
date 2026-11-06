@@ -897,13 +897,17 @@ export interface DraftCrew extends Omit<CrewInput, 'tasks' | 'manifest' | 'peopl
   liftedSetup?: CrewCheck[]
   /**
    * The crew as read when the draft was made from it (toDraft of a crew read whole), never sent: its revision is the copy a save is made from,
-   * and a save the server refused because another came between is put on top of a read made again by what it changed (rebaseDraft).
+   * so the server refuses the save once another came between (409 `stale_revision`).
    */
   base?: CrewInfo
-  /** Set when a save of the draft was refused because the crew was saved elsewhere since its base was read (refusedAsStale); nothing was saved. */
+  /**
+   * Set when a save of the draft was refused because the crew was saved elsewhere since its base was read (refusedAsStale): nothing was saved
+   * and nothing typed changed. The page says what changed (elsewhereWords) and offers two choices, neither taken by itself: read the crew again,
+   * which replaces the draft, or save it anyway over the copy the server holds now (revisionToSave).
+   */
   changedElsewhere?: boolean
-  /** What the read made again after such a refusal found changed elsewhere, in words (rebaseDraft), until the draft is saved or discarded. */
-  elsewhere?: string[]
+  /** The crew as the server holds it now, read after that refusal; absent until it is read, or when the read failed. */
+  theirs?: CrewInfo
 }
 
 let memberKeys = 0
@@ -938,9 +942,21 @@ export function toDraft(c: CrewInput & { id?: string; revision?: string }): Draf
   return out
 }
 
-/** The draft whose save the server refused with 409 `stale_revision`: every edit as it was, marked so the page says so (DraftCrew.changedElsewhere). */
-export function refusedAsStale(d: DraftCrew): DraftCrew {
-  return { ...d, changedElsewhere: true }
+/**
+ * The draft whose save the server refused with 409 `stale_revision`, marked so the page says so: every field as it was, text still being typed
+ * included, and its base kept. `theirs` is the crew as the server holds it now, once it is read.
+ */
+export function refusedAsStale(d: DraftCrew, theirs?: CrewInfo): DraftCrew {
+  return { ...d, changedElsewhere: true, theirs }
+}
+
+/**
+ * The revision a save of the draft is made from: its base's, so a save after a refusal is refused again; or, `anyway` (the person chose to
+ * save theirs over the change made elsewhere), the copy the server holds now, as read after the refusal. Undefined when there is none: a
+ * new crew, or `anyway` before that copy is read, which the page must not save.
+ */
+export function revisionToSave(d: DraftCrew, anyway = false): string | undefined {
+  return anyway ? (d.changedElsewhere ? d.theirs?.revision : undefined) : d.base?.revision
 }
 
 /** Whether two values are the same as JSON (the server's form of a crew's fields, built in one key order). */
@@ -948,105 +964,67 @@ function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
-/**
- * The entries of a list keyed by `key` after a three-way merge: an entry the draft left as its base had it takes the fresh read's version (or
- * its removal), an entry the draft added, changed or removed keeps the draft's, so the draft's edits go on top; entries the fresh read added
- * come after the draft's, in its order.
- */
-function mergeKeyed<T>(mine: readonly T[] | undefined, base: readonly T[] | undefined, fresh: readonly T[] | undefined, key: (x: T) => string): T[] {
-  const b = new Map((base ?? []).map((x) => [key(x), x]))
-  const f = new Map((fresh ?? []).map((x) => [key(x), x]))
-  const m = new Map((mine ?? []).map((x) => [key(x), x]))
-  const out: T[] = []
-  for (const x of mine ?? []) {
-    const k = key(x)
-    if (!same(x, b.get(k))) out.push(x)
-    else if (f.has(k)) out.push(f.get(k)!)
+/** Names a change shows at most, and characters of each name. */
+const CHANGED_NAMES = 3
+const CHANGED_NAME_CHARS = 40
+
+/** Names in words, bounded: the first three, cut to 40 characters, and how many more. */
+function namesWords(names: readonly string[]): string {
+  const cut = names.slice(0, CHANGED_NAMES).map((n) => (n.length > CHANGED_NAME_CHARS ? `${n.slice(0, CHANGED_NAME_CHARS - 1)}…` : n))
+  return names.length > CHANGED_NAMES ? `${cut.join(', ')} and ${names.length - CHANGED_NAMES} more` : cut.join(', ')
+}
+
+/** The entries added, removed and changed between two lists keyed by `key`, as "2 people added (ana, bo)". */
+function listChanges<T>(before: readonly T[] | undefined, after: readonly T[] | undefined, key: (x: T) => string, one: string, many: string, differs: (a: T, b: T) => boolean = (a, b) => !same(a, b)): string[] {
+  const was = new Map((before ?? []).map((x) => [key(x), x]))
+  const now = new Map((after ?? []).map((x) => [key(x), x]))
+  const out: string[] = []
+  const say = (names: string[], what: string) => {
+    if (names.length) out.push(`${names.length} ${names.length === 1 ? one : many} ${what} (${namesWords(names)})`)
   }
-  for (const x of fresh ?? []) if (!m.has(key(x)) && !b.has(key(x))) out.push(x)
+  say([...now.keys()].filter((k) => !was.has(k)), 'added')
+  say([...was.keys()].filter((k) => !now.has(k)), 'removed')
+  say([...now.keys()].filter((k) => was.has(k) && differs(was.get(k)!, now.get(k)!)), 'changed')
   return out
 }
 
-/** What changed between two reads of a crew, in words: the editor's sections, and the people added, removed or changed by name. */
+/**
+ * What changed between two reads of a crew, in words, bounded: the crew's fields; the members, people and tasks added, removed or changed,
+ * counted and named (three names at most each); the acceptance owner, and the tasks whose owner changed; the project manifest; and
+ * "something else changed" for a change none of these names.
+ */
 export function changedBetween(before: CrewInput, after: CrewInput): string[] {
   const a = toCrewInput(liftSetup(before))
   const b = toCrewInput(liftSetup(after))
   const out: string[] = []
-  if (a.name !== b.name) out.push('name')
-  if (a.goal !== b.goal) out.push('goal')
-  if (a.cwd !== b.cwd) out.push('working directory')
-  if (a.where !== b.where || a.isolation !== b.isolation || a.openAfterLaunch !== b.openAfterLaunch || a.viewLinkTtlSeconds !== b.viewLinkTtlSeconds || a.yolo !== b.yolo) out.push('each run')
-  if (!same(a.members, b.members)) out.push('members')
-  const was = new Map((a.people ?? []).map((p) => [p.name, p]))
-  const now = new Map((b.people ?? []).map((p) => [p.name, p]))
-  for (const p of b.people ?? []) if (!was.has(p.name)) out.push(`${p.name} added`)
-  for (const p of a.people ?? []) if (!now.has(p.name)) out.push(`${p.name} removed`)
-  for (const p of b.people ?? []) if (was.has(p.name) && !same(was.get(p.name), p)) out.push(`${p.name} changed`)
-  if (!same(a.tasks, b.tasks)) out.push('tasks')
-  if (!same(a.manifest, b.manifest) || !same(a.setup, b.setup)) out.push('project manifest')
+  if (a.name !== b.name) out.push('the name')
+  if (a.goal !== b.goal) out.push('the goal')
+  if (a.cwd !== b.cwd) out.push('the working directory')
+  if (a.where !== b.where || a.isolation !== b.isolation || a.openAfterLaunch !== b.openAfterLaunch || a.viewLinkTtlSeconds !== b.viewLinkTtlSeconds || a.yolo !== b.yolo) out.push('how each run starts')
+  out.push(...listChanges(a.members, b.members, (m) => m.name, 'member', 'members'))
+  out.push(...listChanges(a.people, b.people, (p) => p.name, 'person', 'people'))
+  const accepts = (c: CrewInput) => c.people?.find((p) => p.responsibilities?.includes('acceptance'))?.name
+  if (accepts(a) !== accepts(b)) out.push(`the acceptance owner (${accepts(a) ?? 'none'}, now ${accepts(b) ?? 'none'})`)
+  // A task's owner is said apart from the rest of the task: who owns it can change with the people alone (the acceptance owner).
+  const ownerless = ({ owner: _owner, ...t }: CrewTask) => t
+  out.push(...listChanges(a.tasks, b.tasks, (t) => t.id, 'task', 'tasks', (x, y) => !same(ownerless(x), ownerless(y))))
+  const wasTasks = new Map((a.tasks ?? []).map((t) => [t.id, t]))
+  const owners = (b.tasks ?? []).filter((t) => wasTasks.has(t.id) && ownerOf(a, wasTasks.get(t.id)!)?.name !== ownerOf(b, t)?.name).map((t) => t.id)
+  if (owners.length) out.push(`${owners.length} ${owners.length === 1 ? "task's owner" : "tasks' owners"} changed (${namesWords(owners)})`)
+  if (!same(a.manifest, b.manifest) || !same(a.setup, b.setup)) out.push('the project manifest')
+  if (!out.length && !same(a, b)) out.push('something else changed')
   return out
 }
 
 /**
- * A draft whose save was refused because the crew was saved elsewhere (refusedAsStale), put on top of `fresh`, the crew read again: a field,
- * or a member, person or task (by name, name and id), that the draft left as its base had it takes the fresh read's; one the draft changed,
- * added or removed keeps the draft's. Nothing the person typed is lost, text still being typed into a step included, and nothing is saved:
- * the draft's base is the fresh read, so the next save is made from it. `elsewhere` says what the fresh read changed (changedBetween).
+ * What the page says changed elsewhere after a refused save (refusedAsStale), from the copy the draft was made from and the one the server
+ * holds now: "1 person added (ana); the goal". "something else changed" when it cannot say (the server's copy not read, or a change no field
+ * shows); '' for a draft not refused.
  */
-export function rebaseDraft(mine: DraftCrew, fresh: CrewInfo): DraftCrew {
-  const base = mine.base ?? fresh
-  const m = toCrewInput(mine)
-  const b = toCrewInput(liftSetup(base))
-  const f = toCrewInput(liftSetup(fresh))
-  const pick = <K extends keyof CrewInput>(k: K): CrewInput[K] => (same(m[k], b[k]) ? f[k] : m[k])
-  const merged: CrewInput & { id: string; revision?: string } = {
-    id: fresh.id,
-    revision: fresh.revision,
-    name: pick('name'),
-    goal: pick('goal'),
-    cwd: pick('cwd'),
-    where: pick('where'),
-    isolation: pick('isolation'),
-    openAfterLaunch: pick('openAfterLaunch'),
-    viewLinkTtlSeconds: pick('viewLinkTtlSeconds'),
-    yolo: pick('yolo'),
-    members: mergeKeyed(m.members, b.members, f.members, (x) => x.name),
-  }
-  const people = mergeKeyed(m.people, b.people, f.people, (x) => x.name)
-  if (people.length) merged.people = people
-  if (m.tasks || b.tasks || f.tasks) {
-    const tasks = mergeKeyed(m.tasks, b.tasks, f.tasks, (x) => x.id)
-    if (tasks.length) merged.tasks = tasks
-  }
-  const mineManifest = !same(m.manifest, b.manifest) || !same(m.setup, b.setup)
-  const source = mineManifest ? m : f
-  if (source.manifest) merged.manifest = source.manifest
-  const out = toDraft(merged)
-  out.base = fresh
-  // What only the editor holds goes with what came from the draft: the manifest as typed (rows still being typed, lists set aside), a lifted
-  // setup's mark, a member's extra arguments as typed, a task's checks as typed.
-  if (mineManifest) {
-    out.manifest = mine.manifest
-    out.liftedSetup = mine.liftedSetup
-  } else {
-    const freshDraft = toDraft(fresh)
-    out.manifest = freshDraft.manifest
-    out.liftedSetup = freshDraft.liftedSetup
-  }
-  out.members = out.members.map((x) => {
-    const was = mine.members.find((y) => y.name === x.name)
-    return was && same(toCrewMember(was), toCrewMember(x)) ? { ...x, argsText: was.argsText } : x
-  })
-  const mineTasks = plainTasks(mine.tasks ?? [])
-  const outTasks = plainTasks(out.tasks ?? [])
-  out.tasks = out.tasks?.map((t, j) => {
-    const i = mineTasks.findIndex((y) => y.id === t.id)
-    const was = i < 0 ? undefined : mine.tasks![i]
-    return was && same(toCrewTask(mineTasks[i]!), toCrewTask(outTasks[j]!)) ? { ...t, checks: was.checks } : t
-  })
-  const rebased = keepParked(out, mine)
-  rebased.elsewhere = changedBetween(base, fresh)
-  return rebased
+export function elsewhereWords(d: DraftCrew): string {
+  if (!d.changedElsewhere) return ''
+  const words = d.base && d.theirs ? changedBetween(d.base, d.theirs) : []
+  return words.length ? words.join('; ') : 'something else changed'
 }
 
 /** The extra arguments typed for a member, split as the Launch dialog splits them; undefined when there are none. */
