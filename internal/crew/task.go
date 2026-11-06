@@ -146,14 +146,14 @@ func (s sqlLedger) Load(ctx context.Context, runID string) (Loaded, bool, error)
 	// step, without its log, read with the attempt's checks.
 	var failed []ledger.CheckRow
 	for _, a := range attempts {
-		if _, _, ok := failedAtCheck(a); !ok {
+		if _, _, ok := FailedAtCheck(a); !ok {
 			continue
 		}
 		rows, err := s.l.Checks(ctx, runID, a.TaskID, a.N, false)
 		if err != nil {
 			return Loaded{}, true, err
 		}
-		if fr, ok := failingReceipt(a, rows); ok {
+		if fr, ok := FailingReceipt(a, rows); ok {
 			failed = append(failed, fr)
 		}
 	}

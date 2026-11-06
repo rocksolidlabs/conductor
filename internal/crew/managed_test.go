@@ -159,7 +159,7 @@ func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, erro
 	// The receipts that failed its attempts, as the ledger's Load reads
 	// them: each (task, n, id, k) as last put.
 	for _, a := range out.Attempts {
-		if fr, ok := failingReceipt(a, l.lastChecks(runID, a.TaskID, a.N)); ok {
+		if fr, ok := FailingReceipt(a, l.lastChecks(runID, a.TaskID, a.N)); ok {
 			out.FailedChecks = append(out.FailedChecks, fr)
 		}
 	}
