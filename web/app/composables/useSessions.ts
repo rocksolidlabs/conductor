@@ -464,6 +464,22 @@ export interface CrewInfo {
   manifestRevision?: number
   createdAt: string
   updatedAt: string
+  /**
+   * The copy of the crew this is, as the server named it beside the crew (64 hex digits, a digest of the crew as stored): a save made from it
+   * sends it back, and the server refuses it (409 `stale_revision`) once another save has come between. Absent on a crew not read whole.
+   */
+  revision?: string
+}
+
+/** What the crew routes answer for one crew: the crew, and the revision of the copy stored. */
+interface CrewReply {
+  crew: CrewInfo
+  revision?: string
+}
+
+/** The crew of a reply, carrying its revision (CrewInfo.revision). */
+function crewOfReply(r: CrewReply): CrewInfo {
+  return r.revision ? { ...r.crew, revision: r.revision } : r.crew
 }
 
 /** A crew as GET /api/crews lists it: what the list shows, without the prompts. GET /api/crews/{id} answers it in full. */
@@ -481,7 +497,7 @@ export interface CrewSummary {
 }
 
 /** Body of POST /api/crews and PUT /api/crews/{id}: a crew without what the server sets. The server rejects unknown fields, these four included. */
-export type CrewInput = Omit<CrewInfo, 'id' | 'createdAt' | 'updatedAt' | 'manifestRevision'>
+export type CrewInput = Omit<CrewInfo, 'id' | 'createdAt' | 'updatedAt' | 'manifestRevision' | 'revision'>
 
 /** A member of a crew run, as the run routes report it. */
 export interface RunMember {
@@ -865,22 +881,23 @@ export function useSessions() {
     listCrews: (offset = 0, limit = 100) =>
       request<{ crews: CrewSummary[]; total: number }>('/api/crews', { query: { offset: String(offset), limit: String(limit) } }).then((r) => ({ crews: r.crews ?? [], total: r.total ?? 0 })),
     /** One crew in full, for the editor. 404 for an unknown id; 409 `crew_unreadable` for a file the server cannot use, with why. */
-    getCrew: (id: string) => request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}`).then((r) => r.crew),
+    getCrew: (id: string) => request<CrewReply>(`/api/crews/${encodeURIComponent(id)}`).then(crewOfReply),
     /**
      * Without an id, creates a crew: the server derives its id from the name (then `-2`, `-3`… when taken). With an id, replaces that crew's
      * fields; its id and createdAt stay. Only CrewInput's fields are sent, so a CrewInfo read with getCrew can be passed as it is.
      * 400 `invalid_crew` says what is wrong, an agent the catalog does not have included; 404 for an unknown id; 409 `crew_unreadable` for a
-     * crew whose file the server cannot use.
+     * crew whose file the server cannot use. With a revision (the CrewInfo's the edit was made from), an update is saved only over that copy:
+     * 409 `stale_revision` when another save came between, nothing saved. The crew answered carries the revision of the copy saved.
      */
-    saveCrew: (crew: CrewInput, id?: string) =>
+    saveCrew: (crew: CrewInput, id?: string, revision?: string) =>
       (id === undefined
-        ? request<{ crew: CrewInfo }>('/api/crews', { method: 'POST', body: toCrewInput(crew) })
-        : request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}`, { method: 'PUT', body: toCrewInput(crew) })
-      ).then((r) => r.crew),
+        ? request<CrewReply>('/api/crews', { method: 'POST', body: toCrewInput(crew) })
+        : request<CrewReply>(`/api/crews/${encodeURIComponent(id)}`, { method: 'PUT', body: revision ? { ...toCrewInput(crew), revision } : toCrewInput(crew) })
+      ).then(crewOfReply),
     deleteCrew: (id: string) => request<void>(`/api/crews/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     /** Saves a copy under `<id>-copy` (then `-copy-2`…), named "<name> copy". 400 `invalid_crew` when one of its agents is no longer in the catalog. */
     duplicateCrew: (id: string) =>
-      request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }).then((r) => r.crew),
+      request<CrewReply>(`/api/crews/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }).then(crewOfReply),
     /**
      * Seeds the five example crews, as `conductor serve --examples` does: each is saved unless a file with its id exists, which is left
      * alone. Returns the ids added and skipped, in the examples' order. 503 `store_unavailable` without a data directory.

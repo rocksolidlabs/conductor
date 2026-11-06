@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAfterDelete, peopleProblems, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
+import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAfterDelete, peopleProblems, rebaseDraft, refusedAsStale, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 
@@ -257,14 +257,18 @@ function setName(name: string) {
   if (draft.value) draft.value = { ...draft.value, name }
 }
 
-/** Saves the draft on screen and returns the crew as saved; undefined when the server refused it (a toast says why). */
+/**
+ * Saves the draft on screen and returns the crew as saved; undefined when the server refused it (a toast says why). An update is made from the
+ * copy the draft was made from (its base's revision): when another save came between, the server refuses it, nothing is saved, and the draft
+ * stays as typed, marked so the page offers to read the crew again (rebase); never saved again by itself.
+ */
 async function save(): Promise<CrewInfo | undefined> {
   const key = selectedKey.value
   const d = draft.value
   if (key === undefined || !d) return undefined
   saving.value = true
   try {
-    const c = await api.saveCrew(d, d.id)
+    const c = await api.saveCrew(d, d.id, d.base?.revision)
     full.value = { ...full.value, [c.id]: c }
     if (crews.value.some((x) => x.id === c.id)) crews.value = crews.value.map((x) => (x.id === c.id ? summaryOf(c) : x))
     else crews.value = [...crews.value, summaryOf(c)].sort((a, b) => a.name.localeCompare(b.name))
@@ -278,10 +282,32 @@ async function save(): Promise<CrewInfo | undefined> {
     drafts.value = next
     return c
   } catch (e) {
-    fail(e instanceof ApiError && e.code === 'invalid_crew' ? 'The server refused the crew' : 'Save failed', e)
+    // The draft as it is now, edits made while the save was out included.
+    const now = drafts.value[key]
+    if (e instanceof ApiError && e.code === 'stale_revision' && now) drafts.value = { ...drafts.value, [key]: refusedAsStale(now) }
+    else fail(e instanceof ApiError && e.code === 'invalid_crew' ? 'The server refused the crew' : 'Save failed', e)
     return undefined
   } finally {
     saving.value = false
+  }
+}
+
+const rebasing = ref(false)
+
+/** Reads the crew on screen again and puts the draft's edits on top of it (rebaseDraft), after a save refused because it was saved elsewhere. Saves nothing. */
+async function rebase() {
+  const id = crewId.value
+  if (!id || !drafts.value[id]) return
+  rebasing.value = true
+  try {
+    const fresh = await api.getCrew(id)
+    full.value = { ...full.value, [id]: fresh }
+    const d = drafts.value[id]
+    if (d) drafts.value = { ...drafts.value, [id]: rebaseDraft(d, fresh) }
+  } catch (e) {
+    fail('Reading the crew again failed', e)
+  } finally {
+    rebasing.value = false
   }
 }
 
@@ -603,6 +629,25 @@ usePalette().registerPage(() => ({
               </span>
               <NuxtLink :to="`/runs/${encodeURIComponent(b.run.id)}`" class="ml-auto flex flex-none items-center gap-1 font-medium text-highlighted hover:underline">Open run <UIcon name="i-lucide-arrow-right" class="size-3.5" /></NuxtLink>
             </div>
+            <UAlert
+              v-if="draft.changedElsewhere"
+              color="warning"
+              variant="subtle"
+              icon="i-lucide-git-compare-arrows"
+              title="This crew was saved elsewhere since you opened it"
+              description="So this save was refused and nothing was saved. Your edits are still here: read the crew again to put them on top of what was saved, then save."
+              :actions="[{ label: 'Read it again, keep my edits', icon: 'i-lucide-refresh-cw', color: 'warning', variant: 'solid', loading: rebasing, onClick: rebase }]"
+              data-crew-stale
+            />
+            <UAlert
+              v-else-if="draft.elsewhere"
+              color="neutral"
+              variant="subtle"
+              icon="i-lucide-git-merge"
+              title="Read again, with your edits on top"
+              :description="`${draft.elsewhere.length ? `Changed elsewhere: ${draft.elsewhere.join(', ')}.` : 'Nothing you can see changed elsewhere.'} Where you changed the same thing, yours stays. Save to keep it.`"
+              data-crew-rebased
+            />
             <UTabs v-model="tab" :items="tabItems" :content="false" color="neutral" variant="link" size="sm" class="-mb-1" data-crew-tabs />
             <CrewEditor v-if="tab === 'setup'" :key="selectedKey" v-model="draft" :agents="agents" :yolo-default="yoloDefault" />
             <CrewRunsPanel v-else :runs="records.runs.value" :sessions="live.sessions.value" :now="now" :error="records.error.value" />

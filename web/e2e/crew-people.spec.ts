@@ -243,6 +243,56 @@ test("a task's owner removed with their name cleared leaves the Owner enabled, a
   await expect(owner).toBeDisabled()
 })
 
+test("two pages add a person each to one crew: the second's save is refused, loses nothing, and read again keeps both", async ({ page, api, state }) => {
+  const id = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { ...crewBody, name: `e2e people pages ${Date.now().toString(36)}`, people: [{ name: 'nate' }] })).crew.id
+  crews.push(id)
+  // The second page, in the same browser: the fixture's token reaches only its own page, so it gets it the same way.
+  const other = await page.context().newPage()
+  await other.addInitScript((token) => {
+    try {
+      localStorage.setItem('conductor.workbenchToken', token)
+    } catch {
+      /* storage refused: the page asks for the token, and the test fails on what it cannot find */
+    }
+  }, state.token)
+  for (const p of [page, other]) {
+    await p.goto(`/crews/${encodeURIComponent(id)}`)
+    budget(30_000)
+    await expect(p.locator('[data-crew-person]')).toHaveCount(1, { timeout: 30_000 })
+  }
+  // The second page adds cy first, unsaved: its draft is edited, so no read of the crew moves it on.
+  await other.locator('[data-add-person]').click()
+  await pickName(other, 1, 'cy')
+  // The first adds ana and saves.
+  await page.locator('[data-add-person]').click()
+  await pickName(page, 1, 'ana')
+  await page.locator('[data-unsaved-bar]').getByRole('button', { name: 'Save' }).click()
+  await expect(page.locator('[data-unsaved-bar]')).toHaveCount(0)
+  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'ana' }])
+
+  // The second saves from the copy it read: refused, nothing saved, cy still on the page and nothing offered but the read again.
+  const save = other.locator('[data-unsaved-bar]').getByRole('button', { name: 'Save' })
+  await save.click()
+  const stale = other.locator('[data-crew-stale]')
+  await expect(stale).toContainText('This crew was saved elsewhere since you opened it')
+  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'ana' }])
+  await expect(other.locator('[data-crew-person]')).toHaveCount(2)
+  await expect(other.locator('[data-crew-person]').nth(1)).toHaveAttribute('data-person-name', 'cy')
+  await expect(other.locator('[data-unsaved-bar]')).toBeVisible()
+
+  // Read again: ana from the first page, cy on top, saved only when the person saves.
+  await stale.getByRole('button', { name: 'Read it again, keep my edits' }).click()
+  await expect(other.locator('[data-crew-rebased]')).toContainText('Changed elsewhere: ana added.')
+  await expect(stale).toHaveCount(0)
+  await expect(other.locator('[data-crew-person]')).toHaveCount(3)
+  expect(await other.locator('[data-crew-person]').evaluateAll((rows) => rows.map((r) => r.getAttribute('data-person-name')))).toEqual(['nate', 'cy', 'ana'])
+  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'ana' }])
+  await save.click()
+  await expect(other.locator('[data-unsaved-bar]')).toHaveCount(0)
+  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'cy' }, { name: 'ana' }])
+  await other.close()
+})
+
 test('a name past the first page of the people Conductor knows is offered when it is searched for', async ({ page, api }) => {
   // 201 names Dispatch's directory gains, ordered after the e2e's other names (byte order): the last is past a first page of 200,
   // whatever else is known.

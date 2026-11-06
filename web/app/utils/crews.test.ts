@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInfo, CrewCheck, CrewInfo, CrewMember, CrewManifest, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
+import { argsFrom, changedBetween, rebaseDraft, refusedAsStale, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
 import type { ManifestList, ManifestShape, TaskShape } from './crews'
 import { startSentence, startWords } from './crewWords'
 
@@ -1174,5 +1174,74 @@ describe('people', () => {
   it("lists a crew's people without their notes", () => {
     expect(summaryOf({ ...managed }).people).toEqual([{ name: 'nate', responsibilities: ['architecture'] }, { name: 'ana', responsibilities: ['acceptance', 'product'] }])
     expect('people' in summaryOf(info)).toBe(false)
+  })
+})
+
+describe('a save refused because the crew was saved elsewhere', () => {
+  const R1 = 'a'.repeat(64)
+  const R2 = 'b'.repeat(64)
+  const read: CrewInfo = { ...info, revision: R1, people: [{ name: 'nate', responsibilities: ['architecture'] }] }
+
+  it('makes the draft from a crew read whole with that copy as its base, which crewKey leaves out', () => {
+    const d = toDraft(read)
+    expect(d.base).toBe(read)
+    expect(d.base?.revision).toBe(R1)
+    expect(crewKey(d)).toBe(crewKey(read))
+    expect(toDraft(info).base).toBeUndefined()
+    expect(wire(toCrewInput(d))).not.toHaveProperty('revision')
+  })
+
+  it('keeps every edit as it was, marked, and its base, after the refusal', () => {
+    const d = toDraft(read)
+    const edited = { ...d, goal: 'mine', people: [...d.people!, { name: 'cy', key: 99 }] }
+    const refused = refusedAsStale(edited)
+    expect(refused.changedElsewhere).toBe(true)
+    expect(crewKey(refused)).toBe(crewKey(edited))
+    expect(refused.people).toEqual(edited.people)
+    expect(refused.base?.revision).toBe(R1)
+  })
+
+  it('puts the edits on top of the crew read again: a person each page added is kept, and the next save is made from the fresh copy', () => {
+    const mine = refusedAsStale({ ...toDraft(read), people: [...toDraft(read).people!, { name: 'cy', key: 99 }] })
+    const fresh: CrewInfo = { ...read, revision: R2, updatedAt: '2026-11-06T09:00:00Z', people: [...read.people!, { name: 'ana', responsibilities: ['acceptance'] }] }
+    const out = rebaseDraft(mine, fresh)
+    expect(out.people?.map((p) => p.name)).toEqual(['nate', 'cy', 'ana'])
+    expect(out.people?.find((p) => p.name === 'ana')?.responsibilities).toEqual(['acceptance'])
+    expect(out.base).toBe(fresh)
+    expect(out.base?.revision).toBe(R2)
+    expect(out.changedElsewhere).toBeUndefined()
+    expect(out.elsewhere).toEqual(['ana added'])
+  })
+
+  it("keeps the draft's change where both changed one thing, takes the fresh read's where only it did, and a removal of either", () => {
+    const base: CrewInfo = { ...read, people: [{ name: 'nate', note: 'base' }, { name: 'ana' }, { name: 'bo' }] }
+    const d = toDraft(base)
+    // Mine: renamed the crew, changed nate's note, removed ana.
+    const mine = refusedAsStale({ ...d, name: 'Mine', people: [{ ...d.people![0]!, note: 'mine' }, d.people![2]!] })
+    // Elsewhere: a new goal, nate's note, bo removed, the lead's prompt.
+    const fresh: CrewInfo = { ...base, revision: R2, goal: 'theirs', people: [{ name: 'nate', note: 'theirs' }, { name: 'ana' }], members: [{ ...lead, prompt: 'theirs' }, tests] }
+    const out = rebaseDraft(mine, fresh)
+    expect(out.name).toBe('Mine')
+    expect(out.goal).toBe('theirs')
+    expect(wire(out.people?.map((p) => ({ name: p.name, note: p.note })))).toEqual([{ name: 'nate', note: 'mine' }])
+    expect(out.members.map((m) => m.prompt)).toEqual(['theirs', ''])
+    expect(out.elsewhere).toEqual(['goal', 'members', 'bo removed', 'nate changed'])
+  })
+
+  it('keeps the arguments and step text still being typed in what came from the draft', () => {
+    const d = toDraft({ ...read, tasks: [{ id: 'build', member: 'lead', kind: 'work', instructions: 'build it' }] })
+    const typed = { ...d, members: [{ ...d.members[0]!, argsText: '--model  x' }, d.members[1]!], tasks: [{ ...d.tasks![0]!, instructions: 'mine', checks: [{ id: 'unit', argv: ['go', 'test'], pending: 'go vet' }] }] }
+    const fresh: CrewInfo = { ...read, revision: R2, goal: 'theirs', tasks: [{ id: 'build', member: 'lead', kind: 'work', instructions: 'build it' }] }
+    const out = rebaseDraft(refusedAsStale({ ...typed, base: { ...read, tasks: fresh.tasks } }), fresh)
+    expect(out.goal).toBe('theirs')
+    expect(out.members[0]?.argsText).toBe('--model  x')
+    expect(out.tasks?.[0]?.instructions).toBe('mine')
+    expect(out.tasks?.[0]?.checks?.[0]?.pending).toBe('go vet')
+    expect(out.tasks?.[0]?.memberKey).toBe(out.members[0]?.key)
+  })
+
+  it('says what changed between two reads, people by name', () => {
+    expect(changedBetween(read, read)).toEqual([])
+    expect(changedBetween(read, { ...read, name: 'x', people: [{ name: 'ana' }] })).toEqual(['name', 'ana added', 'nate removed'])
   })
 })
