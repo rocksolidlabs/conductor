@@ -280,8 +280,8 @@ An `Entry` keeps the identity its source gave it: `ID` a chat message's id
 withdraws, `Event` the chat's event, so two questions of the same words are
 two entries and each answer names the one it ended.
 
-What each kept entry is taken from, by its source on `main` (PR-1 changes
-nothing in `internal/session`; every source below exists today):
+What each kept entry is taken from, by its source on `main` (PR-1 adds no
+source in `internal/session`; every source below exists today):
 
 | Entry (`Kind`) | Source | What it holds |
 |---|---|---|
@@ -666,8 +666,10 @@ the runs' stops). The gate gains the same three for server sessions:
 - `admitSession`, in `createLocalSession` before anything of the launch
   starts (before the launch revision's read and `rt.StartTerminal`), for
   every server session the server makes (a route's, a clone's, a resume's,
-  an attempt's), recorded or not, since whether a record is begun is
-  known only later;
+  an attempt's), recorded or not, whatever `history.sessions` says: one
+  rule for every launch, since a launch the shutdown would stop a moment
+  later is better refused cleanly whether or not history is kept (and
+  whether a record is begun is known only later);
 - `sessionDone`, once the launch's registration has completed
   (`registered`) or failed (`abandon`, a start that failed, any return
   after the admission), answering `late` when the gate closed and its
@@ -700,6 +702,20 @@ So:
   as `lost`**. Each of these ends `lost`, the server having stopped
   observing the session.
 
+**An attempt refused at the gate** is read by the engine as it reads any
+launch error while its run stops, with nothing added. An attempt's launch
+that fails (`fail("launch", …)` in the engine's attempt start,
+`internal/crew/task.go`) is `stopped`, not `failed`, when its run's context
+has ended; `closeAttempt` leaves a stopped attempt's task ready ("attempt
+n stopped with the run"), not failed and not counted against the task's
+attempts, as `recordStop` does for the attempts a run's stop finds in
+flight. The gate closes only after the shutdown has stopped every run it
+lists (`stop` sets `stopping` and cancels the run's context before it
+waits) and drained them, so an attempt that meets the closed gate is one
+of a stopped run: it is `stopped`, and its run, stopped by the shutdown as
+the others are, is taken up by a continuation. A run the shutdown did not
+stop is the one exception ("Open in the design").
+
 A hosted session starts no process on the server and takes no admission:
 its `Begin`, its recorder and its first reconcile are one step under
 `recMu` (`beginHostedRecord`), so the final pass finds it wholly or not at
@@ -719,6 +735,31 @@ not the drain, is what orders a launch against the shutdown.
 `docs/protocol.md` names `503 shutting_down` (the code Brakeman's routes
 already answer once the shutdown has begun) on the routes that launch a
 session.
+
+**The hub's expiry removes only the registration it timed.**
+`Hub.Expire` (`internal/signal/hub.go`) times each hosted session whose
+host has been away past `DisconnectGrace`. On `main` it takes the session
+out of the hub under the hub's lock and calls `registry.Remove(id)` after
+the lock, by id: a host that registers the same id in between makes a new
+`HostedSession`, which `registry.Add` puts in place of the old one, and
+the old one's expiry then removes the new registration. The session leaves
+the server while its host is connected, and its record is settled `host
+away`: an event of an old registration ends the record of a new one, which
+the journal's promise rules out. PR-1 changes `Expire` so that, under the
+hub's own lock, it checks that the session it is about to remove is still
+the registration it timed, in the hub (`hub.sessions[id] == hs`) and in
+the registry, and takes it out of both in that one critical section, by
+identity (`Registry.TakeIf(id, hs)`, new: the entry removed only while it
+is `hs`, without running the hook). The registry's `OnRemove` runs for
+each session taken once the hub's lock is let go (`Registry.Removed(id,
+hs)`, new), as it ran before. A host registering the same id reads the hub
+under the same lock: before the expiry's critical section it finds the old
+session still there and takes it back (`attach`, as within the grace);
+after it, the id is in neither the hub nor the registry, and nothing of
+the old registration's expiry can remove the new one. The registry's lock
+is taken under the hub's (the hub's first; the registry calls nothing
+under its own), and `OnRemove`, which reaches `recMu`, never runs under
+the hub's lock.
 
 The routes:
 
@@ -1705,7 +1746,7 @@ property test below.
 | S18 | Pe, Sr | `Stop` marks `stopRequested`, stops the process, marks the status `stopped`; a process that exits meanwhile ends as the status says once both are in; a stop that fails leaves `stopped` with the process running: no end, the process waited for. | the session's own lock; reconcile reads the result | ended as the status says, once the process is gone | `TestAFailedStopIsNoEnd` |
 | S19 | Sr (failed), Rm | The ended session removed while its process runs: Rm's final reads `stopped` and the process running. The process's later exit is read by no one. | membership first | `lost`, for good | `TestARemovedSessionWhoseProcessRunsIsLost` |
 | S20 | Rm, Rm (the stop route and `GC`; `Expire` twice) | The registry deletes once and calls `OnRemove` only for the delete it made (`Remove`, `removeIf`). | the registry's lock | one final | lock |
-| S21 | Ra, Rm of the earlier registration | Rm first: final, `host away`; Ra then takes the record up. Ra first: its recorder replaces the earlier one and takes the open record up; the earlier `OnRemove` names a session that is not the recorder's and does nothing. | `recMu`, the instance rule | open, `Reopened` one more, one "taken up again" entry, in either order (but see "Open in the design", 1) | `TestADelayedHostedRemovalLeavesTheReconnectedRecordOpen` |
+| S21 | Ra, Rm of the earlier registration | Rm first: final, `host away`; Ra then takes the record up. Ra first: its recorder replaces the earlier one and takes the open record up; the earlier `OnRemove` names a session that is not the recorder's and does nothing. | `recMu`, the instance rule | open, `Reopened` one more, one "taken up again" entry, in either order (S43 holds the hub to it) | `TestADelayedHostedRemovalLeavesTheReconnectedRecordOpen` |
 | S22 | Ra, Hn or Sm of the earlier registration | The earlier recorder is not its id's: nothing. | `recMu` | the new registration's alone | lock |
 | S23 | Ra, an ended record | `Begin` refuses it (`ErrExists`); no recorder. | the journal's `mu` | ended, unchanged; the new registration unrecorded | `TestBeginReopensTheSameHostsRecord` |
 | S24 | Ra, Wr's merge (the record let go from memory, taken up from its file) | The file read outside the lock and merged with what came meanwhile; an end observed meanwhile refuses a second taking up. | the journal's `mu`, its `load` mark | the file's entries and the new ones together; an end observed meanwhile stands | `TestAnEndDuringTheMergeStands` |
@@ -1727,6 +1768,8 @@ property test below.
 | S40 | Rv, Ra (a host registering just after a restart) | Rv ends before any `Begin`; Ra takes the record up from its file (S24). | `wmu`, then the journal's `mu` | open, `Reopened` one more | `TestAHostedRecordSurvivesAServerRestart` |
 | S41 | Pe (a hosted status), the host's going and Rm by `Expire` | The status message first: ended, and `Expire`'s final keeps it. `Expire` first: `host away`; no status follows from a host that is gone. | membership first, idempotence | `exited (exit n)`, or `host away` | `TestAHostedExitIsKeptWithItsActivityDropped` |
 | S42 | Rg (hosted), Sm of the same registration | No message of the host is handled between the hub's add and its hooks (one goroutine reads the connection and registers); a stream after `OnAdded` is the recorder's. | the connection's goroutine | kept | lock |
+| S43 | Rm by `Expire`, Ra of the same id in its gap | `Expire`, under the hub's lock, finds the session it timed still the hub's and the registry's and takes it out of both by identity; its `OnRemove` runs after the lock. Ra reads the hub under the same lock: before, it finds the old session and takes it back (`attach`, the same registration, its recorder unchanged); after, it adds a new `HostedSession` and `OnAdded` takes the record up. The old `OnRemove`, before Ra's `OnAdded`: final, `host away`, then taken up; after it: names a session that is not the recorder's, nothing. | the hub's lock, removal by identity, the instance rule | open: the same registration, or taken up again (`Reopened` one more); the new registration never removed | `TestAnExpiryNeverRemovesTheRegistrationThatReplacedIt` |
+| S44 | Gc, an attempt's launch | The engine's attempt start asks `Launch`; `createLocalSession` refuses it at the closed gate (`503 shutting_down`, nothing started). The engine's `fail("launch", …)` reads the run's context, ended by the shutdown's stop before the gate closed: the attempt is `stopped`, uncounted, its task ready, as `recordStop` closes the attempts in flight. | the shutdown's order (the runs' stops and drain before `closeSessions`), the run's context | no record; in the ledger the attempt `stopped`, its run stopped and taken up by a continuation | `TestAnAttemptRefusedAtTheGateIsStoppedNotCounted` |
 
 **Promises at the edges.** Each follows from the rules above and is said
 once here.
@@ -1768,35 +1811,21 @@ once here.
 
 **Open in the design.**
 
-1. **`Hub.Expire` removes by id, not by identity** (S21). It takes the
-   session out of the hub under the hub's lock and calls
-   `registry.Remove(id)` after it; a host registering the same id between
-   the two gets a new `HostedSession`, which `registry.Add` puts in place
-   of the old one (`Add` replaces an id it already holds), and `Expire`'s
-   `Remove` then takes the new one out. Its record is settled `host away`
-   while its host is connected, and the session leaves the server. This
-   is on `main`, not of the journal's making, and the record's outcome is
-   deterministic (the session did leave the registry), but it is wrong.
-   Options: (a) `Expire` removes only the session it chose (a
-   `registry.RemoveIf(id, hs)`, as `GC` uses `removeIf`) and `Add`
-   refuses an id it holds, a few lines in `internal/signal` and
-   `internal/session`, in PR-1 because S21's row rests on it; (b) an issue
-   of its own, S21's outcome standing until it is fixed.
-2. **An attempt's launch refused at the session gate.** Only an attempt
-   still starting past the shutdown's deadline meets the closed gate (the
-   runs are stopped and drained before it closes). If the engine reads
-   `errShuttingDown` as the attempt's failure, the ledger records a failed
-   attempt for a run the shutdown stopped. Options: (a) the refusal wraps
-   the engine's own stop error, so the attempt reads interrupted (to be
-   checked in `internal/crew` against how a launch error is judged once
-   the run is stopping); (b) an attempt's launch is admitted under its
-   run's admission (`admitRun`) and only the others take `admitSession`.
-3. **The gate covers every server launch, recorded or not.** On `main` a
-   session launched during the shutdown, after its sessions' stops have
-   listed the registry, is never stopped; the gate closes that gap for
-   every launch, with history on or off. Options: (a) as written, one
-   rule for every launch; (b) the gate only for recorded launches, `main`'s
-   behaviour kept for the others.
+1. **A run not started from a ticket, during the shutdown** (S44). Only a
+   run from a ticket is admitted at the launch gate (`admitRun` in
+   `launchPlanned`); a run made otherwise (`POST /api/runs`, a crew a
+   session forms, a continuation) that starts after the shutdown has
+   listed the runs it stops is not stopped by it. Its context is still
+   live when its attempt meets the closed session gate, so
+   `fail("launch", …)` records that attempt `failed`, counted against its
+   task, and the next attempt is refused the same way until the task
+   fails. The run outliving the shutdown's stops is `main`'s; the gate
+   makes it show in the ledger. What it would take: those run starts
+   admitted at the same gate (`admitRun` and `startDone` around the
+   engine's start, as `launchPlanned` has them), so every run is stopped,
+   its context ended, before `closeSessions`; no new mechanism. Options:
+   (a) in PR-1, since S44's row rests on it; (b) an issue of its own, such
+   a run's attempts counted failed meanwhile.
 
 **A resume's receipt.** `pending` (reserved under the record's lock, with
 the new session's id allocated, before any check or launch) → `started`
@@ -2155,7 +2184,17 @@ file there, the session's end then written over it) and
 `TestAFailedDeleteKeepsTheRecord` (S38),
 `TestReadOnlyWithoutTheLock` and `TestOpenSaysReadOnlyBeforeItsWaiterRuns`
 (S39), `TestAHostedRecordSurvivesAServerRestart` (S40),
-`TestAHostedExitIsKeptWithItsActivityDropped` (S41). Each is proved as
+`TestAHostedExitIsKeptWithItsActivityDropped` (S41),
+`TestAnExpiryNeverRemovesTheRegistrationThatReplacedIt` (S43, in
+`internal/signal` and again through the server: `Expire` held at a seam
+after its critical section and before `OnRemove`, the same instance's
+host registering meanwhile; then a variant registering before it: the new
+registration listed, its record open, never `host away`),
+`TestAnAttemptRefusedAtTheGateIsStoppedNotCounted` (S44: a managed run's
+attempt held in its launch before the gate (`beforeAttempt`, the launch
+gate's attempt seam) while the shutdown stops the run and closes the gate
+(`afterSessionsClosed`); let go, the launch refused: the attempt `stopped`, its task ready,
+its attempt count unchanged). Each is proved as
 AGENTS.md asks of a race's test: `go test -race -count=30` on the rows'
 tests, and the property test the same way, each run on a new seed.
 
@@ -2483,10 +2522,11 @@ shutdown's final pass), the agent's
 version and the launch revision read before `StartTerminal` (native only),
 the four record routes. Touches `internal/journal`, `internal/config`,
 `internal/signal` (the `OnAdded` callback, `HostChat`'s questions and
-their ends), `internal/gitcli` (`RepoOf`), `internal/api`,
-`docs/protocol.md`; nothing in `internal/session` (every entry's source
-exists on `main`). Tests: PR-1's of
-`internal/journal` and `internal/api` above. About 1,300 lines. Depends on
+their ends, `Expire`'s removal by identity), `internal/session` (the
+registry's `TakeIf` and `Removed`, nothing of a session: every entry's
+source exists on `main`), `internal/gitcli` (`RepoOf`), `internal/api`,
+`docs/protocol.md`. Tests: PR-1's of
+`internal/journal`, `internal/api` and `internal/signal` above. About 1,300 lines. Depends on
 nothing. May run beside PR-2.
 
 **PR-2: the history index and its search.** `internal/history` whole (the
