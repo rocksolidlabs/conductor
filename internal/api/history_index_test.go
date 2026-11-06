@@ -54,7 +54,11 @@ func histWait(t *testing.T, e *testEnv, reconcile bool) *history.Index {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 2*testWait)
 	defer cancel()
-	if err := e.srv.history.settle(ctx, reconcile); err != nil {
+	wait := e.srv.history.settle
+	if reconcile {
+		wait = func(ctx context.Context, _ bool) error { return e.srv.history.reconcileNow(ctx) }
+	}
+	if err := wait(ctx, reconcile); err != nil {
 		t.Fatalf("the history's indexer did not settle: %v (%v)", err, e.srv.history.indexing())
 	}
 	ix := e.srv.history.index()
