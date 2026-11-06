@@ -49,6 +49,10 @@
 //
 //	func main() { app.Main() }
 //
+// Such a main links more modules than this one, so it hands in the notices
+// of what it links before app.Main, with app.SetThirdPartyNotices (see
+// package app); one that hands in none serves this module's.
+//
 // Every provider has a name (ValidName: 1 to 40 of a-z, 0-9 and '-'), which
 // the logs, the server's notes and GET /api/capabilities give it. One value
 // may register in several slots under one name (a router that is also a

@@ -4598,6 +4598,28 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   default passing the contract suite. With C1, the two clauses of the R0
   gate this stream owns are observed: a plain build registers nothing,
   and every default passes the contract suite.
+- **A main hands in its own third-party notices (#662, 2026-11-05).** A
+  `main` built outside this repository on `app.Run` links more modules than
+  this one, and its server served this module's embedded notices, which do
+  not list them. The maintainers chose a seam in the open-source module:
+  `app.SetThirdPartyNotices(text)`, called before `Run` or `Main`, hands in
+  that `main`'s own text, and the server serves it at
+  `/third-party-notices.txt` (a switchyard too) with the same headers. It
+  replaces a text and nothing else: no licence, plan or build is checked,
+  nothing is gated on it. It refuses, with an error and changing nothing,
+  an empty text (a `main` with none hands in none), one over
+  `MaxThirdPartyNotices` (8 MiB; the embedded text is about 1.5 MB), a
+  second text, and one handed in after a server of the process started:
+  `runServe` reads the holder once, when it makes the server
+  (`cli.SetNotices`, `api.WithNotices`), and that read closes it. A plain
+  build hands in nothing and serves the embedded text byte for byte.
+  Tests: `TestNoticesServeTheTextAMainHandedIn` (the route with the text,
+  with `""` and with none, on a server and a switchyard, the three
+  headers), `TestNoticesHolderBounds` (empty, the limit and one byte over,
+  a second text, after the read), `TestServeServesTheNoticesAMainHandedIn`
+  (through `runServe`: the text read once and served, the embedded one
+  with none, a text after the start refused) and
+  `TestSetThirdPartyNoticesRefuses`.
 - **Three sidebar and crew page fixes (UIB2, #596, #592, #604,
   2026-11-05).** The sidebar's list gives a row that re-rendered the focus
   back only when the focus was lost, and never to a row behind an open
