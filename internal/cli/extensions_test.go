@@ -57,9 +57,9 @@ func watchNewServer(t *testing.T) *handed {
 	old := newServer
 	t.Cleanup(func() { newServer = old })
 	h := &handed{}
-	newServer = func(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, ui http.Handler, st *store.Store, p ext.Providers) (*api.Server, error) {
+	newServer = func(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, ui http.Handler, st *store.Store, p ext.Providers, notices string) (*api.Server, error) {
 		h.providers = p
-		srv, err := old(cfg, cat, log, ui, st, p)
+		srv, err := old(cfg, cat, log, ui, st, p, notices)
 		if srv != nil {
 			h.registered = srv.Registered()
 		}
@@ -165,8 +165,8 @@ func TestServeFailedStartEndsTheDrains(t *testing.T) {
 	oldNew := newServer
 	t.Cleanup(func() { newServer = oldNew })
 	deadline, wait := startDeadline(t)
-	newServer = func(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, ui http.Handler, st *store.Store, p ext.Providers) (*api.Server, error) {
-		srv, err := oldNew(cfg, cat, log, ui, st, p)
+	newServer = func(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, ui http.Handler, st *store.Store, p ext.Providers, notices string) (*api.Server, error) {
+		srv, err := oldNew(cfg, cat, log, ui, st, p, notices)
 		if err != nil {
 			return srv, err
 		}
