@@ -46,7 +46,37 @@ func (s *Server) openSessionRecords(st *store.Store) *journal.Journal {
 		s.log.Error("the session records could not be opened; sessions are not recorded", "err", err)
 		return nil
 	}
+	s.recordsStop = make(chan struct{})
 	return j
+}
+
+// closeSessionRecords closes the journal: the waits for processes still
+// running end first (awaitProcessEnd), then, at a shutdown (reconcile),
+// every session still listed is read once more as it is now, its end taken
+// from it when observed: a session's last activity and change are told
+// after its Ended closes (Local.markEnded), so a stop that returned may
+// still have them on their way, and the journal refuses them once closed.
+// The journal's last pass then writes every record (journal.Close).
+func (s *Server) closeSessionRecords(reconcile bool) {
+	j := s.sessionRecords
+	if j == nil {
+		return
+	}
+	s.stopRecordsOne.Do(func() { close(s.recordsStop) })
+	if reconcile {
+		s.registry.Each(func(d session.Driver) {
+			info := d.Info()
+			if s.observedEnd(info.ID, d, info) {
+				end := journal.Ending{How: endingOf(info)}
+				if info.EndedAt != nil {
+					end.At = *info.EndedAt
+				}
+				j.End(info.ID, end)
+			}
+			j.Changed(info.ID)
+		})
+	}
+	j.Close()
 }
 
 // recording says a session that starts now is recorded.
@@ -59,19 +89,27 @@ func (s *Server) recording() bool {
 // starts in, never again at its path: read for a native session only (a
 // Runtime elsewhere runs on a tree this server does not observe); a read
 // that fails or times out, or whose folder could not be named as opened,
-// leaves it empty.
-func (s *Server) launchRevision(where ext.Where, cwd string, dir *os.File) gitcli.Revision {
+// leaves it empty. repo is the repository it names, as the file system
+// knows it (its common git directory's identity): what the end commit's
+// read must find again (recordEndCommit), nil with no repository.
+func (s *Server) launchRevision(where ext.Where, cwd string, dir *os.File) (rev gitcli.Revision, repo os.FileInfo) {
 	if !s.recording() || where != ext.WhereNative {
-		return gitcli.Revision{}
+		return gitcli.Revision{}, nil
 	}
 	at, still := openedPath(dir, cwd)
 	ctx, cancel := context.WithTimeout(context.Background(), revisionTimeout)
 	defer cancel()
 	rev, err := s.readRevision(ctx, at)
 	if err != nil || !still() {
-		return gitcli.Revision{}
+		return gitcli.Revision{}, nil
 	}
-	return rev
+	if rev.Common == "" {
+		return rev, nil
+	}
+	if repo, err = os.Stat(rev.Common); err != nil {
+		return gitcli.Revision{}, nil
+	}
+	return rev, repo
 }
 
 // openedPath is a path that names the directory dir holds open, for a git
@@ -100,9 +138,12 @@ func openedPath(dir *os.File, cwd string) (string, func() bool) {
 
 // beginServerRecord begins the record of a server session as it is made,
 // before the session can keep an entry.
-func (s *Server) beginServerRecord(info session.Info, launched session.Launched, agentAdapter, agentName string, version string, where ext.Where, rev gitcli.Revision) {
+func (s *Server) beginServerRecord(info session.Info, launched session.Launched, agentAdapter, agentName string, version string, where ext.Where, rev gitcli.Revision, repo os.FileInfo) {
 	if !s.recording() {
 		return
+	}
+	if repo != nil && rev.Top != "" {
+		s.recordRepos.Store(info.ID, repo)
 	}
 	host, _ := os.Hostname()
 	r := journal.Record{
@@ -165,7 +206,7 @@ func (s *Server) recordChanged(id string) {
 }
 
 // recordCurrent is the journal's Current: the session as the registry
-// lists it now.
+// lists it now, ended only once its end is observed (observedEnd).
 func (s *Server) recordCurrent(id string) (journal.Meta, bool) {
 	d, ok := s.registry.Get(id)
 	if !ok {
@@ -173,13 +214,58 @@ func (s *Server) recordCurrent(id string) (journal.Meta, bool) {
 	}
 	info := d.Info()
 	m := journal.Meta{Name: info.Name, AgentSession: agentSessionOf(info.AgentSession), Crew: crewOfRef(info.Crew)}
-	if info.Status.Ended() {
+	if s.observedEnd(id, d, info) {
 		m.Ended, m.Ending = true, endingOf(info)
 		if info.EndedAt != nil {
 			m.EndedAt = *info.EndedAt
 		}
 	}
 	return m, true
+}
+
+// observedEnd says the session's end is one the server observed: its
+// status ended and, for a server session, its process gone (ProcessDone).
+// A server session's status reads stopped once a stop was asked, whatever
+// the process did (Local.Stop marks it so when the process's stop failed
+// too): while that process runs its record is not ended, and its end is
+// recorded once the process is gone (awaitProcessEnd), or never, the
+// record then left open for the next start to mark lost.
+func (s *Server) observedEnd(id string, d session.Driver, info session.Info) bool {
+	if !info.Status.Ended() {
+		return false
+	}
+	l, ok := d.(*session.Local)
+	if !ok {
+		return true
+	}
+	select {
+	case <-l.ProcessDone():
+		return true
+	default:
+	}
+	s.awaitProcessEnd(id, l)
+	return false
+}
+
+// awaitProcessEnd records the end of a server session whose status ended
+// before its process did, once the process is gone; once a session, and
+// never after the journal's close begins (recordsStop).
+func (s *Server) awaitProcessEnd(id string, l *session.Local) {
+	if _, waiting := s.awaitingEnd.LoadOrStore(id, true); waiting {
+		return
+	}
+	go func() {
+		defer s.awaitingEnd.Delete(id)
+		select {
+		case <-l.ProcessDone():
+		case <-s.recordsStop:
+			return
+		}
+		if j := s.sessionRecords; j != nil {
+			j.End(id, journal.Ending{How: endingOf(l.Info())})
+			j.Changed(id)
+		}
+	}()
 }
 
 // endingOf is how an ended session's Info says it ended, in the words of
@@ -203,37 +289,58 @@ func isEnding(msg string) bool {
 
 // recordEndCommit is the journal's EndCommit: HEAD of a native server
 // session's folder after its end, an observation; nothing for any other.
-// The folder is read at its path, its process gone: a read is kept only
-// when the path still names the repository the launch was read in (its
-// top and its common directory), so a folder replaced since never lends
-// its commit.
+// The folder is the session's own, the one it was opened as (FolderDir),
+// read through its handle where the system names one (openedPath), never
+// whatever its path leads to now; and the repository found there must be
+// the launch's, by the file system's identity of its common directory
+// (launchRevision), never by the text of a path: a folder moved, a
+// repository put in its place or made again at the same path lends no
+// commit. A session the server no longer holds (its folder closed) has
+// none read.
 func (s *Server) recordEndCommit(ctx context.Context, r journal.Record) string {
-	if r.Host.Hosted || r.Where != string(ext.WhereNative) || r.Repo == "" {
+	v, ok := s.recordRepos.LoadAndDelete(r.ID)
+	if !ok || r.Host.Hosted || r.Where != string(ext.WhereNative) || r.Repo == "" {
 		return ""
 	}
+	want := v.(os.FileInfo)
+	d, ok := s.registry.Get(r.ID)
+	l, local := d.(*session.Local)
+	if !ok || !local {
+		return ""
+	}
+	dir, err := l.FolderDir()
+	if err != nil {
+		return ""
+	}
+	defer dir.Close()
+	at, still := openedPath(dir, l.Info().Cwd)
 	ctx, cancel := context.WithTimeout(ctx, revisionTimeout)
 	defer cancel()
-	rev, err := s.readRevision(ctx, r.Cwd)
-	if err != nil || rev.Top != r.Repo || (r.RepoCommon != "" && rev.Common != r.RepoCommon) {
+	rev, err := s.readRevision(ctx, at)
+	if err != nil || !still() || rev.Common == "" {
+		return ""
+	}
+	if fi, err := os.Stat(rev.Common); err != nil || !os.SameFile(fi, want) {
 		return ""
 	}
 	return rev.Commit
 }
 
 // recordDenied is the journal's Denied: a server session's deny list, as
-// /api/touched applies it; a session no longer listed keeps nothing.
-func (s *Server) recordDenied(id, path string) bool {
+// /api/touched applies it; for a session the registry no longer lists,
+// known is false (the journal judges by the list it left with, Gone).
+func (s *Server) recordDenied(id, path string) (deny, known bool) {
 	d, ok := s.registry.Get(id)
 	if !ok {
-		return true
+		return false, false
 	}
 	switch drv := d.(type) {
 	case *session.Local:
-		return drv.Denied(path)
+		return drv.Denied(path), true
 	case *signal.HostedSession:
-		return false
+		return false, true
 	}
-	return true
+	return true, true
 }
 
 // recordActivity is the event hub's onActivity, the journal's: every
@@ -262,6 +369,13 @@ func (s *Server) recordActivity(id string, e session.ActivityEntry, _ session.At
 	}
 	j.Note(id, a)
 	if e.Type == session.ActivityStatus && isEnding(e.Message) {
+		// A server session's only once its process is gone (observedEnd);
+		// a hosted one's as its host says.
+		if d, ok := s.registry.Get(id); ok {
+			if l, local := d.(*session.Local); local && !s.observedEnd(id, l, l.Info()) {
+				return
+			}
+		}
 		j.End(id, journal.Ending{At: e.At, How: e.Message})
 	}
 }
@@ -283,9 +397,11 @@ func (s *Server) recordChat(id string, m session.ChatMessage) {
 // recordRemoved is the registry's OnRemove for the journal: what the
 // session was as it left and its deny list are handed over for the work
 // the journal still holds of it (Gone), then a session that left with an
-// end keeps it (the Info's, when the journal has none yet), a hosted one
-// let go without one (its host away past the grace) is marked host away,
-// which proves nothing of its process.
+// end observed keeps it (the Info's, when the journal has none yet), a
+// hosted one let go without one (its host away past the grace) is marked
+// host away, which proves nothing of its process, and a server session
+// whose process still ran is marked lost until it is seen gone
+// (awaitProcessEnd).
 func (s *Server) recordRemoved(id string, d session.Driver) {
 	j := s.sessionRecords
 	if j == nil {
@@ -304,7 +420,7 @@ func (s *Server) recordRemoved(id string, d session.Driver) {
 	}
 	j.Gone(id, final, denied)
 	switch {
-	case info.Status.Ended():
+	case s.observedEnd(id, d, info):
 		end := journal.Ending{How: endingOf(info)}
 		if info.EndedAt != nil {
 			end.At = *info.EndedAt

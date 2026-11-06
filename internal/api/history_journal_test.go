@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,7 +82,7 @@ func recordedFakeSession(t *testing.T, e *testEnv, o session.Options) *fakeSessi
 	t.Helper()
 	id := session.NewID()
 	info := session.Info{ID: id, Name: id, Kind: session.KindServer, AgentID: "cat", Cwd: e.root, CreatedAt: time.Now().UTC()}
-	e.srv.beginServerRecord(info, session.Launched{AgentID: "cat", Cwd: e.root}, "", "cat", "", ext.WhereNative, gitcli.Revision{})
+	e.srv.beginServerRecord(info, session.Launched{AgentID: "cat", Cwd: e.root}, "", "cat", "", ext.WhereNative, gitcli.Revision{}, nil)
 	o.OnChat = e.srv.localChat
 	return newFakeSession(t, e, id, o)
 }
@@ -756,24 +761,193 @@ func TestASwitchyardKeepsNoHistory(t *testing.T) {
 	}
 }
 
-// The end commit is read at the folder's path once the process is gone,
-// and kept only while that path is still the repository the launch was
-// read in: a folder replaced by another repository lends no commit.
-func TestTheEndCommitIsTheLaunchRepositorys(t *testing.T) {
-	e := newTestEnv(t, nil)
-	answer := gitcli.Revision{Top: "/w", Common: "/w/.git", Commit: "0123456789abcdef0123456789abcdef01234567"}
-	e.srv.readRevision = func(context.Context, string) (gitcli.Revision, error) { return answer, nil }
-	r := journal.Record{Where: string(ext.WhereNative), Cwd: "/w", Repo: "/w", RepoCommon: "/w/.git"}
-	if got := e.srv.recordEndCommit(t.Context(), r); got != answer.Commit {
-		t.Fatalf("the same repository's end commit: %q", got)
+// sessionIn starts a cat session in cwd and answers its id; it is stopped
+// when the test ends.
+func sessionIn(t *testing.T, e *testEnv, cwd string) string {
+	t.Helper()
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat", "cwd": cwd})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create in %s: %d %v", cwd, resp.StatusCode, out)
 	}
-	for _, other := range []gitcli.Revision{
-		{Top: "/elsewhere", Common: "/elsewhere/.git", Commit: answer.Commit},
-		{Top: "/w", Common: "/other/.git", Commit: answer.Commit},
-	} {
-		answer = other
-		if got := e.srv.recordEndCommit(t.Context(), r); got != "" {
-			t.Fatalf("a replaced folder's commit was kept: %+v gave %q", other, got)
+	id := out["id"].(string)
+	t.Cleanup(func() {
+		if d, ok := e.srv.registry.Get(id); ok {
+			_ = d.Stop(context.Background())
 		}
+	})
+	return id
+}
+
+// repoAt makes dir a repository with one commit, answering its id.
+func repoAt(t *testing.T, dir, what string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, dir, "init", "-q")
+	return commitAt(t, dir, what)
+}
+
+// commitAt commits in dir, answering the commit's id.
+func commitAt(t *testing.T, dir, what string) string {
+	t.Helper()
+	gitIn(t, dir, "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", what)
+	return gitIn(t, dir, "rev-parse", "HEAD")
+}
+
+// The end commit is the launch repository's, found by what the session's
+// folder is, never by the text of a path: a session started through a
+// link has its repository's commit; one whose folder was moved away and
+// another repository made at its path has its own folder's commit where
+// the system reads a folder through its handle (Linux), and none
+// elsewhere, never the other's; one whose repository was made again at
+// the same path, the paths alike to the letter, has none.
+func TestTheEndCommitIsTheLaunchRepositorys(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	t.Setenv("HOME", t.TempDir())
+	e := newTestEnv(t, nil)
+	t.Run("through a link", func(t *testing.T) {
+		real := filepath.Join(e.root, "linked-real")
+		repoAt(t, real, "first")
+		link := filepath.Join(e.root, "linked")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		id := sessionIn(t, e, link)
+		head := commitAt(t, real, "during the session")
+		e.stopAndWait(id)
+		if r := endedRecord(t, e, id); r.End != head {
+			t.Fatalf("the end commit %q, want %q", r.End, head)
+		}
+	})
+	t.Run("its folder moved, another put at its path", func(t *testing.T) {
+		w := filepath.Join(e.root, "moved")
+		repoAt(t, w, "first")
+		id := sessionIn(t, e, w)
+		head := commitAt(t, w, "during the session")
+		if err := os.Rename(w, w+".was"); err != nil {
+			t.Fatal(err)
+		}
+		other := repoAt(t, w, "another repository")
+		e.stopAndWait(id)
+		r := endedRecord(t, e, id)
+		want := head
+		if runtime.GOOS != "linux" {
+			want = ""
+		}
+		if r.End != want || r.End == other {
+			t.Fatalf("the end commit %q, want %q (the other repository's %s)", r.End, want, other)
+		}
+	})
+	t.Run("its repository made again at the same path", func(t *testing.T) {
+		w := filepath.Join(e.root, "remade")
+		repoAt(t, w, "first")
+		id := sessionIn(t, e, w)
+		if err := os.RemoveAll(filepath.Join(w, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		other := repoAt(t, w, "made again")
+		e.stopAndWait(id)
+		if r := endedRecord(t, e, id); r.End != "" {
+			t.Fatalf("the end commit %q of a repository made again (%s)", r.End, other)
+		}
+	})
+}
+
+// stubbornProc is a process whose stop fails: it runs on until it ends
+// by itself (End).
+type stubbornProc struct{ *sessiontest.FakeProc }
+
+func (stubbornProc) Stop(context.Context, time.Duration) error {
+	return errors.New("the process did not stop")
+}
+
+// stubbornSession is a recorded server session over a stubbornProc.
+func stubbornSession(t *testing.T, e *testEnv) (*session.Local, stubbornProc) {
+	t.Helper()
+	id := session.NewID()
+	info := session.Info{ID: id, Name: id, Kind: session.KindServer, AgentID: "cat", Cwd: e.root, Cols: 80, Rows: 24, Status: session.StatusRunning, CreatedAt: time.Now().UTC()}
+	e.srv.beginServerRecord(info, session.Launched{AgentID: "cat", Cwd: e.root}, "", "cat", "", ext.WhereNative, gitcli.Revision{}, nil)
+	proc := stubbornProc{sessiontest.NewFakeProc()}
+	t.Cleanup(func() { proc.End(0) })
+	l := session.NewLocal(info, proc, session.Options{ScrollbackBytes: 4096, Log: slog.New(slog.DiscardHandler), OnChange: e.srv.localChange, OnActivity: e.srv.localActivity})
+	if err := e.srv.registry.Add(l); err != nil {
+		t.Fatal(err)
+	}
+	return l, proc
+}
+
+// A stop that failed is no end: the session reads stopped (Local.Stop
+// marks it whatever the process did) while its process runs, and its
+// record stays open; once the process is gone the record ends. At a
+// shutdown with the process still running the record is left open, and
+// the next start marks it lost, never ended.
+func TestAFailedStopIsNoEnd(t *testing.T) {
+	e := newTestEnv(t, nil)
+	l, proc := stubbornSession(t, e)
+	id := l.Info().ID
+	if err := l.Stop(t.Context()); err == nil {
+		t.Fatal("the stop did not fail")
+	}
+	if r, _ := recordFile(t, e, id); !r.EndedAt.IsZero() || r.End != "" {
+		t.Fatalf("a failed stop ended the record: %+v", r)
+	}
+	proc.End(0)
+	if r := endedRecord(t, e, id); !strings.HasPrefix(r.Ending, "stopped") {
+		t.Fatalf("the end once the process was gone: %+v", r)
+	}
+
+	still, _ := stubbornSession(t, e)
+	sid := still.Info().ID
+	if err := still.Stop(t.Context()); err == nil {
+		t.Fatal("the stop did not fail")
+	}
+	e2 := restartServer(t, e)
+	r, _ := readRecordFile(t, e2.srv.cfg.DataDir, sid)
+	if !r.EndedAt.IsZero() || r.LostAt.IsZero() || r.Ending != journal.EndingLost {
+		t.Fatalf("a session whose process outlived the shutdown: %+v", r)
+	}
+}
+
+// A session's last activity and change are told after its Ended closes,
+// so a shutdown can reach the journal before them: held here at the
+// journal's hook until the shutdown is over, the session's end is in its
+// record all the same, once, taken from the session; the next start
+// finds it ended, not lost.
+func TestAShutdownKeepsAnEndWhoseHooksAreLate(t *testing.T) {
+	e := newTestEnv(t, nil)
+	reached, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	defer once.Do(func() { close(release) })
+	hook := e.srv.events.onActivity
+	e.srv.events.onActivity = func(sid string, en session.ActivityEntry, st session.AttentionState) {
+		if en.Type == session.ActivityStatus && isEnding(en.Message) {
+			close(reached)
+			<-release
+			defer close(returned)
+		}
+		hook(sid, en, st)
+	}
+	fs := recordedFakeSession(t, e, session.Options{})
+	id := fs.l.Info().ID
+	fs.proc.End(0)
+	<-reached // the process gone, its status entry held on its way to the journal
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	e.srv.Shutdown(ctx)
+	r, before := readRecordFile(t, e.srv.cfg.DataDir, id)
+	if r.EndedAt.IsZero() || r.Ending != "exited (exit 0)" || !r.LostAt.IsZero() {
+		t.Fatalf("the record after the shutdown: %+v", r)
+	}
+	once.Do(func() { close(release) })
+	<-returned // told the journal, closed by then
+	if _, after := readRecordFile(t, e.srv.cfg.DataDir, id); !bytes.Equal(before, after) {
+		t.Fatal("the record changed after the journal closed")
+	}
+	e2 := e.restart()
+	if r, _ := readRecordFile(t, e2.srv.cfg.DataDir, id); r.EndedAt.IsZero() || !r.LostAt.IsZero() || r.Ending != "exited (exit 0)" {
+		t.Fatalf("the record after the next start: %+v", r)
 	}
 }
