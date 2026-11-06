@@ -274,6 +274,17 @@ add its rule here.
   another's waits for the server's read after them (`viewerSeam.read`
   with `wsClient.sent`, `viewerReads.await`), and holds the writer that
   would drain them (`writerGate`) rather than trusting a full socket.
+- A frame the session has sent is not a frame the viewer has. The session
+  queues it, and the subscription's own goroutine hands it to the sink
+  later: a refusal sent before `NvimInput` returned was not yet in a test's
+  sink when it looked at once, and the test, finding it only beside the
+  next keys' refusal, judged the wrong one (#281). Wait until the viewer has
+  been handed all that was sent (`drained`) before judging what it holds,
+  the absence of a frame too. And a test's sink is a viewer like any other,
+  held to the session's queue bound: read the frames it has not read yet,
+  outside its lock. A test that read every frame again each round under
+  that lock held it for 11 s on a loaded machine, and the session dropped
+  the sink as a slow consumer, its editor with it ("file access denied").
 - Keep what decides ahead of what is shown, and wait on what decides.
   The output pump sent each chunk to the viewers before it fed the screen
   a key is routed by (`startupMayShow`): a viewer that answered the
@@ -318,6 +329,18 @@ add its rule here.
   carriage returns taken out (`printed` and `printedUntil` in
   `internal/api`, `lines` in `ext/local`), and keep exact bytes for tests
   of the bytes themselves.
+- A port picked is not a port held, and a number free for one protocol
+  is not free for the other. The Pebble tier's fake DNS took a UDP port
+  from the kernel and asked for the same number over TCP, which a TCP
+  socket already held: a connection an earlier test left in TIME_WAIT, a
+  client's outbound port. Linux refuses a listener there, SO_REUSEADDR or
+  not (0.8 % of picks on a busy machine, 4 % with a thousand loopback
+  clients; "bind: address already in use", #281). Bind what you need and
+  hand over the bound socket; where two binds must share a number, bind
+  both before using either and pick again when the second is refused
+  (`dnsPair` in `internal/certs`); where a program takes only an address,
+  hold the port until it starts and start again on a loss
+  (`pebblePorts`).
 - A read the page keeps one of in flight is bounded, or one request that
   never answers holds every later read behind it. A spec that cut the
   events stream with a route and removed it left one inbox read on the

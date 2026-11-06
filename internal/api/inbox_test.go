@@ -1037,3 +1037,44 @@ func TestInboxTrackHostedOlderViewNotedLast(t *testing.T) {
 		t.Fatalf("resumed: %+v", got)
 	}
 }
+
+// A hosted session removed while a change of it is being noted: its
+// OnRemove forgets what the server noted of it before the note is made,
+// and the note, made after, would keep it for as long as the server runs.
+// What the note kept goes with the session (the hub's OnChange looks
+// again once it has noted).
+func TestInboxHostedNotesGoWithASessionRemovedMidNote(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := startHost(t, e, []string{"/bin/cat"})
+	hs := hostedSession(t, e, id)
+	var removed atomic.Bool
+	notedAfter := make(chan struct{})
+	gate := func(sess string, noted bool) {
+		if sess != id {
+			return
+		}
+		if !noted && removed.CompareAndSwap(false, true) {
+			// The session leaves the registry between the view taken and
+			// its note: its OnRemove forgets it now, before the note.
+			e.srv.registry.Remove(id)
+			return
+		}
+		if noted && removed.Load() {
+			select {
+			case <-notedAfter:
+			default:
+				close(notedAfter)
+			}
+		}
+	}
+	e.srv.hostedSeen.seam.Store(&gate)
+	t.Cleanup(func() { e.srv.hostedSeen.seam.Store(nil) })
+	e.srv.hosts.OnChange(hs.Info())
+	<-notedAfter
+	until(t, "the notes of the removed session forgotten", func() bool {
+		e.srv.hostedSeen.mu.Lock()
+		defer e.srv.hostedSeen.mu.Unlock()
+		_, kept := e.srv.hostedSeen.sessions[id]
+		return !kept
+	})
+}
