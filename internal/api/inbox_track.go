@@ -358,36 +358,35 @@ func uncertainResumed() deliveryStep {
 
 // planSteps are the four steps of the Dispatch operation id of actor on
 // the plan revision ref names: its receipt, its own outcome, and nothing
-// resumed (a launch from the ticket page starts the work). A receipt of
+// resumed (a launch from the ticket page starts the work). The receipt is
+// read with how it binds to the revision (dispatch.PlanReceipt): one of
 // another operation (another intent, or an approval or withdrawal of
-// another revision, as far as the store keeps its subject: PlanOpOn) is
-// none of this revision's.
+// another revision) is none of this revision's; one whose revision the
+// store does not keep (a refused approval) is unknown, never this
+// revision's refusal nor another's.
 func (s *Server) planSteps(ctx context.Context, ref brakeman.Ref, actor, id string) ([]deliveryStep, error) {
 	if s.dispatch == nil {
 		return nil, errNoItem
 	}
 	receipt := "op:" + actor + "/" + id
 	avail := step(stepAvailable, stepDone, nil, "the revision was open for the operator", "")
-	rc, found, err := s.dispatch.Receipt(ctx, actor, id)
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		none := "no receipt of this operation is kept here"
-		return []deliveryStep{avail, step(stepRecorded, stepUnknown, nil, none, ""), step(stepValidated, stepUnknown, nil, none, ""), step(stepResumed, stepUnknown, nil, none, "")}, nil
-	}
-	other := "the operation id names another operation, not an approval or withdrawal of " + ref.String() + ": none with it was taken for this revision"
-	if rc.Intent != dispatch.IntentPlanApprove && rc.Intent != dispatch.IntentPlanWithdraw {
-		return otherReceiptSteps(avail, other), nil
-	}
 	planID, err := s.planIDOf(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
-	if on, known, err := s.dispatch.PlanOpOn(ctx, actor, id, planID); err != nil {
+	rc, bound, found, err := s.dispatch.PlanReceipt(ctx, actor, id, planID)
+	if err != nil {
 		return nil, err
-	} else if known && !on {
-		return otherReceiptSteps(avail, other), nil
+	}
+	switch {
+	case !found:
+		none := "no receipt of this operation is kept here"
+		return []deliveryStep{avail, step(stepRecorded, stepUnknown, nil, none, ""), step(stepValidated, stepUnknown, nil, none, ""), step(stepResumed, stepUnknown, nil, none, "")}, nil
+	case bound == dispatch.BoundElsewhere:
+		return otherReceiptSteps(avail, "the operation id names another operation, not an approval or withdrawal of "+ref.String()+": none with it was taken for this revision"), nil
+	case bound != dispatch.BoundHere:
+		w := "Dispatch keeps a receipt with this id but not the revision it named (a refused approval): whether it was this revision's is not known here"
+		return []deliveryStep{avail, step(stepRecorded, stepUnknown, nil, w, ""), step(stepValidated, stepUnknown, nil, w, ""), step(stepResumed, stepUnknown, nil, w, "")}, nil
 	}
 	recorded := step(stepRecorded, stepDone, nil, "Dispatch keeps the operation's receipt", receipt)
 	if rc.Status != dispatch.StatusDone {
