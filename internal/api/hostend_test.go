@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -128,7 +129,7 @@ func expectTheEnd(t *testing.T, end theEnd, lines int) {
 	if !bytes.Contains(end.output, []byte("the final line")) {
 		t.Errorf("the viewer never got the session's last output: it ends %q", tail(end.output))
 	}
-	if !bytes.Contains(end.output, fmt.Appendf(nil, "\n%d\r\n", lines)) {
+	if !printedLine(end.output, strconv.Itoa(lines)) {
 		t.Errorf("the viewer missed output before the last line: it ends %q", tail(end.output))
 	}
 	if end.status != string(session.StatusExited) {
@@ -139,6 +140,45 @@ func expectTheEnd(t *testing.T, end theEnd, lines int) {
 	}
 	if end.outputAfterError {
 		t.Error("output came after the error frame")
+	}
+}
+
+// printedLine reports whether out, a terminal's bytes, holds line as a
+// line of its own as the program printed it: with the carriage returns
+// taken out. The terminal's newline translation is the kernel's, and
+// macOS's writes a newline's carriage return again when its output queue
+// fills between the two, so a reader slower than the writer gets
+// "30000\r\r\n" for the "30000\n" that seq printed.
+func printedLine(out []byte, line string) bool {
+	return bytes.Contains(bytes.ReplaceAll(out, []byte("\r"), nil), []byte("\n"+line+"\n"))
+}
+
+// The last-output check reads the numbered line past the carriage return
+// macOS's terminal doubles for a slow reader: fed the tail a viewer got on
+// the Mac (#281), the exact bytes the check once looked for are not there
+// and the line as printed is; a line that is missing, or only part of a
+// longer one, is still missed.
+func TestPrintedLineReadsPastADoubledCarriageReturn(t *testing.T) {
+	mac := []byte("29997\r\n29998\r\n29999\r\n30000\r\r\nthe final line\r\n")
+	if bytes.Contains(mac, []byte("\n30000\r\n")) {
+		t.Fatal("the Mac's tail holds the exact bytes after all: this test no longer proves the fix")
+	}
+	for _, c := range []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{"the Mac's doubled carriage return", string(mac), true},
+		{"one carriage return", "29999\r\n30000\r\nthe final line\r\n", true},
+		{"three", "29999\r\n30000\r\r\r\nthe final line\r\n", true},
+		{"a doubled one before it", "29999\r\r\n30000\r\nthe final line\r\n", true},
+		{"missing", "29998\r\n29999\r\nthe final line\r\n", false},
+		{"cut short", "29999\r\n3000", false},
+		{"part of a longer line", "29999\r\n130000\r\n300001\r\nthe final line\r\n", false},
+	} {
+		if got := printedLine([]byte(c.out), "30000"); got != c.want {
+			t.Errorf("%s: printedLine(%q, 30000) = %v, want %v", c.name, c.out, got, c.want)
+		}
 	}
 }
 

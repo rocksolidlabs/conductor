@@ -72,16 +72,23 @@ func (s *screen) text() string {
 	return string(s.out)
 }
 
-// waitFor waits until the output holds want.
+// lines is the output as the program printed it: without the carriage
+// returns, which are the terminal's (macOS's writes one twice for a reader
+// slower than the writer).
+func (s *screen) lines() string {
+	return strings.ReplaceAll(s.text(), "\r", "")
+}
+
+// waitFor waits until the output, read as lines, holds want.
 func (s *screen) waitFor(t *testing.T, want string) {
 	t.Helper()
 	bound := time.NewTimer(hang)
 	defer bound.Stop()
-	for !strings.Contains(s.text(), want) {
+	for !strings.Contains(s.lines(), want) {
 		select {
 		case <-s.more:
 		case <-s.ended:
-			if !strings.Contains(s.text(), want) {
+			if !strings.Contains(s.lines(), want) {
 				t.Fatalf("the output ended without %q: %q", want, s.text())
 			}
 		case <-bound.C:
@@ -279,17 +286,17 @@ func TestNativeStartGivesExactlyItsEnvironment(t *testing.T) {
 			}
 			stopped(t, term)
 			s := read(term)
-			s.waitFor(t, "end\r\n")
-			out := s.text()
+			s.waitFor(t, "end\n")
+			out := s.lines()
 			// A failure names variables, never their values: the server's
 			// environment holds tokens.
 			if strings.Contains(out, "server-secret") {
 				t.Fatal("the server's environment reached the terminal: CONDUCTOR_TEST_SERVER_ONLY is set")
 			}
-			_, body, _ := strings.Cut(out, "begin\r\n")
-			body, _, _ = strings.Cut(body, "end\r\n")
+			_, body, _ := strings.Cut(out, "begin\n")
+			body, _, _ = strings.Cut(body, "end\n")
 			var got []string
-			for _, l := range strings.Split(strings.TrimSpace(strings.ReplaceAll(body, "\r", "")), "\n") {
+			for _, l := range strings.Split(strings.TrimSpace(body), "\n") {
 				if k, _, _ := strings.Cut(l, "="); l != "" && k != "PWD" && k != "SHLVL" && k != "_" && k != "OLDPWD" { // the shell's own
 					got = append(got, l)
 				}
