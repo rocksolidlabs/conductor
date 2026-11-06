@@ -420,6 +420,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		Plans: agents.PlansDir(agent.Adapter, pty.Lookup(procEnv), cwd),
 	}
 	s.recordHooks(rc, &opts)
+	if rc != nil {
+		s.recordSeam("beforeMade", id)
+	}
 	local := session.NewLocal(info, session.RuntimeProcess(term), opts)
 	s.made(rc, local)
 	local.SetAgentToken(agentToken)

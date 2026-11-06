@@ -148,9 +148,14 @@ type Server struct {
 	recCur         map[string]*recorder
 	recordsStop    chan struct{}
 	stopRecordsOne sync.Once
+	// recordsClosed, under recMu, is the final pass's mark: no recorder is
+	// put in place, settled or fed after it (closeSessionRecords).
+	recordsClosed bool
 	// recordDeliver, when a test sets it, is handed each hint and stream
-	// callback of a recorded session in place of running it (deliver).
+	// callback of a recorded session in place of running it (deliver);
+	// recordHook is run at each of the lifecycle's stages (recordSeam).
 	recordDeliver atomic.Pointer[func(func())]
+	recordHook    atomic.Pointer[func(stage, id string)]
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
