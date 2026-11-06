@@ -167,6 +167,13 @@ func (rs *Records) Save(r Run) error {
 	if ok && have.Managed != nil && (r.Managed == nil || have.Managed.Revision > r.Managed.Revision) {
 		return nil
 	}
+	// Only a managed run's record carries people: it is a cache of the
+	// ledger, whose run row keeps the crew as launched, so one an older
+	// build cannot read and prunes is written again (syncRecords). A
+	// legacy run's record stays what every older build reads.
+	if r.Managed == nil {
+		r.People = nil
+	}
 	r, err = fit(r)
 	if err != nil {
 		return err
