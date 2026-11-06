@@ -19,6 +19,8 @@ relay envelope, so a client handles them identically regardless of transport.
 | `0x06` | FILE | owner → client | `[8-byte reqId][uint32 headerLen][JSON header][bytes]` | 1 MiB body |
 | `0x07` | CHUNK | data channel only | `[uint16 msgId][uint32 total][uint32 offset][data]` | 32 KiB |
 | `0x08` | FILE_WRITE | client → owner | `[8-byte reqId][uint32 headerLen][JSON header][part]`: one part of a save (see File saves) | 32 KiB part, 4 KiB header |
+| `0x09` | DECISION | owner → client | UTF-8 JSON: a decision link's lane reply (see Decision links) | 128 KiB |
+| `0x0A` | DECIDE | client → owner | UTF-8 JSON, decoded strictly: one action on a decision (see Decision links) | 32 KiB |
 | `0x10` | RELAY | host ↔ server | `[16-byte viewerId][inner frame 0x01–0x04, 0x06, 0x08]` | |
 
 "Owner" is whichever process holds the PTY: the server for `server` sessions,
@@ -1850,6 +1852,112 @@ owner could not read: one whose part's header would pass 4 KiB (a very long
 path) is refused before anything is sent. A file request still gives up
 after 20 s.
 
+## Decision links
+
+A decision link (docs/plans/decision-inbox.md, PR-5) is a control link
+of a session or a run that the operator mints with `decide: true`
+(`POST /api/sessions/{id}/links`, `POST /api/runs/{run}/links`; `400
+bad_request` with a view role). Its holder lists, reads and acts on the
+decision inbox's items in the link's scope over the connection the link
+opens: the session's viewer (`/ws/sessions/{id}`, a run link's on any
+member's session), or, for a run's link, the run's **desk**, `GET
+/ws/runs/{run}/desk?token=`, a connection with no terminal that serves
+the lane whether or not a member of the run lives. The client sends its
+`hello` first, as a viewer does; the desk's `welcome` says `decisions:
+true` and carries no terminal fields (`sessionId` empty, `role`
+`control`, `transport` `ws`). A token that is no decision link of that
+run closes the desk with `4403` (no token, or one the server does not
+hold, `4401`), and the desk takes the lane's messages, `ping` and a
+repeated `hello` alone: anything else (INPUT, `file_get`, a FILE_WRITE)
+is a `bad_frame` error and `4400`. A link revoked or expired closes its
+desks as it closes its viewers (an `error` naming it, then `4403`), and
+the server's shutdown closes every desk.
+
+What one link allows, and nothing more: the items of its scope (a
+session's link, that session's question and the task its attempt runs; a
+run's link, its members' questions and its tasks; a plan revision is in
+no link's scope); the actions each item lists now, each through the
+item's own operation, which judges it as it judges the workbench's (the
+question's claim, first response wins; the engine's command at the
+action's revision); while the link stands, read again on every request
+and again as the operation is taken; each action once per `opId`; as the
+link's actor, `link:<id>` with its label as the name, never the
+workbench's. A welcome says `decisions: true` to a decision link's
+connection alone; any other connection's lane request, the workbench's
+included, is refused `not_decision_link` and the connection stays.
+
+Every read and every `DECIDE` is answered by exactly one reply naming its
+`reqId` (1 to 32 bytes of printable ASCII): a DECISION frame, `decide_ok`
+or `decide_refused`. At most 4 decides and 4 reads are under way on one
+connection; past them a request is refused `too_many_requests` at once.
+A request past its bounds, or one that does not decode strictly, is
+refused `invalid`, naming its `reqId` when it has one within its bound.
+
+| Message | Direction | Content | Bound |
+|---|---|---|---|
+| control `decisions_list` | client → owner | `{t, reqId, after?}`: a page of the scope's items after `after` (the `next` the page before gave) | `MaxControl`; `after` at most 600 bytes |
+| control `decision_read` | client → owner | `{t, reqId, ref}`: one item with its detail, open or as it is now | `ref` at most 512 bytes |
+| control `decision_track` | client → owner | `{t, reqId, ref, receipt, attempt}`: the four steps of one action taken through this link; `receipt` what its steps are read by (a question's id, a task command's id), `attempt` the action's own identity (its decide's `opId`) | `receipt` 512, `attempt` an `opId` |
+| control `decision_record` | client → owner | `{t, reqId, ref, part, rev?, after?}`: one part (`head`, `responses`, `history`) of a DR1 record, `rev` required after `head`; answered `unsupported` until DR1's records are items | `rev` at most 20 digits, `after` 64 |
+| control `decision_evidence` | client → owner | `{t, reqId, ref, evidence}`: a bounded read of the evidence entry `evidence` (its own ref, never its place in a list) of the item `ref` | 512 each |
+| frame DECIDE | client → owner | `{reqId, ref, action, revision, ticketRev?, input?, choice?, text?, rationale?, opId}`: one action; `revision` the action's `expect`, `input` a choice's keys exactly, `text` a line; `choice` and `rationale` are DR1's, refused `invalid` before DR1; `opId` (1 to 32 of `A-Z a-z 0-9 . _ ~ -`) the receipt's key | 32 KiB encoded: `input` 48 raw bytes, `text` 4096, `rationale` 2 KiB encoded, `choice` 0 to 5, `action` 32, `revision` 64, `ref` 512 |
+| frame DECISION | owner → client | `{reqId, list? \| item? \| track? \| evidence? \| record?}` | 128 KiB; over a data channel fragmented by CHUNK |
+| control `decisions_changed` | owner → client | `{t, seq}`: what the link's viewer sees changed (its scope's items, their actions' revisions, the steps of what it acted on): list again, track again what is not final | `MaxControl` |
+| control `decide_ok` | owner → client | `{t, reqId, ref, receipt, repeat?}`: the action taken; `ref` and `receipt` are what its steps are read by; `repeat` when the operation already held its `opId` | `MaxControl` |
+| control `decide_refused` | owner → client | `{t, reqId, code, message, rev?, ref?, receipt?}`: `code` one of `stale_revision`, `not_in_scope`, `not_decision_link`, `not_found`, `question_answered`, `too_many_requests`, `unsupported`, `invalid`, `record_moved` (with `rev`), `revoked`, `expired`, or an operation's own (`task_state`, `input_failed`, `session_ended`); `ref` and `receipt` when the operation kept its refusal as a receipt (a command refused `stale_revision`) | `message` at most 500 bytes encoded; `MaxControl` |
+| `welcome`, field `decisions` | owner → client | `true` to a decision link's connection; absent otherwise and from an older owner, to which a client sends no lane message | |
+
+**List.** The scope's open items as the inbox's summaries (`GET
+/api/inbox`'s), oldest first by `(since, ref)`, at most 25 a page:
+`{items, next?, total, at, recent?}`, `next` the cursor after the last
+when more follow, `total` every item in scope, so nothing is cut
+silently; an item that left between pages is not on the next, one that
+came is in its place. The first page carries the link's **Recent**: the
+last 50 actions taken through it, `{ref, receipt, attempt, at}`, oldest
+first, kept in memory with the link (gone with it), one per item and
+attempt, so an item closed by its action stays readable with its steps
+and two viewers of one link keep two entries.
+
+**Read.** `{item}` as `GET /api/inbox/item` answers it; an evidence entry
+naming a session in the scope that is still listed carries `session`,
+the id the holder opens it by. A ref outside the scope is
+`not_in_scope`, one that names nothing `not_found`.
+
+**Track.** `{ref, receipt, attempt, steps}`, the four steps of `GET
+/api/inbox/track`, read under this link's actor: a task command's
+receipt is the ledger's under `link:<id>`, never the workbench's; a
+question's is the session's kept result, by `attempt` against the kept
+request id (another's reads "another answer first").
+
+**Evidence.** For a `check:` ref of a task in the scope, `{ref, kind:
+"log", tail, cut?, bytes, sha256, exit, dropped?}`, the log's last 4 KiB
+from the ledger's row (the row's tail when the log was dropped); for a
+`session:` ref in the scope, `{ref, kind: "session", session}`. Any other
+entry is `unsupported` ("open it on the desktop or the LAN"); a ref
+outside the scope `not_in_scope`, one that names nothing `not_found`.
+
+**Decide.** The action maps to the item's own operation, never a new
+one. A repeat first: an `opId` the operation already holds for this
+link's actor (the ledger's receipt by run, actor and command id; the
+session's kept result by request id) is answered with that receipt,
+`repeat`, before the item's current actions are judged, so a reply lost
+with its connection is asked again with the same `opId`. Otherwise the
+item is read: an `answer` (its `revision` the question's id, exactly one
+of `input`, one of the item's choices' keys, and `text`, where the item
+offers a line) to a question of the connection's own session is taken
+as that connection's own `answer` with `opId` as its `reqId`; to another
+session's question, through the question's claim as the link
+(`session.Local.AnswerAs` for keys, `Submit` with the question for a
+line), the link's label its name and `opId` its request id. A question
+no longer waiting, or a turn held for the terminal (an item with no
+answer), is `question_answered`, nothing typed. `retry`, `accept` and
+`cancel` go to the engine's commands with `revision` as the expected
+revision and `opId` as the command id: a run that moved on is
+`stale_revision`, kept as the command's receipt; a command the item no
+longer lists is `stale_revision`, nothing done. Any other action is
+`invalid`. A decide whose operation has begun when its connection
+closes is not taken back; one not begun is never begun.
+
 ## HTTP API
 
 On a switchyard (`switchyard.enabled`, `conductor switchyard`) every route
@@ -1909,8 +2017,8 @@ the query; on `GET /ws/host`, where no token is an open host's
 registration, it is `400 invalid_request`.
 Errors are
 `{"error":{"code","message"}}`, with more fields where the table says so. The
-WebSocket routes, `GET /ws/sessions/{id}` and `GET /ws/host`, are described
-above. A run link's token is a share token on the session of every member of
+WebSocket routes, `GET /ws/sessions/{id}`, `GET /ws/host` and `GET
+/ws/runs/{run}/desk` (Decision links), are described above. A run link's token is a share token on the session of every member of
 its run, and on no other.
 
 | Route | Auth | Purpose |
@@ -1961,7 +2069,7 @@ its run, and on no other.
 | `POST /api/runs/{run}/tasks/{task}/cancel` | admin | cancel a task: its attempt in flight ends (its session stopped once the cancel is recorded), the task is `cancelled`, what needs it is blocked for good, and the run ends when every task is terminal; body `{commandId, expectedRevision?}`; `200 {receipt}` with the task; `409 task_state` with the receipt for a task already succeeded, failed or cancelled |
 | `POST /api/runs/{run}/tasks/{task}/retry` | admin | allow a failed or cancelled task one more attempt: it is `blocked` or `ready` again (a repair it carries stays), the run open again; `200 {receipt}`; `409 task_state` with the receipt otherwise |
 | `POST /api/runs/{run}/tasks/{task}/accept` | admin | take a failed task's last submitted commit as its result all the same ("Accept anyway", a person's decision over a failed check): the task `succeeded` with it, what needs it goes on; `200 {receipt}`; `409 task_state` with the receipt for a task not failed, or one no attempt of which submitted a commit |
-| `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url}` as for a session link (its `url` on the same base); it grants its role on the session of every member of the run, a member added later included (see Crew runs); `409 too_many_links` past 100 links for the run; `404` when unknown |
+| `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?, decide?}`, reply `201 {link, token, url}` as for a session link (its `url` on the same base); it grants its role on the session of every member of the run, a member added later included (see Crew runs); `decide: true` makes it a decision link (see Decision links: control only, `400 bad_request` with a view role; the link says `decide: true`; `409 switchyard_too_old` where the link would be minted at a switchyard, none of which carries decisions yet); `409 too_many_links` past 100 links for the run; `404` when unknown |
 | `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's |
 | `GET /api/dispatch/projects` | admin | Dispatch's projects (see Dispatch below): `{projects, next?}`, a page of at most `limit` (1 to 200, 200 when absent) summaries by key after `cursor` (a page's opaque `next`), each `{id, key, name, tracker, archivedAt?, open, done, rev, updatedAt}`, `open` counting its live tickets neither done nor cancelled and `done` those done, without its description, folder, tracker URL and close policy, which its read carries, so a page is under 128 KiB (a name of 60 characters encodes to at most 360 bytes); the archived ones only with `archived=1`; `400 invalid_request` for a bad value |
 | `POST /api/dispatch/projects` | admin | make a project (`project.create`, Dispatch operations below): `{opId, byName?, key, name, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, `key` one upper-case letter then one to five upper-case letters or digits, chosen now and never changed, `name` 1 to 60 characters, `description` Markdown of at most 16 KiB, `cwd` a folder kept as text (at most 4096 bytes), `tracker` `native` (the default) or `external` with an `http` or `https` `trackerUrl` (at most 2 KiB), `closeRequires` any of `acceptance`, `delivery` and `verified` (A delivery's candidate, below), each at most once, kept in that order (`["acceptance"]` for a native project and `[]` for an external one when absent); reply `201 {receipt, project}`; `409 key_taken` for a key another project holds, archived or not |
@@ -2029,7 +2137,7 @@ its run, and on no other.
 | `POST /api/opens/{id}/claim` | admin | a desktop app's workbench claims a link it was told of (`open`, `pending`), see Opening a link: no body; `200 {open}` for the first claim while the link waits, `409 open_taken` after it, `404` for a link the server no longer holds (offered, answered or gone) |
 | `POST /api/opens/{id}/result` | admin | what the desktop app did with the link it claimed: body `{outcome}` (at most 1 KiB), one of `browser`, `default`, `missing`, `failed` and `offered` (the app could not open it: the server sends the link `offered` to every workbench and answers the agent so); `missing` and `failed` only for a link whose agent names a browser (`400 invalid_request` otherwise); `204`, once, the outcome the agent's call answers, the wait for it ending however it may; `409 open_taken` for a link not claimed or told already, `404` as for the claim, and for a result told once the link's wait for it is over (`handed`), which the page then offers itself |
 | `GET /api/sessions/{id}/links` | admin | share links of a session (`{links, published?, republish?}`), each with `active` viewers; with a switchyard configured, `published` says the session is published there now, and `republish: true` that the publication the switchyard ended has not been made again, which the next link does (the Share dialog makes a link anew then, and in place of one it made here while the session was not published, once it is); for a session published to a rendezvous, the links minted there too, with `remote: true` and no `active` (their viewers are counted there); a rendezvous restart that re-registered the session drops those records; an ended session lists none |
-| `POST /api/sessions/{id}/links` | admin | create a share link (`403 switchyard` on a switchyard, where the publishing machine mints a session's links over its own connection, `link`): `{role, label?, ttlSeconds?}`, reply `201 {link, token, url, invite}` (`invite` is the same link as `conductor://<host>/join/<token>`, which the desktop app opens itself); for a session published to a rendezvous the link is minted there over the host connection and the reply is `201 {link{id, role, label, expiresAt, sessionId, remote: true}, url, invite, remote: true}` with the rendezvous's URL and no `token` (`502 rendezvous_unavailable` when it does not answer within 15 s); while that session's publication is still being made the request waits up to 10 s for it, and when it failed or is not there the link is made here and the reply adds `rendezvous: {server, error}` (why the session is not at the switchyard); `url` is `<base>/join/<token>`, where the base is `publicUrl` when it names another machine, and otherwise (unset, or localhost, as the default is) the address the request came through: `X-Forwarded-Proto` and `X-Forwarded-Host` when a reverse proxy sets them, else the request's scheme and `Host` (a malformed host falls back to `publicUrl`) |
+| `POST /api/sessions/{id}/links` | admin | create a share link (`403 switchyard` on a switchyard, where the publishing machine mints a session's links over its own connection, `link`): `{role, label?, ttlSeconds?, decide?}` (`decide: true`, a decision link: see Decision links; control only, `400 bad_request` with a view role; `409 unsupported` for a hosted session, whose decisions are answered where it runs; `409 switchyard_too_old` for a session published to a switchyard, none of which carries decisions yet), reply `201 {link, token, url, invite}` (`invite` is the same link as `conductor://<host>/join/<token>`, which the desktop app opens itself); for a session published to a rendezvous the link is minted there over the host connection and the reply is `201 {link{id, role, label, expiresAt, sessionId, remote: true}, url, invite, remote: true}` with the rendezvous's URL and no `token` (`502 rendezvous_unavailable` when it does not answer within 15 s); while that session's publication is still being made the request waits up to 10 s for it, and when it failed or is not there the link is made here and the reply adds `rendezvous: {server, error}` (why the session is not at the switchyard); `url` is `<base>/join/<token>`, where the base is `publicUrl` when it names another machine, and otherwise (unset, or localhost, as the default is) the address the request came through: `X-Forwarded-Proto` and `X-Forwarded-Host` when a reverse proxy sets them, else the request's scheme and `Host` (a malformed host falls back to `publicUrl`) |
 | `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link, which closes every viewer attached through it (`4403`); `204`; revoking a revoked link answers `204`, records nothing and closes any viewer still attached through it; a session that ended took its links with it (local ones revoked and dropped, their viewers closed as the session's end, `4410`; those minted at the rendezvous forgotten here and ended there by the session's end, which the rendezvous hears from the publication; a hosted session's at its end too), so they are no longer listed and a revoke of one answers `204`, and stops what the session's end still writes their viewers (here, and at the rendezvous over the publication, which outlasts the session's end by 5 s for it: `502 rendezvous_unavailable` when the rendezvous does not answer then); a link minted at the rendezvous is revoked there over the host connection (`link_revoke`), `204` also when the rendezvous no longer holds it, `502 rendezvous_unavailable` when it does not answer|
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |

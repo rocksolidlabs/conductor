@@ -475,6 +475,10 @@ type Welcome struct {
 	// submit_ok or an error naming it, and takes unlessWaiting (#322):
 	// absent from an older owner, which types the line and says nothing.
 	SubmitAck bool `json:"submitAck,omitempty"`
+	// Decisions says this connection is a decision link's (decisions.go):
+	// it takes the lane's reads and TypeDecide frames. Absent otherwise and
+	// from an older owner, to whom a client sends none.
+	Decisions bool `json:"decisions,omitempty"`
 	// Cwd is the session's working directory on the machine that runs it,
 	// from the owner itself, to a viewer whose role may read files: the root
 	// of a guest's Files pane. A switchyard lists a published session with
