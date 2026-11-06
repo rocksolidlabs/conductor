@@ -20,6 +20,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/notify"
 )
@@ -67,6 +68,11 @@ With the workbench token (--server, --token and --insecure as conductor dispatch
                                             today's turns
   conductor brakeman list [--json]          the requests, newest first, one a line
   conductor brakeman show br-n [--json]     a request whole, with its brief
+  conductor brakeman role on|off|pause|resume|status [--json]
+                                            the background role: on wakes Brakeman on events and at
+                                            its briefing times, off only when asked; pause holds it,
+                                            resume ends the pause; status its state and its last
+                                            wakes
 
 A write whose reply is lost to the network is sent once more with the same
 operation id, which the server answers without a second change. Outside a
@@ -437,14 +443,18 @@ func (c *brakemanClient) post(ctx context.Context, timeout time.Duration, path s
 }
 
 // actWords is an act's answer in one line: the operation, its id, its
-// receipt and what it made (a launch's run, a revision proposed).
+// receipt and what it made (a launch's run, a revision proposed). An
+// act's answer never carries the run (the turn reads it through its own
+// grant): a launch's run is named from Dispatch's launch, launched once
+// the launch is started; the run, when a reply has one, says the same.
 func actWords(operation, opID string, reply json.RawMessage) string {
 	var out struct {
 		Receipt *struct {
 			ID, Status string
 			Repeat     bool
 		} `json:"receipt"`
-		Launch *struct{ ID, RunID string } `json:"launch"`
+		Launch *struct{ ID, RunID, State string } `json:"launch"`
+		Run    *struct{ ID string }               `json:"run"`
 		Plan   *struct {
 			ID    string
 			N     int
@@ -459,10 +469,16 @@ func actWords(operation, opID string, reply json.RawMessage) string {
 			line += ", a repeat of the act already kept"
 		}
 	}
-	// The act's answer carries the launch, never the run: a launch with
-	// its run's id has started it.
-	if l := out.Launch; l != nil && l.RunID != "" {
-		line += "; run " + l.RunID + " launched"
+	switch {
+	case out.Run != nil && out.Run.ID != "":
+		line += "; run " + out.Run.ID + " launched"
+	case out.Launch != nil && out.Launch.RunID != "" && out.Launch.State == "started":
+		line += "; run " + out.Launch.RunID + " launched"
+	case out.Launch != nil && out.Launch.RunID != "":
+		line += "; run " + out.Launch.RunID
+		if out.Launch.State != "" {
+			line += ", its launch " + out.Launch.State
+		}
 	}
 	if p := out.Plan; p != nil && p.ID != "" {
 		line += fmt.Sprintf("; revision %d (%s) %s, for the operator to approve or not", p.N, p.ID, p.State)
@@ -703,7 +719,7 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		asJSON = fs.Bool("json", false, "print the server's reply as it is")
 	case "brief":
 		file = fs.String("file", "", "the brief, a JSON file (brakeman.brief/1), - for stdin (required)")
-	case "ask", "status", "list", "show":
+	case "ask", "status", "list", "show", "role":
 		server = addAPIFlags(fs)
 		if sub == "ask" {
 			fs.Var(&subjects, "subject", "a subject, a ref such as run:<run> or ticket:CND-4 (repeatable)")
@@ -720,9 +736,11 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		fmt.Fprint(stderr, brakemanUsage, "\nFlags:\n")
 		fs.PrintDefaults()
 	}
-	// ask's kind and show's id come first; flags may follow them.
+	// ask's kind, show's id and role's action come first; flags may
+	// follow them.
+	takesArg := sub == "ask" || sub == "show" || sub == "role"
 	var arg string
-	if (sub == "ask" || sub == "show") && len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+	if takesArg && len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
 		arg, rest = rest[0], rest[1:]
 	}
 	if err := fs.Parse(rest); err != nil {
@@ -732,7 +750,7 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return 2, err
 	}
 	pos := fs.Args()
-	if arg == "" && len(pos) > 0 && (sub == "ask" || sub == "show") {
+	if arg == "" && len(pos) > 0 && takesArg {
 		arg, pos = pos[0], pos[1:]
 	}
 	if len(pos) > 0 {
@@ -782,6 +800,10 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		if !regexp.MustCompile(`^br-[1-9][0-9]{0,17}$`).MatchString(arg) {
 			return 2, errors.New("brakeman show needs a request's id, br-n")
 		}
+	case "role":
+		if !slices.Contains(roleActions, arg) {
+			return 2, fmt.Errorf("brakeman role needs one of %s", strings.Join(roleActions, ", "))
+		}
 	}
 	client, err := server.client(stderr)
 	if err != nil {
@@ -792,6 +814,8 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return brakemanStatus(ctx, client, *asJSON, stdout)
 	case "list":
 		return brakemanList(ctx, client, *asJSON, stdout)
+	case "role":
+		return brakemanRole(ctx, client, arg, *asJSON, stdout)
 	}
 	return brakemanShow(ctx, client, arg, *asJSON, stdout)
 }
@@ -1022,7 +1046,7 @@ func brakemanAsk(ctx context.Context, server apiFlags, kind string, subjects []s
 // brakemanStatusReply bounds GET /api/brakeman's reply: the configuration,
 // the turn in progress and the queue, each request at its bound.
 func brakemanStatusReply() int {
-	return wholeMiB(brakeman.MaxConfigDoc + (opBound("brakeman_ask", "queue")+1)*brakeman.MaxRequestDoc)
+	return wholeMiB(brakeman.MaxConfigDoc + (opBound("brakeman_ask", "queue")+1)*brakeman.MaxRequestDoc + brakeman.MaxRoleDoc)
 }
 
 // brakemanStatus is conductor brakeman status.
@@ -1296,4 +1320,142 @@ func compactJSON(v json.RawMessage) string {
 		return string(v)
 	}
 	return b.String()
+}
+
+// roleActions are conductor brakeman role's actions.
+var roleActions = []string{"on", "off", "pause", "resume", "status"}
+
+// roleStatusRows is how many of the role's last wakes status prints.
+const roleStatusRows = 10
+
+// brakemanRole is conductor brakeman role (docs/plans/brakeman.md,
+// PR-15): on and off set the wake mode (background or invoked) at the
+// configuration's revision, pause and resume the role's own route, and
+// status the role with its last wakes; with --json each prints its
+// route's reply as it came.
+func brakemanRole(ctx context.Context, c *apiClient, action string, asJSON bool, stdout io.Writer) (int, error) {
+	switch action {
+	case "on", "off":
+		var st struct {
+			Config brakeman.Config `json:"config"`
+		}
+		if err := c.doLimit(ctx, http.MethodGet, "/api/brakeman", nil, &st, brakemanStatusReply()); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: %w", action, err)
+		}
+		cfg := st.Config
+		cfg.Wake.Mode = brakeman.WakeInvoked
+		if action == "on" {
+			cfg.Wake.Mode = brakeman.WakeBackground
+		}
+		var raw json.RawMessage
+		if err := c.doLimit(ctx, http.MethodPut, "/api/brakeman/config", map[string]any{"rev": cfg.Rev, "config": cfg}, &raw, wholeMiB(brakeman.MaxConfigDoc)); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: %w", action, err)
+		}
+		if asJSON {
+			_, err := stdout.Write(append(raw, '\n'))
+			return 0, err
+		}
+		var out struct {
+			Config brakeman.Config `json:"config"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: an unreadable reply: %w", action, err)
+		}
+		switch {
+		case action == "off":
+			fmt.Fprintln(stdout, "the background role is off: Brakeman runs only when asked")
+		case !out.Config.Enabled:
+			fmt.Fprintln(stdout, "the background role is on, and Brakeman is off: nothing wakes it until it is turned on in Settings")
+		default:
+			fmt.Fprintf(stdout, "the background role is on: a window of %d s, a cooldown of %d min, %d turns and %d minutes a day\n",
+				out.Config.Wake.WindowSeconds, out.Config.Wake.CooldownMinutes, out.Config.Budget.TurnsPerDay, out.Config.Budget.MinutesPerDay)
+		}
+		return 0, nil
+	case "pause", "resume":
+		var raw json.RawMessage
+		if err := c.doLimit(ctx, http.MethodPost, "/api/brakeman/role", map[string]any{"action": action}, &raw, wholeMiB(brakeman.MaxRoleDoc)); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: %w", action, err)
+		}
+		if asJSON {
+			_, err := stdout.Write(append(raw, '\n'))
+			return 0, err
+		}
+		var out struct {
+			Role crew.RoleRecord `json:"role"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return 1, fmt.Errorf("brakeman role %s: an unreadable reply: %w", action, err)
+		}
+		fmt.Fprintf(stdout, "the background role is %s\n", out.Role.State)
+		return 0, nil
+	}
+	var raw json.RawMessage
+	if err := c.doLimit(ctx, http.MethodGet, fmt.Sprintf("/api/brakeman/role?limit=%d", roleStatusRows), nil, &raw, wholeMiB(2*brakeman.MaxRoleDoc)); err != nil {
+		return 1, fmt.Errorf("brakeman role status: %w", err)
+	}
+	if asJSON {
+		_, err := stdout.Write(append(raw, '\n'))
+		return 0, err
+	}
+	var out struct {
+		Role struct {
+			crew.RoleRecord
+			MinutesToday int `json:"minutesToday"`
+		} `json:"role"`
+		Log []crew.RoleLogRow `json:"log"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return 1, fmt.Errorf("brakeman role status: an unreadable reply: %w", err)
+	}
+	r := out.Role
+	line := "role: " + r.State
+	if r.Why != "" {
+		line += ": " + r.Why
+	}
+	fmt.Fprintln(stdout, line)
+	if r.State == crew.RoleUnavailable {
+		if r.RetryAt.IsZero() {
+			fmt.Fprintln(stdout, "tries again: on a person's request or the next briefing time")
+		} else {
+			fmt.Fprintf(stdout, "tries again: %s, or on a person's request or the next briefing time\n", r.RetryAt.Local().Format("2006-01-02 15:04"))
+		}
+	}
+	if r.Open != nil {
+		fmt.Fprintf(stdout, "gathering: %s, %d wakes, opened %s\n", r.Open.ID, batchCount(*r.Open), r.Open.OpenedAt.Local().Format("15:04:05"))
+	}
+	if r.Request != "" {
+		fmt.Fprintf(stdout, "briefing: %s for %s\n", r.Request, r.Fired.ID)
+	}
+	if r.State == crew.RoleCooling {
+		fmt.Fprintf(stdout, "cooling until %s\n", r.CoolUntil.Local().Format("15:04:05"))
+	}
+	fmt.Fprintf(stdout, "today: %d minutes\n", r.MinutesToday)
+	for _, row := range out.Log {
+		l := fmt.Sprintf("wake: %s %s", row.At.Local().Format("2006-01-02 15:04:05"), row.Source)
+		if row.Subject != "" {
+			l += " " + row.Subject
+		}
+		switch {
+		case row.Held != "":
+			l += " (" + row.Held + ")"
+		case row.Request != "":
+			l += " → " + row.Batch + " → " + row.Request
+		case row.Batch != "":
+			l += " → " + row.Batch
+		}
+		fmt.Fprintln(stdout, l)
+	}
+	return 0, nil
+}
+
+// batchCount is how many wakes a batch counts, its overflow too.
+func batchCount(b crew.Batch) int {
+	n := 0
+	for _, w := range b.Wakes {
+		n += w.Count
+	}
+	if b.Overflow != nil {
+		n += b.Overflow.Count
+	}
+	return n
 }

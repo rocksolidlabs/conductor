@@ -296,6 +296,28 @@ add its rule here.
   (`dispatch-plan.spec.ts`, #467). After picking an option, wait for the
   listbox to be gone (`toHaveCount(0)`) before typing, and assert the
   field holds what was typed (`toHaveValue`) before submitting.
+- What a process printed is not kept for a reader however late it comes.
+  On macOS the last close of a terminal's slave side waits about 0.6 s for
+  the master to read what is queued, then discards it: a child that printed
+  and exited at once, read by a test that a loaded machine held back that
+  long, gave an empty read and an end of file (`PWD []`, #281). The product
+  keeps the terminal open itself until the process is reaped (`keepsTTY`
+  in `internal/pty`), so the exit waits for its reader. A test of what a
+  short-lived child printed proves it by holding its reader back past the
+  system's own bound once the child is exiting (`exiting`, `pastDrain`),
+  and runs a program directly, not under bash, whose exit on macOS waits
+  for its reader whatever the parent holds and so hides the loss.
+- A terminal's bytes are the kernel's, not the program's. The tty
+  translates a newline to CR LF, and macOS's writes the CR again when its
+  output queue fills between the two: a reader slower than the writer
+  gets `30000\r\r\n` for seq's `30000\n` (62 in 30,000 lines on the Mac
+  with a reader pausing 0.5 ms per 256 bytes, every line there; none on
+  Linux, none for a reader that keeps up), and a check for the exact
+  `\n30000\r\n` failed whenever one landed on the line it looked for
+  (`expectTheEnd`, #281). Compare what the program printed with the
+  carriage returns taken out (`printed` and `printedUntil` in
+  `internal/api`, `lines` in `ext/local`), and keep exact bytes for tests
+  of the bytes themselves.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

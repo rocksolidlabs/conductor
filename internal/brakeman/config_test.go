@@ -82,6 +82,16 @@ func TestConfigBoundsEachField(t *testing.T) {
 		{"budget.readsPerTurn", func(c *Config) { c.Budget.ReadsPerTurn = MinReadsPerTurn }, func(c *Config) { c.Budget.ReadsPerTurn = MinReadsPerTurn - 1 }},
 		{"budget.turnsPerDay", func(c *Config) { c.Budget.TurnsPerDay = MaxTurnsPerDay }, func(c *Config) { c.Budget.TurnsPerDay = MaxTurnsPerDay + 1 }},
 		{"budget.turnsPerDay", func(c *Config) { c.Budget.TurnsPerDay = MinTurnsPerDay }, func(c *Config) { c.Budget.TurnsPerDay = MinTurnsPerDay - 1 }},
+		// BK3's (PR-14).
+		{"budget.minutesPerDay", func(c *Config) { c.Budget.MinutesPerDay = MaxMinutesPerDay }, func(c *Config) { c.Budget.MinutesPerDay = MaxMinutesPerDay + 1 }},
+		{"budget.minutesPerDay", func(c *Config) { c.Budget.MinutesPerDay = MinMinutesPerDay }, func(c *Config) { c.Budget.MinutesPerDay = MinMinutesPerDay - 1 }},
+		{"wake.windowSeconds", func(c *Config) { c.Wake.WindowSeconds = MaxWindowSeconds }, func(c *Config) { c.Wake.WindowSeconds = MaxWindowSeconds + 1 }},
+		{"wake.windowSeconds", func(c *Config) { c.Wake.WindowSeconds = MinWindowSeconds }, func(c *Config) { c.Wake.WindowSeconds = MinWindowSeconds - 1 }},
+		{"wake.cooldownMinutes", func(c *Config) { c.Wake.CooldownMinutes = MaxCooldownMinutes }, func(c *Config) { c.Wake.CooldownMinutes = MaxCooldownMinutes + 1 }},
+		{"wake.cooldownMinutes", func(c *Config) { c.Wake.CooldownMinutes = MinCooldownMinutes }, func(c *Config) { c.Wake.CooldownMinutes = MinCooldownMinutes - 1 }},
+		{"wake.questionMinutes", func(c *Config) { c.Wake.QuestionMinutes = MaxQuestionMinutes }, func(c *Config) { c.Wake.QuestionMinutes = MaxQuestionMinutes + 1 }},
+		{"wake.questionMinutes", func(c *Config) { c.Wake.QuestionMinutes = MinQuestionMinutes }, func(c *Config) { c.Wake.QuestionMinutes = MinQuestionMinutes - 1 }},
+		{"wake.briefings", func(c *Config) { c.Wake.Briefings = briefings(MaxBriefings) }, func(c *Config) { c.Wake.Briefings = briefings(MaxBriefings + 1) }},
 	}
 	ff := goodFacts()
 	for _, c := range cases {
@@ -106,7 +116,9 @@ func TestConfigBoundsEachField(t *testing.T) {
 		"scope.crews[1]":        func(c *Config) { c.Scope.Crews = []string{"team", "team"} },
 		"scope.runs[0]":         func(c *Config) { c.Scope.Runs = []string{"team"} },
 		"scope.sessions[0]":     func(c *Config) { c.Scope.Sessions = []string{"x"} },
-		"wake.mode":             func(c *Config) { c.Wake.Mode = "background" },
+		"wake.mode":             func(c *Config) { c.Wake.Mode = "always" },
+		"wake.briefings[0]":     func(c *Config) { c.Wake.Briefings = []string{"7:00"} },
+		"wake.briefings[1]":     func(c *Config) { c.Wake.Briefings = []string{"07:00", "07:00"} },
 		"permissions.observe":   func(c *Config) { c.Permissions.Observe = false },
 		"model":                 func(c *Config) { c.Model = "-m" },
 		"allowConductorTools":   func(c *Config) { c.AgentID, c.AllowConductorTools = "codex", true },
@@ -265,8 +277,8 @@ func TestTheDefaultsAreOffAndTerminalsHidden(t *testing.T) {
 		Cwd:         "/srv/work",
 		Visibility:  Visibility{Runs: true, Logs: true, Dispatch: true, Sessions: true, Touched: true},
 		Permissions: Permissions{Observe: true, Draft: true, Propose: true},
-		Wake:        Wake{Mode: WakeInvoked},
-		Budget:      Budget{TurnMinutes: 15, ReadsPerTurn: 300, TurnsPerDay: 40},
+		Wake:        Wake{Mode: WakeInvoked, WindowSeconds: 120, CooldownMinutes: 30, QuestionMinutes: 15},
+		Budget:      Budget{TurnMinutes: 15, ReadsPerTurn: 300, TurnsPerDay: 40, MinutesPerDay: 240},
 		Rev:         1,
 		UpdatedAt:   fx.clock.now().UTC(),
 	}
@@ -469,5 +481,53 @@ func TestObserveOnlyRefusesDraftsAndProposals(t *testing.T) {
 	b := goodBrief(t)
 	if err := CheckBrief(&b, observe, goodFacts()); err != nil {
 		t.Fatalf("a fact, observe only: %v", err)
+	}
+}
+
+// briefings is n distinct briefing times.
+func briefings(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("%02d:%02d", i%24, i/24)
+	}
+	return out
+}
+
+// TestBackgroundIsAWakeMode: the background mode is taken with its
+// fields, and Background says the role wakes Brakeman only when it is on
+// too.
+func TestBackgroundIsAWakeMode(t *testing.T) {
+	c := onConfig()
+	c.Wake.Mode, c.Wake.Briefings = WakeBackground, []string{"07:00", "18:30"}
+	if err := Validate(c, goodFacts()); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Background() {
+		t.Fatal("on and in the background: the role wakes it")
+	}
+	c.Enabled = false
+	if c.Background() {
+		t.Fatal("off: nothing wakes it")
+	}
+}
+
+// TestAConfigBeforeTheRoleGetsItsDefaults: a configuration written before
+// BK3's fields reads back with their defaults, its mode kept.
+func TestAConfigBeforeTheRoleGetsItsDefaults(t *testing.T) {
+	fx := newFixture(t)
+	old := DefaultConfig("/srv/work")
+	old.Wake, old.Budget.MinutesPerDay, old.Rev = Wake{Mode: WakeInvoked}, 0, 4
+	if err := fx.s.st.Save(ConfigFile, old); err != nil {
+		t.Fatal(err)
+	}
+	c, err := fx.s.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Wake.WindowSeconds != DefaultWindowSeconds || c.Wake.CooldownMinutes != DefaultCooldownMinutes || c.Wake.QuestionMinutes != DefaultQuestionMinutes || c.Budget.MinutesPerDay != DefaultMinutesPerDay || c.Wake.Mode != WakeInvoked || c.Rev != 4 {
+		t.Fatalf("%+v", c)
+	}
+	if err := Validate(c, goodFacts()); err != nil {
+		t.Fatalf("the defaults read back validate: %v", err)
 	}
 }

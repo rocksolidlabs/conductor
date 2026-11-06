@@ -9,9 +9,9 @@ import { initials } from '~/utils/sessions'
  * each time the picker opens, so a name another browser added is offered.
  *
  * Given `names` (a crew's person, HM1: the names Conductor knows, usePeople), it offers those instead and reads no directory; it says
- * `open` as it opens, so its owner can read them again, and `search` with the text typed in its search field, so its owner can read the
- * names that contain it (GET /api/people's `q`: a page holds 200 names, and the one typed may be past them). `create` words the row that
- * takes a typed name.
+ * `open` as it opens, so its owner can read them again, and `search` with the text typed in its search field while it is open, so its
+ * owner can read the names that contain it (GET /api/people's `q`: a page holds 200 names, and the one typed may be past them). `create`
+ * words the row that takes a typed name.
  */
 const props = withDefaults(defineProps<{ modelValue: string; disabled?: boolean; placeholder?: string; names?: readonly string[]; create?: string; size?: 'sm' | 'md' }>(), {
   placeholder: undefined,
@@ -25,13 +25,18 @@ const api = useDispatchApi()
 const people = ref<string[]>([])
 const open = ref(false)
 const term = ref('')
-watch(term, (q) => {
-  if (props.names) emit('search', q)
+// Given names, the search is said only while this picker is open (usePickerSearch): its own search cleared after it closed never
+// replaces the names another picker of the same owner is searching.
+usePickerSearch(open, term, {
+  open: () => {
+    if (props.names) emit('open')
+  },
+  search: (q) => {
+    if (props.names) emit('search', q)
+  },
 })
 watch(open, (o) => {
-  if (!o) return
-  if (props.names) emit('open')
-  else void load()
+  if (o && !props.names) void load()
 })
 
 // The directory read whole, through a gate of its own (utils/dispatchOrder.ts): a slow reply never replaces a newer one.
