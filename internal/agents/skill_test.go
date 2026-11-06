@@ -63,10 +63,19 @@ func TestSkillText(t *testing.T) {
 		`"${CONDUCTOR_BIN:-conductor}" task decide --type approval --question "Drop the legacy table?" --option "Drop it: frees 2 GB" --option "Keep it" --recommend 0 --authorizes "running migration 42" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"`,
 		"is a\ndecision: ask it with decision_request or task decide, not with ask or task\nblocked, whose question lasts only as long as this session.",
 		"Commit and save a\ncheckpoint first, then ask", "does not count an attempt that ends while it waits",
-		`"dr-7 open"`, "dr-N is\n  how a decision is named", `"${CONDUCTOR_BIN:-conductor}" task decision dr-7`, `"${CONDUCTOR_BIN:-conductor}" task withdraw dr-7`, "with --supersedes dr-7",
-		"never\n  submit your result before its answer reaches you", "(receipt dr-7/1)\", dr-7/1 being the first response to dr-7", "Decisions section of the task file\n  of your task's next attempt",
+		// Every id and ref a command prints, named; the go-on rule (applied
+		// alone); and, for each state a decision reaches, what the agent
+		// sees and does (the lines themselves are tied to the engine's
+		// words by crew's TestTheSkillQuotesTheEngine).
+		"\"dr-7 open.\n  Pending. ...\". dr-7 is the decision's id", `"${CONDUCTOR_BIN:-conductor}" task decision dr-7`, `"${CONDUCTOR_BIN:-conductor}" task withdraw dr-7`,
+		"rev counts the\n  decision's changes and is nothing you send",
+		"never\n  submit your result before its answer reaches you", "Go on only once a decision is applied:\n  open and answered (the response recorded, not yet applied) still wait;\n  superseded, cancelled and expired mean no answer will come.",
+		"dr-7/1 is the receipt of\n  the first response to dr-7, nothing you cite", "it overrides your recommendation",
+		"Ask again\n  with what was asked for in --context and --supersedes dr-7", "Take it as a no", "Never act\n  on its answer",
+		"Nothing is typed for the operator's comment or a re-route: keep\n  waiting.", "If the run stops or your session ends while you wait", "Decisions section says each\n  decision's state",
 		"Options are\n  numbered from 0", "answered Done or Not done", "what a yes --authorizes",
-		"task:RUN/TASK", "attempt:RUN/TASK/N", "commit:RUN/SHA (in full)", "file:SESSION/PATH", "ticket:KEY-n", "CONDUCTOR_SESSION_ID",
+		"Only refs to your own\n  work are taken", "task:RUN/TASK", "attempt:RUN/TASK/N", "check:RUN/TASK/N/CHECK/K", "commit:RUN/SHA (the full id", "message:RUN/SEQ", "plan:KEY-n/N",
+		"comment:KEY-n/ID and launch:ID", "ticket:KEY-n", "CONDUCTOR_SESSION_ID", "\"evidence[0]: REF resolves to nothing\"",
 		"artifact:PATH", "candidate:RUN/TASK/N@COMMIT",
 		// The ticket the run is linked to (DS1 PR-12): read it, comment on
 		// it, nothing more.
@@ -99,6 +108,10 @@ func TestSkillText(t *testing.T) {
 	decisions, messages := strings.Index(body, "\n## Decisions\n"), strings.Index(body, "\n## Messages, blockers and checkpoints\n")
 	if strings.Count(body, "\n## Decisions\n") != 1 || !(task < decisions && decisions < messages) {
 		t.Errorf("the decisions' section is not between the task's and the messages': %d %d %d", task, decisions, messages)
+	}
+	// A file: ref is outside an asker's grant (#683): never offered.
+	if strings.Contains(body, "file:SESSION") {
+		t.Error("the skill offers a file: ref, which a decision refuses")
 	}
 	if strings.Contains(body, "--state needs_input") {
 		t.Error("the skill asks without the mark (--state needs_input)")

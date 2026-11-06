@@ -179,27 +179,65 @@ checkpoint first, then ask:
   approval (2 to 6 options and what a yes --authorizes) or assignment (no
   options, answered Done or Not done, for work a person does). Options are
   numbered from 0 in the order given; --recommend names one by its number.
-- It answers at once with the decision's id and open: "dr-7 open". dr-N is
-  how a decision is named: read it whole (without the id, your task's
-  decisions), withdraw it once you no longer need it, or ask a new one in
-  its place with --supersedes dr-7.
+- It answers at once with the decision's id and its state: "dr-7 open.
+  Pending. ...". dr-7 is the decision's id, which task decision, task
+  withdraw and --supersedes take. Without an id, task decision lists your
+  task's decisions (id, type, state, rev, question, answer); rev counts the
+  decision's changes and is nothing you send. Withdraw a decision once you
+  no longer need it.
 
       "${CONDUCTOR_BIN:-conductor}" task decision dr-7
       "${CONDUCTOR_BIN:-conductor}" task withdraw dr-7
 
 - Then end your turn, or go on with work that does not depend on it; never
-  submit your result before its answer reaches you. The answer is typed
-  into this session as "Decision dr-7 (approval) answered by NAME: ANSWER.
-  Why: ... (receipt dr-7/1)", dr-7/1 being the first response to dr-7; if
-  this session has ended, it is in the Decisions section of the task file
-  of your task's next attempt, which starts at your checkpoint.
-- --evidence cites a record by its ref, repeatable: task:RUN/TASK,
-  attempt:RUN/TASK/N, commit:RUN/SHA (in full), file:SESSION/PATH (the
-  path absolute), ticket:KEY-n, run:RUN; RUN, TASK, N and SESSION are
-  CONDUCTOR_RUN, CONDUCTOR_TASK, CONDUCTOR_ATTEMPT and
-  CONDUCTOR_SESSION_ID. --subject is what it is about: commit (your HEAD,
-  the default), artifact:PATH (a file committed in your worktree) or
+  submit your result before its answer reaches you (a result is refused,
+  decision_open, while one waits). Go on only once a decision is applied:
+  open and answered (the response recorded, not yet applied) still wait;
+  superseded, cancelled and expired mean no answer will come. task
+  decision says which of these each is.
+- --evidence cites a record by its ref, repeatable. Only refs to your own
+  work are taken: run:RUN, task:RUN/TASK, attempt:RUN/TASK/N and
+  check:RUN/TASK/N/CHECK/K (your task's), commit:RUN/SHA (the full id, git
+  rev-parse HEAD, of a commit in your run's repository), session:SESSION
+  and question:SESSION/ID (this session's), message:RUN/SEQ (a message to
+  you, #SEQ as task inbox numbers it), and, in a run launched from a
+  ticket, ticket:KEY-n, plan:KEY-n/N (the plan revision that launched it),
+  comment:KEY-n/ID and launch:ID (as the launch package in your task
+  folder names them). RUN, TASK, N and SESSION are CONDUCTOR_RUN,
+  CONDUCTOR_TASK, CONDUCTOR_ATTEMPT and CONDUCTOR_SESSION_ID. Any other
+  ref (a file:, another task's or run's) and one that names no record
+  refuse the whole request as "evidence[0]: REF resolves to nothing":
+  drop it and ask again. --subject is what it is about: commit (your
+  HEAD, the default), artifact:PATH (a file committed in your worktree) or
   candidate:RUN/TASK/N@COMMIT (a result attempt N submitted).
+
+What Conductor types into this session about a decision, and what you do:
+
+- "Decision dr-7 (approval) answered by NAME: ANSWER. Why: WHY. (receipt
+  dr-7/1)" (Why only when the operator gave one; dr-7/1 is the receipt of
+  the first response to dr-7, nothing you cite): the answer, applied. Do
+  what it says, even when it is not the option you recommended or adds
+  words of its own; it overrides your recommendation. Then go on and
+  submit.
+- "The operator asks about dr-7: TEXT": dr-7 is not answered. Ask again
+  with what was asked for in --context and --supersedes dr-7; dr-7 closes
+  and you wait for the new decision's answer.
+- "Decision dr-7 was cancelled by the operator, not approved: WHY": it is
+  never answered. Take it as a no: do not do what it asked about, finish
+  the rest and submit, naming what was not done with --issue.
+- "dr-7 was superseded: WHAT MOVED; ask again if you still need it", or
+  "Decision dr-7's answer was not applied: WHAT MOVED": what it was about
+  (your HEAD, the file, the candidate) changed since you asked. Never act
+  on its answer; ask again about what is there now if you still need it.
+- Nothing is typed for the operator's comment or a re-route: keep
+  waiting. A decision you superseded or withdrew is closed: nothing comes.
+- If the run stops or your session ends while you wait, the decision
+  waits with your task. Your task's next attempt starts at your
+  checkpoint once it is applied or closed, in this run or the one that
+  continues it, and its task file's Decisions section says each
+  decision's state: applied with the answer (do it), superseded or
+  cancelled with why (never act on an answer it shows). A run that ends
+  cancels the decisions it holds.
 
 ## Messages, blockers and checkpoints
 

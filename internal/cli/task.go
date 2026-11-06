@@ -53,21 +53,39 @@ commit submitted twice is taken once.
 
 A decision is a question a person must answer before your work goes on
 (docs/protocol.md, Decisions). dr-N is its id: task decision, task withdraw
-and --supersedes name it, and its answer is typed into this session as
-"Decision dr-N (TYPE) answered by NAME: ANSWER. (receipt dr-N/K)", K the
-response's number, or written into your task's next attempt's task file
-when this session has ended. Save a checkpoint first; do not submit your
-result until it is answered. An approval has 2 to 6 options and says what a
-yes --authorizes; an assignment has none (it is answered Done or Not done);
---recommend and an answer name an option by its number from 0, in the order
-given. --subject is what it is about: commit (your HEAD, the default),
-artifact:PATH (a file committed in your worktree, by its path in it), or
+and --supersedes name it. Save a checkpoint first; do not submit your
+result until it is applied. Its states: open and answered (the response
+recorded, not yet applied) wait; applied goes on with its answer;
+superseded, cancelled and expired mean no answer will come. What is typed
+into this session about it, or written into your task's next attempt's
+task file when this session has ended:
+  "Decision dr-N (TYPE) answered by NAME: ANSWER. Why: WHY. (receipt dr-N/K)"
+      applied (Why when a rationale was given; K the response's number):
+      do what it says, even against your recommendation
+  "The operator asks about dr-N: TEXT"
+      ask again with what was asked in --context and --supersedes dr-N
+  "Decision dr-N was cancelled by the operator, not approved: WHY"
+      a no: do not do what it asked about; submit, naming it with --issue
+  "dr-N was superseded: WHAT MOVED; ask again if you still need it", or
+  "Decision dr-N's answer was not applied: WHAT MOVED"
+      what it was about changed: never act on its answer; ask again
+An approval has 2 to 6 options and says what a yes --authorizes; an
+assignment has none (it is answered Done or Not done); --recommend and an
+answer name an option by its number from 0, in the order given. --subject
+is what it is about: commit (your HEAD, the default), artifact:PATH (a file
+committed in your worktree, by its path in it), or
 candidate:RUN/TASK/N@COMMIT (the result attempt N of TASK submitted, its
-commit). --evidence cites a record by its ref: run:RUN, task:RUN/TASK,
-attempt:RUN/TASK/N, commit:RUN/SHA (in full), file:SESSION/PATH (absolute),
-ticket:KEY-n, plan:KEY-n/N; RUN, TASK, N and SESSION are CONDUCTOR_RUN,
-CONDUCTOR_TASK, CONDUCTOR_ATTEMPT and CONDUCTOR_SESSION_ID. --file reads the
-request as JSON instead, as decision_request takes it.
+commit). --evidence cites a record of your own work by its ref: run:RUN,
+task:RUN/TASK, attempt:RUN/TASK/N, check:RUN/TASK/N/CHECK/K (your task's),
+commit:RUN/SHA (the full id, in your run's repository), session:SESSION,
+question:SESSION/ID (this session's), message:RUN/SEQ (one to you), and in a
+run launched from a ticket ticket:KEY-n, plan:KEY-n/N (the revision that
+launched it), comment:KEY-n/ID and launch:ID (as its launch package names
+them); RUN, TASK, N and SESSION are CONDUCTOR_RUN, CONDUCTOR_TASK,
+CONDUCTOR_ATTEMPT and CONDUCTOR_SESSION_ID. Any other ref, a file: among
+them, and one that names no record refuse the request as one that
+"resolves to nothing". --file reads the request as JSON instead, as
+decision_request takes it, one value and nothing after it.
 
 Outside a Conductor session, or in a session that is no attempt, every
 command says so and exits 1.
@@ -120,7 +138,7 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	notes := fs.String("notes", "", "checkpoint: anything the next attempt should know")
 	var options, evidence multiFlag
 	fs.Var(&options, "option", `decide: an alternative, "LABEL[: TRADEOFFS]", numbered from 0 in the order given (repeatable)`)
-	fs.Var(&evidence, "evidence", "decide: a ref to a record the question rests on, as task:RUN/TASK or commit:RUN/SHA (repeatable)")
+	fs.Var(&evidence, "evidence", "decide: a ref to a record of your own work the question rests on, as task:RUN/TASK or commit:RUN/SHA; any other resolves to nothing (repeatable; the usage lists them)")
 	decide := decideFlags{
 		typ:         fs.String("type", "", "decide: clarification, approval or assignment"),
 		question:    fs.String("question", "", "decide: the question, one line of at most 500 characters"),

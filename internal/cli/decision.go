@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -43,8 +44,9 @@ const decisionUsage = `Usage:
   conductor decision show dr-N [--json]
       a decision whole: the question, its options numbered from 0, the
       recommendation, the subject, the evidence and what changed of it
-      since it was asked, the responses with their receipts, how
-      Yardmaster applied the answer, and its history
+      since it was asked, the responses with their receipts and
+      rationales, how Yardmaster applied the answer, and its history with
+      each comment's, request for more's and route's words
   conductor decision respond dr-N (--choice N | --text TEXT) [--why TEXT]
       answer it as the operator: an option by its number from 0, as show
       numbers them (an approval's and an assignment's answer), a text (a
@@ -73,17 +75,20 @@ change.
 var decisionStates = []string{ledger.DecisionOpen, ledger.DecisionAnswered, ledger.DecisionApplied, ledger.DecisionSuperseded, ledger.DecisionCancelled, ledger.DecisionExpired}
 
 // decisionsPage is how many records conductor decision list asks for a
-// page at a time: each is at most a decision's whole reply (its history
-// left out), so a page is at most that many of them. A variable so that
-// a test can walk a few through several pages.
+// page at a time. A variable so that a test can walk a few through
+// several pages.
 var decisionsPage = 10
 
 // decisionReply bounds a read of one decision whole, above the server's
 // own bound (decision_read's reply in the guide's table, which the
-// admin's read with its refs and an answer's reply are under too), and a
-// page of the list is at most decisionsPage of them: derived from the
-// table, never guessed.
+// admin's read with its refs and an answer's reply are under too):
+// derived from the table, never guessed.
 var decisionReply = wholeMiB(opBound("decision_read", "reply"))
+
+// decisionListReply bounds a page of conductor decision list: decisionsPage
+// records as the operator's lists give them, each at most the server's
+// api.DecisionListed, and the page's own 1 KiB.
+func decisionListReply() int { return wholeMiB(decisionsPage*api.DecisionListed + 1<<10) }
 
 // decisionView is a decision's request as its record keeps it.
 type decisionView struct {
@@ -126,15 +131,6 @@ type decisionSummary struct {
 	Why          string `json:"why"`
 	SupersededBy string `json:"supersededBy"`
 	Cut          bool   `json:"cut"`
-}
-
-// pendingWords is what a request's answer says: the decision's id and
-// state, and what to do while it waits (the same as decision_request's
-// tool says).
-func pendingWords(id, state any) string {
-	return fmt.Sprintf("%v %v. Pending. End your turn, or go on with work that does not depend on it; do not submit your result until it is answered. "+
-		"The answer is typed into this session as 'Decision %v … answered', or, if this session has ended, written into your task's next attempt's task file, "+
-		"which starts at your last checkpoint: save one before you end your turn.", id, state, id)
 }
 
 // withdrawnWords is what a withdrawal's answer says.
@@ -243,7 +239,8 @@ func (f decideFlags) given() bool {
 }
 
 // readStrictJSON reads the file named, or stdin for "-", as strict JSON
-// into v: an unknown field is refused, as the server refuses it.
+// into v: an unknown field, or anything after the one value, is refused,
+// as the server refuses it.
 func readStrictJSON(file string, stdin io.Reader, v any) error {
 	var r io.Reader = stdin
 	if file != "-" {
@@ -259,24 +256,54 @@ func readStrictJSON(file string, stdin io.Reader, v any) error {
 	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("%s: %w", file, err)
 	}
+	// One value and nothing after it, as the server reads a body.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("%s: more after the request's JSON value", file)
+	}
 	return nil
 }
 
 // taskDecide sends the attempt's decision request, its requestId minted
 // when the file names none, once more with it on a lost reply; it prints
-// the decision's id and state with what to do while it waits.
+// the decision's id and state with what to do now, in decision_request's
+// words: what to do while it waits, or, for a requestId sent before, the
+// decision as it is now (decisionRequestText).
 func taskDecide(ctx context.Context, c *crewClient, req crew.DecisionRequest, stdout io.Writer) (int, error) {
 	if req.RequestID == "" {
 		req.RequestID = newOpID()
 	}
 	var out struct {
-		Decision crew.Decision `json:"decision"`
+		Decision map[string]any `json:"decision"`
 	}
 	if err := askTwice(ctx, func(ctx context.Context) error { return c.into(ctx, http.MethodPost, "/decisions", req, &out) }); err != nil {
 		return 1, err
 	}
-	fmt.Fprintln(stdout, pendingWords(out.Decision.ID, out.Decision.State))
+	if id := out.Decision["id"]; out.Decision["state"] == ledger.DecisionAnswered {
+		// Recorded is not applied: the agent goes on only at applied.
+		fmt.Fprintf(stdout, "%v is %s. Do not go on with it yet; do not submit your result until it is applied: its answer is then typed into this session as "+
+			"'Decision %v … answered', or written into your task's next attempt's task file.\n", id, agentStateWords(ledger.DecisionAnswered), id)
+		return 0, nil
+	}
+	fmt.Fprintln(stdout, decisionRequestText(out.Decision))
 	return 0, nil
+}
+
+// agentStateWords is a decision's state as the asking agent reads it in
+// the decisions plan's words (open, response recorded, applied, or why
+// not), with whether it goes on: only at applied, or once no answer will
+// come.
+func agentStateWords(state string) string {
+	switch state {
+	case ledger.DecisionOpen:
+		return "open: no answer yet, wait for it"
+	case ledger.DecisionAnswered:
+		return "answered: the response is recorded, not yet applied, wait for it"
+	case ledger.DecisionApplied:
+		return "applied: go on with its answer"
+	case ledger.DecisionSuperseded, ledger.DecisionCancelled, ledger.DecisionExpired:
+		return state + ": no answer will come, never act on one it shows"
+	}
+	return state
 }
 
 // taskDecisions lists the attempt's task's decisions, newest first,
@@ -304,6 +331,9 @@ func taskDecisions(ctx context.Context, c *crewClient, asJSON bool, stdout io.Wr
 		after = page.Next
 	}
 	if asJSON {
+		if all == nil {
+			all = []json.RawMessage{}
+		}
 		return printJSON(stdout, all)
 	}
 	if len(all) == 0 {
@@ -337,8 +367,8 @@ func nextPage(after, next string) bool {
 }
 
 // summaryText is a summary as task decision lists it: its id, type, state
-// and rev with its question, then its answer and why, each on a line of
-// its own.
+// and rev with its question, then what its state means for the agent
+// (agentStateWords), its answer and why, each on a line of its own.
 func summaryText(s decisionSummary) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (%s, %s, rev %d", s.ID, s.Type, s.State, s.Rev)
@@ -346,6 +376,7 @@ func summaryText(s decisionSummary) string {
 		fmt.Fprintf(&b, ", the plan's %s", oneLine(s.Gate))
 	}
 	fmt.Fprintf(&b, "): %s\n", oneLine(s.Question))
+	fmt.Fprintf(&b, "  now: %s\n", agentStateWords(s.State))
 	if s.Answer != "" {
 		fmt.Fprintf(&b, "  answered: %s\n", oneLine(s.Answer))
 	}
@@ -388,6 +419,7 @@ func taskDecisionRead(ctx context.Context, c *crewClient, id string, asJSON bool
 		return printJSON(stdout, out.Decision)
 	}
 	fmt.Fprint(stdout, decisionText(out.Decision, nil, false))
+	fmt.Fprintf(stdout, "now: %s\n", agentStateWords(out.Decision.State))
 	return 0, nil
 }
 
@@ -463,9 +495,11 @@ func decisionText(d crew.Decision, refs []decisionRef, history bool) string {
 	}
 	if len(v.Evidence) > 0 {
 		b.WriteString("evidence:\n")
-		for i, ref := range v.Evidence {
+		for _, ref := range v.Evidence {
 			fmt.Fprintf(&b, "  %s", oneLine(ref))
-			if i < len(refs) {
+			// Its resolution by the ref it names, never by its place: the
+			// server leaves out one it can no longer read as a ref.
+			if i := slices.IndexFunc(refs, func(r decisionRef) bool { return r.Ref == ref }); i >= 0 {
 				b.WriteString(refWords(refs[i]))
 			}
 			b.WriteByte('\n')
@@ -478,6 +512,9 @@ func decisionText(d crew.Decision, refs []decisionRef, history bool) string {
 		b.WriteString("responses:\n")
 		for _, r := range d.Responses {
 			fmt.Fprintf(&b, "  %s/%d %s by %s at %s: %s\n", d.ID, r.K, r.Status, oneLine(cmp.Or(r.ByName, r.Actor)), r.At.UTC().Format(time.RFC3339), oneLine(r.Words))
+			if r.Rationale != "" {
+				fmt.Fprintf(&b, "    why: %s\n", oneLine(r.Rationale))
+			}
 		}
 	}
 	if a := d.Applied; a != nil {
@@ -496,7 +533,34 @@ func decisionText(d crew.Decision, refs []decisionRef, history bool) string {
 			if h.By != "" {
 				fmt.Fprintf(&b, " by %s", oneLine(h.By))
 			}
+			b.WriteString(historyWords(h.Detail))
 			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// historyWords is what a history row's detail says beyond its kind: a
+// comment's or a request for more's text, a route's note, why it closed
+// or what moved under it; "" for none.
+func historyWords(detail json.RawMessage) string {
+	var dt struct {
+		Text  string `json:"text"`
+		Note  string `json:"note"`
+		Why   string `json:"why"`
+		Moved string `json:"moved"`
+	}
+	if len(detail) == 0 || json.Unmarshal(detail, &dt) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, f := range []struct{ name, text string }{{"", dt.Text}, {"note", dt.Note}, {"why", dt.Why}, {"moved", dt.Moved}} {
+		switch {
+		case f.text == "":
+		case f.name == "":
+			fmt.Fprintf(&b, ": %s", oneLine(f.text))
+		default:
+			fmt.Fprintf(&b, " (%s: %s)", f.name, oneLine(f.text))
 		}
 	}
 	return b.String()
@@ -683,7 +747,7 @@ func decisionList(ctx context.Context, c *apiClient, state, run, ticket string, 
 			Decisions []crew.Decision `json:"decisions"`
 			Next      string          `json:"next"`
 		}
-		if err := c.doLimit(ctx, http.MethodGet, "/api/decisions?"+q.Encode(), nil, &page, wholeMiB(decisionsPage*opBound("decision_read", "reply"))); err != nil {
+		if err := c.doLimit(ctx, http.MethodGet, "/api/decisions?"+q.Encode(), nil, &page, decisionListReply()); err != nil {
 			return 1, err
 		}
 		all = append(all, page.Decisions...)

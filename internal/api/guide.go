@@ -148,6 +148,12 @@ func mcpString(desc string) map[string]any {
 	return map[string]any{"type": "string", "description": desc}
 }
 
+// DecisionListed bounds one record as the operator's decision lists give
+// it (GET /api/decisions, a ticket's decisions; listedOf): a page of n of
+// them is at most n times it and 1 KiB more (maxDecisionListPage), the
+// bound conductor decision list reads a page under.
+const DecisionListed = maxDecisionListed
+
 // Operations is the table: every agent route and tool, the admin's
 // operations a proposal may name, and the guide. The caller must not
 // change the maps it holds.

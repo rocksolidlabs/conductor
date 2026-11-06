@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rocksolidlabs/conductor/internal/crew"
 )
 
 // conductor task decide, decision and withdraw, and conductor decision
@@ -99,6 +101,10 @@ var opIDShape = regexp.MustCompile(`^[0-9a-f]{16}$`)
 func TestTaskDecideAndRead(t *testing.T) {
 	d := newDecisionAPI(t)
 	posts := "/api/sessions/" + d.sid + "/decisions"
+	// None yet: an empty JSON array, never null.
+	if out := mustTask(t, "decision", "--json"); out != "[]\n" {
+		t.Fatalf("decision --json with none: %q", out)
+	}
 	before := d.count()
 	out := mustTask(t, "decide", "--type", "approval", "--question", "Ship it?", "--context", "The tests pass.\nThe docs do not.",
 		"--option", "Ship: now, the docs after", "--option", "Hold", "--recommend", "0", "--uncertainty", "the docs", "--authorizes", "the deploy",
@@ -134,13 +140,14 @@ func TestTaskDecideAndRead(t *testing.T) {
 	}
 
 	// The list, newest first; one whole; JSON.
-	if out, want := mustTask(t, "decision"), "dr-2 (clarification, open, rev 1): Which schema?\ndr-1 (approval, open, rev 1): Ship it?\n"; out != want {
+	if out, want := mustTask(t, "decision"), "dr-2 (clarification, open, rev 1): Which schema?\n  now: open: no answer yet, wait for it\n"+
+		"dr-1 (approval, open, rev 1): Ship it?\n  now: open: no answer yet, wait for it\n"; out != want {
 		t.Fatalf("decision:\n%q\nwant\n%q", out, want)
 	}
 	out = mustTask(t, "decision", "dr-1")
 	if !hasAll(out, "dr-1: approval, open, rev 1\n", "asked by: task build's attempt 1, live, in run "+d.run+"\n", "question: Ship it?\n", "context:\n  The tests pass.\n  The docs do not.\n",
 		"options (answer with the number):\n  0. Ship: now, the docs after (recommended)\n  1. Hold\n", "uncertainty: the docs\n", "authorizes: the deploy\n",
-		"subject: commit "+d.head+"\n", "evidence:\n  task:"+d.run+"/build\n") {
+		"subject: commit "+d.head+"\n", "evidence:\n  task:"+d.run+"/build\n", "now: open: no answer yet, wait for it\n") {
 		t.Fatalf("decision dr-1:\n%s", out)
 	}
 	var list []map[string]any
@@ -152,9 +159,15 @@ func TestTaskDecideAndRead(t *testing.T) {
 		t.Fatalf("decision dr-2 --json: %v %v", one, err)
 	}
 
-	// Usage errors: exit 2, nothing sent.
+	// Usage errors: exit 2, nothing sent; a file with more after its one
+	// value among them, as the server refuses a body.
+	trailing := filepath.Join(t.TempDir(), "two.json")
+	if err := os.WriteFile(trailing, []byte(`{"type":"clarification","question":"Which schema?"} {"type":"approval"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	before = d.count()
 	for _, args := range [][]string{
+		{"decide", "--file", trailing},
 		{"decide", "--question", "No type?"},
 		{"decide", "--type", "approval"},
 		{"decide", "--file", file, "--type", "approval"},
@@ -227,15 +240,19 @@ func TestDecisionRespondSendsTheRev(t *testing.T) {
 		t.Fatalf("responses kept: %v", rs)
 	}
 	d.until(t, "dr-1 applied", func() bool { return d.decision(t, "dr-1")["state"] == "applied" })
-	if out := mustTask(t, "decision"); !strings.Contains(out, "dr-1 (approval, applied, rev ") || !strings.Contains(out, "\n  answered: Ship\n") {
+	if out := mustTask(t, "decision"); !strings.Contains(out, "dr-1 (approval, applied, rev ") || !strings.Contains(out, "\n  now: applied: go on with its answer\n  answered: Ship\n") {
 		t.Fatalf("the attempt's list once applied:\n%s", out)
 	}
 	// A second answer, read at the rev now, is refused as answered.
 	if code, _, _, err := d.decisionCmd(t, "respond", "dr-1", "--choice", "1"); code != 1 || err == nil || !strings.HasPrefix(err.Error(), "decision_") {
 		t.Fatalf("a second answer: %d %v", code, err)
 	}
+	// A comment, kept in every state: show prints its words in the history.
+	rev := int(d.decision(t, "dr-1")["rev"].(float64))
+	d.admin(t, "POST", "/api/decisions/dr-1/comment", map[string]any{"opId": "o1", "kind": "comment", "text": "Looks right.", "expectedRev": rev}, http.StatusOK)
 	code, out, _, err = d.decisionCmd(t, "show", "dr-1")
-	if code != 0 || err != nil || !hasAll(out, "dr-1: approval, applied, rev ", "answer: Ship\n", "responses:\n  dr-1/1 accepted by admin at ", "applied: ", "history:\n  1 ") {
+	if code != 0 || err != nil || !hasAll(out, "dr-1: approval, applied, rev ", "answer: Ship\n", "responses:\n  dr-1/1 accepted by admin at ", "\n    why: the tests pass\n", "applied: ", "history:\n  1 ",
+		" commented by admin: Looks right.\n") {
 		t.Fatalf("show: %d %v\n%s", code, err, out)
 	}
 	if code, out, _, err := d.decisionCmd(t, "list", "--state", "open"); code != 0 || err != nil || !regexp.MustCompile(`^dr-2\topen\trev 1\tclarification\trun `+d.run+`, task build\tWhich schema\?\n$`).MatchString(out) {
@@ -369,5 +386,63 @@ func TestDecideReadsSubjectsAndOptions(t *testing.T) {
 	}
 	if o, err := parseOption("a:b"); err != nil || o.Label != "a:b" || o.Tradeoffs != "" {
 		t.Errorf("a label with a colon: %+v %v", o, err)
+	}
+}
+
+// conductor decision show prints each evidence ref with what changed of
+// its record since the question was asked, read from the admin's refs
+// (which respond and cancel read too): the run stopped since.
+func TestDecisionShowsWhatChangedOfItsEvidence(t *testing.T) {
+	d := newDecisionAPI(t)
+	mustTask(t, "decide", "--type", "clarification", "--question", "Which schema?", "--evidence", "run:"+d.run, "--evidence", "task:"+d.run+"/build")
+	code, out, _, err := d.decisionCmd(t, "show", "dr-1")
+	if code != 0 || err != nil || !hasAll(out, "evidence:\n  run:"+d.run+"\n  task:"+d.run+"/build\n") {
+		t.Fatalf("show before: %d %v\n%s", code, err, out)
+	}
+	d.admin(t, "POST", "/api/runs/"+d.run+"/stop", nil, http.StatusOK)
+	code, out, _, err = d.decisionCmd(t, "show", "dr-1")
+	if code != 0 || err != nil || !regexp.MustCompile(`\n  run:`+regexp.QuoteMeta(d.run)+` \(changed: was running[^\n]*, now [a-z]+[^\n]*\)\n`).MatchString(out) {
+		t.Fatalf("show after the run stopped: %d %v\n%s", code, err, out)
+	}
+}
+
+// Each ref's resolution goes with the ref it names, never with its place:
+// a resolution the server left out shifts none of the others.
+func TestDecisionTextMatchesRefsByName(t *testing.T) {
+	req, _ := json.Marshal(map[string]any{"question": "Q", "evidence": []string{"run:r1", "task:r1/build"}})
+	out := decisionText(crew.Decision{ID: "dr-1", Type: "clarification", State: "open", Rev: 1, Request: req},
+		[]decisionRef{{Ref: "task:r1/build", Seen: refAt{State: "running"}, Now: refAt{State: "failed"}, Change: "changed"}}, false)
+	if !strings.Contains(out, "evidence:\n  run:r1\n  task:r1/build (changed: was running, now failed)\n") {
+		t.Fatalf("%s", out)
+	}
+}
+
+// The agent's commands read the states apart: only applied goes on, and
+// a request answered at once (its requestId sent before) that is only
+// recorded says to wait, never to go on.
+func TestTheAgentReadsTheStatesApart(t *testing.T) {
+	seen := map[string]string{}
+	for _, st := range decisionStates {
+		w := agentStateWords(st)
+		if !strings.HasPrefix(w, st+": ") || strings.Contains(w, "go on") != (st == "applied") {
+			t.Errorf("%s: %q", st, w)
+		}
+		seen[w] = st
+	}
+	if len(seen) != len(decisionStates) {
+		t.Errorf("states told alike: %v", seen)
+	}
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/sessions/s1/decisions" {
+			http.Error(w, "unexpected", http.StatusTeapot)
+			return
+		}
+		_, _ = w.Write([]byte(`{"decision":{"id":"dr-7","state":"answered","answer":"Ship"}}`))
+	}))
+	defer hs.Close()
+	inSession(t, hs)
+	out := mustTask(t, "decide", "--type", "clarification", "--question", "Which schema?")
+	if !strings.HasPrefix(out, "dr-7 is answered: the response is recorded, not yet applied") || strings.Contains(out, "Go on with") || !strings.Contains(out, "do not submit your result until it is applied") {
+		t.Fatalf("an answered request: %q", out)
 	}
 }
