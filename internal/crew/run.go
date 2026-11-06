@@ -493,6 +493,10 @@ type Engine struct {
 	// session's Submit (typeAnswer): a test answers as the session's
 	// writer does when a dialog came as the text was taken.
 	submitAnswer func(ctx context.Context, l *session.Local, sub session.Submission) (session.SubmitResult, error)
+	// afterLineEnded, when set, runs once lineEnded has decided a line's
+	// end and its transaction returned: a test waits there before it lets
+	// a continuation go on.
+	afterLineEnded func(n int64)
 }
 
 // sessionMember is the member a session is, and its run.

@@ -36,6 +36,9 @@ import (
 // history and the run's event; an attempt's session shows the decision as
 // its agent's own question (session.Local.TryAskDecision), which only the
 // decision's application answers.
+//
+// The keys a decision is looked up by, and which a caller controls: the
+// package's doc comment (crew.go).
 
 // The policy of this repository (local/1): one response from a principal
 // with the admin grant decides a decision.
@@ -341,10 +344,11 @@ type decisionReader interface {
 	Decision(ctx context.Context, n int64) (ledger.DecisionRecord, bool, error)
 }
 
-// requestReader is the ledger's read of a decision by its request id:
-// ledger.Ledger's.
+// requestReader is the ledger's read of a decision by its request id, and
+// of one decision for one task: ledger.Ledger's.
 type requestReader interface {
-	DecisionByRequest(ctx context.Context, run, member, requestID string) (ledger.DecisionRow, bool, error)
+	DecisionByRequest(ctx context.Context, run, member, task, requestID string) (ledger.DecisionRow, bool, error)
+	TaskDecision(ctx context.Context, n int64, run, task string) (ledger.DecisionRecord, bool, error)
 }
 
 var errNoDecisions = errors.New("the ledger keeps no decisions")
@@ -360,8 +364,12 @@ func (s sqlLedger) Decision(ctx context.Context, n int64) (ledger.DecisionRecord
 	return s.l.Decision(ctx, n)
 }
 
-func (s sqlLedger) DecisionByRequest(ctx context.Context, run, member, requestID string) (ledger.DecisionRow, bool, error) {
-	return s.l.DecisionByRequest(ctx, run, member, requestID)
+func (s sqlLedger) DecisionByRequest(ctx context.Context, run, member, task, requestID string) (ledger.DecisionRow, bool, error) {
+	return s.l.DecisionByRequest(ctx, run, member, task, requestID)
+}
+
+func (s sqlLedger) TaskDecision(ctx context.Context, n int64, run, task string) (ledger.DecisionRecord, bool, error) {
+	return s.l.TaskDecision(ctx, n, run, task)
 }
 
 // readDecision reads decision n from the ledger.
@@ -812,12 +820,82 @@ type repeatRequest struct{ n int64 }
 
 func (repeatRequest) Error() string { return "the request was sent before" }
 
-// historyDetail encodes a history row's detail.
+// historyDetail encodes a history row's detail within the ledger's bound
+// (ledger.MaxHistoryDetail), whatever it holds: a change that hands its
+// commit a row the ledger would refuse for its size has already changed
+// the engine, and a refused commit carries its writes to every later one,
+// which the same row then fails too (#636, review round 3). Past the
+// bound, its longest strings and lists are cut, longest first, the detail
+// marked "cut" (fitObject).
 func historyDetail(v any) string {
+	return fitJSON(v, ledger.MaxHistoryDetail)
+}
+
+// fitJSON encodes v, a JSON object, in at most limit bytes: as it is when it
+// fits, else as fitObject cuts it. An unencodable v is "" (no detail).
+func fitJSON(v any, limit int) string {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return ""
 	}
+	if len(b) <= limit {
+		return string(b)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return ""
+	}
+	return fitObject(m, len(b), limit)
+}
+
+// fitObject encodes m, whose encoding was size bytes, in at most limit: the
+// longest of its strings and lists cut first (a string to what fits, with
+// "…"; a list by its last elements), m["cut"] true, until it fits; when
+// nothing is left to cut, only its size, which always fits.
+func fitObject(m map[string]any, size, limit int) string {
+	m["cut"] = true
+	for range 64 {
+		b, err := json.Marshal(m)
+		if err != nil {
+			break
+		}
+		if len(b) <= limit {
+			return string(b)
+		}
+		over := len(b) - limit
+		key, longest := "", 0
+		for k, v := range m {
+			n := 0
+			switch v := v.(type) {
+			case string:
+				if len(v) > len("…") {
+					n = len(v)
+				}
+			case []any:
+				if len(v) > 0 {
+					vb, _ := json.Marshal(v)
+					n = len(vb)
+				}
+			}
+			if n > longest || n == longest && n > 0 && k < key {
+				key, longest = k, n
+			}
+		}
+		if longest == 0 {
+			break
+		}
+		switch v := m[key].(type) {
+		case string:
+			keep := max(len(v)-over-8, 0)
+			for keep > 0 && !utf8.RuneStart(v[keep]) {
+				keep--
+			}
+			m[key] = v[:keep] + "…"
+		case []any:
+			m[key] = v[:len(v)/2]
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"cut": true, "oversized": size})
 	return string(b)
 }
 
@@ -948,7 +1026,7 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 				if prior, ok, err = dtx.Decision(supN); err != nil {
 					return err
 				}
-				if !ok || prior.State != ledger.DecisionOpen || prior.CurrentRun != r.id {
+				if !ok || prior.State != ledger.DecisionOpen || prior.CurrentRun != r.id || prior.Origin != ledger.OriginAgent || prior.TaskID != t.def.ID {
 					// A request sent before answers its decision first, as it
 					// did when the opening came first; anything this opened
 					// is rolled back with the refusal.
@@ -1043,16 +1121,18 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 	return dec, true, err
 }
 
-// requestSent is the decision the attempt's member opened in r under
-// request id, read from the ledger (ok), refused decision_conflict when it
-// was sent with another body (fp the fingerprint of this one's); not ok for
-// none, or no request id.
+// requestSent is the decision the attempt's member opened in r for the
+// attempt's task under request id, read from the ledger (ok), refused
+// decision_conflict when it was sent with another body (fp the
+// fingerprint of this one's); not ok for none, or no request id. The task
+// is part of the key the ledger looks it up by (DecisionByRequest), so
+// another task's request under the same id is none.
 func (e *Engine) requestSent(ctx context.Context, r *run, a *attempt, id, fp string) (Decision, bool, error) {
 	rr, can := e.ledger.(requestReader)
 	if id == "" || !can {
 		return Decision{}, false, nil
 	}
-	row, ok, err := rr.DecisionByRequest(ctx, r.id, a.m.def.Name, id)
+	row, ok, err := rr.DecisionByRequest(ctx, r.id, a.m.def.Name, a.t.def.ID, id)
 	if err != nil || !ok {
 		return Decision{}, false, err
 	}
@@ -1255,6 +1335,34 @@ func (e *Engine) Decision(ctx context.Context, id string) (Decision, error) {
 	}
 	if !ok {
 		return Decision{}, refuse(CodeNotFound, "no decision %s", id)
+	}
+	return e.decisionOf(rec), nil
+}
+
+// TaskDecision reads decision id for the session's attempt: one of its
+// task's in the run that holds the attempt (asked by the task, or holding
+// it), read whole in the one read that judges it so (the ledger's
+// TaskDecision). Another task's decision is refused not_found in the
+// words of an id no decision has.
+func (e *Engine) TaskDecision(ctx context.Context, sessionID, id string) (Decision, error) {
+	r, a, err := e.attemptOf(sessionID)
+	if err != nil {
+		return Decision{}, err
+	}
+	n, ok := ledger.ParseDecisionID(id)
+	if !ok {
+		return Decision{}, refuse(CodeNotFound, "%q is not a decision's id", shortText(id))
+	}
+	rr, can := e.ledger.(requestReader)
+	if !can {
+		return Decision{}, errNoDecisions
+	}
+	rec, ok, err := rr.TaskDecision(ctx, n, r.id, a.t.def.ID)
+	if err != nil {
+		return Decision{}, err
+	}
+	if !ok {
+		return Decision{}, refuse(CodeNotFound, "no decision %s of task %s", id, a.t.def.ID)
 	}
 	return e.decisionOf(rec), nil
 }
@@ -1992,7 +2100,10 @@ func (e *Engine) applyTx(r *run, d *decision) tx {
 		}
 	}
 	r.note(session.ActivityStatus, "decision %s applied: %s", d.id(), app.Words)
-	appJSON, _ := json.Marshal(app)
+	// Within the ledger's bound whatever the gate held (128 tasks' ids are
+	// more than it): the change below cannot be put back (#636, review
+	// round 3).
+	appJSON := fitJSON(app, ledger.MaxDecisionApplied)
 	n, rev := d.n, d.rev
 	return tx{events: events, more: func(ltx LedgerTx) error {
 		dtx, err := decisionsOf(ltx)
@@ -2006,7 +2117,7 @@ func (e *Engine) applyTx(r *run, d *decision) tx {
 		if !ok || row.State != ledger.DecisionAnswered || row.CurrentRun != r.id {
 			return fmt.Errorf("%w: %s is not answered in %s", ledger.ErrDecisionState, ledger.DecisionID(n), r.id)
 		}
-		row.State, row.Rev, row.Applied = ledger.DecisionApplied, max(rev, row.Rev+1), string(appJSON)
+		row.State, row.Rev, row.Applied = ledger.DecisionApplied, max(rev, row.Rev+1), appJSON
 		if err := dtx.PutDecision(row); err != nil {
 			return err
 		}

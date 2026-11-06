@@ -841,3 +841,43 @@ func TestARetryNeedsRoomAmongTheOpenDecisions(t *testing.T) {
 	}
 	stopRun(t, e, next.ID)
 }
+
+// A task file carries every decision whose answer stands, whatever its
+// age: the gate's applied answer that released deploy stays in deploy's
+// next attempt's files after more newer decisions of deploy's than the
+// files carry of those that ended (asked and withdrawn), of which only the
+// newest are carried (#636, review round 3).
+func TestAnAppliedGateOutlivesNewerDecisions(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchGated(t, e, dir, "api-sweep-000000a7", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	answer(t, e, g.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	decisionWhen(t, ld, g.ID, "applied", inState(ledger.DecisionApplied))
+	a, _, p := attemptOn(t, e, fl, run.ID, "deploy")
+	var first, last string
+	for i := range maxTaskDecisions + 1 {
+		d := ask(t, e, a.Attempt.SessionID, clarification(fmt.Sprintf("q%d", i), "Which region?"))
+		if _, err := e.WithdrawDecision(t.Context(), a.Attempt.SessionID, d.ID); err != nil {
+			t.Fatal(err)
+		}
+		if first == "" {
+			first = d.ID
+		}
+		last = d.ID
+	}
+	decisionWhen(t, ld, last, "withdrawn", inState(ledger.DecisionCancelled))
+	p.End(0)
+	_, f := taskFileOf(t, attemptLine(t, e, fl, run.ID, "deploy", 2))
+	if td := decisionIn(t, f, g.ID); td.State != ledger.DecisionApplied || td.Answer == "" {
+		t.Fatalf("the gate in deploy's attempt 2's task file: %+v", td)
+	}
+	var ids []string
+	for _, td := range f.Decisions {
+		ids = append(ids, td.ID)
+	}
+	if len(f.Decisions) != maxTaskDecisions+1 || slices.Contains(ids, first) || !slices.Contains(ids, last) {
+		t.Fatalf("deploy's attempt 2's task file carries %q", ids)
+	}
+	stopRun(t, e, run.ID)
+}
