@@ -974,50 +974,76 @@ func planBefore(since time.Time, ref string, c PlanCursor) int {
 	return strings.Compare(ref, c.Ref)
 }
 
-// PlanOpOn answers whether the actor's operation with the id is an
-// approval or a withdrawal of the plan revision planID (plan.approve,
-// plan.withdraw), from what the store keeps of it: its intent, and its
-// subject, a done operation's first change row (which every done
+// How a receipt binds to a plan revision (PlanReceipt).
+const (
+	// BoundHere: the operation is an approval or a withdrawal of the
+	// revision.
+	BoundHere = "here"
+	// BoundElsewhere: it is another operation, or one of another
+	// revision.
+	BoundElsewhere = "elsewhere"
+	// BoundUnknown: the store keeps no subject of it (a refused
+	// approval: a refusal writes no change row, and an approval's
+	// fingerprint holds its note), so whose it is is not known; never
+	// read as this revision's or another's.
+	BoundUnknown = "unknown"
+)
+
+// PlanReceipt is the actor's operation with the id read as an approval or
+// a withdrawal of the plan revision planID: its receipt and how it binds
+// to that revision (Bound*), read in one transaction, so that no caller
+// reads a receipt without its binding. Its subject is what the store
+// keeps of it: a done operation's first change row (which every done
 // operation writes, naming the revision it set) or a withdrawal's
-// fingerprint (its revision's id alone). known is false where the store
-// keeps no subject: a refused approval (a refusal writes no change row,
-// and an approval's fingerprint holds its note), and an operation whose
-// receipt is pruned or was never given.
-func (s *Store) PlanOpOn(ctx context.Context, actor, id, planID string) (on, known bool, err error) {
-	db, err := s.conn()
-	if err != nil {
-		return false, false, err
-	}
-	var intent, fp, status string
-	switch err := db.QueryRowContext(ctx, "SELECT intent, fingerprint, status FROM ops WHERE actor = ? AND id = ?", actor, id).Scan(&intent, &fp, &status); {
-	case isNoRows(err):
-		return false, false, nil
-	case err != nil:
-		return false, false, err
-	}
-	if intent != IntentPlanApprove && intent != IntentPlanWithdraw {
-		return false, true, nil
-	}
-	if status == StatusDone {
-		var entity, entityID string
-		switch err := db.QueryRowContext(ctx, "SELECT entity, entity_id FROM changes WHERE actor = ? AND op_id = ? AND n = 0", actor, id).Scan(&entity, &entityID); {
+// fingerprint (its revision's id alone); another intent is bound
+// elsewhere. found is false for an operation the store keeps no receipt
+// of (never given, or pruned).
+func (s *Store) PlanReceipt(ctx context.Context, actor, id, planID string) (rc Receipt, bound string, found bool, err error) {
+	err = s.read(ctx, func(q queryer) error {
+		var intent, fp, status, body string
+		switch err := q.QueryRowContext(ctx, "SELECT intent, fingerprint, status, receipt FROM ops WHERE actor = ? AND id = ?", actor, id).Scan(&intent, &fp, &status, &body); {
 		case isNoRows(err):
-			return false, false, nil
+			return nil
 		case err != nil:
-			return false, false, err
+			return err
 		}
-		return entity == EntityPlan && entityID == planID, true, nil
-	}
-	if intent == IntentPlanWithdraw {
-		want, err := fingerprint(IntentPlanWithdraw, struct {
-			ID string `json:"id"`
-		}{planID})
-		if err != nil {
-			return false, false, err
+		if err := json.Unmarshal([]byte(body), &rc); err != nil {
+			return fmt.Errorf("dispatch: the receipt of %s: %w", id, err)
 		}
-		return fp == want, true, nil
+		found = true
+		bound = BoundUnknown
+		switch {
+		case intent != IntentPlanApprove && intent != IntentPlanWithdraw:
+			bound = BoundElsewhere
+		case status == StatusDone:
+			var entity, entityID string
+			switch err := q.QueryRowContext(ctx, "SELECT entity, entity_id FROM changes WHERE actor = ? AND op_id = ? AND n = 0", actor, id).Scan(&entity, &entityID); {
+			case isNoRows(err):
+			case err != nil:
+				return err
+			case entity == EntityPlan && entityID == planID:
+				bound = BoundHere
+			default:
+				bound = BoundElsewhere
+			}
+		case intent == IntentPlanWithdraw:
+			want, err := fingerprint(IntentPlanWithdraw, struct {
+				ID string `json:"id"`
+			}{planID})
+			if err != nil {
+				return err
+			}
+			bound = BoundElsewhere
+			if fp == want {
+				bound = BoundHere
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return Receipt{}, "", false, err
 	}
-	return false, false, nil
+	return rc, bound, found, nil
 }
 
 // OpenPlans reads the plan revisions that need the operator, of every

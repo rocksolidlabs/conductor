@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -983,5 +984,56 @@ func TestInboxTrackHostedNotedBeforeTheEvent(t *testing.T) {
 	}
 	if got := e.trackOf(t, ref, q, "r1")[stepResumed]; got.State != stepDone || got.At == nil {
 		t.Fatalf("resumed as the event reaches the page: %+v", got)
+	}
+}
+
+// Two views of a hosted session noted out of their order: a viewer's
+// change takes its view while the question shows and is held before the
+// server notes it (the seam, noted false); the host's report of its work
+// is noted meanwhile, the question's resumption with it. The older view,
+// noted last, changes nothing (HostViewSeq's order, not arrival's): the
+// resumption stays, and the track reads it done.
+func TestInboxTrackHostedOlderViewNotedLast(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := startHost(t, e, []string{"/bin/cat"})
+	report(t, e, id, map[string]any{"state": "needs_input", "message": "Allow?", "kind": "permission", "options": yes})
+	var q string
+	until(t, "the hosted question shown", func() bool {
+		q = hostedSession(t, e, id).HostView().Attention.ID
+		return q != ""
+	})
+	ref := questionRef(id, q)
+	held, let := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	gate := func(sess string, noted bool) {
+		if sess == id && !noted && first.CompareAndSwap(false, true) {
+			close(held)
+			<-let
+		}
+	}
+	e.srv.hostedSeen.seam.Store(&gate)
+	t.Cleanup(func() { e.srv.hostedSeen.seam.Store(nil) })
+	var letOnce sync.Once
+	t.Cleanup(func() { letOnce.Do(func() { close(let) }) })
+	// A viewer's change: its callback takes the view, the question shown.
+	older := make(chan struct{})
+	go func() {
+		defer close(older)
+		e.srv.hosts.OnChange(hostedSession(t, e, id).Info())
+	}()
+	<-held
+	report(t, e, id, map[string]any{"state": "working"})
+	until(t, "the newer view's resumption noted", func() bool {
+		res, _, _ := e.srv.hostedSeen.of(id, q)
+		return res != nil
+	})
+	letOnce.Do(func() { close(let) })
+	<-older
+	res, _, _ := e.srv.hostedSeen.of(id, q)
+	if res == nil || res.How != session.ResumedWorking {
+		t.Fatalf("the older view, noted last, took the resumption away: %+v", res)
+	}
+	if got := e.trackOf(t, ref, q, "r1")[stepResumed]; got.State != stepDone {
+		t.Fatalf("resumed: %+v", got)
 	}
 }

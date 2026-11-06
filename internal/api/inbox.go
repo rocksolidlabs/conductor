@@ -29,6 +29,15 @@ import (
 // writes nothing: every action names its operation's own route and the
 // revision that operation checks (Expect), and the page acts through it.
 // An item is named by Brakeman's ref of what it is about.
+//
+// What the track reads of an answer to a question is the record its
+// session leaves (internal/session's package doc, "The record an answer
+// leaves": a receipt and a resumption, each written once, kept through the
+// session's end while it is listed) or, for a hosted session, what
+// hostedResumes noted of its views, in the order the session gives them,
+// never in arrival order. A receipt of Dispatch is read with how it binds
+// to the revision named (dispatch.PlanReceipt): one bound to no revision
+// reads unknown.
 
 // The inbox's bounds, encoded.
 const (
@@ -1100,17 +1109,29 @@ func (s *Server) inboxItemOf(ctx context.Context, ref brakeman.Ref) (*inboxItem,
 // agent working, a next question, the end), set once: a question shown
 // again with its id is held again, and leaves anew. A question whose
 // leaving the server did not see has none.
+//
+// The views are noted in the order the session gives them
+// (signal.HostedSession.HostViewSeq), never in the order they arrive: a
+// view is taken outside this lock, and one taken before another can
+// reach it after (a viewer's change and the host's own, each with its
+// callback). A view not newer than the last noted, by that order, is the
+// session as it was before what is recorded: it changes nothing, so an
+// older view never holds a question again and erases the resumption a
+// newer one recorded. A view whose order is not known (0) is noted for
+// nothing either: what is recorded stays.
 type hostedResumes struct {
 	mu       sync.Mutex
 	sessions map[string]*hostedSeen
 	// seam, when a test sets it, is called with the session's id before a
-	// change is noted and once it is (noted), outside the lock: the
-	// moments a page may read the track at, beside the change's event.
+	// change is noted, its view taken (noted false), and once it is
+	// (noted), outside the lock: the moments a page may read the track
+	// at, beside the change's event.
 	seam atomic.Pointer[func(sess string, noted bool)]
 }
 
 // hostedSeen is what hostedResumes keeps of one session.
 type hostedSeen struct {
+	seq     uint64   // the order of the last view noted (HostViewSeq)
 	held    []string // the questions shown or kept at the last change
 	pending []string // the questions that left, their resumption not seen yet
 	seen    map[string]bool
@@ -1118,20 +1139,22 @@ type hostedSeen struct {
 	order   []string
 }
 
-// change notes the hosted session's attention as its host synced it.
-func (h *hostedResumes) change(info session.Info) {
+// change notes the hosted session's attention as its host synced it:
+// info, its view, seq its place in the session's order (HostViewSeq).
+func (h *hostedResumes) change(info session.Info, seq uint64) {
 	f := h.seam.Load()
 	if f != nil {
 		(*f)(info.ID, false)
 	}
-	h.note(info)
+	h.note(info, seq)
 	if f != nil {
 		(*f)(info.ID, true)
 	}
 }
 
-// note is change under the lock.
-func (h *hostedResumes) note(info session.Info) {
+// note is change under the lock: nothing for a view not newer than the
+// last noted, or of no known order.
+func (h *hostedResumes) note(info session.Info, seq uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.sessions == nil {
@@ -1142,6 +1165,10 @@ func (h *hostedResumes) note(info session.Info) {
 		st = &hostedSeen{seen: map[string]bool{}, kept: map[string]session.Resumption{}}
 		h.sessions[info.ID] = st
 	}
+	if seq == 0 || seq <= st.seq {
+		return
+	}
+	st.seq = seq
 	q := question(info)
 	held := slices.DeleteFunc(append([]string{q}, info.Kept...), func(id string) bool { return id == "" })
 	for _, id := range st.held {

@@ -520,7 +520,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// reads the track as the change reaches it reads what it says.
 		if d, ok := s.registry.Get(info.ID); ok {
 			if hs, ok := d.(*signal.HostedSession); ok {
-				s.hostedSeen.change(hs.HostView())
+				s.hostedSeen.change(hs.HostViewSeq())
 			}
 		}
 		s.events.publishIf(info, s.listed)
