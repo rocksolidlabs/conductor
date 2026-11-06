@@ -19,10 +19,12 @@ import (
 // the batch window open) → briefing (the batch's turn running) → cooling
 // (until the cooldown ends) → idle, with paused (by a person) and
 // unavailable (a turn could not start) beside them. Each change is
-// written (RoleRecords.SaveRole) before what it starts; the one exception
-// is the batch's turn, whose request is made first (Fire, which answers
-// the request a batch's id already made) and the role written briefing
-// after, so a crash between the two fires the batch once.
+// written (RoleRecords.SaveRole) before what it starts: a batch whose
+// window ended is frozen as the one firing (Firing) and written before
+// its request is made, so no wake joins a batch whose turn may have read
+// it, and the request's id is written after (Fire, which answers the
+// request a batch's id already made), so a crash or a failed write
+// between the two fires the batch once.
 //
 // The loop knows the lifecycle, the wakes, the window, the cooldown and
 // the briefing times; it asks RoleRecords for its records, its settings,
@@ -165,10 +167,15 @@ type RoleRecord struct {
 	RetryAt time.Time `json:"retryAt,omitzero"`
 	// Last is the last batch number given; Open the batch gathering (or
 	// waiting while the role briefs, cools or is unavailable); Fired the
-	// last batch fired and Request its request while it runs.
+	// last batch fired and Request its request while it runs. Firing says
+	// Fired is frozen and its request not yet written: the role is
+	// briefing, and its next step asks Fire for the request (made, or
+	// made now), so the batch takes no wake from the moment its turn
+	// could read it.
 	Last    int64  `json:"last"`
 	Open    *Batch `json:"open,omitempty"`
 	Fired   *Batch `json:"fired,omitempty"`
+	Firing  bool   `json:"firing,omitempty"`
 	Request string `json:"request,omitempty"`
 	// CoolUntil is when the cooldown after the last turn ends.
 	CoolUntil time.Time `json:"coolUntil,omitzero"`
@@ -545,6 +552,31 @@ func (c *RoleRecord) keepFired(now time.Time) {
 	c.Open = b
 }
 
+// unfire gives the batch frozen to fire back to gathering, its request
+// refused before it was made (so its id is still its own): the wakes
+// gathered since join it, their log rows with them.
+func (c *RoleRecord) unfire() {
+	f := c.Fired
+	c.Fired, c.Firing = nil, false
+	if f == nil {
+		return
+	}
+	if o := c.Open; o != nil {
+		for _, w := range o.Wakes {
+			f.merge(w)
+		}
+		if o.Overflow != nil {
+			f.overflow(*o.Overflow)
+		}
+		for i := range c.Log {
+			if c.Log[i].Batch == o.ID {
+				c.Log[i].Batch = f.ID
+			}
+		}
+	}
+	c.Open = f
+}
+
 // Wake is a source firing: logged, and gathered into the open batch (the
 // role gathering once idle), unless the role is paused; nothing while the
 // role is off, and nothing for a wake its log holds already (its source,
@@ -584,7 +616,9 @@ func (r *Role) Wake(w RoleWake) error {
 var errNothing = errors.New("nothing to change")
 
 // Asked is a person's own request: logged (it is its own turn, so it
-// joins no batch), and it tries again for an unavailable role.
+// joins no batch), and it tries again for an unavailable role. A request
+// told again (its key the log's already: a write that failed, retried,
+// or its op id asked again) changes nothing.
 func (r *Role) Asked(w RoleWake) error {
 	w.Source = WakeRequest
 	if w.At.IsZero() {
@@ -602,6 +636,9 @@ func (r *Role) Asked(w RoleWake) error {
 	r.mu.Lock()
 	now := r.now()
 	err := r.change(func(c *RoleRecord) error {
+		if c.fired(w) {
+			return errNothing
+		}
 		c.Log = append(c.Log, RoleLogRow{RoleWake: w, Held: "a person's own request"})
 		if c.State == RoleUnavailable {
 			c.available(now)
@@ -609,6 +646,9 @@ func (r *Role) Asked(w RoleWake) error {
 		return nil
 	})
 	r.mu.Unlock()
+	if errors.Is(err, errNothing) {
+		return nil
+	}
 	if err == nil {
 		r.Poke()
 	}
@@ -673,6 +713,27 @@ func (r *Role) Resume() (RoleRecord, error) {
 	return out, nil
 }
 
+// Switched drops the briefing times' mark as the role is turned off or
+// on: its owner calls it before it writes the configuration that turns
+// it, so a briefing time that passes while the role is off fires nothing
+// once it is on, whether or not a step ran between. An error when the
+// record could not be written, the configuration then left as it was.
+func (r *Role) Switched() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	err := r.change(func(c *RoleRecord) error {
+		if c.Briefed.IsZero() {
+			return errNothing
+		}
+		c.Briefed = time.Time{}
+		return nil
+	})
+	if errors.Is(err, errNothing) {
+		return nil
+	}
+	return err
+}
+
 // KeepNote keeps a note, refused past MaxRoleNote or, with the notes
 // kept, past MaxRoleNotes.
 func (r *Role) KeepNote(n RoleNote) (RoleRecord, error) {
@@ -723,7 +784,7 @@ func (r *Role) ClearNotes() (RoleRecord, error) {
 // neither paused nor unavailable.
 func (c *RoleRecord) derive(now time.Time) string {
 	switch {
-	case c.Request != "":
+	case c.Request != "" || c.Firing:
 		return RoleBriefing
 	case c.CoolUntil.After(now):
 		return RoleCooling
@@ -851,6 +912,42 @@ func (r *Role) Step() (time.Duration, error) {
 		}
 	}
 	var stepErr error
+	// fire asks for the frozen batch's request, once a step: made (or
+	// found made), the role briefs on it; refused before it was made, the
+	// batch gathers again (dropped, the role off) and the role is
+	// unavailable; made and gone, the role cools.
+	tried := false
+	fire := func() {
+		tried = true
+		id, err := r.records.Fire(*c.Fired)
+		var refused *RoleRefused
+		switch {
+		case errors.As(err, &refused):
+			c.unfire()
+			if !s.On {
+				// Off: what was gathering is dropped, never fired later.
+				c.Open, c.State = nil, c.derive(now)
+			} else {
+				c.State, c.Why, c.RetryAt = RoleUnavailable, clip(refused.Why), refused.RetryAt.UTC()
+			}
+			dirty = true
+		case errors.Is(err, ErrRoleFired):
+			c.Firing, c.Request = false, ""
+			c.CoolUntil = now.Add(s.Cooldown).UTC()
+			c.State, dirty = c.derive(now), true
+		case err != nil:
+			stepErr = err
+			soon(now.Add(RoleRetry))
+		default:
+			for i := range c.Log {
+				if c.Log[i].Batch == c.Fired.ID {
+					c.Log[i].Request = id
+				}
+			}
+			c.Firing, c.Request = false, id
+			c.State, dirty = RoleBriefing, true
+		}
+	}
 	for range 4 {
 		before := c.State
 		switch c.State {
@@ -874,6 +971,12 @@ func (r *Role) Step() (time.Duration, error) {
 				}
 			}
 		case RoleBriefing:
+			if c.Firing {
+				if !tried {
+					fire()
+				}
+				break
+			}
 			out, err := r.records.Outcome(c.Request)
 			if err != nil {
 				stepErr = err
@@ -927,36 +1030,19 @@ func (r *Role) Step() (time.Duration, error) {
 				soon(at)
 				break
 			}
-			// What the step changed is written before the turn starts.
-			if dirty {
-				if err := r.save(c); err != nil {
-					return RoleRetry, err
-				}
-				c, dirty = cloneRole(r.rec), false
+			// The batch is frozen as the one firing, written with what
+			// the step changed before its request is made: a wake from
+			// here on opens the next batch, so none joins a batch whose
+			// turn may have read it already. A refusal gives it back to
+			// gathering (unfire), fired once the role can start a turn
+			// again.
+			c.Fired, c.Open, c.Request, c.Firing = c.Open, nil, "", true
+			c.State = RoleBriefing
+			if err := r.save(c); err != nil {
+				return RoleRetry, err
 			}
-			id, err := r.records.Fire(*c.Open)
-			var refused *RoleRefused
-			switch {
-			case errors.As(err, &refused):
-				// The batch stays open, fired once the role can start a
-				// turn again.
-				c.State, c.Why, c.RetryAt, dirty = RoleUnavailable, clip(refused.Why), refused.RetryAt.UTC(), true
-			case errors.Is(err, ErrRoleFired):
-				c.Fired, c.Open, c.Request = c.Open, nil, ""
-				c.CoolUntil = now.Add(s.Cooldown).UTC()
-				c.State, dirty = c.derive(now), true
-			case err != nil:
-				stepErr = err
-				soon(now.Add(RoleRetry))
-			default:
-				for i := range c.Log {
-					if c.Log[i].Batch == c.Open.ID {
-						c.Log[i].Request = id
-					}
-				}
-				c.Fired, c.Open, c.Request = c.Open, nil, id
-				c.State, dirty = RoleBriefing, true
-			}
+			c, dirty = cloneRole(r.rec), false
+			fire()
 		}
 		if c.State == before {
 			break

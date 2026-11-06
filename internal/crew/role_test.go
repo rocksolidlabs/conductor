@@ -44,6 +44,8 @@ type fakeRecords struct {
 	outcome  map[string]RoleOutcome
 	fires    int
 	refuse   *RoleRefused
+	// fireErr fails every Fire before its request is made.
+	fireErr error
 	// saveFails makes the next SaveRole fail, as a crash would;
 	// settingsErr every RoleSettings, as a configuration that cannot be
 	// read.
@@ -95,6 +97,10 @@ func (f *fakeRecords) Fire(b Batch) (string, error) {
 	if f.refuse != nil {
 		defer f.mu.Unlock()
 		return "", f.refuse
+	}
+	if f.fireErr != nil {
+		defer f.mu.Unlock()
+		return "", f.fireErr
 	}
 	id, ok := f.requests[b.ID]
 	if !ok {
@@ -355,29 +361,100 @@ func TestARestartFiresAnOpenBatchOnce(t *testing.T) {
 	}
 }
 
-// TestACrashBetweenTheRequestAndTheRoleFiresOnce: the batch's request is
-// made and the role's write after it fails, as a crash would leave it;
-// the restarted role, still gathering, fires the batch again and finds
-// the request made, so one turn runs.
+// TestACrashBetweenTheRequestAndTheRoleFiresOnce: the batch is frozen
+// and written as the one firing, its request is made, and the role's
+// write after it fails, as a crash would leave it. A wake arriving then,
+// once the storage is back and while the request may already have read
+// its batch, joins the next batch, never the one firing, whether the
+// role goes on with the record it holds or a restarted one reads it back;
+// the next step fires the frozen batch again and finds the request made,
+// so one turn runs, for the wakes it read.
 func TestACrashBetweenTheRequestAndTheRoleFiresOnce(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%v", restart), func(t *testing.T) {
+			f := newRoleFixture(t)
+			f.failed("build", 1)
+			f.clock.add(2 * time.Minute)
+			f.rec.afterFire = func() {
+				f.rec.mu.Lock()
+				f.rec.saveFails = true
+				f.rec.mu.Unlock()
+			}
+			if _, err := f.role.Step(); err == nil {
+				t.Fatal("the role's write after the request did not fail")
+			}
+			f.rec.afterFire = nil
+			if restart {
+				f.restart()
+			}
+			if r := f.record(); r.State != RoleBriefing || !r.Firing || r.Fired == nil || r.Fired.ID != "wb-1" || r.Open != nil {
+				t.Fatalf("after the failed write %+v", r)
+			}
+			// The request's turn reads its batch now; a wake arriving after
+			// joins the next batch.
+			f.failed("lint", 1)
+			r := f.record()
+			if r.Open == nil || r.Open.ID != "wb-2" || len(r.Fired.Wakes) != 1 || r.Fired.Wakes[0].Subject != "task:run-1/build" {
+				t.Fatalf("the wake after the request joined the batch firing: %+v", r)
+			}
+			r = f.state(RoleBriefing)
+			if f.rec.fired() != 1 || r.Request != "br-1" || r.Firing || r.Fired.ID != "wb-1" || len(r.Fired.Wakes) != 1 || r.Open == nil || r.Open.ID != "wb-2" {
+				t.Fatalf("%d turns %+v", f.rec.fired(), r)
+			}
+			for _, row := range r.Log {
+				if want := map[string]string{"wb-1": "br-1", "wb-2": ""}[row.Batch]; row.Request != want {
+					t.Fatalf("the log: %+v", r.Log)
+				}
+			}
+			// Its turn ends and the cooldown passes: the next batch fires
+			// a turn of its own.
+			f.rec.close("br-1", RoleOutcome{})
+			f.state(RoleCooling)
+			f.clock.add(30 * time.Minute)
+			if r := f.state(RoleBriefing); f.rec.fired() != 2 || r.Request != "br-2" || r.Fired.ID != "wb-2" {
+				t.Fatalf("%d turns %+v", f.rec.fired(), r)
+			}
+		})
+	}
+}
+
+// TestARefusedFireGathersAgain: the batch frozen to fire cannot reach
+// its owner's store (Fire fails), so it stays frozen and a wake meanwhile
+// opens the next batch; then the turn is refused (the day's budget
+// spent), and the frozen batch gathers again with that wake folded in,
+// under its own id, and fires once the role can start a turn.
+func TestARefusedFireGathersAgain(t *testing.T) {
 	f := newRoleFixture(t)
 	f.failed("build", 1)
 	f.clock.add(2 * time.Minute)
-	f.rec.afterFire = func() {
-		f.rec.mu.Lock()
-		f.rec.saveFails = true
-		f.rec.mu.Unlock()
-	}
+	f.rec.fireErr = errors.New("the store is unreachable")
 	if _, err := f.role.Step(); err == nil {
-		t.Fatal("the role's write after the request did not fail")
+		t.Fatal("the failed request was not said")
 	}
-	f.rec.afterFire = nil
-	f.restart()
-	if r := f.record(); r.State != RoleGathering {
-		t.Fatalf("after the crash %+v", r)
+	f.failed("lint", 1)
+	if r := f.record(); !r.Firing || r.Fired.ID != "wb-1" || r.Open == nil || r.Open.ID != "wb-2" {
+		t.Fatalf("the batch frozen: %+v", r)
 	}
-	r := f.state(RoleBriefing)
-	if f.rec.fired() != 1 || r.Request != "br-1" {
+	f.rec.mu.Lock()
+	f.rec.fireErr, f.rec.refuse = nil, &RoleRefused{Why: "the day's budget is spent"}
+	f.rec.mu.Unlock()
+	r := f.state(RoleUnavailable)
+	if r.Firing || r.Fired != nil || r.Open == nil || r.Open.ID != "wb-1" || len(r.Open.Wakes) != 2 {
+		t.Fatalf("the refused batch: %+v", r)
+	}
+	for _, row := range r.Log {
+		if row.Batch != "wb-1" {
+			t.Fatalf("the log: %+v", r.Log)
+		}
+	}
+	f.rec.mu.Lock()
+	f.rec.refuse = nil
+	f.rec.mu.Unlock()
+	if err := f.role.Asked(RoleWake{Subject: "br-9", Key: "asked"}); err != nil {
+		t.Fatal(err)
+	}
+	r = f.state(RoleBriefing)
+	if f.rec.fired() != 1 || r.Fired.ID != "wb-1" || len(r.Fired.Wakes) != 2 {
 		t.Fatalf("%d turns %+v", f.rec.fired(), r)
 	}
 }
@@ -832,4 +909,44 @@ func TestAgainPassesUnpoked(t *testing.T) {
 	}
 	close(done)
 	<-ended
+}
+
+// TestTurningTheRoleOffAndOnAcrossABriefingTimeFiresNoneUnstepped: the
+// role is turned off at 06:30 and on at 08:00 with no step between (its
+// loop held up), and the 07:00 briefing that passed meanwhile wakes
+// nothing: the owner drops the briefing times' mark as it turns the role
+// (Switched), before the configuration is written.
+func TestTurningTheRoleOffAndOnAcrossABriefingTimeFiresNoneUnstepped(t *testing.T) {
+	zone := time.FixedZone("CST", -6*3600)
+	f := newRoleFixture(t)
+	f.rec.settings.Location, f.rec.settings.Briefings = zone, []string{"07:00"}
+	f.clock.t = time.Date(2026, 11, 5, 6, 0, 0, 0, zone)
+	f.step()
+	if f.record().Briefed.IsZero() {
+		t.Fatal("the first look marked nothing")
+	}
+	f.clock.add(30 * time.Minute)
+	if err := f.role.Switched(); err != nil {
+		t.Fatal(err)
+	}
+	f.rec.settings.On = false
+	f.clock.add(90 * time.Minute) // 08:00
+	if err := f.role.Switched(); err != nil {
+		t.Fatal(err)
+	}
+	f.rec.settings.On = true
+	if next := f.step(); next != 23*time.Hour {
+		t.Fatalf("the next briefing is due in %s, want 23h", next)
+	}
+	if r := f.record(); len(r.Log) != 0 || r.Open != nil || r.State != RoleIdle {
+		t.Fatalf("the briefing passed while off woke the role: %+v", r)
+	}
+	// A mark that could not be written is said, and changes nothing.
+	f.rec.saveFails = true
+	if err := f.role.Switched(); err == nil {
+		t.Fatal("the failed write was not said")
+	}
+	if f.record().Briefed.IsZero() {
+		t.Fatal("a mark not written was dropped")
+	}
 }
