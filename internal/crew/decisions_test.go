@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -174,6 +175,24 @@ func lineWith(t *testing.T, p *sessiontest.FakeProc, want string) string {
 	return got
 }
 
+// infoWhen waits until the session's info satisfies ok, and returns it:
+// the session resolves a question after its Enter is written, which
+// lineWith sees first.
+func infoWhen(t *testing.T, l *session.Local, what string, ok func(session.Info) bool) session.Info {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		info := l.Info()
+		if ok(info) {
+			return info
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the session is not %s: %+v %+v kept %q", what, info.Attention, info.LastAnswer, info.Kept)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // attemptOn is the task's running attempt, its session and process, the
 // task line read.
 func attemptOn(t *testing.T, e *Engine, fl *fakeLauncher, runID, taskID string) (TaskState, *session.Local, *sessiontest.FakeProc) {
@@ -223,6 +242,22 @@ func launchGated(t *testing.T, e *Engine, dir, runID string, c Crew, ds ...Packa
 // shipGate is an approval gate on the tasks before names.
 func shipGate(before ...string) PackageDecision {
 	return PackageDecision{ID: "ship", Question: "Ship to production?", Kind: ledger.DecisionApproval, Before: before}
+}
+
+// ledgerTask is the task's row as the ledger keeps it.
+func ledgerTask(t *testing.T, ld *ledger.Ledger, runID, taskID string) ledger.TaskRow {
+	t.Helper()
+	rows, err := ld.Tasks(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ID == taskID {
+			return row
+		}
+	}
+	t.Fatalf("run %s has no task %s in the ledger", runID, taskID)
+	return ledger.TaskRow{}
 }
 
 // gateOf is the run's gate decision, read through the ledger.
@@ -287,10 +322,9 @@ func TestAnAgentsDecisionIsTypedIntoItsLiveAttempt(t *testing.T) {
 	if got := activeHolds(t, ld, run.ID); len(got) != 0 {
 		t.Fatalf("holds after the application: %q", got)
 	}
-	info := l.Info()
-	if info.Attention.ID == q.ID || info.LastAnswer == nil || info.LastAnswer.ByName != "Nate" {
-		t.Fatalf("the mirror after the answer: %+v %+v", info.Attention, info.LastAnswer)
-	}
+	infoWhen(t, l, "answered by Nate", func(info session.Info) bool {
+		return info.Attention.ID != q.ID && info.LastAnswer != nil && info.LastAnswer.ByName == "Nate"
+	})
 	if got := sqlKinds(t, ld, run.ID); !slices.Contains(got, "decision.opened") || !slices.Contains(got, "decision.answered") || !slices.Contains(got, "decision.applied") {
 		t.Fatalf("events %q", got)
 	}
@@ -342,6 +376,26 @@ func TestARepeatedRequestIsTheSameDecisionAndAnArtifactIsItsBlob(t *testing.T) {
 	if err != nil || body.Subject.Kind != "artifact" || body.Subject.Path != "schema.sql" || body.Subject.Commit != head(t, b.Attempt.Worktree) || body.Subject.SHA256 != digest || strings.TrimSpace(blob) == "" {
 		t.Fatalf("the artifact subject: %+v (%s) %v", body.Subject, digest, err)
 	}
+
+	// Sent again once the file changed (its reply lost): the same decision,
+	// not a refusal of a subject checked again.
+	writeFile(t, filepath.Join(b.Attempt.Worktree, "schema.sql"), "create table t (id text);\n")
+	if again, created, err := e.RequestDecision(t.Context(), sid, art); err != nil || created || again.ID != d.ID {
+		t.Fatalf("the artifact's request again, its file changed: %+v created %v %v", again, created, err)
+	}
+	// A change an index flag hides from git status is a change all the
+	// same.
+	for _, flag := range []string{"--assume-unchanged", "--skip-worktree"} {
+		runGit(t, b.Attempt.Worktree, "update-index", flag, "schema.sql")
+		if st := runGit(t, b.Attempt.Worktree, "status", "--porcelain"); strings.TrimSpace(st) != "" {
+			t.Fatalf("%s: git status still shows the change: %q", flag, st)
+		}
+		hidden := DecisionRequest{RequestID: "q3" + flag, Type: ledger.DecisionClarification, Question: "Is the schema right now?", Subject: &DecisionSubject{Kind: "artifact", Path: "schema.sql"}}
+		if _, _, err := e.RequestDecision(t.Context(), sid, hidden); !errors.As(err, &de) || de.Code != CodeArtifactUncommitted {
+			t.Fatalf("a change hidden by %s: %v", flag, err)
+		}
+		runGit(t, b.Attempt.Worktree, "update-index", strings.Replace(flag, "--", "--no-", 1), "schema.sql")
+	}
 	stopRun(t, e, run.ID)
 }
 
@@ -362,6 +416,9 @@ func TestAGateHoldsItsBeforeTasks(t *testing.T) {
 	})
 	if dep.Attempts != 0 {
 		t.Fatalf("deploy dispatched while held: %+v", dep)
+	}
+	if row := ledgerTask(t, ld, run.ID, "deploy"); row.State != ledger.TaskReady || row.Reason != "waits for decision "+g.ID {
+		t.Fatalf("deploy's row in the ledger: %+v", row)
 	}
 	if got := activeHolds(t, ld, run.ID); !slices.Equal(got, []string{"deploy " + g.ID}) {
 		t.Fatalf("holds %q", got)
@@ -407,6 +464,11 @@ func TestPauseHoldsReleasedTasks(t *testing.T) {
 	e, _, ld := decisionEngine(t)
 	run := launchGated(t, e, dir, "api-sweep-000000a3", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
 	g := gateOf(t, e, ld, run.ID)
+	// Its only task held, the run commits nothing more: the launch's own
+	// transaction wrote the task's row naming its gate.
+	if row := ledgerTask(t, ld, run.ID, "deploy"); row.State != ledger.TaskReady || row.Reason != "waits for decision "+g.ID {
+		t.Fatalf("deploy's row in the ledger: %+v", row)
+	}
 	if err := e.PauseRun(t.Context(), run.ID, true); err != nil {
 		t.Fatal(err)
 	}
@@ -655,6 +717,11 @@ func TestASupersedingRequestMovesTheHold(t *testing.T) {
 		t.Fatalf("holds %q", got)
 	}
 	mirrorOf(t, l, d2.ID)
+	// The superseding request sent again (its reply lost): dr-2, though
+	// dr-1 is no longer open.
+	if again, created, err := e.RequestDecision(t.Context(), b.Attempt.SessionID, DecisionRequest{RequestID: "q2", Type: ledger.DecisionClarification, Question: "Which index, given the load?", Supersedes: d1.ID}); err != nil || created || again.ID != d2.ID {
+		t.Fatalf("the superseding request again: %+v created %v %v", again, created, err)
+	}
 	var de *DecisionError
 	rc, err := e.RespondDecision(t.Context(), d1.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 2}, "admin", workbench(e))
 	if !errors.As(err, &de) || de.Code != CodeDecisionClosed || rc.Status != "refused" || !strings.Contains(rc.Words, d2.ID) {
@@ -681,9 +748,9 @@ func TestADecisionAnswerPassesAQueuedHandoff(t *testing.T) {
 	decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
 	lineWith(t, p, "Decision "+d.ID)
 	lineWith(t, p, "the docs are in")
-	if info := l.Info(); info.LastAnswer == nil || info.LastAnswer.ByName != "Nate" {
-		t.Fatalf("the question was not answered by the line: %+v", info.LastAnswer)
-	}
+	infoWhen(t, l, "answered by the decision's line", func(info session.Info) bool {
+		return info.LastAnswer != nil && info.LastAnswer.ByName == "Nate"
+	})
 	stopRun(t, e, run.ID)
 }
 
@@ -728,10 +795,9 @@ func TestTwoAnswersQueuedBeforeDeliveryAreBothTyped(t *testing.T) {
 			if !strings.Contains(got[0], "Decision "+ds[1].ID) || !strings.Contains(got[1], "Decision "+ds[0].ID) || !strings.Contains(got[2], "the docs are in") {
 				t.Fatalf("typed %q", got)
 			}
-			info := l.Info()
-			if info.LastAnswer == nil || info.LastAnswer.Message != "Which cache?" || info.Attention.Decision != "" {
-				t.Fatalf("dr-2's question after the answers: %+v %+v", info.Attention, info.LastAnswer)
-			}
+			infoWhen(t, l, "dr-2's question answered", func(info session.Info) bool {
+				return info.LastAnswer != nil && info.LastAnswer.Message == "Which cache?" && info.Attention.Decision == ""
+			})
 			stopRun(t, e, run.ID)
 		})
 	}
@@ -817,15 +883,19 @@ func TestARevokedIdentityIsNotApplied(t *testing.T) {
 	if ts := taskOf(t, e, run.ID, "deploy"); ts.Attempts != 0 || ts.Reason != "waits for decision "+fresh.ID() {
 		t.Fatalf("deploy: %+v", ts)
 	}
+	if row := ledgerTask(t, ld, run.ID, "deploy"); row.Reason != "waits for decision "+fresh.ID() {
+		t.Fatalf("deploy's row in the ledger: %+v", row)
+	}
 	answer(t, e, fresh.ID(), Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
 	decisionWhen(t, ld, fresh.ID(), "applied", inState(ledger.DecisionApplied))
 	waitAttempt(t, e, run.ID, "deploy", ledger.AttemptRunning)
 	stopRun(t, e, run.ID)
 
-	// Admitted again: applied.
+	// Admitted again: applied. The process that accepted it is the
+	// engine's, whatever the caller said (no Boot here).
 	run2 := launchGated(t, e, dir, "api-sweep-000000a7", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
 	g2 := gateOf(t, e, ld, run2.ID)
-	rc, err = e.RespondDecision(t.Context(), g2.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1}, "user:nate", identity(e, "nate"))
+	rc, err = e.RespondDecision(t.Context(), g2.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1}, "user:nate", Authority{Grant: grantAdmin, Via: ViaIdentity, Subject: "nate"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -943,4 +1013,272 @@ func TestAResponsesRechecks(t *testing.T) {
 	}
 	answer(t, e, d2.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 1})
 	decisionWhen(t, ld, d2.ID, "answered", inState(ledger.DecisionAnswered))
+}
+
+// refusingLedger is the real ledger, which refuses the next transition
+// once armed, before it writes anything: a commit the ledger refused.
+type refusingLedger struct {
+	sqlLedger
+	armed atomic.Bool
+}
+
+func (l *refusingLedger) Transition(ctx context.Context, runID string, fn func(LedgerTx) error) (int64, error) {
+	if l.armed.CompareAndSwap(true, false) {
+		return 0, errors.New("the ledger refused the commit (test)")
+	}
+	return l.sqlLedger.Transition(ctx, runID, fn)
+}
+
+// An application whose commit the ledger refused is carried by the
+// pause's commit, whole: the answer applied once and typed once, its line
+// queued only once the application is written; and a replacement whose
+// commit was refused has its number, its holds' words, and is answered
+// and applied.
+func TestARefusedApplicationIsCarriedWhole(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	rl := &refusingLedger{sqlLedger: sqlLedger{ld}}
+	e.UseLedger(rl)
+
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, l, p := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
+	mirrorOf(t, l, d.ID)
+	rc, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1, ByName: "Nate"}, "user:nate", identity(e, "nate"))
+	if err != nil || rc.Status != "accepted" {
+		t.Fatalf("the identity's response: %+v %v", rc, err)
+	}
+	rl.armed.Store(true)
+	e.ConfirmAuthority(d.ID, rc.K, true)
+	if rl.armed.Load() {
+		t.Fatal("no commit was refused")
+	}
+	rec := decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
+	if app := applied(t, rec); app.How != HowTyped {
+		t.Fatalf("the application: %+v", app)
+	}
+	n := 0
+	for _, k := range historyKinds(rec) {
+		if k == ledger.HistoryApplied {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d applied rows: %q", n, historyKinds(rec))
+	}
+	lineWith(t, p, "Decision "+d.ID+" (approval) answered by Nate")
+	if _, err := l.Submit(t.Context(), session.Submission{Text: "marker", ByName: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	lineWith(t, p, "marker")
+	if got := activeHolds(t, ld, run.ID); len(got) != 0 {
+		t.Fatalf("holds %q", got)
+	}
+	stopRun(t, e, run.ID)
+
+	// The replacement's commit refused.
+	run2 := launchGated(t, e, dir, "api-sweep-000000b1", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run2.ID)
+	rc, err = e.RespondDecision(t.Context(), g.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1}, "user:nate", identity(e, "nate"))
+	if err != nil || rc.Status != "accepted" {
+		t.Fatalf("the identity's response: %+v %v", rc, err)
+	}
+	rl.armed.Store(true)
+	e.ConfirmAuthority(g.ID, rc.K, false)
+	if rl.armed.Load() {
+		t.Fatal("no commit was refused")
+	}
+	old := decisionWhen(t, ld, g.ID, "superseded", inState(ledger.DecisionSuperseded))
+	fresh := decisionWhen(t, ld, old.SupersededBy, "open", inState(ledger.DecisionOpen))
+	if ts := taskOf(t, e, run2.ID, "deploy"); ts.Reason != "waits for decision "+fresh.ID() {
+		t.Fatalf("deploy: %+v", ts)
+	}
+	answer(t, e, fresh.ID(), Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	if app := applied(t, decisionWhen(t, ld, fresh.ID(), "applied", inState(ledger.DecisionApplied))); app.How != HowReleased {
+		t.Fatalf("the replacement's application: %+v", app)
+	}
+	// The refusal paused the run's dispatch: unpaused, deploy starts.
+	if err := e.PauseRun(t.Context(), run2.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, e, run2.ID, "deploy", ledger.AttemptRunning)
+	stopRun(t, e, run2.ID)
+}
+
+// A mirror set aside between the deliverer's look and its line (the agent
+// at work) is answered by a line naming its decision, and then withdrawn:
+// no question shows at the agent's next done.
+func TestAMirrorSetAsideBeforeItsLineIsWithdrawn(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, l, p := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
+	q := mirrorOf(t, l, d.ID)
+	var once sync.Once
+	e.afterLook = func(member, mirror string) {
+		if member == "lead" && mirror == q.ID {
+			once.Do(func() {
+				if err := l.TrySetAttentionFull(session.AttentionWorking, "", session.SourceAPI, "", nil); err != nil {
+					t.Error(err)
+				}
+			})
+		}
+	}
+	answer(t, e, d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
+	lineWith(t, p, "Decision "+d.ID)
+	infoWhen(t, l, "without the mirror", func(info session.Info) bool {
+		return info.Attention.ID != q.ID && !slices.Contains(info.Kept, q.ID)
+	})
+	if err := l.TrySetAttentionFull(session.AttentionDone, "done", session.SourceAPI, session.KindDone, nil); err != nil {
+		t.Fatal(err)
+	}
+	if a := l.Info().Attention; a.Decision != "" || a.ID == q.ID {
+		t.Fatalf("the applied decision's question at the next done: %+v", a)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// An older decision's ask that comes after a newer one's (askMu taken out
+// of their order) leaves the newer decision's question showing.
+func TestAnOlderMirrorNeverReplacesANewer(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, _ := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, l, _ := attemptOn(t, e, fl, run.ID, "build")
+	d1 := ask(t, e, b.Attempt.SessionID, DecisionRequest{RequestID: "q1", Type: ledger.DecisionClarification, Question: "Which index?"})
+	mirrorOf(t, l, d1.ID)
+	d2 := ask(t, e, b.Attempt.SessionID, DecisionRequest{RequestID: "q2", Type: ledger.DecisionClarification, Question: "Which cache?"})
+	mirrorOf(t, l, d2.ID)
+	e.mu.Lock()
+	r := e.runs[run.ID]
+	a := r.task("build").active()
+	n1, _ := ledger.ParseDecisionID(d1.ID)
+	older := r.decisionN(n1)
+	e.mu.Unlock()
+	// dr-1's ask, late.
+	e.askMirror(r, a, older)
+	if got := l.Info().Attention; got.Decision != d2.ID {
+		t.Fatalf("the question after dr-1's late ask: %+v", got)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A run stopped between a response's choice of it and its transaction is
+// no longer held: an identity's response is refused not_held, nothing
+// recorded, and the workbench token's goes through the ledger.
+func TestAResponseToARunStoppedMeanwhileIsNotHeld(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, DecisionRequest{RequestID: "q1", Type: ledger.DecisionClarification, Question: "Which index?"})
+	var once sync.Once
+	e.beforeRespond = func(int64) { once.Do(func() { stopRun(t, e, run.ID) }) }
+	var de *DecisionError
+	if _, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 1}, "user:nate", identity(e, "nate")); !errors.As(err, &de) || de.Code != CodeNotHeld {
+		t.Fatalf("an identity's response to a run stopped meanwhile: %v", err)
+	}
+	if rec := decisionWhen(t, ld, d.ID, "open", inState(ledger.DecisionOpen)); len(rec.Responses) != 0 {
+		t.Fatalf("the refused response kept a row: %+v", rec.Responses)
+	}
+	answer(t, e, d.ID, Response{ResponseID: "r2", Text: "btree", ExpectedRev: 1})
+	decisionWhen(t, ld, d.ID, "answered", inState(ledger.DecisionAnswered))
+}
+
+// The asking attempt gone (its session ended) and another task's attempt
+// live: the answer is applied for the task's next attempt (how:
+// task_file), its hold released, and nothing is typed into the other
+// attempt, nor into the next one.
+func TestAnAnswerNeverReachesAnotherAttempt(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer")))
+	b, l, p := attemptOn(t, e, fl, run.ID, "build")
+	_, wl, wp := attemptOn(t, e, fl, run.ID, "docs")
+	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
+	mirrorOf(t, l, d.ID)
+	p.End(1)
+	waitTaskWhere(t, e, run.ID, "build", "held after its attempt ended", func(ts TaskState) bool {
+		return ts.State == ledger.TaskReady && ts.Attempts == 1 && ts.Attempt != nil && ts.Attempt.State == ledger.AttemptFailed
+	})
+	answer(t, e, d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	rec := decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
+	if app := applied(t, rec); app.How != HowTaskFile || app.Task != "build" || app.Attempt != 1 {
+		t.Fatalf("the application: %+v", app)
+	}
+	if got := activeHolds(t, ld, run.ID); len(got) != 0 {
+		t.Fatalf("holds %q", got)
+	}
+	// Released, the task's next attempt starts.
+	b2 := waitTaskWhere(t, e, run.ID, "build", "at its next attempt", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	l2, p2 := fl.attemptSession(t, b2)
+	lineWith(t, p2, "build")
+	for _, s := range []struct {
+		l *session.Local
+		p *sessiontest.FakeProc
+	}{{wl, wp}, {l2, p2}} {
+		if _, err := s.l.Submit(t.Context(), session.Submission{Text: "marker", ByName: "test"}); err != nil {
+			t.Fatal(err)
+		}
+		lineWith(t, s.p, "marker")
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A gate whose plan decision names no task before it, answered while the
+// run goes on: noted, holding nothing, the run's work going on.
+func TestAGateWithNoTaskIsNoted(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	run := launchGated(t, e, dir, "api-sweep-000000b2", repoCrew(dir, work("build", "lead")), shipGate())
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	g := gateOf(t, e, ld, run.ID)
+	if got := activeHolds(t, ld, run.ID); len(got) != 0 {
+		t.Fatalf("holds %q", got)
+	}
+	answer(t, e, g.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	rec := decisionWhen(t, ld, g.ID, "applied", inState(ledger.DecisionApplied))
+	if app := applied(t, rec); app.How != HowNoted || len(app.Tasks) != 0 {
+		t.Fatalf("the application: %+v", app)
+	}
+	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskRunning {
+		t.Fatalf("build after the gate: %+v", ts)
+	}
+	if r, _ := e.Get(run.ID); r.Outcome != "" {
+		t.Fatalf("the run after the gate: %q", r.Outcome)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A gate holding a task and one that needs it, rejected: both cancelled,
+// and the run's end recorded once, after both.
+func TestARejectedGateEndsTheRunOnceAfterAllItsTasks(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	run := launchGated(t, e, dir, "api-sweep-000000b3", repoCrew(dir, work("build", "lead"), work("deploy", "ops", "build")), shipGate("build", "deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	answer(t, e, g.ID, Response{ResponseID: "r1", Choice: choice(1), ExpectedRev: 1})
+	rec := decisionWhen(t, ld, g.ID, "applied", inState(ledger.DecisionApplied))
+	if app := applied(t, rec); app.How != HowCancelled || !slices.Equal(app.Tasks, []string{"build", "deploy"}) {
+		t.Fatalf("the application: %+v", app)
+	}
+	waitOutcome(t, e, run.ID, ledger.OutcomeCancelled)
+	kinds := sqlKinds(t, ld, run.ID)
+	finished, lastCancel, finish := 0, -1, -1
+	for i, k := range kinds {
+		switch k {
+		case "run.finished":
+			finished++
+			finish = i
+		case "task.cancelled":
+			lastCancel = i
+		}
+	}
+	if finished != 1 || finish < lastCancel {
+		t.Fatalf("events %q", kinds)
+	}
 }

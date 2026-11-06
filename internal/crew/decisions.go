@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"regexp"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -153,7 +155,8 @@ type requestBody struct {
 // Authority is what a response's principal authenticated as, which the
 // policy checks: its grant (admin, or none), how (the workbench token, an
 // identity provider's principal, a router's answer), the identity's
-// subject, and the server process that accepted it (Engine.Boot).
+// subject, and the server process that accepted it (Engine.Boot), which
+// RespondDecision sets: a caller's Boot is not read.
 type Authority struct {
 	Grant   string `json:"grant,omitempty"`
 	Via     string `json:"via"`
@@ -324,6 +327,12 @@ type decisionReader interface {
 	Decision(ctx context.Context, n int64) (ledger.DecisionRecord, bool, error)
 }
 
+// requestReader is the ledger's read of a decision by its request id:
+// ledger.Ledger's.
+type requestReader interface {
+	DecisionByRequest(ctx context.Context, run, member, requestID string) (ledger.DecisionRow, bool, error)
+}
+
 var errNoDecisions = errors.New("the ledger keeps no decisions")
 
 func decisionsOf(ltx LedgerTx) (decisionTx, error) {
@@ -335,6 +344,10 @@ func decisionsOf(ltx LedgerTx) (decisionTx, error) {
 
 func (s sqlLedger) Decision(ctx context.Context, n int64) (ledger.DecisionRecord, bool, error) {
 	return s.l.Decision(ctx, n)
+}
+
+func (s sqlLedger) DecisionByRequest(ctx context.Context, run, member, requestID string) (ledger.DecisionRow, bool, error) {
+	return s.l.DecisionByRequest(ctx, run, member, requestID)
 }
 
 // readDecision reads decision n from the ledger.
@@ -366,13 +379,16 @@ var responseID = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,32}$`)
 var evidenceRef = regexp.MustCompile(`^[a-z][a-z_]*:[^\s\x00-\x1f\x7f]+$`)
 
 // holdWords is what a held task's reason says: the decisions it waits for.
-func holdWords(t *task) string {
-	if len(t.holds) == 0 {
+func holdWords(t *task) string { return wordsOf(t.holds, (*decision).id) }
+
+// wordsOf is holdWords for the holds given, each named by id.
+func wordsOf(holds []*decision, id func(*decision) string) string {
+	if len(holds) == 0 {
 		return ""
 	}
-	ids := make([]string, 0, len(t.holds))
-	for _, d := range t.holds {
-		ids = append(ids, d.id())
+	ids := make([]string, 0, len(holds))
+	for _, d := range holds {
+		ids = append(ids, id(d))
 	}
 	if len(ids) == 1 {
 		return "waits for decision " + ids[0]
@@ -408,6 +424,50 @@ func (r *run) holdReason(t *task) {
 		t.reason = w
 		r.markTask(t)
 	}
+}
+
+// heldRow is a ready task's row as the transaction that opens a decision
+// holding it writes it again, once the decision has its number: the
+// snapshot's row, taken in the change, could only say "a decision".
+type heldRow struct {
+	t     *task
+	row   ledger.TaskRow
+	holds []*decision
+}
+
+// heldRows are the rows of the ready tasks among ts, each once. The caller
+// holds e.mu, in the change, its holds made.
+func (r *run) heldRows(ts []*task) []*heldRow {
+	var out []*heldRow
+	for _, t := range ts {
+		if t.state == ledger.TaskReady && !slices.ContainsFunc(out, func(h *heldRow) bool { return h.t == t }) {
+			out = append(out, &heldRow{t: t, row: r.taskRow(t), holds: slices.Clone(t.holds)})
+		}
+	}
+	return out
+}
+
+// put writes h's row with its holds' words, the decisions the transaction
+// opened named by their numbers (opened).
+func (h *heldRow) put(ltx LedgerTx, opened map[*decision]int64) error {
+	h.row.Reason = wordsOf(h.holds, func(d *decision) string {
+		if n := opened[d]; n != 0 {
+			return ledger.DecisionID(n)
+		}
+		return d.id()
+	})
+	return ltx.PutTask(h.row)
+}
+
+// written gives h's task, once the transaction committed, the words its
+// row was written with, or marks it for the next one when they are not
+// its words now. The caller holds e.mu.
+func (r *run) written(h *heldRow) {
+	if h.t.state == ledger.TaskReady && holdWords(h.t) == h.row.Reason {
+		h.t.reason = h.row.Reason
+		return
+	}
+	r.holdReason(h.t)
 }
 
 // waitingDecision is a decision the attempt asked that is open, or
@@ -542,6 +602,15 @@ func artifactPath(p string) (string, error) {
 // repository dir is in, read from its object store with git cat-file (an
 // argv), never from a file in a working tree.
 func blobDigest(ctx context.Context, dir, commit, p string) (string, error) {
+	oid, err := blobOID(ctx, dir, commit, p)
+	if err != nil {
+		return "", err
+	}
+	return oidDigest(ctx, dir, commit, p, oid)
+}
+
+// blobOID is the object id of the blob p names at commit.
+func blobOID(ctx context.Context, dir, commit, p string) (string, error) {
 	oid, err := git(ctx, dir, "rev-parse", "--verify", "--quiet", commit+":"+p)
 	if err != nil {
 		return "", fmt.Errorf("%s cannot be read at %s: %w", p, short(commit), err)
@@ -550,12 +619,47 @@ func blobDigest(ctx context.Context, dir, commit, p string) (string, error) {
 	if kind, err := git(ctx, dir, "cat-file", "-t", oid); err != nil || strings.TrimSpace(kind) != "blob" {
 		return "", fmt.Errorf("%s at %s is not a file", p, short(commit))
 	}
-	body, err := git(ctx, dir, "cat-file", "blob", oid)
-	if err != nil {
+	return oid, nil
+}
+
+// oidDigest is the SHA-256 of blob oid (p's at commit), hashed as git
+// writes it out (gitcli.RunTo): however large the file, the server holds
+// no copy of it.
+func oidDigest(ctx context.Context, dir, commit, p, oid string) (string, error) {
+	h := sha256.New()
+	if err := gitcli.RunTo(ctx, dir, h, "cat-file", "blob", oid); err != nil {
 		return "", fmt.Errorf("%s cannot be read at %s: %w", p, short(commit), err)
 	}
-	sum := sha256.Sum256([]byte(body))
-	return hex.EncodeToString(sum[:]), nil
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// asCommitted reports whether the worktree's file p is blob oid, compared
+// through an index of its own (read-tree, add -u), as checkoutIntact
+// compares a checkout: no flag of the worktree's index (assume-unchanged,
+// skip-worktree) hides a change from it, as it hides one from git status.
+func asCommitted(ctx context.Context, dir, commit, p, oid string) (bool, error) {
+	f, err := os.CreateTemp("", "conductor-index-")
+	if err != nil {
+		return false, err
+	}
+	index := f.Name()
+	f.Close()
+	os.Remove(index) // git makes it
+	defer os.Remove(index)
+	env := map[string]string{"GIT_INDEX_FILE": index}
+	if _, err := gitcli.RunEnv(ctx, dir, env, "read-tree", commit); err != nil {
+		return false, err
+	}
+	if _, err := gitcli.RunEnv(ctx, dir, env, "add", "-u", "--", ":(literal)"+p); err != nil {
+		return false, err
+	}
+	out, err := gitcli.RunEnv(ctx, dir, env, "ls-files", "-s", "-z", "--", ":(literal)"+p)
+	if err != nil {
+		return false, err
+	}
+	// "<mode> <oid> <stage>\t<path>\x00", none when the file is gone.
+	fields := strings.Fields(strings.SplitN(out, "\t", 2)[0])
+	return len(fields) == 3 && fields[1] == oid, nil
 }
 
 // subjectOf binds a request's subject: a commit (the attempt's HEAD,
@@ -612,7 +716,16 @@ func (e *Engine) subjectOf(ctx context.Context, r *run, worktree string, s *Deci
 	if strings.TrimSpace(status) != "" {
 		return nil, refuse(CodeArtifactUncommitted, "%s has changes not committed: commit what you ask about, then ask", p)
 	}
-	digest, err := blobDigest(ctx, worktree, head, p)
+	oid, err := blobOID(ctx, worktree, head, p)
+	if err != nil {
+		return nil, refuse(CodeArtifactUncommitted, "%v: commit what you ask about, then ask", err)
+	}
+	if same, err := asCommitted(ctx, worktree, head, p, oid); err != nil {
+		return nil, refuse(CodeInvalid, "%s cannot be compared with its commit: %v", p, err)
+	} else if !same {
+		return nil, refuse(CodeArtifactUncommitted, "%s differs from its blob at %s: commit what you ask about, then ask", p, short(head))
+	}
+	digest, err := oidDigest(ctx, worktree, head, p, oid)
 	if err != nil {
 		return nil, refuse(CodeArtifactUncommitted, "%v: commit what you ask about, then ask", err)
 	}
@@ -664,7 +777,9 @@ var routedOperator = historyDetail(map[string]any{"to": []map[string]string{{"ki
 // routed history, the hold of the asking task, a superseded request's
 // supersession (its hold moved to this one) and the run's event. A request
 // id the attempt's member sent before answers that decision (created
-// false), or decision_conflict for another body. After the commit, and
+// false), or decision_conflict for another body, before anything that may
+// have changed since it was first sent is checked again (the attempt
+// running, the decision it supersedes, its subject). After the commit, and
 // never before it, the session's question mirrors the decision, on the
 // attempt's askMu; the reply does not wait for it.
 func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req DecisionRequest) (Decision, bool, error) {
@@ -675,6 +790,9 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 	body, fp, err := cleanRequest(req)
 	if err != nil {
 		return Decision{}, false, err
+	}
+	if dec, ok, err := e.requestSent(ctx, r, a, req.RequestID, fp); ok || err != nil {
+		return dec, false, err
 	}
 	e.mu.Lock()
 	running := a.closedAt.IsZero() && a.state == ledger.AttemptRunning && !r.stopping
@@ -805,6 +923,11 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 		}
 	})
 	if refused != nil {
+		// The same request sent twice at once: the other one's commit is
+		// its decision.
+		if dec, ok, err := e.requestSent(ctx, r, a, req.RequestID, fp); ok || err != nil {
+			return dec, false, err
+		}
 		return Decision{}, false, refused
 	}
 	var repeat repeatRequest
@@ -822,8 +945,28 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 	if sup != nil {
 		e.withdrawMirror(a, sup)
 	}
-	go e.askMirror(a, d)
+	go e.askMirror(r, a, d)
 	dec, err := e.Decision(ctx, ledger.DecisionID(opened))
+	return dec, true, err
+}
+
+// requestSent is the decision the attempt's member opened in r under
+// request id, read from the ledger (ok), refused decision_conflict when it
+// was sent with another body (fp the fingerprint of this one's); not ok for
+// none, or no request id.
+func (e *Engine) requestSent(ctx context.Context, r *run, a *attempt, id, fp string) (Decision, bool, error) {
+	rr, can := e.ledger.(requestReader)
+	if id == "" || !can {
+		return Decision{}, false, nil
+	}
+	row, ok, err := rr.DecisionByRequest(ctx, r.id, a.m.def.Name, id)
+	if err != nil || !ok {
+		return Decision{}, false, err
+	}
+	if row.Fingerprint != fp {
+		return Decision{}, true, refuse(CodeDecisionConflict, "request %s was sent before with another body, as %s", id, row.ID())
+	}
+	dec, err := e.Decision(ctx, row.ID())
 	return dec, true, err
 }
 
@@ -832,8 +975,11 @@ func (e *Engine) RequestDecision(ctx context.Context, sessionID string, req Deci
 // askMu: the decision is read as open before the ask and again after it,
 // and one answered, superseded or cancelled meanwhile withdraws the
 // question at once by its id. The question's id is kept on the decision,
-// for its application and its withdrawal.
-func (e *Engine) askMirror(a *attempt, d *decision) {
+// for its application and its withdrawal. A decision the attempt opened
+// after this one and still open is asked instead (only the newest's
+// mirror shows): asks that take askMu out of their order never put an
+// older question back over it.
+func (e *Engine) askMirror(r *run, a *attempt, d *decision) {
 	a.askMu.Lock()
 	defer a.askMu.Unlock()
 	e.mu.Lock()
@@ -847,6 +993,14 @@ func (e *Engine) askMirror(a *attempt, d *decision) {
 		// Read as open, before the ask: a test holds it here while the
 		// decision is answered or superseded.
 		e.beforeMirror(n)
+	}
+	e.mu.Lock()
+	newer := r.newerOpen(a, d)
+	e.mu.Unlock()
+	if newer {
+		// A newer decision's ask follows on askMu, or came first: its
+		// question is the one that shows.
+		return
 	}
 	l, ok := e.lookup(sid)
 	if !ok {
@@ -865,6 +1019,16 @@ func (e *Engine) askMirror(a *attempt, d *decision) {
 	if !still {
 		l.WithdrawQuestion(q)
 	}
+}
+
+// newerOpen reports whether the attempt asked a decision after d that is
+// open (r.decisions keeps their opening order). The caller holds e.mu.
+func (r *run) newerOpen(a *attempt, d *decision) bool {
+	i := slices.Index(r.decisions, d)
+	if i < 0 {
+		return false
+	}
+	return slices.ContainsFunc(r.decisions[i+1:], func(x *decision) bool { return x.a == a && x.state == ledger.DecisionOpen })
 }
 
 // withdrawMirror takes away the question that mirrors d, if one was put
@@ -946,6 +1110,11 @@ func (e *Engine) openGates(r *run) (tx, func()) {
 		}
 		gates = append(gates, g)
 	}
+	var heldTasks []*task
+	for _, g := range gates {
+		heldTasks = append(heldTasks, g.d.holds...)
+	}
+	rows := r.heldRows(heldTasks)
 	opened := make([]int64, len(gates))
 	out := tx{last: func(ltx LedgerTx) error {
 		dtx, err := decisionsOf(ltx)
@@ -973,13 +1142,23 @@ func (e *Engine) openGates(r *run) (tx, func()) {
 				return err
 			}
 		}
+		// The held tasks' rows again, naming their gates by number.
+		ids := map[*decision]int64{}
+		for i, g := range gates {
+			ids[g.d] = opened[i]
+		}
+		for _, h := range rows {
+			if err := h.put(ltx, ids); err != nil {
+				return err
+			}
+		}
 		return nil
 	}, done: func() {
 		for i, g := range gates {
 			g.d.n = opened[i]
-			for _, t := range g.d.holds {
-				r.holdReason(t)
-			}
+		}
+		for _, h := range rows {
+			r.written(h)
 		}
 	}}
 	undo := func() {
@@ -1153,8 +1332,12 @@ type respondOutcome struct {
 	receipt  ResponseReceipt
 	accepted bool
 	moved    bool
-	refusal  *DecisionError
-	rev      int
+	// unheld says the run stopped between RespondDecision's choice of it
+	// and its transaction: nothing was written, and the response is
+	// chosen again as one to a run not held.
+	unheld  bool
+	refusal *DecisionError
+	rev     int
 }
 
 func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, auth Authority, authRaw, fp string, prior ledger.DecisionRecord, mem membership, out *respondOutcome) error {
@@ -1334,6 +1517,9 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 	if actor == "" || len(actor) > ledger.MaxDecisionActor {
 		return ResponseReceipt{}, refuse(CodeInvalid, "a response names its actor")
 	}
+	// The process that accepts the response is this one, whatever the
+	// caller says: an identity's is applied only here (applyDecisions).
+	auth.Boot = e.boot
 	authRaw, _ := json.Marshal(auth)
 	fp := fingerprintOf(resp)
 	for range maxDecisionTries {
@@ -1362,7 +1548,7 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 				return respondTx(ltx, prior.CurrentRun, n, resp, actor, auth, string(authRaw), fp, prior, membership{}, &out)
 			})
 		}
-		if errors.Is(err, errDecisionMoved) || err == nil && out.moved {
+		if errors.Is(err, errDecisionMoved) || err == nil && (out.moved || out.unheld) {
 			continue
 		}
 		if err != nil {
@@ -1388,6 +1574,11 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response, actor string, auth Authority, authRaw, fp string, prior ledger.DecisionRecord, out *respondOutcome) error {
 	var d *decision
 	return e.transact(ctx, r, func() tx {
+		if r.stopping || r.ctx.Err() != nil {
+			// Stopped since RespondDecision chose it: no longer held.
+			out.unheld = true
+			return tx{}
+		}
 		d = r.decisionN(n)
 		mem := membership{}
 		if prior.Origin == ledger.OriginAgent {
@@ -1475,22 +1666,30 @@ func (e *Engine) applyDecisions(r *run) {
 	}
 }
 
-// applyOne applies d, answered, in one transaction of r's.
+// applyOne applies d, answered, in one transaction of r's. What follows
+// the application (its line queued, its mirror withdrawn, a replacement's
+// question asked) is the transaction's done: it follows the commit that
+// writes the application, this one or the next (a refused commit's change
+// is carried), and never one that did not.
 func (e *Engine) applyOne(r *run, d *decision) {
-	var (
-		line    *answerLine
-		replace *decision
-	)
 	err := e.transact(context.Background(), r, func() tx {
 		if d.state != ledger.DecisionAnswered || r.decisionN(d.n) != d {
 			return tx{}
 		}
 		ans := d.answer
 		if ans.auth.Via == ViaIdentity && (ans.auth.Boot != e.boot || d.confirmed < 0) {
-			var t tx
-			replace, t = e.replaceDecision(r, d, fmt.Sprintf("%s's answer could not be rechecked", ans.actor))
+			replace, t := e.replaceDecision(r, d, fmt.Sprintf("%s's answer could not be rechecked", ans.actor))
+			opened := t.done
+			t.done = func() {
+				opened()
+				e.withdrawMirror(d.a, d)
+				if replace.a != nil {
+					go e.askMirror(r, replace.a, replace)
+				}
+			}
 			return t
 		}
+		var line *answerLine
 		app := Application{At: time.Now().UTC(), By: "yardmaster", Run: r.id, Response: ans.k, Validated: true}
 		words := answerWords(d, ans)
 		var events []event
@@ -1534,14 +1733,24 @@ func (e *Engine) applyOne(r *run, d *decision) {
 			if ans.rationale != "" {
 				why += ": " + shortText(ans.rationale)
 			}
+			// The run's end once, after every cancellation: one that dooms a
+			// task held with it settles the run before that task's own.
+			was := r.outcome
 			for _, t := range held {
 				if cancellable(t) == nil {
-					events = append(events, e.cancelTask(r, t)...)
+					for _, ev := range e.cancelTask(r, t) {
+						if ev.kind != "run.finished" {
+							events = append(events, ev)
+						}
+					}
 					if t.state == ledger.TaskCancelled {
 						t.reason = why
 						r.markTask(t)
 					}
 				}
+			}
+			if was == "" && r.outcome != "" {
+				events = append(events, event{"run.finished", map[string]any{"outcome": r.outcome}})
 			}
 		}
 		r.note(session.ActivityStatus, "decision %s applied: %s", d.id(), app.Words)
@@ -1572,22 +1781,18 @@ func (e *Engine) applyOne(r *run, d *decision) {
 				}
 			}
 			return ltx.Event("decision.applied", map[string]any{"decision": row.ID(), "how": app.How, "tasks": app.Tasks})
+		}, done: func() {
+			if line != nil {
+				e.queueAnswer(r, line)
+			} else if d.a != nil {
+				e.withdrawMirror(d.a, d)
+			}
 		}}
 	}, nil)
 	if err != nil {
+		// Carried by the pause's commit, whose done then queues the line.
 		e.afterTransact(r, err)
 		return
-	}
-	if replace != nil {
-		e.withdrawMirror(d.a, d)
-		if replace.a != nil {
-			go e.askMirror(replace.a, replace)
-		}
-	}
-	if line != nil {
-		e.queueAnswer(r, line)
-	} else if d.a != nil {
-		e.withdrawMirror(d.a, d)
 	}
 	e.pumpLocked(r)
 }
@@ -1641,6 +1846,7 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 		r.release(t, d)
 		r.hold(t, fresh)
 	}
+	rows := r.heldRows(held)
 	var opened int64
 	n := d.n
 	return fresh, tx{more: func(ltx LedgerTx) error {
@@ -1690,14 +1896,19 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 				return err
 			}
 		}
+		for _, h := range rows {
+			if err := h.put(ltx, map[*decision]int64{fresh: got.N}); err != nil {
+				return err
+			}
+		}
 		if err := ltx.Event("decision.superseded", map[string]any{"decision": old.ID(), "by": got.ID(), "why": words}); err != nil {
 			return err
 		}
 		return ltx.Event("decision.opened", map[string]any{"decision": got.ID(), "origin": old.Origin, "type": old.Type, "follows": old.ID()})
 	}, done: func() {
 		fresh.n = opened
-		for _, t := range held {
-			r.holdReason(t)
+		for _, h := range rows {
+			r.written(h)
 		}
 		r.note(session.ActivityStatus, "decision %s superseded: %s; %s asks again", d.id(), why, fresh.id())
 	}}
@@ -1711,13 +1922,16 @@ type answerLine struct {
 	a      *attempt
 	text   string
 	byName string
+	// plain says the line goes as a line naming its decision, never as
+	// its mirror's answer: the mirror was set aside between the look and
+	// the line (typeAnswer). Its id stays, for its withdrawal.
+	plain bool
 }
 
 // queueAnswer queues an applied answer for the asking attempt's member's
-// deliverer and wakes it, starting one when none runs.
+// deliverer and wakes it, starting one when none runs. The caller holds
+// e.mu: the application's commit (its done).
 func (e *Engine) queueAnswer(r *run, line *answerLine) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	m := line.a.m
 	m.answers = append(m.answers, line)
 	if m.delivering.Load() {
@@ -1756,7 +1970,7 @@ func (e *Engine) nextAnswer(r *run, m *member, l *session.Local) (*answerLine, s
 		q := al.d.mirror
 		e.mu.Unlock()
 		al.a.askMu.Unlock()
-		if q != "" && q == shown {
+		if q != "" && q == shown && !al.plain {
 			pick, mirror = al, q
 			break
 		}
@@ -1798,9 +2012,11 @@ func (e *Engine) typeAnswer(r *run, m *member, l *session.Local, al *answerLine,
 	switch {
 	case mirror != "" && errors.Is(err, session.ErrQuestionAnswered) && !res.Typed:
 		// Its mirror set aside or gone between the look and the line: typed
-		// again as a line naming its decision, at the next pass.
+		// again as a line naming its decision, at the next pass, and the
+		// mirror, which the session keeps aside, withdrawn by its id once
+		// the line is in (#635, review round 1).
 		e.mu.Lock()
-		al.d.mirror = ""
+		al.plain = true
 		m.answers = slices.Insert(m.answers, 0, al)
 		e.mu.Unlock()
 		return false

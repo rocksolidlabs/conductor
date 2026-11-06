@@ -1380,6 +1380,36 @@ func (l *Ledger) Decision(ctx context.Context, n int64) (DecisionRecord, bool, e
 	return rec, true, nil
 }
 
+// DecisionByRequest reads the decision run's member opened under request
+// id requestID (OpenDecision's repeat), ok false for none: the request sent
+// again is answered with it before anything that may have changed since is
+// checked again (a decision it superseded, the file it is about).
+func (l *Ledger) DecisionByRequest(ctx context.Context, run, member, requestID string) (DecisionRow, bool, error) {
+	if requestID == "" {
+		return DecisionRow{}, false, nil
+	}
+	var d DecisionRow
+	found := false
+	err := l.readAt(ctx, func(q querier, version int) error {
+		if version < versionDecisions {
+			return nil
+		}
+		row, err := scanDecision(q.QueryRowContext(ctx, "SELECT "+decisionCols+" FROM decisions WHERE run_id = ? AND member = ? AND request_id = ?", run, member, requestID))
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil
+		case err != nil:
+			return err
+		}
+		d, found = row, true
+		return nil
+	})
+	if err != nil || !found {
+		return DecisionRow{}, false, err
+	}
+	return d, true, nil
+}
+
 // Decisions reads the decisions f names, newest first, a page of at most
 // MaxDecisionsPage.
 func (l *Ledger) Decisions(ctx context.Context, f DecisionFilter) ([]DecisionRow, error) {
