@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -647,5 +648,125 @@ func TestADraftsPeopleAreCheckedAndKept(t *testing.T) {
 	var kept crew.Crew
 	if err := json.Unmarshal(file, &kept); err != nil || !reflect.DeepEqual(kept.People, crewPeople()) || kept.Tasks[0].Owner != "nate" {
 		t.Fatalf("the made crew's file: %s %v", file, err)
+	}
+}
+
+// A person's work (PR-11): the tasks they own in two runs, newest first,
+// one owned by the fallback to the acceptance owner; the tickets they own
+// and are assigned, counted; a person removed from the saved crew after
+// the launch still answered with that run's work; a name in Dispatch's
+// directory alone answered; 404 for a name no source knows, matched
+// exactly; and the bound of 200 tasks with more.
+func TestAPersonsWork(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	saved, err := e.srv.crews.Create(peopledCrew(e.root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := launchPeopled(t, e, saved)
+	newer, release, err := e.srv.runs.LaunchNamed(t.Context(), saved, "second")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runningAttempt(t, e, newer.ID, "build", 1)
+	defer e.expect(t, "POST", "/api/runs/"+newer.ID+"/stop", nil, http.StatusOK, "")
+
+	e.newDispatchProject(t, "PPL", nil)
+	e.newDispatchTicket(t, "PPL", "owned", map[string]any{"owner": "nate"})
+	e.newDispatchTicket(t, "PPL", "assigned", map[string]any{"assignees": []string{"person:nate"}})
+	e.newDispatchTicket(t, "PPL", "both", map[string]any{"owner": "nate", "assignees": []string{"person:nate"}})
+	e.newDispatchTicket(t, "PPL", "another's", map[string]any{"owner": "ana2"})
+
+	work := func(name string) personWork {
+		t.Helper()
+		out := e.expect(t, "GET", "/api/people/"+url.PathEscape(name), nil, http.StatusOK, "")
+		b, _ := json.Marshal(out)
+		var w personWork
+		if err := json.Unmarshal(b, &w); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	tasksOf := func(w personWork) []string {
+		var out []string
+		for _, x := range w.Tasks {
+			out = append(out, x.Run+"/"+x.Task+"/"+x.Member+"/"+x.OwnerFrom)
+		}
+		return out
+	}
+
+	nate := work("nate")
+	if want := []string{newer.ID + "/build/lead/task", older + "/build/lead/task"}; !reflect.DeepEqual(tasksOf(nate), want) || nate.More {
+		t.Fatalf("nate's tasks: %v, want %v", tasksOf(nate), want)
+	}
+	if nate.Tasks[0].RunLabel != "second" || nate.Tasks[1].RunLabel != saved.Name || nate.Tasks[0].State == "" {
+		t.Fatalf("nate's tasks: %+v", nate.Tasks)
+	}
+	if want := []personCrew{{ID: saved.ID, Name: saved.Name, Responsibilities: []string{crew.RespArchitecture}}}; !reflect.DeepEqual(nate.Crews, want) || nate.CrewsMore {
+		t.Fatalf("nate's crews: %+v", nate.Crews)
+	}
+	tk := nate.Tickets
+	if tk == nil || tk.Owner != 2 || tk.Assignee != 2 || tk.OwnerHref != "/api/dispatch/tickets?owner=nate" || tk.AssigneeHref != "/api/dispatch/tickets?assignee=person%3Anate" {
+		t.Fatalf("nate's tickets: %+v", tk)
+	}
+	// Naming nate a ticket's owner put him in Dispatch's directory.
+	if !nate.Dispatch || nate.DispatchUnavailable || nate.Decisions == nil || len(nate.Decisions) != 0 {
+		t.Fatalf("nate: %+v", nate)
+	}
+	// The links are Dispatch's own lists, which answer the counted tickets.
+	if got := e.expect(t, "GET", tk.AssigneeHref, nil, http.StatusOK, "")["total"]; got != 2.0 {
+		t.Fatalf("the assignee list: %v", got)
+	}
+
+	// ana leaves the saved crew; the runs launched with her keep her
+	// tasks, docs hers as the acceptance owner.
+	edited := saved
+	edited.People = []crew.Person{{Name: "nate", Responsibilities: []string{crew.RespArchitecture}}}
+	if _, err := e.srv.crews.Update(saved.ID, edited); err != nil {
+		t.Fatal(err)
+	}
+	ana := work("ana")
+	if want := []string{newer.ID + "/docs/writer/acceptance", older + "/docs/writer/acceptance"}; !reflect.DeepEqual(tasksOf(ana), want) {
+		t.Fatalf("ana's tasks: %v, want %v", tasksOf(ana), want)
+	}
+	if len(ana.Crews) != 0 || ana.Dispatch || ana.Tickets == nil || ana.Tickets.Owner != 0 || ana.Tickets.Assignee != 0 {
+		t.Fatalf("ana: %+v", ana)
+	}
+
+	// A name in Dispatch's directory alone, and one a ticket alone names.
+	e.expect(t, "POST", "/api/dispatch/people", map[string]any{"opId": opID(), "name": "zed"}, http.StatusCreated, "")
+	if zed := work("zed"); !zed.Dispatch || len(zed.Tasks) != 0 || len(zed.Crews) != 0 {
+		t.Fatalf("zed: %+v", zed)
+	}
+	if ana2 := work("ana2"); ana2.Tickets == nil || ana2.Tickets.Owner != 1 {
+		t.Fatalf("ana2: %+v", ana2)
+	}
+
+	// No source knows these: the name is matched exactly.
+	for _, name := range []string{"nobody", "NATE", "nat", strings.Repeat("n", 61), "na\tte"} {
+		e.expect(t, "GET", "/api/people/"+url.PathEscape(name), nil, http.StatusNotFound, "not_found")
+	}
+	e.expect(t, "GET", "/api/people/nate?x=1", nil, http.StatusBadRequest, "invalid_request")
+	if resp, _ := e.do("GET", "/api/people/nate", "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", resp.StatusCode)
+	}
+
+	// 256 tasks owned in two records: the 200 of the newest first, more.
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for i, id := range []string{"bulk-0000000a", "bulk-0000000b"} {
+		run := crew.Run{ID: id, CrewID: "bulk", Name: "bulk", Cwd: e.root, State: crew.RunStopped, StartedAt: at.Add(time.Duration(i) * time.Hour), Managed: &crew.Managed{Revision: 1},
+			People: []crew.Person{{Name: "kai"}}}
+		for n := range 128 {
+			run.Tasks = append(run.Tasks, crew.TaskState{ID: fmt.Sprintf("t%03d", n), Member: "lead", State: ledger.TaskReady, Owner: "kai", OwnerFrom: crew.OwnerFromTask})
+		}
+		if err := e.srv.records.Save(run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kai := work("kai")
+	if len(kai.Tasks) != maxWorkTasks || !kai.More || kai.Tasks[0].Run != "bulk-0000000b" || kai.Tasks[0].Task != "t000" || kai.Tasks[127].Run != "bulk-0000000b" || kai.Tasks[128].Run != "bulk-0000000a" || kai.Tasks[199].Task != "t071" {
+		t.Fatalf("kai: %d tasks, more %v, %+v", len(kai.Tasks), kai.More, kai.Tasks[:2])
 	}
 }

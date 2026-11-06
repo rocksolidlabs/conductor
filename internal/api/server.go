@@ -663,6 +663,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/crews/{id}/runs", s.launching(s.handleCrewRuns))
 	// The people Conductor knows: Dispatch's and the crews' (people.go).
 	mux.HandleFunc("GET /api/people", s.launching(s.handlePeople))
+	mux.HandleFunc("GET /api/people/{name}", s.launching(s.handlePerson))
 	mux.HandleFunc("GET /api/paths", s.launching(s.handleListPaths))
 	mux.HandleFunc("GET /api/git/check", s.launching(s.handleGitCheck))
 	mux.HandleFunc("GET /api/runs", s.readable("GET /api/runs", s.launchingAny(s.handleListRuns)))
