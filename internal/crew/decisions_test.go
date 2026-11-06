@@ -1915,3 +1915,154 @@ func TestAResponseIsFingerprintedAsSent(t *testing.T) {
 	}
 	stopRun(t, e, run.ID)
 }
+
+// A repeat is looked for where it would act (#636, review round 4): a
+// copy of a response held after its first look, while the other copy
+// records a stale refusal (the approval commented on since its rev) and
+// the asking worktree's HEAD then moves, finds the saved refusal under
+// the supersession's lock when released: it answers the saved receipt and
+// supersedes nothing. The approval stays open, its hold active, in the
+// ledger as in the engine.
+func TestARepeatHeldAcrossASubjectMoveSupersedesNothing(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
+	if _, err := e.CommentDecision(t.Context(), d.ID, "o1", CommentKind, "Look at the index first.", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	decisionWhen(t, ld, d.ID, "commented", hasKind(ledger.HistoryCommented))
+	at, gate := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	e.beforeRespond = func(int64) {
+		if first.CompareAndSwap(false, true) {
+			close(at)
+			<-gate
+		}
+	}
+	t.Cleanup(func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	})
+	resp := Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1, ByName: "Nate"}
+	type responded struct {
+		rc  ResponseReceipt
+		err error
+	}
+	held := make(chan responded, 1)
+	go func() {
+		rc, err := e.RespondDecision(context.Background(), d.ID, resp, "admin", workbench(e))
+		held <- responded{rc, err}
+	}()
+	<-at // the held copy looked, and found no row of r1
+	var de *DecisionError
+	saved, err := e.RespondDecision(t.Context(), d.ID, resp, "admin", workbench(e))
+	if !errors.As(err, &de) || de.Code != CodeStaleDecision || saved.Repeat {
+		t.Fatalf("the copy that records: %+v %v", saved, err)
+	}
+	writeFile(t, filepath.Join(b.Attempt.Worktree, "more.txt"), "m\n")
+	commitAll(t, b.Attempt.Worktree, "more")
+	close(gate)
+	got := <-held
+	if !errors.As(got.err, &de) || de.Code != CodeStaleDecision {
+		t.Fatalf("the held copy: %+v %v", got.rc, got.err)
+	}
+	rec := decisionWhen(t, ld, d.ID, "open", inState(ledger.DecisionOpen))
+	savedAs(t, rec, saved.K, got.rc)
+	if rec.Rev != 2 || kindCount(rec, ledger.HistorySuperseded) != 0 || len(rec.Responses) != 1 {
+		t.Fatalf("%s after the repeat: rev %d %q, %d responses", d.ID, rec.Rev, historyKinds(rec), len(rec.Responses))
+	}
+	if got := activeHolds(t, ld, run.ID); !slices.Equal(got, []string{"build " + d.ID}) {
+		t.Fatalf("holds %q", got)
+	}
+	if rev, ok := engineHolds(t, e, run.ID, d.ID); !ok || rev != 2 {
+		t.Fatalf("the engine's %s: rev %d, held %v", d.ID, rev, ok)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A replacement is counted as it is carried (#636, review round 4): in a
+// run at its bound, an identity's answer holding the last place, its
+// recheck failed and the replacement's commit refused, and the pause's
+// after it, the run still holds every decision it may, so a retry that
+// would ask a rejected gate again is refused decision_limit; nothing
+// carried must then fail for ever, and the next commit writes the
+// replacement as the run's 1,000th decision.
+func TestACarriedReplacementHoldsItsPlace(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	rl := refusing(e, ld)
+	smoke := PackageDecision{ID: "smoke", Question: "Smoke it?", Kind: ledger.DecisionApproval, Before: []string{"smoke"}}
+	run := launchGated(t, e, dir, "api-sweep-000000cb", repoCrew(dir, work("deploy", "ops"), work("smoke", "qa")), shipGate("deploy"), smoke)
+	gates := map[string]ledger.DecisionRow{}
+	rows, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: run.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		gates[row.Gate] = row
+	}
+	answer(t, e, gates["smoke"].ID(), Response{ResponseID: "r1", Choice: choice(1), ExpectedRev: 1})
+	waitTask(t, e, run.ID, "smoke", ledger.TaskCancelled, 0)
+	fillDecisions(t, ld, run.ID, ledger.MaxDecisionsPerRun-3)
+	r := runOf(t, e, run.ID)
+	e.mu.Lock()
+	r.dec.opened = ledger.MaxDecisionsPerRun - 1 // as the ledger counts them
+	e.mu.Unlock()
+	ship := gates["ship"].ID()
+	rc, err := e.RespondDecision(t.Context(), ship, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1}, "user:nate", identity(e, "nate"))
+	if err != nil || rc.Status != "accepted" {
+		t.Fatalf("the identity's response: %+v %v", rc, err)
+	}
+
+	g := rl.armHeld("decision.superseded")
+	released := sync.OnceFunc(func() { close(g.release) })
+	t.Cleanup(released) // a check that fails while the commit is held ends the test, never hangs it
+	confirmed := make(chan struct{})
+	go func() {
+		defer close(confirmed)
+		e.ConfirmAuthority(ship, rc.K, false)
+	}()
+	<-g.reached // the replacement made, its commit not answered
+	room := func(when string) {
+		t.Helper()
+		e.mu.Lock()
+		held, ok := r.decisionsHeld(), r.decisionRoom(1)
+		e.mu.Unlock()
+		if held != ledger.MaxDecisionsPerRun || ok {
+			t.Fatalf("%s: the run holds %d, room for one more %v", when, held, ok)
+		}
+	}
+	room("the replacement's commit under way")
+	rl.arm("decision.superseded") // and the pause's, which carries it
+	released()
+	rl.wasRefused(t)
+	rl.wasRefused(t)
+	<-confirmed
+	room("both commits refused")
+	var de *DecisionError
+	if err := e.RetryTask(t.Context(), run.ID, "smoke"); !errors.As(err, &de) || de.Code != CodeDecisionLimit {
+		t.Fatalf("the retry: %v", err)
+	}
+	if ts := taskOf(t, e, run.ID, "smoke"); ts.State != ledger.TaskCancelled {
+		t.Fatalf("smoke after the refused retry: %+v", ts)
+	}
+
+	if err := e.PauseRun(t.Context(), run.ID, false); err != nil {
+		t.Fatalf("the unpause, which writes what was carried: %v", err)
+	}
+	old := decisionWhen(t, ld, ship, "superseded", inState(ledger.DecisionSuperseded))
+	fresh := decisionWhen(t, ld, old.SupersededBy, "open", inState(ledger.DecisionOpen))
+	all, err := allDecisions(t.Context(), sqlLedger{ld}, ledger.DecisionFilter{CurrentRun: run.ID})
+	if err != nil || len(all) != ledger.MaxDecisionsPerRun || all[0].N != fresh.N {
+		t.Fatalf("the run's decisions: %d, %v (the replacement %s)", len(all), err, fresh.ID())
+	}
+	if paused(t, e, run.ID) {
+		t.Fatal("the run is still paused")
+	}
+	stopRun(t, e, run.ID)
+}

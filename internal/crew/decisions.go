@@ -1829,10 +1829,10 @@ func (e *Engine) holder(current string) (*run, bool) {
 // respondHeld is RespondDecision's transaction through a run the engine
 // holds: the asking attempt's membership read under e.mu, the row written
 // in its transaction, the engine's copy answered once it commits. A
-// subject that moved (S2, S4) is superseded first, in a change of its own
-// that is never undone (supersede): what the response's transaction then
-// refuses or fails, it has nothing in the engine to put back (#636,
-// review round 1).
+// subject that moved (S2, S4) is superseded first, unless the response is
+// a repeat, in a change of its own that is never undone (supersede): what
+// the response's transaction then refuses or fails, it has nothing in the
+// engine to put back (#636, review round 1).
 func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response, actor string, auth Authority, authRaw, fp string, prior ledger.DecisionRecord, out *respondOutcome) error {
 	// The subject rechecked first, read before the transaction at the
 	// place the supersession checks it is still read at.
@@ -1849,7 +1849,9 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 			return err
 		}
 		if words != "" {
-			moved = e.supersede(r, n, at, words)
+			if moved, err = e.supersede(ctx, r, n, at, words, actor, resp.ResponseID, fp); err != nil {
+				return err
+			}
 		}
 	}
 	return e.transact(ctx, r, func() tx {
@@ -1880,16 +1882,34 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 }
 
 // supersede supersedes the run's open decision n, whose subject the read
-// at found moved (words), in a transaction of its own with no undo: a
+// at found moved (words), for the response actor sent as responseID (fp
+// its body's fingerprint), in a transaction of its own with no undo: a
 // refused commit carries it, and the run pauses until the pause's commit
 // writes it, so the engine, which has superseded it, and the ledger never
 // disagree for good. It answers the words it was superseded with, "" when
 // the decision was no longer open at at by the change (answered, closed,
-// or its subject read elsewhere since). Under no request's context: a
-// caller gone does not refuse it. The caller holds no lock.
-func (e *Engine) supersede(r *run, n int64, at subjectAt, words string) string {
+// or its subject read elsewhere since), or when the ledger holds a row of
+// that response already: a repeat changes nothing (replayed), and the
+// response's transaction answers it from its row. The repeat is looked
+// for where it would act, under the run's txMu with the change that
+// supersedes, so a copy of the response that committed after
+// RespondDecision's own look, a transaction of this run, is seen before
+// anything is superseded (#636, review round 4). Its commit is under no
+// request's context: a caller gone does not refuse it. An error is the
+// ledger's read, with nothing changed. The caller holds no lock.
+func (e *Engine) supersede(ctx context.Context, r *run, n int64, at subjectAt, words, actor, responseID, fp string) (string, error) {
+	r.txMu.Lock()
+	rec, ok, err := e.readDecision(ctx, n)
+	if err != nil {
+		r.txMu.Unlock()
+		return "", err
+	}
+	if _, found, _ := replayed(rec, actor, responseID, fp); !ok || found {
+		r.txMu.Unlock()
+		return "", nil
+	}
 	done := ""
-	err := e.transact(context.Background(), r, func() tx {
+	err = e.commitHeld(context.Background(), r, false, func() tx {
 		d := r.decisionN(n)
 		if r.stopping || r.ctx.Err() != nil || d == nil || d.state != ledger.DecisionOpen || !e.sameSubject(r, d, at) {
 			return tx{}
@@ -1898,8 +1918,9 @@ func (e *Engine) supersede(r *run, n int64, at subjectAt, words string) string {
 		done = words
 		return tx{}
 	}, nil)
+	r.txMu.Unlock()
 	e.afterTransact(r, err)
-	return done
+	return done, nil
 }
 
 // confirmKey names an accepted response: its decision and its k.
@@ -2224,13 +2245,21 @@ func answerWords(d *decision, ans *accepted) string {
 // replaceDecision supersedes answered d, whose answer's authority could
 // not be rechecked, by a fresh decision of the same request with the same
 // holds, in the caller's transaction: the operator answers again. The
-// caller holds e.mu, in that transaction's change.
+// fresh decision counts against the run's bound from the change on
+// (decisionsHeld), as the place it takes over did. The caller holds e.mu,
+// in that transaction's change, which has no undo.
 func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx) {
 	fresh := &decision{origin: d.origin, typ: d.typ, gate: d.gate, t: d.t, a: d.a, question: d.question, options: slices.Clone(d.options), state: ledger.DecisionOpen, rev: 1, subject: d.subject}
 	held := slices.Clone(d.holds)
 	d.state = ledger.DecisionSuperseded
 	r.dropDecision(d)
 	r.decisions = append(r.decisions, fresh)
+	// Counted as it is carried, in the change that frees the answer's
+	// place, never at its commit: a commit refused (and the pause's after
+	// it) leaves the replacement carried and the place gone, and a count
+	// made at the commit said there was room the replacement holds (#636,
+	// review round 4). The change is never undone (applyOne).
+	r.dec.opened++
 	for _, t := range held {
 		r.release(t, d)
 		r.hold(t, fresh)
@@ -2293,7 +2322,6 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 		return ltx.Event("decision.opened", map[string]any{"decision": got.ID(), "origin": old.Origin, "type": old.Type, "follows": old.ID()})
 	}, done: func() {
 		fresh.n, fresh.openedAt = opened, time.Now().UTC()
-		r.dec.opened++
 		r.note(session.ActivityStatus, "decision %s superseded: %s; %s asks again", d.id(), why, fresh.id())
 	}}
 }

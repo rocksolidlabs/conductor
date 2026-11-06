@@ -886,6 +886,16 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 	}
 	r.txMu.Lock()
 	defer r.txMu.Unlock()
+	return e.commitHeld(ctx, r, first, mutate, undo)
+}
+
+// commitHeld is commit for a caller that holds r.txMu already: one that
+// reads the ledger before its change, and must have no transaction of the
+// run between that read and the change (supersede).
+func (e *Engine) commitHeld(ctx context.Context, r *run, first bool, mutate func() tx, undo func()) error {
+	if e.ledger == nil {
+		return ErrNoLedger
+	}
 	e.mu.Lock()
 	if r.unrecorded() && !first {
 		e.mu.Unlock()

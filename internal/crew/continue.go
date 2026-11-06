@@ -102,8 +102,12 @@ type candidate struct {
 // has: interrupted, stopped or finished, and not continued yet. The new run
 // names the old in ResumedFrom (the ledger's ContinuedFrom) and the old
 // names it in ResumedBy (ContinuedBy). A run still going is refused
-// (ErrRunRunning), one continued already with RunResumedError. The label
-// is the old run's when none is given and the engine still holds it.
+// (ErrRunRunning), one continued already with RunResumedError. A run
+// whose chain of continuations is longer than a server reads, more than
+// maxChain (10,000) runs with runID among them, is refused
+// (ErrChainTooLong) with nothing made or moved: the chain's decisions are
+// read whole or the continuation is not made (readDecisionHistory). The
+// label is the old run's when none is given and the engine still holds it.
 func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, error) {
 	if e.ledger == nil {
 		return nil, ErrNoLedger

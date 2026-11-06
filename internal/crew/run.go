@@ -145,6 +145,12 @@ var (
 	// read the run without them, and a later commit would write them
 	// after it.
 	ErrRunUnsettled = errors.New("the run has changes the ledger has not recorded yet: continue it once the ledger takes them")
+	// ErrChainTooLong refuses a continuation of a run whose chain of
+	// continuations is longer than a server reads (maxChain runs, the run
+	// itself among them): its decisions could not be read whole, and a
+	// continuation that read them in part would ask a released gate again
+	// or drop an answer (readDecisionHistory). Nothing is made or moved.
+	ErrChainTooLong = errors.New("the run's chain of continuations is longer than this server reads: it is not continued")
 	// ErrManaged says the run is a managed one (a crew with tasks, #334),
 	// which the start, add and resume paths of a legacy run do not serve:
 	// a managed run dispatches its own tasks, and continues after a restart
