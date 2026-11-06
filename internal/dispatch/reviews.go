@@ -206,8 +206,8 @@ type FindingEvidence struct {
 // CheckRef is a check finding's receipt as the server read it from the
 // ledger, with the person's choice and quote beside it: its source and
 // identity, the identity's parts, the commit it tested (subject), the
-// check's argv, how it ended (exit, signal, timed out, killed, stable),
-// where it ran, its log's SHA-256 and size, the ledger's tail of the log,
+// check's argv, how it ended (exit, signal, timed out, killed, stable, and
+// the ledger's words of its failure, error), where it ran, its log's SHA-256 and size, the ledger's tail of the log,
 // the class the server worked out, the class the person chose and their
 // quote, and the attempt before the failing one. The log itself stays the
 // ledger's, opened by the identity, and so does the whole argv when the
@@ -229,6 +229,7 @@ type CheckRef struct {
 	TimedOut  bool           `json:"timedOut"`
 	Killed    bool           `json:"killed"`
 	Stable    bool           `json:"stable"`
+	Error     string         `json:"error,omitempty"`
 	Where     string         `json:"where"`
 	LogSHA256 string         `json:"logSha256,omitempty"`
 	LogBytes  int64          `json:"logBytes"`
@@ -248,10 +249,27 @@ type CheckPrevious struct {
 	Commit  string `json:"commit,omitempty"`
 }
 
-// passed says the receipt finished with exit 0, stable, in time and by no
-// signal: nothing to repair.
+// passed says the finished receipt failed nothing, judged for its phase by
+// the fields the ledger says it by. The ledger's words of a failure
+// (error) fail a receipt of every phase. A task's check and a verify step
+// passed besides with exit 0, stable, in time and by no signal: a row a
+// version 4 database kept has no words, its failure only its outcome
+// (crew's failedOutcome), and stable false is a checkout the command left
+// changed. A step of the tree (setup, service, ready) failed only with
+// words, which the engine writes for each way it fails (runStep, runProbe,
+// watchService): its stable is set by a checkout's setup alone, and is
+// false for a worktree's setup and every probe that passed; a service
+// stopped by its tree's end has a signal and no exit 0, and one that
+// exited 0 while the tree was in use failed, its words say so.
 func (c CheckRef) passed() bool {
-	return c.Exit != nil && *c.Exit == 0 && c.Stable && !c.TimedOut && c.Signal == ""
+	if c.Error != "" {
+		return false
+	}
+	switch c.Phase {
+	case PhaseCheck, PhaseVerify:
+		return c.Exit != nil && *c.Exit == 0 && c.Stable && !c.TimedOut && c.Signal == ""
+	}
+	return true
 }
 
 // NewMark is what finding.mark takes, as the client sent it: the candidate
@@ -532,7 +550,8 @@ func errEvidence(format string, args ...any) error {
 // chain, invalid for a chain no ticket holds), the base a full commit; ev
 // is the server's evidence, one entry per finding (errEvidence when it
 // does not answer the request), stored with the rows (a check finding's
-// receipt made to fit as the ledger may hold it: fitTail, fitCheckRef)
+// receipt made to fit as the ledger may hold it: fitTail, fitError,
+// fitCheckRef)
 // and never part of the fingerprint, which is the key and r alone. Refused: an archived
 // project (archived), a deleted ticket (not_found), a request on a closed
 // ticket (invalid: "reopen the ticket to ask for changes"; a comment or
@@ -850,7 +869,7 @@ func bindCheck(k int, c Candidate, req CheckRequest, got *CheckRef) (*CheckRef, 
 	if kept.Argv == nil {
 		kept.Argv = []string{}
 	}
-	kept.Tail = fitTail(kept.Tail)
+	kept.Tail, kept.Error = fitTail(kept.Tail), fitError(kept.Error)
 	size, err := fitCheckRef(&kept)
 	if err != nil {
 		return nil, err
@@ -881,6 +900,20 @@ func fitTail(tail string) string {
 		tail = tail[n:]
 	}
 	return tail
+}
+
+// fitError is a receipt's words of its failure as a check finding keeps
+// them: in UTF-8, at most MaxCheckError bytes. The engine cuts its words
+// at a byte offset (session.CleanMessage), which can fall inside a
+// character: a run of bytes that is no UTF-8 becomes one U+FFFD, and what
+// that grew past the bound goes from the end, a character at a time.
+func fitError(words string) string {
+	words = strings.ToValidUTF8(words, string(utf8.RuneError))
+	for len(words) > MaxCheckError {
+		_, n := utf8.DecodeLastRuneInString(words)
+		words = words[:len(words)-n]
+	}
+	return words
 }
 
 // fitCheckRef cuts the argv of a check finding's receipt from its end

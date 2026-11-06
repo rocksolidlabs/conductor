@@ -295,15 +295,19 @@ const (
 	// MaxCheckExcerpt bounds a check finding's tail (the ledger's last
 	// bytes of the receipt's log) and its quote, in bytes each.
 	MaxCheckExcerpt = 2 << 10
+	// MaxCheckError bounds a check finding's words of its receipt's
+	// failure (the ledger's error), in bytes: the engine's own bound on
+	// them (session.MaxAttentionMessage).
+	MaxCheckError = 500
 	// MaxCheckArgv bounds the arguments a check finding's receipt keeps of
 	// its check's argv.
 	MaxCheckArgv = 32
 	// MaxCheckRef bounds a check finding's receipt (check_ref, JSON), in
 	// bytes as stored, so that a finding's create row with it stays under
 	// MaxChangeValue (reviews_test.go measures it). Its tail and its quote
-	// at their bounds and escaped worst (12 KiB each) beside the rest are
-	// under it, but not the argv a check may have: 8 KiB of control
-	// characters is some 48 KiB as JSON. So the store cuts the argv kept
+	// at their bounds and escaped worst (12 KiB each) and its failure's
+	// words (3 KiB) beside the rest are under it, but not the argv a check
+	// may have: 8 KiB of control characters is some 48 KiB as JSON. So the store cuts the argv kept
 	// to fit and marks it cut (fitCheckRef), the whole argv the ledger's.
 	MaxCheckRef = 32 << 10
 	// MaxReviewTries bounds the tries of a request's application: the

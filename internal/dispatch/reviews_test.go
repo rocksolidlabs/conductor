@@ -55,13 +55,13 @@ func checkNote(candidate string) NewFinding {
 }
 
 // failedRef is the ledger's receipt the request's check names, as the
-// server fills it: failed with exit 1 on the candidate's commit, of the
-// class given.
+// server fills it: failed with exit 1 on the candidate's commit, its words
+// saying so, of the class given.
 func failedRef(req CheckRequest, subject, class string) *CheckRef {
 	ref, _ := parseReceiptRef(req.Receipt)
 	return &CheckRef{Source: req.Source, Receipt: req.Receipt, Run: ref.run, Task: ref.task, Attempt: ref.attempt, Phase: ref.phase, ID: ref.id,
-		K: ref.k, Subject: subject, Argv: []string{"go", "test", "./..."}, Exit: exit(1), Stable: true, Where: "native",
-		LogSHA256: strings.Repeat("d", 64), LogBytes: 4096, Tail: "--- FAIL: TestUsers\nFAIL", Class: class,
+		K: ref.k, Subject: subject, Argv: []string{"go", "test", "./..."}, Exit: exit(1), Stable: true, Error: ref.id + " exited 1",
+		Where: "native", LogSHA256: strings.Repeat("d", 64), LogBytes: 4096, Tail: "--- FAIL: TestUsers\nFAIL", Class: class,
 		Previous: &CheckPrevious{Attempt: ref.attempt - 1, State: "failed", Stage: "checks", Commit: commitB[:40]}}
 }
 
@@ -291,7 +291,7 @@ func TestSubmitReviewRefusesWhatCannotBeRepaired(t *testing.T) {
 	// finished.
 	for i, fill := range []func(*CheckRef){
 		func(c *CheckRef) { c.Subject = commitB[:40] },
-		func(c *CheckRef) { c.Exit = exit(0) },
+		func(c *CheckRef) { c.Exit, c.Error = exit(0), "" },
 		func(c *CheckRef) { c.Exit = nil },
 	} {
 		r := request(candidate, checkNote(candidate))
@@ -334,6 +334,103 @@ func TestSubmitReviewRefusesWhatCannotBeRepaired(t *testing.T) {
 	}
 	rc, _, err := submit(s, "evidence", key, r)
 	want(t, rc, err, StatusDone, "")
+}
+
+// A receipt is judged failed or passed for its phase by the fields the
+// ledger says it by (CheckRef.passed): a task's check and a verify step by
+// how it ended and its words, a step of the tree (setup, service, ready)
+// by its words alone, as the engine writes them. Each way each phase
+// passes is refused (nothing failed to repair), each way it fails is kept.
+func TestACheckFindingsReceiptIsJudgedByItsPhase(t *testing.T) {
+	s, key, run := reviewTicket(t)
+	ctx := context.Background()
+	candidate := candidateOf(run, 2, commitA)
+	// as is the receipt of the phase as the engine records it: its exit,
+	// signal, timeout, stable and words.
+	type as struct {
+		exit     int
+		signal   string
+		timedOut bool
+		stable   bool
+		words    string
+	}
+	cases := []struct {
+		name, phase string
+		receipt     as
+		failed      bool
+	}{
+		{"a check that passed", PhaseCheck, as{exit: 0, stable: true}, false},
+		{"a check that exited 1", PhaseCheck, as{exit: 1, stable: true, words: "test exited 1"}, true},
+		{"a check of a version 4 row that exited 1, no words", PhaseCheck, as{exit: 1, stable: true}, true},
+		{"a check that left the checkout changed", PhaseCheck, as{exit: 0, words: "test changed tracked files: go.sum"}, true},
+		{"a check of a version 4 row that left the checkout changed", PhaseCheck, as{exit: 0}, true},
+		{"a check that timed out", PhaseCheck, as{exit: -1, timedOut: true, stable: true}, true},
+		{"a check ended by a signal", PhaseCheck, as{exit: -1, signal: "killed", stable: true}, true},
+		{"a check whose outcome the ledger refused", PhaseCheck, as{exit: 0, stable: true, words: "its outcome was not recorded: the disk is full"}, true},
+		{"a verify step that passed", PhaseVerify, as{exit: 0, stable: true}, false},
+		{"a verify step that exited 2", PhaseVerify, as{exit: 2, stable: true, words: "lint exited 2"}, true},
+		{"a verify step that left the checkout changed", PhaseVerify, as{exit: 0, words: "verify lint changed tracked files: a.go"}, true},
+		{"a worktree's setup that passed (stable unset)", PhaseSetup, as{exit: 0}, false},
+		{"a checkout's setup that passed", PhaseSetup, as{exit: 0, stable: true}, false},
+		{"a setup that exited 1", PhaseSetup, as{exit: 1, words: "deps exited 1"}, true},
+		{"a setup that timed out", PhaseSetup, as{exit: -1, timedOut: true, words: "deps timed out after 10m0s"}, true},
+		{"a checkout's setup that changed tracked files", PhaseSetup, as{exit: 0, words: "setup deps changed tracked files: go.sum"}, true},
+		{"a setup interrupted", PhaseSetup, as{exit: -1, words: "deps was interrupted: the run was stopped"}, true},
+		{"a service its tree's end stopped", PhaseService, as{exit: -1, signal: "terminated"}, false},
+		{"a service that exited before the tree was ready", PhaseService, as{exit: 1, words: "db exited 1 before the tree was ready"}, true},
+		{"a service that exited 0 while the tree was in use", PhaseService, as{exit: 0, words: "db exited 0 while the tree was in use"}, true},
+		{"a service that could not run", PhaseService, as{exit: -1, words: "db could not run: no such file"}, true},
+		{"a URL probe that passed (stable unset)", PhaseReady, as{exit: 0}, false},
+		{"a command probe that passed (stable unset)", PhaseReady, as{exit: 0}, false},
+		{"a URL probe that did not pass", PhaseReady, as{exit: -1, words: "up did not pass within 30s (5 tries): answered 503 Service Unavailable"}, true},
+		{"a command probe that exited 1", PhaseReady, as{exit: 1, words: "up did not pass within 30s (5 tries): exited 1"}, true},
+		{"a probe cut by a service's exit", PhaseReady, as{exit: -1, words: "db exited 1 before the tree was ready"}, true},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := checkNote(candidate)
+			f.Check.Receipt = fmt.Sprintf("%s/build/2/%s/up/%d", run, tc.phase, i)
+			r := request(candidate, f)
+			ev := evidenceOf(r)
+			c := ev.Findings[0].Check
+			c.Exit, c.Signal, c.TimedOut, c.Stable, c.Error = exit(tc.receipt.exit), tc.receipt.signal, tc.receipt.timedOut, tc.receipt.stable, tc.receipt.words
+			rc, v, err := s.SubmitReview(ctx, testOp(opID("judged", i)), key, r, ev)
+			if !tc.failed {
+				want(t, rc, err, StatusFailed, RefusalInvalid)
+				if !strings.Contains(rc.Error, "passed: nothing failed to repair") {
+					t.Fatalf("the words: %q", rc.Error)
+				}
+				return
+			}
+			want(t, rc, err, StatusDone, "")
+			if got := v.Findings[0].Check; got == nil || got.Phase != tc.phase || got.Error != tc.receipt.words || got.Stable != tc.receipt.stable {
+				t.Fatalf("the receipt kept: %+v", got)
+			}
+		})
+	}
+}
+
+// A receipt's words of its failure are kept in UTF-8 within MaxCheckError
+// bytes: words the engine cut inside a character end at the character
+// before it, and words past the bound are cut at a character's start.
+func TestACheckFindingKeepsItsReceiptsWordsInBound(t *testing.T) {
+	s, key, run := reviewTicket(t)
+	ctx := context.Background()
+	candidate := candidateOf(run, 2, commitA)
+	for i, tc := range []struct{ words, want string }{
+		{strings.Repeat("x", MaxCheckError-1) + "\xe2", strings.Repeat("x", MaxCheckError-1)},
+		{strings.Repeat("é", MaxCheckError), strings.Repeat("é", MaxCheckError/2)},
+		{strings.Repeat("x", MaxCheckError), strings.Repeat("x", MaxCheckError)},
+	} {
+		r := request(candidate, checkNote(candidate))
+		ev := evidenceOf(r)
+		ev.Findings[0].Check.Error = tc.words
+		rc, v, err := s.SubmitReview(ctx, testOp(opID("words", i)), key, r, ev)
+		want(t, rc, err, StatusDone, "")
+		if got := v.Findings[0].Check.Error; got != tc.want || !utf8.ValidString(got) || len(got) > MaxCheckError {
+			t.Fatalf("case %d: the words kept are %d bytes, UTF-8 %v, not the %d wanted", i, len(got), utf8.ValidString(got), len(tc.want))
+		}
+	}
 }
 
 // A receipt the ledger may hold is kept, made to fit: an argv of 32
@@ -1406,7 +1503,7 @@ func TestTheLargestReviewRowsAreUnderTheRowBound(t *testing.T) {
 	ref := CheckRef{Source: CheckSourceLedger, Receipt: "crew-0123abcd/build/999999/verify/" + strings.Repeat("t", 40) + "/999999",
 		Run: "crew-0123abcd", Task: strings.Repeat("b", 40), Attempt: 999999, Phase: PhaseVerify, ID: strings.Repeat("t", 40), K: 999999,
 		Subject: strings.Repeat("a", 64), Exit: exit(-1), Signal: "killed", Where: strings.Repeat("n", 32), LogSHA256: strings.Repeat("d", 64),
-		LogBytes: 1 << 40, Tail: quoted(MaxCheckExcerpt), Class: "infrastructure", Chosen: "infrastructure", Quote: quoted(MaxCheckExcerpt),
+		LogBytes: 1 << 40, Tail: quoted(MaxCheckExcerpt), Error: quoted(MaxCheckError), Class: "infrastructure", Chosen: "infrastructure", Quote: quoted(MaxCheckExcerpt),
 		Previous: &CheckPrevious{Attempt: 999998, State: "failed", Stage: "checks", Commit: strings.Repeat("b", 64)}}
 	// The argv grown to the receipt's bound.
 	for {
