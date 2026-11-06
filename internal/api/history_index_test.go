@@ -294,44 +294,57 @@ func TestTheIndexHandsWhatTheEngineHands(t *testing.T) {
 	}
 }
 
-// A continuation's first attempt is handed the receipt that failed its
-// source run's last attempt, as the engine hands it; and the
-// continuation's pass, read after the source was indexed, writes
-// passed_after from that receipt, which a restart's catch-up keeps.
-func TestHandedAcrossAContinuation(t *testing.T) {
-	e := newTestEnv(t, nil)
+// continuedRun is a run whose attempt 1 failed at its check unit, indexed,
+// and a continuation of it whose attempt 2 runs: their ids and the failed
+// receipt's ref.
+func continuedRun(t *testing.T, e *testEnv) (src, cont, failed string) {
+	t.Helper()
 	ld := e.srv.ledger
 	c := histCrew(e.root)
-	histCreate(t, ld, "hist-00000001", "", c)
-	failedAt(t, ld, "hist-00000001", 1, 1, "TestLoginRedirect")
-	histTx(t, ld, "hist-00000001", func(tx *ledger.Tx) error {
-		return tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: crew.TaskWork, State: ledger.TaskFailed, Attempts: 1})
-	})
+	src, cont = "hist-00000001", "hist-00000002"
+	histCreate(t, ld, src, "", c)
+	failedAt(t, ld, src, 1, 1, "TestLoginRedirect")
 	ix := histSettle(t, e)
-	failed := hCheckRef("hist-00000001", "build", 1, "unit", 1)
+	failed = hCheckRef(src, "build", 1, "unit", 1)
 	if got := histOut(t, ix, failed, relHanded); len(got) != 0 {
 		t.Fatalf("handed before any attempt after it: %v", got)
 	}
-	histCreate(t, ld, "hist-00000002", "hist-00000001", c)
-	histTx(t, ld, "hist-00000002", func(tx *ledger.Tx) error {
+	histCreate(t, ld, cont, src, c)
+	histTx(t, ld, cont, func(tx *ledger.Tx) error {
 		return tx.PutAttempt(histAttempt("build", 2, ledger.AttemptRunning, "", commitID(0), ""))
 	})
-	ix = histSettle(t, e)
-	if got := histOut(t, ix, failed, relHanded); !slices.Equal(got, []string{attemptKey("hist-00000002", "build", 2)}) {
+	return src, cont, failed
+}
+
+// A continuation's first attempt is handed the receipt that failed its
+// source run's last attempt, as the engine hands it.
+func TestHandedAcrossAContinuation(t *testing.T) {
+	e := newTestEnv(t, nil)
+	src, cont, failed := continuedRun(t, e)
+	ix := histSettle(t, e)
+	if got := histOut(t, ix, failed, relHanded); !slices.Equal(got, []string{attemptKey(cont, "build", 2)}) {
 		t.Fatalf("handed across the continuation: %v", got)
 	}
-	if got := histOut(t, ix, hRunRef("hist-00000002"), relContinues); !slices.Equal(got, []string{hRunRef("hist-00000001")}) {
+	if got := histOut(t, ix, hRunRef(cont), relContinues); !slices.Equal(got, []string{hRunRef(src)}) {
 		t.Fatalf("continues: %v", got)
 	}
-	passedAt(t, ld, "hist-00000002", 2, 1)
-	ix = histSettle(t, e)
-	pass := hCheckRef("hist-00000002", "build", 2, "unit", 1)
+}
+
+// The source run indexed while its continuation still runs: the
+// continuation's pass, once its attempt passes, writes passed_after from
+// the source's failed receipt, and a restart's catch-up keeps it.
+func TestPassedAfterAContinuationIndexedLater(t *testing.T) {
+	e := newTestEnv(t, nil)
+	_, cont, failed := continuedRun(t, e)
+	histSettle(t, e)
+	passedAt(t, e.srv.ledger, cont, 2, 1)
+	ix := histSettle(t, e)
+	pass := hCheckRef(cont, "build", 2, "unit", 1)
 	if got := histOut(t, ix, failed, relPassedAfter); !slices.Equal(got, []string{pass}) {
 		t.Fatalf("passed_after from the source's receipt: %v", got)
 	}
 	e2 := restartServer(t, e)
-	ix = histSettle(t, e2)
-	if got := histOut(t, ix, failed, relPassedAfter); !slices.Equal(got, []string{pass}) {
+	if got := histOut(t, histSettle(t, e2), failed, relPassedAfter); !slices.Equal(got, []string{pass}) {
 		t.Fatalf("passed_after after a restart: %v", got)
 	}
 }
