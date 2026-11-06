@@ -970,3 +970,167 @@ func TestCreateFromATombstonedOriginSavesNothing(t *testing.T) {
 		t.Fatalf("%d crews saved", total)
 	}
 }
+
+// An update made from a stored copy (UpdateFrom) is saved only over that
+// copy: of two made from one read, the first is saved and the second is
+// ErrStale with the file as the first left it, so a person the second did
+// not know of stays; one made from the copy the first saved passes, and
+// an empty base replaces whatever is stored, as Update does.
+func TestAnUpdateFromAStaleCopyIsRefused(t *testing.T) {
+	s, st := newStore(t)
+	c := manifestCrew()
+	c.People = []Person{{Name: "nate", Responsibilities: []string{RespArchitecture}}}
+	created, err := s.Create(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := s.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := Revision(read)
+	if len(base) != 64 || base != Revision(created) {
+		t.Fatalf("the revision read %q, the create's %q", base, Revision(created))
+	}
+	// Page A adds ana, page B cy, both from the copy read.
+	a, b := read.clone(), read.clone()
+	a.People = append(a.People, Person{Name: "ana"})
+	b.People = append(b.People, Person{Name: "cy"})
+	savedA, err := s.UpdateFrom(created.ID, base, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(st.Dir(), "crews", created.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateFrom(created.ID, base, b); !errors.Is(err, ErrStale) {
+		t.Fatalf("the second update from one copy: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(st.Dir(), "crews", created.ID+".json"))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("the refused update wrote the file: %v\n%s", err, after)
+	}
+	got, err := s.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := personNames(got.People); !slices.Equal(names, []string{"nate", "ana"}) {
+		t.Fatalf("stored people %v", names)
+	}
+	// The copy the first save answered is the one stored: B, made again
+	// from it, passes.
+	if Revision(savedA) != Revision(got) {
+		t.Fatalf("the save answered %s, a read %s", Revision(savedA), Revision(got))
+	}
+	b = got.clone()
+	b.People = append(b.People, Person{Name: "cy"})
+	savedB, err := s.UpdateFrom(created.ID, Revision(got), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := personNames(savedB.People); !slices.Equal(names, []string{"nate", "ana", "cy"}) {
+		t.Fatalf("saved people %v", names)
+	}
+	// No base: replaced whatever is stored.
+	c = savedB.clone()
+	c.People = c.People[:1]
+	if _, err := s.UpdateFrom(created.ID, "", c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateFrom("missing", base, c); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an unknown crew: %v", err)
+	}
+}
+
+// Of many updates made at once from one copy, exactly one is saved: the
+// check and the write are one step under the store's lock.
+func TestUpdatesFromOneCopyAtOnceSaveOne(t *testing.T) {
+	s, _ := newStore(t)
+	created, err := s.Create(validCrew("", "Racing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := Revision(created)
+	const n = 16
+	var saved atomic.Int32
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c := created.clone()
+			c.People = []Person{{Name: fmt.Sprintf("p%d", i)}}
+			_, err := s.UpdateFrom(created.ID, base, c)
+			switch {
+			case err == nil:
+				saved.Add(1)
+			case !errors.Is(err, ErrStale):
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if saved.Load() != 1 {
+		t.Fatalf("%d of %d updates from one copy saved", saved.Load(), n)
+	}
+}
+
+// A copy's revision is the same whether the store answers it from a save
+// or a read of its file, for every example crew and a crew with every
+// field; another copy (one field changed, or saved at another time) has
+// another, and the same crew saved at the same instant (a clock that
+// repeats) the same one, which is that crew.
+func TestARevisionNamesOneStoredCopy(t *testing.T) {
+	s, _ := newStore(t)
+	at := time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return at }
+	full := manifestCrew()
+	full.People = []Person{{Name: "nate", Responsibilities: []string{RespArchitecture}, Note: "Owns <it> & more"}}
+	full.Tasks[0].Owner = "nate"
+	yes := true
+	full.Yolo = &yes
+	full.Goal = "bad \xff byte"
+	for _, c := range append(Examples("/srv/x", time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)), full) {
+		created, err := s.Create(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, err := s.Update(created.ID, created)
+		if err != nil {
+			t.Fatal(err)
+		}
+		read, err := s.Get(created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if Revision(updated) != Revision(read) {
+			t.Fatalf("%s: the update answered %s, a read %s", created.ID, Revision(updated), Revision(read))
+		}
+		if Revision(created) != Revision(read) {
+			t.Fatalf("%s: the same crew at the same instant, another revision", created.ID)
+		}
+		at = at.Add(time.Nanosecond)
+		later, err := s.Update(created.ID, read)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if Revision(later) == Revision(read) {
+			t.Fatalf("%s: saved again later, the same revision", created.ID)
+		}
+		read = later
+		other := read.clone()
+		other.Goal += "."
+		if Revision(other) == Revision(read) {
+			t.Fatalf("%s: another goal, the same revision", created.ID)
+		}
+	}
+}
+
+func personNames(ps []Person) []string {
+	var out []string
+	for _, p := range ps {
+		out = append(out, p.Name)
+	}
+	return out
+}
