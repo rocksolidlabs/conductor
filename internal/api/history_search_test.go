@@ -1173,6 +1173,51 @@ func TestAReadsSlotIsLetGoOnEveryWayOut(t *testing.T) {
 	}
 	wg.Wait()
 
+	// Every refusal is written under the deadline too: a query string past
+	// its bound, a parameter not named, no token, and history_busy (two
+	// reads of the client's held in the gate).
+	stalledRefusal := func(target, token, addr string, want int) {
+		t.Helper()
+		sw := newStalledWriter()
+		r := httptest.NewRequest("GET", target, nil)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		r.RemoteAddr = addr
+		before := time.Now()
+		done := make(chan struct{})
+		go func() { defer close(done); e.srv.Handler().ServeHTTP(sw, r) }()
+		<-sw.writing
+		if status := sw.status.Load(); status != int64(want) {
+			t.Errorf("%s: %d, want %d", target, status, want)
+		}
+		if d := sw.deadline.Load(); d == nil || d.Before(before) || d.After(time.Now().Add(historyWriteTimeout)) {
+			t.Errorf("%s: the write's deadline: %v", target, d)
+		}
+		close(sw.release)
+		<-done
+	}
+	stalledRefusal("/api/history?q="+strings.Repeat("x", maxHistoryQueryString), adminToken, "192.0.2.8:4000", http.StatusBadRequest)
+	stalledRefusal("/api/history?unexpected=1", adminToken, "192.0.2.8:4000", http.StatusBadRequest)
+	stalledRefusal("/api/history?q=x", "", "192.0.2.8:4000", http.StatusUnauthorized)
+	gate, entered := make(chan struct{}), make(chan struct{}, maxHistoryReadsPerClient)
+	e.srv.historyHold = func(context.Context, *http.Request) {
+		entered <- struct{}{}
+		<-gate
+	}
+	var busy sync.WaitGroup
+	for range maxHistoryReadsPerClient {
+		r := httptest.NewRequest("GET", "/api/history?q=x", nil)
+		r.Header.Set("Authorization", "Bearer "+adminToken)
+		r.RemoteAddr = "192.0.2.9:4000"
+		busy.Go(func() { e.srv.Handler().ServeHTTP(httptest.NewRecorder(), r) })
+		<-entered
+	}
+	stalledRefusal("/api/history?q=x", adminToken, "192.0.2.9:4000", http.StatusTooManyRequests)
+	close(gate)
+	busy.Wait()
+	e.srv.historyHold = nil
+
 	// A client that leaves while its read is held.
 	held := make(chan struct{}, 1)
 	e.srv.historyHold = func(ctx context.Context, _ *http.Request) {
@@ -1616,12 +1661,28 @@ func (l slowReader) Accept() (net.Conn, error) {
 // server's own buffers, asked for one after another on one connection by
 // a client that reads none, fill the socket, and the reply that no longer
 // fits fails at its deadline and the connection is closed, rather than
-// net/http's flush after the handler waiting on it for ever.
+// net/http's flush after the handler waiting on it for ever. A read's
+// reply, a refusal before any read (a parameter not named, no token) and
+// a read's own error alike.
 func TestAClientThatNeverReadsHoldsNoConnection(t *testing.T) {
 	e := newTestEnv(t, nil)
 	histSettle(t, e)
 	historyWriteLimit = 200 * time.Millisecond
 	t.Cleanup(func() { historyWriteLimit = historyWriteTimeout })
+	for _, tc := range []struct{ name, target, token string }{
+		{"a read", "/api/history?q=x", adminToken},
+		{"a parameter not named", "/api/history?unexpected=1", adminToken},
+		{"no token", "/api/history?q=x", ""},
+		{"an entry gone", "/api/history/entry?key=session:00000000000000ff", adminToken},
+	} {
+		t.Run(tc.name, func(t *testing.T) { neverReads(t, e, tc.target, tc.token) })
+	}
+}
+
+// neverReads asks e for target on one connection, over and over, reading
+// nothing, and fails t unless the server closes the connection.
+func neverReads(t *testing.T, e *testEnv, target, token string) {
+	t.Helper()
 	closed := make(chan struct{})
 	var once sync.Once
 	ts := httptest.NewUnstartedServer(e.srv.Handler())
@@ -1645,7 +1706,11 @@ func TestAClientThatNeverReadsHoldsNoConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	req := "GET /api/history?q=x HTTP/1.1\r\nHost: " + ts.Listener.Addr().String() + "\r\nAuthorization: Bearer " + adminToken + "\r\n\r\n"
+	req := "GET " + target + " HTTP/1.1\r\nHost: " + ts.Listener.Addr().String() + "\r\n"
+	if token != "" {
+		req += "Authorization: Bearer " + token + "\r\n"
+	}
+	req += "\r\n"
 	go func() {
 		for range 4000 {
 			if _, err := io.WriteString(conn, req); err != nil {

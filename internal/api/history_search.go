@@ -102,9 +102,9 @@ func (g *historyGate) inFlight() int {
 // historyReq is one read of the index for a request: its query string,
 // the index, the read's context (its deadline) and its slot in the gate.
 // The slot is let go on every way out of the handler (release, deferred)
-// and before the reply is written (reply), so a client that stops reading
+// and before the reply is made (reply), so a client that stops reading
 // holds none; the write itself, to its last byte on the connection, has
-// its own deadline.
+// its own deadline (historyRoute).
 type historyReq struct {
 	s      *Server
 	w      http.ResponseWriter
@@ -126,23 +126,63 @@ func (h *historyReq) release() {
 }
 
 // reply answers status and v: v encoded first, the slot let go, then
-// written and flushed to the connection within historyWriteTimeout. A
-// Write may only fill the server's buffers, which net/http would flush
-// after the handler returns, with no deadline then: so the reply, its
-// length said, is flushed here, under the deadline, and only then is the
-// deadline cleared (the connection's next request has none of its own).
-// A client that stops reading fails the flush at the deadline, and its
-// connection is closed.
+// written (historyRoute sends it).
 func (h *historyReq) reply(status int, v any) {
 	var b bytes.Buffer
 	_ = json.NewEncoder(&b).Encode(v)
 	h.release()
-	rc := http.NewResponseController(h.w)
-	_ = rc.SetWriteDeadline(time.Now().Add(historyWriteLimit))
 	h.w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	h.w.Header().Set("Content-Length", strconv.Itoa(b.Len()))
 	h.w.WriteHeader(status)
-	_, err := h.w.Write(b.Bytes())
+	_, _ = h.w.Write(b.Bytes())
+}
+
+// historyRoute is the one way out of the history's read routes, every
+// reply passing through it: a read's, and every refusal and error (the
+// admin check's, a query string refused, history_busy, a read's own). The
+// handler writes into memory (a reply is at most historyReplyLimit), and
+// nothing reaches the connection before the reply is finished: then the
+// write deadline is set, the reply is written, its length said, and
+// flushed under it, so net/http has nothing left to write after the
+// handler, and only then is the deadline cleared (the connection's next
+// request has none of its own). A client that stops reading fails the
+// write or the flush at the deadline, and its connection is closed.
+func historyRoute(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		b := &heldReply{header: w.Header()}
+		next(b, r)
+		b.send(w)
+	}
+}
+
+// heldReply is a reply held in memory until its handler returns.
+type heldReply struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (b *heldReply) Header() http.Header { return b.header }
+
+func (b *heldReply) WriteHeader(code int) {
+	if b.status == 0 {
+		b.status = code
+	}
+}
+
+func (b *heldReply) Write(p []byte) (int, error) {
+	b.WriteHeader(http.StatusOK)
+	return b.body.Write(p)
+}
+
+// send writes the reply to w under the write deadline, set before its
+// first byte and cleared once it is flushed.
+func (b *heldReply) send(w http.ResponseWriter) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(historyWriteLimit))
+	b.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Length", strconv.Itoa(b.body.Len()))
+	w.WriteHeader(b.status)
+	_, err := w.Write(b.body.Bytes())
 	if err == nil {
 		err = rc.Flush()
 	}

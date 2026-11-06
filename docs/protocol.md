@@ -4095,8 +4095,8 @@ each once, the whole at most 12 KiB: `400 invalid_request` otherwise),
 never log it (the request line names the route), and answer `429
 history_busy` past two reads of the index in flight from one client or
 four in all. A read has 15 s (`503 history_timeout` past it); its slot is
-let go before its reply is written, which has 15 s of its own to reach
-the connection (`Content-Length` set, the reply flushed within it; a
+let go before its reply is written, and every reply, refusals and
+errors included, has 15 s of its own to reach the connection (`Content-Length` set, the reply flushed within it; a
 client that reads nothing past it has its connection closed), and a read
 whose client left is answered nothing and logged as no failure. A
 forgotten session record is in nothing a reply says (its rows, `total`,
