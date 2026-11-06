@@ -143,16 +143,6 @@ func expectTheEnd(t *testing.T, end theEnd, lines int) {
 	}
 }
 
-// printedLine reports whether out, a terminal's bytes, holds line as a
-// line of its own as the program printed it: with the carriage returns
-// taken out. The terminal's newline translation is the kernel's, and
-// macOS's writes a newline's carriage return again when its output queue
-// fills between the two, so a reader slower than the writer gets
-// "30000\r\r\n" for the "30000\n" that seq printed.
-func printedLine(out []byte, line string) bool {
-	return bytes.Contains(bytes.ReplaceAll(out, []byte("\r"), nil), []byte("\n"+line+"\n"))
-}
-
 // The last-output check reads the numbered line past the carriage return
 // macOS's terminal doubles for a slow reader: fed the tail a viewer got on
 // the Mac (#281), the exact bytes the check once looked for are not there

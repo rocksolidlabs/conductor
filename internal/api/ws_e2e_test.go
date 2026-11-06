@@ -103,6 +103,41 @@ func (w *wsClient) expectOutput(needle string) {
 	}
 }
 
+// printed is a terminal's bytes as the program printed them: with the
+// carriage returns taken out. The terminal's newline translation is the
+// kernel's, and macOS's writes a newline's carriage return again when its
+// output queue fills between the two, so a reader slower than the writer
+// gets "30000\r\r\n" for the "30000\n" that seq printed (#281). A test of
+// what a program in a real terminal printed compares through it; a test
+// of the bytes themselves, or of bytes a fake wrote, keeps them exact.
+func printed(out []byte) []byte {
+	return bytes.ReplaceAll(out, []byte("\r"), nil)
+}
+
+// printedLine reports whether out, a terminal's bytes, holds line as a
+// line of its own as the program printed it (see printed).
+func printedLine(out []byte, line string) bool {
+	return bytes.Contains(printed(out), []byte("\n"+line+"\n"))
+}
+
+// printedUntil reads output until what the program printed holds needle,
+// its line ends written "\n" (see printed), and returns the output as it
+// came.
+func (w *wsClient) printedUntil(needle string) string {
+	w.t.Helper()
+	var acc []byte
+	for !bytes.Contains(printed(acc), []byte(needle)) {
+		f, err := w.read()
+		if err != nil {
+			w.t.Fatalf("waiting for the printed output %q: %v (have %q)", needle, err, acc)
+		}
+		if f.Type == proto.TypeOutput || f.Type == proto.TypeScrollback {
+			acc = append(acc, f.Payload...)
+		}
+	}
+	return string(acc)
+}
+
 func (w *wsClient) expectClose(code websocket.StatusCode) {
 	w.t.Helper()
 	for {
@@ -1340,7 +1375,7 @@ func TestTwoAnswersToOneQuestionOverTheWire(t *testing.T) {
 	// What cat read: one 1 of the two answers, then the 2, the 1 of the
 	// reply, then the line.
 	a.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "end"}))
-	if out := watch.outputUntil("1end\r\n121end"); strings.Contains(out, "11") {
+	if out := watch.printedUntil("1end\n121end"); strings.Contains(out, "11") {
 		t.Fatalf("the program read the choice twice: %q", out)
 	}
 }

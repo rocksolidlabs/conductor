@@ -304,8 +304,9 @@ add its rule here.
   Linux, none for a reader that keeps up), and a check for the exact
   `\n30000\r\n` failed whenever one landed on the line it looked for
   (`expectTheEnd`, #281). Compare what the program printed with the
-  carriage returns taken out (`printedLine` in `internal/api`, `lines` in
-  `ext/local`), and keep exact bytes for tests of the bytes themselves.
+  carriage returns taken out (`printed` and `printedUntil` in
+  `internal/api`, `lines` in `ext/local`), and keep exact bytes for tests
+  of the bytes themselves.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
