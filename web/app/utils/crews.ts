@@ -895,6 +895,15 @@ export interface DraftCrew extends Omit<CrewInput, 'tasks' | 'manifest' | 'peopl
    * as it is stored and a manifest's rules hold only its save (taskSaveProblems).
    */
   liftedSetup?: CrewCheck[]
+  /**
+   * The crew as read when the draft was made from it (toDraft of a crew read whole), never sent: its revision is the copy a save is made from,
+   * and a save the server refused because another came between is put on top of a read made again by what it changed (rebaseDraft).
+   */
+  base?: CrewInfo
+  /** Set when a save of the draft was refused because the crew was saved elsewhere since its base was read (refusedAsStale); nothing was saved. */
+  changedElsewhere?: boolean
+  /** What the read made again after such a refusal found changed elsewhere, in words (rebaseDraft), until the draft is saved or discarded. */
+  elsewhere?: string[]
 }
 
 let memberKeys = 0
@@ -913,8 +922,11 @@ export function keepParked(next: DraftCrew, prev: DraftCrew | undefined): DraftC
   return { ...next, manifest: { ...next.manifest, parked } }
 }
 
-/** A saved crew, or the new one, as the editor holds it: its members and tasks keyed, a legacy setup lifted into its project manifest (liftSetup). */
-export function toDraft(c: CrewInput & { id?: string }): DraftCrew {
+/**
+ * A saved crew, or the new one, as the editor holds it: its members and tasks keyed, a legacy setup lifted into its project manifest (liftSetup).
+ * A crew read whole (with the revision the server named it by) is the draft's base.
+ */
+export function toDraft(c: CrewInput & { id?: string; revision?: string }): DraftCrew {
   const lifted = liftSetup(c)
   const input = toCrewInput(lifted)
   const members = c.members.map(draftMember)
@@ -922,7 +934,119 @@ export function toDraft(c: CrewInput & { id?: string }): DraftCrew {
   const out: DraftCrew = { ...input, id: c.id, members, people, tasks: input.tasks ? draftTasks(input.tasks, members, people) : undefined }
   // liftSetup hands back the crew itself when it lifts nothing.
   if (lifted !== c) out.liftedSetup = (c.setup ?? []).map(toCrewCheck)
+  if (c.id && c.revision) out.base = c as CrewInfo
   return out
+}
+
+/** The draft whose save the server refused with 409 `stale_revision`: every edit as it was, marked so the page says so (DraftCrew.changedElsewhere). */
+export function refusedAsStale(d: DraftCrew): DraftCrew {
+  return { ...d, changedElsewhere: true }
+}
+
+/** Whether two values are the same as JSON (the server's form of a crew's fields, built in one key order). */
+function same(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+/**
+ * The entries of a list keyed by `key` after a three-way merge: an entry the draft left as its base had it takes the fresh read's version (or
+ * its removal), an entry the draft added, changed or removed keeps the draft's, so the draft's edits go on top; entries the fresh read added
+ * come after the draft's, in its order.
+ */
+function mergeKeyed<T>(mine: readonly T[] | undefined, base: readonly T[] | undefined, fresh: readonly T[] | undefined, key: (x: T) => string): T[] {
+  const b = new Map((base ?? []).map((x) => [key(x), x]))
+  const f = new Map((fresh ?? []).map((x) => [key(x), x]))
+  const m = new Map((mine ?? []).map((x) => [key(x), x]))
+  const out: T[] = []
+  for (const x of mine ?? []) {
+    const k = key(x)
+    if (!same(x, b.get(k))) out.push(x)
+    else if (f.has(k)) out.push(f.get(k)!)
+  }
+  for (const x of fresh ?? []) if (!m.has(key(x)) && !b.has(key(x))) out.push(x)
+  return out
+}
+
+/** What changed between two reads of a crew, in words: the editor's sections, and the people added, removed or changed by name. */
+export function changedBetween(before: CrewInput, after: CrewInput): string[] {
+  const a = toCrewInput(liftSetup(before))
+  const b = toCrewInput(liftSetup(after))
+  const out: string[] = []
+  if (a.name !== b.name) out.push('name')
+  if (a.goal !== b.goal) out.push('goal')
+  if (a.cwd !== b.cwd) out.push('working directory')
+  if (a.where !== b.where || a.isolation !== b.isolation || a.openAfterLaunch !== b.openAfterLaunch || a.viewLinkTtlSeconds !== b.viewLinkTtlSeconds || a.yolo !== b.yolo) out.push('each run')
+  if (!same(a.members, b.members)) out.push('members')
+  const was = new Map((a.people ?? []).map((p) => [p.name, p]))
+  const now = new Map((b.people ?? []).map((p) => [p.name, p]))
+  for (const p of b.people ?? []) if (!was.has(p.name)) out.push(`${p.name} added`)
+  for (const p of a.people ?? []) if (!now.has(p.name)) out.push(`${p.name} removed`)
+  for (const p of b.people ?? []) if (was.has(p.name) && !same(was.get(p.name), p)) out.push(`${p.name} changed`)
+  if (!same(a.tasks, b.tasks)) out.push('tasks')
+  if (!same(a.manifest, b.manifest) || !same(a.setup, b.setup)) out.push('project manifest')
+  return out
+}
+
+/**
+ * A draft whose save was refused because the crew was saved elsewhere (refusedAsStale), put on top of `fresh`, the crew read again: a field,
+ * or a member, person or task (by name, name and id), that the draft left as its base had it takes the fresh read's; one the draft changed,
+ * added or removed keeps the draft's. Nothing the person typed is lost, text still being typed into a step included, and nothing is saved:
+ * the draft's base is the fresh read, so the next save is made from it. `elsewhere` says what the fresh read changed (changedBetween).
+ */
+export function rebaseDraft(mine: DraftCrew, fresh: CrewInfo): DraftCrew {
+  const base = mine.base ?? fresh
+  const m = toCrewInput(mine)
+  const b = toCrewInput(liftSetup(base))
+  const f = toCrewInput(liftSetup(fresh))
+  const pick = <K extends keyof CrewInput>(k: K): CrewInput[K] => (same(m[k], b[k]) ? f[k] : m[k])
+  const merged: CrewInput & { id: string; revision?: string } = {
+    id: fresh.id,
+    revision: fresh.revision,
+    name: pick('name'),
+    goal: pick('goal'),
+    cwd: pick('cwd'),
+    where: pick('where'),
+    isolation: pick('isolation'),
+    openAfterLaunch: pick('openAfterLaunch'),
+    viewLinkTtlSeconds: pick('viewLinkTtlSeconds'),
+    yolo: pick('yolo'),
+    members: mergeKeyed(m.members, b.members, f.members, (x) => x.name),
+  }
+  const people = mergeKeyed(m.people, b.people, f.people, (x) => x.name)
+  if (people.length) merged.people = people
+  if (m.tasks || b.tasks || f.tasks) {
+    const tasks = mergeKeyed(m.tasks, b.tasks, f.tasks, (x) => x.id)
+    if (tasks.length) merged.tasks = tasks
+  }
+  const mineManifest = !same(m.manifest, b.manifest) || !same(m.setup, b.setup)
+  const source = mineManifest ? m : f
+  if (source.manifest) merged.manifest = source.manifest
+  const out = toDraft(merged)
+  out.base = fresh
+  // What only the editor holds goes with what came from the draft: the manifest as typed (rows still being typed, lists set aside), a lifted
+  // setup's mark, a member's extra arguments as typed, a task's checks as typed.
+  if (mineManifest) {
+    out.manifest = mine.manifest
+    out.liftedSetup = mine.liftedSetup
+  } else {
+    const freshDraft = toDraft(fresh)
+    out.manifest = freshDraft.manifest
+    out.liftedSetup = freshDraft.liftedSetup
+  }
+  out.members = out.members.map((x) => {
+    const was = mine.members.find((y) => y.name === x.name)
+    return was && same(toCrewMember(was), toCrewMember(x)) ? { ...x, argsText: was.argsText } : x
+  })
+  const mineTasks = plainTasks(mine.tasks ?? [])
+  const outTasks = plainTasks(out.tasks ?? [])
+  out.tasks = out.tasks?.map((t, j) => {
+    const i = mineTasks.findIndex((y) => y.id === t.id)
+    const was = i < 0 ? undefined : mine.tasks![i]
+    return was && same(toCrewTask(mineTasks[i]!), toCrewTask(outTasks[j]!)) ? { ...t, checks: was.checks } : t
+  })
+  const rebased = keepParked(out, mine)
+  rebased.elsewhere = changedBetween(base, fresh)
+  return rebased
 }
 
 /** The extra arguments typed for a member, split as the Launch dialog splits them; undefined when there are none. */
