@@ -290,6 +290,36 @@ func (t *Tx) Continued(from string) error {
 	return nil
 }
 
+// ErrPeopleListed says RestorePeople found the run's crew listing people
+// already: the transition is undone, so a crew as launched with people is
+// never written over.
+var ErrPeopleListed = errors.New("ledger: the run's crew lists people already")
+
+// RestorePeople writes crew, the run's crew as launched with the people
+// and the tasks' owners an older build left out of it (docs/plans/
+// decisions.md, HM1, Migration and downgrade), into the run's row: one
+// UPDATE, made only while the crew the row holds lists no people, so it
+// writes once (ErrPeopleListed otherwise, which undoes the transition).
+// ErrNoRun for a run with no row.
+func (t *Tx) RestorePeople(crew string) error {
+	if len(crew) > MaxCrew {
+		return fmt.Errorf("%w: the crew is %d bytes", ErrTooLarge, len(crew))
+	}
+	if _, ok, err := t.Run(); err != nil {
+		return err
+	} else if !ok {
+		return ErrNoRun
+	}
+	res, err := t.tx.ExecContext(t.ctx, `UPDATE runs SET crew = ? WHERE id = ? AND COALESCE(json_array_length(crew, '$.people'), 0) = 0`, crew, t.runID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrPeopleListed
+	}
+	return nil
+}
+
 // PutTask puts a task's row, new or changed.
 func (t *Tx) PutTask(r TaskRow) error {
 	if len(r.Repair) > MaxPayload {
