@@ -85,6 +85,11 @@ func badQuery(format string, args ...any) error {
 type Query struct {
 	Limit int
 	After string
+	// ExceptCrews leaves out the entries of these crews: the API's default
+	// search leaves Brakeman's turns out unless the line asks for them
+	// (docs/plans/history.md, "A Brakeman brief"). Part of the query's
+	// digest, so a cursor of one is refused by the other.
+	ExceptCrews []string
 
 	terms   []string // FTS5 strings, each a condition of its own
 	none    bool     // words were typed and none is kept: nothing matches
@@ -118,6 +123,19 @@ func (w *when) time(now time.Time) time.Time {
 // string, the last word's a prefix: what TestHistoryAndDispatchReadWordsAlike
 // compares with Dispatch's reading of the same line.
 func (q Query) Terms() []string { return slices.Clone(q.terms) }
+
+// Filter is the values the line gave the filter name (each alternative,
+// as given), and whether it gave it at all.
+func (q Query) Filter(name string) ([]string, bool) {
+	var out []string
+	found := false
+	for _, f := range q.filters {
+		if f.Name == name {
+			out, found = append(out, f.Values...), true
+		}
+	}
+	return out, found
+}
 
 // The filters a line takes, by name; any other name:value is a word.
 var filterNames = []string{"class", "kind", "outcome", "project", "repo", "host", "agent", "crew", "run", "ticket", "session", "since", "until"}
@@ -371,7 +389,8 @@ func (q Query) digest() string {
 		F []filter `json:"f"`
 		S *when    `json:"s"`
 		U *when    `json:"u"`
-	}{q.terms, q.none, q.filters, q.since, q.until})
+		X []string `json:"x,omitempty"`
+	}{q.terms, q.none, q.filters, q.since, q.until, q.ExceptCrews})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:16])
 }
@@ -410,6 +429,9 @@ func (q Query) conds(now time.Time) (conds []string, args []any) {
 			r := in("e.ref", refs)
 			conds = append(conds, "("+a+" OR "+r+")")
 		}
+	}
+	if len(q.ExceptCrews) > 0 {
+		conds = append(conds, "NOT "+in("e.crew", q.ExceptCrews))
 	}
 	if q.since != nil {
 		conds = append(conds, "e.at >= ?")
