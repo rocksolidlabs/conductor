@@ -123,7 +123,9 @@ before it is approved, this plan takes the change.
 | `proto.HostSession`'s provenance fields and `session_info` | HS1, `docs/plans/history.md` (PR-12) | adds nothing to `HostSession`; adds `machine` and `platform` to `proto.HostInfo` and keeps the `version` the server drops today (PR-1). Both touch `internal/proto`, `internal/hostagent` and `internal/signal`: whichever merges second rebases on the other, never beside it |
 | The decision record, its routes and states | DR1, `docs/plans/decisions.md` | counts a run's open decisions through DR1's reads and links to them; adds no field (PR-4) |
 | Needs your decision (`/decisions`) and its items | MB0, `docs/plans/decision-inbox.md` | links each waiting count to MB0's page; answers nothing on its own page |
-| The sync seam (`ext.ContinuityStore`, `ext.Doc`, the adapter's allowlist) | C6, `docs/plans/ext.md` | adds one document to the allowlist, the host summary (PR-5) |
+| The sync seam (`ext.ContinuityStore`, `ext.Doc`, the adapter's allowlist) | C6, `docs/plans/ext.md` | adds one document to the allowlist, the host summary, as a computed source (PR-5) |
+| The adapter's computed sources (a store name, keys marked pending, a build at delivery) | made by whichever of this plan's PR-5 and the team-history plan's PR-5 (TS1, `docs/plans/team-history.md`, under review in #686) merges first, used by the other | registers one source, `hosts`, with one key, `summary`; TS1 registers `history` with its keyed cards (PR-5) |
+| When other machines are shown, and the one line when they are not (`remoteShown` in `internal/api`, `utils/remoteShown.ts`) | made by whichever of this plan's PR-5 and TS1's PR-6 merges first, read by the other (TS1's History and Skills) | reads it for Other machines (PR-5) |
 | The remote records, their doors and files, the sync status | CS1 (its OS-4, which takes the kinds `device` and `hosts` and the status's own device) | reads them; defines `ext.HostSummary`, the `hosts` record's body, and makes that kind's `Valid` check it (PR-5) |
 | A workspace's devices: names, kinds, platforms, versions, revocation | ID1, and CS1's service for each device's last report | reads them only from the `device` records a registered sync provider hands over (Owner decisions, 11) |
 | `GET /api/switchyard/status` and the switchyard's landing page | the switchyard (`internal/api/switchyard_page.go`) | unchanged: a switchyard is never sent a machine key (PR-1), so its grouping by `HostName` stays as it is |
@@ -519,14 +521,17 @@ once per request; nothing is persisted.
     | Held here | `Lock()`: owned, writable | `this` | empty | **Held by this server** |
     | Held here, read-only | `Lock()`: owned, read-only | `this_read_only` | `Lock().Why`, the reason the ledger gives for its own database, set only while it owns the lock | **Held by this server, read-only** and the reason |
     | Held by another server | not owned; `Probe` finds the lock held and reads the holder's line in that same try | `other` | `pid 4242 since 2026-11-05T13:00:00Z` when the line is in that form (`^pid [0-9]{1,10} since ` and an RFC 3339 time), otherwise "its line is not readable"; at most 200 bytes | **Held by another server on this data directory**, "pid 4242, since 13:00, as that server wrote" |
-    | Held by no server | not owned; `Probe` finds the lock free, or the filesystem without locks | `none` | from `Lock()`'s structured reason alone: "this server stopped waiting for the lock at 13:02:10" (`GaveUpAt`) or "the data directory's filesystem has no locks" (`NoLocks`) | **Held by no server** and the why |
+    | Held by no server | not owned; `Probe` finds the lock free, or the filesystem without locks | `none` | from `Lock()`'s structured reason alone: "this server stopped waiting for the lock at 13:02:10" (`GaveUpAt`), "the data directory's filesystem has no locks" (`NoLocks`), or, while its wait still runs, "this server is taking the lock, waiting since 13:02:00" (`WaitingSince`) | **Held by no server** and the why |
     | Not known | not owned; `Probe` fails (the lock file cannot be opened or read) | `unknown` | "the lock file could not be read" and the error's class (permission, missing, other), never its text | **Not known who holds these runs** and the why |
 
-    `Ledger.Lock()` returns `{Owned, ReadOnly bool; Why string; GaveUpAt
-    time.Time; NoLocks bool}`, read under the ledger's lock: `Why` only
-    while `Owned`; `awaitLock`, where it gives up today, records
+    `Ledger.Lock()` returns `{Owned, ReadOnly bool; Why string;
+    WaitingSince, GaveUpAt time.Time; NoLocks bool}`, read under the
+    ledger's lock: `Why` only while `Owned`; `WaitingSince` while
+    `awaitLock` still tries; `awaitLock`, where it gives up today, records
     `GaveUpAt` or `NoLocks` beside the `why` it keeps for its existing
-    readers, and a lock taken later clears both. `ledger.Probe` returns
+    readers, and a lock taken later clears all three. While the ledger is
+    not `Owned`, exactly one of the three is set, so no `none` row is
+    drawn without its why. `ledger.Probe` returns
     `{State (held, free, no_locks), Line string}` and an error, `Line`
     read only in a try that found the lock held.
 
@@ -681,15 +686,19 @@ once per request; nothing is persisted.
     sessions by the predicate, not taken from it; the way MB0 drops the
     question item a record replaces
     (`TestADecisionRecordReplacesItsQuestion`).
-  - This server's `decisions` (the open decision records of the runs it
-    holds, by `current_run`) sit beside `sessions.waiting`, which leaves
-    out the mirrors by the same predicate. A hosted session's question
+  - This server's `decisions`, `{"open": 1, "waitingRef": "…"}`: the
+    open decision records of the runs it lists with a `waiting` count
+    (holder `this`), by `current_run`; `null` for every other holder, as
+    those runs' `waiting` is. It sits beside `sessions.waiting`, which
+    leaves out the mirrors by the same predicate. A hosted session's question
     stays a question (DR1: a managed run's attempts are server sessions,
     so no decision record is ever a host's).
 - **The reply carries each link's target**, `waitingRef`, made in the
   same pass as the count it belongs to, so the page derives no target
-  and needs no other read. Each count (this server's `sessions`, each
-  host row's `sessions`, each run) gains `waitingRef`: the ref of MB0's
+  and needs no other read. Every count the page draws as a link gains
+  `waitingRef`: this server's `sessions`, its `hosted` sessions' and its
+  `decisions`, each host row's `sessions`, and each run; a remote count
+  has none, as it has no link. It is the ref of MB0's
   item (`docs/plans/decision-inbox.md`, Item identity) when exactly one
   thing waits there, empty otherwise. A lone open decision gives
   `decision:<id>`, from the DR1 record the count read by `current_run`,
@@ -725,9 +734,21 @@ once per request; nothing is persisted.
   today delivers only what a store committed, read at delivery from
   where it was committed (`store.OpenDoc`, `ledger.Pointer`, Dispatch).
   The summary has no commit and no store, so the adapter gains a fourth
-  source kind, a computed document: a store name `syncHosts` (`hosts`)
-  beside `data`, `ledger` and `dispatch`, registered with a build
-  function (`a.computed(store, path, build func() ([]byte, error))`).
+  source kind, a **computed source**, the one mechanism TS1's history
+  cards use too (`docs/plans/team-history.md`, its PR-5): whichever of
+  the two PRs merges first makes it, and the other registers its source
+  and adds nothing to the mechanism. A source is a store name beside
+  `data`, `ledger` and `dispatch`, registered once with `a.computed(src)`:
+  its keys (`paths func() []string`, what a replay lists), its build at
+  delivery (`build func(path string) (body []byte, deleted bool, err
+  error)`), and its revision rule. A change marks one key pending
+  (`a.computedChanged(store, path)`), which takes the adapter's own lock
+  alone and never builds or waits; the drain builds each pending key as
+  it then is, and a `deleted` build is sent as a delete. What is the
+  host summary's own, and not the mechanism's, is below: its one key, its
+  marks, its 30 s coalescing and hash gate, its 5-minute check and its
+  `Rev` sequence; TS1's cards bring their own marks and `Rev`. This
+  plan's source is store `hosts` (`syncHosts`), one key, `summary`.
   - **Marked** (I9): by every change of what the summary is built from,
     at the one place all of them pass, the server's event hub
     (`internal/api/events.go`): its `session` sends (`publishIf` and
@@ -745,9 +766,9 @@ once per request; nothing is persisted.
     change no event tells (a `hostsSeen` entry passing its 24 hours,
     another process taking or letting go the ledger's lock) is caught by
     a check every 5 minutes on the adapter's clock seam, which builds and
-    marks only when the hash differs. `computedChanged` only arms a
-    coalescing timer of 30 s (the adapter's clock seam), takes the
-    adapter's own lock alone and never builds or waits. When it fires,
+    marks only when the hash differs. For this source `computedChanged`
+    only arms a coalescing timer of 30 s (the adapter's clock seam), takes
+    the adapter's own lock alone and never builds or waits. When it fires,
     the adapter's goroutine builds the summary (outside the adapter's
     lock; the build takes the hub's and the engine's own locks as `GET
     /api/hosts` does, one at a time), hashes its bytes and marks the
@@ -769,7 +790,12 @@ once per request; nothing is persisted.
     summary after a newer one reached it, nor drops a newer one as
     stale. A new epoch starts the sequence again at 1 with its replay,
     as `Rev` orders the docs of one epoch only. `ext.Doc.Rev`'s comment
-    gains `hosts`: the summary's sequence in this epoch.
+    gains `hosts`: the summary's sequence in this epoch. The sync service
+    orders a document by the provider's own transport counter, raised at
+    every change the provider sends, and keeps `Rev` for display only
+    (the sync plan): so this rule is what the seam promises any store
+    that orders by `Rev`, as the adapter's own model does, and the
+    service's order never rests on it.
   - **Replayed**: every replay lists `hosts/summary` after the run
     pointers and before Dispatch's `log` doc, and a new epoch forgets the
     last delivered hash and starts the revisions again, so each epoch
@@ -777,8 +803,10 @@ once per request; nothing is persisted.
   - **The allowlist's rule**, restated in the adapter's comment and in
     `docs/protocol.md`'s sync section: what reaches the sync store is
     `syncDataDoc`'s data documents, a run's pointer, Dispatch's
-    references, and one computed document, the host summary, built from
-    the reduced model only; nothing else.
+    references, and the documents of the registered computed sources,
+    each built from its own reduced model; this plan's is the host
+    summary alone, and TS1 adds its cards with its own row. Nothing
+    else.
   - **Not on a switchyard.** A switchyard's hosts are other people's
     servers, so on a switchyard the computed source is never registered
     and no summary is sent, whatever provider is registered.
@@ -793,13 +821,23 @@ once per request; nothing is persisted.
   `hosts` body, `ext.HostSummary`, and makes the `hosts` kind's `Valid`
   call `HostSummary.Valid`, unless OS-4 has already taken the type from
   this plan's text.
+- **When other machines are shown: one function.** `remoteShown()`
+  (`internal/api/remote_shown.go`, a method of the server) holds the
+  rule every page that shows other machines reads, this one and TS1's
+  History and Skills (`docs/plans/team-history.md`, its PR-6), made by
+  whichever of the two PRs merges first and read by the other, never
+  written twice. It returns `{present, shown bool; state; since}`:
+  `present` when `sync` is in the capabilities with the state `ready`
+  (never while `starting`, `internal/api/capabilities.go`), the sync
+  status has been `current` at least once in this server's life (the
+  function keeps that fact, in memory) and is not `signed_out`; `shown`
+  when, besides, the status is `current`, or `behind` for less than 10
+  minutes; `state` and `since` the status's. It reads the capability and
+  the status once per call, from memory.
 - **The model.** `GET /api/hosts` gains `other`, present only when
-  `sync` is in the capabilities with the state `ready` (never while
-  `starting`, `internal/api/capabilities.go`) and the sync status has
-  been `current` at least once in this server's life and is not
-  `signed_out`. A provider never signed in, signed out, or still
-  starting gives no `other` field at all, so the reply and the page are
-  a plain build's:
+  `remoteShown()` says `present`. A provider never signed in, signed
+  out, or still starting gives no `other` field at all, so the reply
+  and the page are a plain build's:
 
   ```json
   "other": {"state": "current", "since": "…",
@@ -814,8 +852,9 @@ once per request; nothing is persisted.
   ```
 
   - `state` is the sync status's (`current`, `behind`, `unreachable`,
-    `lapsed`) and `since` its time; for anything but `current` (and
-    `behind` for less than 10 minutes, which a backlog of uploads is),
+    `lapsed`) and `since` its time, as `remoteShown()` gave them; when it
+    says not `shown` (anything but `current`, or `behind` past 10
+    minutes; a shorter backlog of uploads counts as current),
     `machines` is empty: the page shows the one line, and the remote
     files stay where the provider wrote them.
   - `machines` is one row per `device` record that is not this server
@@ -851,7 +890,15 @@ once per request; nothing is persisted.
   open decisions as a count with no link and no control, and the one
   line for a state that is not current. `utils/hosts.ts`'s
   `remoteSection` is the pure part, tested on its own (nothing for no
-  `other` field).
+  `other` field). It decides through `utils/remoteShown.ts`, the web
+  half of the one rule, made with `remoteShown()` by whichever of this
+  PR and TS1's PR-6 merges first and imported by TS1's History and
+  Skills: `remoteShown(view)` gives `none` (no `other` or `remote`
+  field), `line` or `shown`, and `remoteWhy(view)` the line's reason
+  ("the sync service has not answered since 14:02", "the subscription
+  has lapsed"), which each page puts after its own subject ("Other
+  machines are not shown: …"). No Nuxt import, so both pages' tests
+  read it.
 - `docs/protocol.md`: the route's `other`, the document's row in the
   sync section; `protocol.ts` the types. `docs/features.md`'s Hosts
   entry gains Other machines and its observation, Acceptance, part B.
@@ -1225,8 +1272,10 @@ delivery and no replay holds `machine-id`).
 **`internal/crew/ledger`** (PR-2): `TestLockView` (an owner writable;
 an owner whose database a newer schema wrote: owned and read-only with
 the reason; a ledger whose wait for the lock ended, through `LockWait`'s
-seam: not owned, `GaveUpAt` set and no `Why`; a lock taken later: both
-cleared; a filesystem without locks, through the seam: `NoLocks`),
+seam: not owned, `GaveUpAt` set and no `Why`; a ledger whose wait
+still runs, held at a gate in it: `WaitingSince` set; a lock taken
+later: all three cleared; a filesystem without locks, through the seam:
+`NoLocks`),
 `TestProbeStates` (held, with the holder's line read in that try; free,
 with no line; no locks through the seam; a lock file that cannot be
 opened: an error), `TestOpenRunsBounded` (open rows only:
@@ -1277,7 +1326,9 @@ words "another server holds"), `TestHostsLedgerStates` (I1: one data
 directory walked through every state of the lock's table, each reply
 built twice with a session's event between, the redraw the test causes:
 `other` with the holder's line; `none` with this server's reason and
-nothing of the former line; `unknown` through `Probe`'s seam returning
+nothing of the former line; `none` while this server's wait still runs,
+the holder gone and the wait held at a gate before its next try: the
+taking words, then `this` after the gate opens; `unknown` through `Probe`'s seam returning
 an error, with the class's words and not the error's text; a lock file
 whose line is not in its form: `other` with "its line is not
 readable"), `TestHostsRunsTakenLate` (the first ended within
@@ -1366,7 +1417,10 @@ starts, so no session of either is listed: B's `waiting` 1 and its
 `waitingRef` `decision:<id>`, from the record; a second decision opened
 on B: 2 and no `waitingRef`; a lone question on a host's session: its
 `question:` ref on the session's machine row, built in the same pass as
-its count), `TestHostsHostedQuestionStaysAQuestion`. vitest: the links'
+its count; the same on a session hosted from this machine, on `this`'s
+`hosted`; this server's `decisions` with B's lone decision: its
+`decision:` ref, and `null` under a holder that is not `this`),
+`TestHostsHostedQuestionStaysAQuestion`. vitest: the links'
 targets in `utils/hosts.test.ts`, from `waitingRef` alone (a set ref: its
 item; none and more than one: `/decisions`; 0: no link). Playwright: `hosts.spec.ts` gains a gate's
 decision on the example crew's run: the run's waiting count 1, its link
@@ -1397,7 +1451,13 @@ its removal each deliver a summary whose counts are the model's after
 the coalescing, through the fake clock, with no host or run activity),
 `TestSyncHostSummaryPeriodicCheck` (I9: a `hostsSeen` entry passing its
 24 hours through the table's clock: delivered at the next 5-minute
-check; an unchanged model: no delivery), `TestSyncNoHostSummaryOnASwitchyard`
+check; an unchanged model: no delivery), `TestSyncComputedSourceKeys`
+(the mechanism on its own, for the plan that uses it second: a test
+source of two keys, each marked, built at delivery and sent alone, one
+built `deleted` and sent as a delete, both listed in a replay after the
+pointers), `TestRemoteShown` (each capability state and sync status,
+`behind` either side of 10 minutes, never current yet, signed out:
+`present` and `shown` as the rule says), `TestSyncNoHostSummaryOnASwitchyard`
 (a switchyard with a fake sync provider: no `hosts` document, in a
 delivery or a replay), `TestHostSummaryLeavesOutTheLocal` (a session id,
 cwd, branch, run name, user, machine id and machine key never in the
@@ -1417,7 +1477,9 @@ never signed in, or signed out: the same reply as
 and pointers of this server's own device id dropped, and a pointer of a
 run of this ledger), `TestHostsOtherBounded` (within its 56 KiB, the
 counts exact), `TestHostsNoOtherWithoutSync` (no provider: no `other`
-field). vitest: `remoteSection` in `utils/hosts.test.ts` (nothing for no
+field). vitest: `utils/remoteShown.test.ts` (`none`, `line` and `shown` for
+each state, and `remoteWhy`'s words) and `remoteSection` in
+`utils/hosts.test.ts` (nothing for no
 `other` field; the state's line for each state; never "Connected" for a
 remote row; I2 for the second half: a remote run row and a remote
 decision render no link and no button). Playwright:
@@ -1544,10 +1606,13 @@ second half: `TestHostsDecisionMovesWithContinuation`,
 `TestHostsLoneGateLinksWithoutSession`.
 
 **PR-5**: `ext.HostSummary` and the `hosts` kind's `Valid` calling it
-(the kinds are CS1's OS-4); the adapter's computed source and its document, marked from the
-event hub's sends and the 5-minute check, its revisions; the `other`
-model; the page's section; `hosts-free.spec.ts`; the features entry
-completed. Tests above; I9: `TestSyncHostSummaryRevisions`,
+(the kinds are CS1's OS-4); the adapter's computed sources (made here
+unless TS1's PR-5 merged first, then only registered) and the summary's
+source, marked from the event hub's sends and the 5-minute check, its
+revisions; `remoteShown()` and `utils/remoteShown.ts` (made here unless
+TS1's PR-6 merged first, then only read); the `other` model; the page's
+section; `hosts-free.spec.ts`; the features entry completed. TS1's PR-5
+and PR-6 touch `internal/api` and `ext` too: never beside them. Tests above; I9: `TestSyncHostSummaryRevisions`,
 `TestSyncHostSummaryFollowsStandaloneSessions`,
 `TestSyncHostSummaryPeriodicCheck`. This is the
 last open-source PR, and it ends the item's open-source work.
