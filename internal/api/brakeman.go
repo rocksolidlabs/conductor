@@ -51,18 +51,24 @@ const (
 	brakemanStuck = 6
 	// brakemanStopWait bounds one stop of a turn's run.
 	brakemanStopWait = 15 * time.Second
-	// brakemanFirstRead is how long a turn's agent has, from the turn's
-	// start, to read its request (its first read, the request route with
-	// its own token) before the turn is ended as one whose agent did not
-	// start (notStarted), whatever its screen shows: a sign-in, an update
-	// dialog, a question Conductor does not know. A real agent reads
-	// within two minutes of its start (Claude Code in seconds; Codex,
-	// its MCP servers started first, about 90 s at #659's live check),
-	// so five minutes is past every start seen with room for a loaded
-	// machine, and a third of the default 15-minute turn: a turn held at
-	// a screen gives most of its minutes back. A turn shorter than it is
-	// judged so at its deadline.
-	brakemanFirstRead = 5 * time.Minute
+	// brakemanStartShare is the share of a turn's minutes its agent has,
+	// from the turn's launch's return, to make its first call to the
+	// server with its own token (any route: the guide, its MCP server's
+	// tool listing, a report, an observation, an act, its request's
+	// read; Local.AgentCalled) before the turn is ended as one whose
+	// agent did not start (notStarted), whatever its screen shows: a
+	// sign-in, an update dialog, a question Conductor does not know. A
+	// third: five minutes of the default 15-minute turn, twenty of a
+	// 60-minute one, so a turn given longer is given longer to start,
+	// and a turn held at a screen still gives two thirds of its minutes
+	// back. A turn whose agent has made any call is never ended by it.
+	brakemanStartShare = 3
+	// brakemanStartMin is the least time to start a turn of few minutes
+	// has: a real agent calls within two minutes of its start (Claude
+	// Code in seconds; Codex, its MCP servers started first, about 90 s
+	// at #659's live check). A turn shorter than it is judged so at its
+	// deadline.
+	brakemanStartMin = 2 * time.Minute
 	// brakemanScreenWords bounds the screen's lines a turn whose agent
 	// did not start carries in its words: its last lines not blank, at
 	// most this many bytes together.
@@ -244,22 +250,42 @@ type deskTurn struct {
 	// (createLocalSession's agent_changed otherwise).
 	agentSHA256 string
 	// started is when the turn's launch returned (its agent's process
-	// made), on the desk's clock: its agent reads its request by
-	// started+brakemanFirstRead, or the turn ends as one whose agent did
-	// not start (firstReadBy). Zero while it launches: the deadline covers
-	// starting, its run then the request's stray run.
+	// made), on the desk's clock: its agent calls the server by
+	// startBy(started), or the turn ends as one whose agent did not
+	// start. Zero while it launches: the deadline covers starting, its
+	// run then the request's stray run.
 	started time.Time
 }
 
-// firstReadBy is when a turn of req whose launch returned at started ends
-// as one whose agent did not start, unless it has read its request:
-// brakemanFirstRead after started, or its deadline when that comes first.
-func firstReadBy(req brakeman.Request, started time.Time) time.Time {
-	by := started.Add(brakemanFirstRead)
+// startBy is when a turn of req whose launch returned at started ends as
+// one whose agent did not start, unless its agent has called the server
+// (agentCalled): a third of the turn's minutes after started
+// (brakemanStartShare), at least brakemanStartMin, or its deadline when
+// that comes first.
+func startBy(req brakeman.Request, started time.Time) time.Time {
+	wait := max(time.Duration(req.Config.Budget.TurnMinutes)*time.Minute/brakemanStartShare, brakemanStartMin)
+	by := started.Add(wait)
 	if !req.Deadline.IsZero() && req.Deadline.Before(by) {
 		by = req.Deadline
 	}
 	return by
+}
+
+// agentCalled reports whether the agent of the turn t has called the
+// server with its own token, on any route: its request read (read), or
+// any other call its session's token was taken for (Local.AgentCalled,
+// noted where the token is checked, so no route is left out). The
+// caller holds d.mu.
+func (d *brakemanDesk) agentCalled(t *deskTurn) bool {
+	if d.read[t.id] {
+		return true
+	}
+	for _, l := range t.locals {
+		if l.AgentCalled() {
+			return true
+		}
+	}
+	return false
 }
 
 // openBrakemanDesk opens the desk over the data directory st: its store
@@ -660,18 +686,16 @@ func (d *brakemanDesk) tend(t *deskTurn) time.Duration {
 		d.s.log.Warn("Brakeman's turn could not be read", "request", t.id, "err", err)
 		return brakemanRetry
 	}
-	// An agent that has not read its request by its bound did not start
-	// (signed out, held at a screen): the turn ends, failed, with what its
-	// screen shows, before the deadline's time-out would read it as a turn
-	// that ran and charge all its minutes.
+	// An agent that has made no call to the server by its bound did not
+	// start (signed out, held at a screen): the turn ends, failed, with
+	// what its screen shows, before the deadline's time-out would read it
+	// as a turn that ran and charge all its minutes. One that has made any
+	// call runs to its deadline.
 	d.mu.Lock()
-	read := d.read[t.id]
+	called, started := d.agentCalled(t), t.started
 	d.mu.Unlock()
-	d.mu.Lock()
-	started := t.started
-	d.mu.Unlock()
-	if req.Open() && !read && !started.IsZero() && !now.Before(firstReadBy(req, started)) {
-		why := d.notStarted(t, firstReadBy(req, started).Sub(started))
+	if req.Open() && !called && !started.IsZero() && !now.Before(startBy(req, started)) {
+		why := d.notStarted(t, startBy(req, started).Sub(started))
 		req, err = d.update(t.id, func(r *brakeman.Request) error {
 			if !r.Open() {
 				return nil
@@ -713,8 +737,8 @@ func (d *brakemanDesk) tend(t *deskTurn) time.Duration {
 	defer d.mu.Unlock()
 	if req.Open() {
 		next := req.Deadline
-		if !d.read[t.id] && !t.started.IsZero() {
-			next = firstReadBy(req, t.started)
+		if !t.started.IsZero() && !d.agentCalled(t) {
+			next = startBy(req, t.started)
 		}
 		return untilPositive(next, now)
 	}
@@ -797,10 +821,11 @@ func (d *brakemanDesk) heldAtStartup(t *deskTurn, req brakeman.Request) string {
 	return ""
 }
 
-// notStarted is the words of the turn t whose agent did not read its
-// request within waited: what its screen shows (screenWords), or that no
-// session of it was started. No key is typed into the screen: the turn
-// ends and its run is stopped.
+// notStarted is the words of the turn t whose agent made no call to the
+// server within waited: what its screen shows (screenWords), or that no
+// session of it was started. The turn ends and its run is stopped; what
+// was typed into the screen before (the request's line, once the screen
+// was quiet, as for any agent) is all it was given.
 func (d *brakemanDesk) notStarted(t *deskTurn, waited time.Duration) string {
 	d.mu.Lock()
 	locals := liveLocals(t.locals)
@@ -814,7 +839,7 @@ func (d *brakemanDesk) notStarted(t *deskTurn, waited time.Duration) string {
 		}
 	}
 	mins := max(1, int(waited.Round(time.Minute)/time.Minute))
-	why := fmt.Sprintf("the agent did not read its request in %d minutes (signed out, or held at a screen Conductor does not know?); %s: sign it in or answer it in a session of that agent; Brakeman tries again by itself, or ask it now", mins, shown)
+	why := fmt.Sprintf("the agent did not start in %d minutes, no call to Conductor (signed out, or held at a screen Conductor does not know?); %s: sign it in or answer it in a session of that agent; Brakeman tries again by itself, or ask it now", mins, shown)
 	for len(why) > brakeman.MaxWhy {
 		_, n := utf8.DecodeLastRuneInString(why)
 		why = why[:len(why)-n]

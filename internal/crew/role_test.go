@@ -611,7 +611,7 @@ func TestAnAgentThatDidNotStartIsNotFiredIntoAgain(t *testing.T) {
 	f.failed("build", 1)
 	f.clock.add(2 * time.Minute)
 	f.state(RoleBriefing)
-	words := "the turn could not start: the agent did not read its request in 5 minutes"
+	words := "the turn could not start: the agent did not start in 5 minutes, no call to Conductor"
 	f.rec.close("br-1", RoleOutcome{Unavailable: words, Reason: ReasonStart})
 	r := f.state(RoleUnavailable)
 	if r.Why != words || r.Reason != ReasonStart || r.Tries != 1 || !r.RetryAt.Equal(f.clock.now().Add(RoleStartRetry)) || r.Open == nil {

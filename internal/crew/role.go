@@ -101,8 +101,8 @@ const (
 	// ReasonBudget is the day's turns or minutes spent.
 	ReasonBudget = "budget"
 	// ReasonStart is a turn whose agent did not start: its launch refused,
-	// its agent exited or never read its request (signed out, held at a
-	// screen). A turn of the agent that reads its request ends it
+	// its agent exited or made no call to the server (signed out, held at
+	// a screen). A turn of the agent that reads its request ends it
 	// (Started), a person's own included.
 	ReasonStart = "start"
 	// ReasonOff is its owner off, or not running it in the background, as
