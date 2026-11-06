@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -287,3 +288,67 @@ func TestFileAtReadsAFileOfACommit(t *testing.T) {
 		t.Fatalf("a commit not there: %v", err)
 	}
 }
+
+// FileAt's memory is bounded, not only its reply: a file far past the
+// bound, committed twice with one byte changed, is read at each commit
+// with its loose objects and again once packed, the older then stored as a
+// delta of the newer (git gc --aggressive), and no read allocates more
+// than fileAtAllocBound, whatever the file's size.
+func TestFileAtMemoryIsBounded(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	body := strings.Repeat("a line of a file far past the bound\n", (32<<20)/36)
+	write(t, dir, "big.txt", body)
+	older := commit(t, dir, time.Time{}, "big")
+	write(t, dir, "big.txt", "L"+body[1:])
+	newer := commit(t, dir, time.Time{}, "big again")
+	read := func(state, c string) {
+		t.Helper()
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		f, err := FileAt(ctx, dir, c, "big.txt", 1<<20)
+		runtime.ReadMemStats(&after)
+		if err != nil || len(f.Content) != 1<<20 || !f.Truncated || f.Binary || f.Size != int64(len(body)) {
+			t.Fatalf("%s, %s: %d bytes, %+v %v", state, c, len(f.Content), f.Truncated, err)
+		}
+		alloc := after.TotalAlloc - before.TotalAlloc
+		t.Logf("%s, %s: %d bytes allocated", state, c[:7], alloc)
+		if alloc > fileAtAllocBound {
+			t.Fatalf("%s, %s: %d bytes allocated for a read of a %d-byte file, past %d", state, c[:7], alloc, len(body), fileAtAllocBound)
+		}
+	}
+	read("loose", older)
+	read("loose", newer)
+	gitIn(t, dir, time.Time{}, "gc", "-q", "--aggressive", "--prune=now")
+	deltas := 0
+	for _, line := range strings.Split(gitIn(t, dir, time.Time{}, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype) %(deltabase)"), "\n") {
+		if f := strings.Fields(line); len(f) == 3 && f[1] == "blob" && strings.Trim(f[2], "0") != "" {
+			deltas++
+		}
+	}
+	if deltas == 0 {
+		t.Fatal("no blob is stored as a delta after the gc")
+	}
+	read("packed", older)
+	read("packed", newer)
+
+	// Past largeObject, read by the git binary: a file under the bound is
+	// whole, a NUL in the first 8,000 bytes is binary.
+	mid := body[:600<<10]
+	write(t, dir, "mid.txt", mid)
+	if err := os.WriteFile(filepath.Join(dir, "big.bin"), append([]byte("head\x00"), body...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := commit(t, dir, time.Time{}, "more")
+	if f, err := FileAt(ctx, dir, c, "mid.txt", 1<<20); err != nil || string(f.Content) != mid || f.Truncated || f.Binary || f.Size != int64(len(mid)) {
+		t.Fatalf("mid.txt: %d bytes, %v %v %v", len(f.Content), f.Truncated, f.Binary, err)
+	}
+	if f, err := FileAt(ctx, dir, c, "big.bin", 1<<20); err != nil || !f.Binary || f.Content != nil || f.Size != int64(len(body)+5) {
+		t.Fatalf("big.bin: %d bytes, %v %v %v", len(f.Content), f.Binary, f.Size, err)
+	}
+}
+
+// fileAtAllocBound is what one FileAt of a 1 MiB head may allocate: the
+// head and the buffers of the read (about 1.3 MiB measured).
+const fileAtAllocBound = 4 << 20

@@ -1,12 +1,15 @@
 // Package gitrepo reads a repository's history with go-git (design round
 // 12, F5): the commits on the checked-out branch since a time or a base,
 // and one commit's files with their added and removed lines against its
-// first parent. No git binary is needed; a crew's linked worktree opens
-// through its common directory. The working tree's status and a file at a
-// revision stay with internal/gitcli, which the git binary does faster.
+// first parent. No git binary is needed for them; a crew's linked worktree
+// opens through its common directory. FileAt reads the head of a large
+// file through the git binary (head says why). The working tree's status
+// and a file at a revision stay with internal/gitcli, which the git binary
+// does faster.
 package gitrepo
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,11 +17,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-git/go-billy/v5"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/format/diff"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
+	"github.com/go-git/go-git/v5/storage/filesystem"
+
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 )
 
 // Bounds of what one read returns.
@@ -93,11 +101,30 @@ func open(dir string) (*git.Repository, string, error) {
 		return nil, "", err
 	}
 	top := dir
+	var wt billy.Filesystem
 	if w, err := r.Worktree(); err == nil {
-		top = w.Filesystem.Root()
+		top, wt = w.Filesystem.Root(), w.Filesystem
+	}
+	// The same repository over a storage that reads an object past
+	// largeObject as a stream from its file, a delta applied as it is
+	// read, never whole in memory: go-git's own opening reads every
+	// object whole, however large (a blob of a gigabyte, a gigabyte of
+	// heap, and a delta's base besides).
+	fs, ok := r.Storer.(*filesystem.Storage)
+	if !ok {
+		return nil, "", fmt.Errorf("the repository's storage is a %T, not its files", r.Storer)
+	}
+	st := filesystem.NewStorageWithOptions(fs.Filesystem(), cache.NewObjectLRUDefault(), filesystem.Options{LargeObjectThreshold: largeObject})
+	if r, err = git.Open(st, wt); err != nil {
+		return nil, "", err
 	}
 	return r, top, nil
 }
+
+// largeObject is the size past which an object is read as a stream rather
+// than whole: a file's head (FileAt) costs then about what it returns,
+// whatever the file's size.
+const largeObject = 256 << 10
 
 // Commits lists the commits on HEAD newest first: those after base's merge
 // base with HEAD when base names a revision, else those committed at or
@@ -244,10 +271,11 @@ type File struct {
 
 // FileAt reads the file at path (relative to the repository's top, with
 // '/') in the tree of the commit id (a full object id, read by id), at
-// most max bytes of it. A link is its target's text, as git keeps it,
+// most limit bytes of it, the memory it takes bounded by about that,
+// however large the file (head). A link is its target's text, as git keeps it,
 // never followed. ErrNoCommit (wrapped) for an id the repository has no
 // commit of, ErrNoFile for a path the commit has no file at.
-func FileAt(ctx context.Context, dir, id, path string, max int) (File, error) {
+func FileAt(ctx context.Context, dir, id, path string, limit int) (File, error) {
 	r, _, err := open(dir)
 	if err != nil {
 		return File{}, err
@@ -273,28 +301,77 @@ func FileAt(ctx context.Context, dir, id, path string, max int) (File, error) {
 	if err := ctx.Err(); err != nil {
 		return File{}, err
 	}
+	// The object read once, at most what the reply and git's binary sniff
+	// need of it (head).
 	out := File{Size: f.Size}
-	if out.Binary, err = f.IsBinary(); err != nil {
+	want := min(max(int64(limit)+1, sniffLen), f.Size)
+	b, err := head(ctx, dir, f, want)
+	if err != nil {
 		return File{}, err
 	}
-	if out.Binary {
+	if bytes.IndexByte(b[:min(len(b), sniffLen)], 0) >= 0 {
+		out.Binary = true
 		return out, nil
 	}
-	rd, err := f.Reader()
-	if err != nil {
-		return File{}, err
-	}
-	defer rd.Close()
-	b, err := io.ReadAll(io.LimitReader(rd, int64(max)+1))
-	if err != nil {
-		return File{}, err
-	}
-	if len(b) > max {
-		b, out.Truncated = b[:max], true
+	if len(b) > limit {
+		b, out.Truncated = b[:limit], true
 	}
 	out.Content = b
 	return out, nil
 }
+
+// head is the first n bytes of the blob f (n at most its size), read
+// without the blob whole in this process's memory. go-git streams an
+// object past open's largeObject from its file, loose or packed whole, but
+// a delta's base it reads whole (a packed blob stored as a delta of a
+// 32 MiB one, 165 MiB allocated for its first MiB, measured with go-git
+// v5.19.3), so a blob past largeObject is read by the git binary (git
+// cat-file blob, its id in full, through gitcli), its output stopped once
+// n bytes are in: git, a process of its own that ends with the read,
+// resolves the delta. A smaller blob go-git reads, whole at most
+// largeObject.
+func head(ctx context.Context, dir string, f *object.File, n int64) ([]byte, error) {
+	b := make([]byte, 0, n)
+	if f.Size <= largeObject {
+		rd, err := f.Reader()
+		if err != nil {
+			return nil, err
+		}
+		defer rd.Close()
+		return io.ReadAll(io.LimitReader(rd, n))
+	}
+	w := &headWriter{b: b}
+	err := gitcli.RunTo(ctx, dir, w, "cat-file", "blob", f.Hash.String())
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err != nil && !w.full() {
+		return nil, err
+	}
+	return w.b, nil
+}
+
+// headWriter keeps what is written to it up to its buffer's capacity and
+// then refuses more (errHeadFull), which ends the git writing to it.
+type headWriter struct{ b []byte }
+
+var errHeadFull = errors.New("the head is read")
+
+func (w *headWriter) full() bool { return len(w.b) == cap(w.b) }
+
+func (w *headWriter) Write(p []byte) (int, error) {
+	room := cap(w.b) - len(w.b)
+	if len(p) <= room {
+		w.b = append(w.b, p...)
+		return len(p), nil
+	}
+	w.b = append(w.b, p[:room]...)
+	return room, errHeadFull
+}
+
+// sniffLen is how much of a file git reads to call it binary (a NUL in its
+// first 8,000 bytes).
+const sniffLen = 8000
 
 // commitByID is the commit whose full object id is id: ErrNoCommit
 // (wrapped) when the repository has none, an error for an id that is not
