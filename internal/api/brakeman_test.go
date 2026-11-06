@@ -711,16 +711,21 @@ func TestOneTurnAtATimeAndABoundedQueue(t *testing.T) {
 }
 
 // The deadline ends the turn: at TurnMinutes after starting (the desk's
-// clock), the request is timed_out, then its run is stopped.
+// clock), the request of a turn whose agent read it is timed_out, then
+// its run is stopped. (One whose agent never read it ends failed then,
+// its agent not started: TestAnAgentAtAScreenNobodyKnowsDidNotStart.)
 func TestTheDeadlineEndsTheTurn(t *testing.T) {
 	t.Parallel()
 	b := brakemanEnv(t, nil)
 	c := b.fakeClock()
 	b.enable(t, "bk", func(c map[string]any) { c["budget"].(map[string]any)["turnMinutes"] = 1 })
 	id := b.briefing(t)
-	sid, _, _ := b.turnSession(t, id)
+	sid, tok, _ := b.turnSession(t, id)
 	run := b.runOf(t, sid)
 	b.waitState(t, id, brakeman.StateRunning)
+	if status, _ := b.readRequest(t, sid, tok); status != http.StatusOK {
+		t.Fatalf("read: %d", status)
+	}
 	c.add(59 * time.Second)
 	b.settle(t)
 	if r, _ := b.desk.st.Get(id); r.State != brakeman.StateRunning {

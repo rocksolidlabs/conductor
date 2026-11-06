@@ -243,17 +243,19 @@ type deskTurn struct {
 	// made for (agentSelection): its session starts only from that entry
 	// (createLocalSession's agent_changed otherwise).
 	agentSHA256 string
-	// started is when the turn took the slot, on the desk's clock: its
-	// agent reads its request by started+brakemanFirstRead, or the turn
-	// ends as one whose agent did not start (firstReadBy).
+	// started is when the turn's launch returned (its agent's process
+	// made), on the desk's clock: its agent reads its request by
+	// started+brakemanFirstRead, or the turn ends as one whose agent did
+	// not start (firstReadBy). Zero while it launches: the deadline covers
+	// starting, its run then the request's stray run.
 	started time.Time
 }
 
-// firstReadBy is when the turn t of req ends as one whose agent did not
-// start, unless it has read its request: brakemanFirstRead after it took
-// the slot, or its deadline when that comes first.
-func (t *deskTurn) firstReadBy(req brakeman.Request) time.Time {
-	by := t.started.Add(brakemanFirstRead)
+// firstReadBy is when a turn of req whose launch returned at started ends
+// as one whose agent did not start, unless it has read its request:
+// brakemanFirstRead after started, or its deadline when that comes first.
+func firstReadBy(req brakeman.Request, started time.Time) time.Time {
+	by := started.Add(brakemanFirstRead)
 	if !req.Deadline.IsZero() && req.Deadline.Before(by) {
 		by = req.Deadline
 	}
@@ -665,8 +667,11 @@ func (d *brakemanDesk) tend(t *deskTurn) time.Duration {
 	d.mu.Lock()
 	read := d.read[t.id]
 	d.mu.Unlock()
-	if req.Open() && !read && !t.started.IsZero() && !now.Before(t.firstReadBy(req)) {
-		why := d.notStarted(t, t.firstReadBy(req).Sub(t.started))
+	d.mu.Lock()
+	started := t.started
+	d.mu.Unlock()
+	if req.Open() && !read && !started.IsZero() && !now.Before(firstReadBy(req, started)) {
+		why := d.notStarted(t, firstReadBy(req, started).Sub(started))
 		req, err = d.update(t.id, func(r *brakeman.Request) error {
 			if !r.Open() {
 				return nil
@@ -709,7 +714,7 @@ func (d *brakemanDesk) tend(t *deskTurn) time.Duration {
 	if req.Open() {
 		next := req.Deadline
 		if !d.read[t.id] && !t.started.IsZero() {
-			next = t.firstReadBy(req)
+			next = firstReadBy(req, t.started)
 		}
 		return untilPositive(next, now)
 	}
@@ -959,7 +964,7 @@ func (d *brakemanDesk) dequeue() time.Duration {
 			return brakemanRetry
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		t := &deskTurn{id: id, account: cfg.Account, launching: true, cancel: cancel, registered: map[string]bool{}, started: d.now()}
+		t := &deskTurn{id: id, account: cfg.Account, launching: true, cancel: cancel, registered: map[string]bool{}}
 		d.mu.Lock()
 		d.queue = slices.DeleteFunc(d.queue, func(q string) bool { return q == id })
 		d.turn = t
@@ -1116,6 +1121,7 @@ func (d *brakemanDesk) launch(ctx context.Context, t *deskTurn, req brakeman.Req
 	}
 	d.mu.Lock()
 	t.launching = false
+	t.started = d.now()
 	if runID != "" {
 		t.runID = runID
 	}

@@ -466,6 +466,20 @@ func TestABackgroundTurnEndsAtAStartupQuestion(t *testing.T) {
 	}
 }
 
+// launched waits for the launch of the turn holding the slot for id to
+// have returned (its agent's process made): the moment its first-read
+// bound counts from (deskTurn.started).
+func (b *bkEnv) launched(t *testing.T, id string) {
+	t.Helper()
+	if !waitFor(30*time.Second, func() bool {
+		b.desk.mu.Lock()
+		defer b.desk.mu.Unlock()
+		return b.desk.turn != nil && b.desk.turn.id == id && !b.desk.turn.started.IsZero()
+	}) {
+		t.Fatalf("%s's launch never returned", id)
+	}
+}
+
 // ledgerRole is the role as its records hold it (the desk's store),
 // read afresh: what a restart would take up.
 func (b *bkEnv) ledgerRole(t *testing.T) crew.RoleRecord {
@@ -495,7 +509,7 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	b := brakemanEnv(t, nil)
 	c := b.background(t, "bkunknown", nil)
 	id := b.failTask(t, c, "build")
-	b.waitState(t, id, brakeman.StateStarting, brakeman.StateRunning)
+	b.launched(t, id)
 	_, _, l := b.turnSession(t, id)
 	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(l.TailLines(12), "\n"), "[ Sign in ]") }) {
 		t.Fatalf("the screen was never drawn: %q", l.TailLines(12))
@@ -531,7 +545,7 @@ func TestAnAgentAtAScreenNobodyKnowsDidNotStart(t *testing.T) {
 	}
 	// A person's own request in the same state: ended at the same bound.
 	ask := b.briefing(t)
-	b.waitState(t, ask, brakeman.StateStarting, brakeman.StateRunning)
+	b.launched(t, ask)
 	_, _, la := b.turnSession(t, ask)
 	if !waitFor(30*time.Second, func() bool { return strings.Contains(strings.Join(la.TailLines(12), "\n"), "[ Sign in ]") }) {
 		t.Fatalf("the screen was never drawn: %q", la.TailLines(12))
@@ -584,7 +598,7 @@ func TestAnAgentThatReadsLateWithinItsBoundIsNotEnded(t *testing.T) {
 	b := brakemanEnv(t, nil)
 	c := b.background(t, "bk", nil)
 	id := b.failTask(t, c, "build")
-	b.waitState(t, id, brakeman.StateRunning)
+	b.launched(t, id)
 	sid, tok, _ := b.turnSession(t, id)
 	c.add(brakemanFirstRead - time.Minute)
 	b.settle(t)

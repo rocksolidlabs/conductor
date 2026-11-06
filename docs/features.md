@@ -3761,8 +3761,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     and never exits), `TestASignInScreenTheProgramLeavesByItselfIsWithdrawn`.
   - A screen no catalog entry knows (another agent's sign-in, a version's
     new wording) does the same without a pattern: a turn whose agent has
-    not read its request 5 minutes after the turn's start (a real agent
-    reads within two; by its deadline, for a shorter turn) ends failed,
+    not read its request 5 minutes after its launch returned (a real
+    agent reads within two; by its deadline, for a shorter turn) ends failed,
     "the agent did not read its request in 5 minutes", with the last lines
     its screen shows (links left out), no key typed, charged the minutes
     it ran; a person's own turn too, instead of waiting out its minutes.

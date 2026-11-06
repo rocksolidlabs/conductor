@@ -3564,7 +3564,9 @@ crew a person names Brakeman is saved as `brakeman-2`.
 request), `failed` (the launch failed, with the engine's words; the
 agent exited before it read its request: "is it logged in?", with its
 exit and last line; the agent did not read its request within 5 minutes
-of the turn's start, or by its deadline when that comes first, whatever
+of its launch's return (its process made; a launch still under way is
+covered by the deadline, as before), or by its deadline when that comes
+first, whatever
 its screen shows, ended then with words naming the bound and the last
 lines its screen shows (links left out, at most 220 bytes), no key typed
 into it, a person's turn as a wake turn: a real agent reads within two
