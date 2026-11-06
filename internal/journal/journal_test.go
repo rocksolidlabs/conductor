@@ -1010,13 +1010,6 @@ func TestAnEndedRecordStaysUntilItsSessionIsDone(t *testing.T) {
 	}
 }
 
-// reopenJournal closes j and opens another over dir, as a restart does.
-func reopenJournal(t *testing.T, j *Journal, dir string) *Journal {
-	t.Helper()
-	j.Close()
-	return openAt(t, dir, Options{})
-}
-
 // A record file this version cannot decode is kept as it is and is in
 // the index: listed as unreadable, refused to a Begin of its id (so
 // nothing writes over it), counted toward MaxRecords by its last write,

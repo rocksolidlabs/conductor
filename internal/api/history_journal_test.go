@@ -65,14 +65,6 @@ func endedRecord(t *testing.T, e *testEnv, id string) journal.Record {
 	return r
 }
 
-func entryKinds(r journal.Record) []string {
-	var out []string
-	for _, e := range r.Entries {
-		out = append(out, e.Kind)
-	}
-	return out
-}
-
 // recordedLocal is a server session over proc in e's registry with its
 // record begun as createLocalSession begins one, its hooks (o's, else the
 // server's) feeding it after them (recordHooks): a hook o holds holds the
