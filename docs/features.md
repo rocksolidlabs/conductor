@@ -3581,8 +3581,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   observations; a bug the stream caused, found there, is fixed in the
   stream.
   Neither item was done with this slice: BK0 waited for the guide's
-  providers (PR-9) and BK1 for its observation made again after its
-  fix. How each ended is recorded above; the next entry has BK2 and BK3.
+  providers (PR-9), and BK1 still waits for its observation made again
+  after PR-11, with a ticket launched from an approved plan revision
+  among the evidence and the owner's word on that brief. Both checks
+  above ran before PR-11, so neither is that observation. How BK0 stands
+  is recorded above; the next entry has BK2 and BK3, and #659 holds BK1's
+  observation with theirs.
 - **Brakeman, the second and third slices: authorized actions and the
   background role (BK2 and BK3, #530 to #538, 2026-11-04 to
   2026-11-05).** Program items BK2 and BK3, with BK0's providers part,
@@ -3721,8 +3725,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestAnUnavailableRoleHoldsNothingElse`).
   Neither item is done with this entry: each is done once its observation
   is made and recorded here, a bug the stream caused found there fixed in
-  the stream. #659 holds these two observations and BK0's real Codex
-  session, the docs PR that records them, and any stream bug they find.
+  the stream. #659 holds these two observations, BK1's made again after
+  PR-11 and BK0's real Codex session, the docs PR that records them, and
+  any stream bug they find.
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
