@@ -523,7 +523,13 @@ func TestRevisionOfAndRepoOf(t *testing.T) {
 		t.Fatal(err)
 	}
 	head = strings.TrimSpace(head)
-	rev, err := RevisionOf(ctx, filepath.Join(dir, "internal"))
+	// Through a link to the repository, as macOS's /var is to
+	// /private/var: the common directory is the real path, as the top is.
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	rev, err := RevisionOf(ctx, filepath.Join(link, "internal"))
 	if err != nil {
 		t.Fatal(err)
 	}

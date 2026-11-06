@@ -384,13 +384,19 @@ func RepoOf(ctx context.Context, dir string) (top, common string, err error) {
 }
 
 // repoLines checks rev-parse's top and makes its common directory
-// absolute (git before 2.31 answers it relative to dir).
+// absolute (git before 2.31 answers it relative to dir) and, as git
+// answers the top, with its links resolved: a relative one joined to dir
+// keeps dir's spelling (macOS's /var for /private/var), and a repository's
+// identity is compared as a path.
 func repoLines(dir, top, common string) (string, string, error) {
 	if !filepath.IsAbs(top) || common == "" {
 		return "", "", fmt.Errorf("git rev-parse: an unexpected top %q", top)
 	}
 	if !filepath.IsAbs(common) {
 		common = filepath.Join(dir, common)
+	}
+	if real, err := filepath.EvalSymlinks(common); err == nil {
+		common = real
 	}
 	return top, filepath.Clean(common), nil
 }
