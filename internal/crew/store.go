@@ -77,7 +77,10 @@ type Summary struct {
 	Where     string          `json:"where"`
 	Isolation string          `json:"isolation"`
 	Members   []MemberSummary `json:"members"`
-	UpdatedAt time.Time       `json:"updatedAt"`
+	// People are the crew's people with their responsibilities, never
+	// their notes; absent for a crew without people.
+	People    []TaskPerson `json:"people,omitempty"`
+	UpdatedAt time.Time    `json:"updatedAt"`
 }
 
 // MemberSummary is a member as a Summary lists it: its name, agent and
@@ -93,7 +96,11 @@ func (c Crew) summary() Summary {
 	for _, m := range c.Members {
 		members = append(members, MemberSummary{Name: m.Name, AgentID: m.AgentID, Start: m.Start})
 	}
-	return Summary{ID: c.ID, Name: c.Name, Goal: c.Goal, Cwd: c.Cwd, Where: c.Where, Isolation: c.Isolation, Members: members, UpdatedAt: c.UpdatedAt}
+	var people []TaskPerson
+	for _, p := range c.People {
+		people = append(people, TaskPerson{Name: p.Name, Responsibilities: slices.Clone(p.Responsibilities)})
+	}
+	return Summary{ID: c.ID, Name: c.Name, Goal: c.Goal, Cwd: c.Cwd, Where: c.Where, Isolation: c.Isolation, Members: members, People: people, UpdatedAt: c.UpdatedAt}
 }
 
 // Store keeps the saved crews, one file each in crews/ of the data directory,
@@ -266,6 +273,10 @@ func (s *Store) List(offset, limit int) ([]Summary, int, error) {
 	page := slices.Clone(all[from:to])
 	for i := range page {
 		page[i].Members = slices.Clone(page[i].Members)
+		page[i].People = slices.Clone(page[i].People)
+		for j := range page[i].People {
+			page[i].People[j].Responsibilities = slices.Clone(page[i].People[j].Responsibilities)
+		}
 	}
 	return page, total, nil
 }

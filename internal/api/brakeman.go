@@ -2039,9 +2039,7 @@ func (f brakemanFacts) CheckCrew(body json.RawMessage) error {
 	if err := store.DecodeStrict(body, &in); err != nil {
 		return err
 	}
-	c := crew.Crew{Name: strings.TrimSpace(in.Name), Goal: in.Goal, Cwd: in.Cwd, Where: in.Where, Isolation: in.Isolation,
-		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Yolo: in.Yolo, Members: in.Members, Tasks: in.Tasks, Setup: in.Setup,
-		Manifest: in.Manifest}
+	c := in.crew()
 	if err := c.ValidateSave(); err != nil {
 		return err
 	}
