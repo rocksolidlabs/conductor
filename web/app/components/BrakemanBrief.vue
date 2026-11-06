@@ -9,7 +9,8 @@ import { groupItems, provenance, readsWords } from '~/utils/brakeman'
  * Conductor's controls (PR-7; a proposal Brakeman ran under a grant with its receipt, PR-13), verified outcomes with their receipt, the
  * drafts as forms the person makes work (a draft plan revision proposed through DS2's own route, PR-11), handoff packages,
  * and the comparison and evidence panels. Each item is anchored at `item-<index>`, where a `brief:` ref leads. The brief and its
- * refs are read once, as the brief is opened.
+ * refs are read once, as the brief is opened. A fact or an interpretation can be kept as one of the background role's notes (BK3),
+ * which every later turn is given.
  */
 const props = defineProps<{ request: BrakemanRequest }>()
 const emit = defineEmits<{ opened: [request: BrakemanRequest] }>()
@@ -41,6 +42,21 @@ const when = (iso: string) => new Date(iso).toLocaleString()
 const line = computed(() => provenance(props.request, props.request.agent?.agentId ? `${props.request.agent.agentId}${props.request.agent.adapter ? ` (${props.request.agent.adapter})` : ''}` : undefined, when))
 const groups = computed(() => groupItems(brief.value?.items ?? []))
 const items = computed<BriefItem[]>(() => brief.value?.items ?? [])
+
+const toast = useToast()
+const keeping = ref(-1)
+/** Keeps the item's text as one of the role's notes. */
+async function keep(index: number) {
+  keeping.value = index
+  try {
+    await bk.keepNote(props.request.id, index)
+    toast.add({ title: 'Kept as a note', description: "Brakeman's later turns are given it; clear it on the Brakeman page.", icon: 'i-lucide-check', color: 'success' })
+  } catch (e) {
+    toast.add({ title: 'Not kept', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
+  } finally {
+    keeping.value = -1
+  }
+}
 </script>
 
 <template>
@@ -63,6 +79,18 @@ const items = computed<BriefItem[]>(() => brief.value?.items ?? [])
             <p class="text-sm">{{ x.item.text }}</p>
             <span class="text-xs text-muted" data-reads>{{ readsWords(x.item.facts, items) }}</span>
           </div>
+          <UButton
+            v-if="x.item.kind === 'fact/1' || x.item.kind === 'interpretation/1'"
+            label="Keep as a note"
+            icon="i-lucide-bookmark-plus"
+            size="xs"
+            color="neutral"
+            variant="ghost"
+            class="self-start"
+            :loading="keeping === x.index"
+            :data-keep-note="x.index"
+            @click="keep(x.index)"
+          />
           <BrakemanProposal v-else-if="x.item.kind === 'proposal/1'" :item="x.item" :items="items" :refs="refs" :request="request" />
           <div v-else-if="x.item.kind === 'outcome/1'" class="flex flex-wrap items-center gap-1.5" data-brief-outcome>
             <p class="text-sm">{{ x.item.text }}</p>
