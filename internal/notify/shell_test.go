@@ -1,9 +1,11 @@
 package notify
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -54,5 +56,58 @@ func TestShellFiles(t *testing.T) {
 	// Without the command's directory a relative path names nothing; an absolute one still does.
 	if got := shellFiles("cat README.md "+p("main.go"), ""); !reflect.DeepEqual(got, []FileRef{{"read", p("main.go")}}) {
 		t.Errorf("no cwd: %v", got)
+	}
+}
+
+// A file under /dev/shm is a file (a tmpfs where people keep them), named
+// directly here so the test does not depend on where TMPDIR is; every other
+// name under /dev is a device, even one that resolves to a regular file:
+// /dev/fd/N and /dev/stdin are what the hook's own process holds open.
+func TestShellFilesKeepsDevShmAndDropsDevices(t *testing.T) {
+	held, err := os.CreateTemp(t.TempDir(), "held")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	fd := fmt.Sprintf("/dev/fd/%d", held.Fd())
+	if fi, err := os.Stat(fd); err != nil || !fi.Mode().IsRegular() {
+		t.Skipf("%s is not a regular file here: %v", fd, err)
+	}
+	for _, cmd := range []string{"cat /dev/null", "echo x > /dev/null", "cat " + fd, "cat < " + fd, "cat /dev/shm/../fd/" + strings.TrimPrefix(fd, "/dev/fd/")} {
+		if got := shellFiles(cmd, ""); got != nil {
+			t.Errorf("%q: %v, want nothing", cmd, got)
+		}
+	}
+	if got := shellFiles("cat fd/"+strings.TrimPrefix(fd, "/dev/fd/"), "/dev"); got != nil {
+		t.Errorf("a relative name in /dev: %v, want nothing", got)
+	}
+	for _, p := range []string{"/dev", "/dev/null", "/dev/fd/3", "/dev/mqueue/q", "/dev/shmx"} {
+		if !deviceName(p) {
+			t.Errorf("%s is not a device", p)
+		}
+	}
+	for _, p := range []string{"/dev/shm", "/dev/shm/a.txt", "/devx/a", "/home/dev/a"} {
+		if deviceName(p) {
+			t.Errorf("%s is a device", p)
+		}
+	}
+
+	if fi, err := os.Stat("/dev/shm"); err != nil || !fi.IsDir() {
+		t.Skip("no /dev/shm here")
+	}
+	dir, err := os.MkdirTemp("/dev/shm", "notify-shell-")
+	if err != nil {
+		t.Skipf("/dev/shm is not writable: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	file := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(file, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := shellFiles("cat "+file, ""); !reflect.DeepEqual(got, []FileRef{{"read", file}}) {
+		t.Errorf("an absolute name under /dev/shm: %v", got)
+	}
+	if got := shellFiles("echo y >> notes.txt", dir); !reflect.DeepEqual(got, []FileRef{{"edit", file}}) {
+		t.Errorf("a relative name in a folder under /dev/shm: %v", got)
 	}
 }

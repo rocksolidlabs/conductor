@@ -20,6 +20,21 @@ const maxShellFiles = 32
 
 var shellReaders = map[string]bool{"cat": true, "head": true, "tail": true, "nl": true, "bat": true, "batcat": true, "less": true, "more": true}
 
+// deviceName says whether p, clean and absolute, names a device rather
+// than a file: anything under /dev but /dev/shm. A name like /dev/stdin or
+// /dev/fd/3 resolves to what the hook's own process holds open, which can
+// be a regular file that is not the agent's, so the regular-file check
+// below cannot tell it; /dev/null and /dev/tty fail that check anyway.
+// /dev/shm is a tmpfs where people keep ordinary files, and is kept.
+// /dev/mqueue is not: its entries are POSIX message queues, which stat as
+// regular files but are no file anyone read or wrote.
+func deviceName(p string) bool {
+	if p != "/dev" && !strings.HasPrefix(p, "/dev/") {
+		return false
+	}
+	return p != "/dev/shm" && !strings.HasPrefix(p, "/dev/shm/")
+}
+
 // shellFiles are the files command reads, writes or edits, absolute when
 // cwd (the command's directory) is known, at most maxShellFiles, a repeat
 // of the same op and path dropped.
@@ -33,7 +48,7 @@ func shellFiles(command, cwd string) []FileRef {
 	}
 	var out []FileRef
 	add := func(op, word string) {
-		if len(out) == maxShellFiles || word == "" || strings.HasPrefix(word, "/dev/") {
+		if len(out) == maxShellFiles || word == "" {
 			return
 		}
 		p := word
@@ -47,6 +62,9 @@ func shellFiles(command, cwd string) []FileRef {
 				return
 			}
 			p = filepath.Join(cwd, p)
+		}
+		if p = filepath.Clean(p); deviceName(p) {
+			return
 		}
 		if fi, err := os.Stat(p); err != nil || !fi.Mode().IsRegular() {
 			return
