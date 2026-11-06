@@ -1099,17 +1099,16 @@ func (s *Local) firePattern(line string) {
 // where 1 runs npm install). That is weighed under the lock that sets the
 // question (startupLook).
 func (s *Local) fireTrust(text string) {
-	if q, words := s.startupShown(text); q != nil {
+	if q, words, seen, shown := s.startupSeen(text); q != nil {
 		if s.heldGone(words) {
 			// An Escape typed at it before it was asked took it away.
 			return
 		}
-		// The screen as it is before the question is asked, for one with
-		// no answers (holdAnswerless): output fed while it is asked is
-		// output after it, which may be the screen moving on.
-		var seen heldStartup
-		if len(q.Answers) == 0 && s.asked != nil {
-			seen = s.askedSeen()
+		if len(q.Answers) == 0 && !shown {
+			// The screen moved on after the look took its text: a
+			// question with no answers that the screen no longer shows
+			// is never asked.
+			return
 		}
 		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, s.trust.LookedAt(), "")
 		if len(q.Answers) == 0 {
@@ -3849,6 +3848,43 @@ func (s *Local) lastStartupQ(text string) (*StartupQuestion, string) {
 	return last, words
 }
 
+// startupSeen is fireTrust's observation of the startup question a
+// look's text shows, for every startup question: the question found in
+// text (lastStartupQ, the look's), its words read off the screen the
+// questions asked during the work are read from when it shows them (as
+// startupShown reads them), and that screen as one reading (seen: its
+// Feeds, its size and the size it was laid out for, PatternWatcher.Seen,
+// under feedMu). The words and the mark a question with no answers is
+// held against (holdAnswerless) come from that one reading, never from
+// two: read apart, output fed between them (the screen cleared) paired
+// the screen before it with the mark after it, and the withdrawal, which
+// asks for output after the mark (escGone), never came. shown is false
+// when that reading shows everything drawn and no startup question, as
+// escGone withdraws on: the screen moved on after the look took its
+// text. A question with answers is asked all the same (it goes when it is
+// answered or the next takes its place, and the screen decides neither);
+// one with none is not (fireTrust). Without that screen, the look's words,
+// shown.
+func (s *Local) startupSeen(text string) (q *StartupQuestion, words string, seen heldStartup, shown bool) {
+	q, words = s.lastStartupQ(text)
+	if q == nil || s.asked == nil {
+		return q, words, seen, q != nil
+	}
+	s.feedMu.Lock()
+	v := s.asked.Seen()
+	s.feedMu.Unlock()
+	seen = heldStartup{fed: v.Fed, cols: v.Cols, rows: v.Rows, drawnCols: v.DrawnCols, drawnRows: v.DrawnRows}
+	if v.Uncut && s.lastStartup(v.Text) == "" {
+		return q, words, seen, false
+	}
+	if v.Text != "" {
+		if w := q.words(v.Text); w != "" {
+			words = w
+		}
+	}
+	return q, words, seen, true
+}
+
 // startupShown is the startup question the output shows and its words: the
 // question the output's tail finds (lastStartupQ over text, the startup
 // watcher's ScreenTail), its words read off the screen when that shows
@@ -4466,19 +4502,6 @@ func (s *Local) holdStartupAnswered(words, by, name string) {
 	}
 }
 
-// askedSeen is the screen the questions asked during the work are read
-// from as it is now, as a held startup question marks it: how many Feeds
-// it has seen, its size and the size it was laid out for. Taken with no
-// output fed meanwhile (feedMu).
-func (s *Local) askedSeen() heldStartup {
-	s.feedMu.Lock()
-	defer s.feedMu.Unlock()
-	seen := heldStartup{fed: s.asked.Fed()}
-	seen.cols, seen.rows = s.asked.Size()
-	_, seen.drawnCols, seen.drawnRows = s.asked.DrawnAt()
-	return seen
-}
-
 // holdAnswerless holds the startup question with words, asked with no
 // answers, as one keys reached is held (heldAnswer, by no one): a screen no
 // key of Conductor's passes (Claude Code's sign-in, waiting for a browser's
@@ -4486,11 +4509,11 @@ func (s *Local) askedSeen() heldStartup {
 // signing in through the browser, with no key typed in the terminal. Held
 // so, it goes as every startup question goes once its screen is behind:
 // withdrawn when the screen, after output fed since it was asked, shows no
-// startup question (escGone). seen is the screen as it was before the
-// question was asked (askedSeen): output fed since, the screen cleared
-// while the question was being asked, counts as after it. Nothing is
-// consumed: the question reads as waiting, not as answered in the
-// terminal.
+// startup question (escGone). seen is the screen the question was found
+// on, read with its mark in one reading (startupSeen): output fed since,
+// the screen cleared while the question was being asked, counts as after
+// it. Nothing is consumed: the question reads as waiting, not as
+// answered in the terminal.
 func (s *Local) holdAnswerless(words string, seen heldStartup) {
 	if s.asked == nil {
 		return
