@@ -70,7 +70,8 @@ func (s *Server) handlePeople(w http.ResponseWriter, r *http.Request) {
 		err = fmt.Errorf("q is at most %d characters", maxPeopleQuery)
 	case utf8.RuneCountInString(after) > crew.MaxPersonName:
 		err = fmt.Errorf("after is a name of at most %d characters", crew.MaxPersonName)
-	case limit < 0 || limit > maxPeoplePage:
+	case limit < 0 || limit > maxPeoplePage || (limit == 0 && len(q["limit"]) > 0):
+		// 0 is the count of an absent limit: one given is 1 to the page.
 		err = fmt.Errorf("limit is 1 to %d", maxPeoplePage)
 	}
 	if err != nil {

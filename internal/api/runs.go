@@ -700,6 +700,10 @@ func (s *Server) resumeRecord(w http.ResponseWriter, ctx context.Context, id str
 	if rec.Managed != nil {
 		// A managed run's record is a cache of the ledger, which the
 		// continuation reads (#334, row 8).
+		if aerr := s.continuationAdmission(); aerr != nil {
+			writeError(w, aerr.status, aerr.Code, aerr.Message)
+			return true
+		}
 		run, err = s.runs.ContinueRun(ctx, id, rec.Label)
 	} else {
 		run, err = s.runs.ResumeRecord(ctx, rec)
@@ -776,6 +780,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, crew.ErrManaged) {
 		// A managed run is continued (#334, row 8): its results kept, the
 		// rest dispatched again.
+		if aerr := s.continuationAdmission(); aerr != nil {
+			writeError(w, aerr.status, aerr.Code, aerr.Message)
+			return
+		}
 		run, err = s.runs.ContinueRun(ctx, id, "")
 	}
 	if errors.Is(err, crew.ErrRunNotFound) && s.records != nil {

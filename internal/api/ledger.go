@@ -71,11 +71,12 @@ func openLedger(ctx context.Context, st *store.Store, records *crew.Records, log
 // has it (crew.Recovered): interrupted, its attempts concluded, so the
 // run reads so until it is continued. restore, when given, runs before
 // the records are written (restoreLaunchPeople), so they read what it
-// made whole.
+// made whole. Each of the three has a budget of its own (recoveryBudget):
+// a restore that reads many plan revisions never spends the records'.
 func recoverLedger(ctx context.Context, ld *ledger.Ledger, records *crew.Records, log logger, restore func(context.Context, *ledger.Ledger)) {
-	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	rctx, cancel := context.WithTimeout(ctx, recoveryBudget)
 	recovered, err := ld.Recover(rctx)
+	cancel()
 	if err != nil {
 		log.Warn("the ledger's recovery failed", "err", err)
 	}
@@ -96,10 +97,19 @@ func recoverLedger(ctx context.Context, ld *ledger.Ledger, records *crew.Records
 		}
 	}
 	if restore != nil {
-		restore(rctx, ld)
+		pctx, cancel := context.WithTimeout(ctx, recoveryBudget)
+		restore(pctx, ld)
+		cancel()
 	}
-	syncRecords(rctx, ld, records, log)
+	sctx, cancel := context.WithTimeout(ctx, recoveryBudget)
+	defer cancel()
+	syncRecords(sctx, ld, records, log)
 }
+
+// recoveryBudget bounds each step of a ledger's recovery at a start: the
+// conclusion of what the last owner left open, the restore of the
+// launches' people and the records' sync.
+const recoveryBudget = 30 * time.Second
 
 // syncRecords writes the record of every managed run the ledger has whose
 // record lags the ledger (a snapshot cut short by the last server's end,
