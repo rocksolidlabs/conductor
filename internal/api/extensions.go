@@ -295,12 +295,20 @@ func extCall[T any](ctx context.Context, s *Server, kind, name string, wait time
 // extCallSent is extCall, and reports whether fn was called: false when
 // every slot was busy and the fallback was answered without it.
 func extCallSent[T any](ctx context.Context, s *Server, kind, name string, wait time.Duration, fallback T, valid func(T) error, fn func(context.Context) (T, error)) (T, bool) {
+	v, sent, _ := extCallTold(ctx, s, kind, name, wait, fallback, valid, fn)
+	return v, sent
+}
+
+// extCallTold is extCallSent, and reports too whether fn answered in time
+// with a value valid took (ok): false when it failed, panicked, was late
+// or answered a value valid refused, the fallback answered.
+func extCallTold[T any](ctx context.Context, s *Server, kind, name string, wait time.Duration, fallback T, valid func(T) error, fn func(context.Context) (T, error)) (T, bool, bool) {
 	g := s.guard(kind, name)
 	select {
 	case g.slots <- struct{}{}:
 	default:
 		s.extFailed(kind, name, "busy", fmt.Sprintf("%d calls in flight", extInFlight))
-		return fallback, false
+		return fallback, false, false
 	}
 	if f := extWaiting.Load(); f != nil {
 		wait = *f
@@ -361,19 +369,19 @@ func extCallSent[T any](ctx context.Context, s *Server, kind, name string, wait 
 		if ctx.Err() == nil {
 			s.extFailed(kind, name, "late", fmt.Sprintf("no answer within %s", wait))
 		}
-		return fallback, true
+		return fallback, true, false
 	case r.err:
 		why := "error"
 		if r.panicked {
 			why = "panic"
 		}
 		s.extFailed(kind, name, why, r.failed)
-		return fallback, true
+		return fallback, true, false
 	case r.invalid != "":
 		s.extFailed(kind, name, "invalid", r.invalid)
-		return fallback, true
+		return fallback, true, false
 	}
-	return r.v, true
+	return r.v, true, true
 }
 
 // extCalling, when a test sets it, is told the kind and provider name of
@@ -669,11 +677,18 @@ func (g guardRouter) Route(ctx context.Context, d ext.Decision) (ext.Route, erro
 // its Start has not succeeded or every call slot of its is busy, so that
 // the decision router tells Resolved only of what Route received.
 func (g guardRouter) route(ctx context.Context, d ext.Decision) (ext.Route, bool) {
+	rt, sent, _ := g.routeTold(ctx, d)
+	return rt, sent
+}
+
+// routeTold is route, and reports too whether the provider answered in
+// time with a route Route.Valid takes (ok).
+func (g guardRouter) routeTold(ctx context.Context, d ext.Decision) (ext.Route, bool, bool) {
 	if !live(g.ready) {
-		return ext.Route{}, false
+		return ext.Route{}, false, false
 	}
 	own := copyDecision(d)
-	return extCallSent(ctx, g.s, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
+	return extCallTold(ctx, g.s, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
 		return r.Valid(own)
 	}, func(ctx context.Context) (ext.Route, error) {
 		r, err := g.p.Route(ctx, copyDecision(own))
@@ -681,8 +696,9 @@ func (g guardRouter) route(ctx context.Context, d ext.Decision) (ext.Route, bool
 	})
 }
 
-// Resolved tells the provider of r on the calling goroutine (the router's
-// resolutions, which drop nothing, drain through it in order: C5), within
+// Resolved tells the provider of r on the calling goroutine (the sessions'
+// resolutions, which drop nothing, drain through it in order: C5; a
+// decision's end, best-effort, on a goroutine of its own), within
 // ext.DeliveryWait, its panic recovered. A router not yet started routed
 // nothing, so it is told nothing.
 func (g guardRouter) Resolved(ctx context.Context, r ext.Resolution) {

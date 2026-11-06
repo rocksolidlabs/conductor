@@ -173,7 +173,7 @@ func TestTheRouterIsToldEachDecisionOnce(t *testing.T) {
 		t.Fatalf("the router was told %s, want %s (since %v)", b1, b2, d.Since)
 	}
 
-	// Withdrawn by its attempt: resolved once.
+	// Withdrawn by its attempt: resolved once (on a goroutine of its own).
 	f.expectAs(t, f.tok, http.MethodPost, "/api/sessions/"+f.sid+"/decisions/dr-1/withdraw", map[string]any{}, http.StatusOK, "")
 	until(t, "dr-1 resolved", func() bool { _, n := fr.resolution("dr-1"); return n > 0 })
 	// Applied: resolved once.
@@ -199,10 +199,10 @@ func TestTheRouterIsToldEachDecisionOnce(t *testing.T) {
 		t.Fatalf("routed %q after the final record's comment", got)
 	}
 	f.srv.router.mu.Lock()
-	left, untold := len(f.srv.router.records), f.srv.router.recordsUntold
+	left := len(f.srv.router.opened)
 	f.srv.router.mu.Unlock()
-	if left != 0 || untold != 0 {
-		t.Errorf("the router keeps %d records, %d untold, past their resolution", left, untold)
+	if left != 0 {
+		t.Errorf("the router keeps %d decisions past their end", left)
 	}
 }
 
@@ -369,36 +369,23 @@ func TestNoRouterLeavesDecisionsAsTheyWere(t *testing.T) {
 	until(t, "the router keeps nothing", func() bool {
 		f.srv.router.mu.Lock()
 		defer f.srv.router.mu.Unlock()
-		return len(f.srv.router.records) == 0 && f.srv.router.recordsUntold == 0 && f.srv.router.untold == 0 && len(f.srv.router.told) == 0
+		return len(f.srv.router.opened) == 0 && f.srv.router.untold == 0 && len(f.srv.router.told) == 0
 	})
 }
 
-// A read of a decision's record that fails is made again after a wait:
-// the read of the withdrawal that makes dr-1 final fails once, and the
-// router is told Resolved all the same, once. A decision holds a place of
-// its own count under the bound, never one of the sessions' questions':
-// with the bound at one and dr-1 routed, a session's question is routed
-// still, and dr-2 is skipped.
-func TestARecordReadThatFailsIsReadAgain(t *testing.T) {
-	records := watchRecords(t)
+// lowRetry lowers the wait before an owed pass for the test.
+func lowRetry(t *testing.T) {
 	was, wasMost := recordRetryFirst, recordRetryMost
 	recordRetryFirst, recordRetryMost = 10*time.Millisecond, 20*time.Millisecond
 	t.Cleanup(func() { recordRetryFirst, recordRetryMost = was, wasMost })
-	fr := &fakeRouter{}
-	f := routerDecisionFixture(t, fr, nil)
-	f.srv.router.mu.Lock()
-	f.srv.router.bound = 1
-	f.srv.router.mu.Unlock()
-	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
-	records.wait(t, "routed", "dr-1")
+}
 
-	seams := watchRouter(t)
-	fs := newFakeSession(t, f.testEnv, "plain", session.Options{})
-	q := fs.ask(t, "Which database?", dbChoices)
-	seams.wait(t, "routed", q)
-	f.ask(t, approvalBody("r2"), http.StatusCreated, "")
-	records.wait(t, "skipped", "dr-2")
-
+// A read of a decision's record that fails owes a pass, which tells it:
+// the read of dr-1's opening fails once, the router is told nothing then,
+// and the pass after the wait lists dr-1 open and tells it, once.
+func TestARecordReadThatFailsIsToldByTheNextPass(t *testing.T) {
+	records := watchRecords(t)
+	lowRetry(t)
 	var failed atomic.Int32
 	fail := func(decision string) error {
 		if decision == "dr-1" && failed.CompareAndSwap(0, 1) {
@@ -408,17 +395,125 @@ func TestARecordReadThatFailsIsReadAgain(t *testing.T) {
 	}
 	recordReadFault.Store(&fail)
 	t.Cleanup(func() { recordReadFault.Store(nil) })
-	f.expectAs(t, f.tok, http.MethodPost, "/api/sessions/"+f.sid+"/decisions/dr-1/withdraw", map[string]any{}, http.StatusOK, "")
-	until(t, "dr-1 resolved", func() bool { _, n := fr.resolution("dr-1"); return n > 0 })
-	drained(t, f.srv.router)
+	fr := &fakeRouter{}
+	f := routerDecisionFixture(t, fr, nil)
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	records.wait(t, "routed", "dr-1")
 	if failed.Load() != 1 {
 		t.Fatal("no read of dr-1 failed")
 	}
-	if _, n := fr.resolution("dr-1"); n != 1 {
-		t.Fatalf("dr-1 resolved %d times", n)
+	if records.count("listed", "dr-1") == 0 {
+		t.Fatal("dr-1 was told without a pass listing it")
 	}
-	if got := fr.routedIDs(); !slices.Equal(got, []string{"dr-1", q}) {
+	if got := fr.routedIDs(); !slices.Equal(got, []string{"dr-1"}) {
 		t.Fatalf("routed %q", got)
+	}
+}
+
+// A tell that fails is told again by the next pass: the router's Route
+// fails for dr-1 once (an error), and the pass after the wait tells it
+// again, which it takes; the record keeps the second route's row alone.
+// A failed Route is "nothing told", whatever reached the provider.
+func TestATellThatFailsIsToldAgain(t *testing.T) {
+	records := watchRecords(t)
+	lowRetry(t)
+	var calls atomic.Int32
+	fr := &fakeRouter{route: func(_ context.Context, d ext.Decision) (ext.Route, error) {
+		if calls.Add(1) == 1 {
+			return ext.Route{}, errors.New("the switchboard is down")
+		}
+		return ext.Route{To: []ext.Destination{{Kind: "person", Name: "Ada"}}}, nil
+	}}
+	f := routerDecisionFixture(t, fr, nil)
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	until(t, "dr-1 told twice", func() bool { return count(fr.routedIDs(), "dr-1") >= 2 })
+	until(t, "dr-1's route taken", func() bool {
+		records.mu.Lock()
+		defer records.mu.Unlock()
+		for _, st := range records.steps {
+			if st.step == "routed" && st.decision == "dr-1" && st.err == nil && len(st.rt.To) == 1 {
+				return true
+			}
+		}
+		return false
+	})
+	if records.count("listed", "dr-1") == 0 {
+		t.Fatal("dr-1 was told again without a pass")
+	}
+	d := f.decisionWhen(t, "dr-1", "the route recorded", func(d map[string]any) bool {
+		return slices.Contains(historyOf(d), "routed router:switchman")
+	})
+	if n := count(historyOf(d), "routed router:switchman"); n != 1 {
+		t.Fatalf("dr-1 has %d router's rows: %q", n, historyOf(d))
+	}
+}
+
+// A provider that blocks for ever, ignoring its context, holds one slot
+// and nothing waits for it: dr-1's end is told to a Resolved that never
+// returns, and dr-2 opens, is told, ends and is told its end all the
+// same; the requests that open and close them answer at once.
+func TestAProviderThatBlocksHoldsOneSlot(t *testing.T) {
+	records := watchRecords(t)
+	never := make(chan struct{})
+	t.Cleanup(func() { close(never) })
+	fr := &blockingRouter{fakeRouter: fakeRouter{}, block: "dr-1", never: never}
+	p := ext.Providers{Router: fr, All: []ext.Entry{{Kind: ext.KindDecisions, Name: "switchman", Value: fr}}}
+	f := newDecisionFixture(t, nil, nil, WithExtensions(local.Fill(p)))
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	records.wait(t, "routed", "dr-1")
+	f.expectAs(t, f.tok, http.MethodPost, "/api/sessions/"+f.sid+"/decisions/dr-1/withdraw", map[string]any{}, http.StatusOK, "")
+	until(t, "dr-1's end held in Resolved", func() bool { return fr.blocked.Load() })
+	f.ask(t, approvalBody("r2"), http.StatusCreated, "")
+	records.wait(t, "routed", "dr-2")
+	f.expectAs(t, f.tok, http.MethodPost, "/api/sessions/"+f.sid+"/decisions/dr-2/withdraw", map[string]any{}, http.StatusOK, "")
+	until(t, "dr-2 resolved past the held one", func() bool { _, n := fr.resolution("dr-2"); return n == 1 })
+	if _, n := fr.resolution("dr-1"); n != 0 {
+		t.Fatalf("dr-1's held Resolved returned")
+	}
+}
+
+// blockingRouter is a fakeRouter whose Resolved of block never returns
+// until never is closed, whatever its context.
+type blockingRouter struct {
+	fakeRouter
+	block   string
+	never   chan struct{}
+	blocked atomic.Bool
+}
+
+func (b *blockingRouter) Resolved(ctx context.Context, r ext.Resolution) {
+	if r.Request == b.block {
+		b.blocked.Store(true)
+		<-b.never
+		return
+	}
+	b.fakeRouter.Resolved(ctx, r)
+}
+
+// The router reads a decision's state through its Host (ext.Host.Decision):
+// open, then cancelled and final once withdrawn, with when it closed; a
+// decision the ledger does not hold is ext.ErrNotFound, and a request that
+// is not a decision's id is refused.
+func TestARouterReadsADecisionsState(t *testing.T) {
+	f := routerDecisionFixture(t, &fakeRouter{}, nil)
+	h := &extHost{s: f.srv, name: "switchman", ctx: context.Background()}
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	st, err := h.Decision(t.Context(), "dr-1")
+	if err != nil || st.Request != "dr-1" || st.State != ledger.DecisionOpen || st.Final || !st.ClosedAt.IsZero() {
+		t.Fatalf("dr-1 read %+v, %v", st, err)
+	}
+	f.expectAs(t, f.tok, http.MethodPost, "/api/sessions/"+f.sid+"/decisions/dr-1/withdraw", map[string]any{}, http.StatusOK, "")
+	st, err = h.Decision(t.Context(), "dr-1")
+	if err != nil || st.State != ledger.DecisionCancelled || !st.Final || st.ClosedAt.IsZero() {
+		t.Fatalf("dr-1 read %+v, %v after its withdrawal", st, err)
+	}
+	if _, err := h.Decision(t.Context(), "dr-9"); !errors.Is(err, ext.ErrNotFound) {
+		t.Fatalf("dr-9 read %v", err)
+	}
+	for _, bad := range []string{"", "dr-0", "dr-x", "br-1", "dr-" + strings.Repeat("9", 19)} {
+		if _, err := h.Decision(t.Context(), bad); !errors.Is(err, ext.ErrRefused) {
+			t.Errorf("%q read %v, want refused", bad, err)
+		}
 	}
 }
 
@@ -460,12 +555,13 @@ func crash(t *testing.T, f *decisionFixture) {
 // started over the same data directory while A holds the ledger, tells its
 // router nothing, though A changes dr-1. A ends as a crash ends it; B
 // takes the ledger over and tells its router dr-1 again (open: routed by
-// A, Route told again) and dr-2's end (closed as the ledger changed hands,
-// Resolved), each once; dr-1's record gains no second router's row and no
-// second response, whatever B's router answered. B's router hangs in the
-// route it is told during the catch-up, and nothing waits on it: dr-1 is
-// answered meanwhile and applied as its run is continued, and the router
-// is told its end once too.
+// A, Route told again, a repeat that is nothing new), never dr-2 (closed,
+// its end owed to no one): B's router reads dr-2's end through its Host.
+// dr-1's record gains no second router's row and no second response,
+// whatever B's router answered. B's router hangs in the route it is told
+// at the takeover, and nothing waits on it: dr-1 is answered meanwhile
+// and applied as its run is continued, and the router is told its end,
+// through another slot, while the route still hangs.
 func TestTheRouterIsToldWhatTheLedgerHoldsAcrossARestart(t *testing.T) {
 	records := watchRecords(t)
 	ada := ext.Principal{Subject: "nate", Name: "Nate"}
@@ -503,11 +599,16 @@ func TestTheRouterIsToldWhatTheLedgerHoldsAcrossARestart(t *testing.T) {
 		}
 		return routeTo("Grace")(ctx, d)
 	}}
+	// The route's wait only bounds a hang: B's route stays under way, its
+	// decision told, until the test lets it go.
+	long := 5 * time.Minute
+	extWaiting.Store(&long)
+	t.Cleanup(func() { extWaiting.Store(nil) })
 	b := serveOver(t, f, frB)
 	if ro, _ := b.srv.ledger.ReadOnly(); !ro {
 		t.Fatal("B took the owner lock A holds")
 	}
-	caughtUp := records.count("caught up", "")
+	passed := records.count("passed", "")
 	reads := records.count("done", "dr-1")
 	rev := f.decisionWhen(t, "dr-1", "read", func(map[string]any) bool { return true })["rev"]
 	f.expect(t, http.MethodPost, "/api/decisions/dr-1/comment", map[string]any{"opId": "c1", "kind": "comment", "text": "Looking", "expectedRev": rev}, http.StatusOK, "")
@@ -516,11 +617,15 @@ func TestTheRouterIsToldWhatTheLedgerHoldsAcrossARestart(t *testing.T) {
 		t.Fatalf("B's router was told %q and %d resolutions while A owned the ledger", got, n)
 	}
 
-	// A crashes; B takes the ledger over and catches up.
+	// A crashes; B takes the ledger over and tells what it holds open.
 	crash(t, f)
-	until(t, "B caught up", func() bool { return records.count("caught up", "") > caughtUp })
+	until(t, "B's pass", func() bool { return records.count("passed", "") > passed })
 	<-hung
-	until(t, "dr-2 resolved by B", func() bool { _, n := frB.resolution("dr-2"); return n > 0 })
+	// dr-2 ended as the ledger changed hands: B's router reads its end.
+	st, err := (&extHost{s: b.srv, name: "switchman", ctx: context.Background()}).Decision(t.Context(), "dr-2")
+	if err != nil || st.State != ledger.DecisionCancelled || !st.Final {
+		t.Fatalf("B's router read dr-2 as %+v, %v", st, err)
+	}
 	// While B's router hangs in dr-1's route, the operator answers dr-1
 	// (its run interrupted, the answer recorded), and the run is
 	// continued, which applies it.
@@ -529,16 +634,18 @@ func TestTheRouterIsToldWhatTheLedgerHoldsAcrossARestart(t *testing.T) {
 	b.decisionWhen(t, "dr-1", "answered", inState(ledger.DecisionAnswered))
 	b.expect(t, http.MethodPost, "/api/runs/"+f.run+"/resume", nil, http.StatusCreated, "")
 	b.decisionWhen(t, "dr-1", "applied", inState(ledger.DecisionApplied))
+	until(t, "dr-1 resolved by B while its route hangs", func() bool { _, n := frB.resolution("dr-1"); return n > 0 })
 	hangOnce.Do(func() { close(release) })
-	until(t, "dr-1 resolved by B", func() bool { _, n := frB.resolution("dr-1"); return n > 0 })
-	drained(t, b.srv.router)
+	records.wait(t, "routed", "dr-1")
+	until(t, "B's route of dr-1 handled", func() bool { return records.count("routed", "dr-1") >= 2 })
 	if got := frB.routedIDs(); !slices.Equal(got, []string{"dr-1"}) {
 		t.Fatalf("B's router was routed %q, want dr-1 alone (dr-2 is closed)", got)
 	}
-	for _, did := range []string{"dr-1", "dr-2"} {
-		if r, n := frB.resolution(did); n != 1 || r.Request != did {
-			t.Errorf("B's router told %s resolved %d times: %+v", did, n, r)
-		}
+	if r, n := frB.resolution("dr-1"); n != 1 || r.Request != "dr-1" {
+		t.Errorf("B's router told dr-1 resolved %d times: %+v", n, r)
+	}
+	if _, n := frB.resolution("dr-2"); n != 0 {
+		t.Errorf("B's router told dr-2's end %d times, which B never told open", n)
 	}
 	if got := frA.resolvedIDs(); len(got) != 0 {
 		t.Fatalf("A's router was told %q", got)

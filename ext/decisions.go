@@ -8,14 +8,17 @@ import (
 // DecisionRouter says whom a question a session asks goes to (Switchman's
 // team routing). Its free default answers the empty route: the people
 // watching answer, and the first answer wins. A durable decision (a managed
-// run's, Program item DR1) is routed as its record when it opens
-// (Decision.Request, Kind "decision"), never as the session question that
-// mirrors it, and told Resolved when the record reaches a final state. The
-// ledger is the truth: a server that takes the ledger over (a restart, or
-// another server taking its owner lock) routes every decision the ledger
-// holds open and tells Resolved of every one it closed lately, so a router
-// may be told of the same decision more than once, Route or Resolved, and
-// treats a repeat (the same Request) as nothing new.
+// run's, Program item DR1) is routed as its record (Decision.Request, Kind
+// "decision"), never as the session question that mirrors it. The ledger
+// is the truth, and the server keeps no account of what a router heard: a
+// decision is told when it opens, as often as needed (whenever a server
+// takes the ledger over, and again after a tell that failed or was not
+// made, every decision the ledger holds open is told); told when it ends
+// when that can be done at once (Resolved, best-effort, never owed); and
+// its state can always be read (Host.Decision). A router so may be told
+// of the same decision more than once and treats a repeat (the same
+// Request) as nothing new, and one that heard of a decision and not of its
+// end reads it.
 type DecisionRouter interface {
 	Provider
 	// Route is told, once per question, a question a session shows (a
@@ -27,8 +30,9 @@ type DecisionRouter interface {
 	// Resolved is told that a question Route was given no longer waits:
 	// answered (by whoever), gone from the screen, or ended with its
 	// session; for a durable decision, that its record reached a final
-	// state, perhaps again, or of one routed by a server before. Called in
-	// order, from one goroutine.
+	// state, when that could be told at once (see above). A session's
+	// questions are told in order, from one goroutine; a decision's end on
+	// a goroutine of its own: Safe for concurrent use.
 	Resolved(ctx context.Context, r Resolution)
 }
 
@@ -64,6 +68,18 @@ type Decision struct {
 	// the asking attempt's session, or none (an empty ID) for a plan's
 	// gate, with its run and task.
 	Request string `json:"request,omitempty"`
+}
+
+// DecisionState is a durable decision's state as Host.Decision reads it:
+// its id, its state (open, answered, applied, superseded, cancelled or
+// expired), whether that state is final (no answer is taken any more),
+// its revision and, once final, when it closed.
+type DecisionState struct {
+	Request  string    `json:"request"`
+	State    string    `json:"state"`
+	Final    bool      `json:"final"`
+	Rev      int       `json:"rev"`
+	ClosedAt time.Time `json:"closedAt,omitzero"`
 }
 
 // DecisionOption is one of a question's choices.

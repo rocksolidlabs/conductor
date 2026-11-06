@@ -24,12 +24,11 @@ import (
 // commit; owned runs after the recovery of a ledger that took the owner
 // lock late, as what the server it waited for wrote meanwhile was told to
 // no hook. afterRecover is given the ledger once its recovery is done,
-// with the moment it became this server's (before the recovery),
 // whichever way the owner lock was taken: in this call when it was taken
 // at open, else inside the one OnOwned callback, after recoverLedger and
 // before owned, so neither replaces the other (the reconcile of the
 // launches from a ticket, dispatch_launch.go).
-func openLedger(ctx context.Context, st *store.Store, records *crew.Records, log logger, observe func(*ledger.Ledger), owned func(), afterRecover func(*ledger.Ledger, time.Time)) *ledger.Ledger {
+func openLedger(ctx context.Context, st *store.Store, records *crew.Records, log logger, observe func(*ledger.Ledger), owned func(), afterRecover func(*ledger.Ledger)) *ledger.Ledger {
 	ld, err := ledger.Open(filepath.Join(st.Dir(), "runs"))
 	if err != nil {
 		// The directory or the file itself: the server runs its legacy
@@ -47,10 +46,9 @@ func openLedger(ctx context.Context, st *store.Store, records *crew.Records, log
 		log.Warn("managed runs are off: the ledger is read-only", "why", why)
 		ld.OnOwned(func() {
 			log.Info("the ledger's owner lock was taken: managed runs are on")
-			at := time.Now().UTC()
 			recoverLedger(context.Background(), ld, records, log)
 			if afterRecover != nil {
-				afterRecover(ld, at)
+				afterRecover(ld)
 			}
 			if owned != nil {
 				owned()
@@ -58,10 +56,9 @@ func openLedger(ctx context.Context, st *store.Store, records *crew.Records, log
 		})
 		return ld
 	}
-	at := time.Now().UTC()
 	recoverLedger(ctx, ld, records, log)
 	if afterRecover != nil {
-		afterRecover(ld, at)
+		afterRecover(ld)
 	}
 	return ld
 }

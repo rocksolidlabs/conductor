@@ -51,6 +51,14 @@ type Host interface {
 	// operation id, so a retry answers the launch it made and never starts
 	// a second run.
 	LaunchApproved(ctx context.Context, r ApprovedLaunch) (RunRef, error)
+	// Decision reads the durable decision request ("dr-<n>",
+	// Decision.Request) as the ledger holds it now: a router that was told
+	// of a decision and not of its end reads it (DecisionRouter). It
+	// answers ErrNotFound for a decision the ledger does not hold (its
+	// run deleted), ErrRefused for a request that is not a decision's id
+	// (past MaxDecisionRef bytes, or not dr-<n>), and ErrUnsupported where
+	// the server keeps no ledger (a switchyard).
+	Decision(ctx context.Context, request string) (DecisionState, error)
 }
 
 // TurnLaunch is a Brakeman turn to launch: the catalog agent, its model
@@ -142,6 +150,8 @@ const (
 	MaxRequestRef = 12
 	// MaxOpID bounds an operation's id, in bytes (Dispatch's OpIDPattern).
 	MaxOpID = 32
+	// MaxDecisionRef bounds a durable decision's id (dr-<n>), in bytes.
+	MaxDecisionRef = 21
 	// PlanIDLen is a plan revision's id's length: lower-case hex.
 	PlanIDLen = 16
 )

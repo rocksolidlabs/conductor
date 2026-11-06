@@ -1366,10 +1366,6 @@ type DecisionFilter struct {
 	Task       string
 	Before     int64
 	Limit      int
-	// ClosedSince, when set, keeps the decisions closed at or after it,
-	// and some closed in the second before (a stamp is compared as the
-	// text it is kept as, whose fraction's width varies): a superset.
-	ClosedSince time.Time
 }
 
 // Decision reads decision n with its responses and history, all three of
@@ -1525,9 +1521,6 @@ func (l *Ledger) Decisions(ctx context.Context, f DecisionFilter) ([]DecisionRow
 	if f.Before > 0 {
 		where, args = append(where, "d.n < ?"), append(args, f.Before)
 	}
-	if !f.ClosedSince.IsZero() {
-		where, args = append(where, "d.closed_at != '' AND d.closed_at >= ?"), append(args, secondBefore(f.ClosedSince))
-	}
 	query := "SELECT " + decisionCols + " FROM decisions d"
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -1554,34 +1547,6 @@ func (l *Ledger) Decisions(ctx context.Context, f DecisionFilter) ([]DecisionRow
 		return cmp.Or(rows.Err(), rows.Close())
 	})
 	return out, err
-}
-
-// secondBefore is the stamp of the whole second before t's: compared as
-// text, every stamp of t's second or later is at or past it.
-func secondBefore(t time.Time) string {
-	return t.UTC().Truncate(time.Second).Add(-time.Second).Format(time.RFC3339)
-}
-
-// LastClosed answers when the ledger last closed a decision before the
-// time before, to the second (the stamps compared as text), and false
-// when it closed none.
-func (l *Ledger) LastClosed(ctx context.Context, before time.Time) (time.Time, bool, error) {
-	var last string
-	err := l.readAt(ctx, func(q querier, version int) error {
-		if version < versionDecisions {
-			return nil
-		}
-		var v sql.NullString
-		if err := q.QueryRowContext(ctx, "SELECT MAX(closed_at) FROM decisions WHERE closed_at != '' AND closed_at < ?", stamp(before)).Scan(&v); err != nil {
-			return err
-		}
-		last = v.String
-		return nil
-	})
-	if err != nil || last == "" {
-		return time.Time{}, false, err
-	}
-	return unstamp(last), true, nil
 }
 
 // Holds reads the holds under a run, active and released, by task and

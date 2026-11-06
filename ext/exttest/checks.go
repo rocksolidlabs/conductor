@@ -369,8 +369,8 @@ func Identity(t T, n *Network, p ext.IdentityProvider, known, unknown []string) 
 // record (Request its ID, a valid reference dr-<n> of its own, Kind
 // "decision", no Source, each option picked by its place, Program item
 // DR1), told Resolved with its Request. A record is routed twice and told
-// Resolved twice, as a server that takes the ledger over tells a router
-// again (ext.DecisionRouter): a repeat is answered as the first was. A
+// Resolved twice, as a server tells a router again whenever it holds the
+// ledger (ext.DecisionRouter): a repeat is answered as the first was. A
 // router that fetches a question's route on the call's path is caught on
 // the questions asked with the network blocked, which it has never been
 // given before.

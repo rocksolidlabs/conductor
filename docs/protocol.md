@@ -3986,17 +3986,20 @@ its session's question, with the decision's id as its attention's
 the asking attempt's (an empty id for a plan's gate) with its run and
 task, message: the question cut where a character ends to 500 bytes, kind:
 decision, options: the labels, each picked by its place ("1" first),
-since}`, through the router's guard and a bound of its own (1,024
-decisions routed and not yet told `Resolved`, beside the sessions'
-questions' 1,024), never the session question that mirrors it; it is told
-`Resolved` (with `request`) when the record reaches a final state. The
-ledger is the truth and only its owner tells the router: a server that
-takes the ledger over (at its start, or from another server holding its
-owner lock) routes every decision the ledger holds open, holds every one
-answered for its `Resolved`, and tells `Resolved` of every one closed
-from 2,048 × `ext.DeliveryWait` before the ledger's last close, so a
-router may be told of a decision more than once and treats a repeat (the
-same `request`) as nothing new. A route's destinations become one
+since}`, through the router's guard, never the session question that
+mirrors it. The ledger is the truth, only its owner tells the router, and
+the server keeps no account of what a router heard: a decision is told
+when it opens, as often as needed (whenever the server holds the ledger,
+at its start, at a takeover from another server holding its owner lock
+and after a tell that failed or was not made, one query of the ledger
+tells every decision it holds open, so a router may be told of a decision
+more than once and treats a repeat, the same `request`, as nothing new);
+told `Resolved` (with `request`) when it reaches a final state, when that
+can be done at once (best-effort, never owed); and its state can always
+be read through the provider's Host (`ext.Host.Decision`, a `dr-N` of at
+most 21 bytes: its state, whether final, its rev, when it closed). Each
+call about a decision runs on a goroutine of its own, at most 16 at once:
+a provider that hangs holds one and stalls nothing. A route's destinations become one
 `routed` history row (by `router:<name>`, its `to` and `rule`; a repeat
 writes none); an answer
 it holds is offered as a response under the actor `user:<subject>` with
