@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -92,6 +93,21 @@ func decisionIn(t *testing.T, f TaskFile, id string) TaskDecision {
 	return TaskDecision{}
 }
 
+// unparked fails unless the task's attempt still runs with no park of it
+// on its way: what a pump decides as it runs, read under e.mu once the
+// pump returned. A park is a goroutine whose close commits later, so the
+// attempt's state alone, read a moment after, says nothing of it.
+func unparked(t *testing.T, e *Engine, runID, taskID string) {
+	t.Helper()
+	r := runOf(t, e, runID)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	a := r.task(taskID).active()
+	if a == nil || !a.closedAt.IsZero() || a.state != ledger.AttemptRunning || a.parking {
+		t.Fatalf("%s's attempt was given up: %+v", taskID, a)
+	}
+}
+
 // An agent's decision holds only its own task: the waiting attempt, its
 // turn ended, gives its member up to a sibling task, which dispatches and
 // finishes meanwhile; the attempt is given back, and the task's next
@@ -145,11 +161,35 @@ func TestAWorkingAttemptIsNeverParked(t *testing.T) {
 	mirrorOf(t, l, d.ID)
 	reportWorking(e, b.Attempt.SessionID)
 	e.pumpLocked(runOf(t, e, run.ID))
-	if ts := taskOf(t, e, run.ID, "build"); ts.Attempt.State != ledger.AttemptRunning {
-		t.Fatalf("a working attempt was given up: %+v", ts.Attempt)
-	}
+	unparked(t, e, run.ID, "build")
 	if ts := taskOf(t, e, run.ID, "docs"); ts.Attempts != 0 {
 		t.Fatalf("docs dispatched while its member works: %+v", ts)
+	}
+	reportDone(e, b.Attempt.SessionID)
+	waitGivenBack(t, e, run.ID, "build", 1, d.ID)
+	attemptOn(t, e, fl, run.ID, "docs")
+	stopRun(t, e, run.ID)
+}
+
+// A working report after a done clears the turn's end (I12): a sibling
+// that becomes ready for the member then does not park the attempt; the
+// agent's next done does, and the sibling starts.
+func TestAWorkingReportClearsTheTurnsEnd(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, _ := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("prep", "ops"), work("build", "lead"), work("docs", "lead", "prep")))
+	b, l, _ := attemptOn(t, e, fl, run.ID, "build")
+	pr, _, _ := attemptOn(t, e, fl, run.ID, "prep")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	mirrorOf(t, l, d.ID)
+	reportDone(e, b.Attempt.SessionID)
+	reportWorking(e, b.Attempt.SessionID)
+	commitResult(t, e, pr, "prep.txt", "p\n", "prepared")
+	waitTask(t, e, run.ID, "docs", ledger.TaskReady, 0)
+	e.pumpLocked(runOf(t, e, run.ID))
+	unparked(t, e, run.ID, "build")
+	if ts := taskOf(t, e, run.ID, "docs"); ts.Attempts != 0 {
+		t.Fatalf("docs took the member of a working attempt: %+v", ts)
 	}
 	reportDone(e, b.Attempt.SessionID)
 	waitGivenBack(t, e, run.ID, "build", 1, d.ID)
@@ -219,6 +259,31 @@ func TestWaitingAttemptsFreeTheRunsSlots(t *testing.T) {
 	}
 	if given != 1 {
 		t.Fatalf("%d waiting attempts given up for one slot", given)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// The run's four slots are full and the ready task's member is one whose
+// own attempt waits with its turn ended: that attempt is parked, which
+// frees the member and a slot at once, and the task starts; the other
+// attempts keep their sessions (I12).
+func TestAMembersOwnWaitingAttemptGivesUpItsSlot(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, _ := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("a", "m1"), work("b", "m2"), work("c", "m3"), work("d", "m4"), work("a2", "m1")))
+	a, l, _ := attemptOn(t, e, fl, run.ID, "a")
+	for _, id := range []string{"b", "c", "d"} {
+		attemptOn(t, e, fl, run.ID, id)
+	}
+	d := ask(t, e, a.Attempt.SessionID, clarification("q1", "Which way?"))
+	mirrorOf(t, l, d.ID)
+	reportDone(e, a.Attempt.SessionID)
+	waitGivenBack(t, e, run.ID, "a", 1, d.ID)
+	attemptOn(t, e, fl, run.ID, "a2")
+	for _, id := range []string{"b", "c", "d"} {
+		if ts := taskOf(t, e, run.ID, id); ts.Attempt.State != ledger.AttemptRunning {
+			t.Fatalf("%s: %+v", id, ts.Attempt)
+		}
 	}
 	stopRun(t, e, run.ID)
 }
@@ -372,6 +437,141 @@ func TestARetriedTaskAsksItsGateAgain(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
+// A retry in a continuation of the run whose gate ended asks again: the
+// continuation derives the gate's requirement and its last decision from
+// the chain's rows (readDecisionHistory), and the fresh gate holds the
+// work until it is answered. Twice: the gate cancelled as build failed
+// for good, and the gate rejected.
+func TestARetryAfterAContinuationAsksAgain(t *testing.T) {
+	t.Run("its gate cancelled as the work ended", func(t *testing.T) {
+		dir, ldir := newRepo(t), t.TempDir()
+		e, fl, ld := decisionEngineAt(t, ldir)
+		run := launchGated(t, e, dir, "api-sweep-000000c7", repoCrew(dir, work("build", "lead"), work("deploy", "ops", "build")), shipGate("deploy"))
+		g := gateOf(t, e, ld, run.ID)
+		failBuild(t, e, fl, run.ID)
+		decisionWhen(t, ld, g.ID, "cancelled", inState(ledger.DecisionCancelled))
+		waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+		e2, fl2, ld2 := restart(t, e, ld, ldir, run.ID)
+		next := continueRun(t, e2, run.ID)
+		if err := e2.RetryTask(t.Context(), next.ID, "build"); err != nil {
+			t.Fatal(err)
+		}
+		fresh := gateOf(t, e2, ld2, next.ID)
+		if fresh.ID == g.ID || !strings.Contains(string(fresh.History[0].Detail), "build was retried after "+g.ID+" was cancelled") {
+			t.Fatalf("the fresh gate: %+v %s", fresh, fresh.History[0].Detail)
+		}
+		if got := activeHolds(t, ld2, next.ID); !slices.Equal(got, []string{"deploy " + fresh.ID}) {
+			t.Fatalf("holds after the retry %q", got)
+		}
+		b := attemptLine(t, e2, fl2, next.ID, "build", maxAttemptsPerTask+1)
+		commitResult(t, e2, b, "built.txt", "b\n", "built")
+		waitTask(t, e2, next.ID, "build", ledger.TaskSucceeded, 0)
+		waitTaskWhere(t, e2, next.ID, "deploy", "held by "+fresh.ID, func(ts TaskState) bool {
+			return ts.State == ledger.TaskReady && ts.Reason == "waits for decision "+fresh.ID && ts.Attempts == 0
+		})
+		answer(t, e2, fresh.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+		waitAttempt(t, e2, next.ID, "deploy", ledger.AttemptRunning)
+		stopRun(t, e2, next.ID)
+	})
+	t.Run("its gate rejected", func(t *testing.T) {
+		dir, ldir := newRepo(t), t.TempDir()
+		e, _, ld := decisionEngineAt(t, ldir)
+		run := launchGated(t, e, dir, "api-sweep-000000c8", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
+		g := gateOf(t, e, ld, run.ID)
+		answer(t, e, g.ID, Response{ResponseID: "r1", Choice: choice(1), ExpectedRev: 1})
+		waitTask(t, e, run.ID, "deploy", ledger.TaskCancelled, 0)
+		waitOutcome(t, e, run.ID, ledger.OutcomeCancelled)
+		e2, _, ld2 := restart(t, e, ld, ldir, run.ID)
+		next := continueRun(t, e2, run.ID)
+		if err := e2.RetryTask(t.Context(), next.ID, "deploy"); err != nil {
+			t.Fatal(err)
+		}
+		fresh := gateOf(t, e2, ld2, next.ID)
+		if !strings.Contains(string(fresh.History[0].Detail), "deploy was retried after "+g.ID+" rejected it") {
+			t.Fatalf("the fresh gate's opening: %s", fresh.History[0].Detail)
+		}
+		if ts := taskOf(t, e2, next.ID, "deploy"); ts.Attempts != 0 || ts.Reason != "waits for decision "+fresh.ID {
+			t.Fatalf("deploy after the retry: %+v", ts)
+		}
+		answer(t, e2, fresh.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+		waitAttempt(t, e2, next.ID, "deploy", ledger.AttemptRunning)
+		stopRun(t, e2, next.ID)
+	})
+}
+
+// A change that makes a gate's work runnable again in a run with no room
+// for the gate (a reopen's, a continuation's, which no retry's check
+// guards) notes it once, and pump's backstop does not ask again at every
+// pump: the task is never dispatched, and no regate is on its way.
+func TestARegateWithNoRoomAsksOnce(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	run := launchGated(t, e, dir, "api-sweep-000000c9", repoCrew(dir, work("build", "lead"), work("deploy", "ops")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	answer(t, e, g.ID, Response{ResponseID: "r1", Choice: choice(1), ExpectedRev: 1})
+	waitTask(t, e, run.ID, "deploy", ledger.TaskCancelled, 0)
+	r := runOf(t, e, run.ID)
+	err := e.transact(t.Context(), r, func() tx {
+		// The run full, as a thousand requests would leave it.
+		r.dec.opened = ledger.MaxDecisionsPerRun
+		return tx{events: e.retryTask(r, r.task("deploy"))}
+	}, nil)
+	e.afterTransact(r, err)
+	for range 3 {
+		e.pumpLocked(r)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		e.mu.Lock()
+		regating := r.dec.regating
+		e.mu.Unlock()
+		if !regating {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a regate is still on its way")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := logCount(t, e, run.ID, "cannot be asked again"); n != 1 {
+		t.Fatalf("noted %d times", n)
+	}
+	if ts := taskOf(t, e, run.ID, "deploy"); ts.Attempts != 0 || ts.State != ledger.TaskReady {
+		t.Fatalf("deploy without its gate: %+v", ts)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A retry that would ask two gates again, in a run with room for one, is
+// refused decision_limit: the task stays failed, and no gate opens.
+func TestARetryNeedsRoomForEveryGate(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	smoke := PackageDecision{ID: "smoke", Question: "Smoke it?", Kind: ledger.DecisionApproval, Before: []string{"smoke"}}
+	run := launchGated(t, e, dir, "api-sweep-000000ca", repoCrew(dir, work("build", "lead"), work("deploy", "ops", "build"), work("smoke", "qa", "build")), shipGate("deploy"), smoke)
+	failBuild(t, e, fl, run.ID)
+	waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+	before, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: run.ID})
+	if err != nil || len(before) != 2 || !before[0].Final() || !before[1].Final() {
+		t.Fatalf("the gates: %+v %v", before, err)
+	}
+	r := runOf(t, e, run.ID)
+	e.mu.Lock()
+	r.dec.opened = ledger.MaxDecisionsPerRun - 1
+	e.mu.Unlock()
+	var de *DecisionError
+	if err := e.RetryTask(t.Context(), run.ID, "build"); !errors.As(err, &de) || de.Code != CodeDecisionLimit || !strings.Contains(de.Words, "ship, smoke") {
+		t.Fatalf("the retry: %v", err)
+	}
+	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskFailed {
+		t.Fatalf("build after the refused retry: %+v", ts)
+	}
+	if after, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: run.ID}); err != nil || len(after) != 2 {
+		t.Fatalf("decisions after the refused retry: %+v %v", after, err)
+	}
+	stopRun(t, e, run.ID)
+}
+
 // A Reject cancels deploy; its retry asks again ("after dr-1 rejected
 // it"), and the fresh gate's Approve starts it.
 func TestARetriedRejectedTaskAsksAgain(t *testing.T) {
@@ -456,7 +656,7 @@ func TestAReleasingCancelIsAWaiver(t *testing.T) {
 	e, _, ld := decisionEngine(t)
 	run := launchGated(t, e, dir, "api-sweep-000000b6", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
 	g := gateOf(t, e, ld, run.ID)
-	rc, err := e.CancelDecision(t.Context(), g.ID, "c1", true, "ship it anyway", "admin")
+	rc, err := e.CancelDecision(t.Context(), g.ID, "c1", 0, true, "ship it anyway", "admin")
 	if err != nil || rc.Op != ledger.HistoryCancelled {
 		t.Fatalf("the cancel: %+v %v", rc, err)
 	}
@@ -491,7 +691,7 @@ func TestCancellingTheLastHeldTasksGateEndsTheRunOnce(t *testing.T) {
 	e, _, ld := decisionEngine(t)
 	run := launchGated(t, e, dir, "api-sweep-000000b7", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
 	g := gateOf(t, e, ld, run.ID)
-	if _, err := e.CancelDecision(t.Context(), g.ID, "c1", false, "", "admin"); err != nil {
+	if _, err := e.CancelDecision(t.Context(), g.ID, "c1", 0, false, "", "admin"); err != nil {
 		t.Fatal(err)
 	}
 	rec := decisionWhen(t, ld, g.ID, "cancelled", inState(ledger.DecisionCancelled))
@@ -512,6 +712,34 @@ func TestCancellingTheLastHeldTasksGateEndsTheRunOnce(t *testing.T) {
 	order := eventOrder(t, ld, run.ID)
 	if finished != 1 || !(order["decision.cancelled"] < order["task.cancelled"] && order["task.cancelled"] < order["run.finished"]) {
 		t.Fatalf("events %q", sqlKinds(t, ld, run.ID))
+	}
+}
+
+// The operator's cancel without release of a gate that holds build and
+// deploy, deploy needing build: build's cancel dooms deploy and settles
+// the run before deploy's own; the run finishes once, after both tasks'
+// cancels.
+func TestCancellingAGateOfDependentTasksEndsTheRunOnce(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	run := launchGated(t, e, dir, "api-sweep-000000cb", repoCrew(dir, work("build", "lead"), work("deploy", "ops", "build")), shipGate("build", "deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	if _, err := e.CancelDecision(t.Context(), g.ID, "c1", 0, false, "", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	waitOutcome(t, e, run.ID, ledger.OutcomeCancelled)
+	kinds := sqlKinds(t, ld, run.ID)
+	finished, lastCancel, at := 0, -1, -1
+	for i, k := range kinds {
+		switch k {
+		case "run.finished":
+			finished, at = finished+1, i
+		case "task.cancelled":
+			lastCancel = i
+		}
+	}
+	if finished != 1 || at < lastCancel {
+		t.Fatalf("events %q", kinds)
 	}
 }
 
@@ -556,4 +784,60 @@ func TestAGateWithNoTaskKeepsNoRunOpen(t *testing.T) {
 	}
 	commitResult(t, e, b, "built.txt", "b\n", "built")
 	waitOutcome(t, e, run.ID, ledger.OutcomeSucceeded)
+}
+
+// A retry that would ask a gate again in a run with 64 decisions open,
+// the ledger's other bound, is refused decision_limit before anything
+// changes, though the run's total has room: no gate opens, deploy stays
+// cancelled, and nothing is carried into the run's next commit, so a
+// cancel of one of the 64 commits and frees the place the retry then
+// takes (#636, review round 2).
+func TestARetryNeedsRoomAmongTheOpenDecisions(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	run := launchGated(t, e, dir, "api-sweep-000000cb", repoCrew(dir, work("deploy", "ops"), work("idle", "qa")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	answer(t, e, g.ID, Response{ResponseID: "r1", Choice: choice(1), ExpectedRev: 1})
+	waitTask(t, e, run.ID, "deploy", ledger.TaskCancelled, 0)
+	waitAttempt(t, e, run.ID, "idle", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+	// 64 decisions open, moved into the continuation's engine with its
+	// first commit, as a crew's questions would leave them.
+	fillOpen(t, ld, run.ID, ledger.MaxOpenPerRun)
+	next := continueRun(t, e, run.ID)
+	var de *DecisionError
+	if err := e.RetryTask(t.Context(), next.ID, "deploy"); !errors.As(err, &de) || de.Code != CodeDecisionLimit || !strings.Contains(de.Words, fmt.Sprintf("%d of its %d open", ledger.MaxOpenPerRun, ledger.MaxOpenPerRun)) {
+		t.Fatalf("the retry: %v", err)
+	}
+	if ts := taskOf(t, e, next.ID, "deploy"); ts.State != ledger.TaskCancelled {
+		t.Fatalf("deploy after the refused retry: %+v", ts)
+	}
+	rows, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: next.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var standing ledger.DecisionRow
+	for _, row := range rows {
+		if row.Origin == ledger.OriginPlan && !row.Final() {
+			t.Fatalf("a gate opened by the refused retry: %+v", row)
+		}
+		if row.State == ledger.DecisionOpen {
+			standing = row
+		}
+	}
+	if _, err := e.CancelDecision(t.Context(), standing.ID(), "c1", 0, false, "", "admin"); err != nil {
+		t.Fatalf("the run's next change: %v", err)
+	}
+	decisionWhen(t, ld, standing.ID(), "cancelled", inState(ledger.DecisionCancelled))
+	if paused(t, e, next.ID) {
+		t.Fatal("the run paused: a change was carried")
+	}
+	if err := e.RetryTask(t.Context(), next.ID, "deploy"); err != nil {
+		t.Fatalf("the retry with a place free: %v", err)
+	}
+	fresh := gateOf(t, e, ld, next.ID)
+	if got := activeHolds(t, ld, next.ID); !slices.Equal(got, []string{"deploy " + fresh.ID}) {
+		t.Fatalf("holds after the retry %q", got)
+	}
+	stopRun(t, e, next.ID)
 }

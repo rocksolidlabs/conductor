@@ -881,6 +881,76 @@ func TestDecisionBounds(t *testing.T) {
 // answered; a comment that brings the rev up to it lets the unkept
 // refusal's retry be judged again as a new response, and accepted; a
 // kept refusal's retry stays the refusal it was.
+// TestAnAuthorityIsKeptInOneForm answers decisions with every spelling of
+// an authority the decoder accepts and finds each kept as the one
+// canonical text, so the SQL that counts the places replacements hold
+// reads what the Go policy read: an identity's answer spelled {"Via":...}
+// once kept its text, was an identity's to Respond and nobody's to
+// placeCond, and held no place for its replacement (#664, review round 3).
+func TestAnAuthorityIsKeptInOneForm(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	spellings := []struct {
+		name, auth, want string
+	}{
+		{"canonical", identityAuth, identityAuth},
+		{"a capital key", `{"grant":"admin","Via":"identity","subject":"ana","boot":"boot-1"}`, identityAuth},
+		{"every key upper case", `{"GRANT":"admin","VIA":"identity","SUBJECT":"ana","BOOT":"boot-1"}`, identityAuth},
+		{"an escaped key", `{"grant":"admin","\u0076ia":"identity","subject":"ana","boot":"boot-1"}`, identityAuth},
+		{"an escaped value", `{"grant":"admin","via":"identit\u0079","subject":"ana","boot":"boot-1"}`, identityAuth},
+		{"keys out of order", `{"boot":"boot-1","subject":"ana","via":"identity","grant":"admin"}`, identityAuth},
+		{"space between", " { \"grant\" : \"admin\" ,\n\t\"via\" : \"identity\" , \"subject\" : \"ana\" , \"boot\" : \"boot-1\" } ", identityAuth},
+		{"a key twice, the identity last", `{"grant":"admin","via":"workbench","Via":"identity","subject":"ana","boot":"boot-1"}`, identityAuth},
+		{"a key twice, the workbench last", `{"grant":"admin","via":"identity","via":"workbench","boot":"boot-1"}`, workbenchAuth},
+		{"the workbench, capital", `{"Grant":"admin","Via":"workbench","Boot":"boot-1"}`, workbenchAuth},
+	}
+	identities := 0
+	for i, sp := range spellings {
+		n := open(t, l, gateDecision(run, fmt.Sprintf("g%d", i)))
+		id := fmt.Sprintf("r%d", i)
+		var got Responded
+		in(t, l, run, func(tx *Tx) error {
+			d, _, err := tx.Decision(n)
+			if err != nil {
+				return err
+			}
+			if got, err = tx.Respond(n, ResponseRow{Actor: "admin", Authority: sp.auth, ResponseID: id, Fingerprint: "fp-" + id, Status: ResponseAccepted, Receipt: `{}`}); err != nil {
+				return err
+			}
+			if ok, err := tx.Answer(n, run, d.Rev); err != nil || !ok {
+				return fmt.Errorf("the answer of %s: %v %v", d.ID(), ok, err)
+			}
+			return nil
+		})
+		if got.Row.Authority != sp.want {
+			t.Errorf("%s: answered as %s, want %s", sp.name, got.Row.Authority, sp.want)
+		}
+		var kept string
+		if err := l.db.QueryRow("SELECT authority FROM decision_responses WHERE decision = ?", n).Scan(&kept); err != nil {
+			t.Fatal(err)
+		}
+		if kept != sp.want {
+			t.Errorf("%s: kept as %s, want %s", sp.name, kept, sp.want)
+		}
+		if sp.want == identityAuth {
+			identities++
+		}
+		// The place count (room's) reads each kept row as the policy did.
+		if c := countRows(t, l, "SELECT COUNT(*) FROM decisions d WHERE d.current_run = ? AND "+placeCond, run); c != identities {
+			t.Errorf("%s: %d decisions hold a place, want %d", sp.name, c, identities)
+		}
+	}
+	// A spelling of a field the shape does not have is still refused.
+	n := open(t, l, gateDecision(run, "g-unknown"))
+	if err := try(l, run, func(tx *Tx) error {
+		_, err := tx.Respond(n, ResponseRow{Actor: "admin", Authority: `{"via":"identity","boot":"b","vía":"x"}`, ResponseID: "r-x", Fingerprint: "fp", Status: ResponseAccepted, Receipt: `{}`})
+		return err
+	}); !errors.Is(err, ErrInvalidDecision) {
+		t.Fatalf("an authority with an unknown field: %v", err)
+	}
+}
+
 func TestRefusalsNeverTakeTheAnswersPlace(t *testing.T) {
 	ctx := context.Background()
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
@@ -1335,6 +1405,70 @@ func TestMoveHoldsLeavesOneActiveRow(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// MoveHolds copies only the holds of the decisions MoveDecisions moved: a
+// final decision stays with its run, and so do its released holds, through
+// a chain of continuations (a, b, c), while a moved decision's holds go
+// with it at each step.
+func TestMoveHoldsLeavesAFinalDecisionsHoldsBehind(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	const a, b, c = "team-00000001", "team-00000002", "team-00000003"
+	newRun(t, l, a)
+	tasksOf(t, l, a, "build", "deploy")
+	cancelled := open(t, l, gateDecision(a, "g1"))
+	kept := open(t, l, gateDecision(a, "g2"))
+	in(t, l, a, func(tx *Tx) error {
+		if err := tx.Hold(a, "build", cancelled); err != nil {
+			return err
+		}
+		if _, err := tx.Release(a, "build", cancelled); err != nil {
+			return err
+		}
+		return tx.Hold(a, "deploy", kept)
+	})
+	setState(t, l, a, cancelled, DecisionCancelled, "")
+	before, _ := l.Holds(ctx, a)
+	move := func(from, to string) {
+		t.Helper()
+		in(t, l, to, func(tx *Tx) error {
+			ds, err := tx.MoveDecisions(from, to)
+			if err == nil && (len(ds) != 1 || ds[0].N != kept) {
+				err = fmt.Errorf("moved %+v", ds)
+			}
+			if err != nil {
+				return err
+			}
+			moved, err := tx.MoveHolds(from, to, tx.Now())
+			if err == nil && moved != 1 {
+				err = fmt.Errorf("%d active holds moved", moved)
+			}
+			return err
+		})
+	}
+	finish(t, l, a)
+	continuation(t, l, a, b, "build", "deploy")
+	move(a, b)
+	finish(t, l, b)
+	continuation(t, l, b, c, "build", "deploy")
+	move(b, c)
+	ha, _ := l.Holds(ctx, a)
+	if len(ha) != 2 || ha[0].Decision != cancelled || !ha[0].ReleasedAt.Equal(before[0].ReleasedAt) || ha[1].Decision != kept || ha[1].ReleasedAt.IsZero() {
+		t.Fatalf("under the run that holds the cancelled decision: %+v", ha)
+	}
+	for _, run := range []string{b, c} {
+		hs, _ := l.Holds(ctx, run)
+		if len(hs) != 1 || hs[0].Decision != kept || hs[0].TaskID != "deploy" || hs[0].ReleasedAt.IsZero() != (run == c) {
+			t.Fatalf("under %s: %+v", run, hs)
+		}
+	}
+	if n := countRows(t, l, "SELECT COUNT(*) FROM decision_holds WHERE decision = ?", cancelled); n != 1 {
+		t.Fatalf("%d hold rows of the cancelled decision", n)
+	}
+	if rec := record(t, l, cancelled); rec.CurrentRun != a {
+		t.Fatalf("the cancelled decision is held by %s", rec.CurrentRun)
+	}
 }
 
 // An attempt is given back once, whatever decision it waited on.

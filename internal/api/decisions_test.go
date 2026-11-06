@@ -23,6 +23,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
 
 // The decisions' routes (Program item DR1, docs/plans/decisions.md,
@@ -491,6 +492,75 @@ func encodedReply(t *testing.T, v any) []byte {
 // theirs, is read whole within maxDecisionReply, each ref within
 // maxDecisionRef.
 func TestTheFullestDecisionFitsItsBound(t *testing.T) {
+	d := fullestDecision(t)
+	text := func(n int) string { return strings.Repeat("a", n) }
+	at := time.Date(2026, 11, 5, 23, 59, 59, 999999999, time.UTC)
+	// Each ref at its bound, of characters writeJSON escapes to six bytes
+	// (an ampersand in its path, angle brackets in its states and
+	// revisions, its URL of ampersands), held to its bound by fitRef; and
+	// one of plain letters, whose URL fits as it is.
+	var refs []decisionRef
+	for i := range ledger.MaxDecisionEvidence {
+		fill := "&"
+		if i == 0 {
+			fill = "p"
+		}
+		ref, err := brakeman.ParseRef(fmt.Sprintf("file:%016x//%s", i, strings.Repeat(fill, ledger.MaxEvidenceRef-len("file:0123456789abcdef//"))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		esc := func(n int) string { return strings.Repeat("<", n) }
+		if i == 0 {
+			esc = text
+		}
+		st := brakeman.RefState{URL: "/sessions?q=" + strings.Repeat(fill, brakeman.MaxURL-len("/sessions?q=")), State: esc(brakeman.MaxRefState), Rev: esc(brakeman.MaxRevision), SHA256: strings.Repeat("f", 64), At: at}
+		r := fitRef(decisionRef{Ref: ref, Seen: brakeman.RefState{State: st.State, Rev: st.Rev, SHA256: st.SHA256}, Now: st, Change: refUnread})
+		if n := len(encodedReply(t, r)); n > maxDecisionRef {
+			t.Fatalf("a ref of %d bytes, over %d", n, maxDecisionRef)
+		}
+		if (r.Now.URL == "") != (i > 0) {
+			t.Fatalf("ref %d's URL: %q", i, r.Now.URL)
+		}
+		refs = append(refs, r)
+	}
+	if n := len(encodedReply(t, map[string]any{"decision": d, "refs": refs})); n > maxDecisionReply {
+		t.Fatalf("the fullest decision is %d bytes, over %d", n, maxDecisionReply)
+	}
+}
+
+// The operator's lists (GET /api/decisions, a ticket's decisions) give
+// each record without its history and its responses (listedOf): the
+// fullest such record fits maxDecisionListed, so a page of them with its
+// next fits maxDecisionListPage; and a record answered lists its answer,
+// not its receipts (#637, review round 1).
+func TestTheOperatorsDecisionListFitsItsBound(t *testing.T) {
+	d := listedOf(fullestDecision(t))
+	if d.History != nil || d.Responses != nil || d.Answer == "" {
+		t.Fatalf("listed: %d history rows, %d responses, answer %q", len(d.History), len(d.Responses), d.Answer)
+	}
+	if n := len(encodedReply(t, d)); n > maxDecisionListed {
+		t.Fatalf("the fullest listed record is %d bytes, over %d", n, maxDecisionListed)
+	}
+	page := make([]crew.Decision, maxDecisionsListed)
+	for i := range page {
+		page[i] = d
+	}
+	if n := len(encodedReply(t, map[string]any{"decisions": page, "next": d.ID})); n > maxDecisionListPage {
+		t.Fatalf("a page of %d bytes, over %d", n, maxDecisionListPage)
+	}
+	f := newDecisionFixture(t, nil, nil)
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	f.respond(t, adminToken, "dr-1", "a1", 0, 1, http.StatusCreated, "")
+	f.decisionWhen(t, "dr-1", "applied", inState(ledger.DecisionApplied))
+	listed := f.expect(t, http.MethodGet, "/api/decisions?run="+f.run, nil, http.StatusOK, "")["decisions"].([]any)[0].(map[string]any)
+	if listed["responses"] != nil || listed["history"] != nil || listed["answer"] != "Approve" {
+		t.Fatalf("the listed record: %v", listed)
+	}
+}
+
+// fullestDecision is the fullest record: every part at its bound.
+func fullestDecision(t *testing.T) crew.Decision {
+	t.Helper()
 	text := func(n int) string { return strings.Repeat("a", n) }
 	raw := func(n int) json.RawMessage { return json.RawMessage(`"` + text(n-2) + `"`) }
 	at := time.Date(2026, 11, 5, 23, 59, 59, 999999999, time.UTC)
@@ -519,22 +589,7 @@ func TestTheFullestDecisionFitsItsBound(t *testing.T) {
 	if n := len(decisionJSON(t, app)); n > ledger.MaxDecisionApplied {
 		t.Fatalf("an application of %d bytes", n)
 	}
-	var refs []decisionRef
-	for i := range ledger.MaxDecisionEvidence {
-		ref, err := brakeman.ParseRef(fmt.Sprintf("file:%016x//%s", i, strings.Repeat("p", ledger.MaxEvidenceRef-len("file:0123456789abcdef//"))))
-		if err != nil {
-			t.Fatal(err)
-		}
-		st := brakeman.RefState{URL: text(brakeman.MaxURL), State: text(brakeman.MaxRefState), Rev: text(brakeman.MaxRevision), SHA256: strings.Repeat("f", 64), At: at}
-		r := decisionRef{Ref: ref, Seen: brakeman.RefState{State: st.State, Rev: st.Rev, SHA256: st.SHA256}, Now: st, Change: refUnread}
-		if n := len(encodedReply(t, r)); n > maxDecisionRef {
-			t.Fatalf("a ref of %d bytes, over %d", n, maxDecisionRef)
-		}
-		refs = append(refs, r)
-	}
-	if n := len(encodedReply(t, map[string]any{"decision": d, "refs": refs})); n > maxDecisionReply {
-		t.Fatalf("the fullest decision is %d bytes, over %d", n, maxDecisionReply)
-	}
+	return d
 }
 
 // A page of a task's decisions at its worst fits maxDecisionSummaryPage:
@@ -597,11 +652,11 @@ func TestADecisionResolvesItsEvidence(t *testing.T) {
 		return l.expectAs(t, tok, http.MethodPost, "/api/sessions/"+sid+"/decisions", body, status, code)
 	}
 	body := approvalBody("r1")
-	body["evidence"] = []string{"ticket:CND-1", "task:" + run + "/build"}
+	body["evidence"] = []string{"ticket:CND-1", "task:" + run + "/build", "run:" + run}
 	ask(body, http.StatusCreated, "")
 	out := l.expect(t, http.MethodGet, "/api/decisions/dr-1", nil, http.StatusOK, "")
 	refs, _ := out["refs"].([]any)
-	if len(refs) != 2 {
+	if len(refs) != 3 {
 		t.Fatalf("the refs: %v", out["refs"])
 	}
 	ticket := refs[0].(map[string]any)
@@ -611,6 +666,11 @@ func TestADecisionResolvesItsEvidence(t *testing.T) {
 	}
 	if task := refs[1].(map[string]any); task["ref"] != "task:"+run+"/build" || task["seen"].(map[string]any)["state"] == nil {
 		t.Fatalf("the task's ref: %v", task)
+	}
+	// The run's revision moved with the decision's own opening: its ref is
+	// unchanged while its state is (#637, review round 1).
+	if r := refs[2].(map[string]any); r["ref"] != "run:"+run || r["change"] != nil {
+		t.Fatalf("the run's ref: %v", r)
 	}
 	for _, ev := range []string{"task:" + run + "/nope", "nope:x", "ticket:CND-99"} {
 		b := approvalBody("r-" + ev)
@@ -661,6 +721,20 @@ func TestTheGuideListsTheDecisionOperations(t *testing.T) {
 	if !strings.Contains(guideRules[2], "decision_request") {
 		t.Fatalf("the rules: %v", guideRules)
 	}
+	// The agent's words keep the states apart: an answer is acted on only
+	// once applied; answered is recorded, not yet applied (#637, review
+	// round 2).
+	for _, name := range []string{"decision_request", "decision_list", "decision_read"} {
+		op := ops[name]
+		words := op.Summary + " " + op.Description
+		if strings.Contains(words, "until it is answered") || !strings.Contains(words, "applied") ||
+			name != "decision_request" && !strings.Contains(op.Description, "Act on") {
+			t.Errorf("%s's words: %q", name, words)
+		}
+	}
+	if d := ops["decision_request"].Description; !strings.Contains(d, "answered (an answer recorded, not yet applied") || !strings.Contains(d, "applied (the answer is yours to act on)") {
+		t.Errorf("decision_request's states: %q", d)
+	}
 	e := newTestEnv(t, nil)
 	_, _, out := guideOf(t, e, adminToken, "/api/guide?section=operations")
 	if got := opNames(t, out); !slices.Contains(got, "decision_respond") || !slices.Contains(got, "decision_request") {
@@ -700,4 +774,127 @@ func TestATicketListsItsDecisions(t *testing.T) {
 		t.Fatalf("the application: %v", app)
 	}
 	runningAttempt(t, l.testEnv, run, "build", 1)
+}
+
+// A withdrawal names only the attempt's own decisions: one of another
+// run's attempt with the same task and number, closed, is not found, never
+// that run's decision's state and words (#637, review round 1).
+func TestAWithdrawalOfAnotherRunsDecisionIsNotFound(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	f.expectAs(t, f.tok, http.MethodPost, "/api/sessions/"+f.sid+"/decisions/dr-1/withdraw", map[string]any{}, http.StatusOK, "")
+	f.expectAs(t, f.tok, http.MethodPost, "/api/sessions/"+f.sid+"/decisions/dr-1/withdraw", map[string]any{}, http.StatusConflict, crew.CodeDecisionClosed)
+	other, release, err := f.srv.runs.LaunchNamed(t.Context(), managedCrew(f.root), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := runningAttempt(t, f.testEnv, other.ID, "build", 1)["sessionId"].(string)
+	out := f.expectAs(t, f.agentToken(sid), http.MethodPost, "/api/sessions/"+sid+"/decisions/dr-1/withdraw", map[string]any{}, http.StatusNotFound, crew.CodeNotFound)
+	if msg := apiMessage(out); strings.Contains(msg, "withdrawn") || strings.Contains(msg, ledger.DecisionCancelled) {
+		t.Fatalf("another run's decision's words: %q", msg)
+	}
+}
+
+// A request sent again (a reply lost) answers its decision before its
+// evidence is looked at again, whatever its refs resolve to now, and one
+// with another body is decision_conflict, also without a look (#637,
+// review round 1).
+func TestARequestSentAgainIsNotResolvedAgain(t *testing.T) {
+	f := newDecisionFixture(t, nil, nil)
+	body := approvalBody("r1")
+	body["evidence"] = []string{"session:" + f.sid, "run:" + f.run}
+	first := entityOf(t, f.ask(t, body, http.StatusCreated, ""), "decision")
+	looked := func(ref string) { t.Errorf("%s was resolved again", ref) }
+	baselineSeam.Store(&looked)
+	t.Cleanup(func() { baselineSeam.Store(nil) })
+	if again := entityOf(t, f.ask(t, body, http.StatusOK, ""), "decision"); again["id"] != first["id"] || string(decisionJSON(t, again["evidence"])) != string(decisionJSON(t, first["evidence"])) {
+		t.Fatalf("the repeat %v, the first %v", again, first)
+	}
+	other := approvalBody("r1")
+	other["question"] = "Something else?"
+	other["evidence"] = body["evidence"]
+	f.ask(t, other, http.StatusConflict, crew.CodeDecisionConflict)
+}
+
+// A request's evidence refs are resolved under the asker's own grant,
+// what its agent token reads of each kind of record elsewhere: its run,
+// its task's attempts and checks, its run's commits, its session, and its
+// run's ticket, the comments, plan revision and launch its package
+// carries are taken; every other ref, of each kind, is refused in the
+// words of a ref that names nothing, the same whether or not its record
+// exists, and no decision is opened with it (#637, review round 1).
+func TestAnAskersRefsAreResolvedUnderItsGrant(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	ctx := t.Context()
+	ds := l.srv.dispatch
+	done := doneOf(t)
+	inPkg := done(ds.AddComment(ctx, adminOp("Ann"), "CND-1", "Use the new flow.")).ID
+	plan := l.approved(t, map[string]any{"comments": []string{inPkg}})
+	run := entityOf(t, l.launch(t, l.testEnv, map[string]any{"plan": plan}, http.StatusCreated, ""), "run")["id"].(string)
+	sid := runningAttempt(t, l.testEnv, run, "build", 1)["sessionId"].(string)
+	tok := l.agentToken(sid)
+	row, ok, err := l.srv.ledger.Run(ctx, run)
+	if err != nil || !ok {
+		t.Fatalf("the run's row: %v %v", ok, err)
+	}
+	var pkg crew.Package
+	if err := json.Unmarshal([]byte(row.Package), &pkg); err != nil || len(pkg.Comments) != 1 || pkg.Launch.ID == "" {
+		t.Fatalf("the package: %+v %v", pkg, err)
+	}
+	// What lies outside: another run's attempt and session, another
+	// ticket, a comment and a plan revision made after the launch.
+	other, release, err := l.srv.runs.LaunchNamed(ctx, managedCrew(l.repo), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSid := runningAttempt(t, l.testEnv, other.ID, "build", 1)["sessionId"].(string)
+	otherTicket := done(ds.CreateTicket(ctx, adminOp("Ann"), dispatch.NewTicket{Project: "CND", Title: "Elsewhere"})).Key
+	later := done(ds.AddComment(ctx, adminOp("Ann"), "CND-1", "And another thing.")).ID
+	l.approved(t, nil)
+	base := l.head
+	ask := func(id string, refs []string, status int, code string) map[string]any {
+		b := approvalBody(id)
+		b["evidence"] = refs
+		return l.expectAs(t, tok, http.MethodPost, "/api/sessions/"+sid+"/decisions", b, status, code)
+	}
+	// Within the grant: one request names them all.
+	ask("in", []string{"run:" + run, "task:" + run + "/build", "attempt:" + run + "/build/1", "commit:" + run + "/" + base, "session:" + sid,
+		"ticket:CND-1", fmt.Sprintf("comment:CND-1/%s", inPkg), fmt.Sprintf("plan:CND-1/%d", pkg.Plan.N), "launch:" + pkg.Launch.ID}, http.StatusCreated, "")
+	// Outside it, each kind: one whose record exists (where the fixture
+	// has one) and one whose record does not, answered alike.
+	none := "0123456789abcdef"
+	for _, c := range []struct{ kind, exists, absent string }{
+		{"run", "run:" + other.ID, "run:routes-0000dead"},
+		{"task", "task:" + other.ID + "/build", "task:" + run + "/nope"},
+		{"attempt", "attempt:" + other.ID + "/build/1", "attempt:" + run + "/docs/1"},
+		{"check", "check:" + other.ID + "/build/1/test/1", "check:" + run + "/nope/1/test/1"},
+		{"command", "command:" + run + "/c1", "command:" + run + "/c2"},
+		{"event", "event:" + run + "/1", "event:" + run + "/999999"},
+		{"message", "message:" + other.ID + "/1", "message:" + run + "/999999"},
+		{"session", "session:" + otherSid, "session:" + none},
+		{"question", "question:" + otherSid + "/" + none, "question:" + none + "/" + none},
+		{"ticket", "ticket:" + otherTicket, "ticket:CND-99"},
+		{"comment", "comment:CND-1/" + later, "comment:CND-1/" + none},
+		{"op", "op:admin/" + opID(), "op:admin/nope"},
+		{"commit", "commit:" + other.ID + "/" + base, "commit:" + run + "/" + strings.Repeat("0", 40)},
+		{"file", "file:" + sid + "/" + l.repo + "/README", "file:" + none + "//nope"},
+		{"brief", "brief:br-1/0", "brief:br-9/0"},
+		{"plan", fmt.Sprintf("plan:CND-1/%d", pkg.Plan.N+1), "plan:CND-1/99"},
+		{"launch", "launch:" + none, "launch:fedcba9876543210"},
+		{"candidate", "candidate:" + other.ID + "/build/1", "candidate:" + run + "/build/9"},
+	} {
+		words := map[string]string{}
+		for _, ref := range []string{c.exists, c.absent} {
+			out := ask("out-"+c.kind, []string{ref}, http.StatusBadRequest, crew.CodeInvalid)
+			words[ref] = strings.ReplaceAll(apiMessage(out), cutBytes(ref, 80), "<ref>")
+		}
+		if words[c.exists] != words[c.absent] || !strings.Contains(words[c.exists], "<ref> resolves to nothing") {
+			t.Errorf("%s: %q, and for one that names nothing %q", c.kind, words[c.exists], words[c.absent])
+		}
+	}
+	if ds := l.expectAs(t, tok, http.MethodGet, "/api/sessions/"+sid+"/decisions", nil, http.StatusOK, "")["decisions"].([]any); len(ds) != 1 {
+		t.Fatalf("decisions opened: %v", ds)
+	}
 }

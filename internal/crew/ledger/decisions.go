@@ -349,7 +349,8 @@ func finalDecision(state string) bool {
 // ResponseRow is one response to a decision, accepted or refused, with its
 // receipt (JSON): K in the order received; Authority (JSON {grant, via,
 // subject?, boot}) is what the policy checks, kept apart from Actor, the
-// audit's words.
+// audit's words, and kept in its canonical text, whatever spelling of it
+// Respond was given (authorityOf).
 type ResponseRow struct {
 	Decision    int64
 	K           int
@@ -618,21 +619,39 @@ func checkPolicy(raw string) error {
 	return nil
 }
 
-// authorityOf decodes a response's authority, refusing one not of its shape.
-func authorityOf(raw string) (authorityShape, error) {
+// authorityOf decodes a response's authority, refusing one not of its
+// shape, and answers it with its canonical text, the one form a response
+// row keeps. The decoder takes spellings SQL reads otherwise: a key in
+// any case ("Via") or escaped ("\u0076ia"), a key given twice (the
+// decoder keeps the last, json_extract the first), keys in any order. A
+// row kept as typed could be an identity's to the policy and not to
+// placeCond's '$.via', and hold no place for its replacement; the
+// canonical text is the decoded value encoded again, so both read it
+// alike.
+func authorityOf(raw string) (authorityShape, string, error) {
 	var a authorityShape
 	if len(raw) > MaxAuthority {
-		return a, tooLarge("the authority", len(raw))
+		return a, "", tooLarge("the authority", len(raw))
 	}
 	if err := strict(raw, &a); err != nil {
-		return a, invalid("the authority: %v", err)
+		return a, "", invalid("the authority: %v", err)
 	}
 	switch a.Via {
 	case "workbench", ViaIdentity, "router":
 	default:
-		return a, invalid("an authority is via the workbench, an identity or a router, not %q", a.Via)
+		return a, "", invalid("an authority is via the workbench, an identity or a router, not %q", a.Via)
 	}
-	return a, nil
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(a); err != nil {
+		return a, "", invalid("the authority: %v", err)
+	}
+	canon := strings.TrimSuffix(b.String(), "\n")
+	if len(canon) > MaxAuthority {
+		return a, "", tooLarge("the authority", len(canon))
+	}
+	return a, canon, nil
 }
 
 // checkObject refuses text that is not "" or one JSON object within max
@@ -993,10 +1012,11 @@ func (t *Tx) Respond(n int64, r ResponseRow) (Responded, error) {
 	if err := checkKeys(map[string]string{"the response id": r.ResponseID, "the fingerprint": r.Fingerprint}, MaxDecisionKey); err != nil {
 		return Responded{}, err
 	}
-	auth, err := authorityOf(r.Authority)
+	auth, canon, err := authorityOf(r.Authority)
 	if err != nil {
 		return Responded{}, err
 	}
+	r.Authority = canon
 	if err := checkObject("the response receipt", r.Receipt, MaxDecisionReceipt, false); err != nil {
 		return Responded{}, err
 	}
@@ -1054,6 +1074,16 @@ func scanResponse(sc scanner) (ResponseRow, error) {
 	err := sc.Scan(&r.Decision, &r.K, &r.Actor, &r.Authority, &r.ResponseID, &r.Fingerprint, &r.Status, &r.Receipt, &at)
 	r.At = unstamp(at)
 	return r, err
+}
+
+// AcceptedActor is the actor of decision n's accepted response, "" for
+// none, read within the transaction.
+func (t *Tx) AcceptedActor(n int64) (string, error) {
+	r, ok, err := t.response("WHERE decision = ? AND status = ? ORDER BY k DESC LIMIT 1", n, ResponseAccepted)
+	if err != nil || !ok {
+		return "", err
+	}
+	return r.Actor, nil
 }
 
 func (t *Tx) response(where string, args ...any) (ResponseRow, bool, error) {
@@ -1267,10 +1297,12 @@ func (t *Tx) Release(run, task string, n int64) (bool, error) {
 }
 
 // MoveHolds is a continuation's, after MoveDecisions: every hold of from
-// is written under to as it is (active or released), and the active ones
-// of from are released at at, so an active hold is under its decision's
-// current run alone (I16). An active hold of a decision that to does not
-// hold is ErrNotCurrent. It answers how many active holds moved.
+// of a decision to now holds (one MoveDecisions moved) is written under to
+// as it is (active or released), and the active ones of from are released
+// at at, so an active hold is under its decision's current run alone
+// (I16). The holds of a decision to does not hold (a final one, left
+// behind) stay under from alone. An active hold of a decision that to
+// does not hold is ErrNotCurrent. It answers how many active holds moved.
 func (t *Tx) MoveHolds(from, to string, at time.Time) (int, error) {
 	stray, err := t.count(`SELECT COUNT(*) FROM decision_holds h JOIN decisions d ON d.n = h.decision WHERE h.run_id = ? AND h.released_at = '' AND d.current_run != ?`, from, to)
 	if err != nil {
@@ -1280,8 +1312,9 @@ func (t *Tx) MoveHolds(from, to string, at time.Time) (int, error) {
 		return 0, fmt.Errorf("%w: %d active holds of %s are of decisions %s does not hold", ErrNotCurrent, stray, from, to)
 	}
 	if _, err := t.tx.ExecContext(t.ctx, `INSERT INTO decision_holds (run_id, task_id, decision, released_at)
-		SELECT ?, task_id, decision, released_at FROM decision_holds WHERE run_id = ? ORDER BY task_id, decision
-		ON CONFLICT(run_id, task_id, decision) DO UPDATE SET released_at = excluded.released_at`, to, from); err != nil {
+		SELECT ?, task_id, decision, released_at FROM decision_holds
+		WHERE run_id = ? AND decision IN (SELECT n FROM decisions WHERE current_run = ?) ORDER BY task_id, decision
+		ON CONFLICT(run_id, task_id, decision) DO UPDATE SET released_at = excluded.released_at`, to, from, to); err != nil {
 		return 0, err
 	}
 	res, err := t.tx.ExecContext(t.ctx, `UPDATE decision_holds SET released_at = ? WHERE run_id = ? AND released_at = ''`, stamp(at), from)
@@ -1345,36 +1378,57 @@ func (l *Ledger) Decision(ctx context.Context, n int64) (DecisionRecord, bool, e
 		if l.inDecision != nil {
 			l.inDecision()
 		}
-		rows, err := q.QueryContext(ctx, "SELECT "+responseCols+" FROM decision_responses WHERE decision = ? ORDER BY k", n)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			r, err := scanResponse(rows)
-			if err != nil {
-				rows.Close()
-				return err
-			}
-			rec.Responses = append(rec.Responses, r)
-		}
-		if err := cmp.Or(rows.Err(), rows.Close()); err != nil {
-			return err
-		}
-		rows, err = q.QueryContext(ctx, "SELECT "+historyCols+" FROM decision_history WHERE decision = ? ORDER BY seq", n)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			h, err := scanHistory(rows)
-			if err != nil {
-				rows.Close()
-				return err
-			}
-			rec.History = append(rec.History, h)
-		}
-		return cmp.Or(rows.Err(), rows.Close())
+		return readRecord(ctx, q, n, &rec)
 	})
 	if err != nil || !found {
+		return DecisionRecord{}, false, err
+	}
+	return rec, true, nil
+}
+
+// readRecord reads decision n's responses and history into rec, through q.
+func readRecord(ctx context.Context, q querier, n int64, rec *DecisionRecord) error {
+	rows, err := q.QueryContext(ctx, "SELECT "+responseCols+" FROM decision_responses WHERE decision = ? ORDER BY k", n)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		r, err := scanResponse(rows)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		rec.Responses = append(rec.Responses, r)
+	}
+	if err := cmp.Or(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	rows, err = q.QueryContext(ctx, "SELECT "+historyCols+" FROM decision_history WHERE decision = ? ORDER BY seq", n)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		h, err := scanHistory(rows)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		rec.History = append(rec.History, h)
+	}
+	return cmp.Or(rows.Err(), rows.Close())
+}
+
+// Record reads decision n with its responses and history within the
+// transaction: what a response's refusal says (who answered first, what
+// changed) is read with the state it judges, never before the run's
+// transaction began (#635, review round 2).
+func (t *Tx) Record(n int64) (DecisionRecord, bool, error) {
+	d, ok, err := t.Decision(n)
+	if err != nil || !ok {
+		return DecisionRecord{}, ok, err
+	}
+	rec := DecisionRecord{DecisionRow: d}
+	if err := readRecord(t.ctx, t.tx, n, &rec); err != nil {
 		return DecisionRecord{}, false, err
 	}
 	return rec, true, nil

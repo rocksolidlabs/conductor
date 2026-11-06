@@ -2,6 +2,8 @@ package crew
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -207,7 +209,7 @@ func TestHoldsFollowTheDecisionAcrossContinuations(t *testing.T) {
 	last := runs[len(runs)-1]
 	answer(t, e, g.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
 	decisionWhen(t, ld, g.ID, "applied", inState(ledger.DecisionApplied))
-	if _, err := e.CancelDecision(t.Context(), d.ID, "c1", false, "", "admin"); err != nil {
+	if _, err := e.CancelDecision(t.Context(), d.ID, "c1", 0, false, "", "admin"); err != nil {
 		t.Fatal(err)
 	}
 	decisionWhen(t, ld, d.ID, "cancelled", inState(ledger.DecisionCancelled))
@@ -355,4 +357,198 @@ func TestAnIdentityAnswerIsNotAppliedAfterARestart(t *testing.T) {
 		t.Fatalf("deploy released: %+v", ts)
 	}
 	stopRun(t, e2, next.ID)
+}
+
+// toldLog keeps what SQLLedgerTold's told was handed, in its order.
+type toldLog struct {
+	mu  sync.Mutex
+	got []DecisionChange
+}
+
+func (l *toldLog) told(cs []DecisionChange) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.got = append(l.got, cs...)
+}
+
+// of is what was told of decision id, in order.
+func (l *toldLog) of(id string) []ledger.DecisionRow {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []ledger.DecisionRow
+	for _, c := range l.got {
+		if c.Row.ID() == id {
+			out = append(out, c.Row)
+		}
+	}
+	return out
+}
+
+// Every committed change of a decision is told, as its transaction left
+// it, in the order of the commits, by the writers themselves: the opening,
+// an answer recorded while the run is interrupted, a refused response
+// (its receipt and history, no event), the continuation's move (the run
+// that holds it) and its application, the last told being the record as it
+// ends (#637, review round 1).
+func TestEveryChangeOfADecisionIsTold(t *testing.T) {
+	dir, ldir := newRepo(t), t.TempDir()
+	e, fl, ld := decisionEngineAt(t, ldir)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	e.ForgetForTest(run.ID)
+	if err := ld.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e2, fl2 := readyEngine(t)
+	ld2, err := ledger.Open(ldir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ld2.Close() })
+	if _, err := ld2.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	log := &toldLog{}
+	e2.UseLedger(SQLLedgerTold(ld2, log.told))
+	answer(t, e2, d.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 1})
+	if got := log.of(d.ID); len(got) != 1 || got[0].State != ledger.DecisionAnswered || got[0].Rev != 2 || got[0].CurrentRun != run.ID {
+		t.Fatalf("told of the answer: %+v", got)
+	}
+	// A refused response writes its receipt and history, and no event: told.
+	if rc, err := e2.RespondDecision(t.Context(), d.ID, Response{ResponseID: "r2", Text: "hash", ExpectedRev: 2}, "admin", workbench(e2)); err == nil || rc.Status != "refused" {
+		t.Fatalf("the second response: %+v %v", rc, err)
+	}
+	if got := log.of(d.ID); len(got) != 2 || got[1].State != ledger.DecisionAnswered || got[1].Rev != 2 {
+		t.Fatalf("told of the refusal: %+v", got)
+	}
+	next := continueRun(t, e2, run.ID)
+	rec := decisionWhen(t, ld2, d.ID, "applied", inState(ledger.DecisionApplied))
+	attemptLine(t, e2, fl2, next.ID, "build", 2)
+	got := log.of(d.ID)
+	moved := false
+	for i, row := range got {
+		if i > 0 && row.Rev < got[i-1].Rev {
+			t.Fatalf("told out of the commits' order: %+v", got)
+		}
+		moved = moved || row.CurrentRun == next.ID
+	}
+	last := got[len(got)-1]
+	if !moved || last.State != rec.State || last.Rev != rec.Rev || last.CurrentRun != rec.CurrentRun {
+		t.Fatalf("told %+v; the record ends %s rev %d in %s", got, rec.State, rec.Rev, rec.CurrentRun)
+	}
+	stopRun(t, e2, next.ID)
+}
+
+// answeredReadsFail is the real ledger whose read of a decision fails
+// while the decision is answered: a read made after a response commits
+// and before its application.
+type answeredReadsFail struct {
+	sqlLedger
+}
+
+func (l *answeredReadsFail) Decision(ctx context.Context, n int64) (ledger.DecisionRecord, bool, error) {
+	rec, ok, err := l.sqlLedger.Decision(ctx, n)
+	if err == nil && ok && rec.State == ledger.DecisionAnswered {
+		return ledger.DecisionRecord{}, false, errors.New("the ledger could not read the decision (test)")
+	}
+	return rec, ok, err
+}
+
+// A response committed on the old run while the continuation is held
+// between its read and its first transaction is moved as answered with
+// its answer, read in the move's transaction: no read after the move,
+// which here fails, stands between it and its application (#636, review
+// round 2).
+func TestAMovedAnswerIsReadWithItsMove(t *testing.T) {
+	dir, ldir := newRepo(t), t.TempDir()
+	e, fl, ld := decisionEngineAt(t, ldir)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	e2, fl2, ld2 := restart(t, e, ld, ldir, run.ID)
+	e2.UseLedger(&answeredReadsFail{sqlLedger{l: ld2}})
+	at, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	e2.afterAdd = func(string) { once.Do(func() { close(at); <-gate }) }
+	out := make(chan Run, 1)
+	go func() {
+		next, err := e2.ContinueRun(context.Background(), run.ID, "")
+		if err != nil {
+			t.Error(err)
+			close(out)
+			return
+		}
+		out <- *next
+	}()
+	<-at
+	answer(t, e2, d.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 1})
+	decisionWhen(t, ld2, d.ID, "answered", inState(ledger.DecisionAnswered))
+	close(gate)
+	next, ok := <-out
+	if !ok {
+		t.FailNow()
+	}
+	rec := decisionWhen(t, ld2, d.ID, "applied", inState(ledger.DecisionApplied))
+	if app := applied(t, rec); app.Run != next.ID || app.How != HowTaskFile || kindCount(rec, ledger.HistoryApplied) != 1 {
+		t.Fatalf("the application: %+v", app)
+	}
+	if _, f := taskFileOf(t, attemptLine(t, e2, fl2, next.ID, "build", 2)); decisionIn(t, f, d.ID).Answer != "btree" {
+		t.Fatalf("the task file: %+v", f.Decisions)
+	}
+	stopRun(t, e2, next.ID)
+}
+
+// An identity's answer whose recheck answers while its run is stopped and
+// continued in the same process is applied by the continuation, which
+// holds the decision: the recheck answered after the move, and the
+// recheck answered while the continuation is held between its read and
+// its first transaction, when only the old run has a copy (#636, review
+// round 2).
+func TestAConfirmationFollowsItsDecisionIntoTheContinuation(t *testing.T) {
+	for i, when := range []string{"after the move", "during the move"} {
+		t.Run(when, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, ld := decisionEngine(t)
+			run := launchGated(t, e, dir, fmt.Sprintf("api-sweep-000000f%d", i), repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
+			g := gateOf(t, e, ld, run.ID)
+			rc, err := e.RespondDecision(t.Context(), g.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1, ByName: "Nate"}, "user:nate", identity(e, "nate"))
+			if err != nil || rc.Status != "accepted" {
+				t.Fatalf("the identity's response: %+v %v", rc, err)
+			}
+			stopRun(t, e, run.ID)
+			var next Run
+			if when == "after the move" {
+				next = continueRun(t, e, run.ID)
+				e.ConfirmAuthority(g.ID, rc.K, true)
+			} else {
+				at, gate := make(chan struct{}), make(chan struct{})
+				var once sync.Once
+				e.afterAdd = func(string) { once.Do(func() { close(at); <-gate }) }
+				out := make(chan Run, 1)
+				go func() {
+					next, err := e.ContinueRun(context.Background(), run.ID, "")
+					if err != nil {
+						t.Error(err)
+						close(out)
+						return
+					}
+					out <- *next
+				}()
+				<-at
+				e.ConfirmAuthority(g.ID, rc.K, true)
+				close(gate)
+				var ok bool
+				if next, ok = <-out; !ok {
+					t.FailNow()
+				}
+			}
+			rec := decisionWhen(t, ld, g.ID, "applied", inState(ledger.DecisionApplied))
+			if app := applied(t, rec); app.Run != next.ID || app.How != HowReleased || rec.CurrentRun != next.ID {
+				t.Fatalf("the application: %+v in %s", app, rec.CurrentRun)
+			}
+			waitAttempt(t, e, next.ID, "deploy", ledger.AttemptRunning)
+			stopRun(t, e, next.ID)
+		})
+	}
 }
