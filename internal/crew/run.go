@@ -449,10 +449,6 @@ type Engine struct {
 	// identity's response to a decision is applied only by the process
 	// that accepted it (decisions.go).
 	boot string
-	// gatesAtLaunch opens a planned run's gates in its first transaction
-	// (openGates). Off until the response route ships with it
-	// (docs/plans/decisions.md, PR-4): a test turns it on.
-	gatesAtLaunch bool
 	// beforeMirror, when set, runs as a decision's question is about to be
 	// put to its session (askMirror), on the attempt's askMu, the decision
 	// read as open: a test holds the ask there. beforeRespond, when set, runs in RespondDecision

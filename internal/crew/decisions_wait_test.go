@@ -288,11 +288,11 @@ func TestAnAttemptThatSubmittedIsCounted(t *testing.T) {
 	decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
 	lineWith(t, p, "Decision "+d.ID)
 	commitResult(t, e, b, "x.txt", "x\n", "no ok.txt")
-	ts := waitTaskWhere(t, e, run.ID, "build", "failed its check", func(ts TaskState) bool {
-		return ts.Attempt != nil && ts.Attempt.N == 1 && ts.Attempt.State == ledger.AttemptFailed
-	})
-	if ts.Attempt.Stage == stageDecision || extraOf(t, e, run.ID, "build") != 0 {
-		t.Fatalf("an attempt that submitted was given back: %+v", ts.Attempt)
+	// Attempt 1 failed in the ledger: the task's attempt 2 starts at once,
+	// so the task's own attempt only passes through it.
+	row := ledgerAttempt(t, ld, run.ID, "build", 1, ledger.AttemptFailed)
+	if row.Stage == stageDecision || extraOf(t, e, run.ID, "build") != 0 {
+		t.Fatalf("an attempt that submitted was given back: %+v", row)
 	}
 	if rec := decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied)); kindCount(rec, ledger.HistoryRefunded) != 0 {
 		t.Fatalf("%s's history: %q", d.ID, historyKinds(rec))

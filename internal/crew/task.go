@@ -102,12 +102,53 @@ type Ledger interface {
 }
 
 // SQLLedger is the ledger package's as a Ledger.
-func SQLLedger(l *ledger.Ledger) Ledger { return sqlLedger{l} }
+func SQLLedger(l *ledger.Ledger) Ledger { return sqlLedger{l: l} }
 
-type sqlLedger struct{ l *ledger.Ledger }
+// SQLLedgerTold is SQLLedger, with told called after each committed
+// transition that changed a decision, with the ids it changed (each a
+// decision.* event's), in their order: the server's decision event and
+// notification follow each commit (internal/api, decisions.go). told runs
+// on the committing goroutine, outside the ledger's lock, and must not
+// wait.
+func SQLLedgerTold(l *ledger.Ledger, told func(ids []string)) Ledger {
+	return sqlLedger{l: l, told: told}
+}
+
+type sqlLedger struct {
+	l    *ledger.Ledger
+	told func(ids []string)
+}
 
 func (s sqlLedger) Transition(ctx context.Context, runID string, fn func(LedgerTx) error) (int64, error) {
-	return s.l.Transition(ctx, runID, func(tx *ledger.Tx) error { return fn(tx) })
+	if s.told == nil {
+		return s.l.Transition(ctx, runID, func(tx *ledger.Tx) error { return fn(tx) })
+	}
+	var ids []string
+	rev, err := s.l.Transition(ctx, runID, func(tx *ledger.Tx) error {
+		ids = ids[:0]
+		return fn(toldTx{tx, &ids})
+	})
+	if err == nil && len(ids) > 0 {
+		s.told(slices.Compact(ids))
+	}
+	return rev, err
+}
+
+// toldTx is a transaction that notes the decisions its events name.
+type toldTx struct {
+	*ledger.Tx
+	ids *[]string
+}
+
+func (t toldTx) Event(kind string, payload any) error {
+	if strings.HasPrefix(kind, "decision.") {
+		if m, ok := payload.(map[string]any); ok {
+			if id, ok := m["decision"].(string); ok {
+				*t.ids = append(*t.ids, id)
+			}
+		}
+	}
+	return t.Tx.Event(kind, payload)
 }
 
 func (s sqlLedger) Available() error {
@@ -1421,12 +1462,10 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 			payload["ticket"], payload["digest"] = r.pkg.p.Ticket.Key, r.pkg.digest
 		}
 		out := ev("run.created", payload)
-		if e.gatesAtLaunch {
-			// The plan revision's gates, with their tasks' rows (O2).
-			var gates tx
-			gates, ungate = e.openGates(r)
-			out.last, out.done = gates.last, gates.done
-		}
+		// The plan revision's gates, with their tasks' rows (O2).
+		var gates tx
+		gates, ungate = e.openGates(r)
+		out.last, out.done = gates.last, gates.done
 		return out
 	}, func() { ungate() }); err != nil {
 		return err

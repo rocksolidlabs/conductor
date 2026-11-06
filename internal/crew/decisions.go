@@ -255,6 +255,7 @@ type Decision struct {
 	Rev          int               `json:"rev"`
 	Why          string            `json:"why,omitempty"`
 	SupersededBy string            `json:"supersededBy,omitempty"`
+	Answer       string            `json:"answer,omitempty"` // the accepted response in words
 	Responses    []ResponseReceipt `json:"responses,omitempty"`
 	Applied      *Application      `json:"applied,omitempty"`
 	History      []DecisionEntry   `json:"history,omitempty"`
@@ -1027,6 +1028,7 @@ func (e *Engine) decisionOf(rec ledger.DecisionRecord) Decision {
 		at := rec.AnsweredAt
 		d.AnsweredAt = &at
 	}
+	d.Answer, _, _ = answerOf(rec)
 	if !rec.ClosedAt.IsZero() {
 		at := rec.ClosedAt
 		d.ClosedAt = &at

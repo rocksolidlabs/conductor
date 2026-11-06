@@ -212,11 +212,10 @@ func gatedPlan(t *testing.T, runID, base string, ds ...PackageDecision) Planned 
 	return Planned{RunID: runID, Base: base, Digest: packageDigest(raw), Package: raw}
 }
 
-// launchGated launches c as a planned run whose package names ds, with its
+// launchGated launches c as a planned run whose package names ds, its
 // gates opened at the launch.
 func launchGated(t *testing.T, e *Engine, dir, runID string, c Crew, ds ...PackageDecision) Run {
 	t.Helper()
-	e.gatesAtLaunch = true
 	return launchPlanned(t, e, c, gatedPlan(t, runID, head(t, dir), ds...))
 }
 
