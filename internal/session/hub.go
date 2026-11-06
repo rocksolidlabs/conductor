@@ -106,6 +106,10 @@ type Subscription struct {
 	// with authorize wherever what the connection sent is acted on
 	// (revoked), never as it attaches. Set once, as it attaches.
 	fresh func() error
+	// hold is the connection's AttachOptions.Hold, nil for none: taken as
+	// the writer takes each write of the connection (writeWait.hold). Set
+	// once, as it attaches.
+	hold func() (func(), error)
 	// quiet marks a connection for a run's chat alone (hello.chatOnly): no
 	// output or scrollback, not a viewer of the session.
 	quiet bool

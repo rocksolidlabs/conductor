@@ -88,11 +88,19 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 	}
 	sink := s.viewerSink(c, raw)
 	decides := s.isDecisionLink(linkID)
+	// A decision link's writes are taken only while the link stands,
+	// checked with each write (lane.go, rule 1): its lane's answers are
+	// this subscription's.
+	var hold func() (func(), error)
+	if decides {
+		hold = s.holdLink(linkID)
+	}
 	sub, err := local.AttachWith(session.AttachOptions{
 		Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
 		Authorize: check,
 		Owner:     owner,
 		Decisions: decides,
+		Hold:      hold,
 	}, sink)
 	if err != nil {
 		switch {

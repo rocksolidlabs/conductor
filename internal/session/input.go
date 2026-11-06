@@ -80,6 +80,14 @@ type writeWait struct {
 	// the last of its checks: an error from it and the write is not made (a
 	// submission's Enter that a newer prompt would take); nil, and it is.
 	guard func() error
+	// hold, when set (else from's, AttachOptions.Hold), is the credential
+	// held while the write is taken: asked as the writer takes it, after
+	// every other check but guard, and held until the write is begun, so
+	// that the credential stands at the moment of the write, checked with
+	// it, and a revoke waiting on it (share.Store.Hold) comes after the
+	// write or refuses it, never between the check and the write. An error
+	// from it refuses the write (a kind of ErrRevoked), nothing written.
+	hold func() (release func(), err error)
 }
 
 // withdrawn says why the write's connection withdraws it, nil while it
@@ -196,6 +204,9 @@ type procWrite struct {
 	over func() error
 	// before runs as the writer takes it (writeWait.before).
 	before func()
+	// release lets go of the credential over took (writeWait.hold): once
+	// the write is begun, under procWriter.mu.
+	release func()
 }
 
 // newWrite is a write of data for writeProc's wait: until ctx ends, until
@@ -203,7 +214,12 @@ type procWrite struct {
 // session ends.
 func (s *Local) newWrite(ctx context.Context, data []byte, deadline time.Time, o writeWait) *procWrite {
 	ended := s.ended
-	return &procWrite{data: bytes.Clone(data), done: make(chan error, 1), before: o.before, over: func() error {
+	hold := o.hold
+	if hold == nil && o.from != nil {
+		hold = o.from.hold
+	}
+	w := &procWrite{data: bytes.Clone(data), done: make(chan error, 1), before: o.before}
+	w.over = func() error {
 		select {
 		case <-ended:
 			return ErrSessionEnded
@@ -218,16 +234,35 @@ func (s *Local) newWrite(ctx context.Context, data []byte, deadline time.Time, o
 		if !deadline.IsZero() && !time.Now().Before(deadline) {
 			return ErrInputStalled
 		}
+		// The credential held from here until the write is begun (run):
+		// checked with the write, so nothing comes between.
+		if hold != nil {
+			release, err := hold()
+			if err != nil {
+				return asRevoked(err)
+			}
+			w.release = release
+		}
 		// The guard is asked last: the writer begins the write when it
 		// passes, so a guard that notes something of the write (a reply
 		// noting its question answered) notes it only for a write made.
 		if o.guard != nil {
 			if err := o.guard(); err != nil {
+				w.letGo()
 				return err
 			}
 		}
 		return nil
-	}}
+	}
+	return w
+}
+
+// letGo lets go of the credential the write holds (writeWait.hold), if any.
+func (w *procWrite) letGo() {
+	if w.release != nil {
+		w.release()
+		w.release = nil
+	}
 }
 
 // procWriter writes to the process in the order the writes were added, on a
@@ -290,6 +325,7 @@ func (q *procWriter) run(to io.Writer) {
 			continue
 		}
 		w.begun = true
+		w.letGo()
 		q.writing, q.current = time.Now(), w
 		q.mu.Unlock()
 		if w.before != nil {

@@ -135,7 +135,7 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		writeLinkError(w, err, err.Error())
 		return
 	}
-	s.recordLink(id, "link created: "+linkLabelOr(link.Label)+" ("+linkRole(string(link.Role), link.Decide)+")")
+	s.recordLink(id, "link created: "+linkLabelOr(link.Label)+" ("+linkRole(link)+")")
 	reply := s.linkReply(r, link, token)
 	if server != "" {
 		reply["rendezvous"] = map[string]any{"server": server, "error": why}
@@ -173,13 +173,14 @@ func switchyardTooOld(w http.ResponseWriter) {
 	writeError(w, http.StatusConflict, "switchyard_too_old", "This switchyard must be updated to answer decisions through its links")
 }
 
-// linkRole is a link's role as the activity says it, a decision link's
-// said so.
-func linkRole(role string, decide bool) string {
-	if decide {
-		return role + ", answers decisions"
+// linkRole is a link's role as the activity says it; a decision link's
+// says so with its actor, link:<id>, which its receipts are kept under, so
+// a reader of them finds whose link acted after the link is gone.
+func linkRole(l *share.Link) string {
+	if l.Decide {
+		return string(l.Role) + ", answers decisions, " + laneActor(l.ID)
 	}
-	return role
+	return string(l.Role)
 }
 
 func (req createLinkRequest) ttl() time.Duration { return time.Duration(req.TTLSeconds) * time.Second }
@@ -374,7 +375,7 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 		writeLinkError(w, err, "too many links for this run")
 		return
 	}
-	s.runs.Note(id, session.ActivityLink, "link created: "+linkLabelOr(link.Label)+" ("+linkRole(string(link.Role), link.Decide)+")")
+	s.runs.Note(id, session.ActivityLink, "link created: "+linkLabelOr(link.Label)+" ("+linkRole(link)+")")
 	if server != "" {
 		reply := s.linkReply(r, link, token)
 		reply["rendezvous"] = map[string]any{"server": server, "error": why}

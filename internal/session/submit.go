@@ -131,6 +131,12 @@ type Submission struct {
 	// go as the hold shows. A closed channel is seen at once: nothing
 	// waits for it to be passed on.
 	Withdrawn <-chan struct{}
+	// Hold, when set, is the sender's credential held while each of the
+	// submission's writes is taken (writeWait.hold): a decision link's, so
+	// its text and its Enter are written only while the link stands,
+	// checked as the writer takes each. Hold must not call the session and
+	// must not wait.
+	Hold func() (release func(), err error)
 }
 
 // ErrSubmitPending says a submission's text was being taken when its time
@@ -402,7 +408,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// while the program is known not to read, and is withdrawn when
 		// the session ends its controller (not when the controller only
 		// goes): its text, and its Enter once the text is typed.
-		wait:  writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, from: from, gone: sub.Withdrawn},
+		wait:  writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, from: from, gone: sub.Withdrawn, hold: sub.Hold},
 		aside: aside,
 		claim: new(atomic.Uint64),
 	}

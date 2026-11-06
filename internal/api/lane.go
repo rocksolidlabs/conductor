@@ -45,14 +45,44 @@ import (
 //     stale_revision. The reads: the scope's items, one item, the steps of
 //     what was done through this link, and a bounded read of one evidence
 //     entry in its scope (a check's log tail, a session's id).
-//   - For how long, how many times: while the link stands. Every request
-//     reads the link again (share.Store.Live), and the operation is checked
-//     again right before it is taken, so a link revoked, expired or gone
-//     (its session ended, its run forgotten, the server restarted: links
-//     are in memory) refuses what comes after. An action is taken once per
-//     opId: the same opId sent again is answered with the first receipt.
-//   - As whom: the link's actor, link:<id> with its label, never the
-//     workbench's; the steps read through it are its own receipts.
+//   - For how long, how many times: while the link stands (rule 1), once
+//     per opId (rule 2), below. A link revoked, expired or gone (its
+//     session ended, its run forgotten, the server restarted: links are in
+//     memory) refuses what comes after.
+//   - As whom: the link's actor, link:<id>, never the workbench's, its
+//     label beside it (laneActorNote); the steps read through it are its
+//     own receipts.
+//
+// Three rules hold every path to them, and each is enforced in one place:
+//
+//  1. A link's act is written only while the link stands, checked with
+//     the write (share.Store.Hold): the check that the link is not revoked
+//     or expired is made under the link's hold, which a revoke waits for,
+//     at the moment the write is made: as the session's writer takes an
+//     answer's keys or a line (session.Actor.Hold, Submission.Hold,
+//     AttachOptions.Hold: holdLink) and around the engine's command
+//     (laneCommand), never once before and used later. An answer queued,
+//     in flight or asked again when the link ends is refused, never
+//     written, on every path: the first try, a repeat answered from the
+//     link's record (replay, under the hold too), a twin from another
+//     connection, a queued send. An action whose connection closed before
+//     it began is never begun (the lane's context, checked under the hold);
+//     one begun is the operation's, its receipt kept.
+//  2. An opId names one operation (share.Store.ClaimOp, Decide): the link
+//     keeps, by opId, the fingerprint of the whole request as it was sent
+//     (decideFingerprint: its item, action and every argument), and a
+//     repeat is answered from that record only when the request is the
+//     same; the same opId with anything else is op_conflict, nothing done,
+//     from any connection of the link, at once or later. A twin under way
+//     on another connection is waited for and answered with its outcome.
+//  3. The lane reads only the decisions' own records as the server keeps
+//     them, in the link's scope: the inbox's items (the sessions'
+//     attention, the engine's tasks), the ledger's receipts and check rows
+//     under the link's actor, the sessions' kept results under the link's
+//     own request ids (answerReqID). Nothing is resolved afresh on the
+//     link's word: no screen, no file, no run or session outside the scope;
+//     the lane reads no file at all (a session's files stay the viewer's,
+//     through session.ResolvePath and the session's Folder, as before).
 //
 // What a decision link never allows: another decision (one of no
 // session or run of its scope, a plan revision, an action the item does
@@ -70,12 +100,94 @@ import (
 // laneActor is the actor of a decision link's receipts.
 func laneActor(linkID string) string { return "link:" + linkID }
 
+// laneActorNote is how a command taken through the link is noted in its
+// run's activity, which the run's record keeps: the link's actor with its
+// label, so a reader of the ledger's link:<id> finds whose link it was
+// after the link is gone.
+func laneActorNote(l *share.Link, action, task string) string {
+	return action + " of " + task + " taken through the link " + linkLabelOr(l.Label) + " (" + laneActor(l.ID) + ")"
+}
+
+// answerReqID is the request id a link's answer is kept under in its
+// question's result (session.Actor.ReqID, proto.Answer.ReqID): the
+// decide's opId bound to the link, so another link's answer, or the
+// workbench's, under the same opId is never this link's (rule 2), and a
+// track reads the winner by it. Printable ASCII of MaxAnswerReqID bytes.
+func answerReqID(linkID, opID string) string {
+	sum := sha256.Sum256([]byte(linkID + "\x00" + opID))
+	return "link-" + hex.EncodeToString(sum[:])[:proto.MaxAnswerReqID-5]
+}
+
+// decideFingerprint is the whole request a decide is, as it was sent and
+// decoded strictly, before anything of it is cleaned or mapped: every
+// field but its reqId, which names the request, not the operation (rule
+// 2).
+func decideFingerprint(m proto.Decide) string {
+	m.ReqID = ""
+	b, _ := json.Marshal(m)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
 // laneSeams are the lane's seams for tests; nil outside them.
 type laneSeams struct {
 	// beforeDecide runs as a decide begins, before its link is read.
 	beforeDecide func(linkID, opID string)
+	// beforeOperation runs once a decide's item is judged and the action
+	// found offered, before the operation is asked (its link held).
+	beforeOperation func(linkID, opID string)
+	// atHold runs as an answer's write is taken, before its link is held
+	// (holdLink): in the session's writer.
+	atHold func(linkID string)
+	// beforeRead runs as a lane read begins, on its goroutine.
+	beforeRead func(reqID string)
+	// twinWaits runs as a decide finds its opId under way on another
+	// connection, before it waits for it.
+	twinWaits func(linkID, opID string)
+	// hashing runs as a link's watch reads its scope (laneHash).
+	hashing func(linkID string)
 	// beforeReply runs once a decide is done, before its reply is sent.
 	beforeReply func(reqID string, reply []byte)
+}
+
+// holdLink is the hold a decision link's answer takes as the session's
+// writer takes its keys or line (rule 1): the link checked with the write,
+// its refusal said as the session says a link's (ErrRevoked, ErrExpired).
+func (s *Server) holdLink(linkID string) func() (func(), error) {
+	return func() (func(), error) {
+		if seam := s.laneSeam; seam != nil && seam.atHold != nil {
+			seam.atHold(linkID)
+		}
+		_, release, err := s.links.Hold(linkID)
+		switch {
+		case errors.Is(err, share.ErrExpired):
+			return nil, session.ErrExpired
+		case err != nil:
+			return nil, session.ErrRevoked
+		}
+		return release, nil
+	}
+}
+
+// linkRefusal is the refusal of a request whose link no longer stands.
+func linkRefusal(reqID string, err error) []byte {
+	if errors.Is(err, share.ErrExpired) || errors.Is(err, session.ErrExpired) {
+		return refusal(reqID, proto.DecideExpired, "the link has expired: nothing was done")
+	}
+	return refusal(reqID, proto.DecideRevoked, "the link no longer stands: nothing was done")
+}
+
+// laneOutcome is what a link keeps of an operation it took, by its opId
+// (share.Store.ClaimOp's Outcome): the same request again is answered
+// from it. Run names a task command's run, whose receipt the ledger keeps
+// under the link's actor; Code a refusal the operation gave and the link
+// keeps (an answer another answer came before).
+type laneOutcome struct {
+	Ref     string `json:"ref"`
+	Receipt string `json:"receipt,omitempty"`
+	Run     string `json:"run,omitempty"`
+	Code    string `json:"code,omitempty"`
+	Words   string `json:"words,omitempty"`
 }
 
 // Lane is the Server as a decision link's lane (hostagent.Decisions).
@@ -304,8 +416,10 @@ type laneTrack struct {
 }
 
 // steps are the four steps of the action attempt on the item ref in the
-// scope, receipt what its steps are read by: a question's id (attempt the
-// opId its answer was sent with), a task command's id, the link's own.
+// scope, receipt what its steps are read by: a question's id, its kept
+// result read by the link's own request id for attempt (answerReqID: the
+// winner is this link's attempt, or another answer came first), a task
+// command's id, its receipt the link's own (rule 3).
 func (s *Server) steps(ctx context.Context, sc laneScope, ref brakeman.Ref, receipt, attempt string) ([]deliveryStep, string, error) {
 	switch ref.Kind {
 	case brakeman.RefQuestion:
@@ -316,7 +430,7 @@ func (s *Server) steps(ctx context.Context, sc laneScope, ref brakeman.Ref, rece
 		if !ok {
 			return unknownSteps("the session is no longer listed: what it kept is gone"), "", nil
 		}
-		st, known := s.questionSteps(d, ref.Question, attempt)
+		st, known := s.questionSteps(d, ref.Question, answerReqID(sc.link.ID, attempt))
 		if !known {
 			return unknownSteps("the session keeps no result of this question (it keeps its last 64)"), "", nil
 		}
@@ -490,43 +604,47 @@ func commandReply(reqID, ref string, rc crew.Receipt, repeat bool) []byte {
 	return laneOK(reqID, ref, rc.CommandID, repeat)
 }
 
-// repeat answers a decide whose opId the operation already holds for this
-// link's actor with that first receipt, before the item's current actions
-// are judged; nil when it holds none.
-func (s *Server) repeat(ctx context.Context, sc laneScope, ref brakeman.Ref, m proto.Decide) []byte {
+// replay answers a decide whose opId the link holds, settled, for the same
+// request (rule 2) from what the link kept of it: a task command from its
+// receipt in the ledger under the link's actor, an answer from its
+// outcome; repeat, before the item's current actions are judged. The link
+// must still stand, checked under its hold (rule 1).
+func (s *Server) replay(ctx context.Context, linkID string, m proto.Decide, raw string) []byte {
+	_, release, err := s.links.Hold(linkID)
+	if err != nil {
+		return linkRefusal(m.ReqID, err)
+	}
+	defer release()
+	var o laneOutcome
+	if json.Unmarshal([]byte(raw), &o) != nil {
+		return refusal(m.ReqID, "unavailable", "what the link kept of this opId could not be read")
+	}
 	switch {
-	case m.Action == "answer" && ref.Kind == brakeman.RefQuestion:
-		d, ok := s.registry.Get(ref.Session)
-		if !ok {
-			return nil
+	case o.Run != "":
+		if s.ledger == nil {
+			return refusal(m.ReqID, "unavailable", "there is no ledger to read the receipt from")
 		}
-		local, ok := d.(*session.Local)
-		if !ok {
-			return nil
-		}
-		if r, ok := local.QuestionResult(ref.Question); ok && r.ReqID == m.OpID {
-			return laneOK(m.ReqID, ref.String(), ref.Question, true)
-		}
-	case isCommand(m.Action) && s.ledger != nil:
-		run, task, ok := s.commandTarget(ref)
-		if !ok {
-			return nil
-		}
-		row, found, err := s.ledger.Receipt(ctx, run, laneActor(sc.link.ID), m.OpID)
-		if err != nil || !found || row.Intent != m.Action {
-			return nil
+		row, found, err := s.ledger.Receipt(ctx, o.Run, laneActor(linkID), m.OpID)
+		if err != nil || !found {
+			return refusal(m.ReqID, "unavailable", "the receipt could not be read")
 		}
 		var rc crew.Receipt
 		if json.Unmarshal([]byte(row.Receipt), &rc) != nil {
 			rc = crew.Receipt{Status: row.Status}
 		}
 		rc.CommandID = m.OpID
-		return commandReply(m.ReqID, "task:"+run+"/"+task, rc, true)
+		return commandReply(m.ReqID, o.Ref, rc, true)
+	case o.Code != "":
+		return proto.MustControl(proto.DecideRefused{T: proto.CtlDecideRefused, ReqID: m.ReqID, Code: o.Code, Message: fitText(o.Words, proto.MaxDecideWords), Ref: o.Ref, Receipt: o.Receipt})
 	}
-	return nil
+	return laneOK(m.ReqID, o.Ref, o.Receipt, true)
 }
 
 // Decide takes one action through the item's own operation, as the link.
+// Its opId is claimed first, for the whole request (rule 2): the same
+// request the link took before is answered from it (replay), one under way
+// on another connection is waited for, and another request under it is
+// op_conflict, nothing done.
 func (l *Lane) Decide(ctx context.Context, linkID, sessionID string, m proto.Decide, answer func(context.Context, proto.Answer) error) []byte {
 	s := l.s
 	if seam := s.laneSeam; seam != nil && seam.beforeDecide != nil {
@@ -540,31 +658,95 @@ func (l *Lane) Decide(ctx context.Context, linkID, sessionID string, m proto.Dec
 	if no != nil {
 		return no
 	}
-	if f := s.repeat(ctx, sc, ref, m); f != nil {
-		return f
+	fp := decideFingerprint(m)
+	for {
+		op, mine, err := s.links.ClaimOp(linkID, m.OpID, fp)
+		switch {
+		case errors.Is(err, share.ErrOpConflict):
+			return refusal(m.ReqID, proto.DecideOpConflict, "this opId was used before for another request: nothing was done")
+		case errors.Is(err, share.ErrTooManyOps):
+			return refusal(m.ReqID, proto.DecideTooMany, "this link has taken as many actions as it keeps: nothing was done")
+		case err != nil:
+			return linkRefusal(m.ReqID, err)
+		case mine:
+			return s.decideNew(ctx, linkID, sessionID, sc, ref, m, answer)
+		case op.Settled:
+			return s.replay(ctx, linkID, m, op.Outcome)
+		}
+		if seam := s.laneSeam; seam != nil && seam.twinWaits != nil {
+			seam.twinWaits(linkID, m.OpID)
+		}
+		select {
+		case <-op.Done:
+		case <-ctx.Done():
+			return refusal(m.ReqID, "unavailable", "the connection closed: nothing was done")
+		}
 	}
+}
+
+// decideNew takes a decide whose opId it holds (Decide): kept for the link
+// once the operation was asked and gave an outcome, let go when nothing was
+// begun (refused before the operation, the connection gone), so the opId
+// is free again.
+func (s *Server) decideNew(ctx context.Context, linkID, sessionID string, sc laneScope, ref brakeman.Ref, m proto.Decide, answer func(context.Context, proto.Answer) error) []byte {
+	var kept *laneOutcome
+	defer func() {
+		raw := ""
+		if kept != nil {
+			b, _ := json.Marshal(kept)
+			raw = string(b)
+		}
+		s.links.SettleOp(linkID, m.OpID, kept != nil, raw)
+	}()
 	it, err := s.inboxItemOf(ctx, ref)
 	if errors.Is(err, errNoItem) {
 		return refusal(m.ReqID, proto.DecideNotFound, "no such item")
 	} else if err != nil {
 		return refusal(m.ReqID, "unavailable", "the item could not be read")
 	}
+	var f []byte
 	switch {
 	case m.Action == "answer" && ref.Kind == brakeman.RefQuestion:
-		return s.laneAnswer(ctx, linkID, sessionID, sc, ref, it, m, answer)
+		f, kept = s.laneAnswer(ctx, linkID, sessionID, sc, ref, it, m, answer)
 	case isCommand(m.Action):
-		return s.laneCommand(ctx, linkID, sc, ref, it, m)
+		f, kept = s.laneCommand(ctx, linkID, sc, ref, it, m)
+	default:
+		f = refusal(m.ReqID, proto.DecideInvalid, "no such action on this item")
 	}
-	return refusal(m.ReqID, proto.DecideInvalid, "no such action on this item")
+	return f
+}
+
+// beforeOperation runs the seam between an action's judgement and its
+// operation.
+func (s *Server) beforeOperation(linkID, opID string) {
+	if seam := s.laneSeam; seam != nil && seam.beforeOperation != nil {
+		seam.beforeOperation(linkID, opID)
+	}
+}
+
+// begunGone refuses an action whose connection closed before it began:
+// never begun (rule 1).
+func begunGone(reqID string) []byte {
+	return refusal(reqID, "unavailable", "the connection closed before the action began: nothing was done")
 }
 
 // laneAnswer answers the question ref with m's choice or line: through the
 // connection's own answer when the question is its session's, else
 // through the question's claim as the link (AnswerAs, Submit). Only an
-// answer the item offers now is taken; the session judges the rest.
-func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc laneScope, ref brakeman.Ref, it *inboxItem, m proto.Decide, own func(context.Context, proto.Answer) error) []byte {
+// answer the item offers now is taken; the session judges the rest. The
+// answer is kept under the link's own request id (answerReqID), and its
+// keys or line are written only while the link stands, held as the
+// session's writer takes them (holdLink, rule 1). An answer another answer
+// came before is kept and noted in the link's Recent as the losing attempt
+// it is, so its steps read "another answer first".
+func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc laneScope, ref brakeman.Ref, it *inboxItem, m proto.Decide, own func(context.Context, proto.Answer) error) ([]byte, *laneOutcome) {
 	if m.Revision != ref.Question || m.Choice != nil || m.Rationale != "" || (m.Input == "") == (m.Text == "") {
-		return refusal(m.ReqID, proto.DecideInvalid, "an answer names its question's id as its revision and carries a choice's keys or a line")
+		return refusal(m.ReqID, proto.DecideInvalid, "an answer names its question's id as its revision and carries a choice's keys or a line"), nil
+	}
+	lost := func(words string) ([]byte, *laneOutcome) {
+		s.note(linkID, ref.String(), ref.Question, m.OpID)
+		o := &laneOutcome{Ref: ref.String(), Receipt: ref.Question, Code: proto.DecideAnswered, Words: words}
+		return proto.MustControl(proto.DecideRefused{T: proto.CtlDecideRefused, ReqID: m.ReqID, Code: o.Code, Message: fitText(words, proto.MaxDecideWords), Ref: o.Ref, Receipt: o.Receipt}), o
 	}
 	offered := false
 	for _, a := range it.Actions {
@@ -574,34 +756,43 @@ func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc la
 	}
 	if !offered {
 		if it.Revision != ref.Question || !slices.ContainsFunc(it.Actions, func(a inboxAction) bool { return a.Name == "answer" }) {
-			return refusal(m.ReqID, proto.DecideAnswered, "the question is no longer one an answer is taken for: nothing was typed")
+			return lost("the question is no longer one an answer is taken for: nothing was typed")
 		}
-		return refusal(m.ReqID, proto.DecideInvalid, "not one of the question's choices: nothing was typed")
+		return refusal(m.ReqID, proto.DecideInvalid, "not one of the question's choices: nothing was typed"), nil
 	}
 	d, ok := s.registry.Get(ref.Session)
 	if !ok {
-		return refusal(m.ReqID, proto.DecideAnswered, "the session is no longer listed: nothing was typed")
+		return lost("the session is no longer listed: nothing was typed")
 	}
 	local, isLocal := d.(*session.Local)
 	if !isLocal {
-		return refusal(m.ReqID, proto.DecideUnsupported, "a hosted session's question is answered where it runs")
+		return refusal(m.ReqID, proto.DecideUnsupported, "a hosted session's question is answered where it runs"), nil
 	}
-	// The link again, as the operation is taken.
+	s.beforeOperation(linkID, m.OpID)
+	// Read again here to refuse early; what decides is the hold the
+	// session's writer takes with the write (holdLink).
 	if _, no := s.scope(linkID, m.ReqID); no != nil {
-		return no
+		return no, nil
 	}
+	if ctx.Err() != nil {
+		return begunGone(m.ReqID), nil
+	}
+	reqID := answerReqID(linkID, m.OpID)
 	var err error
 	if ref.Session == sessionID && own != nil {
-		err = own(ctx, proto.Answer{T: proto.CtlAnswer, ReqID: m.OpID, Question: ref.Question, Input: m.Input, Text: m.Text})
+		// The connection's own subscription holds the link as its writes
+		// are taken (AttachOptions.Hold).
+		err = own(ctx, proto.Answer{T: proto.CtlAnswer, ReqID: reqID, Question: ref.Question, Input: m.Input, Text: m.Text})
 	} else {
 		opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), submitTimeout)
 		defer cancel()
 		name := cmpOr(sc.link.Label, "a decision link")
+		hold := s.holdLink(linkID)
 		if m.Input != "" {
-			err = local.AnswerAs(opCtx, ref.Question, m.Input, session.Actor{Name: name, ReqID: m.OpID, Withdrawn: ctx.Done()})
+			err = local.AnswerAs(opCtx, ref.Question, m.Input, session.Actor{Name: name, ReqID: reqID, Withdrawn: ctx.Done(), Hold: hold})
 		} else {
 			done := make(chan error, 1)
-			_, err = local.Submit(opCtx, session.Submission{Text: m.Text, Question: ref.Question, ByName: name, ReqID: m.OpID, Withdrawn: ctx.Done(),
+			_, err = local.Submit(opCtx, session.Submission{Text: m.Text, Question: ref.Question, ByName: name, ReqID: reqID, Withdrawn: ctx.Done(), Hold: hold,
 				Finished: func(res session.SubmitResult, e error) { done <- session.AnswerWord(res, e) }})
 			if errors.Is(err, session.ErrSubmitPending) {
 				select {
@@ -612,52 +803,57 @@ func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc la
 		}
 	}
 	if err != nil && !errors.Is(err, session.ErrSubmitPending) {
-		code, words := proto.ErrCodeQuestionAnswered, "the question is no longer the one waiting: nothing was typed"
 		switch {
 		case errors.Is(err, session.ErrQuestionAnswered):
+			return lost("the question is no longer the one waiting: nothing was typed")
 		case errors.Is(err, session.ErrNotAChoice):
-			code, words = proto.DecideInvalid, err.Error()
-		default:
-			if c, w, ok := session.LinkRefusal(err); ok {
-				code, words = c, w
-			} else {
-				code, words = "input_failed", "the answer could not be delivered: "+err.Error()
-			}
+			return refusal(m.ReqID, proto.DecideInvalid, err.Error()), nil
 		}
-		return refusal(m.ReqID, code, words)
+		if c, w, ok := session.LinkRefusal(err); ok {
+			return refusal(m.ReqID, c, w), nil
+		}
+		return refusal(m.ReqID, "input_failed", "the answer could not be delivered: "+err.Error()), nil
 	}
 	s.note(linkID, ref.String(), ref.Question, m.OpID)
-	return laneOK(m.ReqID, ref.String(), ref.Question, false)
+	return laneOK(m.ReqID, ref.String(), ref.Question, false), &laneOutcome{Ref: ref.String(), Receipt: ref.Question}
 }
 
 // laneCommand takes a task command the item offers now, at the revision
 // the decide carries, as the link: the engine judges it (stale_revision
 // for a run that moved on). One the item no longer offers is refused,
-// nothing done.
-func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, ref brakeman.Ref, it *inboxItem, m proto.Decide) []byte {
+// nothing done. The link is held from the check that it stands until the
+// engine has committed the command (rule 1): a revoke waits for it, and a
+// command whose connection closed before it began is never begun.
+func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, ref brakeman.Ref, it *inboxItem, m proto.Decide) ([]byte, *laneOutcome) {
 	if m.Input != "" || m.Text != "" || m.Choice != nil || m.Rationale != "" {
-		return refusal(m.ReqID, proto.DecideInvalid, "a task command carries its revision alone")
+		return refusal(m.ReqID, proto.DecideInvalid, "a task command carries its revision alone"), nil
 	}
 	rev, err := strconv.ParseInt(m.Revision, 10, 64)
 	if err != nil || rev <= 0 {
-		return refusal(m.ReqID, proto.DecideInvalid, "revision is the run's revision the action carried")
+		return refusal(m.ReqID, proto.DecideInvalid, "revision is the run's revision the action carried"), nil
 	}
 	run, task, ok := s.commandTarget(ref)
 	if !ok || !sc.coversTask(run, task) {
-		return refusal(m.ReqID, proto.DecideNotInScope, "this link does not cover the task")
+		return refusal(m.ReqID, proto.DecideNotInScope, "this link does not cover the task"), nil
 	}
 	if !slices.ContainsFunc(it.Actions, func(a inboxAction) bool { return a.Name == m.Action }) {
 		words := "the item no longer offers this: nothing was done"
 		if it.Now != "" {
 			words = "the item moved on (" + it.Now + "): nothing was done"
 		}
-		return refusal(m.ReqID, proto.DecideStaleRevision, words)
+		return refusal(m.ReqID, proto.DecideStaleRevision, words), nil
 	}
-	if _, no := s.scope(linkID, m.ReqID); no != nil {
-		return no
+	s.beforeOperation(linkID, m.OpID)
+	link, release, err := s.links.Hold(linkID)
+	if err != nil {
+		return linkRefusal(m.ReqID, err), nil
 	}
-	// The command is the engine's whatever becomes of the connection: once
-	// begun, its receipt stands, and the same opId asks for it again.
+	defer release()
+	if ctx.Err() != nil {
+		return begunGone(m.ReqID), nil
+	}
+	// Begun: the command is the engine's whatever becomes of the
+	// connection; its receipt stands, and the same opId asks for it again.
 	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	cmd := crew.Command{ID: m.OpID, ExpectedRevision: rev}
@@ -672,13 +868,16 @@ func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, r
 	}
 	target := "task:" + run + "/" + task
 	if rc.CommandID != "" {
+		if !rc.Repeat {
+			s.runs.Note(run, session.ActivityLink, laneActorNote(link, m.Action, task))
+		}
 		s.note(linkID, target, rc.CommandID, m.OpID)
-		return commandReply(m.ReqID, target, rc, rc.Repeat)
+		return commandReply(m.ReqID, target, rc, rc.Repeat), &laneOutcome{Ref: target, Receipt: rc.CommandID, Run: run}
 	}
 	code, words := "unavailable", "the command could not be taken"
 	switch {
 	case errors.Is(err, crew.ErrCommandConflict):
-		code, words = proto.DecideInvalid, "this opId was used before with another action"
+		code, words = proto.DecideOpConflict, "this opId was used before for another request: nothing was done"
 	case errors.Is(err, crew.ErrStaleRevision):
 		code, words = proto.DecideStaleRevision, "the run moved on since the revision you read: nothing was done"
 	case errors.Is(err, crew.ErrRunStopped), errors.Is(err, crew.ErrRunContinued), errors.Is(err, crew.ErrTaskState), errors.Is(err, crew.ErrRunNotFound), errors.Is(err, crew.ErrTaskNotFound):
@@ -686,13 +885,16 @@ func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, r
 	case errors.Is(err, crew.ErrTooManyCommands):
 		code, words = proto.DecideTooMany, err.Error()
 	}
-	return refusal(m.ReqID, code, words)
+	return refusal(m.ReqID, code, words), nil
 }
 
 // laneHash is what the link's viewer sees, hashed: its scope's open items
 // as summarized, their actions' revisions, and the steps of each entry of
 // the link's Recent; "" for a link that no longer stands.
 func (s *Server) laneHash(ctx context.Context, linkID string) string {
+	if seam := s.laneSeam; seam != nil && seam.hashing != nil {
+		seam.hashing(linkID)
+	}
 	sc, no := s.scope(linkID, "")
 	if no != nil {
 		return ""
@@ -721,18 +923,48 @@ const laneSettle = 100 * time.Millisecond
 // Watch calls changed whenever the hash of what the link's viewer sees
 // differs from the last it saw, read again on each of the server's events
 // (a session's, a run's, Dispatch's) and on each action noted in the
-// link's Recent, until stop.
+// link's Recent, until stop. A link's connections share one watch, which
+// reads the scope once per settle for all of them (laneState.links), and
+// its first read is made before Watch returns, so a request the
+// connection serves after it is never the baseline of a change it misses.
 func (l *Lane) Watch(linkID, sessionID string, changed func()) (stop func()) {
 	s := l.s
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	wake := make(chan struct{}, 1)
+	told := make(chan struct{})
 	go func() {
-		defer close(done)
-		ch := s.events.subscribe()
+		defer close(told)
+		for range wake {
+			changed()
+		}
+	}()
+	if lw, first := s.lanes.join(linkID, wake); first {
+		s.startWatch(linkID, lw)
+	} else {
+		<-lw.ready
+	}
+	return func() {
+		if lw := s.lanes.leave(linkID, wake); lw != nil {
+			lw.stop()
+			<-lw.done
+		}
+		close(wake)
+		<-told
+	}
+}
+
+// startWatch makes lw's first read, subscribed to the server's events
+// first, and then watches on a goroutine of its own until lw.stop.
+func (s *Server) startWatch(linkID string, lw *linkWatch) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := s.events.subscribe()
+	last := s.laneHash(ctx, linkID)
+	s.lanes.mu.Lock()
+	lw.stop = cancel
+	s.lanes.mu.Unlock()
+	close(lw.ready)
+	go func() {
+		defer close(lw.done)
 		defer func() { s.events.unsubscribe(ch) }()
-		poked, unwatch := s.lanes.watch(linkID)
-		defer unwatch()
-		last := s.laneHash(ctx, linkID)
 		settle := time.NewTimer(0)
 		<-settle.C
 		pending := false
@@ -750,7 +982,7 @@ func (l *Lane) Watch(linkID, sessionID string, changed func()) (stop func()) {
 					pending = true
 					settle.Reset(laneSettle)
 				}
-			case <-poked:
+			case <-lw.poke:
 				if !pending {
 					pending = true
 					settle.Reset(laneSettle)
@@ -759,25 +991,23 @@ func (l *Lane) Watch(linkID, sessionID string, changed func()) (stop func()) {
 				pending = false
 				if h := s.laneHash(ctx, linkID); h != last {
 					last = h
-					changed()
+					s.lanes.fan(lw)
 				}
 			}
 		}
 	}()
-	return func() {
-		cancel()
-		<-done
-	}
 }
 
 // laneConn is one connection's side of the lane: the requests under way,
 // at most proto.MaxDecideInFlight decides and
 // proto.MaxDecisionReadsInFlight reads, each on a goroutine of its own,
 // its reply sent as it is done; nil for a connection of no decision link,
-// which is refused each request (not_decision_link).
+// which is refused each request (not_decision_link). Its context ends
+// with the connection, and first of all as end begins, on every way out.
 type laneConn struct {
 	lane              *Lane
 	ctx               context.Context
+	cancel            context.CancelFunc
 	linkID, sessionID string
 	send              func([]byte)
 	answer            func(context.Context, proto.Answer) error
@@ -791,18 +1021,21 @@ type laneConn struct {
 // are served under ctx, replies sent through send, and decisions_changed
 // once what it sees changes.
 func (s *Server) newLane(ctx context.Context, linkID, sessionID string, send func([]byte), answer func(context.Context, proto.Answer) error) *laneConn {
-	c := &laneConn{lane: s.Lane(), ctx: ctx, linkID: linkID, sessionID: sessionID, send: send, answer: answer}
+	ctx, cancel := context.WithCancel(ctx)
+	c := &laneConn{lane: s.Lane(), ctx: ctx, cancel: cancel, linkID: linkID, sessionID: sessionID, send: send, answer: answer}
 	c.stopWatch = c.lane.Watch(linkID, sessionID, func() {
 		send(proto.MustControl(proto.DecisionsChanged{T: proto.CtlDecisionsChanged, Seq: c.seq.Add(1)}))
 	})
 	return c
 }
 
-// end stops the watch and waits for the requests under way.
+// end cancels the requests under way, stops the watch and waits for them:
+// one not begun is never begun; one begun ends as its operation does.
 func (c *laneConn) end() {
 	if c == nil {
 		return
 	}
+	c.cancel()
 	c.stopWatch()
 	c.wg.Wait()
 }
@@ -833,6 +1066,9 @@ func (c *laneConn) control(payload []byte, send func([]byte)) bool {
 	}
 	c.wg.Go(func() {
 		defer c.reads.Add(-1)
+		if seam := c.lane.s.laneSeam; seam != nil && seam.beforeRead != nil {
+			seam.beforeRead(reqID)
+		}
 		var f []byte
 		switch m := msg.(type) {
 		case *proto.DecisionsList:
@@ -911,43 +1147,80 @@ func (s *Server) ownAnswer(sub *session.Subscription, local *session.Local) func
 
 // laneState is the lane's state on this server: the connections of the
 // run desks open, by their link, which a revoke, an expiry or the run's
-// forgetting closes; and the watches of each link, woken when its Recent
-// changes.
+// forgetting closes; and the watch of each link, shared by its
+// connections (Lane.Watch).
 type laneState struct {
-	mu      sync.Mutex
-	conns   map[string]map[*wsSink]struct{}
-	watches map[string]map[chan struct{}]struct{}
+	mu    sync.Mutex
+	conns map[string]map[*wsSink]struct{}
+	links map[string]*linkWatch
 }
 
-// watch is a channel woken when linkID's Recent changes, and its end.
-func (d *laneState) watch(linkID string) (chan struct{}, func()) {
-	ch := make(chan struct{}, 1)
+// linkWatch is one link's watch: the connections it tells (their wakes,
+// each told without waiting, a connection's own goroutine sending its
+// decisions_changed), poked when the link's Recent changes. ready is
+// closed once its first read is made; stop and done end it once its last
+// connection leaves.
+type linkWatch struct {
+	subs  map[chan struct{}]struct{}
+	poke  chan struct{}
+	ready chan struct{}
+	stop  context.CancelFunc
+	done  chan struct{}
+}
+
+// join adds wake to linkID's watch: first is true when the watch is new,
+// and its caller starts it (startWatch).
+func (d *laneState) join(linkID string, wake chan struct{}) (*linkWatch, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.watches == nil {
-		d.watches = map[string]map[chan struct{}]struct{}{}
+	if d.links == nil {
+		d.links = map[string]*linkWatch{}
 	}
-	if d.watches[linkID] == nil {
-		d.watches[linkID] = map[chan struct{}]struct{}{}
+	lw, ok := d.links[linkID]
+	if !ok {
+		lw = &linkWatch{subs: map[chan struct{}]struct{}{}, poke: make(chan struct{}, 1), ready: make(chan struct{}), done: make(chan struct{})}
+		d.links[linkID] = lw
 	}
-	d.watches[linkID][ch] = struct{}{}
-	return ch, func() {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		delete(d.watches[linkID], ch)
-		if len(d.watches[linkID]) == 0 {
-			delete(d.watches, linkID)
+	lw.subs[wake] = struct{}{}
+	return lw, !ok
+}
+
+// leave takes wake out of linkID's watch: the watch, when wake was its
+// last, for its caller to stop; nil otherwise. Nothing tells wake after.
+func (d *laneState) leave(linkID string, wake chan struct{}) *linkWatch {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	lw := d.links[linkID]
+	if lw == nil {
+		return nil
+	}
+	delete(lw.subs, wake)
+	if len(lw.subs) > 0 {
+		return nil
+	}
+	delete(d.links, linkID)
+	return lw
+}
+
+// fan tells each connection of lw, none waited for.
+func (d *laneState) fan(lw *linkWatch) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for wake := range lw.subs {
+		select {
+		case wake <- struct{}{}:
+		default:
 		}
 	}
 }
 
-// poke wakes linkID's watches, none waited for.
+// poke wakes linkID's watch, not waited for.
 func (d *laneState) poke(linkID string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for ch := range d.watches[linkID] {
+	if lw := d.links[linkID]; lw != nil {
 		select {
-		case ch <- struct{}{}:
+		case lw.poke <- struct{}{}:
 		default:
 		}
 	}
@@ -1005,9 +1278,15 @@ func (s *Server) closeDesks(why error, linkIDs ...string) {
 		}
 	}
 	s.lanes.mu.Unlock()
+	// Each one's cut armed at once (closeWait), so a peer that reads
+	// nothing holds none of them past it, and all closed together: the
+	// whole takes one closeWait at most, whatever their number.
+	var wg sync.WaitGroup
 	for i, c := range todo {
-		c.Close(reasons[i])
+		c.Closing()
+		wg.Go(func() { c.Close(reasons[i]) })
 	}
+	wg.Wait()
 }
 
 // handleRunDesk serves a run's desk at the server (GET
@@ -1053,9 +1332,16 @@ func (s *Server) handleRunDesk(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.lanes.remove(linkID, sink)
 	defer sink.cancel()
-	if _, no := s.scope(linkID, ""); no != nil {
+	sc, no := s.scope(linkID, "")
+	if no != nil {
 		s.closeDesks(nil, linkID)
 		return
+	}
+	// Closed at the link's expiry as a viewer is at its Grant's Until, not
+	// at the next sweep.
+	if at := sc.link.ExpiresAt; at != nil {
+		expiry := time.AfterFunc(time.Until(*at), func() { sink.Close(session.ErrExpired) })
+		defer expiry.Stop()
 	}
 	send := func(f []byte) {
 		if sink.WriteFrame(f) != nil {

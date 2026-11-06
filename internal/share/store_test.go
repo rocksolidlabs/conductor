@@ -595,3 +595,131 @@ func TestADecisionLinksRecent(t *testing.T) {
 		t.Fatalf("after the run's links went: %v", got)
 	}
 }
+
+// A link's act is held while it is written (Hold): a revoke waits for the
+// act under way and returns once it is let go, a hold asked while the
+// revoke waits is refused at once, as one after it is; an expired link is
+// refused ErrExpired; a link revoked on its session's end (End) does not
+// wait, its session refusing what comes after on its own.
+func TestALinksActIsHeldAgainstItsRevoke(t *testing.T) {
+	s := NewStore()
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "phone", time.Minute)
+	got, release, err := s.Hold(l.ID)
+	if err != nil || got.ID != l.ID {
+		t.Fatalf("hold: %+v %v", got, err)
+	}
+	// Two holds at once are fine.
+	_, again, err := s.Hold(l.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again()
+	revoked := make(chan struct{})
+	go func() {
+		s.RevokeRun("r1", l.ID)
+		close(revoked)
+	}()
+	// The revoke waits: holds are refused meanwhile, the act's still held.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, rel, err := s.Hold(l.ID); err != nil {
+			if !errors.Is(err, ErrRevoked) {
+				t.Fatalf("a hold while the revoke waits: %v", err)
+			}
+			break
+		} else {
+			rel()
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the revoke never began")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-revoked:
+		t.Fatal("the revoke returned with an act held")
+	default:
+	}
+	release()
+	release() // once
+	<-revoked
+	if _, _, err := s.Hold(l.ID); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("a hold after the revoke: %v", err)
+	}
+	e, _, _ := s.CreateRunDecision("r1", session.RoleControl, "", time.Minute)
+	now = now.Add(time.Minute)
+	if _, _, err := s.Hold(e.ID); !errors.Is(err, ErrExpired) {
+		t.Fatalf("a hold of an expired link: %v", err)
+	}
+	if _, _, err := s.Hold("nope"); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("a hold of no link: %v", err)
+	}
+	sl, _, _ := s.CreateDecision("s1", session.RoleControl, "", 0)
+	_, held, _ := s.Hold(sl.ID)
+	defer held()
+	if !s.End("s1", sl.ID) {
+		t.Fatal("not ended")
+	}
+}
+
+// An opId names one operation of a link: the same request again finds the
+// first, under way or settled; another request under it is a conflict,
+// before and after it settles; one let go (nothing begun) frees it; past
+// MaxOps a new one is refused, an old one still answered; another link's
+// opIds are its own; a plain link takes none; and they go with the link.
+func TestAnOpIDNamesOneOperation(t *testing.T) {
+	s := NewStore()
+	l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "", 0)
+	other, _, _ := s.CreateRunDecision("r1", session.RoleControl, "", 0)
+	op, mine, err := s.ClaimOp(l.ID, "op-1", "fp-a")
+	if err != nil || !mine || op.Settled {
+		t.Fatalf("a new opId: %+v %v %v", op, mine, err)
+	}
+	twin, mine, err := s.ClaimOp(l.ID, "op-1", "fp-a")
+	if err != nil || mine || twin.Settled {
+		t.Fatalf("the twin under way: %+v %v %v", twin, mine, err)
+	}
+	if _, _, err := s.ClaimOp(l.ID, "op-1", "fp-b"); !errors.Is(err, ErrOpConflict) {
+		t.Fatalf("another request under way: %v", err)
+	}
+	if _, mine, err := s.ClaimOp(other.ID, "op-1", "fp-b"); err != nil || !mine {
+		t.Fatalf("another link's opId: %v %v", mine, err)
+	}
+	s.SettleOp(l.ID, "op-1", true, "kept")
+	<-twin.Done
+	if got, mine, err := s.ClaimOp(l.ID, "op-1", "fp-a"); err != nil || mine || !got.Settled || got.Outcome != "kept" {
+		t.Fatalf("settled: %+v %v %v", got, mine, err)
+	}
+	if _, _, err := s.ClaimOp(l.ID, "op-1", "fp-b"); !errors.Is(err, ErrOpConflict) {
+		t.Fatalf("another request after: %v", err)
+	}
+	s.ClaimOp(l.ID, "op-2", "fp-a")
+	s.SettleOp(l.ID, "op-2", false, "")
+	if _, mine, err := s.ClaimOp(l.ID, "op-2", "fp-b"); err != nil || !mine {
+		t.Fatalf("an opId let go: %v %v", mine, err)
+	}
+	for i := 3; i <= MaxOps; i++ {
+		if _, _, err := s.ClaimOp(l.ID, "op-"+strconv.Itoa(i), "fp"); err != nil {
+			t.Fatalf("op %d: %v", i, err)
+		}
+	}
+	if _, _, err := s.ClaimOp(l.ID, "op-new", "fp"); !errors.Is(err, ErrTooManyOps) {
+		t.Fatalf("past MaxOps: %v", err)
+	}
+	if got, _, err := s.ClaimOp(l.ID, "op-1", "fp-a"); err != nil || got.Outcome != "kept" {
+		t.Fatalf("an old one past MaxOps: %+v %v", got, err)
+	}
+	plain, _, _ := s.CreateRunLink("r1", session.RoleControl, "", 0)
+	if _, _, err := s.ClaimOp(plain.ID, "op-1", "fp"); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("a plain link: %v", err)
+	}
+	if c, _ := s.Get(l.ID); c.ops != nil {
+		t.Fatal("a copy carries the ops")
+	}
+	s.DeleteRun("r1")
+	if _, _, err := s.ClaimOp(l.ID, "op-1", "fp-a"); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("after the run's links went: %v", err)
+	}
+}

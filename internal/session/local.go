@@ -2407,6 +2407,11 @@ type AttachOptions struct {
 	// PR-5): its welcome says decisions, so it sends the lane's reads and
 	// decides, which its caller serves.
 	Decisions bool
+	// Hold, when set, is the client's credential held while one of its
+	// writes is taken (writeWait.hold): a decision link's, whose answer is
+	// written only while the link stands, checked with the write. Hold must
+	// not call the session and must not wait.
+	Hold func() (release func(), err error)
 }
 
 // Attach registers a client without a display name. See AttachWith.
@@ -2529,6 +2534,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	sub.owner = o.Owner && o.LinkID == ""
 	sub.authorize = o.Authorize
 	sub.fresh = o.Fresh
+	sub.hold = o.Hold
 	if sized {
 		sub.want = [2]uint16{cols, rows}
 	}
@@ -2876,6 +2882,9 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 	o.from, o.anyEnd = who.sub, true
 	if who.gone != nil {
 		o.gone = who.gone
+	}
+	if who.hold != nil {
+		o.hold = who.hold
 	}
 	// Whether a person typed anything here, or only the terminal reported
 	// (its replies, the pointer moved or clicked), as many reports as the

@@ -33,6 +33,12 @@ type Actor struct {
 	// most proto.MaxAnswerReqID bytes of printable ASCII; another is kept
 	// as none.
 	ReqID string
+	// Hold, when set, is the actor's credential held while its keys are
+	// taken (writeWait.hold): a decision link's, so they are written only
+	// while the link stands, checked as the writer takes them, not before.
+	// An error from it (ErrRevoked, ErrExpired) and nothing is written.
+	// Hold must not call the session and must not wait.
+	Hold func() (release func(), err error)
 }
 
 // ErrNotAChoice refuses keys AnswerAs is given that are not one of the
@@ -60,7 +66,7 @@ func (s *Local) AnswerAs(ctx context.Context, question, input string, by Actor) 
 	if question == "" {
 		return ErrQuestionAnswered
 	}
-	who := typist{actor: true, name: CleanName(by.Name), gone: by.Withdrawn}
+	who := typist{actor: true, name: CleanName(by.Name), gone: by.Withdrawn, hold: by.Hold}
 	if proto.ValidAnswerReqID(by.ReqID) {
 		who.reqID = by.ReqID
 	}
@@ -78,6 +84,8 @@ type typist struct {
 	actor bool
 	name  string
 	gone  <-chan struct{}
+	// hold is the actor's Actor.Hold.
+	hold func() (func(), error)
 	// reqID is the request id of the reply the keys are (AnswerInputReq),
 	// kept with the question's result.
 	reqID string

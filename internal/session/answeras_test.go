@@ -666,3 +666,106 @@ func TestAnswerAsKeepsTheRequestID(t *testing.T) {
 		}
 	}
 }
+
+// An actor's credential is held as the writer takes its keys, checked with
+// the write (Actor.Hold): keys queued behind a write the program has not
+// taken, whose credential ends while they wait (a decision link revoked),
+// are never written once the writer reaches them, ErrRevoked, the question
+// still waiting; keys whose credential stands are written, the hold taken
+// once as the writer took them and let go once their write was begun.
+func TestAnswerAsHoldsItsCredentialAtTheWrite(t *testing.T) {
+	s, p, _ := asking(t, Options{InputWait: time.Hour})
+	owner := ownerOf(t, s)
+	q := askOwn(t, s, "Which database?", dbChoices...)
+	begun, gate := make(chan struct{}), make(chan struct{})
+	var once, opened sync.Once
+	open := func() { opened.Do(func() { close(gate) }) }
+	t.Cleanup(open)
+	p.onWrite = func() {
+		once.Do(func() {
+			close(begun)
+			<-gate
+		})
+	}
+	first := make(chan error, 1)
+	go func() { first <- s.Input(owner, []byte("x")) }()
+	select {
+	case <-begun:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first write never began")
+	}
+	var mu sync.Mutex
+	stands, holds, released := true, 0, 0
+	hold := func() (func(), error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !stands {
+			return nil, ErrRevoked
+		}
+		holds++
+		return func() { mu.Lock(); released++; mu.Unlock() }, nil
+	}
+	answered := make(chan error, 1)
+	go func() {
+		answered <- s.AnswerAs(context.Background(), q.ID, "Postgres\r", Actor{Name: "phone", ReqID: "op-1", Hold: hold})
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for goroutinesIn("session.(*Local).writeProc(") < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the keys never waited behind the first write")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	// The credential ends while the keys wait: nothing has asked it yet.
+	mu.Lock()
+	stands = false
+	mu.Unlock()
+	open()
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-answered; !errors.Is(err, ErrRevoked) {
+		t.Fatalf("keys whose credential ended as they waited: %v, want ErrRevoked", err)
+	}
+	if got := written(t, p); got != "x" {
+		t.Fatalf("written %q, want the first write alone", got)
+	}
+	select {
+	case b := <-p.input:
+		t.Fatalf("written after the credential ended: %q", b)
+	default:
+	}
+	showsOwn(t, s, q, "after the credential ended")
+	mu.Lock()
+	stands = true
+	mu.Unlock()
+	if err := s.AnswerAs(context.Background(), q.ID, "SQLite\r", Actor{Name: "phone", ReqID: "op-2", Hold: hold}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "SQLite\r" {
+		t.Fatalf("written %q", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if holds != 1 || released != 1 {
+		t.Fatalf("the hold taken %d times, let go %d", holds, released)
+	}
+}
+
+// A line's credential is held as each of its writes is taken
+// (Submission.Hold): one that no longer stands as the writer takes the text
+// refuses it, nothing typed, the question still waiting.
+func TestSubmitHoldsItsCredentialAtTheWrite(t *testing.T) {
+	s, p, _ := asking(t, Options{})
+	q := askOwn(t, s, "Which name?")
+	_, err := s.Submit(context.Background(), Submission{Text: "Ada", ByName: "phone", Question: q.ID, Hold: func() (func(), error) { return nil, ErrExpired }})
+	if !errors.Is(err, ErrExpired) {
+		t.Fatalf("a line whose credential ended: %v", err)
+	}
+	select {
+	case b := <-p.input:
+		t.Fatalf("written: %q", b)
+	default:
+	}
+	showsOwn(t, s, q, "after the refused line")
+}

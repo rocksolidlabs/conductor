@@ -504,8 +504,9 @@ func TestADecisionLinkPagesItsScope(t *testing.T) {
 
 // A retry through a run's decision link is the link's: the ledger keeps
 // its receipt under link:<id>, the lane's track reads that receipt, and
-// the admin's track, under its own actor, keeps none of it. The same
-// opId again is answered with that receipt, repeat, nothing done twice.
+// the admin's track, under its own actor, keeps none of it; the run's
+// activity maps link:<id> to the link's label. The same opId again is
+// answered with that receipt, repeat, nothing done twice.
 func TestDecideRetryRecordsTheLinkAsActor(t *testing.T) {
 	e := readyEnv(t, nil)
 	e.gitRepo(t)
@@ -526,6 +527,15 @@ func TestDecideRetryRecordsTheLinkAsActor(t *testing.T) {
 	}
 	if steps := e.trackOf(t, ref, op, ""); steps[stepRecorded].State != stepUnknown {
 		t.Fatalf("the admin's steps of the link's command: %+v", steps)
+	}
+	// The run's record says whose link:<id> it is, past the link's life:
+	// its creation names it, and the command taken through it is noted
+	// with the link's label beside it.
+	r, _ := e.srv.runs.Get(run)
+	for _, want := range []string{"link created: phone (control, answers decisions, link:" + linkID + ")", "retry of build taken through the link phone (link:" + linkID + ")"} {
+		if !slices.ContainsFunc(r.Log, func(a session.ActivityEntry) bool { return a.Message == want }) {
+			t.Fatalf("the run's activity has no %q: %+v", want, r.Log)
+		}
 	}
 	runningAttempt(t, e, run, "build", 4)
 	again := desk.decide(proto.Decide{Ref: ref, Action: crew.TaskRetry, Revision: expect, OpID: op})
@@ -959,7 +969,7 @@ func TestALinksLosingViewerReadsAnotherAnswerFirst(t *testing.T) {
 	sid := runningAttempt(t, e, run.ID, "build", 1)["sessionId"].(string)
 	d, _ := e.srv.registry.Get(sid)
 	local := d.(*session.Local)
-	_, tok := e.decisionLink(t, "/api/runs/"+run.ID+"/links", "phone", 0)
+	linkID, tok := e.decisionLink(t, "/api/runs/"+run.ID+"/links", "phone", 0)
 	own := dialLane(t, e, "/ws/sessions/"+sid, tok)
 	desk := dialLane(t, e, "/ws/runs/"+run.ID+"/desk", tok)
 	if own.welcome["decisions"] != true {
@@ -982,8 +992,14 @@ func TestALinksLosingViewerReadsAnotherAnswerFirst(t *testing.T) {
 	if steps := desk.track(ref, q, "own-1"); steps[stepRecorded].State != stepDone {
 		t.Fatalf("the winner's steps: %+v", steps)
 	}
-	if r, _ := local.QuestionResult(q); r.ReqID != "own-1" {
+	if r, _ := local.QuestionResult(q); r.ReqID != answerReqID(linkID, "own-1") {
 		t.Fatalf("the kept result: %+v", r)
+	}
+	// The link's Recent keeps both attempts, the loser's too, each read by
+	// its own attempt after a reconnect.
+	if recent := desk.list("").Recent; !slices.ContainsFunc(recent, func(r share.Recent) bool { return r.Ref == ref && r.Attempt == "own-1" }) ||
+		!slices.ContainsFunc(recent, func(r share.Recent) bool { return r.Ref == ref && r.Attempt == "desk-1" }) {
+		t.Fatalf("the link's Recent: %+v", recent)
 	}
 	// A line, through Submit over the desk, then the own connection late.
 	until(t, "the answer resolved", func() bool { return local.Info().Attention.ID != q })
@@ -1001,7 +1017,7 @@ func TestALinksLosingViewerReadsAnotherAnswerFirst(t *testing.T) {
 	if steps := own.track(ref2, q2, "own-2"); steps[stepRecorded].State != stepRefused || !strings.Contains(steps[stepRecorded].Words, "another answer first, by phone") {
 		t.Fatalf("the line's loser: %+v", steps)
 	}
-	if r, _ := local.QuestionResult(q2); r.ReqID != "desk-2" || r.ByName != "phone" {
+	if r, _ := local.QuestionResult(q2); r.ReqID != answerReqID(linkID, "desk-2") || r.ByName != "phone" {
 		t.Fatalf("the line's kept result: %+v", r)
 	}
 }
@@ -1123,7 +1139,8 @@ func TestADecisionLinkExpiresAndDiesWithTheServer(t *testing.T) {
 }
 
 // A decision link's token is never logged: the request lines name the
-// desk's route, a refused token included, never its query.
+// desk's route, a refused token included, never its query; nor does the
+// upgrade's failure, a redirect or an error answer log it.
 func TestADecisionLinksTokenIsNeverLogged(t *testing.T) {
 	logs := &logBuffer{}
 	e := newTestEnvLogging(t, nil, slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -1133,7 +1150,18 @@ func TestADecisionLinksTokenIsNeverLogged(t *testing.T) {
 	dialLane(t, e, "/ws/sessions/"+id, tok).list("")
 	closedWith(t, e, "/ws/runs/some-run/desk", tok)
 	closedWith(t, e, "/ws/runs/some-run/desk", tok+"x")
-	lines := requestLines(t, logs, 3)
+	// The upgrade's failure (a plain GET, which the WebSocket accept
+	// refuses and logs), a path the mux redirects (its Location keeps the
+	// query, for the client only) and an error answer.
+	plain := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for _, path := range []string{"/ws/runs/some-run/desk", "/ws/runs/some-run/./desk", "/ws/runs//desk"} {
+		resp, err := plain.Get(e.http.URL + path + "?token=" + tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	lines := requestLines(t, logs, 6)
 	if strings.Contains(logs.String(), tok) {
 		t.Fatalf("the token in the log:\n%s", logs.String())
 	}

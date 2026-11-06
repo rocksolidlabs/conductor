@@ -1870,8 +1870,13 @@ run closes the desk with `4403` (no token, or one the server does not
 hold, `4401`), and the desk takes the lane's messages, `ping` and a
 repeated `hello` alone: anything else (INPUT, `file_get`, a FILE_WRITE)
 is a `bad_frame` error and `4400`. A link revoked or expired closes its
-desks as it closes its viewers (an `error` naming it, then `4403`), and
-the server's shutdown closes every desk.
+desks as it closes its viewers (an `error` naming it, then `4403`; an
+expiry at the link's own deadline, not at the next sweep), so does its
+run's forgetting (`revoked`), and the server's shutdown closes every desk
+(`1001`). Desks closed together are closed at once, each cut once the
+viewers' close wait (5 s) has passed, so a peer that reads nothing holds
+none of them past it. One link holds at most 8 desks open (`4409` past
+them).
 
 What one link allows, and nothing more: the items of its scope (a
 session's link, that session's question and the task its attempt runs; a
@@ -1880,9 +1885,17 @@ no link's scope); the actions each item lists now, each through the
 item's own operation, which judges it as it judges the workbench's (the
 question's claim, first response wins; the engine's command at the
 action's revision); while the link stands, read again on every request
-and again as the operation is taken; each action once per `opId`; as the
-link's actor, `link:<id>` with its label as the name, never the
-workbench's. A welcome says `decisions: true` to a decision link's
+and checked with the write itself: an answer's keys or line are written
+only while the link is neither revoked nor expired, looked at as the
+session's writer takes them, and a task command is taken holding the
+link until the engine has committed it, a revoke waiting for it; so an
+action queued, in flight or asked again when its link ends is refused,
+never written, and none of a link's acts lands after its revoke returns;
+each `opId` names one operation; as the link's actor, `link:<id>`, never
+the workbench's, with its label beside it (a command taken through it is
+noted in its run's activity as `<action> of <task> taken through the link
+<label> (link:<id>)`, and the link's creation names its id the same
+way). A welcome says `decisions: true` to a decision link's
 connection alone; any other connection's lane request, the workbench's
 included, is refused `not_decision_link` and the connection stays.
 
@@ -1904,7 +1917,7 @@ refused `invalid`, naming its `reqId` when it has one within its bound.
 | frame DECISION | owner → client | `{reqId, list? \| item? \| track? \| evidence? \| record?}` | 128 KiB; over a data channel fragmented by CHUNK |
 | control `decisions_changed` | owner → client | `{t, seq}`: what the link's viewer sees changed (its scope's items, their actions' revisions, the steps of what it acted on): list again, track again what is not final | `MaxControl` |
 | control `decide_ok` | owner → client | `{t, reqId, ref, receipt, repeat?}`: the action taken; `ref` and `receipt` are what its steps are read by; `repeat` when the operation already held its `opId` | `MaxControl` |
-| control `decide_refused` | owner → client | `{t, reqId, code, message, rev?, ref?, receipt?}`: `code` one of `stale_revision`, `not_in_scope`, `not_decision_link`, `not_found`, `question_answered`, `too_many_requests`, `unsupported`, `invalid`, `record_moved` (with `rev`), `revoked`, `expired`, or an operation's own (`task_state`, `input_failed`, `session_ended`); `ref` and `receipt` when the operation kept its refusal as a receipt (a command refused `stale_revision`) | `message` at most 500 bytes encoded; `MaxControl` |
+| control `decide_refused` | owner → client | `{t, reqId, code, message, rev?, ref?, receipt?}`: `code` one of `stale_revision`, `not_in_scope`, `not_decision_link`, `not_found`, `question_answered`, `too_many_requests`, `unsupported`, `invalid`, `record_moved` (with `rev`), `revoked`, `expired`, `op_conflict` (the `opId` named another request), or an operation's own (`task_state`, `input_failed`, `session_ended`, `unavailable`); `ref` and `receipt` when the operation kept its refusal as a receipt (a command refused `stale_revision`, an answer another answer came before) | `message` at most 500 bytes encoded; `MaxControl` |
 | `welcome`, field `decisions` | owner → client | `true` to a decision link's connection; absent otherwise and from an older owner, to which a client sends no lane message | |
 
 **List.** The scope's open items as the inbox's summaries (`GET
@@ -1916,7 +1929,8 @@ came is in its place. The first page carries the link's **Recent**: the
 last 50 actions taken through it, `{ref, receipt, attempt, at}`, oldest
 first, kept in memory with the link (gone with it), one per item and
 attempt, so an item closed by its action stays readable with its steps
-and two viewers of one link keep two entries.
+and two viewers of one link keep two entries: an answer another answer
+came before is kept too, its steps reading "another answer first".
 
 **Read.** `{item}` as `GET /api/inbox/item` answers it; an evidence entry
 naming a session in the scope that is still listed carries `session`,
@@ -1927,7 +1941,9 @@ the id the holder opens it by. A ref outside the scope is
 /api/inbox/track`, read under this link's actor: a task command's
 receipt is the ledger's under `link:<id>`, never the workbench's; a
 question's is the session's kept result, by `attempt` against the kept
-request id (another's reads "another answer first").
+request id, which for a link's answer is its `opId` bound to the link
+(another link's answer, or the workbench's, under the same id is never
+this link's), so another's reads "another answer first".
 
 **Evidence.** For a `check:` ref of a task in the scope, `{ref, kind:
 "log", tail, cut?, bytes, sha256, exit, dropped?}`, the log's last 4 KiB
@@ -1937,11 +1953,20 @@ entry is `unsupported` ("open it on the desktop or the LAN"); a ref
 outside the scope `not_in_scope`, one that names nothing `not_found`.
 
 **Decide.** The action maps to the item's own operation, never a new
-one. A repeat first: an `opId` the operation already holds for this
-link's actor (the ledger's receipt by run, actor and command id; the
-session's kept result by request id) is answered with that receipt,
-`repeat`, before the item's current actions are judged, so a reply lost
-with its connection is asked again with the same `opId`. Otherwise the
+one. An `opId` names one operation of the link: the link keeps, by
+`opId`, the whole request as it was sent (its item, action and every
+argument, all but `reqId`) and what came of it, in memory with the link,
+at most 1024 (past them a new `opId` is `too_many_requests`). A repeat
+first: the same request under an `opId` the link took is answered from
+that record (a command's receipt read again from the ledger under the
+link's actor), `repeat`, before the item's current actions are judged,
+and only while the link stands, so a reply lost with its connection is
+asked again with the same `opId`; the same request under way on another
+connection of the link is waited for and answered with its outcome. The
+same `opId` with anything else (another item, task, action, revision,
+choice or line) is `op_conflict`, nothing done, at once or later and
+from any connection. An `opId` whose request was refused before anything
+was begun is free again. Otherwise the
 item is read: an `answer` (its `revision` the question's id, exactly one
 of `input`, one of the item's choices' keys, and `text`, where the item
 offers a line) to a question of the connection's own session is taken
@@ -1956,7 +1981,15 @@ revision and `opId` as the command id: a run that moved on is
 `stale_revision`, kept as the command's receipt; a command the item no
 longer lists is `stale_revision`, nothing done. Any other action is
 `invalid`. A decide whose operation has begun when its connection
-closes is not taken back; one not begun is never begun.
+closes is not taken back; one not begun is never begun: the connection's
+end cancels it, looked at as the operation is taken.
+
+**Relayed connections.** Neither frame is carried by a relay yet (the
+switchyard's side of the lane is a later row's): a relay envelope with a
+DECISION or DECIDE inside is refused as any type it does not carry is
+(`DecodeRelay`), and a hosted session's viewer that sends a DECIDE to the
+server is closed `4400`, nothing sent to its host. A hosted session's
+welcome never says `decisions`, so a client sends none there.
 
 ## HTTP API
 
