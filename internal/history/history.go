@@ -29,6 +29,49 @@
 // last owner did not close (a crash, a kill) answers its searches
 // StateChecking until Check has read it whole (PRAGMA quick_check), which
 // its caller runs in the background.
+//
+// # Who may call what while what else runs
+//
+// Open returns an Index no other goroutine holds yet; after it every
+// method may be called from any goroutine at any time, and the index
+// holds to this (life_test.go tests each pair through the seams on
+// Index, never by a sleep):
+//
+//   - A write (Replace, Remove, Clear, and Check's own clear and mark) runs
+//     on the owner's one writer, so two writes take turns, each waiting
+//     for the one before as its context allows. A read (Search, Entry,
+//     Links, Similar, Mark, Sources, Stats, Unchecked, Check's quick_check)
+//     runs on one of the owner's readConns readers in a snapshot of its
+//     own, waiting for a free reader as its context allows. Neither waits
+//     for the other: no lock is held across a wait for a connection
+//     (mu is held only to read or set the closed flags), so a write with
+//     every reader busy and more searches queued still commits.
+//   - Clear, the rebuild, is one transaction: every table dropped and made
+//     again, the generation bumped, the index marked open by its owner and
+//     owed no Check. Two Clears, or a Clear and a Check's clear, give the
+//     same index in either order, and a read sees the index before it or
+//     after it.
+//   - Check runs one at a time: a second waits for the first as its
+//     context allows. Its quick_check is a read and its clear a write, as
+//     above; only when the clear meets damage too does it hold the index
+//     whole (life) to move the file aside, waiting for every call running
+//     to end, as Close does.
+//   - Close refuses every call made once it has begun (ErrClosed), waits
+//     for every call begun before it to end, a Check's move aside among
+//     them, marks the index closed (not when a Check has found damage it
+//     has not yet repaired: the next owner checks it again), and closes the
+//     connections. Every Close, the first and any made while it runs or
+//     after it, returns only once all that is done: the first with what
+//     closing the connections answered, the others nil.
+//   - A reader opens the file again when the path names another (refresh)
+//     holding the index whole, as a move aside does.
+//   - The handles (db, rdb, fi) change only while the index is held whole,
+//     so a call, which holds it shared from its start to its end, reads
+//     them without a lock. A write therefore waits for a read in one case
+//     only: when a swap (Close, a move aside, a reader's reopen) is waiting
+//     for the calls running to end, a call that starts meanwhile waits for
+//     the swap, which waits for them; each read is bounded by its context
+//     and a search by MaxScanned.
 package history
 
 import (
@@ -102,10 +145,11 @@ type Options struct {
 	Logger *slog.Logger
 }
 
-// Index is an open index. Its methods are safe for concurrent use. The
-// owner writes through one connection (db) and reads through readConns
-// others (rdb), so in WAL a search and a write never wait for each other;
-// a reader reads through readConns (db).
+// Index is an open index. Its methods are safe for concurrent use, as the
+// package's "Who may call what while what else runs" says. The owner
+// writes through one connection (db) and reads through readConns others
+// (rdb), so in WAL a search and a write never wait for each other; a
+// reader reads through readConns (db).
 type Index struct {
 	path       string
 	readOnly   bool
@@ -119,26 +163,52 @@ type Index struct {
 	maxRanked  int
 
 	// life is held shared by every call for as long as it runs and whole
-	// by Close and by Check's move aside: Close returns only once nothing
-	// it let begin can still read or write, and a file is swapped only
-	// while nothing uses it.
+	// by whatever changes the handles: Close, Check's move aside and a
+	// reader's reopen (refresh). Close returns only once nothing it let
+	// begin can still read or write, a file is swapped only while nothing
+	// uses it, and a call reads the handles without mu.
 	life sync.RWMutex
 
-	mu     sync.Mutex
-	db     *sql.DB     // the owner's writer; a reader's pool
-	rdb    *sql.DB     // the owner's readers (nil for a reader)
-	fi     os.FileInfo // the file db is open on
+	db  *sql.DB     // the owner's writer; a reader's pool
+	rdb *sql.DB     // the owner's readers (nil for a reader)
+	fi  os.FileInfo // the file db is open on
+
+	// mu guards the flags below; it is held only to read or set them,
+	// never across a wait.
+	mu sync.Mutex
+	// closed refuses every call: Close has begun, or Check could not
+	// make the file again.
 	closed bool
+	// shutting says Close has begun; done is closed once it has ended.
+	shutting bool
+	done     chan struct{}
+	// damage says a Check found the file damaged and has not repaired it:
+	// Close then leaves it marked open, so its next owner checks it again.
+	damage bool
+
+	// checks holds the Check running (one at a time).
+	checks chan struct{}
 
 	// beforeCommit, when set, runs before a Replace commits; an error it
 	// answers fails the commit (TestReplaceIsAllOrNothing).
 	beforeCommit func() error
+	// beforeClear, when set, runs in a clear before it commits; an error
+	// it answers fails it (TestOverlappingClearsOweNoCheck).
+	beforeClear func() error
 	// inRead, when set, runs inside each read transaction once it holds
 	// its snapshot (TestASearchNeverHoldsAWriteBack).
 	inRead func()
-	// closing, when set, runs in Close once it refuses new calls and
-	// before it waits for those running (TestCloseWaitsForAWrite).
-	closing func()
+	// inCheck, when set, runs in Check once its quick_check has read the
+	// file, before it acts on what it found (TestCloseWaitsForACheck).
+	inCheck func()
+	// moving, when set, runs in Check's move aside once it holds the index
+	// whole (TestCloseDuringAMoveAside).
+	moving func()
+	// closing, when set, runs in the first Close once it refuses new calls
+	// and before it waits for those running; closeWaits in every later
+	// Close before it waits for the first (TestCloseWaitsForAWrite).
+	closing    func()
+	closeWaits func()
 }
 
 // testBeforePrepare, when set, runs in the owner's Open with its context
@@ -149,11 +219,13 @@ var testBeforePrepare func(ctx context.Context)
 // enter takes the index for one call (life, shared): ErrClosed after
 // Close. leave ends it. A call enters once, never again inside itself.
 func (ix *Index) enter() error {
+	// Refused before it waits for life: a Close waiting for the calls
+	// running holds every new one back until it is done.
+	if ix.isClosed() {
+		return ErrClosed
+	}
 	ix.life.RLock()
-	ix.mu.Lock()
-	closed := ix.closed
-	ix.mu.Unlock()
-	if closed {
+	if ix.isClosed() {
 		ix.life.RUnlock()
 		return ErrClosed
 	}
@@ -161,6 +233,29 @@ func (ix *Index) enter() error {
 }
 
 func (ix *Index) leave() { ix.life.RUnlock() }
+
+// enterRead is enter for a read: a reader first opens the file again
+// when the path names another than the one it reads (refresh).
+func (ix *Index) enterRead(ctx context.Context) error {
+	if ix.readOnly {
+		if err := ix.refresh(ctx); err != nil {
+			return err
+		}
+	}
+	return ix.enter()
+}
+
+func (ix *Index) isClosed() bool {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	return ix.closed
+}
+
+func (ix *Index) setDamage(d bool) {
+	ix.mu.Lock()
+	ix.damage = d
+	ix.mu.Unlock()
+}
 
 // Open opens the index at path, its directory made 0700 when missing: as
 // its owner, the file made when missing (0600), moved aside when SQLite
@@ -179,7 +274,7 @@ func Open(ctx context.Context, path string, opts Options) (*Index, error) {
 		return nil, fmt.Errorf("history: %w", err)
 	}
 	ix := &Index{path: abs, readOnly: opts.ReadOnly, maxEntries: opts.MaxEntries, maxBytes: opts.MaxBytes, log: opts.Logger, now: time.Now,
-		maxScanned: MaxScanned, maxRanked: MaxRanked}
+		maxScanned: MaxScanned, maxRanked: MaxRanked, done: make(chan struct{}), checks: make(chan struct{}, 1)}
 	if ix.maxEntries <= 0 {
 		ix.maxEntries = MaxEntries
 	}
@@ -190,9 +285,7 @@ func Open(ctx context.Context, path string, opts Options) (*Index, error) {
 		ix.log = slog.Default()
 	}
 	if ix.readOnly {
-		ix.mu.Lock()
-		_, _ = ix.reader(ctx) // a file not there yet is opened at the first read
-		ix.mu.Unlock()
+		_ = ix.refresh(ctx) // a file not there yet is opened at the first read
 		return ix, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
@@ -268,10 +361,11 @@ func (ix *Index) openFile(ctx context.Context) (*sql.DB, error) {
 }
 
 // prepare brings the database to this version and marks it open: one
-// that holds another version or none is cleared in place (clear). It
-// reads the schema's version and nothing more; an error that isDamaged
-// says the file must be moved aside, any other (a cancelled context, a
-// busy or full disk) is answered as it is.
+// that holds another version or none is cleared in place (clear, which
+// marks it open itself and owes it no Check). It reads the schema's
+// version and nothing more; an error that isDamaged says the file must be
+// moved aside, any other (a cancelled context, a busy or full disk) is
+// answered as it is.
 func (ix *Index) prepare(ctx context.Context, db *sql.DB) error {
 	v, _, err := readVersion(ctx, db)
 	switch {
@@ -282,15 +376,14 @@ func (ix *Index) prepare(ctx context.Context, db *sql.DB) error {
 	case ctx.Err() != nil || !isNoTable(err):
 		return err
 	}
-	if err := clear(ctx, db, Version); err != nil {
-		return err
-	}
-	return markOpen(ctx, db)
+	return ix.clear(ctx, db, Version)
 }
 
-// markOpen marks the index open by its owner, and owes it a Check when the
-// last owner did not close it (open still set): its searches answer
-// StateChecking until Check finds it sound.
+// markOpen marks an index of this version open by its owner as Open finds
+// it, and owes it a Check when the last owner did not close it (open still
+// set): its searches answer StateChecking until Check finds it sound. Only
+// Open calls it, on a file it has not cleared: a clear marks the index
+// open in its own transaction.
 func markOpen(ctx context.Context, db *sql.DB) error {
 	_, err := db.ExecContext(ctx, "UPDATE schema_version SET unchecked = (unchecked OR open), open = 1")
 	return err
@@ -326,16 +419,26 @@ const (
 // that is not the file's damage, is answered as it is with nothing
 // changed: the index stays StateChecking if it was. The owner's caller
 // runs it in the background, at once after an Open whose Unchecked is
-// true, and may run it at any time.
+// true, and may run it at any time; a Check called while another runs
+// waits for it, as its context allows, and then reads the file itself.
 func (ix *Index) Check(ctx context.Context) (string, error) {
 	if ix.readOnly {
 		return "", ErrReadOnly
 	}
+	select {
+	case ix.checks <- struct{}{}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	defer func() { <-ix.checks }()
 	if err := ix.enter(); err != nil {
 		return "", err
 	}
 	var check string
 	err := ix.rdb.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&check)
+	if ix.inCheck != nil {
+		ix.inCheck()
+	}
 	if err == nil && check == "ok" {
 		_, err = ix.db.ExecContext(ctx, "UPDATE schema_version SET unchecked = 0")
 		ix.leave()
@@ -352,26 +455,27 @@ func (ix *Index) Check(ctx context.Context) (string, error) {
 		err = errors.New(check)
 	}
 	ix.log.Warn("history: the index fails its check; cleared in place (it is rebuilt from the stores)", "path", ix.path, "err", err)
-	err = clear(ctx, ix.db, Version)
-	if err == nil {
-		err = markOpen(ctx, ix.db)
-	}
+	// Until it is repaired, Close leaves the index marked open, so its next
+	// owner checks it again.
+	ix.setDamage(true)
+	err = ix.clear(ctx, ix.db, Version)
 	ix.leave()
 	if err == nil {
+		ix.setDamage(false)
 		return CheckCleared, nil
 	}
 	if ctx.Err() != nil || !isDamaged(err) {
 		return "", err
 	}
 	// The clear met damage too: the file is moved aside once nothing reads
-	// or writes it, and made again.
+	// or writes it, and made again. A Close begun meanwhile has refused it.
 	ix.life.Lock()
 	defer ix.life.Unlock()
-	ix.mu.Lock()
-	closed := ix.closed
-	ix.mu.Unlock()
-	if closed {
+	if ix.isClosed() {
 		return "", ErrClosed
+	}
+	if ix.moving != nil {
+		ix.moving()
 	}
 	ix.rdb.Close()
 	ix.db.Close()
@@ -386,6 +490,7 @@ func (ix *Index) Check(ctx context.Context) (string, error) {
 		ix.log.Error("history: the index could not be made again; closed", "path", ix.path, "err", err)
 		return "", err
 	}
+	ix.setDamage(false)
 	return CheckMovedAside, nil
 }
 
@@ -409,7 +514,7 @@ func (ix *Index) remake(ctx context.Context) error {
 // Unchecked says the owner's index was not closed by its last owner and
 // has not passed Check since: its searches answer StateChecking.
 func (ix *Index) Unchecked(ctx context.Context) (bool, error) {
-	if err := ix.enter(); err != nil {
+	if err := ix.enterRead(ctx); err != nil {
 		return false, err
 	}
 	defer ix.leave()
@@ -438,60 +543,72 @@ func removeDamaged(path string) {
 	}
 }
 
-// reader is a reader's database, opened again when the path names
-// another file than the one it is open on, closed while the path names
-// none (ErrNotReady). ix.mu is held.
-func (ix *Index) reader(ctx context.Context) (*sql.DB, error) {
+// stale says a reader's database is not the file the path names: the
+// path names another, or none while it is open, or one while it is not.
+// The index is held, shared or whole.
+func (ix *Index) stale() bool {
 	fi, err := os.Stat(ix.path)
 	if err != nil {
-		if ix.db != nil {
-			ix.db.Close()
-			ix.db, ix.fi = nil, nil
-		}
-		return nil, fmt.Errorf("%w: %s", ErrNotReady, StateMissing)
+		return ix.db != nil
 	}
-	if ix.db != nil && os.SameFile(fi, ix.fi) {
-		return ix.db, nil
+	return ix.db == nil || !os.SameFile(fi, ix.fi)
+}
+
+// refresh opens a reader's database again when it is stale, holding the
+// index whole (so no call reads the database it closes); the next stale
+// file is opened by the next call. A reader whose path names no file has
+// no database (its searches answer StateMissing).
+func (ix *Index) refresh(ctx context.Context) error {
+	if err := ix.enter(); err != nil {
+		return err
+	}
+	stale := ix.stale()
+	ix.leave()
+	if !stale {
+		return nil
+	}
+	ix.life.Lock()
+	defer ix.life.Unlock()
+	if ix.isClosed() {
+		return ErrClosed
+	}
+	fi, err := os.Stat(ix.path)
+	if err == nil && ix.db != nil && os.SameFile(fi, ix.fi) {
+		return nil // another call opened it meanwhile
 	}
 	if ix.db != nil {
-		ix.log.Info("history: the index file was made again; reading the new one", "path", ix.path)
+		ix.log.Info("history: the index file was made again or removed; reading the new one", "path", ix.path)
 		ix.db.Close()
 		ix.db, ix.fi = nil, nil
 	}
+	if err != nil {
+		return nil
+	}
 	db, err := open(ctx, ix.path, true, readConns)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	ix.db, ix.fi = db, fi
-	return db, nil
+	return nil
 }
 
 // readTx begins a read transaction, one snapshot of the database for
 // every statement of a read, and reads the version and generation in it,
-// through the owner's readers or a reader's pool. A reader's file is
-// checked first (reader). state is StateMissing or StateOtherVersion,
-// with no transaction, for an index that holds no entries of this
-// version; StateChecking, with the transaction, for one owed a Check (a
-// search answers no rows; the indexer's reads go on). The caller has
-// entered the index.
+// through the owner's readers or a reader's pool. state is StateMissing
+// or StateOtherVersion, with no transaction, for an index that holds no
+// entries of this version; StateChecking, with the transaction, for one
+// owed a Check (a search answers no rows; the indexer's reads go on). The
+// caller has entered the index (enterRead), so the handles stay as they
+// are, and no lock is held while the transaction waits for a connection.
 func (ix *Index) readTx(ctx context.Context) (tx *sql.Tx, gen int64, state string, err error) {
-	ix.mu.Lock()
 	db := ix.rdb
-	switch {
-	case ix.closed:
-		err = ErrClosed
-	case ix.readOnly:
-		db, err = ix.reader(ctx)
+	if ix.readOnly {
+		db = ix.db
 	}
-	if err == nil {
-		// Begun under mu, so no reopen closes db before the transaction
-		// holds its connection.
-		tx, err = db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	}
-	ix.mu.Unlock()
-	if errors.Is(err, ErrNotReady) {
+	if db == nil {
 		return nil, 0, StateMissing, nil
 	}
+	tx, err = db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -526,7 +643,7 @@ func (ix *Index) readTx(ctx context.Context) (tx *sql.Tx, gen int64, state strin
 // version, and for one owed a Check when the read is a search's (an
 // entry, its links, Similar).
 func (ix *Index) read(ctx context.Context, search bool, fn func(tx *sql.Tx, gen int64) error) error {
-	if err := ix.enter(); err != nil {
+	if err := ix.enterRead(ctx); err != nil {
 		return err
 	}
 	defer ix.leave()
@@ -544,14 +661,11 @@ func (ix *Index) read(ctx context.Context, search bool, fn func(tx *sql.Tx, gen 
 }
 
 // writeTx begins a write transaction (BEGIN IMMEDIATE, dsn's _txlock) on
-// the owner's one writer. The caller has entered the index.
+// the owner's one writer, waiting for the write before it as ctx allows.
+// The caller has entered the index, so the writer stays as it is, and no
+// lock is held while the transaction waits for it.
 func (ix *Index) writeTx(ctx context.Context) (*sql.Tx, error) {
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	switch {
-	case ix.closed:
-		return nil, ErrClosed
-	case ix.readOnly:
+	if ix.readOnly {
 		return nil, ErrReadOnly
 	}
 	return ix.db.BeginTx(ctx, nil)
@@ -560,26 +674,36 @@ func (ix *Index) writeTx(ctx context.Context) (*sql.Tx, error) {
 // ReadOnly says the index takes no writes.
 func (ix *Index) ReadOnly() bool { return ix.readOnly }
 
-// Close closes the index: a call after it is ErrClosed, and it returns
-// only once every call begun before it has ended, so nothing it let begin
-// writes the file after it (a Replace held before its commit commits
-// first). The owner marks the index closed, so its next owner owes it no
-// Check.
+// Close closes the index: a call made once it has begun is ErrClosed, and
+// it returns only once every call begun before it has ended, so nothing it
+// let begin writes the file after it (a Replace held before its commit
+// commits first). The owner marks the index closed, so its next owner owes
+// it no Check, unless a Check has found it damaged and not yet repaired
+// it. Every Close returns only once the index is closed: one called while
+// another runs waits for it and answers nil, as does one called after.
 func (ix *Index) Close() error {
 	ix.mu.Lock()
-	if ix.closed {
+	if ix.shutting {
 		ix.mu.Unlock()
+		if ix.closeWaits != nil {
+			ix.closeWaits()
+		}
+		<-ix.done
 		return nil
 	}
-	ix.closed = true
+	ix.shutting, ix.closed = true, true
 	ix.mu.Unlock()
+	defer close(ix.done)
 	if ix.closing != nil {
 		ix.closing()
 	}
 	ix.life.Lock()
 	defer ix.life.Unlock()
+	ix.mu.Lock()
+	damage := ix.damage
+	ix.mu.Unlock()
 	var errs []error
-	if !ix.readOnly && ix.db != nil {
+	if !ix.readOnly && ix.db != nil && !damage {
 		if _, err := ix.db.Exec("UPDATE schema_version SET open = 0"); err != nil {
 			ix.log.Warn("history: the index could not be marked closed; its next owner checks it", "path", ix.path, "err", err)
 		}
@@ -594,8 +718,10 @@ func (ix *Index) Close() error {
 
 // Clear empties the index in place for a reindex: every table dropped and
 // this version's schema made in one transaction, the generation bumped,
-// so a cursor taken before it is stale and a reader sees the index before
-// the clear or after it, never between.
+// and the index marked open by its owner and owed no Check, so a cursor
+// taken before it is stale, a reader sees the index before the clear or
+// after it, never between, and Clears that overlap give the same index in
+// either order.
 func (ix *Index) Clear(ctx context.Context) error {
 	return ix.clearTo(ctx, Version)
 }
@@ -610,10 +736,7 @@ func (ix *Index) clearTo(ctx context.Context, version int) error {
 		return err
 	}
 	defer ix.leave()
-	if err := clear(ctx, ix.db, version); err != nil {
-		return err
-	}
-	return markOpen(ctx, ix.db)
+	return ix.clear(ctx, ix.db, version)
 }
 
 // schema is the index's tables (docs/plans/history.md, "The database"),
@@ -695,9 +818,14 @@ var schema = []string{
 // BEGIN IMMEDIATE transaction. A database that holds no generation (a new
 // file, one made again after a move aside, one of another shape) starts
 // at a random one (newGeneration), so a cursor of an earlier file is
-// never of this one's generation. Foreign keys are checked at its commit,
-// by which time no table is left to check.
-func clear(ctx context.Context, db *sql.DB, version int) error {
+// never of this one's generation. The same transaction marks the index
+// open by its owner (open, which Close clears) and owes it no Check (an
+// empty index has nothing to check): a mark made after the commit, in a
+// transaction of its own, would let another clear between them, and the
+// mark would then read the owner's own open as an earlier owner's crash.
+// Foreign keys are checked at its commit, by which time no table is left
+// to check.
+func (ix *Index) clear(ctx context.Context, db *sql.DB, version int) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -745,8 +873,13 @@ func clear(ctx context.Context, db *sql.DB, version int) error {
 			return fmt.Errorf("schema: %w", err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO schema_version (version, generation) VALUES (?, ?)", version, gen+1); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO schema_version (version, generation, open, unchecked) VALUES (?, ?, 1, 0)", version, gen+1); err != nil {
 		return err
+	}
+	if ix.beforeClear != nil {
+		if err := ix.beforeClear(); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

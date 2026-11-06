@@ -49,7 +49,9 @@ type SourceMark struct {
 // source from what it is (its own ref when it has one, else its anchor's
 // ref and its place), the same on every read of the source and after
 // every rebuild, never the row's id. Class, Digest and Source are the
-// index's: a caller leaves them empty (a class given is ErrClass).
+// index's: a caller leaves them empty (a class given is ErrClass). Title,
+// Summary and Body are indexed with U+E000 and U+E001, the snippet's
+// marks, written as U+FFFD (unmark).
 type Entry struct {
 	Key          string    `json:"key"`
 	Kind         string    `json:"kind"`
@@ -138,7 +140,7 @@ func checkText(what, s string, n int) error {
 }
 
 // check checks an entry and sets what the index sets: its class from its
-// kind and its digest.
+// kind, its digest, and its texts unmarked (unmark).
 func (e *Entry) check() error {
 	if e.Class != "" {
 		return fmt.Errorf("%w: the entry %s gives the class %q", ErrClass, e.Key, e.Class)
@@ -185,9 +187,15 @@ func (e *Entry) check() error {
 	if class == ClassDecided && e.Actor == "" {
 		return bound("the %s entry %s names no actor: a decision is a person's", e.Kind, e.Key)
 	}
+	e.Title, e.Summary, e.Body = unmark.Replace(e.Title), unmark.Replace(e.Summary), unmark.Replace(e.Body)
 	e.Class, e.Digest = class, digest(e.Title, e.Summary, e.Body)
 	return nil
 }
+
+// unmark writes U+E000 and U+E001, where snippet() marks a match
+// (snipOpen, snipClose), as U+FFFD, of the same three bytes: a text that
+// held them would otherwise give a snippet marks the search never made.
+var unmark = strings.NewReplacer(snipOpen, replacement, snipClose, replacement)
 
 // digest is the SHA-256 of an entry's body folded (its case folded, its
 // white space one space), so the same words said in several places are
@@ -528,7 +536,7 @@ type Stats struct {
 // Stats reads the index's Stats.
 func (ix *Index) Stats(ctx context.Context) (Stats, error) {
 	var st Stats
-	if err := ix.enter(); err != nil {
+	if err := ix.enterRead(ctx); err != nil {
 		return st, err
 	}
 	defer ix.leave()

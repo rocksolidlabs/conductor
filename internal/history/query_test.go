@@ -113,6 +113,10 @@ func TestEachFilter(t *testing.T) {
 		{"since:24h", []string{"b"}}, {"until:24h", []string{"a", "c"}}, {"since:1w", []string{"a", "b", "c"}},
 		{"since:2026-11-04", []string{"b"}}, {"until:2026-11-04", []string{"a", "c"}}, {"until:2026-11-05", []string{"a", "b", "c"}},
 		{"since:2026-11-05T10:30:00Z", []string{"b"}}, {"since:2026-11-05T11:30:00Z", nil},
+		// The longest spans a time.Duration holds, and the largest counts
+		// of hours and days: every entry is newer than each.
+		{"since:15250w", []string{"a", "b", "c"}}, {"since:99999d", []string{"a", "b", "c"}}, {"since:99999h", []string{"a", "b", "c"}},
+		{"until:15250w", nil},
 		{"alpha class:checked outcome:failed", []string{"b"}}, {"class:said class:checked", nil},
 	} {
 		wantSameKeys(t, ix, c.line, c.want...)
@@ -120,6 +124,9 @@ func TestEachFilter(t *testing.T) {
 	for _, line := range []string{
 		"class:bogus", "kind:nope", "outcome:Bad!", "project:1X", "project:TOOLONGKEY", "repo:/", "agent:Bad_Agent!", "crew:-x",
 		"crew:" + longCrew + "x", "crew:a_b", "run:-x", "run:team-1", "run:review-0a1b2c3", "run:" + longCrew + "x-0123abcd", "ticket:CND-0", "ticket:CND", "session:xyz", "since:yesterday", "until:7y", "since:0d", "since:1d since:2d",
+		// A week past the longest span, and spans whose product wraps
+		// (30501w wraps to some three days, 99999w past it).
+		"since:15251w", "since:30501w", "until:99999w", "since:100000h",
 		"class:", "class:said,", "outcome:" + strings.Repeat("a,", MaxFilterValues) + "a",
 		strings.Repeat("x", MaxQuery+1), manyWords(MaxTerms + 1), "\xff",
 	} {
@@ -285,12 +292,77 @@ func TestSnippetMarksTheMatch(t *testing.T) {
 			t.Errorf("body %d: the snippet %q (%d bytes)", i, s, len(s))
 		}
 	}
-	if s := clipSnippet(strings.Repeat("w ", 100)+snipOpen+strings.Repeat("m", 400)+snipClose, MaxSnippet); !strings.HasPrefix(s, "[mmm") || len(s) > MaxSnippet {
-		t.Errorf("a match longer than the bound: %q (%d bytes)", s, len(s))
+	// Text that holds the snippet's own marks (U+E000, U+E001) beside the
+	// match: they are indexed as U+FFFD, so the snippet's only marks are
+	// the search's.
+	own := strings.Repeat(snipClose+"x"+snipOpen+" ", 40) + "needle " + strings.Repeat(snipOpen+"y ", 40)
+	ix = openIndex(t, t.TempDir(), Options{})
+	put(t, ix, "session:s", chat("session:s#e1", "s", own, t0))
+	if s := search(t, ix, "needle", 0).Entries[0].Snippet; strings.Count(s, "[") != 1 || strings.Count(s, "]") != 1 ||
+		!strings.Contains(s, "[needle]") || strings.ContainsAny(s, snipOpen+snipClose) || len(s) > MaxSnippet {
+		t.Errorf("a text holding the marks: the snippet %q (%d bytes)", s, len(s))
 	}
-	w := strings.Repeat("word ", 50)
-	if s := clipSnippet(w+snipOpen+"hit"+snipClose+" "+w+snipOpen+"two"+snipClose+w, MaxSnippet); strings.Count(s, "[") != strings.Count(s, "]") {
-		t.Errorf("a mark cut through: %q", s)
+	if e, err := ix.Entry(context.Background(), "session:s#e1"); err != nil || strings.ContainsAny(e.Body, snipOpen+snipClose) {
+		t.Errorf("a text holding the marks is indexed with them: %v", err)
+	}
+}
+
+// clipSnippet keeps both marks of every match it shows, whole, however
+// it cuts: a match at the start (cut at the end only), at the end (cut at
+// the start only), in the middle (cut at both), a match longer than the
+// bound at each place, a second match the window ends in, and text that
+// holds brackets of its own. Each is at most the bound, valid UTF-8,
+// starts with … exactly when its start was cut and ends with … exactly
+// when its end was.
+func TestClipSnippetKeepsItsMarks(t *testing.T) {
+	m := func(s string) string { return snipOpen + s + snipClose }
+	w := strings.Repeat("word ", 100)
+	long := strings.Repeat("m", 400)
+	cjk := strings.Repeat("検索", 100)
+	for _, c := range []struct {
+		name, in   string
+		head, tail bool // … at the start, at the end
+		match      string
+	}{
+		{"at the start", m("hit") + " " + w, false, true, "[hit]"},
+		{"at the end", w + m("hit"), true, false, "[hit]"},
+		{"in the middle", w + m("hit") + " " + w, true, true, "[hit]"},
+		{"a second match cut", w + m("hit") + " " + w + m("two") + w, true, true, "[hit]"},
+		{"long at the start", m(long) + " " + w, false, true, "[mmm"},
+		{"long at the end", w + m(long), true, false, "[mmm"},
+		{"long in the middle", w + m(long) + w, true, true, "[mmm"},
+		{"long and alone", m(long), false, false, "[mmm"},
+		{"long CJK", w + m(cjk) + w, true, true, "[検索"},
+		{"its own brackets", strings.Repeat("[x] ", 60) + m("hit") + strings.Repeat(" [y]", 60), true, true, "[hit]"},
+		{"short", "a " + m("hit") + " b", false, false, "a [hit] b"},
+	} {
+		s := clipSnippet(c.in, MaxSnippet)
+		if len(s) > MaxSnippet || !utf8.ValidString(s) || strings.ContainsAny(s, snipOpen+snipClose) || !strings.Contains(s, c.match) {
+			t.Errorf("%s: %q (%d bytes)", c.name, s, len(s))
+		}
+		if strings.HasPrefix(s, "…") != c.head || strings.HasSuffix(s, "…") != c.tail {
+			t.Errorf("%s: cut at the start %v, at the end %v, want %v, %v: %q", c.name, strings.HasPrefix(s, "…"), strings.HasSuffix(s, "…"), c.head, c.tail, s)
+		}
+		// The marks, read from the marked text the window was cut from:
+		// none open at the end, none closed before it opened.
+		if c.name == "its own brackets" {
+			continue
+		}
+		depth := 0
+		for _, r := range s {
+			switch r {
+			case '[':
+				depth++
+			case ']':
+				depth--
+			}
+			if depth < 0 || depth > 1 {
+				break
+			}
+		}
+		if depth != 0 || strings.Count(s, "[") != strings.Count(s, "]") {
+			t.Errorf("%s: a mark cut through: %q", c.name, s)
+		}
 	}
 }
 
