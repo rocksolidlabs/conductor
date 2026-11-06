@@ -269,6 +269,20 @@ func historyOutcome(r ledger.CheckRow) string {
 	return "passed"
 }
 
+// stepFailed says a finished step of the tree (a setup step, a service, a
+// readiness probe) failed, judged as Dispatch judges its phase
+// (dispatch.CheckRef.passed): by its words of failure alone. Its stable is
+// set by a checkout's setup alone, its exit is -1 for a probe that did not
+// pass and for a service stopped in order, and each way it fails has words;
+// a check's or a verify step's receipt is judged by crew.FailedOutcome.
+func stepFailed(r ledger.CheckRow) bool {
+	switch r.Phase {
+	case ledger.PhaseSetup, ledger.PhaseService, ledger.PhaseReady:
+		return r.Error != ""
+	}
+	return false
+}
+
 // isReceipt says a row is a check's or a verify step's receipt.
 func hIsReceipt(r ledger.CheckRow) bool {
 	return r.Phase == "" || r.Phase == ledger.PhaseCheck || r.Phase == ledger.PhaseVerify
@@ -415,9 +429,9 @@ func runSource(p runPlace, rec *crew.Run, rows *runRows, chain []runRows, kept [
 		out = append(out, v)
 	}
 	out = append(out, blockerEntries(p, rec)...)
-	// Failed setup and service steps: records of the run.
+	// Failed setup, service and readiness steps: records of the run.
 	for _, r := range rows.checks {
-		if hIsReceipt(r) || r.State != ledger.CheckFinished || !crew.FailedOutcome(r) || (r.Phase != ledger.PhaseSetup && r.Phase != ledger.PhaseService && r.Phase != ledger.PhaseReady) {
+		if hIsReceipt(r) || r.State != ledger.CheckFinished || !stepFailed(r) {
 			continue
 		}
 		x := p.base()
@@ -670,10 +684,11 @@ func passedAfterLinks(run string, rows *runRows, chain []runRows) []history.Link
 // reviewedBy is the work attempt a review attempt v reviewed, found as
 // the engine names it: the review's subject is the first task it needs
 // (its crew's Needs[0], reopen), and its start commit that task's result
-// when it was dispatched, the result of the subject's last attempt to
-// succeed with that commit before the review was reserved, in the review's
-// run or back along the runs it continues (a result imported by a
-// continuation). runs are the review's run first, then its ancestors.
+// when it was dispatched, the result of the subject's last attempt whose
+// result stood (resultStood) with that commit, closed before the review
+// was reserved, in the review's run or back along the runs it continues (a
+// result imported by a continuation). runs are the review's run first,
+// then its ancestors.
 func reviewedBy(p runPlace, v ledger.AttemptRow, runs []runRows) (chainAttempt, bool) {
 	needs := p.needs[v.TaskID]
 	if len(needs) == 0 || v.StartCommit == "" {
@@ -684,7 +699,7 @@ func reviewedBy(p runPlace, v ledger.AttemptRow, runs []runRows) (chainAttempt, 
 		var out ledger.AttemptRow
 		found := false
 		for _, w := range rr.attempts {
-			if w.TaskID != subject || w.State != ledger.AttemptSucceeded || w.ResultCommit != v.StartCommit {
+			if w.TaskID != subject || w.ResultCommit != v.StartCommit || !resultStood(w) {
 				continue
 			}
 			if rr.row.ID == runs[0].row.ID && !v.ReservedAt.IsZero() && !w.ClosedAt.IsZero() && w.ClosedAt.After(v.ReservedAt) {
@@ -699,6 +714,14 @@ func reviewedBy(p runPlace, v ledger.AttemptRow, runs []runRows) (chainAttempt, 
 		}
 	}
 	return chainAttempt{}, false
+}
+
+// resultStood says an attempt's result can be what a task's dependents
+// start from: it succeeded, or it failed with a result submitted, which a
+// person's Accept anyway makes the task's result as it is (crew's
+// acceptTask: the task succeeds, the attempt stays failed).
+func resultStood(a ledger.AttemptRow) bool {
+	return a.State == ledger.AttemptSucceeded || (a.State == ledger.AttemptFailed && a.Result != "")
 }
 
 // reviewLinks are the review links whose later end is the run's: reviews

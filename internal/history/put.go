@@ -26,15 +26,23 @@ var (
 	ErrBound = errors.New("history: out of bounds")
 	// ErrKeyTaken is an entry whose key another source's entry holds.
 	ErrKeyTaken = errors.New("history: the key is another source's entry's")
+	// ErrStale is a write of a source read in a generation the index has
+	// left (a Clear, a Check's clear or its file made again since): its
+	// mark would stand over what the clear took. Nothing is written; the
+	// source is read again.
+	ErrStale = errors.New("history: the index was cleared since the source was read")
 )
 
 // Source is what entries are read from: its key ("run:<id>",
 // "session:<id>", "ticket:<KEY-n>", ...) and its mark, what the source
 // said when it was read (a revision, a seq), which the indexer compares
-// to know whether to read it again.
+// to know whether to read it again. Generation, when it is not 0, is the
+// index's generation (Generation) the source was read in: a Replace in
+// any other is ErrStale.
 type Source struct {
-	Key  string
-	Mark string
+	Key        string
+	Mark       string
+	Generation int64
 }
 
 // SourceMark is an indexed source as the index holds it.
@@ -221,7 +229,10 @@ func entryBytes(e Entry) int64 { return int64(len(e.Title) + len(e.Summary) + le
 // budget kept (budget). Every entry is checked first: its kind in the
 // table (ErrKind), no class of the caller's (ErrClass), its fields within
 // their bounds (ErrBound); a key another source's entry holds is
-// ErrKeyTaken. A link another source wrote is this one's after it.
+// ErrKeyTaken. A link another source wrote is this one's after it. A
+// source read in another generation than the index's is ErrStale, judged
+// in the write's own transaction, so no clear comes between the judgement
+// and the commit.
 func (ix *Index) Replace(ctx context.Context, src Source, entries []Entry, links []Link) error {
 	if err := checkRef("the source's key", src.Key); err != nil {
 		return err
@@ -268,6 +279,15 @@ func (ix *Index) Replace(ctx context.Context, src Source, entries []Entry, links
 		return err
 	}
 	defer end()
+	if src.Generation != 0 {
+		_, gen, err := readVersion(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if gen != src.Generation {
+			return ErrStale
+		}
+	}
 	if err := unindexSource(ctx, tx, src.Key); err != nil {
 		return err
 	}
@@ -384,6 +404,17 @@ func (ix *Index) Remove(ctx context.Context, key string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// Generation is the index's generation, which every clear moves: what a
+// source read now gives its Replace (Source.Generation).
+func (ix *Index) Generation(ctx context.Context) (int64, error) {
+	var out int64
+	err := ix.read(ctx, false, func(_ *sql.Tx, gen int64) error {
+		out = gen
+		return nil
+	})
+	return out, err
 }
 
 // Mark reads a source's mark; ok is false for a source the index does

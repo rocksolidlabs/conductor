@@ -891,10 +891,13 @@ owner did not close it, the indexer runs `Check` in the background at once
 (a goroutine of its own, the server's context, never on the start path)
 and indexes beside it; searches meanwhile answer `indexing: {state:
 "checking"}`, and a `Check` that cleared the index or moved it aside is
-followed by a reindex on the indexer's own goroutine (the index cleared
-again between two passes, then a catch-up from nothing): a pass that ran
-across the check's clear wrote its mark over entries the clear took, a
-mark no catch-up may trust (PR-3, review round 1). The server's shutdown
+followed by a catch-up from nothing. Every write of a pass is of the
+index's generation as the pass began (`Source.Generation`; `Replace`
+judges it in its own transaction and refuses another, `ErrStale`, and the
+source is read again), so no pass that ran across a clear writes a mark
+over entries the clear took, and a crash at any point leaves nothing a
+restart's catch-up may not trust: no repair is owed that only the process
+remembers (PR-3, review rounds 1 and 2). The server's shutdown
 calls `Close`, which waits for a write in flight and marks the index
 closed, so the next start owes no check.
 A dirty set of source keys, filled by the commit hooks (a run's id from the
@@ -903,7 +906,9 @@ the session sources of the run's members; a ticket's key from Dispatch's
 changes, and every session source for a change of a project; a session
 record from the journal's writes; a brief from `brakeman/` saves), bounded at 10,000 keys: past that the set is
 emptied and a full catch-up is asked instead, so nothing is dropped. One
-goroutine takes the oldest key and indexes that source as it is now:
+goroutine takes the oldest key and indexes that source as it is now; a
+reconcile whose time has come is made before the next key, so a queue that
+is never empty defers it by one pass at most (PR-3, review round 2):
 
 1. the source's mark is read first, then the source (the marks are in
    "Marks" below: a run's is its ledger revision with its record file's
@@ -1019,7 +1024,12 @@ and links, every field of the six taken from the record itself:
   The index's `repo` holds that identity (a run's from its folder, read the
   same way) and `tree` the worktree's top; `repo:` and `Similar`'s
   repository scope compare `repo`, so crews in sibling worktrees of one
-  repository are one repository's.
+  repository are one repository's. A folder is in no repository only when
+  git says so or the folder is gone; any other failed read (git's timeout)
+  is not known, never written down as none: the pass fails and is read
+  again after its backoff, three times in a row, then is indexed without
+  the repository under a mark that says so (`U`), and every reconcile
+  reads it again until a read succeeds (PR-3, review round 2).
 - **A run** (source `run:<id>`, from its record `runs/<id>.json` and, for a
   managed run, the ledger's rows): a `run` record entry (the crew, the label
   or goal, the base commit, the outcome); per task a `task` entry; per
@@ -1065,8 +1075,12 @@ and links, every field of the six taken from the record itself:
   issue for its own) and writes `candidate.verified` only when `verifiedOf`
   holds and `crew.FailedOutcome` fails none of the candidate's receipts, so
   no Checked ✓ stands over a receipt the history shows Checked ✗; a failed
-  setup or service step as `step`, its body the row's `Error` (its words
-  of failure) alone, never its output's tail: a step's output (a service's
+  setup, service or readiness step as `step`, judged as Dispatch judges its
+  phase (`dispatch.CheckRef.passed`): by its words of failure alone (its
+  stable is a checkout's setup's alone, its exit -1 for a probe that did
+  not pass and for a service stopped in order), so a step that succeeded
+  is none (PR-3, review round 2); its body the row's `Error` alone, never
+  its output's tail: a step's output (a service's
   start-up lines, a package manager's log) is terminal output the history
   does not index (PR-3, review round 1). Links: `continues` to the run it continues;
   `launched_from` to its ticket and plan revision (`Run.Ticket`); `handed`
@@ -1101,7 +1115,10 @@ and links, every field of the six taken from the record itself:
   longer say what it was handed (PR-3, review round 1). A review's subject
   is the task it needs first (`Needs[0]`, the engine's `reopen`), its
   attempt the one whose result the review started from, never another
-  task's or attempt's with the same commit; `reopened` is written by the
+  task's or attempt's with the same commit: the last whose result stood
+  before the review was reserved, one that succeeded or one that failed
+  with a result a person accepted anyway (`acceptTask` makes the task
+  succeed and leaves the attempt failed; PR-3, review round 2); `reopened` is written by the
   run that makes the repair, the review's own or, when the review's run
   ended before it, the continuation that carries it.
   `TestTheIndexHandsWhatTheEngineHands` runs a managed run with fake
@@ -1680,14 +1697,19 @@ retried after a backoff (1 s doubling to 1 min).
   line a person typed into the terminal or a reply box.
 - The index's text is bounded by kind and in total; history older than the
   budget is dropped by age and the reply says from when it holds.
-- A Forget removes the record's file and, at the next pass, its entries: a
-  record a Forget, ForgetAll or Prune has chosen is hidden from `Get` and
-  `List` until the removal returns, nothing of its instance written again
-  (PR-1's rule between writers and removers), so a pass that
-  runs during the removal removes it, and one that read it just before is
-  followed by the pass its file's delete event asks; a record whose file
+- A Forget removes the record's file and its entries, the entries before
+  the route answers: the route drops the record's sources from the index
+  (`dropSessions`) under the lock a pass takes to publish a session
+  record, and a pass publishes one only while the journal still answers
+  for it, judged under that lock (`publishSession`; a record a Forget,
+  ForgetAll or Prune has chosen is hidden from `Get` until the removal
+  returns, PR-1's rule). So a forgotten record's rows are gone from the
+  index before Forget answers, and no pass publishes a record its source
+  no longer answers for; an index that cannot take the drop (not open, a
+  write refused) makes the route answer `503 history_index_failed`, the
+  drop owed and taken before the index is read again. A record whose file
   went while no server ran is removed by the next start's catch-up (PR-3,
-  review round 1); the
+  review rounds 1 and 2); the
   ledger's, Dispatch's and Brakeman's own records are never deleted through
   history.
 

@@ -188,7 +188,7 @@ func (h *historyIndexer) indexTicket(ctx context.Context, ix *history.Index, key
 		return err
 	}
 	entries, links := ticketEntries(r)
-	return ix.Replace(ctx, history.Source{Key: src, Mark: mark}, entries, links)
+	return ix.Replace(ctx, history.Source{Key: src, Mark: mark, Generation: h.gen}, entries, links)
 }
 
 // indexBrief reads a request's kept brief: its mark B<brief time>/<op id>
@@ -222,7 +222,7 @@ func (h *historyIndexer) indexBrief(ctx context.Context, ix *history.Index, id s
 		return err
 	}
 	entries, links := briefEntries(req, b)
-	return ix.Replace(ctx, history.Source{Key: src, Mark: mark}, entries, links)
+	return ix.Replace(ctx, history.Source{Key: src, Mark: mark, Generation: h.gen}, entries, links)
 }
 
 // readFeed reads Dispatch's change feed after the position the index
