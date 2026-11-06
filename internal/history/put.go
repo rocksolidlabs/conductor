@@ -263,11 +263,11 @@ func (ix *Index) Replace(ctx context.Context, src Source, entries []Entry, links
 		return err
 	}
 	defer ix.leave()
-	tx, err := ix.writeTx(ctx)
+	tx, end, err := ix.writeTx(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer end()
 	if err := unindexSource(ctx, tx, src.Key); err != nil {
 		return err
 	}
@@ -372,11 +372,11 @@ func (ix *Index) Remove(ctx context.Context, key string) error {
 		return err
 	}
 	defer ix.leave()
-	tx, err := ix.writeTx(ctx)
+	tx, end, err := ix.writeTx(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer end()
 	if err := unindexSource(ctx, tx, key); err != nil {
 		return err
 	}
@@ -541,12 +541,12 @@ func (ix *Index) Stats(ctx context.Context, except ...string) (Stats, error) {
 		return st, err
 	}
 	defer ix.leave()
-	tx, gen, state, err := ix.readTx(ctx)
+	tx, end, gen, state, err := ix.readTx(ctx)
+	defer end()
 	st.State = state
 	if err != nil || tx == nil {
 		return st, err
 	}
-	defer tx.Rollback()
 	st.Generation = gen
 	var oldest sql.NullString
 	count, args := "SELECT COUNT(*), MIN(at) FROM entries", []any(nil)

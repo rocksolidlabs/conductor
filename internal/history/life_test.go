@@ -758,3 +758,379 @@ func TestCheckClearsADamagedIndex(t *testing.T) {
 		t.Fatalf("Check again: %q %v", got, err)
 	}
 }
+
+// A call whose context ends inside its transaction ends only once the
+// rollback database/sql runs for it on a goroutine of its own has ended,
+// and Close, which waits for the call, returns only once that rollback
+// has ended and every connection is closed. Two calls: a search, on one
+// of the owner's readers, and a Check's clear, on its writer, which
+// leaves the index marked open, so Close writes nothing that would wait
+// for the writer. The driver holds the rollback at a gate, let go once
+// the call waits for it (ending) and Close has begun; a call that did not
+// wait for it sees it let go only after Close has returned, and fails.
+func TestCloseWaitsForACancelledRollback(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		start func(ix *Index, ctx context.Context, inside func()) <-chan error
+		// owed: the call leaves the index owed a Check (damage found and
+		// not repaired), so its next owner checks it again.
+		owed bool
+	}{
+		{"a search", func(ix *Index, ctx context.Context, inside func()) <-chan error {
+			var once sync.Once
+			ix.inRead = func() { once.Do(inside) }
+			return async(func() error {
+				q, _ := ParseQuery("alpha")
+				_, err := ix.Search(ctx, q)
+				return err
+			})
+		}, false},
+		{"a check's clear", func(ix *Index, ctx context.Context, inside func()) <-chan error {
+			ix.checkSays = func(string, error) (string, error) {
+				return "*** in database main ***\nPage 2: the test's damage", nil
+			}
+			var once sync.Once
+			ix.beforeClear = func() error { once.Do(inside); return nil }
+			return async(func() error { _, err := ix.Check(ctx); return err })
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useTestDriver(t)
+			dir := t.TempDir()
+			ix := openIndex(t, dir, Options{})
+			put(t, ix, "session:s1", chat("session:s1#e1", "s1", "alpha", t0))
+			h := newRollbackHold()
+			defer h.let()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			waits := make(chan struct{})
+			var once sync.Once
+			ix.ending = func() { once.Do(func() { close(waits) }) }
+			// Inside its transaction the call's context ends, and the
+			// rollback database/sql runs for it reaches the gate.
+			called := tc.start(ix, ctx, func() {
+				h.arm()
+				cancel()
+				<-h.arrived
+			})
+			waited := false
+			var early error
+			timer := time.NewTimer(hang)
+			defer timer.Stop()
+			select {
+			case <-waits:
+				waited = true
+			case early = <-called:
+			case <-timer.C:
+				t.Fatalf("the cancelled call neither waited for its rollback nor returned after %v", hang)
+			}
+			closing := make(chan struct{})
+			ix.closing = func() {
+				close(closing)
+				if waited {
+					h.let()
+				}
+			}
+			closed := async(ix.Close)
+			within(t, "Close", (<-chan struct{})(closing), h.let)
+			if err := within(t, "Close", closed, h.let); err != nil {
+				t.Fatal(err)
+			}
+			if !h.ended() {
+				t.Fatal("Close returned while the rollback of a call it let begin was still running")
+			}
+			if n := connsOpen.Load(); n != 0 {
+				t.Fatalf("Close returned with %d connections open", n)
+			}
+			if !waited {
+				t.Fatalf("the cancelled call returned (%v) before its rollback ended", early)
+			}
+			wantErr(t, within(t, "the cancelled call", called, h.let), context.Canceled)
+			next := openIndex(t, dir, Options{})
+			if owed, err := next.Unchecked(context.Background()); err != nil || owed != tc.owed {
+				t.Fatalf("the next owner owes a check: %v %v, want %v", owed, err, tc.owed)
+			}
+			if n := count(t, next, "entries"); n != 1 {
+				t.Fatalf("%d entries after a cancelled call, want the one it found", n)
+			}
+		})
+	}
+}
+
+// A Check whose context ends before its move aside has begun answers the
+// context's error and changes nothing: ended once its quick_check has read
+// the damage (which the PRAGMA answers as a row, not an error), or while
+// it waits for a search running to end before it moves the file aside.
+// The index stays open, nothing is moved aside, and the next Check
+// repairs it. A context that ends once the Check holds the index whole
+// and has begun the move aside does not cut it: the file is made again.
+func TestACancelledCheckChangesNothing(t *testing.T) {
+	repairs := func(t *testing.T, ix *Index, path string, moved *atomic.Bool) {
+		t.Helper()
+		if _, err := os.Stat(path + damaged); !os.IsNotExist(err) {
+			t.Fatalf("a cancelled Check moved the index aside: %v", err)
+		}
+		if _, err := ix.Unchecked(context.Background()); err != nil {
+			t.Fatalf("after a cancelled Check: %v", err)
+		}
+		ix.awaitsWhole = nil
+		ix.moving = func() { moved.Store(true) }
+		got, err := ix.Check(context.Background())
+		if err != nil || (got != CheckCleared && got != CheckMovedAside) {
+			t.Fatalf("the next Check: %q %v", got, err)
+		}
+		if n := count(t, ix, "entries"); n != 0 {
+			t.Fatalf("%d entries after the next Check", n)
+		}
+	}
+	t.Run("once its quick check read the damage", func(t *testing.T) {
+		dir := t.TempDir()
+		damage(t, dir)
+		ix := openIndex(t, dir, Options{})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var said string
+		ix.checkSays = func(check string, err error) (string, error) {
+			said = check
+			return check, err
+		}
+		ix.inCheck = cancel
+		_, err := ix.Check(ctx)
+		if said == "ok" || said == "" {
+			t.Fatalf("the damaged index's quick check read %q", said)
+		}
+		wantErr(t, err, context.Canceled)
+		ix.checkSays, ix.inCheck = nil, nil
+		repairs(t, ix, filepath.Join(dir, File), new(atomic.Bool))
+	})
+	t.Run("while it waits to move the file aside", func(t *testing.T) {
+		dir := t.TempDir()
+		damage(t, dir)
+		ix := openIndex(t, dir, Options{})
+		var moved atomic.Bool
+		failClear(ix, &moved)
+		r := newGate(1)
+		ix.inRead = r.hook
+		searched := searchAsync(ix, context.Background(), "alpha")
+		r.arrived(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		waiting := make(chan struct{})
+		ix.awaitsWhole = func() {
+			cancel()
+			close(waiting)
+		}
+		checked := async(func() error { _, err := ix.Check(ctx); return err })
+		within(t, "the Check, waiting for the search", (<-chan struct{})(waiting), r.release)
+		notYet(t, "the Check", checked)
+		r.release()
+		within(t, "the held search", searched, r.release)
+		wantErr(t, within(t, "the Check", checked, r.release), context.Canceled)
+		repairs(t, ix, filepath.Join(dir, File), &moved)
+	})
+	t.Run("once it has begun the move aside", func(t *testing.T) {
+		dir := t.TempDir()
+		damage(t, dir)
+		ix := openIndex(t, dir, Options{})
+		var moved atomic.Bool
+		failClear(ix, &moved)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ix.moving = func() {
+			moved.Store(true)
+			cancel()
+		}
+		if got, err := ix.Check(ctx); err != nil || got != CheckMovedAside {
+			t.Fatalf("a Check whose context ends in its move aside: %q %v", got, err)
+		}
+		if owed, err := ix.Unchecked(context.Background()); err != nil || owed {
+			t.Fatalf("after the move aside: owed %v %v", owed, err)
+		}
+		put(t, ix, "session:s2", chat("session:s2#e1", "s2", "alpha", t0))
+		wantKeys(t, ix, "alpha", "session:s2#e1")
+	})
+}
+
+// A Check that finds the index sound repairs what an earlier Check found
+// and could not clear: the damage it noted no longer holds, so Close marks
+// the index closed and its next owner owes it no Check.
+func TestASoundCheckClearsAnEarlierCheckDamage(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	ix := openIndex(t, dir, Options{})
+	put(t, ix, "session:s1", chat("session:s1#e1", "s1", "alpha", t0))
+	busy := errors.New("the test's busy disk")
+	ix.checkSays = func(string, error) (string, error) {
+		return "*** in database main ***\nPage 2: the test's damage", nil
+	}
+	ix.beforeClear = func() error { return busy }
+	if _, err := ix.Check(ctx); !errors.Is(err, busy) {
+		t.Fatalf("a Check whose clear fails: %v", err)
+	}
+	ix.checkSays, ix.beforeClear = nil, nil
+	if got, err := ix.Check(ctx); err != nil || got != CheckSound {
+		t.Fatalf("the next Check: %q %v", got, err)
+	}
+	if err := ix.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ix = openIndex(t, dir, Options{})
+	if owed, err := ix.Unchecked(ctx); err != nil || owed {
+		t.Fatalf("an index a Check found sound, then closed, owes a check: %v %v", owed, err)
+	}
+	wantKeys(t, ix, "alpha", "session:s1#e1")
+}
+
+// Clear is a write and takes its turn as one: a Clear made while a
+// Replace is held before its commit waits for it and then empties the
+// index, and a Replace made while a Clear is held waits for it and then
+// writes into the cleared index.
+func TestAWriteAndAClearTakeTurns(t *testing.T) {
+	ctx := context.Background()
+	ix := openIndex(t, t.TempDir(), Options{})
+	put(t, ix, "session:s1", chat("session:s1#e1", "s1", "alpha", t0))
+	before, err := ix.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := newGate(1)
+	ix.beforeCommit = func() error { w.hook(); return nil }
+	replaced := async(func() error {
+		return ix.Replace(ctx, Source{Key: "session:s2", Mark: "m1"}, []Entry{chat("session:s2#e1", "s2", "alpha", t0)}, nil)
+	})
+	w.arrived(t)
+	waits := ix.db.Stats().WaitCount
+	cleared := async(func() error { return ix.Clear(ctx) })
+	waitQueued(t, ix.db, waits+1, w.release)
+	notYet(t, "a Clear behind a held Replace", cleared)
+	w.release()
+	for _, ch := range []<-chan error{replaced, cleared} {
+		if err := within(t, "a write", ch, w.release); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if st, err := ix.Stats(ctx); err != nil || st.Entries != 0 || st.Generation != before.Generation+1 {
+		t.Fatalf("a Clear after a Replace: %+v %v (generation before %d)", st, err, before.Generation)
+	}
+	ix.beforeCommit = nil
+
+	put(t, ix, "session:s1", chat("session:s1#e1", "s1", "alpha", t0))
+	c := newGate(1)
+	ix.beforeClear = func() error { c.hook(); return nil }
+	cleared = async(func() error { return ix.Clear(ctx) })
+	c.arrived(t)
+	waits = ix.db.Stats().WaitCount
+	replaced = async(func() error {
+		return ix.Replace(ctx, Source{Key: "session:s2", Mark: "m1"}, []Entry{chat("session:s2#e1", "s2", "alpha", t0)}, nil)
+	})
+	waitQueued(t, ix.db, waits+1, c.release)
+	notYet(t, "a Replace behind a held Clear", replaced)
+	c.release()
+	for _, ch := range []<-chan error{cleared, replaced} {
+		if err := within(t, "a write", ch, c.release); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantKeys(t, ix, "alpha", "session:s2#e1")
+}
+
+// Checks run one at a time: a second, made while the first is held after
+// its quick check, finds it running and waits, and once the first has
+// ended reads the file itself.
+func TestChecksTakeTurns(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	ix := openIndex(t, dir, Options{})
+	put(t, ix, "session:s1", chat("session:s1#e1", "s1", "alpha", t0))
+	crash(ix)
+	ix = openIndex(t, dir, Options{})
+	g := newGate(1)
+	ix.inCheck = g.hook
+	waits := make(chan struct{})
+	ix.checkWaits = func() { close(waits) }
+	type result struct {
+		got string
+		err error
+	}
+	check := func() <-chan result {
+		ch := make(chan result, 1)
+		go func() {
+			got, err := ix.Check(ctx)
+			ch <- result{got, err}
+		}()
+		return ch
+	}
+	first := check()
+	g.arrived(t)
+	second := check()
+	within(t, "the second Check", (<-chan struct{})(waits), g.release)
+	notYet(t, "the second Check", second)
+	g.release()
+	for _, ch := range []<-chan result{first, second} {
+		if r := within(t, "a Check", ch, g.release); r.err != nil || r.got != CheckSound {
+			t.Fatalf("a Check: %q %v", r.got, r.err)
+		}
+	}
+	g.mu.Lock()
+	seen := g.seen
+	g.mu.Unlock()
+	if seen != 2 {
+		t.Fatalf("%d quick checks for two Checks", seen)
+	}
+}
+
+// A move aside waits for the calls running and holds back those begun
+// meanwhile: a Check whose clear meets damage waits for a search held
+// inside its transaction, and once it holds the index whole a Replace and
+// a search made then wait for it and run on the new file.
+func TestAMoveAsideWaitsForTheCallsRunning(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	damage(t, dir)
+	ix := openIndex(t, dir, Options{})
+	var moved atomic.Bool
+	failClear(ix, &moved)
+	r := newGate(1)
+	ix.inRead = r.hook
+	searched := searchAsync(ix, ctx, "alpha")
+	r.arrived(t)
+	waiting := make(chan struct{})
+	ix.awaitsWhole = func() { close(waiting) }
+	m := newGate(1)
+	ix.moving = func() {
+		moved.Store(true)
+		m.hook()
+	}
+	type result struct {
+		got string
+		err error
+	}
+	checked := make(chan result, 1)
+	go func() {
+		got, err := ix.Check(ctx)
+		checked <- result{got, err}
+	}()
+	release := func() { r.release(); m.release() }
+	within(t, "the Check, waiting for the search", (<-chan struct{})(waiting), release)
+	notYet(t, "the Check", checked)
+	r.release()
+	within(t, "the held search", searched, release)
+	m.arrived(t)
+	replaced := async(func() error {
+		return ix.Replace(ctx, Source{Key: "session:s2", Mark: "m1"}, []Entry{chat("session:s2#e1", "s2", "alpha", t0)}, nil)
+	})
+	later := searchAsync(ix, ctx, "alpha")
+	notYet(t, "a Replace during a move aside", replaced)
+	notYet(t, "a search during a move aside", later)
+	m.release()
+	if r := within(t, "the Check", (<-chan result)(checked), release); r.err != nil || r.got != CheckMovedAside {
+		t.Fatalf("the Check: %q %v", r.got, r.err)
+	}
+	if err := within(t, "the Replace", replaced, release); err != nil {
+		t.Fatalf("a Replace made during the move aside: %v", err)
+	}
+	if a := within(t, "the search", later, release); a.err != nil {
+		t.Fatalf("a search made during the move aside: %v", a.err)
+	}
+	wantKeys(t, ix, "alpha", "session:s2#e1")
+}

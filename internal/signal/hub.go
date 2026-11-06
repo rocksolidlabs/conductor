@@ -41,12 +41,26 @@ type Hub struct {
 	// concurrent use. Set it before the first host registers.
 	OnChat func(sessionID string, m session.ChatMessage)
 	// OnAdded is called once a new hosted session is in the registry, with
-	// its Info and the hash its hub keeps of its host's instance ("" for a
-	// host that registered none), before its first change, entry or chat
-	// message reaches a hook: the server begins its record there. It runs
-	// on the goroutine that reads the host's connection and must not
-	// block. Set it before the first host registers.
-	OnAdded func(info session.Info, owner string)
+	// the session and the hash its hub keeps of its host's instance (""
+	// for a host that registered none), before its host's first entry or
+	// chat message reaches a hook: the server begins its record there. It
+	// answers the session's own hooks (SessionHooks), which the session
+	// keeps for its life. It runs on the goroutine that reads the host's
+	// connection and must not block. Set it before the first host
+	// registers.
+	OnAdded func(hs *HostedSession, owner string) SessionHooks
+}
+
+// SessionHooks are a hosted session's own hooks, OnAdded's answer: told
+// each entry and chat message its host reports, after the hub's OnActivity
+// and OnChat, and each change of its Info, after OnChange. They belong to
+// this session, not to its id: a later session of the same id (its host
+// registering again once this one was let go) has its own. Each may be
+// nil; the same contract as OnActivity.
+type SessionHooks struct {
+	Activity func(e session.ActivityEntry)
+	Chat     func(m session.ChatMessage)
+	Change   func(info session.Info)
 }
 
 // NewHub creates a hub that registers hosted sessions in registry.
@@ -149,7 +163,10 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	hub.sessions[hs.info.ID] = hs
 	hub.mu.Unlock()
 	if hub.OnAdded != nil {
-		hub.OnAdded(hs.Info(), owner)
+		hooks := hub.OnAdded(hs, owner)
+		hs.mu.Lock()
+		hs.hooks = hooks
+		hs.mu.Unlock()
 	}
 	hs.notifyChange()
 	return hs, false, nil

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -166,12 +167,20 @@ func histReceipt(task string, n int, id string, k int, subject string, exit int,
 		Tail: tail, Where: ledger.WhereNative}
 }
 
+// histTask puts build's row as the engine keeps it: n attempts made.
+func histTask(tx *ledger.Tx, state string, n int) error {
+	return tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: crew.TaskWork, State: state, Attempts: n})
+}
+
 // failedAt is attempt n of build failed at its check unit with the
 // receipt k, whose log names what broke.
 func failedAt(t *testing.T, ld *ledger.Ledger, run string, n, k int, words string) {
 	t.Helper()
 	histTx(t, ld, run, func(tx *ledger.Tx) error {
 		if err := tx.PutAttempt(histAttempt("build", n, ledger.AttemptFailed, "check unit", commitID(n-1), commitID(n))); err != nil {
+			return err
+		}
+		if err := histTask(tx, ledger.TaskFailed, n); err != nil {
 			return err
 		}
 		return tx.PutCheck(histReceipt("build", n, "unit", k, commitID(n), 1, "--- FAIL: "+words+"\n"))
@@ -183,6 +192,9 @@ func passedAt(t *testing.T, ld *ledger.Ledger, run string, n, k int) {
 	t.Helper()
 	histTx(t, ld, run, func(tx *ledger.Tx) error {
 		if err := tx.PutAttempt(histAttempt("build", n, ledger.AttemptSucceeded, "", commitID(n-1), commitID(n))); err != nil {
+			return err
+		}
+		if err := histTask(tx, ledger.TaskSucceeded, n); err != nil {
 			return err
 		}
 		return tx.PutCheck(histReceipt("build", n, "unit", k, commitID(n), 0, "ok\n"))
@@ -596,10 +608,34 @@ func TestOnlyTheAdminsCommandsAreIndexed(t *testing.T) {
 }
 
 // countingLedger is the ledger as the indexer reads it, counting the logs
-// it reads and the runs it reads.
+// it reads, the runs' rows it reads (passes: Tasks is read by a run's pass
+// alone), the attempts' reads, and every receipt read by the attempt it
+// named; failAttempts fails that many Attempts reads.
 type countingLedger struct {
 	indexLedger
-	logs, withLog, runs atomic.Int64
+	logs, withLog, passes, attempts, failAttempts atomic.Int64
+	mu                                            sync.Mutex
+	checks                                        []attemptID
+}
+
+func (c *countingLedger) Tasks(ctx context.Context, runID string) ([]ledger.TaskRow, error) {
+	c.passes.Add(1)
+	return c.indexLedger.Tasks(ctx, runID)
+}
+
+func (c *countingLedger) Attempts(ctx context.Context, runID string) ([]ledger.AttemptRow, error) {
+	c.attempts.Add(1)
+	if c.failAttempts.Add(-1) >= 0 {
+		return nil, errors.New("the ledger could not be read")
+	}
+	return c.indexLedger.Attempts(ctx, runID)
+}
+
+// checksRead is the attempts whose receipts were read, in order, from i.
+func (c *countingLedger) checksRead(i int) []attemptID {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.checks[min(i, len(c.checks)):])
 }
 
 func (c *countingLedger) Check(ctx context.Context, runID, taskID string, n int, id string, k int) (ledger.CheckRow, bool, error) {
@@ -611,12 +647,10 @@ func (c *countingLedger) Checks(ctx context.Context, runID, taskID string, n int
 	if withLog {
 		c.withLog.Add(1)
 	}
+	c.mu.Lock()
+	c.checks = append(c.checks, attemptID{runID, taskID, n})
+	c.mu.Unlock()
 	return c.indexLedger.Checks(ctx, runID, taskID, n, withLog)
-}
-
-func (c *countingLedger) Run(ctx context.Context, id string) (ledger.RunRow, bool, error) {
-	c.runs.Add(1)
-	return c.indexLedger.Run(ctx, id)
 }
 
 // freshIndexer replaces e's indexer, once it has settled (its index
@@ -735,7 +769,7 @@ func TestARunIsReadAtMostEvery2s(t *testing.T) {
 	histSettle(t, e)
 	ld := e.srv.ledger
 	histCreate(t, ld, "hist-00000009", "", histCrew(e.root))
-	until(t, "the run read", func() bool { return c.runs.Load() == 1 })
+	until(t, "the run read", func() bool { return c.passes.Load() == 1 })
 	for n := 1; n <= 3; n++ {
 		histTx(t, ld, "hist-00000009", func(tx *ledger.Tx) error { return tx.Event("note", map[string]any{"n": n}) })
 	}
@@ -750,19 +784,19 @@ func TestARunIsReadAtMostEvery2s(t *testing.T) {
 	// moved only once that timer is set.
 	until(t, "the deferred read's timer", func() bool { return clock.waiting(histNow.Add(minRunInterval)) })
 	clock.Advance(minRunInterval - time.Millisecond)
-	if c.runs.Load() != 1 {
-		t.Fatalf("the run read %d times within the interval", c.runs.Load())
+	if c.passes.Load() != 1 {
+		t.Fatalf("the run read %d times within the interval", c.passes.Load())
 	}
 	clock.Advance(time.Millisecond)
-	until(t, "the last change read", func() bool { return c.runs.Load() == 2 })
+	until(t, "the last change read", func() bool { return c.passes.Load() == 2 })
 	ix := e.srv.history.index()
 	until(t, "the mark", func() bool {
 		p, _, _ := ld.Pointer(t.Context(), "hist-00000009")
 		m, _, _ := ix.Mark(t.Context(), "run:hist-00000009")
 		return m == fmt.Sprintf("L%d", p.Revision)
 	})
-	if c.runs.Load() != 2 {
-		t.Fatalf("the run read %d times", c.runs.Load())
+	if c.passes.Load() != 2 {
+		t.Fatalf("the run read %d times", c.passes.Load())
 	}
 }
 
@@ -1098,7 +1132,7 @@ func TestAnAttemptsStartCommitReachesItsSessionEntry(t *testing.T) {
 	id := session.NewID()
 	r := journal.Record{ID: id, Name: "lead", Kind: string(session.KindServer), Agent: journal.Agent{ID: "cat"}, Where: "native", Cwd: e.root, StartedAt: histNow,
 		StartFrom: journal.StartFromAttempt, Crew: &journal.Crew{RunID: "hist-00000013", CrewID: "hist", Member: "lead", Task: "build", Attempt: 1}}
-	if err := e.srv.sessionRecords.Begin(r); err != nil {
+	if _, err := e.srv.sessionRecords.Begin(r); err != nil {
 		t.Fatal(err)
 	}
 	ix := histSettle(t, e)
@@ -1370,4 +1404,596 @@ func BenchmarkTransitionWhileIndexing(b *testing.B) {
 	b.ReportMetric(q(busy, 0.5), "indexing-p50-ms")
 	b.ReportMetric(q(busy, 0.99), "indexing-p99-ms")
 	b.ReportMetric(float64(passes.Load()), "passes")
+}
+
+// histFind is the keys a search for line answers.
+func histFind(t *testing.T, ix *history.Index, line string) []string {
+	t.Helper()
+	q, err := history.ParseQuery(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := ix.Search(t.Context(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, h := range page.Entries {
+		out = append(out, h.Key)
+	}
+	return out
+}
+
+// forgettable is an ended server session's record, named by word and
+// holding a chat line of it, indexed and found by a search for it.
+func forgettable(t *testing.T, e *testEnv, word string) (string, journal.Instance) {
+	t.Helper()
+	id := session.NewID()
+	r := journal.Record{ID: id, Name: word + " session", Kind: string(session.KindServer), Agent: journal.Agent{ID: "cat"}, Where: "native", Cwd: e.root, StartedAt: histNow}
+	in, err := e.srv.sessionRecords.Begin(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.srv.sessionRecords.Chat(in, journal.ChatLine{Kind: "message", Text: "the " + word + " line", ByName: "nate", At: histNow})
+	e.srv.sessionRecords.End(in, journal.Ending{How: "exited"})
+	endedRecord(t, e, id)
+	if got := histFind(t, histSettle(t, e), word); len(got) < 2 {
+		t.Fatalf("the record's words before it is forgotten: %v", got)
+	}
+	return id, in
+}
+
+// forgotten says the record id and its words are nowhere a search reaches.
+func forgotten(t *testing.T, ix *history.Index, id, word string) {
+	t.Helper()
+	histGone(t, ix, hSessionRef(id))
+	if got := histFind(t, ix, word); len(got) != 0 {
+		t.Fatalf("the forgotten record's words are found: %v", got)
+	}
+}
+
+// A pass that runs inside a Forget, as its file is removed (an observer
+// after the indexer's, on the file's removal, waits for the indexer to
+// settle), finds the record gone (the journal hides a record it removes
+// from Get before its file goes) and removes it: never left until a
+// restart.
+func TestAForgetIsGoneFromTheIndexAtOnce(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id, _ := forgettable(t, e, "zforgetinside")
+	path := journal.Dir + "/" + journal.SessionsDir + "/" + id + ".json"
+	var inside atomic.Bool
+	e.srv.commits.add(commitObserver{data: func(ev store.Event) {
+		if ev.Op == store.OpDeleted && ev.Path == path {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*testWait)
+			defer cancel()
+			if err := e.srv.history.settle(ctx, false); err != nil {
+				t.Errorf("the indexer did not settle inside the forget: %v", err)
+			}
+			inside.Store(true)
+		}
+	}})
+	if err := e.srv.sessionRecords.Forget(id); err != nil {
+		t.Fatal(err)
+	}
+	if !inside.Load() {
+		t.Fatal("the forget's removal was never seen")
+	}
+	forgotten(t, histSettle(t, e), id, "zforgetinside")
+}
+
+// A Forget made while a pass holds the record read (between its mark and
+// its Replace, the afterMark seam) is not undone: the pass's write is
+// followed by the pass the forget's commit asked, which removes it; the
+// same during a reindex's catch-up, and for ForgetAll.
+func TestAForgetDuringAPassIsNotWrittenBack(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		reindex bool
+		all     bool
+	}{{"a pass", false, false}, {"a reindex", true, false}, {"ForgetAll", false, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t, nil)
+			id, in := forgettable(t, e, "zforgetduring")
+			var held atomic.Bool
+			h := freshIndexer(t, e, func(h *historyIndexer) {
+				h.afterMark = func(key string) {
+					if key != hSessionRef(id) || held.Swap(true) {
+						return
+					}
+					if tc.all {
+						if _, _, err := e.srv.sessionRecords.ForgetAll(); err != nil {
+							t.Error(err)
+						}
+					} else if err := e.srv.sessionRecords.Forget(id); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			// The fresh indexer's catch-up finds the mark as it was: the
+			// record is read again only once it changes, or once the index
+			// is cleared.
+			histSettle(t, e)
+			if !held.Load() {
+				if !tc.reindex {
+					// A write of the record (its Seq) makes the pass read it.
+					e.srv.sessionRecords.Chat(in, journal.ChatLine{Kind: "message", Text: "one more", ByName: "nate", At: histNow})
+					e.srv.sessionRecords.Flush()
+				} else {
+					h.askReindex()
+				}
+			}
+			ix := histSettle(t, e)
+			if !held.Load() {
+				t.Fatal("no pass read the record while it was forgotten")
+			}
+			forgotten(t, ix, id, "zforgetduring")
+		})
+	}
+}
+
+// A record whose file went while no server ran (a forget whose index
+// write never happened) is removed by the next start's catch-up.
+func TestARecordForgottenWhileStoppedLeavesTheIndex(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id, _ := forgettable(t, e, "zforgetstopped")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	e.srv.Shutdown(ctx)
+	if err := os.Remove(filepath.Join(e.srv.cfg.DataDir, journal.Dir, journal.SessionsDir, id+".json")); err != nil {
+		t.Fatal(err)
+	}
+	e2 := e.restart()
+	forgotten(t, histSettle(t, e2), id, "zforgetstopped")
+}
+
+// A run record deleted (a legacy run's, with no ledger rows) leaves the
+// index with its words.
+func TestADeletedRunRecordLeavesTheIndex(t *testing.T) {
+	e := newTestEnv(t, nil)
+	saveRecord(t, e.srv, crew.Run{ID: "hist-00000030", Label: "zrunrecordword", Cwd: e.root, StartedAt: histNow})
+	if got := histFind(t, histSettle(t, e), "zrunrecordword"); len(got) != 1 {
+		t.Fatalf("the run's words: %v", got)
+	}
+	if err := e.srv.records.Delete("hist-00000030"); err != nil {
+		t.Fatal(err)
+	}
+	ix := histSettle(t, e)
+	histGone(t, ix, "run:hist-00000030")
+	if got := histFind(t, ix, "zrunrecordword"); len(got) != 0 {
+		t.Fatalf("the deleted run's words: %v", got)
+	}
+}
+
+// A run that the ledger's owner (another process: no hook of this one's
+// sees it) prunes leaves the index at the next reconcile, its receipts
+// and their words with it.
+func TestALedgerRunPrunedByAnotherOwnerLeavesTheIndex(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	seedDispatch(t, dir)
+	ld, err := ledger.Open(filepath.Join(dir, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ld.Close()
+	histCreate(t, ld, "hist-00000031", "", histCrew(dir))
+	failedAt(t, ld, "hist-00000031", 1, 1, "TestPrunedElsewhere")
+	histTx(t, ld, "hist-00000031", func(tx *ledger.Tx) error {
+		row, _, err := tx.Run()
+		if err != nil {
+			return err
+		}
+		row.State, row.Outcome, row.ClosedAt = ledger.RunFinished, ledger.OutcomeFailed, histNow
+		return tx.PutRun(row)
+	})
+	e := newTestEnv(t, func(c *config.Config) { c.DataDir = dir })
+	if ro, _ := e.srv.ledger.ReadOnly(); !ro {
+		t.Fatal("the server holds the ledger's lock")
+	}
+	noTick(t, e)
+	ix := histSettle(t, e)
+	receipt := hCheckRef("hist-00000031", "build", 1, "unit", 1)
+	histEntry(t, ix, receipt)
+	if got := histFind(t, ix, "TestPrunedElsewhere"); len(got) != 1 {
+		t.Fatalf("the receipt's words: %v", got)
+	}
+	if err := ld.Prune(t.Context(), "hist-00000031"); err != nil {
+		t.Fatal(err)
+	}
+	ix = histReconcile(t, e)
+	histGone(t, ix, "run:hist-00000031")
+	histGone(t, ix, receipt)
+	if got := histFind(t, ix, "TestPrunedElsewhere"); len(got) != 0 {
+		t.Fatalf("the pruned run's words: %v", got)
+	}
+}
+
+// A run's receipts are read an attempt at a time, each read naming its
+// task and attempt; a settled attempt's (ended by its own outcome, every
+// receipt finished) are not read again on a later pass, a running one's
+// are.
+func TestARunsReceiptsAreReadAnAttemptAtATime(t *testing.T) {
+	e := newTestEnv(t, nil)
+	c := countLedger(t, e, nil)
+	ld := e.srv.ledger
+	histCreate(t, ld, "hist-00000032", "", histCrew(e.root))
+	failedAt(t, ld, "hist-00000032", 1, 1, "TestSettled")
+	histTx(t, ld, "hist-00000032", func(tx *ledger.Tx) error {
+		return tx.PutAttempt(histAttempt("build", 2, ledger.AttemptRunning, "", commitID(1), ""))
+	})
+	histSettle(t, e)
+	read := c.checksRead(0)
+	if len(read) == 0 {
+		t.Fatal("no receipt read")
+	}
+	for _, a := range read {
+		if a.task == "" || a.n == 0 {
+			t.Fatalf("a read of a run's receipts names no attempt: %+v", a)
+		}
+	}
+	from := len(c.checksRead(0))
+	histTx(t, ld, "hist-00000032", func(tx *ledger.Tx) error { return tx.Event("note", map[string]any{"x": 1}) })
+	histSettle(t, e)
+	later := c.checksRead(from)
+	if slices.Contains(later, attemptID{"hist-00000032", "build", 1}) {
+		t.Fatalf("the settled attempt's receipts read again: %v", later)
+	}
+	if !slices.Contains(later, attemptID{"hist-00000032", "build", 2}) {
+		t.Fatalf("the running attempt's receipts not read again: %v", later)
+	}
+}
+
+// A receipt put after its attempt's end (a cancel commits the end first
+// and ends its check after) is indexed: a cancelled attempt's rows are
+// never taken as settled.
+func TestAReceiptPutAfterItsAttemptEndedIsIndexed(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	histCreate(t, ld, "hist-00000033", "", histCrew(e.root))
+	histTx(t, ld, "hist-00000033", func(tx *ledger.Tx) error {
+		return tx.PutAttempt(histAttempt("build", 1, ledger.AttemptCancelled, "", commitID(0), commitID(1)))
+	})
+	histSettle(t, e)
+	histTx(t, ld, "hist-00000033", func(tx *ledger.Tx) error {
+		r := histReceipt("build", 1, "unit", 1, commitID(1), -1, "cut short\n")
+		r.State = ledger.CheckInterrupted
+		return tx.PutCheck(r)
+	})
+	if h := histEntry(t, histSettle(t, e), hCheckRef("hist-00000033", "build", 1, "unit", 1)); h.Outcome != ledger.CheckInterrupted {
+		t.Fatalf("the late receipt: %+v", h.Entry)
+	}
+}
+
+// A run's transition that leaves its member's start commit as it was
+// reads no member's session again (no Attempts read but the run's own);
+// a start commit that changes does, and reaches the member's entry.
+func TestARunsTransitionReadsNoMemberAgain(t *testing.T) {
+	e := newTestEnv(t, nil)
+	c := countLedger(t, e, nil)
+	ld := e.srv.ledger
+	histCreate(t, ld, "hist-00000034", "", histCrew(e.root))
+	id := session.NewID()
+	r := journal.Record{ID: id, Name: "lead", Kind: string(session.KindServer), Agent: journal.Agent{ID: "cat"}, Where: "native", Cwd: e.root, StartedAt: histNow,
+		StartFrom: journal.StartFromAttempt, Crew: &journal.Crew{RunID: "hist-00000034", CrewID: "hist", Member: "lead", Task: "build", Attempt: 1}}
+	in, err := e.srv.sessionRecords.Begin(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func(start string) {
+		histTx(t, ld, "hist-00000034", func(tx *ledger.Tx) error {
+			a := histAttempt("build", 1, ledger.AttemptRunning, "", start, "")
+			a.SessionID = id
+			return tx.PutAttempt(a)
+		})
+	}
+	put(commitID(7))
+	// Ended and written: its record changes no more while the run moves.
+	e.srv.sessionRecords.End(in, journal.Ending{How: "exited"})
+	endedRecord(t, e, id)
+	if h := histEntry(t, histSettle(t, e), hSessionRef(id)); h.Commit != commitID(7) {
+		t.Fatalf("the member's commit: %q", h.Commit)
+	}
+	attempts, passes := c.attempts.Load(), c.passes.Load()
+	for n := range 3 {
+		histTx(t, ld, "hist-00000034", func(tx *ledger.Tx) error { return tx.Event("note", map[string]any{"n": n}) })
+		histSettle(t, e)
+	}
+	if da, dp := c.attempts.Load()-attempts, c.passes.Load()-passes; dp == 0 || da != dp {
+		t.Fatalf("%d attempts' reads in %d passes of the run: a member was read again", da, dp)
+	}
+	attempts, passes = c.attempts.Load(), c.passes.Load()
+	put(commitID(8))
+	if h := histEntry(t, histSettle(t, e), hSessionRef(id)); h.Commit != commitID(8) {
+		t.Fatalf("the member's new commit: %q", h.Commit)
+	}
+	if da, dp := c.attempts.Load()-attempts, c.passes.Load()-passes; da <= dp {
+		t.Fatalf("%d attempts' reads in %d passes: the member was not read again", da, dp)
+	}
+}
+
+// A member's session whose ledger read fails writes no mark: read again
+// after the backoff, its entry has its attempt's start commit.
+func TestASessionMarkWaitsForItsLedgerRead(t *testing.T) {
+	e := newTestEnv(t, nil)
+	c := countLedger(t, e, nil)
+	ld := e.srv.ledger
+	histCreate(t, ld, "hist-00000035", "", histCrew(e.root))
+	id := session.NewID()
+	histTx(t, ld, "hist-00000035", func(tx *ledger.Tx) error {
+		a := histAttempt("build", 1, ledger.AttemptRunning, "", commitID(9), "")
+		a.SessionID = id
+		return tx.PutAttempt(a)
+	})
+	histSettle(t, e)
+	c.failAttempts.Store(1)
+	r := journal.Record{ID: id, Name: "lead", Kind: string(session.KindServer), Agent: journal.Agent{ID: "cat"}, Where: "native", Cwd: e.root, StartedAt: histNow,
+		StartFrom: journal.StartFromAttempt, Crew: &journal.Crew{RunID: "hist-00000035", CrewID: "hist", Member: "lead", Task: "build", Attempt: 1}}
+	if _, err := e.srv.sessionRecords.Begin(r); err != nil {
+		t.Fatal(err)
+	}
+	if h := histEntry(t, histSettle(t, e), hSessionRef(id)); h.Commit != commitID(9) {
+		t.Fatalf("the member's commit after a failed read: %q", h.Commit)
+	}
+	if c.failAttempts.Load() >= 0 {
+		t.Fatal("no read failed")
+	}
+}
+
+// A project made over a run's repository after the run was indexed places
+// the run and its receipts in it, without reading a log again, and a
+// restart keeps them there.
+func TestAProjectChangePlacesARunAndItsReceipts(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.gitRepo(t)
+	c := countLedger(t, e, nil)
+	ld := e.srv.ledger
+	histCreate(t, ld, "hist-00000036", "", histCrew(e.root))
+	failedAt(t, ld, "hist-00000036", 1, 1, "TestPlaced")
+	receipt := hCheckRef("hist-00000036", "build", 1, "unit", 1)
+	ix := histSettle(t, e)
+	if h := histEntry(t, ix, receipt); h.Project != "" {
+		t.Fatalf("a project before any: %q", h.Project)
+	}
+	logs := c.logs.Load()
+	histProject(t, e, "HIS", e.root)
+	ix = histSettle(t, e)
+	for _, key := range []string{"run:hist-00000036", receipt} {
+		if h := histEntry(t, ix, key); h.Project != "HIS" {
+			t.Fatalf("%s's project: %q", key, h.Project)
+		}
+	}
+	if h := histEntry(t, ix, receipt); !strings.Contains(h.Body, "TestPlaced") {
+		t.Fatalf("the receipt placed again lost its body: %q", h.Body)
+	}
+	if c.logs.Load() != logs {
+		t.Fatalf("a log read again to place a receipt: %d reads", c.logs.Load()-logs)
+	}
+	e2 := restartServer(t, e)
+	if h := histEntry(t, histSettle(t, e2), receipt); h.Project != "HIS" {
+		t.Fatalf("the receipt's project after a restart: %q", h.Project)
+	}
+}
+
+// A failed setup step indexes its words of failure, never its output.
+func TestAFailedStepIndexesItsErrorAlone(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	histCreate(t, ld, "hist-00000037", "", histCrew(e.root))
+	histTx(t, ld, "hist-00000037", func(tx *ledger.Tx) error {
+		if err := tx.PutAttempt(histAttempt("build", 1, ledger.AttemptFailed, "setup install", commitID(0), "")); err != nil {
+			return err
+		}
+		r := histReceipt("build", 1, "install", 1, commitID(0), 1, "token=zstepoutputword\n")
+		r.Phase, r.Error = ledger.PhaseSetup, "the step exited with status 1"
+		return tx.PutCheck(r)
+	})
+	ix := histSettle(t, e)
+	if h := histEntry(t, ix, hCheckRef("hist-00000037", "build", 1, "install", 1)); h.Kind != "step" || h.Body != "the step exited with status 1" {
+		t.Fatalf("the step's entry: %+v", h.Entry)
+	}
+	if got := histFind(t, ix, "zstepoutputword"); len(got) != 0 {
+		t.Fatalf("the step's output is indexed: %v", got)
+	}
+}
+
+// The server without history/owner.lock refuses a reindex (409
+// history_read_only), and the owner's index is not cleared.
+func TestTheReadOnlyServerRefusesAReindex(t *testing.T) {
+	e := newTestEnv(t, nil)
+	before, err := histSettle(t, e).Stats(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := otherServer(t, e)
+	resp, out := other.do("POST", "/api/history/reindex", adminToken, nil)
+	if code, _ := out["error"].(map[string]any)["code"].(string); resp.StatusCode != http.StatusConflict || code != "history_read_only" {
+		t.Fatalf("a reindex on the other server: %d %v", resp.StatusCode, out)
+	}
+	if after, _ := histSettle(t, e).Stats(t.Context()); after.Generation != before.Generation {
+		t.Fatalf("the owner's index was cleared: generation %d, %d before", after.Generation, before.Generation)
+	}
+}
+
+// A Check that clears the index while a run's pass is between its receipts
+// and its own Replace leaves no mark over missing receipts: the indexer
+// clears the index again on its own goroutine and catches up from nothing,
+// so the receipt is indexed.
+func TestACheckThatClearsDuringARunsPassIsCaughtUp(t *testing.T) {
+	e := newTestEnv(t, nil)
+	checked := make(chan struct{})
+	var once sync.Once
+	h := freshIndexer(t, e, func(h *historyIndexer) {
+		h.checkIndex = func(ctx context.Context, ix *history.Index) (string, error) {
+			if err := ix.Clear(ctx); err != nil { // as a Check's clear in place
+				return "", err
+			}
+			return history.CheckCleared, nil
+		}
+		h.beforeRunReplace = func(key string) {
+			if key != "run:hist-00000038" {
+				return
+			}
+			once.Do(func() {
+				// The check runs to its end here, beside the pass.
+				go func() {
+					h.check(context.Background(), h.index())
+					close(checked)
+				}()
+				<-checked
+			})
+		}
+	})
+	_ = h
+	ld := e.srv.ledger
+	histCreate(t, ld, "hist-00000038", "", histCrew(e.root))
+	failedAt(t, ld, "hist-00000038", 1, 1, "TestAcrossTheClear")
+	ix := histSettle(t, e)
+	select {
+	case <-checked:
+	default:
+		t.Fatal("the check never ran inside the run's pass")
+	}
+	histEntry(t, ix, "run:hist-00000038")
+	histEntry(t, ix, hCheckRef("hist-00000038", "build", 1, "unit", 1))
+}
+
+// histReviewCrew is two work tasks and a review of the second.
+func histReviewCrew(dir string) crew.Crew {
+	c := histCrew(dir)
+	c.Tasks = []crew.Task{{ID: "build", Member: "lead", Kind: crew.TaskWork, Instructions: "Build."},
+		{ID: "other", Member: "lead", Kind: crew.TaskWork, Instructions: "Other."},
+		{ID: "review", Member: "reviewer", Kind: crew.TaskReview, Instructions: "Review.", Needs: []string{"other"}}}
+	return c
+}
+
+func needsChanges(t *testing.T) string {
+	t.Helper()
+	b, err := json.Marshal(crew.Result{Verdict: crew.VerdictNeedsChanges, Summary: "Not yet."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// A review is linked to its subject by the task it needs, never by a
+// commit another task's or another attempt's result shares: build and
+// other both return the same commit, other's attempt 1 failed with it and
+// its attempt 2 succeeded with it; the review of other reviews other #2
+// and reopens other #3.
+func TestAReviewIsLinkedByItsSubject(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	run := "hist-00000039"
+	histCreate(t, ld, run, "", histReviewCrew(e.root))
+	same := commitID(5)
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		for _, a := range []ledger.AttemptRow{
+			histAttempt("build", 1, ledger.AttemptSucceeded, "", commitID(0), same),
+			histAttempt("other", 1, ledger.AttemptFailed, "check unit", commitID(0), same),
+			histAttempt("other", 2, ledger.AttemptSucceeded, "", commitID(0), same),
+		} {
+			if err := tx.PutAttempt(a); err != nil {
+				return err
+			}
+		}
+		rv := histAttempt("review", 1, ledger.AttemptSucceeded, "", same, "")
+		rv.Member, rv.Result = "reviewer", needsChanges(t)
+		if err := tx.PutAttempt(rv); err != nil {
+			return err
+		}
+		return tx.PutAttempt(histAttempt("other", 3, ledger.AttemptRunning, "", same, ""))
+	})
+	ix := histSettle(t, e)
+	rv := attemptKey(run, "review", 1)
+	if got := histOut(t, ix, rv, relReviews); !slices.Equal(got, []string{attemptKey(run, "other", 2)}) {
+		t.Fatalf("reviews: %v", got)
+	}
+	if got := histOut(t, ix, rv, relReopened); !slices.Equal(got, []string{attemptKey(run, "other", 3)}) {
+		t.Fatalf("reopened: %v", got)
+	}
+}
+
+// A review's needs_changes in a run that stopped before the repair began:
+// the continuation that makes the repair writes the reopened link.
+func TestAReopenedLinkIsTheRepairingContinuations(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	src, cont := "hist-0000003a", "hist-0000003b"
+	c := histReviewCrew(e.root)
+	histCreate(t, ld, src, "", c)
+	histTx(t, ld, src, func(tx *ledger.Tx) error {
+		if err := tx.PutAttempt(histAttempt("other", 1, ledger.AttemptSucceeded, "", commitID(0), commitID(1))); err != nil {
+			return err
+		}
+		rv := histAttempt("review", 1, ledger.AttemptSucceeded, "", commitID(1), "")
+		rv.Member, rv.Result = "reviewer", needsChanges(t)
+		return tx.PutAttempt(rv)
+	})
+	histSettle(t, e)
+	histCreate(t, ld, cont, src, c)
+	histTx(t, ld, cont, func(tx *ledger.Tx) error {
+		return tx.PutAttempt(histAttempt("other", 2, ledger.AttemptRunning, "", commitID(1), ""))
+	})
+	ix := histSettle(t, e)
+	if got := histOut(t, ix, attemptKey(src, "review", 1), relReopened); !slices.Equal(got, []string{attemptKey(cont, "other", 2)}) {
+		t.Fatalf("reopened across the continuation: %v", got)
+	}
+}
+
+// A run whose attempts at the task are all uncounted (a setup that failed)
+// is walked past, as the engine carries the receipt through it: A's
+// attempt 1 fails its check, B (continuing A) fails attempt 2 at setup, C
+// (continuing B) makes attempt 3, handed A's receipt, as B's attempt 2
+// was at its launch.
+func TestHandedThroughARunOfUncountedAttempts(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	c := histCrew(e.root)
+	a, b, cc := "hist-0000003c", "hist-0000003d", "hist-0000003e"
+	histCreate(t, ld, a, "", c)
+	failedAt(t, ld, a, 1, 1, "TestCarried")
+	histCreate(t, ld, b, a, c)
+	histTx(t, ld, b, func(tx *ledger.Tx) error {
+		if err := tx.PutAttempt(histAttempt("build", 2, ledger.AttemptFailed, "setup install", commitID(1), "")); err != nil {
+			return err
+		}
+		return histTask(tx, ledger.TaskFailed, 2)
+	})
+	histCreate(t, ld, cc, b, c)
+	histTx(t, ld, cc, func(tx *ledger.Tx) error {
+		return tx.PutAttempt(histAttempt("build", 3, ledger.AttemptRunning, "", commitID(1), ""))
+	})
+	ix := histSettle(t, e)
+	if got := histOut(t, ix, hCheckRef(a, "build", 1, "unit", 1), relHanded); !slices.Equal(got, []string{attemptKey(b, "build", 2), attemptKey(cc, "build", 3)}) {
+		t.Fatalf("handed through the uncounted run: %v", got)
+	}
+}
+
+// A handoff made before a withdrawal stays: attempt 1 failed its check and
+// attempt 2 was handed its receipt; an upstream review then withdraws both
+// (Withdrawn 2), and the link the index wrote is kept.
+func TestAHandoffSurvivesALaterWithdrawal(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	run := "hist-0000003f"
+	histCreate(t, ld, run, "", histCrew(e.root))
+	failedAt(t, ld, run, 1, 1, "TestWithdrawn")
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		if err := tx.PutAttempt(histAttempt("build", 2, ledger.AttemptRunning, "", commitID(1), "")); err != nil {
+			return err
+		}
+		return histTask(tx, ledger.TaskRunning, 2)
+	})
+	failed := hCheckRef(run, "build", 1, "unit", 1)
+	if got := histOut(t, histSettle(t, e), failed, relHanded); !slices.Equal(got, []string{attemptKey(run, "build", 2)}) {
+		t.Fatalf("handed before the withdrawal: %v", got)
+	}
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		if err := tx.PutAttempt(histAttempt("build", 2, ledger.AttemptCancelled, "withdrawn", commitID(1), "")); err != nil {
+			return err
+		}
+		return tx.PutTask(ledger.TaskRow{ID: "build", Member: "lead", Kind: crew.TaskWork, State: ledger.TaskBlocked, Attempts: 2, Extra: 1, Withdrawn: 2})
+	})
+	if got := histOut(t, histSettle(t, e), failed, relHanded); !slices.Equal(got, []string{attemptKey(run, "build", 2)}) {
+		t.Fatalf("handed after the withdrawal: %v", got)
+	}
 }

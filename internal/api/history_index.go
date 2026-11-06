@@ -116,10 +116,13 @@ type historyIndexer struct {
 	log      *slog.Logger
 
 	// Seams: the clock, the timer, a pause between a source's mark and
-	// its read, the repository read, and the reconcile's period.
-	now       func() time.Time
-	after     func(time.Duration) <-chan time.Time
-	afterMark func(key string)
+	// its read, a pause between a run's receipts and its own Replace, the
+	// index's Check, the repository read, and the reconcile's period.
+	now              func() time.Time
+	after            func(time.Duration) <-chan time.Time
+	afterMark        func(key string)
+	beforeRunReplace func(key string)
+	checkIndex       func(ctx context.Context, ix *history.Index) (string, error)
 	// briefsListed, a test's, runs once a catch-up has listed Brakeman's
 	// requests (PR-4): nil in the product.
 	briefsListed  func()
@@ -130,8 +133,8 @@ type historyIndexer struct {
 	queue    []string
 	dirty    map[string]bool
 	overflow bool // the set passed its bound: a full catch-up
-	sessions bool // a project changed: every session source
-	reindex  bool
+	placed   bool // a project changed: every session and run source compared
+	reindex  bool // the index cleared on this goroutine, then a catch-up from nothing
 	projects bool // Dispatch's projects changed: read them again
 	feed     bool // Dispatch committed: read its change feed (PR-4)
 	behind   int  // a catch-up's sources not read yet
@@ -165,6 +168,11 @@ type historyIndexer struct {
 	// run's receipts are read an attempt at a time, each a short hold of
 	// the ledger's one connection, and an ended attempt's not again.
 	endedChecks map[attemptID][]ledger.CheckRow
+	// memberStarts are the start commits a run's pass last told each
+	// member's session source of (by session id): a member's session is
+	// read again when its attempt's start commit changes, not on every
+	// transition of its run.
+	memberStarts map[string]string
 }
 
 type repoIdent struct{ top, common string }
@@ -191,23 +199,26 @@ const feedSource = "dispatch:feed"
 func newHistoryIndexer(data *store.Store, j *journal.Journal, ld func() indexLedger, ds *dispatch.Store, host string, log *slog.Logger) *historyIndexer {
 	return &historyIndexer{
 		data: data, journal: j, ledger: ld, dispatch: ds, host: host, log: log,
-		path:          filepath.Join(data.Dir(), journal.Dir, history.File),
-		now:           time.Now,
-		after:         time.After,
-		afterMark:     func(string) {},
-		repoOf:        gitcli.RepoOf,
-		reconcileTick: historyReconcileEvery,
-		dirty:         map[string]bool{},
-		state:         indexOpening,
-		wake:          make(chan struct{}, 1),
-		owned:         make(chan struct{}),
-		done:          make(chan struct{}),
-		due:           map[string]time.Time{},
-		readAt:        map[string]time.Time{},
-		repos:         map[string]repoIdent{},
-		runStats:      map[string]fileStat{},
-		briefStats:    map[string]briefStat{},
-		endedChecks:   map[attemptID][]ledger.CheckRow{},
+		path:             filepath.Join(data.Dir(), journal.Dir, history.File),
+		now:              time.Now,
+		after:            time.After,
+		afterMark:        func(string) {},
+		beforeRunReplace: func(string) {},
+		checkIndex:       func(ctx context.Context, ix *history.Index) (string, error) { return ix.Check(ctx) },
+		repoOf:           gitcli.RepoOf,
+		reconcileTick:    historyReconcileEvery,
+		dirty:            map[string]bool{},
+		state:            indexOpening,
+		wake:             make(chan struct{}, 1),
+		owned:            make(chan struct{}),
+		done:             make(chan struct{}),
+		due:              map[string]time.Time{},
+		readAt:           map[string]time.Time{},
+		repos:            map[string]repoIdent{},
+		runStats:         map[string]fileStat{},
+		briefStats:       map[string]briefStat{},
+		endedChecks:      map[attemptID][]ledger.CheckRow{},
+		memberStarts:     map[string]string{},
 	}
 }
 
@@ -237,7 +248,7 @@ func (h *historyIndexer) observer() commitObserver {
 			h.signal()
 			if slices.ContainsFunc(cs, func(c dispatch.Change) bool { return c.Entity == dispatch.EntityProject }) {
 				h.mu.Lock()
-				h.projects, h.sessions = true, true
+				h.projects, h.placed = true, true
 				h.mu.Unlock()
 				h.signal()
 			}
@@ -415,7 +426,7 @@ func (h *historyIndexer) run(ctx context.Context) {
 	if !h.openOwner(ctx) {
 		return
 	}
-	h.catchUp(ctx, false)
+	h.catchUp(ctx)
 	h.loop(ctx)
 }
 
@@ -471,12 +482,18 @@ func (h *historyIndexer) openOwner(ctx context.Context) bool {
 func (h *historyIndexer) check(ctx context.Context, ix *history.Index) {
 	wait := historyBackoffMin
 	for {
-		outcome, err := ix.Check(ctx)
+		outcome, err := h.checkIndex(ctx, ix)
 		if err == nil {
 			h.mu.Lock()
 			h.checking = false
 			if outcome != history.CheckSound {
-				h.overflow = true // a catch-up from nothing
+				// Cleared or made again beside the indexing: a pass that
+				// spanned it wrote a mark over entries the clear took (a
+				// run's receipts written before it, the run's own source
+				// after), which a catch-up would trust. So the indexer's own
+				// goroutine clears the index again, between two passes, and
+				// catches up from nothing, as a reindex does.
+				h.reindex = true
 			}
 			h.mu.Unlock()
 			if outcome != history.CheckSound {
@@ -507,10 +524,8 @@ func (h *historyIndexer) loop(ctx context.Context) {
 		switch {
 		case h.reindex:
 			step, h.reindex, h.overflow = "reindex", false, false
-		case h.overflow:
-			step, h.overflow, h.sessions = "catch-up", false, false
-		case h.sessions:
-			step, h.sessions = "sessions", false
+		case h.overflow || h.placed:
+			step, h.overflow, h.placed = "catch-up", false, false
 		case len(h.requests) > 0 && h.requests[0] == nil:
 			step, h.requests = "reconcile", h.requests[1:]
 		case h.feed:
@@ -523,10 +538,7 @@ func (h *historyIndexer) loop(ctx context.Context) {
 			h.doReindex(ctx)
 			continue
 		case "catch-up":
-			h.catchUp(ctx, false)
-			continue
-		case "sessions":
-			h.catchUp(ctx, true)
+			h.catchUp(ctx)
 			continue
 		case "reconcile":
 			h.reconcile(ctx)
@@ -717,7 +729,18 @@ func (h *historyIndexer) repoIdent(ctx context.Context, dir string) repoIdent {
 }
 
 // indexSession reads a session record: its mark S<Seq>/P<projects>, and
-// L<revision> for a crew member (its start commit is its attempt's).
+// for a crew member C<start commit>/J<project>, the two things its entries
+// take from its run (its attempt's StartCommit from the ledger, its run's
+// project), read before the mark is compared. A failed read of either
+// is the pass's error, retried after a backoff, never a mark over an
+// entry that lacks it. A record a Forget, ForgetAll or Prune has chosen is
+// ErrNotFound to Get from that moment until the removal returns, and
+// nothing of its instance is written again (the journal's rule between
+// writers and removers), so a pass during the removal removes it, and one
+// that read it just before is followed by the pass its file's delete
+// event asks. A removal whose delete failed leaves the file as it was,
+// with no event: the record is indexed again by the next catch-up's
+// listing or its file's next change.
 func (h *historyIndexer) indexSession(ctx context.Context, ix *history.Index, id string) error {
 	key := hSessionRef(id)
 	rec, _, err := h.journal.Get(id)
@@ -732,12 +755,32 @@ func (h *historyIndexer) indexSession(ctx context.Context, ix *history.Index, id
 	}
 	pm := h.projectsOf(ctx)
 	mark := fmt.Sprintf("S%d/P%s", rec.Seq, pm.digest)
-	ld := h.currentLedger()
-	member := rec.Crew != nil && rec.Crew.RunID != ""
-	if member && ld != nil {
-		if p, ok, err := ld.Pointer(ctx, rec.Crew.RunID); err == nil && ok {
-			mark += fmt.Sprintf("/L%d", p.Revision)
+	var place sessionPlace
+	if rec.Crew != nil && rec.Crew.RunID != "" {
+		ld := h.currentLedger()
+		if ld != nil && rec.Crew.Task != "" {
+			as, err := ld.Attempts(ctx, rec.Crew.RunID)
+			switch {
+			case errors.Is(err, ledger.ErrUnavailable):
+			case err != nil:
+				return err
+			default:
+				if i := slices.IndexFunc(as, func(a ledger.AttemptRow) bool { return a.TaskID == rec.Crew.Task && a.N == rec.Crew.Attempt }); i >= 0 {
+					place.commit = as[i].StartCommit
+				}
+			}
 		}
+		// A crew member's project is its run's.
+		cwd, err := h.runCwd(ctx, ld, rec.Crew.RunID)
+		if err != nil {
+			return err
+		}
+		if cwd != "" {
+			place.project = pm.byRepo[h.repoIdent(ctx, cwd).common]
+		}
+		mark += fmt.Sprintf("/C%s/J%s", place.commit, place.project)
+	} else if !rec.Host.Hosted && rec.RepoCommon != "" {
+		place.project = pm.byRepo[rec.RepoCommon]
 	}
 	if old, ok, err := ix.Mark(ctx, key); err != nil {
 		return err
@@ -745,44 +788,45 @@ func (h *historyIndexer) indexSession(ctx context.Context, ix *history.Index, id
 		return nil
 	}
 	h.afterMark(key)
-	var place sessionPlace
-	if member {
-		if ld != nil && rec.Crew.Task != "" {
-			if as, err := ld.Attempts(ctx, rec.Crew.RunID); err == nil {
-				if i := slices.IndexFunc(as, func(a ledger.AttemptRow) bool { return a.TaskID == rec.Crew.Task && a.N == rec.Crew.Attempt }); i >= 0 {
-					place.commit = as[i].StartCommit
-				}
-			}
-		}
-		// A crew member's project is its run's.
-		if cwd := h.runCwd(ctx, ld, rec.Crew.RunID); cwd != "" {
-			place.project = pm.byRepo[h.repoIdent(ctx, cwd).common]
-		}
-	} else if !rec.Host.Hosted && rec.RepoCommon != "" {
-		place.project = pm.byRepo[rec.RepoCommon]
-	}
 	entries, links := sessionEntries(rec, place)
 	return ix.Replace(ctx, history.Source{Key: key, Mark: mark}, entries, links)
 }
 
 // runCwd is a run's folder: its record's, else its crew's as the ledger
-// keeps it.
-func (h *historyIndexer) runCwd(ctx context.Context, ld indexLedger, run string) string {
-	if b, ok, _ := h.readRunRecord(run); ok {
+// keeps it; "" for a run neither holds (yet). A failed read is an error.
+func (h *historyIndexer) runCwd(ctx context.Context, ld indexLedger, run string) (string, error) {
+	b, ok, err := h.readRunRecord(run)
+	if err != nil {
+		return "", err
+	}
+	if ok {
 		var r crew.Run
 		if json.Unmarshal(b, &r) == nil && r.Cwd != "" {
-			return r.Cwd
+			return r.Cwd, nil
 		}
 	}
-	if ld != nil {
-		if row, ok, err := ld.Run(ctx, run); err == nil && ok {
-			var c crew.Crew
-			if json.Unmarshal([]byte(row.Crew), &c) == nil {
-				return c.Cwd
-			}
-		}
+	if ld == nil {
+		return "", nil
 	}
-	return ""
+	row, ok, err := ld.Run(ctx, run)
+	switch {
+	case errors.Is(err, ledger.ErrUnavailable):
+		return "", nil
+	case err != nil:
+		return "", err
+	case !ok:
+		return "", nil
+	}
+	return crewCwd(row), nil
+}
+
+// crewCwd is the folder of a run's crew as its ledger row keeps it.
+func crewCwd(row ledger.RunRow) string {
+	var c crew.Crew
+	if json.Unmarshal([]byte(row.Crew), &c) != nil {
+		return ""
+	}
+	return c.Cwd
 }
 
 // readRunRecord is the bytes of runs/<id>.json, false when there is none.
@@ -808,11 +852,14 @@ func (h *historyIndexer) readRunRecord(id string) ([]byte, bool, error) {
 	return b, true, nil
 }
 
-// indexRun reads a run: its mark L<revision>/R<sha256> (the ledger's
-// revision read before the rows, the record file's hash as read), its own
-// source read without any log, each finished receipt not indexed yet read
-// once (its log by ledger.Check, for that one row), and its members'
-// session sources marked, since their marks carry its revision.
+// indexRun reads a run: its mark L<revision>/R<sha256>/J<project> (the
+// ledger's revision read before the rows, the record file's hash as read,
+// the project its folder's repository is in, which Dispatch's projects
+// decide), its own source read without any log, each finished receipt not
+// indexed yet read once (its log by ledger.Check, for that one row), a
+// receipt held under another project placed again from its entry, and the
+// session source of each member whose attempt's start commit changed
+// marked, since a member's entry carries it.
 func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id string) error {
 	key := hRunRef(id)
 	now := h.now()
@@ -842,6 +889,33 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 		delete(h.readAt, key)
 		return h.removeRun(ctx, ix, id)
 	}
+	var rec *crew.Run
+	if hasRec {
+		var r crew.Run
+		if json.Unmarshal(recBytes, &r) == nil && r.ID == id {
+			rec = &r
+		}
+	}
+	// The run's folder, for its project: its record's, else its crew's as
+	// the ledger's row keeps it (the run's first transaction writes it, and
+	// it never changes after).
+	cwd := ""
+	if rec != nil {
+		cwd = rec.Cwd
+	}
+	if cwd == "" && inLedger {
+		row, ok, err := ld.Run(ctx, id)
+		if err != nil {
+			return err
+		}
+		if ok {
+			cwd = crewCwd(row)
+		}
+	}
+	project := ""
+	if repo := h.repoIdent(ctx, cwd); repo.common != "" {
+		project = h.projectsOf(ctx).byRepo[repo.common]
+	}
 	var marks []string
 	if inLedger {
 		marks = append(marks, "L"+strconv.FormatInt(ptr.Revision, 10))
@@ -849,6 +923,9 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 	if hasRec {
 		sum := sha256.Sum256(recBytes)
 		marks = append(marks, "R"+hex.EncodeToString(sum[:]))
+	}
+	if project != "" {
+		marks = append(marks, "J"+project)
 	}
 	mark := strings.Join(marks, "/")
 	if old, ok, err := ix.Mark(ctx, key); err != nil {
@@ -858,13 +935,6 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 	}
 	h.afterMark(key)
 	h.readAt[key] = now
-	var rec *crew.Run
-	if hasRec {
-		var r crew.Run
-		if json.Unmarshal(recBytes, &r) == nil && r.ID == id {
-			rec = &r
-		}
-	}
 	var rows *runRows
 	var chain []runRows
 	if inLedger {
@@ -887,32 +957,80 @@ func (h *historyIndexer) indexRun(ctx context.Context, ix *history.Index, id str
 			from = c.row.ContinuedFrom
 		}
 	}
-	p := h.runPlaceOf(ctx, id, rec, rows)
-	entries, links := runSource(p, rec, rows, chain)
+	p := h.runPlaceOf(ctx, id, cwd, project, rec, rows)
+	var kept []history.Link
+	if rows != nil {
+		var err error
+		if kept, err = h.keptHanded(ctx, ix, id, rows); err != nil {
+			return err
+		}
+	}
+	entries, links := runSource(p, rec, rows, chain, kept)
 	if rows != nil {
 		if err := h.indexReceipts(ctx, ix, ld, p, rows); err != nil {
 			return err
 		}
 	}
+	h.beforeRunReplace(key)
 	if err := ix.Replace(ctx, history.Source{Key: key, Mark: mark}, entries, links); err != nil {
 		return err
 	}
-	// The members' sessions: their marks carry the run's revision.
+	// The members' sessions, each when what its entry takes from the run
+	// changed: its attempt's start commit, or the run first seen by this
+	// process (its folder, and so its project, may be new to the member).
+	tell := func(sid, start string) {
+		if sid == "" {
+			return
+		}
+		if old, ok := h.memberStarts[sid]; ok && old == start {
+			return
+		}
+		if len(h.memberStarts) >= maxEndedAttempts {
+			clear(h.memberStarts)
+		}
+		h.memberStarts[sid] = start
+		h.mark(hSessionRef(sid))
+	}
 	if rows != nil {
 		for _, a := range rows.attempts {
-			if a.SessionID != "" {
-				h.mark(hSessionRef(a.SessionID))
-			}
+			tell(a.SessionID, a.StartCommit)
 		}
 	}
 	if rec != nil {
 		for _, m := range rec.Members {
-			if m.SessionID != "" {
-				h.mark(hSessionRef(m.SessionID))
-			}
+			tell(m.SessionID, "")
 		}
 	}
 	return nil
+}
+
+// keptHanded are the handed links the index holds into the attempts of
+// run that a later withdrawal has taken back (their number at or below
+// their task's Withdrawn): the boundary each was handed under, the
+// withdrawal before its launch, is no longer in the rows, so the link
+// written while it was is kept as evidence, never rebuilt from today's.
+func (h *historyIndexer) keptHanded(ctx context.Context, ix *history.Index, run string, rows *runRows) ([]history.Link, error) {
+	withdrawn := map[string]int{}
+	for _, t := range rows.tasks {
+		withdrawn[t.ID] = t.Withdrawn
+	}
+	var out []history.Link
+	for _, a := range rows.attempts {
+		if a.N > withdrawn[a.TaskID] {
+			continue
+		}
+		to := attemptKey(run, a.TaskID, a.N)
+		ls, err := ix.Links(ctx, to, history.MaxLinks)
+		if err != nil {
+			return nil, err
+		}
+		for _, l := range ls.In {
+			if l.Rel == relHanded {
+				out = append(out, history.Link{From: l.Ref, Rel: relHanded, To: to})
+			}
+		}
+	}
+	return out, nil
 }
 
 func (h *historyIndexer) setNoLedger(gone bool) {
@@ -931,8 +1049,8 @@ type attemptID struct {
 }
 
 // readRunRows reads a run's rows, its checks without their logs, an
-// attempt at a time: the receipts of an ended attempt whose every receipt
-// has finished are remembered, never read again.
+// attempt at a time: the receipts of a settled attempt (settledAttempt)
+// are remembered, never read again.
 func (h *historyIndexer) readRunRows(ctx context.Context, ld indexLedger, id string) (runRows, error) {
 	var r runRows
 	row, ok, err := ld.Run(ctx, id)
@@ -962,9 +1080,7 @@ func (h *historyIndexer) readRunRows(ctx context.Context, ld indexLedger, id str
 			if rows, err = ld.Checks(ctx, id, a.TaskID, a.N, false); err != nil {
 				return r, err
 			}
-			if slices.Contains(attemptEnded, a.State) && !slices.ContainsFunc(rows, func(c ledger.CheckRow) bool {
-				return c.State == ledger.CheckStarted || c.State == ledger.CheckRunning
-			}) {
+			if settledAttempt(a, rows) {
 				if len(h.endedChecks) >= maxEndedAttempts {
 					clear(h.endedChecks)
 				}
@@ -976,17 +1092,33 @@ func (h *historyIndexer) readRunRows(ctx context.Context, ld indexLedger, id str
 	return r, nil
 }
 
-// runPlaceOf is what a run's entries take from beyond its rows.
-func (h *historyIndexer) runPlaceOf(ctx context.Context, id string, rec *crew.Run, rows *runRows) runPlace {
-	p := runPlace{run: id, host: hField(h.host), kinds: map[string]string{}, agents: map[string]string{}, agentSessions: map[string]string{}}
+// settledAttempt says an attempt's receipt rows can change no more: it
+// ended by its own outcome (succeeded or failed, which the engine decides
+// after its steps and checks have ended) and none of its rows is started
+// or running. An attempt cancelled, stopped, interrupted or uncertain is
+// not: the engine commits its end first and ends its check after, in a
+// later transaction (attemptEnded's comment), and a check that had not put
+// its started row yet can still put one after the end.
+func settledAttempt(a ledger.AttemptRow, rows []ledger.CheckRow) bool {
+	if a.State != ledger.AttemptSucceeded && a.State != ledger.AttemptFailed {
+		return false
+	}
+	return !slices.ContainsFunc(rows, func(c ledger.CheckRow) bool {
+		return c.State == ledger.CheckStarted || c.State == ledger.CheckRunning
+	})
+}
+
+// runPlaceOf is what a run's entries take from beyond its rows; cwd and
+// project are the run's folder and project as its mark took them.
+func (h *historyIndexer) runPlaceOf(ctx context.Context, id, cwd, project string, rec *crew.Run, rows *runRows) runPlace {
+	p := runPlace{run: id, host: hField(h.host), project: project, kinds: map[string]string{}, agents: map[string]string{}, agentSessions: map[string]string{}, needs: map[string][]string{}}
 	var c crew.Crew
 	if rows != nil {
 		_ = json.Unmarshal([]byte(rows.row.Crew), &c)
 		p.crew, p.fallback = rows.row.CrewID, rows.row.CreatedAt
 	}
-	cwd := c.Cwd
 	if rec != nil {
-		p.crew, cwd = cmp.Or(p.crew, rec.CrewID), cmp.Or(rec.Cwd, cwd)
+		p.crew = cmp.Or(p.crew, rec.CrewID)
 		if p.fallback.IsZero() {
 			p.fallback = rec.StartedAt
 		}
@@ -1014,6 +1146,7 @@ func (h *historyIndexer) runPlaceOf(ctx context.Context, id string, rec *crew.Ru
 	for _, t := range c.Tasks {
 		p.kinds[t.ID] = cmp.Or(t.Kind, p.kinds[t.ID])
 		p.agents[t.ID] = p.agents["member:"+t.Member]
+		p.needs[t.ID] = t.Needs
 	}
 	if rows != nil {
 		for _, t := range rows.tasks {
@@ -1023,27 +1156,47 @@ func (h *historyIndexer) runPlaceOf(ctx context.Context, id string, rec *crew.Ru
 	}
 	if repo := h.repoIdent(ctx, cwd); repo.common != "" {
 		p.repo, p.tree = hFitID(repo.common), hFitID(repo.top)
-		p.project = h.projectsOf(ctx).byRepo[repo.common]
 	}
 	return p
 }
 
+// receiptMark is a finished receipt's mark: finished, and the project
+// its run is placed in (J<project>), which a project's change moves.
+func receiptMark(project string) string {
+	if project == "" {
+		return ledger.CheckFinished
+	}
+	return ledger.CheckFinished + "/J" + project
+}
+
 // indexReceipts indexes each finished receipt the index does not hold
 // yet as its own source, its log read by ledger.Check for that one row:
-// a receipt recorded never changes once finished, so it is read once.
+// a receipt recorded never changes once finished, so it is read once. One
+// held under another project is placed again from its own entry, its log
+// not read again.
 func (h *historyIndexer) indexReceipts(ctx context.Context, ix *history.Index, ld indexLedger, p runPlace, rows *runRows) error {
 	held, err := checkSources(ctx, ix, p.run)
 	if err != nil {
 		return err
 	}
+	want := receiptMark(p.project)
 	branch := map[string]string{}
 	for _, a := range rows.attempts {
 		branch[a.TaskID+"/"+strconv.Itoa(a.N)] = a.Branch
 	}
 	for _, r := range rows.checks {
 		key := hCheckRef(p.run, r.TaskID, r.N, r.ID, r.K)
-		if !receiptFinished(r) || held[key] || r.Subject == "" {
+		if !receiptFinished(r) || r.Subject == "" {
 			continue // a receipt is bound to the commit it checked
+		}
+		if old, ok := held[key]; ok {
+			if old == want {
+				continue
+			}
+			if err := h.placeReceipt(ctx, ix, key, p.project, want); err != nil {
+				return err
+			}
+			continue
 		}
 		full := r
 		if historyOutcome(r) == "failed" && !r.LogDropped {
@@ -1056,17 +1209,36 @@ func (h *historyIndexer) indexReceipts(ctx context.Context, ix *history.Index, l
 			}
 		}
 		e := checkEntry(p, full, branch[r.TaskID+"/"+strconv.Itoa(r.N)])
-		if err := ix.Replace(ctx, history.Source{Key: key, Mark: ledger.CheckFinished}, []history.Entry{e}, nil); err != nil {
+		if err := ix.Replace(ctx, history.Source{Key: key, Mark: want}, []history.Entry{e}, nil); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// checkSources is the receipts of run the index holds as sources.
-func checkSources(ctx context.Context, ix *history.Index, run string) (map[string]bool, error) {
+// placeReceipt writes a held receipt's entry again under project, as the
+// index holds it (its body the log's ends read once, never again); one
+// whose entry the index's budget let go keeps none.
+func (h *historyIndexer) placeReceipt(ctx context.Context, ix *history.Index, key, project, mark string) error {
+	hit, err := ix.Entry(ctx, key)
+	var entries []history.Entry
+	switch {
+	case errors.Is(err, history.ErrGone):
+	case err != nil:
+		return err
+	default:
+		e := hit.Entry
+		e.Class, e.Digest, e.Source, e.Project = "", "", "", project
+		entries = []history.Entry{e}
+	}
+	return ix.Replace(ctx, history.Source{Key: key, Mark: mark}, entries, nil)
+}
+
+// checkSources is the receipts of run the index holds as sources, with
+// their marks.
+func checkSources(ctx context.Context, ix *history.Index, run string) (map[string]string, error) {
 	prefix := "check:" + run + "/"
-	held := map[string]bool{}
+	held := map[string]string{}
 	after := prefix
 	for {
 		page, err := ix.Sources(ctx, after, history.MaxSourcesPage)
@@ -1077,7 +1249,7 @@ func checkSources(ctx context.Context, ix *history.Index, run string) (map[strin
 			if !strings.HasPrefix(s.Key, prefix) {
 				return held, nil
 			}
-			held[s.Key] = true
+			held[s.Key] = s.Mark
 		}
 		if len(page) < history.MaxSourcesPage {
 			return held, nil
@@ -1109,24 +1281,20 @@ func (h *historyIndexer) removeRun(ctx context.Context, ix *history.Index, id st
 // catchUp compares every source's mark with the index's: every source the
 // stores hold is read (its pass reads nothing past its mark when the two
 // agree), and every source the index holds that no store does is
-// removed. sessionsOnly reads the session sources alone (a project's
-// change).
-func (h *historyIndexer) catchUp(ctx context.Context, sessionsOnly bool) {
+// removed. A project's change asks one too: a session's and a run's
+// marks carry the project they were placed in.
+func (h *historyIndexer) catchUp(ctx context.Context) {
 	ix := h.index()
 	if ix == nil {
 		return
 	}
 	h.setState(indexCatchingUp)
-	keys, complete, head, err := h.storeSources(ctx, sessionsOnly)
+	keys, complete, head, err := h.storeSources(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
 			h.log.Warn("the history's catch-up could not list the sources; trying again", "err", err)
 			h.mu.Lock()
-			if sessionsOnly {
-				h.sessions = true
-			} else {
-				h.overflow = true
-			}
+			h.overflow = true
 			h.mu.Unlock()
 			h.backoff = min(max(2*h.backoff, historyBackoffMin), historyBackoffMax)
 			select {
@@ -1154,9 +1322,6 @@ func (h *historyIndexer) catchUp(ctx context.Context, sessionsOnly bool) {
 			if rest, ok := strings.CutPrefix(k, "check:"); ok {
 				run, _, _ := strings.Cut(rest, "/")
 				k = hRunRef(run)
-			}
-			if sessionsOnly && !strings.HasPrefix(k, "session:") {
-				continue
 			}
 			if indexedSource(k) && !has[k] {
 				has[k] = true
@@ -1197,7 +1362,7 @@ func (h *historyIndexer) catchUp(ctx context.Context, sessionsOnly bool) {
 // every run the ledger has (when there is one to read) and every run
 // record. complete is false when a store could not be listed whole (no
 // ledger in this process is not that: its runs are then the records').
-func (h *historyIndexer) storeSources(ctx context.Context, sessionsOnly bool) ([]string, bool, *int64, error) {
+func (h *historyIndexer) storeSources(ctx context.Context) ([]string, bool, *int64, error) {
 	var keys []string
 	for after := ""; ; {
 		page, err := h.journal.List(after, journal.MaxPage)
@@ -1213,9 +1378,6 @@ func (h *historyIndexer) storeSources(ctx context.Context, sessionsOnly bool) ([
 			break
 		}
 		after = page.Next
-	}
-	if sessionsOnly {
-		return keys, true, nil, nil
 	}
 	tickets, briefs, head, err := h.dispatchSources(ctx)
 	if err != nil {
@@ -1263,10 +1425,13 @@ func (h *historyIndexer) storeSources(ctx context.Context, sessionsOnly bool) ([
 }
 
 // reconcile finds what another server wrote, which no hook of this
-// process saw: the ledger's run revisions against the indexed marks, and
-// the run records' files by size and modification time (a file whose
-// stat changed is read, and its hash compared by its pass). Dispatch's
-// projects are read again, a change of them reading every session.
+// process saw: the ledger's run revisions against the indexed marks (and,
+// once every pointer is listed, the runs indexed from the ledger that it
+// no longer holds: pruned by the ledger's owner, which tells no hook of
+// this process), and the run records' files by size and modification
+// time (a file whose stat changed is read, and its hash compared by its
+// pass). Dispatch's projects are read again, a change of them comparing
+// every session's and run's mark.
 func (h *historyIndexer) reconcile(ctx context.Context) {
 	ix := h.index()
 	if ix == nil {
@@ -1293,6 +1458,8 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 		after = page[len(page)-1].Key
 	}
 	if ld := h.currentLedger(); ld != nil {
+		listed := map[string]bool{}
+		complete := false
 		for after := ""; ; {
 			ps, err := ld.Pointers(ctx, after, ledger.MaxPointers)
 			if err != nil {
@@ -1300,14 +1467,23 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 			}
 			for _, p := range ps {
 				key := hRunRef(p.ID)
+				listed[key] = true
 				if rev, ok := ledgerRevOf(marks[key]); !ok || rev != p.Revision {
 					h.mark(key)
 				}
 			}
 			if len(ps) < ledger.MaxPointers {
+				complete = true
 				break
 			}
 			after = ps[len(ps)-1].ID
+		}
+		if complete {
+			for key, m := range marks {
+				if _, fromLedger := ledgerRevOf(m); fromLedger && !listed[key] {
+					h.mark(key) // its pass removes it, or keeps its record's part
+				}
+			}
 		}
 	}
 	if docs, err := h.data.ListDocs("runs"); err == nil {
@@ -1346,7 +1522,7 @@ func (h *historyIndexer) reconcile(ctx context.Context) {
 	h.mu.Unlock()
 	if pm := h.projectsOf(ctx); old != "" && pm.digest != old {
 		h.mu.Lock()
-		h.sessions = true
+		h.placed = true
 		h.mu.Unlock()
 	}
 }
@@ -1375,7 +1551,9 @@ func (h *historyIndexer) doReindex(ctx context.Context) {
 		return
 	}
 	clear(h.readAt)
-	h.catchUp(ctx, false)
+	clear(h.endedChecks)
+	clear(h.memberStarts)
+	h.catchUp(ctx)
 }
 
 // handleHistoryReindex answers POST /api/history/reindex: the index

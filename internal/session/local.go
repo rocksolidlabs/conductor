@@ -424,6 +424,8 @@ type Local struct {
 	hasAgentToken   bool
 
 	ended chan struct{}
+	// told is closed once the end has been handed to every hook (EndTold).
+	told chan struct{}
 
 	// submitting holds a token while a submission runs (Submit): one at a
 	// time per session. turnWaiters counts the submissions waiting for it
@@ -516,6 +518,7 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 		log:    opts.Log.With("session", info.ID),
 		info:   info,
 		ended:  make(chan struct{}),
+		told:   make(chan struct{}),
 
 		submitting:  make(chan struct{}, 1),
 		attnChanged: make(chan struct{}),
@@ -703,6 +706,7 @@ func (s *Local) markEnded(status Status) {
 	s.log.Info("session ended", attrs...)
 	s.Record(ActivityEntry{Type: ActivityStatus, Message: msg})
 	s.notifyChange()
+	close(s.told)
 }
 
 // Record appends an activity entry, broadcasts it to attached clients and
@@ -2312,6 +2316,12 @@ func (s *Local) SetID(id string) {
 
 // Ended is closed once the process has exited or been stopped.
 func (s *Local) Ended() <-chan struct{} { return s.ended }
+
+// EndTold is closed once the session's end has been handed to its hooks,
+// after Ended: its status entry (OnActivity), the question it withdrew as
+// it ended (OnChat) and its change (OnChange). What waits for everything
+// the session said before its end waits for it.
+func (s *Local) EndTold() <-chan struct{} { return s.told }
 
 // Info returns a snapshot of the session description.
 func (s *Local) Info() Info {

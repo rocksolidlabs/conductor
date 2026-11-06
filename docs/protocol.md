@@ -3979,14 +3979,17 @@ repository's common git directory, absolute), `branch` and `startCommit`
 read in one `git rev-parse` in the folder opened and checked, the one its
 process starts in, before it starts (`startFrom: "launch"`; an attempt of
 a managed run has `startFrom: "attempt"`, its start being the ledger's),
-and `endCommit`, HEAD read after its end at the folder's path, an
-observation kept only while that path is still the launch's repository
-(its top and common directory); its `launch` (server sessions: `args` only when the launch
+and `endCommit`, HEAD read once its process is gone in the session's own
+folder as it was opened (through its handle where the system has one), an
+observation kept only when the repository found there is the launch's by
+the file system's identity of its common directory, never by a path's
+text; its `launch` (server sessions: `args` only when the launch
 fits 16 KiB, else `argCount` and `argsSha256` with `argsKept: false`; the
 variables' `envNames`, at most 64, `envCount` and one `envSha256` over the
 sorted `name=value` lines, never a value; `yolo`, `renamed`); its `crew`
 (`runId, crewId, member, task?, attempt?, brakeman?`); `resumedFrom`;
-`startedAt`; `endedAt` (an observed end: an exit or a stop), or `lostAt`
+`startedAt`; `endedAt` (an observed end: an exit, or a stop once the
+process is gone; a stop that failed leaves the record open), or `lostAt`
 when the server stopped observing it (`ending` `lost` for a server
 session's record found open at the next start, `host away` for a hosted
 one's, or for one its hub let go past the disconnect grace: whether its
@@ -4003,10 +4006,12 @@ terminal, `withdrawn` when the agent moved on), `chat` (a message posted,
 `id` its id; with `event: "sent_to_agent"` and `ref`, the mark that one
 was sent to the agent), `report` (`event` `progress`, `artifact`,
 `handoff`, `error` or `tool_denied`), `status`; `files[{path, op, count,
-last}]`, one row per path and op, at most 500, a path the session's deny
-list covers never written; `tools`, tool uses counted by tool, at most 64;
+last}]`, one row per path and op, at most 500, a path the server's deny
+list covers never written in a server session's record; `tools`, tool uses counted by tool, at most 64;
 `dropped`, the entries and files its bounds let go, oldest first, and
-those that came after its end; `resumes`, the receipts of resumes from it.
+those that came after a server session's end (a hosted record keeps what
+its host sends, in its place by the host's clock, which its end, stamped
+by the server's, does not bound); `resumes`, the receipts of resumes from it.
 Never kept: what a person types into a terminal or a reply box, a typed
 answer's text (whoever passed it on: a reply box, a provider, a route's
 answer on a host), a variable's value, who joined, left or came through a
@@ -4025,12 +4030,14 @@ the records reads a file again only when its size or time changed.
 |---|---|---|
 | `GET /api/history/sessions?after=&limit=` | admin | `{records[{id, name, kind, agent, host, where?, cwd, repo?, branch?, crew?, startedAt, endedAt?, lostAt?, ending?, entries, files, dropped?, newer?, unreadable?}], next?, readOnly?}`, newest first by `startedAt`; `limit` 1 to 100, default 50 (`400 invalid_request` otherwise); `after` the `next` of the page before (at most 64 bytes; `400 bad_cursor` for one that is not) |
 | `GET /api/history/sessions/{id}` | admin | `{record, live, newer}`: the record whole (at most 64 KiB), `live` while the registry lists its session running; `404 not_found` |
-| `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found` |
-| `DELETE /api/history/sessions` | admin | `{forgotten, kept}`: every record neither live nor pending forgotten, those kept counted |
+| `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten, its file deleted; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found`, `500 history_failed` when its file could not be deleted: the record stays as last written, listed and forgettable again, and nothing more is written to it |
+| `DELETE /api/history/sessions` | admin | `{forgotten, kept}`: every record neither live nor pending forgotten, those kept counted; `500 history_failed` when a file could not be deleted (those records stay, as above) |
 | `POST /api/history/reindex` | admin | `202 {indexing}`: the history's index cleared in place and caught up from nothing, on the indexer's goroutine; `409 history_read_only` on a server that does not hold `history/owner.lock` |
 
-A share link, a session's own token and Brakeman's principal reach none
-of them (`401`). A server with no data directory, and a switchyard,
+From a forget on, nothing the forgotten record's session says is written
+anywhere, also when its host registers the same session again (a new
+record of the same id). A share link, a session's own token and
+Brakeman's principal reach none of them (`401`). A server with no data directory, and a switchyard,
 answer `404 history_unavailable`.
 
 The **index** of history (`history/index.sqlite`, `internal/history`) is a

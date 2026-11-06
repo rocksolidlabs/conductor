@@ -266,7 +266,7 @@ func (h *historyIndexer) readFeed(ctx context.Context) {
 			}
 			if c.Entity == dispatch.EntityProject {
 				h.mu.Lock()
-				h.projects, h.sessions = true, true
+				h.projects, h.placed = true, true
 				h.mu.Unlock()
 			}
 			pos = c.Seq

@@ -148,6 +148,17 @@ type Server struct {
 	historyDeadline time.Duration
 	commits         *commitFan // the commit hooks' observers (commits.go)
 	readRevision    func(ctx context.Context, dir string) (gitcli.Revision, error)
+	// recordRepos is each native server session's launch repository, by
+	// the identity of its common git directory (os.FileInfo), until its
+	// end commit is read (recordEndCommit); recorders each recorded
+	// session's hold on its record (*recorder), by its Driver, until it
+	// leaves the registry; recordsStop, closed as the journal's close
+	// begins (closeSessionRecords), ends the waits for processes still
+	// running (awaitProcessEnd).
+	recordRepos    sync.Map
+	recorders      sync.Map
+	recordsStop    chan struct{}
+	stopRecordsOne sync.Once
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -534,21 +545,17 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.events.addSink(s.brakeman.activity)
 	}
 	s.events.addSink(s.runs.OnActivity)
-	// The session records take every entry and every session's chat line.
-	if s.sessionRecords != nil {
-		s.events.onActivity, s.events.onChat = s.recordActivity, s.recordChat
-	}
 	// The context providers: an attempt's context, and the files touched.
 	s.wireContext()
 	s.hosts = signal.NewHub(s.registry, log)
 	if cfg.MaxViewersPerSession > 0 {
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}
+	// A hosted session's record, its own hooks feeding it (recorder).
 	s.hosts.OnAdded = s.beginHostedRecord
 	s.hosts.OnChange = func(info session.Info) {
 		s.events.publishIf(info, s.listed)
 		s.router.mark(info.ID)
-		s.recordChanged(info.ID)
 		// A hosted session that ended takes its links with it, as a server
 		// session does, and closes their viewers as its end.
 		if info.Status.Ended() {
@@ -699,9 +706,7 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	if s.dispatch != nil {
 		s.dispatch.Close()
 	}
-	if s.sessionRecords != nil {
-		s.sessionRecords.Close()
-	}
+	s.closeSessionRecords(ctx, false)
 }
 
 // Handler returns the routed handler with middleware applied.
@@ -1226,11 +1231,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}
 	}
 	// The sessions stopped and the hosts let go, every record is written
-	// as it stands: the next start finds a hosted one open and marks it
-	// host away.
-	if s.sessionRecords != nil {
-		s.sessionRecords.Close()
-	}
+	// as it stands: each session's end, and what it told its hooks as it
+	// ended, taken from the session itself (closeSessionRecords).
+	s.closeSessionRecords(ctx, true)
 }
 
 // Registry exposes the session index (used by tests and the CLI).
