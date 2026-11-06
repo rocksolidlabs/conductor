@@ -1188,15 +1188,20 @@ test (Tests per surface), the decisions plan followed as it stands:
    is always inside the window `readDecisionHistory` reads (`maxChain`).
    An answered record not yet applied (a run interrupted by a restart
    while selecting, answered on the ledger as DR1 takes any answer for
-   a run it does not hold) is applied there, in the continuation's
-   first transaction, by the `selected` arm, as DR1 applies every such
-   answer; an open one moves and stays open: the compare step reads the
+   a run it does not hold) moves as answered and is applied right after
+   the continuation's first transaction, in a transaction of its own and
+   before anything is dispatched (`startContinued` calls DR1's
+   `applyDecisions` after `transactFirst` and before `pumpLocked`), by
+   the `selected` arm, as DR1 applies every moved answer; the first
+   transaction's compare step finds every lane as its options name it
+   and keeps it answered, and `settleRun` holds the run open until the
+   application; an open one moves and stays open: the compare step reads the
    lanes, not the rows `startContinued` marks, and an imported candidate
    keeps its source run, so it is its option's and nothing supersedes
    the record. A record left open or answered by a stop (the person's,
    or the shutdown's) moves the same way, with its options and their
    commits unchanged, and an answer recorded while the run was stopped
-   is applied in that first transaction.
+   is applied the same way, right after that first transaction.
 5. The rationale (`Engine.RespondDecision`, #635, PR #672): a response
    to an `origin: compare` record without a non-empty rationale is
    refused `invalid` with no row ("say why: the rationale is the record
@@ -1321,16 +1326,21 @@ interrupted; either way it is not held. Nothing of this plan's is added
 for it: DR1 keeps the record open (a stop closes no decision, item 3),
 takes a workbench token's answer on the ledger (its Responding, which
 DR1's own tests drive on a stopped run), supersedes an identity's as it
-does for every run not held, and applies an answer in the first
-transaction of the run's continuation (the reload arm above). So a
+does for every run not held, and applies an answer right after the
+first transaction of the run's continuation (the reload arm above). So a
 selection answered while its run is stopped or interrupted, or answered
 before the stop and not yet applied, is recorded and applied when the
 person continues the run; the comparison, read from the ledger, says
 "Recorded: applied when the run is continued" with the run page's
-Continue beside it. A continuation that starts a lane again (a failed
-lane re-run) changes a lane, and if the record is still open that
-closes it (the rule above); an answered one was applied first, so the
-lanes not selected start nothing.
+Continue beside it. A continuation keeps every ended lane as it was (a
+succeeded task imported, a failed or cancelled one kept failed or
+cancelled, `startContinued`), so it keeps the record; one that changes
+a lane even so (a succeeded task whose result's attempt the ledger no
+longer has, which it marks failed) supersedes the record in its first
+transaction, an answered one included, and DR1's application after it
+then applies nothing (the rule above). Applied, the selection refuses
+the lanes not selected before anything is dispatched, so they start
+nothing.
 
 **Stopped, none.** A stop of the run leaves its open or answered
 selection as it was (above), and the operator's cancel is refused for
@@ -1369,7 +1379,8 @@ A continuation of a stopped comparison, made with Continue, finds one
 of three things: lanes not ended, which it runs again, the change that
 ends the last of them settling the lanes and opening the selection as
 the first run would; every lane ended and a selection open or answered,
-which it moves and keeps (an answer applied in its first transaction);
+which it moves and keeps (an answer applied right after its first
+transaction);
 or every lane ended and no selection, which its first transaction
 settles (when the chain had not) and opens when it has a candidate.
 
@@ -1463,7 +1474,7 @@ settles (when the chain had not) and opens when it has a candidate.
   "queued" after the brief arrived), and on the event stream's reconnect
   snapshot; one fetch at a time. From PR-7 it also reads again on
   `decision` events (DR1's `decisionTold`, #637) naming a record of the
-  chain: an answer or a cancel made on the card, the CLI or another
+  chain: an answer made on the card, the CLI or another
   client changes neither the run's events while the run is not held
   nor the ticket's, and without them an open comparison would keep the
   old selection.
@@ -1590,8 +1601,8 @@ the record and goes back to `running` until every lane has ended again,
 then to `selecting` with a new record. A stop of the run, the server's
 shutdown and a restart change no state: `selecting` and `answered`
 stay so on the stopped or interrupted run, the record answered on the
-ledger and applied in the first transaction of the run's continuation
-(PR-6a), and a stopped run whose lanes have not all ended is `running`
+ledger and applied right after the first transaction of the run's
+continuation (PR-6a), and a stopped run whose lanes have not all ended is `running`
 until its continuation ends them. The operator's cancel is refused for
 a selection, so a comparison goes to `ended` (no candidate selected)
 only by a settling with no candidate or with no room in the run's
@@ -1624,8 +1635,9 @@ with no `compare.settled` is `ended` too.
   made is asked again by hand.
 - O5. A response is recorded before it is applied, each in its own
   transaction (DR1's order); `compare.selected` and the run's settle are
-  in the application's; on a run not held the application is in the
-  continuation's first transaction, before it schedules anything.
+  in the application's; on a run not held the application is the
+  continuation's, in its own transaction right after its first and
+  before it dispatches anything (DR1's `applyDecisions`).
 - O6. Every change that leaves a lane not ended, or its shown candidate
   not its option's, before a selection is applied supersedes an open or
   answered selection in that change (its compare step), never after; a
@@ -2052,18 +2064,22 @@ restored in the 256th run, and `maxCompareChain` equals DR1's
 the response: the record open, the comparison read from the ledger as
 selecting; a workbench response recorded on the run not held and
 nothing applied, the comparison saying it is applied when the run is
-continued; Continue applies it in the continuation's first transaction,
-`compare.selected` written there, the lanes not selected starting
-nothing; a restart between the response and the application gives the
-same; an identity's response superseded as DR1 does);
+continued; Continue applies it right after the continuation's first
+transaction, `compare.selected` written in the application's, the lanes
+not selected starting nothing; a restart between the response and the
+application gives the same; an identity's response superseded as DR1 does);
 `TestAStopKeepsTheSelection` (replaces round 3's
 `TestCancelledOrStoppedSelectsNone`: a Stop while the record is open,
 read from the ledger: the record still open, not cancelled, the same
 options and commits; the comparison selecting on the stopped run; a
 workbench response recorded there and nothing applied; Continue applies
-it in the continuation's first transaction, `compare.selected` written
-there, the lanes not selected starting nothing; a Stop after the
-response and before the application gives the same; a Stop of an open
+it right after the continuation's first transaction, `compare.selected`
+written in the application's, the lanes not selected starting nothing;
+a Stop begun after the response's commit and before its application
+(the application held at a seam) applies it once: DR1's application
+takes a stopping or stopped run it still holds, so released it applies
+there, and a restart before it leaves the record answered for Continue
+to apply; never twice and never lost (I1); a Stop of an open
 record and Continue with no answer: the record moved, still open, no
 `compare.settled` in the continuation);
 `TestAContinuationOpensTheSelectionItFinds` (every lane ended and no
@@ -2076,7 +2092,8 @@ transaction opens the record in its own run, writing no second
 or None of these opens none);
 `TestOnlyAnAnswerEndsTheSelection` (the operator's cancel of an open
 and of an answered selection refused `invalid` with its words and no
-history row, through the engine and the route; the record unchanged;
+history row, through the engine (the route's case is PR-6b's); the
+record unchanged;
 None of these with a rationale applied, ending the comparison with no
 candidate, after which a pause and an unpause, a message within a
 lane, a Stop and Continue open no record and write no
@@ -2109,7 +2126,10 @@ server over the same data directory reads the record open with the
 same options and commits and the comparison selecting; the workbench
 answers it through the route, the comparison says it is applied when
 the run is continued, and Continue applies it; an answer recorded
-before the shutdown and not yet applied is applied the same way); `TestAnUnlistedDoorIsClosedToALane`
+before the shutdown, its application held at a seam, is applied once,
+by the stopping run or by Continue; and DR1's `POST
+/api/decisions/{did}/cancel` on the open selection answers `400
+invalid` with the engine's words, the record unchanged); `TestAnUnlistedDoorIsClosedToALane`
 with its `decisionSession` route, and DR1's four decision tools still
 refused to every lane after an applied selection (door 9);
 `TestTheComparisonShowsTheSelection`;
@@ -2770,3 +2790,27 @@ no outcome, so DR1 keeps every decision over a stop. Changed:
 - Acceptance: the owner quits the desktop app while the selection is
   open and finds it open after the restart, and a selection answered on
   a stopped run is applied by Continue.
+
+## Changed in the second final check
+
+Read against `startContinued` (`issue-636`), which moves a run's open
+and answered decisions in the continuation's first transaction and
+applies the answered ones after it, each in its own (`applyDecisions`,
+before `pumpLocked`):
+
+- An answer left by a stop or a restart is applied right after the
+  continuation's first transaction, not in it (PR-6a item 4, A run not
+  held, the states, O5, the continuation's three cases, and the tests
+  `TestARestartWhileSelecting` and `TestAStopKeepsTheSelection`).
+- A continuation keeps every ended lane as it was (a failed task stays
+  failed), so the old example of one re-running a failed lane is
+  replaced by the one way it can change a lane, a result the ledger no
+  longer has, which supersedes the record before DR1's application.
+- A Stop between a response and its application applies it once,
+  in the stopped run (DR1's application takes a run it still holds) or
+  after a restart through Continue (`TestAStopKeepsTheSelection`,
+  `TestAShutdownKeepsTheSelection`).
+- The operator's cancel through DR1's route is tested in PR-6b, which
+  comes after #637; PR-6a tests the engine's refusal.
+- `useComparison` reads again on an answer, not on "a cancel", which a
+  selection no longer has.
