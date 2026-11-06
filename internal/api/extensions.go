@@ -33,6 +33,9 @@ type options struct {
 	// native stands in for the native Runtime (local.Native) in the tests;
 	// nil outside them.
 	native ext.Runtime
+	// notices is the third-party notices text the server serves
+	// (WithNotices); the embedded one unless a main handed in its own.
+	notices string
 }
 
 // WithExtensions gives the server the providers p, as the composition root

@@ -66,3 +66,19 @@ func (s *Store) ChangesAfter(ctx context.Context, after int64, limit int) ([]Fee
 	}
 	return out, nil
 }
+
+// ChangeValue reads the value the change with the seq set (a status
+// change's new status), which the feed leaves out: what that change made
+// the field, whatever later changes made it since. ErrNotFound for no
+// such change.
+func (s *Store) ChangeValue(ctx context.Context, seq int64) (string, error) {
+	var value string
+	err := s.read(ctx, func(q queryer) error {
+		err := q.QueryRowContext(ctx, "SELECT value FROM changes WHERE seq = ?", seq).Scan(&value)
+		if isNoRows(err) {
+			return ErrNotFound
+		}
+		return err
+	})
+	return value, err
+}

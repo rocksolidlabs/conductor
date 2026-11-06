@@ -698,3 +698,24 @@ func TestALaunchRefusedAtAdmissionKeepsNothing(t *testing.T) {
 		t.Fatalf("the resend: %+v %v, admission asked %d times", again, err, asked)
 	}
 }
+
+// TestALaunchsActorIsItsCreateRows: a launch is read back as made under
+// the actor of its operation, whatever its display name; an id no launch
+// has is ErrNotFound.
+func TestALaunchsActorIsItsCreateRows(t *testing.T) {
+	s, _, key := planTicket(t)
+	plan := simplePlan(t, s, key)
+	v := mustLaunch(t, s, "l1", key, plan, "")
+	ctx := context.Background()
+	if actor, err := s.LaunchActor(ctx, v.ID); err != nil || actor != "test" {
+		t.Fatalf("%q %v", actor, err)
+	}
+	rc, err := s.Launch(ctx, Op{Actor: "brakeman", ID: "l2", By: "Tester"}, key, plan, "")
+	want(t, rc, err, StatusDone, "")
+	if actor, err := s.LaunchActor(ctx, rc.ID); err != nil || actor != "brakeman" {
+		t.Fatalf("%q %v", actor, err)
+	}
+	if _, err := s.LaunchActor(ctx, "no-such-launch"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("%v", err)
+	}
+}

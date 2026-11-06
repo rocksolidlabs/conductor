@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
-import { BOUNDS, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actReceiptRef, actShown, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actReceiptRef, actShown, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -17,8 +17,8 @@ function config(over: Partial<BrakemanConfig> = {}): BrakemanConfig {
     visibility: { runs: true, logs: true, dispatch: true, sessions: true, touched: true, terminals: false },
     scope: {},
     permissions: { observe: true, draft: true, propose: true },
-    wake: { mode: 'invoked' },
-    budget: { turnMinutes: 15, readsPerTurn: 300, turnsPerDay: 40 },
+    wake: { mode: 'invoked', windowSeconds: 120, cooldownMinutes: 30, questionMinutes: 15 },
+    budget: { turnMinutes: 15, readsPerTurn: 300, turnsPerDay: 40, minutesPerDay: 240 },
     rev: 1,
     ...over,
   }
@@ -53,7 +53,8 @@ describe('the kinds and the states, in words', () => {
     expect(say('timed_out', { config: { budget: { turnMinutes: 5 } } })).toBe('timed out after 5 min')
     expect(say('ended')).toBe('the session ended with no brief')
     expect(say('failed', { why: 'the agent exited before it read its request: is it logged in?' })).toBe('failed: the agent exited before it read its request: is it logged in?')
-    expect(say('over_budget')).toBe("not started: today's turns were spent")
+    expect(say('over_budget')).toBe("not started: today's budget was spent")
+    expect(say('over_budget', { why: "the day's 40 turns were spent" })).toBe("not started: the day's 40 turns were spent")
     expect(say('cancelled', { why: 'a person cancelled it' })).toBe('cancelled: a person cancelled it')
     expect(say('interrupted')).toBe('interrupted: the server stopped during the turn')
   })
@@ -278,6 +279,12 @@ describe("the configuration form's checks, the server's", () => {
     expect(BOUNDS.turnMinutes).toEqual([n('MinTurnMinutes'), n('MaxTurnMinutes')])
     expect(BOUNDS.readsPerTurn).toEqual([n('MinReadsPerTurn'), n('MaxReadsPerTurn')])
     expect(BOUNDS.turnsPerDay).toEqual([n('MinTurnsPerDay'), n('MaxTurnsPerDay')])
+    expect(BOUNDS.minutesPerDay).toEqual([n('MinMinutesPerDay'), n('MaxMinutesPerDay')])
+    expect(BOUNDS.windowSeconds).toEqual([n('MinWindowSeconds'), n('MaxWindowSeconds')])
+    expect(BOUNDS.cooldownMinutes).toEqual([n('MinCooldownMinutes'), n('MaxCooldownMinutes')])
+    expect(BOUNDS.questionMinutes).toEqual([n('MinQuestionMinutes'), n('MaxQuestionMinutes')])
+    expect(BOUNDS.briefings).toBe(n('MaxBriefings'))
+    expect(BRIEFING_TIME.source).toBe(/briefingPattern = regexp\.MustCompile\(`([^`]+)`\)/.exec(src)![1])
     expect(BOUNDS.selector).toBe(n('MaxSelector'))
     expect(BOUNDS.path).toBe(n('MaxPath'))
     const shift = /\bMaxScopeBytes\s*=\s*(\d+)\s*<<\s*(\d+)/.exec(src)!
@@ -340,8 +347,8 @@ describe("the configuration form's checks, the server's", () => {
     expect(configProblems(config({ enabled: false, agentId: '', cwd: '' }), '')).toEqual({})
     expect(configProblems(config({ model: 'claude-sonnet-4.5', allowConductorTools: true }), 'claude')).toEqual({})
     expect(configProblems(config({ model: 'gpt-5.1-codex' }), 'codex')).toEqual({})
-    expect(configProblems(config({ budget: { turnMinutes: 60, readsPerTurn: 2000, turnsPerDay: 500 } }), 'claude')).toEqual({})
-    expect(configProblems(config({ budget: { turnMinutes: 1, readsPerTurn: 10, turnsPerDay: 1 } }), 'claude')).toEqual({})
+    expect(configProblems(config({ budget: { turnMinutes: 60, readsPerTurn: 2000, turnsPerDay: 500, minutesPerDay: 1440 } }), 'claude')).toEqual({})
+    expect(configProblems(config({ budget: { turnMinutes: 1, readsPerTurn: 10, turnsPerDay: 1, minutesPerDay: 10 } }), 'claude')).toEqual({})
     expect(configProblems(config({ scope: { projects: ['CND'], runs: [RUN], sessions: [SESSION], crews: ['brakeman'], repos: ['/home/me/code'] } }), 'claude')).toEqual({})
   })
 
@@ -354,9 +361,9 @@ describe("the configuration form's checks, the server's", () => {
     expect(Object.keys(configProblems(config({ cwd: 'code' }), 'claude'))).toEqual(['cwd'])
     expect(Object.keys(configProblems(config({ cwd: '/home/me/../me' }), 'claude'))).toEqual(['cwd'])
     expect(Object.keys(configProblems(config({ account: 'rel' }), 'claude'))).toEqual(['account'])
-    expect(Object.keys(configProblems(config({ budget: { turnMinutes: 0, readsPerTurn: 300, turnsPerDay: 40 } }), 'claude'))).toEqual(['budget.turnMinutes'])
-    expect(Object.keys(configProblems(config({ budget: { turnMinutes: 15, readsPerTurn: 9, turnsPerDay: 40 } }), 'claude'))).toEqual(['budget.readsPerTurn'])
-    expect(Object.keys(configProblems(config({ budget: { turnMinutes: 15, readsPerTurn: 300, turnsPerDay: 501 } }), 'claude'))).toEqual(['budget.turnsPerDay'])
+    expect(Object.keys(configProblems(config({ budget: { turnMinutes: 0, readsPerTurn: 300, turnsPerDay: 40, minutesPerDay: 240 } }), 'claude'))).toEqual(['budget.turnMinutes'])
+    expect(Object.keys(configProblems(config({ budget: { turnMinutes: 15, readsPerTurn: 9, turnsPerDay: 40, minutesPerDay: 240 } }), 'claude'))).toEqual(['budget.readsPerTurn'])
+    expect(Object.keys(configProblems(config({ budget: { turnMinutes: 15, readsPerTurn: 300, turnsPerDay: 501, minutesPerDay: 240 } }), 'claude'))).toEqual(['budget.turnsPerDay'])
     expect(Object.keys(configProblems(config({ scope: { projects: ['cnd'] } }), 'claude'))).toEqual(['scope.projects'])
     expect(Object.keys(configProblems(config({ scope: { runs: [RUN, RUN] } }), 'claude'))).toEqual(['scope.runs'])
     expect(Object.keys(configProblems(config({ scope: { sessions: Array.from({ length: 51 }, (_, i) => i.toString(16).padStart(16, '0')) } }), 'claude'))).toEqual(['scope.sessions'])
@@ -377,6 +384,33 @@ describe('the display name a request and a make keep', () => {
     expect(displayBy('a'.repeat(58) + '😀')).toBe('a'.repeat(58))
     expect(displayBy('  Nate  ')).toBe('Nate')
     expect(displayBy('Na\tte\r\n')).toBe('Na te')
+  })
+})
+
+describe("the background role's controls, the server's", () => {
+  it('holds the wake and the day to their bounds', () => {
+    expect(configProblems(config(), 'claude')).toEqual({})
+    expect(configProblems(config({ wake: { mode: 'background', windowSeconds: 10, cooldownMinutes: 0, questionMinutes: 1440, briefings: ['07:00', '18:30'] } }), 'claude')).toEqual({})
+    const bad = configProblems(config({ wake: { mode: 'always', windowSeconds: 9, cooldownMinutes: 1441, questionMinutes: 0, briefings: ['7:00'] }, budget: { turnMinutes: 15, readsPerTurn: 300, turnsPerDay: 40, minutesPerDay: 9 } }), 'claude')
+    expect(Object.keys(bad).sort()).toEqual(['budget.minutesPerDay', 'wake.briefings', 'wake.cooldownMinutes', 'wake.mode', 'wake.questionMinutes', 'wake.windowSeconds'])
+    expect(bad['wake.briefings']).toBe('7:00 is not a time of day: HH:MM, 00:00 to 23:59.')
+    expect(configProblems(config({ wake: { mode: 'background', windowSeconds: 120, cooldownMinutes: 30, questionMinutes: 15, briefings: ['07:00', '07:00'] } }), 'claude')['wake.briefings']).toBe('07:00 is named twice.')
+    const many = Array.from({ length: 25 }, (_, i) => `${String(i % 24).padStart(2, '0')}:${String(i).padStart(2, '0')}`)
+    expect(configProblems(config({ wake: { mode: 'background', windowSeconds: 120, cooldownMinutes: 30, questionMinutes: 15, briefings: many } }), 'claude')['wake.briefings']).toBe('At most 24 briefing times.')
+  })
+
+  it('reads the briefing times from the text the form holds, and back', () => {
+    expect(briefingList(' 07:00, 18:30  12:00,')).toEqual(['07:00', '18:30', '12:00'])
+    expect(briefingList('')).toEqual([])
+    expect(briefingLine(['07:00', '18:30'])).toBe('07:00, 18:30')
+    expect(briefingLine(undefined)).toBe('')
+  })
+
+  it('names a wake request and an over-budget one', () => {
+    expect(kindWords('wake')).toBe('Woken by events')
+    expect(KINDS.some((k) => k.value === 'wake')).toBe(false)
+    const r = { state: 'over_budget', why: 'the day\'s minutes are spent: 1 of 240 left', config: { budget: { turnMinutes: 15 } } } as never
+    expect(stateWords(r)).toBe("not started: the day's minutes are spent: 1 of 240 left")
   })
 })
 
@@ -406,6 +440,14 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
     expect(GRANTS.find((g) => g.value === 'launch_approved_plan')!.words).toContain('never approves')
     expect(grantLabel('prepare_followup')).toBe('Prepare a follow-up')
     expect(grantLabel('nope')).toBe('nope')
+  })
+
+  it('say observe only when nothing is drafted, proposed or granted: a grant runs by itself, with drafting and proposing off', () => {
+    expect(observesOnly({ draft: false, propose: false })).toBe(true)
+    expect(observesOnly({ draft: false, propose: false, act: [] })).toBe(true)
+    expect(observesOnly({ draft: false, propose: false, act: ['launch_approved_plan'] })).toBe(false)
+    expect(observesOnly({ draft: true, propose: false, act: [] })).toBe(false)
+    expect(observesOnly({ draft: false, propose: true })).toBe(false)
   })
 
   it('save a grant list in their order, each once, and a save with none as no grant', () => {
