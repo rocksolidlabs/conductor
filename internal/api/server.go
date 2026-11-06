@@ -271,6 +271,9 @@ type Server struct {
 	// router is the decision router's seam over the sessions' questions
 	// (router.go).
 	router *decisionRouter
+	// hostedSeen is how the hosted sessions' questions went on, as their
+	// hosts synced them (the decision inbox's track, inbox.go).
+	hostedSeen hostedResumes
 	// launches admits and settles the launches from a ticket
 	// (dispatch_launch.go).
 	launches launchGate
@@ -511,6 +514,22 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}
 	s.hosts.OnChange = func(info session.Info) {
+		// How a question went on is read from what the host said, never
+		// from a change the server forwarded and the host has not applied;
+		// noted before the change is published, so that a browser that
+		// reads the track as the change reaches it reads what it says.
+		if d, ok := s.registry.Get(info.ID); ok {
+			if hs, ok := d.(*signal.HostedSession); ok {
+				s.hostedSeen.change(hs.HostViewSeq())
+				// Removed while its change was noted, its OnRemove may
+				// have forgotten it before the note: what the note kept
+				// goes with it (the registry lets a session go before
+				// its OnRemove, so one of the two forgets it last).
+				if _, ok := s.registry.Get(info.ID); !ok {
+					s.hostedSeen.gone(info.ID)
+				}
+			}
+		}
 		s.events.publishIf(info, s.listed)
 		s.router.mark(info.ID)
 		// A hosted session that ended takes its links with it, as a server
@@ -545,6 +564,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.unpublish(id)
 		s.pastes.closeAll(id)
 		s.router.mark(id)
+		s.hostedSeen.gone(id)
 	}
 	if cfg.Switchyard.Enabled && s.store != nil {
 		s.openLinkKeeper(s.store)
@@ -670,6 +690,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/switchyard/status", s.requireAdmin(s.handleSwitchyardStatus))
 	mux.HandleFunc("GET /api/export", s.requireAdmin(s.handleExport))
 	mux.HandleFunc("GET /api/capabilities", s.requireAdmin(s.handleCapabilities))
+	// The decision inbox, read-only (inbox.go, inbox_track.go).
+	mux.HandleFunc("GET /api/inbox", s.inboxOnly(s.handleInbox))
+	mux.HandleFunc("GET /api/inbox/item", s.inboxOnly(s.handleInboxItem))
+	mux.HandleFunc("GET /api/inbox/track", s.inboxOnly(s.handleInboxTrack))
 	mux.HandleFunc("GET /api/catalog", s.launching(s.handleCatalog))
 	mux.HandleFunc("POST /api/catalog", s.launching(s.handleSaveAgent))
 	mux.HandleFunc("POST /api/catalog/check", s.launching(s.handleCheckCommand))
