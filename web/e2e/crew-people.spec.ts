@@ -10,7 +10,8 @@ import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helper
 // editor (the option held by another row is disabled, a person named as a member blocks Save) and by the server. Launched from a ticket's
 // approved plan revision with the stub workers: the run header's people, each task row's owner and the fallback's words, the sessions of
 // the run counted by its id equal to its attempts (none for a person, and no worktree under a person's name), and the ticket's People
-// listing the revision's people. Every crew, ticket and run is found by its id or key, never by a list's length.
+// listing the revision's people; the person's page (PR-11) reached from the header's chip and from the palette's @ row, listing the tasks
+// they own. Every crew, ticket and run is found by its id or key, never by a list's length.
 test.describe.configure({ mode: 'serial' })
 
 let crewId = ''
@@ -193,6 +194,40 @@ test("launched from the approved revision: the run's people and owners, a sessio
   await expect(page.locator('[data-task-row="docs"] [data-task-owner]')).toHaveText('owner ana, the acceptance owner')
   await page.locator('[data-task-row="docs"] [role="button"]').click()
   await expect(page.locator('[data-task-detail-id="docs"] [data-task-detail-owner]')).toContainText('owner ana, the acceptance owner')
+
+  // A person's page (PR-11): the header's chip opens nate's, listing the task he owns in this run; ana's lists docs, hers as the
+  // acceptance owner; the ticket's owner nobody named has none.
+  await page.locator('[data-run-people] [data-run-person="nate"]').click()
+  await expect(page).toHaveURL(/\/people\/nate$/)
+  budget(30_000)
+  const nateTask = page.locator(`[data-person-page-name="nate"] [data-person-task="${runId}/build"]`)
+  await expect(nateTask).toBeVisible({ timeout: 30_000 })
+  await expect(nateTask).toHaveAttribute('data-person-task-from', 'task')
+  await expect(nateTask).toContainText('done by builder')
+  await expect(page.locator(`[data-person-task="${runId}/docs"]`)).toHaveCount(0)
+  await expect(page.locator(`[data-person-crew="${crewId}"] [data-person-crew-words]`)).toHaveText('architecture owner')
+  await page.goto('/people/ana')
+  budget(30_000)
+  const anaTask = page.locator(`[data-person-page-name="ana"] [data-person-task="${runId}/docs"]`)
+  await expect(anaTask).toBeVisible({ timeout: 30_000 })
+  await expect(anaTask).toHaveAttribute('data-person-task-from', 'acceptance')
+  await expect(anaTask).toContainText('as the acceptance owner')
+
+  // The palette's @ mode: a row per person Conductor knows, worded by what they hold, opening their page.
+  await page.goto(`/runs/${encodeURIComponent(runId)}?view=tasks`)
+  budget(30_000)
+  await expect(page.locator('#dashboard-sidebar-main')).toBeAttached({ timeout: 30_000 })
+  await expect(page.locator('[data-run-people]')).toBeVisible({ timeout: 30_000 })
+  await page.keyboard.press('Alt+/')
+  const palette = page.locator('[data-palette]')
+  await expect(palette).toBeVisible()
+  await palette.locator('input[data-palette-input]').fill('@nate')
+  const row = palette.locator('[data-palette-row="person:nate"]')
+  await expect(row).toBeVisible()
+  await expect(row.locator('[data-palette-detail]')).toContainText(`architecture owner in ${crewBody.name}`)
+  await row.click()
+  await expect(page).toHaveURL(/\/people\/nate$/)
+  await expect(page.locator(`[data-person-page-name="nate"] [data-person-task="${runId}/build"]`)).toBeVisible()
 
   // The ticket's People: the approved revision's people with their responsibilities.
   await page.goto(`/dispatch/${ticketKey.replace('-', '/')}`)

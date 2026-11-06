@@ -18,6 +18,35 @@ export interface PeoplePage {
   dispatchUnavailable?: boolean
 }
 
+/** A task a person owns in a run, as the run's crew was launched: by the task's own owner, or as the crew's acceptance owner. */
+export interface PersonTask {
+  run: string
+  /** The run's label, else its crew's name. */
+  runLabel: string
+  task: string
+  state: string
+  /** The member (the agent) that does it. */
+  member: string
+  ownerFrom: 'task' | 'acceptance'
+}
+
+/** A person's work (GET /api/people/{name}). */
+export interface PersonWork {
+  name: string
+  dispatch: boolean
+  /** At most 100 of the saved crews that list the person; `crewsMore` past them. */
+  crews: KnownPerson['crews']
+  crewsMore?: boolean
+  /** At most 200, the newest run first; `more` past them. */
+  tasks: PersonTask[]
+  more?: boolean
+  /** Dispatch's tickets they own and are assigned: the counts and Dispatch's own lists; null while Dispatch is unavailable. */
+  tickets: { owner: number; assignee: number; ownerHref: string; assigneeHref: string } | null
+  /** Empty until whom a decision is for exists (HM1, PR-12). */
+  decisions: unknown[]
+  dispatchUnavailable?: boolean
+}
+
 /**
  * The names Conductor knows (docs/plans/decisions.md, HM1): the union of Dispatch's directory and the saved crews' people, read from both
  * and written to neither. `load` reads the first page again (200 names, `q` keeping those that contain it); a reply older than the last
@@ -27,6 +56,8 @@ export interface PeoplePage {
 export function usePeople() {
   const { request } = useApi()
   const names = ref<string[]>([])
+  /** The first page as read last, whole: for the palette's People. */
+  const known = ref<KnownPerson[]>([])
   let seq = 0
 
   /** One page of the people, as the server answers it. */
@@ -42,11 +73,19 @@ export function usePeople() {
     const n = ++seq
     try {
       const r = await page({ q })
-      if (n === seq) names.value = r.people.map((p) => p.name)
+      if (n === seq) {
+        known.value = r.people
+        names.value = r.people.map((p) => p.name)
+      }
     } catch {
       // The names read before stay offered.
     }
   }
 
-  return { names, load, page }
+  /** A person's work, by their name exactly. */
+  function person(name: string): Promise<PersonWork> {
+    return request<PersonWork>(`/api/people/${encodeURIComponent(name)}`).then((r) => ({ ...r, crews: r.crews ?? [], tasks: r.tasks ?? [], decisions: r.decisions ?? [] }))
+  }
+
+  return { names, known, load, page, person }
 }
