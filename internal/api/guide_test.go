@@ -960,6 +960,17 @@ func TestTheBriefsSectionIsTheKindTable(t *testing.T) {
 	if draftCrew["properties"].(map[string]any)["kind"].(map[string]any)["const"] != brakeman.ItemDraftCrew || !reflect.DeepEqual(crewBody, jsonOf(t, crewCreate.Input)) {
 		t.Fatalf("a draft crew's crew is not crew_create's input: %v", crewBody)
 	}
+	// A draft plan's crew is a saved crew's id, as DraftPlan decodes it:
+	// never the body crew_create takes.
+	for _, b := range jsonOf(t, schema).(map[string]any)["properties"].(map[string]any)["items"].(map[string]any)["items"].(map[string]any)["oneOf"].([]any) {
+		props := b.(map[string]any)["properties"].(map[string]any)
+		if props["kind"].(map[string]any)["const"] != brakeman.ItemDraftPlan {
+			continue
+		}
+		if c := props["crew"].(map[string]any); c["type"] != "string" || c["properties"] != nil {
+			t.Fatalf("a draft plan's crew in brief_submit's schema: %v", c)
+		}
+	}
 	for _, c := range []struct{ tok, path string }{{adminToken, "/api/guide"}, {tok, "/api/sessions/" + sid + "/guide"}} {
 		status, _, out := guideOf(t, b.testEnv, c.tok, c.path+"?section=briefs")
 		if status != http.StatusOK {

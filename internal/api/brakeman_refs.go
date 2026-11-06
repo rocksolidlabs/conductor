@@ -303,7 +303,8 @@ type refResolver struct {
 	runs  map[string]*refRun
 	tops  map[string]string
 	// taskRead is nil but in tests: called after a managed task's states
-	// are read and before its run's revision is read again (taskRev), so
+	// are read and before its run's revision is read again (taskRev), and
+	// between a candidate's task row and its attempt rows (candidate), so
 	// a test commits a transition between the two.
 	taskRead func()
 }
@@ -866,21 +867,48 @@ func (rr *refResolver) lookupRunPart(ctx context.Context, ref brakeman.Ref) (ref
 // candidate is the run's candidate the ref names, as GET
 // /api/runs/{run}/candidates reads it (candidateOf): attempt n of the
 // task, when it submitted something; false for an attempt that did not,
-// or none.
+// or none. The task's row and the attempt's are of one revision of the
+// run, as the candidates' route reads them: read between two reads of
+// the run's revision that agree (a transition that moves both, a
+// verification making the attempt its task's result, moves it), read
+// again when a transition came between, and an error for a run that
+// moves on through every try, never a pair that never was.
 func (rr *refResolver) candidate(ctx context.Context, ld *ledger.Ledger, r *refRun, ref brakeman.Ref) (runCandidate, bool, error) {
-	tasks, err := ld.Tasks(ctx, ref.Run)
-	if err != nil {
-		return runCandidate{}, false, fmt.Errorf("the ledger's tasks of %s: %w", ref.Run, err)
+	var (
+		tasks    []ledger.TaskRow
+		attempts []ledger.AttemptRow
+		settled  bool
+	)
+	for range refRevTries {
+		before, ok, err := ld.Run(ctx, ref.Run)
+		if err != nil || !ok {
+			return runCandidate{}, false, wrapNil(err, "the ledger's run %s", ref.Run)
+		}
+		if tasks, err = ld.Tasks(ctx, ref.Run); err != nil {
+			return runCandidate{}, false, fmt.Errorf("the ledger's tasks of %s: %w", ref.Run, err)
+		}
+		if rr.taskRead != nil {
+			rr.taskRead()
+		}
+		if attempts, err = ld.Attempts(ctx, ref.Run); err != nil {
+			return runCandidate{}, false, fmt.Errorf("the ledger's attempts of %s: %w", ref.Run, err)
+		}
+		after, ok, err := ld.Run(ctx, ref.Run)
+		if err != nil || !ok {
+			return runCandidate{}, false, wrapNil(err, "the ledger's run %s", ref.Run)
+		}
+		if settled = before.Revision == after.Revision; settled {
+			break
+		}
+	}
+	if !settled {
+		return runCandidate{}, false, fmt.Errorf("the run %s moved on through %d reads of its candidate %s/%d", ref.Run, refRevTries, ref.Task, ref.N)
 	}
 	i := slices.IndexFunc(tasks, func(t ledger.TaskRow) bool { return t.ID == ref.Task })
 	if i < 0 {
 		return runCandidate{}, false, nil
 	}
 	tr := tasks[i]
-	attempts, err := ld.Attempts(ctx, ref.Run)
-	if err != nil {
-		return runCandidate{}, false, fmt.Errorf("the ledger's attempts of %s: %w", ref.Run, err)
-	}
 	j := slices.IndexFunc(attempts, func(a ledger.AttemptRow) bool { return a.TaskID == ref.Task && a.N == ref.N })
 	if j < 0 || attempts[j].Result == "" {
 		return runCandidate{}, false, nil
