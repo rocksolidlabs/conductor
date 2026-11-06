@@ -1277,7 +1277,8 @@ prompted >"), a startup question with no answers: no key of Conductor's
 passes it, and the person signs in through the browser, after which the
 program leaves the screen by itself. Such a question is withdrawn, with
 no answer recorded and no key typed, once the screen, after output since
-it was asked, shows no startup question (as one a key reached is), and a
+it was asked (output fed while it was being asked counts), shows no
+startup question (as one a key reached is), and a
 person's text is taken again. A person's text refused while a startup
 question shows says so: "the agent asks a startup question (whether to
 trust the folder, its sign-in, an update): answer with the question's
@@ -3563,14 +3564,19 @@ crew a person names Brakeman is saved as `brakeman-2`.
 `starting`), `ended` (its session ended with no brief, after it read its
 request), `failed` (the launch failed, with the engine's words; the
 agent exited before it read its request: "is it logged in?", with its
-exit and last line; the agent did not read its request within 5 minutes
-of its launch's return (its process made; a launch still under way is
-covered by the deadline, as before), or by its deadline when that comes
-first, whatever
-its screen shows, ended then with words naming the bound and the last
-lines its screen shows (links left out, at most 220 bytes), no key typed
-into it, a person's turn as a wake turn: a real agent reads within two
-minutes; or, sooner, before it read its request, its agent shows a
+exit and last line; the agent made no call to the server with its own
+token, on any route (the guide, its MCP server's tool listing, a
+report, an observation, an act, its request's read), within a third of
+the turn's minutes of its launch's return (its process made; a launch
+still under way is covered by the deadline, as before), at least 2
+minutes, or by its deadline when that comes first, whatever its screen
+shows, ended then with words naming the bound ("did not start in 5
+minutes, no call to Conductor") and the last lines its screen shows
+(links left out, at most 220 bytes), a person's turn as a wake turn: a
+real agent calls within two minutes, and a turn whose agent has made any
+call runs to its deadline (a screen no catalog entry knows is not told
+from any other: once it is quiet the request's line is typed into it, as
+into every agent's); or, sooner, before it read its request, its agent shows a
 startup question the turn may not pass, ended at once with the words of
 what it shows and no key typed into it: a startup question with no
 answers, a screen no key of Conductor's passes (Claude Code's sign-in
@@ -3977,7 +3983,7 @@ starting once the role is resumed; the briefing times passed while
 paused fire nothing, whether or not the role stepped between;
 `unavailable` (a turn could not start: its launch refused, its agent
 exited before it read its request, was held at a startup question it
-may not pass, or did not read it in its bound, or the day's turns or
+may not pass, or made no call in its start bound, or the day's turns or
 minutes spent) says why, with its `reason` (`start`, `budget`, `off`,
 `stuck`), keeps its batch (a turn that started none gives its wakes to
 the next batch, under a new id), and tries again at `retryAt` and as its

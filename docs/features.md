@@ -3760,23 +3760,33 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     `TestASignedOutAgentMakesTheRoleUnavailable` (a stub that waits there
     and never exits), `TestASignInScreenTheProgramLeavesByItselfIsWithdrawn`.
   - A screen no catalog entry knows (another agent's sign-in, a version's
-    new wording) does the same without a pattern: a turn whose agent has
-    not read its request 5 minutes after its launch returned (a real
-    agent reads within two; by its deadline, for a shorter turn) ends failed,
-    "the agent did not read its request in 5 minutes", with the last lines
-    its screen shows (links left out), no key typed, charged the minutes
-    it ran; a person's own turn too, instead of waiting out its minutes.
+    new wording) is not recognised: like any agent's screen, once it is
+    quiet the request's line is typed into it (only the catalog's startup
+    questions get no key). What ends the turn is that its agent then makes
+    no call to the server: a turn whose agent has made no call with its own
+    token (any route: the guide, its MCP server's tool listing, a report,
+    an observation, an act, its request's read) a third of the turn's
+    minutes after its launch returned (5 of the default 15, 20 of a
+    60-minute turn; at least 2, a real agent calls within two; by its
+    deadline, for a shorter turn) ends failed, "the agent did not start in
+    5 minutes, no call to Conductor", with the last lines its screen
+    shows (links left out), charged the minutes it ran; a person's own
+    turn too, instead of waiting out its minutes. A turn whose agent has
+    made any call runs to its minutes, however late it reads its request.
     The role is unavailable with those words and a retry of its own, 10
     minutes doubled for each such turn in a row up to 4 hours; meanwhile a
     wake, a briefing time and a person's request fire nothing into the
     same state, and a turn whose agent reads its request (a person's,
     once the agent is signed in) takes the batch up at once.
-    `TestAnAgentAtAScreenNobodyKnowsDidNotStart`,
-    `TestAnAgentThatReadsLateWithinItsBoundIsNotEnded`,
+    `TestAnAgentAtAScreenNobodyKnowsDidNotStart` (the request's line typed
+    into the quiet screen, then the bound),
+    `TestAnAgentThatHasCalledRunsToItsMinutes` (the guide read a minute
+    in, the request six), `TestALongTurnIsGivenLongerToStart`,
     `TestALoggedOutAgentMakesTheRoleUnavailable`. The tests that promise no
-    key reached such a screen read the terminal's raw input (the stub's
-    terminal in raw mode), which `TestTheRecordOfATerminalCatchesOneKey`
-    proves catches one key with no Enter.
+    key reached a known startup screen read the terminal's raw input (the
+    stub's terminal in raw mode), which
+    `TestTheRecordOfATerminalCatchesOneKey` proves catches one key with no
+    Enter.
   - Any other startup question ends a background turn the same way: an
     agent's update dialog (as Codex showed) ends a wake turn, whose
     questions page no one, naming the dialog and saying to answer it in a
