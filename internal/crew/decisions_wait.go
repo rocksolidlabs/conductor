@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1525,6 +1526,17 @@ func (e *Engine) closeDecisionOp(r *run, d *decision, why, by string) {
 
 // WithdrawDecision is the asking agent's withdrawal of its own open
 // decision (the tool decision_withdraw): cancelled, its hold released.
+// The decision is judged by its row in the transaction that cancels it,
+// before anything changes (transactJudged), as an operator's operation is:
+// one this attempt did not ask (another task's, another attempt's, or none
+// at all) is refused not_found in the same words, whatever it is; one of
+// its own answered or closed is refused decision_answered or
+// decision_closed. A withdrawal is taken only while the attempt runs and
+// its run is neither stopping nor continued (refused not_running, the
+// decision left as it is): a continuation reads the run's decisions after
+// its mark (markContinuing) and moves the open ones with their holds, so
+// a decision it moved is the continuation's to close, and the stopped
+// attempt has nothing left to wait for.
 func (e *Engine) WithdrawDecision(ctx context.Context, sessionID, id string) (Decision, error) {
 	r, a, err := e.attemptOf(sessionID)
 	if err != nil {
@@ -1534,14 +1546,49 @@ func (e *Engine) WithdrawDecision(ctx context.Context, sessionID, id string) (De
 	if !ok {
 		return Decision{}, refuse(CodeNotFound, "%q is not a decision's id", shortText(id))
 	}
-	var refused error
+	notOurs := refuse(CodeNotFound, "%s is no decision of this attempt's that is open", id)
+	notRunning := func() error {
+		if e.continued(r) != nil || r.stopping || !a.closedAt.IsZero() || a.state != ledger.AttemptRunning {
+			return refuse(CodeNotRunning, "the attempt is not running: %s is left as it is, for the run that continues this one; stop here, as this attempt's work is over", id)
+		}
+		return nil
+	}
+	e.mu.Lock()
+	refused := notRunning()
+	e.mu.Unlock()
+	if refused != nil {
+		return Decision{}, refused
+	}
+	judge := func(ltx LedgerTx) error {
+		dtx, err := decisionsOf(ltx)
+		if err != nil {
+			return err
+		}
+		row, ok, err := dtx.Decision(n)
+		if err != nil {
+			return err
+		}
+		if !ok || row.Origin != ledger.OriginAgent || row.CurrentRun != r.id || row.TaskID != a.t.def.ID || row.Attempt != a.n {
+			return notOurs
+		}
+		switch row.State {
+		case ledger.DecisionOpen:
+			return nil
+		case ledger.DecisionAnswered:
+			return refuse(CodeDecisionAnswered, "%s is %s: it is not withdrawn", id, row.State)
+		}
+		return refuse(CodeDecisionClosed, "%s is %s: %s", id, row.State, cmp.Or(row.Why, "it is closed"))
+	}
 	// A change kept ahead (no undo): under no request's context, so that
 	// only the ledger refuses it.
-	err = e.transact(context.WithoutCancel(ctx), r, func() tx {
+	err = e.transactJudged(context.WithoutCancel(ctx), r, judge, func() tx {
+		if refused = notRunning(); refused != nil {
+			return tx{}
+		}
 		d := r.decisionN(n)
 		switch {
 		case d == nil || d.a != a:
-			refused = refuse(CodeNotFound, "%s is no decision of this attempt's that is open", id)
+			refused = notOurs
 		case d.state != ledger.DecisionOpen:
 			refused = refuse(CodeDecisionAnswered, "%s is %s: it is not withdrawn", id, d.state)
 		default:
@@ -1549,6 +1596,12 @@ func (e *Engine) WithdrawDecision(ctx context.Context, sessionID, id string) (De
 		}
 		return tx{}
 	}, nil)
+	// Refused by its row, or failed before its change was made: nothing
+	// changed, and nothing is paused.
+	var um errUnmade
+	if errors.As(err, &um) {
+		return Decision{}, um.err
+	}
 	if refused != nil {
 		return Decision{}, refused
 	}

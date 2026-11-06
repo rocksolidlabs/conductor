@@ -24,6 +24,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // The decisions' routes (Program item DR1, docs/plans/decisions.md,
@@ -896,5 +897,79 @@ func TestAnAskersRefsAreResolvedUnderItsGrant(t *testing.T) {
 	}
 	if ds := l.expectAs(t, tok, http.MethodGet, "/api/sessions/"+sid+"/decisions", nil, http.StatusOK, "")["decisions"].([]any); len(ds) != 1 {
 		t.Fatalf("decisions opened: %v", ds)
+	}
+}
+
+// A task's keys are its own (#637, review round 3): the docs task, worked
+// by the member that worked build, sends build's request again, with the
+// same body and with another, and opens a decision of its own, answered
+// for its own request after that; build's decision is read, withdrawn and
+// superseded by docs' token exactly as an id no decision has is: the same
+// status, code and words.
+func TestATasksDecisionKeysAreItsOwn(t *testing.T) {
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{readyCat})
+	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	e.gitRepo(t)
+	c := managedCrew(e.root)
+	c.Tasks[1].Member, c.Tasks[1].Needs = "lead", nil
+	c.Members = c.Members[:1]
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), c, "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := e.srv
+	t.Cleanup(func() { stopEveryRun(srv) })
+	bsid := runningAttempt(t, e, run.ID, "build", 1)["sessionId"].(string)
+	built := entityOf(t, e.expectAs(t, e.agentToken(bsid), http.MethodPost, "/api/sessions/"+bsid+"/decisions", approvalBody("r1"), http.StatusCreated, ""), "decision")
+	// Its agent ends its turn: the waiting attempt gives up the member,
+	// and docs starts.
+	e.srv.runs.OnActivity(bsid, session.ActivityEntry{Type: session.ActivityAttention, Message: "done", At: time.Now().UTC()}, session.AttentionDone)
+	dsid := runningAttempt(t, e, run.ID, "docs", 1)["sessionId"].(string)
+	dtok := e.agentToken(dsid)
+	base := "/api/sessions/" + dsid + "/decisions"
+
+	other := approvalBody("r1")
+	other["question"] = "Ship docs r1?"
+	mine := entityOf(t, e.expectAs(t, dtok, http.MethodPost, base, other, http.StatusCreated, ""), "decision")
+	if mine["id"] == built["id"] {
+		t.Fatalf("docs' request under build's id is build's %v", built["id"])
+	}
+	same := entityOf(t, e.expectAs(t, dtok, http.MethodPost, base, approvalBody("r1"), http.StatusConflict, crew.CodeDecisionConflict), "error")
+	if msg, _ := same["message"].(string); strings.Contains(msg, built["id"].(string)) {
+		t.Fatalf("docs' conflict names build's decision: %q", msg)
+	}
+	if again := entityOf(t, e.expectAs(t, dtok, http.MethodPost, base, other, http.StatusOK, ""), "decision"); again["id"] != mine["id"] {
+		t.Fatalf("docs' request sent again: %v, first %v", again["id"], mine["id"])
+	}
+
+	theirs, none := built["id"].(string), "dr-999"
+	words := func(out map[string]any, id string) string {
+		return strings.ReplaceAll(string(decisionJSON(t, out)), id, "dr-?")
+	}
+	for _, c := range []struct {
+		what   string
+		status int
+		code   string
+		do     func(id string, status int, code string) map[string]any
+	}{
+		{"read", http.StatusNotFound, crew.CodeNotFound, func(id string, status int, code string) map[string]any {
+			return e.expectAs(t, dtok, http.MethodGet, base+"/"+id, nil, status, code)
+		}},
+		{"withdraw", http.StatusNotFound, crew.CodeNotFound, func(id string, status int, code string) map[string]any {
+			return e.expectAs(t, dtok, http.MethodPost, base+"/"+id+"/withdraw", map[string]any{}, status, code)
+		}},
+		{"supersede", http.StatusBadRequest, crew.CodeInvalid, func(id string, status int, code string) map[string]any {
+			body := approvalBody("s-" + id)
+			body["supersedes"] = id
+			return e.expectAs(t, dtok, http.MethodPost, base, body, status, code)
+		}},
+	} {
+		if a, b := words(c.do(theirs, c.status, c.code), theirs), words(c.do(none, c.status, c.code), none); a != b {
+			t.Fatalf("%s of build's decision: %s; of none: %s", c.what, a, b)
+		}
+	}
+	if d := e.decisionWhen(t, theirs, "open", inState(ledger.DecisionOpen)); d["rev"] != float64(1) {
+		t.Fatalf("build's decision after docs' tries: %v", d)
 	}
 }
