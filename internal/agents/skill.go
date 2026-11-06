@@ -38,8 +38,9 @@ With Conductor's MCP server registered (Claude Code and Codex get it at
 launch), the same reports and crew actions are tools: report, set_state,
 ask, form_crew, add_member, run_status, link, open_url, task_context, task_result,
 message_send, inbox_read, inbox_ack, task_blocked, task_checkpoint,
-ticket_read and ticket_comment. Call those when you have them; the
-commands below do the same.
+ticket_read, ticket_comment, and in a managed run decision_request,
+decision_list, decision_read and decision_withdraw. Call those when you
+have them; the commands below do the same.
 
 ## When to report
 
@@ -162,6 +163,40 @@ the end of your turn finishes nothing; only a submitted result does.
   a commit not from the inputs): fix it and submit again. The same commit
   submitted twice is taken once.
 
+## Decisions
+
+In a managed run, a question your work must wait for (a choice between
+designs, an approval before a step, something only a person can do) is a
+decision: ask it with decision_request or task decide, not with ask or task
+blocked, whose question lasts only as long as this session. Conductor keeps
+a decision through restarts, holds your task until the operator answers,
+and does not count an attempt that ends while it waits. Commit and save a
+checkpoint first, then ask:
+
+      "${CONDUCTOR_BIN:-conductor}" task decide --type approval --question "Drop the legacy table?" --option "Drop it: frees 2 GB" --option "Keep it" --recommend 0 --authorizes "running migration 42" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"
+
+- --type is clarification (options optional, answered in words too),
+  approval (2 to 6 options and what a yes --authorizes) or assignment (no
+  options, answered Done or Not done, for work a person does). Options are
+  numbered from 0 in the order given; --recommend names one by its number.
+- It answers at once with the decision's id and open: "dr-7 open". dr-N is
+  how a decision is named: task decision dr-7 reads it whole, task withdraw
+  dr-7 withdraws it once you no longer need it, --supersedes dr-7 asks a
+  new one in its place. task decision lists your task's decisions.
+- Then end your turn, or go on with work that does not depend on it; never
+  submit your result before its answer reaches you. The answer is typed into this
+  session as "Decision dr-7 (approval) answered by NAME: ANSWER. Why: ...
+  (receipt dr-7/1)", dr-7/1 being the first response to dr-7; if this
+  session has ended, it is in the Decisions section of the task file of
+  your task's next attempt, which starts at your checkpoint.
+- --evidence cites a record by its ref, repeatable: task:RUN/TASK,
+  attempt:RUN/TASK/N, commit:RUN/SHA (in full), file:SESSION/PATH (the
+  path absolute), ticket:KEY-n, run:RUN; RUN, TASK, N and SESSION are
+  CONDUCTOR_RUN, CONDUCTOR_TASK, CONDUCTOR_ATTEMPT and
+  CONDUCTOR_SESSION_ID. --subject is what it is about: commit (your HEAD,
+  the default), artifact:PATH (a file committed in your worktree) or
+  candidate:RUN/TASK/N@COMMIT (a result attempt N submitted).
+
 ## Messages, blockers and checkpoints
 
 - What the next task needs to know beyond your result, send its member as
@@ -175,7 +210,7 @@ the end of your turn finishes nothing; only a submitted result does.
       "${CONDUCTOR_BIN:-conductor}" task ack 3
 
 - Something stops you that only a person can give (a credential, a
-  decision, a step by hand): say so. The task shows as blocked with the
+  step by hand) and that you wait for in this session: say so. The task shows as blocked with the
   reason, and your session asks the message as your question; report
   working, or submit, once you go on.
 

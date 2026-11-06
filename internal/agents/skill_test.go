@@ -50,13 +50,24 @@ func TestSkillText(t *testing.T) {
 		// A project manifest's tree (EN1 PR-3): its ports, its preview and
 		// its state directory, in the environment.
 		"CONDUCTOR_PORT_<NAME> holds each of its ports", "CONDUCTOR_PREVIEW_URL its preview", "CONDUCTOR_STATE_DIR (.conductor/state)",
-		"task_context, task_result,\nmessage_send, inbox_read, inbox_ack, task_blocked, task_checkpoint,\nticket_read and ticket_comment",
+		"task_context, task_result,\nmessage_send, inbox_read, inbox_ack, task_blocked, task_checkpoint,\nticket_read, ticket_comment, and in a managed run decision_request,\ndecision_list, decision_read and decision_withdraw",
 		`"${CONDUCTOR_BIN:-conductor}" task send --to docs "the API is under internal/api/users.go; the handler names are final"`,
 		`"${CONDUCTOR_BIN:-conductor}" task inbox`,
 		`"${CONDUCTOR_BIN:-conductor}" task ack 3`,
 		`"${CONDUCTOR_BIN:-conductor}" task blocked --reason "no token for the registry" --message "Set NPM_TOKEN in the worktree's .env, then answer here"`,
 		`"${CONDUCTOR_BIN:-conductor}" task checkpoint --done "handlers and tests" --remaining "the docs" --notes "the docs page is docs/api.md"`,
 		"most 50 not acknowledged",
+		// Decisions (DR1 PR-6): when a question is one rather than ask or
+		// task blocked, that the request answers at once, how the answer
+		// arrives, and what each id, receipt and ref it names is.
+		`"${CONDUCTOR_BIN:-conductor}" task decide --type approval --question "Drop the legacy table?" --option "Drop it: frees 2 GB" --option "Keep it" --recommend 0 --authorizes "running migration 42" --evidence "task:$CONDUCTOR_RUN/$CONDUCTOR_TASK"`,
+		"is a\ndecision: ask it with decision_request or task decide, not with ask or task\nblocked, whose question lasts only as long as this session.",
+		"Commit and save a\ncheckpoint first, then ask", "does not count an attempt that ends while it waits",
+		`"dr-7 open"`, "task decision dr-7 reads it whole", "task withdraw\n  dr-7 withdraws it", "--supersedes dr-7", "task decision lists your task's decisions",
+		"never\n  submit your result before its answer reaches you", "(receipt dr-7/1)\", dr-7/1 being the first response to dr-7", "Decisions section of the task file",
+		"Options are\n  numbered from 0", "answered Done or Not done", "what a yes --authorizes",
+		"task:RUN/TASK", "attempt:RUN/TASK/N", "commit:RUN/SHA (in full)", "file:SESSION/PATH", "ticket:KEY-n", "CONDUCTOR_SESSION_ID",
+		"artifact:PATH", "candidate:RUN/TASK/N@COMMIT",
 		// The ticket the run is linked to (DS1 PR-12): read it, comment on
 		// it, nothing more.
 		`"${CONDUCTOR_BIN:-conductor}" task ticket`,
@@ -83,6 +94,11 @@ func TestSkillText(t *testing.T) {
 	task, ticket, rules := strings.Index(body, "\n## Your task\n"), strings.Index(body, "\n## Your ticket\n"), strings.Index(body, "\n## Rules\n")
 	if strings.Count(body, "\n## Your ticket\n") != 1 || task < 0 || !(task < ticket && ticket < rules) {
 		t.Errorf("the ticket's section is not between the task's and the rules: %d %d %d", task, ticket, rules)
+	}
+	// The decisions' section follows the task's, once, before the messages'.
+	decisions, messages := strings.Index(body, "\n## Decisions\n"), strings.Index(body, "\n## Messages, blockers and checkpoints\n")
+	if strings.Count(body, "\n## Decisions\n") != 1 || !(task < decisions && decisions < messages) {
+		t.Errorf("the decisions' section is not between the task's and the messages': %d %d %d", task, decisions, messages)
 	}
 	if strings.Contains(body, "--state needs_input") {
 		t.Error("the skill asks without the mark (--state needs_input)")
