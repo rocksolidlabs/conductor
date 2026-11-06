@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -610,7 +611,9 @@ func (j *Journal) Begin(r Record) (Instance, error) {
 
 // Abandon removes the record of a session that was never added (the
 // registry refused it): from memory and from the disk, while in is still
-// its record's instance.
+// its record's instance. It returns once the delete is made or has failed;
+// a failed one puts the row back from the file with no instance, as a
+// removal's does (restoreLocked): listed lost, forgettable.
 func (j *Journal) Abandon(in Instance) {
 	j.wmu.Lock()
 	defer j.wmu.Unlock()
@@ -622,8 +625,9 @@ func (j *Journal) Abandon(in Instance) {
 	delete(j.recs, in.id)
 	delete(j.index, in.id)
 	j.mu.Unlock()
-	if err := j.sess.Delete(in.id + ".json"); err != nil {
-		j.log.Warn("an abandoned session's record was not removed", "session", in.id, "err", err)
+	if err := j.remove(in.id); err != nil {
+		j.log.Warn("an abandoned session's record was not removed; it is listed lost", "session", in.id, "err", err)
+		j.restoreLocked(in.id)
 	}
 }
 
@@ -954,19 +958,16 @@ func (j *Journal) applyState(x *rec) {
 	}
 }
 
-// endLocked records the end of x's session: an observed end once (it
-// replaces a lost one), a lost one only on a record that has no end at
-// all. An observed end also ends the questions still open in the record,
-// as the session's end withdrew them (closeQuestions). The caller holds
-// mu.
+// endLocked records the end of x's session once: an observed end or a
+// lost one, on a record that has no end; an end once recorded stands,
+// whichever it was. An observed end also ends the questions still open in
+// the record, as the session's end withdrew them (closeQuestions). The
+// caller holds mu.
 func (j *Journal) endLocked(x *rec, end Ending) {
-	if !x.r.EndedAt.IsZero() {
+	if !x.r.open() {
 		return
 	}
 	if end.Lost {
-		if !x.r.LostAt.IsZero() {
-			return
-		}
 		x.r.LostAt, x.r.Ending = end.At, cutBytes(end.How, maxField)
 	} else {
 		x.r.EndedAt, x.r.LostAt, x.r.Ending = end.At, time.Time{}, cutBytes(end.How, maxField)
@@ -1566,23 +1567,58 @@ func (j *Journal) choose(id string) {
 }
 
 // forgetLocked deletes the file of the record id, which the caller chose
-// (choose). A file not deleted keeps its row, listed and read from the
-// file, forgettable again, and no instance: nothing that its instance held
-// or that a hook of it brings is written. A record a hosted Begin began of
-// the id meanwhile is left as it is: its first write follows (wmu), over
-// the file a failed delete left. The caller holds wmu.
+// (choose). A file not deleted is put back from the file with no instance
+// (restoreLocked): nothing that its instance held or that a hook of it
+// brings is written. The caller holds wmu.
 func (j *Journal) forgetLocked(id string) error {
 	err := j.remove(id)
 	j.mu.Lock()
-	defer j.mu.Unlock()
-	s := j.removing[id]
 	delete(j.removing, id)
-	if _, begun := j.index[id]; err != nil && s != nil && !begun {
-		row := *s
-		row.inst = 0
-		j.index[id] = &row
+	j.mu.Unlock()
+	if err != nil {
+		j.restoreLocked(id)
 	}
 	return err
+}
+
+// restoreLocked puts back the row of id from its file, a delete of it
+// having failed: with no instance, so by the rule for a record with no
+// instance a file with no end is listed lost (LostAt its file's last
+// write, Ending lost, no EndedAt), held in memory, dirty, and that end
+// written at the next pass; a file with an end is listed as it says. A
+// file that cannot be read is listed unreadable; one that is not there
+// any more, not at all. The caller holds wmu.
+func (j *Journal) restoreLocked(id string) {
+	r, newer, err := j.load(id)
+	var mod time.Time
+	if fi, serr := os.Stat(filepath.Join(j.sess.Dir(), id+".json")); serr == nil {
+		mod = fi.ModTime().UTC()
+	} else if err == nil {
+		mod = j.o.Now().UTC()
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if _, ok := j.index[id]; ok {
+		return
+	}
+	switch {
+	case errors.Is(err, ErrNotFound):
+	case err != nil:
+		if mod.IsZero() {
+			mod = j.o.Now().UTC()
+		}
+		j.index[id] = unreadableRow(id, mod)
+	case newer:
+		j.index[id] = summaryOf(&r, true)
+	case r.open():
+		r.LostAt, r.Ending = mod, EndingLost
+		x := &rec{id: id, r: r, dirty: true, urgent: true, endedAt: j.o.Now()}
+		j.recs[id] = x
+		j.index[id] = j.row(x)
+		j.poke()
+	default:
+		j.index[id] = summaryOf(&r, false)
+	}
 }
 
 // Forget deletes the record of id: refused for a live session (ErrLive)

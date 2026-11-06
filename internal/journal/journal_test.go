@@ -1931,3 +1931,231 @@ func TestARecordWhoseFirstWriteFailedIsKept(t *testing.T) {
 		t.Fatalf("forget: %v", err)
 	}
 }
+
+// A second end, observed or lost, leaves the first: an end once recorded
+// stands (I2), so a lost end is never turned into an observed one, nor an
+// observed one into lost.
+func TestASecondEndLeavesTheFirst(t *testing.T) {
+	j, dir := newJournal(t, Options{})
+	lost, ended := sid(1), sid(2)
+	a := begin(t, j, serverRecord(lost))
+	b := begin(t, j, serverRecord(ended))
+	finish(j, a, Ending{How: EndingLost, Lost: true})
+	finish(j, a, Ending{How: "exited (exit 0)"})
+	finish(j, b, Ending{How: "exited (exit 3)"})
+	finish(j, b, Ending{How: EndingLost, Lost: true})
+	j.Flush()
+	if r, _ := onDisk(t, dir, lost); r.Ending != EndingLost || r.LostAt.IsZero() || !r.EndedAt.IsZero() {
+		t.Fatalf("a lost end replaced: %q ended %v lost %v", r.Ending, r.EndedAt, r.LostAt)
+	}
+	if r, _ := onDisk(t, dir, ended); r.Ending != "exited (exit 3)" || r.EndedAt.IsZero() || !r.LostAt.IsZero() {
+		t.Fatalf("an observed end replaced: %q ended %v lost %v", r.Ending, r.EndedAt, r.LostAt)
+	}
+}
+
+// An id that has a record is refused (ErrExists), its record unchanged.
+func TestBeginRefusesAnIdThatHasARecord(t *testing.T) {
+	j, dir := newJournal(t, Options{})
+	id := sid(1)
+	in := begin(t, j, serverRecord(id))
+	j.Note(in, Activity{Type: actProgress, Message: "the first's"})
+	j.Flush()
+	_, before := onDisk(t, dir, id)
+	again := serverRecord(id)
+	again.Name = "another"
+	if _, err := j.Begin(again); !errors.Is(err, ErrExists) {
+		t.Fatalf("a second Begin of the id: %v", err)
+	}
+	j.Flush()
+	if _, now := onDisk(t, dir, id); !bytes.Equal(now, before) {
+		t.Fatalf("the record changed:\n%s", now)
+	}
+}
+
+// A record holding what PR-12 will write of a hosted session (Host.Hosted,
+// Host.Owner, Reopened, the ending host away) is read, listed and kept as
+// it is: never marked lost, never written over.
+func TestARecordHoldingPR12sFieldsIsRead(t *testing.T) {
+	dir := t.TempDir()
+	sess := filepath.Join(dir, Dir, SessionsDir)
+	if err := os.MkdirAll(sess, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := sid(1)
+	r := hostedRecord(id, "owner-hash")
+	at := time.Date(2026, 11, 5, 8, 0, 0, 0, time.UTC)
+	r.V, r.Seq, r.StartedAt, r.LostAt, r.Ending, r.Reopened, r.StartFrom = V, 3, at, at.Add(time.Minute), EndingHostAway, 2, "host"
+	r.Entries = []Entry{{Seq: 1, At: at.Add(time.Second), Kind: KindReport, Event: actProgress, Message: "before"}}
+	raw, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sess, id+".json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j := openAt(t, dir, Options{})
+	page, err := j.List("", 10)
+	if err != nil || len(page.Records) != 1 || !page.Records[0].Host.Hosted || page.Records[0].Ending != EndingHostAway {
+		t.Fatalf("the list: %+v %v", page.Records, err)
+	}
+	got, newer, err := j.Get(id)
+	if err != nil || newer || !got.Host.Hosted || got.Host.Owner != "owner-hash" || got.Reopened != 2 || got.Ending != EndingHostAway || got.StartFrom != "host" || !slices.Equal(messages(got), []string{"before"}) {
+		t.Fatalf("read: %+v %v %v", got, newer, err)
+	}
+	j.Flush()
+	if _, now := onDisk(t, dir, id); !bytes.Equal(now, raw) {
+		t.Fatalf("the record was written over:\n%s", now)
+	}
+}
+
+// heldEndCommit is an EndCommit held until release: reached says the
+// writer is reading it, on its own goroutine with none of the journal's
+// locks held, so a removal can run meanwhile.
+func heldEndCommit(t *testing.T) (o Options, reached <-chan string, release func()) {
+	in := make(chan string, 8)
+	gate := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	o.EndCommit = func(ctx context.Context, r Record) string {
+		in <- r.ID
+		select {
+		case <-gate:
+		case <-ctx.Done():
+		}
+		return "late-commit"
+	}
+	return o, in, release
+}
+
+// A failed delete of a record whose end is settled and not yet written
+// (S35, S36): for each remover, the end settled and its write kept from
+// the file by its end commit held in EndCommit (outside wmu), the file
+// read and found open, the delete failed at beforeDelete, the end commit
+// let go: the row comes back from the file with no instance, listed lost
+// (LostAt the file's last write), that end written at the next pass, and
+// forgettable again at once; with a shutdown between, Close's last pass
+// writes it lost and the next Open reads it so.
+func TestAFailedDeleteOfAnUnwrittenEndIsListedLost(t *testing.T) {
+	for _, remover := range []string{"Forget", "ForgetAll", "Prune", "Close"} {
+		t.Run(remover, func(t *testing.T) {
+			slowFlush(t)
+			if remover == "Prune" {
+				maxRecords = 0
+				t.Cleanup(func() { maxRecords = MaxRecords })
+			}
+			o, reached, release := heldEndCommit(t)
+			j, dir := newJournal(t, o)
+			id := sid(1)
+			in := begin(t, j, serverRecord(id))
+			j.Note(in, Activity{Type: actProgress, Message: "unwritten"})
+			finish(j, in, Ending{How: "exited (exit 0)"})
+			<-reached
+			if r, _ := onDisk(t, dir, id); !r.EndedAt.IsZero() || !r.LostAt.IsZero() {
+				t.Fatalf("the file holds an end before the removal: %+v", r)
+			}
+			fi, err := os.Stat(filepath.Join(dir, Dir, SessionsDir, id+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeDelete = func(string) error { return errors.New("a disk that did not answer") }
+			t.Cleanup(func() { beforeDelete = nil })
+			switch remover {
+			case "ForgetAll":
+				if n, kept, err := j.ForgetAll(); err == nil || n != 0 || kept != 0 {
+					t.Fatalf("ForgetAll: %d %d %v", n, kept, err)
+				}
+			case "Prune":
+				j.Prune()
+				// The pass the held end commit is in prunes too once let go.
+				maxRecords = MaxRecords
+			default:
+				if err := j.Forget(id); err == nil {
+					t.Fatal("a forget whose delete failed answered nil")
+				}
+			}
+			release()
+			beforeDelete = nil
+			page, err := j.List("", MaxPage)
+			if err != nil || len(page.Records) != 1 || page.Records[0].Ending != EndingLost || !page.Records[0].LostAt.Equal(fi.ModTime().UTC()) || !page.Records[0].EndedAt.IsZero() {
+				t.Fatalf("the row after the failed delete: %+v %v", page.Records, err)
+			}
+			if remover == "Close" {
+				j.Close()
+				r, raw := onDisk(t, dir, id)
+				if r.Ending != EndingLost || r.LostAt.IsZero() || !r.EndedAt.IsZero() || bytes.Contains(raw, []byte("unwritten")) || bytes.Contains(raw, []byte("late-commit")) {
+					t.Fatalf("after Close:\n%s", raw)
+				}
+				j2 := openAt(t, dir, Options{})
+				if g, _, err := j2.Get(id); err != nil || g.Ending != EndingLost || !g.EndedAt.IsZero() {
+					t.Fatalf("the next Open: %+v %v", g, err)
+				}
+				return
+			}
+			j.Flush()
+			r, raw := onDisk(t, dir, id)
+			if r.Ending != EndingLost || r.LostAt.IsZero() || !r.EndedAt.IsZero() || bytes.Contains(raw, []byte("unwritten")) || bytes.Contains(raw, []byte("late-commit")) {
+				t.Fatalf("the file after the next pass:\n%s", raw)
+			}
+			if err := j.Forget(id); err != nil || exists(dir, id) {
+				t.Fatalf("forgotten again: %v", err)
+			}
+		})
+	}
+}
+
+// A record begun and abandoned whose delete fails (S11) comes back from
+// its file with no instance: listed lost, that end written at the next
+// pass, forgettable.
+func TestAFailedAbandonIsListedLost(t *testing.T) {
+	slowFlush(t)
+	j, dir := newJournal(t, Options{})
+	id := sid(1)
+	in := begin(t, j, serverRecord(id))
+	beforeDelete = func(string) error { return errors.New("a disk that did not answer") }
+	t.Cleanup(func() { beforeDelete = nil })
+	j.Abandon(in)
+	beforeDelete = nil
+	page, err := j.List("", MaxPage)
+	if err != nil || len(page.Records) != 1 || page.Records[0].Ending != EndingLost || !page.Records[0].EndedAt.IsZero() {
+		t.Fatalf("the row after the failed abandon: %+v %v", page.Records, err)
+	}
+	j.Note(in, Activity{Type: actProgress, Message: "of the abandoned instance"})
+	j.Flush()
+	if r, raw := onDisk(t, dir, id); r.Ending != EndingLost || r.LostAt.IsZero() || len(r.Entries) != 0 {
+		t.Fatalf("the file after the next pass:\n%s", raw)
+	}
+	if err := j.Forget(id); err != nil || exists(dir, id) {
+		t.Fatalf("forgotten: %v", err)
+	}
+}
+
+// A record whose last write fails at Close (S37) stays on disk as last
+// written, open, and the next Open marks it lost.
+func TestALastWriteThatFailsIsLostAtTheNextStart(t *testing.T) {
+	slowFlush(t)
+	dir := t.TempDir()
+	j := openAt(t, dir, Options{})
+	id := sid(1)
+	in := begin(t, j, serverRecord(id))
+	_, written := onDisk(t, dir, id)
+	j.Note(in, Activity{Type: actProgress, Message: "never written"})
+	j.Settle(in, State{Name: "renamed"})
+	beforeWrite = func(name string) error {
+		if strings.HasSuffix(name, id+".json") {
+			return errors.New("a disk that did not answer")
+		}
+		return nil
+	}
+	t.Cleanup(func() { beforeWrite = nil })
+	j.Close()
+	beforeWrite = nil
+	if _, now := onDisk(t, dir, id); !bytes.Equal(now, written) {
+		t.Fatalf("the record changed though its last write failed:\n%s", now)
+	}
+	j2 := openAt(t, dir, Options{})
+	r, _, err := j2.Get(id)
+	if err != nil || r.Ending != EndingLost || r.LostAt.IsZero() || !r.EndedAt.IsZero() || len(r.Entries) != 0 {
+		t.Fatalf("the next Open: %+v %v", r, err)
+	}
+}
