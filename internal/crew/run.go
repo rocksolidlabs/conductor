@@ -444,6 +444,26 @@ type Engine struct {
 	// after the failed step's last commit and before its own change: a
 	// test lands an unpause there.
 	beforePrereqRefused func()
+
+	// boot is this server process's id, minted at its start (Boot): an
+	// identity's response to a decision is applied only by the process
+	// that accepted it (decisions.go).
+	boot string
+	// gatesAtLaunch opens a planned run's gates in its first transaction
+	// (openGates). Off until the response route ships with it
+	// (docs/plans/decisions.md, PR-4): a test turns it on.
+	gatesAtLaunch bool
+	// beforeMirror, when set, runs as a decision's question is about to be
+	// put to its session (askMirror), on the attempt's askMu, the decision
+	// read as open: a test holds the ask there. beforeRespond, when set, runs in RespondDecision
+	// once it has chosen the run to answer through and before its
+	// transaction: a test lands a change there.
+	beforeMirror  func(n int64)
+	beforeRespond func(n int64)
+	// beforeAnswer, when set, runs in a member's deliverer as it is about
+	// to take the next decision answer (nextAnswer): a test queues two
+	// answers there before either is typed.
+	beforeAnswer func(member string)
 }
 
 // sessionMember is the member a session is, and its run.
@@ -480,6 +500,9 @@ type run struct {
 	checks    sync.WaitGroup
 	revision  int64
 	crewJSON  string // the crew as launched, for the ledger's run row
+	// decisions are the run's open and answered decisions, in the order
+	// they opened (decisions.go), under e.mu.
+	decisions []*decision
 	// created says the run's row is in the ledger: its first transaction
 	// committed. Until then only a change that may be the run's first (its
 	// launch's, its continuation's, its stop's: transactFirst) is written,
@@ -645,7 +668,11 @@ type member struct {
 	// maxHandoffs (handoff.go). delivering is set, under e.mu, while a
 	// goroutine types them (deliver), and read without it by poke; wake makes
 	// that goroutine look again.
-	handoffs   []handoff
+	handoffs []handoff
+	// answers are the decisions' answers waiting to be typed into the
+	// member's attempt that asked them, ahead of its handoffs
+	// (decisions.go: queueAnswer), under e.mu.
+	answers    []*answerLine
 	delivering atomic.Bool
 	wake       chan struct{}
 }
@@ -655,7 +682,7 @@ type member struct {
 func NewEngine(l Launcher, lookup func(sessionID string) (*session.Local, bool)) *Engine {
 	root, cut := context.WithCancel(context.Background())
 	return &Engine{launcher: l, lookup: lookup, await: awaitReady, now: time.Now,
-		runs: map[string]*run{}, offered: local.Native(), exec: execFor(local.Native()), native: local.Native(), teardownRoot: root, teardownCut: cut}
+		runs: map[string]*run{}, offered: local.Native(), exec: execFor(local.Native()), native: local.Native(), teardownRoot: root, teardownCut: cut, boot: newBoot()}
 }
 
 // Launch is LaunchHeld for a caller that needs nothing more of the run once

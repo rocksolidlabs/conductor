@@ -343,6 +343,10 @@ type task struct {
 	// continues when it failed at a check: its first attempt is handed the
 	// receipt, read from the rows (failedcheck.go).
 	priorFailed *priorFailed
+	// holds are the decisions that hold the task (decisions.go): pump
+	// dispatches no attempt of a held task, whatever its needs. A hold is
+	// a fact beside the state, which it leaves as it is.
+	holds []*decision
 }
 
 // lastKept is t's last attempt when a withdrawal has not taken it back,
@@ -724,6 +728,13 @@ type event struct {
 type tx struct {
 	events []event
 	more   func(LedgerTx) error
+	// last, when set, writes after the events: rows whose own events
+	// follow the change's (a run's gates after run.created). done, when
+	// set, runs under e.mu once the transaction has committed, before
+	// anything else reads the run: what the commit answered (a decision's
+	// id) goes into the engine's state there.
+	last func(LedgerTx) error
+	done func()
 }
 
 // giveUp is the undo of a change its caller gives up when its commit is
@@ -829,7 +840,11 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 	if t.more != nil {
 		more = append(more, t.more)
 	}
-	if len(events) == 0 && len(more) == 0 && snap.run == nil && len(snap.tasks) == 0 && len(snap.attempts) == 0 {
+	var last []func(LedgerTx) error
+	if t.last != nil {
+		last = append(last, t.last)
+	}
+	if len(events) == 0 && len(more) == 0 && len(last) == 0 && snap.run == nil && len(snap.tasks) == 0 && len(snap.attempts) == 0 {
 		e.mu.Unlock()
 		return nil
 	}
@@ -861,6 +876,11 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 				return err
 			}
 		}
+		for _, write := range last {
+			if err := write(ltx); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	e.mu.Lock()
@@ -870,7 +890,7 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 			r.foreign = true
 		}
 		snap.undo(r)
-		r.pendingEvents, r.pendingMore = events, more
+		r.pendingEvents, r.pendingMore = events, append(more, last...)
 		if undo != nil {
 			undo()
 			r.pendingEvents, r.pendingMore = pending, pendingMore
@@ -883,6 +903,9 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 	r.revision = max(r.revision, rev)
 	if snap.create {
 		r.created = true
+	}
+	if t.done != nil {
+		t.done()
 	}
 	r.touch()
 	if r.endPending {
@@ -1107,7 +1130,7 @@ func (r *run) ready() {
 		if doomed == nil {
 			doomed = r.doomed()
 		}
-		state, reason := ledger.TaskReady, ""
+		state, reason := ledger.TaskReady, holdWords(t)
 		switch {
 		case len(waiting) == 0:
 		case doomed[t]:
@@ -1263,6 +1286,11 @@ func (e *Engine) pump(r *run) {
 		if t.state != ledger.TaskReady {
 			continue
 		}
+		if len(t.holds) > 0 {
+			// Held by a decision (decisions.go): not dispatched until its
+			// answer is applied; its reason says which (holdReason).
+			continue
+		}
 		m := r.member(t.def.Member)
 		if m == nil {
 			continue
@@ -1312,6 +1340,7 @@ func (e *Engine) noteEndLater(r *run) {
 // dispatched once they passed, at once without any. An error is the
 // launch's.
 func (e *Engine) startManaged(ctx context.Context, r *run) error {
+	ungate := func() {}
 	if err := e.transactFirst(ctx, r, func() tx {
 		r.markRun()
 		for _, t := range r.tasks {
@@ -1324,8 +1353,15 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 			// package's digest, which its row keeps the bytes of.
 			payload["ticket"], payload["digest"] = r.pkg.p.Ticket.Key, r.pkg.digest
 		}
-		return ev("run.created", payload)
-	}, giveUp); err != nil {
+		out := ev("run.created", payload)
+		if e.gatesAtLaunch {
+			// The plan revision's gates, with their tasks' rows (O2).
+			var gates tx
+			gates, ungate = e.openGates(r)
+			out.last, out.done = gates.last, gates.done
+		}
+		return out
+	}, func() { ungate() }); err != nil {
 		return err
 	}
 	e.pumpLocked(r)
@@ -1914,6 +1950,13 @@ func (e *Engine) managedActivity(r *run, sm sessionMember, entry session.Activit
 	if a == nil || !a.closedAt.IsZero() || a.state != ledger.AttemptRunning || a.reminded {
 		return
 	}
+	if r.waitingDecision(a) != nil {
+		// Its agent ended its turn to wait for a decision: never told to
+		// submit while it waits, and reminded at its next done once the
+		// decision is applied (docs/plans/decisions.md, A result while a
+		// decision waits).
+		return
+	}
 	a.reminded = true
 	r.note(session.ActivityStatus, "task %s: %s reports done without a result; reminded once", a.t.def.ID, sm.m.def.Name)
 	if l, ok := e.lookup(a.sessionID); ok {
@@ -2010,6 +2053,13 @@ func (e *Engine) Submit(ctx context.Context, sessionID string, res Result) (Task
 		e.mu.Unlock()
 		r.txMu.Unlock()
 		return TaskState{}, false, fmt.Errorf("%w: it is %s", ErrNotRunning, state)
+	}
+	if d := r.waitingDecision(a); d != nil {
+		// No dependent starts on work whose approval is still open, and
+		// the attempt neither succeeds nor fails while its decision waits.
+		e.mu.Unlock()
+		r.txMu.Unlock()
+		return TaskState{}, false, refuse(CodeDecisionOpen, "%s is not answered yet: wait for its answer, or withdraw it with decision_withdraw", d.id())
 	}
 	a.state = ledger.AttemptSubmitting
 	a.submitSeq++
