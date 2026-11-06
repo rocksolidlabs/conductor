@@ -32,6 +32,7 @@ type launch struct {
 	o    session.Options
 	proc *sessiontest.FakeProc
 	l    *session.Local
+	made bool // its session object made before the final pass (make)
 }
 
 func beginLaunch(t *testing.T, e *testEnv) *launch {
@@ -49,8 +50,16 @@ func beginLaunch(t *testing.T, e *testEnv) *launch {
 
 func (lc *launch) make() *launch {
 	lc.l = session.NewLocal(lc.info, lc.proc, lc.o)
+	lc.made = !lc.e.srv.recordsAreClosed()
 	lc.e.srv.made(lc.rc, lc.l)
 	return lc
+}
+
+// recordsAreClosed says the final pass's mark is set.
+func (s *Server) recordsAreClosed() bool {
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	return s.recordsClosed
 }
 
 func (lc *launch) add(t *testing.T) *launch {
