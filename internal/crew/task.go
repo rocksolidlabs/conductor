@@ -285,6 +285,15 @@ func (s sqlLedger) Load(ctx context.Context, runID string) (Loaded, bool, error)
 			failed = append(failed, fr)
 		}
 	}
+	launch, err := LaunchCrew(runID, func(id string) (ledger.RunRow, bool, error) {
+		if id == runID {
+			return row, true, nil
+		}
+		return s.l.Run(ctx, id)
+	})
+	if err != nil {
+		return Loaded{}, true, err
+	}
 	holds, err := s.l.Holds(ctx, runID)
 	if err != nil {
 		return Loaded{}, true, err
@@ -302,7 +311,7 @@ func (s sqlLedger) Load(ctx context.Context, runID string) (Loaded, bool, error)
 			held[h.Decision] = rec.DecisionRow
 		}
 	}
-	return Loaded{Run: row, Tasks: tasks, Attempts: attempts, Messages: messages, Prerequisites: prereqs, FailedChecks: failed, Holds: holds, HeldDecisions: held}, true, nil
+	return Loaded{Run: row, Launch: launch, Tasks: tasks, Attempts: attempts, Messages: messages, Prerequisites: prereqs, FailedChecks: failed, Holds: holds, HeldDecisions: held}, true, nil
 }
 
 func (s sqlLedger) CheckLog(ctx context.Context, runID, taskID string, n int, id string, k int) (ledger.CheckRow, bool, error) {
@@ -488,10 +497,32 @@ type task struct {
 	// continues when it failed at a check: its first attempt is handed the
 	// receipt, read from the rows (failedcheck.go).
 	priorFailed *priorFailed
+	// priorLast is, in a continuation, the last counted attempt of the runs
+	// it continues as the continuation read it (its run, number, state,
+	// stage, start, result commit and submitted result): the task's
+	// standing failed candidate until it makes an attempt of its own
+	// (standingFailed).
+	priorLast *ledger.AttemptRow
 	// holds are the decisions that hold the task (decisions.go): pump
 	// dispatches no attempt of a held task, whatever its needs. A hold is
 	// a fact beside the state, which it leaves as it is.
 	holds []*decision
+}
+
+// standingFailed is failed t's standing failed candidate, as its attempt's
+// row: the last attempt a withdrawal has not taken back (lastKept), else,
+// in a continuation whose task has made no attempt of its own yet, the
+// last attempt of the runs it continues (priorLast). ok is false when
+// there is none: every attempt withdrawn, or no attempt made. The caller
+// holds e.mu.
+func (r *run) standingFailed(t *task) (ledger.AttemptRow, bool) {
+	if last := t.lastKept(); last != nil {
+		return r.attemptRow(last), true
+	}
+	if len(t.attempts) == 0 && t.priorLast != nil && t.kept(t.priorLast.N) {
+		return *t.priorLast, true
+	}
+	return ledger.AttemptRow{}, false
 }
 
 // lastKept is t's last attempt when a withdrawal has not taken it back,
@@ -644,6 +675,11 @@ type TaskState struct {
 	ImportedFrom string `json:"importedFrom,omitempty"`
 	// Blocker is what the attempt in flight says stops it (checkpoints.go).
 	Blocker *Blocker `json:"blocker,omitempty"`
+	// Owner is the person accountable for the task's outcome in the crew as
+	// launched, and OwnerFrom how (TaskOwner: task or acceptance); both
+	// absent for a crew without people.
+	Owner     string `json:"owner,omitempty"`
+	OwnerFrom string `json:"ownerFrom,omitempty"`
 	// Holds are the decisions that hold the task (decisions.go): it is not
 	// dispatched until each is applied or ends.
 	Holds []TaskHold `json:"holds,omitempty"`
@@ -730,6 +766,7 @@ func (r *run) taskStates() []TaskState {
 	out := make([]TaskState, 0, len(r.tasks))
 	for _, t := range r.tasks {
 		st := TaskState{ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, Needs: slices.Clone(t.def.Needs), State: t.state, Reason: t.reason, Attempts: len(t.attempts) + t.prior, ImportedFrom: t.imported}
+		st.setOwner(Crew{People: r.people}, t.def)
 		if b := t.blocker; b != nil {
 			st.Blocker = &Blocker{Reason: b.reason, Message: b.message, By: b.by, At: b.at}
 		}
@@ -989,9 +1026,9 @@ func (e *Engine) transactJudged(ctx context.Context, r *run, judge func(LedgerTx
 	return e.commit(ctx, r, false, judge, mutate, undo)
 }
 
-// errNothing is a judged change that wrote nothing: its transaction is
+// errWroteNothing is a judged change that wrote nothing: its transaction is
 // rolled back, and the change committed as one that changed nothing.
-var errNothing = errors.New("the change wrote nothing")
+var errWroteNothing = errors.New("the change wrote nothing")
 
 // errUnmade is a judged change's transaction that ended before its change
 // was made (transactJudged): its judge's refusal, the ledger's failure, or
@@ -1026,6 +1063,16 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, judge func(Ledg
 	}
 	r.txMu.Lock()
 	defer r.txMu.Unlock()
+	return e.commitHeld(ctx, r, first, judge, mutate, undo)
+}
+
+// commitHeld is commit for a caller that holds r.txMu already: one that
+// reads the ledger before its change, and must have no transaction of the
+// run between that read and the change (supersede).
+func (e *Engine) commitHeld(ctx context.Context, r *run, first bool, judge func(LedgerTx) error, mutate func() tx, undo func()) error {
+	if e.ledger == nil {
+		return ErrNoLedger
+	}
 	var (
 		events                             []event
 		more, last, laterMore, pendingMore []func(LedgerTx) error
@@ -1110,7 +1157,7 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, judge func(Ledg
 			case err != nil:
 				return errUnmade{err}
 			case !ok:
-				return errUnmade{errNothing}
+				return errUnmade{errWroteNothing}
 			}
 		}
 		if err := snap.write(ltx); err != nil {
@@ -1141,7 +1188,7 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, judge func(Ledg
 		// Refused or failed before the change was made: nothing of the run
 		// changed. A change that wrote nothing commits nothing either.
 		if um := (errUnmade{}); errors.As(err, &um) {
-			if errors.Is(um.err, errNothing) {
+			if errors.Is(um.err, errWroteNothing) {
 				return nil
 			}
 			return um
@@ -1552,6 +1599,10 @@ func refusedBeforeChecks(stage string) bool {
 // holds e.mu, and has committed the state the dispatch rests on; the
 // dispatches run on goroutines of their own.
 func (e *Engine) pump(r *run) {
+	if r.managed {
+		// A Check again's verification, whatever the pause.
+		e.startRechecks(r)
+	}
 	if !r.managed || r.stopping || r.paused || r.prereq != prereqPassed || r.ctx.Err() != nil {
 		// Nothing is dispatched until the prerequisites passed, whatever
 		// pumps the run meanwhile (steps.go).
@@ -2795,7 +2846,7 @@ func (e *Engine) RetryTask(ctx context.Context, runID, taskID string) error {
 		if refused = e.continued(r); refused != nil || retryable(t) != nil {
 			return tx{} // continued or changed meanwhile
 		}
-		if refused = r.retryNeedsRoom(t); refused != nil {
+		if refused = r.retryNeedsRoom(t, "retry"); refused != nil {
 			return tx{}
 		}
 		return tx{events: e.retryTask(r, t)}

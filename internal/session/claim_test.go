@@ -947,7 +947,10 @@ func TestEveryClearingPathThroughReleaseAndReclaim(t *testing.T) {
 					p.exit()
 					<-s.Ended()
 				}
-				if st := stateOf(s); st.shown.ID == q.ID || st.claim.id == q.ID {
+				// At the end the claim stands with its line until the line's
+				// word (its keys may have been written: endClaimsLocked), the
+				// question shown no more and not left yet.
+				if st := stateOf(s); st.shown.ID == q.ID || how != "ended" && st.claim.id == q.ID {
 					t.Fatalf("%s: the question stands: %+v", how, st)
 				}
 				release()
@@ -955,6 +958,12 @@ func TestEveryClearingPathThroughReleaseAndReclaim(t *testing.T) {
 				case "ended":
 					if got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line }); !errors.Is(got.err, ErrSessionEnded) {
 						t.Fatalf("%s: %+v %v", how, got.res, got.err)
+					}
+					// Its Enter not written, the line gave its claim up: the
+					// question left as ended.
+					leftAs(t, s, q.ID, LeftEnded)
+					if st := stateOf(s); st.claim.id == q.ID {
+						t.Fatalf("%s: the claim outlived its line: %+v", how, st)
 					}
 				case "next question":
 					// A question came in the line's pause: its Enter is left
@@ -1572,8 +1581,16 @@ func TestAWrappedStartupQuestionStaysWhenTheWindowGrows(t *testing.T) {
 // then held over by the hold of a line let go, and a dialog shown over the
 // hold answered by another reply: the dialog's claim leaves the held-over
 // question's claim standing, which resolves it once its keys' word comes,
-// and the hold's end shows it no more.
+// and the hold's end shows it no more. Each answer keeps its own
+// resumption, set by what follows both (the agent working, or the end):
+// the older answer, resolved second, never takes the dialog's place.
 func TestAHeldOverQuestionsClaimSurvivesADialogsClaim(t *testing.T) {
+	for _, how := range []string{ResumedWorking, ResumedEnded} {
+		t.Run(how, func(t *testing.T) { heldOverClaimSurvives(t, how) })
+	}
+}
+
+func heldOverClaimSurvives(t *testing.T, how string) {
 	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond, Questions: approvalQuestions()})
 	var gone atomic.Bool
 	guest := linkedController(t, s, newChanSink(false), &gone)
@@ -1641,6 +1658,27 @@ func TestAHeldOverQuestionsClaimSurvivesADialogsClaim(t *testing.T) {
 	}
 	refusedAs(t, s.AnswerInput(context.Background(), nate, q.ID, []byte("SQLite\r")), "this question was already answered by Nate: nothing was sent", "a reply after the result")
 	nothingWritten(t, p, 100*time.Millisecond)
+	// Both answers wait for how the session goes on, each its own.
+	for _, a := range []Attention{d, q} {
+		if r, ok := s.QuestionResult(a.ID); !ok || r.Resumed != nil {
+			t.Fatalf("%s before the session went on: %+v %v", a.Message, r, ok)
+		}
+	}
+	if how == ResumedWorking {
+		reportState(t, s, AttentionWorking, "")
+	} else {
+		p.exit()
+		select {
+		case <-s.ended:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the session never ended")
+		}
+	}
+	for _, a := range []Attention{d, q} {
+		if r, ok := s.QuestionResult(a.ID); !ok || r.Resumed == nil || r.Resumed.How != how {
+			t.Fatalf("%s once the session went on: %+v %v", a.Message, r, ok)
+		}
+	}
 }
 
 // Round 10, finding 3: the pre-hold Enter for a line naming no question. A

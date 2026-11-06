@@ -760,6 +760,74 @@ func TestARefusedActRetriedIsPendingBeforeItRuns(t *testing.T) {
 	}
 }
 
+// TestAnActsOutcomeCopiedAfterItsTurnIsSent: an act whose operation
+// commits after its turn's brief is kept and its slot given up sends the
+// request's brakeman event once its outcome is copied, though the
+// request's state does not change: a page holding the brief reads the act
+// done, never pending for as long as it stays open.
+func TestAnActsOutcomeCopiedAfterItsTurnIsSent(t *testing.T) {
+	l := newLaunchTest(t, nil, nil, bkAgents()...)
+	f := &actFixture{launchTest: l, bk: bkEnvOf(t, l.testEnv)}
+	c := f.bk.fakeClock()
+	f.turn(t, everyGrant, nil)
+	run := f.bk.runOf(t, f.sid)
+	events := f.bk.sse(t)
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	open := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(open)
+	atAct(t, func(stage, _, opID string) error {
+		if stage == "committed" && opID == "a-1" {
+			close(reached)
+			<-gate
+		}
+		return nil
+	})
+	type answer struct {
+		status int
+		out    map[string]any
+	}
+	acted := make(chan answer, 1)
+	go func() {
+		status, out := f.launchAct(t, map[string]any{"opId": "a-1"})
+		acted <- answer{status, out}
+	}()
+	select {
+	case <-reached:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the act's operation never committed")
+	}
+	// The launch has committed and its outcome is not yet copied: the
+	// brief is kept, then the grace passes and the slot is given up, each
+	// sending the request's event.
+	if status, out := f.bk.submit(t, f.sid, f.tok, "b1", factBrief("session:"+f.sid)); status != http.StatusCreated {
+		t.Fatalf("the brief: %d %v", status, out)
+	}
+	ofRequest := func(ev string) bool {
+		data, ok := strings.CutPrefix(ev, "brakeman ")
+		var e brakemanEvent
+		return ok && json.Unmarshal([]byte(data), &e) == nil && e.ID == f.req
+	}
+	f.bk.waitEvent(t, events, ofRequest)
+	c.add(brakemanGrace + time.Second)
+	f.bk.settle(t)
+	f.bk.runStopped(t, run)
+	f.bk.slotFree(t)
+	f.bk.waitEvent(t, events, ofRequest)
+	if acts := f.acts(t); len(acts) != 1 || acts[0].State != brakeman.ActPending {
+		t.Fatalf("the act before its outcome is copied %+v", acts)
+	}
+	// The outcome copied, before the act is answered: its event.
+	open()
+	if a := <-acted; a.status != http.StatusCreated {
+		t.Fatalf("the act: %d %v", a.status, a.out)
+	}
+	f.bk.waitEvent(t, events, ofRequest)
+	if acts := f.acts(t); len(acts) != 1 || acts[0].State != brakeman.ActDone || acts[0].Receipt == "" {
+		t.Fatalf("the act once its event is sent %+v", acts)
+	}
+}
+
 // TestAnActIsCheckedAgainAfterItWaits: an act that waited for the
 // request's make mutex is checked against the configuration and the
 // request as they are once it holds it: a grant taken away meanwhile

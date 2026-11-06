@@ -145,6 +145,12 @@ var (
 	// read the run without them, and a later commit would write them
 	// after it.
 	ErrRunUnsettled = errors.New("the run has changes the ledger has not recorded yet: continue it once the ledger takes them")
+	// ErrChainTooLong refuses a continuation of a run whose chain of
+	// continuations is longer than a server reads (maxChain runs, the run
+	// itself among them): its decisions could not be read whole, and a
+	// continuation that read them in part would ask a released gate again
+	// or drop an answer (readDecisionHistory). Nothing is made or moved.
+	ErrChainTooLong = errors.New("the run's chain of continuations is longer than this server reads: it is not continued")
 	// ErrManaged says the run is a managed one (a crew with tasks, #334),
 	// which the start, add and resume paths of a legacy run do not serve:
 	// a managed run dispatches its own tasks, and continues after a restart
@@ -272,6 +278,12 @@ type Run struct {
 	// run, whose JSON is unchanged (LaunchNamedWith).
 	Class   string `json:"class,omitempty"`
 	Request string `json:"request,omitempty"`
+	// People are the crew's people as launched (people.go), fixed for the
+	// run; a continuation's and a recovered record's are the chain's
+	// launch's. A run without tasks keeps them while the engine holds it
+	// and writes none into its record (Records.Save), which every older
+	// build reads as before.
+	People []Person `json:"people,omitempty"`
 }
 
 // Managed is what a managed run's record carries beside the run: the
@@ -397,10 +409,17 @@ type Engine struct {
 	// afterLookup, when set, runs once a command or RetryTask has looked
 	// its run up and before its change: a test evicts the run there.
 	afterLookup func(runID string)
+	// afterTaken, when set, runs in a command between its two
+	// transactions (SetAfterTakenForTest). Guarded by mu.
+	afterTaken func(runID, commandID string)
 	// afterRefused, when set, runs in a command once its taking was
 	// refused and before the refusal is handled (afterTransact): a test
 	// commits the run's launch there.
 	afterRefused func(runID string, err error)
+	// beforeRecheck, when set, runs once a Check again's change is
+	// committed and before its verification starts (recheckRecorded): a
+	// test ends the server there.
+	beforeRecheck func(runID string)
 	// afterVisit, when set, is called by withdraw for each task it visits,
 	// under e.mu: a test counts the visits.
 	afterVisit func(taskID string)
@@ -533,6 +552,10 @@ type run struct {
 	checks    sync.WaitGroup
 	revision  int64
 	crewJSON  string // the crew as launched, for the ledger's run row
+	// rechecks are the attempts Check again recorded whose verification
+	// has not started: the pump starts them once their change is
+	// committed and the prerequisites have passed (startRechecks).
+	rechecks []*attempt
 	// decisions are the run's open and answered decisions (decisions.go),
 	// under e.mu. Their order is not their opening's: a supersession
 	// refused puts its target back last; what needs that order compares
@@ -635,6 +658,10 @@ type run struct {
 	id, crewID, name, label, goal, cwd, isolation string
 	// class and request are the run's LaunchOpts, fixed when it is made.
 	class, request string
+	// people are the crew's people as launched, fixed when the run is
+	// made: read for what the run reports and the task files, never to
+	// start anything.
+	people []Person
 	// yolo is the run's yolo choice, fixed when it is made.
 	yolo bool
 	// changed is the engine's OnRunChange, or nil.
@@ -974,7 +1001,7 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 	}
 	old.resuming = true
 	yolo := old.yolo
-	c := Crew{ID: old.crewID, Name: old.name, Goal: old.goal, Cwd: old.cwd, Where: WhereServer, Isolation: old.isolation, Yolo: &yolo}
+	c := Crew{ID: old.crewID, Name: old.name, Goal: old.goal, Cwd: old.cwd, Where: WhereServer, Isolation: old.isolation, Yolo: &yolo, People: old.people}
 	keeps := map[string]kept{}
 	for _, m := range old.members {
 		c.Members = append(c.Members, m.def)
@@ -1189,7 +1216,7 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed(),
-		class: p.opts.Class, request: p.opts.Request}
+		class: p.opts.Class, request: p.opts.Request, people: c.clone().People}
 	if r.managed {
 		// The crew's project manifest as launched, a legacy setup lifted
 		// into it, and the manifest at the pinned base, whose prerequisites
@@ -1297,6 +1324,16 @@ func newMember(m Member) *member {
 }
 
 // member returns the member of r with the given name. The caller holds e.mu.
+// person reports whether name is one of the run's people as launched.
+func (r *run) person(name string) bool {
+	for _, p := range r.people {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *run) member(name string) *member {
 	for _, m := range r.members {
 		if m.def.Name == name {
@@ -1838,6 +1875,11 @@ func (r *run) admit(m Member) error {
 		return invalidf("too many members (at most %d)", maxMembers)
 	case r.member(m.Name) != nil:
 		return invalidf("member %s: the name is used twice", quote(m.Name))
+	case r.person(m.Name):
+		// checkPeople's rule, kept for a member added by hand: a run whose
+		// member took a person's name could not be resumed (ResumeRun
+		// checks the crew again, its people with it).
+		return invalidf("member %s: the name is a person's; a person is never a member, so the two names differ", quote(m.Name))
 	}
 	if err := m.checkTypedPrompt(r.goal); err != nil {
 		return err
@@ -2271,7 +2313,7 @@ func (r *run) snapshot(withDiffs, withChat bool) Run {
 		Class: r.class, Request: r.request,
 		StartedAt: r.startedAt, StoppedAt: r.stoppedAt, Members: make([]MemberState, 0, len(r.members)),
 		ResumedFrom: r.resumedFrom, ResumedBy: r.resumedBy,
-		Log: append([]session.ActivityEntry{}, r.log...)}
+		Log: append([]session.ActivityEntry{}, r.log...), People: Crew{People: r.people}.clone().People}
 	for _, m := range r.members {
 		st := m.state
 		st.Diff = nil

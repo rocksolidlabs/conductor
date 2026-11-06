@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -710,4 +713,89 @@ func TestALateLineEndDuringAContinuationWritesNothing(t *testing.T) {
 		t.Fatalf("paused: the continuation %v, the run continued %v", paused(t, e, next.ID), paused(t, e, run.ID))
 	}
 	stopRun(t, e, next.ID)
+}
+
+// ghostChain is the real ledger, with run target continuing a chain of
+// runs only it has: ghost-1 continues ghost-2, and so on to ghost-<ghosts>,
+// which continues none. Their rows hold no decisions.
+type ghostChain struct {
+	sqlLedger
+	target string
+	ghosts atomic.Int64
+}
+
+func (l *ghostChain) Load(ctx context.Context, runID string) (Loaded, bool, error) {
+	from, ok, err := l.sqlLedger.Load(ctx, runID)
+	if ok && runID == l.target {
+		from.Run.ContinuedFrom = "ghost-1"
+	}
+	return from, ok, err
+}
+
+func (l *ghostChain) RunRow(ctx context.Context, id string) (ledger.RunRow, bool, error) {
+	if n, ok := strings.CutPrefix(id, "ghost-"); ok {
+		i, err := strconv.Atoi(n)
+		if err != nil || i < 1 || int64(i) > l.ghosts.Load() {
+			return ledger.RunRow{}, false, nil
+		}
+		row := ledger.RunRow{ID: id, State: ledger.RunInterrupted}
+		if int64(i) < l.ghosts.Load() {
+			row.ContinuedFrom = fmt.Sprintf("ghost-%d", i+1)
+		}
+		return row, true, nil
+	}
+	return l.sqlLedger.RunRow(ctx, id)
+}
+
+func (l *ghostChain) Decisions(ctx context.Context, f ledger.DecisionFilter) ([]ledger.DecisionRow, error) {
+	if strings.HasPrefix(f.CurrentRun, "ghost-") {
+		return nil, nil
+	}
+	return l.sqlLedger.Decisions(ctx, f)
+}
+
+// A chain is read whole or the continuation is refused (#636, review round
+// 4): the run and maxChain-1 runs before it are read to the chain's first;
+// one run more is refused chain_too_long, with nothing made or moved: the
+// decision stays open under the run, its hold active, the run not marked
+// continued, and a continuation once the chain reads whole moves it.
+func TestAChainLongerThanTheServerReadsIsNotContinued(t *testing.T) {
+	dir, ldir := newRepo(t), t.TempDir()
+	e, fl, ld := decisionEngineAt(t, ldir)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	e2, _, ld2 := restart(t, e, ld, ldir, run.ID)
+	gc := &ghostChain{sqlLedger: sqlLedger{l: ld2}, target: run.ID}
+	e2.UseLedger(gc)
+
+	gc.ghosts.Store(maxChain - 1)
+	from, ok, err := gc.Load(t.Context(), run.ID)
+	if err != nil || !ok {
+		t.Fatalf("the run: %v %v", ok, err)
+	}
+	dh, err := e2.readDecisionHistory(t.Context(), from)
+	if err != nil || len(dh.chain) != maxChain || dh.chain[maxChain-1] != fmt.Sprintf("ghost-%d", maxChain-1) || len(dh.moving) != 1 {
+		t.Fatalf("the chain at the limit: %d runs, %d moving, %v", len(dh.chain), len(dh.moving), err)
+	}
+
+	gc.ghosts.Store(maxChain)
+	if _, err := e2.ContinueRun(t.Context(), run.ID, ""); !errors.Is(err, ErrChainTooLong) || !strings.Contains(err.Error(), "10000 runs") {
+		t.Fatalf("the continuation of a chain one longer: %v", err)
+	}
+	rec := decisionWhen(t, ld2, d.ID, "open", inState(ledger.DecisionOpen))
+	if rec.CurrentRun != run.ID || len(historyKinds(rec)) != 2 {
+		t.Fatalf("%s after the refusal: in %s, %q", d.ID, rec.CurrentRun, historyKinds(rec))
+	}
+	if got := activeHolds(t, ld2, run.ID); !slices.Equal(got, []string{"build " + d.ID}) {
+		t.Fatalf("holds %q", got)
+	}
+	if row, ok, err := ld2.Run(t.Context(), run.ID); err != nil || !ok || row.ContinuedBy != "" {
+		t.Fatalf("the run after the refusal: %+v %v", row, err)
+	}
+
+	e2.UseLedger(SQLLedger(ld2))
+	next := continueRun(t, e2, run.ID)
+	decisionWhen(t, ld2, d.ID, "moved", func(rec ledger.DecisionRecord) bool { return rec.CurrentRun == next.ID })
+	stopRun(t, e2, next.ID)
 }
