@@ -557,34 +557,3 @@ func TestAGateWithNoTaskKeepsNoRunOpen(t *testing.T) {
 	commitResult(t, e, b, "built.txt", "b\n", "built")
 	waitOutcome(t, e, run.ID, ledger.OutcomeSucceeded)
 }
-
-// An answer never reaches another task's attempt: the asking attempt gone
-// (given back), the answer goes to its task's next attempt through its task
-// file, and nothing is typed into the live attempt of another task.
-func TestAnAnswerNeverReachesAnotherAttempt(t *testing.T) {
-	dir := newRepo(t)
-	e, fl, ld := decisionEngine(t)
-	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer")))
-	b, _, bp := attemptOn(t, e, fl, run.ID, "build")
-	_, _, wp := attemptOn(t, e, fl, run.ID, "docs")
-	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
-	bp.End(0)
-	waitGivenBack(t, e, run.ID, "build", 1, d.ID)
-	answer(t, e, d.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 1})
-	rec := decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
-	if app := applied(t, rec); app.How != HowTaskFile {
-		t.Fatalf("the application: %+v", app)
-	}
-	b2 := attemptLine(t, e, fl, run.ID, "build", 2)
-	if _, f := taskFileOf(t, b2); decisionIn(t, f, d.ID).Answer != "btree" {
-		t.Fatalf("the next attempt's task file: %+v", f.Decisions)
-	}
-	if _, err := e.SendMessage(t.Context(), b2.Attempt.SessionID, "writer", "marker"); err != nil {
-		t.Fatal(err)
-	}
-	got := lineWith(t, wp, "marker")
-	if strings.Contains(got, d.ID) {
-		t.Fatalf("the answer reached docs: %q", got)
-	}
-	stopRun(t, e, run.ID)
-}

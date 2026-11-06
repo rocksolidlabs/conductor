@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -201,32 +202,110 @@ func schemaNames(t *testing.T, l *Ledger, kind string) []string {
 
 var v7Tables = []string{"attempts", "checks", "commands", "events", "messages", "prerequisites", "runs", "schema_version", "tasks", "trees"}
 
-// A version 7 database, made from main's schema, is brought to version 8
-// as it opens: five tables and four indexes are added, every table it had
-// keeps its rows as they were, and the new tables are empty.
-func TestMigrationSevenToEightAddsOnlyTables(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "runs")
-	l := openLedger(t, dir)
-	seedWhere(t, l, WhereNative)
-	finish(t, l, "team-00000001")
-	for _, stmt := range append(slices.Clone(version8Added), "UPDATE schema_version SET version = 7") {
-		if _, err := l.db.Exec(stmt); err != nil {
+// version7Like makes dir a data directory whose database is a version 7
+// one as main's code made it: a fresh file of the version 7 statements
+// (the schema without the decision tables, so no sqlite_sequence either),
+// holding the version 7 tables' rows of src's database.
+func version7Like(t *testing.T, src, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn(filepath.Join(dir, File), false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1) // the ATTACH and the pragma are the connection's
+	stmts := slices.Clone(schema[:len(schema)-len(decisionTables)])
+	// The rows are copied as they are, in no parent-first order.
+	stmts = append(stmts, "INSERT INTO schema_version (version) VALUES (7)", "PRAGMA foreign_keys = OFF", "ATTACH DATABASE '"+filepath.Join(src, File)+"' AS src")
+	for _, table := range v7Tables {
+		if table != "schema_version" {
+			stmts = append(stmts, fmt.Sprintf("INSERT INTO main.%q SELECT * FROM src.%q", table, table))
+		}
+	}
+	for _, stmt := range append(stmts, "DETACH DATABASE src") {
+		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	if got := schemaNames(t, l, "table"); !slices.Equal(got, v7Tables) {
+}
+
+// rawExec runs statements on dir's database through a connection of its
+// own, the ledger closed.
+func rawExec(t *testing.T, dir string, stmts ...string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dsn(filepath.Join(dir, File), false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+}
+
+// A version 7 database, made from main's schema, is brought to version 8
+// as it opens: five tables and four indexes are added (and the
+// AUTOINCREMENT's sqlite_sequence, made inside the migration), every
+// table it had keeps its rows as they were, and the new tables are empty.
+// A migration that fails leaves the database at version 7 as it was,
+// read-only, with none of the version's tables, and the next open, the
+// cause gone, migrates.
+func TestMigrationSevenToEightAddsOnlyTables(t *testing.T) {
+	seeded := filepath.Join(t.TempDir(), "seed")
+	l := openLedger(t, seeded)
+	seedWhere(t, l, WhereNative)
+	finish(t, l, "team-00000001")
+	l.Close()
+	dir := filepath.Join(t.TempDir(), "runs")
+	version7Like(t, seeded, dir)
+
+	v7 := openReadOnly(t, dir)
+	if v := dbVersion(t, v7); v != 7 {
+		t.Fatalf("the fixture is version %d", v)
+	}
+	if got := schemaNames(t, v7, "table"); !slices.Equal(got, v7Tables) {
 		t.Fatalf("the version 7 fixture's tables: %v", got)
 	}
-	if got := schemaNames(t, l, "index"); len(got) != 0 {
+	if got := schemaNames(t, v7, "index"); len(got) != 0 {
 		t.Fatalf("the version 7 fixture's indexes: %v", got)
+	}
+	if n := countRows(t, v7, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'sqlite_sequence'"); n != 0 {
+		t.Fatal("the version 7 fixture has a sqlite_sequence")
 	}
 	// Every table's rows but the version's own.
 	kept := slices.DeleteFunc(slices.Clone(v7Tables), func(s string) bool { return s == "schema_version" })
 	before := map[string][]string{}
 	for _, table := range kept {
-		before[table] = tableRows(t, l, table)
+		before[table] = tableRows(t, v7, table)
+		if len(before[table]) == 0 && table != "commands" && table != "messages" && table != "trees" {
+			t.Fatalf("the fixture's %s holds no rows", table)
+		}
 	}
-	l.Close()
+	v7.Close()
+
+	// A table of the version's name already there: the migration fails,
+	// and nothing of it is kept.
+	rawExec(t, dir, "CREATE TABLE decision_holds (x)")
+	failed := openLedger(t, dir)
+	if ro, why := failed.ReadOnly(); !ro || !strings.Contains(why, "decision_holds") {
+		t.Fatalf("a failed migration: read-only %v: %s", ro, why)
+	}
+	if v := dbVersion(t, failed); v != 7 {
+		t.Fatalf("version %d after a failed migration", v)
+	}
+	if got := schemaNames(t, failed, "table"); !slices.Equal(got, slices.Sorted(slices.Values(append(slices.Clone(v7Tables), "decision_holds")))) {
+		t.Fatalf("tables after a failed migration: %v", got)
+	}
+	if _, ok, err := failed.Decision(context.Background(), 1); ok || err != nil {
+		t.Fatalf("a decision after a failed migration: %v %v", ok, err)
+	}
+	failed.Close()
+	rawExec(t, dir, "DROP TABLE decision_holds")
 
 	again := openLedger(t, dir)
 	if ro, why := again.ReadOnly(); ro {
@@ -241,6 +320,9 @@ func TestMigrationSevenToEightAddsOnlyTables(t *testing.T) {
 	}
 	if got, want := schemaNames(t, again, "index"), []string{"decision_holds_decision", "decision_ops", "decisions_current", "decisions_request"}; !slices.Equal(got, want) {
 		t.Fatalf("indexes after the migration: %v", got)
+	}
+	if n := countRows(t, again, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'sqlite_sequence'"); n != 1 {
+		t.Fatal("no sqlite_sequence after the migration")
 	}
 	for _, table := range kept {
 		if got := tableRows(t, again, table); !slices.Equal(got, before[table]) {
@@ -258,6 +340,22 @@ func TestMigrationSevenToEightAddsOnlyTables(t *testing.T) {
 	if n := open(t, again, agentDecision("team-00000002", "build", 1, "q1")); n != 1 {
 		t.Fatalf("the first decision is %s", DecisionID(n))
 	}
+}
+
+// openReadOnly opens dir's ledger as a reader: the owner lock another's,
+// not waited for, so it never migrates.
+func openReadOnly(t *testing.T, dir string) *Ledger {
+	t.Helper()
+	old := takeLock
+	takeLock = func(string) (*ownerLock, string, bool, error) {
+		return nil, "another server owns the ledger (test)", false, nil
+	}
+	defer func() { takeLock = old }()
+	l := openLedger(t, dir)
+	if ro, _ := l.ReadOnly(); !ro {
+		t.Fatal("the reader opened as the owner")
+	}
+	return l
 }
 
 // A decision's n is never given again, not even once its run is pruned.
@@ -602,10 +700,35 @@ func TestDecisionBounds(t *testing.T) {
 		if err := openOne("over"); !errors.Is(err, ErrDecisionLimit) {
 			t.Fatalf("an opening past the place: %v", err)
 		}
-		// Its replacement takes the place it held.
-		setState(t, l, run, x, DecisionSuperseded, "")
-		if err := openOne("replacement"); err != nil {
-			t.Fatalf("the replacement: %v", err)
+		// Its replacement takes the place it held, in the order
+		// OpenDecision says, in one transition: the replaced one made
+		// final, the replacement opened, superseded_by set. Opened first,
+		// it finds the place taken.
+		if err := try(l, run, func(tx *Tx) error {
+			_, _, err := tx.OpenDecision(gateDecision(run, "replacement"))
+			return err
+		}); !errors.Is(err, ErrDecisionLimit) {
+			t.Fatalf("the replacement opened before the replaced one is final: %v", err)
+		}
+		var rn int64
+		in(t, l, run, func(tx *Tx) error {
+			d, _, err := tx.Decision(x)
+			if err != nil {
+				return err
+			}
+			d.State, d.Rev, d.Why = DecisionSuperseded, d.Rev+1, "the answer's identity could not be rechecked"
+			if err := tx.PutDecision(d); err != nil {
+				return err
+			}
+			r, created, err := tx.OpenDecision(gateDecision(run, "replacement"))
+			if err != nil || !created {
+				return fmt.Errorf("the replacement: %v %v", created, err)
+			}
+			rn, d.SupersededBy = r.N, r.ID()
+			return tx.PutDecision(d)
+		})
+		if rec := record(t, l, x); rec.State != DecisionSuperseded || rec.SupersededBy != DecisionID(rn) {
+			t.Fatalf("the replaced one: %s, superseded by %q", rec.State, rec.SupersededBy)
 		}
 		if err := openOne("over-2"); !errors.Is(err, ErrDecisionLimit) {
 			t.Fatalf("a 1,001st: %v", err)
@@ -691,7 +814,27 @@ func TestDecisionBounds(t *testing.T) {
 				t.Fatalf("%s: %v", name, err)
 			}
 		}
+		// Applied only with its receipt.
+		answer(t, l, run, n2, "r-wb", workbenchAuth)
+		if err := try(l, run, func(tx *Tx) error {
+			d, _, _ := tx.Decision(n2)
+			d.State, d.Rev = DecisionApplied, d.Rev+1
+			return tx.PutDecision(d)
+		}); !errors.Is(err, ErrInvalidDecision) {
+			t.Fatalf("applied with no receipt: %v", err)
+		}
+		// An authority with a closing bracket after it is no authority.
+		n3 := open(t, l, gateDecision(run, "g3"))
+		if err := try(l, run, func(tx *Tx) error {
+			_, err := tx.Respond(n3, ResponseRow{Actor: "admin", Authority: workbenchAuth + "]", ResponseID: "r", Fingerprint: "fp", Status: ResponseAccepted, Receipt: `{}`})
+			return err
+		}); !errors.Is(err, ErrInvalidDecision) {
+			t.Fatalf("an authority with text after it: %v", err)
+		}
 		for name, req := range map[string]string{
+			"a closing bracket after it":   `{"question":"q","subject":{"kind":"commit","commit":"c"}}]`,
+			"a closing brace after it":     `{"question":"q","subject":{"kind":"commit","commit":"c"}}}`,
+			"a second value after it":      `{"question":"q","subject":{"kind":"commit","commit":"c"}} {}`,
 			"a question of 501 characters": `{"question":"` + strings.Repeat("é", MaxDecisionQuestion+1) + `","subject":{"kind":"commit","commit":"c"}}`,
 			"a question of two lines":      `{"question":"a\nb","subject":{"kind":"commit","commit":"c"}}`,
 			"a context of 4,001":           `{"question":"q","context":"` + strings.Repeat("x", MaxDecisionContext+1) + `","subject":{"kind":"commit","commit":"c"}}`,
@@ -876,8 +1019,9 @@ func TestAnOperationIDIsUniquePerDecision(t *testing.T) {
 
 // Every kind is written to its own bound and refused past it; the
 // notified rows take the rest of 256 and past it are not written,
-// counted as dropped in the next row written; a decision's history never
-// passes 256.
+// counted as dropped in the next row written that has room for the count
+// within its 2 KiB (a row of the full 2 KiB is written as sent, and the
+// count goes in the next); a decision's history never passes 256.
 func TestTheHistoryCapHolds(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	const run = "team-00000001"
@@ -909,20 +1053,28 @@ func TestTheHistoryCapHolds(t *testing.T) {
 	if _, err := write(HistoryRow{Kind: HistoryEscalated}); !errors.Is(err, ErrDecisionLimit) {
 		t.Fatalf("a provider's row past the rest: %v", err)
 	}
-	opened, err := write(HistoryRow{Kind: HistoryOpened, Detail: `{"by":"plan"}`})
+	full := `{"by":"plan","pad":"` + strings.Repeat("x", MaxHistoryDetail-len(`{"by":"plan","pad":""}`)) + `"}`
+	opened, err := write(HistoryRow{Kind: HistoryOpened, Detail: full})
+	if err != nil || len(full) != MaxHistoryDetail {
+		t.Fatalf("an opened row of %d bytes: %v", len(full), err)
+	}
+	if opened.Detail != full {
+		t.Fatalf("a row of the full 2 KiB took the count: %d bytes", len(opened.Detail))
+	}
+	routed, err := write(HistoryRow{Kind: HistoryRouted, Detail: `{"rule":"policy"}`})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var detail map[string]any
-	if err := json.Unmarshal([]byte(opened.Detail), &detail); err != nil || detail["dropped"] != float64(2) || detail["by"] != "plan" {
-		t.Fatalf("the next row's detail: %s %v", opened.Detail, err)
+	if err := json.Unmarshal([]byte(routed.Detail), &detail); err != nil || detail["dropped"] != float64(2) || detail["rule"] != "policy" {
+		t.Fatalf("the next row's detail: %s %v", routed.Detail, err)
 	}
 	bounds := []struct {
 		kinds []string
 		max   int
 		op    bool
 	}{
-		{[]string{HistoryRouted}, 2, false},
+		{[]string{HistoryRouted}, 1, false}, // the second of two: the first took the count
 		{[]string{HistoryCommented, HistoryInfoRequested, HistoryRouted}, MaxDecisionOperations, true},
 		{[]string{HistoryResponded}, MaxDecisionResponses, false},
 		{[]string{HistoryApplied}, 1, false},
@@ -960,6 +1112,11 @@ func TestTheHistoryCapHolds(t *testing.T) {
 	rec := record(t, l, n)
 	if len(rec.History) != MaxDecisionHistory {
 		t.Fatalf("%d history rows", len(rec.History))
+	}
+	for _, h := range rec.History {
+		if len(h.Detail) > MaxHistoryDetail {
+			t.Fatalf("a %s row of %d bytes", h.Kind, len(h.Detail))
+		}
 	}
 	for i, h := range rec.History {
 		if h.Seq != i+1 {
@@ -1321,5 +1478,131 @@ func TestAnUnmigratedLedgerHasNoDecisions(t *testing.T) {
 	}
 	if hs, err := l.Holds(ctx, "team-00000001"); len(hs) != 0 || err != nil {
 		t.Fatalf("holds: %+v %v", hs, err)
+	}
+}
+
+// A reader that attached to a version 7 database, read-only and never
+// migrating, sees the decisions another server, the owner, writes once
+// it has migrated the database: the readers read the version with their
+// rows, not the one kept at attach.
+func TestADecisionReaderSeesAnotherOwnersMigration(t *testing.T) {
+	seeded := filepath.Join(t.TempDir(), "seed")
+	l := openLedger(t, seeded)
+	newRun(t, l, "team-00000001")
+	l.Close()
+	dir := filepath.Join(t.TempDir(), "runs")
+	version7Like(t, seeded, dir)
+
+	ctx := context.Background()
+	reader := openReadOnly(t, dir)
+	if v := dbVersion(t, reader); v != 7 {
+		t.Fatalf("version %d before the owner's migration", v)
+	}
+	if _, ok, err := reader.Decision(ctx, 1); ok || err != nil {
+		t.Fatalf("a decision before the migration: %v %v", ok, err)
+	}
+
+	owner := openLedger(t, dir)
+	if ro, why := owner.ReadOnly(); ro {
+		t.Fatalf("the owner opened read-only: %s", why)
+	}
+	const run = "team-00000001"
+	tasksOf(t, owner, run, "build")
+	n := open(t, owner, agentDecision(run, "build", 1, "q1"))
+	in(t, owner, run, func(tx *Tx) error { return tx.Hold(run, "build", n) })
+
+	if rec, ok, err := reader.Decision(ctx, n); !ok || err != nil || rec.State != DecisionOpen {
+		t.Fatalf("the reader's decision after the owner's migration: %+v %v %v", rec, ok, err)
+	}
+	if ds, err := reader.Decisions(ctx, DecisionFilter{}); len(ds) != 1 || err != nil {
+		t.Fatalf("the reader's decisions: %+v %v", ds, err)
+	}
+	if hs, err := reader.Holds(ctx, run); len(hs) != 1 || err != nil {
+		t.Fatalf("the reader's holds: %+v %v", hs, err)
+	}
+}
+
+// Decision reads the row, its responses and its history of one commit: a
+// transition that answers the decision, committed by another server
+// between the reader's row and its responses, is not seen in part (an
+// open row beside an accepted response), and the next read sees it whole.
+func TestADecisionIsReadInOneSnapshot(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	owner := openLedger(t, dir)
+	const run = "team-00000001"
+	newRun(t, owner, run)
+	n := open(t, owner, gateDecision(run, "g1"))
+	reader := openReadOnly(t, dir)
+
+	ctx := context.Background()
+	ran := false
+	reader.inDecision = func() {
+		ran = true
+		answer(t, owner, run, n, "yes", workbenchAuth)
+		in(t, owner, run, func(tx *Tx) error {
+			_, _, err := tx.History(n, HistoryRow{Kind: HistoryResponded, Detail: `{"k":1,"status":"accepted"}`})
+			return err
+		})
+	}
+	rec, ok, err := reader.Decision(ctx, n)
+	reader.inDecision = nil
+	if !ran || !ok || err != nil {
+		t.Fatalf("the read: ran %v, %v %v", ran, ok, err)
+	}
+	if rec.State != DecisionOpen || rec.Rev != 1 || len(rec.Responses) != 0 || len(rec.History) != 0 {
+		t.Fatalf("a torn record: %s at rev %d, %d responses, %d history rows", rec.State, rec.Rev, len(rec.Responses), len(rec.History))
+	}
+	rec = record(t, reader, n)
+	if rec.State != DecisionAnswered || rec.Rev != 2 || len(rec.Responses) != 1 || len(rec.History) != 1 {
+		t.Fatalf("the record after: %s at rev %d, %d responses, %d history rows", rec.State, rec.Rev, len(rec.Responses), len(rec.History))
+	}
+}
+
+// A cancellation keeps its command id and fingerprint as an operation
+// does: sent again it answers its row, with another body it is a
+// conflict. It is no operation of the 32: it has the final row's place,
+// after 32 operations too, and a second final row is refused.
+func TestACancellationKeepsItsCommandID(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	const run = "team-00000001"
+	newRun(t, l, run)
+	n := open(t, l, gateDecision(run, "g1"))
+	in(t, l, run, func(tx *Tx) error {
+		for i := range MaxDecisionOperations {
+			if _, _, err := tx.History(n, HistoryRow{Kind: HistoryCommented, By: "admin", OpID: fmt.Sprintf("op%d", i), Fingerprint: "fp"}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	cancel := HistoryRow{Kind: HistoryCancelled, By: "admin", Detail: `{"why":"not needed","rev":1}`, OpID: "c1", Fingerprint: "fp-c1"}
+	var first HistoryRow
+	in(t, l, run, func(tx *Tx) error {
+		var err error
+		first, _, err = tx.History(n, cancel)
+		return err
+	})
+	if first.Seq != MaxDecisionOperations+1 || first.OpID != "c1" {
+		t.Fatalf("the cancellation: %+v", first)
+	}
+	in(t, l, run, func(tx *Tx) error {
+		again, repeat, err := tx.History(n, cancel)
+		if err != nil || !repeat || again.Seq != first.Seq {
+			return fmt.Errorf("again: %+v %v %v", again, repeat, err)
+		}
+		other := cancel
+		other.Fingerprint = "fp-other"
+		if _, _, err := tx.History(n, other); !errors.Is(err, ErrDecisionConflict) {
+			return fmt.Errorf("another body: %v", err)
+		}
+		second := cancel
+		second.OpID = "c2"
+		if _, _, err := tx.History(n, second); !errors.Is(err, ErrDecisionLimit) {
+			return fmt.Errorf("a second final row: %v", err)
+		}
+		return nil
+	})
+	if rec := record(t, l, n); rec.History[len(rec.History)-1].OpID != "c1" || rec.History[len(rec.History)-1].Fingerprint != "fp-c1" {
+		t.Fatalf("the kept row: %+v", rec.History[len(rec.History)-1])
 	}
 }

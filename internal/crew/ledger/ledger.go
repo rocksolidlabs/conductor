@@ -265,8 +265,10 @@ type Ledger struct {
 	afterCommit func()
 	// inRead, when a test sets it, runs inside readAt's read transaction
 	// of an unmigrated database, after the version is read: the
-	// connection held, mu not.
-	inRead func()
+	// connection held, mu not. inDecision runs inside Decision's read
+	// transaction, between the decision's row and its responses.
+	inRead     func()
+	inDecision func()
 }
 
 // Errors of a ledger that cannot serve.
@@ -578,24 +580,37 @@ type querier interface {
 }
 
 // readAt runs read, a reader whose columns depend on the version of the
-// database, with that version. From versionWhere on, the version the
-// ledger keeps is the database's columns' (no later version takes one
-// away), and read asks the database. Below it the ledger is read-only and
-// reads a database another server, the owner, may migrate at any moment:
-// the version and the rows are read in one read transaction, one snapshot
-// of the database, so a migration committed before the rows are read is
-// seen with them and their where_ran column is read, never the literal
-// native in its place. A later version seen is kept (noteVersion), so the
-// reads after it ask the database, but only once the transaction is
-// rolled back: the ledger has one connection, and a holder of mu may wait
-// for it (Snapshot's VACUUM INTO, a transition), so mu is never taken
-// while the transaction holds it.
+// database, with that version. From versionDecisions on, the newest
+// version a reader asks about (no later version takes a column or a table
+// away), the version the ledger keeps is the database's, and read asks
+// the database. Below it the ledger is read-only and reads a database
+// another server, the owner, may migrate at any moment: the version and
+// the rows are read in one read transaction, one snapshot of the
+// database, so a migration committed before the rows are read is seen
+// with them (their where_ran column read, never the literal native in its
+// place; the decision tables read, never "no decision"). A later version
+// seen is kept (noteVersion), so the reads after it ask the database, but
+// only once the transaction is rolled back: the ledger has one
+// connection, and a holder of mu may wait for it (Snapshot's VACUUM INTO,
+// a transition), so mu is never taken while the transaction holds it.
 func (l *Ledger) readAt(ctx context.Context, read func(q querier, version int) error) error {
+	return l.readIn(ctx, false, read)
+}
+
+// readSnapshot is readAt in one read transaction at every version: a
+// reader of several statements whose rows must be of one commit (a
+// decision with its responses and history), which a transition committed
+// between two of them would otherwise tear.
+func (l *Ledger) readSnapshot(ctx context.Context, read func(q querier, version int) error) error {
+	return l.readIn(ctx, true, read)
+}
+
+func (l *Ledger) readIn(ctx context.Context, snapshot bool, read func(q querier, version int) error) error {
 	db, version, err := l.connAt()
 	if err != nil {
 		return err
 	}
-	if version >= versionWhere {
+	if version >= versionDecisions && !snapshot {
 		return read(db, version)
 	}
 	// ReadOnly: a plain BEGIN, deferred, whose snapshot is the first read's,
@@ -609,7 +624,7 @@ func (l *Ledger) readAt(ctx context.Context, read func(q querier, version int) e
 	if err := tx.QueryRowContext(ctx, "SELECT version FROM schema_version").Scan(&v); err != nil {
 		v = version
 	}
-	if l.inRead != nil {
+	if l.inRead != nil && version < versionDecisions {
 		l.inRead()
 	}
 	err = read(tx, v)

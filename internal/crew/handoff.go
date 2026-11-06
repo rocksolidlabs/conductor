@@ -215,8 +215,13 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			if e.beforeAnswer != nil {
 				e.beforeAnswer(m.def.Name)
 			}
-			if al, mirror := e.nextAnswer(r, m, l); al != nil && e.typeAnswer(r, m, l, al, mirror) {
-				waitWake(r, m, l)
+			if al, mirror := e.nextAnswer(r, m, l); al != nil {
+				if e.afterLook != nil {
+					e.afterLook(m.def.Name, mirror)
+				}
+				if e.typeAnswer(r, m, l, al, mirror) {
+					waitWake(r, m, l)
+				}
 			}
 			continue
 		}
