@@ -1115,6 +1115,106 @@ func TestCloseGivesUpOnEndCommits(t *testing.T) {
 	}
 }
 
+// An end, once observed, is written whether or not its commit could be
+// read (the package's rule on end commits; S26, S29). A pass is held
+// reading the first record's end commit; the second record ends
+// meanwhile, so that pass did not take it; Close then gives up on the
+// reads. When Close returns, both files are ended, with no commit: the
+// second's end never waited for a read that Close had cancelled
+// (Codex round 9, finding 1).
+func TestAnEndIsWrittenWhateverItsCommitRead(t *testing.T) {
+	slowFlush(t)
+	old := closeWait
+	closeWait = 50 * time.Millisecond
+	t.Cleanup(func() { closeWait = old })
+	first, second := sid(1), sid(2)
+	reached := make(chan string, 16)
+	j, dir := newJournal(t, Options{EndCommit: func(ctx context.Context, r Record) string {
+		reached <- r.ID
+		<-ctx.Done()
+		return "0123456789abcdef0123456789abcdef01234567"
+	}})
+	begin(t, j, serverRecord(first))
+	begin(t, j, serverRecord(second))
+	finish(j, j.at(first), Ending{How: "stopped"})
+	if id := <-reached; id != first {
+		t.Fatalf("the first read was %s's", id)
+	}
+	// The pass is held in the first record's read: the second ends now.
+	finish(j, j.at(second), Ending{How: "exited (exit 0)"})
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if r, raw := onDisk(t, dir, second); r.EndedAt.IsZero() || r.Ending != "exited (exit 0)" || r.End != "" {
+		t.Fatalf("the record that ended during the held read, after Close:\n%s", raw)
+	}
+	if r, raw := onDisk(t, dir, first); r.EndedAt.IsZero() || r.Ending != "stopped" || r.End != "" {
+		t.Fatalf("the record whose read Close gave up on, after Close:\n%s", raw)
+	}
+}
+
+// An end commit is an enrichment written when it arrives (the package's
+// rule on end commits): a record ended while a pass reads another's end
+// commit is written by that pass with no commit, and its own commit,
+// read by the next pass, is written then; the record stays in memory
+// until it is (Codex round 9, finding 2).
+func TestAnEndCommitReadAfterItsEndIsWritten(t *testing.T) {
+	slowFlush(t)
+	first, second := sid(1), sid(2)
+	reached := make(chan string, 16)
+	gate := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	j, dir := newJournal(t, Options{EndCommit: func(_ context.Context, r Record) string {
+		reached <- r.ID
+		if r.ID == first {
+			<-gate
+			return "1111111111111111111111111111111111111111"
+		}
+		return "2222222222222222222222222222222222222222"
+	}})
+	begin(t, j, serverRecord(first))
+	begin(t, j, serverRecord(second))
+	finish(j, j.at(first), Ending{How: "stopped"})
+	<-reached
+	finish(j, j.at(second), Ending{How: "exited (exit 0)"})
+	ended := make(chan []byte, 1)
+	beforeWrite = func(name string) error {
+		if name == SessionsDir+"/"+second+".json" {
+			if b, err := os.ReadFile(filepath.Join(dir, Dir, name)); err == nil && bytes.Contains(b, []byte(`"endedAt"`)) {
+				select {
+				case ended <- b:
+				default:
+				}
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() { beforeWrite = nil })
+	release()
+	until(t, "the second record's commit written", func() bool {
+		r, _ := onDisk(t, dir, second)
+		return r.End != ""
+	})
+	r, _ := onDisk(t, dir, second)
+	if r.EndedAt.IsZero() || r.Ending != "exited (exit 0)" || r.End != "2222222222222222222222222222222222222222" {
+		t.Fatalf("the second record: %+v", r)
+	}
+	select {
+	case b := <-ended:
+		var w Record
+		if err := json.Unmarshal(b, &w); err != nil || w.End != "" {
+			t.Fatalf("the end written before its commit: %s %v", b, err)
+		}
+	default:
+		t.Fatal("the second record's end was not written before its commit was read")
+	}
+	if f, _ := onDisk(t, dir, first); f.End != "1111111111111111111111111111111111111111" {
+		t.Fatalf("the first record: %+v", f)
+	}
+}
+
 // A crew a session takes after its launch is written at once, not at the
 // next flush: the writer writes the record with the crew while its tick
 // cannot come.

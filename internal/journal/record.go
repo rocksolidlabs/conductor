@@ -40,6 +40,15 @@
 //   - the writer, outside the journal's lock: its end commit read
 //     (EndCommit), its touches asked of Denied (fold), then the record
 //     written (pass).
+//
+// An end, once observed, is written whether or not its commit could be
+// read: the end commit is an enrichment, written when it arrives, never a
+// condition of the end's write. A pass reads the end commits of the
+// records it found ended before it writes, so an end and its commit
+// usually go out together; an end settled while a pass reads is written
+// by that pass without its commit, which the next pass reads and writes;
+// and once Close has given up on the reads (closeWait), every end is
+// written with the commit it has, none for a read not answered.
 //   - the rule for a record with no instance (below): one whose file has
 //     no end is marked lost and written so.
 //

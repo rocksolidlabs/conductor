@@ -380,7 +380,8 @@ safe for concurrent use:
   written at once, not at the next pass), and `st.End` once: an observed
   end (`EndedAt` and `Ending` as the session's status gives them, every
   question still open in the record ended `withdrawn` at the end's time,
-  the end commit read by the writer before the record is written) or a
+  its end commit read by the writer and written when it is read: an
+  enrichment, never a condition of the end's write) or a
   lost one (`LostAt`, `Ending` `lost`, no `EndedAt`). It is idempotent: a
   `State` settled again changes nothing, and an end once recorded stands.
   Which of two `State`s is the newer is its caller's to order (the API
@@ -395,10 +396,14 @@ safe for concurrent use:
   set, an end) at the next pass, woken at once. Before it writes, a pass
   reads the end commits of the records ended since the last (a git read
   each, `endReaders` at once, each within its 2 s), which can delay that
-  pass's writes. What a kill loses is what was not yet written. `Close()`:
-  the writer's last pass writes every record; an end commit still being
-  read gets `closeWait` (3 s), past which its record is written without
-  one; every later write and `Begin` is refused.
+  pass's writes. An end, once observed, is written whether or not its
+  commit could be read: an end settled while a pass reads is written by
+  that pass without its commit, which the next pass reads and writes. What
+  a kill loses is what was not yet written (an end written before its
+  commit keeps no commit). `Close()`: the writer's last pass writes every
+  record; an end commit still being read gets `closeWait` (3 s), past
+  which its record is written with the commit it has, none, and an answer
+  after it is not kept; every later write and `Begin` is refused.
 - `Get(id)`, `List(after string, limit int)` (newest first by `StartedAt`,
   pages of at most 100), `Forget(id)` (refused for a live session,
   `ErrLive`, and for a record holding a `pending` resume receipt,
@@ -1756,7 +1761,7 @@ hosted session has no record until PR-12). `open` (admitted: its session
 live, or its registration in flight) → `ended` (a reconcile read an
 observed end: `EndedAt` and `Ending` from the session's `Info`, every
 question still open withdrawn by the end, the end commit read by the
-writer before the end is written) or `lost` (a final reconcile read no
+writer and written when read, never a condition of the end's write) or `lost` (a final reconcile read no
 observed end: the session gone from the registry, or the shutdown's final
 pass, with its process running at that read; or a record with no instance
 whose file has no end, at the next start's recovery or after a failed
@@ -1826,10 +1831,10 @@ Rv with any other (below, S38).
 | S23 | Fp, Hn or Sm | After Fp the recorder is gone; `awaitProcessEnd` ends on `recordsStop`. | `recMu` | as Fp left it | lock |
 | S24 | Fp, Rm | Both final; whichever is second finds no recorder. | `recMu`, idempotence | one end | lock |
 | S25 | Fp, Sr or Pe | Fp's read decides, as Rm's does (S21): what the session object shows at the read. | `recMu`, the snapshot rule | its end, or `lost` | lock |
-| S26 | Fp's `Close`, Wr's end commits | The ends Fp settled are written by `Close`'s last pass; each end commit is read within `closeWait` (3 s), past it written without one. | `closeWait`, the `needEnd` mark | ended, with its end commit or none | `TestCloseGivesUpOnEndCommits` |
+| S26 | Fp's `Close`, Wr's end commits | The ends Fp settled are written by `Close`'s last pass, and every end observed before it, whether or not its commit was read: an end is never held for its commit. A commit read within `closeWait` (3 s) is written with it; a read not answered by then leaves the record ended with no commit, and an answer after it is not kept. | `closeWait`, the reads' context | ended, with its end commit or none | `TestCloseGivesUpOnEndCommits`, `TestAnEndIsWrittenWhateverItsCommitRead` (a pass held reading one commit, another record ending meanwhile, then `Close`) |
 | S27 | Fp, Fg (a Forget route during the shutdown) | Before `Close`: as any Forget. After: refused (`ErrClosed`). | the journal's `mu` and `closed` | forgotten, or as it was | lock |
 | S28 | Wr's end commit, Rm | The end commit is read through the registry's session and its folder: removed first, none is read. | the order of events (a promise, below) | ended, `endCommit` empty | `TestTheEndCommitIsTheLaunchRepositorys` (with its removed-first case) |
-| S29 | Wr, Settle | The writer copies the record under `mu`; a later `Settle` marks it dirty again; an end is written only once its end commit is read. | the journal's `mu`, `needEnd` | the later state at the next write | lock |
+| S29 | Wr, Settle | The writer copies the record under `mu`; a later `Settle` marks it dirty again. An end is written at the write that finds it, whether or not its end commit is read; the commit, read after, marks the record dirty again and is written then (`needEnd` keeps the record in memory until it is, and gates no write). | the journal's `mu` | the later state at the next write; the end before its commit when the commit is read after the write | `TestAnEndCommitReadAfterItsEndIsWritten` |
 | S30 | Wr, Fg | Chosen under `mu`, the record's instance ends; the writer's work after finds its record gone; a write under way ends before the delete. | the instance rule, `wmu` | gone | `TestAForgottenRecordIsHiddenBeforeItsFileGoes`, `TestARemovalAgainstTheFold` |
 | S31 | Fg, Hn or Rm or Sm on an ended record whose session is still registered | `Forget` takes the ended record; the instance ends; a later `Settle` or stream is dropped. | the instance rule | gone, and stays gone | `TestAHookOfAForgottenInstanceIsDropped` |
 | S32 | Fg, a live session | The route refuses a session listed and not ended; the journal refuses any open record (`ErrLive`), a stopped session whose process runs among them. | the journal's `mu` | kept | `TestForgetRefusesALiveSession` |
@@ -1863,6 +1868,9 @@ once here.
   status is published, `exited` with no exit code at the read's time. What
   the process does after that read is never recorded.
 - **The end commit** is read by the writer after the end is recorded,
+  and written when it is read: the end's write never waits for it, so an
+  end written before its commit keeps none should the process be killed
+  between. It is read
   through the session's own folder (`FolderDir`, by its handle where the
   system names one) and only from the launch's repository, by the file
   system's identity of its common directory. A session removed from the
@@ -2265,7 +2273,9 @@ counted, the question `withdrawn`),
 session removed, `OnRemove` held at `beforeRemovedReconcile`, the process
 let exit, then the reconcile let go: `stopped`; and the reconcile let go
 first, the process exiting after: `lost`, still `lost` after a `Flush`),
-`TestCloseGivesUpOnEndCommits` (S26),
+`TestCloseGivesUpOnEndCommits` and
+`TestAnEndIsWrittenWhateverItsCommitRead` (S26),
+`TestAnEndCommitReadAfterItsEndIsWritten` (S29),
 `TestTheEndCommitIsTheLaunchRepositorys` (S28, with a session removed
 before the writer reads its end commit: none),
 `TestAForgottenRecordIsHiddenBeforeItsFileGoes` and

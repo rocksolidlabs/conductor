@@ -195,9 +195,10 @@ type rec struct {
 	inst uint64
 	r    Record
 	// dirty: changed since its last write; urgent: to be written at once
-	// (an end, a crew taken); needEnd: its end commit to be read;
-	// released: its session's last State is in (State.Final), so it may
-	// leave memory once ended and written.
+	// (an end, a crew taken); needEnd: its end commit to be read, which
+	// keeps it in memory and never keeps its end from being written (the
+	// package's rule on end commits); released: its session's last State
+	// is in (State.Final), so it may leave memory once ended and written.
 	dirty, urgent, needEnd, released bool
 	touches                          []touch
 	// state is the last State settled (Settle): its metadata is the
@@ -875,8 +876,10 @@ func (j *Journal) Tool(in Instance, name string) {
 
 // Settle makes the record of in say what st says of its session: its
 // name, its agent's own session and its crew as they are now (a crew taken
-// written at once), and its end once st has one (written at once, an
-// observed end with its end commit read first). It is idempotent: a State
+// written at once), and its end once st has one (written at once; an
+// observed end's commit is read by the writer and written when it is
+// read, never a condition of the end's write: the package's rule on end
+// commits). It is idempotent: a State
 // settled again, or an older one after a newer, changes nothing an end
 // recorded says, since an end, once recorded, stands (an observed end
 // replaces only a lost one); what it reads of the metadata is the
@@ -1038,14 +1041,11 @@ func (j *Journal) pass(all bool) {
 	j.mu.Lock()
 	var due []*rec
 	for id, x := range j.recs {
-		if x.needEnd {
-			continue
-		}
 		if x.urgent || (all && x.dirty) {
 			due = append(due, x)
 			continue
 		}
-		if (x.released || x.inst == 0) && !x.dirty && len(x.touches) == 0 && !x.endedAt.IsZero() && j.o.Now().Sub(x.endedAt) >= flushEvery {
+		if (x.released || x.inst == 0) && !x.needEnd && !x.dirty && len(x.touches) == 0 && !x.endedAt.IsZero() && j.o.Now().Sub(x.endedAt) >= flushEvery {
 			delete(j.recs, id)
 		}
 	}
@@ -1074,9 +1074,12 @@ func (j *Journal) collect(pick func(*rec) bool) []*rec {
 }
 
 // endCommits reads the end commits of the records ended, at most
-// endReaders at once. Once Close has given up on them (reads ended,
-// closeWait after it began) those not read are written without one, and
-// an answer that comes later is not kept.
+// endReaders at once, and returns once they are read or Close has given up
+// on them (reads ended, closeWait after it began). It changes no record's
+// end: each end was settled dirty and urgent, and the writes that follow
+// write it with the commit it has, none for a read not answered (the
+// package's rule on end commits). An answer that comes once Close has
+// given up is not kept (endCommit).
 func (j *Journal) endCommits(ends []*rec) {
 	if len(ends) == 0 {
 		return
@@ -1104,20 +1107,13 @@ func (j *Journal) endCommits(ends []*rec) {
 	select {
 	case <-read:
 	case <-ctx.Done():
-		j.mu.Lock()
-		for _, x := range ends {
-			if x.needEnd {
-				x.needEnd = false
-				x.dirty, x.urgent = true, true
-			}
-		}
-		j.mu.Unlock()
 	}
 }
 
-// endCommit reads the end commit of an ended record. An answer that comes
-// once Close has given up on it (needEnd let go, endCommits) changes
-// nothing: the read may outlast Close, but nothing it does is written.
+// endCommit reads the end commit of an ended record and marks the record
+// to be written with it. An answer that comes once Close has given up on
+// the reads (ctx ended, endCommits) changes nothing: the read may outlast
+// Close, but nothing it brings is kept.
 func (j *Journal) endCommit(ctx context.Context, x *rec) {
 	j.mu.Lock()
 	r := x.r
@@ -1129,7 +1125,7 @@ func (j *Journal) endCommit(ctx context.Context, x *rec) {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if !x.needEnd {
+	if !x.needEnd || ctx.Err() != nil {
 		return
 	}
 	x.needEnd = false
