@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -481,4 +482,227 @@ func TestAnOperationAtARevAnAnswerMovedIsStale(t *testing.T) {
 		}
 	}
 	stopRun(t, e, run.ID)
+}
+
+// keptAside writes a comment on decision id straight into the ledger, on
+// the run that holds it, in a transaction of its own: the row's rev moves
+// and the engine's copy does not, as a write outside the run's
+// transactions leaves it (a comment kept on the old run while a
+// continuation read the decisions).
+func keptAside(t *testing.T, ld *ledger.Ledger, runID, id string) {
+	t.Helper()
+	n, _ := ledger.ParseDecisionID(id)
+	if _, err := ld.Transition(context.Background(), runID, func(tx *ledger.Tx) error {
+		row, ok, err := tx.Decision(n)
+		if err != nil || !ok {
+			return errors.Join(err, errors.New("no row"))
+		}
+		row.Rev++
+		if err := tx.PutDecision(row); err != nil {
+			return err
+		}
+		_, _, err = tx.History(n, ledger.HistoryRow{Kind: ledger.HistoryCommented, By: "admin", Detail: historyDetail(map[string]any{"text": "Seen elsewhere.", "rev": row.Rev}),
+			OpID: "aside", Fingerprint: fingerprintOf([]string{CommentKind, "Seen elsewhere."})})
+		return err
+	}); err != nil {
+		t.Fatalf("the write aside: %v", err)
+	}
+}
+
+// opIn says decision rec's history holds operation opID.
+func opIn(rec ledger.DecisionRecord, opID string) bool {
+	for _, h := range rec.History {
+		if h.OpID == opID {
+			return true
+		}
+	}
+	return false
+}
+
+// competingLedger is the real ledger whose next transaction of run, once
+// armed, first runs compete: a writer between the engine's change, made
+// under its lock, and that change's transaction.
+type competingLedger struct {
+	sqlLedger
+	run     string
+	mu      sync.Mutex
+	compete func()
+}
+
+func (l *competingLedger) arm(run string, f func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.run, l.compete = run, f
+}
+
+func (l *competingLedger) Transition(ctx context.Context, runID string, fn func(LedgerTx) error) (int64, error) {
+	l.mu.Lock()
+	f := l.compete
+	if f == nil || runID != l.run {
+		f = nil
+	} else {
+		l.compete = nil
+	}
+	l.mu.Unlock()
+	if f != nil {
+		f()
+	}
+	return l.sqlLedger.Transition(ctx, runID, fn)
+}
+
+// operatorOps are the operator's operations that take the rev read, each
+// with the history kind it writes.
+var operatorOps = []struct {
+	name, kind string
+	do         func(ctx context.Context, e *Engine, id, opID string, rev int) (OpReceipt, error)
+}{
+	{"a cancel", ledger.HistoryCancelled, func(ctx context.Context, e *Engine, id, opID string, rev int) (OpReceipt, error) {
+		return e.CancelDecision(ctx, id, opID, rev, false, "not needed", "admin")
+	}},
+	{"a comment", ledger.HistoryCommented, func(ctx context.Context, e *Engine, id, opID string, rev int) (OpReceipt, error) {
+		return e.CommentDecision(ctx, id, opID, rev, CommentKind, "Looks right.", "admin")
+	}},
+	{"a request for more", ledger.HistoryInfoRequested, func(ctx context.Context, e *Engine, id, opID string, rev int) (OpReceipt, error) {
+		return e.CommentDecision(ctx, id, opID, rev, MoreInfoKind, "Which table?", "admin")
+	}},
+	{"a route", ledger.HistoryRouted, func(ctx context.Context, e *Engine, id, opID string, rev int) (OpReceipt, error) {
+		return e.RouteDecision(ctx, id, opID, rev, []Destination{{Kind: "operator"}}, "for the operator", "admin")
+	}},
+}
+
+// stale says err is the stale_decision refusal of a rev read before rev now.
+func stale(err error, read, now int) bool {
+	var de *DecisionError
+	return errors.As(err, &de) && de.Code == CodeStaleDecision && strings.Contains(de.Words, fmt.Sprintf("at rev %d, not the rev %d read", now, read))
+}
+
+// Every operation that takes the rev read is judged by the decision's row,
+// in the transaction that applies it, whether or not the engine holds a
+// copy of the decision: a write the copy never saw, made between the
+// engine's change and its transaction (where the copy once judged), makes
+// the operation sent at the rev before it stale_decision, with nothing
+// written and the run not paused, and the operation sent at the row's rev
+// is taken. A decision whose run is not held is judged the same way, by
+// the same judgement (#637, review round 2).
+func TestEveryOperationIsJudgedByItsRow(t *testing.T) {
+	for _, o := range operatorOps {
+		t.Run(o.name+", the engine holding a copy", func(t *testing.T) {
+			dir := newRepo(t)
+			e, fl, ld := decisionEngine(t)
+			cl := &competingLedger{sqlLedger: sqlLedger{l: ld}}
+			e.UseLedger(cl)
+			run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+			b, l, _ := attemptOn(t, e, fl, run.ID, "build")
+			d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+			mirrorOf(t, l, d.ID)
+			e.beforeOperate = func(int64) {
+				e.beforeOperate = nil
+				cl.arm(run.ID, func() { keptAside(t, ld, run.ID, d.ID) })
+			}
+			if _, err := o.do(t.Context(), e, d.ID, "o1", 1); !stale(err, 1, 2) {
+				t.Fatalf("%s at the rev before the write aside: %v", o.name, err)
+			}
+			rec := decisionWhen(t, ld, d.ID, "the write aside", func(rec ledger.DecisionRecord) bool { return opIn(rec, "aside") })
+			if opIn(rec, "o1") || rec.State != ledger.DecisionOpen || rec.Rev != 2 {
+				t.Fatalf("%s refused wrote: %s rev %d %q", o.name, rec.State, rec.Rev, historyKinds(rec))
+			}
+			if paused(t, e, run.ID) {
+				t.Fatalf("%s refused paused the run", o.name)
+			}
+			rc, err := o.do(t.Context(), e, d.ID, "o2", 2)
+			if err != nil || rc.Op != o.kind {
+				t.Fatalf("%s at the row's rev: %+v %v", o.name, rc, err)
+			}
+			if rec := decisionWhen(t, ld, d.ID, o.name, func(rec ledger.DecisionRecord) bool { return opIn(rec, "o2") }); rec.Rev != rc.Rev {
+				t.Fatalf("%s's receipt says rev %d, its row %d", o.name, rc.Rev, rec.Rev)
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+	for _, o := range operatorOps {
+		t.Run(o.name+", its run not held", func(t *testing.T) {
+			dir := newRepo(t)
+			e, fl, ld := decisionEngine(t)
+			run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+			b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+			d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+			stopRun(t, e, run.ID)
+			e.beforeOperate = func(int64) {
+				e.beforeOperate = nil
+				keptAside(t, ld, run.ID, d.ID)
+			}
+			_, err := o.do(t.Context(), e, d.ID, "o1", 1)
+			var de *DecisionError
+			switch o.kind {
+			case ledger.HistoryCancelled, ledger.HistoryInfoRequested:
+				// Refused for the run's state before any rev is judged.
+				if !errors.As(err, &de) || de.Code != CodeNotHeld && de.Code != CodeNoRecipient {
+					t.Fatalf("%s of a run not held: %v", o.name, err)
+				}
+				return
+			}
+			if !stale(err, 1, 2) {
+				t.Fatalf("%s at the rev before the write aside: %v", o.name, err)
+			}
+			if rc, err := o.do(t.Context(), e, d.ID, "o2", 2); err != nil || rc.Op != o.kind {
+				t.Fatalf("%s at the row's rev: %+v %v", o.name, rc, err)
+			}
+			rec := decisionWhen(t, ld, d.ID, o.name, func(rec ledger.DecisionRecord) bool { return opIn(rec, "o2") })
+			if opIn(rec, "o1") {
+				t.Fatalf("%s refused wrote: %q", o.name, historyKinds(rec))
+			}
+		})
+	}
+}
+
+// A comment kept on the old run while a continuation is held between its
+// read of the decisions and its first transaction moves the decision's
+// rev where the continuation's copy never saw it: a cancel sent at the rev
+// before the comment is stale_decision, and one sent at the comment's rev
+// cancels it (#637, review round 2).
+func TestACancelAfterAContinuationIsJudgedByItsRow(t *testing.T) {
+	dir, ldir := newRepo(t), t.TempDir()
+	e, fl, ld := decisionEngineAt(t, ldir)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, _ := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	e2, _, ld2 := restart(t, e, ld, ldir, run.ID)
+	at, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	e2.afterAdd = func(string) { once.Do(func() { close(at); <-gate }) }
+	out := make(chan Run, 1)
+	go func() {
+		next, err := e2.ContinueRun(context.Background(), run.ID, "")
+		if err != nil {
+			t.Error(err)
+			close(out)
+			return
+		}
+		out <- *next
+	}()
+	<-at
+	rc, err := e2.CommentDecision(t.Context(), d.ID, "o1", 1, CommentKind, "Keep it small.", "admin")
+	if err != nil || rc.Rev != 2 {
+		close(gate)
+		t.Fatalf("the comment during the continuation: %+v %v", rc, err)
+	}
+	close(gate)
+	next, ok := <-out
+	if !ok {
+		t.FailNow()
+	}
+	if _, err := e2.CancelDecision(t.Context(), d.ID, "c1", 1, false, "", "admin"); !stale(err, 1, 2) {
+		t.Fatalf("a cancel at the rev before the comment: %v", err)
+	}
+	if paused(t, e2, next.ID) {
+		t.Fatal("the refused cancel paused the run")
+	}
+	if rc, err := e2.CancelDecision(t.Context(), d.ID, "c2", 2, false, "", "admin"); err != nil || rc.Op != ledger.HistoryCancelled {
+		t.Fatalf("a cancel at the comment's rev: %+v %v", rc, err)
+	}
+	rec := decisionWhen(t, ld2, d.ID, "cancelled", inState(ledger.DecisionCancelled))
+	if opIn(rec, "c1") || !opIn(rec, "c2") {
+		t.Fatalf("the cancels written: %q", historyKinds(rec))
+	}
+	stopRun(t, e2, next.ID)
 }

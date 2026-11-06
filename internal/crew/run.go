@@ -449,6 +449,11 @@ type Engine struct {
 	// identity's response to a decision is applied only by the process
 	// that accepted it (decisions.go).
 	boot string
+	// confirms are the answers of the identity providers' rechecks of
+	// accepted identity responses (ConfirmAuthority), by the response:
+	// whichever run holds its decision reads them, so one is never lost
+	// with a copy a continuation left behind. Under e.mu.
+	confirms map[confirmKey]int
 	// opMu orders the operators' operations on decisions (operate), from
 	// the look for their ids through their commits: an operation's row is
 	// never refused in its transaction as another's with the same id,

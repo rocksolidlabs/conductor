@@ -64,6 +64,10 @@ type runDecisions struct {
 	// filed are the applied answers whose delivery.task_file a change of
 	// the run has written, or carries (taskDecisions).
 	filed map[int64]bool
+	// unapplied are the applied decisions a change of the run has closed
+	// since (superseded: S1, S4): a task file's read that found one
+	// applied is read again (taskDecisions).
+	unapplied map[int64]bool
 }
 
 // endGate remembers gate's decision closed without releasing it.
@@ -119,6 +123,15 @@ type decisionOp struct {
 func (e *Engine) closeDecision(r *run, d *decision, state, why, by string, op decisionOp, detail map[string]any, tell string) {
 	was := d.state
 	held := slices.Clone(d.holds)
+	if was == ledger.DecisionApplied {
+		if r.dec.unapplied == nil {
+			r.dec.unapplied = map[int64]bool{}
+		}
+		r.dec.unapplied[d.n] = true
+	}
+	if d.answer != nil {
+		delete(e.confirms, confirmKey{d.n, d.answer.k})
+	}
 	d.state, d.rev = state, d.rev+1
 	r.dropDecision(d)
 	r.dec.settled = slices.DeleteFunc(r.dec.settled, func(x *decision) bool { return x == d })
@@ -571,7 +584,7 @@ func (e *Engine) regate(r *run, cause string) {
 			continue
 		}
 		if !r.decisionRoom(1) {
-			r.note(session.ActivityError, "the plan's decision %s cannot be asked again: the run has %d decisions", pd.ID, ledger.MaxDecisionsPerRun)
+			r.note(session.ActivityError, "the plan's decision %s cannot be asked again: %s", pd.ID, r.roomWords())
 			r.dec.noRoom = true
 			continue
 		}
@@ -579,12 +592,41 @@ func (e *Engine) regate(r *run, cause string) {
 	}
 }
 
-// decisionRoom reports whether the run may open n more decisions: those
-// it opened and the places its identities' answers hold for their
-// replacements stay within the ledger's MaxDecisionsPerRun. The caller
-// holds e.mu.
+// decisionRoom reports whether the run may open n more decisions within
+// every bound the ledger's OpenDecision checks for a decision of no
+// attempt: the decisions it opened and the places its identities' answers
+// hold for their replacements within MaxDecisionsPerRun, and those that
+// stand (open, or answered by an identity) within MaxOpenPerRun. A gate
+// opened past either would be refused in the commit of the change that
+// asked it, and carried to every commit after it (#636, review round 2).
+// The caller holds e.mu.
 func (r *run) decisionRoom(n int) bool {
-	return r.decisionsHeld()+n <= ledger.MaxDecisionsPerRun
+	return r.decisionsHeld()+n <= ledger.MaxDecisionsPerRun && r.decisionsStanding()+n <= ledger.MaxOpenPerRun
+}
+
+// roomLeft is how many decisions the run may open now (decisionRoom). The
+// caller holds e.mu.
+func (r *run) roomLeft() int {
+	return max(0, min(ledger.MaxDecisionsPerRun-r.decisionsHeld(), ledger.MaxOpenPerRun-r.decisionsStanding()))
+}
+
+// roomWords say where the run stands against both bounds. The caller
+// holds e.mu.
+func (r *run) roomWords() string {
+	return fmt.Sprintf("the run holds %d of its %d decisions, %d of its %d open", r.decisionsHeld(), ledger.MaxDecisionsPerRun, r.decisionsStanding(), ledger.MaxOpenPerRun)
+}
+
+// decisionsStanding counts the run's decisions the ledger counts against
+// MaxOpenPerRun: open, or answered by an identity (whose place stands for
+// its replacement). The caller holds e.mu.
+func (r *run) decisionsStanding() int {
+	n := 0
+	for _, d := range r.decisions {
+		if d.state == ledger.DecisionOpen || d.state == ledger.DecisionAnswered && d.answer != nil && d.answer.auth.Via == ViaIdentity {
+			n++
+		}
+	}
+	return n
 }
 
 // gateRequest is a plan decision's request as a gate keeps it: its
@@ -715,7 +757,7 @@ func (r *run) retryNeedsRoom(t *task) error {
 	if len(asks) == 0 || r.decisionRoom(len(asks)) {
 		return nil
 	}
-	return refuse(CodeDecisionLimit, "the plan's decisions %s would ask again, and the run has room for %d of its %d decisions: the retry is refused", strings.Join(asks, ", "), max(0, ledger.MaxDecisionsPerRun-r.decisionsHeld()), ledger.MaxDecisionsPerRun)
+	return refuse(CodeDecisionLimit, "the plan's decisions %s would ask again, and the run has room for %d more (%s): the retry is refused", strings.Join(asks, ", "), r.roomLeft(), r.roomWords())
 }
 
 // decisionsHeld counts what decisionRoom counts against the run's bound:
@@ -761,14 +803,19 @@ func (e *Engine) subjectPlace(r *run, d *decision) (subjectAt, bool) {
 // subjectMoved rechecks an approval's subject at at: the commit the
 // answer's work rests on, read from the object store; the words of what
 // moved, "" when it holds. A commit or path that cannot be read moved: an
-// unreadable subject is never counted as validated. The caller holds no
-// lock.
-func subjectMoved(ctx context.Context, s DecisionSubject, at subjectAt) string {
+// unreadable subject is never counted as validated. A read that failed
+// because ctx ended (its caller gone, its attempt cancelled) says nothing
+// of the subject: it is ctx's error, and the caller changes nothing (#636,
+// review round 2). The caller holds no lock.
+func subjectMoved(ctx context.Context, s DecisionSubject, at subjectAt) (string, error) {
 	commit := at.commit
 	if at.live {
 		head, err := headCommit(ctx, at.dir)
 		if err != nil || head == "" {
-			return fmt.Sprintf("the asking worktree's HEAD cannot be read: %v", err)
+			if cerr := ctx.Err(); cerr != nil {
+				return "", cerr
+			}
+			return fmt.Sprintf("the asking worktree's HEAD cannot be read: %v", err), nil
 		}
 		commit = head
 	}
@@ -776,26 +823,30 @@ func subjectMoved(ctx context.Context, s DecisionSubject, at subjectAt) string {
 	case "commit":
 		if commit != s.Commit {
 			if at.live {
-				return fmt.Sprintf("HEAD is now %s, was %s", short(commit), short(s.Commit))
+				return fmt.Sprintf("HEAD is now %s, was %s", short(commit), short(s.Commit)), nil
 			}
-			return fmt.Sprintf("the next attempt starts at %s, not %s", short(commit), short(s.Commit))
+			return fmt.Sprintf("the next attempt starts at %s, not %s", short(commit), short(s.Commit)), nil
 		}
 	case "artifact":
 		digest, err := blobDigest(ctx, at.dir, commit, s.Path)
 		if err != nil {
-			return err.Error()
+			if cerr := ctx.Err(); cerr != nil {
+				return "", cerr
+			}
+			return err.Error(), nil
 		}
 		if digest != s.SHA256 {
-			return fmt.Sprintf("%s changed: sha256 %s… was %s…", s.Path, digest[:8], s.SHA256[:min(8, len(s.SHA256))])
+			return fmt.Sprintf("%s changed: sha256 %s… was %s…", s.Path, digest[:8], s.SHA256[:min(8, len(s.SHA256))]), nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // recheckSubject reads where d's subject is now and whether it moved, and
 // answers with the place it read at, so the change that acts on it checks
-// the place is still the same (sameSubject). The caller holds no lock.
-func (e *Engine) recheckSubject(ctx context.Context, r *run, d *decision) (subjectAt, string) {
+// the place is still the same (sameSubject); ctx's error when the read was
+// cut short by it (subjectMoved). The caller holds no lock.
+func (e *Engine) recheckSubject(ctx context.Context, r *run, d *decision) (subjectAt, string, error) {
 	e.mu.Lock()
 	at, ok := e.subjectPlace(r, d)
 	var s DecisionSubject
@@ -804,9 +855,10 @@ func (e *Engine) recheckSubject(ctx context.Context, r *run, d *decision) (subje
 	}
 	e.mu.Unlock()
 	if !ok {
-		return subjectAt{}, ""
+		return subjectAt{}, "", nil
 	}
-	return at, subjectMoved(ctx, s, at)
+	words, err := subjectMoved(ctx, s, at)
+	return at, words, err
 }
 
 // sameSubject reports whether d's subject would be rechecked at the place
@@ -992,8 +1044,11 @@ type operation struct {
 	opID, fp string
 	actor    string
 	// expectedRev is the rev the operator read: the operation is refused
-	// stale_decision in its transaction when the decision is at another
-	// (staleOp), after the look for a repeat of its id. 0 checks none:
+	// stale_decision when the decision's row is at another (staleOp),
+	// judged by the row in the transaction that applies the operation,
+	// before anything changes, whether or not the engine holds a copy of
+	// the decision (judge), after the look for a repeat of its id. 0
+	// checks none:
 	// the routes always send one (internal/api, decisions.go), and only
 	// the engine's own tests send none.
 	expectedRev int
@@ -1058,11 +1113,13 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			out     OpReceipt
 			refused error
 		)
-		// write is the operation's rows in its transaction; checkRev says
-		// it judges the rev read against the row's, the record's own,
-		// before it changes anything (a change the engine made first is
-		// judged by its own copy, in change).
-		write := func(ltx LedgerTx, dt opDetail, checkRev bool) error {
+		// judge is the operation's one judgement of the decision, in the
+		// transaction that applies it and before anything changes: its row
+		// still the run's the look chose, and at the rev the operator read.
+		// The row judges, never the engine's copy, which a write outside
+		// the run's transactions (a comment kept while a continuation read
+		// the decisions) leaves behind (#637, review round 2).
+		judge := func(ltx LedgerTx) error {
 			dtx, err := decisionsOf(ltx)
 			if err != nil {
 				return err
@@ -1074,10 +1131,31 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			if row.CurrentRun != rec.CurrentRun {
 				return errOpMoved
 			}
-			if checkRev {
-				if why := staleOp(id, op.expectedRev, row.Rev); why != nil {
-					return why
+			if why := staleOp(id, op.expectedRev, row.Rev); why != nil {
+				return why
+			}
+			if held {
+				// The engine's copy takes its row's rev, which the change
+				// then bumps.
+				e.mu.Lock()
+				if d := r.decisionN(n); d != nil {
+					d.rev = max(d.rev, row.Rev)
+				} else if d := settledN(r, n); d != nil {
+					d.rev = max(d.rev, row.Rev)
 				}
+				e.mu.Unlock()
+			}
+			return nil
+		}
+		// write is the operation's rows in its transaction, after judge.
+		write := func(ltx LedgerTx, dt opDetail) error {
+			dtx, err := decisionsOf(ltx)
+			if err != nil {
+				return err
+			}
+			row, ok, err := dtx.Decision(n)
+			if err != nil || !ok {
+				return cmpErr(err, fmt.Errorf("%w: %s", ledger.ErrNoDecision, id))
 			}
 			if op.rev {
 				row.Rev++
@@ -1121,13 +1199,6 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 					if d.a != nil {
 						wasEnded = d.a.turnEnded
 					}
-					// The rev read judged here, before the change: an
-					// answer committed since the look moved it (#637,
-					// review round 1).
-					if why := staleOp(id, op.expectedRev, d.rev); why != nil {
-						refused = why
-						return tx{}
-					}
 				}
 				dt, then, why := op.held(r, d, rec)
 				if why != nil {
@@ -1147,14 +1218,12 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 					}
 				}
 				after = then
-				// A decision the engine holds no copy of is judged by its row.
-				checkRev := d == nil
-				return tx{more: func(ltx LedgerTx) error { return write(ltx, dt, checkRev) }}
+				return tx{more: func(ltx LedgerTx) error { return write(ltx, dt) }}
 			}
 			if op.ahead {
-				err = e.transact(context.WithoutCancel(ctx), r, change, nil)
+				err = e.transactJudged(context.WithoutCancel(ctx), r, judge, change, nil)
 			} else {
-				err = e.transact(ctx, r, change, func() {
+				err = e.transactJudged(ctx, r, judge, change, func() {
 					if undo != nil {
 						undo()
 					}
@@ -1163,15 +1232,22 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			if moved {
 				continue
 			}
+			// Refused or failed before its change was made (judge, at the
+			// row's rev): nothing changed, nothing is carried or paused.
+			var um errUnmade
+			unmade := errors.As(err, &um)
+			if unmade {
+				err = um.err
+			}
 			var de *DecisionError
-			if !op.ahead && errors.As(err, &de) {
-				// Refused in its transaction (its row's rev), undone.
+			if (unmade || !op.ahead) && errors.As(err, &de) {
+				// Refused in its transaction, undone or never made.
 				refused, err = de, nil
 			}
 			if err == nil && refused == nil && after != nil {
 				after()
 			}
-			if err == nil && refused == nil || err != nil && op.ahead {
+			if !unmade && (err == nil && refused == nil || err != nil && op.ahead) {
 				// Committed, what it released is dispatched; refused, a
 				// change kept ahead pauses the run, whose pause's commit
 				// writes it.
@@ -1188,7 +1264,12 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			if op.rev {
 				dt.Rev = rec.Rev + 1
 			}
-			_, err = e.ledger.Transition(ctx, rec.CurrentRun, func(ltx LedgerTx) error { return write(ltx, dt, true) })
+			_, err = e.ledger.Transition(ctx, rec.CurrentRun, func(ltx LedgerTx) error {
+				if err := judge(ltx); err != nil {
+					return err
+				}
+				return write(ltx, dt)
+			})
 			var de *DecisionError
 			if errors.As(err, &de) {
 				refused, err = de, nil

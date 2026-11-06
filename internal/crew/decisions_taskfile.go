@@ -73,8 +73,13 @@ func taskDecisionOf(rec ledger.DecisionRecord) TaskDecision {
 // rechecked first against a's start, read from the object store (S4): the
 // same commit or blob carries it as applied, another supersedes it, and
 // the files say so; each applied answer the files carry first is marked
-// so (delivery.task_file), once. The transaction checks a's start is the
-// one the recheck read. The caller holds no lock.
+// so (delivery.task_file), once. The mark only keeps the history from
+// repeating: it is no proof the answer reached an agent (the attempt that
+// took it may never have started), so every later start rechecks it again
+// (#636, review round 2). The read is checked in the run's order of
+// changes, in the change that marks it: a's start the one the recheck
+// read, and every record read still as the engine has it (readStale), or
+// it is read again. The caller holds no lock.
 func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskDecision, error) {
 	dl, ok := e.ledger.(decisionLedger)
 	if !ok {
@@ -87,70 +92,29 @@ func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskD
 	}
 	taskID, start := a.t.def.ID, a.start
 	e.mu.Unlock()
-	// Each run of the chain's own, by the run that holds it now: a
-	// decision of the chain is held by one of its runs, and another run's
-	// decisions about a task of the same id are never read in their place
-	// (#636, review round 1). The newest maxTaskDecisions of each run hold
-	// the chain's newest.
-	var rows []ledger.DecisionRow
-	for _, runID := range chain {
-		got, err := dl.Decisions(ctx, ledger.DecisionFilter{CurrentRun: runID, Task: taskID, Limit: maxTaskDecisions})
+	for try := 1; ; try++ {
+		recs, moved, carried, err := e.readTaskDecisions(ctx, dl, r, chain, taskID, start)
 		if err != nil {
 			return nil, err
 		}
-		rows = append(rows, got...)
-	}
-	slices.SortFunc(rows, func(x, y ledger.DecisionRow) int { return cmp.Compare(y.N, x.N) })
-	rows = slices.CompactFunc(rows, func(x, y ledger.DecisionRow) bool { return x.N == y.N })
-	var recs []ledger.DecisionRecord
-	for _, row := range rows {
-		rec, ok, err := dl.Decision(ctx, row.N)
-		if err != nil {
-			return nil, err
+		if e.afterDecisionsRead != nil {
+			e.afterDecisionsRead(taskID)
 		}
-		if ok {
-			recs = append(recs, rec)
+		if len(recs) == 0 {
+			return nil, nil
 		}
-		if len(recs) == maxTaskDecisions {
-			break
-		}
-	}
-	if len(recs) == 0 {
-		return nil, nil
-	}
-	slices.Reverse(recs) // oldest first
-	moved := map[int64]string{}
-	var carried []int64
-	for _, rec := range recs {
-		if rec.State != ledger.DecisionApplied {
-			continue
-		}
-		last, filed := deliveryOf(rec)
-		if filed || last == ledgerEntered {
-			continue
-		}
-		var body requestBody
-		_ = json.Unmarshal([]byte(rec.Request), &body)
-		if s := body.Subject; rec.Origin == ledger.OriginAgent && rec.Type == ledger.DecisionApproval && rec.TaskID == taskID && s != nil && (s.Kind == "commit" || s.Kind == "artifact") {
-			if words := subjectMoved(ctx, *s, subjectAt{dir: r.cwd, commit: start}); words != "" {
-				if s.Kind == "commit" {
-					words = fmt.Sprintf("%s approved %s; this attempt starts at %s", rec.ID(), short(s.Commit), short(start))
-				}
-				moved[rec.N] = words
-				continue
-			}
-		}
-		carried = append(carried, rec.N)
-	}
-	if e.afterDecisionsRead != nil {
-		e.afterDecisionsRead(taskID)
-	}
-	if len(moved) > 0 || len(carried) > 0 {
-		stale := false
+		gone, stale := false, false
 		// A change kept ahead (no undo): under no attempt's context, which
 		// a cancel or a stop ends, so that only the ledger refuses it.
-		err := e.transact(context.WithoutCancel(ctx), r, func() tx {
+		err = e.transact(context.WithoutCancel(ctx), r, func() tx {
 			if !a.closedAt.IsZero() || a.start != start {
+				gone = true
+				return tx{}
+			}
+			// Every change of the run before this one has committed (txMu):
+			// a record the engine has changed since the read is read again,
+			// never carried as it was (#636, review round 2).
+			if r.readStale(recs) {
 				stale = true
 				return tx{}
 			}
@@ -184,6 +148,9 @@ func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskD
 					d.taskFiled = true
 				}
 			}
+			if len(ids) == 0 {
+				return tx{}
+			}
 			an := a.n
 			return tx{more: func(ltx LedgerTx) error {
 				dtx, err := decisionsOf(ltx)
@@ -202,7 +169,13 @@ func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskD
 			e.afterTransact(r, err)
 			return nil, err
 		}
-		if !stale {
+		if stale {
+			if try < maxTaskDecisionReads {
+				continue
+			}
+			return nil, fmt.Errorf("its decisions changed at each of %d reads", try)
+		}
+		if !gone {
 			for i, rec := range recs {
 				if words, ok := moved[rec.N]; ok {
 					recs[i].State = ledger.DecisionSuperseded
@@ -210,12 +183,105 @@ func (e *Engine) taskDecisions(ctx context.Context, r *run, a *attempt) ([]TaskD
 				}
 			}
 		}
+		out := make([]TaskDecision, 0, len(recs))
+		for _, rec := range recs {
+			out = append(out, taskDecisionOf(rec))
+		}
+		return out, nil
 	}
-	out := make([]TaskDecision, 0, len(recs))
+}
+
+// maxTaskDecisionReads bounds the reads of a task file's decisions that a
+// change of them made stale (taskDecisions).
+const maxTaskDecisionReads = 8
+
+// readTaskDecisions reads the newest maxTaskDecisions decisions of task
+// taskID in the run chain, oldest first, and rechecks each applied
+// approval whose line did not go in against start (S4): moved has the
+// words of those whose subject moved, carried the others not yet marked
+// carried by a task file. A recheck cut short by ctx is its error. The
+// caller holds no lock.
+func (e *Engine) readTaskDecisions(ctx context.Context, dl decisionLedger, r *run, chain []string, taskID, start string) ([]ledger.DecisionRecord, map[int64]string, []int64, error) {
+	// Each run of the chain's own, by the run that holds it now: a
+	// decision of the chain is held by one of its runs, and another run's
+	// decisions about a task of the same id are never read in their place
+	// (#636, review round 1). The newest maxTaskDecisions of each run hold
+	// the chain's newest.
+	var rows []ledger.DecisionRow
+	for _, runID := range chain {
+		got, err := dl.Decisions(ctx, ledger.DecisionFilter{CurrentRun: runID, Task: taskID, Limit: maxTaskDecisions})
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		rows = append(rows, got...)
+	}
+	slices.SortFunc(rows, func(x, y ledger.DecisionRow) int { return cmp.Compare(y.N, x.N) })
+	rows = slices.CompactFunc(rows, func(x, y ledger.DecisionRow) bool { return x.N == y.N })
+	var recs []ledger.DecisionRecord
+	for _, row := range rows {
+		rec, ok, err := dl.Decision(ctx, row.N)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if ok {
+			recs = append(recs, rec)
+		}
+		if len(recs) == maxTaskDecisions {
+			break
+		}
+	}
+	slices.Reverse(recs) // oldest first
+	moved := map[int64]string{}
+	var carried []int64
 	for _, rec := range recs {
-		out = append(out, taskDecisionOf(rec))
+		if rec.State != ledger.DecisionApplied {
+			continue
+		}
+		last, filed := deliveryOf(rec)
+		if last == ledgerEntered {
+			continue
+		}
+		var body requestBody
+		_ = json.Unmarshal([]byte(rec.Request), &body)
+		if s := body.Subject; rec.Origin == ledger.OriginAgent && rec.Type == ledger.DecisionApproval && rec.TaskID == taskID && s != nil && (s.Kind == "commit" || s.Kind == "artifact") {
+			words, err := subjectMoved(ctx, *s, subjectAt{dir: r.cwd, commit: start})
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if words != "" {
+				if s.Kind == "commit" {
+					words = fmt.Sprintf("%s approved %s; this attempt starts at %s", rec.ID(), short(s.Commit), short(start))
+				}
+				moved[rec.N] = words
+				continue
+			}
+		}
+		if !filed {
+			carried = append(carried, rec.N)
+		}
 	}
-	return out, nil
+	return recs, moved, carried, nil
+}
+
+// readStale reports whether a record read for a task file is no longer
+// as the engine has it: one read open or answered that the engine holds
+// in another state or not at all, one read applied that a change has
+// closed since (superseded). Final records never change. The caller holds
+// e.mu, in a transaction's change.
+func (r *run) readStale(recs []ledger.DecisionRecord) bool {
+	for _, rec := range recs {
+		switch rec.State {
+		case ledger.DecisionOpen, ledger.DecisionAnswered:
+			if d := r.decisionN(rec.N); d == nil || d.state != rec.State {
+				return true
+			}
+		case ledger.DecisionApplied:
+			if r.dec.unapplied[rec.N] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // decisionsStage is the stage an attempt fails at, uncounted, when its

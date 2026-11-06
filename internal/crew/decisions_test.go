@@ -544,7 +544,11 @@ func TestRejectingTheLastHeldTaskEndsTheRunOnce(t *testing.T) {
 }
 
 // A result while the attempt's decision waits is refused decision_open,
-// the attempt running on; once the decision is applied it is taken.
+// the attempt running on: open, it is not answered yet; answered (an
+// identity's answer, recorded while its recheck has not said yes), its
+// answer is not applied yet, and nothing tells the agent to go on with it
+// (#637, review round 2); once the decision is applied the result is
+// taken.
 func TestAResultWhileADecisionWaitsIsRefused(t *testing.T) {
 	dir := newRepo(t)
 	e, fl, ld := decisionEngine(t)
@@ -562,7 +566,16 @@ func TestAResultWhileADecisionWaitsIsRefused(t *testing.T) {
 	if ts := taskOf(t, e, run.ID, "build"); ts.Attempt.State != ledger.AttemptRunning {
 		t.Fatalf("the attempt after the refusal: %+v", ts.Attempt)
 	}
-	answer(t, e, d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	rc, err := e.RespondDecision(t.Context(), d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1, ByName: "Nate"}, "user:nate", identity(e, "nate"))
+	if err != nil || rc.Status != "accepted" || !strings.HasPrefix(rc.Words, "Recorded: ") {
+		t.Fatalf("the identity's answer: %+v %v", rc, err)
+	}
+	decisionWhen(t, ld, d.ID, "answered", inState(ledger.DecisionAnswered))
+	_, err = e.SubmitResult(t.Context(), b.Attempt.SessionID, Result{Summary: "built"})
+	if !errors.As(err, &de) || de.Code != CodeDecisionOpen || !strings.Contains(de.Words, d.ID+" is answered and its answer is not applied yet") || strings.Contains(de.Words, "not answered") {
+		t.Fatalf("a result while %s is answered: %v", d.ID, err)
+	}
+	e.ConfirmAuthority(d.ID, rc.K, true)
 	decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
 	lineWith(t, p, "Decision "+d.ID)
 	submit(t, e, b.Attempt.SessionID, Result{Summary: "built"})
