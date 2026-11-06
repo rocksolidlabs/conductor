@@ -206,8 +206,9 @@ type FindingEvidence struct {
 // CheckRef is a check finding's receipt as the server read it from the
 // ledger, with the person's choice and quote beside it: its source and
 // identity, the identity's parts, the commit it tested (subject), the
-// check's argv, how it ended (exit, signal, timed out, killed, stable, and
-// the ledger's words of its failure, error), where it ran, its log's SHA-256 and size, the ledger's tail of the log,
+// check's argv, how it ended (the row's state, exit, signal, timed out,
+// killed, stable, and the ledger's words of its failure, error), where it
+// ran, its log's SHA-256 and size, the ledger's tail of the log,
 // the class the server worked out, the class the person chose and their
 // quote, and the attempt before the failing one. The log itself stays the
 // ledger's, opened by the identity, and so does the whole argv when the
@@ -229,6 +230,7 @@ type CheckRef struct {
 	TimedOut  bool           `json:"timedOut"`
 	Killed    bool           `json:"killed"`
 	Stable    bool           `json:"stable"`
+	State     string         `json:"state"`
 	Error     string         `json:"error,omitempty"`
 	Where     string         `json:"where"`
 	LogSHA256 string         `json:"logSha256,omitempty"`
@@ -249,20 +251,54 @@ type CheckPrevious struct {
 	Commit  string `json:"commit,omitempty"`
 }
 
-// passed says the finished receipt failed nothing, judged for its phase by
-// the fields the ledger says it by. The ledger's words of a failure
-// (error) fail a receipt of every phase. A task's check and a verify step
-// passed besides with exit 0, stable, in time and by no signal: a row a
-// version 4 database kept has no words, its failure only its outcome
-// (crew's failedOutcome), and stable false is a checkout the command left
-// changed. A step of the tree (setup, service, ready) failed only with
-// words, which the engine writes for each way it fails (runStep, runProbe,
-// watchService): its stable is set by a checkout's setup alone, and is
-// false for a worktree's setup and every probe that passed; a service
-// stopped by its tree's end has a signal and no exit 0, and one that
-// exited 0 while the tree was in use failed, its words say so.
+// passed says the ended receipt failed nothing, judged by exactly the
+// fields the ledger says it by, per phase and per way a step ends. The
+// engine writes every row it ends (verify.go for a check and a verify
+// step, runStep for a setup, runProbe for a ready probe, watchService and
+// serviceNotRun for a service) and Ledger.Recover the rows a server that
+// crashed left open:
+//
+//	phase          ends                                   the row says                                judged
+//	any            still started or running               state started|running                       not ended: refused (bindCheck)
+//	any            recovered after a crash (Recover)      state interrupted, no words, exit -1        failed
+//	any            interrupted (stop, cancel, close)      state interrupted, words                    failed
+//	any            never run, its start not recorded      no row                                      no receipt (the fill's not_found)
+//	check, verify  passed                                 finished, exit 0, stable, no words          passed
+//	check, verify  passed, killed (a leftover held        finished, exit 0, stable, killed, no words  passed (killed decides nothing)
+//	               the output, ended with the group)
+//	check, verify  exited non-zero (killed or not)        finished, exit n; words, none in version 4  failed
+//	check, verify  ended by a signal                      finished, signal; words, none in version 4  failed
+//	check, verify  timed out                              finished, timed out; words, none in v4      failed
+//	check, verify  left the checkout changed              finished, stable false; words, none in v4   failed
+//	check, verify  never run (could not start)            finished, exit -1; words, none in v4        failed
+//	check, verify  its outcome refused by the ledger      finished, exit 0, stable, words             failed
+//	setup          passed (a worktree's: stable unset)    finished, exit 0, no words                  passed
+//	setup          passed, killed                         finished, exit 0, killed, no words          passed
+//	setup          exited non-zero, a signal, timed out,  finished, words                             failed
+//	               never run, its checkout changed,
+//	               its running row refused
+//	service        stopped by its tree's end or the       finished, a signal, no words                passed (the tree's end, not
+//	               server's shutdown                                                                  the service's; a probe cut by
+//	                                                                                                  it says so in its own words)
+//	service        exited before the tree was ready,      finished, words                             failed
+//	               or while it was in use (exit 0 too)
+//	service        never run (could not start)            finished, exit -1, words                    failed
+//	ready          passed (a URL or a command; stable     finished, exit 0, no words                  passed
+//	               unset)
+//	ready          did not pass in time, cut by a         finished, words                             failed
+//	               service's exit
+//
+// So: a row not finished failed (bindCheck refuses one not ended), words
+// fail a finished row of every phase, and a finished check or verify step
+// passed only with exit 0, stable, in time and by no signal besides,
+// because a version 4 database kept no words (crew's failedOutcome) and
+// stable false is a checkout the command left changed. A step of the tree
+// is judged by its words alone: its stable is set by a checkout's setup
+// alone, its exit is -1 for a URL probe that did not pass and a service
+// stopped, and each way it fails has words.
+// TestACheckFindingsReceiptIsJudgedByItsPhase holds a case for every row.
 func (c CheckRef) passed() bool {
-	if c.Error != "" {
+	if c.State != ReceiptFinished || c.Error != "" {
 		return false
 	}
 	switch c.Phase {
@@ -485,6 +521,23 @@ const (
 	PhaseService = "service"
 	PhaseReady   = "ready"
 )
+
+// The states a check finding's receipt is in (CheckRef.State), the
+// ledger's row's (internal/crew/ledger's CheckStarted, CheckRunning,
+// CheckFinished and CheckInterrupted): started or running is not ended;
+// finished is ended by the engine, judged by how (CheckRef.passed);
+// interrupted is ended under the step, by the engine (a stop, a cancel,
+// the attempt's close) or by a server's recovery after a crash, and never
+// passed.
+const (
+	ReceiptStarted     = "started"
+	ReceiptRunning     = "running"
+	ReceiptFinished    = "finished"
+	ReceiptInterrupted = "interrupted"
+)
+
+// receiptStates is every state a receipt's row is in.
+var receiptStates = []string{ReceiptStarted, ReceiptRunning, ReceiptFinished, ReceiptInterrupted}
 
 // receiptRefPattern is a ledger receipt's identity:
 // <run>/<task>/<n>/<phase>/<id>/<k>, its k 0 or more with no leading zero,
@@ -853,11 +906,15 @@ func bindCheck(k int, c Candidate, req CheckRequest, got *CheckRef) (*CheckRef, 
 		return nil, errEvidence("finding %d's log hash is no SHA-256", k)
 	case got.Previous != nil && got.Previous.Commit != "" && !objectIDPattern.MatchString(got.Previous.Commit):
 		return nil, errEvidence("finding %d's attempt before has a commit not in full", k)
+	case !slices.Contains(receiptStates, got.State):
+		return nil, errEvidence("finding %d's receipt is %q, none of the ledger's states", k, got.State)
+	case got.State == ReceiptFinished && got.Exit == nil:
+		return nil, errEvidence("finding %d's receipt finished with no exit", k)
 	}
 	if got.Subject != c.Commit {
 		return nil, refuse(RefusalInvalid, "finding %d: the receipt %s tested %s, not the candidate reviewed (%s)", k, req.Receipt, short(got.Subject), short(c.Commit))
 	}
-	if got.Exit == nil {
+	if got.State == ReceiptStarted || got.State == ReceiptRunning {
 		return nil, refuse(RefusalInvalid, "finding %d: the receipt %s has not finished", k, req.Receipt)
 	}
 	if got.passed() {
