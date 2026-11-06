@@ -132,11 +132,12 @@ type Submission struct {
 	// waits for it to be passed on.
 	Withdrawn <-chan struct{}
 	// Hold, when set, is the sender's credential held while each of the
-	// submission's writes is taken (writeWait.hold): a decision link's, so
-	// its text and its Enter are written only while the link stands,
-	// checked as the writer takes each. Hold must not call the session and
-	// must not wait.
-	Hold func() (release func(), err error)
+	// submission's writes is under way (writeWait.hold): a decision link's,
+	// so its text and its Enter are written only while the link stands,
+	// checked as the writer takes each and again at each write's commit
+	// boundary, and held until that write has returned or was cancelled.
+	// Hold must not call the session and must not wait.
+	Hold func() (Held, error)
 	// Decision, when set, names the durable decision whose answer the line
 	// is ("dr-<n>"; the run engine's application alone sets it): with
 	// Question, it may answer the question that mirrors that decision
@@ -1083,7 +1084,7 @@ func (s *Local) resolveLine(sub Submission, st submitState) {
 	}
 	by, name := "", st.byName
 	if sub.By != nil {
-		by, name = sub.By.ID, sub.By.Name
+		by, name = sub.By.ID, sub.By.answerer()
 	}
 	// A line's text is never repeated in the chat (answerWords): the line resolves the question by whom alone.
 	s.resolve(sub.Question, token, by, name, sub.ReqID, nil)

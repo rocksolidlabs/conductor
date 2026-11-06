@@ -106,10 +106,13 @@ type Subscription struct {
 	// with authorize wherever what the connection sent is acted on
 	// (revoked), never as it attaches. Set once, as it attaches.
 	fresh func() error
+	// answerName is the connection's AttachOptions.AnswerName, "" for
+	// none (answerer). Set once, as it attaches.
+	answerName string
 	// hold is the connection's AttachOptions.Hold, nil for none: taken as
 	// the writer takes each write of the connection (writeWait.hold). Set
 	// once, as it attaches.
-	hold func() (func(), error)
+	hold func() (Held, error)
 	// quiet marks a connection for a run's chat alone (hello.chatOnly): no
 	// output or scrollback, not a viewer of the session.
 	quiet bool
@@ -507,4 +510,13 @@ func (h *Hub) Each(fn func(*Subscription)) {
 	for _, s := range list {
 		fn(s)
 	}
+}
+
+// answerer is the name the subscriber's answers are kept under: its
+// AttachOptions.AnswerName, else its Name.
+func (s *Subscription) answerer() string {
+	if s.answerName != "" {
+		return s.answerName
+	}
+	return s.Name
 }

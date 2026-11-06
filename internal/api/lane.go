@@ -55,19 +55,32 @@ import (
 //
 // Three rules hold every path to them, and each is enforced in one place:
 //
-//  1. A link's act is written only while the link stands, checked with
-//     the write (share.Store.Hold): the check that the link is not revoked
-//     or expired is made under the link's hold, which a revoke waits for,
-//     at the moment the write is made: as the session's writer takes an
-//     answer's keys or a line (session.Actor.Hold, Submission.Hold,
-//     AttachOptions.Hold: holdLink) and around the engine's command
-//     (laneCommand), never once before and used later. An answer queued,
-//     in flight or asked again when the link ends is refused, never
-//     written, on every path: the first try, a repeat answered from the
-//     link's record (replay, under the hold too), a twin from another
-//     connection, a queued send. An action whose connection closed before
-//     it began is never begun (the lane's context, checked under the hold);
-//     one begun is the operation's, its receipt kept.
+//  1. A link's hold covers an act until it has taken effect or is
+//     cancelled (share.Store.Hold): from the check that the link is not
+//     revoked or expired, made under the hold as the act is taken, to the
+//     moment the act has taken effect (an answer's process write returned;
+//     a task command committed by the engine) or has been cancelled,
+//     whichever comes first. A revoke and an expiry end the link through
+//     the same barrier, and an expiry waits as a revoke does (the sweep,
+//     share.Store.ExpireDue, and a desk's own deadline, Expire): from its
+//     start no act is held, and it returns only once each act held has
+//     taken effect or been cancelled. At its commit boundary an act asks
+//     once more whether its link stands, fail-closed (session.Held.Stands
+//     before a write is begun, crew.Command.Stands before a command's
+//     change): an act whose link ended while it was held takes no effect.
+//     A process write the program has not taken within the store's
+//     HoldWait is cancelled: refused as its link's end, nothing more of it
+//     written, no question resolved by it. The hold is taken as the
+//     session's writer takes an answer's keys or a line (session.Actor.Hold,
+//     Submission.Hold, AttachOptions.Hold: holdLink) and around the
+//     engine's command (laneCommand), never once before and used later. An
+//     answer queued, in flight or asked again when the link ends is
+//     refused, never written, on every path: the first try, a repeat
+//     answered from the link's record (replay, under the hold too), a twin
+//     from another connection, a queued send. An action whose connection
+//     closed before it began is never begun (the lane's context, checked
+//     under the hold, and an own-session answer's queued write withdrawn
+//     with it); one begun is the operation's, its receipt kept.
 //  2. An opId names one operation (share.Store.ClaimOp, Decide): the link
 //     keeps, by opId, the fingerprint of the whole request as it was sent
 //     (decideFingerprint: its item, action and every argument), and a
@@ -96,6 +109,11 @@ import (
 // link's always was (the session's terminal, and the files its policy
 // lets a controller read): the lane adds the decisions to it, nothing
 // else.
+
+// linkAnswerName is the name a decision link's answer is kept under, on
+// every path (its own connection's answer, its claim of another session's
+// question): its label, or "a decision link" for a link with none.
+func linkAnswerName(label string) string { return cmpOr(label, "a decision link") }
 
 // laneActor is the actor of a decision link's receipts.
 func laneActor(linkID string) string { return "link:" + linkID }
@@ -139,6 +157,10 @@ type laneSeams struct {
 	// atHold runs as an answer's write is taken, before its link is held
 	// (holdLink): in the session's writer.
 	atHold func(linkID string)
+	// afterHold runs once an answer's write has its link held, before the
+	// write's commit check (linkHeld.Stands) and the write: in the
+	// session's writer.
+	afterHold func(linkID string)
 	// beforeRead runs as a lane read begins, on its goroutine.
 	beforeRead func(reqID string)
 	// twinWaits runs as a decide finds its opId under way on another
@@ -148,26 +170,55 @@ type laneSeams struct {
 	hashing func(linkID string)
 	// beforeReply runs once a decide is done, before its reply is sent.
 	beforeReply func(reqID string, reply []byte)
+	// commandCtx is handed the cancel of a task command's own context as
+	// the command begins (laneCommand), so a test can fail the engine's
+	// transactions after the taking.
+	commandCtx func(opID string, cancel context.CancelFunc)
 }
 
 // holdLink is the hold a decision link's answer takes as the session's
-// writer takes its keys or line (rule 1): the link checked with the write,
-// its refusal said as the session says a link's (ErrRevoked, ErrExpired).
-func (s *Server) holdLink(linkID string) func() (func(), error) {
-	return func() (func(), error) {
+// writer takes its keys or line (rule 1): the link checked with the write
+// and held until the write has returned or was cancelled, its refusal said
+// as the session says a link's (ErrRevoked, ErrExpired).
+func (s *Server) holdLink(linkID string) func() (session.Held, error) {
+	return func() (session.Held, error) {
 		if seam := s.laneSeam; seam != nil && seam.atHold != nil {
 			seam.atHold(linkID)
 		}
-		_, release, err := s.links.Hold(linkID)
-		switch {
-		case errors.Is(err, share.ErrExpired):
-			return nil, session.ErrExpired
-		case err != nil:
-			return nil, session.ErrRevoked
+		h, err := s.links.Hold(linkID)
+		if err != nil {
+			return nil, sessionRefusal(err)
 		}
-		return release, nil
+		if seam := s.laneSeam; seam != nil && seam.afterHold != nil {
+			seam.afterHold(linkID)
+		}
+		return &linkHeld{s: s, h: h}, nil
 	}
 }
+
+// sessionRefusal is a link's refusal as the session says it: ErrExpired
+// for an expired link, ErrRevoked for any other; nil for none.
+func sessionRefusal(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, share.ErrExpired):
+		return session.ErrExpired
+	}
+	return session.ErrRevoked
+}
+
+// linkHeld is a link's hold as the session's writer holds it
+// (session.Held): share.Held, its refusals said as the session's.
+type linkHeld struct {
+	s *Server
+	h *share.Held
+}
+
+func (l *linkHeld) Stands() error { return sessionRefusal(l.h.Stands()) }
+
+func (l *linkHeld) Cancelled() <-chan struct{} { return l.h.Cancelled() }
+func (l *linkHeld) Release()                   { l.h.Release() }
 
 // linkRefusal is the refusal of a request whose link no longer stands.
 func linkRefusal(reqID string, err error) []byte {
@@ -439,6 +490,15 @@ func (s *Server) steps(ctx context.Context, sc laneScope, ref brakeman.Ref, rece
 		if !crew.CommandIDPattern.MatchString(receipt) {
 			return nil, "receipt is the command's id", nil
 		}
+		// A task command's receipt is the decide's own opId (laneCommand):
+		// the attempt it names is that one, so the receipt of one action
+		// is never read for another.
+		if attempt != receipt {
+			return nil, "a task command's attempt is its receipt, the decide's opId", nil
+		}
+		// Read under the link's actor, and bound to the task it was taken
+		// for (commandSteps: a receipt of another task's command reads as
+		// none of this task's).
 		st, err := s.commandSteps(ctx, ref.Run, ref.Task, laneActor(sc.link.ID), receipt)
 		return st, "", err
 	}
@@ -610,11 +670,11 @@ func commandReply(reqID, ref string, rc crew.Receipt, repeat bool) []byte {
 // outcome; repeat, before the item's current actions are judged. The link
 // must still stand, checked under its hold (rule 1).
 func (s *Server) replay(ctx context.Context, linkID string, m proto.Decide, raw string) []byte {
-	_, release, err := s.links.Hold(linkID)
+	held, err := s.links.Hold(linkID)
 	if err != nil {
 		return linkRefusal(m.ReqID, err)
 	}
-	defer release()
+	defer held.Release()
 	var o laneOutcome
 	if json.Unmarshal([]byte(raw), &o) != nil {
 		return refusal(m.ReqID, "unavailable", "what the link kept of this opId could not be read")
@@ -786,7 +846,7 @@ func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc la
 	} else {
 		opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), submitTimeout)
 		defer cancel()
-		name := cmpOr(sc.link.Label, "a decision link")
+		name := linkAnswerName(sc.link.Label)
 		hold := s.holdLink(linkID)
 		if m.Input != "" {
 			err = local.AnswerAs(opCtx, ref.Question, m.Input, session.Actor{Name: name, ReqID: reqID, Withdrawn: ctx.Done(), Hold: hold})
@@ -822,8 +882,15 @@ func (s *Server) laneAnswer(ctx context.Context, linkID, sessionID string, sc la
 // the decide carries, as the link: the engine judges it (stale_revision
 // for a run that moved on). One the item no longer offers is refused,
 // nothing done. The link is held from the check that it stands until the
-// engine has committed the command (rule 1): a revoke waits for it, and a
-// command whose connection closed before it began is never begun.
+// engine has committed the command (rule 1), and asked once more at the
+// command's commit boundary (crew.Command.Stands): a revoke or an expiry
+// waits for a command past it, and one whose link ended while it was held
+// commits nothing (refused revoked or expired; once the engine had taken
+// it, its receipt settled withdrawn). A command whose connection closed
+// before it began is never begun. Once the engine has taken the command,
+// the operation is the link's whatever its outcome (an error after the
+// taking included): its opId stays bound to this request (rule 2), and a
+// repeat reads its receipt.
 func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, ref brakeman.Ref, it *inboxItem, m proto.Decide) ([]byte, *laneOutcome) {
 	if m.Input != "" || m.Text != "" || m.Choice != nil || m.Rationale != "" {
 		return refusal(m.ReqID, proto.DecideInvalid, "a task command carries its revision alone"), nil
@@ -844,11 +911,11 @@ func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, r
 		return refusal(m.ReqID, proto.DecideStaleRevision, words), nil
 	}
 	s.beforeOperation(linkID, m.OpID)
-	link, release, err := s.links.Hold(linkID)
+	held, err := s.links.Hold(linkID)
 	if err != nil {
 		return linkRefusal(m.ReqID, err), nil
 	}
-	defer release()
+	defer held.Release()
 	if ctx.Err() != nil {
 		return begunGone(m.ReqID), nil
 	}
@@ -856,7 +923,17 @@ func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, r
 	// connection; its receipt stands, and the same opId asks for it again.
 	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	cmd := crew.Command{ID: m.OpID, ExpectedRevision: rev}
+	if seam := s.laneSeam; seam != nil && seam.commandCtx != nil {
+		seam.commandCtx(m.OpID, cancel)
+	}
+	var ended error
+	cmd := crew.Command{ID: m.OpID, ExpectedRevision: rev, Stands: func() error {
+		if err := held.Stands(); err != nil {
+			ended = err
+			return err
+		}
+		return nil
+	}}
 	var rc crew.Receipt
 	switch m.Action {
 	case crew.TaskRetry:
@@ -868,11 +945,22 @@ func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, r
 	}
 	target := "task:" + run + "/" + task
 	if rc.CommandID != "" {
+		kept := &laneOutcome{Ref: target, Receipt: rc.CommandID, Run: run}
+		if ended != nil && rc.Refusal == crew.RefusalWithdrawn {
+			// Taken, and settled withdrawn at its commit: nothing changed.
+			s.note(linkID, target, rc.CommandID, m.OpID)
+			f := linkRefusal(m.ReqID, ended)
+			return f, kept
+		}
 		if !rc.Repeat {
-			s.runs.Note(run, session.ActivityLink, laneActorNote(link, m.Action, task))
+			s.runs.Note(run, session.ActivityLink, laneActorNote(held.Link, m.Action, task))
 		}
 		s.note(linkID, target, rc.CommandID, m.OpID)
-		return commandReply(m.ReqID, target, rc, rc.Repeat), &laneOutcome{Ref: target, Receipt: rc.CommandID, Run: run}
+		return commandReply(m.ReqID, target, rc, rc.Repeat), kept
+	}
+	if ended != nil {
+		// Refused before the engine took it: nothing begun.
+		return linkRefusal(m.ReqID, ended), nil
 	}
 	code, words := "unavailable", "the command could not be taken"
 	switch {
@@ -885,7 +973,42 @@ func (s *Server) laneCommand(ctx context.Context, linkID string, sc laneScope, r
 	case errors.Is(err, crew.ErrTooManyCommands):
 		code, words = proto.DecideTooMany, err.Error()
 	}
+	if code != proto.DecideOpConflict {
+		if f, kept := s.takenAnyway(ctx, linkID, run, task, target, m); kept != nil {
+			return f, kept
+		}
+	}
 	return refusal(m.ReqID, code, words), nil
+}
+
+// takenAnyway is the outcome of a command the engine answered with an
+// error and no receipt, when the engine had taken it all the same (its
+// change failed after the taking, the run paused for it): the ledger keeps
+// a row under the link's actor for the opId, for this task's command, so
+// the operation is the link's (rule 2), its opId bound to this request,
+// and its receipt says what becomes of it. A ledger that cannot be read
+// keeps it the link's as well, fail-closed: a later request under the
+// opId is op_conflict, never a fresh command. nil when the engine took
+// nothing (no row), or a row of another command holds the opId.
+func (s *Server) takenAnyway(ctx context.Context, linkID, run, task, target string, m proto.Decide) ([]byte, *laneOutcome) {
+	kept := &laneOutcome{Ref: target, Receipt: m.OpID, Run: run}
+	if s.ledger == nil {
+		return nil, nil
+	}
+	// Read on a context of its own: the command's may be what failed it.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	row, found, err := s.ledger.Receipt(rctx, run, laneActor(linkID), m.OpID)
+	switch {
+	case err != nil:
+		return proto.MustControl(proto.DecideRefused{T: proto.CtlDecideRefused, ReqID: m.ReqID, Code: "unavailable",
+			Message: "whether the engine took the command could not be read: this opId stays this request's", Ref: target, Receipt: m.OpID}), kept
+	case !found || row.Intent != m.Action || !crew.TaskCommandOn(row, task):
+		return nil, nil
+	}
+	s.note(linkID, target, m.OpID, m.OpID)
+	return proto.MustControl(proto.DecideRefused{T: proto.CtlDecideRefused, ReqID: m.ReqID, Code: "unavailable",
+		Message: "the engine took the command and could not apply it yet: its receipt says what becomes of it", Ref: target, Receipt: m.OpID}), kept
 }
 
 // laneHash is what the link's viewer sees, hashed: its scope's open items
@@ -1130,7 +1253,9 @@ func (s *Server) isDecisionLink(linkID string) bool {
 func (s *Server) ownAnswer(sub *session.Subscription, local *session.Local) func(context.Context, proto.Answer) error {
 	return func(ctx context.Context, a proto.Answer) error {
 		done := make(chan error, 1)
-		err := s.answer(sub, local, a, func(e error) { done <- e })
+		// The lane's context, which ends with the connection: an answer
+		// queued and not yet begun is withdrawn as it ends (Server.answer).
+		err := s.answer(ctx, sub, local, a, func(e error) { done <- e })
 		if !errors.Is(err, session.ErrSubmitPending) {
 			return err
 		}
@@ -1338,9 +1463,14 @@ func (s *Server) handleRunDesk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Closed at the link's expiry as a viewer is at its Grant's Until, not
-	// at the next sweep.
+	// at the next sweep: the expiry made then, through the link's barrier
+	// as a revoke is (share.Store.Expire: the acts under way taken effect
+	// or cancelled first, rule 1).
 	if at := sc.link.ExpiresAt; at != nil {
-		expiry := time.AfterFunc(time.Until(*at), func() { sink.Close(session.ErrExpired) })
+		expiry := time.AfterFunc(time.Until(*at), func() {
+			s.links.Expire(linkID)
+			sink.Close(session.ErrExpired)
+		})
 		defer expiry.Stop()
 	}
 	send := func(f []byte) {

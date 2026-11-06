@@ -2436,8 +2436,14 @@ type AttachOptions struct {
 	LinkID    string
 	LinkLabel string
 	Name      string // cleaned with CleanName
-	Cols      uint16
-	Rows      uint16
+	// AnswerName, when set, is the name an answer through this client is
+	// kept under (a question's result, its activity), cleaned with
+	// CleanName, in place of Name: a decision link's label, so its answer
+	// is the link's however its client names itself. The roster still
+	// shows Name.
+	AnswerName string
+	Cols       uint16
+	Rows       uint16
 	// ChatOnly makes the connection quiet (hello.chatOnly): for a run's
 	// chat alone, with no scrollback or output, uncounted among the viewers.
 	ChatOnly bool
@@ -2479,10 +2485,11 @@ type AttachOptions struct {
 	// decides, which its caller serves.
 	Decisions bool
 	// Hold, when set, is the client's credential held while one of its
-	// writes is taken (writeWait.hold): a decision link's, whose answer is
-	// written only while the link stands, checked with the write. Hold must
-	// not call the session and must not wait.
-	Hold func() (release func(), err error)
+	// writes is under way (writeWait.hold): a decision link's, whose answer
+	// is written only while the link stands, checked with the write and
+	// held until it has returned or was cancelled. Hold must not call the
+	// session and must not wait.
+	Hold func() (Held, error)
 }
 
 // Attach registers a client without a display name. See AttachWith.
@@ -2601,6 +2608,9 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	sub := newSubscription(id, role, o.LinkID, sink)
 	sub.Name = CleanName(o.Name)
 	sub.LinkLabel = o.LinkLabel
+	if o.AnswerName != "" {
+		sub.answerName = CleanName(o.AnswerName)
+	}
 	sub.quiet = o.ChatOnly
 	sub.owner = o.Owner && o.LinkID == ""
 	sub.authorize = o.Authorize

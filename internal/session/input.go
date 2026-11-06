@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -81,13 +83,46 @@ type writeWait struct {
 	// submission's Enter that a newer prompt would take); nil, and it is.
 	guard func() error
 	// hold, when set (else from's, AttachOptions.Hold), is the credential
-	// held while the write is taken: asked as the writer takes it, after
-	// every other check but guard, and held until the write is begun, so
-	// that the credential stands at the moment of the write, checked with
-	// it, and a revoke waiting on it (share.Store.Hold) comes after the
-	// write or refuses it, never between the check and the write. An error
-	// from it refuses the write (a kind of ErrRevoked), nothing written.
-	hold func() (release func(), err error)
+	// held while the write is under way (Held): taken as the writer takes
+	// the write, after every other check but guard, asked again at the
+	// write's commit boundary (Held.Stands, before the guard, the last
+	// check before the write is begun), and let go once the process write
+	// has returned or the write was cancelled (Held.Cancelled), so that a
+	// revoke or an expiry waiting on it (share.Store.Hold) comes after the
+	// write or refuses it, never between the check and the write's end.
+	// An error from it, taken or asked, refuses the write (a kind of
+	// ErrRevoked), nothing written.
+	hold func() (Held, error)
+}
+
+// Held is a credential held while one write is under way (writeWait.hold):
+// a decision link's (share.Held, through the server's hold of the link).
+// A link's hold covers the write from its check until it has taken effect
+// (the process write returned) or is cancelled; a revoke and an expiry of
+// the link wait for it alike.
+type Held interface {
+	// Stands is asked at the write's commit boundary, just before it is
+	// begun: an error (ErrRevoked, ErrExpired) and nothing of it is
+	// written. It must not call the session and must not wait.
+	Stands() error
+	// Cancelled is closed once whoever ends the credential stops waiting
+	// for the write (a process write the program has not taken within the
+	// link's bound): the write is cancelled, its hold let go at once.
+	Cancelled() <-chan struct{}
+	// Release lets the credential go: once; again does nothing.
+	Release()
+}
+
+// cancelledBy is why a write whose credential's end cancelled it is
+// refused: why the credential no longer stands (a kind of ErrRevoked,
+// ErrExpired for an expiry), the write having begun and not returned
+// within the bound the credential's end waits for.
+func (w *procWrite) cancelledBy() error {
+	why := w.held.Stands()
+	if why == nil {
+		why = ErrRevoked
+	}
+	return fmt.Errorf("%w: the write was cancelled: the program had not taken it when its link ended", asRevoked(why))
 }
 
 // withdrawn says why the write's connection withdraws it, nil while it
@@ -204,9 +239,18 @@ type procWrite struct {
 	over func() error
 	// before runs as the writer takes it (writeWait.before).
 	before func()
-	// release lets go of the credential over took (writeWait.hold): once
-	// the write is begun, under procWriter.mu.
-	release func()
+	// held is the credential over took (writeWait.hold), nil for none: let
+	// go once the write has returned or was cancelled (letGo).
+	held Held
+}
+
+// cancelledEarly is closed when the write's credential was cancelled
+// before the write began (never for a write without one).
+func (w *procWrite) cancelledEarly() <-chan struct{} {
+	if w.held == nil {
+		return nil
+	}
+	return w.held.Cancelled()
 }
 
 // newWrite is a write of data for writeProc's wait: until ctx ends, until
@@ -234,14 +278,23 @@ func (s *Local) newWrite(ctx context.Context, data []byte, deadline time.Time, o
 		if !deadline.IsZero() && !time.Now().Before(deadline) {
 			return ErrInputStalled
 		}
-		// The credential held from here until the write is begun (run):
-		// checked with the write, so nothing comes between.
+		// The credential held from here until the write has returned or
+		// was cancelled (run): checked with the write, so nothing comes
+		// between.
 		if hold != nil {
-			release, err := hold()
+			held, err := hold()
 			if err != nil {
 				return asRevoked(err)
 			}
-			w.release = release
+			w.held = held
+			// The write's commit boundary, the last thing asked before the
+			// guard (which claims a reply's question for a write that is
+			// made): the credential asked once more, fail-closed, so one
+			// that ended since it was taken (a link revoked or expired, its
+			// barrier begun) begins nothing.
+			if err := w.stands(); err != nil {
+				return err
+			}
 		}
 		// The guard is asked last: the writer begins the write when it
 		// passes, so a guard that notes something of the write (a reply
@@ -257,11 +310,50 @@ func (s *Local) newWrite(ctx context.Context, data []byte, deadline time.Time, o
 	return w
 }
 
-// letGo lets go of the credential the write holds (writeWait.hold), if any.
+// letGo lets go of the credential the write holds (writeWait.hold), if
+// any: again does nothing.
 func (w *procWrite) letGo() {
-	if w.release != nil {
-		w.release()
-		w.release = nil
+	if w.held != nil {
+		w.held.Release()
+	}
+}
+
+// stands asks the write's credential at its commit boundary (over), just
+// before the write is begun: nil while it stands (or there is none), else
+// why it does not (a kind of ErrRevoked), the credential let go.
+func (w *procWrite) stands() error {
+	if w.held == nil {
+		return nil
+	}
+	if err := w.held.Stands(); err != nil {
+		w.letGo()
+		return asRevoked(err)
+	}
+	return nil
+}
+
+// watchCancel watches the write's credential while the write is made:
+// once the credential's end cancels it (Held.Cancelled), its hold is let
+// go at once. done ends the watch and says whether it was cancelled.
+func (w *procWrite) watchCancel() (done func() bool) {
+	if w.held == nil {
+		return func() bool { return false }
+	}
+	var cancelled atomic.Bool
+	wrote, watched := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watched)
+		select {
+		case <-w.held.Cancelled():
+			cancelled.Store(true)
+			w.letGo()
+		case <-wrote:
+		}
+	}()
+	return func() bool {
+		close(wrote)
+		<-watched
+		return cancelled.Load()
 	}
 }
 
@@ -325,13 +417,28 @@ func (q *procWriter) run(to io.Writer) {
 			continue
 		}
 		w.begun = true
-		w.letGo()
 		q.writing, q.current = time.Now(), w
 		q.mu.Unlock()
-		if w.before != nil {
-			w.before()
+		// The credential is held until the write has returned, or is let go
+		// as the credential's end cancels the write (a program that does
+		// not take it within the bound): what the program had taken stays
+		// taken, and the write is refused as cancelled, nothing after it
+		// written as its own (a reply's question not resolved by it).
+		cancelled := w.watchCancel()
+		var err error
+		select {
+		case <-w.cancelledEarly():
+			err = w.cancelledBy()
+		default:
+			if w.before != nil {
+				w.before()
+			}
+			_, err = to.Write(w.data)
 		}
-		_, err := to.Write(w.data)
+		if cancelled() && err == nil {
+			err = w.cancelledBy()
+		}
+		w.letGo()
 		// The write is made: nothing of it is held against the next
 		// (a stall marked for it by a waiter whose time ran out as it was
 		// being made) from the moment its waiter can learn so.

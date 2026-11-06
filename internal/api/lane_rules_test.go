@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -309,8 +310,10 @@ func TestALinksAnswerIsWrittenOnlyWhileItStands(t *testing.T) {
 // A task command through a link is taken only while the link stands,
 // checked with the engine's command (rule 1): a revoke between the item's
 // judgement and the operation refuses it, no receipt kept; a revoke that
-// lands while the engine takes a command waits for the command's commit
-// and returns after it, and the link takes nothing after.
+// lands while the engine takes a command (taken, its change not yet
+// made) waits for the command, which asks again at its commit, finds its
+// link ended and commits nothing (its receipt settled withdrawn, the task
+// as it was), and returns after it.
 func TestALinksCommandIsHeldAgainstItsRevoke(t *testing.T) {
 	t.Run("revoked before the operation", func(t *testing.T) {
 		e := readyEnv(t, nil)
@@ -339,7 +342,7 @@ func TestALinksCommandIsHeldAgainstItsRevoke(t *testing.T) {
 			t.Fatal("a receipt kept for a retry after the revoke")
 		}
 	})
-	t.Run("a revoke waits for the command under way", func(t *testing.T) {
+	t.Run("a revoke waits for the command under way, which commits nothing", func(t *testing.T) {
 		e := readyEnv(t, nil)
 		e.gitRepo(t)
 		run := failedRun(t, e)
@@ -368,9 +371,9 @@ func TestALinksCommandIsHeldAgainstItsRevoke(t *testing.T) {
 		// The revoke is under way (a hold is refused) and waits for the
 		// command the engine is taking.
 		until(t, "the revoke under way", func() bool {
-			_, release, err := e.srv.links.Hold(linkID)
+			h, err := e.srv.links.Hold(linkID)
 			if err == nil {
-				release()
+				h.Release()
 			}
 			return err != nil
 		})
@@ -384,15 +387,18 @@ func TestALinksCommandIsHeldAgainstItsRevoke(t *testing.T) {
 		default:
 		}
 		close(let)
-		if r := replyOf(t, <-replies); !isOK(r) || r["receipt"] != "held-1" {
+		if r := replyOf(t, <-replies); !refusedWith(r, proto.DecideRevoked) {
 			t.Fatalf("the command under way: %v", r)
 		}
 		if code := <-revoked; code != http.StatusNoContent {
 			t.Fatalf("revoke: %d", code)
 		}
 		row, found, err := e.srv.ledger.Receipt(t.Context(), run, laneActor(linkID), "held-1")
-		if err != nil || !found || row.Status != "done" {
+		if err != nil || !found || row.Status != "failed" || !strings.Contains(row.Receipt, crew.RefusalWithdrawn) {
 			t.Fatalf("the command's receipt: %+v %v %v", row, found, err)
+		}
+		if st, _, err := e.srv.runs.TaskOf(run, "build"); err != nil || st.State != "failed" {
+			t.Fatalf("the task after a command its link's revoke withdrew: %+v %v", st, err)
 		}
 	})
 }
@@ -685,7 +691,11 @@ func TestALinksConnectionsShareOneWatch(t *testing.T) {
 	}
 	var desks []*laneClient
 	for range 3 {
-		desks = append(desks, dialLane(t, e, "/ws/runs/"+run+"/desk", tok))
+		d := dialLane(t, e, "/ws/runs/"+run+"/desk", tok)
+		// A request answered: the desk's lane, and its watch's
+		// registration, made (the welcome comes before them).
+		d.list("")
+		desks = append(desks, d)
 	}
 	if watches, subs := watchers(); watches != 1 || subs != 3 {
 		t.Fatalf("%d watches of %d connections", watches, subs)
@@ -702,38 +712,52 @@ func TestALinksConnectionsShareOneWatch(t *testing.T) {
 }
 
 // A connection's watch makes its first read of the scope before the
-// connection serves a request, so a change after that read is told
+// connection serves a request: Watch makes it on its caller's goroutine
+// and returns after it, so a change after that read is told
 // (decisions_changed) and none is taken as the watch's baseline unseen.
-// The seam gives a request the chance to be served first, as a watch begun
-// on a goroutine of its own would let it: the timer bounds that chance
-// alone, and the order holds however long it is.
+// The seam holds a first read made on any other goroutine until Watch has
+// returned, so a watch that read on one of its own would return before
+// its baseline every time; the caller's own read is never held.
 func TestTheWatchReadsBeforeTheFirstRequest(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id := sessionHex("first-read")
 	newFakeSession(t, e, id, session.Options{})
+	linkID, _ := e.decisionLink(t, "/api/sessions/"+id+"/links", "phone", 0)
+	caller := goroutineID()
+	returned := make(chan struct{})
 	var mu sync.Mutex
 	var order []string
 	note := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
-	served := make(chan struct{})
-	var first, firstRead sync.Once
+	var first sync.Once
 	e.srv.laneSeam = &laneSeams{
 		hashing: func(string) {
 			first.Do(func() {
-				select {
-				case <-served:
-				case <-time.After(2 * time.Second):
+				if goroutineID() != caller {
+					<-returned
 				}
 				note("the watch's first read")
 			})
 		},
-		beforeRead: func(string) { firstRead.Do(func() { note("a request served"); close(served) }) },
 	}
-	_, tok := e.decisionLink(t, "/api/sessions/"+id+"/links", "phone", 0)
-	w := dialLane(t, e, "/ws/sessions/"+id, tok)
-	w.list("")
+	stop := e.srv.Lane().Watch(linkID, id, func() {})
+	note("Watch returned")
+	close(returned)
+	defer stop()
 	mu.Lock()
 	defer mu.Unlock()
-	if len(order) != 2 || order[0] != "the watch's first read" {
+	if !slices.Equal(order, []string{"the watch's first read", "Watch returned"}) {
 		t.Fatalf("in order: %q", order)
 	}
+}
+
+// goroutineID is the id of the goroutine it runs on, from the first line
+// of its stack ("goroutine <id> [...]").
+func goroutineID() string {
+	buf := make([]byte, 64)
+	buf = buf[:runtime.Stack(buf, false)]
+	f := strings.Fields(string(buf))
+	if len(f) < 2 {
+		return ""
+	}
+	return f[1]
 }

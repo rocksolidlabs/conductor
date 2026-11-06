@@ -36,12 +36,35 @@ var (
 	ErrStaleRevision   = errors.New("the run has moved on since the revision expected")
 	ErrCommandConflict = errors.New("the command id was used before with other content")
 	ErrTooManyCommands = errors.New("the run has taken as many commands as it keeps")
+	// ErrWithdrawn fails a command whose asker's credential no longer
+	// stood as its change was to be made (Command.Stands): nothing changed.
+	ErrWithdrawn = errors.New("the command was withdrawn: its asker's credential no longer stands")
 )
 
 // Command is what the asker sends with a change.
 type Command struct {
 	ID               string `json:"commandId"`
 	ExpectedRevision int64  `json:"expectedRevision,omitempty"`
+	// Stands, when set, says whether the asker's credential still stands
+	// (a decision link's hold, share.Held.Stands): asked before the
+	// command is taken, and again at its commit boundary, under the run's
+	// lock as its change is to be made, before anything else is judged.
+	// An error from it fails the command, ErrWithdrawn, nothing changed: a
+	// command not yet taken is not taken (no receipt), one taken settles
+	// failed (refusal withdrawn). It must not wait or call the engine.
+	Stands func() error `json:"-"`
+}
+
+// withdrawn is ErrWithdrawn with why when the asker's credential no
+// longer stands (Stands), nil while it does or there is none.
+func (c Command) withdrawn() error {
+	if c.Stands == nil {
+		return nil
+	}
+	if err := c.Stands(); err != nil {
+		return fmt.Errorf("%w: %w", ErrWithdrawn, err)
+	}
+	return nil
 }
 
 // Receipt is what a command gets: its id and intent, the run's revision
@@ -102,6 +125,7 @@ const (
 	RefusalNotFound      = "not_found"
 	RefusalStaleRevision = "stale_revision"
 	RefusalRunContinued  = "run_continued"
+	RefusalWithdrawn     = "withdrawn"
 )
 
 // refusalOf names the refusal err is.
@@ -115,6 +139,8 @@ func refusalOf(err error) string {
 		return RefusalStaleRevision
 	case errors.Is(err, ErrRunContinued):
 		return RefusalRunContinued
+	case errors.Is(err, ErrWithdrawn):
+		return RefusalWithdrawn
 	}
 	return RefusalTaskState
 }
@@ -164,6 +190,9 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 		e.afterLookup(runID)
 	}
 	fp := fingerprint(intent, args...)
+	if err := cmd.withdrawn(); err != nil {
+		return Receipt{}, err
+	}
 	if prior, found, err := e.ledger.Receipt(ctx, runID, actor, cmd.ID); err != nil {
 		return Receipt{}, err
 	} else if found {
@@ -223,7 +252,11 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	err = e.transact(ctx, r, func() tx {
 		var t *task
 		var events []event
-		if err := e.continued(r); err != nil {
+		// The commit boundary: the asker's credential asked once more,
+		// fail-closed, before anything else is judged.
+		if err := cmd.withdrawn(); err != nil {
+			cmdErr = err
+		} else if err := e.continued(r); err != nil {
 			cmdErr = err
 		} else if cmd.ExpectedRevision > 0 && (cmd.ExpectedRevision != before || r.revision != before+1) {
 			cmdErr = fmt.Errorf("%w: expected %d, the run was at %d when the command was taken and is at %d", ErrStaleRevision, cmd.ExpectedRevision, before, r.revision)

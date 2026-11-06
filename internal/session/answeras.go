@@ -34,11 +34,12 @@ type Actor struct {
 	// as none.
 	ReqID string
 	// Hold, when set, is the actor's credential held while its keys are
-	// taken (writeWait.hold): a decision link's, so they are written only
-	// while the link stands, checked as the writer takes them, not before.
-	// An error from it (ErrRevoked, ErrExpired) and nothing is written.
-	// Hold must not call the session and must not wait.
-	Hold func() (release func(), err error)
+	// written (writeWait.hold): a decision link's, so they are written only
+	// while the link stands, checked as the writer takes them and again at
+	// the write's commit boundary, and held until the write has returned
+	// or was cancelled. An error from it (ErrRevoked, ErrExpired) and
+	// nothing is written. Hold must not call the session and must not wait.
+	Hold func() (Held, error)
 }
 
 // ErrNotAChoice refuses keys AnswerAs is given that are not one of the
@@ -85,7 +86,7 @@ type typist struct {
 	name  string
 	gone  <-chan struct{}
 	// hold is the actor's Actor.Hold.
-	hold func() (func(), error)
+	hold func() (Held, error)
 	// reqID is the request id of the reply the keys are (AnswerInputReq),
 	// kept with the question's result.
 	reqID string
@@ -105,12 +106,13 @@ func (t typist) id() string {
 	return t.sub.ID
 }
 
-// displayName is the subscriber's display name, or the actor's.
+// displayName is the subscriber's name as its answers are kept
+// (answerer), or the actor's.
 func (t typist) displayName() string {
 	if t.actor {
 		return t.name
 	}
-	return t.sub.Name
+	return t.sub.answerer()
 }
 
 // typesSomething reports whether data types anything, a terminal's own

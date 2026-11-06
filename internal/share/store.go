@@ -42,10 +42,9 @@ type Link struct {
 	// recent is a decision link's Recent: what was acted on through it
 	// (NoteRecent), in memory with the link and gone with it.
 	recent []Recent
-	// acts is held by each act taken through the link while it is written
-	// (Hold) and taken whole by a revoke (Revoke, RevokeRun), which so
-	// waits for the acts under way and refuses those after it.
-	acts *sync.RWMutex
+	// acts are the acts taken through the link under way (Hold) and the
+	// barrier a revoke or an expiry ends them through (end).
+	acts *linkActs
 	// ops are the operations a decision link took, by their opId (ClaimOp),
 	// in memory with the link and gone with it.
 	ops map[string]*op
@@ -128,6 +127,11 @@ type Store struct {
 	OnRevoke func(sessionID, linkID string)
 	// OnRevokeRun is OnRevoke for a run's link.
 	OnRevokeRun func(runID, linkID string)
+	// HoldWait bounds how long a revoke or an expiry waits for an act
+	// under way that can be cancelled (a process write the program does
+	// not take) before it cancels it (Held.Cancelled); DefaultHoldWait
+	// when zero. Set before the store is used.
+	HoldWait time.Duration
 }
 
 // NewStore creates an empty store.
@@ -304,7 +308,7 @@ func (s *Store) create(link *Link, scopes map[string]map[string]*Link, key strin
 		label = label[:120]
 	}
 	tok, hash := NewToken()
-	link.ID, link.Label, link.Role, link.CreatedAt, link.hash, link.acts = session.NewID(), label, role, s.now(), hash, new(sync.RWMutex)
+	link.ID, link.Label, link.Role, link.CreatedAt, link.hash, link.acts = session.NewID(), label, role, s.now(), hash, newActs()
 	if ttl > 0 {
 		exp := link.CreatedAt.Add(ttl)
 		link.ExpiresAt = &exp
@@ -415,10 +419,10 @@ func (s *Store) RevokeRun(runID, linkID string) (found, revoked bool) {
 // caller's, and then calls notify, outside the lock, each time: the mark
 // comes first, so a viewer attaching meanwhile either sees it or is there
 // for notify's close to find. With wait (a revoke, not a session's end,
-// whose session refuses what comes after on its own) the mark is made
-// holding the link's acts whole: after the acts under way (Hold) are
-// written, and before any other is held, so none of the link's acts is
-// written after the revoke returns.
+// whose session refuses what comes after on its own) the link is ended
+// through its barrier first (end): no act is held after, and the acts
+// under way have taken effect or been cancelled before the mark, so none
+// of the link's acts takes effect after the revoke returns.
 func (s *Store) revoke(linkID string, owned func(*Link) bool, wait bool, notify func()) (found, revoked bool) {
 	s.mu.Lock()
 	link, ok := s.byID[linkID]
@@ -426,80 +430,79 @@ func (s *Store) revoke(linkID string, owned func(*Link) bool, wait bool, notify 
 		s.mu.Unlock()
 		return false, false
 	}
-	if wait && link.acts != nil {
-		s.mu.Unlock()
-		link.acts.Lock()
-		s.mu.Lock()
+	acts := link.acts
+	s.mu.Unlock()
+	if wait {
+		s.end(acts, ErrRevoked)
 	}
+	s.mu.Lock()
 	already := link.Revoked
 	link.Revoked = true
 	s.mu.Unlock()
-	if wait && link.acts != nil {
-		link.acts.Unlock()
-	}
 	notify()
 	return true, !already
 }
 
-// Hold is the link linkID as it stands, held while an act taken through it
-// is written (a decision link's answer as the session's writer takes it, a
-// task command as the engine commits it): the link is checked with the
-// write, not before it. Until release (once; again does nothing) a Revoke
-// or RevokeRun of the link waits, so an act held is written before the
-// revoke returns and never after it. Hold itself never waits: while a
-// revoke of the link is under way it is refused ErrRevoked, as after it;
-// an unknown, revoked or expired link is refused as Live refuses it.
-func (s *Store) Hold(linkID string) (*Link, func(), error) {
-	s.mu.RLock()
-	l, ok := s.byID[linkID]
-	s.mu.RUnlock()
-	if !ok || l.acts == nil {
-		return nil, nil, ErrUnknownLink
-	}
-	if !l.acts.TryRLock() {
-		return nil, nil, ErrRevoked
-	}
-	link, err := s.Live(linkID)
-	if err != nil {
-		l.acts.RUnlock()
-		return nil, nil, err
-	}
-	return link, sync.OnceFunc(l.acts.RUnlock), nil
-}
-
-// ExpireDue tells the hooks of each link that has expired by now, once per
-// link, as a revoke does (OnRevoke for a session's link, OnRevokeRun for a
-// run's), so the viewers still attached through it are closed. A link
-// revoked before is not told again. It returns how many it told.
+// ExpireDue ends each link that has expired by now through its barrier,
+// as a revoke does (end: no act held after, those under way taken effect
+// or cancelled), and then tells its hooks, once per link (OnRevoke for a
+// session's link, OnRevokeRun for a run's), so the viewers still attached
+// through it are closed. A link revoked before is not told again. It
+// returns how many it told.
 func (s *Store) ExpireDue(now time.Time) int {
-	type due struct {
-		run         bool
-		scope, link string
-	}
-	var todo []due
+	var todo []*Link
 	s.mu.Lock()
 	for _, l := range s.byID {
 		if l.Revoked || l.lapsed || l.ExpiresAt == nil || now.Before(*l.ExpiresAt) {
 			continue
 		}
 		l.lapsed = true
-		if l.RunID != "" {
-			todo = append(todo, due{run: true, scope: l.RunID, link: l.ID})
-		} else {
-			todo = append(todo, due{scope: l.SessionID, link: l.ID})
-		}
+		todo = append(todo, l)
 	}
 	s.mu.Unlock()
-	for _, d := range todo {
-		if d.run {
-			if s.OnRevokeRun != nil {
-				s.OnRevokeRun(d.scope, d.link)
-			}
-		} else if s.OnRevoke != nil {
-			s.OnRevoke(d.scope, d.link)
-		}
+	var wg sync.WaitGroup
+	for _, l := range todo {
+		wg.Go(func() { s.end(l.acts, ErrExpired) })
+	}
+	wg.Wait()
+	for _, l := range todo {
+		s.tellExpired(l)
 	}
 	return len(todo)
+}
+
+// Expire is ExpireDue for the one link linkID as its own deadline comes
+// (a desk's timer at the link's ExpiresAt): once the store's clock has
+// passed the deadline, the link is ended through its barrier as an expiry
+// (end), and its hooks are told unless ExpireDue or Expire told them
+// before. It reports whether the link had expired; a link revoked, unknown
+// or not yet due is left as it is.
+func (s *Store) Expire(linkID string) bool {
+	s.mu.Lock()
+	l, ok := s.byID[linkID]
+	if !ok || l.Revoked || l.ExpiresAt == nil || s.now().Before(*l.ExpiresAt) {
+		s.mu.Unlock()
+		return false
+	}
+	tell := !l.lapsed
+	l.lapsed = true
+	s.mu.Unlock()
+	s.end(l.acts, ErrExpired)
+	if tell {
+		s.tellExpired(l)
+	}
+	return true
+}
+
+// tellExpired tells l's hook that it expired.
+func (s *Store) tellExpired(l *Link) {
+	if l.RunID != "" {
+		if s.OnRevokeRun != nil {
+			s.OnRevokeRun(l.RunID, l.ID)
+		}
+	} else if s.OnRevoke != nil {
+		s.OnRevoke(l.SessionID, l.ID)
+	}
 }
 
 // ListBySession returns links for a session, newest first.
@@ -549,7 +552,7 @@ func (s *Store) DeleteSession(sessionID string, durableToo bool) []string {
 // Restore puts back a link kept on disk, under the hash of its token.
 func (s *Store) Restore(l Link, hash Hash) {
 	link := l
-	link.hash, link.acts, link.recent, link.ops = hash, new(sync.RWMutex), nil, nil
+	link.hash, link.acts, link.recent, link.ops = hash, newActs(), nil, nil
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.byHash[hash] = &link

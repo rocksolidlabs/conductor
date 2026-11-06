@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -596,71 +597,179 @@ func TestADecisionLinksRecent(t *testing.T) {
 	}
 }
 
-// A link's act is held while it is written (Hold): a revoke waits for the
-// act under way and returns once it is let go, a hold asked while the
-// revoke waits is refused at once, as one after it is; an expired link is
-// refused ErrExpired; a link revoked on its session's end (End) does not
-// wait, its session refusing what comes after on its own.
+// A link's act is held while it is under way (Hold): a revoke waits for
+// the act under way and returns once it is let go, a hold asked while the
+// revoke waits is refused at once, as one after it is, and the act held
+// asks at its commit boundary (Stands) and is told the link ended; an
+// expired link is refused ErrExpired; a link revoked on its session's end
+// (End) does not wait, its session refusing what comes after on its own.
 func TestALinksActIsHeldAgainstItsRevoke(t *testing.T) {
 	s := NewStore()
 	now := time.Now()
 	s.now = func() time.Time { return now }
 	l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "phone", time.Minute)
-	got, release, err := s.Hold(l.ID)
-	if err != nil || got.ID != l.ID {
-		t.Fatalf("hold: %+v %v", got, err)
+	held, err := s.Hold(l.ID)
+	if err != nil || held.Link.ID != l.ID {
+		t.Fatalf("hold: %+v %v", held, err)
+	}
+	if err := held.Stands(); err != nil {
+		t.Fatalf("stands: %v", err)
 	}
 	// Two holds at once are fine.
-	_, again, err := s.Hold(l.ID)
+	again, err := s.Hold(l.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	again()
+	again.Release()
 	revoked := make(chan struct{})
 	go func() {
 		s.RevokeRun("r1", l.ID)
 		close(revoked)
 	}()
-	// The revoke waits: holds are refused meanwhile, the act's still held.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, rel, err := s.Hold(l.ID); err != nil {
-			if !errors.Is(err, ErrRevoked) {
-				t.Fatalf("a hold while the revoke waits: %v", err)
-			}
-			break
-		} else {
-			rel()
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the revoke never began")
-		}
-		time.Sleep(time.Millisecond)
+	// The revoke waits: holds are refused meanwhile, the act's still held,
+	// and told at its commit boundary that its link ended.
+	barrierBegun(t, s, l.ID, ErrRevoked)
+	if err := held.Stands(); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("stands while the revoke waits: %v", err)
 	}
 	select {
 	case <-revoked:
 		t.Fatal("the revoke returned with an act held")
 	default:
 	}
-	release()
-	release() // once
+	held.Release()
+	held.Release() // once
 	<-revoked
-	if _, _, err := s.Hold(l.ID); !errors.Is(err, ErrRevoked) {
+	if _, err := s.Hold(l.ID); !errors.Is(err, ErrRevoked) {
 		t.Fatalf("a hold after the revoke: %v", err)
 	}
 	e, _, _ := s.CreateRunDecision("r1", session.RoleControl, "", time.Minute)
 	now = now.Add(time.Minute)
-	if _, _, err := s.Hold(e.ID); !errors.Is(err, ErrExpired) {
+	if _, err := s.Hold(e.ID); !errors.Is(err, ErrExpired) {
 		t.Fatalf("a hold of an expired link: %v", err)
 	}
-	if _, _, err := s.Hold("nope"); !errors.Is(err, ErrUnknownLink) {
+	if _, err := s.Hold("nope"); !errors.Is(err, ErrUnknownLink) {
 		t.Fatalf("a hold of no link: %v", err)
 	}
 	sl, _, _ := s.CreateDecision("s1", session.RoleControl, "", 0)
-	_, held, _ := s.Hold(sl.ID)
-	defer held()
+	sh, _ := s.Hold(sl.ID)
+	defer sh.Release()
 	if !s.End("s1", sl.ID) {
 		t.Fatal("not ended")
+	}
+}
+
+// barrierBegun waits for the barrier of the link linkID to have begun
+// (end: its ended closed), and then a hold is refused why.
+func barrierBegun(t *testing.T, s *Store, linkID string, why error) {
+	t.Helper()
+	s.mu.RLock()
+	a := s.byID[linkID].acts
+	s.mu.RUnlock()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		a.mu.Lock()
+		ended := a.isEnded()
+		a.mu.Unlock()
+		if ended {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the barrier never began")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := s.Hold(linkID); !errors.Is(err, why) {
+		t.Fatalf("a hold while the barrier waits: %v", err)
+	}
+}
+
+// An expiry is a revoke the clock makes: the sweep (ExpireDue) and a
+// link's own deadline (Expire) end the link through the same barrier,
+// waiting for the act under way, which is told at its commit boundary
+// that the link expired; the hooks are told once, after the acts let go.
+// A link not yet due is left as it is.
+func TestAnExpiryWaitsAsARevokeDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		expire func(s *Store, linkID string, now time.Time)
+	}{
+		{"the sweep", func(s *Store, _ string, now time.Time) { s.ExpireDue(now) }},
+		{"its own deadline", func(s *Store, linkID string, _ time.Time) { s.Expire(linkID) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewStore()
+			var mu sync.Mutex
+			now := time.Now()
+			s.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+			var told atomic.Int32
+			s.OnRevokeRun = func(string, string) { told.Add(1) }
+			l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "phone", time.Minute)
+			if s.Expire(l.ID) {
+				t.Fatal("expired before its deadline")
+			}
+			held, err := s.Hold(l.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			now = now.Add(time.Minute)
+			at := now
+			mu.Unlock()
+			expired := make(chan struct{})
+			go func() {
+				tc.expire(s, l.ID, at)
+				close(expired)
+			}()
+			barrierBegun(t, s, l.ID, ErrExpired)
+			if err := held.Stands(); !errors.Is(err, ErrExpired) {
+				t.Fatalf("stands while the expiry waits: %v", err)
+			}
+			select {
+			case <-expired:
+				t.Fatal("the expiry returned with an act held")
+			default:
+			}
+			if told.Load() != 0 {
+				t.Fatal("the hooks told before the act let go")
+			}
+			held.Release()
+			<-expired
+			s.Expire(l.ID)
+			s.ExpireDue(at)
+			if n := told.Load(); n != 1 {
+				t.Fatalf("told %d times", n)
+			}
+		})
+	}
+}
+
+// An act that can be cancelled and has not taken effect within HoldWait
+// (a process write the program does not take) is cancelled: the barrier
+// waits HoldWait, closes the act's Cancelled, and returns once the act
+// has let go.
+func TestABarrierCancelsAStalledActPastItsBound(t *testing.T) {
+	s := NewStore()
+	s.HoldWait = 50 * time.Millisecond
+	l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "phone", 0)
+	stalled, _ := s.Hold(l.ID)
+	var order []string
+	var mu sync.Mutex
+	note := func(v string) { mu.Lock(); order = append(order, v); mu.Unlock() }
+	go func() {
+		<-stalled.Cancelled()
+		note("cancelled")
+		stalled.Release()
+	}()
+	s.RevokeRun("r1", l.ID)
+	note("revoked")
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(order, []string{"cancelled", "revoked"}) {
+		t.Fatalf("in order: %q", order)
+	}
+	if _, err := s.Hold(l.ID); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("a hold after the revoke: %v", err)
 	}
 }
 

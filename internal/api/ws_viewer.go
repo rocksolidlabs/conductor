@@ -91,16 +91,23 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 	// A decision link's writes are taken only while the link stands,
 	// checked with each write (lane.go, rule 1): its lane's answers are
 	// this subscription's.
-	var hold func() (func(), error)
+	var hold func() (session.Held, error)
+	label := s.linkLabel(linkID)
+	answerName := ""
 	if decides {
 		hold = s.holdLink(linkID)
+		// Its answers are the link's, kept under its label as a decision
+		// link's answer to another session's question is (laneAnswer),
+		// whatever name its client says.
+		answerName = linkAnswerName(label)
 	}
 	sub, err := local.AttachWith(session.AttachOptions{
-		Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
-		Authorize: check,
-		Owner:     owner,
-		Decisions: decides,
-		Hold:      hold,
+		Role: role, LinkID: linkID, LinkLabel: label, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
+		AnswerName: answerName,
+		Authorize:  check,
+		Owner:      owner,
+		Decisions:  decides,
+		Hold:       hold,
 	}, sink)
 	if err != nil {
 		switch {
@@ -401,7 +408,7 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 			// its outcome is known (a line the program takes slowly is
 			// finished later, and its word comes then).
 			held.typeIn(sub, local, m.ReqID, func() error {
-				if err := s.answer(sub, local, m, reply); !errors.Is(err, session.ErrSubmitPending) {
+				if err := s.answer(context.Background(), sub, local, m, reply); !errors.Is(err, session.ErrSubmitPending) {
 					reply(err)
 				}
 				return nil
@@ -411,7 +418,7 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		// A choice's keys on the read loop, as a keystroke is, so what the
 		// client sends next comes after them; the owner's word names them,
 		// once they have landed.
-		if err := s.answer(sub, local, m, reply); !errors.Is(err, session.ErrSubmitPending) {
+		if err := s.answer(context.Background(), sub, local, m, reply); !errors.Is(err, session.ErrSubmitPending) {
 			reply(err)
 		}
 	case proto.CtlChat:
@@ -461,7 +468,14 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 // known yet (session.ErrSubmitPending): finished gets it then, on another
 // goroutine (nil once the keys landed or the line was entered,
 // session.ErrLineStranded for a line typed and not entered).
-func (s *Server) answer(sub *session.Subscription, local *session.Local, m proto.Answer, finished func(error)) error {
+//
+// ctx is whoever asked for the answer: the connection's own answer goes on
+// whatever becomes of it (context.Background()); a decision link's lane
+// passes its own, which ends with the connection, so that an answer queued
+// behind another write (keys, a line's text or Enter) and not yet begun
+// is withdrawn as it ends, never begun; a write begun lands as the
+// program reads, its word still waited for.
+func (s *Server) answer(ctx context.Context, sub *session.Subscription, local *session.Local, m proto.Answer, finished func(error)) error {
 	// The reply's request id is kept with the question's result, so the
 	// winner is told by its id (the decision inbox's track).
 	reqID := m.ReqID
@@ -469,11 +483,11 @@ func (s *Server) answer(sub *session.Subscription, local *session.Local, m proto
 		reqID = ""
 	}
 	if m.Input != "" {
-		return local.AnswerInputReq(context.Background(), sub, m.Question, reqID, []byte(m.Input), finished)
+		return local.AnswerInputReq(ctx, sub, m.Question, reqID, []byte(m.Input), finished)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), submitTimeout)
 	defer cancel()
-	_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub, Question: m.Question, ReqID: reqID, Finished: func(res session.SubmitResult, err error) {
+	_, err := local.Submit(sctx, session.Submission{Text: m.Text, By: sub, Question: m.Question, ReqID: reqID, Withdrawn: ctx.Done(), Finished: func(res session.SubmitResult, err error) {
 		finished(session.AnswerWord(res, err))
 	}})
 	return err

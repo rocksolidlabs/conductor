@@ -1885,14 +1885,26 @@ no link's scope); the actions each item lists now, each through the
 item's own operation, which judges it as it judges the workbench's (the
 question's claim, first response wins; the engine's command at the
 action's revision); while the link stands, read again on every request
-and checked with the write itself: an answer's keys or line are written
-only while the link is neither revoked nor expired, looked at as the
-session's writer takes them, and a task command is taken holding the
-link until the engine has committed it, a revoke waiting for it; so an
-action queued, in flight or asked again when its link ends is refused,
-never written, and none of a link's acts lands after its revoke returns;
-each `opId` names one operation; as the link's actor, `link:<id>`, never
-the workbench's, with its label beside it (a command taken through it is
+and checked with the act itself: a link's hold covers an act until it
+has taken effect or is cancelled (an answer's keys or line from the
+check, as the session's writer takes them, until the process write has
+returned; a task command until the engine has committed it), and an
+expiry waits as a revoke does: from the start of either no act is held,
+and either returns only once each act held has taken effect or been
+cancelled. At its commit boundary an act asks once more whether its link
+stands, so one whose link ended while it was held takes no effect (a
+command the engine had taken settles failed, refusal `withdrawn`). A
+process write the program has not taken within 5 s of the link's end is
+cancelled: refused as the link's end, nothing more of it written, no
+question resolved by it. So an action queued, in flight or asked again
+when its link ends is refused, never written, and none of a link's acts
+takes effect after its revoke or expiry; an answer of the asking
+session's own decision-link connection not yet begun when the connection
+closes is withdrawn with it. Each `opId` names one operation; as the
+link's actor, `link:<id>`, never the workbench's, with its label beside
+it (an answer, through the link's own connection or its claim of another
+session's question, is kept under the link's label, `a decision link`
+for one with none, whatever name the client says; a command taken through it is
 noted in its run's activity as `<action> of <task> taken through the link
 <label> (link:<id>)`, and the link's creation names its id the same
 way). A welcome says `decisions: true` to a decision link's
@@ -1939,7 +1951,10 @@ the id the holder opens it by. A ref outside the scope is
 
 **Track.** `{ref, receipt, attempt, steps}`, the four steps of `GET
 /api/inbox/track`, read under this link's actor: a task command's
-receipt is the ledger's under `link:<id>`, never the workbench's; a
+receipt is the ledger's under `link:<id>`, never the workbench's, and
+its `attempt` is its receipt (the decide's `opId`), any other refused
+`invalid`; a receipt of another task's command reads as none of this
+task's; a
 question's is the session's kept result, by `attempt` against the kept
 request id, which for a link's answer is its `opId` bound to the link
 (another link's answer, or the workbench's, under the same id is never
@@ -1966,7 +1981,9 @@ connection of the link is waited for and answered with its outcome. The
 same `opId` with anything else (another item, task, action, revision,
 choice or line) is `op_conflict`, nothing done, at once or later and
 from any connection. An `opId` whose request was refused before anything
-was begun is free again. Otherwise the
+was begun is free again; once the engine has taken a command, its `opId`
+stays the request's whatever came of it (an error after the taking
+included, its receipt saying what becomes of it). Otherwise the
 item is read: an `answer` (its `revision` the question's id, exactly one
 of `input`, one of the item's choices' keys, and `text`, where the item
 offers a line) to a question of the connection's own session is taken
@@ -3126,7 +3143,8 @@ repeat?, status, error?, refusal?, task?, paused?}}`: `status` is `done` or
 `failed` (with `error` and `refusal`, for a command the run's state refused,
 such as a cancel of a task already finished: `refusal` is the code the
 answer carries, `task_state`, `run_stopped`, `run_continued` or
-`not_found`, on the first
+`not_found`, or `withdrawn` for a decision link's command whose link
+ended before its change was made (Decision links), on the first
 answer and on every repeat), `task` the task as it stands after the command
 (`{id, state, reason?, attempts, result?: {attempt, commit?}}`, the reason
 at most 2,000 characters; the run has the rest, so a receipt always fits

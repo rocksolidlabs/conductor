@@ -667,12 +667,71 @@ func TestAnswerAsKeepsTheRequestID(t *testing.T) {
 	}
 }
 
+// testCred is a credential for a write's hold (writeWait.hold), as a
+// decision link's is: it stands until ended, counts its holds and
+// releases, and may hold the writer once it is held (atHeld), or be
+// cancelled.
+type testCred struct {
+	mu              sync.Mutex
+	ended           error
+	holds, released int
+	atHeld          func()
+	cancelled       chan struct{}
+	cancelOnce      sync.Once
+}
+
+func newTestCred() *testCred { return &testCred{cancelled: make(chan struct{})} }
+
+// end makes the credential no longer stand (why).
+func (c *testCred) end(why error) { c.mu.Lock(); c.ended = why; c.mu.Unlock() }
+
+// cancel cancels the writes under way (Held.Cancelled).
+func (c *testCred) cancel() { c.cancelOnce.Do(func() { close(c.cancelled) }) }
+
+// counts are the holds taken and let go.
+func (c *testCred) counts() (holds, released int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.holds, c.released
+}
+
+// hold is the credential as an Actor's, a Submission's or AttachOptions' Hold.
+func (c *testCred) hold() (Held, error) {
+	c.mu.Lock()
+	if c.ended != nil {
+		defer c.mu.Unlock()
+		return nil, c.ended
+	}
+	c.holds++
+	at := c.atHeld
+	c.mu.Unlock()
+	if at != nil {
+		at()
+	}
+	return &testHeld{c: c}, nil
+}
+
+type testHeld struct {
+	c    *testCred
+	once sync.Once
+}
+
+func (h *testHeld) Stands() error {
+	h.c.mu.Lock()
+	defer h.c.mu.Unlock()
+	return h.c.ended
+}
+func (h *testHeld) Cancelled() <-chan struct{} { return h.c.cancelled }
+func (h *testHeld) Release() {
+	h.once.Do(func() { h.c.mu.Lock(); h.c.released++; h.c.mu.Unlock() })
+}
+
 // An actor's credential is held as the writer takes its keys, checked with
 // the write (Actor.Hold): keys queued behind a write the program has not
 // taken, whose credential ends while they wait (a decision link revoked),
 // are never written once the writer reaches them, ErrRevoked, the question
 // still waiting; keys whose credential stands are written, the hold taken
-// once as the writer took them and let go once their write was begun.
+// once as the writer took them and let go once their write had returned.
 func TestAnswerAsHoldsItsCredentialAtTheWrite(t *testing.T) {
 	s, p, _ := asking(t, Options{InputWait: time.Hour})
 	owner := ownerOf(t, s)
@@ -694,20 +753,10 @@ func TestAnswerAsHoldsItsCredentialAtTheWrite(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the first write never began")
 	}
-	var mu sync.Mutex
-	stands, holds, released := true, 0, 0
-	hold := func() (func(), error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if !stands {
-			return nil, ErrRevoked
-		}
-		holds++
-		return func() { mu.Lock(); released++; mu.Unlock() }, nil
-	}
+	cred := newTestCred()
 	answered := make(chan error, 1)
 	go func() {
-		answered <- s.AnswerAs(context.Background(), q.ID, "Postgres\r", Actor{Name: "phone", ReqID: "op-1", Hold: hold})
+		answered <- s.AnswerAs(context.Background(), q.ID, "Postgres\r", Actor{Name: "phone", ReqID: "op-1", Hold: cred.hold})
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for goroutinesIn("session.(*Local).writeProc(") < 2 {
@@ -717,9 +766,7 @@ func TestAnswerAsHoldsItsCredentialAtTheWrite(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	// The credential ends while the keys wait: nothing has asked it yet.
-	mu.Lock()
-	stands = false
-	mu.Unlock()
+	cred.end(ErrRevoked)
 	open()
 	if err := <-first; err != nil {
 		t.Fatal(err)
@@ -736,20 +783,141 @@ func TestAnswerAsHoldsItsCredentialAtTheWrite(t *testing.T) {
 	default:
 	}
 	showsOwn(t, s, q, "after the credential ended")
-	mu.Lock()
-	stands = true
-	mu.Unlock()
-	if err := s.AnswerAs(context.Background(), q.ID, "SQLite\r", Actor{Name: "phone", ReqID: "op-2", Hold: hold}); err != nil {
+	cred.end(nil)
+	if err := s.AnswerAs(context.Background(), q.ID, "SQLite\r", Actor{Name: "phone", ReqID: "op-2", Hold: cred.hold}); err != nil {
 		t.Fatal(err)
 	}
 	if got := written(t, p); got != "SQLite\r" {
 		t.Fatalf("written %q", got)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if holds != 1 || released != 1 {
+	if holds, released := cred.counts(); holds != 1 || released != 1 {
 		t.Fatalf("the hold taken %d times, let go %d", holds, released)
 	}
+}
+
+// A write's credential is held until the process write has returned, not
+// only until it begins: while the program has not taken the keys, their
+// hold stands (a revoke of the link waits for it), and it is let go once
+// the write returns.
+func TestAnswerAsHoldsItsCredentialThroughTheWrite(t *testing.T) {
+	s, p, _ := asking(t, Options{InputWait: time.Hour})
+	q := askOwn(t, s, "Which database?", dbChoices...)
+	begun, gate := make(chan struct{}), make(chan struct{})
+	var once, opened sync.Once
+	open := func() { opened.Do(func() { close(gate) }) }
+	t.Cleanup(open)
+	p.onWrite = func() {
+		once.Do(func() {
+			close(begun)
+			<-gate
+		})
+	}
+	cred := newTestCred()
+	answered := make(chan error, 1)
+	go func() {
+		answered <- s.AnswerAs(context.Background(), q.ID, "SQLite\r", Actor{Name: "phone", ReqID: "op-1", Hold: cred.hold})
+	}()
+	<-begun
+	if holds, released := cred.counts(); holds != 1 || released != 0 {
+		t.Fatalf("while the program has not taken the keys: held %d, let go %d", holds, released)
+	}
+	open()
+	if err := <-answered; err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "SQLite\r" {
+		t.Fatalf("written %q", got)
+	}
+	if holds, released := cred.counts(); holds != 1 || released != 1 {
+		t.Fatalf("after the write: held %d, let go %d", holds, released)
+	}
+}
+
+// A write's credential is asked once more at its commit boundary, after
+// the writer took the write (its claim of the question made) and before
+// it is begun: a credential that ended in between refuses it there,
+// nothing written, the question's claim let go (the question still
+// waiting) and the hold let go.
+func TestAnswerAsAsksItsCredentialAtTheCommit(t *testing.T) {
+	s, p, _ := asking(t, Options{InputWait: time.Hour})
+	q := askOwn(t, s, "Which database?", dbChoices...)
+	cred := newTestCred()
+	at, let := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	cred.atHeld = func() { once.Do(func() { close(at); <-let }) }
+	answered := make(chan error, 1)
+	go func() {
+		answered <- s.AnswerAs(context.Background(), q.ID, "SQLite\r", Actor{Name: "phone", ReqID: "op-1", Hold: cred.hold})
+	}()
+	<-at
+	cred.end(ErrExpired)
+	close(let)
+	if err := <-answered; !errors.Is(err, ErrExpired) {
+		t.Fatalf("keys whose credential ended at their commit: %v, want ErrExpired", err)
+	}
+	nothingWritten(t, p, 50*time.Millisecond)
+	showsOwn(t, s, q, "after the refused keys")
+	if _, ok := s.QuestionResult(q.ID); ok {
+		t.Fatal("a result kept for keys never written")
+	}
+	if holds, released := cred.counts(); holds != 1 || released != 1 {
+		t.Fatalf("held %d, let go %d", holds, released)
+	}
+	// The question's claim was let go: another answer is taken.
+	cred.end(nil)
+	if err := s.AnswerAs(context.Background(), q.ID, "Postgres\r", Actor{Name: "phone", ReqID: "op-2", Hold: cred.hold}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "Postgres\r" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// A write whose credential's end cancels it (Held.Cancelled: the program
+// did not take it within the bound the end waits for) lets go of its hold
+// at once, while the write is still being made, and is refused as its
+// credential's end when the write returns: the question is not resolved
+// by it, its claim settled unresolved as a failed write's is.
+func TestAnswerAsIsCancelledWithItsCredential(t *testing.T) {
+	s, p, _ := asking(t, Options{InputWait: time.Hour})
+	q := askOwn(t, s, "Which database?", dbChoices...)
+	begun, gate := make(chan struct{}), make(chan struct{})
+	var once, opened sync.Once
+	open := func() { opened.Do(func() { close(gate) }) }
+	t.Cleanup(open)
+	p.onWrite = func() {
+		once.Do(func() {
+			close(begun)
+			<-gate
+		})
+	}
+	cred := newTestCred()
+	answered := make(chan error, 1)
+	go func() {
+		answered <- s.AnswerAs(context.Background(), q.ID, "SQLite\r", Actor{Name: "phone", ReqID: "op-1", Hold: cred.hold})
+	}()
+	<-begun
+	cred.end(ErrRevoked)
+	cred.cancel()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, released := cred.counts(); released == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the hold of a cancelled write was never let go")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	open()
+	if err := <-answered; !errors.Is(err, ErrRevoked) {
+		t.Fatalf("a cancelled write: %v, want a kind of ErrRevoked", err)
+	}
+	written(t, p)
+	if _, ok := s.QuestionResult(q.ID); ok {
+		t.Fatal("a cancelled write resolved the question")
+	}
+	showsOwn(t, s, q, "after the cancelled write")
 }
 
 // A line's credential is held as each of its writes is taken
@@ -758,7 +926,7 @@ func TestAnswerAsHoldsItsCredentialAtTheWrite(t *testing.T) {
 func TestSubmitHoldsItsCredentialAtTheWrite(t *testing.T) {
 	s, p, _ := asking(t, Options{})
 	q := askOwn(t, s, "Which name?")
-	_, err := s.Submit(context.Background(), Submission{Text: "Ada", ByName: "phone", Question: q.ID, Hold: func() (func(), error) { return nil, ErrExpired }})
+	_, err := s.Submit(context.Background(), Submission{Text: "Ada", ByName: "phone", Question: q.ID, Hold: func() (Held, error) { return nil, ErrExpired }})
 	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("a line whose credential ended: %v", err)
 	}
