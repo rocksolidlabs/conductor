@@ -2249,6 +2249,7 @@ func TestAForgetAnswersOnceTheIndexHoldsNothingOfIt(t *testing.T) {
 			id, _ := forgettable(t, e, "zforgetheld")
 			gate, reached := make(chan struct{}), make(chan struct{})
 			var once sync.Once
+			release := sync.OnceFunc(func() { close(gate) })
 			h := freshIndexer(t, e, func(h *historyIndexer) {
 				h.beforePass = func(key string) {
 					if key == "run:hist-00000046" {
@@ -2259,12 +2260,13 @@ func TestAForgetAnswersOnceTheIndexHoldsNothingOfIt(t *testing.T) {
 					}
 				}
 			})
+			t.Cleanup(release) // a failed check leaves no pass held
 			histSettle(t, e)
 			saveRecord(t, e.srv, crew.Run{ID: "hist-00000046", Label: "the held run", Cwd: e.root, StartedAt: histNow})
 			reachGate(t, reached)
 			forget(t, e, id, all)
 			forgotten(t, h.index(), id, "zforgetheld")
-			close(gate)
+			release()
 			forgotten(t, histSettle(t, e), id, "zforgetheld")
 		})
 	}
@@ -2277,6 +2279,7 @@ func TestAForgetAnswersOnceTheIndexHoldsNothingOfIt(t *testing.T) {
 		var armed atomic.Bool
 		var heldOnce, nextOnce sync.Once
 		var pass atomic.Int64
+		releaseHeld, releaseNext := sync.OnceFunc(func() { close(held) }), sync.OnceFunc(func() { close(next) })
 		h := freshIndexer(t, e, func(h *historyIndexer) {
 			h.afterMark = func(k string) {
 				if k == key && armed.Load() {
@@ -2297,6 +2300,7 @@ func TestAForgetAnswersOnceTheIndexHoldsNothingOfIt(t *testing.T) {
 				}
 			}
 		})
+		t.Cleanup(func() { releaseHeld(); releaseNext() }) // a failed check leaves no pass held
 		histSettle(t, e)
 		armed.Store(true)
 		e.srv.sessionRecords.Chat(in, journal.ChatLine{Kind: "message", Text: "one more", ByName: "nate", At: histNow})
@@ -2304,10 +2308,10 @@ func TestAForgetAnswersOnceTheIndexHoldsNothingOfIt(t *testing.T) {
 		reachGate(t, heldAt)
 		forget(t, e, id, false)
 		forgotten(t, h.index(), id, "zforgetpass")
-		close(held)
+		releaseHeld()
 		reachGate(t, nextAt)
 		forgotten(t, h.index(), id, "zforgetpass")
-		close(next)
+		releaseNext()
 		forgotten(t, histSettle(t, e), id, "zforgetpass")
 	})
 }
