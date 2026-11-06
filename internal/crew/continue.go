@@ -509,7 +509,6 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h history, old *run) error {
 	rows, last, refs, refOf := h.rows, h.last, h.refs, h.refOf
 	var imported, again, uncertain, held int
-	var answered []*decision
 	err := e.transactFirst(ctx, r, func() tx {
 		r.base, r.paused, r.pausedWhy, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.PausedWhy, from.Run.ID
 		r.markRun()
@@ -627,7 +626,7 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 		}
 		// The decisions of the run continued, with their holds, before
 		// anything is readied on them (decisions_continue.go).
-		moveDecisions := e.continueDecisions(r, from, h, &answered)
+		moveDecisions := e.continueDecisions(r, from, h)
 		r.ready()
 		e.settleRun(r)
 		r.note(session.ActivityStatus, "continues %s: %d results kept, %d verified again, %d uncertain launches waiting for a retry, %d messages carried", from.Run.ID, imported, again, uncertain, len(r.messages))
@@ -670,13 +669,16 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 		}
 		old.resumedBy = r.id
 		old.resuming = false
+		// The decisions it held are the continuation's now: its copies go,
+		// so nothing finds or applies one through it (ConfirmAuthority).
+		old.decisions = slices.DeleteFunc(old.decisions, func(d *decision) bool { return d.n != 0 && d.waits() })
 		old.note(session.ActivityStatus, "continued as %s", r.id)
 		old.touch()
 		e.mu.Unlock()
 	}
 	// The answered decisions moved are applied now, each in its own
 	// transaction (O6).
-	e.readAnswers(ctx, r, answered)
+	e.applyDecisions(r)
 	e.pumpLocked(r)
 	return nil
 }

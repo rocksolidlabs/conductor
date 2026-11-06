@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -492,5 +493,133 @@ func TestAReopenCancelsTheTasksDecisions(t *testing.T) {
 	if got := activeHolds(t, ld, run.ID); len(got) != 0 {
 		t.Fatalf("holds %q", got)
 	}
+	stopRun(t, e, run.ID)
+}
+
+// An applied approval superseded while the asking task's next attempt
+// reads its decisions is read again, never carried as it was read: docs's
+// attempt 2 is held after its read of the applied approval of build's
+// first candidate, build's second candidate supersedes it (the ledger
+// shows it), and the task file docs's attempt 2 is given says superseded
+// (#636, review round 2).
+func TestATaskFileReadsAgainWhatChangedAsItRead(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	var holding atomic.Bool
+	var once sync.Once
+	arrived, release := make(chan struct{}), make(chan struct{})
+	e.afterDecisionsRead = func(task string) {
+		if task == "docs" && holding.Load() {
+			once.Do(func() {
+				close(arrived)
+				<-release
+			})
+		}
+	}
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	run, w, c1 := candidateRun(t, e, fl, dir)
+	l, wp := fl.attemptSession(t, w)
+	lineWith(t, wp, "docs")
+	d := ask(t, e, w.Attempt.SessionID, approveCandidate(run.ID, c1))
+	mirrorOf(t, l, d.ID)
+	answer(t, e, d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	decisionWhen(t, ld, d.ID, "entered", hasKind(ledger.HistoryDeliveryEntered))
+	holding.Store(true)
+	wp.End(0)
+	select {
+	case <-arrived:
+	case <-time.After(60 * time.Second):
+		t.Fatal("docs's attempt 2 did not read its decisions")
+	}
+	secondCandidate(t, e, fl, run.ID)
+	decisionWhen(t, ld, d.ID, "superseded", inState(ledger.DecisionSuperseded))
+	close(release)
+	if _, f := taskFileOf(t, attemptLine(t, e, fl, run.ID, "docs", 2)); decisionIn(t, f, d.ID).State != ledger.DecisionSuperseded {
+		t.Fatalf("docs's attempt 2's task file: %+v", f.Decisions)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A task file's mark (delivery.task_file) is no proof an approval reached
+// an agent: attempt 2 starts at the checkpoint at the approved commit and
+// carries the approval, marked, then fails at setup there, which refuses
+// the checkpoint; attempt 3 starts at attempt 1's start, and the approval
+// is rechecked there and superseded, never carried as applied (#636,
+// review round 2).
+func TestAMarkedApprovalIsRecheckedAtEveryStart(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	held, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	e.beforeTyping = func(int64) { once.Do(func() { close(held); <-release }) }
+	c := repoManifestCrew(dir, Manifest{Setup: []Check{shStep("deps", "if [ -e broken.txt ]; then echo broken >&2; exit 1; fi")}}, work("build", "lead"))
+	run := launchManaged(t, e, c)
+	b, _, p := attemptOn(t, e, fl, run.ID, "build")
+	wt := b.Attempt.Worktree
+	writeFile(t, filepath.Join(wt, "broken.txt"), "b\n")
+	commitAll(t, wt, "c2")
+	approved := head(t, wt)
+	if _, err := e.SaveCheckpoint(t.Context(), b.Attempt.SessionID, "the schema", "the index", ""); err != nil {
+		t.Fatal(err)
+	}
+	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
+	answer(t, e, d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	<-held
+	p.End(0)
+	waitPast(t, e, run.ID, "build", 1)
+	close(release)
+	marked := decisionWhen(t, ld, d.ID, "carried by attempt 2's task file", hasKind(ledger.HistoryDeliveryTaskFile))
+	if marked.State != ledger.DecisionApplied {
+		t.Fatalf("%s when attempt 2 carried it: %+v", d.ID, marked.DecisionRow)
+	}
+	a3 := attemptLine(t, e, fl, run.ID, "build", 3)
+	if a3.Attempt.Start != b.Attempt.Start {
+		t.Fatalf("attempt 3 starts at %s, not at attempt 1's start %s", short(a3.Attempt.Start), short(b.Attempt.Start))
+	}
+	rec := decisionWhen(t, ld, d.ID, "superseded", inState(ledger.DecisionSuperseded))
+	if want := fmt.Sprintf("%s approved %s; this attempt starts at %s", d.ID, short(approved), short(b.Attempt.Start)); !strings.Contains(rec.Why, want) || kindCount(rec, ledger.HistoryDeliveryTaskFile) != 1 {
+		t.Fatalf("%s: %q %q", d.ID, rec.Why, historyKinds(rec))
+	}
+	if _, f := taskFileOf(t, a3); decisionIn(t, f, d.ID).State != ledger.DecisionSuperseded {
+		t.Fatalf("attempt 3's task file: %+v", f.Decisions)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A response whose recheck of an unchanged subject is cut short by its own
+// context (the client gone during the probe) changes nothing: the
+// response fails with the context's error, the decision stays open at rev
+// 1 with its hold, never superseded; answered again, it is applied (#636,
+// review round 2).
+func TestACancelledRecheckChangesNothing(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, p := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, approval("q1", "Merge it?"))
+	ctx, cancel := context.WithCancel(t.Context())
+	e.beforeRespond = func(int64) { cancel() }
+	_, err := e.RespondDecision(ctx, d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1}, "admin", workbench(e))
+	e.beforeRespond = nil
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("the response cut short: %v", err)
+	}
+	n, _ := ledger.ParseDecisionID(d.ID)
+	rec, ok, err := ld.Decision(t.Context(), n)
+	if err != nil || !ok || rec.State != ledger.DecisionOpen || rec.Rev != 1 || len(rec.Responses) != 0 || kindCount(rec, ledger.HistorySuperseded) != 0 {
+		t.Fatalf("%s after the cut response: %+v %q %v", d.ID, rec.DecisionRow, historyKinds(rec), err)
+	}
+	if got := activeHolds(t, ld, run.ID); !slices.Equal(got, []string{"build " + d.ID}) {
+		t.Fatalf("holds %q", got)
+	}
+	answer(t, e, d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
+	lineWith(t, p, "Decision "+d.ID)
+	decisionWhen(t, ld, d.ID, "applied", inState(ledger.DecisionApplied))
 	stopRun(t, e, run.ID)
 }

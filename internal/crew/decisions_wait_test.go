@@ -785,3 +785,59 @@ func TestAGateWithNoTaskKeepsNoRunOpen(t *testing.T) {
 	commitResult(t, e, b, "built.txt", "b\n", "built")
 	waitOutcome(t, e, run.ID, ledger.OutcomeSucceeded)
 }
+
+// A retry that would ask a gate again in a run with 64 decisions open,
+// the ledger's other bound, is refused decision_limit before anything
+// changes, though the run's total has room: no gate opens, deploy stays
+// cancelled, and nothing is carried into the run's next commit, so a
+// cancel of one of the 64 commits and frees the place the retry then
+// takes (#636, review round 2).
+func TestARetryNeedsRoomAmongTheOpenDecisions(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	run := launchGated(t, e, dir, "api-sweep-000000cb", repoCrew(dir, work("deploy", "ops"), work("idle", "qa")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	answer(t, e, g.ID, Response{ResponseID: "r1", Choice: choice(1), ExpectedRev: 1})
+	waitTask(t, e, run.ID, "deploy", ledger.TaskCancelled, 0)
+	waitAttempt(t, e, run.ID, "idle", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+	// 64 decisions open, moved into the continuation's engine with its
+	// first commit, as a crew's questions would leave them.
+	fillOpen(t, ld, run.ID, ledger.MaxOpenPerRun)
+	next := continueRun(t, e, run.ID)
+	var de *DecisionError
+	if err := e.RetryTask(t.Context(), next.ID, "deploy"); !errors.As(err, &de) || de.Code != CodeDecisionLimit || !strings.Contains(de.Words, fmt.Sprintf("%d of its %d open", ledger.MaxOpenPerRun, ledger.MaxOpenPerRun)) {
+		t.Fatalf("the retry: %v", err)
+	}
+	if ts := taskOf(t, e, next.ID, "deploy"); ts.State != ledger.TaskCancelled {
+		t.Fatalf("deploy after the refused retry: %+v", ts)
+	}
+	rows, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: next.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var standing ledger.DecisionRow
+	for _, row := range rows {
+		if row.Origin == ledger.OriginPlan && !row.Final() {
+			t.Fatalf("a gate opened by the refused retry: %+v", row)
+		}
+		if row.State == ledger.DecisionOpen {
+			standing = row
+		}
+	}
+	if _, err := e.CancelDecision(t.Context(), standing.ID(), "c1", 0, false, "", "admin"); err != nil {
+		t.Fatalf("the run's next change: %v", err)
+	}
+	decisionWhen(t, ld, standing.ID(), "cancelled", inState(ledger.DecisionCancelled))
+	if paused(t, e, next.ID) {
+		t.Fatal("the run paused: a change was carried")
+	}
+	if err := e.RetryTask(t.Context(), next.ID, "deploy"); err != nil {
+		t.Fatalf("the retry with a place free: %v", err)
+	}
+	fresh := gateOf(t, e, ld, next.ID)
+	if got := activeHolds(t, ld, next.ID); !slices.Equal(got, []string{"deploy " + fresh.ID}) {
+		t.Fatalf("holds after the retry %q", got)
+	}
+	stopRun(t, e, next.ID)
+}

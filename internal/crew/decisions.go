@@ -283,7 +283,6 @@ type decision struct {
 	holds       []*task
 	mirror      string // the id of the question that mirrors it in a's session
 	answer      *accepted
-	confirmed   int // an identity's response: 1 admitted again, -1 not, 0 not yet told
 	applying    bool
 	// subject is what the decision is about (S1 to S4); openedAt when its
 	// opening committed, which a done must come after to end its agent's
@@ -1692,7 +1691,13 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 	e.mu.Unlock()
 	moved := ""
 	if d != nil {
-		at, words := e.recheckSubject(ctx, r, d)
+		at, words, err := e.recheckSubject(ctx, r, d)
+		if err != nil {
+			// The recheck was cut short by the response's own context: it
+			// says nothing of the subject, and nothing is changed (#636,
+			// review round 2).
+			return err
+		}
 		if words != "" {
 			moved = e.supersede(r, n, at, words)
 		}
@@ -1747,32 +1752,62 @@ func (e *Engine) supersede(r *run, n int64, at subjectAt, words string) string {
 	return done
 }
 
+// confirmKey names an accepted response: its decision and its k.
+type confirmKey struct {
+	n int64
+	k int
+}
+
+// confirmation is what the recheck of d's accepted identity response
+// answered (ConfirmAuthority): 1 admitted again, -1 not, 0 not yet told.
+// The caller holds e.mu.
+func (e *Engine) confirmation(d *decision) int {
+	if d.answer == nil {
+		return 0
+	}
+	return e.confirms[confirmKey{d.n, d.answer.k}]
+}
+
 // ConfirmAuthority tells the engine whether the identity provider admitted
 // the token of decision id's accepted response k again after the response
 // committed (the response route's recheck, Applying): an identity's
 // response is applied only once admitted; not admitted, the decision is
-// superseded by a fresh one with its holds.
+// superseded by a fresh one with its holds. The answer is the engine's,
+// kept by the response it names, not by a run's copy of the decision:
+// whichever run holds the decision reads it, a continuation that moved it
+// included, and a run being continued or continued leaves it to its
+// continuation, which applies what it moved once its move commits (#636,
+// review round 2).
 func (e *Engine) ConfirmAuthority(id string, k int, admitted bool) {
 	n, ok := ledger.ParseDecisionID(id)
 	if !ok {
 		return
 	}
 	e.mu.Lock()
-	var held *run
+	var holders []*run
+	known := false
 	for _, r := range e.runs {
-		if d := r.decisionN(n); d != nil && d.answer != nil && d.answer.k == k && d.state == ledger.DecisionAnswered {
-			if admitted {
-				d.confirmed = 1
-			} else {
-				d.confirmed = -1
-			}
-			held = r
-			break
+		d := r.decisionN(n)
+		if d == nil || d.answer == nil || d.answer.k != k || d.state != ledger.DecisionAnswered {
+			continue
+		}
+		known = true
+		if e.continued(r) == nil && !r.unrecorded() {
+			holders = append(holders, r)
+		}
+	}
+	if known {
+		if e.confirms == nil {
+			e.confirms = map[confirmKey]int{}
+		}
+		e.confirms[confirmKey{n, k}] = -1
+		if admitted {
+			e.confirms[confirmKey{n, k}] = 1
 		}
 	}
 	e.mu.Unlock()
-	if held != nil {
-		e.applyDecisions(held)
+	for _, r := range holders {
+		e.applyDecisions(r)
 	}
 }
 
@@ -1788,12 +1823,17 @@ func (e *Engine) ConfirmAuthority(id string, k int, admitted bool) {
 func (e *Engine) applyDecisions(r *run) {
 	for {
 		e.mu.Lock()
+		if e.continued(r) != nil {
+			// Its decisions are its continuation's to apply (ConfirmAuthority).
+			e.mu.Unlock()
+			return
+		}
 		var next *decision
 		for _, d := range r.decisions {
 			if d.state != ledger.DecisionAnswered || d.applying || d.answer == nil || d.n == 0 {
 				continue
 			}
-			if d.answer.auth.Via == ViaIdentity && d.answer.auth.Boot == e.boot && d.confirmed == 0 {
+			if d.answer.auth.Via == ViaIdentity && d.answer.auth.Boot == e.boot && e.confirmation(d) == 0 {
 				continue // its recheck has not answered yet
 			}
 			next = d
@@ -1821,10 +1861,11 @@ func (e *Engine) applyDecisions(r *run) {
 func (e *Engine) applyOne(r *run, d *decision) {
 	var err error
 	for try := 0; ; try++ {
-		at, moved := e.recheckSubject(context.Background(), r, d)
+		// Under no request's context: nothing cuts the recheck short.
+		at, moved, _ := e.recheckSubject(context.Background(), r, d)
 		again := false
 		err = e.transact(context.Background(), r, func() tx {
-			if d.state != ledger.DecisionAnswered || r.decisionN(d.n) != d {
+			if d.state != ledger.DecisionAnswered || r.decisionN(d.n) != d || e.continued(r) != nil {
 				return tx{}
 			}
 			if !e.sameSubject(r, d, at) && try < maxDecisionTries {
@@ -1857,7 +1898,9 @@ func (e *Engine) applyOne(r *run, d *decision) {
 // change.
 func (e *Engine) applyTx(r *run, d *decision) tx {
 	ans := d.answer
-	if ans.auth.Via == ViaIdentity && (ans.auth.Boot != e.boot || d.confirmed < 0) {
+	revoked := e.confirmation(d) < 0
+	delete(e.confirms, confirmKey{d.n, ans.k})
+	if ans.auth.Via == ViaIdentity && (ans.auth.Boot != e.boot || revoked) {
 		replace, t := e.replaceDecision(r, d, fmt.Sprintf("%s's answer could not be rechecked", ans.actor))
 		opened := t.done
 		t.done = func() {
