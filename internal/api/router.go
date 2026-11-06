@@ -49,8 +49,11 @@ import (
 // tell that failed or was not made); its end is told (Resolved) when that
 // can be done at once, never owed; and its state can always be read
 // (ext.Host.Decision). The calls about decisions run off every path, each
-// on a goroutine of its own under recordSlots: a provider that hangs holds
-// a slot, and nothing waits for it. Under the free build's
+// on a goroutine of its own begun only once it holds one of the provider's
+// call slots (the guard's extInFlight, which every call of the router
+// takes, Route and Resolved alike, and keeps until it returns): a provider
+// that hangs holds slots, up to the bound, and nothing waits for it past
+// its deadline; a tell with no slot free is not made and owed. Under the free build's
 // policy (local/1) the router's destinations become the record's routed
 // history row and an answer it holds is offered as a response under the
 // actor user:<subject> with the router's authority and no grant, which the
@@ -78,9 +81,6 @@ const (
 	maxUnresolved = 1024
 	// routerSkipLogEvery is how often the skips past the bound are logged.
 	routerSkipLogEvery = time.Minute
-	// recordSlots bounds the calls to the router about durable decisions
-	// under way at once (Route, Resolved), each on a goroutine of its own.
-	recordSlots = 16
 )
 
 // routeState is where a question the router saw is.
@@ -137,13 +137,12 @@ type decisionRouter struct {
 	// open decisions this server has told the router of (or tells now)
 	// since it took the ledger, so that a change of an open record (its
 	// routed row, a comment) tells nothing again: it holds open decisions
-	// only, never what a router heard of an end. slots bound the calls
-	// about decisions under way. passing says a pass runs, again that one
-	// was asked meanwhile; waiting that one is owed after passWait (owe).
+	// only, never what a router heard of an end. passing says a pass
+	// runs, again that one was asked meanwhile; waiting that one is owed
+	// after passWait (owe).
 	ledger   *ledger.Ledger
 	begun    bool
 	opened   map[string]bool
-	slots    chan struct{}
 	passing  bool
 	again    bool
 	waiting  bool
@@ -161,7 +160,7 @@ type decisionRouter struct {
 // changes.
 func newDecisionRouter(s *Server) *decisionRouter {
 	return &decisionRouter{s: s, bound: maxUnresolved, dirty: map[string]bool{}, working: map[string]bool{}, sessions: map[string]*routedSession{},
-		opened: map[string]bool{}, slots: make(chan struct{}, recordSlots)}
+		opened: map[string]bool{}}
 }
 
 // routerSeam, when a test sets it, is told the router's steps for a
@@ -433,8 +432,9 @@ func (r *decisionRouter) tellLocked() {
 }
 
 // tell tells the router each queued resolution, the oldest first, one at a
-// time (Resolved, through the guard: DeliveryWait, its panic recovered); an
-// entry leaves the list only once its call has returned, so none is ever
+// time (Resolved, through the guard: in one of the provider's call slots,
+// waited for when all are taken, within DeliveryWait, its panic
+// recovered); an entry leaves the list only once its call has returned, so none is ever
 // lost, and none is told twice. It ends when the list is empty or the
 // server's extensions stop.
 func (r *decisionRouter) tell() {
@@ -598,10 +598,10 @@ func decisionOf(info session.Info) ext.Decision {
 // that read ends, whatever it found; "routed" once its route is handled
 // (the route the guard answered; its destinations recorded and its answer
 // offered, the latter's refusal as err; err ErrUnrouted when the tell
-// failed or was not made, owed to the next pass), "skipped" when no slot
-// was free to tell it; "resolved" once Resolved returned, "unresolved"
-// when no slot was free to tell its end (best-effort: the router reads
-// it); "listed" for each decision a pass marked, and "passed" with the
+// failed or was late, owed to the next pass), "skipped" when it was not
+// made, no call slot of the provider's free or its Start undone (owed
+// too); "resolved" once Resolved returned, "unresolved" when its end was
+// not told for the same reasons (best-effort: the router reads it); "listed" for each decision a pass marked, and "passed" with the
 // decision "" as a pass ends, err its listing's failure. Nil outside
 // tests.
 var recordSeam atomic.Pointer[func(step, decision string, rt ext.Route, err error)]
@@ -762,18 +762,19 @@ func (r *decisionRouter) owe() {
 	context.AfterFunc(r.s.extCtx, func() { t.Stop() })
 }
 
-// take takes one of the slots of the calls about decisions, or answers
-// false when all are busy; free gives it back.
-func (r *decisionRouter) take() bool {
-	select {
-	case r.slots <- struct{}{}:
-		return true
-	default:
-		return false
+// take takes one of the call slots of the router's provider (the guard's,
+// shared by every call into it), or answers false when all are taken or
+// its Start has not succeeded: the call is then not made, and no goroutine
+// is begun for it. Every server's router is behind the guard
+// (installExtensions).
+func (r *decisionRouter) take() (guardRouter, extSlot, bool) {
+	g, ok := r.s.exts.router.(guardRouter)
+	if !ok {
+		return guardRouter{}, extSlot{}, false
 	}
+	slot, ok := g.take()
+	return g, slot, ok
 }
-
-func (r *decisionRouter) free() { <-r.slots }
 
 // record notes that the durable decision id ("dr-<n>") changed
 // (Server.decisionTold, on the committing goroutine, after the commit: so
@@ -846,30 +847,33 @@ func (r *decisionRouter) readRecord(id string, n int64) {
 }
 
 // resolveRecord tells the router that the decision id reached its end
-// (Resolved, through the guard), on a goroutine of its own, when a slot is
-// free and the router's Start has succeeded: best-effort, never owed, for
-// a router reads a decision's state (ext.Host.Decision).
+// (Resolved, through the guard), on a goroutine of its own, when one of
+// its provider's call slots is free (take) and its Start has succeeded:
+// best-effort, never owed, for a router reads a decision's state
+// (ext.Host.Decision). The goroutine holds the slot until Resolved returns.
 func (r *decisionRouter) resolveRecord(id string, ref ext.SessionRef) {
-	if !routerLive(r.s.exts.router) || !r.take() {
+	g, slot, ok := r.take()
+	if !ok {
 		recordStep("unresolved", id, ext.Route{}, nil)
 		return
 	}
 	res := ext.Resolution{ID: id, Request: id, Session: ref, At: time.Now().UTC()}
 	r.s.track(func() {
-		defer r.free()
-		r.s.exts.router.Resolved(r.s.extCtx, res)
+		g.resolveIn(r.s.extCtx, slot, res)
 		recordStep("resolved", id, ext.Route{}, nil)
 	})
 }
 
 // routeRecord tells the router of the open decision d (Route, through the
-// guard, within its wait) on a goroutine of its own, when a slot is free,
-// and acts on what the guard answers: its destinations kept as the
-// record's routed history row, then its answer offered as a response at
-// rev, the rev the router was shown, which local/1 refuses and records. A
-// tell not made (no slot, the guard's slots busy, its Start undone) or
-// failed (an error, late, a route refused) is let go from opened and owes
-// a pass, which tells it again.
+// guard, within its wait) on a goroutine of its own, when one of its
+// provider's call slots is free (take), and acts on what the guard
+// answers: its destinations kept as the record's routed history row, then
+// its answer offered as a response at rev, the rev the router was shown,
+// which local/1 refuses and records. The goroutine waits for the call
+// until its deadline and moves on; the call keeps its slot until it
+// returns. A tell not made (no slot free, its Start undone) or failed (an
+// error, late, a route refused) is let go from opened and owes a pass,
+// which tells it again.
 func (r *decisionRouter) routeRecord(d ext.Decision, rev int) {
 	unrouted := func() {
 		r.mu.Lock()
@@ -877,20 +881,20 @@ func (r *decisionRouter) routeRecord(d ext.Decision, rev int) {
 		r.mu.Unlock()
 		r.owe()
 	}
-	if !r.take() {
+	g, slot, ok := r.take()
+	if !ok {
 		unrouted()
 		recordStep("skipped", d.Request, ext.Route{}, nil)
 		return
 	}
 	r.s.track(func() {
-		defer r.free()
 		ctx, cancel := r.s.extCtx, context.CancelFunc(func() {})
 		if r.wait > 0 {
 			ctx, cancel = context.WithTimeout(ctx, r.wait)
 		}
-		rt, sent, ok := routeTold(ctx, r.s.exts.router, d)
+		rt, ok := g.routeIn(ctx, slot, d)
 		cancel()
-		if !sent || !ok {
+		if !ok {
 			unrouted()
 			recordStep("routed", d.Request, rt, errUnrouted)
 			return

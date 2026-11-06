@@ -490,6 +490,121 @@ func (b *blockingRouter) Resolved(ctx context.Context, r ext.Resolution) {
 	b.fakeRouter.Resolved(ctx, r)
 }
 
+// A provider whose calls never return, whatever their context, takes the
+// bound's worth of call slots and no more, Resolved counted as Route is:
+// dr-1 is told, and its end hangs in Resolved (one slot); dr-2's Route
+// hangs, each tell's caller moves on at its deadline (the router's wait)
+// and the next pass tells it again in a slot of its own, until every slot
+// is held. From then on a tell is refused before anything goes into the
+// provider ("skipped", no goroutine begun for it) and the provider is
+// called no more, while a decision opens, shows in its session and is
+// withdrawn, the requests answering at once. Once the provider returns,
+// its slots come back and dr-2 is told.
+func TestAHungProviderHoldsAtMostTheBound(t *testing.T) {
+	records := watchRecords(t)
+	lowRetry(t)
+	never := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(never) }) }
+	t.Cleanup(release)
+	h := &hungRouter{free: "dr-1", never: never}
+	p := ext.Providers{Router: h, All: []ext.Entry{{Kind: ext.KindDecisions, Name: "switchman", Value: h}}}
+	f := newDecisionFixture(t, nil, nil, WithExtensions(local.Fill(p)))
+	f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+	until(t, "dr-1's route taken", func() bool { return records.routedOK("dr-1") })
+	f.expectAs(t, f.tok, http.MethodPost, "/api/sessions/"+f.sid+"/decisions/dr-1/withdraw", map[string]any{}, http.StatusOK, "")
+	until(t, "dr-1's end held in Resolved", func() bool { return h.resolving.Load() == 1 })
+
+	// Set only now: no tell is under way to read it (dr-1's took its route).
+	f.srv.router.wait = 20 * time.Millisecond
+	f.ask(t, approvalBody("r2"), http.StatusCreated, "")
+	until(t, "every call slot held", func() bool { return h.inside.Load() >= extInFlight })
+	called := len(h.routedIDs())
+	listed := records.count("listed", "dr-2")
+	until(t, "two passes more over dr-2", func() bool { return records.count("listed", "dr-2") >= listed+2 })
+	if most := h.most.Load(); most != extInFlight {
+		t.Fatalf("%d calls in the provider at once, want the bound, %d", most, extInFlight)
+	}
+	if n := len(h.routedIDs()); n != called {
+		t.Fatalf("the provider was called %d times more with every slot held", n-called)
+	}
+	if n := h.resolving.Load(); n != 1 {
+		t.Fatalf("%d Resolved under way, want dr-1's", n)
+	}
+	if n := records.count("skipped", "dr-2"); n == 0 {
+		t.Fatal("no tell of dr-2 refused with every slot held")
+	}
+	if n := records.countErr("routed", "dr-2", errUnrouted); n < extInFlight-1 {
+		t.Fatalf("%d tells of dr-2 moved on at their deadline, want %d", n, extInFlight-1)
+	}
+
+	// Meanwhile a decision opens, shows in its session and is withdrawn.
+	f.ask(t, approvalBody("r3"), http.StatusCreated, "")
+	f.mirrorOf(t, "dr-3")
+	f.expectAs(t, f.tok, http.MethodPost, "/api/sessions/"+f.sid+"/decisions/dr-3/withdraw", map[string]any{}, http.StatusOK, "")
+	f.decisionWhen(t, "dr-3", "withdrawn", inState(ledger.DecisionCancelled))
+	if slices.Contains(h.routedIDs(), "dr-3") {
+		t.Fatal("dr-3 went into the provider with every slot held")
+	}
+
+	release()
+	until(t, "dr-2 told once the provider returned", func() bool { return records.routedOK("dr-2") })
+	until(t, "every call returned", func() bool { return h.inside.Load() == 0 })
+}
+
+// routedOK reports whether the decision's route was taken: a "routed" step
+// with no error.
+func (l *recordLog) routedOK(decision string) bool {
+	return l.countErr("routed", decision, nil) > 0
+}
+
+// countErr is how many times the step was taken for the decision with err.
+func (l *recordLog) countErr(step, decision string, err error) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, s := range l.steps {
+		if s.step == step && s.decision == decision && errors.Is(s.err, err) {
+			n++
+		}
+	}
+	return n
+}
+
+// hungRouter is a fakeRouter whose calls, but Route of free, never return
+// until never is closed, whatever their context. inside counts its calls
+// under way, most the most at once, resolving the Resolved among them.
+type hungRouter struct {
+	fakeRouter
+	free                    string
+	never                   chan struct{}
+	inside, most, resolving atomic.Int32
+}
+
+// hang holds the call until never is closed.
+func (h *hungRouter) hang() {
+	n := h.inside.Add(1)
+	for m := h.most.Load(); n > m && !h.most.CompareAndSwap(m, n); m = h.most.Load() {
+	}
+	<-h.never
+	h.inside.Add(-1)
+}
+
+func (h *hungRouter) Route(ctx context.Context, d ext.Decision) (ext.Route, error) {
+	rt, err := h.fakeRouter.Route(ctx, d)
+	if d.Request != h.free {
+		h.hang()
+	}
+	return rt, err
+}
+
+func (h *hungRouter) Resolved(ctx context.Context, r ext.Resolution) {
+	h.resolving.Add(1)
+	h.hang()
+	h.resolving.Add(-1)
+	h.fakeRouter.Resolved(ctx, r)
+}
+
 // The router reads a decision's state through its Host (ext.Host.Decision):
 // open, then cancelled and final once withdrawn, with when it closed; a
 // decision the ledger does not hold is ext.ErrNotFound, and a request that

@@ -43,9 +43,16 @@ func WithExtensions(p ext.Providers) Option {
 }
 
 // extInFlight bounds the direct calls of one provider and kind that run at
-// once: past it, the free default is answered at once. A call that hangs
-// holds its slot until it returns, so a hung provider holds at most this
-// many goroutines of one kind.
+// once: past it, the free default is answered at once. A slot is taken
+// before the call goes into the provider and given back only once the
+// call has returned, never at a deadline the provider may ignore: a
+// deadline lets the caller stop waiting and move on, while the call keeps
+// its slot. So a provider that never returns loses slots one by one, up to
+// this bound, and then is called no more until one of its calls returns:
+// the cost accepted, for the bound is what keeps a hung provider from
+// growing goroutines without limit. The decision router's calls (Route and
+// Resolved, the sessions' and the durable decisions' alike) all take their
+// slots here (extTake, extAwait).
 const extInFlight = 16
 
 // extLogEvery is how often a provider's failures of one kind are logged.
@@ -303,13 +310,52 @@ func extCallSent[T any](ctx context.Context, s *Server, kind, name string, wait 
 // with a value valid took (ok): false when it failed, panicked, was late
 // or answered a value valid refused, the fallback answered.
 func extCallTold[T any](ctx context.Context, s *Server, kind, name string, wait time.Duration, fallback T, valid func(T) error, fn func(context.Context) (T, error)) (T, bool, bool) {
+	slot, ok := s.extTake(kind, name)
+	if !ok {
+		return fallback, false, false
+	}
+	v, ok := extCallIn(ctx, s, slot, kind, name, wait, fallback, valid, fn)
+	return v, true, ok
+}
+
+// extSlot is one of the call slots of a provider and kind (extInFlight),
+// taken before a call goes into the provider: whoever holds it gives it
+// back (free) once that call has returned, and only then.
+type extSlot struct{ g *extGuard }
+
+// free gives the slot back.
+func (sl extSlot) free() { <-sl.g.slots }
+
+// extTake takes one of the call slots of the provider name of kind, or
+// answers false at once, the failure logged (busy), when all are taken.
+func (s *Server) extTake(kind, name string) (extSlot, bool) {
 	g := s.guard(kind, name)
 	select {
 	case g.slots <- struct{}{}:
+		return extSlot{g}, true
 	default:
 		s.extFailed(kind, name, "busy", fmt.Sprintf("%d calls in flight", extInFlight))
-		return fallback, false, false
+		return extSlot{}, false
 	}
+}
+
+// extAwait takes one of the call slots of the provider name of kind,
+// waiting on the calling goroutine until one is given back, or answers
+// false once ctx ends first.
+func (s *Server) extAwait(ctx context.Context, kind, name string) (extSlot, bool) {
+	g := s.guard(kind, name)
+	select {
+	case g.slots <- struct{}{}:
+		return extSlot{g}, true
+	case <-ctx.Done():
+		return extSlot{}, false
+	}
+}
+
+// extCallIn is extCallTold's call, made in slot, which its goroutine gives
+// back once fn (and valid) has returned: it answers fn's value and whether
+// it answered in time with a value valid took (ok).
+func extCallIn[T any](ctx context.Context, s *Server, slot extSlot, kind, name string, wait time.Duration, fallback T, valid func(T) error, fn func(context.Context) (T, error)) (T, bool) {
 	if f := extWaiting.Load(); f != nil {
 		wait = *f
 	}
@@ -335,7 +381,7 @@ func extCallTold[T any](ctx context.Context, s *Server, kind, name string, wait 
 			}
 			// The slot is free before the answer is sent: a caller that has
 			// its answer may call again at once and find it.
-			<-g.slots
+			slot.free()
 			done <- r
 		}()
 		if f := extCalling.Load(); f != nil {
@@ -369,19 +415,19 @@ func extCallTold[T any](ctx context.Context, s *Server, kind, name string, wait 
 		if ctx.Err() == nil {
 			s.extFailed(kind, name, "late", fmt.Sprintf("no answer within %s", wait))
 		}
-		return fallback, true, false
+		return fallback, false
 	case r.err:
 		why := "error"
 		if r.panicked {
 			why = "panic"
 		}
 		s.extFailed(kind, name, why, r.failed)
-		return fallback, true, false
+		return fallback, false
 	case r.invalid != "":
 		s.extFailed(kind, name, "invalid", r.invalid)
-		return fallback, true, false
+		return fallback, false
 	}
-	return r.v, true, true
+	return r.v, true
 }
 
 // extCalling, when a test sets it, is told the kind and provider name of
@@ -684,11 +730,30 @@ func (g guardRouter) route(ctx context.Context, d ext.Decision) (ext.Route, bool
 // routeTold is route, and reports too whether the provider answered in
 // time with a route Route.Valid takes (ok).
 func (g guardRouter) routeTold(ctx context.Context, d ext.Decision) (ext.Route, bool, bool) {
-	if !live(g.ready) {
+	slot, ok := g.take()
+	if !ok {
 		return ext.Route{}, false, false
 	}
+	rt, ok := g.routeIn(ctx, slot, d)
+	return rt, true, ok
+}
+
+// take takes one of the provider's call slots, or answers false at once
+// when its Start has not succeeded or all are taken: nothing then goes
+// into the provider and no goroutine is begun for it.
+func (g guardRouter) take() (extSlot, bool) {
+	if !live(g.ready) {
+		return extSlot{}, false
+	}
+	return g.s.extTake(ext.KindDecisions, g.name)
+}
+
+// routeIn is routeTold's call, made in slot (take): the caller waits for
+// it until ext.RouteWait or ctx ends, and the call keeps the slot until it
+// returns.
+func (g guardRouter) routeIn(ctx context.Context, slot extSlot, d ext.Decision) (ext.Route, bool) {
 	own := copyDecision(d)
-	return extCallTold(ctx, g.s, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
+	return extCallIn(ctx, g.s, slot, ext.KindDecisions, g.name, ext.RouteWait, ext.Route{}, func(r ext.Route) error {
 		return r.Valid(own)
 	}, func(ctx context.Context) (ext.Route, error) {
 		r, err := g.p.Route(ctx, copyDecision(own))
@@ -696,15 +761,30 @@ func (g guardRouter) routeTold(ctx context.Context, d ext.Decision) (ext.Route, 
 	})
 }
 
-// Resolved tells the provider of r on the calling goroutine (the sessions'
-// resolutions, which drop nothing, drain through it in order: C5; a
-// decision's end, best-effort, on a goroutine of its own), within
-// ext.DeliveryWait, its panic recovered. A router not yet started routed
-// nothing, so it is told nothing.
+// Resolved tells the provider of r on the calling goroutine, the sessions'
+// resolutions' (which drop nothing and drain through it in order: C5), in
+// one of the provider's call slots, as Route takes one: it waits for a slot
+// given back when all are taken, until ctx ends (nothing is told then).
+// A router not yet started routed nothing, so it is told nothing.
 func (g guardRouter) Resolved(ctx context.Context, r ext.Resolution) {
 	if !live(g.ready) {
 		return
 	}
+	slot, ok := g.s.extAwait(ctx, ext.KindDecisions, g.name)
+	if !ok {
+		return
+	}
+	g.resolveIn(ctx, slot, r)
+}
+
+// resolveIn tells the provider of r on the calling goroutine, in slot,
+// within ext.DeliveryWait, its panic recovered, and gives the slot back
+// once the provider has returned (a decision's end, best-effort, is told
+// so on a goroutine of its own, its slot taken first: take).
+func (g guardRouter) resolveIn(ctx context.Context, slot extSlot, r ext.Resolution) {
+	// extDeliver recovers a panic, so this runs once the provider has
+	// returned, however; one that never returns keeps its slot.
+	defer slot.free()
 	_ = extDeliver(ctx, g.s, ext.KindDecisions, g.name, func(ctx context.Context) error {
 		g.p.Resolved(ctx, r)
 		return nil
