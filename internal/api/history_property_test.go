@@ -118,12 +118,38 @@ func (r *propReg) how() (string, bool) {
 // evidence of a kept kind delivered while the record was open and its
 // recorder held, by its key (propKey), the touches the same way, the
 // evidence delivered once its end was recorded (dropped and counted), and
-// the outcome of each question's ending delivered while it was open.
+// the outcome of each question's ending delivered while it was open, with
+// that ending's key (endingKeys), by which retained finds it in the record.
 type propLedger struct {
-	kept    map[string]int
-	touches map[string]int
-	after   int
-	endings map[string]string
+	kept       map[string]int
+	touches    map[string]int
+	after      int
+	endings    map[string]string
+	endingKeys map[string]string
+}
+
+// retained is the outcome of each question's ending that reached the
+// record while it was open and is still in r, by the question: the endings
+// the record kept. One the bounds let go is not, and its question is the
+// end's to withdraw should it reach the record after (delivered late) and
+// still be there at the end; the ending's absence is counted by I4 as any
+// entry's. An ending is never in a record again once let go, and a
+// question is older than its ending, so it is not the end's to withdraw
+// while the ending is kept.
+func (l *propLedger) retained(r journal.Record) map[string]string {
+	in := map[string]bool{}
+	for _, en := range r.Entries {
+		if en.Kind == journal.KindAnswer {
+			in[propKeyOf(en)] = true
+		}
+	}
+	out := map[string]string{}
+	for q, k := range l.endingKeys {
+		if in[k] {
+			out[q] = l.endings[q]
+		}
+	}
+	return out
 }
 
 // recordedNow says the recorder registered for id is d's.
@@ -241,7 +267,7 @@ func (m *propModel) recordPath(id string) string {
 
 func (m *propModel) recOf(id string) *propRecord {
 	if m.recs[id] == nil {
-		m.recs[id] = &propRecord{led: propLedger{kept: map[string]int{}, touches: map[string]int{}, endings: map[string]string{}}}
+		m.recs[id] = &propRecord{led: propLedger{kept: map[string]int{}, touches: map[string]int{}, endings: map[string]string{}, endingKeys: map[string]string{}}}
 	}
 	return m.recs[id]
 }
@@ -415,6 +441,7 @@ func (m *propModel) deliver(c propCall) {
 		rec.led.kept[key]++
 		if w, isChat := c.what.(session.ChatMessage); isChat && w.Kind == proto.ChatKindSystem {
 			rec.led.endings[w.Ref] = propOutcome(w)
+			rec.led.endingKeys[w.Ref] = key
 		}
 	}
 }
@@ -1047,9 +1074,11 @@ func (m *propModel) check(id string, rec *propRecord) journal.Record {
 // (I5's), which the bounds let go as any entry: one for a question still
 // in the record is in it too (it is not older than its question), so
 // Dropped may count past the rest only one withdrawal for each question
-// that could have had one (asked while open, no ending told while open)
-// and is not in the record.
+// that could have had one (asked while open, no ending of it kept: none
+// told while open, or the one told let go by the bounds, retained) and is
+// not in the record.
 func (m *propModel) checkRetention(id string, r journal.Record, rec *propRecord, raw []byte) {
+	retained := rec.led.retained(r)
 	kept := map[string]int{}
 	sent := 0
 	for k, n := range rec.led.kept {
@@ -1067,7 +1096,7 @@ func (m *propModel) checkRetention(id string, r journal.Record, rec *propRecord,
 			continue
 		}
 		if en.Kind == journal.KindAnswer && en.Outcome == journal.OutcomeWithdrawn && !r.EndedAt.IsZero() {
-			if _, ended := rec.led.endings[en.Ref]; !ended {
+			if _, ended := retained[en.Ref]; !ended {
 				continue // the end's withdrawal (I5)
 			}
 		}
@@ -1094,7 +1123,7 @@ func (m *propModel) checkRetention(id string, r journal.Record, rec *propRecord,
 		}
 		for k := range rec.led.kept {
 			if q, ok := strings.CutPrefix(k, "question|"); ok && !asked[q] {
-				if _, told := rec.led.endings[q]; !told {
+				if _, told := retained[q]; !told {
 					withdrawable++
 				}
 			}
@@ -1108,10 +1137,14 @@ func (m *propModel) checkRetention(id string, r journal.Record, rec *propRecord,
 
 // checkQuestions is I5: in a record with an observed end every question
 // has exactly one ending, after it: the one that reached the record while
-// it was open, else the end's withdrawal; a lost record adds none, so each
-// of its questions has at most one.
+// it was open and that it kept (retained), else the end's withdrawal; a
+// lost record adds none, so each of its questions has at most one.
 func (m *propModel) checkQuestions(id string, r journal.Record, raw []byte) {
 	rec := m.recs[id]
+	var retained map[string]string
+	if rec != nil {
+		retained = rec.led.retained(r)
+	}
 	for i, en := range r.Entries {
 		if en.Kind != journal.KindQuestion {
 			continue
@@ -1137,7 +1170,7 @@ func (m *propModel) checkQuestions(id string, r journal.Record, raw []byte) {
 		if rec == nil || rec.detached {
 			continue
 		}
-		want, ok := rec.led.endings[en.ID]
+		want, ok := retained[en.ID]
 		if !ok {
 			want = journal.OutcomeWithdrawn
 		}
@@ -1276,6 +1309,46 @@ func TestTheRecordFollowsTheSession(t *testing.T) {
 		m.setRO(false)
 		if got := m.finish()[r.id]; got.Ending != journal.EndingLost || !got.EndedAt.IsZero() {
 			t.Fatalf("the record: %+v", got)
+		}
+	})
+
+	t.Run("an answer the bounds let go before its question came", func(t *testing.T) { // I4, I5
+		m := newPropModel(t, 8)
+		r := m.make(false, false)
+		m.deliverAll(true)
+		q := m.ask(r)
+		var question propCall
+		for {
+			c, ok := m.q.take(nil)
+			if !ok {
+				t.Fatal("the question was not queued")
+			}
+			if w, isChat := c.what.(session.ChatMessage); isChat && w.ID == q {
+				question = c
+				break
+			}
+			m.deliver(c)
+		}
+		m.endQuestion(r, q, journal.OutcomeAnswered)
+		m.deliverAll(true)
+		m.burst(r, 160)
+		m.deliverAll(true)
+		m.e.srv.sessionRecords.Flush()
+		answered := func(rec journal.Record) bool {
+			return slices.ContainsFunc(rec.Entries, func(en journal.Entry) bool {
+				return en.Kind == journal.KindAnswer && en.Ref == q && en.Outcome == journal.OutcomeAnswered
+			})
+		}
+		if held, _, err := m.e.srv.sessionRecords.Get(r.id); err != nil || answered(held) {
+			t.Fatalf("the bounds kept the answer: %v", err)
+		}
+		m.deliver(question)
+		m.end(r)
+		m.endRecorded(r)
+		got := m.finish()[r.id]
+		asked := slices.ContainsFunc(got.Entries, func(en journal.Entry) bool { return en.Kind == journal.KindQuestion && en.ID == q })
+		if answered(got) || (asked && !withdrawnOnce(got, q)) {
+			t.Fatalf("the question let go of its answer: %+v", got.Entries[:min(len(got.Entries), 4)])
 		}
 	})
 
