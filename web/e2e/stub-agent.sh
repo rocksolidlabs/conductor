@@ -36,13 +36,15 @@
 #                   when it holds one: a spec's own items, after reading the
 #                   ticket STUB_BRAKEMAN_TICKET names, as a turn reads what it
 #                   proposes to change); through the CLI, or the MCP tools
-#                   with STUB_WORKER=mcp. Before the brief, once the gate is
-#                   open, it runs the act STUB_BRAKEMAN_ACT's file names when
-#                   it holds one ("OPERATION KEY", its body the JSON file
-#                   beside it, <file>.body): conductor brakeman act, or the
-#                   act tool; what the server answered, taken or refused, is
-#                   written to <file>.out and the brief is submitted either
-#                   way
+#                   with STUB_WORKER=mcp. With STUB_BRAKEMAN_ASK, a wake
+#                   request's turn (the background role's) first asks it as
+#                   its question (notify --state needs_input), before the gate.
+#                   Before the brief, once the gate is open, it runs the act
+#                   STUB_BRAKEMAN_ACT's file names when it holds one
+#                   ("OPERATION KEY", its body the JSON file beside it,
+#                   <file>.body): conductor brakeman act, or the act tool;
+#                   what the server answered, taken or refused, is written to
+#                   <file>.out and the brief is submitted either way
 # $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
 # start as Codex 0.161 draws it when its hooks are new or changed (round 13,
 # G2c): 1. Review hooks highlighted; a digit moves the highlight, Enter
@@ -739,6 +741,11 @@ brakeman_turn() {
 		printf 'stub: brief -> none, a read failed\n'
 		brakeman_why='a read failed'
 		return 1
+	fi
+	if [[ -n ${STUB_BRAKEMAN_ASK:-} && $got == *'"kind":"wake"'* ]]; then
+		# A background turn's question, which pages no one: Needs you lists it.
+		report --state needs_input --message "$STUB_BRAKEMAN_ASK"
+		printf 'brakeman: %s: asked %s\n' "$req" "$STUB_BRAKEMAN_ASK" >>"$transcript"
 	fi
 	if [[ -n ${STUB_BRAKEMAN_WAIT:-} ]]; then
 		while [[ ! -e $STUB_BRAKEMAN_WAIT ]] && ((n < 9000)); do

@@ -420,6 +420,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.scheduleRunSync(runID)
 		// Its record follows it from its launch on (the journal).
 		s.scheduleJournal(runID)
+		// Brakeman's background role reads it on its next pass.
+		if s.brakeman != nil {
+			s.brakeman.runChanged(runID)
+		}
 	}
 	// A run's chat reaches the browsers' unread counts the same way a session's does.
 	s.runs.OnRunChat = func(runID string, m session.ChatMessage) {
@@ -455,6 +459,18 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)
 		}
+		if s.brakeman != nil {
+			// A run's end reaches Brakeman's background role too: a legacy
+			// run's last member ending is told to OnEnd alone, never to
+			// OnRunChange (its session's change carries it).
+			recordEnd := s.runs.OnEnd
+			s.runs.OnEnd = func(r crew.Run) {
+				if recordEnd != nil {
+					recordEnd(r)
+				}
+				s.brakeman.runChanged(r.ID)
+			}
+		}
 		s.wireLaunches()
 		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned, s.ledgerRecovered)
 		if s.ledger == nil {
@@ -479,6 +495,12 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// it, and its handoff is typed into the member it names. OnActivity never
 	// waits, as a sink must not. The changes of server sessions reach the runs
 	// through localChange.
+	// Brakeman's background role takes a question opened (it only notes
+	// the session, and never waits), before the engine, whose sink and the
+	// touches' end the list.
+	if s.brakeman != nil {
+		s.events.addSink(s.brakeman.activity)
+	}
 	s.events.addSink(s.runs.OnActivity)
 	// The context providers: an attempt's context, and the files touched.
 	s.wireContext()

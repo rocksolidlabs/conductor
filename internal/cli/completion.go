@@ -123,7 +123,7 @@ func completionSpec() []commandSpec {
 		// argument and the operations a grant names as act's.
 		{name: "brakeman", flags: actFlags(observeFlags(api(flagSpec{name: "--json"}, flagSpec{name: "--file", kind: flagFile}, flagSpec{name: "--subject", kind: flagValue}, flagSpec{name: "--note-file", kind: flagFile}, flagSpec{name: "--since", kind: flagValue},
 			flagSpec{name: "--body-file", kind: flagFile}, flagSpec{name: "--op-id", kind: flagValue}))),
-			words: []string{"request", "observe", "act", "brief", "ask", "status", "list", "show"}, after: map[string][]string{"ask": brakeman.Kinds, "observe": observeWhats(), "act": actOperations()}},
+			words: []string{"request", "observe", "act", "brief", "ask", "status", "list", "show", "role"}, after: map[string][]string{"ask": brakeman.Kinds, "observe": observeWhats(), "act": actOperations(), "role": roleActions}},
 		{name: "up", flags: api(flagSpec{name: "--name", kind: flagValue}, flagSpec{name: "--resume", kind: flagValue}, flagSpec{name: "--open"}), crewID: true},
 		{name: "crews", flags: api(flagSpec{name: "--ids"})},
 		// Every flag of every dispatch command (each takes its own), and the
