@@ -17,6 +17,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -199,6 +200,24 @@ func TestInboxLeavesOutAQuestionAnsweredInTheTerminal(t *testing.T) {
 	if page, _ := e.inboxList(t, ""); listed(page, questionRef(sessionHex("typed"), q)) || page.Total != 0 {
 		t.Fatalf("a question answered in the terminal: %+v", page)
 	}
+	// While it still shows, a page's answer reads refused, the terminal's
+	// keys first, never "not answered yet"; and so once it has left.
+	ref := questionRef(sessionHex("typed"), q)
+	terminal := func(when string) {
+		t.Helper()
+		got := e.trackOf(t, ref, q, "r1")
+		if got[stepRecorded].State != stepRefused || got[stepRecorded].Words != terminalWords || got[stepValidated].State != stepNotApplicable || got[stepResumed].State != stepNotApplicable {
+			t.Fatalf("the track %s: %+v", when, got)
+		}
+		it := e.itemOf(t, ref)
+		if len(it.Actions) != 0 || it.Now != "no longer open: "+terminalWords || len(it.Delivery) != 4 || it.Delivery[1].State != stepRefused {
+			t.Fatalf("the item %s: %+v", when, it)
+		}
+	}
+	terminal("while it shows")
+	fs.report(t, session.AttentionWorking, "")
+	until(t, "the question gone", func() bool { return fs.l.Info().Attention.ID != q })
+	terminal("once it left")
 }
 
 func TestInboxLeavesOutASessionNoLongerListed(t *testing.T) {
@@ -359,11 +378,28 @@ func TestInboxTrackHostedQuestion(t *testing.T) {
 		t.Fatalf("while asked: %+v", steps)
 	}
 	report(t, e, id, map[string]any{"state": "working"})
-	until(t, "the host's working synced", func() bool { return hostedSession(t, e, id).Info().Attention.State == session.AttentionWorking })
+	// Synced: the host said it (HostView), not only the server forwarded it.
+	until(t, "the host's working synced", func() bool { return hostedSession(t, e, id).HostView().Attention.State == session.AttentionWorking })
 	for range 2 {
 		if got := e.trackOf(t, ref, q, "r1")[stepResumed]; got.State != stepDone || got.At == nil {
 			t.Fatalf("resumed: %+v", got)
 		}
+	}
+	// A change the server forwarded and the host has not applied (its
+	// attention in Info, not in what the host said) is no resumption: the
+	// hub's OnChange with it records none.
+	report(t, e, id, map[string]any{"state": "needs_input", "message": "Again?", "kind": "permission", "options": yes})
+	var q2 string
+	until(t, "the second question shown", func() bool {
+		hs := hostedSession(t, e, id)
+		q2 = hs.HostView().Attention.ID
+		return q2 != "" && q2 != q && hs.HostView().Attention.Message == "Again?"
+	})
+	unapplied := hostedSession(t, e, id).Info()
+	unapplied.Attention = session.Attention{State: session.AttentionWorking}
+	e.srv.hosts.OnChange(unapplied)
+	if got := e.trackOf(t, questionRef(id, q2), q2, "r2")[stepResumed]; got.State != stepWaiting {
+		t.Fatalf("resumed by a change the host has not applied: %+v", got)
 	}
 	e.srv.hostedSeen.gone(id) // what a restart forgets
 	if got := e.trackOf(t, ref, q, "r1"); got[stepResumed].State != stepUnknown {
@@ -502,6 +538,16 @@ func TestInboxPages(t *testing.T) {
 	if status, _ := e.get(t, "/api/inbox?after=nonsense"); status != http.StatusBadRequest {
 		t.Fatalf("a bad cursor: %d", status)
 	}
+	// A parameter a route does not take, or one given twice, is refused,
+	// never read as page one or as its first value.
+	ref := url.QueryEscape(first.Items[0].Ref)
+	for _, path := range []string{"/api/inbox?cursor=" + url.QueryEscape(first.Next), "/api/inbox?after=" + url.QueryEscape(first.Next) + "&after=" + url.QueryEscape(first.Next),
+		"/api/inbox/item?ref=" + ref + "&ref=" + ref, "/api/inbox/item?ref=" + ref + "&receipt=x",
+		"/api/inbox/track?ref=" + ref + "&ref=" + ref, "/api/inbox/track?ref=" + ref + "&receipt=a&receipt=b", "/api/inbox/track?ref=" + ref + "&nope=1"} {
+		if status, body := e.get(t, path); status != http.StatusBadRequest || !strings.Contains(string(body), "invalid_request") {
+			t.Fatalf("%s: %d %s", path, status, body)
+		}
+	}
 }
 
 // A test router routes a question to a person: the item names whom, with
@@ -564,15 +610,34 @@ func TestInboxRoutedToKeyedByQuestion(t *testing.T) {
 	}
 }
 
-// The routes are the admin's alone; on a switchyard 403 switchyard.
+// The routes are the admin's alone: no token, an agent's, a wrong one, a
+// session's control link's and view link's (the roles that may answer or
+// watch that session in its terminal) and a host's are each refused on
+// all three, a hosted session's question among the items tried; on a
+// switchyard 403 switchyard.
 func TestInboxIsAdminOnly(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id := e.createSession("cat")
 	tok := e.agentToken(id)
-	for _, path := range []string{"/api/inbox", "/api/inbox/item?ref=question:" + id + "/0123456789abcdef", "/api/inbox/track?ref=task:a-00000000/b&receipt=c"} {
-		for _, token := range []string{"", tok, "nope"} {
+	_, control := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "control"})
+	_, view := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	hosted := startHost(t, e, []string{"/bin/cat"})
+	report(t, e, hosted, map[string]any{"state": "needs_input", "message": "Allow?", "kind": "permission", "options": yes})
+	var hq string
+	until(t, "the hosted question shown", func() bool {
+		hq = hostedSession(t, e, hosted).Info().Attention.ID
+		return hq != ""
+	})
+	// The refusals are many from one address: the limiter would answer
+	// 429 before the 401 this test reads.
+	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	tokens := map[string]string{"no token": "", "an agent's": tok, "a wrong one": "nope", "a control link's": control["token"].(string),
+		"a view link's": view["token"].(string), "a host's": "test-host-token"}
+	for _, path := range []string{"/api/inbox", "/api/inbox/item?ref=question:" + id + "/0123456789abcdef", "/api/inbox/item?ref=" + url.QueryEscape(questionRef(hosted, hq)),
+		"/api/inbox/track?ref=task:a-00000000/b&receipt=c", "/api/inbox/track?ref=" + url.QueryEscape(questionRef(hosted, hq)) + "&receipt=" + hq} {
+		for name, token := range tokens {
 			if resp, _ := e.do("GET", path, token, nil); resp.StatusCode != http.StatusUnauthorized {
-				t.Fatalf("%s with %q: %d", path, token, resp.StatusCode)
+				t.Fatalf("%s with %s: %d", path, name, resp.StatusCode)
 			}
 		}
 	}
@@ -638,5 +703,34 @@ func TestInboxCarriesTheNewestBrakemanCard(t *testing.T) {
 	}
 	if page, _ := e.inboxList(t, ""); !page.Items[0].Card {
 		t.Fatalf("the summary: %+v", page.Items[0])
+	}
+}
+
+// An Approve's scope keeps what it must disclose whole within its 1 KiB:
+// 30 tasks of 40 characters and their agents are shortened ("and N
+// more"), never the yolo choice, the approval it supersedes or that
+// launching is a separate step.
+func TestInboxApprovalScopeKeepsItsDisclosures(t *testing.T) {
+	var tasks, agents []string
+	for i := range 30 {
+		tasks = append(tasks, fmt.Sprintf("%040d", i))
+		agents = append(agents, fmt.Sprintf("agent-%034d", i))
+	}
+	on := true
+	p := dispatch.OpenPlan{PlanSummary: dispatch.PlanSummary{N: 3, Base: strings.Repeat("a", 40)}, Key: "CND-12", TicketRev: 9}
+	scope := approvalScope(p, strings.Repeat("<", 300), tasks, agents, &on, []int{2})
+	if jsonLen(scope) > maxScope {
+		t.Fatalf("%d encoded bytes", jsonLen(scope))
+	}
+	for _, want := range []string{"Approves revision 3 of CND-12", yoloWords(&on), "sets revision 2's approval superseded", "launching is a separate step on the ticket page", "more", "against the ticket at revision 9"} {
+		if !strings.Contains(scope, want) {
+			t.Fatalf("the scope lost %q: %s", want, scope)
+		}
+	}
+	a := inboxAction{Scope: scope}
+	it := &inboxItem{}
+	it.addAction(a)
+	if it.Actions[0].Scope != scope {
+		t.Fatal("the scope cut again by addAction")
 	}
 }

@@ -124,6 +124,10 @@ type inboxAction struct {
 	Scope     string `json:"scope"` // 1 KiB
 	Confirm   bool   `json:"confirm,omitempty"`
 	Route     string `json:"route"` // 200
+	// Track is the ref the action's steps are read under
+	// (GET /api/inbox/track), when it is not the item's own: a task's
+	// command carried by a blocker's question is tracked as the task's.
+	Track string `json:"track,omitempty"`
 }
 
 // deliveryStep is one of an action's four steps.
@@ -493,7 +497,9 @@ func (rd *inboxRead) questionItem(info session.Info) (*inboxItem, bool) {
 		// task and carries the task's commands, each at the run's revision.
 		if task != nil && task.Blocker != nil && task.Attempt != nil && task.Attempt.SessionID == info.ID && !held {
 			it.Brief = fitText(brief+"; "+c.Task+" is blocked: "+task.Blocker.Reason, 2<<10)
-			rd.taskActions(it, run, *task, " task "+c.Task)
+			if set, ok := rd.commandsOf(run.ID, c.Task); ok {
+				rd.taskActions(it, run, set, " task "+c.Task)
+			}
 		}
 	}
 	rd.withCard(it)
@@ -528,27 +534,42 @@ func dependents(run crew.Run, task string) []string {
 	return out
 }
 
-// taskActions adds the task's commands its state allows to it, each with
-// the run's revision as judged as its Expect; labelled with suffix.
-func (rd *inboxRead) taskActions(it *inboxItem, run crew.Run, task crew.TaskState, suffix string) crew.TaskCommandSet {
-	set, err := rd.s.runs.TaskCommands(run.ID, task.ID)
-	if err != nil {
-		return crew.TaskCommandSet{}
+// commandsOf is what the engine allows of the run's task's commands now,
+// with the task as it stood when they were judged (one read, under the
+// engine's lock): false when the engine does not hold the run or the task.
+func (rd *inboxRead) commandsOf(runID, taskID string) (crew.TaskCommandSet, bool) {
+	if rd.s.runs == nil {
+		return crew.TaskCommandSet{}, false
 	}
+	set, err := rd.s.runs.TaskCommands(runID, taskID)
+	return set, err == nil
+}
+
+// taskActions adds the commands set allows to it, each with the run's
+// revision as judged as its Expect, described from the task the set was
+// judged on; labelled with suffix, and tracked as the task's when the item
+// is not the task's own.
+func (rd *inboxRead) taskActions(it *inboxItem, run crew.Run, set crew.TaskCommandSet, suffix string) {
+	task := set.Task
 	rev := strconv.FormatInt(set.Revision, 10)
 	deps := dependents(run, task.ID)
 	depWords := "nothing else waits for it"
 	if len(deps) > 0 {
 		depWords = strings.Join(deps, ", ") + " wait for it"
 	}
+	ref := "task:" + run.ID + "/" + task.ID
+	track := ""
+	if it.Ref != ref {
+		track = ref
+	}
 	base := "/api/runs/" + run.ID + "/tasks/" + task.ID + "/"
 	for _, name := range set.Commands {
-		a := inboxAction{Name: name, Expect: rev, Route: http.MethodPost + " " + base + name}
+		a := inboxAction{Name: name, Expect: rev, Route: http.MethodPost + " " + base + name, Track: track}
 		switch name {
 		case crew.TaskRetry:
 			start := "the commit its inputs give it"
-			if task.Attempt != nil && task.Attempt.Start != "" {
-				start = "commit " + short(task.Attempt.Start)
+			if set.RetryStart != "" {
+				start = "commit " + short(set.RetryStart)
 			}
 			a.Label = "Retry" + suffix
 			a.Scope = fmt.Sprintf("Allows %s one more attempt (attempt %d), started at %s with what its last attempt found; %s; at run revision %s",
@@ -567,7 +588,6 @@ func (rd *inboxRead) taskActions(it *inboxItem, run crew.Run, task crew.TaskStat
 		}
 		it.addAction(a)
 	}
-	return set
 }
 
 // short is a commit's first 12 hex digits.
@@ -580,8 +600,14 @@ func short(commit string) string {
 
 // taskItem is the item of the run's task, and whether it is open: failed,
 // with a command its state allows. A task blocked only by a failed input
-// is no item of its own: the input's names it.
+// is no item of its own: the input's names it. The task and its commands
+// are described as the engine judged the commands, in one read; a run the
+// engine does not hold (its record, a run stopped and let go) offers none.
 func (rd *inboxRead) taskItem(run crew.Run, task crew.TaskState) (*inboxItem, bool) {
+	set, held := rd.commandsOf(run.ID, task.ID)
+	if held {
+		task = set.Task
+	}
 	ref := "task:" + run.ID + "/" + task.ID
 	it := &inboxItem{Ref: ref, Subject: ref, Kind: inboxTask, Answerer: inboxAnswerer, BriefBy: "conductor", Actions: []inboxAction{}, Since: run.StartedAt}
 	if run.Managed != nil {
@@ -600,12 +626,17 @@ func (rd *inboxRead) taskItem(run crew.Run, task crew.TaskState) (*inboxItem, bo
 	}
 	it.Brief = fitText(words, 2<<10)
 	open := false
-	if task.State == "failed" {
-		set := rd.taskActions(it, run, task, "")
+	if held {
 		it.Revision = strconv.FormatInt(set.Revision, 10)
-		open = len(set.Commands) > 0
+		if task.State == "failed" {
+			rd.taskActions(it, run, set, "")
+			open = len(set.Commands) > 0
+		}
 	}
-	if !open {
+	switch {
+	case !held:
+		it.Now = fitText(fmt.Sprintf("run %s is no longer held by the engine (it stopped and was let go): %s is %s, and a command on it needs the run continued", run.Name, task.ID, task.State), 500)
+	case !open:
 		it.Now = fitText(fmt.Sprintf("%s is %s now", task.ID, task.State), 500)
 	}
 	deps := dependents(run, task.ID)
@@ -761,19 +792,57 @@ func (rd *inboxRead) approveScope(p dispatch.OpenPlan) (scope, why string) {
 			agents = append(agents, m.AgentID)
 		}
 	}
-	scope = fmt.Sprintf("Approves revision %d of %s: crew %s with the tasks %s and the agents %s, at base %s, against the ticket at revision %d; %s",
-		p.N, p.Key, cmp.Or(names.Crew.Name, p.CrewName), strings.Join(tasks, ", "), strings.Join(agents, ", "), short(p.Base), p.TicketRev, yoloWords(b.yolo))
 	list, ok := rd.plans[p.Key]
 	if !ok {
 		list, _ = s.dispatch.Plans(rd.ctx, p.Key)
 		rd.plans[p.Key] = list
 	}
+	var superseded []int
 	for _, o := range list {
 		if o.ID != p.ID && o.State == dispatch.PlanApproved {
-			scope += fmt.Sprintf("; sets revision %d's approval superseded", o.N)
+			superseded = append(superseded, o.N)
 		}
 	}
-	return scope + "; launching is a separate step on the ticket page", ""
+	return approvalScope(p, cmp.Or(names.Crew.Name, p.CrewName), tasks, agents, b.yolo, superseded), ""
+}
+
+// maxScope bounds an action's scope, encoded (addAction).
+const maxScope = 1 << 10
+
+// approvalScope is an Approve's scope within maxScope: what it must
+// disclose whole (the revision, the base, the ticket's revision, the yolo
+// choice, the approvals it supersedes, that launching is a separate step)
+// kept, the crew's name, its agents and its tasks shortened first, a list
+// past its room ending with how many more.
+func approvalScope(p dispatch.OpenPlan, crewName string, tasks, agents []string, yolo *bool, superseded []int) string {
+	head := fmt.Sprintf("Approves revision %d of %s: crew ", p.N, p.Key)
+	tail := fmt.Sprintf(", at base %s, against the ticket at revision %d; %s", short(p.Base), p.TicketRev, yoloWords(yolo))
+	for _, n := range superseded {
+		tail += fmt.Sprintf("; sets revision %d's approval superseded", n)
+	}
+	tail += "; launching is a separate step on the ticket page"
+	const withTasks, andAgents = " with the tasks ", " and the agents "
+	room := maxScope - jsonLen(head) - jsonLen(tail) - jsonLen(withTasks) - jsonLen(andAgents)
+	crewName = fitText(crewName, min(200, max(room/4, 16)))
+	room -= jsonLen(crewName)
+	agentList := fitList(agents, max(room/3, 0))
+	taskList := fitList(tasks, max(room-jsonLen(agentList), 0))
+	return fitText(head+crewName+withTasks+taskList+andAgents+agentList+tail, maxScope)
+}
+
+// fitList is items joined with ", " within room encoded bytes: whole when
+// they fit, else as many as fit followed by "and N more", or "N" alone.
+func fitList(items []string, room int) string {
+	whole := strings.Join(items, ", ")
+	if jsonLen(whole) <= room {
+		return whole
+	}
+	for k := len(items) - 1; k > 0; k-- {
+		if s := strings.Join(items[:k], ", ") + fmt.Sprintf(" and %d more", len(items)-k); jsonLen(s) <= room {
+			return s
+		}
+	}
+	return strconv.Itoa(len(items))
 }
 
 // openQuestions and openTasks are the open items of the sessions and of
@@ -837,6 +906,25 @@ func (s *Server) inboxOpen(ctx context.Context, after inboxCursor, limit int) ([
 	return all, false, total, nil
 }
 
+// inboxQuery reads the parameters of an inbox route, each at most once:
+// 400 invalid_request for one the route does not take or one given twice,
+// as Dispatch's reads refuse them. When it reports false it has answered.
+func inboxQuery(w http.ResponseWriter, r *http.Request, names ...string) (map[string]string, bool) {
+	q, err := readQuery(r, names...)
+	out := map[string]string{}
+	for _, name := range names {
+		if err != nil {
+			break
+		}
+		out[name], err = q.one(name)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return nil, false
+	}
+	return out, true
+}
+
 // inboxOnly wraps an inbox route: the admin's alone, and on a switchyard
 // 403 switchyard (decisions are answered where the work runs).
 func (s *Server) inboxOnly(next http.HandlerFunc) http.HandlerFunc {
@@ -853,11 +941,11 @@ func (s *Server) inboxOnly(next http.HandlerFunc) http.HandlerFunc {
 // at}, the summaries oldest first by (since, ref), at most inboxPage,
 // next the cursor after the last when more follow.
 func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
-	q, ok := queryValues(w, r)
+	q, ok := inboxQuery(w, r, "after")
 	if !ok {
 		return
 	}
-	after, err := parseCursor(q.Get("after"))
+	after, err := parseCursor(q["after"])
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -887,11 +975,11 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 // something no longer open, the item as it is now with its delivery; 404
 // not_found for a ref that names nothing the server holds.
 func (s *Server) handleInboxItem(w http.ResponseWriter, r *http.Request) {
-	q, ok := queryValues(w, r)
+	q, ok := inboxQuery(w, r, "ref")
 	if !ok {
 		return
 	}
-	ref, err := brakeman.ParseRef(q.Get("ref"))
+	ref, err := brakeman.ParseRef(q["ref"])
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "ref is a question:, task: or plan: ref")
 		return
@@ -907,6 +995,25 @@ func (s *Server) handleInboxItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"item": it})
+}
+
+// runOrRecord is the run as the engine holds it, else as its record keeps
+// it (a run stopped and let go: nothing changes it until it is
+// continued); false for one found in neither.
+func (s *Server) runOrRecord(id string) (crew.Run, bool) {
+	if s.runs != nil {
+		if r, ok := s.runs.Get(id); ok {
+			return r, true
+		}
+	}
+	if s.records == nil {
+		return crew.Run{}, false
+	}
+	r, ok, err := s.records.Get(id)
+	if err != nil {
+		s.log.Warn("inbox: a run's record could not be read", "run", id, "err", err)
+	}
+	return r, ok && err == nil
 }
 
 // errNoItem says a ref names nothing the server holds.
@@ -932,7 +1039,7 @@ func (s *Server) inboxItemOf(ctx context.Context, ref brakeman.Ref) (*inboxItem,
 		r := questionRef(ref.Session, ref.Question)
 		it := &inboxItem{Ref: r, Subject: r, Kind: inboxQuestion, Answerer: inboxAnswerer, Revision: ref.Question, BriefBy: "conductor", Actions: []inboxAction{}, Recommended: -1, Delivery: steps}
 		it.Title = fitText(s.agentName(info)+" in "+info.Name+" asked", 200)
-		it.Now = fitText("no longer asked: "+steps[1].Words, 500)
+		it.Now = fitText("no longer open: "+steps[1].Words, 500)
 		it.Brief = it.Now
 		it.addRef("session:"+info.ID, "the session "+info.Name+"'s terminal")
 		return it, nil
@@ -940,7 +1047,7 @@ func (s *Server) inboxItemOf(ctx context.Context, ref brakeman.Ref) (*inboxItem,
 		if s.runs == nil {
 			return nil, errNoItem
 		}
-		run, ok := s.runs.Get(ref.Run)
+		run, ok := s.runOrRecord(ref.Run)
 		if !ok || run.Managed == nil {
 			return nil, errNoItem
 		}
@@ -969,7 +1076,7 @@ func (s *Server) inboxItemOf(ctx context.Context, ref brakeman.Ref) (*inboxItem,
 		for _, p := range list {
 			if p.N == ref.N {
 				op := dispatch.OpenPlan{PlanSummary: p, Key: tk.Key, Title: tk.Title, TicketRev: tk.Rev}
-				open := tk.DeletedAt.IsZero() && (p.State == dispatch.PlanProposed || (p.State == dispatch.PlanApproved && p.Stale != nil))
+				open := tk.DeletedAt.IsZero() && (p.State == dispatch.PlanProposed || (p.State == dispatch.PlanApproved && p.Stale != nil && !dispatch.TicketClosed(tk.Status)))
 				return rd.planItem(op, open), nil
 			}
 		}
