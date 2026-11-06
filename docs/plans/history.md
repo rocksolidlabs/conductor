@@ -1847,7 +1847,8 @@ holding the marks), `TestClipSnippetKeepsItsMarks`;
 `TestAWriteNeverWaitsBehindSearches`, `TestOverlappingClearsOweNoCheck`,
 `TestAReaderReopensBesideASearch`, `TestCloseWaitsForACancelledRollback`,
 `TestACancelledCheckChangesNothing`, `TestAWriteAndAClearTakeTurns`,
-`TestChecksTakeTurns`, `TestAMoveAsideWaitsForTheCallsRunning`;
+`TestChecksTakeTurns`, `TestASoundCheckClearsAnEarlierCheckDamage`,
+`TestAMoveAsideWaitsForTheCallsRunning`;
 `BenchmarkSearch` (100,000 entries; the medians in PR-2's body).
 
 **Go, `internal/api` and `internal/crew` (PR-3):**
