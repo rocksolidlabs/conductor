@@ -174,6 +174,21 @@ func TestInboxTrackPlanApproval(t *testing.T) {
 	if s := p.trackOf(t, planRef(1), "wd-1", ""); s[stepValidated].State != stepRefused || !strings.Contains(s[stepValidated].Words, "stale_revision") {
 		t.Fatalf("a refused withdrawal: %+v", s)
 	}
+	// A receipt is the revision's only when it is an approval or a
+	// withdrawal of that revision: a ticket's edit, or revision 1's
+	// approval and refused withdrawal read under revision 2, are none of
+	// its own, recorded refused with the words, whatever they became.
+	p.expect(t, "POST", "/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": "ed-1", "set": map[string]any{"description": "Edited."}}, http.StatusOK, "")
+	p.proposed(t, p.saveCrew(t, teamCrew("Team two", "cat")).ID, nil)
+	for _, c := range []struct{ ref, op string }{{planRef(1), "ed-1"}, {planRef(2), "ap-1"}, {planRef(2), "wd-1"}} {
+		s := p.trackOf(t, c.ref, c.op, "")
+		if s[stepRecorded].State != stepRefused || !strings.Contains(s[stepRecorded].Words, "another operation") || s[stepValidated].State != stepNotApplicable || s[stepResumed].State != stepNotApplicable {
+			t.Fatalf("%s under %s: %+v", c.op, c.ref, s)
+		}
+	}
+	if s := p.trackOf(t, planRef(1), "ap-1", ""); s[stepValidated].State != stepDone {
+		t.Fatalf("its own approval after: %+v", s)
+	}
 }
 
 // 230 open revisions over five tickets, proposed ones and approvals that

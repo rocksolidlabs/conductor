@@ -157,7 +157,16 @@ func (s sqlLedger) Load(ctx context.Context, runID string) (Loaded, bool, error)
 			failed = append(failed, fr)
 		}
 	}
-	return Loaded{Run: row, Tasks: tasks, Attempts: attempts, Messages: messages, Prerequisites: prereqs, FailedChecks: failed}, true, nil
+	launch, err := LaunchCrew(runID, func(id string) (ledger.RunRow, bool, error) {
+		if id == runID {
+			return row, true, nil
+		}
+		return s.l.Run(ctx, id)
+	})
+	if err != nil {
+		return Loaded{}, true, err
+	}
+	return Loaded{Run: row, Launch: launch, Tasks: tasks, Attempts: attempts, Messages: messages, Prerequisites: prereqs, FailedChecks: failed}, true, nil
 }
 
 func (s sqlLedger) CheckLog(ctx context.Context, runID, taskID string, n int, id string, k int) (ledger.CheckRow, bool, error) {
@@ -492,6 +501,11 @@ type TaskState struct {
 	// reads of a live run (Get, GetWithDiffs, List, TaskOf); absent for none and in a
 	// record. The run page offers these and no others.
 	Commands []string `json:"commands,omitempty"`
+	// Owner is the person accountable for the task's outcome in the crew as
+	// launched, and OwnerFrom how (TaskOwner: task or acceptance); both
+	// absent for a crew without people.
+	Owner     string `json:"owner,omitempty"`
+	OwnerFrom string `json:"ownerFrom,omitempty"`
 }
 
 // AttemptState is an attempt as the run reports it.
@@ -567,6 +581,7 @@ func (r *run) taskStates() []TaskState {
 	out := make([]TaskState, 0, len(r.tasks))
 	for _, t := range r.tasks {
 		st := TaskState{ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, Needs: slices.Clone(t.def.Needs), State: t.state, Reason: t.reason, Attempts: len(t.attempts) + t.prior, ImportedFrom: t.imported}
+		st.setOwner(Crew{People: r.people}, t.def)
 		if b := t.blocker; b != nil {
 			st.Blocker = &Blocker{Reason: b.reason, Message: b.message, By: b.by, At: b.at}
 		}

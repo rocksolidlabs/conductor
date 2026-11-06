@@ -47,11 +47,44 @@ const (
 	notKnownResumed = "it is not known here whether the work went on"
 )
 
+// The words of a question the session keeps without showing it
+// (Info.Kept): the agent's own set aside while it works on, or the one
+// the hold of the turn holds over.
+const keptWords = "set aside: the session keeps it to show again when the agent's turn is done or the held turn ends"
+
+// leftWords are the words of a question that went for good without an
+// answer through its claim, by how it went (session.Left*), but for keys
+// typed in the terminal (terminalSteps).
+var leftWords = map[string]string{
+	session.LeftEnded:      "the session ended before an answer was taken",
+	session.LeftSuperseded: "another question was shown in its place before an answer was taken",
+	session.LeftWithdrawn:  "withdrawn by the agent before an answer was taken",
+}
+
 // questionSteps are the four steps of an answer to the question id of the
 // session d, attempt the request id the browser sent it with ("" when it
 // is not known); known is false when the session keeps nothing of the
 // question (never asked as far as it knows, or forgotten) and it is not
-// shown.
+// shown. How a question can leave, and what the steps then read:
+//
+//   - shown, keys typed in the terminal reached it: recorded refused
+//     (terminalSteps), the rest not applicable;
+//   - shown, or kept to show again (set aside, held over): waiting;
+//   - answered through its claim (a server session's kept result): this
+//     attempt's or another's, then resumed from the kept resumption
+//     (working, a next question: done; the end: not applicable; none
+//     yet: waiting);
+//   - gone for good without an answer (session.QuestionLeft): keys typed
+//     in the terminal (terminalSteps), the session's end, another
+//     question in its place, or withdrawn: recorded refused at the time
+//     it went, the rest not applicable;
+//   - a hosted session's, answered or gone: recorded and validated
+//     unknown (the host holds the answer), resumed from what the server
+//     saw as the host synced it (hostedResumes): done or not applicable
+//     at the change that said how the work went on, waiting until then,
+//     unknown when the server did not see it leave;
+//   - forgotten (past the session's last 64), or the session no longer
+//     listed: unknown (handleInboxTrack), never a guess.
 func (s *Server) questionSteps(d session.Driver, id, attempt string) ([]deliveryStep, bool) {
 	info := d.Info()
 	hs, hosted := d.(*signal.HostedSession)
@@ -62,6 +95,7 @@ func (s *Server) questionSteps(d session.Driver, id, attempt string) ([]delivery
 	}
 	receipt := questionRef(info.ID, id)
 	shown := info.Attention.State == session.AttentionNeedsInput && info.Attention.ID == id
+	kept := !shown && slices.Contains(info.Kept, id)
 	avail := step(stepAvailable, stepDone, info.Attention.Since, "the session asked it", receipt)
 	if !shown {
 		avail.At = nil
@@ -72,21 +106,27 @@ func (s *Server) questionSteps(d session.Driver, id, attempt string) ([]delivery
 	if shown && info.Attention.Answered == session.AnsweredTerminal {
 		return terminalSteps(avail, nil, receipt), true
 	}
+	waits := "not answered yet"
+	if kept {
+		waits = keptWords
+	}
 	if hosted {
-		res, seen := s.hostedSeen.of(info.ID, id)
-		if !seen && !shown {
-			return nil, false
-		}
+		res, seen, pending := s.hostedSeen.of(info.ID, id)
 		out := []deliveryStep{avail, step(stepRecorded, stepUnknown, nil, hostHoldsWords, ""), step(stepValidated, stepUnknown, nil, hostHoldsWords, "")}
 		switch {
+		case shown || kept:
+			if kept {
+				out[1], out[2] = step(stepRecorded, stepWaiting, nil, keptWords, ""), step(stepValidated, stepWaiting, nil, keptWords, "")
+			}
+			return append(out, step(stepResumed, stepWaiting, nil, waits, "")), true
 		case res != nil:
-			out = append(out, resumedStep(*res))
-		case shown:
-			out = append(out, step(stepResumed, stepWaiting, nil, "the question still waits", ""))
-		default:
-			out = append(out, step(stepResumed, stepUnknown, nil, notKnownResumed, ""))
+			return append(out, resumedStep(*res)), true
+		case pending:
+			return append(out, step(stepResumed, stepWaiting, nil, "the agent has not gone on yet", "")), true
+		case seen:
+			return append(out, step(stepResumed, stepUnknown, nil, notKnownResumed, "")), true
 		}
-		return out, true
+		return nil, false
 	}
 	local, ok := d.(*session.Local)
 	if !ok {
@@ -94,19 +134,20 @@ func (s *Server) questionSteps(d session.Driver, id, attempt string) ([]delivery
 	}
 	r, answered := local.QuestionResult(id)
 	if !answered {
-		if left, ok := local.QuestionLeft(id); ok {
-			if left.How == session.LeftTerminal {
-				return terminalSteps(avail, &left.At, receipt), true
-			}
-			words := "the question was withdrawn before an answer was taken: nothing was typed"
-			return []deliveryStep{avail, step(stepRecorded, stepRefused, &left.At, words, receipt), step(stepValidated, stepNotApplicable, nil, words, ""),
-				step(stepResumed, stepNotApplicable, nil, words, "")}, true
+		if shown || kept {
+			return []deliveryStep{avail, step(stepRecorded, stepWaiting, nil, waits, ""), step(stepValidated, stepWaiting, nil, waits, ""),
+				step(stepResumed, stepWaiting, nil, waits, "")}, true
 		}
-		if shown {
-			return []deliveryStep{avail, step(stepRecorded, stepWaiting, nil, "not answered yet", ""), step(stepValidated, stepWaiting, nil, "not answered yet", ""),
-				step(stepResumed, stepWaiting, nil, "not answered yet", "")}, true
+		left, ok := local.QuestionLeft(id)
+		if !ok {
+			return nil, false
 		}
-		return nil, false
+		if left.How == session.LeftTerminal {
+			return terminalSteps(avail, &left.At, receipt), true
+		}
+		words := cmpOr(leftWords[left.How], "it left before an answer was taken")
+		return []deliveryStep{avail, step(stepRecorded, stepRefused, &left.At, words, receipt), step(stepValidated, stepNotApplicable, nil, words, ""),
+			step(stepResumed, stepNotApplicable, nil, words, "")}, true
 	}
 	by := r.ByName
 	if by == "" {
@@ -164,6 +205,11 @@ func (s *Server) commandSteps(ctx context.Context, runID, taskID, actor, id stri
 		none := "no receipt of this command is kept here"
 		return []deliveryStep{avail, step(stepRecorded, stepUnknown, nil, none, ""), step(stepValidated, stepUnknown, nil, none, ""), step(stepResumed, stepUnknown, nil, none, "")}, nil
 	}
+	if !crew.TaskCommandOn(row, taskID) {
+		// The id names another command (a run's pause, another task's):
+		// none with it was taken for this task, whatever that one became.
+		return otherReceiptSteps(avail, "the command id names another command of the run, not one for task "+taskID+": none with it was taken for this task"), nil
+	}
 	recorded := step(stepRecorded, stepDone, timeOf(row.CreatedAt), "the engine's ledger keeps the command's receipt", receipt)
 	var rc crew.Receipt
 	if row.Receipt != "" {
@@ -185,8 +231,35 @@ func (s *Server) commandSteps(ctx context.Context, runID, taskID, actor, id stri
 		return []deliveryStep{avail, recorded, step(stepValidated, stepUnknown, nil, w, receipt), uncertainResumed()}, nil
 	}
 	validated := step(stepValidated, stepDone, nil, fmt.Sprintf("the engine took it at the run's revision; revision %d after it", rc.Revision), receipt)
-	deps, depsKnown := s.runDependents(runID, taskID)
+	var deps []dependent
+	depsKnown := false
+	if row.Intent == crew.TaskAccept {
+		var tasks []crew.TaskState
+		tasks, depsKnown = s.runDependents(runID, taskID)
+		for _, d := range tasks {
+			_, as := s.taskNow(ctx, runID, d.ID)
+			if as == nil && d.Attempt != nil {
+				as = []crew.AttemptState{*d.Attempt}
+			}
+			deps = append(deps, dependent{id: d.ID, attempts: as})
+		}
+	}
 	return []deliveryStep{avail, recorded, validated, doneResumed(row, rc, task, attempts, deps, depsKnown)}, nil
+}
+
+// otherReceiptSteps are the steps of an action whose id names a receipt
+// of another operation: recorded refused with the words, the rest not
+// applicable.
+func otherReceiptSteps(avail deliveryStep, words string) []deliveryStep {
+	return []deliveryStep{avail, step(stepRecorded, stepRefused, nil, words, ""), step(stepValidated, stepNotApplicable, nil, words, ""),
+		step(stepResumed, stepNotApplicable, nil, words, "")}
+}
+
+// dependent is a task that needs the one an Accept took, with its
+// attempts, every one kept.
+type dependent struct {
+	id       string
+	attempts []crew.AttemptState
 }
 
 // taskNow is the task as the engine holds it, or as the ledger has it for
@@ -222,21 +295,25 @@ func (s *Server) runDependents(runID, taskID string) (deps []crew.TaskState, kno
 	return deps, true
 }
 
-// startedSince is the first of attempts started at or after since, nil
-// for none.
+// startedSince is the attempt of attempts that started first at or
+// after since, nil for none.
 func startedSince(attempts []crew.AttemptState, since time.Time) *crew.AttemptState {
+	var first *crew.AttemptState
 	for i := range attempts {
-		if a := attempts[i]; a.StartedAt != nil && !a.StartedAt.Before(since) {
-			return &attempts[i]
+		if a := attempts[i]; a.StartedAt != nil && !a.StartedAt.Before(since) && (first == nil || a.StartedAt.Before(*first.StartedAt)) {
+			first = &attempts[i]
 		}
 	}
-	return nil
+	return first
 }
 
 // doneResumed is the resumed step of a command the engine took: a retry's
-// next attempt running, an accept's dependents dispatched, a cancel's
-// nothing.
-func doneResumed(row ledger.CommandRow, rc crew.Receipt, task *crew.TaskState, attempts []crew.AttemptState, deps []crew.TaskState, depsKnown bool) deliveryStep {
+// next attempt running, an accept's dependents dispatched (the first
+// attempt of any of them that started since, read from every attempt it
+// keeps, so that a later attempt reserved and not started yet, or one
+// that failed, does not hide the start that resumed the work), a
+// cancel's nothing.
+func doneResumed(row ledger.CommandRow, rc crew.Receipt, task *crew.TaskState, attempts []crew.AttemptState, deps []dependent, depsKnown bool) deliveryStep {
 	switch row.Intent {
 	case crew.TaskRetry:
 		if task == nil {
@@ -253,10 +330,15 @@ func doneResumed(row ledger.CommandRow, rc crew.Receipt, task *crew.TaskState, a
 		if len(deps) == 0 {
 			return step(stepResumed, stepDone, timeOf(row.CreatedAt), "its result is the task's; nothing else needs it", "")
 		}
+		var first *crew.AttemptState
+		var by string
 		for _, d := range deps {
-			if a := d.Attempt; a != nil && a.StartedAt != nil && !a.StartedAt.Before(row.CreatedAt) {
-				return step(stepResumed, stepDone, a.StartedAt, d.ID+" started from its result", "")
+			if a := startedSince(d.attempts, row.CreatedAt); a != nil && (first == nil || a.StartedAt.Before(*first.StartedAt)) {
+				first, by = a, d.id
 			}
+		}
+		if first != nil {
+			return step(stepResumed, stepDone, first.StartedAt, by+" started from its result", "")
 		}
 		return step(stepResumed, stepWaiting, nil, "the tasks that need it have not started yet", "")
 	}
@@ -274,10 +356,13 @@ func uncertainResumed() deliveryStep {
 	return step(stepResumed, stepNotApplicable, nil, "nothing of it was made: its change commits with its receipt, which was never settled; the task's commands are offered again", "")
 }
 
-// planSteps are the four steps of the Dispatch operation id of actor on a
-// plan revision: its receipt, its own outcome, and nothing resumed (a
-// launch from the ticket page starts the work).
-func (s *Server) planSteps(ctx context.Context, actor, id string) ([]deliveryStep, error) {
+// planSteps are the four steps of the Dispatch operation id of actor on
+// the plan revision ref names: its receipt, its own outcome, and nothing
+// resumed (a launch from the ticket page starts the work). A receipt of
+// another operation (another intent, or an approval or withdrawal of
+// another revision, as far as the store keeps its subject: PlanOpOn) is
+// none of this revision's.
+func (s *Server) planSteps(ctx context.Context, ref brakeman.Ref, actor, id string) ([]deliveryStep, error) {
 	if s.dispatch == nil {
 		return nil, errNoItem
 	}
@@ -291,6 +376,19 @@ func (s *Server) planSteps(ctx context.Context, actor, id string) ([]deliverySte
 		none := "no receipt of this operation is kept here"
 		return []deliveryStep{avail, step(stepRecorded, stepUnknown, nil, none, ""), step(stepValidated, stepUnknown, nil, none, ""), step(stepResumed, stepUnknown, nil, none, "")}, nil
 	}
+	other := "the operation id names another operation, not an approval or withdrawal of " + ref.String() + ": none with it was taken for this revision"
+	if rc.Intent != dispatch.IntentPlanApprove && rc.Intent != dispatch.IntentPlanWithdraw {
+		return otherReceiptSteps(avail, other), nil
+	}
+	planID, err := s.planIDOf(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	if on, known, err := s.dispatch.PlanOpOn(ctx, actor, id, planID); err != nil {
+		return nil, err
+	} else if known && !on {
+		return otherReceiptSteps(avail, other), nil
+	}
 	recorded := step(stepRecorded, stepDone, nil, "Dispatch keeps the operation's receipt", receipt)
 	if rc.Status != dispatch.StatusDone {
 		w := fmt.Sprintf("refused (%s): %s", rc.Refusal, rc.Error)
@@ -302,6 +400,24 @@ func (s *Server) planSteps(ctx context.Context, actor, id string) ([]deliverySte
 		resumed = "a withdrawal resumes nothing"
 	}
 	return []deliveryStep{avail, recorded, validated, step(stepResumed, stepNotApplicable, nil, resumed, "")}, nil
+}
+
+// planIDOf is the id of the plan revision ref names; "" for none (its
+// ticket gone, or no such revision), which no operation names.
+func (s *Server) planIDOf(ctx context.Context, ref brakeman.Ref) (string, error) {
+	list, err := s.dispatch.Plans(ctx, ref.Ticket)
+	if errors.Is(err, dispatch.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	for _, p := range list {
+		if p.N == ref.N {
+			return p.ID, nil
+		}
+	}
+	return "", nil
 }
 
 // handleInboxTrack answers the four steps of one action, from its durable
@@ -357,7 +473,7 @@ func (s *Server) handleInboxTrack(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_request", "receipt is the operation's id")
 			return
 		}
-		if steps, err = s.planSteps(r.Context(), actorOf(r), receipt); err != nil {
+		if steps, err = s.planSteps(r.Context(), ref, actorOf(r), receipt); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "unavailable", "the operation's receipt could not be read")
 			return
 		}

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
@@ -1046,7 +1047,13 @@ func (s *Server) inboxItemOf(ctx context.Context, ref brakeman.Ref) (*inboxItem,
 		r := questionRef(ref.Session, ref.Question)
 		it := &inboxItem{Ref: r, Subject: r, Kind: inboxQuestion, Answerer: inboxAnswerer, Revision: ref.Question, BriefBy: "conductor", Actions: []inboxAction{}, Recommended: -1, Delivery: steps}
 		it.Title = fitText(s.agentName(info)+" in "+info.Name+" asked", 200)
-		it.Now = fitText("no longer open: "+steps[1].Words, 500)
+		// Kept to show again (set aside, held over), it is not open now
+		// and not gone; else it is gone, and its recorded step says how.
+		gone := "no longer open: "
+		if steps[1].State == stepWaiting {
+			gone = "not open now: "
+		}
+		it.Now = fitText(gone+steps[1].Words, 500)
 		it.Brief = it.Now
 		it.addRef("session:"+info.ID, "the session "+info.Name+"'s terminal")
 		return it, nil
@@ -1092,26 +1099,46 @@ func (s *Server) inboxItemOf(ctx context.Context, ref brakeman.Ref) (*inboxItem,
 }
 
 // hostedResumes keeps, for each hosted session, how the server saw its
-// questions leave as its host synced its attention: the first change after
-// a question left needs_input that says how the work went on (the agent
-// working, a next question, the end), for its last 64 questions, in
-// memory. A question whose leaving the server did not see has none.
+// questions leave as its host synced its attention, for its last 64
+// questions, in memory. A question leaves when the host's session holds
+// it no longer: neither shown nor kept to show again (Info.Kept, the
+// agent's own set aside, the one a held turn holds over). Its resumption
+// is the first change from then that says how the work went on (the
+// agent working, a next question, the end), set once: a question shown
+// again with its id is held again, and leaves anew. A question whose
+// leaving the server did not see has none.
 type hostedResumes struct {
 	mu       sync.Mutex
 	sessions map[string]*hostedSeen
+	// seam, when a test sets it, is called with the session's id before a
+	// change is noted and once it is (noted), outside the lock: the
+	// moments a page may read the track at, beside the change's event.
+	seam atomic.Pointer[func(sess string, noted bool)]
 }
 
 // hostedSeen is what hostedResumes keeps of one session.
 type hostedSeen struct {
-	asking string // the question shown at the last change
-	left   string // the question that left, its resumption not seen yet
-	seen   map[string]bool
-	kept   map[string]session.Resumption
-	order  []string
+	held    []string // the questions shown or kept at the last change
+	pending []string // the questions that left, their resumption not seen yet
+	seen    map[string]bool
+	kept    map[string]session.Resumption
+	order   []string
 }
 
 // change notes the hosted session's attention as its host synced it.
 func (h *hostedResumes) change(info session.Info) {
+	f := h.seam.Load()
+	if f != nil {
+		(*f)(info.ID, false)
+	}
+	h.note(info)
+	if f != nil {
+		(*f)(info.ID, true)
+	}
+}
+
+// note is change under the lock.
+func (h *hostedResumes) note(info session.Info) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.sessions == nil {
@@ -1123,10 +1150,19 @@ func (h *hostedResumes) change(info session.Info) {
 		h.sessions[info.ID] = st
 	}
 	q := question(info)
-	if st.asking != "" && st.asking != q {
-		st.left = st.asking
+	held := slices.DeleteFunc(append([]string{q}, info.Kept...), func(id string) bool { return id == "" })
+	for _, id := range st.held {
+		if !slices.Contains(held, id) && st.seen[id] && !slices.Contains(st.pending, id) {
+			st.pending = append(st.pending, id)
+		}
 	}
-	st.asking = q
+	for _, id := range held {
+		// Held again (shown again with its id): it has not left, and what
+		// was kept of an earlier leaving is not its resumption.
+		st.pending = slices.DeleteFunc(st.pending, func(x string) bool { return x == id })
+		delete(st.kept, id)
+	}
+	st.held = held
 	if q != "" && !st.seen[q] {
 		st.seen[q] = true
 		st.order = append(st.order, q)
@@ -1135,9 +1171,10 @@ func (h *hostedResumes) change(info session.Info) {
 			st.order = st.order[1:]
 			delete(st.seen, old)
 			delete(st.kept, old)
+			st.pending = slices.DeleteFunc(st.pending, func(x string) bool { return x == old })
 		}
 	}
-	if st.left == "" {
+	if len(st.pending) == 0 {
 		return
 	}
 	at := time.Now().UTC()
@@ -1150,7 +1187,8 @@ func (h *hostedResumes) change(info session.Info) {
 		if a.Since != nil {
 			at = *a.Since
 		}
-	case q != "" && q != st.left:
+	case q != "":
+		// A next question: q is held, so it is none of those pending.
 		how = session.ResumedAsked
 		if a.Since != nil {
 			at = *a.Since
@@ -1158,10 +1196,12 @@ func (h *hostedResumes) change(info session.Info) {
 	default:
 		return
 	}
-	if st.seen[st.left] {
-		st.kept[st.left] = session.Resumption{At: at, How: how}
+	for _, id := range st.pending {
+		if _, set := st.kept[id]; !set {
+			st.kept[id] = session.Resumption{At: at, How: how}
+		}
 	}
-	st.left = ""
+	st.pending = st.pending[:0]
 }
 
 // gone forgets the session id.
@@ -1172,16 +1212,19 @@ func (h *hostedResumes) gone(id string) {
 }
 
 // of is what the server saw of the hosted session's question id: its
-// resumption, and whether it saw the question at all.
-func (h *hostedResumes) of(sess, id string) (res *session.Resumption, seen bool) {
+// resumption; whether it saw the question at all; and whether the work
+// is yet to go on as far as the server knows: it saw the question leave
+// and waits for the change that says how, or holds it still from the
+// last change it noted (a change the host made, not noted yet).
+func (h *hostedResumes) of(sess, id string) (res *session.Resumption, seen, pending bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	st := h.sessions[sess]
 	if st == nil {
-		return nil, false
+		return nil, false, false
 	}
 	if r, ok := st.kept[id]; ok {
-		return &r, true
+		return &r, true, false
 	}
-	return nil, st.seen[id]
+	return nil, st.seen[id], slices.Contains(st.pending, id) || slices.Contains(st.held, id)
 }

@@ -255,6 +255,100 @@ const (
 	MaxAttachmentFile = 64
 )
 
+// The bounds of a review, its findings and their marks (reviews.go;
+// docs/plans/review-repair.md, "Bounds"). The texts follow a review
+// task's (internal/crew's maxFindings, maxSummary, maxFindingText) and a
+// quote's (the F7 card's, numbers kept apart from internal/proto, which
+// Dispatch does not import).
+const (
+	// MaxReviews bounds a ticket's reviews, whatever their verdict.
+	MaxReviews = 500
+	// MaxReviewFindings bounds a review's findings.
+	MaxReviewFindings = 50
+	// MaxReviewSummary bounds a review's summary (Markdown), in
+	// characters.
+	MaxReviewSummary = 4000
+	// MaxFindingMessage bounds a finding's words (Markdown), in
+	// characters.
+	MaxFindingMessage = 1000
+	// MaxFindingResolution bounds the resolution a finding asks for
+	// (Markdown), in characters.
+	MaxFindingResolution = 1000
+	// MaxFindingPath bounds a finding's path, in bytes.
+	MaxFindingPath = 1024
+	// MaxAnchorLines bounds the lines a finding keeps as the person saw
+	// them.
+	MaxAnchorLines = 12
+	// MaxAnchorLine bounds one of those lines, in bytes.
+	MaxAnchorLine = 200
+	// MaxFindingLine is the highest line number a finding names; the
+	// lowest is 1.
+	MaxFindingLine = 10_000_000
+	// MaxMarks bounds a finding's marks.
+	MaxMarks = 50
+	// MaxMarkNote bounds a mark's note (Markdown), in characters.
+	MaxMarkNote = 1000
+	// MaxMarkLocated bounds what a mark keeps of where the finding's
+	// lines were on its candidate (located, the server's JSON), in bytes
+	// as stored.
+	MaxMarkLocated = 4 << 10
+	// MaxCheckExcerpt bounds a check finding's tail (the ledger's last
+	// bytes of the receipt's log) and its quote, in bytes each.
+	MaxCheckExcerpt = 2 << 10
+	// MaxCheckError bounds a check finding's words of its receipt's
+	// failure (the ledger's error), in bytes: the engine's own bound on
+	// them (session.MaxAttentionMessage).
+	MaxCheckError = 500
+	// MaxCheckArgv bounds the arguments a check finding's receipt keeps of
+	// its check's argv.
+	MaxCheckArgv = 32
+	// MaxCheckRef bounds a check finding's receipt (check_ref, JSON), in
+	// bytes as stored, so that a finding's create row with it stays under
+	// MaxChangeValue (reviews_test.go measures it). Its tail and its quote
+	// at their bounds and escaped worst (12 KiB each) and its failure's
+	// words (3 KiB) beside the rest are under it, but not the argv a check
+	// may have: 8 KiB of control characters is some 48 KiB as JSON. So the store cuts the argv kept
+	// to fit and marks it cut (fitCheckRef), the whole argv the ledger's.
+	MaxCheckRef = 32 << 10
+	// MaxReviewTries bounds the tries of a request's application: the
+	// first and four sent again.
+	MaxReviewTries = 5
+	// MaxReviewWhy bounds why a request's application was refused, in
+	// characters (a longer one is cut).
+	MaxReviewWhy = 2000
+	// MaxReviewDetail bounds a review as its detail read encodes it
+	// (Go's JSON, its escapes counted: a '<' is six bytes), its findings
+	// with it and no mark yet, measured at the submit; a review past it is
+	// refused bound. With a latest mark per finding beside it, the read
+	// stays under MaxReviewReply.
+	MaxReviewDetail = 512 << 10
+	// MaxReviewReply bounds a review's detail read (Review), whatever
+	// marks follow its submit.
+	MaxReviewReply = 1 << 20
+	// ReviewsPerPage is a page of a ticket's reviews (Reviews), newest
+	// first: twenty summaries at their bounds are under MaxReviewsReply.
+	ReviewsPerPage = 20
+	// MaxReviewsReply bounds a page of a ticket's reviews.
+	MaxReviewsReply = 1 << 20
+	// MarksPerPage is the most marks a page of a finding's marks holds
+	// (Marks), fewer when the next would pass MaxMarksReply.
+	MarksPerPage = 20
+	// MaxMarksReply bounds a page of a finding's marks as it encodes them;
+	// one mark at its bounds is far under it, so a page always holds one.
+	MaxMarksReply = 256 << 10
+	// FindingsPerPage is the most findings a page of a ticket's findings
+	// holds (Findings), fewer when the next would pass MaxFindingsReply.
+	FindingsPerPage = 100
+	// MaxFindingsReply bounds a page of a ticket's findings as the API
+	// encodes it: each finding as the store reads it and, beside it,
+	// FindingReplyReserve for what the API adds to it (where its lines are
+	// on the candidate asked, the repair attempts' claims).
+	MaxFindingsReply = 1 << 20
+	// FindingReplyReserve is the room a page of findings keeps beside each
+	// finding for what the API adds to it.
+	FindingReplyReserve = 48 << 10
+)
+
 // The bounds of the reads (query.go, and the composite reads of a
 // ticket and of the projects).
 const (
@@ -859,6 +953,15 @@ var fieldRules = map[string]textRule{
 	"launch.label":            {max: MaxLaunchLabel, chars: true, required: true, kind: kindName},
 	"launch.why":              {max: MaxLaunchWhy, chars: true, required: true, kind: kindMarkdown},
 	"launch.agent_version":    {max: MaxLaunchAgentVersion, kind: kindName},
+	"review.summary":          {max: MaxReviewSummary, chars: true, kind: kindMarkdown},
+	"review.why":              {max: MaxReviewWhy, chars: true, required: true, kind: kindMarkdown},
+	"finding.message":         {max: MaxFindingMessage, chars: true, kind: kindMarkdown},
+	"finding.resolution":      {max: MaxFindingResolution, chars: true, kind: kindMarkdown},
+	"finding.path":            {max: MaxFindingPath, required: true, kind: kindText},
+	"finding.line":            {max: MaxAnchorLine, kind: kindMarkdown},
+	"finding.quote":           {max: MaxCheckExcerpt, kind: kindMarkdown},
+	"mark.note":               {max: MaxMarkNote, chars: true, kind: kindMarkdown},
+	"mark.located":            {max: MaxMarkLocated, kind: kindJSON},
 	"op.by":                   {max: MaxByName, chars: true, kind: kindName},
 	"op.actor":                {max: MaxActor, required: true, kind: kindName},
 }
