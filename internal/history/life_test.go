@@ -951,6 +951,36 @@ func TestACancelledCheckChangesNothing(t *testing.T) {
 	})
 }
 
+// A Check that finds the index sound repairs what an earlier Check found
+// and could not clear: the damage it noted no longer holds, so Close marks
+// the index closed and its next owner owes it no Check.
+func TestASoundCheckClearsAnEarlierCheckDamage(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	ix := openIndex(t, dir, Options{})
+	put(t, ix, "session:s1", chat("session:s1#e1", "s1", "alpha", t0))
+	busy := errors.New("the test's busy disk")
+	ix.checkSays = func(string, error) (string, error) {
+		return "*** in database main ***\nPage 2: the test's damage", nil
+	}
+	ix.beforeClear = func() error { return busy }
+	if _, err := ix.Check(ctx); !errors.Is(err, busy) {
+		t.Fatalf("a Check whose clear fails: %v", err)
+	}
+	ix.checkSays, ix.beforeClear = nil, nil
+	if got, err := ix.Check(ctx); err != nil || got != CheckSound {
+		t.Fatalf("the next Check: %q %v", got, err)
+	}
+	if err := ix.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ix = openIndex(t, dir, Options{})
+	if owed, err := ix.Unchecked(ctx); err != nil || owed {
+		t.Fatalf("an index a Check found sound, then closed, owes a check: %v %v", owed, err)
+	}
+	wantKeys(t, ix, "alpha", "session:s1#e1")
+}
+
 // Clear is a write and takes its turn as one: a Clear made while a
 // Replace is held before its commit waits for it and then empties the
 // index, and a Replace made while a Clear is held waits for it and then

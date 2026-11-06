@@ -318,6 +318,18 @@ add its rule here.
   carriage returns taken out (`printed` and `printedUntil` in
   `internal/api`, `lines` in `ext/local`), and keep exact bytes for tests
   of the bytes themselves.
+- A port picked is not a port held, and a number free for one protocol
+  is not free for the other. The Pebble tier's fake DNS took a UDP port
+  from the kernel and asked for the same number over TCP, which a TCP
+  socket already held: a connection an earlier test left in TIME_WAIT, a
+  client's outbound port. Linux refuses a listener there, SO_REUSEADDR or
+  not (0.8 % of picks on a busy machine, 4 % with a thousand loopback
+  clients; "bind: address already in use", #281). Bind what you need and
+  hand over the bound socket; where two binds must share a number, bind
+  both before using either and pick again when the second is refused
+  (`dnsPair` in `internal/certs`); where a program takes only an address,
+  hold the port until it starts and start again on a loss
+  (`pebblePorts`).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

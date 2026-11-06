@@ -72,7 +72,10 @@
 //     it, never between. TestOverlappingClearsOweNoCheck.
 //   - Check and Check: one at a time; a second waits for the first,
 //     bounded by its context (then its error), and then reads the file
-//     itself. TestChecksTakeTurns, TestCloseWaitsForACheck.
+//     itself; one that finds the index sound ends what an earlier one
+//     found damaged and could not clear, so Close marks it closed again.
+//     TestChecksTakeTurns, TestCloseWaitsForACheck,
+//     TestASoundCheckClearsAnEarlierCheckDamage.
 //   - Check and a write or a read: its quick_check is a read and its clear
 //     a write, as above (TestCloseWaitsForACheck). When the clear meets
 //     damage too, Check moves the file aside holding the index whole: it
@@ -522,6 +525,11 @@ func (ix *Index) Check(ctx context.Context) (string, error) {
 	}
 	if err == nil && check == "ok" {
 		_, err = ix.db.ExecContext(ctx, "UPDATE schema_version SET unchecked = 0")
+		if err == nil {
+			// The damage an earlier Check found and could not clear no
+			// longer holds: Close marks the index closed again.
+			ix.setDamage(false)
+		}
 		ix.leave()
 		if err != nil {
 			return "", ctxOr(ctx, err)
