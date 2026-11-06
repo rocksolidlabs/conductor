@@ -352,10 +352,32 @@ type task struct {
 	// continues when it failed at a check: its first attempt is handed the
 	// receipt, read from the rows (failedcheck.go).
 	priorFailed *priorFailed
+	// priorLast is, in a continuation, the last counted attempt of the runs
+	// it continues as the continuation read it (its run, number, state,
+	// stage, start, result commit and submitted result): the task's
+	// standing failed candidate until it makes an attempt of its own
+	// (standingFailed).
+	priorLast *ledger.AttemptRow
 	// holds are the decisions that hold the task (decisions.go): pump
 	// dispatches no attempt of a held task, whatever its needs. A hold is
 	// a fact beside the state, which it leaves as it is.
 	holds []*decision
+}
+
+// standingFailed is failed t's standing failed candidate, as its attempt's
+// row: the last attempt a withdrawal has not taken back (lastKept), else,
+// in a continuation whose task has made no attempt of its own yet, the
+// last attempt of the runs it continues (priorLast). ok is false when
+// there is none: every attempt withdrawn, or no attempt made. The caller
+// holds e.mu.
+func (r *run) standingFailed(t *task) (ledger.AttemptRow, bool) {
+	if last := t.lastKept(); last != nil {
+		return r.attemptRow(last), true
+	}
+	if len(t.attempts) == 0 && t.priorLast != nil && t.kept(t.priorLast.N) {
+		return *t.priorLast, true
+	}
+	return ledger.AttemptRow{}, false
 }
 
 // lastKept is t's last attempt when a withdrawal has not taken it back,
@@ -1312,6 +1334,10 @@ func refusedBeforeChecks(stage string) bool {
 // holds e.mu, and has committed the state the dispatch rests on; the
 // dispatches run on goroutines of their own.
 func (e *Engine) pump(r *run) {
+	if r.managed {
+		// A Check again's verification, whatever the pause.
+		e.startRechecks(r)
+	}
 	if !r.managed || r.stopping || r.paused || r.prereq != prereqPassed || r.ctx.Err() != nil {
 		// Nothing is dispatched until the prerequisites passed, whatever
 		// pumps the run meanwhile (steps.go).
