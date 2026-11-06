@@ -531,3 +531,96 @@ test("an action under way on one item shows nothing on the next one opened: neit
   await page.locator(`[data-inbox-row="${a.ref}"]`).click()
   await expect(itemA.locator('[data-inbox-refusal]')).toContainText('moved on')
 })
+
+/** A question that takes a line, on a session of its own: the session, the question's id and its item's ref. */
+async function lineQuestion(name: string, message: string) {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name })
+  sessions.push(s.id)
+  const q = (await api.ok<{ attention: { id: string } }>('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message })).attention.id
+  return { s, q, ref: `question:${s.id}/${q}` }
+}
+
+test("the list read again faster than the open item is read: each read that answers is drawn, one at a time, and another item's read waits on none", async ({ browser }) => {
+  const a = await lineQuestion('decide storm a', 'Which name for the storm?')
+  const page = await (await context(browser, false)).newPage()
+  // Every read of A's item is held at the network until the test lets it go (a seam), so the list is read again while one is out.
+  const held: Array<{ release: () => Promise<void> }> = []
+  await page.route(
+    (url) => url.pathname === '/api/inbox/item' && url.searchParams.get('ref') === a.ref,
+    (route) => void held.push({ release: () => route.continue() }),
+  )
+  budget(2)
+  await page.goto(`/decisions?item=${encodeURIComponent(a.ref)}`)
+  await expect.poll(() => held.length, { timeout: STEP_MS, message: "A's first read is out" }).toBe(1)
+  const itemA = page.locator(`[data-inbox-item="${a.ref}"]`)
+
+  const others: Array<{ ref: string }> = []
+  for (let i = 0; i < 3; i++) {
+    // Another question comes: the list is read again and draws its row (the page's watcher on the list has run by then).
+    budget(3)
+    const o = await lineQuestion(`decide storm ${i}`, `Which name for ${i}?`)
+    others.push(o)
+    await expect(page.locator(`[data-inbox-row="${o.ref}"]`)).toBeVisible()
+    // One read of A out at a time, however often the list changed; the one out, let go, is drawn.
+    await expect.poll(() => held.length, { timeout: STEP_MS, message: "A's next read is out" }).toBe(1)
+    await held.shift()!.release()
+    await expect(itemA).toBeVisible()
+  }
+
+  // Another item picked while A's queued read is held: its own read starts at once and is drawn, waiting on none of A's.
+  budget(2)
+  await expect.poll(() => held.length, { timeout: STEP_MS, message: "A's queued read is out" }).toBe(1)
+  await page.locator(`[data-inbox-row="${others[0]!.ref}"]`).click()
+  await expect(page.locator(`[data-inbox-item="${others[0]!.ref}"]`)).toBeVisible()
+  await expect(itemA).toHaveCount(0)
+  for (const h of held.splice(0)) await h.release()
+})
+
+test('a comment written while another is out keeps its draft, cannot be sent until the first is back, and then goes', async ({ browser }) => {
+  const q = await lineQuestion('decide comment', 'Which name for the comment?')
+  const TICKET = 'DEC-77'
+  const page = await (await context(browser, false)).newPage()
+  // The item read with a ticket in its evidence (a seam: as a question of a run launched from a ticket reads), so it can be
+  // commented on; the first comment's request is held at the network until the test lets it go, the later ones answered at once.
+  await page.route(
+    (url) => url.pathname === '/api/inbox/item' && url.searchParams.get('ref') === q.ref,
+    async (route) => {
+      const res = await route.fetch()
+      const body = (await res.json()) as { item: { evidence?: Array<{ ref: string; label: string }> } }
+      body.item.evidence = [...(body.item.evidence ?? []), { ref: `ticket:${TICKET}`, label: TICKET }]
+      await route.fulfill({ response: res, json: body })
+    },
+  )
+  const posted: string[] = []
+  const held: { release?: () => Promise<void> } = {}
+  await page.route(`**/api/dispatch/tickets/${TICKET}/comments`, async (route) => {
+    const sent = route.request().postDataJSON() as { opId: string; body: string }
+    posted.push(sent.body)
+    const reply = () => route.fulfill({ status: 200, json: { receipt: { opId: sent.opId, intent: 'ticket.comment', status: 'done' } } })
+    if (posted.length === 1) held.release = reply
+    else await reply()
+  })
+  budget(4)
+  await page.goto(`/decisions?item=${encodeURIComponent(q.ref)}`)
+  const item = page.locator(`[data-inbox-item="${q.ref}"]`)
+  await item.locator('[data-inbox-comment-open]').click()
+  await item.locator('[data-inbox-comment-input]').fill('the first')
+  await item.locator('[data-inbox-comment-send]').click()
+  await expect.poll(() => !!held.release, { timeout: STEP_MS, message: 'the first comment is out' }).toBe(true)
+  await expect(item.locator('[data-inbox-comment]')).toHaveCount(0)
+
+  // The second, written while the first is out: its Send waits, and its draft stays.
+  budget(4)
+  await item.locator('[data-inbox-comment-open]').click()
+  const input = item.locator('[data-inbox-comment-input]')
+  await input.fill('the second')
+  await expect(item.locator('[data-inbox-comment-send]')).toBeDisabled()
+  await expect(input).toHaveValue('the second')
+  // The first back: the second goes, once, with its own words.
+  await held.release!()
+  await expect(item.locator('[data-inbox-comment-send]')).toBeEnabled()
+  await expect(input).toHaveValue('the second')
+  await item.locator('[data-inbox-comment-send]').click()
+  await expect(item.locator('[data-inbox-comment]')).toHaveCount(0)
+  await expect.poll(() => posted, { timeout: STEP_MS }).toEqual(['the first', 'the second'])
+})
