@@ -34,7 +34,13 @@ type Failure struct {
 
 // ClassifyFailure classes the receipt r of attempt a, given same, other
 // receipts of the same task's check on the same commit (the run's and its
-// continuations', Ledger.ChecksOn). It is the plan's table, read in its
+// continuations', Ledger.ChecksOn). A class is decided from the receipt's
+// own row and its own attempt (the same run, task and number: another
+// attempt's row says nothing of it, and is not read); the one other
+// receipt it reads is flaky's, matched by everything that names the check.
+// A fact another run of the same step could satisfy as well (an attempt's
+// words, which name a phase and an id, not a k) decides nothing unless the
+// receipt's own row agrees with it. It is the plan's table, read in its
 // order, the first row that takes the receipt deciding:
 //
 //   - cancelled, from the attempt's state whatever the receipt says: the
@@ -44,14 +50,19 @@ type Failure struct {
 //     interrupted, which the recovery makes of the first two) and its
 //     attempt was interrupted (the server ended under it); the ledger
 //     refused it, its running row (the engine ended its process: the
-//     receipt finished with the ledger's words) or its outcome (the
-//     attempt failed at it with the ledger's words, whatever the row was
-//     left as); it is a step of a manifest phase that makes the tree
-//     (setup, service, ready), not a check or a verify step, finished with
-//     the engine's words of its failure (a step that passed and a service
-//     the engine stopped have none); it never ran (exit -1 with an error:
-//     the runner or the Runtime could not start it); or it exited 0 and
-//     its checkout could not be compared after it;
+//     receipt finished with the ledger's words) or the outcome of a check
+//     or a verify step (the receipt's own row has none, and its attempt
+//     failed at its phase and id with the ledger's words for an outcome:
+//     a refused start leaves no row, and a row the next commit wrote
+//     holds its own outcome and is classed by it; a setup, service or
+//     ready step's refusal is told by its own words alone, since its
+//     attempt's words do not say a start from an outcome and the step
+//     runs once in each tree); it is a step of a manifest phase that
+//     makes the tree (setup, service, ready), not a check or a verify
+//     step, finished with the engine's words of its failure (a step that
+//     passed and a service the engine stopped have none); it never ran
+//     (exit -1 with an error: the runner or the Runtime could not start
+//     it); or it exited 0 and its checkout could not be compared after it;
 //   - flaky: it failed (a fact of the code row below) and another of same,
 //     of the same argv (and, for a verify step, the same manifest),
 //     passed;
@@ -75,6 +86,11 @@ type Failure struct {
 // interrupted, one fact here), and its exit, signal, timeout, stability,
 // phase, error, log mark and tail, which nothing rewrites.
 func ClassifyFailure(a ledger.AttemptRow, r ledger.CheckRow, same []ledger.CheckRow) Failure {
+	// a is r's attempt, or nothing of it is read: another attempt's
+	// state, stage and error are its own receipts' facts.
+	if r.State != "" && (a.RunID != r.RunID || a.TaskID != r.TaskID || a.N != r.N) {
+		a = ledger.AttemptRow{}
+	}
 	// cancelled
 	switch {
 	case a.State == ledger.AttemptStopped:
@@ -87,9 +103,13 @@ func ClassifyFailure(a ledger.AttemptRow, r ledger.CheckRow, same []ledger.Check
 	held := r.State != ""
 	finished := r.State == ledger.CheckFinished
 	stage := r.Phase + " " + r.ID
-	// refused: the attempt failed at the receipt with the ledger's words,
-	// its outcome refused (runCheck).
-	refused := held && a.Stage == stage && strings.HasPrefix(a.Error, unrecordedWords)
+	// refused: the ledger refused this receipt's outcome (runCheck). Its
+	// attempt's words name only the phase and the id; the receipt's own
+	// row, without an outcome, says it is the run of the step they mean:
+	// every earlier run of it in the attempt has its outcome, or the
+	// attempt would have ended there.
+	compared := r.Phase == ledger.PhaseCheck || r.Phase == ledger.PhaseVerify
+	refused := held && !finished && compared && a.Stage == stage && strings.HasPrefix(a.Error, unrecordedOutcome(r.Phase, r.ID)+": ")
 	makesTree := r.Phase == ledger.PhaseSetup || r.Phase == ledger.PhaseService || r.Phase == ledger.PhaseReady
 	// infrastructure
 	switch {
@@ -110,7 +130,6 @@ func ClassifyFailure(a ledger.AttemptRow, r ledger.CheckRow, same []ledger.Check
 	// A step that makes the tree has its failure in its words, taken
 	// above; its checkout is compared only for a checkout's setup, which
 	// says so in them too, so its stable mark is no fact of its own.
-	compared := r.Phase == ledger.PhaseCheck || r.Phase == ledger.PhaseVerify
 	failing := finished && !makesTree && (r.Exit != 0 || r.Signal != "" || r.TimedOut || (compared && !r.Stable))
 	// flaky
 	for _, o := range same {

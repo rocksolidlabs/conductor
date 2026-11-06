@@ -36,6 +36,17 @@ const (
 	uncomparedWords = "left a checkout that could not be compared"
 )
 
+// unrecordedOutcome is the words an attempt fails with, before the
+// ledger's own, when the ledger refused the outcome of its check (phase
+// check) or of its verify step id: words no refused start or running row
+// has, so ClassifyFailure tells a refused outcome from them.
+func unrecordedOutcome(phase, id string) string {
+	if phase == ledger.PhaseVerify {
+		return unrecordedWords + "outcome of the step " + id
+	}
+	return unrecordedWords + "check's outcome"
+}
+
 // checkSlots is the bound on checks running at once across the server's
 // managed runs: one, until SetCheckConcurrency says otherwise.
 func (e *Engine) checkSlots() chan struct{} {
@@ -365,9 +376,8 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
 		return out
 	}, undo); err != nil {
-		what := unrecordedWords + "check's outcome"
+		what := unrecordedOutcome(phase, ch.ID)
 		if step {
-			what = unrecordedWords + "outcome of the step " + ch.ID
 			if words != "" {
 				// Its row and event kept for the next commit (no undo),
 				// which writes them before the attempt's failure: the

@@ -593,10 +593,17 @@ answers `{class, words}`, worked out from what the ledger keeps:
 | Class | When |
 |---|---|
 | `cancelled` | read first, from the attempt's state, whatever the receipt says: the attempt `stopped` (the run's stop, the engine's `AttemptStopped`), `cancelled` (a cancel), or cancelled at stage `withdrawn` (a withdrawal); so a check a stop interrupted (`interrupted`, `killed` false) is a cancellation |
-| `infrastructure` | the receipt has no outcome (`started` or `running`, which the recovery makes `interrupted`, or `interrupted`, one fact) while its attempt was `interrupted` (the server ended under it, the state the recovery writes); it was refused by the ledger (its running row, so the engine ended its process and finished the receipt with the ledger's words; or its outcome, so the attempt failed at it with the ledger's words, whatever the row was left as); it is a step of a manifest phase that makes the tree (`setup`, `service`, `ready`), not a check or a verify step, finished with the engine's words of its failure (`error`: a step that passed and a service the engine stopped have none, and are not taken here); it never ran (exit -1 with an `error`: the runner or the Runtime could not start it); or it exited 0 and its checkout could not be compared after it (the server's comparison failed, not the command) |
+| `infrastructure` | the receipt has no outcome (`started` or `running`, which the recovery makes `interrupted`, or `interrupted`, one fact) while its attempt was `interrupted` (the server ended under it, the state the recovery writes); it was refused by the ledger (its running row, so the engine ended its process and finished the receipt with the ledger's words; or the outcome of a check or a verify step: this receipt's own row has none, and its attempt failed at its phase and id with the ledger's words for an outcome; a refused start leaves no row, a row the next commit wrote holds its own outcome and is classed by it, and a `setup`, `service` or `ready` step's refusal is taken only from its own words, since its attempt's words do not tell a start from an outcome and the step runs once in each tree); it is a step of a manifest phase that makes the tree (`setup`, `service`, `ready`), not a check or a verify step, finished with the engine's words of its failure (`error`: a step that passed and a service the engine stopped have none, and are not taken here); it never ran (exit -1 with an `error`: the runner or the Runtime could not start it); or it exited 0 and its checkout could not be compared after it (the server's comparison failed, not the command) |
 | `flaky` | it holds a failing fact (as in `code`) and another receipt of the same check on the same `subject` passed (in `same`: the run's and its continuations' rows of that commit, the same task, phase and id, and the same `argv`, and for a verify step the same manifest identity, so another task's check of the same id, or a check whose command changed, never makes it flaky) |
 | `unavailable` | the receipt's row is not in the ledger, or its log was dropped (`log_dropped`) and its tail is empty, or it holds no failing fact (it has no outcome, or did not exit non-zero or by a signal, did not time out, and, a check or a verify step, left the checkout stable, and no other row of the table takes it): the words say the receipt holds nothing that says why the check failed |
 | `code` | it exited non-zero or by a signal, or left the checkout changed (`stable` false, for a check or a verify step, whose checkout the server compares), or timed out (the words say "timed out after 600 s: a hang in the code, or a machine too slow", the check's own timeout as the receipt's words give it, never the receipt's span, which counts its wait for the server's check slot); `killed` (`internal/proc`: a leftover process held the output and went with the group) is said in the words and decides no class |
+
+A class is decided from this receipt's own row and its own attempt (the
+same run, task and number; another attempt's row is not read), and the one
+other receipt the table reads is `flaky`'s, matched by everything that names
+the check. A fact another run of the same step could satisfy as well (an
+attempt's words, which name a phase and an id, not a `k`) decides nothing
+unless this receipt's own row agrees with it.
 
 Every fact the table reads is one the ledger keeps for the receipt and
 the recovery (`Ledger.Recover`, at a server's start) leaves as it was, so
@@ -1137,6 +1144,10 @@ exited non-zero: `code`; two tasks sharing a
 check id and a subject with different commands are never flaky for each
 other; a check whose `argv` changed neither; a setup step, a service
 and a ready probe that passed, before a check that failed: `unavailable`;
+a setup step that passed in the worktree, its run in the checkout refused
+at its start or its outcome: `unavailable`; a verify step whose refused
+outcome the next commit wrote: classed by its own row; a receipt with
+another attempt's row: classed without it;
 every case classed again after its rows are put in a ledger, closed,
 opened and recovered (`Ledger.Recover`): the same class and words),
 `TestChecksOnReadsTheChainsRows` (ledger: by task, phase, id and

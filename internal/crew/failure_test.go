@@ -230,7 +230,7 @@ func TestClassifyFailure(t *testing.T) {
 			e, ld := sqlEngineIn(t, ldir)
 			gate := filepath.Join(t.TempDir(), "gate")
 			t.Cleanup(func() { open(t, gate) })
-			run, _ := firstResult(t, e, buildWith(dir, shStep("e2e", gated(gate))))
+			run, _ := firstResult(t, e, buildWith(dir, shStep("vet", "true"), shStep("e2e", gated(gate))))
 			waitFake(t, "the check running in the ledger", func() bool {
 				return sqlCheck(t, ld, run.ID, "build", 1, "e2e", 1).State == ledger.CheckRunning
 			})
@@ -253,7 +253,16 @@ func TestClassifyFailure(t *testing.T) {
 			if r.State != ledger.CheckInterrupted {
 				t.Fatalf("the check after the recovery: %+v", r)
 			}
-			return []classCase{{a: a, r: r, class: FailureInfrastructure, words: "the server ended"}}
+			// vet finished before the server ended: its own row holds its
+			// outcome, which the attempt's interruption does not change.
+			vet := sqlCheck(t, again, run.ID, "build", 1, "vet", 1)
+			if vet.State != ledger.CheckFinished || vet.Exit != 0 {
+				t.Fatalf("the check that passed before the server ended: %+v", vet)
+			}
+			return []classCase{
+				{a: a, r: r, class: FailureInfrastructure, words: "the server ended"},
+				{a: a, r: vet, class: FailureUnavailable, words: "holds nothing that says why"},
+			}
 		}},
 		{"infrastructure: the ledger refused the running row and the engine ended the check", func(t *testing.T) []classCase {
 			dir := newRepo(t)
@@ -285,19 +294,30 @@ func TestClassifyFailure(t *testing.T) {
 			}
 			return []classCase{{a: a, r: r, class: FailureInfrastructure, words: "the ledger never recorded its outcome: the ledger could not record the check's outcome"}}
 		}},
-		{"infrastructure: the ledger refused a verify step's outcome", func(t *testing.T) []classCase {
-			dir := newRepo(t)
-			e, _, l := managedEngine(t)
-			l.mu.Lock()
-			l.failOn, l.failOnce = "step.finished[phase=verify]", true
-			l.mu.Unlock()
-			run, _ := firstResult(t, e, repoManifestCrew(dir, Manifest{Verify: []Check{shStep("e2e", "true")}}, work("build", "lead")))
-			a, r := endedAs(t, l, run.ID, ledger.AttemptFailed, "e2e", 1)
-			stopRun(t, e, run.ID)
-			if r.State != ledger.CheckFinished || r.Exit != 0 || !r.Stable {
-				t.Fatalf("the step whose outcome was refused: %+v", r)
+		{"a verify step whose outcome the ledger refused, its row written by the next commit: classed by its own row", func(t *testing.T) []classCase {
+			// The attempt failed at the step with the ledger's words, but
+			// the receipt holds its outcome: the words name no receipt of
+			// their own, so the row says the class, never them.
+			var out []classCase
+			for _, c := range []struct {
+				cmd          string
+				exit         int
+				class, words string
+			}{{"true", 0, FailureUnavailable, "holds nothing that says why"}, {"exit 1", 1, FailureCode, "exited 1"}} {
+				dir := newRepo(t)
+				e, _, l := managedEngine(t)
+				l.mu.Lock()
+				l.failOn, l.failOnce = "step.finished[phase=verify]", true
+				l.mu.Unlock()
+				run, _ := firstResult(t, e, repoManifestCrew(dir, Manifest{Verify: []Check{shStep("e2e", c.cmd)}}, work("build", "lead")))
+				a, r := endedAs(t, l, run.ID, ledger.AttemptFailed, "e2e", 1)
+				stopRun(t, e, run.ID)
+				if a.Stage != "verify e2e" || !strings.HasPrefix(a.Error, "the ledger could not record the outcome of the step e2e: ") || r.State != ledger.CheckFinished || r.Exit != c.exit {
+					t.Fatalf("the step whose outcome was refused (%s): attempt %+v, receipt %+v", c.cmd, a, r)
+				}
+				out = append(out, classCase{a: a, r: r, class: c.class, words: c.words})
 			}
-			return []classCase{{a: a, r: r, class: FailureInfrastructure, words: "the ledger never recorded its outcome: the ledger could not record the outcome of the step e2e"}}
+			return out
 		}},
 		{"infrastructure: it exited 0 and its checkout could not be compared", func(t *testing.T) []classCase {
 			dir := newRepo(t)
@@ -399,6 +419,64 @@ func TestClassifyFailure(t *testing.T) {
 			}
 			_, test := endedAs(t, l, run.ID, ledger.AttemptFailed, "test", 1)
 			return append(out, classCase{a: a, r: test, class: FailureCode, words: "exited 1"})
+		}},
+		{"unavailable: a setup step that passed in the worktree, its run in the checkout refused by the ledger at its start or its outcome", func(t *testing.T) []classCase {
+			// The attempt fails at "setup deps" with the ledger's words,
+			// which name the phase and the id, not the run: the worktree's
+			// receipt (k1) passed, and the checkout's (k2), refused at
+			// its outcome, holds the outcome the next commit wrote.
+			var out []classCase
+			for _, refuse := range []string{"step.started[tree=checkout]", "step.finished[tree=checkout]"} {
+				dir := newRepo(t)
+				e, _, l := managedEngine(t)
+				l.mu.Lock()
+				l.failOn, l.failOnce = refuse, true
+				l.mu.Unlock()
+				run, _ := firstResult(t, e, repoManifestCrew(dir, Manifest{Setup: []Check{shStep("deps", "true")}}, buildWith(dir, shStep("ok", "true")).Tasks...))
+				a := l.attemptWhen(t, run.ID, "build", 1, failedRow)
+				stopRun(t, e, run.ID)
+				if a.Stage != "setup deps" || !strings.HasPrefix(a.Error, "the ledger could not record the step deps: ") {
+					t.Fatalf("build's attempt 1, %s refused: %+v", refuse, a)
+				}
+				rows := l.stepRows(run.ID, "build", 1)
+				worktree, ok := rowOf(rows, "deps", 1)
+				if !ok || worktree.State != ledger.CheckFinished || worktree.Exit != 0 || worktree.Error != "" {
+					t.Fatalf("the worktree's setup step, %s refused: %s", refuse, rowWords(rows))
+				}
+				out = append(out, classCase{a: a, r: worktree, class: FailureUnavailable, words: "holds nothing that says why"})
+				checkout, ok := rowOf(rows, "deps", 2)
+				if refuse == "step.started[tree=checkout]" {
+					if ok {
+						t.Fatalf("the checkout's setup step refused at its start has a row: %+v", checkout)
+					}
+					continue
+				}
+				if !ok || checkout.State != ledger.CheckFinished || checkout.Exit != 0 || checkout.Error != "" {
+					t.Fatalf("the checkout's setup step refused at its outcome: %s", rowWords(rows))
+				}
+				out = append(out, classCase{a: a, r: checkout, class: FailureUnavailable, words: "holds nothing that says why"})
+			}
+			return out
+		}},
+		{"a receipt is classed with its own attempt, never another's", func(t *testing.T) []classCase {
+			// docs' attempt stopped under its check says nothing of
+			// build's receipt, which exited 1 in an attempt of its own.
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			gate := filepath.Join(t.TempDir(), "gate")
+			t.Cleanup(func() { open(t, gate) })
+			build := work("build", "lead")
+			build.Checks = []Check{shStep("test", "exit 1")}
+			docs := work("docs", "writer")
+			docs.Checks = []Check{shStep("e2e", gated(gate))}
+			run := launchManaged(t, e, repoCrew(dir, build, docs))
+			commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "b\n", "built")
+			_, test := endedAs(t, l, run.ID, ledger.AttemptFailed, "test", 1)
+			commitResult(t, e, waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning), "docs.txt", "d\n", "docs")
+			l.rowWhen(t, run.ID, "docs", 1, "e2e", 1, func(c ledger.CheckRow) bool { return c.State == ledger.CheckRunning })
+			stopRun(t, e, run.ID)
+			stopped := l.attemptWhen(t, run.ID, "docs", 1, func(r ledger.AttemptRow) bool { return r.State == ledger.AttemptStopped })
+			return []classCase{{a: stopped, r: test, class: FailureCode, words: "exited 1"}}
 		}},
 
 		// flaky: another receipt of the same check on the same commit passed.
