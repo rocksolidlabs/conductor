@@ -3868,17 +3868,17 @@ approver.
 
 | Route | Who | Body → reply |
 |---|---|---|
-| `POST /api/sessions/{id}/decisions` | the attempt's own token | `{requestId, type, question, context?, options?, recommendation?, uncertainty?, authorizes?, evidence?, expertise?, subject?, supersedes?}` (at most 24 KiB) → `201 {decision}` at once, `200` the same for a repeat of its `requestId`; `409 decision_conflict`, `not_running`, `artifact_uncommitted`; `429 decision_limit`; `400 invalid` (a field out of its bounds, an evidence ref not in Brakeman's ref syntax or naming nothing) |
+| `POST /api/sessions/{id}/decisions` | the attempt's own token | `{requestId, type, question, context?, options?, recommendation?, uncertainty?, authorizes?, evidence?, expertise?, subject?, supersedes?}` (at most 24 KiB) → `201 {decision}` at once, `200` the same for a repeat of its `requestId` (answered first, its evidence not resolved again); `409 decision_conflict`, `not_running`, `artifact_uncommitted`; `429 decision_limit`; `400 invalid` (a field out of its bounds, an evidence ref not in Brakeman's ref syntax or naming nothing; evidence refs are resolved under the asker's own grant, and a ref outside it is refused as an unknown ref) |
 | `GET /api/sessions/{id}/decisions` | the attempt's own token | `?after=dr-N&limit=` (1 to 100, 100 when absent) → `{decisions, next?}`: its task's decisions in the run that holds them, newest first, each a summary `{id, requestId?, type, origin, task?, gate?, state, rev, question, answer?, why?, supersededBy?, createdAt, answeredAt?, closedAt?, cut?}`, the question, the answer and `why` each cut at a character's end to 1 KiB as encoded (`cut: true` when one was); a summary at most 4 KiB, a page at most 400 KiB; `next` the last id when more follow |
 | `GET /api/sessions/{id}/decisions/{did}` | the attempt's own token | `{decision}`: one of its task's whole; `404 not_found` for another's |
 | `POST /api/sessions/{id}/decisions/{did}/withdraw` | the attempt's own token | `{}` → `{decision}`, cancelled; `409 decision_closed` |
-| `GET /api/decisions` | admin | `?state=&run=&ticket=KEY&after=dr-N&limit=` (1 to 100) → `{decisions, next?}`, newest first, each the record without its `history` |
+| `GET /api/decisions` | admin | `?state=&run=&ticket=KEY&after=dr-N&limit=` (1 to 100) → `{decisions, next?}`, newest first, each the record without its `history` and its `responses` (its `answer` stays; `GET /api/decisions/{did}` reads one whole), at most 48 KiB, so a page is at most 4,801 KiB |
 | `GET /api/decisions/{did}` | admin | `{decision, refs}`: the record whole and its evidence refs' resolutions, at most 1 MiB |
 | `POST /api/decisions/{did}/respond` | admin | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 8 KiB) → `201 {receipt, decision}`, `200` for a repeat; `409 decision_answered` (naming who answered and when), `decision_closed`, `stale_decision` (what changed since the rev read), `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved` (ask once more) |
-| `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`, `200` for a repeat; `409 op_conflict`, `stale_decision` |
+| `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`, `200` for a repeat; `409 op_conflict`, `stale_decision` (the operation's `expectedRev`, here and below, is judged in the transaction that applies it, after the look for a repeat of its id) |
 | `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (at most 8 KiB) → `{receipt, decision}`; `409 op_conflict`, `stale_decision`, `no_recipient` (a `more_info` without a live asking attempt); `429 decision_limit` |
 | `POST /api/decisions/{did}/route` | admin | `{opId, to: {kind: "operator"}, note?, expectedRev}` → `{receipt, decision}`; `409 op_conflict`, `stale_decision`; `429 decision_limit` |
-| `GET /api/dispatch/tickets/{key}/decisions` | admin | `{decisions}`: the decisions of the ticket's runs, newest first, at most 100, each without its `history` |
+| `GET /api/dispatch/tickets/{key}/decisions` | admin | `{decisions}`: the decisions of the ticket's runs, newest first, at most 100, each as `GET /api/decisions` gives it (at most 4,801 KiB) |
 
 The record (`decision`): `{id, run (the run that holds it now), openedIn,
 origin (agent or plan), type (clarification, approval or assignment),
@@ -3904,9 +3904,22 @@ operation's receipt is `{decision, op, seq, at, rev, words, repeat?}`.
 when the request was made (the ref's record then): `{ref, seen, now,
 change?}`, `seen` the baseline's `{state, rev?, sha256?}`, `now` the
 record as it is (`{url, state, rev?, sha256?, at}`), and `change`
-`changed` (its state, revision or digest differ), `deleted` (gone since)
-or `unread` (its store could not be read when the question was asked),
-absent when nothing changed. A resolution is at most 2 KiB.
+`changed` (its state, revision or digest differ; a `run:` ref's state
+alone, as a run's revision moves with every transition of it, the
+decision's own opening among them), `deleted` (gone since) or `unread`
+(its store could not be read when the question was asked), absent when
+nothing changed. A resolution is at most 4 KiB as encoded, its escapes
+counted: past it its `now.url` is left out.
+
+The run's and the task's reads (`GET /api/runs/{run}`, also for a run
+answered from its record, and `GET /api/runs/{run}/tasks/{task}`) carry,
+for the admin, `decisions`: the summaries (as the attempt's list gives
+them) of the decisions the run or the task holds, newest first, at most
+100, absent when there is none; `decisionsNext`, the last id, when more
+follow (`GET /api/decisions?run=&after=` reads on); and
+`decisionsUnread: true`, with no list, when the ledger could not be read
+(the server logs why). A Brakeman turn's shared read of them carries none
+of the three.
 
 An identity provider's principal's accepted response is applied only
 once the provider admits its token again after the response committed

@@ -198,7 +198,7 @@ func TestARefusedCancelIsCarried(t *testing.T) {
 			run := launchGated(t, e, dir, "api-sweep-000000f"+map[bool]string{false: "1", true: "2"}[release], repoCrew(dir, work("build", "lead"), work("deploy", "ops")), shipGate("deploy"))
 			g := gateOf(t, e, ld, run.ID)
 			rl.arm("decision.cancelled")
-			if _, err := e.CancelDecision(t.Context(), g.ID, "c1", release, "", "admin"); err == nil {
+			if _, err := e.CancelDecision(t.Context(), g.ID, "c1", 0, release, "", "admin"); err == nil {
 				t.Fatal("a cancel whose commit was refused answered")
 			}
 			rl.wasRefused(t)
@@ -226,7 +226,7 @@ func TestARefusedCancelIsCarried(t *testing.T) {
 					t.Fatalf("deploy in the ledger: %+v", row)
 				}
 			}
-			rc, err := e.CancelDecision(t.Context(), g.ID, "c1", release, "", "admin")
+			rc, err := e.CancelDecision(t.Context(), g.ID, "c1", 0, release, "", "admin")
 			if err != nil || !rc.Repeat {
 				t.Fatalf("the cancel sent again: %+v %v", rc, err)
 			}
@@ -258,7 +258,7 @@ func TestARefusedOperationIsPutBack(t *testing.T) {
 	}
 	for _, op := range []struct{ kind, event string }{{MoreInfoKind, "decision." + ledger.HistoryInfoRequested}, {CommentKind, "decision." + ledger.HistoryCommented}} {
 		rl.arm(op.event)
-		if _, err := e.CommentDecision(t.Context(), d.ID, "o-"+op.kind, op.kind, "For which table?", "admin"); err == nil {
+		if _, err := e.CommentDecision(t.Context(), d.ID, "o-"+op.kind, 0, op.kind, "For which table?", "admin"); err == nil {
 			t.Fatalf("a %s whose commit was refused answered", op.kind)
 		}
 		rl.wasRefused(t)
@@ -272,7 +272,7 @@ func TestARefusedOperationIsPutBack(t *testing.T) {
 	if paused(t, e, run.ID) {
 		t.Fatal("a change put back paused the run")
 	}
-	if _, err := e.CommentDecision(t.Context(), d.ID, "o-again", CommentKind, "Noted.", "admin"); err != nil {
+	if _, err := e.CommentDecision(t.Context(), d.ID, "o-again", 0, CommentKind, "Noted.", "admin"); err != nil {
 		t.Fatal(err)
 	}
 	rec := decisionWhen(t, ld, d.ID, "commented", hasKind(ledger.HistoryCommented))

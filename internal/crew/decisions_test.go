@@ -645,7 +645,7 @@ func TestALateMirrorNeverOutlivesItsAnswer(t *testing.T) {
 		b, l, _ := attemptOn(t, e, fl, run.ID, "build")
 		d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
 		<-at
-		if _, err := e.CancelDecision(t.Context(), d.ID, "c1", false, "not needed", "admin"); err != nil {
+		if _, err := e.CancelDecision(t.Context(), d.ID, "c1", 0, false, "not needed", "admin"); err != nil {
 			t.Fatal(err)
 		}
 		decisionWhen(t, ld, d.ID, "cancelled", inState(ledger.DecisionCancelled))

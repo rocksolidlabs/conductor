@@ -1281,4 +1281,28 @@ func TestDecisionRequestToolAnswersPending(t *testing.T) {
 			t.Fatalf("%s of a bad id: %v", name, err)
 		}
 	}
+	// A repeat answers the decision as it is now, in words for its state:
+	// only an open one is pending.
+	for _, c := range []struct {
+		decision string
+		want     []string
+		not      string
+	}{
+		{`{"id":"dr-7","state":"answered","answer":"Approve"}`, []string{"dr-7 is answered: Approve", "Go on with your task"}, "Pending"},
+		{`{"id":"dr-7","state":"applied","answer":"Approve"}`, []string{"dr-7 is applied: Approve", "Go on with your task"}, "Pending"},
+		{`{"id":"dr-7","state":"superseded","why":"dr-9 takes its place","supersededBy":"dr-9"}`, []string{"dr-7 is superseded by dr-9", "Wait for dr-9's answer"}, "Pending"},
+		{`{"id":"dr-7","state":"cancelled","why":"cancelled by the operator, not approved"}`, []string{"dr-7 is cancelled: cancelled by the operator", "will not be answered"}, "Pending"},
+	} {
+		rs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"decision":` + c.decision + `}`))
+		}))
+		env := map[string]string{"CONDUCTOR_SESSION_ID": "s1", "CONDUCTOR_NOTIFY_URL": rs.URL + "/api/sessions/s1/attention", "CONDUCTOR_NOTIFY_TOKEN": "tok", "CONDUCTOR_TASK": "build"}
+		rsv := &mcpServer{getenv: func(k string) string { return env[k] }}
+		text, err := rsv.call(t.Context(), "decision_request", json.RawMessage(`{"requestId":"q1","type":"approval","question":"Ship it?"}`))
+		rs.Close()
+		if err != nil || !hasAll(text, c.want...) || strings.Contains(text, c.not) {
+			t.Fatalf("the repeat of %s: %q %v", c.decision, text, err)
+		}
+	}
 }

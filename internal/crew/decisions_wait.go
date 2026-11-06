@@ -969,6 +969,12 @@ type operation struct {
 	kind     string // the history row's
 	opID, fp string
 	actor    string
+	// expectedRev is the rev the operator read: the operation is refused
+	// stale_decision in its transaction when the decision is at another
+	// (staleOp), after the look for a repeat of its id. 0 checks none:
+	// the routes always send one (internal/api, decisions.go), and only
+	// the engine's own tests send none.
+	expectedRev int
 	// held makes the change in the run the engine holds: what it changes
 	// in memory, its refusal, and the history row it writes. Nil for an
 	// operation refused when the run is not held (notHeld's words).
@@ -1016,6 +1022,12 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 		if rc, found, err := opOf(rec, op.actor, op.opID, op.fp); found {
 			return rc, err
 		}
+		if op.expectedRev < 0 {
+			return OpReceipt{}, refuse(CodeInvalid, "an operation names the rev it read, expectedRev")
+		}
+		if e.beforeOperate != nil {
+			e.beforeOperate(n)
+		}
 		e.mu.Lock()
 		r := e.runs[rec.CurrentRun]
 		held := r != nil && r.managed && r.created && r.ctx.Err() == nil && !r.stopping
@@ -1024,7 +1036,11 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			out     OpReceipt
 			refused error
 		)
-		write := func(ltx LedgerTx, dt opDetail) error {
+		// write is the operation's rows in its transaction; checkRev says
+		// it judges the rev read against the row's, the record's own,
+		// before it changes anything (a change the engine made first is
+		// judged by its own copy, in change).
+		write := func(ltx LedgerTx, dt opDetail, checkRev bool) error {
 			dtx, err := decisionsOf(ltx)
 			if err != nil {
 				return err
@@ -1035,6 +1051,11 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			}
 			if row.CurrentRun != rec.CurrentRun {
 				return errOpMoved
+			}
+			if checkRev {
+				if why := staleOp(id, op.expectedRev, row.Rev); why != nil {
+					return why
+				}
 			}
 			if op.rev {
 				row.Rev++
@@ -1078,6 +1099,13 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 					if d.a != nil {
 						wasEnded = d.a.turnEnded
 					}
+					// The rev read judged here, before the change: an
+					// answer committed since the look moved it (#637,
+					// review round 1).
+					if why := staleOp(id, op.expectedRev, d.rev); why != nil {
+						refused = why
+						return tx{}
+					}
 				}
 				dt, then, why := op.held(r, d, rec)
 				if why != nil {
@@ -1097,7 +1125,9 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 					}
 				}
 				after = then
-				return tx{more: func(ltx LedgerTx) error { return write(ltx, dt) }}
+				// A decision the engine holds no copy of is judged by its row.
+				checkRev := d == nil
+				return tx{more: func(ltx LedgerTx) error { return write(ltx, dt, checkRev) }}
 			}
 			if op.ahead {
 				err = e.transact(context.WithoutCancel(ctx), r, change, nil)
@@ -1110,6 +1140,11 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			}
 			if moved {
 				continue
+			}
+			var de *DecisionError
+			if !op.ahead && errors.As(err, &de) {
+				// Refused in its transaction (its row's rev), undone.
+				refused, err = de, nil
 			}
 			if err == nil && refused == nil && after != nil {
 				after()
@@ -1131,7 +1166,11 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 			if op.rev {
 				dt.Rev = rec.Rev + 1
 			}
-			_, err = e.ledger.Transition(ctx, rec.CurrentRun, func(ltx LedgerTx) error { return write(ltx, dt) })
+			_, err = e.ledger.Transition(ctx, rec.CurrentRun, func(ltx LedgerTx) error { return write(ltx, dt, true) })
+			var de *DecisionError
+			if errors.As(err, &de) {
+				refused, err = de, nil
+			}
 		}
 		var rep errOpRepeat
 		switch {
@@ -1159,6 +1198,19 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 		return out, nil
 	}
 	return OpReceipt{}, refuse(CodeDecisionMoved, "%s moved to another run while it was changed: send it again", id)
+}
+
+// staleOp refuses an operation sent at the rev read when the decision is
+// at the rev now: stale_decision when it moved past it, invalid for a rev
+// it never had; nil when they agree, or when no rev was sent (read 0).
+func staleOp(id string, read, now int) error {
+	switch {
+	case read == 0 || read == now:
+		return nil
+	case read > now:
+		return refuse(CodeInvalid, "%s is at rev %d: no rev %d has been read", id, now, read)
+	}
+	return refuse(CodeStaleDecision, "%s is at rev %d, not the rev %d read: read it again", id, now, read)
 }
 
 // settledN is the run's settled decision n, nil for none. The caller holds
@@ -1193,14 +1245,14 @@ func cleanOpText(text string, need bool) (string, error) {
 // them is stale_decision. A more_info clears the attempt's turnEnded mark:
 // its agent takes a turn to answer, by a new request that supersedes the
 // decision.
-func (e *Engine) CommentDecision(ctx context.Context, id, opID, kind, text, actor string) (OpReceipt, error) {
+func (e *Engine) CommentDecision(ctx context.Context, id, opID string, expectedRev int, kind, text, actor string) (OpReceipt, error) {
 	text, err := cleanOpText(text, true)
 	if err != nil {
 		return OpReceipt{}, err
 	}
 	switch kind {
 	case CommentKind:
-		return e.operate(ctx, id, operation{kind: ledger.HistoryCommented, opID: opID, fp: fingerprintOf([]string{kind, text}), actor: actor, rev: true,
+		return e.operate(ctx, id, operation{kind: ledger.HistoryCommented, opID: opID, fp: fingerprintOf([]string{kind, text}), actor: actor, rev: true, expectedRev: expectedRev,
 			held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 				return opDetail{Text: text, By: actor, Words: fmt.Sprintf("Comment kept on %s", id)}, nil, nil
 			},
@@ -1211,7 +1263,7 @@ func (e *Engine) CommentDecision(ctx context.Context, id, opID, kind, text, acto
 	default:
 		return OpReceipt{}, refuse(CodeInvalid, "a comment is a comment or a more_info, not %q", kind)
 	}
-	return e.operate(ctx, id, operation{kind: ledger.HistoryInfoRequested, opID: opID, fp: fingerprintOf([]string{kind, text}), actor: actor, rev: true,
+	return e.operate(ctx, id, operation{kind: ledger.HistoryInfoRequested, opID: opID, fp: fingerprintOf([]string{kind, text}), actor: actor, rev: true, expectedRev: expectedRev,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			switch {
 			case rec.Origin == ledger.OriginPlan:
@@ -1258,7 +1310,7 @@ type Destination struct {
 // destination is the operator (what Brakeman's route_decision grant does);
 // any other is invalid until a person's label is one. It changes no
 // state.
-func (e *Engine) RouteDecision(ctx context.Context, id, opID string, to []Destination, note, actor string) (OpReceipt, error) {
+func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev int, to []Destination, note, actor string) (OpReceipt, error) {
 	if len(to) == 0 {
 		return OpReceipt{}, refuse(CodeInvalid, "a route names its destination")
 	}
@@ -1272,7 +1324,7 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, to []Destin
 		return OpReceipt{}, err
 	}
 	dt := opDetail{Note: note, To: []any{map[string]string{"kind": "operator"}}, Rule: "local/1: the operator answers", By: actor, Words: fmt.Sprintf("%s is routed to the operator", id)}
-	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fingerprintOf([]string{"route", note}), actor: actor,
+	return e.operate(ctx, id, operation{kind: ledger.HistoryRouted, opID: opID, fp: fingerprintOf([]string{"route", note}), actor: actor, expectedRev: expectedRev,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			return dt, nil, nil
 		},
@@ -1285,12 +1337,12 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, to []Destin
 // only with release, the plan decision then waived for the run chain, else
 // cancelled once the decision is final; an agent's decision's hold is
 // released and its agent told.
-func (e *Engine) CancelDecision(ctx context.Context, id, commandID string, release bool, why, actor string) (OpReceipt, error) {
+func (e *Engine) CancelDecision(ctx context.Context, id, commandID string, expectedRev int, release bool, why, actor string) (OpReceipt, error) {
 	why, err := cleanOpText(why, false)
 	if err != nil {
 		return OpReceipt{}, err
 	}
-	return e.operate(ctx, id, operation{kind: ledger.HistoryCancelled, opID: commandID, fp: fingerprintOf([]any{"cancel", release, why}), actor: actor, ahead: true,
+	return e.operate(ctx, id, operation{kind: ledger.HistoryCancelled, opID: commandID, fp: fingerprintOf([]any{"cancel", release, why}), actor: actor, ahead: true, expectedRev: expectedRev,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			if d == nil || !d.waits() || d.n == 0 {
 				return opDetail{}, nil, refuse(CodeDecisionClosed, "%s is %s: it is not cancelled", id, cmpState(d, rec))

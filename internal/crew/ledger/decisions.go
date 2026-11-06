@@ -1076,6 +1076,16 @@ func scanResponse(sc scanner) (ResponseRow, error) {
 	return r, err
 }
 
+// AcceptedActor is the actor of decision n's accepted response, "" for
+// none, read within the transaction.
+func (t *Tx) AcceptedActor(n int64) (string, error) {
+	r, ok, err := t.response("WHERE decision = ? AND status = ? ORDER BY k DESC LIMIT 1", n, ResponseAccepted)
+	if err != nil || !ok {
+		return "", err
+	}
+	return r.Actor, nil
+}
+
 func (t *Tx) response(where string, args ...any) (ResponseRow, bool, error) {
 	r, err := scanResponse(t.tx.QueryRowContext(t.ctx, "SELECT "+responseCols+" FROM decision_responses "+where, args...))
 	switch {

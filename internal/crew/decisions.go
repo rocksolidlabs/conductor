@@ -825,6 +825,25 @@ func historyDetail(v any) string {
 // routedOperator is the routed row of a decision opened under local/1.
 var routedOperator = historyDetail(map[string]any{"to": []map[string]string{{"kind": "operator"}}, "rule": "local/1: the operator answers", "by": "policy"})
 
+// DecisionSent answers the decision a request names when the attempt's
+// member sent its request id before (sent true): that decision as it is
+// now, or decision_conflict for another body. The server asks it before
+// it resolves the request's evidence again (internal/api), so a request
+// sent again after a lost reply answers its decision whatever its
+// evidence has become. sent false for a request not sent before, or one
+// that is not a request (RequestDecision refuses it).
+func (e *Engine) DecisionSent(ctx context.Context, sessionID string, req DecisionRequest) (Decision, bool, error) {
+	r, a, err := e.attemptOf(sessionID)
+	if err != nil {
+		return Decision{}, false, nil
+	}
+	_, fp, err := cleanRequest(req)
+	if err != nil {
+		return Decision{}, false, nil
+	}
+	return e.requestSent(ctx, r, a, req.RequestID, fp)
+}
+
 // RequestDecision opens a decision that the session's attempt asks
 // (docs/plans/decisions.md, Opening): the attempt must be running; the
 // request is cleaned and checked against its bounds, its subject bound

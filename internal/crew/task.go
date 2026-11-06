@@ -105,50 +105,137 @@ type Ledger interface {
 func SQLLedger(l *ledger.Ledger) Ledger { return sqlLedger{l: l} }
 
 // SQLLedgerTold is SQLLedger, with told called after each committed
-// transition that changed a decision, with the ids it changed (each a
-// decision.* event's), in their order: the server's decision event and
-// notification follow each commit (internal/api, decisions.go). told runs
-// on the committing goroutine, outside the ledger's lock, and must not
-// wait.
-func SQLLedgerTold(l *ledger.Ledger, told func(ids []string)) Ledger {
+// transition that changed a decision (its row, a response, a history row,
+// a refund, a move to a continuation: every writer of a decision's notes
+// it, toldTx), with each such decision as the transition left it, read in
+// the transition, in the order first changed: the server's decision event
+// and notification follow each commit (internal/api, decisions.go). told
+// runs under the ledger's lock once the commit is made, so in the order
+// of the commits (ledger.Tx.AfterCommit), and must only queue.
+func SQLLedgerTold(l *ledger.Ledger, told func([]DecisionChange)) Ledger {
 	return sqlLedger{l: l, told: told}
+}
+
+// DecisionChange is a decision as a committed transition left it: its row
+// and the actor of its accepted response ("" for none).
+type DecisionChange struct {
+	Row ledger.DecisionRow
+	By  string
 }
 
 type sqlLedger struct {
 	l    *ledger.Ledger
-	told func(ids []string)
+	told func([]DecisionChange)
 }
 
 func (s sqlLedger) Transition(ctx context.Context, runID string, fn func(LedgerTx) error) (int64, error) {
 	if s.told == nil {
 		return s.l.Transition(ctx, runID, func(tx *ledger.Tx) error { return fn(tx) })
 	}
-	var ids []string
-	rev, err := s.l.Transition(ctx, runID, func(tx *ledger.Tx) error {
-		ids = ids[:0]
-		return fn(toldTx{tx, &ids})
+	return s.l.Transition(ctx, runID, func(tx *ledger.Tx) error {
+		tt := toldTx{Tx: tx, ns: new([]int64)}
+		if err := fn(tt); err != nil {
+			return err
+		}
+		changes, err := tt.changes()
+		if err != nil || len(changes) == 0 {
+			return err
+		}
+		tx.AfterCommit(func() { s.told(changes) })
+		return nil
 	})
-	if err == nil && len(ids) > 0 {
-		s.told(slices.Compact(ids))
-	}
-	return rev, err
 }
 
-// toldTx is a transaction that notes the decisions its events name.
+// toldTx is a transaction that notes the decisions its writes change, by
+// the writers themselves (never inferred from the events they write).
 type toldTx struct {
 	*ledger.Tx
-	ids *[]string
+	ns *[]int64
 }
 
-func (t toldTx) Event(kind string, payload any) error {
-	if strings.HasPrefix(kind, "decision.") {
-		if m, ok := payload.(map[string]any); ok {
-			if id, ok := m["decision"].(string); ok {
-				*t.ids = append(*t.ids, id)
-			}
+func (t toldTx) note(n int64) {
+	if n > 0 && !slices.Contains(*t.ns, n) {
+		*t.ns = append(*t.ns, n)
+	}
+}
+
+// changes is each decision the transaction changed as it is now in it.
+func (t toldTx) changes() ([]DecisionChange, error) {
+	out := make([]DecisionChange, 0, len(*t.ns))
+	for _, n := range *t.ns {
+		row, ok, err := t.Tx.Decision(n)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		by, err := t.Tx.AcceptedActor(n)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, DecisionChange{Row: row, By: by})
+	}
+	return out, nil
+}
+
+func (t toldTx) OpenDecision(d ledger.DecisionRow) (ledger.DecisionRow, bool, error) {
+	got, created, err := t.Tx.OpenDecision(d)
+	if err == nil && created {
+		t.note(got.N)
+	}
+	return got, created, err
+}
+
+func (t toldTx) PutDecision(d ledger.DecisionRow) error {
+	err := t.Tx.PutDecision(d)
+	if err == nil {
+		t.note(d.N)
+	}
+	return err
+}
+
+func (t toldTx) Answer(n int64, run string, rev int) (bool, error) {
+	ok, err := t.Tx.Answer(n, run, rev)
+	if err == nil && ok {
+		t.note(n)
+	}
+	return ok, err
+}
+
+func (t toldTx) Respond(n int64, r ledger.ResponseRow) (ledger.Responded, error) {
+	got, err := t.Tx.Respond(n, r)
+	if err == nil && !got.Repeat {
+		t.note(n)
+	}
+	return got, err
+}
+
+func (t toldTx) History(n int64, h ledger.HistoryRow) (ledger.HistoryRow, bool, error) {
+	got, repeat, err := t.Tx.History(n, h)
+	// A notified row is the notification's own record: it tells nothing.
+	if err == nil && !repeat && got.Seq > 0 && h.Kind != ledger.HistoryNotified {
+		t.note(n)
+	}
+	return got, repeat, err
+}
+
+func (t toldTx) Refund(run, task string, attempt int, d int64) (bool, error) {
+	wrote, err := t.Tx.Refund(run, task, attempt, d)
+	if err == nil && wrote {
+		t.note(d)
+	}
+	return wrote, err
+}
+
+func (t toldTx) MoveDecisions(from, to string) ([]ledger.DecisionRow, error) {
+	rows, err := t.Tx.MoveDecisions(from, to)
+	if err == nil {
+		for _, row := range rows {
+			t.note(row.N)
 		}
 	}
-	return t.Tx.Event(kind, payload)
+	return rows, err
 }
 
 func (s sqlLedger) Available() error {

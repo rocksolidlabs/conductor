@@ -656,7 +656,7 @@ func TestAReleasingCancelIsAWaiver(t *testing.T) {
 	e, _, ld := decisionEngine(t)
 	run := launchGated(t, e, dir, "api-sweep-000000b6", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
 	g := gateOf(t, e, ld, run.ID)
-	rc, err := e.CancelDecision(t.Context(), g.ID, "c1", true, "ship it anyway", "admin")
+	rc, err := e.CancelDecision(t.Context(), g.ID, "c1", 0, true, "ship it anyway", "admin")
 	if err != nil || rc.Op != ledger.HistoryCancelled {
 		t.Fatalf("the cancel: %+v %v", rc, err)
 	}
@@ -691,7 +691,7 @@ func TestCancellingTheLastHeldTasksGateEndsTheRunOnce(t *testing.T) {
 	e, _, ld := decisionEngine(t)
 	run := launchGated(t, e, dir, "api-sweep-000000b7", repoCrew(dir, work("deploy", "ops")), shipGate("deploy"))
 	g := gateOf(t, e, ld, run.ID)
-	if _, err := e.CancelDecision(t.Context(), g.ID, "c1", false, "", "admin"); err != nil {
+	if _, err := e.CancelDecision(t.Context(), g.ID, "c1", 0, false, "", "admin"); err != nil {
 		t.Fatal(err)
 	}
 	rec := decisionWhen(t, ld, g.ID, "cancelled", inState(ledger.DecisionCancelled))
@@ -724,7 +724,7 @@ func TestCancellingAGateOfDependentTasksEndsTheRunOnce(t *testing.T) {
 	e, _, ld := decisionEngine(t)
 	run := launchGated(t, e, dir, "api-sweep-000000cb", repoCrew(dir, work("build", "lead"), work("deploy", "ops", "build")), shipGate("build", "deploy"))
 	g := gateOf(t, e, ld, run.ID)
-	if _, err := e.CancelDecision(t.Context(), g.ID, "c1", false, "", "admin"); err != nil {
+	if _, err := e.CancelDecision(t.Context(), g.ID, "c1", 0, false, "", "admin"); err != nil {
 		t.Fatal(err)
 	}
 	waitOutcome(t, e, run.ID, ledger.OutcomeCancelled)
