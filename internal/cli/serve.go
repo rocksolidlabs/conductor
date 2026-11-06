@@ -47,11 +47,11 @@ var writeAssets = agents.WriteAssets
 // it instead of registering into the process's registry.
 var extensions = ext.Freeze
 
-// newServer is api.New given the providers the composition root read: a
-// test replaces it to see what runServe hands the server, as it replaces
-// extensions.
-var newServer = func(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, ui http.Handler, st *store.Store, p ext.Providers) (*api.Server, error) {
-	return api.New(cfg, cat, log, ui, st, api.WithExtensions(p))
+// newServer is api.New given the providers and the notices text the
+// composition root read: a test replaces it to see what runServe hands the
+// server, as it replaces extensions.
+var newServer = func(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, ui http.Handler, st *store.Store, p ext.Providers, notices string) (*api.Server, error) {
+	return api.New(cfg, cat, log, ui, st, api.WithExtensions(p), api.WithNotices(notices))
 }
 
 // extensionsLine names what the registry holds, kind and name, in its
@@ -221,7 +221,9 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if line := extensionsLine(providers); line != "" {
 		log.Info("extensions: " + line)
 	}
-	srv, err := newServer(cfg, cat, log, ui, st, providers)
+	// The notices a main handed in, read once too ("" for none: the
+	// embedded ones); one handed in later is refused.
+	srv, err := newServer(cfg, cat, log, ui, st, providers, notices.take())
 	res.Release()
 	if err != nil {
 		return 1, err
