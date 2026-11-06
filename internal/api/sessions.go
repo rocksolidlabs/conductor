@@ -359,6 +359,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	})
 	dirFile.Close()
 	if err != nil {
+		repo.close()
 		s.log.Warn("session start failed", "agent", agent.ID, "err", err)
 		return nil, newAPIError(http.StatusBadGateway, "start_failed", "could not start the agent process")
 	}
@@ -392,6 +393,8 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 			version = id.Version
 		}
 		rc = s.beginServerRecord(info, launched, agent.Adapter, agent.Name, version, where, rev, repo)
+	} else {
+		repo.close()
 	}
 	opts := session.Options{
 		ScrollbackBytes: s.cfg.ScrollbackBytes,

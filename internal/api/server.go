@@ -138,8 +138,9 @@ type Server struct {
 	sessionRecords *journal.Journal
 	readRevision   func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// recordRepos is each native server session's launch repository, by
-	// the identity of its common git directory (os.FileInfo), until its
-	// end commit is read (recordEndCommit); recCur, under recMu, the
+	// the identity of its common git directory (*launchRepo, which holds
+	// it open where the system reuses identities), until its end commit is
+	// read (recordEndCommit) or none is to be read; recCur, under recMu, the
 	// registration each record follows (*recorder), by its id, until its
 	// last reconcile (history_journal.go); recordsStop, closed as the
 	// journal's close begins (closeSessionRecords), ends the waits for

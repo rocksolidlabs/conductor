@@ -1870,10 +1870,13 @@ once here.
 - **The end commit** is read by the writer after the end is recorded,
   and written when it is read: the end's write never waits for it, so an
   end written before its commit keeps none should the process be killed
-  between. It is read
-  through the session's own folder (`FolderDir`, by its handle where the
-  system names one) and only from the launch's repository, by the file
-  system's identity of its common directory. A session removed from the
+  between. It is read through the session's own folder (`FolderDir`, by
+  its handle where the system names one) and only from the launch's
+  repository, by the file system's identity of its common directory,
+  which the launch holds open until the end commit is read (or none is to
+  be read) where the system gives a removed directory's identity to the
+  next one made (Linux's inode numbers): a repository made again at the
+  launch's path never lends its commit. A session removed from the
   registry before the writer reads it (its folder closed with it) gets
   none, said by an empty `endCommit`. It is the one fact still read in an
   order of events: a git read under `recMu` would hold every reconcile

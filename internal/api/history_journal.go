@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -152,6 +153,12 @@ func (s *Server) closeSessionRecords(final bool) {
 	clear(s.recCur)
 	s.recMu.Unlock()
 	j.Close()
+	// What no end commit read let go: a record forgotten before its read,
+	// one Close gave up on.
+	s.recordRepos.Range(func(id, _ any) bool {
+		s.dropRecordRepo(id.(string))
+		return true
+	})
 }
 
 // recording says a session that starts now is recorded: the one check,
@@ -169,9 +176,10 @@ func (s *Server) recording() bool {
 // Runtime elsewhere runs on a tree this server does not observe); a read
 // that fails or times out, or whose folder could not be named as opened,
 // leaves it empty. repo is the repository it names, as the file system
-// knows it (its common git directory's identity): what the end commit's
-// read must find again (recordEndCommit), nil with no repository.
-func (s *Server) launchRevision(where ext.Where, cwd string, dir *os.File) (rev gitcli.Revision, repo os.FileInfo) {
+// knows it (openLaunchRepo): what the end commit's read must find again
+// (recordEndCommit), nil with no repository; its caller closes it unless
+// beginServerRecord takes it.
+func (s *Server) launchRevision(where ext.Where, cwd string, dir *os.File) (rev gitcli.Revision, repo *launchRepo) {
 	if !s.recording() || where != ext.WhereNative {
 		return gitcli.Revision{}, nil
 	}
@@ -185,10 +193,57 @@ func (s *Server) launchRevision(where ext.Where, cwd string, dir *os.File) (rev 
 	if rev.Common == "" {
 		return rev, nil
 	}
-	if repo, err = os.Stat(rev.Common); err != nil {
+	if repo = openLaunchRepo(rev.Common); repo == nil {
 		return gitcli.Revision{}, nil
 	}
 	return rev, repo
+}
+
+// launchRepo is a launch's repository as the file system knows it: the
+// identity of its common git directory, and, where the system gives a
+// removed directory's identity to the next one made (Linux reuses an
+// inode's number once it is freed), that directory held open from the
+// launch until the end commit is read, so its identity cannot be given to
+// a repository made again at its path. Windows needs no hold: a file's id
+// there carries a sequence number that its reuse changes.
+type launchRepo struct {
+	id   os.FileInfo
+	held *os.File
+}
+
+func openLaunchRepo(common string) *launchRepo {
+	if runtime.GOOS == "windows" {
+		fi, err := os.Stat(common)
+		if err != nil {
+			return nil
+		}
+		return &launchRepo{id: fi}
+	}
+	f, err := os.Open(common)
+	if err != nil {
+		return nil
+	}
+	fi, err := f.Stat()
+	if err != nil || !fi.IsDir() {
+		f.Close()
+		return nil
+	}
+	return &launchRepo{id: fi, held: f}
+}
+
+// close lets the held directory go; nothing for nil.
+func (r *launchRepo) close() {
+	if r != nil && r.held != nil {
+		r.held.Close()
+	}
+}
+
+// dropRecordRepo lets id's launch repository go: its end commit read, or
+// none to be read (an abandonment, a lost end, the journal closed).
+func (s *Server) dropRecordRepo(id string) {
+	if v, ok := s.recordRepos.LoadAndDelete(id); ok {
+		v.(*launchRepo).close()
+	}
 }
 
 // openedPath is a path that names the directory dir holds open, for a git
@@ -253,8 +308,15 @@ func (s *Server) recordSeam(stage, id string) {
 // begun once the records are closed (closeSessionRecords' mark), and a
 // Begin under way as the mark is set puts no recorder in place: its record
 // stays open on disk, for the next start's recovery to close as lost (the
-// admission rule).
-func (s *Server) beginServerRecord(info session.Info, launched session.Launched, agentAdapter, agentName string, version string, where ext.Where, rev gitcli.Revision, repo os.FileInfo) *recorder {
+// admission rule). It takes repo (launchRevision's), kept until the end
+// commit is read, else closed.
+func (s *Server) beginServerRecord(info session.Info, launched session.Launched, agentAdapter, agentName string, version string, where ext.Where, rev gitcli.Revision, repo *launchRepo) *recorder {
+	kept := false
+	defer func() {
+		if !kept {
+			repo.close()
+		}
+	}()
 	if !s.recording() {
 		return nil
 	}
@@ -305,6 +367,7 @@ func (s *Server) beginServerRecord(info session.Info, launched session.Launched,
 	}
 	if repo != nil && rev.Top != "" {
 		s.recordRepos.Store(info.ID, repo)
+		kept = true
 	}
 	rc := &recorder{in: in, cwd: info.Cwd, gone: make(chan struct{})}
 	s.recCur[info.ID] = rc
@@ -395,7 +458,7 @@ func (s *Server) abandon(rc *recorder) {
 	rc.leaving = true
 	s.recMu.Unlock()
 	s.recordSeam("beforeAbandon", id)
-	s.recordRepos.Delete(id)
+	s.dropRecordRepo(id)
 	s.sessionRecords.Abandon(rc.in)
 	s.recMu.Lock()
 	if s.recCur[id] == rc {
@@ -463,6 +526,7 @@ func (s *Server) reconcileLocked(rc *recorder, finalPass bool) {
 		st.End = &journal.Ending{How: string(session.StatusExited), At: time.Now()}
 	case final:
 		st.End = &journal.Ending{How: journal.EndingLost, Lost: true}
+		s.dropRecordRepo(id) // a lost end has no end commit
 	case info.Status.Ended() && !rc.watching:
 		rc.watching = true
 		go s.awaitProcessEnd(rc, d)
@@ -549,16 +613,23 @@ func endingOf(info session.Info) string {
 // read through its handle where the system names one (openedPath), never
 // whatever its path leads to now; and the repository found there must be
 // the launch's, by the file system's identity of its common directory
-// (launchRevision), never by the text of a path: a folder moved, a
+// (launchRevision), held open from the launch where the system would give
+// it to a directory made after (launchRepo), never by the text of a path:
+// a folder moved, a
 // repository put in its place or made again at the same path lends no
 // commit. A session the server no longer holds (its folder closed) has
 // none read.
 func (s *Server) recordEndCommit(ctx context.Context, r journal.Record) string {
 	v, ok := s.recordRepos.LoadAndDelete(r.ID)
-	if !ok || r.Where != string(ext.WhereNative) || r.Repo == "" {
+	if !ok {
 		return ""
 	}
-	want := v.(os.FileInfo)
+	repo := v.(*launchRepo)
+	defer repo.close()
+	if r.Where != string(ext.WhereNative) || r.Repo == "" {
+		return ""
+	}
+	want := repo.id
 	d, ok := s.registry.Get(r.ID)
 	l, local := d.(*session.Local)
 	if !ok || !local {
