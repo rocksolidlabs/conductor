@@ -650,6 +650,10 @@ type snapshot struct {
 	attempts []ledger.AttemptRow
 	ts       []*task
 	as       []*attempt
+	// held are the ready rows among tasks whose reason names a decision
+	// not yet numbered (decisions.go: heldRow): the commit that opens it
+	// writes them again with its number (renumber).
+	held []heldRow
 }
 
 // drain takes the rows changed since the last transition, in the run's
@@ -665,6 +669,9 @@ func (r *run) drain() snapshot {
 		if _, ok := r.changedTasks[t]; ok {
 			s.tasks = append(s.tasks, r.taskRow(t))
 			s.ts = append(s.ts, t)
+			if h, ok := unnumbered(t, len(s.tasks)-1); ok {
+				s.held = append(s.held, h)
+			}
 		}
 		for _, a := range t.attempts {
 			if _, ok := r.changedAttempts[a]; ok && !a.provisional {
@@ -868,6 +875,8 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 	}
 	r.committing = true
 	e.mu.Unlock()
+	r.numbered = map[*decision]int64{}
+	defer func() { r.numbered = nil }()
 	rev, err := e.ledger.Transition(ctx, r.id, func(ltx LedgerTx) error {
 		if err := snap.write(ltx); err != nil {
 			return err
@@ -887,7 +896,11 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 				return err
 			}
 		}
-		return nil
+		// The held rows again, naming the decisions this commit opened by
+		// their numbers: the snapshot's rows, so the state they write is
+		// the newest the run has, a carried change's included (#635,
+		// review round 2).
+		return snap.renumber(ltx, r.numbered)
 	})
 	e.mu.Lock()
 	r.committing = false
@@ -917,6 +930,7 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 	for _, f := range done {
 		f()
 	}
+	r.written(snap)
 	r.touch()
 	if r.endPending {
 		r.endPending = false

@@ -1348,36 +1348,57 @@ func (l *Ledger) Decision(ctx context.Context, n int64) (DecisionRecord, bool, e
 		if l.inDecision != nil {
 			l.inDecision()
 		}
-		rows, err := q.QueryContext(ctx, "SELECT "+responseCols+" FROM decision_responses WHERE decision = ? ORDER BY k", n)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			r, err := scanResponse(rows)
-			if err != nil {
-				rows.Close()
-				return err
-			}
-			rec.Responses = append(rec.Responses, r)
-		}
-		if err := cmp.Or(rows.Err(), rows.Close()); err != nil {
-			return err
-		}
-		rows, err = q.QueryContext(ctx, "SELECT "+historyCols+" FROM decision_history WHERE decision = ? ORDER BY seq", n)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			h, err := scanHistory(rows)
-			if err != nil {
-				rows.Close()
-				return err
-			}
-			rec.History = append(rec.History, h)
-		}
-		return cmp.Or(rows.Err(), rows.Close())
+		return readRecord(ctx, q, n, &rec)
 	})
 	if err != nil || !found {
+		return DecisionRecord{}, false, err
+	}
+	return rec, true, nil
+}
+
+// readRecord reads decision n's responses and history into rec, through q.
+func readRecord(ctx context.Context, q querier, n int64, rec *DecisionRecord) error {
+	rows, err := q.QueryContext(ctx, "SELECT "+responseCols+" FROM decision_responses WHERE decision = ? ORDER BY k", n)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		r, err := scanResponse(rows)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		rec.Responses = append(rec.Responses, r)
+	}
+	if err := cmp.Or(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	rows, err = q.QueryContext(ctx, "SELECT "+historyCols+" FROM decision_history WHERE decision = ? ORDER BY seq", n)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		h, err := scanHistory(rows)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		rec.History = append(rec.History, h)
+	}
+	return cmp.Or(rows.Err(), rows.Close())
+}
+
+// Record reads decision n with its responses and history within the
+// transaction: what a response's refusal says (who answered first, what
+// changed) is read with the state it judges, never before the run's
+// transaction began (#635, review round 2).
+func (t *Tx) Record(n int64) (DecisionRecord, bool, error) {
+	d, ok, err := t.Decision(n)
+	if err != nil || !ok {
+		return DecisionRecord{}, ok, err
+	}
+	rec := DecisionRecord{DecisionRow: d}
+	if err := readRecord(t.ctx, t.tx, n, &rec); err != nil {
 		return DecisionRecord{}, false, err
 	}
 	return rec, true, nil
