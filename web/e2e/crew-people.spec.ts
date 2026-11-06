@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, task, test, type Run, type Session } from './fixtures'
+import { expect, task, test, type Api, type Run, type Session } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helpers'
 
 // People in a crew (docs/plans/decisions.md, HM1, PR-10): the crew editor's People section and Owner column, the run page's people and
@@ -243,18 +243,24 @@ test("a task's owner removed with their name cleared leaves the Owner enabled, a
   await expect(owner).toBeDisabled()
 })
 
-test("two pages add a person each to one crew: the second's save is refused, loses nothing, and read again keeps both", async ({ page, api, state }) => {
-  const id = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { ...crewBody, name: `e2e people pages ${Date.now().toString(36)}`, people: [{ name: 'nate' }] })).crew.id
+/**
+ * Two pages of one crew, opened before either saves: the second adds cy and leaves it unsaved, the first adds ana and saves, and the second's
+ * save is refused. Returns the second page, its stale alert and its Save button, with the refusal checked: nothing saved, cy still in the
+ * field typed, the unsaved bar still up, and the alert saying what the first page changed.
+ */
+async function refusedSecondPage(page: Page, api: Api, token: string, label: string) {
+  const name = `e2e people ${label} ${Date.now().toString(36)}`
+  const id = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { ...crewBody, name, people: [{ name: 'nate' }] })).crew.id
   crews.push(id)
   // The second page, in the same browser: the fixture's token reaches only its own page, so it gets it the same way.
   const other = await page.context().newPage()
-  await other.addInitScript((token) => {
+  await other.addInitScript((t) => {
     try {
-      localStorage.setItem('conductor.workbenchToken', token)
+      localStorage.setItem('conductor.workbenchToken', t)
     } catch {
       /* storage refused: the page asks for the token, and the test fails on what it cannot find */
     }
-  }, state.token)
+  }, token)
   for (const p of [page, other]) {
     await p.goto(`/crews/${encodeURIComponent(id)}`)
     budget(30_000)
@@ -270,26 +276,60 @@ test("two pages add a person each to one crew: the second's save is refused, los
   await expect(page.locator('[data-unsaved-bar]')).toHaveCount(0)
   expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'ana' }])
 
-  // The second saves from the copy it read: refused, nothing saved, cy still on the page and nothing offered but the read again.
+  // The second saves from the copy it read: refused, nothing saved, cy still in the field it was typed into, and what changed said.
   const save = other.locator('[data-unsaved-bar]').getByRole('button', { name: 'Save' })
   await save.click()
   const stale = other.locator('[data-crew-stale]')
-  await expect(stale).toContainText('This crew was saved elsewhere since you opened it')
+  await expect(stale).toContainText('This crew was changed elsewhere since you opened it')
+  await expect(stale).toContainText('Changed there: 1 person added (ana).')
   expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'ana' }])
   await expect(other.locator('[data-crew-person]')).toHaveCount(2)
   await expect(other.locator('[data-crew-person]').nth(1)).toHaveAttribute('data-person-name', 'cy')
   await expect(other.locator('[data-unsaved-bar]')).toBeVisible()
+  return { id, name, other, stale }
+}
 
-  // Read again: ana from the first page, cy on top, saved only when the person saves.
-  await stale.getByRole('button', { name: 'Read it again, keep my edits' }).click()
-  await expect(other.locator('[data-crew-rebased]')).toContainText('Changed elsewhere: ana added.')
+test('two pages add a person each to one crew: the second is refused, keeps what was typed, and reads the crew again only when it chooses to', async ({ page, api, state }) => {
+  const { id, other, stale } = await refusedSecondPage(page, api, state.token, 'read')
+  // A cancelled choice changes nothing.
+  await stale.getByRole('button', { name: 'Read the crew again' }).click()
+  const dialog = other.getByRole('dialog')
+  await expect(dialog).toContainText('the edits made here will be lost')
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(other.locator('[data-crew-person]').nth(1)).toHaveAttribute('data-person-name', 'cy')
+
+  await stale.getByRole('button', { name: 'Read the crew again' }).click()
+  await dialog.getByRole('button', { name: 'Read it again' }).click()
   await expect(stale).toHaveCount(0)
-  await expect(other.locator('[data-crew-person]')).toHaveCount(3)
-  expect(await other.locator('[data-crew-person]').evaluateAll((rows) => rows.map((r) => r.getAttribute('data-person-name')))).toEqual(['nate', 'cy', 'ana'])
-  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'ana' }])
-  await save.click()
   await expect(other.locator('[data-unsaved-bar]')).toHaveCount(0)
-  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'cy' }, { name: 'ana' }])
+  await expect(other.locator('[data-crew-person]')).toHaveCount(2)
+  expect(await other.locator('[data-crew-person]').evaluateAll((rows) => rows.map((r) => r.getAttribute('data-person-name')))).toEqual(['nate', 'ana'])
+  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'ana' }])
+  await other.close()
+})
+
+test('two pages add a person each to one crew: Save mine anyway replaces the other change, and a change made once more is said again first', async ({ page, api, state }) => {
+  const { id, name, other, stale } = await refusedSecondPage(page, api, state.token, 'anyway')
+  // The crew changes once more before the person confirms: bo added through the API (a PUT without a revision replaces).
+  await api.ok('PUT', `/api/crews/${encodeURIComponent(id)}`, { ...crewBody, name, people: [{ name: 'nate' }, { name: 'ana' }, { name: 'bo' }] })
+
+  await stale.getByRole('button', { name: 'Save mine anyway' }).click()
+  const dialog = other.getByRole('dialog')
+  await expect(dialog).toContainText('what was changed there is lost: 1 person added (ana).')
+  await dialog.getByRole('button', { name: 'Save mine' }).click()
+  // Refused again: the new difference is said, the same two choices offered, nothing saved, cy still there.
+  await expect(stale).toContainText('Changed there: 2 people added (ana, bo).')
+  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'ana' }, { name: 'bo' }])
+  await expect(other.locator('[data-crew-person]').nth(1)).toHaveAttribute('data-person-name', 'cy')
+  await expect(stale.getByRole('button', { name: 'Read the crew again' })).toBeVisible()
+
+  await stale.getByRole('button', { name: 'Save mine anyway' }).click()
+  await expect(dialog).toContainText('what was changed there is lost: 2 people added (ana, bo).')
+  await dialog.getByRole('button', { name: 'Save mine' }).click()
+  await expect(stale).toHaveCount(0)
+  await expect(other.locator('[data-unsaved-bar]')).toHaveCount(0)
+  expect(((await api.crew(id)) as unknown as PeopleCrew).people).toEqual([{ name: 'nate' }, { name: 'cy' }])
   await other.close()
 })
 
