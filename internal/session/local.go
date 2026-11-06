@@ -1685,8 +1685,8 @@ func (s *Local) TryAskID(message, source, kind string, options []Option) (string
 // WithdrawQuestion (its decision superseded or cancelled), the agent's
 // next question, or the session's end.
 func (s *Local) TryAskDecision(decision, message string) (string, error) {
-	if decision == "" {
-		return "", errors.New("session: a decision's question names its decision")
+	if !proto.ValidDecisionRef(decision) {
+		return "", errors.New("session: a decision's question names its decision, dr-<n>")
 	}
 	var id string
 	err := s.setAttentionLooked(AttentionNeedsInput, message, SourceAPI, "", nil, spendToken|agentAsks, anyTurn, 0, "", attentionOpt{asked: &id, decision: decision})
@@ -1703,7 +1703,7 @@ var ErrDecisionQuestion = errors.New("session: the question is answered as a dec
 type decisionQuestionError struct{ decision string }
 
 func (e *decisionQuestionError) Error() string {
-	return e.decision + " is answered as a decision: nothing was sent"
+	return e.decision + " is answered as a decision, by the operator in Conductor: nothing was sent"
 }
 
 func (e *decisionQuestionError) Is(target error) bool {
@@ -2326,7 +2326,7 @@ func sameOptions(a, b []Option) bool {
 
 // attentionMessage encodes an Attention as the wire control message.
 func attentionMessage(att Attention) proto.Attention {
-	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Answered: att.Answered, Plan: att.Plan}
+	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Answered: att.Answered, Plan: att.Plan, Decision: att.Decision}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
@@ -4929,7 +4929,8 @@ var ErrBadAnswer = errors.New("bad answer message")
 // AnswerResult is the owner's word on a viewer's answer (proto.Answer)
 // that ended with err, to that viewer: an answer_ok naming reqID when err is
 // nil (nil when there is no reqID to name: nothing is sent), else an error
-// naming it, question_answered for ErrQuestionAnswered. A line accepted
+// naming it, question_answered for ErrQuestionAnswered (decision, naming
+// the decision, for an ErrDecisionQuestion). A line accepted
 // while its program takes it slowly (ErrSubmitPending) is taken. A reqID
 // out of its bounds is named by nothing.
 func AnswerResult(reqID string, err error) []byte {
@@ -4949,6 +4950,10 @@ func AnswerResult(reqID string, err error) []byte {
 	}
 	code, msg := "input_failed", "input could not be delivered"
 	switch {
+	case errors.Is(err, ErrDecisionQuestion):
+		// Before ErrQuestionAnswered, which it also is: the question
+		// mirrors a durable decision, answered as that decision.
+		code, msg = proto.ErrCodeDecision, err.Error()
 	case errors.Is(err, ErrQuestionAnswered):
 		code, msg = proto.ErrCodeQuestionAnswered, err.Error()
 	case errors.Is(err, ErrLineStranded):

@@ -1,5 +1,5 @@
 import type { SessionInfo } from '~/composables/useSessions'
-import type { Attention, AttentionOption } from '~/utils/protocol'
+import type { Attention, AttentionOption, Role } from '~/utils/protocol'
 
 /**
  * Whether the session waits for a person to type into its terminal: a submission's text was typed and not entered,
@@ -27,6 +27,33 @@ export const TERMINAL_FIRST = 'Type in the terminal first'
  */
 export function answersInTerminal(a: Pick<Attention, 'state' | 'kind' | 'options'> | undefined): boolean {
   return a?.state === 'needs_input' && a.kind === 'permission' && !a.options?.length
+}
+
+/**
+ * The durable decision a question mirrors (`dr-<n>`, the attention's `decision`; Program item DR1), or undefined for any other
+ * attention: such a question is answered only as its decision, so a page offers it no reply field, choice or number key, whatever
+ * the viewer's role, and the session refuses an answer naming it (`decision`).
+ */
+export function decisionOf(a: Pick<Attention, 'state' | 'decision'> | undefined): string | undefined {
+  return a?.state === 'needs_input' && a.decision ? a.decision : undefined
+}
+
+/** The choices a question bar offers for a, each with its number key (choiceKey): its options, none for a decision's (decisionOf). */
+export function offeredChoices(a: Pick<Attention, 'state' | 'decision' | 'options'> | undefined): AttentionOption[] {
+  return a?.state === 'needs_input' && !decisionOf(a) ? (a.options ?? []) : []
+}
+
+/**
+ * Whether a question bar takes a reply to a from a viewer of role: a controller's, unless the session waits for its terminal
+ * (waitsForTerminal), the question is answered in the terminal (answersInTerminal) or it mirrors a durable decision (decisionOf).
+ */
+export function takesReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision'> | undefined, role: Role): boolean {
+  return role === 'control' && !waitsForTerminal(a) && !answersInTerminal(a) && !decisionOf(a)
+}
+
+/** What the question bar says in place of a reply for a question that mirrors decision id (decisionOf). */
+export function answeredAsDecision(id: string): string {
+  return `Answered as decision ${id}`
 }
 
 /** What a reply field says while the question is answered in the terminal (answersInTerminal). */

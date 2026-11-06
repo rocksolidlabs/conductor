@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { alerting, liveAttention, liveSession, ATTENTION_DOT_COLOR, answersInTerminal, choiceKey, firstChoice, isActive, needingInput, newlyNeedingInput, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
+import { alerting, liveAttention, liveSession, ATTENTION_DOT_COLOR, answeredAsDecision, answersInTerminal, choiceKey, decisionOf, firstChoice, isActive, needingInput, newlyNeedingInput, offeredChoices, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
+import type { Attention, Role } from './protocol'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
   return {
@@ -128,5 +129,41 @@ describe('the choices of a dialog read off the screen (#288)', () => {
     expect(answersInTerminal({ state: 'needs_input', kind: 'prompt' })).toBe(false)
     expect(answersInTerminal({ state: 'working', kind: 'permission' })).toBe(false)
     expect(answersInTerminal(undefined)).toBe(false)
+  })
+})
+
+describe("a durable decision's question (Program item DR1)", () => {
+  const roles: Role[] = ['control', 'view']
+  const yesNo = [
+    { label: 'Yes', input: '1' },
+    { label: 'No', input: '2' },
+  ]
+  const mirror: Attention = { state: 'needs_input', source: 'api', id: '0123456789abcdef', message: 'Ship the schema change?', decision: 'dr-7' }
+
+  it('is the decision the question mirrors, and only a shown question has one', () => {
+    expect(decisionOf(mirror)).toBe('dr-7')
+    expect(decisionOf({ state: 'needs_input' })).toBeUndefined()
+    expect(decisionOf({ state: '', decision: 'dr-7' })).toBeUndefined()
+    expect(decisionOf(undefined)).toBeUndefined()
+    expect(answeredAsDecision('dr-7')).toBe('Answered as decision dr-7')
+  })
+
+  it('offers no reply field, choice or number key, whatever the role', () => {
+    // Even with choices given (a mirror has none; an older page's bar must offer none all the same).
+    for (const a of [mirror, { ...mirror, options: yesNo }, { ...mirror, kind: 'prompt' as const, options: yesNo }]) {
+      expect(offeredChoices(a)).toEqual([])
+      expect(offeredChoices(a).map(choiceKey).filter((k) => k !== undefined)).toEqual([])
+      for (const role of roles) expect(takesReply(a, role)).toBe(false)
+    }
+  })
+
+  it("leaves every other question's reply as it was", () => {
+    const own: Attention = { state: 'needs_input', source: 'api', kind: 'prompt', options: yesNo }
+    expect(offeredChoices(own)).toEqual(yesNo)
+    expect(takesReply(own, 'control')).toBe(true)
+    expect(takesReply(own, 'view')).toBe(false)
+    expect(takesReply({ state: 'needs_input', source: 'submit' }, 'control')).toBe(false)
+    expect(takesReply({ state: 'needs_input', kind: 'permission' }, 'control')).toBe(false)
+    expect(offeredChoices({ state: 'working', options: yesNo })).toEqual([])
   })
 })
