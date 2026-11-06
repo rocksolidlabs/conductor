@@ -35,6 +35,7 @@ import (
 
 // Server holds the shared state behind every route.
 type Server struct {
+	notices  string // served at /third-party-notices.txt (WithNotices)
 	cfg      *config.Config
 	registry *session.Registry
 	links    *share.Store
@@ -290,7 +291,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if log == nil {
 		log = slog.Default()
 	}
-	o := options{providers: freeBuild()}
+	o := options{providers: freeBuild(), notices: conductor.ThirdPartyNotices}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -339,6 +340,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		home = ""
 	}
 	s := &Server{
+		notices:     o.notices,
 		cfg:         cfg,
 		base:        base,
 		overlay:     overlay,
@@ -661,7 +663,7 @@ func (s *Server) WaitBackground(ctx context.Context) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
-	mux.HandleFunc("GET /third-party-notices.txt", handleNotices)
+	mux.HandleFunc("GET /third-party-notices.txt", s.handleNotices)
 	mux.HandleFunc("GET /api/reach", s.requireAdmin(s.handleReach))
 	mux.HandleFunc("GET /.well-known/acme-challenge/{token}", s.handleACMEChallenge)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
@@ -995,14 +997,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleNotices serves THIRD_PARTY_NOTICES, on a switchyard too: the
-// licences of what the binary and the app ship, for anyone (Settings → The
-// app links it, and the switchyard's footer).
-func handleNotices(w http.ResponseWriter, _ *http.Request) {
+// handleNotices serves THIRD_PARTY_NOTICES, or the text a main handed in
+// (WithNotices), on a switchyard too: the licences of what the binary and
+// the app ship, for anyone (Settings → The app links it, and the
+// switchyard's footer).
+func (s *Server) handleNotices(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-cache")
-	_, _ = io.WriteString(w, conductor.ThirdPartyNotices)
+	_, _ = io.WriteString(w, s.notices)
 }
 
 // newInstance is a random id for this process (16 hex digits).
