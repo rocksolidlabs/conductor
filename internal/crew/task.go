@@ -732,6 +732,10 @@ type snapshot struct {
 	attempts []ledger.AttemptRow
 	ts       []*task
 	as       []*attempt
+	// held are the ready rows among tasks whose reason names a decision
+	// not yet numbered (decisions.go: heldRow): the commit that opens it
+	// writes them again with its number (renumber).
+	held []heldRow
 }
 
 // drain takes the rows changed since the last transition, in the run's
@@ -747,6 +751,9 @@ func (r *run) drain() snapshot {
 		if _, ok := r.changedTasks[t]; ok {
 			s.tasks = append(s.tasks, r.taskRow(t))
 			s.ts = append(s.ts, t)
+			if h, ok := unnumbered(t, len(s.tasks)-1); ok {
+				s.held = append(s.held, h)
+			}
 		}
 		for _, a := range t.attempts {
 			if _, ok := r.changedAttempts[a]; ok && !a.provisional {
@@ -957,6 +964,8 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 	}
 	r.committing = true
 	e.mu.Unlock()
+	r.numbered = map[*decision]int64{}
+	defer func() { r.numbered = nil }()
 	rev, err := e.ledger.Transition(ctx, r.id, func(ltx LedgerTx) error {
 		if err := snap.write(ltx); err != nil {
 			return err
@@ -976,7 +985,11 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 				return err
 			}
 		}
-		return nil
+		// The held rows again, naming the decisions this commit opened by
+		// their numbers: the snapshot's rows, so the state they write is
+		// the newest the run has, a carried change's included (#635,
+		// review round 2).
+		return snap.renumber(ltx, r.numbered)
 	})
 	e.mu.Lock()
 	r.committing = false
@@ -992,7 +1005,14 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 		r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = events, more, last, done
 		if undo != nil {
 			undo()
-			r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = pending, pendingMore, pendingLast, pendingDone
+			// The change's decisions are never put back: one closed has its
+			// holds released and its line withdrawn, one opened its holds
+			// made (decisions_wait.go). Their writes and what follows them
+			// are carried as a change with no undo is, so the engine and
+			// the ledger agree once the next commit writes them (#636,
+			// review round 1). A change with an undo ends no work, so what
+			// endedWork closed in it stays closed for its own reasons.
+			r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = pending, slices.Concat(pendingMore, laterMore), pendingLast, slices.Concat(pendingDone, laterDone)
 		}
 		e.mu.Unlock()
 		return err
@@ -1006,6 +1026,7 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 	for _, f := range done {
 		f()
 	}
+	r.written(snap)
 	r.touch()
 	if r.endPending {
 		r.endPending = false
@@ -1870,8 +1891,14 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// (askContext): none, without a provider or for one late or failing.
 	blocks := e.askContext(ctx, r, a)
 	// The task's decisions, an undelivered approval rechecked against the
-	// start first (S4).
-	e.noteTaskDecisions(ctx, r, a)
+	// start first (S4): read, or the attempt is not started, uncounted,
+	// and the run pauses, since an answer applied for its task file
+	// reaches it no other way.
+	if err := e.noteTaskDecisions(ctx, r, a); err != nil {
+		release()
+		fail(decisionsStage, err, false, true)
+		return
+	}
 	// The task files, through a root at the working directory: a
 	// .conductor that is not a directory of ours, or a task file that is
 	// there already, is refused.

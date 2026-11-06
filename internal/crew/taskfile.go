@@ -706,7 +706,7 @@ func taskMarkdown(f TaskFile) string {
 				}
 				b.WriteString(". It is not where you start: take from it what holds up.\n\n")
 			} else {
-				if launchStage(u.Stage) || u.Stage == receiptStage {
+				if launchStage(u.Stage) || u.Stage == receiptStage || u.Stage == decisionsStage {
 					fmt.Fprintf(&b, "Attempt %d could not start: it failed at %s", u.Attempt, u.Stage)
 				} else {
 					fmt.Fprintf(&b, "Attempt %d could not be made usable: it failed at %s", u.Attempt, u.Stage)
@@ -717,6 +717,8 @@ func taskMarkdown(f TaskFile) string {
 				switch {
 				case u.Stage == receiptStage:
 					b.WriteString(". Conductor could not read from the ledger the receipt and the log of the check that failed the attempt before it, or write the log beside its task files, before its agent could act: it was not counted, and you start where it started.\n\n")
+				case u.Stage == decisionsStage:
+					b.WriteString(". Conductor could not read from the ledger the task's decisions for its task files before its agent could act: it was not counted, and you start where it started.\n\n")
 				case launchStage(u.Stage):
 					b.WriteString(". Conductor could not hand it the ticket's package, or start the agent the plan revision approved, before its agent could act: it was not counted, and you start where it started.\n\n")
 				default:

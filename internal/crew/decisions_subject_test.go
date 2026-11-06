@@ -7,10 +7,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
@@ -163,40 +165,34 @@ func TestASupersededApprovalIsNeverTyped(t *testing.T) {
 	t.Run("after its text", func(t *testing.T) {
 		dir := newRepo(t)
 		e, fl, ld := decisionEngine(t)
-		// docs's session pauses long between a text and its Enter: the
-		// window the supersession lands in, whatever the load.
-		fl.pauses = map[string]time.Duration{"writer · docs #1": 20 * time.Second}
-		build := work("build", "lead")
-		build.Checks = []Check{{ID: "ok", Argv: []string{"sh", "-c", "test -f ok.txt"}}}
-		run := launchManaged(t, e, repoCrew(dir, build, work("docs", "writer")))
-		b1, _, _ := attemptOn(t, e, fl, run.ID, "build")
-		writeFile(t, filepath.Join(b1.Attempt.Worktree, "x.txt"), "x\n")
-		commitAll(t, b1.Attempt.Worktree, "first")
-		c1 := head(t, b1.Attempt.Worktree)
-		submit(t, e, b1.Attempt.SessionID, Result{Summary: "first"})
-		waitPast(t, e, run.ID, "build", 1)
-		var w TaskState
-		deadline := time.Now().Add(60 * time.Second)
-		for {
-			w = taskOf(t, e, run.ID, "docs")
-			if w.Attempt != nil && w.Attempt.State == ledger.AttemptRunning {
-				break
+		// docs's answer line held where its session reports its text
+		// typed, before the pause its Enter waits in, until the
+		// supersession has committed: the order made at a seam, never
+		// left to a pause's length (#636, review round 1). BeforeEnter
+		// would not do: the session's writer calls it once its look for
+		// a withdrawal has passed, so the Enter follows it whatever came.
+		var line atomic.Pointer[string]
+		typedText, release := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		fl.beforeActivity = func(_ string, entry session.ActivityEntry) {
+			if want := line.Load(); want != nil && entry.Type == session.ActivityInput && strings.Contains(entry.Message, *want) {
+				once.Do(func() { close(typedText); <-release })
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("docs is not running: %+v", w)
-			}
-			time.Sleep(20 * time.Millisecond)
 		}
+		run, w, c1 := candidateRun(t, e, fl, dir)
 		_, wp := fl.attemptSession(t, w)
-		if _, ok := readSubmission(wp, 60*time.Second); !ok {
-			t.Fatal("docs's task line")
-		}
+		lineWith(t, wp, "docs")
 		d := ask(t, e, w.Attempt.SessionID, approveCandidate(run.ID, c1))
+		want := "Decision " + d.ID + " (approval)"
+		line.Store(&want)
 		answer(t, e, d.ID, Response{ResponseID: "r1", Choice: choice(0), ExpectedRev: 1})
-		if got := readUntil(t, wp, "Decision "+d.ID, 30*time.Second); strings.Contains(got, "\r") {
+		<-typedText
+		if got := readUntil(t, wp, want, 30*time.Second); strings.Contains(got, "\r") {
 			t.Fatalf("an Enter before the supersession: %q", got)
 		}
 		secondCandidate(t, e, fl, run.ID)
+		decisionWhen(t, ld, d.ID, "superseded", inState(ledger.DecisionSuperseded))
+		close(release)
 		rec := decisionWhen(t, ld, d.ID, "untyped", hasKind(ledger.HistoryDeliveryUntyped))
 		if rec.State != ledger.DecisionSuperseded || slices.Contains(historyKinds(rec), ledger.HistoryDeliveryEntered) {
 			t.Fatalf("%s: %+v %q", d.ID, rec.DecisionRow, historyKinds(rec))
