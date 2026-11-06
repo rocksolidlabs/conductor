@@ -208,7 +208,8 @@ rail, the phone's bottom bar or the palette (`go hosts`) shows:
   configuration names it, whether this server's publications are
   connected, how many sessions are published.
 - **Runs and who holds them**: every open managed run on this data
-  directory, its crew, its state and its tasks waiting for a person,
+  directory (one a restart interrupted, not yet continued, among them,
+  as its row says), its crew, its state and its tasks waiting for a person,
   under its holder as it is when the page asks: **Held by this server**;
   **Held by this server, read-only** with the ledger's reason (a damaged
   database, one a newer Conductor wrote), where the run page refuses
@@ -287,9 +288,13 @@ starting: no section and no line.
       it) means none reported. So one machine has a different key at
       every server and a new one at each restart of a server: two
       servers' session lists cannot be joined by it. The server computes
-      its own row's key the same way, from its own machine id read once
-      at start in the composition root (`cli.runServe`, never in a
-      route), so its row and its hosts on the same machine share a key.
+      its own row's key from its own machine id, read once at start in
+      the composition root (`cli.runServe`, never in a route), through
+      the one function the hub keys a host by:
+      `machine.Group(machine.Key(id, serverKey))`, the key its hub keeps
+      for a host of its own machine. So its row and a host on the same
+      machine hold one key, made by one function and compared as equal
+      strings (I7).
     - **Never to a switchyard.** A registration to a switchyard
       (`Options.Switchyard`, and the uplink of a server publishing there)
       leaves `machine` out, as it leaves out the OS user and the branch
@@ -306,9 +311,14 @@ starting: no section and no line.
   - Both are read by a new package, `internal/machine` (standard library
     only): `machine.Dir() (string, error)` (`os.UserConfigDir()`'s
     `conductor`), `machine.ID(dir) (string, error)`, `machine.Key(id
-    string, serverKey []byte) string` and `machine.Platform() string`,
-    the last through a seam a test gives its own release string, and
-    `ID` taking its directory so a test gives its own.
+    string, serverKey []byte) string` (what a host sends),
+    `machine.Group(sent string) string` (what a server keeps and serves
+    for a key sent: the first 16 bytes of SHA-256 of `"conductor host
+    machine\x00"` and the key, 32 lowercase hex digits; the only place
+    that hash is made, called by the hub for a host and by the
+    composition root for the server's own row) and `machine.Platform()
+    string`, the last through a seam a test gives its own release
+    string, and `ID` taking its directory so a test gives its own.
     `internal/hostagent` and
     `internal/api` both use it (`internal/api` does not import
     `internal/hostagent`, and neither should for this);
@@ -317,13 +327,15 @@ starting: no section and no line.
   refused with `ErrBadRegister`, as `Name` and `User` are), keeps
   `HostInfo.Version` (dropped today; at most 64 bytes, the pattern of
   `version.Version`), and keys the session. `hostKey` is always 32
-  lowercase hex digits: the first 16 bytes of SHA-256 of `"conductor host
-  machine\x00"` and `machine` when the host reports one (`hostKeyFrom`
-  `machine`); otherwise `ownerOf(instance)`, the 32-hex hash the hub
+  lowercase hex digits: `machine.Group(machine)` when the host reports
+  one (`hostKeyFrom` `machine`), the function the server's own row's key
+  is made by; otherwise `ownerOf(instance)`, the 32-hex hash the hub
   already keeps of the host's instance (`process`: one process); and for
   the oldest hosts, which send no instance either (`Hub.Register` leaves
   `owner` empty), a hash of the session's own id (`session`), so two
   such hosts never share a key. The key the host sent is never served.
+  The three are hashed under three different prefixes, so a key from a
+  process or a session never equals a machine's, nor this server's own.
   The card of a key not from a machine says "one process; this host does
   not report its machine" (or "one session").
 - `session.Info` gains `hostPlatform`, `hostVersion`, `hostKey`,
@@ -384,18 +396,49 @@ once per request; nothing is persisted.
     has, at least one is in its grace; `since` the earliest
     `hostAwaySince`), or `seen` (no session left; `since` when the last
     one went, from the recently seen table below).
+  - A host row is built from the registry's list (`session.Info` with a
+    `hostKey`, the list `GET /api/sessions` serves), never from the
+    hub's own map, which keeps a removed session until its next
+    `Expire` (I10).
   - `sessions.running` counts the machine's sessions that are starting,
-    running or away; `waiting` those whose attention is `needs_input`
-    (the same rule as the Yard's count, `needingInput`).
+    running or away; `waiting` those that wait for a person by one
+    predicate, `waitsForPerson(info)`, the only one the page, its links
+    and the host summary (PR-5) count by: the session not ended, its
+    attention `needs_input` and its `Answered` empty. A question that
+    keys typed in its terminal answered keeps `needs_input` until the
+    screen shows it gone, and waits for no one: the engine's `refresh`
+    (`internal/crew/run.go`) and the Yard (`liveAttention` before
+    `needingInput`, `web/app/utils/attention.ts`) leave it out the same
+    way (#258). From PR-4 the predicate also asks `Attention.Decision`
+    empty: a decision's mirror is counted as its decision (I8).
   - `runs` lists the open managed runs on this data directory, newest
     first, and `ledger` says who holds them, decided each time a reply is
     built, from the ledger the server opened (the one its engine was
-    given):
+    given). The list is the ledger's, for every holder (I1): a new
+    bounded reader, `Ledger.OpenRuns(ctx, n)`, gives the runs whose rows
+    are open (state `running`, or `interrupted` with no `continued_by`:
+    a run a recovery interrupted, whose continuation is not made;
+    newest first, at most n, and the count of the rest), read first;
+    the engine's snapshot then stands in for each row it holds, and adds
+    a run it holds open that was launched after the read; it never hides
+    an open row it does not hold. The engine holds only what it
+    launched or continued in this process: `Ledger.Recover` marks a run
+    its owner left `interrupted` without closing it and launches
+    nothing (`internal/crew/ledger/transition.go`), and `Engine.List`
+    lists only its own order (`internal/crew/run.go`), so after a
+    restart, or a lock taken late, the open rows are on the page only
+    through the ledger.
     - The ledger is this server's and writable (`ReadOnly` false):
-      `holder` `this`, and `runs` are the engine's open runs
-      (`engine.List()`, a run whose state is not final), each with its
-      `waiting` (the run's `needsInput`, and from PR-4 its open
-      decisions).
+      `holder` `this`. A run the engine holds is its snapshot (`state`,
+      `paused` and `waiting` as `engine.List()` gives them, `waiting`
+      its members' sessions that wait by `waitsForPerson`, and from
+      PR-4 its open decisions), and one it lists as final (finished or
+      stopped since the read) is left out; a run only the ledger has
+      (interrupted, or recovered
+      after a restart or a late lock) is its row as committed, with
+      `waiting` 0 before PR-4, since none of its attempts runs in any
+      process and a question goes with its attempt, and its open
+      decisions from PR-4.
     - This server holds the lock but its ledger is read-only (a new
       reader, `Ledger.Owned`, true while this ledger holds the lock, and
       `ReadOnly` true: a damaged database, a newer schema, a file it may
@@ -414,14 +457,13 @@ once per request; nothing is persisted.
     For every holder but `this`, the engine holds no managed run (a
     read-only server refuses managed launches with 503
     `ledger_unavailable`, and a run enters the engine only by a launch,
-    `internal/crew/run.go`), so `runs` are read from the database the
-    ledger opened read-only, through a new bounded reader,
-    `Ledger.OpenRuns(ctx, n)` (the rows not closed, newest first, at most
-    n, and the count of the rest), each with its state and paused flag as
-    committed and `waiting` `null`: a run's attention is in the memory
-    of the process that holds it, and the page says "counted on the
-    server that holds it". A ledger with nothing to read gives no runs,
-    and `note` says so. `heldBy` on each run is `holder`.
+    `internal/crew/run.go`), so `runs` are the same `Ledger.OpenRuns`
+    rows, read from the database the ledger opened read-only, each with
+    its state and paused flag as committed and `waiting` `null`: a run's
+    attention is in the memory of the process that holds it, and the
+    page says "counted on the server that holds it". A ledger with
+    nothing to read gives no runs, and `note` says so. `heldBy` on each
+    run is `holder`.
   - The page shows a `note` from the lock file "as that server wrote
     it": nothing trusts it (`internal/store/lock_unix.go`). The probe is
     the only lock try the page causes, let go at once; a server waiting
@@ -446,21 +488,32 @@ once per request; nothing is persisted.
   was left out.
 - **Recently seen.** `hostsSeen`, a table in memory keyed by machine key:
   name, platform, version and the time the machine's last session left.
-  The hook is the registry's `OnRemove` (`internal/api/server.go`, which
-  `Hub.Expire` reaches through `registry.Remove` after `DisconnectGrace`,
-  as an ended session's removal does); `Hub.OnChange` reports no
-  removal. `hostsSeen` has its own lock: the removal hook, under it,
-  records the machine only when the hub then lists no session of that
-  key, and a register's `OnChange`, under it, drops the key's entry, so
-  of a register and a last removal the second decides; the reply also
-  drops an entry whose key has a live session. At most 64 entries, the
+  The hook is the registry's `OnRemove` (`internal/api/server.go`),
+  which every removal of a session reaches: `Hub.Expire` after
+  `DisconnectGrace` (through `registry.Remove`), `DELETE
+  /api/sessions/{id}` (`registry.Remove`) and the retention sweep of
+  ended sessions (`removeIf`); `Hub.OnChange` reports no removal.
+  `hostsSeen` has its own lock: the removal hook, under it, records the
+  machine only when the registry then lists no session of that key, and
+  a register's `OnChange`, under it, drops the key's entry, so of a
+  register and a last removal the second decides (`Hub.Register` adds
+  to the registry before its `OnChange`). The registry decides, never
+  the hub: `Registry.Remove` drops its own entry before it calls the
+  hook, while the hub keeps its entry of an ended session until its next
+  `Expire`, which then finds the registry without it and calls no hook
+  (`internal/session/registry.go`, `internal/signal/hub.go`), so a check
+  of the hub's map would record nothing for a machine whose last session
+  was deleted or swept. The reply also drops an entry whose key has a
+  listed session. At most 64 entries, the
   oldest dropped first, an entry dropped after 24 hours or when the
   machine connects again; empty after a restart, said on the page
   ("since this server started at 09:12").
 - **Names.** This server's `name` is `os.Hostname()` (at most 120 bytes,
   the hub's bound for a host name), its `platform` `machine.Platform()`,
-  its `key` its own machine id keyed by its server key (PR-1), computed
-  at start. A host machine's name is the newest of its
+  its `key` `machine.Group(machine.Key(its id, its server key))` (PR-1),
+  computed at start: the key its hub gives a host of its own machine, so
+  the comparison below is of two strings made by one function (I7). A
+  host machine's name is the newest of its
   sessions' `HostName`, its user the newest `HostUser`; two sessions of
   one machine that disagree show the newest and the card says
   "reported as 2 names". A host whose key is this server's own runs on
@@ -520,26 +573,48 @@ once per request; nothing is persisted.
 ### `internal/api`, `web/app` (PR-4): the decisions waiting
 
 - `hosts.go` counts what waits for a person on each run as distinct
-  items: the run's open DR1 decisions (`Ledger` reads DR1's PR-4 serves,
-  `state=open`, by `run_id`) and its tasks' questions that no decision
-  mirrors. DR1 mirrors an agent's decision into its session as a
-  question (`needs_input` with the mirror's question id, which the
-  record keeps), which the engine's `needsInput` already counts; such a
-  question is counted once, as its decision, never again as a question,
-  the way MB0 drops the question item a record replaces
-  (`TestADecisionRecordReplacesItsQuestion`). A decision answered but not
-  yet applied, or applied, waits for no person and is not counted, and
-  neither is its mirror while it still shows. This server's `decisions`
-  (its open decision records) sit beside `sessions.waiting`, which leaves
-  out the mirrored questions the same way. A hosted session's question
-  stays a question (DR1: a managed run's attempts are server sessions,
-  so no decision record is ever a host's).
+  items (I8): the run's open DR1 decisions and its members' questions
+  that no decision mirrors.
+  - **A decision counts on the run that holds it now.** The read is
+    DR1's `Ledger.Decisions` with the filter state `open` and current
+    run the listed run's id: `current_run`, never `run_id`, which only
+    names the run that opened it. A continuation moves its open and
+    answered decisions to itself (`Tx.MoveDecisions`), so a gate a
+    continuation inherited counts on the continuation, which waits for
+    it, and on no predecessor (`docs/plans/decisions.md`, the record and
+    its readers). One read per listed run of this server, each within
+    one page, since a run holds at most 64 open decisions; a run held
+    by another process keeps `waiting` `null`, as in PR-2.
+  - **A mirror is told by its session, never by a field the record
+    lacks.** DR1 mirrors an agent's decision into its session as a
+    question and serves the association in the session's attention,
+    `Attention.Decision` (`dr-<n>`, in `session.Info`); the mirror's
+    question id lives only on the engine's in-memory copy of the
+    decision, and no durable column keeps it. So PR-2's predicate
+    `waitsForPerson` asks `Attention.Decision` empty: a session whose
+    question names a decision is never counted as a question, whatever
+    that decision's state, and the decision is counted from its record
+    when it is open. A decision open with its mirror showing counts
+    once; answered but not yet applied, its mirror still showing, it
+    counts 0 (the record is not open, the mirror is no question);
+    applied, 0. The engine's own `NeedsInput` counts a mirror as a
+    member waiting, so a run's count here is made from its members'
+    sessions by the predicate, not taken from it; the way MB0 drops the
+    question item a record replaces
+    (`TestADecisionRecordReplacesItsQuestion`).
+  - This server's `decisions` (the open decision records of the runs it
+    holds, by `current_run`) sit beside `sessions.waiting`, which leaves
+    out the mirrors by the same predicate. A hosted session's question
+    stays a question (DR1: a managed run's attempts are server sessions,
+    so no decision record is ever a host's).
 - The page links each waiting count to MB0's page: a session's to
   `/decisions?item=question:<session>/<question>` when one question that
   no decision mirrors waits, a run's to `/decisions?item=decision:<id>`
   when one decision waits (a mirrored question's link is its decision's,
-  never the question MB0 leaves out), `/decisions` otherwise. It answers
-  nothing itself.
+  the `Attention.Decision` its session names, never the question MB0
+  leaves out; and a mirror of a decision no longer open links nowhere,
+  as it is counted nowhere), `/decisions` otherwise. It answers nothing
+  itself.
 - Tests below; `docs/protocol.md`'s row gains `decisions`.
 
 ### `internal/api`, `ext`, `ext/exttest`, `web/app` (PR-5): other machines
@@ -549,7 +624,8 @@ once per request; nothing is persisted.
   leave the machine: this server's platform and version, its counts
   (sessions running and waiting, runs held and waiting), and each host
   row's name, platform, version, availability, `since` and counts, at
-  most 32 rows and 16 KiB (`ext.MaxHostSummary`). Never a session's id,
+  most 32 rows and 16 KiB (`ext.MaxHostSummary`), every count made by
+  PR-2's predicate and run list (I1, I8). Never a session's id,
   command, folder, branch, a run's name or anything a terminal printed;
   never the OS user, the machine id or a machine key. Its type is
   `ext.HostSummary` (standard library only, with a `Valid` method, as
@@ -562,21 +638,52 @@ once per request; nothing is persisted.
   source kind, a computed document: a store name `syncHosts` (`hosts`)
   beside `data`, `ledger` and `dispatch`, registered with a build
   function (`a.computed(store, path, build func() ([]byte, error))`).
-  - **Marked**: the hooks the page's model already hears (the hub's
-    `OnChange`, the registry's `OnRemove`, the engine's run events) call
-    `a.computedChanged("hosts")`, which only arms a coalescing timer of
-    30 s (the adapter's clock seam) and never builds or waits. When it
-    fires, the adapter's goroutine builds the summary (outside the
-    adapter's lock; the build takes the hub's and the engine's own locks
-    as `GET /api/hosts` does, one at a time), hashes its bytes and marks
-    the entry pending only when the hash differs from the last
-    delivered.
+  - **Marked** (I9): by every change of what the summary is built from,
+    at the one place all of them pass, the server's event hub
+    (`internal/api/events.go`): its `session` sends (`publishIf` and
+    `publishLatest`, which a server session's change reaches through
+    `Server.localChange` and a hosted session's through the hub's
+    `OnChange` alike), its `removed` send (the registry's `OnRemove`,
+    every removal) and its `run` send (the engine's run events), and
+    from PR-4 its `decision` send, each call `a.computedChanged("hosts")`
+    on entry, whether or not a browser is told. These are the events the
+    page itself refreshes on (PR-3), so the summary follows what the page
+    would show: a standalone session's start, its question and its
+    answer mark it though no host connects and no run changes (the
+    engine's `OnChange` returns at once for a session outside a crew,
+    `internal/crew/handoff.go`, and the hub hears no server session). A
+    change no event tells (a `hostsSeen` entry passing its 24 hours,
+    another process taking or letting go the ledger's lock) is caught by
+    a check every 5 minutes on the adapter's clock seam, which builds and
+    marks only when the hash differs. `computedChanged` only arms a
+    coalescing timer of 30 s (the adapter's clock seam), takes the
+    adapter's own lock alone and never builds or waits. When it fires,
+    the adapter's goroutine builds the summary (outside the adapter's
+    lock; the build takes the hub's and the engine's own locks as `GET
+    /api/hosts` does, one at a time), hashes its bytes and marks the
+    entry pending only when the hash differs from the last delivered.
   - **Delivered**: the drain builds it again at delivery, so the latest
     model goes out, as a data document is read as it then is; the hash
     of what was acknowledged becomes the last delivered.
+  - **Revisions** (I9): the document's `Rev` is the source's own
+    sequence in the epoch, never left at its zero value: 1 for the first
+    bytes the drain hands the store in an epoch, and one more each time
+    it hands bytes whose hash differs from the bytes it last handed in
+    that epoch, acknowledged or not. A delivery retried with the same
+    bytes keeps its `Rev`; one retried after the model changed carries
+    the new bytes under the next `Rev`. So within an epoch revisions
+    rise with the contents, and a store that ignores a doc whose `Rev`
+    is not newer than the last it applied of that document, as `ext.Doc`
+    allows (`ext/continuity.go`) and the adapter's own model does
+    (`syncModel`, `internal/api/sync_test.go`), never keeps an older
+    summary after a newer one reached it, nor drops a newer one as
+    stale. A new epoch starts the sequence again at 1 with its replay,
+    as `Rev` orders the docs of one epoch only. `ext.Doc.Rev`'s comment
+    gains `hosts`: the summary's sequence in this epoch.
   - **Replayed**: every replay lists `hosts/summary` after the run
     pointers and before Dispatch's `log` doc, and a new epoch forgets the
-    last delivered hash, so each epoch delivers it once.
+    last delivered hash and starts the revisions again, so each epoch
+    delivers it once, as `Rev` 1.
   - **The allowlist's rule**, restated in the adapter's comment and in
     `docs/protocol.md`'s sync section: what reaches the sync store is
     `syncDataDoc`'s data documents, a run's pointer, Dispatch's
@@ -654,9 +761,12 @@ service's wire contract gains the two record kinds of PR-5 and the host
 summary document, with their bounds; the service keeps a server's last
 report time by a rule (every authenticated call of the device, at most
 one write a minute), writes a `device` record to every device of the
-workspace for each live server device (from identity's device record:
-name, kind, platform, version, last report) and deletes it when the
-device is revoked or retired, and relays a server's `hosts` summary to
+workspace for each live device of kind `server` (its name, platform and
+version from identity's feed, `device.enrolled` and `device.updated`, in
+the platform form this plan uses; its last report the service's own
+time of the device's calls, which identity does not carry; a signed-in
+`conductor host` is identity's kind `host` and is never listed) and
+deletes it when the device is revoked or retired, and relays a server's `hosts` summary to
 that person's other devices only (scope personal). Its tests: the
 contract's vectors for both kinds, the visibility rules (another
 member's devices see the `device` record, never the `hosts` summary),
@@ -696,7 +806,7 @@ asks:
 | (none) | a session of the machine registers (`Hub.Register`) | `connected` |
 | `connected` | its last connected session's link drops (`HostDisconnected`) while another is in its grace | `away`, `since` the earliest `hostAwaySince` |
 | `away` | a session reattaches (`attach`) | `connected` |
-| `away` or `connected` | its last session is removed (ended, or `Expire` after `DisconnectGrace`, 60 s) | `seen`, `since` the removal, held in `hostsSeen` for 24 h |
+| `away` or `connected` | its last session is removed from the registry (a `DELETE`, the retention sweep of ended sessions, or `Expire` after `DisconnectGrace`, 60 s) | `seen`, `since` the removal, held in `hostsSeen` for 24 h |
 | `seen` | a session of the machine registers | `connected`; the `hostsSeen` entry dropped |
 | `seen` | 24 h pass, the table passes 64, or the server restarts | gone from the page |
 
@@ -708,10 +818,21 @@ Invariants:
   its ledger owns it (writable, or read-only with its reason), another
   when `ledger.Held` finds it held at that moment (its runs read from the
   database it writes), none otherwise. The probe is the page's only try
-  of the lock and is let go at once. A remote run is never given a
-  holder: the page says which device reported it and when. A host never
-  holds a run (`Launchable` refuses `where: host` on `main`), and its
-  card says so.
+  of the lock and is let go at once. Every open run of the data
+  directory is listed under that holder, whether or not an engine holds
+  it in memory: the list is the ledger's open rows
+  (`Ledger.OpenRuns`), read for every holder, and the engine's snapshot
+  stands in for the rows it holds and never hides one it does not (a run
+  a recovery interrupted, the runs of a lock taken late). A remote run is
+  never given a holder: the page says which device reported it and when.
+  A host never holds a run (`Launchable` refuses `where: host` on
+  `main`), and its card says so. At stake in: Why and what happens (Runs
+  and who holds them), PR-2's `runs` and `ledger`, PR-5's summary counts
+  and its dropping of a pointer of this ledger's run, Acceptance A.3.
+  Built and tested in PR-2: `TestOpenRunsBounded`,
+  `TestHostsRunsHeldByThis`, `TestHostsRunsRecoveredHeldByThis`,
+  `TestHostsRunsTakenLate`, `TestHostsRunsHeldByOther`,
+  `TestHostsHeldHereReadOnly`, `TestHostsLockless`.
 - **I2. Nothing on the page acts on work.** Its only actions are links
   to existing pages of this server (`/runs/<id>`, `/sessions/<id>`,
   `/decisions`); a remote run or decision has no link and no control.
@@ -741,9 +862,70 @@ Invariants:
   written on the machine, outside every data directory; what a server
   is sent is a key keyed by that server's own key of this start, so two
   servers, or one server across a restart, see unrelated keys; a
-  switchyard is sent no key at all. The hub hashes the key again before
-  anything is kept or served, and neither the id nor a key is in an
-  export or the host summary.
+  switchyard is sent no key at all. The hub hashes the key again
+  (`machine.Group`) before anything is kept or served, and neither the
+  id nor a key is in an export or the host summary.
+- **I7. One machine is one card on this server's page.** The key a host
+  of this server's machine is kept under and the key of this server's
+  own row are made by one function, `machine.Group`, from one input,
+  `machine.Key(id, serverKey)` of the one `machine-id` file and this
+  start's server key, and compared as equal strings; nothing else makes
+  a machine's key, and a key from a process or a session is hashed under
+  another prefix and never equals one. At stake in: PR-1's server key
+  and `internal/machine`'s functions, the hub's `hostKey`, PR-2's
+  Names (`this.hosted`), Acceptance A.5. Built and tested in PR-1
+  (`TestGroupIsTheHubsKey`, `TestMachineKeyPerServer`) and PR-2
+  (`TestHostsHostOnThisMachine`, through a real registration).
+- **I8. What waits for a person is counted once, where it waits now.**
+  One predicate, `waitsForPerson` (not ended, `needs_input`, `Answered`
+  empty, and from PR-4 `Decision` empty), decides every question the
+  page and the host summary count and link; a decision counts on its
+  `current_run` while its record is open, and its mirror, told by the
+  session's `Attention.Decision`, is never a question. So a question
+  keys answered in its terminal, a mirror, and an inherited gate's
+  predecessor each count 0, and no count links to a question that no
+  longer waits. At stake in: PR-2's `sessions.waiting` and runs'
+  `waiting`, PR-3's links to sessions, PR-4's counts and links, PR-5's
+  summary counts. Built and tested in PR-2
+  (`TestHostsTerminalAnsweredNotWaiting`) and PR-4
+  (`TestHostsCountsOpenDecisions`, `TestHostsDecisionMovesWithContinuation`,
+  `TestHostsMirroredDecisionCountedOnce`).
+- **I9. The summary another machine holds is the model as it last
+  was.** Every change the page would show marks the summary (the event
+  hub's `session`, `removed`, `run` and, from PR-4, `decision` sends,
+  and the 5-minute check for what no event tells), and its revisions
+  rise with its contents within an epoch and start again with each
+  replay, so a store that orders by `Rev` holds, within the coalescing,
+  the 5-minute check and the delivery, the latest build and never an
+  older one. This is what appears only with a workspace's sync: with no
+  provider `local.Continuity` drops the document, and the page's own
+  first half never reads it. At stake in: PR-5's Marked, Delivered,
+  Revisions and Replayed, `ext.Doc.Rev`'s comment, Orderings. Built and
+  tested in PR-5: `TestSyncDeliversHostSummary`,
+  `TestSyncHostSummaryRevisions`,
+  `TestSyncHostSummaryFollowsStandaloneSessions`,
+  `TestSyncHostSummaryPeriodicCheck`, `TestSyncReplayListsHostSummary`.
+- **I10. A machine whose last session leaves this server is Last seen,
+  whichever way the session left.** The registry decides, both for the
+  cards and for `hostsSeen`: a host row is built from the registry's
+  list, and the removal hook, which every removal reaches (`Expire`, a
+  `DELETE`, the retention sweep), records the machine when the
+  registry then lists no session of its key; the hub's map, which
+  outlives a removal until its next `Expire`, decides nothing. At stake
+  in: PR-2's host rows and Recently seen, the availability table's
+  `seen` rows, PR-5's summary rows. Built and tested in PR-2:
+  `TestHostsSeenAfterExpire`, `TestHostsSeenAfterDelete`,
+  `TestHostsSeenAfterRetention`, `TestHostsSeenRegisterAndRemoveRace`.
+
+The item's five promises and the invariants that keep them: what a
+plain build shows, the first half whole with nothing registered (I1,
+I7, I8, I10; `TestHostsNoOtherWithoutSync`, `hosts-free.spec.ts`); what
+appears only with a workspace's sync (I4, I5, I9); what the page shows
+when the service is unreachable or the subscription has lapsed, the
+first half and one line (I4; `TestHostsOtherOnlyWhenCurrent`, PR-7's
+outage and lapse tests); who holds each run (I1, and I3 for a remote
+run's report); and that the page never offers or implies moving work
+(I2, the footer, Out of scope).
 
 **Orderings.** The page reads `GET /api/hosts` after the events it
 already gets (`session`, `removed`, `run`), so it can lag an event by its
@@ -752,11 +934,13 @@ meanwhile queued behind the read under way, and a reply of an older
 token's generation dropped (PR-3), so replies are applied in the order
 their reads began and the page never shows a state older than one it
 has shown. The sync document is marked pending after the model's change
-(the coalescing timer armed under no lock of the ledger or the hub, the
-build and the delivery made by the adapter's own goroutine), so a host
-summary on another machine lags by at most the 30 s coalescing plus the
-delivery. Of a register and a machine's last removal, the second decides
-`hostsSeen` (PR-2).
+(the coalescing timer armed from the event hub's sends under no lock of
+the ledger or the hub, the build and the delivery made by the adapter's
+own goroutine), so a host summary on another machine lags by at most the
+30 s coalescing plus the delivery, or the 5-minute check for a change no
+event tells, and its `Rev` rises with each new content in an epoch (I9).
+Of a register and a machine's last removal, the second decides
+`hostsSeen`, by the registry's list (PR-2, I10).
 
 **What each store holds.** `<os.UserConfigDir()>/conductor/machine-id`:
 33 bytes (the id and a newline), 0600, made once, outside every data
@@ -780,7 +964,7 @@ unknown fields, as HS1's PR-12 relies on too).
 | `HostInfo.version` kept | `internal/signal/hub.go`, `docs/protocol.md` | 64 bytes, `version.Version`'s pattern | `TestRegisterKeepsHostVersion` |
 | `session.Info` `hostPlatform`, `hostVersion`, `hostKey`, `hostKeyFrom`, `hostAwaySince` | `internal/session/info.go`, `protocol.ts` (`Session`), `docs/protocol.md` (sessions) | as above; `hostKey` 32 hex; `hostKeyFrom` one of three words | `TestHostedInfoCarriesHostFields` |
 | `GET /api/hosts` | `internal/api/hosts.go`, `protocol.ts` (`HostsReply`), `docs/protocol.md` (routes) | 256 KiB encoded, the halves' budgets, the field and row bounds | `TestHostsReplyBounded` |
-| the host summary document | `internal/api/sync.go`, `ext` (`HostSummary`), `docs/protocol.md` (sync) | 16 KiB, 32 rows | `TestHostSummaryValid`, `TestSyncDeliversHostSummary` |
+| the host summary document | `internal/api/sync.go`, `ext` (`HostSummary`, `Doc.Rev`'s comment), `docs/protocol.md` (sync) | 16 KiB, 32 rows; `Rev` from 1 in each epoch, rising with the contents | `TestHostSummaryValid`, `TestSyncDeliversHostSummary`, `TestSyncHostSummaryRevisions` |
 | remote kinds `device`, `hosts` | `ext` (`Remote`), `docs/protocol.md`; the sync service's contract (PR-6) | 1 KiB; 16 KiB | `TestRemoteDeviceAndHostsKinds` |
 
 ## Out of scope
@@ -848,7 +1032,10 @@ the reconnect).
 
 **`internal/signal`** (PR-1): `TestRegisterKeepsHostVersion`,
 `TestMachineKeyHashesTheKey` (what the host sent never in `Info`, the
-key 32 hex), `TestOlderHostKeyedByProcess` (no machine: the owner hash,
+key 32 hex), `TestGroupIsTheHubsKey` (I7: a register's `hostKey` is
+`machine.Group` of the key it sent, byte for byte, and a process's or a
+session's key never equals the `machine.Group` of any key in the test),
+`TestOlderHostKeyedByProcess` (no machine: the owner hash,
 `hostKeyFrom` `process`), `TestOldestHostsKeyedBySession` (several
 registrations with neither machine nor instance: each its own key),
 `TestHostAwaySinceSetAndCleared` (disconnect sets it; reattach: the
@@ -863,9 +1050,11 @@ start; a refused one carries none).
 
 **`internal/crew/ledger`** (PR-2): `TestOwnedAndReadOnly` (an owner
 writable; an owner whose database a newer schema wrote: owned and
-read-only with the reason), `TestOpenRunsBounded` (open rows only,
-newest first, at most n and the count of the rest, on a read-only
-ledger).
+read-only with the reason), `TestOpenRunsBounded` (open rows only:
+a running row and an interrupted one not continued listed; a finished,
+a stopped and an interrupted one continued left out, its continuation
+listed once; newest first, at most n and the count of the rest, on a
+writable and on a read-only ledger).
 
 **`internal/api`** (PR-2): `TestHostsThisServer` (name, platform,
 version, here, counts), `TestHostsGroupsAMachine` (three `conductor host`
@@ -874,10 +1063,25 @@ host name are two), `TestHostsAvailability` (connected, away with its
 `since`, seen after `Expire`, gone after 24 h through the table's clock
 seam, never a sleep), `TestHostsSeenAfterExpire` (the registry's
 `OnRemove` records the machine after `Expire`; a machine with a second
-session left records nothing), `TestHostsSeenRegisterAndRemoveRace` (a
+session left records nothing), `TestHostsSeenAfterDelete` and
+`TestHostsSeenAfterRetention` (I10: a machine's last hosted session
+ended and removed by `DELETE /api/sessions/{id}`, and another's by the
+retention sweep through its clock, while the hub still keeps each
+entry: the machine is Last seen at once, no card lists the session, and
+the hub's later `Expire` changes nothing), `TestHostsSeenRegisterAndRemoveRace` (a
 register and the last removal of one key in both orders, held at a gate
 in the hook: the second decides), `TestHostsSeenBounded` (65 machines,
-the oldest dropped), `TestHostsRunsHeldByThis`,
+the oldest dropped), `TestHostsTerminalAnsweredNotWaiting` (I8: a
+server session's and a run member's question shown, then answered by
+keys typed in its terminal while the screen still shows it, through the
+session's own terminal-answer seam: `waiting` 0 for the session, its
+machine, this server and the run, and no link to it; the screen
+cleared: still 0; a new question: 1), `TestHostsRunsHeldByThis`,
+`TestHostsRunsRecoveredHeldByThis` (I1: a server ended with a run
+running; a new server over the same data directory recovers it to
+`interrupted`, which its engine does not hold: the run listed `this`,
+`interrupted`, `waiting` 0; continued, the predecessor gone from the
+list and the continuation listed once, from the engine),
 `TestHostsRunsHeldByOther` (two servers over one data directory, as
 `serve` makes them, the later ends first: the first launches a run of
 the fake launcher; the second's reply lists that run from the database,
@@ -885,7 +1089,9 @@ the fake launcher; the second's reply lists that run from the database,
 the second's wait for the lock has given up, which the test sees in the
 second ledger's `ReadOnly` reason, never by a sleep: the next reply says
 `none`, never `other`), `TestHostsRunsTakenLate` (the first ended within
-the wait: the second takes the lock and says `this`),
+the wait: the second takes the lock and says `this`, and the first's
+run, which its recovery interrupted and its engine never launched, is
+listed under `this` from the ledger),
 `TestHostsHeldHereReadOnly` (a database a newer schema wrote:
 `this_read_only` with the reason), `TestHostsLockless` (the
 filesystem's refusal gives `none`), `TestHostsSwitchyardPublishing` (a
@@ -894,8 +1100,13 @@ fake publisher: `url`, `publishing`, `connected`),
 (every list past its bound and every field at its longest and full of
 characters JSON escapes: the reply within 256 KiB, each half within its
 budget, the `more` counts exactly what was left out),
-`TestHostsHostOnThisMachine` (a host registering with this server's
-own machine key: on `this` as `hosted`, no card of its own),
+`TestHostsHostOnThisMachine` (I7, through a real registration: the
+test server given a machine id, and a `hostagent` given the same
+machine directory dialing its `/ws/host`, reading the upgrade's header
+and registering with the key it computes; its session on `this` as
+`hosted`, `this.key` equal to the session's `hostKey`, no card of its
+own; a second test server, with another server key: that host's card
+there is its own, not that server's row),
 `TestHostsAdminOnly` (a host token, a share link and Brakeman's
 principal refused), `TestHostsWritesNothing` (the route over a server
 whose stores are observed: no commit, and no file made under the data
@@ -933,11 +1144,21 @@ start, stop, move, launch, continue or retry, checked again after a
 redraw the spec causes (a second host connecting). Counting only what the
 spec made, by its host name.
 
-**`internal/api`** (PR-4): `TestHostsCountsOpenDecisions` (two open, one
-answered: 2; by run), `TestHostsMirroredDecisionCountedOnce` (an open
-decision whose mirror shows: 1, its link the decision's; answered but
-not applied, its mirror still showing: 0; applied: 0),
-`TestHostsHostedQuestionStaysAQuestion`. vitest: the links' targets in
+**`internal/api`** (PR-4), each over DR1's records as DR1's own writers
+make them (`Tx.OpenDecision`, `Tx.Answer`, `Tx.MoveDecisions`,
+`TryAskDecision`) and as `Ledger.Decisions` and `session.Info` return
+them, never a fixture with a field DR1 does not store:
+`TestHostsCountsOpenDecisions` (two open, one answered: 2; by run),
+`TestHostsDecisionMovesWithContinuation` (I8: a gate open on run A, A
+interrupted and continued as B: B's `waiting` 1 and its link the
+decision's, A not listed and nothing counted for it; a decision
+answered on A before the continuation moved: counted nowhere),
+`TestHostsMirroredDecisionCountedOnce` (I8, the mirror told by the
+session's `Attention.Decision`: an open decision whose mirror shows: 1
+on the run and 0 on this server's `sessions.waiting`, its link the
+decision's; answered but not applied, its mirror still showing: 0 and
+no link; applied: 0; a member's own question beside it: 1 more, its
+link the question's), `TestHostsHostedQuestionStaysAQuestion`. vitest: the links' targets in
 `utils/hosts.test.ts`. Playwright: `hosts.spec.ts` gains a gate's
 decision on the example crew's run: the run's waiting count 1, its link
 opening `/decisions` on that item, drawn by MB0's PR-4.
@@ -953,7 +1174,20 @@ connection changes the summary: one delivery after the coalescing, the
 fake clock's seam; an unchanged model none; the bytes delivered the
 model as it is at delivery), `TestSyncReplayListsHostSummary` (a replay
 lists `hosts/summary` after the pointers and before the `log` doc; a new
-epoch delivers it again though unchanged), `TestSyncNoHostSummaryOnASwitchyard`
+epoch delivers it again though unchanged, as `Rev` 1),
+`TestSyncHostSummaryRevisions` (I9: three changes of the model, a
+delivery that fails and is retried once with the same bytes and once
+after the model changed, then a replay; each doc's `Rev` above the last
+of its epoch, a retry of unchanged bytes the same `Rev`, the new epoch
+from 1; applied through `syncModel`, which drops a `Rev` not newer, the
+store holds the model as it last was after each step),
+`TestSyncHostSummaryFollowsStandaloneSessions` (I9: a server session in
+no run and no host connected: its start, its question, its answer and
+its removal each deliver a summary whose counts are the model's after
+the coalescing, through the fake clock, with no host or run activity),
+`TestSyncHostSummaryPeriodicCheck` (I9: a `hostsSeen` entry passing its
+24 hours through the table's clock: delivered at the next 5-minute
+check; an unchanged model: no delivery), `TestSyncNoHostSummaryOnASwitchyard`
 (a switchyard with a fake sync provider: no `hosts` document, in a
 delivery or a replay), `TestHostSummaryLeavesOutTheLocal` (a session id,
 cwd, branch, run name, user, machine id and machine key never in the
@@ -1061,14 +1295,22 @@ protocol places. No page yet; `GET /api/sessions` carries the new
 fields, which the sidebar ignores. Tests: `internal/proto`,
 `internal/machine`, `internal/hostagent`, `internal/signal`,
 `internal/session`, `internal/api` above, and the web checks for
-`protocol.ts`. Ordering with HS1's PR-12
+`protocol.ts`; I7's half here is `machine.Group`, the one maker of a
+machine's key, proved by `TestGroupIsTheHubsKey`. Ordering with HS1's PR-12
 and MB0's PR-6, which touch the same three packages: whichever merges
 second rebases; never beside them.
 
-**PR-2**: `hosts.go`, the reply and its budgets, `hostsSeen` on the
-registry's `OnRemove`, the holder probed per reply, `Ledger.Owned` and
-`Ledger.OpenRuns`; the route's row. Tests: `internal/api` and
-`internal/crew/ledger` above, and the web checks for `protocol.ts`.
+**PR-2**: `hosts.go`, the reply and its budgets, the host rows and
+`hostsSeen` decided by the registry's list on its `OnRemove`, the
+predicate `waitsForPerson`, the holder probed per reply, `Ledger.Owned`
+and `Ledger.OpenRuns` read for every holder with the engine's snapshot
+standing in for the runs it holds; the route's row. Tests:
+`internal/api` and `internal/crew/ledger` above, and the web checks for
+`protocol.ts`; the invariants this PR builds and the tests that prove
+them: I1 (`TestOpenRunsBounded`, `TestHostsRunsRecoveredHeldByThis`,
+`TestHostsRunsTakenLate`), I7 (`TestHostsHostOnThisMachine`), I8's
+first half (`TestHostsTerminalAnsweredNotWaiting`), I10
+(`TestHostsSeenAfterDelete`, `TestHostsSeenAfterRetention`).
 
 **PR-3**: the page, `HostCard.vue`, `HostRunRow.vue`, `utils/hosts.ts`,
 the nav, the bottom bar and the palette; `hosts.spec.ts`; the features
@@ -1076,14 +1318,19 @@ entry with Acceptance part A's record (written from what was seen, by
 hand, before the PR is marked ready). After this PR the first half is
 shipped.
 
-**PR-4**: the decision counts, a mirrored question counted once as its
-decision, and the links, once DR1's routes and MB0's PR-4 are on `main`.
-Tests above.
+**PR-4**: the decision counts by `current_run`, a mirror told by its
+session's `Attention.Decision` and counted once as its decision, and the
+links, once DR1's routes and MB0's PR-4 are on `main`. Tests above; I8's
+second half: `TestHostsDecisionMovesWithContinuation`,
+`TestHostsMirroredDecisionCountedOnce`.
 
 **PR-5**: `ext.HostSummary` and (if CS1's OS-4 has not) the two remote
-kinds; the adapter's computed source and its document; the `other`
+kinds; the adapter's computed source and its document, marked from the
+event hub's sends and the 5-minute check, its revisions; the `other`
 model; the page's section; `hosts-free.spec.ts`; the features entry
-completed. Tests above. This is the
+completed. Tests above; I9: `TestSyncHostSummaryRevisions`,
+`TestSyncHostSummaryFollowsStandaloneSessions`,
+`TestSyncHostSummaryPeriodicCheck`. This is the
 last open-source PR, and it ends the item's open-source work.
 
 **PR-6 and PR-7**: in the cloud and premium repositories, in their own
@@ -1156,11 +1403,59 @@ not choose (the Program, section 3.1).
     - a sync status that names this server's own device id and name, so
       the page can tell itself from the workspace's other servers;
     - a host (`conductor host`) never listed as a server device that
-      holds runs.
+      holds runs. Identity answered this, with the platform's and the
+      version's forms and the device's name and platform on its feed, in
+      its amendment (its own device kind `host`, and every list of a
+      workspace's servers taking kind `server` alone); the last report
+      is the sync service's own time, as identity carries none.
     A remote run's waiting count comes only from the decision copies
     sync shares. PR-5 waits for these by name (CS1's OS-4 in this
     repository, CS1's and ID1's hosted rows for PR-6 and PR-7); if
     CS1's OS-4 takes the two kinds, PR-5 only reads them.
+
+## Waiting on the sync plan
+
+The sync plan (CS1's, in the cloud repository, under review) is
+answering this plan's needs (Owner decisions, 11) in its current round;
+at the head this plan was last checked against (2026-11-06) the answers
+had not landed. Each place below depends on one still open, and PR-5 to
+PR-7 are not cut into issues until it is settled; where the sync plan
+answers otherwise, this plan takes its answer. The first half (PR-1 to
+PR-4) depends on none of them.
+
+1. **The `device` and `hosts` remote kinds.** The sync plan's remote
+   record kinds are `decision`, `pointer` and `pins`. At stake: PR-5's
+   "Two record kinds", its `machines`, the Protocol table's remote
+   kinds row, What each store holds (the remote files' names), PR-6 and
+   PR-7. Until answered, PR-5 adds the two kinds as written.
+2. **Where a device's name, platform and last report reach a server.**
+   The sync plan names a service route listing a workspace's devices
+   for this page, where this plan asks for `device` records. The open
+   source reads only what the provider hands `ext.Host`, so if the
+   route stays, PR-7 turns its reply into `device` records and PR-5 is
+   unchanged. At stake: PR-5's `machines`, PR-6, PR-7, I3.
+3. **The sync status names this server's own device.** The sync plan's
+   status report carries a state, its time, the changes waiting, those
+   withheld and the answer link, and no device id or name. At stake:
+   PR-5's dropping of this server's own rows (`TestHostsOtherDropsThis`)
+   and PR-7. Until answered, PR-5 adds the two fields to the report if
+   CS1's OS-4 has not.
+4. **The last-report rule.** The sync plan keeps a device's last report
+   time and does not yet say which calls move it, or how often it is
+   written. At stake: I3, Last reported on the page, PR-6, whose rule
+   (every authenticated call, at most one write a minute) stands until
+   answered.
+5. **The `hosts` document, personal scope, the same person's devices
+   only.** The sync plan's documents are pointers, decisions and UI
+   state, and its field-by-field allowlist has no row for a host
+   summary. At stake: PR-5's allowlist rule and I5, Owner decisions 6,
+   PR-6 and PR-7; until answered, nothing of the summary is relayed.
+6. **A remote run's waiting count from the decision copies.** The sync
+   plan's copies carry each decision's state as last reported; whether a
+   copy names the run that holds the decision now (DR1's `current_run`,
+   I8) or only the run that opened it is not stated. At stake: PR-5's
+   `decisions.open` per machine and `TestHostsOtherMachines`; until
+   answered, the count is per device, never per run.
 
 ## Acceptance
 
