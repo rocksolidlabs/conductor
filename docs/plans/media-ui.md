@@ -379,7 +379,14 @@ server and `exttest.FakeHost`, both changed in the same row.
   it reads that field (its protocol version); the host uses them for that
   peer alone and its registration's list otherwise; an older host keeps
   the registration's list, which then carries the configured servers
-  alone. **A host's own explicit list comes first**: a host started with
+  alone. That ask is made on the viewer's own connection before the
+  hosted session sends `viewer_join`, never under the session's lock or
+  on the host's connection, under the guard with `ICEWait` and cut short
+  by the viewer's end, so a provider that hangs delays that one viewer's
+  join by at most `ICEWait` and holds nothing of the session, its host or
+  its other viewers (`TestHostViewerICEAskHoldsNoSession`: the provider
+  hanging in that ask while the host's output reaches a viewer already
+  in and another viewer joins). **A host's own explicit list comes first**: a host started with
   `--stun` (`internal/cli/host.go`; `Options.ICEServers`, which
   `internal/hostagent/agent.go` puts over the registration's list today)
   uses that list for every peer, as on `main`, and its `register` does
@@ -396,9 +403,9 @@ server and `exttest.FakeHost`, both changed in the same row.
   tell an empty review or run room's scope before anyone is in it; the
   guard matches the answer's rooms to the refs by kind, id and home); at
   most `MaxRoomRefs` (32) per call. `RoomsAnswer {Available bool, Rooms
-  []RoomState}`, **one `RoomState` for each ref asked, in the order
-  asked, an empty room included**, so an empty room and an unknown ref
-  never look the same. `RoomState {Kind, ID, Home, Room, Since time.Time
+  []RoomState}`, **one `RoomState` for each ref asked, an empty room
+  included**, matched to the refs by kind, id and home in whatever order
+  it comes, so an empty room and an unknown ref never look the same. `RoomState {Kind, ID, Home, Room, Since time.Time
   (zero while empty), Scope ("d": only this server's principals may join;
   "w": other servers' operators the provider admits too), InviteURL (an
   `https://` URL of at most 512 bytes that brings a person with no server
@@ -444,7 +451,8 @@ server and `exttest.FakeHost`, both changed in the same row.
   the guarded value, through `extCall` with `ICEWait`, answering
   `RoomsAnswer{}` (not available) for a provider without `RoomLister`,
   and refusing (not available) an answer that is not exactly one valid
-  state per ref asked, in order, so a provider can neither show a room
+  state per ref asked, matched by kind, id and home, so a provider can
+  neither show a room
   for work this server did not ask about nor leave one out.
 - **`ext/exttest`**: `FakeMedia` implements `RoomLister` with `SetRooms`
   and `RoomsRequests()`, and records each `ICERequest`; `FakeHost`
@@ -544,7 +552,7 @@ Room service to app:
 | `ice` | `iceServers` (fresh relay credentials) |
 | `ending` | `at` |
 | `ended` | `why` (`EndReasons`: `left`, `removed`, `access`, `unconfirmed`, `elsewhere`, `time`, `unavailable`), `by?` `{person, name}` |
-| `error` | `code` (`rate`, `media_kind`, `not_allowed`, `no_room`, `bad_frame`), `message` (one line, at most 200 bytes) |
+| `error` | `code` (`rate`, `media_kind`, `not_allowed`, `no_room`, `bad_frame`), `message` (within the frame's bound; never shown or logged: the screens word an error by its `code`) |
 
 Close codes, constants of `ext`: `4400` bad frame or no `join`, `4401`
 bad ticket, pass or resume token, `4403` not allowed (the close reason
@@ -753,21 +761,22 @@ real kind, `internal/roomfake` holds:
   replay contract asks (`Store.Replay(ctx, op, intent, args)`,
   `internal/dispatch/ops.go`, which compares the operation's
   fingerprint of its intent and arguments):
-  - **The arguments are the record, never the destination.**
-    `LinkHuddleArgs {Kind, ID, Home, Room, Since, Ended, People, More}`
-    is the `HuddleRecord` as the provider gave it, and nothing the server
-    reads; the ticket the link goes on is resolved after the replay and
-    is not in the fingerprint, so a run moved to another ticket between
-    a try and its retry gives the same fingerprint. The op id is `h-`
-    and 30 characters of base32 of the SHA-256 of `Room` and `Since`; a
-    retry carries the same record (the provider's contract, checked by
-    `exttest`), and a different record under the same room session is
-    `op_conflict`.
+  - **The arguments are the room session, never the destination.**
+    `LinkHuddleArgs {Room, Since}`, the room session the provider
+    names, is what the operation's fingerprint covers; the rest of the
+    `HuddleRecord` (`Kind`, `ID`, `Ended`, `People`, `More`) is the
+    link's content, taken from the call that writes it, and the ticket
+    the link goes on is resolved after the replay. So a retry finds the
+    first answer whatever else it carries: a run moved to another
+    ticket, or a person renamed, between a try and its retry changes
+    nothing, as the specification asks (a second call for the same room
+    and `since` writes nothing). The op id is `h-` and 30 characters of
+    base32 of the SHA-256 of `Room` and `Since`.
   - **Only a done receipt answers nil.** `found` with a done receipt (a
     repeat, or after pruning the link's add row found by the changes
     log's first row with the same fingerprint, as `prunedAnswer` does
-    for `link.add`): nil, nothing written. `found` with a kept refusal
-    or `op_conflict`: that refusal as an error (`ErrHuddleRefused`
+    for `link.add`): nil, nothing written. `found` with a kept
+    refusal: that refusal as an error (`ErrHuddleRefused`
     wrapping its words), so the provider never takes a huddle that was
     not recorded as recorded. Not found (never run, or refused and its
     receipt pruned, which leaves no row): the ticket resolved now as the
@@ -796,7 +805,7 @@ earlier huddles"), so every replica holding the same links shows the
 same 200 (`TestHuddleLinksMergeConverge`: two replicas of 150 each,
 batches delivered in both orders and repeated, the same stored set and
 the same 200 read on each). A new operation `link.huddle`
-(`Store.AddHuddle(ctx, ticketID, LinkHuddleArgs, op Op)`) writes it with
+(`Store.AddHuddle(ctx, ticketID, LinkHuddleArgs, HuddleLink, op Op)`, the link's content beside the arguments) writes it with
 one receipt and the link's fingerprint (so a pruned receipt still
 replays, as `link.add`'s does), its actor `provider:<name>` (at most 49
 bytes, inside `MaxActor`), its op id as above. The link's `ref` is
@@ -1082,13 +1091,21 @@ in the protocol section).
   and a socket that does not drain (the outgoing queue or
   `bufferedAmount` past its bound, closed by the client) start
   **reconnecting**: a new socket with `resume` (backoff 0.5 s doubling to
-  8 s). 60 s after the socket closed with no `joined` since, the call
+  8 s; a first `join` that got no `joined` has no token to resume with,
+  so the client takes the `4401` branch below at once: one fresh ticket
+  and `join`). 60 s after the socket closed with no `joined` since, the call
   ends with the unreachable words. A socket that stays open is the room
   service's word: the app sends no keepalive (the protocol has none) and
   never ends a call because a room is quiet. So a room service that
   stops answering while its socket stays open is not noticed by the
   app; one that stops (its process ended, its machine's connection
-  closed) closes the socket, and the call ends at 60 s (I11).
+  closed) closes the socket, and the call ends at 60 s (I11). A person
+  is never held by a quiet room service: the two browsers' connection
+  carries on as the room service last left it, Leave ends the call on
+  their side at once with no answer needed from the room service (every
+  track stopped, every peer connection closed, the socket closed), and
+  nothing of a session, a run or a decision waits on the room service
+  or its socket (I4).
 - **Which refusals end the call** (I14). A resume's answer is read by
   its close code, and only one is recoverable:
   - `4401` (the resume token unknown, used or past its minute): the
@@ -1209,7 +1226,15 @@ in the protocol section).
   certificate's next renewal fails (six days at most) while a phone
   cannot load it, until the app has mapped the port again (at its
   lease's half, or at its next start). On Linux the server's own mapper
-  withdraws the address at once, as on `main`.
+  withdraws the address at once, as on `main`. What a person sees in that
+  time: on the phone, the browser's own words that the address cannot
+  be reached, never a Conductor page that half works; in the desktop
+  app, from the moment its renewal of the mapping is refused, the same
+  one line on the Settings page as for a mapping refused at start, until
+  the router takes it again; the app's own window, over loopback, works
+  throughout. No huddle, session, run or decision on this server depends
+  on the address (`router-map.test.ts`: a renewal refused later
+  reported as at start).
 - **Tests** (PR-14): desktop, `launcher-wsl.test.ts`,
   `tcp-forwarder.test.ts`, `firewall.test.ts`, `router-map.test.ts`;
   Go, `TestServeTLSFromAnEmptyDataDir` (Tests per surface). The words
@@ -1268,8 +1293,11 @@ provider implements them, and its room service passes their vectors, at
 the tag that defines them. This plan asks of a provider and its room
 service nothing the specification does not give: review round 3 took
 out the three places where it did (`ping` and `pong`, a recipient on
-`RoomInvite`, and an echo confirming one sharer), and each promise that
-rested on one is now narrower (Changed in review round 3). Where it
+`RoomInvite`, and an echo confirming one sharer) and the final check
+three more (`Rooms` answering in the order asked, a retry of
+`RecordHuddle` carrying the same record, and a 200-byte bound on an
+`error`'s message), and each promise that rested on one is now narrower
+(Changed in review round 3, Changed in the final check). Where it
 states more than the specification, the more is the open-source side's
 alone and asks nothing of a provider: `offered` on a server of several
 principals, the reply bounds of this server's own routes, the client's
@@ -1310,12 +1338,12 @@ its own, which the client follows):
   the `snapshot`; a full coalescer set sends `room {}` rather than drop a
   ref.
 - `RecordHuddle`: the operation's earlier answer looked for first, by
-  its arguments (the record, never the ticket); a done answer is nil, a
+  its arguments (the room session, never the ticket); a done answer is nil, a
   kept refusal is that refusal; only then the ticket resolved, then
   Dispatch's `link.huddle` committed with its receipt, then nil to the
   provider; a provider that calls again after a crash, after the run
-  moved to another ticket, or after the receipt was pruned, gets the
-  first answer and nothing is written twice (`TestRecordHuddleOnce`).
+  moved to another ticket, after a person in it was renamed, or after the
+  receipt was pruned, gets the first answer and nothing is written twice (`TestRecordHuddleOnce`).
 - `room_invite` events are pending at most 32, one per room, the oldest
   dropped; the provider's call never waits on a client.
 - On a reconnect: senders silenced and received tracks muted on entering
@@ -1384,7 +1412,8 @@ its own, which the client follows):
   `joined` since, the call ends 60 s after the close; a quiet open socket
   ends nothing (`roomClient.test.ts` on fake timers: a close, then
   resumes unanswered, ends at 60 s; ten quiet minutes on an open socket
-  end nothing; `huddle-states.spec.ts` through the fake's `stop`).
+  end nothing, and Leave then ends the call at once with no frame
+  answered; `huddle-states.spec.ts` through the fake's `stop`).
 - I12. No release build contains a fake (`TestReleaseLeavesOutTheFakes`).
 - I13. No peer connection outlives a gap in the room service's word:
   nothing is sent or played while the client is `reconnecting`, every
@@ -1495,8 +1524,9 @@ notices change):
   (`Scope`, `InviteURL` `https://` only and at 512 bytes and one past,
   `Via`), `TestRoomInviteValid`, `TestHuddleRecordValid`.
   `ext/exttest`: `TestMediaCheckCatchesInvalidJoin`,
-  `TestMediaCheckRoomLister` (a lister that answers late, invalid, out of
-  order, or not one state per ref is caught), `TestFakeMediaRooms`,
+  `TestMediaCheckRoomLister` (a lister that answers late, invalid, or
+  not one state per ref is caught; one answering in another order
+  passes), `TestFakeMediaRooms`,
   `TestFakeHostRecordsRoomDoors`. `ext/local`: `TestLocalMediaListsNoRooms`.
   `internal/api`: `TestGuardMediaJoinValid` (an invalid join is ok
   false), `TestGuardRoomsLateFailingPanicking`,
@@ -1509,7 +1539,8 @@ notices change):
   `TestICEEndedQueueBounded`, `TestICEConnNeverReused`,
   `TestHostViewerGetsItsOwnServers` (two viewers, the second joining long
   after registration), `TestHostPeerToLinkViewerGetsNoProviderTURN`,
-  `TestOlderHostGetsNoPerViewerServers`, `TestHostICEPrecedence` (a
+  `TestOlderHostGetsNoPerViewerServers`, `TestHostViewerICEAskHoldsNoSession`,
+  `TestHostICEPrecedence` (a
   host with `--stun` uses it for every peer and is asked no per-viewer
   servers; a host that reads them uses the viewer's; one that does not,
   the registration's); `internal/proto`: the host messages' new fields
@@ -1574,7 +1605,8 @@ notices change):
   to another ticket, replayed by its arguments; a retry after the
   receipt was pruned, answered from the link's fingerprint; a retry of
   an operation refused, which answers the refusal and never nil; a
-  different record under the same room session, `op_conflict`),
+  retry carrying other names or another end under the same room
+  session, which gets the first answer and writes nothing),
   `TestRecordHuddleNoTicketWritesNothing`,
   `TestRoomFaultsTouchNoSession`; `internal/dispatch`:
   `TestHuddleLinkRefusedOnLocalWrite`, `TestAddHuddleReplays`,
@@ -1800,7 +1832,7 @@ The eight of the Program's section 2.5:
 
 ## The PRs
 
-Each PR is one issue and one branch cut from `main`, a draft PR at its
+Every row is in this repository. Each PR is one issue and one branch cut from `main`, a draft PR at its
 first commit, the checks for its surfaces before every push, its body
 ticking the open-core checklist and naming the agent that made it. Each
 leaves `main` working and green on its own: the seam's doors are stubs
@@ -1841,9 +1873,12 @@ decisions, 14).
 | PR-9 | web, desktop, roomfake: screen sharing | `web/app`, `web/e2e`, `desktop`, `internal/roomfake`, `docs/features.md` | PR-11 (`web/app`, `docs`), PR-14 (`desktop`) | none | ~650 + 650 |
 | PR-10 | web, desktop, roomfake: cameras | `web/app`, `web/e2e`, `desktop`, `internal/roomfake`, `docs/features.md` | PR-9 | none | ~450 + 450 |
 
-Should DR1's, MB0's or RV1's rows be late, PR-9 and PR-10 may go before
-PR-8 and PR-11, these then merging `main` in, and the order is recorded
-on their PRs.
+Should DR1's, MB0's or RV1's rows, or Program item ID1's open-source
+rows, be late (ID1's have no issue in this repository yet), PR-9 and
+PR-10 may go before PR-8 and PR-11, PR-9 then depending on PR-6 (for
+`web/app`) and PR-14, the later rows merging `main` in, and the order
+is recorded on their PRs; screen sharing and cameras never wait on
+another item.
 
 **PR-1** (`ext`, `ext/exttest`, `ext/local`, `internal/api`): `RoomJoin`'s
 two fields and `ValidAt`; `RoomRequest`'s three fields, bounds and
@@ -2044,6 +2079,14 @@ topology is measured and decided by a later item's own plan).
     screen sharing and cameras**, since the acceptance is a decision
     discussed by two people; two people's audio against the fake comes
     first, since it waits on no other item.
+15. **On Windows with the server inside WSL, the desktop app's reach
+    `auto`, its default, makes the server reachable from the internet**
+    (PR-14): a TLS listener with a certificate for the public address,
+    the router's mapping and the forward, all made by the app. Today
+    every desktop install serves loopback alone, and the macOS and Linux
+    desktop apps stay so; reach `manual` or `off` in Settings keeps a
+    Windows install so too. The acceptance's phone needs it, and nothing
+    is configured by the person (`AGENTS.md`).
 
 ## Acceptance
 
@@ -2302,3 +2345,31 @@ is opened before a press; nothing is recorded.
   candidate's existence): `existingCandidate` in both routes. 8 (what
   accumulates): I18. 9 (the handoff's wire): the handoff is removed, so
   there is no wire to place.
+
+## Changed in the final check
+
+The plan read again against the hosted plan's specification section at
+its final head, for any requirement this plan still placed on a
+provider or its room service that the specification does not meet.
+
+- **Taken out.** `RoomsAnswer` in the order asked: the guard and the
+  `Media` check match the states to the refs by kind, id and home, as
+  the specification has it. A retry of `RecordHuddle` carrying the same
+  record: the operation's arguments are the room session alone, so a
+  retry with other names or another end gets the first answer and writes
+  nothing, as the specification's idempotence asks. An `error`'s
+  `message` at most 200 bytes: it is bounded by its frame, and never
+  shown or logged.
+- **Said where it was missing.** A quiet room service holds no one:
+  Leave ends the call at once with no answer from it, and nothing of a
+  session, a run or a decision waits on it (Liveness, I11). What a person
+  sees while the phone's address is offered but unreachable (The server
+  is told nothing after its start). A first `join` with no `joined` has
+  no token to resume with and takes the fresh-ticket branch. The ask for
+  a host's per-viewer servers holds nothing of the hosted session
+  (`TestHostViewerICEAskHoldsNoSession`).
+- **Rows.** Every row is in this repository; screen sharing and
+  cameras may go before the decision rows when Program item ID1's
+  open-source rows are late too.
+- **Owner decisions.** 15, the internet reachability the desktop app's
+  default gives a Windows install with the server inside WSL.
