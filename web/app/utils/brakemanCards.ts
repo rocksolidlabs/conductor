@@ -359,20 +359,47 @@ export function reconcileMade(had: Pick<BrakemanRequest, 'made' | 'edges'>, next
   return out
 }
 
-/** How far along an act is: pending, then refused (which the same opId may still run, its store holding no receipt), then done or not run, which it never leaves. */
+/** Whether an act is final: done or not run, which it never leaves. A refused one its store kept no receipt for is written pending anew when asked again under its opId. */
+const actFinal = (state: string) => state === 'done' || state === 'not_run'
+/** pending, then refused: of two entries of one act written at one instant, the refusal is the later. */
 const actRank = (state: string) => (state === 'pending' ? 0 : state === 'refused' ? 1 : 2)
 
 /**
+ * An entry's time as the server writes it (RFC 3339, its seconds' fraction to the nanosecond) as [milliseconds of its whole seconds,
+ * nanoseconds of the fraction], so that two writes within a millisecond are still told apart; [0, 0] for none.
+ */
+function atParts(at?: string): [number, number] {
+  if (!at) return [0, 0]
+  const m = /^(.*?)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)$/.exec(at)
+  if (!m) return [Date.parse(at) || 0, 0]
+  return [Date.parse(m[1]! + m[3]!) || 0, Number((m[2] ?? '').padEnd(9, '0').slice(0, 9))]
+}
+
+/** Negative when a was written before b, positive after, 0 at one instant. */
+export function compareAt(a?: string, b?: string): number {
+  const [x, xn] = atParts(a)
+  const [y, yn] = atParts(b)
+  return x - y || xn - yn
+}
+
+/**
  * A request's `acts` as a reply gives them, reconciled with what the page has: a reply sent before another (a read sent while an act was
- * pending, answered after the read that saw it done) never takes an act back. Each act is kept by its opId and goes forward only
- * (actRank), the later of two at one rank by its time; the server never removes one, so an act the reply lacks is the page's.
+ * pending, answered after the read that saw it done) never takes an act back. Each act is kept by its opId. A final one (done, not run)
+ * is never left; one that is not yet final takes a final entry, or the later of two that are not final by the time the server wrote it
+ * (each write of an act's entry, pending or its outcome, stamps it): a refusal before Dispatch kept a receipt, asked again, is pending
+ * again under a later time, and a reply sent before that write still says refused under the earlier one. The server never removes an
+ * act, so one the reply lacks is the page's.
  */
 export function reconcileActs(had: Pick<BrakemanRequest, 'acts'>, next: Pick<BrakemanRequest, 'acts'>): Pick<BrakemanRequest, 'acts'> {
   const acts = new Map<string, BrakemanAct>()
   for (const a of had.acts ?? []) acts.set(a.opId, a)
   for (const n of next.acts ?? []) {
     const h = acts.get(n.opId)
-    const older = h && (actRank(n.state) < actRank(h.state) || (actRank(n.state) === actRank(h.state) && claimedAt(n) < claimedAt(h)))
+    const older =
+      h &&
+      (actFinal(h.state)
+        ? !actFinal(n.state) || compareAt(n.at, h.at) < 0
+        : !actFinal(n.state) && (compareAt(n.at, h.at) || actRank(n.state) - actRank(h.state)) < 0)
     if (!older) acts.set(n.opId, n)
   }
   return acts.size ? { acts: [...acts.values()] } : {}
