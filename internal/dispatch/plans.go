@@ -939,3 +939,110 @@ func scanPlan(row interface{ Scan(...any) error }) (PlanSummary, error) {
 	p.CrewUpdatedAt, p.ApprovedAt, p.WithdrawnAt, p.CreatedAt = unstamp(crewUpdated), unstamp(approved), unstamp(withdrawn), unstamp(created)
 	return p, nil
 }
+
+// OpenPlan is a plan revision that needs the operator (OpenPlans): its
+// summary, with its number and its staleness, and its ticket's key, title
+// and revision as read with it.
+type OpenPlan struct {
+	PlanSummary
+	Key       string `json:"key"`
+	Title     string `json:"title"`
+	TicketRev int64  `json:"ticketRev"`
+}
+
+// PlanRef is the ref of the revision n of the ticket with the key,
+// plan:<KEY-n>/<n>: Brakeman's form of it, and the decision inbox's name.
+func PlanRef(key string, n int) string { return fmt.Sprintf("plan:%s/%d", key, n) }
+
+// Ref is the revision's ref (PlanRef).
+func (p OpenPlan) Ref() string { return PlanRef(p.Key, p.N) }
+
+// PlanCursor is where a page of OpenPlans begins: after the revision
+// proposed at Since whose ref is Ref, in the order (since, ref). The zero
+// cursor begins at the first.
+type PlanCursor struct {
+	Since time.Time
+	Ref   string
+}
+
+// planBefore orders open revisions by (since, ref): a revision's since is
+// the time it was proposed.
+func planBefore(since time.Time, ref string, c PlanCursor) int {
+	if n := since.Compare(c.Since); n != 0 {
+		return n
+	}
+	return strings.Compare(ref, c.Ref)
+}
+
+// OpenPlans reads the plan revisions that need the operator, of every
+// ticket not deleted: the proposed ones, and the approved ones whose
+// approval no longer holds (Stale set, judged as the ticket's read judges
+// it), ordered by (since, ref), a revision's since the time it was
+// proposed and its ref PlanRef's. page is at most limit of them after
+// after; next says more follow it; total counts every open revision, not
+// the page's: nothing caps them in all (MaxPlans bounds a ticket's), so
+// none is left out of a page or of the count. A version 1 database has
+// none.
+func (s *Store) OpenPlans(ctx context.Context, after PlanCursor, limit int) (page []OpenPlan, next bool, total int, err error) {
+	var open []OpenPlan
+	err = s.read(ctx, func(q queryer) error {
+		if schemaOf(q) < 2 {
+			return nil
+		}
+		rows, err := q.QueryContext(ctx, "SELECT "+planColumns+" FROM plans WHERE state IN (?, ?) AND ticket_id IN (SELECT id FROM tickets WHERE deleted_at = '') ORDER BY created_at, id",
+			PlanProposed, PlanApproved)
+		if err != nil {
+			return err
+		}
+		var all []PlanSummary
+		for rows.Next() {
+			p, err := scanPlan(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			all = append(all, p)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		tickets := map[string]Ticket{}
+		for _, p := range all {
+			tk, ok := tickets[p.TicketID]
+			if !ok {
+				if tk, err = readTicketByID(ctx, q, p.TicketID); err != nil {
+					return err
+				}
+				tickets[p.TicketID] = tk
+			}
+			// The number first: the staleness's words name it.
+			if p.N, err = planNumber(ctx, q, p); err != nil {
+				return err
+			}
+			if p.Stale, err = planStale(ctx, q, tk, p); err != nil {
+				return err
+			}
+			if p.State == PlanApproved && p.Stale == nil {
+				continue
+			}
+			open = append(open, OpenPlan{PlanSummary: p, Key: tk.Key, Title: tk.Title, TicketRev: tk.Rev})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, 0, err
+	}
+	slices.SortFunc(open, func(a, b OpenPlan) int { return planBefore(a.CreatedAt, a.Ref(), PlanCursor{b.CreatedAt, b.Ref()}) })
+	page = []OpenPlan{}
+	for _, p := range open {
+		if !after.Since.IsZero() && planBefore(p.CreatedAt, p.Ref(), after) <= 0 {
+			continue
+		}
+		if len(page) == limit {
+			return page, true, len(open), nil
+		}
+		page = append(page, p)
+	}
+	return page, false, len(open), nil
+}
