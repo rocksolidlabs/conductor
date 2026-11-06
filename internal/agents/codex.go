@@ -2,7 +2,9 @@ package agents
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
@@ -139,7 +141,7 @@ func codexAdapter() Adapter {
 			if err != nil {
 				return nil
 			}
-			return []string{"-c", "mcp_servers.conductor.command=" + tomlString(bin), "-c", `mcp_servers.conductor.args=["mcp"]`, "-c", "mcp_servers.conductor.env_vars=" + codexMCPEnv}
+			return []string{"-c", "mcp_servers.conductor.command=" + tomlString(bin), "-c", `mcp_servers.conductor.args=["mcp"]`, "-c", "mcp_servers.conductor.env_vars=" + codexMCPEnv, "-c", "mcp_servers.conductor.tool_timeout_sec=" + strconv.Itoa(int(MCPToolTimeout/time.Second))}
 		},
 		// Checked against `codex --help` (0.163.0) and by the recipes tier.
 		// Conductor's MCP server still reaches the server under the
@@ -216,6 +218,16 @@ const codexReadOnlyApprovals = `approval_policy={granular={sandbox_approval=fals
 // codexReadOnlyGap is codexReadOnlyApprovals' list above, in Settings'
 // words (Adapter.ReadOnlyGap).
 const codexReadOnlyGap = "Codex's read-only sandbox (0.163.0) does not hold your own MCP servers, which run outside it and are one yes away from writing, nor your exec-policy allow rules, which run a command outside it without asking; no flag isolates them"
+
+// MCPToolTimeout is how long Codex waits for a tool of Conductor's MCP
+// server (its mcp_servers.<name>.tool_timeout_sec; Codex's own default is
+// 60 s, which 0.163.0 shows as tool_timeout_sec null). Brakeman's act
+// waits for a launch the server is still starting, up to its sends'
+// bounds together (internal/cli's actBudget, which a test there keeps
+// under this): at Codex's default Codex would give the tool up while the
+// act went on, and the op id the tool names for asking again would
+// never reach the turn.
+const MCPToolTimeout = 12 * time.Minute
 
 // codexMCPEnv is the TOML list of the variables Codex passes on to
 // Conductor's MCP server (#354): every CONDUCTOR_* one a session sets,
