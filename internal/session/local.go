@@ -559,7 +559,6 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 		}
 	}
 	s.shot = NewScreenModelWatcher(matchNothing, patternQuiet, int(info.Cols), int(info.Rows), func(string) {}, s.screenQuiet)
-	s.shot.KeepShown() // what ScreenLines reads
 	if opts.WatchGit && info.Cwd != "" {
 		s.gitSeenStart()
 	}
@@ -569,6 +568,7 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 
 func (s *Local) pump() {
 	buf := make([]byte, proto.MaxOutput)
+	var cuts []chunkCut // where a replay may start in a chunk (Ring), reused
 	for {
 		n, err := s.proc.Read(buf)
 		// The turn the output was read in: taken at once, so that a turn
@@ -601,8 +601,8 @@ func (s *Local) pump() {
 			}
 			s.feedMu.Unlock()
 			s.mu.Lock()
-			s.ring.Write(chunk)
-			s.hub.BroadcastLoud(proto.Encode(proto.TypeOutput, chunk))
+			start, fromCut := s.ring.Append(chunk)
+			s.hub.BroadcastLoud(proto.Encode(proto.TypeOutput, chunk), fromCut)
 			if !title {
 				s.lastOutput = time.Now()
 			}
@@ -618,9 +618,11 @@ func (s *Local) pump() {
 			if left != "" {
 				s.withdraw(left)
 			}
-			if !title {
-				s.shot.Feed(chunk)
-			}
+			// The screen model reads every chunk, a title alone too (it
+			// starts no quiet period), and tells the ring where in it a
+			// replay may start (Ring).
+			cuts = s.shot.FeedCuts(chunk, !title, s.ring.Every(), cuts[:0])
+			s.ring.Cut(start, n, cuts)
 		}
 		if err != nil {
 			break
@@ -2536,7 +2538,10 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		Cwd:             welcomeCwd(s.info.Cwd, s.fileAllowed(role)),
 	}))
 	if !sub.quiet {
-		snap := s.ring.Snapshot()
+		snap, whole := s.ring.Replay()
+		// A replay that holds nothing may leave the viewer inside a
+		// string the live output goes on with: it waits for a cut.
+		sub.awaitCut = !whole
 		for len(snap) > 0 {
 			n := min(len(snap), proto.MaxOutput)
 			sub.send(proto.Encode(proto.TypeScrollback, snap[:n]))
@@ -5028,16 +5033,28 @@ func (s *Local) LastLine() string {
 	return ""
 }
 
-// ScreenLines is what a person reading the session's terminal sees: its
-// screen's last n rows at most (shot, which every session keeps, as a
-// terminal shows it: Screen.Shown), oldest first, blank rows at the bottom
-// left out, each cut to at most maxLastLine*4 bytes (the Brakeman desk's
-// screen read).
+// ScreenLines is ScreenRead's rows (the Brakeman desk's screen read): a
+// blank screen reads as none; the alternate screen while the program is on
+// it; during a synchronized update, the frame as far as it is drawn.
 func (s *Local) ScreenLines(n int) []string {
+	rows, _ := s.ScreenRead(n)
+	return rows
+}
+
+// ScreenRead is what a person reading the session's terminal sees: its
+// screen's last n rows at most (shot, which every session keeps, at the
+// terminal's size: the alternate screen while the program is on it),
+// oldest first, blank rows at the bottom left out, each cut to at most
+// maxLastLine*4 bytes, a concealed character (SGR 8) a blank; and whether
+// a synchronized update is under way (updating): the program has begun
+// one and not ended it, and the rows are its frame as far as it is drawn,
+// which a terminal shows only once the update ends (or its own timeout
+// passes, a second in the page's).
+func (s *Local) ScreenRead(n int) (rows []string, updating bool) {
 	if n <= 0 {
-		return nil
+		return nil, false
 	}
-	rows := s.shot.Shown()
+	rows, drawn := s.shot.Rows()
 	for len(rows) > 0 && rows[len(rows)-1] == "" {
 		rows = rows[:len(rows)-1]
 	}
@@ -5049,7 +5066,7 @@ func (s *Local) ScreenLines(n int) []string {
 		}
 		rows[i] = l
 	}
-	return rows
+	return rows, !drawn
 }
 
 // DisconnectLink evicts every subscription created through linkID as

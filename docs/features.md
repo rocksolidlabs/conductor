@@ -3713,32 +3713,42 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   #659's live check watched a Codex session redraw its status row in
   place for minutes, with no line feed. Opening its page drew the tail of
   a colour sequence (`138;138;138;49m•`) as text: a replay began wherever
-  the scrollback's cut fell when no newline was in its first 4 KiB. The
-  ring now scans the bytes it drops, so it knows the stream's state at
-  its oldest byte, and a replay begins where a terminal can: never inside
-  an escape sequence, a control string (a title, a link, an image, a
-  clipboard write, whatever its length) or a character, and after a line
-  feed when one comes within 4 KiB of that start, as before. The bytes
-  given up are the rest of what the cut fell in, which draws nothing, and
-  at most 4 KiB more for the line. A synchronized update whose begin was
-  cut replays as the rest of its frame. A session's last line kept on its
-  exit (a turn's "Please run /login") reads the same replay. Brakeman's
-  screen read answered the kept output with its escapes stripped, split
-  at line breaks: for that session, one line of some 250 bullets after a
-  fragment. It answers the screen now: the rows of the screen model every
-  session keeps of its output (the one the bell's wait is looked at by),
-  at the terminal's size,
-  the alternate screen while the program is on it, the frame before a
-  synchronized update until it ends, blank rows at the bottom left out.
-  No session lacks one. Tests: `TestRingReplayStartsWhereATerminalCan`
-  (every cut of a stream of colours, a title, a synchronized update,
-  links, a DCS and characters of two to four bytes, and of one with line
-  feeds inside a clipboard write), `TestAnAttachReplaysNoFragment`,
-  `TestLastLineHasNoFragment`, `TestScreenLinesOfARowRedrawnInPlace`,
+  the scrollback's cut fell when no newline was in its first 4 KiB. A
+  replay now begins where a terminal can. The screen model every session
+  keeps reads every chunk of output with the page's terminal's parser
+  (xterm.js's states: C1 controls, CAN and SUB, a BEL that ends an OSC but
+  not a DCS or an APC), and tells the scrollback where in it the stream is
+  between sequences, strings and characters; the scrollback keeps a
+  bounded number of those places, and a replay starts at the oldest one,
+  or at an ESC just before it, or at a line's start within 4 KiB. The
+  bytes given up are the rest of what the cut fell in, which draws
+  nothing, and a small part of the scrollback before the first such
+  place. A page that attaches while all the scrollback is inside one
+  string (an image larger than it) is replayed nothing and sent the live
+  output from the first write that begins at such a place. A synchronized
+  update whose begin was cut replays as the rest of its frame. A
+  session's last line kept on its exit (a turn's "Please run /login")
+  reads the same replay. Brakeman's screen read answered the kept output
+  with its escapes stripped, split at line breaks: for that session, one
+  line of some 250 bullets after a fragment. It answers the screen now:
+  the rows of that screen model at the terminal's size, the alternate
+  screen while the program is on it, blank rows at the bottom left out,
+  concealed characters as blanks (text in the colour of its background is
+  still read), and `updating: true` while a synchronized update is under
+  way, its rows then drawn only as far as the program got. No session
+  lacks one. Tests: `TestRingReplayStartsWhereATerminalCan` (every cut of
+  a stream of colours, a title, a synchronized update, links, a DCS and
+  characters of two to four bytes, of one with line feeds inside a
+  clipboard write, and of one with C1 controls, CAN, SUB and BEL inside
+  strings), `TestRingReplayKeepsASequenceAnESCStartsOver`,
+  `TestAnAttachInsideAStringWaitsForACut`, `TestAnAttachReplaysNoFragment`,
+  `TestLastLineHasNoFragment`, `TestScreenParsesAsThePageDoes`,
+  `TestScreenLinesHideConcealedText`, `TestScreenLinesOfARowRedrawnInPlace`,
   `TestScreenLinesOfAFullScreenDialog`,
-  `TestScreenLinesDuringASynchronizedUpdate` and
-  `TestTheScreenReadsAsATerminalShowsIt`, each failing on `main` before
-  the fix.
+  `TestScreenReadDuringASynchronizedUpdate`,
+  `TestTheScreenReadsAsATerminalShowsIt` and
+  `TestTheScreenReadIsBoundedAtItsLargest`, each failing before its fix
+  but the last, which holds a bound that was right.
 
   **BK3's observation: pending.** Made the same way after the merge: a
   task failing overnight wakes Brakeman once; a second failure inside the

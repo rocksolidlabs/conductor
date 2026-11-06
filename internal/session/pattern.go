@@ -501,28 +501,6 @@ func (w *PatternWatcher) Rows() (rows []string, drawn bool) {
 	return nil, false
 }
 
-// KeepShown makes a screen watcher's screen keep the frame a terminal
-// shows during a synchronized update (Screen.KeepShown); nothing for the
-// others.
-func (w *PatternWatcher) KeepShown() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if sc, ok := w.tracker.(*Screen); ok {
-		sc.KeepShown()
-	}
-}
-
-// Shown returns a screen watcher's screen as a terminal shows its rows
-// (Screen.Shown); nil for the others.
-func (w *PatternWatcher) Shown() []string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if sc, ok := w.tracker.(*Screen); ok {
-		return sc.Shown()
-	}
-	return nil
-}
-
 // Size returns a screen watcher's screen size, 0 by 0 for the others.
 func (w *PatternWatcher) Size() (cols, rows int) {
 	w.mu.Lock()
@@ -542,7 +520,32 @@ func (w *PatternWatcher) Feed(chunk []byte) {
 		return
 	}
 	w.tracker.Write(chunk)
-	if len(chunk) > 0 {
+	w.counted(len(chunk) > 0)
+}
+
+// FeedCuts is Feed for a screen watcher (NewScreenModelWatcher), appending
+// to cuts the places in chunk where a replay may start (Screen.WriteCuts,
+// every bytes apart); with count false the chunk moves the screen on and
+// starts no quiet period (output that only sets the window title). It
+// appends nothing for the other watchers, and once stopped.
+func (w *PatternWatcher) FeedCuts(chunk []byte, count bool, every int, cuts []chunkCut) []chunkCut {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	sc, ok := w.tracker.(*Screen)
+	if w.stopped || !ok {
+		return cuts
+	}
+	cuts = sc.WriteCuts(chunk, every, cuts)
+	if count {
+		w.counted(len(chunk) > 0)
+	}
+	return cuts
+}
+
+// counted notes a Feed (of output, or none: Poke) and restarts the quiet
+// period. Under mu.
+func (w *PatternWatcher) counted(output bool) {
+	if output {
 		w.held = false
 	}
 	w.last = time.Now()
