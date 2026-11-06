@@ -974,6 +974,52 @@ func planBefore(since time.Time, ref string, c PlanCursor) int {
 	return strings.Compare(ref, c.Ref)
 }
 
+// PlanOpOn answers whether the actor's operation with the id is an
+// approval or a withdrawal of the plan revision planID (plan.approve,
+// plan.withdraw), from what the store keeps of it: its intent, and its
+// subject, a done operation's first change row (which every done
+// operation writes, naming the revision it set) or a withdrawal's
+// fingerprint (its revision's id alone). known is false where the store
+// keeps no subject: a refused approval (a refusal writes no change row,
+// and an approval's fingerprint holds its note), and an operation whose
+// receipt is pruned or was never given.
+func (s *Store) PlanOpOn(ctx context.Context, actor, id, planID string) (on, known bool, err error) {
+	db, err := s.conn()
+	if err != nil {
+		return false, false, err
+	}
+	var intent, fp, status string
+	switch err := db.QueryRowContext(ctx, "SELECT intent, fingerprint, status FROM ops WHERE actor = ? AND id = ?", actor, id).Scan(&intent, &fp, &status); {
+	case isNoRows(err):
+		return false, false, nil
+	case err != nil:
+		return false, false, err
+	}
+	if intent != IntentPlanApprove && intent != IntentPlanWithdraw {
+		return false, true, nil
+	}
+	if status == StatusDone {
+		var entity, entityID string
+		switch err := db.QueryRowContext(ctx, "SELECT entity, entity_id FROM changes WHERE actor = ? AND op_id = ? AND n = 0", actor, id).Scan(&entity, &entityID); {
+		case isNoRows(err):
+			return false, false, nil
+		case err != nil:
+			return false, false, err
+		}
+		return entity == EntityPlan && entityID == planID, true, nil
+	}
+	if intent == IntentPlanWithdraw {
+		want, err := fingerprint(IntentPlanWithdraw, struct {
+			ID string `json:"id"`
+		}{planID})
+		if err != nil {
+			return false, false, err
+		}
+		return fp == want, true, nil
+	}
+	return false, false, nil
+}
+
 // OpenPlans reads the plan revisions that need the operator, of every
 // ticket not deleted: the proposed ones, and the approved ones of a ticket
 // not closed (neither done nor cancelled) whose approval no longer holds

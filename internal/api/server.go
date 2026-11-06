@@ -514,15 +514,17 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}
 	s.hosts.OnChange = func(info session.Info) {
-		s.events.publishIf(info, s.listed)
-		s.router.mark(info.ID)
 		// How a question went on is read from what the host said, never
-		// from a change the server forwarded and the host has not applied.
+		// from a change the server forwarded and the host has not applied;
+		// noted before the change is published, so that a browser that
+		// reads the track as the change reaches it reads what it says.
 		if d, ok := s.registry.Get(info.ID); ok {
 			if hs, ok := d.(*signal.HostedSession); ok {
 				s.hostedSeen.change(hs.HostView())
 			}
 		}
+		s.events.publishIf(info, s.listed)
+		s.router.mark(info.ID)
 		// A hosted session that ended takes its links with it, as a server
 		// session does, and closes their viewers as its end.
 		if info.Status.Ended() {
