@@ -36,10 +36,12 @@ type eventHub struct {
 	// (the webhooks, then the providers' sinks; notify.go), the crew runs,
 	// then the context providers' touch sink (extcontext.go).
 	sinks []activitySink
-	// onChat, when set before the first session starts, is told every
-	// chat line of a session (never a run's): the session records'
-	// (history_journal.go). It never waits.
-	onChat func(sessionID string, m session.ChatMessage)
+	// onActivity and onChat, when set before the first session starts, are
+	// told every activity entry after the sinks and every chat line of a
+	// session (never a run's): the session records' (history_journal.go),
+	// beside the sinks so that theirs stays main's order. They never wait.
+	onActivity activitySink
+	onChat     func(sessionID string, m session.ChatMessage)
 }
 
 // activitySink receives an activity entry of a session and, for an attention
@@ -180,6 +182,9 @@ func (h *eventHub) activity(sessionID string, e session.ActivityEntry, state ses
 	h.mu.Unlock()
 	for _, f := range sinks {
 		f(sessionID, e, state)
+	}
+	if h.onActivity != nil {
+		h.onActivity(sessionID, e, state)
 	}
 }
 

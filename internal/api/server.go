@@ -492,8 +492,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	s.events.addSink(s.runs.OnActivity)
 	// The session records take every entry and every session's chat line.
 	if s.sessionRecords != nil {
-		s.events.addSink(s.recordActivity)
-		s.events.onChat = s.recordChat
+		s.events.onActivity, s.events.onChat = s.recordActivity, s.recordChat
 	}
 	// The context providers: an attempt's context, and the files touched.
 	s.wireContext()

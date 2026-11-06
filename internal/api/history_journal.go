@@ -27,8 +27,9 @@ import (
 // (createLocalSession: Begin, with the launch revision read before its
 // process starts), a hosted session's add (the hub's OnAdded), every
 // session's changes (localChange and the hub's OnChange, through Changed
-// and Current), its activity (a sink on the event hub), its chat (the
-// hub's chat) and its removal (the registry's OnRemove).
+// and Current), its activity (the event hub's onActivity, after its
+// sinks), its chat (the hub's chat) and its removal (the registry's
+// OnRemove).
 
 // revisionTimeout bounds a record's git read.
 const revisionTimeout = 2 * time.Second
@@ -204,8 +205,8 @@ func (s *Server) recordDenied(id, path string) bool {
 	return true
 }
 
-// recordActivity is the event hub's sink for the journal: every activity
-// entry of every session, server and hosted alike, a file's path made
+// recordActivity is the event hub's onActivity, the journal's: every
+// activity entry of every session, server and hosted alike, a file's path made
 // absolute as the touched index keys it, and a status entry that is the
 // session's end taken as its end. It never waits.
 func (s *Server) recordActivity(id string, e session.ActivityEntry, _ session.AttentionState) {
