@@ -9,6 +9,9 @@ import { ticketOf, type DeliveryStep, type InboxAction, type InboxItem } from '~
  * is blocked, who answers and whom a router named, the evidence folded, the actions, and after an action its four steps. The card
  * acts through its parent (`act`): the workbench's page through each operation's route, a decision link's page through its lane
  * (MB0's PR-7). Accept anyway, Cancel and Withdraw are asked first, with the run page's question. Its routes come from `routeOf`.
+ *
+ * One card is one item: the page keys it by the item's ref, so a typed line, a comment's draft or a question asked first never
+ * carries over to another item, and every action it emits names the item it was drawn for (the page acts on that item or on none).
  */
 const props = defineProps<{
   item: InboxItem
@@ -19,12 +22,14 @@ const props = defineProps<{
   busy?: string
   /** Why the last action was refused, in words. */
   refusal?: string
+  /** The words of an action whose outcome nobody confirmed (sent, and no word will come), with a way to read again; none otherwise. */
+  unknown?: string
   /** Where Ask Brakeman goes (the Brakeman page's composer about the item's subject), when the server has Brakeman. */
   askBrakeman?: string
   /** The question Accept anyway and Cancel ask, the run page's (useTaskCommands.question). */
   confirmQuestion?: (a: InboxAction) => { title: string; detail: string }
 }>()
-const emit = defineEmits<{ act: [action: InboxAction, text?: string]; comment: [ticket: string, text: string] }>()
+const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string]; comment: [ref: string, ticket: string, text: string]; reread: [] }>()
 
 const brakeman = computed(() => props.item.briefBy === 'brakeman')
 const steps = computed(() => (props.delivery?.length ? props.delivery : props.item.delivery) ?? [])
@@ -53,17 +58,17 @@ const question = computed(() => {
 
 function press(a: InboxAction) {
   if (a.confirm) asking.value = a
-  else emit('act', a)
+  else emit('act', props.item.ref, a)
 }
 function confirm() {
   const a = asking.value
   asking.value = null
-  if (a) emit('act', a)
+  if (a) emit('act', props.item.ref, a)
 }
 function sendLine() {
   const a = line.value
   if (!a || !text.value.trim()) return
-  emit('act', a, text.value)
+  emit('act', props.item.ref, a, text.value)
   text.value = ''
 }
 
@@ -71,7 +76,7 @@ const commenting = ref(false)
 const comment = ref('')
 function sendComment() {
   if (!comment.value.trim()) return
-  emit('comment', ticket.value, comment.value)
+  emit('comment', props.item.ref, ticket.value, comment.value)
   comment.value = ''
   commenting.value = false
 }
@@ -161,6 +166,16 @@ function sendComment() {
         <UButton v-if="terminal && routeOf(terminal.ref)" :to="routeOf(terminal.ref)!" label="Open the terminal" icon="i-lucide-square-terminal" size="lg" class="min-h-11 self-start" data-inbox-terminal />
       </div>
       <UAlert v-if="refusal" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="refusal" data-inbox-refusal />
+      <UAlert
+        v-if="unknown"
+        color="neutral"
+        variant="subtle"
+        icon="i-lucide-circle-help"
+        title="Not confirmed"
+        :description="unknown"
+        :actions="[{ label: 'Read again', color: 'neutral', variant: 'outline', class: 'min-h-11', onClick: () => emit('reread') }]"
+        data-inbox-unknown
+      />
       <div class="flex flex-wrap gap-2">
         <UButton v-if="askBrakeman" :to="askBrakeman" label="Ask Brakeman" icon="i-lucide-notebook-pen" color="neutral" variant="outline" size="md" class="min-h-11" data-inbox-ask-brakeman />
         <UButton v-if="ticket" :label="`Comment on ${ticket}`" icon="i-lucide-message-square" color="neutral" variant="outline" size="md" class="min-h-11" data-inbox-comment-open @click="commenting = !commenting" />

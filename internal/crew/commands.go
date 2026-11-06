@@ -494,6 +494,24 @@ const (
 	TaskCancel = "cancel"
 )
 
+// TaskCommandOn reports whether the ledger's command row is one of the
+// three task commands sent for the task taskID: its intent Retry, Accept
+// or Cancel, and its fingerprint the one act keeps for that command on
+// that task (TaskCommandFingerprint). A run's pause or another task's
+// command is not, whatever its id.
+func TaskCommandOn(row ledger.CommandRow, taskID string) bool {
+	switch row.Intent {
+	case TaskRetry, TaskAccept, TaskCancel:
+		return row.Fingerprint == TaskCommandFingerprint(row.Intent, taskID)
+	}
+	return false
+}
+
+// TaskCommandFingerprint is the fingerprint act keeps in the ledger for
+// the task command name (TaskRetry, TaskAccept, TaskCancel) on the task
+// taskID.
+func TaskCommandFingerprint(name, taskID string) string { return fingerprint(name, taskID) }
+
 // TaskCommandSet is what a task's state allows of the three task
 // commands, as the engine would judge them now: their names in the order
 // retry, accept, cancel, the run's revision they were judged at (the

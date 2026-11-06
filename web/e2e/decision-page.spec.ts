@@ -13,10 +13,11 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // answered from the Decide tab with its four steps; a managed task that failed its check, retried from its card with its steps, and
 // a retry at a revision the run has left (moved by a retry through the API first) refused with words, nothing done; a plan revision
 // approved, its yolo words shown first; a turn held for the terminal shown with no choice and no line and its terminal one tap away;
-// the evidence unfolded (a check's log, the session's terminal); the events stream cut while one question goes and another comes,
-// then let back. At a desktop's width: the sidebar's Decide row, G then N, the palette's item row, and Open on your phone (the
-// page's address alone). Every item is found by its ref, never by the list's length. Each step raises the test's timeout by its
-// own waits' caps as it takes them (budget).
+// the evidence unfolded (a check's log, the session's terminal); a Recent row opening its own action, and one whose item is gone
+// showing its steps; the events stream cut while one question goes and another comes, then let back. At a desktop's width: the
+// sidebar's Decide row, G then N, the palette's item row, Open on your phone (the page's address alone), and a line typed on one
+// item that never reaches the next. Every item is found by its ref, never by the list's length. Each step raises the test's timeout
+// by its own waits' caps as it takes them (budget).
 test.describe.configure({ mode: 'serial' })
 
 /** The cap of one step's wait (an expect's, a poll's); budget raises a test's timeout by it per wait it takes. */
@@ -185,6 +186,16 @@ test("a phone opened with a question waiting lands on the page, the Sessions tab
   await phoneAt(phone, '/decisions')
   await expect(phone.locator(`[data-recent-row="${ref}"] [data-recent-word]`)).toHaveText('Work resumed')
   await expect(phone.locator(`[data-inbox-row="${ref}"]`)).toHaveCount(0)
+
+  // An item the server no longer holds (a seam: its read answers not found): the Recent row still shows what became of the action.
+  await phone.route('**/api/inbox/item?**', (route) => route.fulfill({ status: 404, json: { error: { code: 'not_found', message: 'not found' } } }))
+  budget(3)
+  await phone.locator(`[data-recent-row="${ref}"]`).tap()
+  await expect(phone.locator('[data-inbox-missing]')).toBeVisible()
+  const gone = phone.locator('[data-inbox-missing-delivery] [data-step]')
+  await expect(gone).toHaveCount(4)
+  await expect(phone.locator('[data-inbox-missing-delivery] [data-step="resumed"]')).toHaveAttribute('data-step-state', 'done')
+  await phone.unroute('**/api/inbox/item?**')
 })
 
 test("a managed task that failed its check is retried from its card with its steps; a retry at a revision the run has left is refused with words, nothing done", async ({ browser }) => {
@@ -239,6 +250,15 @@ test("a managed task that failed its check is retried from its card with its ste
   await expect.poll(async () => (await stepStates(phone)).resumed, { timeout: 2 * STEP_MS, message: 'the next attempt runs' }).toBe('done')
   await expect(item.locator('[data-step="recorded"] [data-step-words]')).toContainText("ledger keeps the command's receipt")
   expect(task(await api.run(run.id), 'build').attempts).toBeGreaterThanOrEqual(5)
+
+  // Recent holds both actions on the task: the refused one's row opens its own steps, not the later one's.
+  budget(3)
+  await phoneAt(phone, '/decisions')
+  const refusedRow = phone.locator(`[data-recent-row="${ref}"]`).filter({ has: phone.locator('[data-recent-word]', { hasText: 'Refused' }) })
+  await expect(refusedRow).toHaveCount(1)
+  await refusedRow.tap()
+  await expect(item).toBeVisible()
+  await expect.poll(async () => (await stepStates(phone)).validated, { timeout: STEP_MS }).toBe('refused')
 })
 
 test('a plan revision is approved from its card, its yolo words shown before the Approve', async ({ browser }) => {
@@ -293,19 +313,30 @@ test('with the events stream cut, a question answered and another asked meanwhil
   const first = await ask('First way?')
   const ctx = await context(browser, true)
   const phone = await ctx.newPage()
-  // The stream is cut: every request for it is refused until it is let back.
+  // The stream is cut: every request for it is refused until it is let back. So is the sessions' list, which the fallback poll
+  // reads before it reads the inbox (useAttention's poll): with it refused the poll reads no inbox, and only the stream's return can.
   await phone.route('**/api/events', (route) => route.abort())
+  await phone.route('**/api/sessions', (route) => (route.request().method() === 'GET' ? route.abort() : route.continue()))
+  let lists = 0
+  phone.on('request', (r) => {
+    if (new URL(r.url()).pathname === '/api/inbox') lists++
+  })
   await phoneAt(phone, '/decisions')
   budget(1)
   await expect(phone.locator(`[data-inbox-row="question:${s.id}/${first}"]`)).toBeVisible()
-  // Meanwhile on the server: the first answered (the agent works on), another asked.
+  // Meanwhile on the server: the first answered (the agent works on), another asked; the page, reading nothing, still shows the first.
   await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'working' })
   const second = await ask('Second way?')
-  // Let back: the stream comes back on its own retry (at most 15 s apart) and its snapshot reads the inbox again.
+  const cut = lists
+  await expect(phone.locator(`[data-inbox-row="question:${s.id}/${first}"]`)).toBeVisible()
+  await expect(phone.locator(`[data-inbox-row="question:${s.id}/${second}"]`)).toHaveCount(0)
+  // Let back, the stream alone: it comes back on its own retry (at most 15 s apart) and its snapshot reads the inbox again.
   await phone.unroute('**/api/events')
   budget(2, 2 * STEP_MS)
   await expect(phone.locator(`[data-inbox-row="question:${s.id}/${second}"]`)).toBeVisible({ timeout: 2 * STEP_MS })
   await expect(phone.locator(`[data-inbox-row="question:${s.id}/${first}"]`)).toHaveCount(0, { timeout: 2 * STEP_MS })
+  expect(lists).toBeGreaterThan(cut)
+  await phone.unroute('**/api/sessions')
 })
 
 /** Presses lowercase letters in turn as a person does, each handed to the page once it has taken the one before (shortcuts.spec.ts). */
@@ -387,6 +418,40 @@ test("at a desktop's width: the sidebar's Decide row, G then N, the palette's it
     expect(await offer.getAttribute('data-phone-url')).not.toContain(server!.token)
   } finally {
     await lan.close()
+  }
+})
+
+test('at a desktop\'s width, a line typed on one item is not in the next one picked, and nothing is sent to either', async ({ browser }) => {
+  // Two questions that take a line (no choices), side by side with the list at lg.
+  const ask = async (name: string, message: string) => {
+    const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name })
+    sessions.push(s.id)
+    const q = (await api.ok<{ attention: { id: string } }>('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message })).attention.id
+    return { s, q, ref: `question:${s.id}/${q}` }
+  }
+  const a = await ask('decide line a', 'Which name for A?')
+  const b = await ask('decide line b', 'Which name for B?')
+  const page = await (await context(browser, false)).newPage()
+  budget(4)
+  await page.goto(`/decisions?item=${encodeURIComponent(a.ref)}`)
+  const itemA = page.locator(`[data-inbox-item="${a.ref}"]`)
+  await expect(itemA.locator('input[data-inbox-line-input]')).toBeVisible()
+  await itemA.locator('input[data-inbox-line-input]').fill('only for A')
+  await expect(itemA.locator('input[data-inbox-line-input]')).toHaveValue('only for A')
+
+  // B picked from the list: its card is its own, its line empty, its Send not to be pressed.
+  budget(4)
+  await page.locator(`[data-inbox-row="${b.ref}"]`).click()
+  const itemB = page.locator(`[data-inbox-item="${b.ref}"]`)
+  await expect(itemB).toBeVisible()
+  await expect(itemA).toHaveCount(0)
+  await expect(itemB.locator('input[data-inbox-line-input]')).toHaveValue('')
+  await expect(itemB.locator('[data-inbox-line-send]')).toBeDisabled()
+  // Neither question was answered.
+  for (const x of [a, b]) {
+    const att = (await api.session(x.s.id)).attention
+    expect(att?.state).toBe('needs_input')
+    expect(att?.id).toBe(x.q)
   }
 })
 

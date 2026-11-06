@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -733,4 +735,346 @@ func TestInboxApprovalScopeKeepsItsDisclosures(t *testing.T) {
 	if it.Actions[0].Scope != scope {
 		t.Fatal("the scope cut again by addAction")
 	}
+}
+
+// Every way a server session's question leaves (session's
+// TestHowAQuestionLeaves holds the session to the same table), against
+// what the track and the item then read: kept to show again, waiting
+// and not open now; gone for good, recorded refused at the time it went
+// with how, the rest not applicable, and the item no longer open saying
+// so; the session no longer listed, unknown and no item. Each row waits
+// for the entry the session keeps of how the question left
+// (QuestionLeft, noted in the step that let it go), never for what
+// shows.
+func TestInboxTrackHowAQuestionLeft(t *testing.T) {
+	e := newTestEnv(t, nil)
+	n := 0
+	session1 := func(t *testing.T, o session.Options) (*fakeSession, string) {
+		t.Helper()
+		n++
+		id := sessionHex(fmt.Sprintf("leaves %d", n))
+		return newFakeSession(t, e, id, o), id
+	}
+	leftEntry := func(t *testing.T, fs *fakeSession, q string) {
+		t.Helper()
+		until(t, "the entry of how the question left", func() bool {
+			_, ok := fs.l.QuestionLeft(q)
+			return ok
+		})
+	}
+	gone := func(t *testing.T, id, q, words string) {
+		t.Helper()
+		ref := questionRef(id, q)
+		got := e.trackOf(t, ref, q, "r1")
+		if got[stepRecorded].State != stepRefused || got[stepRecorded].Words != words || got[stepRecorded].At == nil ||
+			got[stepValidated].State != stepNotApplicable || got[stepResumed].State != stepNotApplicable {
+			t.Fatalf("the track: %+v", got)
+		}
+		it := e.itemOf(t, ref)
+		if len(it.Actions) != 0 || it.Now != "no longer open: "+words || len(it.Delivery) != 4 || it.Delivery[1].State != stepRefused {
+			t.Fatalf("the item: %+v", it)
+		}
+	}
+	t.Run("keys typed in the terminal, then the process ends", func(t *testing.T) {
+		fs, id := session1(t, session.Options{Questions: codexQuestions(t)})
+		if err := fs.proc.Print(codexApproval("curl -sI https://example.com")); err != nil {
+			t.Fatal(err)
+		}
+		q := shownDialog(t, fs).ID
+		if err := fs.l.Input(fs.owner(t, "Nate"), []byte("y")); err != nil {
+			t.Fatal(err)
+		}
+		until(t, "the question read answered in the terminal", func() bool {
+			a := fs.l.Info().Attention
+			return a.ID == q && a.Answered == session.AnsweredTerminal
+		})
+		fs.proc.End(0)
+		leftEntry(t, fs, q)
+		gone(t, id, q, terminalWords)
+	})
+	t.Run("the session ends while it shows", func(t *testing.T) {
+		fs, id := session1(t, session.Options{})
+		q := fs.ask(t, "Which database?", dbChoices)
+		fs.proc.End(0)
+		leftEntry(t, fs, q)
+		gone(t, id, q, leftWords[session.LeftEnded])
+	})
+	t.Run("another question in its place", func(t *testing.T) {
+		fs, id := session1(t, session.Options{})
+		q := fs.ask(t, "Which database?", dbChoices)
+		fs.ask(t, "Which port?", dbChoices)
+		leftEntry(t, fs, q)
+		gone(t, id, q, leftWords[session.LeftSuperseded])
+	})
+	t.Run("withdrawn by the agent's next state", func(t *testing.T) {
+		fs, id := session1(t, session.Options{})
+		q := fs.ask(t, "Which database?", dbChoices)
+		fs.report(t, session.AttentionWorking, "")
+		leftEntry(t, fs, q)
+		gone(t, id, q, leftWords[session.LeftWithdrawn])
+	})
+	t.Run("set aside, then withdrawn by its id", func(t *testing.T) {
+		fs, id := session1(t, session.Options{})
+		q := fs.askOwn(t, "Which database?", dbChoices)
+		fs.report(t, session.AttentionWorking, "")
+		ref := questionRef(id, q)
+		got := e.trackOf(t, ref, q, "r1")
+		for _, s := range []string{stepRecorded, stepValidated, stepResumed} {
+			if got[s].State != stepWaiting || got[s].Words != keptWords {
+				t.Fatalf("set aside: %+v", got)
+			}
+		}
+		if it := e.itemOf(t, ref); len(it.Actions) != 0 || it.Now != "not open now: "+keptWords {
+			t.Fatalf("the item set aside: %+v", it)
+		}
+		fs.l.WithdrawQuestion(q)
+		leftEntry(t, fs, q)
+		gone(t, id, q, leftWords[session.LeftWithdrawn])
+	})
+	t.Run("the session no longer listed", func(t *testing.T) {
+		fs, id := session1(t, session.Options{})
+		q := fs.ask(t, "Which database?", dbChoices)
+		fs.proc.End(0)
+		leftEntry(t, fs, q)
+		e.srv.registry.Remove(id)
+		ref := questionRef(id, q)
+		if got := e.trackOf(t, ref, q, "r1"); got[stepRecorded].State != stepUnknown || got[stepResumed].State != stepUnknown {
+			t.Fatalf("the track: %+v", got)
+		}
+		if status, body := e.get(t, "/api/inbox/item?ref="+url.QueryEscape(ref)); status != http.StatusNotFound {
+			t.Fatalf("the item: %d %s", status, body)
+		}
+	})
+}
+
+// A hosted session's question set aside while the agent works (the
+// host's Info.Kept) has not left: waiting, no resumption noted; shown
+// again at its turn's done it waits still; gone at the work of the next
+// turn, its resumption is that change's, set once.
+func TestInboxTrackHostedQuestionSetAside(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := startHost(t, e, []string{"/bin/cat"})
+	report(t, e, id, map[string]any{"state": "needs_input", "message": "Which database?", "kind": "prompt", "options": yes, "ask": true})
+	var q string
+	until(t, "the hosted question shown", func() bool {
+		q = hostedSession(t, e, id).HostView().Attention.ID
+		return q != ""
+	})
+	ref := questionRef(id, q)
+	report(t, e, id, map[string]any{"state": "working"})
+	until(t, "the question set aside", func() bool {
+		v := hostedSession(t, e, id).HostView()
+		return v.Attention.State == session.AttentionWorking && slices.Contains(v.Kept, q)
+	})
+	got := e.trackOf(t, ref, q, "r1")
+	if got[stepRecorded].State != stepWaiting || got[stepRecorded].Words != keptWords || got[stepResumed].State != stepWaiting {
+		t.Fatalf("set aside: %+v", got)
+	}
+	if res, _, _ := e.srv.hostedSeen.of(id, q); res != nil {
+		t.Fatalf("a resumption noted for a question set aside: %+v", res)
+	}
+	report(t, e, id, map[string]any{"state": "done", "message": "done for now"})
+	until(t, "shown again at the done", func() bool { return hostedSession(t, e, id).HostView().Attention.ID == q })
+	if got := e.trackOf(t, ref, q, "r1"); got[stepResumed].State != stepWaiting || got[stepRecorded].State != stepUnknown {
+		t.Fatalf("shown again: %+v", got)
+	}
+	report(t, e, id, map[string]any{"state": "working"})
+	var worked *time.Time
+	until(t, "gone at the next turn's work", func() bool {
+		v := hostedSession(t, e, id).HostView()
+		worked = v.Attention.Since
+		return v.Attention.State == session.AttentionWorking && !slices.Contains(v.Kept, q)
+	})
+	until(t, "the resumption noted", func() bool {
+		res, _, _ := e.srv.hostedSeen.of(id, q)
+		return res != nil
+	})
+	for range 2 {
+		got := e.trackOf(t, ref, q, "r1")[stepResumed]
+		if got.State != stepDone || got.At == nil || worked == nil || !got.At.Equal(*worked) {
+			t.Fatalf("resumed %+v, the work at %v", got, worked)
+		}
+	}
+}
+
+// The server notes how a hosted question went on before it publishes the
+// change's session event: held at the moment between the two (the noted
+// seam), no event of the change is out yet and the track reads it
+// resumed; the event, once out, finds the same. And the moment before the
+// noting (the host's change taken, the server's note not made yet) reads
+// waiting, never unknown, so a page that read it then reads again.
+func TestInboxTrackHostedNotedBeforeTheEvent(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := startHost(t, e, []string{"/bin/cat"})
+	report(t, e, id, map[string]any{"state": "needs_input", "message": "Allow?", "kind": "permission", "options": yes})
+	var q string
+	until(t, "the hosted question shown", func() bool {
+		q = hostedSession(t, e, id).HostView().Attention.ID
+		return q != ""
+	})
+	ref := questionRef(id, q)
+	ch := e.srv.events.subscribe()
+	t.Cleanup(func() { e.srv.events.unsubscribe(ch) })
+	working := func(msg []byte) bool {
+		data, ok := strings.CutPrefix(string(msg), "event: session\ndata: ")
+		if !ok {
+			return false
+		}
+		var info session.Info
+		return json.Unmarshal([]byte(strings.TrimSpace(data)), &info) == nil && info.ID == id && info.Attention.State == session.AttentionWorking
+	}
+	before, letBefore := make(chan struct{}), make(chan struct{})
+	at, release := make(chan struct{}), make(chan struct{})
+	var onceBefore, once sync.Once
+	gate := func(sess string, noted bool) {
+		if sess != id || hostedSession(t, e, id).HostView().Attention.State != session.AttentionWorking {
+			return
+		}
+		if !noted {
+			onceBefore.Do(func() {
+				close(before)
+				<-letBefore
+			})
+			return
+		}
+		once.Do(func() {
+			close(at)
+			<-release
+		})
+	}
+	e.srv.hostedSeen.seam.Store(&gate)
+	t.Cleanup(func() { e.srv.hostedSeen.seam.Store(nil) })
+	// The host's report of its work, as the hub takes it from the host
+	// (no change forwarded first: what the server publishes then is the
+	// host's change alone).
+	applied := make(chan struct{})
+	go func() {
+		defer close(applied)
+		hostedSession(t, e, id).HostAttentionKept(session.AttentionWorking, "", session.SourceAPI, "", nil, "", false, "", "", nil)
+	}()
+	<-before
+	if got := e.trackOf(t, ref, q, "r1")[stepResumed]; got.State != stepWaiting {
+		close(letBefore)
+		t.Fatalf("resumed before the server noted the host's change: %+v", got)
+	}
+	close(letBefore)
+	<-at
+	for {
+		select {
+		case msg := <-ch:
+			if working(msg) {
+				close(release)
+				t.Fatal("the change's event went out before the server noted how the question went on")
+			}
+			continue
+		default:
+		}
+		break
+	}
+	if got := e.trackOf(t, ref, q, "r1")[stepResumed]; got.State != stepDone {
+		close(release)
+		t.Fatalf("resumed at the moment it is noted: %+v", got)
+	}
+	close(release)
+	<-applied
+	for msg := range ch {
+		if working(msg) {
+			break
+		}
+	}
+	if got := e.trackOf(t, ref, q, "r1")[stepResumed]; got.State != stepDone || got.At == nil {
+		t.Fatalf("resumed as the event reaches the page: %+v", got)
+	}
+}
+
+// Two views of a hosted session noted out of their order: a viewer's
+// change takes its view while the question shows and is held before the
+// server notes it (the seam, noted false); the host's report of its work
+// is noted meanwhile, the question's resumption with it. The older view,
+// noted last, changes nothing (HostViewSeq's order, not arrival's): the
+// resumption stays, and the track reads it done.
+func TestInboxTrackHostedOlderViewNotedLast(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := startHost(t, e, []string{"/bin/cat"})
+	report(t, e, id, map[string]any{"state": "needs_input", "message": "Allow?", "kind": "permission", "options": yes})
+	var q string
+	until(t, "the hosted question shown", func() bool {
+		q = hostedSession(t, e, id).HostView().Attention.ID
+		return q != ""
+	})
+	ref := questionRef(id, q)
+	held, let := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	gate := func(sess string, noted bool) {
+		if sess == id && !noted && first.CompareAndSwap(false, true) {
+			close(held)
+			<-let
+		}
+	}
+	e.srv.hostedSeen.seam.Store(&gate)
+	t.Cleanup(func() { e.srv.hostedSeen.seam.Store(nil) })
+	var letOnce sync.Once
+	t.Cleanup(func() { letOnce.Do(func() { close(let) }) })
+	// A viewer's change: its callback takes the view, the question shown.
+	older := make(chan struct{})
+	go func() {
+		defer close(older)
+		e.srv.hosts.OnChange(hostedSession(t, e, id).Info())
+	}()
+	<-held
+	report(t, e, id, map[string]any{"state": "working"})
+	until(t, "the newer view's resumption noted", func() bool {
+		res, _, _ := e.srv.hostedSeen.of(id, q)
+		return res != nil
+	})
+	letOnce.Do(func() { close(let) })
+	<-older
+	res, _, _ := e.srv.hostedSeen.of(id, q)
+	if res == nil || res.How != session.ResumedWorking {
+		t.Fatalf("the older view, noted last, took the resumption away: %+v", res)
+	}
+	if got := e.trackOf(t, ref, q, "r1")[stepResumed]; got.State != stepDone {
+		t.Fatalf("resumed: %+v", got)
+	}
+}
+
+// A hosted session removed while a change of it is being noted: its
+// OnRemove forgets what the server noted of it before the note is made,
+// and the note, made after, would keep it for as long as the server runs.
+// What the note kept goes with the session (the hub's OnChange looks
+// again once it has noted).
+func TestInboxHostedNotesGoWithASessionRemovedMidNote(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := startHost(t, e, []string{"/bin/cat"})
+	hs := hostedSession(t, e, id)
+	var removed atomic.Bool
+	notedAfter := make(chan struct{})
+	gate := func(sess string, noted bool) {
+		if sess != id {
+			return
+		}
+		if !noted && removed.CompareAndSwap(false, true) {
+			// The session leaves the registry between the view taken and
+			// its note: its OnRemove forgets it now, before the note.
+			e.srv.registry.Remove(id)
+			return
+		}
+		if noted && removed.Load() {
+			select {
+			case <-notedAfter:
+			default:
+				close(notedAfter)
+			}
+		}
+	}
+	e.srv.hostedSeen.seam.Store(&gate)
+	t.Cleanup(func() { e.srv.hostedSeen.seam.Store(nil) })
+	e.srv.hosts.OnChange(hs.Info())
+	<-notedAfter
+	until(t, "the notes of the removed session forgotten", func() bool {
+		e.srv.hostedSeen.mu.Lock()
+		defer e.srv.hostedSeen.mu.Unlock()
+		_, kept := e.srv.hostedSeen.sessions[id]
+		return !kept
+	})
 }

@@ -20,6 +20,26 @@ const maxShellFiles = 32
 
 var shellReaders = map[string]bool{"cat": true, "head": true, "tail": true, "nl": true, "bat": true, "batcat": true, "less": true, "more": true}
 
+// deviceWord says whether word, as the command wrote it, names a device
+// rather than a file: anything under /dev/ but /dev/shm/. The test is on
+// the word alone, never the file system (the file may not exist yet), and
+// before the word is joined or cleaned, as it always was. A name like
+// /dev/stdin or /dev/fd/3 resolves to what the hook's own process holds
+// open, which can be a regular file that is not the agent's, so the
+// regular-file check below cannot tell it. /dev/shm is a tmpfs where people
+// keep ordinary files: a word under it is kept while it stays under it
+// once cleaned (/dev/shm/../null is /dev/null). Cleaning is for that
+// decision only: an absolute word is still reported as written, since a
+// symlink before a ".." makes the cleaned path another file. /dev/mqueue
+// is not kept: its entries are POSIX message queues, which stat as regular
+// files but are no file anyone read or wrote.
+func deviceWord(word string) bool {
+	if !strings.HasPrefix(word, "/dev/") {
+		return false
+	}
+	return !strings.HasPrefix(word, "/dev/shm/") || !strings.HasPrefix(filepath.Clean(word), "/dev/shm/")
+}
+
 // shellFiles are the files command reads, writes or edits, absolute when
 // cwd (the command's directory) is known, at most maxShellFiles, a repeat
 // of the same op and path dropped.
@@ -33,7 +53,7 @@ func shellFiles(command, cwd string) []FileRef {
 	}
 	var out []FileRef
 	add := func(op, word string) {
-		if len(out) == maxShellFiles || word == "" || strings.HasPrefix(word, "/dev/") {
+		if len(out) == maxShellFiles || word == "" || deviceWord(word) {
 			return
 		}
 		p := word

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { InboxLive, type InboxReads, type InboxState } from './useInbox'
-import { RECENT_KEY, trackKey, type DeliveryStep, type InboxPage, type InboxSummary, type RecentEntry, type StepState } from '../utils/inbox'
+import { inboxEmpty, RECENT_KEY, trackKey, UNCONFIRMED, type DeliveryStep, type InboxPage, type InboxSummary, type RecentEntry, type StepState } from '../utils/inbox'
 
 // The live inbox (docs/plans/decision-inbox.md, "Events", PR-2): one read in flight and one queued, read again on the events, the
 // snapshot and the stream's return, and the tracks of recent actions not yet final read with the list.
@@ -136,6 +136,113 @@ describe('the live inbox', () => {
     l.outcome('q1', 'd1', 'accepted')
     expect(state!.recent[0]!.outcome).toBe('accepted')
     expect(JSON.parse(store.getItem(RECENT_KEY)!)[0].outcome).toBe('accepted')
+  })
+})
+
+describe('what the page knows of an answer', () => {
+  const hosted = () => steps('done', 'unknown', 'unknown', 'waiting')
+  it("keeps a hosted question's recorded and validated steps unknown for an answer nobody confirmed, and fills them with the owner's word", async () => {
+    const srv = fakeServer()
+    const { l, state } = liveOn(srv)
+    const stop = l.track()
+    // An older owner (its welcome says no `answer`): the keys went, and no word will come.
+    const old: RecentEntry = { ref: 'question:h1/q1', receipt: 'q1', attempt: 'd1', at: Date.now() }
+    srv.tracks.set('q1', hosted())
+    l.remember(old)
+    l.outcome('q1', 'd1', UNCONFIRMED)
+    await l.trackNow(old)
+    expect(state().tracks[trackKey(old)]!.map((s) => s.state)).toEqual(['done', 'unknown', 'unknown', 'waiting'])
+    // The owner's own word (answer_ok) on another request fills them.
+    const took: RecentEntry = { ref: 'question:h1/q2', receipt: 'q2', attempt: 'd2', at: Date.now() }
+    srv.tracks.set('q2', hosted())
+    l.remember(took)
+    l.outcome('q2', 'd2', 'accepted')
+    await l.trackNow(took)
+    expect(state().tracks[trackKey(took)]!.map((s) => s.state)).toEqual(['done', 'done', 'done', 'waiting'])
+    stop()
+  })
+
+  it('drops an action whose request never left the browser', () => {
+    const srv = fakeServer()
+    const { l, state, store } = liveOn(srv)
+    const e: RecentEntry = { ref: 'question:s1/q1', receipt: 'q1', attempt: 'd1', at: Date.now() }
+    l.remember(e)
+    l.forget(e)
+    expect(state().recent).toEqual([])
+    expect(JSON.parse(store.getItem(RECENT_KEY)!)).toEqual([])
+  })
+
+  it('follows its actions and their outcomes when the storage throws on every read and write', async () => {
+    const srv = fakeServer()
+    const throwing = {
+      getItem: () => {
+        throw new Error('storage refused')
+      },
+      setItem: () => {
+        throw new Error('storage refused')
+      },
+    }
+    const { l, state } = liveOn(srv, throwing as unknown as ReturnType<typeof storage>)
+    const e: RecentEntry = { ref: 'question:h1/q1', receipt: 'q1', attempt: 'd1', at: Date.now() }
+    srv.tracks.set('q1', hosted())
+    l.remember(e)
+    l.outcome('q1', 'd1', 'accepted')
+    expect(state().recent.map((x) => [x.receipt, x.outcome])).toEqual([['q1', 'accepted']])
+    // The list's reads read the tracks again: the entry and its word are still followed.
+    const stop = l.track()
+    await l.changed()
+    expect(state().recent.map((x) => [x.receipt, x.outcome])).toEqual([['q1', 'accepted']])
+    expect(state().tracks[trackKey(e)]!.map((s) => s.state)).toEqual(['done', 'done', 'done', 'waiting'])
+    stop()
+  })
+})
+
+describe('a read that never answers', () => {
+  it('is given up on past its bound, and the next event reads again', async () => {
+    const srv = fakeServer()
+    let hang = true
+    const reads: InboxReads = { ...srv.reads, list: (after) => (hang ? new Promise<InboxPage>(() => {}) : srv.reads.list(after)) }
+    const l = new InboxLive()
+    let state: InboxState | null = null
+    l.attach(reads, { storage: () => storage(), apply: (s) => (state = s), waitMs: 20 })
+    const stuck = l.changed()
+    // Behind the read that never answers, an event's read is queued; once it is given up on, the queued one reads.
+    hang = false
+    srv.open.set('question:s1/q2', summary('question:s1/q2'))
+    void l.event()
+    await stuck
+    expect(state!.items.map((i) => i.ref)).toEqual(['question:s1/q2'])
+    expect(state!.error).toBe('')
+  })
+})
+
+describe("a command's acceptance", () => {
+  it("fills none of its steps: an uncertain receipt's validated step stays unknown", async () => {
+    const srv = fakeServer()
+    const { l, state } = liveOn(srv)
+    const e: RecentEntry = { ref: 'task:r/build', receipt: 'c1', at: Date.now() }
+    srv.tracks.set('c1', steps('done', 'done', 'unknown', 'not_applicable'))
+    l.remember(e)
+    l.outcome('c1', undefined, 'accepted')
+    await l.trackNow(e)
+    expect(state().tracks[trackKey(e)]!.map((s) => s.state)).toEqual(['done', 'done', 'unknown', 'not_applicable'])
+  })
+})
+
+describe('a failed read', () => {
+  it('after an empty one, says nothing of what is open: the list is not drawn as empty', async () => {
+    const srv = fakeServer()
+    let fail = false
+    const reads: InboxReads = { ...srv.reads, list: (after) => (fail ? Promise.reject(new Error('the server could not be reached')) : srv.reads.list(after)) }
+    const l = new InboxLive()
+    let state: InboxState | null = null
+    l.attach(reads, { storage: () => storage(), apply: (s) => (state = s) })
+    await l.changed()
+    expect(inboxEmpty(state!)).toBe(true)
+    fail = true
+    await l.changed()
+    expect(state!.error).toBe('the server could not be reached')
+    expect(inboxEmpty(state!)).toBe(false)
   })
 })
 

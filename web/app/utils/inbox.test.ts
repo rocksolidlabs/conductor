@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
+import { ReplyError } from './reply'
 import {
   addRecent,
+  answerFailure,
+  homeNext,
+  inboxEmpty,
+  mergeRecent,
+  recentFor,
+  UNCONFIRMED,
+  withoutRecent,
   barCount,
   firstLandingInTab,
   inboxOrder,
@@ -84,7 +92,8 @@ describe('reconcileDelivery', () => {
     const seen = reconcileDelivery(undefined, steps('done', 'done', 'done', 'done'))
     expect(stateOf(reconcileDelivery(seen, steps('done', 'unknown', 'unknown', 'unknown')))).toEqual(['done', 'done', 'done', 'done'])
     const refused = reconcileDelivery(undefined, steps('done', 'done', 'refused', 'not_applicable'))
-    expect(stateOf(reconcileDelivery(refused, steps('done', 'done', 'waiting', 'waiting')))).toEqual(['done', 'done', 'refused', 'waiting'])
+    // The refusal stays, and the action it ended resumes nothing, whatever a later read says of the task.
+    expect(stateOf(reconcileDelivery(refused, steps('done', 'done', 'waiting', 'waiting')))).toEqual(['done', 'done', 'refused', 'not_applicable'])
   })
   it("fills a hosted question's unknown recorded and validated steps with the reply's own word", () => {
     const hosted = steps('done', 'unknown', 'unknown', 'waiting')
@@ -92,10 +101,20 @@ describe('reconcileDelivery', () => {
     expect(stateOf(took)).toEqual(['done', 'done', 'done', 'waiting'])
     expect(took[1]!.words).toContain('reply')
     const refused = reconcileDelivery(undefined, hosted, 'refused: Already answered')
-    expect(stateOf(refused)).toEqual(['done', 'refused', 'refused', 'waiting'])
+    // The owner refused it: its steps end there, resumed not applicable, never waiting on the question's own resumption.
+    expect(stateOf(refused)).toEqual(['done', 'refused', 'refused', 'not_applicable'])
     expect(refused[2]!.words).toBe('Already answered')
-    // An older owner's silence fills nothing.
-    expect(stateOf(reconcileDelivery(undefined, hosted, 'unconfirmed'))).toEqual(['done', 'unknown', 'unknown', 'waiting'])
+    expect(stepsFinal(refused)).toBe(true)
+    // An older owner's silence, or a connection lost before the word, fills nothing: unknown stays unknown.
+    expect(stateOf(reconcileDelivery(undefined, hosted, UNCONFIRMED))).toEqual(['done', 'unknown', 'unknown', 'waiting'])
+    // No word yet (sent): the server's track alone.
+    expect(stateOf(reconcileDelivery(undefined, hosted))).toEqual(['done', 'unknown', 'unknown', 'waiting'])
+  })
+  it("ends a refused hosted answer with a resumption that does not apply, even where another answer's resumed the question", () => {
+    // Another answer won and the work went on: the question's resumption is done, but not this refused action's.
+    const after = reconcileDelivery(undefined, steps('done', 'unknown', 'unknown', 'done'), 'refused: Already answered')
+    expect(stateOf(after)).toEqual(['done', 'refused', 'refused', 'not_applicable'])
+    expect(after[3]!.words).toContain('refused')
   })
 })
 
@@ -138,6 +157,25 @@ describe("this browser's recent actions", () => {
     writeRecentActions(m, [entry(1), { bad: true } as unknown as RecentEntry])
     expect(readRecentActions(m, now).map((e) => e.receipt)).toEqual(['c1'])
   })
+  it("keeps the page's own actions over a storage that lost them, once each, with the owner's word where either has it", () => {
+    const mine = [{ ...entry(1), attempt: 'a1', outcome: 'accepted' }, entry(2)]
+    const stored = [{ ...entry(1), attempt: 'a1' }, entry(3)]
+    const merged = mergeRecent(mine, stored, now)
+    expect(merged.map((e) => e.receipt)).toEqual(['c1', 'c2', 'c3'])
+    expect(merged[0]!.outcome).toBe('accepted')
+    // A storage that answers nothing (it threw) loses none of the page's.
+    expect(mergeRecent(mine, [], now).map((e) => e.receipt)).toEqual(['c1', 'c2'])
+  })
+  it('opens the action a Recent row names, else the newest on the item, and drops one never sent', () => {
+    const list = [
+      { ref: 'question:s/q', receipt: 'q', attempt: 'd2', at: now, outcome: 'accepted' },
+      { ref: 'question:s/q', receipt: 'q', attempt: 'd1', at: now - 1, outcome: 'refused: Already answered' },
+    ]
+    expect(recentFor(list, 'question:s/q')?.attempt).toBe('d2')
+    expect(recentFor(list, 'question:s/q', { receipt: 'q', attempt: 'd1' })?.outcome).toBe('refused: Already answered')
+    expect(recentFor(list, 'question:s/q', { receipt: 'q', attempt: 'gone' })).toBeUndefined()
+    expect(withoutRecent(list, { ref: 'question:s/q', receipt: 'q', attempt: 'd2' }).map((e) => e.attempt)).toEqual(['d1'])
+  })
   it("writes the reply's outcome into its entry, by its receipt and attempt", () => {
     const list = [{ ...entry(1), attempt: 'a1' }, { ...entry(1), attempt: 'a2' }]
     const out = withOutcome(list, 'c1', 'a2', 'accepted')
@@ -150,6 +188,20 @@ describe("the phone's paths", () => {
     expect(phoneLanding(390, 2)).toBe('/decisions')
     expect(phoneLanding(390, 0)).toBeNull()
     expect(phoneLanding(1024, 2)).toBeNull()
+  })
+  it("keeps the phone's landing once chosen: a later change of the home's target sends it nowhere else", () => {
+    const o = { wide: false, answered: true, late: false, width: 390, open: 1, home: '/sessions' }
+    const first = homeNext({ judging: true, landed: false }, o)
+    expect(first.to).toBe('/decisions')
+    // The sessions answer while that navigation is under way: the home's target changes, and the landing stays.
+    expect(homeNext(first.landing, { ...o, home: '/sessions' }).to).toBeNull()
+    // Before the inbox answered, nothing; with no item open, the home's way, and after that the home's way again.
+    expect(homeNext({ judging: true, landed: false }, { ...o, answered: false }).to).toBeNull()
+    const none = homeNext({ judging: true, landed: false }, { ...o, open: 0 })
+    expect(none.to).toBe('/sessions')
+    expect(homeNext(none.landing, { ...o, open: 3 }).to).toBe('/sessions')
+    // Wide: no landing at all.
+    expect(homeNext({ judging: true, landed: false }, { ...o, wide: true, home: null }).to).toBeNull()
   })
   it('judges the landing once per tab, and each load when the storage throws', () => {
     const m = memory()
@@ -173,7 +225,36 @@ describe("the phone's paths", () => {
     const odd = phoneOffer('https://box.lan:8443/?token=secret#t=x')
     expect(odd).toEqual({ kind: 'qr', url: 'https://box.lan:8443/decisions' })
     expect(JSON.stringify(odd)).not.toContain('secret')
-    for (const o of ['http://127.0.0.1:8080', 'http://localhost:3000', 'http://[::1]:8080']) expect(phoneOffer(o).kind).toBe('loopback')
+    for (const o of ['http://127.0.0.1:8080', 'http://localhost:3000', 'http://[::1]:8080']) {
+      const offer = phoneOffer(o)
+      expect(offer.kind).toBe('loopback')
+      // It says a phone cannot reach this address, and asks the person for no step: no other address to open, no network to set up.
+      const words = offer.kind === 'loopback' ? offer.words : ''
+      expect(words).toContain('A phone cannot reach this page')
+      expect(words).not.toMatch(/network|open the page from|address on|forward|configure|set up/i)
+    }
+  })
+})
+
+describe('the list', () => {
+  it('says nothing needs a decision only when its last read answered with none', () => {
+    const answered = { loaded: true, items: [], unavailable: '', error: '' }
+    expect(inboxEmpty(answered)).toBe(true)
+    // An empty read, then a failed one: what is open now is not known.
+    expect(inboxEmpty({ ...answered, error: 'the server could not be reached' })).toBe(false)
+    expect(inboxEmpty({ ...answered, loaded: false })).toBe(false)
+    expect(inboxEmpty({ ...answered, unavailable: 'decisions are answered where the work runs' })).toBe(false)
+  })
+})
+
+describe("an answer's failure", () => {
+  it('tells nothing sent from no word and from the owner\'s refusal', () => {
+    expect(answerFailure(new Error('closed (1006)'))).toBe('not_sent')
+    expect(answerFailure(new ReplyError('not_connected', 'not connected'))).toBe('not_sent')
+    expect(answerFailure(new ReplyError('no_question', 'no question'))).toBe('not_sent')
+    expect(answerFailure(new ReplyError('no_word', 'no word'))).toBe('unconfirmed')
+    expect(answerFailure(new ReplyError('closed', 'closed first'))).toBe('unconfirmed')
+    expect(answerFailure(new ReplyError('question_answered', 'answered by Nate: nothing was sent'))).toBe('refused')
   })
 })
 

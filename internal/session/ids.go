@@ -1,6 +1,3 @@
-// Package session owns the terminal session model shared by the server and
-// the host agent: scrollback, subscriber fan-out, role enforcement, resize
-// policy and bounded file reads.
 package session
 
 import (

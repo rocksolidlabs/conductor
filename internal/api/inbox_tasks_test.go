@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -294,6 +295,14 @@ func TestInboxTrackCommand(t *testing.T) {
 	if none := e.trackOf(t, ref, "never-sent", ""); none[stepRecorded].State != stepUnknown {
 		t.Fatalf("a command never sent: %+v", none)
 	}
+	// A receipt is the task's only when it is a task command for it: the
+	// run's pause, or build's retry read under docs, is none of its own.
+	for _, c := range []struct{ ref, id string }{{ref, "p1"}, {"task:" + run + "/docs", "r1"}} {
+		got := e.trackOf(t, c.ref, c.id, "")
+		if got[stepRecorded].State != stepRefused || !strings.Contains(got[stepRecorded].Words, "another command") || got[stepValidated].State != stepNotApplicable || got[stepResumed].State != stepNotApplicable {
+			t.Fatalf("%s under %s: %+v", c.id, c.ref, got)
+		}
+	}
 }
 
 // A command the ledger took and the engine never settled, the server
@@ -352,7 +361,7 @@ func TestInboxTrackACommandAcrossARestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := l.Transition(ctx, run, func(tx *ledger.Tx) error {
-		_, _, err := tx.Command(adminActor, "taken", crew.TaskRetry, "fingerprint")
+		_, _, err := tx.Command(adminActor, "taken", crew.TaskRetry, crew.TaskCommandFingerprint(crew.TaskRetry, "build"))
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -420,5 +429,82 @@ func TestInboxAcceptOnARunLetGo(t *testing.T) {
 	}
 	if got := doneResumed(ledger.CommandRow{Intent: crew.TaskAccept}, crew.Receipt{}, nil, nil, nil, false); got.State != stepUnknown {
 		t.Fatalf("a run found nowhere: %+v", got)
+	}
+}
+
+// An Accept's resumed step is read from every attempt its dependents
+// keep: docs started from build's result, then failed, its next attempt
+// held back by the run paused, reads done at the first attempt's start;
+// once the next attempt runs, the same time, not the later attempt's
+// (TestDoneResumedReadsEveryAttempt holds a next attempt reserved and not
+// started yet to the same).
+func TestInboxAcceptResumedFromTheDependentsHistory(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	c := failingCrew(e.root)
+	c.Tasks[1].Checks = []crew.Check{{ID: "never", Argv: []string{"sh", "-c", "exit 1"}}}
+	run := failBuild(t, e, c)
+	ref := "task:" + run + "/build"
+	// The run's revision moves as its failed attempt settles: an Accept
+	// refused stale_revision did nothing, and is sent again at the
+	// revision read again (a fresh id each time: a refusal is kept).
+	n, cmd := 0, ""
+	until(t, "the accept taken", func() bool {
+		n++
+		cmd = fmt.Sprintf("a%d", n)
+		status, code := e.command(t, run, "build", crew.TaskAccept, cmd, actionOf(t, e.itemOf(t, ref), crew.TaskAccept).Expect)
+		if status != http.StatusOK && code != "stale_revision" {
+			t.Fatalf("the accept: %d %s", status, code)
+		}
+		return status == http.StatusOK
+	})
+	first := runningAttempt(t, e, run, "docs", 1)
+	started := e.trackOf(t, ref, cmd, "")[stepResumed]
+	if started.State != stepDone || started.At == nil || !strings.Contains(started.Words, "docs started") {
+		t.Fatalf("once docs runs: %+v", started)
+	}
+	if resp, out := e.do("POST", "/api/runs/"+run+"/pause", adminToken, map[string]any{"commandId": "p1"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("pause: %d %v", resp.StatusCode, out)
+	}
+	sid := first["sessionId"].(string)
+	if resp, out := e.do("POST", "/api/sessions/"+sid+"/task/result", e.agentToken(sid), map[string]any{"summary": "try"}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("docs's result: %d %v", resp.StatusCode, out)
+	}
+	until(t, "docs's first attempt failed", func() bool {
+		_, attempts, err := e.srv.runs.TaskOf(run, "docs")
+		return err == nil && len(attempts) > 0 && attempts[0].State == "failed"
+	})
+	for range 2 {
+		if got := e.trackOf(t, ref, cmd, "")[stepResumed]; got.State != stepDone || got.At == nil || !got.At.Equal(*started.At) {
+			t.Fatalf("with the next attempt held: %+v, first started at %v", got, started.At)
+		}
+	}
+	if resp, out := e.do("POST", "/api/runs/"+run+"/unpause", adminToken, map[string]any{"commandId": "u1"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("unpause: %d %v", resp.StatusCode, out)
+	}
+	runningAttempt(t, e, run, "docs", 2)
+	if got := e.trackOf(t, ref, cmd, "")[stepResumed]; got.State != stepDone || got.At == nil || !got.At.Equal(*started.At) {
+		t.Fatalf("once the next attempt runs: %+v, first started at %v", got, started.At)
+	}
+}
+
+// The resumed step of an Accept reads each dependent's every attempt: the
+// first started since the command, whatever the latest is (reserved and
+// not started, or failed).
+func TestDoneResumedReadsEveryAttempt(t *testing.T) {
+	at := time.Now().UTC()
+	row := ledger.CommandRow{Intent: crew.TaskAccept, CreatedAt: at}
+	one, two := at.Add(time.Second), at.Add(2*time.Second)
+	deps := []dependent{
+		{id: "docs", attempts: []crew.AttemptState{{N: 1, State: "failed", StartedAt: &two}, {N: 2, State: "pending"}}},
+		{id: "site", attempts: []crew.AttemptState{{N: 1, State: "failed", StartedAt: &one}, {N: 2, State: "running", StartedAt: &two}}},
+	}
+	got := doneResumed(row, crew.Receipt{}, nil, nil, deps, true)
+	if got.State != stepDone || got.At == nil || !got.At.Equal(one) || !strings.Contains(got.Words, "site started") {
+		t.Fatalf("resumed: %+v", got)
+	}
+	before := at.Add(-time.Second)
+	if got := doneResumed(row, crew.Receipt{}, nil, nil, []dependent{{id: "docs", attempts: []crew.AttemptState{{N: 1, StartedAt: &before}, {N: 2}}}}, true); got.State != stepWaiting {
+		t.Fatalf("an attempt started before the accept: %+v", got)
 	}
 }
