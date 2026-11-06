@@ -12,9 +12,10 @@ import (
 	"time"
 )
 
-// version5Added is what versions 5 to 7 added, dropped: a database of
+// version5Added is what versions 5 to 8 added, dropped: a database of
 // this version made a version 4 one, for a migration's fixture (version
-// 6's own fixture drops version6Added alone, version 7's version7Added).
+// 6's own fixture drops version6Added alone, version 7's version7Added,
+// version 8's version8Added).
 var version5Added = append(slices.Clone(version6Added),
 	"ALTER TABLE checks DROP COLUMN phase",
 	"ALTER TABLE checks DROP COLUMN manifest",
@@ -28,20 +29,20 @@ var version5Added = append(slices.Clone(version6Added),
 	"DROP TABLE trees",
 )
 
-// version6Added is what versions 6 and 7 added, dropped: a database of
+// version6Added is what versions 6 to 8 added, dropped: a database of
 // this version made a version 5 one.
 var version6Added = append(slices.Clone(version7Added),
 	"ALTER TABLE runs DROP COLUMN ticket",
 	"ALTER TABLE runs DROP COLUMN package",
 )
 
-// version7Added is what version 7 added, dropped: a database of this
-// version made a version 6 one.
-var version7Added = []string{
+// version7Added is what versions 7 and 8 added, dropped: a database of
+// this version made a version 6 one.
+var version7Added = append(slices.Clone(version8Added),
 	"ALTER TABLE attempts DROP COLUMN where_ran",
 	"ALTER TABLE checks DROP COLUMN where_ran",
 	"ALTER TABLE prerequisites DROP COLUMN where_ran",
-}
+)
 
 // attemptOf puts a run's task and its attempt, for the rows that hang on
 // them.

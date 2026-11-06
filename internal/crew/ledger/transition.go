@@ -1288,7 +1288,10 @@ var ErrNotPrunable = errors.New("ledger: the run is still needed")
 // prerequisites', trees', commands' and events' with them, once the run
 // is closed, every tree of it ended, no prerequisite of it running, and
 // nothing cites it: a finished run can still be ending a tree, and its
-// rows are what the end and the recovery write.
+// rows are what the end and the recovery write. A run that holds or
+// opened a decision that is not final stays; the final decisions it
+// opened go with it, and those an ancestor opened are handed back to the
+// run it continued (pruneDecisions).
 func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	if l.readOnly {
 		return fmt.Errorf("%w: %s", ErrReadOnly, l.why)
@@ -1332,6 +1335,9 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	}
 	if cited > 0 {
 		return fmt.Errorf("%w: %d runs cite it", ErrNotPrunable, cited)
+	}
+	if err := pruneDecisions(ctx, tx, runID); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM runs WHERE id = ?", runID); err != nil {
 		return err
