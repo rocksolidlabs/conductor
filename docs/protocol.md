@@ -3852,7 +3852,14 @@ file, a gate's tasks released, or a rejected gate's tasks cancelled);
 took its place, or an identity's answer could not be rechecked) or
 `cancelled`; `applied` → `superseded` for an approval whose subject moved
 after it. A record's `rev` moves with each change a response must have
-read (an answer, a comment, a request for more information).
+read (an answer, a comment, a request for more information). An answer is
+the asking agent's to act on only once its decision is `applied`: an
+`answered` one is recorded, not yet validated, and may still be
+superseded or cancelled, so `decision_request`'s reply, the tools'
+descriptions and the result's refusal tell the agent to wait at
+`answered` and to go on only at `applied`. An operation's `expectedRev`
+is judged against the decision's row in the transaction that applies
+it, before anything changes, whatever the engine holds in memory.
 
 The routes. Each body is read with unknown fields refused and bounded;
 `responseId`, `commandId` and `opId` are 1 to 32 of `A-Z a-z 0-9 . _ ~ -`,
@@ -3868,7 +3875,7 @@ approver.
 
 | Route | Who | Body → reply |
 |---|---|---|
-| `POST /api/sessions/{id}/decisions` | the attempt's own token | `{requestId, type, question, context?, options?, recommendation?, uncertainty?, authorizes?, evidence?, expertise?, subject?, supersedes?}` (at most 24 KiB) → `201 {decision}` at once, `200` the same for a repeat of its `requestId` (answered first, its evidence not resolved again); `409 decision_conflict`, `not_running`, `artifact_uncommitted`; `429 decision_limit`; `400 invalid` (a field out of its bounds, an evidence ref not in Brakeman's ref syntax or naming nothing; evidence refs are resolved under the asker's own grant, and a ref outside it is refused as an unknown ref) |
+| `POST /api/sessions/{id}/decisions` | the attempt's own token | `{requestId, type, question, context?, options?, recommendation?, uncertainty?, authorizes?, evidence?, expertise?, subject?, supersedes?}` (at most 24 KiB) → `201 {decision}` at once, `200` the same for a repeat of its `requestId` (replied to first, its evidence not resolved again); `409 decision_conflict`, `not_running`, `artifact_uncommitted`; `429 decision_limit`; `400 invalid` (a field out of its bounds, an evidence ref not in Brakeman's ref syntax or naming nothing; evidence refs are resolved under the asker's own grant, and a ref outside it is refused as an unknown ref) |
 | `GET /api/sessions/{id}/decisions` | the attempt's own token | `?after=dr-N&limit=` (1 to 100, 100 when absent) → `{decisions, next?}`: its task's decisions in the run that holds them, newest first, each a summary `{id, requestId?, type, origin, task?, gate?, state, rev, question, answer?, why?, supersededBy?, createdAt, answeredAt?, closedAt?, cut?}`, the question, the answer and `why` each cut at a character's end to 1 KiB as encoded (`cut: true` when one was); a summary at most 4 KiB, a page at most 400 KiB; `next` the last id when more follow |
 | `GET /api/sessions/{id}/decisions/{did}` | the attempt's own token | `{decision}`: one of its task's whole; `404 not_found` for another's |
 | `POST /api/sessions/{id}/decisions/{did}/withdraw` | the attempt's own token | `{}` → `{decision}`, cancelled; `409 decision_closed` |
@@ -3933,7 +3940,9 @@ applied when the run is continued.
 An attempt with a decision open, or answered and not applied, has its
 result refused: `POST /api/sessions/{id}/task/result` answers `409
 decision_open` ("dr-7 is not answered yet: wait for its answer, or
-withdraw it with decision_withdraw").
+withdraw it with decision_withdraw"; for an answered one, "dr-7 is
+answered and its answer is not applied yet: wait until Yardmaster types
+it into this session, then act on it").
 
 **The `decision` event.** After each committed change of a decision the
 server sends `event: decision` on `GET /api/events` with `{id, run,

@@ -1267,7 +1267,7 @@ func TestDecisionRequestToolAnswersPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasAll(text, "dr-7 open", "Pending.", "do not submit your result until it is answered", "Decision dr-7", "task file", "save one before you end your turn") {
+	if !hasAll(text, "dr-7 open", "Pending.", "do not submit your result until its answer is applied", "Decision dr-7", "task file", "save one before you end your turn") {
 		t.Fatalf("the reply: %q", text)
 	}
 	mu.Lock()
@@ -1282,14 +1282,16 @@ func TestDecisionRequestToolAnswersPending(t *testing.T) {
 		}
 	}
 	// A repeat answers the decision as it is now, in words for its state:
-	// only an open one is pending.
+	// only an open one is pending, and only an applied one's answer is the
+	// agent's to go on with: an answered one is recorded, not yet applied
+	// (#637, review round 2).
 	for _, c := range []struct {
 		decision string
 		want     []string
 		not      string
 	}{
-		{`{"id":"dr-7","state":"answered","answer":"Approve"}`, []string{"dr-7 is answered: Approve", "Go on with your task"}, "Pending"},
-		{`{"id":"dr-7","state":"applied","answer":"Approve"}`, []string{"dr-7 is applied: Approve", "Go on with your task"}, "Pending"},
+		{`{"id":"dr-7","state":"answered","answer":"Approve"}`, []string{"dr-7 is answered: Approve", "recorded, not yet applied", "Do not act on it yet", "do not submit your result until it is applied"}, "Go on"},
+		{`{"id":"dr-7","state":"applied","answer":"Approve"}`, []string{"dr-7 is applied: Approve", "Go on with your task with this answer"}, "Pending"},
 		{`{"id":"dr-7","state":"superseded","why":"dr-9 takes its place","supersededBy":"dr-9"}`, []string{"dr-7 is superseded by dr-9", "Wait for dr-9's answer"}, "Pending"},
 		{`{"id":"dr-7","state":"cancelled","why":"cancelled by the operator, not approved"}`, []string{"dr-7 is cancelled: cancelled by the operator", "will not be answered"}, "Pending"},
 	} {

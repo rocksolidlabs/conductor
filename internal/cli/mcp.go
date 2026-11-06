@@ -479,7 +479,7 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 // decisionTool runs one of an attempt's decision tools, each one call to
 // its route (docs/plans/decisions.md, internal/cli): a request with its
 // id minted when it names none, so a reply lost is asked for once more
-// with it, and answered at once with the decision's id, its state and
+// with it, and replied to at once with the decision's id, its state and
 // what to do while it waits.
 func decisionTool(ctx context.Context, c *crewClient, name string, body map[string]any) (string, error) {
 	id, _ := body["id"].(string)
@@ -530,15 +530,23 @@ func decisionTool(ctx context.Context, c *crewClient, name string, body map[stri
 
 // decisionRequestText is a request's reply in words for the decision's
 // state: a repeat of a requestId (a reply lost, asked again) answers the
-// decision as it is now, which may be answered or closed already.
+// decision as it is now, which may be answered, applied or closed already.
+// Only an applied answer is the agent's to act on: an answered one is
+// recorded, not yet validated and applied by Yardmaster, and may still
+// be superseded instead (#637, review round 2).
 func decisionRequestText(d map[string]any) string {
 	id, state := d["id"], d["state"]
 	answer, _ := d["answer"].(string)
 	why, _ := d["why"].(string)
 	switch state {
-	case ledger.DecisionAnswered, ledger.DecisionApplied:
-		return fmt.Sprintf("%v is %v: %s. Go on with your task with this answer: it is also typed into this session as 'Decision %v … answered', "+
-			"or written into your task's next attempt's task file.", id, state, cmp.Or(answer, "see decision_read"), id)
+	case ledger.DecisionApplied:
+		return fmt.Sprintf("%v is applied: %s. Go on with your task with this answer: it was typed into this session as 'Decision %v … answered by …', "+
+			"or written into your task's next attempt's task file.", id, cmp.Or(answer, "see decision_read"), id)
+	case ledger.DecisionAnswered:
+		return fmt.Sprintf("%v is answered: %s. The answer is recorded, not yet applied: Yardmaster validates it first, and it may still be superseded or cancelled instead. "+
+			"Do not act on it yet: end your turn, or go on with work that does not depend on it; do not submit your result until it is applied. "+
+			"Once applied it is typed into this session as 'Decision %v … answered by …', or, if this session has ended, written into your task's next attempt's task file.",
+			id, cmp.Or(answer, "see decision_read"), id)
 	case ledger.DecisionSuperseded:
 		if by, _ := d["supersededBy"].(string); by != "" {
 			return fmt.Sprintf("%v is superseded by %s: %s. Wait for %s's answer, not this one's.", id, by, cmp.Or(why, "a newer request takes its place"), by)
@@ -547,8 +555,8 @@ func decisionRequestText(d map[string]any) string {
 	case ledger.DecisionCancelled, ledger.DecisionExpired:
 		return fmt.Sprintf("%v is %v: %s. It will not be answered: go on without it, or ask again with a new requestId if the work still needs it.", id, state, cmp.Or(why, "it is closed"))
 	}
-	return fmt.Sprintf("%v %v. Pending. End your turn, or go on with work that does not depend on it; do not submit your result until it is answered. "+
-		"The answer is typed into this session as 'Decision %v … answered', or, if this session has ended, written into your task's next attempt's task file, "+
+	return fmt.Sprintf("%v %v. Pending. End your turn, or go on with work that does not depend on it; do not submit your result until its answer is applied. "+
+		"Once Yardmaster has applied the answer it is typed into this session as 'Decision %v … answered by …', or, if this session has ended, written into your task's next attempt's task file, "+
 		"which starts at your last checkpoint: save one before you end your turn.", id, state, id)
 }
 

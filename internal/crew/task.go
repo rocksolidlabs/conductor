@@ -2375,10 +2375,15 @@ func (e *Engine) Submit(ctx context.Context, sessionID string, res Result) (Task
 	}
 	if d := r.waitingDecision(a); d != nil {
 		// No dependent starts on work whose approval is still open, and
-		// the attempt neither succeeds nor fails while its decision waits.
+		// the attempt neither succeeds nor fails while its decision waits:
+		// an answer recorded is not yet applied (#637, review round 2).
+		id, answered := d.id(), d.state == ledger.DecisionAnswered
 		e.mu.Unlock()
 		r.txMu.Unlock()
-		return TaskState{}, false, refuse(CodeDecisionOpen, "%s is not answered yet: wait for its answer, or withdraw it with decision_withdraw", d.id())
+		if answered {
+			return TaskState{}, false, refuse(CodeDecisionOpen, "%s is answered and its answer is not applied yet: wait until Yardmaster types it into this session, then act on it", id)
+		}
+		return TaskState{}, false, refuse(CodeDecisionOpen, "%s is not answered yet: wait for its answer, or withdraw it with decision_withdraw", id)
 	}
 	a.state = ledger.AttemptSubmitting
 	a.submitSeq++

@@ -721,6 +721,20 @@ func TestTheGuideListsTheDecisionOperations(t *testing.T) {
 	if !strings.Contains(guideRules[2], "decision_request") {
 		t.Fatalf("the rules: %v", guideRules)
 	}
+	// The agent's words keep the states apart: an answer is acted on only
+	// once applied; answered is recorded, not yet applied (#637, review
+	// round 2).
+	for _, name := range []string{"decision_request", "decision_list", "decision_read"} {
+		op := ops[name]
+		words := op.Summary + " " + op.Description
+		if strings.Contains(words, "until it is answered") || !strings.Contains(words, "applied") ||
+			name != "decision_request" && !strings.Contains(op.Description, "Act on") {
+			t.Errorf("%s's words: %q", name, words)
+		}
+	}
+	if d := ops["decision_request"].Description; !strings.Contains(d, "answered (an answer recorded, not yet applied") || !strings.Contains(d, "applied (the answer is yours to act on)") {
+		t.Errorf("decision_request's states: %q", d)
+	}
 	e := newTestEnv(t, nil)
 	_, _, out := guideOf(t, e, adminToken, "/api/guide?section=operations")
 	if got := opNames(t, out); !slices.Contains(got, "decision_respond") || !slices.Contains(got, "decision_request") {
