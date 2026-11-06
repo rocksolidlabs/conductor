@@ -34,6 +34,40 @@ func (s *heldSink) Close(reason error) {
 	s.returned.Store(true)
 }
 
+// heldGates is a heldSink whose gates are opened once each, by the test or
+// by its cleanup (attachHeld): a test that fails with a gate shut leaves no
+// goroutine parked in the transport's write or close.
+type heldGates struct {
+	*heldSink
+	writesOnce, closesOnce sync.Once
+}
+
+// attachHeld attaches a heldGates to s with opts. However the test ends,
+// its cleanup opens both gates, ends the subscription and waits for its
+// transport to have closed.
+func attachHeld(t *testing.T, s *Local, opts AttachOptions) (*heldGates, *Subscription) {
+	t.Helper()
+	h := &heldGates{heldSink: newHeldSink()}
+	sub, err := s.AttachWith(opts, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		h.openWrites()
+		h.openCloses()
+		s.Detach(sub)
+		select {
+		case <-sub.Closed():
+		case <-time.After(time.Minute):
+			t.Error("the held viewer's transport never closed")
+		}
+	})
+	return h, sub
+}
+
+func (h *heldGates) openWrites() { h.writesOnce.Do(func() { close(h.writes) }) }
+func (h *heldGates) openCloses() { h.closesOnce.Do(func() { close(h.closes) }) }
+
 // countSink is a viewer that takes every frame at once and counts the output
 // it was handed, noting a marker in it.
 type countSink struct {
@@ -74,6 +108,46 @@ func within(d time.Duration, fn func()) bool {
 		return true
 	case <-time.After(d):
 		return false
+	}
+}
+
+// overflow writes twice the queue's high-water mark of output, in frames of
+// the most one carries, and tells when the session's pump has read the last
+// of it: an io.Pipe's write returns once the read has taken it, and the pump
+// reads again only after it has broadcast what it read, so by then every
+// frame but the last has been offered to every viewer.
+func overflow(p *fakeProc) <-chan struct{} {
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		chunk := bytes.Repeat([]byte("x"), proto.MaxOutput)
+		for range 2 * HighWaterMark / len(chunk) {
+			if _, err := p.outW.Write(chunk); err != nil {
+				return
+			}
+		}
+	}()
+	return read
+}
+
+// waitDropped waits for overflow's output to have been read and then judges
+// sub, a viewer that took none of it: dropped as a slow consumer, it is off
+// the roster. The drop is made in the broadcast that passes the high-water
+// mark, so it is waited for by the read of the output, never on a clock:
+// 2 MiB through the session under the race detector on a loaded machine
+// took more than a fixed 5 s (#281), and the wait bounds a hang only.
+func waitDropped(t *testing.T, s *Local, sub *Subscription, read <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-read:
+	case <-time.After(time.Minute):
+		t.Fatal("the session never read the output")
+	}
+	if r := sub.Reason(); !errors.Is(r, ErrSlowConsumer) {
+		t.Fatalf("the viewer was not dropped as a slow consumer once the output was read: %v", r)
+	}
+	if n := s.Viewers(); n != 0 {
+		t.Fatalf("the dropped viewer stayed on the roster: %d viewers", n)
 	}
 }
 
@@ -253,25 +327,8 @@ func TestARevokeWaitsForALinksViewerDroppedBefore(t *testing.T) {
 	for _, end := range []string{"revoke", "shutdown"} {
 		t.Run(end, func(t *testing.T) {
 			s, p := newLocal(t, t.TempDir())
-			held := newHeldSink()
-			sub, err := s.AttachWith(AttachOptions{Role: RoleControl, LinkID: "L", Name: "dropped"}, held)
-			if err != nil {
-				t.Fatal(err)
-			}
-			go func() {
-				chunk := bytes.Repeat([]byte("x"), proto.MaxOutput)
-				for range 2 * HighWaterMark / len(chunk) {
-					if _, err := p.outW.Write(chunk); err != nil {
-						return
-					}
-				}
-			}()
-			if !waitFor(5*time.Second, func() bool { return errors.Is(sub.Reason(), ErrSlowConsumer) }) {
-				t.Fatal("the viewer was never dropped")
-			}
-			if !waitFor(time.Second, func() bool { return s.Viewers() == 0 }) {
-				t.Fatal("the dropped viewer stayed on the roster")
-			}
+			held, sub := attachHeld(t, s, AttachOptions{Role: RoleControl, LinkID: "L", Name: "dropped"})
+			waitDropped(t, s, sub, overflow(p))
 			ended := make(chan struct{})
 			go func() {
 				if end == "revoke" {
@@ -286,7 +343,7 @@ func TestARevokeWaitsForALinksViewerDroppedBefore(t *testing.T) {
 				t.Fatalf("the %s returned while the dropped viewer's transport was still open", end)
 			case <-time.After(200 * time.Millisecond):
 			}
-			close(held.writes)
+			held.openWrites()
 			if r := <-held.entered; !errors.Is(r, ErrSlowConsumer) {
 				t.Fatalf("closed for %v", r)
 			}
@@ -295,7 +352,7 @@ func TestARevokeWaitsForALinksViewerDroppedBefore(t *testing.T) {
 				t.Fatalf("the %s returned before the transport's close did", end)
 			case <-time.After(100 * time.Millisecond):
 			}
-			close(held.closes)
+			held.openCloses()
 			select {
 			case <-ended:
 			case <-time.After(3 * time.Second):
@@ -310,36 +367,22 @@ func TestARevokeWaitsForALinksViewerDroppedBefore(t *testing.T) {
 // connections open at once.
 func TestAClientStillClosingCountsTowardTheViewerCap(t *testing.T) {
 	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, MaxViewers: 2})
-	held := newHeldSink()
-	sub, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "dropped"}, held)
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() {
-		chunk := bytes.Repeat([]byte("x"), proto.MaxOutput)
-		for range 2 * HighWaterMark / len(chunk) {
-			if _, err := p.outW.Write(chunk); err != nil {
-				return
-			}
-		}
-	}()
-	if !waitFor(5*time.Second, func() bool { return errors.Is(sub.Reason(), ErrSlowConsumer) }) {
-		t.Fatal("the viewer was never dropped")
-	}
-	if !waitFor(time.Second, func() bool { return s.Viewers() == 0 }) {
-		t.Fatal("the dropped viewer stayed on the roster")
-	}
+	held, sub := attachHeld(t, s, AttachOptions{Role: RoleView, Name: "dropped"})
+	waitDropped(t, s, sub, overflow(p))
 	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "second"}, newChanSink(false)); err != nil {
 		t.Fatalf("the second viewer: %v", err)
 	}
 	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "third"}, newChanSink(false)); !errors.Is(err, ErrTooManyViewers) {
 		t.Fatalf("a third viewer while the dropped one's transport is open: %v", err)
 	}
-	close(held.writes)
+	held.openWrites()
 	<-held.entered
-	close(held.closes)
+	held.openCloses()
 	<-sub.Closed()
-	if !waitFor(time.Second, func() bool {
+	// The slot comes back as AttachWith's watcher, woken by the close, takes
+	// the transport out: nothing of the product's bounds that wake, so the
+	// wait bounds a hang only.
+	if !waitFor(time.Minute, func() bool {
 		_, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "third"}, newChanSink(false))
 		return err == nil
 	}) {
