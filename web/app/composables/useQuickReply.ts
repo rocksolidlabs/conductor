@@ -5,6 +5,14 @@ import type { CloseInfo, TerminalTransport } from '~/utils/transport/types'
 import { skipWords } from '~/utils/crews'
 import type { SessionInfo } from './useSessions'
 
+/**
+ * What became of an answer as this browser can know it: `taken`, the owner's own word that it took it (`answer_ok`); `unconfirmed`,
+ * it went to an owner that never confirms answers (an older one: keys sent as they are); `not_sent`, nothing left this tab (a reply
+ * to this session is already under way from here, or this tab replied to the question already). A refusal, the owner's or a lost
+ * connection's, rejects with its ReplyError, as before.
+ */
+export type AnswerOutcome = 'taken' | 'unconfirmed' | 'not_sent'
+
 /** The questions this browser tab has replied to from a row, a card or a chat (the app renders in the browser alone: ssr is off). */
 const replied = repliedQuestions()
 
@@ -32,13 +40,14 @@ export function useQuickReply() {
     sending.value = next
   }
 
-  /** over sends the reply on a short control connection; whether it went (false: this tab is sending already, or the question was replied to from here). */
-  async function over(session: Pick<SessionInfo, 'id' | 'kind'>, token: string | undefined, reply: QuestionReply, server?: string): Promise<boolean> {
+  /** over sends the reply on a short control connection: whether the owner took it, it went unconfirmed, or nothing was sent (AnswerOutcome). */
+  async function over(session: Pick<SessionInfo, 'id' | 'kind'>, token: string | undefined, reply: QuestionReply, server?: string): Promise<AnswerOutcome> {
     // One reply per question from here: a second click on one already answered from this tab is not sent; one refused may be
     // tried again (repliedQuestions).
-    if (sending.value.has(session.id)) return false
+    if (sending.value.has(session.id)) return 'not_sent'
+    let outcome: AnswerOutcome = 'not_sent'
     try {
-      return await replied.once(reply.question, async () => {
+      await replied.once(reply.question, async () => {
         mark(session.id, true)
         const t: TerminalTransport = create({ sessionId: session.id, token: token ?? admin.token.value, kind: session.kind, forceRelay: true, server })
         try {
@@ -46,12 +55,17 @@ export function useQuickReply() {
           if (welcome.role !== 'control') throw new Error('This link is view-only')
           // An owner that takes answers says whether it took this one; to an older one, the frame is only let leave: it finishes
           // a submission after the connection goes.
-          if (!(await t.answer(reply))) await new Promise((r) => setTimeout(r, 150))
+          if (await t.answer(reply)) outcome = 'taken'
+          else {
+            outcome = 'unconfirmed'
+            await new Promise((r) => setTimeout(r, 150))
+          }
         } finally {
           t.close()
           mark(session.id, false)
         }
       })
+      return outcome
     } catch (e) {
       // The owner says the question is answered: no page offers it any longer (#258), whatever the stream has said so far.
       if ((e as { code?: unknown } | null)?.code === QUESTION_ANSWERED) clearAnswered(store.value.sessions, session.id, reply.question)
@@ -60,16 +74,24 @@ export function useQuickReply() {
   }
 
   /** `reqId`, when given, is the request id the answer goes with (the decision page mints one per action: its track names it). */
-  function send(session: Pick<SessionInfo, 'id' | 'kind'>, input: string, opts: { token?: string; server?: string; question?: string; reqId?: string } = {}): Promise<boolean> {
-    return over(session, opts.token, { question: opts.question, input, reqId: opts.reqId }, opts.server)
+  async function send(session: Pick<SessionInfo, 'id' | 'kind'>, input: string, opts: { token?: string; server?: string; question?: string; reqId?: string } = {}): Promise<boolean> {
+    return (await over(session, opts.token, { question: opts.question, input, reqId: opts.reqId }, opts.server)) !== 'not_sent'
   }
 
   async function reply(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; question?: string; reqId?: string } = {}): Promise<boolean> {
+    return (await answer(session, { text }, opts)) !== 'not_sent'
+  }
+
+  /**
+   * Answers a question with a choice's keys (`input`) or a typed line (`text`), and says what became of it (AnswerOutcome): the
+   * decision page keeps the owner's word, and only that, as its action's outcome (useInbox).
+   */
+  async function answer(session: Pick<SessionInfo, 'id' | 'kind'>, what: { input: string } | { text: string }, opts: { token?: string; server?: string; question?: string; reqId?: string } = {}): Promise<AnswerOutcome> {
+    const out = await over(session, opts.token, { ...what, question: opts.question, reqId: opts.reqId }, opts.server)
     // The line sent, this browser shows it under the question to its own person: the owner repeats no typed line (#364). One
     // not sent (a reply under way from here, a duplicate) is not remembered.
-    const sent = await over(session, opts.token, { question: opts.question, text, reqId: opts.reqId }, opts.server)
-    if (sent) typedAnswers.remember(opts.question, text)
-    return sent
+    if (out !== 'not_sent' && 'text' in what) typedAnswers.remember(opts.question, what.text)
+    return out
   }
 
   /**
@@ -127,5 +149,5 @@ export function useQuickReply() {
     }
   }
 
-  return { send, reply, say, sending }
+  return { send, reply, answer, say, sending }
 }

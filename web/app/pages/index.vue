@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { homeLeavesFor, sessionWorthOpening } from '~/utils/sessions'
-import { firstLandingInTab, phoneLanding } from '~/utils/inbox'
+import { firstLandingInTab, homeNext, type HomeLanding } from '~/utils/inbox'
 
 useHead({ title: 'Sessions' })
 
@@ -16,13 +16,14 @@ const target = computed(() => sessionWorthOpening(attention.sessions.value))
 
 // A phone's first load of the home in a tab lands on Needs your decision when an item waits (docs/plans/decision-inbox.md, Owner
 // decisions 10): it waits for the inbox's first answer (or its failure, or LANDING_WAIT_MS, past which it goes on as before), and
-// is asked once per tab, so the Sessions tab and every later `/` stay on the sessions.
+// is asked once per tab, so the Sessions tab and every later `/` stay on the sessions. Once it chose the decision page, nothing the
+// home reads after (a session changing its target while that navigation is under way) sends it elsewhere (homeNext).
 const inbox = useInbox()
-const landing = ref(import.meta.client && !wide.value ? firstLandingInTab(sessionStore()) : false)
+let landing: HomeLanding = { judging: import.meta.client && !wide.value ? firstLandingInTab(sessionStore()) : false, landed: false }
 const LANDING_WAIT_MS = 3000
 const inboxAnswered = computed(() => inbox.state.value.loaded || !!inbox.state.value.error || !admin.hasToken.value)
 const landingLate = ref(false)
-if (import.meta.client && landing.value) setTimeout(() => (landingLate.value = true), LANDING_WAIT_MS)
+if (import.meta.client && landing.judging) setTimeout(() => (landingLate.value = true), LANDING_WAIT_MS)
 function sessionStore(): Pick<Storage, 'getItem' | 'setItem'> | null {
   try {
     return sessionStorage
@@ -34,20 +35,9 @@ function sessionStore(): Pick<Storage, 'getItem' | 'setItem'> | null {
 watch(
   [target, wide, inboxAnswered, landingLate],
   ([t, w, answered, late]) => {
-    if (landing.value) {
-      if (w) landing.value = false
-      else if (!answered && !late) return
-      else {
-        landing.value = false
-        const to = phoneLanding(window.innerWidth, inbox.count.value)
-        if (to) {
-          navigateTo(to, { replace: true })
-          return
-        }
-      }
-    }
-    const to = homeLeavesFor(w, t)
-    if (to) navigateTo(to, { replace: true })
+    const next = homeNext(landing, { wide: w, answered, late, width: window.innerWidth, open: inbox.count.value, home: homeLeavesFor(w, t) })
+    landing = next.landing
+    if (next.to) navigateTo(next.to, { replace: true })
   },
   { immediate: true },
 )

@@ -1,13 +1,16 @@
+import { effectScope, watch } from 'vue'
 import { ApiError } from './useApi'
 import {
   addRecent,
   barCount,
   inboxOrder,
+  mergeRecent,
   readRecentActions,
   reconcileDelivery,
   stepsFinal,
   trackKey,
   withOutcome,
+  withoutRecent,
   writeRecentActions,
   type DeliveryStep,
   type InboxPage,
@@ -53,6 +56,21 @@ export function emptyInbox(): InboxState {
  * burst of events costs two reads. While a page tracks (the decision page), each read of the list also reads again the steps of
  * every recent action not yet final, so a step that moves with no change to the open list (a retried task's next attempt starting)
  * is seen. Nothing is read before reads are attached, nor while `ready` says no (no workbench token).
+ *
+ * What the page knows of an answer (and of a command or an operation) is kept in its recent entry, and only what is known is drawn:
+ *
+ * - sent: the entry is remembered before the request goes, with no `outcome`; its steps are the server's track alone.
+ * - confirmed by the owner (`accepted`): the owner's own word on this request (an answer's `answer_ok`, a receipt); for a hosted
+ *   session's question, whose recorded and validated steps the server cannot know, that word fills them (reconcileDelivery).
+ * - refused by the owner (`refused: <words>`): the owner's own refusal; the action's steps end there, resumed not applicable.
+ * - unknown (`unconfirmed`): the request went and no word will come: an older owner that never confirms an answer, a connection
+ *   lost or silent before its word. Nothing is filled: the steps stay as the server's track says, unknown where it cannot know, and
+ *   the page says so and offers to read again, never to send again by itself.
+ * - not sent: the request never left the browser (a reply from this tab already under way, no connection): its entry is dropped
+ *   (`forget`), for it is no action of this browser's.
+ *
+ * The recent list the page follows is held in memory; the browser's storage keeps it across reloads where it can, and a storage that
+ * is empty or throws loses none of the actions the page follows (mergeRecent).
  */
 export class InboxLive {
   private state: InboxState = emptyInbox()
@@ -77,7 +95,7 @@ export class InboxLive {
     if (o.storage) this.storage = o.storage
     if (o.apply) this.apply = o.apply
     if (o.ready) this.ready = o.ready
-    this.state = { ...this.state, recent: readRecentActions(this.storage()) }
+    this.state = { ...this.state, recent: mergeRecent(this.state.recent, readRecentActions(this.storage())) }
     this.publish()
   }
 
@@ -139,7 +157,7 @@ export class InboxLive {
   reset(): void {
     this.generation++
     this.pages = 1
-    this.state = { ...emptyInbox(), recent: readRecentActions(this.storage()) }
+    this.state = { ...emptyInbox(), recent: mergeRecent(this.state.recent, readRecentActions(this.storage())) }
     this.publish()
   }
 
@@ -175,7 +193,7 @@ export class InboxLive {
 
   /** Reads again the steps of every recent action not yet final. */
   private async readTracks(gen: number): Promise<void> {
-    const recent = readRecentActions(this.storage())
+    const recent = mergeRecent(this.state.recent, readRecentActions(this.storage()))
     this.state = { ...this.state, recent }
     for (const e of recent) {
       const key = trackKey(e)
@@ -206,15 +224,25 @@ export class InboxLive {
 
   /** Keeps an action in this browser's recent list, before its reply comes back: a reload while it is out still tracks it. */
   remember(e: RecentEntry): void {
-    const recent = addRecent(readRecentActions(this.storage()), e)
+    const recent = addRecent(mergeRecent(this.state.recent, readRecentActions(this.storage())), e)
     writeRecentActions(this.storage(), recent)
     this.state = { ...this.state, recent }
     this.publish()
   }
 
-  /** Writes the owner's word on an action into its entry, when it comes. */
+  /** Drops an action whose request never left the browser: nothing was sent, so it is no action of this browser's. */
+  forget(e: Pick<RecentEntry, 'ref' | 'receipt' | 'attempt'>): void {
+    const recent = withoutRecent(mergeRecent(this.state.recent, readRecentActions(this.storage())), e)
+    writeRecentActions(this.storage(), recent)
+    const tracks = { ...this.state.tracks }
+    delete tracks[trackKey(e)]
+    this.state = { ...this.state, recent, tracks }
+    this.publish()
+  }
+
+  /** Writes the owner's word on an action into its entry, when it comes (ReplyWord). */
   outcome(receipt: string, attempt: string | undefined, word: string): void {
-    const recent = withOutcome(readRecentActions(this.storage()), receipt, attempt, word)
+    const recent = withOutcome(mergeRecent(this.state.recent, readRecentActions(this.storage())), receipt, attempt, word)
     writeRecentActions(this.storage(), recent)
     const key = trackKey({ ref: recent.find((x) => x.receipt === receipt && x.attempt === attempt)?.ref ?? '', receipt, attempt })
     const steps = this.state.tracks[key]
@@ -225,6 +253,8 @@ export class InboxLive {
 
 let live: InboxLive | undefined
 let listening = false
+/** The app's own scope for what start installs once: the token's watcher lives as long as the app, not as the page that started it. */
+let appScope: ReturnType<typeof effectScope> | undefined
 
 /** The app's one live inbox. */
 export function inboxLive(): InboxLive {
@@ -263,12 +293,17 @@ export function useInbox() {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') void l.changed()
     })
-    watch(
-      () => admin.token.value,
-      () => {
-        l.reset()
-        void l.changed()
-      },
+    // Whichever page or layout starts the inbox first, the watcher outlives it: a token forgotten or replaced on any page later
+    // still drops what was read through the old one.
+    appScope ??= effectScope(true)
+    appScope.run(() =>
+      watch(
+        () => admin.token.value,
+        () => {
+          l.reset()
+          void l.changed()
+        },
+      ),
     )
     void l.changed()
   }

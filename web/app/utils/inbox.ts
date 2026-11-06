@@ -4,6 +4,8 @@
 // (its landing on the page, a notification's target) and the Open on your phone offer. Pure. The names keep clear of DR1's
 // (utils/decisions.ts is the durable decision record's).
 
+import { NO_QUESTION, ReplyError } from './reply'
+
 /** One item as the list shows it, folded: no action's input or scope (the page reads the item before it acts). */
 export interface InboxSummary {
   /** Brakeman's ref of what the item is about: question:<session>/<question>, task:<run>/<task>, plan:<KEY-n>/<n>. */
@@ -178,10 +180,16 @@ function settled(state: StepState | string): boolean {
 }
 
 /**
- * The owner's word on this browser's own request, as its reply said it: `accepted` (the session or its host took the answer),
- * `refused: <words>`, or `unconfirmed` (an older owner says nothing). Kept in the recent entry as its `outcome`.
+ * What the page knows of its own request, kept in the recent entry as its `outcome` (useInbox, "What the page knows of an answer"):
+ * none yet (sent, no word: the reply is out, or the page went before it came); `accepted`, the owner's own word that it took it (an
+ * answer's `answer_ok`, a command's or an operation's receipt); `refused: <words>`, the owner's own refusal; `unconfirmed`, the
+ * request went and no word will come (an older owner that does not confirm answers, a connection lost or silent before its word).
+ * A request that never left the browser has no entry at all.
  */
 export type ReplyWord = string
+
+/** The outcome kept for a request that went with no word to come. */
+export const UNCONFIRMED = 'unconfirmed'
 
 /**
  * The steps a page shows after a read: `next` (the server's), with every step the page had seen `done` or `refused` kept over a
@@ -202,6 +210,12 @@ export function reconcileDelivery(prev: readonly DeliveryStep[] | undefined, nex
       const i = STEPS.indexOf(name)
       if (out[i]!.state === 'unknown' && word) out[i] = { ...word, step: name }
     }
+  }
+  // A refused action resumes nothing: whatever the question or the task did after (another answer won, the run went on), it was not
+  // this action's doing, and its steps end here.
+  const r = STEPS.indexOf('resumed')
+  if ((out[1]!.state === 'refused' || out[2]!.state === 'refused') && out[r]!.state !== 'not_applicable') {
+    out[r] = { step: 'resumed', state: 'not_applicable', words: 'this action was refused: nothing resumed from it' }
   }
   return out
 }
@@ -299,6 +313,36 @@ export function addRecent(list: readonly RecentEntry[], e: RecentEntry, now = Da
   return keptRecent([e, ...list.filter((x) => !(x.ref === e.ref && x.receipt === e.receipt && x.attempt === e.attempt))], now)
 }
 
+/**
+ * The recent actions this page holds (`mine`) with those the storage holds (another tab's, or this one's before a reload), newest
+ * first: an action in both is kept once, with the owner's word where either has it. The page's own list is the one it follows, so
+ * a storage that is empty or throws loses none of its actions.
+ */
+export function mergeRecent(mine: readonly RecentEntry[], stored: readonly RecentEntry[], now = Date.now()): RecentEntry[] {
+  const by = new Map<string, RecentEntry>()
+  for (const e of [...stored, ...mine]) {
+    const k = trackKey(e)
+    const had = by.get(k)
+    by.set(k, had && had.outcome && !e.outcome ? had : e)
+  }
+  return keptRecent([...by.values()], now)
+}
+
+/**
+ * The recent action a page shows for an item: the one named (a Recent row opens its own action, `receipt` and `attempt` in the
+ * page's query), else the newest on that item.
+ */
+export function recentFor(list: readonly RecentEntry[], ref: string, pick?: { receipt?: string; attempt?: string }): RecentEntry | undefined {
+  if (pick?.receipt) return list.find((e) => e.ref === ref && e.receipt === pick.receipt && (e.attempt ?? '') === (pick.attempt ?? ''))
+  return list.find((e) => e.ref === ref)
+}
+
+/** The list without one action: a request that never left the browser (nothing was sent) is no action of this browser's. */
+export function withoutRecent(list: readonly RecentEntry[], e: Pick<RecentEntry, 'ref' | 'receipt' | 'attempt'>): RecentEntry[] {
+  const k = trackKey(e)
+  return list.filter((x) => trackKey(x) !== k)
+}
+
 /** The list with the owner's word on one action written into its entry. */
 export function withOutcome(list: readonly RecentEntry[], receipt: string, attempt: string | undefined, outcome: string): RecentEntry[] {
   return list.map((e) => (e.receipt === receipt && e.attempt === attempt ? { ...e, outcome } : e))
@@ -307,6 +351,14 @@ export function withOutcome(list: readonly RecentEntry[], receipt: string, attem
 /** The key a recent action's steps are kept under in a page. */
 export function trackKey(e: Pick<RecentEntry, 'ref' | 'receipt' | 'attempt'>): string {
   return `${e.ref}|${e.receipt}|${e.attempt ?? ''}`
+}
+
+/**
+ * Whether the list may say that nothing needs a decision: only when its last read answered, with no item. A read that failed says
+ * nothing of what is open now, so after it the page shows the failure, never an empty list.
+ */
+export function inboxEmpty(s: { loaded: boolean; items: readonly unknown[]; unavailable: string; error: string }): boolean {
+  return s.loaded && !s.items.length && !s.unavailable && !s.error
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +378,31 @@ export function barCount(page: Pick<InboxPage, 'total'> | null | undefined): num
  */
 export function phoneLanding(width: number, open: number): string | null {
   return width < LG && open > 0 ? '/decisions' : null
+}
+
+/** Where the home is in judging the phone's landing: still judging it (this tab's first load of `/` below lg), and whether it chose the decision page. */
+export interface HomeLanding {
+  judging: boolean
+  landed: boolean
+}
+
+/**
+ * The home's next step (pages/index.vue), each time what it reads changes: while it judges the landing, it waits for the inbox's
+ * first answer (or its failure, or the wait's end) and then goes to the decision page when an item is open (phoneLanding); once it
+ * chose the decision page, nothing after (a session that changes the home's target while that navigation is under way) replaces
+ * it. Otherwise the home goes where it goes (`home`, homeLeavesFor's), or nowhere.
+ */
+export function homeNext(
+  l: HomeLanding,
+  o: { wide: boolean; answered: boolean; late: boolean; width: number; open: number; home: string | null },
+): { landing: HomeLanding; to: string | null } {
+  if (l.landed) return { landing: l, to: null }
+  if (l.judging && !o.wide) {
+    if (!o.answered && !o.late) return { landing: l, to: null }
+    const to = phoneLanding(o.width, o.open)
+    if (to) return { landing: { judging: false, landed: true }, to }
+  }
+  return { landing: { judging: false, landed: false }, to: o.home }
 }
 
 /** Where a tab notes that its first load of the home was judged for the phone's landing. */
@@ -362,7 +439,7 @@ export type PhoneOffer = { kind: 'qr'; url: string } | { kind: 'loopback'; words
 /**
  * Open on your phone (Owner decisions, 7): the page's address as the browser has it, its origin and `/decisions` alone (never a
  * token, a query or a fragment), as a QR code; on a loopback origin (the desktop app listens on 127.0.0.1) a phone cannot reach it,
- * and the offer says so (the decision link arrives with MB0's PR-7).
+ * and the offer says that alone, asking no step of the person (the decision link a phone opens arrives with MB0's PR-7).
  */
 export function phoneOffer(origin: string): PhoneOffer {
   let u: URL
@@ -373,13 +450,25 @@ export function phoneOffer(origin: string): PhoneOffer {
   }
   const host = u.hostname.replace(/^\[|\]$/g, '')
   if (host === 'localhost' || host.endsWith('.localhost') || /^127\./.test(host) || host === '::1' || host === '0.0.0.0') {
-    return { kind: 'loopback', words: `A phone cannot reach ${u.host}: it is this machine's own address. Open the page from an address on your network, or answer here; a decision link for a phone arrives with a later change.` }
+    return { kind: 'loopback', words: `A phone cannot reach this page from here: ${u.host} is this computer's own address, which only this computer opens.` }
   }
   return { kind: 'qr', url: `${u.origin}/decisions` }
 }
 
 // ---------------------------------------------------------------------------
 // Acting.
+
+/**
+ * What an answer's failure says of it: `not_sent` when nothing left this browser (no connection, a view-only link, a reply that
+ * names no question the page could tell the session), `unconfirmed` when it went and no word came (`no_word`: the owner said nothing
+ * in time; `closed`: the connection went first), `refused` for the owner's own refusal (`question_answered` and its other codes).
+ */
+export function answerFailure(e: unknown): 'not_sent' | 'unconfirmed' | 'refused' {
+  if (!(e instanceof ReplyError)) return 'not_sent'
+  if (e.code === 'no_word' || e.code === 'closed') return 'unconfirmed'
+  if (e.code === 'not_connected' || e.code === NO_QUESTION) return 'not_sent'
+  return 'refused'
+}
 
 /** A request id for an answer, fresh per action, so this browser's attempt and the winner are told apart: 16 hex characters. */
 export function mintRequestId(): string {
