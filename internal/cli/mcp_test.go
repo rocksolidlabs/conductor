@@ -850,7 +850,7 @@ func newGrantServer(t *testing.T, act []string, lose bool) *grantServer {
 		}
 		w.WriteHeader(http.StatusCreated)
 		if strings.HasSuffix(r.URL.Path, "/launch") {
-			_, _ = io.WriteString(w, `{"receipt":{"opId":"bk1","intent":"launch","status":"done","id":"0123456789abcdef"},"launch":{"id":"0123456789abcdef","runId":"r-1"},"run":{"id":"r-1"}}`)
+			_, _ = io.WriteString(w, `{"receipt":{"opId":"bk1","intent":"launch","status":"done","id":"0123456789abcdef"},"launch":{"id":"0123456789abcdef","runId":"r-1"}}`)
 			return
 		}
 		_, _ = io.WriteString(w, `{"receipt":{"opId":"bk2","intent":"plan.propose","status":"done","id":"fedcba9876543210"},"plan":{"id":"fedcba9876543210","n":2,"state":"proposed"}}`)
@@ -1168,7 +1168,7 @@ func TestAnActResendsALaunchStillBeingStarted(t *testing.T) {
 					return
 				}
 				w.WriteHeader(http.StatusOK)
-				_, _ = io.WriteString(w, `{"receipt":{"status":"done","id":"0123456789abcdef","repeat":true},"launch":{"id":"0123456789abcdef","runId":"r-1","state":"started"},"run":{"id":"r-1"}}`)
+				_, _ = io.WriteString(w, `{"receipt":{"status":"done","id":"0123456789abcdef","repeat":true},"launch":{"id":"0123456789abcdef","runId":"r-1","state":"started"}}`)
 			}))
 			t.Cleanup(srv.Close)
 			text, _, _, err := actTurn(t, srv.URL).act(context.Background(), brakeman.ActLaunchApprovedPlan, map[string]string{"key": "CND-12"}, map[string]any{"plan": "0123456789abcdef"}, "")

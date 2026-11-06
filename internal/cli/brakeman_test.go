@@ -441,10 +441,10 @@ func TestBrakemanActFromTheCommandLine(t *testing.T) {
 		OpID  string `json:"opId"`
 		Reply struct {
 			Receipt struct{ ID string }
-			Run     struct{ ID string }
+			Launch  struct{ RunID string }
 		} `json:"reply"`
 	}
-	if code != 0 || err != nil || json.Unmarshal([]byte(out), &printed) != nil || printed.Reply.Run.ID != "r-1" || printed.Reply.Receipt.ID == "" {
+	if code != 0 || err != nil || json.Unmarshal([]byte(out), &printed) != nil || printed.Reply.Launch.RunID != "r-1" || printed.Reply.Receipt.ID == "" {
 		t.Fatalf("act --json: %d %v %q", code, err, out)
 	}
 	sent := g.sent()

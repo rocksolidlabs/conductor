@@ -445,7 +445,6 @@ func actWords(operation, opID string, reply json.RawMessage) string {
 			Repeat     bool
 		} `json:"receipt"`
 		Launch *struct{ ID, RunID string } `json:"launch"`
-		Run    *struct{ ID string }        `json:"run"`
 		Plan   *struct {
 			ID    string
 			N     int
@@ -460,11 +459,10 @@ func actWords(operation, opID string, reply json.RawMessage) string {
 			line += ", a repeat of the act already kept"
 		}
 	}
-	switch {
-	case out.Run != nil && out.Run.ID != "":
-		line += "; run " + out.Run.ID + " launched"
-	case out.Launch != nil && out.Launch.RunID != "":
-		line += "; run " + out.Launch.RunID
+	// The act's answer carries the launch, never the run: a launch with
+	// its run's id has started it.
+	if l := out.Launch; l != nil && l.RunID != "" {
+		line += "; run " + l.RunID + " launched"
 	}
 	if p := out.Plan; p != nil && p.ID != "" {
 		line += fmt.Sprintf("; revision %d (%s) %s, for the operator to approve or not", p.N, p.ID, p.State)
