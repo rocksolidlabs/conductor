@@ -2532,3 +2532,39 @@ func TestARepositoryNotKnownIsRepairedFromTheMarks(t *testing.T) {
 		}
 	}
 }
+
+// Two reviews of one work task both submit needs_changes; the engine
+// accepts one, which reopens the work and cancels the other: only the
+// accepted review links the repair as reopened, the cancelled one, its
+// submitted verdict kept, links to nothing it did not reopen.
+func TestACancelledReviewLinksNoReopening(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ld := e.srv.ledger
+	run := "hist-00000073"
+	c := histCrew(e.root)
+	c.Tasks = append(c.Tasks, crew.Task{ID: "review2", Member: "reviewer", Kind: crew.TaskReview, Instructions: "Review too.", Needs: []string{"build"}})
+	histCreate(t, ld, run, "", c)
+	histTx(t, ld, run, func(tx *ledger.Tx) error {
+		if err := tx.PutAttempt(histAttempt("build", 1, ledger.AttemptSucceeded, "", commitID(0), commitID(1))); err != nil {
+			return err
+		}
+		rv := histAttempt("review", 1, ledger.AttemptSucceeded, "", commitID(1), "")
+		rv.Member, rv.Result = "reviewer", needsChanges(t)
+		if err := tx.PutAttempt(rv); err != nil {
+			return err
+		}
+		cancelled := histAttempt("review2", 1, ledger.AttemptCancelled, "", commitID(1), "")
+		cancelled.Member, cancelled.Result = "reviewer", needsChanges(t)
+		if err := tx.PutAttempt(cancelled); err != nil {
+			return err
+		}
+		return tx.PutAttempt(histAttempt("build", 2, ledger.AttemptRunning, "", commitID(1), ""))
+	})
+	ix := histSettle(t, e)
+	if got := histOut(t, ix, attemptKey(run, "review", 1), relReopened); !slices.Equal(got, []string{attemptKey(run, "build", 2)}) {
+		t.Fatalf("the accepted review's reopened: %v", got)
+	}
+	if got := histOut(t, ix, attemptKey(run, "review2", 1), relReopened); len(got) != 0 {
+		t.Fatalf("the cancelled review's reopened: %v", got)
+	}
+}
