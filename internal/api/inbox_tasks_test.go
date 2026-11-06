@@ -223,6 +223,13 @@ func TestInboxBlockingNamesTheDependents(t *testing.T) {
 	if !slices.Equal(it.Blocking.Refs, want) || it.Blocking.More != 0 || !strings.HasPrefix(it.Blocking.Words, "3 tasks wait for root") {
 		t.Fatalf("the diamond: %+v", it.Blocking)
 	}
+	// One dependent, or none, is said as one or none (the page shows the words as they are).
+	if it, _ := rd.taskItem(run, run.Tasks[1]); !strings.HasPrefix(it.Blocking.Words, "1 task waits for left") {
+		t.Fatalf("left: %q", it.Blocking.Words)
+	}
+	if it, _ := rd.taskItem(run, run.Tasks[4]); !strings.HasPrefix(it.Blocking.Words, "No task waits for apart") {
+		t.Fatalf("apart: %q", it.Blocking.Words)
+	}
 	for i := range 25 {
 		run.Tasks = append(run.Tasks, crew.TaskState{ID: "more" + strconv.Itoa(i), Needs: []string{"join"}, State: "blocked"})
 	}
