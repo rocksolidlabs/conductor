@@ -253,11 +253,9 @@ type refundPlan struct {
 // the continuation's first change: the chain, the gates' requirements, the
 // moving decisions with their holds and the settled ones in the engine;
 // its transaction's part (moving them and their holds, the give-backs, the
-// uncertain typings); regate at the end. answered collects, as the
-// transaction finds them, the decisions answered since they were read,
-// whose answer the continuation reads after its commit. The caller holds
-// e.mu, in the continuation's first change.
-func (e *Engine) continueDecisions(r *run, from Loaded, h history, answered *[]*decision) func(LedgerTx) error {
+// uncertain typings); regate at the end. The caller holds e.mu, in the
+// continuation's first change.
+func (e *Engine) continueDecisions(r *run, from Loaded, h history) func(LedgerTx) error {
 	dh := h.dec
 	r.dec.chain = append([]string{r.id}, dh.chain...)
 	r.dec.lastGate = dh.lastGate
@@ -328,15 +326,32 @@ func (e *Engine) continueDecisions(r *run, from Loaded, h history, answered *[]*
 		}
 		// The engine's copy follows the rows that write answers: one
 		// answered on the old run since it was read is moved as answered,
-		// and its answer read after the commit.
-		e.mu.Lock()
+		// with its answer read here, in the move's transaction, so it is
+		// the engine's once the move commits and never lost to a read
+		// after it (#636, review round 2).
 		for _, row := range rows {
-			if d := r.decisionN(row.N); d != nil && row.State == ledger.DecisionAnswered && d.state == ledger.DecisionOpen {
-				d.state, d.rev = ledger.DecisionAnswered, row.Rev
-				*answered = append(*answered, d)
+			if row.State != ledger.DecisionAnswered {
+				continue
 			}
+			e.mu.Lock()
+			d := r.decisionN(row.N)
+			stale := d != nil && d.state == ledger.DecisionOpen
+			e.mu.Unlock()
+			if !stale {
+				continue
+			}
+			rec, ok, err := dtx.Record(row.N)
+			if err == nil && !ok {
+				err = fmt.Errorf("%w: %s", ledger.ErrNoDecision, row.ID())
+			}
+			if err != nil {
+				return err
+			}
+			ans := acceptedOf(rec)
+			e.mu.Lock()
+			d.state, d.rev, d.answer = ledger.DecisionAnswered, row.Rev, ans
+			e.mu.Unlock()
 		}
-		e.mu.Unlock()
 		for _, p := range refunds {
 			wrote, err := refund(dtx, p.run, p.t.def.ID, p.n, p.d)
 			if err != nil {
@@ -376,23 +391,6 @@ func recordN(recs []ledger.DecisionRecord, n int64) ledger.DecisionRecord {
 		}
 	}
 	return ledger.DecisionRecord{}
-}
-
-// readAnswers reads the answers of the decisions a continuation found
-// answered as it moved them, then applies what the run holds answered.
-func (e *Engine) readAnswers(ctx context.Context, r *run, answered []*decision) {
-	for _, d := range answered {
-		rec, ok, err := e.readDecision(ctx, d.n)
-		if err != nil || !ok {
-			continue
-		}
-		e.mu.Lock()
-		if d.state == ledger.DecisionAnswered && d.answer == nil {
-			d.answer = acceptedOf(rec)
-		}
-		e.mu.Unlock()
-	}
-	e.applyDecisions(r)
 }
 
 // recoveredHolds are the holds a recovered record's tasks show: the run's

@@ -64,6 +64,10 @@ type runDecisions struct {
 	// filed are the applied answers whose delivery.task_file a change of
 	// the run has written, or carries (taskDecisions).
 	filed map[int64]bool
+	// unapplied are the applied decisions a change of the run has closed
+	// since (superseded: S1, S4): a task file's read that found one
+	// applied is read again (taskDecisions).
+	unapplied map[int64]bool
 }
 
 // endGate remembers gate's decision closed without releasing it.
@@ -119,6 +123,15 @@ type decisionOp struct {
 func (e *Engine) closeDecision(r *run, d *decision, state, why, by string, op decisionOp, detail map[string]any, tell string) {
 	was := d.state
 	held := slices.Clone(d.holds)
+	if was == ledger.DecisionApplied {
+		if r.dec.unapplied == nil {
+			r.dec.unapplied = map[int64]bool{}
+		}
+		r.dec.unapplied[d.n] = true
+	}
+	if d.answer != nil {
+		delete(e.confirms, confirmKey{d.n, d.answer.k})
+	}
 	d.state, d.rev = state, d.rev+1
 	r.dropDecision(d)
 	r.dec.settled = slices.DeleteFunc(r.dec.settled, func(x *decision) bool { return x == d })
@@ -549,7 +562,7 @@ func (e *Engine) regate(r *run, cause string) {
 			continue
 		}
 		if !r.decisionRoom(1) {
-			r.note(session.ActivityError, "the plan's decision %s cannot be asked again: the run has %d decisions", pd.ID, ledger.MaxDecisionsPerRun)
+			r.note(session.ActivityError, "the plan's decision %s cannot be asked again: %s", pd.ID, r.roomWords())
 			r.dec.noRoom = true
 			continue
 		}
@@ -557,12 +570,41 @@ func (e *Engine) regate(r *run, cause string) {
 	}
 }
 
-// decisionRoom reports whether the run may open n more decisions: those
-// it opened and the places its identities' answers hold for their
-// replacements stay within the ledger's MaxDecisionsPerRun. The caller
-// holds e.mu.
+// decisionRoom reports whether the run may open n more decisions within
+// every bound the ledger's OpenDecision checks for a decision of no
+// attempt: the decisions it opened and the places its identities' answers
+// hold for their replacements within MaxDecisionsPerRun, and those that
+// stand (open, or answered by an identity) within MaxOpenPerRun. A gate
+// opened past either would be refused in the commit of the change that
+// asked it, and carried to every commit after it (#636, review round 2).
+// The caller holds e.mu.
 func (r *run) decisionRoom(n int) bool {
-	return r.decisionsHeld()+n <= ledger.MaxDecisionsPerRun
+	return r.decisionsHeld()+n <= ledger.MaxDecisionsPerRun && r.decisionsStanding()+n <= ledger.MaxOpenPerRun
+}
+
+// roomLeft is how many decisions the run may open now (decisionRoom). The
+// caller holds e.mu.
+func (r *run) roomLeft() int {
+	return max(0, min(ledger.MaxDecisionsPerRun-r.decisionsHeld(), ledger.MaxOpenPerRun-r.decisionsStanding()))
+}
+
+// roomWords say where the run stands against both bounds. The caller
+// holds e.mu.
+func (r *run) roomWords() string {
+	return fmt.Sprintf("the run holds %d of its %d decisions, %d of its %d open", r.decisionsHeld(), ledger.MaxDecisionsPerRun, r.decisionsStanding(), ledger.MaxOpenPerRun)
+}
+
+// decisionsStanding counts the run's decisions the ledger counts against
+// MaxOpenPerRun: open, or answered by an identity (whose place stands for
+// its replacement). The caller holds e.mu.
+func (r *run) decisionsStanding() int {
+	n := 0
+	for _, d := range r.decisions {
+		if d.state == ledger.DecisionOpen || d.state == ledger.DecisionAnswered && d.answer != nil && d.answer.auth.Via == ViaIdentity {
+			n++
+		}
+	}
+	return n
 }
 
 // gateRequest is a plan decision's request as a gate keeps it: its
@@ -693,7 +735,7 @@ func (r *run) retryNeedsRoom(t *task) error {
 	if len(asks) == 0 || r.decisionRoom(len(asks)) {
 		return nil
 	}
-	return refuse(CodeDecisionLimit, "the plan's decisions %s would ask again, and the run has room for %d of its %d decisions: the retry is refused", strings.Join(asks, ", "), max(0, ledger.MaxDecisionsPerRun-r.decisionsHeld()), ledger.MaxDecisionsPerRun)
+	return refuse(CodeDecisionLimit, "the plan's decisions %s would ask again, and the run has room for %d more (%s): the retry is refused", strings.Join(asks, ", "), r.roomLeft(), r.roomWords())
 }
 
 // decisionsHeld counts what decisionRoom counts against the run's bound:
@@ -739,14 +781,19 @@ func (e *Engine) subjectPlace(r *run, d *decision) (subjectAt, bool) {
 // subjectMoved rechecks an approval's subject at at: the commit the
 // answer's work rests on, read from the object store; the words of what
 // moved, "" when it holds. A commit or path that cannot be read moved: an
-// unreadable subject is never counted as validated. The caller holds no
-// lock.
-func subjectMoved(ctx context.Context, s DecisionSubject, at subjectAt) string {
+// unreadable subject is never counted as validated. A read that failed
+// because ctx ended (its caller gone, its attempt cancelled) says nothing
+// of the subject: it is ctx's error, and the caller changes nothing (#636,
+// review round 2). The caller holds no lock.
+func subjectMoved(ctx context.Context, s DecisionSubject, at subjectAt) (string, error) {
 	commit := at.commit
 	if at.live {
 		head, err := headCommit(ctx, at.dir)
 		if err != nil || head == "" {
-			return fmt.Sprintf("the asking worktree's HEAD cannot be read: %v", err)
+			if cerr := ctx.Err(); cerr != nil {
+				return "", cerr
+			}
+			return fmt.Sprintf("the asking worktree's HEAD cannot be read: %v", err), nil
 		}
 		commit = head
 	}
@@ -754,26 +801,30 @@ func subjectMoved(ctx context.Context, s DecisionSubject, at subjectAt) string {
 	case "commit":
 		if commit != s.Commit {
 			if at.live {
-				return fmt.Sprintf("HEAD is now %s, was %s", short(commit), short(s.Commit))
+				return fmt.Sprintf("HEAD is now %s, was %s", short(commit), short(s.Commit)), nil
 			}
-			return fmt.Sprintf("the next attempt starts at %s, not %s", short(commit), short(s.Commit))
+			return fmt.Sprintf("the next attempt starts at %s, not %s", short(commit), short(s.Commit)), nil
 		}
 	case "artifact":
 		digest, err := blobDigest(ctx, at.dir, commit, s.Path)
 		if err != nil {
-			return err.Error()
+			if cerr := ctx.Err(); cerr != nil {
+				return "", cerr
+			}
+			return err.Error(), nil
 		}
 		if digest != s.SHA256 {
-			return fmt.Sprintf("%s changed: sha256 %s… was %s…", s.Path, digest[:8], s.SHA256[:min(8, len(s.SHA256))])
+			return fmt.Sprintf("%s changed: sha256 %s… was %s…", s.Path, digest[:8], s.SHA256[:min(8, len(s.SHA256))]), nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // recheckSubject reads where d's subject is now and whether it moved, and
 // answers with the place it read at, so the change that acts on it checks
-// the place is still the same (sameSubject). The caller holds no lock.
-func (e *Engine) recheckSubject(ctx context.Context, r *run, d *decision) (subjectAt, string) {
+// the place is still the same (sameSubject); ctx's error when the read was
+// cut short by it (subjectMoved). The caller holds no lock.
+func (e *Engine) recheckSubject(ctx context.Context, r *run, d *decision) (subjectAt, string, error) {
 	e.mu.Lock()
 	at, ok := e.subjectPlace(r, d)
 	var s DecisionSubject
@@ -782,9 +833,10 @@ func (e *Engine) recheckSubject(ctx context.Context, r *run, d *decision) (subje
 	}
 	e.mu.Unlock()
 	if !ok {
-		return subjectAt{}, ""
+		return subjectAt{}, "", nil
 	}
-	return at, subjectMoved(ctx, s, at)
+	words, err := subjectMoved(ctx, s, at)
+	return at, words, err
 }
 
 // sameSubject reports whether d's subject would be rechecked at the place
