@@ -2,6 +2,8 @@ package gitrepo
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,5 +169,121 @@ func TestCommitDetail(t *testing.T) {
 	}
 	if _, err := CommitDetail(context.Background(), dir, "nope"); err == nil {
 		t.Fatal("an unknown revision")
+	}
+}
+
+// Compare lists the files between two commits, however many commits lie
+// between them: added, modified, deleted and renamed, with their counts;
+// a binary file without lines; past MaxFiles the list ends, truncated. A
+// commit the repository has not is ErrNoCommit, and an id not in full is
+// refused before anything is read.
+func TestCompareListsTheFilesBetweenTwoCommits(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 6, 8, 0, 0, 0, time.UTC)
+	long := strings.Repeat("a line that stays put\n", 20)
+	write(t, dir, "keep.go", "package keep\n")
+	write(t, dir, "edit.go", "one\ntwo\nthree\n")
+	write(t, dir, "gone.txt", "bye\n")
+	write(t, dir, "old/name.go", long)
+	base := commit(t, dir, at, "base")
+	write(t, dir, "edit.go", "one\n2\nthree\nfour\n")
+	commit(t, dir, at.Add(time.Minute), "between")
+	os.Remove(filepath.Join(dir, "gone.txt"))
+	os.MkdirAll(filepath.Join(dir, "new"), 0o755)
+	if err := os.Rename(filepath.Join(dir, "old/name.go"), filepath.Join(dir, "new/name.go")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "added.txt", "x\ny\n")
+	if err := os.WriteFile(filepath.Join(dir, "blob.bin"), []byte{0, 1, 2, 0, 3}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := commit(t, dir, at.Add(2*time.Minute), "candidate")
+	d, err := Compare(ctx, dir, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]Change{}
+	for _, c := range d.Changes {
+		by[c.Path] = c
+	}
+	want := map[string]Change{
+		"edit.go":     {Path: "edit.go", Status: "M", Added: 2, Removed: 1},
+		"gone.txt":    {Path: "gone.txt", Status: "D", Removed: 1},
+		"new/name.go": {Path: "new/name.go", From: "old/name.go", Status: "R"},
+		"added.txt":   {Path: "added.txt", Status: "A", Added: 2},
+		"blob.bin":    {Path: "blob.bin", Status: "A", Binary: true},
+	}
+	if len(by) != len(want) || d.Commit.Sha != head || d.Truncated {
+		t.Fatalf("compare: %+v", d)
+	}
+	for p, w := range want {
+		if by[p] != w {
+			t.Errorf("%s: %+v, want %+v", p, by[p], w)
+		}
+	}
+	// The other way round, the same files the other way.
+	back, err := Compare(ctx, dir, head, base)
+	if err != nil || len(back.Changes) != len(want) || back.Commit.Sha != base {
+		t.Fatalf("back: %+v %v", back, err)
+	}
+	// Past MaxFiles: the first MaxFiles, truncated.
+	for i := range MaxFiles + 3 {
+		write(t, dir, fmt.Sprintf("many/f%04d.txt", i), fmt.Sprintf("%d\n", i))
+	}
+	many := commit(t, dir, at.Add(3*time.Minute), "many")
+	d, err = Compare(ctx, dir, head, many)
+	if err != nil || len(d.Changes) != MaxFiles || !d.Truncated {
+		t.Fatalf("many: %d %v %v", len(d.Changes), d.Truncated, err)
+	}
+	gone := strings.Repeat("ab", 20)
+	if _, err := Compare(ctx, dir, base, gone); !errors.Is(err, ErrNoCommit) {
+		t.Fatalf("a commit not there: %v", err)
+	}
+	for _, id := range []string{"HEAD", "main", base[:12], strings.ToUpper(base), base + "^"} {
+		if _, err := Compare(ctx, dir, id, head); err == nil || errors.Is(err, ErrNoCommit) {
+			t.Fatalf("%q: %v", id, err)
+		}
+	}
+	if _, err := Compare(ctx, t.TempDir(), base, head); !errors.Is(err, ErrNotRepo) {
+		t.Fatalf("outside a repository: %v", err)
+	}
+}
+
+// FileAt reads a file at a commit, by id: its bytes up to the bound
+// (truncated past it), a binary file without them, ErrNoFile for a path
+// the commit has no file at (none, a folder), ErrNoCommit for a commit
+// the repository has not.
+func TestFileAtReadsAFileOfACommit(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	write(t, dir, "a/b.txt", "hello\n")
+	if err := os.WriteFile(filepath.Join(dir, "bin"), []byte{'x', 0, 'y'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../etc/passwd", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	c := commit(t, dir, time.Time{}, "files")
+	f, err := FileAt(ctx, dir, c, "a/b.txt", 1<<20)
+	if err != nil || string(f.Content) != "hello\n" || f.Truncated || f.Binary || f.Size != 6 {
+		t.Fatalf("a/b.txt: %+v %v", f, err)
+	}
+	if f, err = FileAt(ctx, dir, c, "a/b.txt", 3); err != nil || string(f.Content) != "hel" || !f.Truncated {
+		t.Fatalf("cut: %+v %v", f, err)
+	}
+	if f, err = FileAt(ctx, dir, c, "bin", 1<<20); err != nil || !f.Binary || f.Content != nil {
+		t.Fatalf("bin: %+v %v", f, err)
+	}
+	if f, err = FileAt(ctx, dir, c, "link", 1<<20); err != nil || string(f.Content) != "../../etc/passwd" {
+		t.Fatalf("a link is its target's text: %+v %v", f, err)
+	}
+	for _, p := range []string{"a", "nope.txt", "a/b.txt/c"} {
+		if _, err := FileAt(ctx, dir, c, p, 1<<20); !errors.Is(err, ErrNoFile) {
+			t.Fatalf("%s: %v", p, err)
+		}
+	}
+	if _, err := FileAt(ctx, dir, strings.Repeat("cd", 20), "a/b.txt", 1<<20); !errors.Is(err, ErrNoCommit) {
+		t.Fatalf("a commit not there: %v", err)
 	}
 }

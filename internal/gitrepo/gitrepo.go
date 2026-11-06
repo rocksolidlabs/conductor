@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -32,6 +33,14 @@ const (
 
 // ErrNotRepo says the directory is not inside a repository.
 var ErrNotRepo = errors.New("not a git repository")
+
+// ErrNoCommit says a commit Compare or FileAt was given is not in the
+// repository (pruned, or never there); ErrNoFile that the commit has no
+// file at the path (none, a folder, a submodule).
+var (
+	ErrNoCommit = errors.New("no such commit in the repository")
+	ErrNoFile   = errors.New("no such file at the commit")
+)
 
 // Commit is one commit of a log, or the commit of a Detail.
 type Commit struct {
@@ -188,7 +197,138 @@ func CommitDetail(ctx context.Context, dir, rev string) (Detail, error) {
 			return out, err
 		}
 	}
-	changes, err := object.DiffTreeWithOptions(ctx, parentTree, tree, object.DefaultDiffTreeOptions)
+	return diffTrees(ctx, out, parentTree, tree)
+}
+
+// Compare is the files that differ between the trees of the commits from
+// and to, both full object ids read by id (no revision is resolved, so no
+// reference names another commit), renames found, each with its added and
+// removed lines, as CommitDetail answers for one commit against its
+// parent; Commit is to's. At most MaxFiles files, Truncated past them; a
+// file past MaxDiffed is listed without its lines. ErrNoCommit (wrapped)
+// for an id the repository has no commit of.
+func Compare(ctx context.Context, dir, from, to string) (Detail, error) {
+	r, top, err := open(dir)
+	if err != nil {
+		return Detail{}, err
+	}
+	fc, err := commitByID(r, from)
+	if err != nil {
+		return Detail{}, err
+	}
+	tc, err := commitByID(r, to)
+	if err != nil {
+		return Detail{}, err
+	}
+	out := Detail{Top: top, Commit: summary(tc, true)}
+	fromTree, err := fc.Tree()
+	if err != nil {
+		return out, err
+	}
+	toTree, err := tc.Tree()
+	if err != nil {
+		return out, err
+	}
+	return diffTrees(ctx, out, fromTree, toTree)
+}
+
+// File is a file's bytes at a commit (FileAt): at most the bound asked,
+// Truncated past it; Binary when git would call it so (a NUL in its first
+// 8,000 bytes), with no content then; Size its whole size.
+type File struct {
+	Content   []byte
+	Truncated bool
+	Binary    bool
+	Size      int64
+}
+
+// FileAt reads the file at path (relative to the repository's top, with
+// '/') in the tree of the commit id (a full object id, read by id), at
+// most max bytes of it. A link is its target's text, as git keeps it,
+// never followed. ErrNoCommit (wrapped) for an id the repository has no
+// commit of, ErrNoFile for a path the commit has no file at.
+func FileAt(ctx context.Context, dir, id, path string, max int) (File, error) {
+	r, _, err := open(dir)
+	if err != nil {
+		return File{}, err
+	}
+	c, err := commitByID(r, id)
+	if err != nil {
+		return File{}, err
+	}
+	tree, err := c.Tree()
+	if err != nil {
+		return File{}, err
+	}
+	f, err := tree.File(path)
+	if errors.Is(err, object.ErrFileNotFound) || errors.Is(err, object.ErrDirectoryNotFound) || errors.Is(err, plumbing.ErrObjectNotFound) {
+		return File{}, ErrNoFile
+	}
+	if err != nil {
+		return File{}, err
+	}
+	if !f.Mode.IsFile() {
+		return File{}, ErrNoFile
+	}
+	if err := ctx.Err(); err != nil {
+		return File{}, err
+	}
+	out := File{Size: f.Size}
+	if out.Binary, err = f.IsBinary(); err != nil {
+		return File{}, err
+	}
+	if out.Binary {
+		return out, nil
+	}
+	rd, err := f.Reader()
+	if err != nil {
+		return File{}, err
+	}
+	defer rd.Close()
+	b, err := io.ReadAll(io.LimitReader(rd, int64(max)+1))
+	if err != nil {
+		return File{}, err
+	}
+	if len(b) > max {
+		b, out.Truncated = b[:max], true
+	}
+	out.Content = b
+	return out, nil
+}
+
+// commitByID is the commit whose full object id is id: ErrNoCommit
+// (wrapped) when the repository has none, an error for an id that is not
+// one in full.
+func commitByID(r *git.Repository, id string) (*object.Commit, error) {
+	if !fullID(id) {
+		return nil, fmt.Errorf("%q is not a commit id in full", id)
+	}
+	c, err := r.CommitObject(plumbing.NewHash(id))
+	if errors.Is(err, plumbing.ErrObjectNotFound) {
+		return nil, fmt.Errorf("%w: %s", ErrNoCommit, id)
+	}
+	return c, err
+}
+
+// fullID reports whether s is a full object id: 40 lowercase hex digits
+// (go-git reads SHA-1 repositories).
+func fullID(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// diffTrees is out with the files that differ between the trees from (nil
+// for none: every file added) and to, renames found, each with its counts
+// (CommitDetail's and Compare's walk).
+func diffTrees(ctx context.Context, out Detail, from, to *object.Tree) (Detail, error) {
+	changes, err := object.DiffTreeWithOptions(ctx, from, to, object.DefaultDiffTreeOptions)
 	if err != nil {
 		return out, err
 	}
