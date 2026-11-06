@@ -1270,9 +1270,19 @@ without the daemon, `3` cancels and Codex exits; Cancel is highlighted) and
 "Update available" (Update now highlighted, which runs `npm install -g`;
 Escape skips, `3` alone skips until the next version), both held the same
 way; the update question is found by its highlighted "Update now (runs" and
-its words are its heading, "Update available 0.161.0 → 0.162.1". An input
-that is exactly one of the showing question's choices answers it with or
-without an Enter.
+its words are its heading, "Update available 0.161.0 → 0.162.1". Claude
+Code's built-in entry has its sign-in screen (2.1.319 signed out: "Browser
+didn't open? Use the url below to sign in", the URL, "Paste code here if
+prompted >"), a startup question with no answers: no key of Conductor's
+passes it, and the person signs in through the browser, after which the
+program leaves the screen by itself. Such a question is withdrawn, with
+no answer recorded and no key typed, once the screen, after output since
+it was asked, shows no startup question (as one a key reached is), and a
+person's text is taken again. A person's text refused while a startup
+question shows says so: "the agent asks a startup question (whether to
+trust the folder, its sign-in, an update): answer with the question's
+choices, or in its terminal". An input that is exactly one of the showing
+question's choices answers it with or without an Enter.
 
 A question marked `anytime` (`{prompt, words?, anytime: true, answers}`) is
 one the agent asks during its work, not only as it starts. A server session
@@ -2278,7 +2288,15 @@ overview at most 4 KiB, each section at most 64 KiB, the seven at most
   `admin`, `session`, `task`, `ticket`, `observe` and `act`). `may` is
   the names of the operations the caller may call, the `operations`
   section's, in its order, so a caller told only to read the guide knows
-  what it may do without reading a section. `limits` is the headline
+  what it may do without reading a section. Both are made by the check the
+  routes refuse by, for this caller now: an operation only a session's
+  own token calls (`task_result`, `brief_submit`, which answer the
+  admin's `403 agent_only`) is not listed to the admin, and a Brakeman
+  turn is not listed a read of a class it may not see, its snapshot and
+  the configuration now together (`observe_screen` with terminals off;
+  Dispatch's reads, the act tool and its operations with Dispatch hidden;
+  `observe_status` and `observe_overlaps` with neither runs nor sessions),
+  which its route answers `403 not_visible`. `limits` is the headline
   bounds that bind it, one line of words each, from the `limits`
   section's entries for its scopes (a crew's members, tasks and checks and
   a ticket's title and description for the admin; a report's message and
@@ -3545,7 +3563,12 @@ crew a person names Brakeman is saved as `brakeman-2`.
 `starting`), `ended` (its session ended with no brief, after it read its
 request), `failed` (the launch failed, with the engine's words; the
 agent exited before it read its request: "is it logged in?", with its
-exit and last line; or, before it read its request, its agent shows a
+exit and last line; the agent did not read its request within 5 minutes
+of the turn's start, or by its deadline when that comes first, whatever
+its screen shows, ended then with words naming the bound and the last
+lines its screen shows (links left out, at most 220 bytes), no key typed
+into it, a person's turn as a wake turn: a real agent reads within two
+minutes; or, sooner, before it read its request, its agent shows a
 startup question the turn may not pass, ended at once with the words of
 what it shows and no key typed into it: a startup question with no
 answers, a screen no key of Conductor's passes (Claude Code's sign-in
@@ -3951,13 +3974,25 @@ request still queued (behind a person's turn) waits in the queue,
 starting once the role is resumed; the briefing times passed while
 paused fire nothing, whether or not the role stepped between;
 `unavailable` (a turn could not start: its launch refused, its agent
-exited before it read its request or was held at a startup question it
-may not pass, or the day's turns or minutes spent) says why, keeps its
-batch (a turn that started none gives its wakes to the next batch, under
-a new id), and tries again on a person's request, the next briefing
-time, a save of the configuration (`PUT /api/brakeman/config`: a budget
-raised fires the batch kept within its rules, one still spent says so
-again in words true now), or, for a budget spent, the next local day. The
+exited before it read its request, was held at a startup question it
+may not pass, or did not read it in its bound, or the day's turns or
+minutes spent) says why, with its `reason` (`start`, `budget`, `off`,
+`stuck`), keeps its batch (a turn that started none gives its wakes to
+the next batch, under a new id), and tries again at `retryAt` and as its
+reason allows. For `start` the role waits 10 minutes, doubled for each
+such turn in a row (`tries`) up to 4 hours, and fires nothing into the
+same state meanwhile: a wake, a briefing time and a person's own
+request (which is its own try, and fails or starts on its own) leave the
+batch kept; a turn of the agent that reads its request, a person's
+included, ends it at once, and `tries` starts again from 0. For the
+others a person's request and the next briefing time try again, and for
+a budget spent the next local day. A save of the configuration
+(`PUT /api/brakeman/config`) tries again only for what it changed: the
+budget for `budget` (the batch kept fires within its rules, or one
+still spent says so again in words true now), the agent, its model, its
+account, its folder or its tools allowed for `start`, the role turned on
+or off for `off`, nothing for `stuck`; a save that changes none of what
+the reason weighs, the same body again included, fires nothing. The
 day's minutes, `budget.minutesPerDay` (10 to 1,440; 240), count every
 turn, whatever started it: a turn's reservation at its start is the
 least of `turnMinutes` and what the day has left, its deadline its start
@@ -3979,7 +4014,7 @@ state}`.
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/brakeman/role?limit=` | `{role: {schema, identity, state, why?, retryAt?, last, open?, fired?, firing?, request?, coolUntil?, briefed?, notes?, updatedAt, minutesToday}, log: [{source, subject?, key?, at, batch?, request?, held?}]}`: the role, and its log newest first, `limit` rows (1 to 1,000; 200) |
+| `GET /api/brakeman/role?limit=` | `{role: {schema, identity, state, why?, retryAt?, reason?, tries?, last, open?, fired?, firing?, request?, coolUntil?, briefed?, notes?, updatedAt, minutesToday}, log: [{source, subject?, key?, at, batch?, request?, held?}]}`: the role, and its log newest first, `limit` rows (1 to 1,000; 200) |
 | `POST /api/brakeman/role` | `{action}`, `pause` or `resume` → `{role}`; `400 invalid_request` for another action |
 | `POST /api/brakeman/role/notes` | `{request, item}` → `{role}`: the text of a kept brief's `fact/1` or `interpretation/1` kept as a note, `from` its `brief:` ref; `400 not_a_note` for another kind; `404` for no such request or item; `413 bound` past the notes' 64 KiB |
 | `DELETE /api/brakeman/role/notes` | → `{role}`, the notes cleared |

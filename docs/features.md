@@ -3754,8 +3754,29 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     and the role says it is unavailable in those words, firing nothing
     more into the same screen; a person's own request says the same. A
     plain session of a signed-out Claude Code shows the screen under
-    Needs you. `TestASignedOutAgentMakesTheRoleUnavailable` (a stub that
-    waits there and never exits).
+    Needs you, and once the person signs in through the browser and the
+    program moves on by itself, the question is withdrawn with no key
+    typed and the session takes text again.
+    `TestASignedOutAgentMakesTheRoleUnavailable` (a stub that waits there
+    and never exits), `TestASignInScreenTheProgramLeavesByItselfIsWithdrawn`.
+  - A screen no catalog entry knows (another agent's sign-in, a version's
+    new wording) does the same without a pattern: a turn whose agent has
+    not read its request 5 minutes after the turn's start (a real agent
+    reads within two; by its deadline, for a shorter turn) ends failed,
+    "the agent did not read its request in 5 minutes", with the last lines
+    its screen shows (links left out), no key typed, charged the minutes
+    it ran; a person's own turn too, instead of waiting out its minutes.
+    The role is unavailable with those words and a retry of its own, 10
+    minutes doubled for each such turn in a row up to 4 hours; meanwhile a
+    wake, a briefing time and a person's request fire nothing into the
+    same state, and a turn whose agent reads its request (a person's,
+    once the agent is signed in) takes the batch up at once.
+    `TestAnAgentAtAScreenNobodyKnowsDidNotStart`,
+    `TestAnAgentThatReadsLateWithinItsBoundIsNotEnded`,
+    `TestALoggedOutAgentMakesTheRoleUnavailable`. The tests that promise no
+    key reached such a screen read the terminal's raw input (the stub's
+    terminal in raw mode), which `TestTheRecordOfATerminalCatchesOneKey`
+    proves catches one key with no Enter.
   - Any other startup question ends a background turn the same way: an
     agent's update dialog (as Codex showed) ends a wake turn, whose
     questions page no one, naming the dialog and saying to answer it in a
@@ -3764,11 +3785,24 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   - The guide's overview says what the caller may do: `may`, the
     operations it may call, and `limits`, the headline bounds that bind it
     (a Brakeman turn's reads and minutes, its acts when granted), within
-    its 4 KiB. `TestTheOverviewListsWhatTheCallerMayDoAndItsLimits`.
-  - Saving Brakeman's settings makes an unavailable role look again: a
-    budget raised clears "the day's budget is spent" and fires the batch
-    kept; one still spent says so in words true now. The role card's
-    retry words name the save. `TestASavedConfigurationIsLookedAtAgain`.
+    its 4 KiB. The list and the operations section are made by the check
+    the routes refuse by: the admin is not listed what only an agent's own
+    token calls, a turn not a read of a class it may not see.
+    `TestTheOverviewListsWhatTheCallerMayDoAndItsLimits`,
+    `TestTheOverviewListsWhatTheRoutesAdmit` (the routes called).
+  - Saving Brakeman's settings makes an unavailable role look again at
+    what the save changed, by the reason kept with the state: a budget
+    raised clears "the day's budget is spent" and fires the batch kept
+    (one still spent says so in words true now); another agent, model,
+    account or folder tries an agent that did not start again; a save that
+    changes nothing it weighs fires nothing. The role card's retry words
+    follow the reason. `TestASavedConfigurationIsLookedAtAgain`,
+    `TestASaveWeighsOnlyWhatItChanged`, `TestASaveEndsOnlyWhatItChanged`.
+  - A proposal's launch state is drawn from the request's acts and the
+    launch they name each time, so a re-read of the request keeps a failed
+    launch's "try again" and never shows a second control for one under
+    way. vitest and a `brakeman-act.spec.ts` step that re-reads the
+    request.
   - What a brief is unsure of renders as Markdown, as its summary does;
     the draft crew's guidance states that a crew with tasks starts every
     member with its task (`start.when` `"task"`), which a real model's
