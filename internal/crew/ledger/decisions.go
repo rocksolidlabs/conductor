@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -453,14 +454,17 @@ type authorityShape struct {
 }
 
 // strict decodes raw into v, refusing a field v does not name and anything
-// after the value.
+// after the value but space: a second value, or a closing ] or } (which
+// Decoder.More would pass, since it only asks whether an array or object
+// goes on).
 func strict(raw string, v any) error {
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return err
 	}
-	if dec.More() {
+	var after json.RawMessage
+	if err := dec.Decode(&after); !errors.Is(err, io.EOF) {
 		return errors.New("text after the value")
 	}
 	return nil
@@ -700,6 +704,15 @@ func (t *Tx) room(run string) (bool, error) {
 // identity's response counts as open and as a place. The opened history
 // row, its routing, its holds and its event are the caller's, in the same
 // transaction.
+//
+// A replacement (a fresh decision in the place of one whose identity
+// answer could not be rechecked) has its place only in this order, in one
+// transition: the replaced decision made final first (PutDecision,
+// superseded, no superseded_by yet), so its place is free; then the
+// replacement opened here; then the replaced one put again in the same
+// state with superseded_by naming it. Opened while the replaced one is
+// still answered, the replacement finds the place taken and is
+// ErrDecisionLimit at the bound.
 func (t *Tx) OpenDecision(d DecisionRow) (DecisionRow, bool, error) {
 	if d.RunID == "" {
 		d.RunID = t.runID
@@ -840,7 +853,8 @@ func (t *Tx) mustDecision(n int64) (DecisionRow, error) {
 // answered → applied; open or answered → superseded, cancelled or
 // expired; applied → superseded), a rev never goes back, and an applied
 // receipt once written never changes, so a second application of one
-// decision cannot commit (I1); a final state sets closed_at. open →
+// decision cannot commit (I1); a decision is applied only with its
+// receipt (ErrInvalidDecision without); a final state sets closed_at. open →
 // answered is not PutDecision's: a response's answer is Answer's, the
 // conditional write.
 func (t *Tx) PutDecision(d DecisionRow) error {
@@ -865,6 +879,9 @@ func (t *Tx) PutDecision(d DecisionRow) error {
 	}
 	if d.Applied != "" && cur.Applied == "" && (d.State != DecisionApplied || cur.State != DecisionAnswered) {
 		return fmt.Errorf("%w: %s is applied only from answered", ErrDecisionState, cur.ID())
+	}
+	if d.State == DecisionApplied && d.Applied == "" {
+		return invalid("%s is applied with no application receipt", cur.ID())
 	}
 	if d.SupersededBy != "" {
 		if _, ok := ParseDecisionID(d.SupersededBy); !ok {
@@ -1052,17 +1069,19 @@ func (t *Tx) response(where string, args ...any) (ResponseRow, bool, error) {
 
 // History writes a row of decision n's history, next in its sequence, and
 // answers it. An operation (h.OpID set: an operator's comment, request for
-// information, re-route or cancel, the cancel within the final row's own
-// bound) its author sent before answers that row
-// (repeat), or ErrDecisionConflict when its fingerprint differs. Each kind
-// keeps its own bound (historyBounds), ErrDecisionLimit past it: one
-// opened, two routed besides the re-routes, MaxDecisionOperations
-// operations, one row per response, one applied, one supersession or
-// cancellation, one refund, three deliveries. Notified rows, and a
-// provider's, take what MaxDecisionHistory leaves them: past it a
-// notified row is not written (the row answered has Seq 0) and is
-// counted, as dropped, in the detail of the next row written; a
-// provider's row is ErrDecisionLimit.
+// information or re-route, or a cancel with its command id) its author
+// sent before answers that row (repeat), or ErrDecisionConflict when its
+// fingerprint differs. Each kind keeps its own bound (historyBounds),
+// ErrDecisionLimit past it: one opened, two routed besides the re-routes,
+// MaxDecisionOperations operations (a cancel is not one of them: it has
+// the final row's own place), one row per response, one applied, one
+// supersession or cancellation, one refund, three deliveries. Notified
+// rows, and a provider's, take what MaxDecisionHistory leaves them: past
+// it a notified row is not written (the row answered has Seq 0) and is
+// counted, as dropped, in the detail of the next row written whose detail
+// keeps MaxHistoryDetail with the count in it (a row with no room for it
+// is written as sent, and the count waits for the next); a provider's row
+// is ErrDecisionLimit.
 func (t *Tx) History(n int64, h HistoryRow) (HistoryRow, bool, error) {
 	if _, err := t.mustDecision(n); err != nil {
 		return HistoryRow{}, false, err
@@ -1105,8 +1124,6 @@ func (t *Tx) History(n int64, h HistoryRow) (HistoryRow, bool, error) {
 	}
 	group, max := bound.group, bound.max
 	if op && h.Kind != HistoryCancelled {
-		// An operator's cancel keeps its command's id and stays the
-		// decision's one final row.
 		group, max = "ops", MaxDecisionOperations
 	}
 	var have int
@@ -1146,11 +1163,16 @@ func (t *Tx) History(n int64, h HistoryRow) (HistoryRow, bool, error) {
 		return HistoryRow{}, false, err
 	}
 	if dropped > 0 {
-		if h.Detail, err = withDropped(h.Detail, dropped); err != nil {
+		merged, err := withDropped(h.Detail, dropped)
+		if err != nil {
 			return HistoryRow{}, false, err
 		}
-		if _, err := t.tx.ExecContext(t.ctx, "UPDATE decisions SET dropped = 0 WHERE n = ?", n); err != nil {
-			return HistoryRow{}, false, err
+		// The count goes in only where the row keeps its bound with it.
+		if len(merged) <= MaxHistoryDetail {
+			h.Detail = merged
+			if _, err := t.tx.ExecContext(t.ctx, "UPDATE decisions SET dropped = 0 WHERE n = ?", n); err != nil {
+				return HistoryRow{}, false, err
+			}
 		}
 	}
 	if err := t.tx.QueryRowContext(t.ctx, "SELECT COALESCE(MAX(seq), 0) + 1 FROM decision_history WHERE decision = ?", n).Scan(&h.Seq); err != nil {
@@ -1302,11 +1324,13 @@ type DecisionFilter struct {
 	Limit      int
 }
 
-// Decision reads decision n with its responses and history.
+// Decision reads decision n with its responses and history, all three of
+// one commit (one read transaction), so a transition committed meanwhile
+// is seen whole or not at all.
 func (l *Ledger) Decision(ctx context.Context, n int64) (DecisionRecord, bool, error) {
 	var rec DecisionRecord
 	found := false
-	err := l.readAt(ctx, func(q querier, version int) error {
+	err := l.readSnapshot(ctx, func(q querier, version int) error {
 		if version < versionDecisions {
 			return nil
 		}
@@ -1318,6 +1342,9 @@ func (l *Ledger) Decision(ctx context.Context, n int64) (DecisionRecord, bool, e
 			return err
 		}
 		rec.DecisionRow, found = d, true
+		if l.inDecision != nil {
+			l.inDecision()
+		}
 		rows, err := q.QueryContext(ctx, "SELECT "+responseCols+" FROM decision_responses WHERE decision = ? ORDER BY k", n)
 		if err != nil {
 			return err
@@ -1351,6 +1378,36 @@ func (l *Ledger) Decision(ctx context.Context, n int64) (DecisionRecord, bool, e
 		return DecisionRecord{}, false, err
 	}
 	return rec, true, nil
+}
+
+// DecisionByRequest reads the decision run's member opened under request
+// id requestID (OpenDecision's repeat), ok false for none: the request sent
+// again is answered with it before anything that may have changed since is
+// checked again (a decision it superseded, the file it is about).
+func (l *Ledger) DecisionByRequest(ctx context.Context, run, member, requestID string) (DecisionRow, bool, error) {
+	if requestID == "" {
+		return DecisionRow{}, false, nil
+	}
+	var d DecisionRow
+	found := false
+	err := l.readAt(ctx, func(q querier, version int) error {
+		if version < versionDecisions {
+			return nil
+		}
+		row, err := scanDecision(q.QueryRowContext(ctx, "SELECT "+decisionCols+" FROM decisions WHERE run_id = ? AND member = ? AND request_id = ?", run, member, requestID))
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil
+		case err != nil:
+			return err
+		}
+		d, found = row, true
+		return nil
+	})
+	if err != nil || !found {
+		return DecisionRow{}, false, err
+	}
+	return d, true, nil
 }
 
 // Decisions reads the decisions f names, newest first, a page of at most

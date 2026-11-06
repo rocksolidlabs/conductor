@@ -677,7 +677,7 @@ func (r *run) markRun() { r.runChanged = true }
 
 // dirty reports whether a change waits for a commit. The caller holds e.mu.
 func (r *run) dirty() bool {
-	return r.runChanged || len(r.changedTasks) > 0 || len(r.changedAttempts) > 0 || len(r.pendingEvents) > 0 || len(r.pendingMore) > 0 || r.committing
+	return r.runChanged || len(r.changedTasks) > 0 || len(r.changedAttempts) > 0 || len(r.pendingEvents) > 0 || len(r.pendingMore) > 0 || len(r.pendingLast) > 0 || r.committing
 }
 
 // snapshot is what one transition writes: the rows of what changed, as
@@ -773,7 +773,9 @@ type tx struct {
 	// follow the change's (a run's gates after run.created). done, when
 	// set, runs under e.mu once the transaction has committed, before
 	// anything else reads the run: what the commit answered (a decision's
-	// id) goes into the engine's state there.
+	// id) goes into the engine's state there. A change refused with no
+	// undo keeps both for the commit that writes it (r.pendingLast,
+	// r.pendingDone).
 	last func(LedgerTx) error
 	done func()
 }
@@ -878,23 +880,25 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 	e.endedWork(r)
 	laterMore, laterDone := r.dec.more, r.dec.done
 	r.dec.more, r.dec.done = nil, nil
-	pendingDone := r.dec.pendingDone
-	r.dec.pendingDone = nil
 	snap := r.drain()
-	pending, pendingMore := r.pendingEvents, r.pendingMore
-	r.pendingEvents, r.pendingMore = nil, nil
+	pending, pendingMore, pendingLast, pendingDone := r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone
+	r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = nil, nil, nil, nil
 	events := append(slices.Clip(pending), writable(t.events)...)
 	more := slices.Clip(pendingMore)
 	if t.more != nil {
 		more = append(more, t.more)
 	}
 	more = append(more, laterMore...)
-	var last []func(LedgerTx) error
+	last := slices.Clip(pendingLast)
 	if t.last != nil {
 		last = append(last, t.last)
 	}
+	done := slices.Clip(pendingDone)
+	if t.done != nil {
+		done = append(done, t.done)
+	}
+	done = append(done, laterDone...)
 	if len(events) == 0 && len(more) == 0 && len(last) == 0 && snap.run == nil && len(snap.tasks) == 0 && len(snap.attempts) == 0 {
-		r.dec.pendingDone = pendingDone
 		e.mu.Unlock()
 		return nil
 	}
@@ -940,12 +944,14 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 			r.foreign = true
 		}
 		snap.undo(r)
-		r.pendingEvents, r.pendingMore = events, append(more, last...)
-		r.dec.pendingDone = append(pendingDone, laterDone...)
+		// Carried whole: the rows of its own, those after its events and
+		// what runs once they are written (a decision's number, an
+		// answer's line queued), so a change the next commit writes is
+		// finished as if its own had (#635, review round 1).
+		r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = events, more, last, done
 		if undo != nil {
 			undo()
-			r.pendingEvents, r.pendingMore = pending, pendingMore
-			r.dec.pendingDone = pendingDone
+			r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = pending, pendingMore, pendingLast, pendingDone
 		}
 		e.mu.Unlock()
 		return err
@@ -956,11 +962,8 @@ func (e *Engine) commit(ctx context.Context, r *run, first bool, mutate func() t
 	if snap.create {
 		r.created = true
 	}
-	if t.done != nil {
-		t.done()
-	}
-	for _, done := range append(pendingDone, laterDone...) {
-		done()
+	for _, f := range done {
+		f()
 	}
 	r.touch()
 	if r.endPending {

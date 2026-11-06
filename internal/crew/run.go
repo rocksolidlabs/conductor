@@ -462,8 +462,11 @@ type Engine struct {
 	beforeRespond func(n int64)
 	// beforeAnswer, when set, runs in a member's deliverer as it is about
 	// to take the next decision answer (nextAnswer): a test queues two
-	// answers there before either is typed.
+	// answers there before either is typed. afterLook, when set, runs once
+	// the deliverer has taken one and looked for its mirror (mirror, ""
+	// for none) and before it types it: a test sets the mirror aside there.
 	beforeAnswer func(member string)
+	afterLook    func(member, mirror string)
 	// beforeTyping, when set, runs as a decision's answer is about to be
 	// submitted to its session: a test holds the line there while its
 	// decision is superseded.
@@ -589,9 +592,14 @@ type run struct {
 	// pendingEvents and pendingMore are the events and the rows of their
 	// own (a message's, a command's receipt) of changes whose commit was
 	// refused with no undo, kept as the refusal comes (under txMu): the
-	// next commit writes them first, in order (transact).
+	// next commit writes them first, in order (transact). pendingLast are
+	// those changes' rows written after the events (tx.last), which the
+	// next commit writes after its own events, and pendingDone what runs
+	// once they are written (tx.done), after that commit, in order.
 	pendingEvents []event
 	pendingMore   []func(LedgerTx) error
+	pendingLast   []func(LedgerTx) error
+	pendingDone   []func()
 	// committing says a transaction has taken the run's changes and not
 	// yet heard from the ledger: refused, they come back to the run, which
 	// must still be there (dirty).

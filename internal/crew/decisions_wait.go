@@ -53,11 +53,9 @@ type runDecisions struct {
 	chain []string
 	// more and done are the change under way's writes of decisions and
 	// what follows its commit, which commit takes with the change's own
-	// (later); pendingDone those of a change whose commit failed, run once
-	// a later commit writes its rows.
-	more        []func(LedgerTx) error
-	done        []func()
-	pendingDone []func()
+	// (later), and carries with them when it fails.
+	more []func(LedgerTx) error
+	done []func()
 	// regating says a regate is on its way (pump's backstop).
 	regating bool
 }
@@ -592,6 +590,7 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 	for _, t := range tasks {
 		r.hold(t, d)
 	}
+	rows := r.heldRows(tasks)
 	r.dec.opened++
 	prev := r.dec.lastGate[pd.ID]
 	row := ledger.DecisionRow{Origin: ledger.OriginPlan, Type: typ, Gate: pd.ID, Ticket: p.Ticket.ID, Plan: p.Plan.ID, PlanDigest: p.Plan.Digest,
@@ -630,11 +629,17 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 				return err
 			}
 		}
+		// The held tasks' rows again, naming the gate by its number.
+		for _, h := range rows {
+			if err := h.put(ltx, map[*decision]int64{d: got.N}); err != nil {
+				return err
+			}
+		}
 		return ltx.Event("decision.opened", map[string]any{"decision": got.ID(), "origin": ledger.OriginPlan, "type": typ, "gate": pd.ID, "before": ids, "follows": prev.id})
 	}, func() {
 		d.n = opened
-		for _, t := range tasks {
-			r.holdReason(t)
+		for _, h := range rows {
+			r.written(h)
 		}
 		r.note(session.ActivityStatus, "the plan's decision %s asks again as %s: %s", pd.ID, d.id(), cause)
 	})
@@ -851,7 +856,7 @@ func (e *Engine) tell(r *run, d *decision, text string) {
 		return
 	}
 	line := &answerLine{d: d, a: a, text: strings.TrimSpace(oneLine.Replace(text)), byName: "Conductor", notice: true}
-	go e.queueAnswer(r, line)
+	e.queueAnswer(r, line)
 }
 
 // Operations: the operator's comment, request for more information,
