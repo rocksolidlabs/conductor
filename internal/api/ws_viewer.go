@@ -87,10 +87,12 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 		return
 	}
 	sink := s.viewerSink(c, raw)
+	decides := s.isDecisionLink(linkID)
 	sub, err := local.AttachWith(session.AttachOptions{
 		Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
 		Authorize: check,
 		Owner:     owner,
+		Decisions: decides,
 	}, sink)
 	if err != nil {
 		switch {
@@ -118,6 +120,14 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 	var held heldTyping
 	// The viewer's slot stays taken until what it asked to type is done.
 	defer held.wait()
+	// A decision link's lane (lane.go): nil for any other connection,
+	// whose lane requests are refused.
+	send := func(f []byte) { local.Send(sub, f) }
+	var lane *laneConn
+	if decides {
+		lane = s.newLane(sink.ctx, linkID, local.Info().ID, send, s.ownAnswer(sub, local))
+		defer lane.end()
+	}
 	for {
 		f, err := readFrame(sink.ctx, c, 0)
 		if err != nil {
@@ -139,10 +149,15 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 				s.sendKeysError(sub, local, err)
 			}
 		case proto.TypeControl:
+			if lane.control(f.Payload, send) {
+				continue
+			}
 			if !s.handleLocalControl(sub, local, &held, f.Payload) {
 				sink.Close(nil)
 				return
 			}
+		case proto.TypeDecide:
+			lane.decide(f.Payload, send)
 		case proto.TypeFileWrite:
 			// A save from the editor (design round 12, F6): its answer is a FILE frame.
 			h, part, err := proto.DecodeFileWrite(f.Payload)

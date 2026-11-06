@@ -21,6 +21,8 @@ type createLinkRequest struct {
 	Role       session.Role `json:"role"`
 	Label      string       `json:"label"`
 	TTLSeconds int64        `json:"ttlSeconds"`
+	// Decide makes a decision link (lane.go): control only.
+	Decide bool `json:"decide"`
 }
 
 // linkView is a share link plus the number of viewers attached through it;
@@ -70,7 +72,8 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, ok := s.registry.Get(id); !ok {
+	d, ok := s.registry.Get(id)
+	if !ok {
 		writeError(w, http.StatusNotFound, "not_found", "no such session")
 		return
 	}
@@ -83,6 +86,10 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	}
 	req, ok := readLinkRequest(w, r)
 	if !ok {
+		return
+	}
+	if _, local := d.(*session.Local); req.Decide && !local {
+		writeError(w, http.StatusConflict, "unsupported", "a hosted session's decisions are answered on the machine that runs it")
 		return
 	}
 	// A session published to a switchyard is viewed there: its links are
@@ -98,6 +105,10 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		wcancel()
 	}
 	if pub != nil {
+		if req.Decide {
+			switchyardTooOld(w)
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 		res, err := pub.Link(ctx, string(req.Role), req.ttl(), req.Label)
@@ -115,12 +126,16 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	link, token, err := s.links.Create(id, req.Role, req.Label, req.ttl())
+	create := s.links.Create
+	if req.Decide {
+		create = s.links.CreateDecision
+	}
+	link, token, err := create(id, req.Role, req.Label, req.ttl())
 	if err != nil {
 		writeLinkError(w, err, err.Error())
 		return
 	}
-	s.recordLink(id, "link created: "+linkLabelOr(link.Label)+" ("+string(link.Role)+")")
+	s.recordLink(id, "link created: "+linkLabelOr(link.Label)+" ("+linkRole(string(link.Role), link.Decide)+")")
 	reply := s.linkReply(r, link, token)
 	if server != "" {
 		reply["rendezvous"] = map[string]any{"server": server, "error": why}
@@ -144,7 +159,27 @@ func readLinkRequest(w http.ResponseWriter, r *http.Request) (createLinkRequest,
 		writeError(w, http.StatusBadRequest, "invalid_request", "ttlSeconds out of range")
 		return req, false
 	}
+	if req.Decide && req.Role != session.RoleControl {
+		writeError(w, http.StatusBadRequest, "bad_request", "a decision link is a control link")
+		return req, false
+	}
 	return req, true
+}
+
+// switchyardTooOld refuses a decision link a switchyard would mint: none
+// carries decisions yet, so its link would answer none (the switchyard's
+// side is the plan's PR-6).
+func switchyardTooOld(w http.ResponseWriter) {
+	writeError(w, http.StatusConflict, "switchyard_too_old", "This switchyard must be updated to answer decisions through its links")
+}
+
+// linkRole is a link's role as the activity says it, a decision link's
+// said so.
+func linkRole(role string, decide bool) string {
+	if decide {
+		return role + ", answers decisions"
+	}
+	return role
 }
 
 func (req createLinkRequest) ttl() time.Duration { return time.Duration(req.TTLSeconds) * time.Second }
@@ -263,6 +298,11 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		if carrier != nil && req.Decide {
+			unlock()
+			switchyardTooOld(w)
+			return
+		}
 		if carrier != nil {
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
@@ -322,7 +362,11 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 		token string
 		err   error
 	)
-	if !s.runs.IfKept(id, func() { link, token, err = s.links.CreateRunLink(id, req.Role, req.Label, req.ttl()) }) {
+	create := s.links.CreateRunLink
+	if req.Decide {
+		create = s.links.CreateRunDecision
+	}
+	if !s.runs.IfKept(id, func() { link, token, err = create(id, req.Role, req.Label, req.ttl()) }) {
 		writeError(w, http.StatusNotFound, "not_found", "no such run")
 		return
 	}
@@ -330,7 +374,7 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 		writeLinkError(w, err, "too many links for this run")
 		return
 	}
-	s.runs.Note(id, session.ActivityLink, "link created: "+linkLabelOr(link.Label)+" ("+string(link.Role)+")")
+	s.runs.Note(id, session.ActivityLink, "link created: "+linkLabelOr(link.Label)+" ("+linkRole(string(link.Role), link.Decide)+")")
 	if server != "" {
 		reply := s.linkReply(r, link, token)
 		reply["rendezvous"] = map[string]any{"server": server, "error": why}

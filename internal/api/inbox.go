@@ -147,10 +147,13 @@ type inboxBlocking struct {
 	More  int      `json:"more,omitempty"`
 }
 
-// inboxRef is an evidence entry: a ref and its label.
+// inboxRef is an evidence entry: a ref and its label; on a decision
+// link's lane, Session is the id the link's holder opens a session in its
+// scope by (lane.go).
 type inboxRef struct {
-	Ref   string `json:"ref"`
-	Label string `json:"label"` // 200
+	Ref     string `json:"ref"`
+	Label   string `json:"label"` // 200
+	Session string `json:"session,omitempty"`
 }
 
 // inboxDestination is whom a router said a question went to.
