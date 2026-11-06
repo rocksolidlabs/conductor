@@ -46,6 +46,19 @@ type crewInput struct {
 	Tasks    []crew.Task    `json:"tasks,omitempty"`
 	Setup    []crew.Check   `json:"setup,omitempty"`
 	Manifest *crew.Manifest `json:"manifest,omitempty"`
+	// People are the persons who own the crew's decisions and its tasks'
+	// outcomes (a task's owner is one of them): local labels, never
+	// started.
+	People []crew.Person `json:"people,omitempty"`
+}
+
+// crew is the crew in is, its name trimmed as the store saves it: the one
+// conversion of a crew body, for the crew routes and a Brakeman draft's
+// check and make alike, so a field is added here once.
+func (in crewInput) crew() crew.Crew {
+	return crew.Crew{Name: strings.TrimSpace(in.Name), Goal: in.Goal, Cwd: in.Cwd, Where: in.Where, Isolation: in.Isolation,
+		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Yolo: in.Yolo, Members: in.Members, Tasks: in.Tasks, Setup: in.Setup,
+		Manifest: in.Manifest, People: in.People}
 }
 
 // handleListCrews lists one page of the saved crews' summaries, ordered by
@@ -188,8 +201,9 @@ func (s *Server) handleDuplicateCrew(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"crew": saved})
 }
 
-// readCrew decodes the body of a create or an update into a crew and checks
-// it: first its rules, on the name trimmed as the store saves it, then its
+// readCrew decodes the body of a create or an update into a crew
+// (crewInput.crew, its name trimmed as the store saves it) and checks it:
+// first its rules, then its
 // agents against the catalog. So a crew that breaks a rule is refused for it
 // (400) before the store looks at the id of an update (404), and an unknown
 // agent is 400 whatever else holds. The store checks the crew again as it
@@ -205,14 +219,8 @@ func (s *Server) readCrew(w http.ResponseWriter, r *http.Request) (crew.Crew, bo
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return crew.Crew{}, false
 	}
-	c := crew.Crew{
-		Name: in.Name, Goal: in.Goal, Cwd: in.Cwd, Where: in.Where, Isolation: in.Isolation,
-		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Yolo: in.Yolo, Members: in.Members, Tasks: in.Tasks, Setup: in.Setup,
-		Manifest: in.Manifest,
-	}
-	trimmed := c
-	trimmed.Name = strings.TrimSpace(c.Name)
-	if err := trimmed.ValidateSave(); err != nil {
+	c := in.crew()
+	if err := c.ValidateSave(); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return crew.Crew{}, false
 	}

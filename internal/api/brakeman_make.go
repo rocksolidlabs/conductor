@@ -845,9 +845,7 @@ func crewOfBody(body json.RawMessage) (crew.Crew, error) {
 	if err := store.DecodeStrict(body, &in); err != nil {
 		return crew.Crew{}, err
 	}
-	return crew.Crew{Name: strings.TrimSpace(in.Name), Goal: in.Goal, Cwd: in.Cwd, Where: in.Where, Isolation: in.Isolation,
-		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Yolo: in.Yolo, Members: in.Members, Tasks: in.Tasks, Setup: in.Setup,
-		Manifest: in.Manifest}, nil
+	return in.crew(), nil
 }
 
 // completeEdges records each pending edge of the request whose two ends
