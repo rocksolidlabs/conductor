@@ -627,11 +627,35 @@ func (s *Server) recheckResponse(ctx context.Context, r *http.Request, did strin
 	s.runs.ConfirmAuthority(did, k, admitted)
 }
 
-// decisionOp is an operation's body's common part: its id under its
-// actor, and the rev the operator read.
+// decisionOp is an operation's body's common part: the rev the operator
+// read.
 type decisionOp struct {
 	ExpectedRev int `json:"expectedRev"`
 }
+
+// The operator's operations' bodies (the guide's inputs are their
+// schemas): a cancel's, a comment's and a route's. A response's is
+// crew.Response.
+type (
+	decisionCancelBody struct {
+		decisionOp
+		CommandID string `json:"commandId"`
+		Why       string `json:"why"`
+		Release   bool   `json:"release,omitempty"`
+	}
+	decisionCommentBody struct {
+		decisionOp
+		OpID string `json:"opId"`
+		Kind string `json:"kind"`
+		Text string `json:"text"`
+	}
+	decisionRouteBody struct {
+		decisionOp
+		OpID string           `json:"opId"`
+		To   crew.Destination `json:"to"`
+		Note string           `json:"note,omitempty"`
+	}
+)
 
 // opReady checks an operation against the rev the operator read: one
 // sent before under its actor and id goes on (the engine answers its
@@ -683,12 +707,7 @@ func (s *Server) writeDecisionOp(w http.ResponseWriter, r *http.Request, what, d
 // {receipt, decision}.
 func (s *Server) handleDecisionCancel(w http.ResponseWriter, r *http.Request) {
 	did := r.PathValue("did")
-	var body struct {
-		decisionOp
-		CommandID string `json:"commandId"`
-		Why       string `json:"why"`
-		Release   bool   `json:"release,omitempty"`
-	}
+	var body decisionCancelBody
 	if err := decodeJSONLimit(w, r, &body, maxDecisionAnswerBody); err != nil {
 		writeError(w, http.StatusBadRequest, crew.CodeInvalid, err.Error())
 		return
@@ -706,12 +725,7 @@ func (s *Server) handleDecisionCancel(w http.ResponseWriter, r *http.Request) {
 // attempt for more information (more_info): {receipt, decision}.
 func (s *Server) handleDecisionComment(w http.ResponseWriter, r *http.Request) {
 	did := r.PathValue("did")
-	var body struct {
-		decisionOp
-		OpID string `json:"opId"`
-		Kind string `json:"kind"`
-		Text string `json:"text"`
-	}
+	var body decisionCommentBody
 	if err := decodeJSONLimit(w, r, &body, maxDecisionAnswerBody); err != nil {
 		writeError(w, http.StatusBadRequest, crew.CodeInvalid, err.Error())
 		return
@@ -729,12 +743,7 @@ func (s *Server) handleDecisionComment(w http.ResponseWriter, r *http.Request) {
 // local/1's one): {receipt, decision}.
 func (s *Server) handleDecisionRoute(w http.ResponseWriter, r *http.Request) {
 	did := r.PathValue("did")
-	var body struct {
-		decisionOp
-		OpID string           `json:"opId"`
-		To   crew.Destination `json:"to"`
-		Note string           `json:"note,omitempty"`
-	}
+	var body decisionRouteBody
 	if err := decodeJSONLimit(w, r, &body, maxDecisionAnswerBody); err != nil {
 		writeError(w, http.StatusBadRequest, crew.CodeInvalid, err.Error())
 		return

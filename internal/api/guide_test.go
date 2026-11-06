@@ -681,6 +681,8 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 		"brakeman_config": brakemanConfigBody{}, "brakeman_ask": brakemanAskBody{}, "brakeman_cancel": brakemanCancelBody{},
 		// A Brakeman turn's granted operations take their routes' own bodies.
 		"launch_approved_plan": ticketLaunchBody{}, "prepare_followup": planProposeBody{},
+		// The operator's operations on a decision.
+		"decision_respond": crew.Response{}, "decision_cancel": decisionCancelBody{}, "decision_comment": decisionCommentBody{}, "decision_route": decisionRouteBody{},
 	}
 	seen := 0
 	for _, op := range Operations() {
