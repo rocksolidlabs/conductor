@@ -1044,7 +1044,11 @@ func (m *propModel) check(id string, rec *propRecord) journal.Record {
 // touches that reached it so; and what reached it and is not there, or
 // reached it after its end, is counted in Dropped, exactly. The only
 // entries no delivery explains are the withdrawals an observed end made
-// (I5's).
+// (I5's), which the bounds let go as any entry: one for a question still
+// in the record is in it too (it is not older than its question), so
+// Dropped may count past the rest only one withdrawal for each question
+// that could have had one (asked while open, no ending told while open)
+// and is not in the record.
 func (m *propModel) checkRetention(id string, r journal.Record, rec *propRecord, raw []byte) {
 	kept := map[string]int{}
 	sent := 0
@@ -1080,8 +1084,25 @@ func (m *propModel) checkRetention(id string, r journal.Record, rec *propRecord,
 		}
 		rows += f.Count
 	}
-	if want := rec.led.after + (sent - present) + (touched - rows); r.Dropped != want {
-		m.fatalf("I4, the record of %s counts %d dropped; %d reached it after its end, %d of %d entries and %d of %d touches are not in it:\n%s", id, r.Dropped, rec.led.after, sent-present, sent, touched-rows, touched, raw)
+	withdrawable := 0
+	if !r.EndedAt.IsZero() {
+		asked := map[string]bool{}
+		for _, en := range r.Entries {
+			if en.Kind == journal.KindQuestion {
+				asked[en.ID] = true
+			}
+		}
+		for k := range rec.led.kept {
+			if q, ok := strings.CutPrefix(k, "question|"); ok && !asked[q] {
+				if _, told := rec.led.endings[q]; !told {
+					withdrawable++
+				}
+			}
+		}
+	}
+	want := rec.led.after + (sent - present) + (touched - rows)
+	if r.Dropped < want || r.Dropped > want+withdrawable {
+		m.fatalf("I4, the record of %s counts %d dropped; %d reached it after its end, %d of %d entries and %d of %d touches are not in it, and up to %d withdrawals the end made may have gone:\n%s", id, r.Dropped, rec.led.after, sent-present, sent, touched-rows, touched, withdrawable, raw)
 	}
 }
 
