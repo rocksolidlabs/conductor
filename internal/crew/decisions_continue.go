@@ -41,9 +41,6 @@ func (s sqlLedger) RunRow(ctx context.Context, id string) (ledger.RunRow, bool, 
 	return s.l.Run(ctx, id)
 }
 
-// maxChain bounds the runs of a chain a continuation walks back.
-const maxChain = 256
-
 // decisionHistory is what a continuation takes of the decisions of the
 // runs it continues, read before its first transaction (the ledger's one
 // connection serves no reader inside one).

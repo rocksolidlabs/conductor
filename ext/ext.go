@@ -49,6 +49,13 @@
 //
 //	func main() { app.Main() }
 //
+// Such a main links more modules than this one, so it hands in its
+// notices before app.Main, with app.SetThirdPartyNotices; one that hands in
+// none serves this module's. The text replaces this module's whole,
+// including the web bundle's npm packages and fonts that every such binary
+// embeds, so it starts from this module's (conductor.ThirdPartyNotices) and
+// adds the notices of the modules the main links (see package app).
+//
 // Every provider has a name (ValidName: 1 to 40 of a-z, 0-9 and '-'), which
 // the logs, the server's notes and GET /api/capabilities give it. One value
 // may register in several slots under one name (a router that is also a

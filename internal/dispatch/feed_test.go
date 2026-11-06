@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -66,5 +67,45 @@ func TestChangesAfter(t *testing.T) {
 		if _, err := s.ChangesAfter(ctx, bad.after, bad.limit); !errors.Is(err, ErrBadQuery) {
 			t.Fatalf("after %d limit %d: %v", bad.after, bad.limit, err)
 		}
+	}
+}
+
+// TestChangeValueIsTheChangesOwn: two status changes in a row each read
+// back the status that change set, not the ticket's status now; a seq of
+// no change is ErrNotFound.
+func TestChangeValueIsTheChangesOwn(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "CND")
+	_, key := newTicket(t, s, "CND", "a ticket")
+	head, err := s.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, status := range []string{TicketReady, TicketInProgress} {
+		if rc, err := s.EditTicket(ctx, testOp(fmt.Sprintf("s%d", i)), key, TicketEdit{Set: TicketSet{Status: ptr(status)}}); err != nil || rc.Status != StatusDone {
+			t.Fatalf("%s: %+v %v", status, rc, err)
+		}
+	}
+	page, err := s.ChangesAfter(ctx, head, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range page {
+		if c.Field != "status" {
+			continue
+		}
+		v, err := s.ChangeValue(ctx, c.Seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, v)
+	}
+	if len(got) != 2 || got[0] != TicketReady || got[1] != TicketInProgress {
+		t.Fatalf("the status changes' values: %v", got)
+	}
+	if _, err := s.ChangeValue(ctx, page[len(page)-1].Seq+100); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no such change: %v", err)
 	}
 }

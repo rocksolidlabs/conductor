@@ -45,6 +45,15 @@ type Process struct {
 	cmd  *exec.Cmd
 	done chan struct{}
 
+	// tty is the parent's own descriptor on the terminal's slave side,
+	// kept where keepsTTY says so (macOS) until the process is reaped, or
+	// until Stop gives up on it, Abort or Close, and closed once
+	// (releaseTTY): while it is open the child's exit is not the
+	// terminal's last close, so its output waits for the reader whenever
+	// the reader comes. nil where it is not kept.
+	tty     *os.File
+	ttyOnce sync.Once
+
 	mu   sync.Mutex
 	exit ExitStatus
 
@@ -105,15 +114,17 @@ func start(spec Spec, held bool) (*Process, error) {
 		// the directory's path, not the descriptor's.
 		cmd.Env = append(os.Environ(), "PWD="+spec.Dir)
 	}
-	// creack/pty sets Setsid and Setctty so the child gets its own session and
-	// the PTY as controlling terminal; the process group ID equals the PID.
-	f, err := creack.StartWithSize(cmd, &creack.Winsize{Cols: cols, Rows: rows})
+	f, tty, err := startPTY(cmd, cols, rows)
 	// The child has changed into DirFile's directory by now, or failed to.
 	runtime.KeepAlive(spec.DirFile)
 	if err != nil {
 		return nil, fmt.Errorf("pty: start %s: %w", spec.Argv[0], err)
 	}
-	p := &Process{f: f, cmd: cmd, done: make(chan struct{}), hold: make(chan struct{}), holding: held, kill: syscall.Kill}
+	if !keepsTTY {
+		tty.Close()
+		tty = nil
+	}
+	p := &Process{f: f, tty: tty, cmd: cmd, done: make(chan struct{}), hold: make(chan struct{}), holding: held, kill: syscall.Kill}
 	if !held {
 		close(p.hold)
 	}
@@ -121,9 +132,51 @@ func start(spec Spec, held bool) (*Process, error) {
 	return p, nil
 }
 
+// startPTY starts cmd on a new terminal of the given size, as creack/pty's
+// StartWithSize does, and answers the master and the parent's descriptor
+// on the slave side, which StartWithSize would close: Setsid and Setctty
+// give the child its own session (its group's id is its pid) and the
+// terminal as its controlling one.
+func startPTY(cmd *exec.Cmd, cols, rows uint16) (master, tty *os.File, err error) {
+	master, tty, err = creack.Open()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := creack.Setsize(master, &creack.Winsize{Cols: cols, Rows: rows}); err != nil {
+		master.Close()
+		tty.Close()
+		return nil, nil, err
+	}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+	if err := cmd.Start(); err != nil {
+		master.Close()
+		tty.Close()
+		return nil, nil, err
+	}
+	return master, tty, nil
+}
+
+// releaseTTY closes the parent's descriptor on the slave side, once; it
+// does nothing where none is kept. Closed last, it may wait for the
+// reader as any last close does (on macOS a bounded wait, after which
+// what is unread is discarded).
+func (p *Process) releaseTTY() {
+	p.ttyOnce.Do(func() {
+		if p.tty != nil {
+			p.tty.Close()
+		}
+	})
+}
+
 func (p *Process) wait() {
 	<-p.hold
 	err := p.cmd.Wait()
+	// The process is reaped: its exit has waited for the reader (keepsTTY),
+	// so what it printed has been read, and the reader's end of file comes
+	// with this close, unless something else of the process's still holds
+	// the terminal.
+	p.releaseTTY()
 	st := ExitStatus{Code: -1}
 	if err == nil {
 		st.Code = 0
@@ -151,7 +204,8 @@ func (p *Process) wait() {
 }
 
 // Read reads PTY output. It returns an error once the process has exited and
-// the kernel closed the slave side.
+// the kernel closed the slave side; where the parent keeps a descriptor of
+// its own on it (keepsTTY), only once the process is reaped as well.
 func (p *Process) Read(b []byte) (int, error) { return p.f.Read(b) }
 
 // Write sends input to the process.
@@ -198,6 +252,11 @@ func (p *Process) Stop(ctx context.Context, grace time.Duration) error {
 	case <-ctx.Done():
 	}
 	_ = p.kill(pgid, syscall.SIGKILL)
+	// A leader that has exited with output its reader has not taken waits
+	// for it while the parent holds the terminal (keepsTTY): a caller that
+	// is not reading would wait out KillWait. Let go of it, so the exit
+	// waits only as long as the system lets a last close wait.
+	p.releaseTTY()
 	select {
 	case <-p.done:
 		return nil
@@ -234,6 +293,9 @@ func (p *Process) Abort() error {
 	close(p.hold)
 	p.holdMu.Unlock()
 	defer p.f.Close()
+	// Nobody reads a held process: its exit must not wait for a reader
+	// (Stop, at its SIGKILL).
+	p.releaseTTY()
 	select {
 	case <-p.done:
 		return nil
@@ -242,5 +304,10 @@ func (p *Process) Abort() error {
 	}
 }
 
-// Close releases the PTY without signalling the process.
-func (p *Process) Close() error { return p.f.Close() }
+// Close releases the PTY without signalling the process: the master, then
+// the parent's descriptor on the slave side where one is kept.
+func (p *Process) Close() error {
+	err := p.f.Close()
+	p.releaseTTY()
+	return err
+}
