@@ -3134,7 +3134,10 @@ task is `failed` with `its result's attempt <n> is not in the ledger:
 retry it`. The run log says what was kept,
 verified again and left for a decision; the continuation is made once
 (`409 already_resumed` names it), a run still going is not continued
-(`409 run_running`), and a run holding changes the ledger refused (its
+(`409 run_running`), a run whose chain of continuations is longer than the
+server reads (more than 10,000 runs, the run itself among them) is not
+continued, nothing made or moved, since its decisions could not be read
+whole (`409 chain_too_long`), and a run holding changes the ledger refused (its
 commits failed, and failed again as the next carried them) is not
 continued until the ledger takes them, which the continuation tries
 first (`503 ledger_unavailable`).

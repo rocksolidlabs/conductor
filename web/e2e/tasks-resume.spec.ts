@@ -119,7 +119,7 @@ test("a run interrupted by the server's end is continued: the candidate verified
   expect(build.result?.summary).toBe('stub builder did build, attempt 1')
   const docs = task(done, 'docs')
   expect([docs.state, docs.attempts, docs.attempt?.start]).toEqual(['succeeded', 1, candidate])
-  expect(logged(done, `continues ${run.id}: 0 results kept, 1 verified again, 0 waiting for a decision`)).toBe(true)
+  expect(logged(done, `continues ${run.id}: 0 results kept, 1 verified again, 0 uncertain launches waiting for a retry`)).toBe(true)
   expect(logged(done, 'task build: attempt 2 verifies again the result')).toBe(true)
   // The old run names the continuation and is continued once.
   await expect.poll(async () => (await api.run(run.id)).resumedBy ?? '', { timeout: 10_000 }).toBe(next.id)

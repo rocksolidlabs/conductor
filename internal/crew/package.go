@@ -665,7 +665,7 @@ func ticketMarkdown(p Package) string {
 			}
 			b.WriteString("\n")
 		}
-		b.WriteString("\nAsk a person for these; do not decide them yourself.\n\n")
+		b.WriteString("\nConductor holds the tasks they name until the operator answers.\n\n")
 	}
 	if len(p.References) > 0 {
 		fmt.Fprintf(&b, "## References\n\nPaths in the crew's working directory, each with the git object it names at the commit %s:\n\n", pl.Base)
