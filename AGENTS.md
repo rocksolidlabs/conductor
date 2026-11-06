@@ -296,6 +296,17 @@ add its rule here.
   (`dispatch-plan.spec.ts`, #467). After picking an option, wait for the
   listbox to be gone (`toHaveCount(0)`) before typing, and assert the
   field holds what was typed (`toHaveValue`) before submitting.
+- What a process printed is not kept for a reader however late it comes.
+  On macOS the last close of a terminal's slave side waits about 0.6 s for
+  the master to read what is queued, then discards it: a child that printed
+  and exited at once, read by a test that a loaded machine held back that
+  long, gave an empty read and an end of file (`PWD []`, #281). The product
+  keeps the terminal open itself until the process is reaped (`keepsTTY`
+  in `internal/pty`), so the exit waits for its reader. A test of what a
+  short-lived child printed proves it by holding its reader back past the
+  system's own bound once the child is exiting (`exiting`, `pastDrain`),
+  and runs a program directly, not under bash, whose exit on macOS waits
+  for its reader whatever the parent holds and so hides the loss.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
