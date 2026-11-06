@@ -90,7 +90,7 @@ const unavailable = computed(() => bk.available.value === false)
       <UDashboardNavbar title="Brakeman" :ui="{ root: 'h-14' }">
         <template #leading><UDashboardSidebarCollapse /></template>
         <template #right>
-          <span v-if="state" class="text-xs text-muted" data-turns-today>{{ state.turnsToday }} of {{ config?.budget.turnsPerDay }} turns today</span>
+          <span v-if="state" class="text-xs text-muted" data-turns-today>{{ state.turnsToday }} of {{ config?.budget.turnsPerDay }} turns, {{ state.minutesToday ?? 0 }} of {{ config?.budget.minutesPerDay }} minutes today</span>
           <FullscreenButton />
         </template>
       </UDashboardNavbar>
@@ -113,6 +113,8 @@ const unavailable = computed(() => bk.available.value === false)
             <template #header><SettingsCardTitle title="Ask Brakeman" description="One request a turn: Brakeman reads, then answers with one brief." /></template>
             <BrakemanAsk :key="`${route.query.kind ?? ''} ${route.query.subject ?? ''}`" :kind="typeof route.query.kind === 'string' ? route.query.kind : undefined" :subject="typeof route.query.subject === 'string' ? route.query.subject : undefined" :disabled="!config?.enabled || state?.readOnly" />
           </UCard>
+
+          <BrakemanRoleCard v-if="state && config?.enabled" :background="config.wake.mode === 'background'" :window-seconds="config.wake.windowSeconds" />
 
           <UCard v-if="current" :ui="{ header: 'px-4 py-3', body: 'p-4' }" data-brakeman-current>
             <template #header><SettingsCardTitle title="In progress" /></template>

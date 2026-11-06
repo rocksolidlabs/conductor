@@ -779,11 +779,11 @@ func CheckBrief(b *Brief, p Permissions, f Facts) error {
 	return nil
 }
 
-// CheckAnswers holds a brief to what its request asks: a briefing, what
-// changed and how Conductor knows, answers with at least one fact, each
-// naming its evidence. The error is an *Invalid (invalid_brief).
+// CheckAnswers holds a brief to what its request asks: a briefing (and a
+// wake turn's, which briefs on its batch), what changed and how Conductor
+// knows, answers with at least one fact, each naming its evidence. The error is an *Invalid (invalid_brief).
 func CheckAnswers(b Brief, requestKind string) error {
-	if requestKind != KindBriefing {
+	if requestKind != KindBriefing && requestKind != KindWake {
 		return nil
 	}
 	if slices.ContainsFunc(b.Items, func(it Item) bool { return it.Kind == ItemFact }) {

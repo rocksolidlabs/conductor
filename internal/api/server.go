@@ -35,6 +35,7 @@ import (
 
 // Server holds the shared state behind every route.
 type Server struct {
+	notices  string // served at /third-party-notices.txt (WithNotices)
 	cfg      *config.Config
 	registry *session.Registry
 	links    *share.Store
@@ -290,7 +291,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if log == nil {
 		log = slog.Default()
 	}
-	o := options{providers: freeBuild()}
+	o := options{providers: freeBuild(), notices: conductor.ThirdPartyNotices}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -339,6 +340,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		home = ""
 	}
 	s := &Server{
+		notices:     o.notices,
 		cfg:         cfg,
 		base:        base,
 		overlay:     overlay,
@@ -420,6 +422,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.scheduleRunSync(runID)
 		// Its record follows it from its launch on (the journal).
 		s.scheduleJournal(runID)
+		// Brakeman's background role reads it on its next pass.
+		if s.brakeman != nil {
+			s.brakeman.runChanged(runID)
+		}
 	}
 	// A run's chat reaches the browsers' unread counts the same way a session's does.
 	s.runs.OnRunChat = func(runID string, m session.ChatMessage) {
@@ -455,6 +461,18 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)
 		}
+		if s.brakeman != nil {
+			// A run's end reaches Brakeman's background role too: a legacy
+			// run's last member ending is told to OnEnd alone, never to
+			// OnRunChange (its session's change carries it).
+			recordEnd := s.runs.OnEnd
+			s.runs.OnEnd = func(r crew.Run) {
+				if recordEnd != nil {
+					recordEnd(r)
+				}
+				s.brakeman.runChanged(r.ID)
+			}
+		}
 		s.wireLaunches()
 		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned, s.ledgerRecovered)
 		if s.ledger == nil {
@@ -479,6 +497,12 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// it, and its handoff is typed into the member it names. OnActivity never
 	// waits, as a sink must not. The changes of server sessions reach the runs
 	// through localChange.
+	// Brakeman's background role takes a question opened (it only notes
+	// the session, and never waits), before the engine, whose sink and the
+	// touches' end the list.
+	if s.brakeman != nil {
+		s.events.addSink(s.brakeman.activity)
+	}
 	s.events.addSink(s.runs.OnActivity)
 	// The context providers: an attempt's context, and the files touched.
 	s.wireContext()
@@ -639,7 +663,7 @@ func (s *Server) WaitBackground(ctx context.Context) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
-	mux.HandleFunc("GET /third-party-notices.txt", handleNotices)
+	mux.HandleFunc("GET /third-party-notices.txt", s.handleNotices)
 	mux.HandleFunc("GET /api/reach", s.requireAdmin(s.handleReach))
 	mux.HandleFunc("GET /.well-known/acme-challenge/{token}", s.handleACMEChallenge)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
@@ -973,14 +997,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleNotices serves THIRD_PARTY_NOTICES, on a switchyard too: the
-// licences of what the binary and the app ship, for anyone (Settings → The
-// app links it, and the switchyard's footer).
-func handleNotices(w http.ResponseWriter, _ *http.Request) {
+// handleNotices serves THIRD_PARTY_NOTICES, or the text a main handed in
+// (WithNotices), on a switchyard too: the licences of what the binary and
+// the app ship, for anyone (Settings → The app links it, and the
+// switchyard's footer).
+func (s *Server) handleNotices(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-cache")
-	_, _ = io.WriteString(w, conductor.ThirdPartyNotices)
+	_, _ = io.WriteString(w, s.notices)
 }
 
 // newInstance is a random id for this process (16 hex digits).
