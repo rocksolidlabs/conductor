@@ -449,6 +449,11 @@ type Engine struct {
 	// identity's response to a decision is applied only by the process
 	// that accepted it (decisions.go).
 	boot string
+	// opMu orders the operators' operations on decisions (operate), from
+	// the look for their ids through their commits: an operation's row is
+	// never refused in its transaction as another's with the same id,
+	// which a change kept for the next commit could not survive.
+	opMu sync.Mutex
 	// gatesAtLaunch opens a planned run's gates in its first transaction
 	// (openGates). Off until the response route ships with it
 	// (docs/plans/decisions.md, PR-4): a test turns it on.
@@ -475,6 +480,10 @@ type Engine struct {
 	// session's TryAskDecision: a test refuses it as the session's rate
 	// limit does.
 	tryAsk func(l *session.Local, id, question string) (string, error)
+	// afterDecisionsRead, when set, runs once an attempt's task file
+	// decisions are read and before the change that marks them carried
+	// (taskDecisions): a test holds two readers there.
+	afterDecisionsRead func(task string)
 }
 
 // sessionMember is the member a session is, and its run.

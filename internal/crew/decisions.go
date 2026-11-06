@@ -504,9 +504,12 @@ func (r *run) decisionN(n int64) *decision {
 	return nil
 }
 
-// dropDecision takes d from the run's open and answered ones.
+// dropDecision takes d from the run's open and answered ones: the place an
+// identity's answer held may be free now, so a gate found with no room is
+// asked again at the next pump (regateLater).
 func (r *run) dropDecision(d *decision) {
 	r.decisions = slices.DeleteFunc(r.decisions, func(x *decision) bool { return x == d })
+	r.dec.noRoom = false
 }
 
 // cleanRequest cleans a request and checks it against its bounds: the
@@ -1381,15 +1384,17 @@ func respondTx(ltx LedgerTx, run string, n int64, resp Response, actor string, a
 		rc.Code, rc.Words = CodeStalePolicy, fmt.Sprintf("%s was opened under policy %s, and %s is in force", id, policy.Revision, policyLocal)
 	case d.State == ledger.DecisionAnswered || d.State == ledger.DecisionApplied:
 		rc.Code, rc.Words = CodeDecisionAnswered, answeredWords(id, d, prior)
+	case moved != "" && (d.State == ledger.DecisionOpen || d.State == ledger.DecisionSuperseded):
+		// Its subject moved (S2, S4): superseded before this transaction,
+		// in a change of its own (supersede), whose rows a commit refused
+		// meanwhile carries ahead of these.
+		rc.Code, rc.Words = CodeStaleDecision, fmt.Sprintf("%s was superseded: %s", id, moved)
 	case d.State != ledger.DecisionOpen:
 		why := d.Why
 		if why == "" {
 			why = "it is " + d.State
 		}
 		rc.Code, rc.Words = CodeDecisionClosed, fmt.Sprintf("%s is %s: %s", id, d.State, why)
-	case moved != "":
-		// Its subject moved (S2, S4): superseded in this transaction.
-		rc.Code, rc.Words = CodeStaleDecision, fmt.Sprintf("%s was superseded: %s", id, moved)
 	case resp.ExpectedRev < d.Rev:
 		rc.Code, rc.Words = CodeStaleDecision, staleWords(id, resp.ExpectedRev, d.Rev, prior)
 	case mem.known && !mem.member:
@@ -1582,17 +1587,23 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 
 // respondHeld is RespondDecision's transaction through a run the engine
 // holds: the asking attempt's membership read under e.mu, the row written
-// in its transaction, the engine's copy answered once it commits.
+// in its transaction, the engine's copy answered once it commits. A
+// subject that moved (S2, S4) is superseded first, in a change of its own
+// that is never undone (supersede): what the response's transaction then
+// refuses or fails, it has nothing in the engine to put back (#636,
+// review round 1).
 func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response, actor string, auth Authority, authRaw, fp string, prior ledger.DecisionRecord, out *respondOutcome) error {
-	// The subject rechecked first (S2, S4), read before the transaction at
-	// the place the transaction checks it is still read at.
+	// The subject rechecked first, read before the transaction at the
+	// place the supersession checks it is still read at.
 	e.mu.Lock()
 	d := r.decisionN(n)
 	e.mu.Unlock()
-	var at subjectAt
 	moved := ""
 	if d != nil {
-		at, moved = e.recheckSubject(ctx, r, d)
+		at, words := e.recheckSubject(ctx, r, d)
+		if words != "" {
+			moved = e.supersede(r, n, at, words)
+		}
 	}
 	return e.transact(ctx, r, func() tx {
 		if r.stopping || r.ctx.Err() != nil {
@@ -1601,12 +1612,6 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 			return tx{}
 		}
 		d = r.decisionN(n)
-		if d == nil || d.state != ledger.DecisionOpen || !e.sameSubject(r, d, at) {
-			moved = ""
-		}
-		if moved != "" {
-			e.supersedeAgent(r, d, moved)
-		}
 		mem := membership{}
 		if prior.Origin == ledger.OriginAgent {
 			mem.known = true
@@ -1625,6 +1630,29 @@ func (e *Engine) respondHeld(ctx context.Context, r *run, n int64, resp Response
 			r.note(session.ActivityStatus, "decision %s answered by %s", d.id(), nameOf(resp.ByName, actor))
 		}}
 	}, func() {})
+}
+
+// supersede supersedes the run's open decision n, whose subject the read
+// at found moved (words), in a transaction of its own with no undo: a
+// refused commit carries it, and the run pauses until the pause's commit
+// writes it, so the engine, which has superseded it, and the ledger never
+// disagree for good. It answers the words it was superseded with, "" when
+// the decision was no longer open at at by the change (answered, closed,
+// or its subject read elsewhere since). Under no request's context: a
+// caller gone does not refuse it. The caller holds no lock.
+func (e *Engine) supersede(r *run, n int64, at subjectAt, words string) string {
+	done := ""
+	err := e.transact(context.Background(), r, func() tx {
+		d := r.decisionN(n)
+		if r.stopping || r.ctx.Err() != nil || d == nil || d.state != ledger.DecisionOpen || !e.sameSubject(r, d, at) {
+			return tx{}
+		}
+		e.supersedeAgent(r, d, words)
+		done = words
+		return tx{}
+	}, nil)
+	e.afterTransact(r, err)
+	return done
 }
 
 // ConfirmAuthority tells the engine whether the identity provider admitted

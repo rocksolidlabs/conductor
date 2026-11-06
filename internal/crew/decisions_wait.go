@@ -56,8 +56,14 @@ type runDecisions struct {
 	// (later), and carries with them when it fails.
 	more []func(LedgerTx) error
 	done []func()
-	// regating says a regate is on its way (pump's backstop).
-	regating bool
+	// regating says a regate is on its way (pump's backstop); noRoom
+	// that the last regate could not ask a gate again for want of room,
+	// so the backstop waits for a decision to leave the run (dropDecision)
+	// or a change to regate again rather than asking at every pump.
+	regating, noRoom bool
+	// filed are the applied answers whose delivery.task_file a change of
+	// the run has written, or carries (taskDecisions).
+	filed map[int64]bool
 }
 
 // endGate remembers gate's decision closed without releasing it.
@@ -388,18 +394,33 @@ func (e *Engine) parkFor(r *run, a *attempt, t *task) {
 	}
 }
 
-// parkForSlot parks the oldest attempt that waits with its turn ended when
-// the run's slots are what keeps a ready task from starting: one whose
-// member is free and that has attempts left, from the tasks after the one
-// pump stopped at. The caller holds e.mu, in pump.
+// parkForSlot parks an attempt that waits with its turn ended when the
+// run's slots are what keeps a ready task from starting, from the tasks
+// after the one pump stopped at: for the first such task whose member is
+// free and that has attempts left, the oldest such attempt; for one whose
+// member's own attempt waits so, that attempt, which frees the member and
+// the slot at once (I12; #636, review round 1). The caller holds e.mu, in
+// pump.
 func (e *Engine) parkForSlot(r *run, from int) {
+	for _, t := range r.tasks {
+		if a := t.active(); a != nil && a.parking {
+			return // a slot is on its way already
+		}
+	}
 	var want *task
 	for _, t := range r.tasks[from:] {
 		if t.state != ledger.TaskReady || len(t.holds) > 0 || t.candidate != nil || r.ungated(t) {
 			continue
 		}
 		m := r.member(t.def.Member)
-		if m == nil || r.activeAttempt(m) != nil || len(t.attempts)+t.prior >= maxAttemptsPerTask+t.extra {
+		if m == nil || len(t.attempts)+t.prior >= maxAttemptsPerTask+t.extra {
+			continue
+		}
+		if a := r.activeAttempt(m); a != nil {
+			if r.parkable(a) {
+				e.park(r, a, fmt.Sprintf("%s needs %s and a slot of the run", t.def.ID, m.def.Name))
+				return
+			}
 			continue
 		}
 		want = t
@@ -410,11 +431,7 @@ func (e *Engine) parkForSlot(r *run, from int) {
 	}
 	var oldest *attempt
 	for _, t := range r.tasks {
-		a := t.active()
-		if a != nil && a.parking {
-			return // a slot is on its way already
-		}
-		if r.parkable(a) && (oldest == nil || a.reservedAt.Before(oldest.reservedAt)) {
+		if a := t.active(); r.parkable(a) && (oldest == nil || a.reservedAt.Before(oldest.reservedAt)) {
 			oldest = a
 		}
 	}
@@ -452,7 +469,10 @@ func (r *run) ungated(t *task) bool {
 // regateLater asks again, in a transaction of its own, for what pump's
 // backstop found ungated. The caller holds e.mu.
 func (e *Engine) regateLater(r *run) {
-	if r.dec.regating {
+	if r.dec.regating || r.dec.noRoom {
+		// On its way, or found no room the last time: asked again once a
+		// decision leaves the run or a change regates (#636, review
+		// round 1), never at every pump.
 		return
 	}
 	r.dec.regating = true
@@ -501,6 +521,8 @@ func (e *Engine) regate(r *run, cause string) {
 	if r.dec.gates == nil || r.pkg == nil {
 		return
 	}
+	// Asked afresh: no room is found again below, or there is room now.
+	r.dec.noRoom = false
 	doomed := r.doomed()
 	for _, pd := range r.pkg.p.Decisions {
 		if r.dec.gates[pd.ID] {
@@ -528,6 +550,7 @@ func (e *Engine) regate(r *run, cause string) {
 		}
 		if !r.decisionRoom(1) {
 			r.note(session.ActivityError, "the plan's decision %s cannot be asked again: the run has %d decisions", pd.ID, ledger.MaxDecisionsPerRun)
+			r.dec.noRoom = true
 			continue
 		}
 		e.openGate(r, pd, tasks, cause)
@@ -539,13 +562,7 @@ func (e *Engine) regate(r *run, cause string) {
 // replacements stay within the ledger's MaxDecisionsPerRun. The caller
 // holds e.mu.
 func (r *run) decisionRoom(n int) bool {
-	places := 0
-	for _, d := range r.decisions {
-		if d.state == ledger.DecisionAnswered && d.answer != nil && d.answer.auth.Via == ViaIdentity {
-			places++
-		}
-	}
-	return r.dec.opened+places+n <= ledger.MaxDecisionsPerRun
+	return r.decisionsHeld()+n <= ledger.MaxDecisionsPerRun
 }
 
 // gateRequest is a plan decision's request as a gate keeps it: its
@@ -649,7 +666,7 @@ func (e *Engine) openGate(r *run, pd PackageDecision, tasks []*task, cause strin
 // decision ask again in a run with no room for it (decision_limit): the
 // task stays as it was. The caller holds e.mu.
 func (r *run) retryNeedsRoom(t *task) error {
-	if r.dec.gates == nil || r.pkg == nil || r.decisionRoom(1) {
+	if r.dec.gates == nil || r.pkg == nil {
 		return nil
 	}
 	again := map[*task]bool{t: true}
@@ -667,17 +684,37 @@ func (r *run) retryNeedsRoom(t *task) error {
 			}
 		}
 	}
+	// Every gate it would ask again, counted together: one retry may
+	// reopen several, and each needs its place (#636, review round 1).
+	var asks []string
 	for _, pd := range r.pkg.p.Decisions {
 		if r.dec.gates[pd.ID] || r.standingGate(pd.ID) != nil {
 			continue
 		}
 		for _, id := range pd.Before {
 			if x := r.task(id); x != nil && again[x] {
-				return refuse(CodeDecisionLimit, "the plan's decision %s would ask again, and the run has %d decisions: the retry is refused", pd.ID, ledger.MaxDecisionsPerRun)
+				asks = append(asks, pd.ID)
+				break
 			}
 		}
 	}
-	return nil
+	if len(asks) == 0 || r.decisionRoom(len(asks)) {
+		return nil
+	}
+	return refuse(CodeDecisionLimit, "the plan's decisions %s would ask again, and the run has room for %d of its %d decisions: the retry is refused", strings.Join(asks, ", "), max(0, ledger.MaxDecisionsPerRun-r.decisionsHeld()), ledger.MaxDecisionsPerRun)
+}
+
+// decisionsHeld counts what decisionRoom counts against the run's bound:
+// the decisions it opened and the places its identities' answers hold.
+// The caller holds e.mu.
+func (r *run) decisionsHeld() int {
+	places := 0
+	for _, d := range r.decisions {
+		if d.state == ledger.DecisionAnswered && d.answer != nil && d.answer.auth.Via == ViaIdentity {
+			places++
+		}
+	}
+	return r.dec.opened + places
 }
 
 // Subjects: what an approval is about, rechecked at response and at
@@ -947,6 +984,14 @@ type operation struct {
 	notHeld func(rec ledger.DecisionRecord) (detail opDetail, refusal error)
 	// rev says the operation bumps the decision's rev.
 	rev bool
+	// ahead says the held change moves the engine's state past what an
+	// undo could put back (the cancel: a decision closed, its holds
+	// released, tasks cancelled): it has no undo, its commit is under no
+	// request's context, and a refused commit is carried by the pause's
+	// (#636, review round 1). Every other operation's change is put back
+	// whole when its commit is refused: the rev it bumped, the turnEnded
+	// mark it cleared.
+	ahead bool
 }
 
 // errOpMoved is an operation's transaction that found its decision held
@@ -964,6 +1009,10 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 	if op.actor == "" || len(op.actor) > ledger.MaxDecisionActor {
 		return OpReceipt{}, refuse(CodeInvalid, "an operation names its actor")
 	}
+	// One operation at a time, from its look to its commit: a repeat or a
+	// conflict of its id is found by the look, never by its transaction.
+	e.opMu.Lock()
+	defer e.opMu.Unlock()
 	for range maxDecisionTries {
 		rec, ok, err := e.readDecision(ctx, n)
 		if err != nil {
@@ -1018,14 +1067,25 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 		if held {
 			var after func()
 			var undo func()
-			err = e.transact(ctx, r, func() tx {
+			moved := false
+			change := func() tx {
+				if r.stopping || r.ctx.Err() != nil {
+					// Stopping since the look: the decision is chosen again,
+					// as one of a run not held.
+					moved = true
+					return tx{}
+				}
 				d := r.decisionN(n)
 				if d == nil {
 					d = settledN(r, n)
 				}
-				was := 0
+				var was int
+				var wasEnded bool
 				if d != nil {
 					was = d.rev
+					if d.a != nil {
+						wasEnded = d.a.turnEnded
+					}
 				}
 				dt, then, why := op.held(r, d, rec)
 				if why != nil {
@@ -1039,20 +1099,34 @@ func (e *Engine) operate(ctx context.Context, id string, op operation) (OpReceip
 				undo = func() {
 					if d != nil {
 						d.rev = was
+						if d.a != nil {
+							d.a.turnEnded = wasEnded
+						}
 					}
 				}
 				after = then
 				return tx{more: func(ltx LedgerTx) error { return write(ltx, dt) }}
-			}, func() {
-				if undo != nil {
-					undo()
-				}
-			})
+			}
+			if op.ahead {
+				err = e.transact(context.WithoutCancel(ctx), r, change, nil)
+			} else {
+				err = e.transact(ctx, r, change, func() {
+					if undo != nil {
+						undo()
+					}
+				})
+			}
+			if moved {
+				continue
+			}
 			if err == nil && refused == nil && after != nil {
 				after()
 			}
-			if err == nil && refused == nil {
-				e.afterTransact(r, nil)
+			if err == nil && refused == nil || err != nil && op.ahead {
+				// Committed, what it released is dispatched; refused, a
+				// change kept ahead pauses the run, whose pause's commit
+				// writes it.
+				e.afterTransact(r, err)
 			}
 		} else {
 			if op.notHeld == nil {
@@ -1224,7 +1298,7 @@ func (e *Engine) CancelDecision(ctx context.Context, id, commandID string, relea
 	if err != nil {
 		return OpReceipt{}, err
 	}
-	return e.operate(ctx, id, operation{kind: ledger.HistoryCancelled, opID: commandID, fp: fingerprintOf([]any{"cancel", release, why}), actor: actor,
+	return e.operate(ctx, id, operation{kind: ledger.HistoryCancelled, opID: commandID, fp: fingerprintOf([]any{"cancel", release, why}), actor: actor, ahead: true,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
 			if d == nil || !d.waits() || d.n == 0 {
 				return opDetail{}, nil, refuse(CodeDecisionClosed, "%s is %s: it is not cancelled", id, cmpState(d, rec))
@@ -1246,14 +1320,25 @@ func (e *Engine) CancelDecision(ctx context.Context, id, commandID string, relea
 			var events []event
 			if d.origin == ledger.OriginPlan && !release {
 				reason := fmt.Sprintf("cancelled with %s by the operator", id)
+				// The run's end once, after every cancellation, as a
+				// rejection's (applyTx): one that dooms a task held with it
+				// settles the run before that task's own.
+				was := r.outcome
 				for _, t := range held {
 					if cancellable(t) == nil {
-						events = append(events, e.cancelTask(r, t)...)
+						for _, ev := range e.cancelTask(r, t) {
+							if ev.kind != "run.finished" {
+								events = append(events, ev)
+							}
+						}
 						if t.state == ledger.TaskCancelled {
 							t.reason = reason
 							r.markTask(t)
 						}
 					}
+				}
+				if was == "" && r.outcome != "" {
+					events = append(events, event{"run.finished", map[string]any{"outcome": r.outcome}})
 				}
 			}
 			r.dec.more = append(r.dec.more, func(ltx LedgerTx) error {
@@ -1325,7 +1410,9 @@ func (e *Engine) WithdrawDecision(ctx context.Context, sessionID, id string) (De
 		return Decision{}, refuse(CodeNotFound, "%q is not a decision's id", shortText(id))
 	}
 	var refused error
-	err = e.transact(ctx, r, func() tx {
+	// A change kept ahead (no undo): under no request's context, so that
+	// only the ledger refuses it.
+	err = e.transact(context.WithoutCancel(ctx), r, func() tx {
 		d := r.decisionN(n)
 		switch {
 		case d == nil || d.a != a:

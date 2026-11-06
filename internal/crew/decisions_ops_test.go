@@ -2,12 +2,16 @@ package crew
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
@@ -120,9 +124,7 @@ func TestMoreInfoKeepsItsAttemptFromBeingParked(t *testing.T) {
 	commitResult(t, e, pr, "prep.txt", "p\n", "prepared")
 	waitTask(t, e, run.ID, "docs", ledger.TaskReady, 0)
 	e.pumpLocked(runOf(t, e, run.ID))
-	if ts := taskOf(t, e, run.ID, "build"); ts.Attempt.State != ledger.AttemptRunning {
-		t.Fatalf("parked before the agent's next done: %+v", ts.Attempt)
-	}
+	unparked(t, e, run.ID, "build")
 	if ts := taskOf(t, e, run.ID, "docs"); ts.Attempts != 0 {
 		t.Fatalf("docs took the member: %+v", ts)
 	}
@@ -267,6 +269,111 @@ func TestAReleasedGatesAnswerStaysInItsTasksFiles(t *testing.T) {
 		t.Fatalf("history %q", historyKinds(rec))
 	}
 	stopRun(t, e, next.ID)
+}
+
+// Two tasks a gate released read its applied answer at once, both reads
+// made before either's mark commits: each task file carries the answer,
+// and the decision is marked carried once (delivery.task_file).
+func TestAnAnswerIsMarkedCarriedOnce(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	var seen sync.Map
+	arrived, release := make(chan string, 2), make(chan struct{})
+	e.afterDecisionsRead = func(task string) {
+		if _, again := seen.LoadOrStore(task, true); !again {
+			arrived <- task
+			<-release
+		}
+	}
+	colour := PackageDecision{ID: "colour", Question: "Which colour?", Kind: ledger.DecisionClarification, Before: []string{"deploy", "smoke"}}
+	run := launchGated(t, e, dir, "api-sweep-000000d3", repoCrew(dir, work("deploy", "ops"), work("smoke", "qa")), colour)
+	g := gateOf(t, e, ld, run.ID)
+	answer(t, e, g.ID, Response{ResponseID: "r1", Text: "blue", ExpectedRev: 1})
+	for range 2 {
+		select {
+		case <-arrived:
+		case <-time.After(60 * time.Second):
+			t.Fatal("the two task files were not read")
+		}
+	}
+	close(release)
+	for _, id := range []string{"deploy", "smoke"} {
+		if _, f := taskFileOf(t, attemptLine(t, e, fl, run.ID, id, 1)); decisionIn(t, f, g.ID).Answer != "blue" {
+			t.Fatalf("%s's task file: %+v", id, f.Decisions)
+		}
+	}
+	if rec := decisionWhen(t, ld, g.ID, "carried", hasKind(ledger.HistoryDeliveryTaskFile)); kindCount(rec, ledger.HistoryDeliveryTaskFile) != 1 {
+		t.Fatalf("history %q", historyKinds(rec))
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A task file reads the decisions of its run chain by the runs that hold
+// them, never a page of every run's in their place: another run's newer
+// decisions about a task of the same id, more than a page of them, leave
+// the run's own answer in its task's next task file.
+func TestATaskFileReadsItsOwnChainsDecisions(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b, _, p := attemptOn(t, e, fl, run.ID, "build")
+	d := ask(t, e, b.Attempt.SessionID, clarification("q1", "Which index?"))
+	p.End(0)
+	waitGivenBack(t, e, run.ID, "build", 1, d.ID)
+	other := launchManaged(t, e, repoCrew(newRepo(t), work("build", "lead")))
+	stopRun(t, e, other.ID)
+	fillDecisions(t, ld, other.ID, ledger.MaxDecisionsPage+1)
+	answer(t, e, d.ID, Response{ResponseID: "r1", Text: "btree", ExpectedRev: 1})
+	b2 := attemptLine(t, e, fl, run.ID, "build", 2)
+	if _, f := taskFileOf(t, b2); decisionIn(t, f, d.ID).Answer != "btree" {
+		t.Fatalf("the task file: %+v", f.Decisions)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// failingReads is the real ledger whose reads of decisions fail while
+// fail is set.
+type failingReads struct {
+	sqlLedger
+	fail atomic.Bool
+}
+
+func (l *failingReads) Decisions(ctx context.Context, f ledger.DecisionFilter) ([]ledger.DecisionRow, error) {
+	if l.fail.Load() {
+		return nil, errors.New("the ledger could not read decisions (test)")
+	}
+	return l.sqlLedger.Decisions(ctx, f)
+}
+
+// An attempt whose task's decisions cannot be read is never started
+// without them: it fails at "decisions" before any session, not counted,
+// and the run pauses; unpaused once the ledger reads, the next attempt
+// starts.
+func TestAnAttemptWithoutItsDecisionsIsNotStarted(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, ld := decisionEngine(t)
+	fr := &failingReads{sqlLedger: sqlLedger{ld}}
+	fr.fail.Store(true)
+	e.UseLedger(fr)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	ts := waitTaskWhere(t, e, run.ID, "build", "attempt 1 failed at "+decisionsStage, func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 1 && ts.Attempt.Stage == decisionsStage && ts.State == ledger.TaskReady
+	})
+	if !paused(t, e, run.ID) || extraOf(t, e, run.ID, "build") != 1 || !strings.Contains(ts.Attempt.Error, "could not read decisions") {
+		t.Fatalf("after the failed read: paused %v, extra %d, %+v", paused(t, e, run.ID), extraOf(t, e, run.ID, "build"), ts.Attempt)
+	}
+	fl.mu.Lock()
+	launched := slices.ContainsFunc(fl.calls, func(c launchCall) bool { return strings.HasSuffix(c.name, "build #1") })
+	fl.mu.Unlock()
+	if launched {
+		t.Fatal("attempt 1's session was started")
+	}
+	fr.fail.Store(false)
+	if err := e.PauseRun(t.Context(), run.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	attemptLine(t, e, fl, run.ID, "build", 2)
+	stopRun(t, e, run.ID)
 }
 
 // The task file carries the task's decisions in the record's words: an
