@@ -128,36 +128,35 @@ type syncAdapter struct {
 	missing []string
 }
 
-// newSyncAdapter is an adapter with nothing pending, observing data (nil
-// for a server with no data directory) from now on.
+// newSyncAdapter is an adapter with nothing pending over data (nil for a
+// server with no data directory); its hooks are installed through the
+// commit fan (commits.go, observer).
 func newSyncAdapter(data *store.Store) *syncAdapter {
-	a := &syncAdapter{data: data, order: list.New(), index: map[syncKey]*list.Element{}, wake: make(chan struct{}, 1), limit: ext.SyncPending}
-	if data != nil {
-		data.Observe(a.dataCommitted)
-	}
-	return a
+	return &syncAdapter{data: data, order: list.New(), index: map[syncKey]*list.Element{}, wake: make(chan struct{}, 1), limit: ext.SyncPending}
+}
+
+// observer is what the adapter takes of the commits, through the commit
+// fan: every hook (dataCommitted, ledgerCommitted, ledgerPruned,
+// dispatchCommitted).
+func (a *syncAdapter) observer() commitObserver {
+	return commitObserver{data: a.dataCommitted, commit: a.ledgerCommitted, prune: a.ledgerPruned, dispatch: a.dispatchCommitted}
 }
 
 // attach gives the adapter its server, once the server is made: what it
 // reads the ledger and Dispatch through, and delivers to.
 func (a *syncAdapter) attach(s *Server) { a.s = s }
 
-// detach stops observing the data directory: New failed after the adapter
-// began observing it.
-func (a *syncAdapter) detach() {
-	if a.data != nil {
-		a.data.Observe(nil)
-	}
+// ledgerCommitted and ledgerPruned are the ledger's hooks: openLedger
+// installs them (through the fan) before the ledger's recovery, so its
+// transitions are told. A pruned run's delete takes the revision after its
+// row's last: a store that orders a run's docs by revision takes it as
+// newer than every pointer it was told of the run, never as a stale one.
+func (a *syncAdapter) ledgerCommitted(p ledger.RunPointer) {
+	a.mark(syncKey{syncLedger, p.ID}, p.Revision, nil)
 }
 
-// observeLedger installs the ledger's hooks: openLedger calls it before
-// the ledger's recovery, so its transitions are told. A pruned run's
-// delete takes the revision after its row's last: a store that orders a
-// run's docs by revision takes it as newer than every pointer it was told
-// of the run, never as a stale one.
-func (a *syncAdapter) observeLedger(ld *ledger.Ledger) {
-	ld.OnCommit(func(p ledger.RunPointer) { a.mark(syncKey{syncLedger, p.ID}, p.Revision, nil) })
-	ld.OnPrune(func(id string, revision int64) { a.mark(syncKey{syncLedger, id}, revision+1, nil) })
+func (a *syncAdapter) ledgerPruned(id string, revision int64) {
+	a.mark(syncKey{syncLedger, id}, revision+1, nil)
 }
 
 // unopened says that what (the ledger, Dispatch) was to be opened but its
@@ -182,14 +181,13 @@ func (a *syncAdapter) ledgerOwned() {
 	a.signal()
 }
 
-// observeDispatch installs Dispatch's hook, as the store opens.
-func (a *syncAdapter) observeDispatch(ds *dispatch.Store) {
-	ds.OnCommit(func(cs []dispatch.Change) {
-		for _, c := range cs {
-			ref, _ := json.Marshal(syncRef{Kind: c.Entity, ID: c.ID, Ticket: c.Ticket, Project: c.Project})
-			a.mark(syncKey{syncDispatch, c.Entity + "/" + c.ID}, c.Seq, ref)
-		}
-	})
+// dispatchCommitted is Dispatch's hook, installed (through the fan) as the
+// store opens.
+func (a *syncAdapter) dispatchCommitted(cs []dispatch.Change) {
+	for _, c := range cs {
+		ref, _ := json.Marshal(syncRef{Kind: c.Entity, ID: c.ID, Ticket: c.Ticket, Project: c.Project})
+		a.mark(syncKey{syncDispatch, c.Entity + "/" + c.ID}, c.Seq, ref)
+	}
 }
 
 // syncRef is a Dispatch entity's doc: which entity a commit changed, and

@@ -3985,7 +3985,27 @@ read as it is, never rewritten.
 | `GET /api/history/sessions/{id}` | admin | `{record, live, newer}`: the record whole (at most 64 KiB), `live` while the registry lists its session running; `404 not_found` |
 | `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found` |
 | `DELETE /api/history/sessions` | admin | `{forgotten, kept}`: every record neither live nor pending forgotten, those kept counted |
+| `POST /api/history/reindex` | admin | `202 {indexing}`: the history's index cleared in place and caught up from nothing, on the indexer's goroutine; `409 history_read_only` on a server that does not hold `history/owner.lock` |
 
 A share link, a session's own token and Brakeman's principal reach none
 of them (`401`). A server with no data directory, and a switchyard,
 answer `404 history_unavailable`.
+
+The **index** of history (`history/index.sqlite`, `internal/history`) is a
+cache of the session records, the ledger, the run records, Dispatch and
+Brakeman's briefs, rebuilt from them when it is missing, damaged or of
+another version, left out of an export (`derived`) and refused in a
+restore. The holder of `history/owner.lock` writes it, opening it off the
+server's start path (an index its last owner did not close is checked on
+a goroutine of its own; its searches meanwhile answer `checking`); another
+server reads it. `indexing` is `{state, behind?, ledger?}`: `state`
+`opening`, `catching_up`, `checking`, `ready`, `read_only` or
+`unavailable`; `behind` the sources not read yet; `ledger:
+"unavailable"` when this process has no ledger to read (the runs are then
+indexed from their records alone). Each source is read with its mark
+taken first: a run's `L<revision>/R<sha256>` (the ledger's revision and
+its record file's hash), a session record's `S<seq>/P<projects>`, and
+`/L<revision>` for a crew member's; a finished check receipt is a source
+of its own, read once. A run is read at most once every 2 s; what another
+server writes to the ledger and the run records is found by a reconcile
+every 30 s.
