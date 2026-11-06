@@ -1849,18 +1849,31 @@ func (h *HostedSession) HostActivity(a proto.Activity, state string) {
 // server does not know is dropped, the scope is this session's (a host has
 // no run), the ids are bounded, the names cleaned, the text cleaned and cut
 // to proto.MaxChatText, a missing or unreadable time becomes the time of
-// receipt, and `to` is the agent or nothing. The message is attributed to
-// this session whatever session the host named. Nothing goes back to the
-// host.
+// receipt, and `to` is the agent or nothing. The agent's question
+// (proto.ChatKindQuestion) is taken from the agent's role alone
+// (session.RoleAgent), which no other kind may carry, its choices cleaned
+// and bounded as a server session's (session.CleanOptions); a system line
+// keeps its event when it is join, leave, answered or withdrawn, the last
+// two with the question they name (ref), and a withdrawn line's text only
+// when it is one of the chat's own reasons (session.ChatLeftTerminal,
+// session.ChatLeftAgent). The message is attributed to this session
+// whatever session the host named. Nothing goes back to the host.
 func (h *HostedSession) HostChat(m proto.ChatMessage) {
 	switch m.Kind {
-	case proto.ChatKindMessage, proto.ChatKindSystem, proto.ChatKindSentToAgent:
+	case proto.ChatKindMessage, proto.ChatKindSystem, proto.ChatKindSentToAgent, proto.ChatKindQuestion:
 	default:
 		return
 	}
 	id := session.CleanID(m.ID, maxEntryBy)
 	role := session.Role(m.By.Role)
-	if id == "" || !role.Valid() {
+	if m.Kind == proto.ChatKindQuestion {
+		if role != session.RoleAgent {
+			return
+		}
+	} else if !role.Valid() {
+		return
+	}
+	if id == "" {
 		return
 	}
 	at, err := time.Parse(time.RFC3339Nano, m.At)
@@ -1884,8 +1897,21 @@ func (h *HostedSession) HostChat(m proto.ChatMessage) {
 	if m.To == proto.ChatToAgent {
 		out.To = m.To
 	}
-	if m.Event == "join" || m.Event == "leave" {
+	switch m.Event {
+	case "join", "leave", "answered":
 		out.Event = m.Event
+	case "withdrawn":
+		out.Event = m.Event
+		if out.Text != session.ChatLeftTerminal && out.Text != session.ChatLeftAgent {
+			out.Text = ""
+		}
+	}
+	if m.Kind == proto.ChatKindQuestion {
+		opts := make([]session.Option, 0, len(m.Options))
+		for _, o := range m.Options {
+			opts = append(opts, session.Option{Label: o.Label, Input: o.Input, Mode: o.Mode})
+		}
+		out.Options = session.CleanOptions(opts)
 	}
 	h.mu.Lock()
 	sid := h.info.ID
