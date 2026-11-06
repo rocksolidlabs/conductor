@@ -433,6 +433,7 @@ func TestTheOverviewListsWhatTheCallerMayDoAndItsLimits(t *testing.T) {
 			})
 			req := bk.briefing(t)
 			sid, tok, _ := bk.turnSession(t, req)
+			awaitRunMember(t, bk, sid)
 			may, limits, ops := overview(t, bk.testEnv, tok, "/api/sessions/"+sid+"/guide")
 			if !slices.Equal(may, ops) || !slices.Contains(may, "observe") || !slices.Contains(may, "brief_submit") || slices.Contains(may, "form_crew") ||
 				!has(limits, "brief: at most") || !has(limits, "this turn: at most 123 reads and") {
@@ -442,6 +443,18 @@ func TestTheOverviewListsWhatTheCallerMayDoAndItsLimits(t *testing.T) {
 				t.Fatalf("the turn's overview, granted %v: may %v, limits %v", granted, may, limits)
 			}
 		})
+	}
+}
+
+// awaitRunMember waits until the run of the Brakeman turn's session sid
+// counts it a member. The session is registered (turnSession) before its
+// run counts it one, which is what run_status needs and the guide asks
+// (sessionCaller): a guide read either side of that moment lists other
+// operations, so a test that compares two reads of it waits first.
+func awaitRunMember(t *testing.T, bk *bkEnv, sid string) {
+	t.Helper()
+	if !waitFor(30*time.Second, func() bool { _, _, ok := bk.srv.runs.MemberOf(sid); return ok }) {
+		t.Fatalf("%s never became its run's member", sid)
 	}
 }
 
@@ -1353,13 +1366,7 @@ func TestTheOverviewListsWhatTheRoutesAdmit(t *testing.T) {
 			})
 			req := bk.briefing(t)
 			sid, tok, _ := bk.turnSession(t, req)
-			// The session is registered before its run counts it a member
-			// (what run_status needs, and the guide asks: sessionCaller):
-			// read the guide once it does, or the overview and the section
-			// read either side of it differ.
-			if !waitFor(30*time.Second, func() bool { _, _, ok := bk.srv.runs.MemberOf(sid); return ok }) {
-				t.Fatalf("%s never became its run's member", sid)
-			}
+			awaitRunMember(t, bk, sid)
 			may := mayOf(t, bk.testEnv, tok, "/api/sessions/"+sid+"/guide")
 			if want := c.granted && c.dispatch; slices.Contains(may, "act") != want || slices.Contains(may, brakeman.ActLaunchApprovedPlan) != want {
 				t.Errorf("act listed %v, want %v: %v", slices.Contains(may, "act"), want, may)
