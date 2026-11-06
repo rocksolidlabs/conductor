@@ -228,6 +228,43 @@ func TestAPersonIsNeverStarted(t *testing.T) {
 	})
 }
 
+// A member added to a live run never takes a person's name (checkPeople's
+// rule, which ResumeRun applies again): the run, refused the member, stays
+// resumable with its people.
+func TestAMemberAddedNeverTakesAPersonsName(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	c := testCrew(immediate("lead", "Plan it."))
+	c.People = threePeople()
+	run, err := e.Launch(t.Context(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+	for _, p := range c.People {
+		if err := e.AddMember(t.Context(), run.ID, manual(p.Name, "")); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "a person's") {
+			t.Fatalf("member %s: %v", p.Name, err)
+		}
+	}
+	if err := e.AddMember(t.Context(), run.ID, manual("qa", "")); err != nil {
+		t.Fatal(err)
+	}
+	stopRun(t, e, run.ID)
+	next, err := e.ResumeRun(t.Context(), run.ID)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	got, _ := e.Get(next.ID)
+	var names []string
+	for _, m := range got.Members {
+		names = append(names, m.Name)
+	}
+	if !slices.Equal(names, []string{"lead", "qa"}) {
+		t.Fatalf("resumed members %v", names)
+	}
+	stopRun(t, e, next.ID)
+}
+
 // wantPeople fails t unless r carries the launch's people (threePeople)
 // and build's owner nate (task), docs' ana (acceptance).
 func wantPeople(t *testing.T, what string, r Run) {

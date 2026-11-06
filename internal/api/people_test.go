@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -329,19 +330,16 @@ func TestAnOlderBuildsContinuationLosesNoPeople(t *testing.T) {
 // The downgrade before the first launch: a revision with people and owners
 // approved, its launch row written as an older build's launchPlanned and
 // LaunchPlanned write it (the revision's crew without them) and its record
-// so written. The upgrade: the next start makes the launch row whole
-// (restoreLaunchPeople) and syncRecords the record, the run routes answer
-// the people and owners, and a continuation carries them in its own row.
-// A revision whose digest is not the package's, a launch row whose tasks
-// differ from the revision's, and a revision without people leave their
-// rows as they were.
+// so written. The upgrade, a real restart (the first server ended, a
+// second over the same data): its start makes the launch row whole
+// (restoreLaunchPeople, in the ledger's recovery) and then the record
+// (syncRecords), the run routes answer the people and owners, and a
+// continuation carries them in its own row. A revision whose digest is
+// not the package's, a launch row whose tasks differ from the revision's,
+// and a revision without people leave their rows and their records as
+// they were, without people.
 func TestAnOlderBuildsLaunchLosesNoPeople(t *testing.T) {
-	l := newLaunchTest(t, nil, func(c *crew.Crew) {
-		c.Members = append(c.Members, crew.Member{Name: "writer", AgentID: "ready-cat", Start: crew.Start{When: crew.StartTask}})
-		c.Tasks = append(c.Tasks, crew.Task{ID: "docs", Member: "writer", Kind: crew.TaskWork, Instructions: "Write it.", Needs: []string{"build"}})
-		c.People = crewPeople()
-		c.Tasks[0].Owner = "nate"
-	})
+	l := newLaunchTest(t, nil, peopledLaunch)
 	ctx := t.Context()
 	ld := l.srv.ledger
 	pkg := string(l.pendingLaunch(t, dispatch.Op{Actor: dispatch.ActorAdmin, ID: opID()}).Package)
@@ -373,15 +371,19 @@ func TestAnOlderBuildsLaunchLosesNoPeople(t *testing.T) {
 	older := l.crew
 	older.Cwd = l.repo
 	runID := l.crew.ID + "-0000000a"
+	// Each row's record as the older build wrote it.
+	record := func(id string) {
+		t.Helper()
+		from, _, err := crew.SQLLedger(ld).Load(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := l.srv.records.Save(olderRecord(crew.Recovered(crew.Run{}, from))); err != nil {
+			t.Fatal(err)
+		}
+	}
 	put(runID, olderCrew(older), pkg)
-	// Its record as the older build wrote it.
-	from, _, err := crew.SQLLedger(ld).Load(ctx, runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := l.srv.records.Save(olderRecord(crew.Recovered(crew.Run{}, from))); err != nil {
-		t.Fatal(err)
-	}
+	record(runID)
 	// A digest that is not the package's.
 	badDigest := l.crew.ID + "-0000000b"
 	put(badDigest, olderCrew(older), repackage(func(plan map[string]any) { plan["digest"] = strings.Repeat("0", 64) }))
@@ -403,31 +405,122 @@ func TestAnOlderBuildsLaunchLosesNoPeople(t *testing.T) {
 	put(plainRun, olderCrew(older), repackage(func(plan map[string]any) { plan["id"], plan["digest"] = plainPlan, pv.Digest }))
 	revs := map[string]int64{}
 	for _, id := range []string{badDigest, badTasks, plainRun} {
+		record(id)
 		revs[id] = revisionOf(id)
 	}
-	// The next start: the recovery's restore, then the records.
-	l.srv.restoreLaunchPeople(ctx, ld)
-	syncRecords(ctx, ld, l.srv.records, l.srv.log)
+	// The next start: the first server ended, a second over the same data
+	// directory, whose ledger's recovery restores, then syncs the records.
+	sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	l.srv.Shutdown(sctx)
+	again := l.restart()
+	t.Cleanup(func() { stopEveryRun(again.srv) })
+	if ro, why := again.srv.ledger.ReadOnly(); ro {
+		t.Fatalf("the second server's ledger is read-only: %s", why)
+	}
+	ld = again.srv.ledger
 	row, _, _ := ld.Run(ctx, runID)
 	if !crew.LaunchHasPeople(row.Crew) || !strings.Contains(row.Crew, `"owner":"nate"`) {
 		t.Fatalf("the launch row was not made whole: %s", row.Crew)
 	}
-	wantRunPeople(t, "the launch restored", runOf(t, l.testEnv, runID))
+	wantRunPeople(t, "the launch restored", runOf(t, again, runID))
 	for id, rev := range revs {
 		row, _, _ := ld.Run(ctx, id)
 		if crew.LaunchHasPeople(row.Crew) || row.Revision != rev {
 			t.Fatalf("%s was written: %s at %d, was %d", id, row.Crew, row.Revision, rev)
 		}
+		if run := runOf(t, again, id); run["people"] != nil {
+			t.Fatalf("%s's record got people: %v", id, run["people"])
+		}
 	}
 	// A second start writes nothing more.
 	rev := revisionOf(runID)
-	l.srv.restoreLaunchPeople(ctx, ld)
+	again.srv.restoreLaunchPeople(ctx, ld)
 	if revisionOf(runID) != rev {
 		t.Fatal("a second restore wrote the launch row again")
 	}
-	next := l.expect(t, "POST", "/api/runs/"+runID+"/resume", nil, http.StatusCreated, "")["run"].(map[string]any)
+	next := again.expect(t, "POST", "/api/runs/"+runID+"/resume", nil, http.StatusCreated, "")["run"].(map[string]any)
 	wantRunPeople(t, "the continuation", next)
 	if row, _, _ := ld.Run(ctx, next["id"].(string)); !crew.LaunchHasPeople(row.Crew) {
+		t.Fatalf("the continuation's row: %s", row.Crew)
+	}
+}
+
+// peopledLaunch shapes a launchTest's crew as peopledCrew: build, then
+// docs, with crewPeople, build owned by nate.
+func peopledLaunch(c *crew.Crew) {
+	c.Members = append(c.Members, crew.Member{Name: "writer", AgentID: "ready-cat", Start: crew.Start{When: crew.StartTask}})
+	c.Tasks = append(c.Tasks, crew.Task{ID: "docs", Member: "writer", Kind: crew.TaskWork, Instructions: "Write it.", Needs: []string{"build"}})
+	c.People = crewPeople()
+	c.Tasks[0].Owner = "nate"
+}
+
+// While the server takes the ledger over (its owner lock taken late: the
+// ledger writable, the one OnOwned callback's recovery, restore of the
+// launches' people and reconcile not all done), a managed run's
+// continuation is 503 ledger_unavailable and makes no run, as it is while
+// another server holds the lock: one made then would keep a launch row
+// not yet made whole in its live state and its task files. Once taken
+// over, the continuation is made, from the launch row made whole.
+func TestNoContinuationWhileTheLedgerIsTakenOver(t *testing.T) {
+	var other *ledger.Ledger
+	l := newLaunchTest(t, lateLedger(t, &other), peopledLaunch)
+	ctx := t.Context()
+	pkg := string(l.pendingLaunch(t, dispatch.Op{Actor: dispatch.ActorAdmin, ID: opID()}).Package)
+	older := l.crew
+	older.Cwd = l.repo
+	runID := l.crew.ID + "-0000000a"
+	// The launch row and the record an older build wrote, in the ledger
+	// the other server holds.
+	if _, err := other.Transition(ctx, runID, func(tx *ledger.Tx) error {
+		return tx.CreateRun(ledger.RunRow{ID: runID, CrewID: l.crew.ID, Crew: olderCrew(older), Base: l.head, State: ledger.RunStopped, Ticket: l.ticketID, Package: pkg, CreatedAt: tx.Now(), ClosedAt: tx.Now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	from, _, err := crew.SQLLedger(other).Load(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.srv.records.Save(olderRecord(crew.Recovered(crew.Run{}, from))); err != nil {
+		t.Fatal(err)
+	}
+	reached, release := make(chan struct{}), make(chan struct{})
+	l.srv.launches.setSeams(func(g *launchGate) {
+		g.beforeReconcile = func() {
+			close(reached)
+			<-release
+		}
+	})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	resume := func(status int, code string) map[string]any {
+		t.Helper()
+		return l.expect(t, "POST", "/api/runs/"+runID+"/resume", nil, status, code)
+	}
+	resume(http.StatusServiceUnavailable, "ledger_unavailable")
+	if err := other.Close(); err != nil {
+		t.Fatal(err)
+	}
+	<-reached
+	if ro, why := l.srv.ledger.ReadOnly(); ro {
+		t.Fatalf("the ledger is read-only at the reconcile: %s", why)
+	}
+	if msg := resume(http.StatusServiceUnavailable, "ledger_unavailable")["error"].(map[string]any)["message"]; msg != "the server is taking over the ledger" {
+		t.Fatalf("the refusal: %v", msg)
+	}
+	if row, _, err := l.srv.ledger.Run(ctx, runID); err != nil || row.ContinuedBy != "" {
+		t.Fatalf("a continuation while the ledger was taken over: %+v %v", row, err)
+	}
+	close(release)
+	waitUntil(t, "launches admitted", l.srv.launches.ready.Load)
+	next := resume(http.StatusCreated, "")["run"].(map[string]any)
+	wantRunPeople(t, "the continuation", next)
+	if row, _, _ := l.srv.ledger.Run(ctx, next["id"].(string)); !crew.LaunchHasPeople(row.Crew) {
 		t.Fatalf("the continuation's row: %s", row.Crew)
 	}
 }
@@ -511,7 +604,7 @@ func TestPeopleIsPaged(t *testing.T) {
 	if len(nate) != 1 || len(nate[0].(map[string]any)["crews"].([]any)) != 20 || nate[0].(map[string]any)["crewsMore"] != true {
 		t.Fatalf("a person in 21 crews: %v", nate)
 	}
-	for _, query := range []string{"limit=0x", "limit=201", "q=" + strings.Repeat("q", 61), "after=" + strings.Repeat("a", 61), "other=1", "q=a&q=b"} {
+	for _, query := range []string{"limit=0", "limit=0x", "limit=201", "q=" + strings.Repeat("q", 61), "after=" + strings.Repeat("a", 61), "other=1", "q=a&q=b"} {
 		e.expect(t, "GET", "/api/people?"+query, nil, http.StatusBadRequest, "invalid_request")
 	}
 	if resp, _ := e.do("GET", "/api/people", "", nil); resp.StatusCode != http.StatusUnauthorized {
