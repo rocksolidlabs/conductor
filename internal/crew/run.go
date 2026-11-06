@@ -490,6 +490,10 @@ type run struct {
 	checks    sync.WaitGroup
 	revision  int64
 	crewJSON  string // the crew as launched, for the ledger's run row
+	// rechecks are the attempts Check again recorded whose verification
+	// has not started: the pump starts them once their change is
+	// committed and the prerequisites have passed (startRechecks).
+	rechecks []*attempt
 	// created says the run's row is in the ledger: its first transaction
 	// committed. Until then only a change that may be the run's first (its
 	// launch's, its continuation's, its stop's: transactFirst) is written,

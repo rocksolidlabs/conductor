@@ -1287,6 +1287,10 @@ func refusedBeforeChecks(stage string) bool {
 // holds e.mu, and has committed the state the dispatch rests on; the
 // dispatches run on goroutines of their own.
 func (e *Engine) pump(r *run) {
+	if r.managed {
+		// A Check again's verification, whatever the pause.
+		e.startRechecks(r)
+	}
 	if !r.managed || r.stopping || r.paused || r.prereq != prereqPassed || r.ctx.Err() != nil {
 		// Nothing is dispatched until the prerequisites passed, whatever
 		// pumps the run meanwhile (steps.go).

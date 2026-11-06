@@ -27,6 +27,15 @@ const (
 	checkTail = 2 << 10
 )
 
+// The words a receipt's error begins with when the engine, not the
+// command, is why it failed: the ledger refused the receipt's running row
+// (its process ended under it) or its outcome, or the checkout could not
+// be compared after the command. ClassifyFailure tells them by these.
+const (
+	unrecordedWords = "the ledger could not record the "
+	uncomparedWords = "left a checkout that could not be compared"
+)
+
 // checkSlots is the bound on checks running at once across the server's
 // managed runs: one, until SetCheckConcurrency says otherwise.
 func (e *Engine) checkSlots() chan struct{} {
@@ -216,9 +225,9 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 		maps.Copy(p, more)
 		return ev("check."+kind, p)
 	}
-	unrecorded := "the ledger could not record the check"
+	unrecorded := unrecordedWords + "check"
 	if step {
-		unrecorded = "the ledger could not record the step " + ch.ID
+		unrecorded = unrecordedWords + "step " + ch.ID
 	}
 	if err := e.transact(ctx, r, func() tx {
 		more := map[string]any{"k": k, "subject": a.result}
@@ -356,9 +365,9 @@ func (e *Engine) runCheck(ctx context.Context, r *run, a *attempt, tr *tree, dir
 		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
 		return out
 	}, undo); err != nil {
-		what := "the ledger could not record the check's outcome"
+		what := unrecordedWords + "check's outcome"
 		if step {
-			what = "the ledger could not record the outcome of the step " + ch.ID
+			what = unrecordedWords + "outcome of the step " + ch.ID
 			if words != "" {
 				// Its row and event kept for the next commit (no undo),
 				// which writes them before the attempt's failure: the
@@ -466,7 +475,7 @@ func checkWords(ch Check, res proc.Result, moved bool, changed []string, cerr er
 func intactWords(moved bool, changed []string, err error) string {
 	switch {
 	case err != nil:
-		return "left a checkout that could not be compared: " + session.CleanMessage(err.Error())
+		return uncomparedWords + ": " + session.CleanMessage(err.Error())
 	case moved:
 		return "moved the checkout to another commit"
 	case len(changed) > 0:

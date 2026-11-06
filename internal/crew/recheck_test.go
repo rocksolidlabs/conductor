@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -53,6 +54,25 @@ func receiptWords(l *fakeLedger, runID, taskID string, n int) string {
 		out = append(out, fmt.Sprintf("%s/%d/%s/%s/%d %s %s exit %d", c.RunID, c.N, c.Phase, c.ID, c.K, c.Subject, c.State, c.Exit))
 	}
 	return strings.Join(out, "\n")
+}
+
+// holdRechecks holds the first Check again's verification at its start
+// (beforeRecheck) until release is closed, and lets every later one
+// through once it is: held is told when the first is held.
+func holdRechecks(t *testing.T, e *Engine) (held chan struct{}, release func()) {
+	t.Helper()
+	held, gate := make(chan struct{}, 1), make(chan struct{})
+	e.beforeRecheck = func(string) {
+		select {
+		case held <- struct{}{}:
+		default:
+		}
+		<-gate
+	}
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	return held, release
 }
 
 // mustMark makes the file a marked check waits for.
@@ -149,6 +169,7 @@ func (l *fakeLedger) runRowWhen(t *testing.T, runID, what string, ok func(ledger
 func TestRecheckReopensAFinishedRun(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
+	held, release := holdRechecks(t, e)
 	mark := filepath.Join(t.TempDir(), "passes")
 	build := work("build", "lead")
 	build.Checks = []Check{markedCheck("test", mark)}
@@ -173,11 +194,13 @@ func TestRecheckReopensAFinishedRun(t *testing.T) {
 		t.Fatalf("the run's row after the refused commit: %+v", row)
 	}
 
-	// Failing again: open while attempt 4 is verified, finished failed again.
+	// Failing again: open while attempt 4 is verified (held at its start,
+	// so the open run is a state that holds), finished failed again.
 	rc, err := recheck(e, run.ID, "r1", "build", 3, c3)
 	if err != nil || rc.Status != ledger.CommandDone {
 		t.Fatalf("Check again: %+v %v", rc, err)
 	}
+	<-held
 	if r, _ := e.Get(run.ID); r.State != RunRunning || r.Outcome != "" {
 		t.Fatalf("the run once Check again is recorded: %s %q", r.State, r.Outcome)
 	}
@@ -187,6 +210,7 @@ func TestRecheckReopensAFinishedRun(t *testing.T) {
 	if row.State != ledger.RunRunning || row.Outcome != "" || !row.ClosedAt.IsZero() {
 		t.Fatalf("the run's row once Check again is recorded: %+v", row)
 	}
+	release()
 	waitTask(t, e, run.ID, "build", ledger.TaskFailed, 4)
 	waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
 	l.runRowWhen(t, run.ID, "finished failed again", func(r ledger.RunRow) bool {
@@ -607,8 +631,10 @@ func TestRecheckRefusedCommitRetainsNothing(t *testing.T) {
 }
 
 // Checks again that fail, then one that passes: each attempt has its own
-// receipts, k from 1, on the same commit, past the 16 receipts an attempt's
-// candidate shows, and the pass is the task's result.
+// receipts, k from 1, on the same commit, and the pass is the task's
+// result. That a read bounded at 16 receipts an attempt never loses the
+// pass behind the failures is the candidates route's (PR-3): here, every
+// receipt is its own attempt's, which is what such a read rests on.
 func TestRecheckRepeatedFailuresThenAPass(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
@@ -633,10 +659,8 @@ func TestRecheckRepeatedFailuresThenAPass(t *testing.T) {
 		t.Fatalf("the result: %+v", passed.Result)
 	}
 	l.attemptWhen(t, run.ID, "build", 7, succeededRow)
-	total := 0
 	for n := 3; n <= 7; n++ {
 		rows := l.stepRows(run.ID, "build", n)
-		total += len(rows)
 		if len(rows) != 4 {
 			t.Fatalf("attempt %d's receipts:\n%s", n, rowWords(rows))
 		}
@@ -649,78 +673,254 @@ func TestRecheckRepeatedFailuresThenAPass(t *testing.T) {
 			t.Fatalf("attempt %d's test exited %d", n, last.Exit)
 		}
 	}
-	if total+4*2 <= 16 {
-		t.Fatalf("only %d receipts", total)
+	stopRun(t, e, run.ID)
+}
+
+// Check again sent at once three times, twice under one id and once under
+// another, makes one attempt n+1: the id whose change came first has it
+// done, the other finds the task verifying (task_state), and the id sent
+// twice answers its one receipt again. Another one sent while attempt n+1
+// is held at its verification's start is refused the same way, nothing
+// recorded; once it failed, it is the one attempt n+1.
+func TestRecheckTwiceAtOnceMakesOneAttempt(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	held, release := holdRechecks(t, e)
+	build := work("build", "lead")
+	build.Checks = []Check{markedCheck("test", filepath.Join(t.TempDir(), "never"))}
+	run := launchManaged(t, e, repoCrew(dir, build))
+	c3 := spend(t, e, run.ID, "build", "built.txt").Attempt.Result
+	type answer struct {
+		id  string
+		rc  Receipt
+		err error
+	}
+	answers := make(chan answer, 3)
+	start := make(chan struct{})
+	for _, id := range []string{"a", "a", "b"} {
+		go func() {
+			<-start
+			rc, err := recheck(e, run.ID, id, "build", 3, c3)
+			answers <- answer{id, rc, err}
+		}()
+	}
+	close(start)
+	first := map[string]answer{}
+	var repeats []answer
+	for range 3 {
+		an := <-answers
+		if an.rc.Repeat {
+			repeats = append(repeats, an)
+			continue
+		}
+		if _, dup := first[an.id]; dup {
+			t.Fatalf("%s answered twice without a repeat: %+v %v", an.id, an.rc, an.err)
+		}
+		first[an.id] = an
+	}
+	var made, refused []answer
+	for _, an := range first {
+		switch {
+		case an.err == nil && an.rc.Status == ledger.CommandDone:
+			made = append(made, an)
+		case errors.Is(an.err, ErrTaskState) && an.rc.Refusal == RefusalTaskState && strings.Contains(an.err.Error(), "it is verifying"):
+			refused = append(refused, an)
+		default:
+			t.Fatalf("%s: %+v %v", an.id, an.rc, an.err)
+		}
+	}
+	if len(made) != 1 || len(refused) != 1 || len(repeats) != 1 || repeats[0].id != "a" || repeats[0].err != nil {
+		t.Fatalf("made %+v, refused %+v, repeats %+v", made, refused, repeats)
+	}
+	if st := repeats[0].rc.Status; st != first["a"].rc.Status && st != ledger.CommandAccepted {
+		t.Fatalf("a's repeat answered %s, its receipt %s", st, first["a"].rc.Status)
+	}
+	<-held
+	if rc, err := recheck(e, run.ID, "c", "build", 3, c3); !errors.Is(err, ErrTaskState) || rc.Refusal != RefusalTaskState || !strings.Contains(err.Error(), "it is verifying") {
+		t.Fatalf("Check again while attempt 4 verifies: %+v %v", rc, err)
+	}
+	release()
+	l.attemptWhen(t, run.ID, "build", 4, failedRow)
+	waitTask(t, e, run.ID, "build", ledger.TaskFailed, 4)
+	l.mu.Lock()
+	_, has5 := l.attempts[run.ID+"/build/5"]
+	l.mu.Unlock()
+	if has5 || l.count(run.ID, "result.reverified") != 1 {
+		t.Fatalf("attempt 5 recorded %v, %d checks again", has5, l.count(run.ID, "result.reverified"))
 	}
 	stopRun(t, e, run.ID)
 }
 
-// TestClassifyFailure classes a failed receipt from what the ledger keeps,
-// over every class and the cases that must not be told for one another.
-func TestClassifyFailure(t *testing.T) {
-	at := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
-	failedA := ledger.AttemptRow{RunID: "r-a", TaskID: "build", N: 2, State: ledger.AttemptFailed, Stage: "check test", ResultCommit: "c2"}
-	argv := []string{"go", "test", "./..."}
-	row := ledger.CheckRow{RunID: "r-a", TaskID: "build", N: 2, ID: "test", K: 1, Phase: ledger.PhaseCheck, Argv: argv, Subject: "c2", State: ledger.CheckFinished, Exit: 1, Stable: true, Tail: "FAIL", StartedAt: at, FinishedAt: at.Add(3 * time.Second)}
-	with := func(f func(*ledger.CheckRow)) ledger.CheckRow {
-		r := row
-		r.Argv = slices.Clone(row.Argv)
-		f(&r)
-		return r
+// Check again beside a stop and a continuation: a stop once it is
+// recorded closes attempt n+1 stopped and runs no check of it; a
+// continuation asked once it is recorded finds the run running; Check
+// again asked while a continuation is under way is refused (run_continued)
+// and records nothing.
+func TestRecheckBesideAStopAndAContinuation(t *testing.T) {
+	failedRun := func(t *testing.T, e *Engine) (Run, string) {
+		t.Helper()
+		build := work("build", "lead")
+		build.Checks = []Check{markedCheck("test", filepath.Join(t.TempDir(), "never"))}
+		run := launchManaged(t, e, repoCrew(newRepo(t), build))
+		c3 := spend(t, e, run.ID, "build", "built.txt").Attempt.Result
+		waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+		return run, c3
 	}
-	attempt := func(state, stage string) ledger.AttemptRow {
-		a := failedA
-		a.State, a.Stage = state, stage
-		return a
-	}
-	passed := func(f func(*ledger.CheckRow)) ledger.CheckRow {
-		return with(func(r *ledger.CheckRow) {
-			r.RunID, r.N, r.Exit, r.Tail = "r-b", 3, 0, ""
-			if f != nil {
-				f(r)
-			}
+	t.Run("a stop once it is recorded", func(t *testing.T) {
+		e, _, l := managedEngine(t)
+		held, release := holdRechecks(t, e)
+		run, c3 := failedRun(t, e)
+		if rc, err := recheck(e, run.ID, "r1", "build", 3, c3); err != nil || rc.Status != ledger.CommandDone {
+			t.Fatalf("Check again: %+v %v", rc, err)
+		}
+		<-held
+		stopped := make(chan error, 1)
+		go func() { stopped <- e.Stop(context.Background(), run.ID) }()
+		r := runOf(t, e, run.ID)
+		waitFake(t, "the run stopping", func() bool {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			return r.stopping
 		})
-	}
-	for _, c := range []struct {
-		name  string
-		a     ledger.AttemptRow
-		r     ledger.CheckRow
-		same  []ledger.CheckRow
-		class string
-		words string
-	}{
-		{"a code failure", failedA, row, nil, FailureCode, "exited 1"},
-		{"a stop, the check interrupted and not killed", attempt(ledger.AttemptStopped, "verifying"), with(func(r *ledger.CheckRow) { r.State, r.Exit, r.Killed = ledger.CheckInterrupted, -1, false }), nil, FailureCancelled, "stopped"},
-		{"a cancel", attempt(ledger.AttemptCancelled, "verifying"), row, nil, FailureCancelled, "cancelled"},
-		{"a withdrawal", attempt(ledger.AttemptCancelled, "withdrawn"), row, nil, FailureCancelled, "withdrawn"},
-		{"the server ended under the check", attempt(ledger.AttemptInterrupted, "verifying: the owner stopped; the candidate is verified again"), with(func(r *ledger.CheckRow) { r.State, r.Exit = ledger.CheckInterrupted, -1 }), nil, FailureInfrastructure, "the server ended"},
-		{"an outcome never recorded", failedA, with(func(r *ledger.CheckRow) { r.State, r.Exit = ledger.CheckRunning, -1 }), nil, FailureInfrastructure, "never recorded"},
-		{"a check that never ran", failedA, with(func(r *ledger.CheckRow) { r.Exit, r.Error = -1, "could not run: exec: \"go\": not found" }), nil, FailureInfrastructure, "never ran"},
-		{"a setup step", attempt(ledger.AttemptFailed, "setup deps"), with(func(r *ledger.CheckRow) { r.ID, r.Phase, r.Error = "deps", ledger.PhaseSetup, "deps exited 1" }), nil, FailureInfrastructure, "the setup step deps"},
-		{"a ready probe", attempt(ledger.AttemptFailed, "ready web"), with(func(r *ledger.CheckRow) { r.ID, r.Phase = "web", ledger.PhaseReady }), nil, FailureInfrastructure, "the ready step web"},
-		{"a verify step is a check", attempt(ledger.AttemptFailed, "verify e2e"), with(func(r *ledger.CheckRow) { r.ID, r.Phase, r.Manifest = "e2e", ledger.PhaseVerify, "crew:1" }), nil, FailureCode, "exited 1"},
-		{"flaky: passed on the same commit", failedA, row, []ledger.CheckRow{row, passed(nil)}, FailureFlaky, "attempt 3 of run r-b"},
-		{"another task's check of the same id never makes it flaky", failedA, row, []ledger.CheckRow{passed(func(r *ledger.CheckRow) { r.TaskID = "docs" })}, FailureCode, "exited 1"},
-		{"a check whose argv changed never makes it flaky", failedA, row, []ledger.CheckRow{passed(func(r *ledger.CheckRow) { r.Argv = []string{"go", "test", "./internal/..."} })}, FailureCode, "exited 1"},
-		{"a pass on another commit never makes it flaky", failedA, row, []ledger.CheckRow{passed(func(r *ledger.CheckRow) { r.Subject = "c1" })}, FailureCode, "exited 1"},
-		{"another failure on the same commit is no pass", failedA, row, []ledger.CheckRow{passed(func(r *ledger.CheckRow) { r.Exit = 2 })}, FailureCode, "exited 1"},
-		{"a verify step of another manifest never makes it flaky", attempt(ledger.AttemptFailed, "verify e2e"), with(func(r *ledger.CheckRow) { r.ID, r.Phase, r.Manifest = "e2e", ledger.PhaseVerify, "crew:1" }),
-			[]ledger.CheckRow{passed(func(r *ledger.CheckRow) { r.ID, r.Phase, r.Manifest = "e2e", ledger.PhaseVerify, "crew:2" })}, FailureCode, "exited 1"},
-		{"a verify step of the same manifest passed", attempt(ledger.AttemptFailed, "verify e2e"), with(func(r *ledger.CheckRow) { r.ID, r.Phase, r.Manifest = "e2e", ledger.PhaseVerify, "crew:1" }),
-			[]ledger.CheckRow{passed(func(r *ledger.CheckRow) { r.ID, r.Phase, r.Manifest = "e2e", ledger.PhaseVerify, "crew:1" })}, FailureFlaky, "passed"},
-		{"no receipt in the ledger", failedA, ledger.CheckRow{}, nil, FailureUnavailable, "no receipt"},
-		{"a dropped log with no output", failedA, with(func(r *ledger.CheckRow) { r.LogDropped, r.Tail = true, "" }), nil, FailureUnavailable, "dropped"},
-		{"a dropped log with its tail kept", failedA, with(func(r *ledger.CheckRow) { r.LogDropped = true }), nil, FailureCode, "exited 1"},
-		{"a signal", failedA, with(func(r *ledger.CheckRow) { r.Exit, r.Signal = -1, "killed" }), nil, FailureCode, "signal killed"},
-		{"a timeout", failedA, with(func(r *ledger.CheckRow) { r.Exit, r.TimedOut, r.FinishedAt = -1, true, at.Add(600*time.Second) }), nil, FailureCode, "timed out after 600 s: a hang in the code, or a machine too slow"},
-		{"a changed checkout", failedA, with(func(r *ledger.CheckRow) { r.Exit, r.Stable, r.Error = 0, false, "changed tracked files: a.txt" }), nil, FailureCode, "left the checkout changed"},
-		{"killed and exited non-zero", failedA, with(func(r *ledger.CheckRow) { r.Killed = true }), nil, FailureCode, "exited 1; a process it left behind"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			got := ClassifyFailure(c.a, c.r, c.same)
-			if got.Class != c.class || !strings.Contains(got.Words, c.words) {
-				t.Fatalf("%+v, want %s with %q", got, c.class, c.words)
+		release()
+		if err := <-stopped; err != nil {
+			t.Fatal(err)
+		}
+		if row := l.attemptWhen(t, run.ID, "build", 4, func(r ledger.AttemptRow) bool { return r.State == ledger.AttemptStopped }); row.ResultCommit != c3 {
+			t.Fatalf("attempt 4 after the stop: %+v", row)
+		}
+		if rows := l.stepRows(run.ID, "build", 4); len(rows) != 0 {
+			t.Fatalf("attempt 4 was checked after the stop:\n%s", rowWords(rows))
+		}
+	})
+	t.Run("a continuation asked once it is recorded", func(t *testing.T) {
+		e, _, _ := managedEngine(t)
+		held, release := holdRechecks(t, e)
+		run, c3 := failedRun(t, e)
+		if rc, err := recheck(e, run.ID, "r1", "build", 3, c3); err != nil || rc.Status != ledger.CommandDone {
+			t.Fatalf("Check again: %+v %v", rc, err)
+		}
+		<-held
+		if next, err := e.ContinueRun(context.Background(), run.ID, ""); !errors.Is(err, ErrRunRunning) {
+			t.Fatalf("a continuation of the run Check again opened: %+v %v", next, err)
+		}
+		release()
+		waitTask(t, e, run.ID, "build", ledger.TaskFailed, 4)
+		stopRun(t, e, run.ID)
+	})
+	t.Run("Check again while a continuation is under way", func(t *testing.T) {
+		e, _, l := managedEngine(t)
+		run, c3 := failedRun(t, e)
+		var rc Receipt
+		var rerr error
+		e.beforeContinue = func(id string) {
+			if id == run.ID {
+				rc, rerr = recheck(e, run.ID, "r1", "build", 3, c3)
 			}
-		})
+		}
+		next, err := e.ContinueRun(context.Background(), run.ID, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !errors.Is(rerr, ErrRunContinued) || rc.Refusal != RefusalRunContinued {
+			t.Fatalf("Check again under the continuation: %+v %v", rc, rerr)
+		}
+		if n := l.count(run.ID, "result.reverified"); n != 0 {
+			t.Fatalf("%d checks again recorded in the continued run", n)
+		}
+		stopRun(t, e, next.ID)
+	})
+}
+
+// A Check again counts among the run's attempts in flight: with as many as
+// it runs at once, it is refused (task_state) and nothing is recorded;
+// once one ends, it is taken.
+func TestRecheckTakesARoomAmongTheAttemptsInFlight(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{markedCheck("test", filepath.Join(t.TempDir(), "never"))}
+	tasks := []Task{build}
+	for i := 1; i <= maxActiveAttempts; i++ {
+		tasks = append(tasks, work(fmt.Sprintf("f%d", i), fmt.Sprintf("m%d", i)))
 	}
+	run := launchManaged(t, e, repoCrew(dir, tasks...))
+	c3 := spend(t, e, run.ID, "build", "built.txt").Attempt.Result
+	for i := 1; i <= maxActiveAttempts; i++ {
+		waitAttempt(t, e, run.ID, fmt.Sprintf("f%d", i), ledger.AttemptRunning)
+	}
+	rc, err := recheck(e, run.ID, "r1", "build", 3, c3)
+	if !errors.Is(err, ErrTaskState) || rc.Refusal != RefusalTaskState || !strings.Contains(err.Error(), fmt.Sprintf("%d attempts in flight", maxActiveAttempts)) {
+		t.Fatalf("Check again beside %d attempts in flight: %+v %v", maxActiveAttempts, rc, err)
+	}
+	if n := l.count(run.ID, "result.reverified"); n != 0 {
+		t.Fatalf("%d checks again recorded", n)
+	}
+	commitResult(t, e, waitAttempt(t, e, run.ID, "f1", ledger.AttemptRunning), "f1.txt", "f\n", "f1")
+	waitTask(t, e, run.ID, "f1", ledger.TaskSucceeded, 1)
+	if rc, err := recheck(e, run.ID, "r2", "build", 3, c3); err != nil || rc.Status != ledger.CommandDone {
+		t.Fatalf("Check again once f1 ended: %+v %v", rc, err)
+	}
+	waitTask(t, e, run.ID, "build", ledger.TaskFailed, 4)
+	stopRun(t, e, run.ID)
+}
+
+// A Check again in a continuation whose run its carried failure finished
+// waits for the prerequisites its end interrupted: they run again first,
+// and the check of attempt n+1 starts only once they passed (the
+// verification's start sees them passed, the prerequisites.passed event
+// comes before its check), while one of them is held at its gate attempt
+// n+1 stays recorded, verifying, with no receipt.
+func TestRecheckWaitsForThePrerequisites(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	gate, pidFile := filepath.Join(t.TempDir(), "gate"), filepath.Join(t.TempDir(), "pid")
+	open(t, gate)
+	t.Cleanup(func() { open(t, gate) })
+	mark := filepath.Join(t.TempDir(), "passes")
+	build := work("build", "lead")
+	build.Checks = []Check{markedCheck("test", mark)}
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Prerequisites: []Check{gatedPrerequisite("tools", gate, pidFile)}}, build))
+	c3 := spend(t, e, run.ID, "build", "built.txt").Attempt.Result
+	waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+	l.runRowWhen(t, run.ID, "finished", func(r ledger.RunRow) bool { return r.State == ledger.RunFinished })
+	for _, f := range []string{gate, pidFile} {
+		if err := os.Remove(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	next, err := e.ContinueRun(ctx, run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitOutcome(t, e, next.ID, ledger.OutcomeFailed)
+	r := runOf(t, e, next.ID)
+	seen := make(chan string, 1)
+	e.beforeRecheck = func(string) {
+		st, _, _ := prereqState(e, r)
+		seen <- st
+	}
+	mustMark(t, mark)
+	if rc, err := e.Recheck(ctx, next.ID, "admin", Command{ID: "r1"}, RecheckRequest{Task: "build", Attempt: 3, Commit: c3, Imported: run.ID + "/build/3"}); err != nil || rc.Status != ledger.CommandDone {
+		t.Fatalf("Check again in the continuation: %+v %v", rc, err)
+	}
+	pidIn(t, pidFile) // the prerequisite runs again, held at its gate
+	l.attemptWhen(t, next.ID, "build", 4, func(a ledger.AttemptRow) bool { return a.State == ledger.AttemptVerifying && a.ResultCommit == c3 })
+	if ts := taskOf(t, e, next.ID, "build"); ts.State != ledger.TaskVerifying {
+		t.Fatalf("build while the prerequisite is held: %+v", ts)
+	}
+	if rows := l.stepRows(next.ID, "build", 4); len(rows) != 0 {
+		t.Fatalf("attempt 4 checked while the prerequisite is held:\n%s", rowWords(rows))
+	}
+	open(t, gate)
+	waitTask(t, e, next.ID, "build", ledger.TaskSucceeded, 4)
+	if st := <-seen; st != prereqPassed {
+		t.Fatalf("attempt 4's verification started with the prerequisites %s", st)
+	}
+	kinds := l.kinds(next.ID)
+	if p, c := slices.Index(kinds, "prerequisites.passed"), slices.Index(kinds, "check.started"); p < 0 || c < 0 || p > c {
+		t.Fatalf("prerequisites.passed before attempt 4's check.started: %v", kinds)
+	}
+	stopRun(t, e, next.ID)
 }
