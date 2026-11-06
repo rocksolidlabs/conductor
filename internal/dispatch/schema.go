@@ -3,14 +3,17 @@ package dispatch
 import (
 	"context"
 	"database/sql"
+	"slices"
 )
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
 // Version 1 is DS1's (docs/plans/dispatch.md); version 2 adds a ticket's
 // plan revisions and launches and three columns of a link
-// (docs/plans/dispatch-evidence.md, Program item DS2).
-const Version = 2
+// (docs/plans/dispatch-evidence.md, Program item DS2); version 3 adds a
+// ticket's reviews, their findings and the findings' marks
+// (docs/plans/review-repair.md, Program item RV1).
+const Version = 3
 
 // migrations bring a database from the version keyed to the next, in the
 // transaction that read the version, with the version's bump. A migration
@@ -25,6 +28,11 @@ const Version = 2
 // a version 1 add kept no fingerprint, and no link had a candidate. It
 // reads and rewrites no row, so nothing is derived and no migrate row is
 // written.
+//
+// Version 2 to 3 makes the three tables of reviews, their findings and
+// the findings' marks and their five indexes, and reads or rewrites no
+// row: a version 2 database holds no review, so nothing is derived and no
+// migrate row is written.
 var migrations = map[int][]string{
 	1: append([]string{
 		plansTable,
@@ -34,6 +42,11 @@ var migrations = map[int][]string{
 		`ALTER TABLE links ADD COLUMN candidate TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE links ADD COLUMN verified TEXT NOT NULL DEFAULT ''`,
 	}, version2Indexes...),
+	2: append([]string{
+		reviewsTable,
+		reviewFindingsTable,
+		findingMarksTable,
+	}, version3Indexes...),
 }
 
 // migrationsGo run after a version's statements, in the same transaction:
@@ -107,6 +120,95 @@ const launchFilesTable = `CREATE TABLE launch_files (
 		PRIMARY KEY (launch_id, sha256)
 	)`
 
+// reviewsTable is a ticket's reviews (Program item RV1, reviews.go): a
+// person's batch of notes on one candidate, <run>/<task>/<n>@<commit>,
+// against a base, a full commit, both fixed at the submit with the
+// verdict and the summary, its fingerprint the submitting operation's.
+// The app_* fields are its application as the ledger's owner recorded
+// it: none for a comment or an approval, pending (its try) then applied
+// (the run, the command, the run's revision after it, the repair
+// attempt's number) or refused (why) for a request, nothing else.
+const reviewsTable = `CREATE TABLE reviews (
+		id TEXT PRIMARY KEY,
+		ticket_id TEXT NOT NULL REFERENCES tickets(id),
+		candidate TEXT NOT NULL,
+		base TEXT NOT NULL,
+		verdict TEXT NOT NULL,
+		summary TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		created_by TEXT NOT NULL DEFAULT '',
+		actor TEXT NOT NULL,
+		via TEXT NOT NULL DEFAULT '',
+		fingerprint TEXT NOT NULL DEFAULT '',
+		app_state TEXT NOT NULL DEFAULT 'none',
+		app_try INTEGER NOT NULL DEFAULT 0,
+		app_run TEXT NOT NULL DEFAULT '',
+		app_command TEXT NOT NULL DEFAULT '',
+		app_revision INTEGER NOT NULL DEFAULT 0,
+		app_attempt INTEGER NOT NULL DEFAULT 0,
+		app_why TEXT NOT NULL DEFAULT '',
+		app_at TEXT NOT NULL DEFAULT '',
+		rev INTEGER NOT NULL DEFAULT 0
+	)`
+
+// reviewFindingsTable is a review's findings, each an entity of its own
+// with its place k (1 to MaxReviewFindings) in the batch, immutable once
+// made: lines and check_ref are JSON (the lines as the person saw them,
+// a check finding's receipt as the server read it). ticket_id is the
+// review's, kept so a ticket's findings are read by an index.
+const reviewFindingsTable = `CREATE TABLE review_findings (
+		id TEXT PRIMARY KEY,
+		review_id TEXT NOT NULL REFERENCES reviews(id),
+		ticket_id TEXT NOT NULL REFERENCES tickets(id),
+		k INTEGER NOT NULL,
+		kind TEXT NOT NULL,
+		intent TEXT NOT NULL,
+		severity TEXT NOT NULL DEFAULT '',
+		path TEXT NOT NULL DEFAULT '',
+		side TEXT NOT NULL DEFAULT '',
+		from_line INTEGER NOT NULL DEFAULT 0,
+		to_line INTEGER NOT NULL DEFAULT 0,
+		anchor_commit TEXT NOT NULL DEFAULT '',
+		lines TEXT NOT NULL DEFAULT '[]',
+		message TEXT NOT NULL DEFAULT '',
+		resolution TEXT NOT NULL DEFAULT '',
+		check_ref TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL
+	)`
+
+// findingMarksTable is a finding's marks, a log: each a person's verdict
+// on the finding against a candidate, with what the page showed of its
+// lines there (located, the server's JSON), never edited. op_id is the
+// marking operation's, which with created_at and actor places the mark in
+// the log's one order, the latest deciding the finding's state.
+const findingMarksTable = `CREATE TABLE finding_marks (
+		id TEXT PRIMARY KEY,
+		finding_id TEXT NOT NULL REFERENCES review_findings(id),
+		ticket_id TEXT NOT NULL REFERENCES tickets(id),
+		candidate TEXT NOT NULL,
+		verdict TEXT NOT NULL,
+		located TEXT NOT NULL DEFAULT '',
+		note TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		created_by TEXT NOT NULL DEFAULT '',
+		actor TEXT NOT NULL,
+		via TEXT NOT NULL DEFAULT '',
+		op_id TEXT NOT NULL,
+		fingerprint TEXT NOT NULL DEFAULT ''
+	)`
+
+// version3Indexes is the indexes version 3 adds: a ticket's reviews in
+// their order, the reviews by their application's state (the reconcile's
+// pending ones), a review's findings in their order, a ticket's findings,
+// and a finding's marks in their order. None is unique.
+var version3Indexes = []string{
+	`CREATE INDEX reviews_ticket_created ON reviews (ticket_id, created_at)`,
+	`CREATE INDEX reviews_app_state ON reviews (app_state)`,
+	`CREATE INDEX review_findings_review ON review_findings (review_id, k)`,
+	`CREATE INDEX review_findings_ticket ON review_findings (ticket_id)`,
+	`CREATE INDEX finding_marks_finding_created ON finding_marks (finding_id, created_at)`,
+}
+
 // version2Indexes is the indexes version 2 adds: a ticket's revisions
 // and launches in their order, a revision's launches, the pending
 // launches, a run's launch, and the launches that name a file. None is
@@ -120,10 +222,11 @@ var version2Indexes = []string{
 	`CREATE INDEX launch_files_sha256 ON launch_files (sha256)`,
 }
 
-// schema is version 2, whole: every table of docs/plans/dispatch.md's
-// schema table and docs/plans/dispatch-evidence.md's (plans, launches,
+// schema is version 3, whole: every table of docs/plans/dispatch.md's
+// schema table, docs/plans/dispatch-evidence.md's (plans, launches,
 // launch_files, and a link's three columns, last of its table as the
-// migration adds them), the FTS index included, its indexes and two of the
+// migration adds them) and docs/plans/review-repair.md's (reviews,
+// review_findings, finding_marks), the FTS index included, its indexes and two of the
 // list's own (tickets_list, ticket_labels_label), and the unique
 // indexes of the keys never minted twice and nothing else (projects.key,
 // tickets.key and (project_id, number), people.name, changes (actor,
@@ -368,11 +471,15 @@ var schema = append([]string{
 	plansTable,
 	launchesTable,
 	launchFilesTable,
-}, version2Indexes...)
+	reviewsTable,
+	reviewFindingsTable,
+	findingMarksTable,
+}, append(slices.Clone(version2Indexes), version3Indexes...)...)
 
 // tables is every table of the schema but the FTS index's own and
 // SQLite's, by name: what a test lists sqlite_master against.
 var tables = []string{
-	"attachments", "changes", "comments", "labels", "launch_files", "launches", "links", "milestones", "ops", "people", "plans", "projects",
-	"relations", "schema_version", "ticket_assignees", "ticket_labels", "tickets", "tickets_fts", "uploads", "views",
+	"attachments", "changes", "comments", "finding_marks", "labels", "launch_files", "launches", "links", "milestones", "ops", "people", "plans",
+	"projects", "relations", "review_findings", "reviews", "schema_version", "ticket_assignees", "ticket_labels", "tickets", "tickets_fts",
+	"uploads", "views",
 }
