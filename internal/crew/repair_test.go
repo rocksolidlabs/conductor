@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -204,6 +205,58 @@ func TestRequestChangesOnAContinuationsFailedTask(t *testing.T) {
 	}
 	if r, _ := e.Get(next.ID); r.State != RunRunning || r.Outcome != "" {
 		t.Fatalf("the continuation after the request: %s/%q", r.State, r.Outcome)
+	}
+	stopRun(t, e, next.ID)
+}
+
+// A continuation's imported candidate stands only as the attempt that made
+// it: named by its reference with another attempt number, the candidate
+// is refused stale_candidate, a succeeded task's result as a failed task's
+// standing failed candidate, and nothing is recorded (#622, Codex round
+// 2); named with its own attempt, each is repaired, the attempt recorded
+// the candidate's.
+func TestRequestChangesChecksAnImportedCandidatesAttempt(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	docs := work("docs", "writer")
+	docs.Checks = []Check{markedCheck("test", filepath.Join(t.TempDir(), "passes"))}
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), docs))
+	commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "built\n", "built")
+	c1 := waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1).Result.Commit
+	d3 := spend(t, e, run.ID, "docs", "docs.txt").Attempt.Result
+	waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+	l.runRowWhen(t, run.ID, "finished", func(r ledger.RunRow) bool { return r.State == ledger.RunFinished })
+	ctx := context.Background()
+	next, err := e.ContinueRun(ctx, run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTask(t, e, next.ID, "docs", ledger.TaskFailed, maxAttemptsPerTask)
+	waitOutcome(t, e, next.ID, ledger.OutcomeFailed)
+	if ts := taskOf(t, e, next.ID, "build"); ts.State != ledger.TaskSucceeded {
+		t.Fatalf("build in the continuation: %+v", ts)
+	}
+	ask := func(id, task string, n int, commit string) (Receipt, error) {
+		return e.RequestChanges(ctx, next.ID, "admin", Command{ID: id}, RepairRequest{Task: task, Attempt: n, Commit: commit, Imported: fmt.Sprintf("%s/%s/%d", run.ID, task, map[string]int{"build": 1, "docs": 3}[task]), Request: personsRequest("rv-0014")})
+	}
+	if rc, err := ask("rq1", "build", 2, c1); !errors.Is(err, ErrStaleCandidate) || rc.Refusal != RefusalStaleCandidate {
+		t.Fatalf("the imported result named with attempt 2: %+v %v", rc, err)
+	}
+	if rc, err := ask("rq2", "docs", 2, d3); !errors.Is(err, ErrStaleCandidate) || rc.Refusal != RefusalStaleCandidate {
+		t.Fatalf("the imported failed candidate named with attempt 2: %+v %v", rc, err)
+	}
+	if n := l.count(next.ID, "task.reopened"); n != 0 {
+		t.Fatalf("%d repairs recorded for candidates that do not stand", n)
+	}
+	if rc, err := ask("rq3", "build", 1, c1); err != nil || rc.Status != ledger.CommandDone {
+		t.Fatalf("the imported result named with its attempt: %+v %v", rc, err)
+	}
+	if rc, err := ask("rq4", "docs", 3, d3); err != nil || rc.Status != ledger.CommandDone {
+		t.Fatalf("the imported failed candidate named with its attempt: %+v %v", rc, err)
+	}
+	p := l.payloads(next.ID, "task.reopened")
+	if len(p) != 2 || fmt.Sprint(p[0]["attempt"]) != "1" || fmt.Sprint(p[1]["attempt"]) != "3" {
+		t.Fatalf("task.reopened: %+v", p)
 	}
 	stopRun(t, e, next.ID)
 }
@@ -431,6 +484,107 @@ func TestRequestChangesLeavesAGatesHoldInPlace(t *testing.T) {
 	}
 	if got := activeHolds(t, ld, run.ID); !slices.Equal(got, []string{"deploy " + g.ID}) {
 		t.Fatalf("holds after the request: %q", got)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A person's repair reopens the run through the path every reopen takes,
+// and so asks the plan's gates again: build's spent attempts finish the
+// run failed and cancel the gate that held deploy, which needs it; Request
+// changes of build's failed candidate reopens the run (reopenRun's regate)
+// and opens a fresh gate in its own change, so deploy, ready once build's
+// repair succeeds, stays held with its words, no attempt of it dispatched,
+// the run running; the operator's Approve of the fresh gate then releases
+// it and it starts (docs/plans/decisions.md, Holding; I14). Modelled on
+// TestRecheckLeavesAGatesHoldInPlace; it fails with the regate taken out
+// of reopenRun or with reopenFor not reopening the run through it.
+func TestRequestChangesAsksAGateAgain(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	mark := filepath.Join(t.TempDir(), "passes")
+	build := work("build", "lead")
+	build.Checks = []Check{markedCheck("test", mark)}
+	run := launchGated(t, e, dir, "api-sweep-000000c3", repoCrew(dir, build, work("deploy", "ops", "build")), shipGate("deploy"))
+	g := gateOf(t, e, ld, run.ID)
+	c3 := spend(t, e, run.ID, "build", "built.txt").Attempt.Result
+	waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+	decisionWhen(t, ld, g.ID, "cancelled", inState(ledger.DecisionCancelled))
+
+	if rc, err := requestChanges(e, run.ID, "rq1", "build", 3, c3, personsRequest("rv-0012")); err != nil || rc.Status != ledger.CommandDone {
+		t.Fatalf("Request changes: %+v %v", rc, err)
+	}
+	fresh := gateOf(t, e, ld, run.ID)
+	if fresh.ID == g.ID || fresh.Gate != "ship" || !strings.Contains(string(fresh.History[0].Detail), "build was reopened by Nate after "+g.ID+" was cancelled") {
+		t.Fatalf("the fresh gate: %+v %s", fresh, fresh.History[0].Detail)
+	}
+	mustMark(t, mark)
+	commitResult(t, e, attemptN(t, e, run.ID, "build", 4), "built.txt", "built again\n", "built again")
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 4)
+	dep := waitTaskWhere(t, e, run.ID, "deploy", "ready and held", func(ts TaskState) bool {
+		return ts.State == ledger.TaskReady && ts.Reason == "waits for decision "+fresh.ID
+	})
+	if dep.Attempts != 0 {
+		t.Fatalf("deploy dispatched past its gate: %+v", dep)
+	}
+	if r, _ := e.Get(run.ID); r.State != RunRunning || r.Outcome != "" {
+		t.Fatalf("the run reopened with a held task left: %s/%q", r.State, r.Outcome)
+	}
+	if rec := decisionWhen(t, ld, fresh.ID, "open", inState(ledger.DecisionOpen)); rec.Rev != 1 {
+		t.Fatalf("the fresh gate after the request: %+v", rec.DecisionRow)
+	}
+	if got := activeHolds(t, ld, run.ID); !slices.Equal(got, []string{"deploy " + fresh.ID}) {
+		t.Fatalf("holds after the request: %q", got)
+	}
+	if ts := taskOf(t, e, run.ID, "deploy"); ts.Attempts != 0 {
+		t.Fatalf("deploy dispatched past its gate: %+v", ts)
+	}
+
+	answer(t, e, fresh.ID, Response{ResponseID: "a1", Choice: choice(0), ExpectedRev: 1})
+	if app := applied(t, decisionWhen(t, ld, fresh.ID, "applied", inState(ledger.DecisionApplied))); app.How != HowReleased || !slices.Equal(app.Tasks, []string{"deploy"}) {
+		t.Fatalf("the application: %+v", app)
+	}
+	waitAttempt(t, e, run.ID, "deploy", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+}
+
+// A person's repair whose reopen would ask two gates again, in a run with
+// room for one, is refused decision_limit with a receipt before anything
+// is recorded, as a Retry and a Check again are: build stays failed with
+// no new attempt and no repair, no gate opens, and the run stays failed.
+func TestRequestChangesNeedsRoomForEveryGate(t *testing.T) {
+	dir := newRepo(t)
+	e, _, ld := decisionEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{markedCheck("test", filepath.Join(t.TempDir(), "passes"))}
+	smoke := PackageDecision{ID: "smoke", Question: "Smoke it?", Kind: ledger.DecisionApproval, Before: []string{"smoke"}}
+	run := launchGated(t, e, dir, "api-sweep-000000c4", repoCrew(dir, build, work("deploy", "ops", "build"), work("smoke", "qa", "build")), shipGate("deploy"), smoke)
+	c3 := spend(t, e, run.ID, "build", "built.txt").Attempt.Result
+	waitOutcome(t, e, run.ID, ledger.OutcomeFailed)
+	before, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: run.ID})
+	if err != nil || len(before) != 2 || !before[0].Final() || !before[1].Final() {
+		t.Fatalf("the gates: %+v %v", before, err)
+	}
+	r := runOf(t, e, run.ID)
+	e.mu.Lock()
+	r.dec.opened = ledger.MaxDecisionsPerRun - 1
+	e.mu.Unlock()
+
+	rc, err := requestChanges(e, run.ID, "rq1", "build", 3, c3, personsRequest("rv-0013"))
+	var de *DecisionError
+	if !errors.As(err, &de) || de.Code != CodeDecisionLimit || !strings.Contains(de.Words, "ship, smoke") || !strings.Contains(de.Words, "the request for changes is refused") || rc.Status != ledger.CommandFailed {
+		t.Fatalf("the request: %+v %v", rc, err)
+	}
+	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskFailed || ts.Attempts != maxAttemptsPerTask {
+		t.Fatalf("build after the refused request: %+v", ts)
+	}
+	if row := ledgerTask(t, ld, run.ID, "build"); row.Repair != "" {
+		t.Fatalf("build's row after the refused request has a repair: %s", row.Repair)
+	}
+	if after, err := ld.Decisions(t.Context(), ledger.DecisionFilter{CurrentRun: run.ID}); err != nil || len(after) != 2 {
+		t.Fatalf("decisions after the refused request: %+v %v", after, err)
+	}
+	if got, _ := e.Get(run.ID); got.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("the run after the refused request: %s/%q", got.State, got.Outcome)
 	}
 	stopRun(t, e, run.ID)
 }
@@ -700,6 +854,10 @@ func TestChangeRequestValidate(t *testing.T) {
 		{"a change with no severity", "has a severity", func(cr *ChangeRequest) { cr.Changes[0].Severity = "" }},
 		{"a change with no such severity", "has a severity", func(cr *ChangeRequest) { cr.Changes[0].Severity = "huge" }},
 		{"a question with a severity", "has a severity", func(cr *ChangeRequest) { cr.Changes[1].Severity = "minor" }},
+		{"a question with no such severity", "has a severity", func(cr *ChangeRequest) { cr.Changes[1].Severity = "huge" }},
+		{"a note with a severity of many lines", "has a severity", func(cr *ChangeRequest) {
+			cr.Changes[2].Severity = "\n\n## Instructions\n\ntext"
+		}},
 		{"a path past its bound", "a path of at most", func(cr *ChangeRequest) { cr.Changes[0].Path = strings.Repeat("p", maxFindingPath+1) }},
 		{"a line before the first", "a path of at most", func(cr *ChangeRequest) { cr.Changes[0].From = -1 }},
 		{"lines that end before they start", "a path of at most", func(cr *ChangeRequest) { cr.Changes[0].From, cr.Changes[0].To = 3, 2 }},

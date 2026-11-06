@@ -200,7 +200,7 @@ func (cr ChangeRequest) validate() error {
 			return bad("change %s: its kind is line, file, general or check, its intent change, question or note", c.ID)
 		}
 		asked = asked || c.Intent == "change"
-		if c.Intent == "change" != slices.Contains(severities, c.Severity) {
+		if c.Intent == "change" && !slices.Contains(severities, c.Severity) || c.Intent != "change" && c.Severity != "" {
 			return bad("change %s: a change asked for has a severity, blocker, major, minor or nit, and a question or a note none", c.ID)
 		}
 		if len(c.Path) > maxFindingPath || c.From < 0 || c.To < c.From || len(c.Lines) > maxAnchorLines || slices.ContainsFunc(c.Lines, func(l string) bool { return len(l) > maxAnchorLine }) {
@@ -463,10 +463,12 @@ func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair, 
 // set (rq's request in its next attempt's task file, that attempt starting
 // at the candidate, or where its attempt started when it was refused
 // before its checks), one more attempt granted when the task's are spent,
-// what rested on the result withdrawn, and a finished run open again
-// (reopenRun). A task a review task's findings reopened keeps them beside
-// the request (keepReview). A task a decision holds stays held; no
-// decision is opened or answered; nothing is typed into a session but the
+// what rested on the result withdrawn, the decisions its attempts asked
+// cancelled, and a finished run open again (reopenRun). A task a review
+// task's findings reopened keeps them beside the request (keepReview).
+// The reopen re-applies the task's gates as every reopen does (reopenRun's
+// regate): a gate may ask a decision, and a task a decision holds stays
+// held. No decision is answered; nothing is typed into a session but the
 // task line of the repair attempt, a new attempt like any other.
 //
 // Refused before anything is recorded: a request not of a batch's shape,
@@ -479,7 +481,9 @@ func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair, 
 // its reference (Imported), and so does a failed task whose standing
 // failed candidate (standingFailed) is that attempt, having submitted that
 // commit; a stopped run (run_stopped) and a continued one (run_continued),
-// whose candidate a continuation carries. A run the engine does not hold
+// whose candidate a continuation carries; a reopen whose gates would ask
+// again in a run with no room for them (decision_limit, retryNeedsRoom,
+// as for a Retry). A run the engine does not hold
 // is ErrRunNotFound. The same command sent again is its receipt again,
 // never a second repair, and the same id naming another candidate or
 // review a conflict, as for every command (act). Refused with a receipt
@@ -525,6 +529,11 @@ func (e *Engine) RequestChanges(ctx context.Context, runID, actor string, cmd Co
 		}
 		start, err := r.standingCandidate(t, rq)
 		if err != nil {
+			return t, nil, err
+		}
+		// The gates its reopen would ask again need their room, as a
+		// Retry's do: refused before anything is recorded.
+		if err := r.retryNeedsRoom(t, "request for changes"); err != nil {
 			return t, nil, err
 		}
 		cr := rq.Request
@@ -583,7 +592,7 @@ func (r *run) standingCandidate(t *task, rq RepairRequest) (start string, err er
 			break
 		}
 		standing := cmp.Or(t.imported, fmt.Sprintf("%s/%s/%d", r.id, t.def.ID, t.result.attempt))
-		if standing != named || t.result.commit != rq.Commit {
+		if standing != named || t.result.attempt != rq.Attempt || t.result.commit != rq.Commit {
 			return "", fmt.Errorf("%w: the result is now attempt %d's %s: request changes of that candidate", ErrStaleCandidate, t.result.attempt, short(t.result.commit))
 		}
 		return "", nil
@@ -592,7 +601,7 @@ func (r *run) standingCandidate(t *task, rq RepairRequest) (start string, err er
 		if !ok {
 			return "", fmt.Errorf("%w: the task has no failed candidate since its withdrawal: retry it", ErrStaleCandidate)
 		}
-		if standing := fmt.Sprintf("%s/%s/%d", fc.RunID, fc.TaskID, fc.N); standing != named || fc.ResultCommit == "" || fc.ResultCommit != rq.Commit {
+		if standing := fmt.Sprintf("%s/%s/%d", fc.RunID, fc.TaskID, fc.N); standing != named || fc.N != rq.Attempt || fc.ResultCommit == "" || fc.ResultCommit != rq.Commit {
 			if fc.ResultCommit == "" {
 				return "", fmt.Errorf("%w: attempt %d failed since, at %s, without a result: retry the task", ErrStaleCandidate, fc.N, cmp.Or(fc.Stage, fc.State))
 			}

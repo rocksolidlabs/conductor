@@ -2983,9 +2983,13 @@ withdrawal has not taken back, or in a continuation with no attempt of its
 own the continued run's last, having submitted that commit). The result is
 dropped, the repair set, what rested on it withdrawn as above, a task whose
 attempts are spent granted one more (the request is its authority, as a
-retry's is), a finished run open again, a task a decision holds left held;
-nothing is typed into any session but the repair attempt's task line, and
-no decision is opened or answered. `task.reopened` names the Dispatch
+retry's is), the decisions its attempts asked cancelled, a finished run
+open again, a task a decision holds left held. The request re-applies the
+task's gates as every reopen does; a gate may ask a decision (a plan's
+gate whose decision ended asks again, and a request whose reopen would ask
+more than the run has room for is refused `decision_limit` before anything
+is recorded, as a retry is). No decision is answered, and nothing is typed
+into any session but the repair attempt's task line. `task.reopened` names the Dispatch
 review (`review`) and who asked (`by`) beside `task`, `attempt` (the
 candidate's), `findings` (the changes counted) and `state`, and
 `imported` for a continuation's candidate. The repair attempt starts at the
