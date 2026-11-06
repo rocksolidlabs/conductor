@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actReceiptRef, actShown, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actFor, actReceiptRef, actShown, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedSince, configProblems, displayBy, formField, formMove, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -440,6 +440,14 @@ describe("the grants in Settings and what Brakeman did under them (PR-13)", () =
     expect(GRANTS.find((g) => g.value === 'launch_approved_plan')!.words).toContain('never approves')
     expect(grantLabel('prepare_followup')).toBe('Prepare a follow-up')
     expect(grantLabel('nope')).toBe('nope')
+  })
+
+  it('say observe only when nothing is drafted, proposed or granted: a grant runs by itself, with drafting and proposing off', () => {
+    expect(observesOnly({ draft: false, propose: false })).toBe(true)
+    expect(observesOnly({ draft: false, propose: false, act: [] })).toBe(true)
+    expect(observesOnly({ draft: false, propose: false, act: ['launch_approved_plan'] })).toBe(false)
+    expect(observesOnly({ draft: true, propose: false, act: [] })).toBe(false)
+    expect(observesOnly({ draft: false, propose: true })).toBe(false)
   })
 
   it('save a grant list in their order, each once, and a save with none as no grant', () => {

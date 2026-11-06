@@ -1138,6 +1138,14 @@ export function withGrant(act: readonly string[] | undefined, op: string, on: bo
 }
 
 /**
+ * Whether the permissions leave Brakeman to observe alone, as Settings says: nothing drafted, nothing proposed and no operation granted.
+ * A grant is checked by itself (the server's actGrant), so with drafting and proposing off a turn granted a launch still launches.
+ */
+export function observesOnly(p: Pick<BrakemanPermissions, 'draft' | 'propose' | 'act'>): boolean {
+  return !p.draft && !p.propose && !p.act?.length
+}
+
+/**
  * The grants a server serves, from its admin guide's operations (the scope act, an entry each under the grant's name), or null while the
  * guide is not read: Settings offers those alone, and says of the rest that this build does not serve them (the server refuses them at
  * the save, 400 invalid_config on permissions.act).
