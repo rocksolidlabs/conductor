@@ -1681,12 +1681,12 @@ retried after a backoff (1 s doubling to 1 min).
 - The index's text is bounded by kind and in total; history older than the
   budget is dropped by age and the reply says from when it holds.
 - A Forget removes the record's file and, at the next pass, its entries: a
-  record is indexed only while its file is kept (the pass looks at the file
-  after reading the record), so a pass that runs during a Forget, while the
-  journal still holds the record in memory, removes it, and one that read
-  it just before is followed by the pass the Forget's commit asked; a
-  record whose file went while no server ran is removed by the next
-  start's catch-up (PR-3, review round 1); the
+  record a Forget, ForgetAll or Prune has chosen is hidden from `Get` and
+  `List` before its file is touched (PR-1, review round 2), so a pass that
+  runs during the removal removes it, and one that read it just before is
+  followed by the pass its file's delete event asks; a record whose file
+  went while no server ran is removed by the next start's catch-up (PR-3,
+  review round 1); the
   ledger's, Dispatch's and Brakeman's own records are never deleted through
   history.
 
