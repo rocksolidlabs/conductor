@@ -39,13 +39,12 @@
 #                   with STUB_WORKER=mcp. With STUB_BRAKEMAN_ASK, a wake
 #                   request's turn (the background role's) first asks it as
 #                   its question (notify --state needs_input), before the gate.
-#                   Before the brief, once the gate is
-#                   open, it runs the act STUB_BRAKEMAN_ACT's file names when
-#                   it holds one ("OPERATION KEY", its body the JSON file
-#                   beside it, <file>.body): conductor brakeman act, or the
-#                   act tool; what the server answered, taken or refused, is
-#                   written to <file>.out and the brief is submitted either
-#                   way
+#                   Before the brief, once the gate is open, it runs the act
+#                   STUB_BRAKEMAN_ACT's file names when it holds one
+#                   ("OPERATION KEY", its body the JSON file beside it,
+#                   <file>.body): conductor brakeman act, or the act tool;
+#                   what the server answered, taken or refused, is written to
+#                   <file>.out and the brief is submitted either way
 # $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
 # start as Codex 0.161 draws it when its hooks are new or changed (round 13,
 # G2c): 1. Review hooks highlighted; a digit moves the highlight, Enter

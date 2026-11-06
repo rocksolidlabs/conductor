@@ -3695,13 +3695,6 @@ stopped, as long as the shutdown allows, and Brakeman's owner lock goes
 after it; one that has not begun runs nothing (`503 shutting_down`), and
 a launch still under way once the stops begin starts no run (`409
 launch_failed`, "the server is shutting down: the run was not started").
-A server
-that stops between the operation and the copy, or before the operation,
-leaves the entry `pending`: before Brakeman's routes serve again, the
-desk reads Dispatch's receipt for `(brakeman, op)`, or, the receipt
-pruned, the change its operation recorded, and copies it, or, with
-neither, marks the entry `not_run` ("the server stopped before it ran"),
-never run again; a request with an act `pending` is kept by the prune.
 
 The guide's table lists each operation a grant may name that this build
 serves, under the grant's name with the scope `act` (`launch_approved_plan`
@@ -3729,7 +3722,12 @@ granted operation as its `op`, with `expectedRevision` the ticket's
 revision read, and the `opId` of the act it ran in `args.opId`; the
 request's `acts` say which of them Brakeman ran, and the app shows a
 proposal as "Brakeman did this" with its receipt only when an act of the
-request has the `opId` it names, of its operation on its ticket.
+request has the `opId` it names, of its operation on its ticket. A server that stops between the operation and the copy, or before the operation,
+leaves the entry `pending`: before Brakeman's routes serve again, the
+desk reads Dispatch's receipt for `(brakeman, op)`, or, the receipt
+pruned, the change its operation recorded, and copies it, or, with
+neither, marks the entry `not_run` ("the server stopped before it ran"),
+never run again; a request with an act `pending` is kept by the prune.
 
 Brakeman's own reads, the admin's and the principal's, each at most 256
 KiB (the guide's `observe_<what>` entries carry each read's `reply`
