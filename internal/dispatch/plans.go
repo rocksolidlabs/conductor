@@ -975,9 +975,9 @@ func planBefore(since time.Time, ref string, c PlanCursor) int {
 }
 
 // OpenPlans reads the plan revisions that need the operator, of every
-// ticket not deleted: the proposed ones, and the approved ones whose
-// approval no longer holds (Stale set, judged as the ticket's read judges
-// it), ordered by (since, ref), a revision's since the time it was
+// ticket not deleted: the proposed ones, and the approved ones of a ticket
+// not closed (neither done nor cancelled) whose approval no longer holds
+// (Stale set, judged as the ticket's read judges it), ordered by (since, ref), a revision's since the time it was
 // proposed and its ref PlanRef's. page is at most limit of them after
 // after; next says more follow it; total counts every open revision, not
 // the page's: nothing caps them in all (MaxPlans bounds a ticket's), so
@@ -989,8 +989,12 @@ func (s *Store) OpenPlans(ctx context.Context, after PlanCursor, limit int) (pag
 		if schemaOf(q) < 2 {
 			return nil
 		}
-		rows, err := q.QueryContext(ctx, "SELECT "+planColumns+" FROM plans WHERE state IN (?, ?) AND ticket_id IN (SELECT id FROM tickets WHERE deleted_at = '') ORDER BY created_at, id",
-			PlanProposed, PlanApproved)
+		// The approved revisions of open tickets alone: an approval stays
+		// approved after its launch and its ticket's close, and judging
+		// every one ever made (its body read) would cost each read the
+		// whole history of approvals; on a closed ticket it needs nobody.
+		rows, err := q.QueryContext(ctx, "SELECT "+planColumns+" FROM plans WHERE (state = ? OR (state = ? AND ticket_id IN (SELECT id FROM tickets WHERE status NOT IN (?, ?)))) AND ticket_id IN (SELECT id FROM tickets WHERE deleted_at = '') ORDER BY created_at, id",
+			PlanProposed, PlanApproved, TicketDone, TicketCancelled)
 		if err != nil {
 			return err
 		}

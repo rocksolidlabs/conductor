@@ -319,6 +319,10 @@ var Statuses = []string{TicketBacklog, TicketReady, TicketInProgress, TicketInRe
 // closed reports whether a status closes its ticket.
 func closed(status string) bool { return status == TicketDone || status == TicketCancelled }
 
+// TicketClosed reports whether a ticket in status is closed (done or
+// cancelled): an approval on it no longer needs anyone (OpenPlans).
+func TicketClosed(status string) bool { return closed(status) }
+
 // Priorities names a ticket's priorities by their value, 0 (none) to
 // MaxPriority (urgent).
 var Priorities = []string{"none", "low", "medium", "high", "urgent"}
