@@ -1487,7 +1487,7 @@ each PR adds:
   `TestRefreshMakesApprovalStale`, `TestTakeOverAndGiveBack` (given back
   after GitHub's description changed meanwhile: the fresh body written
   with its snapshot), `TestReadsAreNotLogged` (no `changes` row, no
-  receipt, `OnChange` told), `TestRemovedLinkDropsRead`,
+  receipt, `OnRead` told and `OnChange` not), `TestRemovedLinkDropsRead`,
   `TestCloseRequiresMerged` (met, an old read, a closed-unmerged pull
   request, an external link instead of a delivery, `closed_on` written;
   in PR-1, `merged` refused in `close_requires`), `TestPublicationStates`
