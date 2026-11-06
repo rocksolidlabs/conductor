@@ -77,6 +77,46 @@ func within(d time.Duration, fn func()) bool {
 	}
 }
 
+// overflow writes twice the queue's high-water mark of output, in frames of
+// the most one carries, and tells when the session's pump has read the last
+// of it: an io.Pipe's write returns once the read has taken it, and the pump
+// reads again only after it has broadcast what it read, so by then every
+// frame but the last has been offered to every viewer.
+func overflow(p *fakeProc) <-chan struct{} {
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		chunk := bytes.Repeat([]byte("x"), proto.MaxOutput)
+		for range 2 * HighWaterMark / len(chunk) {
+			if _, err := p.outW.Write(chunk); err != nil {
+				return
+			}
+		}
+	}()
+	return read
+}
+
+// waitDropped waits for overflow's output to have been read and then judges
+// sub, a viewer that took none of it: dropped as a slow consumer, it is off
+// the roster. The drop is made in the broadcast that passes the high-water
+// mark, so it is waited for by the read of the output, never on a clock:
+// 2 MiB through the session under the race detector on a loaded machine
+// took more than a fixed 5 s (#281), and the wait bounds a hang only.
+func waitDropped(t *testing.T, s *Local, sub *Subscription, read <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-read:
+	case <-time.After(time.Minute):
+		t.Fatal("the session never read the output")
+	}
+	if r := sub.Reason(); !errors.Is(r, ErrSlowConsumer) {
+		t.Fatalf("the viewer was not dropped as a slow consumer once the output was read: %v", r)
+	}
+	if n := s.Viewers(); n != 0 {
+		t.Fatalf("the dropped viewer stayed on the roster: %d viewers", n)
+	}
+}
+
 // waitFor polls cond until it holds or d passes.
 func waitFor(d time.Duration, cond func() bool) bool {
 	deadline := time.Now().Add(d)
@@ -258,20 +298,7 @@ func TestARevokeWaitsForALinksViewerDroppedBefore(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			go func() {
-				chunk := bytes.Repeat([]byte("x"), proto.MaxOutput)
-				for range 2 * HighWaterMark / len(chunk) {
-					if _, err := p.outW.Write(chunk); err != nil {
-						return
-					}
-				}
-			}()
-			if !waitFor(5*time.Second, func() bool { return errors.Is(sub.Reason(), ErrSlowConsumer) }) {
-				t.Fatal("the viewer was never dropped")
-			}
-			if !waitFor(time.Second, func() bool { return s.Viewers() == 0 }) {
-				t.Fatal("the dropped viewer stayed on the roster")
-			}
+			waitDropped(t, s, sub, overflow(p))
 			ended := make(chan struct{})
 			go func() {
 				if end == "revoke" {
@@ -315,20 +342,7 @@ func TestAClientStillClosingCountsTowardTheViewerCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() {
-		chunk := bytes.Repeat([]byte("x"), proto.MaxOutput)
-		for range 2 * HighWaterMark / len(chunk) {
-			if _, err := p.outW.Write(chunk); err != nil {
-				return
-			}
-		}
-	}()
-	if !waitFor(5*time.Second, func() bool { return errors.Is(sub.Reason(), ErrSlowConsumer) }) {
-		t.Fatal("the viewer was never dropped")
-	}
-	if !waitFor(time.Second, func() bool { return s.Viewers() == 0 }) {
-		t.Fatal("the dropped viewer stayed on the roster")
-	}
+	waitDropped(t, s, sub, overflow(p))
 	if _, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "second"}, newChanSink(false)); err != nil {
 		t.Fatalf("the second viewer: %v", err)
 	}
@@ -339,7 +353,10 @@ func TestAClientStillClosingCountsTowardTheViewerCap(t *testing.T) {
 	<-held.entered
 	close(held.closes)
 	<-sub.Closed()
-	if !waitFor(time.Second, func() bool {
+	// The slot comes back as AttachWith's watcher, woken by the close, takes
+	// the transport out: nothing of the product's bounds that wake, so the
+	// wait bounds a hang only.
+	if !waitFor(time.Minute, func() bool {
 		_, err := s.AttachWith(AttachOptions{Role: RoleView, Name: "third"}, newChanSink(false))
 		return err == nil
 	}) {
