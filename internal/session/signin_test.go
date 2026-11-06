@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,9 +60,14 @@ func TestASignInScreenTheProgramLeavesByItselfIsWithdrawn(t *testing.T) {
 	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
 		t.Fatalf("a submission at the sign-in screen: %v", err)
 	}
-	// Redrawn as it waits (its spinner, its prompt's cursor): still there.
+	// Redrawn as it waits (its spinner, its prompt's cursor): still there,
+	// once both watchers have looked at the redraw and their callbacks
+	// (fireTrust, missAsked: escGone) have returned.
+	trustFed, askedFed := s.trust.Fed(), s.asked.Fed()
+	trustLooked, askedLooked := lookedPast(t, s.trust, trustFed), lookedPast(t, s.asked, askedFed)
 	p.outW.Write([]byte("\x1b[9;31H "))
-	time.Sleep(3 * patternQuiet)
+	trustLooked()
+	askedLooked()
 	if a := s.Info().Attention; a.ID != signIn.ID || a.State != AttentionNeedsInput {
 		t.Fatalf("the sign-in screen redrawn is not the question still: %+v", a)
 	}
@@ -70,6 +76,100 @@ func TestASignInScreenTheProgramLeavesByItselfIsWithdrawn(t *testing.T) {
 	p.outW.Write([]byte("\x1b[2J\x1b[HLogin successful. Press Enter to continue\x1b[2J\x1b[H\x1b[2;1H> Try \"fix lint errors\""))
 	if a := waitAttention(t, s, func(a Attention) bool { return a.ID != signIn.ID || a.State != AttentionNeedsInput }); a.State == AttentionNeedsInput && a.Source == SourceTrust {
 		t.Fatalf("a startup question after the sign-in: %+v", a)
+	}
+	if info := s.Info(); info.LastAnswer != nil {
+		t.Fatalf("withdrawn, yet answered: %+v", info.LastAnswer)
+	}
+	noWrite(t, p, 50*time.Millisecond)
+	res, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater})
+	if err != nil || !res.Entered {
+		t.Fatalf("a submission once the screen moved on: %+v %v", res, err)
+	}
+	if got := nextWrite(t, p); got != "fix the bug" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// lookedPast arms w to note its first quiet look that takes a text fed
+// past fed Feeds, and returns the wait for it: the wait returns once that
+// look's callback (fire or miss) has returned, the look and its callback
+// being made under w's fireMu. Armed before the output is written, so the
+// look cannot come first; the wait is bounded only against a hang.
+func lookedPast(t *testing.T, w *PatternWatcher, fed uint64) func() {
+	t.Helper()
+	looked := make(chan struct{})
+	var once sync.Once
+	w.mu.Lock()
+	w.afterLook = func() {
+		if w.LookedAt() > fed {
+			once.Do(func() { close(looked) })
+		}
+	}
+	w.mu.Unlock()
+	return func() {
+		t.Helper()
+		select {
+		case <-looked:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the watcher never looked at the output")
+		}
+		// The look's callback runs under fireMu: once it is taken, it
+		// has returned.
+		w.fireMu.Lock()
+		w.mu.Lock()
+		w.afterLook = nil
+		w.mu.Unlock()
+		w.fireMu.Unlock()
+	}
+}
+
+// Claude Code's sign-in screen cleared while its question is being asked,
+// between the question shown and its hold (the session's afterAsked): the
+// screen it holds the question against is the one before the question was
+// asked, so the clearing output is output after it, and the question is
+// withdrawn as the fire ends, with no further output and no key written;
+// a submission is taken then. Held against the screen as it was once the
+// question showed, the clearing was taken for part of what it was asked
+// on, and with nothing drawn after it the question stayed under Needs you
+// and every submission was refused. (#691's review, round 2, finding 3.)
+func TestASignInScreenClearedAsItIsAskedIsWithdrawn(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: claudeStartupQuestions(t)}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	asked := make(chan struct{})
+	var once sync.Once
+	hook := func() {
+		once.Do(func() {
+			defer close(asked)
+			// Signed in through the browser as the question is asked.
+			p.outW.Write([]byte("\x1b[2J\x1b[H\x1b[2;1H> Try \"fix lint errors\""))
+			deadline := time.Now().Add(30 * time.Second)
+			for {
+				text := s.asked.Text()
+				if strings.Contains(text, "fix lint errors") && !strings.Contains(text, "Browser didn't open") {
+					return
+				}
+				if time.Now().After(deadline) {
+					t.Errorf("the clearing output was never fed: %q", text)
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		})
+	}
+	s.afterAsked.Store(&hook)
+	p.outW.Write([]byte(claudeSignInScreen))
+	select {
+	case <-asked:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the sign-in screen was never asked")
+	}
+	// Read once the fire that asked it has returned (it runs under the
+	// watcher's fireMu).
+	s.trust.fireMu.Lock()
+	a := s.Info().Attention
+	s.trust.fireMu.Unlock()
+	if a.State == AttentionNeedsInput && a.Source == SourceTrust {
+		t.Fatalf("the sign-in question outlived its screen: %+v", a)
 	}
 	if info := s.Info(); info.LastAnswer != nil {
 		t.Fatalf("withdrawn, yet answered: %+v", info.LastAnswer)

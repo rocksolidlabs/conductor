@@ -420,8 +420,15 @@ type Local struct {
 	beforeShot      atomic.Pointer[func()]
 	beforeHold      atomic.Pointer[func()]
 	beforeHoldShown atomic.Pointer[func()]
-	agentTokenHash  [32]byte
-	hasAgentToken   bool
+	// afterAsked, a test's hook, runs as fireTrust has asked a startup
+	// question with no answers, before it holds it (holdAnswerless).
+	afterAsked     atomic.Pointer[func()]
+	agentTokenHash [32]byte
+	hasAgentToken  bool
+	// agentCalled says the session's agent token has been presented and
+	// taken (AgentTokenOK) at least once: its agent, or a tool it runs
+	// (its MCP server, its hooks), has called the server as itself.
+	agentCalled atomic.Bool
 
 	ended chan struct{}
 
@@ -1097,9 +1104,19 @@ func (s *Local) fireTrust(text string) {
 			// An Escape typed at it before it was asked took it away.
 			return
 		}
+		// The screen as it is before the question is asked, for one with
+		// no answers (holdAnswerless): output fed while it is asked is
+		// output after it, which may be the screen moving on.
+		var seen heldStartup
+		if len(q.Answers) == 0 && s.asked != nil {
+			seen = s.askedSeen()
+		}
 		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, s.trust.LookedAt(), "")
 		if len(q.Answers) == 0 {
-			s.holdAnswerless(words)
+			if hook := s.afterAsked.Load(); hook != nil {
+				(*hook)()
+			}
+			s.holdAnswerless(words, seen)
 		}
 		// One held answered that the screen no longer shows (the program
 		// took the Escape) is cleared.
@@ -2291,7 +2308,9 @@ func (s *Local) SetAgentToken(tok string) {
 	s.hasAgentToken = tok != ""
 }
 
-// AgentTokenOK compares a presented agent token in constant time.
+// AgentTokenOK compares a presented agent token in constant time. It is
+// the one check every route makes of the token, so a token taken here is
+// noted (AgentCalled): whichever route the agent called first.
 func (s *Local) AgentTokenOK(tok string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2299,7 +2318,18 @@ func (s *Local) AgentTokenOK(tok string) bool {
 		return false
 	}
 	h := sha256.Sum256([]byte(tok))
-	return subtle.ConstantTimeCompare(h[:], s.agentTokenHash[:]) == 1
+	if subtle.ConstantTimeCompare(h[:], s.agentTokenHash[:]) != 1 {
+		return false
+	}
+	s.agentCalled.Store(true)
+	return true
+}
+
+// AgentCalled reports whether the session's agent token has been taken
+// by AgentTokenOK: the agent has called the server as itself (a guide,
+// a report, a read), so it started.
+func (s *Local) AgentCalled() bool {
+	return s.agentCalled.Load()
 }
 
 // SetID assigns the session ID once it is known (hosts learn it from the
@@ -4436,6 +4466,19 @@ func (s *Local) holdStartupAnswered(words, by, name string) {
 	}
 }
 
+// askedSeen is the screen the questions asked during the work are read
+// from as it is now, as a held startup question marks it: how many Feeds
+// it has seen, its size and the size it was laid out for. Taken with no
+// output fed meanwhile (feedMu).
+func (s *Local) askedSeen() heldStartup {
+	s.feedMu.Lock()
+	defer s.feedMu.Unlock()
+	seen := heldStartup{fed: s.asked.Fed()}
+	seen.cols, seen.rows = s.asked.Size()
+	_, seen.drawnCols, seen.drawnRows = s.asked.DrawnAt()
+	return seen
+}
+
 // holdAnswerless holds the startup question with words, asked with no
 // answers, as one keys reached is held (heldAnswer, by no one): a screen no
 // key of Conductor's passes (Claude Code's sign-in, waiting for a browser's
@@ -4443,9 +4486,12 @@ func (s *Local) holdStartupAnswered(words, by, name string) {
 // signing in through the browser, with no key typed in the terminal. Held
 // so, it goes as every startup question goes once its screen is behind:
 // withdrawn when the screen, after output fed since it was asked, shows no
-// startup question (escGone). Nothing is consumed: the question reads as
-// waiting, not as answered in the terminal.
-func (s *Local) holdAnswerless(words string) {
+// startup question (escGone). seen is the screen as it was before the
+// question was asked (askedSeen): output fed since, the screen cleared
+// while the question was being asked, counts as after it. Nothing is
+// consumed: the question reads as waiting, not as answered in the
+// terminal.
+func (s *Local) holdAnswerless(words string, seen heldStartup) {
 	if s.asked == nil {
 		return
 	}
@@ -4455,10 +4501,8 @@ func (s *Local) holdAnswerless(words string) {
 	if att.State != AttentionNeedsInput || att.Source != SourceTrust || att.ID == "" || len(att.Options) != 0 || !sameWords(att.words(), words) || s.heldAnswer.id == att.ID {
 		return
 	}
-	held := heldStartup{id: att.ID, fed: s.asked.Fed()}
-	held.cols, held.rows = s.asked.Size()
-	_, held.drawnCols, held.drawnRows = s.asked.DrawnAt()
-	s.heldAnswer = held
+	seen.id = att.ID
+	s.heldAnswer = seen
 }
 
 // escGone withdraws the startup question keys reached (heldAnswer) once the
