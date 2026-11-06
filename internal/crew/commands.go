@@ -439,18 +439,9 @@ func (e *Engine) retryTask(r *run, t *task) []event {
 // A result a withdrawal took back rested on an input since changed: never
 // accepted. The caller holds e.mu, in a transaction.
 func (e *Engine) acceptTask(r *run, t *task, actor string) ([]event, error) {
-	var last *attempt
-	for i := len(t.attempts) - 1; i >= 0 && t.kept(t.attempts[i].n); i-- {
-		if a := t.attempts[i]; a.submitted != nil && a.result != "" {
-			last = a
-			break
-		}
-	}
-	if last == nil {
-		if t.withdrawn > 0 {
-			return nil, fmt.Errorf("%w: no attempt since the withdrawal submitted a commit to accept", ErrTaskState)
-		}
-		return nil, fmt.Errorf("%w: no attempt submitted a commit to accept", ErrTaskState)
+	last, err := acceptFrom(t)
+	if err != nil {
+		return nil, err
 	}
 	res := last.submitted
 	t.result = &taskResult{attempt: last.n, commit: last.result, summary: res.Summary, issues: slices.Clone(res.Issues), verdict: res.Verdict, findings: slices.Clone(res.Findings), at: time.Now().UTC()}
@@ -472,6 +463,96 @@ func (e *Engine) acceptTask(r *run, t *task, actor string) ([]event, error) {
 		events = append(events, event{"run.finished", map[string]any{"outcome": r.outcome}})
 	}
 	return events, nil
+}
+
+// acceptFrom is the attempt whose result an Accept anyway takes for t:
+// the latest kept one (none a withdrawal took back) that submitted a
+// commit; ErrTaskState when there is none. Accept and TaskCommands both
+// ask it. The caller holds e.mu.
+func acceptFrom(t *task) (*attempt, error) {
+	for i := len(t.attempts) - 1; i >= 0 && t.kept(t.attempts[i].n); i-- {
+		if a := t.attempts[i]; a.submitted != nil && a.result != "" {
+			return a, nil
+		}
+	}
+	if t.withdrawn > 0 {
+		return nil, fmt.Errorf("%w: no attempt since the withdrawal submitted a commit to accept", ErrTaskState)
+	}
+	return nil, fmt.Errorf("%w: no attempt submitted a commit to accept", ErrTaskState)
+}
+
+// The task commands, as TaskCommands names them.
+const (
+	TaskRetry  = "retry"
+	TaskAccept = "accept"
+	TaskCancel = "cancel"
+)
+
+// TaskCommandSet is what a task's state allows of the three task
+// commands, as the engine would judge them now: their names in the order
+// retry, accept, cancel, the run's revision they were judged at (the
+// expected revision a command sent for them carries), and for an Accept
+// anyway the attempt and commit it would take.
+type TaskCommandSet struct {
+	Commands      []string `json:"commands"`
+	Revision      int64    `json:"revision"`
+	AcceptAttempt int      `json:"acceptAttempt,omitempty"`
+	AcceptCommit  string   `json:"acceptCommit,omitempty"`
+}
+
+// TaskCommands is what the run's task allows of Retry, Accept and Cancel,
+// judged by the preconditions the commands themselves apply (the run held
+// and managed, its launch recorded, not continued: continued; then
+// retryable, acceptable with acceptFrom, cancellable), so that a page
+// offering them and the engine taking them never disagree. A command it
+// leaves out is one the engine would refuse now; one it names may still
+// be refused when the run moves first (the revision). ErrRunNotFound and
+// ErrTaskNotFound for what the engine does not hold.
+func (e *Engine) TaskCommands(runID, taskID string) (TaskCommandSet, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, ok := e.runs[runID]
+	if !ok {
+		return TaskCommandSet{}, ErrRunNotFound
+	}
+	t := r.task(taskID)
+	if t == nil {
+		return TaskCommandSet{}, ErrTaskNotFound
+	}
+	out := TaskCommandSet{Commands: []string{}, Revision: r.revision}
+	if e.ledger == nil || !r.managed || r.unrecorded() || r.foreign || e.continued(r) != nil {
+		return out, nil
+	}
+	for _, name := range []string{TaskRetry, TaskAccept, TaskCancel} {
+		a, err := taskCommandCheck(name, t)
+		if err != nil {
+			continue
+		}
+		out.Commands = append(out.Commands, name)
+		if a != nil {
+			out.AcceptAttempt, out.AcceptCommit = a.n, a.result
+		}
+	}
+	return out, nil
+}
+
+// taskCommandCheck is the task command name's precondition on t, the one
+// the command applies (Retry, Accept, Cancel) and TaskCommands asks: nil
+// when t's state takes it, with, for an Accept anyway, the attempt whose
+// result it takes. The caller holds e.mu.
+func taskCommandCheck(name string, t *task) (*attempt, error) {
+	switch name {
+	case TaskRetry:
+		return nil, retryable(t)
+	case TaskAccept:
+		if err := acceptable(t); err != nil {
+			return nil, err
+		}
+		return acceptFrom(t)
+	case TaskCancel:
+		return nil, cancellable(t)
+	}
+	return nil, fmt.Errorf("%w: no task command %q", ErrTaskState, name)
 }
 
 // Pause is PauseRun as a command with a receipt (paused false: unpause).
@@ -510,7 +591,7 @@ func (e *Engine) Cancel(ctx context.Context, runID, actor string, cmd Command, t
 		if t == nil {
 			return nil, nil, ErrTaskNotFound
 		}
-		if err := cancellable(t); err != nil {
+		if _, err := taskCommandCheck(TaskCancel, t); err != nil {
 			return t, nil, err
 		}
 		return t, e.cancelTask(r, t), nil
@@ -524,7 +605,7 @@ func (e *Engine) Retry(ctx context.Context, runID, actor string, cmd Command, ta
 		if t == nil {
 			return nil, nil, ErrTaskNotFound
 		}
-		if err := retryable(t); err != nil {
+		if _, err := taskCommandCheck(TaskRetry, t); err != nil {
 			return t, nil, err
 		}
 		return t, e.retryTask(r, t), nil
@@ -539,7 +620,7 @@ func (e *Engine) Accept(ctx context.Context, runID, actor string, cmd Command, t
 		if t == nil {
 			return nil, nil, ErrTaskNotFound
 		}
-		if err := acceptable(t); err != nil {
+		if _, err := taskCommandCheck(TaskAccept, t); err != nil {
 			return t, nil, err
 		}
 		events, err := e.acceptTask(r, t, actor)
