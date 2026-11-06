@@ -2,6 +2,7 @@ package gitcli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -505,5 +506,70 @@ func TestChangedSince(t *testing.T) {
 	}
 	if _, _, err := ChangedSince(ctx, t.TempDir(), base); err == nil {
 		t.Fatal("outside a repository")
+	}
+}
+
+// RevisionOf reads a folder's top, its repository's common directory (the
+// main checkout's .git for a linked worktree, absolute), HEAD's full id
+// and its branch in one rev-parse; a detached HEAD has no branch, a
+// repository with no commit its top and common directory alone, a folder
+// outside any repository ErrNotRepo. RepoOf answers the first two.
+func TestRevisionOfAndRepoOf(t *testing.T) {
+	dir := repo(t)
+	ctx := context.Background()
+	real, _ := filepath.EvalSymlinks(dir)
+	head, err := Run(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head = strings.TrimSpace(head)
+	// Through a link to the repository, as macOS's /var is to
+	// /private/var: the common directory is the real path, as the top is.
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	rev, err := RevisionOf(ctx, filepath.Join(link, "internal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.Top != real || rev.Common != filepath.Join(real, ".git") || rev.Commit != head || rev.Branch == "" {
+		t.Fatalf("the main checkout's revision %+v", rev)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	if _, err := Run(ctx, dir, "worktree", "add", "--no-checkout", "-b", "side", wt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, wt, "checkout", "-q", "side"); err != nil {
+		t.Fatal(err)
+	}
+	realWt, _ := filepath.EvalSymlinks(wt)
+	rev, err = RevisionOf(ctx, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.Top != realWt || rev.Common != filepath.Join(real, ".git") || rev.Branch != "side" || rev.Commit != head {
+		t.Fatalf("the linked worktree's revision %+v", rev)
+	}
+	top, common, err := RepoOf(ctx, wt)
+	if err != nil || top != realWt || common != filepath.Join(real, ".git") {
+		t.Fatalf("RepoOf %q %q %v", top, common, err)
+	}
+	if _, err := Run(ctx, wt, "checkout", "-q", "--detach"); err != nil {
+		t.Fatal(err)
+	}
+	if rev, err = RevisionOf(ctx, wt); err != nil || rev.Branch != "" || rev.Commit != head {
+		t.Fatalf("detached %+v %v", rev, err)
+	}
+	empty := t.TempDir()
+	if _, err := Run(ctx, empty, "init", "-q"); err != nil {
+		t.Fatal(err)
+	}
+	realEmpty, _ := filepath.EvalSymlinks(empty)
+	if rev, err = RevisionOf(ctx, empty); err != nil || rev.Top != realEmpty || rev.Commit != "" || rev.Common != filepath.Join(realEmpty, ".git") {
+		t.Fatalf("no commit yet %+v %v", rev, err)
+	}
+	if _, err := RevisionOf(ctx, t.TempDir()); !errors.Is(err, ErrNotRepo) {
+		t.Fatalf("outside a repository: %v", err)
 	}
 }

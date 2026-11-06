@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -960,5 +961,87 @@ func TestAHostedQuestionKeepsItsHostsAnsweredMark(t *testing.T) {
 	b.Answered = session.AnsweredTerminal
 	if !sameAttention(a, a) || sameAttention(a, b) {
 		t.Fatal("the mark tells two attentions apart")
+	}
+}
+
+// The host's question reaches OnChat from the agent's role alone, its
+// choices cleaned and bounded (six, each label at most 60 runes); the
+// agent's role on any other kind is refused; an answered and a withdrawn
+// line keep their event and the question they name, a withdrawn line's
+// text only when it is one of the chat's reasons.
+func TestHostChatTakesTheAgentsQuestionAndItsEnds(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	var mu sync.Mutex
+	var got []session.ChatMessage
+	hub.OnChat = func(_ string, m session.ChatMessage) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, m)
+	}
+	hs, _ := register(t, hub)
+	agent := proto.ChatBy{ID: "agent", Name: "claude", Role: "agent"}
+	var opts []proto.AttentionOption
+	for i := range 7 {
+		opts = append(opts, proto.AttentionOption{Label: fmt.Sprintf("%d %s", i, strings.Repeat("word ", 20)), Input: fmt.Sprint(i + 1)})
+	}
+	hs.HostChat(proto.ChatMessage{ID: "q1", Kind: "question", By: agent, Text: "Allow?", Options: opts})
+	hs.HostChat(proto.ChatMessage{ID: "q2", Kind: "question", By: proto.ChatBy{Role: "control"}, Text: "a person's question"})
+	hs.HostChat(proto.ChatMessage{ID: "m1", Kind: "message", By: agent, Text: "the agent posting"})
+	hs.HostChat(proto.ChatMessage{ID: "a1", Kind: "system", Event: "answered", Ref: "q1", Text: "Yes", By: proto.ChatBy{ID: "v", Name: "Ada", Role: "control"}})
+	hs.HostChat(proto.ChatMessage{ID: "w1", Kind: "system", Event: "withdrawn", Ref: "q1", Text: "terminal", By: proto.ChatBy{Name: "Conductor", Role: "control"}})
+	hs.HostChat(proto.ChatMessage{ID: "w2", Kind: "system", Event: "withdrawn", Ref: "q1", Text: "the host's own words", By: proto.ChatBy{Name: "Conductor", Role: "control"}})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 4 {
+		t.Fatalf("hook saw %+v", got)
+	}
+	q := got[0]
+	if q.Kind != "question" || q.By.Role != session.RoleAgent || len(q.Options) != session.MaxAttentionOptions {
+		t.Fatalf("the question %+v", q)
+	}
+	for _, o := range q.Options {
+		if n := utf8.RuneCountInString(o.Label); n > session.MaxOptionLabel {
+			t.Fatalf("a label of %d runes", n)
+		}
+	}
+	if a := got[1]; a.Event != "answered" || a.Ref != "q1" || a.Text != "Yes" {
+		t.Fatalf("the answer %+v", a)
+	}
+	if w := got[2]; w.Event != "withdrawn" || w.Ref != "q1" || w.Text != session.ChatLeftTerminal {
+		t.Fatalf("the terminal's withdrawal %+v", w)
+	}
+	if w := got[3]; w.Event != "withdrawn" || w.Text != "" {
+		t.Fatalf("a withdrawal with the host's own words %+v", w)
+	}
+}
+
+// OnAdded hears a new hosted session once it is registered, with its
+// host's owner, before its first change; a host taking its session back
+// adds nothing.
+func TestOnAddedHearsANewHostedSession(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	var order []string
+	hub.OnAdded = func(info session.Info, owner string) {
+		if _, ok := hub.registry.Get(info.ID); !ok {
+			t.Error("added before the registry holds it")
+		}
+		order = append(order, "added "+info.ID+" "+owner)
+	}
+	hub.OnChange = func(info session.Info) { order = append(order, "changed "+info.ID) }
+	conn := NewHostConn()
+	hs, _, err := registerAs(hub, "instance-a", "1", conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := hs.Info().ID
+	if len(order) < 2 || order[0] != "added "+id+" "+hs.Owner() || order[1] != "changed "+id {
+		t.Fatalf("order %q", order)
+	}
+	hs.HostDisconnected(conn)
+	if _, resumed, err := registerAs(hub, "instance-a", "1", NewHostConn()); err != nil || !resumed {
+		t.Fatalf("taken back: %v %v", resumed, err)
+	}
+	if n := strings.Count(strings.Join(order, "\n"), "added "); n != 1 {
+		t.Fatalf("added %d times: %q", n, order)
 	}
 }

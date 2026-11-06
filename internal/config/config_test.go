@@ -1516,6 +1516,27 @@ func TestAgentSwitchesAndEnv(t *testing.T) {
 	}
 }
 
+// history.sessions is on by default and off by the config or by
+// CONDUCTOR_HISTORY_SESSIONS; a word the variable does not know leaves it.
+func TestHistorySessionsSwitch(t *testing.T) {
+	if !Defaults().HistorySessions() {
+		t.Fatal("off by default")
+	}
+	for env, want := range map[string]bool{"0": false, "false": false, "1": true, "true": true, "maybe": true} {
+		cfg := Defaults()
+		if err := applyEnv(cfg, func(k string) string { return map[string]string{"CONDUCTOR_HISTORY_SESSIONS": env}[k] }); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.HistorySessions() != want {
+			t.Errorf("CONDUCTOR_HISTORY_SESSIONS=%s: %v", env, cfg.HistorySessions())
+		}
+	}
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"history": {"sessions": false}}`), &cfg); err != nil || cfg.HistorySessions() {
+		t.Fatalf("the config file's false: %v %v", err, cfg.HistorySessions())
+	}
+}
+
 // The switchyard mode and its relay and origins come from the config or
 // the environment; origins are host patterns, never URLs.
 func TestSwitchyardConfig(t *testing.T) {

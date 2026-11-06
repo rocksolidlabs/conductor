@@ -244,6 +244,17 @@ func (c *Config) InstallSkill() bool { return c.Agents.InstallSkill == nil || *c
 // SelfService reports whether agents may serve themselves (Agents.SelfService, on by default).
 func (c *Config) SelfService() bool { return c.Agents.SelfService == nil || *c.Agents.SelfService }
 
+// History is the history section of the config (docs/plans/history.md).
+type History struct {
+	// Sessions keeps a record of every session the server runs or hosts
+	// (internal/journal): on by default. Off, no record is begun and the
+	// records kept stay until forgotten.
+	Sessions *bool `json:"sessions,omitempty"`
+}
+
+// HistorySessions reports whether sessions are recorded (History.Sessions, on by default).
+func (c *Config) HistorySessions() bool { return c.History.Sessions == nil || *c.History.Sessions }
+
 // ManagedCrews reports whether a crew with tasks may run (Crews.Managed, on by default).
 func (c *Config) ManagedCrews() bool { return c.Crews.Managed == nil || *c.Crews.Managed }
 
@@ -636,6 +647,8 @@ type Config struct {
 	Crews Crews `json:"crews"`
 	// Checks is the checks section (Checks).
 	Checks Checks `json:"checks"`
+	// History is the history section: whether sessions are recorded.
+	History History `json:"history"`
 	// Switchyard, when enabled, makes this server a coordinator of hosted
 	// sessions that launches nothing (conductor switchyard).
 	Switchyard Switchyard `json:"switchyard"`
@@ -890,6 +903,14 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 64 {
 			cfg.Checks.MaxConcurrent = n
 		}
+	}
+	switch getenv("CONDUCTOR_HISTORY_SESSIONS") {
+	case "1", "true":
+		on := true
+		cfg.History.Sessions = &on
+	case "0", "false":
+		off := false
+		cfg.History.Sessions = &off
 	}
 	switch getenv("CONDUCTOR_AGENT_SELF_SERVICE") {
 	case "1", "true":

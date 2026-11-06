@@ -341,6 +341,13 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if startCtx == nil {
 		startCtx = context.Background()
 	}
+	// Where the session runs, and, for a native one, what its folder is at
+	// before its process starts (its record's launch revision).
+	where := req.where
+	if where == "" {
+		where = ext.WhereNative
+	}
+	rev := s.launchRevision(where, cwd)
 	term, err := rt.StartTerminal(startCtx, ext.TerminalSpec{
 		Argv:    argv,
 		Dir:     cwd,
@@ -375,6 +382,15 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		ref := *crewRef
 		info.Crew = &ref
 	}
+	launched := session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed}
+	// Its record exists before the session can keep an entry.
+	if s.recording() {
+		version := ""
+		if id, ok := s.cachedIdentity(agent); ok && id.Identified {
+			version = id.Version
+		}
+		s.beginServerRecord(info, launched, agent.Adapter, agent.Name, version, where, rev)
+	}
 	local := session.NewLocal(info, session.RuntimeProcess(term), session.Options{
 		ScrollbackBytes: s.cfg.ScrollbackBytes,
 		MaxViewers:      s.cfg.MaxViewersPerSession,
@@ -394,7 +410,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		WorkingTitle:    watch.WorkingTitle,
 		ConfirmSubmit:   watch.ConfirmSubmit,
 		WatchGit:        true,
-		Launched:        session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed},
+		Launched:        launched,
 		Folder:          folder,
 		// Where the agent keeps its plans outside the folder (#289), from
 		// its adapter and the environment the process was given: the
@@ -406,6 +422,9 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		req.spawned(local)
 	}
 	if err := s.registry.AddReserved(local, req.reservation); err != nil {
+		if s.sessionRecords != nil {
+			s.sessionRecords.Abandon(id)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = local.Stop(ctx)
@@ -470,6 +489,7 @@ func (s *Server) localChange(info session.Info) {
 	// The browsers get the session as it is when the hub sends it, not the
 	// snapshot handed here, which a later change may already have overtaken.
 	s.events.publishLatest(info.ID, s.listedInfo)
+	s.recordChanged(info.ID)
 	s.runs.OnChange(info)
 	if s.brakeman != nil {
 		s.brakeman.sessionChanged(info)

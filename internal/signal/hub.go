@@ -40,6 +40,13 @@ type Hub struct {
 	// contract as OnActivity: it must not block, and it must be safe for
 	// concurrent use. Set it before the first host registers.
 	OnChat func(sessionID string, m session.ChatMessage)
+	// OnAdded is called once a new hosted session is in the registry, with
+	// its Info and the hash its hub keeps of its host's instance ("" for a
+	// host that registered none), before its first change, entry or chat
+	// message reaches a hook: the server begins its record there. It runs
+	// on the goroutine that reads the host's connection and must not
+	// block. Set it before the first host registers.
+	OnAdded func(info session.Info, owner string)
 }
 
 // NewHub creates a hub that registers hosted sessions in registry.
@@ -141,6 +148,9 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	hub.mu.Lock()
 	hub.sessions[hs.info.ID] = hs
 	hub.mu.Unlock()
+	if hub.OnAdded != nil {
+		hub.OnAdded(hs.Info(), owner)
+	}
 	hs.notifyChange()
 	return hs, false, nil
 }

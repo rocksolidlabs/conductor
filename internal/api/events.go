@@ -36,6 +36,12 @@ type eventHub struct {
 	// (the webhooks, then the providers' sinks; notify.go), the crew runs,
 	// then the context providers' touch sink (extcontext.go).
 	sinks []activitySink
+	// onActivity and onChat, when set before the first session starts, are
+	// told every activity entry after the sinks and every chat line of a
+	// session (never a run's): the session records' (history_journal.go),
+	// beside the sinks so that theirs stays main's order. They never wait.
+	onActivity activitySink
+	onChat     func(sessionID string, m session.ChatMessage)
 }
 
 // activitySink receives an activity entry of a session and, for an attention
@@ -177,6 +183,9 @@ func (h *eventHub) activity(sessionID string, e session.ActivityEntry, state ses
 	for _, f := range sinks {
 		f(sessionID, e, state)
 	}
+	if h.onActivity != nil {
+		h.onActivity(sessionID, e, state)
+	}
 }
 
 // removed announces that a session left the registry.
@@ -192,8 +201,12 @@ type chatEvent struct {
 // every client, as droppable as activity: a client past activityQueueLimit
 // misses it and keeps its stream. It is the OnChat hook of every server
 // session and the OnRunChat hook of the run engine, so it runs on the posting
-// goroutines and never waits. Chat reaches no sink: no webhook or feed.
+// goroutines and never waits. Chat reaches no sink, no webhook or feed,
+// but a session's line reaches onChat.
 func (h *eventHub) chat(sessionID, runID string, m session.ChatMessage) {
+	if h.onChat != nil && sessionID != "" {
+		h.onChat(sessionID, m)
+	}
 	b, err := json.Marshal(chatEvent{SessionID: sessionID, RunID: runID, ChatMessage: session.ChatToProto(m)})
 	if err != nil {
 		return
