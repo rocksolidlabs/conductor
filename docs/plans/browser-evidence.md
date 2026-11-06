@@ -135,15 +135,19 @@ and PR-11 for DR1's PR-4 and PR-7.
    Dispatch's new entities reach a registered sync store through the
    existing adapter (`internal/api/sync.go`).
 8. Not touched: no hosted dependency exists in this item.
-9. `CGO_ENABLED=0` stays: both stores stay `modernc.org/sqlite`; PNG
-   headers are read with the standard library's `image/png`.
+9. `CGO_ENABLED=0` stays: both stores stay `modernc.org/sqlite`; PNGs
+   are checked with the standard library's `image/png`.
 10. The repository contract holds: this plan before the code; race
     tests per package, vitest, Playwright and the desktop shell's tests
     for their surfaces; no new dependency, so `make notices` has nothing
-    to regenerate; no frame or control message, so `internal/proto` and
-    `web/app/utils/protocol.ts` are untouched, and `docs/protocol.md`
-    gains the HTTP rows, the capture document, the bridge's messages and
-    the `dispatch` event's two entities, each with its bound.
+    to regenerate. The bridge's messages are a protocol, so they touch
+    the three places together (PR-2): `internal/proto/preview.go` (the
+    version, every message type with its fields, the two size bounds),
+    `web/app/utils/protocol.ts` (the same, which the bridge's gate and
+    the workbench both parse by) and `docs/protocol.md`, with one
+    fixture both languages must judge alike (below). `docs/protocol.md`
+    gains too the HTTP rows, the capture document and the `dispatch`
+    event's two entities, each with its bound.
 11. The railroad names keep their meaning: captures and their sends are
     Dispatch's records; runs, attempts, candidates, trees and receipts
     Yardmaster's; Brakeman is asked, never scheduled.
@@ -260,9 +264,23 @@ screenshots).
   in the worktree"), and, folded, its HTML, its neighbourhood and its
   computed styles as text. Select another element adds an annotation,
   up to 20; Draw a region marks a part of the screenshot with no
-  element. Each element annotation keeps the page's URL, title and
-  viewport as the bridge read them at its selection. Before Save, every
-  part of the draft is the person's to change. After Save, the notes are
+  element. **One capture is one moment.** The screenshot is taken at
+  the first selection, and the draft keeps the moment it shows: the
+  page's URL, the viewport and device mode with the frame's scroll
+  offsets, the bridge's page epoch (below), and the label the pane read
+  then (commit and content). Every later selection is checked against
+  that moment before it joins the draft: the pane reads the label again
+  and the bridge reports its URL, viewport, scroll and epoch with the
+  element. When any of them differs (a client-side navigation, another
+  device mode, a scroll, a redraw of the page, a worktree that moved),
+  the element does not join: it starts a new draft with its own
+  screenshot and moment ("the page changed since this screenshot: this
+  element starts a new capture"), the first kept beside it to save. So
+  no annotation's box is drawn over a screenshot of another moment, and
+  no annotation names a revision its screenshot was not taken at; each
+  element annotation keeps that moment, with the title, as its
+  `observed`. Before Save, every part of the draft is the person's to
+  change. After Save, the notes are
   edited, the annotations reordered or removed and regions drawn on the
   screenshot, until the capture is sent and after; an element observed
   later (a re-selection, another element of a page that moved on) is a
@@ -310,7 +328,8 @@ screenshots).
   verification screenshot. **Capture again** on a capture opens the same
   URL and device mode on a later candidate's preview, describes each
   element again by its selector, and saves a new capture linked to the
-  first (`retakeOf`, sent by the client and checked by the server), so
+  first (`retakeOf`, sent by the client and checked by the server: the
+  first may be of another run, as a ticket's repair is, below), so
   the person compares before and after side by side. The checkout ends on Close, after 30 minutes with no label read,
   at the run's stop, and at the server's shutdown, its services stopped
   and its cleanup run as EN1's trees end.
@@ -338,29 +357,32 @@ which):
 
 | Table | Columns |
 |---|---|
-| `captures` | `id` (16 hex, `newID`), `rev` (from 1), `created_at`, `created_by` (the display name, else the actor), `actor`, `via` (`web`, `desktop`), `fingerprint`; the page: `url`, `title`, `viewport` (JSON, below), `selected_at`, `saved_at`; the origin, filled by the API: `origin` (`attempt`, `candidate`, `url`), `run_id`, `task_id`, `attempt_n`, `tree` (`worktree`, `preview`, empty for `url`), `commit_id`, `changed` (the tree's changed paths counted), `changed_paths` (JSON: the first 200 of them), `content` (the tree id of what the tree held at the save, uncommitted changes and untracked files that are not ignored included, below), `mutable` (0 or 1), `candidate` (DS2's form `<run>/<task>/<n>@<commit>`, set when the tree is the candidate's checkout), `where_ran`, `scope` (JSON: `{crew, repo, project}` of the run at the save, the project of the ticket the run was launched from, kept so Brakeman's admission holds after the run has gone), `drift` (JSON: what the pane read at the selection, `{commit, content, changed, readAt}`, kept when the save's `content` or commit differs); the image: `image_sha256`, `image_width`, `image_height`, `image_bytes`, `image_how` (`desktop`, `tab`, `none`), `image_why` (why there is none), `image_scale`; `retake_of` (a capture id or empty), `deleted_at`, `annotations_rev` |
-| `capture_annotations` | `capture_id`, `k` (1 to 20, its place), `kind` (`element`, `region`), `note`, `rect` (JSON: `{x, y, width, height}` in the screenshot's pixels), `element` (JSON: the bridge's report, below, empty for a region), `observed` (JSON: `{at, url, title, viewport}` as the bridge read them at the element's selection, empty for a region), `sources` (JSON: the checked sources, below); PK `(capture_id, k)` |
-| `capture_sends` | `id` (16 hex), `capture_id`, `rev` (the capture's revision sent), `kind` (`ticket`, `brakeman`; `review` and `decision` reserved and refused until PR-10 and PR-11), `target` (a ticket key, `br-<n>`, a review or decision id), `digest` (the SHA-256 of the capture's document as sent, frozen: the document itself is the content file of that hash, never a second copy in the row), `request` (JSON, at most 8 KiB: the destination's input exactly as the target is asked, the Brakeman question and subjects or a decision's comment text, written before the target is asked and replayed whole by a recovery), `state` (`pending`, `sent`, `refused`), `why`, `files` (JSON: the attachment ids it added), `created_at`, `created_by`, `actor`, `op_id`, `fingerprint` |
-| `capture_files` | `capture_id`, `sha256`; PK of the two: every content file a capture or one of its sends names (the screenshot, each sent document), which the sweep keeps, as DS2's `launch_files` keeps a package's |
+| `captures` | `id` (16 hex, `newID`), `rev` (from 1), `created_at`, `created_by` (the display name, else the actor), `actor`, `via` (`web`, `desktop`), `fingerprint`; the page: `url`, `title`, `viewport` (JSON, below), `selected_at`, `saved_at`; the origin, filled by the API: `origin` (`attempt`, `candidate`, `url`), `run_id`, `task_id`, `attempt_n`, `tree` (`worktree`, `preview`, empty for `url`), `commit_id`, `changed` (the tree's changed paths counted, all of them), `changed_paths` (JSON: the first of them within `MaxChangedPaths` and `MaxChangedPathsBytes`, below), `changed_cut` (0 or 1: some were left out), `content` (the tree id of what the tree held at the save, uncommitted changes and untracked files that are not ignored included, below), `mutable` (0 or 1), `candidate` (DS2's form `<run>/<task>/<n>@<commit>`, set when the tree is the candidate's checkout), `where_ran`, `scope` (JSON: `{crew, repo, project}` of the run at the save, the project of the ticket the run was launched from, kept so Brakeman's admission holds after the run has gone), `drift` (JSON: what the pane read at the selection, `{commit, content, changed, readAt}`, kept when the save's `content` or commit differs); the image: `image_sha256`, `image_width`, `image_height`, `image_bytes`, `image_how` (`desktop`, `tab`, `none`), `image_why` (why there is none), `image_scale`; `epoch` (the bridge's page epoch at the screenshot), `retake_of` (a capture id or empty), `retake_via` (`run`, `ticket` or `repo`, below), `deleted_at`, `annotations` (the pointer to the live annotation set: `{rev, digest}`) |
+| `capture_annotations` | one **version** of an annotation, written once and never changed: `capture_id`, `sha256` (of the version's canonical JSON, its identity), `bytes`, `kind` (`element`, `region`), `note`, `rect` (JSON: `{x, y, width, height}` in the screenshot's pixels), `element` (JSON: the bridge's report, below, empty for a region), `observed` (JSON: `{at, url, title, viewport, epoch, label: {commit, content}}` as the bridge and the pane read them at the element's selection, the capture's moment, empty for a region), `sources` (JSON: the checked sources, below); PK `(capture_id, sha256)` |
+| `capture_annotation_sets` | one **revision** of a capture's annotations, written once and never changed: `capture_id`, `digest` (the SHA-256 of `members`), `rev` (from 1), `members` (JSON: the versions' `sha256`s in their order, at most 20, under 1.5 KiB), `at`, `actor`, `op_id`; PK `(capture_id, digest)`, so two replicas' sets of the same `rev` are both kept |
+| `capture_sends` | a send's **input**, written once and never changed: `id` (16 hex), `capture_id`, `rev` (the capture's revision sent), `kind` (`ticket`, `brakeman`; `review` and `decision` reserved and refused by the store until PR-10 and PR-11 lift them), `asked` (JSON: the destination as the person named it: `{project, title}` or `{key}` for a ticket, a review or decision id), `digest` (the SHA-256 of the capture's document as sent, frozen: the document itself is the content file of that hash, never a second copy in the row), `request` (JSON, at most 8 KiB: the destination's input exactly as the target is asked, the Brakeman question and subjects or a decision's comment text, written before the target is asked and replayed whole by a recovery), `created_at`, `created_by`, `actor`, `op_id`, `fingerprint` |
+| `capture_send_outcomes` | what became of a send, **appended, never changed**: `send_id`, `id` (16 hex), `kind` (`sent`, `refused`, `cancelled`), `target` (for `sent`: the ticket key, `br-<n>`, the review or the decision comment's id), `files` (JSON: the attachment ids it added), `why`, `at`, `actor`, `op_id`; PK `(send_id, id)`. A send's state is the projection below, never a column |
+| `capture_files` | `capture_id`, `sha256`, `holder` (`capture`: the live capture's screenshot; or a send's id: the document it froze and the screenshot it carried); PK of the three: every content file a live capture or one of its sends holds, which the sweep keeps, as DS2's `launch_files` keeps a package's, and only while its holder is there (below) |
 
 Indexes: `captures (run_id, task_id, attempt_n)`, `captures
-(created_at)`, `capture_sends (capture_id, created_at)`, `capture_sends
-(kind, target)`; none unique beyond the keys (DS1's convention: no index
-refuses a replicated row).
+(created_at)`, `capture_sends (capture_id, created_at)`,
+`capture_send_outcomes (kind, target)`, `capture_files (sha256)`; none
+unique beyond the keys (DS1's convention: no index refuses a replicated
+row).
 
 **The capture document** (`capture.go`, new, `conductor.capture/1`): the
 JSON a send freezes and a ticket attachment carries, built from the rows
 (`Document(id, rev)`), its shape in `docs/protocol.md`:
 `{schema, id, rev, url, title, viewport, selectedAt, savedAt, origin:
-{kind, run, task, attempt, tree, commit, changed, changedPaths, content,
+{kind, run, task, attempt, tree, commit, changed, changedPaths, changedCut, content,
 mutable, candidate, where, drift}, image: {sha256, width, height, how,
 why, scale}, annotations: [{k, kind, note, rect, element, observed,
-sources}], retakeOf}`; `drift` is present, `{commit, content, changed,
+sources}], retakeOf, retakeVia}`; `drift` is present, `{commit, content, changed,
 readAt}` as the pane read them at the selection, whenever the save's
 read differed, so the ticket's reader and the repairing agent see the
 warning the record holds. `viewport` is `{mode
 (fit, desktop, tablet, phone), width, height, scale, dpr, colorScheme
-(light, dark), userAgent}`. An element report is `{tag, id, classes,
+(light, dark), userAgent (at most 512 bytes), scrollX, scrollY}`. An element report is `{tag, id, classes,
 role, name (accessible name), text, selector, box, attributes (name and
 value pairs, `value` of every `input` dropped, a `password` field's
 always), state: {disabled, hidden, ariaDisabled, ariaExpanded,
@@ -386,41 +408,74 @@ source must be the app's own file, the one a repair edits.
 `MaxCaptureAnnotations` 20; `MaxAnnotationNote` 4,000 characters;
 `MaxCaptureURL` 2,048 bytes; `MaxCaptureTitle` 200 characters;
 `MaxElementText` 1,024 bytes; `MaxSelector` 1,024 bytes;
-`MaxElementAttributes` 32, a name at most 64 bytes and a value at most
-512; `MaxElementHTML` 12 KiB; `MaxNeighbourhood` 24 KiB; `MaxAncestors`
-12, each at most 512 bytes; `MaxStyles` 64, each value at most 256
-bytes; `MaxHints` 8, a file at most 1,024 bytes; `MaxChangedPaths` 200;
-`MaxElementReport` 32 KiB as measured (below).
+`MaxElementName` 1,024 bytes (the tag, the accessible name, the id, the
+role and the classes joined, each); `MaxElementAttributes` 32, a name
+at most 64 bytes and a value at most 512; `MaxElementHTML` 12 KiB;
+`MaxNeighbourhood` 24 KiB; `MaxAncestors` 12, each at most 512 bytes;
+`MaxStyles` 64, each value at most 256 bytes; `MaxHints` 8, a file at
+most 1,024 bytes and a component at most 256; `MaxChangedPaths` 200
+and `MaxChangedPathsBytes` 16 KiB as encoded, the list cut at whichever
+comes first (`verify.go`'s `bounded` rule: count and bytes), `changed`
+still the whole count and `changed_cut` set; `MaxUserAgent` 512 bytes;
+`MaxCaptureScope` 2 KiB; `MaxElementReport` 32 KiB as measured
+(below). Every field the server fills has its bound too, so the page
+part (below) is a sum of bounds, never of what a tree happens to hold.
 
 The per-field bounds add up to more than `MaxElementReport` (about 78
 KiB at every field's bound), so the bridge **cuts to fit, in a fixed
-order**: the neighbourhood first (down to nothing), then the HTML
-(down to its opening tag), then the styles past the first 16 of the
-fixed list (the visibility, hit and box ones, which the state and the
-hit test lean on), then each attribute value to 64 bytes. What is left
-at every field's bound after those cuts (text, selector, the 8 hints,
-the 12 ancestors, 16 styles, 32 short attributes, the box, the state
-and the hit test) is under 27 KiB, so every report fits. Each cut is
-marked in the report (`cut: [neighbourhood, html, styles,
-attributes]`). **One measure on both sides**: the report's size is the
+order, measuring after each step and stopping at the first that
+fits**; every length a step cuts to is by the shared measure (the
+field's encoded bytes, below), never by characters:
+
+1. the neighbourhood, down to nothing;
+2. the HTML, down to its opening tag;
+3. the styles past the first 16 of the fixed list (the visibility, hit
+   and box ones, which the state and the hit test lean on);
+4. each attribute value to 64 bytes;
+5. the HTML's opening tag to 512 bytes, then the HTML dropped;
+6. the hints to the innermost 2, each file to its last 256 bytes and
+   each component to 128;
+7. the ancestors to the innermost 4;
+8. the attributes to the first 8;
+9. the tag, the text, the accessible name, the id, the role, the
+   classes, the selector and the hit test's tag and selector each to
+   256 bytes;
+10. the styles to the first 8.
+
+Steps 1 to 4 are not enough on their own: a 12 KiB opening tag beside
+eight 1,024-byte hint files, twelve 512-byte ancestors and 32
+attributes at 64-byte names and values passes 32 KiB once encoded,
+every style removed. What step 10 leaves at worst is nine fields of 256
+bytes, 8 styles of under 300, 8 attributes of 128, 4 ancestors of 512,
+2 hints of under 450, the box, the state and the keys: under 12 KiB, so
+the cut always ends within the bound, whatever each field held; the
+bridge asserts it, and the server refuses a report past it. Each step
+taken is marked in the report (`cut: [neighbourhood, html, styles,
+attributes, tag, hints, ancestors, names, …]`). **One measure on both
+sides**: the report's size is the
 UTF-8 length of its JSON as Go writes it with HTML escaping off
 (`json.Encoder.SetEscapeHTML(false)`, the server's `measure`), which the
 bridge's `measure` (`report.ts`) computes the same way: `JSON.stringify`
 of the report with lone surrogates first made U+FFFD (`toWellFormed`,
 as Go's encoder does to invalid UTF-8) and U+2028 and U+2029 counted as
-the six bytes Go writes for each. A shared fixture
-(`internal/api/testdata/fullest-report.json`, written by the vitest
-from a fake element at every field's bound and committed) is cut by the
-bridge to its measure and accepted by the server at the same measure.
+the six bytes Go writes for each. Two shared fixtures, written by the vitest and committed
+(`internal/api/testdata/fullest-report.json`, a fake element at every
+field's bound, and `largest-tag-report.json`, the shape above: a 12 KiB
+opening tag, eight 1,024-byte hint files, twelve 512-byte ancestors, 32
+attributes at their bounds, every string of six-byte characters), are
+cut by the bridge to its measure, the second through step 10, and
+accepted by the server at the same measure.
 
 `MaxCaptureDocument` 2 MiB as encoded: 20 annotations each at most 32
 KiB of report, a note of 4,000 characters at most 24,000 bytes encoded
 (a character is at most 6 bytes as Go writes it), 8 sources of about
 1.2 KiB and its rect, observation and keys within 1 KiB, about 66 KiB
 each and 1.32 MiB for 20, beside a page part (URL, title, viewport,
-origin with its 200 changed paths, image, drift) within 64 KiB:
+origin with its changed paths at their 16 KiB, scope, image, drift)
+within 32 KiB by the bounds above:
 `TestTheFullestCaptureFitsItsDocument` builds one at every bound, notes
-of six-byte characters included, and creates, edits and sends it.
+of six-byte characters and 200 changed paths of 4,000 bytes each
+included, and creates, edits and sends it.
 `MaxCaptureImage` 4 MiB, a PNG of at most 4,096 pixels a side, so a
 capture's two files (6 MiB) fit DS2's 16 MiB of a package's
 attachments beside others; `MaxCaptureSends` 50 per capture;
@@ -440,8 +495,9 @@ client's request, never what the server filled, as RV1's
   `AddAttachment`'s upload path (temp file under `attachments/tmp`,
   synced, a lease committed, published under its hash, its name made
   durable) before anything names it; then one transaction writes the
-  `captures` row, its annotations, the `capture_files` row and the
-  receipt, and releases the lease. `CaptureFacts` is what the API read
+  `captures` row, its annotations' versions and their first set, the
+  `capture_files` row (holder `capture`) and the receipt, and releases
+  the lease. `CaptureFacts` is what the API read
   (origin, commit, changed, mutable, candidate, where, the checked
   sources, the drift), stored with the rows and never fingerprinted.
 - `EditCapture(ctx, op, id, expectedRev, []AnnotationEdit)`: the
@@ -450,17 +506,29 @@ client's request, never what the server filled, as RV1's
   observation and sources as saved, and an edit that brings a new
   element report is refused `invalid` ("a new element is a new capture:
   Capture again"), so no later observation sits under the first one's
-  screenshot, time and revision. Bumps `rev`; refused `stale` for a
-  `rev` that is not the row's, `not_found` for a deleted capture.
-- `DeleteCapture(ctx, op, id)`: tombstones (`deleted_at`); its files stay
-  while a send names them (the send's ticket attachments are the
-  ticket's).
+  screenshot, time and revision. An edit writes a new
+  version of each annotation it changes (an unchanged one keeps its
+  `sha256`), a new set naming the versions in their order, and moves the
+  capture's `annotations` pointer to it, in one transaction. Bumps
+  `rev`; refused `stale` for a `rev` that is not the row's, `not_found`
+  for a deleted capture, `bound` past `MaxAnnotationSets` (50 sets a
+  capture: "Capture again").
+- `DeleteCapture(ctx, op, id)`: tombstones (`deleted_at`) and, in the
+  same transaction, removes what only the live capture held: its
+  `capture_files` row of holder `capture` (the screenshot's pin) and its
+  annotation versions and sets. So a capture deleted unsent leaves its
+  tombstone and nothing the sweep must keep, and creating and deleting
+  in turn never piles up files past `MaxCaptures`' worth. Its sends,
+  their `capture_files` rows and the ticket attachments they made stay
+  (those are the ticket's).
 - `SendCapture(ctx, op, id, rev, Destination, SendFacts)`: refused
   `stale` unless `rev` is the capture's revision now (a person sends
   what they see). The document is built, measured and published as a
   content file through the upload path (lease first); one transaction
-  then writes the send row (`sent` for a ticket, `pending` with its
-  `request` for Brakeman), the `capture_files` row of the document, and
+  then writes the send's input row (with its `request` for Brakeman,
+  which leaves it pending), for a ticket its `sent` outcome with the
+  target and the attachment ids, the `capture_files` rows the send holds
+  (the document, and the screenshot when there is one), and
   for a ticket destination: a new ticket (`Destination{Project, Title}`,
   its description made by `ticketText`, within `MaxTicketDescription`,
   the drift's warning in it when the capture has one) or the existing
@@ -472,22 +540,49 @@ client's request, never what the server filled, as RV1's
   a comment naming the capture and its revision, and the ticket's `rev`
   bumped once with its change rows; refused `bound` when the ticket's 50
   attachments would be passed by the rows this send adds (two, or one
-  without a screenshot). `MarkSent(id, target)` and `MarkRefused(id,
-  why)` settle a pending send.
+  without a screenshot). `MarkSent(op, id, target)`, `MarkRefused(op, id,
+  why)` and `CancelSend(op, id)` append a send's outcome (each a typed
+  operation with its receipt, a repeat answered by it), under the
+  terminal rule below.
 - Reads: `Capture(id)` (with its annotations and sends), `Captures(by
   Run/Ticket/Recent, after, limit)` (a page, at most 100, newest first),
   `CaptureSends(kind, target)`, `PendingSends()`, `Document(id, rev)`.
-- `rules.go`: a capture's page, origin and image fields `immutable`; its
-  annotations, with `annotations_rev`, one `scalar` field under DS1's
-  scalar rule as `rules.go` implements it (the later write's `at` wins;
-  equal, the greater actor; equal, the greater `op_id`), applied to the
-  whole set of a capture's annotation rows written by one edit, so a
-  merge keeps one edit's annotations whole and never mixes two; no
-  conflict is kept and none is promised; sends a `log` (append only); a
-  delete a tombstone. Each is a local schema decision CS1 may revise.
+- **The change log.** Every change row a capture writes is within
+  DS1's `MaxChangeValue` (64 KiB, refused by `ops.go`'s `record`) by
+  construction, through that one writer: the create row holds the page
+  part (within 32 KiB by the bounds); an annotation version's row holds
+  its `sha256` and `bytes`, never its body (up to about 66 KiB, kept in
+  its own row and named by its digest, as a plan revision's body is:
+  `plans.go`'s `planCreated`); a set's row holds its `rev` and `members`
+  (under 1.5 KiB); the pointer's row its value and prior, `{rev,
+  digest}` each; a send's input row its fields with the `request` (at
+  most 8 KiB); an outcome's row its fields.
+- `rules.go`: a capture's page, origin and image fields `immutable`;
+  annotation versions and sets immutable rows, inserted and never
+  changed, so two replicas' sets are both kept (keyed by digest); the
+  capture's `annotations` pointer one `scalar` field under DS1's scalar
+  rule as `rules.go` implements it (the later write's `at` wins; equal,
+  the greater actor; equal, the greater `op_id`), so a merge picks one
+  edit's set whole and never mixes two; no conflict is kept and none is
+  promised. A send's input `immutable`; its outcomes a `log` (DS1's
+  `ClassLog`, `KeepBoth`: every outcome kept), read through one
+  projection, **`sendState`**, which every read uses: no outcome is
+  `pending`; any `sent` outcome makes the send `sent`, with the earliest
+  `sent`'s target and files (a destination that took the send took it,
+  whatever else a replica recorded); else the earliest `refused` or
+  `cancelled` by (`at`, actor, `op_id`), DS1's order. So the same
+  outcomes give the same state in any order of arrival. Locally the
+  **terminal rule** holds: an outcome is appended only to a pending
+  send, except a `sent` that reconciles a destination's admission made
+  before a cancellation (below). A delete is a tombstone. Each is a
+  local schema decision CS1 may revise.
 - `sweep.go`: `collectOrphans` keeps a hash any `capture_files` row
-  names. `snapshot.go`: `SnapshotHashes` adds every `capture_files` hash,
-  so C6's export carries the files. `OnChange` reports the entities
+  names; a row is there only while its holder is (the live capture for
+  holder `capture`, a send for its own), so a content file is kept
+  exactly while a live capture, a send or an attachment names it, and a
+  screenshot two captures share stays until both have let it go.
+  `snapshot.go`: `SnapshotHashes` adds every `capture_files` hash, so
+  C6's export carries the files and no released one. `OnChange` reports the entities
   `capture` and `capture_send`.
 
 ### `internal/crew` and `internal/crew/ledger`: the bridge's name, a candidate's preview checkout
@@ -534,7 +629,13 @@ client's request, never what the server filled, as RV1's
   is one owner and behaves as today, every existing test of `steps.go`
   passing unchanged; a preview (`*preview`, `preview.go`) is the other:
   closed once its end is committed, listed in the engine's previews
-  (never `a.trees`), its rows written to `previews` by `seq`
+  (never `a.trees`) and counted on its run (`r.previews`, beside
+  `r.trees.n`, from the open's first transaction until its end's last,
+  its teardown done), which the engine's `idle` reads (`run.go`), so
+  `evict` never forgets a run whose preview is opening, serving or
+  ending and `forget` never cancels the `r.teardown` its services run
+  under (at most 2 previews a server, so at most two runs are held past
+  their class's cap); its rows written to `previews` by `seq`
   (`Tx.OpenPreview`, `Tx.PreviewReady`, `Tx.EndPreview`, never
   `PutTree`, so the result checkout's `trees` row is never touched), its
   ports leased to its tree and released once its end is committed, and a
@@ -622,7 +723,9 @@ client's request, never what the server filled, as RV1's
   open preview checkout's (`?seq=`). `url` is the preview with
   `${CONDUCTOR_TREE_SECRET}` replaced by the tree's secret for an admin
   caller, and with the fragment dropped for any other; the run page's
-  New tab and the pane both open the admin's `url`. The revision is read
+  New tab and the pane both open the admin's `url`. That is the only
+  place the value leaves the server, and nothing durable keeps it:
+  every capture write scrubs it (below). The revision is read
   now by `crew.TreeRevision(ctx, dir, index)` (`verify.go`, new, beside
   `checkoutIntact` and sharing its private-index reading, through
   `gitcli` with argv and the C locale, at most 5 s): `rev-parse HEAD`;
@@ -635,8 +738,9 @@ client's request, never what the server filled, as RV1's
   (ignored paths aside), `write-tree`: `content` is that tree id, a
   digest of everything the tree holds that git would see, uncommitted
   edits and new files included; `changed` and `changedPaths` are
-  `diff --cached --name-only -z HEAD` in that index, counted and the
-  first 200. `mutable` is true for a worktree and for a checkout whose
+  `diff --cached --name-only -z HEAD` in that index: all of them
+  counted, the list cut by `MaxChangedPaths` and `MaxChangedPathsBytes`
+  (`changedCut` when it is). `mutable` is true for a worktree and for a checkout whose
   `content` is not its commit's tree. A read past 5 s answers the label
   with `content` empty and "the tree was not read in time". `404
   no_preview` when neither is open. A read of a checkout's label resets
@@ -654,7 +758,7 @@ client's request, never what the server filled, as RV1's
 
 | Route | Body → reply |
 |---|---|
-| `POST /api/captures` | `multipart/form-data`: `capture` (JSON, at most 2 MiB: `{opId, from: {run, task, attempt, seq?} \| {url}, url, title, viewport, selectedAt, label (the pane's label read at the selection: commit, content, changed, readAt), annotations (each with its `observed`), via, imageWhy?, retakeOf?}`), `image` (optional, `image/png`, at most 4 MiB); the body at most 6 MiB + 64 KiB → `201 {receipt, capture}`; `200` the same for a repeat; `400 invalid` (a field past its bound, a URL whose origin is not the preview's, an image that is not a PNG or is past 4,096 pixels a side, `image/png`'s `DecodeConfig` the judge; a `retakeOf` that is not a live capture of the same run and task, or of the same page origin for a `url` capture); `404 no_preview` (the attempt's preview, or the checkout named, is not open now); `413 bound`; `409 expired` (the image's lease swept; the client sends again) |
+| `POST /api/captures` | `multipart/form-data`: `capture` (JSON, at most 2 MiB: `{opId, from: {run, task, attempt, seq?} \| {url}, url, title, viewport, epoch, selectedAt, label (the pane's label read at the selection: commit, content, changed, readAt), annotations (each with its `observed`), via, imageWhy?, retakeOf?}`), `image` (optional, `image/png`, at most 4 MiB); the body at most 6 MiB + 64 KiB → `201 {receipt, capture}`; `200` the same for a repeat; `400 invalid` (a field past its bound, a URL whose origin is not the preview's, an annotation observed at another moment than the capture's, an image that is not a whole PNG or is past 4,096 pixels a side: `png.DecodeConfig` first, the header and the size before any pixel is allocated, then `png.Decode` of the whole bounded input, every chunk's CRC and every row of pixel data, so a valid header over cut or corrupt data is refused, one decode at a time per server so at most one 4,096-pixel image, 128 MiB at 16 bits a channel, is in memory; a `retakeOf` that is not an admissible capture, below); `404 no_preview` (the attempt's preview, or the checkout named, is not open now); `413 bound`; `409 expired` (the image's lease swept; the client sends again) |
 | `GET /api/captures` | `?run=&task=&attempt=&ticket=&after=&limit=` (1 to 100) → `{captures, next?}`, newest first, each a summary (its first note cut to 200 characters, its label, its sends' targets) |
 | `GET /api/captures/{id}` | the capture whole with its sends' summaries (at most 2.2 MiB) |
 | `GET /api/captures/{id}/image` | the PNG, `Content-Type: image/png`, `nosniff`, `Content-Security-Policy: sandbox`, `X-Conductor-SHA256`; `404` without one |
@@ -662,6 +766,7 @@ client's request, never what the server filled, as RV1's
 | `POST /api/captures/{id}/edit` | `{opId, expectedRev, annotations}` (2 MiB; an element annotation named by its `k`, no new report) → `{receipt, capture}`; `409 stale`; `400 invalid` for a new element report |
 | `POST /api/captures/{id}/delete` | `{opId}` → `{receipt}` |
 | `POST /api/captures/{id}/send` | `{opId, rev, to: {kind: "ticket", project?, title?, key?} \| {kind: "brakeman", question}}` (8 KiB) → `201 {receipt, send}`; `409 stale`, `404 not_found` (a ticket), `409 bound`; for Brakeman, every answer the desk gives, as it gives it: `409 brakeman_off`, `429 queue_full`, `429 budget_spent`, `503 brakeman_stuck`, `503 brakeman_not_owner` (the desk not yet recovered); `202 {receipt, send}` with the send `pending` for the last two, settled later (below) |
+| `POST /api/captures/{id}/sends/{send}/cancel` | `{opId}` → `{receipt, send}` (the send with its state by `sendState`); a repeat answered by its receipt; `409 stale` for a send already `sent` or `refused` (its state named); serialized with the send's settlement (below) |
 
   **What the server fills, never the client.** On a create, the API
   resolves `from`: for an attempt, the run's state now (the ledger and
@@ -688,19 +793,51 @@ client's request, never what the server filled, as RV1's
   that no `assume-unchanged` or `skip-worktree` flag can fool) finds
   HEAD at the candidate's commit and no tracked path changed, at the
   save; the label's `mutable` is for showing, the save's
-  `checkoutIntact` decides. A `retakeOf` is checked to name a live
-  capture of the same run and task (a `url` capture's: the same page
-  origin) and stored.
-- **Ask Brakeman** (`captureSendBrakeman`): the send row `pending`
-  first, with its `request` (the person's question and the subjects,
-  exactly as the desk will be asked), then a request of kind `ask`
-  through the desk's own admission (`handleBrakemanAsk`'s path, factored
-  as `askBrakeman(in)`, with the send's id as its `opId`, so a resend
-  after a lost reply finds the same request: the desk's `ByOp`),
-  subjects `[capture:<id>/<send>]` (the frozen document this send holds,
-  never the live capture) and the attempt's `attempt:` ref when there is
-  one, the note the person's question; then `MarkSent(br-<n>)`. The
-  desk's answers: admitted, `sent`; `brakeman_off`, `queue_full`,
+  `checkoutIntact` decides. **A retake** names an admissible capture: a
+  live one of the same repository (its recorded `scope.repo` is the new
+  capture's run's), so a ticket's repair, which DS2's launch starts as a
+  run of its own (`mintRunID` in `launches.go`) with its plan's task
+  ids, retakes the capture that made the ticket; a `url` capture's
+  retake is a `url` capture of the same page origin, and the two kinds
+  never retake each other. The server records how the two are related,
+  `retake_via`: `run` (the same run and task), `ticket` (the new
+  capture's run was launched from a ticket that a `sent` send of the
+  first one targets: DS2's `launches` row names the ticket), else
+  `repo`. A deleted capture, another repository's, or a `url` capture of
+  another origin is refused.
+- **One capture is one moment** (the server's check): every element
+  annotation's `observed` carries the capture's own URL, viewport with
+  its scroll, `epoch` and label (`commit`, `content`), the moment its
+  screenshot shows; an annotation observed at another is refused `400
+  invalid` ("annotation 3 was selected after the page changed: it is
+  another capture"), whatever the client drew.
+- **The tree's secret is scrubbed** before anything is stored: on a
+  create, an edit and a send, the API replaces every occurrence of the
+  capture's tree's `CONDUCTOR_TREE_SECRET` value with the literal
+  `${CONDUCTOR_TREE_SECRET}` in every string the request carries (the
+  page's URL, which the no-bridge fallback takes from the frame's `src`;
+  the URL a page that keeps its fragment reports; each annotation's
+  `observed`; every string of each element report, its attributes and
+  HTML included; the notes; a Brakeman question), and only then
+  fingerprints, checks and stores it. The document, the ticket's
+  description and comment and a Brakeman request are made from those
+  rows, so none holds the value. The value is hex (its URL-encoded form
+  is itself), held in the tree's memory only while the tree is open, and
+  a capture is created only while it is (`404 no_preview`); an edit or a
+  send after the tree has ended has no value to find, and the credential
+  ended with the tree's throwaway server. So no row, content file,
+  event, log line, document, ticket or request holds a tree's secret.
+- **Ask Brakeman** (`captureSendBrakeman`): the send's input row first,
+  with its `request` (the person's question and the subjects, exactly as
+  the desk will be asked), which leaves it `pending`; then a request of
+  kind `ask` through the desk's own admission (`handleBrakemanAsk`'s
+  path, factored as `askBrakeman(in)`, with the send's id as its `opId`,
+  so a resend after a lost reply finds the same request through the
+  desk's `ByOp`, and **pinned**, below), subjects `[capture:<id>/<send>]`
+  (the frozen document this send holds, never the live capture) and the
+  attempt's `attempt:` ref when there is one, the note the person's
+  question; then `MarkSent(br-<n>)`, then the pin released. The desk's
+  answers: admitted, `sent`; `brakeman_off`, `queue_full`,
   `budget_spent` to the person sending, `refused` with the desk's words
   (they see it and send again); `brakeman_not_owner` and
   `brakeman_stuck`, which pass by themselves, leave the send `pending`.
@@ -709,7 +846,45 @@ client's request, never what the server filled, as RV1's
   (`d.recovered`), then every 60 s while one is pending; there, every
   answer but an admission (`sent`) or `brakeman_off` (`refused`) keeps it
   `pending`, the editor showing "waiting for Brakeman: <the desk's
-  words>" with Cancel (`MarkRefused`, the person's).
+  words>" (the last try's answer, kept in the server's memory beside the
+  send and never a row: nothing to merge, read again at the next try)
+  with Cancel.
+- **One step per send at a time.** Every step that can reach the desk
+  for a send (the send route's first ask, a settlement's try, the
+  cancel route) runs under that send's gate (`sendGates`, a lock per
+  send id in the API, taken before the send's state is read and released
+  after its outcome is committed) and reads `sendState` again under it:
+  a step that finds the send no longer pending asks nothing. So a Cancel
+  either comes before a try, which then finds `cancelled` and makes no
+  request, or after it, when the try has committed `sent` or left the
+  send pending with no request admitted. **Cancel** (`POST
+  …/sends/{send}/cancel`, the person's, idempotent by its `opId`) asks
+  the desk `ByOp(send id)` first, under the gate: no request there,
+  `CancelSend` appends `cancelled`; a request there (admitted by a try
+  whose `sent` was never committed, the server having stopped between
+  the two), the send is settled `sent` with it ("admitted before the
+  cancel") and the request is cancelled through Brakeman's own cancel
+  (`handleBrakemanCancel`'s path, factored as `cancelBrakeman`, its
+  `opId` derived from the cancel's). Either way the person's Cancel ends
+  the question, and no request is left running behind it unknown.
+- **The desk keeps the op while the send waits.** Brakeman's store
+  keeps the newest `MaxOps` (1,000) op ids (`state.json`'s `Ops`,
+  trimmed in `store.go`), and a send can stay pending past a thousand
+  other requests. So a capture send's request is created **pinned**
+  (`Request.Pin`, PR-6, in `internal/brakeman`): a pinned op ref is never
+  trimmed until `Release(opID)`, at most `MaxPinnedOps` (1,000) of them
+  (past it the desk answers `pins_full`, which keeps the send pending
+  with those words), and `Prune` of a pinned op's request marks it
+  pruned as today, the ref kept with the request's number. A settlement
+  that finds the op's request settles the send `sent`; one that finds it
+  pruned (`ByOp` answers a pinned pruned ref with its number and
+  `ErrPruned`) settles it `sent` to that `br-<n>` ("since pruned at
+  Brakeman") and never asks or retries again; only an op the desk has
+  never seen is asked for. The pin is released after the `sent` commit;
+  a release lost to a stop is made by the next settlement pass, which
+  releases every pinned capture op whose send is terminal or gone
+  (`Store.Pinned`). So the desk's idempotency lasts exactly as long as
+  the send is pending.
 - **Brakeman reads a capture.** `brakeman_refs.go`'s resolver resolves
   `capture:<id>` (the live capture: its revision and digest; `deleted`
   for a tombstone) and `capture:<id>/<send>` (that send's frozen
@@ -741,7 +916,11 @@ client's request, never what the server filled, as RV1's
 capture) and `capture:<id>/<send>` (two of 16: that send's frozen
 document), in `refForms` with their words and examples; `Ref.Capture`
 holds the id and `Ref.Send` the send's; `ParseRef` and `String`
-round-trip both (`TestACaptureRefParsesAndPrints`). Kinds whose
+round-trip both (`TestACaptureRefParsesAndPrints`). The store gains
+the pin (above): `Request.Pin`, `Store.Release(opID)`,
+`Store.Pinned()`, `MaxPinnedOps`, the trim to `MaxOps` passing over
+pinned refs, and `ByOp` answering a pinned pruned ref with its number.
+Kinds whose
 refs take any kind (an `ask`'s subjects, a `fact`'s evidence, a draft
 ticket's `from`) take it with no other change.
 
@@ -769,7 +948,13 @@ ticket's `from`) take it with no other change.
   until a workbench origin asks. Selection mode draws its outline in a closed shadow root it adds
   to the page (no style of the page's touches it, none of its leaks
   out), takes pointer events in the capture phase while selecting and
-  gives them back after; it reads, never writes, the page. Up and Down
+  gives them back after; it reads, never writes, the page. It keeps a **page epoch**: a
+  counter it bumps, at most once per animation frame, on a resize or a
+  scroll of the frame's window and on any mutation a `MutationObserver`
+  on the document reports (its own shadow host left out); it says only
+  that the page moved, never how. A page that redraws all the time
+  moves its epoch between any two selections, so each of its elements is
+  a capture of its own: one screenshot shows one moment. Up and Down
   in selection mode step through `document.elementsFromPoint` at the
   pointer (its own shadow host left out), outlining each, so an element
   under an overlay, or under any element above it, is selected; the
@@ -794,16 +979,25 @@ ticket's `from`) take it with no other change.
   Svelte's `__svelte_meta.loc`; React's `_debugSource` (React 18 and
   before) through the element's fiber key. A page with none reports
   none, and the capture says "the page gives no source".
-- **The messages** (`conductor-preview/1`, `docs/protocol.md`): from the
+- **The messages** (`conductor-preview/1`, defined in
+  `internal/proto/preview.go` and `web/app/utils/protocol.ts` and
+  documented in `docs/protocol.md`, the three together): from the
   workbench, `hello {nonce}`, `select {nonce}`, `describe {nonce,
-  selector}`, `cancel {nonce}`; from the bridge, `ready {nonce, version,
-  url, title, viewport, hints: [how]}`, `selected {nonce, element, url,
-  title, viewport}`, `described {nonce, element | missing, url, title,
-  viewport}`, `cancelled {nonce}`. Every answer that carries an element
-  carries the page's URL, title and viewport read at that moment, never
-  the handshake's: a client-side navigation does not reload the frame
-  and the workbench cannot read the frame's URL, and a device mode
-  changed after the handshake changes the viewport. Each is a
+  selector}`, `look {nonce}`, `cancel {nonce}`; from the bridge, `ready
+  {nonce, version, url, title, viewport, epoch, hints: [how]}`,
+  `selected {nonce, element, url, title, viewport, epoch}`, `described
+  {nonce, element | missing, url, title, viewport, epoch}`, `looked
+  {nonce, url, title, viewport, epoch}`, `cancelled {nonce}`; a viewport
+  carries the frame's scroll offsets. Every answer carries the page's
+  URL, title, viewport and epoch read at that moment, never the
+  handshake's: a client-side navigation does not reload the frame and
+  the workbench cannot read the frame's URL, and a device mode changed
+  after the handshake changes the viewport. The workbench sends `look`
+  right after it takes a screenshot: when the epoch it answers is not
+  the selection's, the page moved while the pixels were taken, and the
+  screenshot is taken again, at most twice, then the draft is refused
+  with words ("this page does not hold still long enough to capture").
+  Each is a
   plain object with `conductor: "preview/1"`. The bridge's gate
   (`gate.ts`) accepts a message only when its `source` is
   `window.parent`, its `origin` is one it was given, it is at most 4 KiB
@@ -820,7 +1014,13 @@ ticket's `from`) take it with no other change.
   is in flight at a time; a `hello` with no `ready` in 3 s means no
   bridge ("this page does not load Conductor's bridge: Capture takes the
   screenshot and your notes only. In the desktop app every page has
-  it").
+  it"). Both languages' parsers are held to one fixture,
+  `internal/proto/testdata/preview-messages.json` (every message at its
+  bound and one byte past, an unknown type, a missing or wrong nonce, a
+  wrong `conductor` mark), which `TestPreviewMessagesFixture` reads
+  through `proto.ParsePreviewMessage` and `protocol.test.ts` through
+  `parsePreviewMessage`, each asserting the verdict the fixture records,
+  so the Go and the TypeScript definitions cannot drift.
 - **The pane** (`components/PreviewPane.vue`, new), hosted by the
   preview page (`pages/preview.vue`, new: `?run=&task=&attempt=` and
   `&seq=`), which reads the run and the label alone and never the
@@ -942,17 +1142,37 @@ nothing (`CONDUCTOR_RENDEZVOUS=0`).
   finding's path and line, within 1,000 characters; the whole of it
   travels as **evidence files** pinned to RV1's change request: the
   frozen document and the screenshot of the send (`capture-<id>-r<rev>
-  .json` and `.png`), handed by the API to the engine as bytes
-  (`crew.Evidence{Name, Bytes}`; `internal/crew` never imports
-  `internal/dispatch`), at most 8 files and 16 MiB in all per repair,
-  written by the task files' code through the attempt's `os.Root` into
-  `.conductor/evidence/` and named under each finding in `task.md`
-  ("the capture: .conductor/evidence/capture-…-r2.json"). That is an
-  extension of RV1's repair contract in `internal/crew` (`taskfile.go`)
-  and is in PR-10's touches; `TestAMaximalCaptureFindingReachesTheRepair`
-  sends a capture whose note and report are at their bounds through a
-  real repair launch and reads the finding and both files in the
-  attempt's tree.
+  .json` and `.png`), named in the request by reference, never carried
+  as bytes. RV1 keeps a `ChangeRequest` inside the task's repair JSON
+  and carries it through continuations, and the ledger holds that JSON
+  to 64 KiB (`ledger/transition.go`'s `MaxPayload`), so the request
+  gains `Evidence []EvidenceRef{Name, SHA256, Bytes, Send}` (the file's
+  name, its hash and size, and the capture send whose `capture_files`
+  rows pin it while the send exists, which is always: a send is never
+  deleted), at most 8 refs (under 2 KiB, counted by `FitChangeRequest`)
+  and 16 MiB of files in all per repair. The engine reads the bytes only
+  when it writes an attempt's files, through a resolver the API sets as
+  it sets the launch package's (`Engine.UseEvidenceFiles(open func(ctx,
+  send, sha256 string) (io.ReadCloser, error))` beside
+  `UsePackageFiles`, given Dispatch's `OpenSendFile`, which opens a
+  content file only when that send's `capture_files` row names it;
+  `internal/crew` never imports `internal/dispatch`), and copies each
+  through the attempt's `os.Root` into `.conductor/evidence/`, checking
+  its size and hash as it copies (a mismatch fails the write and tells
+  the attempt, as a package attachment's does); `task.md` names them
+  under each finding ("the capture:
+  .conductor/evidence/capture-…-r2.json"). So a repair queued, retried,
+  or continued after a restart (`continue.go`) reads the same files from
+  the store, never from the server's memory. That is an extension of
+  RV1's repair contract in `internal/crew` (the change request's refs,
+  the resolver, `taskfile.go`) and is in PR-10's touches;
+  `TestAMaximalCaptureFindingReachesTheRepair` sends a capture whose
+  note and report are at their bounds through a real repair launch and
+  reads the finding and both files in the attempt's tree, and
+  `TestCaptureEvidenceSurvivesARestartAndAContinuation` queues a repair
+  with its evidence, restarts the server before the attempt starts and
+  continues the run: the attempt's tree holds both files at their
+  hashes.
 - **A decision send** follows the ordering above (the row and its text
   before DR1's call, settled from DR1's receipt for the send's `opId`).
 
@@ -981,26 +1201,40 @@ and the ticket attachments they made stay).
   naming a missing file (Dispatch's attachment rule).
 - **What is written before what (send to a ticket).** The document is
   built from the rows at `rev`, published as a file with its lease, then
-  one transaction: the send row, `capture_files`, the ticket (new or
+  one transaction: the send's input and its `sent` outcome, the send's
+  `capture_files` rows, the ticket (new or
   existing) with its attachment rows and comment, the receipt. The
   ticket attachment rows name the same hashes `capture_files` does, so
   the sweep keeps the files while either is live.
-- **Send to Brakeman.** The send row `pending`, with the request it
-  will make (the person's question and the subjects), is committed
-  before the desk is asked; the desk's request carries the send's id as
-  its `opId`; `sent` is written after the desk answers. A crash between
-  the two is settled once the desk has recovered, by asking it again
-  with the stored request and the same `opId` (found or admitted:
-  `sent`; Brakeman off: `refused` with its words; not yet the owner,
-  stuck, the queue full or the budget spent: still `pending`, asked
-  again every 60 s, the person able to cancel it). No send is lost, none
-  loses the person's question, and none makes two requests.
+- **Send to Brakeman.** The send's input, with the request it will
+  make (the person's question and the subjects), is committed before the
+  desk is asked; the desk's request carries the send's id as its `opId`
+  and is pinned; `sent` is appended after the desk answers and the pin
+  released after that. A crash between the two is settled once the desk
+  has recovered, by asking it again with the stored request and the same
+  `opId` (found, found pruned or admitted: `sent`; Brakeman off:
+  `refused` with its words; not yet the owner, stuck, the queue full,
+  the budget spent or the pins full: still `pending`, asked again every
+  60 s, the person able to cancel it). Every step for a send runs under
+  its gate and reads its state again there, and a Cancel that finds a
+  request already admitted settles the send `sent` and cancels the
+  request. No send is lost, none loses the person's question, none makes
+  two requests however long it waits, and none is retried once its
+  request is gone.
+- **A send's state is one projection.** Its input never changes; its
+  outcomes are appended, never changed; `sendState` reads them the same
+  way in every replica and in any order of arrival (`sent` over the
+  rest, else the earliest refusal or cancellation).
 - **Send to a decision (PR-11).** The send row `pending`, with its
   `request` (the comment's text, frozen) and the comment's `opId` (the
   send's id), is committed before DR1's comment route is called; `sent`
   follows DR1's receipt. A crash before the comment is settled at start
   by calling DR1 again with the same `opId` and text; one after it by
   DR1's receipt for that `opId`, found, so no second comment is made.
+  The lookup must last while the send is pending: where DR1's receipts
+  are pruned, PR-11 finds the comment by the send's ref, which its text
+  names (`capture:<id>/<send>`) and DR1 keeps with the decision, so no
+  window ends the send's idempotency.
   DR1 lets a comment be made in every state of a decision, so a send
   that races an answer lands as a comment on the answered decision, as
   any comment does; the send route offers pending decisions and refuses
@@ -1013,6 +1247,18 @@ and the ticket attachments they made stay).
   candidate unless its tree is that candidate's checkout and
   `checkoutIntact` finds it at the commit with no tracked path changed
   at the save.
+- **One capture is one moment.** Every element of a capture was
+  selected at the moment its screenshot shows (the URL, the viewport and
+  scroll, the bridge's epoch, the label's commit and content): the
+  workbench starts a new draft at any change, and the server refuses an
+  annotation observed at another moment.
+- **No tree's secret is kept.** Every capture write is scrubbed of the
+  tree's secret before it is fingerprinted or stored; nothing durable
+  holds it.
+- **A file is kept while something holds it.** A content file a capture
+  names is kept while the live capture (its screenshot), a send (what it
+  froze and carried) or a ticket attachment names it; a delete releases
+  what only the live capture held, in its own transaction.
 - **What was sent stays.** A send's `digest`, the content file it
   names and its `request` never change, and `capture_files` keeps the
   file while the send exists; `EditCapture` writes only the live rows
@@ -1033,14 +1279,16 @@ and the ticket attachments they made stay).
   exits after readiness ends its preview the same way (`why:
   service_exited`). The result checkout's `trees` row and the attempt's
   `a.trees` are never written by a preview. At most one open per
-  candidate; `seq` only grows.
+  candidate; `seq` only grows. Its run is held against eviction
+  (`r.previews`) from the open's first transaction to the end's last,
+  so nothing but its own end stops its services.
 - **The bridge's messages.** The bridge answers only `window.parent` at
   an origin the server wrote into it (or the shell, for the desktop),
   with the nonce of its `hello`, a message at most 4 KiB, and posts only
   to that origin; the workbench accepts only the frame's window at the
   preview's origin with its nonce, at most 64 KiB. Nothing the page sends is executed or rendered as HTML
   by the workbench; HTML in a report is text.
-- **Migration.** Dispatch: version 2 (or RV1's 3) to the next, the four
+- **Migration.** Dispatch: version 2 (or RV1's 3) to the next, the six
   tables and their indexes created, no row of an older table rewritten;
   a store at a newer version than the binary is refused as today. The
   ledger: the next version, the `previews` table created; the same
@@ -1113,7 +1361,12 @@ alone first while iterating, one Playwright run per worktree). Desktop:
   six-byte characters, created, edited and sent), `TestACaptureCrashBetweenFileAndRow`
   (the lease swept, no row), `TestAStaleEditIsRefused`,
   `TestAnEditRefusesANewElementReport`,
-  `TestAnEditAfterASendKeepsWhatWasSent`, `TestSendToANewTicket`
+  `TestAnEditAfterASendKeepsWhatWasSent`, `TestAnEditWritesVersionsAndASet`
+  (an unchanged annotation keeps its version; past `MaxAnnotationSets`
+  refused), `TestTheFullestCaptureGoesThroughTheChangeLog` (a create,
+  an edit of every note and a send at every bound through `record`: no
+  change row past `MaxChangeValue`, the pointer's value and prior
+  `{rev, digest}`), `TestSendToANewTicket`
   (the ticket, its description, two attachment rows naming the capture's
   hashes, the comment, one `rev` bump), `TestASendWithoutAScreenshotIsTheDocumentAlone`
   (Create a ticket and Attach to a ticket: one attachment row, the words
@@ -1122,12 +1375,19 @@ alone first while iterating, one Playwright run per worktree). Desktop:
   (the row holds the digest, the file the bytes, `capture_files` naming it),
   `TestSendToATicketPastItsAttachments`,
   `TestASendNamesTheRevisionNow`, `TestAPendingSendIsSettledOnce`,
+  `TestSendOutcomesMergeByTheProjection` (pending beside sent, refused
+  beside cancelled, sent beside cancelled, each in both orders of
+  arrival: the same state), `TestATerminalSendTakesNoOtherOutcome`,
   `TestAPendingSendKeepsItsRequest`,
-  `TestADeletedCaptureKeepsItsSends`, `TestTheSweepKeepsACapturesFiles`,
+  `TestADeletedCaptureKeepsItsSends`, `TestADeletedUnsentCaptureReleasesItsImage`
+  (swept after its grace and gone from `SnapshotHashes`; a screenshot
+  another live capture shares kept; a sent capture's screenshot and
+  document kept), `TestTheSweepKeepsACapturesFiles`,
   `TestSnapshotHashesNameCaptureFiles`, `TestMigrationToCapturesKeepsEveryRow`,
   `TestCaptureFieldClasses` (`rules.go`), `TestAnnotationsMergeAsOneScalar`
-  (two replicas' edits: the later `at`, then actor, then `op_id`, wins
-  whole, never a mix), `TestReplayAnswersACaptureResend`.
+  (two replicas' edits of the same `rev`: both sets kept, the pointer
+  of the later `at`, then actor, then `op_id`, wins, its set whole,
+  never a mix), `TestReplayAnswersACaptureResend`.
 - `internal/crew` (PR-2, PR-7, PR-9): `TestTheBridgeURLReachesServices`,
   `TestNoBridgeWithoutAPreview`, `TestTheTreeSecretIsInNoReceipt` (two
   trees get different secrets; each service sees its own in its
@@ -1145,6 +1405,9 @@ alone first while iterating, one Playwright run per worktree). Desktop:
   (its steps' receipts under the attempt with the checkout's `dir`),
   `TestAPreviewIsEndedBeforeItsServicesAreSignalled` (a probe held at a
   gate), `TestAPreviewIdleIsEnded` (the engine's clock), `TestAPreviewEndsWithTheRun`,
+  `TestAPreviewHoldsItsRunAgainstEviction` (a finished run's preview
+  open while launches pass `maxRuns`: the run kept, its services alive,
+  the label served; closed, the next launch evicts it),
   `TestAPreviewCheckoutWithChangesIsRefused`, `TestPreviewsAreBoundedPerServer`,
   `TestAPreviewLeftAtRestartIsReportedNotSignalled`,
   `TestAContinuedRunRefusesAPreview`; every existing test of `steps.go`
@@ -1152,7 +1415,11 @@ alone first while iterating, one Playwright run per worktree). Desktop:
   `TestTheRepositorysManifestIsValid` (PR-9).
 - `internal/crew/ledger` (PR-7): `TestPreviewsTableMigration`,
   `TestAPreviewRowIsWrittenBeforeItsSteps`, `TestRecoverMarksAnOpenPreviewInterrupted`.
-- `internal/brakeman` (PR-6): `TestACaptureRefParsesAndPrints`.
+- `internal/brakeman` (PR-6): `TestACaptureRefParsesAndPrints`,
+  `TestAPinnedOpOutlivesTheWindow` (a pinned op past 1,000 later
+  requests: a repeat finds its request and never makes a second),
+  `TestAPinnedPrunedOpAnswersItsNumber`, `TestPinsAreBounded`.
+- `internal/proto` (PR-2): `TestPreviewMessagesFixture`.
 - `internal/api`: PR-2 `TestTheBridgeNamesTheServersOrigins`,
   `TestTheBridgeIsServedWithItsHeaders`, `TestNoBridgeInTheEmbedIsA404AndNoName`;
   PR-3 `TestThePreviewLabelReadsTheTreeNow`
@@ -1166,9 +1433,24 @@ alone first while iterating, one Playwright run per worktree). Desktop:
   missing, outside, a `..` path), `TestSourcesAreClassedAndTheAppsFileFirst`
   (a library component under `node_modules` wrapping an app component:
   the app's tracked file first, the library's marked `vendor`),
-  `TestTheBridgesFullestReportIsAccepted` (the shared fixture, at the
-  bridge's measure), `TestARetakeNamesALiveCaptureOfTheSameTask`,
-  `TestAnImageThatIsNotAPNGIsRefused`,
+  `TestTheBridgesFullestReportIsAccepted` (both shared fixtures, at the
+  bridge's measure), `TestACaptureIsOneMoment` (an annotation observed
+  at another URL, viewport, scroll, epoch or label refused),
+  `TestATreeSecretIsScrubbedFromEveryCapture` (a page keeping
+  `#token=<secret>` in its reported URL and in an observed one, in an
+  `href` and in its HTML; the no-bridge fallback taking the frame's
+  `src`; a note with the value pasted: the store's database file, every
+  content file, the document, the ticket's description and the
+  Brakeman request searched byte by byte, none holding it, the URLs
+  keeping `${CONDUCTOR_TREE_SECRET}`), `TestLongChangedPathsAreCutByBytes`
+  (200 paths of 4,000 bytes: the list within 16 KiB, `changed` 200,
+  `changedCut`), `TestARetakeAcrossTheRepairLaunch` (the first capture
+  on run 1's attempt sent to a ticket, the ticket's plan launched as run
+  2 and its candidate captured with `retakeOf`: taken, `retake_via`
+  `ticket`; the same run's: `run`; another repository's, a deleted one
+  and a `url` capture's: refused), `TestAnImageThatIsNotAPNGIsRefused`
+  (not a PNG; a valid header over pixel data cut short; a corrupt IDAT
+  chunk),
   `TestAnImagePastItsSideIsRefused`, `TestCaptureRoutesAreAdminOnly`
   (a share link's controller, an agent's and a Brakeman turn's tokens
   refused), `TestTheImageIsServedSandboxed`; PR-6 `TestSendToBrakemanCitesTheCapture`
@@ -1176,7 +1458,18 @@ alone first while iterating, one Playwright run per worktree). Desktop:
   (off, queue full, budget spent, stuck, not the owner),
   `TestALostBrakemanSendIsSettledAtStart` (with a desk not yet recovered:
   the send stays pending, then is sent with the stored question, which
-  differs from every note), `TestBrakemanReadsTheFrozenSendAcrossEditAndDelete`,
+  differs from every note), `TestACancelHeldBeforeTheDeskCall` (a try
+  held at a seam with the send's gate taken, just before the desk: the
+  cancel waits; released, the request admitted and `sent`, then the
+  cancel cancels it at Brakeman: one request in all),
+  `TestACancelBeforeATryStopsIt` (the try finds `cancelled` and asks
+  nothing), `TestACancelAfterALostAdmission` (admitted, the `sent`
+  append failed through a seam: the cancel finds the request by its op,
+  settles `sent` and cancels it), `TestACancelIsIdempotent`,
+  `TestARecoveredSendOutlivesTheOpWindow` (admitted, `MarkSent` failed,
+  1,001 other requests, then recovery: no second request, the send
+  `sent`, the pin released), `TestAPrunedRequestSettlesTheSend` (`sent`,
+  never asked again), `TestBrakemanReadsTheFrozenSendAcrossEditAndDelete`,
   `TestBrakemanReadsACaptureUnderItsDispatchClass`
   (refused without the class), `TestCaptureAdmissionFollowsTheScope`
   (a capture of a run outside the grant's projects, a `url` capture
@@ -1185,7 +1478,9 @@ alone first while iterating, one Playwright run per worktree). Desktop:
   `TestPreviewCommandsHaveReceipts`, `TestAHiddenTrackedChangeIsNoCandidate`
   (a tracked file changed under `skip-worktree` in the checkout: `git
   status` clean, the capture names no candidate); PR-10
-  `TestAMaximalCaptureFindingReachesTheRepair`; PR-11
+  `TestAMaximalCaptureFindingReachesTheRepair`,
+  `TestCaptureEvidenceSurvivesARestartAndAContinuation`,
+  `TestTheStoreAdmitsAReviewSend`; PR-11 `TestTheStoreAdmitsADecisionSend`,
   `TestADecisionSendIsACommentAndARow`, `TestADecisionSendLostBeforeItsComment`,
   `TestADecisionSendLostAfterItsComment` (one comment, the send `sent`),
   `TestASendRacingAnAnswerLandsAsAComment`.
@@ -1194,7 +1489,8 @@ alone first while iterating, one Playwright run per worktree). Desktop:
 - `internal/agents` (PR-6): the skill's golden with the capture files.
 - vitest: PR-2 `web/app/utils/previewBridge/report.test.ts` (the cut at
   each bound on an element boundary, the cut order to the report's
-  bound with every field at its own, the measure against Go's on
+  bound with every field at its own and through step 10 on the
+  largest-tag shape, both fixtures written, the measure against Go's on
   `<`, `&`, U+2028 and a lone surrogate, the shared fixture written;
   input values and password fields never in the HTML, the styles list),
   `gate.test.ts` (with a fake parent and a foreign window: a message
@@ -1203,15 +1499,21 @@ alone first while iterating, one Playwright run per worktree). Desktop:
   post addressed to the parent's origin, never `*`),
   `select.test.ts` (a selector
   found exactly once, an `id` preferred only when unique; Down stepping
-  from an overlay to the button under it),
+  from an overlay to the button under it; the epoch bumped once a
+  frame by a mutation, a resize and a scroll, never by its own shadow
+  root),
   `hints.test.ts` (Vue, Svelte, React 18 and `data-conductor-source`
-  from fake elements; none); PR-4 `web/app/utils/capture.test.ts`
+  from fake elements; none), `web/app/utils/protocol.test.ts`
+  (`parsePreviewMessage` against the shared fixture); PR-4 `web/app/utils/capture.test.ts`
   (`parseBridgeMessage`: the origin, the source, the nonce, a message
   past 64 KiB, an unknown type; the label's words; `diffSinceSent`),
   `web/app/composables/usePreviewBridge.test.ts` (the 3 s hello's words,
-  one request in flight, a `selected` after a client-side navigation
-  and a device-mode change carrying the new URL and viewport into the
-  annotation), `web/app/utils/screenshot.test.ts` (the scale
+  one request in flight; a selection after a client-side navigation, a
+  device-mode change, a scroll, a page mutation or a label whose content
+  moved starting a new draft with its own screenshot and moment, never
+  joining the first; a selection on the unchanged page joining it; a
+  `looked` whose epoch moved retaking the screenshot, twice, then the
+  words), `web/app/utils/screenshot.test.ts` (the scale
   to 2,048, the second halving, the drop); PR-5
   `web/app/utils/desktop.test.ts` additions.
 - desktop (PR-5): `desktop/src/preview.test.ts` (a frame found by its
@@ -1225,8 +1527,9 @@ alone first while iterating, one Playwright run per worktree). Desktop:
   its page; Open in Conductor; the label "worktree … · changes as the
   agent works"; Capture, select a button under an overlay that covers
   the whole page by stepping Down to it, the hit test's words naming the
-  overlay, a second element after a client-side navigation (its
-  annotation's URL the new one), a region; Save; the record read back
+  overlay, a second element on the unchanged page joining the capture,
+  a third after a client-side navigation starting a second capture (its
+  URL the new one, its own screenshot), a region; Save; the record read back
   with the server's commit and content; the screenshot through `previewSeam`, since
   the tab capture's prompt is no test's; the page without the bridge
   saying so after 3 s); PR-6 `web/e2e/capture-send.spec.ts` (Create a
@@ -1244,7 +1547,8 @@ alone first while iterating, one Playwright run per worktree). Desktop:
   source names (the app's tracked file, a library component's under
   `node_modules` listed after it) and submits, Preview this candidate,
   Capture again, the new capture's `retakeOf` read back from the server
-  as the first's id, the ticket's Captures showing both); PR-10 `web/e2e/capture-review.spec.ts`;
+  as the first's id (the two captures in distinct runs, `retakeVia`
+  `ticket`), the ticket's Captures showing both); PR-10 `web/e2e/capture-review.spec.ts`;
   PR-11 `web/e2e/capture-decision.spec.ts`. Each spec waits on what the
   page draws and on the server's records (AGENTS.md, Tests that do not
   flake), never on a clock; `stopStrays` first; tiles and rows found by
@@ -1331,22 +1635,22 @@ names its schema version and the rows it adds when it is cut.
 
 | PR | Title | Contains | Touches | Tests | Depends on | Parallel with |
 |---|---|---|---|---|---|---|
-| PR-1 | dispatch: captures, annotations, sends and their files (schema version 3, or the next) | the four tables, indexes and migration, the bounds, the capture document, `CreateCapture`, `EditCapture`, `DeleteCapture`, `SendCapture` to a ticket with its attachments and comment, `MarkSent`, `MarkRefused`, the reads, `rules.go`'s classes, the sweep's and `SnapshotHashes`' files, `OnChange`'s entities | `internal/dispatch` | the `internal/dispatch` tests above | none | PR-2 |
-| PR-2 | bridge: the script, its build, its serving and its name in a tree; the tree's secret | `previewBridge.entry.ts` and `utils/previewBridge/` (`report.ts` with the cut order and the measure, `select.ts`, `hints.ts`, `gate.ts`), the Vite library build for the dev server and the Nuxt build hook for the built app, `make web-build`'s check, `previewbridge.go` with the origins and its `404 no_bridge`, `Server.SetListen` and its call in `runServe`, `Engine.SetPreviewBridge` and `tree.names` with `CONDUCTOR_PREVIEW_BRIDGE` and `CONDUCTOR_TREE_SECRET`, the skill's line, `docs/protocol.md`'s bridge messages, their bounds and the bridge's gate, and the route | `web/app/utils`, `web/nuxt.config.ts`, `Makefile`, `internal/web`, `internal/api`, `internal/crew` (`steps.go`), `internal/cli` (`serve.go`), `internal/agents`, `docs/protocol.md` | the PR-2 vitest and Go tests above | none | PR-1 |
-| PR-3 | api: the preview label, captures created, read, edited and deleted | `captures.go`'s routes but send, what the server fills (the sources' classes and order, `retakeOf`, the drift by `content`), the label route with the admin's `url`, `crew.TreeRevision` beside `checkoutIntact`, the shared report fixture, the image route, the `dispatch` event's entities, `docs/protocol.md`'s rows and the capture document | `internal/api`, `internal/crew` (`verify.go`), `docs/protocol.md` | the PR-3 `internal/api` tests above | PR-1, PR-2 | none |
+| PR-1 | dispatch: captures, annotations, sends and their files (schema version 3, or the next) | the six tables (annotation versions and sets, send inputs and outcomes), indexes and migration, the bounds, the capture document, `CreateCapture`, `EditCapture`, `DeleteCapture` with its release, `SendCapture` to a ticket with its attachments and comment, `MarkSent`, `MarkRefused`, `CancelSend`, `sendState`, the reads, `rules.go`'s classes, the sweep's and `SnapshotHashes`' files, `OnChange`'s entities | `internal/dispatch` | the `internal/dispatch` tests above | none | PR-2 |
+| PR-2 | bridge: the script, its build, its serving and its name in a tree; the tree's secret | `previewBridge.entry.ts` and `utils/previewBridge/` (`report.ts` with the cut order and the measure, `select.ts`, `hints.ts`, `gate.ts`), the Vite library build for the dev server and the Nuxt build hook for the built app, `make web-build`'s check, `previewbridge.go` with the origins and its `404 no_bridge`, `Server.SetListen` and its call in `runServe`, `Engine.SetPreviewBridge` and `tree.names` with `CONDUCTOR_PREVIEW_BRIDGE` and `CONDUCTOR_TREE_SECRET`, the skill's line, the bridge's messages in `internal/proto/preview.go` and `web/app/utils/protocol.ts` with their shared fixture, `docs/protocol.md`'s bridge messages, their bounds and the bridge's gate, and the route | `web/app/utils` (`protocol.ts` among them), `web/nuxt.config.ts`, `Makefile`, `internal/proto`, `internal/web`, `internal/api`, `internal/crew` (`steps.go`), `internal/cli` (`serve.go`), `internal/agents`, `docs/protocol.md` | the PR-2 vitest and Go tests above (`TestPreviewMessagesFixture` and `protocol.test.ts` among them) | none | PR-1 |
+| PR-3 | api: the preview label, captures created, read, edited and deleted | `captures.go`'s routes but send, what the server fills (the sources' classes and order, `retakeOf` and `retake_via`, the drift by `content`, the changed paths' byte cut, the one-moment check, the secret's scrub, the whole PNG's check), the label route with the admin's `url`, `crew.TreeRevision` beside `checkoutIntact`, the shared report fixture, the image route, the `dispatch` event's entities, `docs/protocol.md`'s rows and the capture document | `internal/api`, `internal/crew` (`verify.go`), `docs/protocol.md` | the PR-3 `internal/api` tests above | PR-1, PR-2 | none |
 | PR-4 | web: the preview in the pane, selection, annotations, a capture saved | the preview page (`pages/preview.vue`), `PreviewPane`, the `url` tab's Capture, `usePreviewLabel`, `usePreviewBridge` and `previewSeam`, `screenshot.ts` (the tab's path and none), `CaptureEditor`, `CaptureAnnotation`, `CaptureElement`, `useCaptures`, `utils/capture.ts`, Open in Conductor and New tab's admin `url` on the run page and the palette, the fixture page and its service, `preview-capture.spec.ts` | `web/app/components`, `web/app/composables`, `web/app/utils`, `web/app/pages`, `web/e2e` | the PR-4 vitest files, `preview-capture.spec.ts` | PR-3 | PR-7 |
 | PR-5 | desktop: the bridge in any frame and the frame's pixels | `desktop/src/preview.ts`, the two IPC channels and their guard, the preload's two functions, `utils/desktop.ts`'s mirror and `screenshot.ts`'s desktop path, `docs/architecture.md`'s paragraph | `desktop/src`, `web/app/utils`, `docs/architecture.md` | `preview.test.ts`, `ipc.test.ts`, `desktop.test.ts` | PR-4 | PR-6, PR-7 |
-| PR-6 | sends: a ticket and Brakeman; the ticket's captures | the send route (ticket, with the document alone when there is no screenshot, and Brakeman, `askBrakeman` with every desk answer, `settleCaptureSends` from the stored request), the `capture` refs (live and frozen) and their resolution, the observe reads with their admission and `capture_read` and `capture_send_read` in the guide, the skill's capture files, `CaptureSend`, `DispatchCaptures` on the ticket page, `DispatchPlanPropose`'s preselection, `capture-send.spec.ts`, `docs/protocol.md`'s send row | `internal/api`, `internal/brakeman`, `internal/agents`, `web/app/components`, `web/app/composables`, `web/e2e`, `docs/protocol.md` | the PR-6 Go tests, `capture-send.spec.ts` | PR-4 | PR-5, PR-7 |
-| PR-7 | crew: a tree's owner, and a candidate's preview checkout | `treeOwner` in `steps.go` (the open attempt as today; `resolveTree`, `prepareTree`, `treeReady`, `endTree` and the service-exit handling through it), the preview as the second owner, the ledger's `previews` table and migration (the next version), its writers and `Recover`, `Engine.OpenPreview`, `ClosePreview`, the idle end, the bound, `AttemptState.Previewing` | `internal/crew`, `internal/crew/ledger` | the PR-7 `internal/crew` and `internal/crew/ledger` tests | PR-2, PR-3 | PR-4, PR-5, PR-6 |
+| PR-6 | sends: a ticket and Brakeman; the ticket's captures | the send route (ticket, with the document alone when there is no screenshot, and Brakeman, `askBrakeman` with every desk answer, pinned, `settleCaptureSends` from the stored request, the send gates and the cancel route with `cancelBrakeman`), the Brakeman store's pinned op refs, the `capture` refs (live and frozen) and their resolution, the observe reads with their admission and `capture_read` and `capture_send_read` in the guide, the skill's capture files, `CaptureSend`, `DispatchCaptures` on the ticket page, `DispatchPlanPropose`'s preselection, `capture-send.spec.ts`, `docs/protocol.md`'s send row | `internal/api`, `internal/brakeman`, `internal/agents`, `web/app/components`, `web/app/composables`, `web/e2e`, `docs/protocol.md` | the PR-6 Go tests, `capture-send.spec.ts` | PR-4 | PR-5, PR-7 |
+| PR-7 | crew: a tree's owner, and a candidate's preview checkout | `treeOwner` in `steps.go` (the open attempt as today; `resolveTree`, `prepareTree`, `treeReady`, `endTree` and the service-exit handling through it), the preview as the second owner, the ledger's `previews` table and migration (the next version), its writers and `Recover`, `Engine.OpenPreview`, `ClosePreview`, the idle end, the bound, the run held against eviction (`r.previews` in `idle`), `AttemptState.Previewing` | `internal/crew`, `internal/crew/ledger` | the PR-7 `internal/crew` and `internal/crew/ledger` tests | PR-2, PR-3 | PR-4, PR-5, PR-6 |
 | PR-8 | a candidate's preview opened, labelled and captured again | the two command routes and the label's `seq`, Preview this candidate on `RunTasks` and `DispatchCandidates` (opening the preview page), Capture again (`usePreviewBridge`'s `describe`, `useCaptures` and `utils/capture.ts` sending `retakeOf`), `candidate-preview.spec.ts`, `docs/protocol.md`'s rows and events | `internal/api`, `web/app/components`, `web/app/composables`, `web/app/utils`, `web/e2e`, `docs/protocol.md` | the PR-8 Go tests, `candidate-preview.spec.ts` | PR-5, PR-6, PR-7 | none |
 | PR-9 | Conductor's own app, the loop end to end, the docs and the entry | `conductor.manifest.json` (the tree's secret, the probes' timeouts), `serve --token-env`, `TestTheRepositorysManifestIsValid`, `plugins/previewBridge.client.ts`, `nuxt.config.ts`'s `previewBridge` and `CONDUCTOR_DEV_API`, the stub worker's `STUB_CAPTURE_FIX`, `capture-repair.spec.ts`; `docs/architecture.md`, `docs/repository-map.md`, `README.md`'s line, `docs/features.md`'s entry | `conductor.manifest.json`, `internal/cli`, `internal/crew` (the manifest's test), `web/app/plugins`, `web/nuxt.config.ts`, `web/e2e`, `docs`, `README.md` | `capture-repair.spec.ts`, the PR-9 Go tests; the scripts suite is not touched | PR-8 | none |
-| PR-10 | review: a capture as a finding, and Request a change (after RV1) | the finding kind `capture` with `capture_ref` (`{capture, send, k}`, the next Dispatch version), its binding by RV1's rules (the request fingerprinted, the finding's message projected by the server within RV1's 1,000 characters, its path and line the first tracked source), the evidence files pinned to RV1's change request and written into the repair attempt (`internal/crew`'s task files, below), the send kind `review`, Request a change and Add to a review in `CaptureSend` and in RV1's draft, the capture finding's row in the Review view, `capture-review.spec.ts`, the docs and the entry's paragraph | `internal/dispatch`, `internal/api`, `internal/crew` (`taskfile.go`), `web/app/components`, `web/app/composables`, `web/e2e`, `docs` | the PR-10 tests in `internal/dispatch`, `internal/crew` and `internal/api` (`TestACaptureFindingIsFilledByTheServer`, `TestRequestAChangeRepairsWithTheCapture`, `TestAMaximalCaptureFindingReachesTheRepair`), `capture-review.spec.ts` | PR-9; RV1's PR-4 and PR-6 | none |
-| PR-11 | decision: a capture attached to a decision (after DR1) | the send kind `decision` (DR1's comment route, kind `comment`, the capture named in its text with its revision, the send's id its `opId`; the send row this item's, `pending` with its text before the call and settled from DR1's receipt), the decision card's captures from `capture_sends`, Attach to a decision in `CaptureSend` (pending decisions offered), `capture-decision.spec.ts`, the docs and the entry's last paragraph | `internal/api`, `web/app/components`, `web/e2e`, `docs` | `TestADecisionSendIsACommentAndARow`, `TestADecisionSendLostBeforeItsComment`, `TestADecisionSendLostAfterItsComment`, `TestASendRacingAnAnswerLandsAsAComment`, `capture-decision.spec.ts` | PR-9; DR1's PR-4 and PR-7 | none |
+| PR-10 | review: a capture as a finding, and Request a change (after RV1) | the finding kind `capture` with `capture_ref` (`{capture, send, k}`, the next Dispatch version), its binding by RV1's rules (the request fingerprinted, the finding's message projected by the server within RV1's 1,000 characters, its path and line the first tracked source), the evidence files pinned to RV1's change request by reference and written into the repair attempt through the resolver (`internal/crew`, above), the send kind `review` admitted by the store (PR-1's refusal lifted), Request a change and Add to a review in `CaptureSend` and in RV1's draft, the capture finding's row in the Review view, `capture-review.spec.ts`, the docs and the entry's paragraph | `internal/dispatch`, `internal/api`, `internal/crew` (the change request's evidence refs, `UseEvidenceFiles`, `taskfile.go`), `web/app/components`, `web/app/composables`, `web/e2e`, `docs` | the PR-10 tests in `internal/dispatch`, `internal/crew` and `internal/api` (`TestACaptureFindingIsFilledByTheServer`, `TestRequestAChangeRepairsWithTheCapture`, `TestAMaximalCaptureFindingReachesTheRepair`, `TestCaptureEvidenceSurvivesARestartAndAContinuation`, `TestTheStoreAdmitsAReviewSend`), `capture-review.spec.ts` | PR-9; RV1's PR-4 and PR-6 | none |
+| PR-11 | decision: a capture attached to a decision (after DR1) | the send kind `decision`, admitted by the store (PR-1's refusal lifted in `internal/dispatch`) and sent through DR1's comment route (kind `comment`, the capture named in its text with its revision and the send's ref, the send's id its `opId`; the send's input this item's, `pending` with its text before the call and settled from DR1's receipt, or from the comment found by the send's ref where DR1's receipts are pruned), the decision card's captures from `capture_sends`, Attach to a decision in `CaptureSend` (pending decisions offered), `capture-decision.spec.ts`, the docs and the entry's last paragraph | `internal/dispatch`, `internal/api`, `web/app/components`, `web/e2e`, `docs` | `TestTheStoreAdmitsADecisionSend`, `TestADecisionSendIsACommentAndARow`, `TestADecisionSendLostBeforeItsComment`, `TestADecisionSendLostAfterItsComment`, `TestASendRacingAnAnswerLandsAsAComment`, `capture-decision.spec.ts` | PR-9; DR1's PR-4 and PR-7 | none |
 
 Sizes, as the owner asked (2026-11-05: a row is a batch, 300 to 800
-changed lines, at most about 1,500 with its tests): PR-1 about 750 lines
-and 750 of tests; PR-2 about 650 and 500; PR-3 about 800 and 700; PR-4
-about 800 and 550; PR-5 about 350 and 300; PR-6 about 750 and 650; PR-7
+changed lines, at most about 1,500 with its tests): PR-1 about 800 lines
+and 700 of tests; PR-2 about 650 and 500; PR-3 about 800 and 700; PR-4
+about 800 and 550; PR-5 about 350 and 300; PR-6 about 800 and 700; PR-7
 about 800 and 700, the owner seam about 250 of them, every existing
 `steps.go` test kept as the proof that the attempt's path did not move;
 PR-8 about 450 and 400; PR-9 about 450 and 400, with the docs; PR-10
@@ -1366,8 +1670,10 @@ taken.
    join on later. Pricing does not bear on a free item. How replicated
    Dispatch records merge is CS1's to decide; this item only declares
    its entities' classes with DS1's existing rules, as DS1's plan lets
-   each stream: a capture's facts immutable, its annotations one scalar
-   under DS1's last-writer rule, sends a log. None blocks this item.
+   each stream: a capture's facts immutable, its annotations immutable
+   versions and sets under one scalar pointer by DS1's last-writer rule,
+   a send's input immutable and its outcomes a log read through one
+   projection. None blocks this item.
 2. **One bridge, loaded by the page in a browser and injected by the
    shell in the desktop app.** Chosen over a proxy on a second origin
    per preview (dev servers' absolute paths and WebSockets, a port and a
