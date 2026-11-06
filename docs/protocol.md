@@ -478,7 +478,7 @@ that resumes without it has the pair it last sent stand until its first
 `attention`, which then drops the `kept`), and an older server ignores the
 field),
 `activity{sessionId,entry,state?}`,
-`chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
+`chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system`, `sent_to_agent` and `question` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`; a `question` only from the agent's role (`by.role` `agent`), which no other kind may carry, its `options` cleaned as a server session's (at most 6, each label at most 60 runes, cut with an ellipsis); a `system` line's `event` only when it is `join`, `leave`, `answered` or `withdrawn`, the last two with their `ref`, and a `withdrawn` line's `text` only when it is `terminal` or `agent`; it mirrors the message into the events stream and the session's record (History); a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
 minted by the server: `requestId` ≤ 32 bytes, `label` ≤ 120 bytes,
 `ttlSeconds` ≤ 86400, at most 5 requests a minute per connection; one
@@ -3798,3 +3798,74 @@ notifications, Chime and webhooks only when its `crew.brakeman.quiet` is
 false (every turn a person asked for; a background turn's, Program item
 BK3, will be quiet): the server's webhooks and providers' sinks skip a
 quiet session's entries.
+
+### History
+
+Every session the server runs or hosts gets a **record** (`docs/plans/history.md`,
+Program item HS1; `internal/journal`): a JSON document of its own,
+`history/sessions/<id>.json` in the data directory (the directory 0700,
+each file 0600), begun as the session is added, before it can keep an
+entry, and written as it changes, at most once every 5 s, and at once at
+its end, when a crew is taken after its launch, and for a hosted
+session's first write. The server holding `history/owner.lock` writes the
+records; another server on the same data directory reads them (its own
+sessions unrecorded, `readOnly` on the list) and takes the lock when the
+first lets it go. `history.sessions` (`CONDUCTOR_HISTORY_SESSIONS`, on by
+default) off begins no record; the records kept stay until forgotten. A
+server with no data directory, and a switchyard, keep none.
+
+A record holds the session's id, name and kind; its agent (`id`, `name`,
+`adapter`, `version` from the server's probe, its own `session` `{id,
+source, resumable}` as the session knows it); its host (`name`, `user`,
+for a hosted one `owner`, the hash the hub keeps of its host's instance,
+and `hosted`); `where` it ran (a server session's Runtime, always set;
+empty for a hosted one, whose host reports none); its `cwd`; for a native
+server session the `repo` (the worktree's top), `repoCommon` (the
+repository's common git directory, absolute), `branch` and `startCommit`
+read in one `git rev-parse` before its process starts (`startFrom:
+"launch"`; an attempt of a managed run has `startFrom: "attempt"`, its
+start being the ledger's), and `endCommit`, HEAD read after its end, an
+observation; its `launch` (server sessions: `args` only when the launch
+fits 16 KiB, else `argCount` and `argsSha256` with `argsKept: false`; the
+variables' `envNames`, at most 64, `envCount` and one `envSha256` over the
+sorted `name=value` lines, never a value; `yolo`, `renamed`); its `crew`
+(`runId, crewId, member, task?, attempt?, brakeman?`); `resumedFrom`;
+`startedAt`; `endedAt` (an observed end: an exit or a stop), or `lostAt`
+when the server stopped observing it (`ending` `lost` for a server
+session's record found open at the next start, `host away` for a hosted
+one's, or for one its hub let go past the disconnect grace: whether its
+process ended is not known); `ending` (`exited (exit 0)`, `stopped`, …);
+`reopened`, how often its host took a hosted record up again under the
+same id; and its evidence: `entries[{seq, at, kind, id?, ref?, event?,
+byName?, message?, path?, tool?, url?, to?, choices?, outcome?}]` in order
+of `at`, then `seq`: `typed` (a line Conductor typed: a crew's prompt, a
+broadcast, a handoff), `question` (the agent's question in the chat, `id`
+its id, `choices` its labels), `answer` (`ref` the question, `outcome`
+`answered` with the choice's label as the chat's `answered` line has it
+and none for a line typed, `answered_in_terminal` for keys typed in the
+terminal, `withdrawn` when the agent moved on), `chat` (a message posted,
+`id` its id; with `event: "sent_to_agent"` and `ref`, the mark that one
+was sent to the agent), `report` (`event` `progress`, `artifact`,
+`handoff`, `error` or `tool_denied`), `status`; `files[{path, op, count,
+last}]`, one row per path and op, at most 500, a path the session's deny
+list covers never written; `tools`, tool uses counted by tool, at most 64;
+`dropped`, the entries and files its bounds let go, oldest first, and
+those that came after its end; `resumes`, the receipts of resumes from it.
+Never kept: what a person types into a terminal or a reply box, a typed
+answer's text, a variable's value, who joined, left or came through a
+link, an attention entry. A record is at most 64 KiB as written; a
+message at most 500 bytes, a chat line 2 KiB. The newest 2,000 ended
+records are kept; a live one and one with a resume being started are
+never pruned. A record of a later version is listed (`newer: true`) and
+read as it is, never rewritten.
+
+| Route | Who | Answers |
+|---|---|---|
+| `GET /api/history/sessions?after=&limit=` | admin | `{records[{id, name, kind, agent, host, where?, cwd, repo?, branch?, crew?, startedAt, endedAt?, lostAt?, ending?, entries, files, dropped?, newer?}], next?, readOnly?}`, newest first by `startedAt`; `limit` 1 to 100, default 50 (`400 invalid_request` otherwise); `after` the `next` of the page before (at most 64 bytes; `400 bad_cursor` for one that is not) |
+| `GET /api/history/sessions/{id}` | admin | `{record, live, newer}`: the record whole (at most 64 KiB), `live` while the registry lists its session running; `404 not_found` |
+| `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found` |
+| `DELETE /api/history/sessions` | admin | `{forgotten, kept}`: every record neither live nor pending forgotten, those kept counted |
+
+A share link, a session's own token and Brakeman's principal reach none
+of them (`401`). A server with no data directory, and a switchyard,
+answer `404 history_unavailable`.

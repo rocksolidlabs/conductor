@@ -26,6 +26,8 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/share"
 	"github.com/rocksolidlabs/conductor/internal/signal"
@@ -128,6 +130,12 @@ type Server struct {
 	// brakeman is Brakeman's desk (brakeman.go), opened beside Dispatch;
 	// nil without a data directory and on a switchyard.
 	brakeman *brakemanDesk
+	// sessionRecords is the session journal (history_journal.go), opened
+	// beside Brakeman's desk; nil without a data directory, on a
+	// switchyard, and when it could not be opened. readRevision is how a
+	// record's git facts are read (gitcli.RevisionOf; a test's seam).
+	sessionRecords *journal.Journal
+	readRevision   func(ctx context.Context, dir string) (gitcli.Revision, error)
 	// planFacts keeps what the plan revisions' reads take from each
 	// revision's body, by its digest (dispatch_plans.go), so a list reads
 	// no body it has read before.
@@ -366,6 +374,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.
+	s.readRevision = gitcli.RevisionOf
 	s.installExtensions(o.providers)
 	s.installRuntimes(o.providers, o.native)
 	s.syncs = syncs
@@ -454,6 +463,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)
+			s.sessionRecords = s.openSessionRecords(st)
 		}
 		s.wireLaunches()
 		s.ledger = openLedger(context.Background(), st, s.records, log, syncs.observeLedger, syncs.ledgerOwned, s.ledgerRecovered)
@@ -480,15 +490,22 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// waits, as a sink must not. The changes of server sessions reach the runs
 	// through localChange.
 	s.events.addSink(s.runs.OnActivity)
+	// The session records take every entry and every session's chat line.
+	if s.sessionRecords != nil {
+		s.events.addSink(s.recordActivity)
+		s.events.onChat = s.recordChat
+	}
 	// The context providers: an attempt's context, and the files touched.
 	s.wireContext()
 	s.hosts = signal.NewHub(s.registry, log)
 	if cfg.MaxViewersPerSession > 0 {
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}
+	s.hosts.OnAdded = s.beginHostedRecord
 	s.hosts.OnChange = func(info session.Info) {
 		s.events.publishIf(info, s.listed)
 		s.router.mark(info.ID)
+		s.recordChanged(info.ID)
 		// A hosted session that ended takes its links with it, as a server
 		// session does, and closes their viewers as its end.
 		if info.Status.Ended() {
@@ -521,6 +538,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.unpublish(id)
 		s.pastes.closeAll(id)
 		s.router.mark(id)
+		s.recordRemoved(id, d)
 	}
 	if cfg.Switchyard.Enabled && s.store != nil {
 		s.openLinkKeeper(s.store)
@@ -633,6 +651,9 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	if s.dispatch != nil {
 		s.dispatch.Close()
 	}
+	if s.sessionRecords != nil {
+		s.sessionRecords.Close()
+	}
 }
 
 // Handler returns the routed handler with middleware applied.
@@ -646,6 +667,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/switchyard/status", s.requireAdmin(s.handleSwitchyardStatus))
 	mux.HandleFunc("GET /api/export", s.requireAdmin(s.handleExport))
 	mux.HandleFunc("GET /api/capabilities", s.requireAdmin(s.handleCapabilities))
+	mux.HandleFunc("GET /api/history/sessions", s.requireAdmin(s.handleHistorySessions))
+	mux.HandleFunc("GET /api/history/sessions/{id}", s.requireAdmin(s.handleHistorySession))
+	mux.HandleFunc("DELETE /api/history/sessions/{id}", s.requireAdmin(s.handleForgetHistorySession))
+	mux.HandleFunc("DELETE /api/history/sessions", s.requireAdmin(s.handleForgetHistorySessions))
 	mux.HandleFunc("GET /api/catalog", s.launching(s.handleCatalog))
 	mux.HandleFunc("POST /api/catalog", s.launching(s.handleSaveAgent))
 	mux.HandleFunc("POST /api/catalog/check", s.launching(s.handleCheckCommand))
@@ -1140,6 +1165,12 @@ func (s *Server) Shutdown(ctx context.Context) {
 		if err := s.dispatch.Close(); err != nil {
 			s.log.Warn("Dispatch's store did not close cleanly", "err", err)
 		}
+	}
+	// The sessions stopped and the hosts let go, every record is written
+	// as it stands: the next start finds a hosted one open and marks it
+	// host away.
+	if s.sessionRecords != nil {
+		s.sessionRecords.Close()
 	}
 }
 
