@@ -191,6 +191,9 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			}
 			for _, al := range m.answers {
 				r.note(session.ActivityError, "decision %s's answer was not typed into %s: %s", al.d.id(), m.def.Name, why)
+				if !al.notice {
+					go e.lineEnded(r, al.d, ledgerUntyped, why)
+				}
 			}
 			m.handoffs, m.answers = nil, nil
 			m.stopDelivering()

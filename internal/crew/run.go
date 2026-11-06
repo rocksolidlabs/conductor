@@ -145,6 +145,12 @@ var (
 	// read the run without them, and a later commit would write them
 	// after it.
 	ErrRunUnsettled = errors.New("the run has changes the ledger has not recorded yet: continue it once the ledger takes them")
+	// ErrChainTooLong refuses a continuation of a run whose chain of
+	// continuations is longer than a server reads (maxChain runs, the run
+	// itself among them): its decisions could not be read whole, and a
+	// continuation that read them in part would ask a released gate again
+	// or drop an answer (readDecisionHistory). Nothing is made or moved.
+	ErrChainTooLong = errors.New("the run's chain of continuations is longer than this server reads: it is not continued")
 	// ErrManaged says the run is a managed one (a crew with tasks, #334),
 	// which the start, add and resume paths of a legacy run do not serve:
 	// a managed run dispatches its own tasks, and continues after a restart
@@ -462,6 +468,16 @@ type Engine struct {
 	// identity's response to a decision is applied only by the process
 	// that accepted it (decisions.go).
 	boot string
+	// confirms are the answers of the identity providers' rechecks of
+	// accepted identity responses (ConfirmAuthority), by the response:
+	// whichever run holds its decision reads them, so one is never lost
+	// with a copy a continuation left behind. Under e.mu.
+	confirms map[confirmKey]int
+	// opMu orders the operators' operations on decisions (operate), from
+	// the look for their ids through their commits: an operation's row is
+	// never refused in its transaction as another's with the same id,
+	// which a change kept for the next commit could not survive.
+	opMu sync.Mutex
 	// gatesAtLaunch opens a planned run's gates in its first transaction
 	// (openGates). Off until the response route ships with it
 	// (docs/plans/decisions.md, PR-4): a test turns it on.
@@ -480,10 +496,26 @@ type Engine struct {
 	// for none) and before it types it: a test sets the mirror aside there.
 	beforeAnswer func(member string)
 	afterLook    func(member, mirror string)
+	// beforeTyping, when set, runs as a decision's answer is about to be
+	// submitted to its session: a test holds the line there while its
+	// decision is superseded.
+	beforeTyping func(n int64)
+	// tryAsk, when set, asks a decision's question in place of the
+	// session's TryAskDecision: a test refuses it as the session's rate
+	// limit does.
+	tryAsk func(l *session.Local, id, question string) (string, error)
+	// afterDecisionsRead, when set, runs once an attempt's task file
+	// decisions are read and before the change that marks them carried
+	// (taskDecisions): a test holds two readers there.
+	afterDecisionsRead func(task string)
 	// submitAnswer, when set, submits a decision's line in place of the
 	// session's Submit (typeAnswer): a test answers as the session's
 	// writer does when a dialog came as the text was taken.
 	submitAnswer func(ctx context.Context, l *session.Local, sub session.Submission) (session.SubmitResult, error)
+	// afterLineEnded, when set, runs once lineEnded has decided a line's
+	// end and its transaction returned: a test waits there before it lets
+	// a continuation go on.
+	afterLineEnded func(n int64)
 }
 
 // sessionMember is the member a session is, and its run.
@@ -527,8 +559,10 @@ type run struct {
 	// decisions are the run's open and answered decisions (decisions.go),
 	// under e.mu. Their order is not their opening's: a supersession
 	// refused puts its target back last; what needs that order compares
-	// their numbers (newerOpen).
+	// their numbers (newerOpen). dec is the rest of what it keeps of them
+	// (decisions_wait.go).
 	decisions []*decision
+	dec       runDecisions
 	// created says the run's row is in the ledger: its first transaction
 	// committed. Until then only a change that may be the run's first (its
 	// launch's, its continuation's, its stop's: transactFirst) is written,
@@ -1699,6 +1733,13 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 	r, m := sm.r, sm.m
 	m.poke()
 	isHandoff := entry.Type == session.ActivityHandoff
+	if !isHandoff && entry.Type == session.ActivityAttention && state == session.AttentionWorking && sm.a != nil {
+		// Its agent works again: an attempt that waits on a decision is
+		// not given up until its next done (decisions_wait.go: park).
+		e.mu.Lock()
+		sm.a.turnEnded = false
+		e.mu.Unlock()
+	}
 	if !isHandoff && entry.Type == session.ActivityAttention && (state == session.AttentionWorking || state == session.AttentionDone) && sm.a != nil {
 		// A blocker the attempt reported is cleared once it works on, or
 		// says it is done (checkpoints.go).
