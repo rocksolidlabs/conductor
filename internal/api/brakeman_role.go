@@ -58,12 +58,19 @@ type roleSources struct {
 	ticketSeq   int64
 	ticketTop   int64
 	ticketBegun bool
+	// ticketPage and ticketPages bound one pass's read of the feed: pages
+	// of ticketPage changes, at most ticketPages of them, the rest read
+	// on the pass after, at once.
+	ticketPage, ticketPages int
 	// paused are the runs last seen paused: a pause wakes the role as the
 	// run becomes paused, not at each change while it stays so.
 	paused map[string]bool
 	// made are the ticket launches whose maker was read (madeByTurn): true
 	// for a Brakeman act's. At most maxRoleSources, cleared past them.
 	made map[string]bool
+	// asked are the person's requests the role could not note (noteAsked),
+	// told again on the next pass.
+	asked map[string]bool
 }
 
 // openRole makes the desk's role and wires Dispatch's changes to it; the
@@ -71,7 +78,8 @@ type roleSources struct {
 // OnRunChange) and the activity through its sink (activity), which New
 // adds before the engine's.
 func (d *brakemanDesk) openRole() {
-	d.src = &roleSources{runs: map[string]bool{}, questions: map[string]bool{}, paused: map[string]bool{}, made: map[string]bool{}}
+	d.src = &roleSources{runs: map[string]bool{}, questions: map[string]bool{}, paused: map[string]bool{}, made: map[string]bool{}, asked: map[string]bool{},
+		ticketPage: 500, ticketPages: 20}
 	d.role = crew.NewRole(brakemanMember, roleRecords{d: d}, d.now)
 	if ds := d.s.dispatch; ds != nil {
 		// The feed is read from its head now, before the desk hears of a
@@ -165,14 +173,15 @@ func (d *brakemanDesk) ticketsChanged(changes []dispatch.Change) {
 // the configuration's scope or visibility is not taken (admitted).
 func (d *brakemanDesk) drainSources() {
 	d.src.mu.Lock()
-	runs, questions, tickets := d.src.runs, d.src.questions, d.src.tickets
-	d.src.runs, d.src.questions, d.src.tickets = map[string]bool{}, map[string]bool{}, false
+	runs, questions, tickets, asked := d.src.runs, d.src.questions, d.src.tickets, d.src.asked
+	d.src.runs, d.src.questions, d.src.tickets, d.src.asked = map[string]bool{}, map[string]bool{}, false, map[string]bool{}
 	d.src.mu.Unlock()
 	cfg, err := d.st.Config()
 	if err != nil {
 		// Unreadable is not off: nothing is dropped or read past.
 		d.s.log.Warn("Brakeman's role could not read its configuration: it tries again", "err", err)
 		d.keepSources(runs, questions, tickets)
+		d.keepAsked(asked)
 		d.role.Again()
 		return
 	}
@@ -220,6 +229,12 @@ func (d *brakemanDesk) drainSources() {
 		}
 	}
 	d.keepSources(kept, nil, false)
+	for id := range asked {
+		if err := d.askedWake(id); err != nil {
+			d.keepAsked(map[string]bool{id: true})
+			failed = true
+		}
+	}
 	for sid := range questions {
 		d.holdQuestion(ctx, adm, sid, time.Duration(cfg.Wake.QuestionMinutes)*time.Minute)
 	}
@@ -246,6 +261,41 @@ func (d *brakemanDesk) keepSources(runs, questions map[string]bool, tickets bool
 		}
 	}
 	d.src.tickets = d.src.tickets || tickets
+}
+
+// keepAsked notes again the person's requests a pass could not tell the
+// role of, for the next.
+func (d *brakemanDesk) keepAsked(asked map[string]bool) {
+	d.src.mu.Lock()
+	defer d.src.mu.Unlock()
+	for id := range asked {
+		if len(d.src.asked) < maxRoleSources {
+			d.src.asked[id] = true
+		}
+	}
+}
+
+// askedWake tells the role of a person's request id, under a key of its
+// own, so telling it again (a write that failed, the request's op id
+// asked again) logs it once.
+func (d *brakemanDesk) askedWake(id string) error {
+	err := d.role.Asked(crew.RoleWake{Subject: id, Key: "asked"})
+	if err != nil && !errors.Is(err, errDeskClosing) {
+		d.s.log.Warn("Brakeman's role could not note a person's request: it tries again", "request", id, "err", err)
+	}
+	return err
+}
+
+// noteAsked tells the role of a person's request kept: one it could not
+// note (its record not written, its configuration not read) is kept and
+// told again on a later pass of its loop, never dropped.
+func (d *brakemanDesk) noteAsked(id string) {
+	if err := d.askedWake(id); err == nil || errors.Is(err, errDeskClosing) {
+		return
+	}
+	d.keepAsked(map[string]bool{id: true})
+	d.role.Again()
+	d.role.Poke()
 }
 
 // settledRun reads the run as its ledger holds it: ok false for a run the
@@ -415,13 +465,15 @@ var derivedOp = regexp.MustCompile(`^bk[0-9a-f]{30}$`)
 // the ticket is outside the scope or the visibility. The feed's place
 // moves past a change only once its wake is written: a read or a write
 // that fails leaves it there, noted for the next pass, and answers false.
+// A pass reads at most its pages; the changes past them are noted and
+// read on the next pass, which it asks for at once.
 func (d *brakemanDesk) readTickets(ctx context.Context, adm *refResolver) bool {
 	ds := d.s.dispatch
 	if ds == nil {
 		return true
 	}
 	d.src.mu.Lock()
-	after := d.src.ticketSeq
+	after, size, pages := d.src.ticketSeq, d.src.ticketPage, d.src.ticketPages
 	d.src.mu.Unlock()
 	stop := func() bool {
 		d.src.mu.Lock()
@@ -430,8 +482,8 @@ func (d *brakemanDesk) readTickets(ctx context.Context, adm *refResolver) bool {
 		d.src.mu.Unlock()
 		return false
 	}
-	for range 20 {
-		page, err := ds.ChangesAfter(ctx, after, 500)
+	for range pages {
+		page, err := ds.ChangesAfter(ctx, after, size)
 		if err != nil {
 			d.s.log.Warn("Brakeman's role could not read Dispatch's changes: it tries again", "err", err)
 			return stop()
@@ -455,10 +507,16 @@ func (d *brakemanDesk) readTickets(ctx context.Context, adm *refResolver) bool {
 		d.src.mu.Lock()
 		d.src.ticketSeq = max(d.src.ticketSeq, after)
 		d.src.mu.Unlock()
-		if len(page) < 500 {
+		if len(page) < size {
 			return true
 		}
 	}
+	// The pass's pages are read and changes may be left: the next pass
+	// reads on from here, though no commit is announced meanwhile.
+	d.src.mu.Lock()
+	d.src.tickets = true
+	d.src.mu.Unlock()
+	d.role.Poke()
 	return true
 }
 
@@ -566,14 +624,33 @@ func nextDay(now time.Time) time.Time {
 	return time.Date(l.Year(), l.Month(), l.Day()+1, 0, 0, 0, 0, time.Local)
 }
 
+// wakeOpPrefix begins every op id a wake request is made under: a
+// person's request may not take it (handleBrakemanAsk).
+const wakeOpPrefix = "wake-"
+
+// maxWakeOps is how many op ids a batch's request may be made under: a
+// request a person kept under wake-<batch> before the prefix was theirs
+// to take no more is passed over for the next (wakeOpID).
+const maxWakeOps = 8
+
+// wakeOpID is the k-th op id (from 1) of the batch's request:
+// wake-<batch>, then wake-<batch>.<k>.
+func wakeOpID(batch string, k int) string {
+	if k <= 1 {
+		return wakeOpPrefix + batch
+	}
+	return wakeOpPrefix + batch + "." + strconv.Itoa(k)
+}
+
 // Fire makes the batch's request, kind wake, under the op id wake-<batch>
 // and in admission's order, as a person's ask is kept: a batch fired
-// again answers the request it made; a turn that cannot start is
-// refused in words (Brakeman off, stuck, the day's turns or minutes
-// spent), a queue full is tried again.
+// again answers the request it made, known by its kind and batch, never
+// another request kept under that op id (the next of the batch's op ids
+// is taken past one); a turn that cannot start is refused in words
+// (Brakeman off, stuck, the day's turns or minutes spent), a queue full
+// is tried again.
 func (rr roleRecords) Fire(b crew.Batch) (string, error) {
 	d := rr.d
-	in := brakeman.Request{OpID: "wake-" + b.ID, Kind: brakeman.KindWake, Batch: b.ID}
 	d.admit.Lock()
 	defer d.admit.Unlock()
 	if d.closing.Load() {
@@ -582,9 +659,33 @@ func (rr roleRecords) Fire(b crew.Batch) (string, error) {
 	if !d.recovered.Load() {
 		return "", d.notOwner()
 	}
-	if prev, found, err := d.st.ByOp(in.OpID); err == nil && found {
-		return prev.ID, nil
+	for k := 1; k <= maxWakeOps; k++ {
+		in := brakeman.Request{OpID: wakeOpID(b.ID, k), Kind: brakeman.KindWake, Batch: b.ID}
+		prev, found, err := d.st.ByOp(in.OpID)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			if prev.Kind == brakeman.KindWake && prev.Batch == b.ID {
+				return prev.ID, nil
+			}
+			continue
+		}
+		id, err := rr.make(in)
+		if errors.Is(err, brakeman.ErrOpConflict) {
+			// Another request's op id, that request pruned since.
+			continue
+		}
+		return id, err
 	}
+	return "", fmt.Errorf("the batch %s's %d op ids are other requests'", b.ID, maxWakeOps)
+}
+
+// make keeps the wake request in, once Brakeman runs in the background
+// and the desk, the queue and the day's budget have room for it. The
+// caller holds admit.
+func (rr roleRecords) make(in brakeman.Request) (string, error) {
+	d := rr.d
 	cfg, err := d.st.Config()
 	if err != nil {
 		return "", err

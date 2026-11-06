@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
@@ -193,7 +194,42 @@ func (s *Server) handleSessionBrakemanRequest(w http.ResponseWriter, r *http.Req
 	if rec, err := d.roleRecord(); err == nil {
 		out.Notes = rec.Notes
 	}
+	if own && out.Batch != nil {
+		// The batch given is read: its wakes' classes are noted, under the
+		// read mutex a brief is kept under, before the answer goes, so the
+		// brief's footprint carries them (a summary of a ticket made ready
+		// is withheld from a turn that may not see Dispatch).
+		d.readMu.Lock()
+		for _, c := range batchClasses(out.Batch) {
+			d.usedClass(id, c)
+		}
+		d.readMu.Unlock()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"request": out})
+}
+
+// batchClasses are the visibility classes a batch's wakes are of, by
+// their subjects' kinds; its overflow, which names none, counts every
+// class a wake may be of.
+func batchClasses(b *crew.Batch) []string {
+	used := map[string]bool{}
+	for _, w := range b.Wakes {
+		if kind, _, ok := strings.Cut(w.Subject, ":"); ok {
+			if c := refClass(kind); c != "" {
+				used[c] = true
+			}
+		}
+	}
+	if b.Overflow != nil {
+		used[brakeman.ClassRuns], used[brakeman.ClassSessions], used[brakeman.ClassDispatch] = true, true, true
+	}
+	var out []string
+	for _, c := range brakeman.Classes {
+		if used[c] {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // mustJSON is v as JSON, "" when it does not encode.

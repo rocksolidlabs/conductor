@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1080,5 +1081,246 @@ func TestATicketWakesByTheStatusItsChangeSet(t *testing.T) {
 	b.roleSettle(t)
 	if rows := b.roleRecord(t).Log; len(rows) != 2 {
 		t.Fatalf("each ticket made ready once wakes the role once: %+v", rows)
+	}
+}
+
+// TestAWakeBatchReadIsInTheBriefsFootprint: a wake turn reads its batch,
+// a ticket made ready among its wakes, and keeps a brief citing only its
+// own session: the brief's footprint holds Dispatch and the runs its
+// task's wake is of, so a later turn that may not see Dispatch is given
+// the brief withheld.
+func TestAWakeBatchReadIsInTheBriefsFootprint(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.background(t, "bk", nil)
+	b.expect(t, "POST", "/api/dispatch/projects", map[string]any{"opId": "p-1", "key": "CND", "name": "Conductor"}, http.StatusCreated, "")
+	b.expect(t, "POST", "/api/dispatch/tickets", map[string]any{"opId": "t-1", "project": "CND", "title": "Ship the role"}, http.StatusCreated, "")
+	b.readyTicket(t, "CND-1", "e-1")
+	id := b.failTask(t, c, "build")
+	sid, tok, _ := b.turnSession(t, id)
+	b.waitState(t, id, brakeman.StateRunning)
+	status, out := b.readRequest(t, sid, tok)
+	batch, _ := entityOf(t, out, "request")["batch"].(map[string]any)
+	if status != http.StatusOK || !strings.Contains(fmt.Sprint(batch["wakes"]), "ticket:CND-1") {
+		t.Fatalf("%d %v", status, out)
+	}
+	if status, out := b.submit(t, sid, tok, "b-1", factBrief("session:"+sid)); status != http.StatusCreated {
+		t.Fatalf("brief: %d %v", status, out)
+	}
+	if r, _ := b.desk.st.Get(id); r.Footprint == nil || !slices.Contains(r.Footprint.Classes, brakeman.ClassDispatch) || !slices.Contains(r.Footprint.Classes, brakeman.ClassRuns) {
+		t.Fatalf("the brief's footprint: %+v", r.Footprint)
+	}
+	c.add(brakemanGrace + time.Second)
+	b.settle(t)
+	b.waitState(t, id, brakeman.StateBriefed)
+	b.slotFree(t)
+	b.configure(t, func(c map[string]any) { c["visibility"].(map[string]any)["dispatch"] = false })
+	ask := b.briefing(t)
+	sid2, tok2, _ := b.turnSession(t, ask)
+	b.waitState(t, ask, brakeman.StateRunning)
+	req, err := http.NewRequest(http.MethodGet, b.http.URL+"/api/brakeman/briefs", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok2)
+	req.Header.Set(brakemanSessionHeader, sid2)
+	resp, err := b.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var briefs map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&briefs); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("the briefs: %d %v %v", resp.StatusCode, err, briefs)
+	}
+	found := false
+	for _, x := range briefs["briefs"].([]any) {
+		if m := x.(map[string]any); m["id"] == id {
+			found = true
+			if whole(m) || m["withheld"] == nil {
+				t.Fatalf("the wake turn's brief, with Dispatch not visible: %v", m)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("the brief %s is not listed: %v", id, briefs)
+	}
+}
+
+// TestTurningTheRoleOffCancelsAQueuedWake: a wake request queued behind
+// a person's turn when the role is set to run only when asked is
+// cancelled, and never starts once the slot is free.
+func TestTurningTheRoleOffCancelsAQueuedWake(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.background(t, "bk", nil)
+	ask := b.briefing(t)
+	sid, tok, _ := b.turnSession(t, ask)
+	b.waitState(t, ask, brakeman.StateRunning)
+	b.desk.roleWake(crew.RoleWake{Source: crew.WakeTaskFailed, Subject: "task:run-1/build", Key: "attempts 1", At: c.now()})
+	c.add(time.Duration(brakeman.MinWindowSeconds) * time.Second)
+	var wake string
+	if !waitFor(30*time.Second, func() bool {
+		b.desk.role.Poke()
+		if r := b.roleRecord(t); r.State == crew.RoleBriefing {
+			wake = r.Request
+		}
+		return wake != ""
+	}) {
+		t.Fatalf("the batch never fired: %+v", b.roleRecord(t))
+	}
+	b.waitState(t, wake, brakeman.StateQueued)
+	b.configure(t, func(c map[string]any) { c["wake"].(map[string]any)["mode"] = brakeman.WakeInvoked })
+	if r := b.waitState(t, wake, brakeman.StateQueued, brakeman.StateCancelled, brakeman.StateStarting, brakeman.StateRunning); r.State != brakeman.StateCancelled {
+		t.Fatalf("the wake request with the role off: %s", r.State)
+	}
+	if status, out := b.submit(t, sid, tok, "b-1", factBrief("session:"+sid)); status != http.StatusCreated {
+		t.Fatalf("brief: %d %v", status, out)
+	}
+	c.add(brakemanGrace + time.Second)
+	b.settle(t)
+	b.waitState(t, ask, brakeman.StateBriefed)
+	b.slotFree(t)
+	b.settle(t)
+	if r, _ := b.desk.st.Get(wake); r.State != brakeman.StateCancelled {
+		t.Fatalf("the cancelled wake request is %s", r.State)
+	}
+}
+
+// TestTurningTheRoleOffDropsItsBriefingMarkFirst: a save that turns the
+// role off drops the briefing times' mark before the configuration is
+// written, so one whose mark cannot be written changes nothing.
+func TestTurningTheRoleOffDropsItsBriefingMarkFirst(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.background(t, "bk", nil)
+	if b.roleRecord(t).Briefed.IsZero() {
+		t.Fatal("the role's first look marked nothing")
+	}
+	fix := b.breakRoleFile(t)
+	c := b.config(t)
+	rev := c["rev"]
+	c["wake"].(map[string]any)["mode"] = brakeman.WakeInvoked
+	b.expect(t, "PUT", "/api/brakeman/config", map[string]any{"rev": rev, "config": c}, http.StatusInternalServerError, "store_failed")
+	if !b.desk.mustConfig(t).Background() {
+		t.Fatal("the role was turned off with its mark not written")
+	}
+	fix()
+	b.configure(t, func(c map[string]any) { c["wake"].(map[string]any)["mode"] = brakeman.WakeInvoked })
+	if r, err := b.desk.role.Peek(); err != nil || !r.Briefed.IsZero() {
+		t.Fatalf("the mark after the role was turned off: %v %+v", err, r.Briefed)
+	}
+}
+
+// TestAPersonsRequestOutlivesAFailedWrite: a person's request accepted
+// while the role's record cannot be written is noted once it can be,
+// unprompted, and its op id asked again logs it once.
+func TestAPersonsRequestOutlivesAFailedWrite(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.background(t, "bk", nil)
+	fix := b.breakRoleFile(t)
+	body := map[string]any{"opId": "ask-once", "kind": "briefing"}
+	status, _, out := b.call(t, "POST", "/api/brakeman/requests", body)
+	if status != http.StatusCreated {
+		t.Fatalf("ask: %d %v", status, out)
+	}
+	id := entityOf(t, out, "request")["id"].(string)
+	if b.hasWake(t, crew.WakeRequest, id) {
+		t.Fatal("the request was noted with the write failing")
+	}
+	fix()
+	if !waitFor(60*time.Second, func() bool { return b.hasWake(t, crew.WakeRequest, id) }) {
+		t.Fatalf("the person's request was lost with the failed write: %+v", b.roleRecord(t).Log)
+	}
+	if status, _, out := b.call(t, "POST", "/api/brakeman/requests", body); status != http.StatusOK {
+		t.Fatalf("ask again: %d %v", status, out)
+	}
+	b.roleSettle(t)
+	n := 0
+	for _, row := range b.roleRecord(t).Log {
+		if row.Source == crew.WakeRequest && row.Subject == id {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the request is logged %d times", n)
+	}
+}
+
+// TestTheFeedReadsOnPastAPassesPages: with the role's pass held, more of
+// Dispatch's changes wait than a pass reads (its pages made small); once
+// the pass is let go, every ticket made ready wakes the role, though no
+// commit is announced after.
+func TestTheFeedReadsOnPastAPassesPages(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	b.background(t, "bk", nil)
+	b.desk.src.mu.Lock()
+	b.desk.src.ticketPage, b.desk.src.ticketPages = 1, 2
+	b.desk.src.mu.Unlock()
+	b.expect(t, "POST", "/api/dispatch/projects", map[string]any{"opId": "p-1", "key": "CND", "name": "Conductor"}, http.StatusCreated, "")
+	b.desk.recovered.Store(false)
+	b.roleSettle(t)
+	for i := 1; i <= 3; i++ {
+		b.expect(t, "POST", "/api/dispatch/tickets", map[string]any{"opId": fmt.Sprintf("t-%d", i), "project": "CND", "title": fmt.Sprintf("Ticket %d", i)}, http.StatusCreated, "")
+		b.expect(t, "POST", fmt.Sprintf("/api/dispatch/tickets/CND-%d/edit", i), map[string]any{"opId": fmt.Sprintf("e-%d", i), "set": map[string]any{"status": "ready"}}, http.StatusOK, "")
+	}
+	head, err := b.srv.dispatch.Head(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(30*time.Second, func() bool {
+		b.desk.src.mu.Lock()
+		defer b.desk.src.mu.Unlock()
+		return b.desk.src.ticketTop >= head
+	}) {
+		t.Fatal("the role never heard of the last commit")
+	}
+	b.desk.src.mu.Lock()
+	if left := head - b.desk.src.ticketSeq; left <= 2 {
+		b.desk.src.mu.Unlock()
+		t.Fatalf("only %d changes wait: a pass reads them all", left)
+	}
+	b.desk.src.mu.Unlock()
+	b.desk.recovered.Store(true)
+	b.desk.role.Poke()
+	// Waited on without a poke: only the pass that reached its pages asks
+	// for the next.
+	if !waitFor(30*time.Second, func() bool {
+		return b.hasWake(t, crew.WakeTicketReady, "ticket:CND-1") && b.hasWake(t, crew.WakeTicketReady, "ticket:CND-2") && b.hasWake(t, crew.WakeTicketReady, "ticket:CND-3")
+	}) {
+		t.Fatalf("a ticket made ready past the pass's pages woke nothing: %+v", b.roleRecord(t).Log)
+	}
+}
+
+// TestAWakeOpIDIsTheRolesOwn: a person's request may not take an op id
+// beginning wake-; one kept under wake-wb-1 before that was refused is
+// not taken for the batch wb-1's request, which is made under the
+// batch's next op id and runs.
+func TestAWakeOpIDIsTheRolesOwn(t *testing.T) {
+	t.Parallel()
+	b := brakemanEnv(t, nil)
+	c := b.background(t, "bk", nil)
+	if status, _, out := b.call(t, "POST", "/api/brakeman/requests", map[string]any{"opId": "wake-wb-2", "kind": "briefing"}); status != http.StatusBadRequest {
+		t.Fatalf("a person's request under a wake op id: %d %v", status, out)
+	}
+	old, _, err := b.desk.st.Create(brakeman.Request{OpID: "wake-wb-1", Kind: brakeman.KindBriefing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.desk.closeTurn(old.ID, brakeman.StateCancelled, "kept before wake- was the role's"); err != nil {
+		t.Fatal(err)
+	}
+	id := b.failTask(t, c, "build")
+	if id == old.ID {
+		t.Fatalf("the batch was taken as fired by %s", old.ID)
+	}
+	req := b.waitState(t, id, brakeman.StateStarting, brakeman.StateRunning)
+	if req.Kind != brakeman.KindWake || req.Batch != "wb-1" || req.OpID != "wake-wb-1.2" {
+		t.Fatalf("%+v", req)
+	}
+	if r, _ := b.desk.st.Get(old.ID); r.Kind != brakeman.KindBriefing || r.State != brakeman.StateCancelled {
+		t.Fatalf("the person's request: %+v", r)
 	}
 }

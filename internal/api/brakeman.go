@@ -752,6 +752,11 @@ func (d *brakemanDesk) dequeue() time.Duration {
 		d.s.log.Warn("Brakeman's configuration could not be read", "err", err)
 		return brakemanRetry
 	}
+	if cfg.Enabled && !cfg.Background() {
+		// A wake request queued while the role ran (a restart since the
+		// save that turned it off) never starts.
+		d.dropWakes()
+	}
 	for {
 		d.mu.Lock()
 		if !cfg.Enabled || d.stuck || len(d.queue) == 0 || d.turn != nil || d.closing.Load() {
@@ -1338,6 +1343,24 @@ func (d *brakemanDesk) turnOff() {
 	}
 }
 
+// dropWakes cancels the wake requests queued while Brakeman runs only
+// when asked: one queued behind a person's turn as the role was turned
+// off never starts. A wake turn already running runs to its end, as it
+// does when the role is paused. The caller holds admit.
+func (d *brakemanDesk) dropWakes() {
+	d.mu.Lock()
+	ids := slices.Clone(d.queue)
+	d.mu.Unlock()
+	for _, id := range ids {
+		if r, err := d.st.Get(id); err != nil || r.Kind != brakeman.KindWake {
+			continue
+		}
+		if _, err := d.closeTurn(id, brakeman.StateCancelled, "Brakeman runs only when asked"); err != nil {
+			d.s.log.Warn("Brakeman's wake request could not be cancelled", "request", id, "err", err)
+		}
+	}
+}
+
 // brakemanDeskOf answers the desk, or refuses: 403 on a switchyard, 503
 // without a data directory.
 func (s *Server) brakemanDeskOf(w http.ResponseWriter) (*brakemanDesk, bool) {
@@ -1548,6 +1571,19 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	c := body.Config
 	c.Rev, c.UpdatedAt = body.Rev, time.Time{}
+	// A save that turns the role off or on drops its briefing times' mark
+	// first, written before the configuration is: a briefing time that
+	// passes while it is off fires nothing once it is on, whether or not
+	// its loop stepped between. Outside admission's lock, which the role's
+	// step takes inside its own.
+	if d.recovered.Load() && !d.closing.Load() {
+		if prev, err := d.st.Config(); err == nil && prev.Background() != c.Background() {
+			if err := d.role.Switched(); err != nil {
+				s.brakemanError(w, err)
+				return
+			}
+		}
+	}
 	// The save and what turning Brakeman off cancels are one step of
 	// admission's order: an ask after it reads Brakeman off, one before
 	// it is in the queue cancelled, and no dequeue starts a turn between.
@@ -1564,8 +1600,13 @@ func (s *Server) handleBrakemanConfig(w http.ResponseWriter, r *http.Request) {
 		err = errDeskClosing
 	case d.recovered.Load():
 		saved, err = d.st.SaveConfig(c, brakemanFacts{s: s})
-		if err == nil && !saved.Enabled {
+		switch {
+		case err != nil:
+		case !saved.Enabled:
 			d.turnOff()
+		case !saved.Background():
+			// Run only when asked: no wake request waiting starts.
+			d.dropWakes()
 		}
 	default:
 		err = d.notOwner()
@@ -1617,19 +1658,23 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "a wake request is the background role's own: ask another kind")
 		return
 	}
+	if strings.HasPrefix(body.OpID, wakeOpPrefix) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "an op id beginning "+wakeOpPrefix+" is the background role's own: choose another")
+		return
+	}
 	in := brakeman.Request{OpID: body.OpID, Kind: body.Kind, Subjects: body.Subjects, Note: body.Note, Since: body.Since, By: body.By}
 	if f := d.beforeAdmit.Load(); f != nil {
 		(*f)()
 	}
 	// A request kept is a person's own, which the background role logs
 	// (and which tries again for it when it is unavailable): told once
-	// admission's locks are let go, since the role's step takes them.
+	// admission's locks are let go, since the role's step takes them; one
+	// the role could not note is kept for its next pass (noteAsked), and
+	// one still open is told again when its op id is asked again.
 	var asked string
 	defer func() {
 		if asked != "" {
-			if err := d.role.Asked(crew.RoleWake{Subject: asked}); err != nil && !errors.Is(err, errDeskClosing) {
-				s.log.Warn("Brakeman's role could not note a person's request", "request", asked, "err", err)
-			}
+			d.noteAsked(asked)
 		}
 	}()
 	// Brakeman on is read and the request kept in admission's order
@@ -1645,6 +1690,9 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.brakemanError(w, err)
 			return
+		}
+		if req.Open() && d.recovered.Load() {
+			asked = req.ID
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"request": req})
 		return
