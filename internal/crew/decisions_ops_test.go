@@ -144,7 +144,9 @@ func TestMoreInfoKeepsItsAttemptFromBeingParked(t *testing.T) {
 // Each operation sent again after a lost reply gets its receipt again and
 // writes nothing (the request for more typed once): also after the
 // decision was answered, and after a continuation moved it; the same id
-// with another body is op_conflict.
+// with another body is op_conflict, also one that differs only in what
+// cleaning its text removes (the fingerprint is of the body as sent), and a
+// text that is not UTF-8 is invalid.
 func TestAnOperationRepeatsItsReceipt(t *testing.T) {
 	dir := newRepo(t)
 	e, fl, ld := decisionEngine(t)
@@ -171,6 +173,15 @@ func TestAnOperationRepeatsItsReceipt(t *testing.T) {
 	var de *DecisionError
 	if _, err := e.CommentDecision(t.Context(), d.ID, "o1", CommentKind, "Other words.", "admin"); !errors.As(err, &de) || de.Code != CodeOpConflict {
 		t.Fatalf("another body under the same id: %v", err)
+	}
+	if _, err := e.CommentDecision(t.Context(), d.ID, "o1", CommentKind, "Looks right. ", "admin"); !errors.As(err, &de) || de.Code != CodeOpConflict {
+		t.Fatalf("a body that differs as sent, under the same id: %v", err)
+	}
+	if _, err := e.CommentDecision(t.Context(), d.ID, "o9", CommentKind, "Looks\xffright.", "admin"); !errors.As(err, &de) || de.Code != CodeInvalid {
+		t.Fatalf("a text that is not UTF-8: %v", err)
+	}
+	if _, err := e.CancelDecision(t.Context(), d.ID, "o9", false, "not\xffneeded", "admin"); !errors.As(err, &de) || de.Code != CodeInvalid {
+		t.Fatalf("a cancel's words that are not UTF-8: %v", err)
 	}
 	more := func() (OpReceipt, error) {
 		return e.CommentDecision(t.Context(), d.ID, "o2", MoreInfoKind, "Which table?", "admin")
