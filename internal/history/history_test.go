@@ -13,18 +13,19 @@ import (
 	"testing"
 )
 
-// A new index is version 1 of generation 1 with every table; an index of
-// another version (a newer one, an older one, one of another shape) is
-// cleared in place at the owner's open: the same file, this version's
-// schema, the generation past the one it held, its rows gone.
+// A new index is version 1 with every table, of a generation drawn at
+// random (so a cursor of an earlier file is never of its generation); an
+// index of another version (a newer one, an older one, one of another
+// shape) is cleared in place at the owner's open: the same file, this
+// version's schema, the generation past the one it held, its rows gone.
 func TestSchemaV1AndARebuildOfAnotherVersion(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, File)
 	ix := openIndex(t, dir, Options{})
-	v, gen, err := readVersion(ctx, ix.db)
-	if err != nil || v != Version || gen != 1 {
-		t.Fatalf("version %d generation %d: %v", v, gen, err)
+	v, first, err := readVersion(ctx, ix.db)
+	if err != nil || v != Version || first <= 0 || first > 1<<62 {
+		t.Fatalf("version %d generation %d: %v", v, first, err)
 	}
 	for _, table := range []string{"schema_version", "sources", "entries", "links", "entries_fts"} {
 		count(t, ix, table)
@@ -62,8 +63,8 @@ func TestSchemaV1AndARebuildOfAnotherVersion(t *testing.T) {
 		}
 		put(t, ix, "session:s1", chat("session:s1#e1", "s1", "alpha", t0))
 	})
-	if _, gen, _ := readVersion(ctx, ix.db); gen != 3 {
-		t.Fatalf("generation %d after two clears, want 3", gen)
+	if _, gen, _ := readVersion(ctx, ix.db); gen != first+2 {
+		t.Fatalf("generation %d after two clears, want %d", gen, first+2)
 	}
 	ix = reopen(func(ix *Index) {
 		if err := ix.clearTo(ctx, 0); err != nil {
@@ -94,20 +95,25 @@ func TestSchemaV1AndARebuildOfAnotherVersion(t *testing.T) {
 
 // A file SQLite cannot read as a database is moved aside at the owner's
 // open (with its -wal and -shm) and made again; a reader open on the old
-// file reads the new one at its next search; what was moved aside is
-// removed at the owner's next start.
+// file reads the new one at its next search; a cursor of the old file is
+// stale in the new one (its generation is not the old one's); what was
+// moved aside is removed at the owner's next start.
 func TestADamagedIndexIsMovedAsideAndReadersReopen(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, File)
 	a := openIndex(t, dir, Options{})
-	put(t, a, "session:s1", chat("session:s1#e1", "s1", "alpha", t0))
+	put(t, a, "session:s1", chat("session:s1#e1", "s1", "alpha", t0), chat("session:s1#e2", "s1", "alpha", t0))
 	reader, err := Open(ctx, path, Options{ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	wantKeys(t, reader, "alpha", "session:s1#e1")
+	wantKeys(t, reader, "alpha", "session:s1#e1", "session:s1#e2")
+	old := search(t, a, "alpha", 1)
+	if old.Next == "" {
+		t.Fatal("no second page")
+	}
 	a.Close()
 	// The file's pages overwritten and its log lost, as a crash on a
 	// failing disk would leave them (the reader still holds the old ones
@@ -124,8 +130,14 @@ func TestADamagedIndexIsMovedAsideAndReadersReopen(t *testing.T) {
 	if _, err := os.Stat(path + damaged); err != nil {
 		t.Fatalf("the damaged file was not moved aside: %v", err)
 	}
-	put(t, b, "session:s2", chat("session:s2#e1", "s2", "alpha", t0))
-	wantKeys(t, reader, "alpha", "session:s2#e1")
+	put(t, b, "session:s2", chat("session:s2#e1", "s2", "alpha", t0), chat("session:s2#e2", "s2", "alpha", t0))
+	wantKeys(t, reader, "alpha", "session:s2#e1", "session:s2#e2")
+	for _, x := range []*Index{b, reader} {
+		q, _ := ParseQuery("alpha")
+		q.After = old.Next
+		_, err := x.Search(ctx, q)
+		wantErr(t, err, ErrStaleCursor)
+	}
 	b.Close()
 	openIndex(t, dir, Options{})
 	if _, err := os.Stat(path + damaged); !os.IsNotExist(err) {

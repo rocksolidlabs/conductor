@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // Every term must match, each in any of the title, the summary and the
@@ -83,25 +84,34 @@ func TestEachFilter(t *testing.T) {
 	a := Entry{Key: "a", Kind: "session.chat", Ref: "session:0123456789abcdef", Anchor: "session:0123456789abcdef", Title: "alpha",
 		Project: "CND", Repo: "/home/n/code/todo/.git", Host: "lab-box", Agent: "claude", Crew: "team", Run: "team-1", Ticket: "CND-12",
 		At: t0.Add(-48 * time.Hour)}
-	b := receipt("b", "review-2", "sub", "failed", "alpha", t0.Add(-time.Hour))
+	b := receipt("b", "review-0a1b2c3d", "sub", "failed", "alpha", t0.Add(-time.Hour))
 	b.Project, b.Repo, b.Host, b.Agent, b.Crew, b.Ticket = "ZED", "/home/n/code/other/.git", "mac", "codex", "review", "ZED-3"
-	put(t, ix, "s", a, b)
+	// The longest crew id internal/crew takes (ValidID) and a run of it
+	// (ValidRunID: the crew's id, a dash, eight hex digits; 73 bytes).
+	longCrew := "c" + strings.Repeat("rew-", 15) + "abc"
+	c := chat("c", "sc", "gamma", t0.Add(-72*time.Hour))
+	c.Crew, c.Run = longCrew, longCrew+"-0123abcd"
+	put(t, ix, "s", a, b, c)
+	if len(longCrew) != 64 || len(c.Run) != 73 {
+		t.Fatalf("the crew's id is %d bytes and its run's %d", len(longCrew), len(c.Run))
+	}
 	for _, c := range []struct {
 		line string
 		want []string
 	}{
-		{"class:said", []string{"a"}}, {"class:conversation", []string{"a"}}, {"class:checked", []string{"b"}},
-		{"class:said,checked", []string{"a", "b"}}, {"class:decided", nil}, {"class:record", nil}, {"CLASS:Decision", nil},
-		{"kind:check", []string{"b"}}, {"kind:session.chat,check", []string{"a", "b"}},
+		{"class:said", []string{"a", "c"}}, {"class:conversation", []string{"a", "c"}}, {"class:checked", []string{"b"}},
+		{"class:said,checked", []string{"a", "b", "c"}}, {"class:decided", nil}, {"class:record", nil}, {"CLASS:Decision", nil},
+		{"kind:check", []string{"b"}}, {"kind:session.chat,check", []string{"a", "b", "c"}},
 		{"outcome:failed", []string{"b"}}, {"outcome:passed", nil},
 		{"project:cnd", []string{"a"}}, {"project:CND,ZED", []string{"a", "b"}},
 		{"repo:todo", []string{"a"}}, {"repo:code", []string{"a", "b"}}, {"repo:code/other", []string{"b"}}, {"repo:/home/n/code/todo/", []string{"a"}},
 		{"repo:od", nil}, {"repo:.git", []string{"a", "b"}},
 		{"host:LAB-BOX", []string{"a"}}, {"host:mac", []string{"b"}},
-		{"agent:codex", []string{"b"}}, {"crew:team", []string{"a"}}, {"run:review-2", []string{"b"}},
+		{"agent:codex", []string{"b"}}, {"crew:team", []string{"a"}}, {"run:review-0a1b2c3d", []string{"b"}},
+		{"crew:" + longCrew, []string{"c"}}, {"run:" + longCrew + "-0123abcd", []string{"c"}},
 		{"ticket:cnd-12", []string{"a"}}, {"session:0123456789ABCDEF", []string{"a"}},
-		{"since:24h", []string{"b"}}, {"until:24h", []string{"a"}}, {"since:1w", []string{"a", "b"}},
-		{"since:2026-11-04", []string{"b"}}, {"until:2026-11-04", []string{"a"}}, {"until:2026-11-05", []string{"a", "b"}},
+		{"since:24h", []string{"b"}}, {"until:24h", []string{"a", "c"}}, {"since:1w", []string{"a", "b", "c"}},
+		{"since:2026-11-04", []string{"b"}}, {"until:2026-11-04", []string{"a", "c"}}, {"until:2026-11-05", []string{"a", "b", "c"}},
 		{"since:2026-11-05T10:30:00Z", []string{"b"}}, {"since:2026-11-05T11:30:00Z", nil},
 		{"alpha class:checked outcome:failed", []string{"b"}}, {"class:said class:checked", nil},
 	} {
@@ -109,7 +119,7 @@ func TestEachFilter(t *testing.T) {
 	}
 	for _, line := range []string{
 		"class:bogus", "kind:nope", "outcome:Bad!", "project:1X", "project:TOOLONGKEY", "repo:/", "agent:Bad_Agent!", "crew:-x",
-		"run:-x", "ticket:CND-0", "ticket:CND", "session:xyz", "since:yesterday", "until:7y", "since:0d", "since:1d since:2d",
+		"crew:" + longCrew + "x", "crew:a_b", "run:-x", "run:team-1", "run:review-0a1b2c3", "run:" + longCrew + "x-0123abcd", "ticket:CND-0", "ticket:CND", "session:xyz", "since:yesterday", "until:7y", "since:0d", "since:1d since:2d",
 		"class:", "class:said,", "outcome:" + strings.Repeat("a,", MaxFilterValues) + "a",
 		strings.Repeat("x", MaxQuery+1), manyWords(MaxTerms + 1), "\xff",
 	} {
@@ -252,6 +262,158 @@ func TestSnippetMarksTheMatch(t *testing.T) {
 	}
 	if s := search(t, ix, "kind:check", 0).Entries[0].Snippet; s != "go test ./..." {
 		t.Errorf("no words: the snippet %q", s)
+	}
+	// Long tokens before the match (40 of 40 letters, the match after the
+	// 21st: snippet() bounds its window in tokens, and a cut from the
+	// start would lose the match), a CJK sentence the tokenizer reads as
+	// one token, and text that holds brackets of its own: the window is
+	// cut around the first match, its mark whole, … where it was cut.
+	var long []string
+	for i := range 40 {
+		long = append(long, strings.Repeat(string(rune('a'+i%26)), 40))
+		if i == 20 {
+			long = append(long, "needle")
+		}
+	}
+	cjk := strings.Repeat("検索の結果は", 30) + " needle " + strings.Repeat("ここにある", 30)
+	brackets := strings.Repeat("[x] ", 60) + "needle " + strings.Repeat("[y] ", 60)
+	for i, body := range []string{strings.Join(long, " "), cjk, brackets} {
+		ix := openIndex(t, t.TempDir(), Options{})
+		put(t, ix, "session:s", chat("session:s#e1", "s", body, t0))
+		s := search(t, ix, "needle", 0).Entries[0].Snippet
+		if !strings.Contains(s, "[needle]") || len(s) > MaxSnippet || !utf8.ValidString(s) || !strings.HasPrefix(s, "…") {
+			t.Errorf("body %d: the snippet %q (%d bytes)", i, s, len(s))
+		}
+	}
+	if s := clipSnippet(strings.Repeat("w ", 100)+snipOpen+strings.Repeat("m", 400)+snipClose, MaxSnippet); !strings.HasPrefix(s, "[mmm") || len(s) > MaxSnippet {
+		t.Errorf("a match longer than the bound: %q (%d bytes)", s, len(s))
+	}
+	w := strings.Repeat("word ", 50)
+	if s := clipSnippet(w+snipOpen+"hit"+snipClose+" "+w+snipOpen+"two"+snipClose+w, MaxSnippet); strings.Count(s, "[") != strings.Count(s, "]") {
+		t.Errorf("a mark cut through: %q", s)
+	}
+}
+
+// A link's far end shows the entry that stands for its ref: the entry
+// keyed by it, else the first by key of those whose ref it is (a
+// command's key is not its ref), never none when the index holds one.
+func TestALinkFindsItsEndByItsReference(t *testing.T) {
+	ctx := context.Background()
+	ix := openIndex(t, t.TempDir(), Options{})
+	const run = "team-0a1b2c3d"
+	cmd := Entry{Key: "run:" + run + "#command/admin/c1", Kind: "command", Ref: "command:" + run + "/c1", Anchor: "run:" + run,
+		Actor: "admin", Title: "retry", At: t0}
+	put(t, ix, "run:"+run, cmd)
+	item := Entry{Key: "brief:br-1#i1", Kind: "brief.item", Ref: "brief:br-1", Anchor: "brief:br-1", Title: "Brakeman's fact", Body: "it was retried", At: t0}
+	links := []Link{{From: "brief:br-1", Rel: "cites", To: cmd.Ref}, {From: "brief:br-1", Rel: "cites", To: "session:s"}}
+	if err := ix.Replace(ctx, Source{Key: "brief:br-1", Mark: "m"}, []Entry{item}, links); err != nil {
+		t.Fatal(err)
+	}
+	far := func() map[string]string {
+		t.Helper()
+		l, err := ix.Links(ctx, "brief:br-1", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, end := range l.Out {
+			out[end.Ref] = ""
+			if end.Entry != nil {
+				out[end.Ref] = end.Entry.Key
+			}
+		}
+		return out
+	}
+	if got := far(); got[cmd.Ref] != cmd.Key || got["session:s"] != "" {
+		t.Fatalf("the ends: %v", got)
+	}
+	// Two lines of a session carry its ref: the first by key stands for
+	// it, until the index holds the session's own record.
+	put(t, ix, "session:s", chat("session:s#e2", "s", "two", t0), chat("session:s#e1", "s", "one", t0))
+	if got := far(); got["session:s"] != "session:s#e1" {
+		t.Fatalf("a shared ref: %v", got)
+	}
+	record := Entry{Key: "session:s", Kind: "session", Ref: "session:s", Anchor: "session:s", Title: "the session", At: t0}
+	put(t, ix, "session:s", chat("session:s#e2", "s", "two", t0), chat("session:s#e1", "s", "one", t0), record)
+	if got := far(); got["session:s"] != "session:s" {
+		t.Fatalf("a ref with its record: %v", got)
+	}
+	if h, err := ix.Entry(ctx, item.Key); err != nil || len(h.Links.Out) != 2 {
+		t.Fatalf("the entry's links: %+v %v", h.Links, err)
+	}
+}
+
+// A search of words past its bounds says so and answers no wrong row:
+// past maxRanked passing matches it ranks the most recently indexed
+// maxRanked (the best scored first) and counts every one; past
+// maxScanned matches it reads the most recently indexed maxScanned, newest
+// first, and counts every match (with filters, those it read that pass
+// them); under both it reads and ranks every match.
+func TestASearchPastItsBoundsSaysSo(t *testing.T) {
+	ctx := context.Background()
+	ix := openIndex(t, t.TempDir(), Options{})
+	ix.maxRanked, ix.maxScanned = 3, 6
+	// e1 indexed first, e7 last; each an hour older than the one before.
+	add := func(i int) {
+		e := chat(fmt.Sprintf("session:s%d#e1", i), fmt.Sprint(i), "alpha", t0.Add(-time.Duration(i)*time.Hour))
+		if i == 1 || i == 4 {
+			e.Title = "alpha" // scored first
+		}
+		if i == 6 {
+			e.Kind, e.Ref, e.Commit = "check", e.Key, "0123456789abcdef0123456789abcdef01234567"
+		}
+		put(t, ix, fmt.Sprintf("session:s%d", i), e)
+	}
+	for i := 1; i <= 5; i++ {
+		add(i)
+	}
+	put(t, ix, "session:rare", chat("session:rare#e1", "rare", "omega", t0))
+	if p := search(t, ix, "omega", 0); p.Cut != "" || p.Total != 1 {
+		t.Fatalf("under the bounds: cut %q total %d", p.Cut, p.Total)
+	}
+	// Five match, three ranked: e3, e4, e5, e4 first by its score; e1, the
+	// best scored, is past the bound.
+	p := search(t, ix, "alpha", 0)
+	if p.Cut != CutRanked || p.Total != 5 || !slices.Equal(keysOf(p.Entries), []string{"session:s4#e1", "session:s3#e1", "session:s5#e1"}) {
+		t.Fatalf("past maxRanked: cut %q total %d %v", p.Cut, p.Total, keysOf(p.Entries))
+	}
+	if p := search(t, ix, "alpha class:said", 0); p.Cut != CutRanked || p.Total != 5 {
+		t.Fatalf("past maxRanked, filtered: cut %q total %d", p.Cut, p.Total)
+	}
+	add(6)
+	add(7)
+	// Seven match: the six most recently indexed (e2 to e7) read, newest
+	// first, unscored; paged by two, each once.
+	window := []string{"session:s2#e1", "session:s3#e1", "session:s4#e1", "session:s5#e1", "session:s6#e1", "session:s7#e1"}
+	if p := search(t, ix, "alpha", 0); p.Cut != CutScanned || p.Total != 7 || !slices.Equal(keysOf(p.Entries), window) {
+		t.Fatalf("past maxScanned: cut %q total %d %v", p.Cut, p.Total, keysOf(p.Entries))
+	}
+	q, _ := ParseQuery("alpha")
+	q.Limit = 2
+	var got []string
+	for {
+		p, err := ix.Search(ctx, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Cut != CutScanned {
+			t.Fatalf("a page past maxScanned: cut %q", p.Cut)
+		}
+		got = append(got, keysOf(p.Entries)...)
+		if p.Next == "" {
+			break
+		}
+		q.After = p.Next
+	}
+	if !slices.Equal(got, window) {
+		t.Fatalf("paged past maxScanned: %v", got)
+	}
+	// Filtered: the window's five said (e6 is a receipt), counted as read.
+	if p := search(t, ix, "alpha class:said", 0); p.Cut != CutScanned || p.Total != 5 || len(p.Entries) != 5 {
+		t.Fatalf("past maxScanned, filtered: cut %q total %d %v", p.Cut, p.Total, keysOf(p.Entries))
+	}
+	if p := search(t, ix, "alpha class:checked", 0); p.Cut != CutScanned || p.Total != 1 || p.Entries[0].Key != "session:s6#e1" {
+		t.Fatalf("past maxScanned, one passing: cut %q total %d %v", p.Cut, p.Total, keysOf(p.Entries))
 	}
 }
 

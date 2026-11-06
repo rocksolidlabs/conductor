@@ -36,6 +36,30 @@ const (
 	// maxCursor is a cursor's bound: a key of MaxRef bytes, each escaped
 	// at its worst in JSON, base64'd, fits under it.
 	maxCursor = 2 << 10
+
+	// MaxScanned and MaxRanked bound the work of a search of words, so
+	// that a word in every entry costs what a rare one does (Page.Cut): it
+	// reads at most MaxScanned of the entries its words match, the most
+	// recently indexed first (FTS5 walks its doclist from the newest rowid
+	// and stops), and scores (bm25) at most MaxRanked of those that pass
+	// its filters.
+	MaxScanned = 10_000
+	MaxRanked  = 2_000
+)
+
+// The bounds a search of words can stop at (Page.Cut). Neither makes an
+// answer wrong: each says what was read.
+const (
+	// CutRanked: more than MaxRanked of the entries the search read pass
+	// its filters; the MaxRanked most recently indexed of them are ranked
+	// and paged, and Total counts every one that passes.
+	CutRanked = "ranked"
+	// CutScanned: the words match more than MaxScanned entries; the
+	// MaxScanned most recently indexed are read, those of them that pass
+	// the filters are answered newest first, unscored, and Total counts
+	// every match when there are no filters, else those it read that pass
+	// them.
+	CutScanned = "scanned"
 )
 
 var (
@@ -109,7 +133,11 @@ var (
 	outcomePattern = regexp.MustCompile(`^[a-z][a-z_]{0,31}$`)
 	projectPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,5}$`)
 	agentPattern   = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
-	idPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+	// crewPattern and runPattern are a crew's id and a run's (a crew's id,
+	// a dash and eight hex digits), as internal/crew has them (ValidID,
+	// ValidRunID), copied since the index imports nothing of the module.
+	crewPattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+	runPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}-[0-9a-f]{8}$`)
 	ticketPattern  = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,5}-[1-9][0-9]{0,17}$`)
 	sessionPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
 	spanPattern    = regexp.MustCompile(`^([1-9][0-9]{0,4})([hdw])$`)
@@ -228,9 +256,12 @@ func (q *Query) addFilter(name, value string) error {
 		case "agent":
 			v = strings.ToLower(v)
 			ok = agentPattern.MatchString(v)
-		case "crew", "run":
+		case "crew":
 			v = strings.ToLower(v)
-			ok = idPattern.MatchString(v)
+			ok = crewPattern.MatchString(v)
+		case "run":
+			v = strings.ToLower(v)
+			ok = runPattern.MatchString(v)
 		case "ticket":
 			v = strings.ToUpper(v)
 			ok = ticketPattern.MatchString(v)
@@ -393,14 +424,17 @@ func (q Query) match() string { return strings.Join(q.terms, " AND ") }
 
 // Page is a page of a search: its entries in the search's order, the
 // cursor of the next page ("" on the last), how many entries the search
-// names (counted to MaxTotal, TotalCapped past it), and the index's
-// state: StateOtherVersion or StateMissing, with no entries, for an index
-// that holds none of this version.
+// names (counted to MaxTotal, TotalCapped past it), the bound it stopped
+// at (Cut: CutRanked, CutScanned; "" when it read every match), and the
+// index's state: StateOtherVersion, StateMissing or StateChecking, with
+// no entries, for an index that holds none of this version or is owed a
+// Check.
 type Page struct {
 	Entries     []Hit  `json:"entries"`
 	Next        string `json:"next,omitempty"`
 	Total       int    `json:"total"`
 	TotalCapped bool   `json:"totalCapped,omitempty"`
+	Cut         string `json:"cut,omitempty"`
 	State       string `json:"state,omitempty"`
 }
 
@@ -429,7 +463,10 @@ type Links struct {
 }
 
 // LinkEnd is a link seen from one end: its relation and the other end's
-// ref, with the entry whose key that ref is when the index holds one.
+// ref, with the entry that stands for that ref when the index holds one:
+// the entry keyed by it, else the first by key of those whose ref it is
+// (a command's key is run:<run>#command/<actor>/<id>, its ref
+// command:<run>/<id>).
 type LinkEnd struct {
 	Rel   string  `json:"rel"`
 	Ref   string  `json:"ref"`
@@ -511,11 +548,15 @@ func scanEntry(rows interface{ Scan(...any) error }, before ...any) (id int64, e
 // Search answers a page of the query. Order: with words, FTS5's
 // bm25(entries_fts, 4, 2, 1) (title, summary, body), then newer first;
 // with filters alone, newer first; in both, last by the entry's key, so
-// the order is total. Class never weighs in it. The next page is the rows
-// strictly after the cursor's in the same order. Every statement reads
-// one snapshot, after the index's version and generation: an index of
-// another version answers its State and no rows, a cursor of another
-// query ErrCursor, one of an earlier generation ErrStaleCursor.
+// the order is total. Class never weighs in it. A search of words reads
+// at most MaxScanned of its matches and ranks at most MaxRanked, and says
+// so (Page.Cut); past MaxScanned matches its page is newest first. The
+// next page is the rows strictly after the cursor's in the same order.
+// Every statement reads one snapshot, after the index's version and
+// generation: an index of another version, or owed a Check, answers its
+// State and no rows, a cursor of another query ErrCursor, one of an
+// earlier generation ErrStaleCursor. It reads through the owner's readers,
+// never its writer, so no write waits for it.
 func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 	page := Page{Entries: []Hit{}}
 	limit := q.Limit
@@ -536,15 +577,21 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 		}
 		after = &c
 	}
+	if err := ix.enter(); err != nil {
+		return page, err
+	}
+	defer ix.leave()
 	tx, gen, state, err := ix.readTx(ctx)
 	if err != nil {
 		return page, err
+	}
+	if tx != nil {
+		defer tx.Rollback()
 	}
 	if state != "" {
 		page.State = state
 		return page, nil
 	}
-	defer tx.Rollback()
 	if after != nil && (after.V != Version || after.Gen != gen) {
 		return page, ErrStaleCursor
 	}
@@ -563,26 +610,82 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 	// The page is sorted by its keys alone (p), each entry's id, score,
 	// time and key, and only its rows are then read whole: a sort that
 	// carried every match's texts would copy them all. A search of words
-	// scores every match (m), once: the page is drawn from m and its total
-	// counted from it, as Dispatch's list counts its own. A page of filters
-	// alone reads the newest first and stops at the page; its total is a
-	// count of its own, to MaxTotal and one past it.
+	// first asks the full-text index for the rowids of its words'
+	// matches, newest indexed first, and stops at maxScanned+1 (a walk of
+	// the doclist that ORDER BY rowid DESC LIMIT lets FTS5 end there). At
+	// most maxScanned: it reads them, newest indexed first, the filters
+	// applied, and stops at maxRanked+1 (r); the newest maxRanked of them
+	// are scored (m), once, and the page is drawn from m and its total
+	// counted from r, as Dispatch's list counts its own. More: the window
+	// is the newest maxScanned of those rowids, given back as JSON, and the
+	// page is those of its entries that pass the filters, newest first,
+	// unscored (with filters, m, counted). So bm25 is computed for at most
+	// maxRanked+1 rows and the doclist walked to at most maxScanned+1. A
+	// page of filters alone reads the newest first and stops at the page;
+	// its total is a count of its own, to MaxTotal and one past it.
 	var stmt string
 	var pageArgs []any
 	order := "ORDER BY p.score, p.at DESC, p.key"
 	whole := " FROM p JOIN entries e ON e.id = p.id JOIN texts t ON t.id = p.id "
+	var matched int   // the words' matches, to maxScanned+1
+	var window string // past maxScanned, the newest maxScanned's rowids as JSON
+	andConds := ""
+	if len(conds) > 0 {
+		andConds = " AND " + strings.Join(conds, " AND ")
+	}
+	scanned := func() bool { return matched > ix.maxScanned }
 	if words {
-		m := `SELECT e.id AS id, f.score AS score, e.at AS at, e.key AS key
-			FROM (SELECT rowid AS rid, bm25(entries_fts, 4, 2, 1) AS score FROM entries_fts WHERE entries_fts MATCH ?) f
-			JOIN entries e ON e.id = f.rid` + where()
-		pageArgs = append(append(pageArgs, q.match()), args...)
+		rows, err := tx.QueryContext(ctx, "SELECT rowid FROM entries_fts WHERE entries_fts MATCH ? ORDER BY rowid DESC LIMIT ?", q.match(), ix.maxScanned+1)
+		if err != nil {
+			return page, err
+		}
+		b := []byte{'['}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return page, err
+			}
+			if matched++; matched <= ix.maxScanned {
+				if matched > 1 {
+					b = append(b, ',')
+				}
+				b = strconv.AppendInt(b, id, 10)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return page, err
+		}
+		window = string(append(b, ']'))
 		past := ""
+		var pastArgs []any
 		if after != nil {
 			past = " WHERE (score > ? OR (score = ? AND (at < ? OR (at = ? AND key > ?))))"
-			pageArgs = append(pageArgs, after.Score, after.Score, after.At, after.At, after.Key)
+			pastArgs = []any{after.Score, after.Score, after.At, after.At, after.Key}
 		}
-		stmt = "WITH m AS MATERIALIZED (" + m + "), p AS (SELECT * FROM m" + past + " ORDER BY score, at DESC, key LIMIT ?) " +
-			"SELECT (SELECT COUNT(*) FROM m), p.score, " + entryColumns + whole + order
+		if !scanned() {
+			r := `SELECT f.rowid AS id, bm25(entries_fts, 4, 2, 1) AS score, e.at AS at, e.key AS key
+				FROM entries_fts f CROSS JOIN entries e ON e.id = f.rowid WHERE entries_fts MATCH ?` + andConds + " ORDER BY f.rowid DESC LIMIT ?"
+			pageArgs = append(append(append(append(pageArgs, q.match()), args...), ix.maxRanked+1, ix.maxRanked), pastArgs...)
+			stmt = "WITH r AS MATERIALIZED (" + r + "), m AS MATERIALIZED (SELECT * FROM r ORDER BY id DESC LIMIT ?), p AS (SELECT * FROM m" + past +
+				" ORDER BY score, at DESC, key LIMIT ?) SELECT (SELECT COUNT(*) FROM r), p.score, " + entryColumns + whole + order
+		} else if len(conds) == 0 {
+			// The total is known (more than maxScanned): the window's
+			// newest first, a sort that keeps only the page.
+			var extra []string
+			pageArgs = append(pageArgs, window)
+			if after != nil {
+				extra = append(extra, "(e.at < ? OR (e.at = ? AND e.key > ?))")
+				pageArgs = append(pageArgs, after.At, after.At, after.Key)
+			}
+			stmt = "WITH p AS (SELECT e.id AS id, 0.0 AS score, e.at AS at, e.key AS key" + windowFrom + where(extra...) +
+				" ORDER BY e.at DESC, e.key LIMIT ?) SELECT -1, p.score, " + entryColumns + whole + order
+		} else {
+			pageArgs = append(append(append(pageArgs, window), args...), pastArgs...)
+			stmt = "WITH m AS MATERIALIZED (SELECT e.id AS id, 0.0 AS score, e.at AS at, e.key AS key" + windowFrom + where() + "), p AS (SELECT * FROM m" + past +
+				" ORDER BY at DESC, key LIMIT ?) SELECT (SELECT COUNT(*) FROM m), p.score, " + entryColumns + whole + order
+		}
 	} else {
 		var extra []string
 		pageArgs = append(pageArgs, args...)
@@ -619,21 +722,53 @@ func (ix *Index) Search(ctx context.Context, q Query) (Page, error) {
 	if err := rows.Err(); err != nil {
 		return page, err
 	}
-	page.Total = total
-	if total < 0 {
-		// Filters alone, or a page past the last of words, which holds no
-		// row to carry m's count.
+	// The total: with words and no filters, the probe's count of the
+	// matches (past maxScanned, at least that many; a count of its own
+	// when that is under MaxTotal, as a test's maxScanned is); with
+	// filters, what the page's statement counted when that is every
+	// passing match (the matches read whole and at most maxRanked passing;
+	// past maxScanned, those of the window that pass), else a count of its
+	// own (the matches that pass, of which there are at most maxScanned;
+	// the window's); with filters alone, a count of its own. Each count to
+	// MaxTotal and one past it.
+	countOwn := func() error {
 		count, countArgs := "SELECT 1 FROM entries e"+where(), args
-		if words {
-			count = "SELECT 1 FROM entries_fts JOIN entries e ON e.id = entries_fts.rowid WHERE entries_fts MATCH ?"
-			if len(conds) > 0 {
-				count += " AND " + strings.Join(conds, " AND ")
-			}
+		switch {
+		case words && len(conds) == 0:
+			count, countArgs = "SELECT 1 FROM entries_fts WHERE entries_fts MATCH ?", []any{q.match()}
+		case words && !scanned():
+			count = "SELECT 1 FROM entries_fts f CROSS JOIN entries e ON e.id = f.rowid WHERE entries_fts MATCH ?" + andConds
 			countArgs = append([]any{q.match()}, args...)
+		case words:
+			count = "SELECT 1" + windowFrom + where()
+			countArgs = append([]any{window}, args...)
 		}
-		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM ("+count+" LIMIT ?)", append(countArgs, MaxTotal+1)...).Scan(&page.Total); err != nil {
-			return page, err
+		return tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM ("+count+" LIMIT ?)", append(countArgs, MaxTotal+1)...).Scan(&page.Total)
+	}
+	page.Total = total
+	var counted error
+	switch {
+	case !words:
+		if total < 0 {
+			counted = countOwn()
 		}
+	case len(conds) == 0 && (!scanned() || matched > MaxTotal):
+		page.Total = matched
+	case len(conds) == 0:
+		counted = countOwn()
+	case !scanned() && total >= 0 && total <= ix.maxRanked:
+	case !scanned() || total < 0:
+		counted = countOwn()
+	}
+	if counted != nil {
+		return page, counted
+	}
+	switch {
+	case !words:
+	case scanned():
+		page.Cut = CutScanned
+	case page.Total > ix.maxRanked:
+		page.Cut = CutRanked
 	}
 	if page.Total > MaxTotal {
 		page.Total, page.TotalCapped = MaxTotal, true
@@ -661,7 +796,7 @@ func decorate(ctx context.Context, tx *sql.Tx, hits []Hit, ids []int64, match st
 		for _, id := range ids {
 			args = append(args, id)
 		}
-		err := each(ctx, tx, `SELECT rowid, snippet(entries_fts, -1, '[', ']', '…', 24) FROM entries_fts
+		err := each(ctx, tx, `SELECT rowid, snippet(entries_fts, -1, char(57344), char(57345), '…', 24) FROM entries_fts
 			WHERE entries_fts MATCH ? AND rowid BETWEEN ? AND ? AND +rowid IN (`+marks(len(ids))+`)`, args, func(rows *sql.Rows) error {
 			var id int64
 			var s string
@@ -702,14 +837,13 @@ func decorate(ctx context.Context, tx *sql.Tx, hits []Hit, ids []int64, match st
 	}
 	for i := range hits {
 		h := &hits[i]
-		s, ok := snippets[ids[i]]
-		if !ok {
-			s = h.Summary
-			if s == "" {
-				s = h.Body
-			}
+		if s, ok := snippets[ids[i]]; ok {
+			h.Snippet = clipSnippet(s, MaxSnippet)
+		} else if h.Snippet = h.Summary; h.Snippet == "" {
+			h.Snippet = Clip(h.Body, MaxSnippet)
+		} else {
+			h.Snippet = Clip(h.Snippet, MaxSnippet)
 		}
-		h.Snippet = Clip(s, MaxSnippet)
 		h.Repeats = repeats[group{h.Digest, h.Class}]
 		h.Links = Links{Out: []LinkEnd{}, In: []LinkEnd{}}
 		if l, ok := links[h.Ref]; ok {
@@ -717,6 +851,77 @@ func decorate(ctx context.Context, tx *sql.Tx, hits []Hit, ids []int64, match st
 		}
 	}
 	return nil
+}
+
+// windowFrom is a search's window past maxScanned matches (Search): the
+// entries of the rowids its probe read, given as a JSON array. CROSS JOIN
+// keeps the array the outer loop: with entries outer (a filter's index
+// chosen) the array would be read again for every entry. The words'
+// statements join the same way, the full-text index outer, so their
+// LIMIT ends its walk.
+const windowFrom = " FROM json_each(?) j CROSS JOIN entries e ON e.id = j.value"
+
+// snipOpen and snipClose are where snippet() marks a match (U+E000 and
+// U+E001, which no text of the index is expected to hold), so the match
+// can be found in a text that holds brackets of its own; clipSnippet
+// writes them as [ and ].
+const (
+	snipOpen  = "\uE000"
+	snipClose = "\uE001"
+)
+
+var markWords = strings.NewReplacer(snipOpen, "[", snipClose, "]")
+
+// clipSnippet is snippet()'s text with its marks as [ and ], at most n
+// bytes: whole when it fits, else the window of it around its first
+// match, centred on it as far as the text allows, cut at rune boundaries
+// and never through a mark, with … where it was cut. snippet() bounds its
+// window in tokens, not bytes, so long tokens before the match (hashes, a
+// path, a CJK sentence the tokenizer reads as one) would put it past a
+// cut from the start.
+func clipSnippet(s string, n int) string {
+	s = strings.ToValidUTF8(s, replacement)
+	if f := markWords.Replace(s); len(f) <= n {
+		return f
+	}
+	o := strings.Index(s, snipOpen)
+	if o < 0 {
+		return Clip(markWords.Replace(s), n)
+	}
+	c := len(s)
+	if i := strings.Index(s[o:], snipClose); i >= 0 {
+		c = o + i + len(snipClose)
+	}
+	const cut = "…"
+	budget := n - 2*len(cut)
+	if c-o > budget {
+		// The match alone is longer than the bound: its start kept.
+		return Clip(markWords.Replace(s[o:c]), n-len(cut)) + cut
+	}
+	start := max(o-(budget-(c-o))/2, 0)
+	end := min(start+budget, len(s))
+	start = max(min(start, end-budget), 0)
+	for start < o && !utf8.RuneStart(s[start]) {
+		start++
+	}
+	for end > c && end < len(s) && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	// A mark the window's start or end falls in is left out whole.
+	if i, j := strings.Index(s[start:o], snipClose), strings.Index(s[start:o], snipOpen); i >= 0 && (j < 0 || i < j) {
+		start += i + len(snipClose)
+	}
+	if i, j := strings.LastIndex(s[c:end], snipOpen), strings.LastIndex(s[c:end], snipClose); i >= 0 && i > j {
+		end = c + i
+	}
+	out := markWords.Replace(s[start:end])
+	if start > 0 {
+		out = cut + out
+	}
+	if end < len(s) {
+		out += cut
+	}
+	return out
 }
 
 // marks is n placeholders.
@@ -738,8 +943,8 @@ func each(ctx context.Context, tx *sql.Tx, stmt string, args []any, fn func(*sql
 }
 
 // readLinks reads at most limit links each way of each ref, each with the
-// entry at its other end when the index holds one by that key: one
-// statement a way.
+// entry that stands for its other end when the index holds one (LinkEnd):
+// one statement a way.
 func readLinks(ctx context.Context, tx *sql.Tx, refs []string, limit int) (map[string]Links, error) {
 	out := map[string]Links{}
 	for _, r := range refs {
@@ -761,7 +966,10 @@ func readLinks(ctx context.Context, tx *sql.Tx, refs []string, limit int) (map[s
 			SELECT l.` + way.near + ` AS near, l.rel AS rel, l.` + way.far + ` AS far, o.key AS okey, o.kind AS kind, o.class AS class,
 				o.outcome AS outcome, ot.title AS title,
 				row_number() OVER (PARTITION BY l.` + way.near + ` ORDER BY l.rel, l.` + way.far + `) AS n
-			FROM links l LEFT JOIN entries o ON o.key = l.` + way.far + ` LEFT JOIN texts ot ON ot.id = o.id
+				FROM links l LEFT JOIN entries o ON o.id = COALESCE(
+					(SELECT x.id FROM entries x WHERE x.key = l.` + way.far + `),
+					(SELECT x.id FROM entries x WHERE x.ref = l.` + way.far + ` ORDER BY x.key LIMIT 1))
+				LEFT JOIN texts ot ON ot.id = o.id
 			WHERE l.` + way.near + ` IN (` + marks(len(refs)) + `)) WHERE n <= ? ORDER BY near, rel, far`
 		err := each(ctx, tx, stmt, args, func(rows *sql.Rows) error {
 			var near string
@@ -794,7 +1002,7 @@ func readLinks(ctx context.Context, tx *sql.Tx, refs []string, limit int) (map[s
 // longer holds, never another entry.
 func (ix *Index) Entry(ctx context.Context, key string) (Hit, error) {
 	var hit Hit
-	err := ix.read(ctx, func(tx *sql.Tx, _ int64) error {
+	err := ix.read(ctx, true, func(tx *sql.Tx, _ int64) error {
 		id, e, err := scanEntry(tx.QueryRowContext(ctx, "SELECT "+entryColumns+" FROM "+entryFrom+" WHERE e.key = ?", key))
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrGone
@@ -819,7 +1027,7 @@ func (ix *Index) Links(ctx context.Context, ref string, limit int) (Links, error
 		limit = MaxLinks
 	}
 	var links Links
-	err := ix.read(ctx, func(tx *sql.Tx, _ int64) error {
+	err := ix.read(ctx, true, func(tx *sql.Tx, _ int64) error {
 		all, err := readLinks(ctx, tx, []string{ref}, limit)
 		links = all[ref]
 		return err
@@ -856,7 +1064,7 @@ func (ix *Index) Similar(ctx context.Context, key, scope string, chain []string,
 		limit = MaxSimilar
 	}
 	hits := []Hit{}
-	err := ix.read(ctx, func(tx *sql.Tx, _ int64) error {
+	err := ix.read(ctx, true, func(tx *sql.Tx, _ int64) error {
 		_, e, err := scanEntry(tx.QueryRowContext(ctx, "SELECT "+entryColumns+" FROM "+entryFrom+" WHERE e.key = ?", key))
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrGone

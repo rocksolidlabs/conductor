@@ -93,10 +93,13 @@ type benchFixture struct {
 	phrase string
 }
 
-// BenchmarkSearch searches 100,000 entries four ways (docs/plans/
-// history.md, Measured): two words, a page of filters, a phrase, a prefix
-// of two letters; each reports its median, the plan's measure (target 50
-// ms on the Linux box), beside Go's mean.
+// BenchmarkSearch searches 100,000 entries (docs/plans/history.md,
+// Measured): the plan's four (two words, a page of filters, a phrase, a
+// prefix of two letters) and the searches that match nearly every entry
+// (a prefix of one letter, the fixture's most frequent word alone, with a
+// second word, and with filters), which reach the search's bounds
+// (MaxScanned, MaxRanked); each reports its median, the plan's measure
+// (target 50 ms on the Linux box), beside Go's mean.
 func BenchmarkSearch(b *testing.B) {
 	// A benchmark with sub-benchmarks runs once: the fixture is made once.
 	f, err := benchIndex(b.TempDir())
@@ -109,6 +112,10 @@ func BenchmarkSearch(b *testing.B) {
 		{"filtered", "class:checked outcome:failed project:BENA"},
 		{"phrase", `"` + f.phrase + `"`},
 		{"prefix-2", "ka"},
+		{"prefix-1", "k"},
+		{"common-word", f.words[0]},
+		{"common-two-words", f.words[0] + " " + f.words[1]},
+		{"common-word-filtered", f.words[0] + " class:checked project:BENA"},
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			q, err := ParseQuery(c.line)
@@ -117,6 +124,7 @@ func BenchmarkSearch(b *testing.B) {
 			}
 			var took []time.Duration
 			var total int
+			var cut string
 			for b.Loop() {
 				began := time.Now()
 				p, err := f.ix.Search(context.Background(), q)
@@ -124,11 +132,14 @@ func BenchmarkSearch(b *testing.B) {
 					b.Fatal(err)
 				}
 				took = append(took, time.Since(began))
-				total = p.Total
+				total, cut = p.Total, p.Cut
 			}
 			slices.Sort(took)
 			b.ReportMetric(float64(took[len(took)/2].Microseconds())/1000, "ms-median")
 			b.ReportMetric(float64(total), "matches")
+			if cut != "" {
+				b.Logf("%s: cut at %s", c.name, cut)
+			}
 		})
 	}
 }

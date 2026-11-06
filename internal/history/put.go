@@ -251,6 +251,10 @@ func (ix *Index) Replace(ctx context.Context, src Source, entries []Entry, links
 			kept = append(kept, l)
 		}
 	}
+	if err := ix.enter(); err != nil {
+		return err
+	}
+	defer ix.leave()
 	tx, err := ix.writeTx(ctx)
 	if err != nil {
 		return err
@@ -356,6 +360,10 @@ func unindexSource(ctx context.Context, tx *sql.Tx, source string) error {
 // Remove deletes a source and, by cascade, its entries and links, their
 // search rows with them. A source the index does not hold is no error.
 func (ix *Index) Remove(ctx context.Context, key string) error {
+	if err := ix.enter(); err != nil {
+		return err
+	}
+	defer ix.leave()
 	tx, err := ix.writeTx(ctx)
 	if err != nil {
 		return err
@@ -373,7 +381,7 @@ func (ix *Index) Remove(ctx context.Context, key string) error {
 // Mark reads a source's mark; ok is false for a source the index does
 // not hold.
 func (ix *Index) Mark(ctx context.Context, key string) (mark string, ok bool, err error) {
-	err = ix.read(ctx, func(tx *sql.Tx, _ int64) error {
+	err = ix.read(ctx, false, func(tx *sql.Tx, _ int64) error {
 		err := tx.QueryRowContext(ctx, "SELECT mark FROM sources WHERE key = ?", key).Scan(&mark)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -395,7 +403,7 @@ func (ix *Index) Sources(ctx context.Context, after string, limit int) ([]Source
 		limit = MaxSourcesPage
 	}
 	var out []SourceMark
-	err := ix.read(ctx, func(tx *sql.Tx, _ int64) error {
+	err := ix.read(ctx, false, func(tx *sql.Tx, _ int64) error {
 		rows, err := tx.QueryContext(ctx, "SELECT key, mark, indexed_at, bytes FROM sources WHERE key > ? ORDER BY key LIMIT ?", after, limit)
 		if err != nil {
 			return err
@@ -508,7 +516,7 @@ func (ix *Index) budget(ctx context.Context, tx *sql.Tx) error {
 // dropped by the budget, or never indexed) and how many entries the
 // budget let go since the index was last cleared.
 type Stats struct {
-	State      string    `json:"state,omitempty"` // StateOtherVersion, StateMissing; "" for this version's
+	State      string    `json:"state,omitempty"` // StateOtherVersion, StateMissing (no numbers); StateChecking (with them); "" for this version's, checked
 	Generation int64     `json:"generation,omitempty"`
 	Entries    int       `json:"entries"`
 	Sources    int       `json:"sources"`
@@ -520,9 +528,13 @@ type Stats struct {
 // Stats reads the index's Stats.
 func (ix *Index) Stats(ctx context.Context) (Stats, error) {
 	var st Stats
+	if err := ix.enter(); err != nil {
+		return st, err
+	}
+	defer ix.leave()
 	tx, gen, state, err := ix.readTx(ctx)
-	if err != nil || state != "" {
-		st.State = state
+	st.State = state
+	if err != nil || tx == nil {
 		return st, err
 	}
 	defer tx.Rollback()
