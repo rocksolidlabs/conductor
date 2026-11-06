@@ -1353,6 +1353,13 @@ func TestTheOverviewListsWhatTheRoutesAdmit(t *testing.T) {
 			})
 			req := bk.briefing(t)
 			sid, tok, _ := bk.turnSession(t, req)
+			// The session is registered before its run counts it a member
+			// (what run_status needs, and the guide asks: sessionCaller):
+			// read the guide once it does, or the overview and the section
+			// read either side of it differ.
+			if !waitFor(30*time.Second, func() bool { _, _, ok := bk.srv.runs.MemberOf(sid); return ok }) {
+				t.Fatalf("%s never became its run's member", sid)
+			}
 			may := mayOf(t, bk.testEnv, tok, "/api/sessions/"+sid+"/guide")
 			if want := c.granted && c.dispatch; slices.Contains(may, "act") != want || slices.Contains(may, brakeman.ActLaunchApprovedPlan) != want {
 				t.Errorf("act listed %v, want %v: %v", slices.Contains(may, "act"), want, may)
