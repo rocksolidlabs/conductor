@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,7 +11,9 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -502,4 +505,143 @@ func TestRecheckedCandidateIsVerifiedForADelivery(t *testing.T) {
 			t.Fatalf("attempt %d: %+v %q %q %v", n, v, code, words, err)
 		}
 	}
+}
+
+// Check again sent while the run it goes to is continued (between the
+// route's read of the chain and the engine's command), and a resend under
+// its id meanwhile: the first is held after its walk found no receipt
+// (recheckSentSeam), A is continued as B, and the resend, its walk now
+// reaching B, waits for the first rather than taking the id in B
+// (recheckWaitSeam). Released, the first is refused in A as run_continued,
+// its receipt there, nothing checked; the resend answers that refusal from
+// A (a repeat); B has no receipt of the id and no attempt of it, A no new
+// attempt. One command id, one receipt.
+func TestRecheckIsSentOnceAcrossAContinuation(t *testing.T) {
+	l, runA, mark, commits := failingLaunch(t)
+	e := l.testEnv
+	mustMark(t, mark)
+	held, release := make(chan struct{}), make(chan struct{})
+	waiting := make(chan struct{}, 1)
+	var once sync.Once
+	sent := func(run string) {
+		if run != runA {
+			return
+		}
+		once.Do(func() {
+			close(held)
+			<-release
+		})
+	}
+	wait := func(run string) {
+		if run == runA {
+			select {
+			case waiting <- struct{}{}:
+			default:
+			}
+		}
+	}
+	recheckSentSeam.Store(&sent)
+	recheckWaitSeam.Store(&wait)
+	t.Cleanup(func() {
+		recheckSentSeam.Store(nil)
+		recheckWaitSeam.Store(nil)
+	})
+	body := map[string]any{"commandId": "again", "attempt": 3, "commit": commits[2]}
+	first := recheckAsync(e, runA, body)
+	select {
+	case <-held:
+	case a := <-first:
+		t.Fatalf("Check again answered before it was sent: %d %v %v", a.status, a.out, a.err)
+	case <-time.After(time.Minute):
+		t.Fatal("Check again never reached its command")
+	}
+	resp, out := e.do("POST", "/api/runs/"+runA+"/resume", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		close(release)
+		t.Fatalf("continue: %d %v", resp.StatusCode, out)
+	}
+	runB := out["run"].(map[string]any)["id"].(string)
+	waitUntil(t, "A names B", func() bool {
+		p, ok, err := e.srv.ledger.Pointer(context.Background(), runA)
+		return err == nil && ok && p.ContinuedBy == runB
+	})
+	taskVia(t, e, runB, "build", "failed, carried", func(task map[string]any) bool { return task["state"] == ledger.TaskFailed })
+	resend := recheckAsync(e, runA, body)
+	select {
+	case <-waiting:
+	case a := <-resend:
+		close(release)
+		t.Fatalf("the resend went past the Check again under way: %d %v %v", a.status, a.out, a.err)
+	case <-time.After(time.Minute):
+		close(release)
+		t.Fatal("the resend neither waited nor answered")
+	}
+	close(release)
+	refused := func(what string, a recheckAnswer, repeat bool) {
+		t.Helper()
+		if a.err != nil {
+			t.Fatalf("%s: %v", what, a.err)
+		}
+		rc, _ := a.out["receipt"].(map[string]any)
+		if a.status != http.StatusConflict || errorCode(a.out) != crew.RefusalRunContinued || rc["status"] != ledger.CommandFailed || a.out["run"] != runA || (rc["repeat"] == true) != repeat {
+			t.Fatalf("%s: %d %v", what, a.status, a.out)
+		}
+	}
+	refused("the Check again sent to A, continued meanwhile", <-first, false)
+	refused("the resend", <-resend, true)
+	status, again := recheckOn(t, e, runA, body)
+	refused("a resend after both", recheckAnswer{status: status, out: again}, true)
+	ctx := context.Background()
+	if _, ok, err := e.srv.ledger.Receipt(ctx, runB, adminActor, "again"); err != nil || ok {
+		t.Fatalf("B's receipt of the id: %v %v", ok, err)
+	}
+	if _, ok, err := e.srv.ledger.Receipt(ctx, runA, adminActor, "again"); err != nil || !ok {
+		t.Fatalf("A's receipt of the id: %v %v", ok, err)
+	}
+	for _, run := range []string{runA, runB} {
+		rows, err := e.srv.ledger.Attempts(ctx, run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			if r.TaskID == "build" && r.N > 3 {
+				t.Fatalf("%s: an attempt was made: %+v", run, r)
+			}
+		}
+	}
+}
+
+// recheckAnswer is a Check again's answer, read off the test's goroutine.
+type recheckAnswer struct {
+	status int
+	out    map[string]any
+	err    error
+}
+
+// recheckAsync sends Check again to the run's route as the admin from a
+// goroutine of its own, its answer on the channel.
+func recheckAsync(e *testEnv, run string, body map[string]any) <-chan recheckAnswer {
+	ch := make(chan recheckAnswer, 1)
+	go func() {
+		var a recheckAnswer
+		defer func() { ch <- a }()
+		b, err := json.Marshal(body)
+		if a.err = err; err != nil {
+			return
+		}
+		req, err := http.NewRequest("POST", e.http.URL+"/api/runs/"+run+"/tasks/build/recheck", bytes.NewReader(b))
+		if a.err = err; err != nil {
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := e.client.Do(req)
+		if a.err = err; err != nil {
+			return
+		}
+		defer resp.Body.Close()
+		a.status = resp.StatusCode
+		a.err = json.NewDecoder(resp.Body).Decode(&a.out)
+	}()
+	return ch
 }

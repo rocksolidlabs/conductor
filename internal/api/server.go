@@ -111,6 +111,10 @@ type Server struct {
 	// (beginContinuation), whose runs no chain's walk judges until they
 	// end (continuingAt). Under resumingMu.
 	continuations map[*continuation]struct{}
+	// rechecking is held by one Check again at a time, from its chain's
+	// read to its answer (handleRecheckTask): one command id is taken in
+	// one run of a chain, never in two.
+	rechecking chan struct{}
 	// journaling holds the runs whose record is about to be written again
 	// (scheduleJournal), under journalMu.
 	journalMu  sync.Mutex
@@ -368,6 +372,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		instance:    newInstance(),
 		started:     time.Now(),
 		relayed:     newRelayMeter(nil),
+		rechecking:  make(chan struct{}, 1),
 	}
 	// Every provider behind the guard before the server's first write of
 	// its own (the ledger's recovery, the records): nothing calls them yet.

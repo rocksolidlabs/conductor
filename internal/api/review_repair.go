@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -447,13 +448,17 @@ type recheckBody struct {
 // attempt there (n+1, its result the same commit). A resend is looked for
 // by its command id along the chain from {run} and answered from the run
 // that took it (receipt.repeat), another content under the id 409
-// command_conflict. 409 {error, receipt, run} for a refusal the engine
-// recorded (stale_candidate when the candidate is no longer the task's
-// standing failed one there, task_state otherwise); 409 task_state
-// "continue run X first" when the server holds no run of the chain to
-// send it to, nothing checked; 404 not_found for a run the ledger has
-// not; 400 invalid_request for a body that is not one; 503
-// ledger_unavailable, and run_changing while a continuation is being made.
+// command_conflict; one Check again at a time, from the chain's read to
+// its answer (s.rechecking), so one id is taken in one run. 409 {error,
+// receipt, run} for a refusal the engine recorded (stale_candidate when
+// the candidate is no longer the task's standing failed one there,
+// stale_revision for an expected revision not the run's, run_continued
+// for a run continued since the chain's read, task_state otherwise); 409
+// task_state "continue run X first" when the server holds no run of the
+// chain to send it to, nothing checked; 404 not_found for a run the
+// ledger has not; 400 invalid_request for a body that is not one; 503
+// ledger_unavailable, and run_changing while a continuation is being made
+// or when another Check again held s.rechecking past the request's time.
 func (s *Server) handleRecheckTask(w http.ResponseWriter, r *http.Request) {
 	runID, taskID := r.PathValue("run"), r.PathValue("task")
 	if !crew.ValidRunID(runID) || !crew.ValidTaskID(taskID) {
@@ -482,6 +487,24 @@ func (s *Server) handleRecheckTask(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := runContext(r)
 	defer cancel()
+	// One Check again at a time, from the chain's read to the command: a
+	// resend that walked the chain while another request under its id
+	// waited to send it to an older run (continued since, so refused
+	// there) would else take it in the newest, one id then holding a
+	// refusal in one run and a check in another.
+	if f := recheckWaitSeam.Load(); f != nil && len(s.rechecking) == cap(s.rechecking) {
+		(*f)(runID)
+	}
+	select {
+	case s.rechecking <- struct{}{}:
+		defer func() { <-s.rechecking }()
+	case <-ctx.Done():
+		// Nothing taken: another held the server for the whole of the
+		// request's time.
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "run_changing", "another Check again was being sent; nothing was taken, ask again")
+		return
+	}
 	if _, found, err := ld.Run(ctx, runID); err != nil {
 		s.receiptError(w, "recheck: the run", runID, err)
 		return
@@ -512,6 +535,9 @@ func (s *Server) handleRecheckTask(w http.ResponseWriter, r *http.Request) {
 		s.writeRecheck(w, run, rc, err)
 		return
 	}
+	if f := recheckSentSeam.Load(); f != nil {
+		(*f)(newest)
+	}
 	if _, held := s.runs.Get(newest); !held {
 		writeError(w, http.StatusConflict, crew.RefusalTaskState, "continue run "+newest+" first: the server runs no run of the chain to check it again in")
 		return
@@ -519,6 +545,15 @@ func (s *Server) handleRecheckTask(w http.ResponseWriter, r *http.Request) {
 	rc, err := s.runs.Recheck(ctx, newest, actor, body.Command, rq)
 	s.writeRecheck(w, newest, rc, err)
 }
+
+// recheckWaitSeam, when a test sets it, is called with its route's run by
+// a Check again that finds another holding s.rechecking, before it waits;
+// recheckSentSeam with the run a Check again is about to be sent to, once
+// no receipt of its id was found along the chain.
+var (
+	recheckWaitSeam atomic.Pointer[func(run string)]
+	recheckSentSeam atomic.Pointer[func(run string)]
+)
 
 // writeRecheck answers Check again as writeReceipt answers a command,
 // with the run it went to and, taken, the attempt it made there (the
